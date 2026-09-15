@@ -9,24 +9,20 @@
  */
 
 import { internal } from "../convex/_generated/api.js";
+import type { WithoutSystemFields } from "convex/server";
 import type { Doc, Id } from "../convex/_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "../convex/_generated/server";
 import {
 	files_pending_update_has_asset_content,
-	files_pending_update_has_content,
 	files_pending_update_has_yjs_content,
-	files_pending_path_overlay_build,
-	files_pending_path_overlay_translate_path,
-	files_pending_path_overlay_pick_visible_entry,
-	files_ROOT_ID,
 	files_MAX_YJS_WIRE_BYTES,
 } from "../shared/files.ts";
-import {
-	organizations_is_global_organization_id,
-	organizations_is_reserved_workspace_id,
-} from "../shared/organizations.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 import { should_never_happen } from "./server-utils.ts";
+import {
+	files_private_storage_db_reserve,
+	files_private_storage_db_release_deleted_resource,
+} from "../convex/files_private_storage.ts";
 
 export * from "../shared/files.ts";
 
@@ -152,8 +148,8 @@ export async function files_db_get_pending_update(
 	args: {
 		organizationId: Id<"organizations">;
 		workspaceId: Id<"organizations_workspaces">;
-		userId: string;
-		nodeId: Id<"files_nodes">;
+		userId: Id<"users">;
+		target: Doc<"files_pending_updates">["target"];
 		pendingUpdateId?: Id<"files_pending_updates">;
 	},
 ) {
@@ -165,16 +161,18 @@ export async function files_db_get_pending_update(
 		pendingUpdateById.organizationId === args.organizationId &&
 		pendingUpdateById.workspaceId === args.workspaceId &&
 		pendingUpdateById.userId === args.userId &&
-		pendingUpdateById.fileNodeId === args.nodeId
+		pendingUpdateById.target.kind === args.target.kind &&
+		pendingUpdateById.target.id === args.target.id
 			? pendingUpdateById
 			: await ctx.db
 					.query("files_pending_updates")
-					.withIndex("by_organization_workspace_user_fileNode", (q) =>
+					.withIndex("by_organization_workspace_user_target", (q) =>
 						q
 							.eq("organizationId", args.organizationId)
 							.eq("workspaceId", args.workspaceId)
 							.eq("userId", args.userId)
-							.eq("fileNodeId", args.nodeId),
+							.eq("target.kind", args.target.kind)
+							.eq("target.id", args.target.id),
 					)
 					.first();
 
@@ -182,100 +180,63 @@ export async function files_db_get_pending_update(
 }
 
 /**
- * Indexed read of one user's pending update docs. Shared by the FE list query and the
- * pending path overlay reads so both always see the same docs.
+ * Every proposal write invalidates an older paged review of this owner's draft set.
  */
-export async function files_db_list_pending_updates_for_user(
-	ctx: QueryCtx | MutationCtx,
-	args: {
-		organizationId: Id<"organizations">;
-		workspaceId: Id<"organizations_workspaces">;
-		userId: string;
-	},
+export async function files_db_advance_pending_review_version(
+	ctx: MutationCtx,
+	args: { organizationId: Id<"organizations">; workspaceId: Id<"organizations_workspaces">; userId: Id<"users"> },
 ) {
-	return await ctx.db
-		.query("files_pending_updates")
-		.withIndex("by_organization_workspace_user_fileNode", (q) =>
+	const version = await ctx.db
+		.query("files_pending_review_versions")
+		.withIndex("by_organization_workspace_user", (q) =>
 			q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("userId", args.userId),
 		)
-		.order("asc")
-		.collect();
-}
-
-/**
- * Load one user's pending update docs plus the active nodes their move/replace fields
- * reference — the exact inputs `files_pending_path_overlay_build` needs. Full docs,
- * overfetched on purpose so one read serves every overlay consumer.
- */
-export async function files_db_get_pending_path_overlay_data(
-	ctx: QueryCtx | MutationCtx,
-	args: {
-		organizationId: Id<"organizations">;
-		workspaceId: Id<"organizations_workspaces">;
-		userId: string;
-	},
-) {
-	const pendingUpdates = await files_db_list_pending_updates_for_user(ctx, args);
-
-	const referencedNodeIds = new Set<Id<"files_nodes">>();
-	for (const pendingUpdate of pendingUpdates) {
-		if (pendingUpdate.pendingMove) {
-			referencedNodeIds.add(pendingUpdate.fileNodeId);
-			if (pendingUpdate.pendingMove.destParentId !== files_ROOT_ID) {
-				referencedNodeIds.add(pendingUpdate.pendingMove.destParentId);
-			}
-			if (pendingUpdate.pendingMove.replacesNodeId) {
-				referencedNodeIds.add(pendingUpdate.pendingMove.replacesNodeId);
-			}
-		}
-		if (pendingUpdate.pendingArchive) {
-			referencedNodeIds.add(pendingUpdate.fileNodeId);
-		}
+		.first();
+	if (version) {
+		await ctx.db.patch("files_pending_review_versions", version._id, { revision: version.revision + 1 });
+	} else {
+		await ctx.db.insert("files_pending_review_versions", {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			userId: args.userId,
+			revision: 1,
+		});
 	}
-
-	// Archived or out-of-scope nodes stay out of the map, so the overlay treats their
-	// docs as missing and the affected docs go inert on the next build.
-	const referencedNodes = (
-		await Promise.all([...referencedNodeIds].map((nodeId) => ctx.db.get("files_nodes", nodeId)))
-	).filter(
-		(node): node is Doc<"files_nodes"> =>
-			node != null &&
-			node.organizationId === args.organizationId &&
-			node.workspaceId === args.workspaceId &&
-			node.archiveOperationId === null,
-	);
-
-	return { pendingUpdates, referencedNodes };
 }
 
-/**
- * Build the user's pending path overlay from direct db reads.
- */
-export async function files_db_build_pending_path_overlay(
-	ctx: QueryCtx | MutationCtx,
-	args: {
-		organizationId: Id<"organizations">;
-		workspaceId: Id<"organizations_workspaces">;
-		userId: string;
-	},
+export async function files_db_insert_pending_update(
+	ctx: MutationCtx,
+	value: WithoutSystemFields<Doc<"files_pending_updates">>,
 ) {
-	const overlayData = await files_db_get_pending_path_overlay_data(ctx, args);
-	return files_pending_path_overlay_build({
-		pendingUpdates: overlayData.pendingUpdates,
-		nodesById: new Map(overlayData.referencedNodes.map((node) => [node._id, node])),
-	});
+	await files_db_advance_pending_review_version(ctx, value);
+	return await ctx.db.insert("files_pending_updates", value);
+}
+
+export async function files_db_patch_pending_update(
+	ctx: MutationCtx,
+	pendingUpdateId: Id<"files_pending_updates">,
+	value: Partial<WithoutSystemFields<Doc<"files_pending_updates">>>,
+) {
+	const proposal = await ctx.db.get("files_pending_updates", pendingUpdateId);
+	if (!proposal) throw should_never_happen("Pending update disappeared before its write", { pendingUpdateId });
+	await files_db_advance_pending_review_version(ctx, proposal);
+	await ctx.db.patch("files_pending_updates", pendingUpdateId, value);
+}
+
+export async function files_db_delete_pending_update(
+	ctx: MutationCtx,
+	pendingUpdateId: Id<"files_pending_updates">,
+	options?: { reviewAlreadyFenced: true },
+) {
+	const proposal = await ctx.db.get("files_pending_updates", pendingUpdateId);
+	if (!proposal) return;
+	// Paged cleanup follows the root's logical Discard, which already changed this clock.
+	if (!options?.reviewAlreadyFenced) await files_db_advance_pending_review_version(ctx, proposal);
+	await ctx.db.delete("files_pending_updates", pendingUpdateId);
 }
 
 /**
- * Path lookup that can see one user's pending path overlay.
- *
- * Without `overlayUserId` this is the plain committed lookup. With it, the requested path is
- * translated through the user's pending moves first: a claimed destination resolves to the
- * moved node's committed doc (returned unchanged — callers display the requested path), a
- * vacated or replaced path reads as missing, and an unrelated live node found at the path
- * stays visible. Committed nodes inside a moved folder's subtree follow the folder, so their
- * old descendant paths read as missing too. Reserved scopes never have pending docs, so the
- * overlay is skipped there.
+ * Look up a saved path. Owner paths are resolved by the bounded reader in files_visible.
  */
 export async function files_db_get_visible_node_by_path(
 	ctx: QueryCtx | MutationCtx,
@@ -283,131 +244,52 @@ export async function files_db_get_visible_node_by_path(
 		organizationId: Doc<"files_nodes">["organizationId"];
 		workspaceId: Doc<"files_nodes">["workspaceId"];
 		path: string;
-		overlayUserId?: Id<"users">;
 	},
 ): Promise<Doc<"files_nodes"> | null> {
 	if (args.path === "/") {
 		return null;
 	}
 
-	const lookup = (path: string) =>
-		ctx.db
-			.query("files_nodes")
-			.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
-				q
-					.eq("organizationId", args.organizationId)
-					.eq("workspaceId", args.workspaceId)
-					.eq("path", path)
-					.eq("archiveOperationId", null),
-			)
-			.first();
-
-	const overlayUserId = args.overlayUserId;
-	if (
-		overlayUserId == null ||
-		organizations_is_global_organization_id(args.organizationId) ||
-		organizations_is_reserved_workspace_id(args.workspaceId)
-	) {
-		return await lookup(args.path);
-	}
-
-	const overlay = await files_db_build_pending_path_overlay(ctx, {
-		organizationId: args.organizationId,
-		workspaceId: args.workspaceId,
-		userId: overlayUserId,
-	});
-	const translated = files_pending_path_overlay_translate_path(overlay, args.path);
-	if (translated.kind === "redirected") {
-		// A pending move claims this path: present the moved node here, doc unchanged.
-		return await lookup(translated.committedPath);
-	}
-
-	const occupant = await lookup(args.path);
-	if (!occupant) {
-		return null;
-	}
-	const pick = files_pending_path_overlay_pick_visible_entry(overlay, {
-		requestedPath: args.path,
-		occupantNodeId: occupant._id,
-	});
-	if (pick !== "occupant") {
-		return null;
-	}
-	if (translated.kind === "hidden") {
-		// A live occupant under a hidden verdict is a committed descendant of a moved folder:
-		// it follows its ancestor to the destination, so its old path reads as missing here.
-		// (Exact-path hides always surface the moved/replaced node itself, which `pick` drops.)
-		return null;
-	}
-	return occupant;
+	return await ctx.db
+		.query("files_nodes")
+		.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
+			q
+				.eq("organizationId", args.organizationId)
+				.eq("workspaceId", args.workspaceId)
+				.eq("path", args.path)
+				.eq("archiveOperationId", null),
+		)
+		.first();
 }
 
 /**
- * Return the three paged-state ids of a content proposal of either kind (built against a Yjs
- * sequence, or against a content asset for a file with collaboration off), or `null` for a doc
- * with no content proposal: move-only, delete-only, or a whole-file replacement. Use
- * `files_pending_update_yjs_content_of` or `files_pending_update_asset_content_of` when the door
- * also needs the base pointer. The state bytes live in the paged families; load them with
- * `files_db_load_pending_update_yjs_state_bytes` or the one-page queries.
+ * Return the proposal's base and three branch ids, or null for a structural-only doc.
+ * Load branch bytes with `files_db_load_pending_update_yjs_state_bytes` or the one-page queries.
  */
-export function files_pending_update_content_of(
-	pendingUpdate: Pick<
-		Doc<"files_pending_updates">,
-		"baseYjsSequence" | "baseLineageGeneration" | "baseAssetId" | "baseStateId" | "stagedStateId" | "unstagedStateId"
-	>,
-) {
-	if (!files_pending_update_has_content(pendingUpdate)) {
-		return null;
-	}
-
-	return {
-		baseStateId: pendingUpdate.baseStateId,
-		stagedStateId: pendingUpdate.stagedStateId,
-		unstagedStateId: pendingUpdate.unstagedStateId,
-	};
+export function files_pending_update_content_of(pendingUpdate: Pick<Doc<"files_pending_updates">, "content">) {
+	return pendingUpdate.content ?? null;
 }
 
 /**
- * Return the content proposal of a collaborative file (the canonical content group: base
- * sequence, lineage generation, and the three paged-state ids, set together or not at all), or
- * `null` for every other doc, including a proposal on a file with collaboration off.
+ * Return branches built from a saved Yjs sequence, or null for any other base.
  */
-export function files_pending_update_yjs_content_of(
-	pendingUpdate: Pick<
-		Doc<"files_pending_updates">,
-		"baseYjsSequence" | "baseLineageGeneration" | "baseStateId" | "stagedStateId" | "unstagedStateId"
-	>,
-) {
+export function files_pending_update_yjs_content_of(pendingUpdate: Pick<Doc<"files_pending_updates">, "content">) {
 	if (!files_pending_update_has_yjs_content(pendingUpdate)) {
 		return null;
 	}
 
-	return {
-		baseYjsSequence: pendingUpdate.baseYjsSequence,
-		baseLineageGeneration: pendingUpdate.baseLineageGeneration,
-		baseStateId: pendingUpdate.baseStateId,
-		stagedStateId: pendingUpdate.stagedStateId,
-		unstagedStateId: pendingUpdate.unstagedStateId,
-	};
+	return pendingUpdate.content;
 }
 
 /**
- * Return the content proposal of a file with collaboration off: the content asset the branches
- * were built from plus the three paged-state ids, or `null` for every other doc.
+ * Return branches built from a saved content asset, or null for any other base.
  */
-export function files_pending_update_asset_content_of(
-	pendingUpdate: Pick<Doc<"files_pending_updates">, "baseAssetId" | "baseStateId" | "stagedStateId" | "unstagedStateId">,
-) {
+export function files_pending_update_asset_content_of(pendingUpdate: Pick<Doc<"files_pending_updates">, "content">) {
 	if (!files_pending_update_has_asset_content(pendingUpdate)) {
 		return null;
 	}
 
-	return {
-		baseAssetId: pendingUpdate.baseAssetId,
-		baseStateId: pendingUpdate.baseStateId,
-		stagedStateId: pendingUpdate.stagedStateId,
-		unstagedStateId: pendingUpdate.unstagedStateId,
-	};
+	return pendingUpdate.content;
 }
 
 /**
@@ -416,20 +298,9 @@ export function files_pending_update_asset_content_of(
  * file have none, so their file's committed chunks stay the ones to read and search.
  */
 export function files_pending_update_has_pending_chunks(
-	pendingUpdate: Pick<
-		Doc<"files_pending_updates">,
-		| "baseYjsSequence"
-		| "baseLineageGeneration"
-		| "baseAssetId"
-		| "baseStateId"
-		| "stagedStateId"
-		| "unstagedStateId"
-		| "pendingReplacement"
-	>,
+	pendingUpdate: Pick<Doc<"files_pending_updates">, "content" | "pendingReplacement">,
 ) {
-	return (
-		files_pending_update_content_of(pendingUpdate) != null || pendingUpdate.pendingReplacement?.yjsRootKind !== undefined
-	);
+	return pendingUpdate.content !== undefined || pendingUpdate.pendingReplacement?.yjsRootKind !== undefined;
 }
 
 /**
@@ -456,16 +327,17 @@ export async function files_db_insert_pending_update_yjs_state(
 	args: {
 		organizationId: Id<"organizations">;
 		workspaceId: Id<"organizations_workspaces">;
-		userId: string;
-		fileNodeId: Id<"files_nodes">;
-		pendingUpdateId: Id<"files_pending_updates">;
-		role: "base" | "staged" | "unstaged";
+		userId: Id<"users">;
+		target: Doc<"files_pending_update_yjs_states">["target"];
 		update: ArrayBuffer;
 		/**
 		 * Absent for a state built for a file with collaboration off, which has no lineage.
 		 */
 		lineageGeneration?: number;
-	},
+	} & (
+		| { pendingUpdateId: Id<"files_pending_updates">; role: "base" | "staged" | "unstaged" }
+		| { transferItemId: Id<"files_transfer_items"> }
+	),
 ) {
 	// A Yjs state encode is never empty (the empty document encodes as 2 bytes), so every state
 	// has at least one non-empty page.
@@ -476,18 +348,32 @@ export async function files_db_insert_pending_update_yjs_state(
 		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
 		userId: args.userId,
-		fileNodeId: args.fileNodeId,
-		owner: {
-			kind: "active",
-			pendingUpdateId: args.pendingUpdateId,
-			role: args.role,
-		},
+		target: args.target,
+		owner:
+			"transferItemId" in args
+				? { kind: "transfer_capture", itemId: args.transferItemId }
+				: {
+						kind: "active",
+						pendingUpdateId: args.pendingUpdateId,
+						role: args.role,
+					},
 		lineageGeneration: args.lineageGeneration,
 		sealed: true,
 		pageCount,
 		totalBytes: bytes.byteLength,
 		digest: files_pending_update_yjs_state_digest(bytes),
 	});
+	const reserved = await files_private_storage_db_reserve(ctx, {
+		organizationId: args.organizationId,
+		workspaceId: args.workspaceId,
+		userId: args.userId,
+		resource: { kind: "state", id: stateId },
+		byteCount: bytes.byteLength,
+	});
+	if (reserved._nay) {
+		await ctx.db.delete("files_pending_update_yjs_states", stateId);
+		return reserved;
+	}
 
 	for (let pageIndex = 0; pageIndex < pageCount; pageIndex++) {
 		const pageStart = pageIndex * files_MAX_YJS_WIRE_BYTES;
@@ -500,7 +386,7 @@ export async function files_db_insert_pending_update_yjs_state(
 		});
 	}
 
-	return stateId;
+	return Result({ _yay: stateId });
 }
 
 /**
@@ -636,16 +522,15 @@ export async function files_db_delete_pending_update_yjs_states(
 		.withIndex("by_owner_pendingUpdate", (q) => q.eq("owner.pendingUpdateId", args.pendingUpdateId))
 		.collect();
 
-	await Promise.all(
-		stateDocs.map(async (stateDoc) => {
-			const pages = await ctx.db
-				.query("files_pending_update_yjs_state_pages")
-				.withIndex("by_state_pageIndex", (q) => q.eq("stateId", stateDoc._id))
-				.collect();
-			await Promise.all(pages.map((page) => ctx.db.delete("files_pending_update_yjs_state_pages", page._id)));
-			await ctx.db.delete("files_pending_update_yjs_states", stateDoc._id);
-		}),
-	);
+	for (const stateDoc of stateDocs) {
+		const pages = await ctx.db
+			.query("files_pending_update_yjs_state_pages")
+			.withIndex("by_state_pageIndex", (q) => q.eq("stateId", stateDoc._id))
+			.collect();
+		await Promise.all(pages.map((page) => ctx.db.delete("files_pending_update_yjs_state_pages", page._id)));
+		await ctx.db.delete("files_pending_update_yjs_states", stateDoc._id);
+		await files_private_storage_db_release_deleted_resource(ctx, { kind: "state", id: stateDoc._id });
+	}
 }
 
 /**
@@ -678,6 +563,7 @@ export async function files_db_consume_trusted_yjs_update_stage(
 	}
 
 	await ctx.db.delete("files_yjs_trusted_update_stages", stage._id);
+	await files_private_storage_db_release_deleted_resource(ctx, { kind: "trusted_stage", id: stage._id });
 	return Result({ _yay: stage.update });
 }
 
@@ -745,13 +631,13 @@ export async function files_db_reschedule_pending_update_cleanup_for_user(
 	args: {
 		organizationId: Id<"organizations">;
 		workspaceId: Id<"organizations_workspaces">;
-		userId: string;
+		userId: Id<"users">;
 		delayMs?: number;
 	},
 ) {
 	const pendingUpdates = await ctx.db
 		.query("files_pending_updates")
-		.withIndex("by_organization_workspace_user_fileNode", (q) =>
+		.withIndex("by_organization_workspace_user_target", (q) =>
 			q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("userId", args.userId),
 		)
 		.collect();

@@ -149,6 +149,31 @@ Example:
 
 Only do this for packages that the app should consume as source. If a vendored package still needs a build artifact boundary, preserve that boundary.
 
+### Mixed source and build entrypoints
+
+Some packages can expose types from source but must keep a compiled runtime entry. `just-bash` is the local example: its build replaces `__BROWSER__` and aliases `node:dns`, so a plain source import turns on Node-only security hooks and app file access fails. Its manifest points the root and the types at `src`, and keeps `./browser` on the built bundle:
+
+```json
+{
+	"main": "./src/index.ts",
+	"types": "./src/index.ts",
+	"exports": {
+		".": {
+			"browser": { "types": "./src/browser.ts", "default": "./dist/bundle/browser.js" },
+			"types": "./src/index.ts",
+			"default": "./src/index.ts"
+		},
+		"./browser": { "types": "./src/browser.ts", "import": "./dist/bundle/browser.js" }
+	}
+}
+```
+
+When you keep a built entry, the consumer needs that file in a normal clone, so commit it:
+
+- Point the build script at the source entry (`esbuild src/browser.ts ...`) so it does not need a full `tsc` build first.
+- Rebuild the bundle after every source change, and check its hash against the bundle your tests ran against. A stale bundle makes the app run old code while the source files look correct.
+- `dist` is usually gitignored in these repos, so the bundle needs `git add -f <path>` when you stage the fork commit.
+
 ## 7. Switch the app dependency to the workspace package
 
 Update `../../../packages/app/package.json` so the app consumes the vendored package through pnpm workspace resolution.

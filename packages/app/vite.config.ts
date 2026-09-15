@@ -155,6 +155,7 @@ export default defineConfig({
 			"@convex-dev/polar",
 			"@convex-dev/rate-limiter",
 			"@convex-dev/r2",
+			"just-bash",
 
 			"common",
 

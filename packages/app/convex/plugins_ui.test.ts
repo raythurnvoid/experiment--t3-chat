@@ -11,7 +11,7 @@ import { files_db_yjs_push_update, files_nodes_db_create_node_recursively_at_pat
 import { r2 } from "./r2_client.ts";
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
 import { crypto_sha256_hex } from "../server/crypto-utils.ts";
-import { files_u8_to_array_buffer } from "../server/files.ts";
+import { files_ROOT_ID, files_u8_to_array_buffer } from "../server/files.ts";
 import { files_yjs_doc_update_from_text } from "../shared/files-tiptap.ts";
 import { plugins_validate_manifest, type plugins_Capability } from "../shared/plugins.ts";
 
@@ -311,11 +311,10 @@ async function seed_pending_markdown_node(
 	fixture: Awaited<ReturnType<typeof install_gallery_plugin>>,
 	filename: string,
 ) {
-	const created = await t.action(internal.files_nodes_content.create_file_by_path, {
-		organizationId: fixture.membership.organizationId,
-		workspaceId: fixture.membership.workspaceId,
-		userId: fixture.membership.userId,
-		path: `/${filename}`,
+	const created = await fixture.asOwner.action(api.files_nodes_content.create_text_node, {
+		membershipId: fixture.membership.membershipId,
+		parentId: files_ROOT_ID,
+		path: filename,
 	});
 	if (created._nay) throw new Error(created._nay.message);
 

@@ -3,6 +3,7 @@ import { compareValues } from "convex/values";
 
 import { access_control_db_ensure_role_assignment, access_control_db_has_permission } from "./access_control.ts";
 import { api, internal } from "./_generated/api.js";
+import { activities_db_require_by_source_id, activities_db_start } from "./activities_db.ts";
 import type { Id } from "./_generated/dataModel";
 import type { MutationCtx } from "./_generated/server";
 import type { billing_PRODUCTS } from "../shared/billing.ts";
@@ -640,7 +641,7 @@ async function start_plugin_run(
 			archiveOperationId: null,
 		});
 
-		return await ctx.db.insert("plugins_event_runs", {
+		const runId = await ctx.db.insert("plugins_event_runs", {
 			serviceAccountId: fixture.serviceAccountId,
 			organizationId: fixture.organizationId,
 			workspaceId: fixture.workspaceId,
@@ -651,14 +652,32 @@ async function start_plugin_run(
 			pluginVersionId: fixture.pluginVersionId,
 			event: "files.upload.completed",
 			eventId: `plugin:run-${args.tokenSeed}`,
-			status: "queued",
 			acceptedCapabilities: args.acceptedCapabilities,
-			expiresAt: now + 30 * 60 * 1000,
 			apiCallCount: 0,
 			outputWriteCount: 0,
-			errorMessage: null,
-			updatedAt: now,
 		});
+		const version = (await ctx.db.get("plugins_versions", fixture.pluginVersionId))!;
+		await activities_db_start(ctx, {
+			organizationId: fixture.organizationId,
+			workspaceId: fixture.workspaceId,
+			userId: fixture.userId,
+			source: {
+				kind: "plugin_run",
+				id: runId,
+				installationId: fixture.installationId,
+				pluginName: version.name,
+				event: "files.upload.completed",
+			},
+			title: version.displayName,
+			targets: [],
+			visibility: "shared",
+			feedVisible: false,
+			status: "queued",
+			resultKind: "plugin_result",
+			deadlineAt: now + 30 * 60 * 1000,
+			now,
+		});
+		return runId;
 	});
 
 	const apiToken = `plr_${args.tokenSeed.repeat(64)}`;
@@ -2519,17 +2538,18 @@ describe("plugin-data credential revalidation", () => {
 				if (change === "end" || change === "fail" || change === "expire" || change === "deadline") {
 					await t.run(async (ctx) => {
 						if (principal.kind === "plugin_run") {
-							await ctx.db.patch(
-								"plugins_event_runs",
-								principal.runId,
-								change === "end"
-									? { status: "succeeded" }
-									: change === "fail"
-										? { status: "failed" }
-										: change === "deadline"
-											? { expiresAt: Date.now() - 1 }
-											: { apiTokenExpiresAt: Date.now() - 1 },
-							);
+							if (change === "expire") {
+								await ctx.db.patch("plugins_event_runs", principal.runId, { apiTokenExpiresAt: Date.now() - 1 });
+							} else {
+								const activity = await activities_db_require_by_source_id(ctx, principal.runId);
+								await ctx.db.patch(
+									"activities",
+									activity._id,
+									change === "deadline"
+										? { deadlineAt: Date.now() - 1 }
+										: { status: change === "end" ? "succeeded" : "failed" },
+								);
+							}
 						} else if (principal.kind === "plugin_ui") {
 							if (change === "end") {
 								await ctx.db.delete("plugins_ui_sessions", principal.sessionId);
@@ -2726,15 +2746,32 @@ async function seed_store_principal(
 				actorUserId,
 				event: "ui.invoke.requested",
 				eventId: tokenHash,
-				status: "running",
 				apiTokenHash: tokenHash,
 				apiTokenExpiresAt: now + 30 * 60_000,
 				acceptedCapabilities: ["plugin.data.read", "plugin.data.write"],
-				expiresAt: now + 30 * 60_000,
 				apiCallCount: 0,
 				outputWriteCount: 0,
-				errorMessage: null,
-				updatedAt: now,
+			});
+			const version = (await ctx.db.get("plugins_versions", fixture.pluginVersionId))!;
+			await activities_db_start(ctx, {
+				organizationId: fixture.organizationId,
+				workspaceId: fixture.workspaceId,
+				userId: actorUserId,
+				source: {
+					kind: "plugin_run",
+					id: runId,
+					installationId: fixture.installationId,
+					pluginName: version.name,
+					event: "ui.invoke.requested",
+				},
+				title: version.displayName,
+				targets: [],
+				visibility: "shared",
+				feedVisible: false,
+				status: "running",
+				resultKind: "plugin_result",
+				deadlineAt: now + 30 * 60_000,
+				now,
 			});
 			return { principalKey: `plugin_run:${runId}`, credentialRef: { kind, runId } } as const;
 		}

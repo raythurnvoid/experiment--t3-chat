@@ -16,31 +16,25 @@ import { cn } from "@/lib/utils.ts";
 export const FILE_EDITOR_SIDEBAR_TAB_ID_PENDING = "app_file_editor_sidebar_tabs_pending" satisfies AppElementId;
 
 /**
- * Count of the user's pending updates in the workspace; 0 while the query loads.
- * `threadId === undefined` keeps the workspace-wide count; any other value (including `null`,
- * the "New chat" state) counts only the docs whose `threadIds` contributor set includes it, so
- * a chat with no persisted thread matches nothing. An optimistic (not yet swapped) thread id
- * also matches nothing — right after a new chat's first message the server may already have
- * stamped writes with the persisted id; the strip catches up once the id swap lands reactively.
+ * The bounded summary counts the owner or one contributing chat. A new chat skips the query.
+ * A truncated count carries a + suffix. Without it the number would look like a complete
+ * workspace count.
  */
 function useFilesPendingUpdatesCount(threadId?: string | null) {
 	const { membershipId } = AppTenantProvider.useContext();
-	const pendingUpdates = useQuery(app_convex_api.files_pending_updates.list_files_pending_updates, { membershipId });
-	if (!pendingUpdates) {
-		return 0;
-	}
-	if (threadId === undefined) {
-		return pendingUpdates.length;
-	}
-	return pendingUpdates.filter((pendingUpdate) => pendingUpdate.threadIds?.some((id) => id === threadId)).length;
+	const summary = useQuery(
+		app_convex_api.files_pending_updates.get_files_pending_updates_summary,
+		threadId === null ? "skip" : { membershipId, ...(threadId === undefined ? {} : { threadId }) },
+	);
+	return summary ?? { count: 0, truncated: false };
 }
 
 /**
  * The chat scope says "from this chat" because the count is files this chat TOUCHED — the diff
  * behind each row is the combined pending state, which other chats may have contributed to.
  */
-function files_pending_strip_label(count: number, scope: "workspace" | "chat") {
-	const noun = count === 1 ? "pending file change" : "pending file changes";
+function files_pending_strip_label(count: number, scope: "workspace" | "chat", truncated = false) {
+	const noun = count === 1 && !truncated ? "pending file change" : "pending file changes";
 	return scope === "chat" ? `${noun} from this chat` : noun;
 }
 
@@ -74,26 +68,28 @@ export const FileEditorSidebarPendingStrip = memo(function FileEditorSidebarPend
 ) {
 	const { threadId } = props;
 	const labelScope = threadId === undefined ? "workspace" : "chat";
-	const count = useFilesPendingUpdatesCount(threadId);
+	const { count, truncated } = useFilesPendingUpdatesCount(threadId);
+	const hasUpdates = count > 0 || truncated;
 
 	// Keep the last non-zero count rendered for 150ms after count drops to 0 so the strip can
 	// play its disappear animation before unmounting (CSS alone cannot animate an unmount).
-	const [renderedCount, setRenderedCount] = useState(count);
+	const [renderedCount, setRenderedCount] = useState({ count, truncated });
 
 	useEffect(() => {
-		if (count > 0) {
-			setRenderedCount(count);
+		if (count > 0 || truncated) {
+			setRenderedCount({ count, truncated });
 			return;
 		}
 
 		const timeout = setTimeout(() => {
-			setRenderedCount(0);
+			setRenderedCount({ count: 0, truncated: false });
 		}, 150);
 		return () => clearTimeout(timeout);
-	}, [count]);
+	}, [count, truncated]);
 
-	const isLeaving = count === 0 && renderedCount > 0;
-	const displayCount = count > 0 ? count : renderedCount;
+	const isLeaving = !hasUpdates && (renderedCount.count > 0 || renderedCount.truncated);
+	const displayCount = hasUpdates ? { count, truncated } : renderedCount;
+	const displayCountLabel = `${displayCount.count}${displayCount.truncated ? "+" : ""}`;
 
 	const handleClick = useFn(() => {
 		app_local_storage_set_value("app_state::files_last_tab", FILE_EDITOR_SIDEBAR_TAB_ID_PENDING);
@@ -113,16 +109,16 @@ export const FileEditorSidebarPendingStrip = memo(function FileEditorSidebarPend
 				role="status"
 				aria-live="polite"
 			>
-				{count > 0 ? `${count} ${files_pending_strip_label(count, labelScope)}` : ""}
+				{hasUpdates ? `${count}${truncated ? "+" : ""} ${files_pending_strip_label(count, labelScope, truncated)}` : ""}
 			</span>
-			{displayCount > 0 ? (
+			{displayCount.count > 0 || displayCount.truncated ? (
 				<button
 					type="button"
 					className={cn(
 						"FileEditorSidebarPendingStrip" satisfies FileEditorSidebarPendingStrip_ClassNames,
 						isLeaving && ("FileEditorSidebarPendingStrip-leaving" satisfies FileEditorSidebarPendingStrip_ClassNames),
 					)}
-					aria-label={`${displayCount} ${files_pending_strip_label(displayCount, labelScope)}, review`}
+					aria-label={`${displayCountLabel} ${files_pending_strip_label(displayCount.count, labelScope, displayCount.truncated)}, review`}
 					onClick={handleClick}
 				>
 					<FileDiff
@@ -132,12 +128,12 @@ export const FileEditorSidebarPendingStrip = memo(function FileEditorSidebarPend
 					<span
 						className={cn("FileEditorSidebarPendingStrip-count" satisfies FileEditorSidebarPendingStrip_ClassNames)}
 					>
-						{displayCount}
+						{displayCountLabel}
 					</span>
 					<span
 						className={cn("FileEditorSidebarPendingStrip-label" satisfies FileEditorSidebarPendingStrip_ClassNames)}
 					>
-						{files_pending_strip_label(displayCount, labelScope)}
+						{files_pending_strip_label(displayCount.count, labelScope, displayCount.truncated)}
 					</span>
 					<span
 						className={cn("FileEditorSidebarPendingStrip-review" satisfies FileEditorSidebarPendingStrip_ClassNames)}
@@ -162,15 +158,16 @@ type FileEditorSidebarPendingTabBadge_ClassNames = "FileEditorSidebarPendingTabB
 
 /** Amber count pill for the "Pending changes" tab label. Hidden at count 0. */
 export const FileEditorSidebarPendingTabBadge = memo(function FileEditorSidebarPendingTabBadge() {
-	const count = useFilesPendingUpdatesCount();
+	const { count, truncated } = useFilesPendingUpdatesCount();
 
-	if (count === 0) {
+	if (count === 0 && !truncated) {
 		return null;
 	}
 
 	return (
 		<span className={cn("FileEditorSidebarPendingTabBadge" satisfies FileEditorSidebarPendingTabBadge_ClassNames)}>
 			{count}
+			{truncated ? "+" : ""}
 		</span>
 	);
 });

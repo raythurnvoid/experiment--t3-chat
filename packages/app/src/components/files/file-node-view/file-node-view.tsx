@@ -22,7 +22,7 @@ import { FilesClipboardMenuItems, FilesClipboardProvider, FilesClipboardToolbar 
 import { MainAppHeaderBillingIndicator } from "@/components/main-app-header-billing-indicator.tsx";
 import { MainAppSidebarToggle } from "@/components/main-app-sidebar-toggle.tsx";
 import { CopyIconButton } from "@/components/copy-icon-button.tsx";
-import { MyButton, MyButtonIcon, type MyButton_ClassNames } from "@/components/my-button.tsx";
+import { MyButton, MyButtonIcon } from "@/components/my-button.tsx";
 import { MyFloatingSurface } from "@/components/my-floating-surface.tsx";
 import { MyGridTable, MyGridTableBody, MyGridTableCell, MyGridTableRow } from "@/components/my-grid-table.tsx";
 import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
@@ -71,9 +71,11 @@ import { MySkeleton } from "@/components/my-skeleton.tsx";
 import { MySpinner } from "@/components/my-spinner.tsx";
 import { PluginsUiFrame, type PluginsUiFrame_Props } from "@/components/plugins-ui-frame.tsx";
 import { useFn, useRenderPromise } from "@/hooks/utils-hooks.ts";
+import { useFilesVisibleEntries } from "@/hooks/files-search-hooks.ts";
 import { useFileNodeActivities } from "@/lib/activities.ts";
 import { app_convex, app_convex_api, type app_convex_Doc, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
+import { AppActivitiesProvider } from "@/lib/app-activities-context.tsx";
 import { FilesTreeProvider } from "@/lib/files-tree-context.tsx";
 import { format_relative_time } from "@/lib/date.ts";
 import type { AppClassName, AppElementId } from "@/lib/dom-utils.ts";
@@ -91,6 +93,7 @@ import {
 	files_get_read_only_capabilities,
 	files_get_read_only_row_labels,
 	files_get_default_node_name,
+	files_get_signed_download_serving,
 	files_get_node_path_validation,
 	files_get_normalized_node_path_segments,
 	files_get_upload_pipeline_state,
@@ -99,6 +102,8 @@ import {
 	files_pending_update_has_content,
 	files_resolve_effective_editor_view,
 	type files_EditorView,
+	type files_PendingTarget,
+	type files_VisibleEntry,
 	type files_SpecialFileName,
 	type files_VisibleTreeNode,
 	type files_YjsRootKind,
@@ -109,7 +114,7 @@ import { cn, sx } from "@/lib/utils.ts";
 import { combine } from "@atlaskit/pragmatic-drag-and-drop/combine";
 import { draggable, dropTargetForElements } from "@atlaskit/pragmatic-drag-and-drop/element/adapter";
 import { Link } from "@tanstack/react-router";
-import { useConvex, useQueries, useQuery } from "convex/react";
+import { useConvex, usePaginatedQuery, useQueries, useQuery } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
 import {
 	Archive,
@@ -262,6 +267,7 @@ type FileNodeViewHeader_ClassNames =
 
 type FileNodeViewHeader_Props = {
 	selectedNodeId: string | null | undefined;
+	privateEntry?: Extract<files_VisibleEntry, { kind: "private" }>;
 	fileNodesList: files_VisibleTreeNode[] | undefined;
 	readOnlyAncestorIds: ReadonlySet<app_convex_Id<"files_nodes">>;
 	filesSidebarOpen: boolean;
@@ -273,6 +279,7 @@ type FileNodeViewHeader_Props = {
 const FileNodeViewHeader = memo(function FileNodeViewHeader(props: FileNodeViewHeader_Props) {
 	const {
 		selectedNodeId,
+		privateEntry,
 		fileNodesList,
 		readOnlyAncestorIds,
 		filesSidebarOpen,
@@ -336,7 +343,42 @@ const FileNodeViewHeader = memo(function FileNodeViewHeader(props: FileNodeViewH
 				)}
 
 				<ol className={cn("FileNodeViewHeader-breadcrumb" satisfies FileNodeViewHeader_ClassNames)}>
-					{selectedNodeId && breadcrumbPath.length > 0 ? (
+					{privateEntry ? (
+						<>
+							<li>
+								<MyLink
+									aria-label="Home"
+									className={cn("FileNodeViewHeader-breadcrumb-home" satisfies FileNodeViewHeader_ClassNames)}
+									to="/w/$organizationName/$workspaceName/files"
+									params={{ organizationName, workspaceName }}
+									search={(prev) => ({ ...prev, nodeId: files_ROOT_ID, pendingNodeId: undefined, view: undefined })}
+									variant="button-icon-ghost-highlightable"
+									tooltip="Home"
+								>
+									<MyLinkIcon aria-hidden>
+										<Home />
+									</MyLinkIcon>
+								</MyLink>
+							</li>
+							<li aria-hidden="true">/</li>
+							<li
+								className={cn("FileNodeViewHeader-breadcrumb-segment-current" satisfies FileNodeViewHeader_ClassNames)}
+							>
+								{privateEntry.path}
+							</li>
+							<li>
+								<CopyIconButton variant="ghost-highlightable" tooltipCopy="Copy path" text={privateEntry.path} />
+							</li>
+							<li>
+								<CopyIconButton
+									variant="ghost-highlightable"
+									tooltipCopy="Copy link"
+									icon={<Link2 />}
+									text={window.location.href}
+								/>
+							</li>
+						</>
+					) : selectedNodeId && breadcrumbPath.length > 0 ? (
 						<>
 							<li>
 								<MyLink
@@ -346,7 +388,7 @@ const FileNodeViewHeader = memo(function FileNodeViewHeader(props: FileNodeViewH
 									params={{ organizationName, workspaceName }}
 									// Keep `q` so the URL stays in step with the still-filled sidebar search box.
 									// Drop `view` so the target node opens on its own default editor.
-									search={(prev) => ({ ...prev, nodeId: files_ROOT_ID, view: undefined })}
+									search={(prev) => ({ ...prev, nodeId: files_ROOT_ID, pendingNodeId: undefined, view: undefined })}
 									variant="button-icon-ghost-highlightable"
 									tooltip="Home"
 								>
@@ -395,7 +437,7 @@ const FileNodeViewHeader = memo(function FileNodeViewHeader(props: FileNodeViewH
 													)}
 													to="/w/$organizationName/$workspaceName/files"
 													params={{ organizationName, workspaceName }}
-													search={(prev) => ({ ...prev, nodeId: item._id, view: undefined })}
+													search={(prev) => ({ ...prev, nodeId: item._id, pendingNodeId: undefined, view: undefined })}
 													variant="button-tertiary"
 												>
 													{item.name}
@@ -505,26 +547,15 @@ const FileNodeViewTopFloating = memo(function FileNodeViewTopFloating(props: Fil
 	const { nodeId, contentTooLargeByteSize, frontmatterTooLarge, readOnlyMessage, pendingSlot } = props;
 	const { membershipId } = AppTenantProvider.useContext();
 	const convex = useConvex();
-	const activityArchivePermission = useQuery(app_convex_api.access_control.get_current_user_workspace_permission, {
-		membershipId,
-		permission: "content.write",
-	});
-	const activityArchiveReasonId = `FileNodeViewTopFloating-activity-archive-${useId()}-description`;
-	const canArchiveActivity = activityArchivePermission === true;
-	const activityArchiveReason =
-		activityArchivePermission === false
-			? "You need the Edit workspace content permission to dismiss workspace activity."
-			: null;
-
 	const activities = useFileNodeActivities({ membershipId, nodeId });
 	// Slices come newest first; a rerun in progress wins over an older failure.
 	const activity =
-		activities.find((item) => item.status === "running") ??
-		activities.find((item) => item.status === "failed" || item.status === "timeout") ??
+		activities.find((item) => item.finishedAt === undefined) ??
+		activities.find((item) => item.status === "failed" || item.status === "partial" || item.status === "timed_out") ??
 		null;
 
 	const handleDismiss = useFn((activityId: app_convex_Id<"activities">) => {
-		if (!canArchiveActivity) return;
+		if (!activity?.controls.canDismiss) return;
 
 		convex
 			.mutation(app_convex_api.activities.archive_activity, { membershipId, activityId })
@@ -560,9 +591,9 @@ const FileNodeViewTopFloating = memo(function FileNodeViewTopFloating(props: Fil
 		? activity.targets.find((target) => target.id === nodeId)?.message || undefined
 		: undefined;
 	const message = activity
-		? activity.status === "running"
+		? activity.finishedAt === undefined
 			? (targetMessage ?? activity.title)
-			: activity.status === "timeout"
+			: activity.status === "timed_out"
 				? "Timed out"
 				: (activity.errorMessage ?? targetMessage ?? activity.title)
 		: null;
@@ -586,7 +617,7 @@ const FileNodeViewTopFloating = memo(function FileNodeViewTopFloating(props: Fil
 			{readOnlyMessage && activity ? <MySeparator orientation="vertical" /> : null}
 			{activity ? (
 				<div className={"FileNodeViewTopFloating-activity" satisfies FileNodeViewTopFloating_ClassNames}>
-					{activity.status === "running" ? (
+					{activity.finishedAt === undefined ? (
 						<MySpinner
 							className={"FileNodeViewTopFloating-activity-icon" satisfies FileNodeViewTopFloating_ClassNames}
 							size="16px"
@@ -608,21 +639,10 @@ const FileNodeViewTopFloating = memo(function FileNodeViewTopFloating(props: Fil
 					>
 						{message}
 					</span>
-					{activity.status !== "running" ? (
-						<MyButton
-							variant="ghost"
-							className={cn(!canArchiveActivity && ("MyButton-state-disabled" satisfies MyButton_ClassNames))}
-							aria-disabled={canArchiveActivity ? undefined : true}
-							aria-describedby={activityArchiveReason ? activityArchiveReasonId : undefined}
-							onClick={() => handleDismiss(activity._id)}
-						>
+					{activity.controls.canDismiss ? (
+						<MyButton variant="ghost" onClick={() => handleDismiss(activity._id)}>
 							Dismiss
 						</MyButton>
-					) : null}
-					{activity.status !== "running" && activityArchiveReason ? (
-						<span id={activityArchiveReasonId} className="sr-only">
-							{activityArchiveReason}
-						</span>
 					) : null}
 				</div>
 			) : null}
@@ -727,7 +747,7 @@ const FileNodeViewFileEditor = memo(function FileNodeViewFileEditor(props: FileN
 		<FileEditor
 			ref={ref}
 			isActive={isActive}
-			nodeId={nodeId}
+			target={{ kind: "saved", id: nodeId }}
 			writeBlockedReason={writeBlockedReason}
 			pendingUpdateId={pendingUpdateId}
 			rootKind={rootKind}
@@ -1035,7 +1055,7 @@ const FileNodeViewFile = memo(function FileNodeViewFile(props: FileNodeViewFile_
 				{hasHtmlPreview && activeFileView === "preview" && (
 					<div className={"FileNodeViewFile-panel" satisfies FileNodeViewFile_ClassNames}>
 						<FileHtmlPreview
-							node={node}
+							entry={{ kind: "saved", node, pendingUpdate: null, path: node.path }}
 							getEditorSnapshot={getPreviewSnapshot}
 							editorRevision={previewRevision}
 							selectedSource={previewSource}
@@ -1067,6 +1087,369 @@ const FileNodeViewFile = memo(function FileNodeViewFile(props: FileNodeViewFile_
 	);
 });
 // #endregion file views
+
+// #region private file views
+type FileNodeViewPrivate_ClassNames =
+	| "FileNodeViewPrivate-actions"
+	| "FileNodeViewPrivate-status"
+	| "FileNodeViewPrivate-body"
+	| "FileNodeViewPrivate-media"
+	| "FileNodeViewPrivate-table"
+	| "FileNodeViewPrivate-name";
+
+type FileNodeViewPrivateView = NonNullable<
+	FunctionReturnType<typeof app_convex_api.files_pending_updates.get_file_pending_target>
+> & { entry: Extract<files_VisibleEntry, { kind: "private" }> };
+
+const FileNodeViewPrivateActions = memo(function FileNodeViewPrivateActions(props: {
+	view: FileNodeViewPrivateView;
+	onTargetChange: NonNullable<FileEditor_Props["onTargetChange"]>;
+}) {
+	const { view, onTargetChange } = props;
+	const { membershipId } = AppTenantProvider.useContext();
+	const { startReview, isStartingReview } = AppActivitiesProvider.useContext();
+	const [busy, setBusy] = useState(false);
+	const pendingUpdate = view.entry.pendingUpdate;
+	const handleSave = useFn(() => {
+		if (busy || !view.canAccept || view.readiness !== "ready") return;
+		setBusy(true);
+		void app_convex
+			.action(app_convex_api.files_pending_updates.save_file_pending_update, {
+				membershipId,
+				target: { kind: "private", id: view.entry.node._id },
+				pendingUpdateId: pendingUpdate._id,
+				reviewedRevision: pendingUpdate.revision,
+			})
+			.then((result) => {
+				if (result._nay) toast.error(result._nay.message);
+				else onTargetChange(result._yay.target, { keepReview: result._yay.pendingUpdateRevision != null });
+			})
+			.catch(() => {
+				toast.error("The draft could not be saved. Try again.");
+			})
+			.finally(() => {
+				setBusy(false);
+			});
+	});
+	const handleDiscard = useFn(() => {
+		if (busy || isStartingReview) return;
+		setBusy(true);
+		void startReview({
+			kind: "discard",
+			items: [
+				{
+					pendingUpdateId: pendingUpdate._id,
+					reviewedRevision: pendingUpdate.revision,
+					selectedContentStateId: null,
+				},
+			],
+		})
+			.catch((error: unknown) => {
+				toast.error(error instanceof Error ? error.message : "The draft could not be discarded. Try again.");
+			})
+			.finally(() => {
+				setBusy(false);
+			});
+	});
+
+	return (
+		<div className={"FileNodeViewPrivate-actions" satisfies FileNodeViewPrivate_ClassNames}>
+			<span className={"FileNodeViewPrivate-status" satisfies FileNodeViewPrivate_ClassNames} role="status">
+				{view.readiness === "preparing"
+					? "Preparing…"
+					: view.entry.node.kind === "folder"
+						? "Added folder"
+						: "Added file"}
+			</span>
+			{pendingUpdate.createIntent?.kind !== "text" && (
+				<MyButton
+					variant="outline"
+					disabled={busy || !view.canAccept || view.readiness !== "ready"}
+					onClick={handleSave}
+				>
+					Save
+				</MyButton>
+			)}
+			<MyButton variant="outline" disabled={busy || isStartingReview} onClick={handleDiscard}>
+				Discard
+			</MyButton>
+		</div>
+	);
+});
+
+const FileNodeViewPrivateFolder = memo(function FileNodeViewPrivateFolder(props: {
+	folderPath: string;
+	onNavigateTarget: (target: files_PendingTarget) => void;
+}) {
+	const { folderPath, onNavigateTarget } = props;
+	const { membershipId } = AppTenantProvider.useContext();
+	const { entries: children, isFailed } = useFilesVisibleEntries(membershipId, folderPath, "children");
+
+	return isFailed ? (
+		<p role="alert">This folder could not be loaded.</p>
+	) : children === undefined ? (
+		<p role="status">Loading folder…</p>
+	) : children.length === 0 ? (
+		<p>This folder is empty.</p>
+	) : (
+		<MyGridTable
+			aria-label="Folder contents"
+			className={"FileNodeViewPrivate-table" satisfies FileNodeViewPrivate_ClassNames}
+		>
+			<MyGridTableBody>
+				{children.map((entry) => (
+					<MyGridTableRow key={`${entry.target.kind}:${entry.target.id}`}>
+						<MyGridTableCell>
+							<MyButton
+								variant="ghost"
+								className={"FileNodeViewPrivate-name" satisfies FileNodeViewPrivate_ClassNames}
+								onClick={() => onNavigateTarget(entry.target)}
+							>
+								<MyButtonIcon aria-hidden>{entry.kind === "folder" ? <Folder /> : <FileText />}</MyButtonIcon>
+								{entry.name}
+							</MyButton>
+						</MyGridTableCell>
+						<MyGridTableCell>
+							{entry.preparing ? "Preparing…" : entry.target.kind === "private" ? "Added" : ""}
+						</MyGridTableCell>
+					</MyGridTableRow>
+				))}
+			</MyGridTableBody>
+		</MyGridTable>
+	);
+});
+
+const FileNodeViewPrivateStoredFile = memo(function FileNodeViewPrivateStoredFile(props: {
+	entry: Extract<files_VisibleEntry, { kind: "private" }>;
+	intent: Extract<NonNullable<app_convex_Doc<"files_pending_updates">["createIntent"]>, { kind: "stored" }>;
+}) {
+	const { entry, intent } = props;
+	const { membershipId } = AppTenantProvider.useContext();
+	const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+	const [busy, setBusy] = useState(false);
+	const serving = files_get_signed_download_serving({ contentType: intent.contentType, fileName: entry.node.name });
+	const canPreview = serving.responseContentDisposition.startsWith("inline");
+	const handleRead = useFn((download: boolean) => {
+		if (busy) return;
+		setBusy(true);
+		void app_convex
+			.action(app_convex_api.files_pending_updates.create_private_pending_download_url, {
+				membershipId,
+				target: { kind: "private", id: entry.node._id },
+				pendingUpdateId: entry.pendingUpdate._id,
+				reviewedRevision: entry.pendingUpdate.revision,
+				creationGeneration: entry.node.creationGeneration,
+			})
+			.then(async (result) => {
+				if (result._nay) {
+					toast.error(result._nay.message);
+					return;
+				}
+				if (!download) {
+					setPreviewUrl(result._yay.url);
+					return;
+				}
+				const response = await fetch(result._yay.url);
+				if (!response.ok) {
+					toast.error("The file could not be downloaded. Try again.");
+					return;
+				}
+				files_download_blob({ blob: await response.blob(), filename: entry.node.name });
+			})
+			.catch(() => {
+				toast.error("The file could not be loaded. Try again.");
+			})
+			.finally(() => {
+				setBusy(false);
+			});
+	});
+
+	return (
+		<>
+			<h2>{entry.node.name}</h2>
+			<p>
+				{intent.contentType} · {files_format_size(intent.size)}
+			</p>
+			<div className={"FileNodeViewPrivate-actions" satisfies FileNodeViewPrivate_ClassNames}>
+				{canPreview && (
+					<MyButton variant="outline" disabled={busy} onClick={() => handleRead(false)}>
+						Preview
+					</MyButton>
+				)}
+				<MyButton variant="outline" disabled={busy} onClick={() => handleRead(true)}>
+					Download
+				</MyButton>
+			</div>
+			{previewUrl &&
+				(serving.responseContentType.startsWith("image/") ? (
+					<img
+						className={"FileNodeViewPrivate-media" satisfies FileNodeViewPrivate_ClassNames}
+						src={previewUrl}
+						alt={entry.node.name}
+					/>
+				) : serving.responseContentType.startsWith("video/") ? (
+					<video
+						className={"FileNodeViewPrivate-media" satisfies FileNodeViewPrivate_ClassNames}
+						src={previewUrl}
+						controls
+						aria-label={entry.node.name}
+					/>
+				) : (
+					<audio
+						className={"FileNodeViewPrivate-media" satisfies FileNodeViewPrivate_ClassNames}
+						src={previewUrl}
+						controls
+						aria-label={entry.node.name}
+					/>
+				))}
+		</>
+	);
+});
+
+const FileNodeViewPrivateContent = memo(function FileNodeViewPrivateContent(props: {
+	view: FileNodeViewPrivateView;
+	selectedFileView: string;
+	editorMode: FileEditor_Mode;
+	filesSidebarOpen: boolean;
+	fileNodesList: FileNodeViewHeader_Props["fileNodesList"];
+	readOnlyAncestorIds: FileNodeViewHeader_Props["readOnlyAncestorIds"];
+	topSafeArea: number;
+	toolbarPortalHost: HTMLElement;
+	viewSelectPortalHost: HTMLElement;
+	presenceStore: FileEditor_Props["presenceStore"];
+	onEditorModeChange: FileEditor_Props["onEditorModeChange"];
+	onAutomaticEditorModeChange: FileEditor_Props["onEditorModeChange"];
+	onFileViewChange: (view: string) => void;
+	onTargetChange: NonNullable<FileEditor_Props["onTargetChange"]>;
+	onNavigateTarget: (target: files_PendingTarget) => void;
+	onNavigateNode: FileNodeViewHeader_Props["onNavigateNode"];
+}) {
+	const {
+		view,
+		selectedFileView,
+		editorMode,
+		filesSidebarOpen,
+		fileNodesList,
+		readOnlyAncestorIds,
+		topSafeArea,
+		toolbarPortalHost,
+		viewSelectPortalHost,
+		presenceStore,
+		onEditorModeChange,
+		onAutomaticEditorModeChange,
+		onFileViewChange,
+		onTargetChange,
+		onNavigateTarget,
+		onNavigateNode,
+	} = props;
+	const { entry } = view;
+	const editorRef = useRef<FileEditor_Ref>(null);
+	const [previewRevision, setPreviewRevision] = useState(0);
+	const [previewSource, setPreviewSource] = useState<FileHtmlPreview_Source>();
+	const intent = entry.pendingUpdate.createIntent;
+	const textIntent = intent?.kind === "text" ? intent : null;
+	const hasHtmlPreview =
+		textIntent?.textKind === "plain_text" &&
+		files_editable_text_content_type_of(textIntent.contentType) === "text/html;charset=utf-8";
+	const isPreview = selectedFileView === "preview" && hasHtmlPreview;
+	const editorOptions = textIntent ? get_editor_view_options(textIntent.textKind) : [];
+	const handleViewChange = useFn((value: string) => {
+		const option = editorOptions.find((item) => item.value === value);
+		if (option) onEditorModeChange(option.value);
+		else onFileViewChange(value);
+	});
+	const handlePreviewSnapshotChange = useFn(() => setPreviewRevision((revision) => revision + 1));
+	const getPreviewSnapshot = useFn(() => editorRef.current?.getPreviewSnapshot() ?? null);
+
+	return (
+		<>
+			<FileNodeViewHeaderPortal
+				selectedNodeId={null}
+				privateEntry={entry}
+				fileNodesList={fileNodesList}
+				readOnlyAncestorIds={readOnlyAncestorIds}
+				filesSidebarOpen={filesSidebarOpen}
+				showFileControls={false}
+				onlineUsers={[]}
+				onNavigateNode={onNavigateNode}
+			/>
+			{view.readiness === "ready" && textIntent ? (
+				<>
+					{createPortal(
+						<FileNodeViewViewSelect
+							options={[...editorOptions, ...(hasHtmlPreview ? [{ value: "preview", label: "Preview" }] : [])]}
+							value={isPreview ? "preview" : editorMode}
+							onValueChange={handleViewChange}
+						/>,
+						viewSelectPortalHost,
+					)}
+					<div
+						className={cn(
+							"FileNodeViewFile" satisfies FileNodeViewFile_ClassNames,
+							!isPreview &&
+								editorMode === "rich_text_editor" &&
+								("FileNodeViewFile-rich-text" satisfies FileNodeViewFile_ClassNames),
+						)}
+					>
+						{/* Keep local draft edits while Preview is open. */}
+						<div
+							className={"FileNodeViewFile-panel" satisfies FileNodeViewFile_ClassNames}
+							role="region"
+							aria-label="File editor"
+							hidden={isPreview}
+							inert={isPreview}
+						>
+							<FileEditor
+								ref={editorRef}
+								isActive={!isPreview}
+								target={{ kind: "private", id: entry.node._id }}
+								privateCanEdit={view.canEdit}
+								writeBlockedReason={null}
+								pendingUpdateId={entry.pendingUpdate._id}
+								rootKind={textIntent.textKind}
+								monacoLanguageId={files_monaco_language_id_of_content_type(textIntent.contentType)}
+								nonCollaborative
+								committedAssetId={null}
+								pendingUpdatesLoaded
+								editorMode={editorMode}
+								topSafeArea={topSafeArea}
+								presenceStore={presenceStore}
+								commentsPortalHost={null}
+								toolbarPortalHost={toolbarPortalHost}
+								onEditorModeChange={onEditorModeChange}
+								onAutomaticEditorModeChange={onAutomaticEditorModeChange}
+								onPreviewSnapshotChange={handlePreviewSnapshotChange}
+								onTargetChange={onTargetChange}
+							/>
+						</div>
+						{isPreview && (
+							<div className={"FileNodeViewFile-panel" satisfies FileNodeViewFile_ClassNames}>
+								<FileHtmlPreview
+									entry={entry}
+									getEditorSnapshot={getPreviewSnapshot}
+									editorRevision={previewRevision}
+									selectedSource={previewSource}
+									onSourceChange={setPreviewSource}
+								/>
+							</div>
+						)}
+					</div>
+				</>
+			) : (
+				<div className={"FileNodeViewPrivate-body" satisfies FileNodeViewPrivate_ClassNames}>
+					{view.readiness === "preparing" ? (
+						<p role="status">Preparing this {entry.node.kind}…</p>
+					) : entry.node.kind === "folder" ? (
+						<FileNodeViewPrivateFolder folderPath={entry.path} onNavigateTarget={onNavigateTarget} />
+					) : intent?.kind === "stored" ? (
+						<FileNodeViewPrivateStoredFile key={entry.pendingUpdate.revision} entry={entry} intent={intent} />
+					) : null}
+				</div>
+			)}
+		</>
+	);
+});
+// #endregion private file views
 
 // #region stored file
 type FileNodeViewStoredFile_ClassNames =
@@ -1522,6 +1905,8 @@ const FILE_NODE_VIEW_FOLDER_INITIAL_VISIBLE_ITEMS_COUNT = 5;
 
 type FileNodeViewFolder_ClassNames = "FileNodeViewFolder" | "FileNodeViewFolder-mode-monaco";
 
+type FileNodeViewFolderEntry = NonNullable<ReturnType<typeof useFilesVisibleEntries>["entries"]>[number];
+
 type FileNodeViewFolder_Props = {
 	folderItemId: app_convex_Doc<"files_nodes">["parentId"];
 	fileNodesList: FileNodeViewContent_Props["fileNodesList"];
@@ -1558,13 +1943,27 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 		viewSelectPortalHost,
 		onEditorModeChange,
 	} = props;
+
 	const { membershipId, organizationName, workspaceName } = AppTenantProvider.useContext();
 	const convex = useConvex();
+
+	const savedFolderPath = useQuery(
+		app_convex_api.files_visible.get_path,
+		folderItemId === files_ROOT_ID ? "skip" : { membershipId, target: { kind: "saved", id: folderItemId } },
+	);
+
+	const { entries: visibleEntries, isFailed: isFolderFailed } = useFilesVisibleEntries(
+		membershipId,
+		folderItemId === files_ROOT_ID ? "/" : savedFolderPath,
+		"children",
+	);
+
 	const canWriteFolder = useQuery(app_convex_api.files_nodes.get_current_user_file_write_permission, {
 		membershipId,
 		nodeId: folderItemId,
 	});
 	const folderCanReceiveChildren = canWriteFolder === true;
+
 	// Moving a child out of a restricted folder needs Can manage on its source scope.
 	// Keep manual `useMemo` in this group. Convex `useQueries` re-subscribes with a
 	// render-phase setState whenever the queries object identity changes, and the React
@@ -1579,6 +1978,7 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 		],
 		[fileNodesList],
 	);
+
 	const restrictedScopeShareStates = useQueries(
 		useMemo(
 			() =>
@@ -1594,6 +1994,7 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 			[membershipId, restrictedScopeNodeIds],
 		),
 	);
+
 	const canManageRestrictedScope = useFn((scopeNodeId: app_convex_Id<"files_nodes">) => {
 		const shareState = restrictedScopeShareStates[scopeNodeId];
 		return shareState != null && !(shareState instanceof Error) && shareState.canManage;
@@ -1603,15 +2004,13 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 	const [isCreatingReadme, setIsCreatingReadme] = useState(false);
 	const [pendingActionNodeIds, setPendingActionNodeIds] = useState(() => new Set<string>());
 
-	const childItems = (fileNodesList ?? [])
-		.filter((item) => item.parentId === folderItemId && item.archiveOperationId === null)
-		.sort((a, b) => {
-			if (a.kind !== b.kind) {
-				return a.kind === "folder" ? -1 : 1;
-			}
+	const childItems = [...(visibleEntries ?? [])].sort((a, b) => {
+		if (a.kind !== b.kind) {
+			return a.kind === "folder" ? -1 : 1;
+		}
 
-			return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" });
-		});
+		return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" });
+	});
 	const visibleChildItems = showAllItems
 		? childItems
 		: childItems.slice(0, FILE_NODE_VIEW_FOLDER_INITIAL_VISIBLE_ITEMS_COUNT);
@@ -1778,8 +2177,14 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 
 	const folderBrowserContent = (
 		<FileNodeViewFolderBody topSafeArea={topSafeArea}>
+			{isFolderFailed ? (
+				<p role="alert">This folder could not be loaded.</p>
+			) : visibleEntries === undefined ? (
+				<p role="status">Loading folder…</p>
+			) : null}
 			<FileNodeViewFolderExplorer
 				visibleChildItems={visibleChildItems}
+				fileNodesList={fileNodesList}
 				hiddenChildItemsCount={hiddenChildItemsCount}
 				organizationName={organizationName}
 				workspaceName={workspaceName}
@@ -1925,9 +2330,6 @@ const FileNodeViewToolbarFolderActions = memo(function FileNodeViewToolbarFolder
 	);
 });
 
-// #endregion folder actions
-
-// #region file download action
 type FileNodeViewToolbarFileDownloadAction_ClassNames =
 	| "FileNodeViewToolbarFileDownloadAction"
 	| "FileNodeViewToolbarFileDownloadAction-button"
@@ -2030,8 +2432,6 @@ const FileNodeViewToolbarFileDownloadAction = memo(function FileNodeViewToolbarF
 		</div>
 	);
 });
-
-// #endregion file download action
 
 type FileNodeViewToolbar_ClassNames =
 	| "FileNodeViewToolbar"
@@ -2512,6 +2912,7 @@ type FileNodeViewFolderExplorerRow_ClassNames =
 
 type FileNodeViewFolderExplorerRow_Props = {
 	child: files_VisibleTreeNode;
+	visibleName: string;
 	hasVisibleReadOnlyDescendant: boolean;
 	canPasteIntoFolder: boolean;
 	organizationName: string;
@@ -2533,6 +2934,7 @@ const FileNodeViewFolderExplorerRow = memo(function FileNodeViewFolderExplorerRo
 ) {
 	const {
 		child,
+		visibleName,
 		hasVisibleReadOnlyDescendant,
 		canPasteIntoFolder,
 		organizationName,
@@ -2689,7 +3091,7 @@ const FileNodeViewFolderExplorerRow = memo(function FileNodeViewFolderExplorerRo
 					("FileNodeViewFolderExplorer-row-drop-target" satisfies FileNodeViewFolderExplorerRow_ClassNames),
 			)}
 			data-file-node-id={child._id}
-			aria-label={isCut ? `${child.name}, ready to move` : undefined}
+			aria-label={isCut ? `${visibleName}, ready to move` : undefined}
 		>
 			<MyGridTableCell
 				className={cn(
@@ -2701,12 +3103,12 @@ const FileNodeViewFolderExplorerRow = memo(function FileNodeViewFolderExplorerRo
 				    may only own cells, and a link sitting directly under it is an invalid tree for a
 				    screen reader. The CSS still stretches it across the whole row. */}
 				<Link
-					aria-label={`Open ${child.name}${readOnlyLabels ? `, ${readOnlyLabels.description}` : ""}${isCut ? ", ready to move" : ""}`}
+					aria-label={`Open ${visibleName}${readOnlyLabels ? `, ${readOnlyLabels.description}` : ""}${isCut ? ", ready to move" : ""}`}
 					className={"FileNodeViewFolderExplorer-row-action" satisfies FileNodeViewFolderExplorerRow_ClassNames}
 					to="/w/$organizationName/$workspaceName/files"
 					params={{ organizationName, workspaceName }}
 					// Drop `view` so the target node opens on its own default editor.
-					search={(prev) => ({ ...prev, nodeId: child._id, view: undefined })}
+					search={(prev) => ({ ...prev, nodeId: child._id, pendingNodeId: undefined, view: undefined })}
 					draggable={false}
 				/>
 				<MyIcon className={"FileNodeViewFolderExplorer-icon" satisfies FileNodeViewFolderExplorerRow_ClassNames}>
@@ -2721,7 +3123,7 @@ const FileNodeViewFolderExplorerRow = memo(function FileNodeViewFolderExplorerRo
 					</MyIcon>
 				) : null}
 				<span className={"FileNodeViewFolderExplorer-link" satisfies FileNodeViewFolderExplorerRow_ClassNames}>
-					{child.name}
+					{visibleName}
 				</span>
 			</MyGridTableCell>
 			<MyGridTableCell
@@ -2757,7 +3159,7 @@ const FileNodeViewFolderExplorerRow = memo(function FileNodeViewFolderExplorerRo
 							variant="ghost-highlightable"
 							tooltip="More actions"
 							disabled={isPendingAction}
-							aria-label={`More actions for ${child.name}`}
+							aria-label={`More actions for ${visibleName}`}
 						>
 							<MyIconButtonIcon>
 								<EllipsisVertical />
@@ -2805,7 +3207,8 @@ type FileNodeViewFolderExplorer_ClassNames =
 	| "FileNodeViewFolderExplorer-show-less-cover";
 
 type FileNodeViewFolderExplorer_Props = {
-	visibleChildItems: files_VisibleTreeNode[];
+	visibleChildItems: FileNodeViewFolderEntry[];
+	fileNodesList: FileNodeViewContent_Props["fileNodesList"];
 	hiddenChildItemsCount: number;
 	organizationName: string;
 	workspaceName: string;
@@ -2829,6 +3232,7 @@ type FileNodeViewFolderExplorer_Props = {
 const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(props: FileNodeViewFolderExplorer_Props) {
 	const {
 		visibleChildItems,
+		fileNodesList,
 		hiddenChildItemsCount,
 		organizationName,
 		workspaceName,
@@ -2855,13 +3259,86 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 					className={"FileNodeViewFolderExplorer-table" satisfies FileNodeViewFolderExplorer_ClassNames}
 				>
 					<MyGridTableBody>
-						{visibleChildItems.map((child) => {
+						{visibleChildItems.map((entry) => {
+							const child =
+								entry.target.kind === "saved" ? fileNodesList?.find((node) => node._id === entry.target.id) : undefined;
+							if (!child) {
+								return (
+									<MyGridTableRow
+										key={`${entry.target.kind}:${entry.target.id}`}
+										className={"FileNodeViewFolderExplorer-row" satisfies FileNodeViewFolderExplorerRow_ClassNames}
+									>
+										<MyGridTableCell
+											className={cn(
+												"FileNodeViewFolderExplorer-cell" satisfies FileNodeViewFolderExplorerRow_ClassNames,
+												"FileNodeViewFolderExplorer-cell-name" satisfies FileNodeViewFolderExplorerRow_ClassNames,
+											)}
+										>
+											<Link
+												aria-label={`Open ${entry.name}`}
+												className={
+													"FileNodeViewFolderExplorer-row-action" satisfies FileNodeViewFolderExplorerRow_ClassNames
+												}
+												to="/w/$organizationName/$workspaceName/files"
+												params={{ organizationName, workspaceName }}
+												search={(prev) => ({
+													...prev,
+													nodeId: entry.target.kind === "saved" ? entry.target.id : undefined,
+													pendingNodeId: entry.target.kind === "private" ? entry.target.id : undefined,
+													view: undefined,
+												})}
+											/>
+											<MyIcon
+												className={"FileNodeViewFolderExplorer-icon" satisfies FileNodeViewFolderExplorerRow_ClassNames}
+											>
+												{entry.kind === "folder" ? <Folder /> : <FileText />}
+											</MyIcon>
+											<span
+												className={"FileNodeViewFolderExplorer-link" satisfies FileNodeViewFolderExplorerRow_ClassNames}
+											>
+												{entry.name}
+											</span>
+										</MyGridTableCell>
+										<MyGridTableCell
+											className={cn(
+												"FileNodeViewFolderExplorer-cell" satisfies FileNodeViewFolderExplorerRow_ClassNames,
+												"FileNodeViewFolderExplorer-cell-updated-by" satisfies FileNodeViewFolderExplorerRow_ClassNames,
+											)}
+										>
+											<span
+												className={
+													"FileNodeViewFolderExplorer-updated-by" satisfies FileNodeViewFolderExplorerRow_ClassNames
+												}
+											>
+												{entry.updatedBy || "Unknown"}
+											</span>
+										</MyGridTableCell>
+										<MyGridTableCell
+											className={cn(
+												"FileNodeViewFolderExplorer-cell" satisfies FileNodeViewFolderExplorerRow_ClassNames,
+												"FileNodeViewFolderExplorer-cell-updated" satisfies FileNodeViewFolderExplorerRow_ClassNames,
+											)}
+										>
+											{format_relative_time(entry.updatedAt)}
+										</MyGridTableCell>
+										<MyGridTableCell
+											className={cn(
+												"FileNodeViewFolderExplorer-cell" satisfies FileNodeViewFolderExplorerRow_ClassNames,
+												"FileNodeViewFolderExplorer-cell-actions" satisfies FileNodeViewFolderExplorerRow_ClassNames,
+											)}
+										>
+											{entry.preparing ? "Preparing…" : entry.target.kind === "private" ? "Added" : ""}
+										</MyGridTableCell>
+									</MyGridTableRow>
+								);
+							}
 							const isPendingAction = pendingActionNodeIds.has(child._id);
 
 							return (
 								<FileNodeViewFolderExplorerRow
 									key={child._id}
 									child={child}
+									visibleName={entry.name}
 									hasVisibleReadOnlyDescendant={readOnlyAncestorIds.has(child._id)}
 									canPasteIntoFolder={canPasteIntoFolder}
 									organizationName={organizationName}
@@ -3242,6 +3719,7 @@ const DEFAULT_EDITOR_PANEL_LAYOUT = [75, 25] satisfies [number, number];
 
 export type FileNodeView_SearchParams = {
 	nodeId?: string;
+	pendingNodeId?: string;
 	view?: files_EditorView;
 	q?: string;
 };
@@ -3272,20 +3750,22 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 	const [toolbarPortalHost, setToolbarPortalHost] = useState<HTMLElement | null>(null);
 	const [viewSelectPortalHost, setViewSelectPortalHost] = useState<HTMLElement | null>(null);
 
-	const [lastOpenNodeId, setLastOpenNodeId] = useAppLocalStorageStateValue(
-		`app_state::files_last_open::scope::${membershipId}`,
+	const [lastOpenTarget, setLastOpenTarget] = useAppLocalStorageStateValue(
+		`app_state::files_last_open_target::scope::${membershipId}`,
 	);
 
-	const searchNodeId = searchParams.nodeId;
+	const searchPrivateNodeId = searchParams.pendingNodeId;
+	const searchNodeId = searchPrivateNodeId ? undefined : searchParams.nodeId;
+	const selectionKey = searchPrivateNodeId ? `private:${searchPrivateNodeId}` : `saved:${searchNodeId}`;
 	const isRootNodeSelected = searchNodeId === files_ROOT_ID;
-	const [fileViewSelection, setFileViewSelection] = useState({ membershipId, nodeId: searchNodeId, view: "default" });
+	const [fileViewSelection, setFileViewSelection] = useState({ membershipId, selectionKey, view: "default" });
 	const selectedFileView =
-		fileViewSelection.membershipId === membershipId && fileViewSelection.nodeId === searchNodeId
+		fileViewSelection.membershipId === membershipId && fileViewSelection.selectionKey === selectionKey
 			? fileViewSelection.view
 			: "default";
 	const isEditorActive = selectedFileView === "default";
 	const handleFileViewChange = useFn((view: string) => {
-		setFileViewSelection({ membershipId, nodeId: searchNodeId, view });
+		setFileViewSelection({ membershipId, selectionKey, view });
 	});
 
 	const fileNodesList = FilesTreeProvider.useContext();
@@ -3300,6 +3780,16 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 				}
 			: "skip",
 	);
+	const privateTargetView = useQuery(
+		app_convex_api.files_pending_updates.get_file_pending_target,
+		searchPrivateNodeId ? { membershipId, target: { kind: "private", id: searchPrivateNodeId } } : "skip",
+	);
+	const privateEntry = privateTargetView?.entry.kind === "private" ? privateTargetView.entry : null;
+	const privateSourceKey = privateEntry
+		? `${membershipId}:private:${privateEntry.node._id}:${privateEntry.node.userId}:${privateEntry.node.creationGeneration}`
+		: null;
+	const privateTextIntent =
+		privateEntry?.pendingUpdate.createIntent?.kind === "text" ? privateEntry.pendingUpdate.createIntent : null;
 	// Show the loaded tree node while the query starts. A null answer must still clear the view.
 	const resolvedNode =
 		queriedNode === undefined ? fileNodesList?.find((item) => item._id === searchNodeId) : queriedNode;
@@ -3322,12 +3812,19 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 	const activeEditorTreeNode = fileNodesList?.find((item) => item._id === activeEditorNodeId);
 	const activeEditorNode =
 		resolvedNode?.kind === "file" && resolvedNodeHasEditableTextContent ? resolvedNode : activeEditorTreeNode;
+	const activeEditorTarget: files_PendingTarget | null =
+		privateEntry && privateTextIntent
+			? { kind: "private", id: privateEntry.node._id }
+			: activeEditorNodeId
+				? { kind: "saved", id: activeEditorNodeId }
+				: null;
 
 	// Clamp against the actual editor node. For a selected folder that node is its README, not the
 	// folder itself, so the header and layout must follow the README's document shape too.
 	const requestedView: files_EditorView = searchParams.view ?? "rich_text_editor";
-	const effectiveView =
-		activeEditorNode && files_node_has_editable_text_content(activeEditorNode)
+	const effectiveView = privateTextIntent
+		? files_resolve_effective_editor_view({ requestedView, rootKind: privateTextIntent.textKind })
+		: activeEditorNode && files_node_has_editable_text_content(activeEditorNode)
 			? files_resolve_effective_editor_view({
 					requestedView,
 					rootKind: activeEditorNode.textKind,
@@ -3337,9 +3834,22 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 	// the tree. A file with collaboration turned off has no Yjs sequence to watch.
 	const activeEditorNodeIsCollaborative = activeEditorNode?.collaborationEnabled === true;
 
-	const allPendingUpdatesResult = useQuery(app_convex_api.files_pending_updates.list_files_pending_updates, {
-		membershipId,
-	});
+	const {
+		results: allPendingUpdatesResult,
+		status: pendingListStatus,
+		loadMore: loadMorePendingUpdates,
+	} = usePaginatedQuery(
+		app_convex_api.files_pending_updates.list_files_pending_updates,
+		{ membershipId },
+		{ initialNumItems: 20 },
+	);
+	const savedEditorPendingUpdate = useQuery(
+		app_convex_api.files_pending_updates.get_file_pending_update,
+		activeEditorTarget?.kind === "saved" ? { membershipId, target: activeEditorTarget } : "skip",
+	);
+	// The open editor does not depend on which review pages have loaded.
+	const editorPendingUpdate =
+		activeEditorTarget?.kind === "private" ? privateTargetView?.entry.pendingUpdate : savedEditorPendingUpdate;
 	const activeEditorServerSequenceData = useQuery(
 		app_convex_api.files_nodes.get_file_last_yjs_sequence,
 		activeEditorNodeId && activeEditorNodeIsCollaborative
@@ -3358,15 +3868,45 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 	 */
 	const navigateToNode = useFn((nodeId?: string, nextEditorMode: files_EditorView = "rich_text_editor") => {
 		const view = nextEditorMode === "rich_text_editor" ? undefined : nextEditorMode;
-		setFileViewSelection({ membershipId, nodeId, view: "default" });
+		setFileViewSelection({ membershipId, selectionKey: `saved:${nodeId}`, view: "default" });
 		onNavigateSearch({ nodeId, view, q: searchParams.q });
 	});
+	const navigateToTarget = useFn((target: files_PendingTarget, nextEditorMode?: files_EditorView) => {
+		const view = nextEditorMode === "rich_text_editor" ? undefined : nextEditorMode;
+		setFileViewSelection({ membershipId, selectionKey: `${target.kind}:${target.id}`, view: "default" });
+		onNavigateSearch({
+			...(target.kind === "private" ? { pendingNodeId: target.id } : { nodeId: target.id }),
+			view,
+			q: searchParams.q,
+		});
+	});
+	const handleEditorTargetChange = useFn(
+		(sourceKey: string, target: files_PendingTarget, options?: { keepReview: boolean }) => {
+			// A completed Save must not replace a different file opened while it was running.
+			if (sourceKey !== `${membershipId}:${selectionKey}`) return;
+			setFileViewSelection({ membershipId, selectionKey: `${target.kind}:${target.id}`, view: "default" });
+			onNavigateSearch(
+				{
+					...(target.kind === "private" ? { pendingNodeId: target.id } : { nodeId: target.id }),
+					view: searchParams.view === "diff_editor" && options?.keepReview === false ? undefined : searchParams.view,
+					q: searchParams.q,
+				},
+				{ replace: true },
+			);
+		},
+	);
 
 	const handleAutomaticEditorModeChange = useFn<FileNodeViewContent_Props["onEditorModeChange"]>(
 		(nextView, options) => {
-			const nodeId = searchNodeId ?? files_ROOT_ID;
 			const view = nextView === "rich_text_editor" ? undefined : nextView;
-			onNavigateSearch({ nodeId, view, q: searchParams.q }, options);
+			onNavigateSearch(
+				{
+					...(searchPrivateNodeId ? { pendingNodeId: searchPrivateNodeId } : { nodeId: searchNodeId ?? files_ROOT_ID }),
+					view,
+					q: searchParams.q,
+				},
+				options,
+			);
 		},
 	);
 	const navigateToView = useFn<FileNodeViewContent_Props["onEditorModeChange"]>((nextView, options) => {
@@ -3388,7 +3928,14 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 				return;
 			}
 
-			onNavigateSearch({ nodeId: searchNodeId, view: searchParams.view, q }, { replace: true });
+			onNavigateSearch(
+				{
+					...(searchPrivateNodeId ? { pendingNodeId: searchPrivateNodeId } : { nodeId: searchNodeId }),
+					view: searchParams.view,
+					q,
+				},
+				{ replace: true },
+			);
 		},
 	);
 
@@ -3402,47 +3949,63 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 
 	// The pager/floating bar reviews diffs, so count only content-bearing rows; pure moves are
 	// reviewed in the Pending panel only.
-	const pendingUpdates = (allPendingUpdatesResult ?? []).filter(files_pending_update_has_content);
-	const hasPendingUpdates = pendingUpdates.length > 0;
+	const pendingUpdates = allPendingUpdatesResult.flatMap((view) =>
+		view.kind === "entry" && view.readiness === "ready" && files_pending_update_has_content(view.entry.pendingUpdate)
+			? [view.entry.pendingUpdate]
+			: [],
+	);
+	const currentPendingUpdate =
+		editorPendingUpdate && !editorPendingUpdate.preparation && files_pending_update_has_content(editorPendingUpdate)
+			? editorPendingUpdate
+			: null;
+	if (currentPendingUpdate && !pendingUpdates.some((update) => update._id === currentPendingUpdate._id)) {
+		pendingUpdates.push(currentPendingUpdate);
+	}
+	const hasMorePendingUpdates = pendingListStatus === "CanLoadMore" || pendingListStatus === "LoadingMore";
+	const hasPendingUpdates = pendingUpdates.length > 0 || hasMorePendingUpdates;
 	// 44px = 40px for the floating content area plus 4px of spacing.
 	// Keep this reserve visible even without pending updates so folder and file content
 	// start below the route toolbar with the same top breathing room.
 	const topSafeArea = FILE_NODE_VIEW_TOP_SAFE_AREA;
-	const currentPendingUpdateIndex = activeEditorNodeId
-		? pendingUpdates.findIndex((pendingUpdate) => pendingUpdate.fileNodeId === activeEditorNodeId)
+	const currentPendingUpdateIndex = activeEditorTarget
+		? pendingUpdates.findIndex(
+				(pendingUpdate) =>
+					pendingUpdate.target.kind === activeEditorTarget.kind && pendingUpdate.target.id === activeEditorTarget.id,
+			)
 		: -1;
-	const currentPendingUpdate = pendingUpdates[currentPendingUpdateIndex];
-	const hasCurrentPendingUpdates = currentPendingUpdateIndex >= 0;
+	const hasCurrentPendingUpdates = currentPendingUpdate !== null;
 	const activePendingUpdateIndex = hasCurrentPendingUpdates ? currentPendingUpdateIndex : 0;
 	const canNavigatePendingUpdates =
 		pendingUpdates.length > 1 || (pendingUpdates.length === 1 && !hasCurrentPendingUpdates);
 	const reviewPagerLabel = hasCurrentPendingUpdates
-		? `${activePendingUpdateIndex + 1} of ${pendingUpdates.length}`
+		? `${activePendingUpdateIndex + 1} of ${pendingUpdates.length}${hasMorePendingUpdates ? "+" : ""}`
 		: "Review";
 
-	const readOnlyMessage = resolvedNode
-		? !resolvedNode.canWrite
-			? resolvedNode.writeBlockedReason === "read_only"
-				? `A file policy blocks editing this ${resolvedNode.kind}.`
-				: `You don't have permission to edit this ${resolvedNode.kind}.`
-			: resolvedNode.kind === "folder" && readOnlyAncestorIds.has(resolvedNode._id)
-				? "This folder contains read-only items. It cannot be renamed, moved, or archived."
-				: null
-		: null;
+	const readOnlyMessage = privateEntry
+		? privateTargetView?.canEdit === false
+			? "You don't have permission to save this draft here."
+			: null
+		: resolvedNode
+			? !resolvedNode.canWrite
+				? resolvedNode.writeBlockedReason === "read_only"
+					? `A file policy blocks editing this ${resolvedNode.kind}.`
+					: `You don't have permission to edit this ${resolvedNode.kind}.`
+				: resolvedNode.kind === "folder" && readOnlyAncestorIds.has(resolvedNode._id)
+					? "This folder contains read-only items. It cannot be renamed, moved, or archived."
+					: null
+			: null;
 
 	const handleReviewPendingUpdates = useFn(() => {
 		navigateToView("diff_editor");
 	});
 
-	const handleNavigatePendingUpdates = useFn(
-		(args: { nodeId: app_convex_Id<"files_nodes">; forceDiffEditor: boolean }) => {
-			// Carry only the diff view: paging inside a diff review stays in diff review. Any
-			// other current view is dropped so each node opens on its own default editor —
-			// carrying a plain node's view would force the next `.md` into Monaco.
-			const nextView = args.forceDiffEditor || effectiveView === "diff_editor" ? "diff_editor" : undefined;
-			navigateToNode(args.nodeId, nextView);
-		},
-	);
+	const handleNavigatePendingUpdates = useFn((args: { target: files_PendingTarget; forceDiffEditor: boolean }) => {
+		// Carry only the diff view: paging inside a diff review stays in diff review. Any
+		// other current view is dropped so each node opens on its own default editor —
+		// carrying a plain node's view would force the next `.md` into Monaco.
+		const nextView = args.forceDiffEditor || effectiveView === "diff_editor" ? "diff_editor" : undefined;
+		navigateToTarget(args.target, nextView);
+	});
 
 	const handleNavigatePendingUpdatesDirection = useFn((direction: "prev" | "next") => {
 		if (pendingUpdates.length <= 1) {
@@ -3451,7 +4014,7 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 			}
 
 			handleNavigatePendingUpdates({
-				nodeId: pendingUpdates[0].fileNodeId,
+				target: pendingUpdates[0].target,
 				forceDiffEditor: true,
 			});
 			return;
@@ -3467,7 +4030,7 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 		}
 
 		handleNavigatePendingUpdates({
-			nodeId: nextPendingUpdate.fileNodeId,
+			target: nextPendingUpdate.target,
 			forceDiffEditor: !hasCurrentPendingUpdates,
 		});
 	});
@@ -3483,8 +4046,9 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 	// Monaco editors and the non-editor file panels keep a scrollbar at the content panel's
 	// right edge; rich text and folder views scroll on the shared editor-area scroller, whose
 	// bar sits outside the row.
-	const topFloatingInnerScrollbar =
-		resolvedNode?.kind === "file"
+	const topFloatingInnerScrollbar = privateEntry
+		? !privateTextIntent || !isEditorActive || effectiveView !== "rich_text_editor"
+		: resolvedNode?.kind === "file"
 			? !resolvedNodeHasEditableTextContent || !isEditorActive || effectiveView !== "rich_text_editor"
 			: activeEditorNodeId != null && effectiveView !== "rich_text_editor";
 
@@ -3510,9 +4074,12 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 						showReviewButton={hasCurrentPendingUpdates && (!isEditorActive || effectiveView !== "diff_editor")}
 						reviewPagerLabel={reviewPagerLabel}
 						canNavigate={canNavigatePendingUpdates}
+						showLoadMore={hasMorePendingUpdates}
+						isLoadingMore={pendingListStatus === "LoadingMore"}
 						onReviewChanges={handleReviewPendingUpdates}
 						onNavigatePrevious={handleNavigatePendingUpdatesPrevious}
 						onNavigateNext={handleNavigatePendingUpdatesNext}
+						onLoadMore={() => loadMorePendingUpdates(20)}
 					/>
 				) : null
 			}
@@ -3599,28 +4166,29 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 		{ ignoreInputs: false },
 	);
 
-	// If URL has no node id, restore last-open; otherwise default to the root folder.
+	// Restore the exact saved/private target only when the URL has no selection.
 	useEffect(() => {
-		if (searchNodeId) {
+		if (searchNodeId || searchPrivateNodeId) {
 			return;
 		}
 
-		if (lastOpenNodeId) {
-			navigateToNode(lastOpenNodeId);
+		if (lastOpenTarget?.kind === "private") {
+			onNavigateSearch({ pendingNodeId: lastOpenTarget.id, q: searchParams.q }, { replace: true });
 			return;
 		}
 
-		navigateToNode(files_ROOT_ID);
-	}, [lastOpenNodeId, navigateToNode, searchNodeId]);
+		navigateToNode(lastOpenTarget?.kind === "saved" ? lastOpenTarget.id : files_ROOT_ID);
+	}, [lastOpenTarget, navigateToNode, onNavigateSearch, searchNodeId, searchPrivateNodeId, searchParams.q]);
 
-	// Persist the current URL node id as "last open" for next visits.
+	// Keep private IDs tagged. A missing private draft must never fall through to saved-file lookup.
 	useEffect(() => {
-		if (!searchNodeId) {
-			return;
+		if (searchPrivateNodeId) {
+			if (privateTargetView === undefined) return;
+			setLastOpenTarget(privateEntry ? { kind: "private", id: privateEntry.node._id } : null);
+		} else if (searchNodeId) {
+			setLastOpenTarget(searchNodeId === files_ROOT_ID ? { kind: "root" } : { kind: "saved", id: searchNodeId });
 		}
-
-		setLastOpenNodeId(searchNodeId);
-	}, [searchNodeId, setLastOpenNodeId]);
+	}, [searchNodeId, searchPrivateNodeId, privateTargetView, privateEntry, setLastOpenTarget]);
 
 	// If a requested node id cannot be resolved, clear stale last-open and fall back to the root folder.
 	useEffect(() => {
@@ -3628,9 +4196,9 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 			return;
 		}
 
-		setLastOpenNodeId(null);
+		setLastOpenTarget(null);
 		navigateToNode(files_ROOT_ID);
-	}, [navigateToNode, resolvedNode, searchNodeId, setLastOpenNodeId]);
+	}, [navigateToNode, resolvedNode, searchNodeId, setLastOpenTarget]);
 
 	const contentPanelStyle =
 		isEditorActive && effectiveView === "rich_text_editor"
@@ -3646,6 +4214,38 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 		toolbarPortalHost: HTMLElement,
 		viewSelectPortalHost: HTMLElement,
 	) => {
+		if (searchPrivateNodeId) {
+			return privateEntry && privateTargetView ? (
+				<FileNodeViewPrivateContent
+					key={privateSourceKey}
+					view={{ ...privateTargetView, entry: privateEntry }}
+					selectedFileView={selectedFileView}
+					editorMode={effectiveView}
+					filesSidebarOpen={filesSidebarOpen}
+					fileNodesList={fileNodesList}
+					readOnlyAncestorIds={readOnlyAncestorIds}
+					topSafeArea={topSafeArea}
+					toolbarPortalHost={toolbarPortalHost}
+					viewSelectPortalHost={viewSelectPortalHost}
+					presenceStore={presenceProps.presenceStore}
+					onEditorModeChange={navigateToView}
+					onAutomaticEditorModeChange={handleAutomaticEditorModeChange}
+					onFileViewChange={handleFileViewChange}
+					onTargetChange={(target, options) =>
+						handleEditorTargetChange(`${membershipId}:${selectionKey}`, target, options)
+					}
+					onNavigateTarget={navigateToTarget}
+					onNavigateNode={navigateToNode}
+				/>
+			) : (
+				<div className={"FileNodeView-loading-text" satisfies FileNodeView_ClassNames} role="status">
+					{privateTargetView === undefined
+						? "Loading draft…"
+						: "This draft is no longer available. You can discard it in Pending changes."}
+				</div>
+			);
+		}
+
 		return resolvedNodeId ? (
 			<FileNodeViewContent
 				key={membershipId}
@@ -3656,7 +4256,7 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 				readOnlyAncestorIds={readOnlyAncestorIds}
 				pendingUpdateId={currentPendingUpdate?._id}
 				committedAssetId={activeEditorNode?.collaborationEnabled === false ? (activeEditorNode.assetId ?? null) : null}
-				pendingUpdatesLoaded={allPendingUpdatesResult !== undefined}
+				pendingUpdatesLoaded={!activeEditorTarget || editorPendingUpdate !== undefined}
 				serverSequence={activeEditorServerSequenceData?.lastSequence}
 				yjsLastSequenceId={activeEditorServerSequenceData?.yjsLastSequenceId}
 				topSafeArea={topSafeArea}
@@ -3749,9 +4349,24 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 									<FileNodeViewToolbar
 										editorActionsRef={handleToolbarPortalHostChange}
 										viewSelectRef={handleViewSelectPortalHostChange}
-										showEditorActions={isEditorActive}
+										showEditorActions={
+											isEditorActive &&
+											(!searchPrivateNodeId || (!!privateTextIntent && privateTargetView?.readiness === "ready"))
+										}
 										folderActionsSlot={folderActionsSlot}
-										fileActionsSlot={<FileNodeViewToolbarFileDownloadAction node={resolvedNode} />}
+										fileActionsSlot={
+											privateEntry && privateTargetView ? (
+												<FileNodeViewPrivateActions
+													key={privateSourceKey}
+													view={{ ...privateTargetView, entry: privateEntry }}
+													onTargetChange={(target, options) =>
+														handleEditorTargetChange(`${membershipId}:${selectionKey}`, target, options)
+													}
+												/>
+											) : (
+												<FileNodeViewToolbarFileDownloadAction node={resolvedNode} />
+											)
+										}
 									/>
 								)}
 							</FileNodeViewToolbarCreateNodeActions>
@@ -3761,8 +4376,12 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 								</FileNodeViewTopStickyFloatingContainer>
 							) : null}
 							{/* Mount both toolbar hosts before the content that fills them. */}
-							{toolbarPortalHost && viewSelectPortalHost && activeEditorNodeId ? (
-								<FileEditorPresenceSupplier userId={authenticated.userId} nodeId={activeEditorNodeId}>
+							{toolbarPortalHost && viewSelectPortalHost && activeEditorTarget ? (
+								<FileEditorPresenceSupplier
+									key={`${membershipId}:${activeEditorTarget.kind}:${activeEditorTarget.id}`}
+									userId={authenticated.userId}
+									target={activeEditorTarget}
+								>
 									{(presenceProps) => renderContent(presenceProps, toolbarPortalHost, viewSelectPortalHost)}
 								</FileEditorPresenceSupplier>
 							) : toolbarPortalHost && viewSelectPortalHost ? (
@@ -3782,7 +4401,11 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 								overflow: "initial",
 							}}
 						>
-							<FileEditorSidebar node={resolvedNode ?? null} commentsContainerRef={setCommentsPortalHost} />
+							<FileEditorSidebar
+								node={resolvedNode ?? null}
+								isPrivate={!!searchPrivateNodeId}
+								commentsContainerRef={setCommentsPortalHost}
+							/>
 						</MyPanel>
 					</MyPanelGroup>
 				</div>

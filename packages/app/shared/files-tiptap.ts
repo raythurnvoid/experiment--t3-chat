@@ -40,7 +40,11 @@ import {
 const TRAILING_SPACES_OR_TABS_REGEX = /[ \t]+$/;
 const TRAILING_WHITESPACE_ONLY_LINE_REGEX = /\n([ \t]+)$/;
 const TRAILING_NEWLINES_REGEX = /\n+$/;
-const STRUCTURAL_HTML_WHITESPACE_REGEX = />\n[ \t]*</g;
+// Newlines between two HTML tags are the writer's layout, not document text. Marked puts a blank
+// line between two raw HTML blocks, so this must match a run of newlines. With only one newline
+// matched, the blank line survived into the document as a "\n\n" text node next to an inline
+// image, and every re-parse wrote it back plus a new blank line, so each copy of a copy grew.
+const STRUCTURAL_HTML_WHITESPACE_REGEX = />(?:\n[ \t]*)+</g;
 const TRAILING_HARD_BREAKS_REGEX = /(?:\\\n)+$/;
 const HARD_BREAK_REGEX = /\\\n/g;
 const VIDEO_BLOCK_START_REGEX = /^<video[\s>]/m;

@@ -48,8 +48,8 @@ vi.mock("convex/react", async (importOriginal) => {
 			switch (getFunctionName(query)) {
 				case "ai_chat:thread_messages_list":
 					return mocks.threadMessages;
-				case "files_pending_updates:list_files_pending_updates":
-					return [];
+				case "files_pending_updates:get_files_pending_updates_summary":
+					return { count: 0, truncated: false };
 				default:
 					return undefined;
 			}

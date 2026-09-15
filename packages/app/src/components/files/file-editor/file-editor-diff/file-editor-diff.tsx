@@ -50,6 +50,7 @@ import {
 	files_upsert_file_pending_update,
 	files_yjs_reconcile_branch_with_local_text,
 	files_yjs_rebase_branch_with_local_text,
+	type files_PendingTarget,
 	type files_YjsRootKind,
 } from "@/lib/files.ts";
 import { files_yjs_doc_clone, files_yjs_doc_create_from_array_buffer_update } from "../../../../../shared/files-yjs.ts";
@@ -87,7 +88,7 @@ type FileEditorDiffToolbarActions_Props = {
 	isAcceptAllDisabled: boolean;
 	isAcceptAllAndSaveDisabled: boolean;
 	isDiscardAllDisabled: boolean;
-	nodeId: app_convex_Id<"files_nodes">;
+	nodeId: app_convex_Id<"files_nodes"> | null;
 	sessionId: string;
 	toolbarPortalHost: HTMLElement;
 	getCurrentText: () => string;
@@ -228,7 +229,7 @@ const FileEditorDiffToolbarActions = memo(function FileEditorDiffToolbarActions(
 			<span className="sr-only" role="status" aria-live="polite" aria-atomic="true">
 				{file_editor_get_size_status_message({ byteSize, blocks: "saving" })}
 			</span>
-			{showSnapshots && (
+			{showSnapshots && nodeId && (
 				<FileEditorSnapshotsModal
 					nodeId={nodeId}
 					sessionId={sessionId}
@@ -662,12 +663,26 @@ function editor_content_states_match(left: RemoteEditorContentState, right: Remo
 		left.yjsSequence === right.yjsSequence &&
 		left.yjsLastSequenceId === right.yjsLastSequenceId &&
 		left.pendingUpdate?._id === right.pendingUpdate?._id &&
-		left.pendingUpdate?.updatedAt === right.pendingUpdate?.updatedAt &&
-		left.pendingUpdate?.baseStateId === right.pendingUpdate?.baseStateId &&
-		left.pendingUpdate?.stagedStateId === right.pendingUpdate?.stagedStateId &&
-		left.pendingUpdate?.unstagedStateId === right.pendingUpdate?.unstagedStateId &&
+		left.pendingUpdate?.target.kind === right.pendingUpdate?.target.kind &&
+		left.pendingUpdate?.target.id === right.pendingUpdate?.target.id &&
+		left.pendingUpdate?.revision === right.pendingUpdate?.revision &&
+		left.pendingUpdate?.content?.baseStateId === right.pendingUpdate?.content?.baseStateId &&
+		left.pendingUpdate?.content?.stagedStateId === right.pendingUpdate?.content?.stagedStateId &&
+		left.pendingUpdate?.content?.unstagedStateId === right.pendingUpdate?.content?.unstagedStateId &&
 		left.pendingUpdate?.contentNeedsRebase === right.pendingUpdate?.contentNeedsRebase &&
 		left.pendingUpdate?.contentRebaseRootKind === right.pendingUpdate?.contentRebaseRootKind
+	);
+}
+
+function pending_content_history_changed(
+	left: NonNullable<app_convex_Doc<"files_pending_updates">["content"]>["base"] | undefined,
+	right: NonNullable<app_convex_Doc<"files_pending_updates">["content"]>["base"] | undefined,
+) {
+	// Sequence changes within one lineage are synced without replacing local drafts.
+	return (
+		left?.kind !== right?.kind ||
+		(left?.kind === "asset" && right?.kind === "asset" && left.assetId !== right.assetId) ||
+		(left?.kind === "yjs" && right?.kind === "yjs" && left.lineageGeneration !== right.lineageGeneration)
 	);
 }
 
@@ -692,18 +707,18 @@ async function create_editor_content_state_from_pending_update(args: {
 	const [baseBytes, stagedBytes, unstagedBytes] = await Promise.all([
 		files_fetch_file_pending_update_yjs_state({
 			membershipId,
-			nodeId: pendingUpdate.fileNodeId,
-			stateId: pendingUpdate.baseStateId,
+			target: pendingUpdate.target,
+			stateId: pendingUpdate.content.baseStateId,
 		}),
 		files_fetch_file_pending_update_yjs_state({
 			membershipId,
-			nodeId: pendingUpdate.fileNodeId,
-			stateId: pendingUpdate.stagedStateId,
+			target: pendingUpdate.target,
+			stateId: pendingUpdate.content.stagedStateId,
 		}),
 		files_fetch_file_pending_update_yjs_state({
 			membershipId,
-			nodeId: pendingUpdate.fileNodeId,
-			stateId: pendingUpdate.unstagedStateId,
+			target: pendingUpdate.target,
+			stateId: pendingUpdate.content.unstagedStateId,
 		}),
 	]);
 	if (baseBytes._nay) return baseBytes;
@@ -732,7 +747,7 @@ async function create_editor_content_state_from_pending_update(args: {
 			stagedMarkdown: stagedMarkdown._yay,
 			unstagedYjsDoc,
 			unstagedMarkdown: unstagedMarkdown._yay,
-			yjsSequence: pendingUpdate.baseYjsSequence ?? null,
+			yjsSequence: pendingUpdate.content.base.kind === "yjs" ? pendingUpdate.content.base.sequence : null,
 		} satisfies RemoteEditorContentState,
 	});
 }
@@ -761,7 +776,6 @@ function create_editor_content_state_from_file_content_data(
 type FileEditorDiff_ClassNames =
 	| "FileEditorDiff"
 	| "FileEditorDiff-editor"
-	| "FileEditorDiff-anchor"
 	| "FileEditorDiff-refusal"
 	| "FileEditorDiff-stale"
 	| "FileEditorDiff-saved-draft";
@@ -775,7 +789,7 @@ export type FileEditorDiff_Props = {
 	ref?: React.Ref<Pick<FileEditor_Ref, "getPreviewSnapshot">>;
 	isActive?: boolean;
 	className?: string;
-	nodeId: app_convex_Id<"files_nodes">;
+	target: files_PendingTarget;
 	editable: boolean;
 	/**
 	 * The node's document shape, threaded from the node the ROUTE already resolved — never from
@@ -794,7 +808,7 @@ export type FileEditorDiff_Props = {
 	nonCollaborative: boolean;
 	/**
 	 * The `assetId` of the editor node `FileNodeView` chose: the selected file or a folder's README,
-	 * for a node with collaboration off. The proposal is stale when its `baseAssetId` differs: a
+	 * for a node with collaboration off. The proposal is stale when its base asset differs: a
 	 * member saved the file after the agent made the proposal. `null` for a collaborative node, or
 	 * while that node has not loaded.
 	 */
@@ -810,6 +824,7 @@ export type FileEditorDiff_Props = {
 	serverSequence?: number;
 	topSafeArea?: number;
 	onExit: () => void;
+	onTargetChange?: (target: files_PendingTarget, options?: { keepReview: boolean }) => void;
 	onPreviewSnapshotChange?: () => void;
 	topStickyFloatingSlot?: React.ReactNode;
 	topViewZoneSlot?: React.ReactNode;
@@ -831,7 +846,7 @@ type FileEditorDiffInner_Props = FileEditorDiff_Props & {
 	isHistoryChanging: boolean;
 	needsPreparation: boolean;
 	preparationError: string | null;
-	preparedRestoreUpdate: Pick<app_convex_Doc<"files_pending_updates">, "_id" | "updatedAt"> | null | undefined;
+	preparedRestoreUpdate: Pick<app_convex_Doc<"files_pending_updates">, "_id" | "revision"> | null | undefined;
 	/**
 	 * The doc under review, or null when the collaborative view has no proposal. A content discard
 	 * keeps a move or delete on the doc, and the toast for a proposal that is over says so.
@@ -844,7 +859,7 @@ type FileEditorDiffInner_Props = FileEditorDiff_Props & {
 			false | { pendingUpdate: app_convex_Doc<"files_pending_updates"> | null }
 		>;
 	}) => void;
-	onClickSync: (editorValues: { stagedMarkdown: string; unstagedMarkdown: string; reviewedUpdatedAt?: number }) => void;
+	onClickSync: (editorValues: { stagedMarkdown: string; unstagedMarkdown: string; reviewedRevision?: number }) => void;
 	onClickDiscardStaleProposal: () => void;
 };
 
@@ -853,7 +868,7 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 		ref,
 		isActive = true,
 		className,
-		nodeId,
+		target,
 		editable,
 		rootKind,
 		monacoLanguageId,
@@ -885,6 +900,7 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 	} = props;
 
 	const { membershipId } = AppTenantProvider.useContext();
+	const nodeId = target.kind === "saved" ? target.id : null;
 
 	const id = useId();
 	const anchorName = `${"--FileEditorDiff-anchor-name" satisfies keyof FileEditorDiff_CssVars}-${id}`;
@@ -905,9 +921,10 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 	const lastAppliedRemoteEditorContentStateRef = useRef(editorContentState);
 	// A saved draft can load before the reactive query updates the panes.
 	const lastPersistedDraftRef = useRef<RemoteEditorContentState | null>(null);
-	const endedPendingUpdateRef = useRef<Pick<app_convex_Doc<"files_pending_updates">, "_id" | "updatedAt"> | null>(null);
+	const endedPendingUpdateRef = useRef<Pick<app_convex_Doc<"files_pending_updates">, "_id" | "revision"> | null>(null);
 	const resumePendingUpdateSyncRef = useRef(false);
 	const replaceBranchesAfterPreparationRef = useRef(false);
+
 	const [savedLocalDraft, setSavedLocalDraft] = useState<{
 		stagedMarkdown: string;
 		unstagedMarkdown: string;
@@ -917,7 +934,9 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 	const [needsDraftReloadRef, setNeedsDraftReload, needsDraftReload] = useStateRef(false);
 	const [isRestoringProposal, setIsRestoringProposal] = useState(false);
 	const [draftSyncVersion, setDraftSyncVersion] = useState(0);
+
 	const isSyncing = isSyncingProp || isRestoringProposal;
+
 	const canEditDraft = useFn(
 		() => editable && !needsPreparation && !isHistoryChanging && !needsDraftReloadRef.current && !isRestoringProposal,
 	);
@@ -925,7 +944,10 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 	const canReadSavedDraft = useFn(
 		(draft: RemoteEditorContentState) =>
 			!needsPreparation &&
-			(!nonCollaborative || draft.pendingUpdate?.baseAssetId === props.committedAssetId) &&
+			(target.kind === "private" ||
+				!nonCollaborative ||
+				(draft.pendingUpdate?.content?.base.kind === "asset" &&
+					draft.pendingUpdate.content.base.assetId === props.committedAssetId)) &&
 			!(
 				editorContentState.pendingUpdate === null &&
 				editorContentState.yjsSequence != null &&
@@ -933,15 +955,22 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 				editorContentState.yjsSequence > draft.yjsSequence
 			),
 	);
+
 	const currentYjsLastSequenceId = useFn(() => props.yjsLastSequenceId);
 	const getConfirmedDraft = useFn(() => {
 		const paneState = lastAppliedRemoteEditorContentStateRef.current;
 		const persisted = lastPersistedDraftRef.current;
+
 		return persisted &&
 			persisted.pendingUpdate?._id === paneState.pendingUpdate?._id &&
-			persisted.pendingUpdate?.baseAssetId === paneState.pendingUpdate?.baseAssetId &&
+			(persisted.pendingUpdate?.content?.base.kind === "asset"
+				? persisted.pendingUpdate.content.base.assetId
+				: undefined) ===
+				(paneState.pendingUpdate?.content?.base.kind === "asset"
+					? paneState.pendingUpdate.content.base.assetId
+					: undefined) &&
 			persisted.yjsLastSequenceId === paneState.yjsLastSequenceId &&
-			(persisted.pendingUpdate?.updatedAt ?? 0) > (paneState.pendingUpdate?.updatedAt ?? 0)
+			(persisted.pendingUpdate?.revision ?? 0) > (paneState.pendingUpdate?.revision ?? 0)
 			? persisted
 			: paneState;
 	});
@@ -994,7 +1023,8 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 	 */
 	const pendingUpdateSyncStatusRef = useRef<"idle" | "debouncing" | "mutation_in_flight">("idle");
 
-	const isSaveDisabled = !editable || needsDraftReload || isSaving || isSyncing || !isDirty;
+	const isSaveDisabled =
+		!editable || needsDraftReload || isSaving || isSyncing || (target.kind === "saved" && !isDirty);
 	const isAcceptAllDisabled = !editable || needsDraftReload || isSaving || isSyncing || !hasUnstagedChanges;
 	const isAcceptAllAndSaveDisabled = !editable || needsDraftReload || isSaving || isSyncing || !hasUnstagedChanges;
 	const isDiscardAllDisabled = !editable || needsDraftReload || isSaving || isSyncing || !hasUnstagedChanges;
@@ -1246,9 +1276,9 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 		updateThreadIds(editorValues.stagedMarkdown);
 	};
 
-	const retireDraft = (pending: Pick<app_convex_Doc<"files_pending_updates">, "_id" | "updatedAt">) => {
+	const retireDraft = (pending: Pick<app_convex_Doc<"files_pending_updates">, "_id" | "revision">) => {
 		const previous = endedPendingUpdateRef.current;
-		if (!previous || previous._id !== pending._id || previous.updatedAt < pending.updatedAt) {
+		if (!previous || previous._id !== pending._id || previous.revision < pending.revision) {
 			endedPendingUpdateRef.current = pending;
 		}
 		lastPersistedDraftRef.current = null;
@@ -1284,11 +1314,18 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 		resumePendingUpdateSyncRef.current = false;
 		const paneState = lastAppliedRemoteEditorContentStateRef.current;
 		const persistedDraft = lastPersistedDraftRef.current;
+		// A new proposal starts at revision 1. A first draft can still arrive before its query.
 		const reviewedState =
 			persistedDraft &&
+			(paneState.pendingUpdate === null || persistedDraft.pendingUpdate?._id === paneState.pendingUpdate._id) &&
 			persistedDraft.yjsLastSequenceId === paneState.yjsLastSequenceId &&
-			persistedDraft.pendingUpdate?.baseAssetId === paneState.pendingUpdate?.baseAssetId &&
-			(persistedDraft.pendingUpdate?.updatedAt ?? 0) > (paneState.pendingUpdate?.updatedAt ?? 0)
+			(persistedDraft.pendingUpdate?.content?.base.kind === "asset"
+				? persistedDraft.pendingUpdate.content.base.assetId
+				: undefined) ===
+				(paneState.pendingUpdate?.content?.base.kind === "asset"
+					? paneState.pendingUpdate.content.base.assetId
+					: undefined) &&
+			(persistedDraft.pendingUpdate?.revision ?? 0) > (paneState.pendingUpdate?.revision ?? 0)
 				? persistedDraft
 				: paneState;
 		const previousPendingUpdateId = reviewedState.pendingUpdate?._id ?? pendingUpdateId;
@@ -1296,7 +1333,7 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 		const reviewedPendingUpdateId =
 			endedPendingUpdate &&
 			previousPendingUpdateId === endedPendingUpdate._id &&
-			(reviewedState.pendingUpdate?.updatedAt ?? 0) <= endedPendingUpdate.updatedAt
+			(reviewedState.pendingUpdate?.revision ?? 0) <= endedPendingUpdate.revision
 				? undefined
 				: previousPendingUpdateId;
 
@@ -1320,15 +1357,18 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 		// the doc (or keeps only its move or delete) and `FileEditorInner` leaves the view. Say so,
 		// because the view closes by itself.
 		const endedProposal =
-			nonCollaborative && stagedMarkdown === unstagedMarkdown && stagedMarkdown === editorContentState.baselineMarkdown
+			target.kind === "saved" &&
+			nonCollaborative &&
+			stagedMarkdown === unstagedMarkdown &&
+			stagedMarkdown === editorContentState.baselineMarkdown
 				? pendingUpdate
 				: null;
 
 		return files_upsert_file_pending_update({
 			membershipId,
-			nodeId,
+			target,
 			pendingUpdateId: reviewedPendingUpdateId,
-			reviewedUpdatedAt: reviewedPendingUpdateId ? reviewedState.pendingUpdate?.updatedAt : undefined,
+			reviewedRevision: reviewedPendingUpdateId ? reviewedState.pendingUpdate?.revision : undefined,
 			stagedText: stagedMarkdown,
 			unstagedText: unstagedMarkdown,
 		})
@@ -1359,13 +1399,16 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 				if (
 					files_pending_update_has_content(persisted) &&
 					(persisted._id !== endedPendingUpdateRef.current?._id ||
-						persisted.updatedAt > endedPendingUpdateRef.current.updatedAt) &&
+						persisted.revision > endedPendingUpdateRef.current.revision) &&
 					(reviewedPendingUpdateId == null || persisted._id === reviewedPendingUpdateId) &&
 					!files_pending_update_content_is_stale(persisted, { assetId: props.committedAssetId ?? null }) &&
 					canReadSavedDraft(reviewedState) &&
 					currentYjsLastSequenceId() === reviewedState.yjsLastSequenceId &&
 					savedYjsLastSequenceId === reviewedState.yjsLastSequenceId &&
-					persisted.baseAssetId === reviewedState.pendingUpdate?.baseAssetId
+					(persisted.content.base.kind === "asset" ? persisted.content.base.assetId : undefined) ===
+						(reviewedState.pendingUpdate?.content?.base.kind === "asset"
+							? reviewedState.pendingUpdate.content.base.assetId
+							: undefined)
 				) {
 					const loaded = await create_editor_content_state_from_pending_update({
 						membershipId,
@@ -1382,7 +1425,7 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 					}
 					if (
 						(persisted._id !== endedPendingUpdateRef.current?._id ||
-							persisted.updatedAt > endedPendingUpdateRef.current.updatedAt) &&
+							persisted.revision > endedPendingUpdateRef.current.revision) &&
 						canReadSavedDraft(reviewedState) &&
 						currentYjsLastSequenceId() === reviewedState.yjsLastSequenceId
 					) {
@@ -1519,7 +1562,7 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 		const currentStagedMarkdown = editorModelsRef.current.original.getValue();
 		const isDirtyNow = currentStagedMarkdown !== editorContentState.baselineMarkdown;
 
-		if (isSaving || isSyncing || !isDirtyNow) return;
+		if (isSaving || isSyncing || (target.kind === "saved" && !isDirtyNow)) return;
 
 		// Keep the over-cap content out of `flushPendingUpdateUpsertIfNeeded` further down.
 		if (!check_markdown_fits_size_cap(currentStagedMarkdown)) return;
@@ -1552,18 +1595,15 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 			sourceKind: proposal ? "proposed_changes" : "editor_draft",
 			isDirty: text !== confirmed.unstagedMarkdown,
 			membershipId,
-			nodeId,
+			target,
 			rootKind,
 			yjsLastSequenceId: confirmed.yjsLastSequenceId ?? null,
 			pendingUpdate: proposal
 				? {
 						_id: proposal._id,
-						updatedAt: proposal.updatedAt,
-						baseStateId: proposal.baseStateId,
-						stagedStateId: proposal.stagedStateId,
-						unstagedStateId: proposal.unstagedStateId,
-						baseAssetId: proposal.baseAssetId,
-						baseLineageGeneration: proposal.baseLineageGeneration,
+						target: proposal.target,
+						revision: proposal.revision,
+						content: proposal.content,
 					}
 				: null,
 		};
@@ -1575,6 +1615,7 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 	// restore, so skipping the refresh when permission was removed mid-restore would leave the
 	// editor showing stale content. The pre-action gate lives in the snapshots modal.
 	const handleApplySnapshotText = useFn(() => {
+		if (!nodeId) return;
 		// Restore keeps the proposal. Its query marker starts preparation and reloads both branches.
 		if (pendingUpdate) {
 			setIsRestoringProposal(true);
@@ -1679,7 +1720,7 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 			onClickSync({
 				stagedMarkdown: editorModelsRef.current.original.getValue(),
 				unstagedMarkdown: editorModelsRef.current.modified.getValue(),
-				reviewedUpdatedAt: getConfirmedDraft().pendingUpdate?.updatedAt,
+				reviewedRevision: getConfirmedDraft().pendingUpdate?.revision,
 			});
 		})().catch((error) => {
 			console.error("[FileEditorDiff.handleClickSync] Error while preparing sync", {
@@ -1974,7 +2015,12 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 			editorModels &&
 			(needsPreparation ||
 				previous.yjsLastSequenceId !== props.yjsLastSequenceId ||
-				previous.pendingUpdate?.baseAssetId !== editorContentState.pendingUpdate?.baseAssetId) &&
+				(previous.pendingUpdate?.content?.base.kind === "asset"
+					? previous.pendingUpdate.content.base.assetId
+					: undefined) !==
+					(editorContentState.pendingUpdate?.content?.base.kind === "asset"
+						? editorContentState.pendingUpdate.content.base.assetId
+						: undefined)) &&
 			(editorModels.original.getValue() !== previous.stagedMarkdown ||
 				editorModels.modified.getValue() !== previous.unstagedMarkdown)
 		) {
@@ -2017,13 +2063,21 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 			persistedDraft &&
 			editorContentState.pendingUpdate?._id === persistedDraft.pendingUpdate?._id &&
 			persistedDraft.yjsLastSequenceId === paneState.yjsLastSequenceId &&
-			persistedDraft.pendingUpdate?.baseAssetId === paneState.pendingUpdate?.baseAssetId &&
-			(persistedDraft.pendingUpdate?.updatedAt ?? 0) > (paneState.pendingUpdate?.updatedAt ?? 0)
+			(persistedDraft.pendingUpdate?.content?.base.kind === "asset"
+				? persistedDraft.pendingUpdate.content.base.assetId
+				: undefined) ===
+				(paneState.pendingUpdate?.content?.base.kind === "asset"
+					? paneState.pendingUpdate.content.base.assetId
+					: undefined) &&
+			(persistedDraft.pendingUpdate?.revision ?? 0) > (paneState.pendingUpdate?.revision ?? 0)
 				? persistedDraft
 				: paneState;
+
 		if (needsPreparation || isBranchReloading) return;
+
 		const previousPendingUpdate = previousRemoteEditorContentState.pendingUpdate;
 		const nextPendingUpdate = editorContentState.pendingUpdate;
+
 		// A restore reply can arrive after preparation. Wait for its confirmed revision even
 		// when loading that revision leaves the pane text and state ids unchanged.
 		if (
@@ -2032,31 +2086,34 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 				(preparedRestoreUpdate === null
 					? nextPendingUpdate !== null
 					: nextPendingUpdate?._id !== preparedRestoreUpdate._id ||
-						nextPendingUpdate.updatedAt < preparedRestoreUpdate.updatedAt))
+						nextPendingUpdate.revision < preparedRestoreUpdate.revision))
 		)
 			return;
+
 		if (
 			previousPendingUpdate &&
 			nextPendingUpdate &&
 			previousPendingUpdate._id === nextPendingUpdate._id &&
-			previousPendingUpdate.updatedAt > nextPendingUpdate.updatedAt
+			previousPendingUpdate.revision > nextPendingUpdate.revision
 		) {
 			if (resumePendingUpdateSyncRef.current) scheduleUpsertPendingUpdate();
 			return;
 		}
+
 		const historyChanged =
 			replaceBranchesAfterPreparationRef.current ||
 			previousRemoteEditorContentState.yjsLastSequenceId !== editorContentState.yjsLastSequenceId ||
 			(previousPendingUpdate &&
 				nextPendingUpdate &&
-				(previousPendingUpdate.baseAssetId !== nextPendingUpdate.baseAssetId ||
-					previousPendingUpdate.contentNeedsRebase === true ||
-					previousPendingUpdate.baseLineageGeneration !== nextPendingUpdate.baseLineageGeneration));
+				(previousPendingUpdate.contentNeedsRebase === true ||
+					pending_content_history_changed(previousPendingUpdate.content?.base, nextPendingUpdate.content?.base)));
+
 		// A prepared family can arrive before an old write response. Show its exact text now;
 		// waiting for that response would leave writable panes on the previous file version.
 		if (historyChanged) {
 			resumePendingUpdateSyncRef.current = false;
 			lastPersistedDraftRef.current = null;
+
 			if (
 				editorModels.original.getValue() !== previousRemoteEditorContentState.stagedMarkdown ||
 				editorModels.modified.getValue() !== previousRemoteEditorContentState.unstagedMarkdown
@@ -2068,13 +2125,16 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 					unstagedChanged: editorModels.modified.getValue() !== previousRemoteEditorContentState.unstagedMarkdown,
 				});
 			}
+
 			updateEditorValues(editorContentState);
 			lastAppliedRemoteEditorContentStateRef.current = editorContentState;
 			replaceBranchesAfterPreparationRef.current = false;
 			setIsRestoringProposal(false);
 			return;
 		}
+
 		if (pendingUpdateSyncStatusRef.current !== "idle") return;
+
 		if (editor_content_states_match(previousRemoteEditorContentState, editorContentState)) {
 			lastAppliedRemoteEditorContentStateRef.current = editorContentState;
 			if (resumePendingUpdateSyncRef.current) {
@@ -2157,8 +2217,8 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 	// base, or lineage blocks typing until its branches load. An ordinary page reload keeps
 	// local typing enabled; draft writes and Save wait until the stored branches catch up.
 	useEffect(() => {
-		editorRef.current?.updateOptions({ readOnly: !canEditDraft() });
-	}, [editable, isHistoryChanging, needsPreparation, needsDraftReload, isRestoringProposal]);
+		editorRef.current?.updateOptions({ readOnly: !canEditDraft() || (target.kind === "private" && isSaving) });
+	}, [editable, isHistoryChanging, needsPreparation, needsDraftReload, isRestoringProposal, target.kind, isSaving]);
 
 	// Track focus inside the toolbar host, so the effect below can keep focus in the toolbar when
 	// the toolbar is swapped. See `toolbarFocusWithinRef`.
@@ -2322,8 +2382,8 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 					<FileEditorDiffToolbarActions
 						byteSize={byteSize}
 						editable={editable}
-						showSync={!nonCollaborative}
-						showSnapshots={!nonCollaborative && !isBranchReloading && !needsDraftReload}
+						showSync={target.kind === "saved" && !nonCollaborative}
+						showSnapshots={target.kind === "saved" && !nonCollaborative && !isBranchReloading && !needsDraftReload}
 						isSaveDisabled={isSaveDisabled}
 						isSyncDisabled={isSyncDisabled || isSaving || needsDraftReload}
 						isAcceptAllDisabled={isAcceptAllDisabled}
@@ -2392,7 +2452,8 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 					</FileEditorMonacoTopViewZone>
 				</div>
 			</div>
-			{commentsPortalHost &&
+			{target.kind === "saved" &&
+				commentsPortalHost &&
 				createPortal(
 					<FileEditorCommentsSidebar threadIds={commentThreadIds} canResolve={editable} />,
 					commentsPortalHost,
@@ -2416,7 +2477,7 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff_Props) {
 	const {
 		isActive = true,
-		nodeId,
+		target,
 		editable,
 		rootKind,
 		pendingUpdateId,
@@ -2429,27 +2490,35 @@ export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff
 		className,
 		serverSequence,
 		onExit,
+		onTargetChange,
 		topStickyFloatingSlot,
 		topViewZoneSlot,
 	} = props;
 
 	const { membershipId } = AppTenantProvider.useContext();
+	const nodeId = target.kind === "saved" ? target.id : null;
+	const targetKey = `${target.kind}:${target.id}`;
 
 	const convex = useConvex();
 	const pendingUpdateResult = useStableQuery(api.files_pending_updates.get_file_pending_update, {
 		membershipId,
-		nodeId,
+		target,
 		pendingUpdateId,
 	});
-	// Move-only pending update docs carry no content to diff: treat them as "no pending update"
-	// so the editor degrades to the plain live-file view. Loading (`undefined`) passes through.
+	// Only the current target's content can load this editor.
+	// Loading (`undefined`) passes through.
 	const pendingUpdate =
-		pendingUpdateResult && !files_pending_update_has_content(pendingUpdateResult) ? null : pendingUpdateResult;
+		pendingUpdateResult &&
+		(!files_pending_update_has_content(pendingUpdateResult) ||
+			pendingUpdateResult.target.kind !== target.kind ||
+			pendingUpdateResult.target.id !== target.id)
+			? null
+			: pendingUpdateResult;
 	// The saved sequence only matters for Sync against the live Yjs document, which a file with
 	// collaboration off does not have.
 	const pendingUpdateLastSequenceSaved = useQuery(
 		api.files_pending_updates.get_file_pending_update_last_sequence_saved,
-		nonCollaborative
+		nonCollaborative || !nodeId
 			? "skip"
 			: {
 					membershipId,
@@ -2480,14 +2549,15 @@ export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff
 	const [preparationAttempt, setPreparationAttempt] = useState(0);
 	const [restorePreparationRequested, setRestorePreparationRequested] = useState(false);
 	const [preparedRestoreUpdate, setPreparedRestoreUpdate] = useState<
-		Pick<app_convex_Doc<"files_pending_updates">, "_id" | "updatedAt"> | null | undefined
+		Pick<app_convex_Doc<"files_pending_updates">, "_id" | "revision"> | null | undefined
 	>(undefined);
 	const preparingPendingUpdateIdRef = useRef<app_convex_Id<"files_pending_updates"> | null>(null);
 	// The asset the loaded branches were built from. Set when the page reads finish.
 	const [loadedBaseAssetId, setLoadedBaseAssetId] = useState<app_convex_Id<"files_r2_assets"> | undefined>(undefined);
 	const currentPendingUpdateId = pendingUpdate?._id ?? pendingUpdateId;
 	// Keep actions blocked until the panes and query name the same stored family and document.
-	const fileDocumentId = nonCollaborative ? committedAssetId : yjsLastSequenceId;
+	const fileDocumentId =
+		target.kind === "private" ? targetKey : nonCollaborative ? committedAssetId : yjsLastSequenceId;
 	const isCurrentFileDocument = useFn((id: typeof fileDocumentId) => !needsPreparation && fileDocumentId === id);
 	const loadedPendingUpdate =
 		remoteEditorContentState && remoteEditorContentState !== "refused" ? remoteEditorContentState.pendingUpdate : null;
@@ -2499,17 +2569,18 @@ export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff
 			(pendingUpdate != null &&
 				((pendingUpdate.currentYjsLastSequenceId ?? undefined) !== loadedYjsLastSequenceId ||
 					(loadedPendingUpdate != null &&
-						(pendingUpdate.baseAssetId !== loadedPendingUpdate.baseAssetId ||
-							pendingUpdate.baseLineageGeneration !== loadedPendingUpdate.baseLineageGeneration)))));
+						pending_content_history_changed(pendingUpdate.content?.base, loadedPendingUpdate.content?.base)))));
 	const isBranchReloading =
 		(remoteEditorContentState !== "refused" && remoteEditorContentState?.yjsLastSequenceId !== yjsLastSequenceId) ||
 		(pendingUpdate != null &&
 			(pendingUpdate._id !== loadedPendingUpdate?._id ||
-				pendingUpdate.updatedAt !== loadedPendingUpdate.updatedAt ||
-				pendingUpdate.baseStateId !== loadedPendingUpdate.baseStateId ||
-				pendingUpdate.stagedStateId !== loadedPendingUpdate.stagedStateId ||
-				pendingUpdate.unstagedStateId !== loadedPendingUpdate.unstagedStateId ||
-				(nonCollaborative && pendingUpdate.baseAssetId !== loadedBaseAssetId)));
+				pendingUpdate.revision !== loadedPendingUpdate.revision ||
+				pendingUpdate.content?.baseStateId !== loadedPendingUpdate.content?.baseStateId ||
+				pendingUpdate.content?.stagedStateId !== loadedPendingUpdate.content?.stagedStateId ||
+				pendingUpdate.content?.unstagedStateId !== loadedPendingUpdate.content?.unstagedStateId ||
+				(nonCollaborative &&
+					(pendingUpdate.content?.base.kind === "asset" ? pendingUpdate.content.base.assetId : undefined) !==
+						loadedBaseAssetId)));
 
 	const editorBaseYjsSequence = file_editor_diff_editor_base_yjs_sequence({
 		pendingUpdate,
@@ -2520,6 +2591,7 @@ export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff
 	});
 
 	const isSyncDisabled =
+		target.kind === "private" ||
 		!editable ||
 		file_editor_diff_is_sync_disabled({
 			isSyncing,
@@ -2571,9 +2643,9 @@ export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff
 
 			const savePendingResult = await convex.action(api.files_pending_updates.save_file_pending_update, {
 				membershipId,
-				nodeId,
+				target,
 				pendingUpdateId: savedPendingUpdate._id,
-				reviewedUpdatedAt: savedPendingUpdate.updatedAt,
+				reviewedRevision: savedPendingUpdate.revision,
 			});
 			if (!isCurrentFileDocument(savedDocumentId)) return;
 			if (savePendingResult._nay) {
@@ -2586,32 +2658,39 @@ export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff
 				toast.error(savePendingResult._nay.message ?? "Failed to save pending updates");
 				return;
 			}
+			if (savePendingResult._yay.target.kind !== target.kind || savePendingResult._yay.target.id !== target.id) {
+				toast.success("Changes saved");
+				onTargetChange?.(savePendingResult._yay.target, {
+					keepReview: savePendingResult._yay.pendingUpdateRevision != null,
+				});
+				return;
+			}
 
 			// A file with collaboration off has no live Yjs state to refetch. The pending doc query
 			// tells the rest: a full save takes the content off the doc and `FileEditorInner` leaves the
 			// diff view; a partial save rewrites the doc and the reconcile effect reloads the branches.
-			if (nonCollaborative) {
+			if (nonCollaborative || target.kind === "private") {
 				toast.success("Changes saved");
 				// The doc query can deliver the save later than the action result. Until it does, the
 				// cache still holds the doc whose state pages the save deleted, and the reconcile effect
 				// would reload them as soon as `isSaving` flips. So keep `isSaving` until the cache shows
 				// what this save left behind: no doc, the doc rewritten by the save, or a newer doc.
-				const savedUpdatedAt = savePendingResult._yay.pendingUpdateUpdatedAt;
+				const savedRevision = savePendingResult._yay.pendingUpdateRevision;
 				const pendingUpdateWatch = convex.watchQuery(api.files_pending_updates.get_file_pending_update, {
 					membershipId,
-					nodeId,
+					target,
 					pendingUpdateId,
 				});
 				const cacheShowsSave = () => {
 					const doc = pendingUpdateWatch.localQueryResult();
 					if (doc === undefined) return false;
 					if (doc === null || doc._id !== currentPendingUpdateId) return true;
-					return savedUpdatedAt != null && doc.updatedAt >= savedUpdatedAt;
+					return savedRevision != null && doc.revision >= savedRevision;
 				};
 				while (!cacheShowsSave()) {
 					await app_convex_wait_new_query_value(api.files_pending_updates.get_file_pending_update, {
 						membershipId,
-						nodeId,
+						target,
 						pendingUpdateId,
 					});
 				}
@@ -2621,14 +2700,14 @@ export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff
 			const [nextFileContentData] = await Promise.allSettled([
 				files_fetch_file_yjs_state_and_text({
 					membershipId,
-					nodeId,
+					nodeId: target.id,
 				}),
 				// Fetch also the pending updates query to ensure we perform
 				// the state cleanups only after we are sure the data is available
 				// in the local convex cache.
 				convex.query(api.files_pending_updates.get_file_pending_update, {
 					membershipId,
-					nodeId,
+					target,
 					pendingUpdateId: currentPendingUpdateId,
 				}),
 			]);
@@ -2663,7 +2742,7 @@ export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff
 	});
 
 	const handleClickSync = useFn<FileEditorDiffInner_Props["onClickSync"]>((editorValues) => {
-		if (!editable || isSyncing || needsPreparation || isBranchReloading) return;
+		if (!nodeId || !editable || isSyncing || needsPreparation || isBranchReloading) return;
 		const syncedDocumentId = fileDocumentId;
 
 		setIsSyncing(true);
@@ -2748,9 +2827,9 @@ export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff
 			// Stage the three rebased states page by page and finish with the ids-only action.
 			const persistRebasedStateResult = await files_persist_file_pending_update_rebased_state({
 				membershipId,
-				nodeId,
+				target,
 				pendingUpdateId: currentPendingUpdateId,
-				reviewedUpdatedAt: editorValues.reviewedUpdatedAt,
+				reviewedRevision: editorValues.reviewedRevision,
 				baseYjsSequence: nextFileContentData.yjsSequence,
 				baseYjsUpdate: files_u8_to_array_buffer(encodeStateAsUpdate(nextFileContentData.yjsDoc)),
 				stagedBranchYjsUpdate: files_u8_to_array_buffer(
@@ -2779,7 +2858,7 @@ export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff
 			await Promise.allSettled([
 				convex.query(api.files_pending_updates.get_file_pending_update, {
 					membershipId,
-					nodeId,
+					target,
 					pendingUpdateId: currentPendingUpdateId,
 				}),
 			]);
@@ -2818,8 +2897,9 @@ export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff
 		convex
 			.mutation(api.files_pending_updates.discard_file_pending_content, {
 				membershipId,
-				nodeId,
+				target,
 				pendingUpdateId: pendingUpdate._id,
+				reviewedRevision: pendingUpdate.revision,
 			})
 			.then((result) => {
 				if (result._nay) {
@@ -2867,7 +2947,7 @@ export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff
 		convex
 			.action(api.files_pending_updates.prepare_file_pending_update_for_review, {
 				membershipId,
-				nodeId,
+				target,
 				pendingUpdateId: pendingUpdate._id,
 			})
 			.then((result) => {
@@ -2890,10 +2970,10 @@ export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff
 		membershipId,
 		nodeId,
 		pendingUpdate?._id,
-		pendingUpdate?.updatedAt,
-		pendingUpdate?.baseStateId,
-		pendingUpdate?.stagedStateId,
-		pendingUpdate?.unstagedStateId,
+		pendingUpdate?.revision,
+		pendingUpdate?.content?.baseStateId,
+		pendingUpdate?.content?.stagedStateId,
+		pendingUpdate?.content?.unstagedStateId,
 		needsPreparation,
 		isBranchReloading,
 		nonCollaborative,
@@ -2916,13 +2996,13 @@ export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff
 		setPreparedRestoreUpdate(undefined);
 		preparingPendingUpdateIdRef.current = null;
 		setLoadedBaseAssetId(undefined);
-	}, [nodeId]);
+	}, [targetKey]);
 
 	// Fetch file content on load, on `nodeId` changes, and when the live Yjs state advances.
 	useEffect(() => {
 		// A file with collaboration off has no Yjs state, and its review needs only the proposal's
 		// branches. The bootstrap below does not wait for `fileContentData` in that mode.
-		if (nonCollaborative) return;
+		if (nonCollaborative || !nodeId) return;
 
 		let didCancel = false;
 
@@ -2950,6 +3030,7 @@ export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff
 	// Refetch live file content only after a pending-edit save marker advances past the local file snapshot.
 	useEffect(() => {
 		if (
+			!nodeId ||
 			pendingUpdate !== null ||
 			pendingUpdateLastSequenceSaved == null ||
 			fileContentData == null ||
@@ -2990,7 +3071,7 @@ export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff
 		if (
 			remoteEditorContentState !== undefined ||
 			pendingUpdate === undefined ||
-			(!pendingUpdate && !nonCollaborative && fileContentData === undefined)
+			(!pendingUpdate && !nonCollaborative && target.kind === "saved" && fileContentData === undefined)
 		) {
 			return;
 		}
@@ -3008,7 +3089,9 @@ export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff
 				});
 				if (didCancel) return;
 				if (pendingUpdateInitialEditorContentState._yay) {
-					setLoadedBaseAssetId(pendingUpdate.baseAssetId);
+					setLoadedBaseAssetId(
+						pendingUpdate.content?.base.kind === "asset" ? pendingUpdate.content.base.assetId : undefined,
+					);
 					setRemoteEditorContentStateIfNotMatch(pendingUpdateInitialEditorContentState._yay);
 					return;
 				}
@@ -3036,7 +3119,7 @@ export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff
 
 		// With collaboration off there is no live-file view to fall back to. `FileEditorInner`
 		// leaves the view once the doc is gone; do not flash the refusal alert before that.
-		if (nonCollaborative) {
+		if (nonCollaborative || target.kind === "private") {
 			return;
 		}
 
@@ -3106,7 +3189,9 @@ export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff
 					setIsSyncing(false);
 					return;
 				}
-				setLoadedBaseAssetId(pendingUpdate.baseAssetId);
+				setLoadedBaseAssetId(
+					pendingUpdate.content?.base.kind === "asset" ? pendingUpdate.content.base.assetId : undefined,
+				);
 				if (!needsPreparation) setPreparationError(null);
 				if (!editor_content_states_match(currentRemoteEditorContentState, nextRemoteEditorContentState._yay)) {
 					setRemoteEditorContentState(nextRemoteEditorContentState._yay);
@@ -3186,7 +3271,7 @@ export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff
 	return forceLoading ||
 		hoistingContainer == null ||
 		pendingUpdate === undefined ||
-		(!pendingUpdate && !nonCollaborative && fileContentData === undefined) ||
+		(!pendingUpdate && !nonCollaborative && target.kind === "saved" && fileContentData === undefined) ||
 		remoteEditorContentState === undefined ? (
 		<FileEditorDiffSkeleton />
 	) : remoteEditorContentState === "refused" ? (
@@ -3204,10 +3289,10 @@ export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff
 		</div>
 	) : (
 		<FileEditorDiffInner
-			key={nodeId}
+			key={targetKey}
 			{...props}
 			className={className}
-			nodeId={nodeId}
+			target={target}
 			pendingUpdateId={currentPendingUpdateId}
 			presenceStore={presenceStore}
 			commentsPortalHost={commentsPortalHost}
@@ -3572,7 +3657,7 @@ const FileEditorDiffNonCollabInner = memo(function FileEditorDiffNonCollabInner(
 			sourceKind: "editor_draft",
 			isDirty: text !== models.original.getValue(),
 			membershipId,
-			nodeId,
+			target: { kind: "saved", id: nodeId },
 			rootKind: initialData.rootKind,
 			yjsLastSequenceId: null,
 			pendingUpdate: null,

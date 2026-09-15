@@ -1,0 +1,285 @@
+import type { Id } from "../convex/_generated/dataModel.js";
+import type { ActionCtx } from "../convex/_generated/server.js";
+import { defineCommand, type Command, type CommandContext, type ExecResult } from "just-bash/browser";
+import { internal } from "../convex/_generated/api.js";
+import type { files_PendingParent, files_PendingTarget } from "../shared/files.ts";
+import { path_name_of, path_extract_segments_from } from "../shared/paths.ts";
+import {
+	bash_current_workspace_path_to_db_files_path,
+	bash_resolve_path,
+	bash_parse_cp_mv_operands,
+	type bash_DbFilesRoots,
+} from "./bash-utils.ts";
+
+export type bash_TransferContext = {
+	invocationId: Id<"ai_chat_bash_invocations">;
+	membershipId: Id<"organizations_workspaces_users">;
+	deadlineAt: number;
+	signal: AbortSignal;
+	abort: (reason?: unknown) => void;
+	nextCommandNumber: () => number;
+};
+
+async function stop_transfer(
+	ctx: ActionCtx,
+	scope: {
+		membershipId: Id<"organizations_workspaces_users">;
+		threadId: Id<"ai_chat_threads">;
+		runId: Id<"files_transfer_runs">;
+	},
+	reason: "user" | "timeout",
+) {
+	try {
+		const stopped = await ctx.runMutation(internal.files_transfer.stop_for_agent, { ...scope, reason });
+		if (stopped._yay === null) return;
+	} catch {
+		// Read back a lost Stop reply before allowing later shell statements.
+	}
+
+	const view = await ctx.runQuery(internal.files_transfer.get_for_agent, scope);
+	if (!view || ["queued", "running", "awaiting_input"].includes(view.activity.status))
+		throw new Error(`Stop could not be confirmed for transfer ${scope.runId}`);
+}
+
+/**
+ * App copies and moves use the same durable transfer jobs as Files.
+ */
+export async function bash_transfer_command_run(args: {
+	ctx: ActionCtx;
+	dbFilesRoots: bash_DbFilesRoots;
+	transferContext: bash_TransferContext | undefined;
+	command: "cp" | "mv";
+	commandCtx: CommandContext;
+	parsed: NonNullable<ReturnType<typeof bash_parse_cp_mv_operands>["_yay"]>;
+	background?: boolean;
+}): Promise<ExecResult> {
+	const { ctx, dbFilesRoots, command, commandCtx, parsed, transferContext } = args;
+	const fail = (message: string) => ({ stdout: "", stderr: `${command}: ${message}\n`, exitCode: 1 });
+
+	if (!dbFilesRoots.app.fs.allowDbFilesMkdir) return fail("app file writes require Agent mode");
+
+	const threadId = dbFilesRoots.app.fs.ctxData.threadId;
+	if (!transferContext || !threadId) return fail("this command has no active Bash invocation");
+
+	if (transferContext.signal.aborted || (!args.background && Date.now() >= transferContext.deadlineAt))
+		return { stdout: "", stderr: `${command}: transfer timed out\n`, exitCode: 124 };
+
+	const commandNumber = transferContext.nextCommandNumber();
+
+	const pathOf = (path: string) =>
+		bash_current_workspace_path_to_db_files_path(
+			dbFilesRoots.app.currentWorkspacePath,
+			bash_resolve_path(commandCtx.cwd, path),
+		);
+
+	const sources: files_PendingTarget[] = [];
+	for (const source of parsed.sources) {
+		const path = pathOf(source.path);
+		if (path === null) return fail("all sources and the destination must be app paths");
+		const entry = await dbFilesRoots.app.fs.getEntry(path);
+		if (!entry?.target || entry.target.kind === "root") return fail(`source '${source.path}' is not available`);
+		if (entry.preparing) return fail(`draft '${source.path}' is still preparing`);
+		if (source.requiresFolder && entry.kind !== "folder") return fail(`'${source.path}' is not a directory`);
+		if (command === "cp" && entry.kind === "folder" && !parsed.recursive) return fail("copying a folder requires -R");
+		sources.push(entry.target);
+	}
+
+	if (sources.length > 200) return fail("select at most 200 sources");
+
+	const destinationPath = pathOf(parsed.destination.path);
+	if (destinationPath === null) return fail("all sources and the destination must be app paths");
+
+	const destination = await dbFilesRoots.app.fs.getEntry(destinationPath);
+	if (destination?.preparing) return fail("the destination draft is still preparing");
+
+	if (parsed.destination.requiresFolder && destination?.kind !== "folder")
+		return fail("the destination must be an existing directory");
+
+	let targetPath: string;
+	let targetParent: files_PendingParent;
+	let targetName: string | null = null;
+	const missingParentNames: string[] = [];
+
+	if (destination?.kind === "folder" && !parsed.noTargetDirectory) {
+		targetPath = destinationPath;
+		if (!destination.target) return fail("the destination is not available");
+		targetParent = destination.target;
+	} else {
+		if (sources.length !== 1) return fail("multiple sources require a directory destination");
+
+		// Let the transfer check the literal path before normalizing a missing name.
+		targetName = path_name_of(destinationPath);
+		targetPath = `/${path_extract_segments_from(destinationPath).slice(0, -1).join("/")}`;
+
+		let parent = await dbFilesRoots.app.fs.getEntry(targetPath);
+		// The transfer start refuses more than 32 missing parents. Stop the walk at that count.
+		// The check below then refuses this command with the destination message.
+		while (!parent && command === "cp" && targetPath !== "/" && missingParentNames.length < 32) {
+			missingParentNames.unshift(path_name_of(targetPath));
+			targetPath = `/${path_extract_segments_from(targetPath).slice(0, -1).join("/")}`;
+			parent = await dbFilesRoots.app.fs.getEntry(targetPath);
+		}
+
+		if (parent?.kind !== "folder" || !parent.target) return fail("the destination parent is not a directory");
+		targetParent = parent.target;
+
+		if (
+			command === "mv" &&
+			destination?.target &&
+			destination.target.kind === sources[0]!.kind &&
+			destination.target.id === sources[0]!.id
+		)
+			return { stdout: "", stderr: "", exitCode: 0 };
+	}
+
+	const started = await ctx
+		.runMutation(internal.files_transfer.start_for_agent, {
+			membershipId: transferContext.membershipId,
+			threadId,
+			invocation: { id: transferContext.invocationId, commandNumber, background: args.background === true },
+			requestId: `${transferContext.invocationId}:${commandNumber}`,
+			kind: command === "cp" ? "copy" : "move",
+			sources,
+			targetParent,
+			targetPath,
+			targetName,
+			missingParentNames,
+			conflictPolicy: {
+				file: parsed.conflictPolicy,
+				folder:
+					command === "cp"
+						? "merge"
+						: parsed.conflictPolicy === "skip"
+							? "skip"
+							: parsed.noTargetDirectory && parsed.conflictPolicy === "replace"
+								? "replace_empty"
+								: "error",
+			},
+		})
+		.catch((error: unknown) => {
+			// A lost start reply may hide an accepted job. End this shell call before later writes.
+			transferContext.abort(error);
+			throw error;
+		});
+
+	if (started._nay)
+		return {
+			...fail(started._nay.message + (started._nay.data ? ` (activity ${started._nay.data.activityId})` : "")),
+			exitCode: started._nay.name === "timed_out" ? 124 : 1,
+		};
+
+	const { runId, activityId } = started._yay;
+
+	if (args.background)
+		return {
+			stdout: `Running. Transfer ${runId}. Activity ${activityId}. Use transfer status ${runId} to check progress.\n`,
+			stderr: "",
+			exitCode: 0,
+		};
+
+	const scope = { membershipId: transferContext.membershipId, threadId, runId };
+
+	try {
+		for (;;) {
+			const view = await ctx.runQuery(internal.files_transfer.get_for_agent, scope);
+			if (!view) throw new Error("Transfer access changed");
+			const { activity } = view;
+			if (!["queued", "running", "stopping"].includes(activity.status)) {
+				dbFilesRoots.app.fs.resetProposalCaches();
+				const progress = activity.progress;
+				const summary = `${progress?.completed ?? 0} ready for review, ${progress?.skipped ?? 0} skipped, ${progress?.failed ?? 0} failed`;
+				return {
+					stdout: `Transfer ${runId}: ${summary}. Activity ${activityId}. Review in Files.\n`,
+					stderr: activity.errorMessage ? `${command}: ${activity.errorMessage}\n` : "",
+					exitCode: activity.status === "succeeded" ? 0 : 1,
+				};
+			}
+
+			if (transferContext.signal.aborted || Date.now() >= transferContext.deadlineAt) {
+				await stop_transfer(ctx, scope, "timeout");
+				dbFilesRoots.app.fs.resetProposalCaches();
+				return {
+					stdout: "",
+					stderr: `${command}: transfer timed out; remaining work was stopped. Activity ${activityId}\n`,
+					exitCode: 124,
+				};
+			}
+
+			await new Promise<void>((resolve) => setTimeout(resolve, 200));
+		}
+	} catch (error) {
+		// A failed stop must end this Bash call before a chained command can write.
+		transferContext.abort(error);
+		throw error;
+	}
+}
+
+export function bash_transfer_command_create(
+	ctx: ActionCtx,
+	dbFilesRoots: bash_DbFilesRoots,
+	transferContext?: bash_TransferContext,
+): Command {
+	return defineCommand("transfer", async (args, commandCtx) => {
+		const threadId = dbFilesRoots.app.fs.ctxData.threadId;
+
+		if (!transferContext || !threadId)
+			return { stdout: "", stderr: "transfer: no active Bash invocation\n", exitCode: 1 };
+
+		if (args[0] === "start" && (args[1] === "copy" || args[1] === "move")) {
+			const command = args[1] === "copy" ? "cp" : "mv";
+			const parsed = bash_parse_cp_mv_operands(command, args.slice(2));
+
+			if (parsed._nay) return { stdout: "", stderr: `${parsed._nay.message}\n`, exitCode: 2 };
+
+			return await bash_transfer_command_run({
+				ctx,
+				dbFilesRoots,
+				transferContext,
+				command,
+				commandCtx,
+				parsed: parsed._yay,
+				background: true,
+			});
+		}
+
+		if (args.length !== 2 || !["status", "wait", "stop"].includes(args[0]!))
+			return {
+				stdout: "",
+				stderr: "Usage: transfer start copy|move <sources> <destination>, or transfer status|wait|stop <transfer-id>\n",
+				exitCode: 2,
+			};
+
+		const scope = { membershipId: transferContext.membershipId, threadId, runId: args[1] as Id<"files_transfer_runs"> };
+
+		if (args[0] === "stop") {
+			try {
+				await stop_transfer(ctx, scope, "user");
+			} catch (error) {
+				transferContext.abort(error);
+				throw error;
+			}
+
+			return { stdout: `Stopping. Transfer ${scope.runId}. Ready output is kept.\n`, stderr: "", exitCode: 0 };
+		}
+
+		const observeUntil = Date.now() + 30_000;
+		for (;;) {
+			const view = await ctx.runQuery(internal.files_transfer.get_for_agent, scope);
+
+			if (!view) return { stdout: "", stderr: "transfer: not found\n", exitCode: 1 };
+
+			const active = ["queued", "running", "stopping", "awaiting_input"].includes(view.activity.status);
+
+			if (args[0] === "status" || !active || Date.now() >= observeUntil || transferContext.signal.aborted) {
+				dbFilesRoots.app.fs.resetProposalCaches();
+				return {
+					stdout: `Transfer ${view.runId}: ${view.activity.status}. Activity ${view.activity._id}. ${JSON.stringify(view.activity.progress)}\n`,
+					stderr: "",
+					exitCode: args[0] === "status" || view.activity.status === "succeeded" ? 0 : active ? 3 : 1,
+				};
+			}
+
+			await new Promise<void>((resolve) => setTimeout(resolve, 200));
+		}
+	});
+}

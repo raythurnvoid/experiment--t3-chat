@@ -1,9 +1,18 @@
 import { defineCommand } from "just-bash/browser";
 import { internal } from "../convex/_generated/api.js";
 import type { ActionCtx } from "../convex/_generated/server.js";
-import type { files_nodes_get_by_path_Result } from "../convex/files_nodes.ts";
 import type { files_nodes_read_file_line_range_Result } from "../convex/files_nodes_content.ts";
-import { bash_build_unreadable_file_advisory, bash_format_multiline_hint, bash_READ_HEAD_LARGE_FILE_MAX_LINES, bash_resolve_path, bash_shell_arg_quote, bash_resolve_db_files_shell_path, bash_COMMAND_EXIT_FAILURE, bash_COMMAND_EXIT_USAGE, type bash_DbFilesRoots } from "./bash-utils.ts";
+import {
+	bash_build_unreadable_file_advisory,
+	bash_format_multiline_hint,
+	bash_READ_HEAD_LARGE_FILE_MAX_LINES,
+	bash_resolve_path,
+	bash_shell_arg_quote,
+	bash_resolve_db_files_shell_path,
+	bash_COMMAND_EXIT_FAILURE,
+	bash_COMMAND_EXIT_USAGE,
+	type bash_DbFilesRoots,
+} from "./bash-utils.ts";
 import { bash_delegate_native_just_bash_tmp_command } from "./bash-delegate.ts";
 
 /**
@@ -109,16 +118,7 @@ export function bash_sed_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFil
 					overlayUserId: pathResolution.fs.overlayUserId,
 				})) as files_nodes_read_file_line_range_Result;
 				if (!result) {
-					const dbFilesDoc: files_nodes_get_by_path_Result =
-						dbFilesPath === "/"
-							? null
-							: ((await ctx.runQuery(internal.files_nodes.get_by_path, {
-									organizationId: pathResolution.ctxData.organizationId,
-									workspaceId: pathResolution.ctxData.workspaceId,
-									visibilityUserId: pathResolution.ctxData.userId,
-									path: dbFilesPath,
-									overlayUserId: pathResolution.fs.overlayUserId,
-								})) as files_nodes_get_by_path_Result);
+					const dbFilesDoc = await pathResolution.fs.getEntry(dbFilesPath);
 
 					if (dbFilesPath === "/" || dbFilesDoc?.kind === "folder") {
 						return {

@@ -47,8 +47,15 @@ range search over dates works. Value docs carry `entryIndex`, the key's position
 typed — reading the map back in index order would reorder the dialog's lines on every save.
 Frontmatter docs leave `entryIndex` unset.
 
-`metadata.*` docs are always `sourceKind: "committed"`. There is no pending overlay for them: a
-pending content proposal changes the file's text, and metadata is not text.
+Saved files keep `metadata.*` docs as `sourceKind: "committed"`, even during a pending content edit.
+Private files and folders keep their map in `createIntent.metadata` and index it as `sourceKind: "pending"`.
+Save publishes that map with the new saved node. Discard removes the private map with its proposal.
+
+The table has strict committed and pending variants. Committed docs use a real `fileNodeId`.
+Pending frontmatter and private metadata docs use a saved/private `target`, owner, proposal ID, and proposal revision.
+They always belong to a real organization and workspace. Saved move and cleanup paths query both
+the committed file index and the pending target index. Marking content for rebase hides its old
+frontmatter until preparation rebuilds it.
 
 # Rules
 
@@ -62,15 +69,10 @@ pending content proposal changes the file's text, and metadata is not text.
 - **A key named twice keeps its last value**, whether or not the file already had that key.
 - **Metadata uses `content.write`.** There is no separate permission. A read-only node refuses
   metadata writes too, exactly like its content.
-- **A metadata write keeps an eager-created node alive.** Agent-mode `cp` and a bash write to a
-  missing path create the node right away and stamp `eagerCreated`. When the proposal is discarded,
-  `remove_eager_created_node_if_safe` hard-deletes that node again. A metadata write is committed and
-  never advances the Yjs sequence, so none of the other safety checks can see it, and the map would
-  be deleted with the file. `files_nodes_db_is_eager_node_safe_to_hard_delete` therefore keeps any
-  node that already has committed `metadata.` docs. Frontmatter docs do not count: they come from the
-  very content the proposal created.
-  An eager ancestor folder with committed metadata also survives pruning. Empty, unchanged ancestors
-  remain eligible for cleanup.
+- **Private metadata stays private.** The agent write door resolves the owner's current path and
+  checks the current saved parent permission and write policy. Preparing drafts refuse writes.
+  A ready draft's metadata write advances its proposal revision and expiry, keeps its text and
+  frontmatter indexes current, and replaces only its `metadata.*` docs. It creates no saved node.
 - **Caps** (all in `shared/files-metadata.ts`): 128 keys, 128 characters per key, 1024 characters per
   string value, and 16 KiB for the YAML document. Both doors enforce the document cap — the agent
   writes entries, so its door measures the document those entries would make. Without that the agent
@@ -178,13 +180,15 @@ Both live in the `// #region file metadata` of `packages/app/convex/files_metada
 6. `files_node_require_writable`
 7. parse the YAML, then write
 
-`update_entries_by_path` — the agent's door, an internal mutation. It has no membership leg because the
-agent already proved workspace-level permission before any tool was built. It follows the established
-agent-write contract (compare with `settle_file_pending_update_no_change_in_db` in
-`files_pending_updates.ts`): resolve the node scoped by org/workspace, then
-`access_control_db_can_act_on_file_node`, then `files_node_require_writable`. It applies changes
-directly — there is no pending review, because the pending-update system only models content
-branches and move/copy/archive intents.
+`update_entries_by_path` — the agent's door, an internal mutation. It resolves the owner's current
+saved or private path with the bounded visible reader. It checks active membership, read and write
+access, and the saved node or private draft parent's write policy in the same transaction.
+Saved metadata changes immediately. Private metadata stays in the create proposal until Save.
+
+`get_by_path` reads the same owner tree. It returns a tagged `target`, the current path, and current
+metadata/frontmatter fields. Preparing private drafts return null. Service accounts and read-only
+mounts use saved content only. Bash `meta get --format json` and `meta search --format json` return
+tagged targets too.
 
 `get_entries` is a public query and returns `[]` for a non-member or an unreadable node. It throws
 only when Convex auth has no usable identity.
@@ -219,17 +223,14 @@ stay on the leaf.
 `repo-path` is the path inside the repository. The stored path starts with the mount name and the
 commit sha, so that root is cut off before the value is stored.
 
-## Two flows stamp nothing, on purpose
+## Copies and new text files
 
-- **The agent's eager-created nodes.** Agent-mode `cp` and a bash write to a missing path create the
-  node right away through `create_file_by_path` → `action_create_file_node`. A node with committed
-  `metadata.` docs can no longer be hard-deleted (see the eager-create rule above), so stamping at
-  creation would make every one of them permanent and leave an empty file behind whenever a proposal
-  is discarded. `action_create_file_node` never passes `metadata`; only
-  `create_file_node_internal` does. That is the whole separation — keep it.
-- **App-created text files** (`create_text_node`, `create_home_file`). They share
-  `action_create_file_node` with the eager path, and a user creating a file in the app already knows
-  where it came from.
+- A new copy keeps ordinary source metadata in its captured create intent. Accept writes that map
+  with the saved node. A replacement keeps the destination's metadata and policy.
+- Agent text writes and `mkdir` reserve private nodes. Their create intents start without source
+  stamps. The owner can edit the private map through `update_entries_by_path`; Accept saves it.
+- App-created text files (`create_text_node`, `create_home_file`) also start without source stamps.
+  A user creating a file in the app already knows where it came from.
 
 ## Size and content type are not metadata
 
@@ -333,23 +334,21 @@ in the sidebar's key catalog (`metadata.file`), because typed bare it would read
 The doors sit in the search box region of `convex/files_metadata.ts`. Each answers its empty shape
 for a membership that is not the caller's.
 
-- `search_nodes({ membershipId, plans, pathPrefix? })` → `{ nodeIds }`. One filter per call: the box
-  sends one call per chip and ANDs the answers itself, because it already holds every readable node.
-  `pathPrefix` narrows the scan to one folder subtree; `tree_path_upper_bound` stops at `/tasks/`,
-  so `/tasks-archive` is out. The sidebar sends the stored path of the node the typed `file.path:`
-  names (the tree filter ignores case), and nothing when that node is a file: a file has nothing
-  under it, and the tree filter keeps the file by its own path. A string prefix plan scans up to
-  `string_prefix_upper_bound` (the prefix's last code point plus one), because Convex sorts strings
-  by UTF-8 bytes and `${prefix}\uffff` would miss `op😀`. The ids pass
-  `access_control_db_filter_readable_file_nodes`, and there is no "complete" flag on purpose: a
-  flag next to fewer ids than the cap would say outright that restricted files matched. The caps
-  can still hint at it (a file missing from `status:open` but found under `file.path:`), but never
-  name a file. Each plan's index range is read raw (`search_index_query`,
-  `take(SEARCH_NODES_DOCS_PER_PLAN)`), and the folder path and the pending overlay are checked on
-  the docs read (`search_doc_is_visible`), so the cap bounds the docs read. The paginated agent
-  `search` keeps the same rule as query filters in `search_query`. The candidates are also cut at
-  `SEARCH_NODES_MAX_SCOPES` (250) distinct restricted folders before the readable-nodes filter,
-  because that filter pays one permission check per folder.
+- `search_nodes({ membershipId, plans, pathPrefix? })` → `{ targets, truncated }`. Targets carry
+  `kind: saved | private` and `id`. One filter runs per call; the UI ANDs the answers by target
+  key. `pathPrefix` checks each result's current visible path under the folder, so `/tasks-archive`
+  is outside `/tasks/` and a moved draft appears only at its current path. String prefix plans use
+  `string_prefix_upper_bound`, which includes non-BMP text such as `op😀`.
+- `files_search_db_create_reader` shares owner, ancestor, and permission reads across indexed
+  results. It checks active membership, private ownership, current proposal id and revision,
+  readiness, and read access. Ready private drafts use captured metadata and pending frontmatter.
+  Saved metadata stays current beside pending text; ready pending frontmatter replaces committed
+  frontmatter. Other owners, old proposal revisions, preparing drafts, and hidden destinations
+  never produce a result.
+- Each plan reads at most `SEARCH_NODES_DOCS_PER_PLAN` candidates plus one to detect the cap.
+  The owner reader has its own work limit. Either limit sets `truncated`. UI metadata filters treat
+  that as an unknown answer and ask the user to narrow the search. Never negate a partial answer
+  and show the missing files as matches.
 - `list_search_fields({ membershipId })` → `[{ fieldPath, valueKinds }]`, the key catalog for
   the suggestions, in index order. A stored field the other doors refuse (longer than
   `SEARCH_FIELD_PATH_MAX_LENGTH`; frontmatter has no cap on a key path) is skipped, so the
@@ -357,21 +356,17 @@ for a membership that is not the caller's.
 - `list_search_values({ membershipId, fieldPath, prefix })` → the string values of one key that
   start with `prefix`, in exact case: `d` does not list `Denys`. The sidebar filters its rows by
   the same rule.
-- The two catalog doors name a key or a value only when one of its first
-  `SEARCH_CATALOG_SAMPLE_DOCS` docs sits on a file the caller can read
-  (`db_search_sample_is_readable`). A member who was given one folder deep inside a large
-  restricted tree can miss a key that way. Typing the key still works. Whether a file is readable
-  depends on its restricted scope only, so one walk caches the answer per node and per scope
-  (`SearchSampleCache`): a workspace with one restricted folder pays for one permission check. The
-  samples are read raw as well, and another user's draft among them is dropped in JS. They carry no
-  pending overlay: after a draft replaces a committed value, the old value is still suggested and
-  then finds nothing. Accepted and pinned by a test: the catalog is a hint, the search is the truth.
+- The two catalog doors name a key or value only when one of the first
+  `SEARCH_CATALOG_SAMPLE_DOCS` docs passes the same current owner reader
+  (`db_search_sample_is_readable`). Old committed frontmatter hidden by a draft is not suggested.
+  `SearchSampleCache` reuses the reader across samples. A readable match beyond the sample limit
+  can still be missed; typing the key remains valid.
 - The caps (`SEARCH_NODES_*`, `SEARCH_FIELDS_*`, `SEARCH_VALUES_*`) bound the reads, not the answer.
   A workspace with more matching docs than one plan reads gets a partial answer, and `file.path:`
   narrows the scan. The catalog budgets (`SEARCH_FIELDS_READ_BUDGET`, `SEARCH_VALUES_READ_BUDGET`)
   count index reads, not docs: Convex allows 4096 `db.get` and `db.query` calls per query, and a
-  restricted scope's permission check is counted as `SEARCH_SCOPE_CHECK_READS` of them. The walk
-  stops early instead of throwing.
+  shared owner reader separately bounds node, ancestor, and permission work. The walk stops early
+  instead of throwing.
 - A member whose role has no workspace-wide `content.read` still finds files in folders shared with
   them: `db_get_search_caller` passes `hasWorkspaceRead` to the readable-nodes filter instead of
   refusing. The other way round holds too: a member whose role reads the workspace sees nothing
@@ -433,7 +428,6 @@ Two mistakes a model makes, both found by driving the real agent, both fixed in 
 - No quota or billing accounting. `set_entries` shares the `files_tree_write` bucket and writes up to
   ~384 index docs per call. `set_node_write_policy` has no quota leg either, so this is consistent —
   revisit it as a product decision, not as a hole.
-- `cp` does not copy metadata to the new file.
 - No dedicated chat renderer for the tool call. It falls back to the generic unknown-tool disclosure,
   which shows name, parameters, and result.
 
@@ -443,7 +437,7 @@ Two mistakes a model makes, both found by driving the real agent, both fixed in 
 - `packages/app/convex/files_nodes.test.ts` — the `metadata` tests: search next to frontmatter,
   surviving a content save, the pending-overlay exemption, refusals, and the agent door on an upload.
   The `create-time metadata` describe covers the create-flow stamps: an upload's keys, a
-  folder import's relative path with empty folders, the eager-create exclusion, the plugin source
+  folder import's relative path with empty folders, the plugin source
   mirror's own `source` value, and the publish leaving the create-time map alone.
 - `packages/app/convex/files_pending_updates.test.ts` — a save whose frontmatter the parser cannot
   read still stores the text and writes no metadata docs.

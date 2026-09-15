@@ -19,38 +19,23 @@ import { internal } from "../convex/_generated/api.js";
 import type { Doc, Id } from "../convex/_generated/dataModel";
 import type { ActionCtx } from "../convex/_generated/server.js";
 import type {
-	files_nodes_create_folder_node_by_path_Result,
-	files_nodes_get_by_path_Result,
+	files_nodes_create_private_node_by_path_Result,
+	files_nodes_get_visible_entry_by_path_Result,
 	files_nodes_read_file_content_from_chunks_Result,
-	files_nodes_remove_eager_created_node_if_safe_Result,
-	files_nodes_text_search_files_Result,
 } from "../convex/files_nodes.ts";
-import type {
-	files_nodes_create_file_by_path_Result,
-	files_nodes_get_file_last_available_text_content_by_path_Result,
-} from "../convex/files_nodes_content.ts";
-import type {
-	files_pending_updates_get_by_file_node_Result,
-	files_pending_updates_get_pending_path_overlay_data_Result,
-	prepare_file_pending_update_for_agent_Result,
-} from "../convex/files_pending_updates.ts";
+import type { files_nodes_get_file_last_available_text_content_by_path_Result } from "../convex/files_nodes_content.ts";
+import type { prepare_file_pending_update_for_agent_Result } from "../convex/files_pending_updates.ts";
 import type { get_asset_by_id_Result } from "../convex/r2.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 import {
 	files_MAX_TEXT_CONTENT_BYTES,
-	files_ROOT_ID,
-	files_SYNTHETIC_ROOT_FOLDER,
 	files_get_normalized_node_path_segments,
 	files_get_utf8_byte_size,
-	files_node_has_editable_text_content,
 	files_normalize_lf_newlines,
 	files_normalize_special_node_path,
-	files_pending_path_overlay_build,
-	files_pending_path_overlay_project_committed_path,
-	files_pending_path_overlay_translate_path,
 	files_pending_update_content_is_stale,
 	files_pending_update_has_content,
-	type files_PendingPathOverlay,
+	type files_PendingTarget,
 } from "../shared/files.ts";
 import { math_clamp, should_never_happen } from "../shared/shared-utils.ts";
 import { path_name_of } from "../shared/paths.ts";
@@ -251,7 +236,7 @@ export function bash_regex_validation_error(command: string, pattern: string) {
  * folders created while caching descendants.
  */
 type DbFilesCacheEntry = {
-	_id?: Id<"files_nodes"> | typeof files_ROOT_ID;
+	target?: files_PendingTarget | { kind: "root" };
 	path: Doc<"files_nodes">["path"];
 	name: Doc<"files_nodes">["name"];
 	kind: Doc<"files_nodes">["kind"];
@@ -259,7 +244,9 @@ type DbFilesCacheEntry = {
 	updatedBy?: Doc<"files_nodes">["updatedBy"] | "";
 	contentType?: Doc<"files_nodes">["contentType"];
 	assetId: Doc<"files_nodes">["assetId"];
+	contentSize?: number;
 	textKind: Doc<"files_nodes">["textKind"];
+	preparing?: boolean;
 };
 
 export type bash_DbFilesFsOptions = {
@@ -411,7 +398,6 @@ export class bash_DbFilesFs implements IFileSystem {
 	readonly observedPaths = new Set<string>();
 	/** Set when the observed-path cap above dropped entries. */
 	observedPathsTruncated = false;
-	private overlayPromise: Promise<files_PendingPathOverlay> | null = null;
 	/** Command-owned per-run caches (cat's content cache) cleared together with resetProposalCaches. */
 	private linkedProposalCaches: Array<Map<string, string>> = [];
 
@@ -432,11 +418,15 @@ export class bash_DbFilesFs implements IFileSystem {
 	// synthetic "/" root: keep the seeded entry id-less so callers resolve the real node id
 	// instead of inheriting files_ROOT_ID and listing the reserved scope root's children.
 	private seedRootEntry() {
-		this.rememberEntry(
-			this.dbFilesRootPath === "/"
-				? files_SYNTHETIC_ROOT_FOLDER
-				: { ...files_SYNTHETIC_ROOT_FOLDER, _id: undefined, path: this.dbFilesRootPath },
-		);
+		this.rememberEntry({
+			...(this.dbFilesRootPath === "/" ? { target: { kind: "root" as const } } : {}),
+			path: this.dbFilesRootPath,
+			name: "",
+			kind: "folder",
+			updatedAt: 0,
+			assetId: null,
+			textKind: null,
+		});
 	}
 
 	/**
@@ -533,46 +523,26 @@ export class bash_DbFilesFs implements IFileSystem {
 				overlayUserId: this.overlayUserId,
 			},
 		) as Promise<files_nodes_get_file_last_available_text_content_by_path_Result>;
-		const dbFilePromise: Promise<files_nodes_get_by_path_Result> =
-			dbFilesPath === "/"
-				? Promise.resolve(null)
-				: (this.ctx.runQuery(internal.files_nodes.get_by_path, {
-						organizationId: this.ctxData.organizationId,
-						workspaceId: this.ctxData.workspaceId,
-						visibilityUserId: this.ctxData.userId,
-						path: dbFilesPath,
-						overlayUserId: this.overlayUserId,
-					}) as Promise<files_nodes_get_by_path_Result>);
-		const [fileContent, dbFilesDoc] = await Promise.all([fileContentPromise, dbFilePromise]);
+		const [fileContent, cacheEntry] = await Promise.all([fileContentPromise, this.getEntry(dbFilesPath)]);
 
 		if (!fileContent) {
-			// The overlay can present a moved node here: cache it under the requested path,
-			// never the node's committed path.
-			const cacheEntry =
-				dbFilesPath === "/"
-					? files_SYNTHETIC_ROOT_FOLDER
-					: dbFilesDoc && { ...dbFilesDoc, path: dbFilesPath, name: path_name_of(dbFilesPath) };
+			if (cacheEntry?.preparing) throw new Error(`Draft is still preparing: '${this.shellPathOf(dbFilesPath)}'`);
 			if (cacheEntry?.kind === "file") {
-				this.rememberEntry(cacheEntry);
 				throw new bash_DbFilesContentUnavailableError({
 					shellPath: this.shellPathOf(dbFilesPath),
 					contentType: cacheEntry.contentType,
 				});
 			}
 			if (cacheEntry?.kind === "folder") {
-				this.rememberEntry(cacheEntry);
 				throw new Error(`EISDIR: illegal operation on a directory, read '${this.shellPathOf(dbFilesPath)}'`);
 			}
 			throw new Error(`ENOENT: no such file or directory, open '${this.shellPathOf(dbFilesPath)}'`);
 		}
 
 		this.contentCache.set(dbFilesPath, fileContent.content);
-		if (dbFilesDoc?.kind === "file") {
-			// Same requested-path caching as above: the doc may live at a different committed path.
-			this.rememberEntry({ ...dbFilesDoc, path: dbFilesPath, name: path_name_of(dbFilesPath) });
-		} else {
+		if (!cacheEntry) {
 			this.rememberEntry({
-				_id: fileContent.nodeId,
+				target: fileContent.target,
 				path: dbFilesPath,
 				name: path_name_of(dbFilesPath),
 				kind: "file",
@@ -598,15 +568,14 @@ export class bash_DbFilesFs implements IFileSystem {
 
 	/**
 	 * Write an app file from shell redirection, `tee`, or builtin `touch`, Agent mode only.
-	 * Every write goes to the pending unstaged branch; a missing target is eagerly created
-	 * empty first.
+	 * Every write goes to the pending unstaged branch. A missing target reserves a private path.
 	 *
 	 * Thrown errors become the whole command's stderr (redirection has no per-write catch
 	 * in Just Bash), so every message must tell the model what to do instead.
 	 *
 	 * Compound redirects (`{ ...; } > f`, bare `> f`, `exec > f`) pre-truncate with an
 	 * empty write before the content write: two upserts on the same pending doc, correct
-	 * end state, and the `eagerCreated` stamp from the first upsert survives.
+	 * end state, and both writes use the same private target.
 	 */
 	private async proposeWrite(
 		path: string,
@@ -618,24 +587,29 @@ export class bash_DbFilesFs implements IFileSystem {
 		if (this.readOnlySource != null) {
 			throw this.readOnlyFileSystemError(normalizedPath);
 		}
+
 		const requestedDbFilesPath = this.toDbFilesPath(normalizedPath);
 		const shellPath = this.shellPathOf(requestedDbFilesPath);
+
 		if (!this.allowDbFilesMkdir) {
 			throw new Error(
 				`App file writes are available in Agent mode. Ask mode cannot create or change app files: '${shellPath}'.`,
 			);
 		}
+
 		if (bash_GLOB_METACHARACTER_REGEX.test(requestedDbFilesPath)) {
 			throw new Error(`app file glob patterns are not supported: '${shellPath}'`);
 		}
+
 		// An existing occupant at the requested path always wins untouched: draft-name
 		// normalization (README casing, extension fixes) must never redirect a write away from
-		// a real target. Only a missing target normalizes, so eager creation names new files
+		// a real target. Only a missing target normalizes, so private creation names new files
 		// exactly like cp and the UI create flow.
 		let dbFilesPath = requestedDbFilesPath;
 		// Listing caches omit document shape. Writes need the current editable-text marker.
 		this.entryCache.delete(dbFilesPath);
 		let entry = await this.getEntry(dbFilesPath);
+
 		if (!entry) {
 			dbFilesPath = files_normalize_special_node_path("file", requestedDbFilesPath);
 			if (dbFilesPath !== requestedDbFilesPath) {
@@ -652,6 +626,7 @@ export class bash_DbFilesFs implements IFileSystem {
 				this.entryCache.delete(dbFilesPath);
 				entry = await this.getEntry(dbFilesPath);
 			}
+
 			const normalizedSegments = files_get_normalized_node_path_segments({
 				kind: "file",
 				nameOrPath: dbFilesPath,
@@ -659,6 +634,7 @@ export class bash_DbFilesFs implements IFileSystem {
 				// an unknown or missing extension becomes plain text.
 				fileNamePolicy: "keep_extension",
 			});
+
 			if (!normalizedSegments || "validationMessage" in normalizedSegments) {
 				throw new Error(
 					`cannot write '${shellPath}': invalid app file path${
@@ -666,7 +642,9 @@ export class bash_DbFilesFs implements IFileSystem {
 					}`,
 				);
 			}
+
 			const normalizedDbFilesPath = `/${normalizedSegments.normalizedPathSegments.join("/")}`;
+
 			if (normalizedDbFilesPath !== dbFilesPath) {
 				// The normalized name can land on an existing node; that node becomes the
 				// overwrite target (cp's replace-target re-check). Creating at a silently
@@ -682,15 +660,27 @@ export class bash_DbFilesFs implements IFileSystem {
 				dbFilesPath = normalizedDbFilesPath;
 			}
 		}
+
 		if (entry?.kind === "folder") {
 			throw new Error(`EISDIR: illegal operation on a directory, open '${shellPath}'`);
 		}
-		if (entry?.kind === "file" && !files_node_has_editable_text_content(entry)) {
+
+		if (entry?.preparing) throw new Error(`cannot write '${shellPath}': this draft is still preparing`);
+		// Private text owns a sealed state before it has a saved asset.
+		if (entry?.kind === "file" && entry.textKind === null) {
 			throw new Error(
 				`cannot write '${shellPath}': this file's content type ('${entry.contentType ?? "unknown"}') is not editable as text`,
 			);
 		}
+
 		const chunk = decode_write_content(content, options, shellPath);
+		const normalizedChunk = files_normalize_lf_newlines(chunk);
+
+		if (files_get_utf8_byte_size(normalizedChunk) > files_MAX_TEXT_CONTENT_BYTES) {
+			throw new Error(
+				`cannot write '${shellPath}': content exceeds the ${files_MAX_TEXT_CONTENT_BYTES}-byte app file limit`,
+			);
+		}
 
 		// Writes only run for the tenant app db-files root: the mounted sources threw above,
 		// so the scope here is never reserved. Narrow the union for the workspace-only functions.
@@ -702,98 +692,61 @@ export class bash_DbFilesFs implements IFileSystem {
 			throw should_never_happen("app file write reached the reserved mount scope", { organizationId, workspaceId });
 		}
 
-		let nodeId: Id<"files_nodes">;
-		let eagerCreatedCommittedSequence: number | undefined;
-		let createdAncestorIds: Id<"files_nodes">[] | undefined;
-		if (entry?._id && entry._id !== files_ROOT_ID) {
-			nodeId = entry._id;
+		let target: files_PendingTarget;
+		if (entry?.target && entry.target.kind !== "root") {
+			target = entry.target;
 		} else {
-			// Missing target: eager create like write_file/cp. The visible path must respect the
-			// user's pending moves: a vacated path keeps its committed occupant, and a path inside
-			// a moved folder's claimed area creates at the committed join so the new file travels
-			// with the folder on accept.
-			const overlay = await this.getOverlay();
-			const translated = overlay == null ? null : files_pending_path_overlay_translate_path(overlay, dbFilesPath);
-			if (translated?.kind === "hidden") {
-				throw new Error(
-					`cannot write '${shellPath}': a pending move or replace vacated this path. Accept or discard that proposal first, or choose a different destination path.`,
-				);
-			}
 			const nearestAncestor = await this.getNearestVisibleAncestor(dbFilesPath);
 			if (nearestAncestor?.kind === "file") {
 				throw new Error(
 					`cannot write '${shellPath}': '${this.shellPathOf(nearestAncestor.path)}' is a file, not a folder`,
 				);
 			}
-			const creationPath = translated?.kind === "redirected" ? translated.committedPath : dbFilesPath;
-			const created = (await this.ctx.runAction(internal.files_nodes_content.create_file_by_path, {
+			const created = (await this.ctx.runMutation(internal.files_nodes.create_private_node_by_path, {
 				organizationId,
 				workspaceId,
 				userId,
-				path: creationPath,
-			})) as files_nodes_create_file_by_path_Result;
+				path: dbFilesPath,
+				kind: "file",
+				threadId: threadId ?? undefined,
+			})) as files_nodes_create_private_node_by_path_Result;
 			if (created._nay) {
 				throw new Error(`cannot write '${shellPath}': ${created._nay.message}`);
 			}
-			nodeId = created._yay.nodeId;
+			target = created._yay.target;
 			if (created._yay.created) {
-				// The stamp is the creation-time sequence, so a save landing before the upsert
-				// below keeps the node safe from discard/expiry hard deletes.
-				eagerCreatedCommittedSequence = created._yay.createdCommittedSequence;
-				createdAncestorIds = created._yay.createdAncestorIds;
-			}
-		}
-
-		// Real shell behavior: overwrite stores the bytes as written (only CRLF is
-		// normalized) and append concatenates, so a shell-written trailing newline
-		// survives and a later `>>` starts on a new line instead of gluing.
-		const normalizedChunk = files_normalize_lf_newlines(chunk);
-
-		// A failure after the eager create (size cap, upsert) would leave the just-created empty node behind.
-		// Best-effort compensation: remove it while it is still provably untouched; a cleanup
-		// failure must never mask the original write error.
-		const eager_created_failure_note = async () => {
-			if (eagerCreatedCommittedSequence === undefined) {
-				return "";
-			}
-			try {
-				const removal = (await this.ctx.runMutation(internal.files_nodes.remove_eager_created_node_if_safe, {
+				const written = await files_agent_write_file_text(this.ctx, {
 					organizationId,
 					workspaceId,
 					userId,
-					nodeId,
-					eagerCreatedCommittedSequence,
-					createdAncestorIds,
-				})) as files_nodes_remove_eager_created_node_if_safe_Result;
-				if (removal._yay?.removed) {
-					return removal._yay.ancestorsLeft > 0
-						? ` — empty folders created for '${shellPath}' were left behind; remove them in Files if they are not wanted`
-						: ` — nothing was created at '${shellPath}'`;
-				}
-			} catch (cleanupError) {
-				console.error(
-					"bash app-file write failed to remove the eagerly created node after a failed write",
-					cleanupError,
-				);
+					target,
+					operationBatchId: created._yay.operationBatchId!,
+					pendingUpdateId: created._yay.pendingUpdateId!,
+					unstagedText: normalizedChunk,
+					threadId: threadId ?? undefined,
+				});
+				this.resetProposalCaches();
+				if (written._nay) throw new Error(`cannot write '${shellPath}': ${written._nay.message}`);
+				return;
 			}
-			return ` — an empty file was left behind at '${shellPath}'; remove it in Files if it is not wanted`;
-		};
+		}
+
 		for (let attempt = 0; ; attempt += 1) {
 			// Prepare before reading or opening a write batch: preparation uses its own batch.
 			const prepared = (await this.ctx.runAction(internal.files_pending_updates.prepare_file_pending_update_for_agent, {
 				organizationId,
 				workspaceId,
 				userId,
-				nodeId,
+				target,
 			})) as prepare_file_pending_update_for_agent_Result;
 			if (prepared._nay) {
-				throw new Error(`cannot write '${shellPath}': ${prepared._nay.message}${await eager_created_failure_note()}`);
+				throw new Error(`cannot write '${shellPath}': ${prepared._nay.message}`);
 			}
 
 			// Use full chunks, not capped readFile output. Keep exact Markdown bytes when
 			// available; the Yjs action is the fallback for text not served by chunks.
 			let currentContent: {
-				nodeId: Id<"files_nodes">;
+				target: files_PendingTarget;
 				content: string;
 				pendingUpdateId: Id<"files_pending_updates"> | null;
 				pendingUpdateBaseStateId?: Id<"files_pending_update_yjs_states">;
@@ -819,48 +772,34 @@ export class bash_DbFilesFs implements IFileSystem {
 			}
 			if (!currentContent) {
 				throw new Error(
-					`cannot write '${shellPath}': the file changed while the command was running. Re-run the command.${await eager_created_failure_note()}`,
+					`cannot write '${shellPath}': the file changed while the command was running. Re-run the command.`,
 				);
 			}
 
 			const newText = mode === "append" ? currentContent.content + normalizedChunk : normalizedChunk;
 			if (files_get_utf8_byte_size(newText) > files_MAX_TEXT_CONTENT_BYTES) {
 				throw new Error(
-					`cannot write '${shellPath}': content exceeds the ${files_MAX_TEXT_CONTENT_BYTES}-byte app file limit${await eager_created_failure_note()}`,
+					`cannot write '${shellPath}': content exceeds the ${files_MAX_TEXT_CONTENT_BYTES}-byte app file limit`,
 				);
 			}
-			let written: files_agent_write_file_text_Result;
-			try {
-				written = await files_agent_write_file_text(this.ctx, {
-					organizationId,
-					workspaceId,
-					userId,
-					nodeId,
-					pendingUpdateId: currentContent.pendingUpdateId ?? undefined,
-					// Append depends on the text read above; a full overwrite replaces it deliberately.
-					expectedBaseStateId: mode === "append" ? (currentContent.pendingUpdateBaseStateId ?? null) : undefined,
-					unstagedText: newText,
-					eagerCreatedCommittedSequence,
-					// Recorded on the pending update doc so Discard/TTL expiry can also remove the
-					// parent folders this write eagerly created.
-					eagerCreatedAncestorIds: createdAncestorIds,
-					threadId: threadId ?? undefined,
-				});
-			} catch (error) {
-				if (eagerCreatedCommittedSequence === undefined) {
-					throw error;
-				}
-				throw new Error(
-					`cannot write '${shellPath}': the proposal was not recorded.${await eager_created_failure_note()}`,
-					{
-						cause: error,
-					},
-				);
+			if (currentContent.target.kind !== target.kind || currentContent.target.id !== target.id) {
+				throw new Error(`cannot write '${shellPath}': the target changed. Re-run the command.`);
 			}
+			const written = await files_agent_write_file_text(this.ctx, {
+				organizationId,
+				workspaceId,
+				userId,
+				target,
+				pendingUpdateId: currentContent.pendingUpdateId ?? undefined,
+				// Append depends on the text read above; a full overwrite replaces it deliberately.
+				expectedBaseStateId: mode === "append" ? (currentContent.pendingUpdateBaseStateId ?? null) : undefined,
+				unstagedText: newText,
+				threadId: threadId ?? undefined,
+			});
 
 			if (written._nay) {
 				if (attempt === 0 && written._nay.name === "pending_content_changed") continue;
-				throw new Error(`cannot write '${shellPath}': ${written._nay.message}${await eager_created_failure_note()}`);
+				throw new Error(`cannot write '${shellPath}': ${written._nay.message}`);
 			}
 			// Later commands chained in this same bash call must see the new proposal.
 			this.resetProposalCaches();
@@ -944,20 +883,6 @@ export class bash_DbFilesFs implements IFileSystem {
 			}
 		}
 
-		// A path under a moved folder's visible destination creates at the COMMITTED join,
-		// so the new folder travels with the folder on accept. A vacated committed path has
-		// no visible parent, so mkdir there fails like any other missing parent (for -p,
-		// which skips the parent check, the ancestor-kind guard above enforces the folder
-		// kind and the hidden case below still rejects vacated paths).
-		let creationPath = dbFilesPath;
-		const overlay = await this.getOverlay();
-		const translated = overlay == null ? null : files_pending_path_overlay_translate_path(overlay, dbFilesPath);
-		if (translated?.kind === "redirected") {
-			creationPath = translated.committedPath;
-		} else if (translated?.kind === "hidden") {
-			throw new Error(`ENOENT: no such file or directory, mkdir '${this.shellPathOf(dbFilesPath)}'`);
-		}
-
 		// mkdir only runs for the tenant app db-files root: the external mount and plugin
 		// source roots pass allowDbFilesMkdir=false and threw above, so the scope here is never
 		// reserved. Narrow the union before the workspace-only mutation, which declares strict ids.
@@ -968,26 +893,18 @@ export class bash_DbFilesFs implements IFileSystem {
 		) {
 			throw should_never_happen("mkdir reached the reserved mount scope", { organizationId, workspaceId });
 		}
-		const created = (await this.ctx.runMutation(internal.files_nodes.create_folder_node_by_path, {
+		const created = (await this.ctx.runMutation(internal.files_nodes.create_private_node_by_path, {
 			organizationId,
 			workspaceId,
 			userId,
-			path: creationPath,
-		})) as files_nodes_create_folder_node_by_path_Result;
+			path: dbFilesPath,
+			kind: "folder",
+			threadId: this.ctxData.threadId ?? undefined,
+		})) as files_nodes_create_private_node_by_path_Result;
 		if (created._nay) {
 			throw new Error(created._nay.message);
 		}
-		this.rememberEntry({
-			_id: created._yay.nodeId,
-			path: dbFilesPath,
-			name: path_name_of(dbFilesPath),
-			kind: "folder",
-			updatedAt: Date.now(),
-			contentType: null,
-			assetId: null,
-			textKind: null,
-			updatedBy: this.ctxData.userId,
-		});
+		this.resetProposalCaches();
 	}
 
 	async readdir(path: string): Promise<string[]> {
@@ -1073,56 +990,11 @@ export class bash_DbFilesFs implements IFileSystem {
 	}
 
 	/**
-	 * The user's pending path overlay for multi-result listings, fetched at most once per
-	 * command run (the query result itself is also cached by Convex per (function, args)).
-	 *
-	 * Returns null for mounted sources and when the overlay changes nothing, so listing
-	 * code can keep the committed fast path byte-identical to today.
-	 */
-	async getOverlay(): Promise<files_PendingPathOverlay | null> {
-		const overlayUserId = this.overlayUserId;
-		if (overlayUserId == null) {
-			return null;
-		}
-		// An overlay user only exists on the tenant app scope, so the reserved mount
-		// scopes cannot reach this point. Narrow the ctxData union for the query args.
-		const { organizationId, workspaceId } = this.ctxData;
-		if (
-			organizations_is_global_organization_id(organizationId) ||
-			organizations_is_reserved_workspace_id(workspaceId)
-		) {
-			throw should_never_happen("pending path overlay reached the reserved mount scope", {
-				organizationId,
-				workspaceId,
-			});
-		}
-		this.overlayPromise ??= (async (/* iife */) => {
-			const overlayData = (await this.ctx.runQuery(internal.files_pending_updates.get_pending_path_overlay_data, {
-				organizationId,
-				workspaceId,
-				userId: overlayUserId,
-			})) as files_pending_updates_get_pending_path_overlay_data_Result;
-			return files_pending_path_overlay_build({
-				pendingUpdates: overlayData.pendingUpdates,
-				nodesById: new Map(overlayData.referencedNodes.map((node) => [node._id, node])),
-			});
-		})();
-		const overlay = await this.overlayPromise;
-		// Every hiding producer also fills hiddenCommittedPaths; the folder-set check is for safety.
-		return overlay.moves.length === 0 &&
-			overlay.hiddenCommittedPaths.size === 0 &&
-			overlay.hiddenCommittedFolderPaths.size === 0
-			? null
-			: overlay;
-	}
-
-	/**
-	 * Drop the memoized overlay and the per-run entry/content caches after a command
+	 * Drop the per-run entry/content caches after a command
 	 * changes the user's proposal set, so later commands chained in the same bash
 	 * call see the new visible tree instead of the view cached before the proposal.
 	 */
 	resetProposalCaches() {
-		this.overlayPromise = null;
 		this.entryCache.clear();
 		this.contentCache.clear();
 		for (const cache of this.linkedProposalCaches) {
@@ -1175,36 +1047,69 @@ export class bash_DbFilesFs implements IFileSystem {
 		if (recordPath) this.observePath(normalizedPath);
 		const cached = this.entryCache.get(normalizedPath);
 		// Synthetic parent folders make descendant paths navigable. Except for the
-		// synthetic root, only entries with `_id` prove that an app path exists in `files_nodes`.
-		if (cached && (normalizedPath === this.dbFilesRootPath || cached._id != null)) {
+		// synthetic root, only tagged targets prove that an app path exists.
+		if (cached && (normalizedPath === "/" || cached.target != null)) {
 			return cached;
 		}
 
-		const dbFilesDoc = (await this.ctx.runQuery(internal.files_nodes.get_by_path, {
+		const entry = (await this.ctx.runQuery(internal.files_nodes.get_visible_entry_by_path, {
 			organizationId: this.ctxData.organizationId,
 			workspaceId: this.ctxData.workspaceId,
 			visibilityUserId: this.ctxData.userId,
 			path: normalizedPath,
 			overlayUserId: this.overlayUserId,
-		})) as files_nodes_get_by_path_Result;
+		})) as files_nodes_get_visible_entry_by_path_Result;
 
-		if (!dbFilesDoc) {
+		if (!entry) {
 			return null;
 		}
 
 		// The overlay can present a moved node here: cache it under the requested path,
 		// never the node's committed path (identical without an overlay).
-		const cacheEntry = {
-			_id: dbFilesDoc._id,
+		const intent = entry.kind === "private" ? entry.pendingUpdate.createIntent : undefined;
+		const replacement = entry.kind === "saved" ? entry.pendingUpdate?.pendingReplacement : undefined;
+		const cacheEntry: DbFilesCacheEntry = {
+			target: entry.kind === "saved" ? { kind: "saved", id: entry.node._id } : { kind: "private", id: entry.node._id },
 			path: normalizedPath,
 			name: path_name_of(normalizedPath),
-			kind: dbFilesDoc.kind,
-			updatedAt: dbFilesDoc.updatedAt,
-			updatedBy: dbFilesDoc.updatedBy,
-			contentType: dbFilesDoc.contentType,
-			assetId: dbFilesDoc.assetId,
-			textKind: dbFilesDoc.textKind,
-		} satisfies DbFilesCacheEntry;
+			kind: entry.node.kind,
+			updatedAt: entry.kind === "saved" ? entry.node.updatedAt : entry.pendingUpdate.updatedAt,
+			updatedBy: entry.kind === "saved" ? entry.node.updatedBy : entry.node.userId,
+			contentType:
+				entry.kind === "saved"
+					? (replacement?.contentType ?? entry.node.contentType)
+					: intent && intent.kind !== "folder"
+						? intent.contentType
+						: null,
+			assetId:
+				entry.kind === "saved"
+					? (replacement?.assetId ?? entry.node.assetId)
+					: intent?.kind === "stored"
+						? intent.assetId
+						: null,
+			textKind:
+				entry.kind === "saved"
+					? replacement
+						? (replacement.yjsRootKind ?? null)
+						: entry.node.textKind
+					: intent?.kind === "text"
+						? intent.textKind
+						: null,
+			preparing:
+				entry.kind === "private" &&
+				(!intent || (intent.kind === "text" && entry.pendingUpdate.content?.base.kind !== "new")),
+			contentSize:
+				entry.kind === "private"
+					? intent?.kind === "stored"
+						? intent.size
+						: entry.pendingUpdate.content
+							? entry.pendingUpdate.size
+							: undefined
+					: files_pending_update_has_content(entry.pendingUpdate) &&
+						  !files_pending_update_content_is_stale(entry.pendingUpdate, entry.node)
+						? entry.pendingUpdate.size
+						: replacement?.size,
+		};
 		this.rememberEntry(cacheEntry);
 		return cacheEntry;
 	}
@@ -1900,20 +1805,18 @@ export function bash_disallowed_shell_code_error() {
 }
 
 /**
- * Extract `cp`/`mv` path operands for app-path routing.
+ * Parse app `cp`/`mv` flags and keep path intent before normalization.
  *
- * This is intentionally smaller than a full parser: it tracks the supported recursive,
- * force, no-clobber, and no-target-directory flags, including short clusters and `--`,
- * then preserves every following token as a path operand so dash-leading app file names
- * cannot bypass the app-mutation guards.
+ * Raw operands remain available on failure so callers can route pure scratch commands
+ * to the native parser. App commands must check the Result before starting any work.
  */
-export function bash_parse_cp_mv_operands(args: string[]) {
+export function bash_parse_cp_mv_operands(command: "cp" | "mv", args: string[]) {
 	const operands: string[] = [];
 	let recursive = false;
-	let force = false;
-	let noClobber = false;
+	let conflictPolicy: "replace" | "skip" | "error" = command === "cp" ? "replace" : "error";
 	let noTargetDirectory = false;
 	let optionsEnded = false;
+	let error: string | null = null;
 
 	for (const arg of args) {
 		if (optionsEnded) {
@@ -1924,43 +1827,45 @@ export function bash_parse_cp_mv_operands(args: string[]) {
 			optionsEnded = true;
 			continue;
 		}
-		if (arg === "-r" || arg === "-R" || arg === "--recursive") {
-			recursive = true;
-			continue;
-		}
-		if (arg === "-f" || arg === "--force") {
-			force = true;
-			continue;
-		}
-		if (arg === "-n" || arg === "--no-clobber") {
-			noClobber = true;
-			continue;
-		}
-		if (arg === "-T" || arg === "--no-target-directory") {
-			noTargetDirectory = true;
-			continue;
-		}
-		if (arg.startsWith("-")) {
-			if (!arg.startsWith("--")) {
-				const flags = [...arg.slice(1)];
-				if (flags.some((flag) => flag === "r" || flag === "R")) {
+		if (arg.startsWith("-") && arg !== "-") {
+			const flags = arg.startsWith("--") ? [arg] : [...arg.slice(1)];
+			for (const flag of flags) {
+				if (command === "cp" && (flag === "r" || flag === "R" || flag === "--recursive")) {
 					recursive = true;
-				}
-				if (flags.some((flag) => flag === "f")) {
-					force = true;
-				}
-				if (flags.some((flag) => flag === "n")) {
-					noClobber = true;
-				}
-				if (flags.some((flag) => flag === "T")) {
+				} else if (flag === "f" || flag === "--force") {
+					conflictPolicy = "replace";
+				} else if (flag === "n" || flag === "--no-clobber") {
+					conflictPolicy = "skip";
+				} else if (flag === "T" || flag === "--no-target-directory") {
 					noTargetDirectory = true;
+				} else {
+					error ??= `${command}: unsupported option '${flag.startsWith("--") ? flag : `-${flag}`}'`;
 				}
 			}
 			continue;
 		}
 		operands.push(arg);
 	}
-	return { operands, recursive, force, noClobber, noTargetDirectory };
+
+	if (operands.length < 2) error ??= `${command}: expected at least one source and a destination`;
+	if (noTargetDirectory && operands.length > 2) error ??= `${command}: -T requires exactly one source`;
+	if (error !== null) {
+		return { operands, ...Result({ _nay: { message: error } }) };
+	}
+
+	const destination = operands[operands.length - 1];
+	return {
+		operands,
+		...Result({
+			_yay: {
+				sources: operands.slice(0, -1).map((path) => ({ path, requiresFolder: path.endsWith("/") })),
+				destination: { path: destination, requiresFolder: operands.length > 2 || destination.endsWith("/") },
+				recursive,
+				conflictPolicy,
+				noTargetDirectory,
+			},
+		}),
+	};
 }
 
 /**
@@ -2174,27 +2079,28 @@ export async function files_agent_write_file_text(
 		organizationId: Id<"organizations">;
 		workspaceId: Id<"organizations_workspaces">;
 		userId: Id<"users">;
-		nodeId: Id<"files_nodes">;
+		target: files_PendingTarget;
+		operationBatchId?: Id<"files_pending_update_operation_batches">;
 		pendingUpdateId?: Id<"files_pending_updates">;
 		expectedBaseStateId?: Id<"files_pending_update_yjs_states"> | null;
 		unstagedText: string;
-		copiedFrom?: { nodeId: Id<"files_nodes">; path: string };
-		eagerCreatedCommittedSequence?: number;
-		eagerCreatedAncestorIds?: Id<"files_nodes">[];
+		copiedFrom?: Doc<"files_pending_updates">["copiedFrom"];
 		threadId?: Id<"ai_chat_threads">;
 	},
 ): Promise<files_agent_write_file_text_Result> {
-	const batch = (await ctx.runMutation(
-		internal.files_pending_updates.create_file_pending_update_operation_batch_internal,
-		{
-			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
-			userId: args.userId,
-			nodeId: args.nodeId,
-		},
-	)) as
-		| { _yay: { operationBatchId: Id<"files_pending_update_operation_batches">; expiresAt: number }; _nay?: undefined }
-		| { _yay?: undefined; _nay: { name?: string; message: string } };
+	const batch = args.operationBatchId
+		? Result({ _yay: { operationBatchId: args.operationBatchId } })
+		: ((await ctx.runMutation(internal.files_pending_updates.create_file_pending_update_operation_batch_internal, {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				userId: args.userId,
+				target: args.target,
+			})) as
+				| {
+						_yay: { operationBatchId: Id<"files_pending_update_operation_batches">; expiresAt: number };
+						_nay?: undefined;
+				  }
+				| { _yay?: undefined; _nay: { name?: string; message: string } });
 	if (batch._nay) {
 		return { _nay: batch._nay };
 	}
@@ -2219,15 +2125,11 @@ export async function files_agent_write_file_text(
 		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
 		userId: args.userId,
-		nodeId: args.nodeId,
+		target: args.target,
 		operationBatchId,
 		...(args.pendingUpdateId ? { pendingUpdateId: args.pendingUpdateId } : {}),
 		...(args.expectedBaseStateId !== undefined ? { expectedBaseStateId: args.expectedBaseStateId } : {}),
 		...(args.copiedFrom ? { copiedFrom: args.copiedFrom } : {}),
-		...(args.eagerCreatedCommittedSequence !== undefined
-			? { eagerCreatedCommittedSequence: args.eagerCreatedCommittedSequence }
-			: {}),
-		...(args.eagerCreatedAncestorIds !== undefined ? { eagerCreatedAncestorIds: args.eagerCreatedAncestorIds } : {}),
 		...(args.threadId ? { threadId: args.threadId } : {}),
 	})) as files_agent_write_file_text_Result;
 }
@@ -2406,151 +2308,7 @@ export function bash_external_mounts_fan_out_db_files_path(mount: bash_ExternalS
 }
 
 // #endregion shared command helpers
-// #region pending path overlay listings
 
-const OVERLAY_PATH_WORD_SPLIT_REGEX = /[^a-z0-9]+/u;
-
-/**
- * Return the committed folder path a visible folder scope reads from.
- *
- * A folder that is a pending-move destination redirects to the moved source folder;
- * any other folder keeps its own path.
- */
-export function bash_overlay_committed_scope_path(overlay: files_PendingPathOverlay, visibleFolderPath: string) {
-	const translated = files_pending_path_overlay_translate_path(overlay, visibleFolderPath);
-	return translated.kind === "redirected" ? translated.committedPath : visibleFolderPath;
-}
-
-/**
- * Check whether a visible path is `visibleScopePath` itself or inside it.
- */
-export function bash_overlay_path_in_scope(visibleScopePath: string, visiblePath: string) {
-	return visibleScopePath === "/" || bash_is_path_under(visibleScopePath, visiblePath);
-}
-
-/**
- * Map one committed listing or search hit path to the path the proposing user sees.
- *
- * Returns null when the node is hidden from the visible tree or its visible path
- * leaves the listed scope (moved elsewhere). `visibleScopePath` null means the whole
- * workspace (no scope filter).
- */
-export function bash_overlay_project_scoped_path(args: {
-	overlay: files_PendingPathOverlay;
-	committedPath: string;
-	visibleScopePath: string | null;
-}) {
-	const visiblePath = files_pending_path_overlay_project_committed_path(args.overlay, args.committedPath);
-	if (visiblePath == null) {
-		return null;
-	}
-	if (args.visibleScopePath != null && !bash_overlay_path_in_scope(args.visibleScopePath, visiblePath)) {
-		return null;
-	}
-	return visiblePath;
-}
-
-/**
- * List the moves a recursive listing of `visibleScopePath` must add as extra entries.
- *
- * Walking the committed scope already surfaces moves whose committed source is inside
- * it (projection maps them to their visible paths), so only moves coming in from outside inject.
- */
-export function bash_overlay_subtree_injections(
-	overlay: files_PendingPathOverlay,
-	args: { visibleScopePath: string; committedScopePath: string },
-) {
-	return overlay.moves.filter(
-		(move) =>
-			move.visiblePath !== args.visibleScopePath &&
-			bash_overlay_path_in_scope(args.visibleScopePath, move.visiblePath) &&
-			!bash_overlay_path_in_scope(args.committedScopePath, move.committedPath),
-	);
-}
-
-/**
- * Extra content-search hits for moves whose committed chunks sit outside the
- * scoped committed prefix (an ancestor scope of the visible destination).
- *
- * One first-page query runs per such move. The chunk scope bound excludes the
- * prefix path itself, so a moved file searches its committed parent folder and
- * keeps only its own chunks. Returned items already carry visible paths.
- */
-export async function bash_overlay_content_search_injections(args: {
-	ctx: ActionCtx;
-	ctxData: bash_DbFilesFsOptions["ctxData"];
-	overlay: files_PendingPathOverlay;
-	visibleScopePath: string;
-	committedScopePath: string;
-	query: string;
-	numItems: number;
-}): Promise<files_nodes_text_search_files_Result["items"]> {
-	const injectedItems: files_nodes_text_search_files_Result["items"] = [];
-	const seenChunkKeys = new Set<string>();
-	for (const move of bash_overlay_subtree_injections(args.overlay, {
-		visibleScopePath: args.visibleScopePath,
-		committedScopePath: args.committedScopePath,
-	})) {
-		const committedQueryPrefix =
-			move.kind === "folder"
-				? move.committedPath
-				: move.committedPath.slice(0, move.committedPath.lastIndexOf("/")) || "/";
-		const res = (await args.ctx.runQuery(internal.files_nodes.text_search_files, {
-			organizationId: args.ctxData.organizationId,
-			workspaceId: args.ctxData.workspaceId,
-			userId: args.ctxData.userId,
-			// The /api/chat gate already required content.read on the thread's workspace before any
-			// bash tool ran; overlay injections only run for the proposer's own tenant workspace.
-			hasWorkspaceRead: true,
-			query: args.query,
-			numItems: args.numItems,
-			cursor: null,
-			pathPrefix: committedQueryPrefix,
-		})) as files_nodes_text_search_files_Result;
-		for (const item of res.items) {
-			// The parent-folder scan for a moved file also returns sibling chunks; skip them.
-			if (move.kind === "file" && item.path !== move.committedPath) {
-				continue;
-			}
-			const visiblePath = bash_overlay_project_scoped_path({
-				overlay: args.overlay,
-				committedPath: item.path,
-				visibleScopePath: args.visibleScopePath,
-			});
-			if (visiblePath == null) {
-				continue;
-			}
-			// Nested moves can surface the same chunk from two scans; keep the first.
-			const chunkKey = `${visiblePath}#${item.chunkIndex}`;
-			if (seenChunkKeys.has(chunkKey)) {
-				continue;
-			}
-			seenChunkKeys.add(chunkKey);
-			injectedItems.push({ ...item, path: visiblePath });
-		}
-	}
-	return injectedItems;
-}
-
-/**
- * Client-side stand-in for the indexed path word search, used to match a query
- * against overlay-visible paths. Words split on non-alphanumeric characters,
- * matching is case-insensitive, and the final query word prefix-matches.
- */
-export function bash_overlay_path_query_matches(pathQuery: string, visiblePath: string) {
-	const pathWords = visiblePath.toLowerCase().split(OVERLAY_PATH_WORD_SPLIT_REGEX).filter(Boolean);
-	const queryWords = pathQuery.toLowerCase().split(OVERLAY_PATH_WORD_SPLIT_REGEX).filter(Boolean);
-	return (
-		queryWords.length > 0 &&
-		queryWords.every((queryWord, index) =>
-			index === queryWords.length - 1
-				? pathWords.some((pathWord) => pathWord.startsWith(queryWord))
-				: pathWords.includes(queryWord),
-		)
-	);
-}
-
-// #endregion pending path overlay listings
 // #region reader helpers
 
 /**
@@ -2594,42 +2352,19 @@ export function bash_enforce_reader_operand_cap(
  * Return the current byte size for a loaded db file before deciding
  * whether reader commands can read it inline.
  *
- * This reads metadata only: an unsaved edit's size wins over the committed
- * asset size, and the file body/chunks are never loaded. There is no local
- * cache because an earlier command in the same bash run may have changed the
- * unsaved edit.
+ * Proposal metadata wins over saved asset size. Writes clear the path cache,
+ * so a later command sees the current size without loading the body.
  */
 export async function bash_get_db_file_byte_size(args: {
 	ctx: ActionCtx;
 	ctxData: bash_DbFilesFsOptions["ctxData"];
-	dbFilesDoc: Doc<"files_nodes">;
+	dbFilesDoc: Pick<DbFilesCacheEntry, "kind" | "assetId" | "contentSize">;
 }) {
-	if (args.dbFilesDoc.kind !== "file" || args.dbFilesDoc.assetId == null) {
+	if (args.dbFilesDoc.kind !== "file") {
 		return null;
 	}
-
-	const organizationId = args.ctxData.organizationId;
-	const workspaceId = args.ctxData.workspaceId;
-	if (
-		files_node_has_editable_text_content(args.dbFilesDoc) &&
-		!organizations_is_global_organization_id(organizationId) &&
-		!organizations_is_reserved_workspace_id(workspaceId)
-	) {
-		const pendingUpdate = (await args.ctx.runQuery(internal.files_pending_updates.get_by_file_node, {
-			organizationId,
-			workspaceId,
-			userId: args.ctxData.userId,
-			fileNodeId: args.dbFilesDoc._id,
-		})) as files_pending_updates_get_by_file_node_Result;
-		// A move-only pending update doc stores size 0; only a content-bearing doc may shadow the committed asset size.
-		// A stale proposal on a file with collaboration off does not shadow it either.
-		if (
-			files_pending_update_has_content(pendingUpdate) &&
-			!files_pending_update_content_is_stale(pendingUpdate, args.dbFilesDoc)
-		) {
-			return pendingUpdate.size;
-		}
-	}
+	if (args.dbFilesDoc.contentSize != null) return args.dbFilesDoc.contentSize;
+	if (args.dbFilesDoc.assetId == null) return null;
 
 	const asset = (await args.ctx.runQuery(internal.r2.get_asset_by_id, {
 		organizationId: args.ctxData.organizationId,

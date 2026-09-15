@@ -122,7 +122,7 @@ import { FilesTreeProvider } from "@/lib/files-tree-context.tsx";
 import { cn, copy_to_clipboard, forward_ref, should_never_happen, sx } from "@/lib/utils.ts";
 import { path_extract_segments_from } from "@/lib/paths.ts";
 import { app_convex_api, type app_convex_Doc, type app_convex_Id } from "@/lib/app-convex-client.ts";
-import { url_path_file_by_node_id } from "@/lib/urls.ts";
+import { url_parse_file_link, url_path_file_by_node_id } from "@/lib/urls.ts";
 import { dom_clear_text_selection, type AppClassName, type AppElementId } from "@/lib/dom-utils.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 import { useGlobalEventList } from "@/lib/global-event.tsx";
@@ -1448,7 +1448,7 @@ const FilesSidebarTreeItemPrimaryContent = memo(function FilesSidebarTreeItemPri
 	const { membershipId } = AppTenantProvider.useContext();
 
 	const activities = useFileNodeActivities({ membershipId, nodeId });
-	const isProcessing = activities.some((activity) => activity.status === "running");
+	const isProcessing = activities.some((activity) => activity.finishedAt === undefined);
 
 	return (
 		<div className={"FilesSidebarTreeItemPrimaryContent" satisfies FilesSidebarTreeItemPrimaryContent_ClassNames}>
@@ -1760,7 +1760,7 @@ type FilesSidebarTreeItem_ClassNames =
 	| "FilesSidebarTreeItem-content-renaming"
 	| "FilesSidebarTreeItemNavigatedRail";
 
-type FilesSidebar_CssVars = {
+type FilesSidebarTreeItem_CssVars = {
 	"--FilesSidebarTreeItem-content-depth": number;
 };
 
@@ -2194,7 +2194,7 @@ const FilesSidebarTreeRow = memo(
 							)}
 							style={sx({
 								"--FilesSidebarTreeItem-content-depth": depth,
-							} satisfies Partial<FilesSidebar_CssVars>)}
+							} satisfies Partial<FilesSidebarTreeItem_CssVars>)}
 							role={itemRole}
 							// Keep one row Tab-reachable when the focused item is no longer rendered (e.g. archived away).
 							tabIndex={isFallbackTabStop ? 0 : itemTabIndex}
@@ -3039,7 +3039,7 @@ const FilesSidebarHeader = memo(function FilesSidebarHeader(props: FilesSidebarH
 							params={{ organizationName, workspaceName }}
 							// Keep `q`: the sidebar stays mounted with its search box filled, so dropping the
 							// param here would leave the URL disagreeing with what the user still sees.
-							search={(prev) => ({ ...prev, nodeId: files_ROOT_ID, view })}
+							search={(prev) => ({ ...prev, nodeId: files_ROOT_ID, pendingNodeId: undefined, view })}
 						>
 							<MySidebarTitle>Files</MySidebarTitle>
 						</MyLink>
@@ -3947,8 +3947,8 @@ function get_tree_items_list_after_optimistic_rename(args: {
  * Match a search query against the tree.
  *
  * The free text matches by its shape (see `detect_search_query_mode`). A `file.*` filter matches a tree
- * field. A metadata filter matches the node ids its server query returned, looked up by the
- * filter's raw token in `metadataNodeIds`. A filter with no entry yet matches nothing, and the
+ * field. A metadata filter matches the target keys its server query returned, looked up by the
+ * filter's raw token in `metadataTargetKeys`. A filter with no entry yet matches nothing, and the
  * tree says "Searching…" until every entry is there. Files and folders match their own metadata.
  * Archived nodes and synthetic folders cannot be direct metadata matches.
  *
@@ -3962,7 +3962,7 @@ function get_tree_items_list_after_optimistic_rename(args: {
 function get_search_matches(args: {
 	treeItems: TreeItems;
 	searchQuery: string;
-	metadataNodeIds: ReadonlyMap<string, ReadonlySet<string> | null>;
+	metadataTargetKeys: ReadonlyMap<string, ReadonlySet<string> | null>;
 }) {
 	const parsed = files_search_query_parse(args.searchQuery);
 	const filters = parsed.filters;
@@ -3973,6 +3973,9 @@ function get_search_matches(args: {
 	// Quotes in the free text only group words. A text of quotes alone asks for nothing.
 	const text = parsed.text.replace(/"/gu, "").trim();
 	const textQuery = text.length > 0 ? detect_search_query_mode(text) : null;
+	if (textQuery?.mode === "private") {
+		return { visibleFileIds: new Set<string>(), topMatchId: null, matchCount: 0 };
+	}
 	if (filters.length === 0 && textQuery === null) {
 		return { visibleFileIds: new Set<string>(), topMatchId: null, matchCount: 0 };
 	}
@@ -4013,7 +4016,13 @@ function get_search_matches(args: {
 
 		if (
 			!filters.every(
-				(filter) => search_filter_matches_item({ filter, item, metadataNodeIds: args.metadataNodeIds }) === true,
+				(filter) =>
+					search_filter_matches_item({
+						filter,
+						item,
+						targetKey: `saved:${item._id}`,
+						metadataTargetKeys: args.metadataTargetKeys,
+					}) === true,
 			)
 		) {
 			continue;
@@ -4092,7 +4101,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 	const searchQueryDeferred = useDeferredValue(searchQuery);
 	const isSearchActive = searchQueryDeferred.trim().length > 0;
 
-	const { searchMetadataNodeIds, isSearchLoading, isSearchFailed } = useFilesSearchMetadata(
+	const { searchMetadataTargetKeys, isSearchLoading, isSearchFailed } = useFilesSearchMetadata(
 		membershipId,
 		searchQueryDeferred,
 		treeItemsList,
@@ -4352,9 +4361,13 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 	const searchMatches = useMemo(
 		() =>
 			treeItems && isSearchActive
-				? get_search_matches({ treeItems, searchQuery: searchQueryDeferred, metadataNodeIds: searchMetadataNodeIds })
+				? get_search_matches({
+						treeItems,
+						searchQuery: searchQueryDeferred,
+						metadataTargetKeys: searchMetadataTargetKeys,
+					})
 				: null,
-		[treeItems, isSearchActive, searchQueryDeferred, searchMetadataNodeIds],
+		[treeItems, isSearchActive, searchQueryDeferred, searchMetadataTargetKeys],
 	);
 	const visibleFileIds = searchMatches?.visibleFileIds ?? treeItems?.itemsIds ?? new Set<string>();
 
@@ -5617,6 +5630,22 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 	});
 
 	const handleSearchSubmit = useFn<FilesSearchInput_Props["onSubmit"]>((searchQuery) => {
+		const link = url_parse_file_link(searchQuery.trim());
+		if (link && "pendingNodeId" in link) {
+			navigate({
+				to: "/w/$organizationName/$workspaceName/files",
+				params: { organizationName, workspaceName },
+				search: { pendingNodeId: link.pendingNodeId },
+			}).catch((error) => console.error("[FilesSidebar.handleSearchSubmit] Failed to open draft", { error }));
+			return true;
+		}
+		if (link && "path" in link) {
+			navigate({
+				to: "/w/$organizationName/$workspaceName/files/$",
+				params: { organizationName, workspaceName, _splat: link.path },
+			}).catch((error) => console.error("[FilesSidebar.handleSearchSubmit] Failed to open path", { error }));
+			return true;
+		}
 		if (!treeItems || searchQuery.trim().length === 0) {
 			return true;
 		}
@@ -5631,7 +5660,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		);
 		// A query with no metadata chip needs only the tree, so it never waits.
 		if (liveMetadataFilters.length > 0) {
-			if (isSearchLoading || liveMetadataFilters.some((filter) => !searchMetadataNodeIds.has(filter.raw))) {
+			if (isSearchLoading || liveMetadataFilters.some((filter) => !searchMetadataTargetKeys.has(filter.raw))) {
 				return false;
 			}
 			// The metadata results were fetched inside the folder of the `file.path` chip the deferred
@@ -5648,11 +5677,17 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		const topMatchId = get_search_matches({
 			treeItems,
 			searchQuery,
-			metadataNodeIds: searchMetadataNodeIds,
+			metadataTargetKeys: searchMetadataTargetKeys,
 		}).topMatchId;
 		const topMatchItem = topMatchId ? treeItems.itemById.get(topMatchId) : undefined;
 		if (topMatchId && topMatchItem) {
 			onPrimaryAction(topMatchId, topMatchItem.kind);
+		} else if (liveFilters.length === 0 && searchQuery.trim().startsWith("/")) {
+			// Private paths are outside the saved tree. The path route resolves the owner's current view.
+			navigate({
+				to: "/w/$organizationName/$workspaceName/files/$",
+				params: { organizationName, workspaceName, _splat: searchQuery.trim() },
+			}).catch((error) => console.error("[FilesSidebar.handleSearchSubmit] Failed to open path", { error }));
 		}
 		return true;
 	});
@@ -7030,6 +7065,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			const virtualizerRef = React.createRef<Virtualizer<HTMLDivElement, HTMLDivElement>>();
 			const handleTreeStateChange = vi.fn();
 			const handleAction = vi.fn();
+
 			function TestTree(props: {
 				isSearchActive?: boolean;
 				selectedNodeId?: string;
@@ -7039,6 +7075,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				pendingActionNodeIds?: Set<string>;
 			}) {
 				const scrollElementRef = useRef<HTMLDivElement | null>(null);
+
 				const tree = useTree<files_TreeItem>({
 					rootItemId: files_ROOT_ID,
 					instanceBuilder: buildProxiedInstance,
@@ -7061,7 +7098,9 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 					isItemFolder: () => true,
 					scrollToItem: (item) => virtualizerRef.current?.scrollToIndex(item.getItemMeta().index),
 				});
+
 				useImperativeHandle(treeRef, tree);
+
 				return (
 					<ConvexProvider client={app_convex}>
 						<FilesClipboardProvider membershipId={"membership" as app_convex_Id<"organizations_workspaces_users">}>
@@ -7868,6 +7907,13 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			});
 		});
 
+		test("keeps an explicit private link separate from a saved id", () => {
+			expect(detect_search_query_mode("https://app.test/w/acme/main/files?pendingNodeId=k5701private")).toEqual({
+				mode: "private",
+				value: "k5701private",
+			});
+		});
+
 		test("unwraps a pasted path link and decodes its segments", () => {
 			expect(detect_search_query_mode("https://app.test/w/acme/main/files/Docs/api%20notes.md")).toEqual({
 				mode: "path",
@@ -7903,7 +7949,8 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			search_filter_matches_item({
 				filter: files_search_query_parse(query).filters[0]!,
 				item,
-				metadataNodeIds: new Map(),
+				targetKey: `saved:${item._id}`,
+				metadataTargetKeys: new Map(),
 			});
 
 		test("file.ext never matches a folder, even one with a dot in its name", () => {
@@ -7963,8 +8010,17 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			itemById: new Map<string, files_TreeItem>(list.map((item) => [item._id, item])),
 		} satisfies TreeItems;
 
-		const search = (searchQuery: string, metadataNodeIds = new Map<string, Set<string> | null>()) => {
-			const result = get_search_matches({ treeItems, searchQuery, metadataNodeIds });
+		const search = (searchQuery: string, metadataTargetKeys = new Map<string, Set<string> | null>()) => {
+			const result = get_search_matches({
+				treeItems,
+				searchQuery,
+				metadataTargetKeys: new Map(
+					[...metadataTargetKeys].map(([raw, ids]) => [
+						raw,
+						ids === null ? null : new Set([...ids].map((id) => `saved:${id}`)),
+					]),
+				),
+			});
 			return {
 				visible: [...result.visibleFileIds].sort(),
 				topMatchId: result.topMatchId,
@@ -8062,17 +8118,17 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 		test("a metadata filter matches the node ids its query returned, and negation keeps other files and folders", () => {
 			// `FilesSidebar` keys the results by the raw token, so a negated chip has its own entry.
-			const metadataNodeIds = new Map<string, Set<string>>([
+			const metadataTargetKeys = new Map<string, Set<string>>([
 				["status:open", new Set(["task"])],
 				["!status:open", new Set(["task"])],
 			]);
 
-			expect(search("status:open", metadataNodeIds)).toEqual({
+			expect(search("status:open", metadataTargetKeys)).toEqual({
 				visible: [files_ROOT_ID, "task", "tasks"].sort(),
 				topMatchId: "task",
 				matchCount: 1,
 			});
-			expect(search("!status:open", metadataNodeIds)).toEqual({
+			expect(search("!status:open", metadataTargetKeys)).toEqual({
 				visible: [files_ROOT_ID, "tasks", "archive", "old_task", "note", "backup"].sort(),
 				topMatchId: null,
 				matchCount: 5,
@@ -8123,8 +8179,8 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 					itemById: new Map(treeItems.itemById).set(archivedFolder._id, archivedFolder),
 				},
 				searchQuery,
-				metadataNodeIds: new Map([
-					[searchQuery, new Set(searchQuery === "status:open" ? [archivedFolder._id] : ["task"])],
+				metadataTargetKeys: new Map([
+					[searchQuery, new Set(searchQuery === "status:open" ? [`saved:${archivedFolder._id}`] : ["saved:task"])],
 				]),
 			});
 			expect(result.visibleFileIds.has(archivedFolder._id)).toBe(false);

@@ -189,7 +189,7 @@ async function seed_markdown_file(args: {
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
 			userId: args.userId,
-			nodeId,
+			target: { kind: "saved", id: nodeId },
 		},
 	);
 	if (batch._nay) {
@@ -234,7 +234,7 @@ async function seed_markdown_file(args: {
 		userId: args.userId,
 		nodeId,
 		operationBatchId: batch._yay.operationBatchId,
-		expectedUpdatedAt: null,
+		expectedRevision: null,
 		base: {
 			kind: "yjs",
 			baseYjsSequence: 0,

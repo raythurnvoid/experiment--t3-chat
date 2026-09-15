@@ -27,7 +27,13 @@ import { v_result } from "../server/convex-utils.ts";
 import { files_node_has_editable_text_content } from "../server/files.ts";
 import { server_request_json_parse_and_validate } from "../server/server-utils.ts";
 import { crypto_random_hex, crypto_sha256_hex, crypto_timing_safe_equal } from "../server/crypto-utils.ts";
-import { activities_db_finish, activities_db_get_by_source_id } from "./activities.ts";
+import {
+	activities_db_delete,
+	activities_db_finish,
+	activities_db_require_by_source_id,
+	activities_db_start,
+	activities_is_active,
+} from "./activities_db.ts";
 import { plugins_db_get_live_service_account } from "./plugins_service_accounts.ts";
 import type { plugins_decrypt_secret_for_runtime_Result } from "./plugins.ts";
 // Type-only import: public_api.ts value-imports this module, so a value import here would be a
@@ -51,13 +57,13 @@ export const experimental_reuseContext = true;
 
 // 10 minutes. The real execution ceiling is the Convex action timeout plus the runner request
 // timeout below; the TTL only needs to cover queue wait on top of that. Runs past it are
-// refused at start or failed by the expiry cron.
+// refused at start or timed out by shared Activity recovery.
 const RUN_TTL_MS = 10 * 60 * 1000;
 // 3 minutes.
 const RUNNER_REQUEST_TIMEOUT_MS = 3 * 60 * 1000;
 // 60 seconds: an invoke run is a synchronous request/response held open by a page, not queued
-// work. The run record doubles as the serialization lock, so a short TTL also bounds how long a
-// crashed invoke can keep an endpoint busy before the expiry cron frees it.
+// work. The Activity holds the serialization lock, so a short TTL also bounds how long a
+// crashed invoke can keep an endpoint busy before shared recovery frees it.
 const INVOKE_RUN_TTL_MS = 60 * 1000;
 // Mirror of the runner's LIMITS.bodyBytes. The exact wire body is measured before the fetch so
 // an oversized invoke fails with a labeled error instead of a generic runner 413.
@@ -70,10 +76,6 @@ const RUNNER_RESPONSE_BLOCK_BYTES = 64 * 1024;
 // One shared transactional quota across every plugin-consuming call, whatever the route.
 const MAX_API_CALLS = 20;
 const RUNNER_ERROR_MESSAGE_MAX_CHARS = 500;
-// 30 days.
-const RUN_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
-const RUN_EXPIRY_BATCH_SIZE = 50;
-const RUN_CLEANUP_BATCH_SIZE = 50;
 
 const UPLOAD_COMPLETED_EVENT_TYPE = "files.upload.completed" as const;
 const RUN_REQUESTED_EVENT_TYPE = "files.run.requested" as const;
@@ -330,13 +332,29 @@ export async function plugins_runtime_db_enqueue_upload_completed_runs(
 			pluginVersionId: candidate.version._id,
 			event: UPLOAD_COMPLETED_EVENT_TYPE,
 			eventId: composite_id("plugin", "upload_completed", args.eventId, String(candidate.installation._id)),
-			status: "queued",
 			acceptedCapabilities: candidate.installation.acceptedCapabilities,
-			expiresAt: now + RUN_TTL_MS,
 			apiCallCount: 0,
 			outputWriteCount: 0,
-			errorMessage: null,
-			updatedAt: now,
+		});
+		await activities_db_start(ctx, {
+			organizationId,
+			workspaceId,
+			userId: createdBy,
+			source: {
+				kind: "plugin_run",
+				id: runId,
+				installationId: candidate.installation._id,
+				pluginName: candidate.version.name,
+				event: UPLOAD_COMPLETED_EVENT_TYPE,
+			},
+			title: candidate.version.displayName,
+			targets: [],
+			visibility: "shared",
+			feedVisible: false,
+			status: "queued",
+			resultKind: "plugin_result",
+			deadlineAt: now + RUN_TTL_MS,
+			now,
 		});
 
 		const workId = await plugin_event_execution_workpool.enqueueAction(
@@ -348,7 +366,6 @@ export async function plugins_runtime_db_enqueue_upload_completed_runs(
 		);
 		await ctx.db.patch("plugins_event_runs", runId, {
 			workId,
-			updatedAt: now,
 		});
 
 		enqueued += 1;
@@ -395,11 +412,10 @@ export async function plugins_runtime_db_enqueue_manual_run(
 			)
 			.order("desc")
 			.take(5);
-		if (
-			recentPluginRuns.some(
-				(pluginRun) => (pluginRun.status === "queued" || pluginRun.status === "running") && pluginRun.expiresAt > now,
-			)
-		) {
+		const recentActivities = await Promise.all(
+			recentPluginRuns.map((pluginRun) => activities_db_require_by_source_id(ctx, pluginRun._id)),
+		);
+		if (recentActivities.some((activity) => activities_is_active(activity.status) && activity.deadlineAt > now)) {
 			return Result({ _nay: { message: "A run for this plugin is already pending for this file" } });
 		}
 	}
@@ -417,13 +433,29 @@ export async function plugins_runtime_db_enqueue_manual_run(
 		pluginVersionId: version._id,
 		event: RUN_REQUESTED_EVENT_TYPE,
 		eventId: composite_id("plugin", "run_requested", crypto.randomUUID(), String(args.installation._id)),
-		status: "queued",
 		acceptedCapabilities: args.installation.acceptedCapabilities,
-		expiresAt: now + RUN_TTL_MS,
 		apiCallCount: 0,
 		outputWriteCount: 0,
-		errorMessage: null,
-		updatedAt: now,
+	});
+	await activities_db_start(ctx, {
+		organizationId: args.installation.organizationId,
+		workspaceId: args.installation.workspaceId,
+		userId: args.installation.installedBy,
+		source: {
+			kind: "plugin_run",
+			id: runId,
+			installationId: args.installation._id,
+			pluginName: version.name,
+			event: RUN_REQUESTED_EVENT_TYPE,
+		},
+		title: version.displayName,
+		targets: [],
+		visibility: "shared",
+		feedVisible: false,
+		status: "queued",
+		resultKind: "plugin_result",
+		deadlineAt: now + RUN_TTL_MS,
+		now,
 	});
 
 	const workId = await plugin_event_execution_workpool.enqueueAction(
@@ -435,7 +467,6 @@ export async function plugins_runtime_db_enqueue_manual_run(
 	);
 	await ctx.db.patch("plugins_event_runs", runId, {
 		workId,
-		updatedAt: now,
 	});
 
 	return Result({ _yay: { runId } });
@@ -509,13 +540,29 @@ export const enqueue_account_deleted_runs = internalMutation({
 					pluginVersionId: version._id,
 					event: ACCOUNT_DELETED_EVENT_TYPE,
 					eventId: composite_id("plugin", "account_deleted", String(args.userId), String(installation._id)),
-					status: "queued",
 					acceptedCapabilities: installation.acceptedCapabilities,
-					expiresAt: now + RUN_TTL_MS,
 					apiCallCount: 0,
 					outputWriteCount: 0,
-					errorMessage: null,
-					updatedAt: now,
+				});
+				await activities_db_start(ctx, {
+					organizationId: membership.organizationId,
+					workspaceId: membership.workspaceId,
+					userId: args.userId,
+					source: {
+						kind: "plugin_run",
+						id: runId,
+						installationId: installation._id,
+						pluginName: version.name,
+						event: ACCOUNT_DELETED_EVENT_TYPE,
+					},
+					title: version.displayName,
+					targets: [],
+					visibility: "shared",
+					feedVisible: false,
+					status: "queued",
+					resultKind: "plugin_result",
+					deadlineAt: now + RUN_TTL_MS,
+					now,
 				});
 
 				const workId = await plugin_event_execution_workpool.enqueueAction(
@@ -525,7 +572,6 @@ export const enqueue_account_deleted_runs = internalMutation({
 				);
 				await ctx.db.patch("plugins_event_runs", runId, {
 					workId,
-					updatedAt: now,
 				});
 			}
 		}
@@ -554,12 +600,13 @@ export const start_event_run = internalMutation({
 		if (!pluginRun) {
 			return Result({ _nay: { message: "Not found" } });
 		}
-		if (pluginRun.status !== "queued") {
+		const activity = await activities_db_require_by_source_id(ctx, pluginRun._id);
+		if (activity.status !== "queued") {
 			// A "running" run here means a previous executor attempt crashed mid-run and the
 			// workpool retried; the retry must not restart the run.
-			return Result({ _nay: { message: pluginRun.status === "running" ? "Run was interrupted" : "Not found" } });
+			return Result({ _nay: { message: activity.status === "running" ? "Run was interrupted" : "Not found" } });
 		}
-		if (pluginRun.expiresAt <= Date.now()) {
+		if (activity.deadlineAt <= Date.now()) {
 			return Result({ _nay: { message: "Run expired" } });
 		}
 
@@ -598,11 +645,13 @@ export const start_event_run = internalMutation({
 
 		const now = Date.now();
 		await ctx.db.patch("plugins_event_runs", pluginRun._id, {
-			status: "running",
 			apiTokenHash: args.apiTokenHash,
 			// The API token stays valid for the life of the run; a shorter TTL would silently cut
 			// off API access mid-run for plugins that outlive it.
-			apiTokenExpiresAt: pluginRun.expiresAt,
+			apiTokenExpiresAt: activity.deadlineAt,
+		});
+		await ctx.db.patch("activities", activity._id, {
+			status: "running",
 			startedAt: now,
 			updatedAt: now,
 		});
@@ -638,8 +687,8 @@ type start_event_run_Result =
 const INVOKE_CALLER_KEY_REGEX = /^[\x21-\x7E]{1,128}$/u;
 
 /**
- * Claims the serialization lock and creates a running invoke run in one transaction. The run
- * record itself is the lock, so no separate lock table is needed. A second invoke with the same
+ * Claims the serialization lock and creates a running invoke run in one transaction. Its
+ * Activity holds the lock, so no separate lock table is needed. A second invoke with the same
  * live key finds this doc and answers busy. Two invokes racing on the same key conflict on
  * Convex's transaction retry. The loser re-runs and finds the winner's doc.
  *
@@ -734,24 +783,23 @@ export const start_invoke_run = internalMutation({
 			lockKey = "installation";
 		}
 
-		// Expired queued/running rows must not hold the lock forever: the expiry cron settles
-		// them, but a crash can leave one live until it fires, so judge liveness by expiresAt.
+		// The deadline releases an expired lock before the recovery cron settles its run.
 		const now = Date.now();
-		for (const status of ["queued", "running"] as const) {
-			const recentRuns = await ctx.db
-				.query("plugins_event_runs")
-				.withIndex("by_installation_serializationKey_status", (q) =>
-					q.eq("installationId", installation._id).eq("serializationKey", lockKey).eq("status", status),
+		for (const status of ["queued", "running", "stopping"] as const) {
+			const recentActivities = await ctx.db
+				.query("activities")
+				.withIndex("by_source_installation_serializationKey_status", (q) =>
+					q.eq("source.installationId", installation._id).eq("source.serializationKey", lockKey).eq("status", status),
 				)
 				.order("desc")
 				.take(5);
-			const liveRun = recentRuns.find((run) => run.expiresAt > now);
-			if (liveRun) {
+			const liveActivity = recentActivities.find((activity) => activity.deadlineAt > now);
+			if (liveActivity) {
 				return Result({
 					_nay: {
 						name: "busy",
 						message: "Another invoke is already running for this endpoint",
-						data: { retryAfterMs: Math.max(0, liveRun.expiresAt - now) },
+						data: { retryAfterMs: Math.max(0, liveActivity.deadlineAt - now) },
 					},
 				});
 			}
@@ -770,16 +818,32 @@ export const start_invoke_run = internalMutation({
 			eventId: composite_id("plugin", "ui_invoke", crypto.randomUUID(), String(installation._id)),
 			endpointId: endpoint.id,
 			serializationKey: lockKey,
-			status: "running",
 			apiTokenHash: args.apiTokenHash,
 			apiTokenExpiresAt: now + INVOKE_RUN_TTL_MS,
 			acceptedCapabilities: installation.acceptedCapabilities,
-			expiresAt: now + INVOKE_RUN_TTL_MS,
 			apiCallCount: 0,
 			outputWriteCount: 0,
-			errorMessage: null,
-			startedAt: now,
-			updatedAt: now,
+		});
+		await activities_db_start(ctx, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			userId: args.userId,
+			source: {
+				kind: "plugin_run",
+				id: runId,
+				installationId: installation._id,
+				pluginName: version.name,
+				event: UI_INVOKE_EVENT_TYPE,
+				serializationKey: lockKey,
+			},
+			title: version.displayName,
+			targets: [],
+			visibility: "shared",
+			feedVisible: false,
+			status: "running",
+			resultKind: "plugin_result",
+			deadlineAt: now + INVOKE_RUN_TTL_MS,
+			now,
 		});
 
 		const pluginRun = await ctx.db.get("plugins_event_runs", runId);
@@ -807,7 +871,7 @@ export type start_invoke_run_Result =
 		: never;
 
 /**
- * Terminalization side effects shared by finish_event_run and the expiry cron: any call the
+ * Terminalization side effects shared by finish_event_run and Activity recovery: any call the
  * plugin left started is settled failed, and any write stage it left unpublished is scheduled for
  * cleanup. Bounded by the 20-call invariant (calls and stages both descend from consumed
  * call slots).
@@ -845,14 +909,14 @@ async function db_terminalize_run_leftovers(ctx: MutationCtx, args: { runId: Id<
 export const finish_event_run = internalMutation({
 	args: {
 		runId: v.id("plugins_event_runs"),
-		// "failed" reports a hard failure the executor already classified (start refused, backend
+		// "failed" or "timed_out" reports a failure the executor already classified (start refused, backend
 		// missing, runner unreachable). "runner_response" hands over the raw runner outcome and the
 		// success/failure classification happens here, in the same transaction that reads the run's
 		// calls — the executor must not classify from a completion-state query that can go
 		// stale between read and write.
 		outcome: v.union(
 			v.object({
-				kind: v.literal("failed"),
+				kind: v.union(v.literal("failed"), v.literal("timed_out")),
 				errorMessage: v.string(),
 			}),
 			v.object({
@@ -871,7 +935,7 @@ export const finish_event_run = internalMutation({
 	},
 	returns: v_result({
 		_yay: v.object({
-			status: v.union(v.literal("succeeded"), v.literal("failed")),
+			status: doc(app_convex_schema, "activities").fields.status,
 			errorMessage: v.union(v.string(), v.null()),
 			canRelayResponse: v.boolean(),
 		}),
@@ -881,22 +945,30 @@ export const finish_event_run = internalMutation({
 		if (!pluginRun) {
 			return Result({ _nay: { message: "Not found" } });
 		}
+		const activity = await activities_db_require_by_source_id(ctx, pluginRun._id);
 		// A late response cannot replace history or repeat cleanup after another finish won.
-		if (pluginRun.status !== "queued" && pluginRun.status !== "running") {
+		if (!activities_is_active(activity.status)) {
 			return Result({
-				_yay: { status: pluginRun.status, errorMessage: pluginRun.errorMessage, canRelayResponse: false },
+				_yay: {
+					status: activity.status,
+					errorMessage: activity.errorMessage,
+					canRelayResponse: false,
+				},
 			});
 		}
 
 		const now = Date.now();
 		const outcome = args.outcome;
 		let succeeded = false;
+		let timedOut = false;
 		let errorMessage: string | null = null;
 		let canRelayResponse = false;
 
-		if (pluginRun.expiresAt <= now) {
+		if (activity.deadlineAt <= now) {
+			timedOut = true;
 			errorMessage = "Run expired";
-		} else if (outcome.kind === "failed") {
+		} else if (outcome.kind !== "runner_response") {
+			timedOut = outcome.kind === "timed_out";
 			errorMessage = outcome.errorMessage;
 		} else if (!outcome.runnerOk || outcome.bodyStatus !== "succeeded" || outcome.pluginStatus === undefined) {
 			errorMessage = outcome.runnerErrorMessage ?? `Plugin runner failed with status ${outcome.runnerHttpStatus}`;
@@ -928,10 +1000,9 @@ export const finish_event_run = internalMutation({
 			console.error("Plugin event run failed", { runId: pluginRun._id, errorMessage });
 		}
 
+		const status = succeeded ? "succeeded" : timedOut ? "timed_out" : "failed";
 		await Promise.all([
 			ctx.db.patch("plugins_event_runs", pluginRun._id, {
-				status: succeeded ? "succeeded" : "failed",
-				errorMessage,
 				// Terminal runs must not authenticate: explicit undefined unsets both token fields.
 				apiTokenHash: undefined,
 				apiTokenExpiresAt: undefined,
@@ -944,20 +1015,19 @@ export const finish_event_run = internalMutation({
 							runnerOutputTruncated: outcome.runnerOutputTruncated,
 						}
 					: {}),
-				finishedAt: now,
-				updatedAt: now,
 			}),
 			activities_db_finish(ctx, {
 				sourceId: pluginRun._id,
-				status: succeeded ? "succeeded" : "failed",
+				status,
 				errorMessage,
+				errorCode: timedOut ? (activity.deadlineAt <= now ? "run_expired" : "runner_timeout") : undefined,
 				now,
 			}),
 			db_terminalize_run_leftovers(ctx, { runId: pluginRun._id, now }),
 		]);
 
 		return Result({
-			_yay: { status: succeeded ? ("succeeded" as const) : ("failed" as const), errorMessage, canRelayResponse },
+			_yay: { status, errorMessage, canRelayResponse },
 		});
 	},
 });
@@ -968,141 +1038,54 @@ export type finish_event_run_Result =
 		: never;
 
 /**
- * Hourly cron: marks expired queued/running runs as failed. A run normally settles through
- * finish_event_run, but that requires its executor to survive — a crash, a deploy, or a workpool
- * item that never fires leaves the run live forever. Expired runs can never execute anyway
- * (start_event_run refuses them); this settles what they leave behind.
+ * Shared Activity recovery calls this only for an expired active run.
  */
-export const fail_expired_event_runs = internalMutation({
-	args: {
-		_test_now: v.optional(v.number()),
-		batchSize: v.optional(v.number()),
-		_test_disableReschedule: v.optional(v.boolean()),
-	},
-	returns: v.object({
-		failedCount: v.number(),
-		done: v.boolean(),
-	}),
-	handler: async (ctx, args) => {
-		const now = args._test_now ?? Date.now();
-		const batchSize = Math.max(1, Math.min(args.batchSize ?? RUN_EXPIRY_BATCH_SIZE, RUN_EXPIRY_BATCH_SIZE));
-		let failedCount = 0;
-
-		// Both live statuses can expire: "queued" when the workpool item never fired, "running"
-		// when the executor died mid-run.
-		for (const status of ["queued", "running"] as const) {
-			if (failedCount >= batchSize) {
-				break;
-			}
-
-			const expiredPluginRuns = await ctx.db
-				.query("plugins_event_runs")
-				.withIndex("by_status_expiresAt", (q) => q.eq("status", status).lte("expiresAt", now))
-				.take(batchSize - failedCount);
-			await Promise.all(
-				expiredPluginRuns.flatMap((pluginRun) => [
-					// start_event_run would refuse the queued work anyway; cancelling also frees the
-					// workpool slot.
-					...(pluginRun.workId ? [plugin_event_execution_workpool.cancel(ctx, pluginRun.workId)] : []),
-					ctx.db.patch("plugins_event_runs", pluginRun._id, {
-						status: "failed",
-						errorMessage: "Run expired",
-						// Terminal runs must not authenticate: explicit undefined unsets both token fields.
-						apiTokenHash: undefined,
-						apiTokenExpiresAt: undefined,
-						finishedAt: now,
-						updatedAt: now,
-					}),
-					activities_db_finish(ctx, {
-						sourceId: pluginRun._id,
-						status: "failed",
-						errorMessage: "Run expired",
-						now,
-					}),
-					db_terminalize_run_leftovers(ctx, { runId: pluginRun._id, now }),
-				]),
-			);
-
-			failedCount += expiredPluginRuns.length;
-		}
-
-		const done = failedCount < batchSize;
-		if (!done && !args._test_disableReschedule) {
-			// A full batch means more may be waiting; keep draining instead of waiting an hour.
-			await ctx.scheduler.runAfter(0, internal.plugins_runtime.fail_expired_event_runs, {
-				batchSize: args.batchSize,
-				_test_now: args._test_now,
-			});
-		}
-
-		return { failedCount, done };
-	},
-});
+export async function plugins_runtime_db_timeout_run(
+	ctx: MutationCtx,
+	args: { runId: Id<"plugins_event_runs">; now: number },
+) {
+	const pluginRun = await ctx.db.get("plugins_event_runs", args.runId);
+	if (!pluginRun) {
+		const errorMessage = "activity.source.id points to a missing plugins_event_runs doc";
+		console.error(errorMessage, { runId: args.runId });
+		throw should_never_happen(errorMessage, { runId: args.runId });
+	}
+	// Fence API writes and cancel queued work before recording the terminal outcome.
+	await ctx.db.patch("plugins_event_runs", pluginRun._id, {
+		apiTokenHash: undefined,
+		apiTokenExpiresAt: undefined,
+	});
+	if (pluginRun.workId) await plugin_event_execution_workpool.cancel(ctx, pluginRun.workId);
+	await db_terminalize_run_leftovers(ctx, args);
+	await activities_db_finish(ctx, {
+		sourceId: pluginRun._id,
+		status: "timed_out",
+		errorMessage: "Run expired",
+		errorCode: "run_expired",
+		now: args.now,
+	});
+}
 
 /**
- * Daily cron: deletes terminal (succeeded/failed) runs and their call telemetry docs past
- * the 30-day retention window. Output files are user data and are kept. Only terminal runs are
- * eligible, so this relies on fail_expired_event_runs to settle stuck runs — without it, a
- * crashed run would stay live forever and escape retention.
+ * Shared Activity retention has already checked that this history expired.
  */
-export const cleanup_old_event_runs = internalMutation({
-	args: {
-		_test_now: v.optional(v.number()),
-		batchSize: v.optional(v.number()),
-		_test_disableReschedule: v.optional(v.boolean()),
-	},
-	returns: v.object({
-		deletedCount: v.number(),
-		done: v.boolean(),
-	}),
-	handler: async (ctx, args) => {
-		const now = args._test_now ?? Date.now();
-		// expiresAt is enqueue time + RUN_TTL_MS, which makes it a fine age proxy for retention.
-		const cutoff = now - RUN_RETENTION_MS;
-		const batchSize = Math.max(1, Math.min(args.batchSize ?? RUN_CLEANUP_BATCH_SIZE, RUN_CLEANUP_BATCH_SIZE));
-		let deletedCount = 0;
-
-		for (const status of ["succeeded", "failed"] as const) {
-			if (deletedCount >= batchSize) {
-				break;
-			}
-
-			const oldPluginRuns = await ctx.db
-				.query("plugins_event_runs")
-				.withIndex("by_status_expiresAt", (q) => q.eq("status", status).lte("expiresAt", cutoff))
-				.take(batchSize - deletedCount);
-			await Promise.all(
-				oldPluginRuns.map(async (pluginRun) => {
-					// take(MAX_API_CALLS) is exact, not a truncation: consume_run_api_call refuses
-					// over-quota claims before inserting, so a run can never have more call docs.
-					const calls = await ctx.db
-						.query("plugins_event_run_calls")
-						.withIndex("by_run_sequence", (q) => q.eq("runId", pluginRun._id))
-						.take(MAX_API_CALLS);
-					await Promise.all(calls.map((call) => ctx.db.delete("plugins_event_run_calls", call._id)));
-					// The run owns its activity's lifecycle, so retention deletes them together.
-					const activity = await activities_db_get_by_source_id(ctx, pluginRun._id);
-					if (activity) {
-						await ctx.db.delete("activities", activity._id);
-					}
-					await ctx.db.delete("plugins_event_runs", pluginRun._id);
-				}),
-			);
-
-			deletedCount += oldPluginRuns.length;
-		}
-
-		const done = deletedCount < batchSize;
-		if (!done && !args._test_disableReschedule) {
-			await ctx.scheduler.runAfter(0, internal.plugins_runtime.cleanup_old_event_runs, {
-				batchSize: args.batchSize,
-				_test_now: args._test_now,
-			});
-		}
-
-		return { deletedCount, done };
-	},
-});
+export async function plugins_runtime_db_delete_run_history(
+	ctx: MutationCtx,
+	args: { runId: Id<"plugins_event_runs">; activityId: Id<"activities"> },
+) {
+	// Every call consumes one of twenty slots, so this reads the whole call ledger.
+	const calls = await ctx.db
+		.query("plugins_event_run_calls")
+		.withIndex("by_run_sequence", (q) => q.eq("runId", args.runId))
+		.take(MAX_API_CALLS);
+	await Promise.all(calls.map((call) => ctx.db.delete("plugins_event_run_calls", call._id)));
+	const activityDeletion = await activities_db_delete(ctx, args.activityId);
+	const deletedCount = calls.length + activityDeletion.deletedCount;
+	// Keep the producer until its Activity and the last viewer-state page can be deleted together.
+	if (!activityDeletion.done) return { done: false, deletedCount };
+	await ctx.db.delete("plugins_event_runs", args.runId);
+	return { done: true, deletedCount: deletedCount + 1 };
+}
 
 const runner_count_validator = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 const runner_header_count_validator = z
@@ -1542,8 +1525,8 @@ export const execute_upload_completed_event_run = internalAction({
 			});
 			return null;
 		} catch (error) {
-			// A network error — or our own timeout aborting the fetch — still settles the run as
-			// failed. Only a real crash of this action leaves the run live for the workpool retry
+			// A network error or our timeout still settles the run. Only a crash of this action
+			// leaves the run live for the workpool retry
 			// and, failing that, the expiry cron.
 			// The deadline uses TimeoutError; a fetch abort may surface as AbortError.
 			const timedOut = error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError");
@@ -1554,7 +1537,7 @@ export const execute_upload_completed_event_run = internalAction({
 			await ctx.runMutation(internal.plugins_runtime.finish_event_run, {
 				runId: args.runId,
 				outcome: {
-					kind: "failed",
+					kind: timedOut ? "timed_out" : "failed",
 					errorMessage: timedOut ? "Plugin runner request timed out" : "Plugin runner request failed",
 				},
 			});
@@ -1592,12 +1575,11 @@ export const consume_run_api_call = internalMutation({
 	handler: async (ctx, args) => {
 		const now = Date.now();
 		const pluginRun = await ctx.db.get("plugins_event_runs", args.runId);
-		if (
-			!pluginRun ||
-			pluginRun.status !== "running" ||
-			!pluginRun.apiTokenExpiresAt ||
-			pluginRun.apiTokenExpiresAt <= now
-		) {
+		if (!pluginRun || !pluginRun.apiTokenExpiresAt || pluginRun.apiTokenExpiresAt <= now) {
+			return Result({ _nay: { message: "Unauthenticated" } });
+		}
+		const activity = await activities_db_require_by_source_id(ctx, pluginRun._id);
+		if (activity.status !== "running" || activity.deadlineAt <= now) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 
@@ -1638,8 +1620,8 @@ export const consume_run_api_call = internalMutation({
 		});
 		await ctx.db.patch("plugins_event_runs", pluginRun._id, {
 			apiCallCount: sequence,
-			updatedAt: now,
 		});
+		await ctx.db.patch("activities", activity._id, { updatedAt: now });
 
 		return Result({ _yay: { callId, sequence } });
 	},

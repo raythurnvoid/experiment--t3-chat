@@ -13,12 +13,15 @@ description: Persisted per-user, per-organization, and per-workspace quota count
 	- `userId`, `organizationId`, and `workspaceId` plus `quotaName: "active_api_credentials"` for a user's active API keys in one workspace
 	- `organizationId` plus `workspaceId` plus `quotaName: "public_api_upload_bytes"` for the workspace's declared upload bytes through the public API
 	- `organizationId` plus `workspaceId` plus `quotaName: "plugin_service_storage_bytes"` for the workspace's plugin service upload storage
+	- `userId`, `organizationId`, and `workspaceId` for `files_private_user_bytes` and `files_private_nodes`
+	- `organizationId` plus `workspaceId` for `files_private_workspace_bytes`
 - The product rule is still:
 	- each user gets `personal` plus at most **2** extra organizations (**3** total organizations)
 	- each organization gets `home` plus at most **5** extra workspaces (**6** total workspaces)
 	- each user can have at most **20** active API keys in one workspace
 	- each workspace gets a **50 GB** budget of declared upload bytes through the public API; the counter only grows (deleting files does not give bytes back)
 	- each workspace gets **10 GiB** of plugin service storage; this counter only grows, exactly like `public_api_upload_bytes` — deleting a service-uploaded file gives nothing back (see `../public-api/SKILL.md#service-upload-routes`)
+	- private prepared content has **1 GiB** per user/workspace and **5 GiB** per workspace; each user/workspace also has **10,000** private new-node slots. These are live capacity counters. Saving or confirmed deletion returns capacity.
 - Default entities do **not** consume quota usage:
 	- default organization `personal`
 	- default workspace `home`
@@ -34,7 +37,7 @@ description: Persisted per-user, per-organization, and per-workspace quota count
 	- recomputes `usedCount` from live docs
 	- substitutes code `maxCount` defaults when a quota doc is missing
 - Missing required quota docs in write flows should fail intentionally via `should_never_happen(...)` so bootstrap bugs stay visible.
-- Exception: `public_api_upload_bytes` and `plugin_service_storage_bytes` have no bootstrap owner, so the first consumer seeds them with `quotas_db_ensure` — the first `/api/v1/files/upload-urls` mint inside `public_api.create_file_upload_targets`, and the first service upload target inside `public_api_service_uploads.create_upload_target`. A missing doc means nothing was consumed yet, and the public `quotas.get` arm returns the doc or `null` instead of failing.
+- Exception: upload and private storage counters have no bootstrap owner, so the first consumer seeds them with `quotas_db_ensure`. A missing doc means nothing was consumed yet, and the public `quotas.get` arm returns the doc or `null` instead of failing. Private storage uses `files_private_storage_db_reserve`; the existing public upload and service upload doors still seed their own counters.
 - Public quota queries may return `null` for stale identities or unauthorized quota scopes. Missing quota docs for authorized scopes fail intentionally.
 
 # Schema
@@ -54,6 +57,7 @@ description: Persisted per-user, per-organization, and per-workspace quota count
 	- `quotas.by_organization_quotaName`
 	- `quotas.by_workspace_quotaName`
 	- `quotas.by_user_organization_workspace_quotaName`
+- Cleanup indexes add `retiredAt` after the user, organization, or workspace. Cleanup selects the exact absent value so retained counters cannot block later batches. Retired private quotas keep their original scope and quota IDs.
 - Organization quota read authorization checks active membership against the requested `organizationId` with `organizations_workspaces_users.by_active_user_organization_workspace`, then reads the quota doc by `organizationId` and `quotaName`.
 - Stable definitions live in `packages/app/shared/quotas.ts`:
 	- `quotas.extra_organizations`
@@ -61,6 +65,9 @@ description: Persisted per-user, per-organization, and per-workspace quota count
 	- `quotas.active_api_credentials`
 	- `quotas.public_api_upload_bytes`
 	- `quotas.plugin_service_storage_bytes`
+	- `quotas.files_private_user_bytes`
+	- `quotas.files_private_workspace_bytes`
+	- `quotas.files_private_nodes`
 
 # Runtime write paths
 
@@ -104,14 +111,26 @@ description: Persisted per-user, per-organization, and per-workspace quota count
 - `chargedBytes` is the largest stored object confirmed across a logical target's accepted attempts. The quota charges only a positive increase. `actualBytes` is the winning file's exact size, or null before publication. Late superseded or cancelled attempts can raise `chargedBytes` after a newer file commits, but cannot change `actualBytes` or emit another file-save event. For A=12 MB and newer B=5 MB, the quota is charged for 12 MB and finalize reports 5 MB in either event order. Nothing refunds bytes.
 - `plugin_service_storage_attempts` receipts retain each old asset's target after the asset is deleted. Target and receipt tombstones remain until workspace purge. Preserve existing quota totals when backfilling `chargedBytes`; older target retirement may have removed charged target docs, so surviving docs are not the complete historical total. A target whose uploads never reached R2 has charged nothing.
 
+## Private prepared storage
+
+- `files_private_storage_reservations` holds one receipt per physical resource: R2 asset/key, pending state family, temporary text input, trusted update stage, or private node. Pages inherit their state's hold. Count stored payload bytes once per resource; separate state encodings and copied assets count separately. Derived search and metadata docs keep their own existing bounds.
+- Reserve before storing payload or starting a remote write. An empty allocation that fails admission must leave no resource behind. State growth reserves the new total in the same mutation as new pages. Both byte counters must fit before either changes. A repeated reservation does not charge again. New positive capacity refuses with `storage_full` while over cap; reading, saving and discarding retained work stay available.
+- Reserve and release resources in sequence within one mutation. Concurrent helper calls in that mutation could both read the same old counter. Separate Convex mutations use normal transaction conflict checks.
+- Reviewed Save batches may use 20 MiB of temporary publication space per workspace when a normal byte cap is full. The batch names either exact output assets or one trusted Yjs update; only those resources and its output states qualify. This covers saved and private targets. The helper checks the proposal revision and private generation again. All bytes still increase the normal counters. A bounded index read includes at most 128 held publication resources; a full allowance waits for physical cleanup. Public edit batches cannot mark themselves as publication batches.
+- Ownership changes from capture to proposal, or active to retired state, keep the hold. Saving releases only resources handed to saved ownership. Residual or retired state pages stay charged until their last page is deleted.
+- `files_private_storage_db_release` records settlement and decrements the counters together. Database-only cleanup calls it only after the exact resource family is deleted. R2 cleanup calls it only after the current deletion generation is confirmed at or after the last possible late PUT. Failed, stale, or early deletes release nothing. The receipt survives the asset and the deletion job, so replay cannot charge or release it twice.
+- Account and tenant cleanup use `quotas_db_delete`. A private quota with held receipts gets `retiredAt`; the normal cleanup index then skips it. Final settlement deletes a retired counter only when no held resources remain, including zero-byte resources. Cleanup uses the retained quota IDs after the user or workspace is gone.
+- Account and workspace purge remove private proposals, pages, inputs, batches, and private identities before releasing their DB storage holds. Children go before private parents. Failed Save assets go to exact-key deletion jobs with their last upload deadline. Their bytes remain held until remote deletion settles. Published files are outside user-private cleanup.
+- A recovered account or preserved reset workspace may use the same scope again. `quotas_db_ensure` reuses and reactivates its retained quota, including bytes still awaiting deletion. It never starts a second zero counter while the old hold remains.
+- Byte counts cover payloads, not database encoding or index overhead. Private storage limits are separate from usage billing and the monotonic public/service upload quotas.
+
 ## Delete flows
 
 - `delete_workspace` reads the organization extra-workspace quota and decrements `usedCount` directly when deleting a non-default workspace.
 - The immediate `delete_workspace` phase deletes active API credential quota docs but keeps `public_api_upload_bytes` and `plugin_service_storage_bytes` through retention. The queued content purge deletes those two budgets only after service targets, assets, and files are gone, so late accepted R2 events can still settle first. Internal workspace structural deletion removes any remaining workspace quota docs. Admin data-only reset keeps the current user's active API credential quota doc and sets its `usedCount` to `0`, while the content purge removes the two upload budgets so their next use starts fresh.
 - `delete_organization` reads the owner from `organizations.ownerUserId`, decrements that owner's extra-organization quota directly, and defers deleting the organization quota doc until `data_deletion.process_organization_deletion_request`.
 - Account deletion uses the same direct owner quota decrement when the backend queues a still-owned organization for deletion instead of the frontend transferring it first.
-- `data_deletion.process_organization_deletion_request` deletes all quota docs for the organization id.
-- `data_deletion.process_user_deletion_request` deletes all quota docs for the user id.
+- `data_deletion.process_organization_deletion_request` and `data_deletion.process_user_deletion_request` delete their scoped quota docs, except private counters retained for outstanding cleanup as described above.
 - Organization deletion requests are expected to reference an existing organization and delete quota docs by the request organization id before deleting the organization doc. If a user-scope queued request finds the user shell doc already gone, treat that request as stale and still delete the matching user quota docs by user id.
 
 ## Ownership transfer
@@ -129,6 +148,7 @@ description: Persisted per-user, per-organization, and per-workspace quota count
 - Use `api.quotas.get({ quotaName: "active_api_credentials", membershipId })` for the current user's active API credential quota in that membership's workspace.
 - Use `api.quotas.get({ quotaName: "public_api_upload_bytes", membershipId })` for that membership workspace's declared upload-byte budget; it returns `null` until the first mint seeds the doc.
 - Use `api.quotas.get({ quotaName: "plugin_service_storage_bytes", membershipId })` for that membership workspace's plugin service storage; it returns `null` until the first upload target seeds the doc.
+- The three `files_private_*` quotas also take `membershipId` and return `null` before first use. User quotas always resolve the authenticated user; workspace bytes require the caller's active membership. Passing another user's membership cannot reveal that user's counter.
 - Returned objects are the persisted quota docs. Frontend callers derive remaining capacity from `usedCount` and `maxCount`, and use `packages/app/shared/quotas.ts` for quota-specific display copy.
 
 # Tests
@@ -160,5 +180,5 @@ Ordinary chat traffic moves no `quotas` counter at all. Nothing in the plugin do
 # Guardrails
 
 - Keep rate limiting separate; rate-limiter names, config, and copy still use rate-limit terminology.
-- Do not add migrations for this quota shape while the product assumes an empty database.
+- Apply the approved data policy to schema and quota changes. Private storage migration counts every retained physical resource, including retired work and unresolved deletion jobs, before enabling new admission. Existing over-cap work must remain readable, acceptable, and discardable.
 - Cross-check tenancy/product rules with `../organizations-tenancy/SKILL.md`.

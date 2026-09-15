@@ -569,6 +569,76 @@ Do **not** read either result as "the roster is protected". It is not. `presence
 
 `users_anagraphics.email` is a required field on the returned doc: a real address for signed-in (Clerk) users, `""` for anonymous ones — and `""` for anyone the caller is not, which is exactly what the fix does. When reproducing an email leak, redact in the report — log `{ present, length, hasAt }`, never the value. To chain many ids for a blast-radius count, use `Promise.all` over the presence ids with the fire-and-forget pattern (stays under the 5000ms CLI budget).
 
+## Call Any Convex Door As The Signed-In User, From Inside The Page
+
+The sibling recipe above posts from the relay's Node `fetch`, which carries no session on purpose.
+When you need the **opposite** — the signed-in owner's own identity, with no `convex run --identity`
+juggling and no admin key — post from the page instead. The browser already holds a Clerk session, so
+one `getToken({ template: "convex" })` gives a bearer the deployment accepts.
+
+Install it once per session and park it on `state`:
+
+```js
+// runner file, loaded with -f
+const p = state.page;
+state.convexUrl = await p.evaluate(async () => (await import("/src/lib/app-convex-client.ts")).app_convex_deployment_url);
+state.qaCall = async (kind, path, args) => {
+	return await p.evaluate(
+		async ([kind, path, args, url]) => {
+			const token = await window.Clerk.session.getToken({ template: "convex" });
+			const res = await fetch(url + "/api/" + kind, {
+				method: "POST",
+				headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
+				body: JSON.stringify({ path, args, format: "json" }),
+			});
+			return { status: res.status, body: await res.json() };
+		},
+		[kind, path, args, state.convexUrl],
+	);
+};
+```
+
+Then `await state.qaCall("query", "organizations:get_membership_by_organization_workspace_name", {
+organizationName: "personal", workspaceName: "home" })` returns the membership doc, and its `_id` is
+the `membershipId` nearly every Files door wants. `kind` is `"query"` or `"mutation"`.
+
+Read the door's real validator before guessing its args. HTTP `200` with
+`body.status === "error"` and an `ArgumentValidationError` prints the whole `v.object({...})`, which
+is faster than reading the source: that is how `files_visible:list` turned out to need
+`membershipId`, `folderPath`, `mode` and `numItems`, not the `organizationName`/`parentPath` pair
+that reads naturally. A door that answers `{ status: "success", value: { _nay: ... } }` executed fine
+and returned a Result refusal — that is the app's answer, not a transport failure.
+
+Do **not** build the URL from `import.meta.env` inside the runner. The CLI parses the whole runner
+file with `node:vm` before any of it reaches the page, so the token `import.meta` is a `SyntaxError`
+even when it sits inside a `page.evaluate` callback that would have been legal in the browser. The
+page-module read above avoids it; a value pasted from `packages/app/.env.local` also works but goes
+stale.
+
+### Break-on-purpose in one probe
+
+This caller makes the once-per-session "the browser runs my working tree" proof cheap, because a
+refusal message is a string you can watch change. Build the smallest fixture the refusal needs, call
+the door, and read `_nay.message`:
+
+```js
+// /qa-<run> and /qa-<run>/child, then move the parent into its own child
+await state.qaCall("mutation", "files_transfer:start", {
+	membershipId: state.qaMembershipId,
+	requestId: "probe-" + Date.now(),
+	kind: "move",
+	sourceIds: [parentId],
+	targetParentId: childId,
+});
+// -> { _nay: { message: "A folder cannot be transferred inside itself" } }
+```
+
+Append a marker to that literal in `convex/files_transfer.ts`, wait for the watcher, and the same
+probe returns the marked string; remove it and the original comes back. Poll for each flip rather
+than sleeping a fixed time — `while <probe prints marker>; do sleep 5; done` — because the watcher
+push is not instant and a single re-run right after the edit usually still shows the old message.
+Verified 2026-09-14.
+
 ## Prove A Cross-Origin Iframe Permissions-Policy Grant Without The Host App
 
 You do not need the real host to test what an `<iframe>`'s `allow` attribute grants.

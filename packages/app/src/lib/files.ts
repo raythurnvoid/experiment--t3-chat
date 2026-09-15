@@ -3,7 +3,9 @@ import {
 	files_find_file_stem_end_index,
 	files_get_normalized_node_path_segments,
 	files_MAX_YJS_WIRE_BYTES,
+	files_pending_update_has_content,
 	files_u8_to_array_buffer,
+	type files_PendingTarget,
 	type files_TreeItem,
 	type files_VisibleTreeNode,
 	type files_YjsRootKind,
@@ -440,7 +442,7 @@ export function files_yjs_reconcile_branch_with_local_text(args: {
  */
 export async function files_fetch_file_pending_update_yjs_state(args: {
 	membershipId: app_convex_Id<"organizations_workspaces_users">;
-	nodeId: app_convex_Id<"files_nodes">;
+	target: files_PendingTarget;
 	stateId: app_convex_Id<"files_pending_update_yjs_states">;
 }) {
 	const pages: ArrayBuffer[] = [];
@@ -450,7 +452,7 @@ export async function files_fetch_file_pending_update_yjs_state(args: {
 	while (pageIndex < pageCount) {
 		const page = await app_convex.query(app_convex_api.files_pending_updates.get_file_pending_update_state_page, {
 			membershipId: args.membershipId,
-			nodeId: args.nodeId,
+			target: args.target,
 			stateId: args.stateId,
 			pageIndex,
 		});
@@ -480,58 +482,129 @@ export async function files_fetch_file_pending_update_yjs_state(args: {
 }
 
 /**
+ * Load private text from its owned branch, then check that the same proposal is still readable.
+ */
+export async function files_fetch_private_file_pending_text(args: {
+	membershipId: app_convex_Id<"organizations_workspaces_users">;
+	target: Extract<files_PendingTarget, { kind: "private" }>;
+}) {
+	const pendingUpdate = await app_convex.query(app_convex_api.files_pending_updates.get_file_pending_update, args);
+	if (
+		!files_pending_update_has_content(pendingUpdate) ||
+		pendingUpdate.preparation ||
+		pendingUpdate.createIntent?.kind !== "text"
+	) {
+		return Result({ _nay: { message: "This file is not ready to edit." } });
+	}
+	const state = await files_fetch_file_pending_update_yjs_state({
+		...args,
+		stateId: pendingUpdate.content.unstagedStateId,
+	});
+	if (state._nay) return state;
+	const yjsDoc = files_yjs_doc_create_from_array_buffer_update(state._yay);
+	const text = files_yjs_doc_get_text({ yjsDoc, rootKind: pendingUpdate.createIntent.textKind });
+	yjsDoc.destroy();
+	if (text._nay) return text;
+	const current = await app_convex.query(app_convex_api.files_pending_updates.get_file_pending_update, args);
+	if (current?._id !== pendingUpdate._id || current.revision !== pendingUpdate.revision) {
+		return Result({ _nay: { message: "The proposed changes changed while loading. Reopen the file and try again." } });
+	}
+	return Result({ _yay: { text: text._yay, rootKind: pendingUpdate.createIntent.textKind, pendingUpdate } });
+}
+
+/**
  * The client upsert flow: one operation batch, one bounded text per staging call, then the
  * finishing action that carries only ids. A staging refusal already retired the batch
  * server-side, so refusals return directly.
  */
 export async function files_upsert_file_pending_update(args: {
 	membershipId: app_convex_Id<"organizations_workspaces_users">;
-	nodeId: app_convex_Id<"files_nodes">;
+	target: files_PendingTarget;
 	pendingUpdateId?: app_convex_Id<"files_pending_updates">;
 	/**
-	 * The `updatedAt` of the proposal version the user reviewed. The server refuses when the
+	 * The revision of the proposal the user reviewed. The server refuses when the
 	 * proposal was revised after that read; pass it from review flows (the sidebar Accept).
 	 */
-	reviewedUpdatedAt?: number;
+	reviewedRevision?: number;
 	stagedText?: string;
 	unstagedText: string;
 }) {
-	const batch = await app_convex.mutation(app_convex_api.files_pending_updates.create_file_pending_update_operation_batch, {
-		membershipId: args.membershipId,
-		nodeId: args.nodeId,
-	});
+	const batch = await app_convex.mutation(
+		app_convex_api.files_pending_updates.create_file_pending_update_operation_batch,
+		{
+			membershipId: args.membershipId,
+			target: args.target,
+		},
+	);
 	if (batch._nay) {
 		return batch;
 	}
 	const operationBatchId = batch._yay.operationBatchId;
 
 	if (args.stagedText !== undefined) {
-		const staged = await app_convex.mutation(app_convex_api.files_pending_updates.stage_file_pending_update_text_input, {
-			membershipId: args.membershipId,
-			operationBatchId,
-			role: "staged",
-			text: args.stagedText,
-		});
+		const staged = await app_convex.mutation(
+			app_convex_api.files_pending_updates.stage_file_pending_update_text_input,
+			{
+				membershipId: args.membershipId,
+				operationBatchId,
+				role: "staged",
+				text: args.stagedText,
+			},
+		);
 		if (staged._nay) {
 			return staged;
 		}
 	}
-	const unstaged = await app_convex.mutation(app_convex_api.files_pending_updates.stage_file_pending_update_text_input, {
-		membershipId: args.membershipId,
-		operationBatchId,
-		role: "unstaged",
-		text: args.unstagedText,
-	});
+	const unstaged = await app_convex.mutation(
+		app_convex_api.files_pending_updates.stage_file_pending_update_text_input,
+		{
+			membershipId: args.membershipId,
+			operationBatchId,
+			role: "unstaged",
+			text: args.unstagedText,
+		},
+	);
 	if (unstaged._nay) {
 		return unstaged;
 	}
 
 	return await app_convex.action(app_convex_api.files_pending_updates.upsert_file_pending_update, {
 		membershipId: args.membershipId,
-		nodeId: args.nodeId,
+		target: args.target,
 		operationBatchId,
 		...(args.pendingUpdateId ? { pendingUpdateId: args.pendingUpdateId } : {}),
-		...(args.reviewedUpdatedAt !== undefined ? { reviewedUpdatedAt: args.reviewedUpdatedAt } : {}),
+		...(args.reviewedRevision !== undefined ? { reviewedRevision: args.reviewedRevision } : {}),
+	});
+}
+
+/**
+ * Ordinary private editors accept their whole text. Diff keeps its separate staged branch.
+ */
+export async function files_save_private_file_pending_text(args: {
+	membershipId: app_convex_Id<"organizations_workspaces_users">;
+	target: Extract<files_PendingTarget, { kind: "private" }>;
+	pendingUpdateId: app_convex_Id<"files_pending_updates">;
+	reviewedRevision: number;
+	text: string;
+}) {
+	const upserted = await files_upsert_file_pending_update({
+		membershipId: args.membershipId,
+		target: args.target,
+		pendingUpdateId: args.pendingUpdateId,
+		reviewedRevision: args.reviewedRevision,
+		stagedText: args.text,
+		unstagedText: args.text,
+	});
+	if (upserted._nay) return upserted;
+	const pendingUpdate = upserted._yay.pendingUpdate;
+	if (!files_pending_update_has_content(pendingUpdate)) {
+		return Result({ _nay: { message: "The proposed changes changed. Reopen the file and try again." } });
+	}
+	return await app_convex.action(app_convex_api.files_pending_updates.save_file_pending_update, {
+		membershipId: args.membershipId,
+		target: args.target,
+		pendingUpdateId: pendingUpdate._id,
+		reviewedRevision: pendingUpdate.revision,
 	});
 }
 
@@ -542,18 +615,21 @@ export async function files_upsert_file_pending_update(args: {
  */
 export async function files_persist_file_pending_update_rebased_state(args: {
 	membershipId: app_convex_Id<"organizations_workspaces_users">;
-	nodeId: app_convex_Id<"files_nodes">;
+	target: files_PendingTarget;
 	pendingUpdateId?: app_convex_Id<"files_pending_updates">;
-	reviewedUpdatedAt?: number;
+	reviewedRevision?: number;
 	baseYjsSequence: number;
 	baseYjsUpdate: ArrayBuffer;
 	stagedBranchYjsUpdate: ArrayBuffer;
 	unstagedBranchYjsUpdate: ArrayBuffer;
 }) {
-	const batch = await app_convex.mutation(app_convex_api.files_pending_updates.create_file_pending_update_operation_batch, {
-		membershipId: args.membershipId,
-		nodeId: args.nodeId,
-	});
+	const batch = await app_convex.mutation(
+		app_convex_api.files_pending_updates.create_file_pending_update_operation_batch,
+		{
+			membershipId: args.membershipId,
+			target: args.target,
+		},
+	);
 	if (batch._nay) {
 		return batch;
 	}
@@ -568,13 +644,16 @@ export async function files_persist_file_pending_update_rebased_state(args: {
 		const bytes = new Uint8Array(input.update);
 		for (let pageIndex = 0; pageIndex * files_MAX_YJS_WIRE_BYTES < bytes.byteLength; pageIndex++) {
 			const pageStart = pageIndex * files_MAX_YJS_WIRE_BYTES;
-			const staged = await app_convex.mutation(app_convex_api.files_pending_updates.stage_file_pending_update_state_page, {
-				membershipId: args.membershipId,
-				operationBatchId,
-				role: input.role,
-				pageIndex,
-				bytes: files_u8_to_array_buffer(bytes.slice(pageStart, pageStart + files_MAX_YJS_WIRE_BYTES)),
-			});
+			const staged = await app_convex.mutation(
+				app_convex_api.files_pending_updates.stage_file_pending_update_state_page,
+				{
+					membershipId: args.membershipId,
+					operationBatchId,
+					role: input.role,
+					pageIndex,
+					bytes: files_u8_to_array_buffer(bytes.slice(pageStart, pageStart + files_MAX_YJS_WIRE_BYTES)),
+				},
+			);
 			if (staged._nay) {
 				return staged;
 			}
@@ -593,11 +672,11 @@ export async function files_persist_file_pending_update_rebased_state(args: {
 
 	return await app_convex.action(app_convex_api.files_pending_updates.persist_file_pending_update_rebased_state, {
 		membershipId: args.membershipId,
-		nodeId: args.nodeId,
+		target: args.target,
 		operationBatchId,
 		...(args.pendingUpdateId ? { pendingUpdateId: args.pendingUpdateId } : {}),
 		baseYjsSequence: args.baseYjsSequence,
-		...(args.reviewedUpdatedAt !== undefined ? { reviewedUpdatedAt: args.reviewedUpdatedAt } : {}),
+		...(args.reviewedRevision !== undefined ? { reviewedRevision: args.reviewedRevision } : {}),
 	});
 }
 
@@ -900,7 +979,7 @@ export class files_PresenceStore extends TypedEventTarget<files_PresenceStore_Ev
 		this.disposed = true;
 	}
 }
-// #endregion PresenceStore
+// #endregion presence store
 
 // #region monaco
 export function files_monaco_create_editor_model(text: string, languageId: string) {

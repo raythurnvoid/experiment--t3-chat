@@ -91,8 +91,12 @@ vi.mock("@/components/ai-chat/ai-chat-markdown.tsx", () => ({
 }));
 
 vi.mock("@tanstack/react-router", () => ({
-	Link: function Link(props: { children?: ReactNode; to?: string }) {
-		return <a href={props.to ?? "#"}>{props.children}</a>;
+	Link: function Link(props: { children?: ReactNode; to?: string; search?: unknown }) {
+		return (
+			<a href={props.to ?? "#"} data-search={JSON.stringify(props.search)}>
+				{props.children}
+			</a>
+		);
 	},
 }));
 
@@ -552,7 +556,7 @@ describe("AiChatMessage", () => {
 		expect(screen.getByRole("textbox", { name: "Result" }).textContent).toContain("Result: 21");
 	});
 
-	test("colors the edit_file result diff by line", () => {
+	test.each(["saved", "private"] as const)("colors the edit_file diff and opens its %s target", (kind) => {
 		// The tool already trimmed the patch down to the changed lines.
 		const diff = [" {", '-	"n": 1', '+	"n": 2', " }", ""].join("\n");
 
@@ -569,8 +573,10 @@ describe("AiChatMessage", () => {
 						output: {
 							title: "/qa.json",
 							metadata: {
-								nodeId: "node_1" as app_convex_Id<"files_nodes">,
-								contentNodeId: "node_1" as app_convex_Id<"files_nodes">,
+								target:
+									kind === "private"
+										? { kind, id: "private_1" as app_convex_Id<"files_pending_nodes"> }
+										: { kind, id: "node_1" as app_convex_Id<"files_nodes"> },
 								pendingUpdateId: null,
 								path: "/qa.json",
 								matches: 1,
@@ -589,6 +595,9 @@ describe("AiChatMessage", () => {
 		});
 
 		fireEvent.click(screen.getByRole("button", { name: "Edit file: qa.json" }));
+		expect(JSON.parse(screen.getByRole("link", { name: "Open file" }).getAttribute("data-search")!)).toEqual(
+			kind === "private" ? { pendingNodeId: "private_1" } : { nodeId: "node_1" },
+		);
 
 		const result = screen.getByRole("textbox", { name: "Result" });
 		expect(result.querySelector(".DiffMonospaceBlock-line-removed")?.textContent).toContain('"n": 1');

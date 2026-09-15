@@ -6,7 +6,8 @@ import type { Id } from "./_generated/dataModel.js";
 import type { MutationCtx } from "./_generated/server.js";
 import { test_convex, test_mocks_cancel_pending_home_file_seeds, test_mocks_fill_db_with } from "./setup.test.ts";
 import { data_deletion_db_request } from "./data_deletion_requests.ts";
-import { files_nodes_db_is_eager_node_safe_to_hard_delete } from "./files_nodes.ts";
+import { files_pending_nodes_db_create } from "./files_pending_nodes.ts";
+import { files_private_storage_db_reserve } from "./files_private_storage.ts";
 import {
 	organizations_db_create,
 	organizations_db_create_workspace,
@@ -416,7 +417,8 @@ async function data_deletion_test_seed_workspace_content_bulk(
 				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
 				userId: args.userId,
-				fileNodeId,
+				target: { kind: "saved", id: fileNodeId },
+				revision: 1,
 				size: files_get_utf8_byte_size(`# pending ${i}`),
 				updatedAt: pendingUpdateUpdatedAt,
 			});
@@ -425,7 +427,8 @@ async function data_deletion_test_seed_workspace_content_bulk(
 				workspaceId: args.workspaceId,
 				sourceKind: "pending",
 				userId: args.userId,
-				fileNodeId,
+				target: { kind: "saved", id: fileNodeId },
+				proposalRevision: 1,
 				pendingUpdateId,
 				chunkIndex: 0,
 				textChunk: `# pending ${i}`,
@@ -438,7 +441,8 @@ async function data_deletion_test_seed_workspace_content_bulk(
 			await ctx.db.insert("files_plain_text_chunks", {
 				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
-				fileNodeId,
+				target: { kind: "saved", id: fileNodeId },
+				proposalRevision: 1,
 				sourceKind: "pending",
 				userId: args.userId,
 				pendingUpdateId,
@@ -459,7 +463,8 @@ async function data_deletion_test_seed_workspace_content_bulk(
 				ctx.db.insert("files_metadata_docs", {
 					organizationId: args.organizationId,
 					workspaceId: args.workspaceId,
-					fileNodeId,
+					target: { kind: "saved", id: fileNodeId },
+					proposalRevision: 1,
 					sourceKind: "pending",
 					userId: args.userId,
 					pendingUpdateId,
@@ -471,7 +476,8 @@ async function data_deletion_test_seed_workspace_content_bulk(
 				ctx.db.insert("files_metadata_docs", {
 					organizationId: args.organizationId,
 					workspaceId: args.workspaceId,
-					fileNodeId,
+					target: { kind: "saved", id: fileNodeId },
+					proposalRevision: 1,
 					sourceKind: "pending",
 					userId: args.userId,
 					pendingUpdateId,
@@ -524,6 +530,7 @@ async function data_deletion_test_seed_workspace_content_bulk(
 				workspaceId: args.workspaceId,
 				threadId,
 				bashCwd: "~",
+				bashCwdTarget: null,
 				updatedBy: args.userId,
 				updatedAt: Date.now(),
 			}),
@@ -648,6 +655,7 @@ const review_workspace_tables = [
 	"plugins_ui_sessions",
 	"plugins_workspace_installations",
 	"activities",
+	"activities_user_states",
 	"chat_messages",
 	"files_metadata_docs",
 	"files_plain_text_chunks",
@@ -693,13 +701,18 @@ async function review_seed_all_workspace_content(
 		if (!node.assetId) throw new Error("Expected the base fixture asset");
 		const pending = await ctx.db
 			.query("files_pending_updates")
-			.withIndex("by_user_fileNode", (q) => q.eq("userId", String(args.userId)).eq("fileNodeId", node._id))
+			.withIndex("by_user_target", (q) =>
+				q.eq("userId", args.userId).eq("target.kind", "saved").eq("target.id", node._id),
+			)
 			.first();
 		if (!pending) throw new Error("Expected the base fixture proposal");
 		const operationBatchId = await ctx.db.insert("files_pending_update_operation_batches", {
 			...tenant,
-			userId: String(args.userId),
-			fileNodeId: node._id,
+			userId: args.userId,
+			target: { kind: "saved", id: node._id },
+			expectedPendingUpdateId: pending._id,
+			expectedRevision: 1,
+			expectedPrivateVersion: null,
 			expiresAt: now + 1_800_000,
 			lastActivityAt: now,
 			updatedAt: now,
@@ -718,8 +731,8 @@ async function review_seed_all_workspace_content(
 		] as const) {
 			const stateId = await ctx.db.insert("files_pending_update_yjs_states", {
 				...tenant,
-				userId: String(args.userId),
-				fileNodeId: node._id,
+				userId: args.userId,
+				target: { kind: "saved", id: node._id },
 				owner,
 				lineageGeneration: 0,
 				sealed: true,
@@ -736,16 +749,17 @@ async function review_seed_all_workspace_content(
 			if (owner.kind === "active") activeIds.push(stateId);
 		}
 		await ctx.db.patch("files_pending_updates", pending._id, {
-			baseYjsSequence: 1,
-			baseLineageGeneration: 0,
-			baseStateId: activeIds[0]!,
-			stagedStateId: activeIds[1]!,
-			unstagedStateId: activeIds[2]!,
+			content: {
+				base: { kind: "yjs", sequence: 1, lineageGeneration: 0 },
+				baseStateId: activeIds[0]!,
+				stagedStateId: activeIds[1]!,
+				unstagedStateId: activeIds[2]!,
+			},
 		});
 		await ctx.db.insert("files_pending_update_text_inputs", {
 			...tenant,
-			userId: String(args.userId),
-			fileNodeId: node._id,
+			userId: args.userId,
+			target: { kind: "saved", id: node._id },
 			operationBatchId,
 			role: "staged",
 			text: "draft",
@@ -971,13 +985,9 @@ async function review_seed_all_workspace_content(
 			pluginVersionId,
 			event: "files.upload.completed",
 			eventId: `review-${args.tag}-${i}`,
-			status: "succeeded",
 			acceptedCapabilities: ["workspace.files.read"],
-			expiresAt: now + 1_800_000,
 			apiCallCount: 1,
 			outputWriteCount: 1,
-			errorMessage: null,
-			updatedAt: now,
 		});
 		await ctx.db.insert("plugins_event_run_calls", {
 			...tenant,
@@ -996,19 +1006,23 @@ async function review_seed_all_workspace_content(
 			elapsedMs: 0,
 			updatedAt: now,
 		});
-		await ctx.db.insert("activities", {
+		const activityId = await ctx.db.insert("activities", {
 			...tenant,
 			userId: args.userId,
 			status: "succeeded",
-			source: { kind: "plugin_run", id: runId, installationId, pluginName },
+			visibility: "shared",
+			feedVisible: true,
+			resultKind: "plugin_result",
+			source: { kind: "plugin_run", id: runId, installationId, pluginName, event: "files.upload.completed" },
 			title: `Review ${i}`,
 			errorMessage: null,
 			targets: [],
-			timeoutAt: now + 60_000,
+			deadlineAt: now + 60_000,
 			finishedAt: now,
-			archivedAt: 0,
+			expiresAt: now + 30 * 24 * 60 * 60 * 1000,
 			updatedAt: now,
 		});
+		await ctx.db.insert("activities_user_states", { userId: args.userId, activityId, dismissedAt: now });
 		const destinationNodeId = await ctx.db.insert("files_nodes", {
 			...tenant,
 			path: `/service-${i}`,
@@ -1188,6 +1202,11 @@ async function review_capture_workspace_rows(
 	organizationId: Id<"organizations">,
 	workspaceId: Id<"organizations_workspaces">,
 ) {
+	const activityIds = new Set(
+		(await ctx.db.query("activities").collect())
+			.filter((activity) => activity.organizationId === organizationId && activity.workspaceId === workspaceId)
+			.map((activity) => activity._id),
+	);
 	const pendingIds = new Set(
 		(await ctx.db.query("files_pending_updates").collect())
 			.filter((row) => row.organizationId === organizationId && row.workspaceId === workspaceId)
@@ -1198,12 +1217,14 @@ async function review_capture_workspace_rows(
 			const rows = await ctx.db.query(table).collect();
 			const ids = rows
 				.filter((row) =>
-					"pendingUpdateId" in row && !("workspaceId" in row)
-						? pendingIds.has(row.pendingUpdateId)
-						: "organizationId" in row &&
-							"workspaceId" in row &&
-							row.organizationId === organizationId &&
-							row.workspaceId === workspaceId,
+					"activityId" in row
+						? activityIds.has(row.activityId)
+						: "pendingUpdateId" in row && !("workspaceId" in row)
+							? pendingIds.has(row.pendingUpdateId)
+							: "organizationId" in row &&
+								"workspaceId" in row &&
+								row.organizationId === organizationId &&
+								row.workspaceId === workspaceId,
 				)
 				.map((row) => row._id);
 			return { table, ids };
@@ -2733,76 +2754,60 @@ describe("process_user_deletion_request", () => {
 	});
 });
 
-describe("process_user_deletion_request eager copy assets", () => {
-	test("keeps a durable exact-key deletion job after removing an untouched eager copy", async () => {
+describe("process_user_deletion_request private copy assets", () => {
+	test("keeps a durable exact-key deletion job after removing a private copy", async () => {
 		const t = test_convex({ transactionLimits: true });
 		const deleteObjectSpy = vi.spyOn(R2.prototype, "deleteObject");
 		const user = await t.run((ctx) =>
-			data_deletion_test_bootstrap_user(ctx, { clerkUserId: null, displayName: "Eager copy deletion" }),
+			data_deletion_test_bootstrap_user(ctx, { clerkUserId: null, displayName: "Private copy deletion" }),
 		);
 		const tenant = { organizationId: user.defaultOrganizationId, workspaceId: user.defaultWorkspaceId };
 		const seeded = await t.run(async (ctx) => {
 			const source = await data_deletion_test_seed_page(ctx, { ...tenant, userId: user.userId, tag: "source.md" });
-			const destination = await data_deletion_test_seed_page(ctx, { ...tenant, userId: user.userId, tag: "copy.md" });
-			const node = await ctx.db.get("files_nodes", destination.nodeId);
-			if (!node?.assetId) throw new Error("Missing eager destination base asset");
-			await ctx.db.patch("files_r2_assets", node.assetId, { size: 0 });
-			// cp creates an empty text placeholder and captures its committed sequence.
-			const sequenceId = await ctx.db.insert("files_yjs_docs_last_sequences", {
+			const created = await files_pending_nodes_db_create(ctx, {
 				...tenant,
-				fileNodeId: destination.nodeId,
-				lastSequence: 0,
-				unmaterializedUpdateCount: 0,
-				unmaterializedUpdateBytes: 0,
-				lineageGeneration: 0,
+				userId: user.userId,
+				name: "copy.bin",
+				parent: { kind: "root" },
+				kind: "file",
 			});
-			await ctx.db.patch("files_nodes", destination.nodeId, {
-				yjsLastSequenceId: sequenceId,
-				textKind: "rich_text",
-			});
-			// The stage action has copied the object before calling this real commit mutation.
+			if (created._nay) throw new Error(created._nay.message);
 			const stagedAssetId = await ctx.db.insert("files_r2_assets", {
 				...tenant,
-				kind: "content_snapshot",
+				kind: "content",
 				r2Bucket: "test-bucket",
 				size: 15,
 				createdBy: user.userId,
 				updatedAt: Date.now(),
-				unfinalizedExpiresAt: Date.now() + 60_000,
 			});
-			return { sourceId: source.nodeId, nodeId: destination.nodeId, baseAssetId: node.assetId, stagedAssetId };
+			const stagedKey = r2_create_asset_key({ ...tenant, assetId: stagedAssetId });
+			await ctx.db.patch("files_r2_assets", stagedAssetId, { r2Key: stagedKey });
+			const reserved = await files_private_storage_db_reserve(ctx, {
+				...tenant,
+				userId: user.userId,
+				resource: { kind: "asset", id: stagedAssetId, r2Key: stagedKey },
+				byteCount: 15,
+			});
+			if (reserved._nay) throw new Error(reserved._nay.message);
+			// A completed transfer owns its stored copy through this private proposal.
+			await ctx.db.patch("files_pending_updates", created._yay.pendingUpdateId, {
+				createIntent: {
+					kind: "stored",
+					assetId: stagedAssetId,
+					size: 15,
+					contentType: "application/octet-stream",
+					metadata: [],
+				},
+				copiedFrom: { target: { kind: "saved", id: source.nodeId }, path: "/source.md" },
+			});
+			return {
+				nodeId: created._yay.privateNodeId,
+				pendingUpdateId: created._yay.pendingUpdateId,
+				stagedAssetId,
+				stagedKey,
+			};
 		});
-		const committed = await t.mutation(internal.files_pending_updates.commit_file_pending_replacement_in_db, {
-			...tenant,
-			userId: user.userId,
-			nodeId: seeded.nodeId,
-			expectedUpdatedAt: null,
-			replacement: {
-				assetId: seeded.stagedAssetId,
-				baseAssetId: seeded.baseAssetId,
-				size: 15,
-				contentType: "text/markdown;charset=utf-8",
-				yjsRootKind: "rich_text",
-			},
-			text: "# copied source",
-			copiedFrom: { nodeId: seeded.sourceId, path: "/source.md" },
-			eagerCreatedCommittedSequence: 0,
-		});
-		if (!committed._yay) throw new Error(`Copy stage refused: ${committed._nay?.message}`);
-		const pendingUpdateId = committed._yay.pendingUpdateId;
-		const stagedKey = await t.run(async (ctx) => {
-			const pending = await ctx.db.get("files_pending_updates", pendingUpdateId);
-			const asset = await ctx.db.get("files_r2_assets", seeded.stagedAssetId);
-			if (!pending || !asset?.r2Key) throw new Error("Copy commit did not publish the object and pending row");
-			expect(
-				await files_nodes_db_is_eager_node_safe_to_hard_delete(ctx, {
-					...tenant,
-					nodeId: seeded.nodeId,
-					pendingUpdate: pending,
-				}),
-			).toBe(true);
-			return asset.r2Key;
-		});
+		const { pendingUpdateId, stagedKey } = seeded;
 		const requestId = await t.mutation(internal.data_deletion.init_user_deletion, { userId: user.userId });
 		if (!requestId) throw new Error("Deletion request was not created");
 		const request = await t.run((ctx) => ctx.db.get("data_deletion_requests", requestId));
@@ -2820,19 +2825,17 @@ describe("process_user_deletion_request eager copy assets", () => {
 		expect(done).toBe(true);
 		const after = await t.run(async (ctx) => ({
 			pending: await ctx.db.get("files_pending_updates", pendingUpdateId),
-			node: await ctx.db.get("files_nodes", seeded.nodeId),
-			baseAsset: await ctx.db.get("files_r2_assets", seeded.baseAssetId),
+			node: await ctx.db.get("files_pending_nodes", seeded.nodeId),
 			stagedAsset: await ctx.db.get("files_r2_assets", seeded.stagedAssetId),
 			jobs: await ctx.db.query("files_r2_object_deletion_jobs").collect(),
 		}));
 		expect(after.pending).toBeNull();
 		expect(after.node).toBeNull();
-		expect(after.baseAsset).toBeNull();
 		expect(after.stagedAsset).toBeNull();
 		expect(deleteObjectSpy).not.toHaveBeenCalled();
 		expect(
 			after.jobs.map((job) => job.r2Key),
-			"eager copy deletion must retain its staged key for durable retries",
+			"private copy deletion must retain its staged key for durable retries",
 		).toContain(stagedKey);
 
 		const job = after.jobs.find((job) => job.r2Key === stagedKey);

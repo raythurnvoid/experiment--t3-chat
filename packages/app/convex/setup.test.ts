@@ -18,7 +18,7 @@ import {
 	organizations_db_ensure_default_organization_and_workspace_for_user,
 } from "./organizations.ts";
 import { quotas_db_ensure } from "./quotas.ts";
-import { components } from "./_generated/api.js";
+import { api, components, internal } from "./_generated/api.js";
 import { billing_PRODUCTS } from "../shared/billing.ts";
 
 // #region helpers
@@ -119,6 +119,69 @@ export async function test_get_file_yjs_pointers(t: ReturnType<typeof test_conve
 			yjsSnapshotId: node.yjsSnapshotId,
 		};
 	});
+}
+
+export async function test_create_saved_text_file(
+	t: ReturnType<typeof test_convex>,
+	args: { membershipId: Id<"organizations_workspaces_users">; path: string; textContent?: string },
+) {
+	const membership = await t.run((ctx) => ctx.db.get("organizations_workspaces_users", args.membershipId));
+	if (!membership) throw new Error("Expected a test membership");
+	const scope = {
+		organizationId: membership.organizationId,
+		workspaceId: membership.workspaceId,
+		userId: membership.userId,
+	};
+	const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: membership.userId });
+	const segments = args.path.split("/").slice(1);
+	for (let depth = 1; depth <= segments.length; depth++) {
+		const kind = depth === segments.length ? "file" : "folder";
+		const created = await t.mutation(internal.files_nodes.create_private_node_by_path, {
+			...scope,
+			path: `/${segments.slice(0, depth).join("/")}`,
+			kind,
+		});
+		if (created._nay) throw new Error(created._nay.message);
+		const { target, pendingUpdateId, operationBatchId } = created._yay;
+		if (!created._yay.created) {
+			// Never accept an existing parent's proposal as part of fixture setup.
+			if (kind === "folder" && target.kind === "saved") continue;
+			throw new Error(`Expected a new test ${kind}: ${args.path}`);
+		}
+		if (target.kind !== "private" || !pendingUpdateId) throw new Error("Expected a private test proposal");
+		if (kind === "file") {
+			if (!operationBatchId) throw new Error("Expected a private text batch");
+			for (const role of ["staged", "unstaged"] as const) {
+				const staged = await t.mutation(internal.files_pending_updates.stage_file_pending_update_text_input_internal, {
+					...scope,
+					operationBatchId,
+					role,
+					text: args.textContent ?? "",
+				});
+				if (staged._nay) throw new Error(staged._nay.message);
+			}
+			const ready = await t.action(internal.files_pending_updates.upsert_file_pending_update_internal_action, {
+				...scope,
+				target,
+				pendingUpdateId,
+				operationBatchId,
+			});
+			if (ready._nay) throw new Error(ready._nay.message);
+		}
+		const proposal = await t.run((ctx) => ctx.db.get("files_pending_updates", pendingUpdateId));
+		if (!proposal) throw new Error("Expected a proposal to save");
+		// Save new parents first, then publish exact text at sequence 0.
+		const saved = await asUser.action(api.files_pending_updates.save_file_pending_update, {
+			membershipId: args.membershipId,
+			target,
+			pendingUpdateId,
+			reviewedRevision: proposal.revision,
+		});
+		if (saved._nay) throw new Error(saved._nay.message);
+		if (saved._yay.target.kind !== "saved") throw new Error("Expected a saved test node");
+		if (kind === "file") return saved._yay.target.id;
+	}
+	throw new Error("Expected a test file path");
 }
 
 // #endregion

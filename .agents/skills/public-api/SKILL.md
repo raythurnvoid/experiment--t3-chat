@@ -251,9 +251,16 @@ Deadlines cover execution and body reading: 35 seconds for invoke, 180 seconds f
 Existing request limits and 400/413, session, permission, busy, and rate refusals stay in place.
 
 Plugin-data writes carry the original trusted `credentialRef.runId` into the store transaction.
-The live-run check includes both `expiresAt` and `apiTokenExpiresAt`, plus the current installation,
-version, tenant, actor and service-account pin. A live service account cannot extend an ended run.
+The live-run check reads status and `deadlineAt` from the run's Activity and `apiTokenExpiresAt`
+from the run, plus the current installation, version, tenant, actor and service-account pin.
+A live service account cannot extend an ended run. The cached principal query returns the earlier
+token/deadline time; HTTP and host auth check the clock, and final mutations check it again.
 The write, batch, and delete doors keep all existing collection, scope, ownership, and quota rules.
+
+Every plugin run has one hidden Activity from admission. `/api/v1/activities/start` reveals that
+same doc after live access checks and keeps its earlier output targets. `timeoutMs` sets an
+expected finish time; Overdue does not end the run or extend its execution deadline. A second
+feed opt-in returns 409. Real execution expiry is `timed_out` and prevents later API publication.
 
 `POST /api/v1/plugin-backend/invoke` (registered in `plugins_invoke_http_routes.ts`, implemented in `plugins_invoke.ts`) lets a plugin frame run its own reviewed backend synchronously. Scope `backend:invoke`, `allowedKinds: ["plugin_ui"]`, capability `plugin.backend.invoke`, and the installed version must declare the endpoint in `backend.endpoints`.
 

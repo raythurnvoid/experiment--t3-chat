@@ -572,10 +572,10 @@ describe("get_events", () => {
 		expect((await lease(t, fixture))._nay?.message).toBe("Unauthorized");
 	});
 
-	test("records removal before re-invite and never reuses its private membership lifetime", async () => {
+	test.each([true, false])("keeps membership lifetimes across re-invite with external feed %s", async (hasFeed) => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
-		await lease(t, fixture);
+		if (hasFeed) await lease(t, fixture);
 		const owner = t.withIdentity({ issuer: "https://clerk.test", external_id: fixture.userId });
 		const userId = await t.run((ctx) => ctx.db.insert("users", { clerkUserId: "invitee" }));
 		const invite = () =>
@@ -595,15 +595,23 @@ describe("get_events", () => {
 		).toBeNull();
 		await t.mutation(components.rate_limiter.lib.resetRateLimit, { name: "organizations_write", key: fixture.userId });
 		expect((await invite())._yay).toBeNull();
-		const result = await events(t, fixture.installationId);
-		const memberEvents = result._yay!.events.flatMap(({ event }) =>
-			event.kind === "member" && event.member.hostUserId === String(userId) ? [event.member] : [],
-		);
-		expect(memberEvents.map((member) => [member.active, member.membershipLifetime])).toEqual([
-			[true, 1],
-			[false, 2],
-			[true, 2],
-		]);
+		if (hasFeed) {
+			const result = await events(t, fixture.installationId);
+			const memberEvents = result._yay!.events.flatMap(({ event }) =>
+				event.kind === "member" && event.member.hostUserId === String(userId) ? [event.member] : [],
+			);
+			expect(memberEvents.map((member) => [member.active, member.membershipLifetime])).toEqual([
+				[true, 1],
+				[false, 2],
+				[true, 2],
+			]);
+			expect(result._yay!.events.map((event) => event.revision)).toEqual(
+				Array.from({ length: result._yay!.events.length }, (_, index) => index + 1),
+			);
+		} else {
+			expect(await t.run((ctx) => ctx.db.query("access_control_change_state").collect())).toEqual([]);
+			expect(await t.run((ctx) => ctx.db.query("access_control_changes").collect())).toEqual([]);
+		}
 		expect(
 			await t.run((ctx) =>
 				ctx.db
@@ -612,9 +620,6 @@ describe("get_events", () => {
 					.first(),
 			),
 		).toMatchObject({ active: true, lifetime: 2 });
-		expect(result._yay!.events.map((event) => event.revision)).toEqual(
-			Array.from({ length: result._yay!.events.length }, (_, index) => index + 1),
-		);
 	});
 
 	test("keeps global cursor order while redacting unrelated installations", async () => {

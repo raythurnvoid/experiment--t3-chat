@@ -169,6 +169,7 @@ Tree-item components:
 - Both search inputs show fields on entry. Returning from chips, suggestions, or the global result list keeps the menu state. Add search filter and Ctrl+Space open the same suggestions. Opening the menu leaves the query unchanged. A matching field prefix is completed; otherwise choosing a field adds it after the plain search text. Choosing a key keeps the menu open for values; committing a filter closes it. The visible summary shows the match count or loading/failure state. Clear search removes the text and all chips, closes suggestions, and returns focus to the input. Invalid filters show their reason below the summary.
 - The top section uses content height so wrapped chips cannot overlap the tree. Keep the chip area's height cap so a long query still leaves room for results.
 - Enter opens the query's top match: the node whose `path` matched exactly, or the only node that matched at all. While a metadata chip is still loading, `onSubmit` returns false and the status line reads "Still searching. Press Enter again when the results are in". A query with no metadata chip needs only the tree, so it never waits. The tree's scoped rename `Enter` hotkey is separate and must keep working.
+- A pasted private link opens its tagged target. If a bare absolute path has no saved-tree match and no filters, Enter opens the path route so it can resolve a private draft. Keep the typed case for that exact lookup.
 - Enter also waits, again only while the live query holds a metadata chip, when the `file.path` chip of the live query differs from the deferred one (`search_path_filter` on both): the metadata results were fetched inside the old folder, so a node picked from them right after that chip is removed could be the wrong one.
 - `Mod+K` (registered in `FileNodeView`, `ignoreInputs: false`) opens the files sidebar if closed and focuses the search input through the global `app_files_sidebar_search` id on the `MyInput` wrapper. `MyComboboxInputControl` owns its own generated id for the Ariakit wiring, so the global id cannot live on the control.
 - The files route's `q` search param mirrors the search box both ways. The router reads search params as JSON, so a hand-typed `?q=2026` arrives as a number; the route turns a number or a boolean back into text before the length cap. A pasted app link whose path holds a raw `%` (`50% off.md`) is plain text: `url_parse_file_link` answers null instead of throwing from `decodeURIComponent` inside the render. The box serializes the chips' raw tokens plus the text with `files_search_query_serialize`, so the URL holds exactly what the user typed and seeds the chips on mount. It seeds the box on mount (the path route's not-found panel uses that so a failed link lands on a filled, case-insensitive search), and the box writes back to it through `FilesSidebar_Props.onSearchQueryChange` → `FileNodeView.handleSearchQueryChange` → `onNavigateSearch(..., { replace: true })`. The write is already debounced by `FilesSearchInput`; do not add a second timer. `replace` keeps a whole typing session on one history entry, and an empty query drops the param instead of leaving `?q=`. The route caps `q` at 2000 characters (`.catch(undefined)` drops a longer one) and the parser caps a query at `files_search_query_MAX_FILTERS` (20) filters, so a shared link cannot fill the box with thousands of chips and subscriptions.
@@ -179,13 +180,13 @@ Tree-item components:
 
 - The header search and `Mod+Shift+F` open `FilesSearchPalette`. Chips wrap above the shared input.
 - Plain text searches names, paths, and contents. Filter-only queries work too. All chips are ANDed. Invalid chips block results.
-- Names and folders come from the readable tree. Content comes from `files_nodes.search_content`, including the caller's pending text. Duplicate files share one row with a preview.
+- Names and folders come from the owner's `files_visible.list` pages, including saved entries and private drafts at their current paths. `useFilesVisibleEntries` keeps every loaded page subscribed and waits for completion before filtering or negating results. A changed earlier cursor replaces its old suffix. Content comes from `files_nodes.search_content`, including ready private text. Deduplicate by target kind and id.
 - Metadata filters, including negated filters, match active files and folders. Content queries stay file-only.
-- Filtered content queries send every candidate file `nodeId` in groups of at most 1,000 through
+- Filtered content queries send every candidate file `target` in groups of at most 1,000 through
   `useQueries`, so a broad filter stays below Convex's argument-array limit. Each scope applies
   before pagination, with tenant and file access checks still enforced. Empty scopes send no
   content query. The palette waits for every group and shows an error if any group fails. It merges
-  the bounded responses by node id; these groups do not provide exhaustive results or a shared
+  the bounded responses by target kind and id; these groups do not provide exhaustive results or a shared
   relevance score. Unfiltered text keeps one content query.
 - Suggestions open on entry, with the same Escape, Ctrl+Space, and filter-button behavior as the sidebar. After dismissing suggestions, ArrowDown from the input focuses results. ArrowUp from the first result returns to the input. Enter opens a result. Escape closes suggestions first, then the modal.
 - “Use filters in sidebar” transfers chips into route `q` and opens the tree. Plain content text stays in global search because the sidebar matches names and paths.
@@ -193,14 +194,20 @@ Tree-item components:
 
 ## Path URLs And Copy Actions
 
-- Canonical live URL stays `/w/:organizationName/:workspaceName/files?nodeId=<id>&view=<view>`. Node ids keep an open tab valid across rename and move, and avoid repeating a lookup on every load.
-- `/w/:organizationName/:workspaceName/files/<path>` is an entry format only. The splat route `routes/w/$organizationName/$workspaceName/files/$.tsx` resolves the path through the public `files_nodes.get_authorized_by_path` query, then replaces the URL with the `?nodeId=` form. `view` rides along.
+- Saved URLs use `/w/:organizationName/:workspaceName/files?nodeId=<id>&view=<view>`. Private URLs use `pendingNodeId=<id>` instead. Links clear the other id and preserve `q`. Last-open storage keeps `{kind,id}` per membership; a missing private target never falls back to a saved lookup.
+- `/w/:organizationName/:workspaceName/files/<path>` is an entry format only. The splat route `routes/w/$organizationName/$workspaceName/files/$.tsx` calls `files_nodes.get_visible_target_by_path`, then replaces the URL with the matching tagged id route. `view` and `q` ride along.
 - Only a resolved `null` renders the not-found panel. `undefined` still means loading, so a cold pasted link must not flash not-found.
-- Path lookup is exact and case-sensitive because it rides `by_organization_workspace_path_archiveOperation`. Copy path emits the stored path, so a path built from it matches. A hand-typed `/readme.md` for a stored `README.md` misses on purpose and recovers through the not-found panel's search link. Do not add a case-insensitive server fallback.
+- Path lookup is exact and case-sensitive in the owner's current view. It includes private entries and proposed moves. A hand-typed `/readme.md` for a stored `README.md` misses on purpose and recovers through the not-found panel's search link. Do not add a case-insensitive server fallback.
 - Canonicalize a splat with `path_extract_segments_from`. Do not use `files_get_normalized_node_path_segments` for lookups: it is the create/rename normalizer and rewrites characters, which would resolve to a different file.
-- `get_authorized_by_path` authorizes `content.read` with the loaded `fileNode` passed, like `get_file_node_for_membership`, so a path link cannot hand out a node id the id route would refuse.
+- `get_visible_target_by_path` uses the same owner, tenant, and read checks as direct target lookup. Private parent paths disappear when destination read access is lost.
 - Three copy actions, all multi-select aware in the sidebar and joined with newlines: Copy path (sidebar row menu and breadcrumb) copies the plain path for pasting into search or an AI chat message; Copy link (same two places) copies the absolute `?nodeId=` URL built from `url_path_file_by_node_id`, so a shared link survives rename and move; Copy node id (sidebar row menu only) copies the bare id.
 - Copy link deliberately does not emit the readable `/files/<path>` shape. That shape has no in-app producer: it exists so a hand-written or externally generated path can be opened, and the sidebar search still unwraps it when pasted.
+
+## Folder Contents
+
+- Home, saved folders, and private folders read direct children through `files_visible.list` and `useFilesVisibleEntries`. Use the current visible folder path. Keep loading until every page has answered; do not treat a partial page as a complete folder.
+- Combine saved and private children before sorting folders first and names second. Apply Show more and Show less to that full list. Private rows show Added or Preparing and link with `pendingNodeId`.
+- Saved row actions use the real saved document and its current permission data. Never create a fake saved document for a private row. Private folders use tagged children and owner review actions.
 
 ## File Cut, Copy, And Paste
 
@@ -232,16 +239,26 @@ Tree-item components:
   and blocks another start while this member has an active run in the workspace. Run progress
   comes from `get` and `list_current`; tree changes still come from `list_tree`.
 - The progress dialog says `Paste files` until the saved run kind is available, then shows
-  `Copy files` or `Move files`, counts, and conflicts. Each conflict shows its full authorized source
-  path, so same-name files can be told apart. Name conflicts offer Keep both or Skip; changed
-  or unavailable sources and destinations offer only Skip or Stop. Apply to remaining name
-  conflicts starts unset. Choices reset on each server revision. Hide, X, and Escape close the
+  `Copy files` or `Move files`, counts, and 50-item pages from `list_items`. Previous/Next page
+  follows the server cursor, even after an empty page. Each conflict shows its authorized source
+  and destination paths. File name conflicts offer Keep both, Replace, or Skip. Copy folder conflicts
+  offer Keep both, Merge, or Skip. Move folder conflicts offer Keep both, Replace empty folder, or Skip.
+  Replace and Merge send the exact reviewed target and version. Move has no future-folder replace choice.
+  Changed or unavailable items offer only Skip or Stop. Remaining-file and remaining-folder
+  choices start unset. Continue submits only the current page. Choices reset on each server revision.
+  Finished items show their authorized output path and say Saved or Ready for review.
+  Hide, X, and Escape close the
   dialog without stopping the run. After any copy is published, the stop button says
   `Stop and keep completed copies`; before that it says `Cancel`.
 - Activity can reopen the dialog after navigation or reload and can stop an active run. Clipboard
   runs belong to their requester. Terminal runs can be dismissed without workspace write access.
+  When the server allows it, Retry remaining files starts a new run and opens its progress.
+  A lost retry response keeps the same request ID. A retried Cut still clears only moved IDs
+  from its original clipboard revision, so a newer Cut or Copy stays intact.
   Canceled runs say `Stopped` and use a neutral icon. Active runs cannot be dismissed.
-- A completed cut removes only the returned moved ids from the same clipboard revision. Opening
+- `AppActivitiesProvider` owns common Stop requests above the clipboard provider. The server
+  returns controls and common progress through Activity. See the [Activity spec](../activities/SKILL.md).
+- A finished cut removes only the returned moved ids from the same clipboard revision. Opening
   an older Activity dialog must not stop that update. A later Cut or Copy must stay intact. Copy
   stays ready after completion so it can be pasted again.
 
@@ -287,6 +304,17 @@ Backend rules, limits, billing, cleanup, and Activity privacy are in
 - File rename selects the basename by default so `.md` is not included in the initial edit selection.
 - Rename uses `files_nodes.rename_node` with Convex `optimisticUpdate` and
   `optimisticallyUpdateValueInPaginatedQuery` for immediate title feedback across cached pages.
+- Rename and saved-node moves use `files_nodes_db_preflight_move` followed by
+  `files_nodes_db_apply_move` in the same mutation. Preflight resolves final paths, permissions,
+  write policies, search chunks, and metadata before any Files write. It includes archived descendants.
+  Archived renames keep their archive identity and can share an active path.
+- A path-like rename starts at the source's current parent. Missing folders are planned below a
+  saved parent ID with `missingParentNames`. Shared folder chains are inserted once. Paths and
+  inherited scopes use that saved parent's final position, even when it also moves in the batch.
+  Apply inserts the folders from top to bottom and resolves their real IDs without reading again.
+- Move limits include adapter reads, descendant updates, and new parent folders: at most 500 changed
+  or inserted nodes, 2,000 Files docs read or written, and 4 MiB in each direction. A refusal writes
+  no Files changes. Permission reads and the caller's receipt use separate transaction headroom.
 - The selected file/folder path auto-expands in the sidebar after route changes and path-based create/rename moves so the focused row stays visible.
 - Archive/unarchive uses `files_nodes.archive_nodes` / `files_nodes.unarchive_nodes`.
 - The row menu's Restore gate mirrors the backend restore plan (`can_unarchive_item`): a node whose parent is missing or still archived restores to root, so Restore also needs workspace write at root plus scope manage when the node would leave its restricted scope. A node that carries its own restriction only needs its own write answer. An in-place restore only needs the node's write answer.

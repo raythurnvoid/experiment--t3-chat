@@ -48,14 +48,13 @@ export async function ai_chat_context_create(
 					maxBytes: ai_chat_skills_LIMITS.skill,
 				}));
 			if (!read) {
-				const node = await ctx.runQuery(internal.files_nodes.get_by_path, {
+				const visibleEntry = await ctx.runQuery(internal.files_visible.internal_get_by_path, {
 					organizationId,
 					workspaceId,
-					visibilityUserId: args.userId,
-					overlayUserId: args.userId,
+					userId: args.userId,
 					path,
 				});
-				if (node?.kind !== "file") continue;
+				if (visibleEntry?.node.kind !== "file") continue;
 				entry = { path, warning: "This skill could not be read within the 64 KiB limit. Inspect it with Bash." };
 			} else {
 				// The fallback skill name is the parent folder (`/<dir>/<name>/SKILL.md`).
@@ -132,14 +131,13 @@ export async function ai_chat_context_read_instructions(
 
 	for (const path of [...candidates].sort((a, b) => a.split("/").length - b.split("/").length || a.localeCompare(b))) {
 		try {
-			const node = await ctx.runQuery(internal.files_nodes.get_by_path, {
+			const entry = await ctx.runQuery(internal.files_visible.internal_get_by_path, {
 				organizationId,
 				workspaceId,
-				visibilityUserId: userId,
-				overlayUserId: userId,
+				userId,
 				path,
 			});
-			if (node?.kind !== "file") continue;
+			if (entry?.node.kind !== "file") continue;
 			const readArgs = { organizationId, workspaceId, userId, overlayUserId: userId, path };
 			const read =
 				(await ctx.runQuery(internal.files_nodes.read_file_content_from_chunks, {

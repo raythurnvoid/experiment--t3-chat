@@ -1,15 +1,15 @@
 ---
 name: files-agent-pending-updates
-description: "Current `/files` pending-changes system: per-user Yjs content branches plus structural move, copy, replace, delete, and eager-create proposals; diff review; accept, discard, save, and sync; AI and Bash file-tool overlays; indexed pending content; and TTL cleanup. Use when changing pending banners or tabs, bash shell write/edit_file/cp/mv/rm proposals, pending path or content reads, search overlays, review actions, rebase/save behavior, or expiry."
+description: "Current /files pending changes: private file and folder creates, per-user content branches, moves, copies, replacement, deletes, review, Save, Discard, search, and expiry. Use when changing pending state, agent Files tools, review actions, or cleanup."
 ---
 
 # Content And Structural Proposal States
 
-Each `files_pending_updates` doc — the pending update doc — belongs to one user and one file node. It may contain a content proposal, a structural proposal, or both.
+Each `files_pending_updates` doc belongs to one user and one saved or private target. It may contain a content proposal, a structural proposal, or both. Saved Files doors still accept a saved `nodeId` and build the tagged target at their boundary.
 
 Pending updates work for both document shapes: a Markdown file's `rich_text` (ProseMirror) Yjs document and every other editable text file's `plain_text` (`Y.Text`) document. The node's `textKind` decides the current shape. After a restore changes shape, `contentRebaseRootKind` keeps the old branches readable until preparation replaces them (see the `files-editable-text` skill). Both shapes use the same three branches and text merge.
 
-A content proposal sets one base pointer (`baseYjsSequence` plus `baseLineageGeneration` for a collaborative file, `baseAssetId` for a file with collaboration off) and the three state ids together, and tracks three states:
+A content proposal stores one `content` object. Its `base` is `{ kind: "yjs", sequence, lineageGeneration }` for a collaborative file, `{ kind: "asset", assetId }` for a file with collaboration off, or `{ kind: "new" }` for private new content. The same object owns the three sealed state IDs:
 
 - `base`: the live file state the pending update was built from.
 - `staged`: the branch that save will persist.
@@ -22,9 +22,9 @@ Structural state uses:
 - `pendingMove` for move or rename intent.
 - `copiedFrom` for copy or replace provenance.
 - `pendingArchive` for delete intent (bash `rm`): accepting archives the node; a folder archives its whole subtree, computed at accept time. Setting it clears `pendingMove` — a delete supersedes a move. Content branches survive on the doc (accept ignores them; discard restores them as a Modified row).
-- `eagerCreated` when `edit_file`, a bash shell write, or `cp` eagerly created a destination node so discard or expiry can remove it safely. `rm` on such a doc cancels it immediately when the hard-delete gate passes, like Discard — no proposal remains; when the gate fails, `rm` falls back to a normal pending delete proposal.
+- `createIntent` for a private file or folder. Missing agent write and copy targets stay private until Save. Removing an owned private create discards that private identity and its approved pending work.
 
-Move-only docs have no Yjs fields and use `size: 0`. Docs do not always disappear when the three content states match: eager-created docs, replace-move docs, and docs with a move or delete may still need structural review.
+Move-only docs have no `content` object and use `size: 0`. Private creates and proposals with a move or delete may remain when the three content states match.
 
 # Data Model
 
@@ -34,40 +34,62 @@ Main table in `packages/app/convex/schema.ts`:
   - `organizationId`
   - `workspaceId`
   - `userId`
-  - `fileNodeId`
-  - optional canonical content group, always set together:
-    - one base pointer: `baseYjsSequence` + `baseLineageGeneration` (the live document and its lineage this proposal was built against) for a collaborative file, or `baseAssetId` (the content asset the branches were built from) for a file with collaboration off. A doc never carries both.
+  - `target`: exactly `{ kind: "saved", id: Id<"files_nodes"> }` or `{ kind: "private", id: Id<"files_pending_nodes"> }`
+  - `revision`: advances whenever reviewed content or intent changes; `updatedAt` remains the idle expiry clock
+  - optional `content` object:
+    - `base`: exactly one of the `new`, `yjs`, or `asset` variants above.
     - `baseStateId` / `stagedStateId` / `unstagedStateId`, each pointing at one sealed `files_pending_update_yjs_states` doc whose pages hold that branch's full Yjs state. Branch bytes never live on the pending update doc itself.
-    - optional `contentNeedsRebase: true` after a collaboration toggle or restore. The old base and all three states stay intact until preparation replaces them.
-    - optional `contentRebaseRootKind`: the source shape captured before restore. Repeated restores keep the first captured shape. Preparation and content removal clear both fields.
+  - optional `contentNeedsRebase: true` after a collaboration toggle or restore. The old base and all three states stay intact until preparation replaces them.
+  - optional `contentRebaseRootKind`: the source shape captured before restore. Repeated restores keep the first captured shape. Preparation and content removal clear both fields.
   - optional `pendingMove`
   - optional `copiedFrom`
   - optional `pendingArchive` (`fromPath` display metadata only; the node id is authoritative)
-  - optional `eagerCreated`
+  - optional `createIntent` for private text, stored content, or folders
   - optional `threadIds` (contributor set: the chat threads that touched this doc, deduped; agent writes append their thread id, client-driven writes leave the field out of their patches so it survives, and it dies with the doc; unset for client-only docs and rows older than the field)
   - `size` (UTF-8 byte size of the current `unstaged` text, or `0` for a structural-only doc)
   - `updatedAt`
 
+Private lifetime and cleanup (`packages/app/convex/files_pending_nodes.ts`):
+
+- Every private node has one proposal. Its owner, parent, creation generation, and structural revision stay on the node. Its create intent, content, contributors, and idle expiry stay on the proposal.
+- Direct Discard checks the exact proposal ID and revision before any writes. A ready child or another chat's child outside the reviewed set returns `needs_review`. A pending move into the folder also needs review. The direct transaction checks up to 256 private nodes; larger sets use bulk review.
+- Closing the generation hides the approved subtree at once. Each node gets a durable `files_pending_node_cleanup_tasks` doc. Cleanup removes the proposal indexes, retires its states, hands assets to the deletion ledger, and expires its batches. It keeps the node until its batches, states, and discarded children are gone. Node slots release only after node deletion. A 15-minute cron resumes failed cleanup continuations.
+- Expiry keeps an old parent while a live private descendant still needs it. It reschedules the same proposal timestamp without making an edit. Every producer schedules each proposal's four-hour expiry. A tree over the direct 256-node bound waits while those child jobs shrink it; a newer child still keeps its parent alive.
+- A published parent resolves through its owner-scoped saved receipt; Discard does not remove that saved identity. Daily receipt cleanup keeps the private identity for seven days and while any child, proposal, copy source, state, batch, review item, transfer item or parent, or Bash cwd still refers to it. It pages past retained identities so they cannot block later cleanup. Removing the unused private identity and receipt never removes the saved file.
+
+Bulk review (`packages/app/convex/files_pending_update_runs.ts`):
+
+- One review lane runs per user/workspace, separate from transfer admission. A different busy request returns the active run and Activity IDs. Preparation uses the same two-worker Workpool component as transfers. Each unit keeps its Workpool ID so Stop and retries cancel queued work after fencing publication.
+- The run stores the reviewed proposal IDs, revisions, and selected content state IDs in pages. Planning joins changes that must save or discard together. Each connected unit commits in one transaction; an unrelated unit can finish on its own.
+- Planning and later checks use the same dependency graph. It accounts for private parents, moved saved parents, replaced targets, projected paths, and archive or Discard scope. An unselected affected proposal returns `needs_review`; the worker never adds it to the selection.
+- `files_pending_review_versions` is the owner's pending-change clock. The normal path seals each unit against the run's current clock. An outside edit enables `revalidateRemaining` for the rest of the run. Every later unit then checks its original IDs, revisions, content states, paths, and dependency scope in pages, even after an earlier unit's own commit advances the run clock.
+- Every page and the final seal check the same clock. The final transaction requires that unit's `validatedReviewVersion`. A clock change retries the same unit up to three attempts, then returns `needs_review`. A changed reviewed item or new dependency blocks the unit at once.
+- Private subtree Discard checks the selected descendants in pages, then fences the approved roots in one small transaction. The unchanged unit clock protects that checked set. Activity counts the full unit when the roots close; cleanup continues after Stop. Other final transactions count their reads, writes, bytes, and query ranges and roll back as `review_too_large` before exceeding the supported budget.
+- Before final writes, each connected Save checks the full file-save cost for each pinned payer. Folders, moves, unchanged text, and replaced occupants add no charge. Anonymous debits and signed-in billing jobs commit with the files; failed units publish and bill nothing.
+- Stop fences unfinished workers and retires prepared content. It keeps completed units. Recovery bounds lost planning and preparation attempts; user and workspace purge stop review work before removing proposals. Late replies from expired attempts use the watchdog's same three-attempt limit. Whole-run expiry ends as `timed_out` even when delayed planning arrives before the watchdog.
+- Common Activity history cleanup owns the seven-day review retention window. It drains finished run items and units through the producer's bounded delete helper. Review recovery scans only active work; it has no separate finished-history scan.
+
 Paged pending-state storage (`packages/app/convex/schema.ts`; shared helpers in `packages/app/server/files.ts`):
 
-- `files_pending_update_yjs_states` — metadata for one branch state (one role: `base`, `staged`, or `unstaged`). A full Yjs state can be larger than one Convex value, so it never travels or stores as a single value. The `owner` union says who deletes the family: `active` states belong to a pending update doc, `temporary` states to an operation batch (expiry-swept), `retired` states to a durable cleanup task. Each state records `lineageGeneration` (unset for a file with collaboration off, which has no document lineage), `sealed`, `pageCount`, `totalBytes`, and `digest`.
+- `files_pending_update_yjs_states` — metadata for one branch state (one role: `base`, `staged`, or `unstaged`), with the same tagged `target`. A full Yjs state can be larger than one Convex value, so it never travels or stores as a single value. The `owner` union says who deletes the family: `active` states belong to a pending update doc, `temporary` states to an operation batch (expiry-swept), `retired` states to a durable cleanup task. Each state records `lineageGeneration` (unset for a file with collaboration off, which has no document lineage), `sealed`, `pageCount`, `totalBytes`, and `digest`.
 - `files_pending_update_yjs_state_pages` — the bytes, in non-empty pages of at most `files_MAX_YJS_WIRE_BYTES` (930,000 bytes), contiguous by `pageIndex` from 0. A state holds at most 5 pages, which covers the 4 MiB state cap.
 - `files_pending_update_state_cleanup_tasks` — durable cleanup task for a retired family. A commit re-owns the previous states to a task doc instead of deleting pages inline; a bounded scheduled continuation drains pages, states, then the task.
-- `files_pending_update_operation_batches` — one in-flight upsert or rebase per user and file. One active batch per user/node; a batch expires after 30 minutes, and a new create by the SAME user takes over a batch idle past 2 minutes (`lastActivityAt`, refreshed by page staging, text-input staging, and the seal), so a crashed client does not lock the user out.
-- `files_pending_update_text_inputs` — one staged text value (role `staged` or `unstaged`) per batch, so no registered call carries two large values at once.
+- `files_pending_update_operation_batches` — one in-flight upsert or rebase per user and tagged target. It captures the expected proposal ID and revision, or null when no proposal exists. Private targets also capture creation generation and structural revision. Staging, sealing, and adoption refuse changed targets. A batch expires after 30 minutes, and a new create by the same user takes over a batch idle past 2 minutes (`lastActivityAt`, refreshed by page staging, text-input staging, and the seal).
+- `files_pending_update_text_inputs` — one staged text value (role `staged` or `unstaged`) per batch, with its batch's tagged target, so no registered call carries two large values at once.
 - `files_yjs_trusted_update_stages` — one server-built Yjs update staged ahead of its commit (pending accept, public fill, snapshot restore), so the commit call carries only ids and one bounded text. 30-minute TTL.
 
 The digest is two FNV-1a 32-bit passes joined as hex (`files_pending_update_yjs_state_digest` in `packages/app/server/files.ts`). It is not cryptographic; it only detects a torn or mixed page family when a state is reassembled.
 
 Unified exact text chunk table:
 
+All three index tables below use strict committed/pending variants. Committed docs require a real `fileNodeId` and may carry `yjsSequence`. Pending docs require real tenant IDs, `target`, `userId`, `pendingUpdateId`, and `proposalRevision`; they have no saved `fileNodeId`. Saved move and cleanup helpers query both the committed file index and the pending target index. Owner reads hide content marked for rebase until preparation rebuilds its indexes.
+
 - `files_text_chunks`
   - `organizationId`
   - `workspaceId`
-  - `fileNodeId`
+  - committed `fileNodeId` or pending `target`
   - `sourceKind: "committed" | "pending"`
-  - optional `userId` for pending docs
-  - optional `pendingUpdateId` for pending docs
+  - required `userId`, `pendingUpdateId`, and `proposalRevision` for pending docs
   - optional `yjsSequence` for committed docs
   - `chunkIndex`
   - `textChunk`
@@ -79,10 +101,9 @@ Unified full-text search table:
 - `files_plain_text_chunks`
   - `organizationId`
   - `workspaceId`
-  - `fileNodeId`
+  - committed `fileNodeId` or pending `target`
   - `sourceKind: "committed" | "pending"`
-  - optional `userId` for pending docs
-  - optional `pendingUpdateId` for pending docs
+  - required `userId`, `pendingUpdateId`, and `proposalRevision` for pending docs
   - optional `yjsSequence` for committed docs
   - `textChunkId`
   - denormalized `path`
@@ -105,10 +126,9 @@ Unified Markdown frontmatter metadata docs:
   - value docs use `docKind: "value"` and support one searchable primitive value per field value
   - `organizationId`
   - `workspaceId`
-  - `fileNodeId`
+  - committed `fileNodeId` or pending `target`
   - `sourceKind: "committed" | "pending"`
-  - optional `userId` for pending docs
-  - optional `pendingUpdateId` for pending docs
+  - required `userId`, `pendingUpdateId`, and `proposalRevision` for pending docs
   - optional `yjsSequence` for committed docs
   - denormalized `path`
   - denormalized `treePath`
@@ -167,13 +187,13 @@ Workspace AGENTS.md and skills use the same current-user pending content and pat
 2. That read path overlays the current user's pending `unstaged` branch when content exists. Pending destinations are visible, vacated or replaced paths are hidden, and descendants follow a pending folder move.
 3. `edit_file` and Agent-mode bash shell writes (`bash_DbFilesFs.writeFile`/`appendFile` in `packages/app/server/bash-utils.ts`, reached by `>`/`>>` redirects, heredocs, `tee`, and `touch` on a new path — `touch` on an existing app file is a no-op) go through `files_agent_write_file_text` in `bash-utils.ts`: create an operation batch, stage the one proposed text, then call the ids-only `internal.files_pending_updates.upsert_file_pending_update_internal_action`. Every staged text crosses `db_stage_operation_batch_text_input`, which drops one leading BOM and normalizes CRLF and lone CR to LF (`files_normalize_text_document_input`) before the byte count, so the branch document, the pending chunks, and the stored size all see the same string. A staging refusal retires the batch first so the user is not locked out. The branch is built under the TARGET file's `textKind`, so a shell write or `edit_file` is always a text edit in the file's own shape. A `cp` never gets a branch: it is staged as a whole-file copy that keeps the source's content type and shape (step 2 below), and `mv -f` is a structural replace-move, so neither one parses the text.
 4. Agent calls stage no `staged` text, so the backend preserves the current `staged` branch and updates only `unstaged`.
-5. `files_pending_updates` creates or updates a doc for `(organizationId, workspaceId, userId, fileNodeId)`. A missing `edit_file` or bash shell write target may be eagerly created and recorded with `eagerCreated`.
+5. `files_pending_updates` creates or updates a doc for the user and tagged saved or private target. A missing agent write target is created in `files_pending_nodes`. Its initial text batch must seal before the draft is ready.
 
 Before reading text for an edit or shell write, the tool calls `prepare_file_pending_update_for_agent` with the acting user's scope and node id. This uses the same preparation as Review, with active membership and file-write checks. It runs before the write batch and needs no owner to open Review. Targeted edits and appends then read the prepared proposal and compute fresh output. Their write carries the base state id from that read. If the base changes before commit, they prepare, read, and recompute once; they never resend old whole-file output. A shell overwrite still replaces the proposed text with the supplied bytes. Preparation failure keeps the old proposal and stops the write.
 
-**Files with collaboration turned off use an asset base.** The pending doc stores `baseAssetId` instead of `baseYjsSequence` and `baseLineageGeneration`. The first upsert builds base and staged from committed text in the file's shape; the agent's text becomes unstaged. A member save makes the proposal stale when `baseAssetId !== node.assetId`. Ordinary reads and searches then show committed content until Review or the next agent write prepares the proposal. Direct stale upserts and Save still refuse with `files_PENDING_UPDATE_STALE_BASE_MESSAGE`; tool entrypoints prepare before calling them. Discard removes the content and keeps any move or delete.
+**Files with collaboration turned off use an asset base.** The pending doc stores `content.base: { kind: "asset", assetId }`. The first upsert builds base and staged from committed text in the file's shape; the agent's text becomes unstaged. A member save makes the proposal stale when `content.base.assetId !== node.assetId`. Ordinary reads and searches then show committed content until Review or the next agent write prepares the proposal. Direct stale upserts and Save still refuse with `files_PENDING_UPDATE_STALE_BASE_MESSAGE`; tool entrypoints prepare before calling them. Discard removes the content and keeps any move or delete.
 
-Save dispatches to `action_save_file_pending_update_non_collaborative` and `save_file_pending_update_non_collaborative_in_db`. It publishes staged text, stores a version snapshot, and bills one `file_save`. A partial save keeps unstaged work and advances `baseAssetId`. Text normalization is unchanged: one leading BOM is removed, line endings become LF, and rich text uses its Markdown serialization. Ordinary saves, collaboration toggles, and every restore preserve proposals. Accepted whole-file copies still drop destination content proposals for every member. `mv -f` on a committed file remains a structural replace-move: it archives the target and moves the source with its own mode and history. (A pending-created file never gets a `pendingMove` — see step 1 of the structural path.)
+Save dispatches to `action_save_file_pending_update_non_collaborative` and `save_file_pending_update_non_collaborative_in_db`. It publishes staged text, stores a version snapshot, and bills one `file_save`. A partial save keeps unstaged work and advances `content.base.assetId`. Text normalization is unchanged: one leading BOM is removed, line endings become LF, and rich text uses its Markdown serialization. Ordinary saves, collaboration toggles, and every restore preserve proposals. Accepted whole-file copies still drop destination content proposals for every member. `mv -f` on a committed file remains a structural replace-move: it archives the target and moves the source with its own mode and history. A private source uses `pendingMove` only to keep an exact saved replacement claim until Save.
 
 In the UI, a proposal on a file with collaboration off opens in `FileEditorDiff` with `nonCollaborative` and `committedAssetId` (the `assetId` of the editor node `FileNodeView` chose for the route: the selected file, or a folder's README): the editor loads only the proposal's branches, so there is no live-file fetch, no Sync, and no versions button. Save calls the same `save_file_pending_update` and shows "Changes saved". The action result carries `pendingUpdateUpdatedAt` (the doc's `updatedAt` after the save, or null when the save deleted the doc), and the view stays busy until its doc query shows that doc, because the query can deliver the save later than the action result and the reconcile effect would otherwise reload state pages the save deleted. The view exits once the doc is gone (a full save, a Discard, a row action, another tab). These exits replace the current browser history entry, so Back does not reopen the finished review. A failed ordinary branch reload shows "Failed to load the updated proposal. Open it again." and exits. A failed preparation reload keeps the old panes and offers Retry; Retry loads the pages again without preparing an already current proposal. An asset-stale proposal uses the same preparation flow as a marked proposal. The pending row says "Review to update" in its caption and accessible name. Accept explains that Review is needed and sends nothing. "Accept all" skips unprepared content with one explanation.
 Saving in the normal editor has no warning about making a proposal stale. The Pending caption and Review status after Save give that feedback.
@@ -213,9 +233,9 @@ Public `upsert_file_pending_update` returns `{ pendingUpdate, currentYjsLastSequ
 
 Structural review follows a parallel path:
 
-1. Agent-mode Bash `mv` stores `pendingMove` instead of moving the committed node immediately. Exception: a node whose doc has `eagerCreated` (the file only exists as this user's pending create) gets the move applied directly — there is no committed state to review it against — and its Added row follows the new path, like a manual sidebar move. That still falls back to a `pendingMove` when the destination is occupied by a committed node (replace is reviewable) or the committed destination slot is only vacated by another pending move. Inside that exception, `mv -f` onto a destination that is itself only this user's unaccepted eager create also applies for real: the occupant is hard-deleted (its staged copy asset reaches the deletion ledger), the source takes its path, and one Added row survives carrying the union of both docs' `threadIds` and the destination chain's `createdAncestorIds`. An occupant that gained real state — committed content past the creation stamp, another member's pending doc, a staged move or delete, or its own restricted scope — keeps the replace reviewable.
-2. Agent-mode app-to-app `cp` stages a whole-file replacement of the destination (`pendingReplacement`: the staged content asset and its size, the source's content type, document shape, and collaboration mode, and `baseAssetId`, the destination asset the copy was proposed against) and may create or update a doc with `copiedFrom`, `eagerCreated`, or both. A text copy over an existing text file keeps the destination's mode at accept time; a new eager copy or a text copy over a stored file inherits the source's mode. `cp -n` and `cp --no-clobber` create no pending replacement when the final destination already exists, including when it appears during eager creation. A text copy also writes pending chunks, so the agent reads and searches the copied text behind the proposal; a copy of a stored file has none (`files_pending_update_has_pending_chunks`). Accepting (`accept_file_pending_replacement`, then `finalize_file_pending_replacement`) installs the copy as a whole: the node keeps its id, name, permissions, metadata, and history, the replaced content stays as a version with its own type, and an existing collaborative file gets a fresh text document on a rotated lineage. A stored-content copy over an existing collaborative text file refuses with `Turn collaboration off in Properties before replacing this text file with stored content.` The member must use that OFF warning and acknowledgement first. New eager copy placeholders may become stored files without that toggle. For a collaborative destination whose document has edits past its snapshot, the accept first saves the document's latest text as a version too, so edits the materializer had not stored yet are not lost; a document the accept cannot read (a shape marker) refuses the accept in that case, like restore does. A changed destination asset refuses the accept with `files_PENDING_REPLACEMENT_BASE_CHANGED_MESSAGE`, and a changed `yjsLastSequenceId` or `lastSequence` counter refuses it with `files_PENDING_REPLACEMENT_EDITED_DURING_ACCEPT_MESSAGE` (the copy stays pending; accepting again keeps that edit as a version). A final refusal hands uploads made by that accept to the deletion ledger and keeps the staged copy for review. A no-change text write settles only the doc it read: a doc that appeared meanwhile, such as a copy proposal, is left alone. A text write onto a file that has a pending copy is refused with `This file has a pending copy. Accept or discard the copy in Files before writing to the file.`, so a later edit never turns the copy into a plain edit and drops the copied type. `mv -f` is a replace-move, not a copy: the pending move on the source stores `replacesNodeId`, and accepting archives the occupant and moves the source into its place.
-3. Agent-mode Bash `rm` stores `pendingArchive` (per operand, builtin flag semantics: `-r` for folders, `-f` silences missing paths, folder without `-r` fails with `Is a directory`). Accepting archives; nothing is ever hard-deleted except the own-Added-file cancel path.
+1. Agent-mode Bash `mv` uses a durable transfer run. A saved source gets `pendingMove`; its saved path does not change until Accept. Moving a private source updates its private parent and name. Its proposal, content states, and contributing chat threads follow that private identity. A forced file replacement supports every saved/private source and occupant pair. Replacing an owned private occupant retires it only after readiness, type, access, policy, and empty-folder checks. Its contributing threads join the surviving source proposal. If that private occupant already claimed a saved replacement, the source inherits the exact saved target and version. A saved occupant stays unchanged until archive and source publication commit together on Save. Discard, expiry, and moving away release the claim without changing the saved occupant.
+2. Agent-mode app-to-app `cp` captures content through a durable transfer run. A new destination gets a private node and `createIntent`; replacing a saved destination stores `pendingReplacement` with its exact saved content version. Both keep `copiedFrom`. A text copy over saved text keeps the destination's collaboration mode. A new private copy or a text copy over stored content inherits the source's mode. No-clobber skips an occupied path. Copied text has pending search chunks; stored content does not. Accept preserves a saved destination's id, name, permissions, metadata, and history, then installs the captured content. Replacing collaborative text with stored content requires turning collaboration off in Properties first. A changed saved content version refuses Accept. Edits past the snapshot are saved as a version before replacement; an unreadable document refuses that step. Failed Accept uploads enter the deletion ledger while the captured copy remains pending. A later text write cannot overwrite a pending whole-file copy; the user must accept or discard it first.
+3. Agent-mode Bash `rm` stores `pendingArchive` for saved nodes. Accept archives the reviewed node and descendants. Removing an owned private create discards it without creating a saved node. Normal flags still apply: folders need `-r`, and `-f` silences missing paths.
 4. Bash and legacy file reads/listings/searches apply the proposing user's pending path overlay. A pending-deleted node reads as gone (a deleted folder hides its whole subtree). Other users continue to see the committed tree, and the sidebar file tree shows no delete indicator until accept. Bash `resolve` checks access by node ID and projects its saved path through a fresh overlay for that same user. It follows file and ancestor moves, hides pending deletes and replaced targets, and does not fall back to the saved path when projection returns null. A path URL first finds its saved node, so a pending path swap still follows the original file. The next reader applies the normal pending content view.
 5. The Pending changes tab renders content-only, move-only, copy, content-plus-move, and delete rows. It applies moves through `apply_file_pending_move`, deletes through `apply_file_pending_archive`, saves content through the normal save path, discards structural state through `discard_file_pending_structural`, and discards content rows through `discard_file_pending_content`.
 
@@ -242,26 +262,24 @@ Important behavior:
 - The final commit mutations take sealed state ids plus digests (and at most one bounded `unstagedText`), re-check the digests, and atomically swap the canonical ids on the pending update doc. The previous family is retired into a durable cleanup task instead of being deleted inline; a bounded continuation drains it. Commits never reload pages.
 - Every refusal terminal retires the batch immediately (staging refusals, commit `_nay`s, and thrown commits), so a refused flow does not block the user for the batch TTL. The 15-minute sweeper (`cleanup_expired_pending_state_rows`) drains expired batches, text inputs, temporary states, trusted stages, and retired cleanup tasks; the TTL sweep must bound `by_owner_expiresAt` from below (`gte(0)`) because docs without the field sort before every number.
 - Node `content.write` is enforced at batch creation and re-enforced at every commit that swaps sealed states canonical. Page staging, text-input staging, and the seal check batch ownership only — any future path that commits sealed states MUST re-check `content.write`.
-- Upsert reconstructs existing branch docs or clones the live file base, applies the incoming text to `unstaged`, and applies `staged` only when a staged text was staged. When both branches match base, it removes the content proposal and keeps any move or delete. Eager-created docs keep their branches for review.
+- Upsert reconstructs existing branches or clones the saved base, applies the incoming unstaged text, and changes staged text only when supplied. When both branches match base, it removes saved content proposals while keeping a move or delete. Private creates keep their sealed branches, including empty text.
 - The base reconstruction reads the materialization header plus one update row per query call. A walk that ends before the frozen target sequence (covered-row cleanup deleted rows mid-walk) is treated as stale and refused with `Failed to load file state` instead of returning a partial base labeled complete — a partial base would let Accept commit duplicated content.
 - Content Accept, draft persistence, Sync, and Save can pass `reviewedUpdatedAt`. The diff editor and sidebar pass the version they loaded. Each flow refuses a changed proposal; final `expectedUpdatedAt` checks also catch changes during the action. Agent flows omit the reviewed timestamp and use the prepared base state id for read-dependent edits.
-- The agent pending read treats a content group whose `baseLineageGeneration` differs from the node's current generation as no pending content, so ordinary reads use committed text. The next agent write prepares the retained family before reading fresh text. An operator Yjs repair bumps the lineage, which makes old proposals stale.
+- The agent pending read treats a Yjs content base whose `lineageGeneration` differs from the node's current generation as no pending content, so ordinary reads use committed text. The next agent write prepares the retained family before reading fresh text. An operator Yjs repair bumps the lineage, which makes old proposals stale.
 - Rebase persistence rejects stale live bases and only accepts rebased state built from the current live file snapshot.
 - Rebase persistence is update-only and patches only the exact doc id the client synced. When that doc was discarded, fully accepted, or replaced by a newer proposal while the sync was in flight, it returns a benign `Not found` and never recreates or overwrites anything.
 - Two more rebase guards. A sync whose captured base is older than the doc's current base returns a benign `Stale save` (a tab that saved meanwhile wins). A sync against a doc that degraded to move-only returns `Not found` (in-flight syncs cannot resurrect reverted content).
-- Accept and discard are deliberately simple: `apply_file_pending_move` and `discard_file_pending_structural` take only `{membershipId, nodeId}` and act on the user's CURRENT doc for that node.
-- Structural clicks act on the doc's current state. Content acceptance has the reviewed timestamp checks above.
-- Discard is idempotent: a missing doc or a doc with nothing structural returns `_yay`, so bulk flows and already-settled swap cycle members just no-op.
-- Deliberate non-guarantees: other members of a swap cycle apply their current destinations, and equal-base concurrent content edits stay last-write-wins.
-- Same-user swap cycles accept atomically for any kind mix (files, folders, or both): accepting one member applies every member's move in one transaction, folder members cascade their descendants, and the other members' rows settle so a later accept on them no-ops.
-- Folder replaces follow rename() semantics: a folder move soft-archives and replaces an EMPTY folder occupant, both when `mv` resolves into a folder with a same-named empty folder child and with `mv -T`; no `-f` is needed. A non-empty occupant is rejected with `Directory not empty` — committed children count, and so do the user's own pending moves into that folder. Accept also replaces an empty folder occupant that appears after proposal time, the same way it auto-replaces a file occupant. A file never replaces a folder, and a folder never replaces a file.
+- Structural Accept and Discard name the exact tagged target, proposal ID, and reviewed revision. A changed proposal refuses. Removing one structural part keeps the same proposal when other pending parts remain.
+- Connected moves, folder cycles, content, and replacement occupants must appear in the explicit server review selection. Accepting one member never silently selects another member. The connected unit applies all selected changes in one bounded transaction.
+- Folder Move replaces only an empty folder. Bash requires the explicit `mv -T -f` form. Active saved children, private children, and the owner's pending moves into that folder count as contents. The final Save checks again, so a late saved child keeps its folder. A file never replaces a folder, and a folder never replaces a file. Move never merges nonempty folders.
+- A replacement pins the saved occupant ID and content version at proposal time. A later occupant or changed version requires a new review; Save never adopts either automatically. The occupant's own pending changes must be selected too, even when another chat contributed them.
 - The only stale literal the client treats as benign is `Stale save` (plus `Not found` on in-flight syncs); both come from multi-second ACTIONS, not from panel clicks.
 - One documented cross-tab edge (accepted editing model): an OPEN diff editor owns a live local draft, and a dead doc id with no replacement doc deliberately falls through to the create path — so a diff tab left open on a file can recreate a proposal that was discarded in another tab. The recreated content is pending only (never committed or billed) and shows up in the panel like any proposal. Making Discard authoritative across tabs would need a separate draft-cancellation design.
 - Every proposal edit refreshes the 4-hour expiry, including identical-content upsert and sync. An identical rewrite still bumps `updatedAt`, reschedules cleanup, and records new structural intent. Toggle and restore marking leave the timestamp and expiry task unchanged. Successful preparation refreshes them normally.
 - Collaborative Save merges both branches against current text with the shared line rule, builds them on current history, and publishes only staged text. It writes the saved-sequence marker, enqueues R2 materialization, and keeps unresolved unstaged work on partial save. It does not replay old branch delete sets onto current content. A branch may contain another Yjs root accepted by the state seal; Save projects only the file's own text shape.
 - Save guards the target node before any write: a missing, out-of-scope, or non-file target returns `Not found` and the doc survives. An archived target still saves: the archive only hides the node, its content stays writable, and unarchiving later shows the saved text. The sidebar marks those rows `· Archived`.
 - A save whose action-read base sequence no longer matches the file's CURRENT committed last sequence returns `Stale save` before any write or billing. This one check covers two races: a second tab replaying an old save (no double billing), and another user committing between the action's read and the mutation (the doc's new base can never silently hide that commit).
-- A replace-move accept (`pendingMove.replacesNodeId`) archives the occupant and moves the source into its place — except an occupant that is still the accepting user's own untouched eager create, which is hard-deleted so its pending row dies with the node instead of lingering archived. The source keeps its id, type, and history; nothing merges the occupant's content anywhere.
+- A replace-move Accept archives the reviewed saved occupant and moves or publishes the source into its place. A saved source keeps its saved ID, type, and history; a private source keeps its private identity until it receives its one saved receipt. A partial private Save clears the replacement claim and keeps unresolved content on the same proposal, now targeting the saved source. It does not merge the occupant's content.
 - `apply_file_pending_archive` re-validates at accept time: a missing doc or one without `pendingArchive` no-ops; a missing/out-of-scope/already-archived node just drops the doc. A folder computes its subtree by following stored `parentId` links at accept time (nodes added after the proposal are archived too, while an archived tree that reuses the path stays separate) and everything gets ONE `archiveOperationId`, so Unarchive restores the delete as one unit. The acting user's docs on all archived nodes are removed; other users' docs stay, and a content accept still saves onto the archived node. Accepting a delete never runs the mv‑f replace-source chain.
 - Save on a doc with `pendingArchive` is rejected with `File has a pending delete` (discard the delete first). Discarding a delete only clears `pendingArchive`: a doc that still has content or copy provenance survives as a content row; a delete-only doc is removed.
 - Keep each public endpoint's current auth, membership, and rate-limit order. Do not infer one shared order: content upsert validates membership before its rate limit, while structural accept/discard and save perform the rate-limit check earlier.
@@ -307,7 +325,7 @@ Important behavior:
 - bulk Accept is enabled only when every shown row currently returns true from its node write query. The backend still checks destination, replacement, and subtree permissions that one source-node query cannot prove
 - move-before-content ordering for content-plus-move row acceptance; the content publish re-reads the doc after the move settle bumps `updatedAt`, and the row caption compounds (`Modified · Moved`)
 - delete rows run as their own trailing bulk phase (accepting a folder delete first would archive descendants and fail sibling accepts)
-- safe eager-created destination deletion during discard
+- private create discard without deleting saved files
 
 `packages/app/src/components/files/file-editor/file-editor-sidebar/file-editor-sidebar-pending-strip.tsx` owns:
 
@@ -336,32 +354,23 @@ every parent policy still applies. The full contract lives in
   from changing different files from the ones the user reviewed.
 - Whole-proposal Discard and Discard all stay available. They delete only the caller's pending docs.
   Diff hunk discard and editor-level discard that rewrite the pending Yjs model remain blocked.
-- `eagerCreated.createdAncestorIds` stores the ids of missing folders created with the new file. The
-  ids are stored deepest first so cleanup can delete empty folders from the inside out.
-- Discard, expiry, and failed-write cleanup check the proposer's current policy access on the
-  eager-created file and each created ancestor before the first delete. If one refuses, delete the
-  pending docs but keep the committed file and folders. Past policy state does not block safe cleanup.
+- Private Discard retires only the owner's approved private nodes and proposals. Saved files and folders stay intact.
 
 # Cleanup And Expiry Model
 
-- Eager-file hard deletion ensures durable exact-key jobs for all owned assets, including a staged whole-file copy, before removing their docs. It preserves upload jobs and arrival guards already queued by the caller. A resolved vendor retry enqueue is not proof that the object was deleted.
+- Private cleanup hands captured assets to durable exact-key deletion jobs before removing their records. Physical storage reservations remain until deletion is confirmed.
 
 - Every edit that leaves a pending update doc alive refreshes its four-hour cleanup task. This includes content upserts, move upserts, rebases, preparation, partial saves, and structural accept/discard paths that preserve part of a content-plus-move doc. Toggle and restore marking leave the existing deadline unchanged.
 - If an operation deletes or fully resolves the doc, it removes the cleanup task instead.
 - A new presence session reschedules cleanup for four hours from that session without changing the doc's `updatedAt`. Disconnect does not shorten the lifetime, so unreviewed proposals survive the user closing the app.
 - Every scheduled cleanup carries `expectedUpdatedAt`; stale scheduled work cannot delete a newer doc.
-- Expiry hard-deletes the file node only when every check passes: the doc has an `eagerCreated` stamp, the node's committed sequence still matches that stamp, the node's `updatedBy` is still the proposer, and no other pending update doc uses the node. The `updatedBy` check exists because a committed rename or move by another user never advances the Yjs sequence, so the stamp alone cannot catch it; `rename_node` and `move_nodes` both stamp `updatedBy`.
-- An ancestor-folder move does not restamp descendants and does not block the hard delete — removing the eager-created node does not undo the ancestor's move.
-- When the node is not eligible, expiry deletes only the pending update doc and its pending indexes/task, and the node stays active. Expiry never hard-deletes a pre-existing node targeted by a replace proposal. A delete-only doc expires the same way: the doc goes, the node is untouched.
-- Eager creates commit missing parent folders. `eagerCreated.createdAncestorIds` remembers their ids,
-  deepest first.
-- Every path that safely hard-deletes the eager-created leaf — discard, expiry, and the failed-upsert compensation — then removes those folders too, but only while each folder is provably untouched: created AND last updated by the proposer, zero children in any archive state, no pending update doc ON the folder (`by_fileNode`), and no pending move TARGETING it as a destination (`by_pendingMove_destParentId` — another user's proposed move into the folder keeps it alive).
-- The first kept folder stops the walk (everything shallower contains it).
+- Expiry removes saved-target proposals, pending indexes, and cleanup tasks without deleting their saved targets.
+- Private expiry uses the lifetime rules above. Missing folders created with an agent file are private nodes, each with its own proposal and expiry. Live descendants keep their private ancestors alive.
 
 # Architectural Invariants
 
-- Pending updates are per-user docs keyed by `(organizationId, workspaceId, userId, fileNodeId)`.
-- A content-only doc normally exists while `staged` or `unstaged` differs from `base`. Structural docs, eager-created destinations, and replace-moves may persist even when the content branches match.
+- Pending updates are per-user docs keyed by organization, workspace, user, and tagged target.
+- A saved content-only doc normally exists while staged or unstaged differs from base. Private creates and structural proposals may persist when content branches match.
 - Preparation, Sync, and Save merge text with `files_pending_text_merge`, then build base → staged → unstaged on current history. State-vector diffs publish only this rebuilt family. Never diff an independent fresh `Y.Doc` against live state: Yjs compares structs and client clocks, not visible text, so that can duplicate content.
 - Use the shape-aware dispatchers (`files_yjs_doc_get_text` / `files_yjs_doc_update_from_text`). Read retained branches with `contentRebaseRootKind` when set, then write in the current node shape. ProseMirror-specific work belongs inside the rich-text dispatcher.
 - AI reads use the current user's pending `unstaged` branch when it is current. Marked proposals and ordinary stale asset proposals leave committed text visible instead.
@@ -403,5 +412,5 @@ every parent policy still applies. The full contract lives in
 - Verify bash `rm` hides the path from the proposer's reads, accept archives (folder cascade, one operation id), and discard restores visibility without touching the node.
 - Verify pure moves do not enter the diff pager.
 - Verify accept/discard applies pending paths, archive behavior, content, and move-before-save ordering for content-plus-move rows.
-- Verify discard and expiry hard-delete only eligible eager-created destinations.
+- Verify private discard and expiry leave saved files intact.
 - Verify the proposing user sees the pending structural path overlay while another user sees the committed tree.

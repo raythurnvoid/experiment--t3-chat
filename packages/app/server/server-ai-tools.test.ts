@@ -164,6 +164,7 @@ describe("ai_chat_tool_create_bash", () => {
 			expect.anything(),
 			expect.objectContaining({
 				command: "pwd",
+				toolCallId: "test",
 				threadId: "thread_1",
 				userId: server_ai_tools_test_user_id,
 				organizationName: "personal",
@@ -181,18 +182,31 @@ describe("ai_chat_tool_create_bash", () => {
 			instructions: new Map(),
 			instructionBytes: 0,
 		};
-		const { ctx } = makeCtx(async (_ref, args) => {
-			if (args.path !== "/docs/AGENTS.md") return null;
-			return args.mode ? { content: "Use short headings." } : { _id: "rules", kind: "file" };
-		}, {
-			runActionImpl: async () => ({
-				title: "exit 0", output: "$ cat docs/notes.md\n\nNotes", stdout: "Notes", stderr: "",
-				metadata: { exitCode: 0, observedPaths: ["/docs/notes.md"], observedPathsTruncated: false },
-			}),
-		});
-		const tool = ai_chat_tool_create_bash(ctx, {
-			...server_ai_tools_test_ctx_data, getWorkspaceContext: () => context,
-		}, { allowDbFilesMkdir: true });
+		const { ctx } = makeCtx(
+			async (_ref, args) => {
+				if (args.path !== "/docs/AGENTS.md") return null;
+				return args.mode
+					? { content: "Use short headings." }
+					: { kind: "saved", node: { _id: "rules", kind: "file" }, path: args.path, pendingUpdate: null };
+			},
+			{
+				runActionImpl: async () => ({
+					title: "exit 0",
+					output: "$ cat docs/notes.md\n\nNotes",
+					stdout: "Notes",
+					stderr: "",
+					metadata: { exitCode: 0, observedPaths: ["/docs/notes.md"], observedPathsTruncated: false },
+				}),
+			},
+		);
+		const tool = ai_chat_tool_create_bash(
+			ctx,
+			{
+				...server_ai_tools_test_ctx_data,
+				getWorkspaceContext: () => context,
+			},
+			{ allowDbFilesMkdir: true },
+		);
 		const first = await tool.execute!({ command: "cat docs/notes.md" }, { toolCallId: "first", messages: [] });
 		expect(first).toMatchObject({
 			output: "$ cat docs/notes.md\n\nNotes",
@@ -214,15 +228,26 @@ describe("ai_chat_tool_create_bash", () => {
 		};
 		const { ctx } = makeCtx(async () => null, {
 			runActionImpl: async () => ({
-				title: "exit 0", output: "$ find .", stdout: "", stderr: "",
+				title: "exit 0",
+				output: "$ find .",
+				stdout: "",
+				stderr: "",
 				metadata: { exitCode: 0, observedPaths: [], observedPathsTruncated: true },
 			}),
 		});
-		const tool = ai_chat_tool_create_bash(ctx, {
-			...server_ai_tools_test_ctx_data, getWorkspaceContext: () => context,
-		}, { allowDbFilesMkdir: true });
+		const tool = ai_chat_tool_create_bash(
+			ctx,
+			{
+				...server_ai_tools_test_ctx_data,
+				getWorkspaceContext: () => context,
+			},
+			{ allowDbFilesMkdir: true },
+		);
 		const result = await tool.execute!({ command: "find ." }, { toolCallId: "many", messages: [] });
-		expect(result).toHaveProperty("instructions", "Workspace guidance is incomplete: inspect fewer app paths per Bash call.");
+		expect(result).toHaveProperty(
+			"instructions",
+			"Workspace guidance is incomplete: inspect fewer app paths per Bash call.",
+		);
 	});
 
 	test("describes supported app ls flags and pagination limits", () => {
@@ -781,15 +806,19 @@ test("edit_file tool treats an invalid pending update id as absent", async () =>
 test("edit_file tool surfaces the upsert rejection when the file is archived after the read", async () => {
 	const nodeId = "p456";
 	const currentContent = {
-		nodeId,
-		displayNodeId: nodeId,
+		target: { kind: "saved", id: nodeId },
 		content: "Hello world",
 		pendingUpdateId: "pending456",
 	};
 
 	let runActionCallCount = 0;
 	const { ctx, runQuery, runAction } = makeCtx(
-		async () => ({ _id: nodeId, kind: "file", assetId: "asset_edit", textKind: "plain_text" }),
+		async () => ({
+			kind: "saved",
+			node: { _id: nodeId, kind: "file", assetId: "asset_edit", textKind: "plain_text" },
+			path: "/docs/hello.md",
+			pendingUpdate: null,
+		}),
 		{
 			// The upsert flow stages through internal mutations first: batch create, then text input.
 			runMutationImpl: async () => ({ _yay: { operationBatchId: "batch456", expiresAt: Date.now() + 60_000 } }),
@@ -827,8 +856,7 @@ test("edit_file tool stores pending unstaged branch updates from the agent", asy
 	const pendingUpdateId = "pending456";
 	const pendingUpdateBaseStateId = "base456";
 	const currentContent = {
-		nodeId,
-		displayNodeId: nodeId,
+		target: { kind: "saved", id: nodeId },
 		content: "Hello world",
 		pendingUpdateId,
 		pendingUpdateBaseStateId,
@@ -837,7 +865,12 @@ test("edit_file tool stores pending unstaged branch updates from the agent", asy
 	const { ctx, runAction, runMutation } = makeCtx(
 		async (_ref, args) =>
 			args.path
-				? { _id: nodeId, kind: "file", assetId: "asset_edit", textKind: "plain_text" }
+				? {
+						kind: "saved",
+						node: { _id: nodeId, kind: "file", assetId: "asset_edit", textKind: "plain_text" },
+						path: args.path,
+						pendingUpdate: null,
+					}
 				: { _id: pendingUpdateId },
 		{
 			// The upsert flow stages through internal mutations: batch create, then text input.
@@ -892,15 +925,14 @@ test("edit_file tool stores pending unstaged branch updates from the agent", asy
 		organizationId: test_mocks_hardcoded.organization_id.organization_1,
 		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
 		userId: server_ai_tools_test_user_id,
-		nodeId,
+		target: { kind: "saved", id: nodeId },
 		pendingUpdateId,
 		operationBatchId: "batch456",
 		expectedBaseStateId: pendingUpdateBaseStateId,
 		threadId: server_ai_tools_test_thread_id,
 	});
 
-	expect(result.metadata.nodeId).toBe(nodeId);
-	expect(result.metadata.contentNodeId).toBe(nodeId);
+	expect(result.metadata.target).toEqual({ kind: "saved", id: nodeId });
 	expect(result.metadata.pendingUpdateId).toBe(pendingUpdateId);
 	expect(result.metadata.matches).toBe(1);
 	expect(result.metadata.matcher).toBe("simple");
@@ -910,7 +942,12 @@ test("edit_file tool stores pending unstaged branch updates from the agent", asy
 describe("ai_chat_tool_create_edit_file", () => {
 	test("refuses before opening a write batch when the file disappears after preparation", async () => {
 		const { ctx, runMutation } = makeCtx(
-			async () => ({ _id: "file_gone", kind: "file", assetId: "asset_edit", textKind: "plain_text" }),
+			async () => ({
+				kind: "saved",
+				node: { _id: "file_gone", kind: "file", assetId: "asset_edit", textKind: "plain_text" },
+				path: "/gone.txt",
+				pendingUpdate: null,
+			}),
 			{ runActionImpl: async (_ref, args) => (args.path ? null : { _yay: { pendingUpdate: null } }) },
 		);
 		const edit = ai_chat_tool_create_edit_file(ctx, server_ai_tools_test_ctx_data);
@@ -929,20 +966,22 @@ describe("ai_chat_tool_create_edit_file", () => {
 			let reads = 0;
 			let writes = 0;
 			const { ctx, runAction, runMutation } = makeCtx(
-				async (_ref, args) => ({
-					_id: args.path ? "file_retry" : "pending_retry",
-					kind: "file",
-					assetId: "asset_edit",
-					textKind: "plain_text",
-				}),
+				async (_ref, args) =>
+					args.path
+						? {
+								kind: "saved",
+								node: { _id: "file_retry", kind: "file", assetId: "asset_edit", textKind: "plain_text" },
+								path: args.path,
+								pendingUpdate: null,
+							}
+						: { _id: "pending_retry" },
 				{
 					runMutationImpl: async () => ({ _yay: { operationBatchId: "batch_retry", expiresAt: Date.now() + 60_000 } }),
 					runActionImpl: async (_ref, args) => {
 						if (args.path) {
 							reads += 1;
 							return {
-								nodeId: "file_retry",
-								displayNodeId: "file_retry",
+								target: { kind: "saved", id: "file_retry" },
 								content: reads === 1 ? "old\n" : "saved\nold\n",
 								pendingUpdateId: reads === 1 ? null : "pending_retry",
 								pendingUpdateBaseStateId: reads === 1 ? undefined : "base_retry",
@@ -971,10 +1010,10 @@ describe("ai_chat_tool_create_edit_file", () => {
 			expect(reads).toBe(2);
 			expect(writes).toBe(2);
 			expect(runAction.mock.calls.map(([, args]) => args)).toMatchObject([
-				{ nodeId: "file_retry" },
+				{ target: { kind: "saved", id: "file_retry" } },
 				{ path: "/retry.txt" },
 				{ expectedBaseStateId: null },
-				{ nodeId: "file_retry" },
+				{ target: { kind: "saved", id: "file_retry" } },
 				{ path: "/retry.txt" },
 				{ expectedBaseStateId: "base_retry" },
 			]);
@@ -1068,7 +1107,7 @@ test("edit_file tool preserves the baseline trailing newline shape", async () =>
 	const nodeId = "p789";
 	const pendingUpdateId = "pending789";
 	const currentContent = {
-		nodeId,
+		target: { kind: "saved", id: nodeId },
 		content: "Hello world\n",
 		pendingUpdateId,
 	};
@@ -1076,7 +1115,12 @@ test("edit_file tool preserves the baseline trailing newline shape", async () =>
 	const { ctx, runAction, runMutation } = makeCtx(
 		async (_ref, args) =>
 			args.path
-				? { _id: nodeId, kind: "file", assetId: "asset_edit", textKind: "plain_text" }
+				? {
+						kind: "saved",
+						node: { _id: nodeId, kind: "file", assetId: "asset_edit", textKind: "plain_text" },
+						path: args.path,
+						pendingUpdate: null,
+					}
 				: { _id: pendingUpdateId },
 		{
 			// The upsert flow stages through internal mutations: batch create, then text input.
@@ -1129,8 +1173,7 @@ test("edit_file edits a plain text .json file and stages the exact text", async 
 	const nodeId = "p901";
 	const pendingUpdateId = "pending901";
 	const currentContent = {
-		nodeId,
-		displayNodeId: nodeId,
+		target: { kind: "saved", id: nodeId },
 		content: '{"port": 9090}',
 		pendingUpdateId,
 	};
@@ -1138,7 +1181,12 @@ test("edit_file edits a plain text .json file and stages the exact text", async 
 	const { ctx, runMutation } = makeCtx(
 		async (_ref, args) =>
 			args.path
-				? { _id: nodeId, kind: "file", assetId: "asset_edit", textKind: "plain_text" }
+				? {
+						kind: "saved",
+						node: { _id: nodeId, kind: "file", assetId: "asset_edit", textKind: "plain_text" },
+						path: args.path,
+						pendingUpdate: null,
+					}
 				: { _id: pendingUpdateId },
 		{
 			runMutationImpl: async () => ({ _yay: { operationBatchId: "batch901", expiresAt: Date.now() + 60_000 } }),
@@ -1179,13 +1227,17 @@ test("edit_file edits a plain text .json file and stages the exact text", async 
 
 test("edit_file describes and preserves a terminal read-only refusal", async () => {
 	const currentContent = {
-		nodeId: "file_read_only",
-		displayNodeId: "file_read_only",
+		target: { kind: "saved", id: "file_read_only" },
 		content: "before",
 		pendingUpdateId: null,
 	};
 	const { ctx, runAction, runMutation } = makeCtx(
-		async () => ({ _id: currentContent.nodeId, kind: "file", assetId: "asset_edit", textKind: "plain_text" }),
+		async () => ({
+			kind: "saved",
+			node: { _id: currentContent.target.id, kind: "file", assetId: "asset_edit", textKind: "plain_text" },
+			path: "/docs/locked.md",
+			pendingUpdate: null,
+		}),
 		{
 			runActionImpl: async () => ({ _nay: { name: "read_only", message: "This item is read-only." } }),
 		},
@@ -1214,10 +1266,15 @@ test("edit_file describes and preserves a terminal read-only refusal", async () 
 	expect(runMutation).not.toHaveBeenCalled();
 });
 
-test("edit_file's refusal names the stored content type, not the path", async () => {
+test.each(["saved", "private"])("edit_file's refusal names the %s content type, not the path", async (kind) => {
 	// A stored image has no text. Its node lookup lets the refusal name the stored type.
 	const { ctx, runAction, runQuery } = makeCtx(
-		async () => ({ kind: "file", contentType: "image/png", assetId: "asset_image", textKind: null }),
+		async () => ({
+			kind,
+			node: { kind: "file", contentType: "image/png", assetId: "asset_image", textKind: null },
+			path: "/assets/photo.png",
+			pendingUpdate: kind === "saved" ? null : { createIntent: { kind: "stored", contentType: "image/png" } },
+		}),
 		{ runActionImpl: async (_ref, args) => (args.path ? null : { _yay: { pendingUpdate: null } }) },
 	);
 	const tool = ai_chat_tool_create_edit_file(
@@ -1527,28 +1584,44 @@ describe("runner cancellation", () => {
 	test("Stop aborts the execute_code fetch", async () => {
 		const abort = new AbortController();
 		let notifyFetch!: () => void;
-		const fetched = new Promise<void>((resolve) => { notifyFetch = resolve; });
-		let fetchWasAborted = false;
-		await execute_code_test_with_runner({
-			url: "https://runner.test", secret: "test-runner-secret",
-			fetchImpl: async (...args) => {
-				const init = args[1] as RequestInit;
-				notifyFetch();
-				expect(init.signal).toBe(abort.signal);
-				return await new Promise<execute_code_test_runner_response>((_resolve, reject) => {
-					init.signal?.addEventListener("abort", () => { fetchWasAborted = true; reject(init.signal?.reason); }, { once: true });
-				});
-			},
-		}, async () => {
-			const { ctx } = makeCtx(async () => null);
-			const options = { toolCallId: "abort-call", messages: [], abortSignal: abort.signal };
-			const operation = ai_chat_tool_create_execute_code(ctx, server_ai_tools_test_ctx_data).execute?.({ code: "return 2 + 2;" }, options);
-			const rejected = expect(operation).rejects.toThrow("Stop");
-			await fetched;
-			abort.abort(new Error("Stop"));
-			await rejected;
-			expect(fetchWasAborted).toBe(true);
+		const fetched = new Promise<void>((resolve) => {
+			notifyFetch = resolve;
 		});
+		let fetchWasAborted = false;
+		await execute_code_test_with_runner(
+			{
+				url: "https://runner.test",
+				secret: "test-runner-secret",
+				fetchImpl: async (...args) => {
+					const init = args[1] as RequestInit;
+					notifyFetch();
+					expect(init.signal).toBe(abort.signal);
+					return await new Promise<execute_code_test_runner_response>((_resolve, reject) => {
+						init.signal?.addEventListener(
+							"abort",
+							() => {
+								fetchWasAborted = true;
+								reject(init.signal?.reason);
+							},
+							{ once: true },
+						);
+					});
+				},
+			},
+			async () => {
+				const { ctx } = makeCtx(async () => null);
+				const options = { toolCallId: "abort-call", messages: [], abortSignal: abort.signal };
+				const operation = ai_chat_tool_create_execute_code(ctx, server_ai_tools_test_ctx_data).execute?.(
+					{ code: "return 2 + 2;" },
+					options,
+				);
+				const rejected = expect(operation).rejects.toThrow("Stop");
+				await fetched;
+				abort.abort(new Error("Stop"));
+				await rejected;
+				expect(fetchWasAborted).toBe(true);
+			},
+		);
 	});
 });
 

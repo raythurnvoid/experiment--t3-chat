@@ -1,12 +1,15 @@
 import { useSyncExternalStore } from "react";
-import { app_convex, app_convex_api, type app_convex_Doc, type app_convex_Id } from "@/lib/app-convex-client.ts";
+import {
+	app_convex,
+	app_convex_api,
+	type app_convex_FunctionReturnType,
+	type app_convex_Id,
+} from "@/lib/app-convex-client.ts";
 
-// One shared `activities.list_recent` watch per membership (the Convex client dedupes it with the
-// notifications bell subscription), sliced per target file node. Components subscribe to a single
-// node's slice through `useFileNodeActivities`, so a feed update only re-renders the components
-// whose node slice actually changed.
+// Share the first active and history pages per membership, sliced per target file.
+// The bell can load older pages. File badges stay bounded to these recent pages.
 
-type activities_NodeSlice = app_convex_Doc<"activities">[];
+type activities_NodeSlice = app_convex_FunctionReturnType<typeof app_convex_api.activities.list_page>["page"];
 
 type ActivitiesFeed = {
 	dispose: () => void;
@@ -76,7 +79,13 @@ function get_or_create_feed(membershipId: app_convex_Id<"organizations_workspace
 		return existing;
 	}
 
-	const watcher = app_convex.watchQuery(app_convex_api.activities.list_recent, { membershipId });
+	const watchers = (["active", "history"] as const).map((section) =>
+		app_convex.watchQuery(app_convex_api.activities.list_page, {
+			membershipId,
+			section,
+			paginationOpts: { cursor: null, numItems: 50 },
+		}),
+	);
 
 	const feed: ActivitiesFeed = {
 		dispose: () => {},
@@ -88,16 +97,21 @@ function get_or_create_feed(membershipId: app_convex_Id<"organizations_workspace
 	// `localQueryResult` throws when the server returned an error for the query (e.g. auth loss).
 	const read_local_result = () => {
 		try {
-			return watcher.localQueryResult();
+			const pages = watchers.map((watcher) => watcher.localQueryResult());
+			if (pages.some((page) => page === undefined)) return undefined;
+			return pages.flatMap((page) => page?.page ?? []);
 		} catch (error) {
 			console.error("[activities] Failed to read the activities feed", { error });
 			return undefined;
 		}
 	};
 
-	feed.dispose = watcher.onUpdate(() => {
-		apply_feed_result(feed, read_local_result());
-	});
+	const disposers = watchers.map((watcher) =>
+		watcher.onUpdate(() => {
+			apply_feed_result(feed, read_local_result());
+		}),
+	);
+	feed.dispose = () => disposers.forEach((dispose) => dispose());
 	// Seed from the local cache: another subscriber (the notifications bell) may already hold the result.
 	apply_feed_result(feed, read_local_result());
 
@@ -106,7 +120,7 @@ function get_or_create_feed(membershipId: app_convex_Id<"organizations_workspace
 }
 
 /**
- * The active (non archived) activities targeting one file node, newest first.
+ * Recent, undismissed activities targeting one file node, active jobs first.
  *
  * Re-renders only when that node's slice changes; nodes without activities share one
  * stable empty array. Pass `nodeId: null` when no file is viewed (no subscription).

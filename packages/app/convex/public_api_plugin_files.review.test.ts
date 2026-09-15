@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 
 import { api, internal } from "./_generated/api.js";
+import { activities_db_require_by_source_id } from "./activities_db.ts";
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
 import { crypto_sha256_hex } from "../server/crypto-utils.ts";
 import { files_ROOT_ID } from "../server/files.ts";
@@ -200,8 +201,10 @@ describe("ensure_plugin_folder", () => {
 			expect(await t.run((ctx) => ctx.db.get("organizations_workspaces_users", fixture.membershipId))).toMatchObject({
 				active: true,
 			});
-			expect(await t.run((ctx) => ctx.db.get("plugins_event_runs", started._yay.pluginRun._id))).toMatchObject({
+			expect(await t.run((ctx) => activities_db_require_by_source_id(ctx, started._yay.pluginRun._id))).toMatchObject({
 				status: "running",
+			});
+			expect(await t.run((ctx) => ctx.db.get("plugins_event_runs", started._yay.pluginRun._id))).toMatchObject({
 				actorUserId: fixture.userId,
 			});
 

@@ -71,7 +71,7 @@ Server-side usage-event typing lives in [billing.ts](../../../packages/app/serve
 - `billing_event` is a typed identity helper for preserving the narrow `billing_Event` variant at call sites. It does not build full event payloads; callers own the metadata they emit.
 - Usage-event `externalId` values are built directly with the shared `composite_id("billing", ...)` helper. Its `AppCompositeIds.billing` tuple union keeps billing IDs strict and always joins parts with `::`; organization usage event ids include the billed user, actor, organization, and workspace.
 - Organization usage events (`file_save`, `ai_usage`) always include `metadata.actorUserId`, `metadata.billedUserId`, `metadata.organizationId`, and `metadata.workspaceId`. `externalMemberId` is optional actor attribution; when present, `ingest_events` passes it through to Polar.
-- `billing_ingest_events` is the mandatory exported local emission helper for billing usage events. It accepts `{ event, billedUser }` pairs using the real payer `users` row, routes signed-in billed rows (`billedUser.clerkUserId != null`) to the `billing_workpool_usage_event` retry path, and routes anonymous billed rows (`billedUser.clerkUserId == null`) to a local mutation that applies the synthetic snapshot directly. The enqueued `ingest_events` action remains the only code path that should call Polar `eventsIngest`.
+- `billing_ingest_events` is the mandatory local emission helper for billing usage events. It accepts `{ event, billedUser }` pairs using the real payer `users` row. Signed-in payers use the `billing_workpool_usage_event` retry path. Anonymous payers use `billing_db_ingest_anonymous_user_events` in the caller's mutation context; action callers reach that helper through the registered mutation. The enqueued `ingest_events` action remains the only caller of Polar `eventsIngest`.
 
 See [Glossary — server/billing.ts](#glossary--serverbillingts) and [Glossary — event ingestion](#glossary--event-ingestion) for precise signatures and behavior.
 
@@ -213,6 +213,20 @@ files. Publish the file and emit one `file_save` event in the same mutation. The
 id is the event's version part. Repeated callbacks do not bill again. Cut and copied folders emit
 no file-save event. See [Files transfer runs](../files-explorer-tree/references/transfer.md#copied-content).
 
+Agent creation and Copy preparation reserve private storage but emit no `file_save`. Save chooses
+the current payer before preparation. A review job pins that payer on each item and keeps it through
+retries. Final publication rechecks credits and the paid-plan gate for stored bytes, including a
+text-to-stored replacement. It saves the file, billing event, and receipt in one mutation. Replayed
+receipts do not bill again. Folder publication, moves, Discard, and skipped or failed items do not bill.
+See the [pending review spec](../files-agent-pending-updates/SKILL.md).
+
+Connected review commits check the full successful file-save cost per pinned payer before writing.
+They exclude folders, moves, unchanged content, and replaced occupants. This checks a connected unit
+against one balance without changing the existing signed-in Polar refresh policy.
+They use the same DB context for anonymous debits, so billing reads and writes
+count toward the review budget and roll back with the files. Each debit reads the previous debit's
+balance. Signed-in billing jobs also enter the queue in that final transaction.
+
 R2 content materialization is storage bookkeeping for an already accepted save; it must not emit an additional billing event.
 
 For bulk imports, distinguish a saved file with a durable billing job from an event already accepted by Polar. A large sandbox queue can remain after all file checks pass. Check the current queue's workspace, payer, amount, unique event IDs, retry state, and worker progress; report pending events separately. A healthy pending queue alone does not require waiting for full drain to finish the file import. Failed or canceled jobs need investigation. Never disable billing, change rates, or mark jobs complete to speed up the import. See the [import guide](../convex-admin-ops/references/large-file-imports.md#billing-and-upload-finalization).
@@ -226,7 +240,7 @@ Anonymous users participate in credit gating through a **synthetic `billing_usag
 - The snapshot keeps the `subscription` and `meter` objects, but marks them as synthetic with null external ids: `polarCustomerId: null`, `subscription.id: null`, `meter.id: null`. `subscription.productId` reuses the real synced Polar Free product id.
 - `billing_db_check_credits` treats anonymous snapshots like regular `Free` snapshots by reading the synced Free `productId` from `subscription.productId` and the current synthetic `meter.balance`. It does not perform any lazy refill on read.
 - `reset_due_anonymous_credits` runs daily from `crons.ts` at `00:00 UTC`. Anonymous snapshots store `currentPeriodStart` and `currentPeriodEnd` at UTC midnight boundaries, and the cron refills any anonymous snapshot whose `currentPeriodEnd` day is today. It patches one bounded batch per mutation and reschedules itself while full batches remain, because each patch pushes the doc's period end 30 days forward and out of the due index range.
-- Anonymous local application flows through `billing_ingest_events` and `internal.billing.ingest_anonymous_user_events`. The validator rejects malformed event arguments. The handler logs and skips signed-in user rows, ignores zero amounts, throws when the anonymous snapshot or meter is missing, and otherwise applies the signed `metadata.amount` directly (`positive` usage lowers balance, `negative` credits raise balance). Callers are expected to gate first, and the daily cron owns period rollover.
+- Anonymous local application flows through `billing_ingest_events` and `billing_db_ingest_anonymous_user_events`. Action callers use `internal.billing.ingest_anonymous_user_events`, whose validator checks the arguments before calling that same helper. The helper logs and skips signed-in rows, ignores zero amounts, throws when the snapshot or meter is missing, and applies the signed `metadata.amount` (`positive` usage lowers balance, `negative` credits raise it). Callers gate first; the daily cron owns period rollover.
 - `billing_db_ensure_anonymous_user_usage_snapshot(ctx, { userId, now })` is idempotent and creates the row only if one does not exist. It is called at anonymous-user creation only and returns `null` after ensuring the row.
 - Anonymous usage still does **not** go through Polar `eventsIngest`, but it does go through `billing_ingest_events`, which routes anonymous rows to the local synthetic-snapshot ledger instead of Polar.
 - On anonymous-to-signed-in upgrade (`resolve_user`), the synthetic snapshot is deleted. The signed-in Free bootstrap via Polar creates a fresh Polar-backed snapshot.
@@ -428,13 +442,13 @@ The indicator displays the current user's balance for personal organizations, `"
 
 - **Kind:** exported async helper in [packages/app/convex/billing_db.ts](../../../packages/app/convex/billing_db.ts) — split out of `billing.ts` so emitting call sites skip the Polar SDK module-load cost.
 - **Signature:** `(ctx: ActionCtx | MutationCtx, { billedUserEvents: Array<{ event: billing_Event; billedUser: Doc<"users"> }> }) => Promise<void>`
-- **Role:** Mandatory local entrypoint for emitting billing usage events. It routes signed-in billed rows to `billing_workpool_usage_event` and routes anonymous billed rows to `internal.billing.ingest_anonymous_user_events`, so call sites no longer branch on billing transport details or accidentally use the actor as the transport user.
+- **Role:** Mandatory local entrypoint for billing usage events. Signed-in payers use `billing_workpool_usage_event`. Anonymous payers use `billing_db_ingest_anonymous_user_events` directly in mutations, or through `internal.billing.ingest_anonymous_user_events` in actions. Call sites do not choose billing transport or substitute the actor for the payer.
 
 #### `ingest_anonymous_user_events`
 
 - **Kind:** `internalMutation`
 - **Args:** `{ billedUserEvents: Array<{ event: billing_Event; billedUser: Doc<"users"> }> }`
-- **Role:** The only local synthetic-snapshot apply path. Convex validators reject malformed arguments. The handler logs and skips signed-in rows, ignores zero amounts, throws when an anonymous snapshot or meter is missing, and otherwise reads `event.metadata.amount` as a signed delta and patches the row in place.
+- **Role:** Validates action callers' arguments, then calls `billing_db_ingest_anonymous_user_events`. That shared helper applies anonymous events one at a time in the caller's transaction. It skips signed-in rows and zero amounts, requires the snapshot and meter, and patches the signed amount into the balance.
 
 #### `ingest_events`
 

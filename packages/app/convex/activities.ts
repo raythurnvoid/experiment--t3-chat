@@ -1,12 +1,18 @@
-// Workspace activity feed: plugin work and private transfer runs. Producers update activities
-// in the same mutation as their work, so progress and results stay in sync. The `source` field
-// links each activity to its run through `by_source_id`. Each producer owns expiry and cleanup.
+// Producers own the work. Activities own its lifecycle. Both change in one transaction.
 
+import { paginationOptsValidator, paginationResultValidator } from "convex/server";
 import { v } from "convex/values";
 import { doc } from "convex-helpers/validators";
-import type { ExcludeStrict } from "type-fest";
 import type { Doc, Id } from "./_generated/dataModel.js";
+import { internal } from "./_generated/api.js";
 import { internalMutation, mutation, query, type MutationCtx, type QueryCtx } from "./_generated/server.js";
+import { activities_get_controls, activities_is_active } from "./activities_db.ts";
+import { files_transfer_db_delete_run_batch, files_transfer_db_request_stop } from "./files_transfer.ts";
+import {
+	files_pending_update_runs_db_delete_run_batch,
+	files_pending_update_runs_db_request_stop,
+} from "./files_pending_update_runs.ts";
+import { plugins_runtime_db_delete_run_history, plugins_runtime_db_timeout_run } from "./plugins_runtime.ts";
 import { organizations_db_get_membership } from "./organizations.ts";
 import {
 	access_control_db_authorize_membership,
@@ -15,6 +21,7 @@ import {
 import app_convex_schema from "./schema.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
+import { should_never_happen } from "../shared/shared-utils.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
@@ -22,99 +29,7 @@ import { Result } from "common/errors-as-values-utils.ts";
 export const experimental_reuseContext = true;
 
 /**
- * The plugin activity deadline limit. Transfer runs manage their own expiry.
- */
-export const ACTIVITIES_TIMEOUT_MAX_MS = 5 * 60 * 1000;
-
-export async function activities_db_start(
-	ctx: MutationCtx,
-	args: {
-		organizationId: Doc<"activities">["organizationId"];
-		workspaceId: Doc<"activities">["workspaceId"];
-		userId: Doc<"activities">["userId"];
-		source: Doc<"activities">["source"];
-		/** Status-neutral display text, e.g. "Video plugin · speakers.mp4". */
-		title: Doc<"activities">["title"];
-		/**
-		 * The file the plugin work started from. Its name may appear in the title, so activity
-		 * visibility must follow access to this file.
-		 */
-		target: Doc<"activities">["targets"][number];
-		/** Caller-predicted deadline; must be at most ACTIVITIES_TIMEOUT_MAX_MS after now. */
-		timeoutAt: Doc<"activities">["timeoutAt"];
-		now: number;
-	},
-) {
-	return await ctx.db.insert("activities", {
-		organizationId: args.organizationId,
-		workspaceId: args.workspaceId,
-		userId: args.userId,
-		status: "running",
-		source: args.source,
-		title: args.title,
-		errorMessage: null,
-		targets: [args.target],
-		timeoutAt: args.timeoutAt,
-		archivedAt: 0,
-		updatedAt: args.now,
-	});
-}
-
-/** The producer's activity (e.g. the one a plugin run opted into), or null when it never started one. */
-export async function activities_db_get_by_source_id(ctx: MutationCtx, sourceId: Doc<"activities">["source"]["id"]) {
-	return await ctx.db
-		.query("activities")
-		.withIndex("by_source_id", (q) => q.eq("source.id", sourceId))
-		.unique();
-}
-
-export async function activities_db_finish(
-	ctx: MutationCtx,
-	args: {
-		sourceId: Doc<"activities">["source"]["id"];
-		status: ExcludeStrict<Doc<"activities">["status"], "running">;
-		errorMessage: Doc<"activities">["errorMessage"];
-		now: number;
-	},
-) {
-	const activity = await activities_db_get_by_source_id(ctx, args.sourceId);
-	if (!activity) {
-		return;
-	}
-	await ctx.db.patch("activities", activity._id, {
-		status: args.status,
-		errorMessage: args.errorMessage,
-		finishedAt: args.now,
-		updatedAt: args.now,
-	});
-}
-
-export async function activities_db_add_target(
-	ctx: MutationCtx,
-	args: {
-		sourceId: Doc<"activities">["source"]["id"];
-		target: Doc<"activities">["targets"][number];
-		now: number;
-	},
-) {
-	const activity = await activities_db_get_by_source_id(ctx, args.sourceId);
-	if (!activity) {
-		return;
-	}
-
-	// A touch then a fill of the same output must not duplicate the target.
-	if (activity.targets.some((target) => target.id === args.target.id)) {
-		return;
-	}
-
-	await ctx.db.patch("activities", activity._id, {
-		targets: [...activity.targets, args.target],
-		updatedAt: args.now,
-	});
-}
-
-/**
- * Limit recent history. The caller's active transfer run is added if it falls outside this page.
+ * Each page bounds both the scan and its access checks.
  */
 const ACTIVITIES_LIST_MAX = 50;
 
@@ -124,10 +39,7 @@ const ACTIVITIES_LIST_MAX = 50;
  * Plugin activities follow file access. Those with no named file require workspace read.
  * Transfer activities contain no file paths and are visible only to their requester.
  *
- * Every surface that reads or dismisses activities uses this, so the feed and the dismiss buttons
- * always agree on what exists. Without it "Dismiss all" would archive an activity the caller cannot
- * see, and `archivedAt` is one field on the doc rather than one per user, so the people who can see
- * the file would lose it from their feed and never learn why.
+ * Every read and dismiss uses the same checks, including pages consumed by hidden entries.
  */
 async function db_filter_visible_activities(
 	ctx: QueryCtx | MutationCtx,
@@ -136,17 +48,19 @@ async function db_filter_visible_activities(
 		workspaceId: Doc<"activities">["workspaceId"];
 		userId: Id<"users">;
 		activities: readonly Doc<"activities">[];
-		/** Whether the caller holds workspace-wide `content.read`, proved by the caller. */
+		/**
+		 * Whether the caller proved workspace-wide `content.read`.
+		 */
 		hasWorkspaceRead: boolean;
 	},
 ) {
 	// Each node named on the page is looked up once, and the filter answers once per restricted scope.
 	const candidates = args.activities.filter(
-		(activity) => activity.source.kind !== "files_transfer_run" || activity.userId === args.userId,
+		(activity) => activity.feedVisible && (activity.visibility !== "requester" || activity.userId === args.userId),
 	);
 	const targetNodeIds = [...new Set(candidates.flatMap((activity) => activity.targets.map((target) => target.id)))];
 	if (targetNodeIds.length === 0) {
-		return candidates.filter((activity) => activity.source.kind === "files_transfer_run" || args.hasWorkspaceRead);
+		return candidates.filter((activity) => activity.visibility === "requester" || args.hasWorkspaceRead);
 	}
 
 	const targetNodes = (await Promise.all(targetNodeIds.map((nodeId) => ctx.db.get("files_nodes", nodeId)))).filter(
@@ -167,9 +81,9 @@ async function db_filter_visible_activities(
 
 	return candidates.filter((activity) => {
 		// Transfer activities belong to their requester and contain no file names or paths.
-		if (activity.source.kind === "files_transfer_run") return true;
+		if (activity.visibility === "requester") return true;
 
-		// Only docs written before the target above became mandatory can be empty here.
+		// Hidden plugin work can start without a file, but feed opt-in still requires one.
 		if (activity.targets.length === 0) {
 			return args.hasWorkspaceRead;
 		}
@@ -182,66 +96,134 @@ async function db_filter_visible_activities(
 	});
 }
 
-export const list_recent = query({
+async function db_list_visible_page(
+	ctx: QueryCtx | MutationCtx,
+	args: {
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		userId: Id<"users">;
+		hasWorkspaceRead: boolean;
+		section: "active" | "history";
+		paginationOpts: { cursor: string | null; numItems: number };
+	},
+) {
+	const page = await ctx.db
+		.query("activities")
+		.withIndex("by_organization_workspace_feedVisible_finishedAt_updatedAt", (q) => {
+			const scope = q
+				.eq("organizationId", args.organizationId)
+				.eq("workspaceId", args.workspaceId)
+				.eq("feedVisible", true);
+			return args.section === "active" ? scope.eq("finishedAt", undefined) : scope.gt("finishedAt", undefined);
+		})
+		.order("desc")
+		.paginate({ ...args.paginationOpts, numItems: Math.min(ACTIVITIES_LIST_MAX, args.paginationOpts.numItems) });
+	const visible = await db_filter_visible_activities(ctx, { ...args, activities: page.page });
+	const states = await Promise.all(
+		visible.map((activity) =>
+			ctx.db
+				.query("activities_user_states")
+				.withIndex("by_user_activity", (q) => q.eq("userId", args.userId).eq("activityId", activity._id))
+				.unique(),
+		),
+	);
+	return {
+		...page,
+		page: visible
+			.filter((_activity, index) => states[index] === null)
+			.map((activity) => ({
+				...activity,
+				controls: activities_get_controls(activity, args.userId),
+			})),
+	};
+}
+
+export const list_page = query({
 	args: {
 		membershipId: v.id("organizations_workspaces_users"),
+		section: v.union(v.literal("active"), v.literal("history")),
+		paginationOpts: paginationOptsValidator,
 	},
-	returns: v.array(doc(app_convex_schema, "activities")),
+	returns: paginationResultValidator(
+		v.object({
+			...doc(app_convex_schema, "activities").fields,
+			controls: v.object({
+				canStop: v.boolean(),
+				canRetry: v.boolean(),
+				canDismiss: v.boolean(),
+			}),
+		}),
+	),
 	handler: async (ctx, args) => {
 		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!userAuth) {
-			throw convex_error({ message: "Unauthenticated" });
-		}
+		if (!userAuth) throw convex_error({ message: "Unauthenticated" });
 		const membership = await organizations_db_get_membership(ctx, {
 			userId: userAuth.id,
 			membershipId: args.membershipId,
 		});
-		if (!membership) {
-			return [];
-		}
-
-		// Folder guests can read activities about their files and their private transfer runs.
-		// Plugin activities with no named file still require workspace read.
-		const readAuthorized = await access_control_db_authorize_membership(ctx, {
+		if (!membership) return { page: [], isDone: true, continueCursor: "" };
+		const authorized = await access_control_db_authorize_membership(ctx, {
 			userAuth,
 			membership,
 			permission: "content.read",
 		});
-		const hasWorkspaceRead = !readAuthorized._nay;
-
-		// Newest activity first; running items bubble up because every change bumps updatedAt.
-		// Dismissed items (archivedAt > 0) stay in the table for their producers; the index skips them here.
-		const activities = await ctx.db
-			.query("activities")
-			.withIndex("by_organization_workspace_archivedAt_updatedAt", (q) =>
-				q.eq("organizationId", membership.organizationId).eq("workspaceId", membership.workspaceId).eq("archivedAt", 0),
-			)
-			.order("desc")
-			.take(ACTIVITIES_LIST_MAX);
-
-		// A long Paste must keep its Stop button even after newer activities fill the page.
-		const transferRun = await ctx.db
-			.query("files_transfer_runs")
-			.withIndex("by_user_workspace_active", (q) =>
-				q.eq("userId", userAuth.id).eq("workspaceId", membership.workspaceId).eq("active", true),
-			)
-			.unique();
-		if (transferRun) {
-			const transferActivity = await ctx.db
-				.query("activities")
-				.withIndex("by_source_id", (q) => q.eq("source.id", transferRun._id))
-				.unique();
-			if (transferActivity && !activities.some((activity) => activity._id === transferActivity._id))
-				activities.unshift(transferActivity);
-		}
-
-		return await db_filter_visible_activities(ctx, {
+		return await db_list_visible_page(ctx, {
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
 			userId: userAuth.id,
-			activities,
-			hasWorkspaceRead,
+			hasWorkspaceRead: !authorized._nay,
+			section: args.section,
+			paginationOpts: args.paginationOpts,
 		});
+	},
+});
+
+export const request_stop = mutation({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		activityId: v.id("activities"),
+	},
+	returns: v_result({ _yay: v.null() }),
+	handler: async (ctx, args) => {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) return Result({ _nay: { message: "Unauthenticated" } });
+		const membership = await organizations_db_get_membership(ctx, {
+			userId: userAuth.id,
+			membershipId: args.membershipId,
+		});
+		if (!membership) return Result({ _nay: { message: "Unauthorized" } });
+		const activity = await ctx.db.get("activities", args.activityId);
+		if (
+			!activity ||
+			activity.organizationId !== membership.organizationId ||
+			activity.workspaceId !== membership.workspaceId ||
+			activity.visibility !== "requester" ||
+			activity.userId !== userAuth.id ||
+			!activity.feedVisible
+		) {
+			return Result({ _nay: { message: "Activity not found" } });
+		}
+		// A repeated Stop remains successful after the first request has settled.
+		if (!activities_is_active(activity.status) || activity.status === "stopping") return Result({ _yay: null });
+		switch (activity.source.kind) {
+			case "files_pending_update_run": {
+				await files_pending_update_runs_db_request_stop(ctx, {
+					runId: activity.source.id,
+					reason: "user",
+					now: Date.now(),
+				});
+				break;
+			}
+			case "files_transfer_run": {
+				await files_transfer_db_request_stop(ctx, { runId: activity.source.id, reason: "user", now: Date.now() });
+				break;
+			}
+			case "plugin_run":
+				return Result({ _nay: { message: "This activity cannot be stopped" } });
+			default:
+				throw should_never_happen("Unknown Activity source", activity.source satisfies never);
+		}
+		return Result({ _yay: null });
 	},
 });
 
@@ -250,27 +232,15 @@ export const archive_activity = mutation({
 		membershipId: v.id("organizations_workspaces_users"),
 		activityId: v.id("activities"),
 	},
-	returns: v_result({
-		_yay: v.null(),
-	}),
+	returns: v_result({ _yay: v.null() }),
 	handler: async (ctx, args) => {
 		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!userAuth) {
-			return Result({ _nay: { message: "Unauthenticated" } });
-		}
+		if (!userAuth) return Result({ _nay: { message: "Unauthenticated" } });
 		const membership = await organizations_db_get_membership(ctx, {
 			userId: userAuth.id,
 			membershipId: args.membershipId,
 		});
-		if (!membership) {
-			return Result({ _nay: { message: "Unauthorized" } });
-		}
-
-		const authorized = await access_control_db_authorize_membership(ctx, {
-			userAuth,
-			membership,
-			permission: "content.write",
-		});
+		if (!membership) return Result({ _nay: { message: "Unauthorized" } });
 		const activity = await ctx.db.get("activities", args.activityId);
 		if (
 			!activity ||
@@ -279,16 +249,7 @@ export const archive_activity = mutation({
 		) {
 			return Result({ _nay: { message: "Activity not found" } });
 		}
-		// Transfer activities are private to their requester, so their owner may dismiss one without
-		// workspace write permission.
-		if (authorized._nay && !(activity.source.kind === "files_transfer_run" && activity.userId === userAuth.id)) {
-			return authorized;
-		}
-
-		// Writing in the workspace is not the same as being allowed to see this activity, so ask the
-		// same question `list_recent` asks. An activity the caller cannot see must answer like one that
-		// is not there, otherwise the refusal itself says a hidden file was worked on.
-		const readAuthorized = await access_control_db_authorize_membership(ctx, {
+		const authorized = await access_control_db_authorize_membership(ctx, {
 			userAuth,
 			membership,
 			permission: "content.read",
@@ -298,22 +259,21 @@ export const archive_activity = mutation({
 			workspaceId: membership.workspaceId,
 			userId: userAuth.id,
 			activities: [activity],
-			hasWorkspaceRead: !readAuthorized._nay,
+			hasWorkspaceRead: !authorized._nay,
 		});
-		if (!visible) {
-			return Result({ _nay: { message: "Activity not found" } });
+		if (!visible) return Result({ _nay: { message: "Activity not found" } });
+		if (activities_is_active(activity.status)) return Result({ _nay: { message: "Activity is still running" } });
+		const state = await ctx.db
+			.query("activities_user_states")
+			.withIndex("by_user_activity", (q) => q.eq("userId", userAuth.id).eq("activityId", activity._id))
+			.unique();
+		if (!state) {
+			await ctx.db.insert("activities_user_states", {
+				userId: userAuth.id,
+				activityId: activity._id,
+				dismissedAt: Date.now(),
+			});
 		}
-
-		// Only finished work can be dismissed; a running activity still needs to be visible.
-		if (activity.status === "running") {
-			return Result({ _nay: { message: "Activity is still running" } });
-		}
-
-		if (activity.archivedAt === 0) {
-			const now = Date.now();
-			await ctx.db.patch("activities", activity._id, { archivedAt: now, updatedAt: now });
-		}
-
 		return Result({ _yay: null });
 	},
 });
@@ -321,93 +281,167 @@ export const archive_activity = mutation({
 export const archive_all_activities = mutation({
 	args: {
 		membershipId: v.id("organizations_workspaces_users"),
+		cursor: v.union(v.string(), v.null()),
 	},
 	returns: v_result({
-		_yay: v.object({
-			count: v.number(),
-		}),
+		_yay: v.object({ count: v.number(), isDone: v.boolean(), continueCursor: v.string() }),
 	}),
 	handler: async (ctx, args) => {
 		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!userAuth) {
-			return Result({ _nay: { message: "Unauthenticated" } });
-		}
+		if (!userAuth) return Result({ _nay: { message: "Unauthenticated" } });
 		const membership = await organizations_db_get_membership(ctx, {
 			userId: userAuth.id,
 			membershipId: args.membershipId,
 		});
-		if (!membership) {
-			return Result({ _nay: { message: "Unauthorized" } });
-		}
-
+		if (!membership) return Result({ _nay: { message: "Unauthorized" } });
 		const authorized = await access_control_db_authorize_membership(ctx, {
-			userAuth,
-			membership,
-			permission: "content.write",
-		});
-		const active = await ctx.db
-			.query("activities")
-			.withIndex("by_organization_workspace_archivedAt_updatedAt", (q) =>
-				q.eq("organizationId", membership.organizationId).eq("workspaceId", membership.workspaceId).eq("archivedAt", 0),
-			)
-			.collect();
-		// Running activities still need to be visible, so bulk dismiss only covers finished ones.
-		// Without workspace write permission, only the caller's own transfer activities qualify.
-		const finished = active.filter(
-			(activity) =>
-				activity.status !== "running" &&
-				(!authorized._nay || (activity.source.kind === "files_transfer_run" && activity.userId === userAuth.id)),
-		);
-		if (authorized._nay && finished.length === 0) return authorized;
-
-		// Dismiss only what the caller can see. `archivedAt` is one field on the doc and not one per
-		// user, so archiving an activity about a restricted file would take it away from the people who
-		// do hold that file, and they would never learn why it went.
-		const readAuthorized = await access_control_db_authorize_membership(ctx, {
 			userAuth,
 			membership,
 			permission: "content.read",
 		});
-		const visible = await db_filter_visible_activities(ctx, {
+		const page = await db_list_visible_page(ctx, {
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
 			userId: userAuth.id,
-			activities: finished,
-			hasWorkspaceRead: !readAuthorized._nay,
+			hasWorkspaceRead: !authorized._nay,
+			section: "history",
+			paginationOpts: { cursor: args.cursor, numItems: ACTIVITIES_LIST_MAX },
 		});
 		const now = Date.now();
-
 		await Promise.all(
-			visible.map((activity) => ctx.db.patch("activities", activity._id, { archivedAt: now, updatedAt: now })),
+			page.page.map((activity) =>
+				ctx.db.insert("activities_user_states", {
+					userId: userAuth.id,
+					activityId: activity._id,
+					dismissedAt: now,
+				}),
+			),
 		);
-
-		return Result({ _yay: { count: visible.length } });
+		return Result({ _yay: { count: page.page.length, isDone: page.isDone, continueCursor: page.continueCursor } });
 	},
 });
 
 /**
- * Close plugin activities past their deadline. Transfer recovery stops its own work first.
+ * Producers fence their own writes before finishing an expired Activity.
  */
-export const timeout_stale_activities = internalMutation({
-	args: {},
-	returns: v.object({
-		count: v.number(),
-	}),
-	handler: async (ctx) => {
-		const now = Date.now();
-		const running = await ctx.db
-			.query("activities")
-			.withIndex("by_status_timeoutAt", (q) => q.eq("status", "running").lte("timeoutAt", now))
-			.collect();
-		// Transfer expiry must stop its producer before the activity can finish.
-		const stale = running.filter((activity) => activity.source.kind !== "files_transfer_run");
+export const recover_expired = internalMutation({
+	args: {
+		_test_now: v.optional(v.number()),
+		batchSize: v.optional(v.number()),
+		_test_disableReschedule: v.optional(v.boolean()),
+	},
+	returns: v.object({ processedCount: v.number(), done: v.boolean() }),
+	handler: async (ctx, args) => {
+		const now = args._test_now ?? Date.now();
+		const batchSize = Math.max(1, Math.min(args.batchSize ?? 50, 50));
+		const activities: Doc<"activities">[] = [];
+		// Read the page before dispatch: a queued transfer can become stopping in this mutation.
+		for (const status of ["queued", "running", "awaiting_input", "stopping"] as const) {
+			if (activities.length >= batchSize) break;
+			activities.push(
+				...(await ctx.db
+					.query("activities")
+					.withIndex("by_status_deadlineAt", (q) => q.eq("status", status).lte("deadlineAt", now))
+					.take(batchSize - activities.length)),
+			);
+		}
+		for (const activity of activities) {
+			switch (activity.source.kind) {
+				case "files_pending_update_run": {
+					await files_pending_update_runs_db_request_stop(ctx, { runId: activity.source.id, reason: "timeout", now });
+					break;
+				}
+				case "plugin_run": {
+					await plugins_runtime_db_timeout_run(ctx, { runId: activity.source.id, now });
+					break;
+				}
+				case "files_transfer_run": {
+					await files_transfer_db_request_stop(ctx, { runId: activity.source.id, reason: "timeout", now });
+					break;
+				}
+				default:
+					throw should_never_happen("Unknown Activity source", activity.source satisfies never);
+			}
+		}
+		const processedCount = activities.length;
+		const done = processedCount < batchSize;
+		// Stopping work may still hold an upload lease. The next cron can retry it without a busy loop.
+		if (!done && activities.some((activity) => activity.status !== "stopping") && !args._test_disableReschedule) {
+			await ctx.scheduler.runAfter(0, internal.activities.recover_expired, {
+				batchSize: args.batchSize,
+				_test_now: args._test_now,
+			});
+		}
+		return { processedCount, done };
+	},
+});
 
-		await Promise.all(
-			stale.map((activity) =>
-				ctx.db.patch("activities", activity._id, { status: "timeout", finishedAt: now, updatedAt: now }),
-			),
-		);
+/**
+ * Keep producer receipts until the producer and its viewer state can be deleted together.
+ */
+export const cleanup_history = internalMutation({
+	args: {
+		_test_now: v.optional(v.number()),
+		batchSize: v.optional(v.number()),
+		_test_disableReschedule: v.optional(v.boolean()),
+	},
+	returns: v.object({ deletedCount: v.number(), done: v.boolean() }),
+	handler: async (ctx, args) => {
+		const now = args._test_now ?? Date.now();
+		const batchSize = Math.max(1, Math.min(args.batchSize ?? 50, 50));
+		let processedCount = 0;
+		let deletedCount = 0;
+		let pendingCleanup = false;
 
-		return { count: stale.length };
+		for (const status of ["succeeded", "partial", "failed", "canceled", "timed_out"] as const) {
+			if (processedCount >= batchSize || deletedCount >= 50) break;
+
+			const activities = await ctx.db
+				.query("activities")
+				.withIndex("by_status_expiresAt", (q) => q.eq("status", status).gte("expiresAt", 0).lte("expiresAt", now))
+				.take(batchSize - processedCount);
+
+			for (const activity of activities) {
+				if (deletedCount >= 50) {
+					pendingCleanup = true;
+					break;
+				}
+
+				let deletion;
+				switch (activity.source.kind) {
+					case "files_pending_update_run": {
+						deletion = await files_pending_update_runs_db_delete_run_batch(ctx, { runId: activity.source.id });
+						break;
+					}
+					case "plugin_run": {
+						deletion = await plugins_runtime_db_delete_run_history(ctx, {
+							runId: activity.source.id,
+							activityId: activity._id,
+						});
+						break;
+					}
+					case "files_transfer_run": {
+						deletion = await files_transfer_db_delete_run_batch(ctx, { runId: activity.source.id, batchSize: 50 });
+						break;
+					}
+					default:
+						throw should_never_happen("Unknown Activity source", activity.source satisfies never);
+				}
+
+				deletedCount += deletion.deletedCount;
+				pendingCleanup ||= !deletion.done;
+				processedCount += 1;
+			}
+		}
+
+		const done = processedCount < batchSize && deletedCount < 50 && !pendingCleanup;
+		if (!done && !args._test_disableReschedule) {
+			await ctx.scheduler.runAfter(0, internal.activities.cleanup_history, {
+				batchSize: args.batchSize,
+				_test_now: args._test_now,
+			});
+		}
+
+		return { deletedCount, done };
 	},
 });

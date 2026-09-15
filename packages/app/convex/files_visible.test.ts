@@ -1,0 +1,313 @@
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { api, internal } from "./_generated/api.js";
+import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
+import { files_visible_db_create_reader, type files_visible_internal_list_Result } from "./files_visible.ts";
+
+beforeEach(() => vi.useFakeTimers());
+afterEach(() => vi.useRealTimers());
+
+async function fixture() {
+	const t = test_convex();
+	const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+	const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+	return { t, db, asUser };
+}
+
+async function create_private(
+	f: Awaited<ReturnType<typeof fixture>>,
+	path: string,
+	kind: "file" | "folder" = "folder",
+) {
+	const created = await f.t.mutation(internal.files_nodes.create_private_node_by_path, {
+		organizationId: f.db.organizationId,
+		workspaceId: f.db.workspaceId,
+		userId: f.db.userId,
+		path,
+		kind,
+	});
+	if (created._nay) throw new Error(created._nay.message);
+	return created._yay;
+}
+
+async function create_saved(f: Awaited<ReturnType<typeof fixture>>, path: string) {
+	const created = await f.asUser.mutation(api.files_nodes.create_folder_node, {
+		membershipId: f.db.membershipId,
+		parentId: "root",
+		path,
+	});
+	if (created._nay) throw new Error(created._nay.message);
+	return { kind: "saved" as const, id: created._yay.nodeId };
+}
+
+describe("list", () => {
+	test("continues after empty filtered pages without losing later matches", async () => {
+		const f = await fixture();
+		for (let index = 0; index < 110; index++) {
+			vi.setSystemTime(Date.now() + 2_000);
+			await create_saved(f, `folder-${String(index).padStart(3, "0")}`);
+		}
+		const last = await create_private(f, "/zzz-match");
+		let cursor: string | null = null;
+		const paths: string[] = [];
+		let done = false;
+		let emptyPages = 0;
+		for (let page = 0; page < 20 && !done; page++) {
+			const result: files_visible_internal_list_Result = await f.asUser.query(api.files_visible.list, {
+				membershipId: f.db.membershipId,
+				folderPath: "/",
+				mode: "children",
+				numItems: 50,
+				cursor,
+				pathQuery: "zzz",
+			});
+			if (result._nay) throw new Error(result._nay.message);
+			if (result._yay.items.length === 0 && !result._yay.isDone) emptyPages++;
+			paths.push(...result._yay.items.map((item) => item.path));
+			cursor = result._yay.continueCursor;
+			done = result._yay.isDone;
+		}
+		expect(done).toBe(true);
+		expect(emptyPages).toBeGreaterThan(0);
+		expect(paths).toEqual(["/zzz-match"]);
+		expect(
+			await f.asUser.query(api.files_visible.get_path, { membershipId: f.db.membershipId, target: last.target }),
+		).toBe("/zzz-match");
+	});
+
+	test("merges saved, renamed, and private children in name order across pages", async () => {
+		const f = await fixture();
+		await create_saved(f, "a");
+		await create_saved(f, "c");
+		const renamed = await create_saved(f, "z");
+		await create_private(f, "/b");
+		const moved = await f.t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
+			organizationId: f.db.organizationId,
+			workspaceId: f.db.workspaceId,
+			userId: f.db.userId,
+			target: renamed,
+			destParent: { kind: "root" },
+			destName: "aa",
+		});
+		expect(moved._nay).toBeUndefined();
+		const paths: string[] = [];
+		let cursor: string | null = null;
+		let done = false;
+		for (let page = 0; page < 10 && !done; page++) {
+			const result: files_visible_internal_list_Result = await f.asUser.query(api.files_visible.list, {
+				membershipId: f.db.membershipId,
+				folderPath: "/",
+				mode: "children",
+				numItems: 1,
+				cursor,
+			});
+			if (result._nay) throw new Error(result._nay.message);
+			expect(result._yay.items.length).toBeLessThanOrEqual(1);
+			paths.push(...result._yay.items.map((item) => item.path));
+			cursor = result._yay.continueCursor;
+			done = result._yay.isDone;
+		}
+		expect(done).toBe(true);
+		expect(paths).toEqual(["/a", "/aa", "/b", "/c"]);
+	});
+
+	test("walks private folders and moved-in saved folders once", async () => {
+		const f = await fixture();
+		const parent = await create_private(f, "/draft/nested");
+		await create_private(f, "/draft/nested/preparing.txt", "file");
+		const source = await create_saved(f, "source/child");
+		const sourceParent = await f.asUser.query(api.files_nodes.get_visible_target_by_path, {
+			membershipId: f.db.membershipId,
+			path: "/source",
+		});
+		if (!sourceParent) throw new Error("Expected the saved source folder");
+		const moved = await f.t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
+			organizationId: f.db.organizationId,
+			workspaceId: f.db.workspaceId,
+			userId: f.db.userId,
+			target: sourceParent.target,
+			destParent: parent.target,
+			destName: "moved",
+		});
+		expect(moved._nay).toBeUndefined();
+		const result = await f.asUser.query(api.files_visible.list, {
+			membershipId: f.db.membershipId,
+			folderPath: "/draft",
+			mode: "subtree",
+			numItems: 20,
+			cursor: null,
+		});
+		if (result._nay) throw new Error(result._nay.message);
+		expect(result._yay.isDone).toBe(true);
+		expect(result._yay.items.map((item) => item.path)).toEqual([
+			"/draft/nested",
+			"/draft/nested/moved",
+			"/draft/nested/moved/child",
+			"/draft/nested/preparing.txt",
+		]);
+		expect(result._yay.items.find((item) => item.target.id === source.id)?.path).toBe("/draft/nested/moved/child");
+		expect(result._yay.items.at(-1)).toMatchObject({ target: { kind: "private" }, preparing: true });
+	});
+
+	test("keeps private children reachable after their parent is saved", async () => {
+		const f = await fixture();
+		const parent = await create_private(f, "/draft");
+		const child = await create_private(f, "/draft/child");
+		if (!parent.pendingUpdateId) throw new Error("Expected the parent proposal");
+		const saved = await f.asUser.action(api.files_pending_updates.save_file_pending_update, {
+			membershipId: f.db.membershipId,
+			target: parent.target,
+			pendingUpdateId: parent.pendingUpdateId,
+			reviewedRevision: 1,
+		});
+		if (saved._nay) throw new Error(saved._nay.message);
+		const result = await f.asUser.query(api.files_visible.list, {
+			membershipId: f.db.membershipId,
+			folderPath: "/draft",
+			mode: "children",
+			numItems: 20,
+			cursor: null,
+		});
+		if (result._nay) throw new Error(result._nay.message);
+		expect(result._yay.items).toMatchObject([{ target: child.target, path: "/draft/child", preparing: false }]);
+		expect(
+			await f.asUser.query(api.files_nodes.get_visible_target_by_path, {
+				membershipId: f.db.membershipId,
+				path: "/draft/child",
+			}),
+		).toEqual({ target: child.target, kind: "folder" });
+	});
+
+	test("rejects a cursor from a different folder", async () => {
+		const f = await fixture();
+		await create_private(f, "/a/first");
+		await create_private(f, "/b/second");
+		const first = await f.asUser.query(api.files_visible.list, {
+			membershipId: f.db.membershipId,
+			folderPath: "/",
+			mode: "children",
+			numItems: 1,
+			cursor: null,
+		});
+		if (first._nay) throw new Error(first._nay.message);
+		const other = await f.asUser.query(api.files_visible.list, {
+			membershipId: f.db.membershipId,
+			folderPath: "/a",
+			mode: "children",
+			numItems: 1,
+			cursor: first._yay.continueCursor,
+		});
+		expect(other._nay?.message).toBe("Listing changed. Start again.");
+	});
+});
+
+describe("files_visible_db_create_reader", () => {
+	test("resolves preparing files by owner path without exposing a saved placeholder", async () => {
+		const f = await fixture();
+		const created = await create_private(f, "/draft/new.txt", "file");
+		const read = await f.t.run(async (ctx) => {
+			const reader = await files_visible_db_create_reader(ctx, f.db);
+			return {
+				byTarget: await reader.resolveTarget(created.target),
+				byPath: await reader.resolvePath("/draft/new.txt"),
+				exhausted: reader.exhausted,
+			};
+		});
+		expect(read.byTarget).toEqual(read.byPath);
+		expect(read.byTarget).toMatchObject({ kind: "private", path: "/draft/new.txt" });
+		expect(read.exhausted).toBe(false);
+		expect(await f.t.run((ctx) => ctx.db.query("files_nodes").collect())).toEqual([]);
+	});
+
+	test("hides a private target from another owner and from an inactive member", async () => {
+		const f = await fixture();
+		const created = await create_private(f, "/draft");
+		const other = await f.t.run((ctx) => test_mocks_fill_db_with.membership(ctx, { organizationName: "other" }));
+		expect(
+			await f.t.run(async (ctx) =>
+				(await files_visible_db_create_reader(ctx, { ...f.db, userId: other.userId })).resolveTarget(created.target),
+			),
+		).toBeNull();
+		await f.t.run((ctx) => ctx.db.patch("organizations_workspaces_users", f.db.membershipId, { active: false }));
+		expect(
+			await f.t.run(async (ctx) => (await files_visible_db_create_reader(ctx, f.db)).resolveTarget(created.target)),
+		).toBeNull();
+	});
+});
+
+describe("list_files_pending_updates", () => {
+	test("continues a short or empty page and excludes a discarded draft from its count", async () => {
+		const f = await fixture();
+		for (let index = 0; index < 7; index++) await create_private(f, `/review-${index}`);
+		const queryArgs = { membershipId: f.db.membershipId, paginationOpts: { numItems: 20, cursor: null } };
+		const first = await f.asUser.query(api.files_pending_updates.list_files_pending_updates, queryArgs);
+		expect(first.page).toHaveLength(5);
+		expect(first.isDone).toBe(false);
+		const second = await f.asUser.query(api.files_pending_updates.list_files_pending_updates, {
+			...queryArgs,
+			paginationOpts: { numItems: 20, cursor: first.continueCursor },
+		});
+		expect(second.page).toHaveLength(2);
+		expect(second.isDone).toBe(true);
+		const chosen = second.page[0];
+		if (chosen?.kind !== "entry" || chosen.entry.kind !== "private") throw new Error("Expected a private review entry");
+		const thread = await f.asUser.mutation(api.ai_chat.thread_create, {
+			membershipId: f.db.membershipId,
+			clientGeneratedId: "pending-list-thread",
+			title: "Review",
+			lastMessageAt: undefined,
+		});
+		if (thread._nay) throw new Error(thread._nay.message);
+		const moved = await f.t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
+			organizationId: f.db.organizationId,
+			workspaceId: f.db.workspaceId,
+			userId: f.db.userId,
+			target: chosen.entry.pendingUpdate.target,
+			destParent: { kind: "root" },
+			destName: "chat-review",
+			threadId: thread._yay.threadId,
+		});
+		expect(moved._nay).toBeUndefined();
+		const empty = await f.asUser.query(api.files_pending_updates.list_files_pending_updates, {
+			...queryArgs,
+			threadId: thread._yay.threadId,
+		});
+		expect(empty.page).toEqual([]);
+		expect(empty.isDone).toBe(false);
+		const next = await f.asUser.query(api.files_pending_updates.list_files_pending_updates, {
+			...queryArgs,
+			threadId: thread._yay.threadId,
+			paginationOpts: { numItems: 20, cursor: empty.continueCursor },
+		});
+		expect(next.page).toMatchObject([{ kind: "entry", entry: { path: "/chat-review" } }]);
+		expect(next.isDone).toBe(true);
+		expect(
+			await f.asUser.query(api.files_pending_updates.get_files_pending_updates_summary, {
+				membershipId: f.db.membershipId,
+				threadId: thread._yay.threadId,
+			}),
+		).toEqual({ count: 1, truncated: false });
+		expect(
+			await f.asUser.query(api.files_pending_updates.get_files_pending_updates_summary, {
+				membershipId: f.db.membershipId,
+				threadId: "optimistic-thread",
+			}),
+		).toEqual({ count: 0, truncated: false });
+		const ready = next.page[0];
+		if (ready?.kind !== "entry" || ready.entry.kind !== "private") throw new Error("Expected a private review entry");
+		expect(
+			(
+				await f.asUser.mutation(api.files_pending_updates.discard_file_pending_update, {
+					membershipId: f.db.membershipId,
+					target: ready.entry.pendingUpdate.target,
+					pendingUpdateId: ready.entry.pendingUpdate._id,
+					reviewedRevision: ready.entry.pendingUpdate.revision,
+				})
+			)._nay,
+		).toBeUndefined();
+		expect(
+			await f.asUser.query(api.files_pending_updates.get_files_pending_updates_summary, {
+				membershipId: f.db.membershipId,
+			}),
+		).toEqual({ count: 6, truncated: false });
+	});
+});

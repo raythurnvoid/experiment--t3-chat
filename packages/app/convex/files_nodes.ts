@@ -29,7 +29,7 @@ import {
 	path_tree_prefix_upper_bound,
 	string_prefix_upper_bound,
 } from "../server/server-utils.ts";
-import { v } from "convex/values";
+import { v, type Infer } from "convex/values";
 import {
 	date_get_week_start_timestamp,
 	date_get_day_start_timestamp,
@@ -55,19 +55,15 @@ import {
 	files_pending_update_has_pending_chunks,
 	files_db_cancel_pending_update_cleanup_tasks,
 	files_db_delete_pending_update_yjs_states,
-	files_db_build_pending_path_overlay,
 	files_db_get_pending_update,
+	files_db_patch_pending_update,
+	files_db_delete_pending_update,
 	files_db_get_visible_node_by_path,
-	files_db_list_pending_updates_for_user,
-	files_pending_path_overlay_project_committed_path,
+	files_db_schedule_pending_update_cleanup,
 	type files_YjsRootKind,
 } from "../server/files.ts";
 import { files_yjs_COMPACTION_RETRY_MESSAGE, files_yjs_scan_client_update } from "../shared/files-yjs.ts";
-import {
-	files_metadata_METADATA_FIELD_PREFIX,
-	files_metadata_apply_set_and_remove,
-	type files_metadata_Entry,
-} from "../shared/files-metadata.ts";
+import { files_metadata_apply_set_and_remove, type files_metadata_Entry } from "../shared/files-metadata.ts";
 import { path_name_of } from "../shared/paths.ts";
 import { Result, Result_all } from "common/errors-as-values-utils.ts";
 import { composite_id, should_never_happen } from "../shared/shared-utils.ts";
@@ -76,7 +72,15 @@ import {
 	organizations_is_reserved_workspace_id,
 } from "../shared/organizations.ts";
 import { users_SYSTEM_AUTHOR } from "../shared/users.ts";
-import app_convex_schema from "./schema.ts";
+import app_convex_schema, {
+	files_content_version_validator,
+	files_pending_target_validator,
+	file_content_materialization_state_validator,
+	file_content_materialization_header_validator,
+} from "./schema.ts";
+import { files_search_db_create_reader } from "./files_search.ts";
+import { files_visible_db_create_reader } from "./files_visible.ts";
+import type { files_PendingTarget } from "../shared/files.ts";
 import { components, internal } from "./_generated/api.js";
 import { doc } from "convex-helpers/validators";
 import { billing_event } from "../server/billing.ts";
@@ -99,14 +103,24 @@ import {
 import { rate_limiter_check_by_key, rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import {
 	files_normalize_file_rename_name,
+	files_default_text_shape_for_name,
+	files_get_normalized_node_path_segments,
 	files_normalize_markdown_name,
 	files_normalize_name,
 	files_normalize_special_node_path,
 	files_normalize_upload_file_name,
 	files_pending_update_content_is_stale,
+	type files_VisibleEntry,
 } from "../shared/files.ts";
 import { files_metadata_db_patch_file_scope, files_metadata_db_write_entries } from "./files_metadata.ts";
 import { public_api_service_uploads_db_get_target_by_asset } from "./public_api_service_uploads.ts";
+import {
+	files_pending_nodes_db_create,
+	files_pending_nodes_db_get_ancestry,
+	files_pending_nodes_db_resolve_saved_parent,
+} from "./files_pending_nodes.ts";
+import { quotas_db_ensure } from "./quotas.ts";
+import { quotas } from "../shared/quotas.ts";
 import {
 	r2,
 	r2_create_asset_key,
@@ -260,12 +274,26 @@ async function db_patch_plain_text_chunks_scope(
 	if ("archiveOperationId" in args) {
 		patch.archiveOperationId = args.archiveOperationId;
 	}
-	const chunks = await ctx.db
-		.query("files_plain_text_chunks")
-		.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
-			q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("fileNodeId", args.nodeId),
-		)
-		.collect();
+	const chunks = (
+		await Promise.all([
+			ctx.db
+				.query("files_plain_text_chunks")
+				.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
+					q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("fileNodeId", args.nodeId),
+				)
+				.collect(),
+			ctx.db
+				.query("files_plain_text_chunks")
+				.withIndex("by_organization_workspace_target_chunkIndex", (q) =>
+					q
+						.eq("organizationId", args.organizationId)
+						.eq("workspaceId", args.workspaceId)
+						.eq("target.kind", "saved")
+						.eq("target.id", args.nodeId),
+				)
+				.collect(),
+		])
+	).flat();
 	await Promise.all(chunks.map((chunk) => ctx.db.patch("files_plain_text_chunks", chunk._id, patch)));
 }
 
@@ -368,6 +396,23 @@ export const get_by_path = internalQuery({
 	},
 	returns: v.union(doc(app_convex_schema, "files_nodes"), v.null()),
 	handler: async (ctx, args) => {
+		if (
+			args.overlayUserId &&
+			!args.serviceAccountId &&
+			!organizations_is_global_organization_id(args.organizationId) &&
+			!organizations_is_reserved_workspace_id(args.workspaceId)
+		) {
+			if (args.overlayUserId !== args.visibilityUserId) return null;
+			const reader = await files_visible_db_create_reader(ctx, {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				userId: args.visibilityUserId,
+				readLimit: 2048,
+			});
+			const entry = await reader.resolvePath(args.path);
+			if (reader.exhausted) throw convex_error({ message: "File path lookup exceeded its read limit." });
+			return entry?.kind === "saved" ? entry.node : null;
+		}
 		const fileNode = await files_db_get_visible_node_by_path(ctx, args);
 		if (!fileNode) {
 			return null;
@@ -388,6 +433,143 @@ export type files_nodes_get_by_path_Result =
 	typeof get_by_path extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
 		? Awaited<ReturnValue>
 		: never;
+
+export const get_visible_entry_by_path = internalQuery({
+	args: {
+		organizationId: doc(app_convex_schema, "files_nodes").fields.organizationId,
+		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
+		path: v.string(),
+		visibilityUserId: v.id("users"),
+		serviceAccountId: v.optional(v.id("access_control_service_accounts")),
+		overlayUserId: v.optional(v.id("users")),
+	},
+	returns: v.union(
+		v.object({
+			kind: v.literal("saved"),
+			node: doc(app_convex_schema, "files_nodes"),
+			pendingUpdate: v.union(doc(app_convex_schema, "files_pending_updates"), v.null()),
+			path: v.string(),
+		}),
+		v.object({
+			kind: v.literal("private"),
+			node: doc(app_convex_schema, "files_pending_nodes"),
+			pendingUpdate: doc(app_convex_schema, "files_pending_updates"),
+			path: v.string(),
+		}),
+		v.null(),
+	),
+	handler: async (ctx, args): Promise<files_VisibleEntry | null> => {
+		if (
+			organizations_is_global_organization_id(args.organizationId) ||
+			organizations_is_reserved_workspace_id(args.workspaceId)
+		) {
+			const node = await files_db_get_visible_node_by_path(ctx, args);
+			return node ? { kind: "saved" as const, node, pendingUpdate: null, path: args.path } : null;
+		}
+
+		const organizationId = args.organizationId;
+		const workspaceId = args.workspaceId;
+		const membership = await ctx.db
+			.query("organizations_workspaces_users")
+			.withIndex("by_user_organization_workspace_active", (q) =>
+				q
+					.eq("userId", args.visibilityUserId)
+					.eq("organizationId", organizationId)
+					.eq("workspaceId", workspaceId)
+					.eq("active", true),
+			)
+			.first();
+		if (!membership) return null;
+
+		const workspaceRead = await access_control_db_authorize_membership(ctx, {
+			userAuth: { id: args.visibilityUserId },
+			membership,
+			permission: "content.read",
+		});
+
+		const savedNode =
+			args.overlayUserId === undefined || args.serviceAccountId !== undefined
+				? await files_db_get_visible_node_by_path(ctx, { organizationId, workspaceId, path: args.path })
+				: null;
+
+		const entry: files_VisibleEntry | null =
+			args.overlayUserId === undefined || args.serviceAccountId !== undefined
+				? savedNode
+					? { kind: "saved" as const, node: savedNode, pendingUpdate: null, path: args.path }
+					: null
+				: args.overlayUserId === args.visibilityUserId
+					? ((await ctx.runQuery(internal.files_visible.internal_get_by_path, {
+							organizationId,
+							workspaceId,
+							userId: args.visibilityUserId,
+							path: args.path,
+						})) as files_VisibleEntry | null)
+					: null;
+		if (!entry) return null;
+
+		let accessNode: Doc<"files_nodes"> | null;
+		if (entry.kind === "private") {
+			const ancestry = await files_pending_nodes_db_get_ancestry(ctx, {
+				organizationId,
+				workspaceId,
+				userId: args.visibilityUserId,
+				privateNodeId: entry.node._id,
+			});
+			if (ancestry._nay) return null;
+			accessNode = ancestry._yay.savedParent;
+		} else {
+			accessNode = entry.node;
+		}
+
+		if (!accessNode) return workspaceRead._nay ? null : entry;
+		const [readable] = await access_control_db_filter_readable_file_nodes(ctx, {
+			organizationId,
+			workspaceId,
+			userId: args.visibilityUserId,
+			serviceAccountId: args.serviceAccountId,
+			hasWorkspaceRead: !workspaceRead._nay,
+			nodes: [accessNode],
+		});
+		return readable ? entry : null;
+	},
+});
+
+export type files_nodes_get_visible_entry_by_path_Result =
+	typeof get_visible_entry_by_path extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
+
+export const get_visible_target_by_path = query({
+	args: { membershipId: v.id("organizations_workspaces_users"), path: v.string() },
+	returns: v.union(
+		v.object({ target: files_pending_target_validator, kind: doc(app_convex_schema, "files_nodes").fields.kind }),
+		v.null(),
+	),
+	handler: async (ctx, args) => {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) throw convex_error({ message: "Unauthenticated" });
+		const membership = await organizations_db_get_membership(ctx, {
+			userId: userAuth.id,
+			membershipId: args.membershipId,
+		});
+		if (!membership) return null;
+		const entry = (await ctx.runQuery(internal.files_nodes.get_visible_entry_by_path, {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			visibilityUserId: userAuth.id,
+			overlayUserId: userAuth.id,
+			path: server_path_normalize(args.path),
+		})) as files_nodes_get_visible_entry_by_path_Result;
+		if (!entry) return null;
+		return {
+			target:
+				entry.kind === "private"
+					? { kind: "private" as const, id: entry.node._id }
+					: { kind: "saved" as const, id: entry.node._id },
+			kind: entry.node.kind,
+		};
+	},
+});
 
 /**
  * The chat route already proves workspace read access. This lookup checks the node and
@@ -410,33 +592,15 @@ export const get_path_by_id = internalQuery({
 			return null;
 		}
 
-		const fileNode = await ctx.db.get("files_nodes", nodeId);
-		if (
-			!fileNode ||
-			fileNode.organizationId !== args.organizationId ||
-			fileNode.workspaceId !== args.workspaceId ||
-			fileNode.archiveOperationId !== null
-		) {
-			return null;
-		}
-
-		const [readable] = await access_control_db_filter_readable_file_nodes(ctx, {
+		const reader = await files_visible_db_create_reader(ctx, {
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
 			userId: args.visibilityUserId,
-			nodes: [fileNode],
+			readLimit: 2048,
 		});
-		if (!readable) {
-			return null;
-		}
-
-		const overlay = await files_db_build_pending_path_overlay(ctx, {
-			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
-			userId: args.visibilityUserId,
-		});
-		// Null hides pending deletes and replaced nodes. Never fall back to the saved path.
-		return files_pending_path_overlay_project_committed_path(overlay, fileNode.path);
+		const entry = await reader.resolveTarget({ kind: "saved", id: nodeId });
+		if (reader.exhausted) throw convex_error({ message: "File path lookup exceeded its read limit." });
+		return entry?.path ?? null;
 	},
 });
 
@@ -452,34 +616,24 @@ export const resolve_new_node_path = internalQuery({
 	handler: async (ctx, args) => {
 		if (args.path === args.normalizedPath) return args.path;
 		// Hidden targets still occupy their names. Write doors check access after choosing the path.
+		if (
+			args.overlayUserId &&
+			!organizations_is_global_organization_id(args.organizationId) &&
+			!organizations_is_reserved_workspace_id(args.workspaceId)
+		) {
+			const reader = await files_visible_db_create_reader(ctx, {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				userId: args.overlayUserId,
+				readLimit: 2048,
+			});
+			const entry = await reader.findPath(args.path);
+			if (reader.exhausted) throw convex_error({ message: "File path lookup exceeded its read limit." });
+			return entry ? args.path : args.normalizedPath;
+		}
 		return (await files_db_get_visible_node_by_path(ctx, args)) ? args.path : args.normalizedPath;
 	},
 });
-
-async function resolve_parent_path_from_parent_id(
-	ctx: QueryCtx,
-	args: {
-		organizationId: Doc<"files_nodes">["organizationId"];
-		workspaceId: Doc<"files_nodes">["workspaceId"];
-		parentId: Doc<"files_nodes">["parentId"];
-	},
-) {
-	if (args.parentId === files_ROOT_ID) {
-		return "/";
-	}
-
-	const parentNode = await ctx.db.get("files_nodes", args.parentId);
-	if (
-		!parentNode ||
-		parentNode.organizationId !== args.organizationId ||
-		parentNode.workspaceId !== args.workspaceId ||
-		parentNode.kind !== "folder"
-	) {
-		return null;
-	}
-
-	return parentNode.path;
-}
 
 /**
  * Recompute path fields for descendants after a file node moves or is renamed.
@@ -1571,6 +1725,54 @@ export const get_current_user_file_write_permission = query({
 	},
 });
 
+function node_insert_fields(args: {
+	userId: Doc<"files_nodes">["createdBy"];
+	organizationId: Doc<"files_nodes">["organizationId"];
+	workspaceId: Doc<"files_nodes">["workspaceId"];
+	parentId: Doc<"files_nodes">["parentId"];
+	name: string;
+	path: string;
+	kind: Doc<"files_nodes">["kind"];
+	contentType?: Doc<"files_nodes">["contentType"];
+	assetId?: Id<"files_r2_assets">;
+	archiveOperationId?: Doc<"files_nodes">["archiveOperationId"];
+	restrictedScopeNodeId: Doc<"files_nodes">["restrictedScopeNodeId"];
+	writePolicyScopeNodeId: Doc<"files_nodes">["writePolicyScopeNodeId"];
+	writePolicy?: Doc<"files_nodes">["writePolicy"];
+	now: number;
+}) {
+	return {
+		organizationId: args.organizationId,
+		workspaceId: args.workspaceId,
+		parentId: args.parentId,
+		kind: args.kind,
+		name: args.name,
+		path: args.path,
+		treePath: derive_tree_path_for_file_node(args.path, args.kind),
+		pathDepth: files_path_depth(args.path),
+		lowercaseExtension: files_lowercase_extension(args.path, args.kind),
+		contentType: args.contentType ?? null,
+		assetId: args.assetId ?? null,
+		textKind: null,
+		collaborationEnabled: null,
+		yjsSnapshotId: null,
+		yjsLastSequenceId: null,
+		statsId: null,
+		contentTooLargeByteSize: null,
+		contentShapeMismatchAt: null,
+		contentYjsStateTooLargeByteSize: null,
+		contentFrontmatterTooLargeFieldCount: null,
+		contentFrontmatterTooLargeIndexDocumentCount: null,
+		restrictedScopeNodeId: args.restrictedScopeNodeId,
+		writePolicyScopeNodeId: args.writePolicyScopeNodeId,
+		writePolicy: args.writePolicy ?? null,
+		archiveOperationId: args.archiveOperationId ?? null,
+		createdBy: args.userId,
+		updatedBy: args.userId,
+		updatedAt: args.now,
+	};
+}
+
 async function db_insert_node(
 	ctx: MutationCtx,
 	args: {
@@ -1605,36 +1807,10 @@ async function db_insert_node(
 		parentId: args.parentId,
 	});
 
-	const nodeId = await ctx.db.insert("files_nodes", {
-		organizationId: args.organizationId,
-		workspaceId: args.workspaceId,
-		parentId: args.parentId,
-		kind: args.kind,
-		name: args.name,
-		path: args.path,
-		treePath: derive_tree_path_for_file_node(args.path, args.kind),
-		pathDepth: files_path_depth(args.path),
-		lowercaseExtension: files_lowercase_extension(args.path, args.kind),
-		contentType: args.contentType ?? null,
-		assetId: args.assetId ?? null,
-		textKind: null,
-		collaborationEnabled: null,
-		yjsSnapshotId: null,
-		yjsLastSequenceId: null,
-		statsId: null,
-		contentTooLargeByteSize: null,
-		contentShapeMismatchAt: null,
-		contentYjsStateTooLargeByteSize: null,
-		contentFrontmatterTooLargeFieldCount: null,
-		contentFrontmatterTooLargeIndexDocumentCount: null,
-		restrictedScopeNodeId,
-		writePolicyScopeNodeId,
-		writePolicy: args.writePolicy ?? null,
-		archiveOperationId: args.archiveOperationId ?? null,
-		createdBy: args.userId,
-		updatedBy: args.userId,
-		updatedAt: args.now,
-	});
+	const nodeId = await ctx.db.insert(
+		"files_nodes",
+		node_insert_fields({ ...args, restrictedScopeNodeId, writePolicyScopeNodeId }),
+	);
 
 	if (args.writePolicy != null) {
 		await ctx.db.patch("files_nodes", nodeId, { writePolicyScopeNodeId: nodeId });
@@ -1695,10 +1871,6 @@ export async function files_nodes_db_create_node_recursively_at_path(
 		expectsTextContent?: true;
 		/**
 		 * Metadata for the leaf file or folder only. Import names must not spread to ancestors.
-		 *
-		 * Never pass this for the agent's eager-created nodes. A node with committed `metadata.` docs
-		 * can no longer be hard-deleted (`files_nodes_db_is_eager_node_safe_to_hard_delete`), so
-		 * discarding the proposal would leave the empty file behind forever.
 		 */
 		metadata?: files_metadata_Entry[];
 		/**
@@ -1706,11 +1878,6 @@ export async function files_nodes_db_create_node_recursively_at_path(
 		 */
 		createdNodesMetadata?: files_metadata_Entry[];
 		now: number;
-		/**
-		 * When set, receives the `_id` of every intermediate folder this call creates (reused
-		 * folders are skipped), in creation order (shallowest first).
-		 */
-		mut_createdAncestorIds?: Array<Id<"files_nodes">>;
 		/**
 		 * Trusted delegated facts; ordinary callers use their explicit human author.
 		 */
@@ -1881,7 +2048,6 @@ export async function files_nodes_db_create_node_recursively_at_path(
 		if (isLeaf) {
 			return Result({ _yay: nodeIdResult._yay });
 		}
-		args.mut_createdAncestorIds?.push(nodeIdResult._yay);
 		currentParent = nodeIdResult._yay;
 	}
 
@@ -2048,6 +2214,189 @@ export type files_nodes_create_folder_node_by_path_Result =
 		: never;
 
 /**
+ * Reserve a private path for agent creates. Text stays Preparing until its initial batch seals.
+ */
+export const create_private_node_by_path = internalMutation({
+	args: {
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		userId: v.id("users"),
+		path: v.string(),
+		kind: v.union(v.literal("file"), v.literal("folder")),
+		threadId: v.optional(v.id("ai_chat_threads")),
+	},
+	returns: v_result({
+		_yay: v.object({
+			target: files_pending_target_validator,
+			created: v.boolean(),
+			pendingUpdateId: v.union(v.id("files_pending_updates"), v.null()),
+			operationBatchId: v.union(v.id("files_pending_update_operation_batches"), v.null()),
+		}),
+	}),
+	handler: async (ctx, args) => {
+		const normalized = files_get_normalized_node_path_segments({
+			kind: args.kind,
+			nameOrPath: args.path,
+			fileNamePolicy: "keep_extension",
+		});
+		if (
+			!normalized ||
+			"validationMessage" in normalized ||
+			`/${normalized.normalizedPathSegments.join("/")}` !== args.path
+		) {
+			return Result({ _nay: { message: "Invalid file path" } });
+		}
+		const segments = normalized.normalizedPathSegments;
+
+		const membership = await ctx.db
+			.query("organizations_workspaces_users")
+			.withIndex("by_active_user_organization_workspace", (q) =>
+				q
+					.eq("active", true)
+					.eq("userId", args.userId)
+					.eq("organizationId", args.organizationId)
+					.eq("workspaceId", args.workspaceId),
+			)
+			.first();
+		if (!membership) return Result({ _nay: { message: "Permission denied" } });
+
+		const reader = await files_visible_db_create_reader(ctx, { ...args, readLimit: 4096 });
+		let parent: Doc<"files_pending_nodes">["parent"] = { kind: "root" };
+		let savedParent: Doc<"files_nodes"> | null = null;
+		let privateDepth = 0;
+		let missingFrom = 0;
+
+		for (; missingFrom < segments.length; missingFrom++) {
+			const entry = (await reader.findPath(`/${segments.slice(0, missingFrom + 1).join("/")}`))?.entry;
+			if (reader.exhausted) return Result({ _nay: { message: "Create path lookup exceeded its read limit." } });
+			if (!entry) break;
+
+			if (entry.kind === "private") {
+				const ancestry = await files_pending_nodes_db_get_ancestry(ctx, { ...args, privateNodeId: entry.node._id });
+				if (ancestry._nay) return ancestry;
+				savedParent = ancestry._yay.savedParent;
+				privateDepth = ancestry._yay.ancestors.length + 1;
+			} else {
+				savedParent = entry.node;
+				privateDepth = 0;
+			}
+
+			const readable = await access_control_db_authorize_membership(ctx, {
+				userAuth: { id: args.userId },
+				membership,
+				fileNode: savedParent ?? undefined,
+				permission: "content.read",
+			});
+			if (readable._nay) return Result({ _nay: { message: "Permission denied" } });
+
+			if (missingFrom === segments.length - 1) {
+				if (entry.node.kind !== args.kind)
+					return Result({ _nay: { message: "A different entry already exists at this path" } });
+				return Result({
+					_yay: {
+						target:
+							entry.kind === "saved"
+								? { kind: "saved" as const, id: entry.node._id }
+								: { kind: "private" as const, id: entry.node._id },
+						created: false,
+						pendingUpdateId: entry.pendingUpdate?._id ?? null,
+						operationBatchId: null,
+					},
+				});
+			}
+
+			if (entry.node.kind !== "folder") return Result({ _nay: { message: "Not a directory" } });
+			if (entry.kind === "private" && entry.pendingUpdate.createIntent?.kind !== "folder") {
+				return Result({ _nay: { name: "preparing", message: "This draft folder is still preparing" } });
+			}
+			parent = entry.kind === "saved" ? { kind: "saved", id: entry.node._id } : { kind: "private", id: entry.node._id };
+		}
+
+		const writable = await authorize_file_write(ctx, {
+			userAuth: { id: args.userId },
+			membership,
+			nodeId: savedParent?._id ?? files_ROOT_ID,
+		});
+		if (writable._nay) return writable;
+		if (savedParent) {
+			const policy = await files_nodes_db_require_user_writable(ctx, { node: savedParent, userId: args.userId });
+			if (policy._nay) return policy;
+		}
+
+		const missingCount = segments.length - missingFrom;
+		// Bound the ancestor checks and writes of one implicit-parent create.
+		if (missingCount > 32 || privateDepth + missingCount > 256) {
+			return Result({ _nay: { name: "too_large", message: "Create the parent folders in smaller groups" } });
+		}
+
+		const now = Date.now();
+		const quotaId = await quotas_db_ensure(ctx, { ...args, quotaName: "files_private_nodes", now });
+		const quota = await ctx.db.get("quotas", quotaId);
+		if (!quota) throw should_never_happen("Missing private node quota", { quotaId });
+		if (quota.usedCount + missingCount > quota.maxCount) {
+			return Result({ _nay: { name: "storage_full", message: quotas.files_private_nodes.disabledReason } });
+		}
+
+		for (let index = missingFrom; index < segments.length; index++) {
+			const kind = index === segments.length - 1 ? args.kind : "folder";
+			const created = await files_pending_nodes_db_create(ctx, { ...args, parent, name: segments[index]!, kind });
+			if (created._nay) throw should_never_happen("Private path changed after preflight", { path: args.path });
+			const { privateNodeId, pendingUpdateId, updatedAt } = created._yay;
+			const shape = files_default_text_shape_for_name(segments[index]!);
+
+			await files_db_patch_pending_update(ctx, pendingUpdateId, {
+				createIntent:
+					kind === "folder"
+						? { kind: "folder", metadata: [] }
+						: {
+								kind: "text",
+								contentType: shape.contentType,
+								textKind: shape.rootKind,
+								collaborationEnabled: true,
+								metadata: [],
+							},
+			});
+			await files_db_schedule_pending_update_cleanup(ctx, { pendingUpdateId, expectedUpdatedAt: updatedAt });
+			parent = { kind: "private", id: privateNodeId };
+
+			if (index === segments.length - 1) {
+				const operationBatchId =
+					kind === "file"
+						? await ctx.db.insert("files_pending_update_operation_batches", {
+								organizationId: args.organizationId,
+								workspaceId: args.workspaceId,
+								userId: args.userId,
+								target: { kind: "private", id: privateNodeId },
+								expectedPendingUpdateId: pendingUpdateId,
+								expectedRevision: 1,
+								expectedPrivateVersion: { creationGeneration: 1, structuralRevision: 1 },
+								initialCreation: true,
+								expiresAt: now + 30 * 60 * 1000,
+								updatedAt: now,
+								lastActivityAt: now,
+							})
+						: null;
+				return Result({
+					_yay: {
+						target: { kind: "private" as const, id: privateNodeId },
+						created: true,
+						pendingUpdateId,
+						operationBatchId,
+					},
+				});
+			}
+		}
+
+		throw should_never_happen("Private create has no path segments", { path: args.path });
+	},
+});
+
+export type files_nodes_create_private_node_by_path_Result =
+	typeof create_private_node_by_path extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
+
+/**
  * Delete one bounded batch of a subtree: range-scan `files_nodes` by `treePath` over
  * `[prefix, path_tree_prefix_upper_bound(prefix))` and, for each node, delete its committed chunks, `file_stats`,
  * metadata docs, and R2 asset (object + doc, gated on `r2Key`) BEFORE the node doc itself, so a
@@ -2085,12 +2434,24 @@ export async function files_nodes_db_delete_subtree_batch(
 		}
 
 		const remainingPlainTextChunks = args.batchSize - deletedCount;
-		const plainTextChunks = await ctx.db
+		let plainTextChunks = await ctx.db
 			.query("files_plain_text_chunks")
 			.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
 				q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("fileNodeId", node._id),
 			)
 			.take(remainingPlainTextChunks);
+		if (plainTextChunks.length === 0) {
+			plainTextChunks = await ctx.db
+				.query("files_plain_text_chunks")
+				.withIndex("by_organization_workspace_target_chunkIndex", (q) =>
+					q
+						.eq("organizationId", args.organizationId)
+						.eq("workspaceId", args.workspaceId)
+						.eq("target.kind", "saved")
+						.eq("target.id", node._id),
+				)
+				.take(remainingPlainTextChunks);
+		}
 		for (const chunk of plainTextChunks) {
 			await ctx.db.delete("files_plain_text_chunks", chunk._id);
 			deletedCount++;
@@ -2100,12 +2461,24 @@ export async function files_nodes_db_delete_subtree_batch(
 		}
 
 		const remainingTextChunks = args.batchSize - deletedCount;
-		const textChunks = await ctx.db
+		let textChunks = await ctx.db
 			.query("files_text_chunks")
 			.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
 				q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("fileNodeId", node._id),
 			)
 			.take(remainingTextChunks);
+		if (textChunks.length === 0) {
+			textChunks = await ctx.db
+				.query("files_text_chunks")
+				.withIndex("by_organization_workspace_target_chunkIndex", (q) =>
+					q
+						.eq("organizationId", args.organizationId)
+						.eq("workspaceId", args.workspaceId)
+						.eq("target.kind", "saved")
+						.eq("target.id", node._id),
+				)
+				.take(remainingTextChunks);
+		}
 		for (const chunk of textChunks) {
 			await ctx.db.delete("files_text_chunks", chunk._id);
 			deletedCount++;
@@ -2130,12 +2503,24 @@ export async function files_nodes_db_delete_subtree_batch(
 		}
 
 		const remainingMetadataDocs = args.batchSize - deletedCount;
-		const metadataDocs = await ctx.db
+		let metadataDocs = await ctx.db
 			.query("files_metadata_docs")
 			.withIndex("by_organization_workspace_fileNode_fieldPath", (q) =>
 				q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("fileNodeId", node._id),
 			)
 			.take(remainingMetadataDocs);
+		if (metadataDocs.length === 0) {
+			metadataDocs = await ctx.db
+				.query("files_metadata_docs")
+				.withIndex("by_organization_workspace_target_fieldPath", (q) =>
+					q
+						.eq("organizationId", args.organizationId)
+						.eq("workspaceId", args.workspaceId)
+						.eq("target.kind", "saved")
+						.eq("target.id", node._id),
+				)
+				.take(remainingMetadataDocs);
+		}
 		for (const metadataDoc of metadataDocs) {
 			await ctx.db.delete("files_metadata_docs", metadataDoc._id);
 			deletedCount++;
@@ -2182,97 +2567,6 @@ export async function files_nodes_db_delete_subtree_batch(
 }
 
 /**
- * An eager-created destination (write_file or cp onto a new path) may only be hard-deleted
- * while it is still the near-empty node the proposal created: no content committed since the
- * proposal (the committed Yjs sequence still matches the immutable `eagerCreated.committedSequence`
- * stamp), no committed rename/move of the node itself by another user (`updatedBy` is still
- * the proposer; rename_node and move_nodes both stamp it), and no other user's pending update
- * doc on the node. An ancestor-folder move rewrites descendant paths without restamping them —
- * that is deliberate: hard-deleting the eager-created node does not undo the ancestor's own
- * move. Anything else means the node became a real file; callers must then drop only the
- * proposer's doc and keep the node.
- */
-export async function files_nodes_db_is_eager_node_safe_to_hard_delete(
-	ctx: QueryCtx,
-	args: {
-		organizationId: Id<"organizations">;
-		workspaceId: Id<"organizations_workspaces">;
-		nodeId: Id<"files_nodes">;
-		// `_id` is absent for the compensation caller whose doc was never written: any real
-		// pending update doc on the node then blocks the hard delete.
-		pendingUpdate: Pick<Doc<"files_pending_updates">, "userId" | "eagerCreated"> &
-			Partial<Pick<Doc<"files_pending_updates">, "_id">>;
-	},
-) {
-	// Proposals against pre-existing files (edits, replace-copies): never hard-delete those.
-	if (!args.pendingUpdate.eagerCreated) {
-		return false;
-	}
-	const committedSequence = args.pendingUpdate.eagerCreated.committedSequence;
-
-	const node = await ctx.db.get("files_nodes", args.nodeId);
-	if (!node || node.organizationId !== args.organizationId || node.workspaceId !== args.workspaceId) {
-		// Node already gone: the hard delete no-ops, so running it is safe.
-		return true;
-	}
-	// Keep the node while it is read-only. Its pending update docs can still be deleted.
-	const userId = ctx.db.normalizeId("users", args.pendingUpdate.userId);
-	if (!userId || (await files_nodes_db_require_user_writable(ctx, { node, userId }))._nay) {
-		return false;
-	}
-	if (node.updatedBy !== args.pendingUpdate.userId) {
-		// Someone else committed a structural change (rename/move) since the eager creation;
-		// structural changes never advance the Yjs sequence, so the stamp cannot catch them.
-		return false;
-	}
-	if (!node.yjsLastSequenceId) {
-		return false;
-	}
-
-	const yjsLastSequenceDoc = await ctx.db.get("files_yjs_docs_last_sequences", node.yjsLastSequenceId);
-	if (!yjsLastSequenceDoc || yjsLastSequenceDoc.lastSequence !== committedSequence) {
-		return false;
-	}
-
-	const pendingUpdatesOnNode = await ctx.db
-		.query("files_pending_updates")
-		.withIndex("by_fileNode", (q) => q.eq("fileNodeId", args.nodeId))
-		.collect();
-	if (pendingUpdatesOnNode.some((row) => row._id !== args.pendingUpdate._id)) {
-		return false;
-	}
-
-	// File metadata is written straight to committed and never advances the Yjs sequence, so none of
-	// the checks above can see it. Somebody set a key on this file, so keep the node instead of
-	// deleting their map with it. Frontmatter docs do not count: those come from the very content
-	// this proposal created. The bound stops at `metadata/` because `/` is the next character
-	// after `.`.
-	const metadataDoc = await ctx.db
-		.query("files_metadata_docs")
-		.withIndex("by_organization_workspace_source_fileNode_fieldPath", (q) =>
-			q
-				.eq("organizationId", args.organizationId)
-				.eq("workspaceId", args.workspaceId)
-				.eq("sourceKind", "committed")
-				.eq("fileNodeId", args.nodeId)
-				.gte("fieldPath", files_metadata_METADATA_FIELD_PREFIX)
-				.lt("fieldPath", "metadata/"),
-		)
-		.first();
-	if (metadataDoc) {
-		return false;
-	}
-
-	return true;
-}
-
-/**
- * Hard-delete one file node with every dependent doc, every user's pending update docs, and its
- * R2 assets/objects. Built for pending-copy destination cleanup, not a general delete: copy
- * destinations are fresh near-empty nodes, so no batching is needed. Missing/mismatched nodes
- * are a no-op so discard stays idempotent.
- */
-/**
  * Transfer the late-PUT deadline before node or tenant deletion removes this asset.
  * The caller owns deleting the node's snapshots and the asset doc.
  */
@@ -2297,6 +2591,9 @@ export async function files_nodes_db_handoff_yjs_cleanup_task(ctx: MutationCtx, 
 	await ctx.db.delete("files_yjs_cleanup_tasks", task._id);
 }
 
+/**
+ * Remove a failed file creation and its linked content, proposals, and assets.
+ */
 export async function files_nodes_db_hard_delete_node(
 	ctx: MutationCtx,
 	args: {
@@ -2309,8 +2606,8 @@ export async function files_nodes_db_hard_delete_node(
 	if (!node || node.organizationId !== args.organizationId || node.workspaceId !== args.workspaceId) {
 		return;
 	}
+	// Every caller cleans up an upload that never completed, and all of them pass a file node.
 	if (node.kind !== "file") {
-		// Pending-copy destinations are always files; a folder here means a caller bug.
 		const errorMessage = "files_nodes_db_hard_delete_node only supports file nodes";
 		const errorData = { nodeId: args.nodeId, kind: node.kind };
 		console.error(errorMessage, errorData);
@@ -2332,31 +2629,66 @@ export async function files_nodes_db_hard_delete_node(
 		shareGrants,
 		yjsCleanupTasks,
 	] = await Promise.all([
-		// The by-fileNode chunk indexes cover both committed and pending chunk docs.
-		ctx.db
-			.query("files_plain_text_chunks")
-			.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
-				q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("fileNodeId", node._id),
-			)
-			.collect(),
-		ctx.db
-			.query("files_text_chunks")
-			.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
-				q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("fileNodeId", node._id),
-			)
-			.collect(),
+		Promise.all([
+			ctx.db
+				.query("files_plain_text_chunks")
+				.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
+					q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("fileNodeId", node._id),
+				)
+				.collect(),
+			ctx.db
+				.query("files_plain_text_chunks")
+				.withIndex("by_organization_workspace_target_chunkIndex", (q) =>
+					q
+						.eq("organizationId", args.organizationId)
+						.eq("workspaceId", args.workspaceId)
+						.eq("target.kind", "saved")
+						.eq("target.id", node._id),
+				)
+				.collect(),
+		]).then((families) => families.flat()),
+		Promise.all([
+			ctx.db
+				.query("files_text_chunks")
+				.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
+					q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("fileNodeId", node._id),
+				)
+				.collect(),
+			ctx.db
+				.query("files_text_chunks")
+				.withIndex("by_organization_workspace_target_chunkIndex", (q) =>
+					q
+						.eq("organizationId", args.organizationId)
+						.eq("workspaceId", args.workspaceId)
+						.eq("target.kind", "saved")
+						.eq("target.id", node._id),
+				)
+				.collect(),
+		]).then((families) => families.flat()),
 		ctx.db
 			.query("file_stats")
 			.withIndex("by_organization_workspace_fileNode", (q) =>
 				q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("fileNodeId", node._id),
 			)
 			.collect(),
-		ctx.db
-			.query("files_metadata_docs")
-			.withIndex("by_organization_workspace_fileNode_fieldPath", (q) =>
-				q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("fileNodeId", node._id),
-			)
-			.collect(),
+		Promise.all([
+			ctx.db
+				.query("files_metadata_docs")
+				.withIndex("by_organization_workspace_fileNode_fieldPath", (q) =>
+					q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("fileNodeId", node._id),
+				)
+				.collect(),
+			ctx.db
+				.query("files_metadata_docs")
+				.withIndex("by_organization_workspace_target_fieldPath", (q) =>
+					q
+						.eq("organizationId", args.organizationId)
+						.eq("workspaceId", args.workspaceId)
+						.eq("target.kind", "saved")
+						.eq("target.id", node._id),
+				)
+				.collect(),
+		]).then((families) => families.flat()),
 		ctx.db
 			.query("files_yjs_snapshots")
 			.withIndex("by_organization_workspace_fileNode_sequence", (q) =>
@@ -2389,7 +2721,7 @@ export async function files_nodes_db_hard_delete_node(
 			.collect(),
 		ctx.db
 			.query("files_pending_updates")
-			.withIndex("by_fileNode", (q) => q.eq("fileNodeId", node._id))
+			.withIndex("by_target", (q) => q.eq("target.kind", "saved").eq("target.id", node._id))
 			.collect(),
 		ctx.db
 			.query("files_pending_updates_last_sequence_saved")
@@ -2461,8 +2793,12 @@ export async function files_nodes_db_hard_delete_node(
 	// their own, and a new index only for this path is not worth its write cost.
 	const nodeScopedStates = await ctx.db
 		.query("files_pending_update_yjs_states")
-		.withIndex("by_organization_workspace_fileNode", (q) =>
-			q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("fileNodeId", node._id),
+		.withIndex("by_organization_workspace_target", (q) =>
+			q
+				.eq("organizationId", args.organizationId)
+				.eq("workspaceId", args.workspaceId)
+				.eq("target.kind", "saved")
+				.eq("target.id", node._id),
 		)
 		.collect();
 	await Promise.all(
@@ -2486,7 +2822,7 @@ export async function files_nodes_db_hard_delete_node(
 		...yjsLastSequences.map((lastSequence) => ctx.db.delete("files_yjs_docs_last_sequences", lastSequence._id)),
 		...materializationJobs.map((job) => ctx.db.delete("files_content_materialization_jobs", job._id)),
 		...snapshots.map((snapshot) => ctx.db.delete("files_snapshots", snapshot._id)),
-		...pendingUpdates.map((pendingUpdate) => ctx.db.delete("files_pending_updates", pendingUpdate._id)),
+		...pendingUpdates.map((pendingUpdate) => files_db_delete_pending_update(ctx, pendingUpdate._id)),
 		...lastSequenceSavedDocs.map((doc) => ctx.db.delete("files_pending_updates_last_sequence_saved", doc._id)),
 		...shareGrants.map((grant) => ctx.db.delete("access_control_permission_grants", grant._id)),
 	]);
@@ -2515,199 +2851,6 @@ export async function files_nodes_db_hard_delete_node(
 
 	await ctx.db.delete("files_nodes", node._id);
 }
-
-/**
- * Remove the folders an eager create committed for a removed leaf, deepest first. A folder is
- * only deleted while it is still the empty folder the proposer created: same scope, still
- * a folder, created and last updated by `userId` (a rename/move by another user stamps
- * `updatedBy` and must survive), no pending update doc referencing it (on the folder itself
- * or as a pending move destination), and no child. A kept folder makes every shallower
- * ancestor non-empty, so the walk stops there and counts the rest as left without further
- * reads.
- */
-export async function files_nodes_db_remove_created_ancestor_folders_if_safe(
-	ctx: MutationCtx,
-	args: {
-		organizationId: Id<"organizations">;
-		workspaceId: Id<"organizations_workspaces">;
-		userId: string;
-		createdAncestorIds: Id<"files_nodes">[];
-	},
-) {
-	const userId = ctx.db.normalizeId("users", args.userId);
-	if (!userId) {
-		return { ancestorsLeft: args.createdAncestorIds.length };
-	}
-	let ancestorsLeft = 0;
-	for (const [i, ancestorId] of args.createdAncestorIds.entries()) {
-		const ancestor = await ctx.db.get("files_nodes", ancestorId);
-		if (!ancestor) {
-			// Already gone (e.g. a repeated compensation): nothing left here.
-			continue;
-		}
-		if (
-			ancestor.organizationId !== args.organizationId ||
-			ancestor.workspaceId !== args.workspaceId ||
-			ancestor.kind !== "folder" ||
-			ancestor.createdBy !== args.userId ||
-			ancestor.updatedBy !== args.userId
-		) {
-			ancestorsLeft = args.createdAncestorIds.length - i;
-			break;
-		}
-		const pendingUpdateOnFolder = await ctx.db
-			.query("files_pending_updates")
-			.withIndex("by_fileNode", (q) => q.eq("fileNodeId", ancestor._id))
-			.first();
-		if (pendingUpdateOnFolder) {
-			// Deleting the folder would orphan the doc (e.g. a pending move of the folder).
-			ancestorsLeft = args.createdAncestorIds.length - i;
-			break;
-		}
-		const pendingMoveIntoFolder = await ctx.db
-			.query("files_pending_updates")
-			.withIndex("by_pendingMove_destParentId", (q) => q.eq("pendingMove.destParentId", ancestor._id))
-			.first();
-		if (pendingMoveIntoFolder) {
-			// A pending move targeting this folder must keep its destination alive.
-			ancestorsLeft = args.createdAncestorIds.length - i;
-			break;
-		}
-		const child = await ctx.db
-			.query("files_nodes")
-			.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
-				q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("parentId", ancestor._id),
-			)
-			.first();
-		if (child) {
-			ancestorsLeft = args.createdAncestorIds.length - i;
-			break;
-		}
-		// Somebody restricted this folder and shared it, which is a deliberate act on a folder the
-		// agent only happened to create on the way. Keep it. Deleting it would also strand its share
-		// grants: they point at this node id, nothing here removes them, and a leftover grant naming a
-		// custom role makes that role impossible to delete for good, because `delete_role` refuses
-		// while any grant names it.
-		if (ancestor.restrictedScopeNodeId === ancestor._id) {
-			ancestorsLeft = args.createdAncestorIds.length - i;
-			break;
-		}
-		// Keep the folder while its current policy refuses the proposer.
-		if ((await files_nodes_db_require_user_writable(ctx, { node: ancestor, userId }))._nay) {
-			ancestorsLeft = args.createdAncestorIds.length - i;
-			break;
-		}
-		// Metadata is a committed member edit, even when the folder is still empty.
-		const metadataDoc = await ctx.db
-			.query("files_metadata_docs")
-			.withIndex("by_organization_workspace_source_fileNode_fieldPath", (q) =>
-				q
-					.eq("organizationId", args.organizationId)
-					.eq("workspaceId", args.workspaceId)
-					.eq("sourceKind", "committed")
-					.eq("fileNodeId", ancestor._id)
-					.gte("fieldPath", files_metadata_METADATA_FIELD_PREFIX)
-					.lt("fieldPath", "metadata/"),
-			)
-			.first();
-		if (metadataDoc) {
-			ancestorsLeft = args.createdAncestorIds.length - i;
-			break;
-		}
-		await ctx.db.delete("files_nodes", ancestor._id);
-	}
-	return { ancestorsLeft };
-}
-
-/**
- * Compensation for a failed eager create's proposal upsert (write_file or cp onto a new path):
- * the node was committed but the pending update doc was never recorded, so remove the
- * just-created empty node — only while it is still provably untouched. The safety gate runs
- * with a synthetic pending update doc that has no real `_id`, so any existing pending update
- * doc on the node blocks the hard delete.
- * When the eager create also committed missing parent folders, `createdAncestorIds`
- * lets a removed leaf take those still-empty folders with it. Never errors for the compensation
- * caller: a missing, out-of-scope, archived, or already-real node reports `removed: false`.
- */
-export const remove_eager_created_node_if_safe = internalMutation({
-	args: {
-		organizationId: v.id("organizations"),
-		workspaceId: v.id("organizations_workspaces"),
-		userId: v.id("users"),
-		nodeId: v.id("files_nodes"),
-		eagerCreatedCommittedSequence: v.number(),
-		/**
-		 * Folders created with this file, deepest first. After deleting the file, also delete each
-		 * folder that is still empty and was only changed by `userId`.
-		 */
-		createdAncestorIds: v.optional(v.array(v.id("files_nodes"))),
-	},
-	returns: v_result({
-		_yay: v.object({
-			removed: v.boolean(),
-			/** How many of the passed ancestor folders still exist after this attempt. */
-			ancestorsLeft: v.number(),
-		}),
-	}),
-	handler: async (ctx, args) => {
-		const createdAncestorIds = args.createdAncestorIds ?? [];
-		const node = await ctx.db.get("files_nodes", args.nodeId);
-		if (
-			!node ||
-			node.organizationId !== args.organizationId ||
-			node.workspaceId !== args.workspaceId ||
-			node.archiveOperationId !== null ||
-			node.kind !== "file"
-		) {
-			return Result({ _yay: { removed: false, ancestorsLeft: createdAncestorIds.length } });
-		}
-
-		const safeToHardDelete = await files_nodes_db_is_eager_node_safe_to_hard_delete(ctx, {
-			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
-			nodeId: args.nodeId,
-			pendingUpdate: {
-				userId: args.userId,
-				eagerCreated: { committedSequence: args.eagerCreatedCommittedSequence },
-			},
-		});
-		if (!safeToHardDelete) {
-			return Result({ _yay: { removed: false, ancestorsLeft: createdAncestorIds.length } });
-		}
-
-		// Check every created folder first. If one is read-only, keep the file and all folders.
-		const createdAncestorNodes = await Promise.all(
-			createdAncestorIds.map((ancestorId) => ctx.db.get("files_nodes", ancestorId)),
-		);
-		const ancestorChecks = await Promise.all(
-			createdAncestorNodes.map(async (ancestor) =>
-				ancestor ? await files_nodes_db_require_user_writable(ctx, { node: ancestor, userId: args.userId }) : null,
-			),
-		);
-		if (ancestorChecks.some((result) => result?._nay)) {
-			return Result({ _yay: { removed: false, ancestorsLeft: createdAncestorIds.length } });
-		}
-
-		await files_nodes_db_hard_delete_node(ctx, {
-			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
-			nodeId: args.nodeId,
-		});
-
-		const { ancestorsLeft } = await files_nodes_db_remove_created_ancestor_folders_if_safe(ctx, {
-			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
-			userId: args.userId,
-			createdAncestorIds,
-		});
-		return Result({ _yay: { removed: true, ancestorsLeft } });
-	},
-});
-
-export type files_nodes_remove_eager_created_node_if_safe_Result =
-	typeof remove_eager_created_node_if_safe extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
-		? Awaited<ReturnValue>
-		: never;
 
 /**
  * A signed upload URL works for 15 minutes.
@@ -3686,44 +3829,201 @@ async function db_folder_occupant_is_empty(
 	args: {
 		organizationId: Id<"organizations">;
 		workspaceId: Id<"organizations_workspaces">;
-		folderId: Id<"files_nodes">;
-		userId: string;
+		target: files_PendingTarget;
+		userId: Id<"users">;
 	},
 ) {
-	const activeChild = await ctx.db
-		.query("files_nodes")
-		.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
-			q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("parentId", args.folderId),
-		)
-		.filter((q) => q.eq(q.field("archiveOperationId"), null))
-		.first();
+	const target = args.target;
+	const activeChild =
+		target.kind === "saved"
+			? await ctx.db
+					.query("files_nodes")
+					.withIndex("by_organization_workspace_parent_archiveOperation_name", (q) =>
+						q
+							.eq("organizationId", args.organizationId)
+							.eq("workspaceId", args.workspaceId)
+							.eq("parentId", target.id)
+							.eq("archiveOperationId", null),
+					)
+					.first()
+			: null;
 	if (activeChild) {
 		return false;
 	}
-	const pendingUpdates = await files_db_list_pending_updates_for_user(ctx, {
-		organizationId: args.organizationId,
-		workspaceId: args.workspaceId,
-		userId: args.userId,
-	});
-	if (pendingUpdates.some((pendingUpdate) => pendingUpdate.pendingMove?.destParentId === args.folderId)) {
-		return false;
+
+	const reader = await files_visible_db_create_reader(ctx, args);
+	for (const parent of await reader.parentAliases(args.target)) {
+		const [privateChild, pendingMove] = await Promise.all([
+			ctx.db
+				.query("files_pending_nodes")
+				.withIndex("by_organization_workspace_user_parent_state_name", (q) =>
+					q
+						.eq("organizationId", args.organizationId)
+						.eq("workspaceId", args.workspaceId)
+						.eq("userId", args.userId)
+						.eq("parent.kind", parent.kind)
+						.eq("parent.id", parent.kind === "root" ? undefined : parent.id)
+						.eq("state", "active"),
+				)
+				.first(),
+			ctx.db
+				.query("files_pending_updates")
+				.withIndex("by_user_pendingMove_destParent_destName", (q) =>
+					q
+						.eq("userId", args.userId)
+						.eq("pendingMove.destParent.kind", parent.kind)
+						.eq("pendingMove.destParent.id", parent.kind === "root" ? undefined : parent.id),
+				)
+				.first(),
+		]);
+		if (privateChild || pendingMove) return false;
 	}
+
 	return true;
 }
 
 /**
- * Shared base validation for a pending move target: resolve the node and destination and run
- * the checks both modes need. The node ids are authoritative, so the same resolution runs
- * when the proposal is created and when it is applied.
+ * Validate the visible occupant before a move replaces it. Private occupants are retired only
+ * after this check. A saved occupant stays intact until the proposal is saved.
  */
-async function db_resolve_pending_move_target(
-	ctx: QueryCtx,
+export async function files_nodes_db_validate_occupant_replace(
+	ctx: MutationCtx,
+	args: {
+		membership: Doc<"organizations_workspaces_users">;
+		sourceKind: "file" | "folder";
+		occupant: files_VisibleEntry;
+		replace: boolean;
+	},
+) {
+	const { membership, occupant } = args;
+	const scope = {
+		organizationId: membership.organizationId,
+		workspaceId: membership.workspaceId,
+		userId: membership.userId,
+	};
+
+	if (
+		!args.replace ||
+		args.sourceKind !== occupant.node.kind ||
+		(occupant.kind === "saved" && occupant.pendingUpdate?.pendingMove)
+	)
+		return Result({ _nay: { message: "Path already exists" } });
+
+	let replacesNode = occupant.kind === "saved" ? occupant.node : null;
+	let replacesContentVersion = replacesNode ? await files_nodes_db_get_content_version(ctx, replacesNode) : null;
+
+	if (occupant.kind === "private") {
+		const ready =
+			!occupant.pendingUpdate.preparation &&
+			occupant.pendingUpdate.createIntent &&
+			(occupant.pendingUpdate.createIntent.kind !== "text" || occupant.pendingUpdate.content?.base.kind === "new");
+		if (!ready) return Result({ _nay: { name: "preparing", message: "The destination draft is still preparing" } });
+		const ancestry = await files_pending_nodes_db_get_ancestry(ctx, { ...scope, privateNodeId: occupant.node._id });
+		if (ancestry._nay) return ancestry;
+
+		const allowed = await access_control_db_authorize_membership(ctx, {
+			userAuth: { id: membership.userId },
+			membership,
+			permission: "content.write",
+			fileNode: ancestry._yay.savedParent ?? undefined,
+		});
+		if (allowed._nay) return allowed;
+		if (ancestry._yay.savedParent) {
+			const writable = await files_nodes_db_require_user_writable(ctx, {
+				node: ancestry._yay.savedParent,
+				userId: membership.userId,
+			});
+			if (writable._nay) return writable;
+		}
+
+		const claim = occupant.pendingUpdate.pendingMove;
+		if (claim?.replacesTarget?.kind === "saved") {
+			if (claim.replacesContentVersion === undefined)
+				return Result({
+					_nay: { name: "destination_changed", message: "The destination changed. Start the move again." },
+				});
+			const checked = await files_nodes_db_preflight_move(ctx, {
+				userAuth: { id: membership.userId },
+				membership,
+				intents: [],
+				writer: { kind: "user", userId: membership.userId },
+				policyReach: "ancestors",
+				privateReplacements: [
+					{
+						node: occupant.node,
+						parentId: ancestry._yay.savedParent?._id ?? files_ROOT_ID,
+						occupant: { nodeId: claim.replacesTarget.id, contentVersion: claim.replacesContentVersion },
+					},
+				],
+			});
+			if (checked._nay) return checked;
+			replacesNode = await ctx.db.get("files_nodes", claim.replacesTarget.id);
+			replacesContentVersion = claim.replacesContentVersion;
+		}
+	}
+
+	if (
+		occupant.node.kind === "folder" &&
+		!(await db_folder_occupant_is_empty(ctx, {
+			...scope,
+			target:
+				occupant.kind === "private"
+					? { kind: "private", id: occupant.node._id }
+					: { kind: "saved", id: occupant.node._id },
+		}))
+	) {
+		return Result({ _nay: { message: "Directory not empty" } });
+	}
+
+	if (replacesNode) {
+		const allowed = await access_control_db_authorize_membership(ctx, {
+			userAuth: { id: membership.userId },
+			membership,
+			permission: "content.write",
+			fileNode: replacesNode,
+		});
+		if (allowed._nay) return allowed;
+		const writable = await files_nodes_db_require_user_writable(ctx, { node: replacesNode, userId: membership.userId });
+		if (writable._nay) return writable;
+
+		const subtree = await files_nodes_db_require_subtree_writable(ctx, {
+			...scope,
+			node: replacesNode,
+			writeContext: {
+				writer: { kind: "user", userId: membership.userId },
+				actorUserId: membership.userId,
+				resourceScope: { kind: "workspace" },
+				policyReach: "ancestors",
+			},
+		});
+		if (subtree._nay) return subtree;
+	}
+
+	return Result({ _yay: { replacesEntry: occupant, replacesNode, replacesContentVersion } });
+}
+
+/**
+ * Proposal-time validation for a pending move, against the proposer's visible tree: a committed
+ * sibling with a pending move away does not conflict, and a destination already claimed by
+ * another pending move is rejected.
+ */
+export async function files_nodes_db_validate_pending_move_target_for_proposal(
+	ctx: MutationCtx,
 	args: {
 		organizationId: Id<"organizations">;
 		workspaceId: Id<"organizations_workspaces">;
 		nodeId: Id<"files_nodes">;
-		destParentId: Id<"files_nodes"> | typeof files_ROOT_ID;
+		destParent: Doc<"files_pending_nodes">["parent"];
 		destName: string;
+		/**
+		 * Replace opt-in: file-onto-file (`mv -f`), or folder-onto-EMPTY-folder (rename()
+		 * semantics). `"any-active-occupant"` accepts whichever active node owns the destination;
+		 * a node id requires the destination to still be exactly that node.
+		 */
+		replaceTarget?: Id<"files_nodes"> | "any-active-occupant";
+		/** The owner whose pending paths the move uses. */
+		userId: Id<"users">;
+		membership: Doc<"organizations_workspaces_users">;
 	},
 ) {
 	const node = await ctx.db.get("files_nodes", args.nodeId);
@@ -3736,243 +4036,55 @@ async function db_resolve_pending_move_target(
 		return Result({ _nay: { message: "Not found" } });
 	}
 
-	let destParentPath: string;
-	if (args.destParentId === files_ROOT_ID) {
-		destParentPath = "/";
-	} else {
-		const destParent = await ctx.db.get("files_nodes", args.destParentId);
-		if (
-			!destParent ||
-			destParent.organizationId !== args.organizationId ||
-			destParent.workspaceId !== args.workspaceId ||
-			destParent.kind !== "folder" ||
-			destParent.archiveOperationId !== null
-		) {
-			return Result({ _nay: { message: "Destination folder is missing" } });
-		}
-		destParentPath = destParent.path;
-	}
-
-	const destPath = path_join(destParentPath, args.destName);
-	if (destPath === node.path) {
-		return Result({ _nay: { message: "Source and destination are the same" } });
-	}
-	if (node.kind === "folder" && destPath.startsWith(`${node.path}/`)) {
-		return Result({ _nay: { message: "Cannot move a folder into itself" } });
-	}
-
-	return Result({ _yay: { node, destParentPath, destPath } });
-}
-
-/**
- * Replace rules shared by both modes: file-onto-file when requested, and folder-onto-EMPTY-folder
- * (rename() semantics; a non-empty one errors "Directory not empty"). File-onto-folder and
- * folder-onto-file never replace. Echoes the resolved target fields so callers can return the
- * result directly.
- */
-async function db_validate_occupant_replace(
-	ctx: QueryCtx,
-	args: {
-		organizationId: Id<"organizations">;
-		workspaceId: Id<"organizations_workspaces">;
-		node: Doc<"files_nodes">;
-		destParentPath: string;
-		destPath: string;
-		occupant: Doc<"files_nodes">;
-		replaceTarget: Id<"files_nodes"> | "any-active-occupant" | undefined;
-		userId: string;
-	},
-) {
-	const { node, destParentPath, destPath, occupant } = args;
-	const replaceRequested =
-		args.replaceTarget != null && (args.replaceTarget === "any-active-occupant" || occupant._id === args.replaceTarget);
-	if (replaceRequested && node.kind === "file" && occupant.kind === "file") {
-		return Result({ _yay: { node, destParentPath, destPath, replacesNode: occupant } });
-	}
-	const folderReplaceRequested = replaceRequested && node.kind === "folder" && occupant.kind === "folder";
-	if (
-		folderReplaceRequested &&
-		(await db_folder_occupant_is_empty(ctx, {
-			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
-			folderId: occupant._id,
-			userId: args.userId,
-		}))
-	) {
-		return Result({ _yay: { node, destParentPath, destPath, replacesNode: occupant } });
-	}
-	return Result({
-		_nay: { message: folderReplaceRequested ? "Directory not empty" : "Path already exists" },
-	});
-}
-
-/**
- * Proposal-time validation for a pending move, against the proposer's visible tree: a committed
- * sibling with a pending move away does not conflict, and a destination already claimed by
- * another pending move is rejected.
- */
-export async function files_nodes_db_validate_pending_move_target_for_proposal(
-	ctx: QueryCtx,
-	args: {
-		organizationId: Id<"organizations">;
-		workspaceId: Id<"organizations_workspaces">;
-		nodeId: Id<"files_nodes">;
-		destParentId: Id<"files_nodes"> | typeof files_ROOT_ID;
-		destName: string;
-		/**
-		 * Replace opt-in: file-onto-file (`mv -f`), or folder-onto-EMPTY-folder (rename()
-		 * semantics). `"any-active-occupant"` accepts whichever active node owns the destination;
-		 * a node id requires the destination to still be exactly that node.
-		 */
-		replaceTarget?: Id<"files_nodes"> | "any-active-occupant";
-		/** The proposing user: their pending updates build the overlay. */
-		userId: string;
-	},
-) {
-	const resolved = await db_resolve_pending_move_target(ctx, {
-		organizationId: args.organizationId,
-		workspaceId: args.workspaceId,
-		nodeId: args.nodeId,
-		destParentId: args.destParentId,
-		destName: args.destName,
-	});
-	if (resolved._nay) {
-		return resolved;
-	}
-	const { node, destParentPath, destPath } = resolved._yay;
-
-	const overlay = await files_db_build_pending_path_overlay(ctx, {
+	const reader = await files_visible_db_create_reader(ctx, {
 		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
 		userId: args.userId,
+		readLimit: 4096,
 	});
-	// Another pending move already claims this visible destination: reject instead of
-	// double-booking one path (this also covers moved-in occupants, which are never replaceable).
-	const visibleDestParentPath =
-		files_pending_path_overlay_project_committed_path(overlay, destParentPath) ?? destParentPath;
+
+	let destParentPath = "/";
+	let visibleDestParentPath = "/";
+	if (args.destParent.kind !== "root") {
+		const parent = await reader.resolveTarget(args.destParent);
+		if (reader.exhausted) return Result({ _nay: { message: "Move path lookup exceeded its read limit." } });
+		if (!parent || parent.node.kind !== "folder") {
+			return Result({ _nay: { message: "Destination folder is missing" } });
+		}
+		destParentPath = parent.kind === "saved" ? parent.node.path : parent.path;
+		visibleDestParentPath = parent.path;
+	}
+
+	const destPath = path_join(destParentPath, args.destName);
 	const visibleDestPath = path_join(visibleDestParentPath, args.destName);
-	const claimedByOtherMove = overlay.moves.some(
-		(move) => move.nodeId !== args.nodeId && move.visiblePath === visibleDestPath,
-	);
-	if (claimedByOtherMove) {
-		return Result({ _nay: { message: "Path already exists" } });
+	const visibleNodePath = (await reader.resolveTarget({ kind: "saved", id: node._id }))?.path;
+	if (reader.exhausted) return Result({ _nay: { message: "Move path lookup exceeded its read limit." } });
+	if (!visibleNodePath) return Result({ _nay: { message: "Not found" } });
+	if (visibleDestPath === visibleNodePath) {
+		return Result({ _nay: { message: "Source and destination are the same" } });
 	}
-	// The overlay can place the destination inside the folder's own visible subtree even
-	// when the committed paths look unrelated (a parent cycle across two pending moves).
-	if (node.kind === "folder") {
-		const visibleNodePath = files_pending_path_overlay_project_committed_path(overlay, node.path) ?? node.path;
-		if (visibleDestPath === visibleNodePath || visibleDestPath.startsWith(`${visibleNodePath}/`)) {
-			return Result({ _nay: { message: "Cannot move a folder into itself" } });
-		}
+	if (node.kind === "folder" && visibleDestPath.startsWith(`${visibleNodePath}/`)) {
+		return Result({ _nay: { message: "Cannot move a folder into itself" } });
 	}
 
-	// Check whether an active sibling already owns the destination name.
-	const activeSiblingConflict = await ctx.db
-		.query("files_nodes")
-		.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
-			q
-				.eq("organizationId", args.organizationId)
-				.eq("workspaceId", args.workspaceId)
-				.eq("parentId", args.destParentId)
-				.eq("name", args.destName)
-				.eq("archiveOperationId", null),
-		)
-		.first();
-	if (activeSiblingConflict && activeSiblingConflict._id !== args.nodeId) {
-		// A sibling the proposer's overlay moves away or hides is not a visible occupant:
-		// the destination reads as free for them, and accept auto-replaces any replaceable
-		// newcomer occupant.
-		const siblingInvisible =
-			overlay.hiddenNodeIds.has(activeSiblingConflict._id) ||
-			overlay.moves.some((move) => move.nodeId === activeSiblingConflict._id);
-		if (!siblingInvisible) {
-			return await db_validate_occupant_replace(ctx, {
-				organizationId: args.organizationId,
-				workspaceId: args.workspaceId,
-				node,
-				destParentPath,
-				destPath,
-				occupant: activeSiblingConflict,
-				replaceTarget: args.replaceTarget,
-				userId: args.userId,
-			});
-		}
-	}
-
-	return Result({ _yay: { node, destParentPath, destPath, replacesNode: null } });
-}
-
-/**
- * Accept-time validation for a pending move, against the committed tree. The pending move
- * claims its destination, so any replaceable active occupant is auto-replaced like rename();
- * a non-replaceable occupant that vacates through the accepting user's own pending move is
- * still returned as `replacesNode`, so the caller can apply a swap cycle or ask to accept
- * the occupant's move first.
- */
-export async function files_nodes_db_validate_pending_move_target_for_accept(
-	ctx: QueryCtx,
-	args: {
-		organizationId: Id<"organizations">;
-		workspaceId: Id<"organizations_workspaces">;
-		nodeId: Id<"files_nodes">;
-		destParentId: Id<"files_nodes"> | typeof files_ROOT_ID;
-		destName: string;
-		/** The accepting user: the occupant's vacating pending move must be theirs. */
-		userId: string;
-	},
-) {
-	const resolved = await db_resolve_pending_move_target(ctx, {
-		organizationId: args.organizationId,
-		workspaceId: args.workspaceId,
-		nodeId: args.nodeId,
-		destParentId: args.destParentId,
-		destName: args.destName,
-	});
-	if (resolved._nay) {
-		return resolved;
-	}
-	const { node, destParentPath, destPath } = resolved._yay;
-
-	// Check whether an active sibling already owns the destination name.
-	const activeSiblingConflict = await ctx.db
-		.query("files_nodes")
-		.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
-			q
-				.eq("organizationId", args.organizationId)
-				.eq("workspaceId", args.workspaceId)
-				.eq("parentId", args.destParentId)
-				.eq("name", args.destName)
-				.eq("archiveOperationId", null),
-		)
-		.first();
-	if (activeSiblingConflict && activeSiblingConflict._id !== args.nodeId) {
-		const replaced = await db_validate_occupant_replace(ctx, {
-			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
-			node,
-			destParentPath,
-			destPath,
-			occupant: activeSiblingConflict,
-			replaceTarget: "any-active-occupant",
-			userId: args.userId,
+	const occupant = (await reader.findPath(visibleDestPath))?.entry;
+	if (reader.exhausted) return Result({ _nay: { message: "Move path lookup exceeded its read limit." } });
+	if (occupant && (occupant.kind !== "saved" || occupant.node._id !== node._id)) {
+		const checked = await files_nodes_db_validate_occupant_replace(ctx, {
+			membership: args.membership,
+			sourceKind: node.kind,
+			occupant,
+			replace:
+				args.replaceTarget === "any-active-occupant" ||
+				(occupant.kind === "saved" && args.replaceTarget === occupant.node._id),
 		});
-		if (replaced._nay) {
-			// A non-replaceable occupant that vacates through the accepting user's own pending
-			// move is still returned: the caller applies a swap cycle or asks to accept it first.
-			const occupantPendingUpdate = await files_db_get_pending_update(ctx, {
-				organizationId: args.organizationId,
-				workspaceId: args.workspaceId,
-				userId: args.userId,
-				nodeId: activeSiblingConflict._id,
-			});
-			if (occupantPendingUpdate?.pendingMove) {
-				return Result({ _yay: { node, destParentPath, destPath, replacesNode: activeSiblingConflict } });
-			}
-		}
-		return replaced;
+		if (checked._nay) return checked;
+		return Result({ _yay: { node, destParentPath, destPath, ...checked._yay } });
 	}
 
-	return Result({ _yay: { node, destParentPath, destPath, replacesNode: null } });
+	return Result({
+		_yay: { node, destParentPath, destPath, replacesEntry: null, replacesNode: null, replacesContentVersion: null },
+	});
 }
 
 /**
@@ -4045,379 +4157,155 @@ export async function files_nodes_db_apply_node_move(
 }
 
 /**
- * Apply an accepted pending move. Re-validates, then mirrors `rename_node`'s tail; this helper
- * owns the denormalized path fan-out (node, file chunk scope, descendant cascade).
- *
- * `_yay.cycleMemberPendingUpdates` lists the other pending update docs applied together with
- * this one when the user's moves form a swap cycle; the caller must settle those docs too.
+ * Apply one independent structural proposal through the same bounded plan as a direct move.
+ * Mixed content and connected proposals need one reviewed unit before any saved writes.
  */
 export async function files_nodes_db_apply_pending_move(
 	ctx: MutationCtx,
 	args: {
-		organizationId: Id<"organizations">;
-		workspaceId: Id<"organizations_workspaces">;
-		nodeId: Id<"files_nodes">;
-		destParentId: Id<"files_nodes"> | typeof files_ROOT_ID;
-		destName: string;
-		userId: string;
-		updatedBy: Id<"users">;
-		/**
-		 * Whether the caller may move one node of a swap cycle to its own destination.
-		 *
-		 * The caller authorized the node it was asked about. A cycle drags in nodes it never named:
-		 * accepting `/A` also moves whatever sits on `/A`'s destination. Those need the same two
-		 * questions, asked now, because a proposal can outlive the access that created it.
-		 *
-		 * Required, not optional, so a new caller cannot quietly move nodes nobody asked about.
-		 */
-		authorizeCycleMember: (args: {
-			node: Doc<"files_nodes">;
-			destParentId: Id<"files_nodes"> | typeof files_ROOT_ID;
-		}) => Promise<boolean>;
+		userAuth: { id: Id<"users"> };
+		membership: Doc<"organizations_workspaces_users">;
+		pendingUpdate: Doc<"files_pending_updates">;
 	},
 ) {
-	// A committed rename can land the node at the proposed destination before the accept
-	// (validation would call that "Source and destination are the same"). Treat it as an
-	// already-applied move: a success no-op, so the caller settles the doc normally.
-	const acceptedNode = await ctx.db.get("files_nodes", args.nodeId);
+	const { userAuth, membership, pendingUpdate } = args;
+	const move = pendingUpdate.pendingMove;
 	if (
-		acceptedNode &&
-		acceptedNode.organizationId === args.organizationId &&
-		acceptedNode.workspaceId === args.workspaceId &&
-		acceptedNode.archiveOperationId === null &&
-		acceptedNode.parentId === args.destParentId &&
-		acceptedNode.name === args.destName
+		pendingUpdate.target.kind !== "saved" ||
+		!move ||
+		pendingUpdate.userId !== userAuth.id ||
+		pendingUpdate.organizationId !== membership.organizationId ||
+		pendingUpdate.workspaceId !== membership.workspaceId
 	) {
-		return Result({
-			_yay: { destPath: acceptedNode.path, cycleMemberPendingUpdates: [] as Doc<"files_pending_updates">[] },
-		});
+		return Result({ _nay: { message: "Not found" } });
 	}
-
-	const validated = await files_nodes_db_validate_pending_move_target_for_accept(ctx, {
-		organizationId: args.organizationId,
-		workspaceId: args.workspaceId,
-		nodeId: args.nodeId,
-		destParentId: args.destParentId,
-		destName: args.destName,
-		userId: args.userId,
+	if (pendingUpdate.content || pendingUpdate.pendingReplacement || pendingUpdate.pendingArchive) {
+		return Result({ _nay: { name: "needs_review", message: "Review this move and its content together" } });
+	}
+	const node = await ctx.db.get("files_nodes", pendingUpdate.target.id);
+	if (!node || node.archiveOperationId !== null) return Result({ _nay: { message: "Not found" } });
+	const destination = await files_pending_nodes_db_resolve_saved_parent(ctx, {
+		organizationId: membership.organizationId,
+		workspaceId: membership.workspaceId,
+		userId: userAuth.id,
+		parent: move.destParent,
 	});
-	if (validated._nay) {
-		return validated;
-	}
-	const { node, destPath } = validated._yay;
-
-	// The lock may change after the proposal is created. Check it again when applying the move.
-	// Check the node, all its descendants, the destination, any replaced node, and every swap member.
-	const nodeWritable = await files_nodes_db_require_user_writable(ctx, { node: node, userId: args.updatedBy });
-	if (nodeWritable._nay) {
-		return nodeWritable;
-	}
-	const subtreeWritable = await files_nodes_db_require_subtree_writable(ctx, {
-		organizationId: args.organizationId,
-		workspaceId: args.workspaceId,
-		writeContext: {
-			writer: { kind: "user", userId: args.updatedBy },
-			actorUserId: args.updatedBy,
-			resourceScope: { kind: "workspace" },
-			policyReach: "ancestors",
-		},
-		node,
-	});
-	if (subtreeWritable._nay) {
-		return subtreeWritable;
-	}
-	const destNode = args.destParentId === files_ROOT_ID ? null : await ctx.db.get("files_nodes", args.destParentId);
-	const destWritable = destNode
-		? await files_nodes_db_require_user_writable(ctx, { node: destNode, userId: args.updatedBy })
-		: Result({ _yay: null });
-	if (destWritable._nay) {
-		return destWritable;
+	if (destination._nay) return destination;
+	const { parentId } = destination._yay;
+	const parent = parentId === files_ROOT_ID ? null : await ctx.db.get("files_nodes", parentId);
+	if (parentId !== files_ROOT_ID && !parent) {
+		return Result({ _nay: { message: "Destination folder is missing" } });
 	}
 
-	// Update the node once and then rebase descendants under the new materialized path.
-	const now = Date.now();
-	let occupantEagerPendingUpdate: Doc<"files_pending_updates"> | null = null;
-	if (validated._yay.replacesNode) {
-		// An occupant that is itself the source of this user's chained pending move must
-		// move away first: archiving it here would silently break that other proposal.
-		const occupantPendingUpdate = await files_db_get_pending_update(ctx, {
-			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
-			userId: args.userId,
-			nodeId: validated._yay.replacesNode._id,
-		});
-		if (occupantPendingUpdate?.pendingMove) {
-			// The chain of same-user pending moves can close back on this node (a swap
-			// built through a temp name). Such a swap cycle has no acceptable order, so
-			// accept applies every member's move together: the destinations are each other's
-			// sources inside one transaction, so no re-validation and no archiving is needed.
-			const cycleMembers: Array<{
-				node: Doc<"files_nodes">;
-				pendingUpdate: Doc<"files_pending_updates">;
-				destParentId: Id<"files_nodes"> | typeof files_ROOT_ID;
-				destName: string;
-			}> = [];
-			let isCycle = false;
-			let memberNode = validated._yay.replacesNode;
-			let memberPendingUpdate = occupantPendingUpdate;
-			let memberPendingMove = occupantPendingUpdate.pendingMove;
-			// Each hop consumes one of the user's pending moves, so the visited set bounds the
-			// walk: the chain ends, reaches the accepted node, or revisits a member.
-			const visitedNodeIds = new Set<Id<"files_nodes">>([memberNode._id]);
-			while (true) {
-				const nextOccupant = await ctx.db
-					.query("files_nodes")
-					.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
-						q
-							.eq("organizationId", args.organizationId)
-							.eq("workspaceId", args.workspaceId)
-							.eq("parentId", memberPendingMove.destParentId)
-							.eq("name", memberPendingMove.destName)
-							.eq("archiveOperationId", null),
-					)
-					.first();
-				if (!nextOccupant) {
-					break;
-				}
-				cycleMembers.push({
-					node: memberNode,
-					pendingUpdate: memberPendingUpdate,
-					destParentId: memberPendingMove.destParentId,
-					destName: memberPendingMove.destName,
-				});
-				if (nextOccupant._id === args.nodeId) {
-					isCycle = true;
-					break;
-				}
-				if (visitedNodeIds.has(nextOccupant._id)) {
-					// The chain closed on itself without the accepted node: not this node's swap cycle.
-					break;
-				}
-				const nextPendingUpdate = await files_db_get_pending_update(ctx, {
-					organizationId: args.organizationId,
-					workspaceId: args.workspaceId,
-					userId: args.userId,
-					nodeId: nextOccupant._id,
-				});
-				if (!nextPendingUpdate?.pendingMove) {
-					break;
-				}
-				visitedNodeIds.add(nextOccupant._id);
-				memberNode = nextOccupant;
-				memberPendingUpdate = nextPendingUpdate;
-				memberPendingMove = nextPendingUpdate.pendingMove;
+	// A moved ancestor belongs to the same review unit as its source or destination.
+	const checkedAncestors = new Set<Id<"files_nodes">>();
+	for (const firstParentId of [node.parentId, parentId]) {
+		let ancestorId = firstParentId;
+		while (ancestorId !== files_ROOT_ID && !checkedAncestors.has(ancestorId)) {
+			if (checkedAncestors.size === MAX_MOVE_NODE_COUNT) {
+				return Result({ _nay: { name: "move_too_large", message: "This move is too large. Select fewer items." } });
 			}
+			checkedAncestors.add(ancestorId);
 
-			if (isCycle) {
-				// Ask about every node the cycle drags in, before anything is written. The caller proved
-				// only the node it was asked about; these were found by following the chain. Moving one
-				// is a real write: it changes the node's path, and a node that merely sits inside a
-				// restricted folder also loses that folder's scope when it lands somewhere open.
-				for (const member of cycleMembers) {
-					if (!(await args.authorizeCycleMember({ node: member.node, destParentId: member.destParentId }))) {
-						return Result({ _nay: { message: "Permission denied" } });
-					}
-				}
-
-				// Check every swap member and its children. Also check its destination folder.
-				for (const member of cycleMembers) {
-					const memberWritable = await files_nodes_db_require_user_writable(ctx, {
-						node: member.node,
-						userId: args.updatedBy,
-					});
-					if (memberWritable._nay) {
-						return memberWritable;
-					}
-					const memberSubtreeWritable = await files_nodes_db_require_subtree_writable(ctx, {
-						organizationId: args.organizationId,
-						workspaceId: args.workspaceId,
-						writeContext: {
-							writer: { kind: "user", userId: args.updatedBy },
-							actorUserId: args.updatedBy,
-							resourceScope: { kind: "workspace" },
-							policyReach: "ancestors",
-						},
-						node: member.node,
-					});
-					if (memberSubtreeWritable._nay) {
-						return memberSubtreeWritable;
-					}
-					const memberDestNode =
-						member.destParentId === files_ROOT_ID ? null : await ctx.db.get("files_nodes", member.destParentId);
-					const memberDestWritable = memberDestNode
-						? await files_nodes_db_require_user_writable(ctx, { node: memberDestNode, userId: args.updatedBy })
-						: Result({ _yay: null });
-					if (memberDestWritable._nay) {
-						return memberDestWritable;
-					}
-				}
-
-				// A destination can sit inside a folder that is itself a cycle member, so paths
-				// captured before the apply go stale mid-transaction. Compute every member's
-				// final path from the FINAL parent chain (moved parents use their destination,
-				// committed parents their stored fields) before writing anything. A chain that
-				// revisits a node means the final tree would contain a parent loop — possible
-				// when another user nested a destination parent under its mover after the
-				// proposal — so refuse it instead of applying.
-				const finalMoves = [
-					{ node, destParentId: args.destParentId, destName: args.destName },
-					...cycleMembers.map((member) => ({
-						node: member.node,
-						destParentId: member.destParentId,
-						destName: member.destName,
-					})),
-				];
-				const finalMovesByNodeId = new Map(finalMoves.map((move) => [move.node._id, move]));
-				const finalPaths: string[] = [];
-				for (const move of finalMoves) {
-					const chainNodeIds = new Set<Id<"files_nodes">>([move.node._id]);
-					const segments = [move.destName];
-					let parentId = move.destParentId;
-					let loops = false;
-					while (parentId !== files_ROOT_ID) {
-						if (chainNodeIds.has(parentId)) {
-							loops = true;
-							break;
-						}
-						chainNodeIds.add(parentId);
-						const parentMove = finalMovesByNodeId.get(parentId);
-						if (parentMove) {
-							segments.unshift(parentMove.destName);
-							parentId = parentMove.destParentId;
-							continue;
-						}
-						const parent = await ctx.db.get("files_nodes", parentId);
-						if (!parent) {
-							return Result({ _nay: { message: "Destination folder is missing" } });
-						}
-						segments.unshift(parent.name);
-						parentId = parent.parentId;
-					}
-					if (loops) {
-						return Result({ _nay: { message: "Cannot move a folder into itself" } });
-					}
-					finalPaths.push(`/${segments.join("/")}`);
-				}
-				for (const [index, move] of finalMoves.entries()) {
-					await files_nodes_db_apply_node_move(ctx, {
-						organizationId: args.organizationId,
-						workspaceId: args.workspaceId,
-						node: move.node,
-						destParentId: move.destParentId,
-						destName: move.destName,
-						destPath: finalPaths[index],
-						updatedBy: args.updatedBy,
-						now,
-					});
-				}
-				return Result({
-					_yay: {
-						destPath: finalPaths[0],
-						cycleMemberPendingUpdates: cycleMembers.map((member) => member.pendingUpdate),
-					},
-				});
-			}
-
-			return Result({
-				_nay: { message: `Accept the pending move of "${validated._yay.replacesNode.name}" first` },
+			const ancestorProposal = await files_db_get_pending_update(ctx, {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				userId: userAuth.id,
+				target: { kind: "saved", id: ancestorId },
 			});
+			if (ancestorProposal?.pendingMove || ancestorProposal?.pendingArchive) {
+				return Result({ _nay: { name: "needs_review", message: "Review the parent changes with this move" } });
+			}
+
+			const ancestor = await ctx.db.get("files_nodes", ancestorId);
+			if (!ancestor) return Result({ _nay: { message: "Destination folder is missing" } });
+			ancestorId = ancestor.parentId;
 		}
-		// Archive (never hard-delete) the occupant of the destination path — a file, or an
-		// empty folder — whether it was the proposed replace target or a newcomer created
-		// after the proposal.
-		//
-		// The caller was authorized for the node being moved and for the destination folder. This
-		// occupant is neither: it is whatever happens to sit on the path right now, so it needs its own
-		// answer before it is archived.
+	}
+
+	const occupant = await ctx.db
+		.query("files_nodes")
+		.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
+			q
+				.eq("organizationId", membership.organizationId)
+				.eq("workspaceId", membership.workspaceId)
+				.eq("parentId", parentId)
+				.eq("name", move.destName)
+				.eq("archiveOperationId", null),
+		)
+		.first();
+
+	let occupantIntent: Parameters<typeof files_nodes_db_preflight_move>[1]["intents"][number]["occupant"];
+	if (occupant?._id === node._id) {
+		occupantIntent = { kind: "vacated", nodeId: node._id };
+	} else if (occupant) {
+		const occupantProposal = await files_db_get_pending_update(ctx, {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			userId: userAuth.id,
+			target: { kind: "saved", id: occupant._id },
+		});
+		if (occupantProposal) {
+			return Result({ _nay: { name: "needs_review", message: "Review the destination's changes with this move" } });
+		}
 		if (
-			!(await access_control_db_can_act_on_file_node(ctx, {
-				organizationId: args.organizationId,
-				workspaceId: args.workspaceId,
-				userId: args.updatedBy,
-				fileNode: validated._yay.replacesNode,
-				permission: "content.write",
-			}))
+			move.replacesTarget?.kind !== "saved" ||
+			move.replacesTarget.id !== occupant._id ||
+			move.replacesContentVersion === undefined
 		) {
-			return Result({ _nay: { message: "Permission denied" } });
+			return Result({ _nay: { name: "destination_changed", message: "The destination changed. Review it again" } });
 		}
+		occupantIntent = { kind: "replace", nodeId: occupant._id, contentVersion: move.replacesContentVersion };
+	} else {
+		if (move.replacesTarget) {
+			return Result({ _nay: { name: "destination_changed", message: "The destination changed. Review it again" } });
+		}
+		occupantIntent = { kind: "empty" };
+	}
 
-		// Replace archives the current node and all its children.
-		// An empty active folder can still have archived children.
-		const occupantWritable = await files_nodes_db_require_user_writable(ctx, {
-			node: validated._yay.replacesNode,
-			userId: args.updatedBy,
-		});
-		if (occupantWritable._nay) {
-			return occupantWritable;
-		}
-		const occupantSubtreeWritable = await files_nodes_db_require_subtree_writable(ctx, {
-			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
-			writeContext: {
-				writer: { kind: "user", userId: args.updatedBy },
-				actorUserId: args.updatedBy,
-				resourceScope: { kind: "workspace" },
-				policyReach: "ancestors",
+	const plan = await files_nodes_db_preflight_move(ctx, {
+		userAuth,
+		membership,
+		writer: { kind: "user", userId: userAuth.id },
+		policyReach: "ancestors",
+		intents: [
+			{
+				nodeId: node._id,
+				expected: node,
+				destination: {
+					parentId,
+					name: move.destName,
+					expectedParentPath: parent?.path ?? "/",
+					expectedParentArchiveOperationId: parent?.archiveOperationId ?? null,
+				},
+				occupant: occupantIntent,
 			},
-			node: validated._yay.replacesNode,
-		});
-		if (occupantSubtreeWritable._nay) {
-			return occupantSubtreeWritable;
-		}
-
-		// An occupant that only exists as the accepting user's own unaccepted eager create has
-		// no committed state to protect: it is hard-deleted and its pending row dies with the
-		// node instead of lingering as an archived one. Anything real on it — committed content,
-		// another member's proposal, a staged delete, a restricted scope — keeps the archive.
-		occupantEagerPendingUpdate =
-			occupantPendingUpdate?.eagerCreated &&
-			!occupantPendingUpdate.pendingArchive &&
-			validated._yay.replacesNode.restrictedScopeNodeId !== validated._yay.replacesNode._id &&
-			(await files_nodes_db_is_eager_node_safe_to_hard_delete(ctx, {
-				organizationId: args.organizationId,
-				workspaceId: args.workspaceId,
-				nodeId: validated._yay.replacesNode._id,
-				pendingUpdate: occupantPendingUpdate,
-			}))
-				? occupantPendingUpdate
-				: null;
-		if (occupantEagerPendingUpdate) {
-			await files_nodes_db_hard_delete_node(ctx, {
-				organizationId: args.organizationId,
-				workspaceId: args.workspaceId,
-				nodeId: validated._yay.replacesNode._id,
-			});
-		} else {
-			await files_nodes_db_archive_nodes(ctx, {
-				nodeIds: [validated._yay.replacesNode._id],
-				updatedBy: args.updatedBy,
-				now,
-			});
-		}
-	}
-
-	await files_nodes_db_apply_node_move(ctx, {
-		organizationId: args.organizationId,
-		workspaceId: args.workspaceId,
-		node,
-		destParentId: args.destParentId,
-		destName: args.destName,
-		destPath,
-		updatedBy: args.updatedBy,
-		now,
+		],
 	});
+	if (plan._nay) return plan;
 
-	// The hard-deleted eager occupant's created folders are checked only after the source
-	// lands: the destination chain holds the moved node now and must not be removed.
-	if (occupantEagerPendingUpdate?.eagerCreated) {
-		await files_nodes_db_remove_created_ancestor_folders_if_safe(ctx, {
-			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
-			userId: occupantEagerPendingUpdate.userId,
-			createdAncestorIds: occupantEagerPendingUpdate.eagerCreated.createdAncestorIds ?? [],
-		});
+	for (const archivedNodeId of plan._yay.archivedNodeIds) {
+		const privateChild = await ctx.db
+			.query("files_pending_nodes")
+			.withIndex("by_organization_workspace_user_parent_state_name", (q) =>
+				q
+					.eq("organizationId", membership.organizationId)
+					.eq("workspaceId", membership.workspaceId)
+					.eq("userId", userAuth.id)
+					.eq("parent.kind", "saved")
+					.eq("parent.id", archivedNodeId)
+					.eq("state", "active"),
+			)
+			.first();
+		if (privateChild) {
+			return Result({
+				_nay: { name: "needs_review", message: "Review the destination's child drafts with this move" },
+			});
+		}
 	}
-	return Result({ _yay: { destPath, cycleMemberPendingUpdates: [] as Doc<"files_pending_updates">[] } });
+
+	await files_nodes_db_apply_move(ctx, plan._yay);
+	return Result({ _yay: { destPath: plan._yay.moved.find((moved) => moved.nodeId === node._id)?.path ?? node.path } });
 }
 
 export const rename_node = mutation({
@@ -4465,176 +4353,50 @@ export const rename_node = mutation({
 			return authorized;
 		}
 
-		// Write permission does not bypass read-only. A locked node cannot be renamed or moved.
-		const sourceWritable = await files_nodes_db_require_user_writable(ctx, { node: fileNode, userId: userAuth.id });
-		if (sourceWritable._nay) {
-			return sourceWritable;
+		const readBudget = { readDocumentCount: 0, readBytes: 0 };
+		if (!fits_move_read_budget(readBudget, fileNode)) {
+			return Result({ _nay: { name: "move_too_large", message: "This move is too large. Select fewer items." } });
 		}
-
-		args = { ...args, path: files_normalize_special_node_path(fileNode.kind, args.path) };
-		const pathSegments = path_extract_segments_from(args.path);
-		// Plan the full rename before writing anything.
-		// Remember missing folders now. Create them only after every check passes.
+		const pathSegments = path_extract_segments_from(files_normalize_special_node_path(fileNode.kind, args.path));
+		const leafName = pathSegments.at(-1) ?? "";
 		let targetParentId = fileNode.parentId;
-		let targetParentPath: string | null;
-		let leafName: string;
-		const missingSegmentNames: string[] = [];
-
-		if (pathSegments.length > 1) {
-			targetParentPath = fileNode.parentId === files_ROOT_ID ? "/" : null;
-			// We trust that the front-end is validating the input correctly.
-			for (const name of pathSegments.slice(0, -1)) {
-				// After one folder is missing, every deeper folder is also missing.
-				// The first missing folder's parent already passed the write check.
-				if (missingSegmentNames.length > 0) {
-					missingSegmentNames.push(name);
-					continue;
-				}
-
-				const existing = await ctx.db
-					.query("files_nodes")
-					.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
-						q
-							.eq("organizationId", membership.organizationId)
-							.eq("workspaceId", membership.workspaceId)
-							.eq("parentId", targetParentId)
-							.eq("name", name)
-							.eq("archiveOperationId", null),
-					)
-					.first();
-
-				if (existing) {
-					if (existing._id === args.nodeId) {
-						return Result({
-							_nay: {
-								name: "nay",
-								message: "Not found",
-							},
-						});
-					}
-
-					// A path-like rename is a move, and this is the folder it would land in. The check at
-					// the top of the handler asked about the node being renamed, not about here. Asked
-					// through the membership, because `access_control_db_can_act_on_file_node` waves an open
-					// node through on the promise that workspace write was already proved, and here it was
-					// not: a grant on the node being renamed says nothing about this folder.
-					const authorizedSegment = await authorize_file_write(ctx, {
-						userAuth,
-						membership,
-						nodeId: existing._id,
-					});
-					if (authorizedSegment._nay) {
-						return Result({ _nay: { name: "nay", message: "Permission denied" } });
-					}
-
-					// This rename moves the node into this folder. The folder must be writable.
-					// Check each existing folder in the path.
-					const segmentWritable = await files_nodes_db_require_user_writable(ctx, {
-						node: existing,
-						userId: userAuth.id,
-					});
-					if (segmentWritable._nay) {
-						return segmentWritable;
-					}
-
-					if (existing.kind === "folder") {
-						targetParentId = existing._id;
-						targetParentPath = existing.path;
-						continue;
-					}
-
-					return Result({
-						_nay: {
-							name: "nay",
-							message: "This folder already exists.",
-						},
-					});
-				}
-
-				if (targetParentPath == null) {
-					targetParentPath = await resolve_parent_path_from_parent_id(ctx, {
-						organizationId: membership.organizationId,
-						workspaceId: membership.workspaceId,
-						parentId: targetParentId,
-					});
-					if (targetParentPath == null) {
-						return Result({ _yay: null });
-					}
-				}
-
-				// Creating the missing segment writes into whatever holds it, so that folder decides. Nothing
-				// has asked about it: the loop starts at the renamed node's own parent, which a grant on the
-				// node says nothing about.
-				const authorizedNewSegment = await authorize_file_write(ctx, {
-					userAuth,
-					membership,
-					nodeId: targetParentId,
-				});
-				if (authorizedNewSegment._nay) {
-					return Result({ _nay: { name: "nay", message: "Permission denied" } });
-				}
-
-				// Do not check this parent again. It is the current parent or a folder checked above.
-				missingSegmentNames.push(name);
+		let targetParent = targetParentId === files_ROOT_ID ? null : await ctx.db.get("files_nodes", targetParentId);
+		if (targetParent && !fits_move_read_budget(readBudget, targetParent)) {
+			return Result({ _nay: { name: "move_too_large", message: "This move is too large. Select fewer items." } });
+		}
+		let missingSegmentNames: string[] = [];
+		for (const [index, name] of pathSegments.slice(0, -1).entries()) {
+			const existing = await ctx.db
+				.query("files_nodes")
+				.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
+					q
+						.eq("organizationId", membership.organizationId)
+						.eq("workspaceId", membership.workspaceId)
+						.eq("parentId", targetParentId)
+						.eq("name", name)
+						.eq("archiveOperationId", null),
+				)
+				.first();
+			if (!existing) {
+				missingSegmentNames = pathSegments.slice(index, -1);
+				break;
 			}
-
-			const resolvedLeafName = pathSegments.at(-1);
-			if (!resolvedLeafName) {
-				const errorMessage = "leafName not resolved after path rename";
-				const errorData = {};
-				console.error(errorMessage, errorData);
-				throw should_never_happen(errorMessage, errorData);
+			if (!fits_move_read_budget(readBudget, existing)) {
+				return Result({ _nay: { name: "move_too_large", message: "This move is too large. Select fewer items." } });
 			}
-			leafName = resolvedLeafName;
-		} else {
-			const parentPath = await resolve_parent_path_from_parent_id(ctx, {
-				organizationId: membership.organizationId,
-				workspaceId: membership.workspaceId,
-				parentId: fileNode.parentId,
+			if (existing._id === fileNode._id) return Result({ _nay: { message: "Not found" } });
+			// A source grant says nothing about the folders named in a path-like rename.
+			const authorizedSegment = await access_control_db_authorize_membership(ctx, {
+				userAuth,
+				membership,
+				permission: "content.write",
+				fileNode: existing,
 			});
-			if (parentPath == null) {
-				return Result({ _yay: null });
-			}
-
-			targetParentPath = parentPath;
-			leafName = args.path;
+			if (authorizedSegment._nay) return authorizedSegment;
+			if (existing.kind !== "folder") return Result({ _nay: { message: "This folder already exists." } });
+			targetParentId = existing._id;
+			targetParent = existing;
 		}
-
-		if (targetParentPath == null) {
-			const parentPath = await resolve_parent_path_from_parent_id(ctx, {
-				organizationId: membership.organizationId,
-				workspaceId: membership.workspaceId,
-				parentId: targetParentId,
-			});
-			if (parentPath == null) {
-				return Result({ _yay: null });
-			}
-			targetParentPath = parentPath;
-		}
-
-		// Rename changes every descendant path, including archived descendants.
-		// Refuse before writing if any descendant is read-only.
-		const subtreeWritable = await files_nodes_db_require_subtree_writable(ctx, {
-			organizationId: membership.organizationId,
-			workspaceId: membership.workspaceId,
-			writeContext: {
-				writer: { kind: "user", userId: userAuth.id },
-				actorUserId: userAuth.id,
-				resourceScope: { kind: "workspace" },
-				policyReach: "ancestors",
-			},
-			node: fileNode,
-		});
-		if (subtreeWritable._nay) {
-			return subtreeWritable;
-		}
-
-		// Add the missing folders to the final path.
-		let plannedParentPath = targetParentPath;
-		for (const name of missingSegmentNames) {
-			plannedParentPath = path_join(plannedParentPath, name);
-		}
-		const renamedPath = path_join(plannedParentPath, leafName);
 
 		// New folders are empty. Check for a name conflict only in an existing folder.
 		if (fileNode.archiveOperationId === null && missingSegmentNames.length === 0) {
@@ -4650,6 +4412,9 @@ export const rename_node = mutation({
 						.eq("archiveOperationId", null),
 				)
 				.first();
+			if (activeSiblingConflict && !fits_move_read_budget(readBudget, activeSiblingConflict)) {
+				return Result({ _nay: { name: "move_too_large", message: "This move is too large. Select fewer items." } });
+			}
 			if (activeSiblingConflict && activeSiblingConflict._id !== args.nodeId) {
 				// Check access before reporting the conflict. Keep a restricted sibling hidden.
 				const authorizedConflict = await access_control_db_authorize_membership(ctx, {
@@ -4670,75 +4435,32 @@ export const rename_node = mutation({
 			}
 		}
 
-		const now = Date.now();
-
-		// Every check passed. Create the missing folders from top to bottom.
-		for (const name of missingSegmentNames) {
-			const folderPath = path_join(targetParentPath, name);
-			const folderNodeIdResult = await db_insert_node(ctx, {
-				userId: userAuth.id,
-				organizationId: membership.organizationId,
-				workspaceId: membership.workspaceId,
-				parentId: targetParentId,
-				name,
-				path: folderPath,
-				kind: "folder",
-				now,
-			});
-			if (folderNodeIdResult._nay) {
-				return folderNodeIdResult;
-			}
-
-			targetParentId = folderNodeIdResult._yay;
-			targetParentPath = folderPath;
-		}
-
-		// Update the node once and then rebase descendants under the new materialized path.
-		await ctx.db.patch("files_nodes", args.nodeId, {
-			parentId: targetParentId,
-			name: leafName,
-			path: renamedPath,
-			treePath: derive_tree_path_for_file_node(renamedPath, fileNode.kind),
-			pathDepth: files_path_depth(renamedPath),
-			lowercaseExtension: files_lowercase_extension(renamedPath, fileNode.kind),
-			// A rename changes the name only. The stored content type stays with the content.
-			updatedBy: userAuth.id,
-			updatedAt: now,
+		const plan = await files_nodes_db_preflight_move(ctx, {
+			userAuth,
+			membership,
+			writer: { kind: "user", userId: userAuth.id },
+			policyReach: "ancestors",
+			readBudget,
+			intents: [
+				{
+					nodeId: fileNode._id,
+					expected: fileNode,
+					destination: {
+						parentId: targetParentId,
+						missingParentNames: missingSegmentNames,
+						name: leafName,
+						expectedParentPath: targetParent?.path ?? "/",
+						expectedParentArchiveOperationId: targetParent?.archiveOperationId ?? null,
+					},
+					occupant:
+						missingSegmentNames.length === 0 && targetParentId === fileNode.parentId && leafName === fileNode.name
+							? { kind: "vacated", nodeId: fileNode._id }
+							: { kind: "empty" },
+				},
+			],
 		});
-		await db_patch_node_search_scope(ctx, {
-			organizationId: membership.organizationId,
-			workspaceId: membership.workspaceId,
-			nodeId: args.nodeId,
-			kind: fileNode.kind,
-			path: renamedPath,
-		});
-		await cascade_file_descendants_path(ctx, {
-			organizationId: membership.organizationId,
-			workspaceId: membership.workspaceId,
-			parentId: args.nodeId,
-			parentPath: renamedPath,
-		});
-
-		// A rename can be a move: typing `private/notes.md` re-parents the node into `private`. So the
-		// same rule as `move_nodes` applies, or a file renamed into a restricted folder would keep the
-		// open access it had outside and stay readable by the whole workspace.
-		if (targetParentId !== fileNode.parentId && fileNode.writePolicy === null) {
-			await db_set_write_policy(ctx, { node: { ...fileNode, parentId: targetParentId }, writePolicy: null });
-		}
-		if (targetParentId !== fileNode.parentId && fileNode.restrictedScopeNodeId !== args.nodeId) {
-			const destScopeNodeId = await files_nodes_db_resolve_parent_restricted_scope(ctx, {
-				parentId: targetParentId,
-			});
-			if (destScopeNodeId !== fileNode.restrictedScopeNodeId) {
-				await ctx.db.patch("files_nodes", args.nodeId, { restrictedScopeNodeId: destScopeNodeId });
-				await files_nodes_db_cascade_restricted_scope(ctx, {
-					organizationId: membership.organizationId,
-					workspaceId: membership.workspaceId,
-					parentId: args.nodeId,
-					scopeNodeId: destScopeNodeId,
-				});
-			}
-		}
+		if (plan._nay) return plan;
+		await files_nodes_db_apply_move(ctx, plan._yay);
 
 		return Result({ _yay: null });
 	},
@@ -4746,9 +4468,868 @@ export const rename_node = mutation({
 
 // #region move nodes
 
+function fits_move_read_budget(budget: { readDocumentCount: number; readBytes: number }, value: object) {
+	budget.readDocumentCount += 1;
+	budget.readBytes += files_get_utf8_byte_size(JSON.stringify(value)) + 128;
+	return budget.readDocumentCount <= MAX_MOVE_DOCUMENT_COUNT && budget.readBytes <= MAX_MOVE_BYTES;
+}
+
 /**
- * Move a bounded set in one transaction. Callers supply the current actor and live membership.
- * Clipboard callers also pin placement and choose conflict names before calling this helper.
+ * Plan exact saved-node moves in one read snapshot. Callers resolve review dependencies first.
+ * Callers also prove the credential's resource scope and supply its current policy reach.
+ * Explicit child moves stay in the plan even when an ancestor is also moving.
+ */
+export async function files_nodes_db_preflight_move(
+	ctx: QueryCtx | MutationCtx,
+	args: {
+		userAuth: { id: Id<"users"> };
+		membership: Doc<"organizations_workspaces_users">;
+		writer: files_nodes_WriteContext["writer"];
+		policyReach: files_nodes_WriteContext["policyReach"];
+		readBudget?: { readDocumentCount: number; readBytes: number };
+		/**
+		 * Private publication uses the same saved-occupant checks before inserting its new node.
+		 * The caller has checked the private proposal and resolved its parent in this mutation.
+		 */
+		privateReplacements?: Array<{
+			node: Doc<"files_pending_nodes">;
+			parentId: Doc<"files_nodes">["parentId"];
+			occupant: {
+				nodeId: Id<"files_nodes">;
+				contentVersion: Infer<typeof files_content_version_validator> | null;
+			};
+		}>;
+		intents: Array<{
+			nodeId: Id<"files_nodes">;
+			expected: Pick<Doc<"files_nodes">, "parentId" | "name" | "path" | "archiveOperationId">;
+			destination: {
+				parentId: Doc<"files_nodes">["parentId"];
+				// These folders do not exist yet. parentId is their nearest saved ancestor.
+				missingParentNames?: string[];
+				name: string;
+				expectedParentPath: string;
+				expectedParentArchiveOperationId: string | null;
+			};
+			occupant:
+				| { kind: "empty" }
+				| { kind: "vacated"; nodeId: Id<"files_nodes"> }
+				| {
+						kind: "replace";
+						nodeId: Id<"files_nodes">;
+						contentVersion: Infer<typeof files_content_version_validator> | null;
+				  };
+		}>;
+	},
+) {
+	const { userAuth, membership, writer } = args;
+	if (args.intents.length + (args.privateReplacements?.length ?? 0) > MAX_MOVE_NODE_COUNT) {
+		return Result({ _nay: { name: "move_too_large", message: "This move is too large. Select fewer items." } });
+	}
+
+	// Count nodes, version docs, search chunks, and metadata. Permission reads and the caller's
+	// receipt use the transaction headroom outside this smaller Files budget.
+	const readBudget = args.readBudget ?? { readDocumentCount: 0, readBytes: 0 };
+	const nodesById = new Map<Id<"files_nodes">, Doc<"files_nodes">>();
+	let readBudgetExceeded = false;
+	async function readNode(nodeId: Id<"files_nodes">) {
+		const cached = nodesById.get(nodeId);
+		if (cached) return cached;
+		const node = await ctx.db.get("files_nodes", nodeId);
+		if (node) {
+			readBudgetExceeded ||= !fits_move_read_budget(readBudget, node);
+			nodesById.set(nodeId, node);
+		}
+		return node;
+	}
+
+	const intentsById = new Map<Id<"files_nodes">, (typeof args.intents)[number]>();
+	for (const intent of args.intents) {
+		if (intentsById.has(intent.nodeId)) {
+			return Result({ _nay: { message: "A move names the same item more than once." } });
+		}
+		intentsById.set(intent.nodeId, intent);
+
+		const node = await readNode(intent.nodeId);
+		const parent = intent.destination.parentId === files_ROOT_ID ? null : await readNode(intent.destination.parentId);
+		if (readBudgetExceeded) {
+			return Result({ _nay: { name: "move_too_large", message: "This move is too large. Select fewer items." } });
+		}
+		if (!node || (intent.destination.parentId !== files_ROOT_ID && (!parent || parent.kind !== "folder"))) {
+			return Result({ _nay: { message: "Not found" } });
+		}
+		if (
+			node.organizationId !== membership.organizationId ||
+			node.workspaceId !== membership.workspaceId ||
+			(parent && (parent.organizationId !== membership.organizationId || parent.workspaceId !== membership.workspaceId))
+		) {
+			return Result({ _nay: { message: "Unauthorized" } });
+		}
+
+		const authorized = await access_control_db_authorize_membership(ctx, {
+			userAuth,
+			membership,
+			permission: "content.write",
+			fileNode: node,
+		});
+		if (authorized._nay) return authorized;
+
+		// Renaming inside the same saved parent uses the source grant. Creating folders or
+		// changing parents also needs a grant on the destination.
+		const needsParentWrite =
+			node.parentId !== intent.destination.parentId || (intent.destination.missingParentNames?.length ?? 0) > 0;
+		if (needsParentWrite) {
+			const authorizedParent = await access_control_db_authorize_membership(ctx, {
+				userAuth,
+				membership,
+				permission: "content.write",
+				...(parent ? { fileNode: parent } : {}),
+			});
+			if (authorizedParent._nay) return authorizedParent;
+
+			if (writer.kind === "service_account") {
+				const allowed = parent
+					? await access_control_db_can_act_on_file_node(ctx, {
+							organizationId: membership.organizationId,
+							workspaceId: membership.workspaceId,
+							userId: userAuth.id,
+							serviceAccountId: writer.serviceAccountId,
+							fileNode: parent,
+							permission: "content.write",
+						})
+					: await access_control_db_has_permission(ctx, {
+							organizationId: membership.organizationId,
+							workspaceId: membership.workspaceId,
+							defaultWorkspaceId: authorizedParent._yay.defaultWorkspaceId,
+							organizationOwnerUserId: authorizedParent._yay.organization.ownerUserId,
+							serviceAccountId: writer.serviceAccountId,
+							resource: { kind: "workspace", id: membership.workspaceId },
+							permission: "content.write",
+						});
+				if (!allowed) return Result({ _nay: { message: "Permission denied" } });
+			}
+		}
+
+		if (
+			node.parentId !== intent.expected.parentId ||
+			node.name !== intent.expected.name ||
+			node.path !== intent.expected.path ||
+			node.archiveOperationId !== intent.expected.archiveOperationId
+		) {
+			return Result({ _nay: { name: "source_changed", message: "A source changed. Start the move again." } });
+		}
+		if (
+			(parent?.path ?? "/") !== intent.destination.expectedParentPath ||
+			(parent?.archiveOperationId ?? null) !== intent.destination.expectedParentArchiveOperationId
+		) {
+			return Result({
+				_nay: { name: "destination_changed", message: "The destination changed. Start the move again." },
+			});
+		}
+		if (node.archiveOperationId === null && parent?.archiveOperationId != null) {
+			return Result({ _nay: { message: "Not found" } });
+		}
+
+		const name =
+			node.kind === "file"
+				? files_normalize_file_rename_name(intent.destination.name)
+				: files_normalize_name(node.kind, intent.destination.name);
+		if (name._nay) return name;
+		if (name._yay !== intent.destination.name) {
+			return Result({ _nay: { message: "The destination name is not valid." } });
+		}
+
+		if ((intent.destination.missingParentNames?.length ?? 0) > MAX_MOVE_NODE_COUNT) {
+			return Result({ _nay: { name: "move_too_large", message: "This move is too large. Select fewer items." } });
+		}
+		for (const segment of intent.destination.missingParentNames ?? []) {
+			const folderName = files_normalize_name("folder", segment);
+			if (folderName._nay) return folderName;
+			if (folderName._yay !== segment) return Result({ _nay: { message: "The destination name is not valid." } });
+		}
+	}
+
+	for (const replacement of args.privateReplacements ?? []) {
+		const { node, parentId } = replacement;
+		const occupant = await readNode(replacement.occupant.nodeId);
+		if (parentId !== files_ROOT_ID) await readNode(parentId);
+		if (readBudgetExceeded || !fits_move_read_budget(readBudget, node))
+			return Result({ _nay: { name: "move_too_large", message: "This move is too large. Select fewer items." } });
+		if (
+			node.state !== "active" ||
+			node.userId !== userAuth.id ||
+			node.organizationId !== membership.organizationId ||
+			node.workspaceId !== membership.workspaceId ||
+			!occupant ||
+			occupant.organizationId !== membership.organizationId ||
+			occupant.workspaceId !== membership.workspaceId ||
+			occupant.archiveOperationId !== null ||
+			occupant.parentId !== parentId ||
+			occupant.name !== node.name
+		)
+			return Result({ _nay: { name: "destination_changed", message: "The destination changed. Review it again." } });
+	}
+
+	// Load current ancestors once. The final graph below uses these same docs for both policies.
+	for (const node of nodesById.values()) {
+		if (node.parentId === files_ROOT_ID || nodesById.has(node.parentId)) continue;
+		const parent = await readNode(node.parentId);
+		if (readBudgetExceeded) {
+			return Result({ _nay: { name: "move_too_large", message: "This move is too large. Select fewer items." } });
+		}
+		if (!parent) {
+			const errorMessage = "fileNode.parentId points to a missing files_nodes doc";
+			const errorData = { nodeId: node._id, parentId: node.parentId };
+			console.error(errorMessage, errorData);
+			throw should_never_happen(errorMessage, errorData);
+		}
+	}
+
+	type FinalNodeFields = Pick<
+		Doc<"files_nodes">,
+		| "parentId"
+		| "name"
+		| "path"
+		| "treePath"
+		| "pathDepth"
+		| "lowercaseExtension"
+		| "restrictedScopeNodeId"
+		| "writePolicyScopeNodeId"
+	>;
+	const finalById = new Map<Id<"files_nodes">, FinalNodeFields>();
+	const visiting = new Set<Id<"files_nodes">>();
+	function finalFields(nodeId: Id<"files_nodes">): FinalNodeFields | null {
+		const cached = finalById.get(nodeId);
+		if (cached) return cached;
+		if (visiting.has(nodeId)) return null;
+		visiting.add(nodeId);
+		const node = nodesById.get(nodeId)!;
+		const intent = intentsById.get(nodeId);
+		const parentId = intent?.destination.parentId ?? node.parentId;
+		const parent = parentId === files_ROOT_ID ? null : finalFields(parentId);
+		if (parentId !== files_ROOT_ID && !parent) return null;
+		const name = intent?.destination.name ?? node.name;
+		let parentPath = parent?.path ?? "/";
+		for (const segment of intent?.destination.missingParentNames ?? []) parentPath = path_join(parentPath, segment);
+		const path = path_join(parentPath, name);
+		const fields: FinalNodeFields = {
+			parentId,
+			name,
+			path,
+			treePath: derive_tree_path_for_file_node(path, node.kind),
+			pathDepth: files_path_depth(path),
+			lowercaseExtension: files_lowercase_extension(path, node.kind),
+			restrictedScopeNodeId:
+				node.restrictedScopeNodeId === node._id ? node._id : (parent?.restrictedScopeNodeId ?? null),
+			writePolicyScopeNodeId: node.writePolicy !== null ? node._id : (parent?.writePolicyScopeNodeId ?? null),
+		};
+		visiting.delete(nodeId);
+		finalById.set(nodeId, fields);
+		return fields;
+	}
+	for (const node of nodesById.values()) {
+		if (!finalFields(node._id)) {
+			return Result({ _nay: { message: "Cannot move a folder into itself or its descendants." } });
+		}
+	}
+
+	function isWritable(node: Doc<"files_nodes">, final: boolean) {
+		let current: Doc<"files_nodes"> | undefined = node;
+		while (current) {
+			const policy = current.writePolicy;
+			if (
+				policy !== null &&
+				((args.policyReach !== "ancestors" && (args.policyReach !== "direct" || current._id !== node._id)) ||
+					policy.mode !== "writer" ||
+					(policy.writer.kind === "user"
+						? writer.kind !== "user" || policy.writer.userId !== writer.userId
+						: writer.kind !== "service_account" || policy.writer.serviceAccountId !== writer.serviceAccountId))
+			)
+				return false;
+			const parentId: Doc<"files_nodes">["parentId"] = final ? finalById.get(current._id)!.parentId : current.parentId;
+			current = parentId === files_ROOT_ID ? undefined : nodesById.get(parentId);
+		}
+		return true;
+	}
+
+	const moved: Array<{ nodeId: Id<"files_nodes">; name: string; path: string }> = [];
+	const unchangedNodeIds: Array<Id<"files_nodes">> = [];
+	const changedById = new Map<Id<"files_nodes">, Doc<"files_nodes">>();
+	const claimedDestinations = new Set<string>();
+	const plannedFolders = new Map<string, { parentKey: string | null; node: ReturnType<typeof node_insert_fields> }>();
+	const plannedParentKeys = new Map<Id<"files_nodes">, string>();
+	const now = Date.now();
+
+	for (const intent of args.intents) {
+		const { parentId, missingParentNames = [] } = intent.destination;
+		const parent = parentId === files_ROOT_ID ? null : finalById.get(parentId)!;
+		let parentKey: string | null = null;
+		let path = parent?.path ?? "/";
+
+		for (const [index, name] of missingParentNames.entries()) {
+			const key = JSON.stringify([parentId, ...missingParentNames.slice(0, index + 1)]);
+			path = path_join(path, name);
+
+			if (!plannedFolders.has(key)) {
+				if (index === 0) {
+					const existing = await ctx.db
+						.query("files_nodes")
+						.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
+							q
+								.eq("organizationId", membership.organizationId)
+								.eq("workspaceId", membership.workspaceId)
+								.eq("parentId", parentId)
+								.eq("name", name)
+								.eq("archiveOperationId", null),
+						)
+						.first();
+					if (existing && !fits_move_read_budget(readBudget, existing)) {
+						return Result({ _nay: { name: "move_too_large", message: "This move is too large. Select fewer items." } });
+					}
+					if (existing)
+						return Result({
+							_nay: { name: "destination_changed", message: "The destination changed. Start the move again." },
+						});
+				}
+
+				if (plannedFolders.size >= MAX_MOVE_NODE_COUNT) {
+					return Result({ _nay: { name: "move_too_large", message: "This move is too large. Select fewer items." } });
+				}
+
+				plannedFolders.set(key, {
+					parentKey,
+					node: node_insert_fields({
+						userId: userAuth.id,
+						organizationId: membership.organizationId,
+						workspaceId: membership.workspaceId,
+						parentId,
+						name,
+						path,
+						kind: "folder",
+						restrictedScopeNodeId: parent?.restrictedScopeNodeId ?? null,
+						writePolicyScopeNodeId: parent?.writePolicyScopeNodeId ?? null,
+						now,
+					}),
+				});
+				claimedDestinations.add(key);
+			}
+			parentKey = key;
+		}
+
+		if (parentKey) plannedParentKeys.set(intent.nodeId, parentKey);
+	}
+
+	const archiveNodes = new Map<Id<"files_nodes">, Doc<"files_nodes">>();
+	const archivedDescendants = new Map<Id<"files_nodes">, Doc<"files_nodes">>();
+	const replacementChecks: Array<{
+		kind: Doc<"files_nodes">["kind"];
+		occupant: Doc<"files_nodes">;
+		contentVersion: Infer<typeof files_content_version_validator> | null;
+	}> = [];
+
+	for (const intent of args.intents) {
+		const node = nodesById.get(intent.nodeId)!;
+		const fields = finalById.get(node._id)!;
+
+		if (node.archiveOperationId === null) {
+			const destinationKey = JSON.stringify([
+				fields.parentId,
+				...(intent.destination.missingParentNames ?? []),
+				fields.name,
+			]);
+			if (claimedDestinations.has(destinationKey)) {
+				return Result({ _nay: { name: "nay", message: "Path already exists" } });
+			}
+			claimedDestinations.add(destinationKey);
+		}
+
+		if (!isWritable(node, false) || !isWritable(node, true)) {
+			return Result({ _nay: { name: "read_only", message: "This item is read-only." } });
+		}
+
+		if (fields.parentId !== files_ROOT_ID) {
+			const parent = nodesById.get(fields.parentId)!;
+			if (!isWritable(parent, false) || !isWritable(parent, true)) {
+				return Result({ _nay: { name: "read_only", message: "This item is read-only." } });
+			}
+
+			if (node.parentId !== fields.parentId || plannedParentKeys.has(node._id)) {
+				const finalParent = { ...parent, ...finalById.get(parent._id)! };
+				const authorizedParent = await access_control_db_authorize_membership(ctx, {
+					userAuth,
+					membership,
+					permission: "content.write",
+					fileNode: finalParent,
+				});
+				if (authorizedParent._nay) return authorizedParent;
+
+				if (writer.kind === "service_account") {
+					const allowed = await access_control_db_can_act_on_file_node(ctx, {
+						organizationId: membership.organizationId,
+						workspaceId: membership.workspaceId,
+						userId: userAuth.id,
+						serviceAccountId: writer.serviceAccountId,
+						fileNode: finalParent,
+						permission: "content.write",
+					});
+					if (!allowed) return Result({ _nay: { message: "Permission denied" } });
+				}
+			}
+		}
+
+		if (
+			!plannedParentKeys.has(node._id) &&
+			node.parentId === fields.parentId &&
+			node.name === fields.name &&
+			node.path === fields.path &&
+			node.restrictedScopeNodeId === fields.restrictedScopeNodeId &&
+			node.writePolicyScopeNodeId === fields.writePolicyScopeNodeId
+		) {
+			unchangedNodeIds.push(node._id);
+		} else {
+			moved.push({ nodeId: node._id, name: fields.name, path: fields.path });
+			changedById.set(node._id, node);
+		}
+
+		// Archived renames keep their archive identity and may share an active path.
+		if (node.archiveOperationId !== null) continue;
+
+		if (plannedParentKeys.has(node._id)) {
+			if (intent.occupant.kind !== "empty")
+				return Result({
+					_nay: { name: "destination_changed", message: "The destination changed. Start the move again." },
+				});
+			continue;
+		}
+
+		const occupant = await ctx.db
+			.query("files_nodes")
+			.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
+				q
+					.eq("organizationId", membership.organizationId)
+					.eq("workspaceId", membership.workspaceId)
+					.eq("parentId", fields.parentId)
+					.eq("name", fields.name)
+					.eq("archiveOperationId", null),
+			)
+			.first();
+		if (occupant && !fits_move_read_budget(readBudget, occupant)) {
+			return Result({ _nay: { name: "move_too_large", message: "This move is too large. Select fewer items." } });
+		}
+		if (occupant && !nodesById.has(occupant._id)) nodesById.set(occupant._id, occupant);
+
+		if (intent.occupant.kind === "empty") {
+			if (occupant) {
+				const readable = await access_control_db_authorize_membership(ctx, {
+					userAuth,
+					membership,
+					permission: "content.read",
+					fileNode: occupant,
+				});
+				return Result({ _nay: { name: "nay", message: readable._nay ? "Permission denied" : "Path already exists" } });
+			}
+			continue;
+		}
+
+		if (!occupant || occupant._id !== intent.occupant.nodeId) {
+			return Result({
+				_nay: { name: "destination_changed", message: "The destination changed. Start the move again." },
+			});
+		}
+
+		if (intent.occupant.kind === "vacated") {
+			const occupantIntent = intentsById.get(occupant._id);
+			const occupantFinal = finalById.get(occupant._id);
+			if (
+				occupant._id !== node._id &&
+				(!occupantIntent ||
+					!occupantFinal ||
+					(!plannedParentKeys.has(occupant._id) &&
+						occupantFinal.parentId === fields.parentId &&
+						occupantFinal.name === fields.name))
+			) {
+				return Result({ _nay: { name: "nay", message: "Path already exists" } });
+			}
+			continue;
+		}
+
+		replacementChecks.push({ kind: node.kind, occupant, contentVersion: intent.occupant.contentVersion });
+	}
+
+	for (const replacement of args.privateReplacements ?? [])
+		replacementChecks.push({
+			kind: replacement.node.kind,
+			occupant: nodesById.get(replacement.occupant.nodeId)!,
+			contentVersion: replacement.occupant.contentVersion,
+		});
+
+	for (const { kind, occupant, contentVersion: expectedVersion } of replacementChecks) {
+		const authorizedOccupant = await access_control_db_authorize_membership(ctx, {
+			userAuth,
+			membership,
+			permission: "content.write",
+			fileNode: occupant,
+		});
+		if (authorizedOccupant._nay) return authorizedOccupant;
+		if (occupant.kind !== kind || intentsById.has(occupant._id)) {
+			return Result({ _nay: { message: "Cannot replace this item." } });
+		}
+
+		const contentVersion = await files_nodes_db_get_content_version(ctx, occupant);
+		if (contentVersion?.kind === "yjs") {
+			const sequenceDoc = await ctx.db.get("files_yjs_docs_last_sequences", contentVersion.lastSequenceId);
+			// Count both this budget read and the version helper's read.
+			if (
+				sequenceDoc &&
+				(!fits_move_read_budget(readBudget, sequenceDoc) || !fits_move_read_budget(readBudget, sequenceDoc))
+			) {
+				return Result({ _nay: { name: "move_too_large", message: "This move is too large. Select fewer items." } });
+			}
+		}
+
+		const versionMatches =
+			contentVersion === null || expectedVersion === null
+				? contentVersion === expectedVersion
+				: contentVersion.contentType === expectedVersion.contentType &&
+					contentVersion.textKind === expectedVersion.textKind &&
+					contentVersion.collaborationEnabled === expectedVersion.collaborationEnabled &&
+					(contentVersion.kind === "asset" && expectedVersion.kind === "asset"
+						? contentVersion.assetId === expectedVersion.assetId
+						: contentVersion.kind === "yjs" &&
+							expectedVersion.kind === "yjs" &&
+							contentVersion.lastSequenceId === expectedVersion.lastSequenceId &&
+							contentVersion.lineageGeneration === expectedVersion.lineageGeneration &&
+							contentVersion.sequence === expectedVersion.sequence);
+		if (!versionMatches) {
+			return Result({
+				_nay: { name: "destination_changed", message: "The destination changed. Start the move again." },
+			});
+		}
+
+		archiveNodes.set(occupant._id, occupant);
+		const descendants = [occupant];
+		for (const ancestor of descendants) {
+			for await (const child of ctx.db
+				.query("files_nodes")
+				.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
+					q
+						.eq("organizationId", membership.organizationId)
+						.eq("workspaceId", membership.workspaceId)
+						.eq("parentId", ancestor._id),
+				)) {
+				if (!fits_move_read_budget(readBudget, child)) {
+					return Result({ _nay: { name: "move_too_large", message: "This move is too large. Select fewer items." } });
+				}
+				if (child.archiveOperationId === null) {
+					return Result({ _nay: { message: "Cannot replace a non-empty folder." } });
+				}
+				nodesById.set(child._id, child);
+				archivedDescendants.set(child._id, child);
+				descendants.push(child);
+			}
+		}
+	}
+
+	// Discover descendants by current parent IDs. Final parent links decide where each one lands.
+	const descendants = [...changedById.values()];
+	for (const node of descendants) {
+		for await (const child of ctx.db
+			.query("files_nodes")
+			.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
+				q
+					.eq("organizationId", membership.organizationId)
+					.eq("workspaceId", membership.workspaceId)
+					.eq("parentId", node._id),
+			)) {
+			if (!fits_move_read_budget(readBudget, child)) {
+				return Result({ _nay: { name: "move_too_large", message: "This move is too large. Select fewer items." } });
+			}
+			nodesById.set(child._id, child);
+			if (!changedById.has(child._id)) {
+				changedById.set(child._id, child);
+				descendants.push(child);
+			}
+		}
+	}
+	for (const node of nodesById.values()) {
+		if (!finalFields(node._id)) {
+			return Result({ _nay: { message: "Cannot move a folder into itself or its descendants." } });
+		}
+	}
+	for (const intent of args.intents) {
+		let node: Doc<"files_nodes"> | undefined = nodesById.get(intent.nodeId)!;
+		while (node) {
+			if (archiveNodes.has(node._id)) {
+				return Result({ _nay: { message: "Cannot replace an ancestor of a moved item." } });
+			}
+			node = node.parentId === files_ROOT_ID ? undefined : nodesById.get(node.parentId);
+		}
+		let parentId = intent.destination.parentId;
+		while (parentId !== files_ROOT_ID) {
+			if (archiveNodes.has(parentId)) {
+				return Result({ _nay: { message: "Cannot move into an item being replaced." } });
+			}
+			parentId = finalById.get(parentId)!.parentId;
+		}
+	}
+
+	const checkedWriteScopes = new Set<Id<"files_nodes">>();
+	const checkedLeavingScopes = new Set<Id<"files_nodes">>();
+	const affectedNodes = new Map([...changedById, ...archiveNodes]);
+	const reparentedTrees = args.intents
+		.filter(
+			(intent) =>
+				nodesById.get(intent.nodeId)!.parentId !== intent.destination.parentId || plannedParentKeys.has(intent.nodeId),
+		)
+		.map((intent) => nodesById.get(intent.nodeId)!);
+
+	for (const node of new Map([...affectedNodes, ...archivedDescendants]).values()) {
+		const final = finalById.get(node._id)!;
+		if (!isWritable(node, false) || (changedById.has(node._id) && !isWritable(node, true))) {
+			const readable = await access_control_db_authorize_membership(ctx, {
+				userAuth,
+				membership,
+				permission: "content.read",
+				fileNode: node,
+			});
+			return Result({
+				_nay: {
+					name: readable._nay ? "nay" : "read_only",
+					message: readable._nay ? "Permission denied" : "This item is read-only.",
+				},
+			});
+		}
+
+		const scope = node.restrictedScopeNodeId;
+		// A name change carries nested shares without changing their parent or readers.
+		// Reparenting a subtree still asks each nested share for write access.
+		const needsContentWrite =
+			intentsById.has(node._id) ||
+			archiveNodes.has(node._id) ||
+			reparentedTrees.some((root) => node.path.startsWith(root.path + "/"));
+
+		if (scope && !checkedWriteScopes.has(scope) && affectedNodes.has(node._id) && needsContentWrite) {
+			const authorized = await access_control_db_authorize_membership(ctx, {
+				userAuth,
+				membership,
+				permission: "content.write",
+				fileNode: node,
+			});
+			if (authorized._nay) return authorized;
+			checkedWriteScopes.add(scope);
+		}
+
+		if (writer.kind === "service_account" && needsContentWrite) {
+			const allowed = await access_control_db_can_act_on_file_node(ctx, {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				userId: userAuth.id,
+				serviceAccountId: writer.serviceAccountId,
+				fileNode: node,
+				permission: "content.write",
+			});
+			if (!allowed) return Result({ _nay: { message: "Permission denied" } });
+
+			if (changedById.has(node._id) && scope !== final.restrictedScopeNodeId) {
+				const allowedFinal = await access_control_db_can_act_on_file_node(ctx, {
+					organizationId: membership.organizationId,
+					workspaceId: membership.workspaceId,
+					userId: userAuth.id,
+					serviceAccountId: writer.serviceAccountId,
+					fileNode: { ...node, ...final },
+					permission: "content.write",
+				});
+				if (!allowedFinal) return Result({ _nay: { message: "Permission denied" } });
+			}
+		}
+
+		if (
+			changedById.has(node._id) &&
+			scope &&
+			scope !== node._id &&
+			scope !== final.restrictedScopeNodeId &&
+			!checkedLeavingScopes.has(scope)
+		) {
+			const authorized = await access_control_db_authorize_membership(ctx, {
+				userAuth,
+				membership,
+				permission: "content.permissions.manage",
+				fileNode: node,
+			});
+			if (authorized._nay) {
+				return Result({
+					_nay: { name: "nay", message: "You need Can manage on the shared folder to move this out of it." },
+				});
+			}
+
+			if (writer.kind === "service_account") {
+				const allowed = await access_control_db_can_act_on_file_node(ctx, {
+					organizationId: membership.organizationId,
+					workspaceId: membership.workspaceId,
+					userId: userAuth.id,
+					serviceAccountId: writer.serviceAccountId,
+					fileNode: node,
+					permission: "content.permissions.manage",
+				});
+				if (!allowed) return Result({ _nay: { message: "Permission denied" } });
+			}
+			checkedLeavingScopes.add(scope);
+		}
+	}
+
+	const nodePatches: Array<{ id: Id<"files_nodes">; parentKey?: string; patch: Partial<Doc<"files_nodes">> }> = [];
+	const chunkPatches: Array<{
+		id: Id<"files_plain_text_chunks">;
+		patch: Pick<Doc<"files_plain_text_chunks">, "path" | "archiveOperationId">;
+	}> = [];
+	const metadataPatches: Array<{
+		id: Id<"files_metadata_docs">;
+		patch: Pick<Doc<"files_metadata_docs">, "path" | "treePath" | "archiveOperationId">;
+	}> = [];
+	let writeBytes = 0;
+	let writeDocumentCount = 0;
+
+	function fitsWriteBudget(value: object) {
+		writeDocumentCount += 1;
+		writeBytes += files_get_utf8_byte_size(JSON.stringify(value)) + 128;
+		return writeDocumentCount <= MAX_MOVE_DOCUMENT_COUNT && writeBytes <= MAX_MOVE_BYTES;
+	}
+
+	for (const folder of plannedFolders.values()) {
+		if (!fitsWriteBudget(folder.node)) {
+			return Result({ _nay: { name: "move_too_large", message: "This move is too large. Select fewer items." } });
+		}
+	}
+
+	const archiveOperationId = archiveNodes.size > 0 ? crypto.randomUUID() : null;
+	for (const node of affectedNodes.values()) {
+		const archived = archiveNodes.has(node._id);
+		const fields = finalById.get(node._id)!;
+		const patch = {
+			...fields,
+			...(archived ? { archiveOperationId: archiveOperationId! } : {}),
+			...(archived || intentsById.has(node._id) ? { updatedBy: userAuth.id, updatedAt: now } : {}),
+		};
+
+		if (
+			!archived &&
+			!plannedParentKeys.has(node._id) &&
+			node.parentId === fields.parentId &&
+			node.name === fields.name &&
+			node.path === fields.path &&
+			node.restrictedScopeNodeId === fields.restrictedScopeNodeId &&
+			node.writePolicyScopeNodeId === fields.writePolicyScopeNodeId
+		)
+			continue;
+
+		if (nodePatches.length + plannedFolders.size >= MAX_MOVE_NODE_COUNT || !fitsWriteBudget({ ...node, ...patch })) {
+			return Result({ _nay: { name: "move_too_large", message: "This move is too large. Select fewer items." } });
+		}
+
+		nodePatches.push({
+			id: node._id,
+			...(plannedParentKeys.has(node._id) ? { parentKey: plannedParentKeys.get(node._id)! } : {}),
+			patch,
+		});
+
+		const { path, treePath } = fields;
+		const nextArchiveOperationId = archived ? archiveOperationId! : (node.archiveOperationId ?? undefined);
+
+		if (node.kind === "file") {
+			for (const chunks of [
+				ctx.db
+					.query("files_plain_text_chunks")
+					.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
+						q
+							.eq("organizationId", membership.organizationId)
+							.eq("workspaceId", membership.workspaceId)
+							.eq("fileNodeId", node._id),
+					),
+				ctx.db
+					.query("files_plain_text_chunks")
+					.withIndex("by_organization_workspace_target_chunkIndex", (q) =>
+						q
+							.eq("organizationId", membership.organizationId)
+							.eq("workspaceId", membership.workspaceId)
+							.eq("target.kind", "saved")
+							.eq("target.id", node._id),
+					),
+			]) {
+				for await (const chunk of chunks) {
+					const chunkPatch = { path, archiveOperationId: nextArchiveOperationId };
+					if (!fits_move_read_budget(readBudget, chunk) || !fitsWriteBudget({ ...chunk, ...chunkPatch })) {
+						return Result({ _nay: { name: "move_too_large", message: "This move is too large. Select fewer items." } });
+					}
+					chunkPatches.push({ id: chunk._id, patch: chunkPatch });
+				}
+			}
+		}
+
+		for (const metadataDocs of [
+			ctx.db
+				.query("files_metadata_docs")
+				.withIndex("by_organization_workspace_fileNode_fieldPath", (q) =>
+					q
+						.eq("organizationId", membership.organizationId)
+						.eq("workspaceId", membership.workspaceId)
+						.eq("fileNodeId", node._id),
+				),
+			ctx.db
+				.query("files_metadata_docs")
+				.withIndex("by_organization_workspace_target_fieldPath", (q) =>
+					q
+						.eq("organizationId", membership.organizationId)
+						.eq("workspaceId", membership.workspaceId)
+						.eq("target.kind", "saved")
+						.eq("target.id", node._id),
+				),
+		]) {
+			for await (const metadata of metadataDocs) {
+				const metadataPatch = { path, treePath, archiveOperationId: nextArchiveOperationId };
+				if (!fits_move_read_budget(readBudget, metadata) || !fitsWriteBudget({ ...metadata, ...metadataPatch })) {
+					return Result({ _nay: { name: "move_too_large", message: "This move is too large. Select fewer items." } });
+				}
+				metadataPatches.push({ id: metadata._id, patch: metadataPatch });
+			}
+		}
+	}
+
+	return Result({
+		_yay: {
+			folderInserts: [...plannedFolders].map(([key, folder]) => ({ key, ...folder })),
+			nodePatches,
+			chunkPatches,
+			metadataPatches,
+			moved,
+			unchangedNodeIds,
+			archivedNodeIds: [...archiveNodes.keys()],
+			budget: { ...readBudget, writeDocumentCount, writeBytes },
+		},
+	});
+}
+
+/**
+ * Apply only a plan built in this same mutation. No descendant discovery or normal refusal remains.
+ */
+export async function files_nodes_db_apply_move(
+	ctx: MutationCtx,
+	plan: NonNullable<Awaited<ReturnType<typeof files_nodes_db_preflight_move>>["_yay"]>,
+) {
+	const folderIds = new Map<string, Id<"files_nodes">>();
+	for (const folder of plan.folderInserts) {
+		const parentId = folder.parentKey ? folderIds.get(folder.parentKey)! : folder.node.parentId;
+		folderIds.set(folder.key, await ctx.db.insert("files_nodes", { ...folder.node, parentId }));
+	}
+	for (const node of plan.nodePatches)
+		await ctx.db.patch("files_nodes", node.id, {
+			...node.patch,
+			...(node.parentKey ? { parentId: folderIds.get(node.parentKey)! } : {}),
+		});
+	for (const chunk of plan.chunkPatches) await ctx.db.patch("files_plain_text_chunks", chunk.id, chunk.patch);
+	for (const metadata of plan.metadataPatches) await ctx.db.patch("files_metadata_docs", metadata.id, metadata.patch);
+}
+
+/**
+ * Normalize a human selection before planning its moves. A selected ancestor carries its children.
  */
 export async function files_nodes_db_move_nodes(
 	ctx: MutationCtx,
@@ -4759,359 +5340,106 @@ export async function files_nodes_db_move_nodes(
 			nodeId: Id<"files_nodes">;
 			expected?: { parentId: Doc<"files_nodes">["parentId"]; name: string; path: string };
 			destName?: string;
+			replacement?: { nodeId: Id<"files_nodes">; contentVersion: Infer<typeof files_content_version_validator> | null };
 		}>;
 		targetParentId: Doc<"files_nodes">["parentId"];
 		expectedTargetPath?: string;
 	},
 ) {
-	const { userAuth, membership } = args;
 	if (args.items.length > MAX_MOVE_NODE_COUNT) {
 		return Result({ _nay: { name: "move_too_large", message: "This move is too large. Select fewer items." } });
 	}
 
-	// Leave room for permission checks, the caller's receipt, and Convex's document encoding.
-	let readDocumentCount = 0;
-	let readBytes = 0;
-	const nodesById = new Map<Id<"files_nodes">, Doc<"files_nodes">>();
-	function fitsReadBudget(value: object) {
-		readDocumentCount += 1;
-		readBytes += files_get_utf8_byte_size(JSON.stringify(value)) + 128;
-		return readDocumentCount <= MAX_MOVE_DOCUMENT_COUNT && readBytes <= MAX_MOVE_BYTES;
+	const readBudget = { readDocumentCount: 0, readBytes: 0 };
+	const selected = new Map<Id<"files_nodes">, { node: Doc<"files_nodes">; item: (typeof args.items)[number] }>();
+
+	for (const item of args.items) {
+		if (selected.has(item.nodeId)) continue;
+		const node = await ctx.db.get("files_nodes", item.nodeId);
+		if (node && !fits_move_read_budget(readBudget, node)) {
+			return Result({ _nay: { name: "move_too_large", message: "This move is too large. Select fewer items." } });
+		}
+		if (!node || node.archiveOperationId !== null) return Result({ _nay: { message: "Not found" } });
+		if (node.organizationId !== args.membership.organizationId || node.workspaceId !== args.membership.workspaceId) {
+			return Result({ _nay: { message: "Unauthorized" } });
+		}
+		selected.set(item.nodeId, { node, item });
 	}
 
-	const authorizedTarget = await authorize_file_write(ctx, {
-		userAuth,
-		membership,
-		nodeId: args.targetParentId,
-	});
-	if (authorizedTarget._nay) {
-		return authorizedTarget;
+	const roots = [...selected.values()].filter(
+		({ node }) =>
+			![...selected.values()].some(
+				({ node: ancestor }) =>
+					ancestor._id !== node._id && ancestor.kind === "folder" && node.path.startsWith(ancestor.path + "/"),
+			),
+	);
+
+	const parent = args.targetParentId === files_ROOT_ID ? null : await ctx.db.get("files_nodes", args.targetParentId);
+	if (parent && !fits_move_read_budget(readBudget, parent)) {
+		return Result({ _nay: { name: "move_too_large", message: "This move is too large. Select fewer items." } });
 	}
-	const destinationNode =
-		args.targetParentId === files_ROOT_ID ? null : await ctx.db.get("files_nodes", args.targetParentId);
 	if (
 		args.targetParentId !== files_ROOT_ID &&
-		(!destinationNode || destinationNode.kind !== "folder" || destinationNode.archiveOperationId !== null)
+		(!parent || parent.kind !== "folder" || parent.archiveOperationId !== null)
 	) {
 		return Result({ _nay: { message: "Not found" } });
 	}
-	if (destinationNode) {
-		if (!fitsReadBudget(destinationNode)) {
-			return Result({ _nay: { name: "move_too_large", message: "This move is too large. Select fewer items." } });
-		}
-		nodesById.set(destinationNode._id, destinationNode);
-	}
-	const targetParentPath = destinationNode?.path ?? "/";
-	if (args.expectedTargetPath !== undefined && args.expectedTargetPath !== targetParentPath) {
-		return Result({ _nay: { name: "destination_changed", message: "The destination changed. Start the move again." } });
-	}
 
-	const selectedById = new Map<Id<"files_nodes">, (typeof args.items)[number]>();
-	for (const item of args.items) {
-		if (selectedById.has(item.nodeId)) {
-			continue;
-		}
-		selectedById.set(item.nodeId, item);
-		const fileNode = nodesById.get(item.nodeId) ?? (await ctx.db.get("files_nodes", item.nodeId));
-		if (!fileNode) {
-			return Result({ _nay: { message: "Not found" } });
-		}
-		if (fileNode.organizationId !== membership.organizationId || fileNode.workspaceId !== membership.workspaceId) {
-			return Result({ _nay: { message: "Unauthorized" } });
-		}
-		if (!nodesById.has(item.nodeId) && !fitsReadBudget(fileNode)) {
-			return Result({ _nay: { name: "move_too_large", message: "This move is too large. Select fewer items." } });
-		}
-		nodesById.set(item.nodeId, fileNode);
-	}
-
-	// Load parent chains once. This also bounds policy checks and catches ancestor moves.
-	for (const fileNode of nodesById.values()) {
-		if (fileNode.parentId === files_ROOT_ID || nodesById.has(fileNode.parentId)) {
-			continue;
-		}
-		const parent = await ctx.db.get("files_nodes", fileNode.parentId);
-		if (!parent) {
-			const errorMessage = "fileNode.parentId points to a missing files_nodes doc";
-			const errorData = { nodeId: fileNode._id, parentId: fileNode.parentId };
-			console.error(errorMessage, errorData);
-			throw should_never_happen(errorMessage, errorData);
-		}
-		if (!fitsReadBudget(parent)) {
-			return Result({ _nay: { name: "move_too_large", message: "This move is too large. Select fewer items." } });
-		}
-		nodesById.set(parent._id, parent);
-	}
-
-	function isWritable(fileNode: Doc<"files_nodes">) {
-		let node: Doc<"files_nodes"> | undefined = fileNode;
-		while (node) {
-			const policy = node.writePolicy;
-			if (
-				policy !== null &&
-				(policy.mode !== "writer" || policy.writer.kind !== "user" || policy.writer.userId !== userAuth.id)
-			) {
-				return false;
-			}
-			node = node.parentId === files_ROOT_ID ? undefined : nodesById.get(node.parentId);
-		}
-		return true;
-	}
-	if (destinationNode && !isWritable(destinationNode)) {
-		return Result({ _nay: { name: "read_only", message: "This item is read-only." } });
-	}
-
-	const roots: Array<{ node: Doc<"files_nodes">; name: string; path: string }> = [];
-	const unchangedNodeIds: Array<Id<"files_nodes">> = [];
-	for (const item of selectedById.values()) {
-		const fileNode = nodesById.get(item.nodeId)!;
-		let parentId = fileNode.parentId;
-		let selectedAncestor = false;
-		while (parentId !== files_ROOT_ID) {
-			if (selectedById.has(parentId)) {
-				selectedAncestor = true;
-				break;
-			}
-			parentId = nodesById.get(parentId)!.parentId;
-		}
-		if (selectedAncestor) {
-			continue;
-		}
-		if (fileNode.archiveOperationId !== null) {
-			return Result({ _nay: { message: "Not found" } });
-		}
-		const authorizedNode = await access_control_db_authorize_membership(ctx, {
-			userAuth,
-			membership,
-			permission: "content.write",
-			fileNode,
-		});
-		if (authorizedNode._nay) {
-			return authorizedNode;
-		}
-		if (
-			item.expected &&
-			(item.expected.parentId !== fileNode.parentId ||
-				item.expected.name !== fileNode.name ||
-				item.expected.path !== fileNode.path)
-		) {
-			return Result({ _nay: { name: "source_changed", message: "A source changed. Start the move again." } });
-		}
-		let targetAncestor: Doc<"files_nodes"> | undefined = destinationNode ?? undefined;
-		while (targetAncestor) {
-			if (targetAncestor._id === fileNode._id) {
-				return Result({ _nay: { message: "Cannot move a folder into itself or its descendants." } });
-			}
-			targetAncestor = targetAncestor.parentId === files_ROOT_ID ? undefined : nodesById.get(targetAncestor.parentId);
-		}
-		if (!isWritable(fileNode)) {
-			return Result({ _nay: { name: "read_only", message: "This item is read-only." } });
-		}
-		const authorizedLeaving = await authorize_leaving_restricted_scope(ctx, {
-			userAuth,
-			membership,
-			fileNode,
-			destParentId: args.targetParentId,
-		});
-		if (authorizedLeaving._nay) {
-			return authorizedLeaving;
-		}
+	const intents: Parameters<typeof files_nodes_db_preflight_move>[1]["intents"] = [];
+	const rootIds = new Set(roots.map(({ node }) => node._id));
+	for (const { node, item } of roots) {
 		const name =
 			item.destName === undefined
-				? Result({ _yay: fileNode.name })
-				: fileNode.kind === "file"
+				? Result({ _yay: node.name })
+				: node.kind === "file"
 					? files_normalize_file_rename_name(item.destName)
-					: files_normalize_name(fileNode.kind, item.destName);
-		if (name._nay) {
-			return name;
-		}
-		const path = path_join(targetParentPath, name._yay);
-		// A same-parent, same-name move changes nothing. Do not patch it: stamping updatedBy would
-		// mark the node as touched by this user and wrongly block the eager hard-delete gate on
-		// discard/expiry.
-		if (path === fileNode.path && args.targetParentId === fileNode.parentId) {
-			unchangedNodeIds.push(item.nodeId);
-			continue;
-		}
-		roots.push({ node: fileNode, name: name._yay, path });
-	}
+					: files_normalize_name(node.kind, item.destName);
+		if (name._nay) return name;
 
-	const rootById = new Map(roots.map((root) => [root.node._id, root]));
-	const paths = new Set<string>();
-	for (const root of roots) {
-		if (paths.has(root.path)) {
-			return Result({ _nay: { name: "nay", message: "Path already exists" } });
-		}
-		paths.add(root.path);
 		const occupant = await ctx.db
-			.query("files_nodes")
-			.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
-				q
-					.eq("organizationId", membership.organizationId)
-					.eq("workspaceId", membership.workspaceId)
-					.eq("path", root.path)
-					.eq("archiveOperationId", null),
-			)
-			.first();
-		if (occupant && !fitsReadBudget(occupant)) {
-			return Result({ _nay: { name: "move_too_large", message: "This move is too large. Select fewer items." } });
-		}
-		// Check read access before reporting the conflict. A hidden occupant answers
-		// "Permission denied" so its path stays unrevealed.
-		if (occupant && !rootById.has(occupant._id)) {
-			const authorizedConflict = await access_control_db_authorize_membership(ctx, {
-				userAuth,
-				membership,
-				permission: "content.read",
-				fileNode: occupant,
-			});
-			return Result({
-				_nay: { name: "nay", message: authorizedConflict._nay ? "Permission denied" : "Path already exists" },
-			});
-		}
-	}
-
-	const movedNodes = roots.map((root) => root.node);
-	for (const fileNode of movedNodes) {
-		// Async iteration reads at most one document beyond our budget, never a whole large folder.
-		for await (const child of ctx.db
 			.query("files_nodes")
 			.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
 				q
-					.eq("organizationId", membership.organizationId)
-					.eq("workspaceId", membership.workspaceId)
-					.eq("parentId", fileNode._id),
-			)) {
-			if (movedNodes.length >= MAX_MOVE_NODE_COUNT || !fitsReadBudget(child)) {
-				return Result({ _nay: { name: "move_too_large", message: "This move is too large. Select fewer items." } });
-			}
-			nodesById.set(child._id, child);
-			movedNodes.push(child);
-			if (!isWritable(child)) {
-				const readable = await access_control_db_can_act_on_file_node(ctx, {
-					organizationId: membership.organizationId,
-					workspaceId: membership.workspaceId,
-					userId: userAuth.id,
-					fileNode: child,
-					permission: "content.read",
-				});
-				return Result({
-					_nay: {
-						name: readable ? "read_only" : "nay",
-						message: readable ? "This item is read-only." : "Permission denied",
-					},
-				});
-			}
-		}
-	}
-
-	// Moving a folder also changes its restricted descendants, including archived ones.
-	const canMoveDescendants = await files_nodes_db_can_act_on_swept_nodes(ctx, {
-		organizationId: membership.organizationId,
-		workspaceId: membership.workspaceId,
-		userId: userAuth.id,
-		rootScopeNodeId: null,
-		nodes: movedNodes,
-		permission: "content.write",
-	});
-	if (!canMoveDescendants) {
-		return Result({ _nay: { message: "Permission denied" } });
-	}
-
-	let writeBytes = 0;
-	let writeDocumentCount = 0;
-	const nodePatches = new Map<
-		Id<"files_nodes">,
-		Pick<
-			Doc<"files_nodes">,
-			"path" | "treePath" | "pathDepth" | "lowercaseExtension" | "restrictedScopeNodeId" | "writePolicyScopeNodeId"
-		> &
-			Partial<Pick<Doc<"files_nodes">, "parentId" | "name" | "updatedBy" | "updatedAt">>
-	>();
-	const chunkPatches: Array<{ id: Id<"files_plain_text_chunks">; path: string }> = [];
-	const metadataPatches: Array<{ id: Id<"files_metadata_docs">; path: string; treePath: string }> = [];
-	const now = Date.now();
-	function fitsWriteBudget(value: object) {
-		writeDocumentCount += 1;
-		writeBytes += files_get_utf8_byte_size(JSON.stringify(value)) + 128;
-		return writeDocumentCount <= MAX_MOVE_DOCUMENT_COUNT && writeBytes <= MAX_MOVE_BYTES;
-	}
-	for (const fileNode of movedNodes) {
-		const root = rootById.get(fileNode._id);
-		const parentPatch = fileNode.parentId === files_ROOT_ID ? undefined : nodePatches.get(fileNode.parentId);
-		const path = root?.path ?? path_join(parentPatch!.path, fileNode.name);
-		const treePath = derive_tree_path_for_file_node(path, fileNode.kind);
-		// A node that owns a scope keeps it. A moved root takes the destination's scope; every other
-		// descendant takes its patched parent's.
-		const patch = {
-			path,
-			treePath,
-			pathDepth: files_path_depth(path),
-			lowercaseExtension: files_lowercase_extension(path, fileNode.kind),
-			restrictedScopeNodeId:
-				fileNode.restrictedScopeNodeId === fileNode._id
-					? fileNode._id
-					: root
-						? (destinationNode?.restrictedScopeNodeId ?? null)
-						: parentPatch!.restrictedScopeNodeId,
-			writePolicyScopeNodeId:
-				fileNode.writePolicy !== null
-					? fileNode._id
-					: root
-						? (destinationNode?.writePolicyScopeNodeId ?? null)
-						: parentPatch!.writePolicyScopeNodeId,
-			...(root ? { parentId: args.targetParentId, name: root.name, updatedBy: userAuth.id, updatedAt: now } : {}),
-		};
-		if (!fitsWriteBudget({ ...fileNode, ...patch })) {
+					.eq("organizationId", args.membership.organizationId)
+					.eq("workspaceId", args.membership.workspaceId)
+					.eq("parentId", args.targetParentId)
+					.eq("name", name._yay)
+					.eq("archiveOperationId", null),
+			)
+			.first();
+		if (occupant && !fits_move_read_budget(readBudget, occupant)) {
 			return Result({ _nay: { name: "move_too_large", message: "This move is too large. Select fewer items." } });
 		}
-		nodePatches.set(fileNode._id, patch);
-		if (fileNode.kind === "file") {
-			for await (const chunk of ctx.db
-				.query("files_plain_text_chunks")
-				.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
-					q
-						.eq("organizationId", membership.organizationId)
-						.eq("workspaceId", membership.workspaceId)
-						.eq("fileNodeId", fileNode._id),
-				)) {
-				if (!fitsReadBudget(chunk) || !fitsWriteBudget({ ...chunk, path })) {
-					return Result({ _nay: { name: "move_too_large", message: "This move is too large. Select fewer items." } });
-				}
-				chunkPatches.push({ id: chunk._id, path });
-			}
-		}
-		for await (const metadata of ctx.db
-			.query("files_metadata_docs")
-			.withIndex("by_organization_workspace_fileNode_fieldPath", (q) =>
-				q
-					.eq("organizationId", membership.organizationId)
-					.eq("workspaceId", membership.workspaceId)
-					.eq("fileNodeId", fileNode._id),
-			)) {
-			if (!fitsReadBudget(metadata) || !fitsWriteBudget({ ...metadata, path, treePath })) {
-				return Result({ _nay: { name: "move_too_large", message: "This move is too large. Select fewer items." } });
-			}
-			metadataPatches.push({ id: metadata._id, path, treePath });
-		}
+
+		intents.push({
+			nodeId: node._id,
+			expected: { ...(item.expected ?? node), archiveOperationId: null },
+			destination: {
+				parentId: args.targetParentId,
+				name: name._yay,
+				expectedParentPath: args.expectedTargetPath ?? parent?.path ?? "/",
+				expectedParentArchiveOperationId: null,
+			},
+			occupant: item.replacement
+				? { kind: "replace", ...item.replacement }
+				: occupant && rootIds.has(occupant._id)
+					? { kind: "vacated", nodeId: occupant._id }
+					: { kind: "empty" },
+		});
 	}
 
-	// Every expected refusal is above this point. A thrown write failure rolls back the whole move.
-	for (const [nodeId, patch] of nodePatches) {
-		await ctx.db.patch("files_nodes", nodeId, patch);
-	}
-	for (const chunk of chunkPatches) {
-		await ctx.db.patch("files_plain_text_chunks", chunk.id, { path: chunk.path });
-	}
-	for (const metadata of metadataPatches) {
-		await ctx.db.patch("files_metadata_docs", metadata.id, { path: metadata.path, treePath: metadata.treePath });
-	}
-	return Result({
-		_yay: {
-			moved: roots.map((root) => ({ nodeId: root.node._id, name: root.name, path: root.path })),
-			unchangedNodeIds,
-		},
+	const plan = await files_nodes_db_preflight_move(ctx, {
+		userAuth: args.userAuth,
+		membership: args.membership,
+		writer: { kind: "user", userId: args.userAuth.id },
+		policyReach: "ancestors",
+		readBudget,
+		intents,
 	});
+	if (plan._nay) return plan;
+
+	await files_nodes_db_apply_move(ctx, plan._yay);
+	return Result({ _yay: { moved: plan._yay.moved, unchangedNodeIds: plan._yay.unchangedNodeIds } });
 }
 
 export const move_nodes = mutation({
@@ -5155,7 +5483,7 @@ export const move_nodes = mutation({
 
 // #endregion move nodes
 
-// #region Archive nodes
+// #region archive nodes
 export async function files_nodes_db_archive_nodes(
 	ctx: MutationCtx,
 	args: {
@@ -5838,7 +6166,7 @@ export const unarchive_nodes = mutation({
 		return Result({ _yay: null });
 	},
 });
-// #endregion Archive nodes
+// #endregion archive nodes
 
 /**
  * Fields for a node returned by public queries.
@@ -6361,6 +6689,7 @@ export const list_subtree = internalQuery({
 		const baseDepth = files_path_depth(normalizedPath);
 		const minAbsoluteDepth = args.minDepth == null ? null : baseDepth + args.minDepth;
 		const maxAbsoluteDepth = args.maxDepth == null ? null : baseDepth + args.maxDepth;
+
 		const query =
 			lowercaseExtension != null
 				? ctx.db
@@ -6400,6 +6729,7 @@ export const list_subtree = internalQuery({
 									.lt("treePath", upperBound),
 							)
 							.order(args.order ?? "asc");
+
 		let filteredQuery = query;
 		const contentTypePrefixes = args.contentTypePrefixes;
 		if (contentTypePrefixes != null) {
@@ -6415,6 +6745,7 @@ export const list_subtree = internalQuery({
 				),
 			);
 		}
+
 		if (minAbsoluteDepth != null && maxAbsoluteDepth != null) {
 			filteredQuery = filteredQuery.filter((q) =>
 				q.and(q.gte(q.field("pathDepth"), minAbsoluteDepth), q.lte(q.field("pathDepth"), maxAbsoluteDepth)),
@@ -6424,6 +6755,7 @@ export const list_subtree = internalQuery({
 		} else if (maxAbsoluteDepth != null) {
 			filteredQuery = filteredQuery.filter((q) => q.lte(q.field("pathDepth"), maxAbsoluteDepth));
 		}
+
 		const result = await filteredQuery.paginate({
 			cursor: args.cursor,
 			numItems: args.numItems,
@@ -6571,14 +6903,63 @@ export type files_nodes_search_paths_Result =
 		? Awaited<ReturnValue>
 		: never;
 
-export const file_content_materialization_state_validator = v.object({
-	fileNode: doc(app_convex_schema, "files_nodes"),
-	yjsSnapshotDoc: doc(app_convex_schema, "files_yjs_snapshots"),
-	yjsLastSequenceDoc: doc(app_convex_schema, "files_yjs_docs_last_sequences"),
-	yjsUpdatesDocs: v.array(doc(app_convex_schema, "files_yjs_updates")),
-	asset: doc(app_convex_schema, "files_r2_assets"),
-	yjsSnapshotAsset: doc(app_convex_schema, "files_r2_assets"),
-});
+/**
+ * Read the saved content version without loading snapshots or the update log. Content error
+ * markers do not prevent a move or archive. Callers that read bytes check those markers.
+ */
+export async function files_nodes_db_get_content_version(
+	ctx: QueryCtx | MutationCtx,
+	fileNode: Doc<"files_nodes">,
+): Promise<Infer<typeof files_content_version_validator> | null> {
+	if (fileNode.kind !== "file" || fileNode.assetId === null || fileNode.contentType === null) {
+		return null;
+	}
+
+	if (fileNode.collaborationEnabled !== true) {
+		return {
+			kind: "asset",
+			assetId: fileNode.assetId,
+			contentType: fileNode.contentType,
+			textKind: fileNode.textKind,
+			collaborationEnabled: fileNode.collaborationEnabled,
+		};
+	}
+
+	if (fileNode.textKind === null || fileNode.yjsLastSequenceId === null) {
+		const errorMessage = "fileNode.textKind or fileNode.yjsLastSequenceId is not set";
+		const errorData = {
+			nodeId: fileNode._id,
+			textKind: fileNode.textKind,
+			yjsLastSequenceId: fileNode.yjsLastSequenceId,
+		};
+		console.error(errorMessage, errorData);
+		throw should_never_happen(errorMessage, errorData);
+	}
+
+	const sequenceDoc = await ctx.db.get("files_yjs_docs_last_sequences", fileNode.yjsLastSequenceId);
+	if (
+		!sequenceDoc ||
+		sequenceDoc.organizationId !== fileNode.organizationId ||
+		sequenceDoc.workspaceId !== fileNode.workspaceId ||
+		sequenceDoc.fileNodeId !== fileNode._id
+	) {
+		const errorMessage =
+			"fileNode.yjsLastSequenceId points to a missing or mismatched files_yjs_docs_last_sequences doc";
+		const errorData = { nodeId: fileNode._id, yjsLastSequenceId: fileNode.yjsLastSequenceId, sequenceDoc };
+		console.error(errorMessage, errorData);
+		throw should_never_happen(errorMessage, errorData);
+	}
+
+	return {
+		kind: "yjs",
+		lastSequenceId: sequenceDoc._id,
+		lineageGeneration: sequenceDoc.lineageGeneration,
+		sequence: sequenceDoc.lastSequence,
+		contentType: fileNode.contentType,
+		textKind: fileNode.textKind,
+		collaborationEnabled: true,
+	};
+}
 
 export async function db_get_file_content_materialization_db_state(
 	ctx: QueryCtx,
@@ -6750,20 +7131,6 @@ export type get_file_content_materialization_state_Result =
 	>
 		? Awaited<ReturnValue>
 		: never;
-
-export const file_content_materialization_header_validator = v.object({
-	fileNode: doc(app_convex_schema, "files_nodes"),
-	yjsSnapshotDoc: doc(app_convex_schema, "files_yjs_snapshots"),
-	yjsLastSequenceDoc: doc(app_convex_schema, "files_yjs_docs_last_sequences"),
-	asset: doc(app_convex_schema, "files_r2_assets"),
-	yjsSnapshotAsset: doc(app_convex_schema, "files_r2_assets"),
-	/**
-	 * The frozen upper bound for this materialization run. Every later update-doc read is bounded
-	 * by this exact value, so a concurrent `S+1` push is ignored by the `S` job (the `S+1` job
-	 * covers it) instead of growing this run's work.
-	 */
-	throughSequence: v.number(),
-});
 
 export const get_file_content_materialization_header = internalQuery({
 	args: {
@@ -6956,12 +7323,29 @@ async function db_resolve_committed_chunk_source(
 	// An explicit pending view is requested → committed chunks are not what the caller wants.
 	if (args.pendingUpdateId || args.path === "/") return null;
 
-	const fileNode = await files_db_get_visible_node_by_path(ctx, {
-		organizationId: args.organizationId,
-		workspaceId: args.workspaceId,
-		path: args.path,
-		overlayUserId: args.overlayUserId,
-	});
+	let fileNode: Doc<"files_nodes"> | null;
+	if (
+		args.overlayUserId &&
+		!organizations_is_global_organization_id(args.organizationId) &&
+		!organizations_is_reserved_workspace_id(args.workspaceId)
+	) {
+		if (args.overlayUserId !== args.userId) return null;
+		const reader = await files_visible_db_create_reader(ctx, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			userId: args.userId,
+			readLimit: 2048,
+		});
+		const entry = await reader.resolvePath(args.path);
+		if (reader.exhausted) throw convex_error({ message: "File path lookup exceeded its read limit." });
+		fileNode = entry?.kind === "saved" ? entry.node : null;
+	} else {
+		fileNode = await files_db_get_visible_node_by_path(ctx, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			path: args.path,
+		});
+	}
 	if (fileNode == null) return null;
 	if (fileNode.kind !== "file") return null;
 
@@ -7016,12 +7400,13 @@ async function db_resolve_committed_chunk_source(
 	// committed chunks below answer for both, the same way the read doors fall through.
 	const pendingUpdate = await ctx.db
 		.query("files_pending_updates")
-		.withIndex("by_organization_workspace_user_fileNode", (q) =>
+		.withIndex("by_organization_workspace_user_target", (q) =>
 			q
 				.eq("organizationId", organizationId)
 				.eq("workspaceId", workspaceId)
 				.eq("userId", args.userId)
-				.eq("fileNodeId", fileNode._id),
+				.eq("target.kind", "saved")
+				.eq("target.id", fileNode._id),
 		)
 		.first();
 	if (
@@ -7358,7 +7743,7 @@ export const read_file_content_from_chunks = internalQuery({
 	},
 	returns: v.union(
 		v.object({
-			nodeId: v.id("files_nodes"),
+			target: files_pending_target_validator,
 			content: v.string(),
 			moreLines: v.boolean(),
 			pendingUpdateId: v.union(v.id("files_pending_updates"), v.null()),
@@ -7369,28 +7754,25 @@ export const read_file_content_from_chunks = internalQuery({
 	handler: async (ctx, args) => {
 		// Translate the path through the overlay first; the per-user pending-content logic
 		// below then runs on the resolved node, so content-plus-move docs compose.
-		const fileNode = await files_db_get_visible_node_by_path(ctx, {
+		const entry = (await ctx.runQuery(internal.files_nodes.get_visible_entry_by_path, {
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
 			path: args.path,
-			overlayUserId: args.overlayUserId,
-		});
-		if (fileNode == null) return null;
-		if (fileNode.kind !== "file") return null;
-
-		// `userId` is the person asking, so the restricted check belongs here and not in each caller.
-		// Every reader of file bytes lands in this query or in the markdown one next to it — bash `cat`,
-		// `head`, `tail`, `wc`, `sed`, the AI edit tool, the public API — and a check in one of them is a
-		// check in all of them. Answering `null` is the same answer a missing file gives, which is what
-		// the caller already handles.
-		const [readableNode] = await access_control_db_filter_readable_file_nodes(ctx, {
-			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
-			userId: args.userId,
+			visibilityUserId: args.userId,
 			serviceAccountId: args.serviceAccountId,
-			nodes: [fileNode],
-		});
-		if (!readableNode) return null;
+			overlayUserId: args.overlayUserId,
+		})) as files_nodes_get_visible_entry_by_path_Result;
+		if (!entry || entry.node.kind !== "file") return null;
+		if (
+			entry.kind === "private" &&
+			(args.committedOnly === true ||
+				entry.pendingUpdate.createIntent?.kind !== "text" ||
+				entry.pendingUpdate.content?.base.kind !== "new")
+		)
+			return null;
+
+		const fileNode = entry.kind === "saved" ? entry.node : null;
+		const target = entry.kind === "saved" ? { kind: "saved" as const, id: entry.node._id } : entry.pendingUpdate.target;
 
 		const requestedOrganizationId = args.organizationId;
 		const requestedWorkspaceId = args.workspaceId;
@@ -7402,18 +7784,20 @@ export const read_file_content_from_chunks = internalQuery({
 						organizationId: requestedOrganizationId,
 						workspaceId: requestedWorkspaceId,
 					};
-		const isEditableTextFile = files_node_has_editable_yjs_state(fileNode);
+		const isEditableTextFile = fileNode !== null && files_node_has_editable_yjs_state(fileNode);
 		// A non-collaborative file is editable text with no Yjs document. Its pending proposals
 		// apply the same way, but it has no materialization state and reads its committed chunks
 		// directly.
-		const isNonCollaborativeTextFile = !isEditableTextFile && files_node_has_editable_text_content(fileNode);
+		const isNonCollaborativeTextFile =
+			fileNode !== null && !isEditableTextFile && files_node_has_editable_text_content(fileNode);
 		const isReadOnlyPlainTextFile =
-			!isEditableTextFile && !isNonCollaborativeTextFile && (fileNode.contentType?.startsWith("text/plain") ?? false);
+			!isEditableTextFile && !isNonCollaborativeTextFile && (fileNode?.contentType?.startsWith("text/plain") ?? false);
 		let pendingUpdateBaseStateId: Id<"files_pending_update_yjs_states"> | undefined;
 		if (realTenantScope) {
-			if (!isEditableTextFile && !isNonCollaborativeTextFile && !isReadOnlyPlainTextFile) return null;
+			if (entry.kind === "saved" && !isEditableTextFile && !isNonCollaborativeTextFile && !isReadOnlyPlainTextFile)
+				return null;
 
-			if (isEditableTextFile || isNonCollaborativeTextFile) {
+			if (entry.kind === "private" || isEditableTextFile || isNonCollaborativeTextFile) {
 				// Bind the guard-narrowed ids; TS drops property narrowing inside the closures below.
 				const { organizationId, workspaceId } = realTenantScope;
 
@@ -7427,7 +7811,8 @@ export const read_file_content_from_chunks = internalQuery({
 							pendingUpdate.organizationId !== organizationId ||
 							pendingUpdate.workspaceId !== workspaceId ||
 							pendingUpdate.userId !== args.userId ||
-							pendingUpdate.fileNodeId !== fileNode._id
+							pendingUpdate.target.kind !== target.kind ||
+							pendingUpdate.target.id !== target.id
 						) {
 							return null;
 						}
@@ -7437,19 +7822,23 @@ export const read_file_content_from_chunks = internalQuery({
 				} else if (args.committedOnly !== true) {
 					pendingUpdate = await ctx.db
 						.query("files_pending_updates")
-						.withIndex("by_organization_workspace_user_fileNode", (q) =>
+						.withIndex("by_organization_workspace_user_target", (q) =>
 							q
 								.eq("organizationId", organizationId)
 								.eq("workspaceId", workspaceId)
 								.eq("userId", args.userId)
-								.eq("fileNodeId", fileNode._id),
+								.eq("target.kind", target.kind)
+								.eq("target.id", target.id),
 						)
 						.first();
 				}
 
 				// Keep the source family even when stale reads show saved text. Review may replace
 				// this family before a read-based edit writes its result.
-				pendingUpdateBaseStateId = pendingUpdate?.baseStateId;
+				pendingUpdateBaseStateId = pendingUpdate?.content?.baseStateId;
+				// A stored replacement has no text. The old saved text is no longer this user's view.
+				if (pendingUpdate?.pendingReplacement && pendingUpdate.pendingReplacement.yjsRootKind === undefined)
+					return null;
 
 				// Move-only docs and copies of stored files have no pending chunks; fall through to
 				// the committed chunks so reads do not return an empty file behind them. A stale
@@ -7458,13 +7847,14 @@ export const read_file_content_from_chunks = internalQuery({
 				if (
 					pendingUpdate != null &&
 					files_pending_update_has_pending_chunks(pendingUpdate) &&
-					!files_pending_update_content_is_stale(pendingUpdate, fileNode)
+					(fileNode === null || !files_pending_update_content_is_stale(pendingUpdate, fileNode))
 				) {
 					// Pending chunks are already the markdown text the user sees. Full reads
 					// still honor maxBytes; line reads stream only the overlapping chunks.
 					const chunks = ctx.db
 						.query("files_text_chunks")
-						.withIndex("by_pendingUpdate_chunkIndex", (q) => q.eq("pendingUpdateId", pendingUpdate._id));
+						.withIndex("by_pendingUpdate_chunkIndex", (q) => q.eq("pendingUpdateId", pendingUpdate._id))
+						.filter((q) => q.eq(q.field("proposalRevision"), pendingUpdate.revision));
 
 					if (args.mode.kind === "prefix") {
 						const prefix = await files_read_prefix_from_ordered_chunks(
@@ -7473,7 +7863,7 @@ export const read_file_content_from_chunks = internalQuery({
 						);
 						if (prefix == null || (!prefix.hasChunks && pendingUpdate.size > 0)) return null;
 						return {
-							nodeId: fileNode._id,
+							target,
 							content: prefix.content,
 							moreLines: prefix.moreLines,
 							pendingUpdateId: pendingUpdate._id,
@@ -7488,7 +7878,7 @@ export const read_file_content_from_chunks = internalQuery({
 							return pendingUpdate.size > 0
 								? null
 								: {
-										nodeId: fileNode._id,
+										target,
 										content: "",
 										moreLines: false,
 										pendingUpdateId: pendingUpdate._id,
@@ -7499,7 +7889,7 @@ export const read_file_content_from_chunks = internalQuery({
 						const content = files_merge_contiguous_chunks(collectedChunks);
 						if (content == null || files_get_utf8_byte_size(content) > args.mode.maxBytes) return null;
 						return {
-							nodeId: fileNode._id,
+							target,
 							content,
 							moreLines: false,
 							pendingUpdateId: pendingUpdate._id,
@@ -7513,7 +7903,8 @@ export const read_file_content_from_chunks = internalQuery({
 							.query("files_text_chunks")
 							.withIndex("by_pendingUpdate_lineEnd_chunkIndex", (q) =>
 								q.eq("pendingUpdateId", pendingUpdate._id).gte("lineEnd", startLine),
-							),
+							)
+							.filter((q) => q.eq(q.field("proposalRevision"), pendingUpdate.revision)),
 						{
 							startLine,
 							maxLines: args.mode.maxLines,
@@ -7521,7 +7912,7 @@ export const read_file_content_from_chunks = internalQuery({
 					);
 					if (range == null || (!range.hasChunks && pendingUpdate.size > 0)) return null;
 					return {
-						nodeId: fileNode._id,
+						target,
 						content: range.content,
 						moreLines: range.moreLines,
 						pendingUpdateId: pendingUpdate._id,
@@ -7535,6 +7926,9 @@ export const read_file_content_from_chunks = internalQuery({
 			// External (reserved) nodes never have pending docs; an explicit pending view cannot resolve.
 			return null;
 		}
+
+		// Private preparation never falls through to saved chunks or an empty saved file.
+		if (!fileNode) return null;
 
 		// Determine the committed byte size used for the cap/empty checks below. Tenant: the materialized
 		// snapshot must be current (stale → null so the action fallback runs). External: the linked R2
@@ -7584,7 +7978,7 @@ export const read_file_content_from_chunks = internalQuery({
 			);
 			if (prefix == null || (!prefix.hasChunks && byteSize > 0)) return null;
 			return {
-				nodeId: fileNode._id,
+				target,
 				content: prefix.content,
 				moreLines: prefix.moreLines,
 				pendingUpdateId: null,
@@ -7611,7 +8005,7 @@ export const read_file_content_from_chunks = internalQuery({
 				return byteSize > 0
 					? null
 					: {
-							nodeId: fileNode._id,
+							target,
 							content: "",
 							moreLines: false,
 							pendingUpdateId: null,
@@ -7621,7 +8015,7 @@ export const read_file_content_from_chunks = internalQuery({
 
 			const content = files_merge_contiguous_chunks(chunks);
 			if (content == null) return null;
-			return { nodeId: fileNode._id, content, moreLines: false, pendingUpdateId: null, pendingUpdateBaseStateId };
+			return { target, content, moreLines: false, pendingUpdateId: null, pendingUpdateBaseStateId };
 		}
 
 		// Line reads use the lineEnd index to seek near the requested start line
@@ -7657,7 +8051,7 @@ export const read_file_content_from_chunks = internalQuery({
 		}
 
 		return {
-			nodeId: fileNode._id,
+			target,
 			content: range.content,
 			moreLines: range.moreLines,
 			pendingUpdateId: null,
@@ -7718,6 +8112,8 @@ export type files_nodes_read_committed_file_chunk_stats_Result =
 		? Awaited<ReturnValue>
 		: never;
 
+// #endregion read file
+
 // #region match
 
 // Per-file `grep` scans chunks streaming-style and bounds only the retained output state.
@@ -7753,7 +8149,7 @@ async function match_text_chunks_list(
 		textChunk?: string;
 	}>,
 	args: {
-		fileNodeId: Id<"files_nodes">;
+		target: files_PendingTarget;
 		pattern: string;
 		invert: boolean;
 		before: number;
@@ -7786,6 +8182,7 @@ async function match_text_chunks_list(
 				}
 			: null;
 	const sliceWindowEnd = sliceWindow == null ? null : sliceWindow.startIndex + sliceWindow.maxChars;
+
 	let afterRemaining = 0;
 	let afterContextCapPending = false;
 	let carry = "";
@@ -8002,7 +8399,7 @@ async function match_text_chunks_list(
 	const resultTruncatedReason = truncation.reason ?? (outputTruncated ? "output_line_limit_reached" : null);
 
 	return {
-		fileNodeId: args.fileNodeId,
+		target: args.target,
 		lines: [...linesByNumber.values()].sort((left, right) => left.lineNumber - right.lineNumber),
 		selectedCount,
 		scanTruncated: scanTruncated || outputTruncated,
@@ -8024,7 +8421,7 @@ async function match_plain_text_chunks_list(
 		plainTextChunk?: string;
 	}>,
 	args: {
-		fileNodeId: Id<"files_nodes">;
+		target: files_PendingTarget;
 		pattern: string;
 		ignoreCase: boolean;
 		fixedStrings: boolean;
@@ -8158,7 +8555,7 @@ async function match_plain_text_chunks_list(
 
 	const resultTruncatedReason = truncation.reason ?? (outputTruncated ? "output_line_limit_reached" : null);
 	return {
-		fileNodeId: args.fileNodeId,
+		target: args.target,
 		lines: [...linesByNumber.values()].sort((left, right) => left.lineNumber - right.lineNumber),
 		selectedCount,
 		scanTruncated: scanTruncated || outputTruncated,
@@ -8181,6 +8578,82 @@ async function* db_plain_text_chunks_with_lines(chunks: AsyncIterable<Doc<"files
 }
 
 /**
+ * The two grep views share owner, readiness, and saved-content checks.
+ */
+async function db_get_text_match_source(
+	ctx: QueryCtx,
+	args: {
+		organizationId: Doc<"files_nodes">["organizationId"];
+		workspaceId: Doc<"files_nodes">["workspaceId"];
+		userId: Id<"users">;
+		target: files_PendingTarget;
+		pendingUpdateId?: Id<"files_pending_updates">;
+	},
+) {
+	const tenantScope =
+		!organizations_is_global_organization_id(args.organizationId) &&
+		!organizations_is_reserved_workspace_id(args.workspaceId)
+			? { organizationId: args.organizationId, workspaceId: args.workspaceId, userId: args.userId }
+			: null;
+
+	let fileNode: Doc<"files_nodes"> | null = null;
+	let pendingUpdateId: Id<"files_pending_updates"> | null = null;
+	if (tenantScope) {
+		const entry = (await ctx.runQuery(internal.files_visible.internal_get_by_target, {
+			...tenantScope,
+			target: args.target,
+		})) as files_VisibleEntry | null;
+		if (!entry || entry.node.kind !== "file") return null;
+		const pending = entry.pendingUpdate;
+		if (args.pendingUpdateId != null && pending?._id !== args.pendingUpdateId) return null;
+
+		if (entry.kind === "private") {
+			if (
+				entry.pendingUpdate.preparation ||
+				entry.pendingUpdate.createIntent?.kind !== "text" ||
+				!files_pending_update_has_pending_chunks(entry.pendingUpdate)
+			)
+				return null;
+			pendingUpdateId = entry.pendingUpdate._id;
+		} else {
+			fileNode = entry.node;
+			if (!files_node_has_editable_text_content(fileNode)) return null;
+			// A move-only or stale content proposal keeps reading the saved chunks.
+			if (
+				pending &&
+				!pending.preparation &&
+				files_pending_update_has_pending_chunks(pending) &&
+				!files_pending_update_content_is_stale(pending, fileNode)
+			)
+				pendingUpdateId = pending._id;
+		}
+	} else {
+		if (args.target.kind !== "saved" || args.pendingUpdateId != null) return null;
+		fileNode = await ctx.db.get("files_nodes", args.target.id);
+		if (
+			!fileNode ||
+			fileNode.organizationId !== args.organizationId ||
+			fileNode.workspaceId !== args.workspaceId ||
+			fileNode.archiveOperationId !== null
+		)
+			return null;
+
+		if (
+			!(await access_control_db_can_act_on_file_node(ctx, {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				userId: args.userId,
+				fileNode,
+				permission: "content.read",
+			}))
+		)
+			return null;
+	}
+
+	return { fileNode, pendingUpdateId };
+}
+
+/**
  * Match lines in text chunks for the Bash `grep` command's single-file path.
  *
  * Normal grep uses regex matching over the Markdown representation. `grep -F`
@@ -8191,7 +8664,7 @@ export const match_text_file_lines = internalQuery({
 		organizationId: doc(app_convex_schema, "files_nodes").fields.organizationId,
 		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
 		userId: v.id("users"),
-		fileNodeId: v.id("files_nodes"),
+		target: files_pending_target_validator,
 		pattern: v.string(),
 		ignoreCase: v.boolean(),
 		fixedStrings: v.boolean(),
@@ -8217,7 +8690,7 @@ export const match_text_file_lines = internalQuery({
 	returns: v.union(
 		v.null(),
 		v.object({
-			fileNodeId: v.id("files_nodes"),
+			target: files_pending_target_validator,
 			lines: v.array(
 				v.object({
 					lineNumber: v.number(),
@@ -8242,76 +8715,9 @@ export const match_text_file_lines = internalQuery({
 		}),
 	),
 	handler: async (ctx, args) => {
-		const fileNode = await ctx.db.get("files_nodes", args.fileNodeId);
-		if (
-			fileNode == null ||
-			fileNode.organizationId !== args.organizationId ||
-			fileNode.workspaceId !== args.workspaceId ||
-			fileNode.archiveOperationId !== null
-		) {
-			return null;
-		}
-		const readable = await access_control_db_can_act_on_file_node(ctx, {
-			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
-			userId: args.userId,
-			fileNode,
-			permission: "content.read",
-		});
-		if (!readable) return null;
-		if (
-			!organizations_is_global_organization_id(args.organizationId) &&
-			!organizations_is_reserved_workspace_id(args.workspaceId) &&
-			!files_node_has_editable_text_content(fileNode)
-		)
-			return null;
-
-		let pendingUpdateId: Id<"files_pending_updates"> | null = null;
-		if (
-			!organizations_is_global_organization_id(args.organizationId) &&
-			!organizations_is_reserved_workspace_id(args.workspaceId)
-		) {
-			// Bind the guard-narrowed ids; TS drops property narrowing inside the closures below.
-			const organizationId = args.organizationId;
-			const workspaceId = args.workspaceId;
-			let pendingUpdate: Doc<"files_pending_updates"> | null = null;
-			if (args.pendingUpdateId != null) {
-				pendingUpdate = await ctx.db.get("files_pending_updates", args.pendingUpdateId);
-				if (
-					!pendingUpdate ||
-					pendingUpdate.organizationId !== organizationId ||
-					pendingUpdate.workspaceId !== workspaceId ||
-					pendingUpdate.userId !== args.userId ||
-					pendingUpdate.fileNodeId !== fileNode._id
-				) {
-					return null;
-				}
-			} else {
-				pendingUpdate = await ctx.db
-					.query("files_pending_updates")
-					.withIndex("by_organization_workspace_user_fileNode", (q) =>
-						q
-							.eq("organizationId", organizationId)
-							.eq("workspaceId", workspaceId)
-							.eq("userId", args.userId)
-							.eq("fileNodeId", fileNode._id),
-					)
-					.first();
-			}
-			// Move-only docs have no pending chunks; leave the id null so the scan falls
-			// through to the committed chunks instead of a silent no-match. A stale proposal on a
-			// file with collaboration off falls through too: the member's saved text is the file.
-			if (
-				pendingUpdate != null &&
-				files_pending_update_has_pending_chunks(pendingUpdate) &&
-				!files_pending_update_content_is_stale(pendingUpdate, fileNode)
-			) {
-				pendingUpdateId = pendingUpdate._id;
-			}
-		} else if (args.pendingUpdateId != null) {
-			// External (reserved) nodes never have pending docs; an explicit pending view cannot resolve.
-			return null;
-		}
+		const source = await db_get_text_match_source(ctx, args);
+		if (!source) return null;
+		const { fileNode, pendingUpdateId } = source;
 
 		let match: { kind: "substring"; needle: string; ignoreCase: boolean } | { kind: "regex"; regex: RegExp };
 		if (args.fixedStrings) {
@@ -8351,7 +8757,7 @@ export const match_text_file_lines = internalQuery({
 								.withIndex("by_pendingUpdate_chunkIndex", (q) => q.eq("pendingUpdateId", pendingUpdateId));
 
 			return await match_text_chunks_list(chunks, {
-				fileNodeId: fileNode._id,
+				target: args.target,
 				pattern: args.pattern,
 				invert: args.invert,
 				before: args.before,
@@ -8360,6 +8766,8 @@ export const match_text_file_lines = internalQuery({
 				window,
 			});
 		}
+
+		if (!fileNode) return null;
 
 		// Tenant committed chunks are valid only when the latest Yjs sequence is materialized; external
 		// (reserved) nodes have no Yjs/materialization state and read committed chunks by node id. A
@@ -8414,7 +8822,7 @@ export const match_text_file_lines = internalQuery({
 							);
 
 		return await match_text_chunks_list(chunks, {
-			fileNodeId: fileNode._id,
+			target: args.target,
 			pattern: args.pattern,
 			invert: args.invert,
 			before: args.before,
@@ -8439,7 +8847,7 @@ export const match_plain_text_file_lines = internalQuery({
 		organizationId: doc(app_convex_schema, "files_nodes").fields.organizationId,
 		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
 		userId: v.id("users"),
-		fileNodeId: v.id("files_nodes"),
+		target: files_pending_target_validator,
 		pattern: v.string(),
 		ignoreCase: v.boolean(),
 		fixedStrings: v.boolean(),
@@ -8449,7 +8857,7 @@ export const match_plain_text_file_lines = internalQuery({
 	returns: v.union(
 		v.null(),
 		v.object({
-			fileNodeId: v.id("files_nodes"),
+			target: files_pending_target_validator,
 			lines: v.array(
 				v.object({
 					lineNumber: v.number(),
@@ -8474,76 +8882,9 @@ export const match_plain_text_file_lines = internalQuery({
 		}),
 	),
 	handler: async (ctx, args) => {
-		const fileNode = await ctx.db.get("files_nodes", args.fileNodeId);
-		if (
-			fileNode == null ||
-			fileNode.organizationId !== args.organizationId ||
-			fileNode.workspaceId !== args.workspaceId ||
-			fileNode.archiveOperationId !== null
-		) {
-			return null;
-		}
-		const readable = await access_control_db_can_act_on_file_node(ctx, {
-			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
-			userId: args.userId,
-			fileNode,
-			permission: "content.read",
-		});
-		if (!readable) return null;
-		if (
-			!organizations_is_global_organization_id(args.organizationId) &&
-			!organizations_is_reserved_workspace_id(args.workspaceId) &&
-			!files_node_has_editable_text_content(fileNode)
-		)
-			return null;
-
-		let pendingUpdateId: Id<"files_pending_updates"> | null = null;
-		if (
-			!organizations_is_global_organization_id(args.organizationId) &&
-			!organizations_is_reserved_workspace_id(args.workspaceId)
-		) {
-			// Bind the guard-narrowed ids; TS drops property narrowing inside the closures below.
-			const organizationId = args.organizationId;
-			const workspaceId = args.workspaceId;
-			let pendingUpdate: Doc<"files_pending_updates"> | null = null;
-			if (args.pendingUpdateId != null) {
-				pendingUpdate = await ctx.db.get("files_pending_updates", args.pendingUpdateId);
-				if (
-					!pendingUpdate ||
-					pendingUpdate.organizationId !== organizationId ||
-					pendingUpdate.workspaceId !== workspaceId ||
-					pendingUpdate.userId !== args.userId ||
-					pendingUpdate.fileNodeId !== fileNode._id
-				) {
-					return null;
-				}
-			} else {
-				pendingUpdate = await ctx.db
-					.query("files_pending_updates")
-					.withIndex("by_organization_workspace_user_fileNode", (q) =>
-						q
-							.eq("organizationId", organizationId)
-							.eq("workspaceId", workspaceId)
-							.eq("userId", args.userId)
-							.eq("fileNodeId", fileNode._id),
-					)
-					.first();
-			}
-			// Move-only docs have no pending chunks; leave the id null so the scan falls
-			// through to the committed chunks instead of a silent no-match. A stale proposal on a
-			// file with collaboration off falls through too: the member's saved text is the file.
-			if (
-				pendingUpdate != null &&
-				files_pending_update_has_pending_chunks(pendingUpdate) &&
-				!files_pending_update_content_is_stale(pendingUpdate, fileNode)
-			) {
-				pendingUpdateId = pendingUpdate._id;
-			}
-		} else if (args.pendingUpdateId != null) {
-			// External (reserved) nodes never have pending docs; an explicit pending view cannot resolve.
-			return null;
-		}
+		const source = await db_get_text_match_source(ctx, args);
+		if (!source) return null;
+		const { fileNode, pendingUpdateId } = source;
 
 		if (pendingUpdateId != null) {
 			const chunks = ctx.db
@@ -8551,13 +8892,15 @@ export const match_plain_text_file_lines = internalQuery({
 				.withIndex("by_pendingUpdate_chunkIndex", (q) => q.eq("pendingUpdateId", pendingUpdateId));
 
 			return await match_plain_text_chunks_list(db_plain_text_chunks_with_lines(chunks), {
-				fileNodeId: fileNode._id,
+				target: args.target,
 				pattern: args.pattern,
 				ignoreCase: args.ignoreCase,
 				fixedStrings: args.fixedStrings,
 				invert: args.invert,
 			});
 		}
+
+		if (!fileNode) return null;
 
 		// Tenant committed chunks are valid only when the latest Yjs sequence is materialized; external
 		// (reserved) nodes have no Yjs/materialization state and read committed chunks by node id. A
@@ -8591,7 +8934,7 @@ export const match_plain_text_file_lines = internalQuery({
 			);
 
 		return await match_plain_text_chunks_list(db_plain_text_chunks_with_lines(chunks), {
-			fileNodeId: fileNode._id,
+			target: args.target,
 			pattern: args.pattern,
 			ignoreCase: args.ignoreCase,
 			fixedStrings: args.fixedStrings,
@@ -8606,8 +8949,6 @@ export type files_nodes_match_plain_text_file_lines_Result =
 		: never;
 
 // #endregion match
-
-// #endregion read file
 
 export const get_file_last_yjs_sequence = query({
 	args: { membershipId: v.id("organizations_workspaces_users"), nodeId: v.id("files_nodes") },
@@ -8685,16 +9026,9 @@ function db_text_search_filtered_query(
 		workspaceId: Doc<"files_plain_text_chunks">["workspaceId"];
 		userId: Id<"users">;
 		query: string;
-		pathPrefix?: string;
-		pendingNodeIds: Array<Id<"files_nodes">>;
-		nodeIds?: Array<Id<"files_nodes">>;
+		targets?: files_PendingTarget[];
 	},
 ) {
-	const rawPrefix = args.pathPrefix?.trim();
-	const scopePrefix = rawPrefix && rawPrefix !== "/" ? `/${rawPrefix.replace(/^\/+|\/+$/gu, "")}` : null;
-	const scopedLowerBound = scopePrefix === null ? "/" : `${scopePrefix}/`;
-	const scopedUpperBound = path_tree_prefix_upper_bound(scopedLowerBound);
-
 	let searchQuery = ctx.db
 		.query("files_plain_text_chunks")
 		.withSearchIndex("search_by_plainTextChunk", (q) =>
@@ -8704,39 +9038,26 @@ function db_text_search_filtered_query(
 				.eq("workspaceId", args.workspaceId)
 				.eq("archiveOperationId", undefined),
 		);
-	// Convex applies `.filter` before returned page contents, so each rendered page is already
-	// scoped and does not need a JavaScript re-filter or separate page probe. The tradeoff is that
-	// `.filter` scans search hits after `withSearchIndex`; equality filters in the search index are
-	// still more efficient where available. Do not rely on `maximumRowsRead` here: Convex currently
-	// does not enforce it for search queries.
-	if (scopePrefix !== null) {
+	if (args.targets !== undefined) {
+		const targets = args.targets;
 		searchQuery = searchQuery.filter((q) =>
-			q.and(q.gte(q.field("path"), scopedLowerBound), q.lt(q.field("path"), scopedUpperBound)),
+			q.or(
+				...targets.map((target) =>
+					q.or(
+						...(target.kind === "saved" ? [q.eq(q.field("fileNodeId"), target.id)] : []),
+						q.and(q.eq(q.field("target.kind"), target.kind), q.eq(q.field("target.id"), target.id)),
+					),
+				),
+			),
 		);
 	}
-	if (args.nodeIds !== undefined) {
-		const nodeIds = args.nodeIds;
-		searchQuery = searchQuery.filter((q) => q.or(...nodeIds.map((nodeId) => q.eq(q.field("fileNodeId"), nodeId))));
-	}
-	// A pending chunk is searched only for a node whose proposal is live. A stale proposal on a
-	// file with collaboration off keeps its chunks until Discard, and those must not match.
+	// Current paths, proposal revisions, and access are checked on the bounded page below.
 	searchQuery = searchQuery.filter((q) =>
 		q.or(
 			q.eq(q.field("sourceKind"), "committed"),
-			...args.pendingNodeIds.map((pendingNodeId) =>
-				q.and(
-					q.eq(q.field("sourceKind"), "pending"),
-					q.eq(q.field("userId"), args.userId),
-					q.eq(q.field("fileNodeId"), pendingNodeId),
-				),
-			),
+			q.and(q.eq(q.field("sourceKind"), "pending"), q.eq(q.field("userId"), args.userId)),
 		),
 	);
-	for (const pendingNodeId of args.pendingNodeIds) {
-		searchQuery = searchQuery.filter((q) =>
-			q.or(q.neq(q.field("fileNodeId"), pendingNodeId), q.eq(q.field("sourceKind"), "pending")),
-		);
-	}
 	return searchQuery;
 }
 
@@ -8758,7 +9079,7 @@ const text_search_args = {
 	/**
 	 * Files matching the structured filters. This only narrows the existing access checks.
 	 */
-	nodeIds: v.optional(v.array(v.id("files_nodes"))),
+	targets: v.optional(v.array(files_pending_target_validator)),
 };
 
 export const text_search_files = internalQuery({
@@ -8770,7 +9091,7 @@ export const text_search_files = internalQuery({
 	returns: v.object({
 		items: v.array(
 			v.object({
-				nodeId: v.id("files_nodes"),
+				target: files_pending_target_validator,
 				path: v.string(),
 				textChunk: v.string(),
 				chunkIndex: v.number(),
@@ -8791,7 +9112,7 @@ export const text_search_files = internalQuery({
 		args,
 	): Promise<{
 		items: Array<{
-			nodeId: Id<"files_nodes">;
+			target: files_PendingTarget;
 			path: string;
 			textChunk: string;
 			chunkIndex: number;
@@ -8806,76 +9127,21 @@ export const text_search_files = internalQuery({
 		continueCursor: string;
 		isDone: boolean;
 	}> => {
-		const pageLimit = args.numItems;
-		// Reserved (external) scope has no per-user pending overlay; tenant scope suppresses committed
-		// chunks for files the acting user is currently editing.
-		let pendingNodeIds: Array<Id<"files_nodes">> = [];
-		if (
-			!organizations_is_global_organization_id(args.organizationId) &&
-			!organizations_is_reserved_workspace_id(args.workspaceId)
-		) {
-			// Bind the guard-narrowed ids; TS drops property narrowing inside the closure below.
-			const organizationId = args.organizationId;
-			const workspaceId = args.workspaceId;
-			const pendingUpdates = await ctx.db
-				.query("files_pending_updates")
-				.withIndex("by_organization_workspace_user_fileNode", (q) =>
-					q.eq("organizationId", organizationId).eq("workspaceId", workspaceId).eq("userId", args.userId),
-				)
-				.order("asc")
-				.collect();
-			// Only docs with pending chunks are searched instead of their file. Move-only docs
-			// must keep their committed chunks searchable, and so must a stale proposal on a file
-			// with collaboration off: the member's saved text is the file now.
-			const pendingNodes = await Promise.all(
-				pendingUpdates
-					.filter((pendingUpdate) => files_pending_update_has_pending_chunks(pendingUpdate))
-					.map(async (pendingUpdate) => ({
-						pendingUpdate,
-						fileNode: await ctx.db.get("files_nodes", pendingUpdate.fileNodeId),
-					})),
-			);
-			pendingNodeIds = pendingNodes
-				.filter(
-					({ pendingUpdate, fileNode }) =>
-						fileNode !== null && !files_pending_update_content_is_stale(pendingUpdate, fileNode),
-				)
-				.map(({ pendingUpdate }) => pendingUpdate.fileNodeId);
-		}
-
-		const result = await db_text_search_filtered_query(ctx, {
-			...args,
-			pendingNodeIds,
-		}).paginate({
+		const result = await db_text_search_filtered_query(ctx, args).paginate({
 			cursor: args.cursor,
-			numItems: pageLimit,
+			numItems: Math.max(1, Math.min(100, args.numItems)),
 		});
 
-		// A chunk carries the text of its file, so a hit inside a restricted file would print the very
-		// thing the restriction protects. Each distinct file on the page is looked up once, and the
-		// filter answers once per restricted scope, so a page of chunks from one file costs one check.
-		const pageNodeIds = [...new Set(result.page.map((searchChunk) => searchChunk.fileNodeId))];
-		const pageNodes = (await Promise.all(pageNodeIds.map((nodeId) => ctx.db.get("files_nodes", nodeId)))).filter(
-			(fileNode) => fileNode !== null,
-		);
-		const readableNodeIds = new Set(
-			(
-				await access_control_db_filter_readable_file_nodes(ctx, {
-					organizationId: args.organizationId,
-					workspaceId: args.workspaceId,
-					userId: args.userId,
-					nodes: pageNodes,
-					serviceAccountId: args.serviceAccountId,
-					hasWorkspaceRead: args.hasWorkspaceRead,
-				})
-			).map((fileNode) => fileNode._id),
-		);
-
-		const items = result.page
-			.filter((searchChunk) => readableNodeIds.has(searchChunk.fileNodeId))
-			.map((searchChunk) => ({
-				nodeId: searchChunk.fileNodeId,
-				path: searchChunk.path,
+		const reader = await files_search_db_create_reader(ctx, args);
+		const items = [];
+		const rawPrefix = args.pathPrefix?.trim();
+		const pathPrefix = rawPrefix && rawPrefix !== "/" ? `/${rawPrefix.replace(/^\/+|\/+$/gu, "")}/` : null;
+		for (const searchChunk of result.page) {
+			const entry = await reader.resolveDocument(searchChunk);
+			if (reader.exhausted) throw convex_error({ message: "Search is too broad. Narrow the path or filters." });
+			if (!entry || (pathPrefix && !entry.path.startsWith(pathPrefix))) continue;
+			items.push({
+				...entry,
 				textChunk: searchChunk.textChunk,
 				chunkIndex: searchChunk.chunkIndex,
 				startIndex: searchChunk.startIndex,
@@ -8885,7 +9151,8 @@ export const text_search_files = internalQuery({
 				chunkFlags: searchChunk.chunkFlags,
 				hasChunkAbove: searchChunk.hasChunkAbove,
 				hasChunkBelow: searchChunk.hasChunkBelow,
-			}));
+			});
+		}
 
 		return {
 			items,
@@ -8908,12 +9175,13 @@ export const search_content = query({
 		// given while the permission checks answer for the membership's workspace.
 		membershipId: v.id("organizations_workspaces_users"),
 		query: v.string(),
-		nodeIds: v.optional(v.array(v.id("files_nodes"))),
+		targets: v.optional(v.array(files_pending_target_validator)),
 	},
 	returns: v.object({
+		truncated: v.boolean(),
 		results: v.array(
 			v.object({
-				nodeId: v.id("files_nodes"),
+				target: files_pending_target_validator,
 				path: v.string(),
 				textChunk: v.string(),
 				lineStart: v.number(),
@@ -8930,15 +9198,15 @@ export const search_content = query({
 			throw convex_error({ message: "Unauthenticated" });
 		}
 		if (!membership || membership.userId !== userAuth.id || membership.active === false) {
-			return { results: [] };
+			return { results: [], truncated: false };
 		}
 
 		// Below 2 characters every search is noise; above 200 the query is not something a person
 		// typed into the palette. Both return empty instead of erroring so the palette just shows
 		// its idle/no-results state.
 		const trimmedQuery = args.query.trim();
-		if (trimmedQuery.length < 2 || trimmedQuery.length > 200 || args.nodeIds?.length === 0) {
-			return { results: [] };
+		if (trimmedQuery.length < 2 || trimmedQuery.length > 200 || args.targets?.length === 0) {
+			return { results: [], truncated: false };
 		}
 
 		// A failed check does not end the query here. Somebody whose role gives no workspace-wide
@@ -8954,11 +9222,12 @@ export const search_content = query({
 		// The internal query filters restricted files AFTER filling a page, so one page can come back
 		// empty for a grant-only user even when their shared folder matches. Fetch a few more pages
 		// until enough distinct files are collected; the budget keeps one call bounded.
-		const resultsByNodeId = new Map<
-			Id<"files_nodes">,
-			{ nodeId: Id<"files_nodes">; path: string; textChunk: string; lineStart: number; matchCount: number }
+		const resultsByTarget = new Map<
+			string,
+			{ target: files_PendingTarget; path: string; textChunk: string; lineStart: number; matchCount: number }
 		>();
 		let cursor: string | null = null;
+		let truncated = false;
 		for (let pageIndex = 0; pageIndex < 3; pageIndex++) {
 			const page = (await ctx.runQuery(internal.files_nodes.text_search_files, {
 				organizationId: membership.organizationId,
@@ -8966,20 +9235,22 @@ export const search_content = query({
 				userId: userAuth.id,
 				hasWorkspaceRead: !authorized._nay,
 				query: trimmedQuery,
-				nodeIds: args.nodeIds,
+				targets: args.targets,
 				numItems: 32,
 				cursor,
 			})) as files_nodes_text_search_files_Result;
+			truncated = !page.isDone;
 
 			for (const item of page.items) {
-				const existing = resultsByNodeId.get(item.nodeId);
+				const key = `${item.target.kind}:${item.target.id}`;
+				const existing = resultsByTarget.get(key);
 				// The first chunk of a file wins (search relevance order); later chunks only bump the
 				// count, which is a count over the fetched pages, not a total for the file.
 				if (existing) {
 					existing.matchCount += 1;
 				} else {
-					resultsByNodeId.set(item.nodeId, {
-						nodeId: item.nodeId,
+					resultsByTarget.set(key, {
+						target: item.target,
 						path: item.path,
 						textChunk: item.textChunk,
 						lineStart: item.lineStart,
@@ -8988,15 +9259,13 @@ export const search_content = query({
 				}
 			}
 
-			if (page.isDone || resultsByNodeId.size >= 10) {
+			if (page.isDone || resultsByTarget.size >= 10) {
 				break;
 			}
 			cursor = page.continueCursor;
 		}
 
-		// No cursor or isDone in the response, on purpose: fewer-than-requested results plus a
-		// "not done" flag would tell the caller that restricted content matched the query.
-		return { results: [...resultsByNodeId.values()] };
+		return { results: [...resultsByTarget.values()], truncated };
 	},
 });
 
@@ -10130,7 +10399,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 	const grepTestFileNodeId = "grep-test-file-node" as Id<"files_nodes">;
 	const matchMarkdownTestScannerOptions = {
-		fileNodeId: grepTestFileNodeId,
+		target: { kind: "saved" as const, id: grepTestFileNodeId },
 		invert: false,
 		before: 0,
 		after: 0,
@@ -10326,7 +10595,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			const result = await grepTestScan("alpha\nbeta\n", { pattern: "" });
 
 			expect(result).toEqual({
-				fileNodeId: grepTestFileNodeId,
+				target: { kind: "saved", id: grepTestFileNodeId },
 				lines: [],
 				selectedCount: 0,
 				scanTruncated: false,
@@ -10373,7 +10642,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			const result = await match_plain_text_chunks_list(
 				grepTestChunkIterator([{ chunkIndex: 0, plainTextChunk: "intro\ncritical alert\noutro\n" }]),
 				{
-					fileNodeId: grepTestFileNodeId,
+					target: { kind: "saved", id: grepTestFileNodeId },
 					pattern: String.raw`critical\s+alert`,
 					ignoreCase: false,
 					fixedStrings: false,

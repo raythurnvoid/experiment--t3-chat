@@ -1,9 +1,31 @@
 import { defineCommand, type Command } from "just-bash/browser";
 import { internal } from "../convex/_generated/api.js";
 import type { ActionCtx } from "../convex/_generated/server.js";
-import type { files_nodes_get_by_path_Result, files_nodes_list_subtree_Result } from "../convex/files_nodes.ts";
+import type { files_nodes_list_subtree_Result } from "../convex/files_nodes.ts";
+import type { files_visible_internal_list_Result } from "../convex/files_visible.ts";
 import { Result } from "common/errors-as-values-utils.ts";
-import { bash_APP_MOUNT_PATH, bash_clamp_listing_page_limit, bash_create_glob_syntax_unsupported_message, bash_cursor_id_create, bash_cursor_id_resolve, bash_GLOB_METACHARACTER_REGEX, bash_LISTING_DEFAULT_LIMIT, bash_LISTING_MAX_LIMIT, bash_overlay_committed_scope_path, bash_overlay_project_scoped_path, bash_overlay_subtree_injections, bash_parse_limit, bash_external_mounts_fan_out_db_files_path, bash_external_mounts_fan_out_paginate, bash_plugins_fan_out_db_files_path, bash_plugins_fan_out_paginate, bash_read_option_value, bash_resolve_path, bash_shell_arg_quote, bash_resolve_db_files_shell_path, bash_COMMAND_EXIT_FAILURE, bash_COMMAND_EXIT_USAGE, type bash_DbFilesRoots } from "./bash-utils.ts";
+import {
+	bash_APP_MOUNT_PATH,
+	bash_clamp_listing_page_limit,
+	bash_create_glob_syntax_unsupported_message,
+	bash_cursor_id_create,
+	bash_cursor_id_resolve,
+	bash_GLOB_METACHARACTER_REGEX,
+	bash_LISTING_DEFAULT_LIMIT,
+	bash_LISTING_MAX_LIMIT,
+	bash_parse_limit,
+	bash_external_mounts_fan_out_db_files_path,
+	bash_external_mounts_fan_out_paginate,
+	bash_plugins_fan_out_db_files_path,
+	bash_plugins_fan_out_paginate,
+	bash_read_option_value,
+	bash_resolve_path,
+	bash_shell_arg_quote,
+	bash_resolve_db_files_shell_path,
+	bash_COMMAND_EXIT_FAILURE,
+	bash_COMMAND_EXIT_USAGE,
+	type bash_DbFilesRoots,
+} from "./bash-utils.ts";
 import { bash_command_build_builtin_delegation_args, bash_delegate_builtin_command } from "./bash-delegate.ts";
 
 const BUILTIN_OPTIONS_WITH_VALUES = new Set(["-L", "-P", "-I", "--filelimit", "-o"]);
@@ -384,18 +406,8 @@ export function bash_tree_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 
 		const rootDbFilesPath = target.dbFilesPath;
 
-		// The workspace root is synthetic and has no files_nodes doc. Every other target
-		// (app paths, single-mount paths) must resolve to a real files_nodes doc before tree can print it.
-		const dbFilesDoc =
-			rootDbFilesPath === "/"
-				? null
-				: ((await ctx.runQuery(internal.files_nodes.get_by_path, {
-						organizationId: target.pathResolution.ctxData.organizationId,
-						workspaceId: target.pathResolution.ctxData.workspaceId,
-						visibilityUserId: target.pathResolution.ctxData.userId,
-						path: rootDbFilesPath,
-						overlayUserId: target.pathResolution.fs.overlayUserId,
-					})) as files_nodes_get_by_path_Result);
+		// The workspace root is synthetic. Other paths must resolve in the caller's visible tree.
+		const dbFilesDoc = rootDbFilesPath === "/" ? null : await target.pathResolution.fs.getEntry(rootDbFilesPath);
 
 		// Missing concrete app paths fail like normal tree paths.
 		if (rootDbFilesPath !== "/" && !dbFilesDoc) {
@@ -415,106 +427,41 @@ export function bash_tree_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 			};
 		}
 
-		// Folder targets use the subtree index. minDepth excludes the folder itself
-		// because the first output line already prints the requested root path.
-		// The listed folder may be a pending-move destination: walk its committed
-		// source subtree and project every entry back into the visible tree.
-		const overlay = await target.pathResolution.fs.getOverlay();
-		const committedRootPath = overlay == null ? rootDbFilesPath : bash_overlay_committed_scope_path(overlay, rootDbFilesPath);
-		const result = (await ctx.runQuery(internal.files_nodes.list_subtree, {
+		// The shared list returns descendants only. The first line below prints the requested root.
+		const result = (await ctx.runQuery(internal.files_visible.internal_list, {
 			organizationId: target.pathResolution.ctxData.organizationId,
 			workspaceId: target.pathResolution.ctxData.workspaceId,
 			visibilityUserId: target.pathResolution.ctxData.userId,
-			folderPath: committedRootPath,
+			overlayUserId: target.pathResolution.fs.overlayUserId,
+			folderPath: rootDbFilesPath,
+			mode: "subtree",
 			numItems: bash_clamp_listing_page_limit(parsed._yay.limit),
 			cursor,
-			minDepth: 1,
-		})) as files_nodes_list_subtree_Result;
+		})) as files_visible_internal_list_Result;
+		if (result._nay)
+			return { stdout: "", stderr: `tree: ${result._nay.message}\n`, exitCode: bash_COMMAND_EXIT_FAILURE };
 
 		// Render each returned descendant as a simple tree branch relative to the
 		// requested root, preserving folder slashes for easy visual scanning.
 		const lines = [target.absoluteShellPath];
-		// A nested pending move can surface twice: once projected out of its moved parent's
-		// splice and once as its own injection. Keep the first appearance of each visible path.
-		const seenVisiblePaths = new Set<string>();
-		const push_branch_line = (visiblePath: string, kind: "folder" | "file") => {
-			if (seenVisiblePaths.has(visiblePath)) {
-				return;
-			}
-			seenVisiblePaths.add(visiblePath);
-			const segments = relative_segments(rootDbFilesPath, visiblePath);
+		for (const item of result._yay.items) {
+			const segments = relative_segments(rootDbFilesPath, item.path);
 			if (segments.length === 0) {
-				return;
-			}
-			const prefix = segments.length === 1 ? "|-- " : `${"|   ".repeat(segments.length - 1)}|-- `;
-			lines.push(`${prefix}${segments.at(-1)}${kind === "folder" ? "/" : ""}`);
-		};
-		for (const item of result.page) {
-			const visiblePath =
-				overlay == null
-					? item.path
-					: bash_overlay_project_scoped_path({ overlay, committedPath: item.path, visibleScopePath: rootDbFilesPath });
-			if (visiblePath == null) {
 				continue;
 			}
-			push_branch_line(visiblePath, item.kind);
-		}
-
-		// Moved-in entries live outside the walked committed subtree: add them once,
-		// on the first page, with each moved folder's committed subtree spliced in.
-		if (overlay != null && cursor == null) {
-			for (const move of bash_overlay_subtree_injections(overlay, {
-				visibleScopePath: rootDbFilesPath,
-				committedScopePath: committedRootPath,
-			})) {
-				push_branch_line(move.visiblePath, move.kind);
-				if (move.kind !== "folder") {
-					continue;
-				}
-				// The splice repeats this command's own query shape, so a leftover splice
-				// cursor can continue through `tree <visible destination> --cursor ...`.
-				const splice = (await ctx.runQuery(internal.files_nodes.list_subtree, {
-					organizationId: target.pathResolution.ctxData.organizationId,
-					workspaceId: target.pathResolution.ctxData.workspaceId,
-					visibilityUserId: target.pathResolution.ctxData.userId,
-					folderPath: move.committedPath,
-					numItems: bash_clamp_listing_page_limit(parsed._yay.limit),
-					cursor: null,
-					minDepth: 1,
-				})) as files_nodes_list_subtree_Result;
-				for (const item of splice.page) {
-					const visiblePath = bash_overlay_project_scoped_path({
-						overlay,
-						committedPath: item.path,
-						visibleScopePath: rootDbFilesPath,
-					});
-					if (visiblePath == null) {
-						continue;
-					}
-					push_branch_line(visiblePath, item.kind);
-				}
-				if (!splice.isDone) {
-					lines.push(
-						"",
-						build_continuation({
-							target: target.pathResolution.renderShellPath(move.visiblePath),
-							limit: parsed._yay.limit,
-							cursor: await bash_cursor_id_create(ctx, splice.continueCursor),
-						}),
-					);
-				}
-			}
+			const prefix = segments.length === 1 ? "|-- " : `${"|   ".repeat(segments.length - 1)}|-- `;
+			lines.push(`${prefix}${segments.at(-1)}${item.kind === "folder" ? "/" : ""}`);
 		}
 
 		// Emit a complete continuation command so the next page can be copied without
 		// reconstructing the path, limit, or cursor by hand.
-		if (!result.isDone) {
+		if (!result._yay.isDone && result._yay.continueCursor != null) {
 			lines.push(
 				"",
 				build_continuation({
 					target: target.absoluteShellPath,
 					limit: parsed._yay.limit,
-					cursor: await bash_cursor_id_create(ctx, result.continueCursor),
+					cursor: await bash_cursor_id_create(ctx, result._yay.continueCursor),
 				}),
 			);
 			if (parsed._yay.cursor != null) {

@@ -1,478 +1,88 @@
-import { defineCommand } from "just-bash/browser";
-import { internal } from "../convex/_generated/api.js";
+import { defineCommand, type Command } from "just-bash/browser";
 import type { ActionCtx } from "../convex/_generated/server.js";
-import type { Id } from "../convex/_generated/dataModel";
-import type {
-	files_nodes_get_by_path_Result,
-	files_nodes_remove_eager_created_node_if_safe_Result,
-} from "../convex/files_nodes.ts";
-import type {
-	files_nodes_create_file_by_path_Result,
-	files_nodes_get_file_last_available_text_content_by_path_Result,
-} from "../convex/files_nodes_content.ts";
-import type {
-	files_pending_updates_stage_file_pending_replacement_Result,
-} from "../convex/files_pending_updates.ts";
-import {
-	files_SYNTHETIC_ROOT_FOLDER,
-	files_editable_text_content_type_of,
-	files_get_normalized_node_path_segments,
-	files_node_has_editable_text_content,
-	files_normalize_special_node_path,
-	files_pending_path_overlay_translate_path,
-} from "../shared/files.ts";
-import { organizations_is_global_organization_id, organizations_is_reserved_workspace_id } from "../shared/organizations.ts";
-import { should_never_happen } from "../shared/shared-utils.ts";
 import { path_name_of } from "../shared/paths.ts";
-import { path_join } from "./server-utils.ts";
-import { bash_DbFilesContentUnavailableError, bash_build_unreadable_file_advisory, bash_create_glob_syntax_unsupported_message, bash_current_workspace_path_to_db_files_path, bash_GLOB_METACHARACTER_REGEX, bash_is_path_under_current_workspace_path, bash_is_path_under_read_only_mounts, bash_normalize_path, bash_parse_cp_mv_operands, bash_resolve_path, bash_shell_arg_quote, bash_TMP_MOUNT, bash_read_only_mount_error, bash_COMMAND_EXIT_FAILURE, bash_COMMAND_EXIT_USAGE, type bash_DbFilesRoots } from "./bash-utils.ts";
+import {
+	bash_DbFilesContentUnavailableError,
+	bash_build_unreadable_file_advisory,
+	bash_create_glob_syntax_unsupported_message,
+	bash_current_workspace_path_to_db_files_path,
+	bash_GLOB_METACHARACTER_REGEX,
+	bash_is_path_under_current_workspace_path,
+	bash_is_path_under_read_only_mounts,
+	bash_normalize_path,
+	bash_parse_cp_mv_operands,
+	bash_resolve_path,
+	bash_shell_arg_quote,
+	bash_TMP_MOUNT,
+	bash_read_only_mount_error,
+	bash_COMMAND_EXIT_FAILURE,
+	bash_COMMAND_EXIT_USAGE,
+	type bash_DbFilesRoots,
+} from "./bash-utils.ts";
 import { bash_delegate_builtin_command } from "./bash-delegate.ts";
+import { bash_transfer_command_run, type bash_TransferContext } from "./bash-transfer-command.ts";
 
-/**
- * Check whether a normalized path is inside the per-command scratch mount.
- */
 function is_under_tmp_mount(path: string) {
 	return path === bash_TMP_MOUNT || path.startsWith(`${bash_TMP_MOUNT}/`);
 }
 
 /**
- * Allow the app-file `cp` shapes that are useful to agents:
- * copy one readable app file into `/tmp` scratch for Native Just Bash tools,
- * or (Agent mode only) propose an app→app copy as a pending update the user
- * reviews in Files.
- *
- * Everything else involving app paths is rejected before delegation so cp never
- * mutates the durable app tree or silently treats app destinations as scratch.
+ * App copies create reviewable transfer output. Scratch copies keep native behavior.
  */
-export function bash_cp_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFilesRoots) {
+export function bash_cp_command_create(
+	ctx: ActionCtx,
+	dbFilesRoots: bash_DbFilesRoots,
+	transferContext?: bash_TransferContext,
+): Command {
 	const currentWorkspacePath = dbFilesRoots.app.currentWorkspacePath;
-	// Proposals target only the tenant app tree; the reserved mount scopes never back `app.fs`.
-	// Narrow the ctxData union up front for the workspace-only functions below, which declare strict ids.
-	const { organizationId, workspaceId, userId, threadId } = dbFilesRoots.app.fs.ctxData;
-	if (organizations_is_global_organization_id(organizationId) || organizations_is_reserved_workspace_id(workspaceId)) {
-		throw should_never_happen("cp command created for a reserved mount scope", { organizationId, workspaceId });
-	}
-
 	return defineCommand("cp", async (args, commandCtx) => {
-		const { operands, recursive, noClobber } = bash_parse_cp_mv_operands(args);
+		const parsed = bash_parse_cp_mv_operands("cp", args);
+		const { operands } = parsed;
+		const destination = operands.at(-1);
 
-		// Mounts are read-only: reject any cp whose destination (the last operand) is under /.mounts
-		// or /.plugins, before native delegation could write into the reserved mount tree. Copying a
-		// mount file OUT to /tmp scratch stays allowed (the source may be a mount path).
-		if (operands.length >= 2) {
-			const destResolved = bash_resolve_path(commandCtx.cwd, operands[operands.length - 1]);
-			if (bash_is_path_under_read_only_mounts(destResolved)) {
-				return {
-					stdout: "",
-					stderr: bash_read_only_mount_error("cp", destResolved),
-					exitCode: bash_COMMAND_EXIT_FAILURE,
-				};
-			}
+		if (operands.length >= 2 && destination !== undefined) {
+			const path = bash_resolve_path(commandCtx.cwd, destination);
+			if (bash_is_path_under_read_only_mounts(path))
+				return { stdout: "", stderr: bash_read_only_mount_error("cp", path), exitCode: bash_COMMAND_EXIT_FAILURE };
 		}
 
-		// Classify app operands up front so any app-path command is fully preflighted
-		// before delegating to native cp, which could otherwise create /tmp side effects.
 		const appOperands = operands.filter((operand) =>
 			bash_is_path_under_current_workspace_path(currentWorkspacePath, bash_resolve_path(commandCtx.cwd, operand)),
 		);
+		if (appOperands.length === 0) return await bash_delegate_builtin_command({ command: "cp", args, commandCtx });
 
-		// Pure scratch/non-app copies keep native Just Bash behavior.
-		if (appOperands.length === 0) {
-			return await bash_delegate_builtin_command({ command: "cp", args, commandCtx });
-		}
+		if (parsed._nay) return { stdout: "", stderr: `${parsed._nay.message}\n`, exitCode: bash_COMMAND_EXIT_USAGE };
+		const { recursive, conflictPolicy } = parsed._yay;
+		const noClobber = conflictPolicy === "skip";
 
 		for (const operand of appOperands) {
-			const path = bash_current_workspace_path_to_db_files_path(currentWorkspacePath, bash_resolve_path(commandCtx.cwd, operand));
-			if (path != null) dbFilesRoots.app.fs.observePath(path);
-			if (bash_GLOB_METACHARACTER_REGEX.test(operand)) {
+			if (bash_GLOB_METACHARACTER_REGEX.test(operand))
 				return {
 					stdout: "",
 					stderr: bash_create_glob_syntax_unsupported_message("cp", operand),
 					exitCode: bash_COMMAND_EXIT_USAGE,
 				};
-			}
 		}
-		// App destinations: an app→app copy becomes a pending proposal in Agent mode; every
-		// other write INTO the app tree stays rejected and routes to a shell redirect so
-		// the model does not retry cp.
-		if (
-			operands.length === 2 &&
-			bash_is_path_under_current_workspace_path(currentWorkspacePath, bash_resolve_path(commandCtx.cwd, operands[1]))
-		) {
-			const sourceShellPath = bash_resolve_path(commandCtx.cwd, operands[0]);
-			const destShellPath = bash_resolve_path(commandCtx.cwd, operands[1]);
-			const sourceDbFilesPath = bash_current_workspace_path_to_db_files_path(currentWorkspacePath, sourceShellPath);
-			if (sourceDbFilesPath != null && dbFilesRoots.app.fs.allowDbFilesMkdir) {
-				if (recursive) {
-					return {
-						stdout: "",
-						stderr: "cp: app folder copy is not supported; copy individual files\n",
-						exitCode: bash_COMMAND_EXIT_FAILURE,
-					};
-				}
-				// Resolutions run through the calling user's pending path overlay: their earlier
-				// pending moves are already visible, so sources read through pending moves work.
-				const sourceNode = (await ctx.runQuery(internal.files_nodes.get_by_path, {
-					organizationId,
-					workspaceId,
-					visibilityUserId: userId,
-					path: sourceDbFilesPath,
-					overlayUserId: userId,
-				})) as files_nodes_get_by_path_Result;
-				if (!sourceNode) {
-					return {
-						stdout: "",
-						stderr: `cp: cannot stat '${operands[0]}': No such file or directory\n`,
-						exitCode: bash_COMMAND_EXIT_FAILURE,
-					};
-				}
-				if (sourceNode.kind === "folder") {
-					return {
-						stdout: "",
-						stderr: "cp: app folder copy is not supported; copy individual files\n",
-						exitCode: bash_COMMAND_EXIT_FAILURE,
-					};
-				}
-				// The copy freezes the source's content asset. A file whose upload has not finished has
-				// nothing to copy yet.
-				const sourceAssetId = sourceNode.assetId;
-				if (sourceAssetId === null) {
-					return {
-						stdout: "",
-						stderr: `cp: cannot copy '${operands[0]}': the file's content is not available yet\n`,
-						exitCode: bash_COMMAND_EXIT_FAILURE,
-					};
-				}
-				const rawDestDbFilesPath = bash_current_workspace_path_to_db_files_path(currentWorkspacePath, destShellPath);
-				if (rawDestDbFilesPath == null) {
-					throw should_never_happen("cp: app destination path missing inside the app destination branch", {
-						operands,
-						destShellPath,
-					});
-				}
-				const destNode: files_nodes_get_by_path_Result | typeof files_SYNTHETIC_ROOT_FOLDER =
-					rawDestDbFilesPath === "/"
-						? files_SYNTHETIC_ROOT_FOLDER
-						: ((await ctx.runQuery(internal.files_nodes.get_by_path, {
-								organizationId,
-								workspaceId,
-								visibilityUserId: userId,
-								path: rawDestDbFilesPath,
-								overlayUserId: userId,
-							})) as files_nodes_get_by_path_Result);
-				let destPath: string;
-				// Where create_file_by_path writes when nothing occupies the destination. It differs
-				// from destPath only for a moved destination folder: the committed join keeps the
-				// eager node under the moved folder, so it travels with it on accept.
-				let creationDestPath: string;
-				if (destNode && destNode.kind === "folder") {
-					// Start with the source's visible basename; new special names are cased below.
-					// A moved source's stored name can differ. Resolve occupants at the requested
-					// join because a moved destination folder's committed path reads as vacated.
-					destPath = path_join(rawDestDbFilesPath, path_name_of(sourceDbFilesPath));
-					creationDestPath = path_join(destNode.path, path_name_of(sourceDbFilesPath));
-				} else if (destNode) {
-					// Existing file destination: like native cp, the copy replaces its content — as a
-					// pending proposal the user reviews before anything is committed. Keep the requested
-					// path for display: the overlay can present a moved node here (identical without one).
-					destPath = rawDestDbFilesPath;
-					creationDestPath = destPath;
-				} else {
-					// Missing parent folders are fine; create_file_by_path creates them below.
-					const normalizedDestSegments = files_get_normalized_node_path_segments({
-						kind: "file",
-						nameOrPath: rawDestDbFilesPath,
-						// Keep the typed extension, except bare README becomes README.md.
-						// The destination's stored type comes from the source.
-						fileNamePolicy: "keep_extension",
-					});
-					if (!normalizedDestSegments || "validationMessage" in normalizedDestSegments) {
-						return {
-							stdout: "",
-							stderr: `cp: invalid destination '${rawDestDbFilesPath}'${
-								normalizedDestSegments ? `: ${normalizedDestSegments.validationMessage}` : ""
-							}\n`,
-							exitCode: bash_COMMAND_EXIT_FAILURE,
-						};
-					}
-					destPath = `/${normalizedDestSegments.normalizedPathSegments.join("/")}`;
-					if (files_normalize_special_node_path("file", rawDestDbFilesPath) !== rawDestDbFilesPath) {
-						const selectedPath = await ctx.runQuery(internal.files_nodes.resolve_new_node_path, {
-							organizationId, workspaceId, path: rawDestDbFilesPath, normalizedPath: destPath, overlayUserId: userId,
-						});
-						if (selectedPath === rawDestDbFilesPath) {
-							return { stdout: "", stderr: "cp: Permission denied\n", exitCode: bash_COMMAND_EXIT_FAILURE };
-						}
-					}
-					// Implicit parent creation must not build committed folders under a visible file
-					// ancestor (committed, or a pending file move's claim); real cp fails with ENOTDIR.
-					const nearestAncestor = await dbFilesRoots.app.fs.getNearestVisibleAncestor(destPath);
-					if (nearestAncestor?.kind === "file") {
-						return {
-							stdout: "",
-							stderr: `cp: cannot create regular file '${destPath}': Not a directory\n`,
-							exitCode: bash_COMMAND_EXIT_FAILURE,
-						};
-					}
-					// A missing dest inside a moved folder's claimed area creates at the COMMITTED
-					// join (like write_file), so the eager node travels with the folder on accept.
-					// "hidden" keeps the requested path; the vacated guard below handles it.
-					const overlay = await dbFilesRoots.app.fs.getOverlay();
-					const translated = overlay == null ? null : files_pending_path_overlay_translate_path(overlay, destPath);
-					creationDestPath = translated?.kind === "redirected" ? translated.committedPath : destPath;
-				}
-				// Resolve the final (joined/normalized) path: an existing file there becomes the
-				// replace target instead of an eagerly-created node.
-				let occupant =
-					destNode && destNode.kind !== "folder"
-						? destNode
-						: ((await ctx.runQuery(internal.files_nodes.get_by_path, {
-								organizationId,
-								workspaceId,
-								visibilityUserId: userId,
-								path: destPath,
-								overlayUserId: userId,
-							})) as files_nodes_get_by_path_Result);
-				// Preserve an exact child first. Only a new child gets special-name normalization.
-				if (!occupant && destNode?.kind === "folder") {
-					const name = files_normalize_special_node_path("file", path_name_of(sourceDbFilesPath));
-					if (name !== path_name_of(sourceDbFilesPath)) {
-						const selectedPath = await ctx.runQuery(internal.files_nodes.resolve_new_node_path, {
-							organizationId, workspaceId, path: destPath,
-							normalizedPath: path_join(rawDestDbFilesPath, name), overlayUserId: userId,
-						});
-						if (selectedPath === destPath) {
-							return { stdout: "", stderr: "cp: Permission denied\n", exitCode: bash_COMMAND_EXIT_FAILURE };
-						}
-						destPath = selectedPath;
-						creationDestPath = path_join(destNode.path, name);
-						occupant = await ctx.runQuery(internal.files_nodes.get_by_path, {
-							organizationId, workspaceId, visibilityUserId: userId,
-							path: destPath, overlayUserId: userId,
-						});
-					}
-				}
-				dbFilesRoots.app.fs.observePath(destPath);
-				if (occupant && occupant._id === sourceNode._id) {
-					return {
-						stdout: "",
-						stderr: `cp: '${operands[0]}' and '${operands[1]}' are the same file\n`,
-						exitCode: bash_COMMAND_EXIT_FAILURE,
-					};
-				}
-				if (occupant && occupant.kind === "folder") {
-					return {
-						stdout: "",
-						stderr: `cp: cannot overwrite directory '${destPath}' with non-directory\n`,
-						exitCode: bash_COMMAND_EXIT_FAILURE,
-					};
-				}
-				if (occupant && noClobber) {
-					return { stdout: "", stderr: "", exitCode: 0 };
-				}
-				// Copy what the agent sees. A text source is read as text, including the calling
-				// user's own pending overlay on it. A stored source (an image, a PDF) is copied as
-				// bytes by the stage action below, so nothing is read here.
-				const sourceIsText =
-					files_editable_text_content_type_of(sourceNode.contentType) !== null &&
-					files_node_has_editable_text_content(sourceNode);
-				let sourceText: string | undefined;
-				if (sourceIsText) {
-					const sourceContent = (await ctx.runAction(
-						internal.files_nodes_content.get_file_last_available_text_content_by_path,
-						{
-							organizationId,
-							workspaceId,
-							userId,
-							path: sourceDbFilesPath,
-							overlayUserId: userId,
-						},
-					)) as files_nodes_get_file_last_available_text_content_by_path_Result;
-					if (!sourceContent) {
-						return {
-							stdout: "",
-							stderr: bash_build_unreadable_file_advisory(currentWorkspacePath, sourceDbFilesPath, sourceNode.contentType),
-							exitCode: bash_COMMAND_EXIT_FAILURE,
-						};
-					}
-					sourceText = sourceContent.content;
-				}
 
-				let destNodeId: Id<"files_nodes">;
-				let replacesExisting: boolean;
-				let eagerCreatedCommittedSequence: number | undefined;
-				let createdAncestorIds: Id<"files_nodes">[] | undefined;
-				if (occupant) {
-					destNodeId = occupant._id;
-					replacesExisting = true;
-				} else {
-					// The overlay can present this path as free while a committed node is still there
-					// mid-move (vacated source or replaced path). Creating here would reuse that
-					// committed node and silently turn the copy into a content replacement on it. A fresh
-					// name under a moved folder also translates hidden but has no committed occupant
-					// there, so it may proceed.
-					const overlay = await dbFilesRoots.app.fs.getOverlay();
-					if (
-						overlay != null &&
-						files_pending_path_overlay_translate_path(overlay, creationDestPath).kind === "hidden"
-					) {
-						const committedOccupant = (await ctx.runQuery(internal.files_nodes.get_by_path, {
-							organizationId,
-							workspaceId,
-							visibilityUserId: userId,
-							path: creationDestPath,
-						})) as files_nodes_get_by_path_Result;
-						if (committedOccupant) {
-							return {
-								stdout: "",
-								stderr: `cp: cannot create '${creationDestPath}': the path is vacated by your pending move. Accept or discard that proposal first, or choose a different destination path.\n`,
-								exitCode: bash_COMMAND_EXIT_FAILURE,
-							};
-						}
-					}
-					const created = (await ctx.runAction(internal.files_nodes_content.create_file_by_path, {
-						organizationId,
-						workspaceId,
-						userId,
-						path: creationDestPath,
-						// A text copy creates the destination with the source's type, so the new file
-						// opens the right way from the start. A stored copy creates a text placeholder
-						// that accepting turns into the stored file.
-						contentType: sourceIsText ? (sourceNode.contentType ?? undefined) : undefined,
-					})) as files_nodes_create_file_by_path_Result;
-					if (created._nay) {
-						return {
-							stdout: "",
-							stderr: `cp: cannot create '${destPath}': ${created._nay.message}\n`,
-							exitCode: bash_COMMAND_EXIT_FAILURE,
-						};
-					}
-					if (!created._yay.created && noClobber) {
-						return { stdout: "", stderr: "", exitCode: 0 };
-					}
-					destNodeId = created._yay.nodeId;
-					// A raced creation reuses the pre-existing node: degrade to a content replacement so
-					// discard/expiry can never hard-delete a node this command did not create. The
-					// stamp is the creation-time sequence captured by create_file_by_path, so a save
-					// landing before the upsert below keeps the node safe from hard deletes.
-					replacesExisting = !created._yay.created;
-					if (created._yay.created) {
-						eagerCreatedCommittedSequence = created._yay.createdCommittedSequence;
-						createdAncestorIds = created._yay.createdAncestorIds;
-					}
-				}
-				// A failed upsert after the eager create would leave the just-created empty node behind.
-				// Best-effort compensation: remove it while it is still provably untouched; a
-				// cleanup failure must never mask the original upsert error.
-				const eager_created_failure_note = async () => {
-					if (eagerCreatedCommittedSequence === undefined) {
-						return "";
-					}
-					try {
-						const removal = (await ctx.runMutation(internal.files_nodes.remove_eager_created_node_if_safe, {
-							organizationId,
-							workspaceId,
-							userId,
-							nodeId: destNodeId,
-							eagerCreatedCommittedSequence,
-							createdAncestorIds,
-						})) as files_nodes_remove_eager_created_node_if_safe_Result;
-						if (removal._yay?.removed) {
-							return removal._yay.ancestorsLeft > 0
-								? ` — empty folders created for '${destPath}' were left behind; remove them in Files if they are not wanted`
-								: ` — nothing was created at '${destPath}'`;
-						}
-					} catch (cleanupError) {
-						console.error("cp failed to remove the eagerly created node after a failed upsert", cleanupError);
-					}
-					return ` — an empty file was left behind at '${destPath}'; remove it in Files if it is not wanted`;
-				};
-				let staged: files_pending_updates_stage_file_pending_replacement_Result;
-				try {
-					staged = (await ctx.runAction(
-						internal.files_pending_updates.stage_file_pending_replacement_internal_action,
-						{
-							organizationId,
-							workspaceId,
-							userId,
-							nodeId: destNodeId,
-							source: { nodeId: sourceNode._id, path: sourceDbFilesPath },
-							expectedSourceAssetId: sourceAssetId,
-							...(sourceText !== undefined ? { sourceText } : {}),
-							eagerCreatedCommittedSequence,
-							// Recorded on the pending update doc so Discard/TTL expiry can also remove the
-							// parent folders this cp eagerly created.
-							eagerCreatedAncestorIds: createdAncestorIds,
-							threadId: threadId ?? undefined,
-						},
-					)) as files_pending_updates_stage_file_pending_replacement_Result;
-				} catch (error) {
-					if (eagerCreatedCommittedSequence === undefined) {
-						throw error;
-					}
-					const message = error instanceof Error ? error.message : String(error);
-					return {
-						stdout: "",
-						stderr: `cp: cannot copy '${operands[0]}': ${message}${await eager_created_failure_note()}\n`,
-						exitCode: bash_COMMAND_EXIT_FAILURE,
-					};
-				}
+		if (appOperands.length === operands.length)
+			return await bash_transfer_command_run({
+				ctx,
+				dbFilesRoots,
+				transferContext,
+				command: "cp",
+				commandCtx,
+				parsed: parsed._yay,
+			});
 
-				if (staged._nay) {
-					return {
-						stdout: "",
-						stderr: `cp: cannot copy '${operands[0]}': ${staged._nay.message}${await eager_created_failure_note()}\n`,
-						exitCode: bash_COMMAND_EXIT_FAILURE,
-					};
-				}
-				// Later commands chained in this same bash call must see the new proposal.
-				dbFilesRoots.app.fs.resetProposalCaches();
-
-				const copiedStdout: string = replacesExisting
-					? `pending copy created: ${sourceDbFilesPath} -> ${destPath} — replaces the existing file's content and type when accepted; review in Files\n`
-					: `pending copy created: ${sourceDbFilesPath} -> ${destPath} — review in Files\n`;
-				return {
-					stdout: copiedStdout,
-					stderr: "",
-					exitCode: 0,
-				};
-			}
-			let destDbFilesPath =
-				bash_current_workspace_path_to_db_files_path(currentWorkspacePath, destShellPath) ?? operands[1];
-			let redirectDestShellPath = destShellPath;
-			try {
-				const destStat = await commandCtx.fs.stat(destShellPath);
-				if (destStat.isDirectory) {
-					const nativeDirectoryDestPath = bash_normalize_path(`${destShellPath}/${path_name_of(sourceShellPath)}`);
-					destDbFilesPath =
-						bash_current_workspace_path_to_db_files_path(currentWorkspacePath, nativeDirectoryDestPath) ?? destDbFilesPath;
-					redirectDestShellPath = nativeDirectoryDestPath;
-				}
-			} catch {
-				// Missing destinations are normal; the rejected write target is the operand itself.
-			}
-			// Agent mode only reaches here with a non-app source (app→app already proposed above);
-			// Ask mode reaches here for every app destination.
-			// `cat` on a folder source would create the destination proposal first and then fail,
-			// so the redirect recovery is only suggested for a file source.
-			let sourceIsFile = false;
-			try {
-				sourceIsFile = (await commandCtx.fs.stat(sourceShellPath)).isFile;
-			} catch {
-				// A missing source keeps the generic guidance.
-			}
+		if (destination !== undefined && appOperands.includes(destination))
 			return {
 				stdout: "",
 				stderr: dbFilesRoots.app.fs.allowDbFilesMkdir
-					? `cp: cannot write to app file '${operands[1]}': only app files can be copied within the app tree.\n` +
-						(sourceIsFile
-							? `To write that content at '${destDbFilesPath}', redirect instead: cat ${bash_shell_arg_quote(operands[0])} > ${bash_shell_arg_quote(redirectDestShellPath)} — this creates a pending proposal you review in Files.\n`
-							: "")
-					: `cp: cannot write to app file '${operands[1]}' in Ask mode.\n` +
-						"App file writes are available in Agent mode; Ask mode is read-only for app files.\n",
+					? `cp: only app files can be copied into the app tree. To write scratch text, use cat <scratch-file> > ${bash_shell_arg_quote(destination)}.\n`
+					: "cp: app file writes require Agent mode\n",
 				exitCode: bash_COMMAND_EXIT_FAILURE,
 			};
-		}
+
 		// The only mixed form allowed is source app file first, scratch destination second.
 		if (recursive || operands.length !== 2 || appOperands.length !== 1 || appOperands[0] !== operands[0]) {
 			return {
@@ -487,6 +97,7 @@ export function bash_cp_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 
 		const sourceShellPath = bash_resolve_path(commandCtx.cwd, operands[0]);
 		let destShellPath = bash_resolve_path(commandCtx.cwd, operands[1]);
+
 		if (!is_under_tmp_mount(destShellPath)) {
 			const destDbFilesPath = bash_current_workspace_path_to_db_files_path(currentWorkspacePath, destShellPath);
 			const destHint =
@@ -502,6 +113,7 @@ export function bash_cp_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 				exitCode: bash_COMMAND_EXIT_FAILURE,
 			};
 		}
+
 		try {
 			const sourceStat = await commandCtx.fs.stat(sourceShellPath);
 			if (!sourceStat.isFile) {
@@ -511,6 +123,7 @@ export function bash_cp_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 					exitCode: bash_COMMAND_EXIT_FAILURE,
 				};
 			}
+
 			try {
 				const destStat = await commandCtx.fs.stat(destShellPath);
 				if (destStat.isDirectory) {
@@ -520,6 +133,7 @@ export function bash_cp_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 			} catch {
 				// Missing destinations are normal; writeFile creates the scratch file.
 			}
+
 			if (noClobber) {
 				try {
 					await commandCtx.fs.stat(destShellPath);
@@ -528,10 +142,12 @@ export function bash_cp_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 					// Missing destinations are normal; continue with the scratch copy.
 				}
 			}
+
 			// Read through the mounted fs so app-file readability checks stay centralized,
 			// then write only to the already-validated scratch destination.
 			const content = await commandCtx.fs.readFileBuffer(sourceShellPath);
 			await commandCtx.fs.writeFile(destShellPath, content);
+
 			return { stdout: "", stderr: "", exitCode: 0 };
 		} catch (error) {
 			if (error instanceof bash_DbFilesContentUnavailableError) {
@@ -543,6 +159,7 @@ export function bash_cp_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 					exitCode: bash_COMMAND_EXIT_FAILURE,
 				};
 			}
+
 			return {
 				stdout: "",
 				stderr: `cp: cannot copy '${operands[0]}'\n`,

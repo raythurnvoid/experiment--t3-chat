@@ -15,6 +15,7 @@ import {
 	files_PresenceStore,
 	files_resolve_effective_editor_view,
 	type files_EditorView,
+	type files_PendingTarget,
 	type files_YjsRootKind,
 } from "@/lib/files.ts";
 import { ChevronLeft, ChevronRight, Sparkles } from "lucide-react";
@@ -48,14 +49,26 @@ export type FileEditorPendingUpdatesFloating_Props = {
 	showReviewButton: boolean;
 	reviewPagerLabel: string;
 	canNavigate: boolean;
+	showLoadMore: boolean;
+	isLoadingMore: boolean;
 	onReviewChanges: () => void;
 	onNavigatePrevious: () => void;
 	onNavigateNext: () => void;
+	onLoadMore: () => void;
 };
 
 export function FileEditorPendingUpdatesFloating(props: FileEditorPendingUpdatesFloating_Props) {
-	const { showReviewButton, reviewPagerLabel, canNavigate, onReviewChanges, onNavigatePrevious, onNavigateNext } =
-		props;
+	const {
+		showReviewButton,
+		reviewPagerLabel,
+		canNavigate,
+		showLoadMore,
+		isLoadingMore,
+		onReviewChanges,
+		onNavigatePrevious,
+		onNavigateNext,
+		onLoadMore,
+	} = props;
 
 	const handleClickReviewChanges = useFn(() => {
 		onReviewChanges();
@@ -91,7 +104,7 @@ export function FileEditorPendingUpdatesFloating(props: FileEditorPendingUpdates
 			>
 				<MyIconButton
 					variant="ghost-highlightable-alt"
-					tooltip="Previous pending update"
+					tooltip="Previous pending change"
 					className={cn(
 						"FileEditorPendingUpdatesFloating-review-pager-button" satisfies FileEditorPendingUpdatesFloating_ClassNames,
 					)}
@@ -109,7 +122,7 @@ export function FileEditorPendingUpdatesFloating(props: FileEditorPendingUpdates
 				</span>
 				<MyIconButton
 					variant="ghost-highlightable-alt"
-					tooltip="Next pending update"
+					tooltip="Next pending change"
 					className={cn(
 						"FileEditorPendingUpdatesFloating-review-pager-button" satisfies FileEditorPendingUpdatesFloating_ClassNames,
 					)}
@@ -119,6 +132,11 @@ export function FileEditorPendingUpdatesFloating(props: FileEditorPendingUpdates
 					<ChevronRight />
 				</MyIconButton>
 			</div>
+			{showLoadMore ? (
+				<MyButton variant="ghost" disabled={isLoadingMore} onClick={onLoadMore}>
+					{isLoadingMore ? "Loading…" : "Load more"}
+				</MyButton>
+			) : null}
 		</div>
 	);
 }
@@ -135,7 +153,7 @@ export type FileEditor_OnlineUser = {
 
 export type FileEditorPresenceSupplier_Props = {
 	userId: string | null | undefined;
-	nodeId: app_convex_Id<"files_nodes">;
+	target: files_PendingTarget;
 
 	children: (props: {
 		presenceStore: files_PresenceStore | null;
@@ -143,12 +161,14 @@ export type FileEditorPresenceSupplier_Props = {
 	}) => React.ReactNode;
 };
 
-function FileEditorPresenceSupplier_Enabled(props: FileEditorPresenceSupplier_Props) {
-	const { userId, nodeId, children } = props;
+function FileEditorPresenceSupplier_Enabled(
+	props: Omit<FileEditorPresenceSupplier_Props, "target"> & { target: Extract<files_PendingTarget, { kind: "saved" }> },
+) {
+	const { userId, target, children } = props;
 
 	const { organizationId, workspaceId } = AppTenantProvider.useContext();
 
-	const roomId = files_create_room_id(organizationId, workspaceId, nodeId);
+	const roomId = files_create_room_id(organizationId, workspaceId, target.id);
 
 	const presence = usePresence({
 		roomId: roomId,
@@ -348,11 +368,11 @@ function FileEditorPresenceSupplier_Disabled(props: FileEditorPresenceSupplier_P
 export function FileEditorPresenceSupplier(props: FileEditorPresenceSupplier_Props) {
 	const presenceEnabled = usePresenceEnabled();
 
-	if (!presenceEnabled) {
+	if (!presenceEnabled || props.target.kind === "private") {
 		return <FileEditorPresenceSupplier_Disabled {...props} />;
 	}
 
-	return <FileEditorPresenceSupplier_Enabled {...props} />;
+	return <FileEditorPresenceSupplier_Enabled {...props} target={props.target} />;
 }
 
 // #endregion presence supplier
@@ -361,7 +381,7 @@ export function FileEditorPresenceSupplier(props: FileEditorPresenceSupplier_Pro
 type FileEditorRender_Props = {
 	previewRef?: Ref<Pick<FileEditor_Ref, "getPreviewSnapshot">>;
 	isActive: boolean;
-	nodeId: app_convex_Id<"files_nodes">;
+	target: files_PendingTarget;
 	pendingUpdateId?: app_convex_Id<"files_pending_updates">;
 	/** The node's document shape, from the route-resolved node; the diff editor dispatches on it. */
 	rootKind: files_YjsRootKind;
@@ -395,6 +415,7 @@ type FileEditorRender_Props = {
 	serverSequence?: number;
 	onDiffExit: () => void;
 	onPreviewSnapshotChange?: () => void;
+	onTargetChange?: (target: files_PendingTarget, options?: { keepReview: boolean }) => void;
 	topStickyFloatingSlot?: React.ReactNode;
 	topViewZoneSlot?: React.ReactNode;
 };
@@ -403,7 +424,7 @@ function FileEditorRender(props: FileEditorRender_Props) {
 	const {
 		previewRef,
 		isActive,
-		nodeId,
+		target,
 		pendingUpdateId,
 		rootKind,
 		monacoLanguageId,
@@ -421,6 +442,7 @@ function FileEditorRender(props: FileEditorRender_Props) {
 		serverSequence,
 		onDiffExit,
 		onPreviewSnapshotChange,
+		onTargetChange,
 		topStickyFloatingSlot,
 		topViewZoneSlot,
 	} = props;
@@ -440,15 +462,16 @@ function FileEditorRender(props: FileEditorRender_Props) {
 	if (editorMode === "rich_text_editor") {
 		// A file with collaboration turned off never has a Yjs sequence id, so this branch must
 		// come before the skeleton check below or that skeleton would show forever.
-		if (nonCollaborative) {
+		if (target.kind === "private" || nonCollaborative) {
 			return (
 				<FileEditorRichTextNonCollab
-					nodeId={nodeId}
+					target={target}
 					editable={editable}
 					presenceStore={presenceStore}
 					commentsPortalHost={commentsPortalHost}
 					toolbarPortalHost={toolbarPortalHost}
 					topStickyFloatingSlot={topStickyFloatingSlot}
+					onTargetChange={onTargetChange}
 				/>
 			);
 		}
@@ -459,7 +482,7 @@ function FileEditorRender(props: FileEditorRender_Props) {
 
 		return (
 			<FileEditorRichText
-				nodeId={nodeId}
+				nodeId={target.id}
 				yjsLastSequenceId={yjsLastSequenceId}
 				editable={editable}
 				editBlockReason={editBlockReason}
@@ -480,13 +503,13 @@ function FileEditorRender(props: FileEditorRender_Props) {
 
 		// With no proposal, a file with collaboration off has no shared document to diff, so its
 		// diff view compares the committed text with the member's local edits instead.
-		if (nonCollaborative && pendingUpdateId == null) {
+		if (target.kind === "saved" && nonCollaborative && pendingUpdateId == null) {
 			return (
 				<FileEditorDiffNonCollab
-					key={nodeId}
+					key={target.id}
 					ref={previewRef}
 					isActive={isActive}
-					nodeId={nodeId}
+					nodeId={target.id}
 					editable={editable}
 					monacoLanguageId={monacoLanguageId}
 					presenceStore={presenceStore}
@@ -502,10 +525,10 @@ function FileEditorRender(props: FileEditorRender_Props) {
 
 		return (
 			<FileEditorDiff
-				key={nodeId}
+				key={`${target.kind}:${target.id}`}
 				ref={previewRef}
 				isActive={isActive}
-				nodeId={nodeId}
+				target={target}
 				editable={editable}
 				rootKind={rootKind}
 				monacoLanguageId={monacoLanguageId}
@@ -520,6 +543,7 @@ function FileEditorRender(props: FileEditorRender_Props) {
 				topSafeArea={topSafeArea}
 				onExit={onDiffExit}
 				onPreviewSnapshotChange={onPreviewSnapshotChange}
+				onTargetChange={onTargetChange}
 				topStickyFloatingSlot={topStickyFloatingSlot}
 				topViewZoneSlot={topViewZoneSlot}
 			/>
@@ -530,7 +554,7 @@ function FileEditorRender(props: FileEditorRender_Props) {
 		<FileEditorPlainText
 			ref={previewRef}
 			isActive={isActive}
-			nodeId={nodeId}
+			target={target}
 			yjsLastSequenceId={yjsLastSequenceId}
 			editable={editable}
 			monacoLanguageId={monacoLanguageId}
@@ -543,6 +567,7 @@ function FileEditorRender(props: FileEditorRender_Props) {
 			topStickyFloatingSlot={topStickyFloatingSlot}
 			topViewZoneSlot={topViewZoneSlot}
 			onPreviewSnapshotChange={onPreviewSnapshotChange}
+			onTargetChange={onTargetChange}
 		/>
 	);
 }
@@ -567,7 +592,8 @@ type FileEditor_CssVars = {
 type FileEditorInner_Props = {
 	previewRef?: Ref<Pick<FileEditor_Ref, "getPreviewSnapshot">>;
 	isActive: boolean;
-	nodeId: app_convex_Id<"files_nodes">;
+	target: files_PendingTarget;
+	privateCanEdit?: boolean;
 	writeBlockedReason: files_yjs_EditBlockReason | null;
 	pendingUpdateId?: app_convex_Id<"files_pending_updates">;
 	rootKind: files_YjsRootKind;
@@ -597,6 +623,7 @@ type FileEditorInner_Props = {
 	onEditorModeChange: (mode: FileEditor_Mode, options?: { replace?: boolean }) => void;
 	onAutomaticEditorModeChange?: FileEditor_Props["onEditorModeChange"];
 	onPreviewSnapshotChange?: () => void;
+	onTargetChange?: (target: files_PendingTarget, options?: { keepReview: boolean }) => void;
 	onDiffExit?: () => void;
 	topStickyFloatingSlot?: React.ReactNode;
 	topViewZoneSlot?: React.ReactNode;
@@ -606,7 +633,8 @@ function FileEditorInner(props: FileEditorInner_Props) {
 	const {
 		previewRef,
 		isActive,
-		nodeId,
+		target,
+		privateCanEdit,
 		writeBlockedReason,
 		pendingUpdateId,
 		rootKind,
@@ -624,6 +652,7 @@ function FileEditorInner(props: FileEditorInner_Props) {
 		onEditorModeChange,
 		onAutomaticEditorModeChange,
 		onPreviewSnapshotChange,
+		onTargetChange,
 		onDiffExit,
 		topStickyFloatingSlot,
 		topViewZoneSlot,
@@ -639,10 +668,11 @@ function FileEditorInner(props: FileEditorInner_Props) {
 
 	// Keep editing off while the current user's effective write permission loads.
 	const { membershipId } = AppTenantProvider.useContext();
-	const canWrite = useQuery(app_convex_api.files_nodes.get_current_user_file_write_permission, {
-		membershipId,
-		nodeId,
-	});
+	const savedCanWrite = useQuery(
+		app_convex_api.files_nodes.get_current_user_file_write_permission,
+		target.kind === "saved" ? { membershipId, nodeId: target.id } : "skip",
+	);
+	const canWrite = target.kind === "private" ? privateCanEdit : savedCanWrite;
 	const editBlockReason = canWrite === false ? (writeBlockedReason ?? "permission") : null;
 	const editable = canWrite === true;
 
@@ -656,8 +686,9 @@ function FileEditorInner(props: FileEditorInner_Props) {
 	// The exit checks the mode and not `nonCollaborative`: turning collaboration on from the review
 	// deletes the proposal and flips the flag in one update, and the view must leave then too.
 	const inDiffView = effectiveEditorMode === "diff_editor";
+	const targetKey = `${target.kind}:${target.id}`;
 	const [shownProposal, setShownProposal] = useState<{
-		nodeId: app_convex_Id<"files_nodes">;
+		targetKey: string;
 		pendingUpdateId: app_convex_Id<"files_pending_updates">;
 	} | null>(null);
 	if (!inDiffView) {
@@ -665,17 +696,18 @@ function FileEditorInner(props: FileEditorInner_Props) {
 			setShownProposal(null);
 		}
 	} else if (
+		target.kind === "saved" &&
 		nonCollaborative &&
 		pendingUpdateId != null &&
-		(shownProposal?.nodeId !== nodeId || shownProposal.pendingUpdateId !== pendingUpdateId)
+		(shownProposal?.targetKey !== targetKey || shownProposal.pendingUpdateId !== pendingUpdateId)
 	) {
-		setShownProposal({ nodeId, pendingUpdateId });
-	} else if (shownProposal !== null && shownProposal.nodeId !== nodeId) {
+		setShownProposal({ targetKey, pendingUpdateId });
+	} else if (shownProposal !== null && shownProposal.targetKey !== targetKey) {
 		// Another node with no proposal: the remembered proposal belongs to the node before it.
 		// Forget it, or a later return to that node would exit its diff view as "went away".
 		setShownProposal(null);
 	}
-	const proposalWentAway = inDiffView && pendingUpdateId == null && shownProposal?.nodeId === nodeId;
+	const proposalWentAway = inDiffView && pendingUpdateId == null && shownProposal?.targetKey === targetKey;
 	const renderHostRef = useRef<HTMLDivElement>(null);
 
 	const handleDiffExit = useFn(() => {
@@ -776,7 +808,7 @@ function FileEditorInner(props: FileEditorInner_Props) {
 							<FileEditorRender
 								previewRef={previewRef}
 								isActive={isActive}
-								nodeId={nodeId}
+								target={target}
 								pendingUpdateId={pendingUpdateId}
 								rootKind={rootKind}
 								monacoLanguageId={monacoLanguageId}
@@ -794,6 +826,7 @@ function FileEditorInner(props: FileEditorInner_Props) {
 								yjsLastSequenceId={yjsLastSequenceId}
 								onDiffExit={handleDiffExit}
 								onPreviewSnapshotChange={onPreviewSnapshotChange}
+								onTargetChange={onTargetChange}
 								topStickyFloatingSlot={topStickyFloatingSlot}
 								topViewZoneSlot={topViewZoneSlot}
 							/>
@@ -810,13 +843,10 @@ export type FileEditor_PreviewSnapshot = {
 	sourceKind: "editor_draft" | "proposed_changes";
 	isDirty: boolean;
 	membershipId: app_convex_Id<"organizations_workspaces_users">;
-	nodeId: app_convex_Id<"files_nodes">;
+	target: files_PendingTarget;
 	rootKind: files_YjsRootKind;
 	yjsLastSequenceId: app_convex_Id<"files_yjs_docs_last_sequences"> | null;
-	pendingUpdate: Pick<
-		app_convex_Doc<"files_pending_updates">,
-		"_id" | "updatedAt" | "baseStateId" | "stagedStateId" | "unstagedStateId" | "baseAssetId" | "baseLineageGeneration"
-	> | null;
+	pendingUpdate: Pick<app_convex_Doc<"files_pending_updates">, "_id" | "target" | "revision" | "content"> | null;
 };
 
 export type FileEditor_Ref = {
@@ -827,7 +857,8 @@ export type FileEditor_Ref = {
 export type FileEditor_Props = {
 	ref?: Ref<FileEditor_Ref>;
 	isActive?: boolean;
-	nodeId: app_convex_Id<"files_nodes"> | null | undefined;
+	target: files_PendingTarget | null | undefined;
+	privateCanEdit?: boolean;
 	writeBlockedReason: files_yjs_EditBlockReason | null;
 	pendingUpdateId?: app_convex_Id<"files_pending_updates">;
 	/** The node's document shape, from the route-resolved node the caller already holds. */
@@ -861,6 +892,7 @@ export type FileEditor_Props = {
 	onEditorModeChange: (mode: FileEditor_Mode, options?: { replace?: boolean }) => void;
 	onAutomaticEditorModeChange?: FileEditor_Props["onEditorModeChange"];
 	onPreviewSnapshotChange?: () => void;
+	onTargetChange?: (target: files_PendingTarget, options?: { keepReview: boolean }) => void;
 	topStickyFloatingSlot?: React.ReactNode;
 	topViewZoneSlot?: React.ReactNode;
 };
@@ -869,7 +901,8 @@ export function FileEditor(props: FileEditor_Props) {
 	const {
 		ref,
 		isActive = true,
-		nodeId,
+		target,
+		privateCanEdit,
 		writeBlockedReason,
 		pendingUpdateId,
 		rootKind,
@@ -887,6 +920,7 @@ export function FileEditor(props: FileEditor_Props) {
 		onEditorModeChange,
 		onAutomaticEditorModeChange,
 		onPreviewSnapshotChange,
+		onTargetChange,
 		topStickyFloatingSlot,
 		topViewZoneSlot,
 	} = props;
@@ -895,7 +929,10 @@ export function FileEditor(props: FileEditor_Props) {
 	const previewRef = useRef<Pick<FileEditor_Ref, "getPreviewSnapshot"> | null>(null);
 	const getPreviewSnapshot = useFn(() => {
 		const snapshot = previewRef.current?.getPreviewSnapshot();
-		return snapshot?.membershipId === membershipId && snapshot.nodeId === nodeId && snapshot.rootKind === rootKind
+		return snapshot?.membershipId === membershipId &&
+			snapshot.target.kind === target?.kind &&
+			snapshot.target.id === target?.id &&
+			snapshot.rootKind === rootKind
 			? snapshot
 			: null;
 	});
@@ -909,11 +946,13 @@ export function FileEditor(props: FileEditor_Props) {
 		[editorMode, getPreviewSnapshot],
 	);
 
-	return nodeId ? (
+	return target ? (
 		<FileEditorInner
+			key={`${membershipId}:${target.kind}:${target.id}`}
 			previewRef={previewRef}
 			isActive={isActive}
-			nodeId={nodeId}
+			target={target}
+			privateCanEdit={privateCanEdit}
 			writeBlockedReason={writeBlockedReason}
 			pendingUpdateId={pendingUpdateId}
 			rootKind={rootKind}
@@ -931,6 +970,7 @@ export function FileEditor(props: FileEditor_Props) {
 			onEditorModeChange={onEditorModeChange}
 			onAutomaticEditorModeChange={onAutomaticEditorModeChange}
 			onPreviewSnapshotChange={onPreviewSnapshotChange}
+			onTargetChange={onTargetChange}
 			topStickyFloatingSlot={topStickyFloatingSlot}
 			topViewZoneSlot={topViewZoneSlot}
 		/>

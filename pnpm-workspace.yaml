@@ -16,6 +16,7 @@ packages:
   - "packages/app/vendor/presence"
   - "packages/app/vendor/rate-limiter"
   - "packages/app/vendor/r2"
+  - "packages/app/vendor/just-bash/packages/just-bash"
 
 overrides:
   "@tiptap/y-tiptap": "3.0.0"

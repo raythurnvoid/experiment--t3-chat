@@ -3,18 +3,22 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { StrictMode, useState, type ComponentProps } from "react";
 import { encodeStateAsUpdate } from "yjs";
 import type { FileEditor_PreviewSnapshot } from "../file-editor/file-editor.tsx";
-import type { app_convex_Id } from "@/lib/app-convex-client.ts";
+import type { app_convex_Doc, app_convex_Id } from "@/lib/app-convex-client.ts";
+import type { files_VisibleEntry } from "@/lib/files.ts";
 import { files_yjs_doc_create_from_text } from "../../../../shared/files-tiptap.ts";
 import { files_u8_to_array_buffer } from "../../../../shared/files.ts";
 
-const { queryMock, actionMock, savedReadMock, pendingReadMock, tenantMock, queryValues } = vi.hoisted(() => ({
-	queryMock: vi.fn(),
-	actionMock: vi.fn(),
-	savedReadMock: vi.fn(),
-	pendingReadMock: vi.fn(),
-	tenantMock: vi.fn(),
-	queryValues: { pending: null as unknown, sequence: null as unknown },
-}));
+const { queryMock, actionMock, savedReadMock, pendingReadMock, privateReadMock, tenantMock, queryValues } = vi.hoisted(
+	() => ({
+		queryMock: vi.fn(),
+		actionMock: vi.fn(),
+		savedReadMock: vi.fn(),
+		pendingReadMock: vi.fn(),
+		privateReadMock: vi.fn(),
+		tenantMock: vi.fn(),
+		queryValues: { pending: null as unknown, sequence: null as unknown },
+	}),
+);
 
 vi.mock("@/lib/app-tenant-context.tsx", () => ({ AppTenantProvider: { useContext: () => tenantMock() } }));
 vi.mock("convex/react", () => ({
@@ -32,13 +36,17 @@ vi.mock("@/lib/app-convex-client.ts", () => ({
 			get_file_last_yjs_sequence: "get_file_last_yjs_sequence",
 		},
 		files_nodes_content: { get_non_collaborative_file_content: "get_non_collaborative_file_content" },
-		files_pending_updates: { get_file_pending_update: "get_file_pending_update" },
+		files_pending_updates: {
+			get_file_pending_update: "get_file_pending_update",
+			get_file_pending_target: "get_file_pending_target",
+		},
 	},
 }));
 vi.mock("@/lib/files.ts", async () => ({
 	...(await import("../../../../shared/files.ts")),
 	files_fetch_file_yjs_state_and_text: (...args: unknown[]) => savedReadMock(...args),
 	files_fetch_file_pending_update_yjs_state: (...args: unknown[]) => pendingReadMock(...args),
+	files_fetch_private_file_pending_text: (...args: unknown[]) => privateReadMock(...args),
 }));
 
 import { FileHtmlPreview, type FileHtmlPreview_Source } from "./file-html-preview.tsx";
@@ -50,10 +58,10 @@ const NODE = {
 	_id: NODE_ID,
 	_creationTime: 0,
 	name: "brief.html",
-	organizationId: "org_1",
-	workspaceId: "workspace_1",
-	createdBy: "user_1",
-	updatedBy: "user_1",
+	organizationId: "org_1" as app_convex_Id<"organizations">,
+	workspaceId: "workspace_1" as app_convex_Id<"organizations_workspaces">,
+	createdBy: "user_1" as app_convex_Id<"users">,
+	updatedBy: "user_1" as app_convex_Id<"users">,
 	updatedAt: 0,
 	parentId: "root",
 	path: "/brief.html",
@@ -61,12 +69,12 @@ const NODE = {
 	pathDepth: 1,
 	kind: "file",
 	contentType: "text/html;charset=utf-8",
-	assetId: "asset_1",
+	assetId: "asset_1" as app_convex_Id<"files_r2_assets">,
 	archiveOperationId: null,
 	lowercaseExtension: "html",
 	textKind: "plain_text",
 	collaborationEnabled: true,
-	yjsSnapshotId: "snapshot_1",
+	yjsSnapshotId: "snapshot_1" as app_convex_Id<"files_yjs_snapshots">,
 	yjsLastSequenceId: DOCUMENT_ID,
 	statsId: null,
 	contentTooLargeByteSize: null,
@@ -75,27 +83,64 @@ const NODE = {
 	contentFrontmatterTooLargeFieldCount: null,
 	contentFrontmatterTooLargeIndexDocumentCount: null,
 	restrictedScopeNodeId: null,
+	writePolicyScopeNodeId: null,
+	writePolicy: null,
 	canWrite: true,
 	writeBlockedReason: null,
 	writePolicyState: "none",
-} as ComponentProps<typeof FileHtmlPreview>["node"];
+} as app_convex_Doc<"files_nodes">;
 
 const PENDING = {
 	_id: "pending_1" as app_convex_Id<"files_pending_updates">,
 	_creationTime: 0,
-	organizationId: NODE.organizationId,
-	workspaceId: NODE.workspaceId,
-	userId: "user_1",
-	fileNodeId: NODE_ID,
-	baseYjsSequence: 0,
-	baseLineageGeneration: 0,
-	baseStateId: "base_1" as app_convex_Id<"files_pending_update_yjs_states">,
-	stagedStateId: "staged_1" as app_convex_Id<"files_pending_update_yjs_states">,
-	unstagedStateId: "unstaged_1" as app_convex_Id<"files_pending_update_yjs_states">,
+	organizationId: NODE.organizationId as app_convex_Id<"organizations">,
+	workspaceId: NODE.workspaceId as app_convex_Id<"organizations_workspaces">,
+	userId: "user_1" as app_convex_Id<"users">,
+	target: { kind: "saved" as const, id: NODE_ID },
+	revision: 1,
+	content: {
+		base: { kind: "yjs" as const, sequence: 0, lineageGeneration: 0 },
+		baseStateId: "base_1" as app_convex_Id<"files_pending_update_yjs_states">,
+		stagedStateId: "staged_1" as app_convex_Id<"files_pending_update_yjs_states">,
+		unstagedStateId: "unstaged_1" as app_convex_Id<"files_pending_update_yjs_states">,
+	},
 	updatedAt: 1,
 	size: 10,
 	currentYjsLastSequenceId: DOCUMENT_ID,
 };
+
+const PRIVATE_PENDING = {
+	...PENDING,
+	target: { kind: "private", id: "private_1" as app_convex_Id<"files_pending_nodes"> },
+	content: { ...PENDING.content, base: { kind: "new" } },
+	createIntent: {
+		kind: "text",
+		textKind: "plain_text",
+		contentType: "text/html;charset=utf-8",
+		collaborationEnabled: false,
+		metadata: [] as { key: string; value: string | number | boolean }[],
+	},
+	currentYjsLastSequenceId: null,
+} as const;
+const PRIVATE_ENTRY = {
+	kind: "private",
+	node: {
+		_id: PRIVATE_PENDING.target.id,
+		_creationTime: 0,
+		organizationId: NODE.organizationId as app_convex_Id<"organizations">,
+		workspaceId: NODE.workspaceId as app_convex_Id<"organizations_workspaces">,
+		userId: "user_1" as app_convex_Id<"users">,
+		kind: "file",
+		name: NODE.name,
+		parent: { kind: "root" },
+		structuralRevision: 0,
+		creationGeneration: 1,
+		state: "active",
+		closedAt: null,
+	},
+	pendingUpdate: PRIVATE_PENDING,
+	path: "/brief.html",
+} as Extract<files_VisibleEntry, { kind: "private" }>;
 
 function editor_snapshot(overrides: Partial<FileEditor_PreviewSnapshot> = {}): FileEditor_PreviewSnapshot {
 	return {
@@ -103,7 +148,7 @@ function editor_snapshot(overrides: Partial<FileEditor_PreviewSnapshot> = {}): F
 		sourceKind: "editor_draft",
 		isDirty: true,
 		membershipId: MEMBERSHIP_ID,
-		nodeId: NODE_ID,
+		target: { kind: "saved", id: NODE_ID },
 		rootKind: "plain_text",
 		yjsLastSequenceId: DOCUMENT_ID,
 		pendingUpdate: null,
@@ -121,6 +166,7 @@ function pending_bytes(text: string) {
 
 function Preview(props: {
 	node?: typeof NODE;
+	entry?: ComponentProps<typeof FileHtmlPreview>["entry"];
 	editorRevision?: number;
 	getEditorSnapshot?: () => FileEditor_PreviewSnapshot | null;
 	initialSource?: FileHtmlPreview_Source | null;
@@ -128,7 +174,7 @@ function Preview(props: {
 	const [source, setSource] = useState<FileHtmlPreview_Source | null>(props.initialSource ?? null);
 	return (
 		<FileHtmlPreview
-			node={props.node ?? NODE}
+			entry={props.entry ?? { kind: "saved", node: props.node ?? NODE, pendingUpdate: null, path: "/brief.html" }}
 			getEditorSnapshot={props.getEditorSnapshot ?? (() => null)}
 			editorRevision={props.editorRevision ?? 0}
 			selectedSource={source}
@@ -182,6 +228,9 @@ beforeEach(() => {
 		};
 	});
 	pendingReadMock.mockResolvedValue(pending_bytes("<p>Proposed</p>"));
+	privateReadMock.mockResolvedValue({
+		_yay: { text: "<p>Private</p>", rootKind: "plain_text", pendingUpdate: PRIVATE_PENDING },
+	});
 });
 
 afterEach(() => {
@@ -198,6 +247,81 @@ describe("FileHtmlPreview", () => {
 		const { frame, post, hello } = await start_frame();
 		send_status(frame, { ...hello, type: "ready" });
 		expect(post).toHaveBeenLastCalledWith(expect.objectContaining({ html: "<p>Saved</p>" }), "https://preview.test");
+	});
+
+	test.each([false, true])("reads an owner draft with local edits: %s", async (localEdits) => {
+		queryValues.pending = PRIVATE_PENDING;
+		queryMock.mockResolvedValue({ entry: PRIVATE_ENTRY, readiness: "ready", canEdit: true, canAccept: true });
+		render(
+			<Preview
+				entry={PRIVATE_ENTRY}
+				getEditorSnapshot={() =>
+					localEdits
+						? editor_snapshot({
+								target: PRIVATE_PENDING.target,
+								sourceKind: "proposed_changes",
+								yjsLastSequenceId: null,
+								pendingUpdate: PRIVATE_PENDING,
+								text: "<p>Private local edits</p>",
+							})
+						: null
+				}
+			/>,
+		);
+		const { frame, post, hello } = await start_frame();
+		send_status(frame, { ...hello, type: "ready" });
+		expect(post).toHaveBeenLastCalledWith(
+			expect.objectContaining({ html: localEdits ? "<p>Private local edits</p>" : "<p>Private</p>" }),
+			"https://preview.test",
+		);
+		expect(queryMock).toHaveBeenCalledTimes(2);
+		expect(queryMock).toHaveBeenCalledWith("get_file_pending_target", {
+			membershipId: MEMBERSHIP_ID,
+			target: PRIVATE_PENDING.target,
+		});
+		expect(savedReadMock).not.toHaveBeenCalled();
+		expect(pendingReadMock).not.toHaveBeenCalled();
+		expect(privateReadMock).toHaveBeenCalledTimes(localEdits ? 0 : 1);
+		fireEvent.click(screen.getByRole("combobox"));
+		expect(screen.queryByRole("option", { name: "Saved content" })).toBeNull();
+	});
+
+	test.each(["missing", "preparing", "new generation", "new revision"])(
+		"refuses a private draft that is %s",
+		async (change) => {
+			queryValues.pending = PRIVATE_PENDING;
+			queryMock.mockResolvedValue(
+				change === "missing"
+					? null
+					: {
+							entry: {
+								...PRIVATE_ENTRY,
+								node: { ...PRIVATE_ENTRY.node, creationGeneration: change === "new generation" ? 2 : 1 },
+								pendingUpdate: { ...PRIVATE_PENDING, revision: change === "new revision" ? 2 : 1 },
+							},
+							readiness: change === "preparing" ? "preparing" : "ready",
+							canEdit: true,
+							canAccept: true,
+						},
+			);
+			render(<Preview entry={PRIVATE_ENTRY} />);
+			await screen.findByText("The draft changed or access ended. Refresh to try again.");
+			expect(privateReadMock).not.toHaveBeenCalled();
+			expect(savedReadMock).not.toHaveBeenCalled();
+			expect(screen.queryByTitle("HTML preview: brief.html")).toBeNull();
+		},
+	);
+
+	test("drops private bytes when owner access ends during the read", async () => {
+		queryValues.pending = PRIVATE_PENDING;
+		queryMock
+			.mockResolvedValueOnce({ entry: PRIVATE_ENTRY, readiness: "ready", canEdit: true, canAccept: true })
+			.mockResolvedValue(null);
+		render(<Preview entry={PRIVATE_ENTRY} />);
+		await screen.findByText("The draft changed or access ended. Refresh to try again.");
+		expect(privateReadMock).toHaveBeenCalledOnce();
+		expect(savedReadMock).not.toHaveBeenCalled();
+		expect(screen.queryByTitle("HTML preview: brief.html")).toBeNull();
 	});
 
 	test("captures an immediate editor draft before the pending proposal", async () => {
@@ -243,8 +367,8 @@ describe("FileHtmlPreview", () => {
 		expect(post).toHaveBeenLastCalledWith(expect.objectContaining({ html: "<p>Proposed</p>" }), "https://preview.test");
 		expect(pendingReadMock).toHaveBeenCalledWith({
 			membershipId: MEMBERSHIP_ID,
-			nodeId: NODE_ID,
-			stateId: PENDING.unstagedStateId,
+			target: { kind: "saved", id: NODE_ID },
+			stateId: PENDING.content.unstagedStateId,
 		});
 		expect(savedReadMock).not.toHaveBeenCalled();
 	});
@@ -270,7 +394,12 @@ describe("FileHtmlPreview", () => {
 		const view = render(<Preview initialSource="proposed_changes" />);
 		const { frame, hello } = await start_frame();
 		send_status(frame, { ...hello, type: "ready" });
-		queryValues.pending = { ...PENDING, updatedAt: 2, unstagedStateId: "unstaged_2" };
+		queryValues.pending = {
+			...PENDING,
+			revision: 2,
+			updatedAt: 2,
+			content: { ...PENDING.content, unstagedStateId: "unstaged_2" },
+		};
 		pendingReadMock.mockResolvedValue(pending_bytes("<p>Revised</p>"));
 		view.rerender(<Preview initialSource="proposed_changes" />);
 		expect(screen.getByText("Updates available")).toBeDefined();
@@ -313,7 +442,11 @@ describe("FileHtmlPreview", () => {
 
 	test("waits for Refresh after a stale proposal becomes current again", async () => {
 		let currentNode = { ...NODE, collaborationEnabled: false, yjsLastSequenceId: null, yjsSnapshotId: null };
-		const proposal = { ...PENDING, baseAssetId: NODE.assetId, currentYjsLastSequenceId: null };
+		const proposal = {
+			...PENDING,
+			content: { ...PENDING.content, base: { kind: "asset", assetId: NODE.assetId } },
+			currentYjsLastSequenceId: null,
+		};
 		queryValues.pending = proposal;
 		queryMock.mockImplementation(async (query: string) =>
 			query === "get_file_node_for_membership" ? currentNode : queryValues.pending,
@@ -328,9 +461,13 @@ describe("FileHtmlPreview", () => {
 		expect(screen.getByText("Review and sync these changes first.")).toBeDefined();
 		queryValues.pending = {
 			...proposal,
-			baseAssetId: currentNode.assetId,
-			unstagedStateId: "unstaged_2",
+			content: {
+				...proposal.content,
+				base: { kind: "asset", assetId: currentNode.assetId },
+				unstagedStateId: "unstaged_2",
+			},
 			updatedAt: 2,
+			revision: 2,
 		};
 		pendingReadMock.mockResolvedValue(pending_bytes("<p>Prepared proposal</p>"));
 		await act(async () => view.rerender(<Preview node={currentNode} initialSource="proposed_changes" />));
@@ -357,6 +494,15 @@ describe("FileHtmlPreview", () => {
 		expect(savedReadMock).not.toHaveBeenCalled();
 	});
 
+	test("does not read a private proposal through the saved preview", async () => {
+		queryValues.pending = { ...PENDING, target: { kind: "private", id: NODE_ID } };
+		render(<Preview initialSource="proposed_changes" />);
+		await screen.findByText("Choose an available source.");
+		expect(screen.queryByTitle("HTML preview: brief.html")).toBeNull();
+		expect(pendingReadMock).not.toHaveBeenCalled();
+		expect(actionMock).not.toHaveBeenCalled();
+	});
+
 	test("refuses stale proposals without preparing or reading their pages", async () => {
 		queryValues.pending = { ...PENDING, contentNeedsRebase: true };
 		render(<Preview />);
@@ -366,13 +512,13 @@ describe("FileHtmlPreview", () => {
 		expect(actionMock).not.toHaveBeenCalled();
 	});
 
-	test("drops a paged proposal read that changed while loading", async () => {
+	test("drops a paged proposal read when its revision changes within the same timestamp", async () => {
 		queryValues.pending = PENDING;
 		const deferred = Promise.withResolvers<ReturnType<typeof pending_bytes>>();
 		pendingReadMock.mockReturnValue(deferred.promise);
 		const view = render(<Preview />);
 		await waitFor(() => expect(pendingReadMock).toHaveBeenCalled());
-		queryValues.pending = { ...PENDING, updatedAt: 2, unstagedStateId: "unstaged_2" };
+		queryValues.pending = { ...PENDING, revision: 2 };
 		view.rerender(<Preview />);
 		await act(async () => deferred.resolve(pending_bytes("<p>Old proposal</p>")));
 		expect(screen.queryByTitle("HTML preview: brief.html")).toBeNull();
@@ -383,7 +529,12 @@ describe("FileHtmlPreview", () => {
 		queryValues.pending = PENDING;
 		const deferred = Promise.withResolvers<ReturnType<typeof pending_bytes>>();
 		pendingReadMock.mockReturnValue(deferred.promise);
-		const props = { node: NODE, getEditorSnapshot: () => null, editorRevision: 0, onSourceChange: vi.fn() };
+		const props = {
+			entry: { kind: "saved", node: NODE, pendingUpdate: null, path: "/brief.html" } as const,
+			getEditorSnapshot: () => null,
+			editorRevision: 0,
+			onSourceChange: vi.fn(),
+		};
 		const view = render(<FileHtmlPreview {...props} selectedSource="proposed_changes" />);
 		await waitFor(() => expect(pendingReadMock).toHaveBeenCalled());
 		view.rerender(<FileHtmlPreview {...props} selectedSource="saved" />);
@@ -440,7 +591,7 @@ describe("FileHtmlPreview", () => {
 		render(
 			<Preview
 				getEditorSnapshot={() =>
-					editor_snapshot({ sourceKind: "proposed_changes", pendingUpdate: { ...PENDING, updatedAt: 0 } })
+					editor_snapshot({ sourceKind: "proposed_changes", pendingUpdate: { ...PENDING, revision: 0 } })
 				}
 			/>,
 		);

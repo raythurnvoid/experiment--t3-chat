@@ -24,7 +24,9 @@ Before the first attempt at a new interaction type (upload, download, screenshot
 - Vitest 4.1.10 ignores the unsupported `--browser.screenshotFailures=false` CLI option and can still write failure images into the repo. For expected failures, use a temporary config in the personal task folder that imports the app config and sets `test.browser.screenshotFailures: false` on the browser project. Set its `root` to `packages/app` and pass its absolute path with `--config`. This prevented screenshots during a failing check. Capture needed images with Playwriter; a screenshot directory outside the repo can be refused by Vite's file allowlist.
 - Give a temporary Vitest config outside the repo the `.mts` extension. A `.ts` file outside the app's `type: module` package can load as CommonJS and fail on Tailwind's default import with `default is not a function`. Using `.mts` keeps the imported app config in ESM mode.
 - A first Vitest browser run can reload while Vite optimizes a new dependency, then fail to import a test. Record that run as failed. One full rerun after the cache settles can confirm recovery; do not ignore a repeated failure. This occurred for `react-dom/server` and passed on the next run.
+- Vitest 4.1.10 browser tests can hang before the first case when the checkout path contains `+`, including the personal `+ai` folder. Its orchestrator puts the raw test path into `iframeId`; URLSearchParams changes each `+` to a space, so the ready event never matches. Diagnose one small suite with `DEBUG=vitest:browser*`, `VITEST_PW_DEBUG=1`, and `VITEST_BROWSER_DEBUG=1`, plus a short outer timeout. A temporary provider can intercept only the local orchestrator script response and replace the single `&iframeId=${iframeId}` expression with `&iframeId=${iframeId.replaceAll("+", "%2B")}`. Require exactly one match and recheck the installed version. Do not redirect the iframe: Vitest rejects a changed final URL. Keep the provider outside the repo, set an explicit app root and unused test port, disable failure screenshots, and set browser file parallelism to false. Check transformed app paths to prove the intended checkout ran. No app or installed dependency edits are needed.
 - A locator-scoped Playwriter snapshot can return empty text for the visible transfer dialog. Check the page snapshot with a text search before treating that as an empty dialog. Keep action locators scoped to `.FilesTransferRunModal`.
+- A finished transfer dialog has two buttons named `Close`: the footer button and the icon. Use the footer's exact text or press Escape. A role/name locator alone is ambiguous, even when scoped to `.FilesTransferRunModal`.
 - The Vitest browser project loads the app's Tailwind Vite plugin so style tests include generated utilities. Import `app.css` before component styles to establish the app's CSS layer order. When a regression depends on a library utility, verify that the test fails with the relevant fix removed; also check the live app.
 - A Files screenshot can time out after reporting `fonts loaded`, even when the page is still usable. Check the current URL and scroll position, then retry the capture in a separate call. This worked after navigation and scrolling on 2026-09-12. Check that the output file exists before calling the capture complete.
 - If a Files screenshot jumps back to the focused editor block or checkbox, focus a header control first, then scroll and capture. `Copy path` can receive focus without activating it.
@@ -71,11 +73,12 @@ Before the first attempt at a new interaction type (upload, download, screenshot
 - **A plugin frame is narrower than the layout viewport, and the difference is not a constant.** The host chrome around the frame takes width, so a frame inside a 1440px viewport is not 1440px wide. Measured 2026-08-23: **−40px from 720 up to 1440, and −55px at 390** — so a value derived by subtracting a fixed number from the viewport is wrong at one end or the other. Never compute the frame width from the viewport. Read it from inside the frame (`window.innerWidth` in frame context, or the frame element's own `getBoundingClientRect().width`) before asserting anything about a breakpoint, or a reflow check lands on the wrong side of one.
 - Playwriter execute snippets do not automatically provide Playwright Test's `expect`. Use manual polling or import only the small assertion utility you need.
 - The CLI's cwd is not always the repo root even without `--filter`: after any earlier `pnpm --filter <pkg> exec` in the same shell it can be `packages/app`, and `-f .agents/skills/...` then fails with `File not found: packages\app\.agents\...`. Pass the harness script as an absolute path instead of a repo-relative one.
-- Assigning `state.page = await context.newPage()` does **not** move the harness. `getHarnessPage()` prefers `state.appPlaywriterHarness.page`, pinned when the harness was installed, so `observe()` and `auditAccessibility()` keep reporting the **old** tab while every raw `snapshot({ page: state.page })` shows the new one — the two disagree in silence and the run looks merely confusing rather than wrong. Harness 0.6.1 logs `[harness] state.page … is not the bound tab` when they differ and skips closed tabs. Call `bindOpenTab(...)` (it sets both) or assign `state.appPlaywriterHarness.page` yourself. The pin also survives across sessions on the same relay: on 2026-08-18 it still pointed at another app (`http://127.0.0.1:7373/#/grid`) from an earlier run, and `auditAccessibility` did not report the wrong tab — it just timed out. Read `state.appPlaywriterHarness.page.url()` before debugging a harness call that hangs.
+- Assigning `state.page = await context.newPage()` does **not** move the harness. `getHarnessPage()` prefers `state.appPlaywriterHarness.page`, pinned when the harness was installed, so `observe()` and `auditAccessibility()` keep reporting the **old** tab while every raw `snapshot({ page: state.page })` shows the new one — the two disagree in silence and the run looks merely confusing rather than wrong. Harness 0.6.1 logs `[harness] state.page … is not the bound tab` when they differ and skips closed tabs. Call `bindOpenTab(...)` (it sets both) or assign `state.appPlaywriterHarness.page` yourself. The pin also survives across sessions on the same relay: on 2026-08-18 it still pointed at another app (`http://127.0.0.1:7373/#/grid`) from an earlier run, and `auditAccessibility` did not report the wrong tab — it just timed out. Read `state.appPlaywriterHarness.page.url()` before debugging a harness call that hangs. `auditAccessibility` takes a `frame` argument and uses it instead of the pinned tab, so `auditAccessibility({ selector, frame: state.page })` is the one-line fix when your runner navigated `state.page` itself (verified 2026-09-15: the pin was still on `/chat` while `state.page` held `/files?view=diff_editor`, and the audit timed out on a selector that was plainly on screen).
 - **The Playwriter default `page` global is not the bound tab.** After `bindOpenTab`, `state.page` and `state.appPlaywriterHarness.page` point at Council, but a runner that uses the injected `page` still drives the session's first tab. Verified 2026-08-26: that first tab was another local app, so `page.frameLocator(".PluginsUiFrame")` found 0 meetings, `Get host room link` timed out, and a card dump looked like the Council list had vanished. Use `state.appPlaywriterHarness.page` (or `state.page` after a proven bind) in every Council click and read. Print only whether the URL contains `/plugins/council/`, never the full URL if it can carry ids.
 - **The human can also CLOSE the bound tab while you run**, and that failure does not look like a closed tab. The call prints `[WARNING] Page closed (url: …) for state.page`, then `page.evaluate: Target page, context or browser has been closed`, and ends with the same libuv `Assertion failed: !(handle->flags & UV_HANDLE_CLOSING)` (exit 9) as the out-of-CWD `fs` read below. The relay is fine and `state` survives. Do not run relay recovery or `session reset`: print `context.pages().map((p) => p.url())`, then either open your own tab (`context.newPage()`, set both `state.page` and `state.appPlaywriterHarness.page`) or re-`bindOpenTab(...)`. Verified 2026-08-13.
 - **The human can drive the bound tab while you run.** It is their browser: a tab bound to `/files` can be on `/chat` by the next call, and every probe then reports the new route's DOM as if the old one had broken (0 treeitems, `controlCount: 0`). Print `state.page.url()` alongside any surprising empty result before debugging the app. For anything long or blocking, work in a tab the run owns — `context.newPage()`, set **both** `state.page` and `state.appPlaywriterHarness.page`, then close only that tab at the end and reassign both back.
 - **Playwriter injects its own toolbar over the app header's top-right corner, and it blocks clicks there.** `<div data-playwriter-toolbar="1">` is appended to `<html>` (not `<body>`, so a `document.body.children` dump never shows it) at `position: fixed; top: 12px; right: 12px; z-index: 2147483647`, covering roughly a 65×32 box. Despite its inline `pointer-events: none`, both `document.elementFromPoint` and Playwright's actionability check return it, so `locator.click()` on a header icon button fails with `<div data-playwriter-toolbar="1"></div> intercepts pointer events`, and `auditAccessibility` lists those buttons under `blockedHitTargets` with a class-less `div` as `topAtCenter`. On `/files` that is `Search file contents (Ctrl+Shift+F)` and `Notifications`. It is a Playwriter artifact — a real user without the extension attached is unaffected — so do not report it as an app bug and do not chase the app's z-index. Activate the button with `locator.focus()` + `keyboard.press("Enter")` instead (verified 2026-08-11: the search palette opened, `Escape` closed it). Tell it apart from a stuck Ariakit tooltip portal (also a bare `div` on `<body>`) by reading the element's attributes rather than its class. The toolbar also takes **keyboard** focus: it is a shadow host with focusable children, and because it sits on `<html>` Ariakit's modal `inert` marking never covers it, so a focus-trap Tab walk on any open MyModal dialog records two out-of-dialog stops on `[data-playwriter-toolbar]` (then one transient `BODY` stop) before wrapping back into the dialog. That reads exactly like a trap leak and is the harness, not the app — check `activeElement.closest("[data-playwriter-toolbar]")` before reporting one (verified 2026-08-25 on the plugin update-consent dialog).
+- **On `/files`, `auditAccessibility` lists most of the sidebar tree as `blockedHitTargets`, and almost none of it is a bug.** A body-wide audit of that route reported 341 controls with **zero** unlabeled, but around thirty entries under `blockedHitTargets`: `Expand folder <name>`, `Add file to <name>`, `Add folder to <name>` and `More actions for <name>`, repeated for every folder. Their `topAtCenter` is `FilesSidebarTopSection` or `MyInputArea FilesSearchInput-area`. Those two are the sidebar's sticky top bar and its search box, and the listed rows are simply scrolled up underneath them. The audit hit-tests an element's geometric centre wherever it currently sits, so any row above the visible area of a scrolling list reports as covered. Scroll the row into view first (`computer scroll_to`, or the `.FilesSidebar-content.app-scrollable` container) and re-audit before believing a single one of them, and do not report them as app defects. The same route also reports three `smallTargets`: the two 8px splitters (`Resize files sidebar`, `Resize comments and agent sidebar`) and `Open TanStack Router Devtools`, which ships only in dev. Verified 2026-09-14.
 - `auditAccessibility({ selector })` resolves with `document.querySelector`, so it audits exactly **one** element. A comma-separated list like `"main, aside, [role=tree]"` silently audits only the first match and reports a small `controlCount` that looks like a clean route. It also returns `controlCount: 0` with all-empty finding lists when it runs against a blank/reloading tab, which reads identically to "no problems found". Use the default `"body"`, and sanity-check `controlCount` against `document.querySelectorAll("button").length` before believing a clean result.
 - `latestLogs()` without a prior `bindOpenTab(...)` reads whatever tab the harness defaulted to, which may be a completely different app. Symptom: logs full of third-party SDK noise (Intercom, FullStory, Churnkey) that the app under test does not use. Always `bindOpenTab({ urlIncludes: 'localhost:5173' })` before trusting a log read, and note that passing `{ page: state.page }` alone does not fix it.
 - `latestLogs()` returns an array of **preformatted strings** (`"[error] Sending form data..."`), not `{ type, text }` objects. A filter that reads `l.type` / `l.text` sees empty fields and reports zero matches, which looks like the log never happened. Match with a regex over the whole string. Verified 2026-08-16.
@@ -499,6 +502,7 @@ Two caveats: only rendered lines exist in the DOM (fine for short fixtures, wron
 - `context.grantPermissions([...], { origin })` fails in extension mode with `No tab found for method Browser.grantPermissions`, but `navigator.clipboard.writeText` from `page.evaluate` still succeeds. In a headless direct-CDP session `grantPermissions` works, and `clipboard.readText` needs it.
 - Monaco applies an app-driven `executeEdits` write slightly after the call returns, so a pane read in the same execute call can still show the old text. Assert the new text in the next observe step instead of treating the first read as a failure.
 - `auditAccessibility` always flags Monaco's own input host. `div.native-edit-context` (role `textbox`) is reported as a small target (measured 436x19 for a 220px-tall editor) and as covered by the `.view-line` above it. Both are Monaco internals, not app bugs: the real hit target is the editor box around them. Discount them the same way as `.MyCheckboxButton-control`, and read `controlCount` to check the audit found the panel at all (verified 2026-08-18 on the Properties modal's Metadata section: controlCount 2, no unlabeled controls).
+- `auditAccessibility` does not reach Monaco **content widgets** or a **portalled toolbar**, so it under-reports any Monaco route. On the diff review route it returned `controlCount: 1` for `.FileEditor` while the page really held four hunk buttons plus four toolbar buttons: the hunk widgets live in Monaco's overlay layer and `FileEditorDiffToolbarActions` is rendered with `createPortal` into `#app_hoisting_container`. A low `controlCount` there is the audit's blind spot, not a clean route — read the buttons directly (`button[aria-label="Accept change"]`, `[aria-label="Diff editor actions"] button`) and check each one's box and `tabIndex` yourself. Verified 2026-09-15: all four hunk buttons are 24×24 with `tabIndex 0` and real names.
 - **Monaco traps Tab by default, which is a keyboard trap in any small embedded editor.** A user who tabs into the editor can never tab out to the Save button. The fix is `tabFocusMode: true` in the editor options (the Properties modal's Metadata editor sets it; verified 2026-08-18). Include a Tab-out check whenever a route embeds Monaco next to other controls. The plugin configuration YAML editor still has this trap.
 
 ## Diff editor
@@ -2039,3 +2043,253 @@ If `page.close()` hangs, a CDP target close can still work. Get the target id fr
 ## Streamdown link prompts can log HTML nesting warnings
 
 Opening a link in an assistant Markdown paragraph can log `<div>` and `<p>` inside `<p>` warnings with the installed Streamdown 2.5.0 build. Its default prompt still opens, shows the destination, and closes. This was observed on 2026-09-12 without replacing the library's link or paragraph renderer. Check the installed package when tracing this warning; the reference checkout can contain newer fixes. Keep link checks enabled during style work.
+
+## The Files sidebar search suggestions popover covers the tree and steals every click
+
+Typing into `#app_files_sidebar_search input` opens an Ariakit suggestions popover on top of the
+tree. A later click on a `[role="treeitem"]` then fails actionability with
+`<div class="MyComboboxItem FilesSearchInput-suggestion ..."> intercepts pointer events`. The
+popover does not close on its own while the input keeps focus.
+
+Press `Escape` once after typing. That closes the popover and keeps both the typed text and the
+search chips, so the filtered tree stays as you set it:
+
+```js
+await input.fill("file.path:/my-fixture");
+await page.waitForTimeout(2500);
+await page.keyboard.press("Escape");
+await page.waitForTimeout(600);
+```
+
+Do not use a forced click instead. The popover is a real overlay, and a real user hits it too.
+
+## The Playwriter toolbar covers the top of the page, so header buttons are unclickable
+
+The relay injects `<div data-playwriter-toolbar="1">` over the top strip of the page. Clicking a
+button that sits under it fails with `<div data-playwriter-toolbar="1"> intercepts pointer events`.
+This hits the app header: the notifications bell, the organization switcher, and the route tabs.
+
+Focus the control and press Enter instead of clicking it:
+
+```js
+const bell = page.getByRole("button", { name: "Notifications" }).first();
+await bell.focus();
+await page.keyboard.press("Enter");
+```
+
+This is a harness artifact, not an app bug. Do not report it as one, and do not scroll the page to
+move the button out from under the toolbar: the header is sticky, so it does not move.
+
+## `files_visible:list` returns `_yay.items`, not `page`
+
+The door answers with the `Result` shape, so a paginated readback is at `body._yay.items` with
+`body._yay.continueCursor` and `body._yay.isDone`. Reading `body.page` silently yields `[]`, which
+looks exactly like an empty folder and will make you believe a transfer wrote nothing:
+
+```js
+const body = response.body?.value ?? response.body;
+const items = body?._yay?.items ?? [];
+```
+
+Check `isDone` before concluding a folder is complete. The page size is clamped server-side to 50, so `numItems: 100` still returns 50 items with a `continueCursor` — a 60-child folder reads back as 50 and looks like 10 lost nodes. Page until `isDone`.
+
+## Transfer conflict choices are `fieldset` / `legend`, so `getByRole("radiogroup")` finds nothing
+
+Each conflicting item in `.FilesTransferRunModal`, and each "Apply to remaining ..." block, is a
+`<fieldset>` with a `<legend>`. That maps to role `group`, not `radiogroup`, so a
+`getByRole("radiogroup", { name: /folder name conflicts/i })` lookup times out. Filter the fieldset
+by its legend text and click the option's `<label>`:
+
+```js
+const set = modal.locator("fieldset").filter({ hasText: "Apply to remaining folder name conflicts" }).first();
+await set.locator("label").filter({ hasText: /^Keep both$/ }).first().click();
+```
+
+The per-item fieldsets use the source path as their legend, so
+`filter({ hasText: "/a/report" })` selects one item's choices.
+
+## `auditAccessibility` `smallTargets` measures the `<input>`, not the label you actually click
+
+A radio or checkbox wrapped in its own `<label>` is reported as an 18x18 small target, because the
+audit measures the control element. The pointer target is the whole label. The transfer modal's
+`label.FilesTransferRunModal-choice` measures 99x36, well over the 24px floor, so every one of those
+reports was a false positive (checked 2026-09-14).
+
+Measure the wrapping label before reporting a target-size gap:
+
+```js
+await page.locator("label.SomeChoice").evaluateAll((els) =>
+	els.map((e) => { const r = e.getBoundingClientRect(); return { w: Math.round(r.width), h: Math.round(r.height) }; }),
+);
+```
+
+The same wrapping label is also what gives those inputs their accessible name. Do not report
+"radios have no accessible name" from a DOM attribute scan: an implicit label carries no `for` and
+no `aria-label`, and the browser's own tree shows the name anyway. `Accessibility.queryAXTree` on
+the transfer modal returned `radio "Keep both"`, `radio "Merge"`, `radio "Skip"` and named each
+`fieldset` after its `<legend>`.
+
+## A Sonner toast is gone before a normal `waitForTimeout`, so a refusal reads as silent
+
+Error toasts here expire in about four seconds. A runner that clicks, waits 7 seconds and then reads
+`[data-sonner-toast]` finds nothing — and the refusal looks like a silent failure with no modal, no
+toast and no console log. That is a false report waiting to happen.
+
+Read the toast within about two seconds, and sample more than once:
+
+```js
+await button.click();
+const shots = [];
+for (const wait of [400, 700, 1200, 2000]) {
+	await page.waitForTimeout(wait);
+	shots.push(((await page.locator("[data-sonner-toast]").allTextContents().catch(() => [])) || []).join(" | "));
+}
+```
+
+Confirm against the door itself before calling any refusal silent: call the same mutation from page
+context and compare `_nay.message` with what the toast showed.
+
+## The Files clipboard toolbar is rendered twice, and one copy is hidden
+
+`[class*=FilesClipboard] button[aria-label="Paste files"]` matches two elements. Clicking the first
+match can hit the hidden copy and nothing happens. Loop to the first visible one:
+
+```js
+const buttons = page.locator('[class*=FilesClipboard] button[aria-label="Paste files"]');
+for (let i = 0; i < (await buttons.count()); i += 1) {
+	if (await buttons.nth(i).isVisible()) { await buttons.nth(i).click(); break; }
+}
+```
+
+The toolbar's buttons are icon-only. Their names are `Paste files` and `Clear file clipboard`, and
+the destination is in a separate `sr-only` span ("Paste into report.") wired through
+`aria-describedby`, so a text selector finds the description, not the button. A `getByRole("button",
+{ name: /Paste/i })` can match that description text instead of the control.
+
+## The Files sidebar tree is virtualized and keeps its scroll offset across a filter change
+
+Only about 30 `[role="treeitem"]` rows exist in the DOM at once. Two failures follow from this:
+
+1. After you change the search filter, the tree keeps the previous scroll position. The new first
+   rows are unmounted, so `rowFor(id).scrollIntoViewIfNeeded()` waits 60 seconds on an element that
+   does not exist and the run dies on the CLI timeout. Reset the scroll after every filter change:
+   The scroll container is `.FilesSidebar-content.app-scrollable`, NOT `[role="tree"]` — resetting the
+   tree element's own `scrollTop` is a silent no-op:
+   `await page.locator('.FilesSidebar-content').first().evaluate((el) => { el.scrollTop = 0; });`
+2. A folder with many children pushes its own siblings out of the rendered window. Filtering on
+   `file.path:/run/big` matched 61 nodes (the folder plus 60 children) and never rendered the
+   sibling `big-dst` at all — `file.path:/run/big` does not prefix-match `big-dst` either. Give the
+   destination its own filter, or pick a destination that is not buried under a large folder.
+
+Do not try to fix this with `page.goto("...?nodeId=<id>")`. The file clipboard is React state: a
+full reload clears it, and the Paste button then renders **disabled**, which reads like a
+permission problem instead of an empty clipboard.
+
+## An answered transfer conflict keeps its `fieldset` and legend, so filtering by legend hangs
+
+`.FilesTransferRunModal` renders one `<fieldset>` per item and keeps it after the item is answered.
+An answered one holds only `<p>Skipped</p>`; a waiting one holds the question and the choice labels.
+Several items can share a legend — every vanished source is legended "Unavailable item", not its
+path, because the path is gone.
+
+So `filter({ hasText: "Unavailable item" }).first()` usually selects an item that has already been
+answered, and the follow-up `label` click waits out the full timeout on an element that does not
+exist. Filter on the question text instead:
+
+```js
+const asking = modal.locator("fieldset").filter({ hasText: "Skip it or stop." }).first();
+await asking.locator("label").filter({ hasText: /^Skip$/ }).first().click();
+```
+
+A run blocks on one item at a time, so answering is a loop: choose, Continue, wait, look again.
+
+## Closing the last enabled tab disconnects the whole extension browser
+
+The documented recovery for a wedged tab — `Target.closeTarget` on the owned page — has a trap. In
+extension mode only tabs where a person clicked the Playwriter icon are drivable. Close the last one
+and the browser disappears from `playwriter browser list` entirely, `context.newPage()` fails with
+"The Playwriter Chrome extension is not connected", and **no agent can get it back**: re-enabling
+needs a human click on the extension icon. That ends browser QA for the session.
+
+Before closing a tab, check `context.pages().length`. If it is 1, do not close it. Try in this
+order instead:
+
+1. `page.goto(<known good route>, { timeout: 60000 })` — the default `goto` timeout is 10s, and a
+   slow route reads as a wedge.
+2. `page.reload()`.
+3. Ask the user to open a second tab and enable Playwriter on it, then close the stuck one.
+
+The wedge that triggered this: pressing `New Chat` on the full-page `/chat` route left an optimistic
+`?threadId=ai_thread-...` in the URL, and after that `Page.navigate` failed with
+`Extension request timeout after 30000ms: forwardCDPCommand`. See the optimistic-tab entry above —
+prefer the sidebar chat, or send into the thread the route already opened.
+
+## The agent chat has a per-reply tool budget
+
+A Bash-heavy message can stop part way with, in the terminal card,
+"Tool budget reached. This call was not run. Finish this reply and continue in a new message." The
+commands after that point never run, and their cards still render with the command text, so a
+runner that reads the terminals gets plausible-looking output for commands that never executed.
+
+Check each terminal body for that sentence before recording a result. Keep a QA message to a few
+Bash calls, and start a fresh chat when a thread has already spent its budget.
+
+## Most `[role="dialog"]` nodes on `/files` are mounted but closed
+
+The route keeps many `MyModalPopover` elements in the DOM all the time. On a `/files` page with a
+file open we counted a dozen, including `FilesShareModal`, `FilesPropertiesModal`,
+`FileNodeViewFolderCreateNodeModal`, the organization-switcher modals, and
+`FilesPendingReviewModal`. So `document.querySelector('[role="dialog"]')` almost never returns the
+dialog you just opened. It returns whichever one happens to come first in the DOM, and its
+`innerText` reads like a real open dialog.
+
+Two things follow. Pick the dialog by its own class, not by role, for example
+`.FilesPendingReviewModal`. Then check `data-open="true"` on it, because the element exists even
+while the dialog is closed.
+
+```js
+const modal = document.querySelector(".FilesPendingReviewModal[data-open='true']");
+```
+
+The same mistake in reverse also bites. If a real modal is open and you did not notice, every later
+click fails with `<div class="MyModalBackdrop"> ... intercepts pointer events`. The organization
+switcher is the easy one to open by accident. Press `Escape` at the start of a runner that is about
+to click, and confirm nothing is open with
+`document.querySelector(".MyModalBackdrop[data-open='true'])`.
+
+A review run opens one of these by itself. Every Accept or Discard in the pending sidebar ends with
+a result dialog, and a run that could not finish leaves it up. So the Escape loop belongs at the
+**start** of the next runner, not only at the end of the one that clicked — a runner that only
+escapes afterwards still dies on its own first click 60 s later. Verified 2026-09-15: a refused
+single Accept left the dialog open and the following `Accept all shown pending changes` click timed
+out on the backdrop.
+
+## The file editor sidebar has two nested tablists
+
+`getByRole("tab", { name: ... })` is ambiguous on `/files`. The right sidebar has a panel tablist
+(`.FileEditorSidebar-tabs-list`, holding Comments / Agent / Pending changes) and, inside the Agent
+panel, a second tablist of chat threads (`.FileEditorSidebarAgentHeaderTabs`), where every thread is
+a tab named after its first message. A thread whose title happens to contain "Agent" or "Pending"
+will win the match.
+
+Always scope to the panel list:
+
+```js
+await page.locator('.FileEditorSidebar-tabs-list [role="tab"]', { hasText: "Agent" }).first().click();
+```
+
+Switching the panel to Pending changes unmounts the chat composer. A later `state.qa.send(...)` then
+fails with `waitForSelector: .AiChatComposer-editor-content` resolving to a hidden element, because
+the panel that holds it has `hidden` and `display: none`. Click the Agent tab first and wait for the
+composer to be visible before sending.
+
+## An agent Bash write is not visible the moment `state.qa.send` returns
+
+`state.qa.send` resolves when the reply is done, but an agent `cp`, `mv`, or `rm` finishes by
+starting a transfer run, and that run writes the pending update a little later. A readback of
+`files_pending_updates:list_files_pending_updates` in the same runner comes back empty, which looks
+exactly like "the agent did nothing".
+
+The reply text says which one happened. A real transfer prints
+`Transfer <id>: 1 ready for review, 0 skipped, 0 failed.` Read the reply with `state.qa.dump()`
+first, and poll the pending list instead of reading it once.

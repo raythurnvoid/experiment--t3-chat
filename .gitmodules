@@ -187,3 +187,7 @@
 [submodule "references-submodules/action-cache"]
 	path = references-submodules/action-cache
 	url = https://github.com/get-convex/action-cache.git
+[submodule "packages/app/vendor/just-bash"]
+	path = packages/app/vendor/just-bash
+	url = https://github.com/raythurnvoid/just-bash.git
+	branch = rt0-updates

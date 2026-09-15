@@ -14,6 +14,7 @@ import { FilesSidebar } from "./files-sidebar.tsx";
 import { FilesClipboardProvider } from "./files-clipboard.tsx";
 import { files_ROOT_ID, files_SYNTHETIC_ROOT_FOLDER, type files_VisibleTreeNode } from "@/lib/files.ts";
 import type { app_convex_Id } from "@/lib/app-convex-client.ts";
+import { AppActivitiesProvider } from "@/lib/app-activities-context.tsx";
 
 const { treeState, tenantState, createNode } = vi.hoisted(() => ({
 	treeState: { nodes: [] as files_VisibleTreeNode[], listeners: new Set<() => void>() },
@@ -103,23 +104,44 @@ describe("FilesSidebar", () => {
 		const handleAction = () => {};
 		return (
 			<RouterContextProvider router={props.router}>
-				<FilesClipboardProvider
+				<AppActivitiesProvider
 					key={tenantState.membershipId}
 					membershipId={tenantState.membershipId as app_convex_Id<"organizations_workspaces_users">}
 				>
-					<FilesSidebar
-						selectedNodeId={props.selectedNodeId}
-						view="rich_text_editor"
-						initialSearchQuery=""
-						onClose={handleAction}
-						onArchive={handleAction}
-						onPrimaryAction={handleAction}
-						onSearchQueryChange={handleAction}
-					/>
-				</FilesClipboardProvider>
+					<FilesClipboardProvider
+						key={tenantState.membershipId}
+						membershipId={tenantState.membershipId as app_convex_Id<"organizations_workspaces_users">}
+					>
+						<FilesSidebar
+							selectedNodeId={props.selectedNodeId}
+							view="rich_text_editor"
+							initialSearchQuery=""
+							onClose={handleAction}
+							onArchive={handleAction}
+							onPrimaryAction={handleAction}
+							onSearchQueryChange={handleAction}
+						/>
+					</FilesClipboardProvider>
+				</AppActivitiesProvider>
 			</RouterContextProvider>
 		);
 	}
+
+	test("opens a private path outside the saved tree through the path route", async () => {
+		const router = createRouter({ routeTree: createRootRoute(), history: createMemoryHistory() });
+		const navigate = vi.spyOn(router, "navigate").mockResolvedValue(undefined);
+		const view = render(<CreateSidebar router={router} selectedNodeId="alpha" />);
+		await view.findByRole("treeitem", { name: "alpha" });
+		const input = view.getByRole("combobox");
+		fireEvent.change(input, { target: { value: "/private/Brand New.md" } });
+		fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
+		expect(navigate).toHaveBeenCalledWith(
+			expect.objectContaining({
+				to: "/w/$organizationName/$workspaceName/files/$",
+				params: { organizationName: "organization", workspaceName: "workspace", _splat: "/private/Brand New.md" },
+			}),
+		);
+	});
 
 	test("copies the tree selection and keeps its source IDs after navigation", async () => {
 		const router = createRouter({ routeTree: createRootRoute(), history: createMemoryHistory() });
@@ -427,20 +449,25 @@ describe("FilesSidebar", () => {
 				const [searchQuery, setSearchQuery] = useState("");
 				return (
 					<RouterContextProvider router={router}>
-						<FilesClipboardProvider
+						<AppActivitiesProvider
 							key={tenantState.membershipId}
 							membershipId={tenantState.membershipId as app_convex_Id<"organizations_workspaces_users">}
 						>
-							<FilesSidebar
-								selectedNodeId={props.selectedNodeId}
-								view="rich_text_editor"
-								initialSearchQuery={searchQuery}
-								onClose={handleAction}
-								onArchive={handleAction}
-								onPrimaryAction={handleAction}
-								onSearchQueryChange={setSearchQuery}
-							/>
-						</FilesClipboardProvider>
+							<FilesClipboardProvider
+								key={tenantState.membershipId}
+								membershipId={tenantState.membershipId as app_convex_Id<"organizations_workspaces_users">}
+							>
+								<FilesSidebar
+									selectedNodeId={props.selectedNodeId}
+									view="rich_text_editor"
+									initialSearchQuery={searchQuery}
+									onClose={handleAction}
+									onArchive={handleAction}
+									onPrimaryAction={handleAction}
+									onSearchQueryChange={setSearchQuery}
+								/>
+							</FilesClipboardProvider>
+						</AppActivitiesProvider>
 					</RouterContextProvider>
 				);
 			}

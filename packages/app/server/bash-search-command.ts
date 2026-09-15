@@ -1,9 +1,8 @@
 import { defineCommand, type Command } from "just-bash/browser";
 import { internal } from "../convex/_generated/api.js";
 import type { ActionCtx } from "../convex/_generated/server.js";
-import type { files_nodes_get_by_path_Result, files_nodes_text_search_files_Result } from "../convex/files_nodes.ts";
+import type { files_nodes_text_search_files_Result } from "../convex/files_nodes.ts";
 import { Result } from "common/errors-as-values-utils.ts";
-import type { files_PendingPathOverlay } from "../shared/files.ts";
 import { files_chunk_BITMASK_FLAGS, files_chunk_has_bitmask_flag } from "./files-markdown-chunking-mastra.ts";
 import {
 	bash_clamp_listing_page_limit,
@@ -12,9 +11,6 @@ import {
 	bash_is_path_under_current_workspace_path,
 	bash_is_path_under_read_only_mounts,
 	bash_normalize_path,
-	bash_overlay_committed_scope_path,
-	bash_overlay_content_search_injections,
-	bash_overlay_project_scoped_path,
 	bash_parse_limit,
 	bash_external_mounts_fan_out_db_files_path,
 	bash_external_mounts_fan_out_paginate,
@@ -228,13 +224,7 @@ export function bash_search_command_create(ctx: ActionCtx, dbFilesRoots: bash_Db
 
 		// `search --path` is an exact folder scope, not a prefix scan.
 		if (parsed._yay.pathShell != null && scope.dbFilesPath != null && scope.dbFilesPath !== "/") {
-			const scopedFolder = (await ctx.runQuery(internal.files_nodes.get_by_path, {
-				organizationId: scope.ctxData.organizationId,
-				workspaceId: scope.ctxData.workspaceId,
-				visibilityUserId: scope.ctxData.userId,
-				path: scope.dbFilesPath,
-				overlayUserId: scope.fs.overlayUserId,
-			})) as files_nodes_get_by_path_Result;
+			const scopedFolder = await scope.fs.getEntry(scope.dbFilesPath);
 			const scopedShellPath = scope.renderShellPath(scope.dbFilesPath);
 			if (!scopedFolder) {
 				return {
@@ -259,7 +249,7 @@ export function bash_search_command_create(ctx: ActionCtx, dbFilesRoots: bash_Db
 		const scopePath = scope.kind === "plugins_root" || scope.kind === "external_mounts_root" ? "/" : path;
 
 		let res: files_nodes_text_search_files_Result;
-		let overlay: files_PendingPathOverlay | null = null;
+
 		if (scope.kind === "external_mounts_root") {
 			// One text search per synced mount, each scoped to its commit-keyed tree.
 			const fanOut = await bash_external_mounts_fan_out_paginate({
@@ -290,6 +280,7 @@ export function bash_search_command_create(ctx: ActionCtx, dbFilesRoots: bash_Db
 					};
 				},
 			});
+
 			if (fanOut._nay) {
 				return {
 					stdout: "",
@@ -297,6 +288,7 @@ export function bash_search_command_create(ctx: ActionCtx, dbFilesRoots: bash_Db
 					exitCode: bash_COMMAND_EXIT_FAILURE,
 				};
 			}
+
 			res = {
 				items: fanOut._yay.items,
 				continueCursor: fanOut._yay.continueCursor ?? "",
@@ -332,6 +324,7 @@ export function bash_search_command_create(ctx: ActionCtx, dbFilesRoots: bash_Db
 					};
 				},
 			});
+
 			if (fanOut._nay) {
 				return {
 					stdout: "",
@@ -339,17 +332,13 @@ export function bash_search_command_create(ctx: ActionCtx, dbFilesRoots: bash_Db
 					exitCode: bash_COMMAND_EXIT_FAILURE,
 				};
 			}
+
 			res = {
 				items: fanOut._yay.items,
 				continueCursor: fanOut._yay.continueCursor ?? "",
 				isDone: fanOut._yay.isDone,
 			};
 		} else {
-			// The proposer's pending moves translate the scope and project the results: chunks
-			// keep committed paths until accept, so a moved-in scope must query its committed source path.
-			overlay = await scope.fs.getOverlay();
-			const committedPathPrefix =
-				overlay == null || path == null ? path : bash_overlay_committed_scope_path(overlay, path);
 			res = (await ctx.runQuery(internal.files_nodes.text_search_files, {
 				organizationId: scope.ctxData.organizationId,
 				workspaceId: scope.ctxData.workspaceId,
@@ -360,43 +349,13 @@ export function bash_search_command_create(ctx: ActionCtx, dbFilesRoots: bash_Db
 				query: parsed._yay.query,
 				numItems: bash_clamp_listing_page_limit(parsed._yay.limit),
 				cursor,
-				pathPrefix: committedPathPrefix,
+				pathPrefix: path,
 			})) as files_nodes_text_search_files_Result;
 		}
 
-		// Project result paths into the proposer's visible tree; hidden results and results
-		// projected outside the scope drop from the page.
-		const activeOverlay = overlay;
-		const visibleItems =
-			activeOverlay == null
-				? res.items
-				: res.items.flatMap((item) => {
-						const visiblePath = bash_overlay_project_scoped_path({
-							overlay: activeOverlay,
-							committedPath: item.path,
-							visibleScopePath: path ?? null,
-						});
-						return visiblePath == null ? [] : [{ ...item, path: visiblePath }];
-					});
-
-		// An ancestor scope of a move's visible destination misses that move's committed
-		// chunks (they sit outside the scoped prefix); inject them on the first page.
-		const injectedItems =
-			activeOverlay == null || path == null || cursor != null
-				? []
-				: await bash_overlay_content_search_injections({
-						ctx,
-						ctxData: scope.ctxData,
-						overlay: activeOverlay,
-						visibleScopePath: path,
-						committedScopePath: bash_overlay_committed_scope_path(activeOverlay, path),
-						query: parsed._yay.query,
-						numItems: bash_clamp_listing_page_limit(parsed._yay.limit),
-					});
-
 		const exactQueryFilter = bash_search_command_exact_query_filter(parsed._yay.query);
 		const searchResult = {
-			items: [...visibleItems, ...injectedItems].map((item) => ({
+			items: res.items.map((item) => ({
 				...item,
 				path: scope.renderShellPath(item.path),
 			})),
@@ -417,8 +376,7 @@ export function bash_search_command_create(ctx: ActionCtx, dbFilesRoots: bash_Db
 			`use meta search (e.g. exists/eq) over frontmatter.* or metadata.* to find files by a field or value. ` +
 			`Retry with shorter distinctive content terms if needed.`;
 
-		// Built outside the results branch: a page whose hits were all projected away by the
-		// pending path overlay must still print its continuation, or the search dead-ends.
+		// An empty filtered page still needs its continuation.
 		const continuationBlocks: string[] = [];
 		if (!res.isDone) {
 			// Print a complete command before long result snippets so an agent asked to

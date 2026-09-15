@@ -21,6 +21,7 @@ Load each companion skill that owns the affected boundary:
 - Organization/workspace deletion is also split: UI-facing mutations remove structure/access immediately where needed, then the data deletion worker purges heavy tenant content in batches.
 - Admin data reset is not account deletion. It preserves the account and default tenant while deleting reset-owned content.
 - Large deletes must remain retryable, bounded, and idempotent. Keep limited indexed reads and leave queue docs in place while work remains.
+- Private storage counters survive deletion while held resources still await cleanup. `quotas_db_delete` marks them retired; cleanup indexes skip those counters. Final resource settlement releases by quota ID and deletes the last retired counter. R2 outages must neither erase accounting nor block account or tenant deletion. See the quotas spec for recovery and zero-byte holds.
 - Tenant, workspace, and account purge are named file-policy exceptions. These flows delete the whole
   lifecycle scope, so they do not call normal writable guards. They delete protected subtrees like other
   content. See [files-read-only](../files-read-only/SKILL.md).
@@ -47,6 +48,7 @@ Load each companion skill that owns the affected boundary:
 - `data_deletion_db_request`: creates or reuses exactly one queue doc for the requested user, organization, or workspace scope.
 - `db_prepare_user_for_deletion`: phase 1 for a user. It tombstones the user, deactivates memberships, and removes presence.
 - `db_drain_user_transfer_runs_batch`: stops and removes one user-owned Paste run in bounded calls before deleting memberships. Completed files stay in retained workspaces.
+- `db_drain_user_pending_review_runs_batch`: fences one review run before deleting its prepared content and at most eight item rows per pass. Units, Activity viewer state, Activity, and the run follow. Completed saves stay in retained workspaces. Both user deletion paths drain reviews before memberships and proposals.
 - `db_drain_user_plugin_ui_sessions_batch`: deletes one bounded batch of a user's `plugins_ui_sessions` docs via `by_user`. Both user-deletion paths drain these to zero before `db_finalize_deleted_user`, which therefore never reads them.
 - `db_drain_user_plugin_publisher_docs_batch`: drains one bounded user-owned publisher phase in child-first order: repository secrets, repository docs, then version reviews. It deletes an unreferenced review. If a global plugin version or another publisher's `lastPublishAttempt` still points at the review, it keeps the immutable decision and clears `createdBy` instead. Replacing that attempt, deleting its repository, or cleaning a failed source snapshot then deletes the anonymized review only after the last version and publish-attempt link is gone. Fresh review persistence, version preparation, and ready finalization recheck the user tombstone and exact repository ownership in their write transactions. A provider call, cached review, or upload that finishes after this drain cannot recreate or expose publisher data. Both user-deletion paths repeat this phase until the deleted user's index is empty before `db_finalize_deleted_user`.
 - `db_drain_user_notifications_batch`: deletes one bounded batch of notifications where the deleted user is the recipient, via `by_user`. Both user-deletion paths drain these to zero before `db_finalize_deleted_user`. The per-user cap sweep in `notifications.cleanup_extra_notifications` walks the `users` table, so without this drain a purged user record would leave its notifications unreachable forever. Notifications that only name the deleted user as `actorUserId` stay in the recipient's inbox with the deleted user's name (product decision 2026-08-09: keep the name, do not anonymize).
@@ -56,7 +58,7 @@ Load each companion skill that owns the affected boundary:
 - `db_drain_user_finalization_batch`: deletes the first non-empty indexed user family in a fixed order. Membership decisions happen while the bounded membership batch still holds its organization ids. Pending-update children stay before parents, and Yjs pages stay before state parents.
 - `db_finalize_deleted_user`: the small final phase-2 transaction. Growing user families are already empty. It deletes the one-row anonymous-token and billing-snapshot records when requested. Retained tombstone modes clear tenant pointers and the recovery fence; auth pointers are cleared only with `deleteUserAuth`. Full user-record purge deletes the anagraphic and user in this same transaction.
 - `db_purge_organization_workspace_content_batch`: deletes tenant content for one `(organizationId, workspaceId)` in bounded batches, then deletes the workspace-level public and service upload budget docs after every target, asset, and file is gone.
-- `db_delete_workspace_structure_batch`: deletes workspace notifications, memberships, every workspace-scoped quota doc, access-control docs, and then the workspace doc after content is gone.
+- `db_delete_workspace_structure_batch`: deletes workspace notifications, memberships, scoped quota docs, access-control docs, and then the workspace doc after content is gone. Private quota docs with live cleanup holds are retired instead of deleted.
 - `db_delete_workspace_batch`: full workspace deletion used by organization deletion and admin reset flows where the workspace doc may still exist.
 - `db_delete_organization_batch`: drains queued workspace content, deletes remaining workspaces, deletes organization structure, then deletes the organization doc.
 - `process_user_deletion_request`, `process_organization_deletion_request`, and `process_workspace_deletion_request`: own one queued request at a time and leave the queue doc in place while covered work remains.
@@ -121,7 +123,7 @@ Deleted-account recovery is handled in `users.resolve_user`.
 - Keep `billing_usage_snapshots` whenever the `users` doc is retained. The full user-record purge passes `deleteBillingState` to remove them.
 - Retained-tombstone finalization removes auth pointers and anonymous tokens only when the caller passes `deleteUserAuth`.
 - `users.purge_deleted_user_tombstone` removes the one anonymous-token doc and billing snapshot in the same transaction as the anagraphic and user. It leaves queued tenant cleanup in place. The normal finalizer and missing-user drain share this auth/billing cleanup helper.
-- Untouched eager-created files are removed with their pending proposals. Before deleting each owned asset doc, `files_nodes_db_hard_delete_node` ensures an exact-key deletion job, including the staged replacement asset. Existing upload jobs keep their generation and arrival guards.
+- Removing a saved-target proposal leaves its saved node in place. Private cleanup fences the draft and drains its owned content before releasing its node slot. Stored create and replacement assets go through exact-key cleanup; existing upload jobs keep their generation and arrival guards.
 
 # Organization And Workspace Deletion
 
@@ -167,10 +169,14 @@ Deleted-account recovery is handled in `users.resolve_user`.
 
 # Workspace Content Purge Coverage
 
+User inbox cleanup drains `activities_user_states` before notification docs. This removes only
+that user's dismissals; shared Activities and other viewers' dismissals remain until their own cleanup.
+
 `db_purge_organization_workspace_content_batch` is the tenant-content purge order. When adding a tenant-scoped table with workspace data, update this function and add a narrow index or a parent-doc batching strategy.
 
 Current purge coverage includes:
 
+- Pending review runs before pending-state payloads. Stop invalidates active workers; retire prepared bytes before deleting item rows. Review units and the paired Activity follow. Delete the owner's review clock only after all proposals, private nodes, and runs are gone.
 - Transfer runs before other file docs. Stop each run, hand unpublished assets to exact-key
   deletion jobs, and delete at most 50 item docs per call. Delete its Activity and run docs after
   its items are gone. Late workers cannot publish. Private run cleanup keeps completed files;
@@ -178,6 +184,7 @@ Current purge coverage includes:
 - `files_pending_update_yjs_state_pages`, `files_pending_update_yjs_states`, `files_pending_update_state_cleanup_tasks`, `files_pending_update_text_inputs`, `files_pending_update_operation_batches`, `files_yjs_trusted_update_stages` — the paged pending-state family and its operation scaffolding, child docs first (pages before states, text inputs before batches), all before the pending-update docs they belong to
 - `files_pending_updates_cleanup_tasks`, `files_pending_updates`
 - `files_pending_updates_last_sequence_saved`
+- `ai_chat_bash_invocation_transfers` before `ai_chat_bash_invocations`, both before the thread. Results expire after seven days; the small terminal call identity stays until this purge. Delete at most eight invocation docs per pass because retained results can use 700 KiB each. Missing records make late deadline and expiry callbacks no-ops.
 - `ai_chat_files_content`, `ai_chat_files`
 - `ai_chat_threads_messages_aisdk_5` (the `aisdk_5` in that name is stored data and does not track the AI SDK major version), `ai_chat_threads_state`, `ai_chat_threads`
 - `api_credentials`
@@ -188,7 +195,10 @@ Current purge coverage includes:
 - `public_api_file_write_stages` via `public_api_db_cleanup_file_write_stage`, before the calls/runs/assets passes: stage cleanup derives the R2 keys and durably enqueues deletion jobs before removing the asset docs
 - Before the first bounded content step, the purge sets `organizations_workspaces.pluginDataPurgeStartedAt`. Before `plugins_event_run_calls`, it changes enabled plugin installations to `disabled` in bounded indexed passes. Then it drains `plugins_event_run_calls`, `plugins_event_runs` with `plugins_runtime_workpool` run cancellation (plugin event runs execute on that dedicated component; R2 asset `processingWorkId` jobs stay on `files_upload_conversion_workpool`), `plugins_workspace_event_handlers`, `plugins_workspace_installation_secrets`, the plugin document store, and finally `plugins_workspace_installations` one installation per pass: its `plugins_ui_sessions` (via `by_installation`) drain one bounded batch per transaction, and the installation doc is deleted only once no sessions remain
 - The plugin document store goes through `plugins_data_db_drain_batch` with `installationId: null`, which covers every installation in the workspace. The durable workspace fence makes `plugins.install_version` refuse new installs and re-enables. Every central plugin UI, store, service, and runtime gate also requires the workspace doc to exist with no fence. The later disabled status is a second guard while live scope rows and released fences drain. Both guards stay until the later session and installation passes remove the records. A data-only reset clears the fence only when the full reset finishes; a deleted workspace removes it with the workspace doc, and the missing doc itself keeps the gates closed. The store drain order is: reservations, deleted-append replay receipts, revision tombstones, documents, service grants, `plugins_file_access_bindings` rows, `plugin_scope` grants, live scope rows, then scope lifecycle rows (identity markers plus real released-range fences). Grants go before scope docs so a partial drain fails closed, and released fences go last so stale writers stay refused until both the documents and their live scope docs are gone. The binding drain deletes only the binding rows and leaves the mirrored file `content.read` grants: the bound files belong to the workspace and outlive the plugin, and member removal and workspace purge find those grants through their own tenant indexes. It then drains member usage and the accounting doc. The accounting doc goes last so it is never the survivor. Plugin store rows go before the installation pass; service upload records stay until the later file purge finishes. An installation-scoped drain writes to no `files_nodes` row and deletes no service destination fence, storage target, attempt receipt, or mirrored private-folder `file` grant: files a plugin created belong to the workspace and stay, uploaded and plugin-door-written alike. A `plugin_scope` grant whose `resourceId` is `"<installationId>:<scopeId>"` does leave with its live store row; a `file` grant naming a bound folder stays because the file stays. A placeholder whose upload never finished stays as an empty file a member can delete.
-- `activities` after the plugin passes. The run-retention path normally deletes an activity together with its plugin run, but this purge deletes run docs directly, so it drains the leftover activities by the workspace index. Every activity producer needs a live run doc, so no new rows can appear once the run pass is empty.
+- Each plugin run drains its Activity dismissal docs before the Activity and run leave together.
+  `activities_db_delete` removes at most 50 dismissal docs per pass. Transfer cleanup uses the
+  same helper after its items are gone. Shared recovery can run between purge passes, so no pass
+  may leave an Activity pointing to a deleted run. See the [Activity spec](../activities/SKILL.md).
 - `chat_messages`
 - `files_metadata_docs`
 - `files_plain_text_chunks`, `files_text_chunks`
@@ -316,6 +326,8 @@ For data-only reset, treat missing or inconsistent default tenant state as an in
 - Recipient notifications are bounded on both user-deletion paths through `db_drain_user_notifications_batch`, after the publisher docs.
 - `process_workspace_deletion_request` deletes content only; `db_delete_workspace_batch` deletes content and structure.
 - Every growing user-finalization family uses an indexed `.take(batchSize)` pass, except the chosen successor's organization roles: those are bounded to six by the workspace limit and stay atomic with ownership transfer. Pending-update cleanup tasks, exact chunks, plain chunks, and metadata are deleted before their pending-update parent. Pending Yjs pages are deleted before their state parent. The one-row anonymous-token and billing-snapshot invariants stay in the small final transaction.
+- Private cleanup removes stored create-intent assets and failed Save output assets through the deletion ledger. It deletes private child identities before parents, then releases the remaining DB storage holds after checking their payloads are gone. Remote asset holds stay until confirmed deletion. A private publication receipt never gives this cleanup authority to delete its saved file. Workspace purge carries upload and unfinished-output deadlines into each exact-key job.
+- Pending state pages, text inputs, and trusted Yjs stages use at most eight rows per purge pass. Each row can approach 1 MiB, so the usual 100-row batch would exceed the read budget. Both user and workspace purges use this smaller payload batch.
 
 # Guardrails
 

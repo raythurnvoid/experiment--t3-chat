@@ -285,6 +285,7 @@ const messages = await ctx.db
 
 # Mutation Guidelines
 
+- Use static imports in queries and mutations. The deployed Convex runtime rejects dynamic module imports, even when a local test passes. Break producer/dispatcher cycles with a shared DB helper module that does not import either handler. HTTP actions use a separate runtime and may follow this repo's lazy HTTP route pattern.
 - Use `ctx.db.replace` to fully replace an existing document. This method will throw an error if the document does not exist. Syntax: `await ctx.db.replace('tasks', taskId, { name: 'Buy milk', completed: false })`
 - Use `ctx.db.patch` to shallow merge updates into an existing document. This method will throw an error if the document does not exist. Syntax: `await ctx.db.patch('tasks', taskId, { completed: true })`
 

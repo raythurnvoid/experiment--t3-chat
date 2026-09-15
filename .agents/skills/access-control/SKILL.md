@@ -289,13 +289,15 @@ handler should copy whichever fits:
 
 Rules that are easy to miss, all of which were real holes:
 
-- **A write has three legs when it moves something.** `move_nodes` and `apply_file_pending_move`
+- **A write has three legs when it moves something.** `move_nodes`, path-like `rename_node`, and `apply_file_pending_move`
   check the destination *and* the node. Checking only one lets a grant on a single folder push files
   into a restricted folder. The third leg is `authorize_leaving_restricted_scope` in `files_nodes.ts`:
   taking a node out of the restricted folder it sits in changes who can read it, so it takes
   `content.permissions.manage` on that folder, not `content.write`. A folder that is the restricted
-  scope itself carries its scope along and is not asked. `rename_node` needs no such check: its path
-  walk starts at the node's own parent and only ever goes deeper, so it cannot leave a scope.
+  scope itself carries its scope along and is not asked. Rename resolves paths from the node's own
+  parent, then uses `files_nodes_db_preflight_move` and `files_nodes_db_apply_move`. The shared core
+  checks the current and final scopes before writing. A name-only rename in the same saved parent
+  needs the source grant. Reparenting or creating missing folders also needs destination write.
   `unarchive_nodes` restores a node to a new parent when its own parent is still archived, so it is a
   move and asks the same questions. It skips both of them for a node that is its own restricted
   scope, and that skip is deliberate — reviewers keep reporting it. The destination there is picked
@@ -317,8 +319,9 @@ Rules that are easy to miss, all of which were real holes:
   `content.write` on each distinct restricted scope in their affected descendants, once per scope.
   Moves include archived descendants because their paths change too. A hidden restricted child
   can refuse the whole move with `Permission denied`, without exposing its name. A move that keeps
-  the same parent and path does not change descendants. `rename_node` accepts a path and can re-parent,
-  so it carries `restrictedScopeNodeId` over exactly like `move_nodes`.
+  the same parent and path does not change descendants. A name-only rename in the same saved parent
+  carries nested shares without asking for write access to each one. It still checks every affected
+  write policy. Reparenting through Rename uses the same nested-scope checks as other moves.
 - **Every refusal comes before the first write.** A Convex mutation that returns normally commits, so
   a `Result({ _nay })` after a write keeps that write and reports failure at the same time. Ask every
   question first. `create_upload_node` shows the shape: a filename may carry path segments, so it
@@ -347,12 +350,14 @@ that answers with bytes. Keep `visibilityUserId` a required argument, so a later
 to pass it. Count the readers before you trust this list: a sixth one added later is a sixth door.
 
 **Plugin activities answer to the files they name.** `db_filter_visible_activities` in `convex/activities.ts`
-is the one rule, used by `list_recent`, `archive_activity` and `archive_all_activities`. One
+is the one rule, used by `list_page`, `archive_activity` and `archive_all_activities`. One
 unreadable target hides the whole activity, because the title usually carries the file's name. A
 target whose current path differs from its stored activity path also hides the whole activity: the
 stored path, title, target message, and error belong to the old location and cannot be made safe by
-current access alone. The two archive mutations use the same rule as the feed. `archivedAt` is one
-field on the doc rather than one per user, so "Dismiss all" must never reach hidden activities.
+current access alone. Both dismiss mutations use the same rule as the feed. Dismissals live in
+`activities_user_states`, one per viewer and Activity. A viewer can dismiss a visible finished
+Activity without workspace write access. Another viewer's feed is unchanged. Bulk dismiss follows
+bounded history pages and must never reach hidden Activities. See the [Activity spec](../activities/SKILL.md).
 
 Clipboard Activity is private to the requester, even from other workspace owners. Current
 membership is required. A folder guest can view and stop their own run, and dismiss it after it

@@ -19,10 +19,10 @@ import {
 import type { Doc, Id } from "./_generated/dataModel";
 import { type RegisteredAction, type RegisteredMutation, type RegisteredQuery } from "convex/server";
 import type { Editor } from "@tiptap/core";
+import { vWorkId } from "@convex-dev/workpool";
 import { path_join, server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
-import { v, type Infer } from "convex/values";
+import { ConvexError, v, type Infer } from "convex/values";
 import {
-	files_ROOT_ID,
 	files_INITIAL_CONTENT,
 	files_u8_to_array_buffer,
 	files_MAX_TEXT_CONTENT_BYTES,
@@ -31,9 +31,7 @@ import {
 	files_MAX_YJS_REPAIR_RECONSTRUCTED_STATE_BYTES,
 	files_MAX_UNMATERIALIZED_YJS_UPDATE_BYTES,
 	files_MAX_UNMATERIALIZED_YJS_UPDATE_COUNT,
-	files_default_text_shape_for_name,
 	files_editable_text_content_type_of,
-	files_editable_text_shape_of,
 	files_get_utf8_byte_size,
 	files_normalize_text_document_input,
 	files_node_has_editable_text_content,
@@ -44,13 +42,20 @@ import {
 	files_db_cancel_pending_update_cleanup_tasks,
 	files_db_consume_trusted_yjs_update_stage,
 	files_db_get_pending_update,
-	files_db_get_visible_node_by_path,
+	files_db_insert_pending_update,
+	files_db_patch_pending_update,
+	files_db_delete_pending_update,
 	files_db_load_pending_update_yjs_state_bytes,
+	files_db_insert_pending_update_yjs_state,
+	files_db_retire_pending_update_yjs_states,
 	files_db_schedule_pending_update_cleanup,
 	type files_ContentType,
+	type files_PendingTarget,
+	type files_VisibleEntry,
 	type files_SpecialFileName,
 	type files_YjsRootKind,
 } from "../server/files.ts";
+import { files_ROOT_ID } from "../shared/files.ts";
 import {
 	files_yjs_create_empty_state_update,
 	files_yjs_doc_apply_array_buffer_update,
@@ -68,12 +73,13 @@ import {
 	files_yjs_doc_update_from_text,
 } from "../shared/files-tiptap.ts";
 import { files_COMMENT_MARK_TYPE } from "../shared/files-tiptap-comments.ts";
+import { files_pending_text_merge } from "../shared/files-pending-text-merge.ts";
 import { files_chunk_markdown } from "../server/files-markdown-chunking-mastra.ts";
 import { files_chunk_plain_text } from "../server/files-plain-text-chunking.ts";
 import { Result, Result_all } from "common/errors-as-values-utils.ts";
 import { encodeStateVector, encodeStateAsUpdate } from "yjs";
 import { composite_id, should_never_happen } from "../shared/shared-utils.ts";
-import { path_extract_segments_from, path_name_of } from "../shared/paths.ts";
+import { path_extract_segments_from } from "../shared/paths.ts";
 import {
 	organizations_is_global_organization_id,
 	organizations_is_reserved_workspace_id,
@@ -82,13 +88,20 @@ import {
 	organizations_GLOBAL_PLUGINS_WORKSPACE_ID,
 } from "../shared/organizations.ts";
 import { users_SYSTEM_AUTHOR } from "../shared/users.ts";
-import app_convex_schema from "./schema.ts";
+import app_convex_schema, {
+	files_metadata_entries_validator,
+	files_pending_target_validator,
+	files_content_version_validator,
+	files_transfer_source_version_validator,
+	file_content_materialization_state_validator,
+	file_content_materialization_header_validator,
+} from "./schema.ts";
 import { api, internal } from "./_generated/api.js";
 import { doc } from "convex-helpers/validators";
 import { billing_event } from "../server/billing.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import { organizations_db_get_membership } from "./organizations.ts";
-import { access_control_db_authorize_node, access_control_db_filter_readable_file_nodes } from "./access_control.ts";
+import { access_control_db_authorize_node } from "./access_control.ts";
 import {
 	billing_db_check_credits,
 	billing_db_check_paid_plan,
@@ -100,7 +113,6 @@ import {
 	files_metadata_db_delete_committed_frontmatter,
 	files_metadata_db_insert_committed,
 	files_metadata_db_read_entries,
-	files_metadata_entry_fields,
 } from "./files_metadata.ts";
 import {
 	files_metadata_frontmatter_exceeds_index_caps,
@@ -111,6 +123,7 @@ import {
 	files_PENDING_REPLACEMENT_BASE_CHANGED_MESSAGE,
 	files_PENDING_REPLACEMENT_EDITED_DURING_ACCEPT_MESSAGE,
 	files_pending_update_db_delete_chunks,
+	files_pending_update_db_replace_chunks,
 	files_pending_update_db_release_replacement_asset,
 	files_pending_updates_db_drop_content_for_node,
 	files_pending_updates_db_mark_content_for_rebase,
@@ -135,14 +148,17 @@ import {
 	db_get_file_snapshot_content,
 	db_upsert_file_stats,
 	enqueue_file_content_materialization,
-	file_content_materialization_header_validator,
-	file_content_materialization_state_validator,
 	files_READ_RANGE_MAX_LINES,
 	files_line_range_from_text,
 	files_merge_contiguous_chunks,
 	files_nodes_db_require_user_writable,
+	files_nodes_db_get_content_version,
 	type files_nodes_get_user_file_write_access_Result,
+	type files_nodes_get_visible_entry_by_path_Result,
 	files_nodes_db_create_node_recursively_at_path,
+	files_nodes_db_validate_occupant_replace,
+	files_nodes_db_preflight_move,
+	files_nodes_db_apply_move,
 	files_tail_lines_from_text,
 	yjs_reserve_and_increment_last_sequence,
 	type files_nodes_read_committed_file_chunk_stats_Result,
@@ -156,7 +172,11 @@ import {
 	files_transfer_db_complete_copy_item,
 	files_transfer_db_fail_copy_item,
 	files_transfer_db_prepare_copy_item,
+	files_transfer_db_get_entry_version,
+	files_transfer_source_versions_equal,
 } from "./files_transfer.ts";
+import { files_pending_nodes_db_get_ancestry, files_pending_nodes_db_publish } from "./files_pending_nodes.ts";
+import { files_private_storage_db_release, files_private_storage_db_reserve } from "./files_private_storage.ts";
 
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
 // Does NOT work for http actions (see http.ts). No mutable module-level state allowed here.
@@ -649,7 +669,8 @@ export async function files_nodes_db_insert_file_content_docs(
  * Create a deletion job for each unpublished R2 asset. Then delete the asset docs.
  * Do both in the transaction that refuses the write, so a crash cannot lose the cleanup work.
  * The action already finished each R2 upload to its known key, even when `r2Key` is not set.
- * Keep missing or published assets. No upload can arrive later, so the deletion job needs no wait time.
+ * Do not touch an asset that is missing or already published. Save preparation keeps its
+ * late-upload deadline on the job.
  */
 async function db_hand_unpublished_assets_to_deletion_ledger(
 	ctx: MutationCtx,
@@ -677,6 +698,9 @@ async function db_hand_unpublished_assets_to_deletion_ledger(
 				assetId: asset._id,
 			}),
 			reason: args.reason,
+			...(asset.uploadUrlExpiresAt !== undefined
+				? { putMayArriveUntil: asset.uploadUrlExpiresAt + r2_PUT_MAY_ARRIVE_MARGIN_MS }
+				: {}),
 		});
 		await ctx.db.delete("files_r2_assets", asset._id);
 	}
@@ -888,28 +912,12 @@ export const create_file_node = internalMutation({
 		syncRunId: v.optional(v.string()),
 		/** Tenant assets already uploaded to R2. Add deletion jobs when this mutation refuses them. */
 		unpublishedAssetIds: v.optional(v.array(v.id("files_r2_assets"))),
-		/**
-		 * File metadata that says where the file came from, written on the created file only. Only
-		 * `create_file_node_internal` passes it, for the reserved-scope mirrors. The eager-create
-		 * path must never pass it. A node with committed `metadata.` docs can no longer be
-		 * hard-deleted, so discarding the proposal would leave the empty file behind forever.
-		 */
-		metadata: v.optional(v.array(v.object(files_metadata_entry_fields))),
+		/** Source metadata for files created by reserved-scope mirrors. */
+		metadata: v.optional(files_metadata_entries_validator),
 	},
 	returns: v_result({
 		_yay: v.object({
 			nodeId: v.id("files_nodes"),
-			/**
-			 * The node's committed Yjs last sequence, captured in this same mutation. Eager-create
-			 * callers stamp their pending update doc with it, so a save landing after this mutation
-			 * always advances the node past the stamp and the hard-delete gate fails closed.
-			 * Undefined when the node has no Yjs docs (read-only files).
-			 */
-			createdCommittedSequence: v.optional(v.number()),
-			/**
-			 * Folders created by this mutation, deepest first. Reused folders are not included.
-			 */
-			createdAncestorIds: v.array(v.id("files_nodes")),
 		}),
 	}),
 	handler: async (ctx, args) => {
@@ -1048,7 +1056,6 @@ export const create_file_node = internalMutation({
 			}
 		}
 
-		const createdAncestorIds: Array<Id<"files_nodes">> = [];
 		const now = Date.now();
 		const nodeIdResult = await files_nodes_db_create_node_recursively_at_path(ctx, {
 			userId: args.userId,
@@ -1063,16 +1070,12 @@ export const create_file_node = internalMutation({
 			expectsTextContent: true,
 			metadata: args.metadata,
 			now,
-			mut_createdAncestorIds: createdAncestorIds,
 		});
 		// The walk finds any conflict, access error, or lock before its first insert.
 		// The refusal cannot leave part of a new folder tree behind.
 		if (nodeIdResult._nay) {
 			return await refuse(nodeIdResult._nay);
 		}
-
-		// The helper records shallowest first; compensation walks deepest first.
-		createdAncestorIds.reverse();
 
 		// The leaf's stored path can differ from `args.path` (segments resolved under `parentId`),
 		// so read it back from the created node before inserting the content docs.
@@ -1135,22 +1138,9 @@ export const create_file_node = internalMutation({
 			});
 		}
 
-		// Capture the committed last sequence inside the creating transaction: no save can land
-		// between the node creation and this read, so the value is the true creation-time state.
-		let createdCommittedSequence: number | undefined;
-		const createdNode = await ctx.db.get("files_nodes", nodeIdResult._yay);
-		if (createdNode?.yjsLastSequenceId) {
-			const yjsLastSequenceDoc = await ctx.db.get("files_yjs_docs_last_sequences", createdNode.yjsLastSequenceId);
-			if (yjsLastSequenceDoc) {
-				createdCommittedSequence = yjsLastSequenceDoc.lastSequence;
-			}
-		}
-
 		return Result({
 			_yay: {
 				nodeId: nodeIdResult._yay,
-				createdCommittedSequence,
-				createdAncestorIds,
 			},
 		});
 	},
@@ -1222,6 +1212,305 @@ export async function files_nodes_db_finalize_editable_text_node_creation(
 	]);
 
 	return Result({ _yay: null });
+}
+
+/**
+ * Publish one prepared private node. The caller checks the reviewed proposal and output states
+ * first, then settles or retargets that proposal in this same transaction after this returns.
+ */
+export async function files_nodes_content_db_publish_private_node(
+	ctx: MutationCtx,
+	args: {
+		membership: Doc<"organizations_workspaces_users">;
+		node: Doc<"files_pending_nodes">;
+		pendingUpdate: Doc<"files_pending_updates">;
+		billedUserId: Id<"users">;
+		reviewedPendingUpdateIds?: Set<Id<"files_pending_updates">>;
+		prepared?: {
+			text: string;
+			contentAssetId: Id<"files_r2_assets">;
+			yjsSnapshotAssetId?: Id<"files_r2_assets">;
+		};
+	},
+) {
+	const { membership, node, pendingUpdate, prepared } = args;
+	if (
+		!membership.active ||
+		membership.organizationId !== node.organizationId ||
+		membership.workspaceId !== node.workspaceId ||
+		membership.userId !== node.userId ||
+		pendingUpdate.target.kind !== "private" ||
+		pendingUpdate.target.id !== node._id ||
+		pendingUpdate.organizationId !== node.organizationId ||
+		pendingUpdate.workspaceId !== node.workspaceId ||
+		pendingUpdate.userId !== node.userId
+	) {
+		return Result({ _nay: { name: "not_found", message: "Not found" } });
+	}
+
+	const ancestry = await files_pending_nodes_db_get_ancestry(ctx, { ...node, privateNodeId: node._id });
+	if (ancestry._nay) return ancestry;
+
+	if (
+		ancestry._yay.node.creationGeneration !== node.creationGeneration ||
+		ancestry._yay.node.structuralRevision !== node.structuralRevision
+	) {
+		return Result({ _nay: { name: "target_changed", message: "This draft changed. Review it again." } });
+	}
+
+	if (ancestry._yay.ancestors.length > 0) {
+		return Result({ _nay: { name: "needs_review", message: "Review and save the parent draft first." } });
+	}
+
+	const createIntent = pendingUpdate.createIntent;
+	if (!createIntent || (createIntent.kind === "text" && !prepared)) {
+		return Result({ _nay: { name: "not_ready", message: "This draft is still preparing." } });
+	}
+
+	if (pendingUpdate.pendingArchive) {
+		return Result({ _nay: { name: "needs_review", message: "This draft has a pending delete." } });
+	}
+
+	const parentId = ancestry._yay.savedParent?._id ?? files_ROOT_ID;
+	const authorized = await authorize_file_write(ctx, { userAuth: { id: node.userId }, membership, nodeId: parentId });
+	if (authorized._nay) return authorized;
+
+	if (ancestry._yay.savedParent) {
+		const writable = await files_nodes_db_require_user_writable(ctx, {
+			node: ancestry._yay.savedParent,
+			userId: node.userId,
+		});
+		if (writable._nay) return writable;
+	}
+
+	const now = Date.now();
+	const assetIds =
+		createIntent.kind === "folder"
+			? []
+			: createIntent.kind === "stored"
+				? [createIntent.assetId]
+				: [prepared!.contentAssetId, ...(prepared!.yjsSnapshotAssetId ? [prepared!.yjsSnapshotAssetId] : [])];
+	const assets = await Promise.all(assetIds.map((id) => ctx.db.get("files_r2_assets", id)));
+	const reservations = await Promise.all(
+		assetIds.map((id) =>
+			ctx.db
+				.query("files_private_storage_reservations")
+				.withIndex("by_resource", (q) => q.eq("resource.kind", "asset").eq("resource.id", id))
+				.first(),
+		),
+	);
+	for (const [index, asset] of assets.entries()) {
+		const reservation = reservations[index];
+		if (
+			!asset ||
+			asset.organizationId !== node.organizationId ||
+			asset.workspaceId !== node.workspaceId ||
+			asset.createdBy !== node.userId ||
+			asset.uploadRetiredAt !== undefined ||
+			// Stored copies are already finalized. Their private hold still owns the bytes.
+			(createIntent.kind === "text" &&
+				(asset.unfinalizedExpiresAt === undefined || asset.unfinalizedExpiresAt <= now)) ||
+			!reservation ||
+			reservation.settlement.kind !== "held" ||
+			reservation.userId !== node.userId ||
+			reservation.byteCount !== asset.size ||
+			reservation.resource.kind !== "asset" ||
+			reservation.resource.r2Key !== r2_create_asset_key({ ...node, assetId: asset._id })
+		) {
+			return Result({ _nay: { name: "target_changed", message: "The prepared content is no longer available." } });
+		}
+	}
+	if (
+		(createIntent.kind === "text" &&
+			(assets[0]!.size !== files_get_utf8_byte_size(prepared!.text) ||
+				createIntent.collaborationEnabled !== (prepared!.yjsSnapshotAssetId !== undefined))) ||
+		(createIntent.kind === "stored" && (!assets[0]!.r2Key || assets[0]!.size !== createIntent.size))
+	) {
+		return Result({ _nay: { name: "target_changed", message: "The prepared content changed. Review it again." } });
+	}
+
+	let billedUser: Doc<"users"> | null = null;
+	if (createIntent.kind !== "folder") {
+		const organization = await ctx.db.get("organizations", node.organizationId);
+		if (!organization) {
+			throw should_never_happen("Private node publication has no organization", { privateNodeId: node._id });
+		}
+		const billedUserId = args.billedUserId;
+		billedUser = await ctx.db.get("users", billedUserId);
+		if (!billedUser) {
+			throw should_never_happen("Private node publication has no billed user", { billedUserId });
+		}
+		const credits = await billing_db_check_credits(ctx, { userId: billedUserId, minimumRequiredCents: 1 });
+		if (!credits.hasCredits) return Result({ _nay: { message: "Insufficient funds" } });
+		if (
+			createIntent.kind === "stored" &&
+			!(await billing_db_check_paid_plan(ctx, { userId: billedUserId })).hasPaidPlan
+		) {
+			return Result({ _nay: { message: "This workspace's plan does not include file uploads" } });
+		}
+	}
+
+	const claim = pendingUpdate.pendingMove;
+	let replacementPlan: Awaited<ReturnType<typeof files_nodes_db_preflight_move>> | null = null;
+
+	if (claim?.replacesTarget) {
+		if (claim.replacesTarget.kind !== "saved" || claim.replacesContentVersion === undefined)
+			return Result({ _nay: { name: "destination_changed", message: "The destination changed. Review it again." } });
+
+		const occupant = await ctx.db.get("files_nodes", claim.replacesTarget.id);
+		if (!occupant || occupant.organizationId !== node.organizationId || occupant.workspaceId !== node.workspaceId)
+			return Result({ _nay: { name: "destination_changed", message: "The destination changed. Review it again." } });
+
+		const occupantProposal = await files_db_get_pending_update(ctx, {
+			...node,
+			target: { kind: "saved", id: occupant._id },
+		});
+		if (occupantProposal && !args.reviewedPendingUpdateIds?.has(occupantProposal._id))
+			return Result({
+				_nay: { name: "needs_review", message: "Review the destination changes with this replacement." },
+			});
+
+		const checked = await files_nodes_db_validate_occupant_replace(ctx, {
+			membership,
+			sourceKind: node.kind,
+			replace: true,
+			occupant: { kind: "saved", node: occupant, pendingUpdate: occupantProposal, path: occupant.path },
+		});
+		if (checked._nay) return checked;
+
+		replacementPlan = await files_nodes_db_preflight_move(ctx, {
+			userAuth: { id: node.userId },
+			membership,
+			writer: { kind: "user", userId: node.userId },
+			policyReach: "ancestors",
+			intents: [],
+			privateReplacements: [
+				{ node, parentId, occupant: { nodeId: occupant._id, contentVersion: claim.replacesContentVersion } },
+			],
+		});
+
+		if (replacementPlan._nay) return replacementPlan;
+		await files_nodes_db_apply_move(ctx, replacementPlan._yay);
+	}
+
+	const created = await files_nodes_db_create_node_recursively_at_path(ctx, {
+		organizationId: node.organizationId,
+		workspaceId: node.workspaceId,
+		userId: node.userId,
+		parentId,
+		path: node.name,
+		kind: node.kind,
+		contentType: createIntent.kind === "folder" ? undefined : createIntent.contentType,
+		assetId: assets[0]?._id,
+		expectsTextContent: createIntent.kind === "text" ? true : undefined,
+		metadata: createIntent.metadata,
+		now,
+	});
+
+	if (created._nay) {
+		// A replacement must roll its archive back if creation refuses.
+		if (replacementPlan) throw convex_error(created._nay);
+		return created;
+	}
+
+	const nodeId = created._yay;
+	let base: NonNullable<Doc<"files_pending_updates">["content"]>["base"] | null = null;
+
+	if (createIntent.kind === "text") {
+		await files_nodes_db_insert_file_content_docs(ctx, {
+			organizationId: node.organizationId,
+			workspaceId: node.workspaceId,
+			nodeId,
+			path: path_join(ancestry._yay.savedParent?.path ?? "/", node.name),
+			parentId,
+			contentType: createIntent.contentType,
+			rootKind: createIntent.textKind,
+			textContent: prepared!.text,
+			readOnly: false,
+			nonCollaborative: !createIntent.collaborationEnabled,
+			yjsSnapshotAssetId: prepared!.yjsSnapshotAssetId,
+			userId: node.userId,
+			now,
+		});
+
+		await files_nodes_db_finalize_editable_text_node_creation(ctx, {
+			organizationId: node.organizationId,
+			workspaceId: node.workspaceId,
+			nodeId,
+			userId: node.userId,
+			versionSnapshotAssetId: assets[0]!._id,
+			versionSnapshotSize: assets[0]!.size,
+			yjsSnapshot: assets[1] ? { assetId: assets[1]._id, size: assets[1].size } : undefined,
+		});
+
+		base = createIntent.collaborationEnabled
+			? { kind: "yjs", sequence: 0, lineageGeneration: 0 }
+			: { kind: "asset", assetId: assets[0]!._id };
+	} else if (createIntent.kind === "stored") {
+		await ctx.db.patch("files_r2_assets", createIntent.assetId, { unfinalizedExpiresAt: undefined, updatedAt: now });
+
+		await store_version_snapshot(ctx, {
+			organizationId: node.organizationId,
+			workspaceId: node.workspaceId,
+			nodeId,
+			assetId: createIntent.assetId,
+			userId: node.userId,
+			contentType: createIntent.contentType,
+			yjsRootKind: null,
+			collaborationEnabled: false,
+		});
+	}
+
+	if (billedUser) {
+		await billing_ingest_events(ctx, {
+			billedUserEvents: [
+				{
+					billedUser,
+					event: billing_event({
+						name: "file_save",
+						externalCustomerId: billedUser._id,
+						externalMemberId: node.userId,
+						externalId: composite_id(
+							"billing",
+							"file_save",
+							billedUser._id,
+							node.userId,
+							node.organizationId,
+							node.workspaceId,
+							nodeId,
+							assets[0]!._id,
+						),
+						metadata: {
+							amount: 1,
+							actorUserId: node.userId,
+							billedUserId: billedUser._id,
+							organizationId: node.organizationId,
+							workspaceId: node.workspaceId,
+							nodeId,
+							version: assets[0]!._id,
+						},
+					}),
+				},
+			],
+		});
+	}
+
+	await files_pending_nodes_db_publish(ctx, { node, pendingUpdate, savedNodeId: nodeId });
+
+	for (const reservation of reservations) {
+		await files_private_storage_db_release(ctx, {
+			reservationId: reservation!._id,
+			settlement: { kind: "saved", savedNodeId: nodeId, settledAt: now },
+		});
+	}
+
+	return Result({
+		_yay: {
+			target: { kind: "saved" as const, id: nodeId },
+			newSequence: base?.kind === "yjs" ? base.sequence : null,
+			base,
+		},
+	});
 }
 
 export const cleanup_file_node_creation_assets = internalMutation({
@@ -1435,8 +1724,6 @@ type action_create_file_node_Result =
 	| {
 			_yay: {
 				nodeId: Id<"files_nodes">;
-				createdCommittedSequence?: number;
-				createdAncestorIds: Id<"files_nodes">[];
 			};
 			_nay?: undefined;
 	  }
@@ -1591,13 +1878,51 @@ async function action_create_file_node(
 	return Result({
 		_yay: {
 			nodeId: created._yay.nodeId,
-			createdCommittedSequence: created._yay.createdCommittedSequence,
-			createdAncestorIds: created._yay.createdAncestorIds,
 		},
 	});
 }
 
 // #region transfer file copy
+
+// The parent action and a nested R2 copy action can each run for ten minutes.
+// Keep this bound on the asset because attempt recovery can remove the item's deadline first.
+const TRANSFER_ASSET_WRITE_WINDOW_MS = 20 * 60 * 1000 + r2_PUT_MAY_ARRIVE_MARGIN_MS;
+
+async function db_get_transfer_copy_source_version(
+	ctx: MutationCtx,
+	sourceEntry: files_VisibleEntry,
+	capture: Doc<"files_transfer_items">["capture"],
+) {
+	const version = await files_transfer_db_get_entry_version(ctx, sourceEntry);
+	if (!version) return Result({ _nay: { message: "The source file is not available" } });
+
+	const captured = capture?.sourceVersion;
+	const savedVersion = version.kind === "pending" ? version.savedVersion : version;
+	const capturedSavedVersion = captured?.kind === "pending" ? captured.savedVersion : captured;
+	if (
+		captured &&
+		(version.kind !== captured.kind ||
+			version.contentType !== captured.contentType ||
+			version.textKind !== captured.textKind ||
+			version.collaborationEnabled !== captured.collaborationEnabled ||
+			savedVersion?.kind !== capturedSavedVersion?.kind ||
+			savedVersion?.contentType !== capturedSavedVersion?.contentType ||
+			savedVersion?.textKind !== capturedSavedVersion?.textKind ||
+			savedVersion?.collaborationEnabled !== capturedSavedVersion?.collaborationEnabled ||
+			(savedVersion?.kind === "yjs" &&
+				capturedSavedVersion?.kind === "yjs" &&
+				(savedVersion.lastSequenceId !== capturedSavedVersion.lastSequenceId ||
+					savedVersion.lineageGeneration !== capturedSavedVersion.lineageGeneration)) ||
+			(version.kind === "pending" &&
+				captured.kind === "pending" &&
+				(version.pendingUpdateId !== captured.pendingUpdateId ||
+					version.privateVersion?.creationGeneration !== captured.privateVersion?.creationGeneration)))
+	) {
+		return Result({ _nay: { message: "The source document changed while it was being copied. Try again." } });
+	}
+	// Later edits may advance the asset or sequence. They never replace this run's captured bytes.
+	return Result({ _yay: version });
+}
 
 async function db_resolve_transfer_copy_billed_user(
 	ctx: MutationCtx,
@@ -1629,96 +1954,279 @@ async function db_resolve_transfer_copy_billed_user(
 }
 
 export const get_transfer_file_copy_data = internalMutation({
-	args: { itemId: v.id("files_transfer_items"), attempt: v.number() },
+	args: {
+		itemId: v.id("files_transfer_items"),
+		attempt: v.number(),
+		preparedDraft: v.optional(
+			v.object({
+				text: v.string(),
+				sourceVersion: files_transfer_source_version_validator,
+				savedVersion: files_content_version_validator,
+			}),
+		),
+	},
 	returns: v_result({
+		_nay: {
+			data: v.object({
+				organizationId: v.id("organizations"),
+				workspaceId: v.id("organizations_workspaces"),
+				userId: v.id("users"),
+				savedPath: v.string(),
+				sourceVersion: files_transfer_source_version_validator,
+				savedVersion: files_content_version_validator,
+			}),
+		},
 		_yay: v.union(
 			v.null(),
 			v.object({
 				organizationId: v.id("organizations"),
 				workspaceId: v.id("organizations_workspaces"),
 				userId: v.id("users"),
-				sourceNode: doc(app_convex_schema, "files_nodes"),
-				asset: doc(app_convex_schema, "files_r2_assets"),
-				metadata: v.array(v.object(files_metadata_entry_fields)),
-				header: v.union(file_content_materialization_header_validator, v.null()),
-				content: v.optional(v.string()),
+				workId: vWorkId,
+				source: files_pending_target_validator,
+				capture: doc(app_convex_schema, "files_transfer_items").fields.capture,
+				asset: v.union(doc(app_convex_schema, "files_r2_assets"), v.null()),
+				yjsSnapshotAsset: v.union(doc(app_convex_schema, "files_r2_assets"), v.null()),
+				text: v.optional(v.string()),
+				replacement: v.union(
+					v.object({
+						path: v.string(),
+						contentType: v.string(),
+						collaborationEnabled: v.boolean(),
+						needsBackup: v.boolean(),
+					}),
+					v.null(),
+				),
 			}),
 		),
 	}),
 	handler: async (ctx, args) => {
-		const prepared = await files_transfer_db_prepare_copy_item(ctx, args);
-		if (prepared._nay || prepared._yay === null) return prepared;
+		const fail = async (message: string) => {
+			await files_transfer_db_fail_copy_item(ctx, { ...args, message });
+			return Result({ _nay: { message } });
+		};
 
-		const { run, item, sourceNode } = prepared._yay;
-		// Only the first invocation owns this attempt's assets. Retries get a new attempt number.
-		if (item.stagedAssetIds.length > 0) return Result({ _yay: null });
-		if (sourceNode.kind !== "file" || !sourceNode.assetId) {
-			return Result({ _nay: { message: "The source file is not available" } });
+		const prepared = await files_transfer_db_prepare_copy_item(ctx, args);
+		if (prepared._nay) return await fail(prepared._nay.message);
+		if (prepared._yay === null) return prepared;
+
+		const { run, item, sourceEntry, existing } = prepared._yay;
+
+		// Only the first invocation owns this attempt's assets.
+		if (item.workId === null || item.stagedAssetIds.length > 0) return Result({ _yay: null });
+
+		const version = await db_get_transfer_copy_source_version(ctx, sourceEntry, item.capture);
+		if (version._nay) return await fail(version._nay.message);
+
+		const pendingContent = sourceEntry.pendingUpdate?.content;
+		if (item.capture === null && sourceEntry.kind === "saved" && pendingContent) {
+			const savedVersion = await files_nodes_db_get_content_version(ctx, sourceEntry.node);
+			if (!savedVersion) return await fail("The source file is not available");
+
+			const needsRebase =
+				files_pending_update_content_is_stale(sourceEntry.pendingUpdate!, sourceEntry.node) ||
+				(savedVersion.kind === "yjs" &&
+					(pendingContent.base.kind !== "yjs" ||
+						pendingContent.base.sequence !== savedVersion.sequence ||
+						pendingContent.base.lineageGeneration !== savedVersion.lineageGeneration));
+
+			if (args.preparedDraft) {
+				if (
+					!files_transfer_source_versions_equal(version._yay, args.preparedDraft.sourceVersion) ||
+					!files_transfer_source_versions_equal(savedVersion, args.preparedDraft.savedVersion)
+				)
+					return await fail("The source document changed while it was being copied. Try again.");
+			} else if (needsRebase) {
+				return Result({
+					_nay: {
+						name: "source_needs_rebase",
+						message: "The source draft needs its latest saved text",
+						data: {
+							organizationId: run.organizationId,
+							workspaceId: run.workspaceId,
+							userId: run.userId,
+							savedPath: sourceEntry.node.path,
+							sourceVersion: version._yay,
+							savedVersion,
+						},
+					},
+				});
+			}
 		}
 
 		const billed = await db_resolve_transfer_copy_billed_user(ctx, {
 			organizationId: run.organizationId,
 			userId: run.userId,
 			item,
-			storedFile: sourceNode.textKind === null,
+			storedFile: version._yay.textKind === null,
 		});
-		if (billed._nay) return billed;
+		if (billed._nay) return await fail(billed._nay.message);
 
-		const asset = await ctx.db.get("files_r2_assets", sourceNode.assetId);
-		if (!asset?.r2Key) return Result({ _nay: { message: "The source file is still saving. Try again." } });
-		if (asset.size > (sourceNode.textKind === null ? files_MAX_UPLOADS_BYTES : files_MAX_TEXT_CONTENT_BYTES)) {
-			return Result({ _nay: { message: "This file is too large to copy" } });
-		}
+		const intent = sourceEntry.pendingUpdate?.createIntent;
+		const sourceAssetId =
+			version._yay.kind === "pending"
+				? (sourceEntry.pendingUpdate?.pendingReplacement?.assetId ??
+					(intent?.kind === "stored" ? intent.assetId : null))
+				: sourceEntry.kind === "saved"
+					? sourceEntry.node.assetId
+					: null;
 
-		const metadata = await files_metadata_db_read_entries(ctx, {
-			organizationId: run.organizationId,
-			workspaceId: run.workspaceId,
-			fileNodeId: sourceNode._id,
-		});
+		const assetId = item.capture?.artifact?.contentAssetId ?? item.capture?.sourceAssetId ?? sourceAssetId;
+		const asset = assetId ? await ctx.db.get("files_r2_assets", assetId) : null;
 
-		let header: get_file_content_materialization_header_Result = null;
-		if (files_node_has_editable_yjs_state(sourceNode)) {
-			const yjsLastSequenceDoc = await ctx.db.get("files_yjs_docs_last_sequences", sourceNode.yjsLastSequenceId);
-			if (!yjsLastSequenceDoc) {
-				const errorMessage = "Copy source has no Yjs sequence";
-				const errorData = { nodeId: sourceNode._id, yjsLastSequenceId: sourceNode.yjsLastSequenceId };
-				console.error(errorMessage, errorData);
-				throw should_never_happen(errorMessage, errorData);
-			}
-			header = (await ctx.runQuery(internal.files_nodes.get_file_content_materialization_header, {
-				organizationId: run.organizationId,
-				workspaceId: run.workspaceId,
-				nodeId: sourceNode._id,
-				targetSequence: yjsLastSequenceDoc.lastSequence,
-			})) as get_file_content_materialization_header_Result;
-		}
+		if ((assetId !== null && !asset?.r2Key) || (version._yay.textKind === null && !asset?.r2Key))
+			return await fail(
+				item.capture
+					? "The captured source content is no longer available"
+					: "The source file is still saving. Try again.",
+			);
 
-		let content: string | undefined;
-		if (sourceNode.textKind !== null && (!header || header.throughSequence === header.yjsSnapshotDoc.sequence)) {
-			// Saved text is capped at 900 KB, so one file's committed chunks are bounded.
-			const chunks = await ctx.db
-				.query("files_text_chunks")
-				.withIndex("by_organization_workspace_source_fileNode_yjsSeq_chunk", (q) =>
-					q
-						.eq("organizationId", run.organizationId)
-						.eq("workspaceId", run.workspaceId)
-						.eq("sourceKind", "committed")
-						.eq("fileNodeId", sourceNode._id),
+		if (asset && asset.size > (version._yay.textKind === null ? files_MAX_UPLOADS_BYTES : files_MAX_TEXT_CONTENT_BYTES))
+			return await fail("This file is too large to copy");
+
+		let capture = item.capture;
+		let text: string | undefined;
+		let yjsSnapshotAsset: Doc<"files_r2_assets"> | null = null;
+		if (capture === null) {
+			const metadata =
+				sourceEntry.kind === "private"
+					? sourceEntry.pendingUpdate.createIntent!.metadata
+					: await files_metadata_db_read_entries(ctx, {
+							organizationId: run.organizationId,
+							workspaceId: run.workspaceId,
+							fileNodeId: sourceEntry.node._id,
+						});
+
+			let sourceYjsSnapshot: NonNullable<Doc<"files_transfer_items">["capture"]>["sourceYjsSnapshot"] = null;
+			let sourceStateId: Id<"files_pending_update_yjs_states"> | null = null;
+
+			if (
+				version._yay.kind === "pending" &&
+				version._yay.textKind !== null &&
+				!sourceEntry.pendingUpdate?.pendingReplacement
+			) {
+				const content = sourceEntry.pendingUpdate?.content;
+				const state = content ? await ctx.db.get("files_pending_update_yjs_states", content.unstagedStateId) : null;
+
+				if (
+					!state?.sealed ||
+					state.owner.kind !== "active" ||
+					state.owner.pendingUpdateId !== version._yay.pendingUpdateId ||
+					state.owner.role !== "unstaged"
 				)
-				.collect();
-			content =
-				chunks.length > 0 ? (files_merge_contiguous_chunks(chunks) ?? undefined) : asset.size === 0 ? "" : undefined;
+					return await fail("The source draft is still preparing");
+
+				let update: ArrayBuffer;
+				if (args.preparedDraft) {
+					if (files_get_utf8_byte_size(args.preparedDraft.text) > files_MAX_TEXT_CONTENT_BYTES)
+						return await fail("This file's text is too large to copy");
+					const document = files_yjs_doc_create_from_text({
+						text: args.preparedDraft.text,
+						rootKind: version._yay.textKind,
+					});
+					if ("_nay" in document) return await fail(document._nay.message);
+					update = files_u8_to_array_buffer(encodeStateAsUpdate(document));
+					document.destroy();
+				} else {
+					const bytes = await files_db_load_pending_update_yjs_state_bytes(ctx, { stateDoc: state });
+					if (bytes._nay) return await fail(bytes._nay.message);
+					update = files_u8_to_array_buffer(bytes._yay);
+				}
+
+				// The unstaged branch is the full draft: saved text, staged edits, and unstaged edits.
+				const captured = await files_db_insert_pending_update_yjs_state(ctx, {
+					organizationId: run.organizationId,
+					workspaceId: run.workspaceId,
+					userId: run.userId,
+					target: item.source,
+					transferItemId: item._id,
+					update,
+				});
+				if (captured._nay) return await fail(captured._nay.message);
+				sourceStateId = captured._yay;
+			} else if (version._yay.kind === "yjs" && sourceEntry.kind === "saved") {
+				const header = (await ctx.runQuery(internal.files_nodes.get_file_content_materialization_header, {
+					organizationId: run.organizationId,
+					workspaceId: run.workspaceId,
+					nodeId: sourceEntry.node._id,
+					targetSequence: version._yay.sequence,
+				})) as get_file_content_materialization_header_Result;
+				if (!header) return await fail("The source file is still saving. Try again.");
+				sourceYjsSnapshot = {
+					snapshotId: header.yjsSnapshotDoc._id,
+					assetId: header.yjsSnapshotDoc.assetId,
+					sequence: header.yjsSnapshotDoc.sequence,
+				};
+				yjsSnapshotAsset = header.yjsSnapshotAsset;
+			}
+
+			capture = {
+				sourceVersion: version._yay,
+				sourceAssetId: asset?._id ?? null,
+				sourceStateId,
+				sourceYjsSnapshot,
+				metadata,
+				artifact: null,
+			};
+
+			await ctx.db.patch("files_transfer_items", item._id, { capture });
+		} else if (capture.artifact === null && capture.sourceYjsSnapshot !== null) {
+			yjsSnapshotAsset = await ctx.db.get("files_r2_assets", capture.sourceYjsSnapshot.assetId);
+			if (!yjsSnapshotAsset?.r2Key) return await fail("The captured source content is no longer available");
 		}
+
+		if (capture.artifact === null && capture.sourceStateId !== null && capture.sourceVersion.textKind !== null) {
+			const state = await ctx.db.get("files_pending_update_yjs_states", capture.sourceStateId);
+			if (!state || state.owner.kind !== "transfer_capture" || state.owner.itemId !== item._id)
+				return await fail("The captured source content is no longer available");
+
+			const bytes = await files_db_load_pending_update_yjs_state_bytes(ctx, { stateDoc: state });
+			if (bytes._nay) return await fail(bytes._nay.message);
+
+			const document = files_yjs_doc_create_from_array_buffer_update(files_u8_to_array_buffer(bytes._yay));
+			try {
+				const extracted = files_yjs_doc_get_text({ yjsDoc: document, rootKind: capture.sourceVersion.textKind });
+				if (extracted._nay) return await fail(extracted._nay.message);
+				if (files_get_utf8_byte_size(extracted._yay) > files_MAX_TEXT_CONTENT_BYTES)
+					return await fail("This file's text is too large to copy");
+				text = extracted._yay;
+			} finally {
+				document.destroy();
+			}
+		}
+
+		let replacement = null;
+		if (run.publication === "saved" && existing?.kind === "saved") {
+			const destinationVersion = await files_nodes_db_get_content_version(ctx, existing.node);
+
+			const snapshot = existing.node.yjsSnapshotId
+				? await ctx.db.get("files_yjs_snapshots", existing.node.yjsSnapshotId)
+				: null;
+
+			replacement = {
+				path: existing.path,
+				contentType: existing.node.contentType!,
+				collaborationEnabled:
+					existing.node.textKind !== null
+						? existing.node.collaborationEnabled === true
+						: capture.sourceVersion.collaborationEnabled === true,
+				needsBackup:
+					destinationVersion?.kind === "yjs" && snapshot !== null && destinationVersion.sequence > snapshot.sequence,
+			};
+		}
+
 		return Result({
 			_yay: {
 				organizationId: run.organizationId,
 				workspaceId: run.workspaceId,
 				userId: run.userId,
-				sourceNode,
+				workId: item.workId,
+				source: item.source,
+				capture,
 				asset,
-				metadata,
-				header,
-				content,
+				yjsSnapshotAsset,
+				text,
+				replacement,
 			},
 		});
 	},
@@ -1729,11 +2237,59 @@ type get_transfer_file_copy_data_Result =
 		? Awaited<ReturnValue>
 		: never;
 
+export const get_transfer_copy_pending_text = internalMutation({
+	args: {
+		itemId: v.id("files_transfer_items"),
+		attempt: v.number(),
+		revision: v.number(),
+		role: v.union(v.literal("base"), v.literal("unstaged")),
+	},
+	returns: v_result({ _yay: v.string() }),
+	handler: async (ctx, args) => {
+		const prepared = await files_transfer_db_prepare_copy_item(ctx, args);
+		if (prepared._nay) return prepared;
+		if (!prepared._yay) return Result({ _nay: { message: "The copy stopped" } });
+		const pending = prepared._yay.sourceEntry.pendingUpdate;
+		const version = await files_transfer_db_get_entry_version(ctx, prepared._yay.sourceEntry);
+		if (!pending?.content || pending.revision !== args.revision || !version?.textKind)
+			return Result({ _nay: { message: "The source draft changed. Try again." } });
+		const stateId = args.role === "base" ? pending.content.baseStateId : pending.content.unstagedStateId;
+		const state = await ctx.db.get("files_pending_update_yjs_states", stateId);
+		if (
+			!state?.sealed ||
+			state.owner.kind !== "active" ||
+			state.owner.pendingUpdateId !== pending._id ||
+			state.owner.role !== args.role
+		)
+			return Result({ _nay: { message: "The source draft is not available" } });
+		const bytes = await files_db_load_pending_update_yjs_state_bytes(ctx, { stateDoc: state });
+		if (bytes._nay) return bytes;
+		const document = files_yjs_doc_create_from_array_buffer_update(files_u8_to_array_buffer(bytes._yay));
+		try {
+			const text = files_yjs_doc_get_text({
+				yjsDoc: document,
+				rootKind: pending.contentRebaseRootKind ?? version.textKind,
+			});
+			if (text._nay) return text;
+			if (files_get_utf8_byte_size(text._yay) > files_MAX_TEXT_CONTENT_BYTES)
+				return Result({ _nay: { message: "This file's text is too large to copy" } });
+			return text;
+		} finally {
+			document.destroy();
+		}
+	},
+});
+
+type get_transfer_copy_pending_text_Result =
+	typeof get_transfer_copy_pending_text extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
+
 export const stage_transfer_file_copy_assets = internalMutation({
 	args: {
 		itemId: v.id("files_transfer_items"),
 		attempt: v.number(),
-		textKind: doc(app_convex_schema, "files_nodes").fields.textKind,
+		workId: vWorkId,
 		contentSize: v.number(),
 		yjsSnapshotSize: v.optional(v.number()),
 	},
@@ -1747,15 +2303,19 @@ export const stage_transfer_file_copy_assets = internalMutation({
 		const prepared = await files_transfer_db_prepare_copy_item(ctx, args);
 		if (prepared._nay || prepared._yay === null) return prepared;
 
-		const { run, item } = prepared._yay;
+		const { run, item, sourceEntry } = prepared._yay;
 		// Only the first invocation owns this attempt's assets. Retries get a new attempt number.
-		if (item.stagedAssetIds.length > 0) return Result({ _yay: null });
+		if (item.capture === null || item.capture.artifact !== null || item.stagedAssetIds.length > 0)
+			return Result({ _yay: null });
+		const version = await db_get_transfer_copy_source_version(ctx, sourceEntry, item.capture);
+		if (version._nay) return version;
+		const textKind = item.capture.sourceVersion.textKind;
 
 		const billed = await db_resolve_transfer_copy_billed_user(ctx, {
 			organizationId: run.organizationId,
 			userId: run.userId,
 			item,
-			storedFile: args.textKind === null,
+			storedFile: textKind === null,
 		});
 		if (billed._nay) return billed;
 
@@ -1766,11 +2326,12 @@ export const stage_transfer_file_copy_assets = internalMutation({
 			r2Bucket: r2.config.bucket,
 			createdBy: run.userId,
 			unfinalizedExpiresAt: now + r2_UNFINALIZED_ASSET_TTL_MS,
+			putMayArriveUntil: now + TRANSFER_ASSET_WRITE_WINDOW_MS,
 			updatedAt: now,
 		};
 		const contentAssetId = await ctx.db.insert("files_r2_assets", {
 			...assetFields,
-			kind: args.textKind === null ? "content" : "content_snapshot",
+			kind: textKind === null ? "content" : "content_snapshot",
 			size: args.contentSize,
 		});
 		const yjsSnapshotAssetId =
@@ -1785,6 +2346,26 @@ export const stage_transfer_file_copy_assets = internalMutation({
 		await ctx.db.patch("files_transfer_items", item._id, {
 			stagedAssetIds: yjsSnapshotAssetId ? [contentAssetId, yjsSnapshotAssetId] : [contentAssetId],
 		});
+		for (const [assetId, byteCount] of [
+			[contentAssetId, args.contentSize] as const,
+			...(yjsSnapshotAssetId ? [[yjsSnapshotAssetId, args.yjsSnapshotSize!] as const] : []),
+		]) {
+			const reserved = await files_private_storage_db_reserve(ctx, {
+				organizationId: run.organizationId,
+				workspaceId: run.workspaceId,
+				userId: run.userId,
+				resource: {
+					kind: "asset",
+					id: assetId,
+					r2Key: r2_create_asset_key({ organizationId: run.organizationId, workspaceId: run.workspaceId, assetId }),
+				},
+				byteCount,
+			});
+			if (reserved._nay) {
+				await files_nodes_content_db_discard_transfer_file_attempt(ctx, args);
+				return reserved;
+			}
+		}
 		return Result({ _yay: { contentAssetId, yjsSnapshotAssetId } });
 	},
 });
@@ -1796,22 +2377,30 @@ type stage_transfer_file_copy_assets_Result =
 
 export async function files_nodes_content_db_discard_transfer_file_attempt(
 	ctx: MutationCtx,
-	args: { itemId: Id<"files_transfer_items">; attempt: number },
+	args: {
+		itemId: Id<"files_transfer_items">;
+		attempt: number;
+		workId?: NonNullable<Doc<"files_transfer_items">["workId"]>;
+	},
 ) {
 	const item = await ctx.db.get("files_transfer_items", args.itemId);
-	if (!item || item.attempt !== args.attempt || item.stagedAssetIds.length === 0) return;
+	if (
+		!item ||
+		item.attempt !== args.attempt ||
+		(args.workId !== undefined && item.workId !== args.workId) ||
+		item.stagedAssetIds.length === 0
+	)
+		return;
 
 	for (const assetId of item.stagedAssetIds) {
 		const asset = await ctx.db.get("files_r2_assets", assetId);
-		// An asset with an r2Key was already published by a committed finalize — never delete it.
-		if (!asset || asset.r2Key !== undefined) continue;
+		if (!asset) continue;
 		await r2_enqueue_object_deletion_job(ctx, {
 			organizationId: item.organizationId,
 			workspaceId: item.workspaceId,
 			r2Key: r2_create_asset_key({ organizationId: item.organizationId, workspaceId: item.workspaceId, assetId }),
 			reason: "failed_create",
-			// A canceled worker's PUT can still land, so the deadline covers that in-flight window.
-			putMayArriveUntil: (item.attemptExpiresAt ?? Date.now()) + r2_PUT_MAY_ARRIVE_MARGIN_MS,
+			putMayArriveUntil: asset.putMayArriveUntil,
 		});
 		await ctx.db.delete("files_r2_assets", assetId);
 	}
@@ -1819,28 +2408,271 @@ export async function files_nodes_content_db_discard_transfer_file_attempt(
 	await ctx.db.patch("files_transfer_items", item._id, { stagedAssetIds: [] });
 }
 
+async function db_retire_transfer_states(ctx: MutationCtx, item: Doc<"files_transfer_items">) {
+	// Capture preparation can also own the new proposal's base and unstaged states.
+	const states = await ctx.db
+		.query("files_pending_update_yjs_states")
+		.withIndex("by_owner_transferItem", (q) => q.eq("owner.itemId", item._id))
+		.take(4);
+	if (states.length === 0) return;
+	const cleanupTaskId = await ctx.db.insert("files_pending_update_state_cleanup_tasks", {
+		organizationId: item.organizationId,
+		workspaceId: item.workspaceId,
+		createdAt: Date.now(),
+	});
+	for (const state of states)
+		await ctx.db.patch("files_pending_update_yjs_states", state._id, { owner: { kind: "retired", cleanupTaskId } });
+	await ctx.scheduler.runAfter(0, internal.files_pending_updates.cleanup_expired_pending_state_rows, {});
+}
+
+export async function files_nodes_content_db_discard_transfer_file_capture(
+	ctx: MutationCtx,
+	args: { itemId: Id<"files_transfer_items"> },
+) {
+	const item = await ctx.db.get("files_transfer_items", args.itemId);
+	if (!item?.capture) return;
+	await db_retire_transfer_states(ctx, item);
+
+	const { capture } = item;
+	const artifact = capture.artifact;
+	for (const assetId of artifact
+		? [artifact.contentAssetId, ...(artifact.yjsSnapshotAssetId ? [artifact.yjsSnapshotAssetId] : [])]
+		: []) {
+		const asset = await ctx.db.get("files_r2_assets", assetId);
+		if (!asset) continue;
+		// A sealed capture has an R2 key, but no saved file owns it yet.
+		await r2_enqueue_object_deletion_job(ctx, {
+			organizationId: item.organizationId,
+			workspaceId: item.workspaceId,
+			r2Key: asset.r2Key!,
+			reason: "failed_create",
+			putMayArriveUntil: asset.putMayArriveUntil,
+		});
+		await ctx.db.delete("files_r2_assets", assetId);
+	}
+	await ctx.db.patch("files_transfer_items", item._id, {
+		capture: { ...capture, sourceStateId: null, artifact: null },
+	});
+}
+
 export const discard_transfer_file_attempt = internalMutation({
-	args: { itemId: v.id("files_transfer_items"), attempt: v.number(), message: v.optional(v.string()) },
+	args: {
+		itemId: v.id("files_transfer_items"),
+		attempt: v.number(),
+		workId: v.optional(vWorkId),
+		message: v.optional(v.string()),
+		onlyIfUnprepared: v.optional(v.boolean()),
+	},
 	returns: v.null(),
 	handler: async (ctx, args) => {
+		// A duplicate call that staged no bytes must not fail the invocation that already owns them.
+		if (args.onlyIfUnprepared) {
+			const item = await ctx.db.get("files_transfer_items", args.itemId);
+			if (item && (item.stagedAssetIds.length > 0 || item.capture?.artifact)) return null;
+		}
 		await files_nodes_content_db_discard_transfer_file_attempt(ctx, args);
 		if (args.message !== undefined) await files_transfer_db_fail_copy_item(ctx, { ...args, message: args.message });
 		return null;
 	},
 });
 
+export const seal_transfer_file_capture = internalMutation({
+	args: {
+		itemId: v.id("files_transfer_items"),
+		attempt: v.number(),
+		workId: vWorkId,
+		contentAssetId: v.id("files_r2_assets"),
+		yjsSnapshotAssetId: v.optional(v.id("files_r2_assets")),
+		text: v.optional(v.string()),
+	},
+	returns: v_result({ _yay: v.null() }),
+	handler: async (ctx, args) => {
+		const prepared = await files_transfer_db_prepare_copy_item(ctx, args);
+		if (prepared._nay || prepared._yay === null)
+			return prepared._nay ? Result({ _nay: prepared._nay }) : Result({ _yay: null });
+		const { run, item, sourceEntry } = prepared._yay;
+		if (item.capture === null || item.capture.artifact !== null) return Result({ _yay: null });
+		const version = await db_get_transfer_copy_source_version(ctx, sourceEntry, item.capture);
+		if (version._nay) return version;
+
+		const assetIds = args.yjsSnapshotAssetId ? [args.contentAssetId, args.yjsSnapshotAssetId] : [args.contentAssetId];
+		if (
+			assetIds.length !== item.stagedAssetIds.length ||
+			assetIds.some((assetId, index) => assetId !== item.stagedAssetIds[index])
+		)
+			return Result({ _yay: null });
+		const assets = await Promise.all(assetIds.map((assetId) => ctx.db.get("files_r2_assets", assetId)));
+		const now = Date.now();
+		if (assets.some((asset) => !asset || asset.unfinalizedExpiresAt === undefined || asset.unfinalizedExpiresAt <= now))
+			return Result({ _nay: { message: "This copy's prepared content expired. Try again." } });
+		let textStateId: Id<"files_pending_update_yjs_states"> | null = null;
+		if (run.publication === "proposal" && item.capture.sourceVersion.textKind !== null) {
+			if (args.text === undefined) return Result({ _nay: { message: "The prepared text is missing" } });
+			const document = files_yjs_doc_create_from_text({
+				text: args.text,
+				rootKind: item.capture.sourceVersion.textKind,
+			});
+			if ("_nay" in document) return document;
+			try {
+				const update = files_u8_to_array_buffer(encodeStateAsUpdate(document));
+				if (update.byteLength > files_MAX_YJS_RECONSTRUCTED_STATE_BYTES)
+					return Result({ _nay: { message: "This file's document is too large to copy" } });
+				await db_retire_transfer_states(ctx, item);
+				const state = await files_db_insert_pending_update_yjs_state(ctx, {
+					organizationId: run.organizationId,
+					workspaceId: run.workspaceId,
+					userId: run.userId,
+					target: item.source,
+					transferItemId: item._id,
+					update,
+				});
+				if (state._nay) return state;
+				textStateId = state._yay;
+			} finally {
+				document.destroy();
+			}
+		}
+
+		for (const asset of assets) {
+			await ctx.db.patch("files_r2_assets", asset!._id, {
+				r2Key: r2_create_asset_key({
+					organizationId: item.organizationId,
+					workspaceId: item.workspaceId,
+					assetId: asset!._id,
+				}),
+				unfinalizedExpiresAt: undefined,
+				updatedAt: now,
+			});
+		}
+		await ctx.db.patch("files_transfer_items", item._id, {
+			capture: {
+				...item.capture,
+				sourceStateId: null,
+				artifact: {
+					contentAssetId: args.contentAssetId,
+					yjsSnapshotAssetId: args.yjsSnapshotAssetId ?? null,
+					textStateId,
+				},
+			},
+			stagedAssetIds: [],
+		});
+		return Result({ _yay: null });
+	},
+});
+
+type seal_transfer_file_capture_Result =
+	typeof seal_transfer_file_capture extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
+
+/**
+ * These extra assets belong to the attempt until the saved replacement commits.
+ */
+export const stage_transfer_saved_replacement = internalMutation({
+	args: {
+		itemId: v.id("files_transfer_items"),
+		attempt: v.number(),
+		workId: vWorkId,
+		backupSize: v.optional(v.number()),
+		yjsSnapshotSize: v.optional(v.number()),
+	},
+	returns: v_result({
+		_yay: v.union(
+			v.object({
+				backupAssetId: v.union(v.id("files_r2_assets"), v.null()),
+				yjsSnapshotAssetId: v.union(v.id("files_r2_assets"), v.null()),
+			}),
+			v.null(),
+		),
+	}),
+	handler: async (ctx, args) => {
+		const prepared = await files_transfer_db_prepare_copy_item(ctx, args);
+		if (prepared._nay || prepared._yay === null) return prepared;
+
+		const { run, item, existing } = prepared._yay;
+
+		if (
+			run.publication !== "saved" ||
+			existing?.kind !== "saved" ||
+			!item.capture?.artifact ||
+			item.stagedAssetIds.length
+		)
+			return Result({ _yay: null });
+
+		const sizes = [args.backupSize, args.yjsSnapshotSize];
+
+		if (
+			sizes.some((size) => size !== undefined && (!Number.isSafeInteger(size) || size < 0)) ||
+			(args.backupSize ?? 0) > files_MAX_TEXT_CONTENT_BYTES ||
+			(args.yjsSnapshotSize ?? 0) > files_MAX_YJS_RECONSTRUCTED_STATE_BYTES
+		)
+			return Result({ _nay: { message: "Replacement content is too large" } });
+
+		const now = Date.now();
+		const assetIds: Id<"files_r2_assets">[] = [];
+		let backupAssetId: Id<"files_r2_assets"> | null = null;
+		let yjsSnapshotAssetId: Id<"files_r2_assets"> | null = null;
+
+		for (const [kind, size] of [
+			["content_snapshot", args.backupSize],
+			["yjs_snapshot", args.yjsSnapshotSize],
+		] as const) {
+			if (size === undefined) continue;
+			const assetId = await ctx.db.insert("files_r2_assets", {
+				organizationId: run.organizationId,
+				workspaceId: run.workspaceId,
+				kind,
+				size,
+				r2Bucket: r2.config.bucket,
+				createdBy: run.userId,
+				unfinalizedExpiresAt: now + r2_UNFINALIZED_ASSET_TTL_MS,
+				putMayArriveUntil: now + TRANSFER_ASSET_WRITE_WINDOW_MS,
+				updatedAt: now,
+			});
+			assetIds.push(assetId);
+
+			await ctx.db.patch("files_transfer_items", item._id, { stagedAssetIds: assetIds });
+
+			const reserved = await files_private_storage_db_reserve(ctx, {
+				organizationId: run.organizationId,
+				workspaceId: run.workspaceId,
+				userId: run.userId,
+				resource: {
+					kind: "asset",
+					id: assetId,
+					r2Key: r2_create_asset_key({ organizationId: run.organizationId, workspaceId: run.workspaceId, assetId }),
+				},
+				byteCount: size,
+			});
+
+			if (reserved._nay) {
+				await files_nodes_content_db_discard_transfer_file_attempt(ctx, args);
+				return reserved;
+			}
+
+			if (kind === "content_snapshot") backupAssetId = assetId;
+			else yjsSnapshotAssetId = assetId;
+		}
+
+		return Result({ _yay: { backupAssetId, yjsSnapshotAssetId } });
+	},
+});
+
+type stage_transfer_saved_replacement_Result =
+	typeof stage_transfer_saved_replacement extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
+
 export const finalize_transfer_file_copy = internalMutation({
 	args: {
 		itemId: v.id("files_transfer_items"),
 		attempt: v.number(),
+		workId: vWorkId,
 		contentAssetId: v.id("files_r2_assets"),
 		yjsSnapshotAssetId: v.optional(v.id("files_r2_assets")),
-		contentType: v.string(),
-		textKind: doc(app_convex_schema, "files_nodes").fields.textKind,
-		collaborationEnabled: v.boolean(),
-		sourceYjsLastSequenceId: v.union(v.id("files_yjs_docs_last_sequences"), v.null()),
 		text: v.optional(v.string()),
-		metadata: v.array(v.object(files_metadata_entry_fields)),
+		backupAssetId: v.optional(v.id("files_r2_assets")),
+		replacementYjsSnapshotAssetId: v.optional(v.id("files_r2_assets")),
 	},
 	returns: v_result({ _yay: v.null() }),
 	handler: async (ctx, args) => {
@@ -1850,28 +2682,24 @@ export const finalize_transfer_file_copy = internalMutation({
 			return prepared._nay ? Result({ _nay: prepared._nay }) : Result({ _yay: null });
 		}
 
-		const { run, item, sourceNode, parentId, name, path } = prepared._yay;
-		const assetIds = args.yjsSnapshotAssetId ? [args.contentAssetId, args.yjsSnapshotAssetId] : [args.contentAssetId];
+		const { run, item, sourceEntry, parent, name, path, existing, membership } = prepared._yay;
 		const now = Date.now();
 		if (
-			item.attemptExpiresAt === null ||
-			item.attemptExpiresAt <= now ||
-			assetIds.length !== item.stagedAssetIds.length ||
-			assetIds.some((assetId, index) => assetId !== item.stagedAssetIds[index])
+			!item.capture?.artifact ||
+			item.capture.artifact.contentAssetId !== args.contentAssetId ||
+			item.capture.artifact.yjsSnapshotAssetId !== (args.yjsSnapshotAssetId ?? null)
 		) {
-			return Result({ _nay: { message: "This copy attempt expired. Try again." } });
+			return Result({ _yay: null });
 		}
-
-		// A normal edit may advance the sequence. A new document must never be mixed into this read.
-		if (sourceNode.yjsLastSequenceId !== args.sourceYjsLastSequenceId) {
-			return Result({ _nay: { message: "The source document changed while it was being copied. Try again." } });
-		}
+		const version = await db_get_transfer_copy_source_version(ctx, sourceEntry, item.capture);
+		if (version._nay) return version;
+		const { contentType, textKind, collaborationEnabled } = item.capture.sourceVersion;
 
 		const billed = await db_resolve_transfer_copy_billed_user(ctx, {
 			organizationId: run.organizationId,
 			userId: run.userId,
 			item,
-			storedFile: args.textKind === null,
+			storedFile: textKind === null,
 		});
 		if (billed._nay) return billed;
 
@@ -1879,17 +2707,350 @@ export const finalize_transfer_file_copy = internalMutation({
 		const yjsSnapshotAsset = args.yjsSnapshotAssetId
 			? await ctx.db.get("files_r2_assets", args.yjsSnapshotAssetId)
 			: null;
-		if (
-			!contentAsset ||
-			contentAsset.unfinalizedExpiresAt === undefined ||
-			contentAsset.unfinalizedExpiresAt <= now ||
-			(args.yjsSnapshotAssetId &&
-				(!yjsSnapshotAsset ||
-					yjsSnapshotAsset.unfinalizedExpiresAt === undefined ||
-					yjsSnapshotAsset.unfinalizedExpiresAt <= now))
-		) {
-			return Result({ _nay: { message: "This copy's prepared content expired. Try again." } });
+
+		if (!contentAsset?.r2Key || (args.yjsSnapshotAssetId && !yjsSnapshotAsset?.r2Key)) {
+			return Result({ _nay: { message: "The captured source content is no longer available" } });
 		}
+
+		if (run.publication === "proposal" && (item.preparation || existing?.kind === "private")) {
+			const privateNodeId = item.preparation?.privateNodeId ?? (existing!.node._id as Id<"files_pending_nodes">);
+			const previous = existing?.kind === "private" ? existing.pendingUpdate : null;
+			const pendingUpdateId = item.preparation?.pendingUpdateId ?? previous!._id;
+			const proposalRevision = item.preparation?.proposalRevision ?? previous!.revision;
+			const metadata = previous?.createIntent?.metadata ?? item.capture.metadata;
+			const target = { kind: "private" as const, id: privateNodeId };
+			const scope = { organizationId: run.organizationId, workspaceId: run.workspaceId, userId: run.userId };
+
+			if (textKind === null) {
+				if (previous?.content) await files_db_retire_pending_update_yjs_states(ctx, { ...scope, pendingUpdateId });
+				await files_pending_update_db_delete_chunks(ctx, { pendingUpdateId });
+				await files_db_patch_pending_update(ctx, pendingUpdateId, {
+					createIntent: {
+						kind: "stored",
+						contentType,
+						assetId: contentAsset._id,
+						size: contentAsset.size,
+						metadata,
+					},
+					content: undefined,
+					preparation: undefined,
+					revision: proposalRevision + 1,
+					size: contentAsset.size,
+					copiedFrom: { target: item.source, path: item.sourcePath },
+					updatedAt: now,
+				});
+			} else {
+				const state = item.capture.artifact.textStateId
+					? await ctx.db.get("files_pending_update_yjs_states", item.capture.artifact.textStateId)
+					: null;
+				if (!state || state.owner.kind !== "transfer_capture" || state.owner.itemId !== item._id)
+					return Result({ _nay: { message: "The prepared text is missing" } });
+
+				const bytes = await files_db_load_pending_update_yjs_state_bytes(ctx, { stateDoc: state });
+				if (bytes._nay) return bytes;
+
+				const document = files_yjs_doc_create_from_array_buffer_update(files_u8_to_array_buffer(bytes._yay));
+				let capturedText: string;
+				try {
+					const extracted = files_yjs_doc_get_text({ yjsDoc: document, rootKind: textKind });
+					if (extracted._nay) return extracted;
+					capturedText = extracted._yay;
+				} finally {
+					document.destroy();
+				}
+
+				const empty = files_yjs_doc_create_from_text({ text: "", rootKind: textKind });
+				if ("_nay" in empty) return empty;
+				let baseUpdate: ArrayBuffer;
+				try {
+					baseUpdate = files_u8_to_array_buffer(encodeStateAsUpdate(empty));
+				} finally {
+					empty.destroy();
+				}
+
+				const base = await files_db_insert_pending_update_yjs_state(ctx, {
+					...scope,
+					target,
+					transferItemId: item._id,
+					update: baseUpdate,
+				});
+				if (base._nay) return base;
+
+				const unstaged = await files_db_insert_pending_update_yjs_state(ctx, {
+					...scope,
+					target,
+					transferItemId: item._id,
+					update: files_u8_to_array_buffer(bytes._yay),
+				});
+				if (unstaged._nay) return unstaged;
+
+				if (previous?.content) await files_db_retire_pending_update_yjs_states(ctx, { ...scope, pendingUpdateId });
+				await ctx.db.patch("files_pending_update_yjs_states", base._yay, {
+					owner: { kind: "active", pendingUpdateId, role: "base" },
+				});
+				await ctx.db.patch("files_pending_update_yjs_states", unstaged._yay, {
+					owner: { kind: "active", pendingUpdateId, role: "unstaged" },
+				});
+				await ctx.db.patch("files_pending_update_yjs_states", state._id, {
+					target,
+					owner: { kind: "active", pendingUpdateId, role: "staged" },
+				});
+
+				await files_db_patch_pending_update(ctx, pendingUpdateId, {
+					createIntent: {
+						kind: "text",
+						contentType,
+						textKind,
+						collaborationEnabled:
+							previous?.createIntent?.kind === "text"
+								? previous.createIntent.collaborationEnabled
+								: collaborationEnabled === true,
+						metadata,
+					},
+					content: {
+						base: { kind: "new" },
+						baseStateId: base._yay,
+						stagedStateId: state._id,
+						unstagedStateId: unstaged._yay,
+					},
+					preparation: undefined,
+					revision: proposalRevision + 1,
+					size: files_get_utf8_byte_size(capturedText),
+					copiedFrom: { target: item.source, path: item.sourcePath },
+					updatedAt: now,
+				});
+
+				await files_pending_update_db_replace_chunks(ctx, {
+					...scope,
+					target,
+					pendingUpdateId,
+					proposalRevision: proposalRevision + 1,
+					unstagedText: capturedText,
+					rootKind: textKind,
+				});
+
+				// The proposal owns its three states. The transport assets are no longer needed.
+				for (const asset of [contentAsset, ...(yjsSnapshotAsset ? [yjsSnapshotAsset] : [])]) {
+					await r2_enqueue_object_deletion_job(ctx, {
+						...scope,
+						r2Key: asset.r2Key!,
+						reason: "failed_create",
+						putMayArriveUntil: (item.attemptExpiresAt ?? now) + r2_PUT_MAY_ARRIVE_MARGIN_MS,
+					});
+					await ctx.db.delete("files_r2_assets", asset._id);
+				}
+			}
+
+			if (previous?.createIntent?.kind === "stored")
+				await files_pending_update_db_release_replacement_asset(ctx, {
+					...scope,
+					assetId: previous.createIntent.assetId,
+				});
+
+			await files_db_schedule_pending_update_cleanup(ctx, { pendingUpdateId, expectedUpdatedAt: now });
+
+			await files_transfer_db_complete_copy_item(ctx, {
+				itemId: item._id,
+				attempt: args.attempt,
+				workId: args.workId,
+				target,
+				name,
+				path,
+			});
+
+			return Result({ _yay: null });
+		}
+
+		if (run.publication === "proposal" && existing?.kind === "saved") {
+			const baseContentVersion = await files_nodes_db_get_content_version(ctx, existing.node);
+			if (!baseContentVersion || !existing.node.assetId)
+				return Result({ _nay: { message: "The destination file is still saving" } });
+			const scope = { organizationId: run.organizationId, workspaceId: run.workspaceId, userId: run.userId };
+			const target = { kind: "saved" as const, id: existing.node._id };
+			const previous = existing.pendingUpdate;
+			const revision = (previous?.revision ?? 0) + 1;
+			const threadId = run.origin.kind === "agent" ? run.origin.threadId : undefined;
+			const threadIds =
+				threadId && !previous?.threadIds?.includes(threadId)
+					? [...(previous?.threadIds ?? []), threadId]
+					: previous?.threadIds;
+
+			const pendingReplacement = {
+				assetId: contentAsset._id,
+				size: contentAsset.size,
+				contentType,
+				baseAssetId: existing.node.assetId,
+				baseContentVersion,
+				...(textKind === null
+					? {}
+					: {
+							yjsRootKind: textKind,
+							nonCollaborative:
+								existing.node.textKind !== null
+									? existing.node.collaborationEnabled === false
+									: collaborationEnabled !== true,
+						}),
+			};
+
+			const changes = {
+				revision,
+				pendingReplacement,
+				copiedFrom: { target: item.source, path: item.sourcePath },
+				threadIds,
+				size: contentAsset.size,
+				updatedAt: now,
+			};
+
+			let pendingUpdateId: Id<"files_pending_updates">;
+			if (previous) {
+				pendingUpdateId = previous._id;
+				if (previous.content) await files_db_retire_pending_update_yjs_states(ctx, { ...scope, pendingUpdateId });
+				if (previous.pendingReplacement)
+					await files_pending_update_db_release_replacement_asset(ctx, {
+						...scope,
+						assetId: previous.pendingReplacement.assetId,
+					});
+				await files_pending_update_db_delete_chunks(ctx, { pendingUpdateId });
+				await files_db_patch_pending_update(ctx, pendingUpdateId, {
+					...changes,
+					content: undefined,
+					contentNeedsRebase: undefined,
+					contentRebaseRootKind: undefined,
+				});
+			} else {
+				pendingUpdateId = await files_db_insert_pending_update(ctx, { ...scope, target, ...changes });
+			}
+
+			if (textKind !== null && args.text !== undefined)
+				await files_pending_update_db_replace_chunks(ctx, {
+					...scope,
+					target,
+					pendingUpdateId,
+					proposalRevision: revision,
+					unstagedText: args.text,
+					rootKind: textKind,
+				});
+
+			await db_retire_transfer_states(ctx, item);
+
+			if (yjsSnapshotAsset) {
+				await r2_enqueue_object_deletion_job(ctx, {
+					...scope,
+					r2Key: yjsSnapshotAsset.r2Key!,
+					reason: "failed_create",
+					putMayArriveUntil: (item.attemptExpiresAt ?? now) + r2_PUT_MAY_ARRIVE_MARGIN_MS,
+				});
+				await ctx.db.delete("files_r2_assets", yjsSnapshotAsset._id);
+			}
+
+			await files_db_schedule_pending_update_cleanup(ctx, { pendingUpdateId, expectedUpdatedAt: now });
+
+			await files_transfer_db_complete_copy_item(ctx, {
+				itemId: item._id,
+				attempt: args.attempt,
+				workId: args.workId,
+				target,
+				name,
+				path,
+			});
+
+			return Result({ _yay: null });
+		}
+
+		if (run.publication === "saved" && existing?.kind === "saved") {
+			const fileNode = existing.node;
+			if (!fileNode.assetId) return Result({ _nay: { message: "The destination file is still saving" } });
+
+			const user = await ctx.db.get("users", run.userId);
+			if (!user) return Result({ _nay: { message: "Unauthenticated" } });
+
+			const extraIds = [args.backupAssetId, args.replacementYjsSnapshotAssetId].filter((id) => id !== undefined);
+			if (
+				extraIds.length !== item.stagedAssetIds.length ||
+				extraIds.some((id, index) => item.stagedAssetIds[index] !== id)
+			)
+				return Result({ _nay: { message: "Replacement assets changed" } });
+
+			const backupAsset = args.backupAssetId ? await ctx.db.get("files_r2_assets", args.backupAssetId) : null;
+			const replacementSnapshot = args.replacementYjsSnapshotAssetId
+				? await ctx.db.get("files_r2_assets", args.replacementYjsSnapshotAssetId)
+				: null;
+
+			const destinationVersion = await files_nodes_db_get_content_version(ctx, fileNode);
+			const oldSnapshot = fileNode.yjsSnapshotId
+				? await ctx.db.get("files_yjs_snapshots", fileNode.yjsSnapshotId)
+				: null;
+			if (
+				destinationVersion?.kind === "yjs" &&
+				oldSnapshot &&
+				destinationVersion.sequence > oldSnapshot.sequence &&
+				!backupAsset
+			)
+				return Result({ _nay: { message: "The destination's current text needs a history backup" } });
+
+			const collaborative =
+				textKind !== null &&
+				(fileNode.textKind !== null ? fileNode.collaborationEnabled === true : collaborationEnabled === true);
+			const usedSnapshot = collaborative ? (replacementSnapshot ?? yjsSnapshotAsset) : null;
+
+			const installed = await db_install_file_content_replacement(ctx, {
+				membership,
+				user,
+				billedUser: billed._yay,
+				fileNode,
+				previousAssetId: fileNode.assetId,
+				pendingContent: "preserve",
+				contentAssetId: contentAsset._id,
+				contentSize: contentAsset.size,
+				publishContentAsset: false,
+				contentType,
+				backup: backupAsset ? { assetId: backupAsset._id, size: backupAsset.size } : undefined,
+				yjsRootKind: textKind ?? undefined,
+				nonCollaborative: textKind === null ? undefined : !collaborative,
+				yjsSnapshot: usedSnapshot ? { assetId: usedSnapshot._id, size: usedSnapshot.size } : undefined,
+				text: args.text,
+			});
+
+			if (installed._nay) return installed;
+
+			for (const asset of [
+				contentAsset,
+				...(usedSnapshot ? [usedSnapshot] : []),
+				...(backupAsset ? [backupAsset] : []),
+			]) {
+				const reservation = await ctx.db
+					.query("files_private_storage_reservations")
+					.withIndex("by_resource", (q) => q.eq("resource.kind", "asset").eq("resource.id", asset._id))
+					.unique();
+				if (!reservation)
+					throw should_never_happen("Transfer asset has no storage reservation", { assetId: asset._id });
+				await files_private_storage_db_release(ctx, {
+					reservationId: reservation._id,
+					settlement: { kind: "saved", savedNodeId: fileNode._id, settledAt: now },
+				});
+			}
+
+			if (yjsSnapshotAsset && yjsSnapshotAsset._id !== usedSnapshot?._id)
+				await files_pending_update_db_release_replacement_asset(ctx, {
+					organizationId: run.organizationId,
+					workspaceId: run.workspaceId,
+					assetId: yjsSnapshotAsset._id,
+				});
+
+			await files_transfer_db_complete_copy_item(ctx, {
+				itemId: item._id,
+				attempt: args.attempt,
+				workId: args.workId,
+				target: { kind: "saved", id: fileNode._id },
+				name,
+				path,
+			});
+
+			return Result({ _yay: null });
+		}
+
+		if (parent.kind === "private") return Result({ _nay: { message: "The destination draft is still preparing" } });
+		const parentId = parent.kind === "root" ? files_ROOT_ID : parent.id;
 
 		const created = await files_nodes_db_create_node_recursively_at_path(ctx, {
 			organizationId: run.organizationId,
@@ -1898,16 +3059,16 @@ export const finalize_transfer_file_copy = internalMutation({
 			parentId,
 			path: name,
 			kind: "file",
-			contentType: args.contentType,
+			contentType,
 			assetId: args.contentAssetId,
-			expectsTextContent: args.textKind === null ? undefined : true,
-			metadata: args.metadata,
+			expectsTextContent: textKind === null ? undefined : true,
+			metadata: item.capture.metadata,
 			now,
 		});
 		if (created._nay) return created;
 		const nodeId = created._yay;
 
-		if (args.textKind !== null) {
+		if (textKind !== null) {
 			if (args.text === undefined) {
 				const errorMessage = "Text copy has no text";
 				const errorData = { itemId: item._id };
@@ -1920,11 +3081,11 @@ export const finalize_transfer_file_copy = internalMutation({
 				nodeId,
 				path,
 				parentId,
-				contentType: args.contentType,
-				rootKind: args.textKind,
+				contentType,
+				rootKind: textKind,
 				textContent: args.text,
 				readOnly: false,
-				nonCollaborative: !args.collaborationEnabled,
+				nonCollaborative: !collaborationEnabled,
 				yjsSnapshotAssetId: args.yjsSnapshotAssetId,
 				userId: run.userId,
 				now,
@@ -1939,22 +3100,13 @@ export const finalize_transfer_file_copy = internalMutation({
 				yjsSnapshot: yjsSnapshotAsset ? { assetId: yjsSnapshotAsset._id, size: yjsSnapshotAsset.size } : undefined,
 			});
 		} else {
-			await ctx.db.patch("files_r2_assets", contentAsset._id, {
-				r2Key: r2_create_asset_key({
-					organizationId: run.organizationId,
-					workspaceId: run.workspaceId,
-					assetId: contentAsset._id,
-				}),
-				unfinalizedExpiresAt: undefined,
-				updatedAt: now,
-			});
 			await store_version_snapshot(ctx, {
 				organizationId: run.organizationId,
 				workspaceId: run.workspaceId,
 				nodeId,
 				assetId: contentAsset._id,
 				userId: run.userId,
-				contentType: args.contentType,
+				contentType,
 				yjsRootKind: null,
 				collaborationEnabled: false,
 			});
@@ -1992,7 +3144,25 @@ export const finalize_transfer_file_copy = internalMutation({
 			],
 		});
 
-		await files_transfer_db_complete_copy_item(ctx, { itemId: item._id, attempt: args.attempt, nodeId, name, path });
+		await files_transfer_db_complete_copy_item(ctx, {
+			itemId: item._id,
+			attempt: args.attempt,
+			workId: args.workId,
+			target: { kind: "saved", id: nodeId },
+			name,
+			path,
+		});
+		for (const asset of [contentAsset, ...(yjsSnapshotAsset ? [yjsSnapshotAsset] : [])]) {
+			const reservation = await ctx.db
+				.query("files_private_storage_reservations")
+				.withIndex("by_resource", (q) => q.eq("resource.kind", "asset").eq("resource.id", asset._id))
+				.unique();
+			if (!reservation) throw should_never_happen("Transfer asset has no storage reservation", { assetId: asset._id });
+			await files_private_storage_db_release(ctx, {
+				reservationId: reservation._id,
+				settlement: { kind: "saved", savedNodeId: nodeId, settledAt: now },
+			});
+		}
 		return Result({ _yay: null });
 	},
 });
@@ -2006,178 +3176,328 @@ export const copy_transfer_file = internalAction({
 	args: { itemId: v.id("files_transfer_items"), attempt: v.number() },
 	returns: v.null(),
 	handler: async (ctx, args) => {
-		const prepared = (await ctx.runMutation(
+		let prepared = (await ctx.runMutation(
 			internal.files_nodes_content.get_transfer_file_copy_data,
 			args,
 		)) as get_transfer_file_copy_data_Result;
+		if (prepared._nay && "data" in prepared._nay && prepared._nay.data) {
+			const data = prepared._nay.data;
+			if (data.sourceVersion.kind !== "pending") return null;
+			const base = (await ctx.runMutation(internal.files_nodes_content.get_transfer_copy_pending_text, {
+				...args,
+				revision: data.sourceVersion.revision,
+				role: "base",
+			})) as get_transfer_copy_pending_text_Result;
+			const draft = (await ctx.runMutation(internal.files_nodes_content.get_transfer_copy_pending_text, {
+				...args,
+				revision: data.sourceVersion.revision,
+				role: "unstaged",
+			})) as get_transfer_copy_pending_text_Result;
+			const saved = (await ctx.runAction(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
+				organizationId: data.organizationId,
+				workspaceId: data.workspaceId,
+				userId: data.userId,
+				path: data.savedPath,
+				includePending: false,
+				maxBytes: files_MAX_TEXT_CONTENT_BYTES,
+			})) as get_file_last_available_text_content_by_path_Result;
+			const merged =
+				base._nay || draft._nay || !saved
+					? Result({
+							_nay: { message: base._nay?.message ?? draft._nay?.message ?? "The source file is not available" },
+						})
+					: files_pending_text_merge({ baseText: base._yay, proposedText: draft._yay, currentText: saved.content });
+			if (merged._nay) {
+				await ctx.runMutation(internal.files_nodes_content.discard_transfer_file_attempt, {
+					...args,
+					message: merged._nay.message,
+				});
+				return null;
+			}
+			// Rebase only the captured copy. Reading a source never needs permission to edit it.
+			prepared = (await ctx.runMutation(internal.files_nodes_content.get_transfer_file_copy_data, {
+				...args,
+				preparedDraft: { text: merged._yay, sourceVersion: data.sourceVersion, savedVersion: data.savedVersion },
+			})) as get_transfer_file_copy_data_Result;
+		}
+		if (prepared._nay || prepared._yay === null) return null;
+		const copyData = prepared._yay;
+		const claim = { ...args, workId: copyData.workId };
+		const { capture } = copyData;
 
 		// A throw leaves the item retryable through the workpool callback; fail() marks it failed with
 		// no retry.
+		let ownsStaging = false;
 		const fail = async (message: string) => {
-			await ctx.runMutation(internal.files_nodes_content.discard_transfer_file_attempt, { ...args, message });
+			await ctx.runMutation(internal.files_nodes_content.discard_transfer_file_attempt, {
+				...claim,
+				message,
+				onlyIfUnprepared: capture.artifact === null && !ownsStaging,
+			});
 			return null;
 		};
-		if (prepared._nay) return await fail(prepared._nay.message);
-		if (prepared._yay === null) return null;
 
-		const copyData = prepared._yay;
-		const contentType = copyData.sourceNode.contentType;
-		if (contentType === null) return await fail("The source file has no content type");
+		const { contentType, textKind: rootKind, collaborationEnabled } = capture.sourceVersion;
+		try {
+			let text: string | undefined;
+			let snapshotUpdate: ArrayBuffer | undefined;
+			if (rootKind !== null) {
+				let copiedText: string;
+				const sourceSnapshot = capture.sourceYjsSnapshot;
+				if (capture.artifact === null && copyData.text !== undefined) {
+					copiedText = copyData.text;
+				} else if (
+					capture.artifact === null &&
+					capture.sourceVersion.kind === "yjs" &&
+					copyData.source.kind === "saved" &&
+					sourceSnapshot &&
+					capture.sourceVersion.sequence > sourceSnapshot.sequence
+				) {
+					if (!copyData.yjsSnapshotAsset?.r2Key)
+						return await fail("The captured source content is no longer available");
+					if (copyData.yjsSnapshotAsset.size > files_MAX_YJS_RECONSTRUCTED_STATE_BYTES)
+						return await fail("This file's document is too large to copy");
+					const base = await r2_fetch_object_from_bucket({ key: copyData.yjsSnapshotAsset.r2Key }).then((response) =>
+						response.arrayBuffer(),
+					);
+					const yjsDoc = files_yjs_doc_create_from_array_buffer_update(base);
+					try {
+						let sequence = sourceSnapshot.sequence;
+						let updateCount = 0;
+						let updateBytes = 0;
+						while (sequence < capture.sourceVersion.sequence) {
+							const next = (await ctx.runQuery(internal.files_nodes.get_file_next_yjs_update, {
+								organizationId: copyData.organizationId,
+								workspaceId: copyData.workspaceId,
+								nodeId: copyData.source.id,
+								afterSequence: sequence,
+								throughSequence: capture.sourceVersion.sequence,
+							})) as get_file_next_yjs_update_Result;
+							if (next.kind !== "row") return await fail("The captured source content is no longer available");
+							files_yjs_doc_apply_array_buffer_update(yjsDoc, next.row.update);
+							sequence = next.row.sequence;
+							updateCount += 1;
+							updateBytes += next.row.update.byteLength;
 
-		const rootKind = copyData.sourceNode.textKind;
-		let text: string | undefined;
-		let snapshotUpdate: ArrayBuffer | undefined;
-		if (rootKind !== null) {
-			let copiedText: string;
-			const header = copyData.header;
-			if (header && header.throughSequence > header.yjsSnapshotDoc.sequence) {
-				if (header.yjsSnapshotAsset.size > files_MAX_YJS_RECONSTRUCTED_STATE_BYTES)
-					return await fail("This file's document is too large to copy");
-				if (!header.yjsSnapshotAsset.r2Key) return await fail("The source file is still saving. Try again.");
-				const base = await r2_fetch_object_from_bucket({ key: header.yjsSnapshotAsset.r2Key }).then((response) =>
-					response.arrayBuffer(),
-				);
-				const yjsDoc = files_yjs_doc_create_from_array_buffer_update(base);
-				try {
-					let sequence = header.yjsSnapshotDoc.sequence;
-					let updateCount = 0;
-					let updateBytes = 0;
-					while (sequence < header.throughSequence) {
-						const next = (await ctx.runQuery(internal.files_nodes.get_file_next_yjs_update, {
+							if (
+								updateCount > files_MAX_UNMATERIALIZED_YJS_UPDATE_COUNT ||
+								updateBytes > files_MAX_UNMATERIALIZED_YJS_UPDATE_BYTES ||
+								encodeStateAsUpdate(yjsDoc).byteLength > files_MAX_YJS_RECONSTRUCTED_STATE_BYTES
+							)
+								return await fail("This file's document is too large to copy");
+						}
+						const extracted = files_yjs_doc_get_text({ yjsDoc, rootKind });
+						if (extracted._nay) return await fail(extracted._nay.message);
+						copiedText = extracted._yay;
+					} finally {
+						yjsDoc.destroy();
+					}
+				} else {
+					if (!copyData.asset?.r2Key) return await fail("The captured source content is no longer available");
+					copiedText = await r2_fetch_object_from_bucket({ key: copyData.asset.r2Key }).then((response) =>
+						response.text(),
+					);
+				}
+
+				if (capture.artifact === null && rootKind === "rich_text") {
+					const editor = files_headless_tiptap_editor_create({ initialContent: { markdown: copiedText } });
+					if (editor._nay) return await fail(editor._nay.message);
+					try {
+						// Drop only comment marks. Their text and all other formatting remain in the document.
+						const state = editor._yay.state;
+						editor._yay.view.updateState(
+							state.apply(
+								state.tr.removeMark(0, state.doc.content.size, editor._yay.schema.marks[files_COMMENT_MARK_TYPE]),
+							),
+						);
+						copiedText = files_headless_tiptap_editor_get_markdown({ mut_editor: editor._yay });
+					} finally {
+						editor._yay.destroy();
+					}
+					const frontmatter = files_metadata_preflight_frontmatter(copiedText);
+					if (frontmatter._yay && files_metadata_frontmatter_exceeds_index_caps(frontmatter._yay))
+						return await fail("Too many frontmatter fields");
+				}
+
+				if (capture.artifact === null && collaborationEnabled) {
+					const document = files_yjs_doc_create_from_text({ text: copiedText, rootKind });
+					if ("_nay" in document) return await fail(document._nay.message);
+					try {
+						snapshotUpdate = files_u8_to_array_buffer(encodeStateAsUpdate(document));
+						if (snapshotUpdate.byteLength > files_MAX_YJS_RECONSTRUCTED_STATE_BYTES)
+							return await fail("This file's document is too large to copy");
+						const normalized = files_yjs_doc_get_text({ yjsDoc: document, rootKind });
+						if (normalized._nay) return await fail(normalized._nay.message);
+						copiedText = normalized._yay;
+					} finally {
+						document.destroy();
+					}
+				}
+
+				if (files_get_utf8_byte_size(copiedText) > files_MAX_TEXT_CONTENT_BYTES)
+					return await fail("This file's text is too large to copy");
+				text = copiedText;
+			}
+
+			let assets = capture.artifact
+				? {
+						contentAssetId: capture.artifact.contentAssetId,
+						yjsSnapshotAssetId: capture.artifact.yjsSnapshotAssetId ?? undefined,
+					}
+				: null;
+			if (assets === null) {
+				const staged = (await ctx.runMutation(internal.files_nodes_content.stage_transfer_file_copy_assets, {
+					...claim,
+					contentSize: text === undefined ? copyData.asset!.size : files_get_utf8_byte_size(text),
+					yjsSnapshotSize: snapshotUpdate?.byteLength,
+				})) as stage_transfer_file_copy_assets_Result;
+				if (staged._nay) return await fail(staged._nay.message);
+				if (staged._yay === null) return null;
+
+				assets = staged._yay;
+				ownsStaging = true;
+				const contentKey = r2_create_asset_key({
+					organizationId: copyData.organizationId,
+					workspaceId: copyData.workspaceId,
+					assetId: assets.contentAssetId,
+				});
+				if (text === undefined) {
+					if (!copyData.asset?.r2Key) return await fail("The captured source content is no longer available");
+					const copied = await r2_copy_object_to_immutable_key(ctx, {
+						sourceKey: copyData.asset.r2Key!,
+						destinationKey: contentKey,
+					});
+					if (copied.outcome !== "ready" || copied.size !== copyData.asset.size)
+						return await fail("The source file's content is not available");
+				} else {
+					const writes = await Promise.allSettled([
+						r2_put_object(ctx, {
+							key: contentKey,
+							body: text,
+							contentType,
+						}),
+						assets.yjsSnapshotAssetId && snapshotUpdate
+							? r2_put_object(ctx, {
+									key: r2_create_asset_key({
+										organizationId: copyData.organizationId,
+										workspaceId: copyData.workspaceId,
+										assetId: assets.yjsSnapshotAssetId,
+									}),
+									body: snapshotUpdate,
+									contentType: "application/octet-stream",
+								})
+							: Promise.resolve(),
+					]);
+					const failed = writes.find((write) => write.status === "rejected");
+					if (failed?.status === "rejected") throw failed.reason;
+				}
+
+				const sealed = (await ctx.runMutation(internal.files_nodes_content.seal_transfer_file_capture, {
+					...claim,
+					...assets,
+					text,
+				})) as seal_transfer_file_capture_Result;
+				if (sealed._nay) return await fail(sealed._nay.message);
+			}
+
+			let backupAssetId: Id<"files_r2_assets"> | undefined;
+			let replacementYjsSnapshotAssetId: Id<"files_r2_assets"> | undefined;
+
+			if (copyData.replacement) {
+				let backupText: string | undefined;
+				if (copyData.replacement.needsBackup) {
+					const current = (await ctx.runAction(
+						internal.files_nodes_content.get_file_last_available_text_content_by_path,
+						{
 							organizationId: copyData.organizationId,
 							workspaceId: copyData.workspaceId,
-							nodeId: copyData.sourceNode._id,
-							afterSequence: sequence,
-							throughSequence: header.throughSequence,
-						})) as get_file_next_yjs_update_Result;
-						if (next.kind !== "row") throw new Error("The source file changed while reading saved edits. Try again.");
-						files_yjs_doc_apply_array_buffer_update(yjsDoc, next.row.update);
-						sequence = next.row.sequence;
-						updateCount += 1;
-						updateBytes += next.row.update.byteLength;
+							userId: copyData.userId,
+							path: copyData.replacement.path,
+							includePending: false,
+							maxBytes: files_MAX_TEXT_CONTENT_BYTES,
+						},
+					)) as get_file_last_available_text_content_by_path_Result;
+					if (!current) return await fail("The destination's current text is not available");
+					backupText = current.content;
+				}
 
-						if (
-							updateCount > files_MAX_UNMATERIALIZED_YJS_UPDATE_COUNT ||
-							updateBytes > files_MAX_UNMATERIALIZED_YJS_UPDATE_BYTES ||
-							encodeStateAsUpdate(yjsDoc).byteLength > files_MAX_YJS_RECONSTRUCTED_STATE_BYTES
-						)
-							return await fail("This file's document is too large to copy");
+				let replacementSnapshot: ArrayBuffer | undefined;
+				if (rootKind !== null && copyData.replacement.collaborationEnabled && !assets.yjsSnapshotAssetId) {
+					const document = files_yjs_doc_create_from_text({ text: text!, rootKind });
+					if ("_nay" in document) return await fail(document._nay.message);
+					try {
+						replacementSnapshot = files_u8_to_array_buffer(encodeStateAsUpdate(document));
+					} finally {
+						document.destroy();
 					}
-					const extracted = files_yjs_doc_get_text({ yjsDoc, rootKind });
-					if (extracted._nay) return await fail(extracted._nay.message);
-					copiedText = extracted._yay;
-				} finally {
-					yjsDoc.destroy();
 				}
-			} else {
-				copiedText =
-					copyData.content ??
-					(await r2_fetch_object_from_bucket({ key: copyData.asset.r2Key! }).then((response) => response.text()));
-			}
 
-			if (rootKind === "rich_text") {
-				const editor = files_headless_tiptap_editor_create({ initialContent: { markdown: copiedText } });
-				if (editor._nay) return await fail(editor._nay.message);
-				try {
-					// Drop only comment marks. Their text and all other formatting remain in the document.
-					const state = editor._yay.state;
-					editor._yay.view.updateState(
-						state.apply(
-							state.tr.removeMark(0, state.doc.content.size, editor._yay.schema.marks[files_COMMENT_MARK_TYPE]),
-						),
-					);
-					copiedText = files_headless_tiptap_editor_get_markdown({ mut_editor: editor._yay });
-				} finally {
-					editor._yay.destroy();
+				if (backupText !== undefined || replacementSnapshot !== undefined) {
+					const staged = (await ctx.runMutation(internal.files_nodes_content.stage_transfer_saved_replacement, {
+						...claim,
+						backupSize: backupText === undefined ? undefined : files_get_utf8_byte_size(backupText),
+						yjsSnapshotSize: replacementSnapshot?.byteLength,
+					})) as stage_transfer_saved_replacement_Result;
+
+					if (staged._nay) return await fail(staged._nay.message);
+					if (!staged._yay) return null;
+					ownsStaging = true;
+					backupAssetId = staged._yay.backupAssetId ?? undefined;
+					replacementYjsSnapshotAssetId = staged._yay.yjsSnapshotAssetId ?? undefined;
+
+					const writes = await Promise.allSettled([
+						backupAssetId && backupText !== undefined
+							? r2_put_object(ctx, {
+									key: r2_create_asset_key({
+										organizationId: copyData.organizationId,
+										workspaceId: copyData.workspaceId,
+										assetId: backupAssetId,
+									}),
+									body: backupText,
+									contentType: copyData.replacement.contentType,
+								})
+							: Promise.resolve(),
+						replacementYjsSnapshotAssetId && replacementSnapshot
+							? r2_put_object(ctx, {
+									key: r2_create_asset_key({
+										organizationId: copyData.organizationId,
+										workspaceId: copyData.workspaceId,
+										assetId: replacementYjsSnapshotAssetId,
+									}),
+									body: replacementSnapshot,
+									contentType: "application/octet-stream",
+								})
+							: Promise.resolve(),
+					]);
+
+					const failed = writes.find((write) => write.status === "rejected");
+					if (failed?.status === "rejected") throw failed.reason;
 				}
-				const frontmatter = files_metadata_preflight_frontmatter(copiedText);
-				if (frontmatter._yay && files_metadata_frontmatter_exceeds_index_caps(frontmatter._yay))
-					return await fail("Too many frontmatter fields");
-			}
-
-			if (copyData.sourceNode.collaborationEnabled) {
-				const document = files_yjs_doc_create_from_text({ text: copiedText, rootKind });
-				if ("_nay" in document) return await fail(document._nay.message);
-				try {
-					snapshotUpdate = files_u8_to_array_buffer(encodeStateAsUpdate(document));
-					if (snapshotUpdate.byteLength > files_MAX_YJS_RECONSTRUCTED_STATE_BYTES)
-						return await fail("This file's document is too large to copy");
-					const normalized = files_yjs_doc_get_text({ yjsDoc: document, rootKind });
-					if (normalized._nay) return await fail(normalized._nay.message);
-					copiedText = normalized._yay;
-				} finally {
-					document.destroy();
-				}
-			}
-
-			if (files_get_utf8_byte_size(copiedText) > files_MAX_TEXT_CONTENT_BYTES)
-				return await fail("This file's text is too large to copy");
-			text = copiedText;
-		}
-
-		const staged = (await ctx.runMutation(internal.files_nodes_content.stage_transfer_file_copy_assets, {
-			...args,
-			textKind: rootKind,
-			contentSize: text === undefined ? copyData.asset.size : files_get_utf8_byte_size(text),
-			yjsSnapshotSize: snapshotUpdate?.byteLength,
-		})) as stage_transfer_file_copy_assets_Result;
-		if (staged._nay) return await fail(staged._nay.message);
-		if (staged._yay === null) return null;
-
-		const assets = staged._yay;
-		try {
-			const contentKey = r2_create_asset_key({
-				organizationId: copyData.organizationId,
-				workspaceId: copyData.workspaceId,
-				assetId: assets.contentAssetId,
-			});
-			if (text === undefined) {
-				const copied = await r2_copy_object_to_immutable_key(ctx, {
-					sourceKey: copyData.asset.r2Key!,
-					destinationKey: contentKey,
-				});
-				if (copied.outcome !== "ready" || copied.size !== copyData.asset.size)
-					return await fail("The source file's content is not available");
-			} else {
-				const writes = await Promise.allSettled([
-					r2_put_object(ctx, {
-						key: contentKey,
-						body: text,
-						contentType,
-					}),
-					assets.yjsSnapshotAssetId && snapshotUpdate
-						? r2_put_object(ctx, {
-								key: r2_create_asset_key({
-									organizationId: copyData.organizationId,
-									workspaceId: copyData.workspaceId,
-									assetId: assets.yjsSnapshotAssetId,
-								}),
-								body: snapshotUpdate,
-								contentType: "application/octet-stream",
-							})
-						: Promise.resolve(),
-				]);
-				const failed = writes.find((write) => write.status === "rejected");
-				if (failed?.status === "rejected") throw failed.reason;
 			}
 
 			const finalized = (await ctx.runMutation(internal.files_nodes_content.finalize_transfer_file_copy, {
-				...args,
+				...claim,
 				...assets,
-				contentType,
-				textKind: rootKind,
-				collaborationEnabled: copyData.sourceNode.collaborationEnabled === true,
-				sourceYjsLastSequenceId: copyData.sourceNode.yjsLastSequenceId,
 				text,
-				metadata: copyData.metadata,
+				backupAssetId,
+				replacementYjsSnapshotAssetId,
 			})) as finalize_transfer_file_copy_Result;
 			if (finalized._nay) return await fail(finalized._nay.message);
+
 			return null;
+		} catch (error) {
+			const data: unknown = error instanceof ConvexError ? error.data : null;
+			if (data !== null && typeof data === "object" && "cause" in data) {
+				const cause = data.cause;
+				if (cause !== null && typeof cause === "object" && "status" in cause && cause.status === 404)
+					return await fail("The captured source content is no longer available");
+			}
+
+			throw error;
 		} finally {
-			// If finalize committed but its response was lost, the publish already cleared
-			// stagedAssetIds and this discard is a no-op. Otherwise it removes this attempt's
-			// unpublished assets.
-			await ctx.runMutation(internal.files_nodes_content.discard_transfer_file_attempt, args);
+			// Seal and publish both clear the staging themselves. A lost response must leave the new
+			// owner's assets in place.
+			if (ownsStaging) await ctx.runMutation(internal.files_nodes_content.discard_transfer_file_attempt, claim);
 		}
 	},
 });
@@ -2270,8 +3590,7 @@ export const get_file_text_content_db_state_by_path = internalQuery({
 			 * that object instead of the committed content.
 			 */
 			pendingReplacementText: v.optional(v.object({ r2Key: v.string(), size: v.number() })),
-			nodeId: v.id("files_nodes"),
-			displayNodeId: v.id("files_nodes"),
+			target: files_pending_target_validator,
 			pendingUpdateId: v.union(v.id("files_pending_updates"), v.null()),
 			pendingUpdateBaseStateId: v.optional(v.id("files_pending_update_yjs_states")),
 			materializationState: v.union(file_content_materialization_state_validator, v.null()),
@@ -2281,26 +3600,45 @@ export const get_file_text_content_db_state_by_path = internalQuery({
 	handler: async (ctx, args) => {
 		// Translate the path through the overlay first; the per-user pending-content logic
 		// below then runs on the resolved node, so content-plus-move docs compose.
-		const fileNode = await files_db_get_visible_node_by_path(ctx, {
+		const entry = (await ctx.runQuery(internal.files_nodes.get_visible_entry_by_path, {
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
 			path: args.path,
-			overlayUserId: args.overlayUserId,
-		});
-
-		if (fileNode == null) return null;
-		if (fileNode.kind !== "file") return null;
-
-		// Same reason as in `read_file_content_from_chunks`: `userId` is the person asking, and this is
-		// the second door onto file bytes.
-		const [readableNode] = await access_control_db_filter_readable_file_nodes(ctx, {
-			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
-			userId: args.userId,
+			visibilityUserId: args.userId,
 			serviceAccountId: args.serviceAccountId,
-			nodes: [fileNode],
-		});
-		if (!readableNode) return null;
+			overlayUserId: args.overlayUserId,
+		})) as files_nodes_get_visible_entry_by_path_Result;
+
+		if (!entry || entry.node.kind !== "file") return null;
+
+		if (entry.kind === "private") {
+			const pendingUpdate = entry.pendingUpdate;
+			const content = pendingUpdate.content;
+			const intent = pendingUpdate.createIntent;
+
+			if (args.includePending === false || intent?.kind !== "text" || content?.base.kind !== "new") return null;
+
+			const stateDoc = await ctx.db.get("files_pending_update_yjs_states", content.unstagedStateId);
+			if (!stateDoc?.sealed) return null;
+
+			const bytes = await files_db_load_pending_update_yjs_state_bytes(ctx, { stateDoc });
+			if (bytes._nay) return null;
+
+			const yjsDoc = files_yjs_doc_create_from_array_buffer_update(files_u8_to_array_buffer(bytes._yay));
+			const text = files_yjs_doc_get_text({ yjsDoc, rootKind: intent.textKind });
+			if (text._nay || (args.maxBytes !== undefined && files_get_utf8_byte_size(text._yay) > args.maxBytes))
+				return null;
+
+			return {
+				content: text._yay,
+				asset: null,
+				target: pendingUpdate.target,
+				pendingUpdateId: pendingUpdate._id,
+				pendingUpdateBaseStateId: content.baseStateId,
+				materializationState: null,
+			};
+		}
+		const fileNode = entry.node;
 
 		// External (reserved) scope: no Yjs/pending/materialization. Read the linked R2 content asset
 		// directly and leave `content` undefined so `get_file_last_available_text_content_by_path`
@@ -2320,8 +3658,7 @@ export const get_file_text_content_db_state_by_path = internalQuery({
 				: null;
 			return {
 				asset,
-				nodeId: fileNode._id,
-				displayNodeId: fileNode._id,
+				target: { kind: "saved" as const, id: fileNode._id },
 				pendingUpdateId: null,
 				pendingUpdateBaseStateId: undefined,
 				materializationState: null,
@@ -2346,23 +3683,26 @@ export const get_file_text_content_db_state_by_path = internalQuery({
 					  pendingUpdateById.organizationId === organizationId &&
 					  pendingUpdateById.workspaceId === workspaceId &&
 					  pendingUpdateById.userId === args.userId &&
-					  pendingUpdateById.fileNodeId === fileNode._id
+					  pendingUpdateById.target.kind === "saved" &&
+					  pendingUpdateById.target.id === fileNode._id
 					? pendingUpdateById
 					: await ctx.db
 							.query("files_pending_updates")
-							.withIndex("by_organization_workspace_user_fileNode", (q) =>
+							.withIndex("by_organization_workspace_user_target", (q) =>
 								q
 									.eq("organizationId", organizationId)
 									.eq("workspaceId", workspaceId)
 									.eq("userId", args.userId)
-									.eq("fileNodeId", fileNode._id),
+									.eq("target.kind", "saved")
+									.eq("target.id", fileNode._id),
 							)
 							.first();
 
 		// The acting user's whole-file replacement (`cp` onto this path) shows here before it is
 		// accepted: the agent reads back what it copied. Only a text replacement reads as text. A
-		// stored one, and a destination that is not text, fall through to the committed read.
+		// stored replacement has no text to serve, even if the saved destination used to be text.
 		const pendingReplacement = pendingUpdate?.pendingReplacement;
+		if (pendingReplacement && pendingReplacement.yjsRootKind === undefined) return null;
 		if (pendingUpdate && pendingReplacement && pendingReplacement.yjsRootKind !== undefined) {
 			const stagedAsset = await ctx.db.get("files_r2_assets", pendingReplacement.assetId);
 			if (
@@ -2373,10 +3713,9 @@ export const get_file_text_content_db_state_by_path = internalQuery({
 				return {
 					asset: null,
 					pendingReplacementText: { r2Key: stagedAsset.r2Key, size: pendingReplacement.size },
-					nodeId: fileNode._id,
-					displayNodeId: fileNode._id,
+					target: { kind: "saved" as const, id: fileNode._id },
 					pendingUpdateId: pendingUpdate._id,
-					pendingUpdateBaseStateId: pendingUpdate.baseStateId,
+					pendingUpdateBaseStateId: pendingUpdate.content?.baseStateId,
 					materializationState: null,
 				};
 			}
@@ -2389,6 +3728,7 @@ export const get_file_text_content_db_state_by_path = internalQuery({
 		// Move-only docs carry no content; keep returning their `pendingUpdateId` below so
 		// write_file/edit_file mix onto them, while content resolves from the committed tree.
 		let pendingUpdateContent = pendingUpdate ? files_pending_update_content_of(pendingUpdate) : null;
+
 		// A stale-generation proposal was built against a document history that a repair has
 		// since replaced. The commit gate refuses it, so its text must not be served as the
 		// file's current pending content either: treat it as no pending content and resolve
@@ -2399,15 +3739,21 @@ export const get_file_text_content_db_state_by_path = internalQuery({
 		// proposals instead.
 		if (pendingUpdate && pendingUpdateContent && fileNode.yjsLastSequenceId) {
 			const lastSequenceDoc = await ctx.db.get("files_yjs_docs_last_sequences", fileNode.yjsLastSequenceId);
-			if (!lastSequenceDoc || lastSequenceDoc.lineageGeneration !== pendingUpdate.baseLineageGeneration) {
+			if (
+				!lastSequenceDoc ||
+				pendingUpdateContent.base.kind !== "yjs" ||
+				lastSequenceDoc.lineageGeneration !== pendingUpdateContent.base.lineageGeneration
+			) {
 				pendingUpdateContent = null;
 			}
 		}
+
 		// A member save hides stale proposal text until preparation updates it. Keep its base state ID
 		// in the read result so an edit cannot overwrite a proposal prepared after this read.
 		if (pendingUpdate && pendingUpdateContent && files_pending_update_content_is_stale(pendingUpdate, fileNode)) {
 			pendingUpdateContent = null;
 		}
+
 		if (pendingUpdate && pendingUpdateContent) {
 			// Rebuild the pending branch from its canonical unstaged paged state (a full state, so
 			// no base merge is needed). On any refusal the pending read is NULL — the agent reports
@@ -2429,6 +3775,7 @@ export const get_file_text_content_db_state_by_path = internalQuery({
 				});
 				return null;
 			}
+
 			const unstagedBytes = await files_db_load_pending_update_yjs_state_bytes(ctx, {
 				stateDoc: unstagedStateDoc,
 			});
@@ -2454,10 +3801,9 @@ export const get_file_text_content_db_state_by_path = internalQuery({
 			return {
 				content: text._yay,
 				asset: null,
-				nodeId: fileNode._id,
-				displayNodeId: fileNode._id,
+				target: { kind: "saved" as const, id: fileNode._id },
 				pendingUpdateId: pendingUpdate._id,
-				pendingUpdateBaseStateId: pendingUpdate.baseStateId,
+				pendingUpdateBaseStateId: pendingUpdateContent.baseStateId,
 				materializationState: null,
 			};
 		}
@@ -2503,10 +3849,9 @@ export const get_file_text_content_db_state_by_path = internalQuery({
 				return {
 					content: committedContent,
 					asset: null,
-					nodeId: fileNode._id,
-					displayNodeId: fileNode._id,
+					target: { kind: "saved" as const, id: fileNode._id },
 					pendingUpdateId: pendingUpdate?._id ?? null,
-					pendingUpdateBaseStateId: pendingUpdate?.baseStateId,
+					pendingUpdateBaseStateId: pendingUpdate?.content?.baseStateId,
 					materializationState: null,
 				};
 			}
@@ -2514,10 +3859,9 @@ export const get_file_text_content_db_state_by_path = internalQuery({
 
 		return {
 			asset,
-			nodeId: fileNode._id,
-			displayNodeId: fileNode._id,
+			target: { kind: "saved" as const, id: fileNode._id },
 			pendingUpdateId: pendingUpdate?._id ?? null,
-			pendingUpdateBaseStateId: pendingUpdate?.baseStateId,
+			pendingUpdateBaseStateId: pendingUpdate?.content?.baseStateId,
 			materializationState,
 		};
 	},
@@ -2534,8 +3878,7 @@ type get_file_text_content_db_state_by_path_Result =
 
 type get_file_last_available_text_content_by_path_Result = {
 	content: string;
-	nodeId: Id<"files_nodes">;
-	displayNodeId: Id<"files_nodes">;
+	target: files_PendingTarget;
 	pendingUpdateId: Id<"files_pending_updates"> | null;
 	pendingUpdateBaseStateId?: Id<"files_pending_update_yjs_states">;
 } | null;
@@ -2556,8 +3899,7 @@ export const get_file_last_available_text_content_by_path = internalAction({
 	returns: v.union(
 		v.object({
 			content: v.string(),
-			nodeId: v.id("files_nodes"),
-			displayNodeId: v.id("files_nodes"),
+			target: files_pending_target_validator,
 			pendingUpdateId: v.union(v.id("files_pending_updates"), v.null()),
 			pendingUpdateBaseStateId: v.optional(v.id("files_pending_update_yjs_states")),
 		}),
@@ -2631,8 +3973,7 @@ export const get_file_last_available_text_content_by_path = internalAction({
 
 		return {
 			content,
-			nodeId: contentState.nodeId,
-			displayNodeId: contentState.displayNodeId,
+			target: contentState.target,
 			pendingUpdateId: contentState.pendingUpdateId,
 			pendingUpdateBaseStateId: contentState.pendingUpdateBaseStateId,
 		};
@@ -2683,7 +4024,7 @@ async function files_resolve_readable_content_or_window(
 		pendingUpdateId?: Id<"files_pending_updates">;
 		overlayUserId?: Id<"users">;
 	},
-): Promise<{ nodeId: Id<"files_nodes">; text: string; fetchedAllBytes: boolean; totalBytes: number } | null> {
+): Promise<{ target: files_PendingTarget; text: string; fetchedAllBytes: boolean; totalBytes: number } | null> {
 	const state = (await ctx.runQuery(internal.files_nodes_content.get_file_text_content_db_state_by_path, {
 		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
@@ -2695,16 +4036,18 @@ async function files_resolve_readable_content_or_window(
 	if (!state) {
 		return null;
 	}
+
 	const materializationState = state.materializationState;
 	// Pending user edit, or stale snapshot: full content is (or must be) in memory.
 	if (state.content !== undefined) {
 		return {
-			nodeId: state.nodeId,
+			target: state.target,
 			text: state.content,
 			fetchedAllBytes: true,
 			totalBytes: files_get_utf8_byte_size(state.content),
 		};
 	}
+
 	if (
 		materializationState &&
 		materializationState.yjsLastSequenceDoc.lastSequence > materializationState.yjsSnapshotDoc.sequence
@@ -2716,23 +4059,27 @@ async function files_resolve_readable_content_or_window(
 			throw convex_error({ message: "Failed to reconstruct latest file content", cause: reconstructed._nay });
 		}
 		return {
-			nodeId: state.nodeId,
+			target: state.target,
 			text: reconstructed._yay.text,
 			fetchedAllBytes: true,
 			totalBytes: files_get_utf8_byte_size(reconstructed._yay.text),
 		};
 	}
+
 	// Committed and up to date: bounded byte-range read of the content object (leading window).
 	const asset = state.asset;
 	if (!asset?.r2Key) {
-		return { nodeId: state.nodeId, text: "", fetchedAllBytes: true, totalBytes: 0 };
+		return { target: state.target, text: "", fetchedAllBytes: true, totalBytes: 0 };
 	}
+
 	const totalBytes = asset.size;
 	const endInclusive = Math.max(0, Math.min(files_READ_RANGE_SCAN_MAX_BYTES, totalBytes) - 1);
+
 	const response = await r2_fetch_object_range_from_bucket({ key: asset.r2Key, start: 0, endInclusive });
 	const bytes = new Uint8Array(await response.arrayBuffer());
 	const text = new TextDecoder("utf-8").decode(bytes);
-	return { nodeId: state.nodeId, text, fetchedAllBytes: bytes.byteLength >= totalBytes, totalBytes };
+
+	return { target: state.target, text, fetchedAllBytes: bytes.byteLength >= totalBytes, totalBytes };
 }
 
 /**
@@ -2758,7 +4105,7 @@ export const read_file_line_range = internalAction({
 	},
 	returns: v.union(
 		v.object({
-			nodeId: v.id("files_nodes"),
+			target: files_pending_target_validator,
 			content: v.string(),
 			moreLines: v.boolean(),
 			scanTruncated: v.boolean(),
@@ -2783,7 +4130,7 @@ export const read_file_line_range = internalAction({
 		})) as files_nodes_read_file_content_from_chunks_Result;
 		if (chunked) {
 			return {
-				nodeId: chunked.nodeId,
+				target: chunked.target,
 				content: chunked.content,
 				moreLines: chunked.moreLines,
 				scanTruncated: false,
@@ -2798,7 +4145,7 @@ export const read_file_line_range = internalAction({
 		// Stopped on the byte window (not line count / EOF): output may be partial.
 		const scanTruncated = !resolved.fetchedAllBytes && range.linesReturned < maxLines;
 		return {
-			nodeId: resolved.nodeId,
+			target: resolved.target,
 			content: range.content,
 			moreLines: range.moreLines || !resolved.fetchedAllBytes,
 			scanTruncated,
@@ -2829,7 +4176,7 @@ export const read_file_tail_lines = internalAction({
 	},
 	returns: v.union(
 		v.object({
-			nodeId: v.id("files_nodes"),
+			target: files_pending_target_validator,
 			content: v.string(),
 			// True when lines precede the returned tail (the view is a partial end-of-file window).
 			moreLines: v.boolean(),
@@ -2852,7 +4199,12 @@ export const read_file_tail_lines = internalAction({
 			overlayUserId: args.overlayUserId,
 		})) as files_nodes_read_committed_file_chunks_line_range_Result;
 		if (chunked.usable) {
-			return { nodeId: chunked.nodeId, content: chunked.content, moreLines: chunked.moreLines, scanTruncated: false };
+			return {
+				target: { kind: "saved" as const, id: chunked.nodeId },
+				content: chunked.content,
+				moreLines: chunked.moreLines,
+				scanTruncated: false,
+			};
 		}
 		// Fallback: in-memory reconstruction (pending/stale) or a bounded trailing R2 window.
 		const state = (await ctx.runQuery(internal.files_nodes_content.get_file_text_content_db_state_by_path, {
@@ -2871,7 +4223,7 @@ export const read_file_tail_lines = internalAction({
 		// Pending/stale: full content in memory.
 		if (state.content !== undefined) {
 			const tail = files_tail_lines_from_text(state.content, maxLines);
-			return { nodeId: state.nodeId, content: tail.content, moreLines: tail.moreAbove, scanTruncated: false };
+			return { target: state.target, content: tail.content, moreLines: tail.moreAbove, scanTruncated: false };
 		}
 		if (
 			materializationState &&
@@ -2884,13 +4236,13 @@ export const read_file_tail_lines = internalAction({
 				throw convex_error({ message: "Failed to reconstruct latest file content", cause: reconstructed._nay });
 			}
 			const tail = files_tail_lines_from_text(reconstructed._yay.text, maxLines);
-			return { nodeId: state.nodeId, content: tail.content, moreLines: tail.moreAbove, scanTruncated: false };
+			return { target: state.target, content: tail.content, moreLines: tail.moreAbove, scanTruncated: false };
 		}
 
 		// Committed: read a bounded trailing window from the end of the R2 object.
 		const asset = state.asset;
 		if (!asset?.r2Key) {
-			return { nodeId: state.nodeId, content: "", moreLines: false, scanTruncated: false };
+			return { target: state.target, content: "", moreLines: false, scanTruncated: false };
 		}
 		const totalBytes = asset.size;
 		const start = Math.max(0, totalBytes - files_READ_RANGE_SCAN_MAX_BYTES);
@@ -2901,7 +4253,7 @@ export const read_file_tail_lines = internalAction({
 		// If the trailing window didn't reach the start of the file, the earliest returned line
 		// could be partial — only relevant for files larger than the scan window.
 		const scanTruncated = start > 0;
-		return { nodeId: state.nodeId, content: tail.content, moreLines: tail.moreAbove || start > 0, scanTruncated };
+		return { target: state.target, content: tail.content, moreLines: tail.moreAbove || start > 0, scanTruncated };
 	},
 });
 
@@ -2928,7 +4280,7 @@ export const read_file_content_stats = internalAction({
 	},
 	returns: v.union(
 		v.object({
-			nodeId: v.id("files_nodes"),
+			target: files_pending_target_validator,
 			lineCount: v.number(),
 			wordCount: v.number(),
 			charCount: v.number(),
@@ -2949,7 +4301,7 @@ export const read_file_content_stats = internalAction({
 		})) as files_nodes_read_committed_file_chunk_stats_Result;
 		if (chunked.usable) {
 			return {
-				nodeId: chunked.nodeId,
+				target: { kind: "saved" as const, id: chunked.nodeId },
 				lineCount: chunked.lineCount,
 				wordCount: chunked.wordCount,
 				charCount: chunked.charCount,
@@ -2966,7 +4318,7 @@ export const read_file_content_stats = internalAction({
 		// Same wc semantics as the materialized path, but on a possibly-partial window (lower bounds).
 		const counts = files_compute_wc_counts(resolved.text);
 		return {
-			nodeId: resolved.nodeId,
+			target: resolved.target,
 			lineCount: counts.lineCount,
 			wordCount: counts.wordCount,
 			charCount: counts.charCount,
@@ -2978,97 +4330,6 @@ export const read_file_content_stats = internalAction({
 
 export type files_nodes_read_file_content_stats_Result =
 	typeof read_file_content_stats extends RegisteredAction<infer _Visibility, infer _Args, infer ReturnValue>
-		? Awaited<ReturnValue>
-		: never;
-
-/**
- * Create an editable text file at a trusted path, for the agent write flows (bash redirects,
- * cp, touch). The caller may name the stored content type (a copy passes the source's type).
- * Without one, the file name is only a hint, and an unknown name becomes plain text. The
- * stored type decides the document shape. The public create action and the sidebar New-file
- * flow stay Markdown-only on purpose.
- *
- * Trust callers to validate and normalize `path` before calling this action.
- */
-export const create_file_by_path = internalAction({
-	args: {
-		organizationId: v.id("organizations"),
-		workspaceId: v.id("organizations_workspaces"),
-		userId: v.id("users"),
-		path: v.string(),
-		textContent: v.optional(v.string()),
-		/**
-		 * Must be an editable text type. Omit to take the hint from the file name.
-		 */
-		contentType: v.optional(v.string()),
-	},
-	returns: v_result({
-		_yay: v.object({
-			nodeId: v.id("files_nodes"),
-			created: v.boolean(),
-			/**
-			 * The node's committed Yjs last sequence, captured in the mutation that created the
-			 * node. Eager-create callers pass it to the pending-update upsert as the immutable
-			 * `eagerCreated.committedSequence` stamp. Only set when `created` is true.
-			 */
-			createdCommittedSequence: v.optional(v.number()),
-			/**
-			 * Folders created with this file, deepest first. Reused folders are not included.
-			 */
-			createdAncestorIds: v.array(v.id("files_nodes")),
-		}),
-	}),
-	handler: async (ctx, args) => {
-		const activeFileNode = (await ctx.runQuery(internal.files_nodes.get_by_path, {
-			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
-			visibilityUserId: args.userId,
-			path: args.path,
-		})) as Doc<"files_nodes"> | null;
-		if (activeFileNode?.kind === "file") {
-			// `created: false` marks a pre-existing file. Callers that need a fresh node (e.g.
-			// pending-copy destinations, which are later hard-deleted) must treat this as a conflict.
-			return Result({ _yay: { nodeId: activeFileNode._id, created: false, createdAncestorIds: [] } });
-		}
-
-		// The stored type and the document shape come from the same value, so they can never
-		// disagree. An explicit type must be editable text; a stored-bytes type cannot become a
-		// text document here.
-		const shape =
-			args.contentType !== undefined
-				? files_editable_text_shape_of(args.contentType)
-				: files_default_text_shape_for_name(path_name_of(args.path));
-		if (shape === null) {
-			return Result({ _nay: { message: `Content type '${args.contentType}' is not an editable text type` } });
-		}
-
-		const created = await action_create_file_node(ctx, {
-			userId: args.userId,
-			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
-			parentId: files_ROOT_ID,
-			path: args.path,
-			textContent: args.textContent ?? "",
-			contentType: shape.contentType,
-			rootKind: shape.rootKind,
-		});
-		if (created._nay) {
-			return created;
-		}
-
-		return Result({
-			_yay: {
-				nodeId: created._yay.nodeId,
-				created: true,
-				createdCommittedSequence: created._yay.createdCommittedSequence,
-				createdAncestorIds: created._yay.createdAncestorIds,
-			},
-		});
-	},
-});
-
-export type files_nodes_create_file_by_path_Result =
-	typeof create_file_by_path extends RegisteredAction<infer _Visibility, infer _Args, infer ReturnValue>
 		? Awaited<ReturnValue>
 		: never;
 
@@ -3273,6 +4534,7 @@ export async function files_nodes_db_fill_text_node_content(
 
 	// A non-collaborative file leaves this undefined: its committed chunks belong to no sequence.
 	let yjsSequence: number | undefined;
+
 	if (args.fillUpdateStageId) {
 		// Consume the staged trusted update, then run the shared reserve gate. Throw, do not
 		// return `_nay`: the writes above already pointed the node at the new content snapshot in
@@ -3288,11 +4550,13 @@ export async function files_nodes_db_fill_text_node_content(
 		if (fillUpdate._nay) {
 			throw convex_error({ message: fillUpdate._nay.message });
 		}
+
 		if (!args.expectedYjsLastSequenceId) {
 			throw should_never_happen("Collaborative fill has no expected Yjs lineage", {
 				nodeId: args.fileNode._id,
 			});
 		}
+
 		// Trusted server-built bytes skip door 1's content scan, but every writer goes through
 		// the shared reserve gate.
 		const reserved = await yjs_reserve_and_increment_last_sequence(ctx, {
@@ -3306,6 +4570,7 @@ export async function files_nodes_db_fill_text_node_content(
 		if (reserved._nay) {
 			throw convex_error({ message: reserved._nay.message });
 		}
+
 		const newSequenceData = reserved._yay;
 		await ctx.db.insert("files_yjs_updates", {
 			organizationId,
@@ -3318,6 +4583,7 @@ export async function files_nodes_db_fill_text_node_content(
 			createdBy: args.userId,
 			createdAt: now,
 		});
+
 		await enqueue_file_content_materialization(ctx, {
 			organizationId,
 			workspaceId,
@@ -3326,6 +4592,7 @@ export async function files_nodes_db_fill_text_node_content(
 			targetSequence: newSequenceData.lastSequence,
 			delayMs: 0,
 		});
+
 		yjsSequence = newSequenceData.lastSequence;
 	} else if (files_node_has_editable_yjs_state(args.fileNode)) {
 		const yjsLastSequenceDoc = await ctx.db.get("files_yjs_docs_last_sequences", args.fileNode.yjsLastSequenceId);
@@ -3338,6 +4605,7 @@ export async function files_nodes_db_fill_text_node_content(
 			console.error(errorMessage, errorData);
 			throw should_never_happen(errorMessage, errorData);
 		}
+
 		yjsSequence = yjsLastSequenceDoc.lastSequence;
 	}
 
@@ -4707,7 +5975,6 @@ async function db_install_file_content_replacement(
 		fileNode: Doc<"files_nodes">;
 		previousAssetId: Id<"files_r2_assets">;
 		pendingContent: "preserve" | "drop";
-		isNewCopy?: boolean;
 		backup?: { assetId: Id<"files_r2_assets">; size: number };
 		contentAssetId: Id<"files_r2_assets">;
 		contentSize: number;
@@ -4735,7 +6002,7 @@ async function db_install_file_content_replacement(
 	const nodeId = fileNode._id;
 
 	// Removing shared history uses the existing warning and acknowledgement in Properties.
-	if (!args.isNewCopy && files_node_has_editable_yjs_state(fileNode) && args.yjsRootKind === undefined) {
+	if (files_node_has_editable_yjs_state(fileNode) && args.yjsRootKind === undefined) {
 		return Result({
 			_nay: { message: "Turn collaboration off in Properties before replacing this text file with stored content." },
 		});
@@ -4871,6 +6138,7 @@ async function db_install_file_content_replacement(
 		// Stop the queued materialization of the old document. It would work on content that is
 		// gone after this write.
 		await cancel_file_content_materialization(ctx, { nodeId });
+
 		const [yjsSnapshotDoc, yjsLastSequenceDoc] = await Promise.all([
 			ctx.db.get("files_yjs_snapshots", fileNode.yjsSnapshotId),
 			ctx.db.get("files_yjs_docs_last_sequences", fileNode.yjsLastSequenceId),
@@ -4885,6 +6153,7 @@ async function db_install_file_content_replacement(
 			console.error(errorMessage, errorData);
 			throw should_never_happen(errorMessage, errorData);
 		}
+
 		if (args.yjsSnapshot) {
 			// Replace the lineage in place, like the Yjs repair does. The snapshot doc keeps its
 			// id and points at the new document at the current sequence number, the exact
@@ -4901,6 +6170,7 @@ async function db_install_file_content_replacement(
 				unmaterializedUpdateBytes: 0,
 				lineageGeneration: yjsLastSequenceDoc.lineageGeneration + 1,
 			});
+
 			await Promise.all([
 				ctx.db.patch("files_yjs_snapshots", yjsSnapshotDoc._id, {
 					sequence: yjsLastSequenceDoc.lastSequence,
@@ -4910,6 +6180,7 @@ async function db_install_file_content_replacement(
 				}),
 				ctx.db.delete("files_yjs_docs_last_sequences", yjsLastSequenceDoc._id),
 			]);
+
 			nextYjsSnapshotId = yjsSnapshotDoc._id;
 			yjsSequenceForChunks = yjsLastSequenceDoc.lastSequence;
 			yjsCleanup = {
@@ -4923,6 +6194,7 @@ async function db_install_file_content_replacement(
 				ctx.db.delete("files_yjs_snapshots", yjsSnapshotDoc._id),
 				ctx.db.delete("files_yjs_docs_last_sequences", yjsLastSequenceDoc._id),
 			]);
+
 			const taskId = await ctx.db.insert("files_yjs_cleanup_tasks", {
 				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
@@ -4932,6 +6204,7 @@ async function db_install_file_content_replacement(
 				putMayArriveUntil: now + FILE_MATERIALIZATION_LATE_PUT_WINDOW_MS,
 				historyPending: true,
 			});
+
 			await ctx.scheduler.runAfter(0, internal.files_nodes_content.cleanup_file_yjs_task, { taskId });
 		}
 	} else if (args.yjsSnapshot) {
@@ -4957,6 +6230,7 @@ async function db_install_file_content_replacement(
 				lineageGeneration: 0,
 			}),
 		]);
+
 		yjsSequenceForChunks = 0;
 	}
 
@@ -5096,7 +6370,7 @@ export const finalize_file_pending_replacement = internalMutation({
 		userId: v.id("users"),
 		nodeId: v.id("files_nodes"),
 		pendingUpdateId: v.id("files_pending_updates"),
-		expectedUpdatedAt: v.number(),
+		expectedRevision: v.number(),
 		stagedAssetId: v.id("files_r2_assets"),
 		/**
 		 * The document's last-sequence token the action read. Present for a collaborative file.
@@ -5127,175 +6401,276 @@ export const finalize_file_pending_replacement = internalMutation({
 	},
 	returns: v_result({ _yay: v.null() }),
 	handler: async (ctx, args) => {
-		const user = await ctx.db.get("users", args.userId);
-		if (!user) {
-			return Result({ _nay: { message: "Unauthenticated" } });
-		}
-
-		// Ask again in the transaction that writes. The action checked the same things, but a
-		// membership can end or a grant can be taken away while the text was uploading.
-		const membership = await db_get_active_membership_in_workspace(ctx, {
-			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
-			userId: user._id,
+		const organization = await ctx.db.get("organizations", args.organizationId);
+		if (!organization) return Result({ _nay: { message: "Not found" } });
+		return await files_nodes_content_db_finalize_pending_replacement(ctx, args, {
+			billedUserId: billing_pick_billed_user_id({ userId: args.userId, organization }),
 		});
-		if (!membership) {
-			return Result({ _nay: { message: "Unauthorized" } });
-		}
-
-		const authorized = await access_control_db_authorize_node(ctx, {
-			userAuth: { id: user._id },
-			membership,
-			nodeId: args.nodeId,
-			permission: "content.write",
-		});
-		if (authorized._nay) {
-			return authorized;
-		}
-
-		const fileNode = await ctx.db.get("files_nodes", args.nodeId);
-		if (
-			!fileNode ||
-			fileNode.organizationId !== args.organizationId ||
-			fileNode.workspaceId !== args.workspaceId ||
-			fileNode.kind !== "file"
-		) {
-			return Result({ _nay: { message: "Not found" } });
-		}
-
-		// Check the lock after access and before the first write, like every other write door.
-		const writable = await files_nodes_db_require_user_writable(ctx, { node: fileNode, userId: args.userId });
-		if (writable._nay) {
-			return writable;
-		}
-
-		// Only the exact proposal the action read. A doc that changed under it (a newer copy, a
-		// discard) must not be published.
-		const pendingUpdate = await files_db_get_pending_update(ctx, {
-			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
-			userId: user._id,
-			nodeId: args.nodeId,
-			pendingUpdateId: args.pendingUpdateId,
-		});
-		const replacement = pendingUpdate?.pendingReplacement;
-		if (
-			!pendingUpdate ||
-			pendingUpdate._id !== args.pendingUpdateId ||
-			pendingUpdate.updatedAt !== args.expectedUpdatedAt ||
-			!replacement ||
-			replacement.assetId !== args.stagedAssetId
-		) {
-			return Result({ _nay: { message: "Stale save" } });
-		}
-
-		// Another save landed after the copy was proposed. Refuse instead of overwriting content
-		// the reviewer never saw.
-		if (fileNode.assetId !== replacement.baseAssetId) {
-			return Result({ _nay: { message: files_PENDING_REPLACEMENT_BASE_CHANGED_MESSAGE } });
-		}
-
-		// An edit that reached the document while the action ran is in neither the backup nor the
-		// history. Refuse, so the next accept reads the document again.
-		if (args.expectedYjsLastSequence) {
-			const yjsLastSequenceDoc = await ctx.db.get("files_yjs_docs_last_sequences", args.expectedYjsLastSequence.id);
-			if (
-				fileNode.yjsLastSequenceId !== args.expectedYjsLastSequence.id ||
-				yjsLastSequenceDoc?.lastSequence !== args.expectedYjsLastSequence.lastSequence
-			) {
-				return Result({ _nay: { message: files_PENDING_REPLACEMENT_EDITED_DURING_ACCEPT_MESSAGE } });
-			}
-		}
-
-		const previousAssetId = replacement.baseAssetId;
-
-		const organization = await ctx.db.get("organizations", membership.organizationId);
-		if (!organization) {
-			const errorMessage = "membership.organizationId points to a missing organizations doc";
-			const errorData = {
-				membershipId: membership._id,
-				organizationId: membership.organizationId,
-				workspaceId: membership.workspaceId,
-				nodeId: args.nodeId,
-			};
-			console.error(errorMessage, errorData);
-			throw should_never_happen(errorMessage, errorData);
-		}
-		const billedUserId = billing_pick_billed_user_id({ userId: user._id, organization });
-		const billedUser = await ctx.db.get("users", billedUserId);
-		if (!billedUser) {
-			const errorMessage = "billedUserId points to a missing users doc";
-			const errorData = { userId: user._id, organizationId: organization._id, billedUserId };
-			console.error(errorMessage, errorData);
-			throw should_never_happen(errorMessage, errorData);
-		}
-
-		// Accepting a copy saves a version, and a save costs the same here as through the other doors.
-		const check = await billing_db_check_credits(ctx, { userId: billedUser._id, minimumRequiredCents: 1 });
-		if (!check.hasCredits) {
-			return Result({ _nay: { message: "Insufficient funds" } });
-		}
-
-		const installed = await db_install_file_content_replacement(ctx, {
-			membership,
-			user,
-			billedUser,
-			fileNode,
-			previousAssetId,
-			pendingContent: "drop",
-			isNewCopy: pendingUpdate.eagerCreated !== undefined,
-			backup: args.backup,
-			contentAssetId: args.contentAssetId,
-			contentSize: args.contentSize,
-			// The staged object is already published. A normalized text got its own object.
-			publishContentAsset: args.contentAssetId !== args.stagedAssetId,
-			contentType: args.contentType,
-			yjsRootKind: args.yjsRootKind,
-			nonCollaborative: args.nonCollaborative,
-			yjsSnapshot: args.yjsSnapshot,
-			text: args.text,
-		});
-		if (installed._nay) {
-			return installed;
-		}
-
-		// The staged object is superseded when the normalized text got its own object.
-		if (args.contentAssetId !== args.stagedAssetId) {
-			await files_pending_update_db_release_replacement_asset(ctx, {
-				organizationId: membership.organizationId,
-				workspaceId: membership.workspaceId,
-				assetId: args.stagedAssetId,
-			});
-		}
-
-		// The proposal is consumed. A move proposal on the same doc survives as a move-only doc.
-		const now = Date.now();
-		if (pendingUpdate.pendingMove) {
-			await Promise.all([
-				ctx.db.patch("files_pending_updates", pendingUpdate._id, {
-					pendingReplacement: undefined,
-					copiedFrom: undefined,
-					eagerCreated: undefined,
-					size: 0,
-					updatedAt: now,
-				}),
-				files_pending_update_db_delete_chunks(ctx, { pendingUpdateId: pendingUpdate._id }),
-				files_db_schedule_pending_update_cleanup(ctx, {
-					pendingUpdateId: pendingUpdate._id,
-					expectedUpdatedAt: now,
-				}),
-			]);
-		} else {
-			await Promise.all([
-				files_db_cancel_pending_update_cleanup_tasks(ctx, { pendingUpdateId: pendingUpdate._id }),
-				files_pending_update_db_delete_chunks(ctx, { pendingUpdateId: pendingUpdate._id }),
-				ctx.db.delete("files_pending_updates", pendingUpdate._id),
-			]);
-		}
-
-		return Result({ _yay: null });
 	},
 });
+
+export async function files_nodes_content_db_finalize_pending_replacement(
+	ctx: MutationCtx,
+	args: {
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		userId: Id<"users">;
+		nodeId: Id<"files_nodes">;
+		pendingUpdateId: Id<"files_pending_updates">;
+		expectedRevision: number;
+		stagedAssetId: Id<"files_r2_assets">;
+		expectedYjsLastSequence?: { id: Id<"files_yjs_docs_last_sequences">; lastSequence: number };
+		backup?: { assetId: Id<"files_r2_assets">; size: number };
+		contentAssetId: Id<"files_r2_assets">;
+		contentSize: number;
+		contentType: string;
+		yjsRootKind?: "rich_text" | "plain_text";
+		nonCollaborative?: boolean;
+		yjsSnapshot?: { assetId: Id<"files_r2_assets">; size: number };
+		text?: string;
+	},
+	actor: { billedUserId: Id<"users">; publicationBatchId?: Id<"files_pending_update_operation_batches"> },
+) {
+	const user = await ctx.db.get("users", args.userId);
+	if (!user) {
+		return Result({ _nay: { message: "Unauthenticated" } });
+	}
+
+	// Ask again in the transaction that writes. The action checked the same things, but a
+	// membership can end or a grant can be taken away while the text was uploading.
+	const membership = await db_get_active_membership_in_workspace(ctx, {
+		organizationId: args.organizationId,
+		workspaceId: args.workspaceId,
+		userId: user._id,
+	});
+	if (!membership) {
+		return Result({ _nay: { message: "Unauthorized" } });
+	}
+
+	const authorized = await access_control_db_authorize_node(ctx, {
+		userAuth: { id: user._id },
+		membership,
+		nodeId: args.nodeId,
+		permission: "content.write",
+	});
+	if (authorized._nay) {
+		return authorized;
+	}
+
+	const fileNode = await ctx.db.get("files_nodes", args.nodeId);
+	if (
+		!fileNode ||
+		fileNode.organizationId !== args.organizationId ||
+		fileNode.workspaceId !== args.workspaceId ||
+		fileNode.kind !== "file"
+	) {
+		return Result({ _nay: { message: "Not found" } });
+	}
+
+	// Check the lock after access and before the first write, like every other write door.
+	const writable = await files_nodes_db_require_user_writable(ctx, { node: fileNode, userId: args.userId });
+	if (writable._nay) {
+		return writable;
+	}
+
+	// Only the exact proposal the action read. A doc that changed under it (a newer copy, a
+	// discard) must not be published.
+	const pendingUpdate = await files_db_get_pending_update(ctx, {
+		organizationId: args.organizationId,
+		workspaceId: args.workspaceId,
+		userId: user._id,
+		target: { kind: "saved", id: args.nodeId },
+		pendingUpdateId: args.pendingUpdateId,
+	});
+	const replacement = pendingUpdate?.pendingReplacement;
+	if (
+		!pendingUpdate ||
+		pendingUpdate._id !== args.pendingUpdateId ||
+		pendingUpdate.revision !== args.expectedRevision ||
+		!replacement ||
+		replacement.assetId !== args.stagedAssetId
+	) {
+		return Result({ _nay: { message: "Stale save" } });
+	}
+
+	// Another save landed after the copy was proposed. Refuse instead of overwriting content
+	// the reviewer never saw.
+	if (
+		fileNode.assetId !== replacement.baseAssetId ||
+		!files_transfer_source_versions_equal(
+			await files_nodes_db_get_content_version(ctx, fileNode),
+			replacement.baseContentVersion,
+		)
+	) {
+		return Result({ _nay: { message: files_PENDING_REPLACEMENT_BASE_CHANGED_MESSAGE } });
+	}
+
+	// An edit that reached the document while the action ran is in neither the backup nor the
+	// history. Refuse, so the next accept reads the document again.
+	if (args.expectedYjsLastSequence) {
+		const yjsLastSequenceDoc = await ctx.db.get("files_yjs_docs_last_sequences", args.expectedYjsLastSequence.id);
+		if (
+			fileNode.yjsLastSequenceId !== args.expectedYjsLastSequence.id ||
+			yjsLastSequenceDoc?.lastSequence !== args.expectedYjsLastSequence.lastSequence
+		) {
+			return Result({ _nay: { message: files_PENDING_REPLACEMENT_EDITED_DURING_ACCEPT_MESSAGE } });
+		}
+	}
+
+	const publicationReservations: Doc<"files_private_storage_reservations">[] = [];
+	if (actor.publicationBatchId) {
+		const batch = await ctx.db.get("files_pending_update_operation_batches", actor.publicationBatchId);
+		if (
+			!batch ||
+			batch.publication?.kind !== "assets" ||
+			batch.userId !== args.userId ||
+			batch.organizationId !== args.organizationId ||
+			batch.workspaceId !== args.workspaceId ||
+			batch.target.kind !== "saved" ||
+			batch.target.id !== args.nodeId ||
+			batch.expiresAt <= Date.now() ||
+			batch.expectedPendingUpdateId !== args.pendingUpdateId ||
+			batch.expectedRevision !== args.expectedRevision ||
+			batch.publication.contentAssetId !== args.contentAssetId ||
+			batch.publication.yjsSnapshotAssetId !== args.yjsSnapshot?.assetId ||
+			batch.publication.backupAssetId !== args.backup?.assetId
+		)
+			return Result({ _nay: { message: "This Save preparation is no longer current" } });
+		for (const prepared of [
+			...(args.contentAssetId === args.stagedAssetId ? [] : [{ assetId: args.contentAssetId, size: args.contentSize }]),
+			...(args.yjsSnapshot ? [args.yjsSnapshot] : []),
+			...(args.backup ? [args.backup] : []),
+		]) {
+			const asset = await ctx.db.get("files_r2_assets", prepared.assetId);
+			const hold = await ctx.db
+				.query("files_private_storage_reservations")
+				.withIndex("by_resource", (q) => q.eq("resource.kind", "asset").eq("resource.id", prepared.assetId))
+				.unique();
+			if (
+				!asset ||
+				asset.organizationId !== args.organizationId ||
+				asset.workspaceId !== args.workspaceId ||
+				asset.createdBy !== args.userId ||
+				asset.size !== prepared.size ||
+				asset.uploadRetiredAt !== undefined ||
+				asset.unfinalizedExpiresAt === undefined ||
+				asset.unfinalizedExpiresAt <= Date.now() ||
+				!hold ||
+				hold.publicationBatchId !== batch._id ||
+				hold.userId !== args.userId ||
+				hold.settlement.kind !== "held" ||
+				hold.byteCount !== prepared.size ||
+				hold.resource.kind !== "asset" ||
+				hold.resource.r2Key !== r2_create_asset_key({ ...args, assetId: asset._id })
+			)
+				return Result({ _nay: { message: "The prepared content is no longer available" } });
+			publicationReservations.push(hold);
+		}
+	}
+
+	const previousAssetId = replacement.baseAssetId;
+
+	const organization = await ctx.db.get("organizations", membership.organizationId);
+	if (!organization) {
+		const errorMessage = "membership.organizationId points to a missing organizations doc";
+		const errorData = {
+			membershipId: membership._id,
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			nodeId: args.nodeId,
+		};
+		console.error(errorMessage, errorData);
+		throw should_never_happen(errorMessage, errorData);
+	}
+	const billedUserId = actor.billedUserId;
+	const billedUser = await ctx.db.get("users", billedUserId);
+	if (!billedUser) {
+		const errorMessage = "billedUserId points to a missing users doc";
+		const errorData = { userId: user._id, organizationId: organization._id, billedUserId };
+		console.error(errorMessage, errorData);
+		throw should_never_happen(errorMessage, errorData);
+	}
+
+	// Accepting a copy saves a version, and a save costs the same here as through the other doors.
+	const check = await billing_db_check_credits(ctx, { userId: billedUser._id, minimumRequiredCents: 1 });
+	if (!check.hasCredits) {
+		return Result({ _nay: { message: "Insufficient funds" } });
+	}
+
+	const installed = await db_install_file_content_replacement(ctx, {
+		membership,
+		user,
+		billedUser,
+		fileNode,
+		previousAssetId,
+		pendingContent: "drop",
+		backup: args.backup,
+		contentAssetId: args.contentAssetId,
+		contentSize: args.contentSize,
+		// The staged object is already published. A normalized text got its own object.
+		publishContentAsset: args.contentAssetId !== args.stagedAssetId,
+		contentType: args.contentType,
+		yjsRootKind: args.yjsRootKind,
+		nonCollaborative: args.nonCollaborative,
+		yjsSnapshot: args.yjsSnapshot,
+		text: args.text,
+	});
+	if (installed._nay) {
+		return installed;
+	}
+	for (const hold of publicationReservations)
+		await files_private_storage_db_release(ctx, {
+			reservationId: hold._id,
+			settlement: { kind: "saved", savedNodeId: args.nodeId, settledAt: Date.now() },
+		});
+
+	// The staged object is superseded when the normalized text got its own object.
+	if (args.contentAssetId !== args.stagedAssetId) {
+		await files_pending_update_db_release_replacement_asset(ctx, {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			assetId: args.stagedAssetId,
+		});
+	} else {
+		const reservation = await ctx.db
+			.query("files_private_storage_reservations")
+			.withIndex("by_resource", (q) => q.eq("resource.kind", "asset").eq("resource.id", args.stagedAssetId))
+			.unique();
+		if (!reservation)
+			throw should_never_happen("Replacement asset has no storage reservation", { assetId: args.stagedAssetId });
+		await files_private_storage_db_release(ctx, {
+			reservationId: reservation._id,
+			settlement: { kind: "saved", savedNodeId: args.nodeId, settledAt: Date.now() },
+		});
+	}
+
+	// The proposal is consumed. A move proposal on the same doc survives as a move-only doc.
+	const now = Date.now();
+	if (pendingUpdate.pendingMove) {
+		await Promise.all([
+			files_db_patch_pending_update(ctx, pendingUpdate._id, {
+				revision: pendingUpdate.revision + 1,
+				pendingReplacement: undefined,
+				copiedFrom: undefined,
+				size: 0,
+				updatedAt: now,
+			}),
+			files_pending_update_db_delete_chunks(ctx, { pendingUpdateId: pendingUpdate._id }),
+			files_db_schedule_pending_update_cleanup(ctx, {
+				pendingUpdateId: pendingUpdate._id,
+				expectedUpdatedAt: now,
+			}),
+		]);
+	} else {
+		await Promise.all([
+			files_db_cancel_pending_update_cleanup_tasks(ctx, { pendingUpdateId: pendingUpdate._id }),
+			files_pending_update_db_delete_chunks(ctx, { pendingUpdateId: pendingUpdate._id }),
+			files_db_delete_pending_update(ctx, pendingUpdate._id),
+		]);
+	}
+
+	return Result({ _yay: null });
+}
 
 /**
  * Both restore doors refuse with this message when the file moved under the running action.
@@ -6004,17 +7379,21 @@ async function action_restore_snapshot_as_replacement(
 		yjsSnapshot?: { assetId: Id<"files_r2_assets">; size: number };
 		text?: string;
 	};
+
 	if (args.version.rootKind === null) {
 		// Stored bytes: copy the version's object to a new content asset on the R2 server side.
 		const { assetId, r2Key } = await insert_asset({ kind: "content", size: args.versionAsset.size });
+
 		const copied = await r2_copy_object_to_immutable_key(ctx, {
 			sourceKey: args.versionAsset.r2Key,
 			destinationKey: r2Key,
 		});
+
 		if (copied.outcome !== "ready") {
 			await cleanup_uploads();
 			return Result({ _nay: { message: "The snapshot's content is not available" } });
 		}
+
 		content = { contentAssetId: assetId, contentSize: copied.size };
 	} else {
 		// Text gets its final form here, like an accepted copy: a collaborative result gets a
@@ -6022,13 +7401,16 @@ async function action_restore_snapshot_as_replacement(
 		// committed, because building a rich document normalizes Markdown.
 		const rootKind = args.version.rootKind;
 		let text = await r2_fetch_object_from_bucket({ key: args.versionAsset.r2Key }).then((response) => response.text());
+
 		let yjsSnapshot: { assetId: Id<"files_r2_assets">; size: number } | undefined;
+
 		if (args.version.collaborationEnabled) {
 			const yjsDoc = files_yjs_doc_create_from_text({ text, rootKind });
 			if ("_nay" in yjsDoc) {
 				await cleanup_uploads();
 				return Result({ _nay: { message: yjsDoc._nay.message } });
 			}
+
 			const snapshotUpdate = encodeStateAsUpdate(yjsDoc);
 			if (snapshotUpdate.byteLength > files_MAX_YJS_RECONSTRUCTED_STATE_BYTES) {
 				await cleanup_uploads();
@@ -6036,11 +7418,13 @@ async function action_restore_snapshot_as_replacement(
 					_nay: { message: `Compact document exceeds ${files_MAX_YJS_RECONSTRUCTED_STATE_BYTES}-byte limit` },
 				});
 			}
+
 			const normalizedText = files_yjs_doc_get_text({ yjsDoc, rootKind });
 			if (normalizedText._nay) {
 				await cleanup_uploads();
 				return Result({ _nay: { message: normalizedText._nay.message } });
 			}
+
 			text = normalizedText._yay;
 			yjsSnapshot = {
 				assetId: await upload_asset({
@@ -6052,11 +7436,13 @@ async function action_restore_snapshot_as_replacement(
 				size: snapshotUpdate.byteLength,
 			};
 		}
+
 		const textSize = files_get_utf8_byte_size(text);
 		if (textSize > files_MAX_TEXT_CONTENT_BYTES) {
 			await cleanup_uploads();
 			return Result({ _nay: { message: `Text content exceeds ${files_MAX_TEXT_CONTENT_BYTES}-byte limit` } });
 		}
+
 		content = {
 			contentAssetId: await upload_asset({
 				kind: "content_snapshot",
@@ -7161,13 +8547,9 @@ export const set_file_non_collaborative = mutation({
 			return writable;
 		}
 
-		const [yjsSnapshotDoc, yjsLastSequenceDoc, pendingUpdates] = await Promise.all([
+		const [yjsSnapshotDoc, yjsLastSequenceDoc] = await Promise.all([
 			ctx.db.get("files_yjs_snapshots", fileNode.yjsSnapshotId),
 			ctx.db.get("files_yjs_docs_last_sequences", fileNode.yjsLastSequenceId),
-			ctx.db
-				.query("files_pending_updates")
-				.withIndex("by_fileNode", (q) => q.eq("fileNodeId", args.nodeId))
-				.collect(),
 		]);
 		if (!yjsSnapshotDoc || !yjsLastSequenceDoc) {
 			const errorMessage = "A Yjs pointer on the file node points to a missing doc";
@@ -7180,14 +8562,6 @@ export const set_file_non_collaborative = mutation({
 			};
 			console.error(errorMessage, errorData);
 			throw should_never_happen(errorMessage, errorData);
-		}
-
-		// An eager-created node is a brand-new file nobody has accepted yet. A node with no
-		// `yjsLastSequenceId` can never be hard-deleted again, because the eager-node delete check
-		// refuses one, so discard, expiry and account deletion would all skip it and the sidebar
-		// would keep showing it as "Added" forever. Ask the user to finish that decision first.
-		if (pendingUpdates.some((pendingUpdate) => pendingUpdate.eagerCreated)) {
-			return Result({ _nay: { message: "Accept or discard this new file before turning collaboration off." } });
 		}
 
 		// The committed text only ever reaches the last MATERIALIZED sequence, so deleting the

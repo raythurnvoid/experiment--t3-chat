@@ -30,11 +30,11 @@ Skills, resources, and instructions use the same current-user pending view as or
 - Pending text is visible under the normal stale-content rules.
 - Pending moves and renames change visible paths. A moved folder carries its descendants.
 - Pending deletes hide files and folder descendants.
-- Eager-created files are visible before their first save.
+- Ready private files are visible to their owner before Save. Preparing files do not enter the catalog.
 - Another user's pending moves and content do not change the current user's view.
 - New reads recheck normal file access. Missing and restricted sources are unavailable.
 
-Discovery checks active membership and `content.read`, then filters restricted files before returning paths. It scans exact saved `SKILL.md` names and the nodes used by the pending path overlay. The latter also finds ordinary files renamed to `SKILL.md`. It projects each candidate through the normal overlay before checking the skill path shape.
+Discovery checks active membership and `content.read`, then uses the shared visible-file reader to list `/.agents/skills` at exactly two levels. This includes saved and private files at their current owner paths, including files renamed to `SKILL.md`. Restricted and Preparing files are omitted. It reads at most twenty pages of fifty items and reports an incomplete catalog when that bound is reached.
 
 Do not add source versions, saved-only readers, special resource IDs, or a separate skill file cache. There are no selected skills, loaded-skill state, or private script results. There is no skill picker or Instructions and skills dialog.
 
@@ -70,7 +70,7 @@ Caps are UTF-8 bytes unless stated otherwise. Never present a cut skill as compl
 | Item | Limit |
 | --- | --- |
 | Skill catalog | 100 entries and 32 KiB serialized metadata |
-| Candidate named files / pending docs | 1,000 each |
+| Visible catalog scan | 20 pages of at most 50 files |
 | Skill frontmatter | 8 KiB, plus bounded fence/BOM read space |
 | Supported complete skill or normal full read | 64 KiB |
 | One automatically loaded `AGENTS.md` | 32 KiB |
@@ -85,7 +85,7 @@ The tool layer also bounds serialized inputs and outputs across the request. It 
 
 # Verification
 
-- [Discovery tests](../../../packages/app/convex/ai_chat_context.test.ts): exact paths, pending renames and moved folders, pending text and eager creates, deletes, access refusals, and catalog limits.
+- [Discovery tests](../../../packages/app/convex/ai_chat_context.test.ts): exact paths, pending renames and moved folders, pending text and private creates, deletes, access refusals, and catalog limits.
 - [Context tests](../../../packages/app/server/ai-chat-context.test.ts): root-only startup, metadata-only catalog, ancestor order, path/text dedupe, parallel byte budgets, output refusal, and safe read errors.
 - [Parser tests](../../../packages/app/server/ai-chat-skills.test.ts): valid metadata, malformed YAML, aliases, app name rules, and UTF-8 frontmatter limits.
 - [Gate tests](../../../packages/app/convex/ai_chat_context_gate.test.ts) and [route tests](../../../packages/app/convex/ai_chat_context_route.test.ts): optional feature flag and actual stream setup.

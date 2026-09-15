@@ -13,15 +13,7 @@ import {
 	type Ref,
 } from "react";
 import { useFn } from "@/hooks/utils-hooks.ts";
-import {
-	ArrowUpRight,
-	ChevronLeft,
-	ChevronRight,
-	GitBranch,
-	Info,
-	RefreshCw,
-	ShieldQuestion,
-} from "lucide-react";
+import { ArrowUpRight, ChevronLeft, ChevronRight, GitBranch, Info, RefreshCw, ShieldQuestion } from "lucide-react";
 import { MySpinner } from "@/components/my-spinner.tsx";
 import {
 	isDataUIPart,
@@ -69,7 +61,10 @@ import { MyButton, MyButtonIcon } from "../my-button.tsx";
 
 // Reuse one stable empty array so the store selector does not trigger avoidable re-renders.
 const EMPTY_BRANCH_SIBLING_IDS: readonly string[] = [];
-const ai_chat_message_user_edit_layout_by_message_id = new Map<string, { width: number; height: number; top: number }>();
+const ai_chat_message_user_edit_layout_by_message_id = new Map<
+	string,
+	{ width: number; height: number; top: number }
+>();
 
 // #region tool chip
 type AiChatMessagePartToolChip_ClassNames = "AiChatMessagePartToolChip";
@@ -220,7 +215,9 @@ const AiChatMessagePartDisclosureButton = memo(function AiChatMessagePartDisclos
 						{labelText}
 					</span>
 				</b>
-				<span className={"AiChatMessagePartDisclosureButton-text" satisfies AiChatMessagePartDisclosureButton_ClassNames}>
+				<span
+					className={"AiChatMessagePartDisclosureButton-text" satisfies AiChatMessagePartDisclosureButton_ClassNames}
+				>
 					{text}
 				</span>
 				<AiChatMessagePartToolStatus state={state} isChatRunning={isChatRunning} />
@@ -365,12 +362,7 @@ const AiChatMessagePartToolBash = memo(function AiChatMessagePartToolBash(props:
 		<AiChatMessagePartDisclosure
 			className={cn("AiChatMessagePartToolBash" satisfies AiChatMessagePartToolBash_ClassNames, className)}
 		>
-			<AiChatMessagePartDisclosureButton
-				title="Bash"
-				text={command}
-				state={toolState}
-				isChatRunning={isChatRunning}
-			/>
+			<AiChatMessagePartDisclosureButton title="Bash" text={command} state={toolState} isChatRunning={isChatRunning} />
 			<AiChatMessagePartToolBody>
 				<TextMonospaceBlock
 					aria-label="Bash terminal output"
@@ -423,12 +415,16 @@ const AiChatMessagePartToolEditPage = memo(function AiChatMessagePartToolEditPag
 				isChatRunning={isChatRunning}
 			/>
 			<AiChatMessagePartToolBody>
-				{result?.metadata?.nodeId && (
+				{result?.metadata?.target && (
 					<MyLink
 						className={"AiChatMessagePartToolEditPage-link" satisfies AiChatMessagePartToolEditPage_ClassNames}
 						to="/w/$organizationName/$workspaceName/files"
 						params={{ organizationName, workspaceName }}
-						search={{ nodeId: result.metadata.nodeId }}
+						search={
+							result.metadata.target.kind === "private"
+								? { pendingNodeId: result.metadata.target.id }
+								: { nodeId: result.metadata.target.id }
+						}
 						variant="button-ghost-accent"
 					>
 						Open file
@@ -634,15 +630,15 @@ const AiChatMessagePartToolUnknown = memo(function AiChatMessagePartToolUnknown(
 });
 // #endregion tool unknown
 
-// #region markdown assistant
-type AiChatMessagePartMarkdownAssistant_ClassNames =
+// #region markdown agent
+type AiChatMessagePartMarkdownAgent_ClassNames =
 	| "AiChatMessagePartMarkdownAgent"
 	| "AiChatMessagePartMarkdownAgent-content";
 
-type AiChatMessagePartMarkdownAssistant_Props = AiChatMarkdown_Props;
+type AiChatMessagePartMarkdownAgent_Props = AiChatMarkdown_Props;
 
 const AiChatMessagePartMarkdownAgent = memo(function AiChatMessagePartMarkdownAgent(
-	props: AiChatMessagePartMarkdownAssistant_Props,
+	props: AiChatMessagePartMarkdownAgent_Props,
 ) {
 	const { className, contentClassName, markdown, ...rest } = props;
 
@@ -650,12 +646,9 @@ const AiChatMessagePartMarkdownAgent = memo(function AiChatMessagePartMarkdownAg
 
 	return (
 		<AiChatMarkdown
-			className={cn(
-				"AiChatMessagePartMarkdownAgent" satisfies AiChatMessagePartMarkdownAssistant_ClassNames,
-				className,
-			)}
+			className={cn("AiChatMessagePartMarkdownAgent" satisfies AiChatMessagePartMarkdownAgent_ClassNames, className)}
 			contentClassName={cn(
-				"AiChatMessagePartMarkdownAgent-content" satisfies AiChatMessagePartMarkdownAssistant_ClassNames,
+				"AiChatMessagePartMarkdownAgent-content" satisfies AiChatMessagePartMarkdownAgent_ClassNames,
 				contentClassName,
 			)}
 			markdown={deferredMarkdown}
@@ -663,7 +656,7 @@ const AiChatMessagePartMarkdownAgent = memo(function AiChatMessagePartMarkdownAg
 		/>
 	);
 });
-// #endregion markdown assistant
+// #endregion markdown agent
 
 // #region text user
 type AiChatMessagePartTextUser_ClassNames = "AiChatMessagePartTextUser";
@@ -1172,14 +1165,14 @@ const AiChatMessageContent = memo(function AiChatMessageContent(props: AiChatMes
 // #endregion content
 
 // #region bubble
+type AiChatMessageBubble_ClassNames = "AiChatMessageBubble";
+
 type AiChatMessageBubble_Props = ComponentPropsWithRef<"div"> & {
 	ref?: Ref<HTMLDivElement>;
 	id?: string;
 	className?: string;
 	children: ReactNode;
 };
-
-type AiChatMessageBubble_ClassNames = "AiChatMessageBubble";
 
 const AiChatMessageBubble = memo(function AiChatMessageBubble(props: AiChatMessageBubble_Props) {
 	const { ref, id, className, children, ...rest } = props;
@@ -1222,9 +1215,7 @@ const AiChatMessageUserSendError = memo(function AiChatMessageUserSendError(prop
 				<MyModal>
 					<MyModalTrigger>
 						<MyIconButton
-							className={
-								"AiChatMessageUserSendError-details-button" satisfies AiChatMessageUserSendError_ClassNames
-							}
+							className={"AiChatMessageUserSendError-details-button" satisfies AiChatMessageUserSendError_ClassNames}
 							variant="outline_destructive"
 							tooltip="Show error details"
 						>
@@ -1538,11 +1529,7 @@ const AiChatMessageUser = memo(function AiChatMessageUser(props: AiChatMessageUs
 				)}
 				<div className={"AiChatMessageUser-actions" satisfies AiChatMessageUser_ClassNames} hidden={isEditing}>
 					{sendErrorText && (
-						<AiChatMessageUserSendError
-							message={sendErrorText}
-							details={sendErrorDetails}
-							onRetry={handleRetrySend}
-						/>
+						<AiChatMessageUserSendError message={sendErrorText} details={sendErrorDetails} onRetry={handleRetrySend} />
 					)}
 					<div className={"AiChatMessageUser-actions-main" satisfies AiChatMessageUser_ClassNames}>
 						<CopyIconButton
@@ -1963,9 +1950,7 @@ export const AiChatMessage = memo(function AiChatMessage(props: AiChatMessage_Pr
 		"data-ai-chat-message-id": message.id,
 		"data-ai-chat-message-role": message.role,
 		...(message.metadata?.convexId ? { "data-ai-chat-message-convex-id": message.metadata.convexId } : {}),
-		...(message.metadata?.convexParentId
-			? { "data-ai-chat-message-parent-id": message.metadata.convexParentId }
-			: {}),
+		...(message.metadata?.convexParentId ? { "data-ai-chat-message-parent-id": message.metadata.convexParentId } : {}),
 		...(message.metadata?.parentClientGeneratedId
 			? { "data-ai-chat-message-parent-client-id": message.metadata.parentClientGeneratedId }
 			: {}),

@@ -264,7 +264,7 @@
 	}
 	/* #endregion tree */
 
-	/* #region tree drop zone */
+	/* #region tree drop zone area */
 	.FilesSidebarTreeDropZoneArea {
 		position: absolute;
 		left: 8px;
@@ -285,7 +285,9 @@
 		top: var(--FilesSidebarTreeDropZoneArea-top);
 		height: var(--FilesSidebarTreeDropZoneArea-height);
 	}
+	/* #endregion tree drop zone area */
 
+	/* #region tree drop zone indicator */
 	.FilesSidebarTreeDropZoneIndicator {
 		/* Rest at the tree bottom (margin-top auto); sticky keeps it on the visible scrollport
 		   bottom when the tree overflows. */
@@ -323,7 +325,7 @@
 		width: 16px;
 		height: 16px;
 	}
-	/* #endregion tree drop zone */
+	/* #endregion tree drop zone indicator */
 
 	/* #region tree item */
 	.FilesSidebarTreeItem,

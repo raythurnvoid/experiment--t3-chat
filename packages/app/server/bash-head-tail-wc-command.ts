@@ -2,20 +2,34 @@ import { defineCommand, type Command, type CommandContext } from "just-bash/brow
 import { internal } from "../convex/_generated/api.js";
 import type { Doc } from "../convex/_generated/dataModel";
 import type { ActionCtx } from "../convex/_generated/server.js";
-import type {
-	files_nodes_get_by_path_Result,
-	files_nodes_read_file_content_from_chunks_Result,
-} from "../convex/files_nodes.ts";
+import type { files_nodes_read_file_content_from_chunks_Result } from "../convex/files_nodes.ts";
 import type {
 	files_nodes_read_file_content_stats_Result,
 	files_nodes_read_file_line_range_Result,
 	files_nodes_read_file_tail_lines_Result,
 } from "../convex/files_nodes_content.ts";
 import { Result } from "common/errors-as-values-utils.ts";
-import { files_node_has_editable_text_content } from "../shared/files.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 import { bash_sed_command_build_next_page_hint } from "./bash-sed-command.ts";
-import { bash_DbFilesContentUnavailableError, bash_build_unreadable_file_advisory, bash_create_glob_syntax_unsupported_message, bash_enforce_reader_operand_cap, bash_format_multiline_hint, bash_GLOB_METACHARACTER_REGEX, bash_get_db_file_byte_size, bash_is_path_under_current_workspace_path, bash_READ_HEAD_LARGE_FILE_MAX_LINES, bash_READ_INLINE_MAX_BYTES, bash_resolve_path, bash_shell_arg_quote, bash_resolve_db_files_shell_path, bash_COMMAND_EXIT_FAILURE, bash_COMMAND_EXIT_USAGE, type bash_DbFilesRoots, type bash_DbFilesShellPathResolution } from "./bash-utils.ts";
+import {
+	bash_DbFilesContentUnavailableError,
+	bash_build_unreadable_file_advisory,
+	bash_create_glob_syntax_unsupported_message,
+	bash_enforce_reader_operand_cap,
+	bash_format_multiline_hint,
+	bash_GLOB_METACHARACTER_REGEX,
+	bash_get_db_file_byte_size,
+	bash_is_path_under_current_workspace_path,
+	bash_READ_HEAD_LARGE_FILE_MAX_LINES,
+	bash_READ_INLINE_MAX_BYTES,
+	bash_resolve_path,
+	bash_shell_arg_quote,
+	bash_resolve_db_files_shell_path,
+	bash_COMMAND_EXIT_FAILURE,
+	bash_COMMAND_EXIT_USAGE,
+	type bash_DbFilesRoots,
+	type bash_DbFilesShellPathResolution,
+} from "./bash-utils.ts";
 import { bash_delegate_builtin_command } from "./bash-delegate.ts";
 
 const READER_LINE_COUNT_REGEX = /^(\+?)(\d+)$/u;
@@ -193,16 +207,7 @@ async function find_oversized_file_operand(
 		const pathResolution = bash_resolve_db_files_shell_path(bash_resolve_path(commandCtx.cwd, file), dbFilesRoots);
 		if (pathResolution.dbFilesPath == null) continue;
 
-		const dbFilesDoc: files_nodes_get_by_path_Result =
-			pathResolution.dbFilesPath === "/"
-				? null
-				: ((await ctx.runQuery(internal.files_nodes.get_by_path, {
-						organizationId: pathResolution.ctxData.organizationId,
-						workspaceId: pathResolution.ctxData.workspaceId,
-						visibilityUserId: pathResolution.ctxData.userId,
-						path: pathResolution.dbFilesPath,
-						overlayUserId: pathResolution.fs.overlayUserId,
-					})) as files_nodes_get_by_path_Result);
+		const dbFilesDoc = await pathResolution.fs.getEntry(pathResolution.dbFilesPath);
 		if (dbFilesDoc == null) continue;
 
 		const size: number | null = await bash_get_db_file_byte_size({ ctx, ctxData: pathResolution.ctxData, dbFilesDoc });
@@ -211,8 +216,8 @@ async function find_oversized_file_operand(
 				file,
 				dbFilesPath: pathResolution.dbFilesPath,
 				size,
-				contentType: dbFilesDoc.contentType,
-				hasEditableTextContent: dbFilesDoc.kind === "file" && files_node_has_editable_text_content(dbFilesDoc),
+				contentType: dbFilesDoc.contentType ?? null,
+				hasEditableTextContent: dbFilesDoc.kind === "file" && dbFilesDoc.textKind !== null,
 				pathResolution,
 			} as const;
 		}
@@ -295,16 +300,7 @@ export function bash_head_tail_wc_command_create(
 					overlayUserId: pathResolution.fs.overlayUserId,
 				})) as files_nodes_read_file_content_stats_Result;
 				if (!stats) {
-					const dbFilesDoc: files_nodes_get_by_path_Result =
-						dbFilesPath === "/"
-							? null
-							: ((await ctx.runQuery(internal.files_nodes.get_by_path, {
-									organizationId: pathResolution.ctxData.organizationId,
-									workspaceId: pathResolution.ctxData.workspaceId,
-									visibilityUserId: pathResolution.ctxData.userId,
-									path: dbFilesPath,
-									overlayUserId: pathResolution.fs.overlayUserId,
-								})) as files_nodes_get_by_path_Result);
+					const dbFilesDoc = await pathResolution.fs.getEntry(dbFilesPath);
 
 					if (dbFilesPath === "/" || dbFilesDoc?.kind === "folder") {
 						stderr += `wc: ${file}: Is a directory\n`;
@@ -562,16 +558,7 @@ export function bash_head_tail_wc_command_create(
 						return { stdout, stderr: "", exitCode: 0 };
 					}
 
-					const dbFilesDoc: files_nodes_get_by_path_Result =
-						dbFilesPath === "/"
-							? null
-							: ((await ctx.runQuery(internal.files_nodes.get_by_path, {
-									organizationId: pathResolution.ctxData.organizationId,
-									workspaceId: pathResolution.ctxData.workspaceId,
-									visibilityUserId: pathResolution.ctxData.userId,
-									path: dbFilesPath,
-									overlayUserId: pathResolution.fs.overlayUserId,
-								})) as files_nodes_get_by_path_Result);
+					const dbFilesDoc = await pathResolution.fs.getEntry(dbFilesPath);
 
 					if (dbFilesPath === "/" || dbFilesDoc?.kind === "folder") {
 						return {
@@ -584,9 +571,10 @@ export function bash_head_tail_wc_command_create(
 					if (dbFilesDoc?.kind === "file") {
 						return {
 							stdout: "",
-							stderr: files_node_has_editable_text_content(dbFilesDoc)
-								? `${command}: ${file}: content is not available from materialized chunks\n`
-								: bash_build_unreadable_file_advisory(pathResolution.basePath, dbFilesPath, dbFilesDoc.contentType),
+							stderr:
+								dbFilesDoc.textKind !== null
+									? `${command}: ${file}: content is not available from materialized chunks\n`
+									: bash_build_unreadable_file_advisory(pathResolution.basePath, dbFilesPath, dbFilesDoc.contentType),
 							exitCode: bash_COMMAND_EXIT_FAILURE,
 						};
 					}

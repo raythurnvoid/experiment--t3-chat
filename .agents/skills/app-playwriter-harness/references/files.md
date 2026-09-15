@@ -348,6 +348,17 @@ downloadThroughput: -1, uploadThroughput: -1 }`. This affects only the owned QA 
   must fail with `Permission denied` and zero moved. Owner readback must show every original path
   and scope unchanged. Give the member `write` on the restricted child and repeat: the move must
   succeed and keep that child's scope. Unit tests also cover read-only grants and archived children.
+- **Where `Upload file` actually is** (verified 2026-09-15): the sidebar toolbar's `More options`
+  button, whose menu is `Cut`, `Copy`, `Paste into root folder`, `Upload file`, `Import folder`. It
+  uploads into the **currently selected** folder, so select the target node first (open
+  `/files?nodeId=<folder id>`) even though the Paste entry says "root folder". Drive it with
+  `state.page.waitForEvent("filechooser")` started before the click, then
+  `chooser.setFiles("C:/absolute/path")`; under a Windows relay a Windows path works. A 14 KB PNG
+  needs ~20 s before the node appears. It is **not** on a row's `More actions` menu (that menu is
+  Cut/Copy/Paste/Copy path/Copy link/Copy node id/Rename/Expand subtree/Collapse subtree/Share/
+  Properties/Archive). Do not go looking for it behind the row's `Add file to <folder>` button or
+  the toolbar's `New file` button: neither opens a menu, both immediately create a `new-file.md`
+  node in inline-rename mode, so probing them litters the tree with files you then have to archive.
 - For a small stored-file check, choose `Upload file` in an isolated folder and give its file chooser
   a known `application/octet-stream` buffer named with a `.bin` extension. Copy it through the menu.
   Sign both downloads, compare every byte, and check the copied file has a different asset id.
@@ -534,7 +545,7 @@ Use this after changing the bulk import flow (`run_folder_import` in `files-side
 - Put or find a unique token in the selected Markdown file.
 - Open `Agent` and ask it to search for the token, read the file, and make a small edit.
 - Verify a `Bash` disclosure appears for search/read steps, using commands such as `search --limit N <token>` and `cat /home/cloud-usr/w/personal/home/<known-md-path>`.
-- Verify the edit step uses `Edit file` or `Write file`, not a Bash redirect under `/home/cloud-usr/w/personal/home`.
+- Verify the edit step uses `Edit file` or a Bash write and leaves reviewable pending content.
 - Review/apply via `[data-testid="review-changes-button"]`.
 - In Agent mode, ask Bash to `mv` a file to a new path and verify the Pending tab shows a move proposal before acceptance. Test both a rename and a move between folders.
 - Ask Bash to `cp` a file to a new path and to an occupied path. Verify the Pending tab shows the copy or replacement proposal and that committed files stay unchanged until acceptance.
@@ -550,8 +561,7 @@ Use this to verify backend changes to `files_metadata` (extraction, `meta search
 - Read results from `[aria-label="Bash terminal output"]` via `textContent`, not the assistant's prose.
 - Create the fixture with a heredoc write (`cat > qa-<topic>/a.md <<'EOF' ... EOF`) instead of editing real files. The write is a pending proposal, and pending metadata docs are indexed and overlaid for the acting user, so `meta search` and `meta get` already see them — no acceptance needed for a read-path check.
 - Copy the real frontmatter shape you care about. Sybill meeting files quote their dates: `realStartTime: "2026-07-29T19:00:00.000Z"`.
-- Clean up with the Pending changes tab: use `role=button[name="Discard changes to /<path>"]` for each file. Discarding an eager-created file also deletes the folders that same write created, but only while they are still empty, and only the first write into a new folder records them. Two fixture files in one folder therefore always leave the folder behind, so archive it through `More actions for <folder>` → `Archive`.
-- If discarding a newly created file fails with `dynamic module import unsupported`, check `files_nodes_db_hard_delete_node` in `convex/files_nodes.ts`. Its dynamic import of `files_nodes_content.ts` caused this error in the live Convex runtime (2026-09-10). Archive only the owned QA folders through their row menus, then confirm their `archiveOperationId` values with `list_tree`. Archiving removes them from active file reads and the skill catalog; it does not prove hard deletion or draft cleanup worked.
+- Clean up the private fixture through the Pending tab. Select its folder and all its child proposals, then use Discard. A ready child outside that selection must require review. Discarding only a child leaves its private parent proposal. Check that the fixture disappears from owner reads, then verify private cleanup releases its node and storage holds. No saved folder should need archiving unless the fixture was saved first.
 - Metadata changes live in `convex/`, which `pnpm dev` does NOT push (that script is Vite only). Run `vp env exec pnpm exec convex dev --once` from `packages/app` after each edit, and reload the route afterwards using the blanked-tab recipe in `agent-panel.md`.
 
 ### File Agent Just Bash
@@ -572,8 +582,14 @@ Use this after changing the AI bash tool, tool rendering, or agent file-access c
 - Send `cd /home/cloud-usr/w/personal/home/<known-folder>` and then a second prompt asking for `pwd`; verify the second bash result uses the persisted cwd.
 - In Agent mode, ask it to create a timestamped folder with `mkdir /home/cloud-usr/w/personal/home/playwriter-ai-chat-qa-<timestamp>`; verify the new turn shows a Bash disclosure and does not show a `create_folder` tool.
 - In Ask mode, ask it to try `mkdir /home/cloud-usr/w/personal/home/playwriter-ai-chat-ask-denied-<timestamp>`; verify bash reports that durable folder creation belongs in Agent mode and no folder appears.
-- Ask it to try `echo nope > /home/cloud-usr/w/personal/home/agent-bash-qa.md`; verify the bash result reports a read-only filesystem error.
-- Ask it to make one real Markdown edit; verify the new turn uses `edit_file`, not a bash write under the workspace mount.
+- In Agent mode, ask it to run `echo draft > /home/cloud-usr/w/personal/home/<unique-qa-name>.md`; verify a private proposal appears and `cat` reads it before Save. In Ask mode, the same write must fail without creating a proposal.
+- Ask it to make one real Markdown edit; verify the new turn uses `edit_file` or Bash and leaves the change pending.
+- **`sed -i` does not work on app files.** The db-backed tree exposes a fixed command set, and `sed` is not in it: `sed -i 's/a/b/' u39/target.md` reads the script argument as a path and answers `sed: u39/target.md: No such file or directory` plus `Native Just Bash /tmp commands cannot access app files directly`. To make a content proposal with an exact text, ask the agent for `printf '<the whole new file>' > <path>` instead — that writes the file the tool does know about and produces one proposal per file. Verified 2026-09-15.
+- **Pick fixture names that no name rule rewrites.** The Bash writer leaves an existing occupant's path alone, but a **missing** target is normalized before the file is created (`server/bash-utils.ts:600-660`), and `readme` in any casing becomes `README.md` (`shared/files.test.ts:937-940`). So `mv u05/readme.md u05/guide.md ; echo new > u05/readme.md` puts the new private node at `/u05/README.md`, not at the path you vacated, and the case you were testing quietly stops being the case you meant. `create_text_node` called directly does **not** normalize, so a door-built fixture and a Bash-written file can sit at two different paths for the same requested name. Use a neutral name such as `notes.md`. Verified 2026-09-15.
+- **The two writers answer that name rule differently, so pick your check deliberately.** A redirect refuses: `echo hello > 'my other.md'` exits 1 with `cannot write '<path>/my other.md': app file names are normalized; write to '<path>/my-other.md' instead`. A `cp` renames silently and still reports `1 ready for review`: `my copy.md` lands at `my-copy.md`, `café 🎉-copy.md` at `cafe-copy.md`, `-weird-copy.md` at `weird-copy.md`. The transfer's success line never names the output path, so always read the destination back from `files_visible.list` instead of trusting the command's own output. Verified 2026-09-15.
+- `cd` works in the agent shell, the terminal footer reports it (`exit 0 · cwd changed: /home/cloud-usr/w/<org>/<ws> -> /home/cloud-usr/w/<org>/<ws>/u10`), and the new cwd **persists into later turns of the same chat**. A runner that sends workspace-relative paths after an earlier `cd` will address the wrong folder, so either `cd` back or keep every command anchored at the workspace root. Verified 2026-09-15.
+- After a `cp -R`, the private nodes appear in `files_visible.list` before their rows appear in `files_pending_updates.list_files_pending_updates`. A read 8 s after the agent turn finished showed 5 of 8 rows; a re-read showed all 8. Poll the pending list until its count stops changing before asserting a missing row. Verified 2026-09-15.
+- **`sha256sum` and `cmp` are not in that command set either**, so you cannot checksum or diff two app files from inside the agent's shell — both answer `No such file or directory` followed by the same `Native Just Bash /tmp commands cannot access app files directly` note. To compare content, use `stat` for size and `cat` for text, or read the nodes through Convex in page context. There is no digest to read on the server side either: `files_r2_assets` (`convex/schema.ts:1660`) stores `size`, `r2Key` and `kind`, but no hash column. Verified 2026-09-15.
 - Inspect the latest assistant tool parts and verify new turns do not show legacy `Read file`, `List files`, `Glob files`, `Grep files`, or `Search files` disclosures unless they came from older transcript history.
 
 ### Pending Copy Onto A Collaborative File
@@ -687,6 +703,12 @@ Selectors and a proven flow for the media embeds in the rich text editor (verifi
 - The image node is **inline** (`isInline: true`), so a shape dump that maps only `doc.content.content` never lists it — a dropped image "disappears" into its paragraph. Find media nodes with `doc.descendants((n) => ...)` instead. A drop lands at the pointer (`posAtCoords`), not at the caret; prove placement by parking the caret with `Ctrl+Home` and dropping onto a specific paragraph, then resolving the found node's parent (verified 2026-08-09).
 - The signed-url grant is per membership: `r2.create_signed_download_url` with the caller's own valid membership plus a file node from another workspace answers `_nay "Not found"`, and an invited member's browser renders the embed from the R2 origin with no extra step (verified 2026-08-09 with the `second-user-fixtures.md` flow).
 - `list_tree` takes `paginationOpts: { numItems: 500, cursor: null }` and returns `{ page, isDone, continueCursor }`. Follow each cursor until `isDone` before checking all nodes or fixture children. A node has `kind`, not `type`; use `kind`, `lowercaseExtension`, or `contentType`.
+- `files_visible.list` takes **flat** args, not a `paginationOpts` object: `{ membershipId, mode, folderPath, cursor, numItems }` with `mode` one of `children | subtree | recent`, and it returns a Result — read `_yay.items`, `_yay.isDone`, `_yay.continueCursor`. It is addressed by `folderPath`, not by a parent id. Verified 2026-09-15.
+- **A `files_visible.list` item has no `_id`.** Each item is `{ kind, name, path, contentType, preparing, updatedAt, updatedBy, target: { kind, id } }`, so read `item.target.id`. `target.kind` also tells you which read door to use: `"saved"` is a real `files_nodes` row, `"private"` is a `files_pending_nodes` row that only the proposal's owner can see. Passing a private id to `files_nodes_content.get_non_collaborative_file_content` fails the validator with `Found ID ... from table files_pending_nodes, which does not match ... v.id("files_nodes")`. Read a private one with `files_fetch_private_file_pending_text({ membershipId, target })` from `/src/lib/files.ts` instead. An agent `cp`/`touch`/`>` into a new path always produces a private item, so a listing right after an agent write mixes both kinds. Verified 2026-09-15.
+- `files_nodes.get_file_node_for_membership` takes **`fileNodeId`**, not `nodeId` (nearly every other files door takes `nodeId`). It returns the raw node doc plus `canWrite`, so it is the quickest way to read `assetId`, `collaborationEnabled`, `textKind` and `writePolicyState` for a node. Verified 2026-09-15.
+- To decode a pending branch by hand in page context, the two helpers live in different modules: `files_yjs_doc_create_from_array_buffer_update` is in `/shared/files-yjs.ts` and `files_yjs_doc_get_text` is in `/shared/files-tiptap.ts`. Pair either with `files_fetch_file_pending_update_yjs_state({ membershipId, target, stateId })` from `/src/lib/files.ts` to read the base, staged or unstaged text of a saved-target proposal. Verified 2026-09-15.
+- A copy is **not** byte-identical to its source for a `rich_text` file. The copy runs the text through a headless Tiptap editor to drop comment marks, and that markdown round-trip removes a single trailing newline (`"a\nb\n"` becomes `"a\nb"`; a trailing blank line, `"a\n\nb\n\n"`, survives) and writes a fresh asset. A file written straight through `replace_file_content` keeps whatever bytes you passed, so a fixture built that way and then copied shows a one-byte diff that is the serializer, not the transfer. Compare content after the same round-trip, or assert without the trailing newline. Verified 2026-09-15.
+- **`create_text_node` and `create_folder_node` take `path` relative to `parentId`.** `create_text_node({ parentId: <the /u39 folder>, path: "/u39/target.md" })` silently makes `/u39/u39/target.md`. The failure shows up much later and looks like something else: the agent's Bash then answers `ls: No such file or directory` for the path you think you created, and a `>` write there creates a *new private draft* (`Added` row, `target.kind: "private"`) instead of a content proposal on your file. Pass the leaf name (`path: "target.md"`) when `parentId` is a folder; pass the full path only with `parentId: "root"`. Verified 2026-09-15.
 - To sign a url without opening a document, import the module in page context: `const media = await import("/src/lib/files-media-src.ts")`, then `media.files_media_get_signed_url({ membershipId, fileNodeId })`. Call it twice and time the second call — a cached hit returns the same url in ~0 ms. `files_media_get_signed_chat_image_url({ membershipId, assetId })` does the same for a picture the chat agent drew, out of the same cache.
 - Slash-menu drive (current, verified 2026-08-08 — supersedes the historical `rich-text-slash-command-keyboard.md`): type `/image` into the editor, wait for `.FileEditorRichTextToolsSlashCommand-item`, ArrowDown until `[aria-selected="true"]`'s `-item-title` matches, then Enter. Start each drive from a fresh paragraph (press Enter first): a refused URL prompt leaves the `/query` text in the doc, and typing another `/` right after it does not reopen the menu.
 - `Image`/`Video` open a real file chooser from the hidden inputs — intercept with `state.page.waitForEvent("filechooser")` started before the Enter, then `chooser.setFiles("C:/absolute/path")`. Works under a Windows relay.
@@ -911,6 +933,50 @@ Do not keep the temporary branch or the QA node id in committed code.
 Use `convex/files_nodes_content.test.ts` for the exact overlapping R2 PUT order. Browser request
 interception cannot pause those server-side uploads. The tests hold each PUT and cover stale
 materialization, same-counter workers, restore after an edit, and OFF/ON during materialization.
+
+### Copy, paste and answer a transfer name conflict
+
+Build the fixture through the deployed doors, not the UI. `files_nodes:create_folder_node` joins its
+`path` under `parentId`, so an absolute path creates a nested duplicate such as
+`/run/run/a`. Pass a plain relative name.
+
+A fixture that produces every conflict shape in one paste: `/<run>/a/report`, `/<run>/b/report` and
+an empty `/<run>/target`. Copying both `report` folders into `target` makes the first item a free
+name and the second a same-paste name claim, which has no destination document.
+
+Drive it from the tree:
+
+```js
+const rowFor = (id) => page.locator(`[data-file-id="${id}"][role="treeitem"]`).first();
+await rowFor(ids.aReport).click();
+await rowFor(ids.bReport).click({ modifiers: ["Control"] });
+await page.keyboard.press("Control+c");
+await rowFor(ids.targetId).click();          // the paste destination follows the selection
+await page.getByRole("button", { name: "Paste files" }).first().click();
+```
+
+Filter the tree first with `#app_files_sidebar_search input`, then press `Escape` — see the
+suggestions-popover hazard. Scope the modal to `.FilesTransferRunModal`; `getByRole("dialog")`
+matches the always-mounted organization switcher instead.
+
+Answer the conflicts by fieldset legend (they are `group`, not `radiogroup`):
+
+```js
+const modal = page.locator(".FilesTransferRunModal").first();
+const set = modal.locator("fieldset").filter({ hasText: "Apply to remaining folder name conflicts" }).first();
+await set.locator("label").filter({ hasText: /^Keep both$/ }).first().click();
+await modal.getByRole("button", { name: "Continue" }).first().click();
+```
+
+Read the result back from the server, not from the modal text alone:
+`files_transfer:list_items` with `{ membershipId, runId, paginationOpts }` gives each item's
+`state`, `outcome`, resolved `source` and `output` paths, and `conflictKind`. List the destination
+folder with `files_visible:list` and remember the `_yay.items` shape.
+
+A run that ends blocked stays reachable. Reopen it from the notifications bell (focus + Enter; the
+Playwriter toolbar covers it) and click "Review conflicts" inside `.AppNotifications-popover`.
+Pasting the same sources again is the way to check that duplicate names keep a stable order: the
+counter must continue past the existing siblings, in source order.
 
 ## Script Pattern
 

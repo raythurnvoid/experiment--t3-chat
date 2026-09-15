@@ -29,7 +29,6 @@ import {
 	access_control_SYSTEM_ROLE_MATRIX,
 	access_control_SYSTEM_ROLES,
 } from "../shared/access-control.ts";
-import { files_nodes_db_remove_created_ancestor_folders_if_safe } from "./files_nodes.ts";
 import { files_ROOT_ID } from "../shared/files.ts";
 import { files_u8_to_array_buffer } from "../server/files.ts";
 import { files_chunk_markdown } from "../server/files-markdown-chunking-mastra.ts";
@@ -265,26 +264,25 @@ async function access_control_test_seed_activity(
 			pluginVersionId,
 			event: "files.upload.completed",
 			eventId: "plugin:activity-gate",
-			status: "succeeded",
 			acceptedCapabilities: [],
-			expiresAt: now + 60_000,
 			apiCallCount: 0,
 			outputWriteCount: 0,
-			errorMessage: null,
-			updatedAt: now,
 		});
 		return await ctx.db.insert("activities", {
 			organizationId: fixture.organizationId,
 			workspaceId: fixture.defaultWorkspaceId,
 			userId: fixture.ownerId,
 			status: "succeeded",
-			source: { kind: "plugin_run", id: runId, installationId, pluginName: "media" },
+			visibility: "shared",
+			feedVisible: true,
+			resultKind: "plugin_result",
+			source: { kind: "plugin_run", id: runId, installationId, pluginName: "media", event: "files.upload.completed" },
 			title: "Media plugin · secret.png",
 			errorMessage: null,
 			targets: args.targets ?? [],
-			timeoutAt: now,
+			deadlineAt: now,
 			finishedAt: now,
-			archivedAt: 0,
+			expiresAt: now + 30 * 24 * 60 * 60 * 1000,
 			updatedAt: now,
 		});
 	});
@@ -1271,21 +1269,36 @@ describe("enforcement", () => {
 			path: "notes",
 		});
 		expect(folder._nay).toBeUndefined();
+		const target = { kind: "saved" as const, id: folder._yay!.nodeId };
+		const moved = await t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
+			organizationId: fixture.organizationId,
+			workspaceId: fixture.defaultWorkspaceId,
+			userId: fixture.memberId,
+			target,
+			destParent: { kind: "root" },
+			destName: "moved-notes",
+		});
+		expect(moved._nay).toBeUndefined();
+		const pending = await fixture.asMember.query(api.files_pending_updates.get_file_pending_update, {
+			membershipId: fixture.memberMembershipId,
+			target,
+		});
+		if (!pending) throw new Error("Expected the member's proposal");
 
 		await access_control_test_demote_to_viewer(fixture);
 
-		// Accepting a pending update is the write path the AI uses. Its permission check runs before the
-		// node is looked up at all, which is why a folder id is enough here: a viewer never gets as far
-		// as the document.
+		// A folder proposal is enough: the write check runs before content reads.
 		const saved = await fixture.asMember.action(api.files_pending_updates.save_file_pending_update, {
 			membershipId: fixture.memberMembershipId,
-			nodeId: folder._yay!.nodeId,
+			target,
+			pendingUpdateId: pending._id,
+			reviewedRevision: pending.revision,
 		});
 
 		expect(saved._nay?.message).toBe("Permission denied");
 	});
 
-	test("a viewer can start a chat thread but cannot comment or clear activities", async () => {
+	test("a viewer can start a chat thread and dismiss their feed but cannot comment", async () => {
 		const t = test_convex();
 		const fixture = await access_control_test_seed_enforcement_fixture(t, {
 			name: "chat-gate-org",
@@ -1311,15 +1324,16 @@ describe("enforcement", () => {
 			}),
 			fixture.asMember.mutation(api.activities.archive_all_activities, {
 				membershipId: fixture.memberMembershipId,
+				cursor: null,
 			}),
 		]);
 
 		expect(thread._nay).toBeUndefined();
 		expect(comment._nay?.message).toBe("Permission denied");
-		expect(activities._nay?.message).toBe("Permission denied");
+		expect(activities._yay?.count).toBe(0);
 	});
 
-	test("a role without content.read sees no activities, and a viewer cannot dismiss one", async () => {
+	test("a viewer dismisses only their feed and a role without read sees no shared activities", async () => {
 		const t = test_convex();
 		const fixture = await access_control_test_seed_enforcement_fixture(t, {
 			name: "activity-org",
@@ -1338,15 +1352,35 @@ describe("enforcement", () => {
 		// names, and reading the workspace is what gives the right to see those.
 		await access_control_test_demote_to_viewer(fixture);
 
-		const [viewerListed, dismissed] = await Promise.all([
-			fixture.asMember.query(api.activities.list_recent, { membershipId: fixture.memberMembershipId }),
-			fixture.asMember.mutation(api.activities.archive_activity, {
-				membershipId: fixture.memberMembershipId,
-				activityId,
-			}),
-		]);
-		expect(viewerListed).toHaveLength(1);
-		expect(dismissed._nay?.message).toBe("Permission denied");
+		const viewerListed = await fixture.asMember.query(api.activities.list_page, {
+			membershipId: fixture.memberMembershipId,
+			section: "history",
+			paginationOpts: { cursor: null, numItems: 50 },
+		});
+		expect(viewerListed.page).toHaveLength(1);
+		const dismissed = await fixture.asMember.mutation(api.activities.archive_activity, {
+			membershipId: fixture.memberMembershipId,
+			activityId,
+		});
+		expect(dismissed._nay).toBeUndefined();
+		expect(
+			(
+				await fixture.asMember.query(api.activities.list_page, {
+					membershipId: fixture.memberMembershipId,
+					section: "history",
+					paginationOpts: { cursor: null, numItems: 50 },
+				})
+			).page,
+		).toEqual([]);
+		expect(
+			(
+				await fixture.asOwner.query(api.activities.list_page, {
+					membershipId: fixture.ownerMembershipId,
+					section: "history",
+					paginationOpts: { cursor: null, numItems: 50 },
+				})
+			).page.map((activity) => activity._id),
+		).toEqual([activityId]);
 
 		const role = await fixture.asOwner.mutation(api.access_control.create_role, {
 			organizationId: fixture.organizationId,
@@ -1366,13 +1400,17 @@ describe("enforcement", () => {
 		});
 		expect(assigned._nay).toBeUndefined();
 
-		const noReadListed = await fixture.asMember.query(api.activities.list_recent, {
+		// This new card has not been dismissed, so the empty page must come from access checks.
+		await access_control_test_seed_activity(t, fixture, { fileNodeId: folder._yay!.nodeId });
+		const noReadListed = await fixture.asMember.query(api.activities.list_page, {
 			membershipId: fixture.memberMembershipId,
+			section: "history",
+			paginationOpts: { cursor: null, numItems: 50 },
 		});
-		expect(noReadListed).toEqual([]);
+		expect(noReadListed.page).toEqual([]);
 
 		const stillActive = await t.run((ctx) => ctx.db.get("activities", activityId));
-		expect(stillActive?.archivedAt).toBe(0);
+		expect(stillActive?.status).toBe("succeeded");
 	});
 
 	test("a role without content.read cannot read comments through any of their queries", async () => {
@@ -6503,7 +6541,7 @@ describe("file sharing", () => {
 				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
 				userId: args.userId,
-				nodeId: args.nodeId,
+				target: { kind: "saved", id: args.nodeId },
 			},
 		);
 		if (batch._nay) {
@@ -6553,7 +6591,7 @@ describe("file sharing", () => {
 			userId: args.userId,
 			nodeId: args.nodeId,
 			operationBatchId,
-			expectedUpdatedAt: null,
+			expectedRevision: null,
 			base: {
 				kind: "yjs",
 				baseYjsSequence: 0,
@@ -6722,7 +6760,7 @@ describe("file sharing", () => {
 		const draftId = await t.run(async (ctx) => {
 			const [draft] = await ctx.db.query("files_pending_updates").collect();
 			await ctx.db.patch("files_pending_updates", draft._id, {
-				pendingMove: { destParentId: files_ROOT_ID, destName: "salaries.md", fromPath: "/payroll/salaries.md" },
+				pendingMove: { destParent: { kind: "root" }, destName: "salaries.md", fromPath: "/payroll/salaries.md" },
 			});
 			return draft._id;
 		});
@@ -6741,29 +6779,37 @@ describe("file sharing", () => {
 		const [listedAfterLowering, canWriteAfterLowering] = await Promise.all([
 			fixture.asMember.query(api.files_pending_updates.list_files_pending_updates, {
 				membershipId: fixture.memberMembershipId,
+				paginationOpts: { cursor: null, numItems: 20 },
 			}),
 			fixture.asMember.query(api.files_nodes.get_current_user_file_write_permission, {
 				membershipId: fixture.memberMembershipId,
 				nodeId,
 			}),
 		]);
-		expect(listedAfterLowering.map((pendingUpdate) => pendingUpdate._id)).toEqual([draftId]);
+		expect(listedAfterLowering.page).toMatchObject([{ kind: "entry", entry: { pendingUpdate: { _id: draftId } } }]);
+		const listedProposal = listedAfterLowering.page[0];
+		if (!listedProposal || listedProposal.kind !== "entry" || !listedProposal.entry.pendingUpdate)
+			throw new Error("Expected the readable proposal");
 		expect(canWriteAfterLowering).toBe(false);
 
 		await access_control_test_reset_write_rate_limit(t, fixture.memberId);
 		const discarded = await fixture.asMember.mutation(api.files_pending_updates.discard_file_pending_structural, {
 			membershipId: fixture.memberMembershipId,
-			nodeId,
+			target: { kind: "saved", id: nodeId },
+			pendingUpdateId: draftId,
+			reviewedRevision: listedProposal.entry.pendingUpdate.revision,
 		});
 		expect(discarded._nay).toBeUndefined();
 
 		const afterDiscard = await t.run((ctx) => ctx.db.get("files_pending_updates", draftId));
 		expect(afterDiscard?.pendingMove).toBeUndefined();
+		if (!afterDiscard) throw new Error("Expected the remaining content proposal");
 
 		const contentDiscarded = await fixture.asMember.mutation(api.files_pending_updates.discard_file_pending_content, {
 			membershipId: fixture.memberMembershipId,
-			nodeId,
+			target: { kind: "saved", id: nodeId },
 			pendingUpdateId: draftId,
+			reviewedRevision: afterDiscard.revision,
 		});
 		expect(contentDiscarded._nay).toBeUndefined();
 		expect(await t.run((ctx) => ctx.db.get("files_pending_updates", draftId))).toBeNull();
@@ -7280,7 +7326,7 @@ describe("file sharing", () => {
 		const matchArgs = {
 			organizationId: fixture.organizationId,
 			workspaceId: fixture.defaultWorkspaceId,
-			fileNodeId: nodeId,
+			target: { kind: "saved", id: nodeId },
 			pattern: "secretneedle",
 			ignoreCase: false,
 			fixedStrings: true,
@@ -7355,7 +7401,7 @@ describe("file sharing", () => {
 		const fromDefaultWorkspace = await fixture.asOwner.query(api.files_nodes.search_content, {
 			membershipId: fixture.ownerMembershipId,
 			query: "tenantleakneedle",
-			nodeIds: insideOther.results.map((result) => result.nodeId),
+			targets: insideOther.results.map((result) => result.target),
 		});
 		expect(fromDefaultWorkspace.results).toEqual([]);
 
@@ -7404,7 +7450,7 @@ describe("file sharing", () => {
 		const memberFound = await fixture.asMember.query(api.files_nodes.search_content, {
 			membershipId: fixture.memberMembershipId,
 			query: "grantsearchneedle",
-			nodeIds: ownerFound.results.map((result) => result.nodeId),
+			targets: ownerFound.results.map((result) => result.target),
 		});
 		expect(memberFound.results.map((result) => result.path)).toEqual(["/open-notes.md"]);
 
@@ -7422,7 +7468,7 @@ describe("file sharing", () => {
 		const grantOnlyFound = await fixture.asMember.query(api.files_nodes.search_content, {
 			membershipId: fixture.memberMembershipId,
 			query: "grantsearchneedle",
-			nodeIds: ownerFound.results.map((result) => result.nodeId),
+			targets: ownerFound.results.map((result) => result.target),
 		});
 		expect(grantOnlyFound.results.map((result) => result.path)).toEqual(["/closed/secret-notes.md"]);
 
@@ -8084,8 +8130,20 @@ describe("file sharing", () => {
 		});
 
 		const [ownerListed, memberListed] = await Promise.all([
-			fixture.asOwner.query(api.activities.list_recent, { membershipId: fixture.ownerMembershipId }),
-			fixture.asMember.query(api.activities.list_recent, { membershipId: fixture.memberMembershipId }),
+			fixture.asOwner
+				.query(api.activities.list_page, {
+					membershipId: fixture.ownerMembershipId,
+					section: "history",
+					paginationOpts: { cursor: null, numItems: 50 },
+				})
+				.then((result) => result.page),
+			fixture.asMember
+				.query(api.activities.list_page, {
+					membershipId: fixture.memberMembershipId,
+					section: "history",
+					paginationOpts: { cursor: null, numItems: 50 },
+				})
+				.then((result) => result.page),
 		]);
 
 		// The owner keeps all three, so what the member loses is the filter and not an empty table.
@@ -8141,8 +8199,20 @@ describe("file sharing", () => {
 			targets: [{ kind: "file_node", id: childId, path: "/activity-new-scope/inside", message: "" }],
 		});
 		const [ownerListed, memberListed] = await Promise.all([
-			fixture.asOwner.query(api.activities.list_recent, { membershipId: fixture.ownerMembershipId }),
-			fixture.asMember.query(api.activities.list_recent, { membershipId: fixture.memberMembershipId }),
+			fixture.asOwner
+				.query(api.activities.list_page, {
+					membershipId: fixture.ownerMembershipId,
+					section: "history",
+					paginationOpts: { cursor: null, numItems: 50 },
+				})
+				.then((result) => result.page),
+			fixture.asMember
+				.query(api.activities.list_page, {
+					membershipId: fixture.memberMembershipId,
+					section: "history",
+					paginationOpts: { cursor: null, numItems: 50 },
+				})
+				.then((result) => result.page),
 		]);
 		expect(ownerListed.map((activity) => activity._id)).toEqual([currentActivityId]);
 		expect(memberListed.map((activity) => activity._id)).toEqual([currentActivityId]);
@@ -8180,10 +8250,12 @@ describe("file sharing", () => {
 		});
 
 		// The member sees only the open one, which is the rule the two mutations below have to match.
-		const listed = await fixture.asMember.query(api.activities.list_recent, {
+		const listed = await fixture.asMember.query(api.activities.list_page, {
 			membershipId: fixture.memberMembershipId,
+			section: "history",
+			paginationOpts: { cursor: null, numItems: 50 },
 		});
-		expect(listed.map((activity) => activity._id)).toEqual([openActivityId]);
+		expect(listed.page.map((activity) => activity._id)).toEqual([openActivityId]);
 
 		// Naming the hidden activity directly must answer like one that is not there. Anything else
 		// tells the member a file they cannot open was worked on.
@@ -8196,21 +8268,22 @@ describe("file sharing", () => {
 		// "Dismiss all" clears the open one and leaves the hidden one for the people who hold that folder.
 		const archivedAll = await fixture.asMember.mutation(api.activities.archive_all_activities, {
 			membershipId: fixture.memberMembershipId,
+			cursor: null,
 		});
 		expect(archivedAll._yay?.count).toBe(1);
 
-		const [hidden, opened] = await t.run(
-			async (ctx) =>
-				await Promise.all([ctx.db.get("activities", hiddenActivityId), ctx.db.get("activities", openActivityId)]),
-		);
-		expect(hidden?.archivedAt).toBe(0);
-		expect(opened?.archivedAt).toBeGreaterThan(0);
+		const states = await t.run((ctx) => ctx.db.query("activities_user_states").collect());
+		expect(states.map((state) => ({ userId: state.userId, activityId: state.activityId }))).toEqual([
+			{ userId: fixture.memberId, activityId: openActivityId },
+		]);
 
-		// The owner still has it, which is what the member was stopped from taking away.
-		const ownerListed = await fixture.asOwner.query(api.activities.list_recent, {
+		// Dismissal cannot remove either card from another viewer's feed.
+		const ownerListed = await fixture.asOwner.query(api.activities.list_page, {
 			membershipId: fixture.ownerMembershipId,
+			section: "history",
+			paginationOpts: { cursor: null, numItems: 50 },
 		});
-		expect(ownerListed.map((activity) => activity._id)).toEqual([hiddenActivityId]);
+		expect(ownerListed.page.map((activity) => activity._id).sort()).toEqual([hiddenActivityId, openActivityId].sort());
 	});
 
 	test("a folder given to somebody with no workspace read shows its activity, and none about the workspace", async () => {
@@ -8252,8 +8325,20 @@ describe("file sharing", () => {
 		// Only the one about the folder they were given. Open content is not theirs, because this role has
 		// no workspace read, and an activity naming no file is about a workspace they cannot see either.
 		const [ownerListed, guestListed] = await Promise.all([
-			fixture.asOwner.query(api.activities.list_recent, { membershipId: fixture.ownerMembershipId }),
-			fixture.asMember.query(api.activities.list_recent, { membershipId: fixture.memberMembershipId }),
+			fixture.asOwner
+				.query(api.activities.list_page, {
+					membershipId: fixture.ownerMembershipId,
+					section: "history",
+					paginationOpts: { cursor: null, numItems: 50 },
+				})
+				.then((result) => result.page),
+			fixture.asMember
+				.query(api.activities.list_page, {
+					membershipId: fixture.memberMembershipId,
+					section: "history",
+					paginationOpts: { cursor: null, numItems: 50 },
+				})
+				.then((result) => result.page),
 		]);
 		expect(ownerListed).toHaveLength(3);
 		expect(guestListed).toHaveLength(1);
@@ -9072,7 +9157,7 @@ describe("file sharing", () => {
 			organizationId: fixture.organizationId,
 			workspaceId: fixture.defaultWorkspaceId,
 			userId: fixture.memberId,
-			nodeId: childId,
+			target: { kind: "saved", id: childId },
 		});
 		expect(proposed._nay?.message).toBe("Permission denied");
 
@@ -9100,68 +9185,14 @@ describe("file sharing", () => {
 			organizationId: fixture.organizationId,
 			workspaceId: fixture.defaultWorkspaceId,
 			userId: fixture.memberId,
-			nodeId: childId,
-			destParentId: files_ROOT_ID,
+			target: { kind: "saved", id: childId },
+			destParent: { kind: "root" },
 			destName: "moved-inside",
 		});
 		expect(proposed._nay?.message).toBe("Permission denied");
 
 		const pendingUpdates = await t.run(async (ctx) => await ctx.db.query("files_pending_updates").collect());
 		expect(pendingUpdates).toHaveLength(0);
-	});
-
-	test("eager-create cleanup keeps a folder somebody restricted and shared", async () => {
-		const t = test_convex();
-		const fixture = await access_control_test_seed_enforcement_fixture(t, {
-			name: "eager-keep-org",
-			suffix: "eager-keep",
-		});
-
-		const folder = await fixture.asOwner.mutation(api.files_nodes.create_folder_node, {
-			membershipId: fixture.ownerMembershipId,
-			parentId: files_ROOT_ID,
-			path: "drafts",
-		});
-		expect(folder._nay).toBeUndefined();
-
-		const restricted = await fixture.asOwner.mutation(api.files_sharing.restrict_node, {
-			membershipId: fixture.ownerMembershipId,
-			nodeId: folder._yay!.nodeId,
-		});
-		expect(restricted._nay).toBeUndefined();
-
-		const shared = await fixture.asOwner.mutation(api.files_sharing.set_node_share_grant, {
-			membershipId: fixture.ownerMembershipId,
-			nodeId: folder._yay!.nodeId,
-			principal: { kind: "user", userId: fixture.memberId },
-			level: "read",
-		});
-		expect(shared._nay).toBeUndefined();
-
-		// The agent created this folder on the way to a file, and the file is now gone. The folder is
-		// empty and still stamped by its creator, so every other rule in the cleanup says "delete it".
-		// Restricting and sharing it is a deliberate act on the folder, so it stays.
-		const removal = await t.run(async (ctx) =>
-			files_nodes_db_remove_created_ancestor_folders_if_safe(ctx, {
-				organizationId: fixture.organizationId,
-				workspaceId: fixture.defaultWorkspaceId,
-				userId: fixture.ownerId,
-				createdAncestorIds: [folder._yay!.nodeId],
-			}),
-		);
-		expect(removal.ancestorsLeft).toBe(1);
-
-		const after = await t.run(async (ctx) => {
-			const node = await ctx.db.get("files_nodes", folder._yay!.nodeId);
-			const grants = await ctx.db
-				.query("access_control_permission_grants")
-				.filter((q) => q.eq(q.field("resourceId"), folder._yay!.nodeId))
-				.collect();
-			return { node, grantCount: grants.length };
-		});
-		expect(after.node).not.toBeNull();
-		// A grant left pointing at a deleted node is what makes its role undeletable forever.
-		expect(after.grantCount).toBeGreaterThan(0);
 	});
 });
 

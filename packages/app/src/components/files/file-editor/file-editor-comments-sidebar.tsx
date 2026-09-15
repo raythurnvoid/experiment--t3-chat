@@ -1,3 +1,4 @@
+import "./file-editor-comments-sidebar.css";
 import { useRef, useState } from "react";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { useStableQuery } from "@/hooks/convex-hooks.ts";
@@ -55,13 +56,10 @@ function FileEditorCommentsSidebarThread(props: FileEditorCommentsSidebarThread_
 // #endregion thread
 
 // #region root
-export type FileEditorPlainTextCommentsSidebar_ClassNames =
-	| "FileEditorPlainTextCommentsSidebar"
-	| "FileEditorPlainTextCommentsSidebar-header"
-	| "FileEditorPlainTextCommentsSidebar-filter"
-	| "FileEditorPlainTextCommentsSidebar-filter-mode"
-	| "FileEditorPlainTextCommentsSidebar-list"
-	| "FileEditorPlainTextCommentsSidebar-empty";
+export type FileEditorCommentsSidebar_ClassNames =
+	| "FileEditorCommentsSidebar"
+	| "FileEditorCommentsSidebar-list"
+	| "FileEditorCommentsSidebar-empty";
 
 export type FileEditorCommentsSidebar_Props = {
 	threadIds: string[];
@@ -99,21 +97,15 @@ export function FileEditorCommentsSidebar(props: FileEditorCommentsSidebar_Props
 	return (
 		<aside
 			className={cn(
-				"FileEditorPlainTextCommentsSidebar" satisfies FileEditorPlainTextCommentsSidebar_ClassNames,
+				"FileEditorCommentsSidebar" satisfies FileEditorCommentsSidebar_ClassNames,
 				"app-scrollable" satisfies AppClassName,
 			)}
 		>
 			<FileEditorCommentsFilterInput value={query} onValueChange={setFilterValue} />
 
-			<div
-				className={"FileEditorPlainTextCommentsSidebar-list" satisfies FileEditorPlainTextCommentsSidebar_ClassNames}
-			>
+			<div className={"FileEditorCommentsSidebar-list" satisfies FileEditorCommentsSidebar_ClassNames}>
 				{!sortedThreads || sortedThreads.length === 0 ? (
-					<div
-						className={
-							"FileEditorPlainTextCommentsSidebar-empty" satisfies FileEditorPlainTextCommentsSidebar_ClassNames
-						}
-					>
+					<div className={"FileEditorCommentsSidebar-empty" satisfies FileEditorCommentsSidebar_ClassNames}>
 						<i>
 							{sortedThreads === undefined
 								? "Loading comments…"

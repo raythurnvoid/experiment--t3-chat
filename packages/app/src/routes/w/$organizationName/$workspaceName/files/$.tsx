@@ -73,7 +73,7 @@ const RouteFilesPath = memo(function RouteFilesPath() {
 	// rewrites characters and would silently point at a different file.
 	const path = `/${path_extract_segments_from(params._splat ?? "").join("/")}`;
 
-	const resolvedNode = useQuery(app_convex_api.files_nodes.get_authorized_by_path, { membershipId, path });
+	const resolvedNode = useQuery(app_convex_api.files_nodes.get_visible_target_by_path, { membershipId, path });
 
 	// Path is only an entry format. Once resolved, hand over to the node-id route so the open
 	// tab survives a later rename or move, and so the lookup does not repeat on every load.
@@ -86,13 +86,16 @@ const RouteFilesPath = memo(function RouteFilesPath() {
 		navigate({
 			to: "/w/$organizationName/$workspaceName/files",
 			params: { organizationName, workspaceName },
-			search: { nodeId: resolvedNode.nodeId, view },
+			search:
+				resolvedNode.target.kind === "private"
+					? { pendingNodeId: resolvedNode.target.id, view }
+					: { nodeId: resolvedNode.target.id, view },
 			replace: true,
 		}).catch((error: unknown) => {
 			console.error("[RouteFilesPath.redirect] Error navigating to the resolved file node", {
 				error,
 				path,
-				nodeId: resolvedNode.nodeId,
+				target: resolvedNode.target,
 			});
 		});
 	}, [navigate, organizationName, path, resolvedNode, view, workspaceName]);

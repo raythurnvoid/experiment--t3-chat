@@ -2,12 +2,30 @@ import { defineCommand, type Command } from "just-bash/browser";
 import { internal } from "../convex/_generated/api.js";
 import type { ActionCtx } from "../convex/_generated/server.js";
 import type {
-	files_nodes_get_by_path_Result,
 	files_nodes_match_text_file_lines_Result,
 	files_nodes_text_search_files_Result,
 } from "../convex/files_nodes.ts";
 import { Result } from "common/errors-as-values-utils.ts";
-import { bash_create_glob_syntax_unsupported_message, bash_cursor_id_create, bash_format_multiline_hint, bash_GLOB_METACHARACTER_REGEX, bash_overlay_committed_scope_path, bash_overlay_content_search_injections, bash_overlay_project_scoped_path, bash_read_option_value, bash_regex_validation_error, bash_resolve_path, bash_search_command_build_continuation, bash_search_command_exact_query_filter, bash_search_command_exact_query_note, bash_search_command_exact_query_summary, bash_shell_arg_quote, bash_resolve_db_files_shell_path, bash_COMMAND_EXIT_FAILURE, bash_COMMAND_EXIT_USAGE, bash_NON_NEGATIVE_INTEGER_REGEX, bash_TERMINAL_LINE_ENDING_REGEX, type bash_DbFilesRoots } from "./bash-utils.ts";
+import {
+	bash_create_glob_syntax_unsupported_message,
+	bash_cursor_id_create,
+	bash_format_multiline_hint,
+	bash_GLOB_METACHARACTER_REGEX,
+	bash_read_option_value,
+	bash_regex_validation_error,
+	bash_resolve_path,
+	bash_search_command_build_continuation,
+	bash_search_command_exact_query_filter,
+	bash_search_command_exact_query_note,
+	bash_search_command_exact_query_summary,
+	bash_shell_arg_quote,
+	bash_resolve_db_files_shell_path,
+	bash_COMMAND_EXIT_FAILURE,
+	bash_COMMAND_EXIT_USAGE,
+	bash_NON_NEGATIVE_INTEGER_REGEX,
+	bash_TERMINAL_LINE_ENDING_REGEX,
+	type bash_DbFilesRoots,
+} from "./bash-utils.ts";
 import { bash_delegate_native_just_bash_tmp_command } from "./bash-delegate.ts";
 
 const GREP_ATTACHED_CONTEXT_REGEX = /^-([ABC])(\d+)$/u;
@@ -445,17 +463,8 @@ export function bash_grep_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 					};
 				}
 
-				const dbFilesDoc =
-					target.dbFilesPath === "/"
-						? null
-						: ((await ctx.runQuery(internal.files_nodes.get_by_path, {
-								organizationId: pathResolution.ctxData.organizationId,
-								workspaceId: pathResolution.ctxData.workspaceId,
-								visibilityUserId: pathResolution.ctxData.userId,
-								path: target.dbFilesPath,
-								overlayUserId: pathResolution.fs.overlayUserId,
-							})) as files_nodes_get_by_path_Result);
-				if (!dbFilesDoc || dbFilesDoc.kind !== "file") {
+				const dbFilesDoc = target.dbFilesPath === "/" ? null : await pathResolution.fs.getEntry(target.dbFilesPath);
+				if (!dbFilesDoc?.target || dbFilesDoc.target.kind === "root" || dbFilesDoc.kind !== "file") {
 					return {
 						stdout: "",
 						stderr: `grep: ${target.inputPath}: No such file or directory\n`,
@@ -479,7 +488,7 @@ export function bash_grep_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 					organizationId: pathResolution.ctxData.organizationId,
 					workspaceId: pathResolution.ctxData.workspaceId,
 					userId: pathResolution.ctxData.userId,
-					fileNodeId: dbFilesDoc._id,
+					target: dbFilesDoc.target,
 					pattern: parsed._yay.pattern,
 					ignoreCase: parsed._yay.ignoreCase,
 					fixedStrings: parsed._yay.fixedStrings,
@@ -725,13 +734,7 @@ export function bash_grep_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 			const dbFilesDoc =
 				target.dbFilesPath == null || target.dbFilesPath === "/"
 					? null
-					: ((await ctx.runQuery(internal.files_nodes.get_by_path, {
-							organizationId: pathResolution.ctxData.organizationId,
-							workspaceId: pathResolution.ctxData.workspaceId,
-							visibilityUserId: pathResolution.ctxData.userId,
-							path: target.dbFilesPath,
-							overlayUserId: pathResolution.fs.overlayUserId,
-						})) as files_nodes_get_by_path_Result);
+					: await pathResolution.fs.getEntry(target.dbFilesPath);
 
 			if (target.dbFilesPath != null && (target.dbFilesPath === "/" || dbFilesDoc?.kind === "folder")) {
 				// `grep -R -F` over an app folder routes to tokenized indexed full-text search, which
@@ -743,13 +746,6 @@ export function bash_grep_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 						exitCode: bash_COMMAND_EXIT_USAGE,
 					};
 				}
-
-				// The proposer's pending moves translate the scope and project the results: chunks
-				// keep committed paths until accept, so a moved-in scope must query its committed source path.
-				const overlay = await pathResolution.fs.getOverlay();
-				const visibleScopePath = target.dbFilesPath;
-				const committedScopePath =
-					overlay == null ? visibleScopePath : bash_overlay_committed_scope_path(overlay, visibleScopePath);
 
 				const recursivePattern = parsed._yay.pattern;
 				const res = (await ctx.runQuery(internal.files_nodes.text_search_files, {
@@ -763,37 +759,10 @@ export function bash_grep_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 					query: recursivePattern,
 					numItems: 20,
 					cursor: null,
-					pathPrefix: committedScopePath,
+					pathPrefix: target.dbFilesPath,
 				})) as files_nodes_text_search_files_Result;
 
-				// Hidden results and results projected outside the scope drop; the rest report their visible path.
-				const visibleItems =
-					overlay == null
-						? res.items
-						: res.items.flatMap((item) => {
-								const visiblePath = bash_overlay_project_scoped_path({
-									overlay,
-									committedPath: item.path,
-									visibleScopePath,
-								});
-								return visiblePath == null ? [] : [{ ...item, path: visiblePath }];
-							});
-
-				// An ancestor scope of a move's visible destination misses that move's committed
-				// chunks (they sit outside the scoped prefix); inject them into this single page.
-				const injectedItems =
-					overlay == null
-						? []
-						: await bash_overlay_content_search_injections({
-								ctx,
-								ctxData: pathResolution.ctxData,
-								overlay,
-								visibleScopePath,
-								committedScopePath,
-								query: recursivePattern,
-								numItems: 20,
-							});
-				const allItems = [...visibleItems, ...injectedItems];
+				const allItems = res.items;
 
 				const scopePath = pathResolution.renderShellPath(target.dbFilesPath);
 
@@ -905,13 +874,7 @@ export function bash_grep_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 				const dbFilesDoc =
 					target.dbFilesPath == null || target.dbFilesPath === "/"
 						? null
-						: ((await ctx.runQuery(internal.files_nodes.get_by_path, {
-								organizationId: pathResolution.ctxData.organizationId,
-								workspaceId: pathResolution.ctxData.workspaceId,
-								visibilityUserId: pathResolution.ctxData.userId,
-								path: target.dbFilesPath,
-								overlayUserId: pathResolution.fs.overlayUserId,
-							})) as files_nodes_get_by_path_Result);
+						: await pathResolution.fs.getEntry(target.dbFilesPath);
 
 				if (target.dbFilesPath === "/" || dbFilesDoc?.kind === "folder") {
 					suggestedCommand = `search --path ${bash_shell_arg_quote(target.absoluteShellPath)} --limit 20 ${bash_shell_arg_quote(parsed._yay.pattern)}`;

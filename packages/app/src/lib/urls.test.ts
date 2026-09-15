@@ -23,6 +23,12 @@ describe("url_parse_file_link", () => {
 		});
 	});
 
+	test("keeps an explicit private target separate from saved targets", () => {
+		expect(url_parse_file_link("https://app.test/w/acme/main/files?pendingNodeId=private123&nodeId=saved123")).toEqual({
+			pendingNodeId: "private123",
+		});
+	});
+
 	test("reads the readable splat form as an absolute path", () => {
 		expect(url_parse_file_link("https://app.test/w/acme/main/files/docs/api.md")).toEqual({ path: "/docs/api.md" });
 	});

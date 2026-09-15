@@ -8,7 +8,7 @@ import {
 	type files_search_query_Filter,
 } from "../../shared/files-search-query.ts";
 
-type SearchMode = "name" | "path" | "node";
+type SearchMode = "name" | "path" | "node" | "private";
 
 /**
  * Decide what a search query means from its shape.
@@ -22,6 +22,7 @@ export function detect_search_query_mode(rawQuery: string): { mode: SearchMode; 
 
 	const link = url_parse_file_link(query);
 	if (link) {
+		if ("pendingNodeId" in link) return { mode: "private", value: link.pendingNodeId };
 		return "nodeId" in link ? { mode: "node", value: link.nodeId } : { mode: "path", value: link.path.toLowerCase() };
 	}
 
@@ -43,14 +44,15 @@ export function detect_search_query_mode(rawQuery: string): { mode: SearchMode; 
  */
 export function search_filter_matches_item(args: {
 	filter: files_search_query_Filter;
-	item: files_TreeItem;
-	metadataNodeIds: ReadonlyMap<string, ReadonlySet<string> | null>;
+	item: Pick<files_TreeItem, "name" | "path" | "kind" | "updatedAt" | "lowercaseExtension">;
+	targetKey: string;
+	metadataTargetKeys: ReadonlyMap<string, ReadonlySet<string> | null>;
 }): boolean | null {
 	const { filter, item } = args;
 	const matches = ((/* iife */) => {
 		if (filter.key.namespace !== "file") {
-			const nodeIds = args.metadataNodeIds.get(filter.raw);
-			return nodeIds ? nodeIds.has(item._id) : null;
+			const targetKeys = args.metadataTargetKeys.get(filter.raw);
+			return targetKeys ? targetKeys.has(args.targetKey) : null;
 		}
 
 		const match = filter.match;

@@ -31,6 +31,7 @@ const Route = createFileRoute("/w/$organizationName/$workspaceName/files/")({
 	validateSearch: zodValidator(
 		z.object({
 			nodeId: z.string().optional().catch(undefined),
+			pendingNodeId: z.string().optional().catch(undefined),
 			view: z.enum(files_editor_view_values).optional().catch(undefined),
 			/**
 			 * Seeds the files sidebar search box.

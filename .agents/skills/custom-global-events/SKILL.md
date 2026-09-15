@@ -9,7 +9,9 @@ The module has two separate APIs. Do not mix them.
 
 # App Custom Events
 
-Declare each app custom event in the map owned by `global_custom_event_Event` in [global-event.tsx](../../../packages/app/src/lib/global-event.tsx). The map is currently empty.
+Declare each app custom event in the map owned by `global_custom_event_Event` in [global-event.tsx](../../../packages/app/src/lib/global-event.tsx).
+
+`files::review_all_pending` carries `membershipId`. The review job dialog sends it when opening remaining changes. The matching workspace's pending sidebar resets its chat-source filter to All changes. A newly mounted sidebar already starts at All changes.
 
 This is a template, not a registered current event:
 
@@ -56,7 +58,7 @@ cleanup();
 
 Keep custom keys centralized in `global_custom_event_Event`. Do not dispatch ad hoc `CustomEvent` strings elsewhere.
 
-No app custom-event keys are currently registered, so production use does not establish a naming convention. For a new typed custom event, use `module::event_name` as the project's recommended convention unless the user defines another convention for that feature.
+For a new typed custom event, use `module::event_name` unless the user defines another convention for that feature.
 
 # Native Window Events
 

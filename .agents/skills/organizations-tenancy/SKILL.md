@@ -97,6 +97,10 @@ External plugin backends may mirror current workspace members through the public
 
 `organizations_membership_lifetimes` keeps a lifetime per workspace and canonical user. Its helpers live in `organizations_membership_lifetimes.ts`. Removal advances the lifetime before recording the event. Re-invite and account restoration keep the advanced lifetime, so an external private-group membership or Files reader grant from the old lifetime remains invalid. Do not delete this marker during ordinary member removal. Member snapshots include active workspace users even when they have never opened the plugin. They share display names, permissions and lifetime facts, never emails.
 
+Keep lifetime changes even when the workspace has no external access-change feed yet. Files jobs
+also pin this lifetime. Removing and restoring the same membership doc must not revive an old job.
+Only external event recording depends on an existing change feed.
+
 `plugins_service_connections` belongs to the installation, not the member who sponsors a Files grant. A valid page exchange pins its exact registration, version and account. A missing or retired installation can retain a connection to read terminal events, but it cannot read new profiles. Each separate plugin database owns its group and channel rules. Core tenancy code must not load or change them.
 
 - **Fields:** `organizations_workspaces_users.active` is required. `false` keeps a membership non-effective during account-deletion retention or a bounded organization-removal drain. `pendingOrganizationRemoval` is optional for rollout compatibility and is `true` only for the second case. Account recovery reactivates ordinary inactive rows and skips marked rows.

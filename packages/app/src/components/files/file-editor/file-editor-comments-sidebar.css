@@ -1,0 +1,38 @@
+@layer components {
+	/* #region root */
+	.FileEditorCommentsSidebar {
+		height: 100%;
+
+		display: flex;
+		flex-direction: column;
+		gap: 12px;
+
+		padding: 12px;
+
+		overflow: auto;
+		contain: content;
+	}
+
+	/* Keep the filter input pinned while the sidebar scrolls. The input is another owner, so this
+	   contextual rule stays flat. */
+	.FileEditorCommentsSidebar .FileEditorCommentsFilterInput {
+		position: sticky;
+		top: 0;
+		z-index: 1;
+	}
+
+	.FileEditorCommentsSidebar-list {
+		display: flex;
+		flex-direction: column;
+		gap: 12px;
+	}
+
+	.FileEditorCommentsSidebar-empty {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		color: var(--color-fg-07);
+		height: 49px;
+	}
+	/* #endregion root */
+}

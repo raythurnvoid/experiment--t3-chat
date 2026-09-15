@@ -2,6 +2,7 @@
 
 import { v, type Infer } from "convex/values";
 import { internalAction } from "./_generated/server.js";
+import { ai_chat_bash_result_validator } from "./schema.ts";
 
 // Shell diagnostics live with `bash_run_command`, so the Convex action imports
 // only the runner and does not need the lower-level shell constants.
@@ -31,28 +32,11 @@ export const run = internalAction({
 		workspaceName: v.string(),
 		userId: v.id("users"),
 		threadId: v.id("ai_chat_threads"),
+		toolCallId: v.string(),
 		command: v.string(),
 		allowDbFilesMkdir: v.boolean(),
 	},
-	returns: v.object({
-		title: v.string(),
-		output: v.string(),
-		stdout: v.string(),
-		stderr: v.string(),
-		metadata: v.object({
-			command: v.string(),
-			cwd: v.string(),
-			nextCwd: v.string(),
-			exitCode: v.number(),
-			stdoutTruncated: v.boolean(),
-			stderrTruncated: v.boolean(),
-			stdoutLength: v.number(),
-			stderrLength: v.number(),
-			pathIndexTruncated: v.boolean(),
-			observedPaths: v.array(v.string()),
-			observedPathsTruncated: v.boolean(),
-		}),
-	}),
+	returns: ai_chat_bash_result_validator,
 	handler: async (ctx, args) => {
 		return await bash_run_command(ctx, args);
 	},

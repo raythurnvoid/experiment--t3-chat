@@ -1,5 +1,5 @@
-// Lean, cross-runtime file helpers: constants, name/path normalization, byte helpers, and the
-// pending path overlay. Keep this module free of heavy runtime imports (@tiptap/* runtime, yjs,
+// Lean, cross-runtime file helpers: constants, name/path normalization, and byte helpers.
+// Keep this module free of heavy runtime imports (@tiptap/* runtime, yjs,
 // y-prosemirror, marked): Convex evaluates a function module's full static import graph on cold
 // start, and many consumers only need these pure helpers. Type-only imports are fine. Yjs helpers
 // live in `shared/files-yjs.ts`; Tiptap/Markdown helpers live in `shared/files-tiptap.ts`.
@@ -14,14 +14,25 @@ import type { Merge } from "type-fest";
 
 export const files_ROOT_ID = "root" as const;
 
+export type files_PendingTarget = app_convex_Doc<"files_pending_updates">["target"];
+export type files_PendingParent = app_convex_Doc<"files_pending_nodes">["parent"];
+export type files_VisibleEntry =
+	| {
+			kind: "saved";
+			node: app_convex_Doc<"files_nodes">;
+			pendingUpdate: app_convex_Doc<"files_pending_updates"> | null;
+			path: string;
+	  }
+	| {
+			kind: "private";
+			node: app_convex_Doc<"files_pending_nodes">;
+			pendingUpdate: app_convex_Doc<"files_pending_updates">;
+			path: string;
+	  };
+
 export type files_VisibleTreeNode = Omit<
 	app_convex_Doc<"files_nodes">,
-	| "organizationId"
-	| "workspaceId"
-	| "createdBy"
-	| "updatedBy"
-	| "writePolicyScopeNodeId"
-	| "writePolicy"
+	"organizationId" | "workspaceId" | "createdBy" | "updatedBy" | "writePolicyScopeNodeId" | "writePolicy"
 > & {
 	organizationId: app_convex_Id<"organizations">;
 	workspaceId: app_convex_Id<"organizations_workspaces">;
@@ -770,82 +781,44 @@ export function files_node_has_editable_yjs_state<
 	return files_node_has_editable_text_content(node) && node.yjsSnapshotId !== null && node.yjsLastSequenceId !== null;
 }
 
-type FilePendingUpdateFieldsForYjsContent = Pick<
-	app_convex_Doc<"files_pending_updates">,
-	"baseYjsSequence" | "baseLineageGeneration" | "baseStateId" | "stagedStateId" | "unstagedStateId"
->;
+type FilePendingUpdateFieldsForContent = Pick<app_convex_Doc<"files_pending_updates">, "content">;
+type FilePendingUpdateContent = NonNullable<FilePendingUpdateFieldsForContent["content"]>;
 
 /**
  * Narrow a pending update doc to a content proposal on a collaborative file (Yjs base).
- * A proposal on a file with collaboration off fails this check. Use
- * `files_pending_update_has_content` for either kind. The state bytes live in the paged
- * `files_pending_update_yjs_states` families the three ids point at.
+ * Use `files_pending_update_has_content` when only the three branch ids are needed.
  */
-export function files_pending_update_has_yjs_content<
-	Row extends FilePendingUpdateFieldsForYjsContent | null | undefined,
->(
+export function files_pending_update_has_yjs_content<Row extends FilePendingUpdateFieldsForContent | null | undefined>(
 	row: Row,
 ): row is NonNullable<Row> & {
-	baseYjsSequence: NonNullable<FilePendingUpdateFieldsForYjsContent["baseYjsSequence"]>;
-	baseLineageGeneration: NonNullable<FilePendingUpdateFieldsForYjsContent["baseLineageGeneration"]>;
-	baseStateId: NonNullable<FilePendingUpdateFieldsForYjsContent["baseStateId"]>;
-	stagedStateId: NonNullable<FilePendingUpdateFieldsForYjsContent["stagedStateId"]>;
-	unstagedStateId: NonNullable<FilePendingUpdateFieldsForYjsContent["unstagedStateId"]>;
+	content: FilePendingUpdateContent & { base: Extract<FilePendingUpdateContent["base"], { kind: "yjs" }> };
 } {
-	return (
-		row != null &&
-		row.baseYjsSequence !== undefined &&
-		row.baseLineageGeneration !== undefined &&
-		row.baseStateId !== undefined &&
-		row.stagedStateId !== undefined &&
-		row.unstagedStateId !== undefined
-	);
+	return row?.content?.base.kind === "yjs";
 }
 
-type FilePendingUpdateFieldsForAssetContent = Pick<
-	app_convex_Doc<"files_pending_updates">,
-	"baseAssetId" | "baseStateId" | "stagedStateId" | "unstagedStateId"
->;
-
 /**
- * Narrow a pending update doc to a content proposal on a file with collaboration off. Such a
- * file has no Yjs document, so the proposal records the content asset the three branches were
- * built from instead of a Yjs sequence. The 4 fields are set together or not at all.
+ * Narrow a pending update doc to branches built from a saved content asset.
  */
 export function files_pending_update_has_asset_content<
-	Row extends FilePendingUpdateFieldsForAssetContent | null | undefined,
+	Row extends FilePendingUpdateFieldsForContent | null | undefined,
 >(
 	row: Row,
 ): row is NonNullable<Row> & {
-	baseAssetId: NonNullable<FilePendingUpdateFieldsForAssetContent["baseAssetId"]>;
-	baseStateId: NonNullable<FilePendingUpdateFieldsForAssetContent["baseStateId"]>;
-	stagedStateId: NonNullable<FilePendingUpdateFieldsForAssetContent["stagedStateId"]>;
-	unstagedStateId: NonNullable<FilePendingUpdateFieldsForAssetContent["unstagedStateId"]>;
+	content: FilePendingUpdateContent & { base: Extract<FilePendingUpdateContent["base"], { kind: "asset" }> };
 } {
-	return (
-		row != null &&
-		row.baseAssetId !== undefined &&
-		row.baseStateId !== undefined &&
-		row.stagedStateId !== undefined &&
-		row.unstagedStateId !== undefined
-	);
+	return row?.content?.base.kind === "asset";
 }
 
-type FilePendingUpdateFieldsForContent = FilePendingUpdateFieldsForYjsContent & FilePendingUpdateFieldsForAssetContent;
-
 /**
- * Narrow a pending update doc to one that carries a content proposal of either kind: three
- * branches built against a Yjs sequence (collaboration on) or against a content asset
- * (collaboration off). Use this wherever the code only needs the three state ids.
+ * Narrow a pending update doc to its content proposal, including a new private file.
+ * The schema keeps its base and all three branch ids together.
  */
 export function files_pending_update_has_content<Row extends FilePendingUpdateFieldsForContent | null | undefined>(
 	row: Row,
 ): row is NonNullable<Row> & {
-	baseStateId: NonNullable<FilePendingUpdateFieldsForContent["baseStateId"]>;
-	stagedStateId: NonNullable<FilePendingUpdateFieldsForContent["stagedStateId"]>;
-	unstagedStateId: NonNullable<FilePendingUpdateFieldsForContent["unstagedStateId"]>;
+	content: FilePendingUpdateContent;
 } {
-	return files_pending_update_has_yjs_content(row) || files_pending_update_has_asset_content(row);
+	return row?.content !== undefined;
 }
 
 /**
@@ -860,453 +833,9 @@ export function files_pending_update_content_is_stale(
 	node: Pick<app_convex_Doc<"files_nodes">, "assetId">,
 ) {
 	return (
-		row.contentNeedsRebase === true || (files_pending_update_has_asset_content(row) && row.baseAssetId !== node.assetId)
+		row.contentNeedsRebase === true || (row.content?.base.kind === "asset" && row.content.base.assetId !== node.assetId)
 	);
 }
-
-// #region pending path overlay
-// The proposing user's pending `mv` / `mv -f` proposals re-shape the tree that user sees:
-// moved nodes appear at their destination path, vacated and replaced paths read as gone.
-// Other users keep seeing the committed tree. Callers (bash fs, convex path queries) fetch
-// the user's pending update docs plus the few referenced nodes, build one overlay per
-// command run, and route every path decision through these pure functions.
-//
-// Sealed rules (see the tests in files.test.ts):
-// - A pending update doc is inert when the node it moves, its destination parent, or a
-//   copy source (`copiedFrom`) is missing from `nodesById`; the overlay simply drops it on the next
-//   build. A missing `replacesNodeId` node only degrades the replace to a plain move,
-//   matching what accept does.
-// - Visible destination paths resolve through moved ancestors (including committed subfolders of
-//   a moved folder); parent cycles drop all cycling docs, other docs keep applying.
-// - Two docs that claim the same visible destination path are all dropped (no guessing a winner;
-//   proposal-time validation prevents this state).
-// - A replaced target that has its own pending move follows its move instead of being hidden.
-// - At one path, a redirect wins over the vacated-source hiding (chains and swaps work).
-// - A pending move claims its destination path. A committed node that appears there later is
-//   shadowed for the proposer: lookups redirect, listings hide it. Accept auto-replaces it like
-//   `mv -f` (file onto file; the pending panel shows a live "Replaces" indicator before accept).
-// - A pending delete (`rm`) hides its node; a deleted folder hides its whole committed subtree.
-//   A deeper pending move wins over the delete-hiding (a subtree moved out of a deleted folder
-//   stays visible at its destination), while a delete deeper inside a moved folder still hides
-//   that area — the deepest structural claim over a path decides.
-
-export type files_PendingPathOverlayRow = Pick<
-	app_convex_Doc<"files_pending_updates">,
-	"fileNodeId" | "pendingMove" | "copiedFrom" | "pendingArchive"
->;
-
-export type files_PendingPathOverlayNode = Pick<app_convex_Doc<"files_nodes">, "_id" | "path" | "kind">;
-
-export type files_PendingPathOverlay = {
-	/** One entry per applied move doc; `visiblePath` already resolves through moved ancestors. */
-	moves: Array<{
-		nodeId: app_convex_Doc<"files_nodes">["_id"];
-		kind: app_convex_Doc<"files_nodes">["kind"];
-		committedPath: string;
-		visiblePath: string;
-	}>;
-	/** Nodes that disappear from the visible tree: replaced targets, replace-move sources, and pending deletes. */
-	hiddenNodeIds: Set<string>;
-	hiddenCommittedPaths: Set<string>;
-	/** Committed folder paths with a pending delete: their whole subtree reads as gone. */
-	hiddenCommittedFolderPaths: Set<string>;
-};
-
-/**
- * Build the overlay from the user's pending update docs.
- *
- * `nodesById` must contain the nodes the docs reference: each move doc's `fileNodeId` and
- * `destParentId` node, each `pendingMove.replacesNodeId` node, and each
- * `pendingArchive` doc's `fileNodeId` node. A doc with a
- * missing moved node, destination parent, or deleted node is inert;
- * a missing `replacesNodeId` node only degrades the replace to a plain move (accept does
- * the same). Content-only docs and copies never affect paths.
- */
-export function files_pending_path_overlay_build(args: {
-	pendingUpdates: readonly files_PendingPathOverlayRow[];
-	nodesById: ReadonlyMap<string, files_PendingPathOverlayNode>;
-}): files_PendingPathOverlay {
-	const { pendingUpdates, nodesById } = args;
-
-	type CandidateMove = {
-		nodeId: app_convex_Doc<"files_nodes">["_id"];
-		kind: app_convex_Doc<"files_nodes">["kind"];
-		committedPath: string;
-		destParentId: NonNullable<files_PendingPathOverlayRow["pendingMove"]>["destParentId"];
-		destName: string;
-		replacesNodeId: app_convex_Doc<"files_nodes">["_id"] | undefined;
-	};
-
-	// Collect the move docs whose moved node and destination parent both exist.
-	// A missing replace target is fine here: the replace degrades to a plain move.
-	const candidateMoves: CandidateMove[] = [];
-	const candidateMoveByNodeId = new Map<string, CandidateMove>();
-	for (const row of pendingUpdates) {
-		const pendingMove = row.pendingMove;
-		// A pending delete supersedes a pending move (the upsert clears it; skip defensively).
-		if (!pendingMove || row.pendingArchive) {
-			continue;
-		}
-		const node = nodesById.get(row.fileNodeId);
-		if (!node) {
-			continue;
-		}
-		if (pendingMove.destParentId !== files_ROOT_ID && !nodesById.has(pendingMove.destParentId)) {
-			continue;
-		}
-		const candidate: CandidateMove = {
-			nodeId: node._id,
-			kind: node.kind,
-			committedPath: node.path,
-			destParentId: pendingMove.destParentId,
-			destName: pendingMove.destName,
-			replacesNodeId: pendingMove.replacesNodeId,
-		};
-		candidateMoves.push(candidate);
-		candidateMoveByNodeId.set(node._id, candidate);
-	}
-
-	// Resolve each move's visible destination path through moved ancestors.
-	// Re-entering a move that is still resolving means a destination-parent cycle:
-	// that branch resolves to null, so every move on the cycle is dropped.
-	const resolvingMoves = new Set<CandidateMove>();
-	const visiblePathByMove = new Map<CandidateMove, string | null>();
-
-	function resolve_move_visible_path(move: CandidateMove): string | null {
-		if (resolvingMoves.has(move)) {
-			return null;
-		}
-		const known = visiblePathByMove.get(move);
-		if (known !== undefined) {
-			return known;
-		}
-
-		resolvingMoves.add(move);
-		let parentVisiblePath: string | null;
-		if (move.destParentId === files_ROOT_ID) {
-			parentVisiblePath = "";
-		} else {
-			const parentMove = candidateMoveByNodeId.get(move.destParentId);
-			if (parentMove) {
-				parentVisiblePath = resolve_move_visible_path(parentMove);
-			} else {
-				const parentNode = nodesById.get(move.destParentId);
-				parentVisiblePath = parentNode ? resolve_committed_dir_visible_path(parentNode.path) : null;
-			}
-		}
-		resolvingMoves.delete(move);
-
-		const visiblePath = parentVisiblePath == null ? null : `${parentVisiblePath}/${move.destName}`;
-		visiblePathByMove.set(move, visiblePath);
-		return visiblePath;
-	}
-
-	// A committed folder with no move doc of its own can still sit inside a moved
-	// folder (destination parents resolved by id). Project its path through the
-	// deepest moved ancestor so nested destinations land under the visible tree.
-	function resolve_committed_dir_visible_path(committedDirPath: string): string | null {
-		let deepestAncestor: CandidateMove | null = null;
-		for (const move of candidateMoves) {
-			if (move.kind !== "folder") {
-				continue;
-			}
-			if (move.committedPath !== committedDirPath && !committedDirPath.startsWith(`${move.committedPath}/`)) {
-				continue;
-			}
-			if (!deepestAncestor || move.committedPath.length > deepestAncestor.committedPath.length) {
-				deepestAncestor = move;
-			}
-		}
-		if (!deepestAncestor) {
-			return committedDirPath;
-		}
-
-		const ancestorVisiblePath = resolve_move_visible_path(deepestAncestor);
-		if (ancestorVisiblePath == null) {
-			return null;
-		}
-		return `${ancestorVisiblePath}${committedDirPath.slice(deepestAncestor.committedPath.length)}`;
-	}
-
-	// Two docs must not claim one visible path: drop all colliding docs instead of
-	// guessing a winner (proposal-time validation prevents this state).
-	const claimsByVisiblePath = new Map<string, CandidateMove[]>();
-	for (const move of candidateMoves) {
-		const visiblePath = resolve_move_visible_path(move);
-		if (visiblePath == null) {
-			continue;
-		}
-		const claims = claimsByVisiblePath.get(visiblePath) ?? [];
-		claims.push(move);
-		claimsByVisiblePath.set(visiblePath, claims);
-	}
-	const appliedMoves: Array<{ candidate: CandidateMove; visiblePath: string }> = [];
-	for (const [visiblePath, claims] of claimsByVisiblePath) {
-		if (claims.length !== 1) {
-			continue;
-		}
-		appliedMoves.push({ candidate: claims[0], visiblePath });
-	}
-
-	const moves: files_PendingPathOverlay["moves"] = appliedMoves.map(({ candidate, visiblePath }) => ({
-		nodeId: candidate.nodeId,
-		kind: candidate.kind,
-		committedPath: candidate.committedPath,
-		visiblePath,
-	}));
-	const appliedMoveNodeIds = new Set<string>(moves.map((move) => move.nodeId));
-
-	const hiddenNodeIds = new Set<string>();
-	const hiddenCommittedPaths = new Set<string>();
-	// Replace targets leave the visible tree, unless the target follows its own
-	// pending move (then both docs apply; see the sealed rules above).
-	for (const { candidate } of appliedMoves) {
-		if (!candidate.replacesNodeId) {
-			continue;
-		}
-		const target = nodesById.get(candidate.replacesNodeId);
-		if (!target || appliedMoveNodeIds.has(target._id)) {
-			continue;
-		}
-		hiddenNodeIds.add(target._id);
-		hiddenCommittedPaths.add(target.path);
-	}
-	// Pending deletes (`rm`) hide their node; a deleted folder hides its whole subtree.
-	const hiddenCommittedFolderPaths = new Set<string>();
-	for (const row of pendingUpdates) {
-		if (!row.pendingArchive) {
-			continue;
-		}
-		const node = nodesById.get(row.fileNodeId);
-		if (!node) {
-			continue;
-		}
-		hiddenNodeIds.add(node._id);
-		hiddenCommittedPaths.add(node.path);
-		if (node.kind === "folder") {
-			hiddenCommittedFolderPaths.add(node.path);
-		}
-	}
-
-	return { moves, hiddenNodeIds, hiddenCommittedPaths, hiddenCommittedFolderPaths };
-}
-
-/**
- * Answer "what does the user see at this visible path?" for lookups (cat, stat, exists).
- *
- * - `redirected`: a pending move presents the node stored at `committedPath` here.
- *   For paths inside a moved folder, `committedPath` is the source-prefix translation.
- * - `hidden`: the committed node at this path moved away or is replaced away.
- * - `unchanged`: the overlay does not touch this path.
- */
-export function files_pending_path_overlay_translate_path(
-	overlay: files_PendingPathOverlay,
-	visiblePath: string,
-): { kind: "unchanged" } | { kind: "hidden" } | { kind: "redirected"; committedPath: string } {
-	// A redirect wins over the vacated-source hiding of the same path (chains, swaps).
-	for (const move of overlay.moves) {
-		if (move.visiblePath === visiblePath) {
-			return { kind: "redirected", committedPath: move.committedPath };
-		}
-	}
-	// Paths inside a moved folder's claimed area translate back to the committed source;
-	// the deepest claiming folder wins so nested folder moves resolve correctly.
-	let deepestFolderRedirect: files_PendingPathOverlay["moves"][number] | null = null;
-	for (const move of overlay.moves) {
-		if (move.kind !== "folder" || !visiblePath.startsWith(`${move.visiblePath}/`)) {
-			continue;
-		}
-		if (!deepestFolderRedirect || move.visiblePath.length > deepestFolderRedirect.visiblePath.length) {
-			deepestFolderRedirect = move;
-		}
-	}
-	if (deepestFolderRedirect) {
-		const committedPath = `${deepestFolderRedirect.committedPath}${visiblePath.slice(deepestFolderRedirect.visiblePath.length)}`;
-		// The committed node at the translated path can have its own move (a rename inside the
-		// moved folder): the redirect only holds when it projects back onto this path.
-		if (files_pending_path_overlay_project_committed_path(overlay, committedPath) !== visiblePath) {
-			return { kind: "hidden" };
-		}
-		return { kind: "redirected", committedPath };
-	}
-
-	// Vacated sources (and their descendants) and replaced/copy-archived/deleted nodes read as gone.
-	if (overlay.hiddenCommittedPaths.has(visiblePath)) {
-		return { kind: "hidden" };
-	}
-	for (const folderPath of overlay.hiddenCommittedFolderPaths) {
-		if (visiblePath.startsWith(`${folderPath}/`)) {
-			return { kind: "hidden" };
-		}
-	}
-	for (const move of overlay.moves) {
-		if (move.committedPath === visiblePath) {
-			return { kind: "hidden" };
-		}
-		if (move.kind === "folder" && visiblePath.startsWith(`${move.committedPath}/`)) {
-			return { kind: "hidden" };
-		}
-	}
-
-	return { kind: "unchanged" };
-}
-
-/**
- * Answer "where does this committed node appear in the visible tree?" for listings.
- *
- * Returns the visible path (destination path for moved nodes and their descendants,
- * the same path when untouched) or `null` when the node is hidden from the visible tree.
- * A node's own move doc wins over an ancestor folder's prefix projection. A committed path
- * that sits at or under a move's visible destination is shadowed (`null`): the pending
- * move claims that path, and accept will auto-replace whatever committed node sits there.
- */
-export function files_pending_path_overlay_project_committed_path(
-	overlay: files_PendingPathOverlay,
-	committedPath: string,
-): string | null {
-	// Replaced targets, copy-archived sources, and deleted nodes leave the visible tree entirely.
-	if (overlay.hiddenCommittedPaths.has(committedPath)) {
-		return null;
-	}
-
-	// The node's own move doc wins over an ancestor folder's prefix projection.
-	for (const move of overlay.moves) {
-		if (move.committedPath === committedPath) {
-			return move.visiblePath;
-		}
-	}
-	let deepestAncestor: files_PendingPathOverlay["moves"][number] | null = null;
-	for (const move of overlay.moves) {
-		if (move.kind !== "folder" || !committedPath.startsWith(`${move.committedPath}/`)) {
-			continue;
-		}
-		if (!deepestAncestor || move.committedPath.length > deepestAncestor.committedPath.length) {
-			deepestAncestor = move;
-		}
-	}
-	// The deepest structural claim wins: a deleted ancestor folder hides the path unless a
-	// deeper moved ancestor lifts it out of the deleted area (redirect wins over hiding).
-	let deepestDeletedFolderPath: string | null = null;
-	for (const folderPath of overlay.hiddenCommittedFolderPaths) {
-		if (!committedPath.startsWith(`${folderPath}/`)) {
-			continue;
-		}
-		if (deepestDeletedFolderPath == null || folderPath.length > deepestDeletedFolderPath.length) {
-			deepestDeletedFolderPath = folderPath;
-		}
-	}
-	if (
-		deepestDeletedFolderPath != null &&
-		(!deepestAncestor || deepestDeletedFolderPath.length > deepestAncestor.committedPath.length)
-	) {
-		return null;
-	}
-	if (deepestAncestor) {
-		const rewrittenPath = `${deepestAncestor.visiblePath}${committedPath.slice(deepestAncestor.committedPath.length)}`;
-		// Another move can claim the projected path exactly (a node moved onto a vacated
-		// visible path inside the moved folder): that claim shadows the committed child.
-		// Only exact claims apply here — the producing ancestor's own visible path prefixes
-		// every projected child, so the folder prefix-shadow rule would hide the whole subtree.
-		for (const move of overlay.moves) {
-			if (move.visiblePath === rewrittenPath) {
-				return null;
-			}
-		}
-		return rewrittenPath;
-	}
-
-	// A committed path at or under a claimed destination is shadowed: the pending
-	// move owns that path, and accept will auto-replace whatever sits there.
-	for (const move of overlay.moves) {
-		if (move.visiblePath === committedPath) {
-			return null;
-		}
-		if (move.kind === "folder" && committedPath.startsWith(`${move.visiblePath}/`)) {
-			return null;
-		}
-	}
-
-	return committedPath;
-}
-
-/**
- * Decide which entry a lookup at `requestedPath` should present when both a committed
- * occupant and a redirect can claim the path. `occupantNodeId` is the id of the committed
- * node found at the path, or `null` when nothing committed lives there.
- *
- * - `redirected`: a pending move claims this path; fetch the node at the redirect's
- *   `committedPath` and present it here, even over a committed occupant (accept will
- *   auto-replace the occupant like `mv -f`).
- * - `occupant`: no redirect claims the path and the committed node is live (not moved
- *   away, not hidden). A node created at a vacated path after the proposal stays visible.
- * - `none`: the path reads as missing.
- */
-export function files_pending_path_overlay_pick_visible_entry(
-	overlay: files_PendingPathOverlay,
-	args: { requestedPath: string; occupantNodeId: string | null },
-): "occupant" | "redirected" | "none" {
-	const translated = files_pending_path_overlay_translate_path(overlay, args.requestedPath);
-	if (translated.kind === "redirected") {
-		return "redirected";
-	}
-	if (args.occupantNodeId == null) {
-		return "none";
-	}
-
-	// A hidden or moved-away occupant reads as missing; any other committed node is
-	// live and stays visible (for example one created at a vacated path later).
-	if (overlay.hiddenNodeIds.has(args.occupantNodeId)) {
-		return "none";
-	}
-	for (const move of overlay.moves) {
-		if (move.nodeId === args.occupantNodeId) {
-			return "none";
-		}
-	}
-
-	return "occupant";
-}
-
-/**
- * List the moved nodes that a listing of `visibleFolderPath` must add as direct children.
- *
- * Skips moves already covered by projecting that folder's own committed children (in-place
- * renames, and moves whose committed parent folder projects onto this same visible folder),
- * so callers never show one node twice.
- */
-export function files_pending_path_overlay_list_injections(
-	overlay: files_PendingPathOverlay,
-	visibleFolderPath: string,
-): Array<{
-	nodeId: app_convex_Doc<"files_nodes">["_id"];
-	kind: app_convex_Doc<"files_nodes">["kind"];
-	committedPath: string;
-	visibleName: string;
-}> {
-	const injections: ReturnType<typeof files_pending_path_overlay_list_injections> = [];
-	for (const move of overlay.moves) {
-		const visibleDirPath = move.visiblePath.slice(0, move.visiblePath.lastIndexOf("/")) || "/";
-		if (visibleDirPath !== visibleFolderPath) {
-			continue;
-		}
-
-		// Skip moves this folder's own committed children already surface via projection
-		// (in-place renames, and renames inside a moved folder), so nothing shows twice.
-		const committedDirPath = move.committedPath.slice(0, move.committedPath.lastIndexOf("/")) || "/";
-		if (files_pending_path_overlay_project_committed_path(overlay, committedDirPath) === visibleFolderPath) {
-			continue;
-		}
-
-		injections.push({
-			nodeId: move.nodeId,
-			kind: move.kind,
-			committedPath: move.committedPath,
-			visibleName: move.visiblePath.slice(move.visiblePath.lastIndexOf("/") + 1),
-		});
-	}
-	return injections;
-}
-// #endregion pending path overlay
 
 // #region file name normalization
 const FILES_NORMALIZED_DOTTED_NAME_REGEX = /^(?!.*[._-]{2})[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?$/;
@@ -1506,6 +1035,13 @@ export function files_normalize_special_node_path(kind: "file" | "folder", path:
 		.join("/");
 }
 
+// TODO: decide a maximum name length and enforce it here. Nothing limits a name today, not this
+// normalizer, not the schema, and not any door, so a paste can store a name of any length. Keep-both
+// makes it grow: every retry appends `-copy-N` to a name that is already too long. Investigate what
+// the limit should be before choosing one. 255 bytes matches most filesystems and survives an export
+// to disk, while 255 characters is easier to explain but lets a CJK name reach about 765 bytes. The
+// truncation also has to keep the extension and the `-copy-N` suffix, or two different sources would
+// cut down to the same name.
 function files_normalize_file_name_parts(args: {
 	fileName: string;
 	pathSeparators: "dash" | "leaf";

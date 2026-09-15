@@ -41,9 +41,19 @@ describe("ai_chat thread state", () => {
 			bashCwd: "~",
 			updatedBy: seeded.userId,
 		});
+		const begun = await t.mutation(internal.ai_chat_files.begin_bash_invocation, {
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			threadId,
+			toolCallId: "cwd-test",
+			commandHash: "a".repeat(64),
+		});
+		if (begun._nay) throw new Error(begun._nay.message);
 
 		await t.run((ctx) =>
 			ctx.runMutation(internal.ai_chat.set_thread_state, {
+				invocationId: begun._yay.invocationId,
 				organizationId: seeded.organizationId,
 				workspaceId: seeded.workspaceId,
 				threadId,
@@ -87,9 +97,19 @@ describe("ai_chat thread state", () => {
 		});
 		expect(created._yay).toBeTruthy();
 		const sourceThreadId = created._yay!.threadId;
+		const begun = await t.mutation(internal.ai_chat_files.begin_bash_invocation, {
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			threadId: sourceThreadId,
+			toolCallId: "cwd-test",
+			commandHash: "a".repeat(64),
+		});
+		if (begun._nay) throw new Error(begun._nay.message);
 
 		await t.run((ctx) =>
 			ctx.runMutation(internal.ai_chat.set_thread_state, {
+				invocationId: begun._yay.invocationId,
 				organizationId: seeded.organizationId,
 				workspaceId: seeded.workspaceId,
 				threadId: sourceThreadId,

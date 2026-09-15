@@ -4,10 +4,12 @@ import { doc } from "convex-helpers/validators";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { internalMutation, internalQuery, mutation, query } from "./_generated/server.js";
-import app_convex_schema from "./schema.ts";
+import app_convex_schema, { files_pending_target_validator, files_metadata_entries_validator } from "./schema.ts";
+import { files_search_db_create_reader } from "./files_search.ts";
+import { files_visible_db_create_reader } from "./files_visible.ts";
+import { files_pending_update_db_update_index_revision } from "./files_pending_updates.ts";
 import {
 	access_control_db_authorize_membership,
-	access_control_db_can_act_on_file_node,
 	access_control_db_filter_readable_file_nodes,
 } from "./access_control.ts";
 import { files_nodes_db_require_user_writable } from "./files_nodes.ts";
@@ -40,8 +42,17 @@ import {
 	organizations_is_reserved_workspace_id,
 	organizations_is_global_organization_id,
 } from "../shared/organizations.ts";
-import { files_db_get_visible_node_by_path, files_pending_update_has_pending_chunks } from "../server/files.ts";
-import { files_pending_update_content_is_stale } from "../shared/files.ts";
+import {
+	files_db_get_visible_node_by_path,
+	files_db_schedule_pending_update_cleanup,
+	files_db_patch_pending_update,
+	files_pending_update_has_pending_chunks,
+} from "../server/files.ts";
+import {
+	files_pending_update_content_is_stale,
+	type files_PendingTarget,
+	type files_VisibleEntry,
+} from "../shared/files.ts";
 
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
 // Does NOT work for http actions (see http.ts). No mutable module-level state allowed here.
@@ -201,58 +212,49 @@ export async function files_metadata_db_replace_pending(
 	args: {
 		organizationId: Id<"organizations">;
 		workspaceId: Id<"organizations_workspaces">;
-		userId: string;
-		nodeId: Id<"files_nodes">;
+		userId: Id<"users">;
+		target: Doc<"files_pending_updates">["target"];
 		pendingUpdateId: Id<"files_pending_updates">;
-		unstagedText: string;
+		proposalRevision: number;
+		path: string;
+		archiveOperationId?: string;
+		unstagedText?: string;
+		createMetadata?: files_metadata_Entry[];
 	},
 ) {
 	await files_metadata_db_delete_pending(ctx, { pendingUpdateId: args.pendingUpdateId });
 
-	const fileNode = await ctx.db.get("files_nodes", args.nodeId);
-	if (!fileNode || fileNode.organizationId !== args.organizationId || fileNode.workspaceId !== args.workspaceId) {
-		console.error("Failed to replace pending metadata: fileNode is missing or mismatched", {
-			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
-			nodeId: args.nodeId,
-			pendingUpdateId: args.pendingUpdateId,
-			fileNode,
-		});
-		return;
-	}
-
-	const preflight = files_metadata_preflight_frontmatter(args.unstagedText);
-	// The stale pending docs were deleted above, so returning here leaves this proposal with no
-	// frontmatter docs. That is the right outcome: the proposal still saves, and nothing stale is
-	// left behind.
-	if (preflight._nay) {
+	const metadata = files_metadata_extract_entries(args.createMetadata ?? []);
+	const entryIndexByField = new Map(metadata.fields.map((fieldPath, index) => [fieldPath, index]));
+	const preflight = args.unstagedText === undefined ? null : files_metadata_preflight_frontmatter(args.unstagedText);
+	// Malformed frontmatter must not hide a new file's separate metadata map.
+	if (preflight?._nay) {
 		console.warn("Skipped pending frontmatter metadata: the frontmatter could not be parsed", {
-			nodeId: args.nodeId,
+			target: args.target,
 			pendingUpdateId: args.pendingUpdateId,
 			error: preflight._nay,
 		});
-		return;
-	}
-
-	const metadata = preflight._yay.metadata;
-	// Impossible backstop only: the pending commit mutations run the same preflight before any
-	// canonical write and return a visible refusal. The throw stays so an unexpected over-cap
-	// insert still rolls back the whole pending save mutation, including the pending update doc
-	// write that ran before this helper.
-	if (files_metadata_frontmatter_exceeds_index_caps(preflight._yay)) {
-		throw convex_error({ message: "Too many frontmatter fields" });
+	} else if (preflight?._yay) {
+		// Writers check the caps before they change the proposal. Check them again here, because
+		// this transaction is the last place that can still refuse.
+		if (files_metadata_frontmatter_exceeds_index_caps(preflight._yay)) {
+			throw convex_error({ message: "Too many frontmatter fields" });
+		}
+		metadata.fields.push(...preflight._yay.metadata.fields);
+		metadata.values.push(...preflight._yay.metadata.values);
 	}
 
 	const scope = {
 		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
-		fileNodeId: args.nodeId,
 		sourceKind: "pending" as const,
+		target: args.target,
 		userId: args.userId,
 		pendingUpdateId: args.pendingUpdateId,
-		path: fileNode.path,
-		treePath: fileNode.treePath,
-		archiveOperationId: fileNode.archiveOperationId ?? undefined,
+		proposalRevision: args.proposalRevision,
+		path: args.path,
+		treePath: args.path,
+		archiveOperationId: args.archiveOperationId,
 	};
 	await Promise.all([
 		...metadata.fields.map((fieldPath) =>
@@ -266,6 +268,7 @@ export async function files_metadata_db_replace_pending(
 			ctx.db.insert("files_metadata_docs", {
 				...scope,
 				fieldPath: value.fieldPath,
+				entryIndex: entryIndexByField.get(value.fieldPath),
 				...value_doc_payload(value),
 			}),
 		),
@@ -293,12 +296,26 @@ export async function files_metadata_db_patch_file_scope(
 	if ("archiveOperationId" in args) {
 		patch.archiveOperationId = args.archiveOperationId;
 	}
-	const docs = await ctx.db
-		.query("files_metadata_docs")
-		.withIndex("by_organization_workspace_fileNode_fieldPath", (q) =>
-			q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("fileNodeId", args.nodeId),
-		)
-		.collect();
+	const docs = (
+		await Promise.all([
+			ctx.db
+				.query("files_metadata_docs")
+				.withIndex("by_organization_workspace_fileNode_fieldPath", (q) =>
+					q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("fileNodeId", args.nodeId),
+				)
+				.collect(),
+			ctx.db
+				.query("files_metadata_docs")
+				.withIndex("by_organization_workspace_target_fieldPath", (q) =>
+					q
+						.eq("organizationId", args.organizationId)
+						.eq("workspaceId", args.workspaceId)
+						.eq("target.kind", "saved")
+						.eq("target.id", args.nodeId),
+				)
+				.collect(),
+		])
+	).flat();
 	await Promise.all(docs.map((doc) => ctx.db.patch("files_metadata_docs", doc._id, patch)));
 }
 
@@ -314,44 +331,9 @@ function metadata_kind_from_field_path(fieldPath: string) {
 	return fieldPath.slice(0, fieldPath.indexOf("."));
 }
 
-async function db_list_pending_file_node_ids(
-	ctx: QueryCtx,
-	args: {
-		organizationId: Doc<"files_pending_updates">["organizationId"];
-		workspaceId: Doc<"files_pending_updates">["workspaceId"];
-		userId: Id<"users">;
-	},
-) {
-	const pendingUpdates = await ctx.db
-		.query("files_pending_updates")
-		.withIndex("by_organization_workspace_user_fileNode", (q) =>
-			q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("userId", args.userId),
-		)
-		.order("asc")
-		.collect();
-	// Move-only docs have no pending metadata docs: only content-bearing docs hide their file's
-	// committed docs. A stale proposal on a file with collaboration off hides nothing either: the
-	// member's saved text is the file now.
-	const pendingNodes = await Promise.all(
-		pendingUpdates
-			.filter((pendingUpdate) => files_pending_update_has_pending_chunks(pendingUpdate))
-			.map(async (pendingUpdate) => ({
-				pendingUpdate,
-				fileNode: await ctx.db.get("files_nodes", pendingUpdate.fileNodeId),
-			})),
-	);
-	return pendingNodes
-		.filter(
-			({ pendingUpdate, fileNode }) =>
-				fileNode !== null && !files_pending_update_content_is_stale(pendingUpdate, fileNode),
-		)
-		.map(({ pendingUpdate }) => pendingUpdate.fileNodeId);
-}
-
-function format_search_result(doc: Doc<"files_metadata_docs">) {
+function format_search_result(doc: Doc<"files_metadata_docs">, entry: { target: files_PendingTarget; path: string }) {
 	const base = {
-		path: doc.path,
-		nodeId: doc.fileNodeId,
+		...entry,
 		fieldPath: doc.fieldPath,
 		metadataKind: metadata_kind_from_field_path(doc.fieldPath),
 		sourceKind: doc.sourceKind,
@@ -392,7 +374,6 @@ function format_search_result(doc: Doc<"files_metadata_docs">) {
 			const errorMessage = "metadataDoc.valueKind is not set";
 			const errorData = {
 				metadataDocId: doc._id,
-				fileNodeId: doc.fileNodeId,
 				fieldPath: doc.fieldPath,
 				docKind: doc.docKind,
 			};
@@ -430,6 +411,7 @@ function search_index_query(
 					? base.gte("treePath", args.treePathPrefix).lt("treePath", path_tree_prefix_upper_bound(args.treePathPrefix))
 					: base;
 			});
+
 		case "eq":
 			if (typeof plan.value === "string") {
 				const value = plan.value;
@@ -451,6 +433,7 @@ function search_index_query(
 							: base;
 					});
 			}
+
 			if (typeof plan.value === "number") {
 				const value = plan.value;
 				return ctx.db
@@ -471,6 +454,7 @@ function search_index_query(
 							: base;
 					});
 			}
+
 			{
 				const value = plan.value;
 				return ctx.db
@@ -491,6 +475,7 @@ function search_index_query(
 							: base;
 					});
 			}
+
 		case "prefix":
 			return ctx.db
 				.query("files_metadata_docs")
@@ -506,6 +491,7 @@ function search_index_query(
 					const upperBound = string_prefix_upper_bound(plan.value);
 					return upperBound === null ? base : base.lt("stringValue", upperBound);
 				});
+
 		case "range":
 			// Reuse the numeric range index for maybe_date docs. Read their epoch milliseconds from
 			// numberValue, and use valueKind to keep them separate from plain number docs.
@@ -539,33 +525,7 @@ function search_index_query(
 }
 
 /**
- * Whether one doc read from an index range belongs to the caller's view: under the folder path,
- * and under the pending overlay rule. Metadata search follows the same overlay rule as full-text
- * search: for a file with a live proposal by the acting user, show the pending indexed docs and
- * hide the committed ones. A stale proposal on a file with collaboration off keeps its pending docs
- * until Discard, and those must not match.
- */
-function search_doc_is_visible(
-	metadataDoc: Doc<"files_metadata_docs">,
-	args: {
-		userId: Id<"users">;
-		pendingNodeIds: Array<Id<"files_nodes">>;
-		treePathPrefix?: string;
-	},
-) {
-	if (args.treePathPrefix && !metadataDoc.treePath.startsWith(args.treePathPrefix)) {
-		return false;
-	}
-	if (metadataDoc.sourceKind === "pending") {
-		return metadataDoc.userId === args.userId && args.pendingNodeIds.includes(metadataDoc.fileNodeId);
-	}
-	return !args.pendingNodeIds.includes(metadataDoc.fileNodeId);
-}
-
-/**
- * The index range of one plan with the rule of `search_doc_is_visible` as query filters, for the
- * paginated agent `search`. A filter reads the docs it drops, so a door with a read cap reads the
- * index range raw and checks the docs itself.
+ * Read owner candidates first. Saved index paths can lag a pending move.
  */
 function search_query(
 	ctx: QueryCtx,
@@ -573,39 +533,15 @@ function search_query(
 		organizationId: Doc<"files_metadata_docs">["organizationId"];
 		workspaceId: Doc<"files_metadata_docs">["workspaceId"];
 		plan: files_metadata_SearchPlan;
-		treePathPrefix?: string;
 		userId: Id<"users">;
-		pendingNodeIds: Array<Id<"files_nodes">>;
 	},
 ) {
-	let query = search_index_query(ctx, args);
-	const treePathPrefix = args.treePathPrefix;
-	if ((args.plan.op === "prefix" || args.plan.op === "range") && treePathPrefix) {
-		query = query.filter((q) =>
-			q.and(
-				q.gte(q.field("treePath"), treePathPrefix),
-				q.lt(q.field("treePath"), path_tree_prefix_upper_bound(treePathPrefix)),
-			),
-		);
-	}
-	query = query.filter((q) =>
+	return search_index_query(ctx, args).filter((q) =>
 		q.or(
 			q.eq(q.field("sourceKind"), "committed"),
-			...args.pendingNodeIds.map((pendingNodeId) =>
-				q.and(
-					q.eq(q.field("sourceKind"), "pending"),
-					q.eq(q.field("userId"), args.userId),
-					q.eq(q.field("fileNodeId"), pendingNodeId),
-				),
-			),
+			q.and(q.eq(q.field("sourceKind"), "pending"), q.eq(q.field("userId"), args.userId)),
 		),
 	);
-	for (const pendingNodeId of args.pendingNodeIds) {
-		query = query.filter((q) =>
-			q.or(q.neq(q.field("fileNodeId"), pendingNodeId), q.eq(q.field("sourceKind"), "pending")),
-		);
-	}
-	return query;
 }
 
 /**
@@ -634,8 +570,8 @@ const search_plan_validator = v.union(
 export const search = internalQuery({
 	args: {
 		// Scope accepts the reserved `/.mounts` literals so the mount-backed db-files FS can search mount metadata.
-		organizationId: doc(app_convex_schema, "files_metadata_docs").fields.organizationId,
-		workspaceId: doc(app_convex_schema, "files_metadata_docs").fields.workspaceId,
+		organizationId: doc(app_convex_schema, "files_nodes").fields.organizationId,
+		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
 		userId: v.id("users"),
 		serviceAccountId: v.optional(v.id("access_control_service_accounts")),
 		plan: search_plan_validator,
@@ -647,7 +583,7 @@ export const search = internalQuery({
 		items: v.array(
 			v.object({
 				path: v.string(),
-				nodeId: v.id("files_nodes"),
+				target: files_pending_target_validator,
 				fieldPath: v.string(),
 				metadataKind: v.string(),
 				sourceKind: v.union(v.literal("committed"), v.literal("pending")),
@@ -667,55 +603,22 @@ export const search = internalQuery({
 		isDone: v.boolean(),
 	}),
 	handler: async (ctx, args) => {
-		let pendingNodeIds: Array<Id<"files_nodes">> = [];
-		const organizationId = args.organizationId;
-		const workspaceId = args.workspaceId;
-		// File metadata is not derived from content, so a pending content edit must not hide it. Every
-		// plan targets one qualified field. So the field prefix alone decides this for the whole query,
-		// and a metadata search never collects the pending overlay.
-		const isMetadataPlan = args.plan.fieldPath.startsWith(files_metadata_METADATA_FIELD_PREFIX);
-		if (
-			!isMetadataPlan &&
-			!organizations_is_global_organization_id(organizationId) &&
-			!organizations_is_reserved_workspace_id(workspaceId)
-		) {
-			pendingNodeIds = await db_list_pending_file_node_ids(ctx, {
-				organizationId,
-				workspaceId,
-				userId: args.userId,
-			});
-		}
 		const treePathPrefix = args.pathPrefix == null ? undefined : tree_path_from_path(args.pathPrefix);
-		const query = search_query(ctx, {
-			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
-			plan: args.plan,
-			treePathPrefix,
-			userId: args.userId,
-			pendingNodeIds,
+		const result = await search_query(ctx, args).paginate({
+			cursor: args.cursor,
+			numItems: Math.max(1, Math.min(100, args.numItems)),
 		});
-		const result = await query.paginate({ cursor: args.cursor, numItems: args.numItems });
-
-		// Metadata docs carry the file path, so a hit inside a restricted folder would say the file is
-		// there and what it is called. Each distinct file on the page is looked up once.
-		const pageNodeIds = [...new Set(result.page.map((metadataDoc) => metadataDoc.fileNodeId))];
-		const pageNodes = (await Promise.all(pageNodeIds.map((nodeId) => ctx.db.get("files_nodes", nodeId)))).filter(
-			(fileNode) => fileNode !== null,
-		);
-		const readableNodeIds = new Set(
-			(
-				await access_control_db_filter_readable_file_nodes(ctx, {
-					organizationId: args.organizationId,
-					workspaceId: args.workspaceId,
-					userId: args.userId,
-					serviceAccountId: args.serviceAccountId,
-					nodes: pageNodes,
-				})
-			).map((fileNode) => fileNode._id),
-		);
+		const reader = await files_search_db_create_reader(ctx, args);
+		const items = [];
+		for (const metadataDoc of result.page) {
+			const entry = await reader.resolveDocument(metadataDoc);
+			if (reader.exhausted) throw convex_error({ message: "Search is too broad. Narrow the path or filters." });
+			if (entry && (!treePathPrefix || tree_path_from_path(entry.path).startsWith(treePathPrefix)))
+				items.push(format_search_result(metadataDoc, entry));
+		}
 
 		return {
-			items: result.page.filter((metadataDoc) => readableNodeIds.has(metadataDoc.fileNodeId)).map(format_search_result),
+			items,
 			continueCursor: result.continueCursor,
 			isDone: result.isDone,
 		};
@@ -732,20 +635,10 @@ export type files_metadata_search_Result =
 // #region search box
 
 /**
- * Caps for the search box doors below. The box sends one filter per query. A filter expands to at
- * most four plans: two metadata kinds times two value kinds. The docs of each plan are read before
- * the readable-nodes filter runs, so the caps bound the reads, not the answer. A workspace with
- * more matching docs than one plan reads gets a partial answer. `file.path:` narrows the scan of
- * the exists and eq plans. The prefix and range plans check the folder on the docs read.
- *
- * The readable-nodes filter pays one permission check per distinct restricted folder among the
- * candidates, and a check costs several index reads. So the candidates are also cut at
- * `SEARCH_NODES_MAX_SCOPES` restricted folders, to stay inside the 4096 reads Convex allows.
+ * Raw index caps and the shared owner reader bound each filter query.
  */
 const SEARCH_NODES_MAX_PLANS = 4;
 const SEARCH_NODES_DOCS_PER_PLAN = 1000;
-const SEARCH_NODES_MAX_CANDIDATES = 1000;
-const SEARCH_NODES_MAX_SCOPES = 250;
 const SEARCH_PATH_PREFIX_MAX_LENGTH = 1024;
 const SEARCH_FIELD_PATH_MAX_LENGTH = 160;
 
@@ -763,7 +656,6 @@ const SEARCH_FIELDS_MAX_FIELDS = 200;
 const SEARCH_FIELDS_READ_BUDGET = 3000;
 const SEARCH_VALUES_MAX_VALUES = 25;
 const SEARCH_VALUES_READ_BUDGET = 400;
-const SEARCH_SCOPE_CHECK_READS = 8;
 const SEARCH_VALUE_PREFIX_MAX_LENGTH = 200;
 const SEARCH_VALUE_KINDS = ["string", "number", "boolean", "maybe_date"] as const;
 
@@ -808,64 +700,23 @@ async function db_get_search_caller(ctx: QueryCtx, args: { membershipId: Id<"org
 }
 
 /**
- * What one catalog walk remembers across keys and values: which nodes and which restricted scopes
- * the caller can read, and how many index reads the walk has spent.
+ * Keep one owner reader across keys and values. Count catalog range reads separately.
  */
 type SearchSampleCache = {
-	readableByNodeId: Map<Id<"files_nodes">, boolean>;
-	readableByScopeId: Map<string, boolean>;
+	reader: Awaited<ReturnType<typeof files_search_db_create_reader>>;
 	reads: number;
 };
 
 /**
- * True when one of the sample docs sits on a file the caller can read. The catalog must not name
- * a key or value from a doc alone, because the doc's file may sit in a restricted folder.
- *
- * Whether a file is readable depends on its restricted scope only, so the answer is cached per
- * scope as well as per node. A workspace with one restricted folder then pays for one permission
- * check, not one per sampled file.
+ * A suggestion must belong to a current readable file or draft.
  */
-async function db_search_sample_is_readable(
-	ctx: QueryCtx,
-	args: {
-		caller: NonNullable<Awaited<ReturnType<typeof db_get_search_caller>>>;
-		docs: Doc<"files_metadata_docs">[];
-		mut_cache: SearchSampleCache;
-	},
-) {
-	for (const nodeId of new Set(args.docs.map((metadataDoc) => metadataDoc.fileNodeId))) {
-		let readable = args.mut_cache.readableByNodeId.get(nodeId);
-		if (readable === undefined) {
-			const fileNode = await ctx.db.get("files_nodes", nodeId);
-			args.mut_cache.reads += 1;
-			if (fileNode === null) {
-				readable = false;
-			} else {
-				const scopeKey = fileNode.restrictedScopeNodeId ?? "";
-				readable = args.mut_cache.readableByScopeId.get(scopeKey);
-				if (readable === undefined) {
-					readable =
-						(
-							await access_control_db_filter_readable_file_nodes(ctx, {
-								organizationId: args.caller.membership.organizationId,
-								workspaceId: args.caller.membership.workspaceId,
-								userId: args.caller.userAuth.id,
-								nodes: [fileNode],
-								hasWorkspaceRead: args.caller.hasWorkspaceRead,
-							})
-						).length > 0;
-					// An open node costs the filter no reads. A restricted scope costs one permission check.
-					if (fileNode.restrictedScopeNodeId) {
-						args.mut_cache.reads += SEARCH_SCOPE_CHECK_READS;
-					}
-					args.mut_cache.readableByScopeId.set(scopeKey, readable);
-				}
-			}
-			args.mut_cache.readableByNodeId.set(nodeId, readable);
-		}
-		if (readable) {
-			return true;
-		}
+async function db_search_sample_is_readable(args: {
+	docs: Doc<"files_metadata_docs">[];
+	mut_cache: SearchSampleCache;
+}) {
+	for (const metadataDoc of args.docs) {
+		if (args.mut_cache.reader.exhausted) return false;
+		if (await args.mut_cache.reader.resolveDocument(metadataDoc)) return true;
 	}
 	return false;
 }
@@ -880,11 +731,11 @@ export const search_nodes = query({
 		plans: v.array(search_plan_validator),
 		pathPrefix: v.optional(v.string()),
 	},
-	returns: v.object({ nodeIds: v.array(v.id("files_nodes")) }),
+	returns: v.object({ targets: v.array(files_pending_target_validator), truncated: v.boolean() }),
 	handler: async (ctx, args) => {
 		const caller = await db_get_search_caller(ctx, { membershipId: args.membershipId });
 		if (!caller) {
-			return { nodeIds: [] };
+			return { targets: [], truncated: false };
 		}
 
 		// One filter is at most four plans over keys the shared grammar accepts, inside a folder
@@ -896,74 +747,38 @@ export const search_nodes = query({
 			(args.pathPrefix !== undefined &&
 				(!args.pathPrefix.startsWith("/") || args.pathPrefix.length > SEARCH_PATH_PREFIX_MAX_LENGTH))
 		) {
-			return { nodeIds: [] };
+			return { targets: [], truncated: false };
 		}
 
 		const { organizationId, workspaceId } = caller.membership;
 		const userId = caller.userAuth.id;
 
-		// A pending content edit changes frontmatter, not the metadata map, so only frontmatter plans
-		// use the pending overlay. See `search` for the rule.
-		const hasFrontmatterPlan = args.plans.some((plan) =>
-			plan.fieldPath.startsWith(files_metadata_FRONTMATTER_FIELD_PREFIX),
-		);
-		const pendingNodeIds = hasFrontmatterPlan
-			? await db_list_pending_file_node_ids(ctx, { organizationId, workspaceId, userId })
-			: [];
 		const treePathPrefix = args.pathPrefix === undefined ? undefined : tree_path_from_path(args.pathPrefix);
-
-		// Read each plan's index range raw, so the cap bounds the docs read. The folder path and the
-		// pending overlay are checked on the docs read.
-		const candidateIds = new Set<Id<"files_nodes">>();
-		for (const plan of args.plans) {
-			// Stop before the next plan once the set is full. The plans left could add nothing, and each
-			// one would still cost a full range read.
-			if (candidateIds.size >= SEARCH_NODES_MAX_CANDIDATES) {
-				break;
-			}
-			const metadataDocs = await search_index_query(ctx, { organizationId, workspaceId, plan, treePathPrefix }).take(
-				SEARCH_NODES_DOCS_PER_PLAN,
-			);
-			const planPendingNodeIds = plan.fieldPath.startsWith(files_metadata_FRONTMATTER_FIELD_PREFIX)
-				? pendingNodeIds
-				: [];
-			for (const metadataDoc of metadataDocs) {
-				if (candidateIds.size >= SEARCH_NODES_MAX_CANDIDATES) {
-					break;
-				}
-				if (search_doc_is_visible(metadataDoc, { userId, pendingNodeIds: planPendingNodeIds, treePathPrefix })) {
-					candidateIds.add(metadataDoc.fileNodeId);
-				}
-			}
-		}
-
-		// A hit inside a restricted folder must not reach a caller who was not given that folder.
-		// Past `SEARCH_NODES_MAX_SCOPES` restricted folders the answer is partial.
-		const candidateNodes = (
-			await Promise.all([...candidateIds].map((nodeId) => ctx.db.get("files_nodes", nodeId)))
-		).filter((fileNode) => fileNode !== null);
-		const scopeIds = new Set<string>();
-		const cappedNodes = candidateNodes.filter((fileNode) => {
-			if (!fileNode.restrictedScopeNodeId) {
-				return true;
-			}
-			if (!scopeIds.has(fileNode.restrictedScopeNodeId) && scopeIds.size >= SEARCH_NODES_MAX_SCOPES) {
-				return false;
-			}
-			scopeIds.add(fileNode.restrictedScopeNodeId);
-			return true;
-		});
-		const readableNodes = await access_control_db_filter_readable_file_nodes(ctx, {
+		const reader = await files_search_db_create_reader(ctx, {
 			organizationId,
 			workspaceId,
 			userId,
-			nodes: cappedNodes,
 			hasWorkspaceRead: caller.hasWorkspaceRead,
 		});
-
-		// No "is complete" flag, on purpose: a flag next to fewer ids than the caps would say outright
-		// that restricted files matched. The caps can still hint at it, but never name a file.
-		return { nodeIds: readableNodes.map((fileNode) => fileNode._id) };
+		const targets = new Map<string, files_PendingTarget>();
+		let truncated = false;
+		for (const plan of args.plans) {
+			const metadataDocs = await search_index_query(ctx, { organizationId, workspaceId, plan }).take(
+				SEARCH_NODES_DOCS_PER_PLAN + 1,
+			);
+			if (metadataDocs.length > SEARCH_NODES_DOCS_PER_PLAN) truncated = true;
+			for (const metadataDoc of metadataDocs.slice(0, SEARCH_NODES_DOCS_PER_PLAN)) {
+				const entry = await reader.resolveDocument(metadataDoc);
+				if (reader.exhausted) {
+					truncated = true;
+					break;
+				}
+				if (entry && (!treePathPrefix || tree_path_from_path(entry.path).startsWith(treePathPrefix)))
+					targets.set(`${entry.target.kind}:${entry.target.id}`, entry.target);
+			}
+			if (reader.exhausted) break;
+		}
+		return { targets: [...targets.values()], truncated };
 	},
 });
 
@@ -991,14 +806,26 @@ export const list_search_fields = query({
 
 		const { organizationId, workspaceId } = caller.membership;
 		const userId = caller.userAuth.id;
-		const mut_cache: SearchSampleCache = { readableByNodeId: new Map(), readableByScopeId: new Map(), reads: 0 };
+		const mut_cache: SearchSampleCache = {
+			reader: await files_search_db_create_reader(ctx, {
+				organizationId,
+				workspaceId,
+				userId,
+				hasWorkspaceRead: caller.hasWorkspaceRead,
+			}),
+			reads: 0,
+		};
 		const fields: Array<{ fieldPath: string; valueKinds: Array<(typeof SEARCH_VALUE_KINDS)[number]> }> = [];
 		let lastFieldPath = "";
 
 		// Walk the distinct qualified fields with one index read per field: the first field doc above
 		// the last one seen. Each field then reads a few docs per kind to decide whether the caller
 		// may see it.
-		while (fields.length < SEARCH_FIELDS_MAX_FIELDS && mut_cache.reads < SEARCH_FIELDS_READ_BUDGET) {
+		while (
+			fields.length < SEARCH_FIELDS_MAX_FIELDS &&
+			mut_cache.reads < SEARCH_FIELDS_READ_BUDGET &&
+			!mut_cache.reader.exhausted
+		) {
 			const after = lastFieldPath;
 			const nextFieldDoc = await ctx.db
 				.query("files_metadata_docs")
@@ -1038,7 +865,7 @@ export const list_search_fields = query({
 					.take(SEARCH_CATALOG_SAMPLE_DOCS)
 			).filter((metadataDoc) => metadataDoc.sourceKind === "committed" || metadataDoc.userId === userId);
 			mut_cache.reads += 1;
-			let readable = await db_search_sample_is_readable(ctx, { caller, docs: fieldDocs, mut_cache });
+			let readable = await db_search_sample_is_readable({ docs: fieldDocs, mut_cache });
 
 			// Every value index has `valueKind` right after the key, so the string index serves all
 			// four kinds. A kind is listed only when the caller can read a file that holds it.
@@ -1059,7 +886,7 @@ export const list_search_fields = query({
 						.take(SEARCH_CATALOG_SAMPLE_DOCS)
 				).filter((metadataDoc) => metadataDoc.sourceKind === "committed" || metadataDoc.userId === userId);
 				mut_cache.reads += 1;
-				if (valueDocs.length > 0 && (await db_search_sample_is_readable(ctx, { caller, docs: valueDocs, mut_cache }))) {
+				if (valueDocs.length > 0 && (await db_search_sample_is_readable({ docs: valueDocs, mut_cache }))) {
 					valueKinds.push(valueKind);
 					readable = true;
 				}
@@ -1095,14 +922,26 @@ export const list_search_values = query({
 
 		const { organizationId, workspaceId } = caller.membership;
 		const userId = caller.userAuth.id;
-		const mut_cache: SearchSampleCache = { readableByNodeId: new Map(), readableByScopeId: new Map(), reads: 0 };
+		const mut_cache: SearchSampleCache = {
+			reader: await files_search_db_create_reader(ctx, {
+				organizationId,
+				workspaceId,
+				userId,
+				hasWorkspaceRead: caller.hasWorkspaceRead,
+			}),
+			reads: 0,
+		};
 		const values: string[] = [];
 		let lastValue: string | null = null;
 
 		// Walk the distinct values with one index read per value. The index is sorted by value, so
 		// the first value that does not start with the prefix ends the walk. No upper bound is needed.
 		// The first read starts at the prefix itself, every later read starts above the last value.
-		while (values.length < SEARCH_VALUES_MAX_VALUES && mut_cache.reads < SEARCH_VALUES_READ_BUDGET) {
+		while (
+			values.length < SEARCH_VALUES_MAX_VALUES &&
+			mut_cache.reads < SEARCH_VALUES_READ_BUDGET &&
+			!mut_cache.reader.exhausted
+		) {
 			const lowerBound: { gte: string } | { gt: string } =
 				lastValue === null ? { gte: args.prefix } : { gt: lastValue };
 			const nextValueDoc = await ctx.db
@@ -1147,7 +986,7 @@ export const list_search_values = query({
 					.take(SEARCH_CATALOG_SAMPLE_DOCS)
 			).filter((metadataDoc) => metadataDoc.sourceKind === "committed" || metadataDoc.userId === userId);
 			mut_cache.reads += 1;
-			if (await db_search_sample_is_readable(ctx, { caller, docs: valueDocs, mut_cache })) {
+			if (await db_search_sample_is_readable({ docs: valueDocs, mut_cache })) {
 				values.push(value);
 			}
 		}
@@ -1190,7 +1029,6 @@ function format_get_by_path_value(doc: Doc<"files_metadata_docs">) {
 			const errorMessage = "metadataDoc.valueKind is not set";
 			const errorData = {
 				metadataDocId: doc._id,
-				fileNodeId: doc.fileNodeId,
 				fieldPath: doc.fieldPath,
 				docKind: doc.docKind,
 			};
@@ -1203,18 +1041,18 @@ function format_get_by_path_value(doc: Doc<"files_metadata_docs">) {
 export const get_by_path = internalQuery({
 	args: {
 		// Scope accepts the reserved `/.mounts` literals so the mount-backed db-files FS can read mount metadata.
-		organizationId: doc(app_convex_schema, "files_metadata_docs").fields.organizationId,
-		workspaceId: doc(app_convex_schema, "files_metadata_docs").fields.workspaceId,
+		organizationId: doc(app_convex_schema, "files_nodes").fields.organizationId,
+		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
 		userId: v.id("users"),
 		serviceAccountId: v.optional(v.id("access_control_service_accounts")),
 		path: v.string(),
-		/** When set, resolve `path` through this user's pending path overlay (their pending moves). */
+		/** The owner whose pending paths the caller is reading. */
 		overlayUserId: v.optional(v.id("users")),
 	},
 	returns: v.union(
 		v.object({
 			path: v.string(),
-			nodeId: v.id("files_nodes"),
+			target: files_pending_target_validator,
 			sourceKind: v.union(v.literal("committed"), v.literal("pending")),
 			fields: v.array(v.string()),
 			values: v.array(
@@ -1230,84 +1068,87 @@ export const get_by_path = internalQuery({
 		v.null(),
 	),
 	handler: async (ctx, args) => {
-		const fileNode = await files_db_get_visible_node_by_path(ctx, {
-			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
-			path: args.path,
-			overlayUserId: args.overlayUserId,
-		});
-		if (!fileNode) {
-			return null;
-		}
-
-		const [readable] = await access_control_db_filter_readable_file_nodes(ctx, {
-			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
-			userId: args.userId,
-			serviceAccountId: args.serviceAccountId,
-			nodes: [fileNode],
-		});
-		if (!readable) {
-			return null;
-		}
-
-		let pendingUpdate: Doc<"files_pending_updates"> | null = null;
+		let entry: files_VisibleEntry | null;
 		if (
+			args.serviceAccountId === undefined &&
 			!organizations_is_global_organization_id(args.organizationId) &&
 			!organizations_is_reserved_workspace_id(args.workspaceId)
 		) {
-			const organizationId: Id<"organizations"> = args.organizationId;
-			const workspaceId: Id<"organizations_workspaces"> = args.workspaceId;
-			const row = await ctx.db
-				.query("files_pending_updates")
-				.withIndex("by_organization_workspace_user_fileNode", (q) =>
-					q
-						.eq("organizationId", organizationId)
-						.eq("workspaceId", workspaceId)
-						.eq("userId", args.userId)
-						.eq("fileNodeId", fileNode._id),
-				)
-				.first();
-			// A move-only doc carries no pending metadata docs: committed metadata stays
-			// authoritative for it, and for a stale proposal on a file with collaboration off.
-			if (
-				row &&
-				files_pending_update_has_pending_chunks(row) &&
-				!files_pending_update_content_is_stale(row, fileNode)
-			) {
-				pendingUpdate = row;
-			}
+			const reader = await files_visible_db_create_reader(ctx, {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				userId: args.userId,
+			});
+			entry = await reader.resolvePath(args.path);
+			if (reader.exhausted) throw convex_error({ message: "Metadata path lookup exceeded its read limit." });
+		} else {
+			const node = await files_db_get_visible_node_by_path(ctx, {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				path: args.path,
+			});
+			if (!node) return null;
+
+			const [readable] = await access_control_db_filter_readable_file_nodes(ctx, {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				userId: args.userId,
+				serviceAccountId: args.serviceAccountId,
+				nodes: [node],
+			});
+			entry = readable ? { kind: "saved", node, pendingUpdate: null, path: node.path } : null;
 		}
 
-		// `sourceKind` describes the frontmatter docs only. A pending content proposal replaces what
-		// the file's own frontmatter says, but it says nothing about the metadata written next to the
-		// file, so those docs are always read from committed and are always current.
+		if (!entry) return null;
+		if (
+			entry.kind === "private" &&
+			(entry.pendingUpdate.preparation ||
+				!entry.pendingUpdate.createIntent ||
+				(entry.pendingUpdate.createIntent.kind === "text" && !entry.pendingUpdate.content))
+		)
+			return null;
+
+		const pendingUpdate =
+			entry.pendingUpdate &&
+			(entry.kind === "private" ||
+				(files_pending_update_has_pending_chunks(entry.pendingUpdate) &&
+					!files_pending_update_content_is_stale(entry.pendingUpdate, entry.node)))
+				? entry.pendingUpdate
+				: null;
+
+		// Saved metadata stays current beside pending frontmatter. Private entries own both indexes.
 		const sourceKind = pendingUpdate ? ("pending" as const) : ("committed" as const);
-		const committedDocs = await ctx.db
-			.query("files_metadata_docs")
-			.withIndex("by_organization_workspace_source_fileNode_fieldPath", (q) =>
-				q
-					.eq("organizationId", args.organizationId)
-					.eq("workspaceId", args.workspaceId)
-					.eq("sourceKind", "committed")
-					.eq("fileNodeId", fileNode._id),
-			)
-			.collect();
+		const committedDocs =
+			entry.kind === "private"
+				? []
+				: await ctx.db
+						.query("files_metadata_docs")
+						.withIndex("by_organization_workspace_source_fileNode_fieldPath", (q) =>
+							q
+								.eq("organizationId", args.organizationId)
+								.eq("workspaceId", args.workspaceId)
+								.eq("sourceKind", "committed")
+								.eq("fileNodeId", entry.node._id),
+						)
+						.collect();
 		const docs = pendingUpdate
 			? [
 					...committedDocs.filter((doc) => doc.fieldPath.startsWith(files_metadata_METADATA_FIELD_PREFIX)),
-					...(await ctx.db
-						.query("files_metadata_docs")
-						.withIndex("by_pendingUpdate_fieldPath", (q) => q.eq("pendingUpdateId", pendingUpdate._id))
-						.collect()),
+					...(
+						await ctx.db
+							.query("files_metadata_docs")
+							.withIndex("by_pendingUpdate_fieldPath", (q) => q.eq("pendingUpdateId", pendingUpdate._id))
+							.collect()
+					).filter((doc) => doc.sourceKind === "pending" && doc.proposalRevision === pendingUpdate.revision),
 				]
 			: committedDocs;
 
 		return {
-			// The overlay can present a moved node here: echo the requested path, not the
-			// node's committed path (identical without an overlay).
-			path: args.path,
-			nodeId: fileNode._id,
+			path: entry.path,
+			target:
+				entry.kind === "saved"
+					? { kind: "saved" as const, id: entry.node._id }
+					: { kind: "private" as const, id: entry.node._id },
 			sourceKind,
 			fields: docs.filter((doc) => doc.docKind === "field").map((doc) => doc.fieldPath),
 			values: docs.filter((doc) => doc.docKind === "value").map(format_get_by_path_value),
@@ -1323,11 +1164,6 @@ export type files_metadata_get_by_path_Result =
 // #endregion get by path
 
 // #region file metadata
-
-export const files_metadata_entry_fields = {
-	key: v.string(),
-	value: v.union(v.string(), v.number(), v.boolean()),
-};
 
 /**
  * Read the scalar back out of one value doc.
@@ -1349,7 +1185,6 @@ function read_entry_value(doc: Doc<"files_metadata_docs">) {
 	const errorMessage = "metadata value doc has no value for its valueKind";
 	const errorData = {
 		metadataDocId: doc._id,
-		fileNodeId: doc.fileNodeId,
 		fieldPath: doc.fieldPath,
 		valueKind: doc.valueKind,
 	};
@@ -1455,16 +1290,26 @@ export async function files_metadata_db_read_entry(
  */
 export async function files_metadata_db_write_entries(
 	ctx: MutationCtx,
-	args: {
-		fileNode: Doc<"files_nodes">;
+	args: ({ fileNode: Doc<"files_nodes"> } | { privateEntry: Extract<files_VisibleEntry, { kind: "private" }> }) & {
 		entries: files_metadata_Entry[];
 	},
 ) {
-	const existingDocs = await db_query_metadata_docs(ctx, {
-		organizationId: args.fileNode.organizationId,
-		workspaceId: args.fileNode.workspaceId,
-		fileNodeId: args.fileNode._id,
-	});
+	const existingDocs =
+		"fileNode" in args
+			? await db_query_metadata_docs(ctx, {
+					organizationId: args.fileNode.organizationId,
+					workspaceId: args.fileNode.workspaceId,
+					fileNodeId: args.fileNode._id,
+				})
+			: await ctx.db
+					.query("files_metadata_docs")
+					.withIndex("by_pendingUpdate_fieldPath", (q) =>
+						q
+							.eq("pendingUpdateId", args.privateEntry.pendingUpdate._id)
+							.gte("fieldPath", files_metadata_METADATA_FIELD_PREFIX)
+							.lt("fieldPath", "metadata/"),
+					)
+					.collect();
 	await Promise.all(existingDocs.map((doc) => ctx.db.delete("files_metadata_docs", doc._id)));
 
 	const extracted = files_metadata_extract_entries(args.entries);
@@ -1472,15 +1317,28 @@ export async function files_metadata_db_write_entries(
 	// map the user typed.
 	const entryIndexByField = new Map(extracted.fields.map((fieldPath, index) => [fieldPath, index]));
 
-	const scope = {
-		organizationId: args.fileNode.organizationId,
-		workspaceId: args.fileNode.workspaceId,
-		fileNodeId: args.fileNode._id,
-		sourceKind: "committed" as const,
-		path: args.fileNode.path,
-		treePath: args.fileNode.treePath,
-		archiveOperationId: args.fileNode.archiveOperationId ?? undefined,
-	};
+	const scope =
+		"fileNode" in args
+			? {
+					organizationId: args.fileNode.organizationId,
+					workspaceId: args.fileNode.workspaceId,
+					fileNodeId: args.fileNode._id,
+					sourceKind: "committed" as const,
+					path: args.fileNode.path,
+					treePath: args.fileNode.treePath,
+					archiveOperationId: args.fileNode.archiveOperationId ?? undefined,
+				}
+			: {
+					organizationId: args.privateEntry.node.organizationId,
+					workspaceId: args.privateEntry.node.workspaceId,
+					sourceKind: "pending" as const,
+					target: args.privateEntry.pendingUpdate.target,
+					userId: args.privateEntry.node.userId,
+					pendingUpdateId: args.privateEntry.pendingUpdate._id,
+					proposalRevision: args.privateEntry.pendingUpdate.revision,
+					path: args.privateEntry.path,
+					treePath: args.privateEntry.path,
+				};
 	await Promise.all([
 		...extracted.fields.map((fieldPath) =>
 			ctx.db.insert("files_metadata_docs", {
@@ -1549,7 +1407,7 @@ export const get_entries = query({
 		membershipId: v.id("organizations_workspaces_users"),
 		fileNodeId: v.id("files_nodes"),
 	},
-	returns: v.array(v.object(files_metadata_entry_fields)),
+	returns: files_metadata_entries_validator,
 	handler: async (ctx, args) => {
 		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
 		if (!userAuth) {
@@ -1654,43 +1512,62 @@ export const update_entries_by_path = internalMutation({
 		workspaceId: v.id("organizations_workspaces"),
 		userId: v.id("users"),
 		path: v.string(),
-		set: v.array(v.object(files_metadata_entry_fields)),
+		set: files_metadata_entries_validator,
 		remove: v.array(v.string()),
 	},
-	returns: v_result({ _yay: v.object({ path: v.string(), entries: v.array(v.object(files_metadata_entry_fields)) }) }),
+	returns: v_result({ _yay: v.object({ path: v.string(), entries: files_metadata_entries_validator }) }),
 	handler: async (ctx, args) => {
-		const fileNode = await files_db_get_visible_node_by_path(ctx, {
-			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
-			path: args.path,
-			overlayUserId: args.userId,
-		});
-		if (!fileNode) {
+		const reader = await files_visible_db_create_reader(ctx, args);
+		const resolved = await reader.findPath(args.path);
+		if (reader.exhausted) return Result({ _nay: { message: "Metadata path lookup exceeded its read limit." } });
+
+		if (!resolved || !(await reader.canRead(resolved.accessNode))) {
 			return Result({ _nay: { message: "Not found" } });
 		}
+		const { entry, accessNode } = resolved;
 
 		if (
-			!(await access_control_db_can_act_on_file_node(ctx, {
-				organizationId: args.organizationId,
-				workspaceId: args.workspaceId,
-				userId: args.userId,
-				fileNode,
-				permission: "content.write",
-			}))
+			entry.kind === "private" &&
+			(entry.pendingUpdate.preparation ||
+				!entry.pendingUpdate.createIntent ||
+				(entry.pendingUpdate.createIntent.kind === "text" && !entry.pendingUpdate.content))
 		) {
-			return Result({ _nay: { message: "Permission denied" } });
+			return Result({ _nay: { name: "preparing", message: "This draft is still preparing." } });
 		}
 
-		const writable = await files_nodes_db_require_user_writable(ctx, { node: fileNode, userId: args.userId });
-		if (writable._nay) {
-			return writable;
-		}
+		const membership = await ctx.db
+			.query("organizations_workspaces_users")
+			.withIndex("by_user_organization_workspace_active", (q) =>
+				q
+					.eq("userId", args.userId)
+					.eq("organizationId", args.organizationId)
+					.eq("workspaceId", args.workspaceId)
+					.eq("active", true),
+			)
+			.first();
+		if (!membership) return Result({ _nay: { message: "Unauthorized" } });
 
-		const currentEntries = await files_metadata_db_read_entries(ctx, {
-			organizationId: fileNode.organizationId,
-			workspaceId: fileNode.workspaceId,
-			fileNodeId: fileNode._id,
+		const authorized = await access_control_db_authorize_membership(ctx, {
+			userAuth: { id: args.userId },
+			membership,
+			fileNode: accessNode ?? undefined,
+			permission: "content.write",
 		});
+		if (authorized._nay) return authorized;
+
+		if (accessNode) {
+			const writable = await files_nodes_db_require_user_writable(ctx, { node: accessNode, userId: args.userId });
+			if (writable._nay) return writable;
+		}
+
+		const currentEntries =
+			entry.kind === "private"
+				? entry.pendingUpdate.createIntent!.metadata
+				: await files_metadata_db_read_entries(ctx, {
+						organizationId: entry.node.organizationId,
+						workspaceId: entry.node.workspaceId,
+						fileNodeId: entry.node._id,
+					});
 		// Check the removed keys before applying them. A key that cannot exist would remove nothing, and
 		// the call would still report success, so the caller would never learn it made a mistake.
 		const removeKeys = files_metadata_validate_remove_keys(args.remove);
@@ -1707,9 +1584,28 @@ export const update_entries_by_path = internalMutation({
 			return validated;
 		}
 
-		await files_metadata_db_write_entries(ctx, { fileNode, entries: validated._yay.entries });
+		if (entry.kind === "private") {
+			const revision = entry.pendingUpdate.revision + 1;
+			const updatedAt = Date.now();
+			const createIntent = { ...entry.pendingUpdate.createIntent!, metadata: validated._yay.entries };
+			await files_db_patch_pending_update(ctx, entry.pendingUpdate._id, { createIntent, revision, updatedAt });
+			await files_pending_update_db_update_index_revision(ctx, {
+				pendingUpdateId: entry.pendingUpdate._id,
+				proposalRevision: revision,
+			});
+			await files_metadata_db_write_entries(ctx, {
+				privateEntry: { ...entry, pendingUpdate: { ...entry.pendingUpdate, createIntent, revision, updatedAt } },
+				entries: validated._yay.entries,
+			});
+			await files_db_schedule_pending_update_cleanup(ctx, {
+				pendingUpdateId: entry.pendingUpdate._id,
+				expectedUpdatedAt: updatedAt,
+			});
+		} else {
+			await files_metadata_db_write_entries(ctx, { fileNode: entry.node, entries: validated._yay.entries });
+		}
 
-		return Result({ _yay: { path: fileNode.path, entries: validated._yay.entries } });
+		return Result({ _yay: { path: entry.path, entries: validated._yay.entries } });
 	},
 });
 

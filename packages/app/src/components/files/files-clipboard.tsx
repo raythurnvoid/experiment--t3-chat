@@ -25,9 +25,11 @@ import {
 	MyModalScrollableArea,
 } from "@/components/my-modal.tsx";
 import { useFn } from "@/hooks/utils-hooks.ts";
+import { AppActivitiesProvider } from "@/lib/app-activities-context.tsx";
 import {
 	app_convex_api,
 	type app_convex_Doc,
+	type app_convex_FunctionArgs,
 	type app_convex_FunctionReturnType,
 	type app_convex_Id,
 } from "@/lib/app-convex-client.ts";
@@ -45,13 +47,9 @@ type FilesTransferRun = NonNullable<app_convex_FunctionReturnType<typeof app_con
 const FilesClipboardContext = createContext<{
 	clipboard: FilesClipboard | null;
 	isPasting: boolean;
-	pendingStopRunId: app_convex_Id<"files_transfer_runs"> | null;
 	setClipboard: (mode: FilesClipboard["mode"], sourceIds: app_convex_Id<"files_nodes">[]) => void;
 	clearClipboard: () => void;
 	paste: (targetParentId: app_convex_Doc<"files_nodes">["parentId"]) => void;
-	stop: (
-		runId: app_convex_Id<"files_transfer_runs">,
-	) => Promise<app_convex_FunctionReturnType<typeof app_convex_api.files_transfer.stop>>;
 	openRun: (runId: app_convex_Id<"files_transfer_runs">) => void;
 } | null>(null);
 
@@ -67,15 +65,16 @@ const FilesClipboardProvider = Object.assign(
 		const [runId, setRunId] = useState<app_convex_Id<"files_transfer_runs"> | null>(null);
 		const [isRunOpen, setIsRunOpen] = useState(false);
 		const [isStarting, setIsStarting] = useState(false);
-		const [pendingStopRunId, setPendingStopRunId] = useState<app_convex_Id<"files_transfer_runs"> | null>(null);
 		const run = useQuery(app_convex_api.files_transfer.get, runId ? { membershipId, runId } : "skip");
-		const [cutRun, setCutRun] = useState<{ runId: app_convex_Id<"files_transfer_runs">; revision: string } | null>(
-			null,
-		);
+		const [cutRun, setCutRun] = useState<{
+			runId: app_convex_Id<"files_transfer_runs">;
+			revision: string;
+			finished: boolean;
+		} | null>(null);
 		// Keep tracking the cut run when Activity opens a different run in the dialog.
 		const cutRunResult = useQuery(
 			app_convex_api.files_transfer.get,
-			cutRun ? { membershipId, runId: cutRun.runId } : "skip",
+			cutRun && !cutRun.finished ? { membershipId, runId: cutRun.runId } : "skip",
 		);
 		const startPendingRef = useRef(false);
 		const startRequestRef = useRef<{
@@ -127,7 +126,7 @@ const FilesClipboardProvider = Object.assign(
 					}
 					startRequestRef.current = null;
 					if (clipboard.mode === "cut") {
-						setCutRun({ runId: result._yay.runId, revision: clipboard.revision });
+						setCutRun({ runId: result._yay.runId, revision: clipboard.revision, finished: false });
 					}
 					openRun(result._yay.runId);
 				})
@@ -141,19 +140,11 @@ const FilesClipboardProvider = Object.assign(
 				});
 		});
 
-		const stop = useFn((runId: app_convex_Id<"files_transfer_runs">) => {
-			// Keep the pending request visible after the dialog or Activity closes.
-			setPendingStopRunId(runId);
-			return convex
-				.mutation(app_convex_api.files_transfer.stop, { membershipId, runId })
-				.finally(() => setPendingStopRunId(null));
-		});
-
 		useEffect(() => {
-			if (!cutRunResult || !cutRun || !["completed", "canceled", "failed"].includes(cutRunResult.phase)) return;
+			if (!cutRunResult || !cutRun || cutRun.finished || cutRunResult.activity.finishedAt === undefined) return;
 			const revision = cutRun.revision;
-			setCutRun(null);
-			if (cutRunResult.phase !== "completed") return;
+			// Keep the revision so a later retry can finish clearing this Cut.
+			setCutRun({ ...cutRun, finished: true });
 			setClipboardValue((current) => {
 				// A newer Cut or Copy changes the revision, so an older run finishing must not touch it.
 				if (current?.revision !== revision) return current;
@@ -163,9 +154,7 @@ const FilesClipboardProvider = Object.assign(
 		}, [cutRunResult, cutRun]);
 
 		return (
-			<FilesClipboardContext.Provider
-				value={{ clipboard, isPasting, pendingStopRunId, setClipboard, clearClipboard, paste, stop, openRun }}
-			>
+			<FilesClipboardContext.Provider value={{ clipboard, isPasting, setClipboard, clearClipboard, paste, openRun }}>
 				{children}
 				{isRunOpen && runId ? (
 					<FilesTransferRunModal
@@ -173,6 +162,10 @@ const FilesClipboardProvider = Object.assign(
 						membershipId={membershipId}
 						runId={runId}
 						run={run}
+						onRetry={(nextRunId) => {
+							if (cutRun?.runId === runId) setCutRun({ ...cutRun, runId: nextRunId, finished: false });
+							openRun(nextRunId);
+						}}
 						onClose={() => setIsRunOpen(false)}
 					/>
 				) : null}
@@ -340,26 +333,46 @@ export const FilesClipboardToolbar = memo(function FilesClipboardToolbar(props: 
 // #endregion toolbar
 
 // #region run modal
+type ConflictChoices = app_convex_FunctionArgs<typeof app_convex_api.files_transfer.resolve_conflicts>;
+
 type FilesTransferRunModal_ClassNames =
 	| "FilesTransferRunModal"
-	| "FilesTransferRunModal-conflicts"
-	| "FilesTransferRunModal-conflict"
+	| "FilesTransferRunModal-items"
+	| "FilesTransferRunModal-defaults"
+	| "FilesTransferRunModal-item"
 	| "FilesTransferRunModal-path"
 	| "FilesTransferRunModal-choice"
+	| "FilesTransferRunModal-pages"
 	| "FilesTransferRunModal-error";
 
 const FilesTransferRunModal = memo(function FilesTransferRunModal(props: {
 	membershipId: app_convex_Id<"organizations_workspaces_users">;
 	runId: app_convex_Id<"files_transfer_runs">;
 	run: FilesTransferRun | null | undefined;
+	onRetry: (runId: app_convex_Id<"files_transfer_runs">) => void;
 	onClose: () => void;
 }) {
-	const { membershipId, runId, run, onClose } = props;
+	const { membershipId, runId, run, onRetry, onClose } = props;
 	const convex = useConvex();
-	const { pendingStopRunId, stop } = FilesClipboardProvider.useContext();
-	const [choices, setChoices] = useState<Record<string, "keep_both" | "skip">>({});
-	const [applyToRemaining, setApplyToRemaining] = useState<"keep_both" | "skip" | null>(null);
+	const { pendingStopSourceIds, stop } = AppActivitiesProvider.useContext();
+	const [choices, setChoices] = useState<Record<string, ConflictChoices["choices"][number]["choice"]>>({});
+	const [applyToRemaining, setApplyToRemaining] = useState<ConflictChoices["applyToRemaining"]>({
+		file: null,
+		folder: null,
+	});
+	const [cursors, setCursors] = useState<(string | null)[]>([null]);
+	const itemPage = useQuery(
+		app_convex_api.files_transfer.list_items,
+		run
+			? {
+					membershipId,
+					runId,
+					paginationOpts: { numItems: 50, cursor: cursors[cursors.length - 1]! },
+				}
+			: "skip",
+	);
 	const [isSaving, setIsSaving] = useState(false);
+	const retryRequestRef = useRef<string | null>(null);
 	const [errorMessage, setErrorMessage] = useState<string | null>(null);
 	const [previousRevision, setPreviousRevision] = useState(run?.revision);
 	const conflictChoiceName = `FilesTransferRunModal-${useId()}-choice`;
@@ -367,38 +380,84 @@ const FilesTransferRunModal = memo(function FilesTransferRunModal(props: {
 	if (previousRevision !== run?.revision) {
 		setPreviousRevision(run?.revision);
 		setChoices({});
-		setApplyToRemaining(null);
+		setApplyToRemaining({ file: null, folder: null });
 	}
 
-	const isTerminal = run?.phase === "completed" || run?.phase === "canceled" || run?.phase === "failed";
-	const isStopPending = pendingStopRunId === runId;
-	const completedLabel = run?.kind === "move" ? "moved" : "copied";
+	const status = run?.activity.status;
+	const progress = run?.activity.progress;
+	const isTerminal = run?.activity.finishedAt !== undefined;
+	const isStopPending = pendingStopSourceIds.has(runId);
+	const conflicts = itemPage?.page.filter((item) => item.state === "conflict") ?? [];
+
+	const completedLabel =
+		run?.publication === "proposal" ? "ready for review" : run?.kind === "move" ? "moved" : "copied";
+
+	const pageChoices = conflicts.map((item) => {
+		const remaining = item.source && item.conflictKind === "name_conflict" ? applyToRemaining[item.kind] : null;
+
+		// Replace and Merge need a destination doc to act on. When another item in the same paste claims
+		// the name, nothing is there yet, so the bulk choice cannot apply and the user picks per item.
+		const choice =
+			choices[item.itemId] ?? ((remaining === "replace" || remaining === "merge") && !item.conflict ? null : remaining);
+
+		return {
+			itemId: item.itemId,
+			choice,
+			...(item.conflict && (choice === "replace" || choice === "merge")
+				? {
+						reviewedTarget: item.conflict.target,
+						reviewedVersion: item.conflict.version,
+					}
+				: {}),
+		};
+	});
+
+	const canContinue =
+		conflicts.length > 0 &&
+		pageChoices.every((selected, index) => {
+			const item = conflicts[index]!;
+			return (
+				selected.choice === "skip" ||
+				(item.source &&
+					item.conflictKind === "name_conflict" &&
+					(selected.choice === "keep_both" ||
+						(item.conflict !== null &&
+							selected.choice === (item.kind === "file" || run?.kind === "move" ? "replace" : "merge"))))
+			);
+		});
+
 	const statusLabel =
-		isStopPending && !isTerminal && run?.phase !== "stopping"
+		isStopPending && !isTerminal && status !== "stopping"
 			? "Stop requested. Waiting for the server…"
 			: !run
 				? "Loading…"
-				: run.phase === "checking"
+				: status === "queued" || (status === "running" && (run.step === "discover" || run.step === "retry"))
 					? "Checking files…"
-					: run.phase === "awaiting_choice"
+					: status === "awaiting_input"
 						? "Choose how to handle these files."
-						: run.phase === "running"
+						: status === "running"
 							? run.kind === "move"
 								? "Moving files…"
 								: "Copying files…"
-							: run.phase === "stopping"
+							: status === "stopping"
 								? "Stopping…"
-								: run.phase === "completed"
-									? "Completed."
-									: run.phase === "canceled"
+								: status === "succeeded"
+									? run.publication === "proposal"
+										? "Ready for review."
+										: "Completed."
+									: status === "canceled"
 										? "Stopped."
-										: "Failed.";
+										: status === "partial"
+											? "Some files completed."
+											: status === "timed_out"
+												? "Timed out."
+												: "Failed.";
 
 	const handleStop = useFn(() => {
-		if (isSaving || isStopPending) return;
+		if (!run || !run.controls.canStop || isSaving || isStopPending) return;
 
 		setErrorMessage(null);
-		stop(runId)
+		stop({ activityId: run.activity._id, sourceId: runId })
 			.then((result) => {
 				if (result._nay) setErrorMessage(result._nay.message);
 			})
@@ -409,7 +468,7 @@ const FilesTransferRunModal = memo(function FilesTransferRunModal(props: {
 	});
 
 	const handleContinue = useFn(() => {
-		if (!run || isSaving || isStopPending) return;
+		if (!run || !canContinue || isSaving || isStopPending) return;
 
 		setIsSaving(true);
 		setErrorMessage(null);
@@ -418,10 +477,7 @@ const FilesTransferRunModal = memo(function FilesTransferRunModal(props: {
 				membershipId,
 				runId,
 				revision: run.revision,
-				choices: run.conflicts.map((conflict) => ({
-					itemId: conflict.itemId,
-					choice: choices[conflict.itemId] ?? applyToRemaining ?? "skip",
-				})),
+				choices: pageChoices.flatMap((selected) => (selected.choice ? [{ ...selected, choice: selected.choice }] : [])),
 				applyToRemaining,
 			})
 			.then((result) => {
@@ -430,6 +486,32 @@ const FilesTransferRunModal = memo(function FilesTransferRunModal(props: {
 			.catch((error) => {
 				console.error("[FilesTransferRunModal.handleContinue] Failed to resolve conflicts", { error });
 				setErrorMessage("Could not save your choices. Try again when connected.");
+			})
+			.finally(() => setIsSaving(false));
+	});
+
+	const handleRetry = useFn(() => {
+		if (!run?.controls.canRetry || isSaving) return;
+		setIsSaving(true);
+		setErrorMessage(null);
+		if (!retryRequestRef.current) retryRequestRef.current = crypto.randomUUID();
+		convex
+			.mutation(app_convex_api.files_transfer.retry_remaining, {
+				membershipId,
+				runId,
+				requestId: retryRequestRef.current,
+			})
+			.then((result) => {
+				if (result._nay) {
+					retryRequestRef.current = null;
+					setErrorMessage(result._nay.message);
+					return;
+				}
+				onRetry(result._yay.runId);
+			})
+			.catch((error) => {
+				console.error("[FilesTransferRunModal.handleRetry] Failed to retry files", { error });
+				setErrorMessage("Could not confirm the retry. Try again when connected.");
 			})
 			.finally(() => setIsSaving(false));
 	});
@@ -449,80 +531,198 @@ const FilesTransferRunModal = memo(function FilesTransferRunModal(props: {
 					</MyModalDescription>
 				</MyModalHeader>
 				<MyModalScrollableArea>
-					{run ? (
+					{progress ? (
 						<p role="status">
-							{run.completed} {completedLabel}, {run.skipped} skipped, {run.failed} failed,{" "}
-							{Math.max(0, run.total - run.completed - run.skipped - run.failed)} remaining.
+							{progress.completed} {completedLabel}, {progress.skipped} skipped, {progress.failed} failed,{" "}
+							{progress.blocked} need a choice, {progress.canceled} stopped.{" "}
+							{progress.total === null
+								? `${progress.discovered} found. ${isTerminal ? "Stopped while finding files." : "Finding files…"}`
+								: `${Math.max(0, progress.total - progress.completed - progress.skipped - progress.failed - progress.blocked - progress.canceled)} remaining.`}
 						</p>
 					) : null}
-					{run?.phase === "awaiting_choice" ? (
-						<div className={"FilesTransferRunModal-conflicts" satisfies FilesTransferRunModal_ClassNames}>
-							{run.conflicts.map((conflict) => (
-								<fieldset
-									key={conflict.itemId}
-									className={"FilesTransferRunModal-conflict" satisfies FilesTransferRunModal_ClassNames}
-									disabled={isSaving || isStopPending}
-								>
-									<legend className={"FilesTransferRunModal-path" satisfies FilesTransferRunModal_ClassNames}>
-										{conflict.sourcePath ?? "Unavailable item"}
-									</legend>
-									<p>
-										{conflict.kind === "name_conflict"
-											? `${conflict.targetName ?? "This name"} already exists. Keep both adds a unique counter. Skipping a folder skips its contents.`
-											: "This item changed location or is no longer available. Skip it or stop."}
-									</p>
-									{conflict.kind === "name_conflict" ? (
-										<label className={"FilesTransferRunModal-choice" satisfies FilesTransferRunModal_ClassNames}>
-											<MyRadio
-												name={`${conflictChoiceName}-${conflict.itemId}`}
-												checked={choices[conflict.itemId] === "keep_both"}
-												onChange={() => setChoices((current) => ({ ...current, [conflict.itemId]: "keep_both" }))}
-											/>
-											Keep both
-										</label>
-									) : null}
-									<label className={"FilesTransferRunModal-choice" satisfies FilesTransferRunModal_ClassNames}>
-										<MyRadio
-											name={`${conflictChoiceName}-${conflict.itemId}`}
-											checked={choices[conflict.itemId] === "skip"}
-											onChange={() => setChoices((current) => ({ ...current, [conflict.itemId]: "skip" }))}
-										/>
-										Skip
-									</label>
-								</fieldset>
-							))}
-							<fieldset disabled={isSaving || isStopPending}>
-								<legend>Apply to remaining name conflicts</legend>
-								<label className={"FilesTransferRunModal-choice" satisfies FilesTransferRunModal_ClassNames}>
-									<MyRadio
-										name={`${conflictChoiceName}-remaining`}
-										checked={applyToRemaining === null}
-										onChange={() => setApplyToRemaining(null)}
-									/>
-									Ask each time
-								</label>
-								<label className={"FilesTransferRunModal-choice" satisfies FilesTransferRunModal_ClassNames}>
-									<MyRadio
-										name={`${conflictChoiceName}-remaining`}
-										checked={applyToRemaining === "keep_both"}
-										onChange={() => setApplyToRemaining("keep_both")}
-									/>
-									Keep both
-								</label>
-								<label className={"FilesTransferRunModal-choice" satisfies FilesTransferRunModal_ClassNames}>
-									<MyRadio
-										name={`${conflictChoiceName}-remaining`}
-										checked={applyToRemaining === "skip"}
-										onChange={() => setApplyToRemaining("skip")}
-									/>
-									Skip
-								</label>
-							</fieldset>
+					{run && itemPage === undefined ? <p role="status">Loading items…</p> : null}
+					{itemPage === null ? <p>These items are no longer available.</p> : null}
+					{itemPage ? (
+						<div className={"FilesTransferRunModal-items" satisfies FilesTransferRunModal_ClassNames}>
+							{itemPage.page.map((item) => {
+								const isConflict = status === "awaiting_input" && item.state === "conflict";
+								const canChoose = item.source && item.conflictKind === "name_conflict";
+								const selectedChoice = choices[item.itemId] ?? (canChoose ? applyToRemaining[item.kind] : null);
+								return (
+									<fieldset
+										key={item.itemId}
+										className={"FilesTransferRunModal-item" satisfies FilesTransferRunModal_ClassNames}
+										disabled={isSaving || isStopPending}
+									>
+										<legend className={"FilesTransferRunModal-path" satisfies FilesTransferRunModal_ClassNames}>
+											{item.source?.path ?? item.output?.path ?? "Unavailable item"}
+										</legend>
+										{isConflict ? (
+											<>
+												<p>
+													{!canChoose
+														? "This item changed location or is no longer available. Skip it or stop."
+														: item.conflict
+															? "This name already exists. Keep both adds a unique counter. Skipping a folder skips its contents."
+															: "Another item in this paste already uses this name. Keep both adds a unique counter. Skipping a folder skips its contents."}
+												</p>
+												{canChoose ? (
+													<>
+														{/* Only Replace and Merge act on a destination doc, so they need one to exist. */}
+														{item.conflict ? (
+															<>
+																<p className={"FilesTransferRunModal-path" satisfies FilesTransferRunModal_ClassNames}>
+																	Destination: {item.conflict.path}
+																</p>
+																<p>
+																	{item.kind === "file"
+																		? "Replace overwrites the destination file."
+																		: run?.kind === "move"
+																			? "Replace empty folder removes the empty destination folder."
+																			: "Merge adds these files to the destination folder."}
+																</p>
+															</>
+														) : null}
+														<label
+															className={"FilesTransferRunModal-choice" satisfies FilesTransferRunModal_ClassNames}
+														>
+															<MyRadio
+																name={`${conflictChoiceName}-${item.itemId}`}
+																checked={selectedChoice === "keep_both"}
+																onChange={() => setChoices((current) => ({ ...current, [item.itemId]: "keep_both" }))}
+															/>
+															Keep both
+														</label>
+														{item.conflict ? (
+															<label
+																className={"FilesTransferRunModal-choice" satisfies FilesTransferRunModal_ClassNames}
+															>
+																<MyRadio
+																	name={`${conflictChoiceName}-${item.itemId}`}
+																	checked={
+																		selectedChoice ===
+																		(item.kind === "file" || run?.kind === "move" ? "replace" : "merge")
+																	}
+																	onChange={() =>
+																		setChoices((current) => ({
+																			...current,
+																			[item.itemId]: item.kind === "file" || run?.kind === "move" ? "replace" : "merge",
+																		}))
+																	}
+																/>
+																{item.kind === "file"
+																	? "Replace"
+																	: run?.kind === "move"
+																		? "Replace empty folder"
+																		: "Merge"}
+															</label>
+														) : null}
+													</>
+												) : null}
+												<label className={"FilesTransferRunModal-choice" satisfies FilesTransferRunModal_ClassNames}>
+													<MyRadio
+														name={`${conflictChoiceName}-${item.itemId}`}
+														checked={selectedChoice === "skip"}
+														onChange={() => setChoices((current) => ({ ...current, [item.itemId]: "skip" }))}
+													/>
+													Skip
+												</label>
+											</>
+										) : (
+											<>
+												<p>
+													{item.state === "completed"
+														? run?.publication === "proposal"
+															? "Ready for review"
+															: "Saved"
+														: item.state === "skipped"
+															? "Skipped"
+															: item.state === "failed"
+																? "Failed"
+																: item.state === "canceled"
+																	? "Stopped"
+																	: item.state === "conflict"
+																		? "Needs a choice"
+																		: "Preparing"}
+												</p>
+												{item.output ? (
+													<p className={"FilesTransferRunModal-path" satisfies FilesTransferRunModal_ClassNames}>
+														Destination: {item.output.path}
+													</p>
+												) : null}
+											</>
+										)}
+										{item.errorMessage ? (
+											<p className={"FilesTransferRunModal-error" satisfies FilesTransferRunModal_ClassNames}>
+												{item.errorMessage}
+											</p>
+										) : null}
+									</fieldset>
+								);
+							})}
+							{itemPage.page.length === 0 ? <p>No items on this page.</p> : null}
 						</div>
 					) : null}
-					{errorMessage || run?.errorMessage ? (
+					{run ? (
+						<div className={"FilesTransferRunModal-pages" satisfies FilesTransferRunModal_ClassNames}>
+							<MyButton
+								variant="ghost"
+								disabled={isSaving || !itemPage || cursors.length === 1}
+								onClick={() => setCursors((current) => current.slice(0, -1))}
+							>
+								Previous page
+							</MyButton>
+							<span role="status">Page {cursors.length}</span>
+							<MyButton
+								variant="ghost"
+								disabled={isSaving || !itemPage || itemPage.isDone}
+								onClick={() => {
+									if (itemPage) setCursors((current) => [...current, itemPage.continueCursor]);
+								}}
+							>
+								Next page
+							</MyButton>
+						</div>
+					) : null}
+					{status === "awaiting_input" && run ? (
+						<div className={"FilesTransferRunModal-defaults" satisfies FilesTransferRunModal_ClassNames}>
+							{(["file", "folder"] as const).map((kind) => (
+								<fieldset key={kind} disabled={isSaving || isStopPending}>
+									<legend>Apply to remaining {kind} name conflicts</legend>
+									{([null, "keep_both", "skip"] as const).map((choice) => (
+										<label
+											key={choice ?? "ask"}
+											className={"FilesTransferRunModal-choice" satisfies FilesTransferRunModal_ClassNames}
+										>
+											<MyRadio
+												name={`${conflictChoiceName}-remaining-${kind}`}
+												checked={applyToRemaining[kind] === choice}
+												onChange={() => setApplyToRemaining((current) => ({ ...current, [kind]: choice }))}
+											/>
+											{choice === null ? "Ask each time" : choice === "keep_both" ? "Keep both" : "Skip"}
+										</label>
+									))}
+									{kind === "file" || run.kind === "copy" ? (
+										<label className={"FilesTransferRunModal-choice" satisfies FilesTransferRunModal_ClassNames}>
+											<MyRadio
+												name={`${conflictChoiceName}-remaining-${kind}`}
+												checked={applyToRemaining[kind] === (kind === "file" ? "replace" : "merge")}
+												onChange={() =>
+													setApplyToRemaining((current) =>
+														kind === "file" ? { ...current, file: "replace" } : { ...current, folder: "merge" },
+													)
+												}
+											/>
+											{kind === "file" ? "Replace" : "Merge"}
+										</label>
+									) : null}
+								</fieldset>
+							))}
+						</div>
+					) : null}
+					{errorMessage || run?.activity.errorMessage ? (
 						<p role="alert" className={"FilesTransferRunModal-error" satisfies FilesTransferRunModal_ClassNames}>
-							{errorMessage ?? run?.errorMessage}
+							{errorMessage ?? run?.activity.errorMessage}
 						</p>
 					) : null}
 				</MyModalScrollableArea>
@@ -533,24 +733,20 @@ const FilesTransferRunModal = memo(function FilesTransferRunModal(props: {
 					{run && !isTerminal ? (
 						<MyButton
 							variant="secondary"
-							disabled={isSaving || isStopPending || run.phase === "stopping"}
+							disabled={isSaving || isStopPending || !run.controls.canStop}
 							onClick={handleStop}
 						>
-							{run.completed > 0 && run.kind === "copy" ? "Stop and keep completed copies" : "Cancel"}
+							{run.activity.progress.completed > 0 && run.kind === "copy" ? "Stop and keep completed copies" : "Stop"}
 						</MyButton>
 					) : null}
-					{run?.phase === "awaiting_choice" ? (
-						<MyButton
-							disabled={
-								isSaving ||
-								isStopPending ||
-								run.conflicts.some(
-									(conflict) => !choices[conflict.itemId] && !(conflict.kind === "name_conflict" && applyToRemaining),
-								)
-							}
-							onClick={handleContinue}
-						>
+					{status === "awaiting_input" && run ? (
+						<MyButton disabled={isSaving || isStopPending || !canContinue} onClick={handleContinue}>
 							Continue
+						</MyButton>
+					) : null}
+					{run?.controls.canRetry ? (
+						<MyButton disabled={isSaving} onClick={handleRetry}>
+							Retry remaining files
 						</MyButton>
 					) : null}
 				</MyModalFooter>

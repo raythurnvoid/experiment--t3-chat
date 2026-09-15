@@ -2,7 +2,6 @@ import { defineCommand, type Command } from "just-bash/browser";
 import { internal } from "../convex/_generated/api.js";
 import type { ActionCtx } from "../convex/_generated/server.js";
 import type {
-	files_nodes_get_by_path_Result,
 	files_nodes_match_plain_text_file_lines_Result,
 	files_nodes_text_search_files_Result,
 } from "../convex/files_nodes.ts";
@@ -12,9 +11,6 @@ import {
 	bash_cursor_id_create,
 	bash_format_multiline_hint,
 	bash_GLOB_METACHARACTER_REGEX,
-	bash_overlay_committed_scope_path,
-	bash_overlay_content_search_injections,
-	bash_overlay_project_scoped_path,
 	bash_read_option_value,
 	bash_regex_validation_error,
 	bash_resolve_path,
@@ -59,7 +55,8 @@ const TEXTGREP_LINE_NUMBER_GUIDANCE =
 	"textgrep prints rendered plain text without line numbers; use `grep -n PATTERN <file>` for canonical file line numbers.";
 const TEXTGREP_CONTEXT_GUIDANCE =
 	"textgrep does not support context windows over rendered plain text; use `grep` for canonical file context, or `search` for cross-file snippets.";
-const TEXTGREP_WINDOW_GUIDANCE = "grep's scan-window controls don't apply to textgrep's rendered plain text; use `grep`.";
+const TEXTGREP_WINDOW_GUIDANCE =
+	"grep's scan-window controls don't apply to textgrep's rendered plain text; use `grep`.";
 const TEXTGREP_RECURSIVE_FIXED_STRINGS_GUIDANCE =
 	"textgrep -R over app folders uses indexed full-text search and does not support exact fixed-string (-F) matching; use `search --path <folder> <terms>` for indexed search, or `textgrep -F PATTERN <file>` on one exact file.";
 
@@ -259,21 +256,9 @@ export function bash_textgrep_command_create(ctx: ActionCtx, dbFilesRoots: bash_
 			const pathResolution = bash_resolve_db_files_shell_path(absoluteShellPath, dbFilesRoots);
 			const dbFilesPath = pathResolution.dbFilesPath;
 			const folderNode =
-				dbFilesPath == null || dbFilesPath === "/"
-					? null
-					: ((await ctx.runQuery(internal.files_nodes.get_by_path, {
-							organizationId: pathResolution.ctxData.organizationId,
-							workspaceId: pathResolution.ctxData.workspaceId,
-							visibilityUserId: pathResolution.ctxData.userId,
-							path: dbFilesPath,
-							overlayUserId: pathResolution.fs.overlayUserId,
-						})) as files_nodes_get_by_path_Result);
+				dbFilesPath == null || dbFilesPath === "/" ? null : await pathResolution.fs.getEntry(dbFilesPath);
 
 			if (dbFilesPath != null && (dbFilesPath === "/" || folderNode?.kind === "folder")) {
-				// The proposer's pending moves translate the scope and project the results: chunks
-				// keep committed paths until accept, so a moved-in scope must query its committed source path.
-				const overlay = await pathResolution.fs.getOverlay();
-				const committedScopePath = overlay == null ? dbFilesPath : bash_overlay_committed_scope_path(overlay, dbFilesPath);
 				const res = (await ctx.runQuery(internal.files_nodes.text_search_files, {
 					organizationId: pathResolution.ctxData.organizationId,
 					workspaceId: pathResolution.ctxData.workspaceId,
@@ -285,37 +270,10 @@ export function bash_textgrep_command_create(ctx: ActionCtx, dbFilesRoots: bash_
 					query: pattern,
 					numItems: TEXTGREP_RECURSIVE_PAGE_LIMIT,
 					cursor: null,
-					pathPrefix: committedScopePath,
+					pathPrefix: dbFilesPath,
 				})) as files_nodes_text_search_files_Result;
 
-				// Hidden results and results projected outside the scope drop; the rest report their visible path.
-				const visibleItems =
-					overlay == null
-						? res.items
-						: res.items.flatMap((item) => {
-								const visiblePath = bash_overlay_project_scoped_path({
-									overlay,
-									committedPath: item.path,
-									visibleScopePath: dbFilesPath,
-								});
-								return visiblePath == null ? [] : [{ ...item, path: visiblePath }];
-							});
-
-				// An ancestor scope of a move's visible destination misses that move's committed
-				// chunks (they sit outside the scoped prefix); inject them into this single page.
-				const injectedItems =
-					overlay == null
-						? []
-						: await bash_overlay_content_search_injections({
-								ctx,
-								ctxData: pathResolution.ctxData,
-								overlay,
-								visibleScopePath: dbFilesPath,
-								committedScopePath,
-								query: pattern,
-								numItems: TEXTGREP_RECURSIVE_PAGE_LIMIT,
-							});
-				const allItems = [...visibleItems, ...injectedItems];
+				const allItems = res.items;
 
 				const scopePath = pathResolution.renderShellPath(dbFilesPath);
 				const exactQueryFilter = bash_search_command_exact_query_filter(pattern);
@@ -386,18 +344,9 @@ export function bash_textgrep_command_create(ctx: ActionCtx, dbFilesRoots: bash_
 					}
 				}
 
-				const dbFilesDoc =
-					dbFilesPath === "/"
-						? null
-						: ((await ctx.runQuery(internal.files_nodes.get_by_path, {
-								organizationId: pathResolution.ctxData.organizationId,
-								workspaceId: pathResolution.ctxData.workspaceId,
-								visibilityUserId: pathResolution.ctxData.userId,
-								path: dbFilesPath,
-								overlayUserId: pathResolution.fs.overlayUserId,
-							})) as files_nodes_get_by_path_Result);
+				const dbFilesDoc = dbFilesPath === "/" ? null : await pathResolution.fs.getEntry(dbFilesPath);
 
-				if (!dbFilesDoc || dbFilesDoc.kind !== "file") {
+				if (!dbFilesDoc?.target || dbFilesDoc.target.kind === "root" || dbFilesDoc.kind !== "file") {
 					return {
 						stdout: "",
 						stderr: `textgrep: ${inputPath}: No such file or directory\n`,
@@ -409,7 +358,7 @@ export function bash_textgrep_command_create(ctx: ActionCtx, dbFilesRoots: bash_
 					organizationId: pathResolution.ctxData.organizationId,
 					workspaceId: pathResolution.ctxData.workspaceId,
 					userId: pathResolution.ctxData.userId,
-					fileNodeId: dbFilesDoc._id,
+					target: dbFilesDoc.target,
 					pattern,
 					ignoreCase,
 					fixedStrings,

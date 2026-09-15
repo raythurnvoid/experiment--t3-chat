@@ -1,10 +1,18 @@
 import { defineCommand } from "just-bash/browser";
-import { internal } from "../convex/_generated/api.js";
 import type { ActionCtx } from "../convex/_generated/server.js";
-import type { files_nodes_get_by_path_Result } from "../convex/files_nodes.ts";
 import { Result } from "common/errors-as-values-utils.ts";
-import { files_SYNTHETIC_ROOT_FOLDER } from "../shared/files.ts";
-import { bash_create_glob_syntax_unsupported_message, bash_enforce_reader_operand_cap, bash_GLOB_METACHARACTER_REGEX, bash_get_db_file_byte_size, bash_read_option_value, bash_resolve_path, bash_resolve_db_files_shell_path, bash_COMMAND_EXIT_FAILURE, bash_COMMAND_EXIT_USAGE, type bash_DbFilesRoots } from "./bash-utils.ts";
+import {
+	bash_create_glob_syntax_unsupported_message,
+	bash_enforce_reader_operand_cap,
+	bash_GLOB_METACHARACTER_REGEX,
+	bash_get_db_file_byte_size,
+	bash_read_option_value,
+	bash_resolve_path,
+	bash_resolve_db_files_shell_path,
+	bash_COMMAND_EXIT_FAILURE,
+	bash_COMMAND_EXIT_USAGE,
+	type bash_DbFilesRoots,
+} from "./bash-utils.ts";
 import { bash_delegate_builtin_command } from "./bash-delegate.ts";
 
 const STAT_FORMAT_TOKEN_REGEX = /%[%nNsFaAuUgGyYxXzZ]/g;
@@ -211,16 +219,7 @@ export function bash_stat_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 				continue;
 			}
 
-			const dbFilesDoc: files_nodes_get_by_path_Result | typeof files_SYNTHETIC_ROOT_FOLDER =
-				dbFilesPath === "/"
-					? files_SYNTHETIC_ROOT_FOLDER
-					: ((await ctx.runQuery(internal.files_nodes.get_by_path, {
-							organizationId: pathResolution.ctxData.organizationId,
-							workspaceId: pathResolution.ctxData.workspaceId,
-							visibilityUserId: pathResolution.ctxData.userId,
-							path: dbFilesPath,
-							overlayUserId: pathResolution.fs.overlayUserId,
-						})) as files_nodes_get_by_path_Result);
+			const dbFilesDoc = await pathResolution.fs.getEntry(dbFilesPath);
 
 			if (!dbFilesDoc) {
 				stderr += `stat: cannot stat '${file}': No such file or directory\n`;

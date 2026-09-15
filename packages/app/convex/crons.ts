@@ -34,8 +34,8 @@ crons.cron(
 	{},
 );
 
-// Once hourly — fail plugin runs whose executor died (crash/deploy) past their TTL.
-crons.cron("fail expired plugin event runs", "0 * * * *", internal.plugins_runtime.fail_expired_event_runs, {});
+// Every 5 minutes — stop expired jobs through their producer's publication fences.
+crons.cron("recover expired activities", "*/5 * * * *", internal.activities.recover_expired, {});
 
 // Once hourly — reap staged file writes that were never published (crashed action, dead caller).
 crons.cron(
@@ -56,8 +56,19 @@ crons.cron(
 	{},
 );
 
-// Once daily at 06:30 UTC — delete terminal plugin runs and their call docs past retention.
-crons.cron("cleanup old plugin event runs", "30 6 * * *", internal.plugins_runtime.cleanup_old_event_runs, {});
+// Once daily at 06:30 UTC — delete expired history, producer receipts, and viewer state in bounded passes.
+crons.cron("cleanup activity history", "30 6 * * *", internal.activities.cleanup_history, {});
+
+// Once daily — remove seven-day Bash results while keeping terminal call identities.
+crons.cron("cleanup expired bash results", "35 6 * * *", internal.ai_chat_files.cleanup_expired_bash_results, {});
+
+// Once daily — remove old private publication links after their last caller releases them.
+crons.cron(
+	"cleanup private publication receipts",
+	"40 6 * * *",
+	internal.files_pending_nodes.cleanup_published_nodes,
+	{},
+);
 
 // Once daily at 06:45 UTC — delete expired plugin UI page sessions.
 crons.cron("cleanup expired plugin ui sessions", "45 6 * * *", internal.plugins_ui.cleanup_expired_ui_sessions, {});
@@ -77,11 +88,11 @@ crons.cron(
 	{},
 );
 
-// Every 5 minutes — close plugin activities past their caller-set deadline as "timeout".
-crons.cron("timeout stale activities", "*/5 * * * *", internal.activities.timeout_stale_activities, {});
+// Every 5 minutes — release expired transfer attempts, including uploads that outlive Stop.
+crons.cron("recover expired transfer attempts", "*/5 * * * *", internal.files_transfer.recover_expired_attempts, {});
 
-// Every 5 minutes — recover expired Paste attempts, stop overdue runs, and delete expired run history.
-crons.cron("recover expired transfer runs", "*/5 * * * *", internal.files_transfer.recover_expired, {});
+// Every 5 minutes — resume interrupted review plans and commits.
+crons.cron("recover pending review jobs", "*/5 * * * *", internal.files_pending_update_runs.recover, {});
 
 // Every 15 minutes — crash/abandon fallback for paged pending states: expired temporary
 // states/batches/text inputs, expired trusted-update stages, and retired-state cleanup tasks.
@@ -89,6 +100,14 @@ crons.cron(
 	"cleanup expired pending state rows",
 	"*/15 * * * *",
 	internal.files_pending_updates.cleanup_expired_pending_state_rows,
+	{},
+);
+
+// Every 15 minutes — resume private Discard cleanup after a failed continuation.
+crons.cron(
+	"recover private draft cleanup",
+	"*/15 * * * *",
+	internal.files_pending_nodes.recover_discarded_node_cleanup,
 	{},
 );
 

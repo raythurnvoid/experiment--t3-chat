@@ -22,6 +22,7 @@ import {
 } from "./_generated/server.js";
 import { components, internal } from "./_generated/api.js";
 import { access_control_changes_db_record } from "./access_control_changes.ts";
+import { activities_db_delete, activities_db_require_by_source_id, activities_is_active } from "./activities_db.ts";
 import app_convex_schema from "./schema.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 import type { ai_chat_ModelId } from "../shared/ai-chat.ts";
@@ -4807,18 +4808,18 @@ export const list_recent_runs = query({
 			_id: v.id("plugins_event_runs"),
 			event: doc(app_convex_schema, "plugins_event_runs").fields.event,
 			eventId: doc(app_convex_schema, "plugins_event_runs").fields.eventId,
-			status: doc(app_convex_schema, "plugins_event_runs").fields.status,
+			status: v.union(v.literal("queued"), v.literal("running"), v.literal("succeeded"), v.literal("failed")),
 			apiCallCount: doc(app_convex_schema, "plugins_event_runs").fields.apiCallCount,
 			outputWriteCount: doc(app_convex_schema, "plugins_event_runs").fields.outputWriteCount,
-			errorMessage: doc(app_convex_schema, "plugins_event_runs").fields.errorMessage,
+			errorMessage: doc(app_convex_schema, "activities").fields.errorMessage,
 			runnerHttpStatus: doc(app_convex_schema, "plugins_event_runs").fields.runnerHttpStatus,
 			runnerElapsedMs: doc(app_convex_schema, "plugins_event_runs").fields.runnerElapsedMs,
 			pluginStatus: doc(app_convex_schema, "plugins_event_runs").fields.pluginStatus,
 			runnerOutputBytes: doc(app_convex_schema, "plugins_event_runs").fields.runnerOutputBytes,
 			runnerOutputTruncated: doc(app_convex_schema, "plugins_event_runs").fields.runnerOutputTruncated,
-			updatedAt: doc(app_convex_schema, "plugins_event_runs").fields.updatedAt,
-			startedAt: doc(app_convex_schema, "plugins_event_runs").fields.startedAt,
-			finishedAt: doc(app_convex_schema, "plugins_event_runs").fields.finishedAt,
+			updatedAt: doc(app_convex_schema, "activities").fields.updatedAt,
+			startedAt: doc(app_convex_schema, "activities").fields.startedAt,
+			finishedAt: doc(app_convex_schema, "activities").fields.finishedAt,
 			file: v.union(
 				v.object({
 					name: doc(app_convex_schema, "files_nodes").fields.name,
@@ -4871,19 +4872,32 @@ export const list_recent_runs = query({
 			userId: userAuth.id,
 		});
 
-		// The by_installation_updatedAt index already yields the runs in updatedAt order.
-		const runs = await ctx.db
-			.query("plugins_event_runs")
-			.withIndex("by_installation_updatedAt", (q) => q.eq("installationId", installation._id))
+		// Managers see hidden runs too. Feed opt-in does not hide operational history.
+		const activities = await ctx.db
+			.query("activities")
+			.withIndex("by_source_installation_updatedAt", (q) => q.eq("source.installationId", installation._id))
 			.order("desc")
 			.take(PLUGIN_RECENT_RUNS_LIMIT);
+		const runs = await Promise.all(
+			activities.map(async (activity) => {
+				const runId = activity.source.id as Id<"plugins_event_runs">;
+				const run = await ctx.db.get("plugins_event_runs", runId);
+				if (!run) {
+					const errorMessage = "activity.source.id points to a missing plugins_event_runs doc";
+					const errorData = { activityId: activity._id, runId };
+					console.error(errorMessage, errorData);
+					throw should_never_happen(errorMessage, errorData);
+				}
+				return { activity, run };
+			}),
+		);
 
 		// `canReadContent` answered for the workspace, and a run's file can sit in a restricted folder.
 		// Same rule as the file lists: the name and path go away with the file, so managing plugins is not
 		// a way to read what is inside a folder you were never given. Asked once for the whole page,
 		// because the filter answers once per restricted scope and these runs usually share one.
 		const runFileNodes = await Promise.all(
-			runs.map(async (run) => (run.fileNodeId ? await ctx.db.get("files_nodes", run.fileNodeId) : null)),
+			runs.map(async ({ run }) => (run.fileNodeId ? await ctx.db.get("files_nodes", run.fileNodeId) : null)),
 		);
 		const readableNodeIds = new Set(
 			(
@@ -4898,7 +4912,7 @@ export const list_recent_runs = query({
 		);
 
 		return await Promise.all(
-			runs.map(async (run, runIndex) => {
+			runs.map(async ({ activity, run }, runIndex) => {
 				const fileNode = runFileNodes[runIndex];
 				const readableFileNode = fileNode && readableNodeIds.has(fileNode._id) ? fileNode : null;
 				const asset = readableFileNode && run.assetId ? await ctx.db.get("files_r2_assets", run.assetId) : null;
@@ -4907,18 +4921,22 @@ export const list_recent_runs = query({
 					_id: run._id,
 					event: run.event,
 					eventId: run.eventId,
-					status: run.status,
+					// Keep the plugin query's existing status contract while Activity keeps the full outcome.
+					status:
+						activity.status === "queued" || activity.status === "running" || activity.status === "succeeded"
+							? activity.status
+							: ("failed" as const),
 					apiCallCount: run.apiCallCount,
 					outputWriteCount: run.outputWriteCount,
-					errorMessage: run.errorMessage,
+					errorMessage: activity.errorMessage,
 					...(run.runnerHttpStatus === undefined ? {} : { runnerHttpStatus: run.runnerHttpStatus }),
 					...(run.runnerElapsedMs === undefined ? {} : { runnerElapsedMs: run.runnerElapsedMs }),
 					...(run.pluginStatus === undefined ? {} : { pluginStatus: run.pluginStatus }),
 					...(run.runnerOutputBytes === undefined ? {} : { runnerOutputBytes: run.runnerOutputBytes }),
 					...(run.runnerOutputTruncated === undefined ? {} : { runnerOutputTruncated: run.runnerOutputTruncated }),
-					updatedAt: run.updatedAt,
-					...(run.startedAt === undefined ? {} : { startedAt: run.startedAt }),
-					...(run.finishedAt === undefined ? {} : { finishedAt: run.finishedAt }),
+					updatedAt: activity.updatedAt,
+					...(activity.startedAt === undefined ? {} : { startedAt: activity.startedAt }),
+					...(activity.finishedAt === undefined ? {} : { finishedAt: activity.finishedAt }),
 					file:
 						readableFileNode && asset
 							? {
@@ -5076,24 +5094,24 @@ export const get_installation_health = query({
 		// Flag only when the last PLUGIN_HEALTH_FAILING_RUN_COUNT finished runs all failed.
 		// Queued and running rows must not count as finished, so take a larger slice and keep
 		// the first finished ones.
-		const recentRuns = await ctx.db
-			.query("plugins_event_runs")
-			.withIndex("by_installation_updatedAt", (q) => q.eq("installationId", installation._id))
+		const recentActivities = await ctx.db
+			.query("activities")
+			.withIndex("by_source_installation_updatedAt", (q) => q.eq("source.installationId", installation._id))
 			.order("desc")
 			.take(PLUGIN_HEALTH_FAILING_RUN_COUNT * 4);
-		const finishedRuns = recentRuns
-			.filter((run) => run.status === "succeeded" || run.status === "failed")
+		const finishedActivities = recentActivities
+			.filter((activity) => !activities_is_active(activity.status))
 			.slice(0, PLUGIN_HEALTH_FAILING_RUN_COUNT);
 		if (
-			finishedRuns.length === PLUGIN_HEALTH_FAILING_RUN_COUNT &&
-			finishedRuns.every((run) => run.status === "failed")
+			finishedActivities.length === PLUGIN_HEALTH_FAILING_RUN_COUNT &&
+			finishedActivities.every((activity) => activity.status !== "succeeded")
 		) {
 			// Same audience and gate as list_recent_runs' errorMessage; no file details, so the
 			// per-node content.read carve-out stays intact.
 			issues.push({
 				kind: "recent_runs_failing",
-				failedCount: finishedRuns.length,
-				latestErrorMessage: finishedRuns[0]!.errorMessage,
+				failedCount: finishedActivities.length,
+				latestErrorMessage: finishedActivities[0]!.errorMessage,
 			});
 		}
 
@@ -5419,6 +5437,7 @@ export const preview_hard_delete_registered_plugin = internalQuery({
 		for (const attempt of cleanupAttempts) {
 			for (const r2Key of attempt.r2Keys) r2ObjectKeys.add(r2Key);
 		}
+
 		const repositoryUrls = new Set<string>();
 		let sourceFileNodes = 0;
 		let installations = 0;
@@ -5444,11 +5463,13 @@ export const preview_hard_delete_registered_plugin = internalQuery({
 		let eventRuns = 0;
 		let eventRunCalls = 0;
 		let runActivities = 0;
+
 		for (const version of versions) {
 			repositoryUrls.add(version.sourceRepositoryUrl);
 			for (const r2Key of version_r2_keys(version)) {
 				r2ObjectKeys.add(r2Key);
 			}
+
 			// Runs and calls remain version-owned history after uninstall or upgrade.
 			const versionRuns = (
 				await plugins_db_take_registry_preview_docs(childDocBudget, (limit) =>
@@ -5458,6 +5479,7 @@ export const preview_hard_delete_registered_plugin = internalQuery({
 						.take(limit),
 				)
 			).docs;
+
 			const versionCalls = (
 				await plugins_db_take_registry_preview_docs(childDocBudget, (limit) =>
 					ctx.db
@@ -5466,9 +5488,11 @@ export const preview_hard_delete_registered_plugin = internalQuery({
 						.take(limit),
 				)
 			).docs;
+
 			eventRuns += versionRuns.length;
 			eventRunCalls += versionCalls.length;
-			// Only a run that opted in has an activity, so this walks the runs rather than the feed.
+
+			// Follow version-owned runs so hidden Activities are included in the preview.
 			for (const run of versionRuns) {
 				const activities = (
 					await plugins_db_take_registry_preview_docs(childDocBudget, (limit) =>
@@ -5716,8 +5740,9 @@ export const hard_delete_plugin_from_registry = internalMutation({
 				.withIndex("by_pluginVersion", (q) => q.eq("pluginVersionId", version._id))
 				.first();
 			if (pluginRun) {
+				const activity = await activities_db_require_by_source_id(ctx, pluginRun._id);
 				if (pluginRun.workId) await plugins_runtime_workpool.cancel(ctx, pluginRun.workId);
-				if (pluginRun.status === "running") {
+				if (activity.status === "running" || activity.status === "stopping") {
 					// Keep the run until the executor finishes so deletion cannot race its final write.
 					return { done: false, deleted: 0 };
 				}
@@ -5736,20 +5761,13 @@ export const hard_delete_plugin_from_registry = internalMutation({
 				for (const call of calls) await ctx.db.delete("plugins_event_run_calls", call._id);
 				if (calls.length > 0) return { done: false, deleted: calls.length };
 
-				// The run is the only thing that points at its activity, and the link lives solely in
-				// this index. Delete the activity first: once the run doc is gone, normal run retention
-				// can never reach the activity again and it would stay in the feed forever.
-				const activity = await ctx.db
-					.query("activities")
-					.withIndex("by_source_id", (q) => q.eq("source.id", pluginRun._id))
-					.first();
-				if (activity) {
-					await ctx.db.delete("activities", activity._id);
-					return { done: false, deleted: 1 };
-				}
+				// Delete the viewer state first. Once it is gone, the Activity and its producer are
+				// deleted in the same transaction.
+				const activityDeletion = await activities_db_delete(ctx, activity._id);
+				if (!activityDeletion.done) return { done: false, deleted: activityDeletion.deletedCount };
 
 				await ctx.db.delete("plugins_event_runs", pluginRun._id);
-				return { done: false, deleted: 1 };
+				return { done: false, deleted: activityDeletion.deletedCount + 1 };
 			}
 
 			const orphanCalls = await ctx.db

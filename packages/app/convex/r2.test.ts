@@ -2,6 +2,7 @@ import { R2 } from "@convex-dev/r2";
 import { Workpool } from "@convex-dev/workpool";
 import { afterEach, beforeEach, describe, expect, test, vi, type MockInstance } from "vitest";
 import { api, components, internal } from "./_generated/api.js";
+import { activities_db_require_by_source_id } from "./activities_db.ts";
 import {
 	test_convex as test_convex_base,
 	test_get_file_yjs_pointers,
@@ -975,7 +976,7 @@ describe("r2 asset content", () => {
 				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
 				userId: db.userId,
-				nodeId: created._yay.nodeId,
+				target: { kind: "saved", id: created._yay.nodeId },
 			},
 		);
 		if (upsertBatch._nay) {
@@ -998,7 +999,7 @@ describe("r2 asset content", () => {
 				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
 				userId: db.userId,
-				nodeId: created._yay.nodeId,
+				target: { kind: "saved", id: created._yay.nodeId },
 				operationBatchId: upsertBatch._yay.operationBatchId,
 			},
 		);
@@ -1009,12 +1010,13 @@ describe("r2 asset content", () => {
 		const pendingUpdate = await t.run(async (ctx) =>
 			ctx.db
 				.query("files_pending_updates")
-				.withIndex("by_organization_workspace_user_fileNode", (q) =>
+				.withIndex("by_organization_workspace_user_target", (q) =>
 					q
 						.eq("organizationId", db.organizationId)
 						.eq("workspaceId", db.workspaceId)
 						.eq("userId", db.userId)
-						.eq("fileNodeId", created._yay.nodeId),
+						.eq("target.kind", "saved")
+						.eq("target.id", created._yay.nodeId),
 				)
 				.unique(),
 		);
@@ -1023,7 +1025,7 @@ describe("r2 asset content", () => {
 		}
 		// The unstaged branch is a full paged state now; reassemble it and read its markdown.
 		const unstagedBytes = await t.run(async (ctx) => {
-			const stateDoc = await ctx.db.get("files_pending_update_yjs_states", pendingUpdate.unstagedStateId);
+			const stateDoc = await ctx.db.get("files_pending_update_yjs_states", pendingUpdate.content.unstagedStateId);
 			if (!stateDoc) {
 				throw new Error("Expected the unstaged pending state doc");
 			}
@@ -1236,17 +1238,18 @@ describe("r2 asset content", () => {
 		if (!pluginRun) {
 			throw new Error("Expected plugin event run");
 		}
-		expect(pluginRun.status).toBe("queued");
+		const activity = await t.run((ctx) => activities_db_require_by_source_id(ctx, pluginRun._id));
+		expect(activity.status).toBe("queued");
 
 		await asUser.action(internal.plugins_runtime.execute_upload_completed_event_run, {
 			runId: pluginRun._id,
 		});
 
 		// The signed URL never outlives the run token: the 900s request was clamped to the token's
-		// remaining life (run expiresAt doubles as apiTokenExpiresAt at start_event_run).
+		// remaining life, bounded by the Activity deadline.
 		expect(downloadUrlExpiresAt).toBeGreaterThan(0);
 		expect(downloadUrlExpiresAt).toBeLessThan(downloadRequestedAt + 900 * 1000);
-		expect(downloadUrlExpiresAt).toBeLessThanOrEqual(pluginRun.expiresAt + 1000);
+		expect(downloadUrlExpiresAt).toBeLessThanOrEqual(activity.deadlineAt + 1000);
 
 		const docs = await t.run(async (ctx) => {
 			const fileNode = await ctx.db.get("files_nodes", upload._yay.nodeId);
@@ -1288,7 +1291,10 @@ describe("r2 asset content", () => {
 		});
 		const completedRun = await t.run(async (ctx) => ctx.db.get("plugins_event_runs", pluginRun._id));
 		// One download-urls call plus one write call against the shared quota, one published output.
-		expect(completedRun).toMatchObject({ status: "succeeded", apiCallCount: 2, outputWriteCount: 1 });
+		expect(await t.run((ctx) => activities_db_require_by_source_id(ctx, pluginRun._id))).toMatchObject({
+			status: "succeeded",
+		});
+		expect(completedRun).toMatchObject({ apiCallCount: 2, outputWriteCount: 1 });
 
 		enqueueActionSpy.mockClear();
 
@@ -1426,7 +1432,7 @@ describe("r2 asset content", () => {
 		if (!pluginRun) {
 			throw new Error("Expected plugin event run");
 		}
-		expect(pluginRun.status).toBe("queued");
+		expect((await t.run((ctx) => activities_db_require_by_source_id(ctx, pluginRun._id))).status).toBe("queued");
 
 		await asUser.action(internal.plugins_runtime.execute_upload_completed_event_run, {
 			runId: pluginRun._id,
@@ -1456,7 +1462,10 @@ describe("r2 asset content", () => {
 		const processedAsset = await t.run(async (ctx) => ctx.db.get("files_r2_assets", upload._yay.assetId));
 		expect(processedAsset?.processingWorkId).toBeNull();
 		const completedRun = await t.run(async (ctx) => ctx.db.get("plugins_event_runs", pluginRun._id));
-		expect(completedRun).toMatchObject({ status: "succeeded", apiCallCount: 1, outputWriteCount: 1 });
+		expect(await t.run((ctx) => activities_db_require_by_source_id(ctx, pluginRun._id))).toMatchObject({
+			status: "succeeded",
+		});
+		expect(completedRun).toMatchObject({ apiCallCount: 1, outputWriteCount: 1 });
 	});
 
 	test("R2 events create and finalize video summary and transcript Markdown siblings", async () => {
@@ -1576,7 +1585,7 @@ describe("r2 asset content", () => {
 		if (!pluginRun) {
 			throw new Error("Expected plugin event run");
 		}
-		expect(pluginRun.status).toBe("queued");
+		expect((await t.run((ctx) => activities_db_require_by_source_id(ctx, pluginRun._id))).status).toBe("queued");
 
 		await asUser.action(internal.plugins_runtime.execute_upload_completed_event_run, {
 			runId: pluginRun._id,
@@ -1615,7 +1624,10 @@ describe("r2 asset content", () => {
 		const processedAsset = await t.run(async (ctx) => ctx.db.get("files_r2_assets", upload._yay.assetId));
 		expect(processedAsset?.processingWorkId).toBeNull();
 		const completedRun = await t.run(async (ctx) => ctx.db.get("plugins_event_runs", pluginRun._id));
-		expect(completedRun).toMatchObject({ status: "succeeded", apiCallCount: 2, outputWriteCount: 2 });
+		expect(await t.run((ctx) => activities_db_require_by_source_id(ctx, pluginRun._id))).toMatchObject({
+			status: "succeeded",
+		});
+		expect(completedRun).toMatchObject({ apiCallCount: 2, outputWriteCount: 2 });
 
 		const audioUpload = await asUser.mutation(api.files_nodes.create_upload_node, {
 			membershipId: db.membershipId,
@@ -1698,7 +1710,10 @@ describe("r2 asset content", () => {
 			},
 		});
 		const completedAudioRun = await t.run(async (ctx) => ctx.db.get("plugins_event_runs", audioPluginRun._id));
-		expect(completedAudioRun).toMatchObject({ status: "succeeded", apiCallCount: 2, outputWriteCount: 2 });
+		expect(await t.run((ctx) => activities_db_require_by_source_id(ctx, audioPluginRun._id))).toMatchObject({
+			status: "succeeded",
+		});
+		expect(completedAudioRun).toMatchObject({ apiCallCount: 2, outputWriteCount: 2 });
 	});
 
 	test("finalizes uploaded Markdown into editable content and marks the upload terminal", async () => {

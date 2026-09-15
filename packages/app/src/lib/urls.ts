@@ -29,7 +29,9 @@ const URL_FILE_LINK_PATH_MARKER = "/files/";
  * emits, and the readable `/files/{path}` entry point. Anything else returns `null`, including
  * plain text that merely contains a slash, so callers can fall through to their own handling.
  */
-export function url_parse_file_link(value: string): { nodeId: string } | { path: string } | null {
+export function url_parse_file_link(
+	value: string,
+): { nodeId: string } | { pendingNodeId: string } | { path: string } | null {
 	if (!value.startsWith("http://") && !value.startsWith("https://")) {
 		return null;
 	}
@@ -37,6 +39,11 @@ export function url_parse_file_link(value: string): { nodeId: string } | { path:
 	const url = URL.parse(value);
 	if (!url) {
 		return null;
+	}
+
+	const pendingNodeId = url.searchParams.get("pendingNodeId");
+	if (pendingNodeId) {
+		return { pendingNodeId };
 	}
 
 	const nodeId = url.searchParams.get("nodeId");

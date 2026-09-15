@@ -7,6 +7,7 @@ import type { MutationCtx } from "./_generated/server.js";
 import { presence } from "./presence.ts";
 import { test_convex, test_mocks_cancel_pending_home_file_seeds, test_mocks_fill_db_with } from "./setup.test.ts";
 import { data_deletion_db_request } from "./data_deletion_requests.ts";
+import { activities_db_require_by_source_id, activities_db_start } from "./activities_db.ts";
 
 const test = baseTest.sequential;
 import {
@@ -453,7 +454,8 @@ async function data_deletion_test_seed_workspace_content_bulk(
 				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
 				userId: args.userId,
-				fileNodeId,
+				target: { kind: "saved", id: fileNodeId },
+				revision: 1,
 				size: files_get_utf8_byte_size(`# pending ${i}`),
 				updatedAt: pendingUpdateUpdatedAt,
 			});
@@ -462,7 +464,8 @@ async function data_deletion_test_seed_workspace_content_bulk(
 				workspaceId: args.workspaceId,
 				sourceKind: "pending",
 				userId: args.userId,
-				fileNodeId,
+				target: { kind: "saved", id: fileNodeId },
+				proposalRevision: 1,
 				pendingUpdateId,
 				chunkIndex: 0,
 				textChunk: `# pending ${i}`,
@@ -475,7 +478,8 @@ async function data_deletion_test_seed_workspace_content_bulk(
 			await ctx.db.insert("files_plain_text_chunks", {
 				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
-				fileNodeId,
+				target: { kind: "saved", id: fileNodeId },
+				proposalRevision: 1,
 				sourceKind: "pending",
 				userId: args.userId,
 				pendingUpdateId,
@@ -496,7 +500,8 @@ async function data_deletion_test_seed_workspace_content_bulk(
 				ctx.db.insert("files_metadata_docs", {
 					organizationId: args.organizationId,
 					workspaceId: args.workspaceId,
-					fileNodeId,
+					target: { kind: "saved", id: fileNodeId },
+					proposalRevision: 1,
 					sourceKind: "pending",
 					userId: args.userId,
 					pendingUpdateId,
@@ -508,7 +513,8 @@ async function data_deletion_test_seed_workspace_content_bulk(
 				ctx.db.insert("files_metadata_docs", {
 					organizationId: args.organizationId,
 					workspaceId: args.workspaceId,
-					fileNodeId,
+					target: { kind: "saved", id: fileNodeId },
+					proposalRevision: 1,
 					sourceKind: "pending",
 					userId: args.userId,
 					pendingUpdateId,
@@ -561,6 +567,7 @@ async function data_deletion_test_seed_workspace_content_bulk(
 				workspaceId: args.workspaceId,
 				threadId,
 				bashCwd: "~",
+				bashCwdTarget: null,
 				updatedBy: args.userId,
 				updatedAt: Date.now(),
 			}),
@@ -1524,14 +1531,18 @@ describe("process_user_deletion_request", () => {
 				organizationId: created._yay.organizationId,
 				workspaceId: created._yay.defaultWorkspaceId,
 				userId: deletedUser.userId,
-				fileNodeId: (
-					await data_deletion_test_seed_page(ctx, {
-						userId: deletedUser.userId,
-						organizationId: created._yay.organizationId,
-						workspaceId: created._yay.defaultWorkspaceId,
-						tag: "shared-page",
-					})
-				).nodeId,
+				target: {
+					kind: "saved",
+					id: (
+						await data_deletion_test_seed_page(ctx, {
+							userId: deletedUser.userId,
+							organizationId: created._yay.organizationId,
+							workspaceId: created._yay.defaultWorkspaceId,
+							tag: "shared-page",
+						})
+					).nodeId,
+				},
+				revision: 1,
 				size: 0,
 				updatedAt: Date.now(),
 			});
@@ -1703,7 +1714,7 @@ describe("process_user_deletion_request", () => {
 					.collect(),
 				ctx.db
 					.query("files_pending_updates")
-					.withIndex("by_user_fileNode", (q) => q.eq("userId", deletedUser.userId))
+					.withIndex("by_user_target", (q) => q.eq("userId", deletedUser.userId))
 					.collect(),
 				ctx.db
 					.query("files_pending_updates_last_sequence_saved")
@@ -2636,6 +2647,7 @@ describe("process_workspace_deletion_request", () => {
 		});
 		const workId = "clipboard-deletion-work" as WorkId;
 		const attemptExpiresAt = Date.now() + 60_000;
+		const putMayArriveUntil = Date.now() + 25 * 60_000;
 		const { requestId, stagedAssetId, stagedKey } = await t.run(async (ctx) => {
 			const item = await ctx.db
 				.query("files_transfer_items")
@@ -2650,6 +2662,7 @@ describe("process_workspace_deletion_request", () => {
 				size: 12,
 				createdBy: user.userId,
 				unfinalizedExpiresAt: attemptExpiresAt,
+				putMayArriveUntil,
 				updatedAt: Date.now(),
 			});
 			await ctx.db.patch("files_transfer_items", item._id, {
@@ -2660,7 +2673,9 @@ describe("process_workspace_deletion_request", () => {
 				stagedAssetIds: [stagedAssetId],
 				billedUserId: null,
 			});
-			await ctx.db.patch("files_transfer_runs", victim.runId, { phase: "running", inFlight: 1 });
+			await ctx.db.patch("files_transfer_runs", victim.runId, { step: "apply", inFlight: 1 });
+			const activity = await activities_db_require_by_source_id(ctx, victim.runId);
+			await ctx.db.patch("activities", activity._id, { status: "running" });
 			const requestId = await data_deletion_db_request(ctx, {
 				userId: user.userId,
 				organizationId: user.defaultOrganizationId,
@@ -2682,6 +2697,7 @@ describe("process_workspace_deletion_request", () => {
 		const first = await t.mutation(internal.data_deletion.process_workspace_deletion_request, { requestId });
 		const progress = await t.run(async (ctx) => ({
 			run: await ctx.db.get("files_transfer_runs", victim.runId),
+			activity: await activities_db_require_by_source_id(ctx, victim.runId),
 			items: await ctx.db
 				.query("files_transfer_items")
 				.withIndex("by_run_order", (q) => q.eq("runId", victim.runId))
@@ -2691,12 +2707,11 @@ describe("process_workspace_deletion_request", () => {
 			sources: await Promise.all(victim.sourceIds.map((nodeId) => ctx.db.get("files_nodes", nodeId))),
 		}));
 		expect(first).toEqual({ done: false, deletedCount: 50 });
-		expect(progress.run).toMatchObject({ active: false, phase: "canceled" });
+		expect(progress.run).not.toBeNull();
+		expect(progress.activity.status).toBe("stopping");
 		expect(progress.items).toHaveLength(1);
 		expect(progress.stagedAsset).toBeNull();
-		expect(progress.deletionJobs).toEqual([
-			expect.objectContaining({ r2Key: stagedKey, putMayArriveUntil: attemptExpiresAt + r2_PUT_MAY_ARRIVE_MARGIN_MS }),
-		]);
+		expect(progress.deletionJobs).toEqual([expect.objectContaining({ r2Key: stagedKey, putMayArriveUntil })]);
 		expect(progress.sources.every(Boolean)).toBe(true);
 		expect(cancelWork.mock.calls.map((call) => call[1])).toContain(workId);
 
@@ -2718,7 +2733,10 @@ describe("process_workspace_deletion_request", () => {
 		expect(after.run).toBeNull();
 		expect(after.items).toEqual([]);
 		expect(after.activities.some((activity) => activity.source.id === victim.runId)).toBe(false);
-		expect(after.controlRun).toMatchObject({ active: true });
+		expect(after.controlRun).not.toBeNull();
+		expect(after.activities.find((activity) => activity.source.id === control.runId)).toMatchObject({
+			status: "queued",
+		});
 		expect(after.controlItems).toHaveLength(1);
 		expect(after.controlFile).not.toBeNull();
 	});
@@ -2750,6 +2768,107 @@ describe("process_workspace_deletion_request", () => {
 
 		expect(result).toEqual({ done: true, deletedCount: 1 });
 		expect(after).toBeNull();
+	});
+
+	test("purges Bash links and terminal identities before their thread", async () => {
+		const t = test_convex();
+		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+		const thread = await asUser.mutation(api.ai_chat.thread_create, {
+			membershipId: db.membershipId,
+			clientGeneratedId: "purge-bash",
+			lastMessageAt: Date.now(),
+		});
+		if (thread._nay) throw new Error(thread._nay.message);
+		const invocation = await t.mutation(internal.ai_chat_files.begin_bash_invocation, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: db.userId,
+			threadId: thread._yay.threadId,
+			toolCallId: "purge-bash-call",
+			commandHash: "a".repeat(64),
+		});
+		if (invocation._nay) throw new Error(invocation._nay.message);
+		await t.mutation(internal.ai_chat_files.interrupt_bash_invocation, { invocationId: invocation._yay.invocationId });
+		const { requestId, linkId } = await t.run(async (ctx) => {
+			// History links can outlive their cleaned-up transfer and Activity docs.
+			const runId = await ctx.db.insert("files_transfer_runs", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userId: db.userId,
+				requestId: "purge-bash-run",
+				requestHash: "hash",
+				kind: "copy",
+				sourceView: "draft",
+				publication: "proposal",
+				origin: { kind: "agent", threadId: thread._yay.threadId },
+				targetParent: { kind: "root" },
+				targetPath: "/",
+				targetName: null,
+				missingParentNames: [],
+				preparedParent: null,
+				fixedDeadline: false,
+				conflictPolicy: { file: "error", folder: "merge" },
+				step: "apply",
+				planCursor: null,
+				revision: 0,
+				inFlight: 0,
+				retryOf: null,
+				retryCursor: null,
+				applyToRemaining: { file: null, folder: null },
+			});
+			const activityId = await activities_db_start(ctx, {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userId: db.userId,
+				source: { kind: "files_transfer_run", id: runId, transferKind: "copy" },
+				title: "Bash copy",
+				targets: [],
+				visibility: "requester",
+				feedVisible: true,
+				status: "running",
+				resultKind: "ready_for_review",
+				deadlineAt: Date.now() + 90_000,
+				now: Date.now(),
+			});
+			const linkId = await ctx.db.insert("ai_chat_bash_invocation_transfers", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				threadId: thread._yay.threadId,
+				invocationId: invocation._yay.invocationId,
+				commandNumber: 1,
+				runId,
+				activityId,
+			});
+			await ctx.db.delete("files_transfer_runs", runId);
+			await ctx.db.delete("activities", activityId);
+			const requestId = await data_deletion_db_request(ctx, {
+				userId: db.userId,
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				scope: "workspace",
+				eligibleAt: 0,
+			});
+			return { requestId, linkId };
+		});
+		let done = false;
+		for (let index = 0; index < 100 && !done; index += 1) {
+			const step = await t.mutation(internal.data_deletion.process_workspace_deletion_request, {
+				requestId,
+				_test_batchSize: 1,
+			});
+			done = step.done;
+			await t.run(async (ctx) => {
+				const link = await ctx.db.get("ai_chat_bash_invocation_transfers", linkId);
+				const receipt = await ctx.db.get("ai_chat_bash_invocations", invocation._yay.invocationId);
+				const currentThread = await ctx.db.get("ai_chat_threads", thread._yay.threadId);
+				if (link) expect(receipt).not.toBeNull();
+				if (receipt) expect(currentThread).not.toBeNull();
+			});
+		}
+		expect(done).toBe(true);
+		expect(await t.run((ctx) => ctx.db.get("ai_chat_bash_invocation_transfers", linkId))).toBeNull();
+		expect(await t.run((ctx) => ctx.db.get("ai_chat_bash_invocations", invocation._yay.invocationId))).toBeNull();
 	});
 
 	test("purges workspace content in retryable batches without touching sibling workspaces", async () => {
@@ -2851,7 +2970,9 @@ describe("process_workspace_deletion_request", () => {
 		});
 
 		const beforeMetadata = await t.run(async (ctx) =>
-			(await ctx.db.query("files_metadata_docs").collect()).filter((doc) => metadataFolderIds.includes(doc.fileNodeId)),
+			(await ctx.db.query("files_metadata_docs").collect())
+				.filter((doc) => doc.sourceKind === "committed")
+				.filter((doc) => metadataFolderIds.includes(doc.fileNodeId)),
 		);
 		for (const nodeId of metadataFolderIds) {
 			expect(
@@ -2924,7 +3045,9 @@ describe("process_workspace_deletion_request", () => {
 			expect(afterDone.deletionJobs.some((job) => job.r2Key === r2Key)).toBe(true);
 		}
 		const afterMetadata = await t.run(async (ctx) =>
-			(await ctx.db.query("files_metadata_docs").collect()).filter((doc) => metadataFolderIds.includes(doc.fileNodeId)),
+			(await ctx.db.query("files_metadata_docs").collect())
+				.filter((doc) => doc.sourceKind === "committed")
+				.filter((doc) => metadataFolderIds.includes(doc.fileNodeId)),
 		);
 		expect(afterMetadata.map((doc) => doc.docKind).sort()).toEqual(["field", "value"]);
 		for (const doc of afterMetadata) {
@@ -2998,8 +3121,9 @@ describe("process_workspace_deletion_request", () => {
 			const pendingUpdateId = await ctx.db.insert("files_pending_updates", {
 				organizationId: user.defaultOrganizationId,
 				workspaceId,
-				userId: String(user.userId),
-				fileNodeId: nodeId,
+				userId: user.userId,
+				target: { kind: "saved", id: nodeId },
+				revision: 1,
 				size: 0,
 				updatedAt: now,
 			});
@@ -3013,8 +3137,11 @@ describe("process_workspace_deletion_request", () => {
 			const operationBatchId = await ctx.db.insert("files_pending_update_operation_batches", {
 				organizationId: user.defaultOrganizationId,
 				workspaceId,
-				userId: String(user.userId),
-				fileNodeId: nodeId,
+				userId: user.userId,
+				target: { kind: "saved", id: nodeId },
+				expectedPendingUpdateId: pendingUpdateId,
+				expectedRevision: 1,
+				expectedPrivateVersion: null,
 				expiresAt: now + 30 * 60 * 1000,
 				lastActivityAt: now,
 				updatedAt: now,
@@ -3028,8 +3155,8 @@ describe("process_workspace_deletion_request", () => {
 				const stateId = await ctx.db.insert("files_pending_update_yjs_states", {
 					organizationId: user.defaultOrganizationId,
 					workspaceId,
-					userId: String(user.userId),
-					fileNodeId: nodeId,
+					userId: user.userId,
+					target: { kind: "saved", id: nodeId },
 					owner,
 					lineageGeneration: 0,
 					sealed: true,
@@ -3048,8 +3175,8 @@ describe("process_workspace_deletion_request", () => {
 			await ctx.db.insert("files_pending_update_text_inputs", {
 				organizationId: user.defaultOrganizationId,
 				workspaceId,
-				userId: String(user.userId),
-				fileNodeId: nodeId,
+				userId: user.userId,
+				target: { kind: "saved", id: nodeId },
 				operationBatchId,
 				role: "unstaged",
 				text: "staged text",
@@ -3653,13 +3780,9 @@ describe("process_workspace_deletion_request", () => {
 				pluginVersionId,
 				event: "files.upload.completed",
 				eventId: "plugin:purge-test",
-				status: "succeeded",
 				acceptedCapabilities: ["plugin.secrets.read", "outbound.fetch"],
-				expiresAt: now + 30 * 60 * 1000,
 				apiCallCount: 1,
 				outputWriteCount: 1,
-				errorMessage: null,
-				updatedAt: now,
 			});
 			await ctx.db.insert("plugins_event_run_calls", {
 				organizationId: user.defaultOrganizationId,
@@ -3681,20 +3804,24 @@ describe("process_workspace_deletion_request", () => {
 			});
 			// Activities sourced at the run. The purge deletes the run docs directly, so the
 			// run-retention path that normally deletes a run's activity never gets to run here.
-			await ctx.db.insert("activities", {
+			const activityId = await ctx.db.insert("activities", {
 				organizationId: user.defaultOrganizationId,
 				workspaceId: user.defaultWorkspaceId,
 				userId: user.userId,
 				status: "succeeded",
-				source: { kind: "plugin_run", id: runId, installationId, pluginName: "media" },
+				visibility: "shared",
+				feedVisible: true,
+				resultKind: "plugin_result",
+				source: { kind: "plugin_run", id: runId, installationId, pluginName: "media", event: "files.upload.completed" },
 				title: "Media plugin · plugin-source.png",
 				errorMessage: null,
 				targets: [],
-				timeoutAt: now + 60_000,
+				deadlineAt: now + 60_000,
 				finishedAt: now,
-				archivedAt: 0,
+				expiresAt: now + 30 * 24 * 60 * 60 * 1000,
 				updatedAt: now,
 			});
+			await ctx.db.insert("activities_user_states", { userId: user.userId, activityId, dismissedAt: now });
 			// A sibling-workspace activity must survive: the drain is scoped by the index, not by table.
 			const siblingWorkspace = await organizations_db_create_workspace(ctx, {
 				userId: user.userId,
@@ -3706,19 +3833,52 @@ describe("process_workspace_deletion_request", () => {
 			if (siblingWorkspace._nay) {
 				throw new Error(siblingWorkspace._nay.message);
 			}
+			const siblingRunId = await ctx.db.insert("files_transfer_runs", {
+				organizationId: user.defaultOrganizationId,
+				workspaceId: siblingWorkspace._yay.workspaceId,
+				userId: user.userId,
+				requestId: "sibling-transfer",
+				requestHash: "sibling-transfer",
+				kind: "copy",
+				sourceView: "saved",
+				publication: "saved",
+				origin: { kind: "clipboard" },
+				targetParent: { kind: "root" },
+				targetPath: "/",
+				targetName: null,
+				missingParentNames: [],
+				preparedParent: null,
+				fixedDeadline: false,
+				conflictPolicy: { file: "ask", folder: "ask" },
+				step: "apply",
+				planCursor: null,
+				retryOf: null,
+				retryCursor: null,
+				revision: 1,
+				inFlight: 0,
+				applyToRemaining: { file: null, folder: null },
+			});
 			const siblingActivityId = await ctx.db.insert("activities", {
 				organizationId: user.defaultOrganizationId,
 				workspaceId: siblingWorkspace._yay.workspaceId,
 				userId: user.userId,
 				status: "succeeded",
-				source: { kind: "plugin_run", id: runId, installationId, pluginName: "media" },
-				title: "Media plugin · sibling.png",
+				visibility: "requester",
+				feedVisible: true,
+				resultKind: "saved",
+				source: { kind: "files_transfer_run", id: siblingRunId, transferKind: "copy" },
+				title: "Copy files",
 				errorMessage: null,
 				targets: [],
-				timeoutAt: now + 60_000,
+				deadlineAt: now + 60_000,
 				finishedAt: now,
-				archivedAt: 0,
+				expiresAt: now + 7 * 24 * 60 * 60 * 1000,
 				updatedAt: now,
+			});
+			await ctx.db.insert("activities_user_states", {
+				userId: user.userId,
+				activityId: siblingActivityId,
+				dismissedAt: now,
 			});
 			// Stage cleanup must enqueue the derived object keys before removing these unpublished assets.
 			const stagedYjsSnapshotAssetId = await ctx.db.insert("files_r2_assets", {
@@ -3819,6 +3979,9 @@ describe("process_workspace_deletion_request", () => {
 		expect(remaining).toBe(0);
 		// The sibling workspace was not purged, so its activity is still there.
 		expect(await t.run((ctx) => ctx.db.get("activities", siblingActivityId))).not.toBeNull();
+		expect(
+			(await t.run((ctx) => ctx.db.query("activities_user_states").collect())).map((state) => state.activityId),
+		).toEqual([siblingActivityId]);
 	});
 
 	test("drains plugin UI sessions in bounded batches before deleting their installation", async () => {
@@ -4021,7 +4184,7 @@ describe("process_workspace_deletion_request", () => {
 		expect(after.fileNode?._id).toBe(fileNodeId);
 	});
 
-	test("cancels plugin event run workpool items before deleting their run docs", async () => {
+	test("cancels plugin work and keeps Activity recovery valid between purge passes", async () => {
 		const t = test_convex();
 		const cancelSpy = vi.spyOn(Workpool.prototype, "cancel").mockResolvedValue(undefined as never);
 		const user = await t.run((ctx) =>
@@ -4142,14 +4305,24 @@ describe("process_workspace_deletion_request", () => {
 				pluginVersionId,
 				event: "files.upload.completed",
 				eventId: "plugin:run-cancel-test",
-				status: "queued",
 				workId,
 				acceptedCapabilities: ["plugin.secrets.read", "outbound.fetch"],
-				expiresAt: now + 30 * 60 * 1000,
 				apiCallCount: 0,
 				outputWriteCount: 0,
-				errorMessage: null,
-				updatedAt: now,
+			});
+			await activities_db_start(ctx, {
+				organizationId: user.defaultOrganizationId,
+				workspaceId: user.defaultWorkspaceId,
+				userId: user.userId,
+				source: { kind: "plugin_run", id: runId, installationId, pluginName: "media", event: "files.upload.completed" },
+				title: "media",
+				targets: [],
+				visibility: "shared",
+				feedVisible: false,
+				status: "queued",
+				resultKind: "plugin_result",
+				deadlineAt: now + 30 * 60 * 1000,
+				now,
 			});
 			const requestId = await data_deletion_db_request(ctx, {
 				userId: user.userId,
@@ -4160,10 +4333,19 @@ describe("process_workspace_deletion_request", () => {
 			return { requestId, runId };
 		});
 
-		await data_deletion_test_process_workspace_request_until_done(t, {
-			requestId,
-			batchSize: 5,
-		});
+		let done = false;
+		for (let pass = 0; pass < 100 && !done; pass += 1) {
+			const result = await t.mutation(internal.data_deletion.process_workspace_deletion_request, {
+				requestId,
+				_test_batchSize: 5,
+			});
+			done = result.done;
+			if ((await t.run((ctx) => ctx.db.get("plugins_event_runs", runId))) === null) {
+				// Recovery can run between any two purge mutations, before the rest of the tenant is gone.
+				await t.mutation(internal.activities.recover_expired, { _test_now: Date.now() + 31 * 60 * 1000 });
+			}
+		}
+		expect(done).toBe(true);
 
 		const runAfter = await t.run((ctx) => ctx.db.get("plugins_event_runs", runId));
 
@@ -5863,11 +6045,17 @@ describe("finalize_user_deletion_data", () => {
 			if (!item) throw new Error("Expected Paste item");
 			await ctx.db.patch("files_transfer_items", item._id, {
 				state: "completed",
-				outputId: output.nodeId,
+				outputTarget: { kind: "saved", id: output.nodeId },
 				outputName: "copied.md",
 				outputPath: "/copied.md",
 			});
-			await ctx.db.patch("files_transfer_runs", paste.runId, { phase: "running", completed: 1 });
+			await ctx.db.patch("files_transfer_runs", paste.runId, { step: "apply" });
+			const activity = await activities_db_require_by_source_id(ctx, paste.runId);
+			if (!activity.progress) throw new Error("Expected Paste progress");
+			await ctx.db.patch("activities", activity._id, {
+				status: "running",
+				progress: { ...activity.progress, completed: 1 },
+			});
 			return output;
 		});
 		const transferred = await t
@@ -5915,7 +6103,10 @@ describe("finalize_user_deletion_data", () => {
 		expect(after.activities.some((activity) => activity.source.id === paste.runId)).toBe(false);
 		expect(after.membership).toBeNull();
 		expect(after.output).toMatchObject({ _id: output.nodeId });
-		expect(after.controlRun).toMatchObject({ active: true });
+		expect(after.controlRun).not.toBeNull();
+		expect(after.activities.find((activity) => activity.source.id === control.runId)).toMatchObject({
+			status: "queued",
+		});
 		expect(after.workspace).not.toBeNull();
 	});
 
@@ -6081,8 +6272,9 @@ describe("finalize_user_deletion_data", () => {
 				const pendingUpdateId = await ctx.db.insert("files_pending_updates", {
 					organizationId: user.defaultOrganizationId,
 					workspaceId: user.defaultWorkspaceId,
-					userId: String(user.userId),
-					fileNodeId: nodeId,
+					userId: user.userId,
+					target: { kind: "saved", id: nodeId },
+					revision: 1,
 					size: 0,
 					updatedAt: now,
 				});
@@ -6090,9 +6282,10 @@ describe("finalize_user_deletion_data", () => {
 					await ctx.db.insert("files_text_chunks", {
 						organizationId: user.defaultOrganizationId,
 						workspaceId: user.defaultWorkspaceId,
-						fileNodeId: nodeId,
+						target: { kind: "saved", id: nodeId },
+						proposalRevision: 1,
 						sourceKind: "pending",
-						userId: String(user.userId),
+						userId: user.userId,
 						pendingUpdateId,
 						chunkIndex,
 						textChunk: `chunk-${chunkIndex}`,
@@ -6106,8 +6299,8 @@ describe("finalize_user_deletion_data", () => {
 				const stateId = await ctx.db.insert("files_pending_update_yjs_states", {
 					organizationId: user.defaultOrganizationId,
 					workspaceId: user.defaultWorkspaceId,
-					userId: String(user.userId),
-					fileNodeId: nodeId,
+					userId: user.userId,
+					target: { kind: "saved", id: nodeId },
 					owner: { kind: "active", pendingUpdateId, role: "base" },
 					lineageGeneration: 0,
 					sealed: true,
@@ -6125,8 +6318,11 @@ describe("finalize_user_deletion_data", () => {
 				const operationBatchId = await ctx.db.insert("files_pending_update_operation_batches", {
 					organizationId: user.defaultOrganizationId,
 					workspaceId: user.defaultWorkspaceId,
-					userId: String(user.userId),
-					fileNodeId: nodeId,
+					userId: user.userId,
+					target: { kind: "saved", id: nodeId },
+					expectedPendingUpdateId: pendingUpdateId,
+					expectedRevision: 1,
+					expectedPrivateVersion: null,
 					expiresAt: now + 30 * 60 * 1000,
 					lastActivityAt: now,
 					updatedAt: now,
@@ -6134,8 +6330,8 @@ describe("finalize_user_deletion_data", () => {
 				await ctx.db.insert("files_pending_update_text_inputs", {
 					organizationId: user.defaultOrganizationId,
 					workspaceId: user.defaultWorkspaceId,
-					userId: String(user.userId),
-					fileNodeId: nodeId,
+					userId: user.userId,
+					target: { kind: "saved", id: nodeId },
 					operationBatchId,
 					role: "staged",
 					text: "staged text",
@@ -6252,8 +6448,8 @@ describe("finalize_user_deletion_data", () => {
 		// Only the survivor's docs remain: user finalization drains every user-scoped doc class.
 		expect(remaining.states.map((doc) => doc._id)).toEqual([survivorSeed.stateId]);
 		expect(remaining.pages.map((doc) => doc.stateId)).toEqual([survivorSeed.stateId]);
-		expect(remaining.batches.map((doc) => doc.userId)).toEqual([String(survivor.userId)]);
-		expect(remaining.textInputs.map((doc) => doc.userId)).toEqual([String(survivor.userId)]);
+		expect(remaining.batches.map((doc) => doc.userId)).toEqual([survivor.userId]);
+		expect(remaining.textInputs.map((doc) => doc.userId)).toEqual([survivor.userId]);
 		expect(remaining.trustedStages.map((doc) => doc.userId)).toEqual([survivor.userId]);
 		// The victim's plugin storage share goes with them; the survivor's stays.
 		expect(remaining.memberUsage.map((doc) => doc._id)).toEqual([survivorSeed.memberUsageId]);

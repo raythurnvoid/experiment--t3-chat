@@ -6,11 +6,14 @@ They can be used also to listen and dispatch events outside of React components.
 */
 
 import { useEffect } from "react";
+import type { app_convex_Id } from "./app-convex-client.ts";
 import { useLiveRef } from "../hooks/utils-hooks.ts";
 import { XCustomEvent } from "./utils.ts";
 
 // #region custom events
-export class global_custom_event_Event extends XCustomEvent<{}> {}
+export class global_custom_event_Event extends XCustomEvent<{
+	"files::review_all_pending": { membershipId: app_convex_Id<"organizations_workspaces_users"> };
+}> {}
 
 declare global {
 	interface Window {

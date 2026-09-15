@@ -178,9 +178,12 @@ Generate this HTTP contract from the host with `vp env exec pnpm --dir packages/
 
 Plugin replacement of an existing binary/noneditable file requires the actor's live manage permission on that target. All target, parent, lock, and requested-access checks run before archive. The old node retains its grants and reader binding; the new node inherits its parent's sharing. An in-place text update keeps the same node, metadata, and sharing.
 
-Call `activities/start` once, and call it early. The host only collects targets after the activity exists, so files a run writes before that call never become its targets, and nothing reports the miss.
+Call `activities/start` once to show the run in the workspace activity feed. The host already tracks
+the run in a hidden Activity, including files it touched or wrote before this call.
 
-`activities/start` needs `timeoutMs` because the host has no other way to know when a run has gone quiet. Estimate it from the amount of work the run usually does. If the run never finishes inside that window, the host closes the activity with the `timeout` end state.
+`timeoutMs` is an estimate of the remaining work. Passing it shows Overdue while the run continues.
+It does not change the execution deadline. A real execution timeout ends the Activity as
+`timed_out` and stops later API writes. The final outcome closes the same Activity.
 
 A stored document — what `plugin-data/read` and `plugin-data/list` return, and what the frontend `watch_*` doors deliver too — is `{ collection, key, value, revision, byteSize, writeMode, ownership, createdBy, updatedBy, createdAt, updatedAt }`. `revision` grows by one on every accepted write and restarts at 1 when a deleted key is created again. `ownership` is `"owned"` when only the member in `createdBy` may change or delete the document through interactive writers; `"shared"` documents follow the normal write rule. `writeMode` is `"versioned"` for documents a service producer writes through the versioned route, and interactive writers cannot touch those. `byteSize` is the stored value's canonical JSON size in bytes. `createdAt` and `updatedAt` are Unix epoch milliseconds.
 
@@ -196,7 +199,7 @@ Where a run may write depends on how it started:
 - With `workspace.files.read`, any backend run may also call `POST /api/v1/files/list` and `POST /api/v1/files/read` (the same request and response shapes the developer API uses), reading with the acting member's visibility.
 - With `workspace.files.own-access`, an invoke run may change a matching node through `POST /api/v1/files/plugin-access/set` (body `{ path, access: { readOnly?: boolean, readScopeId?: string | null } }`; at least one access field is required; response `{ nodeId }`). The actor needs live manage permission on the affected scope/subtree. `readOnly: true` sets a plugin lock, `readOnly: false` releases it, and `readScopeId` binds readers to one live private data scope or releases an attached binding with `null`. A member lock cannot be released through this door.
 - `POST /api/v1/files/plugin-archive` (body `{ path }`, response `{ archivedNodes }`) lets an invoke run archive a matching folder or file with its subtree. Every affected node must match and pass current permissions and locks before any changes happen. The call releases permitted plugin locks before archive. A sealed service grant may archive one matching file inside its destination. Upload-triggered runs cannot use ensure, access, or archive, even when their output has matching labels.
-- `activities/start` is optional: a run that never calls it stays out of the workspace activity feed. After a run opts in, the host tracks the rest — the files the run touches or writes become the activity's targets, and the run's own outcome closes it.
+- `activities/start` is optional: a run that never calls it stays out of the workspace activity feed. The host tracks targets from the start, and the run's outcome closes its Activity.
 
 For the generic plugin-scope binding above, private-scope membership changes update the file's readers while attached. A real manual sharing change detaches only that node's binding and keeps its remaining grants. Future scope changes then leave those readers alone. Failed or no-op sharing and metadata edits keep the binding. Explicit plugin access may attach it again with manage permission. A foreign installation binding refuses until it drains or is detached. Uninstall removes these generic bindings but preserves file grants. Registered public writers keep their separate binding and membership-lifetime tags with historical copies. Reinstall and repeated ensure do not restore old sharing. The organization owner still reads everything.
 

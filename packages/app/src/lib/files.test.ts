@@ -1,14 +1,16 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
-const { convexActionMock, convexQueryMock } = vi.hoisted(() => ({
+const { convexActionMock, convexQueryMock, convexMutationMock } = vi.hoisted(() => ({
 	convexActionMock: vi.fn(),
 	convexQueryMock: vi.fn(),
+	convexMutationMock: vi.fn(),
 }));
 
 vi.mock("@/lib/app-convex-client.ts", () => ({
 	app_convex: {
 		action: (...args: unknown[]) => convexActionMock(...args),
 		query: (...args: unknown[]) => convexQueryMock(...args),
+		mutation: (...args: unknown[]) => convexMutationMock(...args),
 	},
 	app_convex_api: {
 		files_nodes: {
@@ -16,12 +18,23 @@ vi.mock("@/lib/app-convex-client.ts", () => ({
 			yjs_get_incremental_updates: "yjs_get_incremental_updates",
 			yjs_prepare_doc_last_snapshot: "yjs_prepare_doc_last_snapshot",
 		},
+		files_pending_updates: {
+			get_file_pending_update: "get_file_pending_update",
+			get_file_pending_update_state_page: "get_file_pending_update_state_page",
+			create_file_pending_update_operation_batch: "create_file_pending_update_operation_batch",
+			stage_file_pending_update_text_input: "stage_file_pending_update_text_input",
+			upsert_file_pending_update: "upsert_file_pending_update",
+			save_file_pending_update: "save_file_pending_update",
+		},
 	},
 }));
 
 import {
 	files_clear_node_path_cached_validation_messages,
 	files_fetch_file_yjs_state_and_text,
+	files_fetch_private_file_pending_text,
+	files_save_private_file_pending_text,
+	files_u8_to_array_buffer,
 	files_get_node_path_cached_validation_message,
 	files_get_comment_thread_ids_from_markdown,
 	files_get_node_path_validation,
@@ -37,9 +50,13 @@ import {
 	type files_TreeItem,
 } from "./files.ts";
 import { files_yjs_compute_diff_update_from_yjs_doc, files_yjs_doc_clone } from "../../shared/files-yjs.ts";
-import { files_yjs_doc_get_text, files_yjs_doc_update_from_text } from "../../shared/files-tiptap.ts";
+import {
+	files_yjs_doc_create_from_text,
+	files_yjs_doc_get_text,
+	files_yjs_doc_update_from_text,
+} from "../../shared/files-tiptap.ts";
 import type { Id } from "../../convex/_generated/dataModel";
-import { Doc as YDoc } from "yjs";
+import { Doc as YDoc, encodeStateAsUpdate } from "yjs";
 
 const createTreeItem = (args: {
 	id: string;
@@ -160,6 +177,133 @@ describe("files_fetch_file_yjs_state_and_text", () => {
 			convexActionMock.mockReset();
 			convexQueryMock.mockReset();
 		}
+	});
+});
+
+describe("files_fetch_private_file_pending_text", () => {
+	const args = {
+		membershipId: "membership" as Id<"organizations_workspaces_users">,
+		target: { kind: "private" as const, id: "private_node" as Id<"files_pending_nodes"> },
+	};
+	const pendingUpdate = {
+		_id: "proposal",
+		revision: 4,
+		target: args.target,
+		createIntent: { kind: "text", textKind: "plain_text" },
+		content: { base: { kind: "new" }, unstagedStateId: "unstaged_state" },
+	};
+
+	afterEach(() => convexQueryMock.mockReset());
+
+	test.each(["", "draft text\n"])("loads the owned text, including a ready empty file: %j", async (text) => {
+		const doc = files_yjs_doc_create_from_text({ text, rootKind: "plain_text" });
+		if ("_nay" in doc) throw new Error(doc._nay.message);
+		const bytes = files_u8_to_array_buffer(encodeStateAsUpdate(doc));
+		doc.destroy();
+		convexQueryMock.mockImplementation(async (name: string) =>
+			name === "get_file_pending_update" ? pendingUpdate : { bytes, pageCount: 1, totalBytes: bytes.byteLength },
+		);
+
+		expect((await files_fetch_private_file_pending_text(args))._yay?.text).toBe(text);
+		expect(convexQueryMock.mock.calls.map(([name]) => name)).toEqual([
+			"get_file_pending_update",
+			"get_file_pending_update_state_page",
+			"get_file_pending_update",
+		]);
+		expect(convexQueryMock).toHaveBeenCalledWith("get_file_pending_update_state_page", {
+			...args,
+			stateId: "unstaged_state",
+			pageIndex: 0,
+		});
+	});
+
+	test.each([null, { ...pendingUpdate, preparation: { creationGeneration: 1, transferItemId: "transfer_item" } }])(
+		"refuses a missing or preparing draft before reading pages",
+		async (proposal) => {
+			convexQueryMock.mockResolvedValue(proposal);
+			expect((await files_fetch_private_file_pending_text(args))._nay).toBeTruthy();
+			expect(convexQueryMock).toHaveBeenCalledTimes(1);
+		},
+	);
+
+	test("refuses a draft that changes while its pages load", async () => {
+		const doc = files_yjs_doc_create_from_text({ text: "draft\n", rootKind: "plain_text" });
+		if ("_nay" in doc) throw new Error(doc._nay.message);
+		const bytes = files_u8_to_array_buffer(encodeStateAsUpdate(doc));
+		doc.destroy();
+		convexQueryMock
+			.mockResolvedValueOnce(pendingUpdate)
+			.mockResolvedValueOnce({ bytes, pageCount: 1, totalBytes: bytes.byteLength })
+			.mockResolvedValueOnce({ ...pendingUpdate, revision: 5 });
+		expect((await files_fetch_private_file_pending_text(args))._nay?.message).toContain("changed while loading");
+	});
+});
+
+describe("files_save_private_file_pending_text", () => {
+	const args = {
+		membershipId: "membership" as Id<"organizations_workspaces_users">,
+		target: { kind: "private" as const, id: "private_node" as Id<"files_pending_nodes"> },
+		pendingUpdateId: "proposal" as Id<"files_pending_updates">,
+		reviewedRevision: 4,
+		text: "current text\n",
+	};
+
+	beforeEach(() => {
+		convexMutationMock.mockImplementation(async (name: string) => ({
+			_yay: name === "create_file_pending_update_operation_batch" ? { operationBatchId: "batch" } : null,
+		}));
+	});
+	afterEach(() => {
+		convexMutationMock.mockReset();
+		convexActionMock.mockReset();
+	});
+
+	test("accepts both text branches and publishes the returned revision", async () => {
+		const savedTarget = { kind: "saved", id: "saved_node" };
+		convexActionMock
+			.mockResolvedValueOnce({ _yay: { pendingUpdate: { _id: "proposal", revision: 5, content: {} } } })
+			.mockResolvedValueOnce({ _yay: { target: savedTarget, newSequence: 0 } });
+
+		expect((await files_save_private_file_pending_text(args))._yay?.target).toEqual(savedTarget);
+		expect(convexMutationMock.mock.calls).toEqual([
+			["create_file_pending_update_operation_batch", { membershipId: args.membershipId, target: args.target }],
+			[
+				"stage_file_pending_update_text_input",
+				{ membershipId: args.membershipId, operationBatchId: "batch", role: "staged", text: args.text },
+			],
+			[
+				"stage_file_pending_update_text_input",
+				{ membershipId: args.membershipId, operationBatchId: "batch", role: "unstaged", text: args.text },
+			],
+		]);
+		expect(convexActionMock.mock.calls).toEqual([
+			[
+				"upsert_file_pending_update",
+				{
+					membershipId: args.membershipId,
+					target: args.target,
+					pendingUpdateId: args.pendingUpdateId,
+					reviewedRevision: 4,
+					operationBatchId: "batch",
+				},
+			],
+			[
+				"save_file_pending_update",
+				{
+					membershipId: args.membershipId,
+					target: args.target,
+					pendingUpdateId: args.pendingUpdateId,
+					reviewedRevision: 5,
+				},
+			],
+		]);
+	});
+
+	test("does not publish when the reviewed draft changed before the edit", async () => {
+		convexActionMock.mockResolvedValue({ _nay: { message: "The draft changed." } });
+		expect((await files_save_private_file_pending_text(args))._nay?.message).toBe("The draft changed.");
+		expect(convexActionMock).toHaveBeenCalledTimes(1);
+		expect(convexActionMock.mock.calls[0]?.[0]).toBe("upsert_file_pending_update");
 	});
 });
 

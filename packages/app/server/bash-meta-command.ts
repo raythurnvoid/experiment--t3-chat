@@ -1,7 +1,6 @@
 import { defineCommand, type Command } from "just-bash/browser";
 import { internal } from "../convex/_generated/api.js";
 import type { ActionCtx } from "../convex/_generated/server.js";
-import type { files_nodes_get_by_path_Result } from "../convex/files_nodes.ts";
 import type { files_metadata_get_by_path_Result, files_metadata_search_Result } from "../convex/files_metadata.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 import {
@@ -14,9 +13,6 @@ import {
 	bash_cursor_id_create,
 	bash_cursor_id_resolve,
 	bash_normalize_path,
-	bash_overlay_committed_scope_path,
-	bash_overlay_project_scoped_path,
-	bash_overlay_subtree_injections,
 	bash_parse_limit,
 	bash_read_option_value,
 	bash_resolve_path,
@@ -481,8 +477,10 @@ export function bash_meta_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 					exitCode: bash_COMMAND_EXIT_USAGE,
 				};
 			}
+
 			// meta get reads one item; classify its path to pick the workspace or mount scope.
 			const target = bash_resolve_db_files_shell_path(parsed._yay.pathShell, dbFilesRoots);
+
 			if (target.kind === "external_mounts_root") {
 				return {
 					stdout: "",
@@ -492,6 +490,7 @@ export function bash_meta_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 					exitCode: bash_COMMAND_EXIT_USAGE,
 				};
 			}
+
 			if (target.kind === "plugins_root") {
 				return {
 					stdout: "",
@@ -501,6 +500,7 @@ export function bash_meta_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 					exitCode: bash_COMMAND_EXIT_USAGE,
 				};
 			}
+
 			if (target.dbFilesPath == null) {
 				return {
 					stdout: "",
@@ -508,6 +508,7 @@ export function bash_meta_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 					exitCode: bash_COMMAND_EXIT_USAGE,
 				};
 			}
+
 			const result = (await ctx.runQuery(internal.files_metadata.get_by_path, {
 				organizationId: target.ctxData.organizationId,
 				workspaceId: target.ctxData.workspaceId,
@@ -515,6 +516,7 @@ export function bash_meta_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 				path: target.dbFilesPath,
 				overlayUserId: target.fs.overlayUserId,
 			})) as files_metadata_get_by_path_Result;
+
 			if (!result) {
 				return {
 					stdout: "",
@@ -522,12 +524,13 @@ export function bash_meta_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 					exitCode: bash_COMMAND_EXIT_FAILURE,
 				};
 			}
+
 			if (parsed._yay.format === "json") {
 				return {
 					stdout: `${JSON.stringify(
 						{
 							path: target.renderShellPath(result.path),
-							nodeId: result.nodeId,
+							target: result.target,
 							sourceKind: result.sourceKind,
 							fields: result.fields,
 							values: result.values.map((value) => ({
@@ -543,16 +546,19 @@ export function bash_meta_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 					exitCode: 0,
 				};
 			}
+
 			const lines = [`source: ${result.sourceKind}`];
 			for (const field of result.fields) {
 				lines.push(field);
 			}
+
 			for (const value of result.values) {
 				// Mark the maybe_date line so the agent can distinguish it from the string line and know
 				// the field supports range filters.
 				const valueKindSuffix = value.valueKind === "maybe_date" ? " (maybe_date)" : "";
 				lines.push(`${value.fieldPath} = ${JSON.stringify(get_value(value))}${valueKindSuffix}`);
 			}
+
 			return { stdout: `${lines.join("\n")}\n`, stderr: "", exitCode: 0 };
 		}
 
@@ -613,13 +619,7 @@ export function bash_meta_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 		}
 
 		if (parsed._yay.pathShell != null && scope.dbFilesPath != null && scope.dbFilesPath !== "/") {
-			const scopedFolder = (await ctx.runQuery(internal.files_nodes.get_by_path, {
-				organizationId: scope.ctxData.organizationId,
-				workspaceId: scope.ctxData.workspaceId,
-				visibilityUserId: scope.ctxData.userId,
-				path: scope.dbFilesPath,
-				overlayUserId: scope.fs.overlayUserId,
-			})) as files_nodes_get_by_path_Result;
+			const scopedFolder = await scope.fs.getEntry(scope.dbFilesPath);
 			const scopedShellPath = scope.renderShellPath(scope.dbFilesPath);
 			if (!scopedFolder) {
 				return {
@@ -639,10 +639,6 @@ export function bash_meta_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 
 		// Scope the metadata scan to the classified folder; the workspace/mount root maps to the whole tree.
 		const path = scope.dbFilesPath != null && scope.dbFilesPath !== "/" ? scope.dbFilesPath : undefined;
-		// The proposer's pending moves translate the scope and project the results: metadata
-		// rows keep committed paths until accept, so a moved-in scope must query its committed source.
-		const overlay = await scope.fs.getOverlay();
-		const committedPathPrefix = overlay == null || path == null ? path : bash_overlay_committed_scope_path(overlay, path);
 		const result = (await ctx.runQuery(internal.files_metadata.search, {
 			organizationId: scope.ctxData.organizationId,
 			workspaceId: scope.ctxData.workspaceId,
@@ -650,65 +646,12 @@ export function bash_meta_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 			plan: parsed._yay.plan,
 			numItems: parsed._yay.limit,
 			cursor,
-			pathPrefix: committedPathPrefix,
+			pathPrefix: path,
 		})) as files_metadata_search_Result;
-
-		// Hidden results and results projected outside the scope drop; the rest report their visible path.
-		const visibleItems =
-			overlay == null
-				? result.items
-				: result.items.flatMap((item) => {
-						const visiblePath = bash_overlay_project_scoped_path({
-							overlay,
-							committedPath: item.path,
-							visibleScopePath: path ?? null,
-						});
-						return visiblePath == null ? [] : [{ ...item, path: visiblePath }];
-					});
-
-		// An ancestor scope of a move's visible destination misses that move's metadata
-		// rows (they keep committed paths outside the scoped prefix); one extra first-page
-		// scan per such move injects them. The nodeId dedupe below drops duplicates.
-		const injectedItems: files_metadata_search_Result["items"] = [];
-		if (overlay != null && path != null && committedPathPrefix != null && cursor == null) {
-			for (const move of bash_overlay_subtree_injections(overlay, {
-				visibleScopePath: path,
-				committedScopePath: committedPathPrefix,
-			})) {
-				// The scoped bound is a folder prefix, so a moved file scans its committed
-				// parent folder and keeps only its own metadata rows.
-				const movePrefix =
-					move.kind === "folder"
-						? move.committedPath
-						: move.committedPath.slice(0, move.committedPath.lastIndexOf("/")) || "/";
-				const moveResult = (await ctx.runQuery(internal.files_metadata.search, {
-					organizationId: scope.ctxData.organizationId,
-					workspaceId: scope.ctxData.workspaceId,
-					userId: scope.ctxData.userId,
-					plan: parsed._yay.plan,
-					numItems: parsed._yay.limit,
-					cursor: null,
-					pathPrefix: movePrefix,
-				})) as files_metadata_search_Result;
-				for (const item of moveResult.items) {
-					if (move.kind === "file" && item.path !== move.committedPath) {
-						continue;
-					}
-					const visiblePath = bash_overlay_project_scoped_path({
-						overlay,
-						committedPath: item.path,
-						visibleScopePath: path,
-					});
-					if (visiblePath != null) {
-						injectedItems.push({ ...item, path: visiblePath });
-					}
-				}
-			}
-		}
 
 		// An item can match through multiple metadata values; command output lists each path once.
 		const dedupedItems = [
-			...new Map([...visibleItems, ...injectedItems].map((item) => [item.nodeId, item])).values(),
+			...new Map(result.items.map((item) => [`${item.target.kind}:${item.target.id}`, item])).values(),
 		];
 		const nextCursor = result.isDone ? null : await bash_cursor_id_create(ctx, result.continueCursor);
 		if (parsed._yay.format === "json") {
@@ -717,7 +660,7 @@ export function bash_meta_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 					{
 						results: dedupedItems.map((item) => ({
 							path: scope.renderShellPath(item.path),
-							nodeId: item.nodeId,
+							target: item.target,
 							field: item.fieldPath,
 							valueKind: item.valueKind,
 							matchedValue: search_result_value(item),

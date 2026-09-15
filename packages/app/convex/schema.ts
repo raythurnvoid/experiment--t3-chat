@@ -1,5 +1,6 @@
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
+import { doc } from "convex-helpers/validators";
 import { vWorkId } from "@convex-dev/workpool";
 import type { ai_chat_UiMessage } from "../src/lib/ai-chat.ts";
 import {
@@ -11,16 +12,6 @@ import { users_SYSTEM_AUTHOR } from "../shared/users.ts";
 import { plugins_CAPABILITIES } from "../shared/plugins.ts";
 
 const plugins_capability_validator = v.union(...plugins_CAPABILITIES.map((capability) => v.literal(capability)));
-
-const files_transfer_phase_validator = v.union(
-	v.literal("checking"),
-	v.literal("awaiting_choice"),
-	v.literal("running"),
-	v.literal("stopping"),
-	v.literal("completed"),
-	v.literal("canceled"),
-	v.literal("failed"),
-);
 
 /**
  * The full list of permissions. Users build roles out of these, but can never add a new one.
@@ -52,6 +43,251 @@ const access_control_role_ref_validator = v.union(
 	v.literal("member"),
 	v.literal("viewer"),
 	v.id("access_control_roles"),
+);
+
+export const ai_chat_bash_result_validator = v.object({
+	title: v.string(),
+	output: v.string(),
+	stdout: v.string(),
+	stderr: v.string(),
+	metadata: v.object({
+		command: v.string(),
+		cwd: v.string(),
+		nextCwd: v.string(),
+		exitCode: v.number(),
+		stdoutTruncated: v.boolean(),
+		stderrTruncated: v.boolean(),
+		stdoutLength: v.number(),
+		stderrLength: v.number(),
+		pathIndexTruncated: v.boolean(),
+		observedPaths: v.array(v.string()),
+		observedPathsTruncated: v.boolean(),
+	}),
+});
+
+/**
+ * Saved content approved for capture or replacement. Compaction may change a snapshot asset
+ * without changing the document's sequence or lineage.
+ */
+export const files_content_version_validator = v.union(
+	v.object({
+		kind: v.literal("asset"),
+		assetId: v.id("files_r2_assets"),
+		contentType: v.string(),
+		textKind: v.union(v.literal("plain_text"), v.literal("rich_text"), v.null()),
+		collaborationEnabled: v.union(v.literal(false), v.null()),
+	}),
+	v.object({
+		kind: v.literal("yjs"),
+		lastSequenceId: v.id("files_yjs_docs_last_sequences"),
+		lineageGeneration: v.number(),
+		sequence: v.number(),
+		contentType: v.string(),
+		textKind: v.union(v.literal("plain_text"), v.literal("rich_text")),
+		collaborationEnabled: v.literal(true),
+	}),
+);
+
+export const files_pending_target_validator = v.union(
+	v.object({ kind: v.literal("saved"), id: v.id("files_nodes") }),
+	v.object({ kind: v.literal("private"), id: v.id("files_pending_nodes") }),
+);
+
+export const files_pending_parent_validator = v.union(
+	...files_pending_target_validator.members,
+	v.object({ kind: v.literal("root") }),
+);
+
+export const files_transfer_source_version_validator = v.union(
+	...files_content_version_validator.members,
+	v.object({
+		kind: v.literal("pending"),
+		pendingUpdateId: v.id("files_pending_updates"),
+		revision: v.number(),
+		privateVersion: v.union(v.object({ creationGeneration: v.number(), structuralRevision: v.number() }), v.null()),
+		savedVersion: v.union(files_content_version_validator, v.null()),
+		contentType: v.string(),
+		textKind: v.union(v.literal("plain_text"), v.literal("rich_text"), v.null()),
+		collaborationEnabled: v.union(v.boolean(), v.null()),
+	}),
+);
+
+export const files_metadata_entries_validator = v.array(
+	v.object({ key: v.string(), value: v.union(v.string(), v.number(), v.boolean()) }),
+);
+
+const files_pending_create_intent_validator = v.union(
+	v.object({ kind: v.literal("folder"), metadata: files_metadata_entries_validator }),
+	v.object({
+		kind: v.literal("text"),
+		contentType: v.string(),
+		textKind: v.union(v.literal("plain_text"), v.literal("rich_text")),
+		collaborationEnabled: v.boolean(),
+		metadata: files_metadata_entries_validator,
+	}),
+	v.object({
+		kind: v.literal("stored"),
+		assetId: v.id("files_r2_assets"),
+		size: v.number(),
+		contentType: v.string(),
+		metadata: files_metadata_entries_validator,
+	}),
+);
+
+// Saved indexes also cover read-only mounts. Pending indexes always belong to a real owner and tenant.
+const files_committed_index_fields = {
+	organizationId: v.union(v.id("organizations"), v.literal(organizations_GLOBAL_ORGANIZATION_ID)),
+	workspaceId: v.union(
+		v.id("organizations_workspaces"),
+		v.literal(organizations_GLOBAL_GITHUB_WORKSPACE_ID),
+		v.literal(organizations_GLOBAL_PLUGINS_WORKSPACE_ID),
+	),
+	sourceKind: v.literal("committed"),
+	fileNodeId: v.id("files_nodes"),
+	yjsSequence: v.optional(v.number()),
+};
+
+const files_pending_index_fields = {
+	organizationId: v.id("organizations"),
+	workspaceId: v.id("organizations_workspaces"),
+	sourceKind: v.literal("pending"),
+	target: files_pending_target_validator,
+	userId: v.id("users"),
+	pendingUpdateId: v.id("files_pending_updates"),
+	proposalRevision: v.number(),
+};
+
+const files_metadata_index_fields = {
+	path: v.string(),
+	treePath: v.string(),
+	archiveOperationId: v.optional(v.string()),
+	fieldPath: v.string(),
+	/**
+	 * Preserve the user's metadata map order. Frontmatter leaves this unset.
+	 */
+	entryIndex: v.optional(v.number()),
+	docKind: v.union(v.literal("field"), v.literal("value")),
+	valueKind: v.optional(
+		v.union(v.literal("string"), v.literal("number"), v.literal("boolean"), v.literal("maybe_date")),
+	),
+	stringValue: v.optional(v.string()),
+	numberValue: v.optional(v.number()),
+	booleanValue: v.optional(v.boolean()),
+};
+
+const files_text_chunk_fields = {
+	chunkIndex: v.number(),
+	textChunk: v.string(),
+	/** Character offsets in the full text content. */
+	startIndex: v.number(),
+	endIndex: v.number(),
+	/** 1-based text line range covered by this chunk. */
+	lineStart: v.number(),
+	lineEnd: v.number(),
+	chunkFlags: v.number(),
+};
+
+const files_plain_text_chunk_fields = {
+	...files_text_chunk_fields,
+	/** Linked exact text chunk for exact reads and integrity checks. */
+	textChunkId: v.id("files_text_chunks"),
+	/** Effective path, used to filter search before pagination. */
+	path: v.string(),
+	archiveOperationId: v.optional(v.string()),
+	plainTextChunk: v.string(),
+	hasChunkAbove: v.boolean(),
+	hasChunkBelow: v.boolean(),
+};
+
+export const files_pending_prepared_state_family_validator = v.object({
+	operationBatchId: v.id("files_pending_update_operation_batches"),
+	baseStateId: v.id("files_pending_update_yjs_states"),
+	stagedStateId: v.id("files_pending_update_yjs_states"),
+	unstagedStateId: v.id("files_pending_update_yjs_states"),
+	baseStateDigest: v.string(),
+	stagedStateDigest: v.string(),
+	unstagedStateDigest: v.string(),
+});
+
+const files_pending_prepared_content_fields = {
+	membershipId: v.id("organizations_workspaces_users"),
+	pendingUpdateId: v.id("files_pending_updates"),
+	reviewedRevision: v.number(),
+	billedUserId: v.id("users"),
+	operationBatchIds: v.array(v.id("files_pending_update_operation_batches")),
+};
+
+// Large texts and Yjs states stay in owned batch docs, so review items stay bounded.
+export const files_pending_prepared_content_validator = v.union(
+	v.object({
+		...files_pending_prepared_content_fields,
+		kind: v.literal("saved_yjs"),
+		nodeId: v.id("files_nodes"),
+		baseYjsSequence: v.number(),
+		baseLineageGeneration: v.number(),
+		expectedYjsLastSequenceId: v.id("files_yjs_docs_last_sequences"),
+		trustedStageId: v.optional(v.id("files_yjs_trusted_update_stages")),
+		partial: v.optional(
+			v.object({
+				...files_pending_prepared_state_family_validator.fields,
+				unstagedTextInputId: v.id("files_pending_update_text_inputs"),
+				unstagedTextChanged: v.boolean(),
+			}),
+		),
+	}),
+	v.object({
+		...files_pending_prepared_content_fields,
+		kind: v.literal("saved_asset"),
+		nodeId: v.id("files_nodes"),
+		unchanged: v.optional(v.literal(true)),
+		publish: v.union(
+			v.object({
+				textInputId: v.id("files_pending_update_text_inputs"),
+				textSize: v.number(),
+				versionSnapshotAssetId: v.id("files_r2_assets"),
+			}),
+			v.null(),
+		),
+		partial: v.optional(files_pending_prepared_state_family_validator),
+	}),
+	v.object({
+		...files_pending_prepared_content_fields,
+		kind: v.literal("private"),
+		privateNodeId: v.id("files_pending_nodes"),
+		creationGeneration: v.number(),
+		structuralRevision: v.number(),
+		operationBatchId: v.optional(v.id("files_pending_update_operation_batches")),
+		prepared: v.optional(
+			v.object({
+				textInputId: v.id("files_pending_update_text_inputs"),
+				contentAssetId: v.id("files_r2_assets"),
+				yjsSnapshotAssetId: v.optional(v.id("files_r2_assets")),
+			}),
+		),
+		partial: v.optional(
+			v.object({
+				family: files_pending_prepared_state_family_validator,
+				unstagedTextInputId: v.id("files_pending_update_text_inputs"),
+			}),
+		),
+	}),
+	v.object({
+		...files_pending_prepared_content_fields,
+		kind: v.literal("replacement"),
+		nodeId: v.id("files_nodes"),
+		stagedAssetId: v.id("files_r2_assets"),
+		expectedYjsLastSequence: v.optional(
+			v.object({ id: v.id("files_yjs_docs_last_sequences"), lastSequence: v.number() }),
+		),
+		backup: v.optional(v.object({ assetId: v.id("files_r2_assets"), size: v.number() })),
+		contentAssetId: v.id("files_r2_assets"),
+		contentSize: v.number(),
+		contentType: v.string(),
+		yjsRootKind: v.optional(v.union(v.literal("rich_text"), v.literal("plain_text"))),
+		nonCollaborative: v.optional(v.boolean()),
+		yjsSnapshot: v.optional(v.object({ assetId: v.id("files_r2_assets"), size: v.number() })),
+		textInputId: v.optional(v.id("files_pending_update_text_inputs")),
+	}),
 );
 
 const app_convex_schema = defineSchema({
@@ -102,10 +338,44 @@ const app_convex_schema = defineSchema({
 		workspaceId: v.string(),
 		threadId: v.id("ai_chat_threads"),
 		bashCwd: v.string(),
+		bashCwdTarget: v.union(files_pending_target_validator, v.null()),
 		updatedBy: v.id("users"),
 		updatedAt: v.number(),
 	})
 		.index("by_thread", ["threadId"])
+		.index("by_bashCwdTarget", ["bashCwdTarget.kind", "bashCwdTarget.id"])
+		.index("by_organization_workspace_thread", ["organizationId", "workspaceId", "threadId"]),
+
+	ai_chat_bash_invocations: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		userId: v.id("users"),
+		threadId: v.id("ai_chat_threads"),
+		toolCallId: v.string(),
+		commandHash: v.string(),
+		membershipId: v.id("organizations_workspaces_users"),
+		membershipLifetime: v.number(),
+		status: v.union(v.literal("running"), v.literal("interrupted"), v.literal("finished")),
+		deadlineAt: v.number(),
+		transferDeadlineAt: v.number(),
+		finishedAt: v.optional(v.number()),
+		resultExpiresAt: v.optional(v.number()),
+		result: v.optional(ai_chat_bash_result_validator),
+	})
+		.index("by_thread_toolCall", ["threadId", "toolCallId"])
+		.index("by_resultExpiresAt", ["resultExpiresAt"])
+		.index("by_organization_workspace_thread", ["organizationId", "workspaceId", "threadId"]),
+
+	ai_chat_bash_invocation_transfers: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		threadId: v.id("ai_chat_threads"),
+		invocationId: v.id("ai_chat_bash_invocations"),
+		commandNumber: v.number(),
+		runId: v.id("files_transfer_runs"),
+		activityId: v.id("activities"),
+	})
+		.index("by_invocation_commandNumber", ["invocationId", "commandNumber"])
 		.index("by_organization_workspace_thread", ["organizationId", "workspaceId", "threadId"]),
 
 	/**
@@ -245,10 +515,14 @@ const app_convex_schema = defineSchema({
 		workspaceId: v.id("organizations_workspaces"),
 		/** Authoring user: the credential owner, or the plugin run's actorUserId. */
 		userId: v.id("users"),
-		/** Present only for plugin_run writes; failure cleanup settles the linked started call. */
+		/**
+		 * Present only for plugin_run writes. Failure cleanup settles the linked started call.
+		 */
 		runId: v.optional(v.id("plugins_event_runs")),
 		callId: v.optional(v.id("plugins_event_run_calls")),
-		/** Present only for user_api_key writes; publication revalidates the credential. */
+		/**
+		 * Present only for user_api_key writes. Publication revalidates the credential.
+		 */
 		credentialId: v.optional(v.id("api_credentials")),
 		/**
 		 * Present only for plugin_service writes; publication revalidates the sealed grant.
@@ -274,7 +548,9 @@ const app_convex_schema = defineSchema({
 				requestReadOnly: v.boolean(),
 			}),
 		),
-		/** Normalized absolute target path; parents are resolved again at publication. */
+		/**
+		 * Normalized absolute target path. Parents are resolved again at publication.
+		 */
 		path: v.string(),
 		/**
 		 * Invoke-only immediate parent identity, checked again at publication.
@@ -288,9 +564,13 @@ const app_convex_schema = defineSchema({
 		contentType: v.string(),
 		yjsRootKind: v.union(v.literal("rich_text"), v.literal("plain_text")),
 		yjsSnapshotAssetId: v.id("files_r2_assets"),
-		/** Staged content. On publish it becomes the file's first version snapshot and the `node.assetId` target. */
+		/**
+		 * Staged content. On publish it becomes the file's first version snapshot and the `node.assetId` target.
+		 */
 		contentSnapshotAssetId: v.id("files_r2_assets"),
-		/** Stages older than this are crashed writes; the cleanup cron deletes them and their assets. */
+		/**
+		 * Stages older than this are crashed writes. The cleanup cron deletes them and their assets.
+		 */
 		expiresAt: v.number(),
 		updatedAt: v.number(),
 	})
@@ -318,34 +598,178 @@ const app_convex_schema = defineSchema({
 	// #endregion value store
 
 	// #region files
+	/** A paged review must see the same owner's proposal set at its final fence. */
+	files_pending_review_versions: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		userId: v.id("users"),
+		revision: v.number(),
+	})
+		.index("by_organization_workspace_user", ["organizationId", "workspaceId", "userId"])
+		.index("by_user", ["userId"]),
+
+	files_pending_update_runs: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		userId: v.id("users"),
+		requestId: v.string(),
+		requestHash: v.string(),
+		kind: v.union(v.literal("accept"), v.literal("discard")),
+		step: v.union(v.literal("uploading"), v.literal("planning"), v.literal("running"), v.literal("finished")),
+		expectedItemCount: v.number(),
+		itemCount: v.number(),
+		unitCount: v.number(),
+		finishedUnitCount: v.number(),
+		plannedItemCount: v.number(),
+		reviewVersion: v.number(),
+		revalidateRemaining: v.boolean(),
+		fence: v.number(),
+		planningAttempts: v.number(),
+		needsReviewIds: v.array(v.id("files_pending_updates")),
+		updatedAt: v.number(),
+	})
+		.index("by_user_requestId", ["userId", "requestId"])
+		.index("by_step_updatedAt", ["step", "updatedAt"])
+		.index("by_user", ["userId"])
+		.index("by_organization_workspace", ["organizationId", "workspaceId"]),
+
+	files_pending_update_run_items: defineTable({
+		runId: v.id("files_pending_update_runs"),
+		order: v.number(),
+		pendingUpdateId: v.id("files_pending_updates"),
+		reviewedRevision: v.number(),
+		selectedContentStateId: v.union(v.id("files_pending_update_yjs_states"), v.null()),
+		target: files_pending_target_validator,
+		unitId: v.union(v.id("files_pending_update_run_units"), v.null()),
+		billedUserId: v.union(v.id("users"), v.null()),
+		prepared: v.union(files_pending_prepared_content_validator, v.null()),
+		expectedPath: v.union(v.string(), v.null()),
+		expectedDestinationParentPath: v.union(v.string(), v.null()),
+	})
+		.index("by_run_order", ["runId", "order"])
+		.index("by_run_pendingUpdate", ["runId", "pendingUpdateId"])
+		.index("by_unit_order", ["unitId", "order"])
+		.index("by_unit_targetKind_order", ["unitId", "target.kind", "order"])
+		.index("by_target", ["target.kind", "target.id"]),
+
+	files_pending_update_run_units: defineTable({
+		runId: v.id("files_pending_update_runs"),
+		order: v.number(),
+		deleteLast: v.boolean(),
+		itemCount: v.number(),
+		status: v.union(
+			v.literal("queued"),
+			v.literal("preparing"),
+			v.literal("completed"),
+			v.literal("blocked"),
+			v.literal("failed"),
+			v.literal("canceled"),
+		),
+		attemptCount: v.number(),
+		workId: v.union(vWorkId, v.null()),
+		attemptFence: v.number(),
+		attemptDeadlineAt: v.union(v.number(), v.null()),
+		validatedReviewVersion: v.union(v.number(), v.null()),
+		errorCode: v.union(v.string(), v.null()),
+		errorMessage: v.union(v.string(), v.null()),
+		finishedAt: v.union(v.number(), v.null()),
+		privateDiscardRoots: v.array(
+			v.object({
+				privateNodeId: v.id("files_pending_nodes"),
+				creationGeneration: v.number(),
+				structuralRevision: v.number(),
+				pendingUpdateId: v.id("files_pending_updates"),
+				reviewedRevision: v.number(),
+			}),
+		),
+	})
+		.index("by_run_order", ["runId", "order"])
+		.index("by_run_status_deleteLast_order", ["runId", "status", "deleteLast", "order"]),
+
+	files_pending_nodes: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		userId: v.id("users"),
+		kind: v.union(v.literal("file"), v.literal("folder")),
+		name: v.string(),
+		parent: files_pending_parent_validator,
+		structuralRevision: v.number(),
+		creationGeneration: v.number(),
+		state: v.union(v.literal("active"), v.literal("published"), v.literal("discarded")),
+		closedAt: v.union(v.number(), v.null()),
+	})
+		.index("by_organization_workspace_user_parent_state_name", [
+			"organizationId",
+			"workspaceId",
+			"userId",
+			"parent.kind",
+			"parent.id",
+			"state",
+			"name",
+		])
+		.index("by_organization_workspace_user_state", ["organizationId", "workspaceId", "userId", "state"])
+		.index("by_state_closedAt", ["state", "closedAt"])
+		.index("by_user", ["userId"])
+		.index("by_organization_workspace", ["organizationId", "workspaceId"]),
+
+	files_pending_node_publish_receipts: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		userId: v.id("users"),
+		privateNodeId: v.id("files_pending_nodes"),
+		creationGeneration: v.number(),
+		structuralRevision: v.number(),
+		proposalRevision: v.number(),
+		savedNodeId: v.id("files_nodes"),
+		createdAt: v.number(),
+	})
+		.index("by_privateNode", ["privateNodeId"])
+		.index("by_savedNode", ["savedNodeId"])
+		.index("by_user", ["userId"])
+		.index("by_organization_workspace", ["organizationId", "workspaceId"]),
+
+	/** Physical cleanup continues after a private Discard has closed the target. */
+	files_pending_node_cleanup_tasks: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		userId: v.id("users"),
+		privateNodeId: v.id("files_pending_nodes"),
+		nextAttemptAt: v.number(),
+	})
+		.index("by_privateNode", ["privateNodeId"])
+		.index("by_nextAttemptAt", ["nextAttemptAt"])
+		.index("by_user", ["userId"])
+		.index("by_organization_workspace", ["organizationId", "workspaceId"]),
+
 	files_pending_updates: defineTable({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
-		userId: v.string(),
-		fileNodeId: v.id("files_nodes"),
+		userId: v.id("users"),
+		target: files_pending_target_validator,
+		/** Changes whenever the proposal's reviewed content or intent changes. */
+		revision: v.number(),
 		/**
-		 * Base sequence of a content proposal on a collaborative file.
+		 * Initial type and metadata. A text draft is ready only with its sealed `content` group.
 		 */
-		baseYjsSequence: v.optional(v.number()),
+		createIntent: v.optional(files_pending_create_intent_validator),
+		/** A reserved target is not ready until its worker seals `createIntent` and its content. */
+		preparation: v.optional(v.object({ transferItemId: v.id("files_transfer_items"), creationGeneration: v.number() })),
 		/**
-		 * Canonical paged content group, set together or not at all (and only together with
-		 * `baseYjsSequence`). Each id points at a sealed `files_pending_update_yjs_states` doc
-		 * whose pages hold that branch's full state. Optional at the table level (move-only
-		 * docs have no group); readers and writers require all five content fields together.
-		 * A file with collaboration off has no Yjs sequence: its proposal sets the three state
-		 * ids together with `baseAssetId` instead.
+		 * The three sealed branches share one base. Structural-only proposals have no content.
+		 * A private new file has no saved sequence or asset to use as its base.
 		 */
-		baseLineageGeneration: v.optional(v.number()),
-		baseStateId: v.optional(v.id("files_pending_update_yjs_states")),
-		stagedStateId: v.optional(v.id("files_pending_update_yjs_states")),
-		unstagedStateId: v.optional(v.id("files_pending_update_yjs_states")),
-		/**
-		 * Base of a content proposal on a file with collaboration off: the `files_nodes.assetId`
-		 * the three branches were built from. Set together with the three state ids and never
-		 * together with `baseYjsSequence`. A member save changes the node's asset, which makes
-		 * the proposal stale.
-		 */
-		baseAssetId: v.optional(v.id("files_r2_assets")),
+		content: v.optional(
+			v.object({
+				base: v.union(
+					v.object({ kind: v.literal("new") }),
+					v.object({ kind: v.literal("yjs"), sequence: v.number(), lineageGeneration: v.number() }),
+					v.object({ kind: v.literal("asset"), assetId: v.id("files_r2_assets") }),
+				),
+				baseStateId: v.id("files_pending_update_yjs_states"),
+				stagedStateId: v.id("files_pending_update_yjs_states"),
+				unstagedStateId: v.id("files_pending_update_yjs_states"),
+			}),
+		),
 		/**
 		 * A toggle or restore kept these branches on their old base. Preparation rebuilds them
 		 * before another content write. Marking alone keeps the proposal's current expiry.
@@ -355,21 +779,21 @@ const app_convex_schema = defineSchema({
 		 * Shape of preserved branches before a restore changes the file's shape.
 		 */
 		contentRebaseRootKind: v.optional(v.union(v.literal("plain_text"), v.literal("rich_text"))),
-		/** Pending move/rename proposal. Ids are authoritative; `fromPath` is display/conflict metadata only. */
+		/**
+		 * Pending move or rename proposal. Ids are authoritative. `fromPath` is display and conflict metadata only.
+		 */
 		pendingMove: v.optional(
 			v.object({
-				destParentId: v.union(v.id("files_nodes"), v.literal("root")),
+				destParent: files_pending_parent_validator,
 				destName: v.string(),
 				fromPath: v.string(),
 				/**
 				 * `mv -f` structural replacement: the active file node that owned the destination
-				 * path at proposal time. Provenance metadata for the proposer's path overlay, which
-				 * hides the replaced occupant from their reads. The panel's "Replaces" caption
-				 * derives from live path occupancy instead. Accept re-validates and auto-replaces
-				 * whichever file occupies the destination then, with or without this field; a
-				 * folder occupant fails.
+				 * path at proposal time. The owner's view hides it. Accept requires this same
+				 * target and content version. A later occupant needs a new review.
 				 */
-				replacesNodeId: v.optional(v.id("files_nodes")),
+				replacesTarget: v.optional(files_pending_target_validator),
+				replacesContentVersion: v.optional(v.union(files_content_version_validator, v.null())),
 			}),
 		),
 		/**
@@ -387,7 +811,7 @@ const app_convex_schema = defineSchema({
 		 */
 		copiedFrom: v.optional(
 			v.object({
-				nodeId: v.id("files_nodes"),
+				target: files_pending_target_validator,
 				path: v.string(),
 			}),
 		),
@@ -421,31 +845,8 @@ const app_convex_schema = defineSchema({
 				 * reviewer never saw.
 				 */
 				baseAssetId: v.id("files_r2_assets"),
-			}),
-		),
-		/**
-		 * Set when this proposal eagerly created the file node (write_file or cp onto a new path):
-		 * the file shows as Added, and discard/expiry hard-deletes the node — but only when the
-		 * safety gate passes: no content committed since the stamp, no rename/move of the node
-		 * itself by another user, and no other user's pending update doc on it (an ancestor-folder
-		 * move does not count). Otherwise only the doc is deleted and the node stays. Absent for
-		 * proposals against pre-existing files, which must never hard-delete.
-		 */
-		eagerCreated: v.optional(
-			v.object({
-				/**
-				 * The node's committed Yjs last sequence, captured in the same mutation that
-				 * created the node (not at upsert time: the proposal upsert can land after a user
-				 * already saved the brand-new file). Any save that commits content advances the
-				 * node past this stamp, so the hard-delete safety check fails closed and the saved
-				 * content survives. Immutable (never re-stamped on later patches/rebases).
-				 */
-				committedSequence: v.number(),
-				/**
-				 * Parent folders created for this file, starting with the folder closest to the file.
-				 * Cleanup checks whether it can delete these folders after it deletes the file.
-				 */
-				createdAncestorIds: v.optional(v.array(v.id("files_nodes"))),
+				/** Bind replacement to saved edits even before their asset is materialized. */
+				baseContentVersion: files_content_version_validator,
 			}),
 		),
 		/**
@@ -456,15 +857,35 @@ const app_convex_schema = defineSchema({
 		size: v.number(),
 		updatedAt: v.number(),
 	})
-		.index("by_organization_workspace_user_fileNode", ["organizationId", "workspaceId", "userId", "fileNodeId"])
-		.index("by_user_fileNode", ["userId", "fileNodeId"])
-		.index("by_fileNode", ["fileNodeId"])
-		.index("by_pendingMove_destParentId", ["pendingMove.destParentId"]),
+		.index("by_organization_workspace_user_target", [
+			"organizationId",
+			"workspaceId",
+			"userId",
+			"target.kind",
+			"target.id",
+		])
+		.index("by_user_target", ["userId", "target.kind", "target.id"])
+		.index("by_target", ["target.kind", "target.id"])
+		.index("by_user_pendingMove_destParent_destName", [
+			"userId",
+			"pendingMove.destParent.kind",
+			"pendingMove.destParent.id",
+			"pendingMove.destName",
+		])
+		.index("by_copiedFrom_target", ["copiedFrom.target.kind", "copiedFrom.target.id"])
+		.index("by_organization_workspace_user_targetKind_updatedAt", [
+			"organizationId",
+			"workspaceId",
+			"userId",
+			"target.kind",
+			"updatedAt",
+		])
+		.index("by_pendingMove_destParent", ["pendingMove.destParent.kind", "pendingMove.destParent.id"]),
 
 	files_pending_updates_last_sequence_saved: defineTable({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
-		userId: v.string(),
+		userId: v.id("users"),
 		fileNodeId: v.id("files_nodes"),
 		lastSequenceSaved: v.number(),
 		updatedAt: v.number(),
@@ -495,9 +916,10 @@ const app_convex_schema = defineSchema({
 	files_pending_update_yjs_states: defineTable({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
-		userId: v.string(),
-		fileNodeId: v.id("files_nodes"),
+		userId: v.id("users"),
+		target: files_pending_target_validator,
 		owner: v.union(
+			v.object({ kind: v.literal("transfer_capture"), itemId: v.id("files_transfer_items") }),
 			v.object({
 				kind: v.literal("active"),
 				pendingUpdateId: v.id("files_pending_updates"),
@@ -527,11 +949,12 @@ const app_convex_schema = defineSchema({
 		/** Digest of the whole state bytes, so a reassembled state can be checked for torn pages. */
 		digest: v.string(),
 	})
-		.index("by_organization_workspace_fileNode", ["organizationId", "workspaceId", "fileNodeId"])
+		.index("by_organization_workspace_target", ["organizationId", "workspaceId", "target.kind", "target.id"])
 		.index("by_user", ["userId"])
 		.index("by_owner_pendingUpdate", ["owner.pendingUpdateId"])
 		.index("by_owner_operationBatch", ["owner.operationBatchId"])
 		.index("by_owner_cleanupTask", ["owner.cleanupTaskId"])
+		.index("by_owner_transferItem", ["owner.itemId"])
 		// Only the `temporary` owner variant has `expiresAt`, and Convex sorts docs without the
 		// field BEFORE every number on this index. A TTL sweep must bound the range from below
 		// (`q.gte("owner.expiresAt", 0)`), or it would also return every active and retired state.
@@ -571,8 +994,33 @@ const app_convex_schema = defineSchema({
 	files_pending_update_operation_batches: defineTable({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
-		userId: v.string(),
-		fileNodeId: v.id("files_nodes"),
+		userId: v.id("users"),
+		target: files_pending_target_validator,
+		expectedPendingUpdateId: v.union(v.id("files_pending_updates"), v.null()),
+		expectedRevision: v.union(v.number(), v.null()),
+		expectedPrivateVersion: v.union(
+			v.object({ creationGeneration: v.number(), structuralRevision: v.number() }),
+			v.null(),
+		),
+		/**
+		 * Only internal Save preparation sets this. Ordinary edit batches cannot use Save headroom.
+		 */
+		publication: v.optional(
+			v.union(
+				v.object({
+					kind: v.literal("assets"),
+					contentAssetId: v.id("files_r2_assets"),
+					yjsSnapshotAssetId: v.optional(v.id("files_r2_assets")),
+					backupAssetId: v.optional(v.id("files_r2_assets")),
+				}),
+				v.object({ kind: v.literal("update"), trustedStageId: v.id("files_yjs_trusted_update_stages") }),
+				v.object({ kind: v.literal("review") }),
+			),
+		),
+		/**
+		 * Assigned with a new private file. Only this batch may seal its first content.
+		 */
+		initialCreation: v.optional(v.literal(true)),
 		expiresAt: v.number(),
 		updatedAt: v.number(),
 		/**
@@ -582,7 +1030,13 @@ const app_convex_schema = defineSchema({
 		 */
 		lastActivityAt: v.number(),
 	})
-		.index("by_organization_workspace_user_fileNode", ["organizationId", "workspaceId", "userId", "fileNodeId"])
+		.index("by_organization_workspace_user_target", [
+			"organizationId",
+			"workspaceId",
+			"userId",
+			"target.kind",
+			"target.id",
+		])
 		.index("by_user", ["userId"])
 		.index("by_expiresAt", ["expiresAt"]),
 
@@ -594,8 +1048,8 @@ const app_convex_schema = defineSchema({
 	files_pending_update_text_inputs: defineTable({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
-		userId: v.string(),
-		fileNodeId: v.id("files_nodes"),
+		userId: v.id("users"),
+		target: files_pending_target_validator,
 		operationBatchId: v.id("files_pending_update_operation_batches"),
 		role: v.union(v.literal("staged"), v.literal("unstaged")),
 		text: v.string(),
@@ -622,36 +1076,12 @@ const app_convex_schema = defineSchema({
 	 * and hides stale committed docs for files the acting user is editing. Only frontmatter docs are
 	 * ever pending, because file metadata is written straight to committed.
 	 */
-	files_metadata_docs: defineTable({
-		organizationId: v.union(v.id("organizations"), v.literal(organizations_GLOBAL_ORGANIZATION_ID)),
-		workspaceId: v.union(
-			v.id("organizations_workspaces"),
-			v.literal(organizations_GLOBAL_GITHUB_WORKSPACE_ID),
-			v.literal(organizations_GLOBAL_PLUGINS_WORKSPACE_ID),
+	files_metadata_docs: defineTable(
+		v.union(
+			v.object({ ...files_committed_index_fields, ...files_metadata_index_fields }),
+			v.object({ ...files_pending_index_fields, ...files_metadata_index_fields }),
 		),
-		fileNodeId: v.id("files_nodes"),
-		sourceKind: v.union(v.literal("committed"), v.literal("pending")),
-		userId: v.optional(v.string()),
-		pendingUpdateId: v.optional(v.id("files_pending_updates")),
-		yjsSequence: v.optional(v.number()),
-		path: v.string(),
-		treePath: v.string(),
-		archiveOperationId: v.optional(v.string()),
-		fieldPath: v.string(),
-		/**
-		 * Where this key sits in the file's metadata map, counting from 0. The Properties modal is a
-		 * YAML text editor, so reading the map back in index order would reorder the user's lines on
-		 * every save. Set on `metadata.*` value docs only; frontmatter docs leave it unset.
-		 */
-		entryIndex: v.optional(v.number()),
-		docKind: v.union(v.literal("field"), v.literal("value")),
-		valueKind: v.optional(
-			v.union(v.literal("string"), v.literal("number"), v.literal("boolean"), v.literal("maybe_date")),
-		),
-		stringValue: v.optional(v.string()),
-		numberValue: v.optional(v.number()),
-		booleanValue: v.optional(v.boolean()),
-	})
+	)
 		.index("by_organization_workspace_source_fileNode_fieldPath", [
 			"organizationId",
 			"workspaceId",
@@ -660,6 +1090,13 @@ const app_convex_schema = defineSchema({
 			"fieldPath",
 		])
 		.index("by_organization_workspace_fileNode_fieldPath", ["organizationId", "workspaceId", "fileNodeId", "fieldPath"])
+		.index("by_organization_workspace_target_fieldPath", [
+			"organizationId",
+			"workspaceId",
+			"target.kind",
+			"target.id",
+			"fieldPath",
+		])
 		.index("by_pendingUpdate_fieldPath", ["pendingUpdateId", "fieldPath"])
 		.index("by_org_workspace_archive_docKind_fieldPath_tree", [
 			"organizationId",
@@ -725,9 +1162,13 @@ const app_convex_schema = defineSchema({
 		 * followed by descendants, while excluding sibling-prefix paths such as `/docs-archive`.
 		 */
 		treePath: v.string(),
-		/** Absolute path segment count; root is 0. */
+		/**
+		 * Absolute path segment count. Root is 0.
+		 */
 		pathDepth: v.number(),
-		/** Lowercase file extension without the dot; folders and extensionless files use null. */
+		/**
+		 * Lowercase file extension without the dot. Folders and extensionless files use null.
+		 */
 		lowercaseExtension: v.union(v.string(), v.null()),
 		// Content
 		/**
@@ -935,32 +1376,12 @@ const app_convex_schema = defineSchema({
 	}).index("by_organization_workspace_fileNode", ["organizationId", "workspaceId", "fileNodeId"]),
 
 	/** Exact text chunks for committed Yjs materializations and per-user pending updates. */
-	files_text_chunks: defineTable({
-		organizationId: v.union(v.id("organizations"), v.literal(organizations_GLOBAL_ORGANIZATION_ID)),
-		workspaceId: v.union(
-			v.id("organizations_workspaces"),
-			v.literal(organizations_GLOBAL_GITHUB_WORKSPACE_ID),
-			v.literal(organizations_GLOBAL_PLUGINS_WORKSPACE_ID),
+	files_text_chunks: defineTable(
+		v.union(
+			v.object({ ...files_committed_index_fields, ...files_text_chunk_fields }),
+			v.object({ ...files_pending_index_fields, ...files_text_chunk_fields }),
 		),
-		fileNodeId: v.id("files_nodes"),
-		/** `committed` docs use `yjsSequence`; `pending` docs use `userId` and `pendingUpdateId`. */
-		sourceKind: v.union(v.literal("committed"), v.literal("pending")),
-		/** Present only on pending docs, so one user's unsaved edits stay invisible to other users. */
-		userId: v.optional(v.string()),
-		/** Present only on pending docs; used for pending reads and pending-update cleanup. */
-		pendingUpdateId: v.optional(v.id("files_pending_updates")),
-		/** Present only on committed docs; identifies which Yjs snapshot was materialized. */
-		yjsSequence: v.optional(v.number()),
-		chunkIndex: v.number(),
-		textChunk: v.string(),
-		/** Character offsets in the full text content. */
-		startIndex: v.number(),
-		endIndex: v.number(),
-		/** 1-based text line range covered by this chunk. */
-		lineStart: v.number(),
-		lineEnd: v.number(),
-		chunkFlags: v.number(),
-	})
+	)
 		.index("by_organization_workspace_source_fileNode_yjsSeq_chunk", [
 			"organizationId",
 			"workspaceId",
@@ -992,6 +1413,13 @@ const app_convex_schema = defineSchema({
 			"chunkIndex",
 		])
 		.index("by_pendingUpdate_chunkIndex", ["pendingUpdateId", "chunkIndex"])
+		.index("by_organization_workspace_target_chunkIndex", [
+			"organizationId",
+			"workspaceId",
+			"target.kind",
+			"target.id",
+			"chunkIndex",
+		])
 		.index("by_pendingUpdate_lineEnd_chunkIndex", ["pendingUpdateId", "lineEnd", "chunkIndex"])
 		.index("by_pendingUpdate_endIndex_chunkIndex", ["pendingUpdateId", "endIndex", "chunkIndex"]),
 
@@ -1000,39 +1428,12 @@ const app_convex_schema = defineSchema({
 	 * the organization/workspace and suppressed at query time for files the acting user is editing.
 	 * Search result display fields are duplicated here so full-text hits do not hydrate linked docs.
 	 */
-	files_plain_text_chunks: defineTable({
-		organizationId: v.union(v.id("organizations"), v.literal(organizations_GLOBAL_ORGANIZATION_ID)),
-		workspaceId: v.union(
-			v.id("organizations_workspaces"),
-			v.literal(organizations_GLOBAL_GITHUB_WORKSPACE_ID),
-			v.literal(organizations_GLOBAL_PLUGINS_WORKSPACE_ID),
+	files_plain_text_chunks: defineTable(
+		v.union(
+			v.object({ ...files_committed_index_fields, ...files_plain_text_chunk_fields }),
+			v.object({ ...files_pending_index_fields, ...files_plain_text_chunk_fields }),
 		),
-		fileNodeId: v.id("files_nodes"),
-		/** `committed` docs use `yjsSequence`; `pending` docs use `userId` and `pendingUpdateId`. */
-		sourceKind: v.union(v.literal("committed"), v.literal("pending")),
-		/** Present only on pending docs, so pending search results are scoped to their owner. */
-		userId: v.optional(v.string()),
-		/** Present only on pending docs; used for pending overlay and cleanup. */
-		pendingUpdateId: v.optional(v.id("files_pending_updates")),
-		/** Present only on committed docs; mirrors the linked text chunk's materialized snapshot. */
-		yjsSequence: v.optional(v.number()),
-		/** Linked exact text chunk for exact reads and integrity checks. */
-		textChunkId: v.id("files_text_chunks"),
-		/** Denormalized from files_nodes.path so scoped search can filter before pagination. */
-		path: v.string(),
-		/** Denormalized from files_nodes.archiveOperationId so archived chunks stay out of search pages. */
-		archiveOperationId: v.optional(v.string()),
-		chunkIndex: v.number(),
-		plainTextChunk: v.string(),
-		textChunk: v.string(),
-		startIndex: v.number(),
-		endIndex: v.number(),
-		lineStart: v.number(),
-		lineEnd: v.number(),
-		chunkFlags: v.number(),
-		hasChunkAbove: v.boolean(),
-		hasChunkBelow: v.boolean(),
-	})
+	)
 		.searchIndex("search_by_plainTextChunk", {
 			searchField: "plainTextChunk",
 			filterFields: ["organizationId", "workspaceId", "archiveOperationId"],
@@ -1051,7 +1452,14 @@ const app_convex_schema = defineSchema({
 			"fileNodeId",
 			"chunkIndex",
 		])
-		.index("by_pendingUpdate_chunkIndex", ["pendingUpdateId", "chunkIndex"]),
+		.index("by_pendingUpdate_chunkIndex", ["pendingUpdateId", "chunkIndex"])
+		.index("by_organization_workspace_target_chunkIndex", [
+			"organizationId",
+			"workspaceId",
+			"target.kind",
+			"target.id",
+			"chunkIndex",
+		]),
 
 	files_yjs_snapshots: defineTable({
 		organizationId: v.id("organizations"),
@@ -1194,6 +1602,61 @@ const app_convex_schema = defineSchema({
 		])
 		.index("by_asset", ["assetId"]),
 
+	/**
+	 * A live storage hold becomes a receipt after Save or confirmed deletion. Retain it while a
+	 * producer or cleanup retry can still refer to the resource. Ownership transfers keep the hold.
+	 */
+	files_private_storage_reservations: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		userId: v.id("users"),
+		resource: v.union(
+			v.object({ kind: v.literal("asset"), id: v.id("files_r2_assets"), r2Key: v.string() }),
+			v.object({ kind: v.literal("state"), id: v.id("files_pending_update_yjs_states") }),
+			v.object({ kind: v.literal("text_input"), id: v.id("files_pending_update_text_inputs") }),
+			v.object({ kind: v.literal("trusted_stage"), id: v.id("files_yjs_trusted_update_stages") }),
+			v.object({ kind: v.literal("node"), id: v.id("files_pending_nodes") }),
+		),
+		byteCount: v.number(),
+		publicationBatchId: v.optional(v.id("files_pending_update_operation_batches")),
+		/**
+		 * The node quota for a private node. The user's byte quota for every payload.
+		 */
+		userQuotaId: v.id("quotas"),
+		workspaceQuotaId: v.union(v.id("quotas"), v.null()),
+		createdAt: v.number(),
+		settlement: v.union(
+			v.object({ kind: v.literal("held") }),
+			v.object({ kind: v.literal("saved"), savedNodeId: v.id("files_nodes"), settledAt: v.number() }),
+			v.object({
+				kind: v.literal("deleted"),
+				settledAt: v.number(),
+				proof: v.union(
+					v.object({ kind: v.literal("database") }),
+					v.object({ kind: v.literal("r2"), jobId: v.id("files_r2_object_deletion_jobs"), generation: v.number() }),
+				),
+			}),
+		),
+	})
+		.index("by_resource", ["resource.kind", "resource.id"])
+		.index("by_r2_key", ["resource.r2Key"])
+		.index("by_organization_workspace_settlement", ["organizationId", "workspaceId", "settlement.kind"])
+		.index("by_organization_workspace_settlement_resource", [
+			"organizationId",
+			"workspaceId",
+			"settlement.kind",
+			"resource.kind",
+		])
+		.index("by_user_settlement", ["userId", "settlement.kind"])
+		.index("by_user_settlement_resource", ["userId", "settlement.kind", "resource.kind"])
+		.index("by_userQuota_settlement", ["userQuotaId", "settlement.kind"])
+		.index("by_workspaceQuota_settlement", ["workspaceQuotaId", "settlement.kind"])
+		.index("by_workspaceQuota_settlement_publicationBatch", [
+			"workspaceQuotaId",
+			"settlement.kind",
+			"publicationBatchId",
+		]),
+
 	files_r2_assets: defineTable({
 		organizationId: v.union(v.id("organizations"), v.literal(organizations_GLOBAL_ORGANIZATION_ID)),
 		workspaceId: v.union(
@@ -1235,6 +1698,8 @@ const app_convex_schema = defineSchema({
 		 * create the R2 object again after a delete until the URL expires.
 		 */
 		uploadUrlExpiresAt: v.optional(v.number()),
+		/** Latest time an in-flight transfer write may arrive, including the cleanup margin. */
+		putMayArriveUntil: v.optional(v.number()),
 		/**
 		 * Cleanup has retired this pending attempt. A late event cannot publish it.
 		 */
@@ -1265,6 +1730,7 @@ const app_convex_schema = defineSchema({
 			v.literal("discarded_replacement"),
 		),
 		assetId: v.optional(v.id("files_r2_assets")),
+		privateStorageReservationId: v.optional(v.id("files_private_storage_reservations")),
 		generation: v.number(),
 		lastR2EventId: v.optional(v.string()),
 		/**
@@ -1313,7 +1779,9 @@ const app_convex_schema = defineSchema({
 		skippedCount: v.optional(v.number()),
 		compressedBytesRead: v.optional(v.number()),
 		acceptedUncompressedBytes: v.optional(v.number()),
-		/** App-generated id for the active sync run; stale async writes must match this before writing. */
+		/**
+		 * App-generated id for the active sync run. A stale async write must match this id before it writes.
+		 */
 		syncRunId: v.optional(v.string()),
 		lockedAt: v.optional(v.number()),
 		/**
@@ -1331,39 +1799,55 @@ const app_convex_schema = defineSchema({
 
 	// #region files transfer
 	/**
-	 * Saved Paste work. The idle clipboard stays in its browser tab.
+	 * Saved Paste and agent proposal work. The idle clipboard stays in its browser tab.
 	 */
 	files_transfer_runs: defineTable({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
 		userId: v.id("users"),
-		membershipId: v.id("organizations_workspaces_users"),
 		requestId: v.string(),
+		requestHash: v.string(),
 		kind: v.union(v.literal("move"), v.literal("copy")),
-		targetParentId: v.union(v.id("files_nodes"), v.literal("root")),
+		sourceView: v.union(v.literal("saved"), v.literal("draft")),
+		publication: v.union(v.literal("saved"), v.literal("proposal")),
+		origin: v.union(
+			v.object({ kind: v.literal("clipboard") }),
+			v.object({ kind: v.literal("agent"), threadId: v.id("ai_chat_threads") }),
+		),
+		targetParent: files_pending_parent_validator,
 		targetPath: v.string(),
-		phase: files_transfer_phase_validator,
-		/**
-		 * One active run per user and workspace. Stays true until running workers finish.
-		 */
-		active: v.boolean(),
+		targetName: v.union(v.string(), v.null()),
+		missingParentNames: v.array(v.string()),
+		preparedParent: v.union(files_pending_parent_validator, v.null()),
+		// The Activity holds the deadline. This flag stops a synchronous run from extending it.
+		fixedDeadline: v.boolean(),
+		conflictPolicy: v.object({
+			file: v.union(v.literal("ask"), v.literal("replace"), v.literal("skip"), v.literal("error")),
+			folder: v.union(
+				v.literal("ask"),
+				v.literal("merge"),
+				v.literal("replace_empty"),
+				v.literal("skip"),
+				v.literal("error"),
+			),
+		}),
+		step: v.union(v.literal("discover"), v.literal("plan"), v.literal("apply"), v.literal("retry")),
+		planCursor: v.union(v.number(), v.null()),
+		retryOf: v.union(v.id("files_transfer_runs"), v.null()),
+		retryCursor: v.union(v.number(), v.null()),
 		revision: v.number(),
-		total: v.number(),
-		completed: v.number(),
-		skipped: v.number(),
-		failed: v.number(),
 		inFlight: v.number(),
-		applyToRemaining: v.union(v.literal("keep_both"), v.literal("skip"), v.null()),
-		errorMessage: v.union(v.string(), v.null()),
-		expiresAt: v.number(),
-		finishedAt: v.union(v.number(), v.null()),
-		updatedAt: v.number(),
+		applyToRemaining: v.object({
+			file: v.union(v.literal("keep_both"), v.literal("replace"), v.literal("skip"), v.null()),
+			folder: v.union(v.literal("keep_both"), v.literal("merge"), v.literal("skip"), v.null()),
+		}),
 	})
 		.index("by_user_workspace_request", ["userId", "workspaceId", "requestId"])
-		.index("by_user_workspace_active", ["userId", "workspaceId", "active"])
+		.index("by_targetParent", ["targetParent.kind", "targetParent.id"])
+		.index("by_preparedParent", ["preparedParent.kind", "preparedParent.id"])
+		.index("by_retryOf", ["retryOf", "step"])
 		.index("by_organization_workspace", ["organizationId", "workspaceId"])
-		.index("by_user", ["userId"])
-		.index("by_expiresAt", ["expiresAt"]),
+		.index("by_user", ["userId"]),
 
 	/**
 	 * One doc per source in a run. Tracks attempts, temporary assets, and the resulting node.
@@ -1372,10 +1856,12 @@ const app_convex_schema = defineSchema({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
 		runId: v.id("files_transfer_runs"),
-		sourceId: v.id("files_nodes"),
-		sourceParentId: v.union(v.id("files_nodes"), v.literal("root")),
+		source: files_pending_target_validator,
+		sourceParent: files_pending_parent_validator,
 		sourceName: v.string(),
 		sourcePath: v.string(),
+		targetName: v.string(),
+		plannedPath: v.union(v.string(), v.null()),
 		kind: v.union(v.literal("folder"), v.literal("file")),
 		parentItemId: v.union(v.id("files_transfer_items"), v.null()),
 		order: v.number(),
@@ -1383,11 +1869,13 @@ const app_convex_schema = defineSchema({
 		discoveryCursor: v.union(v.string(), v.null()),
 		state: v.union(
 			v.literal("pending"),
+			v.literal("blocked"),
 			v.literal("copying"),
 			v.literal("conflict"),
 			v.literal("completed"),
 			v.literal("skipped"),
 			v.literal("failed"),
+			v.literal("canceled"),
 		),
 		conflictKind: v.union(
 			v.literal("name_conflict"),
@@ -1395,7 +1883,28 @@ const app_convex_schema = defineSchema({
 			v.literal("destination_changed"),
 			v.null(),
 		),
-		choice: v.union(v.literal("keep_both"), v.literal("skip"), v.null()),
+		choice: v.union(v.literal("keep_both"), v.literal("skip"), v.literal("merge"), v.literal("replace"), v.null()),
+		conflictTarget: v.union(files_pending_target_validator, v.null()),
+		conflictVersion: v.union(files_transfer_source_version_validator, v.null()),
+		preparation: v.union(
+			v.object({
+				privateNodeId: v.id("files_pending_nodes"),
+				pendingUpdateId: v.id("files_pending_updates"),
+				creationGeneration: v.number(),
+				structuralRevision: v.number(),
+				proposalRevision: v.number(),
+			}),
+			v.null(),
+		),
+		outcome: v.union(v.literal("copied"), v.literal("moved"), v.literal("merged"), v.literal("unchanged"), v.null()),
+		cancelReason: v.union(
+			v.literal("stop"),
+			v.literal("timeout"),
+			v.literal("proposal_discard"),
+			v.literal("proposal_expiry"),
+			v.null(),
+		),
+		errorCode: v.union(v.string(), v.null()),
 		attempt: v.number(),
 		workId: v.union(vWorkId, v.null()),
 		attemptExpiresAt: v.union(v.number(), v.null()),
@@ -1404,15 +1913,48 @@ const app_convex_schema = defineSchema({
 		 */
 		stagedAssetIds: v.array(v.id("files_r2_assets")),
 		/**
+		 * The first source read and its independent content. Retries keep the same capture.
+		 * An artifact owns finalized assets until publication or durable cleanup takes them.
+		 */
+		capture: v.union(
+			v.null(),
+			v.object({
+				sourceVersion: files_transfer_source_version_validator,
+				sourceAssetId: v.union(v.id("files_r2_assets"), v.null()),
+				sourceStateId: v.union(v.id("files_pending_update_yjs_states"), v.null()),
+				sourceYjsSnapshot: v.union(
+					v.null(),
+					v.object({
+						snapshotId: v.id("files_yjs_snapshots"),
+						assetId: v.id("files_r2_assets"),
+						sequence: v.number(),
+					}),
+				),
+				metadata: files_metadata_entries_validator,
+				artifact: v.union(
+					v.null(),
+					v.object({
+						contentAssetId: v.id("files_r2_assets"),
+						yjsSnapshotAssetId: v.union(v.id("files_r2_assets"), v.null()),
+						textStateId: v.union(v.id("files_pending_update_yjs_states"), v.null()),
+					}),
+				),
+			}),
+		),
+		/**
 		 * Payer pinned at the first successful billing check; retries keep it.
 		 */
 		billedUserId: v.union(v.id("users"), v.null()),
-		outputId: v.union(v.id("files_nodes"), v.null()),
+		outputTarget: v.union(files_pending_target_validator, v.null()),
 		outputName: v.union(v.string(), v.null()),
 		outputPath: v.union(v.string(), v.null()),
 		errorMessage: v.union(v.string(), v.null()),
 	})
-		.index("by_run_source", ["runId", "sourceId"])
+		.index("by_run_source", ["runId", "source.kind", "source.id"])
+		.index("by_source", ["source.kind", "source.id"])
+		.index("by_sourceParent", ["sourceParent.kind", "sourceParent.id"])
+		.index("by_preparation_privateNode", ["preparation.privateNodeId"])
+		.index("by_outputTarget", ["outputTarget.kind", "outputTarget.id"])
 		.index("by_run_order", ["runId", "order"])
 		.index("by_run_state_order", ["runId", "state", "order"])
 		.index("by_run_work", ["runId", "workId"])
@@ -1429,7 +1971,10 @@ const app_convex_schema = defineSchema({
 		repositoryUrl: v.string(),
 		owner: v.string(),
 		repo: v.string(),
-		/** Last publish_version outcome after authorization; outlives the toast so first-publish rejections stay visible. */
+		/**
+		 * Last publish_version outcome after authorization. It outlives the toast, so first-publish
+		 * rejections stay visible.
+		 */
 		lastPublishAttempt: v.optional(
 			v.object({
 				at: v.number(),
@@ -1551,7 +2096,9 @@ const app_convex_schema = defineSchema({
 				),
 			}),
 		),
-		/** UI pages declared in the manifest; an empty array means this version has no frontend page. */
+		/**
+		 * UI pages declared in the manifest. An empty array means this version has no frontend page.
+		 */
 		pages: v.array(
 			v.object({
 				id: v.string(),
@@ -1560,7 +2107,9 @@ const app_convex_schema = defineSchema({
 				navItem: v.union(v.object({ label: v.string(), icon: v.union(v.string(), v.null()) }), v.null()),
 			}),
 		),
-		/** File views declared in the manifest; an empty array means this version opens no file content types. */
+		/**
+		 * File views declared in the manifest. An empty array means this version opens no file content types.
+		 */
 		fileViews: v.array(
 			v.object({
 				id: v.string(),
@@ -1868,44 +2417,26 @@ const app_convex_schema = defineSchema({
 		 */
 		endpointId: v.optional(v.string()),
 		/**
-		 * The serialization lock this run holds while queued or running: the literal
-		 * "installation", or `<endpointId>:<callerKey>` for a caller-key endpoint. The run record
-		 * itself is the lock — a second run with the same live key answers busy.
+		 * The execution key is also stored on the Activity for its indexed busy check.
 		 */
 		serializationKey: v.optional(v.string()),
-		status: v.union(v.literal("queued"), v.literal("running"), v.literal("succeeded"), v.literal("failed")),
 		workId: v.optional(vWorkId),
 		apiTokenHash: v.optional(v.string()),
 		apiTokenExpiresAt: v.optional(v.number()),
 		acceptedCapabilities: v.array(plugins_capability_validator),
-		expiresAt: v.number(),
 		apiCallCount: v.number(),
 		outputWriteCount: v.number(),
-		errorMessage: v.union(v.string(), v.null()),
 		runnerHttpStatus: v.optional(v.number()),
 		runnerElapsedMs: v.optional(v.number()),
 		pluginStatus: v.optional(v.number()),
 		runnerOutputBytes: v.optional(v.number()),
 		runnerOutputTruncated: v.optional(v.boolean()),
-		updatedAt: v.number(),
-		startedAt: v.optional(v.number()),
-		finishedAt: v.optional(v.number()),
 	})
 		.index("by_asset_event_installation", ["assetId", "event", "installationId"])
-		.index("by_organization_workspace_event_status_updatedAt", [
-			"organizationId",
-			"workspaceId",
-			"event",
-			"status",
-			"updatedAt",
-		])
-		.index("by_organization_workspace_updatedAt", ["organizationId", "workspaceId", "updatedAt"])
+		.index("by_organization_workspace", ["organizationId", "workspaceId"])
 		.index("by_work", ["workId"])
 		.index("by_apiTokenHash", ["apiTokenHash"])
-		.index("by_installation_updatedAt", ["installationId", "updatedAt"])
-		.index("by_installation_serializationKey_status", ["installationId", "serializationKey", "status"])
-		.index("by_pluginVersion", ["pluginVersionId"])
-		.index("by_status_expiresAt", ["status", "expiresAt"]),
+		.index("by_pluginVersion", ["pluginVersionId"]),
 
 	/**
 	 * Per-run call ledger: one doc per consumed quota slot, whether a host API request or an
@@ -1921,7 +2452,9 @@ const app_convex_schema = defineSchema({
 		pluginVersionId: v.id("plugins_versions"),
 		sequence: v.number(),
 		kind: v.union(v.literal("api_request"), v.literal("outbound_fetch")),
-		/** Public API route for `api_request`; the literal "outbound" for `outbound_fetch`. */
+		/**
+		 * Public API route for `api_request`. The literal "outbound" for `outbound_fetch`.
+		 */
 		route: v.string(),
 		status: v.union(v.literal("started"), v.literal("succeeded"), v.literal("failed")),
 		responseStatus: v.optional(v.number()),
@@ -1952,7 +2485,10 @@ const app_convex_schema = defineSchema({
 		installationId: v.id("plugins_workspace_installations"),
 		pluginVersionId: v.id("plugins_versions"),
 		userId: v.id("users"),
-		/** Set only for file-view sessions: the file node the view was opened for. Page sessions leave it unset. */
+		/**
+		 * Set only for file-view sessions. It holds the file node the view was opened for. Page
+		 * sessions leave it unset.
+		 */
 		fileNodeId: v.optional(v.id("files_nodes")),
 		/**
 		 * Set only for file-view sessions: the view the session was minted for. A refresh checks
@@ -2786,27 +3322,26 @@ const app_convex_schema = defineSchema({
 
 	// #region activities
 	/**
-	 * Workspace activity feed: one doc per user-visible unit of background work. Producers write
-	 * activities only inside their own mutations (never from actions), so the activity can never
-	 * drift from the domain state it mirrors. The producer finds its activity through the
-	 * `by_source_id` index and owns its lifecycle, including deleting it on retention.
+	 * One lifecycle per background job. Producers update it in the same transaction as their
+	 * work. Hidden plugin jobs become visible only when the plugin opts into the feed.
 	 */
 	activities: defineTable({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
-		/**
-		 * Who triggered the work. Plugin activities are shared; transfer runs are private to this user.
-		 */
 		userId: v.id("users"),
-		/**
-		 * "timeout" = the deadline cron closed it because the producer never finished it in time.
-		 * "canceled" = the owner stopped the work.
-		 */
+		membershipId: v.optional(v.id("organizations_workspaces_users")),
+		membershipLifetime: v.optional(v.number()),
+		visibility: v.union(v.literal("requester"), v.literal("shared")),
+		feedVisible: v.boolean(),
 		status: v.union(
+			v.literal("queued"),
 			v.literal("running"),
+			v.literal("awaiting_input"),
+			v.literal("stopping"),
 			v.literal("succeeded"),
+			v.literal("partial"),
 			v.literal("failed"),
-			v.literal("timeout"),
+			v.literal("timed_out"),
 			v.literal("canceled"),
 		),
 		/**
@@ -2819,23 +3354,49 @@ const app_convex_schema = defineSchema({
 				id: v.id("plugins_event_runs"),
 				installationId: v.id("plugins_workspace_installations"),
 				pluginName: v.string(),
+				event: v.union(
+					v.literal("files.upload.completed"),
+					v.literal("files.run.requested"),
+					v.literal("users.account.deleted"),
+					v.literal("ui.invoke.requested"),
+				),
+				serializationKey: v.optional(v.string()),
 			}),
 			v.object({
 				kind: v.literal("files_transfer_run"),
 				id: v.id("files_transfer_runs"),
 				transferKind: v.union(v.literal("move"), v.literal("copy")),
-				phase: files_transfer_phase_validator,
-				total: v.number(),
+			}),
+			v.object({
+				kind: v.literal("files_pending_update_run"),
+				id: v.id("files_pending_update_runs"),
+				operationKind: v.union(v.literal("accept"), v.literal("discard")),
+			}),
+		),
+		progress: v.optional(
+			v.object({
+				unit: v.union(v.literal("files"), v.literal("items")),
+				discovered: v.number(),
+				total: v.union(v.number(), v.null()),
 				completed: v.number(),
 				skipped: v.number(),
 				failed: v.number(),
+				blocked: v.number(),
+				canceled: v.number(),
 			}),
+		),
+		resultKind: v.union(
+			v.literal("saved"),
+			v.literal("ready_for_review"),
+			v.literal("discarded"),
+			v.literal("plugin_result"),
 		),
 		/**
 		 * Status-neutral display text, e.g. "Video plugin · speakers.mp4".
 		 */
 		title: v.string(),
 		errorMessage: v.union(v.string(), v.null()),
+		errorCode: v.optional(v.string()),
 		/**
 		 * Entities the work touches, appended as the producer creates them; UIs use these to link
 		 * and to decorate rows. Bounded by the producer (plugin runs: the 20-call quota).
@@ -2852,27 +3413,48 @@ const app_convex_schema = defineSchema({
 			}),
 		),
 		/**
-		 * Plugin deadline (at most 5 minutes after start). Transfer runs own their expiry and stop checks.
+		 * Only the producer's stop path can settle this deadline. An estimate never stops work.
 		 */
-		timeoutAt: v.number(),
+		deadlineAt: v.number(),
+		expectedFinishAt: v.optional(v.number()),
+		startedAt: v.optional(v.number()),
+		stopRequestedAt: v.optional(v.number()),
 		finishedAt: v.optional(v.number()),
-		/**
-		 * 0 = not archived; the dismiss time once a user dismisses a finished activity. Archived items stay for producers.
-		 */
-		archivedAt: v.number(),
+		expiresAt: v.optional(v.number()),
 		updatedAt: v.number(),
 	})
-		.index("by_organization_workspace_archivedAt_updatedAt", [
+		.index("by_organization_workspace_feedVisible_finishedAt_updatedAt", [
 			"organizationId",
 			"workspaceId",
-			"archivedAt",
+			"feedVisible",
+			"finishedAt",
 			"updatedAt",
 		])
-		// The producer→activity link lives only here (no back-link on the producer doc): the
-		// producer finds its activity through this index, and its absence means "never opted in".
 		.index("by_source_id", ["source.id"])
-		// The timeout cron scans only overdue running activities through this index.
-		.index("by_status_timeoutAt", ["status", "timeoutAt"]),
+		.index("by_user_workspace_source_kind_status", ["userId", "workspaceId", "source.kind", "status"])
+		.index("by_status_deadlineAt", ["status", "deadlineAt"])
+		.index("by_status_expiresAt", ["status", "expiresAt"])
+		.index("by_organization_workspace_source_event_status_updatedAt", [
+			"organizationId",
+			"workspaceId",
+			"source.event",
+			"status",
+			"updatedAt",
+		])
+		.index("by_source_installation_updatedAt", ["source.installationId", "updatedAt"])
+		.index("by_source_installation_serializationKey_status", [
+			"source.installationId",
+			"source.serializationKey",
+			"status",
+		]),
+
+	activities_user_states: defineTable({
+		userId: v.id("users"),
+		activityId: v.id("activities"),
+		dismissedAt: v.number(),
+	})
+		.index("by_user_activity", ["userId", "activityId"])
+		.index("by_activity", ["activityId"]),
 
 	// #endregion activities
 
@@ -2915,7 +3497,9 @@ const app_convex_schema = defineSchema({
 		isArchived: v.boolean(),
 		/** User ID who created this message */
 		createdBy: v.string(),
-		/** Markdown content; produced from TipTap rich text on submit */
+		/**
+		 * Markdown content. It is produced from TipTap rich text on submit.
+		 */
 		content: v.string(),
 	}).index("by_organization_workspace_thread", ["organizationId", "workspaceId", "threadId"]),
 	// #endregion chat messages
@@ -3024,7 +3608,9 @@ const app_convex_schema = defineSchema({
 	access_control_roles: defineTable({
 		organizationId: v.id("organizations"),
 		name: v.string(),
-		/** `name` in lowercase, without spaces around it. Unique per organization, never a system role name. */
+		/**
+		 * `name` in lowercase, without spaces around it. Unique per organization, never a system role name.
+		 */
 		normalizedName: v.string(),
 		description: v.string(),
 		permissions: v.array(access_control_permission_validator),
@@ -3243,6 +3829,9 @@ const app_convex_schema = defineSchema({
 			v.literal("active_api_credentials"),
 			v.literal("public_api_upload_bytes"),
 			v.literal("plugin_service_storage_bytes"),
+			v.literal("files_private_user_bytes"),
+			v.literal("files_private_workspace_bytes"),
+			v.literal("files_private_nodes"),
 		),
 		userId: v.optional(v.id("users")),
 		organizationId: v.optional(v.id("organizations")),
@@ -3251,11 +3840,16 @@ const app_convex_schema = defineSchema({
 		maxCount: v.number(),
 		createdAt: v.number(),
 		updatedAt: v.number(),
+		/** Cleanup keeps a private quota until its last storage hold settles. */
+		retiredAt: v.optional(v.number()),
 	})
 		.index("by_user_quotaName", ["userId", "quotaName"])
 		.index("by_organization_quotaName", ["organizationId", "quotaName"])
 		.index("by_workspace_quotaName", ["workspaceId", "quotaName"])
-		.index("by_user_organization_workspace_quotaName", ["userId", "organizationId", "workspaceId", "quotaName"]),
+		.index("by_user_organization_workspace_quotaName", ["userId", "organizationId", "workspaceId", "quotaName"])
+		.index("by_user_retiredAt", ["userId", "retiredAt"])
+		.index("by_organization_retiredAt", ["organizationId", "retiredAt"])
+		.index("by_workspace_retiredAt_quotaName", ["workspaceId", "retiredAt", "quotaName"]),
 	// #endregion organizations
 
 	// #region billing
@@ -3355,7 +3949,10 @@ const app_convex_schema = defineSchema({
 	notifications: defineTable({
 		userId: v.id("users"),
 		kind: v.literal("organization_workspace_invite"),
-		/** 0 = not archived; the dismiss time once the user archives it. Mandatory so indexes can filter on it. */
+		/**
+		 * 0 means not archived. It holds the dismiss time once the user archives it. It is mandatory
+		 * so indexes can filter on it.
+		 */
 		archivedAt: v.number(),
 		actorUserId: v.id("users"),
 		organizationId: v.id("organizations"),
@@ -3368,6 +3965,28 @@ const app_convex_schema = defineSchema({
 		.index("by_organization_workspace_user", ["organizationId", "workspaceId", "userId"]),
 
 	// #endregion users
+});
+
+// Shared handler contracts live with the schema to avoid Files import cycles.
+export const file_content_materialization_state_validator = v.object({
+	fileNode: doc(app_convex_schema, "files_nodes"),
+	yjsSnapshotDoc: doc(app_convex_schema, "files_yjs_snapshots"),
+	yjsLastSequenceDoc: doc(app_convex_schema, "files_yjs_docs_last_sequences"),
+	yjsUpdatesDocs: v.array(doc(app_convex_schema, "files_yjs_updates")),
+	asset: doc(app_convex_schema, "files_r2_assets"),
+	yjsSnapshotAsset: doc(app_convex_schema, "files_r2_assets"),
+});
+
+export const file_content_materialization_header_validator = v.object({
+	fileNode: doc(app_convex_schema, "files_nodes"),
+	yjsSnapshotDoc: doc(app_convex_schema, "files_yjs_snapshots"),
+	yjsLastSequenceDoc: doc(app_convex_schema, "files_yjs_docs_last_sequences"),
+	asset: doc(app_convex_schema, "files_r2_assets"),
+	yjsSnapshotAsset: doc(app_convex_schema, "files_r2_assets"),
+	/**
+	 * Later update reads stop here. A concurrent push belongs to the next materialization.
+	 */
+	throughSequence: v.number(),
 });
 
 export default app_convex_schema;

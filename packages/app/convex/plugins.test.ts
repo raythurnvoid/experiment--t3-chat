@@ -5,12 +5,13 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 import { api, internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
+import type { MutationCtx } from "./_generated/server.js";
 import { plugins_ai_review } from "./plugins.ts";
 import {
 	plugins_runtime_db_enqueue_upload_completed_runs,
 	plugins_runtime_execute_runner_request,
 } from "./plugins_runtime.ts";
-import * as activities from "./activities.ts";
+import * as activities from "./activities_db.ts";
 import plugin_runner, { type Env as PluginRunnerEnv } from "../../plugin-runner/src/index.ts";
 import { plugins_db_get_live_service_account } from "./plugins_service_accounts.ts";
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
@@ -123,6 +124,45 @@ function user_identity(userId: Id<"users">) {
 		external_id: userId,
 		email: "plugin-test@example.com",
 	};
+}
+
+async function insert_plugin_run(
+	ctx: MutationCtx,
+	args: Omit<Doc<"plugins_event_runs">, "_id" | "_creationTime"> &
+		Pick<Doc<"activities">, "status" | "deadlineAt" | "errorMessage" | "updatedAt"> &
+		Partial<Pick<Doc<"activities">, "startedAt" | "finishedAt">>,
+) {
+	const { status, deadlineAt, errorMessage, updatedAt, startedAt, finishedAt, ...run } = args;
+	const version = await ctx.db.get("plugins_versions", run.pluginVersionId);
+	if (!version) throw new Error("Expected plugin version");
+	const runId = await ctx.db.insert("plugins_event_runs", run);
+	const terminalAt = activities.activities_is_active(status) ? undefined : (finishedAt ?? updatedAt);
+	await ctx.db.insert("activities", {
+		organizationId: run.organizationId,
+		workspaceId: run.workspaceId,
+		userId: run.actorUserId,
+		source: {
+			kind: "plugin_run",
+			id: runId,
+			installationId: run.installationId,
+			pluginName: version.name,
+			event: run.event,
+			serializationKey: run.serializationKey,
+		},
+		title: version.displayName,
+		targets: [],
+		visibility: "shared",
+		feedVisible: false,
+		resultKind: "plugin_result",
+		status,
+		deadlineAt,
+		errorMessage,
+		updatedAt,
+		startedAt,
+		finishedAt: terminalAt,
+		expiresAt: terminalAt === undefined ? undefined : terminalAt + 30 * 24 * 60 * 60 * 1000,
+	});
+	return runId;
 }
 
 function runner_response_headers(args: {
@@ -760,7 +800,7 @@ describe("plugins Phase 0", () => {
 		},
 	) {
 		return t.run(async (ctx) =>
-			ctx.db.insert("plugins_event_runs", {
+			insert_plugin_run(ctx, {
 				serviceAccountId: (await ctx.db.get("plugins_workspace_installations", fixture.installationId))!
 					.serviceAccountId,
 				organizationId: fixture.membership.organizationId,
@@ -774,7 +814,7 @@ describe("plugins Phase 0", () => {
 				eventId: args.eventId,
 				status: args.status,
 				acceptedCapabilities: fixture.installation.acceptedCapabilities,
-				expiresAt: args.expiresAt,
+				deadlineAt: args.expiresAt,
 				apiCallCount: 0,
 				outputWriteCount: 0,
 				errorMessage: null,
@@ -818,7 +858,7 @@ describe("plugins Phase 0", () => {
 			throw new Error(upload._nay.message);
 		}
 		const runId = await t.run(async (ctx) =>
-			ctx.db.insert("plugins_event_runs", {
+			insert_plugin_run(ctx, {
 				serviceAccountId: (await ctx.db.get("plugins_workspace_installations", installed._yay.installationId))!
 					.serviceAccountId,
 				organizationId: membership.organizationId,
@@ -832,7 +872,7 @@ describe("plugins Phase 0", () => {
 				eventId: `plugin:run-${args?.tokenSeed ?? "e"}`,
 				status: "queued",
 				acceptedCapabilities: args?.acceptedCapabilities ?? ["plugin.secrets.read", "outbound.fetch"],
-				expiresAt: Date.now() + (args?.expiresInMs ?? 30 * 60 * 1000),
+				deadlineAt: Date.now() + (args?.expiresInMs ?? 30 * 60 * 1000),
 				apiCallCount: 0,
 				outputWriteCount: 0,
 				errorMessage: null,
@@ -1303,7 +1343,7 @@ describe("plugins Phase 0", () => {
 			if (!installation) {
 				throw new Error("Expected installation");
 			}
-			return await ctx.db.insert("plugins_event_runs", {
+			return await insert_plugin_run(ctx, {
 				serviceAccountId: (await ctx.db.get("plugins_workspace_installations", installed._yay.installationId))!
 					.serviceAccountId,
 				organizationId: membership.organizationId,
@@ -1317,7 +1357,7 @@ describe("plugins Phase 0", () => {
 				eventId: "plugin:secret-test",
 				status: "queued",
 				acceptedCapabilities: installation.acceptedCapabilities,
-				expiresAt: Date.now() + 30 * 60 * 1000,
+				deadlineAt: Date.now() + 30 * 60 * 1000,
 				apiCallCount: 0,
 				outputWriteCount: 0,
 				errorMessage: null,
@@ -1395,7 +1435,7 @@ describe("plugins Phase 0", () => {
 			if (!installation) {
 				throw new Error("Expected installation");
 			}
-			return await ctx.db.insert("plugins_event_runs", {
+			return await insert_plugin_run(ctx, {
 				serviceAccountId: (await ctx.db.get("plugins_workspace_installations", installed._yay.installationId))!
 					.serviceAccountId,
 				organizationId: membership.organizationId,
@@ -1409,7 +1449,7 @@ describe("plugins Phase 0", () => {
 				eventId: "plugin:runner-call-test",
 				status: "queued",
 				acceptedCapabilities: ["outbound.fetch"],
-				expiresAt: Date.now() + 30 * 60 * 1000,
+				deadlineAt: Date.now() + 30 * 60 * 1000,
 				apiCallCount: 0,
 				outputWriteCount: 0,
 				errorMessage: null,
@@ -1800,9 +1840,7 @@ describe("plugins Phase 0", () => {
 		await t.run((ctx) => ctx.db.patch("files_r2_assets", upload.assetId, { r2Key: "plugins/test/final-second.png" }));
 		// Alive enough to authenticate, but under the 1s signing granularity: any URL would
 		// have to outlive the token, so the route must refuse instead of flooring the TTL up.
-		await t.run((ctx) =>
-			ctx.db.patch("plugins_event_runs", runId, { apiTokenExpiresAt: Date.now() + 900, updatedAt: Date.now() }),
-		);
+		await t.run((ctx) => ctx.db.patch("plugins_event_runs", runId, { apiTokenExpiresAt: Date.now() + 900 }));
 		const response = await t.fetch("/api/v1/files/download-urls", {
 			method: "POST",
 			headers: { Authorization: `Bearer ${apiToken}`, "Content-Type": "application/json" },
@@ -2220,11 +2258,10 @@ describe("plugins Phase 0", () => {
 		expect(processed).toEqual({ _yay: null });
 		const runs = await t.run((ctx) => ctx.db.query("plugins_event_runs").collect());
 		expect(runs).toHaveLength(1);
-		expect(runs[0]).toMatchObject({
-			installationId: installed._yay.installationId,
-			event: "files.upload.completed",
+		expect(await t.run((ctx) => activities.activities_db_require_by_source_id(ctx, runs[0]!._id))).toMatchObject({
 			status: "queued",
 		});
+		expect(runs[0]).toMatchObject({ installationId: installed._yay.installationId, event: "files.upload.completed" });
 		const asset = await t.run((ctx) => ctx.db.get("files_r2_assets", upload._yay.assetId));
 		expect(asset?.processingWorkId).toBeNull();
 
@@ -2295,7 +2332,7 @@ describe("plugins Phase 0", () => {
 			if (!installation) {
 				throw new Error("Expected installation");
 			}
-			return await ctx.db.insert("plugins_event_runs", {
+			return await insert_plugin_run(ctx, {
 				serviceAccountId: (await ctx.db.get("plugins_workspace_installations", installed._yay.installationId))!
 					.serviceAccountId,
 				organizationId: membership.organizationId,
@@ -2309,7 +2346,7 @@ describe("plugins Phase 0", () => {
 				eventId: "plugin:overwrite-test",
 				status: "queued",
 				acceptedCapabilities: installation.acceptedCapabilities,
-				expiresAt: Date.now() + 30 * 60 * 1000,
+				deadlineAt: Date.now() + 30 * 60 * 1000,
 				apiCallCount: 0,
 				outputWriteCount: 0,
 				errorMessage: null,
@@ -2423,7 +2460,7 @@ describe("plugins Phase 0", () => {
 			if (!installation) {
 				throw new Error("Expected installation");
 			}
-			return await ctx.db.insert("plugins_event_runs", {
+			return await insert_plugin_run(ctx, {
 				serviceAccountId: (await ctx.db.get("plugins_workspace_installations", installed._yay.installationId))!
 					.serviceAccountId,
 				organizationId: membership.organizationId,
@@ -2437,7 +2474,7 @@ describe("plugins Phase 0", () => {
 				eventId: "plugin:locked-destination-test",
 				status: "queued",
 				acceptedCapabilities: installation.acceptedCapabilities,
-				expiresAt: Date.now() + 30 * 60 * 1000,
+				deadlineAt: Date.now() + 30 * 60 * 1000,
 				apiCallCount: 0,
 				outputWriteCount: 0,
 				errorMessage: null,
@@ -2593,7 +2630,7 @@ describe("plugins Phase 0", () => {
 			if (!installation) {
 				throw new Error("Expected installation");
 			}
-			return await ctx.db.insert("plugins_event_runs", {
+			return await insert_plugin_run(ctx, {
 				serviceAccountId: (await ctx.db.get("plugins_workspace_installations", installed._yay.installationId))!
 					.serviceAccountId,
 				organizationId: membership.organizationId,
@@ -2607,7 +2644,7 @@ describe("plugins Phase 0", () => {
 				eventId: "plugin:unsafe-output-test",
 				status: "queued",
 				acceptedCapabilities: installation.acceptedCapabilities,
-				expiresAt: Date.now() + 30 * 60 * 1000,
+				deadlineAt: Date.now() + 30 * 60 * 1000,
 				apiCallCount: 0,
 				outputWriteCount: 0,
 				errorMessage: null,
@@ -2710,7 +2747,7 @@ describe("plugins Phase 0", () => {
 			if (!installation) {
 				throw new Error("Expected installation");
 			}
-			return await ctx.db.insert("plugins_event_runs", {
+			return await insert_plugin_run(ctx, {
 				serviceAccountId: (await ctx.db.get("plugins_workspace_installations", installed._yay.installationId))!
 					.serviceAccountId,
 				organizationId: membership.organizationId,
@@ -2724,7 +2761,7 @@ describe("plugins Phase 0", () => {
 				eventId: "plugin:normalized-output-test",
 				status: "queued",
 				acceptedCapabilities: installation.acceptedCapabilities,
-				expiresAt: Date.now() + 30 * 60 * 1000,
+				deadlineAt: Date.now() + 30 * 60 * 1000,
 				apiCallCount: 0,
 				outputWriteCount: 0,
 				errorMessage: null,
@@ -2839,7 +2876,7 @@ describe("plugins Phase 0", () => {
 			if (!installation) {
 				throw new Error("Expected installation");
 			}
-			return await ctx.db.insert("plugins_event_runs", {
+			return await insert_plugin_run(ctx, {
 				serviceAccountId: (await ctx.db.get("plugins_workspace_installations", installed._yay.installationId))!
 					.serviceAccountId,
 				organizationId: membership.organizationId,
@@ -2853,7 +2890,7 @@ describe("plugins Phase 0", () => {
 				eventId: "plugin:multiple-output-test",
 				status: "queued",
 				acceptedCapabilities: installation.acceptedCapabilities,
-				expiresAt: Date.now() + 30 * 60 * 1000,
+				deadlineAt: Date.now() + 30 * 60 * 1000,
 				apiCallCount: 0,
 				outputWriteCount: 0,
 				errorMessage: null,
@@ -2956,7 +2993,7 @@ describe("plugins Phase 0", () => {
 			if (!installation) {
 				throw new Error("Expected installation");
 			}
-			return await ctx.db.insert("plugins_event_runs", {
+			return await insert_plugin_run(ctx, {
 				serviceAccountId: (await ctx.db.get("plugins_workspace_installations", installed._yay.installationId))!
 					.serviceAccountId,
 				organizationId: membership.organizationId,
@@ -2970,7 +3007,7 @@ describe("plugins Phase 0", () => {
 				eventId: "plugin:billing-charge-test",
 				status: "queued",
 				acceptedCapabilities: installation.acceptedCapabilities,
-				expiresAt: Date.now() + 30 * 60 * 1000,
+				deadlineAt: Date.now() + 30 * 60 * 1000,
 				apiCallCount: 0,
 				outputWriteCount: 0,
 				errorMessage: null,
@@ -3044,7 +3081,7 @@ describe("plugins Phase 0", () => {
 			if (!installation) {
 				throw new Error("Expected installation");
 			}
-			return await ctx.db.insert("plugins_event_runs", {
+			return await insert_plugin_run(ctx, {
 				serviceAccountId: (await ctx.db.get("plugins_workspace_installations", installed._yay.installationId))!
 					.serviceAccountId,
 				organizationId: membership.organizationId,
@@ -3058,7 +3095,7 @@ describe("plugins Phase 0", () => {
 				eventId: "plugin:billing-refusal-test",
 				status: "queued",
 				acceptedCapabilities: installation.acceptedCapabilities,
-				expiresAt: Date.now() + 30 * 60 * 1000,
+				deadlineAt: Date.now() + 30 * 60 * 1000,
 				apiCallCount: 0,
 				outputWriteCount: 0,
 				errorMessage: null,
@@ -3153,7 +3190,7 @@ describe("plugins Phase 0", () => {
 			if (!installation) {
 				throw new Error("Expected installation");
 			}
-			return await ctx.db.insert("plugins_event_runs", {
+			return await insert_plugin_run(ctx, {
 				serviceAccountId: (await ctx.db.get("plugins_workspace_installations", installed._yay.installationId))!
 					.serviceAccountId,
 				organizationId: membership.organizationId,
@@ -3167,7 +3204,7 @@ describe("plugins Phase 0", () => {
 				eventId: "plugin:failed-status-test",
 				status: "queued",
 				acceptedCapabilities: installation.acceptedCapabilities,
-				expiresAt: Date.now() + 30 * 60 * 1000,
+				deadlineAt: Date.now() + 30 * 60 * 1000,
 				apiCallCount: 1,
 				outputWriteCount: 1,
 				errorMessage: null,
@@ -3181,9 +3218,11 @@ describe("plugins Phase 0", () => {
 		await t.action(internal.plugins_runtime.execute_upload_completed_event_run, { runId });
 
 		const run = await t.run((ctx) => ctx.db.get("plugins_event_runs", runId));
-		expect(run).toMatchObject({
+		expect(await t.run((ctx) => activities.activities_db_require_by_source_id(ctx, run!._id))).toMatchObject({
 			status: "failed",
 			errorMessage: "Plugin returned status 500",
+		});
+		expect(run).toMatchObject({
 			runnerHttpStatus: 200,
 			pluginStatus: 500,
 			runnerElapsedMs: 12,
@@ -3211,14 +3250,14 @@ describe("plugins Phase 0", () => {
 		await t.action(internal.plugins_runtime.execute_upload_completed_event_run, { runId });
 
 		const run = await t.run((ctx) => ctx.db.get("plugins_event_runs", runId));
-		expect(run).toMatchObject({
+		expect(await t.run((ctx) => activities.activities_db_require_by_source_id(ctx, run!._id))).toMatchObject({
 			status: "failed",
 			errorMessage: "Plugin runner returned an invalid response",
-			runnerHttpStatus: 500,
 		});
+		expect(run).toMatchObject({ runnerHttpStatus: 500 });
 	});
 
-	test("marks a run failed when the runner request times out", async () => {
+	test("marks a run timed_out when the runner request times out", async () => {
 		const t = test_convex();
 		const fixture = await install_plugin_with_upload_asset(t);
 		const runId = await insert_event_run(t, fixture, {
@@ -3235,8 +3274,8 @@ describe("plugins Phase 0", () => {
 		await t.action(internal.plugins_runtime.execute_upload_completed_event_run, { runId });
 
 		const run = await t.run((ctx) => ctx.db.get("plugins_event_runs", runId));
-		expect(run).toMatchObject({
-			status: "failed",
+		expect(await t.run((ctx) => activities.activities_db_require_by_source_id(ctx, run!._id))).toMatchObject({
+			status: "timed_out",
 			errorMessage: "Plugin runner request timed out",
 		});
 	});
@@ -3253,7 +3292,6 @@ describe("plugins Phase 0", () => {
 			ctx.db.patch("plugins_event_runs", runId, {
 				apiTokenHash: await crypto_sha256_hex(`plr_${"2".repeat(64)}`),
 				apiTokenExpiresAt: Date.now() + 30 * 60 * 1000,
-				updatedAt: Date.now(),
 			}),
 		);
 		const consumed = await t.mutation(internal.plugins_runtime.consume_run_api_call, {
@@ -3281,7 +3319,12 @@ describe("plugins Phase 0", () => {
 		}
 
 		// The run dies between staging and publishing: the output must never become visible.
-		await t.run((ctx) => ctx.db.patch("plugins_event_runs", runId, { status: "failed", updatedAt: Date.now() }));
+		await t.run(async (ctx) =>
+			ctx.db.patch("activities", (await activities.activities_db_require_by_source_id(ctx, runId))._id, {
+				status: "failed",
+				updatedAt: Date.now(),
+			}),
+		);
 		const published = await t.mutation(internal.public_api.publish_file_write, {
 			stageId: prepared._yay.stageId,
 			content: "# New",
@@ -3436,7 +3479,6 @@ describe("plugins Phase 0", () => {
 				actorUserId,
 				apiTokenHash: await crypto_sha256_hex(`plr_${"7".repeat(64)}`),
 				apiTokenExpiresAt: Date.now() + 30 * 60 * 1000,
-				updatedAt: Date.now(),
 			}),
 		);
 		const stage_a_write = async () => {
@@ -3505,7 +3547,6 @@ describe("plugins Phase 0", () => {
 			ctx.db.patch("plugins_event_runs", runId, {
 				apiTokenHash: await crypto_sha256_hex(`plr_${"5".repeat(64)}`),
 				apiTokenExpiresAt: Date.now() + 30 * 60 * 1000,
-				updatedAt: Date.now(),
 			}),
 		);
 		const consumed = await t.mutation(internal.plugins_runtime.consume_run_api_call, {
@@ -3574,7 +3615,6 @@ describe("plugins Phase 0", () => {
 			ctx.db.patch("plugins_event_runs", runId, {
 				apiTokenHash: await crypto_sha256_hex(apiToken),
 				apiTokenExpiresAt: Date.now() + 30 * 60 * 1000,
-				updatedAt: Date.now(),
 			}),
 		);
 
@@ -3628,7 +3668,6 @@ describe("plugins Phase 0", () => {
 			ctx.db.patch("plugins_event_runs", runId, {
 				apiTokenHash: await crypto_sha256_hex(apiToken),
 				apiTokenExpiresAt: Date.now() - 1000,
-				updatedAt: Date.now(),
 			}),
 		);
 
@@ -3679,7 +3718,7 @@ describe("plugins Phase 0", () => {
 			if (!installation) {
 				throw new Error("Expected installation");
 			}
-			return await ctx.db.insert("plugins_event_runs", {
+			return await insert_plugin_run(ctx, {
 				serviceAccountId: (await ctx.db.get("plugins_workspace_installations", installed._yay.installationId))!
 					.serviceAccountId,
 				organizationId: membership.organizationId,
@@ -3693,7 +3732,7 @@ describe("plugins Phase 0", () => {
 				eventId: "plugin:no-output-test",
 				status: "queued",
 				acceptedCapabilities: installation.acceptedCapabilities,
-				expiresAt: Date.now() + 30 * 60 * 1000,
+				deadlineAt: Date.now() + 30 * 60 * 1000,
 				apiCallCount: 0,
 				outputWriteCount: 0,
 				errorMessage: null,
@@ -3707,13 +3746,11 @@ describe("plugins Phase 0", () => {
 		await t.action(internal.plugins_runtime.execute_upload_completed_event_run, { runId });
 
 		const run = await t.run((ctx) => ctx.db.get("plugins_event_runs", runId));
-		expect(run).toMatchObject({
+		expect(await t.run((ctx) => activities.activities_db_require_by_source_id(ctx, run!._id))).toMatchObject({
 			status: "succeeded",
 			errorMessage: null,
-			runnerHttpStatus: 200,
-			pluginStatus: 204,
-			outputWriteCount: 0,
 		});
+		expect(run).toMatchObject({ runnerHttpStatus: 200, pluginStatus: 204, outputWriteCount: 0 });
 	});
 
 	test.each([204, 500, "broken stream"] as const)(
@@ -3760,11 +3797,10 @@ describe("plugins Phase 0", () => {
 
 			await t.action(internal.plugins_runtime.execute_upload_completed_event_run, { runId });
 			const run = await t.run((ctx) => ctx.db.get("plugins_event_runs", runId));
-			expect(run).toMatchObject({
+			expect(await t.run((ctx) => activities.activities_db_require_by_source_id(ctx, run!._id))).toMatchObject({
 				status: outcome === 204 ? "succeeded" : "failed",
-				apiCallCount: 1,
-				outputWriteCount: 0,
 			});
+			expect(run).toMatchObject({ apiCallCount: 1, outputWriteCount: 0 });
 			expect(run?.apiTokenHash).toBeUndefined();
 			expect(await t.run((ctx) => ctx.db.query("plugins_data").collect())).toMatchObject([
 				{ collection: "results", key: "saved", value: { done: true }, revision: 1 },
@@ -3875,11 +3911,11 @@ describe("plugins Phase 0", () => {
 		await t.action(internal.plugins_runtime.execute_upload_completed_event_run, { runId });
 
 		const run = await t.run((ctx) => ctx.db.get("plugins_event_runs", runId));
-		expect(run).toMatchObject({
+		expect(await t.run((ctx) => activities.activities_db_require_by_source_id(ctx, run!._id))).toMatchObject({
 			status: "failed",
 			errorMessage: "Plugin left API calls unfinished",
-			runnerHttpStatus: 200,
 		});
+		expect(run).toMatchObject({ runnerHttpStatus: 200 });
 		// Terminalization settles the dangling call with a curated literal.
 		const call = await t.run((ctx) => ctx.db.get("plugins_event_run_calls", callId));
 		expect(call).toMatchObject({
@@ -3917,7 +3953,7 @@ describe("plugins Phase 0", () => {
 			if (!installation) {
 				throw new Error("Expected installation");
 			}
-			return await ctx.db.insert("plugins_event_runs", {
+			return await insert_plugin_run(ctx, {
 				serviceAccountId: (await ctx.db.get("plugins_workspace_installations", installed._yay.installationId))!
 					.serviceAccountId,
 				organizationId: membership.organizationId,
@@ -3931,7 +3967,7 @@ describe("plugins Phase 0", () => {
 				eventId: "plugin:secret-error-test",
 				status: "queued",
 				acceptedCapabilities: installation.acceptedCapabilities,
-				expiresAt: Date.now() + 30 * 60 * 1000,
+				deadlineAt: Date.now() + 30 * 60 * 1000,
 				apiCallCount: 0,
 				outputWriteCount: 0,
 				errorMessage: null,
@@ -3962,11 +3998,11 @@ describe("plugins Phase 0", () => {
 
 		// The outer runner masks and bounds errors before the host accepts them.
 		const run = await t.run((ctx) => ctx.db.get("plugins_event_runs", runId));
-		expect(run).toMatchObject({
+		expect(await t.run((ctx) => activities.activities_db_require_by_source_id(ctx, run!._id))).toMatchObject({
 			status: "failed",
 			errorMessage: "Plugin failed: [redacted]",
-			runnerHttpStatus: 200,
 		});
+		expect(run).toMatchObject({ runnerHttpStatus: 200 });
 
 		// A runner message outside that contract is a protocol failure.
 		const longRunId = await t.run(async (ctx) => {
@@ -3974,7 +4010,7 @@ describe("plugins Phase 0", () => {
 			if (!installation) {
 				throw new Error("Expected installation");
 			}
-			return await ctx.db.insert("plugins_event_runs", {
+			return await insert_plugin_run(ctx, {
 				serviceAccountId: (await ctx.db.get("plugins_workspace_installations", installed._yay.installationId))!
 					.serviceAccountId,
 				organizationId: membership.organizationId,
@@ -3988,7 +4024,7 @@ describe("plugins Phase 0", () => {
 				eventId: "plugin:long-error-test",
 				status: "queued",
 				acceptedCapabilities: installation.acceptedCapabilities,
-				expiresAt: Date.now() + 30 * 60 * 1000,
+				deadlineAt: Date.now() + 30 * 60 * 1000,
 				apiCallCount: 0,
 				outputWriteCount: 0,
 				errorMessage: null,
@@ -4017,11 +4053,11 @@ describe("plugins Phase 0", () => {
 
 		await t.action(internal.plugins_runtime.execute_upload_completed_event_run, { runId: longRunId });
 
-		const longRun = await t.run((ctx) => ctx.db.get("plugins_event_runs", longRunId));
-		expect(longRun?.errorMessage).toBe("Plugin runner returned an invalid response");
+		const longRunActivity = await t.run((ctx) => activities.activities_db_require_by_source_id(ctx, longRunId));
+		expect(longRunActivity?.errorMessage).toBe("Plugin runner returned an invalid response");
 	});
 
-	test("fails expired queued and running runs", async () => {
+	test("times out expired queued and running runs", async () => {
 		const t = test_convex();
 		const fixture = await install_plugin_with_upload_asset(t);
 		const expiredQueuedRunId = await insert_event_run(t, fixture, {
@@ -4040,9 +4076,9 @@ describe("plugins Phase 0", () => {
 			expiresAt: Date.now() + 30 * 60 * 1000,
 		});
 
-		const result = await t.mutation(internal.plugins_runtime.fail_expired_event_runs, {});
+		const result = await t.mutation(internal.activities.recover_expired, {});
 
-		expect(result).toEqual({ failedCount: 2, done: true });
+		expect(result).toEqual({ processedCount: 2, done: true });
 		const [expiredQueued, expiredRunning, fresh] = await t.run((ctx) =>
 			Promise.all([
 				ctx.db.get("plugins_event_runs", expiredQueuedRunId),
@@ -4050,17 +4086,91 @@ describe("plugins Phase 0", () => {
 				ctx.db.get("plugins_event_runs", freshRunId),
 			]),
 		);
-		expect(expiredQueued).toMatchObject({ status: "failed", errorMessage: "Run expired" });
-		expect(expiredQueued?.finishedAt).toBeDefined();
-		expect(expiredRunning).toMatchObject({ status: "failed", errorMessage: "Run expired" });
-		expect(expiredRunning?.finishedAt).toBeDefined();
+		expect(await t.run((ctx) => activities.activities_db_require_by_source_id(ctx, expiredQueued!._id))).toMatchObject({
+			status: "timed_out",
+			errorMessage: "Run expired",
+		});
+		expect(
+			(await t.run((ctx) => activities.activities_db_require_by_source_id(ctx, expiredQueuedRunId))).finishedAt,
+		).toBeDefined();
+		expect(await t.run((ctx) => activities.activities_db_require_by_source_id(ctx, expiredRunning!._id))).toMatchObject(
+			{ status: "timed_out", errorMessage: "Run expired" },
+		);
+		expect(
+			(await t.run((ctx) => activities.activities_db_require_by_source_id(ctx, expiredRunningRunId))).finishedAt,
+		).toBeDefined();
 		// Terminal runs must not authenticate.
 		expect(expiredRunning?.apiTokenHash).toBeUndefined();
 		expect(expiredRunning?.apiTokenExpiresAt).toBeUndefined();
-		expect(fresh).toMatchObject({ status: "queued", errorMessage: null });
+		expect(await t.run((ctx) => activities.activities_db_require_by_source_id(ctx, fresh!._id))).toMatchObject({
+			status: "queued",
+			errorMessage: null,
+		});
 	});
 
-	test("does not resurrect an expired-failed run when its executor fires", async () => {
+	test("shared recovery cancels work and fences late output in one transaction", async () => {
+		const t = test_convex();
+		const fixture = await start_running_plugin_run(t);
+		const consumed = await t.mutation(internal.plugins_runtime.consume_run_api_call, {
+			runId: fixture.runId,
+			kind: "api_request",
+			route: "/api/v1/files/write",
+		});
+		if (consumed._nay) throw new Error(consumed._nay.message);
+		const prepared = await t.mutation(internal.public_api.prepare_file_write, {
+			organizationId: fixture.membership.organizationId,
+			workspaceId: fixture.membership.workspaceId,
+			userId: fixture.membership.userId,
+			principalRef: { kind: "plugin_run", runId: fixture.runId, callId: consumed._yay.callId },
+			path: "/photo.png.md",
+			overwrite: "replace",
+			contentType: "text/markdown",
+			yjsRootKind: "rich_text",
+			contentSize: 5,
+			yjsSnapshotSize: 5,
+		});
+		if (prepared._nay) throw new Error(prepared._nay.message);
+		const workId = "work_expired_output" as WorkId;
+		await t.run(async (ctx) => {
+			await ctx.db.patch("plugins_event_runs", fixture.runId, { workId });
+			const activity = await activities.activities_db_require_by_source_id(ctx, fixture.runId);
+			await ctx.db.patch("activities", activity._id, { deadlineAt: Date.now() - 1 });
+		});
+		const before = await t.run((ctx) => ctx.db.get("plugins_event_runs", fixture.runId));
+		const cancel = vi.spyOn(Workpool.prototype, "cancel").mockRejectedValueOnce(new Error("Cancel failed"));
+		await expect(t.mutation(internal.activities.recover_expired, {})).rejects.toThrow("Cancel failed");
+		expect(await t.run((ctx) => ctx.db.get("plugins_event_runs", fixture.runId))).toEqual(before);
+		expect(await t.run((ctx) => activities.activities_db_require_by_source_id(ctx, fixture.runId))).toMatchObject({
+			status: "running",
+		});
+		expect(await t.run((ctx) => ctx.db.get("plugins_event_run_calls", consumed._yay.callId))).toMatchObject({
+			status: "started",
+		});
+
+		cancel.mockResolvedValue(undefined);
+		expect(await t.mutation(internal.activities.recover_expired, {})).toEqual({ processedCount: 1, done: true });
+		expect(cancel).toHaveBeenLastCalledWith(expect.anything(), workId);
+		const ended = await t.run((ctx) => ctx.db.get("plugins_event_runs", fixture.runId));
+		expect(ended?.apiTokenHash).toBeUndefined();
+		expect(ended?.apiTokenExpiresAt).toBeUndefined();
+		expect(await t.run((ctx) => activities.activities_db_require_by_source_id(ctx, fixture.runId))).toMatchObject({
+			status: "timed_out",
+		});
+		expect(await t.run((ctx) => ctx.db.get("plugins_event_run_calls", consumed._yay.callId))).toMatchObject({
+			status: "failed",
+			errorCode: "run_ended",
+		});
+		const published = await t.mutation(internal.public_api.publish_file_write, {
+			stageId: prepared._yay.stageId,
+			content: "# New",
+			targetAnchor: prepared._yay.targetAnchor,
+		});
+		expect(published._nay?.message).toBe("Unauthenticated");
+		await drain_scheduled_work(t);
+		expect(await t.run((ctx) => ctx.db.query("public_api_file_write_stages").collect())).toEqual([]);
+	});
+
+	test("does not restart an expired run when its executor fires", async () => {
 		const t = test_convex();
 		const fixture = await install_plugin_with_upload_asset(t);
 		const runId = await insert_event_run(t, fixture, {
@@ -4068,17 +4178,22 @@ describe("plugins Phase 0", () => {
 			status: "queued",
 			expiresAt: Date.now() - 1000,
 		});
-		await t.mutation(internal.plugins_runtime.fail_expired_event_runs, {});
+		await t.mutation(internal.activities.recover_expired, {});
 		const expiredRun = await t.run((ctx) => ctx.db.get("plugins_event_runs", runId));
-		expect(expiredRun).toMatchObject({ status: "failed", errorMessage: "Run expired" });
-		expect(expiredRun?.finishedAt).toBeDefined();
+		expect(await t.run((ctx) => activities.activities_db_require_by_source_id(ctx, expiredRun!._id))).toMatchObject({
+			status: "timed_out",
+			errorMessage: "Run expired",
+		});
+		const expiredActivity = await t.run((ctx) => activities.activities_db_require_by_source_id(ctx, runId));
+		expect(expiredActivity.finishedAt).toBeDefined();
 
-		// The expired-failed run is terminal: start refuses it, the executor reports the refusal as a
+		// The timed-out run is terminal: start refuses it, the executor reports the refusal as a
 		// "failed" finish, and the terminal gate must drop that duplicate without touching the doc.
 		await t.action(internal.plugins_runtime.execute_upload_completed_event_run, { runId });
 
 		const run = await t.run((ctx) => ctx.db.get("plugins_event_runs", runId));
 		expect(run).toEqual(expiredRun);
+		expect(await t.run((ctx) => activities.activities_db_require_by_source_id(ctx, runId))).toEqual(expiredActivity);
 	});
 
 	test("expiry batch reschedule stops when disabled", async () => {
@@ -4092,16 +4207,16 @@ describe("plugins Phase 0", () => {
 			});
 		}
 
-		const first = await t.mutation(internal.plugins_runtime.fail_expired_event_runs, {
+		const first = await t.mutation(internal.activities.recover_expired, {
 			batchSize: 2,
 			_test_disableReschedule: true,
 		});
-		expect(first).toEqual({ failedCount: 2, done: false });
-		const runsAfterFirst = await t.run((ctx) => ctx.db.query("plugins_event_runs").collect());
-		expect(runsAfterFirst.filter((run) => run.status === "queued")).toHaveLength(1);
+		expect(first).toEqual({ processedCount: 2, done: false });
+		const activitiesAfterFirst = await t.run((ctx) => ctx.db.query("activities").collect());
+		expect(activitiesAfterFirst.filter((activity) => activity.status === "queued")).toHaveLength(1);
 
-		const second = await t.mutation(internal.plugins_runtime.fail_expired_event_runs, { batchSize: 2 });
-		expect(second).toEqual({ failedCount: 1, done: true });
+		const second = await t.mutation(internal.activities.recover_expired, { batchSize: 2 });
+		expect(second).toEqual({ processedCount: 1, done: true });
 	});
 
 	test("expiry sweep continues through the backlog via reschedule", async () => {
@@ -4115,14 +4230,17 @@ describe("plugins Phase 0", () => {
 			});
 		}
 
-		const first = await t.mutation(internal.plugins_runtime.fail_expired_event_runs, { batchSize: 2 });
-		expect(first).toEqual({ failedCount: 2, done: false });
+		const first = await t.mutation(internal.activities.recover_expired, { batchSize: 2 });
+		expect(first).toEqual({ processedCount: 2, done: false });
 		await drain_scheduled_work(t);
 
 		const runs = await t.run((ctx) => ctx.db.query("plugins_event_runs").collect());
 		expect(runs).toHaveLength(3);
 		for (const run of runs) {
-			expect(run).toMatchObject({ status: "failed", errorMessage: "Run expired" });
+			expect(await t.run((ctx) => activities.activities_db_require_by_source_id(ctx, run!._id))).toMatchObject({
+				status: "timed_out",
+				errorMessage: "Run expired",
+			});
 		}
 	});
 
@@ -4133,6 +4251,7 @@ describe("plugins Phase 0", () => {
 			eventId: "plugin:cleanup-old",
 			status: "failed",
 			expiresAt: Date.now() - 31 * 24 * 60 * 60 * 1000,
+			finishedAt: Date.now() - 31 * 24 * 60 * 60 * 1000,
 		});
 		await t.run(async (ctx) => {
 			const now = Date.now();
@@ -4163,18 +4282,18 @@ describe("plugins Phase 0", () => {
 			status: "running",
 			expiresAt: Date.now() + 30 * 60 * 1000,
 		});
-		const cleaned = await t.mutation(internal.plugins_runtime.cleanup_old_event_runs, {});
-		expect(cleaned).toEqual({ deletedCount: 1, done: true });
+		const cleaned = await t.mutation(internal.activities.cleanup_history, {});
+		expect(cleaned).toEqual({ deletedCount: 4, done: true });
 		expect(await t.run((ctx) => ctx.db.get("plugins_event_runs", oldRunId))).toBeNull();
 		expect(await t.run((ctx) => ctx.db.query("plugins_event_run_calls").collect())).toEqual([]);
-		const recent = await t.run((ctx) => ctx.db.get("plugins_event_runs", recentRunId));
+		const recent = await t.run((ctx) => activities.activities_db_require_by_source_id(ctx, recentRunId));
 		expect(recent?.status).toBe("succeeded");
 
 		await t.mutation(internal.plugins_runtime.finish_event_run, {
 			runId: runningRunId,
 			outcome: { kind: "failed", errorMessage: "Finished after cleanup" },
 		});
-		expect(await t.run((ctx) => ctx.db.get("plugins_event_runs", runningRunId))).toMatchObject({
+		expect(await t.run((ctx) => activities.activities_db_require_by_source_id(ctx, runningRunId))).toMatchObject({
 			status: "failed",
 			errorMessage: "Finished after cleanup",
 		});
@@ -4193,6 +4312,21 @@ describe("plugins Phase 0", () => {
 			runId,
 			apiTokenHash: await crypto_sha256_hex(apiToken),
 		});
+		const hiddenActivity = await t.run((ctx) => activities.activities_db_require_by_source_id(ctx, runId));
+		expect(hiddenActivity).toMatchObject({ feedVisible: false, status: "running", targets: [] });
+		const touched = await t.fetch("/api/v1/files/touch", {
+			method: "POST",
+			headers: { Authorization: `Bearer ${apiToken}`, "Content-Type": "application/json" },
+			body: JSON.stringify({ paths: ["/expired.png.description.md"] }),
+		});
+		expect(touched.status).toBe(200);
+		const touchedBody = await touched.json();
+		expect(await t.run((ctx) => ctx.db.get("activities", hiddenActivity._id))).toMatchObject({
+			feedVisible: false,
+			targets: [
+				{ kind: "file_node", id: touchedBody.files[0].nodeId, path: "/expired.png.description.md", message: "" },
+			],
+		});
 
 		const response = await t.fetch("/api/v1/activities/start", {
 			method: "POST",
@@ -4205,15 +4339,21 @@ describe("plugins Phase 0", () => {
 		expect(response.status).toBe(200);
 		const responseBody = await response.json();
 		const activityId: Id<"activities"> = responseBody.activityId;
-		expect(activityId).toBeTruthy();
+		expect(activityId).toBe(hiddenActivity._id);
 		expect(await t.run((ctx) => ctx.db.get("activities", activityId))).toMatchObject({
 			status: "running",
+			feedVisible: true,
+			deadlineAt: hiddenActivity.deadlineAt,
+			expectedFinishAt: expect.any(Number),
 			// Empty title in the request: the host composes it from the plugin and the triggering file.
 			title: "Media plugin · expired.png",
 			errorMessage: null,
 			// The triggering file is a target from the start, so the feed can hide the activity when that
 			// file is restricted. The title names it, so an activity naming nothing would leak the name.
-			targets: [{ kind: "file_node", id: fixture.upload.nodeId, path: "/expired.png", message: "" }],
+			targets: [
+				{ kind: "file_node", id: fixture.upload.nodeId, path: "/expired.png", message: "" },
+				{ kind: "file_node", id: touchedBody.files[0].nodeId, path: "/expired.png.description.md", message: "" },
+			],
 			userId: fixture.membership.userId,
 			source: {
 				kind: "plugin_run",
@@ -4224,16 +4364,6 @@ describe("plugins Phase 0", () => {
 		});
 
 		// A touch then a fill of the same output must surface as ONE activity target.
-		const touched = await t.fetch("/api/v1/files/touch", {
-			method: "POST",
-			headers: {
-				Authorization: `Bearer ${apiToken}`,
-				"Content-Type": "application/json",
-			},
-			body: JSON.stringify({ paths: ["/expired.png.description.md"] }),
-		});
-		expect(touched.status).toBe(200);
-		const touchedBody = await touched.json();
 		const filled = await t.fetch("/api/v1/files/write", {
 			method: "POST",
 			headers: {
@@ -4270,8 +4400,8 @@ describe("plugins Phase 0", () => {
 				.withIndex("by_run_sequence", (q) => q.eq("runId", runId))
 				.collect(),
 		);
-		expect(calls[0]).toMatchObject({
-			sequence: 1,
+		expect(calls[1]).toMatchObject({
+			sequence: 2,
 			kind: "api_request",
 			route: "/api/v1/activities/start",
 			status: "succeeded",
@@ -4343,7 +4473,7 @@ describe("plugins Phase 0", () => {
 		// Actor removal is a live run losing authority, so it reports "Permission denied"; every
 		// other change kills the plugin-run bearer itself and reports "Unauthenticated".
 		expect(result._nay?.message).toBe(change === "actor is removed" ? "Permission denied" : "Unauthenticated");
-		expect(await t.run((ctx) => ctx.db.query("activities").collect())).toEqual([]);
+		expect(await t.run((ctx) => ctx.db.query("activities").collect())).toMatchObject([{ feedVisible: false }]);
 	});
 
 	test("rejects invalid activity input and a second activity for the same run", async () => {
@@ -4378,7 +4508,7 @@ describe("plugins Phase 0", () => {
 		expect(missingTitle.status).toBe(400);
 		const timeoutTooLong = await start_activity({ title: "", timeoutMs: 5 * 60 * 1000 + 1 });
 		expect(timeoutTooLong.status).toBe(400);
-		expect(await t.run((ctx) => ctx.db.query("activities").collect())).toEqual([]);
+		expect(await t.run((ctx) => ctx.db.query("activities").collect())).toMatchObject([{ feedVisible: false }]);
 
 		const created = await start_activity({ title: "  Describing expired.png  ", timeoutMs: 60_000 });
 		expect(created.status).toBe(200);
@@ -4418,7 +4548,7 @@ describe("plugins Phase 0", () => {
 		]);
 	});
 
-	test("expiry sweep closes an opted-in activity as failed", async () => {
+	test("expiry sweep closes an opted-in activity as timed_out", async () => {
 		const t = test_convex();
 		const fixture = await install_plugin_with_upload_asset(t);
 		const runId = await insert_event_run(t, fixture, {
@@ -4441,17 +4571,21 @@ describe("plugins Phase 0", () => {
 		});
 		expect(response.status).toBe(200);
 		const activityId: Id<"activities"> = (await response.json()).activityId;
-		await t.run((ctx) => ctx.db.patch("plugins_event_runs", runId, { expiresAt: Date.now() - 1000 }));
+		await t.run(async (ctx) =>
+			ctx.db.patch("activities", (await activities.activities_db_require_by_source_id(ctx, runId))._id, {
+				deadlineAt: Date.now() - 1000,
+			}),
+		);
 
-		await t.mutation(internal.plugins_runtime.fail_expired_event_runs, {});
+		await t.mutation(internal.activities.recover_expired, {});
 
 		expect(await t.run((ctx) => ctx.db.get("activities", activityId))).toMatchObject({
-			status: "failed",
+			status: "timed_out",
 			errorMessage: "Run expired",
 		});
 	});
 
-	test("timeout cron closes an overdue running activity", async () => {
+	test("an overdue estimate stays running until the run finishes", async () => {
 		const t = test_convex();
 		const fixture = await install_plugin_with_upload_asset(t);
 		const runId = await insert_event_run(t, fixture, {
@@ -4476,52 +4610,63 @@ describe("plugins Phase 0", () => {
 		const activityId: Id<"activities"> = (await response.json()).activityId;
 
 		// Not overdue yet: the sweep leaves it running.
-		await t.mutation(internal.activities.timeout_stale_activities, {});
+		await t.mutation(internal.activities.recover_expired, {});
 		expect(await t.run((ctx) => ctx.db.get("activities", activityId))).toMatchObject({ status: "running" });
 
-		await t.run((ctx) => ctx.db.patch("activities", activityId, { timeoutAt: Date.now() - 1000 }));
-		await t.mutation(internal.activities.timeout_stale_activities, {});
-		const timedOut = await t.run((ctx) => ctx.db.get("activities", activityId));
-		expect(timedOut).toMatchObject({ status: "timeout", errorMessage: null });
-		expect(timedOut?.finishedAt).toBeDefined();
+		await t.run((ctx) => ctx.db.patch("activities", activityId, { expectedFinishAt: Date.now() - 1000 }));
+		await t.mutation(internal.activities.recover_expired, {});
+		expect(await t.run((ctx) => ctx.db.get("activities", activityId))).toMatchObject({ status: "running" });
+		await t.mutation(internal.plugins_runtime.finish_event_run, {
+			runId,
+			outcome: {
+				kind: "runner_response",
+				runnerOk: true,
+				runnerHttpStatus: 200,
+				bodyStatus: "succeeded",
+				runnerErrorMessage: null,
+				pluginStatus: 200,
+			},
+		});
+		const finished = await t.run((ctx) => ctx.db.get("activities", activityId));
+		expect(finished).toMatchObject({ status: "succeeded", errorMessage: null });
+		expect(finished?.finishedAt).toBeDefined();
 	});
 
-	test("run retention deletes the run's activity", async () => {
+	test("run retention drains viewer state before deleting the Activity and run together", async () => {
 		const t = test_convex();
 		const fixture = await install_plugin_with_upload_asset(t);
 		const oldRunId = await insert_event_run(t, fixture, {
 			eventId: "plugin:activity-retention",
 			status: "failed",
 			expiresAt: Date.now() - 31 * 24 * 60 * 60 * 1000,
+			finishedAt: Date.now() - 31 * 24 * 60 * 60 * 1000,
 		});
 		const activityId = await t.run(async (ctx) => {
-			const now = Date.now();
-			return await ctx.db.insert("activities", {
-				organizationId: fixture.membership.organizationId,
-				workspaceId: fixture.membership.workspaceId,
-				userId: fixture.membership.userId,
-				status: "failed",
-				source: {
-					kind: "plugin_run",
-					id: oldRunId,
-					installationId: fixture.installationId,
-					pluginName: "media",
-				},
+			const activity = await activities.activities_db_require_by_source_id(ctx, oldRunId);
+			await ctx.db.patch("activities", activity._id, {
+				feedVisible: true,
 				title: "Media plugin · expired.png",
 				errorMessage: "Run expired",
-				targets: [],
-				timeoutAt: now,
-				finishedAt: now,
-				archivedAt: 0,
-				updatedAt: now,
 			});
+			for (let index = 0; index < 51; index += 1) {
+				const userId = await ctx.db.insert("users", { clerkUserId: `plugin-history-viewer-${index}` });
+				await ctx.db.insert("activities_user_states", { activityId: activity._id, userId, dismissedAt: Date.now() });
+			}
+			return activity._id;
 		});
 
-		const cleaned = await t.mutation(internal.plugins_runtime.cleanup_old_event_runs, {});
+		const first = await t.mutation(internal.activities.cleanup_history, { _test_disableReschedule: true });
+		expect(first).toEqual({ deletedCount: 50, done: false });
+		expect(await t.run((ctx) => ctx.db.get("plugins_event_runs", oldRunId))).not.toBeNull();
+		expect(await t.run((ctx) => ctx.db.get("activities", activityId))).not.toBeNull();
+		expect(await t.run((ctx) => ctx.db.query("activities_user_states").collect())).toHaveLength(1);
+		const cleaned = await t.mutation(internal.activities.cleanup_history, {});
 
-		expect(cleaned).toEqual({ deletedCount: 1, done: true });
+		expect(cleaned).toEqual({ deletedCount: 3, done: true });
 		expect(await t.run((ctx) => ctx.db.get("plugins_event_runs", oldRunId))).toBeNull();
 		expect(await t.run((ctx) => ctx.db.get("activities", activityId))).toBeNull();
+		expect(await t.run((ctx) => ctx.db.query("activities_user_states").collect())).toEqual([]);
+		expect(await t.run((ctx) => ctx.db.get("files_nodes", fixture.upload.nodeId))).not.toBeNull();
 	});
 
 	test("does not overwrite a terminal run on duplicate finish", async () => {
@@ -4533,6 +4678,7 @@ describe("plugins Phase 0", () => {
 			expiresAt: Date.now() + 30 * 60 * 1000,
 			finishedAt: Date.now(),
 		});
+		const before = await t.run((ctx) => activities.activities_db_require_by_source_id(ctx, runId));
 
 		await t.mutation(internal.plugins_runtime.finish_event_run, {
 			runId,
@@ -4540,7 +4686,8 @@ describe("plugins Phase 0", () => {
 		});
 
 		const run = await t.run((ctx) => ctx.db.get("plugins_event_runs", runId));
-		expect(run).toMatchObject({ status: "succeeded", errorMessage: null });
+		expect(run).not.toBeNull();
+		expect(await t.run((ctx) => activities.activities_db_require_by_source_id(ctx, runId))).toEqual(before);
 	});
 
 	test("API token stays valid for the life of the run", async () => {
@@ -4588,7 +4735,10 @@ describe("plugins Phase 0", () => {
 			await t.action(internal.plugins_runtime.execute_upload_completed_event_run, { runId });
 			expect(fetch).not.toHaveBeenCalled();
 			const run = await t.run((ctx) => ctx.db.get("plugins_event_runs", runId));
-			expect(run).toMatchObject({ status: "failed", errorMessage: "Plugin version changed before the run started" });
+			expect(await t.run((ctx) => activities.activities_db_require_by_source_id(ctx, run!._id))).toMatchObject({
+				status: "failed",
+				errorMessage: "Plugin version changed before the run started",
+			});
 			expect(run?.apiTokenHash).toBeUndefined();
 			expect(run?.pluginVersionId).toBe(fixture.installation.pluginVersionId);
 		});
@@ -4649,7 +4799,7 @@ describe("plugins Phase 0", () => {
 		});
 
 		expect(started).toEqual({ _nay: { message: "Not found" } });
-		expect(await t.run((ctx) => ctx.db.get("plugins_event_runs", runId))).toMatchObject({
+		expect(await t.run((ctx) => activities.activities_db_require_by_source_id(ctx, runId))).toMatchObject({
 			status: "queued",
 		});
 	});
@@ -5880,7 +6030,7 @@ describe("plugins get_installation_health", () => {
 			nextUpdatedAt += 1000;
 			const updatedAt = nextUpdatedAt;
 			return t.run(async (ctx) =>
-				ctx.db.insert("plugins_event_runs", {
+				insert_plugin_run(ctx, {
 					serviceAccountId: (await ctx.db.get("plugins_workspace_installations", fixture.installationId))!
 						.serviceAccountId,
 					organizationId: fixture.membership.organizationId,
@@ -5894,7 +6044,7 @@ describe("plugins get_installation_health", () => {
 					eventId: `plugin:health-run-${updatedAt}`,
 					status: args.status,
 					acceptedCapabilities,
-					expiresAt: updatedAt + 30 * 60 * 1000,
+					deadlineAt: updatedAt + 30 * 60 * 1000,
 					apiCallCount: 0,
 					outputWriteCount: 0,
 					errorMessage: args.errorMessage ?? null,
@@ -6604,7 +6754,7 @@ describe("plugins outbound origins consent", () => {
 			if (!installation) {
 				throw new Error("Expected installation");
 			}
-			return await ctx.db.insert("plugins_event_runs", {
+			return await insert_plugin_run(ctx, {
 				serviceAccountId: (await ctx.db.get("plugins_workspace_installations", installed._yay.installationId))!
 					.serviceAccountId,
 				organizationId: membership.organizationId,
@@ -6618,7 +6768,7 @@ describe("plugins outbound origins consent", () => {
 				eventId: "plugin:allowlist-test",
 				status: "queued",
 				acceptedCapabilities: installation.acceptedCapabilities,
-				expiresAt: Date.now() + 30 * 60 * 1000,
+				deadlineAt: Date.now() + 30 * 60 * 1000,
 				apiCallCount: 0,
 				outputWriteCount: 0,
 				errorMessage: null,
@@ -10919,7 +11069,7 @@ describe("plugins uninstall_version", () => {
 			if (!installation) {
 				throw new Error("Expected installation");
 			}
-			const runId = await ctx.db.insert("plugins_event_runs", {
+			const runId = await insert_plugin_run(ctx, {
 				serviceAccountId: (await ctx.db.get("plugins_workspace_installations", installed._yay.installationId))!
 					.serviceAccountId,
 				organizationId: membership.organizationId,
@@ -10933,7 +11083,7 @@ describe("plugins uninstall_version", () => {
 				eventId: "plugin:uninstall-history-test",
 				status: "succeeded",
 				acceptedCapabilities: installation.acceptedCapabilities,
-				expiresAt: Date.now() + 30 * 60 * 1000,
+				deadlineAt: Date.now() + 30 * 60 * 1000,
 				apiCallCount: 1,
 				outputWriteCount: 1,
 				errorMessage: null,
@@ -11474,7 +11624,11 @@ describe("plugins run_installation_on_files", () => {
 		if (!firstRunId) {
 			throw new Error("Expected first queued run");
 		}
-		await t.run((ctx) => ctx.db.patch("plugins_event_runs", firstRunId, { status: "succeeded" }));
+		await t.run(async (ctx) =>
+			ctx.db.patch("activities", (await activities.activities_db_require_by_source_id(ctx, firstRunId))._id, {
+				status: "succeeded",
+			}),
+		);
 
 		const second = await t.mutation(internal.plugins.run_installation_on_files, {
 			installationId,
@@ -11514,7 +11668,11 @@ describe("plugins run_installation_on_files", () => {
 			throw new Error("Expected first queued run");
 		}
 		// start_event_run refuses expired queued docs, so the guard must not count them either.
-		await t.run((ctx) => ctx.db.patch("plugins_event_runs", firstRunId, { expiresAt: Date.now() - 1000 }));
+		await t.run(async (ctx) =>
+			ctx.db.patch("activities", (await activities.activities_db_require_by_source_id(ctx, firstRunId))._id, {
+				deadlineAt: Date.now() - 1000,
+			}),
+		);
 
 		const second = await t.mutation(internal.plugins.run_installation_on_files, {
 			installationId,
@@ -11554,6 +11712,10 @@ describe("plugins run_installation_on_files", () => {
 		if (!run) {
 			throw new Error("Expected run doc");
 		}
+		expect(await t.run((ctx) => activities.activities_db_require_by_source_id(ctx, run!._id))).toMatchObject({
+			status: "queued",
+			errorMessage: null,
+		});
 		expect(run).toMatchObject({
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
@@ -11564,16 +11726,16 @@ describe("plugins run_installation_on_files", () => {
 			pluginVersionId: installation.pluginVersionId,
 			event: "files.run.requested",
 			serviceAccountId: installation.serviceAccountId,
-			status: "queued",
 			acceptedCapabilities: installation.acceptedCapabilities,
 			apiCallCount: 0,
 			outputWriteCount: 0,
-			errorMessage: null,
 		});
 		expect(run.eventId.startsWith("run_requested::")).toBe(true);
 		expect(run.eventId.endsWith(`::${installationId}`)).toBe(true);
 		expect(run.workId).toBeDefined();
-		expect(run.expiresAt).toBeGreaterThan(run._creationTime);
+		expect(
+			(await t.run((ctx) => activities.activities_db_require_by_source_id(ctx, runId))).deadlineAt,
+		).toBeGreaterThan(run._creationTime);
 		// Manual runs never take over the asset's upload-conversion bookkeeping.
 		const asset = await t.run((ctx) => ctx.db.get("files_r2_assets", upload.assetId));
 		expect(asset?.processingWorkId).toBeUndefined();
@@ -11693,24 +11855,28 @@ describe("plugins backend invoke runs", () => {
 		const installation = await t.run((ctx) => ctx.db.get("plugins_workspace_installations", fixture.installationId));
 		expect(started._yay.pluginRun.serviceAccountId).toBeDefined();
 		expect(started._yay.pluginRun.serviceAccountId).toBe(installation?.serviceAccountId);
+		expect(
+			await t.run((ctx) => activities.activities_db_require_by_source_id(ctx, started._yay.pluginRun!._id)),
+		).toMatchObject({ status: "running", errorMessage: null });
 		expect(started._yay.pluginRun).toMatchObject({
 			event: "ui.invoke.requested",
 			endpointId: "echo",
 			serializationKey: "installation",
-			status: "running",
 			actorUserId: fixture.membership.userId,
 			apiTokenHash: "invoke-token-hash",
 			acceptedCapabilities: ["plugin.backend.invoke"],
 			apiCallCount: 0,
 			outputWriteCount: 0,
-			errorMessage: null,
 		});
 		expect(started._yay.pluginRun.eventId).toMatch(
 			new RegExp(`^ui_invoke::[0-9a-f-]{36}::${fixture.installationId}$`, "u"),
 		);
 		// The 60-second TTL is both the token life and how long a crashed invoke can hold the lock.
-		expect(started._yay.pluginRun.expiresAt).toBeGreaterThanOrEqual(before + 60_000);
-		expect(started._yay.pluginRun.apiTokenExpiresAt).toBe(started._yay.pluginRun.expiresAt);
+		const activity = await t.run((ctx) =>
+			activities.activities_db_require_by_source_id(ctx, started._yay.pluginRun._id),
+		);
+		expect(activity.deadlineAt).toBeGreaterThanOrEqual(before + 60_000);
+		expect(started._yay.pluginRun.apiTokenExpiresAt).toBe(activity.deadlineAt);
 		expect(started._yay.pluginRun.assetId).toBeUndefined();
 		expect(started._yay.pluginRun.fileNodeId).toBeUndefined();
 	});
@@ -11774,7 +11940,13 @@ describe("plugins backend invoke runs", () => {
 
 		// A crashed invoke leaves a running row until the expiry cron settles it; liveness is
 		// judged by expiresAt so that row cannot hold the lock past its TTL.
-		await t.run((ctx) => ctx.db.patch("plugins_event_runs", first._yay.pluginRun._id, { expiresAt: Date.now() - 1 }));
+		await t.run(async (ctx) =>
+			ctx.db.patch(
+				"activities",
+				(await activities.activities_db_require_by_source_id(ctx, first._yay.pluginRun._id))._id,
+				{ deadlineAt: Date.now() - 1 },
+			),
+		);
 		const third = await t.mutation(internal.plugins_runtime.start_invoke_run, start_invoke_args(fixture));
 		expect(third._nay).toBeUndefined();
 	});
@@ -11846,11 +12018,11 @@ describe("plugins backend invoke runs", () => {
 						pluginStatus: 204,
 					},
 				});
-				expect(await t.run((ctx) => ctx.db.get("plugins_event_runs", runId))).toMatchObject({
+				expect(await t.run((ctx) => activities.activities_db_require_by_source_id(ctx, runId))).toMatchObject({
 					status: "succeeded",
-					outputWriteCount: 0,
 					errorMessage: null,
 				});
+				expect(await t.run((ctx) => ctx.db.get("plugins_event_runs", runId))).toMatchObject({ outputWriteCount: 0 });
 				expect(result).toEqual({ _yay: { status: "succeeded", errorMessage: null, canRelayResponse: true } });
 			},
 		);
@@ -11900,7 +12072,11 @@ describe("plugins backend invoke runs", () => {
 			const started = await t.mutation(internal.plugins_runtime.start_invoke_run, start_invoke_args(fixture));
 			if (started._nay) throw new Error(started._nay.message);
 			const runId = started._yay.pluginRun._id;
-			await t.run((ctx) => ctx.db.patch("plugins_event_runs", runId, { expiresAt: Date.now() - 1 }));
+			await t.run(async (ctx) =>
+				ctx.db.patch("activities", (await activities.activities_db_require_by_source_id(ctx, runId))._id, {
+					deadlineAt: Date.now() - 1,
+				}),
+			);
 			const result = await t.mutation(internal.plugins_runtime.finish_event_run, {
 				runId,
 				outcome: {
@@ -11913,9 +12089,19 @@ describe("plugins backend invoke runs", () => {
 				},
 			});
 			const run = await t.run((ctx) => ctx.db.get("plugins_event_runs", runId));
-			expect(run).toMatchObject({ status: "failed", errorMessage: "Run expired" });
+			expect(await t.run((ctx) => activities.activities_db_require_by_source_id(ctx, run!._id))).toMatchObject({
+				status: "timed_out",
+				errorMessage: "Run expired",
+			});
 			expect(run?.apiTokenHash).toBeUndefined();
-			expect(result).toEqual({ _yay: { status: "failed", errorMessage: "Run expired", canRelayResponse: false } });
+			expect(result).toEqual({ _yay: { status: "timed_out", errorMessage: "Run expired", canRelayResponse: false } });
+			const history = await t
+				.withIdentity(user_identity(fixture.membership.userId))
+				.query(api.plugins.list_recent_runs, {
+					membershipId: fixture.membership.membershipId,
+					installationId: fixture.installationId,
+				});
+			expect(history).toMatchObject([{ _id: runId, status: "failed", errorMessage: "Run expired" }]);
 		});
 	});
 
@@ -11942,11 +12128,11 @@ describe("plugins backend invoke runs", () => {
 			},
 		});
 		const finished = await t.run((ctx) => ctx.db.get("plugins_event_runs", runId));
-		expect(finished).toMatchObject({
+		expect(await t.run((ctx) => activities.activities_db_require_by_source_id(ctx, finished!._id))).toMatchObject({
 			status: "succeeded",
 			errorMessage: null,
-			outputWriteCount: 0,
 		});
+		expect(finished).toMatchObject({ outputWriteCount: 0 });
 		// Terminal runs must not authenticate.
 		expect(finished?.apiTokenHash).toBeUndefined();
 
@@ -11981,10 +12167,9 @@ describe("plugins backend invoke runs", () => {
 				pluginStatus: 200,
 			},
 		});
-		expect(await t.run((ctx) => ctx.db.get("plugins_event_runs", second._yay.pluginRun._id))).toMatchObject({
-			status: "failed",
-			errorMessage: "Plugin left API calls unfinished",
-		});
+		expect(
+			await t.run((ctx) => activities.activities_db_require_by_source_id(ctx, second._yay.pluginRun._id)),
+		).toMatchObject({ status: "failed", errorMessage: "Plugin left API calls unfinished" });
 	});
 
 	test("the expiry cron settles a crashed invoke run and frees the lock", async () => {
@@ -11996,15 +12181,17 @@ describe("plugins backend invoke runs", () => {
 			throw new Error(started._nay.message);
 		}
 
-		const afterTtl = started._yay.pluginRun.expiresAt + 1;
-		const swept = await t.mutation(internal.plugins_runtime.fail_expired_event_runs, {
+		const afterTtl =
+			(await t.run((ctx) => activities.activities_db_require_by_source_id(ctx, started._yay.pluginRun._id)))
+				.deadlineAt + 1;
+		const swept = await t.mutation(internal.activities.recover_expired, {
 			_test_now: afterTtl,
 			_test_disableReschedule: true,
 		});
-		expect(swept.failedCount).toBe(1);
+		expect(swept.processedCount).toBe(1);
 		const settled = await t.run((ctx) => ctx.db.get("plugins_event_runs", started._yay.pluginRun._id));
-		expect(settled).toMatchObject({
-			status: "failed",
+		expect(await t.run((ctx) => activities.activities_db_require_by_source_id(ctx, settled!._id))).toMatchObject({
+			status: "timed_out",
 			errorMessage: "Run expired",
 		});
 		// Terminal runs must not authenticate.
@@ -12114,12 +12301,10 @@ describe("plugins backend invoke runs", () => {
 		});
 
 		const run = await t.run(async (ctx) => await ctx.db.query("plugins_event_runs").first());
-		expect(run).toMatchObject({
-			event: "ui.invoke.requested",
+		expect(await t.run((ctx) => activities.activities_db_require_by_source_id(ctx, run!._id))).toMatchObject({
 			status: "succeeded",
-			outputWriteCount: 0,
-			runnerHttpStatus: 200,
 		});
+		expect(run).toMatchObject({ event: "ui.invoke.requested", outputWriteCount: 0, runnerHttpStatus: 200 });
 		expect(String(responseBody.runId)).toBe(String(run?._id));
 
 		// The settle freed the serialization lock, so a second invoke goes through.
@@ -12194,9 +12379,11 @@ describe("plugins backend invoke runs", () => {
 				expect(result).toEqual({ runId: expect.any(String), pluginStatus: outcome, output });
 			}
 
-			expect(await t.run((ctx) => ctx.db.query("plugins_event_runs").first())).toMatchObject({
-				status: outcome === 200 ? "succeeded" : "failed",
-			});
+			expect(
+				await t.run(async (ctx) =>
+					activities.activities_db_require_by_source_id(ctx, (await ctx.db.query("plugins_event_runs").first())!._id),
+				),
+			).toMatchObject({ status: outcome === 200 ? "succeeded" : "failed" });
 		},
 	);
 
@@ -12217,8 +12404,9 @@ describe("plugins backend invoke runs", () => {
 			expect(response.status).toBe(200);
 			const run = (await t.run((ctx) => ctx.db.query("plugins_event_runs").first()))!;
 			expect(await response.json()).toEqual({ runId: run._id, pluginStatus, output });
-			expect(run.status).toBe(pluginStatus < 300 ? "succeeded" : "failed");
-			expect(run.errorMessage).toBe(pluginStatus < 300 ? null : `Plugin returned status ${pluginStatus}`);
+			const activity = await t.run((ctx) => activities.activities_db_require_by_source_id(ctx, run._id));
+			expect(activity.status).toBe(pluginStatus < 300 ? "succeeded" : "failed");
+			expect(activity.errorMessage).toBe(pluginStatus < 300 ? null : `Plugin returned status ${pluginStatus}`);
 			expect(run.apiTokenHash).toBeUndefined();
 			expect(run.runnerOutputBytes).toBe(new TextEncoder().encode(output).byteLength);
 		},
@@ -12257,10 +12445,11 @@ describe("plugins backend invoke runs", () => {
 		expect(response.status).toBe(500);
 		expect(await response.json()).toMatchObject({ message: "Plugin backend failed", runId: expect.any(String) });
 		expect(canceled).toHaveBeenCalledOnce();
-		expect(await t.run((ctx) => ctx.db.query("plugins_event_runs").first())).toMatchObject({
-			status: "failed",
-			errorMessage: "Plugin runner returned an invalid response",
-		});
+		expect(
+			await t.run(async (ctx) =>
+				activities.activities_db_require_by_source_id(ctx, (await ctx.db.query("plugins_event_runs").first())!._id),
+			),
+		).toMatchObject({ status: "failed", errorMessage: "Plugin runner returned an invalid response" });
 	});
 
 	test.each(["short", "extra", "broken"] as const)(
@@ -12299,7 +12488,9 @@ describe("plugins backend invoke runs", () => {
 			expect(response.status).toBe(500);
 			expect(await response.json()).toEqual({ message: "Plugin backend failed", runId: expect.any(String) });
 			const run = await t.run((ctx) => ctx.db.query("plugins_event_runs").first());
-			expect(run?.status).toBe("failed");
+			expect((await t.run((ctx) => activities.activities_db_require_by_source_id(ctx, run!._id))).status).toBe(
+				"failed",
+			);
 			expect(run?.apiTokenHash).toBeUndefined();
 		},
 	);
@@ -12473,9 +12664,12 @@ describe("plugins backend invoke runs", () => {
 		const response = await post_invoke(t, token, invoke_request_body({ endpoint: "echo" }));
 		expect(response.status).toBe(500);
 		expect(await response.json()).toEqual({ message: "Plugin backend failed", runId: expect.any(String) });
+		expect(
+			await t.run(async (ctx) =>
+				activities.activities_db_require_by_source_id(ctx, (await ctx.db.query("plugins_event_runs").first())!._id),
+			),
+		).toMatchObject({ status: "failed", errorMessage: "Runner unavailable" });
 		expect(await t.run((ctx) => ctx.db.query("plugins_event_runs").first())).toMatchObject({
-			status: "failed",
-			errorMessage: "Runner unavailable",
 			runnerHttpStatus: status,
 		});
 	});
@@ -12526,7 +12720,7 @@ describe("plugins backend invoke runs", () => {
 		const response = await post_invoke(t, token, invoke_request_body({ endpoint: "echo" }));
 		expect(response.status).toBe(500);
 		const run = await t.run((ctx) => ctx.db.query("plugins_event_runs").first());
-		expect(run?.errorMessage).toBe(
+		expect((await t.run((ctx) => activities.activities_db_require_by_source_id(ctx, run!._id))).errorMessage).toBe(
 			kind === "oversized envelope" ? "Plugin response was too large" : "Plugin runner returned an invalid response",
 		);
 	});
@@ -12584,10 +12778,10 @@ describe("plugins backend invoke runs", () => {
 			message: "Plugin backend response was too large",
 			runId: String(run._id),
 		});
-		expect(run).toMatchObject({
+		expect(await t.run((ctx) => activities.activities_db_require_by_source_id(ctx, run!._id))).toMatchObject({
 			status: "failed",
-			runnerOutputBytes: 16 * 1024 * 1024,
 		});
+		expect(run).toMatchObject({ runnerOutputBytes: 16 * 1024 * 1024 });
 	});
 
 	test.each(["expired", "already failed", "unfinished call"] as const)(
@@ -12600,7 +12794,13 @@ describe("plugins backend invoke runs", () => {
 			vi.mocked(fetch).mockImplementation(async (_input, init) => {
 				const wire = JSON.parse(String(init?.body)) as { pluginRunId: Id<"plugins_event_runs"> };
 				if (change === "expired") {
-					await t.run((ctx) => ctx.db.patch("plugins_event_runs", wire.pluginRunId, { expiresAt: Date.now() - 1 }));
+					await t.run(async (ctx) =>
+						ctx.db.patch(
+							"activities",
+							(await activities.activities_db_require_by_source_id(ctx, wire.pluginRunId))._id,
+							{ deadlineAt: Date.now() - 1 },
+						),
+					);
 				} else if (change === "already failed") {
 					await t.mutation(internal.plugins_runtime.finish_event_run, {
 						runId: wire.pluginRunId,
@@ -12628,12 +12828,13 @@ describe("plugins backend invoke runs", () => {
 			expect(response.status).toBe(500);
 			expect(await response.json()).toEqual({ message: "Plugin backend failed", runId: expect.any(String) });
 			const run = await t.run((ctx) => ctx.db.query("plugins_event_runs").first());
-			expect(run?.status).toBe("failed");
+			const activity = await t.run((ctx) => activities.activities_db_require_by_source_id(ctx, run!._id));
+			expect(activity.status).toBe(change === "expired" ? "timed_out" : "failed");
 			expect(run?.apiTokenHash).toBeUndefined();
 			if (change === "already failed") expect(run).toEqual(storedBefore);
-			if (change === "expired") expect(run?.errorMessage).toBe("Run expired");
+			if (change === "expired") expect(activity.errorMessage).toBe("Run expired");
 			if (change === "unfinished call") {
-				expect(run?.errorMessage).toBe("Plugin left API calls unfinished");
+				expect(activity.errorMessage).toBe("Plugin left API calls unfinished");
 				expect(await t.run((ctx) => ctx.db.query("plugins_event_run_calls").first())).toMatchObject({
 					status: "failed",
 					errorCode: "run_ended",
@@ -12673,7 +12874,11 @@ describe("plugins backend invoke runs", () => {
 		const response = await post_invoke(t, token, invoke_request_body({ endpoint: "echo" }));
 		expect(response.status).toBe(200);
 		expect(await response.json()).toMatchObject({ output: "handled" });
-		expect(await t.run((ctx) => ctx.db.query("plugins_event_runs").first())).toMatchObject({ status: "succeeded" });
+		expect(
+			await t.run(async (ctx) =>
+				activities.activities_db_require_by_source_id(ctx, (await ctx.db.query("plugins_event_runs").first())!._id),
+			),
+		).toMatchObject({ status: "succeeded" });
 		expect(await t.run((ctx) => ctx.db.query("plugins_event_run_calls").first())).toMatchObject({
 			status: "failed",
 			errorCode: "conflict",
@@ -12721,7 +12926,11 @@ describe("plugins backend invoke runs", () => {
 		const response = await pending;
 		expect(response.status).toBe(200);
 		expect(await response.json()).toMatchObject({ output: "complete" });
-		expect(await t.run((ctx) => ctx.db.query("plugins_event_runs").first())).toMatchObject({ status: "succeeded" });
+		expect(
+			await t.run(async (ctx) =>
+				activities.activities_db_require_by_source_id(ctx, (await ctx.db.query("plugins_event_runs").first())!._id),
+			),
+		).toMatchObject({ status: "succeeded" });
 	});
 
 	test("refuses an invoke wire body the runner would reject, without calling the runner", async () => {
@@ -12758,7 +12967,7 @@ describe("plugins backend invoke runs", () => {
 		expect(runnerCalls).toBe(0);
 
 		const run = await t.run(async (ctx) => await ctx.db.query("plugins_event_runs").first());
-		expect(run).toMatchObject({
+		expect(await t.run((ctx) => activities.activities_db_require_by_source_id(ctx, run!._id))).toMatchObject({
 			status: "failed",
 			errorMessage: "Invoke request is too large for this plugin configuration",
 		});
@@ -12843,7 +13052,11 @@ describe("plugins backend invoke runs", () => {
 		expect(response.status).toBe(500);
 		const run = (await t.run((ctx) => ctx.db.query("plugins_event_runs").first()))!;
 		expect(await response.json()).toEqual({ message: "Plugin backend failed", runId: String(run._id) });
-		expect(run).toMatchObject({ status: "failed", errorMessage: expect.any(String), outputWriteCount: 0 });
+		expect(await t.run((ctx) => activities.activities_db_require_by_source_id(ctx, run!._id))).toMatchObject({
+			status: kind === "timeout" ? "timed_out" : "failed",
+			errorMessage: expect.any(String),
+		});
+		expect(run).toMatchObject({ outputWriteCount: 0 });
 		expect(run.apiTokenHash).toBeUndefined();
 		if (kind === "configuration") expect(fetch).not.toHaveBeenCalled();
 		else expect(fetch).toHaveBeenCalledOnce();
@@ -12873,7 +13086,10 @@ describe("plugins backend invoke runs", () => {
 
 		// The run record keeps the detail the response left out.
 		const run = await t.run(async (ctx) => await ctx.db.query("plugins_event_runs").first());
-		expect(run).toMatchObject({ status: "failed", errorMessage: "Plugin threw before responding" });
+		expect(await t.run((ctx) => activities.activities_db_require_by_source_id(ctx, run!._id))).toMatchObject({
+			status: "failed",
+			errorMessage: "Plugin threw before responding",
+		});
 		expect(responseBody).toEqual({ message: "Plugin backend failed", runId: String(run?._id) });
 	});
 	// #endregion invoke route transport
@@ -13622,7 +13838,9 @@ describe("plugins metadata file doors", () => {
 		await t.run(async (ctx) => {
 			await ctx.db.patch("files_nodes", probeRoot!._id, { restrictedScopeNodeId: probeRoot!._id });
 			await ctx.db.patch("files_nodes", tailFile!._id, { restrictedScopeNodeId: probeRoot!._id });
-			await ctx.db.patch("plugins_event_runs", ownerRun.runId, { status: "succeeded" });
+			await ctx.db.patch("activities", (await activities.activities_db_require_by_source_id(ctx, ownerRun.runId))._id, {
+				status: "succeeded",
+			});
 		});
 
 		// A second member who was never let into that folder presses the plugin's button.
@@ -14206,7 +14424,11 @@ describe("plugins metadata file doors", () => {
 				await grant_file_account(fixture, nodeId);
 			}
 
-			await t.run((ctx) => ctx.db.patch("plugins_event_runs", ownerRun.runId, { status: "succeeded" }));
+			await t.run(async (ctx) =>
+				ctx.db.patch("activities", (await activities.activities_db_require_by_source_id(ctx, ownerRun.runId))._id, {
+					status: "succeeded",
+				}),
+			);
 			const run = await start_file_invoke_run(t, fixture, { userId: member.userId, tokenSeed: "e" });
 			const before = await t.run((ctx) =>
 				Promise.all([root._id, nested._id].map((id) => ctx.db.get("files_nodes", id))),
@@ -14293,7 +14515,11 @@ describe("plugins metadata file doors", () => {
 				await seed_file_scope(t, fixture, "private");
 			}
 
-			await t.run((ctx) => ctx.db.patch("plugins_event_runs", ownerRun.runId, { status: "succeeded" }));
+			await t.run(async (ctx) =>
+				ctx.db.patch("activities", (await activities.activities_db_require_by_source_id(ctx, ownerRun.runId))._id, {
+					status: "succeeded",
+				}),
+			);
 			const run = await start_file_invoke_run(t, fixture, { userId: member.userId, tokenSeed: "e" });
 			const before = await t.run(async (ctx) => ({
 				nodes: await Promise.all([root._id, nested._id].map((id) => ctx.db.get("files_nodes", id))),
@@ -14435,7 +14661,11 @@ describe("plugins metadata file doors", () => {
 						level: "read",
 					}),
 				).toEqual({ _yay: null });
-				await t.run((ctx) => ctx.db.patch("plugins_event_runs", ownerRun.runId, { status: "succeeded" }));
+				await t.run(async (ctx) =>
+					ctx.db.patch("activities", (await activities.activities_db_require_by_source_id(ctx, ownerRun.runId))._id, {
+						status: "succeeded",
+					}),
+				);
 				token = (await start_file_invoke_run(t, fixture, { userId: member.userId, tokenSeed: "e" })).apiToken;
 			}
 
@@ -14603,7 +14833,11 @@ describe("plugins metadata file doors", () => {
 		);
 
 		// A settled run is dead for every door.
-		await t.run((ctx) => ctx.db.patch("plugins_event_runs", run.runId, { status: "succeeded" }));
+		await t.run(async (ctx) =>
+			ctx.db.patch("activities", (await activities.activities_db_require_by_source_id(ctx, run.runId))._id, {
+				status: "succeeded",
+			}),
+		);
 		const finishedRun = await door_call(t, "/api/v1/files/plugin-folders/ensure", run.apiToken, {
 			path: "/probe/more",
 		});
@@ -14698,6 +14932,12 @@ describe("plugins users.account.deleted dispatch", () => {
 			const installation = await t.run((ctx) => ctx.db.get("plugins_workspace_installations", run.installationId));
 			expect(run.serviceAccountId).toBeDefined();
 			expect(run.serviceAccountId).toBe(installation?.serviceAccountId);
+			expect(await t.run((ctx) => activities.activities_db_require_by_source_id(ctx, run._id))).toMatchObject({
+				feedVisible: false,
+				resultKind: "plugin_result",
+				userId: departingUserId,
+				source: { kind: "plugin_run", id: run._id, event: "users.account.deleted" },
+			});
 		}
 		// The event fires on a user, so the run names no file. Every file door reads these two fields.
 		expect(accountRuns.every((run) => run.assetId === undefined && run.fileNodeId === undefined)).toBe(true);
@@ -15957,7 +16197,7 @@ describe("plugins admin hard delete", () => {
 			throw new Error(upload._nay.message);
 		}
 		const runId = await t.run(async (ctx) =>
-			ctx.db.insert("plugins_event_runs", {
+			insert_plugin_run(ctx, {
 				serviceAccountId: (await ctx.db.get("plugins_workspace_installations", installed._yay.installationId))!
 					.serviceAccountId,
 				organizationId: membership.organizationId,
@@ -15972,7 +16212,7 @@ describe("plugins admin hard delete", () => {
 				status: "running",
 				workId: "work_running_hard_delete" as WorkId,
 				acceptedCapabilities: media_plugin_consent.acceptedCapabilities,
-				expiresAt: Date.now() + 30 * 60 * 1000,
+				deadlineAt: Date.now() + 30 * 60 * 1000,
 				apiTokenExpiresAt: Date.now() + 30 * 60 * 1000,
 				apiCallCount: 0,
 				outputWriteCount: 0,
@@ -16000,7 +16240,9 @@ describe("plugins admin hard delete", () => {
 			runId,
 			outcome: { kind: "failed", errorMessage: "Stopped before deletion" },
 		});
-		expect(await t.run((ctx) => ctx.db.get("plugins_event_runs", runId))).toMatchObject({ status: "failed" });
+		expect(await t.run((ctx) => activities.activities_db_require_by_source_id(ctx, runId))).toMatchObject({
+			status: "failed",
+		});
 		vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
 		await drain_plugin_registry_delete(t, "media");
 		expect(await t.run((ctx) => ctx.db.get("plugins_event_runs", runId))).toBeNull();
@@ -16259,7 +16501,7 @@ describe("plugins admin hard delete", () => {
 				collectionName: "meetings",
 				keyPrefix: "sibling-released/",
 			});
-			const runId = await ctx.db.insert("plugins_event_runs", {
+			const runId = await insert_plugin_run(ctx, {
 				serviceAccountId: (await ctx.db.get("plugins_workspace_installations", installedMedia._yay.installationId))!
 					.serviceAccountId,
 				organizationId: membership.organizationId,
@@ -16273,7 +16515,7 @@ describe("plugins admin hard delete", () => {
 				eventId: "plugin:hard-delete-test",
 				status: "succeeded",
 				acceptedCapabilities: media_plugin_consent.acceptedCapabilities,
-				expiresAt: now + 30 * 60 * 1000,
+				deadlineAt: now + 30 * 60 * 1000,
 				apiCallCount: 2,
 				outputWriteCount: 1,
 				errorMessage: null,
@@ -16297,24 +16539,10 @@ describe("plugins admin hard delete", () => {
 			}
 			// The run's activity. Nothing but the by_source_id index links the two, so if the delete
 			// removed the run first this row would stay in the feed with no producer to clean it up.
-			await ctx.db.insert("activities", {
-				organizationId: membership.organizationId,
-				workspaceId: membership.workspaceId,
-				userId: membership.userId,
-				status: "succeeded",
-				source: {
-					kind: "plugin_run",
-					id: runId,
-					installationId: installedMedia._yay.installationId,
-					pluginName: "media",
-				},
+			const activity = await activities.activities_db_require_by_source_id(ctx, runId);
+			await ctx.db.patch("activities", activity._id, {
+				feedVisible: true,
 				title: "Media plugin · upload.mp4",
-				errorMessage: null,
-				targets: [],
-				timeoutAt: now + 5 * 60 * 1000,
-				finishedAt: now,
-				archivedAt: 0,
-				updatedAt: now,
 			});
 		});
 

@@ -480,11 +480,16 @@ describe("data_import.create_upload_targets", () => {
 		expect(created._nay).toMatchObject({ message: "Not found" });
 	});
 
-	test.each([["skill.md", "SKILL.md"], ["readme", "README.md"]])("normalizes special name %s in operator imports", async (input, name) => {
+	test.each([
+		["skill.md", "SKILL.md"],
+		["readme", "README.md"],
+	])("normalizes special name %s in operator imports", async (input, name) => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 		const result = await t.mutation(internal.data_import.create_upload_targets, {
-			organizationId: db.organizationId, workspaceId: db.workspaceId, createdBy: db.userId,
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			createdBy: db.userId,
 			items: [{ path: `/.AGENTS/skills/one/${input}`, contentType: "text/markdown", size: 1 }],
 		});
 		expect(result._nay).toBeUndefined();
@@ -635,11 +640,23 @@ describe("data_import.verify_metadata", () => {
 		// A pending-source doc must not count as committed frontmatter.
 		await t.run(async (ctx) => {
 			const node = await ctx.db.get("files_nodes", nodeId);
+			const pendingUpdateId = await ctx.db.insert("files_pending_updates", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userId: db.userId,
+				target: { kind: "saved", id: nodeId },
+				revision: 1,
+				size: 0,
+				updatedAt: Date.now(),
+			});
 			await ctx.db.insert("files_metadata_docs", {
 				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
-				fileNodeId: nodeId,
 				sourceKind: "pending",
+				target: { kind: "saved", id: nodeId },
+				userId: db.userId,
+				pendingUpdateId,
+				proposalRevision: 1,
 				path: "/emails/thread/message.md",
 				treePath: node!.treePath,
 				fieldPath: "frontmatter.subject",

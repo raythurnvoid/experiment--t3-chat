@@ -325,7 +325,7 @@ export const verify_run = internalQuery({
 				.collect(),
 			ctx.db
 				.query("plugins_event_runs")
-				.withIndex("by_organization_workspace_event_status_updatedAt", (q) =>
+				.withIndex("by_organization_workspace", (q) =>
 					q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId),
 				)
 				.collect(),

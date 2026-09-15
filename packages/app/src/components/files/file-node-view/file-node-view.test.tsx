@@ -4,28 +4,40 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { getFunctionName } from "convex/server";
 import { toast } from "sonner";
 
-import type { FileEditor_Props, FileEditorPresenceSupplier_Props } from "../file-editor/file-editor.tsx";
+import type {
+	FileEditor_Props,
+	FileEditorPendingUpdatesFloating_Props,
+	FileEditorPresenceSupplier_Props,
+} from "../file-editor/file-editor.tsx";
 import type { FileHtmlPreview } from "./file-html-preview.tsx";
 import { FilesClipboardProvider } from "../files-clipboard.tsx";
+import { AppActivitiesProvider } from "@/lib/app-activities-context.tsx";
+import type { app_convex_Id } from "@/lib/app-convex-client.ts";
+import type { files_VisibleEntry } from "@/lib/files.ts";
+import { app_local_storage_set_value } from "@/lib/storage.ts";
 
 const {
 	tenantContextMock,
 	queryMock,
 	mutationMock,
+	actionMock,
 	queryPushListeners,
 	editorRenderMock,
 	editorMountMock,
 	editorUnmountMock,
 	pluginUnmountMock,
+	loadMorePendingMock,
 } = vi.hoisted(() => ({
 	tenantContextMock: vi.fn(),
 	queryMock: vi.fn(),
 	mutationMock: vi.fn(),
+	actionMock: vi.fn(),
 	queryPushListeners: new Set<() => void>(),
 	editorRenderMock: vi.fn<(props: FileEditor_Props) => void>(),
 	editorMountMock: vi.fn(),
 	editorUnmountMock: vi.fn(),
 	pluginUnmountMock: vi.fn(),
+	loadMorePendingMock: vi.fn(),
 }));
 
 // Push query changes into memoized children, as the live Convex subscriptions do.
@@ -33,7 +45,30 @@ vi.mock("convex/react", async () => {
 	const { useEffect, useState } = await import("react");
 	return {
 		useConvex: () => ({ mutation: mutationMock }),
-		useQueries: () => ({}),
+		usePaginatedQuery: (query: never, args: unknown) => {
+			const [, forceRender] = useState(0);
+			useEffect(() => {
+				const listener = () => forceRender((revision) => revision + 1);
+				queryPushListeners.add(listener);
+				return () => {
+					queryPushListeners.delete(listener);
+				};
+			}, []);
+			return { results: queryMock(query, args), status: pendingListStatus, loadMore: loadMorePendingMock };
+		},
+		useQueries: (queries: Record<string, { query: never; args: unknown }>) => {
+			const [, forceRender] = useState(0);
+			useEffect(() => {
+				const listener = () => forceRender((revision) => revision + 1);
+				queryPushListeners.add(listener);
+				return () => {
+					queryPushListeners.delete(listener);
+				};
+			}, []);
+			return Object.fromEntries(
+				Object.entries(queries).map(([key, request]) => [key, queryMock(request.query, request.args)]),
+			);
+		},
 		useQuery: (...args: unknown[]) => {
 			const [, forceRender] = useState(0);
 			useEffect(() => {
@@ -49,7 +84,7 @@ vi.mock("convex/react", async () => {
 });
 vi.mock("@/lib/app-convex-client.ts", async () => {
 	const { api } = await import("../../../../convex/_generated/api.js");
-	return { app_convex_api: api, app_convex: {} };
+	return { app_convex_api: api, app_convex: { mutation: mutationMock, action: actionMock } };
 });
 vi.mock("@/lib/app-tenant-context.tsx", () => ({
 	AppTenantProvider: { useContext: () => tenantContextMock() },
@@ -72,7 +107,7 @@ vi.mock("@/components/app-auth.tsx", () => ({
 }));
 vi.mock("@/components/app-hotkeys.tsx", () => ({ AppHotkeysProvider: { useHotkey: () => {} } }));
 vi.mock("@/lib/activities.ts", () => ({ useFileNodeActivities: () => [] }));
-vi.mock("sonner", () => ({ toast: { info: vi.fn() } }));
+vi.mock("sonner", () => ({ toast: { info: vi.fn(), error: vi.fn() } }));
 
 // Monaco and the preview frame have separate tests. A local draft makes remounts visible here.
 vi.mock("../file-editor/file-editor.tsx", async () => {
@@ -89,13 +124,13 @@ vi.mock("../file-editor/file-editor.tsx", async () => {
 			useImperativeHandle(props.ref, () => ({
 				getMode: () => props.editorMode,
 				getPreviewSnapshot: () =>
-					props.nodeId
+					props.target
 						? {
 								text,
 								sourceKind: "editor_draft",
 								isDirty: text !== "saved HTML",
 								membershipId: tenantContextMock().membershipId,
-								nodeId: props.nodeId,
+								target: props.target,
 								rootKind: props.rootKind,
 								yjsLastSequenceId: null,
 								pendingUpdate: null,
@@ -111,8 +146,16 @@ vi.mock("../file-editor/file-editor.tsx", async () => {
 		},
 		FileEditorPresenceSupplier: (props: FileEditorPresenceSupplier_Props) =>
 			props.children({ presenceStore: null, onlineUsers: [] }),
-		FileEditorPendingUpdatesFloating: (props: { showReviewButton: boolean; onReviewChanges: () => void }) =>
-			props.showReviewButton ? <button onClick={props.onReviewChanges}>Review changes</button> : null,
+		FileEditorPendingUpdatesFloating: (props: FileEditorPendingUpdatesFloating_Props) => (
+			<>
+				{props.showReviewButton ? <button onClick={props.onReviewChanges}>Review changes</button> : null}
+				{props.showLoadMore ? (
+					<button disabled={props.isLoadingMore} onClick={props.onLoadMore}>
+						Load more reviews
+					</button>
+				) : null}
+			</>
+		),
 	};
 });
 vi.mock("./file-html-preview.tsx", () => ({
@@ -187,11 +230,61 @@ const PLUGIN = {
 	],
 };
 
+const PRIVATE_ENTRY = {
+	kind: "private",
+	node: {
+		_id: "private_1" as app_convex_Id<"files_pending_nodes">,
+		_creationTime: 1,
+		organizationId: "organization_1" as app_convex_Id<"organizations">,
+		workspaceId: "workspace_1" as app_convex_Id<"organizations_workspaces">,
+		userId: "user_1" as app_convex_Id<"users">,
+		kind: "file",
+		name: "draft.html",
+		parent: { kind: "root" },
+		structuralRevision: 1,
+		creationGeneration: 1,
+		state: "active",
+		closedAt: null,
+	},
+	pendingUpdate: {
+		_id: "pending_private" as app_convex_Id<"files_pending_updates">,
+		_creationTime: 1,
+		organizationId: "organization_1" as app_convex_Id<"organizations">,
+		workspaceId: "workspace_1" as app_convex_Id<"organizations_workspaces">,
+		userId: "user_1" as app_convex_Id<"users">,
+		size: 0,
+		updatedAt: 1,
+		target: { kind: "private", id: "private_1" as app_convex_Id<"files_pending_nodes"> },
+		revision: 3,
+		createIntent: {
+			kind: "text",
+			contentType: "text/html;charset=utf-8",
+			textKind: "plain_text",
+			collaborationEnabled: true,
+			metadata: [],
+		},
+		content: {
+			base: { kind: "new" },
+			baseStateId: "private_base" as app_convex_Id<"files_pending_update_yjs_states">,
+			stagedStateId: "private_staged" as app_convex_Id<"files_pending_update_yjs_states">,
+			unstagedStateId: "private_unstaged" as app_convex_Id<"files_pending_update_yjs_states">,
+		},
+	},
+	path: "/draft.html",
+} as Extract<files_VisibleEntry, { kind: "private" }>;
+
 let node = NODE;
 let nodeQueryStatus: "loading" | "ready" | "missing";
 let treeNodes: (typeof NODE)[] | undefined;
 let plugins: (typeof PLUGIN)[] | undefined;
 let pendingUpdates: unknown[];
+let savedPendingUpdate: unknown;
+let pendingListStatus: "CanLoadMore" | "LoadingMore" | "Exhausted";
+let privateView:
+	| { entry: typeof PRIVATE_ENTRY; readiness: "ready" | "preparing"; canEdit: boolean; canAccept: boolean }
+	| null
+	| undefined;
+let pendingChildren: unknown[];
 let header: HTMLDivElement;
 
 function pushQueryChanges() {
@@ -204,6 +297,11 @@ beforeEach(() => {
 	treeNodes = undefined;
 	plugins = undefined;
 	pendingUpdates = [];
+	savedPendingUpdate = undefined;
+	pendingListStatus = "Exhausted";
+	loadMorePendingMock.mockReset();
+	privateView = { entry: PRIVATE_ENTRY, readiness: "ready", canEdit: true, canAccept: true };
+	pendingChildren = [];
 	tenantContextMock.mockReturnValue({
 		membershipId: "membership_1",
 		organizationId: "organization_1",
@@ -211,6 +309,7 @@ beforeEach(() => {
 		organizationName: "team",
 		workspaceName: "home",
 	});
+	queryMock.mockReset();
 	queryMock.mockImplementation((reference: never, args: unknown) => {
 		if (args === "skip") return undefined;
 		switch (getFunctionName(reference)) {
@@ -220,9 +319,52 @@ beforeEach(() => {
 				return nodeQueryStatus === "loading" ? undefined : nodeQueryStatus === "missing" ? null : node;
 			case "files_pending_updates:list_files_pending_updates":
 				return pendingUpdates;
+			case "files_pending_updates:get_file_pending_update": {
+				if (savedPendingUpdate !== undefined) return savedPendingUpdate;
+				const target = (args as { target: { kind: string; id: string } }).target;
+				const views = pendingUpdates as Array<{
+					kind: string;
+					entry: { pendingUpdate: { target: { kind: string; id: string } } };
+				}>;
+				return (
+					views.find(
+						(view) =>
+							view.kind === "entry" &&
+							view.entry.pendingUpdate.target.kind === target.kind &&
+							view.entry.pendingUpdate.target.id === target.id,
+					)?.entry.pendingUpdate ?? null
+				);
+			}
+			case "files_pending_updates:get_file_pending_target":
+				return privateView;
+			case "files_visible:get_path":
+				return node.path;
+			case "files_visible:list":
+				return {
+					_yay: {
+						items:
+							pendingChildren.length > 0
+								? pendingChildren
+								: (treeNodes ?? [])
+										.filter((item) => item.parentId === node._id && item.archiveOperationId === null)
+										.map((item) => ({
+											target: { kind: "saved", id: item._id },
+											name: item.name,
+											kind: item.kind,
+											path: item.path,
+											updatedAt: item.updatedAt,
+											updatedBy: "user_1",
+											contentType: item.contentType,
+											preparing: false,
+										})),
+						isDone: true,
+						continueCursor: null,
+					},
+				};
 			case "files_transfer:list_current":
 				return [];
 			case "files_transfer:get":
+			case "files_pending_update_runs:get":
 				return null;
 			case "plugins_ui:list_file_views":
 				return plugins;
@@ -234,11 +376,14 @@ beforeEach(() => {
 	});
 	mutationMock.mockReset();
 	mutationMock.mockResolvedValue({ _yay: { runId: "clipboard_run" } });
+	actionMock.mockReset();
+	actionMock.mockResolvedValue({ _yay: { target: { kind: "saved", id: NODE._id }, newSequence: null } });
 	editorMountMock.mockClear();
 	editorRenderMock.mockClear();
 	editorUnmountMock.mockClear();
 	pluginUnmountMock.mockClear();
 	vi.mocked(toast.info).mockClear();
+	vi.mocked(toast.error).mockClear();
 	localStorage.clear();
 	header = document.createElement("div");
 	header.id = "app_main_header_content";
@@ -255,9 +400,14 @@ function renderFileView(searchParams: FileNodeView_SearchParams = { nodeId: NODE
 	return {
 		...render(<FileNodeView searchParams={searchParams} onNavigateSearch={onNavigateSearch} />, {
 			wrapper: ({ children }) => (
-				<FilesClipboardProvider key={tenantContextMock().membershipId} membershipId={tenantContextMock().membershipId}>
-					{children}
-				</FilesClipboardProvider>
+				<AppActivitiesProvider key={tenantContextMock().membershipId} membershipId={tenantContextMock().membershipId}>
+					<FilesClipboardProvider
+						key={tenantContextMock().membershipId}
+						membershipId={tenantContextMock().membershipId}
+					>
+						{children}
+					</FilesClipboardProvider>
+				</AppActivitiesProvider>
 			),
 		}),
 		onNavigateSearch,
@@ -392,7 +542,7 @@ describe("FileNodeView node loading", () => {
 		const nextEditor = await screen.findByRole("textbox", { name: "Code draft" });
 		expect(nextEditor).not.toBe(editor);
 		expect(nextEditor).toHaveProperty("value", "saved HTML");
-		expect(editorRenderMock.mock.calls.at(-1)![0].nodeId).toBe(nextNode._id);
+		expect(editorRenderMock.mock.calls.at(-1)![0].target).toEqual({ kind: "saved", id: nextNode._id });
 		expect(onNavigateSearch).not.toHaveBeenCalled();
 	});
 
@@ -404,7 +554,305 @@ describe("FileNodeView node loading", () => {
 	});
 });
 
+describe("FileNodeView private targets", () => {
+	test("opens only the owner target and keeps the local draft through Preview", async () => {
+		const { onNavigateSearch } = renderFileView({
+			pendingNodeId: PRIVATE_ENTRY.node._id,
+			nodeId: NODE._id,
+			q: "draft",
+		});
+		const editor = await screen.findByRole("textbox", { name: "Code draft" });
+		expect(screen.getByText("Added file")).toBeTruthy();
+		expect(editorRenderMock.mock.calls.at(-1)![0]).toMatchObject({
+			target: PRIVATE_ENTRY.pendingUpdate.target,
+			privateCanEdit: true,
+			pendingUpdateId: "pending_private",
+			nonCollaborative: true,
+		});
+		expect(
+			queryMock.mock.calls.filter(
+				([reference, args]) =>
+					args !== "skip" &&
+					[
+						"files_nodes:get_file_node_for_membership",
+						"files_nodes:get_file_last_yjs_sequence",
+						"r2:get_asset_by_file_node_id",
+					].includes(getFunctionName(reference)),
+			),
+		).toEqual([]);
+		fireEvent.change(editor, { target: { value: "<p>Private local draft</p>" } });
+		await selectView("Preview");
+		expect(await screen.findByTestId("html-preview")).toHaveProperty("textContent", "<p>Private local draft</p>");
+		expect(screen.queryByRole("button", { name: "Save draft" })).toBeNull();
+		await selectView("Code");
+		expect(onNavigateSearch).toHaveBeenCalledWith(
+			{ pendingNodeId: PRIVATE_ENTRY.node._id, view: "plain_text_editor", q: "draft" },
+			undefined,
+		);
+		expect(await screen.findByRole("textbox", { name: "Code draft" })).toBe(editor);
+		expect(editorMountMock).toHaveBeenCalledOnce();
+	});
+
+	test.each([false, true])("the first Save moves to the saved target and keeps Review: %s", async (keepReview) => {
+		const { onNavigateSearch, rerender } = renderFileView({
+			pendingNodeId: PRIVATE_ENTRY.node._id,
+			view: "diff_editor",
+			q: "draft",
+		});
+		const editor = await screen.findByRole("textbox", { name: "Code draft" });
+		fireEvent.change(editor, { target: { value: "Private edits" } });
+		const onTargetChange = editorRenderMock.mock.calls.at(-1)![0].onTargetChange;
+		// Publication can close the owner query before its action returns.
+		privateView = null;
+		pushQueryChanges();
+		act(() => onTargetChange?.({ kind: "saved", id: NODE._id as app_convex_Id<"files_nodes"> }, { keepReview }));
+		const searchParams = { nodeId: NODE._id, view: keepReview ? ("diff_editor" as const) : undefined, q: "draft" };
+		expect(onNavigateSearch).toHaveBeenLastCalledWith(searchParams, { replace: true });
+		rerender(<FileNodeView searchParams={searchParams} onNavigateSearch={onNavigateSearch} />);
+		expect(await screen.findByRole("textbox", { name: "Code draft" })).not.toBe(editor);
+		expect(editorRenderMock.mock.calls.at(-1)![0].target).toEqual({ kind: "saved", id: NODE._id });
+	});
+
+	test("a completed Save does not leave a different file opened during the request", async () => {
+		const { onNavigateSearch, rerender } = renderFileView({ pendingNodeId: PRIVATE_ENTRY.node._id });
+		await screen.findByRole("textbox", { name: "Code draft" });
+		const onTargetChange = editorRenderMock.mock.calls.at(-1)![0].onTargetChange;
+		rerender(<FileNodeView searchParams={{ nodeId: NODE._id }} onNavigateSearch={onNavigateSearch} />);
+		const editor = await screen.findByRole("textbox", { name: "Code draft" });
+		act(() => onTargetChange?.({ kind: "saved", id: "published_1" as app_convex_Id<"files_nodes"> }));
+		expect(onNavigateSearch).not.toHaveBeenCalled();
+		expect(screen.getByRole("textbox", { name: "Code draft" })).toBe(editor);
+	});
+
+	test("a new owner draft generation starts with a new editor", async () => {
+		renderFileView({ pendingNodeId: PRIVATE_ENTRY.node._id });
+		const editor = await screen.findByRole("textbox", { name: "Code draft" });
+		fireEvent.change(editor, { target: { value: "Old generation draft" } });
+		privateView = {
+			...privateView!,
+			entry: { ...PRIVATE_ENTRY, node: { ...PRIVATE_ENTRY.node, creationGeneration: 2 } },
+		};
+		pushQueryChanges();
+		const nextEditor = await screen.findByRole("textbox", { name: "Code draft" });
+		expect(nextEditor).not.toBe(editor);
+		expect(nextEditor).toHaveProperty("value", "saved HTML");
+	});
+
+	test("preparation keeps Save disabled and still permits owner Discard", async () => {
+		privateView = {
+			...privateView!,
+			readiness: "preparing",
+			canAccept: false,
+			entry: {
+				...PRIVATE_ENTRY,
+				pendingUpdate: {
+					...PRIVATE_ENTRY.pendingUpdate,
+					createIntent: undefined,
+					content: undefined,
+					preparation: {
+						transferItemId: "transfer_item" as app_convex_Id<"files_transfer_items">,
+						creationGeneration: 1,
+					},
+				},
+			},
+		};
+		const { onNavigateSearch } = renderFileView({ pendingNodeId: PRIVATE_ENTRY.node._id });
+		expect(await screen.findByText("Preparing this file…")).toBeTruthy();
+		expect(screen.getByRole("button", { name: "Save" }).matches(":disabled")).toBe(true);
+		expect(screen.queryByTestId("editor")).toBeNull();
+		fireEvent.click(screen.getByRole("button", { name: "Discard" }));
+		await waitFor(() => expect(mutationMock).toHaveBeenCalledTimes(2));
+		expect(onNavigateSearch).not.toHaveBeenCalled();
+		expect(getFunctionName(mutationMock.mock.calls[0]![0])).toBe("files_pending_update_runs:start");
+		expect(mutationMock.mock.calls[0]![1]).toEqual({
+			membershipId: "membership_1",
+			requestId: expect.any(String),
+			kind: "discard",
+			expectedItemCount: 1,
+			items: [{ pendingUpdateId: "pending_private", reviewedRevision: 3, selectedContentStateId: null }],
+		});
+		expect(getFunctionName(mutationMock.mock.calls[1]![0])).toBe("files_pending_update_runs:seal");
+	});
+
+	test("write loss keeps the draft readable and read loss removes it", async () => {
+		privateView = { ...privateView!, canEdit: false, canAccept: false };
+		const { onNavigateSearch } = renderFileView({ pendingNodeId: PRIVATE_ENTRY.node._id });
+		await screen.findByRole("textbox", { name: "Code draft" });
+		expect(editorRenderMock.mock.calls.at(-1)![0].privateCanEdit).toBe(false);
+		expect(screen.getByRole("button", { name: "Discard" }).matches(":disabled")).toBe(false);
+		privateView = null;
+		pushQueryChanges();
+		expect(await screen.findByText(/This draft is no longer available/)).toBeTruthy();
+		expect(screen.queryByTestId("editor")).toBeNull();
+		expect(onNavigateSearch).not.toHaveBeenCalled();
+	});
+
+	test("opens private and saved children through their own target kinds", async () => {
+		privateView = {
+			...privateView!,
+			entry: {
+				...PRIVATE_ENTRY,
+				node: { ...PRIVATE_ENTRY.node, kind: "folder", name: "Draft folder" },
+				pendingUpdate: {
+					...PRIVATE_ENTRY.pendingUpdate,
+					content: undefined,
+					createIntent: { kind: "folder", metadata: [] },
+				},
+			},
+		};
+		pendingChildren = [
+			{
+				target: { kind: "private", id: PRIVATE_ENTRY.node._id },
+				name: PRIVATE_ENTRY.node.name,
+				path: PRIVATE_ENTRY.path,
+				kind: "file",
+				preparing: true,
+				updatedAt: 1,
+				updatedBy: "user_1",
+				contentType: "text/html",
+			},
+			{
+				target: { kind: "saved", id: NODE._id },
+				name: NODE.name,
+				path: NODE.path,
+				kind: "file",
+				preparing: false,
+				updatedAt: 1,
+				updatedBy: "user_1",
+				contentType: "text/html",
+			},
+		];
+		const { onNavigateSearch } = renderFileView({ pendingNodeId: PRIVATE_ENTRY.node._id });
+		expect(await screen.findByText("Added folder")).toBeTruthy();
+		fireEvent.click(screen.getByRole("button", { name: "draft.html" }));
+		expect(onNavigateSearch).toHaveBeenLastCalledWith({
+			pendingNodeId: PRIVATE_ENTRY.node._id,
+			view: undefined,
+			q: undefined,
+		});
+		fireEvent.click(screen.getByRole("button", { name: "page.html" }));
+		expect(onNavigateSearch).toHaveBeenLastCalledWith({ nodeId: NODE._id, view: undefined, q: undefined });
+	});
+
+	test("the media preview signs only the captured private asset", async () => {
+		privateView = {
+			...privateView!,
+			entry: {
+				...PRIVATE_ENTRY,
+				node: { ...PRIVATE_ENTRY.node, name: "image.png" },
+				pendingUpdate: {
+					...PRIVATE_ENTRY.pendingUpdate,
+					content: undefined,
+					createIntent: {
+						kind: "stored",
+						contentType: "image/png",
+						size: 18,
+						metadata: [],
+						assetId: "private_asset" as app_convex_Id<"files_r2_assets">,
+					},
+				},
+			},
+		};
+		actionMock.mockResolvedValue({ _yay: { url: "https://assets.test/private.png" } });
+		renderFileView({ pendingNodeId: PRIVATE_ENTRY.node._id });
+		fireEvent.click(await screen.findByRole("button", { name: "Preview" }));
+		expect(await screen.findByRole("img", { name: "image.png" })).toHaveProperty(
+			"src",
+			"https://assets.test/private.png",
+		);
+		expect(getFunctionName(actionMock.mock.calls[0]![0])).toBe(
+			"files_pending_updates:create_private_pending_download_url",
+		);
+		expect(actionMock.mock.calls[0]![1]).toEqual({
+			membershipId: "membership_1",
+			target: PRIVATE_ENTRY.pendingUpdate.target,
+			pendingUpdateId: "pending_private",
+			reviewedRevision: 3,
+			creationGeneration: 1,
+		});
+	});
+
+	test("restores a tagged private selection and never falls back to saved lookup", async () => {
+		app_local_storage_set_value("app_state::files_last_open_target::scope::membership_1", {
+			kind: "private",
+			id: "missing_private",
+		});
+		const { onNavigateSearch, rerender } = renderFileView({ q: "draft" });
+		expect(onNavigateSearch).toHaveBeenCalledWith({ pendingNodeId: "missing_private", q: "draft" }, { replace: true });
+		privateView = null;
+		rerender(
+			<FileNodeView
+				searchParams={{ pendingNodeId: "missing_private", q: "draft" }}
+				onNavigateSearch={onNavigateSearch}
+			/>,
+		);
+		expect(await screen.findByText(/This draft is no longer available/)).toBeTruthy();
+		expect(
+			queryMock.mock.calls.some(
+				([reference, args]) =>
+					getFunctionName(reference) === "files_nodes:get_file_node_for_membership" && args !== "skip",
+			),
+		).toBe(false);
+	});
+});
+
 describe("FileNodeView folder clipboard", () => {
+	test("waits for every page and shows more across saved and private children", async () => {
+		node = { ...NODE, _id: "folder_1", name: "Docs", path: "/Docs", kind: "folder" };
+		const children = ["a.html", "c.html", "e.html"].map((name) => ({
+			...NODE,
+			_id: name,
+			name,
+			path: `/Docs/${name}`,
+			parentId: node._id,
+		}));
+		treeNodes = [node, ...children];
+		const savedPage = children.map((child) => ({
+			target: { kind: "saved", id: child._id },
+			name: child.name,
+			path: child.path,
+			kind: "file",
+			preparing: false,
+			updatedAt: 1,
+			updatedBy: "user_1",
+			contentType: "text/html",
+		}));
+		const privatePage = ["b.html", "d.html", "f.html"].map((name) => ({
+			target: { kind: "private", id: name },
+			name,
+			path: `/Docs/${name}`,
+			kind: "file",
+			preparing: false,
+			updatedAt: 1,
+			updatedBy: "user_1",
+			contentType: "text/html",
+		}));
+		let secondPageReady = false;
+		const query = queryMock.getMockImplementation()!;
+		queryMock.mockImplementation((reference: never, args: { cursor?: string | null }) => {
+			if (getFunctionName(reference) !== "files_visible:list") return query(reference, args);
+			if (args.cursor && !secondPageReady) return undefined;
+			return {
+				_yay: {
+					items: args.cursor ? privatePage : savedPage,
+					isDone: Boolean(args.cursor),
+					continueCursor: args.cursor ? null : "private-page",
+				},
+			};
+		});
+		renderFileView({ nodeId: node._id });
+		expect(await screen.findByText("Loading folder…")).toBeTruthy();
+		expect(screen.queryByRole("link", { name: "Open a.html" })).toBeNull();
+		secondPageReady = true;
+		pushQueryChanges();
+		await screen.findByRole("link", { name: "Open b.html" });
+		expect(screen.queryByRole("link", { name: "Open f.html" })).toBeNull();
+		fireEvent.click(screen.getByRole("button", { name: /Show more/ }));
+		expect(await screen.findByRole("link", { name: "Open f.html" })).toBeTruthy();
+		fireEvent.click(screen.getByRole("button", { name: /Show less/ }));
+		expect(screen.queryByRole("link", { name: "Open f.html" })).toBeNull();
+	});
+
 	test("disables toolbar Paste when the open folder is archived", async () => {
 		node = { ...NODE, _id: "folder_1", name: "Docs", kind: "folder" };
 		const child = { ...NODE, parentId: node._id };
@@ -749,12 +1197,26 @@ describe("FileNodeView file views", () => {
 			plugins = [PLUGIN];
 			pendingUpdates = [
 				{
-					_id: "pending_1",
-					fileNodeId: NODE._id,
-					baseAssetId: "asset_1",
-					baseStateId: "base_1",
-					stagedStateId: "staged_1",
-					unstagedStateId: "unstaged_1",
+					kind: "entry",
+					readiness: "ready",
+					canEdit: true,
+					canAccept: true,
+					entry: {
+						kind: "saved",
+						node: NODE,
+						path: NODE.path,
+						pendingUpdate: {
+							_id: "pending_1",
+							target: { kind: "saved", id: NODE._id },
+							revision: 1,
+							content: {
+								base: { kind: "asset", assetId: "asset_1" },
+								baseStateId: "base_1",
+								stagedStateId: "staged_1",
+								unstagedStateId: "unstaged_1",
+							},
+						},
+					},
 				},
 			];
 			const { onNavigateSearch } = renderFileView({ nodeId: NODE._id, view: "diff_editor", q: "page" });
@@ -765,6 +1227,36 @@ describe("FileNodeView file views", () => {
 			expect(onNavigateSearch).toHaveBeenCalledWith({ nodeId: NODE._id, view: "diff_editor", q: "page" }, undefined);
 		},
 	);
+
+	test("the open editor finds its proposal before its review page is loaded", async () => {
+		savedPendingUpdate = {
+			...PRIVATE_ENTRY.pendingUpdate,
+			_id: "pending_later_page",
+			target: { kind: "saved", id: NODE._id },
+		};
+		pendingListStatus = "CanLoadMore";
+		renderFileView();
+		expect(await screen.findByRole("button", { name: "Review changes" })).toBeTruthy();
+		expect(editorRenderMock.mock.calls.at(-1)![0].pendingUpdateId).toBe("pending_later_page");
+		expect(editorRenderMock.mock.calls.at(-1)![0].pendingUpdatesLoaded).toBe(true);
+		fireEvent.click(screen.getByRole("button", { name: "Load more reviews" }));
+		expect(loadMorePendingMock).toHaveBeenCalledWith(20);
+	});
+
+	test("private proposals do not become the current saved file review", async () => {
+		pendingUpdates = [
+			{
+				kind: "entry",
+				readiness: "ready",
+				canEdit: true,
+				canAccept: true,
+				entry: PRIVATE_ENTRY,
+			},
+		];
+		renderFileView();
+		await screen.findByRole("textbox", { name: "Code draft" });
+		expect(screen.queryByRole("button", { name: "Review changes" })).toBeNull();
+	});
 
 	test("the Review option leaves a plugin and keeps the sidebar search in navigation", async () => {
 		plugins = [PLUGIN];

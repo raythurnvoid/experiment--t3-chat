@@ -601,12 +601,15 @@ describe("FileEditorDiffNonCollab", () => {
 const nonCollabPendingUpdate = {
 	_id: PENDING_UPDATE_ID,
 	_creationTime: 1,
-	fileNodeId: NODE_ID,
+	target: { kind: "saved", id: NODE_ID },
+	revision: 1,
 	updatedAt: 1,
-	baseAssetId: "asset_1",
-	baseStateId: "state_base",
-	stagedStateId: "state_staged",
-	unstagedStateId: "state_unstaged",
+	content: {
+		base: { kind: "asset", assetId: "asset_1" },
+		baseStateId: "state_base",
+		stagedStateId: "state_staged",
+		unstagedStateId: "state_unstaged",
+	},
 	currentYjsLastSequenceId: null,
 } as unknown as app_convex_Doc<"files_pending_updates">;
 
@@ -648,7 +651,9 @@ function renderNonCollabProposalReview(args: {
 	yjsLastSequenceId?: string;
 	serverSequence?: number;
 	pendingUpdateId?: string | null;
+	target?: app_convex_Doc<"files_pending_updates">["target"];
 	onExit?: () => void;
+	onTargetChange?: (target: app_convex_Doc<"files_pending_updates">["target"]) => void;
 }) {
 	const toolbarPortalHost = document.createElement("div");
 	document.body.append(toolbarPortalHost);
@@ -665,14 +670,16 @@ function renderNonCollabProposalReview(args: {
 			isActive={overrides.isActive ?? args.isActive}
 			onPreviewSnapshotChange={args.onPreviewSnapshotChange}
 			className={`render-${(renderCount += 1)}`}
-			nodeId={NODE_ID}
+			target={args.target ?? { kind: "saved", id: NODE_ID }}
 			editable={true}
 			rootKind={overrides.rootKind ?? args.rootKind ?? "plain_text"}
 			monacoLanguageId="plaintext"
 			pendingUpdateId={
 				args.pendingUpdateId === null
 					? undefined
-					: ((args.pendingUpdateId ?? PENDING_UPDATE_ID) as app_convex_Id<"files_pending_updates">)
+					: ((overrides.pendingUpdateId ??
+							args.pendingUpdateId ??
+							PENDING_UPDATE_ID) as app_convex_Id<"files_pending_updates">)
 			}
 			nonCollaborative={overrides.nonCollaborative ?? args.nonCollaborative ?? true}
 			serverSequence={overrides.serverSequence ?? args.serverSequence}
@@ -686,6 +693,7 @@ function renderNonCollabProposalReview(args: {
 			commentsPortalHost={null}
 			toolbarPortalHost={toolbarPortalHost}
 			onExit={args.onExit ?? (() => {})}
+			onTargetChange={args.onTargetChange}
 		/>
 	);
 	const rendered = render(makeElement());
@@ -707,11 +715,11 @@ async function flushNonCollabProposalMount() {
 
 /**
  * Mock one Save round trip: the upsert flush (a batch, two stage inputs, the upsert action), the
- * save action answering `pendingUpdateUpdatedAt`, and the doc query cache, which still holds the
+ * save action answering `pendingUpdateRevision`, and the doc query cache, which still holds the
  * old doc when the action result lands and shows `nextDoc` only once the returned function runs.
  */
 function mockSaveDocQuery(args: {
-	pendingUpdateUpdatedAt: number | null;
+	pendingUpdateRevision: number | null;
 	nextDoc: app_convex_Doc<"files_pending_updates"> | null;
 }) {
 	convexMutationMock.mockResolvedValue({ _yay: { operationBatchId: "batch_1" } });
@@ -720,8 +728,19 @@ function mockSaveDocQuery(args: {
 	convexActionMock.mockImplementation((reference: unknown) =>
 		Promise.resolve(
 			reference === "upsert_file_pending_update"
-				? { _yay: { pendingUpdate: { ...nonCollabPendingUpdate, updatedAt: 2 }, currentYjsLastSequenceId: null } }
-				: { _yay: { newSequence: null, pendingUpdateUpdatedAt: args.pendingUpdateUpdatedAt } },
+				? {
+						_yay: {
+							pendingUpdate: { ...nonCollabPendingUpdate, revision: 2, updatedAt: 2 },
+							currentYjsLastSequenceId: null,
+						},
+					}
+				: {
+						_yay: {
+							target: { kind: "saved", id: NODE_ID },
+							newSequence: null,
+							pendingUpdateRevision: args.pendingUpdateRevision,
+						},
+					},
 		),
 	);
 	let cachedDoc: app_convex_Doc<"files_pending_updates"> | null = nonCollabPendingUpdate;
@@ -740,6 +759,61 @@ function mockSaveDocQuery(args: {
 }
 
 describe("FileEditorDiff draft versions", () => {
+	test("does not read private proposal pages through the saved editor", async () => {
+		useStableQueryMock.mockReturnValue({
+			...nonCollabPendingUpdate,
+			target: { kind: "private", id: NODE_ID },
+		});
+		renderNonCollabProposalReview({ committedAssetId: "asset_1" });
+		await flushNonCollabProposalMount();
+		expect(convexQueryMock.mock.calls.some(([reference]) => reference === "get_file_pending_update_state_page")).toBe(
+			false,
+		);
+		expect(convexActionMock).not.toHaveBeenCalled();
+	});
+
+	test("publishes a ready empty private file without saved-file reads", async () => {
+		const target = { kind: "private", id: "private_1" } as const;
+		const pendingUpdate = {
+			...nonCollabPendingUpdate,
+			target,
+			content: { ...nonCollabPendingUpdate.content!, base: { kind: "new" } },
+		} as app_convex_Doc<"files_pending_updates">;
+		const onTargetChange = vi.fn();
+		useStableQueryMock.mockReturnValue(pendingUpdate);
+		resolveStatePages({ base: "", staged: "", unstaged: "" });
+		convexMutationMock.mockResolvedValue({ _yay: { operationBatchId: "batch_1" } });
+		convexActionMock.mockImplementation(async (reference: unknown) =>
+			reference === "upsert_file_pending_update"
+				? { _yay: { pendingUpdate: { ...pendingUpdate, revision: 2 }, currentYjsLastSequenceId: null } }
+				: { _yay: { target: { kind: "saved", id: NODE_ID }, newSequence: null, pendingUpdateRevision: null } },
+		);
+		renderNonCollabProposalReview({
+			committedAssetId: "asset_1",
+			target: pendingUpdate.target,
+			onTargetChange,
+		});
+		await flushNonCollabProposalMount();
+		expect(getPanes().original.getValue()).toBe("");
+		expect(getPanes().modified.getValue()).toBe("");
+		const saveButton = screen.getByRole("button", { name: "Save staged changes" });
+		expect(saveButton.hasAttribute("disabled")).toBe(false);
+		fireEvent.click(saveButton);
+		await flushNonCollabProposalMount();
+
+		expect(convexMutationMock).toHaveBeenCalledWith("create_file_pending_update_operation_batch", {
+			membershipId: MEMBERSHIP_ID,
+			target,
+		});
+		expect(convexActionMock.mock.calls[1]?.[1]).toMatchObject({ target, reviewedRevision: 2 });
+		expect(onTargetChange).toHaveBeenCalledWith({ kind: "saved", id: NODE_ID }, { keepReview: false });
+		expect(files_fetch_file_yjs_state_and_text).not.toHaveBeenCalled();
+		expect(convexQueryMock.mock.calls.every(([reference]) => reference === "get_file_pending_update_state_page")).toBe(
+			true,
+		);
+		expect(screen.queryByTestId("file-editor-snapshots-modal")).toBeNull();
+	});
+
 	test("preview reads the modified proposal and detects immediate local edits", async () => {
 		const ref = createRef<Pick<FileEditor_Ref, "getPreviewSnapshot">>();
 		const onPreviewSnapshotChange = vi.fn();
@@ -753,8 +827,8 @@ describe("FileEditorDiff draft versions", () => {
 			sourceKind: "proposed_changes",
 			isDirty: false,
 			membershipId: MEMBERSHIP_ID,
-			nodeId: NODE_ID,
-			pendingUpdate: { _id: PENDING_UPDATE_ID, updatedAt: 1, unstagedStateId: "state_unstaged" },
+			target: { kind: "saved", id: NODE_ID },
+			pendingUpdate: { _id: PENDING_UPDATE_ID, revision: 1, content: { unstagedStateId: "state_unstaged" } },
 		});
 		onPreviewSnapshotChange.mockClear();
 		act(() => {
@@ -794,7 +868,12 @@ describe("FileEditorDiff draft versions", () => {
 			convexMutationMock.mockResolvedValue({ _yay: { operationBatchId: "batch_1" } });
 			convexActionMock.mockResolvedValue({
 				_yay: {
-					pendingUpdate: { ...nonCollabPendingUpdate, updatedAt: 2, unstagedStateId: "state_unstaged_2" },
+					pendingUpdate: {
+						...nonCollabPendingUpdate,
+						revision: 2,
+						updatedAt: 2,
+						content: { ...nonCollabPendingUpdate.content!, unstagedStateId: "state_unstaged_2" },
+					},
 					currentYjsLastSequenceId: null,
 				},
 			});
@@ -823,7 +902,7 @@ describe("FileEditorDiff draft versions", () => {
 			expect(ref.current?.getPreviewSnapshot()).toMatchObject({
 				text: "proposed with typing\n",
 				isDirty: false,
-				pendingUpdate: { updatedAt: 2 },
+				pendingUpdate: { revision: 2 },
 			});
 		} finally {
 			vi.useRealTimers();
@@ -860,7 +939,7 @@ describe("FileEditorDiff draft versions", () => {
 				if (reference !== "get_file_pending_update_state_page") return persisted;
 				if (pausePages) await pagesFinished.promise;
 				const doc = files_yjs_doc_clone({ yjsDoc: baseDoc });
-				if (args.stateId === persisted.unstagedStateId)
+				if (args.stateId === persisted.content!.unstagedStateId)
 					files_yjs_doc_update_from_text({ mut_yjsDoc: doc, text: savedText, rootKind: "plain_text" });
 				const bytes = encodeStateAsUpdate(doc);
 				return {
@@ -874,7 +953,7 @@ describe("FileEditorDiff draft versions", () => {
 				return { _yay: { operationBatchId: "batch_1" } };
 			});
 			convexActionMock.mockImplementation(async () => {
-				persisted = { ...persisted, updatedAt: persisted.updatedAt + 1 };
+				persisted = { ...persisted, revision: persisted.revision + 1, updatedAt: persisted.updatedAt + 1 };
 				return { _yay: { pendingUpdate: persisted, currentYjsLastSequenceId: null } };
 			});
 			const { rerenderWith } = renderNonCollabProposalReview({ committedAssetId: "asset_1" });
@@ -896,7 +975,7 @@ describe("FileEditorDiff draft versions", () => {
 				await vi.advanceTimersByTimeAsync(250);
 			});
 			expect(convexActionMock).toHaveBeenCalledTimes(2);
-			expect(convexActionMock.mock.calls[1]![1].reviewedUpdatedAt).toBe(2);
+			expect(convexActionMock.mock.calls[1]![1].reviewedRevision).toBe(2);
 			expect(savedText).toBe("base A B\n");
 			expect(getPanes().modified.getValue()).toBe("base A B\n");
 		} finally {
@@ -909,9 +988,10 @@ describe("FileEditorDiff draft versions", () => {
 		try {
 			const initial = {
 				...nonCollabPendingUpdate,
-				baseAssetId: undefined,
-				baseYjsSequence: 0,
-				baseLineageGeneration: 0,
+				content: {
+					...nonCollabPendingUpdate.content!,
+					base: { kind: "yjs", sequence: 0, lineageGeneration: 0 },
+				},
 				currentYjsLastSequenceId: "sequence_live",
 				pendingMove: { fromPath: "old.txt", toPath: "new.txt" },
 			};
@@ -933,19 +1013,16 @@ describe("FileEditorDiff draft versions", () => {
 			await flushNonCollabProposalMount();
 			useStableQueryMock.mockReturnValue({
 				...initial,
+				revision: 2,
 				updatedAt: 2,
-				baseYjsSequence: undefined,
-				baseLineageGeneration: undefined,
-				baseStateId: undefined,
-				stagedStateId: undefined,
-				unstagedStateId: undefined,
+				content: undefined,
 			});
 			rerenderWith({});
 			await flushNonCollabProposalMount();
 			act(() => {
 				monacoHarness.changeListeners.forEach((listener) => listener());
 			});
-			let current = { ...initial, updatedAt: 3 };
+			let current = { ...initial, revision: 3, updatedAt: 3 };
 			let savedText = "base\n";
 			convexMutationMock.mockImplementation(async (reference: string, args: { role?: string; text?: string }) => {
 				if (reference === "stage_file_pending_update_text_input" && args.role === "unstaged") savedText = args.text!;
@@ -957,16 +1034,16 @@ describe("FileEditorDiff draft versions", () => {
 			convexQueryMock.mockImplementation(async (reference: unknown, args: { stateId?: string }) =>
 				reference !== "get_file_pending_update_state_page"
 					? current
-					: statePageOf(args.stateId === initial.unstagedStateId ? savedText : "base\n"),
+					: statePageOf(args.stateId === initial.content!.unstagedStateId ? savedText : "base\n"),
 			);
 			await typeIntoModifiedPane("fresh content\n");
 			useStableQueryMock.mockReturnValue(current);
 			rerenderWith({});
 			await flushNonCollabProposalMount();
-			current = { ...current, updatedAt: 4 };
+			current = { ...current, revision: 4, updatedAt: 4 };
 			await typeIntoModifiedPane("fresh content with typing\n");
 			expect(convexActionMock.mock.calls.at(-1)![1].pendingUpdateId).toBe(PENDING_UPDATE_ID);
-			expect(convexActionMock.mock.calls.at(-1)![1].reviewedUpdatedAt).toBe(3);
+			expect(convexActionMock.mock.calls.at(-1)![1].reviewedRevision).toBe(3);
 		} finally {
 			vi.useRealTimers();
 		}
@@ -981,9 +1058,9 @@ describe("FileEditorDiff draft versions", () => {
 			let persisted = { ...nonCollabPendingUpdate };
 			const savePages = () => {
 				for (const [id, doc] of [
-					[persisted.baseStateId!, baseDoc],
-					[persisted.stagedStateId!, baseDoc],
-					[persisted.unstagedStateId!, unstagedDoc],
+					[persisted.content!.baseStateId, baseDoc],
+					[persisted.content!.stagedStateId, baseDoc],
+					[persisted.content!.unstagedStateId, unstagedDoc],
 				] as const) {
 					const bytes = encodeStateAsUpdate(doc);
 					pages[id] = {
@@ -1008,8 +1085,12 @@ describe("FileEditorDiff draft versions", () => {
 				files_yjs_doc_update_from_text({ mut_yjsDoc: unstagedDoc, text: submittedText, rootKind: "plain_text" });
 				persisted = {
 					...persisted,
+					revision: persisted.revision + 1,
 					updatedAt: persisted.updatedAt + 1,
-					unstagedStateId: `unstaged_${persisted.updatedAt + 1}` as app_convex_Id<"files_pending_update_yjs_states">,
+					content: {
+						...persisted.content!,
+						unstagedStateId: `unstaged_${persisted.updatedAt + 1}` as app_convex_Id<"files_pending_update_yjs_states">,
+					},
 				};
 				savePages();
 				return { _yay: { pendingUpdate: persisted, currentYjsLastSequenceId: null } };
@@ -1033,6 +1114,62 @@ describe("FileEditorDiff draft versions", () => {
 		}
 	});
 
+	test("typing uses a new proposal after its revision restarts", async () => {
+		vi.useFakeTimers();
+		try {
+			const baseDoc = files_yjs_doc_create_plain_text_from_text({ text: "base\n" });
+			let persisted = { ...nonCollabPendingUpdate, revision: 9, updatedAt: 9 };
+			let savedText = "base\n";
+			useStableQueryMock.mockReturnValue(persisted);
+			convexQueryMock.mockImplementation(async (reference: unknown, args: { stateId?: string }) => {
+				if (reference !== "get_file_pending_update_state_page") return persisted;
+				const doc = files_yjs_doc_clone({ yjsDoc: baseDoc });
+				if (args.stateId === persisted.content!.unstagedStateId)
+					files_yjs_doc_update_from_text({ mut_yjsDoc: doc, text: savedText, rootKind: "plain_text" });
+				const bytes = encodeStateAsUpdate(doc);
+				return {
+					bytes: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
+					pageCount: 1,
+					totalBytes: bytes.byteLength,
+				};
+			});
+			convexMutationMock.mockImplementation(async (reference: string, args: { role?: string; text?: string }) => {
+				if (reference === "stage_file_pending_update_text_input" && args.role === "unstaged") savedText = args.text!;
+				return { _yay: { operationBatchId: "batch_1" } };
+			});
+			convexActionMock.mockImplementation(async () => {
+				persisted = { ...persisted, revision: persisted.revision + 1, updatedAt: persisted.updatedAt + 1 };
+				return { _yay: { pendingUpdate: persisted, currentYjsLastSequenceId: null } };
+			});
+			const { rerenderWith } = renderNonCollabProposalReview({ committedAssetId: "asset_1" });
+			await flushNonCollabProposalMount();
+			await typeIntoModifiedPane("base A\n");
+			expect(persisted.revision).toBe(10);
+			useStableQueryMock.mockReturnValue(persisted);
+			rerenderWith();
+			await flushNonCollabProposalMount();
+
+			// Another tab discards A and creates B before the query delivers its next value.
+			const newPendingUpdateId = "pu_2" as app_convex_Id<"files_pending_updates">;
+			persisted = { ...persisted, _id: newPendingUpdateId, revision: 1, updatedAt: 11 };
+			savedText = "base B\n";
+			useStableQueryMock.mockReturnValue(persisted);
+			rerenderWith({ pendingUpdateId: newPendingUpdateId });
+			await flushNonCollabProposalMount();
+			expect(getPanes().modified.getValue()).toBe("base B\n");
+			await typeIntoModifiedPane("base B with typing\n");
+
+			expect(convexActionMock).toHaveBeenCalledTimes(2);
+			expect(convexActionMock.mock.calls[1]![1]).toMatchObject({
+				pendingUpdateId: newPendingUpdateId,
+				reviewedRevision: 1,
+			});
+			expect(savedText).toBe("base B with typing\n");
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	test("a cached proposal query after an upsert cannot replay the saved typing", async () => {
 		vi.useFakeTimers();
 		try {
@@ -1043,9 +1180,9 @@ describe("FileEditorDiff draft versions", () => {
 			let cached = persisted;
 			const savePages = () => {
 				for (const [id, doc] of [
-					[persisted.baseStateId!, baseDoc],
-					[persisted.stagedStateId!, baseDoc],
-					[persisted.unstagedStateId!, unstagedDoc],
+					[persisted.content!.baseStateId, baseDoc],
+					[persisted.content!.stagedStateId, baseDoc],
+					[persisted.content!.unstagedStateId, unstagedDoc],
 				] as const) {
 					const bytes = encodeStateAsUpdate(doc);
 					pages[id] = {
@@ -1070,8 +1207,12 @@ describe("FileEditorDiff draft versions", () => {
 				files_yjs_doc_update_from_text({ mut_yjsDoc: unstagedDoc, text: submittedText, rootKind: "plain_text" });
 				persisted = {
 					...persisted,
+					revision: persisted.revision + 1,
 					updatedAt: persisted.updatedAt + 1,
-					unstagedStateId: `unstaged_${persisted.updatedAt + 1}` as app_convex_Id<"files_pending_update_yjs_states">,
+					content: {
+						...persisted.content!,
+						unstagedStateId: `unstaged_${persisted.updatedAt + 1}` as app_convex_Id<"files_pending_update_yjs_states">,
+					},
 				};
 				savePages();
 				return { _yay: { pendingUpdate: persisted, currentYjsLastSequenceId: null } };
@@ -1128,9 +1269,10 @@ describe("FileEditorDiff draft versions", () => {
 				useStableQueryMock.mockReturnValue(null);
 				const initial = {
 					...nonCollabPendingUpdate,
-					baseAssetId: undefined,
-					baseYjsSequence: 0,
-					baseLineageGeneration: 0,
+					content: {
+						...nonCollabPendingUpdate.content!,
+						base: { kind: "yjs", sequence: 0, lineageGeneration: 0 },
+					},
 					currentYjsLastSequenceId: "sequence_live",
 				};
 				let persisted: typeof initial | null = null;
@@ -1150,7 +1292,7 @@ describe("FileEditorDiff draft versions", () => {
 				convexQueryMock.mockImplementation(async (reference: unknown, args: { stateId?: string }) => {
 					if (reference !== "get_file_pending_update_state_page") return persisted;
 					const doc = files_yjs_doc_clone({ yjsDoc: baseDoc });
-					if (args.stateId === initial.unstagedStateId)
+					if (args.stateId === initial.content!.unstagedStateId)
 						files_yjs_doc_update_from_text({ mut_yjsDoc: doc, text: savedText, rootKind: "plain_text" });
 					const bytes = encodeStateAsUpdate(doc);
 					return {
@@ -1171,7 +1313,7 @@ describe("FileEditorDiff draft versions", () => {
 				persisted = null;
 				await typeIntoModifiedPane("base\nsaved proposal\nlater typing\n");
 				expect(convexActionMock).toHaveBeenCalledTimes(2);
-				expect(convexActionMock.mock.calls[1]![1].reviewedUpdatedAt).toBe(1);
+				expect(convexActionMock.mock.calls[1]![1].reviewedRevision).toBe(1);
 				expect(
 					convexQueryMock.mock.calls.filter(([reference]) => reference !== "get_file_pending_update_state_page"),
 				).toHaveLength(0);
@@ -1202,8 +1344,18 @@ describe("FileEditorDiff draft versions", () => {
 				resolveStatePages({ base: "base\n", staged: "accepted\n", unstaged: "proposal\n" });
 				const { rerenderWith, unmount } = renderNonCollabProposalReview({ committedAssetId: "asset_1" });
 				await flushNonCollabProposalMount();
-				const saved = { ...nonCollabPendingUpdate, updatedAt: 2, unstagedStateId: "saved_unstaged" };
-				const newer = { ...saved, updatedAt: 3, unstagedStateId: "newer_unstaged" };
+				const saved = {
+					...nonCollabPendingUpdate,
+					revision: 2,
+					updatedAt: 2,
+					content: { ...nonCollabPendingUpdate.content!, unstagedStateId: "saved_unstaged" },
+				};
+				const newer = {
+					...saved,
+					revision: 3,
+					updatedAt: 3,
+					content: { ...saved.content, unstagedStateId: "newer_unstaged" },
+				};
 				const savedPage = Promise.withResolvers<null>();
 				convexQueryMock.mockImplementation(async (_reference: unknown, args: { stateId: string }) => {
 					if (args.stateId === "saved_unstaged") return savedPage.promise;
@@ -1259,9 +1411,10 @@ describe("FileEditorDiff draft versions", () => {
 		try {
 			const initial = {
 				...nonCollabPendingUpdate,
-				baseAssetId: undefined,
-				baseYjsSequence: 0,
-				baseLineageGeneration: 0,
+				content: {
+					...nonCollabPendingUpdate.content!,
+					base: { kind: "yjs", sequence: 0, lineageGeneration: 0 },
+				},
 				currentYjsLastSequenceId: "sequence_live",
 			};
 			useStableQueryMock.mockReturnValue(initial);
@@ -1283,11 +1436,11 @@ describe("FileEditorDiff draft versions", () => {
 			const pagesFinished = Promise.withResolvers<void>();
 			convexMutationMock.mockResolvedValue({ _yay: { operationBatchId: "batch_1" } });
 			convexActionMock.mockResolvedValue({
-				_yay: { pendingUpdate: { ...initial, updatedAt: 2 }, currentYjsLastSequenceId: "sequence_live" },
+				_yay: { pendingUpdate: { ...initial, revision: 2, updatedAt: 2 }, currentYjsLastSequenceId: "sequence_live" },
 			});
 			convexQueryMock.mockImplementation(async (reference: unknown, args: { stateId?: string }) => {
-				if (reference !== "get_file_pending_update_state_page") return { ...initial, updatedAt: 2 };
-				const page = statePageOf(args.stateId === initial.unstagedStateId ? "saved typing\n" : "base\n");
+				if (reference !== "get_file_pending_update_state_page") return { ...initial, revision: 2, updatedAt: 2 };
+				const page = statePageOf(args.stateId === initial.content!.unstagedStateId ? "saved typing\n" : "base\n");
 				await pagesFinished.promise;
 				return page;
 			});
@@ -1305,7 +1458,7 @@ describe("FileEditorDiff draft versions", () => {
 			});
 			await typeIntoModifiedPane("new typing\n");
 			expect(convexActionMock.mock.calls.at(-1)![1].pendingUpdateId).toBeUndefined();
-			expect(convexActionMock.mock.calls.at(-1)![1].reviewedUpdatedAt).toBeUndefined();
+			expect(convexActionMock.mock.calls.at(-1)![1].reviewedRevision).toBeUndefined();
 		} finally {
 			vi.useRealTimers();
 		}
@@ -1322,9 +1475,10 @@ describe("FileEditorDiff draft versions", () => {
 				let unstagedText = committedText;
 				const pendingTemplate = {
 					...nonCollabPendingUpdate,
-					baseAssetId: undefined,
-					baseYjsSequence: 0,
-					baseLineageGeneration: 0,
+					content: {
+						...nonCollabPendingUpdate.content!,
+						base: { kind: "yjs", sequence: 0, lineageGeneration: 0 },
+					},
 					currentYjsLastSequenceId: "sequence_live",
 				};
 				let persisted: typeof pendingTemplate | null = null;
@@ -1346,9 +1500,9 @@ describe("FileEditorDiff draft versions", () => {
 				convexQueryMock.mockImplementation(async (reference: unknown, args: { stateId?: string }) => {
 					if (reference !== "get_file_pending_update_state_page") return persisted;
 					return statePageOf(
-						args.stateId === pendingTemplate.stagedStateId
+						args.stateId === pendingTemplate.content!.stagedStateId
 							? stagedText
-							: args.stateId === pendingTemplate.unstagedStateId
+							: args.stateId === pendingTemplate.content!.unstagedStateId
 								? unstagedText
 								: committedText,
 					);
@@ -1359,14 +1513,24 @@ describe("FileEditorDiff draft versions", () => {
 						persisted =
 							stagedText === committedText && unstagedText === committedText
 								? null
-								: { ...pendingTemplate, updatedAt: (persisted?.updatedAt ?? 0) + 1 };
+								: {
+										...pendingTemplate,
+										revision: (persisted?.revision ?? 0) + 1,
+										updatedAt: (persisted?.updatedAt ?? 0) + 1,
+									};
 						return { _yay: { pendingUpdate: persisted, currentYjsLastSequenceId: "sequence_live" } };
 					}
 					committedText = stagedText;
 					committedSequence += 1;
 					persisted = null;
 					useStableQueryMock.mockReturnValue(null);
-					return { _yay: { newSequence: committedSequence, pendingUpdateUpdatedAt: null } };
+					return {
+						_yay: {
+							target: { kind: "saved", id: NODE_ID },
+							newSequence: committedSequence,
+							pendingUpdateRevision: null,
+						},
+					};
 				});
 				const { rerenderWith } = renderNonCollabProposalReview({
 					committedAssetId: "asset_1",
@@ -1405,7 +1569,7 @@ describe("FileEditorDiff draft versions", () => {
 				await typeIntoModifiedPane("next draft\n");
 				expect(convexActionMock.mock.calls.at(-1)![0]).toBe("upsert_file_pending_update");
 				expect(convexActionMock.mock.calls.at(-1)![1].pendingUpdateId).toBeUndefined();
-				expect(convexActionMock.mock.calls.at(-1)![1].reviewedUpdatedAt).toBeUndefined();
+				expect(convexActionMock.mock.calls.at(-1)![1].reviewedRevision).toBeUndefined();
 				expect(getPanes().modified.getValue()).toBe("next draft\n");
 			} finally {
 				vi.useRealTimers();
@@ -1421,9 +1585,10 @@ describe("FileEditorDiff draft versions", () => {
 				const baseDoc = files_yjs_doc_create_plain_text_from_text({ text: "base\n" });
 				let persisted = {
 					...nonCollabPendingUpdate,
-					baseAssetId: undefined,
-					baseYjsSequence: 0,
-					baseLineageGeneration: 0,
+					content: {
+						...nonCollabPendingUpdate.content!,
+						base: { kind: "yjs", sequence: 0, lineageGeneration: 0 },
+					},
 					currentYjsLastSequenceId: "sequence_live",
 				};
 				let savedText = "base\n";
@@ -1431,7 +1596,7 @@ describe("FileEditorDiff draft versions", () => {
 				convexQueryMock.mockImplementation(async (reference: unknown, args: { stateId?: string }) => {
 					if (reference !== "get_file_pending_update_state_page") return persisted;
 					const doc = files_yjs_doc_clone({ yjsDoc: baseDoc });
-					if (args.stateId === persisted.unstagedStateId) {
+					if (args.stateId === persisted.content!.unstagedStateId) {
 						files_yjs_doc_update_from_text({ mut_yjsDoc: doc, text: savedText, rootKind: "plain_text" });
 					}
 					const bytes = encodeStateAsUpdate(doc);
@@ -1461,7 +1626,7 @@ describe("FileEditorDiff draft versions", () => {
 					monacoHarness.changeListeners.forEach((listener) => listener());
 				});
 				savedText = "base A\n";
-				persisted = { ...persisted, updatedAt: 2 };
+				persisted = { ...persisted, revision: 2, updatedAt: 2 };
 				if (queryOrder === "after")
 					await act(async () => {
 						firstUpsert.resolve({ _yay: { pendingUpdate: persisted, currentYjsLastSequenceId: "sequence_live" } });
@@ -1480,7 +1645,7 @@ describe("FileEditorDiff draft versions", () => {
 					await vi.advanceTimersByTimeAsync(250);
 				});
 				expect(convexActionMock).toHaveBeenCalledTimes(2);
-				expect(convexActionMock.mock.calls[1]![1].reviewedUpdatedAt).toBe(2);
+				expect(convexActionMock.mock.calls[1]![1].reviewedRevision).toBe(2);
 				expect(convexMutationMock).toHaveBeenLastCalledWith(
 					"stage_file_pending_update_text_input",
 					expect.objectContaining({ role: "unstaged", text: "base A B\n" }),
@@ -1506,9 +1671,10 @@ describe("FileEditorDiff draft versions", () => {
 			let savedText = "base\n";
 			let persisted = {
 				...nonCollabPendingUpdate,
-				baseAssetId: undefined,
-				baseYjsSequence: 0,
-				baseLineageGeneration: 0,
+				content: {
+					...nonCollabPendingUpdate.content!,
+					base: { kind: "yjs", sequence: 0, lineageGeneration: 0 },
+				},
 				currentYjsLastSequenceId: "sequence_live",
 			};
 			convexMutationMock.mockImplementation(async (reference: string, args: { role?: string; text?: string }) => {
@@ -1521,7 +1687,7 @@ describe("FileEditorDiff draft versions", () => {
 			convexQueryMock.mockImplementation(async (reference: unknown, args: { stateId?: string }) => {
 				if (reference !== "get_file_pending_update_state_page") return persisted;
 				const doc = files_yjs_doc_clone({ yjsDoc: baseDoc });
-				if (args.stateId === persisted.unstagedStateId)
+				if (args.stateId === persisted.content!.unstagedStateId)
 					files_yjs_doc_update_from_text({ mut_yjsDoc: doc, text: savedText, rootKind: "plain_text" });
 				const bytes = encodeStateAsUpdate(doc);
 				return {
@@ -1538,20 +1704,20 @@ describe("FileEditorDiff draft versions", () => {
 			});
 			await flushNonCollabProposalMount();
 			await typeIntoModifiedPane("first draft\n");
-			expect(convexActionMock.mock.calls[0]![1].reviewedUpdatedAt).toBeUndefined();
+			expect(convexActionMock.mock.calls[0]![1].reviewedRevision).toBeUndefined();
 			useStableQueryMock.mockReturnValue(persisted);
 			rerenderWith({});
 			await flushNonCollabProposalMount();
 			expect(screen.queryByText("Your unsaved text was kept here while the proposal changed.")).toBeNull();
 			expect(getPanes().modified.getValue()).toBe("first draft\n");
-			persisted = { ...persisted, updatedAt: 2 };
+			persisted = { ...persisted, revision: 2, updatedAt: 2 };
 			await typeIntoModifiedPane("second draft\n");
 			await flushNonCollabProposalMount();
-			expect(convexActionMock.mock.calls[1]![1].reviewedUpdatedAt).toBe(1);
-			persisted = { ...persisted, updatedAt: 3 };
+			expect(convexActionMock.mock.calls[1]![1].reviewedRevision).toBe(1);
+			persisted = { ...persisted, revision: 3, updatedAt: 3 };
 			await typeIntoModifiedPane("third draft\n");
 			await flushNonCollabProposalMount();
-			expect(convexActionMock.mock.calls[2]![1].reviewedUpdatedAt).toBe(2);
+			expect(convexActionMock.mock.calls[2]![1].reviewedRevision).toBe(2);
 			expect(getPanes().modified.getValue()).toBe("third draft\n");
 		} finally {
 			vi.useRealTimers();
@@ -1563,10 +1729,12 @@ describe("FileEditorDiff after a collaboration change", () => {
 	test("Sync sends the captured proposal revision with both rebased branches", async () => {
 		useStableQueryMock.mockReturnValue({
 			...nonCollabPendingUpdate,
+			revision: 3,
 			updatedAt: 3,
-			baseAssetId: undefined,
-			baseYjsSequence: 0,
-			baseLineageGeneration: 0,
+			content: {
+				...nonCollabPendingUpdate.content!,
+				base: { kind: "yjs", sequence: 0, lineageGeneration: 0 },
+			},
 			currentYjsLastSequenceId: "sequence_live",
 		});
 		resolveStatePages({ base: "Budget: 100\n", staged: "Budget: 150\n", unstaged: "Budget: 170\n" });
@@ -1593,7 +1761,7 @@ describe("FileEditorDiff after a collaboration change", () => {
 		expect(files_persist_file_pending_update_rebased_state).toHaveBeenCalledWith(
 			expect.objectContaining({
 				pendingUpdateId: PENDING_UPDATE_ID,
-				reviewedUpdatedAt: 3,
+				reviewedRevision: 3,
 				baseYjsSequence: 1,
 			}),
 		);
@@ -1629,9 +1797,10 @@ describe("FileEditorDiff after a collaboration change", () => {
 	test("restore leaves the accepted and proposed panes intact until preparation reloads them", async () => {
 		const initial = {
 			...nonCollabPendingUpdate,
-			baseAssetId: undefined,
-			baseYjsSequence: 0,
-			baseLineageGeneration: 0,
+			content: {
+				...nonCollabPendingUpdate.content!,
+				base: { kind: "yjs", sequence: 0, lineageGeneration: 0 },
+			},
 			currentYjsLastSequenceId: "sequence_old",
 		};
 		useStableQueryMock.mockReturnValue(initial);
@@ -1659,11 +1828,14 @@ describe("FileEditorDiff after a collaboration change", () => {
 		// Preparation may finish before the tab receives the temporary marker.
 		const prepared = {
 			...initial,
+			revision: 2,
 			updatedAt: 2,
-			baseYjsSequence: 1,
-			baseStateId: "restored_base",
-			stagedStateId: "restored_staged",
-			unstagedStateId: "restored_unstaged",
+			content: {
+				base: { kind: "yjs", sequence: 1, lineageGeneration: 0 },
+				baseStateId: "restored_base",
+				stagedStateId: "restored_staged",
+				unstagedStateId: "restored_unstaged",
+			},
 		};
 		convexActionMock.mockResolvedValue({ _yay: { pendingUpdate: prepared } });
 		useStableQueryMock.mockReturnValue(prepared);
@@ -1687,18 +1859,22 @@ describe("FileEditorDiff after a collaboration change", () => {
 		async (pagesArrivedFirst) => {
 			const initial = {
 				...nonCollabPendingUpdate,
-				baseAssetId: undefined,
-				baseYjsSequence: 0,
-				baseLineageGeneration: 0,
+				content: {
+					...nonCollabPendingUpdate.content!,
+					base: { kind: "yjs", sequence: 0, lineageGeneration: 0 },
+				},
 				currentYjsLastSequenceId: "sequence_live",
 			};
 			const prepared = {
 				...initial,
+				revision: 2,
 				updatedAt: 2,
-				baseYjsSequence: 1,
-				baseStateId: "restored_base",
-				stagedStateId: "restored_staged",
-				unstagedStateId: "restored_unstaged",
+				content: {
+					base: { kind: "yjs", sequence: 1, lineageGeneration: 0 },
+					baseStateId: "restored_base",
+					stagedStateId: "restored_staged",
+					unstagedStateId: "restored_unstaged",
+				},
 			};
 			const pages: Record<string, ReturnType<typeof statePageOf>> = {
 				state_base: statePageOf("base\n"),
@@ -1792,9 +1968,10 @@ describe("FileEditorDiff after a collaboration change", () => {
 	test("Sync does not rebase a fetched document against panes from an older document", async () => {
 		useStableQueryMock.mockReturnValue({
 			...nonCollabPendingUpdate,
-			baseAssetId: undefined,
-			baseYjsSequence: 0,
-			baseLineageGeneration: 0,
+			content: {
+				...nonCollabPendingUpdate.content!,
+				base: { kind: "yjs", sequence: 0, lineageGeneration: 0 },
+			},
 			currentYjsLastSequenceId: "sequence_old",
 		});
 		resolveStatePages({ base: "base\n", staged: "accepted\n", unstaged: "proposed\n" });
@@ -1825,9 +2002,10 @@ describe("FileEditorDiff after a collaboration change", () => {
 		async (action) => {
 			useStableQueryMock.mockReturnValue({
 				...nonCollabPendingUpdate,
-				baseAssetId: undefined,
-				baseYjsSequence: 0,
-				baseLineageGeneration: 0,
+				content: {
+					...nonCollabPendingUpdate.content!,
+					base: { kind: "yjs", sequence: 0, lineageGeneration: 0 },
+				},
 				currentYjsLastSequenceId: "sequence_old",
 			});
 			resolveStatePages({ base: "old\n", staged: "old accepted\n", unstaged: "old accepted\n" });
@@ -1862,15 +2040,17 @@ describe("FileEditorDiff after a collaboration change", () => {
 							_yay: {
 								pendingUpdate: {
 									...nonCollabPendingUpdate,
-									baseAssetId: undefined,
-									baseYjsSequence: 0,
-									baseLineageGeneration: 0,
+									content: {
+										...nonCollabPendingUpdate.content!,
+										base: { kind: "yjs", sequence: 0, lineageGeneration: 0 },
+									},
+									revision: 2,
 									updatedAt: 2,
 								},
 								currentYjsLastSequenceId: "sequence_old",
 							},
 						}
-					: { _yay: { newSequence: 10, pendingUpdateUpdatedAt: null } },
+					: { _yay: { target: { kind: "saved", id: NODE_ID }, newSequence: 10, pendingUpdateRevision: null } },
 			);
 			if (action === "Save") {
 				// The query waits for the saved proposal after the draft flush's exact action result.
@@ -1911,9 +2091,10 @@ describe("FileEditorDiff after a collaboration change", () => {
 	test("new proposal pages can arrive before the node's new document id", async () => {
 		const initial = {
 			...nonCollabPendingUpdate,
-			baseAssetId: undefined,
-			baseYjsSequence: 0,
-			baseLineageGeneration: 0,
+			content: {
+				...nonCollabPendingUpdate.content!,
+				base: { kind: "yjs", sequence: 0, lineageGeneration: 0 },
+			},
 			currentYjsLastSequenceId: "sequence_old",
 		};
 		useStableQueryMock.mockReturnValue(initial);
@@ -1926,10 +2107,14 @@ describe("FileEditorDiff after a collaboration change", () => {
 		await flushNonCollabProposalMount();
 		const prepared = {
 			...initial,
+			revision: 2,
 			updatedAt: 2,
-			baseStateId: "base_2",
-			stagedStateId: "staged_2",
-			unstagedStateId: "unstaged_2",
+			content: {
+				...initial.content,
+				baseStateId: "base_2",
+				stagedStateId: "staged_2",
+				unstagedStateId: "unstaged_2",
+			},
 			currentYjsLastSequenceId: "sequence_new",
 		};
 		const texts: Record<string, string> = { base_2: "new\n", staged_2: "new accepted\n", unstaged_2: "new proposed\n" };
@@ -1957,9 +2142,10 @@ describe("FileEditorDiff after a collaboration change", () => {
 						? nonCollabPendingUpdate
 						: {
 								...nonCollabPendingUpdate,
-								baseAssetId: undefined,
-								baseYjsSequence: 0,
-								baseLineageGeneration: 0,
+								content: {
+									...nonCollabPendingUpdate.content!,
+									base: { kind: "yjs", sequence: 0, lineageGeneration: 0 },
+								},
 								currentYjsLastSequenceId: "sequence_old",
 							};
 				useStableQueryMock.mockReturnValue(initial);
@@ -1972,13 +2158,17 @@ describe("FileEditorDiff after a collaboration change", () => {
 				await flushNonCollabProposalMount();
 				let prepared = {
 					...nonCollabPendingUpdate,
+					revision: 2,
 					updatedAt: 2,
-					baseStateId: "base_2",
-					stagedStateId: "staged_2",
-					unstagedStateId: "unstaged_2",
-					baseAssetId: mode === "on" ? undefined : "asset_2",
-					baseYjsSequence: mode === "on" ? 0 : undefined,
-					baseLineageGeneration: mode === "on" ? 0 : undefined,
+					content: {
+						base:
+							mode === "on"
+								? { kind: "yjs", sequence: 0, lineageGeneration: 0 }
+								: { kind: "asset", assetId: "asset_2" },
+						baseStateId: "base_2",
+						stagedStateId: "staged_2",
+						unstagedStateId: "unstaged_2",
+					},
 					currentYjsLastSequenceId: mode === "on" ? "sequence_new" : null,
 				};
 				const baseDoc = files_yjs_doc_create_plain_text_from_text({ text: "new\n" });
@@ -1986,9 +2176,9 @@ describe("FileEditorDiff after a collaboration change", () => {
 				convexQueryMock.mockImplementation(async (reference: unknown, args: { stateId?: string }) => {
 					if (reference !== "get_file_pending_update_state_page") return prepared;
 					const doc = files_yjs_doc_clone({ yjsDoc: baseDoc });
-					if (args.stateId === prepared.stagedStateId)
+					if (args.stateId === prepared.content!.stagedStateId)
 						files_yjs_doc_update_from_text({ mut_yjsDoc: doc, text: "new accepted\n", rootKind: "plain_text" });
-					if (args.stateId === prepared.unstagedStateId)
+					if (args.stateId === prepared.content!.unstagedStateId)
 						files_yjs_doc_update_from_text({ mut_yjsDoc: doc, text: savedText, rootKind: "plain_text" });
 					const bytes = encodeStateAsUpdate(doc);
 					return {
@@ -2018,7 +2208,7 @@ describe("FileEditorDiff after a collaboration change", () => {
 					return { _yay: { operationBatchId: "batch_1" } };
 				});
 				convexActionMock.mockImplementation(async () => {
-					prepared = { ...prepared, updatedAt: prepared.updatedAt + 1 };
+					prepared = { ...prepared, revision: prepared.revision + 1, updatedAt: prepared.updatedAt + 1 };
 					return { _yay: { pendingUpdate: prepared, currentYjsLastSequenceId: prepared.currentYjsLastSequenceId } };
 				});
 				await typeIntoModifiedPane("new proposed A\n");
@@ -2028,7 +2218,7 @@ describe("FileEditorDiff after a collaboration change", () => {
 				expect(getPanes().modified.getValue()).toBe("new proposed A\n");
 				await typeIntoModifiedPane("new proposed A B\n");
 				expect(convexActionMock).toHaveBeenCalledTimes(2);
-				expect(convexActionMock.mock.calls[1]![1].reviewedUpdatedAt).toBe(3);
+				expect(convexActionMock.mock.calls[1]![1].reviewedRevision).toBe(3);
 				expect(getPanes().modified.getValue()).toBe("new proposed A B\n");
 			} finally {
 				vi.useRealTimers();
@@ -2040,11 +2230,14 @@ describe("FileEditorDiff after a collaboration change", () => {
 		const pending = { ...nonCollabPendingUpdate, contentNeedsRebase: marked || undefined } as const;
 		const prepared = {
 			...nonCollabPendingUpdate,
+			revision: 2,
 			updatedAt: 2,
-			baseAssetId: "asset_2",
-			baseStateId: "base_2",
-			stagedStateId: "staged_2",
-			unstagedStateId: "unstaged_2",
+			content: {
+				base: { kind: "asset", assetId: "asset_2" },
+				baseStateId: "base_2",
+				stagedStateId: "staged_2",
+				unstagedStateId: "unstaged_2",
+			},
 		} as unknown as app_convex_Doc<"files_pending_updates">;
 		useStableQueryMock.mockReturnValue(pending);
 		resolveStatePages({ base: "old\n", staged: "old accepted\n", unstaged: "old proposed\n" });
@@ -2058,7 +2251,7 @@ describe("FileEditorDiff after a collaboration change", () => {
 		);
 		expect(convexActionMock.mock.calls[0]![1]).toEqual({
 			membershipId: MEMBERSHIP_ID,
-			nodeId: NODE_ID,
+			target: { kind: "saved", id: NODE_ID },
 			pendingUpdateId: PENDING_UPDATE_ID,
 		});
 		expect(screen.getByRole("status").textContent).toContain("Updating this proposal");
@@ -2147,11 +2340,14 @@ describe("FileEditorDiff after a collaboration change", () => {
 				expect(convexMutationMock).not.toHaveBeenCalled();
 				const prepared = {
 					...nonCollabPendingUpdate,
+					revision: 2,
 					updatedAt: 2,
-					baseAssetId: "asset_2",
-					baseStateId: "base_2",
-					stagedStateId: "staged_2",
-					unstagedStateId: "unstaged_2",
+					content: {
+						base: { kind: "asset", assetId: "asset_2" },
+						baseStateId: "base_2",
+						stagedStateId: "staged_2",
+						unstagedStateId: "unstaged_2",
+					},
 				};
 				const texts: Record<string, string> = { base_2: "new\n", staged_2: "new\n", unstaged_2: "new proposed\n" };
 				convexQueryMock.mockImplementation(async (_name: unknown, args: { stateId: string }) =>
@@ -2238,11 +2434,14 @@ describe("FileEditorDiff after a collaboration change", () => {
 		await flushNonCollabProposalMount();
 		useStableQueryMock.mockReturnValue({
 			...nonCollabPendingUpdate,
+			revision: 2,
 			updatedAt: 2,
-			baseAssetId: "asset_2",
-			baseStateId: "new_base",
-			stagedStateId: "new_staged",
-			unstagedStateId: "new_unstaged",
+			content: {
+				base: { kind: "asset", assetId: "asset_2" },
+				baseStateId: "new_base",
+				stagedStateId: "new_staged",
+				unstagedStateId: "new_unstaged",
+			},
 		});
 		const texts: Record<string, string> = {
 			new_base: "current\n",
@@ -2283,11 +2482,14 @@ describe("FileEditorDiff after a collaboration change", () => {
 			await flushNonCollabProposalMount();
 			const prepared = {
 				...nonCollabPendingUpdate,
+				revision: 3,
 				updatedAt: 3,
-				baseAssetId: "asset_2",
-				baseStateId: "new_base",
-				stagedStateId: "new_staged",
-				unstagedStateId: "new_unstaged",
+				content: {
+					base: { kind: "asset", assetId: "asset_2" },
+					baseStateId: "new_base",
+					stagedStateId: "new_staged",
+					unstagedStateId: "new_unstaged",
+				},
 			};
 			const texts: Record<string, string> = {
 				new_base: "current\n",
@@ -2304,7 +2506,10 @@ describe("FileEditorDiff after a collaboration change", () => {
 			const pageCalls = convexQueryMock.mock.calls.length;
 			await act(async () => {
 				oldWrite.resolve({
-					_yay: { pendingUpdate: { ...nonCollabPendingUpdate, updatedAt: 2 }, currentYjsLastSequenceId: null },
+					_yay: {
+						pendingUpdate: { ...nonCollabPendingUpdate, revision: 2, updatedAt: 2 },
+						currentYjsLastSequenceId: null,
+					},
 				});
 			});
 			await flushNonCollabProposalMount();
@@ -2314,7 +2519,7 @@ describe("FileEditorDiff after a collaboration change", () => {
 			act(() => monacoHarness.changeListeners.forEach((listener) => listener()));
 			convexActionMock.mockResolvedValue({ _yay: { pendingUpdate: prepared, currentYjsLastSequenceId: null } });
 			await typeIntoModifiedPane("current proposed\nnext typing\n");
-			expect(convexActionMock.mock.calls.at(-1)?.[1].reviewedUpdatedAt).toBe(3);
+			expect(convexActionMock.mock.calls.at(-1)?.[1].reviewedRevision).toBe(3);
 		} finally {
 			vi.useRealTimers();
 		}
@@ -2323,9 +2528,10 @@ describe("FileEditorDiff after a collaboration change", () => {
 	test("a mode cycle with the same counter blocks the old family even when its marker was missed", async () => {
 		const initial = {
 			...nonCollabPendingUpdate,
-			baseAssetId: undefined,
-			baseYjsSequence: 0,
-			baseLineageGeneration: 0,
+			content: {
+				...nonCollabPendingUpdate.content!,
+				base: { kind: "yjs", sequence: 0, lineageGeneration: 0 },
+			},
 			currentYjsLastSequenceId: "sequence_old",
 		};
 		useStableQueryMock.mockReturnValue(initial);
@@ -2342,10 +2548,14 @@ describe("FileEditorDiff after a collaboration change", () => {
 		expect((screen.getByRole("button", { name: "Save staged changes" }) as HTMLButtonElement).disabled).toBe(true);
 		useStableQueryMock.mockReturnValue({
 			...initial,
+			revision: 2,
 			updatedAt: 2,
-			baseStateId: "base_2",
-			stagedStateId: "staged_2",
-			unstagedStateId: "unstaged_2",
+			content: {
+				...initial.content,
+				baseStateId: "base_2",
+				stagedStateId: "staged_2",
+				unstagedStateId: "unstaged_2",
+			},
 			currentYjsLastSequenceId: "sequence_new",
 		});
 		const texts: Record<string, string> = { base_2: "base\n", staged_2: "accepted\n", unstaged_2: "proposed\n" };
@@ -2396,7 +2606,7 @@ describe("FileEditorDiff with collaboration off", () => {
 		// One hunk is staged already, so Save has something to send.
 		resolveStatePages({ base: "alpha\n", staged: "alpha\nstaged\n", unstaged: "alpha\nstaged\n" });
 		// The save deletes the doc. The cache shows the deletion only with the next query value.
-		const deliverNextValue = mockSaveDocQuery({ pendingUpdateUpdatedAt: null, nextDoc: null });
+		const deliverNextValue = mockSaveDocQuery({ pendingUpdateRevision: null, nextDoc: null });
 		renderNonCollabProposalReview({ committedAssetId: "asset_1" });
 		await flushNonCollabProposalMount();
 
@@ -2408,9 +2618,9 @@ describe("FileEditorDiff with collaboration off", () => {
 		expect(getFunctionName(reference as never)).toBe("files_pending_updates:save_file_pending_update");
 		expect(actionArgs).toEqual({
 			membershipId: MEMBERSHIP_ID,
-			nodeId: NODE_ID,
+			target: { kind: "saved", id: NODE_ID },
 			pendingUpdateId: PENDING_UPDATE_ID,
-			reviewedUpdatedAt: 2,
+			reviewedRevision: 2,
 		});
 		expect(toast.success).toHaveBeenCalledWith("Changes saved");
 		// The action result is in, but the cache still shows the old doc: the view stays busy and
@@ -2445,7 +2655,12 @@ describe("FileEditorDiff with collaboration off", () => {
 
 		const [reference, mutationArgs] = convexMutationMock.mock.calls[0] ?? [];
 		expect(getFunctionName(reference as never)).toBe("files_pending_updates:discard_file_pending_content");
-		expect(mutationArgs).toEqual({ membershipId: MEMBERSHIP_ID, nodeId: NODE_ID, pendingUpdateId: PENDING_UPDATE_ID });
+		expect(mutationArgs).toEqual({
+			membershipId: MEMBERSHIP_ID,
+			target: { kind: "saved", id: NODE_ID },
+			pendingUpdateId: PENDING_UPDATE_ID,
+			reviewedRevision: 1,
+		});
 		expect(toast.success).toHaveBeenCalledWith("Proposal discarded");
 	});
 
@@ -2611,13 +2826,13 @@ describe("FileEditorDiff with collaboration off", () => {
 		expect(document.activeElement).toBe(document.body);
 	});
 
-	test("Save after a partial accept stays busy until the doc query shows the rewritten doc", async () => {
+	test("Save after a partial accept waits for the new revision even when the timestamp is unchanged", async () => {
 		useStableQueryMock.mockReturnValue(nonCollabPendingUpdate);
 		resolveStatePages({ base: "alpha\n", staged: "alpha\nstaged\n", unstaged: "alpha\nstaged\nbeta\n" });
-		// The unstaged hunk survives the save, so the doc stays and only its `updatedAt` moves.
+		// The unstaged hunk survives the save, so the doc stays and only its revision advances.
 		const deliverNextValue = mockSaveDocQuery({
-			pendingUpdateUpdatedAt: 5,
-			nextDoc: { ...nonCollabPendingUpdate, updatedAt: 5 },
+			pendingUpdateRevision: 5,
+			nextDoc: { ...nonCollabPendingUpdate, revision: 5, updatedAt: 1 },
 		});
 		renderNonCollabProposalReview({ committedAssetId: "asset_1" });
 		await flushNonCollabProposalMount();
@@ -2626,8 +2841,12 @@ describe("FileEditorDiff with collaboration off", () => {
 		await act(async () => {});
 		const [watchReference, watchArgs] = convexWatchQueryMock.mock.calls[0] ?? [];
 		expect(getFunctionName(watchReference as never)).toBe("files_pending_updates:get_file_pending_update");
-		expect(watchArgs).toEqual({ membershipId: MEMBERSHIP_ID, nodeId: NODE_ID, pendingUpdateId: PENDING_UPDATE_ID });
-		// The cache still holds the doc from before the save (`updatedAt` 1): keep waiting.
+		expect(watchArgs).toEqual({
+			membershipId: MEMBERSHIP_ID,
+			target: { kind: "saved", id: NODE_ID },
+			pendingUpdateId: PENDING_UPDATE_ID,
+		});
+		// The cache still holds revision 1 from before the save: keep waiting.
 		expect(waitNewQueryValueMock).toHaveBeenCalledTimes(1);
 		expect((screen.getByRole("button", { name: "Save staged changes" }) as HTMLButtonElement).disabled).toBe(true);
 
@@ -2643,7 +2862,7 @@ describe("FileEditorDiff with collaboration off", () => {
 		resolveStatePages({ base: "alpha\n", staged: "alpha\nstaged\n", unstaged: "alpha\nstaged\n" });
 		// The agent wrote again right after the save: the cache skips from the old doc to a new one.
 		const deliverNextValue = mockSaveDocQuery({
-			pendingUpdateUpdatedAt: 5,
+			pendingUpdateRevision: 5,
 			nextDoc: { ...nonCollabPendingUpdate, _id: "pu_other" as typeof nonCollabPendingUpdate._id },
 		});
 		renderNonCollabProposalReview({ committedAssetId: "asset_1" });
@@ -2690,11 +2909,14 @@ describe("FileEditorDiff with collaboration off", () => {
 		});
 		useStableQueryMock.mockReturnValue({
 			...nonCollabPendingUpdate,
+			revision: 2,
 			updatedAt: 2,
-			baseAssetId: "asset_2",
-			baseStateId: "state_base_2",
-			stagedStateId: "state_staged_2",
-			unstagedStateId: "state_unstaged_2",
+			content: {
+				base: { kind: "asset", assetId: "asset_2" },
+				baseStateId: "state_base_2",
+				stagedStateId: "state_staged_2",
+				unstagedStateId: "state_unstaged_2",
+			},
 		} as unknown as app_convex_Doc<"files_pending_updates">);
 		rerenderWith({});
 		await act(async () => {});
@@ -2725,7 +2947,10 @@ describe("FileEditorDiff with collaboration off", () => {
 		expect(ref.current?.getPreviewSnapshot()).toMatchObject({
 			text: "alpha\nmember\nbeta\n",
 			isDirty: false,
-			pendingUpdate: { updatedAt: 2, baseAssetId: "asset_2", unstagedStateId: "state_unstaged_2" },
+			pendingUpdate: {
+				revision: 2,
+				content: { base: { kind: "asset", assetId: "asset_2" }, unstagedStateId: "state_unstaged_2" },
+			},
 		});
 		await act(async () => {
 			monacoHarness.diffListeners.forEach((listener) => listener());
@@ -2753,11 +2978,14 @@ describe("FileEditorDiff with collaboration off", () => {
 		);
 		useStableQueryMock.mockReturnValue({
 			...nonCollabPendingUpdate,
+			revision: 2,
 			updatedAt: 2,
-			baseAssetId: "asset_2",
-			baseStateId: "state_base_2",
-			stagedStateId: "state_staged_2",
-			unstagedStateId: "state_unstaged_2",
+			content: {
+				base: { kind: "asset", assetId: "asset_2" },
+				baseStateId: "state_base_2",
+				stagedStateId: "state_staged_2",
+				unstagedStateId: "state_unstaged_2",
+			},
 		} as unknown as app_convex_Doc<"files_pending_updates">);
 		rerenderWith({});
 		await flushNonCollabProposalMount();
@@ -2794,11 +3022,14 @@ describe("FileEditorDiff with collaboration off", () => {
 		convexQueryMock.mockRejectedValue(new Error("Unauthenticated"));
 		useStableQueryMock.mockReturnValue({
 			...nonCollabPendingUpdate,
+			revision: 2,
 			updatedAt: 2,
-			baseAssetId: "asset_2",
-			baseStateId: "state_base_2",
-			stagedStateId: "state_staged_2",
-			unstagedStateId: "state_unstaged_2",
+			content: {
+				base: { kind: "asset", assetId: "asset_2" },
+				baseStateId: "state_base_2",
+				stagedStateId: "state_staged_2",
+				unstagedStateId: "state_unstaged_2",
+			},
 		} as unknown as app_convex_Doc<"files_pending_updates">);
 		rerenderWith({});
 		await flushNonCollabProposalMount();
@@ -2830,8 +3061,8 @@ describe("FileEditorDiff with collaboration off", () => {
 		useStableQueryMock.mockReturnValue(nonCollabPendingUpdate);
 		resolveStatePages({ base: "alpha\n", staged: "alpha\nstaged\n", unstaged: "alpha\nstaged\nbeta\n" });
 		const deliverSavedDoc = mockSaveDocQuery({
-			pendingUpdateUpdatedAt: 5,
-			nextDoc: { ...nonCollabPendingUpdate, updatedAt: 5 },
+			pendingUpdateRevision: 5,
+			nextDoc: { ...nonCollabPendingUpdate, revision: 5, updatedAt: 1 },
 		});
 		const { toolbarPortalHost } = renderNonCollabProposalReview({ committedAssetId: "asset_1" });
 		await flushNonCollabProposalMount();
@@ -2899,8 +3130,8 @@ describe("FileEditorDiff with collaboration off", () => {
 		useStableQueryMock.mockReturnValue(nonCollabPendingUpdate);
 		resolveStatePages({ base: "alpha\n", staged: "alpha\nstaged\n", unstaged: "alpha\nstaged\nbeta\n" });
 		const deliverSavedDoc = mockSaveDocQuery({
-			pendingUpdateUpdatedAt: 5,
-			nextDoc: { ...nonCollabPendingUpdate, updatedAt: 5 },
+			pendingUpdateRevision: 5,
+			nextDoc: { ...nonCollabPendingUpdate, revision: 5, updatedAt: 1 },
 		});
 		renderNonCollabProposalReview({ committedAssetId: "asset_1" });
 		await flushNonCollabProposalMount();

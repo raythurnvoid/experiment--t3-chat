@@ -1,9 +1,10 @@
 import { R2 } from "@convex-dev/r2";
+import { RateLimiter } from "@convex-dev/rate-limiter";
 import { Workpool } from "@convex-dev/workpool";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel";
-import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
+import { test_convex, test_create_saved_text_file, test_mocks_fill_db_with } from "./setup.test.ts";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 import { ai_chat_context_create, ai_chat_context_read_instructions } from "../server/ai-chat-context.ts";
 import { files_agent_write_file_text } from "../server/bash-utils.ts";
@@ -46,15 +47,11 @@ async function fixture() {
 	const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 	const scope = { membershipId: db.membershipId, userId: db.userId };
 	async function create(path: string, textContent: string) {
-		const created = await t.action(internal.files_nodes_content.create_file_by_path, {
-			organizationId: db.organizationId,
-			workspaceId: db.workspaceId,
-			userId: db.userId,
+		return await test_create_saved_text_file(t, {
+			membershipId: db.membershipId,
 			path,
 			textContent,
 		});
-		if (created._nay) throw new Error(created._nay.message);
-		return created._yay.nodeId;
 	}
 
 	async function member(read: boolean) {
@@ -84,18 +81,15 @@ async function fixture() {
 		destParentId: Id<"files_nodes"> | typeof files_ROOT_ID,
 		destName: string,
 	) {
-		await t.run(async (ctx) => {
-			const node = await ctx.db.get("files_nodes", nodeId);
-			await ctx.db.insert("files_pending_updates", {
-				organizationId: db.organizationId,
-				workspaceId: db.workspaceId,
-				userId: db.userId,
-				fileNodeId: nodeId,
-				pendingMove: { destParentId, destName, fromPath: node!.path },
-				size: 0,
-				updatedAt: Date.now(),
-			});
+		const moved = await t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: db.userId,
+			target: { kind: "saved", id: nodeId },
+			destName,
+			destParent: destParentId === files_ROOT_ID ? { kind: "root" } : { kind: "saved", id: destParentId },
 		});
+		if (moved._nay) throw new Error(moved._nay.message);
 	}
 
 	async function system() {
@@ -189,6 +183,8 @@ describe("discover_sources", () => {
 	});
 
 	test("reports a bounded catalog when more than 100 readable skills exist", async () => {
+		// Saving 101 fixture files through the full publish flow needs more time during the full suite.
+		vi.spyOn(RateLimiter.prototype, "limit").mockResolvedValue({ ok: true, retryAfter: 0 });
 		const f = await fixture();
 		for (let index = 0; index < 101; index++) {
 			await f.create(`/.agents/skills/skill-${index}/SKILL.md`, `---\nname: skill-${index}\ndescription: Skill\n---\n`);
@@ -196,7 +192,7 @@ describe("discover_sources", () => {
 		const found = await f.t.query(internal.ai_chat_context.discover_sources, f.scope);
 		expect(found._yay?.skills).toHaveLength(100);
 		expect(found._yay?.warning).toContain("incomplete");
-	});
+	}, 120_000);
 });
 
 describe("ai_chat_context_create", () => {
@@ -208,7 +204,7 @@ describe("ai_chat_context_create", () => {
 				organizationId: f.db.organizationId,
 				workspaceId: f.db.workspaceId,
 				userId: f.db.userId,
-				nodeId,
+				target: { kind: "saved", id: nodeId },
 				unstagedText: skillText.replace("Saved description", "Pending description"),
 			}),
 		);
@@ -217,23 +213,36 @@ describe("ai_chat_context_create", () => {
 		expect(await f.system()).not.toContain("Saved description");
 	});
 
-	test("includes eager-created skills before their first save", async () => {
+	test("includes private skills and root rules before their first save", async () => {
 		const f = await fixture();
-		const nodeId = await f.create("/.agents/skills/example/SKILL.md", skillText);
-		await f.t.run(async (ctx) => {
-			const node = await ctx.db.get("files_nodes", nodeId);
-			const sequence = await ctx.db.get("files_yjs_docs_last_sequences", node!.yjsLastSequenceId!);
-			await ctx.db.insert("files_pending_updates", {
+		for (const [path, unstagedText] of [
+			["/.agents/skills/example/SKILL.md", skillText],
+			["/AGENTS.md", "PRIVATE_ROOT_RULE"],
+		]) {
+			const created = await f.t.mutation(internal.files_nodes.create_private_node_by_path, {
 				organizationId: f.db.organizationId,
 				workspaceId: f.db.workspaceId,
 				userId: f.db.userId,
-				fileNodeId: nodeId,
-				size: 0,
-				updatedAt: Date.now(),
-				eagerCreated: { committedSequence: sequence!.lastSequence },
+				path: path!,
+				kind: "file",
 			});
-		});
-		expect(await f.system()).toContain("Saved description");
+			if (created._nay || !created._yay.operationBatchId) throw new Error("Expected a private file batch");
+			const written = await f.t.action((ctx) =>
+				files_agent_write_file_text(ctx, {
+					organizationId: f.db.organizationId,
+					workspaceId: f.db.workspaceId,
+					userId: f.db.userId,
+					target: created._yay.target,
+					operationBatchId: created._yay.operationBatchId!,
+					unstagedText: unstagedText!,
+				}),
+			);
+			expect(written._nay).toBeUndefined();
+		}
+		const system = await f.system();
+		expect(system).toContain("Saved description");
+		expect(system).toContain("PRIVATE_ROOT_RULE");
+		expect(await f.t.run((ctx) => ctx.db.query("files_nodes").collect())).toEqual([]);
 	});
 
 	test("loads pending root instructions and only current visible ancestors", async () => {
@@ -246,7 +255,7 @@ describe("ai_chat_context_create", () => {
 				organizationId: f.db.organizationId,
 				workspaceId: f.db.workspaceId,
 				userId: f.db.userId,
-				nodeId: rootId,
+				target: { kind: "saved", id: rootId },
 				unstagedText: "PENDING_ROOT\n",
 			}),
 		);

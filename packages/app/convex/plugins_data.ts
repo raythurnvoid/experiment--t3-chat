@@ -17,6 +17,7 @@ import {
 import { components, internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel";
 import { access_control_db_has_permission } from "./access_control.ts";
+import { activities_db_require_by_source_id } from "./activities_db.ts";
 import { plugins_db_get_live_service_account } from "./plugins_service_accounts.ts";
 import { files_nodes_db_cascade_restricted_scope } from "./files_nodes.ts";
 import type { access_control_Permission } from "../shared/access-control.ts";
@@ -446,6 +447,7 @@ async function db_authorize(
 	// Keep the original credential live through this transaction, including its saved account pin.
 	const now = Date.now();
 	const scope = args.permission === "content.read" ? "plugin_data:read" : "plugin_data:write";
+
 	if (credentialRef.kind === "user_api_key") {
 		const credential = await ctx.db.get("api_credentials", credentialRef.credentialId);
 		if (
@@ -458,6 +460,7 @@ async function db_authorize(
 		) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
+
 		if (credential.serviceAccountId !== null || !credential.scopes.includes(scope)) {
 			return Result({ _nay: { message: "Permission denied" } });
 		}
@@ -466,8 +469,6 @@ async function db_authorize(
 		const run = await ctx.db.get("plugins_event_runs", credentialRef.runId);
 		if (
 			!run ||
-			run.status !== "running" ||
-			run.expiresAt <= now ||
 			!run.apiTokenExpiresAt ||
 			run.apiTokenExpiresAt <= now ||
 			run.organizationId !== installation.organizationId ||
@@ -480,6 +481,12 @@ async function db_authorize(
 		) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
+
+		const activity = await activities_db_require_by_source_id(ctx, run._id);
+		if (activity.status !== "running" || activity.deadlineAt <= now) {
+			return Result({ _nay: { message: "Unauthenticated" } });
+		}
+
 		if (run.fileNodeId) {
 			const source = await ctx.db.get("files_nodes", run.fileNodeId);
 			if (
@@ -491,6 +498,7 @@ async function db_authorize(
 				return Result({ _nay: { message: "Unauthenticated" } });
 			}
 		}
+
 		if (!run.acceptedCapabilities.includes(CAPABILITY_BY_PERMISSION[args.permission])) {
 			return Result({ _nay: { message: "Permission denied" } });
 		}
@@ -527,6 +535,7 @@ async function db_authorize(
 		) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
+
 		if (!grant.scopes.includes(scope)) {
 			return Result({ _nay: { message: "Permission denied" } });
 		}

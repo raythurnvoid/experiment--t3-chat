@@ -28,8 +28,8 @@ function fixture() {
 							skills: [...files.keys()].filter((path) => /^\/\.agents\/skills\/[^/]+\/SKILL\.md$/u.test(path)),
 						},
 					});
-				case "files_nodes:get_by_path":
-					return files.has(args.path!) ? { kind: "file", path: args.path } : null;
+				case "files_visible:internal_get_by_path":
+					return files.has(args.path!) ? { node: { kind: "file" }, path: args.path } : null;
 				case "files_nodes:read_file_content_from_chunks": {
 					const content = files.get(args.path!);
 					if (content === undefined) return null;

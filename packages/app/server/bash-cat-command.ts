@@ -1,21 +1,24 @@
-import { defineCommand } from "just-bash/browser";
+import { defineCommand, type Command } from "just-bash/browser";
 import { internal } from "../convex/_generated/api.js";
-import type { Doc } from "../convex/_generated/dataModel";
 import type { ActionCtx } from "../convex/_generated/server.js";
-import type {
-	files_nodes_get_by_path_Result,
-	files_nodes_read_file_content_from_chunks_Result,
-} from "../convex/files_nodes.ts";
-import type { files_pending_updates_get_by_file_node_Result } from "../convex/files_pending_updates.ts";
-import type { get_asset_by_id_Result } from "../convex/r2.ts";
+import type { files_nodes_read_file_content_from_chunks_Result } from "../convex/files_nodes.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 import {
-	files_node_has_editable_text_content,
-	files_pending_update_content_is_stale,
-	files_pending_update_has_content,
-} from "../shared/files.ts";
-import { organizations_is_reserved_workspace_id, organizations_is_global_organization_id } from "../shared/organizations.ts";
-import { bash_build_unreadable_file_advisory, bash_create_glob_syntax_unsupported_message, bash_enforce_reader_operand_cap, bash_format_multiline_hint, bash_GLOB_METACHARACTER_REGEX, bash_READ_HEAD_LARGE_FILE_MAX_LINES, bash_READ_INLINE_MAX_BYTES, bash_resolve_path, bash_shell_arg_quote, bash_resolve_db_files_shell_path, bash_COMMAND_EXIT_FAILURE, bash_COMMAND_EXIT_USAGE, type bash_DbFilesRoots } from "./bash-utils.ts";
+	bash_build_unreadable_file_advisory,
+	bash_create_glob_syntax_unsupported_message,
+	bash_enforce_reader_operand_cap,
+	bash_format_multiline_hint,
+	bash_GLOB_METACHARACTER_REGEX,
+	bash_get_db_file_byte_size,
+	bash_READ_HEAD_LARGE_FILE_MAX_LINES,
+	bash_READ_INLINE_MAX_BYTES,
+	bash_resolve_path,
+	bash_shell_arg_quote,
+	bash_resolve_db_files_shell_path,
+	bash_COMMAND_EXIT_FAILURE,
+	bash_COMMAND_EXIT_USAGE,
+	type bash_DbFilesRoots,
+} from "./bash-utils.ts";
 import { bash_delegate_builtin_command } from "./bash-delegate.ts";
 
 function parse_args(args: string[]) {
@@ -75,7 +78,8 @@ function add_line_numbers(content: string, startLine: number) {
 	};
 }
 
-export function bash_cat_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFilesRoots) {
+// The command boundary breaks inference through the generated action API.
+export function bash_cat_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFilesRoots): Command {
 	const currentWorkspacePath = dbFilesRoots.app.currentWorkspacePath;
 	const fileContentCache = new Map<string, string>();
 	// A same-call mv/cp proposal changes what paths serve; clear this cache with the fs caches.
@@ -101,10 +105,6 @@ export function bash_cat_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFil
 		const capError = bash_enforce_reader_operand_cap("cat", commandCtx, currentWorkspacePath, targets);
 		if (capError != null) return capError;
 
-		// Cat keeps app-file size lookups inline. Routing them through
-		// bash_get_db_file_byte_size reintroduces a TypeScript inference cycle through
-		// the inline customCommands array.
-
 		// Multi-file cat is all-or-nothing. If one app file is too large to read inline,
 		// inserting only its first page into the concatenation would look like real file
 		// content and corrupt any downstream pipe. Refuse before writing stdout.
@@ -116,52 +116,10 @@ export function bash_cat_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFil
 				const pathResolution = bash_resolve_db_files_shell_path(bash_resolve_path(commandCtx.cwd, file), dbFilesRoots);
 				if (pathResolution.dbFilesPath == null) continue;
 
-				const dbFilesDoc: Doc<"files_nodes"> | null =
-					pathResolution.dbFilesPath === "/"
-						? null
-						: ((await ctx.runQuery(internal.files_nodes.get_by_path, {
-								organizationId: pathResolution.ctxData.organizationId,
-								workspaceId: pathResolution.ctxData.workspaceId,
-								visibilityUserId: pathResolution.ctxData.userId,
-								path: pathResolution.dbFilesPath,
-								overlayUserId: pathResolution.fs.overlayUserId,
-							})) as files_nodes_get_by_path_Result);
-				let size: number | null = null;
-				if (dbFilesDoc?.kind === "file" && dbFilesDoc.assetId != null) {
-					let hasPendingUpdate = false;
-					const organizationId = pathResolution.ctxData.organizationId;
-					const workspaceId = pathResolution.ctxData.workspaceId;
-					if (
-						files_node_has_editable_text_content(dbFilesDoc) &&
-						!organizations_is_global_organization_id(organizationId) &&
-						!organizations_is_reserved_workspace_id(workspaceId)
-					) {
-						const pendingUpdate = (await ctx.runQuery(internal.files_pending_updates.get_by_file_node, {
-							organizationId,
-							workspaceId,
-							userId: pathResolution.ctxData.userId,
-							fileNodeId: dbFilesDoc._id,
-						})) as files_pending_updates_get_by_file_node_Result;
-						// A move-only pending update doc stores size 0; only a content-bearing doc may shadow the committed asset size.
-						// A stale proposal on a file with collaboration off does not shadow it either.
-						if (
-							files_pending_update_has_content(pendingUpdate) &&
-							!files_pending_update_content_is_stale(pendingUpdate, dbFilesDoc)
-						) {
-							hasPendingUpdate = true;
-							size = pendingUpdate.size;
-						}
-					}
-					if (!hasPendingUpdate) {
-						const asset = (await ctx.runQuery(internal.r2.get_asset_by_id, {
-							organizationId: pathResolution.ctxData.organizationId,
-							workspaceId: pathResolution.ctxData.workspaceId,
-							assetId: dbFilesDoc.assetId,
-						})) as get_asset_by_id_Result;
-						size = asset?.size ?? null;
-					}
-				}
-
+				const dbFilesDoc = await pathResolution.fs.getEntry(pathResolution.dbFilesPath);
+				const size = dbFilesDoc
+					? await bash_get_db_file_byte_size({ ctx, ctxData: pathResolution.ctxData, dbFilesDoc })
+					: null;
 				if (size != null && size > bash_READ_INLINE_MAX_BYTES) {
 					return {
 						stdout: "",
@@ -171,7 +129,11 @@ export function bash_cat_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFil
 				}
 				totalBytes += size ?? 0;
 				if (totalBytes > bash_READ_INLINE_MAX_BYTES) {
-					return { stdout: "", stderr: `cat: files exceed the ${bash_READ_INLINE_MAX_BYTES}-byte batch limit. Read fewer files per command.\n`, exitCode: bash_COMMAND_EXIT_FAILURE };
+					return {
+						stdout: "",
+						stderr: `cat: files exceed the ${bash_READ_INLINE_MAX_BYTES}-byte batch limit. Read fewer files per command.\n`,
+						exitCode: bash_COMMAND_EXIT_FAILURE,
+					};
 				}
 			}
 		}
@@ -217,53 +179,10 @@ export function bash_cat_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFil
 			// Check the current byte size before reading. Unsaved edits can be larger
 			// than the committed file, and each command asks Convex for fresh metadata.
 			if (target.dbFilesPath != null) {
-				const dbFilesDoc: Doc<"files_nodes"> | null =
-					target.dbFilesPath === "/"
-						? null
-						: ((await ctx.runQuery(internal.files_nodes.get_by_path, {
-								organizationId: pathResolution.ctxData.organizationId,
-								workspaceId: pathResolution.ctxData.workspaceId,
-								visibilityUserId: pathResolution.ctxData.userId,
-								path: target.dbFilesPath,
-								overlayUserId: pathResolution.fs.overlayUserId,
-							})) as files_nodes_get_by_path_Result);
-
-				let size: number | null = null;
-				if (dbFilesDoc?.kind === "file" && dbFilesDoc.assetId != null) {
-					let hasPendingUpdate = false;
-					const organizationId = pathResolution.ctxData.organizationId;
-					const workspaceId = pathResolution.ctxData.workspaceId;
-					if (
-						files_node_has_editable_text_content(dbFilesDoc) &&
-						!organizations_is_global_organization_id(organizationId) &&
-						!organizations_is_reserved_workspace_id(workspaceId)
-					) {
-						const pendingUpdate = (await ctx.runQuery(internal.files_pending_updates.get_by_file_node, {
-							organizationId,
-							workspaceId,
-							userId: pathResolution.ctxData.userId,
-							fileNodeId: dbFilesDoc._id,
-						})) as files_pending_updates_get_by_file_node_Result;
-						// A move-only pending update doc stores size 0; only a content-bearing doc may shadow the committed asset size.
-						// A stale proposal on a file with collaboration off does not shadow it either.
-						if (
-							files_pending_update_has_content(pendingUpdate) &&
-							!files_pending_update_content_is_stale(pendingUpdate, dbFilesDoc)
-						) {
-							hasPendingUpdate = true;
-							size = pendingUpdate.size;
-						}
-					}
-					if (!hasPendingUpdate) {
-						const asset = (await ctx.runQuery(internal.r2.get_asset_by_id, {
-							organizationId: pathResolution.ctxData.organizationId,
-							workspaceId: pathResolution.ctxData.workspaceId,
-							assetId: dbFilesDoc.assetId,
-						})) as get_asset_by_id_Result;
-						size = asset?.size ?? null;
-					}
-				}
-
+				const dbFilesDoc = await pathResolution.fs.getEntry(target.dbFilesPath);
+				const size = dbFilesDoc
+					? await bash_get_db_file_byte_size({ ctx, ctxData: pathResolution.ctxData, dbFilesDoc })
+					: null;
 				// Large app file: show a bounded first page instead of dumping the
 				// whole file. The footer tells the agent how to continue without
 				// implying that stdout contains the complete file.
@@ -288,13 +207,14 @@ export function bash_cat_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFil
 					// to print the native-looking failure for files, folders, or misses.
 					if (!page) {
 						if (dbFilesDoc?.kind === "file") {
-							stderr += files_node_has_editable_text_content(dbFilesDoc)
-								? `cat: ${file}: content is not available from materialized chunks\n`
-								: bash_build_unreadable_file_advisory(
-										pathResolution.basePath,
-										target.dbFilesPath,
-										dbFilesDoc.contentType,
-									);
+							stderr +=
+								dbFilesDoc.textKind !== null
+									? `cat: ${file}: content is not available from materialized chunks\n`
+									: bash_build_unreadable_file_advisory(
+											pathResolution.basePath,
+											target.dbFilesPath,
+											dbFilesDoc.contentType,
+										);
 						} else {
 							stderr +=
 								dbFilesDoc?.kind === "folder"
@@ -359,9 +279,14 @@ export function bash_cat_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFil
 				if (dbFilesDoc?.kind === "file") {
 					// Advisory belongs on stderr so `cat unreadable | grep ...` cannot match it
 					// as if it were file content.
-					stderr += files_node_has_editable_text_content(dbFilesDoc)
-						? `cat: ${file}: content is not available from materialized chunks\n`
-						: bash_build_unreadable_file_advisory(pathResolution.basePath, target.dbFilesPath, dbFilesDoc.contentType);
+					stderr +=
+						dbFilesDoc.textKind !== null
+							? `cat: ${file}: content is not available from materialized chunks\n`
+							: bash_build_unreadable_file_advisory(
+									pathResolution.basePath,
+									target.dbFilesPath,
+									dbFilesDoc.contentType,
+								);
 					exitCode = bash_COMMAND_EXIT_FAILURE;
 					continue;
 				}

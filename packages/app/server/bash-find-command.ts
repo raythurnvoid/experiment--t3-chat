@@ -1,16 +1,38 @@
 import { defineCommand, type Command, type CommandContext } from "just-bash/browser";
 import { internal } from "../convex/_generated/api.js";
-import type { Id } from "../convex/_generated/dataModel";
 import type { ActionCtx } from "../convex/_generated/server.js";
-import type {
-	files_nodes_get_by_path_Result,
-	files_nodes_list_subtree_Result,
-	files_nodes_search_paths_Result,
-} from "../convex/files_nodes.ts";
+import type { files_nodes_list_subtree_Result, files_nodes_search_paths_Result } from "../convex/files_nodes.ts";
 import { Result } from "common/errors-as-values-utils.ts";
-import { files_ROOT_ID, files_pending_path_overlay_project_committed_path, type files_PendingPathOverlay } from "../shared/files.ts";
+import type { files_visible_internal_list_Result } from "../convex/files_visible.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
-import { bash_APP_MOUNT_PATH, bash_clamp_listing_page_limit, bash_create_glob_syntax_unsupported_message, bash_cursor_id_create, bash_cursor_id_resolve, bash_GLOB_METACHARACTER_REGEX, bash_HOME, bash_is_path_under_current_workspace_path, bash_is_path_under_read_only_mounts, bash_LISTING_DEFAULT_LIMIT, bash_LISTING_MAX_LIMIT, bash_normalize_path, bash_overlay_committed_scope_path, bash_overlay_path_in_scope, bash_overlay_path_query_matches, bash_overlay_project_scoped_path, bash_overlay_subtree_injections, bash_parse_limit, bash_parse_simple_extension_glob, bash_external_mounts_fan_out_db_files_path, bash_external_mounts_fan_out_paginate, bash_plugins_fan_out_db_files_path, bash_plugins_fan_out_paginate, bash_read_option_value, bash_resolve_path, bash_shell_arg_quote, bash_resolve_db_files_shell_path, bash_COMMAND_EXIT_FAILURE, bash_COMMAND_EXIT_USAGE, bash_NON_NEGATIVE_INTEGER_REGEX, type bash_DbFilesRoots, type bash_DbFilesShellPathResolution } from "./bash-utils.ts";
+import {
+	bash_APP_MOUNT_PATH,
+	bash_clamp_listing_page_limit,
+	bash_create_glob_syntax_unsupported_message,
+	bash_cursor_id_create,
+	bash_cursor_id_resolve,
+	bash_GLOB_METACHARACTER_REGEX,
+	bash_HOME,
+	bash_is_path_under_current_workspace_path,
+	bash_is_path_under_read_only_mounts,
+	bash_LISTING_DEFAULT_LIMIT,
+	bash_LISTING_MAX_LIMIT,
+	bash_normalize_path,
+	bash_parse_limit,
+	bash_parse_simple_extension_glob,
+	bash_external_mounts_fan_out_db_files_path,
+	bash_external_mounts_fan_out_paginate,
+	bash_plugins_fan_out_db_files_path,
+	bash_plugins_fan_out_paginate,
+	bash_read_option_value,
+	bash_resolve_path,
+	bash_shell_arg_quote,
+	bash_resolve_db_files_shell_path,
+	bash_COMMAND_EXIT_FAILURE,
+	bash_COMMAND_EXIT_USAGE,
+	bash_NON_NEGATIVE_INTEGER_REGEX,
+	type bash_DbFilesRoots,
+} from "./bash-utils.ts";
 import { bash_command_build_builtin_delegation_args, bash_delegate_builtin_command } from "./bash-delegate.ts";
 
 const EXTENSION_TOKEN_REGEX = /^[a-z0-9][a-z0-9_-]*$/iu;
@@ -449,129 +471,13 @@ function prefix_to_shell_path(commandCtx: CommandContext, currentWorkspacePath: 
 	}
 
 	const cwd = bash_normalize_path(commandCtx.cwd);
-	if (bash_is_path_under_current_workspace_path(currentWorkspacePath, cwd) || bash_is_path_under_read_only_mounts(cwd)) {
+	if (
+		bash_is_path_under_current_workspace_path(currentWorkspacePath, cwd) ||
+		bash_is_path_under_read_only_mounts(cwd)
+	) {
 		return Result({ _yay: { shellPath: bash_resolve_path(commandCtx.cwd, prefix) } });
 	}
 	return Result({ _yay: { shellPath: bash_normalize_path(prefix) } });
-}
-
-/**
- * Overlay post-processing for one committed subtree page of find results.
- *
- * Projects each entry to its visible path, drops hidden entries and entries projected
- * outside the scope, and on the first page adds moved-in entries. A moved-in folder's
- * committed subtree is spliced in with the same query filters, so a leftover splice cursor can continue
- * through `find <visible destination> --cursor ...`. Splices are skipped when depth
- * filters are set (their frame is the listed folder, not the moved one); only the
- * moved entries themselves are added then.
- */
-async function overlay_apply_subtree_page(args: {
-	ctx: ActionCtx;
-	overlay: files_PendingPathOverlay;
-	pathResolution: bash_DbFilesShellPathResolution;
-	visibleScopePath: string;
-	committedScopePath: string;
-	isFirstPage: boolean;
-	numItems: number;
-	page: files_nodes_list_subtree_Result["page"];
-	filters: { kind?: "folder" | "file"; lowercaseExtension?: string };
-	minDepth: number | null;
-	maxDepth: number | null;
-}) {
-	const depth_of = (path: string) => (path === "/" ? 0 : path.split("/").length - 1);
-	const scopeDepth = depth_of(args.visibleScopePath);
-	// Filters re-run against the VISIBLE path, so a rename that changes the extension
-	// or a move that changes the depth is judged by what the user sees.
-	const entry_passes_filters = (entry: { path: string; kind: "folder" | "file" }) => {
-		if (args.filters.kind != null && entry.kind !== args.filters.kind) {
-			return false;
-		}
-		if (
-			args.filters.lowercaseExtension != null &&
-			!entry.path.toLowerCase().endsWith(`.${args.filters.lowercaseExtension}`)
-		) {
-			return false;
-		}
-		const relativeDepth = depth_of(entry.path) - scopeDepth;
-		if (args.minDepth != null && relativeDepth < args.minDepth) {
-			return false;
-		}
-		if (args.maxDepth != null && relativeDepth > args.maxDepth) {
-			return false;
-		}
-		return true;
-	};
-
-	const entries: Array<{ path: string; kind: "folder" | "file" }> = [];
-	// A nested pending move can surface twice: once projected out of its moved parent's
-	// splice and once as its own injection. Keep the first appearance of each visible path.
-	const seenEntryPaths = new Set<string>();
-	const push_entry = (entry: { path: string; kind: "folder" | "file" }) => {
-		if (seenEntryPaths.has(entry.path)) {
-			return;
-		}
-		seenEntryPaths.add(entry.path);
-		entries.push(entry);
-	};
-	for (const item of args.page) {
-		const visiblePath = bash_overlay_project_scoped_path({
-			overlay: args.overlay,
-			committedPath: item.path,
-			visibleScopePath: args.visibleScopePath,
-		});
-		if (visiblePath == null || !entry_passes_filters({ path: visiblePath, kind: item.kind })) {
-			continue;
-		}
-		push_entry({ path: visiblePath, kind: item.kind });
-	}
-
-	const spliceContinuations: Array<{ visibleShellPath: string; continueCursor: string }> = [];
-	if (!args.isFirstPage) {
-		return { entries, spliceContinuations };
-	}
-	const canSplice = args.minDepth == null && args.maxDepth == null;
-	for (const move of bash_overlay_subtree_injections(args.overlay, {
-		visibleScopePath: args.visibleScopePath,
-		committedScopePath: args.committedScopePath,
-	})) {
-		if (move.kind === "folder" && canSplice) {
-			// The splice includes the moved folder itself (no minDepth), matching what a
-			// continuation run over the visible destination folder would fetch.
-			const splice = (await args.ctx.runQuery(internal.files_nodes.list_subtree, {
-				organizationId: args.pathResolution.ctxData.organizationId,
-				workspaceId: args.pathResolution.ctxData.workspaceId,
-				visibilityUserId: args.pathResolution.ctxData.userId,
-				folderPath: move.committedPath,
-				numItems: args.numItems,
-				cursor: null,
-				...(args.filters.kind == null ? {} : { kind: args.filters.kind }),
-				...(args.filters.lowercaseExtension == null ? {} : { lowercaseExtension: args.filters.lowercaseExtension }),
-			})) as files_nodes_list_subtree_Result;
-			for (const item of splice.page) {
-				const visiblePath = bash_overlay_project_scoped_path({
-					overlay: args.overlay,
-					committedPath: item.path,
-					visibleScopePath: args.visibleScopePath,
-				});
-				if (visiblePath == null || !entry_passes_filters({ path: visiblePath, kind: item.kind })) {
-					continue;
-				}
-				push_entry({ path: visiblePath, kind: item.kind });
-			}
-			if (!splice.isDone) {
-				spliceContinuations.push({
-					visibleShellPath: args.pathResolution.renderShellPath(move.visiblePath),
-					continueCursor: splice.continueCursor,
-				});
-			}
-			continue;
-		}
-		// Moved files, and moved folders under depth filters, add just the entry itself.
-		if (entry_passes_filters({ path: move.visiblePath, kind: move.kind })) {
-			push_entry({ path: move.visiblePath, kind: move.kind });
-		}
-	}
-	return { entries, spliceContinuations };
 }
 
 function build_continuation(args: {
@@ -655,10 +561,13 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 		const pathQuery = parsed._yay.name ?? parsed._yay.iname ?? parsed._yay.pathQuery;
 
 		let cursor: string | null = null;
+
 		const absoluteShellPath = bash_resolve_path(commandCtx.cwd, parsed._yay.path ?? commandCtx.cwd);
+
 		// Classify the search root: workspace / mount db-files path, a synthetic fan-out root
 		// (`/.mounts`, `/.plugins`), or an external (non-app) path.
 		const pathResolution = bash_resolve_db_files_shell_path(absoluteShellPath, dbFilesRoots);
+
 		const target = {
 			inputPath: parsed._yay.path,
 			absoluteShellPath,
@@ -666,6 +575,7 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 			dbFilesPath: pathResolution.dbFilesPath,
 			builtinOperand: parsed._yay.path ?? ".",
 		};
+
 		// The `/.plugins` root spans one indexed tree per installed plugin. Fan out one
 		// indexed query per plugin, in name order, under a composite cursor.
 		if (parsed._yay.prefix == null && pathResolution.kind === "plugins_root") {
@@ -676,6 +586,7 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 					exitCode: bash_COMMAND_EXIT_FAILURE,
 				};
 			}
+
 			if (parsed._yay.unsupportedDbFilesPredicate != null) {
 				return {
 					stdout: "",
@@ -686,6 +597,7 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 					exitCode: bash_COMMAND_EXIT_USAGE,
 				};
 			}
+
 			// Path word search at the root supports the full fan-out subtree only; depth
 			// filters need a single plugin's folder anchor.
 			if (pathQuery != null && (parsed._yay.maxDepth != null || parsed._yay.minDepth != null)) {
@@ -697,6 +609,7 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 					exitCode: bash_COMMAND_EXIT_USAGE,
 				};
 			}
+
 			if (pathQuery != null && parsed._yay.extension != null) {
 				return {
 					stdout: "",
@@ -704,6 +617,7 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 					exitCode: bash_COMMAND_EXIT_USAGE,
 				};
 			}
+
 			// --extension only matches files; -maxdepth 0 keeps only the synthetic root itself.
 			if ((parsed._yay.extension != null && parsed._yay.type === "d") || parsed._yay.maxDepth === 0) {
 				return {
@@ -728,7 +642,8 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 
 			// Depth predicates are relative to `/.plugins`; each plugin's version root renders
 			// as the depth-1 entry `/.plugins/<pluginName>/`, so per-plugin depths shift by 1.
-			const perPluginMinDepth = parsed._yay.minDepth == null || parsed._yay.minDepth <= 1 ? null : parsed._yay.minDepth - 1;
+			const perPluginMinDepth =
+				parsed._yay.minDepth == null || parsed._yay.minDepth <= 1 ? null : parsed._yay.minDepth - 1;
 			const perPluginMaxDepth = parsed._yay.maxDepth == null ? null : parsed._yay.maxDepth - 1;
 
 			const fanOut = await bash_plugins_fan_out_paginate({
@@ -761,6 +676,7 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 							isDone: pageResult.isDone,
 						};
 					}
+
 					const pageResult = (await ctx.runQuery(internal.files_nodes.list_subtree, {
 						organizationId: pageArgs.mount.fs.ctxData.organizationId,
 						workspaceId: pageArgs.mount.fs.ctxData.workspaceId,
@@ -788,6 +704,7 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 					};
 				},
 			});
+
 			if (fanOut._nay) {
 				return {
 					stdout: "",
@@ -882,7 +799,8 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 
 			// Depth predicates are relative to `/.mounts`; each mount's commit root renders
 			// as the depth-1 entry `/.mounts/<name>/`, so per-mount depths shift by 1.
-			const perMountMinDepth = parsed._yay.minDepth == null || parsed._yay.minDepth <= 1 ? null : parsed._yay.minDepth - 1;
+			const perMountMinDepth =
+				parsed._yay.minDepth == null || parsed._yay.minDepth <= 1 ? null : parsed._yay.minDepth - 1;
 			const perMountMaxDepth = parsed._yay.maxDepth == null ? null : parsed._yay.maxDepth - 1;
 
 			const fanOut = await bash_external_mounts_fan_out_paginate({
@@ -915,6 +833,7 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 							isDone: pageResult.isDone,
 						};
 					}
+
 					const pageResult = (await ctx.runQuery(internal.files_nodes.list_subtree, {
 						organizationId: pageArgs.mount.fs.ctxData.organizationId,
 						workspaceId: pageArgs.mount.fs.ctxData.workspaceId,
@@ -942,6 +861,7 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 					};
 				},
 			});
+
 			if (fanOut._nay) {
 				return {
 					stdout: "",
@@ -1090,11 +1010,13 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 			}
 			const prefixFolderPath = prefixResolution.dbFilesPath ?? prefixResult._yay.shellPath;
 
-			const result = (await ctx.runQuery(internal.files_nodes.list_subtree, {
+			const result = (await ctx.runQuery(internal.files_visible.internal_list, {
 				organizationId: prefixResolution.ctxData.organizationId,
 				workspaceId: prefixResolution.ctxData.workspaceId,
 				visibilityUserId: prefixResolution.ctxData.userId,
 				folderPath: prefixFolderPath,
+				mode: "subtree",
+				overlayUserId: prefixResolution.fs.overlayUserId,
 				numItems: bash_clamp_listing_page_limit(parsed._yay.limit),
 				cursor,
 				...(parsed._yay.type === "f"
@@ -1102,19 +1024,21 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 					: parsed._yay.type === "d"
 						? { kind: "folder" as const }
 						: {}),
-			})) as files_nodes_list_subtree_Result;
+			})) as files_visible_internal_list_Result;
 
-			const lines = result.page.map(
+			if (result._nay)
+				return { stdout: "", stderr: `find: ${result._nay.message}\n`, exitCode: bash_COMMAND_EXIT_FAILURE };
+			const lines = result._yay.items.map(
 				(item) => `${prefixResolution.renderShellPath(item.path)}${item.kind === "folder" ? "/" : ""}`,
 			);
-			if (!result.isDone) {
+			if (!result._yay.isDone && result._yay.continueCursor != null) {
 				lines.push(
 					"",
 					build_continuation({
 						parsed: parsed._yay,
 						target: null,
 						prefix: prefixResolution.renderShellPath(prefixFolderPath),
-						cursor: await bash_cursor_id_create(ctx, result.continueCursor),
+						cursor: await bash_cursor_id_create(ctx, result._yay.continueCursor),
 					}),
 				);
 			} else if (lines.length === 0) {
@@ -1145,428 +1069,113 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 			});
 		}
 
-		const dbFilesDoc: files_nodes_get_by_path_Result =
-			target.dbFilesPath === "/"
-				? null
-				: await ctx.runQuery(internal.files_nodes.get_by_path, {
-						organizationId: pathResolution.ctxData.organizationId,
-						workspaceId: pathResolution.ctxData.workspaceId,
-						visibilityUserId: pathResolution.ctxData.userId,
-						path: target.dbFilesPath,
-						overlayUserId: pathResolution.fs.overlayUserId,
-					});
-		// Missing concrete app paths fail normally, with a hint for prefix-style discovery.
-		if (target.dbFilesPath !== "/" && !dbFilesDoc) {
+		const entry = target.dbFilesPath === "/" ? null : await pathResolution.fs.getEntry(target.dbFilesPath);
+
+		if (target.dbFilesPath !== "/" && !entry) {
 			return {
 				stdout: "",
-				stderr:
-					`find: ${target.absoluteShellPath}: No such file or directory\n` +
-					`If you intended a path-prefix subtree search, run:\n` +
-					`  find --prefix ${bash_shell_arg_quote(target.absoluteShellPath)} --limit ${parsed._yay.limit}\n`,
+				stderr: `find: ${target.absoluteShellPath}: No such file or directory\nIf you intended a path-prefix subtree search, run:\n  find --prefix ${bash_shell_arg_quote(target.absoluteShellPath)} --limit ${parsed._yay.limit}\n`,
 				exitCode: bash_COMMAND_EXIT_FAILURE,
 			};
 		}
 
-		// Path word search is full-text search, not glob matching.
 		if (pathQuery != null) {
-			// Word search and extension search are separate modes.
-			if (parsed._yay.extension != null) {
+			const retryHint = build_path_query_retry_hint(target.absoluteShellPath, {
+				query: pathQuery,
+				...(parsed._yay.type == null ? {} : { type: parsed._yay.type }),
+				limit: parsed._yay.limit,
+			});
+
+			if (parsed._yay.extension != null)
 				return {
 					stdout: "",
-					stderr:
-						"find: path word search cannot be combined with --extension for app files.\n" +
-						`${build_path_query_retry_hint(target.absoluteShellPath, {
-							query: pathQuery,
-							...(parsed._yay.type == null ? {} : { type: parsed._yay.type }),
-							limit: parsed._yay.limit,
-						})}\n` +
-						`For extension-only search, use: find ${bash_shell_arg_quote(target.absoluteShellPath)} -type f --extension ${bash_shell_arg_quote(parsed._yay.extension)} --limit ${parsed._yay.limit}\n`,
+					stderr: `find: path word search cannot be combined with --extension for app files.\n${retryHint}\nFor extension-only search, use: find ${bash_shell_arg_quote(target.absoluteShellPath)} -type f --extension ${bash_shell_arg_quote(parsed._yay.extension)} --limit ${parsed._yay.limit}\n`,
 					exitCode: bash_COMMAND_EXIT_USAGE,
 				};
-			}
 
-			// Path word search can only express workspace-wide, direct-child, or subtree scopes.
-			let parentId: Id<"files_nodes"> | typeof files_ROOT_ID | undefined = undefined;
-			let pathPrefix: string | undefined = undefined;
-			let minPathDepth: number | undefined = undefined;
-			if (target.dbFilesPath === "/") {
-				// At root, -maxdepth 1 is the direct children query.
-				if (parsed._yay.maxDepth != null && parsed._yay.maxDepth !== 1) {
-					return {
-						stdout: "",
-						stderr:
-							"find: path word search supports workspace-wide results or immediate children with -maxdepth 1.\n" +
-							`${build_path_query_retry_hint(target.absoluteShellPath, {
-								query: pathQuery,
-								...(parsed._yay.type == null ? {} : { type: parsed._yay.type }),
-								limit: parsed._yay.limit,
-							})}\n`,
-						exitCode: bash_COMMAND_EXIT_USAGE,
-					};
-				}
+			if (entry?.kind === "file")
+				return {
+					stdout: "",
+					stderr: "find: path word search can target the workspace root or an immediate folder.\n",
+					exitCode: bash_COMMAND_EXIT_USAGE,
+				};
 
-				// Root has no files_nodes doc, so only the natural child floor is supported.
-				if (parsed._yay.minDepth != null && parsed._yay.minDepth !== 1) {
-					return {
-						stdout: "",
-						stderr:
-							"find: path word search supports -mindepth 1 only; deeper mindepth values are not supported.\n" +
-							`${build_path_query_retry_hint(target.absoluteShellPath, {
-								query: pathQuery,
-								...(parsed._yay.type == null ? {} : { type: parsed._yay.type }),
-								limit: parsed._yay.limit,
-							})}\n` +
-							"Filter deeper paths from those results if needed.\n",
-						exitCode: bash_COMMAND_EXIT_USAGE,
-					};
-				}
+			if (parsed._yay.maxDepth != null && parsed._yay.maxDepth !== 1)
+				return {
+					stdout: "",
+					stderr: `find: scoped path word search supports the full subtree (omit -maxdepth) or immediate children with -maxdepth 1.\n${retryHint}\n`,
+					exitCode: bash_COMMAND_EXIT_USAGE,
+				};
 
-				if (parsed._yay.maxDepth === 1) {
-					parentId = files_ROOT_ID;
-				}
-			} else {
-				// A scoped path-word search starts from an exact folder.
-				if (!dbFilesDoc || dbFilesDoc.kind !== "folder") {
-					return {
-						stdout: "",
-						stderr: "find: path word search can target the workspace root or an immediate folder.\n",
-						exitCode: bash_COMMAND_EXIT_USAGE,
-					};
-				}
-
-				// Non-root scoped search supports the full subtree or direct children.
-				if (parsed._yay.maxDepth != null && parsed._yay.maxDepth !== 1) {
-					return {
-						stdout: "",
-						stderr:
-							"find: scoped path word search supports the full subtree (omit -maxdepth) or immediate children with -maxdepth 1.\n" +
-							`${build_path_query_retry_hint(target.absoluteShellPath, {
-								query: pathQuery,
-								...(parsed._yay.type == null ? {} : { type: parsed._yay.type }),
-								limit: parsed._yay.limit,
-							})}\n`,
-						exitCode: bash_COMMAND_EXIT_USAGE,
-					};
-				}
-
-				// The only supported mindepth filter excludes the starting folder itself.
-				if (parsed._yay.minDepth != null && parsed._yay.minDepth !== 1) {
-					return {
-						stdout: "",
-						stderr:
-							"find: scoped path word search supports -mindepth 1 only; deeper mindepth values are not supported.\n" +
-							`${build_path_query_retry_hint(target.absoluteShellPath, {
-								query: pathQuery,
-								...(parsed._yay.type == null ? {} : { type: parsed._yay.type }),
-								limit: parsed._yay.limit,
-							})}\n` +
-							"Filter deeper paths from those results if needed.\n",
-						exitCode: bash_COMMAND_EXIT_USAGE,
-					};
-				}
-
-				if (parsed._yay.maxDepth === 1) {
-					parentId = dbFilesDoc._id;
-				} else {
-					pathPrefix = target.dbFilesPath;
-					if (parsed._yay.minDepth === 1) {
-						minPathDepth = dbFilesDoc.pathDepth + 1;
-					}
-				}
-			}
-
-			// The index matches COMMITTED paths. With an overlay: query the committed scope,
-			// re-check moved hits against their visible path (a stale old-name match must not
-			// surface), and add moves whose visible path matches the query (first page only,
-			// deduped by dropping walked hits that project onto an added visible path).
-			const overlay = await pathResolution.fs.getOverlay();
-			const committedPathPrefix =
-				overlay == null || pathPrefix == null ? pathPrefix : bash_overlay_committed_scope_path(overlay, pathPrefix);
-			const visibleScopePath = parentId != null || pathPrefix != null ? target.dbFilesPath : null;
-			const directParentPath = parentId == null ? null : target.dbFilesPath;
-			const injectionMoves =
-				overlay == null
-					? []
-					: overlay.moves.filter((move) => {
-							if (parsed._yay.type === "f" && move.kind !== "file") {
-								return false;
-							}
-							if (parsed._yay.type === "d" && move.kind !== "folder") {
-								return false;
-							}
-							if (!bash_overlay_path_query_matches(pathQuery, move.visiblePath)) {
-								return false;
-							}
-							if (directParentPath != null) {
-								return (move.visiblePath.slice(0, move.visiblePath.lastIndexOf("/")) || "/") === directParentPath;
-							}
-							return visibleScopePath == null || bash_overlay_path_in_scope(visibleScopePath, move.visiblePath);
-						});
-			const injectionVisiblePaths = new Set(injectionMoves.map((move) => move.visiblePath));
-
-			const result = (await ctx.runQuery(internal.files_nodes.search_paths, {
-				organizationId: pathResolution.ctxData.organizationId,
-				workspaceId: pathResolution.ctxData.workspaceId,
-				visibilityUserId: pathResolution.ctxData.userId,
-				pathQuery,
-				numItems: bash_clamp_listing_page_limit(parsed._yay.limit),
-				cursor,
-				...(parsed._yay.type === "f"
-					? { kind: "file" as const }
-					: parsed._yay.type === "d"
-						? { kind: "folder" as const }
-						: {}),
-				...(parentId == null ? {} : { parentId }),
-				...(committedPathPrefix == null ? {} : { pathPrefix: committedPathPrefix }),
-				...(minPathDepth == null ? {} : { minPathDepth }),
-			})) as files_nodes_search_paths_Result;
-
-			const visibleHits =
-				overlay == null
-					? result.items
-					: result.items.flatMap((item) => {
-							const visiblePath = files_pending_path_overlay_project_committed_path(overlay, item.path);
-							if (visiblePath == null || injectionVisiblePaths.has(visiblePath)) {
-								return [];
-							}
-							if (visiblePath !== item.path && !bash_overlay_path_query_matches(pathQuery, visiblePath)) {
-								return [];
-							}
-							if (directParentPath != null) {
-								if ((visiblePath.slice(0, visiblePath.lastIndexOf("/")) || "/") !== directParentPath) {
-									return [];
-								}
-							} else if (visibleScopePath != null && !bash_overlay_path_in_scope(visibleScopePath, visiblePath)) {
-								return [];
-							}
-							return [{ ...item, path: visiblePath }];
-						});
-
-			const lines = visibleHits.map(
-				(item) => `${pathResolution.renderShellPath(item.path)}${item.kind === "folder" ? "/" : ""}`,
-			);
-			if (cursor == null) {
-				lines.push(
-					...injectionMoves.map(
-						(move) => `${pathResolution.renderShellPath(move.visiblePath)}${move.kind === "folder" ? "/" : ""}`,
-					),
-				);
-			}
-
-			// Path word search emits the next-page command or a zero-match marker after pagination.
-			if (!result.isDone) {
-				lines.push(
-					"",
-					build_continuation({
-						parsed: parsed._yay,
-						target: target.absoluteShellPath,
-						prefix: null,
-						cursor: await bash_cursor_id_create(ctx, result.continueCursor),
-					}),
-				);
-			} else if (lines.length === 0) {
-				lines.push("0 matches.");
-			}
-
-			return {
-				stdout: `${lines.join("\n")}\n`,
-				stderr: "",
-				exitCode: 0,
-			};
+			if (parsed._yay.minDepth != null && parsed._yay.minDepth !== 1)
+				return {
+					stdout: "",
+					stderr: `find: scoped path word search supports -mindepth 1 only; deeper mindepth values are not supported.\n${retryHint}\n`,
+					exitCode: bash_COMMAND_EXIT_USAGE,
+				};
 		}
 
-		// Extension searches go through the subtree extension index and only return file paths.
-		if (parsed._yay.extension != null) {
-			// --extension only matches files.
-			if (parsed._yay.type === "d") {
-				return {
-					stdout: "0 matches.\n",
-					stderr: "",
-					exitCode: 0,
-				};
-			}
+		if (parsed._yay.extension != null && parsed._yay.type === "d")
+			return { stdout: "0 matches.\n", stderr: "", exitCode: 0 };
 
-			// Exact file targets are handled without a subtree query. The printed path and
-			// extension check follow the requested path (the visible name for moved-in nodes).
-			if (dbFilesDoc?.kind === "file") {
-				const matchesDepth =
-					(parsed._yay.minDepth == null || parsed._yay.minDepth <= 0) &&
-					(parsed._yay.maxDepth == null || parsed._yay.maxDepth >= 0);
-				const lines: string[] =
-					cursor == null && matchesDepth && target.dbFilesPath.toLowerCase().endsWith(`.${parsed._yay.extension}`)
-						? [pathResolution.renderShellPath(target.dbFilesPath)]
-						: ["0 matches."];
-				return {
-					stdout: `${lines.join("\n")}\n`,
-					stderr: "",
-					exitCode: 0,
-				};
-			}
-
-			// A moved-in folder target walks its committed source subtree; entries project
-			// back into the visible tree below.
-			const overlay = await pathResolution.fs.getOverlay();
-			const committedFolderPath =
-				overlay == null ? target.dbFilesPath : bash_overlay_committed_scope_path(overlay, target.dbFilesPath);
-			const result = (await ctx.runQuery(internal.files_nodes.list_subtree, {
-				organizationId: pathResolution.ctxData.organizationId,
-				workspaceId: pathResolution.ctxData.workspaceId,
-				visibilityUserId: pathResolution.ctxData.userId,
-				folderPath: committedFolderPath,
-				kind: "file" as const,
-				lowercaseExtension: parsed._yay.extension,
-				numItems: bash_clamp_listing_page_limit(parsed._yay.limit),
-				cursor,
-				...(parsed._yay.minDepth == null ? {} : { minDepth: parsed._yay.minDepth }),
-				...(parsed._yay.maxDepth == null ? {} : { maxDepth: parsed._yay.maxDepth }),
-			})) as files_nodes_list_subtree_Result;
-
-			const lines: string[] = [];
-			if (overlay == null) {
-				lines.push(...result.page.map((item) => pathResolution.renderShellPath(item.path)));
-			} else {
-				const applied = await overlay_apply_subtree_page({
-					ctx,
-					overlay,
-					pathResolution,
-					visibleScopePath: target.dbFilesPath,
-					committedScopePath: committedFolderPath,
-					isFirstPage: cursor == null,
-					numItems: bash_clamp_listing_page_limit(parsed._yay.limit),
-					page: result.page,
-					filters: { kind: "file", lowercaseExtension: parsed._yay.extension },
-					minDepth: parsed._yay.minDepth,
-					maxDepth: parsed._yay.maxDepth,
-				});
-				lines.push(...applied.entries.map((entry) => pathResolution.renderShellPath(entry.path)));
-				for (const splice of applied.spliceContinuations) {
-					lines.push(
-						"",
-						build_continuation({
-							parsed: parsed._yay,
-							target: splice.visibleShellPath,
-							prefix: null,
-							cursor: await bash_cursor_id_create(ctx, splice.continueCursor),
-						}),
-					);
-				}
-			}
-			if (!result.isDone) {
-				lines.push(
-					"",
-					build_continuation({
-						parsed: parsed._yay,
-						target: target.absoluteShellPath,
-						prefix: null,
-						cursor: await bash_cursor_id_create(ctx, result.continueCursor),
-					}),
-				);
-			} else if (lines.length === 0) {
-				lines.push("0 matches.");
-			}
-
-			return {
-				stdout: `${lines.join("\n")}\n`,
-				stderr: "",
-				exitCode: 0,
-			};
-		}
-
-		// Plain app-file find lists the subtree through the path index with optional type/depth filters.
-		// A file target prints the requested path (the visible name for moved-in nodes).
-		if (dbFilesDoc?.kind === "file") {
-			const matchesKind = parsed._yay.type == null || parsed._yay.type === "f";
-			const matchesDepth =
+		if (entry?.kind === "file") {
+			const matches =
+				(parsed._yay.type == null || parsed._yay.type === "f") &&
 				(parsed._yay.minDepth == null || parsed._yay.minDepth <= 0) &&
-				(parsed._yay.maxDepth == null || parsed._yay.maxDepth >= 0);
-			const lines: string[] =
-				cursor == null && matchesKind && matchesDepth
-					? [pathResolution.renderShellPath(target.dbFilesPath)]
-					: ["0 matches."];
+				(parsed._yay.extension == null || entry.name.toLowerCase().endsWith(`.${parsed._yay.extension}`));
 			return {
-				stdout: `${lines.join("\n")}\n`,
+				stdout: cursor == null && matches ? `${pathResolution.renderShellPath(target.dbFilesPath)}\n` : "0 matches.\n",
 				stderr: "",
 				exitCode: 0,
 			};
 		}
 
-		// A moved-in folder target walks its committed source subtree; entries project
-		// back into the visible tree below.
-		const overlay = await pathResolution.fs.getOverlay();
-		const committedFolderPath =
-			overlay == null ? target.dbFilesPath : bash_overlay_committed_scope_path(overlay, target.dbFilesPath);
-		const result = (await ctx.runQuery(internal.files_nodes.list_subtree, {
+		const result = (await ctx.runQuery(internal.files_visible.internal_list, {
 			organizationId: pathResolution.ctxData.organizationId,
 			workspaceId: pathResolution.ctxData.workspaceId,
 			visibilityUserId: pathResolution.ctxData.userId,
-			folderPath: committedFolderPath,
+			overlayUserId: pathResolution.fs.overlayUserId,
+			folderPath: target.dbFilesPath,
+			mode: parsed._yay.maxDepth === 1 ? "children" : "subtree",
 			numItems: bash_clamp_listing_page_limit(parsed._yay.limit),
 			cursor,
-			...(parsed._yay.type === "f"
+			...(parsed._yay.type === "f" || parsed._yay.extension != null
 				? { kind: "file" as const }
 				: parsed._yay.type === "d"
 					? { kind: "folder" as const }
 					: {}),
+			...(parsed._yay.extension == null ? {} : { lowercaseExtension: parsed._yay.extension }),
 			...(parsed._yay.minDepth == null ? {} : { minDepth: parsed._yay.minDepth }),
 			...(parsed._yay.maxDepth == null ? {} : { maxDepth: parsed._yay.maxDepth }),
-		})) as files_nodes_list_subtree_Result;
-
-		const lines: string[] = [];
-		if (overlay == null) {
-			lines.push(
-				...result.page.map((item) => `${pathResolution.renderShellPath(item.path)}${item.kind === "folder" ? "/" : ""}`),
-			);
-		} else {
-			const applied = await overlay_apply_subtree_page({
-				ctx,
-				overlay,
-				pathResolution,
-				visibleScopePath: target.dbFilesPath,
-				committedScopePath: committedFolderPath,
-				isFirstPage: cursor == null,
-				numItems: bash_clamp_listing_page_limit(parsed._yay.limit),
-				page: result.page,
-				filters: parsed._yay.type === "f" ? { kind: "file" } : parsed._yay.type === "d" ? { kind: "folder" } : {},
-				minDepth: parsed._yay.minDepth,
-				maxDepth: parsed._yay.maxDepth,
-			});
-			lines.push(
-				...applied.entries.map(
-					(entry) => `${pathResolution.renderShellPath(entry.path)}${entry.kind === "folder" ? "/" : ""}`,
-				),
-			);
-			for (const splice of applied.spliceContinuations) {
-				lines.push(
-					"",
-					build_continuation({
-						parsed: parsed._yay,
-						target: splice.visibleShellPath,
-						prefix: null,
-						cursor: await bash_cursor_id_create(ctx, splice.continueCursor),
-					}),
-				);
-			}
+			...(pathQuery == null ? {} : { pathQuery }),
+		})) as files_visible_internal_list_Result;
+		if (result._nay)
+			return { stdout: "", stderr: `find: ${result._nay.message}\n`, exitCode: bash_COMMAND_EXIT_FAILURE };
+		const lines = result._yay.items.map(
+			(item) => `${pathResolution.renderShellPath(item.path)}${item.kind === "folder" ? "/" : ""}`,
+		);
+		// find includes the starting folder at depth zero. The shared list returns its descendants.
+		if (
+			cursor == null &&
+			entry?.kind === "folder" &&
+			parsed._yay.type !== "f" &&
+			parsed._yay.extension == null &&
+			(parsed._yay.minDepth == null || parsed._yay.minDepth === 0) &&
+			(pathQuery == null || (parsed._yay.maxDepth !== 1 && entry.path.toLowerCase().includes(pathQuery.toLowerCase())))
+		) {
+			lines.unshift(`${pathResolution.renderShellPath(entry.path)}/`);
 		}
-
-		// Plain subtree listings emit the next-page command or a zero-match marker after pagination.
-		if (!result.isDone) {
+		if (!result._yay.isDone && result._yay.continueCursor != null) {
 			lines.push(
 				"",
 				build_continuation({
 					parsed: parsed._yay,
 					target: target.absoluteShellPath,
 					prefix: null,
-					cursor: await bash_cursor_id_create(ctx, result.continueCursor),
+					cursor: await bash_cursor_id_create(ctx, result._yay.continueCursor),
 				}),
 			);
-		} else if (lines.length === 0) {
-			lines.push("0 matches.");
-		}
-
-		return {
-			stdout: `${lines.join("\n")}\n`,
-			stderr: "",
-			exitCode: 0,
-		};
+		} else if (lines.length === 0) lines.push("0 matches.");
+		return { stdout: `${lines.join("\n")}\n`, stderr: "", exitCode: 0 };
 	});
 }

@@ -10,6 +10,7 @@ import {
 	organizations_db_ensure_default_organization_and_workspace_for_user,
 } from "./organizations.ts";
 import { access_control_db_ensure_role_assignment, access_control_db_has_permission } from "./access_control.ts";
+import { activities_db_start } from "./activities_db.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 import { quotas_db_ensure, quotas_db_get } from "./quotas.ts";
 import { organizations_DESCRIPTION_MAX_LENGTH, organizations_NAME_MAX_LENGTH } from "../shared/organizations.ts";
@@ -258,6 +259,7 @@ async function organizations_test_seed_workspace_scoped_rows(
 		workspaceId: args.workspaceId,
 		threadId: aiThreadId,
 		bashCwd: "~",
+		bashCwdTarget: null,
 		updatedBy: args.userId,
 		updatedAt: Date.now(),
 	});
@@ -355,15 +357,31 @@ async function organizations_test_seed_live_plugin_authority(
 		pluginVersionId,
 		event: "users.account.deleted",
 		eventId: `plugin:deletion-authority:${args.tag}`,
-		status: "running",
 		acceptedCapabilities: [],
-		expiresAt: now + 30 * 60 * 1000,
 		apiTokenHash: args.tag.padEnd(64, "b").slice(0, 64),
 		apiTokenExpiresAt: now + 30 * 60 * 1000,
 		apiCallCount: 0,
 		outputWriteCount: 0,
-		errorMessage: null,
-		updatedAt: now,
+	});
+	await activities_db_start(ctx, {
+		organizationId: args.organizationId,
+		workspaceId: args.workspaceId,
+		userId: args.userId,
+		source: {
+			kind: "plugin_run",
+			id: runId,
+			installationId,
+			pluginName: "deletion-authority",
+			event: "users.account.deleted",
+		},
+		title: "Deletion Authority",
+		targets: [],
+		visibility: "shared",
+		feedVisible: false,
+		status: "running",
+		resultKind: "plugin_result",
+		deadlineAt: now + 30 * 60 * 1000,
+		now,
 	});
 
 	return { installationId, runId };

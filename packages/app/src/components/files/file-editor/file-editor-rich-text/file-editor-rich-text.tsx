@@ -42,12 +42,15 @@ import type { AppClassName, AppElementId } from "@/lib/dom-utils.ts";
 import { app_fetch_ai_docs_contextual_prompt } from "@/lib/fetch.ts";
 import { MyBadge } from "@/components/my-badge.tsx";
 import { app_convex, app_convex_api } from "@/lib/app-convex-client.ts";
-import type { app_convex_Id } from "@/lib/app-convex-client.ts";
+import type { app_convex_Doc, app_convex_Id } from "@/lib/app-convex-client.ts";
 import {
 	files_MAX_TEXT_CONTENT_BYTES,
 	files_PresenceStore,
 	files_YJS_DOC_KEYS,
 	files_get_utf8_byte_size,
+	files_fetch_private_file_pending_text,
+	files_save_private_file_pending_text,
+	type files_PendingTarget,
 } from "@/lib/files.ts";
 import { files_tiptap_markdown_to_json } from "../../../../../shared/files-tiptap.ts";
 import { usePromiseValue } from "@/lib/async.ts";
@@ -305,7 +308,7 @@ type FileEditorRichTextBubbleContentActions_ClassNames =
 
 type FileEditorRichTextBubbleContentActions_Props = {
 	editor: Editor;
-	nodeId: app_convex_Id<"files_nodes">;
+	nodeId: app_convex_Id<"files_nodes"> | null;
 	/**
 	 * See `FileEditorRichTextToolsComment_Props`; the bubble threads this straight down.
 	 */
@@ -362,12 +365,14 @@ const FileEditorRichTextBubbleContentActions = memo(function FileEditorRichTextB
 			<FileEditorRichTextToolsMathToggle editor={editor} buttonVariant="floating" />
 			<FileEditorRichTextToolsTextStyles editor={editor} buttonVariant="floating" />
 			<FileEditorRichTextToolsColorSelector editor={editor} buttonVariant="floating" />
-			<FileEditorRichTextToolsComment
-				editor={editor}
-				fileNodeId={nodeId}
-				commentCommit={commentCommit}
-				buttonVariant="floating"
-			/>
+			{nodeId && (
+				<FileEditorRichTextToolsComment
+					editor={editor}
+					fileNodeId={nodeId}
+					commentCommit={commentCommit}
+					buttonVariant="floating"
+				/>
+			)}
 		</div>
 	);
 });
@@ -378,7 +383,7 @@ type FileEditorRichTextBubbleContent_ClassNames = "FileEditorRichTextBubbleConte
 
 type FileEditorRichTextBubbleContent_Props = {
 	editor: Editor;
-	nodeId: app_convex_Id<"files_nodes">;
+	nodeId: app_convex_Id<"files_nodes"> | null;
 	/**
 	 * See `FileEditorRichTextToolsComment_Props`; the bubble threads this straight down.
 	 */
@@ -393,8 +398,7 @@ type FileEditorRichTextBubbleContent_Props = {
 const FileEditorRichTextBubbleContent = memo(function FileEditorRichTextBubbleContent(
 	props: FileEditorRichTextBubbleContent_Props,
 ) {
-	const { editor, nodeId, commentCommit, openAi, portalElement, onPortalRef, onClickAi, onDiscardAi } =
-		props;
+	const { editor, nodeId, commentCommit, openAi, portalElement, onPortalRef, onClickAi, onDiscardAi } = props;
 
 	return (
 		<MyFloatingSurface
@@ -424,7 +428,7 @@ type FileEditorRichTextBubble_ClassNames = "FileEditorRichTextBubble" | "FileEdi
 
 type FileEditorRichTextBubble_Props = {
 	editor: Editor;
-	nodeId: app_convex_Id<"files_nodes">;
+	nodeId: app_convex_Id<"files_nodes"> | null;
 	/**
 	 * See `FileEditorRichTextToolsComment_Props`; the bubble threads this straight down.
 	 */
@@ -1253,7 +1257,7 @@ type FileEditorRichTextNonCollabToolbarActions_ClassNames =
 
 type FileEditorRichTextNonCollabToolbarActions_Props = {
 	editor: Editor;
-	nodeId: app_convex_Id<"files_nodes">;
+	nodeId: app_convex_Id<"files_nodes"> | null;
 	editable: boolean;
 	sessionId: string;
 	byteSize: number;
@@ -1373,13 +1377,15 @@ const FileEditorRichTextNonCollabToolbarActions = memo(function FileEditorRichTe
 			<span className="sr-only" role="status" aria-live="polite" aria-atomic="true">
 				{file_editor_get_size_status_message({ byteSize, blocks: "saving" })}
 			</span>
-			<FileEditorSnapshotsModal
-				nodeId={nodeId}
-				sessionId={sessionId}
-				editable={editable}
-				getCurrentText={getCurrentText}
-				onApplySnapshotText={onApplySnapshotText}
-			/>
+			{nodeId && (
+				<FileEditorSnapshotsModal
+					nodeId={nodeId}
+					sessionId={sessionId}
+					editable={editable}
+					getCurrentText={getCurrentText}
+					onApplySnapshotText={onApplySnapshotText}
+				/>
+			)}
 		</div>,
 		toolbarPortalHost,
 	);
@@ -1441,7 +1447,8 @@ function replace_editor_document(mut_editor: Editor, markdown: string) {
 }
 
 type FileEditorRichTextNonCollabInner_Props = {
-	nodeId: app_convex_Id<"files_nodes">;
+	target: files_PendingTarget;
+	pendingUpdate: app_convex_Doc<"files_pending_updates"> | null;
 	editable: boolean;
 	/**
 	 * The stored bytes the loader read; the mount-time baseline is re-serialized from them.
@@ -1455,13 +1462,15 @@ type FileEditorRichTextNonCollabInner_Props = {
 	commentsPortalHost: HTMLElement | null;
 	toolbarPortalHost: HTMLElement;
 	topStickyFloatingSlot?: React.ReactNode;
+	onTargetChange?: (target: files_PendingTarget) => void;
 };
 
 const FileEditorRichTextNonCollabInner = memo(function FileEditorRichTextNonCollabInner(
 	props: FileEditorRichTextNonCollabInner_Props,
 ) {
 	const {
-		nodeId,
+		target,
+		pendingUpdate,
 		editable,
 		initialText,
 		initialJson,
@@ -1469,9 +1478,11 @@ const FileEditorRichTextNonCollabInner = memo(function FileEditorRichTextNonColl
 		commentsPortalHost,
 		toolbarPortalHost,
 		topStickyFloatingSlot,
+		onTargetChange,
 	} = props;
 
 	const { membershipId } = AppTenantProvider.useContext();
+	const nodeId = target.kind === "saved" ? target.id : null;
 
 	const [editor, setEditor] = useState<Editor | null>(null);
 
@@ -1494,7 +1505,8 @@ const FileEditorRichTextNonCollabInner = memo(function FileEditorRichTextNonColl
 	const [showReformatHint, setShowReformatHint] = useState(false);
 
 	const isSaveDebouncing = dirtyCheckState === "checking";
-	const isSaveDisabled = !editable || isSaving || dirtyCheckState !== "dirty";
+	const isSaveDisabled = !editable || isSaving || (target.kind === "saved" && dirtyCheckState !== "dirty");
+	const canEdit = editable && !(target.kind === "private" && isSaving);
 
 	const imageUploadInputRef = useRef<HTMLInputElement>(null);
 	const videoUploadInputRef = useRef<HTMLInputElement>(null);
@@ -1508,6 +1520,10 @@ const FileEditorRichTextNonCollabInner = memo(function FileEditorRichTextNonColl
 	// Click the input synchronously: the browser only opens a file dialog while the user
 	// gesture that ran the slash command is still active.
 	const pickMediaUploadFile = useFn((kind: "image" | "video") => {
+		if (!nodeId) {
+			toast.error("Save this file before uploading media.");
+			return;
+		}
 		(kind === "image" ? imageUploadInputRef : videoUploadInputRef).current?.click();
 	});
 
@@ -1534,7 +1550,7 @@ const FileEditorRichTextNonCollabInner = memo(function FileEditorRichTextNonColl
 		const files = Array.from(event.currentTarget.files ?? []);
 		// Reset so picking the same file twice in a row still fires a change event.
 		event.currentTarget.value = "";
-		if (files.length === 0 || !editor || !editable) {
+		if (files.length === 0 || !editor || !canEdit || !nodeId) {
 			return;
 		}
 
@@ -1590,7 +1606,7 @@ const FileEditorRichTextNonCollabInner = memo(function FileEditorRichTextNonColl
 	const getCurrentText = useFn(() => (editor ? serialize_editor_markdown(editor) : initialText));
 
 	const handleClickSave = useFn(() => {
-		if (!editable || !editor || isSaving || dirtyCheckState !== "dirty") return;
+		if (!editable || !editor || isSaving || (target.kind === "saved" && dirtyCheckState !== "dirty")) return;
 
 		setIsSaving(true);
 
@@ -1605,6 +1621,26 @@ const FileEditorRichTextNonCollabInner = memo(function FileEditorRichTextNonColl
 				toast.error(file_editor_get_size_error_message(savedByteSize));
 				return;
 			}
+
+			if (target.kind === "private" && pendingUpdate) {
+				const saved = await files_save_private_file_pending_text({
+					membershipId,
+					target,
+					pendingUpdateId: pendingUpdate._id,
+					reviewedRevision: pendingUpdate.revision,
+					text: textToSave,
+				});
+				if (saved._nay) {
+					toast.error(saved._nay.message);
+					return;
+				}
+				baselineMarkdownRef.current = textToSave;
+				setShowReformatHint(false);
+				recomputeDirtyState(editor);
+				onTargetChange?.(saved._yay.target);
+				return;
+			}
+			if (!nodeId) return;
 
 			// Save replaces the whole text with this editor's Markdown.
 			const replaced = await app_convex.action(app_convex_api.files_nodes_content.replace_file_content, {
@@ -1639,6 +1675,7 @@ const FileEditorRichTextNonCollabInner = memo(function FileEditorRichTextNonColl
 	// restore, so skipping the refresh when permission was removed mid-restore would leave the
 	// editor showing stale content. The pre-action gate lives in the snapshots modal.
 	const handleApplySnapshotText = useFn(() => {
+		if (!nodeId) return;
 		// Use an async IIFE because the React compiler has problems with try catch finally blocks
 		(async (/* iife */) => {
 			if (!editor) {
@@ -1692,7 +1729,7 @@ const FileEditorRichTextNonCollabInner = memo(function FileEditorRichTextNonColl
 	 * submitted, so the current document is the saved base plus only the new mark.
 	 */
 	const handleCommitComment = useFn(async (): Promise<boolean> => {
-		if (!editor) {
+		if (!editor || !nodeId) {
 			return false;
 		}
 
@@ -1767,9 +1804,9 @@ const FileEditorRichTextNonCollabInner = memo(function FileEditorRichTextNonColl
 	// to "may this user write here" has to go through `setEditable`.
 	useEffect(() => {
 		if (editor) {
-			editor.setEditable(editable, false);
+			editor.setEditable(canEdit, false);
 		}
-	}, [editor, editable]);
+	}, [editor, canEdit]);
 
 	// The dirty check serializes the whole document, so it runs on a typing pause, not on every
 	// keystroke. Same cost profile the collaborative toolbar accepts for its size badge.
@@ -1860,7 +1897,7 @@ const FileEditorRichTextNonCollabInner = memo(function FileEditorRichTextNonColl
 					<FileEditorRichTextNonCollabToolbarActions
 						editor={editor}
 						nodeId={nodeId}
-						editable={editable}
+						editable={canEdit}
 						sessionId={presenceStore.localSessionId}
 						byteSize={byteSize}
 						isSaveDisabled={isSaveDisabled}
@@ -1893,7 +1930,7 @@ const FileEditorRichTextNonCollabInner = memo(function FileEditorRichTextNonColl
 							role: "textbox",
 							"aria-multiline": "true",
 							"aria-label": "File text",
-							"aria-readonly": String(!editable),
+							"aria-readonly": String(!canEdit),
 						},
 						handleDOMEvents: {
 							keydown: (_view, event) => handleCommandNavigation(event),
@@ -1903,16 +1940,21 @@ const FileEditorRichTextNonCollabInner = memo(function FileEditorRichTextNonColl
 						// React render, so block a paste or drop that arrives in that window here and in
 						// `handleDrop` below.
 						handlePaste: (view, event) => {
-							if (!editable) {
+							if (!canEdit) {
 								return true;
 							}
 							if (checkIncomingContentFitsSizeCap(event.clipboardData?.getData("text/plain") ?? "") === false) {
 								return true;
 							}
+							if (!nodeId) {
+								if (!event.clipboardData?.files.length) return false;
+								toast.error("Save this file before uploading media.");
+								return true;
+							}
 							return file_editor_rich_text_handle_media_paste({ view, event, membershipId, documentNodeId: nodeId });
 						},
 						handleDrop: (view, event, _slice, moved) => {
-							if (!editable) {
+							if (!canEdit) {
 								return true;
 							}
 							// `moved` is an internal drag, so the content is only relocated, not added.
@@ -1920,6 +1962,11 @@ const FileEditorRichTextNonCollabInner = memo(function FileEditorRichTextNonColl
 								!moved &&
 								checkIncomingContentFitsSizeCap(event.dataTransfer?.getData("text/plain") ?? "") === false
 							) {
+								return true;
+							}
+							if (!nodeId) {
+								if (moved || !event.dataTransfer?.files.length) return false;
+								toast.error("Save this file before uploading media.");
 								return true;
 							}
 							return file_editor_rich_text_handle_media_drop({
@@ -1932,11 +1979,11 @@ const FileEditorRichTextNonCollabInner = memo(function FileEditorRichTextNonColl
 						},
 					}}
 					extensions={extensions}
-					editable={editable}
+					editable={canEdit}
 					immediatelyRender={false}
 					onCreate={handleCreate}
 					slotAfter={
-						editor && editable ? (
+						editor && canEdit ? (
 							<>
 								<ImageResizer />
 								<FileEditorRichTextToolsSlashCommand />
@@ -1952,7 +1999,7 @@ const FileEditorRichTextNonCollabInner = memo(function FileEditorRichTextNonColl
 					}
 				></EditorContent>
 			</div>
-			{editor && (
+			{editor && nodeId && (
 				<FileEditorRichTextAnchoredCommentsLayer
 					commentsPortalHost={commentsPortalHost}
 					editor={editor}
@@ -1966,12 +2013,13 @@ const FileEditorRichTextNonCollabInner = memo(function FileEditorRichTextNonColl
 });
 
 export type FileEditorRichTextNonCollab_Props = {
-	nodeId: app_convex_Id<"files_nodes">;
+	target: files_PendingTarget;
 	editable: boolean;
 	presenceStore: files_PresenceStore;
 	commentsPortalHost: HTMLElement | null;
 	toolbarPortalHost: HTMLElement;
 	topStickyFloatingSlot?: React.ReactNode;
+	onTargetChange?: (target: files_PendingTarget) => void;
 };
 
 /**
@@ -1983,34 +2031,50 @@ export type FileEditorRichTextNonCollab_Props = {
 export const FileEditorRichTextNonCollab = memo(function FileEditorRichTextNonCollab(
 	props: FileEditorRichTextNonCollab_Props,
 ) {
-	const { nodeId, editable, presenceStore, commentsPortalHost, toolbarPortalHost, topStickyFloatingSlot } = props;
+	const {
+		target,
+		editable,
+		presenceStore,
+		commentsPortalHost,
+		toolbarPortalHost,
+		topStickyFloatingSlot,
+		onTargetChange,
+	} = props;
 
 	const { membershipId } = AppTenantProvider.useContext();
 
 	const fileContentDataPromise = useMemo(() => {
-		// Collaboration off: the server sends the committed text.
-		return app_convex
-			.query(app_convex_api.files_nodes_content.get_non_collaborative_file_content, { membershipId, nodeId })
-			.then((result) => {
-				if (result._nay) {
-					console.error("[FileEditorRichTextNonCollab] Error while reading the file content", result._nay);
-					return null;
-				}
+		const contentPromise =
+			target.kind === "private"
+				? files_fetch_private_file_pending_text({ membershipId, target: { kind: "private", id: target.id } })
+				: app_convex.query(app_convex_api.files_nodes_content.get_non_collaborative_file_content, {
+						membershipId,
+						nodeId: target.id,
+					});
+		return contentPromise.then((result) => {
+			if (result._nay) {
+				console.error("[FileEditorRichTextNonCollab] Error while reading the file content", result._nay);
+				return null;
+			}
 
-				// Parse against the list the editor mounts, so a document this editor cannot
-				// represent is refused below before any editor exists.
-				const json = files_tiptap_markdown_to_json({
-					markdown: result._yay.text,
-					extensions: nonCollaborativeExtensions,
-				});
-				if (json._nay) {
-					console.error("[FileEditorRichTextNonCollab] Error while parsing the file content", json._nay);
-					return null;
-				}
-
-				return { text: result._yay.text, initialJson: json._yay };
+			// Parse against the list the editor mounts, so a document this editor cannot
+			// represent is refused below before any editor exists.
+			const json = files_tiptap_markdown_to_json({
+				markdown: result._yay.text,
+				extensions: nonCollaborativeExtensions,
 			});
-	}, [membershipId, nodeId]);
+			if (json._nay) {
+				console.error("[FileEditorRichTextNonCollab] Error while parsing the file content", json._nay);
+				return null;
+			}
+
+			return {
+				text: result._yay.text,
+				initialJson: json._yay,
+				pendingUpdate: "pendingUpdate" in result._yay ? result._yay.pendingUpdate : null,
+			};
+		});
+	}, [membershipId, target.kind, target.id]);
 	const fileContentData = usePromiseValue(fileContentDataPromise);
 
 	// On a refused or missing read, never mount the editor over a stand-in document: a save from
@@ -2026,9 +2090,10 @@ export const FileEditorRichTextNonCollab = memo(function FileEditorRichTextNonCo
 			support if this keeps happening.
 		</div>
 	) : (
-		<EditorRoot key={`non_collaborative:${nodeId}`}>
+		<EditorRoot key={`non_collaborative:${target.kind}:${target.id}`}>
 			<FileEditorRichTextNonCollabInner
-				nodeId={nodeId}
+				target={target}
+				pendingUpdate={fileContentData.pendingUpdate}
 				editable={editable}
 				initialText={fileContentData.text}
 				initialJson={fileContentData.initialJson}
@@ -2036,6 +2101,7 @@ export const FileEditorRichTextNonCollab = memo(function FileEditorRichTextNonCo
 				commentsPortalHost={commentsPortalHost}
 				toolbarPortalHost={toolbarPortalHost}
 				topStickyFloatingSlot={topStickyFloatingSlot}
+				onTargetChange={onTargetChange}
 			/>
 		</EditorRoot>
 	);

@@ -106,7 +106,7 @@ The table describes a node whose policy refuses the current writer. ACL still ap
 | Share or change policy | Require management permission separately |
 | Reply to an existing comment | Allow with comment permission |
 | Create or resolve an anchored comment | Refuse; this changes a Yjs mark |
-| Discard a whole pending proposal | Allow; keep protected eager-created nodes |
+| Discard a whole pending proposal | Allow; retire owned private work and keep saved nodes |
 | Accept, save, or rebase pending work | Refuse |
 | Finish an already accepted upload or committed Yjs materialization | Allow |
 | Delete a tenant, workspace, or account | Use the named deletion workflow |
@@ -200,9 +200,14 @@ idempotent success. Management stays separate from effective content write acces
   actor and account need Files write and sharing-management access. Current labels, policies,
   membership lifetimes, writer generation, and reader revision still apply. A detached binding is
   acknowledged without changing sharing. No old credential grants new authority.
-- Eager-created cleanup checks the proposer's current policy access on the file and every created
-  ancestor before deleting any node. If one refuses, remove pending docs but keep the committed tree.
-  The existing untouched-node checks still apply. Bash `/tmp` stays writable; copy-out stays allowed.
+- Private draft moves check current access and policy on their saved source and destination parents.
+  Replacing a saved occupant also checks that occupant and its affected descendants. Save repeats
+  these checks and the exact saved content-version check before archive and publication commit
+  together. Replacing an owned private occupant requires a ready draft and an empty folder when
+  applicable; all checks pass before its private generation closes.
+- Discard and expiry retire owned private work without deleting saved nodes. A private replacement
+  keeps its saved occupant until Save. Discard, expiry, and moving the draft elsewhere leave that
+  occupant unchanged, including after a policy refusal. Bash `/tmp` and readable copy-out stay usable.
 - Raw path/overlay resolution remains unfiltered so hidden occupied paths still conflict. Authorized
   read entrypoints apply actor and optional account visibility after lookup. Lists never expose raw
   policy fields or hidden writer/source identity.
@@ -322,7 +327,7 @@ control only because its save is running.
 
 - `convex/files_nodes.test.ts`: selected writers, ACL independence, every parent policy, direct-create
   refusal, creation management, moved scope, archived restrictions, redaction, cascades, and writes.
-- `convex/files_pending_updates.test.ts`: current-policy proposal/commit checks and eager cleanup.
+- `convex/files_pending_updates.test.ts`: current-policy proposal, commit, and private discard checks.
 - `convex/files_nodes_content.test.ts`: replacement, collaboration, snapshots, and materialization.
 - `convex/public_api*.test.ts`: bound accounts, current credentials/scopes, service targets, conflicts,
   policy management, accepted uploads, and no partial publication.
@@ -336,7 +341,7 @@ control only because its save is running.
 # Related Skills
 
 - `../access-control/SKILL.md`: actor/account permissions, grants, and account management.
-- `../files-agent-pending-updates/SKILL.md`: proposal, commit, discard, and eager cleanup.
+- `../files-agent-pending-updates/SKILL.md`: proposal, commit, discard, and private cleanup.
 - `../files-editable-text/SKILL.md`: Yjs write doors and shape guards.
 - `../files-explorer-tree/SKILL.md`: tree operations and row interactions.
 - `../public-api/SKILL.md`: credentials, scopes, plugin adapters, and conflict responses.

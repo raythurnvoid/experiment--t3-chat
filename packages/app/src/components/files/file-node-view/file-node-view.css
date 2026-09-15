@@ -67,6 +67,36 @@
 		height: auto;
 	}
 
+	.FileNodeView-editor-sidebar-panel {
+		container-type: size;
+
+		/* Let anchored comments size themselves against the full-height route sidebar. */
+		contain: inline-size style;
+
+		/* Scope the sidebar's sticky `z-index: 1` chrome (the toolbar, and each tab's
+		   sticky header) to this panel so it can't tie with the sibling resize handle
+		   (also `z-index: 1`) in the shared editor-area stacking context and paint over
+		   the hovered handle track. `.MyPanel` normally gets this from `contain: layout`,
+		   but this panel replaces that with `container-type: size` (which is not a
+		   stacking context). The Agent tab only avoided the bug because the rule below
+		   makes the panel `position: sticky` (a stacking context) when it's open. */
+		isolation: isolate;
+
+		> .MyPanelInfiniteBackground::before {
+			background-color: var(--color-base-1-02);
+		}
+	}
+
+	.FileNodeView-editor-sidebar-panel:has(.FileEditorSidebar-panel[data-open="true"] .FileEditorSidebarAgent),
+	.FileNodeView-editor-sidebar-panel:has(.FileEditorSidebar-panel[data-open="true"] .FileEditorSidebarPending) {
+		/* Keep the Agent and Pending changes tabs pinned; comments stay on the shared editor scroll surface. */
+		position: sticky;
+		top: 0;
+		align-self: start;
+	}
+	/* #endregion root */
+
+	/* #region top sticky floating container */
 	.FileNodeViewTopStickyFloatingContainer {
 		position: sticky;
 		top: calc(44px + var(--app-scrollbar-w) + 1px);
@@ -108,35 +138,7 @@
 		   scrolling file panel) gets another 16px of clearance on top of the shared inset. */
 		padding-right: 32px;
 	}
-
-	.FileNodeView-editor-sidebar-panel {
-		container-type: size;
-
-		/* Let anchored comments size themselves against the full-height route sidebar. */
-		contain: inline-size style;
-
-		/* Scope the sidebar's sticky `z-index: 1` chrome (the toolbar, and each tab's
-		   sticky header) to this panel so it can't tie with the sibling resize handle
-		   (also `z-index: 1`) in the shared editor-area stacking context and paint over
-		   the hovered handle track. `.MyPanel` normally gets this from `contain: layout`,
-		   but this panel replaces that with `container-type: size` (which is not a
-		   stacking context). The Agent tab only avoided the bug because the rule below
-		   makes the panel `position: sticky` (a stacking context) when it's open. */
-		isolation: isolate;
-
-		> .MyPanelInfiniteBackground::before {
-			background-color: var(--color-base-1-02);
-		}
-	}
-
-	.FileNodeView-editor-sidebar-panel:has(.FileEditorSidebar-panel[data-open="true"] .FileEditorSidebarAgent),
-	.FileNodeView-editor-sidebar-panel:has(.FileEditorSidebar-panel[data-open="true"] .FileEditorSidebarPending) {
-		/* Keep the Agent and Pending changes tabs pinned; comments stay on the shared editor scroll surface. */
-		position: sticky;
-		top: 0;
-		align-self: start;
-	}
-	/* #endregion root */
+	/* #endregion top sticky floating container */
 
 	/* #region header */
 	.FileNodeViewHeader {
@@ -465,6 +467,42 @@
 		color: var(--color-destructive);
 	}
 	/* #endregion plugin view */
+
+	/* #region private file views */
+	.FileNodeViewPrivate-actions {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+	}
+
+	.FileNodeViewPrivate-status {
+		font-size: 0.8125rem;
+		white-space: nowrap;
+		color: var(--color-fg-07);
+	}
+
+	.FileNodeViewPrivate-body {
+		padding: 44px 24px 24px;
+		font-size: 0.875rem;
+	}
+
+	.FileNodeViewPrivate-table {
+		grid-template-columns: minmax(0, 1fr) auto;
+	}
+
+	.FileNodeViewPrivate-media {
+		display: block;
+		max-width: 100%;
+		max-height: 70vh;
+		margin-top: 16px;
+	}
+
+	.FileNodeViewPrivate-name {
+		justify-content: flex-start;
+		max-width: 100%;
+		overflow-wrap: anywhere;
+	}
+	/* #endregion private file views */
 
 	/* #region top floating status */
 	.FileNodeViewTopFloating {

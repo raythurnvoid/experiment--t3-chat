@@ -144,6 +144,41 @@ Ensure applies requested access only when it creates the final folder. A reused 
 
 Scope deletion and account/org teardown remove attached mirrored grants and bindings; the node stays restricted. Uninstall instead removes bindings and preserves file grants. Reinstall may reuse matching labels after the old binding drains, but does not restore old sharing through ensure. The organization owner still reads everything. Plugins must disclose that Files managers control transcript readers, including later updates. These file rules do not change the plugin document store's separate `ownership` field.
 
+## Plugin run lifecycle
+
+Every upload, manual, account-deletion, and invoke run creates one hidden Activity in the same
+transaction. `activities.by_source_id` is the only link. Activity owns status, deadlines, errors,
+start/finish times, update time, and history expiry. `plugins_event_runs` keeps the plugin inputs,
+identity pins, token, work ID, API-call counts, output counts, and runner metrics. Never add common
+lifecycle fields back to the run. A missing Activity is an invariant error.
+
+`plugins.list_recent_runs` keeps its existing `queued|running|succeeded|failed` response contract.
+It derives the value from Activity; canceled and timed-out results map to failed in that query.
+The common Activity feed keeps the full outcome.
+
+Hidden Activities still record output targets. `/api/v1/activities/start` reveals the existing
+Activity, sets its title and source target, and saves `expectedFinishAt` from `timeoutMs`. That is
+an estimate: passing it shows Overdue and does not stop the run. A second feed opt-in returns 409.
+The Activity execution deadline is separate: ten minutes from event admission or sixty seconds
+from invoke admission. The runner request and body budgets remain 180 and 35 seconds respectively.
+
+Claims, invoke locks, live token checks, final writes, and expiry read the Activity. The cached
+principal query returns the earlier of token expiry and Activity deadline; the HTTP/host boundary
+checks the clock. Final mutations check the Activity status and time again. A real deadline or runner
+timeout ends as `timed_out`, clears the token, settles unfinished calls, and schedules staged-write
+cleanup in the same transaction. A late completion cannot change the outcome.
+
+Plugin history expires thirty days after finish. Cleanup drains calls and Activity dismissal docs
+before deleting the Activity and run together. It keeps published files and plugin documents.
+Registry deletion uses the same pair rule. Dismissal cleanup may need several bounded passes.
+
+`activities.recover_expired` and `activities.cleanup_history` own the shared batch scans and
+rescheduling. They dispatch by the stored source kind in a server-owned switch. Plugin code only
+exports `plugins_runtime_db_timeout_run` and `plugins_runtime_db_delete_run_history` for those
+transactions. There are no separate plugin expiry or retention batch entrypoints. Timeout fences
+API writes and cancels Workpool before finishing. History returns an exact deleted-document count,
+including calls and dismissal docs; it keeps the Activity/run pair while another dismissal page remains.
+
 ## Invoke runs (`plugin.backend.invoke`)
 
 Backend success does not require file output. Events and invokes use the same finalizer. It first
@@ -166,8 +201,8 @@ Host 500 with `code: "response_too_large"` is a deterministic response failure, 
 may be saved. The former store-based Chitchat client kept its pending entry and request ID for
 manual Retry on that error. Native Chitchat no longer uses this invoke path. Invoke clients must
 reuse the same request ID after plugin 5xx and uncertain transport results.
-The plugin-data transaction keeps `credentialRef.runId` and checks the original run's status,
-deadline, token expiry, actor, version, tenant, and pinned service account before a write commits.
+The plugin-data transaction keeps `credentialRef.runId` and checks its Activity status and
+deadline, plus token expiry, actor, version, tenant, and pinned service account before a write commits.
 
 A page or file view calls `POST /api/v1/plugin-backend/invoke` with its `plu_` token to run the plugin's own reviewed backend synchronously — route contract in `../public-api/SKILL.md#invoke-door`. The run is a normal `plugins_event_runs` record with event `ui.invoke.requested`: same runner, same `plr_` token, same `MAX_API_CALLS = 20`, same call ledger and retention. The plugin's `fetch()` now serves two callers: plugin-declared endpoint paths handle invokes, and host events arrive on the reserved `/__bonobo_senate/run` path. Manifest validation and the runner accept only `/` or slash-separated lowercase letters, digits, and dashes, at most 256 characters. Trailing or duplicate slashes, dots, escapes, and underscores are refused. This grammar keeps declared endpoints separate from the reserved host-event path. The run's `actorUserId` is the member behind the `plu_` session, host-verified and delivered only in the event envelope — never inside the page's `input` — so backends enforce authorship from the envelope alone; the same id lands on the `plugin_run` principal, so store writes record that member as `createdBy`/`updatedBy`. Serialization: at most one live invoke run per `(installationId, lockKey)` — the default is one lock for the whole installation, and an endpoint declared `serialization: "caller-key"` uses the caller's `serializationKey`; a concurrent second invoke answers 409 `busy` with `retryAfterMs`. File reads for runs (`files:read` + `files:list`) are gated on accepted `workspace.files.read` for BOTH invoke and upload runs, and a run reads with its actor's eyes, so it never sees inside a restricted folder that member cannot open.
 

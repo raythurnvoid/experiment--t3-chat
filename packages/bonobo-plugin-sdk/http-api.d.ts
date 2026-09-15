@@ -39,8 +39,8 @@ export type BonoboHttpApi = {
 								[x: string]: any;
 							};
 							revision: number;
-							collection: string;
 							key: string;
+							collection: string;
 							byteSize: number;
 							writeMode: "normal" | "versioned";
 							ownership: "shared" | "owned";
@@ -140,8 +140,8 @@ export type BonoboHttpApi = {
 								[x: string]: any;
 							};
 							revision: number;
-							collection: string;
 							key: string;
+							collection: string;
 							byteSize: number;
 							writeMode: "normal" | "versioned";
 							ownership: "shared" | "owned";
@@ -702,7 +702,7 @@ export type BonoboHttpApi = {
 							sequence: number;
 							nodeId: import("convex/values").GenericId<"files_nodes">;
 							installationId: import("convex/values").GenericId<"plugins_workspace_installations">;
-							operation: "write" | "fence" | "readers" | "archive" | "rollback_readers" | "cancel_readers";
+							operation: "fence" | "write" | "readers" | "archive" | "rollback_readers" | "cancel_readers";
 							fingerprint: string;
 							contentRevision: string | null;
 							readerRevision: number | null;
@@ -1207,7 +1207,7 @@ export type BonoboHttpApi = {
 							sequence: number;
 							nodeId: import("convex/values").GenericId<"files_nodes">;
 							installationId: import("convex/values").GenericId<"plugins_workspace_installations">;
-							operation: "write" | "fence" | "readers" | "archive" | "rollback_readers" | "cancel_readers";
+							operation: "fence" | "write" | "readers" | "archive" | "rollback_readers" | "cancel_readers";
 							fingerprint: string;
 							contentRevision: string | null;
 							readerRevision: number | null;
@@ -1321,7 +1321,7 @@ export type BonoboHttpApi = {
 							sequence: number;
 							nodeId: import("convex/values").GenericId<"files_nodes">;
 							installationId: import("convex/values").GenericId<"plugins_workspace_installations">;
-							operation: "write" | "fence" | "readers" | "archive" | "rollback_readers" | "cancel_readers";
+							operation: "fence" | "write" | "readers" | "archive" | "rollback_readers" | "cancel_readers";
 							fingerprint: string;
 							contentRevision: string | null;
 							readerRevision: number | null;
@@ -1594,7 +1594,7 @@ export type BonoboHttpApi = {
 						sequence: number;
 						nodeId: import("convex/values").GenericId<"files_nodes">;
 						installationId: import("convex/values").GenericId<"plugins_workspace_installations">;
-						operation: "write" | "fence" | "readers" | "archive" | "rollback_readers" | "cancel_readers";
+						operation: "fence" | "write" | "readers" | "archive" | "rollback_readers" | "cancel_readers";
 						fingerprint: string;
 						contentRevision: string | null;
 						readerRevision: number | null;
@@ -1862,9 +1862,9 @@ export type BonoboHttpApi = {
 							} | {
 								kind: "member";
 								member: {
+									membershipLifetime: number;
 									active: boolean;
 									displayName: string | null;
-									membershipLifetime: number;
 									hostUserId: string;
 									hostMembershipId: string | null;
 									canRead: boolean;

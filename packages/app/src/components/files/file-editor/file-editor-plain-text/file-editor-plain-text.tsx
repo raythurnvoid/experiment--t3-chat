@@ -5,10 +5,13 @@ import {
 	files_monaco_create_editor_model,
 	files_monaco_execute_edits_with_read_only_fallback,
 	files_fetch_file_yjs_state_and_text,
+	files_fetch_private_file_pending_text,
+	files_save_private_file_pending_text,
 	files_MAX_TEXT_CONTENT_BYTES,
 	files_get_utf8_byte_size,
 	files_get_comment_thread_ids_from_markdown,
 	type files_YjsRootKind,
+	type files_PendingTarget,
 } from "@/lib/files.ts";
 import { files_yjs_doc_clone, files_yjs_compute_diff_update_from_yjs_doc } from "../../../../../shared/files-yjs.ts";
 import { files_text_diff_TOO_LARGE_MESSAGE } from "../../../../../shared/files-text-diff.ts";
@@ -34,7 +37,7 @@ import { MyBadge } from "@/components/my-badge.tsx";
 import { MyButton, MyButtonIcon } from "@/components/my-button.tsx";
 import { MySpinner } from "@/components/my-spinner.tsx";
 import type { files_PresenceStore } from "@/lib/files.ts";
-import { app_convex, app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
+import { app_convex, app_convex_api, type app_convex_Doc, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { RefreshCcw, Save } from "lucide-react";
 import { Doc as YDoc, applyUpdate } from "yjs";
 import { toast } from "sonner";
@@ -58,7 +61,7 @@ type FileEditorPlainTextToolbarActions_Props = {
 	isSaveDisabled: boolean;
 	isSyncDisabled: boolean;
 	isSaveDebouncing: boolean;
-	nodeId: app_convex_Id<"files_nodes">;
+	nodeId: app_convex_Id<"files_nodes"> | null;
 	nonCollaborative: boolean;
 	sessionId: string;
 	toolbarPortalHost: HTMLElement;
@@ -151,13 +154,15 @@ const FileEditorPlainTextToolbarActions = memo(function FileEditorPlainTextToolb
 			<span className="sr-only" role="status" aria-live="polite" aria-atomic="true">
 				{file_editor_get_size_status_message({ byteSize, blocks: "saving" })}
 			</span>
-			<FileEditorSnapshotsModal
-				nodeId={nodeId}
-				sessionId={sessionId}
-				editable={editable}
-				getCurrentText={getCurrentText}
-				onApplySnapshotText={onApplySnapshotText}
-			/>
+			{nodeId && (
+				<FileEditorSnapshotsModal
+					nodeId={nodeId}
+					sessionId={sessionId}
+					editable={editable}
+					getCurrentText={getCurrentText}
+					onApplySnapshotText={onApplySnapshotText}
+				/>
+			)}
 		</div>,
 		toolbarPortalHost,
 	);
@@ -267,12 +272,18 @@ type FileEditorPlainText_LoadedContent =
 			kind: "non_collaborative";
 			text: string;
 			rootKind: files_YjsRootKind;
+	  }
+	| {
+			kind: "private";
+			text: string;
+			rootKind: files_YjsRootKind;
+			pendingUpdate: app_convex_Doc<"files_pending_updates">;
 	  };
 
 type FileEditorPlainTextInner_Props = {
 	ref?: Ref<Pick<FileEditor_Ref, "getPreviewSnapshot">>;
 	isActive: boolean;
-	nodeId: app_convex_Id<"files_nodes">;
+	target: files_PendingTarget;
 	editable: boolean;
 	/** The node's document shape, resolved by the snapshot fetch; Save/Sync dispatch on it. */
 	rootKind: files_YjsRootKind;
@@ -289,6 +300,7 @@ type FileEditorPlainTextInner_Props = {
 	topStickyFloatingSlot?: React.ReactNode;
 	topViewZoneSlot?: React.ReactNode;
 	onPreviewSnapshotChange?: () => void;
+	onTargetChange?: (target: files_PendingTarget) => void;
 };
 
 const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: FileEditorPlainTextInner_Props) {
@@ -296,7 +308,7 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 		ref,
 		isActive,
 		initialData,
-		nodeId,
+		target,
 		editable,
 		rootKind,
 		monacoLanguageId,
@@ -308,9 +320,11 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 		topStickyFloatingSlot,
 		topViewZoneSlot,
 		onPreviewSnapshotChange,
+		onTargetChange,
 	} = props;
 
 	const { membershipId } = AppTenantProvider.useContext();
+	const nodeId = target.kind === "saved" ? target.id : null;
 
 	const pushYjsUpdateMutation = useMutation(api.files_nodes.yjs_push_update);
 
@@ -342,7 +356,7 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 	const [byteSize, setByteSize] = useState(() => files_get_utf8_byte_size(initialData.text));
 
 	const isSaveDebouncing = dirtyCheckState === "checking";
-	const isSaveDisabled = !editable || isSaving || isSyncing || dirtyCheckState !== "dirty";
+	const isSaveDisabled = !editable || isSaving || isSyncing || (target.kind === "saved" && dirtyCheckState !== "dirty");
 	const activeServerSequence = serverSequence ?? initialYjsSequence;
 	const isSyncDisabled = !editable || isSyncing || isSaving || workingYjsDocSequence === activeServerSequence;
 	const hasTopViewZoneSlot = topViewZoneSlot != null && topViewZoneSlot !== false;
@@ -497,13 +511,13 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 		const text = model.getValue();
 		return {
 			text,
-			sourceKind: "editor_draft",
+			sourceKind: initialData.kind === "private" ? "proposed_changes" : "editor_draft",
 			isDirty: text !== baselineMarkdownRef.current,
 			membershipId,
-			nodeId,
+			target,
 			rootKind,
 			yjsLastSequenceId: yjsLastSequenceIdRef.current,
-			pendingUpdate: null,
+			pendingUpdate: initialData.kind === "private" ? initialData.pendingUpdate : null,
 		};
 	});
 
@@ -513,6 +527,7 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 	// restore, so skipping the refresh when permission was removed mid-restore would leave the
 	// editor showing stale content. The pre-action gate lives in the snapshots modal.
 	const handleApplySnapshotText = useFn(() => {
+		if (!nodeId) return;
 		// Use an async IIFE because the React compiler has problems with try catch finally blocks
 		(async (/* iife */) => {
 			// Collaboration off: re-read the committed text after the restore.
@@ -596,7 +611,7 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 			throw error;
 		}
 
-		if (isSaving || isSyncing || dirtyCheckState !== "dirty") return;
+		if (isSaving || isSyncing || (target.kind === "saved" && dirtyCheckState !== "dirty")) return;
 
 		setIsSaving(true);
 
@@ -611,6 +626,23 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 				toast.error(file_editor_get_size_error_message(localByteSize));
 				return;
 			}
+			if (target.kind === "private" && initialData.kind === "private") {
+				const saved = await files_save_private_file_pending_text({
+					membershipId,
+					target,
+					pendingUpdateId: initialData.pendingUpdate._id,
+					reviewedRevision: initialData.pendingUpdate.revision,
+					text: localMarkdown,
+				});
+				if (saved._nay) {
+					toast.error(saved._nay.message);
+					return;
+				}
+				updateDirtyBaselineAfterSave(localMarkdown);
+				onTargetChange?.(saved._yay.target);
+				return;
+			}
+			if (!nodeId) return;
 
 			// Collaboration off: no document to diff, so Save replaces the whole text.
 			if (initialData.kind === "non_collaborative") {
@@ -721,7 +753,7 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 	});
 
 	const handleClickSync = useFn(() => {
-		if (!editable || isSyncing || isSaving) return;
+		if (!nodeId || !editable || isSyncing || isSaving) return;
 
 		setDirtyCheckState("checking");
 		clearTimeout(dirtyCheckTimeoutRef.current);
@@ -885,8 +917,8 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 	// The permission query can resolve or change after Monaco mounts. Update the live editor instead
 	// of rebuilding its model, which would drop the cursor and undo history.
 	useEffect(() => {
-		mountedEditor?.updateOptions({ readOnly: !editable });
-	}, [editable, mountedEditor]);
+		mountedEditor?.updateOptions({ readOnly: !editable || (target.kind === "private" && isSaving) });
+	}, [editable, mountedEditor, target.kind, isSaving]);
 
 	/**
 	 * Warn before this editor goes away with text that was never saved.
@@ -895,7 +927,7 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 	 * state is up to 250 ms behind and would miss the last words typed.
 	 */
 	const warnIfUnsavedTextIsDropped = useFn(() => {
-		if (initialData.kind !== "non_collaborative") {
+		if (initialData.kind === "collaborative") {
 			return;
 		}
 
@@ -932,7 +964,7 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 					isSyncDisabled={isSyncDisabled}
 					isSaveDebouncing={isSaveDebouncing}
 					nodeId={nodeId}
-					nonCollaborative={initialData.kind === "non_collaborative"}
+					nonCollaborative={initialData.kind !== "collaborative"}
 					sessionId={presenceStore.localSessionId}
 					toolbarPortalHost={toolbarPortalHost}
 					getCurrentText={getCurrentText}
@@ -958,7 +990,8 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 					)}
 				</div>
 			</div>
-			{commentsPortalHost &&
+			{target.kind === "saved" &&
+				commentsPortalHost &&
 				createPortal(
 					<FileEditorCommentsSidebar threadIds={commentThreadIds} canResolve={editable} />,
 					commentsPortalHost,
@@ -970,7 +1003,7 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 export type FileEditorPlainText_Props = {
 	ref?: Ref<Pick<FileEditor_Ref, "getPreviewSnapshot">>;
 	isActive?: boolean;
-	nodeId: app_convex_Id<"files_nodes">;
+	target: files_PendingTarget;
 	editable: boolean;
 	/**
 	 * The Monaco language id derived from the node's content type (`files_monaco_language_id_of_content_type`).
@@ -992,13 +1025,14 @@ export type FileEditorPlainText_Props = {
 	topStickyFloatingSlot?: React.ReactNode;
 	topViewZoneSlot?: React.ReactNode;
 	onPreviewSnapshotChange?: () => void;
+	onTargetChange?: (target: files_PendingTarget) => void;
 };
 
 export const FileEditorPlainText = memo(function FileEditorPlainText(props: FileEditorPlainText_Props) {
 	const {
 		ref,
 		isActive = true,
-		nodeId,
+		target,
 		editable,
 		monacoLanguageId,
 		nonCollaborative,
@@ -1011,11 +1045,24 @@ export const FileEditorPlainText = memo(function FileEditorPlainText(props: File
 		topStickyFloatingSlot,
 		topViewZoneSlot,
 		onPreviewSnapshotChange,
+		onTargetChange,
 	} = props;
 
 	const { membershipId } = AppTenantProvider.useContext();
 
 	const fileContentDataPromise = useMemo(() => {
+		if (target.kind === "private") {
+			return files_fetch_private_file_pending_text({ membershipId, target: { kind: "private", id: target.id } }).then(
+				(result): FileEditorPlainText_LoadedContent | null => {
+					if (result._nay) {
+						console.error("[FileEditorPlainText] Error while reading the proposed text", result._nay);
+						return null;
+					}
+					return { kind: "private", ...result._yay };
+				},
+			);
+		}
+		const nodeId = target.id;
 		// Wait for the route's exact document token before starting the three-part Yjs read. The
 		// route query often resolves one render after the file, and a token-free read cannot be used.
 		if (!nonCollaborative && !yjsLastSequenceId) {
@@ -1065,7 +1112,7 @@ export const FileEditorPlainText = memo(function FileEditorPlainText(props: File
 				};
 			},
 		);
-	}, [membershipId, nodeId, nonCollaborative, yjsLastSequenceId]);
+	}, [membershipId, target.kind, target.id, nonCollaborative, yjsLastSequenceId]);
 	const fileContentData = usePromiseValue(fileContentDataPromise);
 
 	// On a refused or missing read, do not mount the editor over a stand-in document.
@@ -1089,9 +1136,9 @@ export const FileEditorPlainText = memo(function FileEditorPlainText(props: File
 			key={
 				fileContentData.kind === "collaborative"
 					? `collaborative:${fileContentData.yjsLastSequenceId}`
-					: `non_collaborative:${nodeId}`
+					: `${target.kind}:${target.id}`
 			}
-			nodeId={nodeId}
+			target={target}
 			editable={editable}
 			rootKind={fileContentData.rootKind}
 			monacoLanguageId={monacoLanguageId}
@@ -1104,6 +1151,7 @@ export const FileEditorPlainText = memo(function FileEditorPlainText(props: File
 			topStickyFloatingSlot={topStickyFloatingSlot}
 			topViewZoneSlot={topViewZoneSlot}
 			onPreviewSnapshotChange={onPreviewSnapshotChange}
+			onTargetChange={onTargetChange}
 		/>
 	);
 });

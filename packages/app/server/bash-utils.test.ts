@@ -12,6 +12,7 @@ import {
 	bash_external_mounts_fan_out_db_files_path,
 	bash_resolve_db_files_shell_path,
 	bash_read_only_mount_error,
+	bash_parse_cp_mv_operands,
 	bash_DbFilesFs,
 	type bash_DbFilesRoots,
 } from "./bash-utils.ts";
@@ -246,5 +247,101 @@ describe("bash_read_only_mount_error", () => {
 		expect(message).toContain("rm:");
 		expect(message).toContain("/.plugins/media/dist/index.js");
 		expect(message).toContain("read-only mount of installed plugin sources");
+	});
+});
+
+describe("bash_parse_cp_mv_operands", () => {
+	test.each(["cp", "mv"] as const)("keeps the default %s conflict rule", (command) => {
+		expect(bash_parse_cp_mv_operands(command, ["source.txt", "copy.txt"])).toEqual({
+			operands: ["source.txt", "copy.txt"],
+			_yay: {
+				sources: [{ path: "source.txt", requiresFolder: false }],
+				destination: { path: "copy.txt", requiresFolder: false },
+				recursive: false,
+				conflictPolicy: command === "cp" ? "replace" : "error",
+				noTargetDirectory: false,
+			},
+		});
+	});
+
+	test.each(["-r", "-R", "--recursive"])("accepts recursive copy with %s", (flag) => {
+		expect(bash_parse_cp_mv_operands("cp", [flag, "folder", "copy"])._yay?.recursive).toBe(true);
+		expect(bash_parse_cp_mv_operands("mv", [flag, "folder", "copy"])._nay).toEqual({
+			message: `mv: unsupported option '${flag}'`,
+		});
+	});
+
+	test.each(["cp", "mv"] as const)("reads %s force and no-clobber flags in order", (command) => {
+		for (const flags of [["-fn"], ["-f", "-n"], ["--force", "--no-clobber"], ["-nfn"]]) {
+			expect(bash_parse_cp_mv_operands(command, [...flags, "source", "target"])._yay?.conflictPolicy).toBe("skip");
+		}
+		for (const flags of [["-nf"], ["-n", "-f"], ["--no-clobber", "--force"], ["-fnf"]]) {
+			expect(bash_parse_cp_mv_operands(command, [...flags, "source", "target"])._yay?.conflictPolicy).toBe("replace");
+		}
+	});
+
+	test("reads short clusters and options between operands", () => {
+		expect(bash_parse_cp_mv_operands("cp", ["-RfnT", "source", "--force", "target"])._yay).toMatchObject({
+			recursive: true,
+			conflictPolicy: "replace",
+			noTargetDirectory: true,
+		});
+	});
+
+	test.each(["cp", "mv"] as const)("keeps %s source order and requires a folder for multiple sources", (command) => {
+		expect(bash_parse_cp_mv_operands(command, ["b", "a", "b", "target"])._yay).toMatchObject({
+			sources: [
+				{ path: "b", requiresFolder: false },
+				{ path: "a", requiresFolder: false },
+				{ path: "b", requiresFolder: false },
+			],
+			destination: { path: "target", requiresFolder: true },
+		});
+	});
+
+	test.each(["-T", "--no-target-directory"])("requires exactly one source with %s", (flag) => {
+		expect(bash_parse_cp_mv_operands("cp", [flag, "a", "target"])._yay).toMatchObject({
+			noTargetDirectory: true,
+			destination: { path: "target", requiresFolder: false },
+		});
+		expect(bash_parse_cp_mv_operands("cp", [flag, "a", "b", "target"])._nay).toEqual({
+			message: "cp: -T requires exactly one source",
+		});
+	});
+
+	test("keeps trailing slashes before path normalization", () => {
+		expect(bash_parse_cp_mv_operands("cp", ["-R", "./src/", "dest//"])._yay).toMatchObject({
+			sources: [{ path: "./src/", requiresFolder: true }],
+			destination: { path: "dest//", requiresFolder: true },
+		});
+		expect(bash_parse_cp_mv_operands("mv", ["-Tf", "source/", "target/"])._yay).toMatchObject({
+			sources: [{ path: "source/", requiresFolder: true }],
+			destination: { path: "target/", requiresFolder: true },
+			noTargetDirectory: true,
+		});
+	});
+
+	test("keeps all words after -- as paths", () => {
+		expect(bash_parse_cp_mv_operands("cp", ["--", "-n/", "--"])._yay).toMatchObject({
+			sources: [{ path: "-n/", requiresFolder: true }],
+			destination: { path: "--", requiresFolder: false },
+			conflictPolicy: "replace",
+		});
+		expect(bash_parse_cp_mv_operands("mv", ["-", "target"]).operands).toEqual(["-", "target"]);
+	});
+
+	test.each(["--unknown", "--force=false", "-nfz", "-a"])("refuses %s and keeps every routing operand", (flag) => {
+		const parsed = bash_parse_cp_mv_operands("cp", ["/tmp/source", flag, "app-source", "target"]);
+		expect(parsed.operands).toEqual(["/tmp/source", "app-source", "target"]);
+		expect(parsed._yay).toBeUndefined();
+		expect(parsed._nay?.message).toContain("unsupported option");
+	});
+
+	test("requires source and destination operands", () => {
+		for (const args of [[], ["source"], ["-n"], ["-T", "source"]]) {
+			expect(bash_parse_cp_mv_operands("cp", args)._nay).toEqual({
+				message: "cp: expected at least one source and a destination",
+			});
+		}
 	});
 });

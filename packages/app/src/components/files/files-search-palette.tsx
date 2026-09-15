@@ -12,13 +12,12 @@ import { MyButton } from "@/components/my-button.tsx";
 import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
 import { MyModal, MyModalPopover } from "@/components/my-modal.tsx";
 import { MySpinner } from "@/components/my-spinner.tsx";
-import { useFilesSearchMetadata } from "@/hooks/files-search-hooks.ts";
+import { useFilesVisibleEntries, useFilesSearchMetadata } from "@/hooks/files-search-hooks.ts";
 import { useDebounce, useFn } from "@/hooks/utils-hooks.ts";
-import { app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
+import { app_convex_api } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
-import { FilesTreeProvider } from "@/lib/files-tree-context.tsx";
 import type { AppClassName } from "@/lib/dom-utils.ts";
-import { files_ROOT_ID, files_create_tree_items_list_from_nodes, files_is_node } from "@/lib/files.ts";
+import { files_ROOT_ID, type files_PendingTarget } from "@/lib/files.ts";
 import { detect_search_query_mode, search_filter_matches_item } from "@/lib/files-search.ts";
 import { app_local_storage_set_value } from "@/lib/storage.ts";
 import { cn } from "@/lib/utils.ts";
@@ -60,13 +59,18 @@ const FilesSearchPaletteContent = memo(function FilesSearchPaletteContent(props:
 	const inputRef = useRef<HTMLInputElement>(null);
 	const firstResultRef = useRef<HTMLButtonElement>(null);
 	const resultsRef = useRef<HTMLDivElement>(null);
-	const treeNodes = FilesTreeProvider.useContext();
+	const { entries, isFailed: isEntriesFailed } = useFilesVisibleEntries(membershipId, "/", "subtree");
 	const treeItems = useMemo(
-		() => (treeNodes ? files_create_tree_items_list_from_nodes(treeNodes) : undefined),
-		[treeNodes],
+		() =>
+			entries?.map((entry) => ({
+				...entry,
+				lowercaseExtension:
+					entry.kind === "file" ? (entry.name.split(".").slice(1).at(-1)?.toLowerCase() ?? null) : null,
+			})),
+		[entries],
 	);
 	const {
-		searchMetadataNodeIds,
+		searchMetadataTargetKeys,
 		isSearchLoading: isMetadataLoading,
 		isSearchFailed: isMetadataFailed,
 	} = useFilesSearchMetadata(membershipId, debouncedQuery, treeItems);
@@ -81,57 +85,71 @@ const FilesSearchPaletteContent = memo(function FilesSearchPaletteContent(props:
 		() =>
 			(treeItems ?? []).filter(
 				(item) =>
-					files_is_node(item) &&
-					item.archiveOperationId === null &&
 					!hasInvalidFilter &&
 					parsed.filters.every(
-						(filter) => search_filter_matches_item({ filter, item, metadataNodeIds: searchMetadataNodeIds }) === true,
+						(filter) =>
+							search_filter_matches_item({
+								filter,
+								item,
+								targetKey: `${item.target.kind}:${item.target.id}`,
+								metadataTargetKeys: searchMetadataTargetKeys,
+							}) === true,
 					),
 			),
-		[treeItems, hasInvalidFilter, parsed.filters, searchMetadataNodeIds],
+		[treeItems, hasInvalidFilter, parsed.filters, searchMetadataTargetKeys],
 	);
+
 	// Filter the content query before its page limit, including when no candidate matches.
-	const contentNodeIds = useMemo(
+	const contentTargets = useMemo(
 		() =>
 			hasFilters
-				? candidates
-						.filter(files_is_node)
-						.filter((item) => item.kind === "file")
-						.map((item) => item._id)
+				? candidates.filter((item) => item.kind === "file" && !item.preparing).map((item) => item.target)
 				: undefined,
 		[hasFilters, candidates],
 	);
+
 	const canSearchContent =
 		text.length >= 2 &&
 		text.length <= 200 &&
 		!hasInvalidFilter &&
 		!isMetadataLoading &&
 		!isMetadataFailed &&
+		!isEntriesFailed &&
+		textQuery.mode === "name" &&
 		treeItems !== undefined;
+
 	// Convex useQueries needs a stable object to avoid resubscribing during render.
 	const contentQueries = useMemo(() => {
 		if (!canSearchContent) return {};
+
 		// Broad filters can match more ids than one Convex argument array allows.
-		const nodeIdGroups =
-			contentNodeIds === undefined
+		const targetGroups =
+			contentTargets === undefined
 				? [undefined]
-				: Array.from({ length: Math.ceil(contentNodeIds.length / CONTENT_NODE_IDS_LIMIT) }, (_, index) =>
-						contentNodeIds.slice(index * CONTENT_NODE_IDS_LIMIT, (index + 1) * CONTENT_NODE_IDS_LIMIT),
+				: Array.from({ length: Math.ceil(contentTargets.length / CONTENT_NODE_IDS_LIMIT) }, (_, index) =>
+						contentTargets.slice(index * CONTENT_NODE_IDS_LIMIT, (index + 1) * CONTENT_NODE_IDS_LIMIT),
 					);
+
 		return Object.fromEntries(
-			nodeIdGroups.map((nodeIds, index) => [
+			targetGroups.map((targets, index) => [
 				index,
 				{
 					query: app_convex_api.files_nodes.search_content,
-					args: { membershipId, query: text, ...(nodeIds === undefined ? {} : { nodeIds }) },
+					args: { membershipId, query: text, ...(targets === undefined ? {} : { targets }) },
 				},
 			]),
 		);
-	}, [canSearchContent, membershipId, text, contentNodeIds]);
+	}, [canSearchContent, membershipId, text, contentTargets]);
+
 	const contentResponses: Array<
 		FunctionReturnType<typeof app_convex_api.files_nodes.search_content> | Error | undefined
 	> = Object.values(useQueries(contentQueries));
-	const isFailed = isMetadataFailed || contentResponses.some((response) => response instanceof Error);
+
+	const isFailed =
+		isEntriesFailed || isMetadataFailed || contentResponses.some((response) => response instanceof Error);
+	const isTruncated = contentResponses.some(
+		(response) => response !== undefined && !(response instanceof Error) && response.truncated,
+	);
 	const isLoading =
 		isActive &&
 		!isFailed &&
@@ -139,49 +157,62 @@ const FilesSearchPaletteContent = memo(function FilesSearchPaletteContent(props:
 			treeItems === undefined ||
 			isMetadataLoading ||
 			(canSearchContent && contentResponses.some((response) => response === undefined)));
+
 	const contentResults = contentResponses.flatMap((response) =>
 		response instanceof Error ? [] : (response?.results ?? []),
 	);
+
 	const resultsById = new Map<
-		app_convex_Id<"files_nodes">,
+		string,
 		{
-			nodeId: app_convex_Id<"files_nodes">;
+			target: files_PendingTarget;
 			path: string;
 			kind: "file" | "folder";
 			snippet?: string;
 			matchCount?: number;
 		}
 	>();
+
 	for (const item of candidates) {
-		if (!files_is_node(item)) continue;
 		const matchesText =
 			text.length === 0
 				? hasFilters
 				: textQuery.mode === "node"
-					? item._id === textQuery.value
-					: textQuery.mode === "path"
-						? item.path.toLowerCase().includes(textQuery.value)
-						: item.name.toLowerCase().includes(textQuery.value);
-		if (matchesText) resultsById.set(item._id, { nodeId: item._id, path: item.path, kind: item.kind });
+					? item.target.kind === "saved" && item.target.id === textQuery.value
+					: textQuery.mode === "private"
+						? item.target.kind === "private" && item.target.id === textQuery.value
+						: textQuery.mode === "path"
+							? item.path.toLowerCase().includes(textQuery.value)
+							: item.name.toLowerCase().includes(textQuery.value);
+
+		if (matchesText)
+			resultsById.set(`${item.target.kind}:${item.target.id}`, {
+				target: item.target,
+				path: item.path,
+				kind: item.kind,
+			});
 	}
+
 	for (const result of contentResults) {
-		resultsById.set(result.nodeId, {
+		resultsById.set(`${result.target.kind}:${result.target.id}`, {
 			...result,
 			kind: "file",
 			snippet: files_search_palette_snippet(result.textChunk, text),
 		});
 	}
+
 	const results =
 		isLoading || isFailed || hasInvalidFilter || !isActive ? [] : [...resultsById.values()].slice(0, RESULTS_LIMIT);
 
-	const handleSelectResult = useFn((nodeId: app_convex_Id<"files_nodes">) => {
+	const handleSelectResult = useFn((target: files_PendingTarget) => {
 		onClose();
 		navigate({
 			to: "/w/$organizationName/$workspaceName/files",
 			params: { organizationName, workspaceName },
-			search: (previous) => ({ q: previous.q, nodeId }),
+			search: (previous) =>
+				target.kind === "private" ? { q: previous.q, pendingNodeId: target.id } : { q: previous.q, nodeId: target.id },
 		}).catch((error) =>
-			console.error("[FilesSearchPalette.handleSelectResult] Failed to open file", { error, nodeId }),
+			console.error("[FilesSearchPalette.handleSelectResult] Failed to open file", { error, target }),
 		);
 	});
 
@@ -192,7 +223,7 @@ const FilesSearchPaletteContent = memo(function FilesSearchPaletteContent(props:
 		navigate({
 			to: "/w/$organizationName/$workspaceName/files",
 			params: { organizationName, workspaceName },
-			search: (previous) => ({ ...previous, nodeId: previous.nodeId ?? files_ROOT_ID, q }),
+			search: (previous) => ({ ...previous, nodeId: previous.nodeId ?? files_ROOT_ID, pendingNodeId: undefined, q }),
 		}).catch((error) => console.error("[FilesSearchPalette.handleUseFilters] Failed to open filtered tree", { error }));
 	});
 
@@ -212,7 +243,7 @@ const FilesSearchPaletteContent = memo(function FilesSearchPaletteContent(props:
 					onNavigateResults={() => firstResultRef.current?.focus()}
 					onSubmit={(query) => {
 						if (query !== debouncedQuery || isLoading) return false;
-						if (results[0]) handleSelectResult(results[0].nodeId);
+						if (results[0]) handleSelectResult(results[0].target);
 						return true;
 					}}
 				/>
@@ -244,12 +275,12 @@ const FilesSearchPaletteContent = memo(function FilesSearchPaletteContent(props:
 						</div>
 					) : (
 						results.map((result, index) => (
-							<div role="listitem" key={result.nodeId}>
+							<div role="listitem" key={`${result.target.kind}:${result.target.id}`}>
 								<Ariakit.CompositeItem
 									render={<MyButton variant="ghost-highlightable" />}
 									ref={index === 0 ? firstResultRef : undefined}
 									className={cn("FilesSearchPalette-item" satisfies FilesSearchPalette_ClassNames)}
-									onClick={() => handleSelectResult(result.nodeId)}
+									onClick={() => handleSelectResult(result.target)}
 									onKeyDown={(event) => {
 										if (index === 0 && event.key === "ArrowUp") {
 											event.preventDefault();
@@ -286,9 +317,11 @@ const FilesSearchPaletteContent = memo(function FilesSearchPaletteContent(props:
 			</Ariakit.CompositeProvider>
 			<div className={cn("FilesSearchPalette-footer" satisfies FilesSearchPalette_ClassNames)}>
 				<span>
-					{resultsById.size > RESULTS_LIMIT
-						? "First 50 results · Add a filter to narrow your search"
-						: "↑ ↓ Navigate · Enter Open · Esc Close"}
+					{isTruncated
+						? "More matches may be available · Add a filter to narrow your search"
+						: resultsById.size > RESULTS_LIMIT
+							? "First 50 results · Add a filter to narrow your search"
+							: "↑ ↓ Navigate · Enter Open · Esc Close"}
 				</span>
 				{hasFilters && !hasInvalidFilter ? (
 					<MyButton variant="ghost-highlightable" disabled={isLoading || isFailed} onClick={handleUseFilters}>

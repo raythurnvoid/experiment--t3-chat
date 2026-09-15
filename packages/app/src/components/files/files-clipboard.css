@@ -22,13 +22,19 @@
 		flex-wrap: wrap;
 	}
 
-	.FilesTransferRunModal-conflicts {
+	.FilesTransferRunModal-items {
 		display: grid;
 		gap: 12px;
 		padding-block: 12px;
 	}
 
-	.FilesTransferRunModal-conflict {
+	.FilesTransferRunModal-defaults {
+		display: grid;
+		gap: 12px;
+		padding-block: 12px;
+	}
+
+	.FilesTransferRunModal-item {
 		min-width: 0;
 		padding: 12px;
 		border: 1px solid var(--color-fg-04);
@@ -50,6 +56,14 @@
 
 	.FilesTransferRunModal-error {
 		color: var(--color-red-11);
+	}
+
+	.FilesTransferRunModal-pages {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		flex-wrap: wrap;
+		gap: 8px;
 	}
 	/* #endregion run modal */
 }

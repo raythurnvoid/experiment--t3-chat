@@ -1,5 +1,5 @@
 @layer components {
-	/* #region route */
+	/* #region root */
 	.RouteFilesPath {
 		display: flex;
 		align-items: center;
@@ -17,7 +17,7 @@
 		line-height: 1.25rem;
 		color: var(--color-fg-07);
 	}
-	/* #endregion route */
+	/* #endregion root */
 
 	/* #region not found */
 	.RouteFilesPathNotFound {

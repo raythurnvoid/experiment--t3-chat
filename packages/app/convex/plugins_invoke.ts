@@ -6,7 +6,7 @@
 // endpoint, and the member's live membership in one transaction, because any of them can change
 // between the token check and the run.
 //
-// The run doc created there is also the endpoint's serialization lock, and the per-run `plr_`
+// The Activity created there is the endpoint's serialization lock, and the per-run `plr_`
 // token minted here is what the plugin uses to call back into `/api/v1/*` while it runs.
 
 import { z } from "zod";
@@ -273,8 +273,7 @@ export async function plugins_invoke_http_invoke(
 			headers: { "Cache-Control": "no-store", "Content-Type": "application/json" },
 		} as const;
 	} catch (error) {
-		// A network error — or our own timeout aborting the fetch — still settles the run as
-		// failed, which also frees the serialization lock.
+		// A network error or our timeout settles the Activity and frees the serialization lock.
 		const timedOut = error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError");
 		console.error("Plugin invoke run threw", {
 			runId,
@@ -283,7 +282,7 @@ export async function plugins_invoke_http_invoke(
 		await ctx.runMutation(internal.plugins_runtime.finish_event_run, {
 			runId,
 			outcome: {
-				kind: "failed",
+				kind: timedOut ? "timed_out" : "failed",
 				errorMessage: timedOut ? "Plugin runner request timed out" : "Plugin runner request failed",
 			},
 		});

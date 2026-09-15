@@ -61,17 +61,15 @@ import {
 	ai_chat_WRITE_TOOL_NAMES,
 } from "../server/server-ai-tools.ts";
 import { r2_create_asset_key, r2_db_finalize_generated_image_asset, r2_put_object } from "./r2_client.ts";
-import app_convex_schema from "./schema.ts";
+import app_convex_schema, { files_pending_target_validator } from "./schema.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 import { billing_event } from "../server/billing.ts";
 import { billing_ingest_events } from "./billing_db.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import type { Doc, Id } from "./_generated/dataModel";
 import { ai_chat_context_ENABLED } from "./ai_chat_context.ts";
-import {
-	ai_chat_context_create,
-	type ai_chat_context_Context,
-} from "../server/ai-chat-context.ts";
+import { ai_chat_files_db_get_invocation_membership } from "./ai_chat_files.ts";
+import { ai_chat_context_create, type ai_chat_context_Context } from "../server/ai-chat-context.ts";
 import {
 	ai_chat_message_fits_storage,
 	ai_chat_tool_budget_apply,
@@ -163,7 +161,7 @@ function ai_chat_system_prompt(args: {
 		"Only summarize actual Bash stdout/stderr. The blank line between the shell prompt and output is transcript formatting, not file content. If stdout is empty or a command failed, say that instead of inferring likely filesystem contents.",
 		"Bash app-file writes and `edit_file` create pending review changes for the user to apply; your own later reads see them as already applied. On a file with collaboration off, a member save makes your older pending change stale. Reads then show saved text. Your next edit or shell write automatically prepares the proposal before reading fresh text. It keeps earlier proposed work and unrelated saved text. A full overwrite deliberately replaces the proposed text.",
 		"For an interactive HTML brief, create one complete `.html` document with a doctype, head, viewport, body, inline CSS, and regular JavaScript.",
-		"Use `<script type=\"module\">` for pinned HTTPS esm.sh imports such as `https://esm.sh/d3@7.9.0`; static imports, dynamic imports, and native top-level await work in module scripts.",
+		'Use `<script type="module">` for pinned HTTPS esm.sh imports such as `https://esm.sh/d3@7.9.0`; static imports, dynamic imports, and native top-level await work in module scripts.',
 		"Supply every style and variable the HTML needs; no app CSS, Tailwind classes, React/JSX, Node modules, or local asset imports are provided.",
 		"Keep HTML data in the document and state in memory; do not use storage, arbitrary APIs, form submission, workers, popups, or private data in request URLs.",
 		"Show loading and error UI for asynchronous library work, use accessible controls, and make the HTML fit the preview width.",
@@ -172,7 +170,7 @@ function ai_chat_system_prompt(args: {
 		// model cannot keep. `edit_file` is named above as a description, not as an instruction.
 		...(args.canWriteFiles
 			? [
-					"Use `set_file_metadata` to set or remove keys in the flat key-value metadata stored next to a file. It works on every file kind, uploads included, it applies right away with nothing for the user to accept, and it does not change the file's content. Read it back with `meta get <file>`, find files that have a key with `meta search --where '{\"exists\":\"metadata.<key>\"}'`, and files with a key and a value with `meta search --where '{\"eq\":[\"metadata.<key>\",\"<value>\"]}'`.",
+					'Use `set_file_metadata` to set or remove keys in the flat key-value metadata stored next to a file. It works on every file kind, uploads included, it applies right away with nothing for the user to accept, and it does not change the file\'s content. Read it back with `meta get <file>`, find files that have a key with `meta search --where \'{"exists":"metadata.<key>"}\'`, and files with a key and a value with `meta search --where \'{"eq":["metadata.<key>","<value>"]}\'`.',
 				]
 			: []),
 		"Use tools to clarify uncertain reads, searches, and path lookups instead of inventing content or paths.",
@@ -561,8 +559,10 @@ export const set_thread_state = internalMutation({
 		workspaceId: v.string(),
 		threadId: v.id("ai_chat_threads"),
 		userId: v.id("users"),
+		invocationId: v.id("ai_chat_bash_invocations"),
 		patch: v.object({
 			bashCwd: v.optional(v.string()),
+			bashCwdTarget: v.optional(v.union(files_pending_target_validator, v.null())),
 		}),
 	},
 	returns: doc(app_convex_schema, "ai_chat_threads_state"),
@@ -580,6 +580,16 @@ export const set_thread_state = internalMutation({
 			});
 		}
 
+		// Membership removal also fences calls that finish after the member rejoins.
+		const invocation = await ctx.db.get("ai_chat_bash_invocations", args.invocationId);
+		if (
+			!invocation ||
+			invocation.threadId !== thread._id ||
+			invocation.userId !== args.userId ||
+			!(await ai_chat_files_db_get_invocation_membership(ctx, invocation))
+		)
+			throw convex_error({ message: "Unauthorized" });
+
 		// Keep this table for low-churn per-thread agent state, not user-authored chat content.
 		const state = await ctx.db.get("ai_chat_threads_state", thread.stateId);
 		if (
@@ -596,6 +606,11 @@ export const set_thread_state = internalMutation({
 
 		const patch = {
 			...(args.patch.bashCwd !== undefined ? { bashCwd: args.patch.bashCwd } : {}),
+			...(args.patch.bashCwdTarget !== undefined
+				? { bashCwdTarget: args.patch.bashCwdTarget }
+				: args.patch.bashCwd !== undefined
+					? { bashCwdTarget: null }
+					: {}),
 			updatedBy: args.userId,
 			updatedAt: Date.now(),
 		};
@@ -793,6 +808,7 @@ export const thread_create = mutation({
 			workspaceId: membership.workspaceId,
 			threadId,
 			bashCwd: "~",
+			bashCwdTarget: null,
 			updatedBy: userAuth.id,
 			updatedAt: now,
 		});
@@ -974,6 +990,7 @@ export const thread_branch = mutation({
 			// `"~"` is the folder a brand-new thread starts in. Using it makes a branch without scratch
 			// access look like a fresh thread instead of a half-copied one.
 			bashCwd: canReadSourceScratch ? sourceState.bashCwd : "~",
+			bashCwdTarget: canReadSourceScratch ? sourceState.bashCwdTarget : null,
 			updatedBy: userAuth.id,
 			updatedAt: now,
 		});
@@ -1746,7 +1763,10 @@ export async function ai_chat_http_chat(ctx: ActionCtx, request: Request) {
 		// a remote URL must never be forwarded to the model provider.
 		for (const requestMessage of requestMessages) {
 			if (!ai_chat_message_fits_storage(requestMessage)) {
-				return { status: 400, body: { message: "Message is too large to store. Start a new message with less content." } } as const;
+				return {
+					status: 400,
+					body: { message: "Message is too large to store. Start a new message with less content." },
+				} as const;
 			}
 			const fileParts = requestMessage.parts.filter((part) => part.type === "file");
 			const totalUrlChars = fileParts.reduce((total, part) => total + part.url.length, 0);
@@ -2008,10 +2028,11 @@ export async function ai_chat_http_chat(ctx: ActionCtx, request: Request) {
 					system: `${systemPrompt}\n${workspaceSystem}`,
 					prepareStep: ({ stepNumber }) => {
 						// Leave a model step to explain tool results and any unfinished work.
-						if (stepNumber === 9 || toolBudget.exhausted) return {
-							activeTools: [],
-							system: `${systemPrompt}\n${workspaceSystem}\nThis is the last step. Give the result and any remaining checkpoint. Do not claim unfinished work is complete.`,
-						};
+						if (stepNumber === 9 || toolBudget.exhausted)
+							return {
+								activeTools: [],
+								system: `${systemPrompt}\n${workspaceSystem}\nThis is the last step. Give the result and any remaining checkpoint. Do not claim unfinished work is complete.`,
+							};
 					},
 					messages: modelMessages,
 					maxOutputTokens: 2000,
@@ -2243,7 +2264,8 @@ export async function ai_chat_http_chat(ctx: ActionCtx, request: Request) {
 				}
 
 				if (!ai_chat_message_fits_storage(result.responseMessage)) {
-					responseStorageError = "This reply is too large and was not saved. Start a new message and ask for a shorter result or smaller file pages. Any file changes already made still need review.";
+					responseStorageError =
+						"This reply is too large and was not saved. Start a new message and ask for a shorter result or smaller file pages. Any file changes already made still need review.";
 					return;
 				}
 
@@ -2313,12 +2335,14 @@ export async function ai_chat_http_chat(ctx: ActionCtx, request: Request) {
 
 		return {
 			status: 200,
-			body: stream.pipeThrough(new TransformStream<InferUIMessageChunk<ai_chat_UiMessage>, InferUIMessageChunk<ai_chat_UiMessage>>({
-				// SDK onFinish runs during flush. Send its storage refusal before the stream closes.
-				flush(controller) {
-					if (responseStorageError) controller.enqueue({ type: "error", errorText: responseStorageError });
-				},
-			})),
+			body: stream.pipeThrough(
+				new TransformStream<InferUIMessageChunk<ai_chat_UiMessage>, InferUIMessageChunk<ai_chat_UiMessage>>({
+					// SDK onFinish runs during flush. Send its storage refusal before the stream closes.
+					flush(controller) {
+						if (responseStorageError) controller.enqueue({ type: "error", errorText: responseStorageError });
+					},
+				}),
+			),
 		} as const;
 	} catch (error) {
 		const errorMessage = "AI chat stream error";
@@ -2810,17 +2834,22 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				const message = {
 					id: "historical_message",
 					role: "assistant",
-					parts: [{
-						type: `tool-${toolName}`,
-						toolCallId: "historical_call",
-						state: "output-available",
-						input: { path: "/old-file.md" },
-						output,
-					}],
+					parts: [
+						{
+							type: `tool-${toolName}`,
+							toolCallId: "historical_call",
+							state: "output-available",
+							input: { path: "/old-file.md" },
+							output,
+						},
+					],
 				} as unknown as ai_chat_UiMessage;
 
 				expect(configuration.tools).not.toHaveProperty(toolName);
-				const validated = await validateUIMessages<ai_chat_UiMessage>({ messages: [message], tools: configuration.validationTools });
+				const validated = await validateUIMessages<ai_chat_UiMessage>({
+					messages: [message],
+					tools: configuration.validationTools,
+				});
 				const replay = await convertToModelMessages(validated, { tools: configuration.validationTools });
 				expect(replay[1]).toMatchObject({
 					role: "tool",

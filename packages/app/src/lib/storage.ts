@@ -107,7 +107,7 @@ const storage_local_schema = {
 		},
 		serialize: (value) => JSON.stringify(value),
 		defaultValue: [],
-		equals: objects_equal_deep,
+		equals: (left, right) => left === right || (left !== null && right !== null && objects_equal_deep(left, right)),
 	}),
 
 	"app_state::sidebar::main_app_open": define_field<"app_state::sidebar::main_app_open", boolean>({
@@ -163,13 +163,26 @@ const storage_local_schema = {
 		equals: (left, right) => left === right || (left != null && right != null && objects_equal_deep(left, right)),
 	}),
 
-	"app_state::files_last_open::scope::${membershipId}": define_field<
-		`app_state::files_last_open::scope::${string}`,
-		string | null
+	"app_state::files_last_open_target::scope::${membershipId}": define_field<
+		`app_state::files_last_open_target::scope::${string}`,
+		{ kind: "root" } | { kind: "saved"; id: string } | { kind: "private"; id: string } | null
 	>({
-		parse: (value) => value,
-		serialize: (value) => value,
+		parse: (raw) => {
+			try {
+				const value: unknown = JSON.parse(raw ?? "null");
+				if (typeof value !== "object" || value === null || !("kind" in value)) return null;
+				if (value.kind === "root") return { kind: "root" };
+				if (!("id" in value) || typeof value.id !== "string" || value.id.length === 0) return null;
+				if (value.kind === "saved") return { kind: "saved", id: value.id };
+				if (value.kind === "private") return { kind: "private", id: value.id };
+				return null;
+			} catch {
+				return null;
+			}
+		},
+		serialize: (value) => (value === null ? null : JSON.stringify(value)),
 		defaultValue: null,
+		equals: (left, right) => left === right || (left != null && right != null && objects_equal_deep(left, right)),
 	}),
 
 	"app_state::ai_chat_last_open::scope::${membershipId}": define_field<
@@ -457,9 +470,7 @@ export function app_local_storage_get_value<K extends storage_local_Key>(key: K)
 
 export function app_local_storage_set_value<K extends storage_local_Key>(
 	key: K,
-	value:
-		| GetStorageValueFromKey<K>
-		| ((previousValue: GetStorageValueFromKey<K>) => GetStorageValueFromKey<K>),
+	value: GetStorageValueFromKey<K> | ((previousValue: GetStorageValueFromKey<K>) => GetStorageValueFromKey<K>),
 ) {
 	const definition = get_local_storage_field_definition_from_key(key);
 	if (!definition) {
@@ -517,9 +528,7 @@ export function useAppLocalStorageStateValue<K extends storage_local_Key>(key: K
 
 	const setValue = useFn(
 		(
-			nextValue:
-				| GetStorageValueFromKey<K>
-				| ((previousValue: GetStorageValueFromKey<K>) => GetStorageValueFromKey<K>),
+			nextValue: GetStorageValueFromKey<K> | ((previousValue: GetStorageValueFromKey<K>) => GetStorageValueFromKey<K>),
 		) => {
 			app_local_storage_set_value(key, nextValue);
 		},
@@ -528,9 +537,7 @@ export function useAppLocalStorageStateValue<K extends storage_local_Key>(key: K
 	return [value, setValue] as unknown as [
 		GetStorageValueFromKey<K>,
 		(
-			nextValue:
-				| GetStorageValueFromKey<K>
-				| ((previousValue: GetStorageValueFromKey<K>) => GetStorageValueFromKey<K>),
+			nextValue: GetStorageValueFromKey<K> | ((previousValue: GetStorageValueFromKey<K>) => GetStorageValueFromKey<K>),
 		) => void,
 	];
 }

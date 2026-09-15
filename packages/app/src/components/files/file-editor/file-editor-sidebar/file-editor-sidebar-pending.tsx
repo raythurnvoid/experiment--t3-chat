@@ -3,9 +3,11 @@ import { CheckCheck, ChevronDown, ChevronRight, Trash2 } from "lucide-react";
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import { createPatch } from "diff";
 import { measureLineStats, prepareWithSegments } from "@chenglou/pretext";
-import { useConvex, useQueries, useQuery } from "convex/react";
+import { usePaginatedQuery, useQueries, useQuery } from "convex/react";
+import type { FunctionReturnType } from "convex/server";
 import { toast } from "sonner";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
+import { AppActivitiesProvider } from "@/lib/app-activities-context.tsx";
 import { app_convex_api, type app_convex_Doc, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { FilesTreeProvider } from "@/lib/files-tree-context.tsx";
 import { useFn } from "@/hooks/utils-hooks.ts";
@@ -42,33 +44,33 @@ import {
 	files_pending_update_content_is_stale,
 	files_pending_update_has_content,
 	files_PENDING_UPDATE_STALE_BASE_MESSAGE,
-	files_upsert_file_pending_update,
 	type files_YjsRootKind,
 	type files_VisibleTreeNode,
 } from "@/lib/files.ts";
 import { files_yjs_doc_create_from_array_buffer_update } from "../../../../../shared/files-yjs.ts";
 import { files_yjs_doc_get_text } from "../../../../../shared/files-tiptap.ts";
-import { async_all_settled_with_limit, delay } from "@/lib/async.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 import { APP_FONT_FAMILY } from "@/lib/ui.tsx";
 import { cn } from "@/lib/utils.ts";
+import { useGlobalCustomEvent } from "@/lib/global-event.tsx";
 
 // Keep these Pretext metrics in sync with `.FileEditorSidebarPending-item-path-text`;
 // duplicating them here avoids `getComputedStyle` during path resize work.
 const PENDING_PATH_FONT = `500 16px ${APP_FONT_FAMILY}`;
 const PENDING_PATH_LETTER_SPACING = 0;
 
-const PENDING_MISSING_PATH_LABEL = "(unknown file)";
+const PENDING_ACCEPT_ALL_SKIPS_REVIEW_MESSAGE = "Changes waiting for review are skipped. Open Review to update them.";
 
-// "Stale save" is the only benign `_nay` literal: the server returns it before any write when a
-// Save's read went stale (another tab, the agent). The pending update doc survives and the
-// reactive queries show the truth, so it is not a failure.
-const PENDING_BENIGN_NAY_MESSAGES = new Set(["Stale save"]);
+type FileEditorSidebarPendingView = FunctionReturnType<
+	typeof app_convex_api.files_pending_updates.list_files_pending_updates
+>["page"][number];
 
 type FileEditorSidebarPendingRow = {
 	pendingUpdate: app_convex_Doc<"files_pending_updates">;
 	path: string;
-	kind: "content" | "move" | "copy" | "replacement" | "content_and_move" | "delete";
+	kind: "content" | "move" | "copy" | "replacement" | "content_and_move" | "delete" | "added";
+	readiness: "preparing" | "ready";
+	canAccept: boolean;
 	moveDestinationPath: string | undefined;
 	/**
 	 * Id of the active node that accepting this move will replace (soft-archive, like `mv -f`):
@@ -88,7 +90,7 @@ type FileEditorSidebarPendingRow = {
 	canPreviewDeleteDiff: boolean;
 	/** True when this pending row belongs to a folder node. */
 	isFolder: boolean;
-	/** True when the proposal created the file (write_file/cp onto a new path): shown as Added. */
+	/** Private files and folders are shown as Added until publication. */
 	isAddedFile: boolean;
 	/**
 	 * True when the file node is archived. Accept still applies the content — the file stays
@@ -96,8 +98,7 @@ type FileEditorSidebarPendingRow = {
 	 */
 	isArchived: boolean;
 	/**
-	 * The file node's document shape from `list_tree` (the node owns the shape, never the
-	 * proposal). `null` when the node is missing from the tree; content decode then refuses.
+	 * Saved nodes own their text shape. Private drafts use their captured creation intent.
 	 */
 	rootKind: files_YjsRootKind | null;
 	/**
@@ -107,29 +108,25 @@ type FileEditorSidebarPendingRow = {
 };
 
 /**
- * Pair each pending update with its file path and sort by path (the list query returns pending
- * update docs in creation order). Rows whose file node is missing from `list_tree` keep a
- * fallback label so the user can still discard them. The row `kind` is derived from field
- * presence: `pendingMove` marks a move (plus content when the doc carries a content proposal, in
- * either collaboration mode), `copiedFrom` marks a copy.
+ * Use the owner query's paths and draft state. The saved tree supplies live replacement captions.
  */
 function build_pending_rows(
-	pendingUpdates: readonly app_convex_Doc<"files_pending_updates">[],
+	views: readonly Extract<FileEditorSidebarPendingView, { kind: "entry" }>[],
 	nodesById: Map<
 		app_convex_Id<"files_nodes">,
 		Omit<app_convex_Doc<"files_nodes">, "writePolicyScopeNodeId" | "writePolicy">
 	>,
 ): FileEditorSidebarPendingRow[] {
+	const pendingUpdates = views.flatMap((view) => (view.entry.pendingUpdate ? [view.entry.pendingUpdate] : []));
 	// Active nodes keyed by path, to spot the occupant a pending move's accept would replace.
 	const activeNodesByPath = new Map(
 		Array.from(nodesById.values())
 			.filter((node) => node.archiveOperationId === null)
 			.map((node) => [node.path, node] as const),
 	);
-	// Files this user's own pending move will vacate: accept forces their move first,
-	// so they are never left at a destination to replace.
+	// The server requires these moves in the same reviewed unit, so they are not replacements.
 	const movingNodeIds = new Set(
-		pendingUpdates.filter((update) => update.pendingMove != null).map((update) => update.fileNodeId),
+		pendingUpdates.filter((update) => update.pendingMove != null).map((update) => update.target.id),
 	);
 	// Folders that count as non-empty: a folder occupant is only replaced when it is empty
 	// (rename() semantics), so a non-empty one gets no "Replaced" caption. Accept-time
@@ -141,42 +138,46 @@ function build_pending_rows(
 			.map((node) => node.parentId),
 	);
 	for (const update of pendingUpdates) {
-		if (update.pendingMove) {
-			parentIdsWithActiveChildren.add(update.pendingMove.destParentId);
+		if (update.pendingMove?.destParent.kind === "saved") {
+			parentIdsWithActiveChildren.add(update.pendingMove.destParent.id);
 		}
 	}
+	for (const { entry } of views) {
+		if (entry.kind === "private" && entry.node.parent.kind === "saved")
+			parentIdsWithActiveChildren.add(entry.node.parent.id);
+	}
 
-	return pendingUpdates
-		.map((pendingUpdate) => {
-			const node = nodesById.get(pendingUpdate.fileNodeId);
+	return views
+		.flatMap(({ entry, readiness, canAccept }): FileEditorSidebarPendingRow[] => {
+			const pendingUpdate = entry.pendingUpdate;
+			if (!pendingUpdate) return [];
+			const node = entry.kind === "saved" ? entry.node : null;
 			const { pendingMove, copiedFrom, pendingArchive, pendingReplacement } = pendingUpdate;
 
 			// A pending delete supersedes every other aspect of the doc (the upsert already
 			// clears pendingMove; content branches survive but accept ignores them). A whole-file
 			// copy (`cp` onto an app file) is reviewed as a whole: it has no text branches, and a
-			// move on the same doc is applied first when it is accepted.
-			const kind = pendingArchive
-				? ("delete" as const)
-				: pendingReplacement
-					? ("replacement" as const)
-					: pendingMove
-						? files_pending_update_has_content(pendingUpdate)
-							? ("content_and_move" as const)
-							: ("move" as const)
-						: copiedFrom
-							? ("copy" as const)
-							: ("content" as const);
+			// move on the same doc is saved in the same transaction.
+			const kind =
+				entry.kind === "private" && (!files_pending_update_has_content(pendingUpdate) || readiness === "preparing")
+					? ("added" as const)
+					: pendingArchive
+						? ("delete" as const)
+						: pendingReplacement
+							? ("replacement" as const)
+							: pendingMove
+								? files_pending_update_has_content(pendingUpdate)
+									? ("content_and_move" as const)
+									: ("move" as const)
+								: copiedFrom
+									? ("copy" as const)
+									: ("content" as const);
 
 			let moveDestinationPath: string | undefined;
 			let replacedNodeId: app_convex_Id<"files_nodes"> | undefined;
 			let sizeOnlyReplacedNodeId: app_convex_Id<"files_nodes"> | undefined;
 			if (pendingMove) {
-				if (pendingMove.destParentId === files_ROOT_ID) {
-					moveDestinationPath = `/${pendingMove.destName}`;
-				} else {
-					const destParent = nodesById.get(pendingMove.destParentId);
-					moveDestinationPath = destParent ? `${destParent.path}/${pendingMove.destName}` : `…/${pendingMove.destName}`;
-				}
+				moveDestinationPath = entry.path;
 
 				// Accepting replaces (soft-archives) whichever node occupies the destination path at
 				// that moment, so the caption only trusts live path occupancy — a declared `mv -f`
@@ -195,7 +196,7 @@ function build_pending_rows(
 				if (
 					replacedNode &&
 					replaceKindsMatch &&
-					replacedNode._id !== pendingUpdate.fileNodeId &&
+					replacedNode._id !== pendingUpdate.target.id &&
 					!movingNodeIds.has(replacedNode._id)
 				) {
 					replacedNodeId = replacedNode._id;
@@ -209,25 +210,36 @@ function build_pending_rows(
 				}
 			}
 
-			return {
-				pendingUpdate,
-				path: node?.path ?? pendingArchive?.fromPath ?? pendingMove?.fromPath ?? PENDING_MISSING_PATH_LABEL,
-				kind,
-				moveDestinationPath,
-				replacedNodeId,
-				sizeOnlyReplacedNodeId,
-				canPreviewDeleteDiff: kind === "delete" && files_node_has_editable_yjs_state(node),
-				isFolder: node?.kind === "folder",
-				isAddedFile: pendingUpdate.eagerCreated != null,
-				isArchived: node != null && node.archiveOperationId !== null,
-				// A file with collaboration off keeps its shape too; its branches decode the same way.
-				rootKind: files_node_has_editable_text_content(node) ? node.textKind : null,
-				// Accepting a delete ignores the content branches, so stale content does not block it.
-				isStale:
-					kind !== "delete" &&
-					(pendingUpdate.contentNeedsRebase === true ||
-						(node != null && files_pending_update_content_is_stale(pendingUpdate, node))),
-			};
+			return [
+				{
+					pendingUpdate,
+					path: node?.path ?? entry.path,
+					kind,
+					readiness,
+					canAccept,
+					moveDestinationPath,
+					replacedNodeId,
+					sizeOnlyReplacedNodeId,
+					canPreviewDeleteDiff: kind === "delete" && files_node_has_editable_yjs_state(node),
+					isFolder: entry.node.kind === "folder",
+					isAddedFile: entry.kind === "private",
+					isArchived: node != null && node.archiveOperationId !== null,
+					// A file with collaboration off keeps its shape too; its branches decode the same way.
+					rootKind:
+						entry.kind === "private"
+							? pendingUpdate.createIntent?.kind === "text"
+								? pendingUpdate.createIntent.textKind
+								: null
+							: files_node_has_editable_text_content(node)
+								? node.textKind
+								: null,
+					// Accepting a delete ignores the content branches, so stale content does not block it.
+					isStale:
+						kind !== "delete" &&
+						(pendingUpdate.contentNeedsRebase === true ||
+							(node != null && files_pending_update_content_is_stale(pendingUpdate, node))),
+				},
+			];
 		})
 		.sort((left, right) => left.path.localeCompare(right.path));
 }
@@ -326,6 +338,9 @@ async function decode_staged_unstaged(args: {
 }) {
 	const { membershipId, pendingUpdate } = args;
 	const rootKind = pendingUpdate.contentRebaseRootKind ?? args.rootKind;
+	if (pendingUpdate.preparation) {
+		return Result({ _nay: { message: "This file is still being prepared" } });
+	}
 	if (!files_pending_update_has_content(pendingUpdate)) {
 		return Result({ _nay: { message: "Pending update has no content to decode" } });
 	}
@@ -336,377 +351,30 @@ async function decode_staged_unstaged(args: {
 	const [stagedBytes, unstagedBytes] = await Promise.all([
 		files_fetch_file_pending_update_yjs_state({
 			membershipId,
-			nodeId: pendingUpdate.fileNodeId,
-			stateId: pendingUpdate.stagedStateId,
+			target: pendingUpdate.target,
+			stateId: pendingUpdate.content.stagedStateId,
 		}),
 		files_fetch_file_pending_update_yjs_state({
 			membershipId,
-			nodeId: pendingUpdate.fileNodeId,
-			stateId: pendingUpdate.unstagedStateId,
+			target: pendingUpdate.target,
+			stateId: pendingUpdate.content.unstagedStateId,
 		}),
 	]);
 	if (stagedBytes._nay) return stagedBytes;
 	if (unstagedBytes._nay) return unstagedBytes;
 
 	const stagedYjsDoc = files_yjs_doc_create_from_array_buffer_update(stagedBytes._yay);
-	const stagedText = files_yjs_doc_get_text({ yjsDoc: stagedYjsDoc, rootKind });
-	if (stagedText._nay) return stagedText;
-
 	const unstagedYjsDoc = files_yjs_doc_create_from_array_buffer_update(unstagedBytes._yay);
-	const unstagedText = files_yjs_doc_get_text({ yjsDoc: unstagedYjsDoc, rootKind });
-	if (unstagedText._nay) return unstagedText;
-
-	return Result({ _yay: { stagedText: stagedText._yay, unstagedText: unstagedText._yay } });
-}
-
-async function files_pending_accept_and_save(
-	convex: ReturnType<typeof useConvex>,
-	membershipId: app_convex_Id<"organizations_workspaces_users">,
-	pendingUpdate: app_convex_Doc<"files_pending_updates">,
-	rootKind: files_YjsRootKind | null,
-) {
-	// Accept refuses visibly on any decode `_nay` and never falls through to a decoded "":
-	// publishing a fabricated empty text would commit empty over the user's content.
-	const decoded = await decode_staged_unstaged({ membershipId, pendingUpdate, rootKind });
-	if (decoded._nay) return decoded;
-
-	const upserted = await files_upsert_file_pending_update({
-		membershipId,
-		nodeId: pendingUpdate.fileNodeId,
-		pendingUpdateId: pendingUpdate._id,
-		// Anchor the publish to the version this click reviewed: if the proposal was revised
-		// between the decode above and the server commit, the server refuses instead of
-		// silently publishing over the revision.
-		reviewedUpdatedAt: pendingUpdate.updatedAt,
-		stagedText: decoded._yay.unstagedText,
-		unstagedText: decoded._yay.unstagedText,
-	});
-	if (upserted._nay) return upserted;
-
-	const acceptedPendingUpdate = upserted._yay.pendingUpdate;
-	if (!files_pending_update_has_content(acceptedPendingUpdate)) return Result({ _yay: null });
-
-	return await convex.action(app_convex_api.files_pending_updates.save_file_pending_update, {
-		membershipId,
-		nodeId: pendingUpdate.fileNodeId,
-		pendingUpdateId: acceptedPendingUpdate._id,
-		reviewedUpdatedAt: acceptedPendingUpdate.updatedAt,
-	});
-}
-
-async function files_pending_discard(
-	convex: ReturnType<typeof useConvex>,
-	membershipId: app_convex_Id<"organizations_workspaces_users">,
-	pendingUpdate: app_convex_Doc<"files_pending_updates">,
-) {
-	return await convex.mutation(app_convex_api.files_pending_updates.discard_file_pending_content, {
-		membershipId,
-		nodeId: pendingUpdate.fileNodeId,
-		pendingUpdateId: pendingUpdate._id,
-	});
-}
-
-/**
- * Accept a pending update doc per its kind: move-only → apply the move; content-only/copy → the
- * existing accept-and-save path; content-plus-move → apply the move first, then accept-and-save
- * the content.
- */
-async function files_pending_row_accept(
-	convex: ReturnType<typeof useConvex>,
-	membershipId: app_convex_Id<"organizations_workspaces_users">,
-	pendingUpdate: app_convex_Doc<"files_pending_updates">,
-	rootKind: files_YjsRootKind | null,
-) {
-	// A delete row never falls through: accept archives the node (a folder with its whole
-	// subtree) and ignores any content branches left on the doc.
-	if (pendingUpdate.pendingArchive) {
-		return await convex.mutation(app_convex_api.files_pending_updates.apply_file_pending_archive, {
-			membershipId,
-			nodeId: pendingUpdate.fileNodeId,
-		});
+	try {
+		const stagedText = files_yjs_doc_get_text({ yjsDoc: stagedYjsDoc, rootKind });
+		if (stagedText._nay) return stagedText;
+		const unstagedText = files_yjs_doc_get_text({ yjsDoc: unstagedYjsDoc, rootKind });
+		if (unstagedText._nay) return unstagedText;
+		return Result({ _yay: { stagedText: stagedText._yay, unstagedText: unstagedText._yay } });
+	} finally {
+		stagedYjsDoc.destroy();
+		unstagedYjsDoc.destroy();
 	}
-
-	if (pendingUpdate.contentNeedsRebase) {
-		return Result({ _nay: { message: files_PENDING_UPDATE_STALE_BASE_MESSAGE } });
-	}
-
-	let updatedPendingUpdate = pendingUpdate;
-	if (pendingUpdate.pendingMove) {
-		const moved = await convex.mutation(app_convex_api.files_pending_updates.apply_file_pending_move, {
-			membershipId,
-			nodeId: pendingUpdate.fileNodeId,
-		});
-		// A move `_nay` is a real conflict (missing or settled pending update docs resolve as
-		// no-op `_yay`), so a content-plus-move accept stops here instead of saving content
-		// onto a failed move.
-		if (moved._nay || (!files_pending_update_has_content(pendingUpdate) && !pendingUpdate.pendingReplacement)) {
-			return moved;
-		}
-		// Applying the move settled the structural aspect and bumped `updatedAt`, so the
-		// captured doc is stale: the content publish below anchors `reviewedUpdatedAt` on the
-		// version that exists now. A vanished doc means the row was settled elsewhere between
-		// the calls — that is a done row, not a failure.
-		const currentDoc = await convex.query(app_convex_api.files_pending_updates.get_file_pending_update, {
-			membershipId,
-			nodeId: pendingUpdate.fileNodeId,
-			pendingUpdateId: pendingUpdate._id,
-		});
-		if (!currentDoc) {
-			return Result({ _yay: null });
-		}
-		// The settle only clears `pendingMove` and bumps `updatedAt`; the content branches and
-		// replacement asset stay untouched. A different state id means the agent revised the
-		// proposal between the review and this click — publishing it would accept content the
-		// user never saw, so refuse like the reviewed-version guard does.
-		if (
-			currentDoc.baseStateId !== pendingUpdate.baseStateId ||
-			currentDoc.stagedStateId !== pendingUpdate.stagedStateId ||
-			currentDoc.unstagedStateId !== pendingUpdate.unstagedStateId ||
-			currentDoc.pendingReplacement?.assetId !== pendingUpdate.pendingReplacement?.assetId
-		) {
-			return Result({ _nay: { message: "Pending changes were revised, review the latest version" } });
-		}
-		updatedPendingUpdate = currentDoc;
-	}
-
-	// A whole-file copy is accepted as a whole. There are no hunks to stage.
-	if (updatedPendingUpdate.pendingReplacement) {
-		return await convex.action(app_convex_api.files_pending_updates.accept_file_pending_replacement, {
-			membershipId,
-			nodeId: updatedPendingUpdate.fileNodeId,
-			pendingUpdateId: updatedPendingUpdate._id,
-		});
-	}
-
-	return await files_pending_accept_and_save(convex, membershipId, updatedPendingUpdate, rootKind);
-}
-
-/**
- * Discard a pending update doc per its kind: content-only → the content-discard mutation;
- * move-only → the structural discard only; copy and eager-created docs → the structural discard
- * directly (it hard-deletes or fully removes the doc, which subsumes the content, and a revert
- * would hit a dead id); content-plus-move → revert the content first, then discard the move.
- * The structural discard is idempotent (missing doc or no structural aspect → `_yay`), so a
- * bulk retry after a partial attempt settles as a no-op; any `_nay` is a real conflict.
- */
-async function files_pending_row_discard(
-	convex: ReturnType<typeof useConvex>,
-	membershipId: app_convex_Id<"organizations_workspaces_users">,
-	pendingUpdate: app_convex_Doc<"files_pending_updates">,
-) {
-	// A delete row discards structurally only: committed content never changed under the
-	// delete, and the server keeps a content proposal on the doc alive as a Modified row.
-	if (pendingUpdate.pendingArchive) {
-		return await convex.mutation(app_convex_api.files_pending_updates.discard_file_pending_structural, {
-			membershipId,
-			nodeId: pendingUpdate.fileNodeId,
-		});
-	}
-
-	if (!pendingUpdate.pendingMove && !pendingUpdate.copiedFrom && !pendingUpdate.eagerCreated) {
-		return await files_pending_discard(convex, membershipId, pendingUpdate);
-	}
-
-	if (files_pending_update_has_content(pendingUpdate) && !pendingUpdate.copiedFrom && !pendingUpdate.eagerCreated) {
-		const reverted = await files_pending_discard(convex, membershipId, pendingUpdate);
-		if (reverted._nay) return reverted;
-	}
-
-	return await convex.mutation(app_convex_api.files_pending_updates.discard_file_pending_structural, {
-		membershipId,
-		nodeId: pendingUpdate.fileNodeId,
-	});
-}
-
-/**
- * Group move chains and cycles into the acceptance units that must run in order. Other rows each
- * form their own unit.
- */
-function files_pending_rows_build_accept_units(rows: FileEditorSidebarPendingRow[]) {
-	// `moveDestinationPath` is the committed destination path, so it matches the committed `path`
-	// of the row it depends on. A cycle lands in one unit because the chain-membership check stops
-	// the walk when it reaches a row that is already in the chain.
-	const moveRowByPath = new Map(
-		rows.filter((row) => row.pendingUpdate.pendingMove != null).map((row) => [row.path, row]),
-	);
-	const units: FileEditorSidebarPendingRow[][] = [];
-	const unitByRow = new Map<FileEditorSidebarPendingRow, FileEditorSidebarPendingRow[]>();
-	for (const row of rows) {
-		if (unitByRow.has(row)) {
-			continue;
-		}
-		const chain = [row];
-		let head = row;
-		let attachedUnit: FileEditorSidebarPendingRow[] | undefined;
-		while (true) {
-			const predecessor =
-				head.pendingUpdate.pendingMove != null && head.moveDestinationPath != null
-					? moveRowByPath.get(head.moveDestinationPath)
-					: undefined;
-			if (!predecessor || chain.includes(predecessor)) {
-				break;
-			}
-			attachedUnit = unitByRow.get(predecessor);
-			if (attachedUnit) {
-				break;
-			}
-			chain.unshift(predecessor);
-			head = predecessor;
-		}
-		const unit = attachedUnit ?? [];
-		if (!attachedUnit) {
-			units.push(unit);
-		}
-		for (const chainRow of chain) {
-			unit.push(chainRow);
-			unitByRow.set(chainRow, unit);
-		}
-	}
-
-	return units;
-}
-
-const PENDING_ACCEPT_REQUIRES_ALL_CHANGES_MESSAGE =
-	"Use All changes to accept changes that also affect pending changes from another source";
-
-/**
- * "Accept all" skips proposals waiting for preparation. The per-row sentence in
- * `files_PENDING_UPDATE_STALE_BASE_MESSAGE` talks about one file, so the bulk action has its own.
- */
-const PENDING_ACCEPT_ALL_SKIPS_REVIEW_MESSAGE = "Changes waiting for review are skipped. Open Review to update them.";
-
-/**
- * Mark shown rows whose accept can settle or invalidate a hidden row. Keep those accepts in the
- * All view so a source-scoped action never removes another source's pending work.
- */
-function files_pending_rows_get_accept_requires_all_changes_ids(
-	rows: FileEditorSidebarPendingRow[],
-	visibleRows: FileEditorSidebarPendingRow[],
-) {
-	const blockedPendingUpdateIds = new Set<app_convex_Id<"files_pending_updates">>();
-	if (rows.length === visibleRows.length) {
-		return blockedPendingUpdateIds;
-	}
-
-	const visiblePendingUpdateIds = new Set(visibleRows.map((row) => row.pendingUpdate._id));
-	const hiddenRows = rows.filter((row) => !visiblePendingUpdateIds.has(row.pendingUpdate._id));
-	const hiddenNodeIds = new Set(hiddenRows.map((row) => row.pendingUpdate.fileNodeId));
-
-	for (const unit of files_pending_rows_build_accept_units(rows)) {
-		if (
-			unit.some((row) => visiblePendingUpdateIds.has(row.pendingUpdate._id)) &&
-			unit.some((row) => !visiblePendingUpdateIds.has(row.pendingUpdate._id))
-		) {
-			for (const row of unit) {
-				if (visiblePendingUpdateIds.has(row.pendingUpdate._id)) {
-					blockedPendingUpdateIds.add(row.pendingUpdate._id);
-				}
-			}
-		}
-	}
-
-	for (const row of visibleRows) {
-		const deletesHiddenDescendant =
-			row.pendingUpdate.pendingArchive != null &&
-			row.isFolder &&
-			hiddenRows.some((hiddenRow) => hiddenRow.path.startsWith(`${row.path}/`));
-		if (deletesHiddenDescendant || (row.replacedNodeId != null && hiddenNodeIds.has(row.replacedNodeId))) {
-			blockedPendingUpdateIds.add(row.pendingUpdate._id);
-		}
-	}
-
-	return blockedPendingUpdateIds;
-}
-
-/**
- * Run a bulk action over the rows, at most 5 units at a time in FIFO order. Chained moves (a row
- * moving onto the committed path of another pending move) join one unit that runs sequentially,
- * predecessor first, because the server rejects accepting a move whose destination occupant still
- * has its own pending move. The write mutations share per-user rate limits, so a row that gets
- * "Rate limit exceeded" (the literal from `rate_limiter_RATE_LIMIT_EXCEEDED_MESSAGE`, not
- * importable here because the module is server-only) waits 5s and retries, up to 6 times, instead
- * of silently staying behind. A thrown mutation (for example a Convex write conflict on the shared
- * rate-limiter table) retries the same way and counts as a failure when retries run out. Returns
- * the number of rows that still failed.
- */
-async function files_pending_rows_run_bulk(
-	rows: FileEditorSidebarPendingRow[],
-	run: (row: FileEditorSidebarPendingRow) => Promise<{ _nay?: { message?: string } | null }>,
-): Promise<number> {
-	// Delete rows run as their own trailing phase, one at a time with parent folders first:
-	// accepting a folder delete archives its whole subtree, which would fail content/move
-	// accepts inside it that are still running, and a descendant delete accepted concurrently
-	// (or before its folder) would archive under its own operation id, so unarchiving the
-	// folder would leave that descendant archived.
-	const deleteRows = rows.filter((row) => row.pendingUpdate.pendingArchive != null);
-	if (deleteRows.length > 0 && rows.length > 1) {
-		const otherRows = rows.filter((row) => row.pendingUpdate.pendingArchive == null);
-		let failedCount = otherRows.length > 0 ? await files_pending_rows_run_bulk(otherRows, run) : 0;
-		// Plain string order puts a folder before its descendants because the folder path is
-		// a strict prefix of theirs.
-		const orderedDeleteRows = [...deleteRows].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
-		for (const deleteRow of orderedDeleteRows) {
-			failedCount += await files_pending_rows_run_bulk([deleteRow], run);
-		}
-		return failedCount;
-	}
-
-	const units = files_pending_rows_build_accept_units(rows);
-
-	const results = await async_all_settled_with_limit(units, 5, async (unit) => {
-		const unitResults: Array<{ _nay?: { message?: string } | null }> = [];
-		for (const row of unit) {
-			// Catch throws into the result shape so the retry loop and the failure count below
-			// see them; without this a thrown mutation would skip the retries and lose the row's
-			// action.
-			const runRow = () =>
-				run(row).then(
-					(result) => ({ result, threw: false, error: undefined as unknown }),
-					(error: unknown) => ({
-						result: { _nay: { message: error instanceof Error ? error.message : "Bulk action failed" } },
-						threw: true,
-						error,
-					}),
-				);
-
-			let outcome = await runRow();
-			for (
-				let attempt = 0;
-				(outcome.threw || outcome.result._nay?.message === "Rate limit exceeded") && attempt < 6;
-				attempt++
-			) {
-				await delay(5_000);
-				outcome = await runRow();
-			}
-			if (outcome.threw) {
-				console.error("[FileEditorSidebarPending] Bulk action kept throwing for a row", {
-					error: outcome.error,
-					nodeId: row.pendingUpdate.fileNodeId,
-				});
-			}
-			unitResults.push(outcome.result);
-		}
-		return unitResults;
-	});
-
-	let failures = 0;
-	for (const [index, result] of results.entries()) {
-		if (result.status === "rejected") {
-			console.error("[FileEditorSidebarPending] Bulk action failed for a unit of rows", {
-				error: result.reason,
-			});
-			failures += units[index]?.length ?? 0;
-		} else {
-			for (const rowResult of result.value) {
-				// A non-benign `_nay` here is a real conflict: pending update docs that settled or
-				// vanished under this bulk run already resolve as no-op `_yay` on the server.
-				if (rowResult._nay && !PENDING_BENIGN_NAY_MESSAGES.has(rowResult._nay.message ?? "")) {
-					failures += 1;
-				}
-			}
-		}
-	}
-	return failures;
 }
 
 // #region source select
@@ -812,14 +480,17 @@ const PendingSourceOptionLabel = memo(function PendingSourceOptionLabel(props: {
 	);
 });
 
-function pending_row_matches_source(row: FileEditorSidebarPendingRow, source: FileEditorSidebarPendingSource) {
+function pending_row_matches_source(
+	row: { threadIds?: app_convex_Id<"ai_chat_threads">[] },
+	source: FileEditorSidebarPendingSource,
+) {
 	if (source === PENDING_SOURCE_ALL) {
 		return true;
 	}
 	if (source === PENDING_SOURCE_USER) {
-		return !row.pendingUpdate.threadIds?.length;
+		return !row.threadIds?.length;
 	}
-	return row.pendingUpdate.threadIds?.includes(source) ?? false;
+	return row.threadIds?.includes(source) ?? false;
 }
 
 const FileEditorSidebarPendingSourceSelect = memo(function FileEditorSidebarPendingSourceSelect(props: {
@@ -969,10 +640,11 @@ type FileEditorSidebarPendingItem_Props = {
 	sizeOnlyReplacedNodeId: app_convex_Id<"files_nodes"> | undefined;
 	canPreviewDeleteDiff: boolean;
 	isAddedFile: boolean;
+	isFolder: boolean;
+	readiness: "preparing" | "ready";
 	isArchived: boolean;
 	rootKind: files_YjsRootKind | null;
 	isStale: boolean;
-	acceptRequiresAllChanges: boolean;
 	canAccept: boolean;
 	disabled?: boolean;
 	onActionSuccess: (message: string) => void;
@@ -990,16 +662,17 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 		sizeOnlyReplacedNodeId,
 		canPreviewDeleteDiff,
 		isAddedFile,
+		isFolder,
+		readiness,
 		isArchived,
 		rootKind,
 		isStale,
-		acceptRequiresAllChanges,
 		canAccept,
 		disabled,
 		onActionSuccess,
 	} = props;
 	const { membershipId, organizationName, workspaceName } = AppTenantProvider.useContext();
-	const convex = useConvex();
+	const { startReview } = AppActivitiesProvider.useContext();
 
 	const [isOpen, setIsOpen] = useState(false);
 	const [isBusy, setIsBusy] = useState(false);
@@ -1008,17 +681,18 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 	// the pending doc. Start loading it on mount so the first expand does not wait for the reads.
 	const [deletedCommittedMarkdown, setDeletedCommittedMarkdown] = useState<string | null | undefined>();
 	useEffect(() => {
-		if (kind !== "delete" || !canPreviewDeleteDiff) {
+		if (kind !== "delete" || !canPreviewDeleteDiff || pendingUpdate.target.kind !== "saved") {
 			return;
 		}
 
 		let cancelled = false;
+		const nodeId = pendingUpdate.target.id;
 		setDeletedCommittedMarkdown(undefined);
 		// Use an async IIFE because the React compiler has problems with try catch finally blocks
 		(async (/* iife */) => {
 			const fileContentData = await files_fetch_file_yjs_state_and_text({
 				membershipId,
-				nodeId: pendingUpdate.fileNodeId,
+				nodeId,
 			});
 			if (cancelled) return;
 			setDeletedCommittedMarkdown(
@@ -1030,20 +704,20 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 			}
 			console.error("[FileEditorSidebarPending] Failed to load the deleted file content", {
 				error,
-				nodeId: pendingUpdate.fileNodeId,
+				nodeId: pendingUpdate.target.id,
 			});
 		});
 		return () => {
 			cancelled = true;
 		};
-	}, [kind, canPreviewDeleteDiff, membershipId, pendingUpdate.fileNodeId]);
+	}, [kind, canPreviewDeleteDiff, membershipId, pendingUpdate.target.kind, pendingUpdate.target.id]);
 
 	// Decode lazily: the branch states are fetched page by page and the rich branch spins up a
 	// headless Tiptap editor, so only build the diff once the accordion is open. The
 	// pending-update prop ref changes only when the doc data changes.
 	const [diffText, setDiffText] = useState<string | null>(null);
 	useEffect(() => {
-		if (!isOpen) {
+		if (!isOpen || kind === "added") {
 			setDiffText(null);
 			return;
 		}
@@ -1067,7 +741,7 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 			if (decoded._nay) {
 				console.error("[FileEditorSidebarPending] Failed to decode the pending diff preview", {
 					error: decoded._nay,
-					nodeId: pendingUpdate.fileNodeId,
+					nodeId: pendingUpdate.target.id,
 				});
 				setDiffText(null);
 				return;
@@ -1076,7 +750,7 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 		})().catch((error) => {
 			console.error("[FileEditorSidebarPending] Unexpected error while decoding the pending diff preview", {
 				error,
-				nodeId: pendingUpdate.fileNodeId,
+				nodeId: pendingUpdate.target.id,
 			});
 			if (!cancelled) {
 				setDiffText(null);
@@ -1117,70 +791,58 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 			toast.error(files_PENDING_UPDATE_STALE_BASE_MESSAGE);
 			return;
 		}
-		if (acceptRequiresAllChanges) {
-			toast.error(PENDING_ACCEPT_REQUIRES_ALL_CHANGES_MESSAGE);
-			return;
-		}
 		setIsBusy(true);
-
-		// Use an async IIFE because the React compiler has problems with try catch finally blocks
-		(async (/* iife */) => {
-			const result = await files_pending_row_accept(convex, membershipId, pendingUpdate, rootKind);
-			if (result._nay) {
-				// "Stale save" means the pending update doc changed under this click (another tab,
-				// the agent); the reactive query already renders the real state — no error.
-				if (result._nay.message !== "Stale save") {
-					toast.error(result._nay.message ?? "Failed to accept pending changes");
-				}
-			} else {
-				onActionSuccess(`Accepted ${actionLabel}`);
-			}
-		})()
-			.catch((error) => {
-				console.error("[FileEditorSidebarPending] Failed to accept", {
-					error,
-					nodeId: pendingUpdate.fileNodeId,
-				});
-				toast.error(error instanceof Error ? error.message : "Failed to accept pending changes");
+		startReview({
+			kind: "accept",
+			items: [
+				{
+					pendingUpdateId: pendingUpdate._id,
+					reviewedRevision: pendingUpdate.revision,
+					selectedContentStateId:
+						pendingUpdate.pendingArchive || pendingUpdate.pendingReplacement
+							? null
+							: (pendingUpdate.content?.unstagedStateId ?? null),
+				},
+			],
+		})
+			.then(() => onActionSuccess(`Started accepting ${actionLabel}`))
+			.catch((error: unknown) => {
+				toast.error(error instanceof Error ? error.message : "Failed to start review");
 			})
-			.finally(() => {
-				setIsBusy(false);
-			});
+			.finally(() => setIsBusy(false));
 	});
 
 	const handleDiscard = useFn((event: MouseEvent<HTMLButtonElement>) => {
 		event.preventDefault();
 		if (isBusy) return;
 		setIsBusy(true);
-
-		// Use an async IIFE because the React compiler has problems with try catch finally blocks
-		(async (/* iife */) => {
-			const result = await files_pending_row_discard(convex, membershipId, pendingUpdate);
-			if (result._nay) {
-				// A `_nay` is a real conflict: a pending update doc that settled or vanished under
-				// this click (another tab, the agent) already resolves as a no-op `_yay` on the server.
-				toast.error(result._nay.message ?? "Failed to discard pending changes");
-			} else {
-				onActionSuccess(`Discarded ${actionLabel}`);
-			}
-		})()
-			.catch((error) => {
-				console.error("[FileEditorSidebarPending] Failed to discard", {
-					error,
-					nodeId: pendingUpdate.fileNodeId,
-				});
-				toast.error(error instanceof Error ? error.message : "Failed to discard pending changes");
+		startReview({
+			kind: "discard",
+			items: [
+				{
+					pendingUpdateId: pendingUpdate._id,
+					reviewedRevision: pendingUpdate.revision,
+					selectedContentStateId: null,
+				},
+			],
+		})
+			.then(() => onActionSuccess(`Started discarding ${actionLabel}`))
+			.catch((error: unknown) => {
+				toast.error(error instanceof Error ? error.message : "Failed to start review");
 			})
-			.finally(() => {
-				setIsBusy(false);
-			});
+			.finally(() => setIsBusy(false));
 	});
 
 	// Plain moves have no content to diff. A delete without editable Yjs state also has nothing
 	// useful to preview. Size-only replacements are the exception: their accordion compares
 	// stored sizes.
-	if ((kind === "move" && !sizeOnlyReplacedNodeId) || (kind === "delete" && !canPreviewDeleteDiff)) {
+	if (
+		kind === "added" ||
+		(kind === "move" && !sizeOnlyReplacedNodeId) ||
+		(kind === "delete" && !canPreviewDeleteDiff)
+	) {
 		const moveLabel = kind === "move" && moveDestinationPath != null ? `${path} → ${moveDestinationPath}` : path;
+
 		return (
 			<li>
 				<div
@@ -1193,7 +855,11 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 						className={cn("FileEditorSidebarPending-item-path" satisfies FileEditorSidebarPending_ClassNames)}
 						to="/w/$organizationName/$workspaceName/files"
 						params={{ organizationName, workspaceName }}
-						search={(prev) => ({ ...prev, nodeId: pendingUpdate.fileNodeId })}
+						search={
+							pendingUpdate.target.kind === "private"
+								? { pendingNodeId: pendingUpdate.target.id }
+								: { nodeId: pendingUpdate.target.id }
+						}
 						aria-label={moveLabel}
 						tooltip={moveLabel}
 					>
@@ -1203,15 +869,27 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 							<span
 								className={cn(
 									"FileEditorSidebarPending-item-move-label" satisfies FileEditorSidebarPending_ClassNames,
-									kind === "delete" &&
-										("FileEditorSidebarPending-item-path-text-deleted" satisfies FileEditorSidebarPending_ClassNames),
+									kind === "delete"
+										? ("FileEditorSidebarPending-item-path-text-deleted" satisfies FileEditorSidebarPending_ClassNames)
+										: isAddedFile &&
+												("FileEditorSidebarPending-item-path-text-added" satisfies FileEditorSidebarPending_ClassNames),
 								)}
 							>
 								{path}
 							</span>
 						)}
 						<span className={cn("FileEditorSidebarPending-item-caption" satisfies FileEditorSidebarPending_ClassNames)}>
-							{kind === "delete" ? "Deleted" : replacedNodeId != null ? "Replaced" : "Moved"}
+							{readiness === "preparing"
+								? "Preparing…"
+								: kind === "added"
+									? isFolder
+										? "Added folder"
+										: "Added file"
+									: kind === "delete"
+										? "Deleted"
+										: replacedNodeId != null
+											? "Replaced"
+											: "Moved"}
 						</span>
 					</MyLink>
 					<span className={cn("FileEditorSidebarPending-item-actions" satisfies FileEditorSidebarPending_ClassNames)}>
@@ -1219,13 +897,7 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 							variant="ghost"
 							className={cn("FileEditorSidebarPending-accept" satisfies FileEditorSidebarPending_ClassNames)}
 							aria-label={`Accept ${actionLabel}`}
-							tooltip={
-								isStale
-									? files_PENDING_UPDATE_STALE_BASE_MESSAGE
-									: acceptRequiresAllChanges
-										? PENDING_ACCEPT_REQUIRES_ALL_CHANGES_MESSAGE
-										: undefined
-							}
+							tooltip={isStale ? files_PENDING_UPDATE_STALE_BASE_MESSAGE : undefined}
 							aria-busy={isBusy}
 							disabled={isBusy || disabled || !canAccept}
 							onClick={handleAccept}
@@ -1303,9 +975,11 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 							// The diff editor cannot represent a deleted file, a size-only replacement, or a
 							// whole-file copy (no text branches). The inline preview below handles those,
 							// and the link opens the file itself.
-							kind === "delete" || kind === "replacement" || sizeOnlyReplacedNodeId
-								? { nodeId: pendingUpdate.fileNodeId }
-								: { nodeId: pendingUpdate.fileNodeId, view: "diff_editor" }
+							pendingUpdate.target.kind === "private"
+								? { pendingNodeId: pendingUpdate.target.id, view: "diff_editor" }
+								: kind === "delete" || kind === "replacement" || sizeOnlyReplacedNodeId
+									? { nodeId: pendingUpdate.target.id }
+									: { nodeId: pendingUpdate.target.id, view: "diff_editor" }
 						}
 						aria-label={rowAccessibleLabel}
 						tooltip={rowAccessibleLabel}
@@ -1332,13 +1006,7 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 							variant="ghost"
 							className={cn("FileEditorSidebarPending-accept" satisfies FileEditorSidebarPending_ClassNames)}
 							aria-label={`Accept ${actionLabel}`}
-							tooltip={
-								isStale
-									? files_PENDING_UPDATE_STALE_BASE_MESSAGE
-									: acceptRequiresAllChanges
-										? PENDING_ACCEPT_REQUIRES_ALL_CHANGES_MESSAGE
-										: undefined
-							}
+							tooltip={isStale ? files_PENDING_UPDATE_STALE_BASE_MESSAGE : undefined}
 							aria-busy={isBusy}
 							disabled={isBusy || disabled || !canAccept}
 							onClick={handleAccept}
@@ -1356,10 +1024,10 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 						</MyButton>
 					</span>
 				</summary>
-				{sizeOnlyReplacedNodeId ? (
+				{sizeOnlyReplacedNodeId && pendingUpdate.target.kind === "saved" ? (
 					<FileEditorSidebarPendingSizeDiff
 						membershipId={membershipId}
-						sourceNodeId={pendingUpdate.fileNodeId}
+						sourceNodeId={pendingUpdate.target.id}
 						replacedNodeId={sizeOnlyReplacedNodeId}
 						path={path}
 					/>
@@ -1392,6 +1060,68 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 });
 // #endregion item
 
+// #region restricted item
+type FileEditorSidebarPendingRestrictedItem_Props = {
+	view: Extract<FileEditorSidebarPendingView, { kind: "restricted" }>;
+	disabled: boolean;
+	onActionSuccess: (message: string) => void;
+};
+
+const FileEditorSidebarPendingRestrictedItem = memo(function FileEditorSidebarPendingRestrictedItem(
+	props: FileEditorSidebarPendingRestrictedItem_Props,
+) {
+	const { view, disabled, onActionSuccess } = props;
+
+	const { startReview } = AppActivitiesProvider.useContext();
+	const [isBusy, setIsBusy] = useState(false);
+
+	const handleDiscard = useFn(() => {
+		if (isBusy || disabled) return;
+
+		setIsBusy(true);
+		startReview({
+			kind: "discard",
+			items: [
+				{
+					pendingUpdateId: view.pendingUpdateId,
+					reviewedRevision: view.revision,
+					selectedContentStateId: null,
+				},
+			],
+		})
+			.then(() => onActionSuccess("Started discarding unavailable draft"))
+			.catch((error: unknown) => {
+				toast.error(error instanceof Error ? error.message : "Failed to discard pending changes");
+			})
+			.finally(() => setIsBusy(false));
+	});
+
+	return (
+		<li>
+			<div
+				className={cn(
+					"FileEditorSidebarPending-item" satisfies FileEditorSidebarPending_ClassNames,
+					"FileEditorSidebarPending-item-move" satisfies FileEditorSidebarPending_ClassNames,
+				)}
+			>
+				<span className={cn("FileEditorSidebarPending-item-path" satisfies FileEditorSidebarPending_ClassNames)}>
+					Draft unavailable
+				</span>
+				<MyButton
+					variant="ghost_destructive"
+					aria-label="Discard unavailable draft"
+					disabled={isBusy || disabled}
+					aria-busy={isBusy}
+					onClick={handleDiscard}
+				>
+					Discard
+				</MyButton>
+			</div>
+		</li>
+	);
+});
+// #endregion restricted item
+
 // #region root
 export type FileEditorSidebarPending_ClassNames =
 	| "FileEditorSidebarPending"
@@ -1419,10 +1149,14 @@ export type FileEditorSidebarPending_ClassNames =
 
 export const FileEditorSidebarPending = memo(function FileEditorSidebarPending() {
 	const { membershipId } = AppTenantProvider.useContext();
-	const convex = useConvex();
+	const { startReview, isStartingReview } = AppActivitiesProvider.useContext();
 
-	const [isBulkBusy, setIsBulkBusy] = useState(false);
+	const [isSubmitting, setIsSubmitting] = useState(false);
+	const isBulkBusy = isSubmitting || isStartingReview;
 	const [selectedSource, setSelectedSource] = useState<FileEditorSidebarPendingSource>(PENDING_SOURCE_ALL);
+	useGlobalCustomEvent("files::review_all_pending", (event) => {
+		if (event.detail.membershipId === membershipId) setSelectedSource(PENDING_SOURCE_ALL);
+	});
 
 	// Settled signal for screen readers and automation: successful actions write into this
 	// `role="status"` live region imperatively, so no React re-render is needed to announce.
@@ -1436,34 +1170,27 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 		}
 	});
 
-	const pendingUpdates = useQuery(app_convex_api.files_pending_updates.list_files_pending_updates, { membershipId });
+	const {
+		results: pendingUpdatesResult,
+		status: pendingUpdatesStatus,
+		loadMore,
+	} = usePaginatedQuery(
+		app_convex_api.files_pending_updates.list_files_pending_updates,
+		{ membershipId },
+		{ initialNumItems: 20 },
+	);
 	const fileNodesList = FilesTreeProvider.useContext();
-	// Accept writes into the file, so fail closed while permission loads or changes. Discard only
-	// removes this user's draft and stays available after demotion.
-	const pendingNodeIds = useMemo(
-		() => [...new Set((pendingUpdates ?? []).map((pendingUpdate) => pendingUpdate.fileNodeId))],
-		[pendingUpdates],
-	);
-	const acceptPermissionQueryResults = useQueries(
-		useMemo(
-			() =>
-				Object.fromEntries(
-					pendingNodeIds.map((nodeId) => [
-						nodeId,
-						{
-							query: app_convex_api.files_nodes.get_current_user_file_write_permission,
-							args: { membershipId, nodeId },
-						},
-					]),
-				),
-			[membershipId, pendingNodeIds],
-		),
-	);
 	// Keep both the id list and queries object stable. `useQueries` treats a new object as a new set
 	// of subscriptions and schedules render-phase state updates while it reconnects them.
 	const threadIds = useMemo(
-		() => [...new Set((pendingUpdates ?? []).flatMap((pendingUpdate) => pendingUpdate.threadIds ?? []))],
-		[pendingUpdates],
+		() => [
+			...new Set(
+				pendingUpdatesResult.flatMap(
+					(view) => (view.kind === "entry" ? view.entry.pendingUpdate?.threadIds : view.threadIds) ?? [],
+				),
+			),
+		],
+		[pendingUpdatesResult],
 	);
 	const threadQueryResults = useQueries(
 		useMemo(
@@ -1482,7 +1209,12 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 	);
 
 	const nodesById = new Map((fileNodesList ?? []).map((node) => [node._id, node] as const));
-	const rows = build_pending_rows(pendingUpdates ?? [], nodesById);
+	const rows = build_pending_rows(
+		pendingUpdatesResult.filter((view) => view.kind === "entry"),
+		nodesById,
+	);
+	const restrictedRows = pendingUpdatesResult.filter((view) => view.kind === "restricted");
+	const allSources = [...rows.map((row) => row.pendingUpdate), ...restrictedRows];
 	const readOnlyAncestorIds = files_collect_read_only_ancestor_ids(fileNodesList ?? []);
 
 	// The server checks hidden nodes and current policies again when Accept runs.
@@ -1495,11 +1227,12 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 			: null;
 
 	const canAcceptRow = (row: FileEditorSidebarPendingRow) => {
-		if (acceptPermissionQueryResults[row.pendingUpdate.fileNodeId] !== true) {
+		if (!row.canAccept || row.readiness !== "ready") {
 			return false;
 		}
+		if (row.pendingUpdate.target.kind === "private") return true;
 
-		const node = nodesById.get(row.pendingUpdate.fileNodeId);
+		const node = nodesById.get(row.pendingUpdate.target.id);
 		const capabilities = getNodeCapabilities(node);
 
 		if (!node || !capabilities?.canEditContent) {
@@ -1513,9 +1246,9 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 			return false;
 		}
 
-		const destinationParentId = row.pendingUpdate.pendingMove?.destParentId;
-		if (destinationParentId && destinationParentId !== files_ROOT_ID) {
-			if (!getNodeCapabilities(nodesById.get(destinationParentId))?.canReceiveChildren) {
+		const destinationParent = row.pendingUpdate.pendingMove?.destParent;
+		if (destinationParent?.kind === "saved") {
+			if (!getNodeCapabilities(nodesById.get(destinationParent.id))?.canReceiveChildren) {
 				return false;
 			}
 		}
@@ -1542,18 +1275,18 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 		{
 			value: PENDING_SOURCE_ALL,
 			label: "All changes",
-			description: "Every pending change",
-			count: rows.length,
+			description: pendingUpdatesStatus === "Exhausted" ? "Every pending change" : "Loaded pending changes",
+			count: allSources.length,
 		},
 		{
 			value: PENDING_SOURCE_USER,
 			label: "Your edits",
 			description: "Changes you made in the editor, not from a chat",
-			count: rows.filter((row) => pending_row_matches_source(row, PENDING_SOURCE_USER)).length,
+			count: allSources.filter((row) => pending_row_matches_source(row, PENDING_SOURCE_USER)).length,
 		},
 		...sortedThreadIds.map((threadId) => {
 			const thread = threadQueryResults[threadId];
-			const count = rows.filter((row) => pending_row_matches_source(row, threadId)).length;
+			const count = allSources.filter((row) => pending_row_matches_source(row, threadId)).length;
 
 			if (thread === undefined) {
 				return { value: threadId, label: "Loading chat…", description: "Agent chat", count };
@@ -1574,14 +1307,16 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 	// Sources with no pending changes are hidden (only All changes always stays), so a selected
 	// source that empties falls back to All changes.
 	const sourceOptions = allSourceOptions.filter((option) => option.value === PENDING_SOURCE_ALL || option.count > 0);
-	// Build every row before filtering so move-aware occupancy and replacement captions use the
-	// complete pending set. One complete row can still appear under several contributing chats.
+	// Build loaded rows before filtering. The server checks unloaded dependencies again on Accept.
+	// One row can still appear under several contributing chats.
 	const activeSource = sourceOptions.some((option) => option.value === selectedSource)
 		? selectedSource
 		: PENDING_SOURCE_ALL;
-	const visibleRows = rows.filter((row) => pending_row_matches_source(row, activeSource));
-	const acceptRequiresAllChangesIds = files_pending_rows_get_accept_requires_all_changes_ids(rows, visibleRows);
-	const canAcceptAllVisibleRows = visibleRows.every((row) => canAcceptRow(row));
+	const visibleRows = rows.filter((row) => pending_row_matches_source(row.pendingUpdate, activeSource));
+	const visibleRestrictedRows = restrictedRows.filter((row) => pending_row_matches_source(row, activeSource));
+	const visibleCount = visibleRows.length + visibleRestrictedRows.length;
+	const canAcceptAllVisibleRows =
+		visibleRows.length > 0 && visibleRestrictedRows.length === 0 && visibleRows.every((row) => canAcceptRow(row));
 
 	useEffect(() => {
 		if (selectedSource !== activeSource) {
@@ -1591,60 +1326,51 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 
 	const handleAcceptAll = useFn(() => {
 		if (isBulkBusy || !canAcceptAllVisibleRows) return;
-		if (acceptRequiresAllChangesIds.size > 0) {
-			toast.error(PENDING_ACCEPT_REQUIRES_ALL_CHANGES_MESSAGE);
-			return;
-		}
-		// Preparation must show its merged text in Review before a later Accept can publish it.
 		const acceptRows = visibleRows.filter((row) => !row.isStale);
-		if (acceptRows.length < visibleRows.length) {
-			toast.warning(PENDING_ACCEPT_ALL_SKIPS_REVIEW_MESSAGE);
-		}
+		if (acceptRows.length < visibleRows.length) toast.warning(PENDING_ACCEPT_ALL_SKIPS_REVIEW_MESSAGE);
 		if (acceptRows.length === 0) return;
-		setIsBulkBusy(true);
-
-		// Use an async IIFE because the React compiler has problems with try catch finally blocks
-		(async (/* iife */) => {
-			const failures = await files_pending_rows_run_bulk(acceptRows, (row) =>
-				files_pending_row_accept(convex, membershipId, row.pendingUpdate, row.rootKind),
-			);
-			if (failures > 0) {
-				toast.error(`Failed to accept ${failures} of ${acceptRows.length} pending changes`);
-			} else {
-				announceActionSuccess(`Accepted ${acceptRows.length} pending changes`);
-			}
-		})()
-			.catch((error) => {
-				console.error("[FileEditorSidebarPending] Failed to accept all", { error });
-				toast.error(error instanceof Error ? error.message : "Failed to accept pending changes");
+		setIsSubmitting(true);
+		startReview({
+			kind: "accept",
+			items: acceptRows.map(({ pendingUpdate }) => ({
+				pendingUpdateId: pendingUpdate._id,
+				reviewedRevision: pendingUpdate.revision,
+				selectedContentStateId:
+					pendingUpdate.pendingArchive || pendingUpdate.pendingReplacement
+						? null
+						: (pendingUpdate.content?.unstagedStateId ?? null),
+			})),
+		})
+			.then(() => announceActionSuccess(`Started accepting ${acceptRows.length} pending changes`))
+			.catch((error: unknown) => {
+				toast.error(error instanceof Error ? error.message : "Failed to start review");
 			})
-			.finally(() => {
-				setIsBulkBusy(false);
-			});
+			.finally(() => setIsSubmitting(false));
 	});
 
 	const handleDiscardAll = useFn(() => {
 		if (isBulkBusy) return;
-		setIsBulkBusy(true);
-
-		// Use an async IIFE because the React compiler has problems with try catch finally blocks
-		(async (/* iife */) => {
-			const failures = await files_pending_rows_run_bulk(visibleRows, (row) =>
-				files_pending_row_discard(convex, membershipId, row.pendingUpdate),
-			);
-			if (failures > 0) {
-				toast.error(`Failed to discard ${failures} of ${visibleRows.length} pending changes`);
-			} else {
-				announceActionSuccess(`Discarded ${visibleRows.length} pending changes`);
-			}
-		})()
-			.catch((error) => {
-				console.error("[FileEditorSidebarPending] Failed to discard all", { error });
-				toast.error(error instanceof Error ? error.message : "Failed to discard pending changes");
+		setIsSubmitting(true);
+		startReview({
+			kind: "discard",
+			items: [
+				...visibleRows.map(({ pendingUpdate }) => ({
+					pendingUpdateId: pendingUpdate._id,
+					reviewedRevision: pendingUpdate.revision,
+					selectedContentStateId: null,
+				})),
+				...visibleRestrictedRows.map((view) => ({
+					pendingUpdateId: view.pendingUpdateId,
+					reviewedRevision: view.revision,
+					selectedContentStateId: null,
+				})),
+			],
+		})
+			.then(() => announceActionSuccess(`Started discarding ${visibleCount} pending changes`))
+			.catch((error: unknown) => {
+				toast.error(error instanceof Error ? error.message : "Failed to start review");
 			})
-			.finally(() => {
-				setIsBulkBusy(false);
-			});
+			.finally(() => setIsSubmitting(false));
 	});
 
 	// The status span stays first in both branches so React keeps the same DOM node (and its
@@ -1656,8 +1382,18 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 			className={cn("FileEditorSidebarPending-status" satisfies FileEditorSidebarPending_ClassNames, "sr-only")}
 		/>
 	);
+	const paginationControl =
+		pendingUpdatesStatus !== "Exhausted" && pendingUpdatesStatus !== "LoadingFirstPage" ? (
+			<MyButton
+				variant="ghost"
+				disabled={isBulkBusy || pendingUpdatesStatus === "LoadingMore"}
+				onClick={() => loadMore(20)}
+			>
+				{pendingUpdatesStatus === "LoadingMore" ? "Loading more…" : "Load more pending changes"}
+			</MyButton>
+		) : null;
 
-	if (pendingUpdates === undefined || fileNodesList === undefined || rows.length === 0) {
+	if (pendingUpdatesStatus === "LoadingFirstPage" || allSources.length === 0) {
 		return (
 			<>
 				{statusElement}
@@ -1669,9 +1405,12 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 						"FileEditorSidebarPending-empty" satisfies FileEditorSidebarPending_ClassNames,
 					)}
 				>
-					{pendingUpdates === undefined || fileNodesList === undefined
+					{pendingUpdatesStatus === "LoadingFirstPage"
 						? "Loading pending changes…"
-						: "No pending changes"}
+						: pendingUpdatesStatus === "Exhausted"
+							? "No pending changes"
+							: "No changes on the loaded pages"}
+					{paginationControl}
 				</div>
 			</>
 		);
@@ -1702,15 +1441,7 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 								"FileEditorSidebarPending-accept" satisfies FileEditorSidebarPending_ClassNames,
 							)}
 							aria-label="Accept all shown pending changes"
-							tooltip={
-								// Same order as the click: a row that requires all changes stops the bulk accept,
-								// stale rows are only skipped.
-								acceptRequiresAllChangesIds.size > 0
-									? PENDING_ACCEPT_REQUIRES_ALL_CHANGES_MESSAGE
-									: visibleRows.some((row) => row.isStale)
-										? PENDING_ACCEPT_ALL_SKIPS_REVIEW_MESSAGE
-										: undefined
-							}
+							tooltip={visibleRows.some((row) => row.isStale) ? PENDING_ACCEPT_ALL_SKIPS_REVIEW_MESSAGE : undefined}
 							aria-busy={isBulkBusy}
 							disabled={isBulkBusy || !canAcceptAllVisibleRows}
 							onClick={handleAcceptAll}
@@ -1739,6 +1470,7 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 						</MyButton>
 					</div>
 				</div>
+				{pendingUpdatesStatus !== "Exhausted" ? <p>Actions apply to the changes shown below.</p> : null}
 				<ul className={cn("FileEditorSidebarPending-list" satisfies FileEditorSidebarPending_ClassNames)}>
 					{visibleRows.map((row) => (
 						<FileEditorSidebarPendingItem
@@ -1751,16 +1483,26 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 							sizeOnlyReplacedNodeId={row.sizeOnlyReplacedNodeId}
 							canPreviewDeleteDiff={row.canPreviewDeleteDiff}
 							isAddedFile={row.isAddedFile}
+							isFolder={row.isFolder}
+							readiness={row.readiness}
 							isArchived={row.isArchived}
 							rootKind={row.rootKind}
 							isStale={row.isStale}
-							acceptRequiresAllChanges={acceptRequiresAllChangesIds.has(row.pendingUpdate._id)}
 							canAccept={canAcceptRow(row)}
 							disabled={isBulkBusy}
 							onActionSuccess={announceActionSuccess}
 						/>
 					))}
+					{visibleRestrictedRows.map((view) => (
+						<FileEditorSidebarPendingRestrictedItem
+							key={view.pendingUpdateId}
+							view={view}
+							disabled={isBulkBusy}
+							onActionSuccess={announceActionSuccess}
+						/>
+					))}
 				</ul>
+				{paginationControl}
 			</div>
 		</>
 	);
@@ -1780,7 +1522,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		unstaged?: string;
 		pendingMove?: { destParentId: string; destName: string; fromPath: string; replacesNodeId?: string };
 		copiedFrom?: { nodeId: string; path: string };
-		eagerCreated?: { committedSequence: number };
+		isPrivate?: boolean;
 		pendingArchive?: { fromPath: string };
 		/**
 		 * A proposal on a file with collaboration off stores the asset it was built from.
@@ -1789,27 +1531,50 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 	}) =>
 		({
 			_id: args.id,
-			fileNodeId: args.fileNodeId,
+			target: { kind: args.isPrivate ? "private" : "saved", id: args.fileNodeId },
+			revision: 1,
 			// Move-only docs leave the whole canonical content group unset, like the server does.
 			...(args.staged != null && args.unstaged != null
-				? args.baseAssetId
-					? {
-							baseAssetId: args.baseAssetId,
+				? {
+						content: {
+							base: args.baseAssetId
+								? { kind: "asset", assetId: args.baseAssetId }
+								: { kind: "yjs", sequence: 0, lineageGeneration: 0 },
 							baseStateId: `${args.id}_base`,
 							stagedStateId: `${args.id}_staged`,
 							unstagedStateId: `${args.id}_unstaged`,
-						}
-					: {
-							baseYjsSequence: 0,
-							baseLineageGeneration: 0,
-							baseStateId: `${args.id}_base`,
-							stagedStateId: `${args.id}_staged`,
-							unstagedStateId: `${args.id}_unstaged`,
-						}
+						},
+					}
 				: {}),
-			...(args.pendingMove ? { pendingMove: args.pendingMove } : {}),
-			...(args.copiedFrom ? { copiedFrom: args.copiedFrom } : {}),
-			...(args.eagerCreated ? { eagerCreated: args.eagerCreated } : {}),
+			...(args.pendingMove
+				? {
+						pendingMove: {
+							destParent:
+								args.pendingMove.destParentId === "root"
+									? { kind: "root" }
+									: { kind: "saved", id: args.pendingMove.destParentId },
+							destName: args.pendingMove.destName,
+							fromPath: args.pendingMove.fromPath,
+							...(args.pendingMove.replacesNodeId
+								? { replacesTarget: { kind: "saved", id: args.pendingMove.replacesNodeId } }
+								: {}),
+						},
+					}
+				: {}),
+			...(args.copiedFrom
+				? { copiedFrom: { target: { kind: "saved", id: args.copiedFrom.nodeId }, path: args.copiedFrom.path } }
+				: {}),
+			...(args.isPrivate
+				? {
+						createIntent: {
+							kind: "text",
+							contentType: "text/plain",
+							textKind: "plain_text",
+							collaborationEnabled: true,
+							metadata: [],
+						},
+					}
+				: {}),
 			...(args.pendingArchive ? { pendingArchive: args.pendingArchive } : {}),
 		}) as unknown as app_convex_Doc<"files_pending_updates">;
 
@@ -1843,6 +1608,58 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 	const makeNodesById = (nodes: app_convex_Doc<"files_nodes">[]) =>
 		new Map(nodes.map((node) => [node._id, node] as const));
 
+	const buildFixtureRows = (
+		updates: app_convex_Doc<"files_pending_updates">[],
+		nodesById: ReturnType<typeof makeNodesById>,
+	) => {
+		const views = updates.flatMap((pendingUpdate): Extract<FileEditorSidebarPendingView, { kind: "entry" }>[] => {
+			const node = [...nodesById.values()].find((node) => node._id === pendingUpdate.target.id);
+			if (!node) return [];
+			const move = pendingUpdate.pendingMove;
+			const parentPath = move?.destParent.kind === "saved" ? nodesById.get(move.destParent.id)?.path : "";
+			const path = move ? `${parentPath}/${move.destName}` : node.path;
+			if (pendingUpdate.target.kind === "private") {
+				return [
+					{
+						kind: "entry",
+						entry: {
+							kind: "private",
+							node: {
+								_id: pendingUpdate.target.id,
+								_creationTime: 0,
+								organizationId: pendingUpdate.organizationId,
+								workspaceId: pendingUpdate.workspaceId,
+								userId: pendingUpdate.userId,
+								kind: node.kind,
+								name: node.name,
+								parent: { kind: "root" },
+								structuralRevision: 1,
+								creationGeneration: 1,
+								state: "active",
+								closedAt: null,
+							},
+							pendingUpdate,
+							path,
+						},
+						readiness: "ready",
+						canEdit: true,
+						canAccept: true,
+					},
+				];
+			}
+			return [
+				{
+					kind: "entry",
+					entry: { kind: "saved", node, pendingUpdate, path },
+					readiness: "ready",
+					canEdit: true,
+					canAccept: true,
+				},
+			];
+		});
+		return build_pending_rows(views, nodesById);
+	};
+
 	describe("build_pending_rows", () => {
 		test("sorts rows by path regardless of input order", () => {
 			const updates = [
@@ -1856,17 +1673,29 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				makeNode({ id: "node_m", path: "mid/readme.md" }),
 			]);
 
-			const rows = build_pending_rows(updates, nodesById);
+			const rows = buildFixtureRows(updates, nodesById);
 
 			expect(rows.map((row) => row.path)).toEqual(["alpha/intro.md", "mid/readme.md", "zebra/notes.md"]);
 		});
 
-		test("keeps a fallback label when the file node is missing", () => {
-			const updates = [makePendingUpdate({ id: "pu_x", fileNodeId: "node_missing", staged: "s", unstaged: "u" })];
-			const rows = build_pending_rows(updates, new Map());
+		test("uses the readable owner entry before the saved tree loads", () => {
+			const pendingUpdate = makePendingUpdate({ id: "pu_x", fileNodeId: "node_x", staged: "s", unstaged: "u" });
+			const node = makeNode({ id: "node_x", path: "/owned.md" });
+			const rows = build_pending_rows(
+				[
+					{
+						kind: "entry",
+						entry: { kind: "saved", node, pendingUpdate, path: "/owned.md" },
+						readiness: "ready",
+						canEdit: true,
+						canAccept: true,
+					},
+				],
+				new Map(),
+			);
 
 			expect(rows).toHaveLength(1);
-			expect(rows[0]?.path).toBe("(unknown file)");
+			expect(rows[0]?.path).toBe("/owned.md");
 		});
 
 		test("builds a content row with the node's shape for a proposal on a file with collaboration off", () => {
@@ -1883,7 +1712,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				makeNode({ id: "node_off", path: "/off.md", nonCollaborative: true, textKind: "plain_text" }),
 			]);
 
-			const rows = build_pending_rows(updates, nodesById);
+			const rows = buildFixtureRows(updates, nodesById);
 
 			expect(rows[0]).toMatchObject({ kind: "content", rootKind: "plain_text", isStale: false });
 		});
@@ -1912,11 +1741,11 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				makeNode({ id: "node_off_deleted", path: "/off-deleted.md", nonCollaborative: true, textKind: "rich_text" }),
 			]);
 
-			const rows = build_pending_rows(updates, nodesById);
+			const rows = buildFixtureRows(updates, nodesById);
 
 			expect(rows.find((row) => row.pendingUpdate._id === "pu_off")?.isStale).toBe(true);
-			// A node hidden from the tree cannot be compared, so it is never shown as stale.
-			expect(rows.find((row) => row.pendingUpdate._id === "pu_gone")?.isStale).toBe(false);
+			// Restricted drafts are separate rows without file details.
+			expect(rows.find((row) => row.pendingUpdate._id === "pu_gone")).toBeUndefined();
 			// Accepting a delete ignores the content branches, so stale content does not block it.
 			expect(rows.find((row) => row.pendingUpdate._id === "pu_delete")).toMatchObject({
 				kind: "delete",
@@ -1945,12 +1774,12 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				makeNode({ id: "node_d", path: "/d.md" }),
 			]);
 
-			const rows = build_pending_rows(updates, nodesById);
+			const rows = buildFixtureRows(updates, nodesById);
 
 			expect(rows.map((row) => row.kind)).toEqual(["content", "move", "copy", "content_and_move"]);
 		});
 
-		test("resolves the move destination path from the tree", () => {
+		test("uses the owner's current move destination path", () => {
 			const updates = [
 				makePendingUpdate({
 					id: "pu_root",
@@ -1973,14 +1802,15 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				makeNode({ id: "node_b", path: "/from/b.md" }),
 				makeNode({ id: "node_c", path: "/from/c.md" }),
 				makeNode({ id: "node_docs", path: "/docs", kind: "folder" }),
+				makeNode({ id: "node_gone", path: "/other", kind: "folder" }),
 			]);
 
-			const rows = build_pending_rows(updates, nodesById);
+			const rows = buildFixtureRows(updates, nodesById);
 
-			expect(rows.map((row) => row.moveDestinationPath)).toEqual(["/a.md", "/docs/b.md", "…/c.md"]);
+			expect(rows.map((row) => row.moveDestinationPath)).toEqual(["/a.md", "/docs/b.md", "/other/c.md"]);
 		});
 
-		test("falls back to the move fromPath when the source node is missing", () => {
+		test("does not include a restricted move in readable rows", () => {
 			const updates = [
 				makePendingUpdate({
 					id: "pu_folder",
@@ -1995,10 +1825,9 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			];
 			const nodesById = makeNodesById([makeNode({ id: "node_folder", path: "/old-archive", kind: "folder" })]);
 
-			const rows = build_pending_rows(updates, nodesById);
+			const rows = buildFixtureRows(updates, nodesById);
 
-			expect(rows[0]?.path).toBe("/from/gone.md");
-			expect(rows[1]?.path).toBe("/old-archive");
+			expect(rows.map((row) => row.path)).toEqual(["/old-archive"]);
 		});
 
 		test("derives the replaced occupant id for move rows from live path occupancy only", () => {
@@ -2101,7 +1930,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				makeNode({ id: "node_full_child", path: "/full-folder/keep.md", parentId: "node_full_folder" }),
 			]);
 
-			const rows = build_pending_rows(updates, nodesById);
+			const rows = buildFixtureRows(updates, nodesById);
 
 			expect(rows.map((row) => [row.path, row.replacedNodeId])).toEqual([
 				["/incoming.md", undefined],
@@ -2132,7 +1961,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				}),
 				// Folder deletes always render as plain rows.
 				makePendingUpdate({ id: "pu_del_folder", fileNodeId: "node_f", pendingArchive: { fromPath: "/f" } }),
-				// Missing node falls back to the delete's fromPath.
+				// Restricted drafts are returned separately without their old paths.
 				makePendingUpdate({ id: "pu_del_gone", fileNodeId: "node_gone", pendingArchive: { fromPath: "/gone.md" } }),
 			];
 			const nodesById = makeNodesById([
@@ -2141,13 +1970,12 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				makeNode({ id: "node_f", path: "/f", kind: "folder" }),
 			]);
 
-			const rows = build_pending_rows(updates, nodesById);
+			const rows = buildFixtureRows(updates, nodesById);
 
 			expect(rows.map((row) => [row.path, row.kind])).toEqual([
 				["/a.md", "delete"],
 				["/b.md", "delete"],
 				["/f", "delete"],
-				["/gone.md", "delete"],
 			]);
 		});
 
@@ -2158,7 +1986,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 					fileNodeId: "node_a",
 					staged: "s",
 					unstaged: "u",
-					eagerCreated: { committedSequence: 0 },
+					isPrivate: true,
 				}),
 				makePendingUpdate({ id: "pu_edit", fileNodeId: "node_b", staged: "s", unstaged: "u" }),
 			];
@@ -2167,73 +1995,9 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				makeNode({ id: "node_b", path: "/b.md" }),
 			]);
 
-			const rows = build_pending_rows(updates, nodesById);
+			const rows = buildFixtureRows(updates, nodesById);
 
 			expect(rows.map((row) => row.isAddedFile)).toEqual([true, false]);
-		});
-	});
-
-	describe("files_pending_rows_get_accept_requires_all_changes_ids", () => {
-		test("blocks a shown member of a move cycle when another member is hidden", () => {
-			const updates = [
-				makePendingUpdate({
-					id: "pu_a",
-					fileNodeId: "node_a",
-					pendingMove: { destParentId: files_ROOT_ID, destName: "b.md", fromPath: "/a.md" },
-				}),
-				makePendingUpdate({
-					id: "pu_b",
-					fileNodeId: "node_b",
-					pendingMove: { destParentId: files_ROOT_ID, destName: "a.md", fromPath: "/b.md" },
-				}),
-			];
-			const rows = build_pending_rows(
-				updates,
-				makeNodesById([makeNode({ id: "node_a", path: "/a.md" }), makeNode({ id: "node_b", path: "/b.md" })]),
-			);
-			const shownRow = rows.find((row) => row.pendingUpdate.fileNodeId === "node_a");
-			if (!shownRow) throw new Error("Expected the shown move row");
-
-			expect([...files_pending_rows_get_accept_requires_all_changes_ids(rows, [shownRow])]).toEqual(["pu_a"]);
-			expect(files_pending_rows_get_accept_requires_all_changes_ids(rows, rows).size).toBe(0);
-		});
-	});
-
-	describe("files_pending_rows_run_bulk", () => {
-		test("runs delete rows last, one at a time, parent folders first", async () => {
-			const updates = [
-				makePendingUpdate({ id: "pu_content", fileNodeId: "node_c", staged: "s", unstaged: "u" }),
-				makePendingUpdate({ id: "pu_del_child", fileNodeId: "node_z", pendingArchive: { fromPath: "/docs/z.md" } }),
-				makePendingUpdate({ id: "pu_del_docs", fileNodeId: "node_docs", pendingArchive: { fromPath: "/docs" } }),
-			];
-			const nodesById = makeNodesById([
-				makeNode({ id: "node_c", path: "/notes.md" }),
-				makeNode({ id: "node_z", path: "/docs/z.md" }),
-				makeNode({ id: "node_docs", path: "/docs", kind: "folder" }),
-			]);
-			const rows = build_pending_rows(updates, nodesById);
-
-			// A concurrent child delete would archive under its own operation id (breaking a later
-			// folder Unarchive), so deletes must run strictly one at a time after the other rows.
-			const order: string[] = [];
-			let activeDeletes = 0;
-			let sawParallelDelete = false;
-			const failedCount = await files_pending_rows_run_bulk(rows, async (row) => {
-				order.push(row.path);
-				if (row.pendingUpdate.pendingArchive != null) {
-					activeDeletes += 1;
-					if (activeDeletes > 1) {
-						sawParallelDelete = true;
-					}
-					await new Promise((resolve) => setTimeout(resolve, 0));
-					activeDeletes -= 1;
-				}
-				return {};
-			});
-
-			expect(failedCount).toBe(0);
-			expect(order).toEqual(["/notes.md", "/docs", "/docs/z.md"]);
-			expect(sawParallelDelete).toBe(false);
 		});
 	});
 }

@@ -10,6 +10,8 @@ const {
 	tenantContextMock,
 	pushMutationMock,
 	fetchFileYjsStateAndTextMock,
+	fetchPrivateFilePendingTextMock,
+	savePrivateFilePendingTextMock,
 	convexQueryMock,
 	convexActionMock,
 	monacoHarness,
@@ -17,12 +19,17 @@ const {
 	tenantContextMock: vi.fn(),
 	pushMutationMock: vi.fn(),
 	fetchFileYjsStateAndTextMock: vi.fn(),
+	fetchPrivateFilePendingTextMock: vi.fn(),
+	savePrivateFilePendingTextMock: vi.fn(),
 	convexQueryMock: vi.fn(),
 	convexActionMock: vi.fn(),
 	// Shared state between the Editor mock and the tests: the created models with their language,
 	// and the model-change listeners the component registered on mount.
 	monacoHarness: {
-		createdModels: [] as Array<{ model: { getValue: () => string; setValue: (next: string) => void }; languageId: string }>,
+		createdModels: [] as Array<{
+			model: { getValue: () => string; setValue: (next: string) => void };
+			languageId: string;
+		}>,
 		changeListeners: [] as Array<() => void>,
 	},
 }));
@@ -71,6 +78,8 @@ vi.mock("@/lib/files.ts", async (importOriginal) => {
 	return {
 		...original,
 		files_fetch_file_yjs_state_and_text: (...args: unknown[]) => fetchFileYjsStateAndTextMock(...args),
+		files_fetch_private_file_pending_text: (...args: unknown[]) => fetchPrivateFilePendingTextMock(...args),
+		files_save_private_file_pending_text: (...args: unknown[]) => savePrivateFilePendingTextMock(...args),
 		files_monaco_create_editor_model: (text: string, languageId: string) => {
 			const model = original.files_monaco_create_editor_model(text, languageId);
 			monacoHarness.createdModels.push({ model: model as never, languageId });
@@ -133,11 +142,16 @@ import {
 	files_resolve_effective_editor_view,
 	files_yjs_root_kind_of_content_type,
 	type files_PresenceStore,
+	type files_PendingTarget,
 } from "@/lib/files.ts";
 import { files_yjs_doc_create_from_text } from "../../../../../shared/files-tiptap.ts";
 
 const MEMBERSHIP_ID = "membership_1" as app_convex_Id<"organizations_workspaces_users">;
 const NODE_ID = "node_json" as app_convex_Id<"files_nodes">;
+const PRIVATE_TARGET: files_PendingTarget = {
+	kind: "private",
+	id: "pending_node_json" as app_convex_Id<"files_pending_nodes">,
+};
 const LAST_SEQUENCE_ID = "last_sequence_a" as app_convex_Id<"files_yjs_docs_last_sequences">;
 
 const presenceStore = { localSessionId: "session_1" } as unknown as files_PresenceStore;
@@ -176,23 +190,24 @@ function renderPlainTextEditor(args?: {
 	nonCollaborative?: boolean;
 	withYjsLastSequenceId?: boolean;
 	onPreviewSnapshotChange?: () => void;
+	target?: files_PendingTarget;
+	onTargetChange?: (target: files_PendingTarget) => void;
 }) {
 	const toolbarPortalHost = document.createElement("div");
 	document.body.append(toolbarPortalHost);
 	const rendered = render(
 		<FileEditorPlainText
 			ref={args?.ref}
-			nodeId={NODE_ID}
+			target={args?.target ?? { kind: "saved", id: NODE_ID }}
 			editable={args?.editable ?? true}
 			nonCollaborative={args?.nonCollaborative ?? false}
-			yjsLastSequenceId={
-				args?.nonCollaborative || args?.withYjsLastSequenceId === false ? undefined : LAST_SEQUENCE_ID
-			}
+			yjsLastSequenceId={args?.nonCollaborative || args?.withYjsLastSequenceId === false ? undefined : LAST_SEQUENCE_ID}
 			monacoLanguageId={args?.monacoLanguageId ?? "json"}
 			presenceStore={presenceStore}
 			commentsPortalHost={null}
 			toolbarPortalHost={toolbarPortalHost}
 			onPreviewSnapshotChange={args?.onPreviewSnapshotChange}
+			onTargetChange={args?.onTargetChange}
 		/>,
 	);
 	return { ...rendered, toolbarPortalHost };
@@ -211,6 +226,8 @@ beforeEach(() => {
 	pushMutationMock.mockReset();
 	pushMutationMock.mockResolvedValue({ _yay: { newSequence: 4 } });
 	fetchFileYjsStateAndTextMock.mockReset();
+	fetchPrivateFilePendingTextMock.mockReset();
+	savePrivateFilePendingTextMock.mockReset();
 	convexQueryMock.mockReset();
 	convexActionMock.mockReset();
 	monacoHarness.createdModels.length = 0;
@@ -262,6 +279,85 @@ describe("view gating", () => {
 });
 
 describe("FileEditorPlainText", () => {
+	test.each(["", "private text\n"])("publishes a private file with its current text: %j", async (text) => {
+		const pendingUpdate = { _id: "pending_update_1", revision: 7 };
+		fetchPrivateFilePendingTextMock.mockResolvedValue({
+			_yay: { text, rootKind: "plain_text", pendingUpdate },
+		});
+		savePrivateFilePendingTextMock.mockResolvedValue({ _yay: { target: { kind: "saved", id: NODE_ID } } });
+		const onTargetChange = vi.fn();
+		const ref = createRef<Pick<FileEditor_Ref, "getPreviewSnapshot">>();
+		renderPlainTextEditor({ target: PRIVATE_TARGET, onTargetChange, ref });
+		await act(async () => {});
+
+		expect(fetchPrivateFilePendingTextMock).toHaveBeenCalledWith({
+			membershipId: MEMBERSHIP_ID,
+			target: PRIVATE_TARGET,
+		});
+		expect(fetchFileYjsStateAndTextMock).not.toHaveBeenCalled();
+		expect(convexQueryMock).not.toHaveBeenCalled();
+		expect(screen.queryByRole("button", { name: "Sync" })).toBeNull();
+		expect(ref.current?.getPreviewSnapshot()).toMatchObject({
+			target: PRIVATE_TARGET,
+			sourceKind: "proposed_changes",
+			pendingUpdate,
+		});
+		const currentText = text ? "edited private text\n" : "";
+		act(() => {
+			monacoHarness.createdModels[0]!.model.setValue(currentText);
+			monacoHarness.changeListeners.forEach((listener) => listener());
+		});
+		const saveButton = screen.getByRole("button", { name: "Save" });
+		expect(saveButton.hasAttribute("disabled")).toBe(false);
+		fireEvent.click(saveButton);
+		await act(async () => {});
+
+		expect(savePrivateFilePendingTextMock).toHaveBeenCalledWith({
+			membershipId: MEMBERSHIP_ID,
+			target: PRIVATE_TARGET,
+			pendingUpdateId: pendingUpdate._id,
+			reviewedRevision: pendingUpdate.revision,
+			text: currentText,
+		});
+		expect(onTargetChange).toHaveBeenCalledWith({ kind: "saved", id: NODE_ID });
+		expect(convexActionMock).not.toHaveBeenCalled();
+		expect(pushMutationMock).not.toHaveBeenCalled();
+	});
+
+	test("keeps a private edit after a stale Save is refused", async () => {
+		fetchPrivateFilePendingTextMock.mockResolvedValue({
+			_yay: { text: "draft\n", rootKind: "plain_text", pendingUpdate: { _id: "pending_update_1", revision: 7 } },
+		});
+		savePrivateFilePendingTextMock.mockResolvedValue({ _nay: { message: "This draft changed. Reload it." } });
+		const onTargetChange = vi.fn();
+		renderPlainTextEditor({ target: PRIVATE_TARGET, onTargetChange });
+		await act(async () => {});
+		act(() => {
+			monacoHarness.createdModels[0]!.model.setValue("local edit\n");
+			monacoHarness.changeListeners.forEach((listener) => listener());
+		});
+		fireEvent.click(screen.getByRole("button", { name: "Save" }));
+		await act(async () => {});
+
+		expect(toast.error).toHaveBeenCalledWith("This draft changed. Reload it.");
+		expect(monacoHarness.createdModels[0]!.model.getValue()).toBe("local edit\n");
+		expect(onTargetChange).not.toHaveBeenCalled();
+	});
+
+	test("keeps an unreadable private file closed", async () => {
+		const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		try {
+			fetchPrivateFilePendingTextMock.mockResolvedValue({ _nay: { message: "This draft is still preparing." } });
+			renderPlainTextEditor({ target: PRIVATE_TARGET });
+			expect(await screen.findByRole("alert")).toBeTruthy();
+			expect(screen.queryByTestId("monaco-editor")).toBeNull();
+			expect(fetchFileYjsStateAndTextMock).not.toHaveBeenCalled();
+			expect(savePrivateFilePendingTextMock).not.toHaveBeenCalled();
+		} finally {
+			consoleErrorSpy.mockRestore();
+		}
+	});
+
 	test.each([false, true])(
 		"preview reads immediate local typing with collaboration off: %s",
 		async (nonCollaborative) => {
@@ -277,7 +373,7 @@ describe("FileEditorPlainText", () => {
 				sourceKind: "editor_draft",
 				isDirty: false,
 				membershipId: MEMBERSHIP_ID,
-				nodeId: NODE_ID,
+				target: { kind: "saved", id: NODE_ID },
 				rootKind: "plain_text",
 				yjsLastSequenceId: nonCollaborative ? null : LAST_SEQUENCE_ID,
 				pendingUpdate: null,
@@ -390,7 +486,7 @@ describe("FileEditorPlainText", () => {
 			resolveQueryWithNonCollaborativeContent('{"mode":"off"}\n');
 			rerender(
 				<FileEditorPlainText
-					nodeId={NODE_ID}
+					target={{ kind: "saved", id: NODE_ID }}
 					editable={true}
 					nonCollaborative={true}
 					monacoLanguageId="json"
@@ -406,7 +502,7 @@ describe("FileEditorPlainText", () => {
 			resolveFetchWithPlainTextDoc('{"mode":"collaborative-b"}\n', lastSequenceB);
 			rerender(
 				<FileEditorPlainText
-					nodeId={NODE_ID}
+					target={{ kind: "saved", id: NODE_ID }}
 					editable={true}
 					nonCollaborative={false}
 					yjsLastSequenceId={lastSequenceB}
@@ -450,7 +546,7 @@ describe("FileEditorPlainText", () => {
 			rerender(
 				<FileEditorPlainText
 					ref={ref}
-					nodeId={NODE_ID}
+					target={{ kind: "saved", id: NODE_ID }}
 					editable={true}
 					nonCollaborative={false}
 					yjsLastSequenceId={lastSequenceB}

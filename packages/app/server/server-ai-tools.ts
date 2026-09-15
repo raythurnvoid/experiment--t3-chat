@@ -8,7 +8,10 @@ import type { ActionCtx } from "../convex/_generated/server";
 import type { Id } from "../convex/_generated/dataModel";
 import { internal } from "../convex/_generated/api.js";
 import type { public_api_Scope } from "../shared/public-api.ts";
-import { files_READ_RANGE_MAX_LINES, type files_nodes_get_by_path_Result } from "../convex/files_nodes.ts";
+import {
+	files_READ_RANGE_MAX_LINES,
+	type files_nodes_get_visible_entry_by_path_Result,
+} from "../convex/files_nodes.ts";
 import type { prepare_file_pending_update_for_agent_Result } from "../convex/files_pending_updates.ts";
 import { server_path_normalize } from "./server-utils.ts";
 import { crypto_random_hex, crypto_sha256_hex } from "./crypto-utils.ts";
@@ -140,10 +143,12 @@ function* ai_chat_tool_edit_file_replacer_block_anchor(
 	const searchLines = find.split("\n");
 	if (searchLines.length < 3) return;
 	if (searchLines[searchLines.length - 1] === "") searchLines.pop();
+
 	const firstLineSearch = searchLines[0].trim();
 	const lastLineSearch = searchLines[searchLines.length - 1].trim();
 	const searchBlockSize = searchLines.length;
 	const candidates: Array<{ startLine: number; endLine: number }> = [];
+
 	for (let i = 0; i < originalLines.length; i++) {
 		if (originalLines[i].trim() !== firstLineSearch) continue;
 		for (let j = i + 2; j < originalLines.length; j++) {
@@ -153,12 +158,15 @@ function* ai_chat_tool_edit_file_replacer_block_anchor(
 			}
 		}
 	}
+
 	if (candidates.length === 0) return;
+
 	if (candidates.length === 1) {
 		const { startLine, endLine } = candidates[0]!;
 		const actualBlockSize = endLine - startLine + 1;
 		let similarity = 0;
 		const linesToCheck = Math.min(searchBlockSize - 2, actualBlockSize - 2);
+
 		if (linesToCheck > 0) {
 			for (let j = 1; j < searchBlockSize - 1 && j < actualBlockSize - 1; j++) {
 				const originalLine = originalLines[startLine + j].trim();
@@ -172,6 +180,7 @@ function* ai_chat_tool_edit_file_replacer_block_anchor(
 		} else {
 			similarity = 1.0;
 		}
+
 		if (similarity >= SINGLE_CANDIDATE_SIMILARITY_THRESHOLD) {
 			let matchStartIndex = 0;
 			for (let k = 0; k < startLine; k++) matchStartIndex += originalLines[k].length + 1;
@@ -182,15 +191,19 @@ function* ai_chat_tool_edit_file_replacer_block_anchor(
 			}
 			yield content.substring(matchStartIndex, matchEndIndex);
 		}
+
 		return;
 	}
+
 	let bestMatch: { startLine: number; endLine: number } | null = null;
 	let maxSimilarity = -1;
+
 	for (const candidate of candidates) {
 		const { startLine, endLine } = candidate;
 		const actualBlockSize = endLine - startLine + 1;
 		let similarity = 0;
 		const linesToCheck = Math.min(searchBlockSize - 2, actualBlockSize - 2);
+
 		if (linesToCheck > 0) {
 			for (let j = 1; j < searchBlockSize - 1 && j < actualBlockSize - 1; j++) {
 				const originalLine = originalLines[startLine + j].trim();
@@ -204,11 +217,13 @@ function* ai_chat_tool_edit_file_replacer_block_anchor(
 		} else {
 			similarity = 1.0;
 		}
+
 		if (similarity > maxSimilarity) {
 			maxSimilarity = similarity;
 			bestMatch = candidate;
 		}
 	}
+
 	if (maxSimilarity >= MULTIPLE_CANDIDATES_SIMILARITY_THRESHOLD && bestMatch) {
 		const { startLine, endLine } = bestMatch;
 		let matchStartIndex = 0;
@@ -584,7 +599,7 @@ export function ai_chat_tool_create_bash(
 					`Shell command to run. Omit PATH to inspect the current app directory; use ${currentWorkspacePath} only when cwd is outside the app tree or when targeting that absolute path intentionally.`,
 				),
 		}),
-		execute: async (args) => {
+		execute: async (args, execution) => {
 			const threadId = ctxData.getThreadId();
 			if (!threadId) {
 				throw new Error("Cannot run bash before the chat thread has been created.");
@@ -594,6 +609,7 @@ export function ai_chat_tool_create_bash(
 				organizationId: ctxData.organizationId,
 				workspaceId: ctxData.workspaceId,
 				threadId,
+				toolCallId: execution.toolCallId,
 				userId: ctxData.userId,
 				command: args.command,
 				organizationName: ctxData.organizationName,
@@ -730,28 +746,45 @@ export function ai_chat_tool_create_edit_file(
 					`Invalid path: ${normalizedPath}. The ${bash_PLUGINS_MOUNT_ROOT} tree is a read-only mount of installed plugin sources and cannot be edited.`,
 				);
 			}
-			const node = (await ctx.runQuery(internal.files_nodes.get_by_path, {
+			const entry = (await ctx.runQuery(internal.files_nodes.get_visible_entry_by_path, {
 				organizationId: ctxData.organizationId,
 				workspaceId: ctxData.workspaceId,
 				visibilityUserId: ctxData.userId,
 				overlayUserId: ctxData.userId,
 				path: normalizedPath,
-			})) as files_nodes_get_by_path_Result;
-			if (node?.kind !== "file") {
+			})) as files_nodes_get_visible_entry_by_path_Result;
+			if (entry?.node.kind !== "file") {
 				throw new Error(`File not found: ${normalizedPath}`);
 			}
-			if (!files_node_has_editable_text_content(node)) {
+			if (
+				entry.kind === "saved"
+					? !files_node_has_editable_text_content(entry.node)
+					: entry.pendingUpdate.createIntent?.kind === "stored"
+			) {
+				const contentType =
+					entry.kind === "saved"
+						? entry.node.contentType
+						: entry.pendingUpdate.createIntent?.kind === "stored"
+							? entry.pendingUpdate.createIntent.contentType
+							: undefined;
 				throw new Error(
-					`Cannot edit ${normalizedPath}: this file's content type ('${node.contentType ?? "unknown"}') is not editable as text`,
+					`Cannot edit ${normalizedPath}: this file's content type ('${contentType}') is not editable as text`,
 				);
 			}
+			if (entry.kind === "private" && entry.pendingUpdate.content?.base.kind !== "new") {
+				throw new Error(`Cannot edit ${normalizedPath}: this draft is still preparing`);
+			}
+			const target =
+				entry.kind === "saved"
+					? { kind: "saved" as const, id: entry.node._id }
+					: { kind: "private" as const, id: entry.node._id };
 
 			for (let attempt = 0; ; attempt += 1) {
 				const prepared = (await ctx.runAction(internal.files_pending_updates.prepare_file_pending_update_for_agent, {
 					organizationId: ctxData.organizationId,
 					workspaceId: ctxData.workspaceId,
 					userId: ctxData.userId,
-					nodeId: node._id,
+					target,
 				})) as prepare_file_pending_update_for_agent_Result;
 				if (prepared._nay) {
 					throw new Error(
@@ -771,7 +804,11 @@ export function ai_chat_tool_create_edit_file(
 						overlayUserId: ctxData.userId,
 					},
 				);
-				if (!currentFileContent) {
+				if (
+					!currentFileContent ||
+					currentFileContent.target.kind !== target.kind ||
+					currentFileContent.target.id !== target.id
+				) {
 					throw new Error(
 						`Cannot edit ${normalizedPath}: the file changed while the edit was being prepared. Read it again.`,
 					);
@@ -791,13 +828,11 @@ export function ai_chat_tool_create_edit_file(
 				const modifiedText = files_normalize_ai_edit_content(modifiedTextRaw, currentFileContent.content);
 				const diff = ai_chat_tool_edit_file_create_diff(normalizedPath, currentFileContent.content, modifiedText);
 
-				const nodeId = currentFileContent.nodeId;
-
 				const written = await files_agent_write_file_text(ctx, {
 					organizationId: ctxData.organizationId,
 					workspaceId: ctxData.workspaceId,
 					userId: ctxData.userId,
-					nodeId,
+					target,
 					pendingUpdateId: currentFileContent.pendingUpdateId ?? undefined,
 					expectedBaseStateId: currentFileContent.pendingUpdateBaseStateId ?? null,
 					unstagedText: modifiedText,
@@ -824,7 +859,7 @@ export function ai_chat_tool_create_edit_file(
 					organizationId: ctxData.organizationId,
 					workspaceId: ctxData.workspaceId,
 					userId: ctxData.userId,
-					nodeId,
+					target,
 					pendingUpdateId: currentFileContent.pendingUpdateId ?? undefined,
 				});
 
@@ -836,8 +871,7 @@ export function ai_chat_tool_create_edit_file(
 				return {
 					title: normalizedPath,
 					metadata: {
-						nodeId: currentFileContent.displayNodeId,
-						contentNodeId: nodeId,
+						target,
 						pendingUpdateId: nextPendingUpdate?._id ?? null,
 						path: normalizedPath,
 						matches,

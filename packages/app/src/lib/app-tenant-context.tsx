@@ -1,5 +1,6 @@
 import { createContext, memo, use, type ReactNode } from "react";
 import { FilesClipboardProvider } from "@/components/files/files-clipboard.tsx";
+import { AppActivitiesProvider } from "@/lib/app-activities-context.tsx";
 import type { app_convex_Id } from "@/lib/app-convex-client.ts";
 import { FilesTreeProvider } from "@/lib/files-tree-context.tsx";
 
@@ -25,9 +26,11 @@ const AppTenantProvider = Object.assign(
 		return (
 			<AppTenantContext.Provider value={{ membershipId, organizationId, organizationName, workspaceId, workspaceName }}>
 				<FilesTreeProvider key={membershipId} membershipId={membershipId}>
-					<FilesClipboardProvider key={membershipId} membershipId={membershipId}>
-						{children}
-					</FilesClipboardProvider>
+					<AppActivitiesProvider key={membershipId} membershipId={membershipId}>
+						<FilesClipboardProvider key={membershipId} membershipId={membershipId}>
+							{children}
+						</FilesClipboardProvider>
+					</AppActivitiesProvider>
 				</FilesTreeProvider>
 			</AppTenantContext.Provider>
 		);

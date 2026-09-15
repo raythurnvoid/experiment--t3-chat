@@ -20,6 +20,7 @@ import {
 } from "./_generated/server.js";
 import app_convex_schema from "./schema.ts";
 import { convex_error } from "../server/convex-utils.ts";
+import { files_private_storage_db_release } from "./files_private_storage.ts";
 
 const ETAG_WEAK_PREFIX_REGEX = /^W\//;
 const ETAG_QUOTES_REGEX = /^"|"$/g;
@@ -450,6 +451,15 @@ export async function r2_enqueue_object_deletion_job(
 		.query("files_r2_object_deletion_jobs")
 		.withIndex("by_r2_key", (q) => q.eq("r2Key", args.r2Key))
 		.first();
+	// The hold survives deletion of the asset doc, including a late R2 event handoff.
+	const reservation = existing?.privateStorageReservationId
+		? null
+		: await ctx.db
+				.query("files_private_storage_reservations")
+				.withIndex("by_r2_key", (q) => q.eq("resource.r2Key", args.r2Key))
+				.unique();
+	const privateStorageReservationId =
+		existing?.privateStorageReservationId ?? (reservation?.settlement.kind === "held" ? reservation._id : undefined);
 
 	if (!existing) {
 		const jobId = await ctx.db.insert("files_r2_object_deletion_jobs", {
@@ -458,6 +468,7 @@ export async function r2_enqueue_object_deletion_job(
 			r2Key: args.r2Key,
 			reason: args.reason,
 			assetId: args.assetId,
+			privateStorageReservationId,
 			generation: 1,
 			lastR2EventId: args.r2EventId,
 			putMayArriveUntil: args.putMayArriveUntil,
@@ -466,6 +477,10 @@ export async function r2_enqueue_object_deletion_job(
 		});
 		await ctx.scheduler.runAfter(0, internal.r2_client.process_object_deletion_job, { jobId, generation: 1 });
 		return;
+	}
+
+	if (existing.privateStorageReservationId === undefined && privateStorageReservationId !== undefined) {
+		await ctx.db.patch("files_r2_object_deletion_jobs", existing._id, { privateStorageReservationId });
 	}
 
 	if (args.mode === "ensure") {
@@ -592,6 +607,16 @@ export const settle_object_deletion_job = internalMutation({
 
 		// R2 confirmed the final delete. Remove the job and clear the asset's cleanup deadline.
 		await ctx.runMutation(components.r2.lib.deleteMetadata, { bucket: R2_BUCKET_FILES, key: job.r2Key });
+		if (job.privateStorageReservationId) {
+			await files_private_storage_db_release(ctx, {
+				reservationId: job.privateStorageReservationId,
+				settlement: {
+					kind: "deleted",
+					settledAt: args.deletedAt,
+					proof: { kind: "r2", jobId: job._id, generation: job.generation },
+				},
+			});
+		}
 		await ctx.db.delete("files_r2_object_deletion_jobs", job._id);
 
 		// Keep the target and its attempt receipts for late events and replayed service calls.

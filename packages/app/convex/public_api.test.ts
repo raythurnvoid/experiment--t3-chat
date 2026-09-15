@@ -392,7 +392,7 @@ async function seed_markdown_file(args: {
 				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
 				userId: args.userId,
-				nodeId,
+				target: { kind: "saved", id: nodeId },
 			},
 		);
 		if (batch._nay) {
@@ -413,7 +413,7 @@ async function seed_markdown_file(args: {
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
 			userId: args.userId,
-			nodeId,
+			target: { kind: "saved", id: nodeId },
 			operationBatchId: batch._yay.operationBatchId,
 		});
 		if (pending._nay) {
@@ -1912,7 +1912,7 @@ describe("public files API", () => {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			userId: db.userId,
-			nodeId,
+			target: { kind: "saved", id: nodeId },
 		});
 		if (batch._nay) {
 			throw new Error(batch._nay.message);
@@ -1932,7 +1932,7 @@ describe("public files API", () => {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			userId: db.userId,
-			nodeId,
+			target: { kind: "saved", id: nodeId },
 			operationBatchId: batch._yay.operationBatchId,
 		});
 		if (pending._nay) {

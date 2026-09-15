@@ -51,7 +51,7 @@ import type {
 	ai_chat_files_load_thread_tmp_files_Result,
 	ai_chat_files_patch_thread_tmp_files_Args,
 } from "../convex/ai_chat_files.ts";
-import { files_pending_path_overlay_project_committed_path } from "../shared/files.ts";
+import type { files_PendingTarget } from "../shared/files.ts";
 import type { plugins_list_bash_source_mounts_Result } from "../convex/plugins.ts";
 import {
 	organizations_GLOBAL_GITHUB_WORKSPACE_ID,
@@ -66,6 +66,7 @@ import { bash_grep_command_create } from "./bash-grep-command.ts";
 import { bash_ls_command_create } from "./bash-ls-command.ts";
 import { bash_meta_command_create } from "./bash-meta-command.ts";
 import { bash_mv_command_create } from "./bash-mv-command.ts";
+import { bash_transfer_command_create, type bash_TransferContext } from "./bash-transfer-command.ts";
 import { bash_nested_shell_command_create } from "./bash-nested-shell-command.ts";
 import { bash_head_tail_wc_command_create } from "./bash-head-tail-wc-command.ts";
 import { bash_resolve_command_create } from "./bash-resolve-command.ts";
@@ -840,9 +841,11 @@ async function bash_fs_create(args: {
 	userId: Id<"users">;
 	threadId: Id<"ai_chat_threads">;
 	persistedCwd: string;
+	persistedCwdTarget: files_PendingTarget | null;
 	allowDbFilesMkdir: boolean;
 	githubMounts: Doc<"github_mounts">[];
 	pluginSourceMounts: plugins_list_bash_source_mounts_Result;
+	transferContext: bash_TransferContext;
 }) {
 	// Organization and workspace names are validated slugs, so they are stable shell
 	// path segments and do not need path-segment encoding here.
@@ -970,42 +973,60 @@ async function bash_fs_create(args: {
 		},
 	};
 
-	// The visible path the user's own pending move gives this app path, or null when untouched.
-	const project_pending_moved_path = async (path: string) => {
+	const get_directory_path = async (target: files_PendingTarget) => {
+		const directory = await args.ctx.runQuery(internal.files_visible.internal_get_directory_path, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			userId: args.userId,
+			target,
+		});
+		return directory ? bash_db_files_path_to_current_workspace_path(currentWorkspacePath, directory.path) : null;
+	};
+	const get_cwd_target = async (path: string) => {
 		const dbFilesPath = bash_current_workspace_path_to_db_files_path(currentWorkspacePath, bash_normalize_path(path));
-		if (dbFilesPath == null || dbFilesPath === "/") {
-			return null;
-		}
-		const overlay = await appDbFilesFs.getOverlay();
-		if (overlay == null) {
-			return null;
-		}
-		const visiblePath = files_pending_path_overlay_project_committed_path(overlay, dbFilesPath);
-		if (visiblePath == null || visiblePath === dbFilesPath) {
-			return null;
-		}
-		return bash_db_files_path_to_current_workspace_path(currentWorkspacePath, visiblePath);
+		if (dbFilesPath === null || dbFilesPath === "/") return null;
+		const entry = await appDbFilesFs.getEntry(dbFilesPath, false);
+		return entry?.kind === "folder" && entry.target?.kind !== "root" ? (entry?.target ?? null) : null;
 	};
 
-	// The persisted cwd can vanish between runs (deleted folder, pruned /tmp).
-	const requestedCwd = args.persistedCwd === DEFAULT_CWD ? currentWorkspacePath : args.persistedCwd;
-	let cwd = (await nearest_existing_dir(fs, requestedCwd)) ?? currentWorkspacePath;
-	// A persisted cwd vacated by the user's own pending move (proposed in another chat)
-	// follows the move to its visible destination instead of climbing out of it.
-	if (cwd !== bash_normalize_path(requestedCwd)) {
-		const movedCwd = await project_pending_moved_path(requestedCwd);
-		if (movedCwd != null && (await nearest_existing_dir(fs, movedCwd)) === movedCwd) {
-			cwd = movedCwd;
-		}
+	// A target survives moves and publication. A removed target must not adopt a new occupant.
+	let requestedCwd = args.persistedCwd === DEFAULT_CWD ? currentWorkspacePath : args.persistedCwd;
+	if (args.persistedCwdTarget) {
+		requestedCwd = (await get_directory_path(args.persistedCwdTarget)) ?? bash_normalize_path(`${requestedCwd}/..`);
 	}
+	// The remembered folder can be gone by the next run (deleted folder, pruned /tmp).
+	const cwd = (await nearest_existing_dir(fs, requestedCwd)) ?? currentWorkspacePath;
 
-	const shell = bash_shell_create(args.ctx, { fs, cwd, dbFilesRoots });
+	// A successful cd starts a new selection, even when it returns to the same path.
+	const cwdToken = {};
+	const cwdTargets = new WeakMap<object, files_PendingTarget>();
+	const remember_cwd = async (path: string, token: object) => {
+		const target = await get_cwd_target(path);
+		if (target) cwdTargets.set(token, target);
+	};
+	await remember_cwd(cwd, cwdToken);
+
+	const shell = bash_shell_create(args.ctx, {
+		fs,
+		cwd,
+		cwdToken,
+		dbFilesRoots,
+		rememberCwd: remember_cwd,
+		transferContext: args.transferContext,
+	});
+
 	return {
 		cwd,
 		currentWorkspacePath,
 		...shell,
 		nearest_existing_dir: (path: string) => nearest_existing_dir(fs, path),
-		project_pending_moved_path,
+		get_cwd_target,
+		resolve_cwd: async (selection: { path: string; token: object }) => {
+			const target = cwdTargets.get(selection.token);
+			return target
+				? ((await get_directory_path(target)) ?? bash_normalize_path(`${selection.path}/..`))
+				: selection.path;
+		},
 		evict_tmp_to_limits: () => tmp_fs_evict_to_limits(tmpFs),
 		create_tmp_patch: async () => {
 			if (!tmpFs.dirty) {
@@ -1028,8 +1049,19 @@ async function bash_fs_create(args: {
 	};
 }
 
-function bash_shell_create(ctx: ActionCtx, args: { fs: MountableFs; cwd: string; dbFilesRoots: bash_DbFilesRoots }) {
+function bash_shell_create(
+	ctx: ActionCtx,
+	args: {
+		fs: MountableFs;
+		cwd: string;
+		cwdToken?: object;
+		dbFilesRoots: bash_DbFilesRoots;
+		rememberCwd?: (path: string, token: object) => Promise<void>;
+		transferContext?: bash_TransferContext;
+	},
+) {
 	const { fs, cwd, dbFilesRoots } = args;
+	const cwdToken = args.cwdToken ?? {};
 	const currentWorkspacePath = dbFilesRoots.app.currentWorkspacePath;
 	// App commands answer a usage mistake on stderr, usually with a `Try:` line naming the command
 	// that works. That answer is tool guidance, not program output, but `2>/dev/null` deletes it and
@@ -1078,8 +1110,9 @@ function bash_shell_create(ctx: ActionCtx, args: { fs: MountableFs; cwd: string;
 			...(dbFilesRoots.app.fs.readOnlySource == null
 				? [
 						bash_rm_command_create(ctx, dbFilesRoots),
-						bash_cp_command_create(ctx, dbFilesRoots),
-						bash_mv_command_create(ctx, dbFilesRoots),
+						bash_cp_command_create(ctx, dbFilesRoots, args.transferContext),
+						bash_mv_command_create(ctx, dbFilesRoots, args.transferContext),
+						...(args.transferContext ? [bash_transfer_command_create(ctx, dbFilesRoots, args.transferContext)] : []),
 					]
 				: []),
 			bash_tee_command_create(dbFilesRoots),
@@ -1110,6 +1143,7 @@ function bash_shell_create(ctx: ActionCtx, args: { fs: MountableFs; cwd: string;
 					stdout: "",
 					stderr: bash_disallowed_shell_code_error(),
 					exitCode: bash_COMMAND_EXIT_CANNOT_EXECUTE,
+					cwd: { path: cwd, token: cwdToken },
 					env: {
 						PWD: cwd,
 					},
@@ -1118,14 +1152,21 @@ function bash_shell_create(ctx: ActionCtx, args: { fs: MountableFs; cwd: string;
 
 			// Surface unexpected Just Bash failures as terminal stderr instead of
 			// failing the Convex action.
-			const result = await bash.exec(command).catch((error: unknown) => ({
-				stdout: "",
-				stderr: `${error instanceof Error ? error.message : String(error)}\n`,
-				exitCode: bash_COMMAND_EXIT_FAILURE,
-				env: {
-					PWD: cwd,
-				},
-			}));
+			const result = await bash
+				.exec(command, {
+					cwdToken,
+					onCwdChange: args.rememberCwd,
+					signal: args.transferContext?.signal,
+				})
+				.catch((error: unknown) => ({
+					stdout: "",
+					stderr: `${error instanceof Error ? error.message : String(error)}\n`,
+					exitCode: bash_COMMAND_EXIT_FAILURE,
+					cwd: { path: cwd, token: cwdToken },
+					env: {
+						PWD: cwd,
+					},
+				}));
 			return result;
 		},
 		app_command_diagnostics: () => appCommandDiagnostics,
@@ -1189,7 +1230,7 @@ export async function bash_run_plugin_review_command(
 	}
 
 	result.stderr += await tmp_fs_evict_to_limits(tmpFs);
-	const nextCwd = (await nearest_existing_dir(fs, result.env.PWD || cwd)) ?? currentWorkspacePath;
+	const nextCwd = (await nearest_existing_dir(fs, result.cwd.path)) ?? currentWorkspacePath;
 
 	// Return the bounded scratch snapshot to this review, without creating a UI chat thread.
 	tmpFs.baselinePaths.clear();
@@ -1226,202 +1267,328 @@ export async function bash_run_command(
 		workspaceName: string;
 		userId: Id<"users">;
 		threadId: Id<"ai_chat_threads">;
+		toolCallId: string;
 		command: string;
 		allowDbFilesMkdir: boolean;
 	},
-) {
-	// Mount visibility is decided per run: only plugins with an enabled installation in this
-	// workspace appear under `/.plugins`, and only GitHub mounts with a finished sync appear
-	// under `/.mounts` (their commit sha is pinned for the whole run).
-	const [threadState, githubMounts, pluginSourceMounts] = await Promise.all([
-		ctx.runQuery(internal.ai_chat.get_thread_state, {
-			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
-			threadId: args.threadId,
-		}) as Promise<ai_chat_get_thread_state_Result>,
-		ctx.runQuery(internal.github_mounts.list_mounts, {}) as Promise<Doc<"github_mounts">[]>,
-		ctx.runQuery(internal.plugins.list_bash_source_mounts, {
-			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
-		}) as Promise<plugins_list_bash_source_mounts_Result>,
-	]);
+): Promise<NonNullable<Doc<"ai_chat_bash_invocations">["result"]>> {
+	const digest = await crypto.subtle.digest(
+		"SHA-256",
+		new TextEncoder().encode(JSON.stringify([args.command, args.allowDbFilesMkdir])),
+	);
 
-	const bashFs = await bash_fs_create({
-		ctx,
+	const commandHash = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+
+	const identity = {
 		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
-		organizationName: args.organizationName,
-		workspaceName: args.workspaceName,
 		userId: args.userId,
 		threadId: args.threadId,
-		persistedCwd: threadState.bashCwd,
-		allowDbFilesMkdir: args.allowDbFilesMkdir,
-		githubMounts,
-		pluginSourceMounts,
-	});
+		toolCallId: args.toolCallId,
+		commandHash,
+	};
 
-	// Scope follows shell operations, not the cwd checks before and after them.
-	bashFs.clear_observed_paths();
-	const result = await bashFs.run_command(args.command);
-	const observedPaths = [...bashFs.observed_paths];
-	const observedPathsTruncated = bashFs.observed_paths_truncated();
+	// A lost begin reply may already own this call. Read it back instead of running it a second time.
+	const begun = await ctx
+		.runMutation(internal.ai_chat_files.begin_bash_invocation, identity)
+		.catch(() => ctx.runQuery(internal.ai_chat_files.get_bash_invocation, identity));
+	if (begun._nay) throw new Error(begun._nay.message);
 
-	// PWD is an ordinary shell variable; a command can unset or empty it, in
-	// which case we assume the shell did not move.
-	const rawNextCwd = result.env.PWD || bashFs.cwd;
-	// A command can delete its own cwd; climb to the nearest surviving directory.
-	let nextCwd = (await bashFs.nearest_existing_dir(rawNextCwd)) ?? bashFs.currentWorkspacePath;
-	// A cwd vacated by the user's own pending move (mv of the cwd or an ancestor) follows
-	// the move to its visible destination instead of climbing out of it.
-	if (nextCwd !== bash_normalize_path(rawNextCwd)) {
-		const movedCwd = await bashFs.project_pending_moved_path(rawNextCwd);
-		if (movedCwd != null && (await bashFs.nearest_existing_dir(movedCwd)) === movedCwd) {
-			nextCwd = movedCwd;
-		}
-	}
-	const redirectsStderrToStdout = REDIRECTS_STDERR_TO_STDOUT_REGEX.test(args.command);
+	const invocation = begun._yay;
 
-	if (
-		COMMAND_NOT_FOUND_REGEX.test(result.stderr) ||
-		(redirectsStderrToStdout && COMMAND_NOT_FOUND_REGEX.test(result.stdout))
-	) {
-		result.stderr +=
-			"bash: run 'help' to list available commands; app files are db-backed — use search/grep for content and find/ls for paths.\n";
-		const filePathMatch = FILE_COMMAND_OPERAND_REGEX.exec(args.command.replace(bash_SHELL_COMMENT_LINE_REGEX, ""));
-		if (filePathMatch?.[1] != null) {
-			const target = bash_shell_arg_quote(filePathMatch[1]);
-			result.stderr += `bash: the Unix file command is intentionally unavailable. Try: stat ${target} && wc -c ${target} && head -n 5 ${target}\n`;
-		}
-	}
+	if (!invocation.isNew) {
+		if (invocation.result) return invocation.result;
 
-	if (
-		args.command.includes("pipefail") &&
-		(SET_INVALID_OPTION_REGEX.test(result.stderr) ||
-			(redirectsStderrToStdout && SET_INVALID_OPTION_REGEX.test(result.stdout)))
-	) {
-		result.stderr += "bash: `set -euo pipefail` is unsupported; retry without strict-mode boilerplate.\n";
-	}
+		const cwd = `${bash_APP_MOUNT_PATH}/${args.organizationName}/${args.workspaceName}`;
 
-	// Restore app-command guidance the shell swallowed. `find … 2>/dev/null | head` discards the
-	// `Try:` line and reports exit 0, so the model sees an empty successful result and can report
-	// "no matching files" as fact. The guidance is the tool answering the mistake, so it survives
-	// redirection; anything still visible in the transcript is skipped so nothing is printed twice.
-	const restoredDiagnostics = new Set<string>();
-	for (const diagnostic of bashFs.app_command_diagnostics()) {
-		const guidance = diagnostic.stderr.trim();
-		if (!guidance || restoredDiagnostics.has(guidance)) {
-			continue;
-		}
-		if (result.stdout.includes(guidance) || result.stderr.includes(guidance)) {
-			continue;
-		}
-		restoredDiagnostics.add(guidance);
-		result.stderr += `bash: ${diagnostic.name} exited ${diagnostic.exitCode} and its stderr was discarded; it said:\n${guidance}\n`;
+		const exitCode =
+			invocation.status === "running"
+				? 3
+				: invocation.status === "interrupted" && invocation.deadlineAt <= Date.now()
+					? 124
+					: 1;
+
+		const stderr =
+			invocation.status === "running"
+				? `Bash call ${invocation.invocationId} is still running. Check Notifications for its progress.\n`
+				: exitCode === 124
+					? `Bash call ${invocation.invocationId} reached its deadline. Check Notifications before starting a new command.\n`
+					: invocation.resultExpired
+						? `Bash call ${invocation.invocationId} has finished and its saved result has expired. Start a new command.\n`
+						: `Bash call ${invocation.invocationId} was interrupted. Check Notifications before starting a new command.\n`;
+
+		return {
+			title: `exit ${exitCode} · ${cwd}`,
+			stdout: "",
+			stderr,
+			output: format_bash_output({ command: args.command, cwd, nextCwd: cwd, exitCode, stdout: "", stderr }),
+			metadata: {
+				command: args.command,
+				cwd,
+				nextCwd: cwd,
+				exitCode,
+				stdoutTruncated: false,
+				stderrTruncated: false,
+				stdoutLength: 0,
+				stderrLength: stderr.length,
+				pathIndexTruncated: false,
+				observedPaths: [],
+				observedPathsTruncated: false,
+			},
+		};
 	}
 
-	// Only paths under HOME, `/tmp`, and the read-only `/.mounts` and `/.plugins` trees survive between
-	// runs (`/tmp` is restored from the db; mounts are reconstructed from the reserved scopes; everything
-	// else is synthetic mount scaffolding). A `/.plugins` cwd can still vanish when the plugin is
-	// uninstalled; the nearest-existing-dir climb above already handles that.
-	if (
-		nextCwd !== bash_HOME &&
-		!nextCwd.startsWith(`${bash_HOME}/`) &&
-		nextCwd !== bash_TMP_MOUNT &&
-		!nextCwd.startsWith(`${bash_TMP_MOUNT}/`) &&
-		nextCwd !== bash_EXTERNAL_MOUNTS_ROOT &&
-		!nextCwd.startsWith(`${bash_EXTERNAL_MOUNTS_ROOT}/`) &&
-		nextCwd !== bash_PLUGINS_MOUNT_ROOT &&
-		!nextCwd.startsWith(`${bash_PLUGINS_MOUNT_ROOT}/`)
-	) {
-		console.warn("Bash cwd is not persistable, resetting to the app root", {
+	const abort = new AbortController();
+	const deadlineTimer = setTimeout(
+		() => abort.abort("Bash deadline reached"),
+		Math.max(0, invocation.deadlineAt - Date.now()),
+	);
+	let commandNumber = 0;
+	try {
+		// Mount visibility is decided per run: only plugins with an enabled installation in this
+		// workspace appear under `/.plugins`, and only GitHub mounts with a finished sync appear
+		// under `/.mounts` (their commit sha is pinned for the whole run).
+		const [threadState, githubMounts, pluginSourceMounts] = await Promise.all([
+			ctx.runQuery(internal.ai_chat.get_thread_state, {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				threadId: args.threadId,
+			}) as Promise<ai_chat_get_thread_state_Result>,
+			ctx.runQuery(internal.github_mounts.list_mounts, {}) as Promise<Doc<"github_mounts">[]>,
+			ctx.runQuery(internal.plugins.list_bash_source_mounts, {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+			}) as Promise<plugins_list_bash_source_mounts_Result>,
+		]);
+
+		const bashFs = await bash_fs_create({
+			ctx,
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			organizationName: args.organizationName,
+			workspaceName: args.workspaceName,
+			userId: args.userId,
 			threadId: args.threadId,
-			cwd: rawNextCwd,
+			persistedCwd: threadState.bashCwd,
+			persistedCwdTarget: threadState.bashCwdTarget,
+			allowDbFilesMkdir: args.allowDbFilesMkdir,
+			githubMounts,
+			pluginSourceMounts,
+			transferContext: {
+				invocationId: invocation.invocationId,
+				membershipId: invocation.membershipId,
+				deadlineAt: invocation.transferDeadlineAt,
+				signal: abort.signal,
+				abort: (reason) => abort.abort(reason),
+				nextCommandNumber: () => commandNumber++,
+			},
 		});
-		nextCwd = bashFs.currentWorkspacePath;
-	}
 
-	// `/tmp` persists to the db, so bound its durable footprint before flushing:
-	// discard files over the per-file cap, then evict the oldest leaves (files,
-	// symlinks, and empty directories, by mtime then path) until both thread
-	// caps are satisfied — this call's writes have fresh mtimes and survive.
-	// Deletions go through `tmpFs.rm` so they mark the fs dirty and reach the db.
-	result.stderr += await bashFs.evict_tmp_to_limits();
+		// Scope follows shell operations, not the cwd checks before and after them.
+		bashFs.clear_observed_paths();
+		const result = await bashFs.run_command(args.command);
+		if (abort.signal.aborted) {
+			result.exitCode = 124;
+			result.stderr += `bash: ${typeof abort.signal.reason === "string" ? abort.signal.reason : "execution deadline reached"}. Remaining commands were stopped.\n`;
+		}
+		const observedPaths = [...bashFs.observed_paths];
+		const observedPathsTruncated = bashFs.observed_paths_truncated();
 
-	const pendingMutations: Promise<unknown>[] = [];
-	const tmpPatch = await bashFs.create_tmp_patch();
-	if (tmpPatch) {
-		pendingMutations.push(
-			ctx.runMutation(internal.ai_chat_files.patch_thread_tmp_files, {
-				organizationId: args.organizationId,
-				workspaceId: args.workspaceId,
+		// The engine returns its real directory. Shell variables cannot change this selection.
+		const rawNextCwd = result.cwd.path;
+		// Follow the folder identity before its old path, which may hold a new folder after mv.
+		const resolvedCwd = await bashFs.resolve_cwd(result.cwd);
+		let nextCwd = (await bashFs.nearest_existing_dir(resolvedCwd)) ?? bashFs.currentWorkspacePath;
+		const redirectsStderrToStdout = REDIRECTS_STDERR_TO_STDOUT_REGEX.test(args.command);
+
+		if (
+			COMMAND_NOT_FOUND_REGEX.test(result.stderr) ||
+			(redirectsStderrToStdout && COMMAND_NOT_FOUND_REGEX.test(result.stdout))
+		) {
+			result.stderr +=
+				"bash: run 'help' to list available commands; app files are db-backed — use search/grep for content and find/ls for paths.\n";
+			const filePathMatch = FILE_COMMAND_OPERAND_REGEX.exec(args.command.replace(bash_SHELL_COMMENT_LINE_REGEX, ""));
+			if (filePathMatch?.[1] != null) {
+				const target = bash_shell_arg_quote(filePathMatch[1]);
+				result.stderr += `bash: the Unix file command is intentionally unavailable. Try: stat ${target} && wc -c ${target} && head -n 5 ${target}\n`;
+			}
+		}
+
+		if (
+			args.command.includes("pipefail") &&
+			(SET_INVALID_OPTION_REGEX.test(result.stderr) ||
+				(redirectsStderrToStdout && SET_INVALID_OPTION_REGEX.test(result.stdout)))
+		) {
+			result.stderr += "bash: `set -euo pipefail` is unsupported; retry without strict-mode boilerplate.\n";
+		}
+
+		// Restore app-command guidance the shell swallowed. `find … 2>/dev/null | head` discards the
+		// `Try:` line and reports exit 0, so the model sees an empty successful result and can report
+		// "no matching files" as fact. The guidance is the tool answering the mistake, so it survives
+		// redirection; anything still visible in the transcript is skipped so nothing is printed twice.
+		const restoredDiagnostics = new Set<string>();
+		for (const diagnostic of bashFs.app_command_diagnostics()) {
+			const guidance = diagnostic.stderr.trim();
+			if (!guidance || restoredDiagnostics.has(guidance)) {
+				continue;
+			}
+			if (result.stdout.includes(guidance) || result.stderr.includes(guidance)) {
+				continue;
+			}
+			restoredDiagnostics.add(guidance);
+			result.stderr += `bash: ${diagnostic.name} exited ${diagnostic.exitCode} and its stderr was discarded; it said:\n${guidance}\n`;
+		}
+
+		// Only paths under HOME, `/tmp`, and the read-only `/.mounts` and `/.plugins` trees survive between
+		// runs (`/tmp` is restored from the db; mounts are reconstructed from the reserved scopes; everything
+		// else is synthetic mount scaffolding). A `/.plugins` cwd can still vanish when the plugin is
+		// uninstalled; the nearest-existing-dir climb above already handles that.
+		if (
+			nextCwd !== bash_HOME &&
+			!nextCwd.startsWith(`${bash_HOME}/`) &&
+			nextCwd !== bash_TMP_MOUNT &&
+			!nextCwd.startsWith(`${bash_TMP_MOUNT}/`) &&
+			nextCwd !== bash_EXTERNAL_MOUNTS_ROOT &&
+			!nextCwd.startsWith(`${bash_EXTERNAL_MOUNTS_ROOT}/`) &&
+			nextCwd !== bash_PLUGINS_MOUNT_ROOT &&
+			!nextCwd.startsWith(`${bash_PLUGINS_MOUNT_ROOT}/`)
+		) {
+			console.warn("Bash cwd is not persistable, resetting to the app root", {
 				threadId: args.threadId,
-				fileNodes: tmpPatch.fileNodes,
-				fileNodesContentDict: tmpPatch.fileNodesContentDict,
-				deletePaths: tmpPatch.deletePaths,
-			}),
-		);
-		bashFs.mark_tmp_clean();
-	}
+				cwd: rawNextCwd,
+			});
+			nextCwd = bashFs.currentWorkspacePath;
+		}
 
-	const stdoutLength = result.stdout.length;
-	const stderrLength = result.stderr.length;
-	const stdout = bashFs.truncate_output(result.stdout);
-	const truncatedStderr = bashFs.truncate_output(result.stderr);
+		// `/tmp` persists to the db, so bound its durable footprint before flushing:
+		// discard files over the per-file cap, then evict the oldest leaves (files,
+		// symlinks, and empty directories, by mtime then path) until both thread
+		// caps are satisfied — this call's writes have fresh mtimes and survive.
+		// Deletions go through `tmpFs.rm` so they mark the fs dirty and reach the db.
+		result.stderr += await bashFs.evict_tmp_to_limits();
 
-	const threadStateUpdated = nextCwd !== threadState.bashCwd;
-	if (threadStateUpdated) {
-		pendingMutations.push(
-			ctx.runMutation(internal.ai_chat.set_thread_state, {
-				organizationId: args.organizationId,
-				workspaceId: args.workspaceId,
-				threadId: args.threadId,
-				userId: args.userId,
-				patch: {
-					bashCwd: nextCwd,
-				},
-			}),
-		);
-	}
+		const pendingMutations: Promise<unknown>[] = [];
+		const tmpPatch = await bashFs.create_tmp_patch();
+		if (tmpPatch) {
+			pendingMutations.push(
+				ctx.runMutation(internal.ai_chat_files.patch_thread_tmp_files, {
+					invocationId: invocation.invocationId,
+					organizationId: args.organizationId,
+					workspaceId: args.workspaceId,
+					threadId: args.threadId,
+					fileNodes: tmpPatch.fileNodes,
+					fileNodesContentDict: tmpPatch.fileNodesContentDict,
+					deletePaths: tmpPatch.deletePaths,
+				}),
+			);
+			bashFs.mark_tmp_clean();
+		}
 
-	await Promise.all(pendingMutations);
+		const stdoutLength = result.stdout.length;
+		const stderrLength = result.stderr.length;
+		const stdout = bashFs.truncate_output(result.stdout);
+		const truncatedStderr = bashFs.truncate_output(result.stderr);
 
-	const pathIndexTruncated = bashFs.path_index_truncated();
-	console.debug("Bash command completed", {
-		threadId: args.threadId,
-		commandName: args.command.trim().split(bash_WHITESPACE_RUN_REGEX, 1)[0] ?? "",
-		exitCode: result.exitCode,
-		stdoutLength,
-		stderrLength,
-		threadStateUpdated,
-		pathIndexTruncated,
-	});
+		const nextCwdTarget = await bashFs.get_cwd_target(nextCwd);
+		const threadStateUpdated =
+			nextCwd !== threadState.bashCwd ||
+			nextCwdTarget?.kind !== threadState.bashCwdTarget?.kind ||
+			nextCwdTarget?.id !== threadState.bashCwdTarget?.id;
+		if (threadStateUpdated) {
+			pendingMutations.push(
+				ctx.runMutation(internal.ai_chat.set_thread_state, {
+					invocationId: invocation.invocationId,
+					organizationId: args.organizationId,
+					workspaceId: args.workspaceId,
+					threadId: args.threadId,
+					userId: args.userId,
+					patch: {
+						bashCwd: nextCwd,
+						bashCwdTarget: nextCwdTarget,
+					},
+				}),
+			);
+		}
 
-	return {
-		title: `exit ${result.exitCode} · ${nextCwd}`,
-		output: bashFs.format_output({
-			command: args.command,
-			cwd: bashFs.cwd,
-			nextCwd,
+		await Promise.all(pendingMutations);
+
+		const pathIndexTruncated = bashFs.path_index_truncated();
+		console.debug("Bash command completed", {
+			threadId: args.threadId,
+			commandName: args.command.trim().split(bash_WHITESPACE_RUN_REGEX, 1)[0] ?? "",
 			exitCode: result.exitCode,
-			stdout: stdout.value,
-			stderr: truncatedStderr.value,
-		}),
-		stdout: stdout.value,
-		stderr: truncatedStderr.value,
-		metadata: {
-			command: args.command,
-			cwd: bashFs.cwd,
-			nextCwd,
-			exitCode: result.exitCode,
-			stdoutTruncated: stdout.truncated,
-			stderrTruncated: truncatedStderr.truncated,
 			stdoutLength,
 			stderrLength,
+			threadStateUpdated,
 			pathIndexTruncated,
-			observedPaths,
-			observedPathsTruncated,
-		},
-	};
+		});
+
+		const response = {
+			title: `exit ${result.exitCode} · ${nextCwd}`,
+			output: bashFs.format_output({
+				command: args.command,
+				cwd: bashFs.cwd,
+				nextCwd,
+				exitCode: result.exitCode,
+				stdout: stdout.value,
+				stderr: truncatedStderr.value,
+			}),
+			stdout: stdout.value,
+			stderr: truncatedStderr.value,
+			metadata: {
+				command: args.command,
+				cwd: bashFs.cwd,
+				nextCwd,
+				exitCode: result.exitCode,
+				stdoutTruncated: stdout.truncated,
+				stderrTruncated: truncatedStderr.truncated,
+				stdoutLength,
+				stderrLength,
+				pathIndexTruncated,
+				observedPaths,
+				observedPathsTruncated,
+			},
+		};
+
+		const finished = await ctx.runMutation(internal.ai_chat_files.finish_bash_invocation, {
+			invocationId: invocation.invocationId,
+			commandHash,
+			result: response,
+		});
+		if (finished._nay) throw new Error(finished._nay.message);
+		if (finished._yay.result) return finished._yay.result;
+
+		// The watchdog or finalization can end the call while its last writes are pending.
+		const exitCode = finished._yay.deadlineAt <= Date.now() ? 124 : 1;
+		const stderr = `${response.stderr}bash: ${exitCode === 124 ? "execution deadline reached" : "call was interrupted"}. Check Notifications before starting a new command.\n`;
+
+		return {
+			...response,
+			title: `exit ${exitCode} · ${nextCwd}`,
+			stderr,
+			output: bashFs.format_output({
+				command: args.command,
+				cwd: bashFs.cwd,
+				nextCwd,
+				exitCode,
+				stdout: response.stdout,
+				stderr,
+			}),
+			metadata: { ...response.metadata, exitCode, stderrLength: stderr.length },
+		};
+	} catch (error) {
+		await ctx
+			.runMutation(internal.ai_chat_files.interrupt_bash_invocation, { invocationId: invocation.invocationId })
+			.catch((interruptionError: unknown) =>
+				console.error("Failed to mark Bash call interrupted", {
+					invocationId: invocation.invocationId,
+					error: interruptionError,
+				}),
+			);
+		throw error;
+	} finally {
+		clearTimeout(deadlineTimer);
+	}
 }
 
 // #endregion action

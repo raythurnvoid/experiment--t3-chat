@@ -16,11 +16,10 @@ import { doc } from "convex-helpers/validators";
 import app_convex_schema from "./schema.ts";
 import { access_control_db_can_act_on_file_node, access_control_db_has_permission } from "./access_control.ts";
 import {
-	ACTIVITIES_TIMEOUT_MAX_MS,
+	ACTIVITIES_ESTIMATE_MAX_MS,
 	activities_db_add_target,
-	activities_db_get_by_source_id,
-	activities_db_start,
-} from "./activities.ts";
+	activities_db_require_by_source_id,
+} from "./activities_db.ts";
 import { billing_db_check_paid_plan, billing_db_emit_file_save, billing_pick_billed_user_id } from "./billing_db.ts";
 import { quotas_db_ensure, quotas_db_get } from "./quotas.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
@@ -1348,7 +1347,11 @@ export const resolve_principal = internalQuery({
 				.query("plugins_event_runs")
 				.withIndex("by_apiTokenHash", (q) => q.eq("apiTokenHash", apiTokenHash))
 				.unique();
-			if (!pluginRun || pluginRun.status !== "running" || !pluginRun.apiTokenExpiresAt) {
+			if (!pluginRun || !pluginRun.apiTokenExpiresAt) {
+				return Result({ _nay: { message: "Unauthenticated" } });
+			}
+			const activity = await activities_db_require_by_source_id(ctx, pluginRun._id);
+			if (activity.status !== "running") {
 				return Result({ _nay: { message: "Unauthenticated" } });
 			}
 
@@ -1473,7 +1476,8 @@ export const resolve_principal = internalQuery({
 					sourceFileNodeId: pluginRun.fileNodeId ?? null,
 					sourceAssetId: pluginRun.assetId ?? null,
 					outputParentPath,
-					apiTokenExpiresAt: pluginRun.apiTokenExpiresAt,
+					// The HTTP layer checks this clock after cache retrieval. Never cache a live-time verdict.
+					apiTokenExpiresAt: Math.min(pluginRun.apiTokenExpiresAt, activity.deadlineAt),
 					scopes,
 					principalKey: `plugin_run:${pluginRun._id}`,
 					pathPrefix: null,
@@ -2113,12 +2117,15 @@ export async function public_api_db_revalidate_live_plugin_run(
 	const pluginRun = await ctx.db.get("plugins_event_runs", args.runId);
 	if (
 		!pluginRun ||
-		pluginRun.status !== "running" ||
 		!pluginRun.apiTokenExpiresAt ||
 		pluginRun.apiTokenExpiresAt <= args.now ||
 		pluginRun.organizationId !== args.organizationId ||
 		pluginRun.workspaceId !== args.workspaceId
 	) {
+		return Result({ _nay: { message: "Unauthenticated" } });
+	}
+	const activity = await activities_db_require_by_source_id(ctx, pluginRun._id);
+	if (activity.status !== "running" || activity.deadlineAt <= args.now) {
 		return Result({ _nay: { message: "Unauthenticated" } });
 	}
 	const [installation, workspace] = await Promise.all([
@@ -3215,7 +3222,6 @@ export const publish_file_write = internalMutation({
 		if (pluginRun) {
 			await ctx.db.patch("plugins_event_runs", pluginRun._id, {
 				outputWriteCount: pluginRun.outputWriteCount + 1,
-				updatedAt: now,
 			});
 			await activities_db_add_target(ctx, {
 				sourceId: pluginRun._id,
@@ -3479,7 +3485,6 @@ export const publish_file_fill = internalMutation({
 		if (pluginRun) {
 			await ctx.db.patch("plugins_event_runs", pluginRun._id, {
 				outputWriteCount: pluginRun.outputWriteCount + 1,
-				updatedAt: now,
 			});
 			await activities_db_add_target(ctx, {
 				sourceId: pluginRun._id,
@@ -3889,17 +3894,18 @@ export const can_write_file_node = internalQuery({
 });
 
 /**
- * Opt the calling plugin run into the workspace activity feed. Activities are strictly opt-in —
- * a plugin that wants to stay hidden simply never calls this — and one per run. Once created,
- * the host owns the lifecycle: touch/write publishes append targets, run terminalization closes
- * a still-running activity with the run outcome, and run retention deletes it.
+ * Reveal the calling run's Activity in the workspace feed. Every run already has an Activity;
+ * a plugin that wants to stay hidden never calls this. The host owns completion and retention.
  */
 export const start_run_activity = internalMutation({
 	args: {
 		runId: v.id("plugins_event_runs"),
 		/** "" = no custom title; the host composes one from the plugin and the triggering file. */
 		title: v.string(),
-		/** Caller-predicted duration; the route's validator caps it at ACTIVITIES_TIMEOUT_MAX_MS. */
+		/**
+		 * How long the caller expects the run to take. The route's validator caps it at
+		 * `ACTIVITIES_ESTIMATE_MAX_MS`.
+		 */
 		timeoutMs: v.number(),
 	},
 	returns: v_result({
@@ -3909,12 +3915,11 @@ export const start_run_activity = internalMutation({
 		const now = Date.now();
 		const pluginRun = await ctx.db.get("plugins_event_runs", args.runId);
 		// Same liveness bar as the staged-write mutations: only a live, unexpired run may act.
-		if (
-			!pluginRun ||
-			pluginRun.status !== "running" ||
-			!pluginRun.apiTokenExpiresAt ||
-			pluginRun.apiTokenExpiresAt <= now
-		) {
+		if (!pluginRun || !pluginRun.apiTokenExpiresAt || pluginRun.apiTokenExpiresAt <= now) {
+			return Result({ _nay: { message: "Unauthenticated" } });
+		}
+		const activity = await activities_db_require_by_source_id(ctx, pluginRun._id);
+		if (activity.status !== "running" || activity.deadlineAt <= now) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 		const [installation, version, fileNode, actorMembership, workspace] = await Promise.all([
@@ -3964,27 +3969,22 @@ export const start_run_activity = internalMutation({
 			console.error(errorMessage, errorData);
 			throw should_never_happen(errorMessage, errorData);
 		}
-		if (await activities_db_get_by_source_id(ctx, pluginRun._id)) {
+		if (activity.feedVisible) {
 			return Result({ _nay: { message: "An activity already exists for this run" } });
 		}
 
-		const activityId = await activities_db_start(ctx, {
-			organizationId: pluginRun.organizationId,
-			workspaceId: pluginRun.workspaceId,
-			userId: pluginRun.actorUserId,
-			source: {
-				kind: "plugin_run",
-				id: pluginRun._id,
-				installationId: pluginRun.installationId,
-				pluginName: version.name,
-			},
+		await ctx.db.patch("activities", activity._id, {
+			feedVisible: true,
 			title: args.title || `${version.displayName} plugin · ${fileNode.name}`,
-			target: { kind: "file_node", id: fileNode._id, path: fileNode.path, message: "" },
-			timeoutAt: now + args.timeoutMs,
-			now,
+			targets: [
+				{ kind: "file_node" as const, id: fileNode._id, path: fileNode.path, message: "" },
+				...activity.targets.filter((target) => target.id !== fileNode._id),
+			].slice(0, 20),
+			expectedFinishAt: now + args.timeoutMs,
+			updatedAt: now,
 		});
 
-		return Result({ _yay: { activityId } });
+		return Result({ _yay: { activityId: activity._id } });
 	},
 });
 
@@ -5242,7 +5242,7 @@ export async function public_api_http_read_file(ctx: ActionCtx, request: Request
 		includePending: principal.kind === "public_api_grant",
 		maxBytes: Math.min(body._yay.maxBytes ?? FILES_READ_MAX_BYTES, FILES_READ_MAX_BYTES),
 	});
-	if (!content) {
+	if (!content || content.target.kind !== "saved") {
 		return {
 			status: 404,
 			body: await fail({
@@ -5271,7 +5271,7 @@ export async function public_api_http_read_file(ctx: ActionCtx, request: Request
 		status: 200,
 		body: {
 			path: requestedPath,
-			nodeId: content.displayNodeId,
+			nodeId: content.target.id,
 			content: content.content,
 		},
 		headers: { "Cache-Control": "no-store" },
@@ -5338,7 +5338,7 @@ export async function public_api_http_read_many(ctx: ActionCtx, request: Request
 	const errors: Array<{ path: string; message: string }> = [];
 
 	for (const item of contents) {
-		if (!item.content) {
+		if (!item.content || item.content.target.kind !== "saved") {
 			errors.push({
 				path: item.path,
 				message: "File not found or exceeds the read limit.",
@@ -5355,7 +5355,7 @@ export async function public_api_http_read_many(ctx: ActionCtx, request: Request
 		contentBytes += nextContentBytes;
 		files.push({
 			path: item.path,
-			nodeId: item.content.displayNodeId,
+			nodeId: item.content.target.id,
 			content: item.content.content,
 		});
 	}
@@ -6970,9 +6970,8 @@ const start_activity_body_validator = z.object({
 	// "" (after trimming) = no custom title; the host composes one from the plugin's
 	// display name and the triggering file's name.
 	title: z.string().trim().max(ACTIVITIES_TITLE_MAX_CHARS),
-	// The caller must predict how long its work takes; the timeout cron closes the
-	// activity as "timeout" once this much time passes without a finish.
-	timeoutMs: z.number().int().min(1).max(ACTIVITIES_TIMEOUT_MAX_MS),
+	// This estimate controls the Overdue label. The execution deadline stays separate.
+	timeoutMs: z.number().int().min(1).max(ACTIVITIES_ESTIMATE_MAX_MS),
 });
 
 export type public_api_http_start_activity_Body = z.infer<typeof start_activity_body_validator>;

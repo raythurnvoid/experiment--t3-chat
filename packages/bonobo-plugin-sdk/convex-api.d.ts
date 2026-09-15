@@ -223,8 +223,8 @@ export type BonoboConvexApi = {
 		user_put_document: import("convex/server").FunctionReference<"mutation", "public", {
 			expectedRevision?: number | undefined;
 			value: Record<string, any>;
-			collection: string;
 			key: string;
+			collection: string;
 		}, {
 			_nay: {
 				name: undefined;
@@ -423,8 +423,8 @@ export type BonoboConvexApi = {
 		}, string | undefined>;
 		user_remove_document: import("convex/server").FunctionReference<"mutation", "public", {
 			expectedRevision?: number | undefined;
-			collection: string;
 			key: string;
+			collection: string;
 		}, {
 			_nay: {
 				name: undefined;
@@ -565,8 +565,8 @@ export type BonoboConvexApi = {
 		user_put_owned_document: import("convex/server").FunctionReference<"mutation", "public", {
 			expectedRevision?: number | undefined;
 			value: Record<string, any>;
-			collection: string;
 			key: string;
+			collection: string;
 		}, {
 			_nay: {
 				name: undefined;
@@ -775,8 +775,8 @@ export type BonoboConvexApi = {
 		}, string | undefined>;
 		user_remove_owned_document: import("convex/server").FunctionReference<"mutation", "public", {
 			expectedRevision?: number | undefined;
-			collection: string;
 			key: string;
+			collection: string;
 		}, {
 			_nay: {
 				name: undefined;
@@ -926,8 +926,8 @@ export type BonoboConvexApi = {
 				keyPrefix: string;
 				document: {
 					value: Record<string, any>;
-					collection: string;
 					key: string;
+					collection: string;
 				};
 				collections: string[];
 				principals: {
@@ -1330,8 +1330,8 @@ export type BonoboConvexApi = {
 				createdAt: number;
 				value: Record<string, any>;
 				revision: number;
-				collection: string;
 				key: string;
+				collection: string;
 				byteSize: number;
 				writeMode: "normal" | "versioned";
 				ownership: "shared" | "owned";
@@ -1358,8 +1358,8 @@ export type BonoboConvexApi = {
 			createdAt: number;
 			value: Record<string, any>;
 			revision: number;
-			collection: string;
 			key: string;
+			collection: string;
 			byteSize: number;
 			writeMode: "normal" | "versioned";
 			ownership: "shared" | "owned";
@@ -1379,8 +1379,8 @@ export type BonoboConvexApi = {
 				createdAt: number;
 				value: Record<string, any>;
 				revision: number;
-				collection: string;
 				key: string;
+				collection: string;
 				byteSize: number;
 				writeMode: "normal" | "versioned";
 				ownership: "shared" | "owned";
@@ -1400,8 +1400,8 @@ export type BonoboConvexApi = {
 				createdAt: number;
 				value: Record<string, any>;
 				revision: number;
-				collection: string;
 				key: string;
+				collection: string;
 				byteSize: number;
 				writeMode: "normal" | "versioned";
 				ownership: "shared" | "owned";

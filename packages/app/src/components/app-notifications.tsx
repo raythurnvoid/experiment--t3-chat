@@ -1,17 +1,18 @@
 import "./app-notifications.css";
 
-import { useQueries, useQuery } from "convex/react";
+import { usePaginatedQuery, useQueries, useQuery } from "convex/react";
 import { useNavigate } from "@tanstack/react-router";
 import { Bell, CircleAlert, CircleCheck, FileText, LoaderCircle, X } from "lucide-react";
-import { memo, useId, useMemo, useState } from "react";
+import { memo, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
 import { FilesClipboardProvider } from "@/components/files/files-clipboard.tsx";
-import { MyButton, type MyButton_ClassNames } from "@/components/my-button.tsx";
+import { MyButton } from "@/components/my-button.tsx";
 import { MyIcon } from "@/components/my-icon.tsx";
 import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
 import { MyPopover, MyPopoverContent, MyPopoverTrigger } from "@/components/my-popover.tsx";
 import { useFn } from "@/hooks/utils-hooks.ts";
+import { AppActivitiesProvider } from "@/lib/app-activities-context.tsx";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import {
 	app_convex,
@@ -93,7 +94,7 @@ type AppNotificationsList_Props = {
 	notifications:
 		| app_convex_FunctionReturnType<typeof app_convex_api.notifications.list_current_notifications>
 		| undefined;
-	activities: app_convex_FunctionReturnType<typeof app_convex_api.activities.list_recent> | undefined;
+	activities: app_convex_FunctionReturnType<typeof app_convex_api.activities.list_page>["page"] | undefined;
 	organizationList: app_convex_FunctionReturnType<typeof app_convex_api.organizations.list> | undefined;
 	onArchiveNotification: (notificationId: app_convex_Id<"notifications">) => void;
 	onOpenWorkspace: (args: {
@@ -105,8 +106,6 @@ type AppNotificationsList_Props = {
 	}) => void;
 	onOpenFile: (fileNodeId: app_convex_Id<"files_nodes">) => void;
 	onArchiveActivity: (activityId: app_convex_Id<"activities">) => void;
-	canArchiveActivities: boolean;
-	activityArchiveReasonId: string | undefined;
 };
 
 const AppNotificationsList = memo(function AppNotificationsList(props: AppNotificationsList_Props) {
@@ -118,8 +117,6 @@ const AppNotificationsList = memo(function AppNotificationsList(props: AppNotifi
 		onOpenWorkspace,
 		onOpenFile,
 		onArchiveActivity,
-		canArchiveActivities,
-		activityArchiveReasonId,
 	} = props;
 
 	const notificationItems = notifications ?? [];
@@ -145,11 +142,14 @@ const AppNotificationsList = memo(function AppNotificationsList(props: AppNotifi
 		),
 	);
 
-	// One feed: invites and workspace activities interleaved, newest first.
+	// Keep active job controls before recent invitations and finished work.
 	const feedItems = [
 		...notificationItems.map((notification) => ({ kind: "invite" as const, notification })),
 		...(activities ?? []).map((activity) => ({ kind: "activity" as const, activity })),
 	].sort((a, b) => {
+		const aActive = a.kind === "activity" && a.activity.finishedAt === undefined;
+		const bActive = b.kind === "activity" && b.activity.finishedAt === undefined;
+		if (aActive !== bActive) return aActive ? -1 : 1;
 		const aCreationTime = a.kind === "invite" ? a.notification._creationTime : a.activity._creationTime;
 		const bCreationTime = b.kind === "invite" ? b.notification._creationTime : b.activity._creationTime;
 		return bCreationTime - aCreationTime;
@@ -175,8 +175,6 @@ const AppNotificationsList = memo(function AppNotificationsList(props: AppNotifi
 								activity={item.activity}
 								onOpenFile={onOpenFile}
 								onArchive={onArchiveActivity}
-								canArchive={canArchiveActivities}
-								archiveReasonId={activityArchiveReasonId}
 							/>
 						);
 					}
@@ -235,9 +233,13 @@ type AppNotificationsActivityItem_ClassNames =
 	| "AppNotificationsActivityItem-header"
 	| "AppNotificationsActivityItem-icon"
 	| "AppNotificationsActivityItem-icon-status-running"
+	| "AppNotificationsActivityItem-icon-status-queued"
+	| "AppNotificationsActivityItem-icon-status-awaiting_input"
+	| "AppNotificationsActivityItem-icon-status-stopping"
+	| "AppNotificationsActivityItem-icon-status-partial"
 	| "AppNotificationsActivityItem-icon-status-succeeded"
 	| "AppNotificationsActivityItem-icon-status-failed"
-	| "AppNotificationsActivityItem-icon-status-timeout"
+	| "AppNotificationsActivityItem-icon-status-timed_out"
 	| "AppNotificationsActivityItem-icon-status-canceled"
 	| "AppNotificationsActivityItem-title-group"
 	| "AppNotificationsActivityItem-title"
@@ -251,51 +253,62 @@ type AppNotificationsActivityItem_ClassNames =
 	| "AppNotificationsActivityItem-target-name";
 
 type AppNotificationsActivityItem_Props = {
-	activity: app_convex_FunctionReturnType<typeof app_convex_api.activities.list_recent>[number];
+	activity: app_convex_FunctionReturnType<typeof app_convex_api.activities.list_page>["page"][number];
 	onOpenFile: (fileNodeId: app_convex_Id<"files_nodes">) => void;
 	onArchive: (activityId: app_convex_Id<"activities">) => void;
-	canArchive: boolean;
-	archiveReasonId: string | undefined;
 };
 
 const AppNotificationsActivityItem = memo(function AppNotificationsActivityItem(
 	props: AppNotificationsActivityItem_Props,
 ) {
-	const { activity, onOpenFile, onArchive, canArchive, archiveReasonId } = props;
-	const { openRun, stop, pendingStopRunId } = FilesClipboardProvider.useContext();
+	const { activity, onOpenFile, onArchive } = props;
+	const { openRun } = FilesClipboardProvider.useContext();
+	const { stop, pendingStopSourceIds, openReviewRun } = AppActivitiesProvider.useContext();
 	const transferRun = activity.source.kind === "files_transfer_run" ? activity.source : null;
-	const isStopPending = pendingStopRunId === transferRun?.id;
-	const canDismiss = canArchive || transferRun !== null;
+	const reviewRun = activity.source.kind === "files_pending_update_run" ? activity.source : null;
+	const isStopPending = pendingStopSourceIds.has(activity.source.id);
+	const progress = activity.progress;
+	const isActive = activity.finishedAt === undefined;
+	const [now, setNow] = useState(Date.now);
+	useEffect(() => {
+		if (!isActive || activity.expectedFinishAt === undefined) return;
+		// Passing an estimate does not write to the database, so the card needs its own timer.
+		const timer = setTimeout(() => setNow(Date.now()), Math.max(0, activity.expectedFinishAt - Date.now()) + 1);
+		return () => clearTimeout(timer);
+	}, [activity.expectedFinishAt, isActive]);
 
 	const handleStop = useFn(() => {
-		if (!transferRun || isStopPending) return;
+		if (!activity.controls.canStop || isStopPending) return;
 
-		stop(transferRun.id)
+		stop({ activityId: activity._id, sourceId: activity.source.id })
 			.then((result) => {
 				if (result._nay) toast.error(result._nay.message);
 			})
 			.catch((error) => {
-				console.error("[AppNotificationsActivityItem.handleStop] Failed to stop paste", { error });
+				console.error("[AppNotificationsActivityItem.handleStop] Failed to stop activity", { error });
 				toast.error("Stop was not confirmed. Reconnect and try again.");
 			});
 	});
 
 	const statusLabel =
-		isStopPending && activity.status === "running" && transferRun?.phase !== "stopping"
+		isStopPending && isActive && activity.status !== "stopping"
 			? "Stop requested. Waiting for the server…"
-			: transferRun?.phase === "awaiting_choice"
-				? "Waiting for your choice"
-				: transferRun?.phase === "stopping"
-					? "Stopping"
-					: activity.status === "canceled"
-						? "Stopped"
-						: activity.status === "running"
-							? "Running"
-							: activity.status === "succeeded"
-								? "Completed"
-								: activity.status === "timeout"
-									? "Timed out"
-									: "Failed";
+			: {
+					queued: "Queued",
+					running: activity.expectedFinishAt !== undefined && activity.expectedFinishAt < now ? "Overdue" : "Running",
+					awaiting_input: "Waiting for your choice",
+					stopping: "Stopping",
+					succeeded: {
+						saved: "Saved",
+						ready_for_review: "Ready for review",
+						discarded: "Discarded",
+						plugin_result: "Completed",
+					}[activity.resultKind],
+					partial: "Partly completed",
+					failed: "Failed",
+					canceled: "Stopped",
+					timed_out: "Timed out",
+				}[activity.status];
 
 	return (
 		<article className={"AppNotificationsActivityItem" satisfies AppNotificationsActivityItem_ClassNames}>
@@ -307,7 +320,7 @@ const AppNotificationsActivityItem = memo(function AppNotificationsActivityItem(
 					)}
 					aria-hidden
 				>
-					{activity.status === "running" ? (
+					{isActive ? (
 						<LoaderCircle />
 					) : activity.status === "succeeded" ? (
 						<CircleCheck />
@@ -325,55 +338,68 @@ const AppNotificationsActivityItem = memo(function AppNotificationsActivityItem(
 						{activity.title}
 					</h3>
 					<p
-						role={transferRun ? "status" : undefined}
+						role="status"
 						className={"AppNotificationsActivityItem-meta" satisfies AppNotificationsActivityItem_ClassNames}
 					>
 						{statusLabel} · {format_relative_time(activity.finishedAt ?? activity._creationTime)}
 					</p>
 				</div>
-				{activity.status === "running" ? null : (
+				{activity.controls.canDismiss ? (
 					<MyIconButton
 						variant="ghost-highlightable"
 						tooltip="Dismiss"
 						aria-label={`Dismiss ${activity.title}`}
-						aria-disabled={canDismiss ? undefined : true}
-						aria-describedby={canDismiss ? undefined : archiveReasonId}
-						className={cn(
-							"AppNotificationsActivityItem-dismiss" satisfies AppNotificationsActivityItem_ClassNames,
-							!canDismiss && ("MyButton-state-disabled" satisfies MyButton_ClassNames),
-						)}
-						onClick={() => {
-							if (canDismiss) onArchive(activity._id);
-						}}
+						className={"AppNotificationsActivityItem-dismiss" satisfies AppNotificationsActivityItem_ClassNames}
+						onClick={() => onArchive(activity._id)}
 					>
 						<MyIconButtonIcon>
 							<X />
 						</MyIconButtonIcon>
 					</MyIconButton>
-				)}
+				) : null}
 			</div>
-			{activity.status === "failed" && activity.errorMessage ? (
+			{activity.errorMessage ? (
 				<p className={"AppNotificationsActivityItem-error" satisfies AppNotificationsActivityItem_ClassNames}>
 					{activity.errorMessage}
 				</p>
 			) : null}
-			{transferRun ? (
+			{transferRun && progress ? (
 				<div className={"AppNotificationsActivityItem-transfer" satisfies AppNotificationsActivityItem_ClassNames}>
 					<p>
-						{transferRun.completed} {transferRun.transferKind === "move" ? "moved" : "copied"}, {transferRun.skipped}{" "}
-						skipped, {transferRun.failed} failed of {transferRun.total}.
+						{progress.completed} {transferRun.transferKind === "move" ? "moved" : "copied"}, {progress.skipped} skipped,{" "}
+						{progress.failed} failed, {progress.blocked} need a choice, {progress.canceled} stopped.
+						{progress.total === null
+							? isActive
+								? ` Finding files (${progress.discovered} found).`
+								: " Stopped while finding files."
+							: ` Total: ${progress.total}.`}
 					</p>
 					<MyButton variant="secondary" onClick={() => openRun(transferRun.id)}>
-						{transferRun.phase === "awaiting_choice" ? "Review conflicts" : "View progress"}
+						{activity.status === "awaiting_input" ? "Review conflicts" : "View progress"}
 					</MyButton>
-					{activity.status === "running" ? (
-						<MyButton variant="ghost" disabled={isStopPending || transferRun.phase === "stopping"} onClick={handleStop}>
-							{transferRun.completed > 0 && transferRun.transferKind === "copy"
-								? "Stop and keep completed copies"
-								: "Cancel"}
-						</MyButton>
-					) : null}
 				</div>
+			) : null}
+			{reviewRun && progress ? (
+				<div className={"AppNotificationsActivityItem-transfer" satisfies AppNotificationsActivityItem_ClassNames}>
+					<p>
+						{progress.completed} {reviewRun.operationKind === "accept" ? "saved" : "discarded"}, {progress.blocked} need
+						review, {progress.failed} failed, {progress.skipped} skipped, {progress.canceled} stopped.
+					</p>
+					<MyButton variant="secondary" onClick={() => openReviewRun(reviewRun.id)}>
+						View review progress
+					</MyButton>
+				</div>
+			) : null}
+			{activity.controls.canStop ? (
+				<MyButton variant="ghost" disabled={isStopPending} onClick={handleStop}>
+					{reviewRun
+						? "Stop and keep completed changes"
+						: transferRun
+							? (progress?.completed ?? 0) > 0 && transferRun.transferKind === "copy"
+								? "Stop and keep completed copies"
+								: "Stop"
+							: "Stop"}
+				</MyButton>
 			) : null}
 			{activity.targets.length > 0 ? (
 				<ul className={"AppNotificationsActivityItem-targets" satisfies AppNotificationsActivityItem_ClassNames}>
@@ -411,7 +437,6 @@ const AppNotificationsActivityItem = memo(function AppNotificationsActivityItem(
 
 // #region root
 type AppNotifications_ClassNames =
-	| "AppNotifications"
 	| "AppNotifications-trigger"
 	| "AppNotifications-badge"
 	| "AppNotifications-popover"
@@ -423,29 +448,26 @@ export const AppNotifications = memo(function AppNotifications() {
 	const { membershipId, organizationName, workspaceName } = AppTenantProvider.useContext();
 
 	const notifications = useQuery(app_convex_api.notifications.list_current_notifications);
-	const activities = useQuery(app_convex_api.activities.list_recent, { membershipId });
+	const activeActivities = usePaginatedQuery(
+		app_convex_api.activities.list_page,
+		{ membershipId, section: "active" },
+		{ initialNumItems: 50 },
+	);
+	const activityHistory = usePaginatedQuery(
+		app_convex_api.activities.list_page,
+		{ membershipId, section: "history" },
+		{ initialNumItems: 50 },
+	);
+	const activities = [...activeActivities.results, ...activityHistory.results];
 	const organizationList = useQuery(app_convex_api.organizations.list);
-	const activityArchivePermission = useQuery(app_convex_api.access_control.get_current_user_workspace_permission, {
-		membershipId,
-		permission: "content.write",
-	});
 
 	const [open, setOpen] = useState(false);
-	const activityArchiveReasonId = `AppNotifications-activity-archive-${useId()}-description`;
+	const [dismissing, setDismissing] = useState(false);
 
 	const notificationItems = notifications ?? [];
 	// Only unarchived notifications are fetched, so every listed one counts toward the badge.
 	const notificationCount = notificationItems.length;
-	const dismissableActivityCount = (activities ?? []).filter((activity) => activity.status !== "running").length;
-	// Transfer runs are private to their requester, so dismissing them never needs workspace write permission.
-	const hasProtectedActivities = (activities ?? []).some(
-		(activity) => activity.status !== "running" && activity.source.kind !== "files_transfer_run",
-	);
-	const canArchiveActivities = activityArchivePermission === true || !hasProtectedActivities;
-	const activityArchiveReason =
-		dismissableActivityCount > 0 && activityArchivePermission === false
-			? "You need the Edit workspace content permission to dismiss workspace activity."
-			: null;
+	const dismissableActivityCount = activities.filter((activity) => activity.controls.canDismiss).length;
 
 	const onArchiveNotification = useFn((notificationId: app_convex_Id<"notifications">) => {
 		app_convex
@@ -462,32 +484,31 @@ export const AppNotifications = memo(function AppNotifications() {
 	});
 
 	const dismissAll = useFn(() => {
-		if (dismissableActivityCount > 0 && !canArchiveActivities) return;
-
+		if (dismissing) return;
+		setDismissing(true);
 		app_convex
 			.mutation(app_convex_api.notifications.archive_all_notifications, {})
-			.then((result) => {
-				if (result._nay) {
-					console.error("[AppNotifications.dismissAll] Failed to archive notifications", { result });
-					toast.error(result._nay.message);
+			.then(async (notificationsResult) => {
+				if (notificationsResult._nay) {
+					toast.error(notificationsResult._nay.message);
+					return;
 				}
+				let cursor: string | null = null;
+				do {
+					const result: app_convex_FunctionReturnType<typeof app_convex_api.activities.archive_all_activities> =
+						await app_convex.mutation(app_convex_api.activities.archive_all_activities, { membershipId, cursor });
+					if (result._nay) {
+						toast.error(result._nay.message);
+						return;
+					}
+					cursor = result._yay.isDone ? null : result._yay.continueCursor;
+				} while (cursor !== null);
 			})
 			.catch((error) => {
-				console.error("[AppNotifications.dismissAll] Unexpected archive-all-notifications error", { error });
-			});
-		if (dismissableActivityCount > 0) {
-			app_convex
-				.mutation(app_convex_api.activities.archive_all_activities, { membershipId })
-				.then((result) => {
-					if (result._nay) {
-						console.error("[AppNotifications.dismissAll] Failed to archive activities", { result });
-						toast.error(result._nay.message);
-					}
-				})
-				.catch((error) => {
-					console.error("[AppNotifications.dismissAll] Unexpected archive-all-activities error", { error });
-				});
-		}
+				console.error("[AppNotifications.dismissAll] Failed to dismiss notifications", { error });
+				toast.error("Could not dismiss all notifications. Try again.");
+			})
+			.finally(() => setDismissing(false));
 	});
 
 	const handleOpenWorkspace = useFn(
@@ -520,11 +541,7 @@ export const AppNotifications = memo(function AppNotifications() {
 	);
 
 	const onArchiveActivity = useFn((activityId: app_convex_Id<"activities">) => {
-		if (
-			!canArchiveActivities &&
-			activities?.find((activity) => activity._id === activityId)?.source.kind !== "files_transfer_run"
-		)
-			return;
+		if (!activities.find((activity) => activity._id === activityId)?.controls.canDismiss) return;
 
 		app_convex
 			.mutation(app_convex_api.activities.archive_activity, { membershipId, activityId })
@@ -576,25 +593,13 @@ export const AppNotifications = memo(function AppNotifications() {
 					<h2 className={"AppNotifications-title" satisfies AppNotifications_ClassNames}>Notifications</h2>
 					<MyButton
 						variant="ghost"
-						className={cn(
-							dismissableActivityCount > 0 &&
-								!canArchiveActivities &&
-								("MyButton-state-disabled" satisfies MyButton_ClassNames),
-						)}
-						disabled={!notificationCount && !dismissableActivityCount}
-						aria-disabled={dismissableActivityCount > 0 && !canArchiveActivities ? true : undefined}
-						aria-describedby={
-							dismissableActivityCount > 0 && activityArchiveReason ? activityArchiveReasonId : undefined
+						disabled={
+							dismissing || (!notificationCount && !dismissableActivityCount && activityHistory.status === "Exhausted")
 						}
 						onClick={dismissAll}
 					>
-						Dismiss all
+						{dismissing ? "Dismissing…" : "Dismiss all"}
 					</MyButton>
-					{activityArchiveReason ? (
-						<span id={activityArchiveReasonId} className="sr-only">
-							{activityArchiveReason}
-						</span>
-					) : null}
 				</header>
 
 				<AppNotificationsList
@@ -605,9 +610,25 @@ export const AppNotifications = memo(function AppNotifications() {
 					onOpenWorkspace={handleOpenWorkspace}
 					onOpenFile={handleOpenFile}
 					onArchiveActivity={onArchiveActivity}
-					canArchiveActivities={canArchiveActivities}
-					activityArchiveReasonId={activityArchiveReason ? activityArchiveReasonId : undefined}
 				/>
+				{activeActivities.status === "CanLoadMore" || activeActivities.status === "LoadingMore" ? (
+					<MyButton
+						variant="ghost"
+						disabled={activeActivities.status === "LoadingMore"}
+						onClick={() => activeActivities.loadMore(50)}
+					>
+						{activeActivities.status === "LoadingMore" ? "Loading active jobs…" : "Load more active jobs"}
+					</MyButton>
+				) : null}
+				{activityHistory.status === "CanLoadMore" || activityHistory.status === "LoadingMore" ? (
+					<MyButton
+						variant="ghost"
+						disabled={activityHistory.status === "LoadingMore"}
+						onClick={() => activityHistory.loadMore(50)}
+					>
+						{activityHistory.status === "LoadingMore" ? "Loading history…" : "Load more history"}
+					</MyButton>
+				) : null}
 			</MyPopoverContent>
 		</MyPopover>
 	);

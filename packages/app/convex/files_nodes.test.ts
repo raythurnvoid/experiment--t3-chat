@@ -20,8 +20,10 @@ import {
 	files_nodes_db_set_write_policy,
 	files_nodes_db_get_write_policy_management_state,
 	type files_nodes_WriteContext,
-	files_nodes_db_apply_pending_move,
 	files_nodes_db_move_nodes,
+	files_nodes_db_preflight_move,
+	files_nodes_db_apply_move,
+	files_nodes_db_get_content_version,
 	files_nodes_db_create_node_recursively_at_path,
 	files_nodes_db_hard_delete_node,
 	files_tail_lines_from_text,
@@ -34,7 +36,13 @@ import {
 	files_nodes_db_insert_file_content_docs,
 } from "./files_nodes_content.ts";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
-import { test_convex, test_get_file_yjs_pointers, test_mocks, test_mocks_fill_db_with } from "./setup.test.ts";
+import {
+	test_convex,
+	test_create_saved_text_file,
+	test_get_file_yjs_pointers,
+	test_mocks,
+	test_mocks_fill_db_with,
+} from "./setup.test.ts";
 import {
 	files_MAX_UPLOADS_BYTES,
 	files_MAX_TEXT_CONTENT_BYTES,
@@ -231,7 +239,7 @@ async function upsert_pending_update_internal_for_test(
 		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
 		userId: args.userId,
-		nodeId: args.nodeId,
+		target: { kind: "saved", id: args.nodeId },
 	});
 	if (batch._nay) {
 		return batch;
@@ -253,9 +261,44 @@ async function upsert_pending_update_internal_for_test(
 		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
 		userId: args.userId,
-		nodeId: args.nodeId,
+		target: { kind: "saved", id: args.nodeId },
 		operationBatchId: batch._yay.operationBatchId,
 	});
+}
+
+async function propose_move_for_test(
+	t: ReturnType<typeof test_convex>,
+	args: {
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		userId: Id<"users">;
+		nodeId: Id<"files_nodes">;
+		destParent: { kind: "saved"; id: Id<"files_nodes"> } | { kind: "root" };
+		destName: string;
+		replace?: boolean;
+	},
+) {
+	const target = { kind: "saved" as const, id: args.nodeId };
+	const proposed = await t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
+		organizationId: args.organizationId,
+		workspaceId: args.workspaceId,
+		userId: args.userId,
+		target,
+		destParent: args.destParent,
+		destName: args.destName,
+		replace: args.replace,
+	});
+	if (proposed._nay) throw new Error(proposed._nay.message);
+	const proposal = await t.run(async (ctx) =>
+		ctx.db
+			.query("files_pending_updates")
+			.withIndex("by_user_target", (q) =>
+				q.eq("userId", args.userId).eq("target.kind", "saved").eq("target.id", args.nodeId),
+			)
+			.unique(),
+	);
+	if (!proposal) throw new Error("Expected the move proposal");
+	return { target, pendingUpdateId: proposal._id, reviewedRevision: proposal.revision };
 }
 
 async function seed_paginated_bash_listing_fixture(ctx: MutationCtx) {
@@ -1177,8 +1220,8 @@ describe("get_path_by_id", () => {
 					organizationId: db.organizationId,
 					workspaceId: db.workspaceId,
 					userId: db.userId,
-					nodeId: db.files.file_root_1._id,
-					destParentId: files_ROOT_ID,
+					target: { kind: "saved", id: db.files.file_root_1._id },
+					destParent: { kind: "root" },
 					destName: "moved",
 				})
 			)._nay,
@@ -1192,7 +1235,7 @@ describe("get_path_by_id", () => {
 					organizationId: db.organizationId,
 					workspaceId: db.workspaceId,
 					userId: db.userId,
-					nodeId: db.files.file_root_1._id,
+					target: { kind: "saved", id: db.files.file_root_1._id },
 				})
 			)._nay,
 		).toBeUndefined();
@@ -1209,8 +1252,8 @@ describe("get_path_by_id", () => {
 					organizationId: db.organizationId,
 					workspaceId: db.workspaceId,
 					userId: db.userId,
-					nodeId: db.files.file_root_1._id,
-					destParentId: files_ROOT_ID,
+					target: { kind: "saved", id: db.files.file_root_1._id },
+					destParent: { kind: "root" },
 					destName: db.files.file_root_2.name,
 					replace: true,
 				})
@@ -1415,6 +1458,1489 @@ test("rename_node leaves generated siblings independent from the source", async 
 });
 
 // #region move nodes
+
+describe("files_nodes_db_preflight_move", () => {
+	test("creates shared missing parents with the moving anchor's final scopes", async () => {
+		const t = test_convex();
+		const db = await t.run((ctx) => test_mocks_fill_db_with.nested_files(ctx));
+		const anchor = db.files.file_root_1;
+		const target = db.files.file_root_2;
+		const sources = [db.files.file_root_1_child_1, db.files.file_root_1_child_2];
+		const archivedChild = db.files.file_root_1_child_1_deep_1;
+		await t.run(async (ctx) => {
+			await ctx.db.patch("files_nodes", target._id, {
+				restrictedScopeNodeId: target._id,
+				writePolicyScopeNodeId: target._id,
+				writePolicy: { mode: "writer", writer: { kind: "user", userId: db.userId } },
+			});
+			await ctx.db.patch("files_nodes", archivedChild._id, { archiveOperationId: "old-archive" });
+			const membership = (await ctx.db.get("organizations_workspaces_users", db.membershipId))!;
+			const inserts = vi.spyOn(ctx.db, "insert");
+			const patches = vi.spyOn(ctx.db, "patch");
+			const result = await files_nodes_db_preflight_move(ctx, {
+				userAuth: { id: db.userId },
+				membership,
+				writer: { kind: "user", userId: db.userId },
+				policyReach: "ancestors",
+				intents: [
+					...sources.map((source) => ({
+						nodeId: source._id,
+						expected: source,
+						destination: {
+							parentId: anchor._id,
+							missingParentNames: ["new", "shared"],
+							name: source.name,
+							expectedParentPath: anchor.path,
+							expectedParentArchiveOperationId: null,
+						},
+						occupant: { kind: "empty" as const },
+					})),
+					{
+						nodeId: anchor._id,
+						expected: anchor,
+						destination: {
+							parentId: target._id,
+							name: anchor.name,
+							expectedParentPath: target.path,
+							expectedParentArchiveOperationId: null,
+						},
+						occupant: { kind: "empty" },
+					},
+				],
+			});
+			if (result._nay) throw new Error(result._nay.message);
+			expect(inserts).not.toHaveBeenCalled();
+			expect(patches).not.toHaveBeenCalled();
+			await files_nodes_db_apply_move(ctx, result._yay);
+			const createdFolders = await ctx.db
+				.query("files_nodes")
+				.filter((q) => q.or(q.eq(q.field("name"), "new"), q.eq(q.field("name"), "shared")))
+				.collect();
+			expect(createdFolders).toHaveLength(2);
+			const shared = createdFolders.find((node) => node.name === "shared")!;
+			for (const folder of createdFolders) {
+				expect(folder).toMatchObject({ restrictedScopeNodeId: target._id, writePolicyScopeNodeId: target._id });
+			}
+			for (const source of sources) {
+				expect(await ctx.db.get("files_nodes", source._id)).toMatchObject({
+					parentId: shared._id,
+					path: `${target.path}/${anchor.name}/new/shared/${source.name}`,
+					restrictedScopeNodeId: target._id,
+					writePolicyScopeNodeId: target._id,
+				});
+			}
+			expect(await ctx.db.get("files_nodes", archivedChild._id)).toMatchObject({
+				archiveOperationId: "old-archive",
+				path: `${target.path}/${anchor.name}/new/shared/${sources[0].name}/${archivedChild.name}`,
+				restrictedScopeNodeId: target._id,
+				writePolicyScopeNodeId: target._id,
+			});
+		});
+	});
+
+	test.each(["existing-parent", "planned-parent", "same-leaf", "cycle"] as const)(
+		"refuses a missing-parent plan with a %s conflict before writing",
+		async (conflict) => {
+			const t = test_convex();
+			const db = await t.run((ctx) => test_mocks_fill_db_with.nested_files(ctx));
+			await t.run(async (ctx) => {
+				const source = db.files.file_root_1_child_1;
+				const other = db.files.file_root_1_child_2;
+				const anchor = conflict === "cycle" ? source : db.files.file_root_1;
+				const membership = (await ctx.db.get("organizations_workspaces_users", db.membershipId))!;
+				const inserts = vi.spyOn(ctx.db, "insert");
+				const patches = vi.spyOn(ctx.db, "patch");
+				const result = await files_nodes_db_preflight_move(ctx, {
+					userAuth: { id: db.userId },
+					membership,
+					writer: { kind: "user", userId: db.userId },
+					policyReach: "ancestors",
+					intents: [
+						{
+							nodeId: source._id,
+							expected: source,
+							destination: {
+								parentId: anchor._id,
+								missingParentNames: [conflict === "existing-parent" ? other.name : "new"],
+								name: "leaf",
+								expectedParentPath: anchor.path,
+								expectedParentArchiveOperationId: null,
+							},
+							occupant: { kind: "empty" },
+						},
+						...(conflict === "planned-parent" || conflict === "same-leaf"
+							? [
+									{
+										nodeId: other._id,
+										expected: other,
+										destination: {
+											parentId: anchor._id,
+											missingParentNames: conflict === "same-leaf" ? ["new"] : [],
+											name: conflict === "same-leaf" ? "leaf" : "new",
+											expectedParentPath: anchor.path,
+											expectedParentArchiveOperationId: null,
+										},
+										occupant: { kind: "empty" as const },
+									},
+								]
+							: []),
+					],
+				});
+				expect(result._nay).toBeDefined();
+				expect(inserts).not.toHaveBeenCalled();
+				expect(patches).not.toHaveBeenCalled();
+				expect(await ctx.db.get("files_nodes", source._id)).toEqual(source);
+			});
+		},
+	);
+
+	test("swaps parents and keeps an explicit child move in the final graph", async () => {
+		const t = test_convex();
+		const db = await t.run((ctx) => test_mocks_fill_db_with.nested_files(ctx));
+		const first = db.files.file_root_1;
+		const second = db.files.file_root_2;
+		const child = db.files.file_root_1_child_1;
+		await t.run(async (ctx) => {
+			await ctx.db.patch("files_nodes", second._id, {
+				restrictedScopeNodeId: second._id,
+				writePolicyScopeNodeId: second._id,
+				writePolicy: { mode: "writer", writer: { kind: "user", userId: db.userId } },
+			});
+			const membership = (await ctx.db.get("organizations_workspaces_users", db.membershipId))!;
+			const result = await files_nodes_db_preflight_move(ctx, {
+				userAuth: { id: db.userId },
+				membership,
+				writer: { kind: "user", userId: db.userId },
+				policyReach: "ancestors",
+				intents: [
+					{
+						nodeId: first._id,
+						expected: first,
+						destination: {
+							parentId: files_ROOT_ID,
+							name: second.name,
+							expectedParentPath: "/",
+							expectedParentArchiveOperationId: null,
+						},
+						occupant: { kind: "vacated", nodeId: second._id },
+					},
+					{
+						nodeId: second._id,
+						expected: second,
+						destination: {
+							parentId: files_ROOT_ID,
+							name: first.name,
+							expectedParentPath: "/",
+							expectedParentArchiveOperationId: null,
+						},
+						occupant: { kind: "vacated", nodeId: first._id },
+					},
+					{
+						nodeId: child._id,
+						expected: child,
+						destination: {
+							parentId: second._id,
+							name: "explicit-child",
+							expectedParentPath: second.path,
+							expectedParentArchiveOperationId: null,
+						},
+						occupant: { kind: "empty" },
+					},
+				],
+			});
+			if (result._nay) throw new Error(result._nay.message);
+			expect(result._yay.moved).toHaveLength(3);
+			expect(new Set(result._yay.nodePatches.map((patch) => patch.id)).size).toBe(result._yay.nodePatches.length);
+			await files_nodes_db_apply_move(ctx, result._yay);
+		});
+		await t.run(async (ctx) => {
+			expect(await ctx.db.get("files_nodes", child._id)).toMatchObject({
+				parentId: second._id,
+				path: `${first.path}/explicit-child`,
+				restrictedScopeNodeId: second._id,
+				writePolicyScopeNodeId: second._id,
+			});
+			expect(await ctx.db.get("files_nodes", db.files.file_root_1_child_1_deep_1._id)).toMatchObject({
+				parentId: child._id,
+				path: `${first.path}/explicit-child/${db.files.file_root_1_child_1_deep_1.name}`,
+				restrictedScopeNodeId: second._id,
+				writePolicyScopeNodeId: second._id,
+			});
+			expect(await ctx.db.get("files_nodes", db.files.file_root_1_child_2._id)).toMatchObject({
+				parentId: first._id,
+				path: `${second.path}/${db.files.file_root_1_child_2.name}`,
+				restrictedScopeNodeId: null,
+				writePolicyScopeNodeId: null,
+			});
+		});
+	});
+
+	test("uses the final parent graph when a current child becomes a parent", async () => {
+		const t = test_convex();
+		const db = await t.run((ctx) => test_mocks_fill_db_with.nested_files(ctx));
+		const parent = db.files.file_root_1;
+		const child = db.files.file_root_1_child_1;
+		await t.run(async (ctx) => {
+			const membership = (await ctx.db.get("organizations_workspaces_users", db.membershipId))!;
+			const result = await files_nodes_db_preflight_move(ctx, {
+				userAuth: { id: db.userId },
+				membership,
+				writer: { kind: "user", userId: db.userId },
+				policyReach: "ancestors",
+				intents: [
+					{
+						nodeId: parent._id,
+						expected: parent,
+						destination: {
+							parentId: child._id,
+							name: parent.name,
+							expectedParentPath: child.path,
+							expectedParentArchiveOperationId: null,
+						},
+						occupant: { kind: "empty" },
+					},
+					{
+						nodeId: child._id,
+						expected: child,
+						destination: {
+							parentId: files_ROOT_ID,
+							name: child.name,
+							expectedParentPath: "/",
+							expectedParentArchiveOperationId: null,
+						},
+						occupant: { kind: "empty" },
+					},
+				],
+			});
+			if (result._nay) throw new Error(result._nay.message);
+			await files_nodes_db_apply_move(ctx, result._yay);
+			expect(await ctx.db.get("files_nodes", parent._id)).toMatchObject({
+				parentId: child._id,
+				path: `/${child.name}/${parent.name}`,
+			});
+			expect(await ctx.db.get("files_nodes", db.files.file_root_1_child_2._id)).toMatchObject({
+				path: `/${child.name}/${parent.name}/${db.files.file_root_1_child_2.name}`,
+			});
+		});
+	});
+
+	test.each(["asset", "sequence", "lineage", "mode", "newcomer"] as const)(
+		"refuses a replacement after its %s changes without moving another source",
+		async (changed) => {
+			const t = test_convex();
+			const db = await t.run((ctx) => test_mocks_fill_db_with.nested_files(ctx));
+			const source = db.files.file_root_1_child_2;
+			const occupant = db.files.file_root_2;
+			const approvedVersion = await t.run(async (ctx) => {
+				const assetId = await ctx.db.insert("files_r2_assets", {
+					organizationId: db.organizationId,
+					workspaceId: db.workspaceId,
+					kind: "upload",
+					r2Bucket: "test-bucket",
+					r2Key: "approved",
+					size: 5,
+					createdBy: db.userId,
+					updatedAt: Date.now(),
+				});
+				const lastSequenceId = await ctx.db.insert("files_yjs_docs_last_sequences", {
+					organizationId: db.organizationId,
+					workspaceId: db.workspaceId,
+					fileNodeId: occupant._id,
+					lastSequence: 4,
+					lineageGeneration: 2,
+					unmaterializedUpdateCount: 0,
+					unmaterializedUpdateBytes: 0,
+				});
+				await ctx.db.patch("files_nodes", source._id, { kind: "file", treePath: source.path });
+				await ctx.db.patch("files_nodes", occupant._id, {
+					kind: "file",
+					treePath: occupant.path,
+					assetId,
+					contentType: "text/plain",
+					textKind: "plain_text",
+					collaborationEnabled: changed === "asset" ? false : true,
+					yjsLastSequenceId: lastSequenceId,
+					contentShapeMismatchAt: Date.now(),
+				});
+				const version = await files_nodes_db_get_content_version(ctx, (await ctx.db.get("files_nodes", occupant._id))!);
+				if (changed === "sequence" || changed === "lineage") {
+					await ctx.db.patch(
+						"files_yjs_docs_last_sequences",
+						lastSequenceId,
+						changed === "sequence" ? { lastSequence: 5 } : { lineageGeneration: 3 },
+					);
+				} else if (changed === "mode") {
+					await ctx.db.patch("files_nodes", occupant._id, { collaborationEnabled: false });
+				} else if (changed === "asset") {
+					const replacementAssetId = await ctx.db.insert("files_r2_assets", {
+						organizationId: db.organizationId,
+						workspaceId: db.workspaceId,
+						kind: "upload",
+						r2Bucket: "test-bucket",
+						r2Key: "changed",
+						size: 5,
+						createdBy: db.userId,
+						updatedAt: Date.now(),
+					});
+					await ctx.db.patch("files_nodes", occupant._id, { assetId: replacementAssetId });
+				} else {
+					await ctx.db.patch("files_nodes", occupant._id, { archiveOperationId: "old-occupant" });
+					await ctx.db.insert("files_nodes", {
+						...test_mocks.files.base(),
+						organizationId: db.organizationId,
+						workspaceId: db.workspaceId,
+						createdBy: db.userId,
+						updatedBy: db.userId,
+						kind: "file",
+						parentId: files_ROOT_ID,
+						name: occupant.name,
+						path: occupant.path,
+						treePath: occupant.path,
+					});
+				}
+				return version;
+			});
+			const before = await t.run((ctx) => ctx.db.query("files_nodes").collect());
+			const result = await t.run(async (ctx) => {
+				const membership = (await ctx.db.get("organizations_workspaces_users", db.membershipId))!;
+				const parent = db.files.file_root_1_child_1;
+				return await files_nodes_db_preflight_move(ctx, {
+					userAuth: { id: db.userId },
+					membership,
+					writer: { kind: "user", userId: db.userId },
+					policyReach: "ancestors",
+					intents: [
+						{
+							nodeId: parent._id,
+							expected: parent,
+							destination: {
+								parentId: files_ROOT_ID,
+								name: "other",
+								expectedParentPath: "/",
+								expectedParentArchiveOperationId: null,
+							},
+							occupant: { kind: "empty" },
+						},
+						{
+							nodeId: source._id,
+							expected: source,
+							destination: {
+								parentId: files_ROOT_ID,
+								name: occupant.name,
+								expectedParentPath: "/",
+								expectedParentArchiveOperationId: null,
+							},
+							occupant: { kind: "replace", nodeId: occupant._id, contentVersion: approvedVersion },
+						},
+					],
+				});
+			});
+			expect(result._nay?.name).toBe("destination_changed");
+			expect(await t.run((ctx) => ctx.db.query("files_nodes").collect())).toEqual(before);
+		},
+	);
+
+	test.each([false, true])(
+		"archives an exact occupant under a moving parent (collaborative: %s)",
+		async (collaborative) => {
+			const t = test_convex();
+			const db = await t.run((ctx) => test_mocks_fill_db_with.nested_files(ctx));
+			const parent = db.files.file_root_1;
+			const source = db.files.file_root_2;
+			const occupant = db.files.file_root_1_child_2;
+			await t.run(async (ctx) => {
+				const assetId = await ctx.db.insert("files_r2_assets", {
+					organizationId: db.organizationId,
+					workspaceId: db.workspaceId,
+					kind: "upload",
+					r2Bucket: "test-bucket",
+					r2Key: "replacement",
+					size: 5,
+					createdBy: db.userId,
+					updatedAt: Date.now(),
+				});
+				const lastSequenceId = await ctx.db.insert("files_yjs_docs_last_sequences", {
+					organizationId: db.organizationId,
+					workspaceId: db.workspaceId,
+					fileNodeId: occupant._id,
+					lastSequence: 4,
+					lineageGeneration: 2,
+					unmaterializedUpdateCount: 0,
+					unmaterializedUpdateBytes: 0,
+				});
+				for (const node of [source, occupant]) {
+					await ctx.db.patch("files_nodes", node._id, {
+						kind: "file",
+						treePath: node.path,
+						assetId,
+						contentType: "text/plain",
+						textKind: "plain_text",
+						collaborationEnabled: node._id === occupant._id && collaborative,
+						yjsLastSequenceId: node._id === occupant._id && collaborative ? lastSequenceId : null,
+					});
+					const inserted = await db_insert_file_text_content(ctx, {
+						organizationId: db.organizationId,
+						workspaceId: db.workspaceId,
+						nodeId: node._id,
+						path: node.path,
+						rootKind: "plain_text",
+						textContent: "saved text",
+					});
+					if (inserted._nay) throw new Error(inserted._nay.message);
+					await ctx.db.insert("files_metadata_docs", {
+						organizationId: db.organizationId,
+						workspaceId: db.workspaceId,
+						fileNodeId: node._id,
+						sourceKind: "committed",
+						docKind: "field",
+						fieldPath: "metadata.tag",
+						path: node.path,
+						treePath: node.path,
+					});
+					const pendingUpdateId = await ctx.db.insert("files_pending_updates", {
+						organizationId: db.organizationId,
+						workspaceId: db.workspaceId,
+						userId: db.userId,
+						target: { kind: "saved", id: node._id },
+						revision: 1,
+						size: 0,
+						updatedAt: Date.now(),
+					});
+					const pendingIndex = {
+						organizationId: db.organizationId,
+						workspaceId: db.workspaceId,
+						sourceKind: "pending",
+						target: { kind: "saved", id: node._id },
+						userId: db.userId,
+						pendingUpdateId,
+						proposalRevision: 1,
+					} as const;
+					const pendingChunk = {
+						...pendingIndex,
+						chunkIndex: 0,
+						textChunk: "pending text",
+						startIndex: 0,
+						endIndex: "pending text".length,
+						lineStart: 1,
+						lineEnd: 1,
+						chunkFlags: 0,
+					};
+					const textChunkId = await ctx.db.insert("files_text_chunks", pendingChunk);
+					await ctx.db.insert("files_plain_text_chunks", {
+						...pendingChunk,
+						textChunkId,
+						path: node.path,
+						plainTextChunk: "pending text",
+						hasChunkAbove: false,
+						hasChunkBelow: false,
+					});
+					await ctx.db.insert("files_metadata_docs", {
+						...pendingIndex,
+						docKind: "field",
+						fieldPath: "frontmatter.tag",
+						path: node.path,
+						treePath: node.path,
+					});
+				}
+				const membership = (await ctx.db.get("organizations_workspaces_users", db.membershipId))!;
+				const result = await files_nodes_db_preflight_move(ctx, {
+					userAuth: { id: db.userId },
+					membership,
+					writer: { kind: "user", userId: db.userId },
+					policyReach: "ancestors",
+					intents: [
+						{
+							nodeId: parent._id,
+							expected: parent,
+							destination: {
+								parentId: files_ROOT_ID,
+								name: "moved-parent",
+								expectedParentPath: "/",
+								expectedParentArchiveOperationId: null,
+							},
+							occupant: { kind: "empty" },
+						},
+						{
+							nodeId: source._id,
+							expected: source,
+							destination: {
+								parentId: parent._id,
+								name: occupant.name,
+								expectedParentPath: parent.path,
+								expectedParentArchiveOperationId: null,
+							},
+							// Object field order is not part of a content version.
+							occupant: {
+								kind: "replace",
+								nodeId: occupant._id,
+								contentVersion: collaborative
+									? {
+											sequence: 4,
+											lineageGeneration: 2,
+											lastSequenceId,
+											kind: "yjs",
+											textKind: "plain_text",
+											collaborationEnabled: true,
+											contentType: "text/plain",
+										}
+									: {
+											textKind: "plain_text",
+											collaborationEnabled: false,
+											contentType: "text/plain",
+											assetId,
+											kind: "asset",
+										},
+							},
+						},
+					],
+				});
+				if (result._nay) throw new Error(result._nay.message);
+				expect(result._yay.nodePatches.filter((patch) => patch.id === occupant._id)).toHaveLength(1);
+				await files_nodes_db_apply_move(ctx, result._yay);
+				const archived = (await ctx.db.get("files_nodes", occupant._id))!;
+				const path = `/moved-parent/${occupant.name}`;
+				expect(archived).toMatchObject({ path, assetId });
+				expect(archived.archiveOperationId).toEqual(expect.any(String));
+				expect(await ctx.db.get("files_nodes", source._id)).toMatchObject({ path, assetId, archiveOperationId: null });
+				const expectedIdentities = [source._id, occupant._id].flatMap((nodeId) => [
+					expect.objectContaining({ sourceKind: "committed", fileNodeId: nodeId }),
+					expect.objectContaining({ sourceKind: "pending", target: { kind: "saved", id: nodeId } }),
+				]);
+				const chunks = await ctx.db.query("files_plain_text_chunks").collect();
+				expect(chunks).toHaveLength(4);
+				expect(chunks).toEqual(expect.arrayContaining(expectedIdentities));
+				for (const chunk of chunks) {
+					const nodeId = chunk.sourceKind === "committed" ? chunk.fileNodeId : chunk.target.id;
+					expect(chunk.path).toBe(path);
+					expect(chunk.archiveOperationId).toBe(nodeId === occupant._id ? archived.archiveOperationId : undefined);
+				}
+				const metadataDocs = await ctx.db.query("files_metadata_docs").collect();
+				expect(metadataDocs).toHaveLength(4);
+				expect(metadataDocs).toEqual(expect.arrayContaining(expectedIdentities));
+				for (const metadata of metadataDocs) {
+					const nodeId = metadata.sourceKind === "committed" ? metadata.fileNodeId : metadata.target.id;
+					expect(metadata).toMatchObject({ path, treePath: path });
+					expect(metadata.archiveOperationId).toBe(nodeId === occupant._id ? archived.archiveOperationId : undefined);
+				}
+			});
+		},
+	);
+
+	test.each(["active", "read_only", "archived"] as const)(
+		"checks a replacement folder's %s descendants before writing",
+		async (childState) => {
+			const t = test_convex();
+			const db = await t.run((ctx) => test_mocks_fill_db_with.nested_files(ctx));
+			const occupant = db.files.file_root_1_child_1;
+			const child = db.files.file_root_1_child_1_deep_1;
+			const source = db.files.file_root_2;
+			await t.run(async (ctx) => {
+				if (childState !== "active") {
+					await ctx.db.patch("files_nodes", child._id, {
+						archiveOperationId: "earlier-archive",
+						...(childState === "read_only"
+							? { writePolicy: { mode: "read_only" as const }, writePolicyScopeNodeId: child._id }
+							: {}),
+					});
+				}
+			});
+			const before = await t.run((ctx) => ctx.db.query("files_nodes").collect());
+			const result = await t.run(async (ctx) => {
+				const membership = (await ctx.db.get("organizations_workspaces_users", db.membershipId))!;
+				const plan = await files_nodes_db_preflight_move(ctx, {
+					userAuth: { id: db.userId },
+					membership,
+					writer: { kind: "user", userId: db.userId },
+					policyReach: "ancestors",
+					intents: [
+						{
+							nodeId: source._id,
+							expected: source,
+							destination: {
+								parentId: occupant.parentId,
+								name: occupant.name,
+								expectedParentPath: db.files.file_root_1.path,
+								expectedParentArchiveOperationId: null,
+							},
+							occupant: { kind: "replace", nodeId: occupant._id, contentVersion: null },
+						},
+					],
+				});
+				if (plan._yay) await files_nodes_db_apply_move(ctx, plan._yay);
+				return plan;
+			});
+			if (childState === "archived") {
+				expect(result._nay).toBeUndefined();
+				expect(await t.run((ctx) => ctx.db.get("files_nodes", child._id))).toEqual(
+					before.find((node) => node._id === child._id),
+				);
+			} else {
+				expect(result._nay?.message).toBe(
+					childState === "active" ? "Cannot replace a non-empty folder." : "This item is read-only.",
+				);
+				expect(await t.run((ctx) => ctx.db.query("files_nodes").collect())).toEqual(before);
+			}
+		},
+	);
+
+	test("refuses a replacement whose occupant is another selected source", async () => {
+		const t = test_convex();
+		const db = await t.run((ctx) => test_mocks_fill_db_with.nested_files(ctx));
+		const occupant = db.files.file_root_1_child_1;
+		const source = db.files.file_root_2;
+		const before = await t.run((ctx) => ctx.db.query("files_nodes").collect());
+		const result = await t.run(async (ctx) => {
+			const membership = (await ctx.db.get("organizations_workspaces_users", db.membershipId))!;
+			const inserts = vi.spyOn(ctx.db, "insert");
+			const patches = vi.spyOn(ctx.db, "patch");
+			const plan = await files_nodes_db_preflight_move(ctx, {
+				userAuth: { id: db.userId },
+				membership,
+				writer: { kind: "user", userId: db.userId },
+				policyReach: "ancestors",
+				intents: [
+					{
+						nodeId: source._id,
+						expected: source,
+						destination: {
+							parentId: occupant.parentId,
+							name: occupant.name,
+							expectedParentPath: db.files.file_root_1.path,
+							expectedParentArchiveOperationId: null,
+						},
+						occupant: { kind: "replace", nodeId: occupant._id, contentVersion: null },
+					},
+					// The occupant moves in this same plan, so archiving it would delete a selected source.
+					{
+						nodeId: occupant._id,
+						expected: occupant,
+						destination: {
+							parentId: files_ROOT_ID,
+							name: occupant.name,
+							expectedParentPath: "/",
+							expectedParentArchiveOperationId: null,
+						},
+						occupant: { kind: "empty" },
+					},
+				],
+			});
+			expect(inserts).not.toHaveBeenCalled();
+			expect(patches).not.toHaveBeenCalled();
+			return plan;
+		});
+		expect(result._nay?.message).toBe("Cannot replace this item.");
+		expect(await t.run((ctx) => ctx.db.query("files_nodes").collect())).toEqual(before);
+	});
+
+	// The same message covers two different refusals. The test above is the "occupant is also a
+	// selected source" half; this is the "a file may not replace a folder" half. Both read
+	// `Cannot replace this item.`, so asserting the message alone cannot tell which branch ran, and
+	// deleting one of them leaves the other's test green.
+	test.each([
+		{ label: "file over a folder", sourceKind: "file" as const, occupantKind: "folder" as const },
+		{ label: "folder over a file", sourceKind: "folder" as const, occupantKind: "file" as const },
+	])("refuses a replacement of a $label", async ({ sourceKind, occupantKind }) => {
+		const t = test_convex();
+		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const { source, occupant, target } = await t.run(async (ctx) => {
+			const base = {
+				...test_mocks.files.base(),
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				createdBy: db.userId,
+				updatedBy: db.userId,
+			};
+			const targetId = await ctx.db.insert("files_nodes", {
+				...base,
+				kind: "folder",
+				name: "target",
+				path: "/target",
+				treePath: "/target/",
+			});
+			const occupantId = await ctx.db.insert("files_nodes", {
+				...base,
+				kind: occupantKind,
+				parentId: targetId,
+				name: "collide",
+				path: "/target/collide",
+				treePath: "/target/collide/",
+				pathDepth: 2,
+			});
+			const sourceId = await ctx.db.insert("files_nodes", {
+				...base,
+				kind: sourceKind,
+				name: "collide",
+				path: "/collide",
+				treePath: "/collide/",
+			});
+			return {
+				source: (await ctx.db.get("files_nodes", sourceId))!,
+				occupant: (await ctx.db.get("files_nodes", occupantId))!,
+				target: (await ctx.db.get("files_nodes", targetId))!,
+			};
+		});
+		const before = await t.run((ctx) => ctx.db.query("files_nodes").collect());
+		const result = await t.run(async (ctx) => {
+			const membership = (await ctx.db.get("organizations_workspaces_users", db.membershipId))!;
+			const inserts = vi.spyOn(ctx.db, "insert");
+			const patches = vi.spyOn(ctx.db, "patch");
+			const plan = await files_nodes_db_preflight_move(ctx, {
+				userAuth: { id: db.userId },
+				membership,
+				writer: { kind: "user", userId: db.userId },
+				policyReach: "ancestors",
+				intents: [
+					{
+						nodeId: source._id,
+						expected: source,
+						destination: {
+							parentId: target._id,
+							name: occupant.name,
+							expectedParentPath: target.path,
+							expectedParentArchiveOperationId: null,
+						},
+						occupant: { kind: "replace", nodeId: occupant._id, contentVersion: null },
+					},
+				],
+			});
+			expect(inserts).not.toHaveBeenCalled();
+			expect(patches).not.toHaveBeenCalled();
+			return plan;
+		});
+		expect(result._nay?.message).toBe("Cannot replace this item.");
+		expect(await t.run((ctx) => ctx.db.query("files_nodes").collect())).toEqual(before);
+	});
+});
+
+describe("files_nodes_db_preflight_move policy reach", () => {
+	test.each([
+		{ policyReach: "none", lockedParent: "current" },
+		{ policyReach: "direct", lockedParent: "current" },
+		{ policyReach: "ancestors", lockedParent: "current" },
+		{ policyReach: "none", lockedParent: "final" },
+		{ policyReach: "direct", lockedParent: "final" },
+		{ policyReach: "ancestors", lockedParent: "final" },
+	] as const)(
+		"keeps $policyReach reach when the $lockedParent parent names the account",
+		async ({ policyReach, lockedParent }) => {
+			const t = test_convex();
+			const db = await t.run((ctx) => test_mocks_fill_db_with.nested_files(ctx));
+			const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+			const created = await asUser.mutation(api.access_control.create_service_account, {
+				membershipId: db.membershipId,
+				name: "Move writer",
+			});
+			if (created._nay) throw new Error(created._nay.message);
+			const serviceAccountId = created._yay.serviceAccountId;
+			const grant = await asUser.mutation(api.access_control.set_service_account_grant, {
+				membershipId: db.membershipId,
+				serviceAccountId,
+				resource: { kind: "workspace" },
+				level: "write",
+			});
+			if (grant._nay) throw new Error(grant._nay.message);
+			const source = db.files.file_root_1_child_2;
+			const target = db.files.file_root_2;
+			const policyNode = lockedParent === "current" ? db.files.file_root_1 : target;
+			const result = await t.run(async (ctx) => {
+				await ctx.db.patch("files_nodes", policyNode._id, {
+					writePolicyScopeNodeId: policyNode._id,
+					writePolicy: { mode: "writer", writer: { kind: "service_account", serviceAccountId } },
+				});
+				if (lockedParent === "current") {
+					for (const node of [source, db.files.file_root_1_child_1, db.files.file_root_1_child_1_deep_1]) {
+						await ctx.db.patch("files_nodes", node._id, { writePolicyScopeNodeId: policyNode._id });
+					}
+				}
+				const membership = (await ctx.db.get("organizations_workspaces_users", db.membershipId))!;
+				const before = await ctx.db.query("files_nodes").collect();
+				const plan = await files_nodes_db_preflight_move(ctx, {
+					userAuth: { id: db.userId },
+					membership,
+					writer: { kind: "service_account", serviceAccountId },
+					policyReach,
+					intents: [
+						{
+							nodeId: source._id,
+							expected: source,
+							destination: {
+								parentId: target._id,
+								name: source.name,
+								expectedParentPath: target.path,
+								expectedParentArchiveOperationId: null,
+							},
+							occupant: { kind: "empty" },
+						},
+					],
+				});
+				expect(await ctx.db.query("files_nodes").collect()).toEqual(before);
+				return plan;
+			});
+			if (policyReach === "ancestors") expect(result._nay).toBeUndefined();
+			else expect(result._nay?.name).toBe("read_only");
+		},
+	);
+});
+
+describe("files_nodes_db_preflight_move budgets", () => {
+	// files_nodes.ts keeps its move caps private. Mirror them here so the focused pairs below can
+	// sit on one cap and cross only that one.
+	const MAX_MOVE_NODE_COUNT = 500;
+	const MAX_MOVE_DOCUMENT_COUNT = 2000;
+	const MAX_MOVE_BYTES = 4 * 1024 * 1024;
+
+	test.each([
+		{ parentCount: 499, nameLength: 1, allowed: true },
+		{ parentCount: 500, nameLength: 1, allowed: false },
+		{ parentCount: 100, nameLength: 500, allowed: false },
+	])(
+		"counts $parentCount new parents with $nameLength-byte names before writing",
+		async ({ parentCount, nameLength, allowed }) => {
+			const t = test_convex();
+			const db = await t.run((ctx) => test_mocks_fill_db_with.nested_files(ctx));
+			await t.run(async (ctx) => {
+				const source = db.files.file_root_1_child_2;
+				const target = db.files.file_root_2;
+				const membership = (await ctx.db.get("organizations_workspaces_users", db.membershipId))!;
+				const inserts = vi.spyOn(ctx.db, "insert");
+				const patches = vi.spyOn(ctx.db, "patch");
+				const result = await files_nodes_db_preflight_move(ctx, {
+					userAuth: { id: db.userId },
+					membership,
+					writer: { kind: "user", userId: db.userId },
+					policyReach: "ancestors",
+					intents: [
+						{
+							nodeId: source._id,
+							expected: source,
+							destination: {
+								parentId: target._id,
+								missingParentNames: Array.from({ length: parentCount }, () => "a".repeat(nameLength)),
+								name: source.name,
+								expectedParentPath: target.path,
+								expectedParentArchiveOperationId: null,
+							},
+							occupant: { kind: "empty" },
+						},
+					],
+				});
+				if (allowed) {
+					expect(result._nay).toBeUndefined();
+					expect(result._yay?.folderInserts).toHaveLength(parentCount);
+					expect(result._yay?.budget.writeDocumentCount).toBe(parentCount + 1);
+				} else expect(result._nay?.name).toBe("move_too_large");
+				expect(inserts).not.toHaveBeenCalled();
+				expect(patches).not.toHaveBeenCalled();
+			});
+		},
+	);
+
+	test.each([
+		{ childCount: 499, metadataCount: 1499, allowed: true },
+		{ childCount: 500, metadataCount: 0, allowed: false },
+		{ childCount: 499, metadataCount: 1500, allowed: false },
+	])(
+		"checks $childCount children and $metadataCount metadata docs before writing",
+		async ({ childCount, metadataCount, allowed }) => {
+			const t = test_convex();
+			const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+			const { source, target } = await t.run(async (ctx) => {
+				const base = {
+					...test_mocks.files.base(),
+					organizationId: db.organizationId,
+					workspaceId: db.workspaceId,
+					createdBy: db.userId,
+					updatedBy: db.userId,
+				};
+				const sourceId = await ctx.db.insert("files_nodes", {
+					...base,
+					name: "source",
+					path: "/source",
+					treePath: "/source/",
+				});
+				const targetId = await ctx.db.insert("files_nodes", {
+					...base,
+					name: "target",
+					path: "/target",
+					treePath: "/target/",
+				});
+				const nodeIds = [sourceId];
+				for (let index = 0; index < childCount; index += 1) {
+					nodeIds.push(
+						await ctx.db.insert("files_nodes", {
+							...base,
+							parentId: sourceId,
+							name: `child-${index}`,
+							path: `/source/child-${index}`,
+							treePath: `/source/child-${index}/`,
+							pathDepth: 2,
+							archiveOperationId: index === childCount - 1 ? "earlier-archive" : null,
+						}),
+					);
+				}
+				for (let index = 0; index < metadataCount; index += 1) {
+					const node = (await ctx.db.get("files_nodes", nodeIds[index % nodeIds.length]))!;
+					await ctx.db.insert("files_metadata_docs", {
+						organizationId: db.organizationId,
+						workspaceId: db.workspaceId,
+						fileNodeId: node._id,
+						sourceKind: "committed",
+						docKind: "field",
+						fieldPath: `metadata.key-${Math.floor(index / nodeIds.length)}`,
+						path: node.path,
+						treePath: node.treePath,
+						archiveOperationId: node.archiveOperationId ?? undefined,
+					});
+				}
+				return {
+					source: (await ctx.db.get("files_nodes", sourceId))!,
+					target: (await ctx.db.get("files_nodes", targetId))!,
+				};
+			});
+			const before = await t.run(async (ctx) => ({
+				nodes: await ctx.db.query("files_nodes").collect(),
+				metadata: await ctx.db.query("files_metadata_docs").collect(),
+			}));
+			const result = await t.run(async (ctx) => {
+				const membership = (await ctx.db.get("organizations_workspaces_users", db.membershipId))!;
+				return await files_nodes_db_preflight_move(ctx, {
+					userAuth: { id: db.userId },
+					membership,
+					writer: { kind: "user", userId: db.userId },
+					policyReach: "ancestors",
+					intents: [
+						{
+							nodeId: source._id,
+							expected: source,
+							destination: {
+								parentId: target._id,
+								name: source.name,
+								expectedParentPath: target.path,
+								expectedParentArchiveOperationId: null,
+							},
+							occupant: { kind: "empty" },
+						},
+					],
+				});
+			});
+			if (allowed) {
+				expect(result._nay).toBeUndefined();
+				expect(result._yay?.nodePatches).toHaveLength(500);
+				expect(result._yay?.budget.readDocumentCount).toBe(2000);
+				expect(result._yay?.budget.writeDocumentCount).toBe(1999);
+			} else {
+				expect(result._nay?.name).toBe("move_too_large");
+			}
+			expect(
+				await t.run(async (ctx) => ({
+					nodes: await ctx.db.query("files_nodes").collect(),
+					metadata: await ctx.db.query("files_metadata_docs").collect(),
+				})),
+			).toEqual(before);
+		},
+	);
+
+	// Each pair below fills one budget to its cap, then crosses that one only. The success case
+	// reports every counter, so it shows which limit refused the next step.
+
+	test.each([
+		{ childCount: MAX_MOVE_NODE_COUNT - 1, allowed: true },
+		{ childCount: MAX_MOVE_NODE_COUNT, allowed: false },
+	])("patches $childCount children with their parent against the node limit", async ({ childCount, allowed }) => {
+		const t = test_convex();
+		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const { source, target } = await t.run(async (ctx) => {
+			const base = {
+				...test_mocks.files.base(),
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				createdBy: db.userId,
+				updatedBy: db.userId,
+			};
+			const sourceId = await ctx.db.insert("files_nodes", {
+				...base,
+				name: "source",
+				path: "/source",
+				treePath: "/source/",
+			});
+			const targetId = await ctx.db.insert("files_nodes", {
+				...base,
+				name: "target",
+				path: "/target",
+				treePath: "/target/",
+			});
+			for (let index = 0; index < childCount; index += 1) {
+				await ctx.db.insert("files_nodes", {
+					...base,
+					parentId: sourceId,
+					name: `child-${index}`,
+					path: `/source/child-${index}`,
+					treePath: `/source/child-${index}/`,
+					pathDepth: 2,
+				});
+			}
+			return {
+				source: (await ctx.db.get("files_nodes", sourceId))!,
+				target: (await ctx.db.get("files_nodes", targetId))!,
+			};
+		});
+		const result = await t.run(async (ctx) => {
+			const membership = (await ctx.db.get("organizations_workspaces_users", db.membershipId))!;
+			return await files_nodes_db_preflight_move(ctx, {
+				userAuth: { id: db.userId },
+				membership,
+				writer: { kind: "user", userId: db.userId },
+				policyReach: "ancestors",
+				intents: [
+					{
+						nodeId: source._id,
+						expected: source,
+						destination: {
+							parentId: target._id,
+							name: source.name,
+							expectedParentPath: target.path,
+							expectedParentArchiveOperationId: null,
+						},
+						occupant: { kind: "empty" },
+					},
+				],
+			});
+		});
+		if (allowed) {
+			expect(result._nay).toBeUndefined();
+			// Only the patched node count reaches its cap here.
+			expect(result._yay?.nodePatches).toHaveLength(MAX_MOVE_NODE_COUNT);
+			expect(result._yay?.budget.readDocumentCount).toBe(childCount + 2);
+			expect(result._yay?.budget.writeDocumentCount).toBe(MAX_MOVE_NODE_COUNT);
+			expect(result._yay?.budget.readBytes).toBeLessThan(MAX_MOVE_BYTES / 4);
+			expect(result._yay?.budget.writeBytes).toBeLessThan(MAX_MOVE_BYTES / 4);
+		} else {
+			expect(result._nay?.name).toBe("move_too_large");
+		}
+	});
+
+	test.each([
+		// Reads also count the source, the destination, and the ten ancestors below.
+		{ fieldCount: MAX_MOVE_DOCUMENT_COUNT - 12, allowed: true },
+		{ fieldCount: MAX_MOVE_DOCUMENT_COUNT - 11, allowed: false },
+	])(
+		"reads $fieldCount metadata docs with ten ancestors against the read document limit",
+		async ({ fieldCount, allowed }) => {
+			const t = test_convex();
+			const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+			const { source, target } = await t.run(async (ctx) => {
+				const base = {
+					...test_mocks.files.base(),
+					organizationId: db.organizationId,
+					workspaceId: db.workspaceId,
+					createdBy: db.userId,
+					updatedBy: db.userId,
+				};
+				// The ancestors are read but never patched, so writes stay under their own cap.
+				let parentId: Id<"files_nodes"> | "root" = files_ROOT_ID;
+				let path = "";
+				for (let depth = 0; depth < 10; depth += 1) {
+					path += `/ancestor-${depth}`;
+					parentId = await ctx.db.insert("files_nodes", {
+						...base,
+						parentId,
+						name: `ancestor-${depth}`,
+						path,
+						treePath: `${path}/`,
+						pathDepth: depth + 1,
+					});
+				}
+				const sourcePath = `${path}/source`;
+				const sourceId = await ctx.db.insert("files_nodes", {
+					...base,
+					parentId,
+					name: "source",
+					path: sourcePath,
+					treePath: `${sourcePath}/`,
+					pathDepth: 11,
+				});
+				const targetId = await ctx.db.insert("files_nodes", {
+					...base,
+					name: "target",
+					path: "/target",
+					treePath: "/target/",
+				});
+				for (let index = 0; index < fieldCount; index += 1) {
+					await ctx.db.insert("files_metadata_docs", {
+						organizationId: db.organizationId,
+						workspaceId: db.workspaceId,
+						fileNodeId: sourceId,
+						sourceKind: "committed",
+						docKind: "field",
+						fieldPath: `metadata.key-${index}`,
+						path: sourcePath,
+						treePath: `${sourcePath}/`,
+					});
+				}
+				return {
+					source: (await ctx.db.get("files_nodes", sourceId))!,
+					target: (await ctx.db.get("files_nodes", targetId))!,
+				};
+			});
+			const result = await t.run(async (ctx) => {
+				const membership = (await ctx.db.get("organizations_workspaces_users", db.membershipId))!;
+				return await files_nodes_db_preflight_move(ctx, {
+					userAuth: { id: db.userId },
+					membership,
+					writer: { kind: "user", userId: db.userId },
+					policyReach: "ancestors",
+					intents: [
+						{
+							nodeId: source._id,
+							expected: source,
+							destination: {
+								parentId: target._id,
+								name: source.name,
+								expectedParentPath: target.path,
+								expectedParentArchiveOperationId: null,
+							},
+							occupant: { kind: "empty" },
+						},
+					],
+				});
+			});
+			if (allowed) {
+				expect(result._nay).toBeUndefined();
+				// Only the read document count reaches its cap here.
+				expect(result._yay?.budget.readDocumentCount).toBe(MAX_MOVE_DOCUMENT_COUNT);
+				expect(result._yay?.budget.writeDocumentCount).toBe(fieldCount + 1);
+				expect(result._yay?.nodePatches).toHaveLength(1);
+				expect(result._yay?.budget.readBytes).toBeLessThan(MAX_MOVE_BYTES / 2);
+			} else {
+				expect(result._nay?.name).toBe("move_too_large");
+			}
+		},
+	);
+
+	test.each([
+		{ extraBytes: 0, allowed: true },
+		{ extraBytes: 1, allowed: false },
+	])("fills the read byte budget and crosses it by $extraBytes", async ({ extraBytes, allowed }) => {
+		const t = test_convex();
+		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		// A long ancestor path makes every read bigger than the patch that replaces it, so the
+		// write bytes of this move stay under their own cap.
+		const ancestorName = "ancestor-".padEnd(6_000, "a");
+		const sourcePath = `/${ancestorName}/source`;
+		const { source, padDocId } = await t.run(async (ctx) => {
+			const base = {
+				...test_mocks.files.base(),
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				createdBy: db.userId,
+				updatedBy: db.userId,
+			};
+			const ancestorId = await ctx.db.insert("files_nodes", {
+				...base,
+				name: ancestorName,
+				path: `/${ancestorName}`,
+				treePath: `/${ancestorName}/`,
+			});
+			const sourceId = await ctx.db.insert("files_nodes", {
+				...base,
+				parentId: ancestorId,
+				name: "source",
+				path: sourcePath,
+				treePath: `${sourcePath}/`,
+				pathDepth: 2,
+			});
+			const metadataDoc = (fieldPath: string) => ({
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				fileNodeId: sourceId,
+				sourceKind: "committed" as const,
+				docKind: "field" as const,
+				fieldPath,
+				path: sourcePath,
+				treePath: `${sourcePath}/`,
+			});
+			// Few, large documents: the document counts stay near zero while the bytes fill up.
+			for (let index = 0; index < 5; index += 1) {
+				await ctx.db.insert("files_metadata_docs", metadataDoc(`metadata.big-${index}-${"a".repeat(700_000)}`));
+			}
+			return {
+				source: (await ctx.db.get("files_nodes", sourceId))!,
+				padDocId: await ctx.db.insert("files_metadata_docs", metadataDoc("metadata.pad")),
+			};
+		});
+		const move = async (ctx: MutationCtx) => {
+			const membership = (await ctx.db.get("organizations_workspaces_users", db.membershipId))!;
+			return await files_nodes_db_preflight_move(ctx, {
+				userAuth: { id: db.userId },
+				membership,
+				writer: { kind: "user", userId: db.userId },
+				policyReach: "ancestors",
+				intents: [
+					{
+						nodeId: source._id,
+						expected: source,
+						destination: {
+							parentId: files_ROOT_ID,
+							name: source.name,
+							expectedParentPath: "/",
+							expectedParentArchiveOperationId: null,
+						},
+						occupant: { kind: "empty" },
+					},
+				],
+			});
+		};
+		// Measure what this fixture already reads, then grow one field name by the exact number of
+		// bytes left. A field name is stored once, so one more character is one more read byte.
+		const measured = await t.run(move);
+		if (measured._nay) throw new Error(measured._nay.message);
+		const padLength = "metadata.pad".length + MAX_MOVE_BYTES - measured._yay.budget.readBytes + extraBytes;
+		await t.run((ctx) => ctx.db.patch("files_metadata_docs", padDocId, { fieldPath: "a".repeat(padLength) }));
+		const result = await t.run(move);
+		if (allowed) {
+			expect(result._nay).toBeUndefined();
+			// The read bytes sit on the last allowed byte while eight documents stay far under the
+			// document cap, so only the byte budget can refuse one more byte.
+			expect(result._yay?.budget.readBytes).toBe(MAX_MOVE_BYTES);
+			expect(result._yay?.budget.readDocumentCount).toBe(8);
+			expect(result._yay?.budget.writeDocumentCount).toBe(7);
+			// The write bytes keep more than 50 KB of room, so the extra byte cannot refuse there.
+			expect(result._yay?.budget.writeBytes).toBeLessThan(MAX_MOVE_BYTES - 50_000);
+		} else {
+			expect(result._nay?.name).toBe("move_too_large");
+		}
+	});
+
+	test.each([
+		// Writes also count the 100 new parent folders and the moved node itself.
+		{ fieldCount: MAX_MOVE_DOCUMENT_COUNT - 101, allowed: true },
+		{ fieldCount: MAX_MOVE_DOCUMENT_COUNT - 100, allowed: false },
+	])(
+		"writes $fieldCount metadata docs with 100 new parents against the write document limit",
+		async ({ fieldCount, allowed }) => {
+			const t = test_convex();
+			const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+			const { source, target } = await t.run(async (ctx) => {
+				const base = {
+					...test_mocks.files.base(),
+					organizationId: db.organizationId,
+					workspaceId: db.workspaceId,
+					createdBy: db.userId,
+					updatedBy: db.userId,
+				};
+				const sourceId = await ctx.db.insert("files_nodes", {
+					...base,
+					name: "source",
+					path: "/source",
+					treePath: "/source/",
+				});
+				const targetId = await ctx.db.insert("files_nodes", {
+					...base,
+					name: "target",
+					path: "/target",
+					treePath: "/target/",
+				});
+				for (let index = 0; index < fieldCount; index += 1) {
+					await ctx.db.insert("files_metadata_docs", {
+						organizationId: db.organizationId,
+						workspaceId: db.workspaceId,
+						fileNodeId: sourceId,
+						sourceKind: "committed",
+						docKind: "field",
+						fieldPath: `metadata.key-${index}`,
+						path: "/source",
+						treePath: "/source/",
+					});
+				}
+				return {
+					source: (await ctx.db.get("files_nodes", sourceId))!,
+					target: (await ctx.db.get("files_nodes", targetId))!,
+				};
+			});
+			const result = await t.run(async (ctx) => {
+				const membership = (await ctx.db.get("organizations_workspaces_users", db.membershipId))!;
+				return await files_nodes_db_preflight_move(ctx, {
+					userAuth: { id: db.userId },
+					membership,
+					writer: { kind: "user", userId: db.userId },
+					policyReach: "ancestors",
+					intents: [
+						{
+							nodeId: source._id,
+							expected: source,
+							destination: {
+								parentId: target._id,
+								// New parent folders are written without being read, so writes can reach their
+								// cap while reads stay under it.
+								missingParentNames: Array.from({ length: 100 }, () => "p"),
+								name: source.name,
+								expectedParentPath: target.path,
+								expectedParentArchiveOperationId: null,
+							},
+							occupant: { kind: "empty" },
+						},
+					],
+				});
+			});
+			if (allowed) {
+				expect(result._nay).toBeUndefined();
+				// Only the write document count reaches its cap here.
+				expect(result._yay?.folderInserts).toHaveLength(100);
+				expect(result._yay?.budget.writeDocumentCount).toBe(MAX_MOVE_DOCUMENT_COUNT);
+				expect(result._yay?.budget.readDocumentCount).toBe(fieldCount + 2);
+				expect(result._yay?.budget.writeBytes).toBeLessThan(MAX_MOVE_BYTES / 2);
+			} else {
+				expect(result._nay?.name).toBe("move_too_large");
+			}
+		},
+	);
+
+	test.each([
+		{ extraBytes: 0, allowed: true },
+		{ extraBytes: 1, allowed: false },
+	])("fills the write byte budget and crosses it by $extraBytes", async ({ extraBytes, allowed }) => {
+		const t = test_convex();
+		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		// A long destination path makes every patch much bigger than the doc it replaces, so the
+		// read bytes of this move stay far under their own cap.
+		const targetName = "target-".padEnd(6_000, "a");
+		const { source, target, padDocId } = await t.run(async (ctx) => {
+			const base = {
+				...test_mocks.files.base(),
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				createdBy: db.userId,
+				updatedBy: db.userId,
+			};
+			const sourceId = await ctx.db.insert("files_nodes", {
+				...base,
+				name: "source",
+				path: "/source",
+				treePath: "/source/",
+			});
+			const targetId = await ctx.db.insert("files_nodes", {
+				...base,
+				name: targetName,
+				path: `/${targetName}`,
+				treePath: `/${targetName}/`,
+			});
+			const metadataDoc = (fieldPath: string) => ({
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				fileNodeId: sourceId,
+				sourceKind: "committed" as const,
+				docKind: "field" as const,
+				fieldPath,
+				path: "/source",
+				treePath: "/source/",
+			});
+			for (let index = 0; index < 300; index += 1) {
+				await ctx.db.insert("files_metadata_docs", metadataDoc(`metadata.key-${index}`));
+			}
+			return {
+				source: (await ctx.db.get("files_nodes", sourceId))!,
+				target: (await ctx.db.get("files_nodes", targetId))!,
+				padDocId: await ctx.db.insert("files_metadata_docs", metadataDoc("metadata.pad")),
+			};
+		});
+		const move = async (ctx: MutationCtx) => {
+			const membership = (await ctx.db.get("organizations_workspaces_users", db.membershipId))!;
+			return await files_nodes_db_preflight_move(ctx, {
+				userAuth: { id: db.userId },
+				membership,
+				writer: { kind: "user", userId: db.userId },
+				policyReach: "ancestors",
+				intents: [
+					{
+						nodeId: source._id,
+						expected: source,
+						destination: {
+							parentId: target._id,
+							name: source.name,
+							expectedParentPath: target.path,
+							expectedParentArchiveOperationId: null,
+						},
+						occupant: { kind: "empty" },
+					},
+				],
+			});
+		};
+		// Measure what this fixture already writes, then grow one field name by the exact number of
+		// bytes left. The patch keeps that field, so one more character is one more written byte.
+		const measured = await t.run(move);
+		if (measured._nay) throw new Error(measured._nay.message);
+		const padLength = "metadata.pad".length + MAX_MOVE_BYTES - measured._yay.budget.writeBytes + extraBytes;
+		await t.run((ctx) => ctx.db.patch("files_metadata_docs", padDocId, { fieldPath: "a".repeat(padLength) }));
+		const result = await t.run(move);
+		if (allowed) {
+			expect(result._nay).toBeUndefined();
+			// The write bytes sit on the last allowed byte while the read bytes and both document
+			// counts stay far under their own caps.
+			expect(result._yay?.budget.writeBytes).toBe(MAX_MOVE_BYTES);
+			expect(result._yay?.budget.readBytes).toBeLessThan(MAX_MOVE_BYTES / 2);
+			expect(result._yay?.budget.readDocumentCount).toBe(303);
+			expect(result._yay?.budget.writeDocumentCount).toBe(302);
+		} else {
+			expect(result._nay?.name).toBe("move_too_large");
+		}
+	});
+});
+
+describe("files_nodes_db_get_content_version", () => {
+	test("reads the Yjs sequence without needing a materialized snapshot", async () => {
+		const t = test_convex();
+		const db = await t.run((ctx) => test_mocks_fill_db_with.nested_files(ctx));
+		await t.run(async (ctx) => {
+			const node = db.files.file_root_2;
+			expect(await files_nodes_db_get_content_version(ctx, node)).toBeNull();
+			const assetId = await ctx.db.insert("files_r2_assets", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				kind: "upload",
+				r2Bucket: "test-bucket",
+				r2Key: "version",
+				size: 5,
+				createdBy: db.userId,
+				updatedAt: Date.now(),
+			});
+			const lastSequenceId = await ctx.db.insert("files_yjs_docs_last_sequences", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				fileNodeId: node._id,
+				lastSequence: 42,
+				lineageGeneration: 3,
+				unmaterializedUpdateCount: 20,
+				unmaterializedUpdateBytes: 1000,
+			});
+			await ctx.db.patch("files_nodes", node._id, {
+				kind: "file",
+				assetId,
+				contentType: "text/plain",
+				textKind: "plain_text",
+				collaborationEnabled: true,
+				yjsLastSequenceId: lastSequenceId,
+				contentShapeMismatchAt: Date.now(),
+			});
+			expect(await files_nodes_db_get_content_version(ctx, (await ctx.db.get("files_nodes", node._id))!)).toEqual({
+				kind: "yjs",
+				lastSequenceId,
+				lineageGeneration: 3,
+				sequence: 42,
+				contentType: "text/plain",
+				textKind: "plain_text",
+				collaborationEnabled: true,
+			});
+			await ctx.db.patch("files_nodes", node._id, { collaborationEnabled: false });
+			expect(await files_nodes_db_get_content_version(ctx, (await ctx.db.get("files_nodes", node._id))!)).toEqual({
+				kind: "asset",
+				assetId,
+				contentType: "text/plain",
+				textKind: "plain_text",
+				collaborationEnabled: false,
+			});
+		});
+	});
+});
 
 describe("move_nodes", () => {
 	test.each([
@@ -1796,6 +3322,115 @@ describe("move_nodes", () => {
 });
 
 describe("files_nodes_db_move_nodes", () => {
+	test("stops reading the selection when its node bytes exceed the move budget", async () => {
+		const t = test_convex();
+		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const nodeIds = await t.run(async (ctx) => {
+			const ids: Id<"files_nodes">[] = [];
+			for (let index = 0; index < 500; index += 1) {
+				const name = `${"a".repeat(6_000)}-${index}`;
+				ids.push(
+					await ctx.db.insert("files_nodes", {
+						...test_mocks.files.base(),
+						organizationId: db.organizationId,
+						workspaceId: db.workspaceId,
+						createdBy: db.userId,
+						updatedBy: db.userId,
+						name,
+						path: `/${name}`,
+						treePath: `/${name}/`,
+					}),
+				);
+			}
+			return ids;
+		});
+		await t.run(async (ctx) => {
+			const membership = (await ctx.db.get("organizations_workspaces_users", db.membershipId))!;
+			const selectedIds = new Set<string>(nodeIds);
+			const reads = vi.spyOn(ctx.db, "get");
+			const writes = vi.spyOn(ctx.db, "patch");
+			const result = await files_nodes_db_move_nodes(ctx, {
+				userAuth: { id: db.userId },
+				membership,
+				items: nodeIds.map((nodeId) => ({ nodeId })),
+				targetParentId: files_ROOT_ID,
+			});
+			expect(result._nay?.name).toBe("move_too_large");
+			expect(
+				reads.mock.calls.filter(
+					([table, id]: unknown[]) => table === "files_nodes" && typeof id === "string" && selectedIds.has(id),
+				).length,
+			).toBeLessThan(nodeIds.length);
+			expect(writes).not.toHaveBeenCalled();
+		});
+	});
+
+	// The selection-size check is the first statement in the function, so it refuses before any read.
+	// The byte-budget test above stops part way through the selection instead. Crossing 500 by one
+	// item is what tells the two apart: a `>=` typo in the size check would still pass that test.
+	test.each([
+		{ itemCount: 500, allowed: true },
+		{ itemCount: 501, allowed: false },
+	])("moves $itemCount selected files against the selection-size limit", async ({ itemCount, allowed }) => {
+		const t = test_convex();
+		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const { targetId, nodeIds } = await t.run(async (ctx) => {
+			const base = {
+				...test_mocks.files.base(),
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				createdBy: db.userId,
+				updatedBy: db.userId,
+			};
+			const targetId = await ctx.db.insert("files_nodes", {
+				...base,
+				kind: "folder",
+				name: "target",
+				path: "/target",
+				treePath: "/target/",
+			});
+			const nodeIds: Id<"files_nodes">[] = [];
+			for (let index = 0; index < itemCount; index += 1) {
+				const name = `pick-${String(index).padStart(4, "0")}.md`;
+				nodeIds.push(
+					await ctx.db.insert("files_nodes", {
+						...base,
+						name,
+						path: `/${name}`,
+						treePath: `/${name}/`,
+					}),
+				);
+			}
+			return { targetId, nodeIds };
+		});
+		await t.run(async (ctx) => {
+			const membership = (await ctx.db.get("organizations_workspaces_users", db.membershipId))!;
+			const selectedIds = new Set<string>(nodeIds);
+			const reads = vi.spyOn(ctx.db, "get");
+			const writes = vi.spyOn(ctx.db, "patch");
+			const result = await files_nodes_db_move_nodes(ctx, {
+				userAuth: { id: db.userId },
+				membership,
+				items: nodeIds.map((nodeId) => ({ nodeId })),
+				targetParentId: targetId,
+			});
+			const selectedReads = reads.mock.calls.filter(
+				([table, id]: unknown[]) => table === "files_nodes" && typeof id === "string" && selectedIds.has(id),
+			).length;
+			if (allowed) {
+				expect(result._nay).toBeUndefined();
+				// It got past the size check and read the whole selection. The move reads each node more
+				// than once, so pin the floor rather than an exact count.
+				expect(selectedReads).toBeGreaterThanOrEqual(itemCount);
+			} else {
+				expect(result._nay?.name).toBe("move_too_large");
+				// Zero reads is the whole point: the size check refuses before it touches the database.
+				expect(selectedReads).toBe(0);
+				expect(writes).not.toHaveBeenCalled();
+			}
+		});
+	});
+
 	test("moves 41 mixed files with final counter names and keeps their assets", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
@@ -2440,9 +4075,11 @@ test("create_text_node seeds initial Yjs content on the server", async () => {
 	});
 	expect(saved.yjsUpdates).toHaveLength(0);
 	expect(saved.textChunks.length).toBeGreaterThan(0);
-	expect(saved.textChunks.every((chunk) => chunk.yjsSequence === 0)).toBe(true);
+	expect(saved.textChunks.every((chunk) => chunk.sourceKind === "committed" && chunk.yjsSequence === 0)).toBe(true);
 	expect(saved.plainTextChunks.length).toBe(saved.textChunks.length);
-	expect(saved.plainTextChunks.every((chunk) => chunk.yjsSequence === 0)).toBe(true);
+	expect(saved.plainTextChunks.every((chunk) => chunk.sourceKind === "committed" && chunk.yjsSequence === 0)).toBe(
+		true,
+	);
 	expect(saved.stats).toMatchObject({
 		lineCount: 2,
 		wordCount: 9,
@@ -2840,11 +4477,10 @@ test("archived nodes can share path with a new active node", async () => {
 	});
 	const duplicateName = "archived-duplicate-allowed.md";
 
-	const createdFile = await asUser.action(internal.files_nodes_content.create_file_by_path, {
-		organizationId: db.organizationId,
-		workspaceId: db.workspaceId,
-		userId: db.userId,
-		path: `/${duplicateName}`,
+	const createdFile = await asUser.action(api.files_nodes_content.create_text_node, {
+		membershipId: db.membershipId,
+		parentId: files_ROOT_ID,
+		path: duplicateName,
 	});
 	if (createdFile._nay) {
 		throw new Error("Expected initial file creation to succeed");
@@ -2879,21 +4515,17 @@ test("archived nodes can share path with a new active node", async () => {
 	});
 });
 
-test("create_file_by_path can reuse an existing active file", async () => {
+test("create_private_node_by_path can reuse an existing private file", async () => {
 	const t = test_convex();
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
-	const asUser = t.withIdentity({
-		issuer: "https://clerk.test",
-		external_id: db.userId,
-		name: "Test User",
-	});
 	const path = "/existing-by-path.md";
 
-	const createdFile = await asUser.action(internal.files_nodes_content.create_file_by_path, {
+	const createdFile = await t.mutation(internal.files_nodes.create_private_node_by_path, {
 		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
 		userId: db.userId,
 		path,
+		kind: "file",
 	});
 	if (createdFile._nay) {
 		throw new Error("Expected initial file creation to succeed");
@@ -2902,11 +4534,12 @@ test("create_file_by_path can reuse an existing active file", async () => {
 		throw new Error("Expected initial file creation to create a node");
 	}
 
-	const reusedFile = await asUser.action(internal.files_nodes_content.create_file_by_path, {
+	const reusedFile = await t.mutation(internal.files_nodes.create_private_node_by_path, {
 		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
 		userId: db.userId,
 		path,
+		kind: "file",
 	});
 	if (reusedFile._nay) {
 		throw new Error("Expected existing file reuse to succeed");
@@ -2915,571 +4548,12 @@ test("create_file_by_path can reuse an existing active file", async () => {
 		throw new Error("Expected existing file reuse not to create a node");
 	}
 
-	expect(reusedFile._yay.nodeId).toBe(createdFile._yay.nodeId);
+	expect(createdFile._yay.target.kind).toBe("private");
+	expect(reusedFile._yay.target).toEqual(createdFile._yay.target);
 	expect(reusedFile._yay.created).toBe(false);
-	// No folder was created in either call: a root-level create and a reuse both report none.
-	expect(createdFile._yay.createdAncestorIds).toEqual([]);
-	expect(reusedFile._yay.createdAncestorIds).toEqual([]);
-});
-
-test("create_file_by_path reports created ancestor folders deepest-first", async () => {
-	const t = test_convex();
-	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
-
-	const created = await t.action(internal.files_nodes_content.create_file_by_path, {
-		organizationId: db.organizationId,
-		workspaceId: db.workspaceId,
-		userId: db.userId,
-		path: "/r12a/deep/x.md",
-	});
-	if (created._nay) {
-		throw new Error(created._nay.message);
-	}
-	if (!created._yay.created) {
-		throw new Error("Expected create_file_by_path to create a fresh node");
-	}
-	expect(created._yay.createdAncestorIds).toHaveLength(2);
-
-	const [deepAncestorId, shallowAncestorId] = created._yay.createdAncestorIds;
-	if (!deepAncestorId || !shallowAncestorId) {
-		throw new Error("Expected two created ancestor folder ids");
-	}
-	await t.run(async (ctx) => {
-		const deepFolder = await ctx.db.get("files_nodes", deepAncestorId);
-		const shallowFolder = await ctx.db.get("files_nodes", shallowAncestorId);
-		expect(deepFolder?.path).toBe("/r12a/deep");
-		expect(deepFolder?.kind).toBe("folder");
-		expect(shallowFolder?.path).toBe("/r12a");
-		expect(shallowFolder?.kind).toBe("folder");
-	});
 });
 
 // #endregion move nodes
-
-describe("files_nodes.remove_eager_created_node_if_safe", () => {
-	async function create_eager_node(t: ReturnType<typeof test_convex>, path: string) {
-		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
-		const created = await t.action(internal.files_nodes_content.create_file_by_path, {
-			organizationId: db.organizationId,
-			workspaceId: db.workspaceId,
-			userId: db.userId,
-			path,
-		});
-		if (created._nay) {
-			throw new Error(created._nay.message);
-		}
-		if (!created._yay.created || created._yay.createdCommittedSequence === undefined) {
-			throw new Error("Expected create_file_by_path to create a fresh node");
-		}
-		return {
-			db,
-			nodeId: created._yay.nodeId,
-			eagerCreatedCommittedSequence: created._yay.createdCommittedSequence,
-			createdAncestorIds: created._yay.createdAncestorIds,
-		};
-	}
-
-	test("removes an untouched eager node with no pending row", async () => {
-		const t = test_convex();
-		vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
-		const { db, nodeId, eagerCreatedCommittedSequence } = await create_eager_node(t, "/eager-cleanup-untouched.md");
-
-		const removed = await t.mutation(internal.files_nodes.remove_eager_created_node_if_safe, {
-			organizationId: db.organizationId,
-			workspaceId: db.workspaceId,
-			userId: db.userId,
-			nodeId,
-			eagerCreatedCommittedSequence,
-		});
-		expect(removed._yay.removed).toBe(true);
-
-		await t.run(async (ctx) => {
-			expect(await ctx.db.get("files_nodes", nodeId)).toBeNull();
-		});
-	});
-
-	test("keeps the node when another user has a pending row on it", async () => {
-		const t = test_convex();
-		const { db, nodeId, eagerCreatedCommittedSequence } = await create_eager_node(t, "/eager-cleanup-other-user.md");
-
-		// Another user drafts on the node before the compensation runs; a hard delete would
-		// destroy their draft.
-		const otherUserRowId = await t.run((ctx) =>
-			ctx.db.insert("files_pending_updates", {
-				organizationId: db.organizationId,
-				workspaceId: db.workspaceId,
-				userId: "other_user_eager_cleanup_guard",
-				fileNodeId: nodeId,
-				size: 0,
-				updatedAt: Date.now(),
-			}),
-		);
-
-		const removed = await t.mutation(internal.files_nodes.remove_eager_created_node_if_safe, {
-			organizationId: db.organizationId,
-			workspaceId: db.workspaceId,
-			userId: db.userId,
-			nodeId,
-			eagerCreatedCommittedSequence,
-		});
-		expect(removed._yay.removed).toBe(false);
-
-		await t.run(async (ctx) => {
-			expect(await ctx.db.get("files_nodes", nodeId)).not.toBeNull();
-			expect(await ctx.db.get("files_pending_updates", otherUserRowId)).not.toBeNull();
-		});
-	});
-
-	test("keeps a node whose committed content advanced since the eager create", async () => {
-		const t = test_convex();
-		const { db, nodeId, eagerCreatedCommittedSequence } = await create_eager_node(t, "/eager-cleanup-saved.md");
-
-		// A real save advances the committed Yjs sequence past the creation-time stamp.
-		const savedYjsDoc = files_yjs_doc_create_from_text({ rootKind: "rich_text", text: "# Saved by the user" });
-		if ("_nay" in savedYjsDoc) {
-			throw new Error(savedYjsDoc._nay.message);
-		}
-		await t.run(async (ctx) =>
-			files_db_yjs_push_update(ctx, {
-				organizationId: db.organizationId,
-				workspaceId: db.workspaceId,
-				userId: db.userId,
-				nodeId,
-				expectedYjsLastSequenceId: (await ctx.db.get("files_nodes", nodeId))!.yjsLastSequenceId!,
-				rootKind: "rich_text",
-				update: files_u8_to_array_buffer(encodeStateAsUpdate(savedYjsDoc)),
-				sessionId: "eager-cleanup-saved-session",
-				materializeImmediately: false,
-			}),
-		);
-
-		const removed = await t.mutation(internal.files_nodes.remove_eager_created_node_if_safe, {
-			organizationId: db.organizationId,
-			workspaceId: db.workspaceId,
-			userId: db.userId,
-			nodeId,
-			eagerCreatedCommittedSequence,
-		});
-		expect(removed._yay.removed).toBe(false);
-
-		await t.run(async (ctx) => {
-			expect(await ctx.db.get("files_nodes", nodeId)).not.toBeNull();
-		});
-	});
-
-	test("keeps a node whose committed metadata was written since the eager create", async () => {
-		const t = test_convex();
-		// Current code still hard-deletes, so the R2 mock must be in place or this proof dies in
-		// cleanup instead of at the keep assertion below.
-		vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
-		const { db, nodeId, eagerCreatedCommittedSequence } = await create_eager_node(t, "/eager-cleanup-metadata.md");
-
-		// Metadata is a committed write that applies right away. It must stamp the node as a real
-		// file the same way a content save does, or discarding the pending create wipes the map.
-		const written = await t.mutation(internal.files_metadata.update_entries_by_path, {
-			organizationId: db.organizationId,
-			workspaceId: db.workspaceId,
-			userId: db.userId,
-			path: "/eager-cleanup-metadata.md",
-			set: [{ key: "created-by", value: "agent" }],
-			remove: [],
-		});
-		if (written._nay) throw new Error(written._nay.message);
-
-		const removed = await t.mutation(internal.files_nodes.remove_eager_created_node_if_safe, {
-			organizationId: db.organizationId,
-			workspaceId: db.workspaceId,
-			userId: db.userId,
-			nodeId,
-			eagerCreatedCommittedSequence,
-		});
-		expect(removed._yay.removed).toBe(false);
-
-		await t.run(async (ctx) => {
-			expect(await ctx.db.get("files_nodes", nodeId)).not.toBeNull();
-		});
-	});
-
-	test("reports removed false without throwing when the node is missing", async () => {
-		const t = test_convex();
-		vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
-		const { db, nodeId, eagerCreatedCommittedSequence } = await create_eager_node(t, "/eager-cleanup-missing.md");
-
-		const firstRemoval = await t.mutation(internal.files_nodes.remove_eager_created_node_if_safe, {
-			organizationId: db.organizationId,
-			workspaceId: db.workspaceId,
-			userId: db.userId,
-			nodeId,
-			eagerCreatedCommittedSequence,
-		});
-		expect(firstRemoval._yay.removed).toBe(true);
-
-		// A retry against the already-removed node stays benign for the compensation caller.
-		const secondRemoval = await t.mutation(internal.files_nodes.remove_eager_created_node_if_safe, {
-			organizationId: db.organizationId,
-			workspaceId: db.workspaceId,
-			userId: db.userId,
-			nodeId,
-			eagerCreatedCommittedSequence,
-		});
-		expect(secondRemoval._yay.removed).toBe(false);
-	});
-
-	test("removes created ancestor folders together with the leaf", async () => {
-		const t = test_convex();
-		vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
-		const { db, nodeId, eagerCreatedCommittedSequence, createdAncestorIds } = await create_eager_node(
-			t,
-			"/r12a/deep/x.md",
-		);
-		expect(createdAncestorIds).toHaveLength(2);
-
-		const removed = await t.mutation(internal.files_nodes.remove_eager_created_node_if_safe, {
-			organizationId: db.organizationId,
-			workspaceId: db.workspaceId,
-			userId: db.userId,
-			nodeId,
-			eagerCreatedCommittedSequence,
-			createdAncestorIds,
-		});
-		expect(removed._yay).toEqual({ removed: true, ancestorsLeft: 0 });
-
-		await t.run(async (ctx) => {
-			expect(await ctx.db.get("files_nodes", nodeId)).toBeNull();
-			for (const ancestorId of createdAncestorIds) {
-				expect(await ctx.db.get("files_nodes", ancestorId)).toBeNull();
-			}
-		});
-	});
-
-	test("keeps a metadata-bearing eager ancestor and prunes its untouched empty child", async () => {
-		const t = test_convex();
-		vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
-		const { db, nodeId, eagerCreatedCommittedSequence, createdAncestorIds } = await create_eager_node(
-			t,
-			"/eager-folder-metadata/deep/note.md",
-		);
-		const [deepId, folderId] = createdAncestorIds;
-		if (!deepId || !folderId) throw new Error("Expected two created folders");
-		const asOwner = t.withIdentity({
-			issuer: "https://clerk.test",
-			external_id: db.userId,
-			name: "Eager Folder Owner",
-		});
-		expect(
-			await asOwner.mutation(api.files_metadata.set_entries, {
-				membershipId: db.membershipId,
-				fileNodeId: folderId,
-				metadataYaml: "plugin-name: member-choice",
-			}),
-		).toEqual({ _yay: null });
-		expect(
-			(
-				await t.mutation(internal.files_nodes.remove_eager_created_node_if_safe, {
-					organizationId: db.organizationId,
-					workspaceId: db.workspaceId,
-					userId: db.userId,
-					nodeId,
-					eagerCreatedCommittedSequence,
-					createdAncestorIds,
-				})
-			)._yay,
-		).toEqual({ removed: true, ancestorsLeft: 1 });
-		await t.run(async (ctx) => {
-			expect(await ctx.db.get("files_nodes", nodeId)).toBeNull();
-			expect(await ctx.db.get("files_nodes", deepId)).toBeNull();
-			expect(await ctx.db.get("files_nodes", folderId)).not.toBeNull();
-		});
-		expect(
-			await asOwner.query(api.files_metadata.get_entries, {
-				membershipId: db.membershipId,
-				fileNodeId: folderId,
-			}),
-		).toEqual([{ key: "plugin-name", value: "member-choice" }]);
-	});
-
-	test("keeps an ancestor folder that gained another committed child", async () => {
-		const t = test_convex();
-		vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
-		const { db, nodeId, eagerCreatedCommittedSequence, createdAncestorIds } = await create_eager_node(
-			t,
-			"/r12a/deep/x.md",
-		);
-
-		// A second committed file under /r12a makes that folder non-empty once the deep
-		// branch is compensated away.
-		const sibling = await t.action(internal.files_nodes_content.create_file_by_path, {
-			organizationId: db.organizationId,
-			workspaceId: db.workspaceId,
-			userId: db.userId,
-			path: "/r12a/other.md",
-		});
-		if (sibling._nay) {
-			throw new Error(sibling._nay.message);
-		}
-
-		const removed = await t.mutation(internal.files_nodes.remove_eager_created_node_if_safe, {
-			organizationId: db.organizationId,
-			workspaceId: db.workspaceId,
-			userId: db.userId,
-			nodeId,
-			eagerCreatedCommittedSequence,
-			createdAncestorIds,
-		});
-		expect(removed._yay).toEqual({ removed: true, ancestorsLeft: 1 });
-
-		const [deepAncestorId, shallowAncestorId] = createdAncestorIds;
-		if (!deepAncestorId || !shallowAncestorId) {
-			throw new Error("Expected two created ancestor folder ids");
-		}
-		await t.run(async (ctx) => {
-			expect(await ctx.db.get("files_nodes", nodeId)).toBeNull();
-			expect(await ctx.db.get("files_nodes", deepAncestorId)).toBeNull();
-			expect(await ctx.db.get("files_nodes", shallowAncestorId)).not.toBeNull();
-		});
-	});
-
-	test("keeps an ancestor folder another user renamed since the create", async () => {
-		const t = test_convex();
-		vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
-		const { db, nodeId, eagerCreatedCommittedSequence, createdAncestorIds } = await create_eager_node(
-			t,
-			"/r13f/deep/x.md",
-		);
-		const [deepAncestorId, shallowAncestorId] = createdAncestorIds;
-		if (!deepAncestorId || !shallowAncestorId) {
-			throw new Error("Expected two created ancestor folder ids");
-		}
-
-		// Another workspace member renames the created folder through the REAL rename_node
-		// mutation, which stamps updatedBy; the compensation must not delete their rename.
-		const other = await t.run(async (ctx) => {
-			const otherUserId = await ctx.db.insert("users", {
-				clerkUserId: "clerk_eager_ancestor_renamed_other",
-			});
-			const now = Date.now();
-			const otherMembershipId = await ctx.db.insert("organizations_workspaces_users", {
-				organizationId: db.organizationId,
-				workspaceId: db.workspaceId,
-				userId: otherUserId,
-				active: true,
-				updatedAt: now,
-			});
-			// Writing files needs `content.write`, which comes from the member role.
-			await ctx.db.insert("access_control_role_assignments", {
-				organizationId: db.organizationId,
-				workspaceId: db.workspaceId,
-				userId: otherUserId,
-				role: "member",
-				createdAt: now,
-				updatedAt: now,
-			});
-			return { otherUserId, otherMembershipId };
-		});
-		const asOtherUser = t.withIdentity({
-			issuer: "https://clerk.test",
-			external_id: other.otherUserId,
-			name: "Other User",
-		});
-		const renamed = await asOtherUser.mutation(api.files_nodes.rename_node, {
-			membershipId: other.otherMembershipId,
-			nodeId: deepAncestorId,
-			path: "deep-renamed",
-		});
-		if (renamed._nay) {
-			throw new Error(renamed._nay.message);
-		}
-
-		const removed = await t.mutation(internal.files_nodes.remove_eager_created_node_if_safe, {
-			organizationId: db.organizationId,
-			workspaceId: db.workspaceId,
-			userId: db.userId,
-			nodeId,
-			eagerCreatedCommittedSequence,
-			createdAncestorIds,
-		});
-		expect(removed._yay).toEqual({ removed: true, ancestorsLeft: 2 });
-
-		await t.run(async (ctx) => {
-			expect(await ctx.db.get("files_nodes", nodeId)).toBeNull();
-			const deepFolder = await ctx.db.get("files_nodes", deepAncestorId);
-			expect(deepFolder?.path).toBe("/r13f/deep-renamed");
-			expect(await ctx.db.get("files_nodes", shallowAncestorId)).not.toBeNull();
-		});
-	});
-
-	test("keeps an ancestor folder referenced by a pending row", async () => {
-		const t = test_convex();
-		vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
-		const { db, nodeId, eagerCreatedCommittedSequence, createdAncestorIds } = await create_eager_node(
-			t,
-			"/r13g/deep/x.md",
-		);
-		const [deepAncestorId, shallowAncestorId] = createdAncestorIds;
-		if (!deepAncestorId || !shallowAncestorId) {
-			throw new Error("Expected two created ancestor folder ids");
-		}
-
-		// A pending move of the created folder itself, proposed through the REAL move-upsert:
-		// deleting the folder would orphan this row.
-		const movedProposal = await t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
-			organizationId: db.organizationId,
-			workspaceId: db.workspaceId,
-			userId: db.userId,
-			nodeId: deepAncestorId,
-			destParentId: files_ROOT_ID,
-			destName: "deep-moved",
-		});
-		if (movedProposal._nay) {
-			throw new Error(movedProposal._nay.message);
-		}
-
-		const removed = await t.mutation(internal.files_nodes.remove_eager_created_node_if_safe, {
-			organizationId: db.organizationId,
-			workspaceId: db.workspaceId,
-			userId: db.userId,
-			nodeId,
-			eagerCreatedCommittedSequence,
-			createdAncestorIds,
-		});
-		expect(removed._yay).toEqual({ removed: true, ancestorsLeft: 2 });
-
-		await t.run(async (ctx) => {
-			expect(await ctx.db.get("files_nodes", nodeId)).toBeNull();
-			expect(await ctx.db.get("files_nodes", deepAncestorId)).not.toBeNull();
-			const folderPendingRow = await ctx.db
-				.query("files_pending_updates")
-				.withIndex("by_fileNode", (q) => q.eq("fileNodeId", deepAncestorId))
-				.first();
-			expect(folderPendingRow).not.toBeNull();
-			expect(await ctx.db.get("files_nodes", shallowAncestorId)).not.toBeNull();
-		});
-	});
-
-	test("keeps an ancestor folder that is another user's pending move destination", async () => {
-		const t = test_convex();
-		vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
-		const { db, nodeId, eagerCreatedCommittedSequence, createdAncestorIds } = await create_eager_node(
-			t,
-			"/r13h/deep/x.md",
-		);
-		const [deepAncestorId, shallowAncestorId] = createdAncestorIds;
-		if (!deepAncestorId || !shallowAncestorId) {
-			throw new Error("Expected two created ancestor folder ids");
-		}
-
-		// Another user proposes moving their own file INTO the created folder through the REAL
-		// move-upsert: the row lives on their file, not on the folder, but its destination is
-		// the folder and deleting it would break their Accept later.
-		const otherUserId = await t.run(async (ctx) => {
-			const userId = await ctx.db.insert("users", { clerkUserId: "clerk_eager_move_dest_other" });
-			const now = Date.now();
-			await ctx.db.insert("organizations_workspaces_users", {
-				organizationId: db.organizationId,
-				workspaceId: db.workspaceId,
-				userId,
-				active: true,
-				updatedAt: now,
-			});
-			// Writing files needs `content.write`, which comes from the member role.
-			await ctx.db.insert("access_control_role_assignments", {
-				organizationId: db.organizationId,
-				workspaceId: db.workspaceId,
-				userId,
-				role: "member",
-				createdAt: now,
-				updatedAt: now,
-			});
-			return userId;
-		});
-		const otherFile = await t.action(internal.files_nodes_content.create_file_by_path, {
-			organizationId: db.organizationId,
-			workspaceId: db.workspaceId,
-			userId: otherUserId,
-			path: "/move-dest-source.md",
-		});
-		if (otherFile._nay) {
-			throw new Error(otherFile._nay.message);
-		}
-		const movedProposal = await t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
-			organizationId: db.organizationId,
-			workspaceId: db.workspaceId,
-			userId: otherUserId,
-			nodeId: otherFile._yay.nodeId,
-			destParentId: deepAncestorId,
-			destName: "move-dest-source.md",
-		});
-		if (movedProposal._nay) {
-			throw new Error(movedProposal._nay.message);
-		}
-
-		const removed = await t.mutation(internal.files_nodes.remove_eager_created_node_if_safe, {
-			organizationId: db.organizationId,
-			workspaceId: db.workspaceId,
-			userId: db.userId,
-			nodeId,
-			eagerCreatedCommittedSequence,
-			createdAncestorIds,
-		});
-		expect(removed._yay).toEqual({ removed: true, ancestorsLeft: 2 });
-
-		await t.run(async (ctx) => {
-			expect(await ctx.db.get("files_nodes", nodeId)).toBeNull();
-			expect(await ctx.db.get("files_nodes", deepAncestorId)).not.toBeNull();
-			expect(await ctx.db.get("files_nodes", shallowAncestorId)).not.toBeNull();
-			const otherRow = await ctx.db
-				.query("files_pending_updates")
-				.withIndex("by_fileNode", (q) => q.eq("fileNodeId", otherFile._yay.nodeId))
-				.first();
-			expect(otherRow?.pendingMove?.destParentId).toBe(deepAncestorId);
-		});
-	});
-
-	test("keeps created ancestor folders when the leaf is unsafe to delete", async () => {
-		const t = test_convex();
-		const { db, nodeId, eagerCreatedCommittedSequence, createdAncestorIds } = await create_eager_node(
-			t,
-			"/r12b/deep/x.md",
-		);
-
-		// A real save advances the committed Yjs sequence past the creation-time stamp,
-		// so the leaf gate blocks and no folder may be touched either.
-		const savedYjsDoc = files_yjs_doc_create_from_text({ rootKind: "rich_text", text: "# Saved by the user" });
-		if ("_nay" in savedYjsDoc) {
-			throw new Error(savedYjsDoc._nay.message);
-		}
-		await t.run(async (ctx) =>
-			files_db_yjs_push_update(ctx, {
-				organizationId: db.organizationId,
-				workspaceId: db.workspaceId,
-				userId: db.userId,
-				nodeId,
-				expectedYjsLastSequenceId: (await ctx.db.get("files_nodes", nodeId))!.yjsLastSequenceId!,
-				rootKind: "rich_text",
-				update: files_u8_to_array_buffer(encodeStateAsUpdate(savedYjsDoc)),
-				sessionId: "eager-cleanup-ancestors-saved-session",
-				materializeImmediately: false,
-			}),
-		);
-
-		const removed = await t.mutation(internal.files_nodes.remove_eager_created_node_if_safe, {
-			organizationId: db.organizationId,
-			workspaceId: db.workspaceId,
-			userId: db.userId,
-			nodeId,
-			eagerCreatedCommittedSequence,
-			createdAncestorIds,
-		});
-		expect(removed._yay).toEqual({ removed: false, ancestorsLeft: 2 });
-
-		await t.run(async (ctx) => {
-			expect(await ctx.db.get("files_nodes", nodeId)).not.toBeNull();
-			for (const ancestorId of createdAncestorIds) {
-				expect(await ctx.db.get("files_nodes", ancestorId)).not.toBeNull();
-			}
-		});
-	});
-});
 
 describe("files_nodes.get_authorized_by_path", () => {
 	test("returns active nodes by path and ignores archived nodes", async () => {
@@ -4774,11 +5848,11 @@ describe("upload plan gate", () => {
 
 		// The gate is on uploads, not on writes. Text files answer to the credit gate instead, and
 		// `Free` passes it while it still has credits.
-		const created = await t.action(internal.files_nodes_content.create_file_by_path, {
-			organizationId: db.organizationId,
-			workspaceId: db.workspaceId,
-			userId: db.userId,
-			path: "/notes.md",
+		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+		const created = await asUser.action(api.files_nodes_content.create_text_node, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			path: "notes.md",
 		});
 		expect(created._nay).toBeUndefined();
 	});
@@ -5592,7 +6666,7 @@ test("get_by_path ignores archived files with duplicate path", async () => {
 	expect(resolvedRoot1?._id).toBe(db.files.file_root_1._id);
 });
 
-test("create_file_by_path creates active ancestors instead of reusing archived nodes", async () => {
+test("private file publication creates active ancestors instead of reusing archived nodes", async () => {
 	const t = test_convex();
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
 	const asUser = t.withIdentity({
@@ -5606,15 +6680,10 @@ test("create_file_by_path creates active ancestors instead of reusing archived n
 		nodeIds: [db.files.file_root_2._id],
 	});
 
-	const createByPath = await asUser.action(internal.files_nodes_content.create_file_by_path, {
-		organizationId: db.organizationId,
-		workspaceId: db.workspaceId,
-		userId: db.userId,
+	const nodeId = await test_create_saved_text_file(t, {
+		membershipId: db.membershipId,
 		path: `/${db.files.file_root_2.name}/new-leaf.md`,
 	});
-	if (createByPath._nay) {
-		throw new Error("Expected create_file_by_path to succeed with archived duplicate ancestor");
-	}
 
 	await t.run(async (ctx) => {
 		const root2Path = `/${db.files.file_root_2.name}`;
@@ -5633,7 +6702,7 @@ test("create_file_by_path creates active ancestors instead of reusing archived n
 
 		expect(activeRoot2._id).not.toBe(db.files.file_root_2._id);
 
-		const createdLeaf = await ctx.db.get("files_nodes", createByPath._yay.nodeId);
+		const createdLeaf = await ctx.db.get("files_nodes", nodeId);
 		expect(createdLeaf?.parentId).toBe(activeRoot2._id);
 		expect(createdLeaf?.path).toBe(`/${db.files.file_root_2.name}/new-leaf.md`);
 	});
@@ -6010,12 +7079,6 @@ test("files_snapshot_write rate limit runs before restore snapshot validation", 
 test("materialize_file_content writes empty version and Yjs snapshots to R2 and no current-content object", async () => {
 	const t = test_convex();
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
-	const asUser = t.withIdentity({
-		issuer: "https://clerk.test",
-		external_id: db.userId,
-		name: "Empty Materialize User",
-		email: "empty-materialize-user@example.com",
-	});
 	const r2Writes = new Map<string, BodyInit>();
 	generateUploadUrlSpy.mockImplementation(async (customKey?: string) => {
 		const key = customKey ?? "test-upload-key";
@@ -6046,20 +7109,15 @@ test("materialize_file_content writes empty version and Yjs snapshots to R2 and 
 		}),
 	);
 
-	const createdFile = await asUser.action(internal.files_nodes_content.create_file_by_path, {
-		organizationId: db.organizationId,
-		workspaceId: db.workspaceId,
-		userId: db.userId,
+	const createdFileId = await test_create_saved_text_file(t, {
+		membershipId: db.membershipId,
 		path: "/empty-materialized.md",
 	});
-	if (createdFile._nay) {
-		throw new Error(createdFile._nay.message);
-	}
 
 	const materialized = await t.action(internal.files_nodes_content.materialize_file_content, {
 		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
-		nodeId: createdFile._yay.nodeId,
+		nodeId: createdFileId,
 		userId: db.userId,
 		targetSequence: 0,
 	});
@@ -6068,7 +7126,7 @@ test("materialize_file_content writes empty version and Yjs snapshots to R2 and 
 	}
 
 	const saved = await t.run(async (ctx) => {
-		const fileNode = await ctx.db.get("files_nodes", createdFile._yay.nodeId);
+		const fileNode = await ctx.db.get("files_nodes", createdFileId);
 		if (!fileNode?.assetId || !fileNode.yjsSnapshotId) {
 			throw new Error("Expected materialized empty file docs");
 		}
@@ -6078,10 +7136,7 @@ test("materialize_file_content writes empty version and Yjs snapshots to R2 and 
 		const yjsUpdates = await ctx.db
 			.query("files_yjs_updates")
 			.withIndex("by_organization_workspace_fileNode_sequence", (q) =>
-				q
-					.eq("organizationId", db.organizationId)
-					.eq("workspaceId", db.workspaceId)
-					.eq("fileNodeId", createdFile._yay.nodeId),
+				q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("fileNodeId", createdFileId),
 			)
 			.collect();
 		const versionSnapshots = await ctx.db
@@ -6090,7 +7145,7 @@ test("materialize_file_content writes empty version and Yjs snapshots to R2 and 
 				q
 					.eq("organizationId", db.organizationId)
 					.eq("workspaceId", db.workspaceId)
-					.eq("fileNodeId", createdFile._yay.nodeId)
+					.eq("fileNodeId", createdFileId)
 					.eq("archivedAt", -1),
 			)
 			.collect();
@@ -6179,15 +7234,10 @@ test("materialize_file_content writes nonempty version and Yjs snapshots to R2 a
 		}),
 	);
 
-	const createdFile = await asUser.action(internal.files_nodes_content.create_file_by_path, {
-		organizationId: db.organizationId,
-		workspaceId: db.workspaceId,
-		userId: db.userId,
+	const createdFileId = await test_create_saved_text_file(t, {
+		membershipId: db.membershipId,
 		path: "/materialized.md",
 	});
-	if (createdFile._nay) {
-		throw new Error(createdFile._nay.message);
-	}
 
 	const markdown = "# Café\n\nEmoji 🙂\n";
 	const yjsDoc = files_yjs_doc_create_from_text({ rootKind: "rich_text", text: markdown });
@@ -6196,8 +7246,8 @@ test("materialize_file_content writes nonempty version and Yjs snapshots to R2 a
 	}
 	const pushResult = await asUser.mutation(api.files_nodes.yjs_push_update, {
 		membershipId: db.membershipId,
-		nodeId: createdFile._yay.nodeId,
-		expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, createdFile._yay.nodeId)).yjsLastSequenceId,
+		nodeId: createdFileId,
+		expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, createdFileId)).yjsLastSequenceId,
 		update: files_u8_to_array_buffer(encodeStateAsUpdate(yjsDoc)),
 		sessionId: "materialize-session",
 	});
@@ -6209,7 +7259,7 @@ test("materialize_file_content writes nonempty version and Yjs snapshots to R2 a
 	const materialized = await t.action(internal.files_nodes_content.materialize_file_content, {
 		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
-		nodeId: createdFile._yay.nodeId,
+		nodeId: createdFileId,
 		userId: db.userId,
 		targetSequence: 1,
 	});
@@ -6222,13 +7272,13 @@ test("materialize_file_content writes nonempty version and Yjs snapshots to R2 a
 	await t.mutation(internal.files_nodes_content.cleanup_file_materialization_covered_rows, {
 		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
-		nodeId: createdFile._yay.nodeId,
-		expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, createdFile._yay.nodeId)).yjsLastSequenceId,
+		nodeId: createdFileId,
+		expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, createdFileId)).yjsLastSequenceId,
 		throughSequence: 1,
 	});
 
 	const saved = await t.run(async (ctx) => {
-		const fileNode = await ctx.db.get("files_nodes", createdFile._yay.nodeId);
+		const fileNode = await ctx.db.get("files_nodes", createdFileId);
 		if (!fileNode?.assetId || !fileNode.yjsSnapshotId) {
 			throw new Error("Expected materialized file docs");
 		}
@@ -6238,10 +7288,7 @@ test("materialize_file_content writes nonempty version and Yjs snapshots to R2 a
 		const yjsUpdates = await ctx.db
 			.query("files_yjs_updates")
 			.withIndex("by_organization_workspace_fileNode_sequence", (q) =>
-				q
-					.eq("organizationId", db.organizationId)
-					.eq("workspaceId", db.workspaceId)
-					.eq("fileNodeId", createdFile._yay.nodeId),
+				q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("fileNodeId", createdFileId),
 			)
 			.collect();
 		const versionSnapshots = await ctx.db
@@ -6250,7 +7297,7 @@ test("materialize_file_content writes nonempty version and Yjs snapshots to R2 a
 				q
 					.eq("organizationId", db.organizationId)
 					.eq("workspaceId", db.workspaceId)
-					.eq("fileNodeId", createdFile._yay.nodeId)
+					.eq("fileNodeId", createdFileId)
 					.eq("archivedAt", -1),
 			)
 			.collect();
@@ -6338,14 +7385,10 @@ async function test_materialize_markdown_file(
 	path: string,
 	markdown: string,
 ) {
-	const created = await asUser.action(internal.files_nodes_content.create_file_by_path, {
-		organizationId: db.organizationId,
-		workspaceId: db.workspaceId,
-		userId: db.userId,
+	const nodeId = await test_create_saved_text_file(t, {
+		membershipId: db.membershipId,
 		path,
 	});
-	if (created._nay) throw new Error(created._nay.message);
-	const nodeId = created._yay.nodeId;
 	const yjsDoc = files_yjs_doc_create_from_text({ rootKind: "rich_text", text: markdown });
 	if ("_nay" in yjsDoc) throw new Error(yjsDoc._nay.message);
 	const pushResult = await asUser.mutation(api.files_nodes.yjs_push_update, {
@@ -6565,16 +7608,10 @@ test("materialize_file_content settles over-cap frontmatter with the marker pair
 
 	// Seed without a push (the rate limiter allows two pushes per test window and this test
 	// needs both for the over-cap and the fitting content).
-	const createdFile = await asUser.action(internal.files_nodes_content.create_file_by_path, {
-		organizationId: db.organizationId,
-		workspaceId: db.workspaceId,
-		userId: db.userId,
+	const nodeId = await test_create_saved_text_file(t, {
+		membershipId: db.membershipId,
 		path: "/frontmatter-cap.md",
 	});
-	if (createdFile._nay) {
-		throw new Error(createdFile._nay.message);
-	}
-	const nodeId = createdFile._yay.nodeId;
 	const seededMaterialize = await t.action(internal.files_nodes_content.materialize_file_content, {
 		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
@@ -6826,16 +7863,10 @@ test("read_committed_file_chunks_line_range/stats match full-text slicing across
 	);
 	const markdown = `# Chunked Document\n\n${paragraphs.join("\n\n")}`;
 
-	const createdFile = await asUser.action(internal.files_nodes_content.create_file_by_path, {
-		organizationId: db.organizationId,
-		workspaceId: db.workspaceId,
-		userId: db.userId,
+	const nodeId = await test_create_saved_text_file(t, {
+		membershipId: db.membershipId,
 		path: "/chunked.md",
 	});
-	if (createdFile._nay) {
-		throw new Error(createdFile._nay.message);
-	}
-	const nodeId = createdFile._yay.nodeId;
 
 	const yjsDoc = files_yjs_doc_create_from_text({ rootKind: "rich_text", text: markdown });
 	if ("_nay" in yjsDoc) {
@@ -6981,7 +8012,7 @@ test("match_text_file_lines and match_plain_text_file_lines query committed and 
 		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
 		userId: db.userId,
-		fileNodeId: nodeId,
+		target: { kind: "saved" as const, id: nodeId },
 	};
 
 	const committedGrep = await asUser.query(internal.files_nodes.match_text_file_lines, {
@@ -7124,7 +8155,7 @@ test("match_text_file_lines and match_plain_text_file_lines query committed and 
 		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
 		userId: db.userId,
-		fileNodeId: cappedOutputNodeId,
+		target: { kind: "saved", id: cappedOutputNodeId },
 		pattern: "outputneedle-01",
 		ignoreCase: false,
 		fixedStrings: true,
@@ -7143,7 +8174,7 @@ test("match_text_file_lines and match_plain_text_file_lines query committed and 
 		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
 		userId: db.userId,
-		fileNodeId: cappedOutputNodeId,
+		target: { kind: "saved", id: cappedOutputNodeId },
 		pattern: "outputneedle",
 		ignoreCase: false,
 		fixedStrings: true,
@@ -7244,7 +8275,7 @@ test("match_text_file_lines and match_plain_text_file_lines query committed and 
 		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
 		userId: db.userId,
-		fileNodeId: cappedOutputNodeId,
+		target: { kind: "saved", id: cappedOutputNodeId },
 		pattern: "outputneedle",
 		ignoreCase: false,
 		fixedStrings: true,
@@ -7484,7 +8515,7 @@ test("external (reserved) scope reads committed chunks and R2 without Yjs, pendi
 	const markdownGrep = await t.query(internal.files_nodes.match_text_file_lines, {
 		...readScope,
 		userId: db.userId,
-		fileNodeId: nodeId,
+		target: { kind: "saved", id: nodeId },
 		pattern: "externalneedle",
 		ignoreCase: false,
 		fixedStrings: true,
@@ -7502,7 +8533,7 @@ test("external (reserved) scope reads committed chunks and R2 without Yjs, pendi
 	const plainGrep = await t.query(internal.files_nodes.match_plain_text_file_lines, {
 		...readScope,
 		userId: db.userId,
-		fileNodeId: nodeId,
+		target: { kind: "saved", id: nodeId },
 		pattern: "critical mount alert",
 		ignoreCase: false,
 		fixedStrings: true,
@@ -7731,7 +8762,7 @@ describe("non-collaborative files", () => {
 		const grep = await t.query(internal.files_nodes.match_plain_text_file_lines, {
 			...readScope,
 			userId: db.userId,
-			fileNodeId: nodeId,
+			target: { kind: "saved", id: nodeId },
 			pattern: "quietneedle",
 			ignoreCase: false,
 			fixedStrings: true,
@@ -8412,9 +9443,13 @@ describe("non-collaborative files", () => {
 			email: "repeat-id-user@example.com",
 		});
 		test_setup_r2_capture();
+		vi.spyOn(r2_confirmed_object_delete, "delete_object").mockResolvedValue(undefined);
+		const nodeId = await test_create_saved_text_file(t, {
+			membershipId: db.membershipId,
+			path: "/repeat-id.md",
+		});
+		// Count only the two edits whose Yjs histories restart at sequence 1.
 		enqueueActionSpy.mockClear();
-		// The fixture helper pushes sequence 1 of the first lineage and bills it.
-		const nodeId = await test_materialize_markdown_file(t, asUser, db, "/repeat-id.md", "# Repeat id\n");
 
 		const push_text = async (text: string) => {
 			const yjsDoc = files_yjs_doc_create_from_text({ rootKind: "rich_text", text });
@@ -8438,6 +9473,15 @@ describe("non-collaborative files", () => {
 				return (payload.events ?? []).filter((event) => event.name === "file_save").map((event) => event.externalId);
 			});
 
+		expect(await push_text("# Repeat id\n")).toBe(1);
+		const materialized = await t.action(internal.files_nodes_content.materialize_file_content, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			nodeId,
+			userId: db.userId,
+			targetSequence: 1,
+		});
+		expect(materialized._nay).toBeUndefined();
 		expect(billed_file_save_ids()).toHaveLength(1);
 
 		const off = await asUser.mutation(api.files_nodes_content.set_file_non_collaborative, {
@@ -9123,6 +10167,7 @@ describe("non-collaborative files", () => {
 		test_setup_r2_capture();
 
 		const markdown = "# Pending\n\nbody\n";
+		vi.spyOn(r2_confirmed_object_delete, "delete_object").mockResolvedValue(undefined);
 		const contentOnlyNodeId = await test_materialize_markdown_file(t, asUser, db, "/pending-content.md", markdown);
 		const contentAndMoveNodeId = await test_materialize_markdown_file(t, asUser, db, "/pending-both.md", markdown);
 
@@ -9136,10 +10181,11 @@ describe("non-collaborative files", () => {
 					organizationId: db.organizationId,
 					workspaceId: db.workspaceId,
 					userId: db.userId,
-					fileNodeId: nodeId,
+					target: { kind: "saved", id: nodeId },
+					revision: 1,
 					pendingMove:
 						nodeId === contentAndMoveNodeId
-							? { destParentId: "root", destName: "moved.md", fromPath: "/pending-both.md" }
+							? { destParent: { kind: "root" }, destName: "moved.md", fromPath: "/pending-both.md" }
 							: undefined,
 					size: 12,
 					updatedAt: now,
@@ -9150,7 +10196,7 @@ describe("non-collaborative files", () => {
 							organizationId: db.organizationId,
 							workspaceId: db.workspaceId,
 							userId: db.userId,
-							fileNodeId: nodeId,
+							target: { kind: "saved", id: nodeId },
 							owner: { kind: "active", pendingUpdateId, role },
 							lineageGeneration: 0,
 							sealed: true,
@@ -9161,11 +10207,12 @@ describe("non-collaborative files", () => {
 					),
 				);
 				await ctx.db.patch("files_pending_updates", pendingUpdateId, {
-					baseYjsSequence: 1,
-					baseLineageGeneration: 0,
-					baseStateId,
-					stagedStateId,
-					unstagedStateId,
+					content: {
+						base: { kind: "yjs", sequence: 1, lineageGeneration: 0 },
+						baseStateId: baseStateId!,
+						stagedStateId: stagedStateId!,
+						unstagedStateId: unstagedStateId!,
+					},
 				});
 				// The marker a real save leaves behind. It belongs to the document the toggle
 				// deletes, so it has to go with it.
@@ -9181,7 +10228,13 @@ describe("non-collaborative files", () => {
 		});
 
 		const pendingBefore = await t.run(async (ctx) => await ctx.db.query("files_pending_updates").collect());
-		const statesBefore = await t.run(async (ctx) => await ctx.db.query("files_pending_update_yjs_states").collect());
+		// Published fixtures leave retired states for background cleanup.
+		const statesBefore = await t.run(async (ctx) =>
+			ctx.db
+				.query("files_pending_update_yjs_states")
+				.filter((q) => q.eq(q.field("owner.kind"), "active"))
+				.collect(),
+		);
 		for (const nodeId of [contentOnlyNodeId, contentAndMoveNodeId]) {
 			const off = await asUser.mutation(api.files_nodes_content.set_file_non_collaborative, {
 				membershipId: db.membershipId,
@@ -9197,11 +10250,16 @@ describe("non-collaborative files", () => {
 			const docs = await ctx.db.query("files_pending_updates").collect();
 			return {
 				docs,
-				states: await ctx.db.query("files_pending_update_yjs_states").collect(),
+				states: await ctx.db
+					.query("files_pending_update_yjs_states")
+					.filter((q) => q.eq(q.field("owner.kind"), "active"))
+					.collect(),
 				lastSequenceSaved: (await ctx.db.query("files_pending_updates_last_sequence_saved").collect()).length,
 			};
 		});
-		expect(pendingAfter.docs).toEqual(pendingBefore.map((doc) => ({ ...doc, contentNeedsRebase: true })));
+		expect(pendingAfter.docs).toEqual(
+			pendingBefore.map((doc) => ({ ...doc, revision: doc.revision + 1, contentNeedsRebase: true })),
+		);
 		expect(pendingAfter.states).toEqual(statesBefore);
 		// A leftover marker would make the diff editor refetch forever after collaboration is
 		// turned back on, because the fresh document starts counting at 0 again.
@@ -9237,10 +10295,11 @@ describe("non-collaborative files", () => {
 					organizationId: db.organizationId,
 					workspaceId: db.workspaceId,
 					userId: db.userId,
-					fileNodeId: nodeId,
+					target: { kind: "saved", id: nodeId },
+					revision: 1,
 					pendingMove:
 						nodeId === contentAndMove.nodeId
-							? { destParentId: "root", destName: "moved.md", fromPath: "/off-both.md" }
+							? { destParent: { kind: "root" }, destName: "moved.md", fromPath: "/off-both.md" }
 							: undefined,
 					size: 12,
 					updatedAt: now,
@@ -9251,7 +10310,7 @@ describe("non-collaborative files", () => {
 							organizationId: db.organizationId,
 							workspaceId: db.workspaceId,
 							userId: db.userId,
-							fileNodeId: nodeId,
+							target: { kind: "saved", id: nodeId },
 							owner: { kind: "active", pendingUpdateId, role },
 							sealed: true,
 							pageCount: 1,
@@ -9261,10 +10320,12 @@ describe("non-collaborative files", () => {
 					),
 				);
 				await ctx.db.patch("files_pending_updates", pendingUpdateId, {
-					baseAssetId: node.assetId,
-					baseStateId,
-					stagedStateId,
-					unstagedStateId,
+					content: {
+						base: { kind: "asset", assetId: node.assetId },
+						baseStateId: baseStateId!,
+						stagedStateId: stagedStateId!,
+						unstagedStateId: unstagedStateId!,
+					},
 				});
 			}
 		});
@@ -9287,7 +10348,9 @@ describe("non-collaborative files", () => {
 				states: await ctx.db.query("files_pending_update_yjs_states").collect(),
 			};
 		});
-		expect(pendingAfter.docs).toEqual(pendingBefore.map((doc) => ({ ...doc, contentNeedsRebase: true })));
+		expect(pendingAfter.docs).toEqual(
+			pendingBefore.map((doc) => ({ ...doc, revision: doc.revision + 1, contentNeedsRebase: true })),
+		);
 		expect(pendingAfter.states).toEqual(statesBefore);
 	});
 
@@ -9332,18 +10395,16 @@ describe("non-collaborative files", () => {
 		expect(renamed?.lowercaseExtension).toBe("yaml");
 
 		// Accepting a proposed move can rename too, and it keeps the type in its own place.
-		const movedBack = await t.run(async (ctx) =>
-			files_nodes_db_apply_pending_move(ctx, {
-				organizationId: db.organizationId,
-				workspaceId: db.workspaceId,
-				nodeId: plainNodeId,
-				destParentId: files_ROOT_ID,
-				destName: "data.json",
-				userId: db.userId,
-				updatedBy: db.userId,
-				authorizeCycleMember: async () => true,
-			}),
-		);
+		const move = await propose_move_for_test(t, {
+			...db,
+			nodeId: plainNodeId,
+			destParent: { kind: "root" },
+			destName: "data.json",
+		});
+		const movedBack = await asUser.mutation(api.files_pending_updates.apply_file_pending_move, {
+			membershipId: db.membershipId,
+			...move,
+		});
 		if (movedBack._nay) {
 			throw new Error(movedBack._nay.message);
 		}
@@ -9566,14 +10627,10 @@ test("file_stats stay fresh after an edit: re-materialization patches the same d
 	const markdownA = "# Stats Doc\n\nFirst paragraph alpha.\n\nSecond paragraph beta.";
 	const markdownB = `${markdownA}\n\nThird paragraph gamma delta epsilon.\n\nFourth paragraph zeta eta theta iota.`;
 
-	const created = await asUser.action(internal.files_nodes_content.create_file_by_path, {
-		organizationId: db.organizationId,
-		workspaceId: db.workspaceId,
-		userId: db.userId,
+	const nodeId = await test_create_saved_text_file(t, {
+		membershipId: db.membershipId,
 		path: "/stats-edit.md",
 	});
-	if (created._nay) throw new Error(created._nay.message);
-	const nodeId = created._yay.nodeId;
 
 	const yjsDoc = files_yjs_doc_create_from_text({ rootKind: "rich_text", text: markdownA });
 	if ("_nay" in yjsDoc) throw new Error(yjsDoc._nay.message);
@@ -9719,7 +10776,20 @@ describe("text_search_files", () => {
 		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
 		test_setup_r2_capture();
 		const path = `/scope/${suffix}folder/inside.md`;
-		await test_materialize_markdown_file(t, asUser, db, path, "prefixneedle");
+		const nodeId = await test_materialize_markdown_file(t, asUser, db, "/scope/inside.md", "prefixneedle");
+		// The saved folder door allows a wider alphabet than the agent create door.
+		const folder = await asUser.mutation(api.files_nodes.create_folder_node, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			path: `scope/${suffix}folder`,
+		});
+		if (folder._nay) throw new Error(folder._nay.message);
+		const moved = await asUser.mutation(api.files_nodes.move_nodes, {
+			membershipId: db.membershipId,
+			itemIds: [nodeId],
+			targetParentId: folder._yay.nodeId,
+		});
+		expect(moved._nay).toBeUndefined();
 		await test_materialize_markdown_file(t, asUser, db, "/scope-other/outside.md", "prefixneedle");
 		for (const pathPrefix of [undefined, "/scope"]) {
 			const result = await asUser.query(internal.files_nodes.text_search_files, {
@@ -9889,12 +10959,13 @@ test("text_search_files searches pending unstaged content instead of stale commi
 	await t.run(async (ctx) => {
 		const pendingDoc = await ctx.db
 			.query("files_pending_updates")
-			.withIndex("by_organization_workspace_user_fileNode", (q) =>
+			.withIndex("by_organization_workspace_user_target", (q) =>
 				q
 					.eq("organizationId", db.organizationId)
 					.eq("workspaceId", db.workspaceId)
 					.eq("userId", db.userId)
-					.eq("fileNodeId", nodeId),
+					.eq("target.kind", "saved")
+					.eq("target.id", nodeId),
 			)
 			.first();
 		if (!pendingDoc) throw new Error("Expected pending doc");
@@ -9925,7 +10996,7 @@ test("text_search_files searches pending unstaged content instead of stale commi
 	const pendingSearch = await search("pendingneedle");
 	expect(pendingSearch.items).toEqual([
 		{
-			nodeId,
+			target: { kind: "saved", id: nodeId },
 			path,
 			textChunk: expectedChunk.textChunk,
 			chunkIndex: expectedChunk.chunkIndex,
@@ -10142,11 +11213,24 @@ test("metadata search uses current-user pending frontmatter and hides stale comm
 	});
 	if (pending._nay) throw new Error(pending._nay.message);
 
-	const otherUserId = await t.run((ctx) =>
-		ctx.db.insert("users", {
-			clerkUserId: null,
-		}),
-	);
+	const otherUserId = await t.run(async (ctx) => {
+		const userId = await ctx.db.insert("users", { clerkUserId: null });
+		await ctx.db.insert("organizations_workspaces_users", {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId,
+			active: true,
+			updatedAt: Date.now(),
+		});
+		await access_control_db_ensure_role_assignment(ctx, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId,
+			role: "member",
+			now: Date.now(),
+		});
+		return userId;
+	});
 
 	const searchAs = (userId: Id<"users">, value: string) =>
 		asUser.query(internal.files_metadata.search, {
@@ -10240,8 +11324,8 @@ test("a pure-move row keeps committed metadata visible", async () => {
 		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
 		userId: db.userId,
-		nodeId,
-		destParentId: files_ROOT_ID,
+		target: { kind: "saved", id: nodeId },
+		destParent: { kind: "root" },
 		destName: "meta-moved.md",
 	});
 	if (moved._nay) throw new Error(moved._nay.message);
@@ -10258,7 +11342,9 @@ test("a pure-move row keeps committed metadata visible", async () => {
 
 	// Search still surfaces the file's committed metadata docs.
 	const committedHit = await search();
-	expect(committedHit.items).toMatchObject([{ path, nodeId, sourceKind: "committed" }]);
+	expect(committedHit.items).toMatchObject([
+		{ path: "/meta-moved.md", target: { kind: "saved", id: nodeId }, sourceKind: "committed" },
+	]);
 
 	// The get path resolves the visible destination and reports committed metadata.
 	const metadata = await asUser.query(internal.files_metadata.get_by_path, {
@@ -10270,7 +11356,7 @@ test("a pure-move row keeps committed metadata visible", async () => {
 	});
 	expect(metadata).toMatchObject({
 		path: "/meta-moved.md",
-		nodeId,
+		target: { kind: "saved", id: nodeId },
 		sourceKind: "committed",
 		fields: expect.arrayContaining(["frontmatter.from"]),
 		values: expect.arrayContaining([
@@ -10496,21 +11582,21 @@ test("file metadata is searchable next to frontmatter and survives a content sav
 
 	// The same key name on both sources stays two separate fields.
 	expect((await search({ op: "eq", fieldPath: "metadata.title", value: "From metadata" })).items).toMatchObject([
-		{ path, nodeId },
+		{ path, target: { kind: "saved", id: nodeId } },
 	]);
 	expect((await search({ op: "eq", fieldPath: "frontmatter.title", value: "From frontmatter" })).items).toMatchObject([
-		{ path, nodeId },
+		{ path, target: { kind: "saved", id: nodeId } },
 	]);
 	expect((await search({ op: "eq", fieldPath: "metadata.title", value: "From frontmatter" })).items).toEqual([]);
 
 	expect((await search({ op: "exists", fieldPath: "metadata.slack:message-id" })).items).toMatchObject([
-		{ path, nodeId },
+		{ path, target: { kind: "saved", id: nodeId } },
 	]);
 	expect(
 		(await search({ op: "range", fieldPath: "metadata.priority", valueKind: "number", gte: 1, lt: 5 })).items,
-	).toMatchObject([{ path, nodeId }]);
+	).toMatchObject([{ path, target: { kind: "saved", id: nodeId } }]);
 	expect((await search({ op: "eq", fieldPath: "metadata.archived", value: false })).items).toMatchObject([
-		{ path, nodeId },
+		{ path, target: { kind: "saved", id: nodeId } },
 	]);
 	// A date-like string gets the same maybe_date companion frontmatter gets.
 	expect(
@@ -10523,7 +11609,7 @@ test("file metadata is searchable next to frontmatter and survives a content sav
 				lt: Date.UTC(2026, 7, 19),
 			})
 		).items,
-	).toMatchObject([{ path, nodeId }]);
+	).toMatchObject([{ path, target: { kind: "saved", id: nodeId } }]);
 
 	// Saving the file's content re-indexes its frontmatter. The metadata written next to the file
 	// must not be wiped with it.
@@ -10559,12 +11645,12 @@ test("file metadata is searchable next to frontmatter and survives a content sav
 		{ key: "released-on", value: "2026-08-18" },
 	]);
 	expect((await search({ op: "eq", fieldPath: "metadata.title", value: "From metadata" })).items).toMatchObject([
-		{ path, nodeId },
+		{ path, target: { kind: "saved", id: nodeId } },
 	]);
 	// Metadata docs carry their own copy of the file's tree path, so folder-scoped search must find
 	// them in the file's folder and must not find them under another one.
 	expect((await search({ op: "exists", fieldPath: "metadata.title" }, "/file-metadata")).items).toMatchObject([
-		{ path, nodeId },
+		{ path, target: { kind: "saved", id: nodeId } },
 	]);
 	expect((await search({ op: "exists", fieldPath: "metadata.title" }, "/elsewhere")).items).toEqual([]);
 
@@ -10637,7 +11723,7 @@ test("file metadata stays visible while a pending content edit hides committed f
 	expect((await search({ op: "eq", fieldPath: "frontmatter.from", value: "committed@example.com" })).items).toEqual([]);
 	// It says nothing about the metadata written next to the file, so that stays findable.
 	expect((await search({ op: "eq", fieldPath: "metadata.source", value: "slack" })).items).toMatchObject([
-		{ path, nodeId },
+		{ path, target: { kind: "saved", id: nodeId } },
 	]);
 
 	const metadata = await asUser.query(internal.files_metadata.get_by_path, {
@@ -10806,7 +11892,7 @@ test("update_entries_by_path lets the agent set and remove keys on an uploaded f
 				cursor: null,
 			})
 		).items,
-	).toMatchObject([{ path, nodeId }]);
+	).toMatchObject([{ path, target: { kind: "saved", id: nodeId } }]);
 
 	expect(await setByPath([{ key: "with space", value: "x" }], [])).toMatchObject({
 		_nay: { message: expect.stringContaining("may contain only letters") },
@@ -10879,7 +11965,11 @@ describe("folder metadata", () => {
 			path: "/folder-metadata",
 			overlayUserId: db.userId,
 		});
-		expect(read).toMatchObject({ nodeId: folderId, path: "/folder-metadata", sourceKind: "committed" });
+		expect(read).toMatchObject({
+			target: { kind: "saved", id: folderId },
+			path: "/folder-metadata",
+			sourceKind: "committed",
+		});
 		expect(read?.fields.slice().sort()).toEqual(["metadata.plugin-name", "metadata.reviewed", "metadata.source"]);
 		expect(read?.values.map((value) => value.valueKind).sort()).toEqual(["boolean", "string", "string"]);
 
@@ -10991,7 +12081,7 @@ describe("folder metadata", () => {
 		const assertScope = async (paths: string[], archived: boolean) => {
 			const docs = await t.run(async (ctx) =>
 				(await ctx.db.query("files_metadata_docs").collect()).filter(
-					(doc) => doc.fileNodeId === folderId || doc.fileNodeId === nestedId,
+					(doc) => doc.sourceKind === "committed" && (doc.fileNodeId === folderId || doc.fileNodeId === nestedId),
 				),
 			);
 			expect(docs).toHaveLength(4);
@@ -11122,8 +12212,8 @@ describe("folder metadata", () => {
 			(
 				await t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
 					...scope,
-					nodeId: folderId,
-					destParentId: files_ROOT_ID,
+					target: { kind: "saved", id: folderId },
+					destParent: { kind: "root" },
 					destName: "pending-folder",
 				})
 			)._nay,
@@ -11164,11 +12254,18 @@ describe("folder metadata", () => {
 			}),
 		).toMatchObject({ _nay: { message: "Not found" } });
 
+		const pendingMove = await asOwner.query(api.files_pending_updates.get_file_pending_update, {
+			membershipId: db.membershipId,
+			target: { kind: "saved", id: folderId },
+		});
+		if (!pendingMove) throw new Error("Expected the folder move proposal");
 		expect(
 			(
 				await asOwner.mutation(api.files_pending_updates.apply_file_pending_move, {
 					membershipId: db.membershipId,
-					nodeId: folderId,
+					target: { kind: "saved", id: folderId },
+					pendingUpdateId: pendingMove._id,
+					reviewedRevision: pendingMove.revision,
 				})
 			)._nay,
 		).toBeUndefined();
@@ -11177,7 +12274,9 @@ describe("folder metadata", () => {
 			[nestedId, "/pending-folder/nested"],
 		] as const) {
 			const docs = await t.run(async (ctx) =>
-				(await ctx.db.query("files_metadata_docs").collect()).filter((doc) => doc.fileNodeId === nodeId),
+				(await ctx.db.query("files_metadata_docs").collect()).filter(
+					(doc) => doc.sourceKind === "committed" && doc.fileNodeId === nodeId,
+				),
 			);
 			expect(docs).toHaveLength(2);
 			for (const doc of docs) expect(doc).toMatchObject({ path, treePath: path + "/", sourceKind: "committed" });
@@ -11190,7 +12289,7 @@ describe("folder metadata", () => {
 					plans,
 					pathPrefix: "/folder-metadata",
 				})
-			).nodeIds,
+			).targets,
 		).toEqual([]);
 		expect(
 			new Set(
@@ -11200,7 +12299,7 @@ describe("folder metadata", () => {
 						plans,
 						pathPrefix: "/pending-folder",
 					})
-				).nodeIds,
+				).targets.map((target) => target.id),
 			),
 		).toEqual(new Set([folderId, nestedId]));
 	});
@@ -11329,7 +12428,7 @@ describe("search box doors", () => {
 		const search = (plans: files_metadata_SearchPlan[], pathPrefix?: string) =>
 			seeded.asOwner
 				.query(api.files_metadata.search_nodes, { membershipId: seeded.db.membershipId, plans, pathPrefix })
-				.then((found) => new Set(found.nodeIds));
+				.then((found) => new Set(found.targets.map((target) => target.id)));
 
 		// `status:open` from either metadata kind: the open task, the fixed task through its map, the archive.
 		expect(await search(statusOpenPlans)).toEqual(
@@ -11418,7 +12517,7 @@ describe("search box doors", () => {
 			membershipId: other.membershipId,
 			plans: statusOpenPlans,
 		});
-		expect(otherMembership).toEqual({ nodeIds: [] });
+		expect(otherMembership).toEqual({ targets: [], truncated: false });
 	});
 
 	test("search_nodes applies the pending overlay to frontmatter plans only", async () => {
@@ -11427,7 +12526,7 @@ describe("search box doors", () => {
 		const search = (plans: files_metadata_SearchPlan[]) =>
 			seeded.asOwner
 				.query(api.files_metadata.search_nodes, { membershipId: seeded.db.membershipId, plans })
-				.then((found) => new Set(found.nodeIds));
+				.then((found) => new Set(found.targets.map((target) => target.id)));
 
 		const pending = await upsert_pending_update_internal_for_test(t, {
 			organizationId: seeded.db.organizationId,
@@ -11475,13 +12574,25 @@ describe("search box doors", () => {
 			t,
 			seeded.asOwner,
 			seeded.db,
-			"/tasks/😀 media/x.md",
+			"/tasks/x.md",
 			["---", "status: open", "---", "Body"].join("\n"),
 		);
+		const folder = await seeded.asOwner.mutation(api.files_nodes.create_folder_node, {
+			membershipId: seeded.db.membershipId,
+			parentId: seeded.tasksFolderId,
+			path: "😀 media",
+		});
+		if (folder._nay) throw new Error(folder._nay.message);
+		const moved = await seeded.asOwner.mutation(api.files_nodes.move_nodes, {
+			membershipId: seeded.db.membershipId,
+			itemIds: [emojiTaskId],
+			targetParentId: folder._yay.nodeId,
+		});
+		expect(moved._nay).toBeUndefined();
 		const search = (plans: files_metadata_SearchPlan[], pathPrefix: string) =>
 			seeded.asOwner
 				.query(api.files_metadata.search_nodes, { membershipId: seeded.db.membershipId, plans, pathPrefix })
-				.then((found) => new Set(found.nodeIds));
+				.then((found) => new Set(found.targets.map((target) => target.id)));
 
 		expect(await search(statusOpenPlans, "/tasks")).toEqual(
 			new Set([seeded.openTaskId, seeded.fixedTaskId, emojiTaskId]),
@@ -11501,7 +12612,7 @@ describe("search box doors", () => {
 			membershipId: seeded.db.membershipId,
 			plans: [{ op: "prefix", fieldPath: "frontmatter.title", value: "a".repeat(300_000) }],
 		});
-		expect(found.nodeIds).toEqual([]);
+		expect(found.targets).toEqual([]);
 	});
 
 	test("every door answers somebody else's membership with its empty shape", async () => {
@@ -11514,7 +12625,7 @@ describe("search box doors", () => {
 				membershipId: member.membershipId,
 				plans: statusOpenPlans,
 			}),
-		).toEqual({ nodeIds: [] });
+		).toEqual({ targets: [], truncated: false });
 		expect(
 			await seeded.asOwner.query(api.files_metadata.list_search_fields, { membershipId: member.membershipId }),
 		).toEqual([]);
@@ -11542,7 +12653,7 @@ describe("search box doors", () => {
 		const searchAsMember = () =>
 			member.asMember
 				.query(api.files_metadata.search_nodes, { membershipId: member.membershipId, plans: statusOpenPlans })
-				.then((found) => new Set(found.nodeIds));
+				.then((found) => new Set(found.targets.map((target) => target.id)));
 
 		// No role and no grant: the open archive file must not leak through a default
 		// workspace-wide read, and the restricted folder is not theirs either.
@@ -11563,7 +12674,7 @@ describe("search box doors", () => {
 			membershipId: seeded.db.membershipId,
 			plans: statusOpenPlans,
 		});
-		expect(new Set(ownerFound.nodeIds)).toEqual(
+		expect(new Set(ownerFound.targets.map((target) => target.id))).toEqual(
 			new Set([seeded.openTaskId, seeded.fixedTaskId, seeded.archivedTaskId]),
 		);
 	});
@@ -11629,7 +12740,7 @@ describe("search box doors", () => {
 			});
 		expect(await entries()).toEqual([]);
 		expect(await byPath()).toBeNull();
-		expect((await search()).nodeIds).toEqual([]);
+		expect((await search()).targets).toEqual([]);
 		expect(await fields()).toEqual([]);
 		expect(await values()).toEqual([]);
 		expect((await set())._nay).toBeDefined();
@@ -11647,8 +12758,11 @@ describe("search box doors", () => {
 			)._nay,
 		).toBeUndefined();
 		expect(await entries()).toEqual([{ key: "folder-secret", value: "visible-with-grant" }]);
-		expect(await byPath()).toMatchObject({ nodeId: seeded.tasksFolderId, fields: ["metadata.folder-secret"] });
-		expect((await search()).nodeIds).toEqual([seeded.tasksFolderId]);
+		expect(await byPath()).toMatchObject({
+			target: { kind: "saved", id: seeded.tasksFolderId },
+			fields: ["metadata.folder-secret"],
+		});
+		expect((await search()).targets).toEqual([{ kind: "saved", id: seeded.tasksFolderId }]);
 		expect(await fields()).toContainEqual({ fieldPath: "metadata.folder-secret", valueKinds: ["string"] });
 		expect(await values()).toEqual(["visible-with-grant"]);
 		expect((await set())._nay).toBeDefined();
@@ -11773,7 +12887,7 @@ describe("search box doors", () => {
 			membershipId: seeded.db.membershipId,
 			plans: statusOpenPlans,
 		});
-		expect(new Set(found.nodeIds)).toEqual(new Set([seeded.openTaskId, seeded.fixedTaskId]));
+		expect(new Set(found.targets.map((target) => target.id))).toEqual(new Set([seeded.openTaskId, seeded.fixedTaskId]));
 	});
 
 	test("the doors refuse a field or a prefix over the cap, with data a scan would answer", async () => {
@@ -11823,7 +12937,7 @@ describe("search box doors", () => {
 					membershipId: seeded.db.membershipId,
 					plans: [{ op: "exists", fieldPath }],
 				})
-				.then((found) => found.nodeIds);
+				.then((found) => found.targets.map((target) => target.id));
 		const values = (fieldPath: string, prefix: string) =>
 			seeded.asOwner.query(api.files_metadata.list_search_values, {
 				membershipId: seeded.db.membershipId,
@@ -12028,7 +13142,9 @@ describe("search box doors", () => {
 			membershipId: seeded.db.membershipId,
 			plans: [{ op: "eq", fieldPath: "frontmatter.status", value: "capped" }],
 		});
-		expect(found.nodeIds).toHaveLength(260);
+		expect(found.truncated).toBe(true);
+		expect(found.targets.length).toBeGreaterThan(0);
+		expect(found.targets.length).toBeLessThan(310);
 	});
 
 	test("search_nodes hides another user's draft and keeps the committed value for them", async () => {
@@ -12064,7 +13180,7 @@ describe("search box doors", () => {
 		const searchAsMember = (plans: files_metadata_SearchPlan[]) =>
 			member.asMember
 				.query(api.files_metadata.search_nodes, { membershipId: member.membershipId, plans })
-				.then((found) => new Set(found.nodeIds));
+				.then((found) => new Set(found.targets.map((target) => target.id)));
 		expect(await searchAsMember([{ op: "eq", fieldPath: "frontmatter.status", value: "triaging" }])).toEqual(new Set());
 		expect(await searchAsMember(statusOpenPlans)).toEqual(new Set([seeded.openTaskId, seeded.fixedTaskId]));
 		expect(
@@ -12080,7 +13196,9 @@ describe("search box doors", () => {
 			membershipId: seeded.db.membershipId,
 			plans: statusOpenPlans,
 		});
-		expect(new Set(ownerOpen.nodeIds)).toEqual(new Set([seeded.fixedTaskId, seeded.archivedTaskId]));
+		expect(new Set(ownerOpen.targets.map((target) => target.id))).toEqual(
+			new Set([seeded.fixedTaskId, seeded.archivedTaskId]),
+		);
 	});
 
 	test("a prefix finds a value whose next character is an emoji, like the catalog lists it", async () => {
@@ -12101,7 +13219,9 @@ describe("search box doors", () => {
 			plans: [{ op: "prefix", fieldPath: "frontmatter.status", value: "op" }],
 		});
 		// The archive's task is `open` too.
-		expect(new Set(found.nodeIds)).toEqual(new Set([seeded.openTaskId, seeded.archivedTaskId, emojiTaskId]));
+		expect(new Set(found.targets.map((target) => target.id))).toEqual(
+			new Set([seeded.openTaskId, seeded.archivedTaskId, emojiTaskId]),
+		);
 		expect(
 			await seeded.asOwner.query(api.files_metadata.list_search_values, {
 				membershipId: seeded.db.membershipId,
@@ -12134,7 +13254,7 @@ describe("search box doors", () => {
 		const search = () =>
 			member.asMember
 				.query(api.files_metadata.search_nodes, { membershipId: member.membershipId, plans: statusOpenPlans })
-				.then((found) => new Set(found.nodeIds));
+				.then((found) => new Set(found.targets.map((target) => target.id)));
 		const keys = () =>
 			member.asMember
 				.query(api.files_metadata.list_search_fields, { membershipId: member.membershipId })
@@ -12169,7 +13289,7 @@ describe("search box doors", () => {
 		expect(await keys()).toContain("metadata.status");
 	});
 
-	test("list_search_values still names a committed value that only a draft has replaced", async () => {
+	test("list_search_values hides a committed value replaced by the owner's draft", async () => {
 		const t = test_convex();
 		const seeded = await seed_search_box_fixture(t);
 		const statusValues = (prefix: string) =>
@@ -12179,9 +13299,7 @@ describe("search box doors", () => {
 				prefix,
 			});
 
-		// The owner's draft turns the fixed task into "triaging". `search_nodes` hides the stale
-		// committed "fixed", but the catalog samples do not carry the overlay, so "fixed" is still
-		// suggested and then finds nothing. Accepted: the catalog is a hint, the search is the truth.
+		// Suggestions and search both read the owner's current draft.
 		const pending = await upsert_pending_update_internal_for_test(t, {
 			organizationId: seeded.db.organizationId,
 			workspaceId: seeded.db.workspaceId,
@@ -12191,13 +13309,13 @@ describe("search box doors", () => {
 		});
 		if (pending._nay) throw new Error(pending._nay.message);
 
-		expect(await statusValues("f")).toEqual(["fixed"]);
+		expect(await statusValues("f")).toEqual([]);
 		expect(await statusValues("t")).toEqual(["triaging"]);
 		const found = await seeded.asOwner.query(api.files_metadata.search_nodes, {
 			membershipId: seeded.db.membershipId,
 			plans: [{ op: "eq", fieldPath: "frontmatter.status", value: "fixed" }],
 		});
-		expect(found.nodeIds).toEqual([]);
+		expect(found.targets).toEqual([]);
 	});
 });
 
@@ -12205,7 +13323,7 @@ describe("create-time metadata", () => {
 	async function read_metadata_docs(t: ReturnType<typeof test_convex>, nodeId: Id<"files_nodes">) {
 		return await t.run(async (ctx) =>
 			(await ctx.db.query("files_metadata_docs").collect()).filter(
-				(doc) => doc.fileNodeId === nodeId && doc.fieldPath.startsWith("metadata."),
+				(doc) => doc.sourceKind === "committed" && doc.fileNodeId === nodeId && doc.fieldPath.startsWith("metadata."),
 			),
 		);
 	}
@@ -12259,7 +13377,7 @@ describe("create-time metadata", () => {
 					cursor: null,
 				})
 			).items,
-		).toMatchObject([{ path: "/quarterly-report.pdf", nodeId: upload._yay.nodeId }]);
+		).toMatchObject([{ path: "/quarterly-report.pdf", target: { kind: "saved", id: upload._yay.nodeId } }]);
 	});
 
 	test("a folder import keeps the relative path and leaves its folders without a map", async () => {
@@ -12311,40 +13429,6 @@ describe("create-time metadata", () => {
 		for (const folderId of folderIds) {
 			expect(await read_metadata_docs(t, folderId)).toEqual([]);
 		}
-	});
-
-	test("an agent eager-created node gets no map and stays hard-deletable", async () => {
-		const t = test_convex();
-		vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
-		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
-
-		const created = await t.action(internal.files_nodes_content.create_file_by_path, {
-			organizationId: db.organizationId,
-			workspaceId: db.workspaceId,
-			userId: db.userId,
-			path: "/eager-metadata.md",
-		});
-		if (created._nay) throw new Error(created._nay.message);
-		if (!created._yay.created || created._yay.createdCommittedSequence === undefined) {
-			throw new Error("Expected create_file_by_path to create a fresh node");
-		}
-
-		// A stamp here would be permanent: `files_nodes_db_is_eager_node_safe_to_hard_delete` keeps
-		// any node that has committed `metadata.` docs, so discarding the proposal would leave the
-		// empty file behind forever.
-		expect(await read_metadata_docs(t, created._yay.nodeId)).toEqual([]);
-
-		const removed = await t.mutation(internal.files_nodes.remove_eager_created_node_if_safe, {
-			organizationId: db.organizationId,
-			workspaceId: db.workspaceId,
-			userId: db.userId,
-			nodeId: created._yay.nodeId,
-			eagerCreatedCommittedSequence: created._yay.createdCommittedSequence,
-		});
-		expect(removed._yay.removed).toBe(true);
-		await t.run(async (ctx) => {
-			expect(await ctx.db.get("files_nodes", created._yay.nodeId)).toBeNull();
-		});
 	});
 
 	test("the upload publish merges the real size and media type into the create-time keys", async () => {
@@ -12772,21 +13856,27 @@ test("search_content groups readable matches per file for the calling member", a
 	});
 	const resultsByPath = new Map(found.results.map((result) => [result.path, result]));
 	expect([...resultsByPath.keys()].sort()).toEqual(["/palette-double.md", "/palette-single.md"]);
-	expect(resultsByPath.get("/palette-single.md")).toMatchObject({ nodeId: singleChunkNodeId, matchCount: 1 });
-	expect(resultsByPath.get("/palette-double.md")).toMatchObject({ nodeId: doubleChunkNodeId, matchCount: 2 });
+	expect(resultsByPath.get("/palette-single.md")).toMatchObject({
+		target: { kind: "saved", id: singleChunkNodeId },
+		matchCount: 1,
+	});
+	expect(resultsByPath.get("/palette-double.md")).toMatchObject({
+		target: { kind: "saved", id: doubleChunkNodeId },
+		matchCount: 2,
+	});
 	expect(resultsByPath.get("/palette-single.md")!.textChunk).toContain("palneedle");
 
 	const scoped = await asUser.query(api.files_nodes.search_content, {
 		membershipId: db.membershipId,
 		query: "palneedle",
-		nodeIds: [doubleChunkNodeId],
+		targets: [{ kind: "saved", id: doubleChunkNodeId }],
 	});
-	expect(scoped.results.map((result) => result.nodeId)).toEqual([doubleChunkNodeId]);
+	expect(scoped.results.map((result) => result.target)).toEqual([{ kind: "saved", id: doubleChunkNodeId }]);
 	expect(scoped.results[0]?.matchCount).toBe(2);
 	const emptyScope = await asUser.query(api.files_nodes.search_content, {
 		membershipId: db.membershipId,
 		query: "palneedle",
-		nodeIds: [],
+		targets: [],
 	});
 	expect(emptyScope.results).toEqual([]);
 
@@ -12797,11 +13887,14 @@ test("search_content groups readable matches per file for the calling member", a
 		userId: db.userId,
 		hasWorkspaceRead: true,
 		query: "palneedle",
-		nodeIds: [doubleChunkNodeId],
+		targets: [{ kind: "saved", id: doubleChunkNodeId }],
 		numItems: 2,
 		cursor: null,
 	});
-	expect(scopedPage.items.map((item) => item.nodeId)).toEqual([doubleChunkNodeId, doubleChunkNodeId]);
+	expect(scopedPage.items.map((item) => item.target)).toEqual([
+		{ kind: "saved", id: doubleChunkNodeId },
+		{ kind: "saved", id: doubleChunkNodeId },
+	]);
 
 	// Bounds: a 1-character query (after trim) and an over-200-character query return empty
 	// without touching the search index.
@@ -12965,15 +14058,10 @@ test("restore_snapshot_r2 restores from R2-backed content without Convex Markdow
 	});
 	const r2Objects = test_setup_r2_capture();
 
-	const createdFile = await asUser.action(internal.files_nodes_content.create_file_by_path, {
-		organizationId: db.organizationId,
-		workspaceId: db.workspaceId,
-		userId: db.userId,
+	const createdFileId = await test_create_saved_text_file(t, {
+		membershipId: db.membershipId,
 		path: "/restore-r2.md",
 	});
-	if (createdFile._nay) {
-		throw new Error(createdFile._nay.message);
-	}
 	const currentMarkdown = "# Current\n\nBefore restore.\n";
 	const currentYjsDoc = files_yjs_doc_create_from_text({ rootKind: "rich_text", text: currentMarkdown });
 	if ("_nay" in currentYjsDoc) {
@@ -12981,8 +14069,8 @@ test("restore_snapshot_r2 restores from R2-backed content without Convex Markdow
 	}
 	const pushResult = await asUser.mutation(api.files_nodes.yjs_push_update, {
 		membershipId: db.membershipId,
-		nodeId: createdFile._yay.nodeId,
-		expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, createdFile._yay.nodeId)).yjsLastSequenceId,
+		nodeId: createdFileId,
+		expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, createdFileId)).yjsLastSequenceId,
 		update: files_u8_to_array_buffer(encodeStateAsUpdate(currentYjsDoc)),
 		sessionId: "restore-r2-current",
 	});
@@ -12993,7 +14081,7 @@ test("restore_snapshot_r2 restores from R2-backed content without Convex Markdow
 	const materialized = await t.action(internal.files_nodes_content.materialize_file_content, {
 		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
-		nodeId: createdFile._yay.nodeId,
+		nodeId: createdFileId,
 		userId: db.userId,
 		targetSequence: 1,
 	});
@@ -13018,7 +14106,7 @@ test("restore_snapshot_r2 restores from R2-backed content without Convex Markdow
 		const snapshotId = await ctx.db.insert("files_snapshots", {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			fileNodeId: createdFile._yay.nodeId,
+			fileNodeId: createdFileId,
 			assetId: snapshotAssetId,
 			createdBy: db.userId,
 			archivedAt: 0,
@@ -13032,7 +14120,7 @@ test("restore_snapshot_r2 restores from R2-backed content without Convex Markdow
 
 	const restoreResult = await asUser.action(api.files_nodes_content.restore_snapshot_r2, {
 		membershipId: db.membershipId,
-		nodeId: createdFile._yay.nodeId,
+		nodeId: createdFileId,
 		snapshotId,
 		sessionId: "restore-r2-session",
 	});
@@ -13048,7 +14136,7 @@ test("restore_snapshot_r2 restores from R2-backed content without Convex Markdow
 	});
 	expect(readResult?.content).toBe(restoredMarkdown);
 	const saved = await t.run(async (ctx) => {
-		const fileNode = await ctx.db.get("files_nodes", createdFile._yay.nodeId);
+		const fileNode = await ctx.db.get("files_nodes", createdFileId);
 		if (!fileNode?.assetId) {
 			throw new Error("Expected restored node docs");
 		}
@@ -13166,16 +14254,10 @@ describe("restore_snapshot_r2 whole-file restore", () => {
 		});
 		const r2Objects = test_setup_r2_capture();
 
-		const createdFile = await asUser.action(internal.files_nodes_content.create_file_by_path, {
-			organizationId: db.organizationId,
-			workspaceId: db.workspaceId,
-			userId: db.userId,
+		const nodeId = await test_create_saved_text_file(t, {
+			membershipId: db.membershipId,
 			path: "/notes.md",
 		});
-		if (createdFile._nay) {
-			throw new Error(createdFile._nay.message);
-		}
-		const nodeId = createdFile._yay.nodeId;
 		const currentMarkdown = "# Current\n\nStill Markdown.\n";
 		const currentYjsDoc = files_yjs_doc_create_from_text({ rootKind: "rich_text", text: currentMarkdown });
 		if ("_nay" in currentYjsDoc) {
@@ -13698,15 +14780,10 @@ test("restore_snapshot blocks Free users without enough credits before writing",
 		email: "restore-credits-user@example.com",
 	});
 
-	const createdFile = await asUser.action(internal.files_nodes_content.create_file_by_path, {
-		organizationId: db.organizationId,
-		workspaceId: db.workspaceId,
-		userId: db.userId,
+	const createdFileId = await test_create_saved_text_file(t, {
+		membershipId: db.membershipId,
 		path: "/restore-credit.md",
 	});
-	if (createdFile._nay) {
-		throw new Error("Expected file creation to succeed before restore credit test");
-	}
 
 	const restoredMarkdown = "# restored content\n";
 	const restoreAssets = await t.run(async (ctx) => {
@@ -13757,7 +14834,7 @@ test("restore_snapshot blocks Free users without enough credits before writing",
 		const snapshotId = await ctx.db.insert("files_snapshots", {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			fileNodeId: createdFile._yay.nodeId,
+			fileNodeId: createdFileId,
 			assetId: snapshotAssetId,
 			createdBy: db.userId,
 			archivedAt: 0,
@@ -13771,8 +14848,8 @@ test("restore_snapshot blocks Free users without enough credits before writing",
 
 	const restoreResult = await asUser.mutation(internal.files_nodes_content.restore_snapshot, {
 		membershipId: db.membershipId,
-		nodeId: createdFile._yay.nodeId,
-		expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, createdFile._yay.nodeId)).yjsLastSequenceId,
+		nodeId: createdFileId,
+		expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, createdFileId)).yjsLastSequenceId,
 		expectedLastSequence: 0,
 		snapshotId: restoreAssets.snapshotId,
 		sessionId: "restore-credit-test",
@@ -13788,10 +14865,7 @@ test("restore_snapshot blocks Free users without enough credits before writing",
 		ctx.db
 			.query("files_yjs_updates")
 			.withIndex("by_organization_workspace_fileNode_sequence", (q) =>
-				q
-					.eq("organizationId", db.organizationId)
-					.eq("workspaceId", db.workspaceId)
-					.eq("fileNodeId", createdFile._yay.nodeId),
+				q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("fileNodeId", createdFileId),
 			)
 			.collect(),
 	);
@@ -13994,15 +15068,10 @@ test("restore_snapshot emits file_save usage for the restored Yjs sequence", asy
 		email: "restore-billing-user@example.com",
 	});
 
-	const createdFile = await asUser.action(internal.files_nodes_content.create_file_by_path, {
-		organizationId: db.organizationId,
-		workspaceId: db.workspaceId,
-		userId: db.userId,
+	const createdFileId = await test_create_saved_text_file(t, {
+		membershipId: db.membershipId,
 		path: "/restore-billing.md",
 	});
-	if (createdFile._nay) {
-		throw new Error("Expected file creation to succeed before restore billing test");
-	}
 
 	const restoredMarkdown = "# restored content\n";
 	const restoreAssets = await t.run(async (ctx) => {
@@ -14039,7 +15108,7 @@ test("restore_snapshot emits file_save usage for the restored Yjs sequence", asy
 		const snapshotId = await ctx.db.insert("files_snapshots", {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			fileNodeId: createdFile._yay.nodeId,
+			fileNodeId: createdFileId,
 			assetId: snapshotAssetId,
 			createdBy: db.userId,
 			archivedAt: 0,
@@ -14056,7 +15125,7 @@ test("restore_snapshot emits file_save usage for the restored Yjs sequence", asy
 		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
 		userId: db.userId,
-		nodeId: createdFile._yay.nodeId,
+		nodeId: createdFileId,
 		kind: "snapshot_restore",
 		update: files_u8_to_array_buffer(
 			encodeStateAsUpdate(
@@ -14076,8 +15145,8 @@ test("restore_snapshot emits file_save usage for the restored Yjs sequence", asy
 	}
 	const restoreResult = await asUser.mutation(internal.files_nodes_content.restore_snapshot, {
 		membershipId: db.membershipId,
-		nodeId: createdFile._yay.nodeId,
-		expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, createdFile._yay.nodeId)).yjsLastSequenceId,
+		nodeId: createdFileId,
+		expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, createdFileId)).yjsLastSequenceId,
 		expectedLastSequence: 0,
 		snapshotId: restoreAssets.snapshotId,
 		sessionId: "restore-billing-test",
@@ -14093,17 +15162,14 @@ test("restore_snapshot emits file_save usage for the restored Yjs sequence", asy
 	}
 
 	const { asset, yjsUpdates } = await t.run(async (ctx) => {
-		const fileNode = await ctx.db.get("files_nodes", createdFile._yay.nodeId);
+		const fileNode = await ctx.db.get("files_nodes", createdFileId);
 		const asset = fileNode?.assetId ? await ctx.db.get("files_r2_assets", fileNode.assetId) : null;
 		return {
 			asset,
 			yjsUpdates: await ctx.db
 				.query("files_yjs_updates")
 				.withIndex("by_organization_workspace_fileNode_sequence", (q) =>
-					q
-						.eq("organizationId", db.organizationId)
-						.eq("workspaceId", db.workspaceId)
-						.eq("fileNodeId", createdFile._yay.nodeId),
+					q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("fileNodeId", createdFileId),
 				)
 				.collect(),
 		};
@@ -14115,20 +15181,20 @@ test("restore_snapshot emits file_save usage for the restored Yjs sequence", asy
 		kind: "content_snapshot",
 		size: files_get_utf8_byte_size(restoredMarkdown),
 	});
-	const restoredVersion = `${(await test_get_file_yjs_pointers(t, createdFile._yay.nodeId)).yjsLastSequenceId}:${yjsUpdates[0]?.sequence}`;
+	const restoredVersion = `${(await test_get_file_yjs_pointers(t, createdFileId)).yjsLastSequenceId}:${yjsUpdates[0]?.sequence}`;
 	expect(enqueueActionSpy).toHaveBeenCalledWith(expect.anything(), internal.billing.ingest_events, {
 		events: [
 			expect.objectContaining({
 				name: "file_save",
 				externalCustomerId: db.userId,
-				externalId: `file_save::${db.userId}::${db.userId}::${db.organizationId}::${db.workspaceId}::${createdFile._yay.nodeId}::${restoredVersion}`,
+				externalId: `file_save::${db.userId}::${db.userId}::${db.organizationId}::${db.workspaceId}::${createdFileId}::${restoredVersion}`,
 				metadata: expect.objectContaining({
 					amount: 1,
 					actorUserId: db.userId,
 					billedUserId: db.userId,
 					organizationId: db.organizationId,
 					workspaceId: db.workspaceId,
-					nodeId: createdFile._yay.nodeId,
+					nodeId: createdFileId,
 					version: restoredVersion,
 				}),
 			}),
@@ -14507,8 +15573,12 @@ describe("external/system mount text materialization (Phase D)", () => {
 		expect(r2Objects.get(liveR2Key)).toBe(MOUNT_RAW_TEXT);
 		expect(docs.textChunks.map((chunk) => chunk.textChunk).join("")).toBe(MOUNT_RAW_TEXT);
 		expect(docs.plainTextChunks.map((chunk) => chunk.plainTextChunk).join("")).toBe(MOUNT_RAW_TEXT);
-		expect(docs.textChunks.every((chunk) => chunk.yjsSequence === undefined)).toBe(true);
-		expect(docs.plainTextChunks.every((chunk) => chunk.yjsSequence === undefined)).toBe(true);
+		expect(docs.textChunks.every((chunk) => chunk.sourceKind === "committed" && chunk.yjsSequence === undefined)).toBe(
+			true,
+		);
+		expect(
+			docs.plainTextChunks.every((chunk) => chunk.sourceKind === "committed" && chunk.yjsSequence === undefined),
+		).toBe(true);
 		// A mount file indexes no frontmatter. Its only entry is the stamp that records where the
 		// file came from.
 		expect(docs.metadataDocs.map((doc) => doc.fieldPath)).toEqual(["metadata.source", "metadata.source"]);
@@ -14567,7 +15637,7 @@ describe("external/system mount text materialization (Phase D)", () => {
 			organizationId: organizations_GLOBAL_ORGANIZATION_ID,
 			workspaceId: organizations_GLOBAL_GITHUB_WORKSPACE_ID,
 			userId: db.userId,
-			fileNodeId: created._yay.nodeId,
+			target: { kind: "saved", id: created._yay.nodeId },
 			pattern: "Zorptelemetry",
 			ignoreCase: false,
 			fixedStrings: true,
@@ -14581,7 +15651,7 @@ describe("external/system mount text materialization (Phase D)", () => {
 			organizationId: organizations_GLOBAL_ORGANIZATION_ID,
 			workspaceId: organizations_GLOBAL_GITHUB_WORKSPACE_ID,
 			userId: db.userId,
-			fileNodeId: created._yay.nodeId,
+			target: { kind: "saved", id: created._yay.nodeId },
 			pattern: "Zorptelemetry",
 			ignoreCase: false,
 			fixedStrings: true,
@@ -15070,16 +16140,11 @@ describe("plain text file stats and delete-all", () => {
 describe("files_db_yjs_push_update door 1", () => {
 	async function create_door_fixture(t: ReturnType<typeof test_convex>, path: string) {
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
-		const created = await t.action(internal.files_nodes_content.create_file_by_path, {
-			organizationId: db.organizationId,
-			workspaceId: db.workspaceId,
-			userId: db.userId,
+		const createdId = await test_create_saved_text_file(t, {
+			membershipId: db.membershipId,
 			path,
 		});
-		if (created._nay) {
-			throw new Error(created._nay.message);
-		}
-		return { db, nodeId: created._yay.nodeId };
+		return { db, nodeId: createdId };
 	}
 
 	async function read_log_state(
@@ -15292,16 +16357,11 @@ describe("files_db_yjs_push_update door 1", () => {
 describe("yjs_reserve_and_increment_last_sequence", () => {
 	async function create_reserve_fixture(t: ReturnType<typeof test_convex>, path: string) {
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
-		const created = await t.action(internal.files_nodes_content.create_file_by_path, {
-			organizationId: db.organizationId,
-			workspaceId: db.workspaceId,
-			userId: db.userId,
+		const createdId = await test_create_saved_text_file(t, {
+			membershipId: db.membershipId,
 			path,
 		});
-		if (created._nay) {
-			throw new Error(created._nay.message);
-		}
-		return { db, nodeId: created._yay.nodeId };
+		return { db, nodeId: createdId };
 	}
 
 	test("refuses when the aggregate update-count budget would be crossed and schedules compaction instead of writing", async () => {
@@ -15482,6 +16542,17 @@ describe("yjs_reserve_and_increment_last_sequence", () => {
 	test("the public fill writer goes through the same reserve gate", async () => {
 		const t = test_convex();
 		const { db, nodeId } = await create_reserve_fixture(t, "/reserve-fill-writer.md");
+		const staged = await t.mutation(internal.files_pending_updates.stage_trusted_yjs_update, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: db.userId,
+			nodeId,
+			kind: "public_fill",
+			update: files_u8_to_array_buffer(
+				encodeStateAsUpdate(files_yjs_doc_create_from_text({ rootKind: "rich_text", text: "fill" }) as YjsDoc),
+			),
+		});
+		if (staged._nay) throw new Error(staged._nay.message);
 
 		await t.run(async (ctx) => {
 			const lastSequenceDoc = await ctx.db
@@ -15514,18 +16585,6 @@ describe("yjs_reserve_and_increment_last_sequence", () => {
 					createdBy: db.userId,
 					updatedAt: Date.now(),
 				});
-				// The fill update travels through a trusted stage now; the helper carries only its id.
-				const fillUpdateStageId = await ctx.db.insert("files_yjs_trusted_update_stages", {
-					organizationId: db.organizationId,
-					workspaceId: db.workspaceId,
-					userId: db.userId,
-					fileNodeId: nodeId,
-					kind: "public_fill",
-					update: files_u8_to_array_buffer(
-						encodeStateAsUpdate(files_yjs_doc_create_from_text({ rootKind: "rich_text", text: "fill" }) as YjsDoc),
-					),
-					expiresAt: Date.now() + 30 * 60 * 1000,
-				});
 				return files_nodes_db_fill_text_node_content(ctx, {
 					organizationId: db.organizationId,
 					workspaceId: db.workspaceId,
@@ -15534,7 +16593,7 @@ describe("yjs_reserve_and_increment_last_sequence", () => {
 					textContent: "fill",
 					contentSnapshotAssetId,
 					contentSize: 4,
-					fillUpdateStageId,
+					fillUpdateStageId: staged._yay.stageId,
 					expectedYjsLastSequenceId: fileNode.yjsLastSequenceId,
 				});
 			}),
@@ -15545,16 +16604,10 @@ describe("yjs_reserve_and_increment_last_sequence", () => {
 describe("files_nodes.get_file_next_yjs_update", () => {
 	async function seed_update_rows(t: ReturnType<typeof test_convex>, sequences: number[]) {
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
-		const created = await t.action(internal.files_nodes_content.create_file_by_path, {
-			organizationId: db.organizationId,
-			workspaceId: db.workspaceId,
-			userId: db.userId,
+		const nodeId = await test_create_saved_text_file(t, {
+			membershipId: db.membershipId,
 			path: `/next-update-${sequences.join("-")}.md`,
 		});
-		if (created._nay) {
-			throw new Error(created._nay.message);
-		}
-		const nodeId = created._yay.nodeId;
 		await t.run(async (ctx) => {
 			for (const sequence of sequences) {
 				await ctx.db.insert("files_yjs_updates", {
@@ -15630,16 +16683,10 @@ describe("materialization guards", () => {
 	test("snapshot-size preflight settles the state marker without any GET", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
-		const created = await t.action(internal.files_nodes_content.create_file_by_path, {
-			organizationId: db.organizationId,
-			workspaceId: db.workspaceId,
-			userId: db.userId,
+		const nodeId = await test_create_saved_text_file(t, {
+			membershipId: db.membershipId,
 			path: "/preflight-no-fetch.md",
 		});
-		if (created._nay) {
-			throw new Error(created._nay.message);
-		}
-		const nodeId = created._yay.nodeId;
 
 		// Pretend the stored Yjs snapshot is over the 4 MiB cap.
 		await t.run(async (ctx) => {
@@ -15674,16 +16721,10 @@ describe("materialization guards", () => {
 	test("the incremental reconstructed-state check settles the marker while applying the log", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
-		const created = await t.action(internal.files_nodes_content.create_file_by_path, {
-			organizationId: db.organizationId,
-			workspaceId: db.workspaceId,
-			userId: db.userId,
+		const nodeId = await test_create_saved_text_file(t, {
+			membershipId: db.membershipId,
 			path: "/incremental-reconstructed-cap.md",
 		});
-		if (created._nay) {
-			throw new Error(created._nay.message);
-		}
-		const nodeId = created._yay.nodeId;
 
 		// Six legal ~900,000-byte inserts: each wire row stays under the 930,000-byte cap and the
 		// aggregate stays under the 8 MiB budget, but the reconstructed state crosses the 4 MiB cap
@@ -15736,17 +16777,11 @@ describe("materialization guards", () => {
 	test("successful finalization recomputes the aggregate counters exactly", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
-		const created = await t.action(internal.files_nodes_content.create_file_by_path, {
-			organizationId: db.organizationId,
-			workspaceId: db.workspaceId,
-			userId: db.userId,
+		const nodeId = await test_create_saved_text_file(t, {
+			membershipId: db.membershipId,
 			path: "/finalize-exact-counters.md",
 			textContent: "counter fixture\n",
 		});
-		if (created._nay) {
-			throw new Error(created._nay.message);
-		}
-		const nodeId = created._yay.nodeId;
 
 		// Drift the counters the way an uncounted legacy file would look. The staleness gate lets
 		// only the run whose frozen target equals the current lastSequence finalize, so every
@@ -15791,20 +16826,15 @@ describe("files_nodes_content.repair_file_yjs_state_from_visible_text", () => {
 	test("refuses the default source without a durable marker", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
-		const created = await t.action(internal.files_nodes_content.create_file_by_path, {
-			organizationId: db.organizationId,
-			workspaceId: db.workspaceId,
-			userId: db.userId,
+		const createdId = await test_create_saved_text_file(t, {
+			membershipId: db.membershipId,
 			path: "/repair-no-marker.md",
 		});
-		if (created._nay) {
-			throw new Error(created._nay.message);
-		}
 
 		const result = await t.action(internal.files_nodes_content.repair_file_yjs_state_from_visible_text, {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			nodeId: created._yay.nodeId,
+			nodeId: createdId,
 			authorUserId: db.userId,
 		});
 		expect(result._nay?.message).toBe("File carries no durable repair marker");
@@ -15813,17 +16843,12 @@ describe("files_nodes_content.repair_file_yjs_state_from_visible_text", () => {
 	test("refuses an author who is not a member of the node's tenant", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
-		const created = await t.action(internal.files_nodes_content.create_file_by_path, {
-			organizationId: db.organizationId,
-			workspaceId: db.workspaceId,
-			userId: db.userId,
+		const createdId = await test_create_saved_text_file(t, {
+			membershipId: db.membershipId,
 			path: "/repair-outside-author.md",
 		});
-		if (created._nay) {
-			throw new Error(created._nay.message);
-		}
 		await t.run(async (ctx) => {
-			await ctx.db.patch("files_nodes", created._yay.nodeId, { contentShapeMismatchAt: Date.now() });
+			await ctx.db.patch("files_nodes", createdId, { contentShapeMismatchAt: Date.now() });
 		});
 
 		// A real user id with no membership in this tenant: the repair must refuse instead of
@@ -15832,7 +16857,7 @@ describe("files_nodes_content.repair_file_yjs_state_from_visible_text", () => {
 		const result = await t.action(internal.files_nodes_content.repair_file_yjs_state_from_visible_text, {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			nodeId: created._yay.nodeId,
+			nodeId: createdId,
 			authorUserId: outsiderUserId,
 		});
 		expect(result._nay?.message).toBe("Not found");
@@ -15841,20 +16866,15 @@ describe("files_nodes_content.repair_file_yjs_state_from_visible_text", () => {
 	test("refuses last_committed without the explicit acknowledgement flag", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
-		const created = await t.action(internal.files_nodes_content.create_file_by_path, {
-			organizationId: db.organizationId,
-			workspaceId: db.workspaceId,
-			userId: db.userId,
+		const createdId = await test_create_saved_text_file(t, {
+			membershipId: db.membershipId,
 			path: "/repair-no-ack.md",
 		});
-		if (created._nay) {
-			throw new Error(created._nay.message);
-		}
 
 		const result = await t.action(internal.files_nodes_content.repair_file_yjs_state_from_visible_text, {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			nodeId: created._yay.nodeId,
+			nodeId: createdId,
 			authorUserId: db.userId,
 			source: "last_committed",
 		});
@@ -15864,16 +16884,10 @@ describe("files_nodes_content.repair_file_yjs_state_from_visible_text", () => {
 	test("refuses a base over the 16 MiB repair cap before any GET", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
-		const created = await t.action(internal.files_nodes_content.create_file_by_path, {
-			organizationId: db.organizationId,
-			workspaceId: db.workspaceId,
-			userId: db.userId,
+		const nodeId = await test_create_saved_text_file(t, {
+			membershipId: db.membershipId,
 			path: "/repair-over-16mib.md",
 		});
-		if (created._nay) {
-			throw new Error(created._nay.message);
-		}
-		const nodeId = created._yay.nodeId;
 
 		await t.run(async (ctx) => {
 			await ctx.db.patch("files_nodes", nodeId, { contentYjsStateTooLargeByteSize: 17 * 1024 * 1024 });
@@ -15904,16 +16918,10 @@ describe("files_nodes_content.repair_file_yjs_state_from_visible_text", () => {
 		const t = test_convex();
 		const deleteObjectSpy = vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
-		const created = await t.action(internal.files_nodes_content.create_file_by_path, {
-			organizationId: db.organizationId,
-			workspaceId: db.workspaceId,
-			userId: db.userId,
+		const nodeId = await test_create_saved_text_file(t, {
+			membershipId: db.membershipId,
 			path: "/repair-stale-finalize.md",
 		});
-		if (created._nay) {
-			throw new Error(created._nay.message);
-		}
-		const nodeId = created._yay.nodeId;
 		await t.run(async (ctx) => {
 			await ctx.db.patch("files_nodes", nodeId, { contentShapeMismatchAt: Date.now() });
 		});
@@ -16018,17 +17026,11 @@ describe("files_nodes_content.repair_file_yjs_state_from_visible_text", () => {
 			}),
 		);
 
-		const created = await t.action(internal.files_nodes_content.create_file_by_path, {
-			organizationId: db.organizationId,
-			workspaceId: db.workspaceId,
-			userId: db.userId,
+		const nodeId = await test_create_saved_text_file(t, {
+			membershipId: db.membershipId,
 			path: "/repair-happy-path.md",
 			textContent: "# Repair me\n\nBody text\n",
 		});
-		if (created._nay) {
-			throw new Error(created._nay.message);
-		}
-		const nodeId = created._yay.nodeId;
 
 		// Materialize once so the Yjs snapshot bytes exist in (mocked) R2.
 		const materialized = await t.action(internal.files_nodes_content.materialize_file_content, {
@@ -16160,16 +17162,10 @@ describe("files_nodes_content.repair_file_yjs_state_from_visible_text", () => {
 		db: Awaited<ReturnType<typeof test_mocks_fill_db_with.membership>>,
 		path: string,
 	) {
-		const created = await asUser.action(internal.files_nodes_content.create_file_by_path, {
-			organizationId: db.organizationId,
-			workspaceId: db.workspaceId,
-			userId: db.userId,
+		const nodeId = await test_create_saved_text_file(t, {
+			membershipId: db.membershipId,
 			path,
 		});
-		if (created._nay) {
-			throw new Error(created._nay.message);
-		}
-		const nodeId = created._yay.nodeId;
 		const seededMaterialize = await t.action(internal.files_nodes_content.materialize_file_content, {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
@@ -16364,15 +17360,10 @@ describe("files_nodes.yjs_prepare_doc_last_snapshot", () => {
 		vi.spyOn(R2.prototype, "getUrl").mockImplementation(
 			async (key: string) => `https://r2.test/object?key=${encodeURIComponent(key)}`,
 		);
-		const created = await t.action(internal.files_nodes_content.create_file_by_path, {
-			organizationId: db.organizationId,
-			workspaceId: db.workspaceId,
-			userId: db.userId,
+		const createdId = await test_create_saved_text_file(t, {
+			membershipId: db.membershipId,
 			path: "/prepare-root-kind.md",
 		});
-		if (created._nay) {
-			throw new Error(created._nay.message);
-		}
 
 		const asUser = t.withIdentity({
 			issuer: "https://clerk.test",
@@ -16382,7 +17373,7 @@ describe("files_nodes.yjs_prepare_doc_last_snapshot", () => {
 		});
 		const prepared = await asUser.action(api.files_nodes.yjs_prepare_doc_last_snapshot, {
 			membershipId: db.membershipId,
-			nodeId: created._yay.nodeId,
+			nodeId: createdId,
 		});
 		// The response carries the stored shape so the client opens the matching editor.
 		expect(prepared?.textKind).toBe("rich_text");
@@ -18753,128 +19744,7 @@ describe("files_nodes.discard_failed_upload_node read-only gates", () => {
 	});
 });
 
-describe("files_nodes.remove_eager_created_node_if_safe read-only gates", () => {
-	async function seed_eager_branch(t: ReturnType<typeof test_convex>, path: string) {
-		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
-		const asUser = t.withIdentity({
-			issuer: "https://clerk.test",
-			external_id: db.userId,
-			name: "Read Only Eager User",
-		});
-		const created = await t.action(internal.files_nodes_content.create_file_by_path, {
-			organizationId: db.organizationId,
-			workspaceId: db.workspaceId,
-			userId: db.userId,
-			path,
-		});
-		if (created._nay) {
-			throw new Error(created._nay.message);
-		}
-		if (!created._yay.created || created._yay.createdCommittedSequence === undefined) {
-			throw new Error("Expected create_file_by_path to create a fresh node");
-		}
-		return {
-			db,
-			asUser,
-			nodeId: created._yay.nodeId,
-			eagerCreatedCommittedSequence: created._yay.createdCommittedSequence,
-			createdAncestorIds: created._yay.createdAncestorIds,
-		};
-	}
-
-	test("a lock after the eager create keeps the leaf and its created ancestors", async () => {
-		const t = test_convex();
-		vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
-		const { db, asUser, nodeId, eagerCreatedCommittedSequence, createdAncestorIds } = await seed_eager_branch(
-			t,
-			"/ro-eager/deep/x.md",
-		);
-		// Ancestors come deepest-first, so the last one is the shallow /ro-eager folder. Locking
-		// it cascades over the whole created branch.
-		const shallowAncestorId = createdAncestorIds[createdAncestorIds.length - 1];
-		if (!shallowAncestorId) {
-			throw new Error("Expected created ancestor folder ids");
-		}
-		await set_read_only_or_throw(asUser, db.membershipId, shallowAncestorId);
-
-		const removed = await t.mutation(internal.files_nodes.remove_eager_created_node_if_safe, {
-			organizationId: db.organizationId,
-			workspaceId: db.workspaceId,
-			userId: db.userId,
-			nodeId,
-			eagerCreatedCommittedSequence,
-			createdAncestorIds,
-		});
-		expect(removed._yay).toEqual({ removed: false, ancestorsLeft: 2 });
-
-		await t.run(async (ctx) => {
-			expect(await ctx.db.get("files_nodes", nodeId)).not.toBeNull();
-			for (const ancestorId of createdAncestorIds) {
-				expect(await ctx.db.get("files_nodes", ancestorId)).not.toBeNull();
-			}
-		});
-	});
-
-	test("a lock then unlock lets cleanup remove the writable branch", async () => {
-		const t = test_convex();
-		vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
-		const { db, asUser, nodeId, eagerCreatedCommittedSequence, createdAncestorIds } = await seed_eager_branch(
-			t,
-			"/ro-eager-cycle/deep/x.md",
-		);
-		const shallowAncestorId = createdAncestorIds[createdAncestorIds.length - 1];
-		if (!shallowAncestorId) {
-			throw new Error("Expected created ancestor folder ids");
-		}
-		await set_read_only_or_throw(asUser, db.membershipId, shallowAncestorId);
-		await set_writable_or_throw(asUser, db.membershipId, shallowAncestorId);
-
-		const removed = await t.mutation(internal.files_nodes.remove_eager_created_node_if_safe, {
-			organizationId: db.organizationId,
-			workspaceId: db.workspaceId,
-			userId: db.userId,
-			nodeId,
-			eagerCreatedCommittedSequence,
-			createdAncestorIds,
-		});
-		expect(removed._yay).toEqual({ removed: true, ancestorsLeft: 0 });
-
-		await t.run(async (ctx) => {
-			expect(await ctx.db.get("files_nodes", nodeId)).toBeNull();
-			for (const ancestorId of createdAncestorIds) {
-				expect(await ctx.db.get("files_nodes", ancestorId)).toBeNull();
-			}
-		});
-	});
-
-	test("an unchanged writable branch is removed", async () => {
-		const t = test_convex();
-		vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
-		const { db, nodeId, eagerCreatedCommittedSequence, createdAncestorIds } = await seed_eager_branch(
-			t,
-			"/ro-eager-control/deep/x.md",
-		);
-
-		const removed = await t.mutation(internal.files_nodes.remove_eager_created_node_if_safe, {
-			organizationId: db.organizationId,
-			workspaceId: db.workspaceId,
-			userId: db.userId,
-			nodeId,
-			eagerCreatedCommittedSequence,
-			createdAncestorIds,
-		});
-		expect(removed._yay).toEqual({ removed: true, ancestorsLeft: 0 });
-
-		await t.run(async (ctx) => {
-			expect(await ctx.db.get("files_nodes", nodeId)).toBeNull();
-			for (const ancestorId of createdAncestorIds) {
-				expect(await ctx.db.get("files_nodes", ancestorId)).toBeNull();
-			}
-		});
-	});
-});
-
-describe("files_nodes_db_apply_pending_move read-only gates", () => {
+describe("apply_file_pending_move", () => {
 	async function seed_apply_move_file(t: ReturnType<typeof test_convex>, path: string) {
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 		const asUser = t.withIdentity({
@@ -18896,36 +19766,26 @@ describe("files_nodes_db_apply_pending_move read-only gates", () => {
 	test("a locked source refuses the apply and unlock lets the same move through", async () => {
 		const t = test_convex();
 		const { db, asUser, nodeId } = await seed_apply_move_file(t, "pending-src.md");
+		const move = await propose_move_for_test(t, {
+			...db,
+			nodeId,
+			destParent: { kind: "root" },
+			destName: "pending-src-moved.md",
+		});
 		await set_read_only_or_throw(asUser, db.membershipId, nodeId);
 
-		const applied = await t.run(async (ctx) =>
-			files_nodes_db_apply_pending_move(ctx, {
-				organizationId: db.organizationId,
-				workspaceId: db.workspaceId,
-				nodeId,
-				destParentId: files_ROOT_ID,
-				destName: "pending-src-moved.md",
-				userId: db.userId,
-				updatedBy: db.userId,
-				authorizeCycleMember: async () => true,
-			}),
-		);
+		const applied = await asUser.mutation(api.files_pending_updates.apply_file_pending_move, {
+			membershipId: db.membershipId,
+			...move,
+		});
 		expect(applied._nay).toMatchObject({ name: "read_only" });
 		expect((await t.run(async (ctx) => ctx.db.get("files_nodes", nodeId)))?.path).toBe("/pending-src.md");
 
 		await set_writable_or_throw(asUser, db.membershipId, nodeId);
-		const appliedAfterUnlock = await t.run(async (ctx) =>
-			files_nodes_db_apply_pending_move(ctx, {
-				organizationId: db.organizationId,
-				workspaceId: db.workspaceId,
-				nodeId,
-				destParentId: files_ROOT_ID,
-				destName: "pending-src-moved.md",
-				userId: db.userId,
-				updatedBy: db.userId,
-				authorizeCycleMember: async () => true,
-			}),
-		);
+		const appliedAfterUnlock = await asUser.mutation(api.files_pending_updates.apply_file_pending_move, {
+			membershipId: db.membershipId,
+			...move,
+		});
 		expect(appliedAfterUnlock._nay).toBeUndefined();
 		expect((await t.run(async (ctx) => ctx.db.get("files_nodes", nodeId)))?.path).toBe("/pending-src-moved.md");
 	});
@@ -18941,20 +19801,18 @@ describe("files_nodes_db_apply_pending_move read-only gates", () => {
 		if (folder._nay) {
 			throw new Error(folder._nay.message);
 		}
+		const move = await propose_move_for_test(t, {
+			...db,
+			nodeId,
+			destParent: { kind: "saved", id: folder._yay.nodeId },
+			destName: "pending-src-dest.md",
+		});
 		await set_read_only_or_throw(asUser, db.membershipId, folder._yay.nodeId);
 
-		const applied = await t.run(async (ctx) =>
-			files_nodes_db_apply_pending_move(ctx, {
-				organizationId: db.organizationId,
-				workspaceId: db.workspaceId,
-				nodeId,
-				destParentId: folder._yay.nodeId,
-				destName: "pending-src-dest.md",
-				userId: db.userId,
-				updatedBy: db.userId,
-				authorizeCycleMember: async () => true,
-			}),
-		);
+		const applied = await asUser.mutation(api.files_pending_updates.apply_file_pending_move, {
+			membershipId: db.membershipId,
+			...move,
+		});
 		expect(applied._nay).toMatchObject({ name: "read_only" });
 		expect((await t.run(async (ctx) => ctx.db.get("files_nodes", nodeId)))?.path).toBe("/pending-src-dest.md");
 	});
@@ -18970,20 +19828,19 @@ describe("files_nodes_db_apply_pending_move read-only gates", () => {
 		if (occupant._nay) {
 			throw new Error(occupant._nay.message);
 		}
+		const move = await propose_move_for_test(t, {
+			...db,
+			nodeId,
+			destParent: { kind: "root" },
+			destName: "occupied.md",
+			replace: true,
+		});
 		await set_read_only_or_throw(asUser, db.membershipId, occupant._yay.nodeId);
 
-		const applied = await t.run(async (ctx) =>
-			files_nodes_db_apply_pending_move(ctx, {
-				organizationId: db.organizationId,
-				workspaceId: db.workspaceId,
-				nodeId,
-				destParentId: files_ROOT_ID,
-				destName: "occupied.md",
-				userId: db.userId,
-				updatedBy: db.userId,
-				authorizeCycleMember: async () => true,
-			}),
-		);
+		const applied = await asUser.mutation(api.files_pending_updates.apply_file_pending_move, {
+			membershipId: db.membershipId,
+			...move,
+		});
 		expect(applied._nay).toMatchObject({ name: "read_only" });
 		const docs = await t.run(async (ctx) => ({
 			source: await ctx.db.get("files_nodes", nodeId),
@@ -18992,6 +19849,78 @@ describe("files_nodes_db_apply_pending_move read-only gates", () => {
 		expect(docs.source?.path).toBe("/pending-src-replace.md");
 		expect(docs.occupantNode?.archiveOperationId).toBeNull();
 	});
+
+	test.each(["unchanged", "edited", "replaced"] as const)(
+		"binds replacement to the reviewed %s occupant",
+		async (change) => {
+			const t = test_convex();
+			const { db, asUser, nodeId } = await seed_apply_move_file(t, "source.md");
+			const occupant = await asUser.action(api.files_nodes_content.create_text_node, {
+				membershipId: db.membershipId,
+				parentId: files_ROOT_ID,
+				path: "occupied.txt",
+			});
+			if (occupant._nay) throw new Error(occupant._nay.message);
+			const move = await propose_move_for_test(t, {
+				...db,
+				nodeId,
+				destParent: { kind: "root" },
+				destName: "occupied.txt",
+				replace: true,
+			});
+			let laterNodeId: Id<"files_nodes"> | null = null;
+			if (change === "edited") {
+				const yjsDoc = files_yjs_doc_create_from_text({ rootKind: "rich_text", text: "New saved text" });
+				if ("_nay" in yjsDoc) throw new Error(yjsDoc._nay.message);
+				const pushed = await asUser.mutation(api.files_nodes.yjs_push_update, {
+					membershipId: db.membershipId,
+					nodeId: occupant._yay.nodeId,
+					expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, occupant._yay.nodeId)).yjsLastSequenceId,
+					update: files_u8_to_array_buffer(encodeStateAsUpdate(yjsDoc)),
+					sessionId: "changed-replacement",
+				});
+				yjsDoc.destroy();
+				expect(pushed._nay).toBeUndefined();
+			} else if (change === "replaced") {
+				const renamed = await asUser.mutation(api.files_nodes.rename_node, {
+					membershipId: db.membershipId,
+					nodeId: occupant._yay.nodeId,
+					path: "previous.txt",
+				});
+				expect(renamed._nay).toBeUndefined();
+				const later = await asUser.action(api.files_nodes_content.create_text_node, {
+					membershipId: db.membershipId,
+					parentId: files_ROOT_ID,
+					path: "occupied.txt",
+				});
+				if (later._nay) throw new Error(later._nay.message);
+				laterNodeId = later._yay.nodeId;
+			}
+			const accepted = await asUser.mutation(api.files_pending_updates.apply_file_pending_move, {
+				membershipId: db.membershipId,
+				...move,
+			});
+			const after = await t.run(async (ctx) => ({
+				source: await ctx.db.get("files_nodes", nodeId),
+				occupant: await ctx.db.get("files_nodes", occupant._yay.nodeId),
+				later: laterNodeId ? await ctx.db.get("files_nodes", laterNodeId) : null,
+				proposal: await ctx.db.get("files_pending_updates", move.pendingUpdateId),
+			}));
+			if (change === "unchanged") {
+				expect(accepted._nay).toBeUndefined();
+				expect(after.source?.path).toBe("/occupied.txt");
+				expect(after.occupant?.archiveOperationId).toBeTruthy();
+				expect(after.proposal).toBeNull();
+			} else {
+				expect(accepted._nay?.name).toBe("destination_changed");
+				expect(after.source?.path).toBe("/source.md");
+				expect(after.occupant?.archiveOperationId).toBeNull();
+				expect(after.proposal).toMatchObject({ revision: move.reviewedRevision });
+				if (change === "replaced")
+					expect(after.later).toMatchObject({ path: "/occupied.txt", archiveOperationId: null });
+			}
+		},
+	);
 });
 
 describe("files_nodes public read-only view", () => {
@@ -20153,16 +21082,10 @@ async function seed_snapshot_restore_target(
 	db: Awaited<ReturnType<typeof test_mocks_fill_db_with.membership>>,
 	path: string,
 ) {
-	const createdFile = await t.action(internal.files_nodes_content.create_file_by_path, {
-		organizationId: db.organizationId,
-		workspaceId: db.workspaceId,
-		userId: db.userId,
+	const nodeId = await test_create_saved_text_file(t, {
+		membershipId: db.membershipId,
 		path,
 	});
-	if (createdFile._nay) {
-		throw new Error(createdFile._nay.message);
-	}
-	const nodeId = createdFile._yay.nodeId;
 
 	return await t.run(async (ctx) => {
 		const now = Date.now();
@@ -20429,16 +21352,10 @@ async function seed_repair_finalize_target(
 	db: Awaited<ReturnType<typeof test_mocks_fill_db_with.membership>>,
 	path: string,
 ) {
-	const created = await t.action(internal.files_nodes_content.create_file_by_path, {
-		organizationId: db.organizationId,
-		workspaceId: db.workspaceId,
-		userId: db.userId,
+	const nodeId = await test_create_saved_text_file(t, {
+		membershipId: db.membershipId,
 		path,
 	});
-	if (created._nay) {
-		throw new Error(created._nay.message);
-	}
-	const nodeId = created._yay.nodeId;
 	await t.run(async (ctx) => {
 		await ctx.db.patch("files_nodes", nodeId, { contentShapeMismatchAt: Date.now() });
 	});
@@ -20484,18 +21401,13 @@ describe("files_nodes_content.cleanup_file_yjs_covered_rows", () => {
 	test("durably deletes the superseded Yjs object after a confirmed delete retry", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
-		const created = await t.action(internal.files_nodes_content.create_file_by_path, {
-			organizationId: db.organizationId,
-			workspaceId: db.workspaceId,
-			userId: db.userId,
+		const createdId = await test_create_saved_text_file(t, {
+			membershipId: db.membershipId,
 			path: "/repair-superseded-cleanup.md",
 		});
-		if (created._nay) {
-			throw new Error(created._nay.message);
-		}
 
 		const superseded = await t.run(async (ctx) => {
-			const node = await ctx.db.get("files_nodes", created._yay.nodeId);
+			const node = await ctx.db.get("files_nodes", createdId);
 			if (!files_node_has_editable_yjs_state(node)) {
 				throw new Error("Expected an editable repair target");
 			}
@@ -20530,7 +21442,7 @@ describe("files_nodes_content.cleanup_file_yjs_covered_rows", () => {
 		await t.mutation(internal.files_nodes_content.cleanup_file_yjs_covered_rows, {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			nodeId: created._yay.nodeId,
+			nodeId: createdId,
 			throughSequence: superseded.throughSequence,
 			supersededYjsAssetId: superseded.assetId,
 		});
@@ -20625,25 +21537,20 @@ describe("files_nodes_content.finalize_file_yjs_repair read-only gates", () => {
 			external_id: db.userId,
 			name: "Repair Early Refusal User",
 		});
-		const created = await t.action(internal.files_nodes_content.create_file_by_path, {
-			organizationId: db.organizationId,
-			workspaceId: db.workspaceId,
-			userId: db.userId,
+		const createdId = await test_create_saved_text_file(t, {
+			membershipId: db.membershipId,
 			path: "/repair-early-refusal.md",
 		});
-		if (created._nay) {
-			throw new Error(created._nay.message);
-		}
 		await t.run(async (ctx) => {
-			await ctx.db.patch("files_nodes", created._yay.nodeId, { contentShapeMismatchAt: Date.now() });
+			await ctx.db.patch("files_nodes", createdId, { contentShapeMismatchAt: Date.now() });
 		});
-		await set_read_only_or_throw(asUser, db.membershipId, created._yay.nodeId);
+		await set_read_only_or_throw(asUser, db.membershipId, createdId);
 
 		const assetCountBefore = await t.run(async (ctx) => (await ctx.db.query("files_r2_assets").collect()).length);
 		const refused = await t.action(internal.files_nodes_content.repair_file_yjs_state_from_visible_text, {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			nodeId: created._yay.nodeId,
+			nodeId: createdId,
 			authorUserId: db.userId,
 		});
 		expect(refused._nay?.name).toBe("read_only");
@@ -20687,17 +21594,11 @@ describe("files_nodes_content.finalize_file_yjs_repair read-only gates", () => {
 			}),
 		);
 
-		const created = await t.action(internal.files_nodes_content.create_file_by_path, {
-			organizationId: db.organizationId,
-			workspaceId: db.workspaceId,
-			userId: db.userId,
+		const nodeId = await test_create_saved_text_file(t, {
+			membershipId: db.membershipId,
 			path: "/repair-unlocked.md",
 			textContent: "# Repair me\n\nBody text\n",
 		});
-		if (created._nay) {
-			throw new Error(created._nay.message);
-		}
-		const nodeId = created._yay.nodeId;
 
 		const materialized = await t.action(internal.files_nodes_content.materialize_file_content, {
 			organizationId: db.organizationId,

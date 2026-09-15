@@ -1,11 +1,24 @@
 import { defineCommand, type Command } from "just-bash/browser";
 import { internal } from "../convex/_generated/api.js";
 import type { ActionCtx } from "../convex/_generated/server.js";
-import type { files_nodes_get_by_path_Result } from "../convex/files_nodes.ts";
 import type { upsert_file_pending_archive_in_db_Result } from "../convex/files_pending_updates.ts";
-import { organizations_is_global_organization_id, organizations_is_reserved_workspace_id } from "../shared/organizations.ts";
+import {
+	organizations_is_global_organization_id,
+	organizations_is_reserved_workspace_id,
+} from "../shared/organizations.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
-import { bash_create_glob_syntax_unsupported_message, bash_current_workspace_path_to_db_files_path, bash_GLOB_METACHARACTER_REGEX, bash_is_path_under_current_workspace_path, bash_is_path_under_read_only_mounts, bash_resolve_path, bash_read_only_mount_error, bash_COMMAND_EXIT_FAILURE, bash_COMMAND_EXIT_USAGE, type bash_DbFilesRoots } from "./bash-utils.ts";
+import {
+	bash_create_glob_syntax_unsupported_message,
+	bash_current_workspace_path_to_db_files_path,
+	bash_GLOB_METACHARACTER_REGEX,
+	bash_is_path_under_current_workspace_path,
+	bash_is_path_under_read_only_mounts,
+	bash_resolve_path,
+	bash_read_only_mount_error,
+	bash_COMMAND_EXIT_FAILURE,
+	bash_COMMAND_EXIT_USAGE,
+	type bash_DbFilesRoots,
+} from "./bash-utils.ts";
 import { bash_delegate_builtin_command } from "./bash-delegate.ts";
 
 /**
@@ -115,7 +128,10 @@ export function bash_rm_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 		}
 
 		for (const operand of appOperands) {
-			const path = bash_current_workspace_path_to_db_files_path(currentWorkspacePath, bash_resolve_path(commandCtx.cwd, operand));
+			const path = bash_current_workspace_path_to_db_files_path(
+				currentWorkspacePath,
+				bash_resolve_path(commandCtx.cwd, operand),
+			);
 			if (path != null) dbFilesRoots.app.fs.observePath(path);
 			if (bash_GLOB_METACHARACTER_REGEX.test(operand)) {
 				return {
@@ -176,14 +192,8 @@ export function bash_rm_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 
 			// Resolution runs through the calling user's pending path overlay: an already
 			// pending-deleted path reads as missing, like a real fs after rm.
-			const node = (await ctx.runQuery(internal.files_nodes.get_by_path, {
-				organizationId,
-				workspaceId,
-				visibilityUserId: userId,
-				path: dbFilesPath,
-				overlayUserId: userId,
-			})) as files_nodes_get_by_path_Result;
-			if (!node) {
+			const node = await dbFilesRoots.app.fs.getEntry(dbFilesPath);
+			if (!node?.target || node.target.kind === "root") {
 				if (!force) {
 					stderr += `rm: cannot remove '${operand}': No such file or directory\n`;
 					exitCode = bash_COMMAND_EXIT_FAILURE;
@@ -200,7 +210,7 @@ export function bash_rm_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 				organizationId,
 				workspaceId,
 				userId,
-				nodeId: node._id,
+				target: node.target,
 				threadId: threadId ?? undefined,
 			})) as upsert_file_pending_archive_in_db_Result;
 			if (proposed._nay) {

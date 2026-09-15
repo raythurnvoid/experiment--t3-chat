@@ -14,7 +14,7 @@ import { billing_PRODUCTS } from "../shared/billing.ts";
 // and a value import here would put that ~100ms cold-start cost on every module that imports
 // these lean helpers.
 import type { billing_Event } from "../server/billing.ts";
-import { composite_id } from "../shared/shared-utils.ts";
+import { composite_id, should_never_happen } from "../shared/shared-utils.ts";
 
 const billing_workpool_usage_event = new Workpool(components.billing_workpool_usage_event, {
 	maxParallelism: 1,
@@ -191,9 +191,49 @@ export async function billing_ingest_events(
 				}),
 		anonymousUserEvents.length === 0
 			? Promise.resolve()
-			: ctx.runMutation(internal.billing.ingest_anonymous_user_events, {
-					billedUserEvents: anonymousUserEvents,
-				}),
+			: "db" in ctx
+				? billing_db_ingest_anonymous_user_events(ctx, {
+						billedUserEvents: anonymousUserEvents,
+					})
+				: ctx.runMutation(internal.billing.ingest_anonymous_user_events, {
+						billedUserEvents: anonymousUserEvents,
+					}),
 	]);
 }
 
+/**
+ * Use the caller's DB context so a mixed Save counts these writes in its budget.
+ */
+export async function billing_db_ingest_anonymous_user_events(
+	ctx: MutationCtx,
+	args: { billedUserEvents: Array<{ event: billing_Event; billedUser: Doc<"users"> }> },
+) {
+	const now = Date.now();
+	// Several files can bill the same payer in one transaction. Each debit sees the last one.
+	for (const { event, billedUser } of args.billedUserEvents) {
+		if (billedUser.clerkUserId != null) {
+			console.error("Anonymous billing ingest received a signed-in user doc", { billedUserId: billedUser._id, event });
+			continue;
+		}
+		if (event.metadata.amount === 0) continue;
+		const usageSnapshot = await ctx.db
+			.query("billing_usage_snapshots")
+			.withIndex("by_user", (q) => q.eq("userId", billedUser._id))
+			.first();
+		if (!usageSnapshot || usageSnapshot.meter === null) {
+			throw should_never_happen("Anonymous user usage snapshot not found or has no meter", {
+				userId: billedUser._id,
+				event,
+				usageSnapshot,
+			});
+		}
+		await ctx.db.patch("billing_usage_snapshots", usageSnapshot._id, {
+			meter: {
+				...usageSnapshot.meter,
+				consumedUnits: usageSnapshot.meter.consumedUnits + event.metadata.amount,
+				balance: usageSnapshot.meter.balance - event.metadata.amount,
+			},
+			lastSyncedAt: now,
+		});
+	}
+}

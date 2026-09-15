@@ -153,9 +153,8 @@ test("db_replace_file_chunks replaces existing chunk rows for a page", async () 
 		expect(await ctx.db.get("files_plain_text_chunks", oldPlainTextChunkId)).toBeNull();
 		expect(textChunks.length).toBeGreaterThan(0);
 		expect(plainTextChunks.length).toBeGreaterThan(0);
-		expect(textChunks.every((chunk) => chunk.sourceKind === "committed")).toBe(true);
-		expect(textChunks.every((chunk) => chunk.yjsSequence === 2)).toBe(true);
-		expect(plainTextChunks.every((chunk) => chunk.yjsSequence === 2)).toBe(true);
+		expect(textChunks.every((chunk) => chunk.sourceKind === "committed" && chunk.yjsSequence === 2)).toBe(true);
+		expect(plainTextChunks.every((chunk) => chunk.sourceKind === "committed" && chunk.yjsSequence === 2)).toBe(true);
 		expect(textChunks.every((chunk) => chunk.startIndex >= 0 && chunk.endIndex > chunk.startIndex)).toBe(true);
 		for (const chunk of plainTextChunks) {
 			const textChunk = textChunks.find((candidate) => candidate._id === chunk.textChunkId);

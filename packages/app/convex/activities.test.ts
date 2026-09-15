@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
+import { activities_get_result_status } from "./activities_db.ts";
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
 import { files_ROOT_ID } from "../shared/files.ts";
 
@@ -54,11 +55,39 @@ async function create_transfer_activity() {
 	return { t, owner, member, asOwner, asMember, runId: started._yay.runId, activity };
 }
 
-describe("list_recent", () => {
-	test("transfer progress is private to its owner, including for workspace owners", async () => {
+describe("activities_get_result_status", () => {
+	test.each([
+		{ completed: 0, failed: 0, blocked: 0, canceled: 0, status: "succeeded" },
+		{ completed: 1, failed: 0, blocked: 0, canceled: 0, status: "succeeded" },
+		{ completed: 1, failed: 1, blocked: 0, canceled: 0, status: "partial" },
+		{ completed: 1, failed: 0, blocked: 1, canceled: 0, status: "partial" },
+		{ completed: 1, failed: 0, blocked: 0, canceled: 1, status: "partial" },
+		{ completed: 0, failed: 1, blocked: 0, canceled: 1, status: "failed" },
+		{ completed: 0, failed: 0, blocked: 1, canceled: 1, status: "failed" },
+		{ completed: 0, failed: 0, blocked: 0, canceled: 1, status: "canceled" },
+	])("reports $status for $completed completed, $failed failed, $blocked blocked, $canceled canceled", (progress) => {
+		expect(activities_get_result_status(progress)).toBe(progress.status);
+	});
+});
+
+describe("list_page", () => {
+	test("transfer progress and controls are private to its requester", async () => {
 		const { asOwner, asMember, owner, member, activity } = await create_transfer_activity();
-		expect(await asOwner.query(api.activities.list_recent, { membershipId: owner.membershipId })).toEqual([]);
-		expect(await asMember.query(api.activities.list_recent, { membershipId: member.membershipId })).toEqual([activity]);
+		expect(
+			(
+				await asOwner.query(api.activities.list_page, {
+					membershipId: owner.membershipId,
+					section: "active",
+					paginationOpts: { cursor: null, numItems: 50 },
+				})
+			).page,
+		).toEqual([]);
+		const listed = await asMember.query(api.activities.list_page, {
+			membershipId: member.membershipId,
+			section: "active",
+			paginationOpts: { cursor: null, numItems: 50 },
+		});
+		expect(listed.page).toEqual([{ ...activity, controls: { canStop: true, canRetry: false, canDismiss: false } }]);
 		const denied = await asOwner.mutation(api.activities.archive_activity, {
 			membershipId: owner.membershipId,
 			activityId: activity._id,
@@ -66,7 +95,7 @@ describe("list_recent", () => {
 		expect(denied._nay?.message).toBe("Activity not found");
 	});
 
-	test("an active Paste stays reachable beyond the newest fifty activities", async () => {
+	test("an active Paste stays reachable beyond fifty newer finished jobs", async () => {
 		const { t, asMember, member, activity, runId } = await create_transfer_activity();
 		await t.run(async (ctx) => {
 			const run = await ctx.db.get("files_transfer_runs", runId);
@@ -77,26 +106,173 @@ describe("list_recent", () => {
 				const finishedRunId = await ctx.db.insert("files_transfer_runs", {
 					...runFields,
 					requestId: `finished-${index}`,
-					active: false,
-					phase: "completed",
-					finishedAt: Date.now(),
 				});
-				if (activityFields.source.kind !== "files_transfer_run") throw new Error("Wrong activity source");
 				await ctx.db.insert("activities", {
 					...activityFields,
 					status: "succeeded",
+					finishedAt: Date.now() + index + 1,
 					updatedAt: Date.now() + index + 1,
-					source: { ...activityFields.source, id: finishedRunId, phase: "completed" },
+					source: { kind: "files_transfer_run", id: finishedRunId, transferKind: run.kind },
 				});
 			}
 		});
-		const listed = await asMember.query(api.activities.list_recent, { membershipId: member.membershipId });
-		expect(listed).toHaveLength(51);
-		expect(listed[0]?._id).toBe(activity._id);
+		const active = await asMember.query(api.activities.list_page, {
+			membershipId: member.membershipId,
+			section: "active",
+			paginationOpts: { cursor: null, numItems: 50 },
+		});
+		expect(active.page.map((item) => item._id)).toEqual([activity._id]);
+		const history = await asMember.query(api.activities.list_page, {
+			membershipId: member.membershipId,
+			section: "history",
+			paginationOpts: { cursor: null, numItems: 50 },
+		});
+		expect(history.page).toHaveLength(50);
+		expect(history.isDone).toBe(false);
+		const next = await asMember.query(api.activities.list_page, {
+			membershipId: member.membershipId,
+			section: "history",
+			paginationOpts: { cursor: history.continueCursor, numItems: 50 },
+		});
+		expect(next.page).toHaveLength(1);
+		expect(next.isDone).toBe(true);
 	});
 
-	test("a folder guest can still see and stop their Paste after losing workspace access", async () => {
-		const { owner, member, asOwner, asMember, runId, activity } = await create_transfer_activity();
+	test("a hidden page still returns a continuation", async () => {
+		const { t, asOwner, owner, activity, runId } = await create_transfer_activity();
+		await t.run(async (ctx) => {
+			const run = await ctx.db.get("files_transfer_runs", runId);
+			if (!run) throw new Error("Missing run");
+			const { _id: _runId, _creationTime: _runCreationTime, ...runFields } = run;
+			const { _id: _activityId, _creationTime: _activityCreationTime, ...activityFields } = activity;
+			for (let index = 0; index < 51; index += 1) {
+				const id = await ctx.db.insert("files_transfer_runs", {
+					...runFields,
+					requestId: `hidden-${index}`,
+				});
+				await ctx.db.insert("activities", {
+					...activityFields,
+					status: "succeeded",
+					finishedAt: Date.now() + index + 1,
+					source: { kind: "files_transfer_run", id, transferKind: run.kind },
+				});
+			}
+		});
+		const page = await asOwner.query(api.activities.list_page, {
+			membershipId: owner.membershipId,
+			section: "history",
+			paginationOpts: { cursor: null, numItems: 50 },
+		});
+		expect(page.page).toEqual([]);
+		expect(page.isDone).toBe(false);
+		expect(page.continueCursor).not.toBe("");
+	});
+});
+
+describe("request_stop", () => {
+	test("only the requester can stop the job and repeating Stop keeps its result", async () => {
+		const { t, asOwner, asMember, owner, member, activity, runId } = await create_transfer_activity();
+		const denied = await asOwner.mutation(api.activities.request_stop, {
+			membershipId: owner.membershipId,
+			activityId: activity._id,
+		});
+		expect(denied._nay?.message).toBe("Activity not found");
+		expect(await t.run((ctx) => ctx.db.get("activities", activity._id))).toEqual(activity);
+		const stopped = await asMember.mutation(api.activities.request_stop, {
+			membershipId: member.membershipId,
+			activityId: activity._id,
+		});
+		expect(stopped._nay).toBeUndefined();
+		const finished = await t.run((ctx) => ctx.db.get("activities", activity._id));
+		expect(finished).toMatchObject({ status: "canceled", progress: { completed: 0, canceled: 1 } });
+		vi.setSystemTime(Date.now() + 1000);
+		expect(
+			(
+				await asMember.mutation(api.activities.request_stop, {
+					membershipId: member.membershipId,
+					activityId: activity._id,
+				})
+			)._nay,
+		).toBeUndefined();
+		expect(await t.run((ctx) => ctx.db.get("activities", activity._id))).toEqual(finished);
+		expect(
+			await t.run((ctx) =>
+				ctx.db
+					.query("files_transfer_items")
+					.withIndex("by_run_order", (q) => q.eq("runId", runId))
+					.collect(),
+			),
+		).toMatchObject([{ state: "canceled" }]);
+	});
+});
+
+describe("recover_expired", () => {
+	test("uses the execution deadline and settles a transfer through its producer", async () => {
+		const { t, activity, runId } = await create_transfer_activity();
+		expect(await t.mutation(internal.activities.recover_expired, { _test_now: activity.deadlineAt - 1 })).toEqual({
+			processedCount: 0,
+			done: true,
+		});
+		expect(await t.run((ctx) => ctx.db.get("activities", activity._id))).toEqual(activity);
+		expect(await t.mutation(internal.activities.recover_expired, { _test_now: activity.deadlineAt })).toEqual({
+			processedCount: 1,
+			done: true,
+		});
+		const finished = await t.run((ctx) => ctx.db.get("activities", activity._id));
+		expect(finished).toMatchObject({ status: "timed_out", progress: { completed: 0, canceled: 1 } });
+		expect(
+			await t.run((ctx) =>
+				ctx.db
+					.query("files_transfer_items")
+					.withIndex("by_run_order", (q) => q.eq("runId", runId))
+					.collect(),
+			),
+		).toMatchObject([{ state: "canceled", outputTarget: null }]);
+	});
+});
+
+describe("cleanup_history", () => {
+	test("keeps unexpired history and removes expired transfer receipts without deleting files", async () => {
+		const { t, asMember, member, activity, runId } = await create_transfer_activity();
+		await asMember.mutation(api.activities.request_stop, {
+			membershipId: member.membershipId,
+			activityId: activity._id,
+		});
+		const files = await t.run((ctx) => ctx.db.query("files_nodes").collect());
+		const finished = await t.run((ctx) => ctx.db.get("activities", activity._id));
+		if (finished?.expiresAt === undefined) throw new Error("Missing history expiry");
+		expect(await t.mutation(internal.activities.cleanup_history, { _test_now: finished.expiresAt - 1 })).toEqual({
+			deletedCount: 0,
+			done: true,
+		});
+		expect(await t.run((ctx) => ctx.db.get("activities", activity._id))).toEqual(finished);
+		expect(await t.mutation(internal.activities.cleanup_history, { _test_now: finished.expiresAt })).toEqual({
+			deletedCount: 3,
+			done: true,
+		});
+		await t.run(async (ctx) => {
+			expect(await ctx.db.get("activities", activity._id)).toBeNull();
+			expect(await ctx.db.get("files_transfer_runs", runId)).toBeNull();
+			expect(await ctx.db.query("files_transfer_items").collect()).toEqual([]);
+			expect(await ctx.db.query("files_nodes").collect()).toEqual(files);
+		});
+	});
+});
+
+describe("archive_activity", () => {
+	test.each(["queued", "running", "awaiting_input", "stopping"] as const)("cannot dismiss %s work", async (status) => {
+		const { t, asMember, member, activity } = await create_transfer_activity();
+		await t.run((ctx) => ctx.db.patch("activities", activity._id, { status }));
+		const result = await asMember.mutation(api.activities.archive_activity, {
+			membershipId: member.membershipId,
+			activityId: activity._id,
+		});
+		expect(result._nay?.message).toBe("Activity is still running");
+		expect(await t.run((ctx) => ctx.db.query("activities_user_states").collect())).toEqual([]);
+	});
+
+	test("a folder guest can stop and dismiss their own Paste", async () => {
+		const { t, owner, member, asOwner, asMember, runId, activity } = await create_transfer_activity();
 		const demoted = await asOwner.mutation(api.access_control.set_user_role, {
 			organizationId: owner.organizationId,
 			workspaceId: owner.workspaceId,
@@ -104,50 +280,53 @@ describe("list_recent", () => {
 			role: null,
 		});
 		expect(demoted._nay).toBeUndefined();
-		expect(await asMember.query(api.activities.list_recent, { membershipId: member.membershipId })).toEqual([activity]);
-		const stopped = await asMember.mutation(api.files_transfer.stop, { membershipId: member.membershipId, runId });
+		const active = await asMember.query(api.activities.list_page, {
+			membershipId: member.membershipId,
+			section: "active",
+			paginationOpts: { cursor: null, numItems: 50 },
+		});
+		expect(active.page[0]?.controls.canStop).toBe(true);
+		const stopped = await asMember.mutation(api.activities.request_stop, {
+			membershipId: member.membershipId,
+			activityId: activity._id,
+		});
 		expect(stopped._nay).toBeUndefined();
+		await t.mutation(internal.files_transfer.advance, { runId });
 		const dismissed = await asMember.mutation(api.activities.archive_activity, {
 			membershipId: member.membershipId,
 			activityId: activity._id,
 		});
 		expect(dismissed._nay).toBeUndefined();
-		expect(await asMember.query(api.activities.list_recent, { membershipId: member.membershipId })).toEqual([]);
+		expect(
+			(
+				await asMember.query(api.activities.list_page, {
+					membershipId: member.membershipId,
+					section: "history",
+					paginationOpts: { cursor: null, numItems: 50 },
+				})
+			).page,
+		).toEqual([]);
 	});
 });
 
 describe("archive_all_activities", () => {
-	test("guests can dismiss their completed Paste and cannot dismiss another owner's Paste", async () => {
+	test("dismisses only the requester's finished Paste and stores viewer state", async () => {
 		const { t, owner, member, asMember, asOwner, runId, activity } = await create_transfer_activity();
 		await asMember.mutation(api.files_transfer.stop, { membershipId: member.membershipId, runId });
+		await t.mutation(internal.files_transfer.advance, { runId });
 		const ownerDismissed = await asOwner.mutation(api.activities.archive_all_activities, {
 			membershipId: owner.membershipId,
+			cursor: null,
 		});
 		expect(ownerDismissed._yay?.count).toBe(0);
-		expect((await t.run((ctx) => ctx.db.get("activities", activity._id)))?.archivedAt).toBe(0);
-		const demoted = await asOwner.mutation(api.access_control.set_user_role, {
-			organizationId: owner.organizationId,
-			workspaceId: owner.workspaceId,
-			userId: member.userId,
-			role: null,
-		});
-		expect(demoted._nay).toBeUndefined();
 		const dismissed = await asMember.mutation(api.activities.archive_all_activities, {
 			membershipId: member.membershipId,
+			cursor: null,
 		});
 		expect(dismissed._yay?.count).toBe(1);
-		expect((await t.run((ctx) => ctx.db.get("activities", activity._id)))?.archivedAt).toBeGreaterThan(0);
-	});
-});
-
-describe("timeout_stale_activities", () => {
-	test("transfer expiry stops the producer before closing its activity", async () => {
-		const { t, runId, activity } = await create_transfer_activity();
-		vi.setSystemTime(Date.now() + 31 * 60 * 1000);
-		await t.mutation(internal.activities.timeout_stale_activities, {});
-		expect((await t.run((ctx) => ctx.db.get("activities", activity._id)))?.status).toBe("running");
-		await t.mutation(internal.files_transfer.recover_expired, {});
-		expect((await t.run((ctx) => ctx.db.get("files_transfer_runs", runId)))?.phase).toBe("failed");
-		expect((await t.run((ctx) => ctx.db.get("activities", activity._id)))?.status).toBe("failed");
+		expect(await t.run((ctx) => ctx.db.query("activities_user_states").collect())).toMatchObject([
+			{ userId: member.userId, activityId: activity._id },
+		]);
+		expect((await t.run((ctx) => ctx.db.get("activities", activity._id)))?.status).toBe("canceled");
 	});
 });

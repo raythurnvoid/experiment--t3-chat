@@ -35,6 +35,15 @@ async function create_thread() {
 		lastMessageAt: Date.now(),
 	});
 	expect(created._yay).toBeTruthy();
+	const begun = await t.mutation(internal.ai_chat_files.begin_bash_invocation, {
+		organizationId: seeded.organizationId,
+		workspaceId: seeded.workspaceId,
+		userId: seeded.userId,
+		threadId: created._yay!.threadId,
+		toolCallId: "scratch-test",
+		commandHash: "a".repeat(64),
+	});
+	if (begun._nay) throw new Error(begun._nay.message);
 
 	return {
 		t,
@@ -44,6 +53,7 @@ async function create_thread() {
 		userId: seeded.userId,
 		membershipId: seeded.membershipId,
 		threadId: created._yay!.threadId as Id<"ai_chat_threads">,
+		invocationId: begun._yay.invocationId,
 	};
 }
 
@@ -54,6 +64,7 @@ describe("ai_chat_files /tmp persistence", () => {
 
 		await ctxData.t.run((ctx) =>
 			ctx.runMutation(internal.ai_chat_files.patch_thread_tmp_files, {
+				invocationId: ctxData.invocationId,
 				organizationId: ctxData.organizationId,
 				workspaceId: ctxData.workspaceId,
 				threadId: ctxData.threadId,
@@ -71,6 +82,7 @@ describe("ai_chat_files /tmp persistence", () => {
 
 		await ctxData.t.run((ctx) =>
 			ctx.runMutation(internal.ai_chat_files.patch_thread_tmp_files, {
+				invocationId: ctxData.invocationId,
 				organizationId: ctxData.organizationId,
 				workspaceId: ctxData.workspaceId,
 				threadId: ctxData.threadId,
@@ -100,6 +112,7 @@ describe("ai_chat_files /tmp persistence", () => {
 
 		await ctxData.t.run((ctx) =>
 			ctx.runMutation(internal.ai_chat_files.patch_thread_tmp_files, {
+				invocationId: ctxData.invocationId,
 				organizationId: ctxData.organizationId,
 				workspaceId: ctxData.workspaceId,
 				threadId: ctxData.threadId,
@@ -111,6 +124,7 @@ describe("ai_chat_files /tmp persistence", () => {
 
 		await ctxData.t.run((ctx) =>
 			ctx.runMutation(internal.ai_chat_files.patch_thread_tmp_files, {
+				invocationId: ctxData.invocationId,
 				organizationId: ctxData.organizationId,
 				workspaceId: ctxData.workspaceId,
 				threadId: ctxData.threadId,
@@ -129,6 +143,29 @@ describe("ai_chat_files /tmp persistence", () => {
 		expect(snapshot.file_nodes_content_dict).toEqual({});
 	});
 
+	test("patch_thread_tmp_files cannot recreate scratch after thread or workspace purge", async () => {
+		for (const purge of ["thread", "workspace"] as const) {
+			const f = await create_thread();
+			await f.t.run(async (ctx) => {
+				if (purge === "thread") await ctx.db.delete("ai_chat_threads", f.threadId);
+				else await ctx.db.patch("organizations_workspaces", f.workspaceId, { pluginDataPurgeStartedAt: Date.now() });
+			});
+			await expect(
+				f.t.mutation(internal.ai_chat_files.patch_thread_tmp_files, {
+					invocationId: f.invocationId,
+					organizationId: f.organizationId,
+					workspaceId: f.workspaceId,
+					threadId: f.threadId,
+					fileNodes: [{ path: "/late.txt", kind: "file", mode: 0o100644, size: 4, mtime: Date.now() }],
+					fileNodesContentDict: { "/late.txt": bytes("late") },
+					deletePaths: [],
+				}),
+			).rejects.toThrow("no longer available");
+			expect(await f.t.run((ctx) => ctx.db.query("ai_chat_files").collect())).toEqual([]);
+			expect(await f.t.run((ctx) => ctx.db.query("ai_chat_files_content").collect())).toEqual([]);
+		}
+	});
+
 	test("copy_thread_tmp_files copies file nodes and content to the target thread", async () => {
 		const ctxData = await create_thread();
 		const now = Date.now();
@@ -144,6 +181,7 @@ describe("ai_chat_files /tmp persistence", () => {
 
 		await ctxData.t.run((ctx) =>
 			ctx.runMutation(internal.ai_chat_files.patch_thread_tmp_files, {
+				invocationId: ctxData.invocationId,
 				organizationId: ctxData.organizationId,
 				workspaceId: ctxData.workspaceId,
 				threadId: ctxData.threadId,

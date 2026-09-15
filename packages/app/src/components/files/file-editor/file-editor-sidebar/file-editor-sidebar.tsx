@@ -31,11 +31,12 @@ export type FileEditorSidebar_ClassNames =
 export type FileEditorSidebar_Props = {
 	/** The route-resolved node, or null while nothing (or the root folder) is selected. */
 	node: Omit<app_convex_Doc<"files_nodes">, "writePolicyScopeNodeId" | "writePolicy"> | null;
+	isPrivate?: boolean;
 	commentsContainerRef: Ref<HTMLDivElement>;
 };
 
 export const FileEditorSidebar = memo(function FileEditorSidebar(props: FileEditorSidebar_Props) {
-	const { node, commentsContainerRef } = props;
+	const { node, isPrivate = false, commentsContainerRef } = props;
 
 	const [storedFilesLastTab, setStoredFilesLastTab] = useAppLocalStorageStateValue("app_state::files_last_tab");
 
@@ -45,7 +46,7 @@ export const FileEditorSidebar = memo(function FileEditorSidebar(props: FileEdit
 	// it shows Comments, and it keeps Details next to it, because the stored-file card does not
 	// render for editable nodes and those rows would otherwise have no owner at all.
 	const isEditableTextFile = node !== null && node.kind === "file" && files_node_has_editable_text_content(node);
-	const hasCommentsTab = !isEditableTextFile || node.textKind !== "plain_text";
+	const hasCommentsTab = !isPrivate && (!isEditableTextFile || node.textKind !== "plain_text");
 	const showsDetailsTab =
 		isEditableTextFile && (node.textKind === "plain_text" || !files_node_has_editable_yjs_state(node));
 	const availableTabIds: AppElementId[] = (
@@ -61,7 +62,8 @@ export const FileEditorSidebar = memo(function FileEditorSidebar(props: FileEdit
 	// This covers both a stored selection naming a hidden tab AND the Comments default on a file
 	// that shows Details instead. The stored value stays untouched, so opening a rich-text file again
 	// restores the user's real selection.
-	const selectedTab = storedFilesLastTab ?? FILE_EDITOR_SIDEBAR_TAB_ID_COMMENTS;
+	const selectedTab =
+		storedFilesLastTab ?? (isPrivate ? FILE_EDITOR_SIDEBAR_TAB_ID_PENDING : FILE_EDITOR_SIDEBAR_TAB_ID_COMMENTS);
 	const filesLastTab = availableTabIds.includes(selectedTab) ? selectedTab : availableTabIds[0];
 
 	const handleTabChange = (nextSelectedId: string | null | undefined) => {

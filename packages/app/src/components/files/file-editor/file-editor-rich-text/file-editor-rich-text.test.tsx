@@ -5,10 +5,20 @@ import { toast } from "sonner";
 import type { app_convex_Id } from "@/lib/app-convex-client.ts";
 import type { AppElementId } from "@/lib/dom-utils.ts";
 
-const { tenantContextMock, convexQueryMock, convexActionMock, stableQueryMock, editorHarness } = vi.hoisted(() => ({
+const {
+	tenantContextMock,
+	convexQueryMock,
+	convexActionMock,
+	fetchPrivateFilePendingTextMock,
+	savePrivateFilePendingTextMock,
+	stableQueryMock,
+	editorHarness,
+} = vi.hoisted(() => ({
 	tenantContextMock: vi.fn(),
 	convexQueryMock: vi.fn(),
 	convexActionMock: vi.fn(),
+	fetchPrivateFilePendingTextMock: vi.fn(),
+	savePrivateFilePendingTextMock: vi.fn(),
 	stableQueryMock: vi.fn(),
 	// The drag handle is the one mounted child that already receives the Tiptap instance, so the
 	// stub below hands it to the tests. That is how a test types into the real document.
@@ -51,6 +61,15 @@ vi.mock("@/lib/app-convex-client.ts", () => ({
 		},
 	},
 }));
+
+vi.mock("@/lib/files.ts", async (importOriginal) => {
+	const original = await importOriginal<typeof import("@/lib/files.ts")>();
+	return {
+		...original,
+		files_fetch_private_file_pending_text: (...args: unknown[]) => fetchPrivateFilePendingTextMock(...args),
+		files_save_private_file_pending_text: (...args: unknown[]) => savePrivateFilePendingTextMock(...args),
+	};
+});
 
 // The anchored comments layer asks for its threads through this hook. No thread data is under
 // test, but the arguments show which document the layer is currently reading.
@@ -100,10 +119,14 @@ vi.mock("./file-editor-rich-text-drag-handle.tsx", () => ({
 }));
 
 import { FileEditorRichTextNonCollab } from "./file-editor-rich-text.tsx";
-import type { files_PresenceStore } from "@/lib/files.ts";
+import type { files_PendingTarget, files_PresenceStore } from "@/lib/files.ts";
 
 const MEMBERSHIP_ID = "membership_1" as app_convex_Id<"organizations_workspaces_users">;
 const NODE_ID = "node_markdown" as app_convex_Id<"files_nodes">;
+const PRIVATE_TARGET: files_PendingTarget = {
+	kind: "private",
+	id: "pending_node_markdown" as app_convex_Id<"files_pending_nodes">,
+};
 
 const presenceStore = { localSessionId: "session_1" } as unknown as files_PresenceStore;
 
@@ -114,7 +137,11 @@ function resolveQueryWithNonCollaborativeContent(text: string) {
 	convexQueryMock.mockResolvedValue({ _yay: { text, textKind: "rich_text" } });
 }
 
-function renderNonCollabRichEditor(args?: { editable?: boolean }) {
+function renderNonCollabRichEditor(args?: {
+	editable?: boolean;
+	target?: files_PendingTarget;
+	onTargetChange?: (target: files_PendingTarget) => void;
+}) {
 	const toolbarPortalHost = document.createElement("div");
 	document.body.append(toolbarPortalHost);
 	// The bubble renders nothing without this container, and the comment tool lives inside it.
@@ -123,11 +150,12 @@ function renderNonCollabRichEditor(args?: { editable?: boolean }) {
 	document.body.append(hoistingContainer);
 	const rendered = render(
 		<FileEditorRichTextNonCollab
-			nodeId={NODE_ID}
+			target={args?.target ?? { kind: "saved", id: NODE_ID }}
 			editable={args?.editable ?? true}
 			presenceStore={presenceStore}
 			commentsPortalHost={null}
 			toolbarPortalHost={toolbarPortalHost}
+			onTargetChange={args?.onTargetChange}
 		/>,
 	);
 	return { ...rendered, toolbarPortalHost };
@@ -195,7 +223,10 @@ beforeEach(() => {
 	});
 	convexQueryMock.mockReset();
 	convexActionMock.mockReset();
+	fetchPrivateFilePendingTextMock.mockReset();
+	savePrivateFilePendingTextMock.mockReset();
 	stableQueryMock.mockReset();
+	editorHarness.editor = null;
 	editorHarness.commentCommit = null;
 	vi.mocked(toast.error).mockClear();
 	vi.mocked(toast.info).mockClear();
@@ -235,6 +266,80 @@ function createDeferredAction<T>() {
 }
 
 describe("FileEditorRichTextNonCollab", () => {
+	test.each(["", "alpha\n"])("publishes a private file with its current Markdown: %j", async (text) => {
+		vi.useFakeTimers();
+		try {
+			const pendingUpdate = { _id: "pending_update_1", revision: 7 };
+			fetchPrivateFilePendingTextMock.mockResolvedValue({
+				_yay: { text, rootKind: "rich_text", pendingUpdate },
+			});
+			savePrivateFilePendingTextMock.mockResolvedValue({ _yay: { target: { kind: "saved", id: NODE_ID } } });
+			const onTargetChange = vi.fn();
+			renderNonCollabRichEditor({ target: PRIVATE_TARGET, onTargetChange });
+			await flushEditorMount();
+			expect(fetchPrivateFilePendingTextMock).toHaveBeenCalledWith({
+				membershipId: MEMBERSHIP_ID,
+				target: PRIVATE_TARGET,
+			});
+			expect(convexQueryMock).not.toHaveBeenCalled();
+			expect(screen.queryByRole("button", { name: "Apply snapshot" })).toBeNull();
+			expect(editorHarness.commentCommit).toBeNull();
+			expect(stableQueryMock).not.toHaveBeenCalled();
+			if (text) await typeIntoEditor(" beta");
+			const saveButton = screen.getByRole("button", { name: "Save" });
+			expect(saveButton.hasAttribute("disabled")).toBe(false);
+			fireEvent.click(saveButton);
+			await act(async () => {});
+
+			expect(savePrivateFilePendingTextMock).toHaveBeenCalledWith({
+				membershipId: MEMBERSHIP_ID,
+				target: PRIVATE_TARGET,
+				pendingUpdateId: pendingUpdate._id,
+				reviewedRevision: pendingUpdate.revision,
+				text: text ? "alpha beta\n" : "",
+			});
+			expect(onTargetChange).toHaveBeenCalledWith({ kind: "saved", id: NODE_ID });
+			expect(convexActionMock).not.toHaveBeenCalled();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	test("keeps a private edit after a stale Save is refused", async () => {
+		vi.useFakeTimers();
+		try {
+			fetchPrivateFilePendingTextMock.mockResolvedValue({
+				_yay: { text: "alpha\n", rootKind: "rich_text", pendingUpdate: { _id: "pending_update_1", revision: 7 } },
+			});
+			savePrivateFilePendingTextMock.mockResolvedValue({ _nay: { message: "This draft changed. Reload it." } });
+			const onTargetChange = vi.fn();
+			renderNonCollabRichEditor({ target: PRIVATE_TARGET, onTargetChange });
+			await flushEditorMount();
+			await typeIntoEditor(" beta");
+			fireEvent.click(screen.getByRole("button", { name: "Save" }));
+			await act(async () => {});
+			expect(toast.error).toHaveBeenCalledWith("This draft changed. Reload it.");
+			expect(editorHarness.editor?.getMarkdown()).toBe("alpha beta");
+			expect(onTargetChange).not.toHaveBeenCalled();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	test("keeps an unreadable private file closed", async () => {
+		const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		try {
+			fetchPrivateFilePendingTextMock.mockResolvedValue({ _nay: { message: "This draft is still preparing." } });
+			renderNonCollabRichEditor({ target: PRIVATE_TARGET });
+			expect(await screen.findByRole("alert")).toBeTruthy();
+			expect(screen.queryByRole("textbox", { name: "File text" })).toBeNull();
+			expect(convexQueryMock).not.toHaveBeenCalled();
+			expect(savePrivateFilePendingTextMock).not.toHaveBeenCalled();
+		} finally {
+			consoleErrorSpy.mockRestore();
+		}
+	});
+
 	test("mounts the loaded text and reports its word count", async () => {
 		resolveQueryWithNonCollaborativeContent("alpha beta gamma\n");
 		renderNonCollabRichEditor();

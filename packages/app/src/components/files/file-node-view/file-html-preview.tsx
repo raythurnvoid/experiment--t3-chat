@@ -18,9 +18,11 @@ import {
 	files_editable_text_content_type_of,
 	files_fetch_file_pending_update_yjs_state,
 	files_fetch_file_yjs_state_and_text,
+	files_fetch_private_file_pending_text,
 	files_node_has_editable_text_content,
 	files_pending_update_content_is_stale,
 	files_pending_update_has_content,
+	type files_VisibleEntry,
 } from "@/lib/files.ts";
 import {
 	file_preview_MaxHtmlBytes,
@@ -46,20 +48,25 @@ type FileHtmlPreview_ClassNames =
 	| "FileHtmlPreview-message"
 	| "FileHtmlPreview-frame";
 
-type FileHtmlPreview_Node = NonNullable<
-	FunctionReturnType<typeof app_convex_api.files_nodes.get_file_node_for_membership>
+type FileHtmlPreview_Node = Omit<
+	Extract<files_VisibleEntry, { kind: "saved" }>["node"],
+	"writePolicy" | "writePolicyScopeNodeId"
 >;
+type FileHtmlPreview_Entry =
+	| Extract<files_VisibleEntry, { kind: "private" }>
+	| (Omit<Extract<files_VisibleEntry, { kind: "saved" }>, "node"> & { node: FileHtmlPreview_Node });
 
 function pending_content_key(pending: FileEditor_PreviewSnapshot["pendingUpdate"]) {
 	return pending
 		? JSON.stringify([
 				pending._id,
-				pending.updatedAt,
-				pending.baseStateId,
-				pending.stagedStateId,
-				pending.unstagedStateId,
-				pending.baseAssetId,
-				pending.baseLineageGeneration,
+				pending.target.kind,
+				pending.target.id,
+				pending.revision,
+				pending.content?.baseStateId,
+				pending.content?.stagedStateId,
+				pending.content?.unstagedStateId,
+				pending.content?.base,
 			])
 		: null;
 }
@@ -88,12 +95,77 @@ function preview_runtime_url() {
 
 async function read_preview_source(args: {
 	membershipId: app_convex_Id<"organizations_workspaces_users">;
-	node: FileHtmlPreview_Node;
+	entry: FileHtmlPreview_Entry;
 	source: FileHtmlPreview_Source;
 	draft: FileEditor_PreviewSnapshot | null;
 	pendingUpdate: FunctionReturnType<typeof app_convex_api.files_pending_updates.get_file_pending_update>;
 }) {
-	const { membershipId, node, source, draft, pendingUpdate } = args;
+	const { membershipId, entry, source, draft, pendingUpdate } = args;
+
+	if (entry.kind === "private") {
+		const target = { kind: "private", id: entry.node._id } as const;
+
+		const assertCurrentDraft = (
+			current: FunctionReturnType<typeof app_convex_api.files_pending_updates.get_file_pending_target>,
+		) => {
+			if (
+				!current ||
+				current.entry.kind !== "private" ||
+				current.readiness !== "ready" ||
+				current.entry.node._id !== entry.node._id ||
+				current.entry.node.userId !== entry.node.userId ||
+				current.entry.node.creationGeneration !== entry.node.creationGeneration ||
+				current.entry.pendingUpdate.createIntent?.kind !== "text" ||
+				current.entry.pendingUpdate.createIntent.textKind !== "plain_text" ||
+				files_editable_text_content_type_of(current.entry.pendingUpdate.createIntent.contentType) !==
+					"text/html;charset=utf-8" ||
+				pending_content_key(current.entry.pendingUpdate) !== pending_content_key(pendingUpdate)
+			) {
+				throw new Error("The draft changed or access ended. Refresh to try again.");
+			}
+		};
+
+		if (source !== "proposed_changes") throw new Error("Choose an available source.");
+
+		// Check owner access even when the text comes from the local editor.
+		assertCurrentDraft(
+			await app_convex.query(app_convex_api.files_pending_updates.get_file_pending_target, {
+				membershipId,
+				target,
+			}),
+		);
+
+		let html: string;
+		if (draft?.sourceKind === "proposed_changes") {
+			html = draft.text;
+		} else {
+			const content = await files_fetch_private_file_pending_text({ membershipId, target });
+			if (content._nay) throw new Error(content._nay.message);
+			if (
+				content._yay.rootKind !== "plain_text" ||
+				pending_content_key(content._yay.pendingUpdate) !== pending_content_key(pendingUpdate)
+			) {
+				throw new Error("The draft changed while loading. Refresh to try again.");
+			}
+			html = content._yay.text;
+		}
+
+		assertCurrentDraft(
+			await app_convex.query(app_convex_api.files_pending_updates.get_file_pending_target, {
+				membershipId,
+				target,
+			}),
+		);
+
+		if (new TextEncoder().encode(html).byteLength > file_preview_MaxHtmlBytes) {
+			throw new Error("HTML exceeds the 900,000-byte preview limit.");
+		}
+
+		return html;
+	}
+
+	const node = entry.node;
+
 	const assertCurrentNode = (current: FileHtmlPreview_Node | null) => {
 		if (
 			!current ||
@@ -109,6 +181,7 @@ async function read_preview_source(args: {
 			throw new Error("The file changed or access ended. Refresh to try again.");
 		}
 	};
+
 	// Local editor text still needs a current read-access check before leaving Press.
 	assertCurrentNode(
 		await app_convex.query(app_convex_api.files_nodes.get_file_node_for_membership, {
@@ -116,21 +189,26 @@ async function read_preview_source(args: {
 			fileNodeId: node._id,
 		}),
 	);
+
 	let html: string;
 	if (source === "editor_draft") {
 		if (draft?.sourceKind !== "editor_draft") throw new Error("Choose an available source.");
 		html = draft.text;
 	} else if (source === "proposed_changes") {
-		if (!files_pending_update_has_content(pendingUpdate)) throw new Error("Choose an available source.");
+		if (!files_pending_update_has_content(pendingUpdate) || pendingUpdate.target.kind !== "saved") {
+			throw new Error("Choose an available source.");
+		}
+
 		if (draft?.sourceKind === "proposed_changes") {
 			html = draft.text;
 		} else {
 			const state = await files_fetch_file_pending_update_yjs_state({
 				membershipId,
-				nodeId: node._id,
-				stateId: pendingUpdate.unstagedStateId,
+				target: pendingUpdate.target,
+				stateId: pendingUpdate.content.unstagedStateId,
 			});
 			if (state._nay) throw new Error(state._nay.message);
+
 			const yjsDoc = files_yjs_doc_create_from_array_buffer_update(state._yay);
 			try {
 				const text = files_yjs_doc_get_text({ yjsDoc, rootKind: "plain_text" });
@@ -140,10 +218,12 @@ async function read_preview_source(args: {
 				yjsDoc.destroy();
 			}
 		}
+
 		const currentPending = await app_convex.query(app_convex_api.files_pending_updates.get_file_pending_update, {
 			membershipId,
-			nodeId: node._id,
+			target: { kind: "saved", id: node._id },
 		});
+
 		if (
 			pending_content_key(currentPending) !== pending_content_key(pendingUpdate) ||
 			currentPending?.contentNeedsRebase
@@ -153,6 +233,7 @@ async function read_preview_source(args: {
 	} else if (node.collaborationEnabled) {
 		const saved = await files_fetch_file_yjs_state_and_text({ membershipId, nodeId: node._id });
 		if (!saved) throw new Error("Saved content is not available. Refresh to try again.");
+
 		try {
 			if (saved.text._nay) throw new Error(saved.text._nay.message);
 			if (saved.textKind !== "plain_text" || saved.yjsLastSequenceId !== node.yjsLastSequenceId) {
@@ -171,49 +252,85 @@ async function read_preview_source(args: {
 		if (saved._yay.textKind !== "plain_text") throw new Error("This file is no longer available for Preview.");
 		html = saved._yay.text;
 	}
+
 	assertCurrentNode(
 		await app_convex.query(app_convex_api.files_nodes.get_file_node_for_membership, {
 			membershipId,
 			fileNodeId: node._id,
 		}),
 	);
+
 	if (new TextEncoder().encode(html).byteLength > file_preview_MaxHtmlBytes) {
 		throw new Error("HTML exceeds the 900,000-byte preview limit.");
 	}
+
 	return html;
 }
 
 export const FileHtmlPreview = memo(function FileHtmlPreview(props: {
-	node: FileHtmlPreview_Node;
+	entry: FileHtmlPreview_Entry;
 	getEditorSnapshot: () => FileEditor_PreviewSnapshot | null;
 	editorRevision: number;
 	selectedSource: FileHtmlPreview_Source | null | undefined;
 	onSourceChange: (source: FileHtmlPreview_Source) => void;
 }) {
-	const { node, getEditorSnapshot, editorRevision, selectedSource, onSourceChange } = props;
+	const { entry, getEditorSnapshot, editorRevision, selectedSource, onSourceChange } = props;
 	const { membershipId } = AppTenantProvider.useContext();
+	const target =
+		entry.kind === "private"
+			? ({ kind: "private", id: entry.node._id } as const)
+			: ({ kind: "saved", id: entry.node._id } as const);
+	const savedNode = entry.kind === "saved" ? entry.node : null;
+	const privateTextIntent =
+		entry.kind === "private" && entry.pendingUpdate.createIntent?.kind === "text"
+			? entry.pendingUpdate.createIntent
+			: null;
+	const rootKind = savedNode?.textKind ?? privateTextIntent?.textKind;
+	const yjsLastSequenceId = savedNode?.yjsLastSequenceId ?? null;
+
 	const pendingUpdate = useQuery(app_convex_api.files_pending_updates.get_file_pending_update, {
 		membershipId,
-		nodeId: node._id,
+		target,
 	});
 	const lastSequence = useQuery(
 		app_convex_api.files_nodes.get_file_last_yjs_sequence,
-		node.collaborationEnabled ? { membershipId, nodeId: node._id } : "skip",
+		savedNode?.collaborationEnabled ? { membershipId, nodeId: savedNode._id } : "skip",
 	);
+
 	const runtimeUrl = preview_runtime_url();
+
 	const eligible =
-		files_editable_text_content_type_of(node.contentType) === "text/html;charset=utf-8" &&
-		node.textKind === "plain_text" &&
-		files_node_has_editable_text_content(node) &&
-		node.archiveOperationId === null;
+		files_editable_text_content_type_of(savedNode?.contentType ?? privateTextIntent?.contentType) ===
+			"text/html;charset=utf-8" &&
+		rootKind === "plain_text" &&
+		(savedNode
+			? files_node_has_editable_text_content(savedNode) && savedNode.archiveOperationId === null
+			: !!privateTextIntent);
+
 	// A loaded snapshot is stale the moment any of these inputs change.
-	const scope = JSON.stringify([membershipId, node._id, node.yjsLastSequenceId, node.collaborationEnabled, eligible]);
-	const hasProposal = files_pending_update_has_content(pendingUpdate);
+	const scope = JSON.stringify([
+		membershipId,
+		target.kind,
+		target.id,
+		yjsLastSequenceId,
+		savedNode?.collaborationEnabled,
+		entry.kind === "private" ? [entry.node.userId, entry.node.creationGeneration] : null,
+		eligible,
+	]);
+
+	const hasProposal =
+		files_pending_update_has_content(pendingUpdate) &&
+		!pendingUpdate.preparation &&
+		pendingUpdate.target.kind === target.kind &&
+		pendingUpdate.target.id === target.id;
 	const pendingKey = pending_content_key(pendingUpdate ?? null);
+
 	const staleProposal =
 		hasProposal &&
-		(files_pending_update_content_is_stale(pendingUpdate, node) ||
-			pendingUpdate.currentYjsLastSequenceId !== node.yjsLastSequenceId);
+		savedNode !== null &&
+		(files_pending_update_content_is_stale(pendingUpdate, savedNode) ||
+			pendingUpdate.currentYjsLastSequenceId !== savedNode.yjsLastSequenceId);
+
 	// undefined is a real fourth state: no source chosen yet, and the checks below test `!== undefined`.
 	const [editorSource, setEditorSource] = useState<"editor_draft" | "proposed_changes" | null>();
 	const [loading, setLoading] = useState(false);
@@ -226,6 +343,7 @@ export const FileHtmlPreview = memo(function FileHtmlPreview(props: {
 		contentKey: string;
 		pendingId: string | null;
 	} | null>(null);
+
 	const requestRef = useRef(0);
 	const autoCaptureSourceRef = useRef<FileHtmlPreview_Source | null>(null);
 
@@ -235,9 +353,10 @@ export const FileHtmlPreview = memo(function FileHtmlPreview(props: {
 			!draft ||
 			!draft.isDirty ||
 			draft.membershipId !== membershipId ||
-			draft.nodeId !== node._id ||
-			draft.rootKind !== node.textKind ||
-			draft.yjsLastSequenceId !== node.yjsLastSequenceId ||
+			draft.target.kind !== target.kind ||
+			draft.target.id !== target.id ||
+			draft.rootKind !== rootKind ||
+			draft.yjsLastSequenceId !== yjsLastSequenceId ||
 			(draft.sourceKind === "proposed_changes" && pending_content_key(draft.pendingUpdate) !== pendingKey)
 		) {
 			return null;
@@ -252,25 +371,27 @@ export const FileHtmlPreview = memo(function FileHtmlPreview(props: {
 
 	const sourceError = !eligible
 		? "This file is no longer available for Preview."
-		: selectedSource === "editor_draft" && editorSource !== undefined && editorSource !== "editor_draft"
+		: !savedNode && selectedSource !== undefined && selectedSource !== null && selectedSource !== "proposed_changes"
 			? "Choose an available source."
-			: selectedSource === "proposed_changes" && pendingUpdate !== undefined && !hasProposal
+			: selectedSource === "editor_draft" && editorSource !== undefined && editorSource !== "editor_draft"
 				? "Choose an available source."
-				: selectedSource === "proposed_changes" && staleProposal
-					? "Review and sync these changes first."
-					: null;
+				: selectedSource === "proposed_changes" && pendingUpdate !== undefined && !hasProposal
+					? "Choose an available source."
+					: selectedSource === "proposed_changes" && staleProposal
+						? "Review and sync these changes first."
+						: null;
 	const contentKey =
 		selectedSource === "editor_draft"
 			? String(editorRevision)
 			: selectedSource === "proposed_changes"
 				? `${pendingKey}:${editorSource === "proposed_changes" ? editorRevision : ""}`
-				: node.collaborationEnabled
+				: savedNode?.collaborationEnabled
 					? `${lastSequence?.yjsLastSequenceId}:${lastSequence?.lastSequence}`
-					: String(node.assetId);
+					: String(savedNode?.assetId);
 	const sourceReady =
 		pendingUpdate !== undefined &&
 		editorSource !== undefined &&
-		(selectedSource !== "saved" || !node.collaborationEnabled || lastSequence !== undefined);
+		(selectedSource !== "saved" || !savedNode?.collaborationEnabled || lastSequence !== undefined);
 	const pendingSourceId = selectedSource === "proposed_changes" ? pendingUpdate?._id : null;
 	const canShowSnapshot =
 		snapshot &&
@@ -297,7 +418,7 @@ export const FileHtmlPreview = memo(function FileHtmlPreview(props: {
 		setLoading(true);
 		const html = await read_preview_source({
 			membershipId,
-			node,
+			entry,
 			source,
 			draft: readEditorSnapshot(),
 			pendingUpdate,
@@ -326,9 +447,9 @@ export const FileHtmlPreview = memo(function FileHtmlPreview(props: {
 
 	useEffect(() => {
 		if (selectedSource == null && pendingUpdate !== undefined && editorSource !== undefined) {
-			onSourceChange(editorSource ?? (hasProposal ? "proposed_changes" : "saved"));
+			onSourceChange(editorSource ?? (hasProposal || !savedNode ? "proposed_changes" : "saved"));
 		}
-	}, [selectedSource, pendingUpdate, editorSource, hasProposal, onSourceChange]);
+	}, [selectedSource, pendingUpdate, editorSource, hasProposal, savedNode, onSourceChange]);
 
 	useLayoutEffect(() => {
 		// Discard invalid snapshots so a recovered source cannot restart old scripts.
@@ -376,7 +497,7 @@ export const FileHtmlPreview = memo(function FileHtmlPreview(props: {
 						<MySelectPopover>
 							<MySelectPopoverScrollableArea>
 								<MySelectPopoverContent>
-									<MySelectItem value="saved">Saved content</MySelectItem>
+									{savedNode && <MySelectItem value="saved">Saved content</MySelectItem>}
 									{editorSource === "editor_draft" && <MySelectItem value="editor_draft">Editor draft</MySelectItem>}
 									{hasProposal && <MySelectItem value="proposed_changes">{proposalLabel}</MySelectItem>}
 								</MySelectPopoverContent>
@@ -409,7 +530,7 @@ export const FileHtmlPreview = memo(function FileHtmlPreview(props: {
 				<FileHtmlPreviewFrame
 					key={snapshot.id}
 					html={snapshot.html}
-					name={node.name}
+					name={entry.node.name}
 					runtimeUrl={runtimeUrl.href}
 					onRetry={captureSnapshot}
 				/>

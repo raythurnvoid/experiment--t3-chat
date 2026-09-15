@@ -51,6 +51,8 @@ export default defineConfig({
 				extends: true,
 				// Browser layout tests need the same utility styles as the app.
 				plugins: [tailwindcss({ optimize: false })],
+				// Prepare this dynamic dependency before a browser test can trigger a reload.
+				optimizeDeps: { include: ["react-dom/server"] },
 				test: {
 					include: ["src/**/*.browser.test.{ts,tsx}"],
 					name: "browser",

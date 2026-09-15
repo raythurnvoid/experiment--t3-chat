@@ -156,7 +156,7 @@ export type FilesSearchInput_Props = {
 	inputRef?: React.RefObject<HTMLInputElement | null>;
 	resultsRef?: React.RefObject<HTMLElement | null>;
 	onNavigateResults?: () => void;
-	treeItemsList: files_TreeItem[] | undefined;
+	treeItemsList: Pick<files_TreeItem, "kind" | "path" | "lowercaseExtension">[] | undefined;
 	isSearchLoading: boolean;
 	isSearchFailed: boolean;
 	/**
@@ -302,7 +302,9 @@ export const FilesSearchInput = memo(function FilesSearchInput(props: FilesSearc
 	const isNewFilter =
 		typingFilter === null && typedNamespace === null && matchingKeys.length === 0 && matchingFileFields.length === 0;
 	const keyRows = isNewFilter ? catalogKeys.slice(0, FilesSearchInput_SUGGESTIONS_MAX_ROWS) : matchingKeys;
-	const fileFieldRows = isNewFilter ? files_search_query_FILE_FIELDS.map((field) => `file.${field}`) : matchingFileFields;
+	const fileFieldRows = isNewFilter
+		? files_search_query_FILE_FIELDS.map((field) => `file.${field}`)
+		: matchingFileFields;
 
 	// A range value (`>2`) has nothing to complete. A `file.*` key completes from the tree below.
 	// The fields are joined into one string so the memo below depends on plain strings only. The

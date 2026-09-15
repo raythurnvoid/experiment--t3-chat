@@ -12,11 +12,12 @@ import { access_control_db_ensure_role_assignment } from "../convex/access_contr
 import { files_db_yjs_push_update } from "../convex/files_nodes.ts";
 import { db_insert_file_text_content } from "../convex/files_nodes_content.ts";
 import { files_PENDING_REPLACEMENT_BASE_CHANGED_MESSAGE } from "../convex/files_pending_updates.ts";
-import { r2_server_side_copy } from "../convex/r2_client.ts";
+import { r2_confirmed_object_delete, r2_server_side_copy } from "../convex/r2_client.ts";
 import { test_convex, test_mocks, test_mocks_fill_db_with } from "../convex/setup.test.ts";
 import { delay } from "../shared/async-utils.ts";
 import { files_yjs_doc_create_from_text } from "../shared/files-tiptap.ts";
 import {
+	type files_PendingTarget,
 	files_ROOT_ID,
 	files_guess_content_type_from_name,
 	files_u8_to_array_buffer,
@@ -34,7 +35,6 @@ import {
 	bash_READER_FILE_OPERAND_MAX,
 	bash_READ_HEAD_LARGE_FILE_MAX_LINES,
 	bash_READ_INLINE_MAX_BYTES,
-	bash_get_db_file_byte_size,
 } from "./bash-utils.ts";
 import { ai_chat_tool_create_edit_file, ai_chat_tool_create_set_file_metadata } from "./server-ai-tools.ts";
 
@@ -71,6 +71,9 @@ describe("bash_run_command", () => {
 		// Turning collaboration off schedules a delete of the old Yjs snapshot object. Keep that
 		// job off the network.
 		vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
+		vi.spyOn(r2_confirmed_object_delete, "delete_object").mockImplementation(async (_ctx, key) => {
+			test_r2_objects.delete(key);
+		});
 		vi.spyOn(R2.prototype, "getUrl").mockImplementation(
 			async (key: string) => `https://r2.test/object/${encodeURIComponent(key)}`,
 		);
@@ -79,8 +82,7 @@ describe("bash_run_command", () => {
 			vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
 				const href = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
 				const url = new URL(href);
-				// Capture upload bodies so keys written through generateUploadUrl (e.g. the
-				// snapshots of files created by create_file_by_path) can be read back below.
+				// Keep uploaded content and snapshots available for later reads.
 				if (url.origin === "https://r2.test" && url.pathname === "/upload" && init?.method === "PUT") {
 					const body = init.body;
 					const bytes =
@@ -153,16 +155,22 @@ describe("bash_run_command", () => {
 		updatedAt?: number;
 	};
 
-	// Mirrors the old mock organization tree; contents are canonical for every test that reads them.
+	// Saved chunks keep this text. Copied rich text separates the heading from its paragraph.
 	const readme_seed_content = "# Readme\nunique-token here\nmore unique-token below\n";
+	const readme_copy_content = "# Readme\n\nunique-token here\nmore unique-token below\n";
 	const default_organization_files: BashSeedSpec[] = [
 		{ path: "/docs", kind: "folder" },
 		{ path: "/docs/readme.md", content: readme_seed_content },
 		{ path: "/docs/tutorial.md", content: "zeta\nalpha\nALPHA\n" },
 		{ path: "/docs/nested", kind: "folder" },
 		{ path: "/docs/nested/deep.md", content: "one:two\nthree:four\n" },
-		{ path: "/source.pdf", contentType: "application/pdf", withoutYjsState: true, size: 4096 },
-		{ path: "/uploaded.md", contentType: "application/octet-stream", withoutYjsState: true, size: 64 },
+		{
+			path: "/source.pdf",
+			content: "%PDF-1.7\n".padEnd(4096, " "),
+			contentType: "application/pdf",
+			withoutYjsState: true,
+		},
+		{ path: "/uploaded.md", content: "x".repeat(64), contentType: "application/octet-stream", withoutYjsState: true },
 		{ path: "/reports", kind: "folder" },
 		{ path: "/reports/summary.md", content: "summary\n" },
 	];
@@ -294,7 +302,7 @@ describe("bash_run_command", () => {
 		}
 
 		let yjsSnapshotAssetFields: { r2Key?: string; size: number } = { size: 0 };
-		if (spec.withRealYjsSnapshot) {
+		if (spec.withRealYjsSnapshot !== false) {
 			const yjsDoc = files_yjs_doc_create_from_text({
 				text: content,
 				rootKind: seedRootKind,
@@ -470,14 +478,12 @@ describe("bash_run_command", () => {
 
 		let cwd = "~";
 		if (opts?.initialCwd != null && opts.initialCwd !== "~") {
-			const state = await t.mutation(internal.ai_chat.set_thread_state, {
-				organizationId: seeded.organizationId,
-				workspaceId: seeded.workspaceId,
-				threadId,
-				userId: seeded.userId,
-				patch: { bashCwd: opts.initialCwd },
+			await t.run(async (ctx) => {
+				const thread = await ctx.db.get("ai_chat_threads", threadId);
+				if (!thread?.stateId) throw new Error("Expected thread state");
+				await ctx.db.patch("ai_chat_threads_state", thread.stateId, { bashCwd: opts.initialCwd });
 			});
-			cwd = state.bashCwd ?? opts.initialCwd;
+			cwd = opts.initialCwd;
 		}
 
 		// Spy-delegate ctx: every downstream function runs for real against the in-memory db
@@ -485,7 +491,46 @@ describe("bash_run_command", () => {
 		const testQuery = t.query as unknown as (ref: unknown, args: Record<string, unknown>) => Promise<unknown>;
 		const testMutation = t.mutation as unknown as (ref: unknown, args: Record<string, unknown>) => Promise<unknown>;
 		const testAction = t.action as unknown as (ref: unknown, args: Record<string, unknown>) => Promise<unknown>;
-		const runQuery = vi.fn((ref: unknown, queryArgs: Record<string, unknown>) => testQuery(ref, queryArgs));
+		const runQuery = vi.fn(async (ref: unknown, queryArgs: Record<string, unknown>) => {
+			if (function_name_of(ref) === "files_transfer:get_for_agent") {
+				const runId = queryArgs.runId as Id<"files_transfer_runs">;
+				// Workpool is mocked. Drive the real transfer when the shell checks its result.
+				for (let step = 0; step < 200; step++) {
+					const activity = await t.run((ctx) =>
+						ctx.db
+							.query("activities")
+							.withIndex("by_source_id", (q) => q.eq("source.id", runId))
+							.unique(),
+					);
+					if (!activity || !["queued", "running", "stopping"].includes(activity.status)) break;
+					await t.mutation(internal.files_transfer.advance, { runId });
+					const items = await t.run((ctx) =>
+						ctx.db
+							.query("files_transfer_items")
+							.withIndex("by_run_state_order", (q) => q.eq("runId", runId).eq("state", "copying"))
+							.collect(),
+					);
+					for (const item of items) {
+						let result: { kind: "success"; returnValue: null } | { kind: "failed"; error: string };
+						try {
+							await t.action(internal.files_nodes_content.copy_transfer_file, {
+								itemId: item._id,
+								attempt: item.attempt,
+							});
+							result = { kind: "success", returnValue: null };
+						} catch (error) {
+							result = { kind: "failed", error: String(error) };
+						}
+						await t.mutation(internal.files_transfer.handle_copy_complete, {
+							workId: item.workId!,
+							context: { itemId: item._id, attempt: item.attempt },
+							result,
+						});
+					}
+				}
+			}
+			return await testQuery(ref, queryArgs);
+		});
 		const runMutation = vi.fn((ref: unknown, mutationArgs: Record<string, unknown>) => testMutation(ref, mutationArgs));
 		const runAction = vi.fn((ref: unknown, actionArgs: Record<string, unknown>) => testAction(ref, actionArgs));
 		const ctx = { runQuery, runMutation, runAction } as unknown as ActionCtx;
@@ -499,10 +544,12 @@ describe("bash_run_command", () => {
 			threadId,
 		};
 
-		const run = async (command: string) => {
+		let toolCallNumber = 0;
+		const run = async (command: string, toolCallId = `bash-${runnerIndex}-${toolCallNumber++}`) => {
 			const result = await bash_run_command(ctx, {
 				...ctxData,
 				threadId,
+				toolCallId,
 				command,
 				allowDbFilesMkdir: opts?.allowDbFilesMkdir ?? true,
 			});
@@ -541,11 +588,23 @@ describe("bash_run_command", () => {
 		return (await get_seeded_node(runner, path))._id;
 	}
 
+	async function get_private_entry(runner: Awaited<ReturnType<typeof create_bash_runner>>, path: string) {
+		const entry = await runner.t.query(internal.files_nodes.get_visible_entry_by_path, {
+			organizationId: runner.seeded.organizationId,
+			workspaceId: runner.seeded.workspaceId,
+			visibilityUserId: runner.ctxData.userId,
+			overlayUserId: runner.ctxData.userId,
+			path,
+		});
+		if (entry?.kind !== "private") throw new Error(`No private draft at ${path}`);
+		return entry;
+	}
+
 	async function list_pending_updates(runner: Awaited<ReturnType<typeof create_bash_runner>>) {
 		return await runner.t.run(async (ctx) =>
 			ctx.db
 				.query("files_pending_updates")
-				.withIndex("by_organization_workspace_user_fileNode", (q) =>
+				.withIndex("by_organization_workspace_user_target", (q) =>
 					q
 						.eq("organizationId", runner.ctxData.organizationId)
 						.eq("workspaceId", runner.ctxData.workspaceId)
@@ -565,7 +624,7 @@ describe("bash_run_command", () => {
 	async function upsert_pending_update_for_test(
 		runner: Awaited<ReturnType<typeof create_bash_runner>>,
 		args: {
-			nodeId: Id<"files_nodes">;
+			target: files_PendingTarget;
 			stagedText?: string;
 			unstagedText: string;
 			copiedFrom?: { nodeId: Id<"files_nodes">; path: string };
@@ -577,7 +636,7 @@ describe("bash_run_command", () => {
 				organizationId: runner.seeded.organizationId,
 				workspaceId: runner.seeded.workspaceId,
 				userId: runner.seeded.userId,
-				nodeId: args.nodeId,
+				target: args.target,
 			},
 		);
 		if (batch._nay) {
@@ -618,9 +677,11 @@ describe("bash_run_command", () => {
 			organizationId: runner.seeded.organizationId,
 			workspaceId: runner.seeded.workspaceId,
 			userId: runner.seeded.userId,
-			nodeId: args.nodeId,
+			target: args.target,
 			operationBatchId,
-			...(args.copiedFrom ? { copiedFrom: args.copiedFrom } : {}),
+			...(args.copiedFrom
+				? { copiedFrom: { target: { kind: "saved" as const, id: args.copiedFrom.nodeId }, path: args.copiedFrom.path } }
+				: {}),
 		});
 		if (upserted._nay) {
 			throw new Error(upserted._nay.message);
@@ -650,9 +711,74 @@ describe("bash_run_command", () => {
 		return await runner.t.run((ctx) =>
 			ctx.db
 				.query("files_pending_updates")
-				.withIndex("by_fileNode", (q) => q.eq("fileNodeId", nodeId))
+				.withIndex("by_target", (q) => q.eq("target.kind", "saved").eq("target.id", nodeId))
 				.collect(),
 		);
+	}
+
+	async function pending_review_for_test(
+		runner: Awaited<ReturnType<typeof create_bash_runner>>,
+		nodeId: Id<"files_nodes">,
+	) {
+		const pendingUpdate = (await list_pending_updates_for_node(runner, nodeId)).find(
+			(pending) => pending.userId === runner.seeded.userId,
+		);
+		if (!pendingUpdate) throw new Error("No pending update to review");
+		return {
+			membershipId: runner.seeded.membershipId,
+			target: { kind: "saved" as const, id: nodeId },
+			pendingUpdateId: pendingUpdate._id,
+			reviewedRevision: pendingUpdate.revision,
+		};
+	}
+
+	/**
+	 * Review every move in one connected group through the same job as the Files panel.
+	 */
+	async function accept_pending_move_group_for_test(
+		runner: Awaited<ReturnType<typeof create_bash_runner>>,
+		nodeIds: Id<"files_nodes">[],
+	) {
+		const asUser = runner_as_user(runner);
+		const reviews = await Promise.all(nodeIds.map((nodeId) => pending_review_for_test(runner, nodeId)));
+		const started = await asUser.mutation(api.files_pending_update_runs.start, {
+			membershipId: runner.seeded.membershipId,
+			requestId: crypto.randomUUID(),
+			kind: "accept",
+			expectedItemCount: reviews.length,
+			items: reviews.map(({ pendingUpdateId, reviewedRevision }) => ({
+				pendingUpdateId,
+				reviewedRevision,
+				selectedContentStateId: null,
+			})),
+		});
+		if (started._nay) throw new Error(started._nay.message);
+		const { runId } = started._yay;
+		expect(
+			await asUser.mutation(api.files_pending_update_runs.seal, { membershipId: runner.seeded.membershipId, runId }),
+		).toEqual({ _yay: null });
+		await runner.t.action(internal.files_pending_update_runs.plan, { runId, fence: 0 });
+		await runner.t.mutation(internal.files_pending_update_runs.advance, { runId });
+		const unit = await runner.t.run((ctx) =>
+			ctx.db
+				.query("files_pending_update_run_units")
+				.withIndex("by_run_order", (q) => q.eq("runId", runId))
+				.unique(),
+		);
+		if (!unit) throw new Error("Expected one connected move group");
+		await runner.t.action(internal.files_pending_update_runs.prepare_unit, {
+			runId,
+			fence: 0,
+			unitId: unit._id,
+			attemptFence: unit.attemptFence,
+		});
+		await runner.t.mutation(internal.files_pending_update_runs.advance, { runId });
+		const result = await asUser.query(api.files_pending_update_runs.get, {
+			membershipId: runner.seeded.membershipId,
+			runId,
+		});
+		expect(result?.activity.status).toBe("succeeded");
+		expect(result?.activity.progress?.completed).toBe(nodeIds.length);
 	}
 
 	/**
@@ -665,10 +791,10 @@ describe("bash_run_command", () => {
 		runner: Awaited<ReturnType<typeof create_bash_runner>>,
 		nodeId: Id<"files_nodes">,
 	) {
-		const saved = await runner_as_user(runner).action(api.files_pending_updates.save_file_pending_update, {
-			membershipId: runner.seeded.membershipId,
-			nodeId,
-		});
+		const saved = await runner_as_user(runner).action(
+			api.files_pending_updates.save_file_pending_update,
+			await pending_review_for_test(runner, nodeId),
+		);
 		if (saved._nay) {
 			throw new Error(saved._nay.message);
 		}
@@ -707,11 +833,25 @@ describe("bash_run_command", () => {
 			throw new Error(`No proposed text at ${args.path}`);
 		}
 		await upsert_pending_update_for_test(runner, {
-			nodeId: args.nodeId,
+			target: { kind: "saved", id: args.nodeId },
 			stagedText: proposed.content,
 			unstagedText: proposed.content,
 		});
 		return await save_pending_update_for_test(runner, args.nodeId);
+	}
+
+	async function save_private_copy_for_test(runner: Awaited<ReturnType<typeof create_bash_runner>>, path: string) {
+		const draft = await get_private_entry(runner, path);
+		const target = { kind: "private" as const, id: draft.node._id };
+		const saved = await runner_as_user(runner).action(api.files_pending_updates.save_file_pending_update, {
+			membershipId: runner.seeded.membershipId,
+			target,
+			pendingUpdateId: draft.pendingUpdate._id,
+			reviewedRevision: draft.pendingUpdate.revision,
+		});
+		if (saved._nay) throw new Error(saved._nay.message);
+		if (saved._yay.target.kind !== "saved") throw new Error("Draft was not published");
+		return saved._yay.target.id;
 	}
 
 	/**
@@ -757,8 +897,9 @@ describe("bash_run_command", () => {
 		}
 		const accepted = await runner_as_user(runner).action(api.files_pending_updates.accept_file_pending_replacement, {
 			membershipId: runner.seeded.membershipId,
-			nodeId,
+			target: { kind: "saved", id: nodeId },
 			pendingUpdateId: row._id,
+			reviewedRevision: row.revision,
 		});
 		if (accepted._nay) {
 			throw new Error(accepted._nay.message);
@@ -877,6 +1018,223 @@ describe("bash_run_command", () => {
 
 		expect(result.metadata.exitCode).toBe(0);
 		expect(result.stdout).toBe("/home/cloud-usr");
+	});
+
+	test("replays a completed Bash call without repeating scratch or private writes", async () => {
+		const runner = await create_bash_runner();
+		const command = "printf once >> /tmp/replay.txt; printf draft >> draft-replay.txt";
+		const first = await runner.run(command, "replay-write");
+		expect(first.metadata.exitCode).toBe(0);
+		const draft = await get_private_entry(runner, "/draft-replay.txt");
+
+		expect(await runner.run(command, "replay-write")).toEqual(first);
+		expect((await runner.run("cat /tmp/replay.txt; cat draft-replay.txt")).stdout).toBe("oncedraft");
+		const unchanged = await get_private_entry(runner, "/draft-replay.txt");
+		expect(unchanged.pendingUpdate).toEqual(draft.pendingUpdate);
+		await expect(runner.run("printf changed >> /tmp/replay.txt", "replay-write")).rejects.toThrow(
+			"already has a different command",
+		);
+		expect((await runner.run("cat /tmp/replay.txt")).stdout).toBe("once");
+	});
+
+	test("reads a lost Bash begin reply without starting its interpreter", async () => {
+		const runner = await create_bash_runner();
+		const mutate = runner.runMutation.getMockImplementation()!;
+		let lostReply = false;
+		runner.runMutation.mockImplementation(async (ref, args) => {
+			const result = await mutate(ref, args);
+			if (!lostReply && function_name_of(ref) === "ai_chat_files:begin_bash_invocation") {
+				lostReply = true;
+				throw new Error("Lost begin reply");
+			}
+			return result;
+		});
+
+		const result = await runner.run("printf once >> /tmp/lost-begin.txt", "lost-begin");
+		expect(lostReply).toBe(true);
+		expect(result.metadata.exitCode).toBe(3);
+		expect(result.stderr).toContain("still running");
+		expect(
+			runner.runQuery.mock.calls.some(([ref]) => function_name_of(ref) === "ai_chat_files:get_bash_invocation"),
+		).toBe(true);
+		expect((await runner.run("test -e /tmp/lost-begin.txt")).metadata.exitCode).toBe(1);
+		const replay = await runner.run("printf once >> /tmp/lost-begin.txt", "lost-begin");
+		expect(replay.metadata.exitCode).toBe(3);
+		expect((await runner.run("test -e /tmp/lost-begin.txt")).metadata.exitCode).toBe(1);
+	});
+
+	test("replays a saved Bash result after its finish reply is lost", async () => {
+		const runner = await create_bash_runner();
+		const mutate = runner.runMutation.getMockImplementation()!;
+		let lostReply = false;
+		runner.runMutation.mockImplementation(async (ref, args) => {
+			const result = await mutate(ref, args);
+			if (!lostReply && function_name_of(ref) === "ai_chat_files:finish_bash_invocation") {
+				lostReply = true;
+				throw new Error("Lost finish reply");
+			}
+			return result;
+		});
+
+		await expect(runner.run("printf once >> /tmp/lost-finish.txt", "lost-finish")).rejects.toThrow("Lost finish reply");
+		const replay = await runner.run("printf once >> /tmp/lost-finish.txt", "lost-finish");
+		expect(replay.metadata.exitCode).toBe(0);
+		expect((await runner.run("cat /tmp/lost-finish.txt")).stdout).toBe("once");
+	});
+
+	test("does not restart an interrupted Bash call with partial scratch writes", async () => {
+		const runner = await create_bash_runner();
+		const mutate = runner.runMutation.getMockImplementation()!;
+		let interrupted = false;
+		runner.runMutation.mockImplementation(async (ref, args) => {
+			if (!interrupted && function_name_of(ref) === "ai_chat_files:finish_bash_invocation") {
+				interrupted = true;
+				throw new Error("Finish unavailable");
+			}
+			return await mutate(ref, args);
+		});
+
+		await expect(runner.run("printf once >> /tmp/interrupted.txt", "interrupted")).rejects.toThrow(
+			"Finish unavailable",
+		);
+		const replay = await runner.run("printf once >> /tmp/interrupted.txt", "interrupted");
+		expect(replay.metadata.exitCode).toBe(1);
+		expect(replay.stderr).toContain("was interrupted");
+		expect((await runner.run("cat /tmp/interrupted.txt")).stdout).toBe("once");
+	});
+
+	test.each([false, true])(
+		"returns 124 when final scratch persistence passes the deadline (watchdog: %s)",
+		async (watchdog) => {
+			vi.useFakeTimers({ toFake: ["Date"] });
+			try {
+				const runner = await create_bash_runner();
+				const mutate = runner.runMutation.getMockImplementation()!;
+				runner.runMutation.mockImplementation(async (ref, args) => {
+					const saved = await mutate(ref, args);
+					if (function_name_of(ref) === "ai_chat_files:patch_thread_tmp_files") {
+						const invocation = await runner.t.run((ctx) => ctx.db.query("ai_chat_bash_invocations").first());
+						if (!invocation) throw new Error("Expected invocation");
+						vi.setSystemTime(invocation.deadlineAt + 1);
+						if (watchdog)
+							await runner.t.mutation(internal.ai_chat_files.interrupt_bash_invocation, {
+								invocationId: invocation._id,
+							});
+					}
+					return saved;
+				});
+
+				const command = "printf once >> /tmp/late-persistence.txt";
+				const completed = await runner.run(command, "late-persistence");
+				expect(completed.metadata.exitCode).toBe(124);
+				expect(completed.stderr).toContain("deadline");
+				expect((await runner.run(command, "late-persistence")).metadata.exitCode).toBe(124);
+				const stored = await runner.t.run((ctx) => ctx.db.query("ai_chat_bash_invocations").first());
+				expect(stored?.status).toBe("interrupted");
+				expect((await runner.run("cat /tmp/late-persistence.txt")).stdout).toBe("once");
+			} finally {
+				vi.useRealTimers();
+			}
+		},
+	);
+
+	test.each([
+		{ rejoin: false, persist: "scratch" },
+		{ rejoin: true, persist: "scratch" },
+		{ rejoin: false, persist: "result" },
+		{ rejoin: true, persist: "result" },
+	])("refuses late $persist writes after membership removal (rejoin: $rejoin)", async ({ rejoin, persist }) => {
+		const t = test_convex();
+		const owner = await t.run((ctx) =>
+			test_mocks_fill_db_with.membership(ctx, { organizationName: "bash-team", workspaceName: "home" }),
+		);
+		const member = await t.run((ctx) =>
+			test_mocks_fill_db_with.membership(ctx, { organizationName: "personal", workspaceName: "home" }),
+		);
+		const asOwner = t.withIdentity({ issuer: "https://clerk.test", external_id: owner.userId });
+		const asMember = t.withIdentity({ issuer: "https://clerk.test", external_id: member.userId });
+		const inviteArgs = {
+			organizationId: owner.organizationId,
+			workspaceId: owner.workspaceId,
+			userIdToAdd: member.userId,
+		};
+		expect(
+			(await asOwner.mutation(api.organizations.invite_user_to_organization_workspace, inviteArgs))._nay,
+		).toBeUndefined();
+		const membership = await t.run((ctx) =>
+			ctx.db
+				.query("organizations_workspaces_users")
+				.withIndex("by_workspace_user_active", (q) =>
+					q.eq("workspaceId", owner.workspaceId).eq("userId", member.userId).eq("active", true),
+				)
+				.unique(),
+		);
+		if (!membership) throw new Error("Expected invited membership");
+		const ownerRunner = await create_bash_runner({ shared: { t, seeded: owner } });
+		expect((await ownerRunner.run("printf before > /tmp/member.txt")).metadata.exitCode).toBe(0);
+		const runner = await create_bash_runner({
+			shared: { t, seeded: { ...owner, userId: member.userId, membershipId: membership._id } },
+			threadId: ownerRunner.threadId,
+		});
+		const mutate = runner.runMutation.getMockImplementation()!;
+		let removal: Promise<void> | undefined;
+		const writes: Promise<unknown>[] = [];
+		runner.runMutation.mockImplementation(async (ref, args) => {
+			const name = function_name_of(ref);
+			const isFinalWrite =
+				persist === "result"
+					? name === "ai_chat_files:finish_bash_invocation"
+					: name === "ai_chat_files:patch_thread_tmp_files" || name === "ai_chat:set_thread_state";
+			if (!isFinalWrite) return await mutate(ref, args);
+			removal ??= (async () => {
+				expect(
+					(
+						await asMember.mutation(api.organizations.remove_user_from_organization, {
+							organizationId: owner.organizationId,
+							userIdToRemove: member.userId,
+						})
+					)._nay,
+				).toBeUndefined();
+				if (rejoin)
+					expect(
+						(await asOwner.mutation(api.organizations.invite_user_to_organization_workspace, inviteArgs))._nay,
+					).toBeUndefined();
+			})();
+			await removal;
+			const write = mutate(ref, args);
+			writes.push(write);
+			return await write;
+		});
+
+		const command = persist === "result" ? "printf ready" : "printf late > /tmp/member.txt; cd /tmp";
+		const outcome = await runner.run(command, "removed-member").catch((error: unknown) => error);
+		const settled = await Promise.allSettled(writes);
+		expect(outcome).toBeInstanceOf(Error);
+		expect(settled).toHaveLength(persist === "result" ? 1 : 2);
+		if (persist === "scratch") expect(settled.every((write) => write.status === "rejected")).toBe(true);
+		const invocation = await t.run((ctx) =>
+			ctx.db
+				.query("ai_chat_bash_invocations")
+				.withIndex("by_thread_toolCall", (q) => q.eq("threadId", runner.threadId).eq("toolCallId", "removed-member"))
+				.unique(),
+		);
+		expect(invocation?.status).toBe("interrupted");
+		expect(invocation?.result).toBeUndefined();
+		const stored = await t.query(internal.ai_chat_files.load_thread_tmp_files, { threadId: ownerRunner.threadId });
+		const file = stored.file_nodes.find((node) => node.path === "/member.txt");
+		expect(new TextDecoder().decode(stored.file_nodes_content_dict[file!._id].bytes)).toBe("before");
+		const state = await t.query(internal.ai_chat.get_thread_state, {
+			organizationId: owner.organizationId,
+			workspaceId: owner.workspaceId,
+			threadId: ownerRunner.threadId,
+		});
+		expect(state.bashCwd).toBe(test_db_files_mount);
+		expect((await ownerRunner.run("cat /tmp/member.txt")).stdout).toBe("before");
+		if (rejoin) {
+			runner.runMutation.mockImplementation(mutate);
+			expect((await runner.run("printf after > /tmp/member.txt; cd /tmp")).metadata.exitCode).toBe(0);
+			expect((await runner.run("cat /tmp/member.txt")).stdout).toBe("after");
+		}
 	});
 
 	test("guides unknown commands toward supported bash commands", async () => {
@@ -1107,19 +1465,14 @@ describe("bash_run_command", () => {
 		const dbFilesDoc = await get_seeded_node(runner, "/fresh-size.md");
 		const dbFilesDocId = dbFilesDoc._id;
 
-		const committedSize = await bash_get_db_file_byte_size({
-			ctx: runner.ctx,
-			ctxData: runner.ctxData,
-			dbFilesDoc,
-		});
-
-		if (committedSize == null) {
-			throw new Error("expected committed asset size for /fresh-size.md");
-		}
+		const committedStat = await runner.run(`stat -c %s ${test_db_files_mount}/fresh-size.md`);
+		expect(committedStat.stderr).toBe("");
+		expect(committedStat.metadata.exitCode).toBe(0);
+		const committedSize = Number(committedStat.stdout.trim());
 		expect(committedSize).toBeLessThan(bash_READ_INLINE_MAX_BYTES);
 
 		await upsert_pending_update_for_test(runner, {
-			nodeId: dbFilesDocId,
+			target: { kind: "saved", id: dbFilesDocId },
 			unstagedText: "pending text ".repeat(6000),
 		});
 		const pendingUpdate = await runner.t.query(internal.files_pending_updates.get_by_file_node, {
@@ -1133,11 +1486,10 @@ describe("bash_run_command", () => {
 		}
 		runner.runQuery.mockClear();
 
-		const currentSize = await bash_get_db_file_byte_size({
-			ctx: runner.ctx,
-			ctxData: runner.ctxData,
-			dbFilesDoc,
-		});
+		const currentStat = await runner.run(`stat -c %s ${test_db_files_mount}/fresh-size.md`);
+		expect(currentStat.stderr).toBe("");
+		expect(currentStat.metadata.exitCode).toBe(0);
+		const currentSize = Number(currentStat.stdout.trim());
 
 		expect(currentSize).toBe(pendingUpdate.size);
 		expect(currentSize).toBeGreaterThan(bash_READ_INLINE_MAX_BYTES);
@@ -1151,7 +1503,7 @@ describe("bash_run_command", () => {
 		const dbFilesDoc = await get_seeded_node(runner, "/legacy-pending.md");
 		const dbFilesDocId = dbFilesDoc._id;
 		await upsert_pending_update_for_test(runner, {
-			nodeId: dbFilesDocId,
+			target: { kind: "saved", id: dbFilesDocId },
 			unstagedText: "pending body\n",
 		});
 		const pendingUpdate = await runner.t.query(internal.files_pending_updates.get_by_file_node, {
@@ -1166,11 +1518,10 @@ describe("bash_run_command", () => {
 		runner.runQuery.mockClear();
 		runner.runAction.mockClear();
 
-		const size = await bash_get_db_file_byte_size({
-			ctx: runner.ctx,
-			ctxData: runner.ctxData,
-			dbFilesDoc,
-		});
+		const currentStat = await runner.run(`stat -c %s ${test_db_files_mount}/legacy-pending.md`);
+		expect(currentStat.stderr).toBe("");
+		expect(currentStat.metadata.exitCode).toBe(0);
+		const size = Number(currentStat.stdout.trim());
 
 		expect(size).toBe(pendingUpdate.size);
 		expect(runner.runQuery.mock.calls.some(([ref]) => function_name_of(ref) === "r2:get_asset_by_id")).toBe(false);
@@ -1220,7 +1571,6 @@ describe("bash_run_command", () => {
 	test("supports paginated ls with a continuation command", async () => {
 		const runner = await create_bash_runner();
 		const { run, runQuery } = runner;
-		const docsId = await get_seeded_node_id(runner, "/docs");
 
 		const result = await run(`ls --limit 1 ${test_db_files_mount}/docs`);
 
@@ -1233,7 +1583,7 @@ describe("bash_run_command", () => {
 		expect(paginatedCalls).toEqual(
 			expect.arrayContaining([
 				expect.objectContaining({
-					parentId: docsId,
+					folderPath: "/docs",
 					numItems: 1,
 					cursor: null,
 				}),
@@ -1244,8 +1594,6 @@ describe("bash_run_command", () => {
 	test("resolves paginated ls path arguments from the current working directory", async () => {
 		const runner = await create_bash_runner();
 		const { run, runQuery } = runner;
-		const docsId = await get_seeded_node_id(runner, "/docs");
-		const nestedId = await get_seeded_node_id(runner, "/docs/nested");
 
 		await run(`cd ${test_db_files_mount}/docs`);
 		const bareResult = await run("ls --limit 10");
@@ -1262,12 +1610,12 @@ describe("bash_run_command", () => {
 		expect(paginatedCalls).toEqual(
 			expect.arrayContaining([
 				expect.objectContaining({
-					parentId: docsId,
+					folderPath: "/docs",
 					numItems: 10,
 					cursor: null,
 				}),
 				expect.objectContaining({
-					parentId: nestedId,
+					folderPath: "/docs/nested",
 					numItems: 10,
 					cursor: null,
 				}),
@@ -1522,7 +1870,6 @@ describe("bash_run_command", () => {
 	test("supports reverse ls order through the paginated query", async () => {
 		const runner = await create_bash_runner();
 		const { run, runQuery } = runner;
-		const docsId = await get_seeded_node_id(runner, "/docs");
 
 		const result = await run(`ls -r --limit 10 ${test_db_files_mount}/docs`);
 
@@ -1531,7 +1878,7 @@ describe("bash_run_command", () => {
 		expect(runQuery).toHaveBeenCalledWith(
 			expect.anything(),
 			expect.objectContaining({
-				parentId: docsId,
+				folderPath: "/docs",
 				order: "desc",
 			}),
 		);
@@ -1545,7 +1892,6 @@ describe("bash_run_command", () => {
 			],
 		});
 		const { run, runQuery } = runner;
-		const docsId = await get_seeded_node_id(runner, "/docs");
 
 		const newest = await run("ls -t --limit 50");
 		const oldest = await run("ls -rt --limit 50");
@@ -1560,9 +1906,7 @@ describe("bash_run_command", () => {
 		expect(newest.stdout).toMatch(/\dT\d.*Z\t\/home\/cloud-usr\/w\/personal\/home\/docs\/readme\.md/u);
 		const recencyCalls = runQuery.mock.calls
 			.map((call) => call[1])
-			.filter(
-				(a) => "numItems" in a && !("parentId" in a) && !("path" in a) && !("pathPrefix" in a) && !("query" in a),
-			);
+			.filter((a) => "numItems" in a && a.mode === "recent" && a.orderBy === "updatedAt");
 		expect(recencyCalls.some((a) => a.order === "desc")).toBe(true);
 		expect(recencyCalls.some((a) => a.order === "asc")).toBe(true);
 		expect(oldest.metadata.exitCode).toBe(0);
@@ -1577,9 +1921,9 @@ describe("bash_run_command", () => {
 		expect(recursiveScoped.stderr).toContain("ls -t -R is not supported");
 		expect(workspacePaged.stdout).toContain("Next page: ls -t --limit 1 --cursor");
 		expect(runQuery).toHaveBeenCalledWith(
-			internal.files_nodes.list_children,
+			internal.files_visible.internal_list,
 			expect.objectContaining({
-				parentId: docsId,
+				folderPath: "/docs",
 				orderBy: "updatedAt",
 				order: "desc",
 			}),
@@ -1702,7 +2046,6 @@ describe("bash_run_command", () => {
 			],
 		});
 		const { run, runQuery } = runner;
-		const docsId = await get_seeded_node_id(runner, "/docs");
 
 		const nameResult = await run("find -name readme --limit 10");
 		const explicitResult = await run("find --path-query readme --limit 10");
@@ -1734,23 +2077,25 @@ describe("bash_run_command", () => {
 		expect(scopedMindepthResult.stdout.trim().split("\n")).not.toContain(`${test_db_files_mount}/docs/scope word/`);
 		expect(scopedMindepthResult.stdout.trim().split("\n")).toContain(`${test_db_files_mount}/docs/scope word/child.md`);
 		expect(runQuery).toHaveBeenCalledWith(
-			internal.files_nodes.search_paths,
+			internal.files_visible.internal_list,
 			expect.objectContaining({
 				pathQuery: "readme",
 			}),
 		);
 		expect(runQuery).toHaveBeenCalledWith(
-			internal.files_nodes.search_paths,
+			internal.files_visible.internal_list,
 			expect.objectContaining({
-				parentId: docsId,
+				folderPath: "/docs",
+				mode: "children",
 				kind: "file",
 			}),
 		);
 		expect(runQuery).toHaveBeenCalledWith(
-			internal.files_nodes.search_paths,
+			internal.files_visible.internal_list,
 			expect.objectContaining({
 				pathQuery: "readme",
-				pathPrefix: "/docs",
+				folderPath: "/docs",
+				mode: "subtree",
 			}),
 		);
 	});
@@ -2202,9 +2547,7 @@ describe("bash_run_command", () => {
 			threadId: writer.threadId,
 			userId: otherUserSeeded.userId,
 		});
-		const sameThreadOtherUserRead = await sameThreadOtherUser.run("cat /tmp/scope.txt");
-		expect(sameThreadOtherUserRead.metadata.exitCode).toBe(0);
-		expect(sameThreadOtherUserRead.stdout).toBe("thread-a");
+		await expect(sameThreadOtherUser.run("cat /tmp/scope.txt")).rejects.toThrow("Unauthorized");
 	});
 
 	test("merges parallel same-thread /tmp writes through deltas", async () => {
@@ -2304,7 +2647,10 @@ describe("bash_run_command", () => {
 		const { run, runMutation } = await create_bash_runner({ allowDbFilesMkdir: true });
 		const result = await run(`mkdir -p ${test_db_files_mount}/.AGENTS/skills/one`);
 		expect(result.metadata.exitCode).toBe(0);
-		expect(runMutation).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ path: "/.agents/skills/one" }));
+		expect(runMutation).toHaveBeenCalledWith(
+			expect.anything(),
+			expect.objectContaining({ path: "/.agents/skills/one" }),
+		);
 	});
 
 	test("runs indexed search with options before the query", async () => {
@@ -3357,7 +3703,7 @@ describe("bash_run_command", () => {
 		});
 		const draftNodeId = await get_seeded_node_id(runner, "/draft-stat.md");
 		await upsert_pending_update_for_test(runner, {
-			nodeId: draftNodeId,
+			target: { kind: "saved", id: draftNodeId },
 			unstagedText: Array.from({ length: 400 }, (_, index) => `line ${index + 1}`).join("\n\n"),
 		});
 		const pendingUpdate = await runner.t.query(internal.files_pending_updates.get_by_file_node, {
@@ -3494,9 +3840,9 @@ describe("bash_run_command", () => {
 				expect(result.stdout).toBe("");
 				expect(result.stderr).toContain("resolve:");
 				expect(result.metadata.observedPaths).toEqual([]);
-				expect(
-					runner.runQuery.mock.calls.some(([ref]) => function_name_of(ref) === "files_nodes:get_path_by_id"),
-				).toBe(false);
+				expect(runner.runQuery.mock.calls.some(([ref]) => function_name_of(ref) === "files_nodes:get_path_by_id")).toBe(
+					false,
+				);
 			}
 		});
 
@@ -3568,20 +3914,23 @@ describe("bash_run_command", () => {
 			}
 		});
 
-		test.each([true, false])("works in the app workspace from /tmp with writes enabled: %s", async (allowDbFilesMkdir) => {
-			const runner = await create_bash_runner({ allowDbFilesMkdir });
-			const nodeId = await get_seeded_node_id(runner, "/docs/readme.md");
-			await runner.t.run((ctx) =>
-				ctx.db.patch("files_nodes", nodeId, { writePolicyScopeNodeId: nodeId, writePolicy: { mode: "read_only" } }),
-			);
+		test.each([true, false])(
+			"works in the app workspace from /tmp with writes enabled: %s",
+			async (allowDbFilesMkdir) => {
+				const runner = await create_bash_runner({ allowDbFilesMkdir });
+				const nodeId = await get_seeded_node_id(runner, "/docs/readme.md");
+				await runner.t.run((ctx) =>
+					ctx.db.patch("files_nodes", nodeId, { writePolicyScopeNodeId: nodeId, writePolicy: { mode: "read_only" } }),
+				);
 
-			const result = await runner.run(`cd /tmp && resolve '${nodeId}'`);
+				const result = await runner.run(`cd /tmp && resolve '${nodeId}'`);
 
-			expect(result.metadata.exitCode, result.stderr).toBe(0);
-			expect(result.stdout).toBe(`${test_db_files_mount}/docs/readme.md\n`);
-			expect(result.metadata.nextCwd).toBe("/tmp");
-			expect(await list_pending_updates(runner)).toEqual([]);
-		});
+				expect(result.metadata.exitCode, result.stderr).toBe(0);
+				expect(result.stdout).toBe(`${test_db_files_mount}/docs/readme.md\n`);
+				expect(result.metadata.nextCwd).toBe("/tmp");
+				expect(await list_pending_updates(runner)).toEqual([]);
+			},
+		);
 
 		test("keeps spaces in quoted substitution and works in a nested shell", async () => {
 			const runner = await create_bash_runner({
@@ -3610,17 +3959,17 @@ describe("bash_run_command", () => {
 			expect(moved.stdout).toBe(`${test_db_files_mount}/docs/guide.md\nzeta\nalpha\nALPHA\n`);
 			expect((await get_seeded_node(runner, "/docs/tutorial.md"))._id).toBe(nodeId);
 
-			const discarded = await runner_as_user(runner).mutation(api.files_pending_updates.discard_file_pending_structural, {
-				membershipId: runner.seeded.membershipId,
-				nodeId,
-			});
+			const discarded = await runner_as_user(runner).mutation(
+				api.files_pending_updates.discard_file_pending_structural,
+				await pending_review_for_test(runner, nodeId),
+			);
 			expect(discarded._nay).toBeUndefined();
 			expect((await runner.run(`resolve '${nodeId}'`)).stdout).toBe(`${test_db_files_mount}/docs/tutorial.md\n`);
 			expect((await runner.run("mv docs/tutorial.md reports/manual.md")).metadata.exitCode).toBe(0);
-			const accepted = await runner_as_user(runner).mutation(api.files_pending_updates.apply_file_pending_move, {
-				membershipId: runner.seeded.membershipId,
-				nodeId,
-			});
+			const accepted = await runner_as_user(runner).mutation(
+				api.files_pending_updates.apply_file_pending_move,
+				await pending_review_for_test(runner, nodeId),
+			);
 			expect(accepted._nay).toBeUndefined();
 			expect((await get_seeded_node(runner, "/reports/manual.md"))._id).toBe(nodeId);
 			expect((await runner.run(`resolve '${nodeId}'`)).stdout).toBe(`${test_db_files_mount}/reports/manual.md\n`);
@@ -3695,10 +4044,10 @@ describe("bash_run_command", () => {
 				expect(result.metadata.observedPaths).toEqual([]);
 			}
 			expect((await runner.run(`resolve '${childId}'`)).stdout).toBe(`${test_db_files_mount}/reports/survivor.md\n`);
-			const discarded = await runner_as_user(runner).mutation(api.files_pending_updates.discard_file_pending_structural, {
-				membershipId: runner.seeded.membershipId,
-				nodeId: folderId,
-			});
+			const discarded = await runner_as_user(runner).mutation(
+				api.files_pending_updates.discard_file_pending_structural,
+				await pending_review_for_test(runner, folderId),
+			);
 			expect(discarded._nay).toBeUndefined();
 			expect((await runner.run(`resolve '${hiddenId}'`)).stdout).toBe(`${test_db_files_mount}/docs/nested/hidden.md\n`);
 		});
@@ -3876,14 +4225,15 @@ describe("bash_run_command", () => {
 		const runner = await create_bash_runner({
 			extraFiles: [{ path: "/prefix.txt", content: "head ééé tail", nonCollaborative: true }],
 		});
-		const read = () => runner.t.query(internal.files_nodes.read_file_content_from_chunks, {
-			organizationId: runner.seeded.organizationId,
-			workspaceId: runner.seeded.workspaceId,
-			userId: runner.seeded.userId,
-			overlayUserId: runner.seeded.userId,
-			path: "/prefix.txt",
-			mode: { kind: "prefix", maxBytes: 8 },
-		});
+		const read = () =>
+			runner.t.query(internal.files_nodes.read_file_content_from_chunks, {
+				organizationId: runner.seeded.organizationId,
+				workspaceId: runner.seeded.workspaceId,
+				userId: runner.seeded.userId,
+				overlayUserId: runner.seeded.userId,
+				path: "/prefix.txt",
+				mode: { kind: "prefix", maxBytes: 8 },
+			});
 
 		expect(await read()).toMatchObject({ content: "head é", moreLines: true, pendingUpdateId: null });
 		const write = await runner.run("printf 'edit ééé tail' > prefix.txt");
@@ -4214,8 +4564,11 @@ describe("bash_run_command", () => {
 		});
 		const draftNodeId = await get_seeded_node_id(runner, "/draft.md");
 		await upsert_pending_update_for_test(runner, {
-			nodeId: draftNodeId,
-			unstagedText: Array.from({ length: 400 }, (_, index) => `line ${index + 1}${index === 300 ? "x".repeat(bash_READ_INLINE_MAX_BYTES) : ""}`).join("\n\n"),
+			target: { kind: "saved", id: draftNodeId },
+			unstagedText: Array.from(
+				{ length: 400 },
+				(_, index) => `line ${index + 1}${index === 300 ? "x".repeat(bash_READ_INLINE_MAX_BYTES) : ""}`,
+			).join("\n\n"),
 		});
 		const pendingUpdate = await runner.t.query(internal.files_pending_updates.get_by_file_node, {
 			organizationId: runner.seeded.organizationId,
@@ -4362,30 +4715,49 @@ describe("bash_run_command", () => {
 		expect(touchReferenceResult.metadata.exitCode).not.toBe(0);
 		expect(touchReferenceResult.stderr).toContain("reference file");
 		expect(cpAppDestResult.metadata.exitCode).not.toBe(0);
-		expect(cpAppDestResult.stderr).toContain("cannot write to app file");
-		expect(cpAppDestResult.stderr).toContain("redirect instead");
+		expect(cpAppDestResult.stderr).toContain("only app files can be copied into the app tree");
+		expect(cpAppDestResult.stderr).toContain("cat <scratch-file> > -copy-dest.md");
 		expect(cpAppFolderDestResult.metadata.exitCode).not.toBe(0);
-		expect(cpAppFolderDestResult.stderr).toContain("cannot write to app file");
-		expect(cpAppFolderDestResult.stderr).toContain("redirect instead");
-		expect(cpAppFolderDestResult.stderr).toContain("'/docs/native-output.md'");
+		expect(cpAppFolderDestResult.stderr).toContain("only app files can be copied into the app tree");
+		expect(cpAppFolderDestResult.stderr).toContain("cat <scratch-file> >");
 		expect(mvResult.metadata.exitCode).not.toBe(0);
-		expect(mvResult.stderr).toContain("cannot move or rename app file");
-		expect(mvResult.stderr).toContain("non-app destination");
+		expect(mvResult.stderr).toContain("all sources and the destination must be app paths");
 		expect(mvResult.stderr).toContain("cp");
 		expect(mvAppDestResult.metadata.exitCode).not.toBe(0);
-		expect(mvAppDestResult.stderr).toContain("cannot write to app file");
-		expect(mvAppDestResult.stderr).toContain("redirect instead");
-		expect(mvAppDestResult.stderr).toContain("Moving /tmp files into the app tree");
+		expect(mvAppDestResult.stderr).toContain("all sources and the destination must be app paths");
 		expect(mvAppDestSource.metadata.exitCode).toBe(0);
 		expect(mvAppDestSource.stdout).toBe("move");
 		// App→app mv is no longer a rejection: it records a pending move proposal.
 		expect(mvAppToAppResult.metadata.exitCode).toBe(0);
-		expect(mvAppToAppResult.stdout).toBe("pending move created: /docs/readme.md -> /renamed.md — review in Files\n");
+		expect(mvAppToAppResult.stdout).toMatch(
+			/^Transfer \S+: 1 ready for review, 0 skipped, 0 failed\. Activity \S+\. Review in Files\.\n$/,
+		);
 		expect(mvGlobResult.metadata.exitCode).toBe(bash_COMMAND_EXIT_USAGE);
 		expect(mvGlobResult.stderr).toContain("app file glob patterns are not supported");
 		expect(mvGlobResult.stderr).toContain("find");
 		expect(mvDashResult.metadata.exitCode).not.toBe(0);
-		expect(mvDashResult.stderr).toContain("cannot move or rename app file");
+		expect(mvDashResult.stderr).toContain("all sources and the destination must be app paths");
+	});
+
+	test.each(["cp", "mv"])("rejects unsupported app %s flags before copy or move work", async (command) => {
+		const runner = await create_bash_runner({ initialCwd: test_db_files_mount });
+		expect((await runner.run("printf scratch > /tmp/source.txt && mkdir /tmp/target")).metadata.exitCode).toBe(0);
+
+		const app = await runner.run(`${command} -v docs/readme.md new.md`);
+		expect(app.metadata.exitCode).toBe(2);
+		expect(app.stderr).toBe(`${command}: unsupported option '-v'\n`);
+		const mixed = await runner.run(`${command} --unknown /tmp/source.txt docs/readme.md /tmp/target`);
+		expect(mixed.metadata.exitCode).toBe(2);
+		expect(mixed.stderr).toBe(`${command}: unsupported option '--unknown'\n`);
+		expect(await list_pending_updates(runner)).toEqual([]);
+		expect((await runner.run("cat new.md")).metadata.exitCode).not.toBe(0);
+		expect((await runner.run("ls /tmp/target")).stdout).toBe("");
+		expect((await runner.run("cat /tmp/source.txt")).stdout).toBe("scratch");
+
+		// Verbose remains valid when every operand belongs to the native scratch filesystem.
+		const scratch = await runner.run(`${command} -v /tmp/source.txt /tmp/native.txt`);
+		expect(scratch.metadata.exitCode).toBe(0);
+		expect((await runner.run("cat /tmp/native.txt")).stdout).toBe("scratch");
 	});
 
 	test("creates a pending delete proposal for an app file and hides it from later reads", async () => {
@@ -4402,7 +4774,7 @@ describe("bash_run_command", () => {
 		const rows = await list_pending_updates(runner);
 		expect(rows).toHaveLength(1);
 		expect(rows[0]).toMatchObject({
-			fileNodeId: readmeId,
+			target: { kind: "saved", id: readmeId },
 			pendingArchive: { fromPath: "/docs/readme.md" },
 			size: 0,
 		});
@@ -4444,7 +4816,7 @@ describe("bash_run_command", () => {
 		const docsId = await get_seeded_node_id(runner, "/docs");
 		const rows = await list_pending_updates(runner);
 		expect(rows).toHaveLength(1);
-		expect(rows[0]).toMatchObject({ fileNodeId: docsId, pendingArchive: { fromPath: "/docs" } });
+		expect(rows[0]).toMatchObject({ target: { kind: "saved", id: docsId }, pendingArchive: { fromPath: "/docs" } });
 
 		// The whole subtree reads as gone for the proposer.
 		const childRead = await runner.run(`cat ${test_db_files_mount}/docs/tutorial.md`);
@@ -4459,15 +4831,18 @@ describe("bash_run_command", () => {
 
 		const created = await runner.run(`printf 'draft\\n' > ${test_db_files_mount}/draft-note.md`);
 		expect(created.metadata.exitCode).toBe(0);
+		const draft = await get_private_entry(runner, "/draft-note.md");
 
 		const removed = await runner.run(`rm ${test_db_files_mount}/draft-note.md`);
 		expect(removed.metadata.exitCode).toBe(0);
 		expect(removed.stderr).toBe("");
 		expect(removed.stdout).toBe(`removed '${test_db_files_mount}/draft-note.md'\n`);
 
-		// Nothing pends and the eager-created node is really gone, committed tree included.
-		const rows = await list_pending_updates(runner);
-		expect(rows).toHaveLength(0);
+		// The draft closes immediately. Its bytes are cleaned up in the background.
+		expect(await runner.t.run((ctx) => ctx.db.get("files_pending_nodes", draft.node._id))).toMatchObject({
+			state: "discarded",
+		});
+		expect((await runner.run(`cat ${test_db_files_mount}/draft-note.md`)).metadata.exitCode).not.toBe(0);
 		const committedNodes = await runner.t.run((ctx) =>
 			ctx.db
 				.query("files_nodes")
@@ -4612,25 +4987,24 @@ describe("bash_run_command", () => {
 
 		expect(result.metadata.exitCode).toBe(0);
 		expect(result.stderr).toBe("");
-		expect(result.stdout).toBe("pending move created: /docs/tutorial.md -> /docs/guide.md — review in Files\n");
+		expect(result.stdout).toMatch(
+			/^Transfer \S+: 1 ready for review, 0 skipped, 0 failed\. Activity \S+\. Review in Files\.\n$/,
+		);
 
 		// The committed node stays at the old path; only a move-only pending update doc exists.
 		const sourceId = await get_seeded_node_id(runner, "/docs/tutorial.md");
 		const rows = await runner.t.run((ctx) =>
 			ctx.db
 				.query("files_pending_updates")
-				.withIndex("by_fileNode", (q) => q.eq("fileNodeId", sourceId))
+				.withIndex("by_target", (q) => q.eq("target.kind", "saved").eq("target.id", sourceId))
 				.collect(),
 		);
 		expect(rows).toHaveLength(1);
 		expect(rows[0]).toMatchObject({
-			pendingMove: { destParentId: docsId, destName: "guide.md", fromPath: "/docs/tutorial.md" },
+			pendingMove: { destParent: { kind: "saved", id: docsId }, destName: "guide.md", fromPath: "/docs/tutorial.md" },
 			size: 0,
 		});
-		expect(rows[0].baseYjsSequence).toBeUndefined();
-		expect(rows[0].baseStateId).toBeUndefined();
-		expect(rows[0].stagedStateId).toBeUndefined();
-		expect(rows[0].unstagedStateId).toBeUndefined();
+		expect(rows[0].content).toBeUndefined();
 
 		// The proposer's later commands see the pending path overlay: the vacated path reads
 		// as gone and the claimed destination serves the moved file.
@@ -4659,14 +5033,16 @@ describe("bash_run_command", () => {
 		);
 		expect(cancelled.metadata.exitCode).toBe(0);
 		expect(cancelled.stderr).toBe("");
-		expect(cancelled.stdout).toBe("pending move cancelled: the file stays at /docs/tutorial.md\n");
+		expect(cancelled.stdout).toMatch(
+			/^Transfer \S+: 1 ready for review, 0 skipped, 0 failed\. Activity \S+\. Review in Files\.\n$/,
+		);
 
 		// The move-only pending update doc is gone and the file reads at its committed path again.
 		const sourceId = await get_seeded_node_id(runner, "/docs/tutorial.md");
 		const rows = await runner.t.run((ctx) =>
 			ctx.db
 				.query("files_pending_updates")
-				.withIndex("by_fileNode", (q) => q.eq("fileNodeId", sourceId))
+				.withIndex("by_target", (q) => q.eq("target.kind", "saved").eq("target.id", sourceId))
 				.collect(),
 		);
 		expect(rows).toHaveLength(0);
@@ -4681,22 +5057,26 @@ describe("bash_run_command", () => {
 
 		const fileMove = await runner.run(`mv ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/reports`);
 		expect(fileMove.metadata.exitCode).toBe(0);
-		expect(fileMove.stdout).toBe("pending move created: /docs/readme.md -> /reports/readme.md — review in Files\n");
+		expect(fileMove.stdout).toMatch(
+			/^Transfer \S+: 1 ready for review, 0 skipped, 0 failed\. Activity \S+\. Review in Files\.\n$/,
+		);
 
 		const folderMove = await runner.run(`mv ${test_db_files_mount}/docs/nested ${test_db_files_mount}/reports`);
 		expect(folderMove.metadata.exitCode).toBe(0);
-		expect(folderMove.stdout).toBe("pending move created: /docs/nested -> /reports/nested — review in Files\n");
+		expect(folderMove.stdout).toMatch(
+			/^Transfer \S+: 1 ready for review, 0 skipped, 0 failed\. Activity \S+\. Review in Files\.\n$/,
+		);
 
 		const nestedId = await get_seeded_node_id(runner, "/docs/nested");
 		const rows = await runner.t.run((ctx) =>
 			ctx.db
 				.query("files_pending_updates")
-				.withIndex("by_fileNode", (q) => q.eq("fileNodeId", nestedId))
+				.withIndex("by_target", (q) => q.eq("target.kind", "saved").eq("target.id", nestedId))
 				.collect(),
 		);
 		expect(rows).toHaveLength(1);
 		expect(rows[0].pendingMove).toMatchObject({
-			destParentId: reportsId,
+			destParent: { kind: "saved", id: reportsId },
 			destName: "nested",
 			fromPath: "/docs/nested",
 		});
@@ -4711,48 +5091,38 @@ describe("bash_run_command", () => {
 			`mv ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/docs/tutorial.md`,
 		);
 		expect(destFileExists.metadata.exitCode).not.toBe(0);
-		expect(destFileExists.stderr).toBe(
-			"mv: destination '/docs/tutorial.md' already exists. To propose replacing the existing file, add -f: the replacement only applies after the user accepts it in Files.\n",
-		);
+		expect(destFileExists.stderr).toBe("mv: The destination already exists\n");
 
 		const destOccupiedInFolder = await runner.run(
 			`mv ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/reports`,
 		);
 		expect(destOccupiedInFolder.metadata.exitCode).not.toBe(0);
-		expect(destOccupiedInFolder.stderr).toBe(
-			"mv: destination '/reports/readme.md' already exists. To propose replacing the existing file, add -f: the replacement only applies after the user accepts it in Files.\n",
-		);
+		expect(destOccupiedInFolder.stderr).toBe("mv: The destination already exists\n");
 
 		const multiSource = await runner.run(
-			`mv ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/docs/tutorial.md ${test_db_files_mount}/reports`,
+			`mv ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/reports/summary.md ${test_db_files_mount}/docs/tutorial.md`,
 		);
-		expect(multiSource.metadata.exitCode).toBe(bash_COMMAND_EXIT_USAGE);
-		expect(multiSource.stderr).toBe(
-			"mv: app moves support exactly one source and one destination.\n" +
-				"Usage: mv <app-path> <app-path> — creates a pending move the user reviews in Files.\n",
-		);
+		expect(multiSource.metadata.exitCode).not.toBe(0);
+		expect(multiSource.stderr).toBe("mv: the destination must be an existing directory\n");
 
 		const missingParent = await runner.run(
 			`mv ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/missing/readme.md`,
 		);
 		expect(missingParent.metadata.exitCode).not.toBe(0);
-		expect(missingParent.stderr).toBe(
-			`mv: destination folder '/missing' does not exist. Create it first with mkdir ${test_db_files_mount}/missing.\n`,
-		);
+		expect(missingParent.stderr).toBe("mv: the destination parent is not a directory\n");
 
 		const folderIntoItself = await runner.run(`mv ${test_db_files_mount}/docs ${test_db_files_mount}/docs/nested`);
 		expect(folderIntoItself.metadata.exitCode).not.toBe(0);
-		expect(folderIntoItself.stderr).toBe(`mv: cannot move '${test_db_files_mount}/docs' to a subdirectory of itself\n`);
+		expect(folderIntoItself.stderr).toBe("mv: A folder cannot be transferred inside itself\n");
 
 		const samePath = await runner.run(`mv ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/docs/readme.md`);
-		expect(samePath.metadata.exitCode).not.toBe(0);
-		expect(samePath.stderr).toBe(
-			`mv: '${test_db_files_mount}/docs/readme.md' and '${test_db_files_mount}/docs/readme.md' are the same file\n`,
-		);
+		expect(samePath.metadata.exitCode).toBe(0);
+		expect(samePath.stdout).toBe("");
+		expect(samePath.stderr).toBe("");
 
 		const missingSource = await runner.run(`mv ${test_db_files_mount}/nope.md ${test_db_files_mount}/reports`);
 		expect(missingSource.metadata.exitCode).not.toBe(0);
-		expect(missingSource.stderr).toBe(`mv: cannot stat '${test_db_files_mount}/nope.md': No such file or directory\n`);
+		expect(missingSource.stderr).toBe(`mv: source '${test_db_files_mount}/nope.md' is not available\n`);
 
 		const rows = await runner.t.run((ctx) => ctx.db.query("files_pending_updates").collect());
 		expect(rows).toHaveLength(0);
@@ -4774,25 +5144,28 @@ describe("bash_run_command", () => {
 		);
 		expect(fileOntoFile.stderr).toBe("");
 		expect(fileOntoFile.metadata.exitCode).toBe(0);
-		expect(fileOntoFile.stdout).toBe(
-			"pending move created: /docs/readme.md -> /docs/replace-me.md — replaces the existing file when accepted; review in Files\n",
+		expect(fileOntoFile.stdout).toMatch(
+			/^Transfer \S+: 1 ready for review, 0 skipped, 0 failed\. Activity \S+\. Review in Files\.\n$/,
 		);
 		// The proposal is a move on the SOURCE node that replaces the target. The source keeps
 		// its identity, type, and history. The target gets no pending update doc.
 		const sourceRows = await runner.t.run((ctx) =>
 			ctx.db
 				.query("files_pending_updates")
-				.withIndex("by_fileNode", (q) => q.eq("fileNodeId", sourceId))
+				.withIndex("by_target", (q) => q.eq("target.kind", "saved").eq("target.id", sourceId))
 				.collect(),
 		);
 		expect(sourceRows).toHaveLength(1);
-		expect(sourceRows[0].pendingMove).toMatchObject({ destName: "replace-me.md", replacesNodeId: targetId });
+		expect(sourceRows[0].pendingMove).toMatchObject({
+			destName: "replace-me.md",
+			replacesTarget: { kind: "saved", id: targetId },
+		});
 		expect(sourceRows[0].copiedFrom).toBeUndefined();
-		expect(sourceRows[0].unstagedStateId).toBeUndefined();
+		expect(sourceRows[0].content).toBeUndefined();
 		const targetRows = await runner.t.run((ctx) =>
 			ctx.db
 				.query("files_pending_updates")
-				.withIndex("by_fileNode", (q) => q.eq("fileNodeId", targetId))
+				.withIndex("by_target", (q) => q.eq("target.kind", "saved").eq("target.id", targetId))
 				.collect(),
 		);
 		expect(targetRows).toHaveLength(0);
@@ -4801,7 +5174,7 @@ describe("bash_run_command", () => {
 		// same source path reads as missing (the file is already spoken for).
 		const hiddenSource = await runner.run(`mv -f ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/reports`);
 		expect(hiddenSource.metadata.exitCode).not.toBe(0);
-		expect(hiddenSource.stderr).toContain("No such file or directory");
+		expect(hiddenSource.stderr).toBe(`mv: source '${test_db_files_mount}/docs/readme.md' is not available\n`);
 
 		// A folder destination replaces its occupant file through the same -f opt-in
 		// (mv into a folder keeps the source name, so the nested readme collides).
@@ -4811,27 +5184,28 @@ describe("bash_run_command", () => {
 			`mv -f ${test_db_files_mount}/docs/nested/readme.md ${test_db_files_mount}/reports`,
 		);
 		expect(folderDest.metadata.exitCode).toBe(0);
-		expect(folderDest.stdout).toBe(
-			"pending move created: /docs/nested/readme.md -> /reports/readme.md — replaces the existing file when accepted; review in Files\n",
+		expect(folderDest.stdout).toMatch(
+			/^Transfer \S+: 1 ready for review, 0 skipped, 0 failed\. Activity \S+\. Review in Files\.\n$/,
 		);
 		const secondSourceRows = await runner.t.run((ctx) =>
 			ctx.db
 				.query("files_pending_updates")
-				.withIndex("by_fileNode", (q) => q.eq("fileNodeId", secondSourceId))
+				.withIndex("by_target", (q) => q.eq("target.kind", "saved").eq("target.id", secondSourceId))
 				.collect(),
 		);
 		expect(secondSourceRows).toHaveLength(1);
-		expect(secondSourceRows[0].pendingMove).toMatchObject({ destName: "readme.md", replacesNodeId: occupantId });
+		expect(secondSourceRows[0].pendingMove).toMatchObject({
+			destName: "readme.md",
+			replacesTarget: { kind: "saved", id: occupantId },
+		});
 
 		// Folders can never replace a file, even with -f; real mv reports the kind mismatch.
 		// (replace-me.md is claimed by the first move above, so a free file stands in here.)
 		const folderOntoFile = await runner.run(
-			`mv -f ${test_db_files_mount}/docs/nested ${test_db_files_mount}/reports/summary.md`,
+			`mv -Tf ${test_db_files_mount}/docs/nested ${test_db_files_mount}/reports/summary.md`,
 		);
 		expect(folderOntoFile.metadata.exitCode).not.toBe(0);
-		expect(folderOntoFile.stderr).toBe(
-			`mv: cannot overwrite non-directory '${test_db_files_mount}/reports/summary.md' with directory '${test_db_files_mount}/docs/nested'\n`,
-		);
+		expect(folderOntoFile.stderr).toBe("mv: The source and destination types differ\n");
 	});
 
 	test("keeps the structural replace for mv -f onto a non-editable file", async () => {
@@ -4844,17 +5218,20 @@ describe("bash_run_command", () => {
 		const result = await runner.run(`mv -f ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/uploaded.md`);
 		expect(result.stderr).toBe("");
 		expect(result.metadata.exitCode).toBe(0);
-		expect(result.stdout).toBe(
-			"pending move created: /docs/readme.md -> /uploaded.md — replaces the existing file when accepted; review in Files\n",
+		expect(result.stdout).toMatch(
+			/^Transfer \S+: 1 ready for review, 0 skipped, 0 failed\. Activity \S+\. Review in Files\.\n$/,
 		);
 		const rows = await runner.t.run((ctx) =>
 			ctx.db
 				.query("files_pending_updates")
-				.withIndex("by_fileNode", (q) => q.eq("fileNodeId", sourceId))
+				.withIndex("by_target", (q) => q.eq("target.kind", "saved").eq("target.id", sourceId))
 				.collect(),
 		);
 		expect(rows).toHaveLength(1);
-		expect(rows[0].pendingMove).toMatchObject({ destName: "uploaded.md", replacesNodeId: uploadedId });
+		expect(rows[0].pendingMove).toMatchObject({
+			destName: "uploaded.md",
+			replacesTarget: { kind: "saved", id: uploadedId },
+		});
 	});
 
 	test("replaces an earlier move proposal and mixes with pending content", async () => {
@@ -4879,7 +5256,7 @@ describe("bash_run_command", () => {
 		const moveRows = await runner.t.run((ctx) =>
 			ctx.db
 				.query("files_pending_updates")
-				.withIndex("by_fileNode", (q) => q.eq("fileNodeId", sourceId))
+				.withIndex("by_target", (q) => q.eq("target.kind", "saved").eq("target.id", sourceId))
 				.collect(),
 		);
 		expect(moveRows).toHaveLength(1);
@@ -4888,7 +5265,7 @@ describe("bash_run_command", () => {
 		// mv after a write_file-style content upsert degrades to one content-plus-move pending update doc.
 		const mixedId = await get_seeded_node_id(runner, "/docs/mixed.md");
 		await upsert_pending_update_for_test(runner, {
-			nodeId: mixedId,
+			target: { kind: "saved", id: mixedId },
 			unstagedText: "edited mixed content\n",
 		});
 
@@ -4899,12 +5276,12 @@ describe("bash_run_command", () => {
 		const mixedRows = await runner.t.run((ctx) =>
 			ctx.db
 				.query("files_pending_updates")
-				.withIndex("by_fileNode", (q) => q.eq("fileNodeId", mixedId))
+				.withIndex("by_target", (q) => q.eq("target.kind", "saved").eq("target.id", mixedId))
 				.collect(),
 		);
 		expect(mixedRows).toHaveLength(1);
 		expect(mixedRows[0].pendingMove).toMatchObject({ destName: "renamed-mixed.md" });
-		expect(mixedRows[0].unstagedStateId).toBeDefined();
+		expect(mixedRows[0].content?.unstagedStateId).toBeDefined();
 		expect(mixedRows[0].size).toBeGreaterThan(0);
 	});
 
@@ -4921,7 +5298,9 @@ describe("bash_run_command", () => {
 			`mv ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/docs/tutorial.md`,
 		);
 		expect(reuseMove.metadata.exitCode).toBe(0);
-		expect(reuseMove.stdout).toBe("pending move created: /docs/readme.md -> /docs/tutorial.md — review in Files\n");
+		expect(reuseMove.stdout).toMatch(
+			/^Transfer \S+: 1 ready for review, 0 skipped, 0 failed\. Activity \S+\. Review in Files\.\n$/,
+		);
 
 		// cp reads the moved source through the overlay at its claimed destination.
 		const scratchCopy = await runner.run(
@@ -4932,7 +5311,9 @@ describe("bash_run_command", () => {
 
 		const appCopy = await runner.run(`cp ${test_db_files_mount}/docs/guide.md ${test_db_files_mount}/guide-copy.md`);
 		expect(appCopy.metadata.exitCode).toBe(0);
-		expect(appCopy.stdout).toBe("pending copy created: /docs/guide.md -> /guide-copy.md — review in Files\n");
+		expect(appCopy.stdout).toMatch(
+			/^Transfer \S+: 1 ready for review, 0 skipped, 0 failed\. Activity \S+\. Review in Files\.\n$/,
+		);
 	});
 
 	test("proposes and accepts a folder swap cycle through a temp name", async () => {
@@ -4957,13 +5338,15 @@ describe("bash_run_command", () => {
 		const closing = await runner.run(`mv ${test_db_files_mount}/fsc-temp ${test_db_files_mount}/fsc-a`);
 		expect(closing.metadata.exitCode).toBe(0);
 		expect(closing.stderr).toBe("");
-		expect(closing.stdout).toBe("pending move created: /fsc-temp -> /fsc-a — review in Files\n");
+		expect(closing.stdout).toMatch(
+			/^Transfer \S+: 1 ready for review, 0 skipped, 0 failed\. Activity \S+\. Review in Files\.\n$/,
+		);
 
 		// Both rows now target each other's committed paths.
 		const rowsA = await runner.t.run((ctx) =>
 			ctx.db
 				.query("files_pending_updates")
-				.withIndex("by_fileNode", (q) => q.eq("fileNodeId", folderAId))
+				.withIndex("by_target", (q) => q.eq("target.kind", "saved").eq("target.id", folderAId))
 				.collect(),
 		);
 		expect(rowsA).toHaveLength(1);
@@ -4971,24 +5354,25 @@ describe("bash_run_command", () => {
 		const rowsB = await runner.t.run((ctx) =>
 			ctx.db
 				.query("files_pending_updates")
-				.withIndex("by_fileNode", (q) => q.eq("fileNodeId", folderBId))
+				.withIndex("by_target", (q) => q.eq("target.kind", "saved").eq("target.id", folderBId))
 				.collect(),
 		);
 		expect(rowsB).toHaveLength(1);
 		expect(rowsB[0].pendingMove).toMatchObject({ destName: "fsc-a", fromPath: "/fsc-b" });
 
-		// Accepting one member through the real mutation applies the whole cycle.
+		// One selected member cannot settle the other member without review.
 		const asUser = runner.t.withIdentity({
 			issuer: "https://clerk.test",
 			subject: "clerk-bash-folder-swap-accept",
 			external_id: runner.seeded.userId,
 			email: "bash-folder-swap-accept@test.local",
 		});
-		const accepted = await asUser.mutation(api.files_pending_updates.apply_file_pending_move, {
-			membershipId: runner.seeded.membershipId,
-			nodeId: folderAId,
-		});
-		expect(accepted._nay).toBeUndefined();
+		const incomplete = await asUser.mutation(
+			api.files_pending_updates.apply_file_pending_move,
+			await pending_review_for_test(runner, folderAId),
+		);
+		expect(incomplete._nay?.name).toBe("needs_review");
+		await accept_pending_move_group_for_test(runner, [folderAId, folderBId]);
 
 		// Both folders and their children sit at swapped committed paths, rows settled.
 		const movedA = await get_seeded_node(runner, "/fsc-b");
@@ -5002,11 +5386,11 @@ describe("bash_run_command", () => {
 		const settledRows = await runner.t.run(async (ctx) => [
 			...(await ctx.db
 				.query("files_pending_updates")
-				.withIndex("by_fileNode", (q) => q.eq("fileNodeId", folderAId))
+				.withIndex("by_target", (q) => q.eq("target.kind", "saved").eq("target.id", folderAId))
 				.collect()),
 			...(await ctx.db
 				.query("files_pending_updates")
-				.withIndex("by_fileNode", (q) => q.eq("fileNodeId", folderBId))
+				.withIndex("by_target", (q) => q.eq("target.kind", "saved").eq("target.id", folderBId))
 				.collect()),
 		]);
 		expect(settledRows).toHaveLength(0);
@@ -5033,10 +5417,12 @@ describe("bash_run_command", () => {
 		const closing = await runner.run(`mv ${test_db_files_mount}/fsc-mix-tmp.md ${test_db_files_mount}/fsc-mix-b.md`);
 		expect(closing.metadata.exitCode).toBe(0);
 		expect(closing.stderr).toBe("");
-		expect(closing.stdout).toBe("pending move created: /fsc-mix-tmp.md -> /fsc-mix-b.md — review in Files\n");
+		expect(closing.stdout).toMatch(
+			/^Transfer \S+: 1 ready for review, 0 skipped, 0 failed\. Activity \S+\. Review in Files\.\n$/,
+		);
 	});
 
-	test("mv -T proposes and accepts replacing an empty folder occupant", async () => {
+	test("mv -Tf proposes and accepts replacing an empty folder occupant", async () => {
 		const runner = await create_bash_runner({
 			extraFiles: [
 				{ path: "/edr-src", kind: "folder" },
@@ -5048,12 +5434,12 @@ describe("bash_run_command", () => {
 		const destId = await get_seeded_node_id(runner, "/edr-dst");
 		const childId = await get_seeded_node_id(runner, "/edr-src/child.md");
 
-		// rename() semantics: the empty folder occupant is replaced, no -f needed.
-		const moved = await runner.run(`mv -T ${test_db_files_mount}/edr-src ${test_db_files_mount}/edr-dst`);
+		// Both flags make the replacement explicit.
+		const moved = await runner.run(`mv -Tf ${test_db_files_mount}/edr-src ${test_db_files_mount}/edr-dst`);
 		expect(moved.stderr).toBe("");
 		expect(moved.metadata.exitCode).toBe(0);
-		expect(moved.stdout).toBe(
-			"pending move created: /edr-src -> /edr-dst — replaces the empty folder when accepted; review in Files\n",
+		expect(moved.stdout).toMatch(
+			/^Transfer \S+: 1 ready for review, 0 skipped, 0 failed\. Activity \S+\. Review in Files\.\n$/,
 		);
 
 		// Accepting through the real mutation archives the empty occupant and moves the subtree.
@@ -5063,10 +5449,10 @@ describe("bash_run_command", () => {
 			external_id: runner.seeded.userId,
 			email: "bash-edr-accept@test.local",
 		});
-		const accepted = await asUser.mutation(api.files_pending_updates.apply_file_pending_move, {
-			membershipId: runner.seeded.membershipId,
-			nodeId: sourceId,
-		});
+		const accepted = await asUser.mutation(
+			api.files_pending_updates.apply_file_pending_move,
+			await pending_review_for_test(runner, sourceId),
+		);
 		expect(accepted._nay).toBeUndefined();
 
 		const movedFolder = await get_seeded_node(runner, "/edr-dst");
@@ -5075,6 +5461,29 @@ describe("bash_run_command", () => {
 		expect(movedChild._id).toBe(childId);
 		const occupant = await runner.t.run((ctx) => ctx.db.get("files_nodes", destId));
 		expect(occupant?.archiveOperationId).toBeDefined();
+	});
+
+	test("mv -T without -f refuses an empty folder occupant", async () => {
+		const runner = await create_bash_runner({
+			extraFiles: [
+				{ path: "/edr-nf-src", kind: "folder" },
+				{ path: "/edr-nf-src/child.md", content: "edr nf child\n" },
+				{ path: "/edr-nf-dst", kind: "folder" },
+			],
+		});
+		const sourceId = await get_seeded_node_id(runner, "/edr-nf-src");
+		const destId = await get_seeded_node_id(runner, "/edr-nf-dst");
+
+		// -T alone only says "do not move inside the destination". Replacing it still needs -f.
+		const moved = await runner.run(`mv -T ${test_db_files_mount}/edr-nf-src ${test_db_files_mount}/edr-nf-dst`);
+		expect(moved.stderr).toBe("mv: The destination already exists\n");
+		expect(moved.metadata.exitCode).not.toBe(0);
+
+		// Nothing is proposed and nothing moves: both folders keep their saved paths.
+		expect(await list_pending_updates(runner)).toEqual([]);
+		expect((await get_seeded_node(runner, "/edr-nf-src"))._id).toBe(sourceId);
+		expect((await get_seeded_node(runner, "/edr-nf-dst"))._id).toBe(destId);
+		expect((await runner.t.run((ctx) => ctx.db.get("files_nodes", destId)))?.archiveOperationId).toBeNull();
 	});
 
 	test("mv -T onto a non-empty folder fails like rename()", async () => {
@@ -5087,21 +5496,17 @@ describe("bash_run_command", () => {
 			],
 		});
 
-		const moved = await runner.run(`mv -T ${test_db_files_mount}/edr-full-src ${test_db_files_mount}/edr-full`);
+		const moved = await runner.run(`mv -Tf ${test_db_files_mount}/edr-full-src ${test_db_files_mount}/edr-full`);
 		expect(moved.metadata.exitCode).not.toBe(0);
-		expect(moved.stderr).toBe(
-			`mv: cannot move '${test_db_files_mount}/edr-full-src' to '${test_db_files_mount}/edr-full': Directory not empty\n`,
-		);
+		expect(moved.stderr).toBe("mv: Directory not empty\n");
 
 		// A file never replaces a folder, matching rename()'s EISDIR.
-		const fileMove = await runner.run(`mv -T ${test_db_files_mount}/edr-full-file.md ${test_db_files_mount}/edr-full`);
+		const fileMove = await runner.run(`mv -Tf ${test_db_files_mount}/edr-full-file.md ${test_db_files_mount}/edr-full`);
 		expect(fileMove.metadata.exitCode).not.toBe(0);
-		expect(fileMove.stderr).toBe(
-			`mv: cannot overwrite directory '${test_db_files_mount}/edr-full' with non-directory\n`,
-		);
+		expect(fileMove.stderr).toBe("mv: The source and destination types differ\n");
 	});
 
-	test("mv into a folder replaces an empty same-named child folder", async () => {
+	test("mv into a folder requires an explicit empty-folder replacement", async () => {
 		const runner = await create_bash_runner({
 			extraFiles: [
 				{ path: "/edr-mv-a", kind: "folder" },
@@ -5111,12 +5516,16 @@ describe("bash_run_command", () => {
 			],
 		});
 
-		// Real mv: rename() at /edr-into/edr-mv-a replaces the empty folder silently.
 		const moved = await runner.run(`mv ${test_db_files_mount}/edr-mv-a ${test_db_files_mount}/edr-into`);
-		expect(moved.stderr).toBe("");
-		expect(moved.metadata.exitCode).toBe(0);
-		expect(moved.stdout).toBe(
-			"pending move created: /edr-mv-a -> /edr-into/edr-mv-a — replaces the empty folder when accepted; review in Files\n",
+		expect(moved.stderr).toBe("mv: The destination already exists\n");
+		expect(moved.metadata.exitCode).not.toBe(0);
+		expect(await list_pending_updates(runner)).toEqual([]);
+		const replacement = await runner.run(
+			`mv -Tf ${test_db_files_mount}/edr-mv-a ${test_db_files_mount}/edr-into/edr-mv-a`,
+		);
+		expect(replacement.metadata.exitCode, replacement.stderr).toBe(0);
+		expect(replacement.stdout).toMatch(
+			/^Transfer \S+: 1 ready for review, 0 skipped, 0 failed\. Activity \S+\. Review in Files\.\n$/,
 		);
 	});
 
@@ -5141,7 +5550,9 @@ describe("bash_run_command", () => {
 		);
 		expect(closing.metadata.exitCode).toBe(0);
 		expect(closing.stderr).toBe("");
-		expect(closing.stdout).toBe("pending move created: /r16s-swap-tmp.md -> /r16s-swap-b.md — review in Files\n");
+		expect(closing.stdout).toMatch(
+			/^Transfer \S+: 1 ready for review, 0 skipped, 0 failed\. Activity \S+\. Review in Files\.\n$/,
+		);
 
 		// Both rows now target each other's committed paths.
 		const fileAId = await get_seeded_node_id(runner, "/r16s-swap-a.md");
@@ -5149,7 +5560,7 @@ describe("bash_run_command", () => {
 		const rowsA = await runner.t.run((ctx) =>
 			ctx.db
 				.query("files_pending_updates")
-				.withIndex("by_fileNode", (q) => q.eq("fileNodeId", fileAId))
+				.withIndex("by_target", (q) => q.eq("target.kind", "saved").eq("target.id", fileAId))
 				.collect(),
 		);
 		expect(rowsA).toHaveLength(1);
@@ -5157,7 +5568,7 @@ describe("bash_run_command", () => {
 		const rowsB = await runner.t.run((ctx) =>
 			ctx.db
 				.query("files_pending_updates")
-				.withIndex("by_fileNode", (q) => q.eq("fileNodeId", fileBId))
+				.withIndex("by_target", (q) => q.eq("target.kind", "saved").eq("target.id", fileBId))
 				.collect(),
 		);
 		expect(rowsB).toHaveLength(1);
@@ -5177,7 +5588,9 @@ describe("bash_run_command", () => {
 		expect(moveB.metadata.exitCode).toBe(0);
 		const moveA = await runner.run(`mv ${test_db_files_mount}/r16s-lin-a ${test_db_files_mount}/r16s-lin-b`);
 		expect(moveA.metadata.exitCode).toBe(0);
-		expect(moveA.stdout).toBe("pending move created: /r16s-lin-a -> /r16s-lin-b — review in Files\n");
+		expect(moveA.stdout).toMatch(
+			/^Transfer \S+: 1 ready for review, 0 skipped, 0 failed\. Activity \S+\. Review in Files\.\n$/,
+		);
 	});
 
 	test("mv -T claims a folder path vacated by the same user's pending move", async () => {
@@ -5197,7 +5610,9 @@ describe("bash_run_command", () => {
 		const moveA = await runner.run(`mv -T ${test_db_files_mount}/edr-vac-a ${test_db_files_mount}/edr-vac-b`);
 		expect(moveA.stderr).toBe("");
 		expect(moveA.metadata.exitCode).toBe(0);
-		expect(moveA.stdout).toBe("pending move created: /edr-vac-a -> /edr-vac-b — review in Files\n");
+		expect(moveA.stdout).toMatch(
+			/^Transfer \S+: 1 ready for review, 0 skipped, 0 failed\. Activity \S+\. Review in Files\.\n$/,
+		);
 
 		// Accepting A first hits the order guard: B still occupies the committed path.
 		const asUser = runner.t.withIdentity({
@@ -5206,23 +5621,13 @@ describe("bash_run_command", () => {
 			external_id: runner.seeded.userId,
 			email: "bash-edr-vac@test.local",
 		});
-		const acceptedAFirst = await asUser.mutation(api.files_pending_updates.apply_file_pending_move, {
-			membershipId: runner.seeded.membershipId,
-			nodeId: folderAId,
-		});
-		expect(acceptedAFirst._nay?.message).toBe('Accept the pending move of "edr-vac-b" first');
+		const acceptedAFirst = await asUser.mutation(
+			api.files_pending_updates.apply_file_pending_move,
+			await pending_review_for_test(runner, folderAId),
+		);
+		expect(acceptedAFirst._nay?.name).toBe("needs_review");
 
-		// Accepting in order settles both rows at their final paths.
-		const acceptedB = await asUser.mutation(api.files_pending_updates.apply_file_pending_move, {
-			membershipId: runner.seeded.membershipId,
-			nodeId: folderBId,
-		});
-		expect(acceptedB._nay).toBeUndefined();
-		const acceptedA = await asUser.mutation(api.files_pending_updates.apply_file_pending_move, {
-			membershipId: runner.seeded.membershipId,
-			nodeId: folderAId,
-		});
-		expect(acceptedA._nay).toBeUndefined();
+		await accept_pending_move_group_for_test(runner, [folderAId, folderBId]);
 
 		const movedA = await get_seeded_node(runner, "/edr-vac-b");
 		expect(movedA._id).toBe(folderAId);
@@ -5233,11 +5638,11 @@ describe("bash_run_command", () => {
 		const settledRows = await runner.t.run(async (ctx) => [
 			...(await ctx.db
 				.query("files_pending_updates")
-				.withIndex("by_fileNode", (q) => q.eq("fileNodeId", folderAId))
+				.withIndex("by_target", (q) => q.eq("target.kind", "saved").eq("target.id", folderAId))
 				.collect()),
 			...(await ctx.db
 				.query("files_pending_updates")
-				.withIndex("by_fileNode", (q) => q.eq("fileNodeId", folderBId))
+				.withIndex("by_target", (q) => q.eq("target.kind", "saved").eq("target.id", folderBId))
 				.collect()),
 		]);
 		expect(settledRows).toHaveLength(0);
@@ -5252,7 +5657,7 @@ describe("bash_run_command", () => {
 		// The destination folder shows the moved file under its new name.
 		const destList = await runner.run(`ls ${test_db_files_mount}/reports`);
 		expect(destList.metadata.exitCode).toBe(0);
-		expect(destList.stdout.trim().split("\n")).toEqual(["summary.md", "guide.md"]);
+		expect(destList.stdout.trim().split("\n")).toEqual(["guide.md", "summary.md"]);
 
 		// The source folder no longer lists it.
 		const sourceList = await runner.run(`ls ${test_db_files_mount}/docs`);
@@ -5280,7 +5685,7 @@ describe("bash_run_command", () => {
 
 		const list = await runner.run(`ls ${test_db_files_mount}/docs`);
 		expect(list.metadata.exitCode).toBe(0);
-		expect(list.stdout.trim().split("\n")).toEqual(["nested/", "readme.md", "guide.md"]);
+		expect(list.stdout.trim().split("\n")).toEqual(["guide.md", "nested/", "readme.md"]);
 	});
 
 	test("shadows a committed newcomer at a claimed destination in listings", async () => {
@@ -5416,7 +5821,7 @@ describe("bash_run_command", () => {
 		await runner.t.run(async (ctx) => {
 			const rows = await ctx.db
 				.query("files_pending_updates")
-				.withIndex("by_fileNode", (q) => q.eq("fileNodeId", childId))
+				.withIndex("by_target", (q) => q.eq("target.kind", "saved").eq("target.id", childId))
 				.collect();
 			for (const row of rows) {
 				await ctx.db.delete("files_pending_updates", row._id);
@@ -5442,13 +5847,11 @@ describe("bash_run_command", () => {
 
 	test("find matches moved files by their visible name only", async () => {
 		const runner = await create_bash_runner({
-			// convex-test's search index splits path words on whitespace only, so the
-			// stale-name hit needs a space before the searched word.
-			extraFiles: [{ path: "/docs/word tutorial.md", content: "word search fixture\n" }],
+			extraFiles: [{ path: "/docs/word lesson.md", content: "word search fixture\n" }],
 		});
 
 		// mv normalizes app file names, so the visible destination becomes word-guide.md.
-		await runner.run(`mv '${test_db_files_mount}/docs/word tutorial.md' '${test_db_files_mount}/docs/word guide.md'`);
+		await runner.run(`mv '${test_db_files_mount}/docs/word lesson.md' '${test_db_files_mount}/docs/word guide.md'`);
 
 		// The NEW name finds the moved file at its visible path (overlay injection).
 		const byNewName = await runner.run("find -name guide --limit 10");
@@ -5457,7 +5860,7 @@ describe("bash_run_command", () => {
 
 		// The old name no longer matches: the committed-index hit projects to the new
 		// name and fails the re-check.
-		const byOldName = await runner.run("find -name tutorial --limit 10");
+		const byOldName = await runner.run("find -name lesson --limit 10");
 		expect(byOldName.metadata.exitCode).toBe(0);
 		expect(byOldName.stdout.trim()).toBe("0 matches.");
 	});
@@ -5610,7 +6013,7 @@ describe("bash_run_command", () => {
 		);
 		expect(chained.metadata.exitCode).toBe(0);
 		// The mv confirmation line splits the first ls output from the second.
-		const segments = chained.stdout.split("review in Files\n");
+		const segments = chained.stdout.split("Review in Files.\n");
 		expect(segments).toHaveLength(2);
 		// The first ls (before the proposal) shows the committed name.
 		expect(segments[0]).toContain("tutorial.md");
@@ -5622,7 +6025,7 @@ describe("bash_run_command", () => {
 		const pendingRows = await runner.t.run(async (ctx) =>
 			ctx.db
 				.query("files_pending_updates")
-				.withIndex("by_organization_workspace_user_fileNode", (q) =>
+				.withIndex("by_organization_workspace_user_target", (q) =>
 					q
 						.eq("organizationId", runner.ctxData.organizationId)
 						.eq("workspaceId", runner.ctxData.workspaceId)
@@ -5636,20 +6039,17 @@ describe("bash_run_command", () => {
 
 	test("keeps Ask mode mv and cp app rejections without creating proposals", async () => {
 		const runner = await create_bash_runner({ allowDbFilesMkdir: false });
+		const before = await runner.t.run((ctx) => ctx.db.query("files_nodes").collect());
 
 		const mvResult = await runner.run(
 			`mv ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/docs/renamed.md`,
 		);
 		expect(mvResult.metadata.exitCode).not.toBe(0);
-		expect(mvResult.stderr).toBe(
-			"mv: cannot move or rename app files through bash.\n" +
-				"Use the Files sidebar rename/move UI for app path '/docs/readme.md' -> '/docs/renamed.md'. For content changes, use edit_file on '/docs/readme.md'.\n",
-		);
+		expect(mvResult.stderr).toBe("mv: app file writes require Agent mode\n");
 
 		const cpResult = await runner.run(`cp ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/docs/copy.md`);
 		expect(cpResult.metadata.exitCode).not.toBe(0);
-		expect(cpResult.stderr).toContain("cannot write to app file");
-		expect(cpResult.stderr).toContain("Agent mode");
+		expect(cpResult.stderr).toBe("cp: app file writes require Agent mode\n");
 
 		expect(
 			runner.runMutation.mock.calls.some(
@@ -5657,12 +6057,18 @@ describe("bash_run_command", () => {
 			),
 		).toBe(false);
 		expect(
-			runner.runAction.mock.calls.some(([ref]) => function_name_of(ref) === "files_nodes_content:create_file_by_path"),
+			runner.runMutation.mock.calls.some(
+				([ref]) => function_name_of(ref) === "files_nodes:create_private_node_by_path",
+			),
 		).toBe(false);
+		expect(await runner.t.run((ctx) => ctx.db.query("files_pending_nodes").collect())).toEqual([]);
+		expect(await list_pending_updates(runner)).toEqual([]);
+		expect(await runner.t.run((ctx) => ctx.db.query("files_nodes").collect())).toEqual(before);
 	});
 
 	test("keeps Ask mode redirect, touch, and tee app writes rejected without creating proposals", async () => {
 		const runner = await create_bash_runner({ allowDbFilesMkdir: false });
+		const before = await runner.t.run((ctx) => ctx.db.query("files_nodes").collect());
 
 		const redirect = await runner.run(`printf hi > ${test_db_files_mount}/ask.md`);
 		const touched = await runner.run(`touch ${test_db_files_mount}/ask.md`);
@@ -5673,12 +6079,16 @@ describe("bash_run_command", () => {
 			expect(result.stderr).toContain("Agent mode");
 		}
 		expect(
-			runner.runAction.mock.calls.some(([ref]) => function_name_of(ref) === "files_nodes_content:create_file_by_path"),
+			runner.runMutation.mock.calls.some(
+				([ref]) => function_name_of(ref) === "files_nodes:create_private_node_by_path",
+			),
 		).toBe(false);
 		expect(await list_pending_updates(runner)).toHaveLength(0);
+		expect(await runner.t.run((ctx) => ctx.db.query("files_pending_nodes").collect())).toEqual([]);
+		expect(await runner.t.run((ctx) => ctx.db.query("files_nodes").collect())).toEqual(before);
 	});
 
-	test("redirect write creates a pending proposal with eager creation and thread provenance", async () => {
+	test("redirect write creates a private proposal with thread provenance", async () => {
 		const runner = await create_bash_runner();
 
 		const written = await runner.run(
@@ -5691,15 +6101,129 @@ describe("bash_run_command", () => {
 		// non-empty content with one newline; byte-exact storage is the plain-text files' contract.
 		expect(written.stdout).toBe("hello\n");
 
-		// The destination node exists eagerly; the content lives in a pending update doc.
-		const destNode = await get_seeded_node(runner, "/note.md");
+		const draft = await get_private_entry(runner, "/note.md");
 		const pendingRows = await list_pending_updates(runner);
 		expect(pendingRows).toHaveLength(1);
-		expect(pendingRows[0]!.fileNodeId).toBe(destNode._id);
-		expect(pendingRows[0]!.eagerCreated).toBeDefined();
+		expect(pendingRows[0]!.target).toEqual({ kind: "private", id: draft.node._id });
+		expect(pendingRows[0]!.content?.base).toEqual({ kind: "new" });
 		expect(pendingRows[0]!.threadIds).toEqual([runner.threadId]);
-		// The .md path keeps its rich text shape on the eager-created node.
-		expect(destNode.textKind).toBe("rich_text");
+		expect(draft.pendingUpdate.createIntent).toMatchObject({ kind: "text", textKind: "rich_text" });
+		expect(
+			await runner.t.query(internal.files_nodes.get_by_path, {
+				organizationId: runner.seeded.organizationId,
+				workspaceId: runner.seeded.workspaceId,
+				visibilityUserId: runner.ctxData.userId,
+				path: "/note.md",
+			}),
+		).toBeNull();
+	});
+
+	test("private files share paths and fresh sizes across chained readers", async () => {
+		const runner = await create_bash_runner();
+		const folder = `${test_db_files_mount}/reader-draft`;
+		const file = `${folder}/lines.txt`;
+		const result = await runner.run(
+			[
+				`mkdir ${folder}`,
+				`printf 'one\\ntwo\\n' > ${file}`,
+				`stat -c '%s %F' ${file}`,
+				`head -n 1 ${file}`,
+				`tail -n 1 ${file}`,
+				`sed -n '2p' ${file}`,
+				`ls ${folder}`,
+				`printf 'three\\n' >> ${file}`,
+				`stat -c %s ${file}`,
+				`cat ${file}`,
+			].join(" && "),
+		);
+		expect(result.stderr).toBe("");
+		expect(result.metadata.exitCode).toBe(0);
+		expect(result.stdout).toBe("8 regular file\none\ntwo\ntwo\nlines.txt\n14\none\ntwo\nthree\n");
+		const entry = await get_private_entry(runner, "/reader-draft/lines.txt");
+		expect(entry.pendingUpdate.size).toBe(14);
+		expect(
+			await runner.t.query(internal.files_nodes.get_by_path, {
+				organizationId: runner.seeded.organizationId,
+				workspaceId: runner.seeded.workspaceId,
+				visibilityUserId: runner.ctxData.userId,
+				path: "/reader-draft/lines.txt",
+			}),
+		).toBeNull();
+	});
+
+	test("discovery commands include private files and private folder scopes", async () => {
+		const runner = await create_bash_runner();
+		const written = await runner.run("printf 'privateneedle\\n' > private-search/note.md");
+		expect(written.metadata.exitCode).toBe(0);
+		const listed = await runner.run("find private-search --limit 10");
+		expect(listed.metadata.exitCode).toBe(0);
+		expect(listed.stdout).toContain(`${test_db_files_mount}/private-search/note.md`);
+		const exact = await runner.run("grep -n privateneedle private-search/note.md");
+		expect(exact.metadata.exitCode).toBe(0);
+		expect(exact.stdout).toContain("1:privateneedle");
+		const recursive = await runner.run("grep -R privateneedle private-search");
+		expect(recursive.metadata.exitCode).toBe(0);
+		expect(recursive.stdout).toContain(`${test_db_files_mount}/private-search/note.md`);
+		const tree = await runner.run("tree private-search --limit 10");
+		expect(tree.metadata.exitCode).toBe(0);
+		expect(tree.stdout).toContain("|-- note.md");
+		const search = await runner.run("search --path private-search privateneedle");
+		expect(search.metadata.exitCode).toBe(0);
+		expect(search.stdout).toContain(`${test_db_files_mount}/private-search/note.md`);
+		const textgrep = await runner.run("textgrep -F privateneedle private-search/note.md");
+		expect(textgrep.metadata.exitCode).toBe(0);
+		expect(textgrep.stdout).toBe("privateneedle\n");
+		const textgrepRecursive = await runner.run("textgrep -R privateneedle private-search");
+		expect(textgrepRecursive.metadata.exitCode).toBe(0);
+		expect(textgrepRecursive.stdout).toContain(`${test_db_files_mount}/private-search/note.md`);
+	});
+
+	test("private metadata writes keep frontmatter and text searchable", async () => {
+		const runner = await create_bash_runner();
+		const written = await runner.run(
+			"printf '%s\\n' '---' 'status: draft' '---' 'privatemetadataword' > private-meta/note.md",
+		);
+		expect(written.metadata.exitCode).toBe(0);
+		const tool = ai_chat_tool_create_set_file_metadata(runner.ctx, runner.ctxData);
+		for (const path of ["/private-meta", "/private-meta/note.md"]) {
+			expect(
+				await tool.execute?.(
+					{ path, set: [{ key: "source", value: "draft-copy" }], remove: [] },
+					{ toolCallId: `metadata-${path}`, messages: [] },
+				),
+			).toMatchObject({ metadata: { path } });
+			const read = await runner.run(`meta get ${test_db_files_mount}${path} --format json`);
+			expect(read.stderr).toBe("");
+			expect(read.metadata.exitCode).toBe(0);
+			expect(JSON.parse(read.stdout)).toMatchObject({
+				target: { kind: "private" },
+				sourceKind: "pending",
+				values: expect.arrayContaining([{ field: "metadata.source", valueKind: "string", value: "draft-copy" }]),
+			});
+		}
+		const frontmatter = await runner.run(
+			`meta search --path private-meta --where '{"eq":["frontmatter.status","draft"]}'`,
+		);
+		expect(frontmatter.stderr).toBe("");
+		expect(frontmatter.metadata.exitCode).toBe(0);
+		expect(frontmatter.stdout).toBe(`${test_db_files_mount}/private-meta/note.md\n`);
+		const metadata = await runner.run(`meta search --where '{"eq":["metadata.source","draft-copy"]}' --format json`);
+		expect(metadata.metadata.exitCode).toBe(0);
+		expect(JSON.parse(metadata.stdout).results).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					path: `${test_db_files_mount}/private-meta`,
+					target: { kind: "private", id: expect.any(String) },
+				}),
+				expect.objectContaining({
+					path: `${test_db_files_mount}/private-meta/note.md`,
+					target: { kind: "private", id: expect.any(String) },
+				}),
+			]),
+		);
+		const text = await runner.run("grep -R privatemetadataword private-meta");
+		expect(text.metadata.exitCode).toBe(0);
+		expect(text.stdout).toContain(`${test_db_files_mount}/private-meta/note.md`);
 	});
 
 	test("redirect overwrite and append on an existing file stay pending proposals", async () => {
@@ -5727,9 +6251,9 @@ describe("bash_run_command", () => {
 		const existingNode = await get_seeded_node(runner, "/docs/existing.md");
 		const pendingRows = await list_pending_updates(runner);
 		expect(pendingRows).toHaveLength(1);
-		expect(pendingRows[0]!.fileNodeId).toBe(existingNode._id);
-		// Pre-existing files must never carry the eager-created hard-delete stamp.
-		expect(pendingRows[0]!.eagerCreated).toBeUndefined();
+		expect(pendingRows[0]!.target).toEqual({ kind: "saved", id: existingNode._id });
+		// A saved file never becomes a private creation proposal.
+		expect(pendingRows[0]!.createIntent).toBeUndefined();
 	});
 
 	test("redirect overwrite on a file with collaboration off stays a pending proposal", async () => {
@@ -5750,9 +6274,9 @@ describe("bash_run_command", () => {
 		// The file itself did not change and still has no Yjs document.
 		const pendingRows = await list_pending_updates(runner);
 		expect(pendingRows).toHaveLength(1);
-		expect(pendingRows[0]!.fileNodeId).toBe(nodeBefore._id);
-		expect(pendingRows[0]!.baseAssetId).toBe(nodeBefore.assetId);
-		expect(pendingRows[0]!.eagerCreated).toBeUndefined();
+		expect(pendingRows[0]!.target).toEqual({ kind: "saved", id: nodeBefore._id });
+		expect(pendingRows[0]!.content?.base).toEqual({ kind: "asset", assetId: nodeBefore.assetId });
+		expect(pendingRows[0]!.createIntent).toBeUndefined();
 		const nodeAfter = await get_seeded_node(runner, "/docs/off.md");
 		expect(nodeAfter.assetId).toBe(nodeBefore.assetId);
 		expect(nodeAfter.collaborationEnabled).toBe(false);
@@ -5786,7 +6310,7 @@ describe("bash_run_command", () => {
 		const proposed = await runner.run(`printf 'proposal needle\\nsecond line\\n' > ${path}`);
 		expect(proposed.stderr).toBe("");
 		const [row] = await list_pending_updates(runner);
-		expect(row?.baseAssetId).toBe(nodeBefore.assetId);
+		expect(row?.content?.base).toEqual({ kind: "asset", assetId: nodeBefore.assetId });
 
 		// A member saves the file: the proposal is out of date, so the agent reads the saved text.
 		const memberSave = await runner_as_user(runner).action(api.files_nodes_content.replace_file_content, {
@@ -5808,7 +6332,7 @@ describe("bash_run_command", () => {
 		expect(rowsAfter[0]!._id).toBe(row!._id);
 		const nodeAfter = await get_seeded_node(runner, "/docs/off-stale.txt");
 		expect(nodeAfter.assetId).not.toBe(nodeBefore.assetId);
-		expect(rowsAfter[0]!.baseAssetId).toBe(nodeAfter.assetId);
+		expect(rowsAfter[0]!.content?.base).toEqual({ kind: "asset", assetId: nodeAfter.assetId });
 	});
 
 	test.each(["append", "edit_file"] as const)(
@@ -5833,7 +6357,10 @@ describe("bash_run_command", () => {
 				const result = await read(ref, args);
 				if (!inserted && function_name_of(ref) === readName && args.path === filePath) {
 					inserted = true;
-					await upsert_pending_update_for_test(runner, { nodeId: node._id, unstagedText: "earlier proposal\nold\n" });
+					await upsert_pending_update_for_test(runner, {
+						target: { kind: "saved", id: node._id },
+						unstagedText: "earlier proposal\nold\n",
+					});
 				}
 				return result;
 			});
@@ -5881,7 +6408,7 @@ describe("bash_run_command", () => {
 		});
 		const node = await get_seeded_node(runner, filePath);
 		await upsert_pending_update_for_test(runner, {
-			nodeId: node._id,
+			target: { kind: "saved", id: node._id },
 			unstagedText: "first: proposal\nsecond: old\nthird: old\n",
 		});
 		const [pending] = await list_pending_updates(runner);
@@ -5909,13 +6436,14 @@ describe("bash_run_command", () => {
 						api.files_pending_updates.discard_file_pending_content,
 						{
 							membershipId: runner.seeded.membershipId,
-							nodeId: node._id,
+							target: { kind: "saved", id: node._id },
 							pendingUpdateId: pending._id,
+							reviewedRevision: pending.revision,
 						},
 					);
 					expect(discarded._nay).toBeUndefined();
 					await upsert_pending_update_for_test(runner, {
-						nodeId: node._id,
+						target: { kind: "saved", id: node._id },
 						unstagedText: "first: replacement\nsecond: old\nthird: old\n",
 					});
 				}
@@ -5964,7 +6492,10 @@ describe("bash_run_command", () => {
 				args.path === filePath
 			) {
 				races += 1;
-				await upsert_pending_update_for_test(runner, { nodeId: node._id, unstagedText: `proposal ${races}\nold\n` });
+				await upsert_pending_update_for_test(runner, {
+					target: { kind: "saved", id: node._id },
+					unstagedText: `proposal ${races}\nold\n`,
+				});
 			}
 			return result;
 		});
@@ -6023,7 +6554,7 @@ describe("bash_run_command", () => {
 		});
 		const node = await get_seeded_node(runner, filePath);
 		await upsert_pending_update_for_test(runner, {
-			nodeId: node._id,
+			target: { kind: "saved", id: node._id },
 			stagedText: "first: staged\nsecond: old\nthird: old\n",
 			unstagedText: "first: staged\nsecond: proposed\nthird: old\n",
 		});
@@ -6099,7 +6630,7 @@ describe("bash_run_command", () => {
 					expect((await asUser.action(api.files_nodes_content.replace_file_content, saveArgs))._nay).toBeUndefined();
 					const prepared = await asUser.action(api.files_pending_updates.prepare_file_pending_update_for_review, {
 						membershipId: runner.seeded.membershipId,
-						nodeId: node._id,
+						target: { kind: "saved", id: node._id },
 						pendingUpdateId: originalPending._id,
 					});
 					expect(prepared._nay).toBeUndefined();
@@ -6111,7 +6642,7 @@ describe("bash_run_command", () => {
 						expect(await list_pending_updates(runner)).toEqual([]);
 					}
 					preparedNode = await get_seeded_node(runner, filePath);
-					expect(preparedPending.baseStateId).not.toBe(originalPending.baseStateId);
+					expect(preparedPending.content?.baseStateId).not.toBe(originalPending.content?.baseStateId);
 					preparedAfterRead = true;
 				}
 				return result;
@@ -6280,7 +6811,7 @@ describe("bash_run_command", () => {
 		const existingNode = await get_seeded_node(runner, "/docs/existing.md");
 		const pendingRows = await list_pending_updates(runner);
 		expect(pendingRows).toHaveLength(1);
-		expect(pendingRows[0]!.fileNodeId).toBe(existingNode._id);
+		expect(pendingRows[0]!.target).toEqual({ kind: "saved", id: existingNode._id });
 	});
 
 	test("touch creates an empty-file pending proposal and is a no-op on existing files", async () => {
@@ -6291,11 +6822,12 @@ describe("bash_run_command", () => {
 		expect(created.stderr).toBe("");
 		expect(created.stdout).toBe("");
 
-		const destNode = await get_seeded_node(runner, "/new-note.md");
+		const draft = await get_private_entry(runner, "/new-note.md");
 		const pendingRows = await list_pending_updates(runner);
 		expect(pendingRows).toHaveLength(1);
-		expect(pendingRows[0]!.fileNodeId).toBe(destNode._id);
-		expect(pendingRows[0]!.eagerCreated).toBeDefined();
+		expect(pendingRows[0]!.target).toEqual({ kind: "private", id: draft.node._id });
+		expect(pendingRows[0]!.content?.base).toEqual({ kind: "new" });
+		expect((await runner.run(`cat ${test_db_files_mount}/new-note.md`)).stdout).toBe("");
 
 		const existing = await runner.run(`touch ${test_db_files_mount}/docs/readme.md`);
 		expect(existing.metadata.exitCode).toBe(0);
@@ -6308,6 +6840,7 @@ describe("bash_run_command", () => {
 		const runner = await create_bash_runner({
 			extraFiles: [{ path: "/docs/my-note.md", content: "note body\n", withRealYjsSnapshot: true }],
 		});
+		const before = await runner.t.run((ctx) => ctx.db.query("files_nodes").collect());
 
 		// A missing dot-leading target would be created as 'hidden.md'; refuse instead of
 		// silently writing a different path than the shell reported success for.
@@ -6316,9 +6849,13 @@ describe("bash_run_command", () => {
 		expect(dotted.stderr).toContain("app file names are normalized");
 		expect(dotted.stderr).toContain(`${test_db_files_mount}/hidden.md`);
 		expect(
-			runner.runAction.mock.calls.some(([ref]) => function_name_of(ref) === "files_nodes_content:create_file_by_path"),
+			runner.runMutation.mock.calls.some(
+				([ref]) => function_name_of(ref) === "files_nodes:create_private_node_by_path",
+			),
 		).toBe(false);
 		expect(await list_pending_updates(runner)).toHaveLength(0);
+		expect(await runner.t.run((ctx) => ctx.db.query("files_pending_nodes").collect())).toEqual([]);
+		expect(await runner.t.run((ctx) => ctx.db.query("files_nodes").collect())).toEqual(before);
 
 		// When the normalized name lands on an existing file, that file is the overwrite
 		// target (cp's replace-target behavior), not a rejected create.
@@ -6331,8 +6868,8 @@ describe("bash_run_command", () => {
 		const noteNode = await get_seeded_node(runner, "/docs/my-note.md");
 		const pendingRows = await list_pending_updates(runner);
 		expect(pendingRows).toHaveLength(1);
-		expect(pendingRows[0]!.fileNodeId).toBe(noteNode._id);
-		expect(pendingRows[0]!.eagerCreated).toBeUndefined();
+		expect(pendingRows[0]!.target).toEqual({ kind: "saved", id: noteNode._id });
+		expect(pendingRows[0]!.createIntent).toBeUndefined();
 	});
 
 	test("normalizes special file names on new Bash writes without renaming existing files", async () => {
@@ -6351,7 +6888,7 @@ describe("bash_run_command", () => {
 		] as const) {
 			const written = await runner.run(`printf 'saved body' > ${test_db_files_mount}${input}`);
 			expect(written.metadata.exitCode, written.stderr).toBe(0);
-			expect((await get_seeded_node(runner, path)).path).toBe(path);
+			expect((await get_private_entry(runner, path)).path).toBe(path);
 		}
 		for (const name of ["readme.md", "readme"]) {
 			const nodeId = await get_seeded_node_id(runner, `/legacy/${name}`);
@@ -6363,22 +6900,26 @@ describe("bash_run_command", () => {
 	});
 
 	test("uses README.md for new bare readme copy and move destinations", async () => {
-		const runner = await create_bash_runner({ extraFiles: [
-			{ path: "/legacy/readme", content: "legacy\n", withRealYjsSnapshot: true },
-			{ path: "/copies", kind: "folder" },
-			{ path: "/moved", kind: "folder" },
-		] });
+		const runner = await create_bash_runner({
+			extraFiles: [
+				{ path: "/legacy/readme", content: "legacy\n", withRealYjsSnapshot: true },
+				{ path: "/copies", kind: "folder" },
+				{ path: "/moved", kind: "folder" },
+			],
+		});
 		for (const destination of ["/copies", "/docs/readme"]) {
 			const copied = await runner.run(`cp ${test_db_files_mount}/legacy/readme ${test_db_files_mount}${destination}`);
 			expect(copied.metadata.exitCode, copied.stderr).toBe(0);
 		}
-		expect((await get_seeded_node(runner, "/copies/README.md")).name).toBe("README.md");
-		expect((await get_seeded_node(runner, "/docs/README.md")).name).toBe("README.md");
+		expect((await get_private_entry(runner, "/copies/README.md")).node.name).toBe("README.md");
+		expect((await get_private_entry(runner, "/docs/README.md")).node.name).toBe("README.md");
 		const moved = await runner.run(`mv ${test_db_files_mount}/legacy/readme ${test_db_files_mount}/moved/readme`);
 		expect(moved.metadata.exitCode, moved.stderr).toBe(0);
-		expect(await list_pending_updates(runner)).toEqual(expect.arrayContaining([
-			expect.objectContaining({ pendingMove: expect.objectContaining({ destName: "README.md" }) }),
-		]));
+		expect(await list_pending_updates(runner)).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ pendingMove: expect.objectContaining({ destName: "README.md" }) }),
+			]),
+		);
 	});
 
 	test("normalizes special destinations for Bash cp and mv", async () => {
@@ -6387,94 +6928,139 @@ describe("bash_run_command", () => {
 		});
 		const copied = await runner.run(`cp ${test_db_files_mount}/legacy/readme.md ${test_db_files_mount}/docs/skill.md`);
 		expect(copied.metadata.exitCode, copied.stderr).toBe(0);
-		expect((await get_seeded_node(runner, "/docs/SKILL.md")).path).toBe("/docs/SKILL.md");
+		expect((await get_private_entry(runner, "/docs/SKILL.md")).path).toBe("/docs/SKILL.md");
 		const moved = await runner.run(`mv ${test_db_files_mount}/legacy/readme.md ${test_db_files_mount}/docs/agents.md`);
 		expect(moved.metadata.exitCode, moved.stderr).toBe(0);
-		expect(await list_pending_updates(runner)).toEqual(expect.arrayContaining([
-			expect.objectContaining({ pendingMove: expect.objectContaining({ destName: "AGENTS.md" }) }),
-		]));
+		expect(await list_pending_updates(runner)).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ pendingMove: expect.objectContaining({ destName: "AGENTS.md" }) }),
+			]),
+		);
 	});
 
-	test.each(["missing", "literal", "canonical no-clobber"] as const)("cp into a folder resolves special names for a %s child", async (destination) => {
-		const destinationPath = "/.agents/skills/summarize";
-		const runner = await create_bash_runner({
-			extraFiles: [
-				{ path: "/templates/skill.md", content: "Saved skill body\n", withRealYjsSnapshot: true },
-				{ path: destinationPath, kind: "folder" },
-				...(destination === "literal" ? [{ path: `${destinationPath}/skill.md`, content: "Legacy target\n", withRealYjsSnapshot: true }] : []),
-				...(destination !== "missing" ? [{ path: `${destinationPath}/SKILL.md`, content: "Canonical sibling\n", withRealYjsSnapshot: true }] : []),
-			],
-		});
-		const literalId = destination === "literal" ? await get_seeded_node_id(runner, `${destinationPath}/skill.md`) : null;
-		const canonicalId = destination !== "missing" ? await get_seeded_node_id(runner, `${destinationPath}/SKILL.md`) : null;
-		const copied = await runner.run(`cp ${destination === "canonical no-clobber" ? "-n " : ""}${test_db_files_mount}/templates/skill.md ${test_db_files_mount}${destinationPath}`);
-		expect(copied.metadata.exitCode, copied.stderr).toBe(0);
-		if (destination === "canonical no-clobber") {
-			expect(copied.stdout).toBe("");
+	test.each(["missing", "literal", "canonical no-clobber"] as const)(
+		"cp into a folder resolves special names for a %s child",
+		async (destination) => {
+			const destinationPath = "/.agents/skills/summarize";
+			const runner = await create_bash_runner({
+				extraFiles: [
+					{ path: "/templates/skill.md", content: "Saved skill body\n", withRealYjsSnapshot: true },
+					{ path: destinationPath, kind: "folder" },
+					...(destination === "literal"
+						? [{ path: `${destinationPath}/skill.md`, content: "Legacy target\n", withRealYjsSnapshot: true }]
+						: []),
+					...(destination !== "missing"
+						? [{ path: `${destinationPath}/SKILL.md`, content: "Canonical sibling\n", withRealYjsSnapshot: true }]
+						: []),
+				],
+			});
+			const literalId =
+				destination === "literal" ? await get_seeded_node_id(runner, `${destinationPath}/skill.md`) : null;
+			const canonicalId =
+				destination !== "missing" ? await get_seeded_node_id(runner, `${destinationPath}/SKILL.md`) : null;
+			const copied = await runner.run(
+				`cp ${destination === "canonical no-clobber" ? "-n " : ""}${test_db_files_mount}/templates/skill.md ${test_db_files_mount}${destinationPath}`,
+			);
+			expect(copied.metadata.exitCode, copied.stderr).toBe(0);
+			if (destination === "canonical no-clobber") {
+				expect(copied.stdout).toMatch(
+					/^Transfer \S+: 0 ready for review, 1 skipped, 0 failed\. Activity \S+\. Review in Files\.\n$/,
+				);
+				expect(await list_pending_updates(runner)).toEqual([]);
+			} else {
+				const expectedPath = `${destinationPath}/${literalId ? "skill.md" : "SKILL.md"}`;
+				expect(copied.stdout).toMatch(
+					/^Transfer \S+: 1 ready for review, 0 skipped, 0 failed\. Activity \S+\. Review in Files\.\n$/,
+				);
+				if (literalId) {
+					expect((await get_seeded_node(runner, expectedPath))._id).toBe(literalId);
+					expect(await list_pending_updates(runner)).toEqual([
+						expect.objectContaining({ target: { kind: "saved", id: literalId } }),
+					]);
+					await accept_pending_replacement_for_test(runner, literalId);
+					expect(await read_committed_text(runner, literalId)).toBe("Saved skill body\n");
+				} else {
+					const draft = await get_private_entry(runner, expectedPath);
+					expect(await list_pending_updates(runner)).toEqual([
+						expect.objectContaining({ target: { kind: "private", id: draft.node._id } }),
+					]);
+					const savedId = await save_private_copy_for_test(runner, expectedPath);
+					expect(await read_committed_text(runner, savedId)).toBe("Saved skill body\n");
+				}
+			}
+			if (canonicalId) {
+				expect((await get_seeded_node(runner, `${destinationPath}/SKILL.md`))._id).toBe(canonicalId);
+				expect(await read_committed_text(runner, canonicalId)).toBe("Canonical sibling\n");
+			}
+			if (!literalId) {
+				const literal = await runner.t.query(internal.files_nodes.get_by_path, {
+					organizationId: runner.seeded.organizationId,
+					workspaceId: runner.seeded.workspaceId,
+					visibilityUserId: runner.seeded.userId,
+					path: `${destinationPath}/skill.md`,
+				});
+				expect(literal).toBeNull();
+			}
+		},
+	);
+
+	test.each(["cp folder", "cp file", "write", "mkdir"] as const)(
+		"%s refuses a hidden special-name target without changing visible siblings",
+		async (door) => {
+			const owner = await create_bash_runner({
+				extraFiles: [
+					{ path: "/templates/skill.md", content: "Source text\n", withRealYjsSnapshot: true },
+					{ path: "/destination/skill.md", content: "Hidden legacy text\n", withRealYjsSnapshot: true },
+					{ path: "/destination/SKILL.md", content: "Visible sibling\n", withRealYjsSnapshot: true },
+					...(door === "mkdir" ? [{ path: "/.agents", kind: "folder" as const }] : []),
+				],
+			});
+			const literalId = await get_seeded_node_id(owner, "/destination/skill.md");
+			const canonicalId = await get_seeded_node_id(owner, "/destination/SKILL.md");
+			const hiddenPath = door === "mkdir" ? "/.agents" : "/destination/skill.md";
+			const hiddenId = await get_seeded_node_id(owner, hiddenPath);
+			const member = await owner.t.run(async (ctx) => {
+				const userId = await ctx.db.insert("users", { clerkUserId: "literal-member" });
+				await test_mocks_fill_db_with.plan(ctx, { userId, plan: "Pay As You Go" });
+				const membershipId = await ctx.db.insert("organizations_workspaces_users", {
+					organizationId: owner.seeded.organizationId,
+					workspaceId: owner.seeded.workspaceId,
+					userId,
+					active: true,
+					updatedAt: Date.now(),
+				});
+				await access_control_db_ensure_role_assignment(ctx, {
+					organizationId: owner.seeded.organizationId,
+					workspaceId: owner.seeded.workspaceId,
+					userId,
+					role: "member",
+					now: Date.now(),
+				});
+				await ctx.db.patch("files_nodes", hiddenId, { restrictedScopeNodeId: hiddenId });
+				return { userId, membershipId };
+			});
+			const runner = await create_bash_runner({ shared: { t: owner.t, seeded: { ...owner.seeded, ...member } } });
+			expect(
+				await runner.t.query(internal.files_nodes.get_by_path, {
+					organizationId: runner.seeded.organizationId,
+					workspaceId: runner.seeded.workspaceId,
+					visibilityUserId: member.userId,
+					path: hiddenPath,
+				}),
+			).toBeNull();
+			const command =
+				door === "mkdir"
+					? `mkdir -p ${test_db_files_mount}/.AGENTS`
+					: door === "write"
+						? `printf changed > ${test_db_files_mount}/destination/skill.md`
+						: `cp ${test_db_files_mount}/templates/skill.md ${test_db_files_mount}/destination${door === "cp file" ? "/skill.md" : ""}`;
+			const refused = await runner.run(command);
+			expect(refused.metadata.exitCode).not.toBe(0);
 			expect(await list_pending_updates(runner)).toEqual([]);
-		} else {
-			const expectedPath = `${destinationPath}/${literalId ? "skill.md" : "SKILL.md"}`;
-			const node = await get_seeded_node(runner, expectedPath);
-			if (literalId) expect(node._id).toBe(literalId);
-			expect(copied.stdout).toContain(` -> ${expectedPath} — `);
-			expect(await list_pending_updates(runner)).toEqual([expect.objectContaining({ fileNodeId: node._id })]);
-			await accept_pending_replacement_for_test(runner, node._id);
-			expect(await read_committed_text(runner, node._id)).toBe("Saved skill body\n");
-		}
-		if (canonicalId) {
-			expect((await get_seeded_node(runner, `${destinationPath}/SKILL.md`))._id).toBe(canonicalId);
-			expect(await read_committed_text(runner, canonicalId)).toBe("Canonical sibling\n");
-		}
-		if (!literalId) {
-			const literal = await runner.t.query(internal.files_nodes.get_by_path, {
-				organizationId: runner.seeded.organizationId, workspaceId: runner.seeded.workspaceId,
-				visibilityUserId: runner.seeded.userId, path: `${destinationPath}/skill.md`,
-			});
-			expect(literal).toBeNull();
-		}
-	});
-
-	test.each(["cp folder", "cp file", "write", "mkdir"] as const)("%s refuses a hidden special-name target without changing visible siblings", async (door) => {
-		const owner = await create_bash_runner({ extraFiles: [
-			{ path: "/templates/skill.md", content: "Source text\n", withRealYjsSnapshot: true },
-			{ path: "/destination/skill.md", content: "Hidden legacy text\n", withRealYjsSnapshot: true },
-			{ path: "/destination/SKILL.md", content: "Visible sibling\n", withRealYjsSnapshot: true },
-			...(door === "mkdir" ? [{ path: "/.agents", kind: "folder" as const }] : []),
-		] });
-		const literalId = await get_seeded_node_id(owner, "/destination/skill.md");
-		const canonicalId = await get_seeded_node_id(owner, "/destination/SKILL.md");
-		const hiddenPath = door === "mkdir" ? "/.agents" : "/destination/skill.md";
-		const hiddenId = await get_seeded_node_id(owner, hiddenPath);
-		const member = await owner.t.run(async (ctx) => {
-			const userId = await ctx.db.insert("users", { clerkUserId: "literal-member" });
-			await test_mocks_fill_db_with.plan(ctx, { userId, plan: "Pay As You Go" });
-			const membershipId = await ctx.db.insert("organizations_workspaces_users", {
-				organizationId: owner.seeded.organizationId, workspaceId: owner.seeded.workspaceId,
-				userId, active: true, updatedAt: Date.now(),
-			});
-			await access_control_db_ensure_role_assignment(ctx, {
-				organizationId: owner.seeded.organizationId, workspaceId: owner.seeded.workspaceId,
-				userId, role: "member", now: Date.now(),
-			});
-			await ctx.db.patch("files_nodes", hiddenId, { restrictedScopeNodeId: hiddenId });
-			return { userId, membershipId };
-		});
-		const runner = await create_bash_runner({ shared: { t: owner.t, seeded: { ...owner.seeded, ...member } } });
-		expect(await runner.t.query(internal.files_nodes.get_by_path, {
-			organizationId: runner.seeded.organizationId, workspaceId: runner.seeded.workspaceId,
-			visibilityUserId: member.userId, path: hiddenPath,
-		})).toBeNull();
-		const command = door === "mkdir"
-			? `mkdir -p ${test_db_files_mount}/.AGENTS`
-			: door === "write"
-				? `printf changed > ${test_db_files_mount}/destination/skill.md`
-				: `cp ${test_db_files_mount}/templates/skill.md ${test_db_files_mount}/destination${door === "cp file" ? "/skill.md" : ""}`;
-		const refused = await runner.run(command);
-		expect(refused.metadata.exitCode).not.toBe(0);
-		expect(await list_pending_updates(runner)).toEqual([]);
-		expect(await read_committed_text(owner, literalId)).toBe("Hidden legacy text\n");
-		expect(await read_committed_text(owner, canonicalId)).toBe("Visible sibling\n");
-	});
+			expect(await read_committed_text(owner, literalId)).toBe("Hidden legacy text\n");
+			expect(await read_committed_text(owner, canonicalId)).toBe("Visible sibling\n");
+		},
+	);
 
 	test("tee writes app targets as pending proposals", async () => {
 		const runner = await create_bash_runner();
@@ -6539,12 +7125,11 @@ describe("bash_run_command", () => {
 		expect(written.stderr).toBe("");
 
 		// Read-back before byte equality: with the fix off, no file exists at this path.
-		const destNode = await get_seeded_node(runner, `/${name}`);
-		expect(destNode.contentType).toBe(contentType);
-		expect(destNode.textKind).toBe("plain_text");
+		const draft = await get_private_entry(runner, `/${name}`);
+		expect(draft.pendingUpdate.createIntent).toMatchObject({ kind: "text", contentType, textKind: "plain_text" });
 		const pendingRows = await list_pending_updates(runner);
 		expect(pendingRows).toHaveLength(1);
-		expect(pendingRows[0]!.fileNodeId).toBe(destNode._id);
+		expect(pendingRows[0]!.target).toEqual({ kind: "private", id: draft.node._id });
 
 		// Byte equality: plain text stores bytes exactly, with no added newline.
 		const readBack = await runner.run(`cat ${test_db_files_mount}/${name}`);
@@ -6576,12 +7161,18 @@ describe("bash_run_command", () => {
 		expect(appended.metadata.exitCode).toBe(0);
 		expect(appended.stdout).toBe("a,b,c");
 
-		const yamlNode = await get_seeded_node(runner, "/config.yaml");
-		expect(yamlNode.contentType).toBe("application/yaml");
-		expect(yamlNode.textKind).toBe("plain_text");
-		const csvNode = await get_seeded_node(runner, "/table.csv");
-		expect(csvNode.contentType).toBe("text/csv");
-		expect(csvNode.textKind).toBe("plain_text");
+		const yamlDraft = await get_private_entry(runner, "/config.yaml");
+		expect(yamlDraft.pendingUpdate.createIntent).toMatchObject({
+			kind: "text",
+			contentType: "application/yaml",
+			textKind: "plain_text",
+		});
+		const csvDraft = await get_private_entry(runner, "/table.csv");
+		expect(csvDraft.pendingUpdate.createIntent).toMatchObject({
+			kind: "text",
+			contentType: "text/csv",
+			textKind: "plain_text",
+		});
 	});
 
 	test("an unknown extension and an extensionless name write plain text files", async () => {
@@ -6592,17 +7183,21 @@ describe("bash_run_command", () => {
 		const exe = await runner.run(`printf x > ${test_db_files_mount}/tool.exe`);
 		expect(exe.stderr).toBe("");
 		expect(exe.metadata.exitCode).toBe(0);
-		const exeNode = await get_seeded_node(runner, "/tool.exe");
-		expect(exeNode.contentType).toBe("text/plain;charset=utf-8");
-		expect(exeNode.textKind).toBe("plain_text");
+		const exeDraft = await get_private_entry(runner, "/tool.exe");
+		expect(exeDraft.pendingUpdate.createIntent).toMatchObject({
+			contentType: "text/plain;charset=utf-8",
+			textKind: "plain_text",
+		});
 
 		// No `.md` is added to an extensionless name.
 		const extensionless = await runner.run(`printf x > ${test_db_files_mount}/data`);
 		expect(extensionless.stderr).toBe("");
 		expect(extensionless.metadata.exitCode).toBe(0);
-		const dataNode = await get_seeded_node(runner, "/data");
-		expect(dataNode.contentType).toBe("text/plain;charset=utf-8");
-		expect(dataNode.textKind).toBe("plain_text");
+		const dataDraft = await get_private_entry(runner, "/data");
+		expect(dataDraft.pendingUpdate.createIntent).toMatchObject({
+			contentType: "text/plain;charset=utf-8",
+			textKind: "plain_text",
+		});
 	});
 
 	test("cp keeps the source's type at any destination name", async () => {
@@ -6617,12 +7212,15 @@ describe("bash_run_command", () => {
 		);
 		expect(subtypeCopy.metadata.exitCode).toBe(0);
 		expect(subtypeCopy.stderr).toBe("");
-		expect(subtypeCopy.stdout).toBe(
-			'pending copy created: /data/config.json -> /data/config.yaml — review in Files\n{"a": 1}\n',
+		expect(subtypeCopy.stdout).toMatch(
+			/^Transfer \S+: 1 ready for review, 0 skipped, 0 failed\. Activity \S+\. Review in Files\.\n/,
 		);
-		const yamlNode = await get_seeded_node(runner, "/data/config.yaml");
-		expect(yamlNode.contentType).toBe("application/json");
-		expect(yamlNode.textKind).toBe("plain_text");
+		expect(subtypeCopy.stdout.split("Review in Files.\n")[1]).toBe('{"a": 1}\n');
+		const yamlDraft = await get_private_entry(runner, "/data/config.yaml");
+		expect(yamlDraft.pendingUpdate.createIntent).toMatchObject({
+			contentType: "application/json",
+			textKind: "plain_text",
+		});
 
 		// Markdown copied to a .json name stays Markdown, text unchanged.
 		const markdownToJson = await runner.run(
@@ -6630,19 +7228,16 @@ describe("bash_run_command", () => {
 		);
 		expect(markdownToJson.stderr).toBe("");
 		expect(markdownToJson.metadata.exitCode).toBe(0);
-		expect(markdownToJson.stdout).toBe(
-			`pending copy created: /docs/readme.md -> /data/copy.json — review in Files\n${readme_seed_content}`,
+		expect(markdownToJson.stdout).toMatch(
+			/^Transfer \S+: 1 ready for review, 0 skipped, 0 failed\. Activity \S+\. Review in Files\.\n/,
 		);
-		const jsonNode = await get_seeded_node(runner, "/data/copy.json");
-		expect(jsonNode.textKind).toBe("rich_text");
-		expect(jsonNode.contentType).toBe("text/markdown;charset=utf-8");
-		const jsonRows = await list_pending_updates_for_node(runner, jsonNode._id);
-		expect(jsonRows).toHaveLength(1);
-		expect(jsonRows[0].copiedFrom).toMatchObject({ path: "/docs/readme.md" });
-		expect(jsonRows[0].eagerCreated).toBeDefined();
-		expect(jsonRows[0].pendingReplacement).toMatchObject({
+		expect(markdownToJson.stdout.split("Review in Files.\n")[1]).toBe(readme_copy_content);
+		const jsonDraft = await get_private_entry(runner, "/data/copy.json");
+		expect(jsonDraft.pendingUpdate.copiedFrom).toMatchObject({ path: "/docs/readme.md" });
+		expect(jsonDraft.pendingUpdate.createIntent).toMatchObject({
+			kind: "text",
 			contentType: "text/markdown;charset=utf-8",
-			yjsRootKind: "rich_text",
+			textKind: "rich_text",
 		});
 	});
 
@@ -6661,7 +7256,9 @@ describe("bash_run_command", () => {
 				`mv ${test_db_files_mount}/data/${source} ${test_db_files_mount}/data/${destination}`,
 			);
 			expect(moved.metadata.exitCode).toBe(0);
-			expect(moved.stdout).toBe(`pending move created: /data/${source} -> /data/${destination} — review in Files\n`);
+			expect(moved.stdout).toMatch(
+				/^Transfer \S+: 1 ready for review, 0 skipped, 0 failed\. Activity \S+\. Review in Files\.\n$/,
+			);
 
 			const asUser = runner.t.withIdentity({
 				issuer: "https://clerk.test",
@@ -6669,10 +7266,10 @@ describe("bash_run_command", () => {
 				external_id: runner.seeded.userId,
 				email: "bash-subtype-rename-accept@test.local",
 			});
-			const accepted = await asUser.mutation(api.files_pending_updates.apply_file_pending_move, {
-				membershipId: runner.seeded.membershipId,
-				nodeId,
-			});
+			const accepted = await asUser.mutation(
+				api.files_pending_updates.apply_file_pending_move,
+				await pending_review_for_test(runner, nodeId),
+			);
 			expect(accepted._nay).toBeUndefined();
 
 			// The accept patches the name and the extension index. The stored type stays: a rename
@@ -6703,7 +7300,9 @@ describe("bash_run_command", () => {
 		);
 		expect(plainToMd.stderr).toBe("");
 		expect(plainToMd.metadata.exitCode).toBe(0);
-		expect(plainToMd.stdout).toBe("pending move created: /data/other.json -> /data/other.md — review in Files\n");
+		expect(plainToMd.stdout).toMatch(
+			/^Transfer \S+: 1 ready for review, 0 skipped, 0 failed\. Activity \S+\. Review in Files\.\n$/,
+		);
 
 		const mdToJson = await runner.run(
 			`mv ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/docs/readme.json`,
@@ -6718,32 +7317,38 @@ describe("bash_run_command", () => {
 		);
 		expect(crossReplace.stderr).toBe("");
 		expect(crossReplace.metadata.exitCode).toBe(0);
-		expect(crossReplace.stdout).toBe(
-			"pending move created: /data/notes.json -> /docs/target.md — replaces the existing file when accepted; review in Files\n",
+		expect(crossReplace.stdout).toMatch(
+			/^Transfer \S+: 1 ready for review, 0 skipped, 0 failed\. Activity \S+\. Review in Files\.\n$/,
 		);
 		const sourceRows = await list_pending_updates_for_node(runner, sourceId);
 		expect(sourceRows).toHaveLength(1);
-		expect(sourceRows[0].pendingMove).toMatchObject({ destName: "target.md", replacesNodeId: targetId });
+		expect(sourceRows[0].pendingMove).toMatchObject({
+			destName: "target.md",
+			replacesTarget: { kind: "saved", id: targetId },
+		});
 		expect(await list_pending_updates_for_node(runner, targetId)).toHaveLength(0);
 
 		// A stored upload may change its extension too. The type stays with the bytes.
 		const extensionChange = await runner.run(`mv ${test_db_files_mount}/source.pdf ${test_db_files_mount}/video.mp4`);
 		expect(extensionChange.stderr).toBe("");
 		expect(extensionChange.metadata.exitCode).toBe(0);
-		expect(extensionChange.stdout).toContain("pending move created: /source.pdf -> /video.mp4");
+		expect(extensionChange.stdout).toMatch(
+			/^Transfer \S+: 1 ready for review, 0 skipped, 0 failed\. Activity \S+\. Review in Files\.\n$/,
+		);
+		expect((await runner.run(`stat ${test_db_files_mount}/video.mp4`)).metadata.exitCode).toBe(0);
 	});
 
-	test("an oversized redirect to a new path removes the eager-created node", async () => {
+	test("an oversized redirect refuses before creating a private node", async () => {
 		const runner = await create_bash_runner();
 
 		// seq stops at 100k iterations (~589KB), so cat the file twice to pass the 900k
-		// byte cap, which fires after the eager create.
+		// byte cap, which fires before private creation.
 		const result = await runner.run(
 			`seq 1 100000 > /tmp/big.txt && cat /tmp/big.txt /tmp/big.txt > ${test_db_files_mount}/big.md`,
 		);
 		expect(result.metadata.exitCode).not.toBe(0);
 		expect(result.stderr).toContain("exceeds the");
-		expect(result.stderr).toContain(`nothing was created at '${test_db_files_mount}/big.md'`);
+		expect(await runner.t.run(async (ctx) => ctx.db.query("files_pending_nodes").collect())).toHaveLength(0);
 
 		// No committed node or pending row is left behind.
 		expect(await list_pending_updates(runner)).toHaveLength(0);
@@ -6771,28 +7376,25 @@ describe("bash_run_command", () => {
 
 		expect(result.metadata.exitCode).toBe(0);
 		expect(result.stderr).toBe("");
-		expect(result.stdout).toBe("pending copy created: /docs/readme.md -> /docs/readme-copy.md — review in Files\n");
-
-		// The destination node exists eagerly; the copied text is staged as a whole-file
-		// replacement on a pending update doc with provenance.
-		const sourceId = await get_seeded_node_id(runner, "/docs/readme.md");
-		const destNode = await get_seeded_node(runner, "/docs/readme-copy.md");
-		expect(destNode.kind).toBe("file");
-		const rows = await runner.t.run((ctx) =>
-			ctx.db
-				.query("files_pending_updates")
-				.withIndex("by_fileNode", (q) => q.eq("fileNodeId", destNode._id))
-				.collect(),
+		expect(result.stdout).toMatch(
+			/^Transfer \S+: 1 ready for review, 0 skipped, 0 failed\. Activity \S+\. Review in Files\.\n$/,
 		);
-		expect(rows).toHaveLength(1);
-		expect(rows[0].copiedFrom).toMatchObject({ nodeId: sourceId, path: "/docs/readme.md" });
-		expect(rows[0].eagerCreated).toBeDefined();
-		expect(rows[0].pendingReplacement).toMatchObject({
+
+		// The copied file stays private until the user saves it.
+		const sourceId = await get_seeded_node_id(runner, "/docs/readme.md");
+		const draft = await get_private_entry(runner, "/docs/readme-copy.md");
+		expect(draft.node.kind).toBe("file");
+		expect(draft.pendingUpdate.copiedFrom).toMatchObject({
+			target: { kind: "saved", id: sourceId },
+			path: "/docs/readme.md",
+		});
+		expect(draft.pendingUpdate.createIntent).toMatchObject({
+			kind: "text",
 			contentType: "text/markdown;charset=utf-8",
-			yjsRootKind: "rich_text",
+			textKind: "rich_text",
 		});
 
-		// Readers overlay the agent's own pending content on the fresh destination node.
+		// Readers see the owner's private content.
 		const overlayRead = await runner.run(`cat ${test_db_files_mount}/docs/readme-copy.md`);
 		expect(overlayRead.metadata.exitCode).toBe(0);
 		expect(overlayRead.stdout).toContain("# Readme");
@@ -6801,7 +7403,10 @@ describe("bash_run_command", () => {
 		// A new child inside an existing folder uses the special-name casing.
 		const folderDest = await runner.run(`cp ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/reports`);
 		expect(folderDest.metadata.exitCode).toBe(0);
-		expect(folderDest.stdout).toBe("pending copy created: /docs/readme.md -> /reports/README.md — review in Files\n");
+		expect(folderDest.stdout).toMatch(
+			/^Transfer \S+: 1 ready for review, 0 skipped, 0 failed\. Activity \S+\. Review in Files\.\n$/,
+		);
+		expect((await get_private_entry(runner, "/reports/README.md")).node.name).toBe("README.md");
 	});
 
 	test("blocks writes in a read-only subtree but lets cp read its source", async () => {
@@ -6846,9 +7451,9 @@ describe("bash_run_command", () => {
 		);
 		expect(copiedOut.metadata.exitCode).toBe(0);
 		expect(copiedOut.stderr).toBe("");
-		expect(await get_seeded_node(runner, "/reports/copied-out.md")).toMatchObject({
-			writePolicyScopeNodeId: null,
-			writePolicy: null,
+		expect((await get_private_entry(runner, "/reports/copied-out.md")).node.parent).toEqual({
+			kind: "saved",
+			id: await get_seeded_node_id(runner, "/reports"),
 		});
 		expect(await get_seeded_node(runner, "/docs/readme.md")).toMatchObject({
 			writePolicyScopeNodeId: docsId,
@@ -6867,7 +7472,7 @@ describe("bash_run_command", () => {
 		);
 		expect(activePaths).toContain("/docs/readme.md");
 		expect(activePaths).toContain("/docs/tutorial.md");
-		expect(activePaths).toContain("/reports/copied-out.md");
+		expect(activePaths).not.toContain("/reports/copied-out.md");
 		expect(activePaths).toContain("/reports/summary.md");
 		expect(activePaths).not.toContain("/docs/new-folder");
 		expect(activePaths).not.toContain("/docs/copied.md");
@@ -6880,31 +7485,123 @@ describe("bash_run_command", () => {
 
 		const pendingRows = await list_pending_updates(runner);
 		expect(pendingRows).toHaveLength(1);
-		expect(pendingRows[0].copiedFrom).toMatchObject({ nodeId: sourceId, path: "/docs/readme.md" });
+		expect(pendingRows[0].copiedFrom).toMatchObject({
+			target: { kind: "saved", id: sourceId },
+			path: "/docs/readme.md",
+		});
+		const savedCopyId = await save_private_copy_for_test(runner, "/reports/copied-out.md");
+		expect(await runner.t.run((ctx) => ctx.db.get("files_nodes", savedCopyId))).toMatchObject({
+			writePolicyScopeNodeId: null,
+			writePolicy: null,
+		});
 	});
 
-	test("cp into a new deep path records the created ancestor ids on the pending row", async () => {
+	test("cp into a new deep path keeps the file and its parents private", async () => {
 		const runner = await create_bash_runner();
 
 		const result = await runner.run(`cp ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/new/deep/copy.md`);
 		expect(result.stderr).toBe("");
 		expect(result.metadata.exitCode).toBe(0);
-		expect(result.stdout).toBe("pending copy created: /docs/readme.md -> /new/deep/copy.md — review in Files\n");
-
-		// The eager stamp carries the created parent folders (deepest first), so a normal
-		// Discard/TTL expiry can remove them together with the leaf node.
-		const destNode = await get_seeded_node(runner, "/new/deep/copy.md");
-		const newFolderId = await get_seeded_node_id(runner, "/new");
-		const deepFolderId = await get_seeded_node_id(runner, "/new/deep");
-		const rows = await runner.t.run((ctx) =>
-			ctx.db
-				.query("files_pending_updates")
-				.withIndex("by_fileNode", (q) => q.eq("fileNodeId", destNode._id))
-				.collect(),
+		expect(result.stdout).toMatch(
+			/^Transfer \S+: 1 ready for review, 0 skipped, 0 failed\. Activity \S+\. Review in Files\.\n$/,
 		);
-		expect(rows).toHaveLength(1);
-		expect(rows[0].eagerCreated).toMatchObject({
-			createdAncestorIds: [deepFolderId, newFolderId],
+
+		const draft = await get_private_entry(runner, "/new/deep/copy.md");
+		const newFolder = await get_private_entry(runner, "/new");
+		const deepFolder = await get_private_entry(runner, "/new/deep");
+		expect(newFolder.node.parent).toEqual({ kind: "root" });
+		expect(deepFolder.node.parent).toEqual({ kind: "private", id: newFolder.node._id });
+		expect(draft.node.parent).toEqual({ kind: "private", id: deepFolder.node._id });
+		expect((await list_pending_updates(runner)).map((row) => row.target)).toEqual(
+			expect.arrayContaining([
+				{ kind: "private", id: newFolder.node._id },
+				{ kind: "private", id: deepFolder.node._id },
+				{ kind: "private", id: draft.node._id },
+			]),
+		);
+		expect(
+			await runner.t.run(async (ctx) =>
+				(await ctx.db.query("files_nodes").collect()).filter((node) => node.path.startsWith("/new")),
+			),
+		).toEqual([]);
+	});
+
+	test.each(["file", "folder"])("archive acceptance releases a copied replacement under a deleted %s", async (kind) => {
+		const runner = await create_bash_runner({
+			extraFiles: [{ path: "/copied/existing.md", content: "keep this saved version\n" }],
+		});
+		const targetBefore = await get_seeded_node(runner, "/copied/existing.md");
+		const archivedId = kind === "file" ? targetBefore._id : await get_seeded_node_id(runner, "/copied");
+		const result = await runner.run(
+			`cp docs/readme.md copied/existing.md; rm ${kind === "folder" ? "-r copied" : "copied/existing.md"}`,
+		);
+		expect(result.metadata.exitCode, result.stderr).toBe(0);
+		const [copy] = await list_pending_updates_for_node(runner, targetBefore._id);
+		if (!copy?.pendingReplacement) throw new Error("Expected the copied replacement");
+		const assetId = copy.pendingReplacement.assetId;
+		const asset = await runner.t.run((ctx) => ctx.db.get("files_r2_assets", assetId));
+		if (!asset?.r2Key) throw new Error("Expected the sealed copy asset");
+		expect(asset.unfinalizedExpiresAt).toBeUndefined();
+		expect(asset.putMayArriveUntil).toBeGreaterThan(Date.now());
+		const reservation = await runner.t.run((ctx) =>
+			ctx.db
+				.query("files_private_storage_reservations")
+				.withIndex("by_resource", (q) => q.eq("resource.kind", "asset").eq("resource.id", assetId))
+				.unique(),
+		);
+		if (!reservation) throw new Error("Expected the copy storage hold");
+		expect(reservation.settlement.kind).toBe("held");
+		const [archive] = await list_pending_updates_for_node(runner, archivedId);
+		expect(archive.pendingArchive).toBeDefined();
+		const asUser = runner.t.withIdentity({ issuer: "https://clerk.test", external_id: runner.seeded.userId });
+		const accepted = await asUser.mutation(api.files_pending_updates.apply_file_pending_archive, {
+			membershipId: runner.seeded.membershipId,
+			target: { kind: "saved", id: archivedId },
+			pendingUpdateId: archive._id,
+			reviewedRevision: archive.revision,
+		});
+		expect(accepted._nay).toBeUndefined();
+		await runner.t.run(async (ctx) => {
+			const target = await ctx.db.get("files_nodes", targetBefore._id);
+			expect(target?.archiveOperationId).not.toBeNull();
+			expect(target?.assetId).toBe(targetBefore.assetId);
+			expect(await ctx.db.get("files_pending_updates", copy._id)).toBeNull();
+			expect(await ctx.db.get("files_r2_assets", assetId)).toBeNull();
+		});
+		const job = await runner.t.run((ctx) =>
+			ctx.db
+				.query("files_r2_object_deletion_jobs")
+				.withIndex("by_r2_key", (q) => q.eq("r2Key", asset.r2Key!))
+				.unique(),
+		);
+		if (!job) throw new Error("Expected the copy cleanup job");
+		expect(job.privateStorageReservationId).toBe(reservation._id);
+		expect(job.reason).toBe("discarded_replacement");
+		expect(job.putMayArriveUntil).toBe(asset.putMayArriveUntil);
+		expect(
+			(await runner.t.run((ctx) => ctx.db.get("files_private_storage_reservations", reservation._id)))?.settlement.kind,
+		).toBe("held");
+		await runner.t.action(internal.r2_client.process_object_deletion_job, {
+			jobId: job._id,
+			generation: job.generation,
+		});
+		expect(test_r2_objects.has(asset.r2Key)).toBe(false);
+		expect(await runner.t.run((ctx) => ctx.db.get("files_r2_object_deletion_jobs", job._id))).not.toBeNull();
+		const now = vi.spyOn(Date, "now").mockReturnValue(job.putMayArriveUntil! + 1);
+		try {
+			await runner.t.action(internal.r2_client.process_object_deletion_job, {
+				jobId: job._id,
+				generation: job.generation,
+			});
+		} finally {
+			now.mockRestore();
+		}
+		await runner.t.run(async (ctx) => {
+			expect(await ctx.db.get("files_r2_object_deletion_jobs", job._id)).toBeNull();
+			expect((await ctx.db.get("files_private_storage_reservations", reservation._id))?.settlement.kind).toBe(
+				"deleted",
+			);
+			expect(await ctx.db.get("files_r2_assets", targetBefore.assetId!)).not.toBeNull();
 		});
 	});
 
@@ -6921,21 +7618,20 @@ describe("bash_run_command", () => {
 		);
 		expect(result.stderr).toBe("");
 		expect(result.metadata.exitCode).toBe(0);
-		expect(result.stdout).toBe(
-			"pending copy created: /docs/readme.md -> /docs/replace-target.md — replaces the existing file's content and type when accepted; review in Files\n",
+		expect(result.stdout).toMatch(
+			/^Transfer \S+: 1 ready for review, 0 skipped, 0 failed\. Activity \S+\. Review in Files\.\n$/,
 		);
 
-		// The proposal lands on the existing node; no eager stamp, so discard/expiry can never
-		// hard-delete a node cp did not create.
+		// The replacement belongs to the saved file and carries no private creation intent.
 		const rows = await runner.t.run((ctx) =>
 			ctx.db
 				.query("files_pending_updates")
-				.withIndex("by_fileNode", (q) => q.eq("fileNodeId", targetId))
+				.withIndex("by_target", (q) => q.eq("target.kind", "saved").eq("target.id", targetId))
 				.collect(),
 		);
 		expect(rows).toHaveLength(1);
-		expect(rows[0].copiedFrom).toMatchObject({ nodeId: sourceId, path: "/docs/readme.md" });
-		expect(rows[0].eagerCreated).toBeUndefined();
+		expect(rows[0].copiedFrom).toMatchObject({ target: { kind: "saved", id: sourceId }, path: "/docs/readme.md" });
+		expect(rows[0].createIntent).toBeUndefined();
 
 		// The agent's own read overlays the proposed content on the destination.
 		const overlayRead = await runner.run(`cat ${test_db_files_mount}/docs/replace-target.md`);
@@ -6955,15 +7651,15 @@ describe("bash_run_command", () => {
 		);
 		expect(result.stderr).toBe("");
 		expect(result.metadata.exitCode).toBe(0);
-		expect(result.stdout).toBe(
-			"pending copy created: /docs/readme.md -> /docs/off-target.md — replaces the existing file's content and type when accepted; review in Files\n",
+		expect(result.stdout).toMatch(
+			/^Transfer \S+: 1 ready for review, 0 skipped, 0 failed\. Activity \S+\. Review in Files\.\n$/,
 		);
 
 		// The copy waits for review like on a collaborative file. The file itself is unchanged.
 		const rows = await list_pending_updates_for_node(runner, targetBefore._id);
 		expect(rows).toHaveLength(1);
 		expect(rows[0]!.pendingReplacement).toBeDefined();
-		expect(rows[0]!.copiedFrom).toMatchObject({ nodeId: sourceId, path: "/docs/readme.md" });
+		expect(rows[0]!.copiedFrom).toMatchObject({ target: { kind: "saved", id: sourceId }, path: "/docs/readme.md" });
 		expect(await read_committed_text(runner, targetBefore._id)).toBe("replace me\n");
 
 		// The agent's own read overlays the proposed content on the destination.
@@ -6996,8 +7692,8 @@ describe("bash_run_command", () => {
 		);
 		expect(copied.stderr).toBe("");
 		expect(copied.metadata.exitCode).toBe(0);
-		expect(copied.stdout).toBe(
-			"pending copy created: /docs/readme.md -> /data/settings.yaml — replaces the existing file's content and type when accepted; review in Files\n",
+		expect(copied.stdout).toMatch(
+			/^Transfer \S+: 1 ready for review, 0 skipped, 0 failed\. Activity \S+\. Review in Files\.\n$/,
 		);
 
 		// Until the review, the file keeps its type and its text.
@@ -7080,13 +7776,16 @@ describe("bash_run_command", () => {
 		);
 		expect(plainToRich.stderr).toBe("");
 		expect(plainToRich.metadata.exitCode).toBe(0);
-		expect(plainToRich.stdout).toBe(
-			"pending copy created: /data/canonical.json -> /docs/rich-target.md — replaces the existing file's content and type when accepted; review in Files\n",
+		expect(plainToRich.stdout).toMatch(
+			/^Transfer \S+: 1 ready for review, 0 skipped, 0 failed\. Activity \S+\. Review in Files\.\n$/,
 		);
 		const richRows = await list_pending_updates_for_node(runner, richTarget._id);
 		expect(richRows).toHaveLength(1);
-		expect(richRows[0].copiedFrom).toMatchObject({ nodeId: canonicalId, path: "/data/canonical.json" });
-		expect(richRows[0].eagerCreated).toBeUndefined();
+		expect(richRows[0].copiedFrom).toMatchObject({
+			target: { kind: "saved", id: canonicalId },
+			path: "/data/canonical.json",
+		});
+		expect(richRows[0].createIntent).toBeUndefined();
 		expect(richRows[0].pendingReplacement).toMatchObject({
 			contentType: "application/json",
 			yjsRootKind: "plain_text",
@@ -7101,18 +7800,18 @@ describe("bash_run_command", () => {
 		);
 		expect(richToPlain.stderr).toBe("");
 		expect(richToPlain.metadata.exitCode).toBe(0);
-		expect(richToPlain.stdout).toBe(
-			"pending copy created: /docs/readme.md -> /data/plain-target.txt — replaces the existing file's content and type when accepted; review in Files\n",
+		expect(richToPlain.stdout).toMatch(
+			/^Transfer \S+: 1 ready for review, 0 skipped, 0 failed\. Activity \S+\. Review in Files\.\n$/,
 		);
 		const plainRows = await list_pending_updates_for_node(runner, plainTarget._id);
 		expect(plainRows).toHaveLength(1);
-		expect(plainRows[0].copiedFrom).toMatchObject({ nodeId: readmeId, path: "/docs/readme.md" });
+		expect(plainRows[0].copiedFrom).toMatchObject({ target: { kind: "saved", id: readmeId }, path: "/docs/readme.md" });
 		expect(plainRows[0].pendingReplacement).toMatchObject({
 			contentType: "text/markdown;charset=utf-8",
 			yjsRootKind: "rich_text",
 		});
 		const plainProposed = await runner.run(`cat ${test_db_files_mount}/data/plain-target.txt`);
-		expect(plainProposed.stdout).toBe(readme_seed_content);
+		expect(plainProposed.stdout).toBe(readme_copy_content);
 
 		// Accepting replaces the file as a whole on the same node: content, type, and shape.
 		// Discarding keeps the old file untouched.
@@ -7120,10 +7819,10 @@ describe("bash_run_command", () => {
 		expect(await list_pending_updates_for_node(runner, richTarget._id)).toHaveLength(0);
 		const richCommitted = await runner.run(`cat ${test_db_files_mount}/docs/rich-target.md`);
 		expect(richCommitted.stdout).toBe(plain_copy_canonical);
-		const discarded = await runner_as_user(runner).mutation(api.files_pending_updates.discard_file_pending_structural, {
-			membershipId: runner.seeded.membershipId,
-			nodeId: plainTarget._id,
-		});
+		const discarded = await runner_as_user(runner).mutation(
+			api.files_pending_updates.discard_file_pending_structural,
+			await pending_review_for_test(runner, plainTarget._id),
+		);
 		expect(discarded._nay).toBeUndefined();
 		expect(await list_pending_updates_for_node(runner, plainTarget._id)).toHaveLength(0);
 		const plainKept = await runner.run(`cat ${test_db_files_mount}/data/plain-target.txt`);
@@ -7204,7 +7903,7 @@ describe("bash_run_command", () => {
 		expect(await read_committed_text(runner, richTarget._id)).toBe(plain_copy_canonical);
 	});
 
-	test("an edit that lands while a copy is being accepted refuses that accept and survives the next one", async () => {
+	test("an edit during copy acceptance refuses the old copy and survives a fresh copy", async () => {
 		const runner = await create_bash_runner({
 			extraFiles: [
 				{ path: "/data/canonical.json", content: plain_copy_canonical, contentType: "application/json" },
@@ -7241,16 +7940,26 @@ describe("bash_run_command", () => {
 		});
 		const refused = await runner_as_user(runner).action(api.files_pending_updates.accept_file_pending_replacement, {
 			membershipId: runner.seeded.membershipId,
-			nodeId: richTarget._id,
+			target: { kind: "saved", id: richTarget._id },
 			pendingUpdateId: copyRow._id,
+			reviewedRevision: copyRow.revision,
 		});
 		fetchMock.mockImplementation(baseFetch);
 		expect(raced).toBe(true);
-		expect(refused._nay?.message).toBe("The file was edited while the copy was being accepted. Accept the copy again.");
+		expect(refused._nay?.message).toBe(files_PENDING_REPLACEMENT_BASE_CHANGED_MESSAGE);
 		const rowsAfterRefusal = await list_pending_updates_for_node(runner, richTarget._id);
 		expect(rowsAfterRefusal.find((row) => row._id === copyRow._id)?.pendingReplacement).toBeDefined();
 
-		// The next accept reads the document again, so the edit becomes a version.
+		// A fresh copy captures the new target version. Acceptance keeps the edit in history.
+		const discarded = await runner_as_user(runner).mutation(
+			api.files_pending_updates.discard_file_pending_structural,
+			await pending_review_for_test(runner, richTarget._id),
+		);
+		expect(discarded._nay).toBeUndefined();
+		const recopied = await runner.run(
+			`cp ${test_db_files_mount}/data/canonical.json ${test_db_files_mount}/docs/rich-target.md`,
+		);
+		expect(recopied.metadata.exitCode, recopied.stderr).toBe(0);
 		await accept_pending_replacement_for_test(runner, richTarget._id);
 		const versions = await version_snapshot_asset_ids(runner, richTarget._id);
 		expect(await read_version_text(runner, versions[versions.length - 2]!)).toContain("Edit during accept");
@@ -7296,17 +8005,17 @@ describe("bash_run_command", () => {
 		);
 		expect(richToPlain.stderr).toBe("");
 		expect(richToPlain.metadata.exitCode).toBe(0);
-		expect(richToPlain.stdout).toBe(
-			"pending copy created: /docs/readme.md -> /data/readme-copy.txt — review in Files\n",
+		expect(richToPlain.stdout).toMatch(
+			/^Transfer \S+: 1 ready for review, 0 skipped, 0 failed\. Activity \S+\. Review in Files\.\n$/,
 		);
-		const markdownCopy = await get_seeded_node(runner, "/data/readme-copy.txt");
-		expect(markdownCopy.textKind).toBe("rich_text");
-		expect(markdownCopy.contentType).toBe("text/markdown;charset=utf-8");
-		const markdownRows = await list_pending_updates_for_node(runner, markdownCopy._id);
-		expect(markdownRows).toHaveLength(1);
-		expect(markdownRows[0].eagerCreated).toBeDefined();
+		const markdownCopy = await get_private_entry(runner, "/data/readme-copy.txt");
+		expect(markdownCopy.pendingUpdate.createIntent).toMatchObject({
+			kind: "text",
+			textKind: "rich_text",
+			contentType: "text/markdown;charset=utf-8",
+		});
 		const markdownProposed = await runner.run(`cat ${test_db_files_mount}/data/readme-copy.txt`);
-		expect(markdownProposed.stdout).toBe(readme_seed_content);
+		expect(markdownProposed.stdout).toBe(readme_copy_content);
 
 		// JSON copied to a .md name is still JSON.
 		const plainToRich = await runner.run(
@@ -7314,28 +8023,35 @@ describe("bash_run_command", () => {
 		);
 		expect(plainToRich.stderr).toBe("");
 		expect(plainToRich.metadata.exitCode).toBe(0);
-		expect(plainToRich.stdout).toBe(
-			"pending copy created: /data/canonical.json -> /docs/canonical-copy.md — review in Files\n",
+		expect(plainToRich.stdout).toMatch(
+			/^Transfer \S+: 1 ready for review, 0 skipped, 0 failed\. Activity \S+\. Review in Files\.\n$/,
 		);
-		const jsonCopy = await get_seeded_node(runner, "/docs/canonical-copy.md");
-		expect(jsonCopy.textKind).toBe("plain_text");
-		expect(jsonCopy.contentType).toBe("application/json");
+		const jsonCopy = await get_private_entry(runner, "/docs/canonical-copy.md");
+		expect(jsonCopy.pendingUpdate.createIntent).toMatchObject({
+			kind: "text",
+			textKind: "plain_text",
+			contentType: "application/json",
+		});
 		const jsonProposed = await runner.run(`cat ${test_db_files_mount}/docs/canonical-copy.md`);
 		expect(jsonProposed.stdout).toBe(plain_copy_canonical);
 
-		// Accepting the JSON copy commits it on the node cp created. Discarding the Markdown
-		// copy removes the file cp created.
-		await accept_pending_replacement_for_test(runner, jsonCopy._id);
-		expect(await list_pending_updates_for_node(runner, jsonCopy._id)).toHaveLength(0);
+		// Save publishes the JSON copy. Discard closes the private Markdown copy.
+		const jsonSavedId = await save_private_copy_for_test(runner, "/docs/canonical-copy.md");
+		expect(await list_pending_updates_for_node(runner, jsonSavedId)).toHaveLength(0);
 		const jsonCommitted = await runner.run(`cat ${test_db_files_mount}/docs/canonical-copy.md`);
 		expect(jsonCommitted.stdout).toBe(plain_copy_canonical);
 		expect((await get_seeded_node(runner, "/docs/canonical-copy.md")).textKind).toBe("plain_text");
-		const discarded = await runner_as_user(runner).mutation(api.files_pending_updates.discard_file_pending_structural, {
+		const discarded = await runner_as_user(runner).mutation(api.files_pending_updates.discard_file_pending_update, {
 			membershipId: runner.seeded.membershipId,
-			nodeId: markdownCopy._id,
+			target: { kind: "private", id: markdownCopy.node._id },
+			pendingUpdateId: markdownCopy.pendingUpdate._id,
+			reviewedRevision: markdownCopy.pendingUpdate.revision,
 		});
 		expect(discarded._nay).toBeUndefined();
-		expect(await runner.t.run((ctx) => ctx.db.get("files_nodes", markdownCopy._id))).toBeNull();
+		expect(await runner.t.run((ctx) => ctx.db.get("files_pending_nodes", markdownCopy.node._id))).toMatchObject({
+			state: "discarded",
+		});
+		expect((await runner.run(`cat ${test_db_files_mount}/data/readme-copy.txt`)).metadata.exitCode).not.toBe(0);
 	});
 
 	test("cp of a plain text file onto a Markdown file keeps the text exactly, before review and after accept", async () => {
@@ -7366,7 +8082,7 @@ describe("bash_run_command", () => {
 		expect(target.textKind).toBe("plain_text");
 	});
 
-	test("cp of a CRLF plain text file onto a Markdown file with collaboration off stores plain text with LF on accept", async () => {
+	test("cp keeps CRLF plain text when replacing a Markdown file with collaboration off", async () => {
 		const runner = await create_bash_runner({
 			extraFiles: [
 				{
@@ -7384,14 +8100,12 @@ describe("bash_run_command", () => {
 		);
 		expect(copied.stderr).toBe("");
 		expect(copied.metadata.exitCode).toBe(0);
-		expect(copied.stdout).toBe(
-			"pending copy created: /data/notes.txt -> /docs/off-notes.md — replaces the existing file's content and type when accepted; review in Files\n",
+		expect(copied.stdout).toMatch(
+			/^Transfer \S+: 1 ready for review, 0 skipped, 0 failed\. Activity \S+\. Review in Files\.\n$/,
 		);
 		expect(await list_pending_updates_for_node(runner, targetBefore._id)).toHaveLength(1);
 
-		// Accept: the old content stays in history next to the new one. Line endings are
-		// normalized and nothing else is parsed, so the HTML comment survives. The file is
-		// plain text now, like its source.
+		// The old content stays in history. The source's line endings and comment survive.
 		await accept_pending_replacement_for_test(runner, targetBefore._id);
 		expect(await list_pending_updates_for_node(runner, targetBefore._id)).toHaveLength(0);
 		const targetAfter = await get_seeded_node(runner, "/docs/off-notes.md");
@@ -7402,7 +8116,7 @@ describe("bash_run_command", () => {
 		expect(targetAfter.contentType).toBe("text/plain;charset=utf-8");
 		expect(targetAfter.textKind).toBe("plain_text");
 		const saved = await runner.run(`cat ${test_db_files_mount}/docs/off-notes.md`);
-		expect(saved.stdout).toBe(plain_copy_lossy);
+		expect(saved.stdout).toBe(plain_copy_lossy.replaceAll("\n", "\r\n"));
 	});
 
 	test("cp onto a file with collaboration off still refuses a locked destination, and a member save keeps the copy pending", async () => {
@@ -7447,8 +8161,9 @@ describe("bash_run_command", () => {
 		expect(memberSave._nay).toBeUndefined();
 		const refused = await runner_as_user(runner).action(api.files_pending_updates.accept_file_pending_replacement, {
 			membershipId: runner.seeded.membershipId,
-			nodeId: savedOverId,
+			target: { kind: "saved", id: savedOverId },
 			pendingUpdateId: copyRow._id,
+			reviewedRevision: copyRow.revision,
 		});
 		expect(refused._nay?.message).toBe(files_PENDING_REPLACEMENT_BASE_CHANGED_MESSAGE);
 		const rowsAfterRefusal = await list_pending_updates_for_node(runner, savedOverId);
@@ -7524,14 +8239,16 @@ describe("bash_run_command", () => {
 				`cp ${flag} ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/docs/no-clobber-target.md`,
 			);
 			expect(result.metadata.exitCode).toBe(0);
-			expect(result.stdout).toBe("");
+			expect(result.stdout).toMatch(
+				/^Transfer \S+: 0 ready for review, 1 skipped, 0 failed\. Activity \S+\. Review in Files\.\n$/,
+			);
 			expect(result.stderr).toBe("");
 		}
 
 		const rows = await runner.t.run((ctx) =>
 			ctx.db
 				.query("files_pending_updates")
-				.withIndex("by_fileNode", (q) => q.eq("fileNodeId", targetId))
+				.withIndex("by_target", (q) => q.eq("target.kind", "saved").eq("target.id", targetId))
 				.collect(),
 		);
 		expect(rows).toHaveLength(0);
@@ -7541,13 +8258,13 @@ describe("bash_run_command", () => {
 
 	test("cp no-clobber leaves a destination created during the command unchanged", async () => {
 		const runner = await create_bash_runner();
-		const baseImpl = runner.runAction.getMockImplementation();
+		const baseImpl = runner.runMutation.getMockImplementation();
 		if (baseImpl == null) {
-			throw new Error("expected the runner runAction spy to have an implementation");
+			throw new Error("expected the runner runMutation spy to have an implementation");
 		}
 		let raced = false;
-		runner.runAction.mockImplementation(async (ref, actionArgs) => {
-			if (!raced && function_name_of(ref) === "files_nodes_content:create_file_by_path") {
+		runner.runMutation.mockImplementation(async (ref, actionArgs) => {
+			if (!raced && function_name_of(ref) === "files_transfer:start_for_agent") {
 				raced = true;
 				await runner.t.run((ctx) =>
 					seed_organization_node(
@@ -7572,18 +8289,21 @@ describe("bash_run_command", () => {
 		const pendingUpdates = await runner.t.run((ctx) =>
 			ctx.db
 				.query("files_pending_updates")
-				.withIndex("by_fileNode", (q) => q.eq("fileNodeId", targetId))
+				.withIndex("by_target", (q) => q.eq("target.kind", "saved").eq("target.id", targetId))
 				.collect(),
 		);
 		const readBack = await runner.run(`cat ${test_db_files_mount}/docs/raced-target.md`);
 
 		expect(raced).toBe(true);
-		expect(result).toMatchObject({ stdout: "", stderr: "", metadata: { exitCode: 0 } });
+		expect(result).toMatchObject({ stderr: "", metadata: { exitCode: 0 } });
+		expect(result.stdout).toMatch(
+			/^Transfer \S+: 0 ready for review, 1 skipped, 0 failed\. Activity \S+\. Review in Files\.\n$/,
+		);
 		expect(pendingUpdates).toHaveLength(0);
 		expect(readBack.stdout).toBe("raced content\n");
 	});
 
-	test("cp onto a path vacated by the user's own pending move is rejected", async () => {
+	test("cp creates a private file at a path vacated by the user's pending move", async () => {
 		const runner = await create_bash_runner();
 
 		const move = await runner.run(`mv ${test_db_files_mount}/docs/tutorial.md ${test_db_files_mount}/docs/guide.md`);
@@ -7594,25 +8314,25 @@ describe("bash_run_command", () => {
 		const vacatedCopy = await runner.run(
 			`cp ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/docs/tutorial.md`,
 		);
-		expect(vacatedCopy.metadata.exitCode).not.toBe(0);
-		expect(vacatedCopy.stderr).toBe(
-			"cp: cannot create '/docs/tutorial.md': the path is vacated by your pending move. Accept or discard that proposal first, or choose a different destination path.\n",
-		);
+		expect(vacatedCopy.metadata.exitCode, vacatedCopy.stderr).toBe(0);
+		const copyDraft = await get_private_entry(runner, "/docs/tutorial.md");
+		expect(copyDraft.pendingUpdate.target).toEqual({ kind: "private", id: copyDraft.node._id });
 
 		// The moving node keeps its single move-only pending update doc without attached content.
 		const rows = await runner.t.run((ctx) =>
 			ctx.db
 				.query("files_pending_updates")
-				.withIndex("by_fileNode", (q) => q.eq("fileNodeId", tutorialId))
+				.withIndex("by_target", (q) => q.eq("target.kind", "saved").eq("target.id", tutorialId))
 				.collect(),
 		);
 		expect(rows).toHaveLength(1);
 		expect(rows[0].pendingMove).toMatchObject({ destName: "guide.md" });
-		expect(rows[0].unstagedStateId).toBeUndefined();
+		expect(rows[0].content).toBeUndefined();
 
-		// The vacated path still reads as missing; the claimed destination keeps the moved content.
+		// The copy and moved source keep separate content and identities.
 		const vacatedRead = await runner.run(`cat ${test_db_files_mount}/docs/tutorial.md`);
-		expect(vacatedRead.metadata.exitCode).not.toBe(0);
+		expect(vacatedRead.metadata.exitCode).toBe(0);
+		expect(vacatedRead.stdout).toContain("# Readme");
 		const movedRead = await runner.run(`cat ${test_db_files_mount}/docs/guide.md`);
 		expect(movedRead.metadata.exitCode).toBe(0);
 		expect(movedRead.stdout).toContain("zeta");
@@ -7620,7 +8340,69 @@ describe("bash_run_command", () => {
 		// A genuinely free path still takes a plain pending copy.
 		const freeCopy = await runner.run(`cp ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/docs/fresh.md`);
 		expect(freeCopy.metadata.exitCode).toBe(0);
-		expect(freeCopy.stdout).toBe("pending copy created: /docs/readme.md -> /docs/fresh.md — review in Files\n");
+		expect(freeCopy.stdout).toMatch(
+			/^Transfer \S+: 1 ready for review, 0 skipped, 0 failed\. Activity \S+\. Review in Files\.\n$/,
+		);
+	});
+
+	test("keeps a private cwd after another chat renames and saves its folder", async () => {
+		const runner = await create_bash_runner();
+		const entered = await runner.run("mkdir draft-cwd && cd draft-cwd");
+		expect(entered.metadata.exitCode).toBe(0);
+		const draft = await get_private_entry(runner, "/draft-cwd");
+		const target = { kind: "private" as const, id: draft.node._id };
+		const moved = await runner.t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
+			organizationId: runner.seeded.organizationId,
+			workspaceId: runner.seeded.workspaceId,
+			userId: runner.seeded.userId,
+			target,
+			destParent: { kind: "root" },
+			destName: "renamed-cwd",
+		});
+		expect(moved._nay).toBeUndefined();
+		const read = await runner.run("pwd");
+		expect(read.stdout).toBe(`${test_db_files_mount}/renamed-cwd\n`);
+		const proposal = await runner.t.run((ctx) => ctx.db.get("files_pending_updates", draft.pendingUpdate._id));
+		const saved = await runner.t
+			.withIdentity({ issuer: "https://clerk.test", external_id: runner.seeded.userId })
+			.action(api.files_pending_updates.save_file_pending_update, {
+				membershipId: runner.seeded.membershipId,
+				target,
+				pendingUpdateId: draft.pendingUpdate._id,
+				reviewedRevision: proposal!.revision,
+			});
+		if (saved._nay) throw new Error(saved._nay.message);
+		expect((await runner.run("pwd")).stdout).toBe(`${test_db_files_mount}/renamed-cwd\n`);
+		const state = await runner.t.query(internal.ai_chat.get_thread_state, {
+			organizationId: runner.seeded.organizationId,
+			workspaceId: runner.seeded.workspaceId,
+			threadId: runner.threadId,
+		});
+		expect(state.bashCwdTarget).toEqual(saved._yay.target);
+	});
+
+	test("leaves a discarded cwd instead of adopting a new folder at the same path", async () => {
+		const runner = await create_bash_runner();
+		expect((await runner.run("mkdir draft-cwd && cd draft-cwd")).metadata.exitCode).toBe(0);
+		const draft = await get_private_entry(runner, "/draft-cwd");
+		const discarded = await runner.t
+			.withIdentity({ issuer: "https://clerk.test", external_id: runner.seeded.userId })
+			.mutation(api.files_pending_updates.discard_file_pending_update, {
+				membershipId: runner.seeded.membershipId,
+				target: { kind: "private", id: draft.node._id },
+				pendingUpdateId: draft.pendingUpdate._id,
+				reviewedRevision: draft.pendingUpdate.revision,
+			});
+		expect(discarded._nay).toBeUndefined();
+		const replacement = await runner.t.mutation(internal.files_nodes.create_private_node_by_path, {
+			organizationId: runner.seeded.organizationId,
+			workspaceId: runner.seeded.workspaceId,
+			userId: runner.seeded.userId,
+			path: "/draft-cwd",
+			kind: "folder",
+		});
+		expect(replacement._nay).toBeUndefined();
+		expect((await runner.run("pwd")).stdout).toBe(`${test_db_files_mount}\n`);
 	});
 
 	test("mv of the current working folder follows the pending move for cwd", async () => {
@@ -7639,6 +8421,69 @@ describe("bash_run_command", () => {
 		const read = await runner.run("cat readme.md");
 		expect(read.metadata.exitCode).toBe(0);
 		expect(read.stdout).toContain("# Readme");
+	});
+
+	test.each(["", "; cat ../docs/replacement.txt", "; (cd ..; cd docs; cat replacement.txt)"])(
+		"keeps the moved cwd when the old path is reused%s",
+		async (afterReuse) => {
+			const runner = await create_bash_runner();
+			const folderId = await get_seeded_node_id(runner, "/docs");
+			expect((await runner.run("cd docs")).metadata.exitCode).toBe(0);
+			const moved = await runner.run(
+				`mv ../docs ../archive; mkdir ../docs; printf replacement > ../docs/replacement.txt${afterReuse}`,
+			);
+			expect(moved.metadata.exitCode, moved.stderr).toBe(0);
+			expect(moved.metadata.nextCwd).toBe(`${test_db_files_mount}/archive`);
+			const state = await runner.t.query(internal.ai_chat.get_thread_state, {
+				organizationId: runner.seeded.organizationId,
+				workspaceId: runner.seeded.workspaceId,
+				threadId: runner.threadId,
+			});
+			expect(state.bashCwdTarget).toEqual({ kind: "saved", id: folderId });
+			expect((await runner.run("cat readme.md")).stdout).toContain("# Readme");
+			expect((await runner.run("cat ../docs/replacement.txt")).stdout).toBe("replacement");
+		},
+	);
+
+	test.each(["cd ..; cd docs", "cd .", "builtin cd .", "go=cd; $go ."])(
+		"cd can enter a new folder at the moved cwd's old path: %s",
+		async (command) => {
+			const runner = await create_bash_runner();
+			expect((await runner.run("cd docs")).metadata.exitCode).toBe(0);
+			const entered = await runner.run(`mv ../docs ../archive; mkdir ../docs; ${command}`);
+			expect(entered.metadata.exitCode, entered.stderr).toBe(0);
+			expect(entered.metadata.nextCwd).toBe(`${test_db_files_mount}/docs`);
+			const replacement = await get_private_entry(runner, "/docs");
+			const state = await runner.t.query(internal.ai_chat.get_thread_state, {
+				organizationId: runner.seeded.organizationId,
+				workspaceId: runner.seeded.workspaceId,
+				threadId: runner.threadId,
+			});
+			expect(state.bashCwdTarget).toEqual({ kind: "private", id: replacement.node._id });
+		},
+	);
+
+	test.each(["PWD=/tmp", "unset PWD", "exit 0"])("persists the actual cwd after %s", async (command) => {
+		const runner = await create_bash_runner();
+		const entered = await runner.run(`cd docs; ${command}`);
+		expect(entered.metadata.exitCode, entered.stderr).toBe(0);
+		expect(entered.metadata.nextCwd).toBe(`${test_db_files_mount}/docs`);
+		expect((await runner.run("cat readme.md")).stdout).toContain("# Readme");
+	});
+
+	test("keeps the outer cwd when a subshell moves it before any app command observes it", async () => {
+		const runner = await create_bash_runner();
+		const moved = await runner.run("cd docs; (cd ..; mv docs archive; mkdir docs)");
+		expect(moved.metadata.exitCode, moved.stderr).toBe(0);
+		expect(moved.metadata.nextCwd).toBe(`${test_db_files_mount}/archive`);
+		expect((await runner.run("cat readme.md")).stdout).toContain("# Readme");
+	});
+
+	test("leaves an archived cwd when a new folder reuses its path in the same call", async () => {
+		const runner = await create_bash_runner();
+		const archived = await runner.run("cd docs; rm -r ../docs; mkdir ../docs");
+		expect(archived.metadata.exitCode, archived.stderr).toBe(0);
+		expect(archived.metadata.nextCwd).toBe(test_db_files_mount);
 	});
 
 	test("a stale thread cwd follows a pending move proposed outside the thread", async () => {
@@ -7669,11 +8514,12 @@ describe("bash_run_command", () => {
 
 		await runner.run(`mv ${test_db_files_mount}/docs/tutorial.md ${test_db_files_mount}/docs/guide.md`);
 
-		// Moving by the visible path into a folder keeps the visible basename, like real mv,
-		// and stdout prints the visible source path the agent used, not the committed one.
+		// Moving by the visible path into a folder keeps its visible name.
 		const folderMove = await runner.run(`mv ${test_db_files_mount}/docs/guide.md ${test_db_files_mount}/reports`);
 		expect(folderMove.metadata.exitCode).toBe(0);
-		expect(folderMove.stdout).toBe("pending move created: /docs/guide.md -> /reports/guide.md — review in Files\n");
+		expect(folderMove.stdout).toMatch(
+			/^Transfer \S+: 1 ready for review, 0 skipped, 0 failed\. Activity \S+\. Review in Files\.\n$/,
+		);
 
 		const list = await runner.run(`ls ${test_db_files_mount}/reports`);
 		expect(list.metadata.exitCode).toBe(0);
@@ -7681,18 +8527,19 @@ describe("bash_run_command", () => {
 		expect(list.stdout).not.toContain("tutorial.md");
 	});
 
-	test("mv into a moved destination folder prints the visible destination", async () => {
+	test("mv into a moved destination folder uses its visible path", async () => {
 		const runner = await create_bash_runner();
 
 		const folderMove = await runner.run(`mv ${test_db_files_mount}/reports ${test_db_files_mount}/archive`);
 		expect(folderMove.metadata.exitCode).toBe(0);
 
-		// The mutation joins the committed parent path (/reports); stdout must keep the
-		// visible join the agent asked for, or the model follows up on a hidden path.
+		// The parent keeps its saved identity while the shell uses its visible path.
 		const move = await runner.run(`mv ${test_db_files_mount}/docs/tutorial.md ${test_db_files_mount}/archive`);
 		expect(move.stderr).toBe("");
 		expect(move.metadata.exitCode).toBe(0);
-		expect(move.stdout).toBe("pending move created: /docs/tutorial.md -> /archive/tutorial.md — review in Files\n");
+		expect(move.stdout).toMatch(
+			/^Transfer \S+: 1 ready for review, 0 skipped, 0 failed\. Activity \S+\. Review in Files\.\n$/,
+		);
 
 		const list = await runner.run(`ls ${test_db_files_mount}/archive`);
 		expect(list.metadata.exitCode).toBe(0);
@@ -7716,26 +8563,22 @@ describe("bash_run_command", () => {
 		// The committed child at the visible destination is a real conflict, not a claim.
 		const conflict = await runner.run(`mv ${test_db_files_mount}/other/report.md ${test_db_files_mount}/new`);
 		expect(conflict.metadata.exitCode).not.toBe(0);
-		expect(conflict.stderr).toBe(
-			"mv: destination '/new/report.md' already exists. To propose replacing the existing file, add -f: the replacement only applies after the user accepts it in Files.\n",
-		);
+		expect(conflict.stderr).toBe("mv: The destination already exists\n");
 
 		// A visible path claimed by a file's own pending move is still rejected: one visible path, one proposal.
 		const claim = await runner.run(`mv ${test_db_files_mount}/other/claim.md ${test_db_files_mount}/new/claim.md`);
 		expect(claim.metadata.exitCode).toBe(0);
 		const claimedDest = await runner.run(`mv ${test_db_files_mount}/third/claim.md ${test_db_files_mount}/new`);
 		expect(claimedDest.metadata.exitCode).not.toBe(0);
-		expect(claimedDest.stderr).toBe(
-			"mv: destination '/new/claim.md' is already claimed by a pending move. Choose a different destination path.\n",
-		);
+		expect(claimedDest.stderr).toBe("mv: The destination already exists\n");
 
 		// -f proposes the structural replace on the committed child, under the folder's
 		// committed identity, so the replacement travels with the folder when its move is accepted.
 		const forced = await runner.run(`mv -f ${test_db_files_mount}/other/report.md ${test_db_files_mount}/new`);
 		expect(forced.stderr).toBe("");
 		expect(forced.metadata.exitCode).toBe(0);
-		expect(forced.stdout).toBe(
-			"pending move created: /other/report.md -> /new/report.md — replaces the existing file when accepted; review in Files\n",
+		expect(forced.stdout).toMatch(
+			/^Transfer \S+: 1 ready for review, 0 skipped, 0 failed\. Activity \S+\. Review in Files\.\n$/,
 		);
 		const oldId = await get_seeded_node_id(runner, "/old");
 		const targetId = await get_seeded_node_id(runner, "/old/report.md");
@@ -7743,20 +8586,20 @@ describe("bash_run_command", () => {
 		const sourceRows = await runner.t.run((ctx) =>
 			ctx.db
 				.query("files_pending_updates")
-				.withIndex("by_fileNode", (q) => q.eq("fileNodeId", sourceId))
+				.withIndex("by_target", (q) => q.eq("target.kind", "saved").eq("target.id", sourceId))
 				.collect(),
 		);
 		expect(sourceRows).toHaveLength(1);
 		expect(sourceRows[0].pendingMove).toMatchObject({
-			destParentId: oldId,
+			destParent: { kind: "saved", id: oldId },
 			destName: "report.md",
-			replacesNodeId: targetId,
+			replacesTarget: { kind: "saved", id: targetId },
 		});
 		expect(sourceRows[0].copiedFrom).toBeUndefined();
 		const targetRows = await runner.t.run((ctx) =>
 			ctx.db
 				.query("files_pending_updates")
-				.withIndex("by_fileNode", (q) => q.eq("fileNodeId", targetId))
+				.withIndex("by_target", (q) => q.eq("target.kind", "saved").eq("target.id", targetId))
 				.collect(),
 		);
 		expect(targetRows).toHaveLength(0);
@@ -7782,9 +8625,7 @@ describe("bash_run_command", () => {
 			`mv ${test_db_files_mount}/docs/incoming.md ${test_db_files_mount}/archive/existing.md`,
 		);
 		expect(conflict.metadata.exitCode).not.toBe(0);
-		expect(conflict.stderr).toBe(
-			"mv: destination '/archive/existing.md' already exists. To propose replacing the existing file, add -f: the replacement only applies after the user accepts it in Files.\n",
-		);
+		expect(conflict.stderr).toBe("mv: The destination already exists\n");
 
 		// -f proposes the structural replace on the committed child.
 		const forced = await runner.run(
@@ -7792,22 +8633,22 @@ describe("bash_run_command", () => {
 		);
 		expect(forced.stderr).toBe("");
 		expect(forced.metadata.exitCode).toBe(0);
-		expect(forced.stdout).toBe(
-			"pending move created: /docs/incoming.md -> /archive/existing.md — replaces the existing file when accepted; review in Files\n",
+		expect(forced.stdout).toMatch(
+			/^Transfer \S+: 1 ready for review, 0 skipped, 0 failed\. Activity \S+\. Review in Files\.\n$/,
 		);
 		const targetId = await get_seeded_node_id(runner, "/reports/existing.md");
 		const sourceId = await get_seeded_node_id(runner, "/docs/incoming.md");
 		const sourceRows = await runner.t.run((ctx) =>
 			ctx.db
 				.query("files_pending_updates")
-				.withIndex("by_fileNode", (q) => q.eq("fileNodeId", sourceId))
+				.withIndex("by_target", (q) => q.eq("target.kind", "saved").eq("target.id", sourceId))
 				.collect(),
 		);
 		expect(sourceRows).toHaveLength(1);
 		expect(sourceRows[0].pendingMove).toMatchObject({
-			destParentId: reportsId,
+			destParent: { kind: "saved", id: reportsId },
 			destName: "existing.md",
-			replacesNodeId: targetId,
+			replacesTarget: { kind: "saved", id: targetId },
 		});
 		expect(await list_pending_updates_for_node(runner, targetId)).toHaveLength(0);
 
@@ -7820,20 +8661,20 @@ describe("bash_run_command", () => {
 		);
 		expect(structural.stderr).toBe("");
 		expect(structural.metadata.exitCode).toBe(0);
-		expect(structural.stdout).toBe(
-			"pending move created: /uploaded.md -> /archive/plain.md — replaces the existing file when accepted; review in Files\n",
+		expect(structural.stdout).toMatch(
+			/^Transfer \S+: 1 ready for review, 0 skipped, 0 failed\. Activity \S+\. Review in Files\.\n$/,
 		);
 		const structuralRows = await runner.t.run((ctx) =>
 			ctx.db
 				.query("files_pending_updates")
-				.withIndex("by_fileNode", (q) => q.eq("fileNodeId", uploadedId))
+				.withIndex("by_target", (q) => q.eq("target.kind", "saved").eq("target.id", uploadedId))
 				.collect(),
 		);
 		expect(structuralRows).toHaveLength(1);
 		expect(structuralRows[0].pendingMove).toMatchObject({
-			destParentId: reportsId,
+			destParent: { kind: "saved", id: reportsId },
 			destName: "plain.md",
-			replacesNodeId: plainId,
+			replacesTarget: { kind: "saved", id: plainId },
 		});
 
 		// An exact dest path presented by its own pending move is still rejected.
@@ -7843,9 +8684,7 @@ describe("bash_run_command", () => {
 			`mv -f ${test_db_files_mount}/docs/tutorial.md ${test_db_files_mount}/docs/claim.md`,
 		);
 		expect(claimedDest.metadata.exitCode).not.toBe(0);
-		expect(claimedDest.stderr).toBe(
-			"mv: destination '/docs/claim.md' is already claimed by a pending move. Choose a different destination path.\n",
-		);
+		expect(claimedDest.stderr).toBe("mv: Path already exists\n");
 	});
 
 	test("cp into an existing folder keeps the visible name of a moved source", async () => {
@@ -7856,7 +8695,9 @@ describe("bash_run_command", () => {
 		// Copying by the visible path into a folder keeps the visible basename, like real cp.
 		const folderCopy = await runner.run(`cp ${test_db_files_mount}/docs/guide.md ${test_db_files_mount}/reports`);
 		expect(folderCopy.metadata.exitCode).toBe(0);
-		expect(folderCopy.stdout).toBe("pending copy created: /docs/guide.md -> /reports/guide.md — review in Files\n");
+		expect(folderCopy.stdout).toMatch(
+			/^Transfer \S+: 1 ready for review, 0 skipped, 0 failed\. Activity \S+\. Review in Files\.\n$/,
+		);
 
 		const read = await runner.run(`cat ${test_db_files_mount}/reports/guide.md`);
 		expect(read.metadata.exitCode).toBe(0);
@@ -7870,11 +8711,13 @@ describe("bash_run_command", () => {
 		const folderMove = await runner.run(`mv ${test_db_files_mount}/reports ${test_db_files_mount}/archive`);
 		expect(folderMove.metadata.exitCode).toBe(0);
 
-		// cp into the moved folder's VISIBLE path succeeds; stdout shows the visible join.
+		// cp uses the moved folder's visible path.
 		const copy = await runner.run(`cp ${test_db_files_mount}/docs/tutorial.md ${test_db_files_mount}/archive`);
 		expect(copy.stderr).toBe("");
 		expect(copy.metadata.exitCode).toBe(0);
-		expect(copy.stdout).toBe("pending copy created: /docs/tutorial.md -> /archive/tutorial.md — review in Files\n");
+		expect(copy.stdout).toMatch(
+			/^Transfer \S+: 1 ready for review, 0 skipped, 0 failed\. Activity \S+\. Review in Files\.\n$/,
+		);
 
 		// The new file lists under the visible folder path and reads back.
 		const list = await runner.run(`ls ${test_db_files_mount}/archive`);
@@ -7884,10 +8727,9 @@ describe("bash_run_command", () => {
 		expect(read.metadata.exitCode).toBe(0);
 		expect(read.stdout).toContain("zeta");
 
-		// The eager committed node sits under the moved folder's COMMITTED path, so it
-		// travels with the folder when the move is accepted.
-		const createdNode = await get_seeded_node(runner, "/reports/tutorial.md");
-		expect(createdNode.parentId).toBe(reportsId);
+		// The private child keeps the saved folder's identity as its parent.
+		const created = await get_private_entry(runner, "/archive/tutorial.md");
+		expect(created.node.parent).toEqual({ kind: "saved", id: reportsId });
 	});
 
 	test("cp with an explicit dest path under a moved folder creates under the committed folder", async () => {
@@ -7897,17 +8739,17 @@ describe("bash_run_command", () => {
 		const folderMove = await runner.run(`mv ${test_db_files_mount}/reports ${test_db_files_mount}/archive`);
 		expect(folderMove.metadata.exitCode).toBe(0);
 
-		// cp to an explicit missing name under the moved folder's VISIBLE path succeeds;
-		// stdout shows the visible join.
+		// cp can name a new private child under the moved folder's visible path.
 		const copy = await runner.run(`cp ${test_db_files_mount}/docs/tutorial.md ${test_db_files_mount}/archive/copy.md`);
 		expect(copy.stderr).toBe("");
 		expect(copy.metadata.exitCode).toBe(0);
-		expect(copy.stdout).toBe("pending copy created: /docs/tutorial.md -> /archive/copy.md — review in Files\n");
+		expect(copy.stdout).toMatch(
+			/^Transfer \S+: 1 ready for review, 0 skipped, 0 failed\. Activity \S+\. Review in Files\.\n$/,
+		);
 
-		// The eager node lives under the moved folder's COMMITTED path, and no committed
-		// /archive node exists, so the folder move stays acceptable.
-		const createdNode = await get_seeded_node(runner, "/reports/copy.md");
-		expect(createdNode.parentId).toBe(reportsId);
+		// The child stays private while its parent has a pending move.
+		const created = await get_private_entry(runner, "/archive/copy.md");
+		expect(created.node.parent).toEqual({ kind: "saved", id: reportsId });
 		const committedArchive = await runner.t.run((ctx) =>
 			ctx.db
 				.query("files_nodes")
@@ -7926,22 +8768,24 @@ describe("bash_run_command", () => {
 		expect(list.metadata.exitCode).toBe(0);
 		expect(list.stdout.trim().split("\n")).toContain("copy.md");
 
-		// Accepting the folder move through the real mutation moves the copy with it.
+		// Saving the parent move keeps the same private child at the visible path.
 		const asUser = runner.t.withIdentity({
 			issuer: "https://clerk.test",
 			subject: "clerk-bash-cp-accept",
 			external_id: runner.seeded.userId,
 			email: "bash-cp-accept@test.local",
 		});
-		const accepted = await asUser.mutation(api.files_pending_updates.apply_file_pending_move, {
-			membershipId: runner.seeded.membershipId,
-			nodeId: reportsId,
-		});
+		const accepted = await asUser.mutation(
+			api.files_pending_updates.apply_file_pending_move,
+			await pending_review_for_test(runner, reportsId),
+		);
 		expect(accepted._nay).toBeUndefined();
 		const movedFolder = await get_seeded_node(runner, "/archive");
 		expect(movedFolder._id).toBe(reportsId);
-		const movedCopy = await get_seeded_node(runner, "/archive/copy.md");
-		expect(movedCopy._id).toBe(createdNode._id);
+		const movedCopy = await get_private_entry(runner, "/archive/copy.md");
+		expect(movedCopy.node._id).toBe(created.node._id);
+		const savedCopyId = await save_private_copy_for_test(runner, "/archive/copy.md");
+		expect((await get_seeded_node(runner, "/archive/copy.md"))._id).toBe(savedCopyId);
 	});
 
 	test("mkdir under a moved folder's visible path creates under the committed folder", async () => {
@@ -7964,11 +8808,10 @@ describe("bash_run_command", () => {
 		expect(list.stdout.trim().split("\n")).toContain("sub/");
 		expect(list.stdout.trim().split("\n")).toContain("deep/");
 
-		// The committed folders live under the moved folder's COMMITTED path, and no
-		// committed /archive node exists, so the folder move stays acceptable.
-		const subNode = await get_seeded_node(runner, "/reports/sub");
-		expect(subNode.parentId).toBe(reportsId);
-		const deepSubNode = await get_seeded_node(runner, "/reports/deep/sub");
+		// New folders stay private and keep their parent's identity.
+		const sub = await get_private_entry(runner, "/archive/sub");
+		expect(sub.node.parent).toEqual({ kind: "saved", id: reportsId });
+		const deepSub = await get_private_entry(runner, "/archive/deep/sub");
 		const committedArchive = await runner.t.run((ctx) =>
 			ctx.db
 				.query("files_nodes")
@@ -7983,41 +8826,41 @@ describe("bash_run_command", () => {
 		);
 		expect(committedArchive).toBeNull();
 
-		// Accepting the folder move through the real mutation moves the new folders with it.
+		// Saving the parent move keeps both private folders in place.
 		const asUser = runner.t.withIdentity({
 			issuer: "https://clerk.test",
 			subject: "clerk-bash-mkdir-accept",
 			external_id: runner.seeded.userId,
 			email: "bash-mkdir-accept@test.local",
 		});
-		const accepted = await asUser.mutation(api.files_pending_updates.apply_file_pending_move, {
-			membershipId: runner.seeded.membershipId,
-			nodeId: reportsId,
-		});
+		const accepted = await asUser.mutation(
+			api.files_pending_updates.apply_file_pending_move,
+			await pending_review_for_test(runner, reportsId),
+		);
 		expect(accepted._nay).toBeUndefined();
-		const movedSub = await get_seeded_node(runner, "/archive/sub");
-		expect(movedSub._id).toBe(subNode._id);
-		const movedDeepSub = await get_seeded_node(runner, "/archive/deep/sub");
-		expect(movedDeepSub._id).toBe(deepSubNode._id);
+		const movedSub = await get_private_entry(runner, "/archive/sub");
+		expect(movedSub.node._id).toBe(sub.node._id);
+		const movedDeepSub = await get_private_entry(runner, "/archive/deep/sub");
+		expect(movedDeepSub.node._id).toBe(deepSub.node._id);
 	});
 
-	test("mkdir at a path vacated by the user's own pending move is rejected", async () => {
+	test("mkdir can create private folders at a path vacated by the user's pending move", async () => {
 		const runner = await create_bash_runner();
 
 		const folderMove = await runner.run(`mv ${test_db_files_mount}/reports ${test_db_files_mount}/archive`);
 		expect(folderMove.metadata.exitCode).toBe(0);
 
-		// The vacated committed area must not silently regrow committed folders.
+		// Plain mkdir still needs a visible parent. Recursive mkdir creates private parents.
 		const plain = await runner.run(`mkdir ${test_db_files_mount}/reports/sub`);
 		expect(plain.metadata.exitCode).not.toBe(0);
 		expect(plain.stderr).toContain(
 			`mkdir: cannot create directory '${test_db_files_mount}/reports/sub': No such file or directory`,
 		);
 		const recursive = await runner.run(`mkdir -p ${test_db_files_mount}/reports/sub`);
-		expect(recursive.metadata.exitCode).not.toBe(0);
-		expect(recursive.stderr).toContain(
-			`mkdir: cannot create directory '${test_db_files_mount}/reports/sub': No such file or directory`,
-		);
+		expect(recursive.metadata.exitCode, recursive.stderr).toBe(0);
+		const parent = await get_private_entry(runner, "/reports");
+		const child = await get_private_entry(runner, "/reports/sub");
+		expect(child.node.parent).toEqual({ kind: "private", id: parent.node._id });
 
 		// No committed node was created under the vacated path.
 		const committedSub = await runner.t.run((ctx) =>
@@ -8072,7 +8915,7 @@ describe("bash_run_command", () => {
 
 		const copy = await runner.run(`cp ${test_db_files_mount}/docs/tutorial.md ${test_db_files_mount}/foo.md/sub/y.md`);
 		expect(copy.metadata.exitCode).not.toBe(0);
-		expect(copy.stderr).toBe("cp: cannot create regular file '/foo.md/sub/y.md': Not a directory\n");
+		expect(copy.stderr).toBe("cp: the destination parent is not a directory\n");
 
 		// No committed folder grew under the pending file claim.
 		const committedFoo = await runner.t.run((ctx) =>
@@ -8121,28 +8964,90 @@ describe("bash_run_command", () => {
 
 		const sameFile = await runner.run(`cp ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/docs`);
 		expect(sameFile.metadata.exitCode).not.toBe(0);
-		expect(sameFile.stderr).toBe(
-			`cp: '${test_db_files_mount}/docs/readme.md' and '${test_db_files_mount}/docs' are the same file\n`,
-		);
+		expect(sameFile.stderr).toBe("cp: A copy cannot replace or merge into its sources\n");
 
 		const folderOccupant = await runner.run(`cp ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/conflict`);
 		expect(folderOccupant.metadata.exitCode).not.toBe(0);
-		expect(folderOccupant.stderr).toBe("cp: cannot overwrite directory '/conflict/readme.md' with non-directory\n");
+		expect(folderOccupant.stderr).toBe("cp: The source and destination types differ\n");
 
 		const folderSource = await runner.run(`cp ${test_db_files_mount}/docs ${test_db_files_mount}/docs-copy`);
 		expect(folderSource.metadata.exitCode).not.toBe(0);
-		expect(folderSource.stderr).toBe("cp: app folder copy is not supported; copy individual files\n");
-
-		const recursiveCopy = await runner.run(`cp -r ${test_db_files_mount}/docs ${test_db_files_mount}/docs-copy`);
-		expect(recursiveCopy.metadata.exitCode).not.toBe(0);
-		expect(recursiveCopy.stderr).toBe("cp: app folder copy is not supported; copy individual files\n");
+		expect(folderSource.stderr).toBe("cp: copying a folder requires -R\n");
 
 		const missingSource = await runner.run(`cp ${test_db_files_mount}/nope.md ${test_db_files_mount}/copy.md`);
 		expect(missingSource.metadata.exitCode).not.toBe(0);
-		expect(missingSource.stderr).toBe(`cp: cannot stat '${test_db_files_mount}/nope.md': No such file or directory\n`);
+		expect(missingSource.stderr).toBe(`cp: source '${test_db_files_mount}/nope.md' is not available\n`);
 
 		const rows = await runner.t.run((ctx) => ctx.db.query("files_pending_updates").collect());
 		expect(rows).toHaveLength(0);
+	});
+
+	test.each(["cp", "mv"] as const)("%s handles multiple app sources in one transfer", async (command) => {
+		const runner = await create_bash_runner({
+			extraFiles: [
+				{ path: "/data/one.txt", content: "one\n" },
+				{ path: "/data/two.txt", content: "two\n" },
+			],
+		});
+		const result = await runner.run(
+			`${command} ${test_db_files_mount}/data/one.txt ${test_db_files_mount}/data/two.txt ${test_db_files_mount}/reports`,
+		);
+		expect(result.metadata.exitCode, result.stderr).toBe(0);
+		expect(result.stdout).toMatch(
+			/^Transfer \S+: 2 ready for review, 0 skipped, 0 failed\. Activity \S+\. Review in Files\.\n$/,
+		);
+		expect(
+			(await runner.run(`cat ${test_db_files_mount}/reports/one.txt ${test_db_files_mount}/reports/two.txt`)).stdout,
+		).toBe("one\ntwo\n");
+		const rows = await list_pending_updates(runner);
+		expect(rows).toHaveLength(2);
+		expect(rows.map((row) => row.target.kind)).toEqual([
+			command === "cp" ? "private" : "saved",
+			command === "cp" ? "private" : "saved",
+		]);
+		expect((await get_seeded_node(runner, "/data/one.txt")).path).toBe("/data/one.txt");
+		expect((await get_seeded_node(runner, "/data/two.txt")).path).toBe("/data/two.txt");
+	});
+
+	test("cp -R creates a private folder tree with its child content", async () => {
+		const runner = await create_bash_runner();
+		const result = await runner.run(`cp -R ${test_db_files_mount}/docs ${test_db_files_mount}/docs-copy`);
+		expect(result.metadata.exitCode, result.stderr).toBe(0);
+		expect(result.stdout).toMatch(
+			/^Transfer \S+: 5 ready for review, 0 skipped, 0 failed\. Activity \S+\. Review in Files\.\n$/,
+		);
+		const folder = await get_private_entry(runner, "/docs-copy");
+		const nested = await get_private_entry(runner, "/docs-copy/nested");
+		const child = await get_private_entry(runner, "/docs-copy/nested/deep.md");
+		expect(nested.node.parent).toEqual({ kind: "private", id: folder.node._id });
+		expect(child.node.parent).toEqual({ kind: "private", id: nested.node._id });
+		expect((await runner.run(`cat ${test_db_files_mount}/docs-copy/nested/deep.md`)).stdout).toBe(
+			"one:two\nthree:four\n",
+		);
+		expect(await list_pending_updates(runner)).toHaveLength(5);
+		expect(
+			await runner.t.run(async (ctx) =>
+				(await ctx.db.query("files_nodes").collect()).filter((node) => node.path.startsWith("/docs-copy")),
+			),
+		).toEqual([]);
+	});
+
+	test("cp -R into a descendant copies only the checked source tree", async () => {
+		const runner = await create_bash_runner();
+		const before = await runner.t.run((ctx) => ctx.db.query("files_nodes").collect());
+		const result = await runner.run(`cp -R ${test_db_files_mount}/docs ${test_db_files_mount}/docs/nested`);
+		expect(result.metadata.exitCode, result.stderr).toBe(0);
+		expect(result.stdout).toMatch(
+			/^Transfer \S+: 5 ready for review, 0 skipped, 0 failed\. Activity \S+\. Review in Files\.\n$/,
+		);
+		expect((await runner.run(`cat ${test_db_files_mount}/docs/nested/docs/nested/deep.md`)).stdout).toBe(
+			"one:two\nthree:four\n",
+		);
+		const items = await runner.t.run((ctx) => ctx.db.query("files_transfer_items").collect());
+		expect(items).toHaveLength(5);
+		expect(items.every((item) => item.state === "completed" && item.outputTarget?.kind === "private")).toBe(true);
+		expect(items.some((item) => item.sourcePath.startsWith("/docs/nested/docs"))).toBe(false);
+		expect(await runner.t.run((ctx) => ctx.db.query("files_nodes").collect())).toEqual(before);
 	});
 
 	test("cp of a stored file stages a byte copy that accepting turns into the same kind of file", async () => {
@@ -8161,26 +9066,31 @@ describe("bash_run_command", () => {
 		const result = await runner.run(`cp ${test_db_files_mount}/source.pdf ${test_db_files_mount}/source-copy.pdf`);
 		expect(result.stderr).toBe("");
 		expect(result.metadata.exitCode).toBe(0);
-		expect(result.stdout).toBe("pending copy created: /source.pdf -> /source-copy.pdf — review in Files\n");
+		expect(result.stdout).toMatch(
+			/^Transfer \S+: 1 ready for review, 0 skipped, 0 failed\. Activity \S+\. Review in Files\.\n$/,
+		);
 		expect(copySpy).toHaveBeenCalledTimes(1);
 
-		// The staged copy is the stored file's bytes and type. Until it is accepted, the eager
-		// node is an empty text placeholder.
-		const destNode = await get_seeded_node(runner, "/source-copy.pdf");
-		const rows = await list_pending_updates_for_node(runner, destNode._id);
-		expect(rows).toHaveLength(1);
-		expect(rows[0].copiedFrom).toMatchObject({ nodeId: sourceId, path: "/source.pdf" });
-		expect(rows[0].eagerCreated).toBeDefined();
-		expect(rows[0].pendingReplacement).toMatchObject({ contentType: "application/pdf" });
-		expect(rows[0].pendingReplacement?.yjsRootKind).toBeUndefined();
+		// The private copy owns the same bytes and type as its source.
+		const draft = await get_private_entry(runner, "/source-copy.pdf");
+		expect(draft.pendingUpdate.copiedFrom).toMatchObject({
+			target: { kind: "saved", id: sourceId },
+			path: "/source.pdf",
+		});
+		const intent = draft.pendingUpdate.createIntent;
+		if (intent?.kind !== "stored") throw new Error("Expected a stored copy");
+		expect(intent).toMatchObject({ contentType: "application/pdf", size: 4096 });
+		const copyAsset = await runner.t.run((ctx) => ctx.db.get("files_r2_assets", intent.assetId));
+		expect(test_r2_objects.get(copyAsset!.r2Key!)).toEqual(test_r2_objects.get("bash-test/source.pdf"));
 
 		// Accepting makes the copy a stored PDF like its source: no text and no document.
-		await accept_pending_replacement_for_test(runner, destNode._id);
+		const savedId = await save_private_copy_for_test(runner, "/source-copy.pdf");
 		const accepted = await get_seeded_node(runner, "/source-copy.pdf");
+		expect(accepted._id).toBe(savedId);
 		expect(accepted.contentType).toBe("application/pdf");
 		expect(accepted.textKind).toBeNull();
 		expect(accepted.yjsSnapshotId).toBeNull();
-		expect(accepted.assetId).toBe(rows[0].pendingReplacement?.assetId);
+		expect(accepted.assetId).toBe(intent.assetId);
 		const unreadable = await runner.run(`cat ${test_db_files_mount}/source-copy.pdf`);
 		expect(unreadable.metadata.exitCode).not.toBe(0);
 		expect(unreadable.stderr).toContain("Bash can read editable text files only");
@@ -8190,14 +9100,15 @@ describe("bash_run_command", () => {
 		const runner = await create_bash_runner();
 		const racedPath = "/docs/raced-copy.md";
 
-		// Simulate a user creating the destination after cp's occupancy check: seed the node
-		// right before create_file_by_path reaches the db, so the action reports created: false.
-		const baseImpl = runner.runAction.getMockImplementation();
+		// Another user creates the destination between the shell check and transfer planning.
+		const baseImpl = runner.runMutation.getMockImplementation();
 		if (baseImpl == null) {
-			throw new Error("expected the runner runAction spy to have an implementation");
+			throw new Error("expected the runner runMutation spy to have an implementation");
 		}
-		runner.runAction.mockImplementation(async (ref, actionArgs) => {
-			if (function_name_of(ref) === "files_nodes_content:create_file_by_path") {
+		let raced = false;
+		runner.runMutation.mockImplementation(async (ref, actionArgs) => {
+			if (!raced && function_name_of(ref) === "files_transfer:start_for_agent") {
+				raced = true;
 				await runner.t.run(async (ctx) => {
 					await seed_organization_node(
 						ctx,
@@ -8216,124 +9127,114 @@ describe("bash_run_command", () => {
 
 		const result = await runner.run(`cp ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}${racedPath}`);
 
+		expect(raced).toBe(true);
 		expect(result.metadata.exitCode).toBe(0);
-		expect(result.stdout).toBe(
-			`pending copy created: /docs/readme.md -> ${racedPath} — replaces the existing file's content and type when accepted; review in Files\n`,
+		expect(result.stdout).toMatch(
+			/^Transfer \S+: 1 ready for review, 0 skipped, 0 failed\. Activity \S+\. Review in Files\.\n$/,
 		);
 
-		// The raced node becomes a replace target: no eager stamp, so discarding this
-		// proposal can never hard-delete the node cp did not create.
+		// The raced saved node becomes the replacement target and survives Discard.
 		const racedNode = await get_seeded_node(runner, racedPath);
 		const pendingRows = await runner.t.run((ctx) =>
 			ctx.db
 				.query("files_pending_updates")
-				.withIndex("by_fileNode", (q) => q.eq("fileNodeId", racedNode._id))
+				.withIndex("by_target", (q) => q.eq("target.kind", "saved").eq("target.id", racedNode._id))
 				.collect(),
 		);
 		expect(pendingRows).toHaveLength(1);
 		expect(pendingRows[0].copiedFrom).toBeDefined();
-		expect(pendingRows[0].eagerCreated).toBeUndefined();
+		const discarded = await runner_as_user(runner).mutation(
+			api.files_pending_updates.discard_file_pending_structural,
+			await pending_review_for_test(runner, racedNode._id),
+		);
+		expect(discarded._nay).toBeUndefined();
+		expect((await get_seeded_node(runner, racedPath))._id).toBe(racedNode._id);
+		expect((await runner.run(`cat ${test_db_files_mount}${racedPath}`)).stdout).toBe("raced\n");
 	});
 
-	test("cp removes the eager node when staging the copy fails after the eager create", async () => {
+	test.each(["throw", "http"] as const)("cp closes its private output after an upload %s failure", async (failure) => {
 		const runner = await create_bash_runner();
-		vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
-
-		// Force the stage action (R2 writes, can fail transiently) to fail AFTER the eager
-		// create committed a real empty node.
-		const baseImpl = runner.runAction.getMockImplementation();
-		if (baseImpl == null) {
-			throw new Error("expected the runner runAction spy to have an implementation");
-		}
-		let upsertMode: "throw" | "nay" = "throw";
-		runner.runAction.mockImplementation(async (ref, actionArgs) => {
-			if (function_name_of(ref) === "files_pending_updates:stage_file_pending_replacement_internal_action") {
-				if (upsertMode === "throw") {
-					throw new Error("simulated transient upsert failure");
-				}
-				return { _nay: { message: "simulated upsert rejection" } };
+		const fetchMock = vi.mocked(globalThis.fetch);
+		const baseFetch = fetchMock.getMockImplementation()!;
+		let failedUploads = 0;
+		fetchMock.mockImplementation(async (input, init) => {
+			if (init?.method === "PUT") {
+				failedUploads += 1;
+				if (failure === "throw") throw new Error("simulated upload failure");
+				return new Response(null, { status: 503 });
 			}
-			return await baseImpl(ref, actionArgs);
+			return await baseFetch(input, init);
 		});
 
-		const find_orphan_node = (path: string) =>
-			runner.t.run((ctx) =>
-				ctx.db
-					.query("files_nodes")
-					.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
-						q
-							.eq("organizationId", runner.seeded.organizationId)
-							.eq("workspaceId", runner.seeded.workspaceId)
-							.eq("path", path)
-							.eq("archiveOperationId", null),
-					)
-					.first(),
-			);
-
-		const thrown = await runner.run(
-			`cp ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/docs/orphan-copy.md`,
+		const copied = await runner.run(
+			`cp ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/docs/failed-copy.md`,
 		);
-		expect(thrown.metadata.exitCode).not.toBe(0);
-		expect(thrown.stderr).toContain("simulated transient upsert failure");
-		expect(thrown.stderr).toContain("nothing was created at '/docs/orphan-copy.md'");
-		expect(thrown.stderr).not.toContain("left behind");
-
-		// The compensation removed the untouched eager-created node: no leftover empty file remains.
-		expect(await find_orphan_node("/docs/orphan-copy.md")).toBeNull();
-
-		upsertMode = "nay";
-		const nayed = await runner.run(
-			`cp ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/docs/orphan-copy-2.md`,
+		expect(copied.metadata.exitCode).not.toBe(0);
+		expect(copied.stderr).toBe("cp: Could not copy file\n");
+		expect(copied.stdout).toMatch(
+			/^Transfer \S+: 0 ready for review, 0 skipped, 1 failed\. Activity \S+\. Review in Files\.\n$/,
 		);
-		expect(nayed.metadata.exitCode).not.toBe(0);
-		expect(nayed.stderr).toContain("simulated upsert rejection");
-		expect(nayed.stderr).toContain("nothing was created at '/docs/orphan-copy-2.md'");
-		expect(nayed.stderr).not.toContain("left behind");
-		expect(await find_orphan_node("/docs/orphan-copy-2.md")).toBeNull();
+		// Each of the three attempts writes content and a Yjs snapshot.
+		expect(failedUploads).toBe(6);
+		const items = await runner.t.run((ctx) => ctx.db.query("files_transfer_items").collect());
+		expect(items).toHaveLength(1);
+		expect(items[0]).toMatchObject({ state: "failed", attempt: 3 });
+		expect((await runner.run(`cat ${test_db_files_mount}/docs/failed-copy.md`)).metadata.exitCode).not.toBe(0);
+		expect(
+			await runner.t.run(async (ctx) =>
+				(await ctx.db.query("files_pending_nodes").collect()).filter((node) => node.state === "active"),
+			),
+		).toEqual([]);
+		expect(
+			await runner.t.run(async (ctx) =>
+				(await ctx.db.query("files_nodes").collect()).filter((node) => node.path === "/docs/failed-copy.md"),
+			),
+		).toEqual([]);
+		expect((await runner.run(`cat ${test_db_files_mount}/docs/readme.md`)).stdout).toBe(readme_seed_content);
 	});
 
-	test("cp keeps the leftover note when the eager node cleanup is blocked", async () => {
-		const runner = await create_bash_runner();
-
-		const baseImpl = runner.runAction.getMockImplementation();
-		if (baseImpl == null) {
-			throw new Error("expected the runner runAction spy to have an implementation");
-		}
-		runner.runAction.mockImplementation(async (ref, actionArgs) => {
-			if (function_name_of(ref) === "files_pending_updates:stage_file_pending_replacement_internal_action") {
-				// Another user drafts on the eager node before the stage fails: the cleanup
-				// gate must refuse the hard delete and keep their draft.
-				await runner.t.run(async (ctx) => {
-					await ctx.db.insert("files_pending_updates", {
-						organizationId: runner.seeded.organizationId,
-						workspaceId: runner.seeded.workspaceId,
-						userId: "other_user_cp_cleanup_guard",
-						fileNodeId: actionArgs.nodeId as Id<"files_nodes">,
-						size: 0,
-						updatedAt: Date.now(),
-					});
-				});
-				throw new Error("simulated transient upsert failure");
-			}
-			return await baseImpl(ref, actionArgs);
+	test("a failed cp leaves an existing target and another member's draft unchanged", async () => {
+		const runner = await create_bash_runner({
+			extraFiles: [{ path: "/docs/copy-target.md", content: "saved target\n" }],
 		});
+		const targetId = await get_seeded_node_id(runner, "/docs/copy-target.md");
+		const member = await runner.t.run(async (ctx) => {
+			const userId = await ctx.db.insert("users", { clerkUserId: "copy-failure-member" });
+			await test_mocks_fill_db_with.plan(ctx, { userId, plan: "Pay As You Go" });
+			const membershipId = await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: runner.seeded.organizationId,
+				workspaceId: runner.seeded.workspaceId,
+				userId,
+				active: true,
+				updatedAt: Date.now(),
+			});
+			await access_control_db_ensure_role_assignment(ctx, {
+				organizationId: runner.seeded.organizationId,
+				workspaceId: runner.seeded.workspaceId,
+				userId,
+				role: "member",
+				now: Date.now(),
+			});
+			return { userId, membershipId };
+		});
+		const other = await create_bash_runner({ shared: { t: runner.t, seeded: { ...runner.seeded, ...member } } });
+		expect(
+			(await other.run(`printf 'member draft\\n' > ${test_db_files_mount}/docs/copy-target.md`)).metadata.exitCode,
+		).toBe(0);
+		const otherDraft = await list_pending_updates(other);
+		expect(otherDraft).toHaveLength(1);
+		vi.spyOn(R2.prototype, "generateUploadUrl").mockRejectedValue(new Error("simulated upload failure"));
 
-		const thrown = await runner.run(
-			`cp ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/docs/orphan-copy-blocked.md`,
+		const copied = await runner.run(
+			`cp ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/docs/copy-target.md`,
 		);
-		expect(thrown.metadata.exitCode).not.toBe(0);
-		expect(thrown.stderr).toContain("an empty file was left behind at '/docs/orphan-copy-blocked.md'");
-
-		// The blocked cleanup keeps the node and the other user's draft on it.
-		const orphanNode = await get_seeded_node(runner, "/docs/orphan-copy-blocked.md");
-		const orphanRows = await runner.t.run((ctx) =>
-			ctx.db
-				.query("files_pending_updates")
-				.withIndex("by_fileNode", (q) => q.eq("fileNodeId", orphanNode._id))
-				.collect(),
-		);
-		expect(orphanRows).toHaveLength(1);
-		expect(orphanRows[0].userId).toBe("other_user_cp_cleanup_guard");
+		expect(copied.metadata.exitCode).not.toBe(0);
+		expect(copied.stderr).toBe("cp: Could not copy file\n");
+		expect((await get_seeded_node(runner, "/docs/copy-target.md"))._id).toBe(targetId);
+		expect(await read_committed_text(runner, targetId)).toBe("saved target\n");
+		expect(await list_pending_updates(other)).toEqual(otherDraft);
+		expect((await other.run(`cat ${test_db_files_mount}/docs/copy-target.md`)).stdout).toBe("member draft\n");
+		expect(await list_pending_updates(runner)).toEqual([]);
 	});
 
 	test("supports the broader Native Just Bash /tmp command surface", async () => {
@@ -9331,13 +10232,17 @@ describe("bash_run_command", () => {
 				new TextEncoder().encode("// café 🦜\r\nexport const value = 1;\r\n"),
 			);
 			const stored = await runner.t.run((ctx) => ctx.db.query("files_text_chunks").collect());
-			expect(stored.some((chunk) => stagedNodeIds.has(chunk.fileNodeId))).toBe(true);
+			expect(stored.some((chunk) => chunk.sourceKind === "committed" && stagedNodeIds.has(chunk.fileNodeId))).toBe(
+				true,
+			);
 			await runner.t.mutation(internal.plugins.delete_review_source_tree, { reviewRoot: staged._yay.reviewRoot });
 			expect(await runner.t.run((ctx) => ctx.db.query("files_nodes").collect())).toEqual(preserved);
 			expect(await runner.t.run((ctx) => ctx.db.query("files_r2_assets").collect())).toEqual(beforeAssets);
 			for (const table of ["files_text_chunks", "files_plain_text_chunks"] as const) {
 				const chunks = await runner.t.run((ctx) => ctx.db.query(table).collect());
-				expect(chunks.some((chunk) => stagedNodeIds.has(chunk.fileNodeId))).toBe(false);
+				expect(chunks.some((chunk) => chunk.sourceKind === "committed" && stagedNodeIds.has(chunk.fileNodeId))).toBe(
+					false,
+				);
 			}
 		});
 

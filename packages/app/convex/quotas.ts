@@ -1,7 +1,7 @@
 import { v } from "convex/values";
 import { doc } from "convex-helpers/validators";
 
-import type { Id } from "./_generated/dataModel";
+import type { Doc, Id } from "./_generated/dataModel";
 import { query, type MutationCtx, type QueryCtx } from "./_generated/server.js";
 import { convex_error } from "../server/convex-utils.ts";
 import { server_convex_get_user_fallback_to_anonymous, should_never_happen } from "../server/server-utils.ts";
@@ -22,13 +22,13 @@ type QuotaScope =
 			organizationId: Id<"organizations">;
 	  }
 	| {
-			quotaName: "active_api_credentials";
+			quotaName: "active_api_credentials" | "files_private_user_bytes" | "files_private_nodes";
 			userId: Id<"users">;
 			organizationId: Id<"organizations">;
 			workspaceId: Id<"organizations_workspaces">;
 	  }
 	| {
-			quotaName: "public_api_upload_bytes" | "plugin_service_storage_bytes";
+			quotaName: "public_api_upload_bytes" | "plugin_service_storage_bytes" | "files_private_workspace_bytes";
 			organizationId: Id<"organizations">;
 			workspaceId: Id<"organizations_workspaces">;
 	  };
@@ -40,9 +40,7 @@ function quota_scope_fields(args: QuotaScope) {
 	if (args.quotaName === "extra_workspaces") {
 		return { organizationId: args.organizationId };
 	}
-	// Check the single-literal member positively: TypeScript cannot remove the
-	// "public_api_upload_bytes" | "plugin_service_storage_bytes" member with negative checks.
-	if (args.quotaName === "active_api_credentials") {
+	if ("userId" in args) {
 		return {
 			userId: args.userId,
 			organizationId: args.organizationId,
@@ -68,8 +66,7 @@ async function db_find_quota(ctx: QueryCtx | MutationCtx, args: QuotaScope) {
 			)
 			.first();
 	}
-	// Same narrowing limit as quota_scope_fields: check the single-literal member positively.
-	if (args.quotaName === "active_api_credentials") {
+	if ("userId" in args) {
 		return await ctx.db
 			.query("quotas")
 			.withIndex("by_user_organization_workspace_quotaName", (q) =>
@@ -109,6 +106,10 @@ export async function quotas_db_ensure(
 	const quotaDefinition = quotas[args.quotaName];
 	const existing = await db_find_quota(ctx, args);
 	if (existing) {
+		// Recovery can reuse this scope while its old payloads still await deletion.
+		if (existing.retiredAt !== undefined) {
+			await ctx.db.patch("quotas", existing._id, { retiredAt: undefined, updatedAt: args.now });
+		}
 		return existing._id;
 	}
 
@@ -120,6 +121,32 @@ export async function quotas_db_ensure(
 		createdAt: args.now,
 		updatedAt: args.now,
 	});
+}
+
+/**
+ * Retire private counters that cleanup still needs. The deletion indexes skip retired docs,
+ * so an R2 outage cannot block account or tenant deletion. Settlement removes the final counter.
+ */
+export async function quotas_db_delete(ctx: MutationCtx, quota: Doc<"quotas">) {
+	const held =
+		quota.quotaName === "files_private_workspace_bytes"
+			? await ctx.db
+					.query("files_private_storage_reservations")
+					.withIndex("by_workspaceQuota_settlement", (q) =>
+						q.eq("workspaceQuotaId", quota._id).eq("settlement.kind", "held"),
+					)
+					.first()
+			: quota.quotaName === "files_private_user_bytes" || quota.quotaName === "files_private_nodes"
+				? await ctx.db
+						.query("files_private_storage_reservations")
+						.withIndex("by_userQuota_settlement", (q) => q.eq("userQuotaId", quota._id).eq("settlement.kind", "held"))
+						.first()
+				: null;
+	if (held) {
+		await ctx.db.patch("quotas", quota._id, { retiredAt: Date.now() });
+	} else {
+		await ctx.db.delete("quotas", quota._id);
+	}
 }
 
 /**
@@ -195,11 +222,23 @@ export const get = query({
 			return null;
 		}
 
-		// Seeded lazily at the first public-API upload mint (or the first service upload target),
-		// so a missing doc means nothing was consumed yet, not quota drift.
-		if (args.quotaName === "public_api_upload_bytes" || args.quotaName === "plugin_service_storage_bytes") {
+		// Upload and private storage counters start at their first use.
+		if (
+			args.quotaName === "public_api_upload_bytes" ||
+			args.quotaName === "plugin_service_storage_bytes" ||
+			args.quotaName === "files_private_workspace_bytes"
+		) {
 			return await db_find_quota(ctx, {
 				quotaName: args.quotaName,
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+			});
+		}
+
+		if (args.quotaName === "files_private_user_bytes" || args.quotaName === "files_private_nodes") {
+			return await db_find_quota(ctx, {
+				quotaName: args.quotaName,
+				userId: userAuth.id,
 				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
 			});

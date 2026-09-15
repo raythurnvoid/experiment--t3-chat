@@ -86,7 +86,6 @@ type LegacyOrganizationWithOwner = Omit<Doc<"organizations">, "_id" | "_creation
 };
 
 type FileNodeReferenceTable =
-	| "files_pending_updates"
 	| "files_pending_updates_last_sequence_saved"
 	| "file_stats"
 	| "files_text_chunks"
@@ -105,6 +104,10 @@ type LegacyFileNodeReferenceDoc<TableName extends FileNodeReferenceTable> = Omit
 type LegacyFilesR2AssetConversionWorkId = Omit<Doc<"files_r2_assets">, "conversionWorkId"> & {
 	/** Renamed to processingWorkId: it gates the whole post-upload pipeline, not just content conversion. */
 	conversionWorkId?: Doc<"files_r2_assets">["processingWorkId"];
+};
+
+type LegacyAiChatThreadStateBashCwdTarget = Omit<Doc<"ai_chat_threads_state">, "bashCwdTarget"> & {
+	bashCwdTarget?: Doc<"ai_chat_threads_state">["bashCwdTarget"];
 };
 
 type RebrandCleanupTableName = Exclude<TableNames, "users" | "users_anagraphics">;
@@ -367,11 +370,6 @@ export const remove_plugins_workspace_installation_secrets_key_version = app_mig
 	},
 });
 
-export const rename_pending_updates_file_node_id = app_migrations.define({
-	table: "files_pending_updates",
-	migrateOne: (_ctx, pendingUpdate) => rename_legacy_node_id_to_file_node_id(pendingUpdate),
-});
-
 export const rename_pending_update_sequences_file_node_id = app_migrations.define({
 	table: "files_pending_updates_last_sequence_saved",
 	migrateOne: (_ctx, lastSequenceSaved) => rename_legacy_node_id_to_file_node_id(lastSequenceSaved),
@@ -384,12 +382,15 @@ export const rename_file_stats_file_node_id = app_migrations.define({
 
 export const rename_text_chunks_file_node_id = app_migrations.define({
 	table: "files_text_chunks",
-	migrateOne: (_ctx, chunk) => rename_legacy_node_id_to_file_node_id(chunk),
+	// Old committed chunks predate sourceKind. Only current pending chunks use tagged targets.
+	migrateOne: (_ctx, chunk) =>
+		chunk.sourceKind === "pending" ? undefined : rename_legacy_node_id_to_file_node_id(chunk),
 });
 
 export const rename_plain_text_chunks_file_node_id = app_migrations.define({
 	table: "files_plain_text_chunks",
-	migrateOne: (_ctx, chunk) => rename_legacy_node_id_to_file_node_id(chunk),
+	migrateOne: (_ctx, chunk) =>
+		chunk.sourceKind === "pending" ? undefined : rename_legacy_node_id_to_file_node_id(chunk),
 });
 
 export const rename_yjs_snapshots_file_node_id = app_migrations.define({
@@ -455,6 +456,20 @@ export const backfill_ai_chat_threads_read_at = app_migrations.define({
 	},
 });
 
+/** Threads that ran before Bash could follow a file have no cwd target. Null means the workspace root. */
+export const backfill_ai_chat_threads_state_bash_cwd_target = app_migrations.define({
+	table: "ai_chat_threads_state",
+	migrateOne: async (ctx, threadState) => {
+		const legacyThreadState = threadState as LegacyAiChatThreadStateBashCwdTarget;
+		// `in` check: a stored null is already the settled value, so only a missing field needs a write.
+		if ("bashCwdTarget" in legacyThreadState) {
+			return;
+		}
+
+		await ctx.db.patch("ai_chat_threads_state", threadState._id, { bashCwdTarget: null });
+	},
+});
+
 export const backfill_files_nodes_lowercase_extension = app_migrations.define({
 	table: "files_nodes",
 	migrateOne: async (ctx, fileNode) => {
@@ -470,6 +485,7 @@ export const backfill_files_nodes_lowercase_extension = app_migrations.define({
 export const backfill_files_plain_text_chunk_scope = app_migrations.define({
 	table: "files_plain_text_chunks",
 	migrateOne: async (ctx, plainTextChunk) => {
+		if (plainTextChunk.sourceKind === "pending") return;
 		const fileNode = await ctx.db.get("files_nodes", plainTextChunk.fileNodeId);
 		if (
 			!fileNode ||
@@ -1297,9 +1313,6 @@ export const run_update_extra_organizations_quota_max_count_to_2 = app_migration
 export const run_remove_plugins_workspace_installation_secrets_key_version = app_migrations.runner(
 	internal.migrations.remove_plugins_workspace_installation_secrets_key_version,
 );
-export const run_rename_pending_updates_file_node_id = app_migrations.runner(
-	internal.migrations.rename_pending_updates_file_node_id,
-);
 export const run_rename_pending_update_sequences_file_node_id = app_migrations.runner(
 	internal.migrations.rename_pending_update_sequences_file_node_id,
 );
@@ -1389,6 +1402,9 @@ export const run_backfill_plugins_versions_backend_entrypoint_file_sha256 = app_
 );
 export const run_backfill_ai_chat_threads_read_at = app_migrations.runner(
 	internal.migrations.backfill_ai_chat_threads_read_at,
+);
+export const run_backfill_ai_chat_threads_state_bash_cwd_target = app_migrations.runner(
+	internal.migrations.backfill_ai_chat_threads_state_bash_cwd_target,
 );
 export const run_backfill_plugins_versions_ui_outbound_origins = app_migrations.runner(
 	internal.migrations.backfill_plugins_versions_ui_outbound_origins,

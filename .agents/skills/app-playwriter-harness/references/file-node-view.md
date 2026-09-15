@@ -188,7 +188,7 @@ const membership = await m.app_convex.query(m.app_convex_api.organizations.get_m
 });
 const result = await f.files_upsert_file_pending_update({
 	membershipId: membership._id,
-	nodeId,
+	target: { kind: "saved", id: nodeId }, // a private draft is { kind: "private", id: pendingNodeId }
 	unstagedText, // the full proposed content; staged stays at the committed base when stagedText is omitted
 });
 // result._nay carries the refusal (over-cap, active batch, frontmatter caps, ...); handle it.
@@ -254,7 +254,9 @@ Diff view with a pending proposal (since 2026-09-06, `FileEditorDiff` in its col
 
 - The root is `.FileEditorDiff` (not `.FileEditorDiffNonCollab`), the original pane is the staged branch (the committed text, re-serialized for a Markdown file, until a hunk is accepted) and the modified pane is the unstaged branch (the proposal), the hunk widgets and `Save staged changes` / `Accept all` / `Discard all` work as for a collaborative file, and the toolbar has no `Sync with live file` and no `Open file snapshots`.
 - Save shows the toast `Changes saved` and the view exits to the default editor once the doc is gone.
-- Opening a stale proposal (a member saved the file after the agent made it) starts Review preparation. A `role="status"` line `.FileEditorDiff-stale` says `Updating this proposal for the file's current text…`.
+- Opening a stale proposal (a member saved the file after the agent made it) starts Review preparation. A `role="status"` line `.FileEditorDiff-stale` says `Updating this proposal for the file's current text…`, then `Loading the updated proposal…`, then goes empty.
+- **The proposal's own owner can still save the file through the normal editor while holding that proposal.** The "refuse the write and say open Review or discard" rule covers the *agent's* text write, not the user's Save button. So an owner-only run can make its own proposal stale: edit far away through `window.__qa.monaco().plainText` + `executeEdits`, click Save in `[aria-label="Text editor actions"]`, and the proposal keeps its `_id`, `revision`, `updatedAt` and all three state ids while the committed file moves on. `contentNeedsRebase` stays `null` — an ordinary save makes a proposal stale through the base-asset comparison, and that stored flag is only for the collaboration toggle. Verified 2026-09-15.
+- **Which state id each Accept pins.** The diff editor's `Save staged changes` calls `files_pending_updates.save_file_pending_update` and sends **no** `selectedContentStateId`; the server defaults it to `content.stagedStateId`, so a partial save publishes exactly the staged hunks and leaves the rest pending on the same proposal. The pending sidebar's row Accept and `Accept all` send `selectedContentStateId: content.unstagedStateId`, so they take the whole proposal. To prove which one a click really sent, wrap `app_convex.action` / `app_convex.mutation` from page context before the click and record the args — the arg shape alone identifies the door. Verified 2026-09-15.
 - Both panes stay read-only until the merged branches load.
 - Conflicts keep the old text and offer `Copy accepted text`, `Copy proposed text`, Retry, and `Discard proposal`. Preparation never saves file text.
 - While the pending list is still loading the view shows `FileEditorDiffSkeleton` (`role="status"`, sr-only `Loading changes…`).
@@ -331,6 +333,7 @@ For a collaborative move/delete check, create a pending paragraph edit, then use
 - Source filtering happens after the full row model is built. This keeps move-aware destination occupancy and replacement captions correct even when a related row belongs to a different source.
 - `Accept all` and `Discard all` act only on the currently shown rows. Their accessible names are `Accept all shown pending changes` and `Discard all shown pending changes`; both are disabled when the selected source has no rows. If accepting a shown row would also settle or invalidate a hidden row, the app asks the user to switch to `All changes`.
 - If the selected chat stops contributing after an accept, discard, expiry, or another live update, the selector returns to `All changes`.
+- A single-row Accept can be refused because another row has to be saved first, and the refusal is silent unless you read the run's own result. After `mv A B` plus a new file created at the vacated `A`, `Accept changes to A` alone reports `Review could not finish. Check the remaining changes.` with `0 saved, 1 need review, 0 failed, 0 skipped, 0 stopped. 0 remaining.`, writes nothing, and leaves both proposals at their current revisions; `Accept all shown pending changes` on the same pair then reports `2 saved`. So read the numeric result line, not just whether a toast appeared, and expect a result dialog to stay open afterwards (see the `MyModalBackdrop` entry in `known-hazards.md`). Verified 2026-09-15.
 - Items are sorted by path. Captions are `Modified`, `Added`, `Moved`, `Replaced`, or `Deleted`.
 - Move-only rows without a binary replacement are plain `.FileEditorSidebarPending-item-move` rows. Their path links open the moved node without `view=diff_editor`.
 - A move proposal, including a mixed content-and-move proposal, uses an expandable size preview when it replaces a file and either file has no editable Yjs state. The preview shows removed and added size lines when the sizes differ, or `Size unchanged` when they match. Its path link opens the moved node without `view=diff_editor`.
@@ -341,6 +344,49 @@ For a collaborative move/delete check, create a pending paragraph edit, then use
 - Per-item actions, scoped to the row, are `Accept` and `Discard`. `Accept` applies a pure move directly; content rows save the accepted content; copy rows install the whole-file replacement (content, type, shape, and collaboration mode); mixed rows apply the move before saving content. The same `All changes` guard protects hidden dependent rows.
 - `Discard` removes the proposal or restores the committed path/content as required by its kind. Assert the reactive `list_files_pending_updates` result through list membership rather than a fixed index.
 - Bulk actions are `Accept all` and `Discard all`.
+
+### Accept / Discard Round Trip, With Readback
+
+The per-row buttons are addressable by accessible name, so no DOM archaeology is needed. The name is
+built from the row's kind and path (`file-editor-sidebar-pending.tsx`):
+
+- content edit -> `Accept changes to <path>` / `Discard changes to <path>`
+- delete -> `Accept delete of <path>` / `Discard delete of <path>`
+- move or mixed -> `Accept move of <path> to <destinationPath>` / `Discard move of ...`
+
+Dumping every action name in one call is the fastest way to see what a row really offers:
+
+```js
+await state.page.evaluate(() =>
+	[...document.querySelectorAll('[role="region"][aria-label="Pending changes"] button[aria-label]')].map((b) =>
+		b.getAttribute("aria-label"),
+	),
+);
+// -> ["Pending changes source: All changes, 1 change", "Accept all shown pending changes",
+//     "Discard all shown pending changes", "Accept changes to /qa/notes.md", "Discard changes to /qa/notes.md"]
+```
+
+**Getting a proposal in the first place.** Asking the agent to "create a file" is not enough: it
+reaches for Bash, which writes the file directly and produces **no** pending row. Only the write
+tools (`edit_file`, `set_file_metadata`, listed in `ai_chat_WRITE_TOOL_NAMES`) land in the review
+lane. Name the tool in the prompt — "Use the edit_file tool (not Bash) on `<path>` and change X to Y.
+Use edit_file only." — and the panel then shows "N pending file change(s) from this chat".
+
+**Reading the committed text back.** Do not use `files_nodes_content:get_non_collaborative_file_content`
+for this. A file the agent edited usually has collaboration on, and that door answers
+`{ _nay: { message: "Not found" } }` for it, which reads like a missing file rather than a wrong door.
+Open the node instead and read its editor: `?nodeId=<id>` then `.ProseMirror` `textContent` (rich
+text) or `.monaco-editor .view-lines` (plain text). The id is at `item.target.id` in a
+`files_visible:list` row, not `item._id`. Wait with `waitForSelector(".ProseMirror")`, not a fixed
+`waitForTimeout` — nine seconds after the navigation the node was still null, and it resolved on a
+later read.
+
+Run both halves, because only the pair proves anything. Accept must change the committed text and
+drop the row; Discard must drop the row and leave the text alone. Verified 2026-09-14 on a rich-text
+Markdown file: 1 pending -> Accept -> 0 pending and the text moved from "first line" to "second
+line"; a second proposal -> Discard -> 0 pending and the text stayed "second line". Check the row
+count through `files_pending_updates:list_files_pending_updates` as well as the panel, so a stale
+render cannot pass for a settled proposal.
 
 ### Pending Source Selector QA
 
@@ -386,3 +432,117 @@ async function replyInSidebarThread(page, threadRootText, replyText) {
 - The rich-text comment button depends on a live selection. If it is missing, reselect text and snapshot the toolbar/bubble controls.
 - Contenteditable TipTap editors may appear as textboxes in snapshots but still fail `getByRole("textbox")`; use the scoped `contenteditable` + `aria-label` selector above.
 - Right-sidebar content changes with the selected tab. Scope locators to comments or agent contexts after switching tabs.
+
+## The Pending Changes Review Lane
+
+The third right-sidebar panel lists the proposals waiting for review. Open it with the panel
+tablist, not a bare role match (see the nested-tablist entry in `known-hazards.md`):
+
+```js
+await page.locator('.FileEditorSidebar-tabs-list [role="tab"]', { hasText: "Pending changes" }).first().click();
+```
+
+### Which agent action produces which proposal
+
+The agent's tools do not all behave the same way, and picking the wrong one wastes a whole fixture:
+
+- `edit_file` only edits a file that already exists. Asked to create one it answers
+  `Error File not found: <path>`. It also cannot move a file.
+- Bash `printf > file` on a new path creates a **pending file**, not a saved one: a private node with
+  a `text` create intent and no `copiedFrom`. It only becomes saved when someone accepts it. A file
+  that looks saved right after a Bash write is a file whose proposal you already accepted.
+- Bash `cp` creates **pending nodes**: a pending folder for each missing parent plus a pending file.
+  This is the only easy way to get a private (not yet saved) parent folder.
+- Bash `mv` creates a **pending move** on the saved node. The node itself does not move yet.
+- Bash `rm -r` creates a **pending archive** on the node.
+
+`mv` then `rm` on the same file replaces the move, because a delete supersedes it. So build a
+two-proposal fixture on two different nodes, or the second command quietly erases the first.
+
+A copy only copies what is already saved. `cp -r` of a folder whose children are all still pending
+gives you one pending folder and no children at all, which reads like the copy failed. To build a
+fixture of saved files, write them, accept them, and read the pending list back to 0 before copying.
+
+When you read a pending row, `copiedFrom` tells the two apart. A copied node has it set and points at
+its source; a node the agent wrote from scratch has `copiedFrom: null`. Do not use the row `path` for
+this, because a pending child of a pending folder is easy to misread as a copy sitting in the wrong
+place.
+
+### Row accessible names
+
+Each row's buttons are named from the action and the path, so they are stable locators:
+
+```text
+Accept all shown pending changes      Discard all shown pending changes
+Accept delete of <path>               Discard delete of <path>
+Accept move of <path> to <dest>       Discard move of <path> to <dest>
+Accept changes to <path>              Discard changes to <path>
+```
+
+`<dest>` is the projected destination. When the destination folder itself has a pending archive the
+projection falls back to the source, so the label reads `Accept move of /a/x.md to /a/x.md`. That is
+the app telling you the destination is going away, not a broken label.
+
+### Reading the outcome of an Accept or Discard
+
+Clicking Accept or Discard does not call a single door. It starts a review run
+(`files_pending_update_runs.start` / `append_items` / `seal`) and opens `FilesPendingReviewModal`,
+which reports progress and any refusal:
+
+```js
+const modal = document.querySelector(".FilesPendingReviewModal[data-open='true']");
+modal.innerText.replace(/\s+/g, " ").trim();
+// "Discard reviewed changes Review stopped. Check the remaining changes. 0 discarded, 1 need review,
+//  0 failed, 0 skipped, 0 stopped. 0 remaining. Some linked changes were not selected. Open pending
+//  changes to review them together. This action also affects unselected changes. Review them together."
+```
+
+The modal names only the row you selected. The rows it is waiting on are ids on the run, not text on
+screen. To read them, find the run through the activity list and fetch it:
+
+```js
+const acts = await call("query", "activities:list_page", {
+	membershipId, section: "history", paginationOpts: { numItems: 6, cursor: null },
+});
+// Each activity's `source.id` is the run id. `files_pending_update_runs:get` returns null for the
+// ids that belong to some other kind of run, so just try them in order.
+const run = await call("query", "files_pending_update_runs:get", { membershipId, runId: act.source.id });
+run.body.value.run.needsReviewIds;      // the proposals that had to be reviewed together
+run.body.value.activity.errorMessage;   // the same sentence the modal shows
+```
+
+### Building a cross-chat dependency
+
+Two proposals become one review unit when one is an ancestor of the other. Use two chats so the rows
+carry different `threadIds`, and keep the two targets separate so neither command overwrites the
+other's proposal. Both of these refuse with
+`This action also affects unselected changes. Review them together.`
+
+- **Saved parent, Accept.** Chat A: `mv <file> <otherFolder>/<file>`. Chat B: `rm -r <otherFolder>`.
+  Accept the move row alone. The run refuses and `needsReviewIds` holds chat B's archive row.
+- **Private parent, Discard.** Chat A: `cp -r <folder> <newName>`, which creates the pending folder
+  and a pending child. Chat B: `cp <file> <newName>/<other>.md`, adding a second pending child from a
+  different thread. Discard the folder row alone. `needsReviewIds` holds both children.
+
+### Reading the pending rows from the page
+
+`files_pending_updates:list_files_pending_updates` returns review rows, not raw documents. The
+document sits at `entry.pendingUpdate` and the saved node at `entry.node`:
+
+```js
+const page = res.body.value?.page ?? [];
+page.map((row) => ({
+	path: row.entry?.path,              // projected path, moves and archives applied
+	readiness: row.readiness,
+	canAccept: row.canAccept,
+	puId: row.entry?.pendingUpdate?._id,
+	revision: row.entry?.pendingUpdate?.revision,
+	move: row.entry?.pendingUpdate?.pendingMove ?? null,
+	archive: row.entry?.pendingUpdate?.pendingArchive ?? null,
+	threadIds: row.entry?.pendingUpdate?.threadIds ?? null,
+}));
+```
+
+`row.entry.path` is the projected path and `row.entry.node.path` is where the saved node still is.
+A pending move shows the new path in `files_visible:list` too, so a tree readback alone cannot tell
+an applied move from a proposed one. Check that the pending list is empty before believing it.

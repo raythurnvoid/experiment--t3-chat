@@ -95,7 +95,6 @@ export async function organizations_membership_lifetimes_db_record(
 		.query("access_control_change_state")
 		.withIndex("by_key", (q) => q.eq("key", "main"))
 		.first();
-	if (!state) return;
 
 	const events = await Promise.all(
 		memberships.map(async ({ membership, active }) => {
@@ -124,6 +123,8 @@ export async function organizations_membership_lifetimes_db_record(
 				}
 			}
 
+			// Local jobs also use this lifetime, before an external service starts the change feed.
+			if (!state) return null;
 			const organization = active ? await ctx.db.get("organizations", membership.organizationId) : null;
 			const member = organization?.defaultWorkspaceId
 				? await organizations_membership_lifetimes_db_member_facts(ctx, {
@@ -153,5 +154,8 @@ export async function organizations_membership_lifetimes_db_record(
 			};
 		}),
 	);
-	await access_control_changes_db_record(ctx, events);
+	await access_control_changes_db_record(
+		ctx,
+		events.filter((event) => event !== null),
+	);
 }

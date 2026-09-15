@@ -29,7 +29,12 @@ import { date_get_day_start_timestamp, date_MS_DAYS_30 } from "../shared/date.ts
 import { composite_id } from "../shared/shared-utils.ts";
 import { billing_POLAR_METER_EVENT, billing_event, billing_polar_client } from "../server/billing.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
-import { billing_db_check_credits, billing_ingest_events, billing_pick_billed_user_id } from "./billing_db.ts";
+import {
+	billing_db_check_credits,
+	billing_db_ingest_anonymous_user_events,
+	billing_ingest_events,
+	billing_pick_billed_user_id,
+} from "./billing_db.ts";
 import {
 	allowed_origins,
 	server_convex_get_user_fallback_to_anonymous,
@@ -1885,45 +1890,7 @@ export const ingest_anonymous_user_events = internalMutation({
 	},
 	returns: v.null(),
 	handler: async (ctx, args) => {
-		const now = Date.now();
-
-		await Promise.all(
-			args.billedUserEvents.map(async ({ event, billedUser }) => {
-				if (billedUser.clerkUserId != null) {
-					console.error("Anonymous billing ingest received a signed-in user row", {
-						billedUserId: billedUser._id,
-						event,
-					});
-					return;
-				}
-
-				if (event.metadata.amount === 0) {
-					return;
-				}
-
-				const usageSnapshot = await ctx.db
-					.query("billing_usage_snapshots")
-					.withIndex("by_user", (q) => q.eq("userId", billedUser._id))
-					.first();
-				if (!usageSnapshot || usageSnapshot.meter == null) {
-					throw should_never_happen("Anonymous user usage snapshot not found or has no meter", {
-						userId: billedUser._id,
-						event,
-						usageSnapshot,
-					});
-				}
-
-				await ctx.db.patch("billing_usage_snapshots", usageSnapshot._id, {
-					meter: {
-						...usageSnapshot.meter,
-						consumedUnits: usageSnapshot.meter!.consumedUnits + event.metadata.amount,
-						balance: usageSnapshot.meter!.balance - event.metadata.amount,
-					},
-					lastSyncedAt: now,
-				});
-			}),
-		);
-
+		await billing_db_ingest_anonymous_user_events(ctx, args);
 		return null;
 	},
 });
