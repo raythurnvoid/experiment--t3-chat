@@ -147,7 +147,9 @@ function db_with_unit_budget(ctx: MutationCtx) {
 						return property === "first" || property === "unique" ? (docs[0] ?? null) : docs;
 					};
 
-				// No final tail uses filtered scans. Counting their returned docs would miss rejected reads.
+				// Counting only the documents a filtered scan returns would miss the ones it read and
+				// rejected, so the commit must not use one. A helper that needs a filter reads the index
+				// range and checks the extra field in JavaScript instead.
 				if (property === "filter" || property === "withSearchIndex" || property === "paginate")
 					return () => {
 						throw should_never_happen("Review commit used an uncounted query", { method: String(property) });

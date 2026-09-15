@@ -997,10 +997,15 @@ A private node the transfer created but has not filled yet reports `preparing: t
 - `transfer stop` does not freeze a reservation. `db_cancel_items`
   (`convex/files_transfer.ts:369-395`) calls `files_pending_nodes_db_discard` for every item with
   a `preparation`, so stopping **deletes** the unfilled ones.
-- The reliable way to get a **stable** preparing node is a write that dies mid-preparation:
-  `seq 1 300000 > <path>` exceeds the 1 s Convex mutation limit
-  (`Uncaught Error: Function execution timed out (maximum duration: 1s)`) and leaves the
-  reservation behind for as long as you need it. Discard it when you are done.
+- The reliable way to get a **stable** preparing node is a write that dies mid-preparation.
+  `seq 1 300000 > <path>` no longer does it — checked 2026-09-15, that write now succeeds and
+  produces 588,902 bytes. `seq 1 2000000 > <path>` does, and leaves the reservation behind for as
+  long as you need it. It can die two ways, and either is fine: the 1 s Convex mutation limit
+  (`Uncaught Error: Function execution timed out (maximum duration: 1s)`), or a write conflict with
+  another transfer running at the same time (`Documents read from or written to the
+  "files_pending_review_versions" table changed while this mutation was being run ... A call to
+  "files_nodes_content.js:finalize_transfer_file_copy" changed the document`). Discard it when you
+  are done.
 
 What the readers say about one of these is not uniform, so do not assert "the file is missing" or
 "the file is binary" from a single command:
@@ -1015,9 +1020,20 @@ What the readers say about one of these is not uniform, so do not assert "the fi
 | `grep` | silent |
 | `meta get` | `item not found` |
 | `edit_file` | `Cannot edit <path>: this draft is still preparing` |
+| `cp <preparing> <dest>` | **rc 1**, `cp: draft '<path>' is still preparing` — the clearest of them all |
+| review-run Accept | `blocked`, run `failed`, `Pending changes changed during review. Review them again.` (misleading: nothing changed) |
 
 Only the writers name the state. Use `edit_file`, or a redirect write, when you need a command
 that actually tells you a target is preparing.
+
+Two of those answers are wrong about the reason, so do not quote them to a user. `cat` on a
+preparing **plain text** draft prints the binary/media advisory and claims its
+`text/plain;charset=utf-8` type "is not readable as text"; the type is fine, the draft is just not
+filled yet. And the Accept refusal blames a concurrent change that did not happen. `cp` and
+`edit_file` are the two that name the real state.
+
+A preparing private draft cannot be opened with `/files?nodeId=<id>` either — that id belongs to
+`files_pending_nodes`, so the route falls back to the root folder view.
 
 ### Clearing Many Pending Proposals
 
@@ -1040,6 +1056,17 @@ for (const row of rows) {
 Discarding a private node the page is currently viewing navigates the route, which kills a running
 `page.evaluate` with `Execution context was destroyed`. Park the tab on `/chat` first.
 
+Two things make that loop wrong if you write it from memory. The list door caps its page at five
+rows no matter what `numItems` says, so you must follow `continueCursor` until `isDone` — see
+`known-hazards.md`. And a `kind: "restricted"` row carries no `entry`, so read
+`row.entry?.pendingUpdate?._id ?? row.pendingUpdateId`.
+
+One review run clears everything in a single pass and is faster than the per-row loop. Collect
+every row first, then `files_pending_update_runs.start({membershipId, requestId, kind: "discard",
+expectedItemCount, items})`, `append_items` for anything past the first 100, `seal`, and poll `get`
+until `step === "finished"`. The run refuses a partial selection on purpose, so it only works after
+full paging.
+
 ### Public File API From The Browser
 
 `/api/v1/files/read`, `read-many` and `list` take **paths**. `download-urls` is the only public
@@ -1052,6 +1079,46 @@ under `errors` with `files: []`, `list` omits it, and `download-urls` returns
 `{fileNodeId, message: "Not found"}` while a saved id in the same batch still returns its signed
 URL. The public doors also serve committed state only — a saved file with a pending replacement
 reads back at its saved size and body.
+
+### Accepting A Pending Proposal From A Runner
+
+Do not call `files_pending_updates.save_file_pending_update` to accept an agent's proposal on a
+**saved** file. The agent's writer stages only the unstaged branch, and that action publishes only
+what is on the staged branch. With nothing staged it returns the success shape
+(`{"_yay":{"newSequence":null,"pendingUpdateRevision":<unchanged revision>,...}}`), writes nothing,
+and leaves the pending row in place. There is no `_nay` to notice.
+
+The sidebar Accept goes through a review run and names the branch explicitly, so copy that:
+
+```js
+const started = await m.app_convex.mutation(m.app_convex_api.files_pending_update_runs.start, {
+	membershipId,
+	requestId: crypto.randomUUID(),
+	kind: "accept", // or "discard"
+	expectedItemCount: rows.length,
+	items: rows.map((r) => ({
+		pendingUpdateId: r.entry.pendingUpdate._id,
+		reviewedRevision: r.entry.pendingUpdate.revision,
+		// A content proposal publishes its unstaged branch. Archives and replacements take null.
+		selectedContentStateId:
+			r.entry.pendingUpdate.pendingArchive || r.entry.pendingUpdate.pendingReplacement
+				? null
+				: (r.entry.pendingUpdate.content?.unstagedStateId ?? null),
+	})),
+});
+const runId = started._yay.runId;
+await m.app_convex.mutation(m.app_convex_api.files_pending_update_runs.seal, { membershipId, runId });
+```
+
+The run is asynchronous. Poll `files_pending_update_runs.get({membershipId, runId})` until
+`run.step === "finished"`, then read per-item outcomes with
+`files_pending_update_runs.list_items({membershipId, runId, paginationOpts})` — each row is
+`queued | running | completed | needs_review | failed | canceled` with an optional `message`.
+`start` takes at most 100 items; append the rest with `append_items({membershipId, runId, offset,
+items})` before sealing.
+
+`apply_file_pending_archive` and `apply_file_pending_move` are plain mutations with no content
+branch, so those two can still be called directly.
 
 ## Script Pattern
 

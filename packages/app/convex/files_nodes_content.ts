@@ -6091,11 +6091,15 @@ async function db_install_file_content_replacement(
 		// A stored file has no version row for its current asset yet. An editable file already has
 		// one from its last save. Add the row only when it is missing, so the old bytes stay in
 		// history without a duplicate row.
-		const version = await ctx.db
+		// The review worker's Accept runs this with a wrapped `ctx.db` that counts every read and
+		// rejects `.filter(...)`, because a filtered scan hides the documents it throws away. One
+		// asset belongs to one file, so the index range is one or two rows: read it and check the
+		// node id here.
+		const assetVersions = await ctx.db
 			.query("files_snapshots")
 			.withIndex("by_asset", (q) => q.eq("assetId", args.previousAssetId))
-			.filter((q) => q.eq(q.field("fileNodeId"), nodeId))
-			.first();
+			.collect();
+		const version = assetVersions.find((row) => row.fileNodeId === nodeId);
 		if (!version) {
 			await store_version_snapshot(ctx, {
 				organizationId: membership.organizationId,

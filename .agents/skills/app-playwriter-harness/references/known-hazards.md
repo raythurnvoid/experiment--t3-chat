@@ -2323,3 +2323,226 @@ links enumerated under the worktree, 157 were the main repo's own links under
 Enumerate one level at a time and check each parent for the ReparsePoint attribute before
 descending. If it already happened, `pnpm install --force --frozen-lockfile` rebuilds every link
 without touching the lockfile.
+
+## A live `convex dev` process is not proof that your Convex edits are on the deployment
+
+`Get-CimInstance Win32_Process ... -match 'convex'` showed a `convex ... dev` watcher running, and
+it had been running all session. It was not pushing. A Convex fix that was green in vitest kept
+failing in the browser with the *old* error, three runs in a row, which looks exactly like "my fix
+is wrong" and sends you back into the code.
+
+Prove the push, do not infer it. The cheapest proof is a marker: add one `console.error("QA_<marker>", ...)`
+on the line you changed, re-run the flow, and read `convex logs`. No marker means the deployment is
+stale, whatever the process list says.
+
+```powershell
+vp env exec pnpm --dir packages/app exec convex dev --once
+```
+
+pushes the working tree once and exits, and it is safe next to a running watcher. Do that, then
+re-run. Remove the marker and push again when you are done. Observed 2026-09-15 on the files review
+worker.
+
+## `files_nodes.get_file_node_for_membership` returns the node fields at the top level
+
+It returns `v.union(v.object(files_node_public_doc_fields), v.null())` — **not** a `Result`. So
+`result._yay.node.writePolicy` is `undefined` and every field silently reads as missing, which
+looks like "the node has no policy" instead of "you used the wrong path". Read `node.path`,
+`node.collaborationEnabled`, `node.writePolicyState` directly off the returned object.
+
+Two more things the public shape does not have: there is no `writePolicy` field (the public fields
+expose `writePolicyState`, `writePolicySourceNodeId` and `writePolicySourcePath`), and there is no
+`updatedAt`-adjacent `metadata`; read metadata with `files_metadata.get_entries({membershipId,
+fileNodeId})`. When a readback comes back all-`undefined`, print `Object.keys(...)` once before
+assuming the data is missing.
+
+## `list_files_pending_updates` never returns more than five rows
+
+`files_pending_updates.list_files_pending_updates` clamps the page size itself:
+`numItems: Math.min(5, args.paginationOpts.numItems)` at `convex/files_pending_updates.ts:6941`.
+Asking for 50 or 100 still gives you 5. Nothing in the result says it was clamped.
+
+This is dangerous for Accept-all and Discard-all runners, because a review run refuses a partial
+selection. Building the item list from one page selects 5 of, say, 10 proposals, and the run ends
+`failed` with `blocked: 5` and the message `This action also affects unselected changes. Review them
+together.` The refusal is correct; the selection was short. Page until `isDone`:
+
+```js
+const rows = [];
+let cursor = null;
+for (let i = 0; i < 40; i++) {
+	const page = await app_convex.query(app_convex_api.files_pending_updates.list_files_pending_updates, {
+		membershipId,
+		paginationOpts: { numItems: 5, cursor },
+	});
+	rows.push(...(page?.page ?? []));
+	if (page?.isDone || !page?.continueCursor) break;
+	cursor = page.continueCursor;
+}
+```
+
+Two more shapes to handle in that loop. A row with `kind: "restricted"` has **no** `entry`, so read
+ids as `row.entry?.pendingUpdate?._id ?? row.pendingUpdateId`. And a review run takes at most 100
+items in `start`; send the rest with `files_pending_update_runs.append_items({membershipId, runId,
+offset, items})` before `seal`. A ready-made runner lives in the task folder as `qa-discard-all.js`;
+the recipe is in `files.md`.
+
+## `activities.list_page` requires `section`
+
+It is not optional. Calling it with only `{membershipId, paginationOpts}` throws
+`ArgumentValidationError: Object is missing the required field 'section'`. Pass
+`section: "active"` for running work and `section: "history"` for finished rows — a run that just
+ended is in `history`, not `active`, so a poll that only reads `active` reports the row as gone
+instead of finished.
+
+## `files_pending_update_runs.list_items` requires `paginationOpts`
+
+`get` takes `{membershipId, runId}`, so `list_items` looks like it should too. It does not: it
+throws `ArgumentValidationError: Object is missing the required field 'paginationOpts'`. The bad
+part is the timing — in a runner that starts, seals and polls a review run, the throw lands *after*
+the run already committed, so the Accept or Discard really happened while your runner reports a
+failure. Do not restart the run. Read it again by its id:
+
+```js
+await convex.query(api.files_pending_update_runs.list_items, {
+	membershipId,
+	runId,
+	paginationOpts: { numItems: 100, cursor: null },
+});
+```
+
+## Typing right after submitting a comment eats the comment
+
+The bubble comment flow leaves the commented word selected in ProseMirror. The next `keyboard.type`
+replaces that selection, so the text *and* its `span.lb-tiptap-thread-mark` disappear, and the
+editor still looks fine. Click somewhere else first.
+
+`Control+End` does not move the ProseMirror caret either — it is not bound, so the typing lands
+wherever the selection already is. To append at the end, click the bottom-right corner of the
+editor box and press `End`:
+
+```js
+const box = await editor.boundingBox();
+await page.mouse.click(box.x + box.width - 12, box.y + box.height - 12);
+await page.keyboard.press("End");
+await page.keyboard.type(" appended text");
+```
+
+## `files_transfer.list_current` hides the status one level down, and returns an array
+
+It returns a plain `v.array(run_view_validator)` — not an object with a `runs` field. And the run
+view has only `_id`, `kind`, `publication`, `step`, `revision`, `activity`, `controls`, `conflicts`
+and `movedNodeIds`. The status, the progress counters and the **activity id you need for
+`activities.request_stop`** all live inside `run.activity`:
+
+```js
+const cur = await convex.query(api.files_transfer.list_current, { membershipId });
+const run = (Array.isArray(cur) ? cur : [])[0];
+run?.activity?.status;        // "queued" | "running" | "succeeded" | ...
+run?.activity?.progress?.completed;
+run?.activity?._id;           // pass this to activities.request_stop
+run?.controls;                // { canStop, canRetry, canDismiss }
+```
+
+Reading `run.status` gives `undefined`, so a poll loop that waits for a completed count never fires
+and the transfer finishes before you can stop it. Poll every ~400 ms; a 25-file copy is over in
+under a minute.
+
+Two more shapes in the same module: `files_transfer.retry_remaining` needs a `requestId` (its
+sibling queries do not), and it does **not** resume the stopped run — it creates a new run with its
+own `Retry remaining files` activity, while the old run keeps its `canceled` counters forever. Read
+`list_current` after a retry, not the old run id.
+
+## A `restricted` pending row is transient, not stuck
+
+`list_files_pending_updates` returns `kind: "restricted"` when the visible-files reader cannot
+resolve a pending update's target (`convex/files_pending_updates.ts:6962`). That happens routinely
+while a transfer is creating or cleaning up its private nodes, so a cleanup runner can see several
+of them. They carry no `entry`, and a discard run built only from them ends `failed` with
+`Some changes still need review.` — which reads like a stuck list. Wait a minute and re-list; they
+resolve themselves. Use `get_files_pending_updates_summary({membershipId})` for a cheap, honest
+count instead of trusting one paging pass taken while a transfer is in flight.
+
+The partial-selection refusal itself is safe. Selecting one private folder row and leaving its two
+children out ends `failed`, `blocked: 1`, `This action also affects unselected changes. Review them
+together.`, and every row and the whole private subtree survive untouched.
+
+## A review run keeps going after your runner dies
+
+`page.evaluate` that starts a review run and then hits `Execution context was destroyed` does not
+cancel the run — the server already has it. The next `files_pending_update_runs.start` answers
+`A review is already running in this workspace.`, and the pending list fills with `restricted` rows
+that are the run's own private nodes mid-cleanup. Do not retry in a loop and do not conclude the
+list is stuck. Wait for the workspace to settle first:
+
+```js
+// Empty active list AND a pending count that stops moving.
+const a = await convex.query(api.activities.list_page, { membershipId, section: "active", paginationOpts: { numItems: 5, cursor: null } });
+const sum = await convex.query(api.files_pending_updates.get_files_pending_updates_summary, { membershipId });
+```
+
+Poll until `a.page` is empty and `sum.count` repeats three times, then start the next run.
+
+## Run Convex queries from their own tab, not the chat tab
+
+The chat route re-navigates on its own while a thread streams or a transfer activity changes, which
+kills any `page.evaluate` running on it — repeatedly, in the middle of long readback runners. Keep
+the chat tab for `state.qa` only and open one extra tab parked on a quiet route for every Convex
+call:
+
+```js
+const ctx = state.page.context();
+state.apiPage = await ctx.newPage();
+await state.apiPage.goto("http://localhost:5173/w/<org>/<ws>/home", { waitUntil: "domcontentloaded" });
+await state.apiPage.waitForTimeout(8000); // let the Convex client authenticate
+```
+
+Then write runners as `await (state.apiPage ?? state.page).evaluate(...)`. The workspace home route
+holds still, so long multi-step runners survive.
+
+## `page.goto` keeps its own 10 s timeout, and a fresh Vite server is slower than that
+
+The CLI's `--timeout` covers the whole runner. It does not reach Playwright's per-call default, so
+`page.goto(url, { waitUntil: "domcontentloaded" })` still fails after 10 s. The first navigation
+after the dev server restarts compiles the route on demand and takes far longer than that, so a
+rebind runner written the normal way dies on its very first line with
+`page.goto: Timeout 10000ms exceeded`. Pass the timeout yourself on every navigation in a rebind or
+recovery runner:
+
+```js
+await page.goto(url, { waitUntil: "domcontentloaded", timeout: 180000 });
+```
+
+## Never put a mutation inside a retry-on-navigation wrapper
+
+The wrapper that re-runs a lost `page.evaluate` after `Execution context was destroyed` is right
+for reads and wrong for writes. A lost evaluate that already started a review run leaves the run
+executing on the server; the retry then re-lists, finds nothing left to select, and returns
+`Send between 1 and 100 different reviewed changes.` — so the runner reports a refusal for a run
+that is at that moment committing 25 items. The readback afterwards shows work nobody appears to
+have started, which is easy to misread as the app saving things by itself.
+
+Split every write flow into its own call: one call starts and seals the run and prints the run id,
+a second call polls it, a third reads back. Then a navigation can only cost you a poll. When you do
+see unexplained state, read `activities.list_page({ section: "history" })` before believing it —
+the run you lost is in there with its own timestamps.
+
+## A private subtree is one review unit, so `progress.completed` cannot be caught mid-way
+
+`build_review_dependencies` joins every selected private child to its selected private ancestor, so
+a 62-file `cp -R` subtree is **one** unit that commits atomically. `progress.completed` goes from 0
+to 62 in a single step and a 250 ms poll trying to Stop the run mid-way always arrives after the
+commit. Read `run.unitCount` and `run.finishedUnitCount` from the run doc instead — that is the
+honest shape of the work. To get several units, make several independent roots: copying single
+files into an already-saved folder (`for i in 1 2 3; do cp README.md x-$i.md; done`) gives one unit
+per file, and units run in the order of the `items` array you submitted.
+
+## `files_transfer.start` uses the literal `"root"`, and a name clash parks the run
+
+`targetParentId` is `v.union(v.id("files_nodes"), v.literal("root"))`. Any other spelling comes back
+as an `ArgumentValidationError` from the server, not a client-side type error.
+
+If the copy's name already exists at the destination, the activity sits in
+`status: "awaiting_input"` and stays there. It is active, so every "wait until the workspace is
+quiet" loop waits forever. Call `activities.request_stop` on it, and expect the stop to leave
+`restricted` rows behind for a minute or two while it sweeps.

@@ -356,6 +356,58 @@ async function prepare_agent_replacement(
 	return pending;
 }
 
+/**
+ * Accept one proposal the way the sidebar does: a review run, not the direct action. The run's
+ * commit counts every database read, so it refuses code paths the direct action accepts.
+ */
+async function accept_through_review_run(
+	fixture: Awaited<ReturnType<typeof create_file_fixture>>,
+	pendingUpdate: Doc<"files_pending_updates">,
+) {
+	const { t, db, asUser } = fixture;
+	const started = await asUser.mutation(api.files_pending_update_runs.start, {
+		membershipId: db.membershipId,
+		requestId: crypto.randomUUID(),
+		kind: "accept",
+		expectedItemCount: 1,
+		items: [
+			{
+				pendingUpdateId: pendingUpdate._id,
+				reviewedRevision: pendingUpdate.revision,
+				selectedContentStateId: pendingUpdate.pendingReplacement
+					? null
+					: (pendingUpdate.content?.unstagedStateId ?? null),
+			},
+		],
+	});
+	if (started._nay) throw new Error(started._nay.message);
+	const runId = started._yay.runId;
+	const sealed = await asUser.mutation(api.files_pending_update_runs.seal, { membershipId: db.membershipId, runId });
+	if (sealed._nay) throw new Error(sealed._nay.message);
+	await t.action(internal.files_pending_update_runs.plan, { runId, fence: 0 });
+	for (let pass = 0; pass < 20; pass++) {
+		await t.mutation(internal.files_pending_update_runs.advance, { runId });
+		const run = await t.run((ctx) => ctx.db.get("files_pending_update_runs", runId));
+		if (!run) throw new Error("Expected the review run");
+		if (run.step === "finished")
+			return await asUser.query(api.files_pending_update_runs.get, { membershipId: db.membershipId, runId });
+		const unit = await t.run((ctx) =>
+			ctx.db
+				.query("files_pending_update_run_units")
+				.withIndex("by_run_status_deleteLast_order", (q) => q.eq("runId", runId).eq("status", "preparing"))
+				.first(),
+		);
+		if (!unit) throw new Error("Expected a review worker");
+		await t.action(internal.files_pending_update_runs.prepare_unit, {
+			runId,
+			fence: run.fence,
+			unitId: unit._id,
+			attemptFence: unit.attemptFence,
+		});
+	}
+	throw new Error("Review did not finish");
+}
+
 async function create_private_copy_source(
 	fixture: Awaited<ReturnType<typeof create_file_fixture>>,
 	text = "Private staged\n",
@@ -3178,5 +3230,36 @@ describe("accept_file_pending_replacement", () => {
 			path: "/restore.txt",
 		});
 		expect(read?.content).toBe("Copied text\n");
+	});
+
+	test("accepts the replacement through a review run and keeps the replaced bytes in history", async () => {
+		const fixture = await create_file_fixture();
+		const { t, db, scope, nodeId } = fixture;
+		const sourceId = await test_create_saved_text_file(t, {
+			membershipId: db.membershipId,
+			path: "/source.txt",
+			textContent: "Copied text\n",
+		});
+		const staged = await prepare_agent_replacement(fixture, sourceId);
+		const previousAssetId = staged.pendingReplacement!.baseAssetId;
+
+		const finished = await accept_through_review_run(fixture, staged);
+
+		expect(finished?.activity).toMatchObject({ status: "succeeded", progress: { completed: 1 } });
+		expect(await t.run((ctx) => ctx.db.get("files_pending_updates", staged._id))).toBeNull();
+		const read = await t.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
+			...scope,
+			path: "/restore.txt",
+		});
+		expect(read?.content).toBe("Copied text\n");
+		const history = await t.run((ctx) =>
+			ctx.db
+				.query("files_snapshots")
+				.withIndex("by_organization_workspace_fileNode_archivedAt", (q) =>
+					q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("fileNodeId", nodeId),
+				)
+				.collect(),
+		);
+		expect(history.map((version) => version.assetId)).toContain(previousAssetId);
 	});
 });
