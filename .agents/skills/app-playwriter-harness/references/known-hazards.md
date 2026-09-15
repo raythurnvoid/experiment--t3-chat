@@ -2293,3 +2293,33 @@ exactly like "the agent did nothing".
 The reply text says which one happened. A real transfer prints
 `Transfer <id>: 1 ready for review, 0 skipped, 0 failed.` Read the reply with `state.qa.dump()`
 first, and poll the pending list instead of reading it once.
+
+## A Convex write inside `page.evaluate` can navigate the SPA and kill the evaluate
+
+A long `page.evaluate` that loops over writes is not safe just because it never touches the DOM.
+If a write changes what the current route is showing — discarding the pending node the file editor
+has open, archiving the selected folder — TanStack Router navigates, the execution context is torn
+down, and the call fails with:
+
+```
+page.evaluate: Execution context was destroyed, most likely because of a navigation.
+```
+
+The writes already committed still stand, so a retry sees a partly-done job rather than a clean
+slate. Park the tab on a route that does not render the thing you are about to change (`/chat`
+works for anything under `/files`) before running the loop.
+
+## `Get-ChildItem -Recurse` follows directory junctions, so a worktree cleanup can delete the main checkout's `node_modules`
+
+This is a host-side hazard, not a browser one, but it costs a reinstall. A pnpm worktree on Windows
+fills `node_modules` with junctions pointing into the main checkout.
+`Get-ChildItem -Recurse -Directory -Attributes ReparsePoint` does **not** stop at a junction: it
+descends through nested ones and returns entries that live in the *target*. Deleting that list
+removes the main checkout's package links. Observed on a `git worktree remove` cleanup: of 251
+links enumerated under the worktree, 157 were the main repo's own links under
+`packages/app/vendor/{polar,presence,r2,rate-limiter,mastra}`, and deleting them broke the root
+`node_modules/.bin` so `pnpm run lint` failed with `'tsc-silent' is not recognized`.
+
+Enumerate one level at a time and check each parent for the ReparsePoint attribute before
+descending. If it already happened, `pnpm install --force --frozen-lockfile` rebuilds every link
+without touching the lockfile.

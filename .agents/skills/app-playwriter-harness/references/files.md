@@ -978,6 +978,81 @@ Playwriter toolbar covers it) and click "Review conflicts" inside `.AppNotificat
 Pasting the same sources again is the way to check that duplicate names keep a stable order: the
 counter must continue past the existing siblings, in source order.
 
+
+### Reading A Reservation That Is Still "Preparing"
+
+A private node the transfer created but has not filled yet reports `preparing: true` on
+`files_visible.list`. Catching one is harder than it looks.
+
+- `cp`/`mv` in the foreground block until the run ends, so the chained commands after them always
+  see finished nodes. The background form is `transfer start copy|move <sources> <dest>`; it
+  prints `Running. Transfer <runId>. Activity <id>.` and returns at once. `transfer status|wait|
+  stop <runId>` drive it afterwards.
+- Even in the background the window is about one poll sample wide. Polling `files_visible.list`
+  every 120 ms during a 10-node `cp -R` caught one preparing node out of 38 samples. Chained Bash
+  readers reliably miss it: they either run before any reservation exists (everything answers
+  `No such file or directory`) or after the node is ready.
+- `sleep` **is** available in the sandbox, so `transfer start copy ... ; sleep 5 ; ls <dest>`
+  samples a live run. At t+5 s a 8-child copy listed 3 rows, at t+6 s 4 rows, at t+7 s all 8.
+- `transfer stop` does not freeze a reservation. `db_cancel_items`
+  (`convex/files_transfer.ts:369-395`) calls `files_pending_nodes_db_discard` for every item with
+  a `preparation`, so stopping **deletes** the unfilled ones.
+- The reliable way to get a **stable** preparing node is a write that dies mid-preparation:
+  `seq 1 300000 > <path>` exceeds the 1 s Convex mutation limit
+  (`Uncaught Error: Function execution timed out (maximum duration: 1s)`) and leaves the
+  reservation behind for as long as you need it. Discard it when you are done.
+
+What the readers say about one of these is not uniform, so do not assert "the file is missing" or
+"the file is binary" from a single command:
+
+| reader | answer |
+| --- | --- |
+| `ls` / `find` / `tree` | a plain row, no marker of any kind |
+| `stat` | `Size: (content size not tracked for this file)`, `Type: regular file` |
+| `cat` / `tail -n` / `head -n` | `content is not available from materialized chunks` |
+| `head -c` | `No such file or directory` |
+| `wc -c` | the binary/media `[ADVISORY]`, even for `text/markdown` |
+| `grep` | silent |
+| `meta get` | `item not found` |
+| `edit_file` | `Cannot edit <path>: this draft is still preparing` |
+
+Only the writers name the state. Use `edit_file`, or a redirect write, when you need a command
+that actually tells you a target is preparing.
+
+### Clearing Many Pending Proposals
+
+`Discard all shown pending changes` in the sidebar is **chat-scoped** — the strip says "N pending
+file changes from this chat" — so it will not clear proposals made by earlier chats or earlier
+runs, and clicking it repeatedly changes nothing. For test cleanup, go through the Convex doors
+instead and page until the list is empty:
+
+```js
+const rows = /* page files_pending_updates.list_files_pending_updates with paginationOpts */;
+for (const row of rows) {
+	const pu = row.entry.pendingUpdate;
+	const door = row.entry.kind === "private"
+		? api.files_pending_updates.discard_file_pending_structural
+		: api.files_pending_updates.discard_file_pending_update;
+	await convex.mutation(door, { membershipId, target: pu.target, pendingUpdateId: pu._id, reviewedRevision: pu.revision });
+}
+```
+
+Discarding a private node the page is currently viewing navigates the route, which kills a running
+`page.evaluate` with `Execution context was destroyed`. Park the tab on `/chat` first.
+
+### Public File API From The Browser
+
+`/api/v1/files/read`, `read-many` and `list` take **paths**. `download-urls` is the only public
+file door that takes ids (`fileNodeIds`), and it needs scope `files:download` — a key without it
+answers `403 Permission denied` for every id, valid or not. Always send a known-good saved node in
+the same check, or a refusal proves nothing about the id you care about.
+
+A private (agent-created) target is refused everywhere public: `read` 404s, `read-many` returns it
+under `errors` with `files: []`, `list` omits it, and `download-urls` returns
+`{fileNodeId, message: "Not found"}` while a saved id in the same batch still returns its signed
+URL. The public doors also serve committed state only — a saved file with a pending replacement
+reads back at its saved size and body.
+
 ## Script Pattern
 
 For anything longer than a one-liner, keep the runner in a dated personal AI folder:
