@@ -1303,3 +1303,34 @@ Within about 3 s the host revokes the session, unmounts the iframe (`frames: 0`)
 `The plugin page flooded the bridge and was stopped` with a `Retry`. Verified 2026-09-04. Use it to
 screen the error UI without breaking a plugin or editing the server. `Retry` restores the frame in
 about 12 s and mints a new session.
+
+## Getting a shared Activity card without any plugin secret
+
+Files transfers and pending-update runs always write `visibility: "requester"` activities, so an
+owner-only workspace can never produce a **shared** card. Only a plugin run can
+(`plugins_runtime.ts`), and the card starts `feedVisible: false` — the plugin's backend has to call
+`POST /api/v1/activities/start` before anyone sees it.
+
+The cheapest fixture is the **Image** plugin with no secret configured. Verified 2026-09-15 on
+`image@0.3.4` in `chitchat-qa / xfer-qa-0914`: install it, upload any PNG through
+`files_nodes.create_upload_node` plus the signed R2 PUT, and within seconds the feed holds
+
+```text
+title "Describing shapes.png"  status failed  visibility "shared"  feedVisible true
+source.kind "plugin_run"  source.pluginName "image"  controls { canDismiss: true }
+errorMessage "OPENAI_API_KEY secret is not configured"
+```
+
+The plugin opts into the feed **before** it reads the secret, so the missing key costs nothing: the
+card is a real shared card with a real dismiss control. Read both viewers with
+`activities.list_page({membershipId, section: "active" | "history", paginationOpts})` — the two
+sections are disjoint index ranges (`finishedAt === undefined` vs `finishedAt > undefined`), so a
+finished card is only ever in `history`.
+
+Per-viewer dismiss then checks cleanly with a second identity: a member sees this one shared card
+and **none** of the owner's `requester` cards; `Dismiss Describing shapes.png` in the owner's
+Activity popover removes it from the owner's feed while the member's still lists it; and
+`activities_user_states` holds exactly one row for that `activityId`, carrying the owner's `userId`.
+
+Uninstall the plugin afterwards — the installation is what mounts `/.plugins/image` and what makes
+every later image upload start another failing run.

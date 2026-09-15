@@ -1141,6 +1141,91 @@ items})` before sealing.
 `apply_file_pending_archive` and `apply_file_pending_move` are plain mutations with no content
 branch, so those two can still be called directly.
 
+### Reading And Restoring A Collaboration-Off File's Text
+
+`files_nodes_content.get_non_collaborative_file_content` returns a `Result`, so the text is at
+`result._yay.text`, not `result.text`. Reading `result.text` answers `undefined`. That matters more
+than a wrong log line: a runner that builds the new text from the old one then writes `""` plus its
+own line and silently wipes the file. Read the value back after every write.
+
+To undo such a mistake, the file's version list is the source. `files_nodes.get_file_snapshots_list`
+takes `{membershipId, nodeId, showArchived}` and takes **no** `paginationOpts` — it returns
+`{snapshots: [...]}` newest first. Each snapshot's bytes come from a signed URL:
+
+```js
+const link = await m.app_convex.action(m.app_convex_api.files_nodes.create_file_snapshot_content_url, {
+	membershipId,
+	nodeId,
+	snapshotId,
+});
+const text = await (await fetch(link.url)).text();
+```
+
+Then write `text` back with `files_nodes_content.replace_file_content`. There is no restore
+mutation. Note the newest snapshot is taken **after** the save that created it, so the text you want
+is usually the second row, not the first — check each one's `_creationTime` against the save.
+
+### Listing And Draining Pending Rows From A Runner
+
+`files_pending_updates.list_files_pending_updates` requires `paginationOpts`. Each row is
+`{kind, canAccept, canEdit, readiness, entry}` with the useful fields one level down in
+`entry.path`, `entry.node` and `entry.pendingUpdate` — there is no `row._id` or `row.path`.
+
+Draining every row for a clean fixture needs **more than one pass**. A folder draft whose children
+still have drafts refuses with `{_nay: {name: "needs_review", message: "Review the child drafts
+before discarding this folder"}}`, so loop until the list is empty:
+
+```js
+for (let pass = 0; pass < 5; pass++) {
+	const rows = await m.app_convex.query(m.app_convex_api.files_pending_updates.list_files_pending_updates, {
+		membershipId,
+		paginationOpts: { cursor: null, numItems: 50 },
+	});
+	if (rows.page.length === 0) break;
+	for (const r of rows.page) {
+		const pu = r.entry.pendingUpdate;
+		await m.app_convex.mutation(m.app_convex_api.files_pending_updates.discard_file_pending_update, {
+			membershipId,
+			target: pu.target,
+			pendingUpdateId: pu._id,
+			reviewedRevision: pu.revision,
+		});
+	}
+}
+```
+
+### Catching A Toast That Auto-Dismisses
+
+`Accept all shown pending changes` fires its `toast.warning` at click time, and sonner removes the
+node a few seconds later. Polling `[data-sonner-toast]` after the click therefore misses it while
+the slower run-progress toasts are still on screen. Record instead: install a `MutationObserver`
+over `document.body` **before** the click and collect every `[data-sonner-toast]` text it sees.
+
+The run also leaves its `Save reviewed changes` progress dialog open when it finishes. That dialog's
+backdrop intercepts pointer events, so the next click anywhere times out with
+`<div class="MyModalBackdrop"> ... intercepts pointer events`. Close it first — and target the
+dismiss control, because the dialog has two buttons named `Close`:
+
+```js
+await state.page.locator("[role=dialog][data-open=true] button[data-dialog-dismiss]").first().click();
+```
+
+### A Member's Concurrent Save Making An Owner's Proposal Stale
+
+The full shape, proven end to end with a second identity (see `second-user-fixtures.md`):
+
+1. The owner's agent proposes content on a **collaboration-off** file (`printf ... > <path>`).
+   `replace_file_content` only works on collaboration-off files — `get_replace_file_content_preflight`
+   returns `null` (surfacing as `{"_nay":{"message":"Not found"}}`) when `collaborationEnabled !== false`.
+2. The member calls `files_nodes_content.replace_file_content` on that same node. The committed text
+   moves; the proposal is untouched and `contentNeedsRebase` stays `null` (an ordinary save's
+   staleness is derived from the base asset, not from that flag).
+3. The owner's row caption becomes `<path>, review to update`.
+4. `Accept changes to <path>` toasts `This file changed. Open Review to update the proposal, or
+   discard it.` and writes nothing — same proposal id, revision and state ids afterwards.
+5. `Accept all shown pending changes` toasts `Changes waiting for review are skipped. Open Review to
+   update them.`, saves the fresh rows and leaves the stale one alone.
+
 ## Script Pattern
 
 For anything longer than a one-liner, keep the runner in a dated personal AI folder:

@@ -707,3 +707,44 @@ Hardening smoke: run BONOBO=1 source /.mounts/t3-chat/package.json; 2>/tmp/sourc
 ```
 
 Notes: the eval model (GPT-5.4 Nano) is intentionally weak; it still followed every mount convention from the tool descriptions (prefix usage, scoped search, read-only handling, scratch-copy allowance) without coaching — strong evidence the tool/skill wording is unambiguous. The mount content is verifiably real (AGENTS.md and package.json match the repo at the synced commit). The 2026-06-29 hardening smoke confirmed assignment-prefixed `source`, redirected `source`, nested redirected `source`, and `.` mount attempts return exit 126 with the global-disabled diagnostic while `cp` read-out to `/tmp` still works. C7 remains verified by direct regression + architecture until a configured runner path returns tenant file reads and mount-path misses in the same live turn.
+
+## Plugin Mount Evaluation
+
+`/.plugins/<pluginName>` works exactly like `/.mounts/<name>`: one read-only mount per **enabled**
+plugin installation in the current workspace, backed by that version's published source tree. With
+zero installations the `/.plugins` directory does not exist at all, so a check here needs a plugin
+installed first (`plugin-marketplace.md`; the Image plugin installs in two clicks and needs no
+secret to mount). Uninstall it again afterwards — its mount disappears with the installation.
+
+The tree is the plugin's published bundle, not a repository checkout, so there is no `README.md` at
+the top. Verified 2026-09-15 on `image@0.3.4`: `/.plugins/image` holds `dist/`, and
+`/.plugins/image/dist` holds `backend/` and `bonobo.plugin.json`. Pick a real file before copying —
+`$(ls … | head -1)` picks the directory and only proves `cp: -r not specified`.
+
+Both mounts refuse a copy **into the app tree** with the same message, and the check runs first, so
+it fires even when the source path does not exist:
+
+```text
+cp: only app files can be copied into the app tree. To write scratch text, use cat <scratch-file> > <app path>.
+```
+
+A write **into** either mount is refused separately:
+
+```text
+EROFS: read-only file system, '/.plugins/image/dist/x.txt'. '/.plugins' is a read-only mount of installed plugin sources.
+```
+
+Copying the same file to `/tmp` succeeds, which is the control that proves the refusal is about the
+destination and not an unreadable source. Verified 2026-09-15 for both mounts: 1202 bytes out of
+`/.plugins/image/dist/bonobo.plugin.json` and 4166 bytes out of `/.mounts/t3-chat/README.md`
+reached `/tmp` with exit 0, the app-tree `cp` exited 1, the destination folder gained no file, and
+`list_files_pending_updates` stayed empty — the refusal creates no pending update either.
+
+Two traps when scripting these as one `;`-chained command:
+
+- An EROFS write aborts the **whole** command with exit 1 and discards the stdout of the earlier
+  steps. Put any deliberate read-only write in its own command.
+- `/tmp` only persists scratch files up to 2000 bytes between calls. A larger copy still succeeds
+  and reads back inside the same command, then the next call reports
+  `/tmp scratch files larger than 2000 bytes are not persisted between calls; discarded 1
+  oversized file(s): <path>`. Read the copy back in the same command.
