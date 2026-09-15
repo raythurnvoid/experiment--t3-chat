@@ -235,6 +235,37 @@ When the app tab is not foregrounded:
 - `Branch chat here` (message action) creates a branched thread that inherits `/tmp` files and cwd; the new thread gets a sidebar tab with `aria-selected=true`.
 - `state.qa.newChat()` is for the files-sidebar Agent tab only. On the full-page `/chat` route it waits forever on `[aria-label="Open chats"] [role="tab"][aria-selected="true"]`, because that route renders no tab strip. The route's own control is `New Chat` (capital C), and it can be rendered twice, so a plain `getByRole` click dies with a strict-mode violation — but do not click it at all right now, see the renderer wedge in `known-hazards.md`. To reach a new thread, start a fresh headless browser: with no session the app mints an anonymous user whose chat is empty, and `goto("/w/personal/home/chat")` lands on it. A `goto` without `threadId` in a browser that already has threads reopens the last one.
 
+### Make a second chat without clicking anything
+
+A fresh headless browser gives you an empty chat, but it signs you in as a new anonymous user, so it
+cannot be used when the second chat must belong to the **same** account — for example when two chats
+have to write to one file and you need both `threadIds` on one pending row. Create the thread
+through the door instead and navigate straight to it. This is the only way that worked on
+2026-09-15; clicking `New Chat` opens the threads panel over the composer and the click promise
+never settles, which wedges the tab.
+
+The app does **not** put a client on `window`. Import the app's own module instead:
+
+```js
+const created = await state.page.evaluate(async (membershipId) => {
+	const mod = await import("/src/lib/app-convex-client.ts");
+	return await mod.app_convex.mutation("ai_chat:thread_create", {
+		membershipId,
+		clientGeneratedId: `qa-second-chat-${Date.now()}`,
+		title: "QA second chat",
+		lastMessageAt: Date.now(),
+	});
+}, MEMBERSHIP_ID);
+await state.page.goto(`${APP_ORIGIN}/w/<org>/<workspace>/chat?threadId=${created._yay.threadId}`, {
+	waitUntil: "domcontentloaded",
+	timeout: 180000,
+});
+```
+
+Then reinstall the chat helpers and rebind, because the navigation replaces the page context. Give
+`goto` an explicit `timeout`: Playwright's own default for that call is 10 s and the CLI
+`--timeout` does not cover it.
+
 ## Generated pictures (`image_generation`)
 
 Prompt that reliably draws one: `Draw a small picture of a red circle on a white background.` The turn takes ~30-60 s. It works in both `Agent` and `Ask` mode; switch with the chat mode picker in the selector table.

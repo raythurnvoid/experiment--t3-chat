@@ -173,6 +173,75 @@ describe("review jobs", () => {
 		expect(await f.t.run((ctx) => ctx.db.query("files_pending_update_runs").collect())).toHaveLength(1);
 	});
 
+	test("lets a Copy start while a review is running", async () => {
+		const f = await fixture();
+		const first = await private_folder(f, "/first");
+		const running = await start_review(f, "discard", [first]);
+		const source = await saved_folder(f, "source");
+		const target = await saved_folder(f, "target");
+
+		// Each lane admits its own job. They only meet later, in the shared two-worker pool.
+		const copy = await f.asUser.mutation(api.files_transfer.start, {
+			membershipId: f.db.membershipId,
+			requestId: "copy-next-to-review",
+			kind: "copy",
+			sourceIds: [source],
+			targetParentId: target,
+		});
+		expect(copy._nay).toBeUndefined();
+		if (copy._nay) return;
+		const active = await f.asUser.query(api.activities.list_page, {
+			membershipId: f.db.membershipId,
+			section: "active",
+			paginationOpts: { cursor: null, numItems: 50 },
+		});
+		expect(active.page.map((activity) => activity.source.id).sort()).toEqual(
+			[running.runId, copy._yay.runId].sort(),
+		);
+	});
+
+	test("replays a repeated review request and page and refuses a changed one", async () => {
+		const f = await fixture();
+		const first = await private_folder(f, "/first");
+		const second = await private_folder(f, "/second");
+		const item = (proposal: Doc<"files_pending_updates">) => ({
+			pendingUpdateId: proposal._id,
+			reviewedRevision: proposal.revision,
+			selectedContentStateId: null,
+		});
+		const args = {
+			membershipId: f.db.membershipId,
+			requestId: "review-request",
+			kind: "discard" as const,
+			expectedItemCount: 2,
+			items: [item(first)],
+		};
+
+		// A retried send must land on the same run instead of starting a second review.
+		const started = await f.asUser.mutation(api.files_pending_update_runs.start, args);
+		if (started._nay) throw new Error(started._nay.message);
+		expect(await f.asUser.mutation(api.files_pending_update_runs.start, args)).toEqual(started);
+		expect(
+			(await f.asUser.mutation(api.files_pending_update_runs.start, { ...args, items: [item(second)] }))._nay,
+		).toMatchObject({ name: "request_changed", message: "This request ID was already used for a different review." });
+
+		// The same page sent twice is one receipt, but the same position with other changes is not.
+		const page = { membershipId: f.db.membershipId, runId: started._yay.runId, offset: 1, items: [item(second)] };
+		expect(await f.asUser.mutation(api.files_pending_update_runs.append_items, page)).toEqual({ _yay: null });
+		expect(await f.asUser.mutation(api.files_pending_update_runs.append_items, page)).toEqual({ _yay: null });
+		expect(
+			(await f.asUser.mutation(api.files_pending_update_runs.append_items, { ...page, items: [item(first)] }))._nay,
+		).toMatchObject({
+			name: "request_changed",
+			message: "This review page was already sent with different changes.",
+		});
+
+		const run = await f.t.run((ctx) => ctx.db.get("files_pending_update_runs", started._yay.runId));
+		expect(run).toMatchObject({ itemCount: 2 });
+		expect(await f.t.run((ctx) => ctx.db.query("files_pending_update_run_items").collect())).toHaveLength(2);
+		expect(await f.t.run((ctx) => ctx.db.query("files_pending_update_runs").collect())).toHaveLength(1);
+	});
+
 	test.each(["accept", "discard"] as const)(
 		"keeps unchanged units after an unrelated owner edit (%s)",
 		async (kind) => {
@@ -548,7 +617,11 @@ describe("review jobs", () => {
 		expect(result?.activity).toMatchObject({ status: "succeeded", progress: { completed: 2 } });
 		const saved = await f.t.run((ctx) => ctx.db.query("files_nodes").collect());
 		expect(saved.map((node) => node.path)).toEqual(["/parent", "/parent/child"]);
-		expect(saved.every((node) => node.archiveOperationId !== null)).toBe(true);
+		// The archived parent and everything under it must share one archive operation, so a later
+		// unarchive brings back exactly the nodes that went away together.
+		const archiveOperationIds = new Set(saved.map((node) => node.archiveOperationId));
+		expect(archiveOperationIds.size).toBe(1);
+		expect(saved[0]?.archiveOperationId).not.toBeNull();
 		expect(await f.t.run((ctx) => ctx.db.query("files_pending_updates").collect())).toEqual([]);
 	});
 

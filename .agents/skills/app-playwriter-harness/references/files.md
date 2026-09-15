@@ -968,6 +968,27 @@ await set.locator("label").filter({ hasText: /^Keep both$/ }).first().click();
 await modal.getByRole("button", { name: "Continue" }).first().click();
 ```
 
+The modal holds **two kinds** of fieldset, and they carry the same choice words. Each open conflict
+has its own set whose legend is the **source path** (`/run/src/skipme.md`, labels
+`Keep both | Replace | Skip`), and below them sit the two `Apply to remaining ... name conflicts`
+sets. A bare `modal.getByText("Skip", { exact: true }).first()` picks an apply-to-remaining radio,
+which answers nothing, so `Continue` stays disabled and the run never moves. Always filter by the
+legend text of the conflict you mean:
+
+```js
+await modal.locator("fieldset").filter({ hasText: "/run/src/skipme.md" })
+	.getByText("Skip", { exact: true }).first().click();
+```
+
+The Files clipboard lives in the page, not on the server, so **a full page load clears it**. After a
+Copy, do not `goto` the destination: the Paste button is there but disabled. Walk to the destination
+inside the app instead, through the folder table's `a[aria-label="Open <name>"]` link.
+
+To make one copy fail **for real** without touching the billing plan, create the source with
+`files_nodes:create_upload_node` and never send the signed PUT. The node stays unfilled, and its
+copy fails with `The source file is still saving. Try again.` while its siblings copy normally.
+That is the cheap way to stage a partial run and then press `Retry remaining files`.
+
 Read the result back from the server, not from the modal text alone:
 `files_transfer:list_items` with `{ membershipId, runId, paginationOpts }` gives each item's
 `state`, `outcome`, resolved `source` and `output` paths, and `conflictKind`. List the destination

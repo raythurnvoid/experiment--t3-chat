@@ -4709,6 +4709,100 @@ describe("process_organization_deletion_request", () => {
 		expect(after.organizationQuotaDocs).toHaveLength(0);
 	});
 
+	test("stops a running Paste before organization files and keeps another organization's run", async () => {
+		const t = test_convex();
+		const cancelWork = vi.spyOn(Workpool.prototype, "cancel").mockResolvedValue(undefined);
+		const user = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-delete-organization-clipboard",
+				displayName: "Delete Organization Clipboard",
+			}),
+		);
+		const organization = await t.run(async (ctx) => {
+			const created = await organizations_db_create(ctx, {
+				userId: user.userId,
+				name: "org-clipboard",
+				description: "",
+				now: Date.now(),
+				default: false,
+			});
+			if (created._nay) throw new Error(created._nay.message);
+			return created._yay;
+		});
+		const victim = await data_deletion_test_start_transfer_run(t, {
+			userId: user.userId,
+			organizationId: organization.organizationId,
+			workspaceId: organization.defaultWorkspaceId,
+			tag: "organization-clipboard-victim",
+			count: 51,
+		});
+		const control = await data_deletion_test_start_transfer_run(t, {
+			userId: user.userId,
+			organizationId: user.defaultOrganizationId,
+			workspaceId: user.defaultWorkspaceId,
+			tag: "organization-clipboard-control",
+			count: 1,
+		});
+
+		const workId = "organization-clipboard-work" as WorkId;
+		const requestId = await t.run(async (ctx) => {
+			const item = await ctx.db
+				.query("files_transfer_items")
+				.withIndex("by_run_order", (q) => q.eq("runId", victim.runId))
+				.first();
+			if (!item) throw new Error("Expected Paste item");
+			await ctx.db.patch("files_transfer_items", item._id, {
+				state: "copying",
+				attempt: 1,
+				workId,
+				attemptExpiresAt: Date.now() + 60_000,
+				billedUserId: null,
+			});
+			await ctx.db.patch("files_transfer_runs", victim.runId, { step: "apply", inFlight: 1 });
+			const activity = await activities_db_require_by_source_id(ctx, victim.runId);
+			await ctx.db.patch("activities", activity._id, { status: "running" });
+			return await data_deletion_db_request(ctx, {
+				userId: user.userId,
+				organizationId: organization.organizationId,
+				scope: "organization",
+				eligibleAt: 0,
+			});
+		});
+
+		// The first pass must stop the live Paste and cancel its worker before any file is deleted.
+		const first = await t.run((ctx) =>
+			ctx.runMutation(internal.data_deletion.process_organization_deletion_request, { requestId }),
+		);
+		const progress = await t.run(async (ctx) => ({
+			activity: await activities_db_require_by_source_id(ctx, victim.runId),
+			sources: await Promise.all(victim.sourceIds.map((nodeId) => ctx.db.get("files_nodes", nodeId))),
+		}));
+		expect(first.done).toBe(false);
+		expect(progress.activity.status).toBe("stopping");
+		expect(progress.sources.every(Boolean)).toBe(true);
+		expect(cancelWork.mock.calls.map((call) => call[1])).toContain(workId);
+
+		await data_deletion_test_process_organization_request_until_done(t, { requestId });
+		const after = await t.run(async (ctx) => ({
+			run: await ctx.db.get("files_transfer_runs", victim.runId),
+			items: await ctx.db
+				.query("files_transfer_items")
+				.withIndex("by_run_order", (q) => q.eq("runId", victim.runId))
+				.collect(),
+			activities: await ctx.db.query("activities").collect(),
+			controlRun: await ctx.db.get("files_transfer_runs", control.runId),
+			controlFile: await ctx.db.get("files_nodes", control.sourceIds[0]!),
+		}));
+		expect(after.run).toBeNull();
+		expect(after.items).toEqual([]);
+		expect(after.activities.some((activity) => activity.source.id === victim.runId)).toBe(false);
+		expect(after.controlRun).not.toBeNull();
+		expect(after.activities.find((activity) => activity.source.id === control.runId)).toMatchObject({
+			status: "queued",
+		});
+		expect(after.controlFile).not.toBeNull();
+	});
+
 	test("purges queued workspace content even when the workspace doc was already removed", async () => {
 		const t = test_convex();
 		const user = await t.run((ctx) =>

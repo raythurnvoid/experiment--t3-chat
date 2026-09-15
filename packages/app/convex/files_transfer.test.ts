@@ -3,6 +3,9 @@ import { Workpool } from "@convex-dev/workpool";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
+import { activities_is_active } from "./activities_db.ts";
+import { files_transfer_db_delete_run_batch } from "./files_transfer.ts";
+import { organizations_membership_lifetimes_db_ensure } from "./organizations_membership_lifetimes.ts";
 import { test_convex, test_create_saved_text_file, test_mocks_fill_db_with } from "./setup.test.ts";
 import { files_ROOT_ID } from "../shared/files.ts";
 
@@ -168,6 +171,10 @@ describe("start", () => {
 		const first = await asUser.mutation(api.files_transfer.start, args);
 		if (first._nay) throw new Error(first._nay.message);
 		expect(await asUser.mutation(api.files_transfer.start, args)).toEqual(first);
+		// The same request ID with other sources is a new request, not a retry of this one.
+		expect(
+			(await asUser.mutation(api.files_transfer.start, { ...args, sourceIds: [folders.get("/source/child")!] }))._nay,
+		).toMatchObject({ name: "request_changed", message: "This request ID was already used for another transfer" });
 		expect(
 			(await asUser.mutation(api.files_transfer.start, { ...args, requestId: "another-request" }))._nay?.message,
 		).toBe("A transfer is already running in this workspace");
@@ -219,6 +226,36 @@ describe("start", () => {
 			(await fixture.asUser.query(api.files_transfer.get, { membershipId: fixture.db.membershipId, runId }))?.activity
 				.status,
 		).toBe("queued");
+	});
+	// The selection cap is 200 roots. Step it by exactly one so the pair names its own limit.
+	test.each([
+		{ label: "starts a copy of two hundred selected roots", count: 200, refused: false },
+		{ label: "refuses two hundred and one selected roots", count: 201, refused: true },
+	])("$label", async ({ count, refused }) => {
+		const paths = Array.from({ length: count }, (_entry, index) => `/root-${index.toString().padStart(3, "0")}`);
+		const fixture = await create_folder_fixture(paths);
+		const { t, db, asUser, folders } = fixture;
+		const started = await asUser.mutation(api.files_transfer.start, {
+			membershipId: db.membershipId,
+			requestId: "root-limit",
+			kind: "copy",
+			sourceIds: paths.map((path) => folders.get(path)!),
+			targetParentId: folders.get("/target")!,
+		});
+
+		if (refused) {
+			expect(started._nay?.message).toBe("Select between 1 and 200 items");
+			expect(await t.run((ctx) => ctx.db.query("files_transfer_runs").collect())).toEqual([]);
+			expect(await t.run((ctx) => ctx.db.query("files_transfer_items").collect())).toEqual([]);
+			return;
+		}
+
+		expect(started._nay).toBeUndefined();
+		if (started._nay) return;
+		expect(
+			await asUser.query(api.files_transfer.get, { membershipId: db.membershipId, runId: started._yay.runId }),
+		).toMatchObject({ step: "discover", activity: { progress: { discovered: 200 } } });
+		expect(await t.run((ctx) => ctx.db.query("files_transfer_items").collect())).toHaveLength(200);
 	});
 });
 
@@ -585,6 +622,53 @@ describe("advance", () => {
 		expect(await get_node(fixture, "/target/source/second.bin")).toBeNull();
 	});
 
+	test("keeps at most two file copies in flight", async () => {
+		const fixture = await create_folder_fixture(["/source"]);
+		const { t, db, asUser, folders } = fixture;
+		for (const filename of ["first.bin", "second.bin", "third.bin"]) {
+			const file = await asUser.mutation(api.files_nodes.create_upload_node, {
+				membershipId: db.membershipId,
+				parentId: folders.get("/source")!,
+				filename,
+				contentType: "application/octet-stream",
+				size: 8,
+			});
+			if (file._nay) throw new Error(file._nay.message);
+		}
+		const runId = await start_copy(fixture, [folders.get("/source")!]);
+		await finish_discovery(fixture, runId);
+
+		const read_items = async () =>
+			await t.run((ctx) =>
+				ctx.db
+					.query("files_transfer_items")
+					.withIndex("by_run_order", (q) => q.eq("runId", runId))
+					.collect(),
+			);
+		// Copy shares two worker slots with review preparation, so more advances must not queue a
+		// third file.
+		for (let step = 0; step < 10; step += 1) await t.mutation(internal.files_transfer.advance, { runId });
+		const queued = await read_items();
+		expect(queued.filter((item) => item.workId !== null)).toHaveLength(2);
+		expect(queued.filter((item) => item.state === "pending" && item.workId === null)).toHaveLength(1);
+		expect(await t.run((ctx) => ctx.db.get("files_transfer_runs", runId))).toMatchObject({ inFlight: 2 });
+
+		// One finished worker frees one slot, so the waiting file starts and the cap still holds.
+		const waiting = queued.find((item) => item.state === "pending" && item.workId === null)!;
+		const running = queued.find((item) => item.workId !== null)!;
+		await t.action(internal.files_nodes_content.copy_transfer_file, { itemId: running._id, attempt: running.attempt });
+		await t.mutation(internal.files_transfer.handle_copy_complete, {
+			workId: running.workId!,
+			context: { itemId: running._id, attempt: running.attempt },
+			result: { kind: "success", returnValue: null },
+		});
+		await t.mutation(internal.files_transfer.advance, { runId });
+		const after = await read_items();
+		expect(after.find((item) => item._id === waiting._id)?.workId).not.toBeNull();
+		expect(after.filter((item) => item.workId !== null)).toHaveLength(2);
+		expect(await t.run((ctx) => ctx.db.get("files_transfer_runs", runId))).toMatchObject({ inFlight: 2 });
+	});
+
 	test("discovers more than one page before creating any output", async () => {
 		const paths = Array.from({ length: 55 }, (_entry, index) => `/source/folder-${index.toString().padStart(2, "0")}`);
 		const fixture = await create_folder_fixture(["/source", ...paths]);
@@ -604,6 +688,112 @@ describe("advance", () => {
 			activity: { status: "succeeded", progress: { total: 56, completed: 56 } },
 		});
 		for (const path of paths) expect(await get_node(fixture, `/target${path}`)).not.toBeNull();
+	});
+
+	test("copies a child added between discovery pages only when it sorts after the cursor", async () => {
+		const paths = Array.from({ length: 55 }, (_entry, index) => `/source/folder-${index.toString().padStart(2, "0")}`);
+		const fixture = await create_folder_fixture(["/source", ...paths]);
+		const { t, db, asUser, folders } = fixture;
+		const runId = await start_copy(fixture, [folders.get("/source")!]);
+		await t.mutation(internal.files_transfer.advance, { runId });
+		expect(
+			(await asUser.query(api.files_transfer.get, { membershipId: db.membershipId, runId }))?.activity.progress,
+		).toMatchObject({ discovered: 51, total: null });
+
+		// Discovery pages the children by name, so the first page stopped after "folder-49". A name added
+		// after that point is still ahead of the cursor and joins the copy. A name added before it is
+		// already behind the cursor and the second page never sees it. Either way the copy stays whole:
+		// a child is copied completely or not at all, and neither name is copied twice.
+		for (const path of ["late-after-cursor", "early-before-cursor"]) {
+			expect(
+				(
+					await asUser.mutation(api.files_nodes.create_folder_node, {
+						membershipId: db.membershipId,
+						parentId: folders.get("/source")!,
+						path,
+					})
+				)._nay,
+			).toBeUndefined();
+		}
+
+		await t.mutation(internal.files_transfer.advance, { runId });
+		expect(
+			(await asUser.query(api.files_transfer.get, { membershipId: db.membershipId, runId }))?.activity.progress,
+		).toMatchObject({ discovered: 57, total: null });
+		expect(await finish_folder_copy(fixture, runId)).toMatchObject({
+			activity: { status: "succeeded", progress: { total: 57, completed: 57 } },
+		});
+		expect(await get_node(fixture, "/target/source/late-after-cursor")).not.toBeNull();
+		expect(await get_node(fixture, "/target/source/early-before-cursor")).toBeNull();
+		for (const path of paths) expect(await get_node(fixture, `/target${path}`)).not.toBeNull();
+	});
+
+	test("asks for a choice when a discovered child moves out between discovery pages", async () => {
+		const paths = Array.from({ length: 55 }, (_entry, index) => `/source/folder-${index.toString().padStart(2, "0")}`);
+		const fixture = await create_folder_fixture(["/source", ...paths]);
+		const { t, db, asUser, folders } = fixture;
+		const runId = await start_copy(fixture, [folders.get("/source")!]);
+		await t.mutation(internal.files_transfer.advance, { runId });
+		expect(
+			(
+				await asUser.mutation(api.files_nodes.move_nodes, {
+					membershipId: db.membershipId,
+					itemIds: [folders.get("/source/folder-00")!],
+					targetParentId: folders.get("/target")!,
+				})
+			)._nay,
+		).toBeUndefined();
+
+		// The second page finishes the root, then discovery reaches the moved child and finds it at a new
+		// path. The run stops and asks the user instead of copying from where the child used to be.
+		await t.mutation(internal.files_transfer.advance, { runId });
+		await t.mutation(internal.files_transfer.advance, { runId });
+		const view = await asUser.query(api.files_transfer.get, { membershipId: db.membershipId, runId });
+		expect(view).toMatchObject({
+			step: "discover",
+			activity: { status: "awaiting_input", progress: { discovered: 56, total: null, completed: 0, blocked: 1 } },
+			conflicts: [{ kind: "source_changed", sourceName: null }],
+		});
+		expect(await get_node(fixture, "/target/source")).toBeNull();
+	});
+
+	// The copy ceiling is 10,000 items. Seed the count the second page starts from so the run reaches
+	// the real check with a small fixture: the page adds 5 children, so 9,995 lands exactly on the
+	// ceiling and 9,996 goes one past it.
+	test.each([
+		{ label: "lands exactly on the copy ceiling", seeded: 9_995, refused: false },
+		{ label: "goes one item past the copy ceiling", seeded: 9_996, refused: true },
+	])("$label", async ({ seeded, refused }) => {
+		const paths = Array.from({ length: 55 }, (_entry, index) => `/source/folder-${index.toString().padStart(2, "0")}`);
+		const fixture = await create_folder_fixture(["/source", ...paths]);
+		const { t, db, asUser, folders } = fixture;
+		const runId = await start_copy(fixture, [folders.get("/source")!]);
+		await t.mutation(internal.files_transfer.advance, { runId });
+		await t.run(async (ctx) => {
+			const activity = await ctx.db
+				.query("activities")
+				.withIndex("by_source_id", (q) => q.eq("source.id", runId))
+				.unique();
+			if (!activity?.progress) throw new Error("Missing activity");
+			await ctx.db.patch("activities", activity._id, { progress: { ...activity.progress, discovered: seeded } });
+		});
+		await t.mutation(internal.files_transfer.advance, { runId });
+
+		if (refused) {
+			expect(await finish_folder_copy(fixture, runId)).toMatchObject({
+				activity: {
+					status: "failed",
+					errorMessage: "This copy is too large. Select fewer items.",
+					progress: { discovered: seeded, completed: 0 },
+				},
+			});
+			expect(await get_node(fixture, "/target/source")).toBeNull();
+			return;
+		}
+
+		const view = await asUser.query(api.files_transfer.get, { membershipId: db.membershipId, runId });
+		expect(view?.activity.errorMessage).toBeNull();
+		expect(view?.activity.progress).toMatchObject({ discovered: seeded + 5 });
 	});
 
 	test("refuses an unreadable descendant before copying its readable parent", async () => {
@@ -638,6 +828,69 @@ describe("advance", () => {
 		expect(await get_node(fixture, "/target/source")).toBeNull();
 	});
 
+	// A member's running copy must stop when they are removed and invited again, because the invite
+	// makes a new membership doc and the run belongs to the old one. The control keeps the same
+	// member and the same copy, so only the re-invite can change the result.
+	test.each([
+		{ label: "keeps copying for a member who stayed in the workspace", reinvited: false },
+		{ label: "stops copying for a member who was removed and invited again", reinvited: true },
+	])("$label", async ({ reinvited }) => {
+		const fixture = await create_folder_fixture(["/source", "/source/child"]);
+		const { t, db, folders } = fixture;
+		const member = await add_member(fixture);
+		const started = await member.asUser.mutation(api.files_transfer.start, {
+			membershipId: member.membershipId,
+			requestId: "re-invited",
+			kind: "copy",
+			sourceIds: [folders.get("/source")!],
+			targetParentId: folders.get("/target")!,
+		});
+		if (started._nay) throw new Error(started._nay.message);
+		const runId = started._yay.runId;
+
+		if (reinvited) {
+			await t.run(async (ctx) => {
+				await ctx.db.patch("organizations_workspaces_users", member.membershipId, { active: false });
+				const membershipId = await ctx.db.insert("organizations_workspaces_users", {
+					organizationId: db.organizationId,
+					workspaceId: db.workspaceId,
+					userId: member.userId,
+					active: true,
+					updatedAt: Date.now(),
+				});
+				const membership = await ctx.db.get("organizations_workspaces_users", membershipId);
+				if (!membership) throw new Error("Missing membership");
+				expect(await organizations_membership_lifetimes_db_ensure(ctx, membership)).toBe(2);
+			});
+		}
+
+		const read_activity = async () =>
+			await t.run((ctx) =>
+				ctx.db
+					.query("activities")
+					.withIndex("by_source_id", (q) => q.eq("source.id", runId))
+					.unique(),
+			);
+		for (let step = 0; step < 40; step += 1) {
+			const activity = await read_activity();
+			if (activity && !activities_is_active(activity.status)) break;
+			await t.mutation(internal.files_transfer.advance, { runId });
+		}
+
+		if (reinvited) {
+			expect(await read_activity()).toMatchObject({
+				status: "failed",
+				errorMessage: "Permission denied",
+				progress: { completed: 0, canceled: 1 },
+			});
+			expect(await get_node(fixture, "/target/source")).toBeNull();
+			return;
+		}
+
+		expect(await read_activity()).toMatchObject({ status: "succeeded", errorMessage: null });
+		expect(await get_node(fixture, "/target/source/child")).not.toBeNull();
+	});
+
 	test("does not copy descendants added after discovery finishes", async () => {
 		const fixture = await create_folder_fixture(["/source", "/source/first"]);
 		const { db, asUser, folders } = fixture;
@@ -657,6 +910,105 @@ describe("advance", () => {
 		});
 		expect(await get_node(fixture, "/target/source/first")).not.toBeNull();
 		expect(await get_node(fixture, "/target/source/later")).toBeNull();
+	});
+
+	test("gives a run waiting for a choice a much later deadline than a copying run", async () => {
+		const fixture = await create_folder_fixture(["/source", "/source/child", "/target/source/child"]);
+		const { t, db, asUser, folders } = fixture;
+		const runId = await start_copy(fixture, [folders.get("/source")!]);
+		const read_deadline = async () =>
+			(await asUser.query(api.files_transfer.get, { membershipId: db.membershipId, runId }))!.activity;
+
+		const copying = await read_deadline();
+		expect(copying.status).toBe("queued");
+		// A copy must not sit idle for long, so its deadline is half an hour.
+		expect(copying.deadlineAt - Date.now()).toBe(30 * 60 * 1000);
+
+		for (let step = 0; step < 50; step += 1) {
+			if ((await read_deadline()).status === "awaiting_input") break;
+			await t.mutation(internal.files_transfer.advance, { runId });
+		}
+		// Waiting for a person is different work, so the question gets a whole day of its own.
+		const waiting = await read_deadline();
+		expect(waiting.status).toBe("awaiting_input");
+		expect(waiting.deadlineAt - Date.now()).toBe(24 * 60 * 60 * 1000);
+	});
+
+	test("keeps the job status and the counters on the Activity alone at every transition", async () => {
+		const fixture = await create_folder_fixture(["/source"]);
+		const { t, db, asUser } = fixture;
+		// The copy of "asks.txt" meets an occupant in /target and asks; the answer is Skip. Its sibling
+		// copies for real, so the run passes through a question and a worker before it finishes.
+		const sourceIds: Id<"files_nodes">[] = [];
+		for (const path of ["/source/asks.txt", "/source/copies.txt", "/target/asks.txt"]) {
+			const nodeId = await test_create_saved_text_file(t, {
+				membershipId: db.membershipId,
+				path,
+				textContent: `Report for ${path}\n`,
+			});
+			if (path.startsWith("/source/")) sourceIds.push(nodeId);
+		}
+		const runId = await start_copy(fixture, sourceIds);
+
+		// The Activity owns the job status and the counters. The run doc must never grow its own copy,
+		// and the counters must always match a fresh count of the items, so nothing can drift apart.
+		const activityOwnedFields = ["status", "progress", "completed", "skipped", "failed", "canceled", "blocked"];
+		const statusesSeen = new Set<string>();
+		const read_both = async () => {
+			const view = await asUser.query(api.files_transfer.get, { membershipId: db.membershipId, runId });
+			if (!view) throw new Error("Missing run");
+			const run = await t.run((ctx) => ctx.db.get("files_transfer_runs", runId));
+			const items = await t.run((ctx) =>
+				ctx.db
+					.query("files_transfer_items")
+					.withIndex("by_run_order", (q) => q.eq("runId", runId))
+					.collect(),
+			);
+			const count = (state: Doc<"files_transfer_items">["state"]) =>
+				items.filter((item) => item.state === state).length;
+
+			statusesSeen.add(view.activity.status);
+			expect(Object.keys(run!).filter((field) => activityOwnedFields.includes(field))).toEqual([]);
+			expect(view.activity.progress).toMatchObject({
+				discovered: items.length,
+				completed: count("completed"),
+				skipped: count("skipped"),
+				failed: count("failed"),
+				canceled: count("canceled"),
+				blocked: count("conflict"),
+			});
+			return { view, items };
+		};
+
+		let current = await read_both();
+		for (let step = 0; step < 50 && current.view.activity.status !== "awaiting_input"; step += 1) {
+			await t.mutation(internal.files_transfer.advance, { runId });
+			current = await read_both();
+		}
+		expect(current.view.activity.status).toBe("awaiting_input");
+		expect(
+			(
+				await asUser.mutation(api.files_transfer.resolve_conflicts, {
+					membershipId: db.membershipId,
+					runId,
+					revision: current.view.revision,
+					choices: [{ itemId: current.view.conflicts[0]!.itemId, choice: "skip" as const }],
+					applyToRemaining: { file: null, folder: null },
+				})
+			)._nay,
+		).toBeUndefined();
+
+		current = await read_both();
+		for (let step = 0; step < 50 && activities_is_active(current.view.activity.status); step += 1) {
+			const queued = current.items.find((item) => item.state === "copying" && item.workId !== null);
+			if (queued) await finish_copy_worker(fixture, queued);
+			else await t.mutation(internal.files_transfer.advance, { runId });
+			current = await read_both();
+		}
+
+		// The run really passed through all four states, so the checks above are not one repeated state.
+		expect([...statusesSeen].toSorted()).toEqual(["awaiting_input", "queued", "running", "succeeded"]);
+		expect(current.view.activity.progress).toMatchObject({ total: 2, completed: 1, skipped: 1, failed: 0 });
 	});
 });
 
@@ -1521,6 +1873,171 @@ describe("retry_remaining", () => {
 		expect(await get_node(fixture, "/target/source/a.pdf")).toBeNull();
 	});
 
+	test("does not copy a source that moved away after the first run", async () => {
+		const fixture = await create_folder_fixture(["/source", "/elsewhere"]);
+		const { db, asUser, folders } = fixture;
+		const created = await asUser.mutation(api.files_nodes.create_upload_node, {
+			membershipId: db.membershipId,
+			parentId: folders.get("/source")!,
+			filename: "moved.bin",
+			contentType: "application/octet-stream",
+			size: 8,
+		});
+		if (created._nay) throw new Error(created._nay.message);
+		const runId = await start_copy(fixture, [folders.get("/source")!]);
+		await finish_discovery(fixture, runId);
+		expect((await asUser.mutation(api.files_transfer.stop, { membershipId: db.membershipId, runId }))._nay).toBeUndefined();
+		await finish_folder_copy(fixture, runId);
+
+		// The manifest is frozen, so the retry still names the old path. Moving the file out must not
+		// let the retry copy from where it used to be.
+		expect(
+			(
+				await asUser.mutation(api.files_nodes.move_nodes, {
+					membershipId: db.membershipId,
+					itemIds: [created._yay.nodeId],
+					targetParentId: folders.get("/elsewhere")!,
+				})
+			)._nay,
+		).toBeUndefined();
+		const retried = await asUser.mutation(api.files_transfer.retry_remaining, {
+			membershipId: db.membershipId,
+			runId,
+			requestId: "retry-moved-source",
+		});
+		if (retried._nay) throw new Error(retried._nay.message);
+		const finished = await finish_folder_copy(fixture, retried._yay.runId);
+		// The retry stops while it is still planning, so nothing is copied at all.
+		expect(finished.activity).toMatchObject({ status: "awaiting_input", progress: { completed: 0 } });
+		expect(finished.conflicts).toMatchObject([{ kind: "source_changed" }]);
+		expect(await get_node(fixture, "/target/source/moved.bin")).toBeNull();
+		expect((await get_node(fixture, "/elsewhere/moved.bin"))?._id).toBe(created._yay.nodeId);
+	});
+
+	test("keeps the first run in history while the retry copies its manifest", async () => {
+		const fixture = await create_folder_fixture(["/source", "/source/child"]);
+		const { t, db, asUser, folders } = fixture;
+		const runId = await start_copy(fixture, [folders.get("/source")!]);
+		await finish_discovery(fixture, runId);
+		expect(
+			(await asUser.mutation(api.files_transfer.stop, { membershipId: db.membershipId, runId }))._nay,
+		).toBeUndefined();
+		await finish_folder_copy(fixture, runId);
+		const retried = await asUser.mutation(api.files_transfer.retry_remaining, {
+			membershipId: db.membershipId,
+			runId,
+			requestId: "retry-pins-history",
+		});
+		if (retried._nay) throw new Error(retried._nay.message);
+
+		// The retry still reads its manifest from the first run, so a deletion must wait. Otherwise the
+		// retry would copy half a manifest and lose the rest of the work.
+		expect(await t.run((ctx) => files_transfer_db_delete_run_batch(ctx, { runId, batchSize: 50 }))).toEqual({
+			done: false,
+			deletedCount: 0,
+		});
+		expect(await t.run((ctx) => ctx.db.get("files_transfer_runs", runId))).not.toBeNull();
+
+		// Once the manifest is copied the retry leaves the "retry" step and the first run can go away.
+		await finish_folder_copy(fixture, retried._yay.runId);
+		for (let step = 0; step < 20; step += 1) {
+			const deleted = await t.run((ctx) => files_transfer_db_delete_run_batch(ctx, { runId, batchSize: 50 }));
+			if (deleted.done) break;
+		}
+		expect(await t.run((ctx) => ctx.db.get("files_transfer_runs", runId))).toBeNull();
+	});
+
+	test("retries a failed file and leaves a skipped sibling out of the retry", async () => {
+		const fixture = await create_folder_fixture(["/source"]);
+		const { t, db, asUser, folders } = fixture;
+		const sourceIds: Id<"files_nodes">[] = [];
+		for (const parent of ["/source", "/target"] as const) {
+			for (const filename of ["skipped.bin", "fails.bin"]) {
+				// The copy of "skipped.bin" meets an occupant in /target and asks; the answer is Skip.
+				if (parent === "/target" && filename === "fails.bin") continue;
+				const created = await asUser.mutation(api.files_nodes.create_upload_node, {
+					membershipId: db.membershipId,
+					parentId: folders.get(parent)!,
+					filename,
+					contentType: "application/octet-stream",
+					size: 8,
+				});
+				if (created._nay) throw new Error(created._nay.message);
+				if (parent === "/source") sourceIds.push(created._yay.nodeId);
+			}
+		}
+		const runId = await start_copy(fixture, sourceIds);
+		const waiting = await finish_discovery(fixture, runId);
+		expect(
+			(
+				await asUser.mutation(api.files_transfer.resolve_conflicts, {
+					membershipId: db.membershipId,
+					runId,
+					revision: waiting.revision,
+					choices: [{ itemId: waiting.conflicts[0]!.itemId, choice: "skip" as const }],
+					applyToRemaining: { file: null, folder: null },
+				})
+			)._nay,
+		).toBeUndefined();
+
+		// Drop the plan so the remaining file copy fails for real instead of being canceled.
+		await t.run((ctx) => test_mocks_fill_db_with.plan(ctx, { userId: db.userId, plan: "Free" }));
+		const read_failing = async () =>
+			await t.run((ctx) =>
+				ctx.db
+					.query("files_transfer_items")
+					.withIndex("by_run_source", (q) =>
+						q.eq("runId", runId).eq("source.kind", "saved").eq("source.id", sourceIds[1]!),
+					)
+					.unique(),
+			);
+		let failing = await read_failing();
+		for (let step = 0; step < 10 && !failing?.workId; step += 1) {
+			await t.mutation(internal.files_transfer.advance, { runId });
+			failing = await read_failing();
+		}
+		if (!failing?.workId) throw new Error("Missing queued copy worker");
+		await t.action(internal.files_nodes_content.copy_transfer_file, { itemId: failing._id, attempt: failing.attempt });
+		await t.mutation(internal.files_transfer.handle_copy_complete, {
+			workId: failing.workId,
+			context: { itemId: failing._id, attempt: failing.attempt },
+			result: { kind: "success", returnValue: null },
+		});
+		expect(await finish_folder_copy(fixture, runId)).toMatchObject({
+			activity: { status: "failed", progress: { total: 2, completed: 0, skipped: 1, failed: 1 } },
+		});
+
+		const retried = await asUser.mutation(api.files_transfer.retry_remaining, {
+			membershipId: db.membershipId,
+			runId,
+			requestId: "retry-failed-file",
+		});
+		if (retried._nay) throw new Error(retried._nay.message);
+		await t.mutation(internal.files_transfer.advance, { runId: retried._yay.runId });
+		const retryItems = await t.run((ctx) =>
+			ctx.db
+				.query("files_transfer_items")
+				.withIndex("by_run_order", (q) => q.eq("runId", retried._yay.runId))
+				.collect(),
+		);
+		// The skipped file keeps the user's answer and is never copied again. The failed file starts over.
+		expect(retryItems.find((item) => item.source.id === sourceIds[0])).toMatchObject({
+			state: "skipped",
+			attempt: 0,
+			errorMessage: null,
+		});
+		expect(retryItems.find((item) => item.source.id === sourceIds[1])).toMatchObject({
+			state: "pending",
+			attempt: 0,
+			errorMessage: null,
+			outputTarget: null,
+		});
+		expect(
+			await asUser.query(api.files_transfer.get, { membershipId: db.membershipId, runId: retried._yay.runId }),
+		).toMatchObject({ activity: { progress: { discovered: 2, skipped: 1, completed: 0 } } });
+		expect(await get_node(fixture, "/target/fails.bin")).toBeNull();
+	});
+
 	test.each(["private", "saved", "moved", "discarded"] as const)(
 		"resolves a completed private parent that is %s before retry",
 		async (parentState) => {
@@ -1761,6 +2278,114 @@ describe("move", () => {
 			expect(replaced?.archiveOperationId).not.toBeNull();
 		},
 	);
+
+	test("keeps the moved file's metadata and version history when it replaces an occupant", async () => {
+		const fixture = await create_folder_fixture([]);
+		const { t, db, asUser, folders } = fixture;
+		const sourceId = await test_create_saved_text_file(t, {
+			membershipId: db.membershipId,
+			path: "/notes.md",
+			textContent: "keep these bytes",
+		});
+		expect(
+			(
+				await asUser.mutation(api.files_metadata.set_entries, {
+					membershipId: db.membershipId,
+					fileNodeId: sourceId,
+					metadataYaml: ["owner: Ray", "priority: 3"].join("\n"),
+				})
+			)._nay,
+		).toBeUndefined();
+		const occupant = await asUser.mutation(api.files_nodes.create_upload_node, {
+			membershipId: db.membershipId,
+			parentId: folders.get("/target")!,
+			filename: "notes.md",
+			contentType: "application/octet-stream",
+			size: 8,
+		});
+		if (occupant._nay) throw new Error(occupant._nay.message);
+
+		const read_versions = async (fileNodeId: Id<"files_nodes">) =>
+			await t.run((ctx) =>
+				ctx.db
+					.query("files_snapshots")
+					.filter((q) => q.eq(q.field("fileNodeId"), fileNodeId))
+					.collect(),
+			);
+		const read_metadata_docs = async (fileNodeId: Id<"files_nodes">) =>
+			await t.run((ctx) =>
+				ctx.db
+					.query("files_metadata_docs")
+					.filter((q) => q.eq(q.field("fileNodeId"), fileNodeId))
+					.collect(),
+			);
+		const versionsBefore = await read_versions(sourceId);
+		const metadataDocsBefore = await read_metadata_docs(sourceId);
+		const entriesBefore = await asUser.query(api.files_metadata.get_entries, {
+			membershipId: db.membershipId,
+			fileNodeId: sourceId,
+		});
+		// Guard the fixture: an empty history or empty metadata would make the checks below pass for
+		// the wrong reason.
+		expect(versionsBefore.length).toBeGreaterThan(0);
+		expect(entriesBefore.length).toBeGreaterThan(0);
+
+		const started = await asUser.mutation(api.files_transfer.start, {
+			membershipId: db.membershipId,
+			requestId: "move-replace-history",
+			kind: "move",
+			sourceIds: [sourceId],
+			targetParentId: folders.get("/target")!,
+		});
+		if (started._nay) throw new Error(started._nay.message);
+		const runId = started._yay.runId;
+		const waiting = await finish_discovery(fixture, runId);
+		const page = await asUser.query(api.files_transfer.list_items, {
+			membershipId: db.membershipId,
+			runId,
+			paginationOpts: { cursor: null, numItems: 50 },
+		});
+		const item = page!.page[0]!;
+		expect(
+			(
+				await asUser.mutation(api.files_transfer.resolve_conflicts, {
+					membershipId: db.membershipId,
+					runId,
+					revision: waiting.revision,
+					choices: [
+						{
+							itemId: item.itemId,
+							choice: "replace",
+							reviewedTarget: item.conflict!.target!,
+							reviewedVersion: item.conflict!.version,
+						},
+					],
+					applyToRemaining: { file: null, folder: null },
+				})
+			)._nay,
+		).toBeUndefined();
+		expect(await finish_folder_copy(fixture, runId)).toMatchObject({
+			activity: { status: "succeeded", progress: { completed: 1 } },
+		});
+
+		// The move replaces the occupant and carries the source node itself, so the source keeps its
+		// id, its saved versions and its metadata. Nothing may move to the archived occupant.
+		const moved = await t.run((ctx) => ctx.db.get("files_nodes", sourceId));
+		expect(moved).toMatchObject({ path: "/target/notes.md", archiveOperationId: null });
+		expect(await read_versions(sourceId)).toEqual(versionsBefore);
+		// The same metadata rows stay attached to the node. Only their copy of the path follows it.
+		const metadataDocsAfter = await read_metadata_docs(sourceId);
+		expect(metadataDocsAfter.map((doc) => doc._id).sort()).toEqual(metadataDocsBefore.map((doc) => doc._id).sort());
+		expect(metadataDocsAfter.map((doc) => doc.fieldPath).sort()).toEqual(
+			metadataDocsBefore.map((doc) => doc.fieldPath).sort(),
+		);
+		expect([...new Set(metadataDocsAfter.map((doc) => doc.path))]).toEqual(["/target/notes.md"]);
+		expect(
+			await asUser.query(api.files_metadata.get_entries, { membershipId: db.membershipId, fileNodeId: sourceId }),
+		).toEqual(entriesBefore);
+		expect(await read_versions(occupant._yay.nodeId)).toEqual([]);
+		expect((await t.run((ctx) => ctx.db.get("files_nodes", occupant._yay.nodeId)))?.archiveOperationId).not.toBeNull();
+	});
 
 	test.each([
 		{ access: "none", archived: false },

@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
+import type { Id } from "./_generated/dataModel.js";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
-import { activities_get_result_status } from "./activities_db.ts";
+import { activities_db_add_target, activities_get_result_status } from "./activities_db.ts";
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
 import { files_ROOT_ID } from "../shared/files.ts";
 
@@ -70,6 +71,47 @@ describe("activities_get_result_status", () => {
 	});
 });
 
+describe("activities_db_add_target", () => {
+	test("lists a target once and stops growing at twenty", async () => {
+		const { t, owner, asOwner, runId, activity } = await create_transfer_activity();
+		const nodeIds: Id<"files_nodes">[] = [];
+		for (let index = 0; index < 21; index += 1) {
+			const created = await asOwner.mutation(api.files_nodes.create_folder_node, {
+				membershipId: owner.membershipId,
+				parentId: files_ROOT_ID,
+				path: `target-${index.toString().padStart(2, "0")}`,
+			});
+			if (created._nay) throw new Error(created._nay.message);
+			nodeIds.push(created._yay.nodeId);
+		}
+		const add = async (index: number, now: number) =>
+			await t.run((ctx) =>
+				activities_db_add_target(ctx, {
+					sourceId: runId,
+					target: { kind: "file_node", id: nodeIds[index]!, path: `/target-${index}`, message: "" },
+					now,
+				}),
+			);
+
+		// A touch and the write that follows it name the same file, so the second call must not list
+		// it twice, and it must still advance the job.
+		await add(0, 1_000);
+		await add(0, 2_000);
+		expect(await t.run((ctx) => ctx.db.get("activities", activity._id))).toMatchObject({
+			targets: [{ id: nodeIds[0], path: "/target-0" }],
+			updatedAt: 2_000,
+		});
+
+		for (let index = 1; index < 21; index += 1) await add(index, 3_000 + index);
+		const capped = await t.run((ctx) => ctx.db.get("activities", activity._id));
+		expect(capped?.targets).toHaveLength(20);
+		expect(capped?.targets.at(-1)?.id).toBe(nodeIds[19]);
+		expect(capped?.targets.some((target) => target.id === nodeIds[20])).toBe(false);
+		// The dropped target still advances the job it belongs to.
+		expect(capped?.updatedAt).toBe(3_020);
+	});
+});
+
 describe("list_page", () => {
 	test("transfer progress and controls are private to its requester", async () => {
 		const { asOwner, asMember, owner, member, activity } = await create_transfer_activity();
@@ -121,7 +163,9 @@ describe("list_page", () => {
 			section: "active",
 			paginationOpts: { cursor: null, numItems: 50 },
 		});
-		expect(active.page.map((item) => item._id)).toEqual([activity._id]);
+		// The active section reads a different index range than history, so newer finished cards cannot
+		// push the running Paste off the page or take its Stop button away.
+		expect(active.page).toEqual([{ ...activity, controls: { canStop: true, canRetry: false, canDismiss: false } }]);
 		const history = await asMember.query(api.activities.list_page, {
 			membershipId: member.membershipId,
 			section: "history",
