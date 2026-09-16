@@ -152,6 +152,12 @@ A job that paused writes one transcript entry per run, and the entries of other 
 tail for the job's final line reports a false failure. Ask for `jobs -o N` instead: it prints the whole job's stored
 stdout and stderr, then one `[job N exit C]` line. Verified 2026-09-16.
 
+A job killed or timed out before it printed anything is the one case `jobs -o N` cannot answer: it says
+`bash: jobs: no stored output for job N; read the shell transcript` and exits 1, because the job stored no result and
+flushed no head. That is not a lost job. Read `convex data ai_chat_bash_shell_transcripts --limit 6 --order desc`: the
+job's pause entry and its `job N finished (exit 143)` entry are both there, and each still names the script. Verified
+2026-09-16.
+
 ## Stop cancels the turn, not the Bash call already running on the server
 
 Clicking `Stop generating` while a Bash tool call is in flight aborts the AI SDK request in the browser. The Convex side keeps running the command to the end. The tool card is then left with only its command line and no output section, because the tool result never streamed back — but the shell transcript holds the whole run, with its real exit code.
