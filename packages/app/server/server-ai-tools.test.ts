@@ -212,6 +212,7 @@ describe("ai_chat_tool_create_bash", () => {
 			"Read it with tail, head -c or grep, not cat",
 			"cmd & starts a background job and is the only way to start one; cmd1 && cmd2 is not a background job",
 			"$! is the job number in that call only (0 in the next call",
+			"continues in a new run with its variables, functions, cwd and $!",
 			"Inside a background job (&), /tmp is a private copy that is dropped when the job pauses or ends",
 			"A job runs one top-level statement at a time, and each run of it has an 8-minute budget and 2000 commands",
 			"a minute before that the job pauses after the current statement and continues in a new run",
