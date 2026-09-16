@@ -152,6 +152,23 @@ you changed, or a model that never received the new text can echo your own promp
 before the push and once after, and the pair is a real before-and-after: nothing else in the app shows
 the tool description. Verified 2026-09-16.
 
+### Prove the deployment carries a string the app prints
+
+A string the Bash tool prints — a `wait` or launch line from `packages/app/server/bash-jobs-command.ts`, a job note —
+renders inside the tool call in the chat, so read it from the DOM instead of asking the model:
+`document.querySelectorAll(".AiChatMessage")` and search the joined `textContent` for the line.
+
+Seeing the new text is not yet proof that the app ran your tree. Replace the string with a unique marker, push, run the
+check again, and the marker must appear while the real line is gone. Then restore, push, and watch the real line come
+back. Two pushes and three chat turns, and it is the only version of this check that can fail.
+
+`vp env exec pnpm --dir packages/app exec convex dev --once` blocks until the push finishes, so it is also the signal
+that the deployment is ready. It is safe to run while the `convex dev` watcher is up: both push the same tree.
+
+`state.qa.newChat()` does not work on the `/chat` route (see `agent-panel.md`), so send into the thread that is
+already open, and count `.AiChatMessage` before the send so the reader can slice off everything older. Verified
+2026-09-16 on the `wait` stderr line.
+
 ### Bind Snippet
 
 Bind to the existing chat tab and print basic run context. This should not start the dev server or open a new browser.
