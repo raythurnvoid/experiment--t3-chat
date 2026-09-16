@@ -146,7 +146,7 @@ const BASH_JOB_SLEEP_PAUSE_MAX_MS = 60 * 60 * 1000;
 const BASH_JOB_PAUSE_HEADROOM_MS = 60_000;
 // Every pause arms a fresh run budget, so the budget alone cannot end a job that keeps sleeping.
 // This is how long a job may live from its `&`, counting the waits between its runs.
-const BASH_JOB_TOTAL_MS = 24 * 60 * 60 * 1000;
+const BASH_JOB_LIFETIME_MS = 24 * 60 * 60 * 1000;
 // A statement boundary re-reads the Stop flag when the last poll is at least this old, so a Stop
 // lands at the next boundary instead of the next 5-second tick.
 const BASH_JOB_BOUNDARY_POLL_MS = 1_000;
@@ -1186,7 +1186,9 @@ async function bash_fs_create(args: {
 			script: launch.script.trim(),
 			startCwd: launch.cwd,
 			startCwdTarget: await get_cwd_target(launch.cwd),
-			shellState: launch.snapshot,
+			// A job starts with `$!` at 0, like a fresh call: the number in the snapshot names a job the
+			// launching call started, not one this job did.
+			shellState: { ...launch.snapshot, lastBackgroundPid: undefined },
 			allowDbFilesMkdir: job.allowDbFilesMkdir,
 			wakeAgent: job.wakeAgent ?? undefined,
 		})) as ai_chat_files_start_bash_job_Result;
@@ -1659,7 +1661,9 @@ export async function bash_run_command(
 			// `null` is a fresh shell: nothing to seed.
 			restoreState: invocation.shell.state ?? undefined,
 			onExecEnd: (snapshot) => {
-				endSnapshot = snapshot;
+				// The shell keeps no `$!`: a job number belongs to the call that started the job, so the
+				// next call reads 0 again. Only a job that pauses keeps its own number, for `wait $!`.
+				endSnapshot = { ...snapshot, lastBackgroundPid: undefined };
 			},
 		});
 
@@ -1945,7 +1949,8 @@ function bash_response(args: {
  * and before any statement once the run budget is nearly used, the worker pauses the job instead:
  * `pause_bash_job` stores the remaining statements, the state snapshot and the cwd, and the next
  * run of the same row continues from there. So a script of several statements is not bound by
- * the 8-minute budget; one statement still is.
+ * the 8-minute budget; one statement still is. The whole job is bound by 24 hours from its `&`,
+ * counting the waits between its runs, because every pause arms a fresh budget.
  */
 export async function bash_run_job(
 	ctx: ActionCtx,
@@ -2046,7 +2051,7 @@ export async function bash_run_job(
 		// A job past its total lifetime must not pause again. Abort here and let the statement
 		// through: the engine stops on the aborted signal, so the job ends as 124 like a job that
 		// ran out of its run budget.
-		if (Date.now() - row._creationTime >= BASH_JOB_TOTAL_MS) {
+		if (Date.now() - row._creationTime >= BASH_JOB_LIFETIME_MS) {
 			abort.abort(BASH_JOB_DEADLINE_ABORT_REASON);
 			return "run";
 		}
@@ -2079,6 +2084,9 @@ export async function bash_run_job(
 				reason: "run budget used, continues at once",
 			};
 		}
+		// An earlier statement may have been too big to pause on. The script shrank since, so the
+		// warning about it would contradict the pause this run is taking.
+		stateTooLargeToPause = false;
 		return "stop";
 	};
 	// A launch and a transfer are stored under a synthetic id made of this row and the command
@@ -2156,43 +2164,41 @@ export async function bash_run_job(
 		// a timeout like any other: the job ends now.
 		const pausing = pause !== undefined && !abort.signal.aborted;
 
-		// These notes are written after the engine returned, so the live hook never saw them. At a
-		// pause this run's result goes to the transcript only, while `jobs -o` reads the head, so
-		// the note has to reach both.
-		const add_note = (text: string) => {
+		// These warnings are written after the engine returned, so the live hook never saw them. At
+		// a pause this run's result goes to the transcript only, while `jobs -o` reads the head, so
+		// a warning has to reach both.
+		const add_warning = (text: string) => {
 			result.stderr += text;
 			if (pausing) onOutput("stderr", text);
 		};
 
 		if (stateTooLargeToPause) {
-			add_note("bash: the shell state is larger than 128 KiB, so the job cannot pause; it runs on with its budget.\n");
+			add_warning("bash: the shell state is larger than 128 KiB, so the job cannot pause; it runs on with its budget.\n");
 		}
 		// `/tmp` is a private copy inside a job and is never written back. Name what was dropped.
 		const droppedTmpPaths = [...bashFs.tmp_dirty_roots()].sort();
 		if (droppedTmpPaths.length > 0) {
-			add_note(
+			add_warning(
 				`bash: /tmp writes are dropped when a job ${pausing ? "pauses" : "ends"}: ${droppedTmpPaths.map((path) => `${bash_TMP_MOUNT}${path}`).join(", ")}\n`,
 			);
 		}
-		// Extra fds (`exec 3>out`) are reported by the snapshot but never restored, in a job's next
-		// run as little as in the next call. The continuation runs the rest of the same script, so
-		// say it here too: otherwise a later `>&3` writes nowhere with nothing to explain it.
 		if (pausing && pause) {
-			for (const fd of pause.shellState.openFileDescriptors) add_note(`bash: file descriptor ${fd} was closed\n`);
-		}
+			// Extra fds (`exec 3>out`) are reported by the snapshot but never restored, in a job's next
+			// run and in the next call. The continuation runs the rest of the same script, so say it
+			// here too: otherwise a later `>&3` writes nowhere with nothing to explain it.
+			for (const fd of pause.shellState.openFileDescriptors) add_warning(`bash: file descriptor ${fd} was closed\n`);
 
-		if (pausing && pause) {
 			const paused = await ctx.runMutation(internal.ai_chat_files.pause_bash_job, {
 				invocationId: row._id,
 				resume: {
 					script: pause.script,
+					commandNumber,
+					// A bare `wait` waits for the newest numbers anyway, so carrying only those keeps the
+					// row small without changing what `wait` can do.
+					launchedJobNumbers: launchedJobNumbers.slice(-bash_JOB_NUMBERS_MAX_COUNT),
 					shellState: pause.shellState,
 					cwd: nextCwd,
 					cwdTarget: await bashFs.get_cwd_target(nextCwd),
-					commandNumber,
-					// `wait` with no arguments refuses a longer list than this anyway, so carrying the
-					// newest numbers keeps the row small without changing what `wait` can do.
-					launchedJobNumbers: launchedJobNumbers.slice(-bash_JOB_NUMBERS_MAX_COUNT),
 				},
 				liveOutput: liveOutput.stdout || liveOutput.stderr ? { ...liveOutput } : null,
 				outcome: { exitCode: result.exitCode, stdout: result.stdout, stderr: result.stderr },

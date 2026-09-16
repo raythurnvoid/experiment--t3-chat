@@ -1305,7 +1305,7 @@ describe("bash_run_command", () => {
 		expect(errexit.metadata.exitCode).toBe(1);
 		expect(errexit.stdout).not.toContain("reached");
 
-		const nounset = await run('set +e\nset -u\necho "$NEVER_SET_VAR"');
+		const nounset = await run("set +e\nset -u\necho \"$NEVER_SET_VAR\"");
 		expect(nounset.metadata.exitCode).toBe(1);
 		expect(nounset.stderr).toContain("unbound variable");
 
@@ -4422,6 +4422,33 @@ describe("bash_run_command", () => {
 			expect(partial.stderr.endsWith("[job 1 queued]\n")).toBe(true);
 		});
 
+		test("a job whose state is too big to pause runs on and says so", async () => {
+			const runner = await create_bash_runner();
+			// 133000 characters in one variable put the snapshot over the 128 KiB cap, so the sleep
+			// cannot pause and runs for real.
+			const script = '{ x=$(printf "%133000s" ""); sleep 5; echo done; }';
+			expect((await runner.run(`${script} &`)).metadata.exitCode).toBe(0);
+			const finished = await run_job(runner, 1);
+			expect(finished.status).toBe("finished");
+			expect(finished.result?.stdout).toBe("done\n");
+			expect(finished.result?.stderr).toContain(
+				"bash: the shell state is larger than 128 KiB, so the job cannot pause",
+			);
+		});
+
+		test("a pause says nothing about an earlier statement that was too big to pause", async () => {
+			const runner = await create_bash_runner();
+			// The first sleep cannot pause, because the variable is over the cap. `unset` shrinks the
+			// state, so the second sleep pauses, and the warning would contradict that pause.
+			const script = '{ x=$(printf "%133000s" ""); sleep 5; unset x; sleep 5; echo done; }';
+			expect((await runner.run(`${script} &`)).metadata.exitCode).toBe(0);
+			expect((await run_job(runner, 1)).status).toBe("running");
+
+			const partial = await runner.run("jobs -o 1");
+			expect(partial.stderr).not.toContain("the shell state is larger than 128 KiB");
+			expect(partial.stderr.endsWith("[job 1 queued]\n")).toBe(true);
+		});
+
 		test("stops pausing once the job used its whole lifetime", async () => {
 			const runner = await create_bash_runner();
 			expect((await runner.run("{ sleep 30; echo after; } &")).metadata.exitCode).toBe(0);
@@ -4465,6 +4492,20 @@ describe("bash_run_command", () => {
 			// The pool is mocked, so job 2 is still queued. A bare `wait` that lost the numbers of
 			// the earlier run would wait for nothing and return 0 instead of 3.
 			const finished = await run_job(runner, 1);
+			expect(finished.result?.metadata.exitCode).toBe(3);
+		});
+
+		test("a launch before a pause still answers wait $! in the next run", async () => {
+			const runner = await create_bash_runner();
+			expect((await runner.run("sleep 1 & { echo one & sleep 30; wait -t 1 $!; } &")).metadata.exitCode).toBe(0);
+			// A job starts with `$!` at 0: job 1 belongs to the call that started it, not to job 2.
+			expect((await job_row(runner, 2)).job?.shellState?.lastBackgroundPid).toBeUndefined();
+
+			const paused = await run_job(runner, 2);
+			// `$!` is part of the shell state the pause stored. A state that dropped it would run
+			// `wait -t 1 0`, which names no job, instead of waiting for the still-queued job 3.
+			expect(paused.job?.shellState?.lastBackgroundPid).toBe(3);
+			const finished = await run_job(runner, 2);
 			expect(finished.result?.metadata.exitCode).toBe(3);
 		});
 
@@ -4746,11 +4787,12 @@ describe("bash_run_command", () => {
 						lastPollMs = Date.now() - startedAt;
 					}
 				}
-				// A `wait` that did not wait at all polls once, and one that used its own 600 seconds
-				// polls past 90. Bound both ends, so neither passes.
+				// A `wait` that did not wait at all polls once, and one that used its own 600 seconds keeps
+				// polling until the call is aborted at 120 seconds. Bound both ends, so neither passes.
+				// The upper bound has room for a slow step of this loop, which can drift a few seconds.
 				expect(polls).toBeGreaterThan(1);
 				expect(lastPollMs).toBeGreaterThanOrEqual(85_000);
-				expect(lastPollMs).toBeLessThanOrEqual(92_000);
+				expect(lastPollMs).toBeLessThanOrEqual(100_000);
 				expect((await waiting).metadata.exitCode).toBe(3);
 			} finally {
 				vi.useRealTimers();
@@ -8516,6 +8558,7 @@ describe("bash_run_command", () => {
 		);
 		expect(orphan).toBeNull();
 	});
+
 
 	test("creates a pending copy proposal for app-to-app cp", async () => {
 		const runner = await create_bash_runner();

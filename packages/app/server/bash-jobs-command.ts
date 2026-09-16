@@ -84,7 +84,8 @@ const KILL_USAGE = "Usage: kill [-s SIGNAL | -SIGNAL] JOB...\n";
 const JOB_NUMBER_REGEX = /^%?(\d+)$/u;
 
 /**
- * The status word `jobs`, `jobs -a` and the finished-job note print for an Activity status.
+ * The status word `jobs`, `jobs -a`, `jobs -o` and the finished-job note print for an Activity
+ * status.
  * A job never waits for input and never ends `partial`; those two map to their nearest word.
  */
 export function bash_job_status_word(status: Doc<"activities">["status"]) {
@@ -168,9 +169,9 @@ function job_line(summary: ai_chat_files_list_thread_jobs_Result[number]) {
 
 /**
  * `jobs -o N`: the stored stdout, then stderr, each with a `[truncated]` line when it is cut.
- * While the job runs it prints the head the worker flushed so far and still exits 3. The
- * transcript keeps the full output; this read is bounded so two big reads cannot push the
- * reading call over its own output limit.
+ * While the job runs it prints the head the worker flushed so far, then a status marker, and still
+ * exits 3; a paused job reads `queued` in that marker. The transcript keeps the full output; this
+ * read is bounded so two big reads cannot push the reading call over its own output limit.
  */
 async function print_job_output(ctx: ActionCtx, job: bash_JobContext, jobNumber: number) {
 	const output = (await ctx.runQuery(internal.ai_chat_files.read_job_output, {
@@ -179,11 +180,11 @@ async function print_job_output(ctx: ActionCtx, job: bash_JobContext, jobNumber:
 	})) as ai_chat_files_read_job_output_Result;
 	if (!output)
 		return { stdout: "", stderr: `bash: jobs: no such job ${jobNumber}\n`, exitCode: bash_COMMAND_EXIT_FAILURE };
-	// The status word comes from the Activity, like `jobs` and the finished-job note print it, so a
-	// paused job does not read as running here while `jobs` calls it queued.
+	// `jobs`, `jobs -a` and the finished-job note all print the Activity status, so this marker must
+	// read it too. Otherwise a paused job would say running here while `jobs` calls it queued.
 	const liveMarker = `[job ${jobNumber} ${bash_job_status_word(output.activityStatus)}]\n`;
-	// A live job that flushed nothing yet still says which job it is and that it is not done. The
-	// marker alone costs no read budget.
+	// A live job that flushed nothing yet gets the marker alone: it names the job and says the job is
+	// not done. That line costs no read budget.
 	if (output.status === "running" && !output.liveOutput)
 		return { stdout: "", stderr: liveMarker, exitCode: bash_COMMAND_EXIT_STILL_RUNNING };
 	if (output.status !== "running" && !output.result)
@@ -288,10 +289,14 @@ export function bash_wait_command_create(ctx: ActionCtx, job: bash_JobContext): 
 		}
 		// The door reads one index row per number, so drop repeats and refuse a long list here
 		// instead of sending it. `wait {1..5000}` expands to 5000 words.
-		const wanted = [...new Set(jobNumbers.length > 0 ? jobNumbers : job.launchedJobNumbers)];
-		if (wanted.length === 0) return { stdout: "", stderr: "", exitCode: 0 };
-		if (wanted.length > bash_JOB_NUMBERS_MAX_COUNT)
+		const named = jobNumbers.length > 0;
+		const unique = [...new Set(named ? jobNumbers : job.launchedJobNumbers)];
+		if (unique.length === 0) return { stdout: "", stderr: "", exitCode: 0 };
+		if (named && unique.length > bash_JOB_NUMBERS_MAX_COUNT)
 			return usage_error(`wait: at most ${bash_JOB_NUMBERS_MAX_COUNT} job numbers can be waited at once`, WAIT_USAGE);
+		// A bare `wait` named nothing, so it takes the newest numbers instead of failing. A job that
+		// ran several statements, across pauses, can have started more jobs than one `wait` may name.
+		const wanted = named ? unique : unique.slice(-bash_JOB_NUMBERS_MAX_COUNT);
 
 		const scope = job_scope(job);
 		const list = async () =>

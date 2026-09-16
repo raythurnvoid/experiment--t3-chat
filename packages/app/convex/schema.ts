@@ -162,6 +162,11 @@ export const bash_shell_state_validator = v.object({
 	directoryStack: v.array(v.string()),
 	lastExitCode: v.number(),
 	lastArg: v.string(),
+	/**
+	 * What `$!` reads. Optional because the engine snapshot type marks it optional: a state
+	 * stored before the field existed does not have it.
+	 **/
+	lastBackgroundPid: v.optional(v.number()),
 	openFileDescriptors: v.array(v.number()),
 });
 
@@ -402,7 +407,7 @@ const app_convex_schema = defineSchema({
 		 * turn can arm the next job, so this is what ends the chain. A `/api/chat` request clears
 		 * it: the user is back in the loop. Missing means no wakeup ran since the last request.
 		 **/
-		wakeupChain: v.optional(v.number()),
+		bashJobWakeupCount: v.optional(v.number()),
 		activeRun: v.optional(ai_chat_thread_active_run_validator),
 	}).index("by_organization_workspace_archived_lastMessageAt", [
 		"organizationId",
@@ -471,6 +476,12 @@ const app_convex_schema = defineSchema({
 		deadlineAt: v.number(),
 		transferDeadlineAt: v.number(),
 		finishedAt: v.optional(v.number()),
+		/**
+		 * When a background job stored its `system` note in the thread. Both the settle and a late
+		 * worker result try to wake the agent, because a settle drops its own wake while a run holds
+		 * the thread lease. This is what keeps them to one note. Missing means no note was stored.
+		 **/
+		wakeNotifiedAt: v.optional(v.number()),
 		resultExpiresAt: v.optional(v.number()),
 		result: v.optional(ai_chat_bash_result_validator),
 		/**

@@ -145,6 +145,13 @@ A good wake check therefore looks like: one turn that launches the job with the 
 message list with no further sends, then assert that new messages appeared, that none of them is a `user` message, and
 that one holds `Background job <n> finished`. Verified 2026-09-16.
 
+## Read a finished job's own output with `jobs -o N`, not a transcript tail
+
+A job that paused writes one transcript entry per run, and the entries of other jobs land between them. A
+`tail -c <n> /shells/default/transcript` therefore cuts the last run's output in the middle, and a check that greps the
+tail for the job's final line reports a false failure. Ask for `jobs -o N` instead: it prints the whole job's stored
+stdout and stderr, then one `[job N exit C]` line. Verified 2026-09-16.
+
 ## Stop cancels the turn, not the Bash call already running on the server
 
 Clicking `Stop generating` while a Bash tool call is in flight aborts the AI SDK request in the browser. The Convex side keeps running the command to the end. The tool card is then left with only its command line and no output section, because the tool result never streamed back — but the shell transcript holds the whole run, with its real exit code.

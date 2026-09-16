@@ -606,7 +606,8 @@ const CHAT_RUN_LEASE_MS = 10 * 60 * 1000;
  * Take the thread's run lease for a `/api/chat` request (see `activeRun` in the schema). Refuse
  * while a job wakeup runs: the wakeup writes the reply under the job note, and a chat reply at
  * the same time would fork the branch. A second chat request is still allowed, as before: two
- * tabs or a retry must not lock each other out.
+ * tabs or a retry must not lock each other out. This also clears the job wakeup count, because the
+ * user is back in the loop.
  */
 export const thread_run_begin = internalMutation({
 	args: { threadId: v.id("ai_chat_threads") },
@@ -619,7 +620,7 @@ export const thread_run_begin = internalMutation({
 		await ctx.db.patch("ai_chat_threads", thread._id, {
 			activeRun: { kind: "chat", expiresAt: now + CHAT_RUN_LEASE_MS },
 			// The user sent a message, so the job wakeups may chain again from zero.
-			wakeupChain: undefined,
+			bashJobWakeupCount: undefined,
 		});
 		return true;
 	},

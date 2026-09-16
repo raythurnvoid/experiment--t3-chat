@@ -31,6 +31,10 @@ type NotificationWithCreatedAt = Doc<"notifications"> & {
 	createdAt?: number;
 };
 
+type ThreadWithWakeupChain = Doc<"ai_chat_threads"> & {
+	wakeupChain?: number;
+};
+
 type SecretWithKeyVersion = Doc<"plugins_workspace_installation_secrets"> & {
 	keyVersion?: number;
 };
@@ -458,6 +462,20 @@ export const backfill_ai_chat_threads_read_at = app_migrations.define({
 		}
 
 		await ctx.db.patch("ai_chat_threads", thread._id, { readAt: thread.lastMessageAt });
+	},
+});
+
+/** The job wakeup counter was renamed, so carry the old field's value to the new name. */
+export const rename_ai_chat_threads_wakeup_chain = app_migrations.define({
+	table: "ai_chat_threads",
+	migrateOne: async (ctx, thread) => {
+		const legacyThread = thread as ThreadWithWakeupChain;
+		if (legacyThread.wakeupChain === undefined) {
+			return;
+		}
+
+		const { _id, _creationTime, wakeupChain, ...next } = legacyThread;
+		await ctx.db.replace("ai_chat_threads", _id, { ...next, bashJobWakeupCount: wakeupChain });
 	},
 });
 
@@ -1426,6 +1444,9 @@ export const run_backfill_plugins_versions_backend_entrypoint_file_sha256 = app_
 );
 export const run_backfill_ai_chat_threads_read_at = app_migrations.runner(
 	internal.migrations.backfill_ai_chat_threads_read_at,
+);
+export const run_rename_ai_chat_threads_wakeup_chain = app_migrations.runner(
+	internal.migrations.rename_ai_chat_threads_wakeup_chain,
 );
 export const run_backfill_bash_shell_state_arrays = app_migrations.runner([
 	internal.migrations.backfill_ai_chat_bash_shells_state_arrays,

@@ -825,7 +825,7 @@ describe("job wakeup", () => {
 		for (const jobNumber of [1, 2, 3, 4, 5]) await wake_once(jobNumber);
 		const chained = await read_thread(f);
 		expect(chained.wakeups).toHaveLength(5);
-		expect(chained.thread?.wakeupChain).toBe(5);
+		expect(chained.thread?.bashJobWakeupCount).toBe(5);
 
 		// The sixth job still writes its note, and the note says why nothing answers it.
 		await wake_once(6);
@@ -833,11 +833,11 @@ describe("job wakeup", () => {
 		expect(capped.wakeups).toHaveLength(5);
 		expect(capped.thread?.activeRun).toBeUndefined();
 		expect(capped.messages.at(-1)?.content.parts[0].text).toContain(
-			"No reply was started: 5 job wakeups already ran in a row without a message from the user.",
+			"Nothing answered this note: 5 job wakeups already ran in a row without a message from the user.",
 		);
 
 		expect(await f.t.mutation(internal.ai_chat.thread_run_begin, { threadId: f.scope.threadId })).toBe(true);
-		expect((await read_thread(f)).thread?.wakeupChain).toBeUndefined();
+		expect((await read_thread(f)).thread?.bashJobWakeupCount).toBeUndefined();
 		await f.t.mutation(internal.ai_chat.thread_run_end, { threadId: f.scope.threadId, kind: "chat" });
 		await wake_once(7);
 		expect((await read_thread(f)).wakeups).toHaveLength(6);
@@ -856,7 +856,49 @@ describe("job wakeup", () => {
 		expect(state.wakeups).toHaveLength(0);
 	});
 
-	test("a result stored after the watchdog settled adds no second note and no second entry", async () => {
+	test("a job whose member lost the role writes no note either", async () => {
+		const f = await fixture();
+		await seed_messages(f);
+		const job = await f.seed_job({ jobNumber: 1, status: "running", wakeAgent, allowDbFilesMkdir: true });
+		// The fixture user created the organization, so they own it, and an owner passes every
+		// permission check. Hand the organization to somebody else and give the user a real role, so
+		// the role below is what decides.
+		const assignmentId = await f.t.run(async (ctx) => {
+			const otherOwnerId = await ctx.db.insert("users", { clerkUserId: null });
+			await ctx.db.patch("organizations", f.db.organizationId, { ownerUserId: otherOwnerId });
+			return await access_control_db_ensure_role_assignment(ctx, {
+				organizationId: f.db.organizationId,
+				workspaceId: f.db.workspaceId,
+				userId: f.db.userId,
+				role: "viewer",
+				now: Date.now(),
+			});
+		});
+
+		// `viewer` reads and does not write. The note of an Agent-mode job starts a turn that may
+		// write app files, and the wakeup run is refused anyway, so no note is stored.
+		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
+			invocationId: job.invocationId,
+			result: job_result(0),
+		});
+		const afterViewer = await read_thread(f);
+		expect(afterViewer.messages).toHaveLength(2);
+		expect(afterViewer.thread?.activeRun).toBeUndefined();
+
+		// A member with no role at all cannot even read the thread, so an Ask-mode job stores nothing
+		// either.
+		await f.t.run((ctx) => ctx.db.delete("access_control_role_assignments", assignmentId));
+		const ask = await f.seed_job({ jobNumber: 2, status: "running", wakeAgent });
+		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
+			invocationId: ask.invocationId,
+			result: job_result(0),
+		});
+		const afterNoRole = await read_thread(f);
+		expect(afterNoRole.messages).toHaveLength(2);
+		expect(afterNoRole.wakeups).toHaveLength(0);
+	});
+
+	test("a result stored after the watchdog settled adds no second note", async () => {
 		const f = await fixture();
 		await seed_messages(f);
 		const start = Date.now();
@@ -869,19 +911,54 @@ describe("job wakeup", () => {
 		const settled = await read_thread(f);
 		expect(settled.messages).toHaveLength(3);
 
-		// The worker was alive after all and stores its real output. That result is kept, but the
-		// note, the entry and the Activity stay the ones the settle wrote.
+		// The woken turn ended and gave the lease back, so the note the settle already stored is the
+		// only thing that can stop a second one. The worker was alive after all, and its real output
+		// is still kept.
+		await f.t.mutation(internal.ai_chat.thread_run_end, { threadId: f.scope.threadId, kind: "job_wakeup" });
 		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 			invocationId: job.invocationId,
 			result: job_result(0, "real output\n"),
 		});
-		const after = await f.read(job.invocationId);
-		expect(after.row).toMatchObject({ status: "finished", result: { stdout: "real output\n" } });
-		expect(after.activity).toMatchObject({ status: "timed_out" });
-		expect(after.transcript.filter((entry) => entry.includes("job 1 finished"))).toHaveLength(1);
+		expect((await f.read(job.invocationId)).row).toMatchObject({
+			status: "finished",
+			result: { stdout: "real output\n" },
+		});
 		const state = await read_thread(f);
 		expect(state.messages).toHaveLength(3);
 		expect(state.wakeups).toHaveLength(1);
+	});
+
+	test("a settle that could not wake leaves the note to the late result", async () => {
+		const f = await fixture();
+		await seed_messages(f);
+		const start = Date.now();
+		const job = await f.seed_job({ jobNumber: 1, status: "running", wakeAgent });
+		// A chat run still holds the thread when the watchdog settles, so that settle drops its own
+		// wake. The lease has to outlive the settle below, which happens ten minutes in.
+		await f.t.run((ctx) =>
+			ctx.db.patch("ai_chat_threads", f.scope.threadId, {
+				activeRun: { kind: "chat", expiresAt: start + PLACEHOLDER_MS + 60_000 },
+			}),
+		);
+		vi.setSystemTime(start + PLACEHOLDER_MS);
+		await f.t.mutation(internal.ai_chat_files.timeout_bash_job, {
+			invocationId: job.invocationId,
+			expectedDeadlineAt: start + PLACEHOLDER_MS,
+		});
+		const settled = await read_thread(f);
+		expect(settled.messages).toHaveLength(2);
+		expect(settled.wakeups).toHaveLength(0);
+
+		// The chat turn ended, and then the slow worker reported. This is the job's last chance to
+		// tell the agent it ended.
+		await f.t.mutation(internal.ai_chat.thread_run_end, { threadId: f.scope.threadId, kind: "chat" });
+		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
+			invocationId: job.invocationId,
+			result: job_result(0, "real output\n"),
+		});
+		const woken = await read_thread(f);
+		expect(woken.messages).toHaveLength(3);
+		expect(woken.wakeups).toHaveLength(1);
 	});
 
 	test("arm_bash_job_wakeup arms the caller's live jobs only", async () => {
@@ -941,6 +1018,27 @@ describe("job wakeup", () => {
 		expect(await f.t.query(internal.ai_chat.get_job_wakeup_context, { invocationId: plain.invocationId })).toEqual({
 			_nay: { message: "Not found" },
 		});
+
+		// A member who was removed and invited again gets a new lifetime, and the job still names the
+		// older one.
+		const lifetimeRow = await f.t.run(async (ctx) => {
+			const lifetime = (await ctx.db
+				.query("organizations_membership_lifetimes")
+				.withIndex("by_workspace_user", (q) => q.eq("workspaceId", f.db.workspaceId).eq("userId", f.db.userId))
+				.first())!;
+			await ctx.db.patch("organizations_membership_lifetimes", lifetime._id, { lifetime: lifetime.lifetime + 1 });
+			return lifetime;
+		});
+		expect(await f.t.query(internal.ai_chat.get_job_wakeup_context, { invocationId: job.invocationId })).toEqual({
+			_nay: { message: "Unauthorized" },
+		});
+		// Put the job back in reach, so the refusal below is the dead membership and not the lifetime.
+		await f.t.run((ctx) =>
+			ctx.db.patch("organizations_membership_lifetimes", lifetimeRow._id, { lifetime: lifetimeRow.lifetime }),
+		);
+		expect(
+			(await f.t.query(internal.ai_chat.get_job_wakeup_context, { invocationId: job.invocationId }))._nay,
+		).toBeUndefined();
 
 		await f.t.run((ctx) => ctx.db.patch("organizations_workspaces_users", f.db.membershipId, { active: false }));
 		expect(await f.t.query(internal.ai_chat.get_job_wakeup_context, { invocationId: job.invocationId })).toEqual({
