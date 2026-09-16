@@ -1078,6 +1078,21 @@ Prefer this over the escape hatch, because it also lets you choose the rate-limi
 
 The Council plugin preview (`vite --port 5199 --strictPort`) answers `http://localhost:5199/` and `http://[::1]:5199/` with `200` but **refuses** `http://127.0.0.1:5199/` — curl exits `7` with no status. Vite binds the `localhost` host name, and on this machine that resolves to `::1` only, so the IPv4 literal reaches nothing. An agent that hardcodes `127.0.0.1` concludes the server is down and restarts a server the user is already using. Always probe the `localhost` name, and try `[::1]` before deciding a preview is dead. Verified 2026-08-22. Note that this is per server: the Council Worker's `wrangler dev` binds `127.0.0.1:8787` instead.
 
+The app's own dev server does the same: `pnpm --dir packages/app run dev` answers `http://localhost:5173/` and `http://[::1]:5173/` and refuses `http://127.0.0.1:5173/`. One extra trap follows from it. When the shared tab is sitting on a `chrome-error://` page — which is where it lands after a crash, or after a `goto` to the IPv4 literal — the next `goto("http://localhost:5173/")` can fail with `net::ERR_ABORTED` even though the server is up. Load `http://[::1]:5173/` first and then the `localhost` URL; both then work. Verified 2026-09-16 after a machine crash.
+
+## Reading accessible names: `page.accessibility` is missing, and a hand-rolled check invents gaps
+
+`state.page.accessibility` does not exist through the relay (`TypeError: Cannot read properties of undefined (reading 'snapshot')` on playwriter 0.6.0), so the Playwright accessibility-tree API is not the way to screen a route here.
+
+Do not replace it with your own `aria-label` / `aria-labelledby` / `title` / text walk either. That misses the two commonest ways a control gets its name — a `<label for=...>` and a wrapping `<label>` — so it reports named controls as nameless. A 2026-09-16 screen of the chat route flagged `.AiChatThreadsArchivedToggle-input` as unnamed; it is named "Show archived" by its `label[for]`.
+
+Two things that do work:
+
+- `await state.page.locator(sel).first().ariaSnapshot()` returns the real role and name, e.g. `- textbox "Send a message...":`.
+- For a form control, `el.labels?.[0]?.textContent` inside `evaluate` settles the label question directly.
+
+Keep a hand-rolled DOM sweep only as a way to pick candidates, and confirm every candidate with one of those two before reporting it.
+
 ## Grep output can misrender comment lines
 
 Grep/`rg` tool output can render a source line's leading `//` as `\ `. It looks like a stray backslash at line start — a syntax error the dev server would never accept. It is a rendering artifact, not file content: open the file at that line before diagnosing (observed 2026-08-03 on comment lines in `files_pending_updates.ts` and `file-editor-diff.tsx`; both files were clean on disk).

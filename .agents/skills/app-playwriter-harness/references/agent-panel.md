@@ -128,6 +128,23 @@ Shell state (variables, arrays, options, cwd) is kept per named shell, so a cros
 
 Always write `Use the shell name <name> for BOTH calls` into the prompt. To confirm which shell actually ran, read the stored doc rather than the card: `convex data ai_chat_bash_shells --limit 10` prints each shell's `name`, `cwd`, and its saved `state`, including `arrays`.
 
+## A background job only wakes the agent when the prompt asks for `wakeOnJobFinish`
+
+A job's finish starts a new agent run only when the Bash call set `wakeOnJobFinish: true`, and the model sets that field
+only when it sees a reason to. A prompt that just says `{ sleep 25; echo done; } &` gets a job with no wake armed, so
+nothing happens when it ends and the check reads as a broken wake. Write `Set wakeOnJobFinish to true on that Bash call`
+into the prompt. The field exists in Agent mode only.
+
+Two more ways a wake check comes back empty without a defect:
+
+- A job that finishes **while a run is active** writes no note and starts nothing, by design; that run's next Bash call
+  prints the job note instead. So end the turn first, then let the job finish. A 20-40 s sleep is enough.
+- The note is a `system` message. It renders as its own `.AiChatMessage`, so read roles, not only assistant text.
+
+A good wake check therefore looks like: one turn that launches the job with the flag and replies at once, then poll the
+message list with no further sends, then assert that new messages appeared, that none of them is a `user` message, and
+that one holds `Background job <n> finished`. Verified 2026-09-16.
+
 ## Stop cancels the turn, not the Bash call already running on the server
 
 Clicking `Stop generating` while a Bash tool call is in flight aborts the AI SDK request in the browser. The Convex side keeps running the command to the end. The tool card is then left with only its command line and no output section, because the tool result never streamed back — but the shell transcript holds the whole run, with its real exit code.
