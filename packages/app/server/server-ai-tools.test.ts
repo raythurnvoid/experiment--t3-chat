@@ -471,9 +471,7 @@ describe("ai_chat_tool_create_bash", () => {
 		);
 		expect(tool).toEqual(
 			expect.objectContaining({
-				description: expect.stringContaining(
-					"avoid strict-mode boilerplate such as set -euo pipefail because pipefail is unsupported",
-				),
+				description: expect.stringContaining("avoid comments in command strings and process substitution"),
 			}),
 		);
 		expect(tool).toEqual(

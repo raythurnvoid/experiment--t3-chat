@@ -1328,9 +1328,9 @@ export type BonoboConvexApi = {
 				updatedBy: import("convex/values").GenericId<"users">;
 				updatedAt: number;
 				value: Record<string, any>;
+				key: string;
 				createdAt: number;
 				revision: number;
-				key: string;
 				collection: string;
 				byteSize: number;
 				writeMode: "normal" | "versioned";
@@ -1356,9 +1356,9 @@ export type BonoboConvexApi = {
 			updatedBy: import("convex/values").GenericId<"users">;
 			updatedAt: number;
 			value: Record<string, any>;
+			key: string;
 			createdAt: number;
 			revision: number;
-			key: string;
 			collection: string;
 			byteSize: number;
 			writeMode: "normal" | "versioned";
@@ -1377,9 +1377,9 @@ export type BonoboConvexApi = {
 				updatedBy: import("convex/values").GenericId<"users">;
 				updatedAt: number;
 				value: Record<string, any>;
+				key: string;
 				createdAt: number;
 				revision: number;
-				key: string;
 				collection: string;
 				byteSize: number;
 				writeMode: "normal" | "versioned";
@@ -1398,9 +1398,9 @@ export type BonoboConvexApi = {
 				updatedBy: import("convex/values").GenericId<"users">;
 				updatedAt: number;
 				value: Record<string, any>;
+				key: string;
 				createdAt: number;
 				revision: number;
-				key: string;
 				collection: string;
 				byteSize: number;
 				writeMode: "normal" | "versioned";

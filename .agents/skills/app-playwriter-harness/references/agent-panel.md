@@ -122,6 +122,18 @@ The `Error details` dialog stays open after you read it, and it keeps focus, so 
 
 `state.qa.queue(text)` only works while a turn is still running, because it waits for the send button's accessible name to be `Queue message`, and that internal wait is 10 s regardless of the CLI `--timeout`. A short first prompt finishes before the second `queue()` call and the helper times out with the queue half-filled. Give the first turn real work ("write a 1500-word essay about …") when you need two or more messages queued behind it.
 
+## Testing shell state across Bash calls: pin the shell name in the prompt
+
+Shell state (variables, arrays, options, cwd) is kept per named shell, so a cross-call persistence check is only meaningful when both calls use the same shell. The agent picks a shell name on its own when the prompt does not give one — a 2026-09-16 run had it use `sh` for the first call and the default shell for the second, so the second call saw no variables and the starting cwd. That reads exactly like a broken state-restore bug and is not one.
+
+Always write `Use the shell name <name> for BOTH calls` into the prompt. To confirm which shell actually ran, read the stored doc rather than the card: `convex data ai_chat_bash_shells --limit 10` prints each shell's `name`, `cwd`, and its saved `state`, including `arrays`.
+
+## Stop cancels the turn, not the Bash call already running on the server
+
+Clicking `Stop generating` while a Bash tool call is in flight aborts the AI SDK request in the browser. The Convex side keeps running the command to the end. The tool card is then left with only its command line and no output section, because the tool result never streamed back — but the shell transcript holds the whole run, with its real exit code.
+
+So do not read an empty card as "the command was killed", and do not use Stop to exercise the engine's abort path. Check the transcript for the truth (`convex data ai_chat_bash_shell_transcripts --limit 6 --order desc`). To drive a real in-engine abort, use the `timeout` command instead: `printf 'kept\n'; timeout 1 sleep 5; printf 'code=%s\n' "$?"` keeps `kept`, reports `code=124`, and drops the timed-out command's own output. Verified 2026-09-16.
+
 ## Doneness: waitIdle pattern
 
 The Stop button blinks out between agent steps (tool-exec gaps), so a single "no Stop button" check fires too early. Require sustained idle — no Stop button AND no **visible** `aria-busy` element — for 3 consecutive 2 s samples. Visible-only matters: hidden hoisted modals keep `aria-busy="true"` while closed (0x0 rect) and would otherwise report busy forever.

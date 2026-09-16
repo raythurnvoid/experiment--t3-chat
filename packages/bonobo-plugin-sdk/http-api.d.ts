@@ -37,9 +37,9 @@ export type BonoboHttpApi = {
 							value: {
 								[x: string]: any;
 							};
+							key: string;
 							createdAt: number;
 							revision: number;
-							key: string;
 							collection: string;
 							byteSize: number;
 							writeMode: "normal" | "versioned";
@@ -138,9 +138,9 @@ export type BonoboHttpApi = {
 							value: {
 								[x: string]: any;
 							};
+							key: string;
 							createdAt: number;
 							revision: number;
-							key: string;
 							collection: string;
 							byteSize: number;
 							writeMode: "normal" | "versioned";

@@ -44,7 +44,7 @@ export function bash_nested_shell_command_create(name: "bash" | "sh", appRoot: b
 		} else if (args[0].startsWith("-")) {
 			return {
 				stdout: "",
-				stderr: `${name}: unsupported option ${args[0]}\nSupported: ${name} -c 'script' for inline scripts, or ${name} /tmp/script.sh for non-app script files. Avoid set -euo pipefail, process substitution, and other shell-specific flags.\n`,
+				stderr: `${name}: unsupported option ${args[0]}\nSupported: ${name} -c 'script' for inline scripts, or ${name} /tmp/script.sh for non-app script files. Avoid process substitution and other shell-specific flags.\n`,
 				exitCode: bash_COMMAND_EXIT_USAGE,
 			};
 		} else {

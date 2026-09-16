@@ -3162,8 +3162,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(agentSurface).toContain("also -c count, -l list-if-matched, -v invert, and -A/-B/-C N context.");
 			expect(agentSurface).toContain("When using bash -c or sh -c to compare /tmp and app-mount behavior");
 			expect(agentSurface).toContain("For xargs path checks, print pathnames into xargs");
-			expect(agentSurface).toContain("avoid strict-mode boilerplate such as set -euo pipefail");
-			expect(agentSurface).toContain("pipefail is unsupported");
+			expect(agentSurface).toContain("avoid comments in command strings and process substitution");
 			expect(agentSurface).toContain(
 				"For multi-command inspection or eval checks, do not use set -e or hide stderr with 2>/dev/null",
 			);

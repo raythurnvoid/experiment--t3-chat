@@ -35,6 +35,16 @@ type SecretWithKeyVersion = Doc<"plugins_workspace_installation_secrets"> & {
 	keyVersion?: number;
 };
 
+type BashShellState = NonNullable<Doc<"ai_chat_bash_shells">["state"]>;
+
+/**
+ * Shell states saved before the engine kept arrays outside env have no `arrays` list. The engine
+ * never stored arrays back then, so an empty list is the faithful value.
+ */
+type BashShellStateWithoutArrays = Omit<BashShellState, "arrays"> & {
+	arrays?: BashShellState["arrays"];
+};
+
 /** Tables that stamped their own createdAt before `_creationTime` took over. */
 type PluginsLegacyCreatedAtTable =
 	| "plugins_publisher_repositories"
@@ -448,6 +458,39 @@ export const backfill_ai_chat_threads_read_at = app_migrations.define({
 		}
 
 		await ctx.db.patch("ai_chat_threads", thread._id, { readAt: thread.lastMessageAt });
+	},
+});
+
+/** Give shells saved by the older engine the empty array list the new snapshot shape needs. */
+export const backfill_ai_chat_bash_shells_state_arrays = app_migrations.define({
+	table: "ai_chat_bash_shells",
+	migrateOne: async (ctx, shell) => {
+		const state: BashShellStateWithoutArrays | null = shell.state;
+		if (state === null || state.arrays !== undefined) {
+			return;
+		}
+
+		await ctx.db.patch("ai_chat_bash_shells", shell._id, { state: { ...state, arrays: [] } });
+	},
+});
+
+/** The same backfill for the state copy a background job carries. */
+export const backfill_ai_chat_bash_jobs_state_arrays = app_migrations.define({
+	table: "ai_chat_bash_invocations",
+	migrateOne: async (ctx, invocation) => {
+		const job = invocation.job;
+		if (job === undefined) {
+			return;
+		}
+
+		const shellState: BashShellStateWithoutArrays | null = job.shellState;
+		if (shellState === null || shellState.arrays !== undefined) {
+			return;
+		}
+
+		await ctx.db.patch("ai_chat_bash_invocations", invocation._id, {
+			job: { ...job, shellState: { ...shellState, arrays: [] } },
+		});
 	},
 });
 
@@ -1384,6 +1427,10 @@ export const run_backfill_plugins_versions_backend_entrypoint_file_sha256 = app_
 export const run_backfill_ai_chat_threads_read_at = app_migrations.runner(
 	internal.migrations.backfill_ai_chat_threads_read_at,
 );
+export const run_backfill_bash_shell_state_arrays = app_migrations.runner([
+	internal.migrations.backfill_ai_chat_bash_shells_state_arrays,
+	internal.migrations.backfill_ai_chat_bash_jobs_state_arrays,
+]);
 export const run_backfill_plugins_versions_ui_outbound_origins = app_migrations.runner(
 	internal.migrations.backfill_plugins_versions_ui_outbound_origins,
 );

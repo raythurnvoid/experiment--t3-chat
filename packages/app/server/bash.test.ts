@@ -1284,15 +1284,52 @@ describe("bash_run_command", () => {
 		expect(compound.stderr).toContain("run 'help' to list available commands");
 	});
 
-	test("guides unsupported strict-mode boilerplate", async () => {
+	test("runs strict-mode boilerplate", async () => {
 		const { run } = await create_bash_runner();
 
-		const result = await run("set -euo pipefail\nprintf hi > /tmp/a.txt");
+		const result = await run("set -euo pipefail\nprintf hi > /tmp/a.txt\ncat /tmp/a.txt");
 
-		expect(result.metadata.exitCode).toBe(1);
-		expect(result.stderr).toContain("bash: set: -o: invalid option");
-		expect(result.stderr).toContain("`set -euo pipefail` is unsupported");
-		expect(result.stderr).toContain("retry without strict-mode boilerplate");
+		expect(result.stderr).toBe("");
+		expect(result.metadata.exitCode).toBe(0);
+		expect(result.stdout).toContain("hi");
+
+		// The three options are honored, not just accepted: errexit stops the script, nounset
+		// refuses the unset read, and pipefail reports the failing side of the pipe.
+		const errexit = await run("set -e\nfalse\necho reached");
+		expect(errexit.metadata.exitCode).toBe(1);
+		expect(errexit.stdout).not.toContain("reached");
+
+		const nounset = await run("set +e\nset -u\necho \"$NEVER_SET_VAR\"");
+		expect(nounset.metadata.exitCode).toBe(1);
+		expect(nounset.stderr).toContain("unbound variable");
+
+		const pipefail = await run("set +u\nset -o pipefail\nfalse | cat\necho code=$?");
+		expect(pipefail.stdout).toContain("code=1");
+	});
+
+	test("a timeout keeps the earlier output and drops the output of the command it stopped", async () => {
+		const { run } = await create_bash_runner();
+
+		// The engine stops a timed-out command by aborting it, and after that abort it refuses to
+		// collect any more output. So the statements that already ran must keep theirs, while the
+		// command that was stopped reports only exit 124.
+		const result = await run("printf 'kept\\n'; timeout 1 sleep 5; printf 'code=%s\\n' \"$?\"");
+
+		expect(result.stderr).toBe("");
+		expect(result.metadata.exitCode).toBe(0);
+		expect(result.stdout).toBe("kept\ncode=124\n");
+	});
+
+	test("seq past the loop-iteration limit says so instead of returning a short sequence", async () => {
+		const { run } = await create_bash_runner();
+
+		// seq counts against the shell's loop-iteration limit. An older engine stopped at its own
+		// hard-coded cap and returned the shorter sequence with exit 0, which let a model read a
+		// truncated list as the whole answer.
+		const result = await run("seq 1 20000 | tail -n 1");
+
+		expect(result.metadata.exitCode).not.toBe(0);
+		expect(result.stderr).toContain("seq: iteration limit exceeded (10000)");
 	});
 
 	test("restores app-command guidance that the shell swallowed", async () => {
@@ -1851,9 +1888,10 @@ describe("bash_run_command", () => {
 		);
 
 		expect(result.metadata.exitCode).toBe(0);
+		// Native `ls -d` prints its operands as one block, one per line, like real bash. Only the
+		// app-path operand gets its own block.
 		expect(result.stdout.trim().split("\n\n")).toEqual([
-			"/tmp/mixed-ls-a",
-			"/tmp/mixed-ls-b",
+			"/tmp/mixed-ls-a\n/tmp/mixed-ls-b",
 			`${test_db_files_mount}/docs/`,
 		]);
 	});
@@ -3846,6 +3884,33 @@ describe("bash_run_command", () => {
 			expect((await runner.run("x=5")).metadata.exitCode).toBe(0);
 			expect((await runner.run("echo $x")).stdout).toBe("5\n");
 			expect((await runner.run("echo $x", undefined, "other")).stdout).toBe("\n");
+		});
+
+		test("keeps the saved state when the call leaves cwd inside /tmp", async () => {
+			const runner = await create_bash_runner();
+
+			// /tmp is per-thread scratch with its own caps, so a cwd left there is the case most
+			// likely to lose the rest of the shell state on the way back.
+			expect((await runner.run("kept=yes; fruits=(apple pear); mkdir -p /tmp/scratch-cwd; cd /tmp/scratch-cwd")).metadata.exitCode).toBe(0);
+
+			const read = await runner.run('printf "%s|%s|%s\\n" "$kept" "${#fruits[@]}" "$(pwd)"');
+			expect(read.stderr).toBe("");
+			expect(read.stdout).toBe("yes|2|/tmp/scratch-cwd\n");
+		});
+
+		test("keeps an indexed and an associative array for the next call", async () => {
+			const runner = await create_bash_runner();
+
+			// Arrays live outside env in the engine state, so they need their own place in the saved
+			// snapshot. Without it a later call sees the names as unset.
+			expect((await runner.run("fruits=(apple pear plum); declare -A ages; ages[ana]=31")).metadata.exitCode).toBe(0);
+
+			const read = await runner.run('printf "%s|%s|%s\\n" "${fruits[1]}" "${#fruits[@]}" "${ages[ana]}"');
+			expect(read.stderr).toBe("");
+			expect(read.stdout).toBe("pear|3|31\n");
+
+			// A different shell in the same thread starts without them.
+			expect((await runner.run('printf "%s\\n" "${#fruits[@]}"', undefined, "other")).stdout).toBe("0\n");
 		});
 
 		test("still saves the variable when the call ends with exit 0", async () => {
@@ -8145,20 +8210,28 @@ describe("bash_run_command", () => {
 		expect((await runner.run(`stat ${test_db_files_mount}/video.mp4`)).metadata.exitCode).toBe(0);
 	});
 
-	test("an oversized redirect refuses before creating a private node", async () => {
+	test("an oversized redirect refuses the content and leaves the new file empty", async () => {
 		const runner = await create_bash_runner();
 
-		// seq stops at 100k iterations (~589KB), so cat the file twice to pass the 900k
-		// byte cap, which fires before private creation.
-		const result = await runner.run(
-			`seq 1 100000 > /tmp/big.txt && cat /tmp/big.txt /tmp/big.txt > ${test_db_files_mount}/big.md`,
-		);
+		// The shell's own output budget stops this well before the app's 900,000-byte file limit,
+		// because since just-bash 3.4 the bytes a redirection writes are charged to that budget too.
+		// So this is the refusal an agent actually meets when it writes too much to an app file.
+		const result = await runner.run(`printf '%0300000d' 1 > ${test_db_files_mount}/big.md`);
 		expect(result.metadata.exitCode).not.toBe(0);
-		expect(result.stderr).toContain("exceeds the");
-		expect(await runner.t.run(async (ctx) => ctx.db.query("files_pending_nodes").collect())).toHaveLength(0);
+		expect(result.stderr).toContain("limit exceeded");
 
-		// No committed node or pending row is left behind.
-		expect(await list_pending_updates(runner)).toHaveLength(0);
+		// `>` truncates its target when the shell opens it, before the command that fills it runs.
+		// For a path with no file yet that open is itself a write, so it proposes the new file as an
+		// empty placeholder, the same one any new-file write creates. The refused content never
+		// lands, so the proposal stays empty and the user discards it like any other proposal.
+		const pendingNodes = await runner.t.run(async (ctx) => ctx.db.query("files_pending_nodes").collect());
+		expect(pendingNodes.map((node) => node.name)).toEqual(["big.md"]);
+		expect((await runner.run(`wc -c ${test_db_files_mount}/big.md`)).stdout).toBe(
+			`0 ${test_db_files_mount}/big.md\n`,
+		);
+		expect((await list_pending_updates(runner)).map((update) => update.size)).toEqual([0]);
+
+		// The refusal still commits nothing to the shared tree.
 		const orphan = await runner.t.run((ctx) =>
 			ctx.db
 				.query("files_nodes")
@@ -8173,6 +8246,7 @@ describe("bash_run_command", () => {
 		);
 		expect(orphan).toBeNull();
 	});
+
 
 	test("creates a pending copy proposal for app-to-app cp", async () => {
 		const runner = await create_bash_runner();
@@ -10610,7 +10684,9 @@ describe("bash_run_command", () => {
 	test("reports stdout truncation without path-index truncation", async () => {
 		const { run } = await create_bash_runner();
 
-		const result = await run("seq 1 40000");
+		// A wide zero pad reaches the cap in one command; seq now stops at the loop-iteration limit
+		// well below it.
+		const result = await run("printf '%0200000d' 1");
 
 		expect(result.metadata.stdoutTruncated).toBe(true);
 		expect(result.metadata.stdoutLength).toBeGreaterThan(128 * 1024);

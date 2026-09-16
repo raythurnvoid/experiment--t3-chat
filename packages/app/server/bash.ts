@@ -142,7 +142,6 @@ const TERMINAL_TRAILING_NEWLINE_REGEX = /\n+$/;
 
 const COMMAND_NOT_FOUND_REGEX = /: command not found$/m;
 const REDIRECTS_STDERR_TO_STDOUT_REGEX = /(^|[\s;&|])2\s*>\s*&\s*1(?=$|[\s;&|])/;
-const SET_INVALID_OPTION_REGEX = /bash: set: -o: invalid option/m;
 const FILE_COMMAND_OPERAND_REGEX = /(?:^|[\s;&|])file\s+([^\s;&|]+)/u;
 
 // Deliberately tiny caps so /tmp eviction is exercised while testing the app.
@@ -1334,6 +1333,12 @@ function bash_shell_create(
 			maxCommandCount: args.executionLimitsOverride?.maxCommandCount ?? 200,
 			maxLoopIterations: 10_000,
 			maxCallDepth: 50,
+			// Since just-bash 3.4 this budget also counts the bytes a redirection writes to a file,
+			// not only the output a call returns. So a single call cannot write much more than this
+			// to an app file, which is well under the app's own 900,000-byte file limit. Do not
+			// raise it to close that gap: one transcript entry has to fit in a Convex document, and
+			// `BASH_SHELL_TRANSCRIPT_ENTRY_MAX_BYTES` is already sized for the worst-case output of
+			// this number. Bigger app files arrive through upload and the editor instead.
 			maxOutputSize: 250_000,
 			maxHeredocSize: 250_000,
 		},
@@ -1788,14 +1793,6 @@ async function run_command_and_diagnose(args: {
 			const target = bash_shell_arg_quote(filePathMatch[1]);
 			result.stderr += `bash: the Unix file command is intentionally unavailable. Try: stat ${target} && wc -c ${target} && head -n 5 ${target}\n`;
 		}
-	}
-
-	if (
-		command.includes("pipefail") &&
-		(SET_INVALID_OPTION_REGEX.test(result.stderr) ||
-			(redirectsStderrToStdout && SET_INVALID_OPTION_REGEX.test(result.stdout)))
-	) {
-		result.stderr += "bash: `set -euo pipefail` is unsupported; retry without strict-mode boilerplate.\n";
 	}
 
 	// Restore app-command guidance the shell swallowed. `find … 2>/dev/null | head` discards the
