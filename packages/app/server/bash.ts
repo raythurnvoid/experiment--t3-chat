@@ -2084,7 +2084,7 @@ export async function bash_run_job(
 				reason: "run budget used, continues at once",
 			};
 		}
-		// An earlier statement may have been too big to pause on. The script shrank since, so the
+		// An earlier statement may have been too big to pause on. The state shrank since, so the
 		// warning about it would contradict the pause this run is taking.
 		stateTooLargeToPause = false;
 		return "stop";
@@ -2173,7 +2173,9 @@ export async function bash_run_job(
 		};
 
 		if (stateTooLargeToPause) {
-			add_warning("bash: the shell state is larger than 128 KiB, so the job cannot pause; it runs on with its budget.\n");
+			add_warning(
+				"bash: the shell state is larger than 128 KiB, so the job cannot pause; it runs on with its budget.\n",
+			);
 		}
 		// `/tmp` is a private copy inside a job and is never written back. Name what was dropped.
 		const droppedTmpPaths = [...bashFs.tmp_dirty_roots()].sort();

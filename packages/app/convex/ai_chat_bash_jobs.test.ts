@@ -833,7 +833,7 @@ describe("job wakeup", () => {
 		expect(capped.wakeups).toHaveLength(5);
 		expect(capped.thread?.activeRun).toBeUndefined();
 		expect(capped.messages.at(-1)?.content.parts[0].text).toContain(
-			"Nothing answered this note: 5 job wakeups already ran in a row without a message from the user.",
+			"Nothing answered this note: 5 job wakeups already started in a row without a message from the user.",
 		);
 
 		expect(await f.t.mutation(internal.ai_chat.thread_run_begin, { threadId: f.scope.threadId })).toBe(true);
@@ -884,6 +884,9 @@ describe("job wakeup", () => {
 		const afterViewer = await read_thread(f);
 		expect(afterViewer.messages).toHaveLength(2);
 		expect(afterViewer.thread?.activeRun).toBeUndefined();
+		// The job did finish. Without this, a `finish_bash_job` that stored nothing at all would pass
+		// every assertion here, because they all check that something is absent.
+		expect((await f.read(job.invocationId)).row).toMatchObject({ status: "finished" });
 
 		// A member with no role at all cannot even read the thread, so an Ask-mode job stores nothing
 		// either.
@@ -948,6 +951,9 @@ describe("job wakeup", () => {
 		const settled = await read_thread(f);
 		expect(settled.messages).toHaveLength(2);
 		expect(settled.wakeups).toHaveLength(0);
+		// The settle really ran. A watchdog that did nothing would leave the row running, and the
+		// finish below would then be an ordinary first wake that proves nothing about this case.
+		expect((await f.read(job.invocationId)).row).toMatchObject({ status: "interrupted" });
 
 		// The chat turn ended, and then the slow worker reported. This is the job's last chance to
 		// tell the agent it ended.
@@ -1020,7 +1026,8 @@ describe("job wakeup", () => {
 		});
 
 		// A member who was removed and invited again gets a new lifetime, and the job still names the
-		// older one.
+		// older one. The step below bumps that counter straight in the row, which is the one thing a
+		// reinvite changes that this door reads.
 		const lifetimeRow = await f.t.run(async (ctx) => {
 			const lifetime = (await ctx.db
 				.query("organizations_membership_lifetimes")

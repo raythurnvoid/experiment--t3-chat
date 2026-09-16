@@ -85,8 +85,8 @@ const JOB_NUMBER_REGEX = /^%?(\d+)$/u;
 
 /**
  * The status word `jobs`, `jobs -a`, `jobs -o` and the finished-job note print for an Activity
- * status.
- * A job never waits for input and never ends `partial`; those two map to their nearest word.
+ * status. A job never waits for input and never ends `partial`; those two map to their nearest
+ * word.
  */
 export function bash_job_status_word(status: Doc<"activities">["status"]) {
 	return {

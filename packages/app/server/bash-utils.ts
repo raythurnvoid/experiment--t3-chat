@@ -61,16 +61,18 @@ export const bash_SHELLS_MOUNT = "/shells";
 
 /**
  * Keep the stored shell state and the engine snapshot in step. A field added on one side fails
- * the check on the line after each `ts-ignore`; the ignore only covers the unused type name.
+ * the check on the line after each `ts-ignore`; the ignore only covers the unused type name. Both
+ * checks compare the two as `Required`, because a field that one side marks optional and the other
+ * side does not have at all is assignable in both directions.
  */
 type bash_ShellState = Infer<typeof bash_shell_state_validator>;
 type bash_Assignable<_From extends To, To> = true;
 //@ts-ignore
 type _bash_ShellStateToSnapshot = //
-	bash_Assignable<bash_ShellState, InterpreterStateSnapshot>;
+	bash_Assignable<Required<bash_ShellState>, Required<InterpreterStateSnapshot>>;
 //@ts-ignore
 type _bash_SnapshotToShellState = //
-	bash_Assignable<InterpreterStateSnapshot, bash_ShellState>;
+	bash_Assignable<Required<InterpreterStateSnapshot>, Required<bash_ShellState>>;
 
 /**
  * Shell mount point for read-only reserved-scope external mounts (e.g. the GitHub mirror of the

@@ -1305,7 +1305,7 @@ describe("bash_run_command", () => {
 		expect(errexit.metadata.exitCode).toBe(1);
 		expect(errexit.stdout).not.toContain("reached");
 
-		const nounset = await run("set +e\nset -u\necho \"$NEVER_SET_VAR\"");
+		const nounset = await run('set +e\nset -u\necho "$NEVER_SET_VAR"');
 		expect(nounset.metadata.exitCode).toBe(1);
 		expect(nounset.stderr).toContain("unbound variable");
 
@@ -4442,7 +4442,11 @@ describe("bash_run_command", () => {
 			// state, so the second sleep pauses, and the warning would contradict that pause.
 			const script = '{ x=$(printf "%133000s" ""); sleep 5; unset x; sleep 5; echo done; }';
 			expect((await runner.run(`${script} &`)).metadata.exitCode).toBe(0);
-			expect((await run_job(runner, 1)).status).toBe("running");
+			const paused = await run_job(runner, 1);
+			expect(paused.status).toBe("running");
+			// The first sleep really could not pause: the stored rest starts after the second sleep, so
+			// this run walked past the first one instead of stopping there.
+			expect(paused.job?.resumeScript).toBe("echo done");
 
 			const partial = await runner.run("jobs -o 1");
 			expect(partial.stderr).not.toContain("the shell state is larger than 128 KiB");
@@ -4500,6 +4504,9 @@ describe("bash_run_command", () => {
 			expect((await runner.run("sleep 1 & { echo one & sleep 30; wait -t 1 $!; } &")).metadata.exitCode).toBe(0);
 			// A job starts with `$!` at 0: job 1 belongs to the call that started it, not to job 2.
 			expect((await job_row(runner, 2)).job?.shellState?.lastBackgroundPid).toBeUndefined();
+			// The shell the call leaves behind keeps no `$!` either, so the next call reads 0. That is
+			// what the tool prompt promises, and storing the call's snapshot unchanged breaks it.
+			expect((await runner.run("echo $!")).stdout).toBe("0\n");
 
 			const paused = await run_job(runner, 2);
 			// `$!` is part of the shell state the pause stored. A state that dropped it would run
@@ -4507,6 +4514,68 @@ describe("bash_run_command", () => {
 			expect(paused.job?.shellState?.lastBackgroundPid).toBe(3);
 			const finished = await run_job(runner, 2);
 			expect(finished.result?.metadata.exitCode).toBe(3);
+		});
+
+		test("a bare wait takes the newest job numbers when a job started more than one wait may name", async () => {
+			const runner = await create_bash_runner();
+			// Twelve finished jobs. The cap counts live jobs, so launch four and run those four to the
+			// end before the next four.
+			for (let round = 0; round < 3; round++) {
+				expect((await runner.run("echo a & echo b & echo c & echo d &")).metadata.exitCode).toBe(0);
+				for (let jobNumber = round * 4 + 1; jobNumber <= round * 4 + 4; jobNumber++) {
+					expect((await run_job(runner, jobNumber)).status).toBe("finished");
+				}
+			}
+
+			expect((await runner.run("{ sleep 5; wait; echo rc=$?; } &")).metadata.exitCode).toBe(0);
+			const paused = await run_job(runner, 13);
+			expect(paused.job?.resumeScript).toBe("wait\necho rc=$?");
+			// A job that ran several statements across pauses can have started more jobs than one
+			// `wait` may name. Job 999 is the oldest of thirteen numbers and names no row, so a run
+			// that asked for all of them would answer "no such job" instead of waiting.
+			await runner.t.run((ctx) =>
+				ctx.db.patch("ai_chat_bash_invocations", paused._id, {
+					job: { ...paused.job!, resumeLaunchedJobNumbers: [999, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] },
+				}),
+			);
+
+			// The bare `wait` keeps the newest twelve, which all finished, so it waits for nothing and
+			// the job ends with the exit code of the worst job it waited for.
+			const finished = await run_job(runner, 13);
+			expect(finished.result?.stderr).toBe("");
+			expect(finished.result?.stdout).toBe("rc=0\n");
+			expect(finished.result?.metadata.exitCode).toBe(0);
+		});
+
+		test("a settled job keeps no script and no paused state", async () => {
+			const runner = await create_bash_runner();
+			const script = "{ x=1; sleep 30; echo done; }";
+			expect((await runner.run(`${script} &`)).metadata.exitCode).toBe(0);
+			const paused = await run_job(runner, 1);
+			expect(paused.job?.resumeScript).toBe("echo done");
+			expect(paused.job?.shellState?.env).toContainEqual({ name: "x", value: "1" });
+
+			// The watchdog settles the paused row, and nothing will ever run it again. So the script and
+			// the state it stored for the next run must not sit on the row until the row is deleted.
+			vi.useFakeTimers();
+			try {
+				vi.setSystemTime(paused.deadlineAt + 1);
+				await runner.t.mutation(internal.ai_chat_files.timeout_bash_job, {
+					invocationId: paused._id,
+					expectedDeadlineAt: paused.deadlineAt,
+				});
+			} finally {
+				vi.useRealTimers();
+			}
+			const settled = await job_row(runner, 1);
+			expect(settled.status).toBe("interrupted");
+			expect(settled.job).toMatchObject({ script: null, shellState: null });
+			expect(settled.job?.resumeScript).toBeUndefined();
+			expect(settled.job?.resumeCommandNumber).toBeUndefined();
+			expect(settled.job?.resumeLaunchedJobNumbers).toBeUndefined();
+			// The finish entry still names the script, because the settle writes it from the copy it
+			// read before the patch.
+			expect((await runner.run("cat /shells/default/transcript")).stdout).toContain(script);
 		});
 
 		test("a Stop lands at the next statement boundary, not only at the next 5-second tick", async () => {
@@ -8558,7 +8627,6 @@ describe("bash_run_command", () => {
 		);
 		expect(orphan).toBeNull();
 	});
-
 
 	test("creates a pending copy proposal for app-to-app cp", async () => {
 		const runner = await create_bash_runner();
