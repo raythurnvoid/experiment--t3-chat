@@ -315,7 +315,7 @@ describe("start_bash_job", () => {
 		expect(refused._nay).toMatchObject({
 			name: "limit",
 			message:
-				"4 jobs are already active across your workspace (queued, running or stopping). Some may be in another chat, where `jobs` cannot see them. Wait for one to end.",
+				"4 jobs are already active across your workspace (queued, running or stopping). Some may be in another chat, where `jobs` and `wait` cannot name them. Wait for one of this chat's jobs, or start more in a later call.",
 		});
 		expect(await job_rows(f)).toHaveLength(4);
 	});

@@ -140,12 +140,15 @@ const SHELL_STATE_MAX_BYTES = 128 * 1024;
 const BASH_JOB_MAX_COMMAND_COUNT = 2_000;
 // The worker reads the Stop flag, the row status and its permissions this often.
 const BASH_JOB_POLL_MS = 5_000;
-// After this many launches refused in a row, the hook refuses the rest without a query. A launch that
-// succeeds starts the count again, and so does a `wait` that found a job live and saw it end, because
-// those are the two ways a script frees a slot inside one call. If neither reset existed the count
-// could never come back down: the local refusal returns before the query that would clear it. The
-// engine charges no command for `cmd &`, so this count is the only bound on how often one call can ask
-// the jobs door.
+// After this many launches refused in a row, the hook refuses the rest without a query. Every
+// refusal counts, not only the jobs-cap refusal, because each refused launch still costs a door
+// query and `&` is free. A launch that succeeds starts the count again, and so does a `wait`
+// that found a job live and saw it end: those are the two ways this call learns the cap is no
+// longer blocking it. The wait recovery exists only for the cap. If neither reset existed the
+// count could never come back down: the local refusal returns before the query that would clear
+// it. The engine charges no command for `cmd &`, so this count is what stops a flat run of `&`
+// from asking the door once per statement. A successful launch resets it too, so a call can ask
+// the door many times. Every run of a job also starts a fresh count at 0.
 const BASH_JOB_LAUNCH_MAX_REFUSALS = 3;
 // A bare top-level `sleep` of at least this long pauses the job instead of holding a worker, and
 // waits at most as long as the sleep command itself would (its own cap is one hour).
@@ -1798,7 +1801,10 @@ export async function bash_run_command(
 		const exitCode = finished._yay.deadlineAt <= Date.now() ? 124 : 1;
 		const stderr = `${response.stderr}bash: ${exitCode === 124 ? "execution deadline reached" : "call was interrupted"}. Check Notifications before starting a new command.\n`;
 
-		return {
+		// The usual return already went through `bash_response`. This branch rebuilds `title`
+		// and `output` from the raw cwd. A `cd` into a `/tmp` name that holds half a character
+		// would then send that half back to Convex, which refuses the whole return.
+		return bash_value_well_formed({
 			...response,
 			title: `exit ${exitCode} · ${nextCwd}`,
 			stderr,
@@ -1811,7 +1817,7 @@ export async function bash_run_command(
 				stderr,
 			}),
 			metadata: { ...response.metadata, exitCode, stderrLength: stderr.length },
-		};
+		});
 	} catch (error) {
 		await ctx
 			.runMutation(internal.ai_chat_files.interrupt_bash_invocation, { invocationId: invocation.invocationId })

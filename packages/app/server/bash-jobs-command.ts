@@ -50,15 +50,22 @@ export type bash_JobContext = {
 	 */
 	launchedJobNumbers: number[];
 	/**
-	 * Launches refused in a row; after 3 the hook refuses locally without a database round trip. Two
-	 * things put it back to 0, because they are the two ways a slot frees up inside one call: a launch
-	 * that succeeds, and a `wait` that found a job live and then saw it end. A script can hit the jobs
-	 * cap, `wait` for those jobs, and start more. So this bounds a run of refusals, not the refusals of
-	 * a whole call. If neither reset existed the count could never come down, since the local refusal
-	 * returns before the query whose success would clear it. A `wait` for jobs that had already ended
-	 * frees nothing and resets nothing, so a loop of `cmd & wait 1` cannot use it to keep asking the
-	 * door. The jobs of another chat cannot be waited on at all, so a call blocked by those keeps the
-	 * block until it ends.
+	 * Launches refused in a row; after 3 the hook refuses locally without a database round trip.
+	 * Every refusal counts, not only the jobs-cap refusal, because each refused launch still
+	 * costs a door query and `&` is free. Two things put the count back to 0, because they are
+	 * the two ways this call learns the cap is no longer blocking it: a launch that succeeds,
+	 * and a `wait` that found a job live and then saw it end. The wait recovery exists only for
+	 * the cap. A script can hit the cap, `wait` for those jobs, and start more. A script, state
+	 * or stopping refusal is refused every time. So this count stops a flat run of `&` from
+	 * asking the door once per statement, not the refusals of a whole call. A successful launch
+	 * resets it too, so a call can ask the door many times inside its 90 seconds. If neither
+	 * reset existed the count could never come down, since the local refusal returns before the
+	 * query whose success would clear it. A `wait` for jobs that had already ended frees nothing
+	 * and resets nothing, so a loop of `cmd & wait 1` cannot use it to keep asking the door. The
+	 * jobs of another chat cannot be waited on at all, so a call blocked by those keeps the
+	 * block until it ends. There is a third reset: every run of a job starts a fresh context
+	 * with this count at 0, so a `&` followed by a bare `sleep 5` inside a job clears the block
+	 * at each pause.
 	 */
 	launchRefusals: number;
 	/**
@@ -216,9 +223,10 @@ async function print_job_output(ctx: ActionCtx, job: bash_JobContext, jobNumber:
 		};
 	}
 	const result = output.result!;
-	// The Activity decides the code, like `wait`, the finished-job note and the status word above: a job
-	// settled as timed out or stopped can still store the code of a script that finished on its own, and
-	// a stored 0 printed here would say the job succeeded while every other surface says it did not.
+	// The Activity decides the code, like `wait` and the status word above. The finished-job note
+	// prints that status word, not this code. A job settled as timed out or stopped can still store
+	// the code of a script that finished on its own, and a stored 0 printed here would say the job
+	// succeeded while every other surface says it did not.
 	const exitCode = bash_job_exit_code(output.activityStatus, result.metadata.exitCode);
 	return {
 		stdout: bounded(result.stdout, result.metadata.stdoutTruncated),
@@ -352,17 +360,19 @@ export function bash_wait_command_create(ctx: ActionCtx, job: bash_JobContext): 
 		}
 		if (is_live()) return { stdout: "", stderr: "", exitCode: bash_COMMAND_EXIT_STILL_RUNNING };
 
-		// A job this wait found live has ended, so its slot is free now. Let the next `&` ask the door
-		// again even when three launches in a row were refused before this wait. A wait for jobs that
-		// had already ended frees nothing, and neither does one that gave up with a job still live or
-		// waited for nothing. `&` costs no command budget in the engine, so this count is the only
-		// thing that bounds how often one call can ask the jobs door.
+		// A job this wait found live has ended, so this call has learned the cap is no longer
+		// blocking it. Let the next `&` ask the door again even when three launches in a row were
+		// refused before this wait. A wait for jobs that had already ended frees nothing, and
+		// neither does one that gave up with a job still live or waited for nothing. `&` costs no
+		// command budget in the engine, so this count is what stops a flat run of `&` from asking
+		// the door once per statement.
 		if (waitedOnLive) job.launchRefusals = 0;
-		// One query for every waited job, and it returns codes only. Reading each job's stored result
-		// here would move up to 700 KiB per job over the wire to learn one number.
+		// Ask for the numbers this wait started with, not the last list. A purge can empty
+		// `found` after the first list passed, and `Math.max(0, ...[])` would then report
+		// success. `read_job_exit_codes` already answers 1 for a number it cannot resolve.
 		const codes = (await ctx.runQuery(internal.ai_chat_files.read_job_exit_codes, {
 			...scope,
-			jobNumbers: found.map((summary) => summary.jobNumber),
+			jobNumbers: wanted,
 		})) as ai_chat_files_read_job_exit_codes_Result;
 		return { stdout: "", stderr: "", exitCode: Math.max(0, ...codes.map((code) => code.exitCode)) };
 	});

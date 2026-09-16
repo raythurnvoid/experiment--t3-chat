@@ -178,11 +178,11 @@ export const bash_ABORT_REASON_STOPPED = "job stopped";
  * The exit code one job reports, from its Activity and the code its worker stored. A job can be
  * declared dead before its worker stops: a watchdog or a Stop settles the Activity while a slow
  * worker is still finishing, and the worker then stores its own code under a `timed_out` or
- * `canceled` Activity. The feed, `jobs -a` and the finished-job note all show the Activity status, so
- * `wait`, the `jobs -o` marker and the note read the Activity first and agree with them instead of
- * reporting the late result's code. A job with no stored code at all (stopped before a worker ran, a
- * crashed worker, or a result the cleanup cron already stripped) answers from the Activity too:
- * `succeeded` is 0, `timed_out` 124, `canceled` 143 and everything else 1.
+ * `canceled` Activity. The feed, `jobs -a` and the finished-job note all show the Activity status
+ * word. `wait` and the `jobs -o` marker read the Activity first and report a code that agrees
+ * with that word, instead of the late result's code. A job with no stored code at all (stopped
+ * before a worker ran, a crashed worker, or a result the cleanup cron already stripped) answers
+ * from the Activity too: `succeeded` is 0, `timed_out` 124, `canceled` 143 and everything else 1.
  */
 export function bash_job_exit_code(activityStatus: Doc<"activities">["status"], storedExitCode: number | null) {
 	if (activityStatus === "timed_out") return bash_COMMAND_EXIT_TIMED_OUT;
@@ -323,16 +323,16 @@ export function bash_text_well_formed(text: string) {
 }
 
 /**
- * Repair every string inside `value`, however deeply it sits. Pass anything that is not a string, a
- * plain object or an array through as it is, so file bytes and ids reach the backend untouched.
+ * Walk only plain objects and arrays. Repair every string value. Leave every other value as it
+ * is, so file bytes and ids reach the backend untouched. Leave object field names as they are
+ * too: Convex already refuses a non-ASCII key, and U+FFFD is itself non-ASCII, so repairing the
+ * key would only change the error text and could merge two keys into one.
  */
 function value_well_formed(value: unknown): unknown {
 	if (typeof value === "string") return bash_text_well_formed(value);
 	if (Array.isArray(value)) return value.map(value_well_formed);
 	if (value !== null && typeof value === "object" && Object.getPrototypeOf(value) === Object.prototype) {
-		return Object.fromEntries(
-			Object.entries(value).map(([key, entry]) => [bash_text_well_formed(key), value_well_formed(entry)]),
-		);
+		return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, value_well_formed(entry)]));
 	}
 	return value;
 }
@@ -348,10 +348,12 @@ export function bash_value_well_formed<T>(value: T) {
  * The action ctx every Bash call uses, with one repair on the way out. Half a character does not only
  * come out of a command's output: `mkdir "/tmp/$(printf '\ud83c')"` names a file with one, and that
  * name then travels as a mutation argument, as does the saved cwd, an observed path and a copy
- * destination. Convex refuses the whole call for any of them, so a call that already did its work
- * would die at its last write. Wrapping the ctx once covers every query, mutation and action the
- * shell sends, including the ones each command sends for itself. The same shape as the accounting
- * wrapper in convex/files_pending_update_runs.ts.
+ * destination. The same repair also changes a saved variable's value and a saved function's
+ * text, so a paused job continues with U+FFFD where it printed half a character. Convex refuses
+ * the whole call for any of them, so a call that already did its work would die at its last
+ * write. Wrapping the ctx once covers every query, mutation and action the shell sends,
+ * including the ones each command sends for itself. The same shape as the accounting wrapper in
+ * convex/files_pending_update_runs.ts.
  */
 export function bash_well_formed_ctx(ctx: ActionCtx): ActionCtx {
 	// A function reference is not a value the shell built, so repair the args object only.

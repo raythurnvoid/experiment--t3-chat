@@ -15,6 +15,7 @@ import {
 	bash_parse_cp_mv_operands,
 	bash_text_head,
 	bash_text_well_formed,
+	bash_value_well_formed,
 	bash_DbFilesFs,
 	type bash_DbFilesRoots,
 } from "./bash-utils.ts";
@@ -379,5 +380,14 @@ describe("bash_text_well_formed", () => {
 		expect(bash_text_well_formed("A\udf89B")).toBe("A�B");
 		// A pair followed by a lone half: the pair stays, only the half is replaced.
 		expect(bash_text_well_formed("🎉\ud83c")).toBe("🎉�");
+	});
+});
+
+describe("bash_value_well_formed", () => {
+	test("leaves object field names as they are", () => {
+		// Convex refuses a non-ASCII field name, and U+FFFD is itself non-ASCII. Repairing the
+		// key would only change the error text, and these two keys would become one.
+		const value = { "a\ud83c": 1, "a\udf89": 2 };
+		expect(Object.keys(bash_value_well_formed(value))).toEqual(["a\ud83c", "a\udf89"]);
 	});
 });

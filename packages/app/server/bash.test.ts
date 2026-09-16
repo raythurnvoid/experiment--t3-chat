@@ -6,7 +6,10 @@ import { encodeStateAsUpdate } from "yjs";
 import { api, internal } from "../convex/_generated/api.js";
 import type { Id } from "../convex/_generated/dataModel";
 import type { ActionCtx, MutationCtx } from "../convex/_generated/server.js";
-import type { ai_chat_files_patch_thread_tmp_files_Args } from "../convex/ai_chat_files.ts";
+import {
+	ai_chat_files_db_delete_job_batch,
+	type ai_chat_files_patch_thread_tmp_files_Args,
+} from "../convex/ai_chat_files.ts";
 import type { bash_ReviewScratch } from "../convex/bash.ts";
 import { access_control_db_ensure_role_assignment } from "../convex/access_control.ts";
 import { files_db_yjs_push_update } from "../convex/files_nodes.ts";
@@ -1176,6 +1179,33 @@ describe("bash_run_command", () => {
 			}
 		},
 	);
+
+	test("repairs an interrupted finish whose cwd holds half a character", async () => {
+		const runner = await create_bash_runner();
+		const mutate = runner.runMutation.getMockImplementation()!;
+		runner.runMutation.mockImplementation(async (ref, args) => {
+			const result = await mutate(ref, args);
+			if (
+				function_name_of(ref) === "ai_chat_files:finish_bash_invocation" &&
+				result !== null &&
+				typeof result === "object" &&
+				"_yay" in result &&
+				result._yay !== null &&
+				typeof result._yay === "object"
+			) {
+				return { _yay: { ...result._yay, result: null, deadlineAt: Date.now() - 1 } };
+			}
+			return result;
+		});
+
+		// `cd` into a `/tmp` name that holds half a character. The usual return goes through
+		// `bash_response`, but this branch rebuilds `title` from the raw cwd after finish answers
+		// with no stored result. Convex then refuses the whole return.
+		const completed = await runner.run("mkdir /tmp/$(printf '\\ud83c'); cd /tmp/$(printf '\\ud83c')");
+		expect(completed.metadata.exitCode).toBe(124);
+		expect(completed.title.startsWith("exit 124 · /tmp/")).toBe(true);
+		expect(completed.title.isWellFormed()).toBe(true);
+	});
 
 	test.each([
 		{ rejoin: false, persist: "scratch" },
@@ -4433,7 +4463,7 @@ describe("bash_run_command", () => {
 			const refused = await runner.run("sleep 1 & echo rc=$?");
 			expect(refused.stdout).toBe("rc=1\n");
 			expect(refused.stderr).toBe(
-				"bash: cannot start a job: 4 jobs are already active across your workspace (queued, running or stopping). Some may be in another chat, where `jobs` cannot see them. Wait for one to end.\n",
+				"bash: cannot start a job: 4 jobs are already active across your workspace (queued, running or stopping). Some may be in another chat, where `jobs` and `wait` cannot name them. Wait for one of this chat's jobs, or start more in a later call.\n",
 			);
 			const before = mutation_calls(runner, "ai_chat_files:start_bash_job");
 			const many = await runner.run("true & true & true & true & true &");
@@ -4458,9 +4488,10 @@ describe("bash_run_command", () => {
 
 		test("a wait for a job that had already ended leaves the local block in place", async () => {
 			const runner = await create_bash_runner();
-			// Job 1 ended in an earlier call, so its slot was already free while these launches were
-			// refused and this wait frees nothing. Without that rule `true & wait 1` in a loop asks the
-			// door on every turn: `&` costs no command budget, so this count is all that bounds it.
+			// Job 1 ended in an earlier call, so the cap was already not blocking this call while
+			// these launches were refused, and this wait resets nothing. Without that rule
+			// `true & wait 1` in a loop asks the door on every turn: `&` costs no command budget,
+			// so this count is what stops that flat run.
 			expect((await runner.run("echo one &")).metadata.exitCode).toBe(0);
 			await run_job(runner, 1);
 			const tooBig = `true '${"a".repeat(66_000)}' &`;
@@ -4474,7 +4505,7 @@ describe("bash_run_command", () => {
 		test("a wait that waited for nothing leaves the local block in place", async () => {
 			const runner = await create_bash_runner();
 			// A loop of `cmd & wait` starts nothing and waits for nothing, so it must not be able to keep
-			// asking the door. Only a wait that saw a job end frees a slot.
+			// asking the door. Only a wait that saw a live job end lifts the local block.
 			const tooBig = `true '${"a".repeat(66_000)}' &`;
 			const before = mutation_calls(runner, "ai_chat_files:start_bash_job");
 			const blocked = await runner.run(`${tooBig} ${tooBig} ${tooBig} wait; ${tooBig} echo rc=$?`);
@@ -4493,6 +4524,115 @@ describe("bash_run_command", () => {
 			expect(mutation_calls(runner, "ai_chat_files:start_bash_job") - before).toBe(3);
 			expect(blocked.stdout).toBe("rc=1\n");
 			expect(blocked.stderr).toContain("3 launches in a row were refused in this call");
+		});
+
+		test("a wait that saw a live job end lifts the local block", async () => {
+			const runner = await create_bash_runner();
+			// Four live jobs from earlier calls, then three cap refusals. The wait finds job 1 live,
+			// the wrapper ends it after that first list, and the launch after the wait must ask the
+			// door again. Deleting the `if (waitedOnLive)` reset leaves every other door test green.
+			for (let n = 1; n <= 4; n++) expect((await runner.run("sleep 1 &")).metadata.exitCode).toBe(0);
+			const query = runner.runQuery.getMockImplementation()!;
+			let ended = false;
+			runner.runQuery.mockImplementation(async (ref, args) => {
+				const result = await query(ref, args);
+				if (
+					!ended &&
+					function_name_of(ref) === "ai_chat_files:list_thread_jobs" &&
+					(args as { select?: { kind?: string } }).select?.kind === "numbers"
+				) {
+					ended = true;
+					const row = await job_row(runner, 1);
+					await runner.t.mutation(internal.ai_chat_files.finish_bash_job, {
+						invocationId: row._id,
+						result: {
+							title: "job",
+							output: "done\n",
+							stdout: "done\n",
+							stderr: "",
+							metadata: {
+								command: "sleep 1",
+								cwd: "/",
+								nextCwd: "/",
+								exitCode: 0,
+								stdoutTruncated: false,
+								stderrTruncated: false,
+								stdoutLength: 5,
+								stderrLength: 0,
+								pathIndexTruncated: false,
+								observedPaths: [],
+								observedPathsTruncated: false,
+							},
+						},
+					});
+				}
+				return result;
+			});
+			const wait_lists = () =>
+				runner.runQuery.mock.calls.filter(
+					([ref, queryArgs]) =>
+						function_name_of(ref) === "ai_chat_files:list_thread_jobs" &&
+						(queryArgs as { select?: { kind?: string } }).select?.kind === "numbers",
+				).length;
+			const before = mutation_calls(runner, "ai_chat_files:start_bash_job");
+			vi.useFakeTimers();
+			try {
+				// `wait` lists once, then sleeps. Hold the rest of the call until that first list, so
+				// the wrapper can end job 1 while `wait` still sees it live. Then run out the `-t`
+				// bound: `wait` has already returned by then, and a wait that never looked again
+				// would hang this test.
+				const waiting = runner.run("sleep 1 & sleep 1 & sleep 1 & wait -t 5 1; sleep 1 & echo rc=$?");
+				while (wait_lists() === 0) await vi.advanceTimersByTimeAsync(100);
+				await vi.advanceTimersByTimeAsync(5_000);
+				const reset = await waiting;
+				expect(mutation_calls(runner, "ai_chat_files:start_bash_job") - before).toBe(4);
+				expect(reset.stdout).toBe("rc=0\n");
+				expect(reset.stderr).toContain("started job");
+				expect(reset.stderr).not.toContain("in a row were refused");
+			} finally {
+				vi.useRealTimers();
+			}
+		});
+
+		test("wait reports 1 when a job row disappears while it polls", async () => {
+			const runner = await create_bash_runner();
+			expect((await runner.run("{ t=600; sleep $t; } &")).metadata.exitCode).toBe(0);
+			const row = await job_row(runner, 1);
+			const query = runner.runQuery.getMockImplementation()!;
+			let deleted = false;
+			runner.runQuery.mockImplementation(async (ref, args) => {
+				const result = await query(ref, args);
+				if (
+					!deleted &&
+					function_name_of(ref) === "ai_chat_files:list_thread_jobs" &&
+					(args as { select?: { kind?: string } }).select?.kind === "numbers"
+				) {
+					deleted = true;
+					await runner.t.run(async (ctx) => {
+						await ai_chat_files_db_delete_job_batch(ctx, { invocationId: row._id, batchSize: 8 });
+					});
+				}
+				return result;
+			});
+			const wait_lists = () =>
+				runner.runQuery.mock.calls.filter(
+					([ref, queryArgs]) =>
+						function_name_of(ref) === "ai_chat_files:list_thread_jobs" &&
+						(queryArgs as { select?: { kind?: string } }).select?.kind === "numbers",
+				).length;
+			vi.useFakeTimers();
+			try {
+				// `wait` lists once, then sleeps. The first list still sees the row, so the missing
+				// check passes. The wrapper then deletes it. The second list is empty. Asking
+				// `read_job_exit_codes` for that empty list reports 0; asking for the number `wait`
+				// started with reports 1.
+				const waiting = runner.run("wait -t 5 1");
+				while (wait_lists() === 0) await vi.advanceTimersByTimeAsync(100);
+				await vi.advanceTimersByTimeAsync(5_000);
+				expect((await waiting).metadata.exitCode).toBe(1);
+			} finally {
+				vi.useRealTimers();
+			}
 		});
 
 		test("a nested job counts against the cap and survives its parent's stop", async () => {

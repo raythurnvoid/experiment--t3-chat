@@ -989,7 +989,7 @@ export const start_bash_job = internalMutation({
 				return Result({
 					_nay: {
 						name: "limit",
-						message: `${BASH_JOB_LIVE_MAX_COUNT} jobs are already active across your workspace (queued, running or stopping). Some may be in another chat, where \`jobs\` cannot see them. Wait for one to end.`,
+						message: `${BASH_JOB_LIVE_MAX_COUNT} jobs are already active across your workspace (queued, running or stopping). Some may be in another chat, where \`jobs\` and \`wait\` cannot name them. Wait for one of this chat's jobs, or start more in a later call.`,
 					},
 				});
 		}
