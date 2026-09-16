@@ -163,8 +163,7 @@ export const bash_shell_state_validator = v.object({
 	lastExitCode: v.number(),
 	lastArg: v.string(),
 	/**
-	 * What `$!` reads. Optional because the engine snapshot type marks it optional: a state
-	 * stored before the field existed does not have it.
+	 * What `$!` reads. Optional because a state stored before the field existed does not have it.
 	 */
 	lastBackgroundPid: v.optional(v.number()),
 	openFileDescriptors: v.array(v.number()),
@@ -403,9 +402,11 @@ const app_convex_schema = defineSchema({
 		 **/
 		bashJobCounter: v.optional(v.number()),
 		/**
-		 * How many job wakeups started in a row on this thread without a message from the user. A woken
-		 * turn can arm the next job, so this is what ends the chain. A `/api/chat` request clears
-		 * it: the user is back in the loop. Missing means no wakeup started since the last request.
+		 * How many job wakeup notes this thread stored in a row without a message from the user. A woken
+		 * turn can arm the next job, so this is what ends the chain. Only the first
+		 * `BASH_JOB_WAKEUP_MAX_COUNT` notes start a run, and a note stored past that cap still counts
+		 * here. A `/api/chat` request that takes the run lease clears it: the user is back in the loop.
+		 * Missing means no note since that request.
 		 **/
 		bashJobWakeupCount: v.optional(v.number()),
 		activeRun: v.optional(ai_chat_thread_active_run_validator),
@@ -488,8 +489,8 @@ const app_convex_schema = defineSchema({
 		result: v.optional(ai_chat_bash_result_validator),
 		/**
 		 * Present on a background job row (`cmd &`), missing on a foreground call. `script` and
-		 * `shellState` become `null` once the job finished: a patched document is validated again,
-		 * so a required field cannot be removed, only emptied.
+		 * `shellState` become `null` once the job ends, by the finish or by the settle: a patched document
+		 * is validated again, so a required field cannot be removed, only emptied.
 		 */
 		job: v.optional(
 			v.object({
@@ -503,20 +504,20 @@ const app_convex_schema = defineSchema({
 				script: v.union(v.string(), v.null()),
 				/**
 				 * Present after a pause: the statements the next run continues with. `script` keeps
-				 * the whole script for the finish entry. Dropped when the job finished.
+				 * the whole script for the finish entry. Dropped when the job ends.
 				 */
 				resumeScript: v.optional(v.string()),
 				/**
 				 * Present after a pause: the command count the next run continues from. A launch and
 				 * a file transfer are stored under a synthetic id made of this row and the command
 				 * number, so a run that started counting at 0 again would find the earlier run's row
-				 * and do nothing. Dropped when the job finished.
+				 * and do nothing. Dropped when the job ends.
 				 */
 				resumeCommandNumber: v.optional(v.number()),
 				/**
 				 * Present after a pause: the jobs the earlier runs started. `wait` with no arguments
 				 * waits for these, so a continuation would otherwise wait for nothing. Dropped when
-				 * the job finished.
+				 * the job ends.
 				 */
 				resumeLaunchedJobNumbers: v.optional(v.array(v.number())),
 				/**

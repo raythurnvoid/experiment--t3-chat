@@ -4519,9 +4519,11 @@ describe("bash_run_command", () => {
 		test("a bare wait takes the newest job numbers when a job started more than one wait may name", async () => {
 			const runner = await create_bash_runner();
 			// Twelve finished jobs. The cap counts live jobs, so launch four and run those four to the
-			// end before the next four.
+			// end before the next four. Job 2 exits 7 and is neither the newest nor the oldest of the
+			// twelve, so only a wait that took the whole newest twelve can print 7 below.
 			for (let round = 0; round < 3; round++) {
-				expect((await runner.run("echo a & echo b & echo c & echo d &")).metadata.exitCode).toBe(0);
+				const launches = round === 0 ? "echo a & exit 7 & echo c & echo d &" : "echo a & echo b & echo c & echo d &";
+				expect((await runner.run(launches)).metadata.exitCode).toBe(0);
 				for (let jobNumber = round * 4 + 1; jobNumber <= round * 4 + 4; jobNumber++) {
 					expect((await run_job(runner, jobNumber)).status).toBe("finished");
 				}
@@ -4531,20 +4533,43 @@ describe("bash_run_command", () => {
 			const paused = await run_job(runner, 13);
 			expect(paused.job?.resumeScript).toBe("wait\necho rc=$?");
 			// A job that ran several statements across pauses can have started more jobs than one
-			// `wait` may name. Job 999 is the oldest of thirteen numbers and names no row, so a run
-			// that asked for all of them would answer "no such job" instead of waiting.
+			// `wait` may name. Fourteen numbers, and the two oldest name no row: a read of more than
+			// twelve is refused whole, and a slice from the wrong end asks for 998 and gets "no such
+			// job" instead of waiting.
 			await runner.t.run((ctx) =>
 				ctx.db.patch("ai_chat_bash_invocations", paused._id, {
-					job: { ...paused.job!, resumeLaunchedJobNumbers: [999, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] },
+					job: { ...paused.job!, resumeLaunchedJobNumbers: [998, 999, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] },
 				}),
 			);
 
 			// The bare `wait` keeps the newest twelve, which all finished, so it waits for nothing and
-			// the job ends with the exit code of the worst job it waited for.
+			// prints the worst exit code among them, which is job 2's 7. The job's own exit code is the
+			// `echo`'s.
 			const finished = await run_job(runner, 13);
 			expect(finished.result?.stderr).toBe("");
-			expect(finished.result?.stdout).toBe("rc=0\n");
+			expect(finished.result?.stdout).toBe("rc=7\n");
 			expect(finished.result?.metadata.exitCode).toBe(0);
+		});
+
+		test("a pause stores only the newest job numbers when a job started more than the row may keep", async () => {
+			const runner = await create_bash_runner();
+			// Three launches per run is the room the job has: the 4-jobs cap counts the job itself, and
+			// each round's jobs must finish before the next round may start. Five rounds launch fifteen
+			// jobs, which is more than the twelve numbers a row may keep.
+			const round = "echo a & echo b & echo c & sleep 5; ";
+			expect((await runner.run(`{ ${round.repeat(5)}echo done; } &`)).metadata.exitCode).toBe(0);
+			for (let pass = 0; pass < 5; pass++) {
+				expect((await run_job(runner, 1)).job?.resumeScript).toBeDefined();
+				for (let jobNumber = pass * 3 + 2; jobNumber <= pass * 3 + 4; jobNumber++) {
+					expect((await run_job(runner, jobNumber)).status).toBe("finished");
+				}
+			}
+
+			// The newest twelve of the fifteen. Without the cap the stored array would grow with every
+			// pause of a job that keeps launching jobs, for as long as the job lives.
+			const paused = await job_row(runner, 1);
+			expect(paused.job?.resumeScript).toBe("echo done");
+			expect(paused.job?.resumeLaunchedJobNumbers).toEqual([5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
 		});
 
 		test("a settled job keeps no script and no paused state", async () => {
@@ -4574,8 +4599,12 @@ describe("bash_run_command", () => {
 			expect(settled.job?.resumeCommandNumber).toBeUndefined();
 			expect(settled.job?.resumeLaunchedJobNumbers).toBeUndefined();
 			// The finish entry still names the script, because the settle writes it from the copy it
-			// read before the patch.
-			expect((await runner.run("cat /shells/default/transcript")).stdout).toContain(script);
+			// read before the patch. Read it off that entry: the launching call and the start entry
+			// print the same text, so searching the whole transcript would pass without it.
+			const lines = (await runner.run("cat /shells/default/transcript")).stdout.split("\n");
+			const finishHeader = lines.findIndex((line) => line.includes("job 1 finished (exit 124)"));
+			expect(finishHeader).toBeGreaterThan(-1);
+			expect(lines[finishHeader + 1]).toBe(script);
 		});
 
 		test("a Stop lands at the next statement boundary, not only at the next 5-second tick", async () => {

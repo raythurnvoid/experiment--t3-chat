@@ -83,7 +83,7 @@ const BASH_JOB_WAKEUP_HEAD_BYTES = 4 * 1024;
 // A wakeup run holds the thread's run lease this long at most. A Convex action cannot run longer.
 const BASH_JOB_WAKEUP_RUN_MS = 10 * 60 * 1000;
 // A woken turn may arm the next job, and a wakeup charges no rate limit, so the chain needs an end.
-// This many wakeups may run in a row before the thread waits for the user again.
+// This many wakeups may start in a row before the thread waits for the user again.
 const BASH_JOB_WAKEUP_MAX_COUNT = 5;
 
 const ai_chat_bash_jobs_workpool = new Workpool(components.ai_chat_bash_jobs_workpool, {
@@ -727,13 +727,14 @@ async function db_append_job_finish_entry(
  * job's outcome under the newest leaf of the thread, take the `job_wakeup` lease and schedule
  * `run_job_wakeup`, which answers that message. `wakeNotifiedAt` keeps a job to one note, so the
  * settle and a late worker result can both try: whichever finds no lease writes it.
- * `bashJobWakeupCount` limits how many wakeups may follow each other without the user.
+ * `bashJobWakeupCount` limits how many wakeups may follow each other without the user. Past that
+ * limit the note is still stored, and nothing answers it until the user writes again.
  *
  * While a chat request or another wakeup holds the thread's run lease, do nothing at all: the note
  * belongs under the newest leaf, which that run is still writing. Nothing tries again for this job.
  * A job that finishes normally reaches this function once, from `finish_bash_job`, so a job that
- * finishes during a run gets no note. The job still shows in the Activity feed, and the next Bash
- * call that same user makes in the thread prints the plain `bash: job N done` note.
+ * finishes during a run gets no note. The job still shows in the Activity feed of the user who
+ * started it, and their next Bash call in the thread prints the plain `bash: job N done` note.
  */
 async function db_wake_agent_for_job(
 	ctx: MutationCtx,
@@ -847,7 +848,9 @@ async function db_settle_bash_job(
 		// Empty the same fields `finish_bash_job` empties: the job is over, so nothing needs the script
 		// or the paused state again, and a killed paused job would otherwise keep 128 KiB of state
 		// until the row is deleted. The lines below read the copy taken before this patch, so the
-		// finish entry still prints the script.
+		// finish entry still prints the script. A worker never runs the emptied row: this mutation also
+		// finishes the Activity, and `claim_bash_job` returns nothing for a job whose Activity is not
+		// active any more.
 		await ctx.db.patch("ai_chat_bash_invocations", invocation._id, {
 			status: "interrupted",
 			finishedAt: args.now,

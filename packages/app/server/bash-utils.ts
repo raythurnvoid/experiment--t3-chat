@@ -60,19 +60,19 @@ export const bash_TMP_MOUNT = "/tmp";
 export const bash_SHELLS_MOUNT = "/shells";
 
 /**
- * Keep the stored shell state and the engine snapshot in step. A field added on one side fails
- * the check on the line after each `ts-ignore`; the ignore only covers the unused type name. Both
- * checks compare the two as `Required`, because a field that one side marks optional and the other
- * side does not have at all is assignable in both directions.
+ * Keep the stored shell state and the engine snapshot in step. A field added on one side makes the
+ * pair below fail to compile, on the line that names it. The declaration is ambient, so it needs no
+ * value and no suppression. Both checks compare the two as `Required`, because a field that one
+ * side marks optional and the other side does not have at all is assignable in both directions. The
+ * check is shallow: `Required` reaches the top level only, and the stored `options` and
+ * `shoptOptions` take any name, so a new shell option is not caught.
  */
 type bash_ShellState = Infer<typeof bash_shell_state_validator>;
 type bash_Assignable<_From extends To, To> = true;
-//@ts-ignore
-type _bash_ShellStateToSnapshot = //
-	bash_Assignable<Required<bash_ShellState>, Required<InterpreterStateSnapshot>>;
-//@ts-ignore
-type _bash_SnapshotToShellState = //
-	bash_Assignable<Required<InterpreterStateSnapshot>, Required<bash_ShellState>>;
+declare const bash_shell_state_matches_snapshot: [
+	bash_Assignable<Required<bash_ShellState>, Required<InterpreterStateSnapshot>>,
+	bash_Assignable<Required<InterpreterStateSnapshot>, Required<bash_ShellState>>,
+];
 
 /**
  * Shell mount point for read-only reserved-scope external mounts (e.g. the GitHub mirror of the

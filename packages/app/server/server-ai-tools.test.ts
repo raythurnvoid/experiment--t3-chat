@@ -240,6 +240,7 @@ describe("ai_chat_tool_create_bash", () => {
 			"In Agent mode, set wakeOnJobFinish: true on a Bash call when the jobs it starts or waits for should wake you when they end",
 			"a finished job then adds a system message with its number, shell, exit code and the head of its output, and starts a new run of yours (only when no run is active",
 			"In such a call wait does not poll: it prints bash: waiting for job N on stderr, exits 3, and you must end the turn with a short status",
+			"the job's finish starts your next run once your turn has ended",
 			"a stopped job reports 143 (status stopped), a job that used its whole budget reports 124 (timed out)",
 			"the next Bash call prints bash: job N done|failed|timed out|stopped. Output: /shells/<name>/transcript",
 			"Stopping the chat leaves jobs running; the Notifications panel lists every job with its Stop button",
