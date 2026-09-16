@@ -13,6 +13,8 @@ import {
 	bash_resolve_db_files_shell_path,
 	bash_read_only_mount_error,
 	bash_parse_cp_mv_operands,
+	bash_text_head,
+	bash_text_well_formed,
 	bash_DbFilesFs,
 	type bash_DbFilesRoots,
 } from "./bash-utils.ts";
@@ -343,5 +345,39 @@ describe("bash_parse_cp_mv_operands", () => {
 				message: "cp: expected at least one source and a destination",
 			});
 		}
+	});
+});
+
+describe("bash_text_head", () => {
+	const emoji = "\u{1f389}";
+
+	test("keeps the whole text when it is not longer than the cap", () => {
+		expect(bash_text_head(`a${emoji}`, 3)).toBe(`a${emoji}`);
+		expect(bash_text_head("abc", 10)).toBe("abc");
+	});
+
+	test("drops the first half of a character instead of keeping it", () => {
+		const cut = bash_text_head(`ab${emoji}cd`, 3);
+		expect(cut).toBe("ab");
+		expect(cut.isWellFormed()).toBe(true);
+	});
+
+	test("keeps a whole character that ends at the cap", () => {
+		// The last kept unit is the second half of the pair here, so backing off would drop a whole
+		// character the cap has room for.
+		expect(bash_text_head(`a${emoji}b`, 3)).toBe(`a${emoji}`);
+	});
+});
+
+describe("bash_text_well_formed", () => {
+	test("leaves a whole character alone", () => {
+		expect(bash_text_well_formed("a\u{1f389}b")).toBe("a\u{1f389}b");
+	});
+
+	test("replaces a half character with U+FFFD", () => {
+		expect(bash_text_well_formed("A\ud83cB")).toBe("A�B");
+		expect(bash_text_well_formed("A\udf89B")).toBe("A�B");
+		// A pair followed by a lone half: the pair stays, only the half is replaced.
+		expect(bash_text_well_formed("🎉\ud83c")).toBe("🎉�");
 	});
 });

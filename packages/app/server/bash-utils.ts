@@ -63,8 +63,9 @@ export const bash_SHELLS_MOUNT = "/shells";
  * Keep the stored shell state and the engine snapshot in step. A field that one side has and the
  * other does not fails one of the four lines below, and the message names the field. The declaration
  * is ambient, so it needs no value and no suppression. Do not turn it into the unused `type _Name`
- * alias this repo uses elsewhere: that form needs a suppression comment on the line above, and once
- * the declaration fits on one line the drift error lands on that line too and the check goes quiet.
+ * alias this repo uses elsewhere. That form needs a suppression comment on the line above it. If the
+ * declaration then fits on one line, the suppression hides the drift error too, and this check stops
+ * reporting anything.
  *
  * The first pair compares the two as `Required`, because a field that one side marks optional and
  * the other side does not have at all is assignable in both directions. The second pair compares
@@ -149,18 +150,22 @@ const bash_OBSERVED_PATHS_MAX = 100;
 export const bash_COMMAND_EXIT_FAILURE = 1;
 export const bash_COMMAND_EXIT_USAGE = 2;
 /**
- * Only `wait`, `jobs` and `jobs -o` use 3: the job is still running.
+ * Only `wait`, `jobs` and `jobs -o` return 3 on their own: the job is still running. A job's own
+ * script can exit 3 as well, and `wait` reports a waited job's stored code as it is, so 3 does not
+ * prove the job is live. A model that loops on 3 alone should ask `jobs` for the status word.
  */
 export const bash_COMMAND_EXIT_STILL_RUNNING = 3;
 export const bash_COMMAND_EXIT_CANNOT_EXECUTE = 126;
 export const bash_COMMAND_EXIT_NOT_FOUND = 127;
 /**
- * 128 + 15 (SIGTERM): the user stopped the job. The job worker decides this from its own abort
- * reason, never from the engine exit code.
+ * 128 + 15 (SIGTERM): the user stopped the job. The job worker reports it from its own abort reason.
+ * A script that exits 143 by itself lands here too, because `finish_bash_job` reads a stored 143 back
+ * into the Activity status `canceled`, and the job then shows as stopped everywhere.
  */
 export const bash_COMMAND_EXIT_STOPPED = 143;
 /**
- * The job used its whole budget. The job worker decides this from its own abort reason too.
+ * The job used its whole budget. The worker reports it from its own abort reason, and a script that
+ * exits 124 by itself is read back as `timed_out` the same way.
  */
 export const bash_COMMAND_EXIT_TIMED_OUT = 124;
 /**
@@ -168,6 +173,22 @@ export const bash_COMMAND_EXIT_TIMED_OUT = 124;
  * a deadline and reports 124.
  */
 export const bash_ABORT_REASON_STOPPED = "job stopped";
+
+/**
+ * The exit code one job reports, from its Activity and the code its worker stored. A job can be
+ * declared dead before its worker stops: a watchdog or a Stop settles the Activity while a slow
+ * worker is still finishing, and the worker then stores its own code under a `timed_out` or
+ * `canceled` Activity. The feed, `jobs -a` and the finished-job note all show the Activity status, so
+ * `wait` and the `jobs -o` marker read the Activity first and agree with them instead of reporting
+ * the late result's code. A job with no stored code (a crashed worker, or a result the cleanup cron
+ * already stripped) reports 0 or 1 from the Activity too.
+ */
+export function bash_job_exit_code(activityStatus: Doc<"activities">["status"], storedExitCode: number | null) {
+	if (activityStatus === "timed_out") return bash_COMMAND_EXIT_TIMED_OUT;
+	if (activityStatus === "canceled") return bash_COMMAND_EXIT_STOPPED;
+	return storedExitCode ?? (activityStatus === "succeeded" ? 0 : bash_COMMAND_EXIT_FAILURE);
+}
+
 /**
  * How many job numbers `wait` may name in one call. The door reads one index row per number, so
  * the list has to be bounded somewhere: `wait {1..5000}` is 14 characters for the agent to type.
@@ -183,6 +204,7 @@ const PAGINATION_CURSOR_TTL_MS = 24 * 60 * 60 * 1000;
 const BACKSLASH_REGEX = /\\/g;
 const SINGLE_QUOTE_REGEX = /'/g;
 const SIGNED_INTEGER_REGEX = /^-?\d+$/u;
+const LONE_SURROGATE_REGEX = /[\ud800-\udfff]/gu;
 const SIMPLE_EXTENSION_GLOB_REGEX = /^\*\.([a-z0-9][a-z0-9_-]*)$/iu;
 const SEARCH_EXACT_SINGLE_TOKEN_REGEX = /^\S+$/u;
 const SEARCH_EXACT_PUNCTUATION_TOKEN_REGEX = /[-_.:@]/u;
@@ -270,11 +292,12 @@ export function bash_clamp_listing_page_limit(limit: number) {
 
 /**
  * Keep the first `maxChars` UTF-16 code units of `text`, and never cut a character in half. A
- * character outside the basic range takes two code units, so a cut at a fixed count can land
- * between them. The model would then read one broken glyph, and this repo's own write checks call
- * such a string unstorable (`find_unstorable_value_part` in convex/plugins_data_http.ts), so a
- * document write may refuse it. Every Bash cut that carries command output or a script into a
- * document goes through here. Same rule as the chunk cut in server/files-plain-text-chunking.ts.
+ * character outside the basic range takes two code units, so a cut at a fixed count can land between
+ * them. Convex then refuses the whole call: a mutation argument that holds half a character fails
+ * with "Invalid arguments provided", which we checked against the dev deployment by running
+ * `printf 'A\ud83cB'` in the app. Every Bash cut that carries command output or a script into a
+ * document goes through here. Same rule as the chunk cut in server/files-plain-text-chunking.ts. A
+ * cut is not the only way to get half a character, so what the script printed is repaired as well.
  */
 export function bash_text_head(text: string, maxChars: number) {
 	if (text.length <= maxChars) return text;
@@ -282,6 +305,18 @@ export function bash_text_head(text: string, maxChars: number) {
 	// A high surrogate at the last kept position is the first half of a character. Drop it.
 	const end = codeUnit >= 0xd800 && codeUnit <= 0xdbff ? maxChars - 1 : maxChars;
 	return text.slice(0, end);
+}
+
+/**
+ * Replace every half character with U+FFFD. The shell can print one half on its own, with no cut
+ * involved: `printf '\ud83c'` is a valid command. Convex refuses to store the result, so the Bash
+ * call would fail with "Invalid arguments provided" and the model would see no output at all. Every
+ * string of engine output this action hands to a mutation goes through here first. The `u` flag makes
+ * the pattern read whole characters, so a complete pair is one character and does not match; only an
+ * unpaired half does.
+ */
+export function bash_text_well_formed(text: string) {
+	return text.replace(LONE_SURROGATE_REGEX, "�");
 }
 
 export function bash_regex_validation_error(command: string, pattern: string) {

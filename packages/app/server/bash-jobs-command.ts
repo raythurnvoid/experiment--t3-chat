@@ -14,6 +14,7 @@ import {
 	bash_COMMAND_EXIT_STILL_RUNNING,
 	bash_COMMAND_EXIT_USAGE,
 	bash_JOB_NUMBERS_MAX_COUNT,
+	bash_job_exit_code,
 	bash_text_head,
 } from "./bash-utils.ts";
 
@@ -50,14 +51,15 @@ export type bash_JobContext = {
 	launchedJobNumbers: number[];
 	/**
 	 * Launches refused in a row; after 3 the hook refuses locally without a database round trip. A
-	 * launch that succeeds puts this back to 0, because slots free up inside one call: a script can
-	 * hit the jobs cap, `wait` for those jobs, and start more. So this bounds a run of refusals, not
-	 * the refusals of a whole call: a loop that starts one job for every two it gets refused keeps
-	 * asking the door, and only the call's command cap stops it.
+	 * launch that succeeds puts this back to 0, and so does a `wait`, because slots free up inside one
+	 * call: a script can hit the jobs cap, `wait` for those jobs, and start more. So this bounds a run
+	 * of refusals, not the refusals of a whole call. Without the `wait` reset nothing could put it
+	 * back: the local refusal returns before the query whose success clears it.
 	 */
 	launchRefusals: number;
 	/**
-	 * Bytes `jobs -o` may still print in this call; starts at 64 KiB.
+	 * How much `jobs -o` may still print in this call, in UTF-16 code units; starts at 64k. Every read
+	 * costs a whole page, so this is two reads.
 	 */
 	readBudgetRemaining: number;
 	/**
@@ -73,12 +75,13 @@ export type bash_JobContext = {
 	waitingJobNumbers: number[];
 };
 
-export const bash_JOB_OUTPUT_READ_BUDGET_BYTES = 64 * 1024;
+export const bash_JOB_OUTPUT_READ_BUDGET_CHARS = 64 * 1024;
 /**
- * One `jobs -o` page per stream. The worker keeps this much of a running job's output head, so
- * a live read and a finished read are cut at the same place.
+ * One `jobs -o` page per stream, counted in UTF-16 code units. The worker keeps this much of a
+ * running job's output head, so a live read and a finished read are cut at the same place. Two reads
+ * print at most four of these pages, which is exactly one call's whole output limit.
  */
-export const bash_JOB_OUTPUT_READ_MAX_BYTES = 32 * 1024;
+export const bash_JOB_OUTPUT_READ_MAX_CHARS = 32 * 1024;
 const WAIT_DEFAULT_MS = 30_000;
 const WAIT_POLL_MS = 2_000;
 
@@ -150,10 +153,11 @@ function job_line(summary: ai_chat_files_list_thread_jobs_Result[number]) {
 }
 
 /**
- * `jobs -o N`: the stored stdout, then stderr, each with a `[truncated]` line when it is cut.
- * While the job runs it prints the head the worker flushed so far, then a status marker, and still
- * exits 3; a paused job reads `queued` in that marker. The transcript keeps the full output; this
- * read is bounded so two big reads cannot push the reading call over its own output limit.
+ * `jobs -o N`: the stored stdout, then stderr, each with a `[truncated]` line when it is cut, then a
+ * marker with the exit code `wait` reports for the same job. While the job runs it prints the head
+ * the worker flushed so far, then a status marker, and still exits 3; a paused job reads `queued` in
+ * that marker. The transcript keeps the full output; this read is bounded so two big reads cannot
+ * push the reading call over its own output limit.
  */
 async function print_job_output(ctx: ActionCtx, job: bash_JobContext, jobNumber: number) {
 	const output = (await ctx.runQuery(internal.ai_chat_files.read_job_output, {
@@ -167,9 +171,10 @@ async function print_job_output(ctx: ActionCtx, job: bash_JobContext, jobNumber:
 	const liveMarker = `[job ${jobNumber} ${bash_job_status_word(output.activityStatus)}]\n`;
 	// A live job that flushed nothing yet gets the marker alone: it names the job and says the job is
 	// not done. That line costs no read budget. Liveness is the Activity's, like the word above and
-	// like `jobs` and `wait`: the invocation row calls itself interrupted as soon as its deadline
-	// passes, which is minutes before the watchdog settles the job, and during that time this command
-	// would otherwise call a running job ended and throw away the head it printed a moment ago.
+	// like `jobs` and `wait`. The invocation row calls itself interrupted the moment its deadline
+	// passes, and the Activity can still be active then: a `kill` cancels the watchdog, so the settle
+	// is left to the worker or to the five-minute recovery cron. Reading the row instead would call a
+	// running job ended and throw away the head it printed a moment ago.
 	if (!output.result && activities_is_active(output.activityStatus) && !output.liveOutput)
 		return { stdout: "", stderr: liveMarker, exitCode: bash_COMMAND_EXIT_STILL_RUNNING };
 	// A job settled by the watchdog or stopped while it waited stores no result. Name the outcome the
@@ -182,17 +187,17 @@ async function print_job_output(ctx: ActionCtx, job: bash_JobContext, jobNumber:
 		};
 	// Every read costs the same, so the budget is two reads per call whatever they print. Say that,
 	// not the byte total: after two short reads the call has printed a few bytes, not 64 KiB.
-	if (job.readBudgetRemaining < bash_JOB_OUTPUT_READ_MAX_BYTES)
+	if (job.readBudgetRemaining < bash_JOB_OUTPUT_READ_MAX_CHARS)
 		return {
 			stdout: "",
 			stderr: "bash: jobs: this call already read job output twice; read the shell transcript\n",
 			exitCode: bash_COMMAND_EXIT_FAILURE,
 		};
-	job.readBudgetRemaining -= bash_JOB_OUTPUT_READ_MAX_BYTES;
+	job.readBudgetRemaining -= bash_JOB_OUTPUT_READ_MAX_CHARS;
 
 	const bounded = (text: string, truncated: boolean) => {
-		const cut = text.length > bash_JOB_OUTPUT_READ_MAX_BYTES;
-		const kept = cut ? bash_text_head(text, bash_JOB_OUTPUT_READ_MAX_BYTES) : text;
+		const cut = text.length > bash_JOB_OUTPUT_READ_MAX_CHARS;
+		const kept = cut ? bash_text_head(text, bash_JOB_OUTPUT_READ_MAX_CHARS) : text;
 		if (!truncated && !cut) return kept;
 		return `${kept}${kept.endsWith("\n") || kept === "" ? "" : "\n"}[truncated]\n`;
 	};
@@ -205,9 +210,13 @@ async function print_job_output(ctx: ActionCtx, job: bash_JobContext, jobNumber:
 		};
 	}
 	const result = output.result!;
+	// The Activity decides the code, like `wait` and the status word above: a job settled as timed out
+	// or stopped can still store the code of a script that finished on its own, and printing that code
+	// here would tell the model the job succeeded.
+	const exitCode = bash_job_exit_code(output.activityStatus, result.metadata.exitCode);
 	return {
 		stdout: bounded(result.stdout, result.metadata.stdoutTruncated),
-		stderr: `${bounded(result.stderr, result.metadata.stderrTruncated)}[job ${jobNumber} exit ${result.metadata.exitCode}]\n`,
+		stderr: `${bounded(result.stderr, result.metadata.stderrTruncated)}[job ${jobNumber} exit ${exitCode}]\n`,
 		exitCode: 0,
 	};
 }
@@ -276,6 +285,9 @@ export function bash_wait_command_create(ctx: ActionCtx, job: bash_JobContext): 
 			if (jobNumber === null) return usage_error(`wait: ${arg}: arguments must be job numbers`, WAIT_USAGE);
 			jobNumbers.push(jobNumber);
 		}
+		// Waiting is how a script frees a slot inside one call, so let the next `&` ask the door again
+		// even when three launches in a row were refused before this `wait`.
+		job.launchRefusals = 0;
 		// The door reads one index row per number, so drop repeats and refuse a long list here
 		// instead of sending it. `wait {1..5000}` expands to 5000 words.
 		const named = jobNumbers.length > 0;
@@ -335,7 +347,7 @@ export function bash_wait_command_create(ctx: ActionCtx, job: bash_JobContext): 
 		if (is_live()) return { stdout: "", stderr: "", exitCode: bash_COMMAND_EXIT_STILL_RUNNING };
 
 		// One query for every waited job, and it returns codes only. Reading each job's stored result
-		// here would carry up to 700 KiB per job across for one number.
+		// here would move up to 700 KiB per job over the wire to learn one number.
 		const codes = (await ctx.runQuery(internal.ai_chat_files.read_job_exit_codes, {
 			...scope,
 			jobNumbers: found.map((summary) => summary.jobNumber),

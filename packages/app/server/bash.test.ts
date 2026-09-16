@@ -4000,6 +4000,19 @@ describe("bash_run_command", () => {
 			});
 		});
 
+		test("output with half a character reaches the result and the transcript as U+FFFD", async () => {
+			const runner = await create_bash_runner();
+			// A character outside the basic range is two code units, and `printf` can write one of them
+			// on its own. Convex refuses a mutation argument that holds such a string, so the whole call
+			// used to fail with "Invalid arguments provided" and the model saw no output at all.
+			const result = await runner.run(`printf 'A\\ud83cB'`);
+			expect(result.metadata.exitCode).toBe(0);
+			expect(result.stdout).toBe("A�B");
+			const { entries } = await transcript_of(runner, "default");
+			expect(entries[0]!.text).toContain("A�B");
+			expect(entries[0]!.text.isWellFormed()).toBe(true);
+		});
+
 		test("mounts the transcripts read-only under /shells and reads one only when asked", async () => {
 			const runner = await create_bash_runner();
 			expect((await runner.run("echo hi", undefined, "a")).metadata.exitCode).toBe(0);
@@ -4178,6 +4191,24 @@ describe("bash_run_command", () => {
 			expect(read.stderr).toBe("[job 1 queued]\n");
 		});
 
+		test("jobs -o and wait report the same code for a job that stored a late result", async () => {
+			const runner = await create_bash_runner();
+			// The watchdog settles a job at its deadline while a slow worker is still storing the result
+			// of a script that finished on its own. The job then holds a `timed_out` Activity and a
+			// stored exit code of 0. `jobs -a` and the note say "timed out", so both commands must too.
+			expect((await runner.run("echo late &")).metadata.exitCode).toBe(0);
+			expect((await run_job(runner, 1)).result).toMatchObject({ metadata: { exitCode: 0 } });
+			const activity = await activity_of(runner, 1);
+			if (!activity) throw new Error("Expected the job Activity");
+			await runner.t.run((ctx) => ctx.db.patch("activities", activity._id, { status: "timed_out" }));
+
+			const read = await runner.run("jobs -o 1");
+			expect(read.metadata.exitCode).toBe(0);
+			expect(read.stdout).toBe("late\n");
+			expect(read.stderr.endsWith("[job 1 exit 124]\n")).toBe(true);
+			expect((await runner.run("wait 1")).metadata.exitCode).toBe(124);
+		});
+
 		test("another member's jobs stay out of this member's list", async () => {
 			const owner = await create_bash_runner();
 			expect((await owner.run("sleep 60 &")).metadata.exitCode).toBe(0);
@@ -4288,6 +4319,32 @@ describe("bash_run_command", () => {
 			expect(done.stderr.endsWith("[job 1 exit 143]\n")).toBe(true);
 		});
 
+		test("the head cut drops half a character instead of storing it", async () => {
+			const runner = await create_bash_runner();
+			// The engine hands over each statement's output on its own, so a character whose two halves
+			// come from two statements is cut where the head fills up. Convex refuses a mutation
+			// argument that holds half a character, so the flush would fail for the rest of the job.
+			const script = `{ awk 'BEGIN{for(i=0;i<32767;i++)printf "x"}'; printf '\\ud83c'; printf '\\udf89'; sleep 30; }`;
+			expect((await runner.run(`${script} &`)).metadata.exitCode).toBe(0);
+			const paused = await run_job(runner, 1);
+			const head = paused.job?.liveOutput?.stdout ?? "";
+			expect(head.isWellFormed()).toBe(true);
+			// The cut backs off to the last whole character, so it keeps 32767 units, not 32768 with a
+			// replacement character in the last slot.
+			expect(head.length).toBe(32_767);
+			expect(head.endsWith("x")).toBe(true);
+			expect(paused.job?.liveOutput?.stdoutTruncated).toBe(true);
+		});
+
+		test("a head the script itself left half a character in is stored with U+FFFD", async () => {
+			const runner = await create_bash_runner();
+			// No cut is involved here: the script prints one half of a character. Convex refuses to
+			// store it, so the flush and the pause repair the head before they hand it over.
+			expect((await runner.run(`{ printf 'A\\ud83cB'; sleep 30; } &`)).metadata.exitCode).toBe(0);
+			const paused = await run_job(runner, 1);
+			expect(paused.job?.liveOutput?.stdout).toBe("A�B");
+		});
+
 		test("prints the finished-job note once, on the next fresh call only", async () => {
 			const runner = await create_bash_runner();
 			expect((await runner.run("true", "before")).metadata.exitCode).toBe(0);
@@ -4339,6 +4396,21 @@ describe("bash_run_command", () => {
 			expect(mixed.stdout).toBe("rc=0\n[2] queued    default  true\n[1] queued    default  true\n");
 			expect(mixed.stderr).toContain("bash: started job 2 in shell default");
 			expect(mixed.stderr).not.toContain("in a row were refused");
+		});
+
+		test("a wait after three refusals lets the next launch ask the door again", async () => {
+			const runner = await create_bash_runner();
+			// `wait` is how a script frees a slot inside one call, so it has to lift the local block.
+			// Otherwise the script the refusal message asks for - wait for a job, then start yours -
+			// is refused for the rest of the call with four slots free.
+			const tooBig = `true '${"a".repeat(66_000)}' &`;
+			const before = mutation_calls(runner, "ai_chat_files:start_bash_job");
+			const mixed = await runner.run(`${tooBig} ${tooBig} ${tooBig} ${tooBig} wait; true & echo rc=$?`);
+			// Three refusals reach the door, the fourth `&` is refused locally, and the launch after the
+			// `wait` reaches the door again.
+			expect(mutation_calls(runner, "ai_chat_files:start_bash_job") - before).toBe(4);
+			expect(mixed.stdout).toBe("rc=0\n");
+			expect(mixed.stderr).toContain("bash: started job 1 in shell default");
 		});
 
 		test("a nested job counts against the cap and survives its parent's stop", async () => {
@@ -5036,7 +5108,7 @@ describe("bash_run_command", () => {
 
 			// The placeholder watchdog settles a job that never ran as timed out, with no result.
 			const queued = await job_row(runner, 2);
-			vi.useFakeTimers();
+			vi.useFakeTimers({ toFake: ["Date"] });
 			try {
 				vi.setSystemTime(queued.deadlineAt + 1);
 				await runner.t.mutation(internal.ai_chat_files.timeout_bash_job, {

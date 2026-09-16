@@ -584,7 +584,7 @@ describe("flush_bash_job_output", () => {
 		});
 		expect((await f.read(job.invocationId)).row).toMatchObject({ job: { liveOutput: head } });
 		expect(await f.t.query(internal.ai_chat_files.read_job_output, { ...f.scope, jobNumber: 1 })).toMatchObject({
-			status: "running",
+			activityStatus: "running",
 			liveOutput: head,
 		});
 
@@ -1716,21 +1716,112 @@ describe("read_job_output", () => {
 		});
 		vi.setSystemTime(start + 7 * 24 * 60 * 60 * 1000 - 1);
 		expect(await f.t.query(internal.ai_chat_files.read_job_output, { ...f.scope, jobNumber: 1 })).toMatchObject({
-			invocationId: job.invocationId,
-			status: "finished",
 			activityStatus: "succeeded",
 			result: { stdout: "out\n" },
-			resultExpired: false,
 		});
 		vi.setSystemTime(start + 7 * 24 * 60 * 60 * 1000);
 		await f.t.mutation(internal.ai_chat_files.cleanup_expired_bash_results, {});
 		expect(await f.t.query(internal.ai_chat_files.read_job_output, { ...f.scope, jobNumber: 1 })).toMatchObject({
-			status: "finished",
 			activityStatus: "succeeded",
 			result: null,
-			resultExpired: true,
 		});
 		expect(await f.t.query(internal.ai_chat_files.read_job_output, { ...f.scope, jobNumber: 2 })).toBeNull();
+	});
+});
+
+describe("read_job_exit_codes", () => {
+	test("reads the Activity first, then the stored code, and reports 1 for a number that is not a job", async () => {
+		const f = await fixture();
+		const start = Date.now();
+		// Job 1 is settled by the watchdog and its slow worker then stores the 0 of a script that
+		// finished on its own. The Activity says timed out, so this door must too.
+		const timedOut = await f.seed_job({ jobNumber: 1, status: "running" });
+		vi.setSystemTime(start + PLACEHOLDER_MS);
+		await f.t.mutation(internal.ai_chat_files.timeout_bash_job, {
+			invocationId: timedOut.invocationId,
+			expectedDeadlineAt: start + PLACEHOLDER_MS,
+		});
+		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
+			invocationId: timedOut.invocationId,
+			result: job_result(0, "late\n"),
+		});
+		// The row really holds the worker's own 0, so the 124 below is the Activity winning over it.
+		expect(await f.t.query(internal.ai_chat_files.read_job_output, { ...f.scope, jobNumber: 1 })).toMatchObject({
+			activityStatus: "timed_out",
+			result: { metadata: { exitCode: 0 } },
+		});
+		// A script that exits 143 or 124 by itself is read back into the same two Activity statuses.
+		const stopped = await f.seed_job({ jobNumber: 2, status: "running" });
+		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
+			invocationId: stopped.invocationId,
+			result: job_result(143),
+		});
+		const failed = await f.seed_job({ jobNumber: 3, status: "running" });
+		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
+			invocationId: failed.invocationId,
+			result: job_result(5),
+		});
+
+		expect(
+			await f.t.query(internal.ai_chat_files.read_job_exit_codes, { ...f.scope, jobNumbers: [1, 2, 3, 99] }),
+		).toEqual([
+			{ jobNumber: 1, exitCode: 124 },
+			{ jobNumber: 2, exitCode: 143 },
+			{ jobNumber: 3, exitCode: 5 },
+			{ jobNumber: 99, exitCode: 1 },
+		]);
+	});
+
+	test("falls back to the Activity when the cleanup cron stripped the stored result", async () => {
+		const f = await fixture();
+		const start = Date.now();
+		for (const [jobNumber, exitCode] of [
+			[1, 0],
+			[2, 5],
+		]) {
+			const job = await f.seed_job({ jobNumber: jobNumber!, status: "running" });
+			await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
+				invocationId: job.invocationId,
+				result: job_result(exitCode!),
+			});
+		}
+		vi.setSystemTime(start + 7 * 24 * 60 * 60 * 1000);
+		await f.t.mutation(internal.ai_chat_files.cleanup_expired_bash_results, {});
+
+		// The stored 5 is gone, so the failed Activity reports the plain failure code instead.
+		expect(await f.t.query(internal.ai_chat_files.read_job_exit_codes, { ...f.scope, jobNumbers: [1, 2] })).toEqual([
+			{ jobNumber: 1, exitCode: 0 },
+			{ jobNumber: 2, exitCode: 1 },
+		]);
+	});
+
+	test("refuses a long list, hides another member's job, and refuses a non-member", async () => {
+		const f = await fixture();
+		await f.seed_job({ jobNumber: 1, status: "running" });
+		await expect(
+			f.t.query(internal.ai_chat_files.read_job_exit_codes, {
+				...f.scope,
+				jobNumbers: Array.from({ length: bash_JOB_NUMBERS_MAX_COUNT + 1 }, (_, n) => n + 1),
+			}),
+		).rejects.toThrow("Too many job numbers");
+
+		const other = await add_member(f, "bash-jobs-code-reader");
+		expect(
+			await f.t.query(internal.ai_chat_files.read_job_exit_codes, {
+				...f.scope,
+				userId: other.userId,
+				jobNumbers: [1],
+			}),
+		).toEqual([{ jobNumber: 1, exitCode: 1 }]);
+
+		const stranger = await f.t.run((ctx) => test_mocks_fill_db_with.membership(ctx, { organizationName: "elsewhere" }));
+		await expect(
+			f.t.query(internal.ai_chat_files.read_job_exit_codes, {
+				...f.scope,
+				userId: stranger.userId,
+				jobNumbers: [1],
+			}),
+		).rejects.toThrow("Unauthorized");
 	});
 });
 

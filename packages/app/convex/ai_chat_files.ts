@@ -31,6 +31,7 @@ import {
 	bash_COMMAND_EXIT_STOPPED,
 	bash_COMMAND_EXIT_TIMED_OUT,
 	bash_JOB_NUMBERS_MAX_COUNT,
+	bash_job_exit_code,
 	bash_text_head,
 } from "../server/bash-utils.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
@@ -1717,11 +1718,8 @@ export const read_job_output = internalQuery({
 	returns: v.union(
 		v.null(),
 		v.object({
-			invocationId: v.id("ai_chat_bash_invocations"),
-			status: app_convex_schema.tables.ai_chat_bash_invocations.validator.fields.status,
 			activityStatus: app_convex_schema.tables.activities.validator.fields.status,
 			result: v.union(ai_chat_bash_result_validator, v.null()),
-			resultExpired: v.boolean(),
 			liveOutput: v.union(ai_chat_bash_job_live_output_validator, v.null()),
 		}),
 	),
@@ -1739,13 +1737,9 @@ export const read_job_output = internalQuery({
 		const invocation = await ctx.db.get("ai_chat_bash_invocations", activity.source.id);
 		if (!invocation)
 			throw should_never_happen("Job Activity points to a missing invocation", { activityId: activity._id });
-		const { status, result, resultExpired } = invocation_result(invocation);
 		return {
-			invocationId: invocation._id,
-			status,
 			activityStatus: activity.status,
-			result,
-			resultExpired,
+			result: invocation_result(invocation).result,
 			liveOutput: invocation.job?.liveOutput ?? null,
 		};
 	},
@@ -1757,14 +1751,14 @@ export type ai_chat_files_read_job_output_Result =
 		: never;
 
 /**
- * The exit code `wait` reports for each job it waited. A job can be declared dead before its worker
- * stops: a watchdog or a Stop settles the Activity while a slow worker is still finishing, and the
- * worker then stores its own result under a `timed_out` or `canceled` Activity. The feed, `jobs -a`
- * and the finished-job note all show the Activity status, so `wait` agrees with them instead of
- * reporting the late result's code. Every other job reports its stored result's code, and a finished
- * row without one (a crashed worker, or a result the cron already stripped) falls back to the
- * Activity too. Only the code comes back: a stored result is up to 700 KiB and `wait` needs one
- * number per job.
+ * The exit code `wait` reports for each job it waited. `bash_job_exit_code` holds the rule, so the
+ * `jobs -o` marker reports the same code for the same job.
+ *
+ * Only the codes come back, because a stored result is up to 700 KiB and `wait` needs one number per
+ * job. The rows are still read here: reading 12 of them costs at most 8.4 MiB in one transaction,
+ * against a 16 MiB read limit. The batch passes elsewhere in this file keep job-row reads at 8
+ * because they page over an unbounded set; this list cannot be longer than
+ * `bash_JOB_NUMBERS_MAX_COUNT`.
  */
 export const read_job_exit_codes = internalQuery({
 	args: {
@@ -1796,12 +1790,9 @@ export const read_job_exit_codes = internalQuery({
 				codes.push({ jobNumber, exitCode: bash_COMMAND_EXIT_FAILURE });
 				continue;
 			}
-			if (activity.status === "timed_out") {
-				codes.push({ jobNumber, exitCode: bash_COMMAND_EXIT_TIMED_OUT });
-				continue;
-			}
-			if (activity.status === "canceled") {
-				codes.push({ jobNumber, exitCode: bash_COMMAND_EXIT_STOPPED });
+			// A settled Activity already decides the code, so skip the row read for those two.
+			if (activity.status === "timed_out" || activity.status === "canceled") {
+				codes.push({ jobNumber, exitCode: bash_job_exit_code(activity.status, null) });
 				continue;
 			}
 			// The delete batch removes the Activity and the row in one pass, so the row is here.
@@ -1809,8 +1800,7 @@ export const read_job_exit_codes = internalQuery({
 			if (!invocation)
 				throw should_never_happen("Job Activity points to a missing invocation", { activityId: activity._id });
 			const { result } = invocation_result(invocation);
-			const fallback = activity.status === "succeeded" ? 0 : bash_COMMAND_EXIT_FAILURE;
-			codes.push({ jobNumber, exitCode: result?.metadata.exitCode ?? fallback });
+			codes.push({ jobNumber, exitCode: bash_job_exit_code(activity.status, result?.metadata.exitCode ?? null) });
 		}
 		return codes;
 	},

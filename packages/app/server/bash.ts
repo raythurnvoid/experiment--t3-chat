@@ -75,8 +75,8 @@ import { bash_meta_command_create } from "./bash-meta-command.ts";
 import { bash_mv_command_create } from "./bash-mv-command.ts";
 import type { bash_TransferContext } from "./bash-transfer-command.ts";
 import {
-	bash_JOB_OUTPUT_READ_BUDGET_BYTES,
-	bash_JOB_OUTPUT_READ_MAX_BYTES,
+	bash_JOB_OUTPUT_READ_BUDGET_CHARS,
+	bash_JOB_OUTPUT_READ_MAX_CHARS,
 	bash_job_status_word,
 	bash_jobs_command_create,
 	bash_kill_command_create,
@@ -123,6 +123,7 @@ import {
 	bash_SHELL_COMMENT_LINE_REGEX,
 	bash_WHITESPACE_RUN_REGEX,
 	bash_text_head,
+	bash_text_well_formed,
 	type bash_DbFilesRoots,
 } from "./bash-utils.ts";
 import { bash_ALLOWED_COMMANDS, bash_delegate_native_just_bash_tmp_command } from "./bash-delegate.ts";
@@ -138,7 +139,9 @@ const BASH_JOB_MAX_COMMAND_COUNT = 2_000;
 // The worker reads the Stop flag, the row status and its permissions this often.
 const BASH_JOB_POLL_MS = 5_000;
 // After this many launches refused in a row, the hook refuses the rest without a query. A launch
-// that succeeds starts the count again, so a script that waits for a slot is not locked out.
+// that succeeds starts the count again, and so does a `wait`, because that is how a script frees a
+// slot inside one call. Without the `wait` reset the count could never come back down: the local
+// refusal returns before the query that would clear it.
 const BASH_JOB_LAUNCH_MAX_REFUSALS = 3;
 // A bare top-level `sleep` of at least this long pauses the job instead of holding a worker, and
 // waits at most as long as the sleep command itself would (its own cap is one hour).
@@ -1417,7 +1420,14 @@ function bash_shell_create(
 						PWD: cwd,
 					},
 				}));
-			return result;
+			// The engine can hand back half a character: `printf '\ud83c'` prints one. Convex refuses a
+			// mutation argument that holds one, so the result, the transcript entry and the tool output
+			// all have to be repaired here, before any caller stores them.
+			return {
+				...result,
+				stdout: bash_text_well_formed(result.stdout),
+				stderr: bash_text_well_formed(result.stderr),
+			};
 		},
 		app_command_diagnostics: () => appCommandDiagnostics,
 	};
@@ -1634,7 +1644,7 @@ export async function bash_run_command(
 			nextCommandNumber: () => commandNumber++,
 			launchedJobNumbers: [],
 			launchRefusals: 0,
-			readBudgetRemaining: bash_JOB_OUTPUT_READ_BUDGET_BYTES,
+			readBudgetRemaining: bash_JOB_OUTPUT_READ_BUDGET_CHARS,
 			wakeAgent: args.wakeAgent,
 			waitingJobNumbers: [],
 		};
@@ -1994,15 +2004,25 @@ export async function bash_run_job(
 	const onOutput: NonNullable<BashOptions["onOutput"]> = (stream, text) => {
 		const truncatedKey = stream === "stdout" ? "stdoutTruncated" : "stderrTruncated";
 		if (liveOutput[truncatedKey]) return;
-		const room = bash_JOB_OUTPUT_READ_MAX_BYTES - liveOutput[stream].length;
-		if (text.length > room) {
-			liveOutput[stream] += bash_text_head(text, room);
+		// Cut what the head would become, not the new piece on its own. A character's two halves can
+		// arrive in two hand-overs, and cutting each piece by itself would keep the first half and
+		// leave the head with a broken character Convex refuses to store.
+		const kept = liveOutput[stream] + text;
+		if (kept.length > bash_JOB_OUTPUT_READ_MAX_CHARS) {
+			liveOutput[stream] = bash_text_head(kept, bash_JOB_OUTPUT_READ_MAX_CHARS);
 			liveOutput[truncatedKey] = true;
 		} else {
-			liveOutput[stream] += text;
+			liveOutput[stream] = kept;
 		}
 		liveOutputDirty = true;
 	};
+	// The script can also print half a character on its own, which no cut can help. Repair the head
+	// on its way into the row, so a pair that arrived in two hand-overs still joins in the head.
+	const stored_live_output = () => ({
+		...liveOutput,
+		stdout: bash_text_well_formed(liveOutput.stdout),
+		stderr: bash_text_well_formed(liveOutput.stderr),
+	});
 	// The Stop button, a deleted row, a lost permission and the watchdog all reach the script
 	// through this poll. A missing row and a lost permission count as a stop.
 	let polling = false;
@@ -2020,7 +2040,7 @@ export async function bash_run_job(
 				.runMutation(internal.ai_chat_files.flush_bash_job_output, {
 					invocationId: row._id,
 					workId,
-					liveOutput: { ...liveOutput },
+					liveOutput: stored_live_output(),
 				})
 				.catch((error: unknown) => {
 					liveOutputDirty = true;
@@ -2147,7 +2167,7 @@ export async function bash_run_job(
 				nextCommandNumber: () => commandNumber++,
 				launchedJobNumbers,
 				launchRefusals: 0,
-				readBudgetRemaining: bash_JOB_OUTPUT_READ_BUDGET_BYTES,
+				readBudgetRemaining: bash_JOB_OUTPUT_READ_BUDGET_CHARS,
 				wakeAgent: null,
 				waitingJobNumbers: [],
 			},
@@ -2206,7 +2226,7 @@ export async function bash_run_job(
 					cwd: nextCwd,
 					cwdTarget: await bashFs.get_cwd_target(nextCwd),
 				},
-				liveOutput: liveOutput.stdout || liveOutput.stderr ? { ...liveOutput } : null,
+				liveOutput: liveOutput.stdout || liveOutput.stderr ? stored_live_output() : null,
 				outcome: { exitCode: result.exitCode, stdout: result.stdout, stderr: result.stderr },
 				reason: pause.reason,
 				runAfterMs: pause.runAfterMs,
@@ -2302,6 +2322,18 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 			expect(result.value).toBe(`${"x".repeat(OUTPUT_LIMIT)}\n\n[truncated after ${OUTPUT_LIMIT} characters]`);
 			expect(result.value).not.toContain("y");
+			expect(result.truncated).toBe(true);
+		});
+
+		test("cuts before a character the limit would split", () => {
+			// The pair starts at the last unit the limit allows, so a plain slice would keep its first
+			// half. Convex refuses to store a string that ends that way.
+			const value = `${"x".repeat(OUTPUT_LIMIT - 1)}\u{1f389}`;
+
+			const result = truncate_output(value);
+
+			expect(result.value.startsWith(`${"x".repeat(OUTPUT_LIMIT - 1)}\n\n[truncated after`)).toBe(true);
+			expect(result.value.isWellFormed()).toBe(true);
 			expect(result.truncated).toBe(true);
 		});
 
