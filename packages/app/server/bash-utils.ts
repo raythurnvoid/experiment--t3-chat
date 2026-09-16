@@ -60,18 +60,24 @@ export const bash_TMP_MOUNT = "/tmp";
 export const bash_SHELLS_MOUNT = "/shells";
 
 /**
- * Keep the stored shell state and the engine snapshot in step. A field added on one side makes the
- * pair below fail to compile, on the line that names it. The declaration is ambient, so it needs no
- * value and no suppression. Both checks compare the two as `Required`, because a field that one
- * side marks optional and the other side does not have at all is assignable in both directions. The
- * check is shallow: `Required` reaches the top level only, and the stored `options` and
- * `shoptOptions` take any name, so a new shell option is not caught.
+ * Keep the stored shell state and the engine snapshot in step. A field that one side has and the
+ * other does not fails one of the four lines below, and the message names the field. The declaration
+ * is ambient, so it needs no value and no suppression.
+ *
+ * The first pair compares the two as `Required`, because a field that one side marks optional and
+ * the other side does not have at all is assignable in both directions. The second pair compares
+ * them as they are, because `Required` erases the difference when both sides have the field and only
+ * one of them marks it optional. `Required` reaches the top level only, so a field added as optional
+ * inside a nested object passes; a nested field that is required, or whose type changed, still fails.
+ * The stored `options` and `shoptOptions` take any name, so a new boolean shell option passes too.
  */
 type bash_ShellState = Infer<typeof bash_shell_state_validator>;
 type bash_Assignable<_From extends To, To> = true;
 declare const bash_shell_state_matches_snapshot: [
 	bash_Assignable<Required<bash_ShellState>, Required<InterpreterStateSnapshot>>,
 	bash_Assignable<Required<InterpreterStateSnapshot>, Required<bash_ShellState>>,
+	bash_Assignable<bash_ShellState, InterpreterStateSnapshot>,
+	bash_Assignable<InterpreterStateSnapshot, bash_ShellState>,
 ];
 
 /**

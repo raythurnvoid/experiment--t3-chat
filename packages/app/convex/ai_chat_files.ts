@@ -78,8 +78,8 @@ const BASH_JOB_SCRIPT_MAX_BYTES = 64 * 1024;
 const BASH_JOB_SHELL_STATE_MAX_BYTES = 128 * 1024;
 // The finished-job notes read this many newest jobs: 8 finished plus the 4 that can be live.
 const BASH_JOB_NOTE_WINDOW = BASH_JOB_LIST_MAX_COUNT + BASH_JOB_LIVE_MAX_COUNT;
-// The wakeup message carries this much of each output stream; `jobs -o N` has the rest.
-const BASH_JOB_WAKEUP_HEAD_BYTES = 4 * 1024;
+// The wakeup message carries this many characters of each output stream; `jobs -o N` has the rest.
+const BASH_JOB_WAKEUP_HEAD_CHARS = 4 * 1024;
 // A wakeup run holds the thread's run lease this long at most. A Convex action cannot run longer.
 const BASH_JOB_WAKEUP_RUN_MS = 10 * 60 * 1000;
 // A woken turn may arm the next job, and a wakeup charges no rate limit, so the chain needs an end.
@@ -734,7 +734,8 @@ async function db_append_job_finish_entry(
  * belongs under the newest leaf, which that run is still writing. Nothing tries again for this job.
  * A job that finishes normally reaches this function once, from `finish_bash_job`, so a job that
  * finishes during a run gets no note. The job still shows in the Activity feed of the user who
- * started it, and their next Bash call in the thread prints the plain `bash: job N done` note.
+ * started it, and their next Bash call in the thread prints the plain `bash: job N done` note. That
+ * call prints at most eight notes, so a job can fall out of them when many finish at once.
  */
 async function db_wake_agent_for_job(
 	ctx: MutationCtx,
@@ -782,7 +783,7 @@ async function db_wake_agent_for_job(
 	}
 
 	const head = (text: string) =>
-		text.length > BASH_JOB_WAKEUP_HEAD_BYTES ? `${text.slice(0, BASH_JOB_WAKEUP_HEAD_BYTES)}\n[truncated]` : text;
+		text.length > BASH_JOB_WAKEUP_HEAD_CHARS ? `${text.slice(0, BASH_JOB_WAKEUP_HEAD_CHARS)}\n[truncated]` : text;
 	const jobNumber = invocation.job.jobNumber;
 	// Count this wakeup. Past the cap the note is still stored, so the next turn the user starts
 	// reads what the job did, but no run starts on its own.

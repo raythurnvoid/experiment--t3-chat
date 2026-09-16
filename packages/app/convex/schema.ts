@@ -132,7 +132,8 @@ export const ai_chat_bash_job_live_output_validator = v.object({
 
 /**
  * A saved Bash interpreter state. It mirrors the engine's `InterpreterStateSnapshot` field by
- * field; `server/bash-utils.ts` asserts the two types match so a drift fails the type check.
+ * field; `server/bash-utils.ts` compares the two types so a drift fails the type check. That check
+ * has limits, named where it lives.
  * `env` is a pair list, not an object: Convex rejects object keys with non-ASCII characters, and
  * the env map holds associative-array keys. The cwd is not here; the shell row owns it.
  */
@@ -163,7 +164,9 @@ export const bash_shell_state_validator = v.object({
 	lastExitCode: v.number(),
 	lastArg: v.string(),
 	/**
-	 * What `$!` reads. Optional because a state stored before the field existed does not have it.
+	 * What `$!` reads. Optional because almost no stored state has it: a call drops it from the
+	 * snapshot it saves, and so does the copy a job starts from. Only a job paused mid-script keeps it,
+	 * so its next run can answer `$!`.
 	 */
 	lastBackgroundPid: v.optional(v.number()),
 	openFileDescriptors: v.array(v.number()),

@@ -4519,10 +4519,10 @@ describe("bash_run_command", () => {
 		test("a bare wait takes the newest job numbers when a job started more than one wait may name", async () => {
 			const runner = await create_bash_runner();
 			// Twelve finished jobs. The cap counts live jobs, so launch four and run those four to the
-			// end before the next four. Job 2 exits 7 and is neither the newest nor the oldest of the
-			// twelve, so only a wait that took the whole newest twelve can print 7 below.
+			// end before the next four. Job 1 exits 7 and is the oldest number the slice keeps, so a wait
+			// that kept eleven numbers, or numbers from the wrong end, cannot print 7 below.
 			for (let round = 0; round < 3; round++) {
-				const launches = round === 0 ? "echo a & exit 7 & echo c & echo d &" : "echo a & echo b & echo c & echo d &";
+				const launches = round === 0 ? "exit 7 & echo b & echo c & echo d &" : "echo a & echo b & echo c & echo d &";
 				expect((await runner.run(launches)).metadata.exitCode).toBe(0);
 				for (let jobNumber = round * 4 + 1; jobNumber <= round * 4 + 4; jobNumber++) {
 					expect((await run_job(runner, jobNumber)).status).toBe("finished");
@@ -4647,7 +4647,9 @@ describe("bash_run_command", () => {
 				wakeAgent: { modelId: "gpt-5.4-mini" },
 			});
 			const waited = await waiter.run("wait 1 2");
-			expect(waited.stderr).toBe("bash: waiting for job 1: its finish wakes you with the result; end this turn.\n");
+			expect(waited.stderr).toBe(
+				"bash: waiting for job 1: end this turn. The finish then starts your next run, or leaves a note for your next call.\n",
+			);
 			expect(waited.metadata.exitCode).toBe(3);
 			expect(waited.metadata.waitingForJobs).toEqual([1]);
 			expect((await job_row(launcher, 1)).job?.wakeAgent).toEqual({ modelId: "gpt-5.4-mini" });

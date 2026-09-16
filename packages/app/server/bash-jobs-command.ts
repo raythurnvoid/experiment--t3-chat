@@ -325,7 +325,7 @@ export function bash_wait_command_create(ctx: ActionCtx, job: bash_JobContext): 
 				job.waitingJobNumbers.push(...armed);
 				return {
 					stdout: "",
-					stderr: `bash: waiting for job ${armed.join(", ")}: its finish wakes you with the result; end this turn.\n`,
+					stderr: `bash: waiting for job ${armed.join(", ")}: end this turn. The finish then starts your next run, or leaves a note for your next call.\n`,
 					exitCode: bash_COMMAND_EXIT_STILL_RUNNING,
 				};
 			}
