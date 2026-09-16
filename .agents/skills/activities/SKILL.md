@@ -28,6 +28,10 @@ in one mutation. Workpool delivers work; it does not decide whether a job succee
 Active statuses are `queued`, `running`, `awaiting_input`, and `stopping`. Finished statuses are
 `succeeded`, `partial`, `failed`, `canceled`, and `timed_out`.
 
+A Bash background job is the one producer that moves an Activity backwards. A job that pauses goes
+from `running` back to `queued` while it waits for its next run, and `startedAt` keeps the first
+start. Read a paused job as still alive, not as one that never started.
+
 `activities_db_finish` accepts only active work. A late callback cannot change a finished result
 or extend its retention. Transfer and review producers use `activities_get_result_status` for
 natural completion, with counts from their item receipts:

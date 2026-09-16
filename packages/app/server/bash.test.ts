@@ -1305,7 +1305,7 @@ describe("bash_run_command", () => {
 		expect(errexit.metadata.exitCode).toBe(1);
 		expect(errexit.stdout).not.toContain("reached");
 
-		const nounset = await run("set +e\nset -u\necho \"$NEVER_SET_VAR\"");
+		const nounset = await run('set +e\nset -u\necho "$NEVER_SET_VAR"');
 		expect(nounset.metadata.exitCode).toBe(1);
 		expect(nounset.stderr).toContain("unbound variable");
 
@@ -3897,7 +3897,10 @@ describe("bash_run_command", () => {
 
 			// /tmp is per-thread scratch with its own caps, so a cwd left there is the case most
 			// likely to lose the rest of the shell state on the way back.
-			expect((await runner.run("kept=yes; fruits=(apple pear); mkdir -p /tmp/scratch-cwd; cd /tmp/scratch-cwd")).metadata.exitCode).toBe(0);
+			expect(
+				(await runner.run("kept=yes; fruits=(apple pear); mkdir -p /tmp/scratch-cwd; cd /tmp/scratch-cwd")).metadata
+					.exitCode,
+			).toBe(0);
 
 			const read = await runner.run('printf "%s|%s|%s\\n" "$kept" "${#fruits[@]}" "$(pwd)"');
 			expect(read.stderr).toBe("");
@@ -4142,8 +4145,10 @@ describe("bash_run_command", () => {
 			const read = await runner.run("sleep 60 & jobs -o 1; jobs -o 1; jobs -o 1; echo done");
 			expect(read.metadata.exitCode).toBe(0);
 			expect(read.stdout).toBe("done\n");
+			// The pool is mocked, so job 1 never starts and each read prints only its status marker.
 			expect(read.stderr).toBe(
-				"bash: started job 1 in shell default. Follow it with `jobs`, or in the Notifications panel.\n",
+				"bash: started job 1 in shell default. Follow it with `jobs`, or in the Notifications panel.\n" +
+					"[job 1 queued]\n[job 1 queued]\n[job 1 queued]\n",
 			);
 		});
 
@@ -4209,17 +4214,20 @@ describe("bash_run_command", () => {
 			const runner = await create_bash_runner();
 			// A long `sleep $t` runs inline and keeps the worker busy. A literal `sleep 60` would pause the job
 			// instead (see the pause tests below). The tests below use the same form for the same reason.
-			expect((await runner.run("{ echo first; echo warn >&2; t=60; sleep $t; echo last; } &")).metadata.exitCode).toBe(0);
+			expect((await runner.run("{ echo first; echo warn >&2; t=60; sleep $t; echo last; } &")).metadata.exitCode).toBe(
+				0,
+			);
 			const row = await job_row(runner, 1);
 			vi.useFakeTimers();
 			try {
 				const worker = bash_run_job(runner.ctx, { invocationId: row._id });
-				// Before the first poll tick nothing is flushed, so the read costs nothing and prints nothing.
+				// Before the first poll tick nothing is flushed, so the read costs nothing and prints
+				// only the status marker.
 				await vi.advanceTimersByTimeAsync(1_000);
 				const early = await runner.run("jobs -o 1");
 				expect(early.metadata.exitCode).toBe(3);
 				expect(early.stdout).toBe("");
-				expect(early.stderr).toBe("");
+				expect(early.stderr).toBe("[job 1 running]\n");
 
 				// The tick flushes the head; the mutation runs off the timer, so wait for the row.
 				await vi.advanceTimersByTimeAsync(5_000);
@@ -4326,7 +4334,8 @@ describe("bash_run_command", () => {
 			const partial = await runner.run("jobs -o 1");
 			expect(partial.metadata.exitCode).toBe(3);
 			expect(partial.stdout).toBe("before 1\n");
-			expect(partial.stderr).toBe("[job 1 running]\n");
+			// The marker word comes from the Activity, so a paused job reads `queued` here too.
+			expect(partial.stderr).toBe("[job 1 queued]\n");
 
 			// The next run continues with the saved state and prints the whole job's output.
 			const finished = await run_job(runner, 1);
@@ -4371,14 +4380,92 @@ describe("bash_run_command", () => {
 			expect(paused.status).toBe("running");
 			expect(paused.job).toMatchObject({ resumeScript: "echo one\necho two" });
 			expect(paused.job?.liveOutput).toBeUndefined();
+			// Nothing was printed yet, so the marker is the whole answer; it still costs no read budget.
+			const partial = await runner.run("jobs -o 1");
+			expect(partial.metadata.exitCode).toBe(3);
+			expect(partial.stdout).toBe("");
+			expect(partial.stderr).toBe("[job 1 queued]\n");
 			expect(vi.mocked(Workpool.prototype).enqueueAction.mock.calls.at(-1)?.[3]).toMatchObject({ runAfter: 0 });
 			const entries = await runner.t.run(async (ctx) =>
 				(await ctx.db.query("ai_chat_bash_shell_transcripts").collect()).map((entry) => entry.text),
 			);
-			expect(entries.some((entry) => entry.includes("job 1 paused (exit 0) in shell default: run budget used, continues at once\n"))).toBe(true);
+			expect(
+				entries.some((entry) =>
+					entry.includes("job 1 paused (exit 0) in shell default: run budget used, continues at once\n"),
+				),
+			).toBe(true);
 
 			const finished = await run_job(runner, 1);
 			expect(finished.result).toMatchObject({ stdout: "one\ntwo\n", metadata: { exitCode: 0 } });
+		});
+
+		test("a dropped sleep leaves $? at 0, like a sleep that ran", async () => {
+			const runner = await create_bash_runner();
+			expect((await runner.run("{ false; sleep 30; echo rc=$?; } &")).metadata.exitCode).toBe(0);
+			await run_job(runner, 1);
+			const finished = await run_job(runner, 1);
+			expect(finished.result?.stdout).toBe("rc=0\n");
+		});
+
+		test("a pause tells jobs -o about the dropped /tmp writes and the closed descriptors", async () => {
+			const runner = await create_bash_runner();
+			const script = "{ exec 3>/tmp/log; echo one > /tmp/keep; sleep 30; echo two; }";
+			expect((await runner.run(`${script} &`)).metadata.exitCode).toBe(0);
+			expect((await run_job(runner, 1)).status).toBe("running");
+
+			// The notes are added after the engine returned, so only this prepares them for the head
+			// `jobs -o` reads; the run's own result reaches the transcript instead.
+			const partial = await runner.run("jobs -o 1");
+			expect(partial.metadata.exitCode).toBe(3);
+			expect(partial.stderr).toContain("bash: /tmp writes are dropped when a job pauses:");
+			expect(partial.stderr).toContain("bash: file descriptor 3 was closed\n");
+			expect(partial.stderr.endsWith("[job 1 queued]\n")).toBe(true);
+		});
+
+		test("stops pausing once the job used its whole lifetime", async () => {
+			const runner = await create_bash_runner();
+			expect((await runner.run("{ sleep 30; echo after; } &")).metadata.exitCode).toBe(0);
+			const row = await job_row(runner, 1);
+			vi.useFakeTimers({ toFake: ["Date"] });
+			try {
+				// The claim arms a fresh run budget from this moment, so only the job's age can end
+				// this run. A 25-hour-old job is past the 24-hour lifetime.
+				vi.setSystemTime(row._creationTime + 25 * 60 * 60 * 1000);
+				await bash_run_job(runner.ctx, { invocationId: row._id });
+			} finally {
+				vi.useRealTimers();
+			}
+			const finished = await job_row(runner, 1);
+			expect(finished.status).toBe("finished");
+			expect(finished.result?.metadata.exitCode).toBe(124);
+			expect(finished.job?.resumeScript).toBeUndefined();
+			expect(await activity_of(runner, 1)).toMatchObject({ status: "timed_out" });
+		});
+
+		test("a launch after a pause starts a new job instead of finding the earlier one", async () => {
+			const runner = await create_bash_runner();
+			// A launch is stored under a synthetic tool-call id made of the job row and the command
+			// number, so a replayed launch finds the row it already made. Each run counts its own
+			// commands, so the count has to survive the pause: otherwise both `&` statements are
+			// command 0, and the second launch finds job 2 again and starts nothing.
+			expect((await runner.run("{ echo one & sleep 30; echo two & } &")).metadata.exitCode).toBe(0);
+			await run_job(runner, 1);
+			expect((await job_row(runner, 2)).job?.script).toBe("echo one");
+
+			const finished = await run_job(runner, 1);
+			expect(finished.status).toBe("finished");
+			expect(finished.result?.stderr).toContain("bash: started job 3 in shell default.");
+			expect((await job_row(runner, 3)).job?.script).toBe("echo two");
+		});
+
+		test("a bare wait after a pause still waits for the jobs the earlier run started", async () => {
+			const runner = await create_bash_runner();
+			expect((await runner.run("{ echo one & sleep 30; wait -t 1; } &")).metadata.exitCode).toBe(0);
+			await run_job(runner, 1);
+			// The pool is mocked, so job 2 is still queued. A bare `wait` that lost the numbers of
+			// the earlier run would wait for nothing and return 0 instead of 3.
+			const finished = await run_job(runner, 1);
+			expect(finished.result?.metadata.exitCode).toBe(3);
 		});
 
 		test("a Stop lands at the next statement boundary, not only at the next 5-second tick", async () => {
@@ -4744,7 +4831,9 @@ describe("bash_run_command", () => {
 			const runner = await create_bash_runner();
 			// `wait {1..5000}` is 14 characters to type and one index read per number to serve, so the
 			// list is bounded here as well as at the door.
-			const many = await runner.run(`wait ${Array.from({ length: bash_JOB_NUMBERS_MAX_COUNT + 1 }, (_, n) => n + 1).join(" ")}`);
+			const many = await runner.run(
+				`wait ${Array.from({ length: bash_JOB_NUMBERS_MAX_COUNT + 1 }, (_, n) => n + 1).join(" ")}`,
+			);
 			expect(many.stderr).toBe(
 				`wait: at most ${bash_JOB_NUMBERS_MAX_COUNT} job numbers can be waited at once\nUsage: wait [-t SECONDS] [JOB...]\n`,
 			);
@@ -8409,9 +8498,7 @@ describe("bash_run_command", () => {
 		// lands, so the proposal stays empty and the user discards it like any other proposal.
 		const pendingNodes = await runner.t.run(async (ctx) => ctx.db.query("files_pending_nodes").collect());
 		expect(pendingNodes.map((node) => node.name)).toEqual(["big.md"]);
-		expect((await runner.run(`wc -c ${test_db_files_mount}/big.md`)).stdout).toBe(
-			`0 ${test_db_files_mount}/big.md\n`,
-		);
+		expect((await runner.run(`wc -c ${test_db_files_mount}/big.md`)).stdout).toBe(`0 ${test_db_files_mount}/big.md\n`);
 		expect((await list_pending_updates(runner)).map((update) => update.size)).toEqual([0]);
 
 		// The refusal still commits nothing to the shared tree.
@@ -8429,7 +8516,6 @@ describe("bash_run_command", () => {
 		);
 		expect(orphan).toBeNull();
 	});
-
 
 	test("creates a pending copy proposal for app-to-app cp", async () => {
 		const runner = await create_bash_runner();

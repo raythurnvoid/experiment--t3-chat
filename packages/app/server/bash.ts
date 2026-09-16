@@ -118,6 +118,7 @@ import {
 	bash_COMMAND_EXIT_CANNOT_EXECUTE,
 	bash_COMMAND_EXIT_STOPPED,
 	bash_COMMAND_EXIT_TIMED_OUT,
+	bash_JOB_NUMBERS_MAX_COUNT,
 	bash_TERMINAL_LINE_ENDING_REGEX,
 	bash_SHELL_COMMENT_LINE_REGEX,
 	bash_WHITESPACE_RUN_REGEX,
@@ -143,6 +144,9 @@ const BASH_JOB_SLEEP_PAUSE_MIN_MS = 5_000;
 const BASH_JOB_SLEEP_PAUSE_MAX_MS = 60 * 60 * 1000;
 // The job pauses before a statement when less than this remains before the worker's own abort.
 const BASH_JOB_PAUSE_HEADROOM_MS = 60_000;
+// Every pause arms a fresh run budget, so the budget alone cannot end a job that keeps sleeping.
+// This is how long a job may live from its `&`, counting the waits between its runs.
+const BASH_JOB_TOTAL_MS = 24 * 60 * 60 * 1000;
 // A statement boundary re-reads the Stop flag when the last poll is at least this old, so a Stop
 // lands at the next boundary instead of the next 5-second tick.
 const BASH_JOB_BOUNDARY_POLL_MS = 1_000;
@@ -2003,16 +2007,22 @@ export async function bash_run_job(
 		// after the settle or the pause changes nothing.
 		if (liveOutputDirty) {
 			liveOutputDirty = false;
-			ctx.runMutation(internal.ai_chat_files.flush_bash_job_output, {
-				invocationId: row._id,
-				workId,
-				liveOutput: { ...liveOutput },
-			}).catch((error: unknown) => {
-				liveOutputDirty = true;
-				console.warn("Bash job output flush failed", { invocationId: row._id, error });
-			});
+			ctx
+				.runMutation(internal.ai_chat_files.flush_bash_job_output, {
+					invocationId: row._id,
+					workId,
+					liveOutput: { ...liveOutput },
+				})
+				.catch((error: unknown) => {
+					liveOutputDirty = true;
+					console.warn("Bash job output flush failed", { invocationId: row._id, error });
+				});
 		}
-		await (ctx.runQuery(internal.ai_chat_files.poll_bash_job, { invocationId: row._id }) as Promise<ai_chat_files_poll_bash_job_Result>)
+		await (
+			ctx.runQuery(internal.ai_chat_files.poll_bash_job, {
+				invocationId: row._id,
+			}) as Promise<ai_chat_files_poll_bash_job_Result>
+		)
 			.then((poll) => {
 				if (poll.status === "missing" || poll.stopRequested || !poll.authorized) abort.abort(bash_ABORT_REASON_STOPPED);
 				// The watchdog marks the row `interrupted` at the deadline. That is a deadline, not
@@ -2033,7 +2043,15 @@ export async function bash_run_job(
 	const onStatementBoundary: NonNullable<ExecOptions["onStatementBoundary"]> = async (boundary) => {
 		// A Stop lands at this boundary when the last poll is old; the engine then stops the script.
 		if (Date.now() - lastPollAt >= BASH_JOB_BOUNDARY_POLL_MS) await poll();
-		const sleepMs = boundary.sleepMs !== null && boundary.sleepMs >= BASH_JOB_SLEEP_PAUSE_MIN_MS ? boundary.sleepMs : null;
+		// A job past its total lifetime must not pause again. Abort here and let the statement
+		// through: the engine stops on the aborted signal, so the job ends as 124 like a job that
+		// ran out of its run budget.
+		if (Date.now() - row._creationTime >= BASH_JOB_TOTAL_MS) {
+			abort.abort(BASH_JOB_DEADLINE_ABORT_REASON);
+			return "run";
+		}
+		const sleepMs =
+			boundary.sleepMs !== null && boundary.sleepMs >= BASH_JOB_SLEEP_PAUSE_MIN_MS ? boundary.sleepMs : null;
 		const budgetUsed = Date.now() >= row.transferDeadlineAt - BASH_JOB_PAUSE_HEADROOM_MS;
 		if (sleepMs === null && !budgetUsed) return "run";
 		// The same cap as the launch: a state the row cannot hold means the job runs on as before.
@@ -2047,16 +2065,28 @@ export async function bash_run_job(
 			const runAfterMs = Math.min(sleepMs, BASH_JOB_SLEEP_PAUSE_MAX_MS);
 			pause = {
 				script: boundary.scriptAfter(),
-				shellState,
+				// The snapshot was taken before the sleep, so `$?` still holds the statement before
+				// it. A `sleep` that ran would have set it to 0, and the next statement may test it.
+				shellState: { ...shellState, lastExitCode: 0 },
 				runAfterMs,
 				reason: `sleep ${runAfterMs / 1000}s, continues at ${new Date(Date.now() + runAfterMs).toISOString()}`,
 			};
 		} else {
-			pause = { script: boundary.remainingScript(), shellState, runAfterMs: 0, reason: "run budget used, continues at once" };
+			pause = {
+				script: boundary.remainingScript(),
+				shellState,
+				runAfterMs: 0,
+				reason: "run budget used, continues at once",
+			};
 		}
 		return "stop";
 	};
-	let commandNumber = 0;
+	// A launch and a transfer are stored under a synthetic id made of this row and the command
+	// number, so a continuation keeps counting where the paused run stopped.
+	let commandNumber = job.resumeCommandNumber ?? 0;
+	// The hook pushes each started job number here, and `wait` with no arguments waits for them.
+	// A continuation starts from the numbers the earlier runs launched.
+	const launchedJobNumbers = [...(job.resumeLaunchedJobNumbers ?? [])];
 	try {
 		// The same mount visibility as the launching call: without these queries `/.mounts` and
 		// `/.plugins` would be empty inside a job.
@@ -2103,7 +2133,7 @@ export async function bash_run_job(
 				deadlineAt: row.transferDeadlineAt,
 				signal: abort.signal,
 				nextCommandNumber: () => commandNumber++,
-				launchedJobNumbers: [],
+				launchedJobNumbers,
 				launchAttempts: 0,
 				readBudgetRemaining: bash_JOB_OUTPUT_READ_BUDGET_BYTES,
 				wakeAgent: null,
@@ -2126,19 +2156,44 @@ export async function bash_run_job(
 		// a timeout like any other: the job ends now.
 		const pausing = pause !== undefined && !abort.signal.aborted;
 
+		// These notes are written after the engine returned, so the live hook never saw them. At a
+		// pause this run's result goes to the transcript only, while `jobs -o` reads the head, so
+		// the note has to reach both.
+		const add_note = (text: string) => {
+			result.stderr += text;
+			if (pausing) onOutput("stderr", text);
+		};
+
 		if (stateTooLargeToPause) {
-			result.stderr += "bash: the shell state is larger than 128 KiB, so the job cannot pause; it runs on with its budget.\n";
+			add_note("bash: the shell state is larger than 128 KiB, so the job cannot pause; it runs on with its budget.\n");
 		}
 		// `/tmp` is a private copy inside a job and is never written back. Name what was dropped.
 		const droppedTmpPaths = [...bashFs.tmp_dirty_roots()].sort();
 		if (droppedTmpPaths.length > 0) {
-			result.stderr += `bash: /tmp writes are dropped when a job ${pausing ? "pauses" : "ends"}: ${droppedTmpPaths.map((path) => `${bash_TMP_MOUNT}${path}`).join(", ")}\n`;
+			add_note(
+				`bash: /tmp writes are dropped when a job ${pausing ? "pauses" : "ends"}: ${droppedTmpPaths.map((path) => `${bash_TMP_MOUNT}${path}`).join(", ")}\n`,
+			);
+		}
+		// Extra fds (`exec 3>out`) are reported by the snapshot but never restored, in a job's next
+		// run as little as in the next call. The continuation runs the rest of the same script, so
+		// say it here too: otherwise a later `>&3` writes nowhere with nothing to explain it.
+		if (pausing && pause) {
+			for (const fd of pause.shellState.openFileDescriptors) add_note(`bash: file descriptor ${fd} was closed\n`);
 		}
 
 		if (pausing && pause) {
 			const paused = await ctx.runMutation(internal.ai_chat_files.pause_bash_job, {
 				invocationId: row._id,
-				resume: { script: pause.script, shellState: pause.shellState, cwd: nextCwd, cwdTarget: await bashFs.get_cwd_target(nextCwd) },
+				resume: {
+					script: pause.script,
+					shellState: pause.shellState,
+					cwd: nextCwd,
+					cwdTarget: await bashFs.get_cwd_target(nextCwd),
+					commandNumber,
+					// `wait` with no arguments refuses a longer list than this anyway, so carrying the
+					// newest numbers keeps the row small without changing what `wait` can do.
+					launchedJobNumbers: launchedJobNumbers.slice(-bash_JOB_NUMBERS_MAX_COUNT),
+				},
 				liveOutput: liveOutput.stdout || liveOutput.stderr ? { ...liveOutput } : null,
 				outcome: { exitCode: result.exitCode, stdout: result.stdout, stderr: result.stderr },
 				reason: pause.reason,
@@ -2146,7 +2201,12 @@ export async function bash_run_job(
 			});
 			// A refused pause means the job was stopped or settled meanwhile; the settle path ends it.
 			if (paused) {
-				console.debug("Bash job paused", { threadId: row.threadId, shellName, jobNumber: job.jobNumber, reason: pause.reason });
+				console.debug("Bash job paused", {
+					threadId: row.threadId,
+					shellName,
+					jobNumber: job.jobNumber,
+					reason: pause.reason,
+				});
 			}
 			return null;
 		}
@@ -2160,7 +2220,14 @@ export async function bash_run_job(
 			result.stderr = with_earlier_output("stderr");
 		}
 
-		const response = bash_response({ bashFs, command: job.script, result, nextCwd, observedPaths, observedPathsTruncated });
+		const response = bash_response({
+			bashFs,
+			command: job.script,
+			result,
+			nextCwd,
+			observedPaths,
+			observedPathsTruncated,
+		});
 		await ctx.runMutation(internal.ai_chat_files.finish_bash_job, { invocationId: row._id, result: response });
 		console.debug("Bash job completed", {
 			threadId: row.threadId,

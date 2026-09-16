@@ -213,8 +213,12 @@ describe("ai_chat_tool_create_bash", () => {
 			"cmd & starts a background job and is the only way to start one; cmd1 && cmd2 is not a background job",
 			"$! is the job number in that call only (0 in the next call",
 			"Inside a background job (&), /tmp is a private copy that is dropped when the job pauses or ends",
-			"A job runs one top-level statement at a time, and each run of it has an 8-minute budget: when the budget is nearly used, the job pauses after the current statement and continues in a new run",
+			"A job runs one top-level statement at a time, and each run of it has an 8-minute slot and 2000 commands",
+			"a minute before that the job pauses after the current statement and continues in a new run",
+			"or it is cut off at 7 minutes 30 seconds and the job reports 124",
 			"A top-level sleep N with a literal N of 5 seconds or more pauses the job for N seconds (at most one hour) without holding a worker",
+			"a sleep with a redirection or with an assignment in front of it, ! sleep N, time sleep N, a sleep joined by && or ||",
+			"a job waiting to continue after a pause prints [job N queued], and the line is printed even when the job has produced nothing yet",
 			"A paused job shows as queued in jobs and in Notifications, the transcript gets one entry per run of the job, and jobs -o N shows the head of the whole job's output.",
 			"Using /tmp inside a job for intermediate files is fine. Never redirect a job's output to /tmp and never leave a result file there: read a job's output with jobs -o N or the shell transcript.",
 			"A file a job must keep goes under the current workspace path; in Agent mode that write becomes a pending proposal. In Ask mode a job cannot write files, so its result is its output.",
@@ -250,7 +254,12 @@ describe("ai_chat_tool_create_bash", () => {
 			output: "$ wait",
 			stdout: "",
 			stderr: "",
-			metadata: { exitCode: 3, observedPaths: [], observedPathsTruncated: false, ...(waitingForJobs ? { waitingForJobs } : {}) },
+			metadata: {
+				exitCode: 3,
+				observedPaths: [],
+				observedPathsTruncated: false,
+				...(waitingForJobs ? { waitingForJobs } : {}),
+			},
 		});
 
 		// Ask mode: the field does not exist, so a model never sees it and a stored value is dropped.
@@ -268,7 +277,10 @@ describe("ai_chat_tool_create_bash", () => {
 			jobWakeup: { modelId: "gpt-5.4-mini", onWaiting },
 		});
 		if (!has_defined_property(tool.inputSchema, "parse")) throw new Error("inputSchema has no parse");
-		expect(tool.inputSchema.parse({ command: "wait", wakeOnJobFinish: true })).toEqual({ command: "wait", wakeOnJobFinish: true });
+		expect(tool.inputSchema.parse({ command: "wait", wakeOnJobFinish: true })).toEqual({
+			command: "wait",
+			wakeOnJobFinish: true,
+		});
 
 		await tool.execute?.({ command: "wait" }, { toolCallId: "plain", messages: [] });
 		expect(runAction).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({ wakeAgent: null }));
@@ -282,7 +294,10 @@ describe("ai_chat_tool_create_bash", () => {
 		expect(onWaiting).not.toHaveBeenCalled();
 
 		runAction.mockImplementationOnce(async () => bash_result([1]));
-		const waiting = await tool.execute?.({ command: "wait", wakeOnJobFinish: true }, { toolCallId: "waiting", messages: [] });
+		const waiting = await tool.execute?.(
+			{ command: "wait", wakeOnJobFinish: true },
+			{ toolCallId: "waiting", messages: [] },
+		);
 		expect(onWaiting).toHaveBeenCalledTimes(1);
 		expect(waiting).toMatchObject({ metadata: { waitingForJobs: [1] } });
 	});

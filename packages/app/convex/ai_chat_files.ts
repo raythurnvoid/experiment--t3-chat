@@ -82,6 +82,9 @@ const BASH_JOB_NOTE_WINDOW = BASH_JOB_LIST_MAX_COUNT + BASH_JOB_LIVE_MAX_COUNT;
 const BASH_JOB_WAKEUP_HEAD_BYTES = 4 * 1024;
 // A wakeup run holds the thread's run lease this long at most. A Convex action cannot run longer.
 const BASH_JOB_WAKEUP_RUN_MS = 10 * 60 * 1000;
+// A woken turn may arm the next job, and a wakeup charges no rate limit, so the chain needs an end.
+// This many wakeups may run in a row before the thread waits for the user again.
+const BASH_JOB_WAKEUP_MAX_CHAIN = 5;
 
 const ai_chat_bash_jobs_workpool = new Workpool(components.ai_chat_bash_jobs_workpool, {
 	// Above the live-job cap, so one user cannot fill every slot.
@@ -710,7 +713,8 @@ async function db_append_job_finish_entry(
 ) {
 	const shell = await ctx.db.get("ai_chat_bash_shells", invocation.job.shellId);
 	if (!shell) throw should_never_happen("Job shell not found", { shellId: invocation.job.shellId });
-	const started = args.startedAt === undefined ? "" : `, started ${new Date(args.startedAt).toISOString().slice(11, 19)}`;
+	const started =
+		args.startedAt === undefined ? "" : `, started ${new Date(args.startedAt).toISOString().slice(11, 19)}`;
 	await ai_chat_files_db_append_shell_transcript(
 		ctx,
 		shell,
@@ -723,7 +727,8 @@ async function db_append_job_finish_entry(
  * wakeup holds the thread's run lease, do nothing: that run's next Bash call prints the job note
  * instead. Otherwise store a system message with the job's outcome under the newest leaf of the
  * thread, take the `job_wakeup` lease and schedule `run_job_wakeup`, which answers that message.
- * A job settles once, so a job wakes the agent at most once.
+ * A job settles once, so a job wakes the agent at most once, and `wakeupChain` limits how many
+ * wakeups may follow each other without the user.
  */
 async function db_wake_agent_for_job(
 	ctx: MutationCtx,
@@ -731,6 +736,10 @@ async function db_wake_agent_for_job(
 	args: { exitCode: number; stdout: string; stderr: string; now: number },
 ) {
 	if (!invocation.job.wakeAgent) return;
+	// A job whose member lost access must not write into the thread or hold its run lease. The
+	// claim settles exactly such a job, and that settle would otherwise wake the agent for a
+	// member who is no longer there.
+	if (!(await ai_chat_files_db_get_invocation_membership(ctx, invocation))) return;
 	const thread = await ctx.db.get("ai_chat_threads", invocation.threadId);
 	if (!thread) throw should_never_happen("Job thread not found", { threadId: invocation.threadId });
 	if (thread.activeRun && thread.activeRun.expiresAt > args.now) return;
@@ -754,6 +763,10 @@ async function db_wake_agent_for_job(
 	const head = (text: string) =>
 		text.length > BASH_JOB_WAKEUP_HEAD_BYTES ? `${text.slice(0, BASH_JOB_WAKEUP_HEAD_BYTES)}\n[truncated]` : text;
 	const jobNumber = invocation.job.jobNumber;
+	// Count this wakeup. Past the cap the note is still stored, so the next turn the user starts
+	// reads what the job did, but no run starts on its own.
+	const wakeupChain = (thread.wakeupChain ?? 0) + 1;
+	const chainEnded = wakeupChain > BASH_JOB_WAKEUP_MAX_CHAIN;
 	const noteId = get_id_generator("ai_message")();
 	const noteMessageId = await ctx.db.insert("ai_chat_threads_messages_aisdk_5", {
 		organizationId: thread.organizationId,
@@ -772,7 +785,10 @@ async function db_wake_agent_for_job(
 					text:
 						`Background job ${jobNumber} finished in shell ${shell.name} with exit ${args.exitCode}.\n` +
 						`stdout:\n${head(args.stdout)}\nstderr:\n${head(args.stderr)}\n` +
-						`Full output: jobs -o ${jobNumber} or /shells/${shell.name}/transcript.`,
+						`Full output: jobs -o ${jobNumber} or /shells/${shell.name}/transcript.` +
+						(chainEnded
+							? `\nNo reply was started: ${BASH_JOB_WAKEUP_MAX_CHAIN} job wakeups already ran in a row without a message from the user.`
+							: ""),
 				},
 			],
 		},
@@ -781,8 +797,10 @@ async function db_wake_agent_for_job(
 		lastMessageAt: args.now,
 		updatedAt: args.now,
 		updatedBy: invocation.userId,
-		activeRun: { kind: "job_wakeup", expiresAt: args.now + BASH_JOB_WAKEUP_RUN_MS },
+		wakeupChain,
+		activeRun: chainEnded ? undefined : { kind: "job_wakeup", expiresAt: args.now + BASH_JOB_WAKEUP_RUN_MS },
 	});
+	if (chainEnded) return;
 	await ctx.scheduler.runAfter(0, internal.ai_chat.run_job_wakeup, {
 		invocationId: invocation._id,
 		threadId: thread._id,
@@ -1021,8 +1039,10 @@ export type ai_chat_files_start_bash_job_Result =
  * The worker's own settle. Store the bounded result with the foreground retention, empty the big
  * job fields in the same patch so they never coexist with the result, write the finish entry and
  * settle the Activity. Accept a row the watchdog already marked `interrupted` and refuse only
- * `finished`. There is no membership gate: a job that lost its membership stops through the
- * poll, and a gate here would drop its result.
+ * `finished`: the worker's real output is worth more than the watchdog's 124, but on such a row
+ * the finish entry, the Activity and the wakeup are left to the settle that already did them.
+ * There is no membership gate: a job that lost its membership stops through the poll, and a gate
+ * here would drop its result.
  */
 export const finish_bash_job = internalMutation({
 	args: { invocationId: v.id("ai_chat_bash_invocations"), result: ai_chat_bash_result_validator },
@@ -1030,6 +1050,9 @@ export const finish_bash_job = internalMutation({
 	handler: async (ctx, args) => {
 		const invocation = await db_get_job_row(ctx, args.invocationId);
 		if (!invocation || invocation.status === "finished") return null;
+		// The watchdog beat the worker to the row: it marked it `interrupted` and already told the
+		// user the job ended.
+		const settled = invocation.status !== "running";
 
 		const now = Date.now();
 		const exitCode = args.result.metadata.exitCode;
@@ -1048,7 +1071,15 @@ export const finish_bash_job = internalMutation({
 			finishedAt: now,
 			result: bash_result_bounded(args.result),
 			resultExpiresAt: now + BASH_RESULT_RETENTION_MS,
-			job: { ...invocation.job, script: null, shellState: null, resumeScript: undefined, liveOutput: undefined },
+			job: {
+				...invocation.job,
+				script: null,
+				shellState: null,
+				resumeScript: undefined,
+				resumeCommandNumber: undefined,
+				resumeLaunchedJobNumbers: undefined,
+				liveOutput: undefined,
+			},
 		});
 		if (invocation.job.watchdogId !== null) await ctx.scheduler.cancel(invocation.job.watchdogId);
 		// Strip this row's own result on time, like a foreground call does. Without it the daily
@@ -1056,6 +1087,12 @@ export const finish_bash_job = internalMutation({
 		await ctx.scheduler.runAt(now + BASH_RESULT_RETENTION_MS, internal.ai_chat_files.expire_bash_invocation_result, {
 			invocationId: invocation._id,
 		});
+
+		// A settle that ran first already wrote the finish entry, ended the Activity and woke the
+		// agent. The result above is still stored, because that is the worker's real output, but
+		// these three run once: a second entry would contradict the first, and a second wake would
+		// cost another model turn.
+		if (settled) return null;
 
 		// The transcript keeps the full output; the row keeps the bounded copy.
 		const activity = await activities_db_get_by_source_id(ctx, invocation._id);
@@ -1360,6 +1397,15 @@ export const pause_bash_job = internalMutation({
 			shellState: bash_shell_state_validator,
 			cwd: v.string(),
 			cwdTarget: v.union(files_pending_target_validator, v.null()),
+			/**
+			 * How many commands this run counted. The next run keeps counting from here so its
+			 * launches and transfers get their own synthetic ids.
+			 */
+			commandNumber: v.number(),
+			/**
+			 * The jobs this run and the runs before it started, for a bare `wait`.
+			 */
+			launchedJobNumbers: v.array(v.number()),
 		}),
 		/**
 		 * The head of the whole job's output so far, `null` while nothing was printed.
@@ -1403,12 +1449,15 @@ export const pause_bash_job = internalMutation({
 			internal.ai_chat_files.timeout_bash_job,
 			{ invocationId: invocation._id, expectedDeadlineAt: deadlineAt },
 		);
+
 		await ctx.db.patch("ai_chat_bash_invocations", invocation._id, {
 			deadlineAt,
 			transferDeadlineAt: deadlineAt,
 			job: {
 				...invocation.job,
 				resumeScript: args.resume.script,
+				resumeCommandNumber: args.resume.commandNumber,
+				resumeLaunchedJobNumbers: args.resume.launchedJobNumbers,
 				shellState: args.resume.shellState,
 				startCwd: args.resume.cwd,
 				startCwdTarget: args.resume.cwdTarget,
@@ -1419,6 +1468,7 @@ export const pause_bash_job = internalMutation({
 		});
 		// The job waits for its next run like a fresh job waits for its first; `startedAt` stays.
 		await ctx.db.patch("activities", activity._id, { status: "queued", deadlineAt, updatedAt: now });
+
 		await ai_chat_files_db_append_shell_transcript(
 			ctx,
 			shell,
@@ -1449,11 +1499,13 @@ export const poll_bash_job = internalQuery({
 		const membership = await ai_chat_files_db_get_invocation_membership(ctx, invocation);
 		if (!membership) return { status: invocation.status, stopRequested, authorized: false };
 		const userAuth = { id: invocation.userId };
-		let authorized = !(await access_control_db_authorize_membership(ctx, { userAuth, membership, permission: "content.read" }))
-			._nay;
+		let authorized = !(
+			await access_control_db_authorize_membership(ctx, { userAuth, membership, permission: "content.read" })
+		)._nay;
 		if (authorized && invocation.job.allowDbFilesMkdir)
-			authorized = !(await access_control_db_authorize_membership(ctx, { userAuth, membership, permission: "content.write" }))
-				._nay;
+			authorized = !(
+				await access_control_db_authorize_membership(ctx, { userAuth, membership, permission: "content.write" })
+			)._nay;
 		return { status: invocation.status, stopRequested, authorized };
 	},
 });
@@ -1626,7 +1678,8 @@ export const read_job_output = internalQuery({
 			return null;
 		// The delete batch removes the Activity and the row in one pass, so the row is here.
 		const invocation = await ctx.db.get("ai_chat_bash_invocations", activity.source.id);
-		if (!invocation) throw should_never_happen("Job Activity points to a missing invocation", { activityId: activity._id });
+		if (!invocation)
+			throw should_never_happen("Job Activity points to a missing invocation", { activityId: activity._id });
 		const { status, result, resultExpired } = invocation_result(invocation);
 		return {
 			invocationId: invocation._id,

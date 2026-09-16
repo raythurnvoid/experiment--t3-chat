@@ -618,6 +618,8 @@ export const thread_run_begin = internalMutation({
 		if (thread.activeRun?.kind === "job_wakeup" && thread.activeRun.expiresAt > now) return false;
 		await ctx.db.patch("ai_chat_threads", thread._id, {
 			activeRun: { kind: "chat", expiresAt: now + CHAT_RUN_LEASE_MS },
+			// The user sent a message, so the job wakeups may chain again from zero.
+			wakeupChain: undefined,
 		});
 		return true;
 	},
@@ -2517,10 +2519,9 @@ export const get_job_wakeup_context = internalQuery({
 		const invocation = await ctx.db.get("ai_chat_bash_invocations", args.invocationId);
 		if (!invocation?.job?.wakeAgent) return Result({ _nay: { message: "Not found" } });
 		const userAuth = { id: invocation.userId };
-		const membership = await organizations_db_get_membership(ctx, {
-			userId: invocation.userId,
-			membershipId: invocation.membershipId,
-		});
+		// The same fence as every other job door: it also checks the membership lifetime, so a
+		// member who was removed and invited again cannot be woken by the older membership.
+		const membership = await ai_chat_files_db_get_invocation_membership(ctx, invocation);
 		if (!membership) return Result({ _nay: { message: "Unauthorized" } });
 
 		const modeId = invocation.job.allowDbFilesMkdir ? "agent" : "ask";

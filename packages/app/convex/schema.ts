@@ -397,6 +397,12 @@ const app_convex_schema = defineSchema({
 		 * so this only grows. Missing means no job was ever started.
 		 **/
 		bashJobCounter: v.optional(v.number()),
+		/**
+		 * How many job wakeups ran in a row on this thread without a message from the user. A woken
+		 * turn can arm the next job, so this is what ends the chain. A `/api/chat` request clears
+		 * it: the user is back in the loop. Missing means no wakeup ran since the last request.
+		 **/
+		wakeupChain: v.optional(v.number()),
 		activeRun: v.optional(ai_chat_thread_active_run_validator),
 	}).index("by_organization_workspace_archived_lastMessageAt", [
 		"organizationId",
@@ -487,6 +493,19 @@ const app_convex_schema = defineSchema({
 				 * the whole script for the finish entry. Dropped when the job finished.
 				 */
 				resumeScript: v.optional(v.string()),
+				/**
+				 * Present after a pause: the command count the next run continues from. A launch and
+				 * a file transfer are stored under a synthetic id made of this row and the command
+				 * number, so a run that started counting at 0 again would find the earlier run's row
+				 * and do nothing. Dropped when the job finished.
+				 */
+				resumeCommandNumber: v.optional(v.number()),
+				/**
+				 * Present after a pause: the jobs the earlier runs started. `wait` with no arguments
+				 * waits for these, so a continuation would otherwise wait for nothing. Dropped when
+				 * the job finished.
+				 */
+				resumeLaunchedJobNumbers: v.optional(v.array(v.number())),
 				/**
 				 * The cwd the next run starts in: the live cwd at the `&`, which can differ from the
 				 * call's starting cwd, and after a pause the cwd the paused run ended in.
@@ -3640,12 +3659,7 @@ const app_convex_schema = defineSchema({
 		])
 		// Bash job doors resolve a job number through this index, so the user and thread are
 		// fenced by the index itself. Rows of other source kinds have no `source.jobNumber`.
-		.index("by_user_source_kind_thread_jobNumber", [
-			"userId",
-			"source.kind",
-			"source.threadId",
-			"source.jobNumber",
-		]),
+		.index("by_user_source_kind_thread_jobNumber", ["userId", "source.kind", "source.threadId", "source.jobNumber"]),
 
 	activities_user_states: defineTable({
 		userId: v.id("users"),

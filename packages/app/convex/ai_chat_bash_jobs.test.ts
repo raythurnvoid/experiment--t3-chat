@@ -328,9 +328,9 @@ describe("start_bash_job", () => {
 		expect((await f.read(child._id)).activity).toMatchObject({ source: { parentJobNumber: 1 } });
 
 		const stopping = await f.seed_job({ jobNumber: 8, status: "running", stopRequestedAt: Date.now() });
-		expect(
-			(await launch(f, { parentInvocationId: stopping.invocationId, commandNumber: 1 }))._nay?.message,
-		).toBe("the parent job has ended or is stopping");
+		expect((await launch(f, { parentInvocationId: stopping.invocationId, commandNumber: 1 }))._nay?.message).toBe(
+			"the parent job has ended or is stopping",
+		);
 		const orphan = await f.seed_job({ jobNumber: 9, status: "running" });
 		await f.t.run((ctx) => ctx.db.delete("activities", orphan.activityId));
 		expect((await launch(f, { parentInvocationId: orphan.invocationId, commandNumber: 2 }))._nay?.message).toBe(
@@ -400,14 +400,19 @@ describe("begin_bash_invocation", () => {
 		expect(await cursor_rows(f)).toEqual([]);
 		const finishedAt = Date.now();
 		const job = await f.seed_job({ jobNumber: 1, status: "running" });
-		await f.t.mutation(internal.ai_chat_files.finish_bash_job, { invocationId: job.invocationId, result: job_result(0) });
+		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
+			invocationId: job.invocationId,
+			result: job_result(0),
+		});
 		const live = await f.seed_job({ jobNumber: 2, status: "running" });
 
 		vi.setSystemTime(finishedAt + 1000);
 		const first = await begin(f, "notes-1");
 		if (!("notes" in first)) throw new Error("Expected a fresh call");
 		expect(first.notes).toEqual([{ jobNumber: 1, status: "succeeded", shellName: "default" }]);
-		expect(await cursor_rows(f)).toMatchObject([{ userId: f.db.userId, threadId: f.scope.threadId, noticeAt: finishedAt + 999 }]);
+		expect(await cursor_rows(f)).toMatchObject([
+			{ userId: f.db.userId, threadId: f.scope.threadId, noticeAt: finishedAt + 999 },
+		]);
 		// The rejoin of that call carries no notes, and the next fresh call has nothing new.
 		expect("notes" in (await begin(f, "notes-1"))).toBe(false);
 		const second = await begin(f, "notes-2");
@@ -415,7 +420,10 @@ describe("begin_bash_invocation", () => {
 		expect(second.notes).toEqual([]);
 
 		// A job finished in the same millisecond as the previous begin is still noted (`now - 1`).
-		await f.t.mutation(internal.ai_chat_files.finish_bash_job, { invocationId: live.invocationId, result: job_result(1) });
+		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
+			invocationId: live.invocationId,
+			result: job_result(1),
+		});
 		const third = await begin(f, "notes-3");
 		if (!("notes" in third)) throw new Error("Expected a fresh call");
 		expect(third.notes).toEqual([{ jobNumber: 2, status: "failed", shellName: "default" }]);
@@ -424,7 +432,10 @@ describe("begin_bash_invocation", () => {
 	test("one member's call does not hide another member's notes", async () => {
 		const f = await fixture();
 		const job = await f.seed_job({ jobNumber: 1, status: "running" });
-		await f.t.mutation(internal.ai_chat_files.finish_bash_job, { invocationId: job.invocationId, result: job_result(0) });
+		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
+			invocationId: job.invocationId,
+			result: job_result(0),
+		});
 		vi.setSystemTime(Date.now() + 1000);
 		const other = await add_member(f, "bash-jobs-noted");
 		const otherCall = await f.t.mutation(internal.ai_chat_files.begin_bash_invocation, {
@@ -467,13 +478,17 @@ describe("claim_bash_job", () => {
 	test("does not revive a stopping job or one with a stop recorded", async () => {
 		const f = await fixture();
 		const stopping = await f.seed_job({ jobNumber: 1, stopRequestedAt: Date.now() });
-		expect(await f.t.mutation(internal.ai_chat_files.claim_bash_job, { invocationId: stopping.invocationId })).toBeNull();
+		expect(
+			await f.t.mutation(internal.ai_chat_files.claim_bash_job, { invocationId: stopping.invocationId }),
+		).toBeNull();
 		expect((await f.read(stopping.invocationId)).activity).toMatchObject({ status: "stopping" });
 
 		// The flag alone, with the Activity still queued, is also final.
 		const flagged = await f.seed_job({ jobNumber: 2, stopRequestedAt: Date.now() });
 		await f.t.run((ctx) => ctx.db.patch("activities", flagged.activityId, { status: "queued" }));
-		expect(await f.t.mutation(internal.ai_chat_files.claim_bash_job, { invocationId: flagged.invocationId })).toBeNull();
+		expect(
+			await f.t.mutation(internal.ai_chat_files.claim_bash_job, { invocationId: flagged.invocationId }),
+		).toBeNull();
 		expect((await f.read(flagged.invocationId)).activity).toMatchObject({ status: "queued" });
 	});
 
@@ -514,7 +529,10 @@ describe("flush_bash_job_output", () => {
 			liveOutput: head,
 		});
 
-		await f.t.mutation(internal.ai_chat_files.finish_bash_job, { invocationId: job.invocationId, result: job_result(0) });
+		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
+			invocationId: job.invocationId,
+			result: job_result(0),
+		});
 		const finished = await f.read(job.invocationId);
 		expect(finished.row?.job?.liveOutput).toBeUndefined();
 		await f.t.mutation(internal.ai_chat_files.flush_bash_job_output, {
@@ -556,7 +574,14 @@ describe("pause_bash_job", () => {
 	) =>
 		await f.t.mutation(internal.ai_chat_files.pause_bash_job, {
 			invocationId,
-			resume: { script: "echo two", shellState: empty_shell_state, cwd: "/docs", cwdTarget: null },
+			resume: {
+				script: "echo two",
+				shellState: empty_shell_state,
+				cwd: "/docs",
+				cwdTarget: null,
+				commandNumber: 2,
+				launchedJobNumbers: [3],
+			},
 			liveOutput,
 			outcome: { exitCode: 0, stdout: "one\n", stderr: "" },
 			reason: "sleep 30s, continues at soon",
@@ -582,6 +607,9 @@ describe("pause_bash_job", () => {
 			job: {
 				script: "sleep 1",
 				resumeScript: "echo two",
+				// The next run counts its commands and its bare `wait` from where this one stopped.
+				resumeCommandNumber: 2,
+				resumeLaunchedJobNumbers: [3],
 				shellState: empty_shell_state,
 				startCwd: "/docs",
 				startCwdTarget: null,
@@ -601,11 +629,16 @@ describe("pause_bash_job", () => {
 		vi.setSystemTime(start + 120_000);
 		await f.t.mutation(internal.ai_chat_files.claim_bash_job, { invocationId: job.invocationId });
 		expect((await f.read(job.invocationId)).activity).toMatchObject({ status: "running", startedAt: start + 60_000 });
-		await f.t.mutation(internal.ai_chat_files.finish_bash_job, { invocationId: job.invocationId, result: job_result(0) });
+		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
+			invocationId: job.invocationId,
+			result: job_result(0),
+		});
 		const finished = await f.read(job.invocationId);
 		expect(finished.row?.job?.resumeScript).toBeUndefined();
 		expect(finished.row?.job?.liveOutput).toBeUndefined();
-		expect(finished.transcript[2]).toContain(`started ${new Date(start + 60_000).toISOString().slice(11, 19)}\nsleep 1\n`);
+		expect(finished.transcript[2]).toContain(
+			`started ${new Date(start + 60_000).toISOString().slice(11, 19)}\nsleep 1\n`,
+		);
 	});
 
 	test("refuses a row with a Stop pending or one that already settled", async () => {
@@ -613,7 +646,10 @@ describe("pause_bash_job", () => {
 		const stopping = await f.seed_job({ jobNumber: 1, status: "running", stopRequestedAt: Date.now() });
 		expect(await pause(f, stopping.invocationId)).toBe(false);
 		const settled = await f.seed_job({ jobNumber: 2, status: "running" });
-		await f.t.mutation(internal.ai_chat_files.finish_bash_job, { invocationId: settled.invocationId, result: job_result(0) });
+		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
+			invocationId: settled.invocationId,
+			result: job_result(0),
+		});
 		expect(await pause(f, settled.invocationId)).toBe(false);
 		for (const job of [stopping, settled]) {
 			const after = await f.read(job.invocationId);
@@ -647,7 +683,10 @@ describe("job wakeup", () => {
 			threadId: f.scope.threadId,
 			parentId: null,
 			messages: [
-				{ clientGeneratedMessageId: "user-1", content: { id: "user-1", role: "user", parts: [{ type: "text", text: "run it" }] } },
+				{
+					clientGeneratedMessageId: "user-1",
+					content: { id: "user-1", role: "user", parts: [{ type: "text", text: "run it" }] },
+				},
 				{
 					clientGeneratedMessageId: "assistant-1",
 					content: { id: "assistant-1", role: "assistant", parts: [{ type: "text", text: "started" }] },
@@ -702,7 +741,10 @@ describe("job wakeup", () => {
 				],
 			},
 		});
-		expect(thread).toMatchObject({ activeRun: { kind: "job_wakeup", expiresAt: now + 10 * 60 * 1000 }, lastMessageAt: now });
+		expect(thread).toMatchObject({
+			activeRun: { kind: "job_wakeup", expiresAt: now + 10 * 60 * 1000 },
+			lastMessageAt: now,
+		});
 		expect(wakeups).toHaveLength(1);
 		expect(wakeups[0]).toMatchObject({
 			state: { kind: "pending" },
@@ -718,7 +760,10 @@ describe("job wakeup", () => {
 			ctx.db.patch("ai_chat_threads", f.scope.threadId, { activeRun: { kind: "chat", expiresAt: now + 60_000 } }),
 		);
 		const first = await f.seed_job({ jobNumber: 1, status: "running", wakeAgent });
-		await f.t.mutation(internal.ai_chat_files.finish_bash_job, { invocationId: first.invocationId, result: job_result(0) });
+		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
+			invocationId: first.invocationId,
+			result: job_result(0),
+		});
 		let state = await read_thread(f);
 		expect(state.messages).toHaveLength(2);
 		expect(state.thread?.activeRun).toEqual({ kind: "chat", expiresAt: now + 60_000 });
@@ -726,7 +771,10 @@ describe("job wakeup", () => {
 
 		vi.setSystemTime(now + 60_001);
 		const second = await f.seed_job({ jobNumber: 2, status: "running", wakeAgent });
-		await f.t.mutation(internal.ai_chat_files.finish_bash_job, { invocationId: second.invocationId, result: job_result(0) });
+		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
+			invocationId: second.invocationId,
+			result: job_result(0),
+		});
 		state = await read_thread(f);
 		expect(state.messages).toHaveLength(3);
 		expect(state.thread?.activeRun?.kind).toBe("job_wakeup");
@@ -737,7 +785,10 @@ describe("job wakeup", () => {
 		const f = await fixture();
 		await seed_messages(f);
 		const plain = await f.seed_job({ jobNumber: 1, status: "running" });
-		await f.t.mutation(internal.ai_chat_files.finish_bash_job, { invocationId: plain.invocationId, result: job_result(0) });
+		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
+			invocationId: plain.invocationId,
+			result: job_result(0),
+		});
 		expect((await read_thread(f)).messages).toHaveLength(2);
 
 		const start = Date.now();
@@ -759,11 +810,88 @@ describe("job wakeup", () => {
 		expect(wakeups).toHaveLength(1);
 	});
 
+	test("the wakeups stop chaining without the user and chain again after a chat request", async () => {
+		const f = await fixture();
+		await seed_messages(f);
+		// A woken turn gives the lease back when it ends, so the job it armed can wake again.
+		const wake_once = async (jobNumber: number) => {
+			const job = await f.seed_job({ jobNumber, status: "running", wakeAgent });
+			await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
+				invocationId: job.invocationId,
+				result: job_result(0),
+			});
+			await f.t.mutation(internal.ai_chat.thread_run_end, { threadId: f.scope.threadId, kind: "job_wakeup" });
+		};
+		for (const jobNumber of [1, 2, 3, 4, 5]) await wake_once(jobNumber);
+		const chained = await read_thread(f);
+		expect(chained.wakeups).toHaveLength(5);
+		expect(chained.thread?.wakeupChain).toBe(5);
+
+		// The sixth job still writes its note, and the note says why nothing answers it.
+		await wake_once(6);
+		const capped = await read_thread(f);
+		expect(capped.wakeups).toHaveLength(5);
+		expect(capped.thread?.activeRun).toBeUndefined();
+		expect(capped.messages.at(-1)?.content.parts[0].text).toContain(
+			"No reply was started: 5 job wakeups already ran in a row without a message from the user.",
+		);
+
+		expect(await f.t.mutation(internal.ai_chat.thread_run_begin, { threadId: f.scope.threadId })).toBe(true);
+		expect((await read_thread(f)).thread?.wakeupChain).toBeUndefined();
+		await f.t.mutation(internal.ai_chat.thread_run_end, { threadId: f.scope.threadId, kind: "chat" });
+		await wake_once(7);
+		expect((await read_thread(f)).wakeups).toHaveLength(6);
+	});
+
+	test("a job whose member lost access writes no note and takes no lease", async () => {
+		const f = await fixture();
+		await seed_messages(f);
+		const job = await f.seed_job({ jobNumber: 1, status: "running", wakeAgent });
+		await f.t.run((ctx) => ctx.db.patch("organizations_workspaces_users", f.db.membershipId, { active: false }));
+		// The claim of a job with a dead membership settles it, and that settle would wake.
+		expect(await f.t.mutation(internal.ai_chat_files.claim_bash_job, { invocationId: job.invocationId })).toBeNull();
+		const state = await read_thread(f);
+		expect(state.messages).toHaveLength(2);
+		expect(state.thread?.activeRun).toBeUndefined();
+		expect(state.wakeups).toHaveLength(0);
+	});
+
+	test("a result stored after the watchdog settled adds no second note and no second entry", async () => {
+		const f = await fixture();
+		await seed_messages(f);
+		const start = Date.now();
+		const job = await f.seed_job({ jobNumber: 1, status: "running", wakeAgent });
+		vi.setSystemTime(start + PLACEHOLDER_MS);
+		await f.t.mutation(internal.ai_chat_files.timeout_bash_job, {
+			invocationId: job.invocationId,
+			expectedDeadlineAt: start + PLACEHOLDER_MS,
+		});
+		const settled = await read_thread(f);
+		expect(settled.messages).toHaveLength(3);
+
+		// The worker was alive after all and stores its real output. That result is kept, but the
+		// note, the entry and the Activity stay the ones the settle wrote.
+		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
+			invocationId: job.invocationId,
+			result: job_result(0, "real output\n"),
+		});
+		const after = await f.read(job.invocationId);
+		expect(after.row).toMatchObject({ status: "finished", result: { stdout: "real output\n" } });
+		expect(after.activity).toMatchObject({ status: "timed_out" });
+		expect(after.transcript.filter((entry) => entry.includes("job 1 finished"))).toHaveLength(1);
+		const state = await read_thread(f);
+		expect(state.messages).toHaveLength(3);
+		expect(state.wakeups).toHaveLength(1);
+	});
+
 	test("arm_bash_job_wakeup arms the caller's live jobs only", async () => {
 		const f = await fixture();
 		const live = await f.seed_job({ jobNumber: 1, status: "running" });
 		const done = await f.seed_job({ jobNumber: 2, status: "running" });
-		await f.t.mutation(internal.ai_chat_files.finish_bash_job, { invocationId: done.invocationId, result: job_result(0) });
+		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
+			invocationId: done.invocationId,
+			result: job_result(0),
+		});
 		expect(
 			await f.t.mutation(internal.ai_chat_files.arm_bash_job_wakeup, {
 				...f.scope,
@@ -878,7 +1006,10 @@ describe("timeout_bash_job", () => {
 		const f = await fixture();
 		const start = Date.now();
 		const job = await f.seed_job({ jobNumber: 1, status: "running" });
-		await f.t.mutation(internal.ai_chat_files.finish_bash_job, { invocationId: job.invocationId, result: job_result(0) });
+		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
+			invocationId: job.invocationId,
+			result: job_result(0),
+		});
 		vi.setSystemTime(start + PLACEHOLDER_MS);
 		await f.t.mutation(internal.ai_chat_files.timeout_bash_job, {
 			invocationId: job.invocationId,
@@ -933,7 +1064,7 @@ describe("finish_bash_job", () => {
 		expect((await f.read(job.invocationId)).activity).toMatchObject({ status, errorMessage });
 	});
 
-	test("accepts an interrupted row, refuses a finished one, and keeps a watchdog's timed_out on a late finish", async () => {
+	test("accepts an interrupted row, refuses a finished one, and adds no second entry on a late finish", async () => {
 		const f = await fixture();
 		const start = Date.now();
 		const job = await f.seed_job({ jobNumber: 1, status: "running" });
@@ -951,7 +1082,9 @@ describe("finish_bash_job", () => {
 		const late = await f.read(job.invocationId);
 		expect(late.row).toMatchObject({ status: "finished", result: { stdout: "late\n" } });
 		expect(late.activity).toMatchObject({ status: "timed_out" });
-		expect(late.transcript).toHaveLength(3);
+		// The start entry and the settle's finish entry. The worker's real result is kept on the row,
+		// but a second finish entry would contradict the first one's 124.
+		expect(late.transcript).toHaveLength(2);
 
 		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 			invocationId: job.invocationId,
@@ -959,7 +1092,7 @@ describe("finish_bash_job", () => {
 		});
 		const again = await f.read(job.invocationId);
 		expect(again.row).toMatchObject({ result: { stdout: "late\n" } });
-		expect(again.transcript).toHaveLength(3);
+		expect(again.transcript).toHaveLength(2);
 	});
 
 	test("stores a bounded copy of a huge result and keeps the full output in the transcript", async () => {
@@ -1050,7 +1183,10 @@ describe("handle_bash_job_complete", () => {
 	test("a worker that threw settles failed at once and the row is interrupted", async () => {
 		const f = await fixture();
 		const job = await f.seed_job({ jobNumber: 1, status: "running" });
-		await f.t.mutation(internal.ai_chat_files.handle_bash_job_complete, callback(job.invocationId, job.workId!, "failed"));
+		await f.t.mutation(
+			internal.ai_chat_files.handle_bash_job_complete,
+			callback(job.invocationId, job.workId!, "failed"),
+		);
 		const after = await f.read(job.invocationId);
 		expect(after.row).toMatchObject({ status: "interrupted" });
 		expect(after.activity).toMatchObject({ status: "failed", errorMessage: "Background command crashed" });
@@ -1060,7 +1196,10 @@ describe("handle_bash_job_complete", () => {
 	test("a Stop on a queued job settles canceled and the row is interrupted", async () => {
 		const f = await fixture();
 		const job = await f.seed_job({ jobNumber: 1, stopRequestedAt: Date.now() });
-		await f.t.mutation(internal.ai_chat_files.handle_bash_job_complete, callback(job.invocationId, job.workId!, "canceled"));
+		await f.t.mutation(
+			internal.ai_chat_files.handle_bash_job_complete,
+			callback(job.invocationId, job.workId!, "canceled"),
+		);
 		const after = await f.read(job.invocationId);
 		expect(after.row).toMatchObject({ status: "interrupted" });
 		expect(after.activity).toMatchObject({ status: "canceled" });
@@ -1069,7 +1208,10 @@ describe("handle_bash_job_complete", () => {
 	test("a success after a stop settles canceled; a plain success and a superseded worker do nothing", async () => {
 		const f = await fixture();
 		const plain = await f.seed_job({ jobNumber: 1, status: "running" });
-		await f.t.mutation(internal.ai_chat_files.handle_bash_job_complete, callback(plain.invocationId, plain.workId!, "success"));
+		await f.t.mutation(
+			internal.ai_chat_files.handle_bash_job_complete,
+			callback(plain.invocationId, plain.workId!, "success"),
+		);
 		expect((await f.read(plain.invocationId)).activity).toMatchObject({ status: "running" });
 
 		const stopped = await f.seed_job({ jobNumber: 2, stopRequestedAt: Date.now() });
@@ -1078,12 +1220,18 @@ describe("handle_bash_job_complete", () => {
 			callback(stopped.invocationId, "other" as WorkId, "success"),
 		);
 		expect((await f.read(stopped.invocationId)).activity).toMatchObject({ status: "stopping" });
-		await f.t.mutation(internal.ai_chat_files.handle_bash_job_complete, callback(stopped.invocationId, stopped.workId!, "success"));
+		await f.t.mutation(
+			internal.ai_chat_files.handle_bash_job_complete,
+			callback(stopped.invocationId, stopped.workId!, "success"),
+		);
 		expect((await f.read(stopped.invocationId)).activity).toMatchObject({ status: "canceled" });
 
 		await f.t.run((ctx) => ctx.db.delete("ai_chat_bash_invocations", plain.invocationId));
 		await expect(
-			f.t.mutation(internal.ai_chat_files.handle_bash_job_complete, callback(plain.invocationId, plain.workId!, "failed")),
+			f.t.mutation(
+				internal.ai_chat_files.handle_bash_job_complete,
+				callback(plain.invocationId, plain.workId!, "failed"),
+			),
 		).resolves.toBeNull();
 	});
 });
@@ -1236,7 +1384,10 @@ describe("list_thread_jobs", () => {
 		const live = await f.seed_job({ jobNumber: 1, status: "running" });
 		for (let n = 2; n <= 10; n += 1) {
 			const job = await f.seed_job({ jobNumber: n, status: "running", parentJobNumber: n === 10 ? 1 : undefined });
-			await f.t.mutation(internal.ai_chat_files.finish_bash_job, { invocationId: job.invocationId, result: job_result(0) });
+			await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
+				invocationId: job.invocationId,
+				result: job_result(0),
+			});
 		}
 		expect(await f.t.query(internal.ai_chat_files.list_thread_jobs, { ...f.scope, select: { kind: "live" } })).toEqual([
 			{
@@ -1267,7 +1418,10 @@ describe("list_thread_jobs", () => {
 		await expect(
 			f.t.query(internal.ai_chat_files.list_thread_jobs, {
 				...f.scope,
-				select: { kind: "numbers", jobNumbers: Array.from({ length: bash_JOB_NUMBERS_MAX_COUNT + 1 }, (_, n) => n + 1) },
+				select: {
+					kind: "numbers",
+					jobNumbers: Array.from({ length: bash_JOB_NUMBERS_MAX_COUNT + 1 }, (_, n) => n + 1),
+				},
 			}),
 		).rejects.toThrow("Too many job numbers");
 	});
@@ -1281,9 +1435,9 @@ describe("list_thread_jobs", () => {
 			{ kind: "newest" as const },
 			{ kind: "numbers" as const, jobNumbers: [1] },
 		]) {
-			expect(await f.t.query(internal.ai_chat_files.list_thread_jobs, { ...f.scope, userId: other.userId, select })).toEqual(
-				[],
-			);
+			expect(
+				await f.t.query(internal.ai_chat_files.list_thread_jobs, { ...f.scope, userId: other.userId, select }),
+			).toEqual([]);
 		}
 		const stranger = await f.t.run((ctx) => test_mocks_fill_db_with.membership(ctx, { organizationName: "elsewhere" }));
 		await expect(
@@ -1369,12 +1523,18 @@ describe("activities", () => {
 		const jobs: Awaited<ReturnType<typeof f.seed_job>>[] = [];
 		for (let n = 1; n <= 9; n += 1) {
 			const job = await f.seed_job({ jobNumber: n, status: "running" });
-			await f.t.mutation(internal.ai_chat_files.finish_bash_job, { invocationId: job.invocationId, result: job_result(0) });
+			await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
+				invocationId: job.invocationId,
+				result: job_result(0),
+			});
 			jobs.push(job);
 		}
 		const expiresAt = start + 7 * 24 * 60 * 60 * 1000;
 		expect(
-			await f.t.mutation(internal.activities.cleanup_history, { _test_now: expiresAt - 1, _test_disableReschedule: true }),
+			await f.t.mutation(internal.activities.cleanup_history, {
+				_test_now: expiresAt - 1,
+				_test_disableReschedule: true,
+			}),
 		).toEqual({ deletedCount: 0, done: true });
 		expect(
 			await f.t.mutation(internal.activities.cleanup_history, { _test_now: expiresAt, _test_disableReschedule: true }),

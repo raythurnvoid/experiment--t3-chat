@@ -177,10 +177,15 @@ async function print_job_output(ctx: ActionCtx, job: bash_JobContext, jobNumber:
 		...job_scope(job),
 		jobNumber,
 	})) as ai_chat_files_read_job_output_Result;
-	if (!output) return { stdout: "", stderr: `bash: jobs: no such job ${jobNumber}\n`, exitCode: bash_COMMAND_EXIT_FAILURE };
-	// A running job with nothing flushed yet costs no read budget.
+	if (!output)
+		return { stdout: "", stderr: `bash: jobs: no such job ${jobNumber}\n`, exitCode: bash_COMMAND_EXIT_FAILURE };
+	// The status word comes from the Activity, like `jobs` and the finished-job note print it, so a
+	// paused job does not read as running here while `jobs` calls it queued.
+	const liveMarker = `[job ${jobNumber} ${bash_job_status_word(output.activityStatus)}]\n`;
+	// A live job that flushed nothing yet still says which job it is and that it is not done. The
+	// marker alone costs no read budget.
 	if (output.status === "running" && !output.liveOutput)
-		return { stdout: "", stderr: "", exitCode: bash_COMMAND_EXIT_STILL_RUNNING };
+		return { stdout: "", stderr: liveMarker, exitCode: bash_COMMAND_EXIT_STILL_RUNNING };
 	if (output.status !== "running" && !output.result)
 		return {
 			stdout: "",
@@ -205,7 +210,7 @@ async function print_job_output(ctx: ActionCtx, job: bash_JobContext, jobNumber:
 		const live = output.liveOutput;
 		return {
 			stdout: bounded(live.stdout, live.stdoutTruncated),
-			stderr: `${bounded(live.stderr, live.stderrTruncated)}[job ${jobNumber} running]\n`,
+			stderr: `${bounded(live.stderr, live.stderrTruncated)}${liveMarker}`,
 			exitCode: bash_COMMAND_EXIT_STILL_RUNNING,
 		};
 	}
