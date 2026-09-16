@@ -138,6 +138,20 @@ Both phases must start from the same fixture state:
   content search needs materialized chunks.
 - After a Convex push, reload `/files` and re-open the Agent tab before the next prompt.
 
+### Prove the deployment carries your prompt edit
+
+The Bash tool description lives in `packages/app/server/server-ai-tools.ts`, so an edit to it reaches
+the model only after a Convex push. The model reads it back for you: in a fresh chat, send
+
+```text
+Do not use any tool. Copy out, word for word, the sentence in your Bash tool description that begins with: <the first words of the sentence>
+```
+
+and compare the answer with the file. Name the sentence by its opening words only, never by the part
+you changed, or a model that never received the new text can echo your own prompt back. Read it once
+before the push and once after, and the pair is a real before-and-after: nothing else in the app shows
+the tool description. Verified 2026-09-16.
+
 ### Bind Snippet
 
 Bind to the existing chat tab and print basic run context. This should not start the dev server or open a new browser.
