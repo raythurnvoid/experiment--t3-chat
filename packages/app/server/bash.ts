@@ -143,12 +143,13 @@ const BASH_JOB_POLL_MS = 5_000;
 // After this many launches refused in a row, the hook refuses the rest without a query. Every
 // refusal counts, not only the jobs-cap refusal, because each refused launch still costs a door
 // query and `&` is free. A launch that succeeds starts the count again, and so does a `wait`
-// that found a job live and saw it end: those are the two ways this call learns the cap is no
-// longer blocking it. The wait recovery exists only for the cap. If neither reset existed the
-// count could never come back down: the local refusal returns before the query that would clear
-// it. The engine charges no command for `cmd &`, so this count is what stops a flat run of `&`
-// from asking the door once per statement. A successful launch resets it too, so a call can ask
-// the door many times. Every run of a job also starts a fresh count at 0.
+// that found a job live and saw it end. The wait does not look at why the launches were refused.
+// It also does not make a script-size, state-size, or stopping launch succeed: those still fail
+// at the door. If neither reset existed the count could never come back down: the local refusal
+// returns before the query that would clear it. The engine charges no command for `cmd &`, so
+// this count is what stops a flat run of `&` from asking the door once per statement. A
+// successful launch resets it too, so a call can ask the door many times. Every run of a job
+// also starts a fresh count at 0.
 const BASH_JOB_LAUNCH_MAX_REFUSALS = 3;
 // A bare top-level `sleep` of at least this long pauses the job instead of holding a worker, and
 // waits at most as long as the sleep command itself would (its own cap is one hour).

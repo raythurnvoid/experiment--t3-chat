@@ -52,20 +52,19 @@ export type bash_JobContext = {
 	/**
 	 * Launches refused in a row; after 3 the hook refuses locally without a database round trip.
 	 * Every refusal counts, not only the jobs-cap refusal, because each refused launch still
-	 * costs a door query and `&` is free. Two things put the count back to 0, because they are
-	 * the two ways this call learns the cap is no longer blocking it: a launch that succeeds,
-	 * and a `wait` that found a job live and then saw it end. The wait recovery exists only for
-	 * the cap. A script can hit the cap, `wait` for those jobs, and start more. A script, state
-	 * or stopping refusal is refused every time. So this count stops a flat run of `&` from
-	 * asking the door once per statement, not the refusals of a whole call. A successful launch
-	 * resets it too, so a call can ask the door many times inside its 90 seconds. If neither
-	 * reset existed the count could never come down, since the local refusal returns before the
-	 * query whose success would clear it. A `wait` for jobs that had already ended frees nothing
-	 * and resets nothing, so a loop of `cmd & wait 1` cannot use it to keep asking the door. The
-	 * jobs of another chat cannot be waited on at all, so a call blocked by those keeps the
-	 * block until it ends. There is a third reset: every run of a job starts a fresh context
-	 * with this count at 0, so a `&` followed by a bare `sleep 5` inside a job clears the block
-	 * at each pause.
+	 * costs a door query and `&` is free. Two things put the count back to 0: a launch that
+	 * succeeds, and a `wait` that found a job live and then saw it end. The wait does not look
+	 * at why the launches were refused. A script can hit the cap, `wait` for those jobs, and
+	 * start more. A script, state or stopping refusal still fails at the door every time. So
+	 * this count stops a flat run of `&` from asking the door once per statement, not the
+	 * refusals of a whole call. A successful launch resets it too, so a call can ask the door
+	 * many times inside its 90 seconds. If neither reset existed the count could never come
+	 * down, since the local refusal returns before the query whose success would clear it. A
+	 * `wait` for jobs that had already ended resets nothing, so a loop of `cmd & wait 1` cannot
+	 * use it to keep asking the door. The jobs of another chat cannot be waited on at all, so a
+	 * call blocked by those keeps the block until it ends. There is a third reset: every run of
+	 * a job starts a fresh context with this count at 0, so a `&` followed by a bare `sleep 5`
+	 * inside a job clears the block at each pause.
 	 */
 	launchRefusals: number;
 	/**
@@ -360,12 +359,12 @@ export function bash_wait_command_create(ctx: ActionCtx, job: bash_JobContext): 
 		}
 		if (is_live()) return { stdout: "", stderr: "", exitCode: bash_COMMAND_EXIT_STILL_RUNNING };
 
-		// A job this wait found live has ended, so this call has learned the cap is no longer
-		// blocking it. Let the next `&` ask the door again even when three launches in a row were
-		// refused before this wait. A wait for jobs that had already ended frees nothing, and
-		// neither does one that gave up with a job still live or waited for nothing. `&` costs no
-		// command budget in the engine, so this count is what stops a flat run of `&` from asking
-		// the door once per statement.
+		// A job this wait found live has ended, so start the local count again. Let the next `&`
+		// ask the door again even when three launches in a row were refused before this wait. The
+		// wait does not look at why those launches were refused. A wait for jobs that had already
+		// ended resets nothing, and neither does one that gave up with a job still live or waited
+		// for nothing. `&` costs no command budget in the engine, so this count is what stops a
+		// flat run of `&` from asking the door once per statement.
 		if (waitedOnLive) job.launchRefusals = 0;
 		// Ask for the numbers this wait started with, not the last list. A purge can empty
 		// `found` after the first list passed, and `Math.max(0, ...[])` would then report

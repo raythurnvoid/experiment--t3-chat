@@ -231,6 +231,8 @@ describe("ai_chat_tool_create_bash", () => {
 			"to put several commands in one job write { cmd1; cmd2; } & or cmd1 && cmd2 &",
 			"A job starts in the cwd at the &",
 			"At most 4 of your own jobs in this workspace can be queued, running or stopping at once",
+			"until a launch works or a wait that found a job live and then saw it end starts the count again",
+			"A wait does not make a refused script, state, or stopping launch succeed",
 			"a script over 64 KiB, a shell state over 128 KiB, and a launch from a job that is already stopping are refused every time",
 			"put sequential cp or mv commands in one job: the second job's copy waits up to 60 s for the lane and then fails with exit 1",
 			"jobs -o N prints the stored stdout then stderr of job N, then one final [job N exit C] line on stderr",
@@ -249,6 +251,7 @@ describe("ai_chat_tool_create_bash", () => {
 			expect(tool.description).toContain(sentence);
 		}
 		expect(tool.description).not.toContain("transfer");
+		expect(tool.description).not.toContain("frees a slot");
 	});
 
 	test("offers wakeOnJobFinish only with a job wakeup, passes it to the action and ends the turn on a waiting result", async () => {
