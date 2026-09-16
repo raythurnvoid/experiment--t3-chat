@@ -228,6 +228,9 @@ describe("ai_chat_tool_create_bash", () => {
 			"wait N waits for the named jobs",
 			"wait is a shell builtin, so which wait finds nothing even though wait works",
 			"wait normally returns 3 (still running)",
+			"In Agent mode, set wakeOnJobFinish: true on a Bash call when the jobs it starts or waits for should wake you when they end",
+			"a finished job then adds a system message with its number, shell, exit code and the head of its output, and starts a new run of yours (only when no run is active",
+			"In such a call wait does not poll: it prints bash: waiting for job N on stderr, exits 3, and you must end the turn with a short status",
 			"a stopped job reports 143 (status stopped), a job that used its whole budget reports 124 (timed out)",
 			"the next Bash call prints bash: job N done|failed|timed out|stopped. Output: /shells/<name>/transcript",
 			"Stopping the chat leaves jobs running; the Notifications panel lists every job with its Stop button",
@@ -236,6 +239,49 @@ describe("ai_chat_tool_create_bash", () => {
 			expect(tool.description).toContain(sentence);
 		}
 		expect(tool.description).not.toContain("transfer");
+	});
+
+	test("offers wakeOnJobFinish only with a job wakeup, passes it to the action and ends the turn on a waiting result", async () => {
+		const bash_result = (waitingForJobs?: number[]) => ({
+			title: "exit 3",
+			output: "$ wait",
+			stdout: "",
+			stderr: "",
+			metadata: { exitCode: 3, observedPaths: [], observedPathsTruncated: false, ...(waitingForJobs ? { waitingForJobs } : {}) },
+		});
+
+		// Ask mode: the field does not exist, so a model never sees it and a stored value is dropped.
+		const ask = ai_chat_tool_create_bash(makeCtx(async () => null).ctx, server_ai_tools_test_ctx_data, {
+			allowDbFilesMkdir: false,
+			jobWakeup: null,
+		});
+		if (!has_defined_property(ask.inputSchema, "parse")) throw new Error("inputSchema has no parse");
+		expect(ask.inputSchema.parse({ command: "wait", wakeOnJobFinish: true })).toEqual({ command: "wait" });
+
+		const onWaiting = vi.fn();
+		const { ctx, runAction } = makeCtx(async () => null, { runActionImpl: async () => bash_result() });
+		const tool = ai_chat_tool_create_bash(ctx, server_ai_tools_test_ctx_data, {
+			allowDbFilesMkdir: true,
+			jobWakeup: { modelId: "gpt-5.4-mini", onWaiting },
+		});
+		if (!has_defined_property(tool.inputSchema, "parse")) throw new Error("inputSchema has no parse");
+		expect(tool.inputSchema.parse({ command: "wait", wakeOnJobFinish: true })).toEqual({ command: "wait", wakeOnJobFinish: true });
+
+		await tool.execute?.({ command: "wait" }, { toolCallId: "plain", messages: [] });
+		expect(runAction).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({ wakeAgent: null }));
+		expect(onWaiting).not.toHaveBeenCalled();
+
+		await tool.execute?.({ command: "wait", wakeOnJobFinish: true }, { toolCallId: "armed", messages: [] });
+		expect(runAction).toHaveBeenLastCalledWith(
+			expect.anything(),
+			expect.objectContaining({ wakeAgent: { modelId: "gpt-5.4-mini" } }),
+		);
+		expect(onWaiting).not.toHaveBeenCalled();
+
+		runAction.mockImplementationOnce(async () => bash_result([1]));
+		const waiting = await tool.execute?.({ command: "wait", wakeOnJobFinish: true }, { toolCallId: "waiting", messages: [] });
+		expect(onWaiting).toHaveBeenCalledTimes(1);
+		expect(waiting).toMatchObject({ metadata: { waitingForJobs: [1] } });
 	});
 
 	test("returns scoped rules once beside the unchanged shell output", async () => {

@@ -3,6 +3,7 @@ import { v } from "convex/values";
 import { doc } from "convex-helpers/validators";
 import { vWorkId } from "@convex-dev/workpool";
 import type { ai_chat_UiMessage } from "../src/lib/ai-chat.ts";
+import { ai_chat_MODEL_IDS } from "../shared/ai-chat.ts";
 import {
 	organizations_GLOBAL_ORGANIZATION_ID,
 	organizations_GLOBAL_GITHUB_WORKSPACE_ID,
@@ -62,7 +63,27 @@ export const ai_chat_bash_result_validator = v.object({
 		pathIndexTruncated: v.boolean(),
 		observedPaths: v.array(v.string()),
 		observedPathsTruncated: v.boolean(),
+		/**
+		 * The jobs `wait` stopped polling for because their finish wakes the agent. The Bash tool
+		 * ends the turn when this is present.
+		 */
+		waitingForJobs: v.optional(v.array(v.number())),
 	}),
+});
+
+/**
+ * The model a job wakeup runs with: the model of the chat call that armed the job.
+ */
+export const ai_chat_model_id_validator = v.union(...ai_chat_MODEL_IDS.map((modelId) => v.literal(modelId)));
+
+/**
+ * The agent run in progress on a thread: a `/api/chat` request streaming, or a `run_job_wakeup`
+ * action. A finished job wakes the agent only while this is absent or expired. The run clears it
+ * at its end; `expiresAt` covers a run whose action was killed.
+ */
+export const ai_chat_thread_active_run_validator = v.object({
+	kind: v.union(v.literal("chat"), v.literal("job_wakeup")),
+	expiresAt: v.number(),
 });
 
 /**
@@ -376,6 +397,7 @@ const app_convex_schema = defineSchema({
 		 * so this only grows. Missing means no job was ever started.
 		 **/
 		bashJobCounter: v.optional(v.number()),
+		activeRun: v.optional(ai_chat_thread_active_run_validator),
 	}).index("by_organization_workspace_archived_lastMessageAt", [
 		"organizationId",
 		"workspaceId",
@@ -475,6 +497,11 @@ const app_convex_schema = defineSchema({
 				 * the job drops it: the result and the transcript carry the full output.
 				 */
 				liveOutput: v.optional(ai_chat_bash_job_live_output_validator),
+				/**
+				 * Present when the job's finish must wake the agent: the launch asked for it
+				 * (`wakeOnJobFinish`) or a later `wait` armed it. Holds the model the wakeup runs with.
+				 */
+				wakeAgent: v.optional(v.object({ modelId: ai_chat_model_id_validator })),
 			}),
 		),
 	})

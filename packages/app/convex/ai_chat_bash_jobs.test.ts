@@ -1,4 +1,5 @@
 import { Workpool, type WorkId } from "@convex-dev/workpool";
+import { getFunctionName } from "convex/server";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, components, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
@@ -86,6 +87,7 @@ async function fixture() {
 		stopRequestedAt?: number;
 		parentJobNumber?: number;
 		allowDbFilesMkdir?: boolean;
+		wakeAgent?: { modelId: "gpt-5.4-nano" };
 	}) =>
 		await t.run(async (ctx) => {
 			const now = Date.now();
@@ -115,6 +117,7 @@ async function fixture() {
 							: args.workId,
 					watchdogId: null,
 					stopRequestedAt: args.stopRequestedAt ?? null,
+					wakeAgent: args.wakeAgent,
 				},
 			});
 			const watchdogId = await ctx.scheduler.runAt(now + PLACEHOLDER_MS, internal.ai_chat_files.timeout_bash_job, {
@@ -529,6 +532,191 @@ describe("flush_bash_job_output", () => {
 		expect(after.row?.job?.liveOutput).toBeUndefined();
 		expect(after.transcript[1]).toContain("job 1 finished (exit 124)");
 		expect(after.transcript[1]?.endsWith("\nsleep 1\npartial\n\n")).toBe(true);
+	});
+});
+
+describe("job wakeup", () => {
+	const wakeAgent = { modelId: "gpt-5.4-nano" } as const;
+
+	/**
+	 * A user message and its reply, so the thread has a leaf to hang the job note on.
+	 */
+	async function seed_messages(f: Awaited<ReturnType<typeof fixture>>) {
+		const stored = await f.asUser.mutation(api.ai_chat.thread_messages_add, {
+			membershipId: f.db.membershipId,
+			threadId: f.scope.threadId,
+			parentId: null,
+			messages: [
+				{ clientGeneratedMessageId: "user-1", content: { id: "user-1", role: "user", parts: [{ type: "text", text: "run it" }] } },
+				{
+					clientGeneratedMessageId: "assistant-1",
+					content: { id: "assistant-1", role: "assistant", parts: [{ type: "text", text: "started" }] },
+				},
+			],
+		});
+		if (stored._nay) throw new Error(stored._nay.message);
+		return { userId: stored._yay.ids[0]!, assistantId: stored._yay.ids[1]! };
+	}
+
+	async function read_thread(f: Awaited<ReturnType<typeof fixture>>) {
+		return await f.t.run(async (ctx) => ({
+			thread: await ctx.db.get("ai_chat_threads", f.scope.threadId),
+			messages: await ctx.db
+				.query("ai_chat_threads_messages_aisdk_5")
+				.withIndex("by_organization_workspace_thread", (q) =>
+					q
+						.eq("organizationId", f.db.organizationId)
+						.eq("workspaceId", f.db.workspaceId)
+						.eq("threadId", f.scope.threadId),
+				)
+				.order("asc")
+				.collect(),
+			wakeups: (await ctx.db.system.query("_scheduled_functions").collect()).filter(
+				(scheduled) => scheduled.name === getFunctionName(internal.ai_chat.run_job_wakeup),
+			),
+		}));
+	}
+
+	test("the finish stores a system note under the newest leaf, takes the lease and schedules the run", async () => {
+		const f = await fixture();
+		const { assistantId } = await seed_messages(f);
+		const job = await f.seed_job({ jobNumber: 1, status: "running", wakeAgent });
+		const now = Date.now();
+		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
+			invocationId: job.invocationId,
+			result: job_result(2, "line one\n", "oops\n"),
+		});
+
+		const { thread, messages, wakeups } = await read_thread(f);
+		const note = messages.at(-1);
+		expect(note).toMatchObject({
+			parentId: assistantId,
+			createdBy: f.db.userId,
+			content: {
+				role: "system",
+				parts: [
+					{
+						type: "text",
+						text: "Background job 1 finished in shell default with exit 2.\nstdout:\nline one\n\nstderr:\noops\n\nFull output: jobs -o 1 or /shells/default/transcript.",
+					},
+				],
+			},
+		});
+		expect(thread).toMatchObject({ activeRun: { kind: "job_wakeup", expiresAt: now + 10 * 60 * 1000 }, lastMessageAt: now });
+		expect(wakeups).toHaveLength(1);
+		expect(wakeups[0]).toMatchObject({
+			state: { kind: "pending" },
+			args: [{ invocationId: job.invocationId, threadId: f.scope.threadId, noteMessageId: note?._id }],
+		});
+	});
+
+	test("a job that ends while a chat run streams does not wake; an expired lease does not block", async () => {
+		const f = await fixture();
+		await seed_messages(f);
+		const now = Date.now();
+		await f.t.run((ctx) =>
+			ctx.db.patch("ai_chat_threads", f.scope.threadId, { activeRun: { kind: "chat", expiresAt: now + 60_000 } }),
+		);
+		const first = await f.seed_job({ jobNumber: 1, status: "running", wakeAgent });
+		await f.t.mutation(internal.ai_chat_files.finish_bash_job, { invocationId: first.invocationId, result: job_result(0) });
+		let state = await read_thread(f);
+		expect(state.messages).toHaveLength(2);
+		expect(state.thread?.activeRun).toEqual({ kind: "chat", expiresAt: now + 60_000 });
+		expect(state.wakeups).toHaveLength(0);
+
+		vi.setSystemTime(now + 60_001);
+		const second = await f.seed_job({ jobNumber: 2, status: "running", wakeAgent });
+		await f.t.mutation(internal.ai_chat_files.finish_bash_job, { invocationId: second.invocationId, result: job_result(0) });
+		state = await read_thread(f);
+		expect(state.messages).toHaveLength(3);
+		expect(state.thread?.activeRun?.kind).toBe("job_wakeup");
+		expect(state.wakeups).toHaveLength(1);
+	});
+
+	test("a job without the flag never wakes, and a settle with no result wakes with the flushed head", async () => {
+		const f = await fixture();
+		await seed_messages(f);
+		const plain = await f.seed_job({ jobNumber: 1, status: "running" });
+		await f.t.mutation(internal.ai_chat_files.finish_bash_job, { invocationId: plain.invocationId, result: job_result(0) });
+		expect((await read_thread(f)).messages).toHaveLength(2);
+
+		const start = Date.now();
+		const armed = await f.seed_job({ jobNumber: 2, status: "running", wakeAgent });
+		await f.t.mutation(internal.ai_chat_files.flush_bash_job_output, {
+			invocationId: armed.invocationId,
+			liveOutput: { stdout: "partial\n", stderr: "", stdoutTruncated: false, stderrTruncated: false },
+		});
+		vi.setSystemTime(start + PLACEHOLDER_MS);
+		await f.t.mutation(internal.ai_chat_files.timeout_bash_job, {
+			invocationId: armed.invocationId,
+			expectedDeadlineAt: start + PLACEHOLDER_MS,
+		});
+		const { messages, wakeups } = await read_thread(f);
+		expect(messages.at(-1)?.content.parts[0].text).toBe(
+			"Background job 2 finished in shell default with exit 124.\nstdout:\npartial\n\nstderr:\n\nFull output: jobs -o 2 or /shells/default/transcript.",
+		);
+		expect(wakeups).toHaveLength(1);
+	});
+
+	test("arm_bash_job_wakeup arms the caller's live jobs only", async () => {
+		const f = await fixture();
+		const live = await f.seed_job({ jobNumber: 1, status: "running" });
+		const done = await f.seed_job({ jobNumber: 2, status: "running" });
+		await f.t.mutation(internal.ai_chat_files.finish_bash_job, { invocationId: done.invocationId, result: job_result(0) });
+		expect(
+			await f.t.mutation(internal.ai_chat_files.arm_bash_job_wakeup, {
+				...f.scope,
+				jobNumbers: [1, 2, 9],
+				modelId: "gpt-5.4-mini",
+			}),
+		).toEqual([1]);
+		expect((await f.read(live.invocationId)).row?.job?.wakeAgent).toEqual({ modelId: "gpt-5.4-mini" });
+		expect((await f.read(done.invocationId)).row?.job?.wakeAgent).toBeUndefined();
+	});
+
+	test("the run lease refuses a chat request only while a wakeup runs, and each kind clears its own", async () => {
+		const f = await fixture();
+		const now = Date.now();
+		expect(await f.t.mutation(internal.ai_chat.thread_run_begin, { threadId: f.scope.threadId })).toBe(true);
+		expect((await read_thread(f)).thread?.activeRun).toEqual({ kind: "chat", expiresAt: now + 10 * 60 * 1000 });
+		// A second chat request is allowed, like before the lease existed.
+		expect(await f.t.mutation(internal.ai_chat.thread_run_begin, { threadId: f.scope.threadId })).toBe(true);
+		await f.t.mutation(internal.ai_chat.thread_run_end, { threadId: f.scope.threadId, kind: "job_wakeup" });
+		expect((await read_thread(f)).thread?.activeRun?.kind).toBe("chat");
+		await f.t.mutation(internal.ai_chat.thread_run_end, { threadId: f.scope.threadId, kind: "chat" });
+		expect((await read_thread(f)).thread?.activeRun).toBeUndefined();
+
+		await f.t.run((ctx) =>
+			ctx.db.patch("ai_chat_threads", f.scope.threadId, { activeRun: { kind: "job_wakeup", expiresAt: now + 60_000 } }),
+		);
+		expect(await f.t.mutation(internal.ai_chat.thread_run_begin, { threadId: f.scope.threadId })).toBe(false);
+		vi.setSystemTime(now + 60_001);
+		expect(await f.t.mutation(internal.ai_chat.thread_run_begin, { threadId: f.scope.threadId })).toBe(true);
+	});
+
+	test("get_job_wakeup_context reads the thread with the job's user and refuses a lost membership", async () => {
+		const f = await fixture();
+		await seed_messages(f);
+		const job = await f.seed_job({ jobNumber: 1, status: "running", wakeAgent, allowDbFilesMkdir: true });
+		const context = await f.t.query(internal.ai_chat.get_job_wakeup_context, { invocationId: job.invocationId });
+		if (context._nay) throw new Error(context._nay.message);
+		expect(context._yay).toMatchObject({
+			membership: { _id: f.db.membershipId },
+			thread: { _id: f.scope.threadId },
+			modelId: "gpt-5.4-nano",
+			modeId: "agent",
+		});
+		expect(context._yay.messages.map((message) => message.clientGeneratedMessageId)).toEqual(["user-1", "assistant-1"]);
+
+		const plain = await f.seed_job({ jobNumber: 2, status: "running" });
+		expect(await f.t.query(internal.ai_chat.get_job_wakeup_context, { invocationId: plain.invocationId })).toEqual({
+			_nay: { message: "Not found" },
+		});
+
+		await f.t.run((ctx) => ctx.db.patch("organizations_workspaces_users", f.db.membershipId, { active: false }));
+		expect(await f.t.query(internal.ai_chat.get_job_wakeup_context, { invocationId: job.invocationId })).toEqual({
+			_nay: { message: "Unauthorized" },
+		});
 	});
 });
 

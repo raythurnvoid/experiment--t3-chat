@@ -7,6 +7,7 @@ import type {
 	ai_chat_files_read_job_output_Result,
 } from "../convex/ai_chat_files.ts";
 import { activities_is_active } from "../convex/activities_db.ts";
+import type { ai_chat_ModelId } from "../shared/ai-chat.ts";
 import {
 	bash_COMMAND_EXIT_FAILURE,
 	bash_COMMAND_EXIT_STILL_RUNNING,
@@ -55,6 +56,17 @@ export type bash_JobContext = {
 	 * Bytes `jobs -o` may still print in this call; starts at 64 KiB.
 	 */
 	readBudgetRemaining: number;
+	/**
+	 * Set when the chat call asked to be woken when its jobs end (the tool's `wakeOnJobFinish`):
+	 * the model the wakeup runs with. A job worker never has it, so a job a job started never
+	 * wakes the agent.
+	 */
+	wakeAgent: { modelId: ai_chat_ModelId } | null;
+	/**
+	 * The jobs `wait` stopped polling for because their finish wakes the agent. The call ends
+	 * its turn when this is not empty.
+	 */
+	waitingJobNumbers: number[];
 };
 
 export const bash_JOB_OUTPUT_READ_BUDGET_BYTES = 64 * 1024;
@@ -248,6 +260,8 @@ export function bash_jobs_command_create(ctx: ActionCtx, job: bash_JobContext): 
  * `wait` polls the jobs this call started, or the named jobs of this user in the thread, every
  * 2 seconds. It stops at 30 seconds (`-t` changes that) or at the call's own deadline, and
  * returns 3 while a job is still live. With an 8-minute job budget that is the usual answer.
+ * A call that will be woken (`wakeOnJobFinish`) does not poll: it arms the live jobs so their
+ * finish wakes the agent, says so and returns 3; the tool then ends the turn.
  */
 export function bash_wait_command_create(ctx: ActionCtx, job: bash_JobContext): Command {
 	return defineCommand("wait", async (args) => {
@@ -290,8 +304,26 @@ export function bash_wait_command_create(ctx: ActionCtx, job: bash_JobContext): 
 				exitCode: bash_COMMAND_EXIT_FAILURE,
 			};
 
-		const until = Math.min(Date.now() + timeoutMs, job.deadlineAt);
 		const is_live = () => found.some((summary) => activities_is_active(summary.status));
+		if (job.wakeAgent !== null && is_live()) {
+			const armed = await ctx.runMutation(internal.ai_chat_files.arm_bash_job_wakeup, {
+				...scope,
+				jobNumbers: found.filter((summary) => activities_is_active(summary.status)).map((summary) => summary.jobNumber),
+				modelId: job.wakeAgent.modelId,
+			});
+			if (armed.length > 0) {
+				job.waitingJobNumbers.push(...armed);
+				return {
+					stdout: "",
+					stderr: `bash: waiting for job ${armed.join(", ")}: its finish wakes you with the result; end this turn.\n`,
+					exitCode: bash_COMMAND_EXIT_STILL_RUNNING,
+				};
+			}
+			// Every live job ended between the two reads: read the results the normal way.
+			found = await list();
+		}
+
+		const until = Math.min(Date.now() + timeoutMs, job.deadlineAt);
 		while (is_live() && !job.signal.aborted && Date.now() < until) {
 			await sleep(Math.min(WAIT_POLL_MS, until - Date.now()), job.signal);
 			if (job.signal.aborted || Date.now() >= until) break;

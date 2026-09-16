@@ -7,6 +7,7 @@ import {
 	ai_chat_MODEL_IDS,
 	ai_chat_MODE_IDS,
 	ai_chat_is_message_image_media_type,
+	type ai_chat_ModelId,
 	type ai_chat_UiMessage,
 	type ai_chat_UiTools,
 } from "../shared/ai-chat.ts";
@@ -15,13 +16,15 @@ import { get_id_generator } from "../shared/generated-ids.ts";
 import {
 	query,
 	mutation,
+	internalAction,
 	internalMutation,
+	internalQuery,
 	type ActionCtx,
 	type MutationCtx,
 	type QueryCtx,
 } from "./_generated/server.js";
 import { api, internal } from "./_generated/api.js";
-import { paginationOptsValidator, paginationResultValidator } from "convex/server";
+import { paginationOptsValidator, paginationResultValidator, type RegisteredQuery } from "convex/server";
 import { doc } from "convex-helpers/validators";
 import { v } from "convex/values";
 import { openai } from "@ai-sdk/openai";
@@ -60,7 +63,11 @@ import {
 	ai_chat_WRITE_TOOL_NAMES,
 } from "../server/server-ai-tools.ts";
 import { r2_create_asset_key, r2_db_finalize_generated_image_asset, r2_put_object } from "./r2_client.ts";
-import app_convex_schema, { bash_shell_state_validator, files_pending_target_validator } from "./schema.ts";
+import app_convex_schema, {
+	ai_chat_thread_active_run_validator,
+	bash_shell_state_validator,
+	files_pending_target_validator,
+} from "./schema.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 import { billing_event } from "../server/billing.ts";
 import { billing_ingest_events } from "./billing_db.ts";
@@ -460,10 +467,23 @@ function build_agent_configuration(input: {
 	// their ctxData; the lazy getter resolves after the http handler creates/loads the thread.
 	const toolCtxData = { ...ctxData, getThreadId, getWorkspaceContext };
 
+	// Set by the Bash tool when `wait` stopped polling for a job whose finish wakes the agent;
+	// `prepareStep` then ends the turn. Only Agent mode arms jobs.
+	const jobWait = { requested: false };
+
 	// The tools this route runs itself. Only these can write, so only these are filtered in ask mode.
 	const appTools = {
 		bash: ai_chat_tool_create_bash(ctx, toolCtxData, {
 			allowDbFilesMkdir: modeId === "agent",
+			jobWakeup:
+				modeId === "agent"
+					? {
+							modelId,
+							onWaiting: () => {
+								jobWait.requested = true;
+							},
+						}
+					: null,
 		}),
 		edit_file: ai_chat_tool_create_edit_file(ctx, toolCtxData),
 		set_file_metadata: ai_chat_tool_create_set_file_metadata(ctx, toolCtxData),
@@ -509,6 +529,7 @@ function build_agent_configuration(input: {
 		validationTools,
 		activeTools,
 		toolBudget,
+		jobWait,
 	};
 }
 
@@ -574,6 +595,46 @@ export const save_shell = internalMutation({
 		});
 		await ai_chat_files_db_append_shell_transcript(ctx, shell, args.transcriptEntry);
 
+		return null;
+	},
+});
+
+// A chat run holds the thread's run lease this long at most. A Convex action cannot run longer.
+const CHAT_RUN_LEASE_MS = 10 * 60 * 1000;
+
+/**
+ * Take the thread's run lease for a `/api/chat` request (see `activeRun` in the schema). Refuse
+ * while a job wakeup runs: the wakeup writes the reply under the job note, and a chat reply at
+ * the same time would fork the branch. A second chat request is still allowed, as before: two
+ * tabs or a retry must not lock each other out.
+ */
+export const thread_run_begin = internalMutation({
+	args: { threadId: v.id("ai_chat_threads") },
+	returns: v.boolean(),
+	handler: async (ctx, args) => {
+		const thread = await ctx.db.get("ai_chat_threads", args.threadId);
+		if (!thread) throw should_never_happen("Chat thread not found", { threadId: args.threadId });
+		const now = Date.now();
+		if (thread.activeRun?.kind === "job_wakeup" && thread.activeRun.expiresAt > now) return false;
+		await ctx.db.patch("ai_chat_threads", thread._id, {
+			activeRun: { kind: "chat", expiresAt: now + CHAT_RUN_LEASE_MS },
+		});
+		return true;
+	},
+});
+
+/**
+ * Give the run lease back. Only the lease of the same kind is cleared, so a chat run that ends
+ * late never clears the lease of the wakeup that started after it.
+ */
+export const thread_run_end = internalMutation({
+	args: { threadId: v.id("ai_chat_threads"), kind: ai_chat_thread_active_run_validator.fields.kind },
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		const thread = await ctx.db.get("ai_chat_threads", args.threadId);
+		if (thread?.activeRun?.kind === args.kind) {
+			await ctx.db.patch("ai_chat_threads", thread._id, { activeRun: undefined });
+		}
 		return null;
 	},
 });
@@ -1535,7 +1596,429 @@ const chat_body_validator = z.object({
 
 export type ai_chat_http_chat_Body = z.infer<typeof chat_body_validator>;
 
+/**
+ * One agent turn: the model stream with the tools, the title of a new thread, billing and the
+ * stored reply. `/api/chat` returns the stream to the browser; `run_job_wakeup` reads it to the
+ * end on the server. The reply is stored through a callback because the two callers use
+ * different doors: the public `thread_messages_add` needs the request's auth, a wakeup has none.
+ */
+async function create_agent_turn_stream(args: {
+	ctx: ActionCtx;
+	modelId: ai_chat_ModelId;
+	agent: ReturnType<typeof build_agent_configuration>;
+	workspaceSystem: string;
+	/**
+	 * The branch the turn continues, root first.
+	 */
+	uiMessages: ai_chat_UiMessage[];
+	threadId: Id<"ai_chat_threads">;
+	/**
+	 * Set when the request created the thread: the stream tells the browser the new id.
+	 */
+	createdThreadId: Id<"ai_chat_threads"> | null;
+	parentId: string | null | undefined;
+	parentClientGeneratedId: string | null;
+	abortSignal: AbortSignal | undefined;
+	membership: Doc<"organizations_workspaces_users">;
+	userId: Id<"users">;
+	billedUser: Doc<"users">;
+	/**
+	 * `/api/chat` names a new thread after its first reply. A wakeup never does.
+	 */
+	generateTitle: boolean;
+	storeReply: (message: ai_chat_UiMessage) => Promise<void>;
+	/**
+	 * Called once when the stream ends, however it ends: the thread's run lease goes back.
+	 */
+	releaseRun: () => Promise<void>;
+}) {
+	const {
+		ctx,
+		workspaceSystem,
+		uiMessages,
+		threadId,
+		createdThreadId,
+		membership,
+		billedUser,
+		parentId: resolvedParentId,
+		parentClientGeneratedId: resolvedParentClientGeneratedId,
+	} = args;
+	const { systemPrompt, tools, validationTools, activeTools, toolBudget, jobWait } = args.agent;
+
+	const modelMessages = await convertToModelMessages(uiMessages, {
+		ignoreIncompleteToolCalls: true,
+		tools: validationTools,
+	});
+
+	// The AI SDK routes every URL-shaped file part through its download
+	// step, and Convex `fetch` cannot request data: URLs, so the model
+	// call would fail with "Failed to download data:...". Decode the
+	// image data URLs to bytes here so the provider receives them directly.
+	for (const modelMessage of modelMessages) {
+		if (modelMessage.role !== "user" || !Array.isArray(modelMessage.content)) {
+			continue;
+		}
+		for (const part of modelMessage.content) {
+			if (part.type === "file" && typeof part.data === "string" && part.data.startsWith("data:")) {
+				const base64Content = part.data.slice(part.data.indexOf(",") + 1);
+				part.data = Uint8Array.from(atob(base64Content), (char) => char.charCodeAt(0));
+			}
+		}
+	}
+
+	let didStreamError = false;
+	let responseStorageError: string | null = null;
+	// Captured by `streamText.onFinish` below so `createUIMessageStream.onFinish`
+	// can emit one direct Polar usage event with the actual token cost.
+	let capturedUsage: { inputTokens: number; outputTokens: number } | null = null;
+	let capturedActualCents = 0;
+	let capturedGeneratedImages = 0;
+
+	const stream = createUIMessageStream<ai_chat_UiMessage>({
+		generateId: get_id_generator("ai_message"),
+		execute: async ({ writer }) => {
+			// TODO(ai-chat): If we allocate Convex message docs up front, emit a transient `data-message-ids`
+			// part here (while `writer` is available) so the client can swap optimistic UIMessage ids to
+			// Convex ids and/or drop optimistic messages immediately, without persisting client ids in db.
+			if (createdThreadId) {
+				writer.write({
+					type: "data-thread-id",
+					data: {
+						threadId: createdThreadId,
+					},
+					transient: true,
+				});
+			}
+
+			writer.write({
+				type: "message-metadata",
+				messageMetadata: {
+					convexParentId: uiMessages.at(-1)?.id,
+					parentClientGeneratedId: resolvedParentClientGeneratedId,
+				},
+			});
+
+			const result1 = streamText({
+				model: wrapLanguageModel({
+					model: openai(args.modelId),
+					middleware: drop_preliminary_tool_results_middleware,
+				}),
+				system: `${systemPrompt}\n${workspaceSystem}`,
+				prepareStep: ({ stepNumber }) => {
+					// Leave a model step to explain tool results and any unfinished work.
+					if (stepNumber === 9 || toolBudget.exhausted)
+						return {
+							activeTools: [],
+							system: `${systemPrompt}\n${workspaceSystem}\nThis is the last step. Give the result and any remaining checkpoint. Do not claim unfinished work is complete.`,
+						};
+					// `wait` stopped polling for a job whose finish wakes the agent: end the turn, the
+					// job's finish starts the next run.
+					if (jobWait.requested)
+						return {
+							activeTools: [],
+							system: `${systemPrompt}\n${workspaceSystem}\nA background job you are waiting for is still running. Its finish will wake you with its result in a new run. End this turn now with a short status of what is done and what the job will decide.`,
+						};
+				},
+				messages: modelMessages,
+				maxOutputTokens: 2000,
+				abortSignal: args.abortSignal,
+				activeTools,
+				experimental_repairToolCall: async (failed) => {
+					const lowerToolName = failed.toolCall.toolName.toLowerCase();
+					// `Object.hasOwn`, not `in`: `tools` is a plain object, so `in` also finds
+					// keys from `Object.prototype`. With `in`, the name `"Constructor"` would
+					// be "fixed" to `"constructor"`, which is a built-in function, not a tool.
+					if (lowerToolName !== failed.toolCall.toolName && Object.hasOwn(tools, lowerToolName)) {
+						return {
+							...failed.toolCall,
+							toolName: lowerToolName,
+						};
+					}
+
+					return {
+						...failed.toolCall,
+						input: JSON.stringify({
+							tool: failed.toolCall.toolName,
+							error: failed.error.message,
+						}),
+						toolName: "invalid",
+					};
+				},
+				toolChoice: "auto",
+				stopWhen: stepCountIs(10),
+				tools,
+				onAbort: async () => {
+					console.info("streamText.onAbort", {
+						threadId,
+						parentId: resolvedParentId,
+						requestSignalAborted: args.abortSignal?.aborted ?? false,
+					});
+				},
+				onFinish: async ({ totalUsage, steps }) => {
+					// Aggregated across all steps; read by createUIMessageStream.onFinish
+					// to emit one response-usage event.
+					capturedUsage = {
+						inputTokens: totalUsage.inputTokens ?? 0,
+						outputTokens: totalUsage.outputTokens ?? 0,
+					};
+					capturedActualCents += compute_token_usage_cost_cents({
+						modelId: args.modelId,
+						inputTokens: capturedUsage.inputTokens,
+						outputTokens: capturedUsage.outputTokens,
+					});
+
+					// A picture costs per image, not per token. Count the results here rather than in the
+					// upload transform, because a step result holds one entry per finished picture once
+					// `drop_preliminary_tool_results_middleware` has removed the previews.
+					capturedGeneratedImages = steps.reduce(
+						(count, step) =>
+							count +
+							step.toolResults.filter(
+								(toolResult) => toolResult?.toolName === ("image_generation" satisfies keyof ai_chat_UiTools),
+							).length,
+						0,
+					);
+					capturedActualCents += capturedGeneratedImages * GENERATED_IMAGE_COST_CENTS;
+				},
+			});
+
+			// The AI SDK hides the real error behind a constant "An error occurred." by default,
+			// so server details cannot leak. This chat shows the real message on purpose.
+			// So pass the same `onError` here that `createUIMessageStream` uses below.
+			const ui_message_stream = result1.toUIMessageStream<ai_chat_UiMessage>({
+				onError: (error: unknown) => (error instanceof Error ? error.message : String(error)),
+			});
+			writer.merge(
+				ui_message_stream.pipeThrough(
+					create_generated_image_upload_transform({
+						ctx,
+						organizationId: membership.organizationId,
+						workspaceId: membership.workspaceId,
+						userId: args.userId,
+					}),
+				),
+			);
+
+			if (args.abortSignal?.aborted) {
+				return;
+			}
+
+			const response1 = await result1.response;
+
+			if (args.abortSignal?.aborted) {
+				return;
+			}
+
+			// Generate a title for the new thread. Only `/api/chat` asks for one.
+			const thread = args.generateTitle
+				? await ctx.runQuery(api.ai_chat.thread_get, { membershipId: membership._id, threadId })
+				: null;
+			const existingTitle = typeof thread?.title === "string" ? thread.title.trim() : "";
+			if (thread && !existingTitle) {
+				if (args.abortSignal?.aborted) {
+					return;
+				}
+
+				const titleMessages = [...modelMessages, ...response1.messages];
+				let titleInputTokens = 0;
+				let titleOutputTokens = 0;
+				const titleResult = streamText({
+					model: openai(TITLE_MODEL_ID),
+					system: TITLE_SYSTEM_PROMPT,
+					messages: titleMessages,
+					stopWhen: stepCountIs(1),
+					temperature: 0.3,
+					maxOutputTokens: 50,
+					abortSignal: args.abortSignal,
+					onFinish: async ({ totalUsage }) => {
+						// Keep title usage separate from the response event
+						titleInputTokens = totalUsage.inputTokens ?? 0;
+						titleOutputTokens = totalUsage.outputTokens ?? 0;
+					},
+				});
+
+				const reader = titleResult.textStream.getReader();
+				let title = "";
+				while (true) {
+					const { value, done } = await reader.read();
+					if (done) {
+						break;
+					}
+
+					if (value) {
+						title += value;
+					}
+				}
+
+				const trimmedTitle = title.trim();
+				if (trimmedTitle) {
+					writer.write({
+						type: "data-chat-title",
+						data: { title: trimmedTitle },
+						transient: true,
+					});
+
+					const threadUpdateResult = await ctx.runMutation(api.ai_chat.thread_update, {
+						threadId: thread._id,
+						membershipId: membership._id,
+						title: trimmedTitle,
+					});
+					if (threadUpdateResult._nay) {
+						console.error("Failed to persist generated title", {
+							threadId: thread._id,
+							result: threadUpdateResult,
+						});
+					}
+				}
+
+				if (titleInputTokens + titleOutputTokens > 0) {
+					await billing_ingest_events(ctx, {
+						billedUserEvents: [
+							{
+								billedUser,
+								event: billing_event({
+									name: "ai_usage",
+									externalCustomerId: billedUser._id,
+									externalMemberId: args.userId,
+									externalId: composite_id(
+										"billing",
+										"ai_usage",
+										billedUser._id,
+										args.userId,
+										membership.organizationId,
+										membership.workspaceId,
+										String(threadId ?? ""),
+										// TODO: Evaluate if this is a good idea to pass "title" as messageId
+										"title",
+									),
+									metadata: {
+										amount: compute_token_usage_cost_cents({
+											modelId: TITLE_MODEL_ID,
+											inputTokens: titleInputTokens,
+											outputTokens: titleOutputTokens,
+										}),
+										actorUserId: args.userId,
+										billedUserId: billedUser._id,
+										organizationId: membership.organizationId,
+										workspaceId: membership.workspaceId,
+										modelId: TITLE_MODEL_ID,
+										inputTokens: titleInputTokens,
+										outputTokens: titleOutputTokens,
+										// The title model has no tools, so a title turn never draws.
+										generatedImages: 0,
+										threadId: String(threadId ?? ""),
+										messageId: "title",
+									},
+								}),
+							},
+						],
+					});
+				}
+			}
+		},
+		onError: (error: unknown) => {
+			didStreamError = true;
+			console.error("AI chat stream error:", error);
+			return error instanceof Error ? error.message : String(error);
+		},
+		onFinish: async (result) => {
+			try {
+				if (!result.responseMessage) {
+					return;
+				}
+
+				if (result.isAborted) {
+					console.info("onFinish aborted", {
+						threadId,
+						parentId: resolvedParentId,
+						isAborted: result.isAborted,
+						didStreamError,
+						hasResponseMessage: Boolean(result.responseMessage),
+					});
+					return;
+				}
+
+				if (didStreamError) {
+					console.info("onFinish stream error", {
+						threadId,
+						parentId: resolvedParentId,
+						hasResponseMessage: Boolean(result.responseMessage),
+					});
+					return;
+				}
+
+				if (!ai_chat_message_fits_storage(result.responseMessage)) {
+					responseStorageError =
+						"This reply is too large and was not saved. Start a new message and ask for a shorter result or smaller file pages. Any file changes already made still need review.";
+					return;
+				}
+
+				const capturedInputTokens = capturedUsage?.inputTokens ?? 0;
+				const capturedOutputTokens = capturedUsage?.outputTokens ?? 0;
+				const capturedTotalTokens = capturedInputTokens + capturedOutputTokens;
+				// Pictures are billed per image, so a turn that drew one is billed even if the model
+				// reported no token usage.
+				if (capturedTotalTokens > 0 || capturedGeneratedImages > 0) {
+					await billing_ingest_events(ctx, {
+						billedUserEvents: [
+							{
+								billedUser,
+								event: billing_event({
+									name: "ai_usage",
+									externalCustomerId: billedUser._id,
+									externalMemberId: args.userId,
+									externalId: composite_id(
+										"billing",
+										"ai_usage",
+										billedUser._id,
+										args.userId,
+										membership.organizationId,
+										membership.workspaceId,
+										String(threadId ?? ""),
+										String(result.responseMessage.id ?? ""),
+									),
+									metadata: {
+										amount: capturedActualCents,
+										actorUserId: args.userId,
+										billedUserId: billedUser._id,
+										organizationId: membership.organizationId,
+										workspaceId: membership.workspaceId,
+										modelId: args.modelId,
+										inputTokens: capturedInputTokens,
+										outputTokens: capturedOutputTokens,
+										generatedImages: capturedGeneratedImages,
+										threadId: String(threadId ?? ""),
+										messageId: String(result.responseMessage.id ?? ""),
+									},
+								}),
+							},
+						],
+					});
+				}
+
+				// Persist completed assistant responses below the last persisted request message.
+				await args.storeReply(result.responseMessage);
+			} finally {
+				await args.releaseRun();
+			}
+		},
+	});
+
+	return stream.pipeThrough(
+		new TransformStream<InferUIMessageChunk<ai_chat_UiMessage>, InferUIMessageChunk<ai_chat_UiMessage>>({
+			// SDK onFinish runs during flush. Send its storage refusal before the stream closes.
+			flush(controller) {
+				if (responseStorageError) controller.enqueue({ type: "error", errorText: responseStorageError });
+			},
+		}),
+	);
+}
+
 export async function ai_chat_http_chat(ctx: ActionCtx, request: Request) {
+	// The thread's run lease, taken right before the stream and given back when the stream ends.
+	// The catch below gives it back when the stream never started.
+	let threadId: Id<"ai_chat_threads"> | null = null;
+	let runLeaseHeld = false;
 	try {
 		const requestParseResult = await server_request_json_parse_and_validate(request, chat_body_validator);
 
@@ -1638,12 +2121,11 @@ export async function ai_chat_http_chat(ctx: ActionCtx, request: Request) {
 				},
 			} as const;
 		}
-		let threadId: Id<"ai_chat_threads"> | null = null;
 		let createdThreadId = null;
 		let workspaceContext: ai_chat_context_Context | null = null;
 		let workspaceSystem = "";
 
-		const { systemPrompt, tools, validationTools, activeTools, toolBudget } = build_agent_configuration({
+		const agent = build_agent_configuration({
 			ctx,
 			ctxData: {
 				organizationId: membership.organizationId,
@@ -1673,7 +2155,7 @@ export async function ai_chat_http_chat(ctx: ActionCtx, request: Request) {
 			try {
 				await validateUIMessages<ai_chat_UiMessage>({
 					messages: body.messages,
-					tools: validationTools,
+					tools: agent.validationTools,
 				});
 			} catch (error) {
 				if (error instanceof TypeValidationError) {
@@ -1934,386 +2416,60 @@ export async function ai_chat_http_chat(ctx: ActionCtx, request: Request) {
 			resolvedParentClientGeneratedId = requestMessages.at(-1)?.id ?? resolvedParentClientGeneratedId;
 		}
 
-		const modelMessages = await convertToModelMessages(uiMessages, {
-			ignoreIncompleteToolCalls: true,
-			tools: validationTools,
-		});
+		// Both branches above set the thread id.
+		const runThreadId = threadId as Id<"ai_chat_threads">;
 
-		// The AI SDK routes every URL-shaped file part through its download
-		// step, and Convex `fetch` cannot request data: URLs, so the model
-		// call would fail with "Failed to download data:...". Decode the
-		// image data URLs to bytes here so the provider receives them directly.
-		for (const modelMessage of modelMessages) {
-			if (modelMessage.role !== "user" || !Array.isArray(modelMessage.content)) {
-				continue;
-			}
-			for (const part of modelMessage.content) {
-				if (part.type === "file" && typeof part.data === "string" && part.data.startsWith("data:")) {
-					const base64Content = part.data.slice(part.data.indexOf(",") + 1);
-					part.data = Uint8Array.from(atob(base64Content), (char) => char.charCodeAt(0));
-				}
-			}
+		// The lease tells a finishing job that a run is streaming; `thread_run_begin` refuses while
+		// a job wakeup runs, so two runs never write the same branch at once.
+		if (!(await ctx.runMutation(internal.ai_chat.thread_run_begin, { threadId: runThreadId }))) {
+			return {
+				status: 409,
+				body: {
+					message: "The agent is answering a finished background job. Try again in a moment.",
+				},
+			} as const;
 		}
+		runLeaseHeld = true;
 
-		let didStreamError = false;
-		let responseStorageError: string | null = null;
-		// Captured by `streamText.onFinish` below so `createUIMessageStream.onFinish`
-		// can emit one direct Polar usage event with the actual token cost.
-		let capturedUsage: { inputTokens: number; outputTokens: number } | null = null;
-		let capturedActualCents = 0;
-		let capturedGeneratedImages = 0;
-
-		const stream = createUIMessageStream<ai_chat_UiMessage>({
-			generateId: get_id_generator("ai_message"),
-			execute: async ({ writer }) => {
-				// TODO(ai-chat): If we allocate Convex message docs up front, emit a transient `data-message-ids`
-				// part here (while `writer` is available) so the client can swap optimistic UIMessage ids to
-				// Convex ids and/or drop optimistic messages immediately, without persisting client ids in db.
-				if (createdThreadId) {
-					writer.write({
-						type: "data-thread-id",
-						data: {
-							threadId: createdThreadId,
-						},
-						transient: true,
-					});
-				}
-
-				writer.write({
-					type: "message-metadata",
-					messageMetadata: {
-						convexParentId: uiMessages.at(-1)?.id,
-						parentClientGeneratedId: resolvedParentClientGeneratedId,
-					},
-				});
-
-				const result1 = streamText({
-					model: wrapLanguageModel({
-						model: openai(body.model),
-						middleware: drop_preliminary_tool_results_middleware,
-					}),
-					system: `${systemPrompt}\n${workspaceSystem}`,
-					prepareStep: ({ stepNumber }) => {
-						// Leave a model step to explain tool results and any unfinished work.
-						if (stepNumber === 9 || toolBudget.exhausted)
-							return {
-								activeTools: [],
-								system: `${systemPrompt}\n${workspaceSystem}\nThis is the last step. Give the result and any remaining checkpoint. Do not claim unfinished work is complete.`,
-							};
-					},
-					messages: modelMessages,
-					maxOutputTokens: 2000,
-					abortSignal: request.signal,
-					activeTools,
-					experimental_repairToolCall: async (failed) => {
-						const lowerToolName = failed.toolCall.toolName.toLowerCase();
-						// `Object.hasOwn`, not `in`: `tools` is a plain object, so `in` also finds
-						// keys from `Object.prototype`. With `in`, the name `"Constructor"` would
-						// be "fixed" to `"constructor"`, which is a built-in function, not a tool.
-						if (lowerToolName !== failed.toolCall.toolName && Object.hasOwn(tools, lowerToolName)) {
-							return {
-								...failed.toolCall,
-								toolName: lowerToolName,
-							};
-						}
-
-						return {
-							...failed.toolCall,
-							input: JSON.stringify({
-								tool: failed.toolCall.toolName,
-								error: failed.error.message,
-							}),
-							toolName: "invalid",
-						};
-					},
-					toolChoice: "auto",
-					stopWhen: stepCountIs(10),
-					tools,
-					onAbort: async () => {
-						console.info("streamText.onAbort", {
-							threadId,
-							parentId: resolvedParentId,
-							requestSignalAborted: request.signal.aborted,
-						});
-					},
-					onFinish: async ({ totalUsage, steps }) => {
-						// Aggregated across all steps; read by createUIMessageStream.onFinish
-						// to emit one response-usage event.
-						capturedUsage = {
-							inputTokens: totalUsage.inputTokens ?? 0,
-							outputTokens: totalUsage.outputTokens ?? 0,
-						};
-						capturedActualCents += compute_token_usage_cost_cents({
-							modelId: body.model,
-							inputTokens: capturedUsage.inputTokens,
-							outputTokens: capturedUsage.outputTokens,
-						});
-
-						// A picture costs per image, not per token. Count the results here rather than in the
-						// upload transform, because a step result holds one entry per finished picture once
-						// `drop_preliminary_tool_results_middleware` has removed the previews.
-						capturedGeneratedImages = steps.reduce(
-							(count, step) =>
-								count +
-								step.toolResults.filter(
-									(toolResult) => toolResult?.toolName === ("image_generation" satisfies keyof ai_chat_UiTools),
-								).length,
-							0,
-						);
-						capturedActualCents += capturedGeneratedImages * GENERATED_IMAGE_COST_CENTS;
-					},
-				});
-
-				// The AI SDK hides the real error behind a constant "An error occurred." by default,
-				// so server details cannot leak. This chat shows the real message on purpose.
-				// So pass the same `onError` here that `createUIMessageStream` uses below.
-				const ui_message_stream = result1.toUIMessageStream<ai_chat_UiMessage>({
-					onError: (error: unknown) => (error instanceof Error ? error.message : String(error)),
-				});
-				writer.merge(
-					ui_message_stream.pipeThrough(
-						create_generated_image_upload_transform({
-							ctx,
-							organizationId: membership.organizationId,
-							workspaceId: membership.workspaceId,
-							userId: user._id,
-						}),
-					),
-				);
-
-				if (request.signal.aborted) {
-					return;
-				}
-
-				const response1 = await result1.response;
-
-				if (request.signal.aborted) {
-					return;
-				}
-
-				const thread = await ctx.runQuery(api.ai_chat.thread_get, {
+		const stream = await create_agent_turn_stream({
+			ctx,
+			modelId: body.model,
+			agent,
+			workspaceSystem,
+			uiMessages,
+			threadId: runThreadId,
+			createdThreadId,
+			parentId: resolvedParentId,
+			parentClientGeneratedId: resolvedParentClientGeneratedId,
+			abortSignal: request.signal,
+			membership,
+			userId: user._id,
+			billedUser,
+			generateTitle: true,
+			storeReply: async (message) => {
+				const stored = await ctx.runMutation(api.ai_chat.thread_messages_add, {
 					membershipId: membership._id,
-					threadId,
-				});
-				const existingTitle = typeof thread?.title === "string" ? thread.title.trim() : "";
-
-				// Generate a title for the new thread
-				if (thread && !existingTitle) {
-					if (request.signal.aborted) {
-						return;
-					}
-
-					const titleMessages = [...modelMessages, ...response1.messages];
-					let titleInputTokens = 0;
-					let titleOutputTokens = 0;
-					const titleResult = streamText({
-						model: openai(TITLE_MODEL_ID),
-						system: TITLE_SYSTEM_PROMPT,
-						messages: titleMessages,
-						stopWhen: stepCountIs(1),
-						temperature: 0.3,
-						maxOutputTokens: 50,
-						abortSignal: request.signal,
-						onFinish: async ({ totalUsage }) => {
-							// Keep title usage separate from the response event
-							titleInputTokens = totalUsage.inputTokens ?? 0;
-							titleOutputTokens = totalUsage.outputTokens ?? 0;
-						},
-					});
-
-					const reader = titleResult.textStream.getReader();
-					let title = "";
-					while (true) {
-						const { value, done } = await reader.read();
-						if (done) {
-							break;
-						}
-
-						if (value) {
-							title += value;
-						}
-					}
-
-					const trimmedTitle = title.trim();
-					if (trimmedTitle) {
-						writer.write({
-							type: "data-chat-title",
-							data: { title: trimmedTitle },
-							transient: true,
-						});
-
-						const threadUpdateResult = await ctx.runMutation(api.ai_chat.thread_update, {
-							threadId: thread._id,
-							membershipId: membership._id,
-							title: trimmedTitle,
-						});
-						if (threadUpdateResult._nay) {
-							console.error("Failed to persist generated title", {
-								threadId: thread._id,
-								result: threadUpdateResult,
-							});
-						}
-					}
-
-					if (titleInputTokens + titleOutputTokens > 0) {
-						await billing_ingest_events(ctx, {
-							billedUserEvents: [
-								{
-									billedUser,
-									event: billing_event({
-										name: "ai_usage",
-										externalCustomerId: billedUser._id,
-										externalMemberId: user._id,
-										externalId: composite_id(
-											"billing",
-											"ai_usage",
-											billedUser._id,
-											user._id,
-											membership.organizationId,
-											membership.workspaceId,
-											String(threadId ?? ""),
-											// TODO: Evaluate if this is a good idea to pass "title" as messageId
-											"title",
-										),
-										metadata: {
-											amount: compute_token_usage_cost_cents({
-												modelId: TITLE_MODEL_ID,
-												inputTokens: titleInputTokens,
-												outputTokens: titleOutputTokens,
-											}),
-											actorUserId: user._id,
-											billedUserId: billedUser._id,
-											organizationId: membership.organizationId,
-											workspaceId: membership.workspaceId,
-											modelId: TITLE_MODEL_ID,
-											inputTokens: titleInputTokens,
-											outputTokens: titleOutputTokens,
-											// The title model has no tools, so a title turn never draws.
-											generatedImages: 0,
-											threadId: String(threadId ?? ""),
-											messageId: "title",
-										},
-									}),
-								},
-							],
-						});
-					}
-				}
-			},
-			onError: (error: unknown) => {
-				didStreamError = true;
-				console.error("AI chat stream error:", error);
-				return error instanceof Error ? error.message : String(error);
-			},
-			onFinish: async (result) => {
-				if (!result.responseMessage) {
-					return;
-				}
-
-				if (result.isAborted) {
-					console.info("onFinish aborted", {
-						threadId,
-						parentId: resolvedParentId,
-						isAborted: result.isAborted,
-						didStreamError,
-						hasResponseMessage: Boolean(result.responseMessage),
-					});
-					return;
-				}
-
-				if (didStreamError) {
-					console.info("onFinish stream error", {
-						threadId,
-						parentId: resolvedParentId,
-						hasResponseMessage: Boolean(result.responseMessage),
-					});
-					return;
-				}
-
-				if (!ai_chat_message_fits_storage(result.responseMessage)) {
-					responseStorageError =
-						"This reply is too large and was not saved. Start a new message and ask for a shorter result or smaller file pages. Any file changes already made still need review.";
-					return;
-				}
-
-				const capturedInputTokens = capturedUsage?.inputTokens ?? 0;
-				const capturedOutputTokens = capturedUsage?.outputTokens ?? 0;
-				const capturedTotalTokens = capturedInputTokens + capturedOutputTokens;
-				// Pictures are billed per image, so a turn that drew one is billed even if the model
-				// reported no token usage.
-				if (capturedTotalTokens > 0 || capturedGeneratedImages > 0) {
-					await billing_ingest_events(ctx, {
-						billedUserEvents: [
-							{
-								billedUser,
-								event: billing_event({
-									name: "ai_usage",
-									externalCustomerId: billedUser._id,
-									externalMemberId: user._id,
-									externalId: composite_id(
-										"billing",
-										"ai_usage",
-										billedUser._id,
-										user._id,
-										membership.organizationId,
-										membership.workspaceId,
-										String(threadId ?? ""),
-										String(result.responseMessage.id ?? ""),
-									),
-									metadata: {
-										amount: capturedActualCents,
-										actorUserId: user._id,
-										billedUserId: billedUser._id,
-										organizationId: membership.organizationId,
-										workspaceId: membership.workspaceId,
-										modelId: body.model,
-										inputTokens: capturedInputTokens,
-										outputTokens: capturedOutputTokens,
-										generatedImages: capturedGeneratedImages,
-										threadId: String(threadId ?? ""),
-										messageId: String(result.responseMessage.id ?? ""),
-									},
-								}),
-							},
-						],
-					});
-				}
-
-				// Persist completed assistant responses below the last persisted request message.
-				const assistantPersistResult = await ctx.runMutation(api.ai_chat.thread_messages_add, {
-					membershipId: membership._id,
-					threadId: threadId as Id<"ai_chat_threads">,
+					threadId: runThreadId,
 					parentId: resolvedParentId,
-					messages: [
-						{
-							clientGeneratedMessageId: result.responseMessage.id,
-							content: result.responseMessage,
-						},
-					],
+					messages: [{ clientGeneratedMessageId: message.id, content: message }],
 				});
-
-				if (assistantPersistResult._nay) {
-					throw new Error("Failed to persist assistant message", {
-						cause: assistantPersistResult._nay,
-					});
+				if (stored._nay) {
+					throw new Error("Failed to persist assistant message", { cause: stored._nay });
 				}
+			},
+			releaseRun: async () => {
+				runLeaseHeld = false;
+				await ctx.runMutation(internal.ai_chat.thread_run_end, { threadId: runThreadId, kind: "chat" });
 			},
 		});
 
-		return {
-			status: 200,
-			body: stream.pipeThrough(
-				new TransformStream<InferUIMessageChunk<ai_chat_UiMessage>, InferUIMessageChunk<ai_chat_UiMessage>>({
-					// SDK onFinish runs during flush. Send its storage refusal before the stream closes.
-					flush(controller) {
-						if (responseStorageError) controller.enqueue({ type: "error", errorText: responseStorageError });
-					},
-				}),
-			),
-		} as const;
+		return { status: 200, body: stream } as const;
 	} catch (error) {
 		const errorMessage = "AI chat stream error";
 		console.error(`${errorMessage}:`, error);
+		if (runLeaseHeld && threadId) {
+			await ctx.runMutation(internal.ai_chat.thread_run_end, { threadId, kind: "chat" });
+		}
 
 		return {
 			status: 500,
@@ -2339,6 +2495,234 @@ export async function ai_chat_http_chat_response(ctx: ActionCtx, request: Reques
 
 	return Response.json(result.body, result);
 }
+
+/**
+ * The door of `run_job_wakeup`: what `/api/chat` reads with the request's auth, read with the
+ * user who launched the job instead. Refuse when that user lost the membership, the workspace
+ * permissions of the mode, or the right to write in the thread since the launch. The mode is the
+ * one of the launching call: `allowDbFilesMkdir` is set only in Agent mode.
+ */
+export const get_job_wakeup_context = internalQuery({
+	args: { invocationId: v.id("ai_chat_bash_invocations") },
+	returns: v_result({
+		_yay: v.object({
+			membership: doc(app_convex_schema, "organizations_workspaces_users"),
+			thread: doc(app_convex_schema, "ai_chat_threads"),
+			messages: v.array(doc(app_convex_schema, "ai_chat_threads_messages_aisdk_5")),
+			modelId: v.union(...ai_chat_MODEL_IDS.map((modelId) => v.literal(modelId))),
+			modeId: v.union(...ai_chat_MODE_IDS.map((modeId) => v.literal(modeId))),
+		}),
+	}),
+	handler: async (ctx, args) => {
+		const invocation = await ctx.db.get("ai_chat_bash_invocations", args.invocationId);
+		if (!invocation?.job?.wakeAgent) return Result({ _nay: { message: "Not found" } });
+		const userAuth = { id: invocation.userId };
+		const membership = await organizations_db_get_membership(ctx, {
+			userId: invocation.userId,
+			membershipId: invocation.membershipId,
+		});
+		if (!membership) return Result({ _nay: { message: "Unauthorized" } });
+
+		const modeId = invocation.job.allowDbFilesMkdir ? "agent" : "ask";
+		const permissions =
+			modeId === "agent"
+				? (["content.read", "content.write"] as const satisfies readonly access_control_Permission[])
+				: (["content.read"] as const satisfies readonly access_control_Permission[]);
+		for (const permission of permissions) {
+			const authorized = await access_control_db_authorize_membership(ctx, { userAuth, membership, permission });
+			if (authorized._nay) return Result({ _nay: { message: authorized._nay.message } });
+		}
+
+		const thread = await ctx.db.get("ai_chat_threads", invocation.threadId);
+		if (!thread || thread.organizationId !== membership.organizationId || thread.workspaceId !== membership.workspaceId)
+			return Result({ _nay: { message: "Not found" } });
+		const threadAuthorized = await authorize_thread_mutation(ctx, { userAuth, membership, thread });
+		if (threadAuthorized._nay) return Result({ _nay: { message: threadAuthorized._nay.message } });
+
+		const messages = await ctx.db
+			.query("ai_chat_threads_messages_aisdk_5")
+			.withIndex("by_organization_workspace_thread", (q) =>
+				q.eq("organizationId", thread.organizationId).eq("workspaceId", thread.workspaceId).eq("threadId", thread._id),
+			)
+			.order("asc")
+			.collect();
+		return Result({ _yay: { membership, thread, messages, modelId: invocation.job.wakeAgent.modelId, modeId } });
+	},
+});
+
+type get_job_wakeup_context_Result =
+	typeof get_job_wakeup_context extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
+
+/**
+ * Store the reply of a wakeup run under the job note. `thread_messages_add` is the public door
+ * and needs the request's auth; a wakeup has none, so this one takes the user who launched the job.
+ */
+export const store_job_wakeup_reply = internalMutation({
+	args: {
+		threadId: v.id("ai_chat_threads"),
+		userId: v.id("users"),
+		parentId: v.id("ai_chat_threads_messages_aisdk_5"),
+		clientGeneratedMessageId:
+			app_convex_schema.tables.ai_chat_threads_messages_aisdk_5.validator.fields.clientGeneratedMessageId,
+		content: app_convex_schema.tables.ai_chat_threads_messages_aisdk_5.validator.fields.content,
+	},
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		const thread = await ctx.db.get("ai_chat_threads", args.threadId);
+		if (!thread) throw should_never_happen("Chat thread not found", { threadId: args.threadId });
+
+		const now = Date.now();
+		await ctx.db.insert("ai_chat_threads_messages_aisdk_5", {
+			organizationId: thread.organizationId,
+			workspaceId: thread.workspaceId,
+			parentId: args.parentId,
+			threadId: thread._id,
+			createdBy: args.userId,
+			updatedAt: now,
+			clientGeneratedMessageId: args.clientGeneratedMessageId,
+			content: args.content,
+		});
+		// Storing the message is what makes its pictures permanent, like in `thread_messages_add`.
+		for (const assetId of read_generated_image_asset_ids(args.content)) {
+			await r2_db_finalize_generated_image_asset(ctx, {
+				organizationId: thread.organizationId,
+				workspaceId: thread.workspaceId,
+				assetId,
+			});
+		}
+		await ctx.db.patch("ai_chat_threads", thread._id, { lastMessageAt: now, updatedAt: now, updatedBy: args.userId });
+		return null;
+	},
+});
+
+/**
+ * The agent run a finished job starts (`db_wake_agent_for_job` in `ai_chat_files.ts` stored the
+ * job note and took the `job_wakeup` run lease). Same door and same turn as `/api/chat`, with the
+ * job's stored user, mode and model, and the reply stored under the note. Nobody reads the
+ * stream, so the action reads it to the end itself. A run this action cannot start (a refused
+ * door, no credits) leaves the note in the thread and only gives the lease back.
+ */
+export const run_job_wakeup = internalAction({
+	args: {
+		invocationId: v.id("ai_chat_bash_invocations"),
+		threadId: v.id("ai_chat_threads"),
+		noteMessageId: v.id("ai_chat_threads_messages_aisdk_5"),
+	},
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		try {
+			const context = (await ctx.runQuery(internal.ai_chat.get_job_wakeup_context, {
+				invocationId: args.invocationId,
+			})) as get_job_wakeup_context_Result;
+			if (context._nay) {
+				console.warn("Job wakeup refused", { invocationId: args.invocationId, message: context._nay.message });
+				return null;
+			}
+			const { membership, thread, messages, modelId, modeId } = context._yay;
+
+			// Quota: a wakeup run is billed like a chat turn, so it needs credits like one.
+			const creditCheck = await ctx.runQuery(internal.billing.check_credits, {
+				userId: membership.userId,
+				organizationId: membership.organizationId,
+				minimumRequiredCents: 1,
+			});
+			if (!creditCheck.hasCredits || !creditCheck.billedUser) {
+				console.warn("Job wakeup skipped: insufficient funds", { invocationId: args.invocationId });
+				return null;
+			}
+
+			const tenant = await ctx.runQuery(internal.organizations.get_tenant, {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+			});
+			let workspaceContext: ai_chat_context_Context | null = null;
+			let workspaceSystem = "";
+			const agent = build_agent_configuration({
+				ctx,
+				ctxData: {
+					organizationId: membership.organizationId,
+					workspaceId: membership.workspaceId,
+					organizationName: tenant.organization.name,
+					workspaceName: tenant.workspace.name,
+					userId: membership.userId,
+				},
+				args: { modelId, modeId },
+				getThreadId: () => thread._id,
+				getWorkspaceContext: () => workspaceContext,
+			});
+			if (ai_chat_context_ENABLED) {
+				const initialized = await ai_chat_context_create(ctx, {
+					membershipId: membership._id,
+					userId: membership.userId,
+				});
+				if (initialized._nay) {
+					console.warn("Job wakeup skipped: workspace context", {
+						invocationId: args.invocationId,
+						message: initialized._nay.message,
+					});
+					return null;
+				}
+				workspaceContext = initialized._yay.context;
+				workspaceSystem = initialized._yay.system;
+			}
+
+			// The turn continues the branch that ends with the job note.
+			const parentContext = resolve_parent_message_context({ messages, parentId: args.noteMessageId });
+			if (parentContext._nay) {
+				throw should_never_happen("Job note message not found", {
+					threadId: thread._id,
+					noteMessageId: args.noteMessageId,
+				});
+			}
+			const uiMessages: ai_chat_UiMessage[] = [];
+			for (let i = parentContext._yay.reconstructedMessages.length - 1; i >= 0; i--) {
+				const msg = parentContext._yay.reconstructedMessages[i];
+				uiMessages.push({
+					...(msg.content as any),
+					id: msg._id,
+				});
+			}
+
+			const stream = await create_agent_turn_stream({
+				ctx,
+				modelId,
+				agent,
+				workspaceSystem,
+				uiMessages,
+				threadId: thread._id,
+				createdThreadId: null,
+				parentId: args.noteMessageId,
+				parentClientGeneratedId: parentContext._yay.resolvedParentClientGeneratedId,
+				abortSignal: undefined,
+				membership,
+				userId: membership.userId,
+				billedUser: creditCheck.billedUser,
+				generateTitle: false,
+				storeReply: async (message) => {
+					await ctx.runMutation(internal.ai_chat.store_job_wakeup_reply, {
+						threadId: thread._id,
+						userId: membership.userId,
+						parentId: args.noteMessageId,
+						clientGeneratedMessageId: message.id,
+						content: message,
+					});
+				},
+				releaseRun: async () => {
+					await ctx.runMutation(internal.ai_chat.thread_run_end, { threadId: thread._id, kind: "job_wakeup" });
+				},
+			});
+			const reader = stream.getReader();
+			while (!(await reader.read()).done) {
+				// The chunks were handled by the stream's own `onFinish`.
+			}
+		} finally {
+			await ctx.runMutation(internal.ai_chat.thread_run_end, { threadId: args.threadId, kind: "job_wakeup" });
+		}
+		return null;
+	},
+});
 
 /**
  * Keep this in sync with the AI SDK `PrepareSendMessagesRequest` shape used by
@@ -2761,6 +3145,25 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			// The list used to validate messages still holds every tool. It has to accept the
 			// `edit_file` parts that an earlier agent-mode turn stored in the same thread.
 			expect(Object.keys(configuration.validationTools)).toEqual(build_agent_configuration_expected_tool_keys);
+		});
+
+		test("arms job wakeups in Agent mode only", () => {
+			const { ctx } = makeCtx();
+			const wakeOnJobFinish_of = (modeId: "agent" | "ask") => {
+				const configuration = build_agent_configuration({
+					ctx,
+					ctxData: build_agent_configuration_test_ctx_data,
+					args: { modelId: build_agent_configuration_test_model_id, modeId },
+					getThreadId: () => "thread_1" as Id<"ai_chat_threads">,
+				});
+				const schema = configuration.tools.bash?.inputSchema;
+				if (!schema || !("shape" in schema)) throw new Error("bash inputSchema has no shape");
+				return { configuration, field: (schema.shape as Record<string, unknown>).wakeOnJobFinish };
+			};
+
+			expect(wakeOnJobFinish_of("agent").field).toBeDefined();
+			expect(wakeOnJobFinish_of("ask").field).toBeUndefined();
+			expect(wakeOnJobFinish_of("agent").configuration.jobWait).toEqual({ requested: false });
 		});
 
 		test("registers image_generation only for the models marked as supporting it", () => {

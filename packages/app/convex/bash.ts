@@ -2,7 +2,7 @@
 
 import { v, type Infer } from "convex/values";
 import { internalAction } from "./_generated/server.js";
-import { ai_chat_bash_result_validator } from "./schema.ts";
+import { ai_chat_bash_result_validator, ai_chat_model_id_validator } from "./schema.ts";
 
 // Shell diagnostics live with `bash_run_command`, so the Convex action imports
 // only the runner and does not need the lower-level shell constants.
@@ -36,6 +36,7 @@ export const run = internalAction({
 		command: v.string(),
 		allowDbFilesMkdir: v.boolean(),
 		shellName: v.string(),
+		wakeAgent: v.union(v.object({ modelId: ai_chat_model_id_validator }), v.null()),
 	},
 	returns: ai_chat_bash_result_validator,
 	handler: async (ctx, args) => {

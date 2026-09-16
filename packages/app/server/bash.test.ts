@@ -14,6 +14,7 @@ import { db_insert_file_text_content } from "../convex/files_nodes_content.ts";
 import { files_PENDING_REPLACEMENT_BASE_CHANGED_MESSAGE } from "../convex/files_pending_updates.ts";
 import { r2_confirmed_object_delete, r2_server_side_copy } from "../convex/r2_client.ts";
 import { test_convex, test_mocks, test_mocks_fill_db_with } from "../convex/setup.test.ts";
+import type { ai_chat_ModelId } from "../shared/ai-chat.ts";
 import { delay } from "../shared/async-utils.ts";
 import { files_yjs_doc_create_from_text } from "../shared/files-tiptap.ts";
 import {
@@ -426,6 +427,10 @@ describe("bash_run_command", () => {
 		 * Attach to an existing thread instead of creating one (tmp-scope tests).
 		 */
 		threadId?: Id<"ai_chat_threads">;
+		/**
+		 * Every call of this runner asks to be woken when its jobs end (the tool's `wakeOnJobFinish`).
+		 */
+		wakeAgent?: { modelId: ai_chat_ModelId };
 	}) {
 		test_runner_counter += 1;
 		const runnerIndex = test_runner_counter;
@@ -570,6 +575,7 @@ describe("bash_run_command", () => {
 				command,
 				allowDbFilesMkdir: opts?.allowDbFilesMkdir ?? true,
 				shellName,
+				wakeAgent: opts?.wakeAgent ?? null,
 			});
 			cwd = (await get_shell(t, threadId, shellName))?.cwd ?? cwd;
 			return result;
@@ -4294,6 +4300,43 @@ describe("bash_run_command", () => {
 			expect((await runner.run("jobs")).stdout).toBe("[2] queued    default  echo nested   (from job 1)\n");
 			const child = await run_job(runner, 2);
 			expect(child.result?.stdout).toBe("nested\n");
+		});
+
+		test("a call with the wake flag arms the jobs it starts, and a job a job starts is never armed", async () => {
+			const runner = await create_bash_runner({ wakeAgent: { modelId: "gpt-5.4-nano" } });
+			expect((await runner.run("{ echo nested & } &")).metadata.exitCode).toBe(0);
+			expect((await job_row(runner, 1)).job?.wakeAgent).toEqual({ modelId: "gpt-5.4-nano" });
+			// The worker's own jobContext carries no wake flag.
+			await run_job(runner, 1);
+			expect((await job_row(runner, 2)).job?.wakeAgent).toBeUndefined();
+		});
+
+		test("wait in a call with the wake flag arms the live jobs and stops polling", async () => {
+			const launcher = await create_bash_runner();
+			expect((await launcher.run("sleep 600 &")).metadata.exitCode).toBe(0);
+			expect((await launcher.run("true &")).metadata.exitCode).toBe(0);
+			await run_job(launcher, 2);
+			expect((await job_row(launcher, 1)).job?.wakeAgent).toBeUndefined();
+			// A plain `wait` polls and reports nothing about waking.
+			const polled = await launcher.run("wait -t 1 1");
+			expect(polled.metadata.exitCode).toBe(3);
+			expect(polled.metadata.waitingForJobs).toBeUndefined();
+
+			const waiter = await create_bash_runner({
+				shared: { t: launcher.t, seeded: launcher.seeded },
+				threadId: launcher.threadId,
+				wakeAgent: { modelId: "gpt-5.4-mini" },
+			});
+			const waited = await waiter.run("wait 1 2");
+			expect(waited.stderr).toBe("bash: waiting for job 1: its finish wakes you with the result; end this turn.\n");
+			expect(waited.metadata.exitCode).toBe(3);
+			expect(waited.metadata.waitingForJobs).toEqual([1]);
+			expect((await job_row(launcher, 1)).job?.wakeAgent).toEqual({ modelId: "gpt-5.4-mini" });
+			// A finished job is never armed, and a wait on it alone reads its result as usual.
+			expect((await job_row(launcher, 2)).job?.wakeAgent).toBeUndefined();
+			const done = await waiter.run("wait 2");
+			expect(done.metadata.exitCode).toBe(0);
+			expect(done.metadata.waitingForJobs).toBeUndefined();
 		});
 
 		test("kill stops a running job with 143, also inside a sleep, and never ends the call", async () => {

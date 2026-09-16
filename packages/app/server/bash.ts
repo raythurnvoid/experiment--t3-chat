@@ -58,6 +58,7 @@ import type {
 	ai_chat_files_start_bash_job_Result,
 } from "../convex/ai_chat_files.ts";
 import type { files_PendingTarget } from "../shared/files.ts";
+import type { ai_chat_ModelId } from "../shared/ai-chat.ts";
 import type { plugins_list_bash_source_mounts_Result } from "../convex/plugins.ts";
 import {
 	organizations_GLOBAL_GITHUB_WORKSPACE_ID,
@@ -1173,6 +1174,7 @@ async function bash_fs_create(args: {
 			startCwdTarget: await get_cwd_target(launch.cwd),
 			shellState: launch.snapshot,
 			allowDbFilesMkdir: job.allowDbFilesMkdir,
+			wakeAgent: job.wakeAgent ?? undefined,
 		})) as ai_chat_files_start_bash_job_Result;
 		if (started._nay) {
 			job.launchAttempts += 1;
@@ -1493,6 +1495,10 @@ export async function bash_run_command(
 		command: string;
 		allowDbFilesMkdir: boolean;
 		shellName: string;
+		/**
+		 * Set when the call's jobs must wake the agent when they end (the tool's `wakeOnJobFinish`).
+		 */
+		wakeAgent: { modelId: ai_chat_ModelId } | null;
 	},
 ): Promise<NonNullable<Doc<"ai_chat_bash_invocations">["result"]>> {
 	// The shell is part of the call identity: a replay with another shell must not rejoin.
@@ -1587,6 +1593,25 @@ export async function bash_run_command(
 			}) as Promise<plugins_list_bash_source_mounts_Result>,
 		]);
 
+		const jobContext: bash_JobContext = {
+			invocationId: invocation.invocationId,
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			threadId: args.threadId,
+			userId: args.userId,
+			membershipId: invocation.membershipId,
+			shellId: invocation.shell._id,
+			shellName: args.shellName,
+			allowDbFilesMkdir: args.allowDbFilesMkdir,
+			deadlineAt: invocation.transferDeadlineAt,
+			signal: abort.signal,
+			nextCommandNumber: () => commandNumber++,
+			launchedJobNumbers: [],
+			launchAttempts: 0,
+			readBudgetRemaining: bash_JOB_OUTPUT_READ_BUDGET_BYTES,
+			wakeAgent: args.wakeAgent,
+			waitingJobNumbers: [],
+		};
 		const bashFs = await bash_fs_create({
 			ctx,
 			organizationId: args.organizationId,
@@ -1609,23 +1634,7 @@ export async function bash_run_command(
 				nextCommandNumber: () => commandNumber++,
 				jobId: null,
 			},
-			jobContext: {
-				invocationId: invocation.invocationId,
-				organizationId: args.organizationId,
-				workspaceId: args.workspaceId,
-				threadId: args.threadId,
-				userId: args.userId,
-				membershipId: invocation.membershipId,
-				shellId: invocation.shell._id,
-				shellName: args.shellName,
-				allowDbFilesMkdir: args.allowDbFilesMkdir,
-				deadlineAt: invocation.transferDeadlineAt,
-				signal: abort.signal,
-				nextCommandNumber: () => commandNumber++,
-				launchedJobNumbers: [],
-				launchAttempts: 0,
-				readBudgetRemaining: bash_JOB_OUTPUT_READ_BUDGET_BYTES,
-			},
+			jobContext,
 			shells: invocation.shells,
 			// `null` is a fresh shell: nothing to seed.
 			restoreState: invocation.shell.state ?? undefined,
@@ -1707,7 +1716,15 @@ export async function bash_run_command(
 
 		await Promise.all(pendingMutations);
 
-		const response = bash_response({ bashFs, command: args.command, result, nextCwd, observedPaths, observedPathsTruncated });
+		const response = bash_response({
+			bashFs,
+			command: args.command,
+			result,
+			nextCwd,
+			observedPaths,
+			observedPathsTruncated,
+			waitingForJobs: jobContext.waitingJobNumbers,
+		});
 		console.debug("Bash command completed", {
 			threadId: args.threadId,
 			shellName: args.shellName,
@@ -1859,6 +1876,11 @@ function bash_response(args: {
 	nextCwd: string;
 	observedPaths: string[];
 	observedPathsTruncated: boolean;
+	/**
+	 * The jobs `wait` stopped polling for because their finish wakes the agent. Only a chat call
+	 * has any; the tool ends the turn when the result names some.
+	 */
+	waitingForJobs?: number[];
 }) {
 	const { bashFs, command, result, nextCwd } = args;
 	const stdout = bashFs.truncate_output(result.stdout);
@@ -1887,6 +1909,7 @@ function bash_response(args: {
 			pathIndexTruncated: bashFs.path_index_truncated(),
 			observedPaths: args.observedPaths,
 			observedPathsTruncated: args.observedPathsTruncated,
+			...(args.waitingForJobs?.length ? { waitingForJobs: args.waitingForJobs } : {}),
 		},
 	};
 }
@@ -2017,6 +2040,8 @@ export async function bash_run_job(
 				launchedJobNumbers: [],
 				launchAttempts: 0,
 				readBudgetRemaining: bash_JOB_OUTPUT_READ_BUDGET_BYTES,
+				wakeAgent: null,
+				waitingJobNumbers: [],
 			},
 			shells,
 			restoreState: job.shellState,
