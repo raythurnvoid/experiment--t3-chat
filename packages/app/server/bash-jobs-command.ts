@@ -312,7 +312,10 @@ export function bash_wait_command_create(ctx: ActionCtx, job: bash_JobContext): 
 				select: { kind: "numbers", jobNumbers: wanted },
 			})) as ai_chat_files_list_thread_jobs_Result;
 		let found = await list();
-		// Another member's job or a deleted row resolves to nothing: say so, never poll it.
+		// Another member's job or a deleted row resolves to nothing: say so, never poll it. One bad
+		// number refuses the whole list, because one exit code cannot say two things at once: 3 tells
+		// the model to wait again, 1 tells it the call was wrong. The lines below name every missing
+		// number, so the next call knows exactly which ones to drop.
 		const missing = wanted.filter((jobNumber) => !found.some((summary) => summary.jobNumber === jobNumber));
 		if (missing.length > 0)
 			return {
