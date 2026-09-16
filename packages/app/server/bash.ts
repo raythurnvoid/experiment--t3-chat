@@ -123,6 +123,7 @@ import {
 	bash_SHELL_COMMENT_LINE_REGEX,
 	bash_WHITESPACE_RUN_REGEX,
 	bash_text_head,
+	bash_text_well_formed,
 	bash_value_well_formed,
 	bash_well_formed_ctx,
 	type bash_DbFilesRoots,
@@ -288,9 +289,16 @@ async function tmp_fs_delta_payload(tmpFs: BashTmpFs) {
 	}
 
 	const tmpFileEntries = await Promise.all(tmpFileEntryPromises);
+	// One path can hold one node, and two names can leave this call as one path: a name that holds half
+	// a character is repaired on its way out, and every half becomes the same U+FFFD. So keep the last
+	// entry for each repaired path. Two entries for one path would write two docs, and the next call
+	// could not build the filesystem from them: `mkdir` and `symlink` refuse a path that already
+	// exists, so every later call in the thread would fail before it ran a command.
+	const entryByPath = new Map(tmpFileEntries.map((entry) => [bash_text_well_formed(entry.path), entry]));
+	const contentByPath = new Map(tmpFilesContent.map((content) => [bash_text_well_formed(content.path), content]));
 	return {
-		fileNodes: tmpFileEntries,
-		fileNodesContent: tmpFilesContent,
+		fileNodes: [...entryByPath.values()],
+		fileNodesContent: [...contentByPath.values()],
 		deletePaths,
 	};
 }

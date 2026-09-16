@@ -2554,6 +2554,27 @@ describe("bash_run_command", () => {
 		expect(lastPatchArgs?.fileNodesContent.map((entry) => entry.path).sort()).toEqual(["/a�.txt", "/café.txt"]);
 	});
 
+	test("keeps one /tmp node when two names repair to the same path", async () => {
+		const { run, runMutation } = await create_bash_runner();
+
+		// Every half of a character is repaired to the same U+FFFD, so these two names leave the call as
+		// one path. Only one node may be sent for it. Two would write two docs for one path, and the next
+		// call could not even build the filesystem: `mkdir` refuses a path a file already holds, so every
+		// later call in the thread would fail before it ran a command.
+		const wrote = await run(`printf hi > "/tmp/$(printf 'a\\ud83c').txt" && mkdir "/tmp/$(printf 'a\\udf89').txt"`);
+		expect(wrote.metadata.exitCode, wrote.stderr).toBe(0);
+
+		const patchCalls = runMutation.mock.calls.filter(
+			([ref]) => function_name_of(ref) === "ai_chat_files:patch_thread_tmp_files",
+		);
+		const lastPatchArgs = patchCalls.at(-1)?.[1] as
+			| { fileNodes: ai_chat_files_patch_thread_tmp_files_Args["fileNodes"] }
+			| undefined;
+		expect(lastPatchArgs?.fileNodes.map((tmpFile) => tmpFile.path)).toEqual(["/a�.txt"]);
+
+		// The thread still works: the next call reads the /tmp it just wrote.
+		expect((await run("ls /tmp")).metadata.exitCode).toBe(0);
+	});
 	test("flushes /tmp removals as delete-only deltas", async () => {
 		const { run, runMutation } = await create_bash_runner();
 
