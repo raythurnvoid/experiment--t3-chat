@@ -357,7 +357,6 @@ function makeThread(args: { id: string; title: string | null; archived?: boolean
 		title: args.title,
 		archived: args.archived ?? false,
 		runtime: "aisdk_5",
-		stateId: null,
 		createdBy: "user_1",
 		updatedBy: "user_1",
 		updatedAt: 1,

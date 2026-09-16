@@ -1,18 +1,39 @@
+import { vOnCompleteArgs, Workpool } from "@convex-dev/workpool";
 import { v } from "convex/values";
 import { paginationOptsValidator, type RegisteredMutation, type RegisteredQuery } from "convex/server";
 import { doc } from "convex-helpers/validators";
 import { Result } from "common/errors-as-values-utils.ts";
 import { internalMutation, internalQuery, query, type MutationCtx, type QueryCtx } from "./_generated/server.js";
 import type { Doc, Id } from "./_generated/dataModel";
-import { internal } from "./_generated/api.js";
-import app_convex_schema, { ai_chat_bash_result_validator } from "./schema.ts";
+import { components, internal } from "./_generated/api.js";
+import app_convex_schema, {
+	ai_chat_bash_result_validator,
+	bash_shell_state_validator,
+	files_pending_target_validator,
+} from "./schema.ts";
 import { access_control_db_authorize_membership } from "./access_control.ts";
+import {
+	activities_db_delete,
+	activities_db_finish,
+	activities_db_get_by_source_id,
+	activities_db_start,
+	activities_is_active,
+} from "./activities_db.ts";
+import { files_transfer_db_request_stop } from "./files_transfer.ts";
 import {
 	organizations_membership_lifetimes_db_ensure,
 	organizations_membership_lifetimes_db_get,
 } from "./organizations_membership_lifetimes.ts";
+import {
+	bash_COMMAND_EXIT_FAILURE,
+	bash_COMMAND_EXIT_STOPPED,
+	bash_COMMAND_EXIT_TIMED_OUT,
+	bash_JOB_NUMBERS_MAX_COUNT,
+} from "../server/bash-utils.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
+import { crypto_sha256_hex } from "../server/crypto-utils.ts";
 import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
+import { should_never_happen } from "../shared/shared-utils.ts";
 
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
 // Does NOT work for http actions (see http.ts). No mutable module-level state allowed here.
@@ -20,6 +41,47 @@ export const experimental_reuseContext = true;
 
 const BASH_RESULT_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const BASH_RESULT_MAX_BYTES = 700 * 1024;
+// Rows the daily sweep empties per pass. A row's result can be 700 KiB and its size is unknown
+// before the read, so keep the pass well under the transaction byte limit and reschedule instead.
+const BASH_RESULT_CLEANUP_BATCH_COUNT = 8;
+const BASH_SHELL_MAX_COUNT = 10;
+// The name becomes a `/shells/<name>` path segment, so it is checked here too, not only in the tool schema.
+const BASH_SHELL_NAME_REGEX = /^[a-z0-9_-]{1,32}$/;
+// A shell keeps at most 1 MiB and 1,000 transcript entries; the oldest entries go first.
+const BASH_SHELL_TRANSCRIPT_MAX_BYTES = 1_048_576;
+const BASH_SHELL_TRANSCRIPT_MAX_ENTRIES = 1000;
+// A single entry is cut just under the 1 MiB document limit, not down to a tidy number. The
+// transcript is meant to keep a job's whole output, which is about 830 KiB in the worst case, so
+// the cut must sit above that. It exists because a caller can still hand over more: the engine's
+// output limit counts UTF-16 units rather than bytes, a compound statement that exits can carry
+// its own unchecked output out, and the app appends diagnostic lines after the engine returns.
+// Without the cut that insert fails and takes the whole Bash call down after its work was done.
+const BASH_SHELL_TRANSCRIPT_ENTRY_MAX_BYTES = 960 * 1024;
+// `read_shell_transcript` returns at most this many entries, well under the Convex array cap of 8192.
+const BASH_SHELL_TRANSCRIPT_READ_MAX_ENTRIES = 1000;
+// A job's budget starts when its worker starts, not when it was queued.
+const BASH_JOB_RUN_MS = 8 * 60 * 1000;
+// The worker aborts this long before the deadline, so the last 30 seconds store and settle.
+const BASH_JOB_SETTLE_HEADROOM_MS = 30_000;
+// Live jobs per user and workspace, counted on the Activity rows.
+const BASH_JOB_LIVE_MAX_COUNT = 4;
+// `jobs -a` shows this many of the newest jobs.
+const BASH_JOB_LIST_MAX_COUNT = 8;
+// A job's three clocks start at this placeholder; the worker's claim re-arms them from its start.
+const BASH_JOB_PLACEHOLDER_MS = 10 * 60 * 1000;
+// A job row must stay under the 1 MiB document cap once its result is stored, so the script and
+// the shell snapshot are bounded at launch and emptied when the result lands.
+const BASH_JOB_SCRIPT_MAX_BYTES = 64 * 1024;
+const BASH_JOB_SHELL_STATE_MAX_BYTES = 128 * 1024;
+// The finished-job notes read this many newest jobs: 8 finished plus the 4 that can be live.
+const BASH_JOB_NOTE_WINDOW = BASH_JOB_LIST_MAX_COUNT + BASH_JOB_LIVE_MAX_COUNT;
+
+const ai_chat_bash_jobs_workpool = new Workpool(components.ai_chat_bash_jobs_workpool, {
+	// Above the live-job cap, so one user cannot fill every slot.
+	maxParallelism: 8,
+	// A retried worker would replay the job's writes.
+	retryActionsByDefault: false,
+});
 
 // Begin and lost-reply readback use the same immutable call identity.
 const bash_invocation_identity = {
@@ -41,6 +103,86 @@ const bash_invocation_result = v.object({
 	result: v.union(ai_chat_bash_result_validator, v.null()),
 	resultExpired: v.boolean(),
 });
+
+// A "job finished" note. The next fresh call of the user who launched the job prints it.
+const bash_job_note = v.object({
+	jobNumber: v.number(),
+	status: app_convex_schema.tables.activities.validator.fields.status,
+	shellName: v.string(),
+});
+
+// A fresh begin also returns the shell it will run in, the thread's shell list for the `/shells`
+// mount and the finished-job notes. A replayed begin returns the plain invocation result, like
+// `get_bash_invocation`.
+const bash_begin_result = v.union(
+	bash_invocation_result,
+	v.object({
+		...bash_invocation_result.fields,
+		shell: v.object({
+			_id: v.id("ai_chat_bash_shells"),
+			name: v.string(),
+			cwd: v.string(),
+			cwdTarget: app_convex_schema.tables.ai_chat_bash_shells.validator.fields.cwdTarget,
+			state: app_convex_schema.tables.ai_chat_bash_shells.validator.fields.state,
+		}),
+		shells: v.array(v.object({ _id: v.id("ai_chat_bash_shells"), name: v.string() })),
+		notes: v.array(bash_job_note),
+	}),
+);
+
+/**
+ * Append one transcript entry to a shell and trim the oldest entries while the shell is above
+ * its byte or entry cap. The running totals on the shell row mean no scan. Call this inside the
+ * mutation that changes the shell, so a shell never has an entry without its state.
+ */
+export async function ai_chat_files_db_append_shell_transcript(
+	ctx: MutationCtx,
+	shell: Doc<"ai_chat_bash_shells">,
+	text: string,
+) {
+	const encoded = new TextEncoder().encode(text);
+	// Cut the entry here, at the insert, so no caller can make the document too large. Decoding a
+	// byte slice can leave one replacement character where a character was split; drop it.
+	const entryText =
+		encoded.byteLength > BASH_SHELL_TRANSCRIPT_ENTRY_MAX_BYTES
+			? `${new TextDecoder().decode(encoded.slice(0, BASH_SHELL_TRANSCRIPT_ENTRY_MAX_BYTES)).replace(/�+$/u, "")}\n[transcript entry truncated]`
+			: text;
+	const bytes = new TextEncoder().encode(entryText).byteLength;
+	await ctx.db.insert("ai_chat_bash_shell_transcripts", {
+		organizationId: shell.organizationId,
+		workspaceId: shell.workspaceId,
+		threadId: shell.threadId,
+		shellId: shell._id,
+		seq: shell.transcriptSeq,
+		text: entryText,
+		bytes,
+	});
+
+	let transcriptBytes = shell.transcriptBytes + bytes;
+	let transcriptEntries = shell.transcriptEntries + 1;
+	if (transcriptBytes > BASH_SHELL_TRANSCRIPT_MAX_BYTES || transcriptEntries > BASH_SHELL_TRANSCRIPT_MAX_ENTRIES) {
+		// One big entry can push out many small ones, so read the oldest entries as one page and
+		// walk it. Asking for the oldest entry again after every delete would be one query per
+		// deleted entry, and the mutation has its own time budget.
+		const oldest = await ctx.db
+			.query("ai_chat_bash_shell_transcripts")
+			.withIndex("by_shell_seq", (q) => q.eq("shellId", shell._id))
+			.take(BASH_SHELL_TRANSCRIPT_MAX_ENTRIES);
+		for (const entry of oldest) {
+			if (transcriptBytes <= BASH_SHELL_TRANSCRIPT_MAX_BYTES && transcriptEntries <= BASH_SHELL_TRANSCRIPT_MAX_ENTRIES)
+				break;
+			await ctx.db.delete("ai_chat_bash_shell_transcripts", entry._id);
+			transcriptBytes -= entry.bytes;
+			transcriptEntries -= 1;
+		}
+	}
+
+	await ctx.db.patch("ai_chat_bash_shells", shell._id, {
+		transcriptBytes,
+		transcriptEntries,
+		transcriptSeq: shell.transcriptSeq + 1,
+	});
+}
 
 export async function ai_chat_files_db_get_invocation_membership(
 	ctx: QueryCtx | MutationCtx,
@@ -76,6 +218,31 @@ export async function ai_chat_files_db_get_invocation_membership(
 	return membership;
 }
 
+/**
+ * Keep a bounded replay even when multibyte output exceeds the shell's character cap.
+ */
+function bash_result_bounded(result: NonNullable<Doc<"ai_chat_bash_invocations">["result"]>) {
+	if (new TextEncoder().encode(JSON.stringify(result)).byteLength <= BASH_RESULT_MAX_BYTES) return result;
+	const stdout = result.stdout.slice(0, 16_384);
+	const stderr = result.stderr.slice(0, 16_384);
+	return {
+		title: result.title.slice(0, 256),
+		output: `${stdout}${stderr ? `\n${stderr}` : ""}\n[Saved Bash result was truncated.]`,
+		stdout,
+		stderr,
+		metadata: {
+			...result.metadata,
+			command: result.metadata.command.slice(0, 8192),
+			cwd: result.metadata.cwd.slice(0, 1024),
+			nextCwd: result.metadata.nextCwd.slice(0, 1024),
+			stdoutTruncated: true,
+			stderrTruncated: true,
+			observedPaths: result.metadata.observedPaths.filter((path) => path.length <= 256).slice(0, 20),
+			observedPathsTruncated: true,
+		},
+	};
+}
+
 function invocation_result(
 	invocation: Pick<
 		Doc<"ai_chat_bash_invocations">,
@@ -98,12 +265,72 @@ function invocation_result(
 	};
 }
 
+/**
+ * The "job finished" notes for this user's next fresh call in a thread. The cursor row is per
+ * user and thread, so one member's call never hides another member's notes. It moves to
+ * `now - 1`: a finish stamped in the same millisecond that commits after this call would
+ * otherwise be hidden forever, and a rare duplicate note is cheap. More than 8 newly finished
+ * jobs in the window are dropped while the cursor still moves; the transcript keeps their output.
+ */
+async function db_take_job_notes(
+	ctx: MutationCtx,
+	args: { thread: Doc<"ai_chat_threads">; userId: Id<"users">; now: number },
+) {
+	const recent = await ctx.db
+		.query("activities")
+		.withIndex("by_user_source_kind_thread_jobNumber", (q) =>
+			q.eq("userId", args.userId).eq("source.kind", "ai_chat_bash_job").eq("source.threadId", args.thread._id),
+		)
+		.order("desc")
+		.take(BASH_JOB_NOTE_WINDOW);
+	// No job Activity means nothing to note and nothing to hide: keep the thread without a cursor row.
+	if (recent.length === 0) return [];
+
+	const cursor = await ctx.db
+		.query("ai_chat_bash_job_notice_cursors")
+		.withIndex("by_user_thread", (q) => q.eq("userId", args.userId).eq("threadId", args.thread._id))
+		.unique();
+	// `5 > undefined` is false: without the `?? 0` the first wave of notes would never print.
+	const noticeAt = cursor?.noticeAt ?? 0;
+	const notes = recent
+		.filter((activity) => !activities_is_active(activity.status) && (activity.finishedAt ?? 0) > noticeAt)
+		.slice(0, BASH_JOB_LIST_MAX_COUNT)
+		.map((activity) => {
+			const source = activity.source;
+			if (source.kind !== "ai_chat_bash_job")
+				throw should_never_happen("Job Activity has another source kind", { activityId: activity._id });
+			return { jobNumber: source.jobNumber, status: activity.status, shellName: source.shellName };
+		});
+	if (cursor) {
+		await ctx.db.patch("ai_chat_bash_job_notice_cursors", cursor._id, { noticeAt: args.now - 1 });
+	} else {
+		await ctx.db.insert("ai_chat_bash_job_notice_cursors", {
+			organizationId: args.thread.organizationId,
+			workspaceId: args.thread.workspaceId,
+			threadId: args.thread._id,
+			userId: args.userId,
+			noticeAt: args.now - 1,
+		});
+	}
+	return notes;
+}
+
 export const begin_bash_invocation = internalMutation({
-	args: bash_invocation_identity,
-	returns: v_result({ _yay: bash_invocation_result }),
-	handler: async (ctx, args) => {
-		if (!args.toolCallId || args.toolCallId.length > 256 || !/^[a-f0-9]{64}$/.test(args.commandHash))
+	// `shellName` is not part of the call identity shared with `get_bash_invocation`; keep it off
+	// the identity object because the handler spreads that object into the invocation row.
+	args: { ...bash_invocation_identity, shellName: v.string() },
+	returns: v_result({ _yay: bash_begin_result }),
+	handler: async (ctx, { shellName, ...args }) => {
+		// `job:` ids belong to `start_bash_job`. Refuse one here, before the lookup: the index is
+		// not unique, so a second row with that key would shadow the job for every `.first()` reader.
+		if (
+			!args.toolCallId ||
+			args.toolCallId.length > 256 ||
+			args.toolCallId.startsWith("job:") ||
+			!/^[a-f0-9]{64}$/.test(args.commandHash)
+		)
 			return Result({ _nay: { message: "Invalid Bash call identity." } });
+		if (!BASH_SHELL_NAME_REGEX.test(shellName)) return Result({ _nay: { message: "Invalid Bash shell name." } });
 		const existing = await ctx.db
 			.query("ai_chat_bash_invocations")
 			.withIndex("by_thread_toolCall", (q) => q.eq("threadId", args.threadId).eq("toolCallId", args.toolCallId))
@@ -158,6 +385,43 @@ export const begin_bash_invocation = internalMutation({
 		if (authorized._nay) return authorized;
 		const membershipLifetime = await organizations_membership_lifetimes_db_ensure(ctx, membership);
 		const now = Date.now();
+
+		// Create-and-run: a shell that does not exist yet is created by the call that names it.
+		// Read the whole thread range, so the count and the insert are one transaction and a
+		// concurrent insert of an 11th shell retries instead of slipping past the cap.
+		const shells = await ctx.db
+			.query("ai_chat_bash_shells")
+			.withIndex("by_thread_name", (q) => q.eq("threadId", args.threadId))
+			.collect();
+		let shell = shells.find((row) => row.name === shellName) ?? null;
+		if (!shell) {
+			if (shells.length >= BASH_SHELL_MAX_COUNT)
+				return Result({
+					_nay: {
+						name: "shell_limit",
+						message: `This thread already has ${BASH_SHELL_MAX_COUNT} shells (${shells.map((row) => row.name).join(", ")}). Reuse one of them.`,
+					},
+				});
+			const shellId = await ctx.db.insert("ai_chat_bash_shells", {
+				organizationId: thread.organizationId,
+				workspaceId: thread.workspaceId,
+				threadId: args.threadId,
+				name: shellName,
+				// `"~"` means "start in the current workspace path"; the shell runner resolves it.
+				cwd: "~",
+				cwdTarget: null,
+				state: null,
+				transcriptBytes: 0,
+				transcriptEntries: 0,
+				transcriptSeq: 0,
+				updatedBy: args.userId,
+				updatedAt: now,
+			});
+			shell = await ctx.db.get("ai_chat_bash_shells", shellId);
+			if (!shell) throw should_never_happen("Inserted Bash shell not found", { shellId });
+			shells.push(shell);
+		}
+
 		const invocation = {
 			...args,
 			membershipId: membership._id,
@@ -170,9 +434,58 @@ export const begin_bash_invocation = internalMutation({
 		await ctx.scheduler.runAt(invocation.deadlineAt, internal.ai_chat_files.interrupt_bash_invocation, {
 			invocationId,
 		});
-		return Result({ _yay: invocation_result({ ...invocation, _id: invocationId }, true) });
+		// Only a fresh call prints the notes; a rejoined call above never had them.
+		const notes = await db_take_job_notes(ctx, { thread, userId: args.userId, now });
+		return Result({
+			_yay: {
+				...invocation_result({ ...invocation, _id: invocationId }, true),
+				shell: { _id: shell._id, name: shell.name, cwd: shell.cwd, cwdTarget: shell.cwdTarget, state: shell.state },
+				shells: shells.map((row) => ({ _id: row._id, name: row.name })),
+				notes,
+			},
+		});
 	},
 });
+
+/**
+ * The lazy `/shells/<name>/transcript` provider reads this mid-call. The shell is shared by the
+ * thread, so any workspace member with `content.read` may read it; the args scope is bound to the
+ * caller's membership first, then the shell's own tenant fields are checked against that scope.
+ */
+export const read_shell_transcript = internalQuery({
+	args: {
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		userId: v.id("users"),
+		threadId: v.id("ai_chat_threads"),
+		shellId: v.id("ai_chat_bash_shells"),
+	},
+	returns: v.array(v.object({ seq: v.number(), text: v.string() })),
+	handler: async (ctx, args) => {
+		const membership = await db_get_door_membership(ctx, args);
+		if (membership._nay) throw convex_error({ message: membership._nay.message });
+
+		const shell = await ctx.db.get("ai_chat_bash_shells", args.shellId);
+		if (
+			!shell ||
+			shell.organizationId !== membership._yay.organizationId ||
+			shell.workspaceId !== membership._yay.workspaceId ||
+			shell.threadId !== args.threadId
+		)
+			throw convex_error({ message: "Not found" });
+
+		const entries = await ctx.db
+			.query("ai_chat_bash_shell_transcripts")
+			.withIndex("by_shell_seq", (q) => q.eq("shellId", shell._id))
+			.take(BASH_SHELL_TRANSCRIPT_READ_MAX_ENTRIES);
+		return entries.map((entry) => ({ seq: entry.seq, text: entry.text }));
+	},
+});
+
+export type ai_chat_files_read_shell_transcript_Result =
+	typeof read_shell_transcript extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
 
 export const get_bash_invocation = internalQuery({
 	args: bash_invocation_identity,
@@ -222,34 +535,11 @@ export const finish_bash_invocation = internalMutation({
 			return Result({ _yay: invocation_result({ ...invocation, ...patch }) });
 		}
 
-		let result = args.result;
-		// Keep a bounded replay even when multibyte output exceeds the shell's character cap.
-		if (new TextEncoder().encode(JSON.stringify(result)).byteLength > BASH_RESULT_MAX_BYTES) {
-			const stdout = result.stdout.slice(0, 16_384);
-			const stderr = result.stderr.slice(0, 16_384);
-			result = {
-				title: result.title.slice(0, 256),
-				output: `${stdout}${stderr ? `\n${stderr}` : ""}\n[Saved Bash result was truncated.]`,
-				stdout,
-				stderr,
-				metadata: {
-					...result.metadata,
-					command: result.metadata.command.slice(0, 8192),
-					cwd: result.metadata.cwd.slice(0, 1024),
-					nextCwd: result.metadata.nextCwd.slice(0, 1024),
-					stdoutTruncated: true,
-					stderrTruncated: true,
-					observedPaths: result.metadata.observedPaths.filter((path) => path.length <= 256).slice(0, 20),
-					observedPathsTruncated: true,
-				},
-			};
-		}
-
 		const now = Date.now();
 		const patch = {
 			status: "finished" as const,
 			finishedAt: now,
-			result,
+			result: bash_result_bounded(args.result),
 			resultExpiresAt: now + BASH_RESULT_RETENTION_MS,
 		};
 
@@ -288,17 +578,822 @@ export const cleanup_expired_bash_results = internalMutation({
 	args: {},
 	returns: v.null(),
 	handler: async (ctx) => {
+		// A job row can hold a 700 KiB result and its size is unknown until it is read, so this
+		// pass reads few rows and reschedules itself. Every finished row also has its own expiry
+		// scheduled, so this sweep only picks up rows whose schedule was lost.
 		const invocations = await ctx.db
 			.query("ai_chat_bash_invocations")
 			.withIndex("by_resultExpiresAt", (q) => q.gt("resultExpiresAt", 0).lte("resultExpiresAt", Date.now()))
-			.take(20);
+			.take(BASH_RESULT_CLEANUP_BATCH_COUNT);
 		for (const invocation of invocations)
 			await ctx.db.patch("ai_chat_bash_invocations", invocation._id, { result: undefined, resultExpiresAt: undefined });
-		if (invocations.length === 20)
+		if (invocations.length === BASH_RESULT_CLEANUP_BATCH_COUNT)
 			await ctx.scheduler.runAfter(0, internal.ai_chat_files.cleanup_expired_bash_results, {});
 		return null;
 	},
 });
+
+/**
+ * Load a background job row. Callers return quietly on a missing row: purge and the user drain
+ * can delete it while a worker, a watchdog or a pool callback is still in flight.
+ */
+async function db_get_job_row(ctx: QueryCtx | MutationCtx, invocationId: Id<"ai_chat_bash_invocations">) {
+	const invocation = await ctx.db.get("ai_chat_bash_invocations", invocationId);
+	if (!invocation) return null;
+	const job = invocation.job;
+	if (!job) throw should_never_happen("Bash invocation is not a background job", { invocationId });
+	return { ...invocation, job };
+}
+
+type BashJobRow = NonNullable<Awaited<ReturnType<typeof db_get_job_row>>>;
+
+/**
+ * The fence for the internal doors the Bash worker calls with a passed `userId`. The caller must
+ * be an active member of the args scope with `content.read`. Each door then checks the row it
+ * reads against this membership's scope: membership proves the caller, not the row.
+ */
+async function db_get_door_membership(
+	ctx: QueryCtx | MutationCtx,
+	args: { organizationId: Id<"organizations">; workspaceId: Id<"organizations_workspaces">; userId: Id<"users"> },
+) {
+	const membership = await ctx.db
+		.query("organizations_workspaces_users")
+		.withIndex("by_user_organization_workspace_active", (q) =>
+			q
+				.eq("userId", args.userId)
+				.eq("organizationId", args.organizationId)
+				.eq("workspaceId", args.workspaceId)
+				.eq("active", true),
+		)
+		.first();
+	if (!membership) return Result({ _nay: { message: "Unauthorized" } });
+	const authorized = await access_control_db_authorize_membership(ctx, {
+		userAuth: { id: args.userId },
+		membership,
+		permission: "content.read",
+	});
+	if (authorized._nay) return authorized;
+	return Result({ _yay: membership });
+}
+
+/**
+ * Resolve a job number for the `jobs`, `wait` and `kill` doors. The index carries the user and
+ * the thread, so another member's job never resolves.
+ */
+async function db_get_job_activity(
+	ctx: QueryCtx | MutationCtx,
+	args: { userId: Id<"users">; threadId: Id<"ai_chat_threads">; jobNumber: number },
+) {
+	const activity = await ctx.db
+		.query("activities")
+		.withIndex("by_user_source_kind_thread_jobNumber", (q) =>
+			q
+				.eq("userId", args.userId)
+				.eq("source.kind", "ai_chat_bash_job")
+				.eq("source.threadId", args.threadId)
+				.eq("source.jobNumber", args.jobNumber),
+		)
+		.unique();
+	if (!activity) return null;
+	const source = activity.source;
+	if (source.kind !== "ai_chat_bash_job")
+		throw should_never_happen("Job Activity has another source kind", { activityId: activity._id });
+	return { ...activity, source };
+}
+
+const bash_job_summary = v.object({
+	jobNumber: v.number(),
+	status: app_convex_schema.tables.activities.validator.fields.status,
+	shellName: v.string(),
+	scriptPreview: v.string(),
+	parentJobNumber: v.union(v.number(), v.null()),
+	invocationId: v.id("ai_chat_bash_invocations"),
+	startedAt: v.optional(v.number()),
+	finishedAt: v.optional(v.number()),
+});
+
+/**
+ * `jobs` lines come from the small Activity row, never from the invocation row (up to 700 KiB).
+ */
+function job_summary(activity: Doc<"activities">) {
+	const source = activity.source;
+	if (source.kind !== "ai_chat_bash_job")
+		throw should_never_happen("Job Activity has another source kind", { activityId: activity._id });
+	return {
+		jobNumber: source.jobNumber,
+		status: activity.status,
+		shellName: source.shellName,
+		scriptPreview: source.scriptPreview,
+		parentJobNumber: source.parentJobNumber,
+		invocationId: source.id,
+		startedAt: activity.startedAt,
+		finishedAt: activity.finishedAt,
+	};
+}
+
+/**
+ * Append the job's finish entry to its shell transcript. `started` is the Activity's `startedAt`,
+ * so a job that never ran has no `started` part. Read the script off the row before the caller
+ * empties it.
+ */
+async function db_append_job_finish_entry(
+	ctx: MutationCtx,
+	invocation: BashJobRow,
+	args: { exitCode: number; stdout: string; stderr: string; startedAt: number | undefined; now: number },
+) {
+	const shell = await ctx.db.get("ai_chat_bash_shells", invocation.job.shellId);
+	if (!shell) throw should_never_happen("Job shell not found", { shellId: invocation.job.shellId });
+	const started = args.startedAt === undefined ? "" : `, started ${new Date(args.startedAt).toISOString().slice(11, 19)}`;
+	await ai_chat_files_db_append_shell_transcript(
+		ctx,
+		shell,
+		`$ [${new Date(args.now).toISOString()}] job ${invocation.job.jobNumber} finished (exit ${args.exitCode}) in shell ${shell.name}${started}\n${invocation.job.script ?? ""}\n${args.stdout}\n${args.stderr}`,
+	);
+}
+
+/**
+ * Settle a job that stored no result: the watchdog, a Stop while queued, a crashed worker, or a
+ * dead membership at claim. Only the settle that finds the row live marks it `interrupted` and
+ * writes the finish entry, so a retried settle cannot write a duplicate line. The first settle
+ * wins on the Activity; `activities_db_finish` ignores the rest.
+ */
+async function db_settle_bash_job(
+	ctx: MutationCtx,
+	invocation: BashJobRow,
+	args: { status: "failed" | "canceled" | "timed_out"; errorMessage: string | null; now: number },
+) {
+	if (invocation.status === "running") {
+		const activity = await activities_db_get_by_source_id(ctx, invocation._id);
+		await ctx.db.patch("ai_chat_bash_invocations", invocation._id, { status: "interrupted", finishedAt: args.now });
+		await db_append_job_finish_entry(ctx, invocation, {
+			exitCode: {
+				failed: bash_COMMAND_EXIT_FAILURE,
+				canceled: bash_COMMAND_EXIT_STOPPED,
+				timed_out: bash_COMMAND_EXIT_TIMED_OUT,
+			}[args.status],
+			stdout: "",
+			stderr: "",
+			startedAt: activity?.startedAt,
+			now: args.now,
+		});
+	}
+	if (invocation.job.watchdogId !== null) await ctx.scheduler.cancel(invocation.job.watchdogId);
+	await activities_db_finish(ctx, {
+		sourceId: invocation._id,
+		status: args.status,
+		errorMessage: args.errorMessage,
+		now: args.now,
+	});
+}
+
+/**
+ * The launch behind `&`. The hook calls it from a foreground call and from a job worker (a job
+ * may start jobs). One transaction: the cap, the job number, the row, the Activity, the start
+ * entry, the pool item and the placeholder watchdog. The synthetic `toolCallId` lets a replayed
+ * launch find the row it already made.
+ */
+export const start_bash_job = internalMutation({
+	args: {
+		/**
+		 * The caller's own row: a call or a job. The job copies its membership and lifetime, so a
+		 * job dies with the session that launched it.
+		 */
+		parentInvocationId: v.id("ai_chat_bash_invocations"),
+		commandNumber: v.number(),
+		shellId: v.id("ai_chat_bash_shells"),
+		script: v.string(),
+		startCwd: v.string(),
+		startCwdTarget: v.union(files_pending_target_validator, v.null()),
+		shellState: bash_shell_state_validator,
+		allowDbFilesMkdir: v.boolean(),
+	},
+	returns: v_result({ _yay: v.object({ jobNumber: v.number() }) }),
+	handler: async (ctx, args) => {
+		const parent = await ctx.db.get("ai_chat_bash_invocations", args.parentInvocationId);
+		if (!parent || !(await ai_chat_files_db_get_invocation_membership(ctx, parent)))
+			return Result({ _nay: { message: "Unauthorized" } });
+		const shell = await ctx.db.get("ai_chat_bash_shells", args.shellId);
+		if (!shell || shell.threadId !== parent.threadId) return Result({ _nay: { message: "Unauthorized" } });
+		if (!Number.isSafeInteger(args.commandNumber) || args.commandNumber < 0)
+			return Result({ _nay: { message: "Invalid Bash command number." } });
+
+		// A lost reply replays the launch; the synthetic id finds the row it already made.
+		const toolCallId = `job:${parent._id}:${args.commandNumber}`;
+		const existing = await ctx.db
+			.query("ai_chat_bash_invocations")
+			.withIndex("by_thread_toolCall", (q) => q.eq("threadId", parent.threadId).eq("toolCallId", toolCallId))
+			.first();
+		if (existing) {
+			if (!existing.job) throw should_never_happen("Job row without job fields", { invocationId: existing._id });
+			return Result({ _yay: { jobNumber: existing.job.jobNumber } });
+		}
+
+		// A stopping or already finished job must not start children. A chat call is not an Activity
+		// source, so only a job parent is checked, and with a non-throwing read: the drain can
+		// delete a parent's Activity while its worker still runs, and that parent must not start
+		// children either. A parent the feed already shows as ended is the stronger case of the
+		// same rule, so refuse any parent that is no longer active.
+		if (parent.job) {
+			const parentActivity = await activities_db_get_by_source_id(ctx, parent._id);
+			if (
+				!parentActivity ||
+				!activities_is_active(parentActivity.status) ||
+				parentActivity.status === "stopping" ||
+				parentActivity.stopRequestedAt !== undefined ||
+				parent.job.stopRequestedAt !== null
+			)
+				return Result({ _nay: { message: "the parent job has ended or is stopping" } });
+		}
+
+		if (new TextEncoder().encode(args.script).byteLength > BASH_JOB_SCRIPT_MAX_BYTES)
+			return Result({ _nay: { message: "the job script is larger than 64 KiB" } });
+		if (new TextEncoder().encode(JSON.stringify(args.shellState)).byteLength > BASH_JOB_SHELL_STATE_MAX_BYTES)
+			return Result({ _nay: { message: "the shell state is larger than 128 KiB" } });
+
+		// Live jobs per user and workspace, on the Activity rows. Nested jobs count too, so a
+		// runaway job stops at the cap.
+		let live = 0;
+		for (const status of ["queued", "running", "stopping"] as const) {
+			live += (
+				await ctx.db
+					.query("activities")
+					.withIndex("by_user_workspace_source_kind_status", (q) =>
+						q
+							.eq("userId", parent.userId)
+							.eq("workspaceId", parent.workspaceId)
+							.eq("source.kind", "ai_chat_bash_job")
+							.eq("status", status),
+					)
+					.take(BASH_JOB_LIVE_MAX_COUNT + 1)
+			).length;
+			if (live >= BASH_JOB_LIVE_MAX_COUNT)
+				return Result({
+					_nay: {
+						name: "limit",
+						message: `${BASH_JOB_LIVE_MAX_COUNT} jobs are already active across your workspace (queued, running or stopping). Try \`jobs\`, or wait.`,
+					},
+				});
+		}
+
+		// Job numbers only grow. Rows are deleted 7 days after finishing, so the highest stored
+		// number can be gone while lower ones remain.
+		const thread = await ctx.db.get("ai_chat_threads", parent.threadId);
+		if (!thread) throw should_never_happen("Job thread not found", { threadId: parent.threadId });
+		const jobNumber = (thread.bashJobCounter ?? 0) + 1;
+		await ctx.db.patch("ai_chat_threads", thread._id, { bashJobCounter: jobNumber });
+
+		const now = Date.now();
+		const deadlineAt = now + BASH_JOB_PLACEHOLDER_MS;
+		const scriptPreview = args.script.replace(/\s+/g, " ").trim().slice(0, 80);
+		const invocationId = await ctx.db.insert("ai_chat_bash_invocations", {
+			organizationId: parent.organizationId,
+			workspaceId: parent.workspaceId,
+			userId: parent.userId,
+			threadId: parent.threadId,
+			toolCallId,
+			commandHash: await crypto_sha256_hex(JSON.stringify([args.script, args.allowDbFilesMkdir])),
+			membershipId: parent.membershipId,
+			membershipLifetime: parent.membershipLifetime,
+			status: "running",
+			deadlineAt,
+			transferDeadlineAt: deadlineAt,
+			job: {
+				jobNumber,
+				shellId: shell._id,
+				parentInvocationId: parent._id,
+				commandNumber: args.commandNumber,
+				script: args.script,
+				startCwd: args.startCwd,
+				startCwdTarget: args.startCwdTarget,
+				shellState: args.shellState,
+				allowDbFilesMkdir: args.allowDbFilesMkdir,
+				workId: null,
+				watchdogId: null,
+				stopRequestedAt: null,
+			},
+		});
+		await activities_db_start(ctx, {
+			organizationId: parent.organizationId,
+			workspaceId: parent.workspaceId,
+			userId: parent.userId,
+			membershipId: parent.membershipId,
+			membershipLifetime: parent.membershipLifetime,
+			source: {
+				kind: "ai_chat_bash_job",
+				id: invocationId,
+				threadId: parent.threadId,
+				jobNumber,
+				shellName: shell.name,
+				parentJobNumber: parent.job?.jobNumber ?? null,
+				scriptPreview,
+			},
+			title: `Background command ${jobNumber}`,
+			targets: [],
+			visibility: "requester",
+			feedVisible: true,
+			status: "queued",
+			resultKind: "bash_result",
+			deadlineAt,
+			now,
+		});
+		await ai_chat_files_db_append_shell_transcript(
+			ctx,
+			shell,
+			`[${new Date(now).toISOString()}] job ${jobNumber} started in shell ${shell.name}: ${scriptPreview}`,
+		);
+
+		// Both ids go on the row: `handle_bash_job_complete` fences on `workId`, and every stop path
+		// cancels `watchdogId`. The annotation breaks a type cycle through the generated `internal`.
+		const workId = await ai_chat_bash_jobs_workpool.enqueueAction(
+			ctx,
+			internal.bash.run_job,
+			{ invocationId },
+			{ onComplete: internal.ai_chat_files.handle_bash_job_complete, context: { invocationId } },
+		);
+		const watchdogId: Id<"_scheduled_functions"> = await ctx.scheduler.runAt(
+			deadlineAt,
+			internal.ai_chat_files.timeout_bash_job,
+			{ invocationId, expectedDeadlineAt: deadlineAt },
+		);
+		const inserted = await db_get_job_row(ctx, invocationId);
+		if (!inserted) throw should_never_happen("Inserted Bash job not found", { invocationId });
+		await ctx.db.patch("ai_chat_bash_invocations", invocationId, { job: { ...inserted.job, workId, watchdogId } });
+		return Result({ _yay: { jobNumber } });
+	},
+});
+
+export type ai_chat_files_start_bash_job_Result =
+	typeof start_bash_job extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
+
+/**
+ * The worker's own settle. Store the bounded result with the foreground retention, empty the big
+ * job fields in the same patch so they never coexist with the result, write the finish entry and
+ * settle the Activity. Accept a row the watchdog already marked `interrupted` and refuse only
+ * `finished`. There is no membership gate: a job that lost its membership stops through the
+ * poll, and a gate here would drop its result.
+ */
+export const finish_bash_job = internalMutation({
+	args: { invocationId: v.id("ai_chat_bash_invocations"), result: ai_chat_bash_result_validator },
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		const invocation = await db_get_job_row(ctx, args.invocationId);
+		if (!invocation || invocation.status === "finished") return null;
+
+		const now = Date.now();
+		const exitCode = args.result.metadata.exitCode;
+		const status =
+			exitCode === 0
+				? "succeeded"
+				: exitCode === bash_COMMAND_EXIT_STOPPED
+					? "canceled"
+					: exitCode === bash_COMMAND_EXIT_TIMED_OUT
+						? "timed_out"
+						: "failed";
+		await ctx.db.patch("ai_chat_bash_invocations", invocation._id, {
+			status: "finished",
+			finishedAt: now,
+			result: bash_result_bounded(args.result),
+			resultExpiresAt: now + BASH_RESULT_RETENTION_MS,
+			job: { ...invocation.job, script: null, shellState: null },
+		});
+		if (invocation.job.watchdogId !== null) await ctx.scheduler.cancel(invocation.job.watchdogId);
+		// Strip this row's own result on time, like a foreground call does. Without it the daily
+		// cron is the only thing that empties a job row, and a job result can be 700 KiB.
+		await ctx.scheduler.runAt(now + BASH_RESULT_RETENTION_MS, internal.ai_chat_files.expire_bash_invocation_result, {
+			invocationId: invocation._id,
+		});
+
+		// The transcript keeps the full output; the row keeps the bounded copy.
+		const activity = await activities_db_get_by_source_id(ctx, invocation._id);
+		await db_append_job_finish_entry(ctx, invocation, {
+			exitCode,
+			stdout: args.result.stdout,
+			stderr: args.result.stderr,
+			startedAt: activity?.startedAt,
+			now,
+		});
+		await activities_db_finish(ctx, {
+			sourceId: invocation._id,
+			status,
+			errorMessage: status === "failed" ? `Command exited with code ${exitCode}` : null,
+			now,
+		});
+		return null;
+	},
+});
+
+/**
+ * The worker's first call. Re-arm the three clocks from the worker start, swap the watchdog, and
+ * hand back what the worker needs to build its file system. Return `null` without reviving the
+ * job when it was stopped or settled while queued: `handle_bash_job_complete` settles the Stop
+ * case, and a dead membership is settled `canceled` here so the Activity never sits `queued`
+ * until `recover_expired` mislabels it.
+ */
+export const claim_bash_job = internalMutation({
+	args: { invocationId: v.id("ai_chat_bash_invocations") },
+	returns: v.union(
+		v.null(),
+		v.object({
+			row: doc(app_convex_schema, "ai_chat_bash_invocations"),
+			organizationName: v.string(),
+			workspaceName: v.string(),
+			shells: v.array(v.object({ _id: v.id("ai_chat_bash_shells"), name: v.string() })),
+		}),
+	),
+	handler: async (ctx, args) => {
+		const invocation = await db_get_job_row(ctx, args.invocationId);
+		if (!invocation) return null;
+		const now = Date.now();
+
+		// The membership helper binds the row's tenant fields; read the names only after it.
+		if (!(await ai_chat_files_db_get_invocation_membership(ctx, invocation))) {
+			await db_settle_bash_job(ctx, invocation, { status: "canceled", errorMessage: null, now });
+			return null;
+		}
+		const organization = await ctx.db.get("organizations", invocation.organizationId);
+		const workspace = await ctx.db.get("organizations_workspaces", invocation.workspaceId);
+		if (!organization || !workspace) return null;
+
+		const activity = await activities_db_get_by_source_id(ctx, invocation._id);
+		if (
+			!activity ||
+			!activities_is_active(activity.status) ||
+			activity.status === "stopping" ||
+			invocation.job.stopRequestedAt !== null
+		)
+			return null;
+
+		const deadlineAt = now + BASH_JOB_RUN_MS;
+		if (invocation.job.watchdogId !== null) await ctx.scheduler.cancel(invocation.job.watchdogId);
+		// The annotation breaks a type cycle: the id flows into the returned row, and the generated
+		// `internal` type depends on this function's return type.
+		const watchdogId: Id<"_scheduled_functions"> = await ctx.scheduler.runAt(
+			deadlineAt,
+			internal.ai_chat_files.timeout_bash_job,
+			{
+				invocationId: invocation._id,
+				expectedDeadlineAt: deadlineAt,
+			},
+		);
+		const patch = {
+			deadlineAt,
+			transferDeadlineAt: deadlineAt - BASH_JOB_SETTLE_HEADROOM_MS,
+			job: { ...invocation.job, watchdogId },
+		};
+		await ctx.db.patch("ai_chat_bash_invocations", invocation._id, patch);
+		await ctx.db.patch("activities", activity._id, { status: "running", startedAt: now, deadlineAt, updatedAt: now });
+
+		const shells = await ctx.db
+			.query("ai_chat_bash_shells")
+			.withIndex("by_thread_name", (q) => q.eq("threadId", invocation.threadId))
+			.collect();
+		// `ctx.db.patch` does not change the fetched doc, so merge the armed clocks by hand.
+		return {
+			row: { ...invocation, ...patch },
+			organizationName: organization.name,
+			workspaceName: workspace.name,
+			shells: shells.map((shell) => ({ _id: shell._id, name: shell.name })),
+		};
+	},
+});
+
+export type ai_chat_files_claim_bash_job_Result =
+	typeof claim_bash_job extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
+
+/**
+ * The watchdog. A placeholder watchdog can run after `claim_bash_job` re-armed the clocks, since
+ * `scheduler.cancel` cannot recall a mutation that was already dispatched. It settles only when
+ * the row still carries the deadline it was scheduled for.
+ */
+export const timeout_bash_job = internalMutation({
+	args: { invocationId: v.id("ai_chat_bash_invocations"), expectedDeadlineAt: v.number() },
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		const invocation = await db_get_job_row(ctx, args.invocationId);
+		const now = Date.now();
+		if (!invocation || invocation.deadlineAt !== args.expectedDeadlineAt || invocation.deadlineAt > now) return null;
+		await ai_chat_files_db_request_job_stop(ctx, { invocationId: invocation._id, reason: "timeout", now });
+		return null;
+	},
+});
+
+/**
+ * The pool callback. `pool.cancel` only removes a queued item and a worker is never retried, so
+ * this is the settle for a Stop while queued and for a worker that threw. A plain success means
+ * the worker already stored through `finish_bash_job` or exited on a settled Activity; a success
+ * after a Stop is the worker that left `claim_bash_job` with `null`.
+ */
+export const handle_bash_job_complete = internalMutation({
+	args: vOnCompleteArgs(v.object({ invocationId: v.id("ai_chat_bash_invocations") })),
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		const invocation = await db_get_job_row(ctx, args.context.invocationId);
+		// A superseded worker's callback must no-op.
+		if (!invocation || invocation.job.workId !== args.workId) return null;
+
+		const now = Date.now();
+		const stopRequested = invocation.job.stopRequestedAt !== null;
+		if (args.result.kind === "success" && !stopRequested) return null;
+		if (args.result.kind === "failed" && !stopRequested) {
+			await db_settle_bash_job(ctx, invocation, { status: "failed", errorMessage: "Background command crashed", now });
+			return null;
+		}
+		await db_settle_bash_job(ctx, invocation, { status: "canceled", errorMessage: null, now });
+		return null;
+	},
+});
+
+/**
+ * The stop path shared by the Activity Stop button, `kill`, the watchdog and `recover_expired`.
+ * A user stop is cooperative: it records the flag, the worker's poll sees it and aborts with 143.
+ * Only the `"timeout"` reason settles, because `recover_expired` reads expired rows oldest first
+ * and an unsettled row would take one slot in every batch forever.
+ */
+export async function ai_chat_files_db_request_job_stop(
+	ctx: MutationCtx,
+	args: { invocationId: Id<"ai_chat_bash_invocations">; reason: "user" | "timeout"; now: number },
+) {
+	const invocation = await db_get_job_row(ctx, args.invocationId);
+	if (!invocation) return;
+
+	// A user Stop that reaches its deadline is still a stop, not a timeout.
+	if (args.reason === "timeout") {
+		await db_settle_bash_job(
+			ctx,
+			invocation,
+			invocation.job.stopRequestedAt !== null
+				? { status: "canceled", errorMessage: null, now: args.now }
+				: { status: "timed_out", errorMessage: null, now: args.now },
+		);
+		return;
+	}
+
+	if (invocation.job.stopRequestedAt === null)
+		await ctx.db.patch("ai_chat_bash_invocations", invocation._id, {
+			job: { ...invocation.job, stopRequestedAt: args.now },
+		});
+	const activity = await activities_db_get_by_source_id(ctx, invocation._id);
+	if (activity && activities_is_active(activity.status) && activity.status !== "stopping")
+		await ctx.db.patch("activities", activity._id, {
+			status: "stopping",
+			stopRequestedAt: args.now,
+			updatedAt: args.now,
+		});
+	if (invocation.job.workId !== null) await ai_chat_bash_jobs_workpool.cancel(ctx, invocation.job.workId);
+	if (invocation.job.watchdogId !== null) await ctx.scheduler.cancel(invocation.job.watchdogId);
+
+	// Stop only this job's copies: other jobs and Files UI pastes share the same lane. One lane per
+	// user and workspace means at most one of this job's copies is live, and it is the newest.
+	const transfers = await ctx.db
+		.query("ai_chat_bash_invocation_transfers")
+		.withIndex("by_invocation_commandNumber", (q) => q.eq("invocationId", invocation._id))
+		.order("desc")
+		.take(5);
+	for (const transfer of transfers)
+		await files_transfer_db_request_stop(ctx, { runId: transfer.runId, reason: "user", now: args.now });
+}
+
+/**
+ * The `kill` door. `content.read` is enough: an Ask-mode member can launch a job, and the
+ * Activity Stop button works for them too. Returns whether a stop was recorded; `kill` prints
+ * "no such job" otherwise and never ends the call.
+ */
+export const request_bash_job_stop = internalMutation({
+	args: {
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		userId: v.id("users"),
+		threadId: v.id("ai_chat_threads"),
+		jobNumber: v.number(),
+	},
+	returns: v.boolean(),
+	handler: async (ctx, args) => {
+		const membership = await db_get_door_membership(ctx, args);
+		if (membership._nay) return false;
+		const activity = await db_get_job_activity(ctx, args);
+		if (
+			!activity ||
+			activity.organizationId !== membership._yay.organizationId ||
+			activity.workspaceId !== membership._yay.workspaceId ||
+			!activities_is_active(activity.status)
+		)
+			return false;
+		await ai_chat_files_db_request_job_stop(ctx, { invocationId: activity.source.id, reason: "user", now: Date.now() });
+		return true;
+	},
+});
+
+/**
+ * The worker's 5 s poll. `stopRequested` is the flag itself, not the row status: the watchdog can
+ * mark the row `interrupted` while a slow worker is alive in its last 30 seconds, and that
+ * worker must abort with the deadline reason, not the stop reason. `authorized` re-checks what
+ * the chat route checked at launch: read always, write only for an Agent-mode job.
+ */
+export const poll_bash_job = internalQuery({
+	args: { invocationId: v.id("ai_chat_bash_invocations") },
+	returns: v.object({
+		status: v.union(app_convex_schema.tables.ai_chat_bash_invocations.validator.fields.status, v.literal("missing")),
+		stopRequested: v.boolean(),
+		authorized: v.boolean(),
+	}),
+	handler: async (ctx, args) => {
+		const invocation = await db_get_job_row(ctx, args.invocationId);
+		if (!invocation) return { status: "missing" as const, stopRequested: false, authorized: false };
+		const stopRequested = invocation.job.stopRequestedAt !== null;
+		// This helper is what sees a purge in progress and a removed member.
+		const membership = await ai_chat_files_db_get_invocation_membership(ctx, invocation);
+		if (!membership) return { status: invocation.status, stopRequested, authorized: false };
+		const userAuth = { id: invocation.userId };
+		let authorized = !(await access_control_db_authorize_membership(ctx, { userAuth, membership, permission: "content.read" }))
+			._nay;
+		if (authorized && invocation.job.allowDbFilesMkdir)
+			authorized = !(await access_control_db_authorize_membership(ctx, { userAuth, membership, permission: "content.write" }))
+				._nay;
+		return { status: invocation.status, stopRequested, authorized };
+	},
+});
+
+export type ai_chat_files_poll_bash_job_Result =
+	typeof poll_bash_job extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
+
+/**
+ * Delete one job in bounded passes: pool item and watchdog first, then the transfer receipts,
+ * then the Activity, then the row. Never leave an Activity without its row, and never delete the
+ * row after a `done: false` Activity page. `cleanup_history` and both deletion paths call this.
+ */
+export async function ai_chat_files_db_delete_job_batch(
+	ctx: MutationCtx,
+	args: { invocationId: Id<"ai_chat_bash_invocations">; batchSize: number },
+) {
+	const invocation = await db_get_job_row(ctx, args.invocationId);
+	if (!invocation) return { done: true, deletedCount: 0 };
+	if (invocation.job.workId !== null) await ai_chat_bash_jobs_workpool.cancel(ctx, invocation.job.workId);
+	if (invocation.job.watchdogId !== null) await ctx.scheduler.cancel(invocation.job.watchdogId);
+
+	const batchSize = Math.max(1, Math.min(50, args.batchSize));
+	const transfers = await ctx.db
+		.query("ai_chat_bash_invocation_transfers")
+		.withIndex("by_invocation_commandNumber", (q) => q.eq("invocationId", invocation._id))
+		.take(batchSize);
+	await Promise.all(transfers.map((transfer) => ctx.db.delete("ai_chat_bash_invocation_transfers", transfer._id)));
+	if (transfers.length === batchSize) return { done: false, deletedCount: transfers.length };
+
+	let deletedCount = transfers.length;
+	const activity = await activities_db_get_by_source_id(ctx, invocation._id);
+	if (activity) {
+		const deletedActivity = await activities_db_delete(ctx, activity._id);
+		deletedCount += deletedActivity.deletedCount;
+		if (!deletedActivity.done) return { done: false, deletedCount };
+	}
+	await ctx.db.delete("ai_chat_bash_invocations", invocation._id);
+	return { done: true, deletedCount: deletedCount + 1 };
+}
+
+/**
+ * The door behind `jobs`, `jobs -a` and `wait`. Rows come from the Activity index, so one page
+ * never reads an invocation row.
+ */
+export const list_thread_jobs = internalQuery({
+	args: {
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		userId: v.id("users"),
+		threadId: v.id("ai_chat_threads"),
+		/**
+		 * `live`: still queued, running or stopping (`jobs`). `newest`: the newest 8 by job number
+		 * (`jobs -a`). `numbers`: the named jobs, unknown numbers skipped (`wait N`).
+		 */
+		select: v.union(
+			v.object({ kind: v.literal("live") }),
+			v.object({ kind: v.literal("newest") }),
+			v.object({ kind: v.literal("numbers"), jobNumbers: v.array(v.number()) }),
+		),
+	},
+	returns: v.array(bash_job_summary),
+	handler: async (ctx, args) => {
+		const membership = await db_get_door_membership(ctx, args);
+		if (membership._nay) throw convex_error({ message: membership._nay.message });
+		const inScope = (activity: Doc<"activities">) =>
+			activity.organizationId === membership._yay.organizationId &&
+			activity.workspaceId === membership._yay.workspaceId;
+
+		switch (args.select.kind) {
+			case "live": {
+				// A paste can use `.unique()` because one occupies the lane; four jobs can share a
+				// status, so read a page. The cap keeps the page small, and it is per workspace, so
+				// jobs of other threads are read and dropped here.
+				const live: Doc<"activities">[] = [];
+				for (const status of ["queued", "running", "stopping"] as const) {
+					live.push(
+						...(await ctx.db
+							.query("activities")
+							.withIndex("by_user_workspace_source_kind_status", (q) =>
+								q
+									.eq("userId", args.userId)
+									.eq("workspaceId", membership._yay.workspaceId)
+									.eq("source.kind", "ai_chat_bash_job")
+									.eq("status", status),
+							)
+							.take(BASH_JOB_LIVE_MAX_COUNT + 1)),
+					);
+				}
+				return live
+					.filter(
+						(activity) =>
+							inScope(activity) &&
+							activity.source.kind === "ai_chat_bash_job" &&
+							activity.source.threadId === args.threadId,
+					)
+					.map(job_summary)
+					.sort((a, b) => a.jobNumber - b.jobNumber);
+			}
+			case "newest": {
+				const newest = await ctx.db
+					.query("activities")
+					.withIndex("by_user_source_kind_thread_jobNumber", (q) =>
+						q.eq("userId", args.userId).eq("source.kind", "ai_chat_bash_job").eq("source.threadId", args.threadId),
+					)
+					.order("desc")
+					.take(BASH_JOB_LIST_MAX_COUNT);
+				return newest.filter(inScope).map(job_summary);
+			}
+			case "numbers": {
+				// One index read per named number, so the list must be bounded. A validator cannot
+				// limit an array's length, so refuse it here as well as in `wait`.
+				if (args.select.jobNumbers.length > bash_JOB_NUMBERS_MAX_COUNT)
+					throw convex_error({
+						message: `Too many job numbers: at most ${bash_JOB_NUMBERS_MAX_COUNT} can be read at once`,
+					});
+
+				const found = [];
+				for (const jobNumber of args.select.jobNumbers) {
+					const activity = await db_get_job_activity(ctx, { userId: args.userId, threadId: args.threadId, jobNumber });
+					if (activity && inScope(activity)) found.push(job_summary(activity));
+				}
+				return found;
+			}
+			default:
+				throw should_never_happen("Unknown job selection", args.select satisfies never);
+		}
+	},
+});
+
+export type ai_chat_files_list_thread_jobs_Result =
+	typeof list_thread_jobs extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
+
+/**
+ * The door behind `jobs -o N` and the exit code `wait` reads at the end. `activityStatus` gives
+ * the code for a finished row with no stored result (a crashed or watchdog-settled worker, or a
+ * result the cron already stripped).
+ */
+export const read_job_output = internalQuery({
+	args: {
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		userId: v.id("users"),
+		threadId: v.id("ai_chat_threads"),
+		jobNumber: v.number(),
+	},
+	returns: v.union(
+		v.null(),
+		v.object({
+			invocationId: v.id("ai_chat_bash_invocations"),
+			status: app_convex_schema.tables.ai_chat_bash_invocations.validator.fields.status,
+			activityStatus: app_convex_schema.tables.activities.validator.fields.status,
+			result: v.union(ai_chat_bash_result_validator, v.null()),
+			resultExpired: v.boolean(),
+		}),
+	),
+	handler: async (ctx, args) => {
+		const membership = await db_get_door_membership(ctx, args);
+		if (membership._nay) throw convex_error({ message: membership._nay.message });
+		const activity = await db_get_job_activity(ctx, args);
+		if (
+			!activity ||
+			activity.organizationId !== membership._yay.organizationId ||
+			activity.workspaceId !== membership._yay.workspaceId
+		)
+			return null;
+		// The delete batch removes the Activity and the row in one pass, so the row is here.
+		const invocation = await ctx.db.get("ai_chat_bash_invocations", activity.source.id);
+		if (!invocation) throw should_never_happen("Job Activity points to a missing invocation", { activityId: activity._id });
+		const { status, result, resultExpired } = invocation_result(invocation);
+		return { invocationId: invocation._id, status, activityStatus: activity.status, result, resultExpired };
+	},
+});
+
+export type ai_chat_files_read_job_output_Result =
+	typeof read_job_output extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
 
 export async function ai_chat_files_db_get_bash_transfer(
 	ctx: QueryCtx | MutationCtx,
@@ -341,6 +1436,9 @@ export async function ai_chat_files_db_link_bash_transfer(
 		return Result({
 			_nay: { name: "invocation_interrupted", message: "This Bash call has ended. Start a new command." },
 		});
+	// A user stop does not change the row status, so the flag is checked on its own.
+	if (invocation.job && invocation.job.stopRequestedAt !== null)
+		return Result({ _nay: { name: "stopped", message: "This job is stopping. No new transfer can start." } });
 	const link = {
 		...args,
 		organizationId: invocation.organizationId,

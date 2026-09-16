@@ -155,7 +155,6 @@ describe("FileEditorSidebarAgent thread upgrade", () => {
 				archived: false,
 				starred: false,
 				runtime: "aisdk_5",
-				stateId: null,
 				createdBy: "user_test",
 				updatedBy: "user_test",
 				updatedAt: 1,

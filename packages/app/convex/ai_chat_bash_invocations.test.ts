@@ -29,7 +29,9 @@ async function fixture() {
 		toolCallId: "tool-call-1",
 		commandHash: "a".repeat(64),
 	};
-	return { t, db, asUser, args };
+	// Only begin takes the shell name; the lost-reply readback keeps the bare identity.
+	const beginArgs = { ...args, shellName: "default" };
+	return { t, db, asUser, args, beginArgs };
 }
 
 const result = {
@@ -56,7 +58,7 @@ describe("begin_bash_invocation", () => {
 	test("claims one execution and keeps the first database deadlines on duplicate delivery", async () => {
 		const f = await fixture();
 		const now = Date.now();
-		const first = await f.t.mutation(internal.ai_chat_files.begin_bash_invocation, f.args);
+		const first = await f.t.mutation(internal.ai_chat_files.begin_bash_invocation, f.beginArgs);
 		expect(first._yay).toMatchObject({
 			isNew: true,
 			status: "running",
@@ -67,11 +69,17 @@ describe("begin_bash_invocation", () => {
 			resultExpired: false,
 		});
 		vi.setSystemTime(now + 15_000);
-		const duplicate = await f.t.mutation(internal.ai_chat_files.begin_bash_invocation, f.args);
-		expect(duplicate._yay).toEqual({ ...first._yay, isNew: false });
+		// Only the claim that created the shell returns the shell fields; a replay returns the bare claim.
+		if (first._nay || !("shell" in first._yay)) throw new Error("Expected a fresh shell");
+		const { shell, shells, notes, ...claim } = first._yay;
+		expect(shell).toMatchObject({ name: "default", cwd: "~", cwdTarget: null, state: null });
+		expect(shells).toEqual([{ _id: shell._id, name: "default" }]);
+		expect(notes).toEqual([]);
+		const duplicate = await f.t.mutation(internal.ai_chat_files.begin_bash_invocation, f.beginArgs);
+		expect(duplicate._yay).toEqual({ ...claim, isNew: false });
 		expect(await f.t.run((ctx) => ctx.db.query("ai_chat_bash_invocations").collect())).toHaveLength(1);
 		const changed = await f.t.mutation(internal.ai_chat_files.begin_bash_invocation, {
-			...f.args,
+			...f.beginArgs,
 			commandHash: "b".repeat(64),
 		});
 		expect(changed._nay?.name).toBe("invocation_changed");
@@ -79,10 +87,10 @@ describe("begin_bash_invocation", () => {
 
 	test("never revives an interrupted command or an old membership lifetime", async () => {
 		const f = await fixture();
-		const first = await f.t.mutation(internal.ai_chat_files.begin_bash_invocation, f.args);
+		const first = await f.t.mutation(internal.ai_chat_files.begin_bash_invocation, f.beginArgs);
 		if (first._nay) throw new Error(first._nay.message);
 		await f.t.mutation(internal.ai_chat_files.interrupt_bash_invocation, { invocationId: first._yay.invocationId });
-		const repeated = await f.t.mutation(internal.ai_chat_files.begin_bash_invocation, f.args);
+		const repeated = await f.t.mutation(internal.ai_chat_files.begin_bash_invocation, f.beginArgs);
 		expect(repeated._yay).toMatchObject({ isNew: false, status: "interrupted" });
 		const finishedLate = await f.t.mutation(internal.ai_chat_files.finish_bash_invocation, {
 			invocationId: first._yay.invocationId,
@@ -96,14 +104,14 @@ describe("begin_bash_invocation", () => {
 			await organizations_membership_lifetimes_db_record(ctx, [{ membership, active: false }]);
 			await organizations_membership_lifetimes_db_record(ctx, [{ membership, active: true }]);
 		});
-		expect((await f.t.mutation(internal.ai_chat_files.begin_bash_invocation, f.args))._nay?.message).toBe(
+		expect((await f.t.mutation(internal.ai_chat_files.begin_bash_invocation, f.beginArgs))._nay?.message).toBe(
 			"Unauthorized",
 		);
 	});
 
 	test("marks a lost interpreter interrupted at its original deadline", async () => {
 		const f = await fixture();
-		const first = await f.t.mutation(internal.ai_chat_files.begin_bash_invocation, f.args);
+		const first = await f.t.mutation(internal.ai_chat_files.begin_bash_invocation, f.beginArgs);
 		if (first._nay) throw new Error(first._nay.message);
 		await vi.advanceTimersByTimeAsync(120_001);
 		await f.t.finishInProgressScheduledFunctions();
@@ -120,7 +128,7 @@ describe("begin_bash_invocation", () => {
 describe("finish_bash_invocation", () => {
 	test("rejects a late result before a delayed watchdog runs", async () => {
 		const f = await fixture();
-		const begun = await f.t.mutation(internal.ai_chat_files.begin_bash_invocation, f.args);
+		const begun = await f.t.mutation(internal.ai_chat_files.begin_bash_invocation, f.beginArgs);
 		if (begun._nay) throw new Error(begun._nay.message);
 		vi.setSystemTime(begun._yay.deadlineAt + 1);
 		const finished = await f.t.mutation(internal.ai_chat_files.finish_bash_invocation, {
@@ -136,7 +144,7 @@ describe("finish_bash_invocation", () => {
 
 	test("replays the first result and leaves a terminal identity after seven days", async () => {
 		const f = await fixture();
-		const first = await f.t.mutation(internal.ai_chat_files.begin_bash_invocation, f.args);
+		const first = await f.t.mutation(internal.ai_chat_files.begin_bash_invocation, f.beginArgs);
 		if (first._nay) throw new Error(first._nay.message);
 		const finishArgs = { invocationId: first._yay.invocationId, commandHash: f.args.commandHash, result };
 		await f.t.mutation(internal.ai_chat_files.finish_bash_invocation, finishArgs);
@@ -145,7 +153,7 @@ describe("finish_bash_invocation", () => {
 			result: { ...result, stdout: "different" },
 		});
 		expect(changedFinish._yay?.result).toEqual(result);
-		expect((await f.t.mutation(internal.ai_chat_files.begin_bash_invocation, f.args))._yay).toMatchObject({
+		expect((await f.t.mutation(internal.ai_chat_files.begin_bash_invocation, f.beginArgs))._yay).toMatchObject({
 			isNew: false,
 			status: "finished",
 			result,
@@ -166,12 +174,12 @@ describe("finish_bash_invocation", () => {
 			status: "finished",
 		});
 		expect(tombstone?.result).toBeUndefined();
-		expect((await f.t.mutation(internal.ai_chat_files.begin_bash_invocation, f.args))._yay?.isNew).toBe(false);
+		expect((await f.t.mutation(internal.ai_chat_files.begin_bash_invocation, f.beginArgs))._yay?.isNew).toBe(false);
 	});
 
 	test("stores a bounded replay when output exceeds the byte limit", async () => {
 		const f = await fixture();
-		const first = await f.t.mutation(internal.ai_chat_files.begin_bash_invocation, f.args);
+		const first = await f.t.mutation(internal.ai_chat_files.begin_bash_invocation, f.beginArgs);
 		if (first._nay) throw new Error(first._nay.message);
 		const large = "語".repeat(125_000);
 		const finished = await f.t.mutation(internal.ai_chat_files.finish_bash_invocation, {
@@ -191,7 +199,7 @@ describe("finish_bash_invocation", () => {
 describe("list_bash_invocation_transfers", () => {
 	test("shows accepted jobs during execution, pages links, and hides them from another member", async () => {
 		const f = await fixture();
-		const first = await f.t.mutation(internal.ai_chat_files.begin_bash_invocation, f.args);
+		const first = await f.t.mutation(internal.ai_chat_files.begin_bash_invocation, f.beginArgs);
 		if (first._nay) throw new Error(first._nay.message);
 		const source = await f.asUser.mutation(api.files_nodes.create_folder_node, {
 			membershipId: f.db.membershipId,

@@ -248,23 +248,24 @@ async function organizations_test_seed_workspace_scoped_rows(
 		title: `${args.tag} thread`,
 		archived: false,
 		runtime: "aisdk_5",
-		stateId: null,
 		createdBy: args.userId,
 		updatedBy: args.userId,
 		updatedAt: Date.now(),
 		lastMessageAt: Date.now(),
 	});
-	const aiThreadStateId = await ctx.db.insert("ai_chat_threads_state", {
+	await ctx.db.insert("ai_chat_bash_shells", {
 		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
 		threadId: aiThreadId,
-		bashCwd: "~",
-		bashCwdTarget: null,
+		name: "default",
+		cwd: "~",
+		cwdTarget: null,
+		state: null,
+		transcriptBytes: 0,
+		transcriptEntries: 0,
+		transcriptSeq: 0,
 		updatedBy: args.userId,
 		updatedAt: Date.now(),
-	});
-	await ctx.db.patch("ai_chat_threads", aiThreadId, {
-		stateId: aiThreadStateId,
 	});
 	await ctx.db.insert("ai_chat_threads_messages_aisdk_5", {
 		organizationId: args.organizationId,

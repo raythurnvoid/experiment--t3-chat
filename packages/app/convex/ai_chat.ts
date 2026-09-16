@@ -16,13 +16,12 @@ import {
 	query,
 	mutation,
 	internalMutation,
-	internalQuery,
 	type ActionCtx,
 	type MutationCtx,
 	type QueryCtx,
 } from "./_generated/server.js";
 import { api, internal } from "./_generated/api.js";
-import { paginationOptsValidator, paginationResultValidator, type RegisteredQuery } from "convex/server";
+import { paginationOptsValidator, paginationResultValidator } from "convex/server";
 import { doc } from "convex-helpers/validators";
 import { v } from "convex/values";
 import { openai } from "@ai-sdk/openai";
@@ -61,14 +60,17 @@ import {
 	ai_chat_WRITE_TOOL_NAMES,
 } from "../server/server-ai-tools.ts";
 import { r2_create_asset_key, r2_db_finalize_generated_image_asset, r2_put_object } from "./r2_client.ts";
-import app_convex_schema, { files_pending_target_validator } from "./schema.ts";
+import app_convex_schema, { bash_shell_state_validator, files_pending_target_validator } from "./schema.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 import { billing_event } from "../server/billing.ts";
 import { billing_ingest_events } from "./billing_db.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import type { Doc, Id } from "./_generated/dataModel";
 import { ai_chat_context_ENABLED } from "./ai_chat_context.ts";
-import { ai_chat_files_db_get_invocation_membership } from "./ai_chat_files.ts";
+import {
+	ai_chat_files_db_append_shell_transcript,
+	ai_chat_files_db_get_invocation_membership,
+} from "./ai_chat_files.ts";
 import { ai_chat_context_create, type ai_chat_context_Context } from "../server/ai-chat-context.ts";
 import {
 	ai_chat_message_fits_storage,
@@ -510,62 +512,29 @@ function build_agent_configuration(input: {
 	};
 }
 
-export const get_thread_state = internalQuery({
-	args: {
-		organizationId: v.string(),
-		workspaceId: v.string(),
-		threadId: v.id("ai_chat_threads"),
-	},
-	returns: doc(app_convex_schema, "ai_chat_threads_state"),
-	handler: async (ctx, args) => {
-		const thread = await ctx.db.get("ai_chat_threads", args.threadId);
-		if (!thread) {
-			throw convex_error({ message: "Not found" });
-		}
-		if (thread.organizationId !== args.organizationId || thread.workspaceId !== args.workspaceId) {
-			throw convex_error({ message: "Unauthorized" });
-		}
-		if (!thread.stateId) {
-			throw should_never_happen("AI chat thread state pointer missing", {
-				threadId: args.threadId,
-			});
-		}
-
-		const state = await ctx.db.get("ai_chat_threads_state", thread.stateId);
-		if (
-			!state ||
-			state.organizationId !== args.organizationId ||
-			state.workspaceId !== args.workspaceId ||
-			state.threadId !== args.threadId
-		) {
-			throw should_never_happen("AI chat thread state missing or mismatched", {
-				threadId: args.threadId,
-				stateId: thread.stateId,
-			});
-		}
-
-		return state;
-	},
-});
-
-export type ai_chat_get_thread_state_Result =
-	typeof get_thread_state extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
-		? Awaited<ReturnValue>
-		: never;
-
-export const set_thread_state = internalMutation({
+/**
+ * Save a shell at the end of a foreground Bash call: its cwd, its interpreter state and one
+ * transcript entry, in one transaction. Every call appends an entry, so this runs on every call.
+ * Two calls in the same shell at once last-write-wins the whole snapshot; there is no version
+ * field on purpose. A background job never calls this: it must not change its shell.
+ */
+export const save_shell = internalMutation({
 	args: {
 		organizationId: v.string(),
 		workspaceId: v.string(),
 		threadId: v.id("ai_chat_threads"),
 		userId: v.id("users"),
 		invocationId: v.id("ai_chat_bash_invocations"),
-		patch: v.object({
-			bashCwd: v.optional(v.string()),
-			bashCwdTarget: v.optional(v.union(files_pending_target_validator, v.null())),
-		}),
+		shellId: v.id("ai_chat_bash_shells"),
+		cwd: v.string(),
+		cwdTarget: v.union(files_pending_target_validator, v.null()),
+		/**
+		 * Missing means keep the stored state: the call's snapshot was over the size cap.
+		 */
+		state: v.optional(v.union(bash_shell_state_validator, v.null())),
+		transcriptEntry: v.string(),
 	},
-	returns: doc(app_convex_schema, "ai_chat_threads_state"),
+	returns: v.null(),
 	handler: async (ctx, args) => {
 		const thread = await ctx.db.get("ai_chat_threads", args.threadId);
 		if (!thread) {
@@ -574,52 +543,38 @@ export const set_thread_state = internalMutation({
 		if (thread.organizationId !== args.organizationId || thread.workspaceId !== args.workspaceId) {
 			throw convex_error({ message: "Unauthorized" });
 		}
-		if (!thread.stateId) {
-			throw should_never_happen("AI chat thread state pointer missing", {
-				threadId: args.threadId,
-			});
-		}
 
 		// Membership removal also fences calls that finish after the member rejoins.
 		const invocation = await ctx.db.get("ai_chat_bash_invocations", args.invocationId);
-		if (
-			!invocation ||
-			invocation.threadId !== thread._id ||
-			invocation.userId !== args.userId ||
-			!(await ai_chat_files_db_get_invocation_membership(ctx, invocation))
-		)
+		const membership = invocation ? await ai_chat_files_db_get_invocation_membership(ctx, invocation) : null;
+		if (!invocation || invocation.threadId !== thread._id || invocation.userId !== args.userId || !membership)
 			throw convex_error({ message: "Unauthorized" });
 
-		// Keep this table for low-churn per-thread agent state, not user-authored chat content.
-		const state = await ctx.db.get("ai_chat_threads_state", thread.stateId);
-		if (
-			!state ||
-			state.organizationId !== args.organizationId ||
-			state.workspaceId !== args.workspaceId ||
-			state.threadId !== args.threadId
-		) {
-			throw should_never_happen("AI chat thread state missing or mismatched", {
-				threadId: args.threadId,
-				stateId: thread.stateId,
-			});
-		}
+		// The shell row and its transcript are shared by everyone in the thread, and this patch can
+		// also delete another member's oldest transcript entries. A role change during the call
+		// must therefore stop the write, so ask the permission question again here. `poll_bash_job`
+		// asks it the same way on every job poll.
+		const authorized = await access_control_db_authorize_membership(ctx, {
+			userAuth: { id: invocation.userId },
+			membership,
+			permission: "content.read",
+		});
+		if (authorized._nay) throw convex_error({ message: authorized._nay.message });
 
-		const patch = {
-			...(args.patch.bashCwd !== undefined ? { bashCwd: args.patch.bashCwd } : {}),
-			...(args.patch.bashCwdTarget !== undefined
-				? { bashCwdTarget: args.patch.bashCwdTarget }
-				: args.patch.bashCwd !== undefined
-					? { bashCwdTarget: null }
-					: {}),
+		// The shell id comes from the call's own begin; a name invented after begin is not accepted.
+		const shell = await ctx.db.get("ai_chat_bash_shells", args.shellId);
+		if (!shell || shell.threadId !== invocation.threadId) throw convex_error({ message: "Unauthorized" });
+
+		await ctx.db.patch("ai_chat_bash_shells", shell._id, {
+			cwd: args.cwd,
+			cwdTarget: args.cwdTarget,
+			...(args.state !== undefined ? { state: args.state } : {}),
 			updatedBy: args.userId,
 			updatedAt: Date.now(),
-		};
-		await ctx.db.patch("ai_chat_threads_state", state._id, patch);
+		});
+		await ai_chat_files_db_append_shell_transcript(ctx, shell, args.transcriptEntry);
 
-		return {
-			...state,
-			...patch,
-		};
+		return null;
 	},
 });
 
@@ -797,22 +752,11 @@ export const thread_create = mutation({
 			readAt: lastMessageAt,
 			archived: false,
 			runtime: "aisdk_5",
-			stateId: null,
 			createdBy: userAuth.id,
 			updatedBy: userAuth.id,
 			updatedAt: now,
 			starred: false,
 		});
-		const stateId = await ctx.db.insert("ai_chat_threads_state", {
-			organizationId: membership.organizationId,
-			workspaceId: membership.workspaceId,
-			threadId,
-			bashCwd: "~",
-			bashCwdTarget: null,
-			updatedBy: userAuth.id,
-			updatedAt: now,
-		});
-		await ctx.db.patch("ai_chat_threads", threadId, { stateId });
 
 		return Result({ _yay: { threadId } });
 	},
@@ -951,14 +895,6 @@ export const thread_branch = mutation({
 		const title = `${baseTitle} (${maxSuffix + 1})`;
 		const clientGeneratedId = get_id_generator("ai_thread")();
 
-		const sourceState = thread.stateId ? await ctx.db.get("ai_chat_threads_state", thread.stateId) : null;
-		if (!sourceState) {
-			throw should_never_happen("AI chat thread state missing", {
-				threadId,
-				stateId: thread.stateId,
-			});
-		}
-
 		const newThreadId = await ctx.db.insert("ai_chat_threads", {
 			organizationId,
 			workspaceId,
@@ -968,35 +904,45 @@ export const thread_branch = mutation({
 			readAt: now,
 			archived: false,
 			runtime: "aisdk_5",
-			stateId: null,
 			createdBy: userAuth.id,
 			updatedBy: userAuth.id,
 			updatedAt: now,
 			starred: false,
 		});
 		// Branching stays open to any member: it copies messages the caller can already read.
-		// The scratch state is different. It is the `/tmp` files and the `bashCwd` of the source
-		// thread. To reach those inside the source thread you must send a prompt there, and
-		// `thread_messages_add` asks for `content.write` unless you created the thread. Copying them
-		// into a new thread that the caller owns would skip that check, so we copy them only when the
-		// caller was allowed to write in the source thread.
+		// The scratch state is different. It is the `/tmp` files and the shells (cwd, variables and
+		// function bodies) of the source thread. To reach those inside the source thread you must
+		// send a prompt there, and `thread_messages_add` asks for `content.write` unless you created
+		// the thread. Copying them into a new thread that the caller owns would skip that check, so
+		// we copy them only when the caller was allowed to write in the source thread. Without the
+		// permission the branch gets no shell rows and `default` is created on first use.
 		const threadAuthorized = await authorize_thread_mutation(ctx, { userAuth, membership, thread });
 		const canReadSourceScratch = !threadAuthorized._nay;
 
-		const stateId = await ctx.db.insert("ai_chat_threads_state", {
-			organizationId,
-			workspaceId,
-			threadId: newThreadId,
-			// `"~"` is the folder a brand-new thread starts in. Using it makes a branch without scratch
-			// access look like a fresh thread instead of a half-copied one.
-			bashCwd: canReadSourceScratch ? sourceState.bashCwd : "~",
-			bashCwdTarget: canReadSourceScratch ? sourceState.bashCwdTarget : null,
-			updatedBy: userAuth.id,
-			updatedAt: now,
-		});
-		await ctx.db.patch("ai_chat_threads", newThreadId, { stateId });
-
 		if (canReadSourceScratch) {
+			// Transcripts are not copied: the new thread starts with empty history, so the copied
+			// row's transcript counters start at 0 too. Jobs still running in the source thread are
+			// not re-pointed; they keep writing to the source thread's transcript.
+			const sourceShells = await ctx.db
+				.query("ai_chat_bash_shells")
+				.withIndex("by_thread_name", (q) => q.eq("threadId", threadId))
+				.collect();
+			for (const sourceShell of sourceShells) {
+				await ctx.db.insert("ai_chat_bash_shells", {
+					organizationId,
+					workspaceId,
+					threadId: newThreadId,
+					name: sourceShell.name,
+					cwd: sourceShell.cwd,
+					cwdTarget: sourceShell.cwdTarget,
+					state: sourceShell.state,
+					transcriptBytes: 0,
+					transcriptEntries: 0,
+					transcriptSeq: 0,
+					updatedBy: userAuth.id,
+					updatedAt: now,
+				});
+			}
 			await ctx.runMutation(internal.ai_chat_files.copy_thread_tmp_files, {
 				organizationId,
 				workspaceId,
@@ -1803,6 +1749,27 @@ export async function ai_chat_http_chat(ctx: ActionCtx, request: Request) {
 						message: "Not found",
 					},
 				} as const;
+			}
+
+			// Running a turn in somebody else's thread is a write to that thread: it spends the
+			// owner's history, and its Bash calls restore and overwrite that thread's shells and
+			// append to their transcripts. `thread_messages_add` asks the same question, but a
+			// regenerate sends no user message, so that call is skipped and the question was never
+			// asked. Ask it here. The thread's own creator always passes, like every other thread
+			// write, and Agent mode already required `content.write` above.
+			if (existingThread.createdBy !== membership.userId) {
+				const canWriteThread = await ctx.runQuery(api.access_control.get_current_user_workspace_permission, {
+					membershipId: membership._id,
+					permission: "content.write",
+				});
+				if (!canWriteThread) {
+					return {
+						status: 403,
+						body: {
+							message: "Permission denied",
+						},
+					} as const;
+				}
 			}
 
 			threadId = existingThread._id;
@@ -3062,7 +3029,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			);
 			expect(agentSurface).toContain("that is expected evidence of per-chat isolation, not a global Bash failure.");
 			expect(agentSurface).toContain(
-				"Bash cwd persists across tool calls in the same chat. If the previous Bash output already shows the desired cwd, use bare or relative commands instead of repeating cd.",
+				"cwd, variables, options and functions persist per shell across tool calls in the same chat. If the previous Bash output already shows the desired cwd, use bare or relative commands instead of repeating cd.",
 			);
 			expect(agentSurface).toContain(
 				"/tmp has the safe Just Bash native-style scratch command surface, while app files are db-backed and do not have full POSIX/GNU filesystem semantics",

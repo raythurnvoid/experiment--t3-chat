@@ -584,7 +584,7 @@ Use this after changing the AI bash tool, tool rendering, or agent file-access c
 - In Ask mode, ask it to try `mkdir /home/cloud-usr/w/personal/home/playwriter-ai-chat-ask-denied-<timestamp>`; verify bash reports that durable folder creation belongs in Agent mode and no folder appears.
 - In Agent mode, ask it to run `echo draft > /home/cloud-usr/w/personal/home/<unique-qa-name>.md`; verify a private proposal appears and `cat` reads it before Save. In Ask mode, the same write must fail without creating a proposal.
 - Ask it to make one real Markdown edit; verify the new turn uses `edit_file` or Bash and leaves the change pending.
-- **`sed -i` does not work on app files.** The db-backed tree exposes a fixed command set, and `sed` is not in it: `sed -i 's/a/b/' u39/target.md` reads the script argument as a path and answers `sed: u39/target.md: No such file or directory` plus `Native Just Bash /tmp commands cannot access app files directly`. To make a content proposal with an exact text, ask the agent for `printf '<the whole new file>' > <path>` instead — that writes the file the tool does know about and produces one proposal per file. Verified 2026-09-15.
+- **`sed -i` does not work on app files.** The db-backed tree exposes a fixed command set, and `sed` is not in it: `sed -i 's/a/b/' u39/target.md` answers `sed: u39/target.md: No such file or directory` plus `Native Just Bash /tmp commands cannot access app files directly`. To make a content proposal with an exact text, ask the agent for `printf '<the whole new file>' > <path>` instead — that writes the file the tool does know about and produces one proposal per file. Verified 2026-09-15.
 - **Pick fixture names that no name rule rewrites.** The Bash writer leaves an existing occupant's path alone, but a **missing** target is normalized before the file is created (`server/bash-utils.ts:600-660`), and `readme` in any casing becomes `README.md` (`shared/files.test.ts:937-940`). So `mv u05/readme.md u05/guide.md ; echo new > u05/readme.md` puts the new private node at `/u05/README.md`, not at the path you vacated, and the case you were testing quietly stops being the case you meant. `create_text_node` called directly does **not** normalize, so a door-built fixture and a Bash-written file can sit at two different paths for the same requested name. Use a neutral name such as `notes.md`. Verified 2026-09-15.
 - **The two writers answer that name rule differently, so pick your check deliberately.** A redirect refuses: `echo hello > 'my other.md'` exits 1 with `cannot write '<path>/my other.md': app file names are normalized; write to '<path>/my-other.md' instead`. A `cp` renames silently and still reports `1 ready for review`: `my copy.md` lands at `my-copy.md`, `café 🎉-copy.md` at `cafe-copy.md`, `-weird-copy.md` at `weird-copy.md`. The transfer's success line never names the output path, so always read the destination back from `files_visible.list` instead of trusting the command's own output. Verified 2026-09-15.
 - `cd` works in the agent shell, the terminal footer reports it (`exit 0 · cwd changed: /home/cloud-usr/w/<org>/<ws> -> /home/cloud-usr/w/<org>/<ws>/u10`), and the new cwd **persists into later turns of the same chat**. A runner that sends workspace-relative paths after an earlier `cd` will address the wrong folder, so either `cd` back or keep every command anchored at the workspace root. Verified 2026-09-15.
@@ -1006,16 +1006,23 @@ A private node the transfer created but has not filled yet reports `preparing: t
 `files_visible.list`. Catching one is harder than it looks.
 
 - `cp`/`mv` in the foreground block until the run ends, so the chained commands after them always
-  see finished nodes. The background form is `transfer start copy|move <sources> <dest>`; it
-  prints `Running. Transfer <runId>. Activity <id>.` and returns at once. `transfer status|wait|
-  stop <runId>` drive it afterwards.
+  see finished nodes. The background form is a job: `cp -R <sources> <dest> &` prints
+  `bash: started job N in shell default. ...` on stderr and returns at once. `jobs`, `wait N` and
+  `kill N` drive it afterwards, and the Notifications panel shows the job with its Stop button.
+- To make the agent run a job in a **named** shell, say so in the prompt: "Set the Bash tool's
+  shell field to release-prep". The model then passes `shell` and the launch line names it. Do not
+  ask for a 32-character name even though the tool's pattern allows 32: asked for a 32-letter name
+  on 2026-09-15, the model answered that the tool rejects it and ran nothing. Any name from 9
+  characters up already removes every padding space, which is enough to check the `jobs` columns.
 - Even in the background the window is about one poll sample wide. Polling `files_visible.list`
   every 120 ms during a 10-node `cp -R` caught one preparing node out of 38 samples. Chained Bash
   readers reliably miss it: they either run before any reservation exists (everything answers
   `No such file or directory`) or after the node is ready.
-- `sleep` **is** available in the sandbox, so `transfer start copy ... ; sleep 5 ; ls <dest>`
-  samples a live run. At t+5 s a 8-child copy listed 3 rows, at t+6 s 4 rows, at t+7 s all 8.
-- `transfer stop` does not freeze a reservation. `db_cancel_items`
+- `sleep` **is** available in the sandbox, so `cp -R ... <dest> & sleep 5; ls <dest>` samples a
+  live run. With the old foreground-started `transfer start` verb, at t+5 s a 8-child copy listed
+  3 rows, at t+6 s 4 rows, at t+7 s all 8; a job adds its queue wait before the copy starts, so
+  re-measure.
+- A job Stop (`kill N` or the Notifications panel) does not freeze a reservation. `db_cancel_items`
   (`convex/files_transfer.ts:369-395`) calls `files_pending_nodes_db_discard` for every item with
   a `preparation`, so stopping **deletes** the unfilled ones.
 - The reliable way to get a **stable** preparing node is a write that dies mid-preparation.

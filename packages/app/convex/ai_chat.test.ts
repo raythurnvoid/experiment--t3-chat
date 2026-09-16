@@ -2,9 +2,35 @@ import { describe, expect, test } from "vitest";
 import { api, internal } from "./_generated/api.js";
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
 import type { Id } from "./_generated/dataModel.js";
+import { access_control_db_ensure_role_assignment } from "./access_control.ts";
+
+/**
+ * A shell state snapshot with the given variables and nothing else.
+ */
+const snapshot = (env: { name: string; value: string }[]) => ({
+	env,
+	options: {},
+	shoptOptions: {},
+	readonlyVars: [],
+	associativeArrays: [],
+	namerefs: [],
+	boundNamerefs: [],
+	invalidNamerefs: [],
+	integerVars: [],
+	lowercaseVars: [],
+	uppercaseVars: [],
+	exportedVars: [],
+	declaredVars: [],
+	functions: [],
+	previousDir: "~",
+	directoryStack: [],
+	lastExitCode: 0,
+	lastArg: "",
+	openFileDescriptors: [],
+});
 
 describe("ai_chat thread state", () => {
-	test("creates thread state for new threads and updates bash cwd through the thread state functions", async () => {
+	test("creates the shell on the first call and saves its cwd and transcript", async () => {
 		const t = test_convex();
 		const seeded = await t.run((ctx) =>
 			test_mocks_fill_db_with.membership(ctx, {
@@ -28,53 +54,72 @@ describe("ai_chat thread state", () => {
 		expect(created._yay).toBeTruthy();
 		const threadId = created._yay!.threadId;
 
-		const initial = await t.run(async (ctx) => {
-			const thread = await ctx.db.get("ai_chat_threads", threadId);
-			const state = thread?.stateId ? await ctx.db.get("ai_chat_threads_state", thread.stateId) : null;
-			return { thread, state };
-		});
-		expect(initial.thread?.stateId).toBe(initial.state?._id);
-		expect(initial.state).toMatchObject({
-			organizationId: seeded.organizationId,
-			workspaceId: seeded.workspaceId,
-			threadId,
-			bashCwd: "~",
-			updatedBy: seeded.userId,
-		});
-		const begun = await t.mutation(internal.ai_chat_files.begin_bash_invocation, {
+		// A new thread has no shell rows. The first call creates the shell it names.
+		const shellsOf = (forThreadId: Id<"ai_chat_threads">) =>
+			t.run((ctx) =>
+				ctx.db
+					.query("ai_chat_bash_shells")
+					.withIndex("by_thread_name", (q) => q.eq("threadId", forThreadId))
+					.collect(),
+			);
+		expect(await shellsOf(threadId)).toEqual([]);
+		const identity = {
 			organizationId: seeded.organizationId,
 			workspaceId: seeded.workspaceId,
 			userId: seeded.userId,
 			threadId,
+		};
+		const begun = await t.mutation(internal.ai_chat_files.begin_bash_invocation, {
+			...identity,
 			toolCallId: "cwd-test",
 			commandHash: "a".repeat(64),
+			shellName: "default",
 		});
-		if (begun._nay) throw new Error(begun._nay.message);
+		if (begun._nay || !("shell" in begun._yay)) throw new Error("Expected a fresh shell");
+		const shellId = begun._yay.shell._id;
+		expect(begun._yay.shell).toMatchObject({ name: "default", cwd: "~", cwdTarget: null, state: null });
+		expect(begun._yay.shells).toEqual([{ _id: shellId, name: "default" }]);
+		expect(await shellsOf(threadId)).toMatchObject([{ _id: shellId, transcriptEntries: 0 }]);
 
-		await t.run((ctx) =>
-			ctx.runMutation(internal.ai_chat.set_thread_state, {
-				invocationId: begun._yay.invocationId,
-				organizationId: seeded.organizationId,
-				workspaceId: seeded.workspaceId,
-				threadId,
-				userId: seeded.userId,
-				patch: {
-					bashCwd: "~/w/personal/home/docs",
-				},
-			}),
-		);
+		const entry = "$ [2026-09-15T10:00:00.000Z] (exit 0) ~\ncd docs\n\n";
+		await t.mutation(internal.ai_chat.save_shell, {
+			...identity,
+			invocationId: begun._yay.invocationId,
+			shellId,
+			cwd: "~/w/personal/home/docs",
+			cwdTarget: null,
+			transcriptEntry: entry,
+		});
 
-		const state = await t.run((ctx) =>
-			ctx.runQuery(internal.ai_chat.get_thread_state, {
-				organizationId: seeded.organizationId,
-				workspaceId: seeded.workspaceId,
-				threadId,
-			}),
-		);
-		expect(state.bashCwd).toBe("~/w/personal/home/docs");
+		const saved = await t.run(async (ctx) => ({
+			shell: await ctx.db.get("ai_chat_bash_shells", shellId),
+			entries: await ctx.db
+				.query("ai_chat_bash_shell_transcripts")
+				.withIndex("by_shell_seq", (q) => q.eq("shellId", shellId))
+				.collect(),
+		}));
+		expect(saved.shell).toMatchObject({
+			cwd: "~/w/personal/home/docs",
+			transcriptBytes: new TextEncoder().encode(entry).byteLength,
+			transcriptEntries: 1,
+			transcriptSeq: 1,
+			updatedBy: seeded.userId,
+		});
+		expect(saved.entries).toMatchObject([{ seq: 0, text: entry }]);
+
+		// The next call on the same name reuses the row and starts where the last call ended.
+		const again = await t.mutation(internal.ai_chat_files.begin_bash_invocation, {
+			...identity,
+			toolCallId: "cwd-test-2",
+			commandHash: "b".repeat(64),
+			shellName: "default",
+		});
+		if (again._nay || !("shell" in again._yay)) throw new Error("Expected the same shell");
+		expect(again._yay.shell).toMatchObject({ _id: shellId, cwd: "~/w/personal/home/docs" });
+		expect(await shellsOf(threadId)).toHaveLength(1);
 	});
 
-	test("copies bash cwd state when branching a thread", async () => {
+	test("copies the shells when branching with write permission, never transcripts or jobs", async () => {
 		const t = test_convex();
 		const seeded = await t.run((ctx) =>
 			test_mocks_fill_db_with.membership(ctx, {
@@ -97,28 +142,39 @@ describe("ai_chat thread state", () => {
 		});
 		expect(created._yay).toBeTruthy();
 		const sourceThreadId = created._yay!.threadId;
-		const begun = await t.mutation(internal.ai_chat_files.begin_bash_invocation, {
+		const identity = {
 			organizationId: seeded.organizationId,
 			workspaceId: seeded.workspaceId,
 			userId: seeded.userId,
 			threadId: sourceThreadId,
+		};
+		const begun = await t.mutation(internal.ai_chat_files.begin_bash_invocation, {
+			...identity,
 			toolCallId: "cwd-test",
 			commandHash: "a".repeat(64),
+			shellName: "default",
 		});
-		if (begun._nay) throw new Error(begun._nay.message);
-
-		await t.run((ctx) =>
-			ctx.runMutation(internal.ai_chat.set_thread_state, {
-				invocationId: begun._yay.invocationId,
-				organizationId: seeded.organizationId,
-				workspaceId: seeded.workspaceId,
-				threadId: sourceThreadId,
-				userId: seeded.userId,
-				patch: {
-					bashCwd: "~/w/personal/home/mails",
-				},
-			}),
-		);
+		if (begun._nay || !("shell" in begun._yay)) throw new Error("Expected a fresh shell");
+		await t.mutation(internal.ai_chat.save_shell, {
+			...identity,
+			invocationId: begun._yay.invocationId,
+			shellId: begun._yay.shell._id,
+			cwd: "~/w/personal/home/mails",
+			cwdTarget: null,
+			transcriptEntry: "$ [2026-09-15T10:00:00.000Z] (exit 0) ~\ncd mails\n\n",
+		});
+		// A job still running in the source thread stays there; the branch does not see it.
+		const launched = await t.mutation(internal.ai_chat_files.start_bash_job, {
+			parentInvocationId: begun._yay.invocationId,
+			commandNumber: 0,
+			shellId: begun._yay.shell._id,
+			script: "sleep 60",
+			startCwd: "/home/cloud-usr/w/personal/home/mails",
+			startCwdTarget: null,
+			shellState: snapshot([]),
+			allowDbFilesMkdir: true,
+		});
+		if (launched._nay) throw new Error(launched._nay.message);
 
 		const branched = await asUser.mutation(api.ai_chat.thread_branch, {
 			membershipId: seeded.membershipId,
@@ -127,14 +183,220 @@ describe("ai_chat thread state", () => {
 		expect(branched._yay).toBeTruthy();
 		const branchedThreadId = branched._yay!.threadId as Id<"ai_chat_threads">;
 
-		const branchedState = await t.run((ctx) =>
-			ctx.runQuery(internal.ai_chat.get_thread_state, {
+		const branchedShells = await t.run((ctx) =>
+			ctx.db
+				.query("ai_chat_bash_shells")
+				.withIndex("by_thread_name", (q) => q.eq("threadId", branchedThreadId))
+				.collect(),
+		);
+		expect(branchedShells).toMatchObject([
+			{
+				name: "default",
+				cwd: "~/w/personal/home/mails",
+				cwdTarget: null,
+				transcriptBytes: 0,
+				transcriptEntries: 0,
+				transcriptSeq: 0,
+			},
+		]);
+		const branchedEntries = await t.run((ctx) =>
+			ctx.db
+				.query("ai_chat_bash_shell_transcripts")
+				.withIndex("by_shell_seq", (q) => q.eq("shellId", branchedShells[0]!._id))
+				.collect(),
+		);
+		expect(branchedEntries).toEqual([]);
+		const live = { select: { kind: "live" as const } };
+		expect(
+			await t.query(internal.ai_chat_files.list_thread_jobs, { ...identity, threadId: branchedThreadId, ...live }),
+		).toEqual([]);
+		expect(await t.query(internal.ai_chat_files.list_thread_jobs, { ...identity, ...live })).toMatchObject([
+			{ jobNumber: 1, status: "queued" },
+		]);
+
+		// A member who cannot write in the source thread gets a branch without shells.
+		const viewer = await t.run(async (ctx) => {
+			const userId = await ctx.db.insert("users", { clerkUserId: "clerk-ai-chat-branch-viewer" });
+			const membershipId = await ctx.db.insert("organizations_workspaces_users", {
 				organizationId: seeded.organizationId,
 				workspaceId: seeded.workspaceId,
-				threadId: branchedThreadId,
+				userId,
+				active: true,
+				updatedAt: Date.now(),
+			});
+			await access_control_db_ensure_role_assignment(ctx, {
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId,
+				role: "viewer",
+				now: Date.now(),
+			});
+			return { userId, membershipId };
+		});
+		const asViewer = t.withIdentity({
+			issuer: "https://clerk.test",
+			subject: "clerk-ai-chat-branch-viewer",
+			external_id: viewer.userId,
+			email: "ai-chat-branch-viewer@test.local",
+		});
+		const viewerBranch = await asViewer.mutation(api.ai_chat.thread_branch, {
+			membershipId: viewer.membershipId,
+			threadId: sourceThreadId,
+		});
+		if (viewerBranch._nay) throw new Error(viewerBranch._nay.message);
+		const viewerThreadId = viewerBranch._yay.threadId as Id<"ai_chat_threads">;
+		expect(
+			await t.run((ctx) =>
+				ctx.db
+					.query("ai_chat_bash_shells")
+					.withIndex("by_thread_name", (q) => q.eq("threadId", viewerThreadId))
+					.collect(),
+			),
+		).toEqual([]);
+	});
+
+	test("the last save wins the whole snapshot when two calls save the same shell", async () => {
+		const t = test_convex();
+		const seeded = await t.run((ctx) =>
+			test_mocks_fill_db_with.membership(ctx, {
+				organizationName: "personal",
+				workspaceName: "home",
 			}),
 		);
-		expect(branchedState.bashCwd).toBe("~/w/personal/home/mails");
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			subject: "clerk-ai-chat-shell-last-write",
+			external_id: seeded.userId,
+			email: "ai-chat-shell-last-write@test.local",
+		});
+		const created = await asUser.mutation(api.ai_chat.thread_create, {
+			membershipId: seeded.membershipId,
+			clientGeneratedId: "client_ai_chat_shell_last_write",
+			title: "Shell last write",
+			lastMessageAt: Date.now(),
+		});
+		if (created._nay) throw new Error(created._nay.message);
+		const identity = {
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			threadId: created._yay.threadId,
+		};
+		// Both calls begin before either saves, so the second save does not see the first one's state.
+		const first = await t.mutation(internal.ai_chat_files.begin_bash_invocation, {
+			...identity,
+			toolCallId: "first",
+			commandHash: "a".repeat(64),
+			shellName: "default",
+		});
+		if (first._nay || !("shell" in first._yay)) throw new Error("Expected a fresh shell");
+		const shellId = first._yay.shell._id;
+		const second = await t.mutation(internal.ai_chat_files.begin_bash_invocation, {
+			...identity,
+			toolCallId: "second",
+			commandHash: "b".repeat(64),
+			shellName: "default",
+		});
+		if (second._nay) throw new Error(second._nay.message);
+		await t.mutation(internal.ai_chat.save_shell, {
+			...identity,
+			invocationId: first._yay.invocationId,
+			shellId,
+			cwd: "~/first",
+			cwdTarget: null,
+			state: snapshot([{ name: "x", value: "1" }]),
+			transcriptEntry: "$ x=1",
+		});
+		await t.mutation(internal.ai_chat.save_shell, {
+			...identity,
+			invocationId: second._yay.invocationId,
+			shellId,
+			cwd: "~/second",
+			cwdTarget: null,
+			state: snapshot([{ name: "y", value: "2" }]),
+			transcriptEntry: "$ y=2",
+		});
+
+		const shell = await t.run((ctx) => ctx.db.get("ai_chat_bash_shells", shellId));
+		expect(shell).toMatchObject({ cwd: "~/second", state: snapshot([{ name: "y", value: "2" }]) });
+		expect(shell?.state?.env).toEqual([{ name: "y", value: "2" }]);
+
+		// A save with no `state` keeps the stored snapshot: the call's own snapshot was over the size cap.
+		await t.mutation(internal.ai_chat.save_shell, {
+			...identity,
+			invocationId: second._yay.invocationId,
+			shellId,
+			cwd: "~/third",
+			cwdTarget: null,
+			transcriptEntry: "$ big=...",
+		});
+		const kept = await t.run((ctx) => ctx.db.get("ai_chat_bash_shells", shellId));
+		expect(kept).toMatchObject({ cwd: "~/third", transcriptEntries: 3 });
+		expect(kept?.state?.env).toEqual([{ name: "y", value: "2" }]);
+	});
+
+	test("save_shell refuses the write when the caller loses read permission during the call", async () => {
+		const t = test_convex();
+		const seeded = await t.run((ctx) =>
+			test_mocks_fill_db_with.membership(ctx, {
+				organizationName: "personal",
+				workspaceName: "home",
+			}),
+		);
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			subject: "clerk-ai-chat-shell-role-change",
+			external_id: seeded.userId,
+			email: "ai-chat-shell-role-change@test.local",
+		});
+		const created = await asUser.mutation(api.ai_chat.thread_create, {
+			membershipId: seeded.membershipId,
+			clientGeneratedId: "client_ai_chat_shell_role_change",
+			title: "Shell role change",
+			lastMessageAt: Date.now(),
+		});
+		if (created._nay) throw new Error(created._nay.message);
+		const identity = {
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			threadId: created._yay.threadId,
+		};
+		const begun = await t.mutation(internal.ai_chat_files.begin_bash_invocation, {
+			...identity,
+			toolCallId: "role-change",
+			commandHash: "a".repeat(64),
+			shellName: "default",
+		});
+		if (begun._nay || !("shell" in begun._yay)) throw new Error("Expected a fresh shell");
+		const shellId = begun._yay.shell._id;
+		const save = (cwd: string) =>
+			t.mutation(internal.ai_chat.save_shell, {
+				...identity,
+				invocationId: begun._yay.invocationId,
+				shellId,
+				cwd,
+				cwdTarget: null,
+				transcriptEntry: `$ ${cwd}`,
+			});
+
+		// The same save passes first, so the refusal below can only come from the role change.
+		await save("~/before");
+
+		// The shell row and its transcript belong to everyone in the thread, and this save can delete
+		// another member's oldest transcript entries, so a role change during the call has to stop it.
+		// The seeded user created the organization and an owner passes every check, so hand the
+		// organization to somebody else and leave the user without a role.
+		await t.run(async (ctx) => {
+			const otherOwnerId = await ctx.db.insert("users", { clerkUserId: null });
+			await ctx.db.patch("organizations", seeded.organizationId, { ownerUserId: otherOwnerId });
+		});
+
+		await expect(save("~/after")).rejects.toThrow("Permission denied");
+		expect(await t.run((ctx) => ctx.db.get("ai_chat_bash_shells", shellId))).toMatchObject({
+			cwd: "~/before",
+			transcriptEntries: 1,
+		});
 	});
 
 	test("thread_messages_add is idempotent for client generated message ids", async () => {

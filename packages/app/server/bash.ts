@@ -36,20 +36,25 @@ import {
 	type Command,
 	type CommandName,
 	type CpOptions,
+	type ExecOptions,
 	type FileContent,
 	type FsStat,
 	type IFileSystem,
+	type InterpreterStateSnapshot,
 	type MkdirOptions,
 	type RmOptions,
 } from "just-bash/browser";
 import { internal } from "../convex/_generated/api.js";
 import type { ActionCtx } from "../convex/_generated/server.js";
 import type { Doc, Id } from "../convex/_generated/dataModel";
-import type { ai_chat_get_thread_state_Result } from "../convex/ai_chat.ts";
 import type { bash_ReviewScratch } from "../convex/bash.ts";
 import type {
+	ai_chat_files_claim_bash_job_Result,
 	ai_chat_files_load_thread_tmp_files_Result,
 	ai_chat_files_patch_thread_tmp_files_Args,
+	ai_chat_files_poll_bash_job_Result,
+	ai_chat_files_read_shell_transcript_Result,
+	ai_chat_files_start_bash_job_Result,
 } from "../convex/ai_chat_files.ts";
 import type { files_PendingTarget } from "../shared/files.ts";
 import type { plugins_list_bash_source_mounts_Result } from "../convex/plugins.ts";
@@ -66,7 +71,15 @@ import { bash_grep_command_create } from "./bash-grep-command.ts";
 import { bash_ls_command_create } from "./bash-ls-command.ts";
 import { bash_meta_command_create } from "./bash-meta-command.ts";
 import { bash_mv_command_create } from "./bash-mv-command.ts";
-import { bash_transfer_command_create, type bash_TransferContext } from "./bash-transfer-command.ts";
+import type { bash_TransferContext } from "./bash-transfer-command.ts";
+import {
+	bash_JOB_OUTPUT_READ_BUDGET_BYTES,
+	bash_job_status_word,
+	bash_jobs_command_create,
+	bash_kill_command_create,
+	bash_wait_command_create,
+	type bash_JobContext,
+} from "./bash-jobs-command.ts";
 import { bash_nested_shell_command_create } from "./bash-nested-shell-command.ts";
 import { bash_head_tail_wc_command_create } from "./bash-head-tail-wc-command.ts";
 import { bash_resolve_command_create } from "./bash-resolve-command.ts";
@@ -95,9 +108,13 @@ import {
 	bash_shell_arg_quote,
 	bash_disallowed_shell_code_error,
 	bash_TMP_MOUNT,
+	bash_SHELLS_MOUNT,
 	bash_DbFilesFs,
+	bash_ABORT_REASON_STOPPED,
 	bash_COMMAND_EXIT_FAILURE,
 	bash_COMMAND_EXIT_CANNOT_EXECUTE,
+	bash_COMMAND_EXIT_STOPPED,
+	bash_COMMAND_EXIT_TIMED_OUT,
 	bash_TERMINAL_LINE_ENDING_REGEX,
 	bash_SHELL_COMMENT_LINE_REGEX,
 	bash_WHITESPACE_RUN_REGEX,
@@ -109,6 +126,17 @@ import { bash_xargs_command_create } from "./bash-xargs-command.ts";
 
 const DEFAULT_CWD = "~";
 const OUTPUT_LIMIT = 128 * 1024;
+// A saved shell state above this is not stored; the previous state stays and the call warns.
+const SHELL_STATE_MAX_BYTES = 128 * 1024;
+// A job has an 8-minute budget, so it may run more statements than a 90-second call.
+const BASH_JOB_MAX_COMMAND_COUNT = 2_000;
+// The worker reads the Stop flag, the row status and its permissions this often.
+const BASH_JOB_POLL_MS = 5_000;
+// After this many refused launches in one call, the hook refuses the rest without a query.
+const BASH_JOB_LAUNCH_MAX_REFUSALS = 3;
+// Any abort reason other than `bash_ABORT_REASON_STOPPED` reports 124, so this text is what the
+// user reads in the job's stderr. It is not the flag that picks the exit code.
+const BASH_JOB_DEADLINE_ABORT_REASON = "Bash deadline reached";
 
 const TERMINAL_TRAILING_NEWLINE_REGEX = /\n+$/;
 
@@ -830,6 +858,98 @@ class ReadOnlyBaseFs implements IFileSystem {
 }
 
 /**
+ * A read-only view over an in-memory fs, for the `/shells` mount. Reads forward to the inner fs;
+ * every write throws, so `> /shells/x/transcript` fails with a clear error instead of vanishing at
+ * call end. Wrapped like `BashTmpFs`, not extended, because `ReadOnlyBaseFs` is the disk root.
+ */
+class ReadOnlyInMemoryFs implements IFileSystem {
+	constructor(readonly fs: InMemoryFs) {}
+
+	async readFile(path: string, options?: Parameters<IFileSystem["readFile"]>[1]) {
+		return await this.fs.readFile(path, options);
+	}
+
+	async readFileBuffer(path: string) {
+		return await this.fs.readFileBuffer(path);
+	}
+
+	async writeFile(path: string, _content: FileContent, _options?: Parameters<IFileSystem["writeFile"]>[2]) {
+		throw new ReadOnlyFileSystemError(path);
+	}
+
+	async appendFile(path: string, _content: FileContent, _options?: Parameters<IFileSystem["appendFile"]>[2]) {
+		throw new ReadOnlyFileSystemError(path);
+	}
+
+	async exists(path: string) {
+		return await this.fs.exists(path);
+	}
+
+	async stat(path: string) {
+		return await this.fs.stat(path);
+	}
+
+	async mkdir(path: string, _options?: MkdirOptions) {
+		throw new ReadOnlyFileSystemError(path);
+	}
+
+	async readdir(path: string) {
+		return await this.fs.readdir(path);
+	}
+
+	async rm(path: string, options?: RmOptions) {
+		if (options?.force && !(await this.exists(path))) {
+			return;
+		}
+		throw new ReadOnlyFileSystemError(path);
+	}
+
+	async cp(_src: string, dest: string, _options?: CpOptions) {
+		throw new ReadOnlyFileSystemError(dest);
+	}
+
+	async mv(_src: string, dest: string) {
+		throw new ReadOnlyFileSystemError(dest);
+	}
+
+	resolvePath(base: string, path: string) {
+		return this.fs.resolvePath(base, path);
+	}
+
+	getAllPaths() {
+		return this.fs.getAllPaths();
+	}
+
+	async chmod(path: string, _mode: number) {
+		throw new ReadOnlyFileSystemError(path);
+	}
+
+	async symlink(_target: string, linkPath: string) {
+		throw new ReadOnlyFileSystemError(linkPath);
+	}
+
+	async link(_existingPath: string, newPath: string) {
+		throw new ReadOnlyFileSystemError(newPath);
+	}
+
+	async readlink(path: string) {
+		return await this.fs.readlink(path);
+	}
+
+	async lstat(path: string) {
+		return await this.fs.lstat(path);
+	}
+
+	async realpath(path: string) {
+		return await this.fs.realpath(path);
+	}
+
+	async utimes(path: string, _atime: Date, _mtime: Date) {
+		throw new ReadOnlyFileSystemError(path);
+	}
+}
+
+/**
  * Create the app-shell filesystem and Bash runtime for an agent thread.
  */
 async function bash_fs_create(args: {
@@ -846,12 +966,34 @@ async function bash_fs_create(args: {
 	githubMounts: Doc<"github_mounts">[];
 	pluginSourceMounts: plugins_list_bash_source_mounts_Result;
 	transferContext: bash_TransferContext;
+	jobContext: bash_JobContext;
+	shells: { _id: Id<"ai_chat_bash_shells">; name: string }[];
+	restoreState: InterpreterStateSnapshot | undefined;
+	onExecEnd?: (snapshot: InterpreterStateSnapshot) => void;
+	executionLimitsOverride?: { maxCommandCount: number };
 }) {
 	// Organization and workspace names are validated slugs, so they are stable shell
 	// path segments and do not need path-segment encoding here.
 	const currentWorkspacePath = `${bash_APP_MOUNT_PATH}/${args.organizationName}/${args.workspaceName}`;
 
 	const tmpFs = await BashTmpFs.create(args.ctx, args.threadId);
+
+	// `/shells/<name>/transcript` loads on first read. The engine also loads a lazy file on `stat`
+	// (it needs a size), so `ls -l`, `find`, `wc -c` and `test -s` on a transcript run the query;
+	// a plain `ls /shells` only lists the folders and runs nothing.
+	const shellsFs = new InMemoryFs();
+	for (const shell of args.shells) {
+		shellsFs.writeFileLazy(`/${shell.name}/transcript`, async () => {
+			const entries = (await args.ctx.runQuery(internal.ai_chat_files.read_shell_transcript, {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				userId: args.userId,
+				threadId: args.threadId,
+				shellId: shell._id,
+			})) as ai_chat_files_read_shell_transcript_Result;
+			return entries.map((entry) => entry.text).join("\n");
+		});
+	}
 
 	const appDbFilesFs = new bash_DbFilesFs({
 		ctx: args.ctx,
@@ -955,6 +1097,7 @@ async function bash_fs_create(args: {
 				filesystem: mount.fs,
 			})),
 			{ mountPoint: bash_TMP_MOUNT, filesystem: tmpFs },
+			{ mountPoint: bash_SHELLS_MOUNT, filesystem: new ReadOnlyInMemoryFs(shellsFs) },
 		],
 	});
 
@@ -1006,6 +1149,42 @@ async function bash_fs_create(args: {
 	};
 	await remember_cwd(cwd, cwdToken);
 
+	// A `&` statement becomes a background job. The engine hands over the statement text, the
+	// live cwd and a state snapshot taken at the `&`, so a loop variable is captured per job. The
+	// cwd target is resolved from the live cwd here, never from the shell row: `cd x; cmd &` must
+	// start the job in `x`, and the mutation cannot resolve a path on its own.
+	const onBackground: NonNullable<ExecOptions["onBackground"]> = async (launch) => {
+		const job = args.jobContext;
+		if (job.launchAttempts >= BASH_JOB_LAUNCH_MAX_REFUSALS)
+			return {
+				jobNumber: null,
+				stderr: `bash: cannot start a job: ${BASH_JOB_LAUNCH_MAX_REFUSALS} launches were already refused in this call\n`,
+			};
+		const started = (await args.ctx.runMutation(internal.ai_chat_files.start_bash_job, {
+			parentInvocationId: job.invocationId,
+			commandNumber: job.nextCommandNumber(),
+			shellId: job.shellId,
+			// The engine hands over the statement text with only the `&` cut out. Store it without
+			// the whitespace around it: the transcript prints the script on its own line.
+			script: launch.script.trim(),
+			startCwd: launch.cwd,
+			startCwdTarget: await get_cwd_target(launch.cwd),
+			shellState: launch.snapshot,
+			allowDbFilesMkdir: job.allowDbFilesMkdir,
+		})) as ai_chat_files_start_bash_job_Result;
+		if (started._nay) {
+			job.launchAttempts += 1;
+			return { jobNumber: null, stderr: `bash: cannot start a job: ${started._nay.message}\n` };
+		}
+		const { jobNumber } = started._yay;
+		job.launchedJobNumbers.push(jobNumber);
+		// Extra fds (`exec 3>out`) are in the snapshot for report only; the job does not get them.
+		let stderr = "";
+		for (const fd of launch.snapshot.openFileDescriptors) stderr += `bash: file descriptor ${fd} was closed\n`;
+		stderr += `bash: started job ${jobNumber} in shell ${job.shellName}. Follow it with \`jobs\`, or in the Notifications panel.\n`;
+		return { jobNumber, stderr };
+	};
+
 	const shell = bash_shell_create(args.ctx, {
 		fs,
 		cwd,
@@ -1013,6 +1192,11 @@ async function bash_fs_create(args: {
 		dbFilesRoots,
 		rememberCwd: remember_cwd,
 		transferContext: args.transferContext,
+		jobContext: args.jobContext,
+		onBackground,
+		restoreState: args.restoreState,
+		onExecEnd: args.onExecEnd,
+		executionLimitsOverride: args.executionLimitsOverride,
 	});
 
 	return {
@@ -1037,6 +1221,7 @@ async function bash_fs_create(args: {
 		mark_tmp_clean: () => {
 			tmpFs.dirty = false;
 		},
+		tmp_dirty_roots: () => tmpFs.dirtyRoots,
 		path_index_truncated: () => appDbFilesFs.pathIndexTruncated,
 		clear_observed_paths: () => {
 			appDbFilesFs.observedPaths.clear();
@@ -1058,6 +1243,19 @@ function bash_shell_create(
 		dbFilesRoots: bash_DbFilesRoots;
 		rememberCwd?: (path: string, token: object) => Promise<void>;
 		transferContext?: bash_TransferContext;
+		/**
+		 * Present in a chat call and a job worker. The plugin-review shell has none, so it gets no
+		 * `jobs`, `wait` or `kill`, and its `&` runs inline.
+		 */
+		jobContext?: bash_JobContext;
+		onBackground?: NonNullable<ExecOptions["onBackground"]>;
+		/**
+		 * A job may raise the statement count only. `maxOutputSize` stays: the transcript-entry
+		 * size math depends on it.
+		 */
+		executionLimitsOverride?: { maxCommandCount: number };
+		restoreState?: InterpreterStateSnapshot;
+		onExecEnd?: (snapshot: InterpreterStateSnapshot) => void;
 	},
 ) {
 	const { fs, cwd, dbFilesRoots } = args;
@@ -1112,10 +1310,17 @@ function bash_shell_create(
 						bash_rm_command_create(ctx, dbFilesRoots),
 						bash_cp_command_create(ctx, dbFilesRoots, args.transferContext),
 						bash_mv_command_create(ctx, dbFilesRoots, args.transferContext),
-						...(args.transferContext ? [bash_transfer_command_create(ctx, dbFilesRoots, args.transferContext)] : []),
 					]
 				: []),
 			bash_tee_command_create(dbFilesRoots),
+			// Background jobs.
+			...(args.jobContext
+				? [
+						bash_jobs_command_create(ctx, args.jobContext),
+						bash_wait_command_create(ctx, args.jobContext),
+						bash_kill_command_create(ctx, args.jobContext),
+					]
+				: []),
 			// Nested execution.
 			bash_nested_shell_command_create("bash", dbFilesRoots.app),
 			bash_nested_shell_command_create("sh", dbFilesRoots.app),
@@ -1126,7 +1331,7 @@ function bash_shell_create(
 			...native_just_bash_tmp_command_create_all(currentWorkspacePath),
 		].map(record_app_command_diagnostics),
 		executionLimits: {
-			maxCommandCount: 200,
+			maxCommandCount: args.executionLimitsOverride?.maxCommandCount ?? 200,
 			maxLoopIterations: 10_000,
 			maxCallDepth: 50,
 			maxOutputSize: 250_000,
@@ -1157,6 +1362,9 @@ function bash_shell_create(
 					cwdToken,
 					onCwdChange: args.rememberCwd,
 					signal: args.transferContext?.signal,
+					restoreState: args.restoreState,
+					onExecEnd: args.onExecEnd,
+					onBackground: args.onBackground,
 				})
 				.catch((error: unknown) => ({
 					stdout: "",
@@ -1270,11 +1478,13 @@ export async function bash_run_command(
 		toolCallId: string;
 		command: string;
 		allowDbFilesMkdir: boolean;
+		shellName: string;
 	},
 ): Promise<NonNullable<Doc<"ai_chat_bash_invocations">["result"]>> {
+	// The shell is part of the call identity: a replay with another shell must not rejoin.
 	const digest = await crypto.subtle.digest(
 		"SHA-256",
-		new TextEncoder().encode(JSON.stringify([args.command, args.allowDbFilesMkdir])),
+		new TextEncoder().encode(JSON.stringify([args.command, args.allowDbFilesMkdir, args.shellName])),
 	);
 
 	const commandHash = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
@@ -1290,7 +1500,7 @@ export async function bash_run_command(
 
 	// A lost begin reply may already own this call. Read it back instead of running it a second time.
 	const begun = await ctx
-		.runMutation(internal.ai_chat_files.begin_bash_invocation, identity)
+		.runMutation(internal.ai_chat_files.begin_bash_invocation, { ...identity, shellName: args.shellName })
 		.catch(() => ctx.runQuery(internal.ai_chat_files.get_bash_invocation, identity));
 	if (begun._nay) throw new Error(begun._nay.message);
 
@@ -1338,22 +1548,24 @@ export async function bash_run_command(
 		};
 	}
 
+	// A replayed begin has no shell; that path returned above.
+	if (!("shell" in invocation)) {
+		throw should_never_happen("Bash begin returned no shell", { invocationId: invocation.invocationId });
+	}
+
 	const abort = new AbortController();
 	const deadlineTimer = setTimeout(
 		() => abort.abort("Bash deadline reached"),
 		Math.max(0, invocation.deadlineAt - Date.now()),
 	);
 	let commandNumber = 0;
+	// Set by the engine when the exec ends; stays unset when the engine threw before that.
+	let endSnapshot: InterpreterStateSnapshot | undefined;
 	try {
 		// Mount visibility is decided per run: only plugins with an enabled installation in this
 		// workspace appear under `/.plugins`, and only GitHub mounts with a finished sync appear
 		// under `/.mounts` (their commit sha is pinned for the whole run).
-		const [threadState, githubMounts, pluginSourceMounts] = await Promise.all([
-			ctx.runQuery(internal.ai_chat.get_thread_state, {
-				organizationId: args.organizationId,
-				workspaceId: args.workspaceId,
-				threadId: args.threadId,
-			}) as Promise<ai_chat_get_thread_state_Result>,
+		const [githubMounts, pluginSourceMounts] = await Promise.all([
 			ctx.runQuery(internal.github_mounts.list_mounts, {}) as Promise<Doc<"github_mounts">[]>,
 			ctx.runQuery(internal.plugins.list_bash_source_mounts, {
 				organizationId: args.organizationId,
@@ -1369,8 +1581,8 @@ export async function bash_run_command(
 			workspaceName: args.workspaceName,
 			userId: args.userId,
 			threadId: args.threadId,
-			persistedCwd: threadState.bashCwd,
-			persistedCwdTarget: threadState.bashCwdTarget,
+			persistedCwd: invocation.shell.cwd,
+			persistedCwdTarget: invocation.shell.cwdTarget,
 			allowDbFilesMkdir: args.allowDbFilesMkdir,
 			githubMounts,
 			pluginSourceMounts,
@@ -1381,83 +1593,60 @@ export async function bash_run_command(
 				signal: abort.signal,
 				abort: (reason) => abort.abort(reason),
 				nextCommandNumber: () => commandNumber++,
+				jobId: null,
+			},
+			jobContext: {
+				invocationId: invocation.invocationId,
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				threadId: args.threadId,
+				userId: args.userId,
+				membershipId: invocation.membershipId,
+				shellId: invocation.shell._id,
+				shellName: args.shellName,
+				allowDbFilesMkdir: args.allowDbFilesMkdir,
+				deadlineAt: invocation.transferDeadlineAt,
+				signal: abort.signal,
+				nextCommandNumber: () => commandNumber++,
+				launchedJobNumbers: [],
+				launchAttempts: 0,
+				readBudgetRemaining: bash_JOB_OUTPUT_READ_BUDGET_BYTES,
+			},
+			shells: invocation.shells,
+			// `null` is a fresh shell: nothing to seed.
+			restoreState: invocation.shell.state ?? undefined,
+			onExecEnd: (snapshot) => {
+				endSnapshot = snapshot;
 			},
 		});
 
-		// Scope follows shell operations, not the cwd checks before and after them.
-		bashFs.clear_observed_paths();
-		const result = await bashFs.run_command(args.command);
-		if (abort.signal.aborted) {
-			result.exitCode = 124;
-			result.stderr += `bash: ${typeof abort.signal.reason === "string" ? abort.signal.reason : "execution deadline reached"}. Remaining commands were stopped.\n`;
-		}
-		const observedPaths = [...bashFs.observed_paths];
-		const observedPathsTruncated = bashFs.observed_paths_truncated();
+		const { result, observedPaths, observedPathsTruncated, nextCwd } = await run_command_and_diagnose({
+			bashFs,
+			command: args.command,
+			abort,
+			threadId: args.threadId,
+		});
 
-		// The engine returns its real directory. Shell variables cannot change this selection.
-		const rawNextCwd = result.cwd.path;
-		// Follow the folder identity before its old path, which may hold a new folder after mv.
-		const resolvedCwd = await bashFs.resolve_cwd(result.cwd);
-		let nextCwd = (await bashFs.nearest_existing_dir(resolvedCwd)) ?? bashFs.currentWorkspacePath;
-		const redirectsStderrToStdout = REDIRECTS_STDERR_TO_STDOUT_REGEX.test(args.command);
+		// Jobs that finished since this user's last fresh call are announced first.
+		result.stderr =
+			invocation.notes
+				.map(
+					(note) =>
+						`bash: job ${note.jobNumber} ${bash_job_status_word(note.status)}. Output: ${bash_SHELLS_MOUNT}/${note.shellName}/transcript\n`,
+				)
+				.join("") + result.stderr;
 
-		if (
-			COMMAND_NOT_FOUND_REGEX.test(result.stderr) ||
-			(redirectsStderrToStdout && COMMAND_NOT_FOUND_REGEX.test(result.stdout))
-		) {
-			result.stderr +=
-				"bash: run 'help' to list available commands; app files are db-backed — use search/grep for content and find/ls for paths.\n";
-			const filePathMatch = FILE_COMMAND_OPERAND_REGEX.exec(args.command.replace(bash_SHELL_COMMENT_LINE_REGEX, ""));
-			if (filePathMatch?.[1] != null) {
-				const target = bash_shell_arg_quote(filePathMatch[1]);
-				result.stderr += `bash: the Unix file command is intentionally unavailable. Try: stat ${target} && wc -c ${target} && head -n 5 ${target}\n`;
+		// Extra fds (`exec 3>out`) are reported by the snapshot but never restored in the next call.
+		// A state over the cap is not saved: the previous state stays, and the call says so.
+		let nextState = endSnapshot;
+		if (endSnapshot) {
+			for (const fd of endSnapshot.openFileDescriptors) {
+				result.stderr += `bash: file descriptor ${fd} was closed\n`;
 			}
-		}
-
-		if (
-			args.command.includes("pipefail") &&
-			(SET_INVALID_OPTION_REGEX.test(result.stderr) ||
-				(redirectsStderrToStdout && SET_INVALID_OPTION_REGEX.test(result.stdout)))
-		) {
-			result.stderr += "bash: `set -euo pipefail` is unsupported; retry without strict-mode boilerplate.\n";
-		}
-
-		// Restore app-command guidance the shell swallowed. `find … 2>/dev/null | head` discards the
-		// `Try:` line and reports exit 0, so the model sees an empty successful result and can report
-		// "no matching files" as fact. The guidance is the tool answering the mistake, so it survives
-		// redirection; anything still visible in the transcript is skipped so nothing is printed twice.
-		const restoredDiagnostics = new Set<string>();
-		for (const diagnostic of bashFs.app_command_diagnostics()) {
-			const guidance = diagnostic.stderr.trim();
-			if (!guidance || restoredDiagnostics.has(guidance)) {
-				continue;
+			if (new TextEncoder().encode(JSON.stringify(endSnapshot)).byteLength > SHELL_STATE_MAX_BYTES) {
+				result.stderr += "bash: the shell state is larger than 128 KiB and was not saved; the previous state stays.\n";
+				nextState = undefined;
 			}
-			if (result.stdout.includes(guidance) || result.stderr.includes(guidance)) {
-				continue;
-			}
-			restoredDiagnostics.add(guidance);
-			result.stderr += `bash: ${diagnostic.name} exited ${diagnostic.exitCode} and its stderr was discarded; it said:\n${guidance}\n`;
-		}
-
-		// Only paths under HOME, `/tmp`, and the read-only `/.mounts` and `/.plugins` trees survive between
-		// runs (`/tmp` is restored from the db; mounts are reconstructed from the reserved scopes; everything
-		// else is synthetic mount scaffolding). A `/.plugins` cwd can still vanish when the plugin is
-		// uninstalled; the nearest-existing-dir climb above already handles that.
-		if (
-			nextCwd !== bash_HOME &&
-			!nextCwd.startsWith(`${bash_HOME}/`) &&
-			nextCwd !== bash_TMP_MOUNT &&
-			!nextCwd.startsWith(`${bash_TMP_MOUNT}/`) &&
-			nextCwd !== bash_EXTERNAL_MOUNTS_ROOT &&
-			!nextCwd.startsWith(`${bash_EXTERNAL_MOUNTS_ROOT}/`) &&
-			nextCwd !== bash_PLUGINS_MOUNT_ROOT &&
-			!nextCwd.startsWith(`${bash_PLUGINS_MOUNT_ROOT}/`)
-		) {
-			console.warn("Bash cwd is not persistable, resetting to the app root", {
-				threadId: args.threadId,
-				cwd: rawNextCwd,
-			});
-			nextCwd = bashFs.currentWorkspacePath;
 		}
 
 		// `/tmp` persists to the db, so bound its durable footprint before flushing:
@@ -1484,71 +1673,36 @@ export async function bash_run_command(
 			bashFs.mark_tmp_clean();
 		}
 
-		const stdoutLength = result.stdout.length;
-		const stderrLength = result.stderr.length;
-		const stdout = bashFs.truncate_output(result.stdout);
-		const truncatedStderr = bashFs.truncate_output(result.stderr);
-
+		// Every call saves its shell, because every call appends a transcript entry. The entry
+		// carries the full output (the engine already caps it), not the truncated tool result.
 		const nextCwdTarget = await bashFs.get_cwd_target(nextCwd);
-		const threadStateUpdated =
-			nextCwd !== threadState.bashCwd ||
-			nextCwdTarget?.kind !== threadState.bashCwdTarget?.kind ||
-			nextCwdTarget?.id !== threadState.bashCwdTarget?.id;
-		if (threadStateUpdated) {
-			pendingMutations.push(
-				ctx.runMutation(internal.ai_chat.set_thread_state, {
-					invocationId: invocation.invocationId,
-					organizationId: args.organizationId,
-					workspaceId: args.workspaceId,
-					threadId: args.threadId,
-					userId: args.userId,
-					patch: {
-						bashCwd: nextCwd,
-						bashCwdTarget: nextCwdTarget,
-					},
-				}),
-			);
-		}
+		pendingMutations.push(
+			ctx.runMutation(internal.ai_chat.save_shell, {
+				invocationId: invocation.invocationId,
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				threadId: args.threadId,
+				userId: args.userId,
+				shellId: invocation.shell._id,
+				cwd: nextCwd,
+				cwdTarget: nextCwdTarget,
+				...(nextState !== undefined ? { state: nextState } : {}),
+				transcriptEntry: `$ [${new Date().toISOString()}] (exit ${result.exitCode}) ${bashFs.cwd}\n${args.command}\n${result.stdout}\n${result.stderr}`,
+			}),
+		);
 
 		await Promise.all(pendingMutations);
 
-		const pathIndexTruncated = bashFs.path_index_truncated();
+		const response = bash_response({ bashFs, command: args.command, result, nextCwd, observedPaths, observedPathsTruncated });
 		console.debug("Bash command completed", {
 			threadId: args.threadId,
+			shellName: args.shellName,
 			commandName: args.command.trim().split(bash_WHITESPACE_RUN_REGEX, 1)[0] ?? "",
 			exitCode: result.exitCode,
-			stdoutLength,
-			stderrLength,
-			threadStateUpdated,
-			pathIndexTruncated,
+			stdoutLength: response.metadata.stdoutLength,
+			stderrLength: response.metadata.stderrLength,
+			pathIndexTruncated: response.metadata.pathIndexTruncated,
 		});
-
-		const response = {
-			title: `exit ${result.exitCode} · ${nextCwd}`,
-			output: bashFs.format_output({
-				command: args.command,
-				cwd: bashFs.cwd,
-				nextCwd,
-				exitCode: result.exitCode,
-				stdout: stdout.value,
-				stderr: truncatedStderr.value,
-			}),
-			stdout: stdout.value,
-			stderr: truncatedStderr.value,
-			metadata: {
-				command: args.command,
-				cwd: bashFs.cwd,
-				nextCwd,
-				exitCode: result.exitCode,
-				stdoutTruncated: stdout.truncated,
-				stderrTruncated: truncatedStderr.truncated,
-				stdoutLength,
-				stderrLength,
-				pathIndexTruncated,
-				observedPaths,
-				observedPathsTruncated,
-			},
-		};
 
 		const finished = await ctx.runMutation(internal.ai_chat_files.finish_bash_invocation, {
 			invocationId: invocation.invocationId,
@@ -1588,6 +1742,279 @@ export async function bash_run_command(
 		throw error;
 	} finally {
 		clearTimeout(deadlineTimer);
+	}
+}
+
+/**
+ * The part of a run that a chat call and a job worker share: run the command, turn an abort
+ * into 124 or 143, add the agent-facing diagnostics, and settle the next cwd.
+ */
+async function run_command_and_diagnose(args: {
+	bashFs: Awaited<ReturnType<typeof bash_fs_create>>;
+	command: string;
+	abort: AbortController;
+	threadId: Id<"ai_chat_threads">;
+}) {
+	const { bashFs, command, abort } = args;
+
+	// Scope follows shell operations, not the cwd checks before and after them.
+	bashFs.clear_observed_paths();
+	const result = await bashFs.run_command(command);
+	// The abort reason decides 124 or 143, never the engine's exit code: an aborted last statement
+	// can return 0. Only a job Stop aborts with the stop reason.
+	if (abort.signal.aborted) {
+		result.exitCode =
+			abort.signal.reason === bash_ABORT_REASON_STOPPED ? bash_COMMAND_EXIT_STOPPED : bash_COMMAND_EXIT_TIMED_OUT;
+		result.stderr += `bash: ${typeof abort.signal.reason === "string" ? abort.signal.reason : "execution deadline reached"}. Remaining commands were stopped.\n`;
+	}
+	const observedPaths = [...bashFs.observed_paths];
+	const observedPathsTruncated = bashFs.observed_paths_truncated();
+
+	// The engine returns its real directory. Shell variables cannot change this selection.
+	const rawNextCwd = result.cwd.path;
+	// Follow the folder identity before its old path, which may hold a new folder after mv.
+	const resolvedCwd = await bashFs.resolve_cwd(result.cwd);
+	let nextCwd = (await bashFs.nearest_existing_dir(resolvedCwd)) ?? bashFs.currentWorkspacePath;
+	const redirectsStderrToStdout = REDIRECTS_STDERR_TO_STDOUT_REGEX.test(command);
+
+	if (
+		COMMAND_NOT_FOUND_REGEX.test(result.stderr) ||
+		(redirectsStderrToStdout && COMMAND_NOT_FOUND_REGEX.test(result.stdout))
+	) {
+		result.stderr +=
+			"bash: run 'help' to list available commands; app files are db-backed — use search/grep for content and find/ls for paths.\n";
+		const filePathMatch = FILE_COMMAND_OPERAND_REGEX.exec(command.replace(bash_SHELL_COMMENT_LINE_REGEX, ""));
+		if (filePathMatch?.[1] != null) {
+			const target = bash_shell_arg_quote(filePathMatch[1]);
+			result.stderr += `bash: the Unix file command is intentionally unavailable. Try: stat ${target} && wc -c ${target} && head -n 5 ${target}\n`;
+		}
+	}
+
+	if (
+		command.includes("pipefail") &&
+		(SET_INVALID_OPTION_REGEX.test(result.stderr) ||
+			(redirectsStderrToStdout && SET_INVALID_OPTION_REGEX.test(result.stdout)))
+	) {
+		result.stderr += "bash: `set -euo pipefail` is unsupported; retry without strict-mode boilerplate.\n";
+	}
+
+	// Restore app-command guidance the shell swallowed. `find … 2>/dev/null | head` discards the
+	// `Try:` line and reports exit 0, so the model sees an empty successful result and can report
+	// "no matching files" as fact. The guidance is the tool answering the mistake, so it survives
+	// redirection; anything still visible in the transcript is skipped so nothing is printed twice.
+	const restoredDiagnostics = new Set<string>();
+	for (const diagnostic of bashFs.app_command_diagnostics()) {
+		const guidance = diagnostic.stderr.trim();
+		if (!guidance || restoredDiagnostics.has(guidance)) {
+			continue;
+		}
+		if (result.stdout.includes(guidance) || result.stderr.includes(guidance)) {
+			continue;
+		}
+		restoredDiagnostics.add(guidance);
+		result.stderr += `bash: ${diagnostic.name} exited ${diagnostic.exitCode} and its stderr was discarded; it said:\n${guidance}\n`;
+	}
+
+	// Only paths under HOME, `/tmp`, `/shells`, and the read-only `/.mounts` and `/.plugins` trees
+	// survive between runs (`/tmp` is restored from the db; `/shells` and the mounts are rebuilt
+	// from the db and the reserved scopes; everything else is synthetic mount scaffolding). A
+	// `/.plugins` cwd can still vanish when the plugin is uninstalled; the nearest-existing-dir
+	// climb above already handles that.
+	if (
+		nextCwd !== bash_HOME &&
+		!nextCwd.startsWith(`${bash_HOME}/`) &&
+		nextCwd !== bash_TMP_MOUNT &&
+		!nextCwd.startsWith(`${bash_TMP_MOUNT}/`) &&
+		nextCwd !== bash_SHELLS_MOUNT &&
+		!nextCwd.startsWith(`${bash_SHELLS_MOUNT}/`) &&
+		nextCwd !== bash_EXTERNAL_MOUNTS_ROOT &&
+		!nextCwd.startsWith(`${bash_EXTERNAL_MOUNTS_ROOT}/`) &&
+		nextCwd !== bash_PLUGINS_MOUNT_ROOT &&
+		!nextCwd.startsWith(`${bash_PLUGINS_MOUNT_ROOT}/`)
+	) {
+		console.warn("Bash cwd is not persistable, resetting to the app root", {
+			threadId: args.threadId,
+			cwd: rawNextCwd,
+		});
+		nextCwd = bashFs.currentWorkspacePath;
+	}
+
+	return { result, observedPaths, observedPathsTruncated, nextCwd };
+}
+
+/**
+ * The stored result of a chat call or a job: the transcript for the model, and the bounded copy
+ * of the output the row keeps.
+ */
+function bash_response(args: {
+	bashFs: Awaited<ReturnType<typeof bash_fs_create>>;
+	command: string;
+	result: { stdout: string; stderr: string; exitCode: number };
+	nextCwd: string;
+	observedPaths: string[];
+	observedPathsTruncated: boolean;
+}) {
+	const { bashFs, command, result, nextCwd } = args;
+	const stdout = bashFs.truncate_output(result.stdout);
+	const stderr = bashFs.truncate_output(result.stderr);
+	return {
+		title: `exit ${result.exitCode} · ${nextCwd}`,
+		output: bashFs.format_output({
+			command,
+			cwd: bashFs.cwd,
+			nextCwd,
+			exitCode: result.exitCode,
+			stdout: stdout.value,
+			stderr: stderr.value,
+		}),
+		stdout: stdout.value,
+		stderr: stderr.value,
+		metadata: {
+			command,
+			cwd: bashFs.cwd,
+			nextCwd,
+			exitCode: result.exitCode,
+			stdoutTruncated: stdout.truncated,
+			stderrTruncated: stderr.truncated,
+			stdoutLength: result.stdout.length,
+			stderrLength: result.stderr.length,
+			pathIndexTruncated: bashFs.path_index_truncated(),
+			observedPaths: args.observedPaths,
+			observedPathsTruncated: args.observedPathsTruncated,
+		},
+	};
+}
+
+/**
+ * The background job worker, run by the jobs workpool. Claim the row, rebuild the file system
+ * the launching call had (its cwd, its state, a private `/tmp` copy, the same mounts), run the
+ * script through the same runner, and store the result. Stops, the deadline and a lost
+ * permission reach the script through the worker's own abort signal. The pool's `onComplete`
+ * settles a worker that throws; the watchdog settles a dead one.
+ */
+export async function bash_run_job(
+	ctx: ActionCtx,
+	args: { invocationId: Id<"ai_chat_bash_invocations"> },
+): Promise<null> {
+	const claimed = (await ctx.runMutation(internal.ai_chat_files.claim_bash_job, {
+		invocationId: args.invocationId,
+	})) as ai_chat_files_claim_bash_job_Result;
+	// Stopped, settled or purged while queued: nothing to run.
+	if (!claimed) return null;
+	const { row, organizationName, workspaceName, shells } = claimed;
+	const job = row.job;
+	const shellName = shells.find((shell) => shell._id === job?.shellId)?.name;
+	if (!job || job.script === null || job.shellState === null || shellName === undefined) {
+		throw should_never_happen("Claimed job row without its script, state or shell", { invocationId: row._id });
+	}
+
+	const abort = new AbortController();
+	const deadlineTimer = setTimeout(
+		() => abort.abort(BASH_JOB_DEADLINE_ABORT_REASON),
+		Math.max(0, row.transferDeadlineAt - Date.now()),
+	);
+	// The Stop button, a deleted row, a lost permission and the watchdog all reach the script
+	// through this poll. A missing row and a lost permission count as a stop.
+	let polling = false;
+	const pollTimer = setInterval(() => {
+		if (polling) return;
+		polling = true;
+		(ctx.runQuery(internal.ai_chat_files.poll_bash_job, { invocationId: row._id }) as Promise<ai_chat_files_poll_bash_job_Result>)
+			.then((poll) => {
+				if (poll.status === "missing" || poll.stopRequested || !poll.authorized) abort.abort(bash_ABORT_REASON_STOPPED);
+				// The watchdog marks the row `interrupted` at the deadline. That is a deadline, not
+				// a Stop, so it must report 124 and settle a running copy as a timeout. The
+				// deadline timer above normally fires first; this is the case where it did not.
+				else if (poll.status === "interrupted") abort.abort(BASH_JOB_DEADLINE_ABORT_REASON);
+			})
+			.catch((error: unknown) => console.warn("Bash job poll failed", { invocationId: row._id, error }))
+			.finally(() => {
+				polling = false;
+			});
+	}, BASH_JOB_POLL_MS);
+	let commandNumber = 0;
+	try {
+		// The same mount visibility as the launching call: without these queries `/.mounts` and
+		// `/.plugins` would be empty inside a job.
+		const [githubMounts, pluginSourceMounts] = await Promise.all([
+			ctx.runQuery(internal.github_mounts.list_mounts, {}) as Promise<Doc<"github_mounts">[]>,
+			ctx.runQuery(internal.plugins.list_bash_source_mounts, {
+				organizationId: row.organizationId,
+				workspaceId: row.workspaceId,
+			}) as Promise<plugins_list_bash_source_mounts_Result>,
+		]);
+
+		const bashFs = await bash_fs_create({
+			ctx,
+			organizationId: row.organizationId,
+			workspaceId: row.workspaceId,
+			organizationName,
+			workspaceName,
+			userId: row.userId,
+			threadId: row.threadId,
+			persistedCwd: job.startCwd,
+			persistedCwdTarget: job.startCwdTarget,
+			allowDbFilesMkdir: job.allowDbFilesMkdir,
+			githubMounts,
+			pluginSourceMounts,
+			transferContext: {
+				invocationId: row._id,
+				membershipId: row.membershipId,
+				deadlineAt: row.transferDeadlineAt,
+				signal: abort.signal,
+				abort: (reason) => abort.abort(reason),
+				nextCommandNumber: () => commandNumber++,
+				jobId: row._id,
+			},
+			jobContext: {
+				invocationId: row._id,
+				organizationId: row.organizationId,
+				workspaceId: row.workspaceId,
+				threadId: row.threadId,
+				userId: row.userId,
+				membershipId: row.membershipId,
+				shellId: job.shellId,
+				shellName,
+				allowDbFilesMkdir: job.allowDbFilesMkdir,
+				deadlineAt: row.transferDeadlineAt,
+				signal: abort.signal,
+				nextCommandNumber: () => commandNumber++,
+				launchedJobNumbers: [],
+				launchAttempts: 0,
+				readBudgetRemaining: bash_JOB_OUTPUT_READ_BUDGET_BYTES,
+			},
+			shells,
+			restoreState: job.shellState,
+			executionLimitsOverride: { maxCommandCount: BASH_JOB_MAX_COMMAND_COUNT },
+		});
+
+		const { result, observedPaths, observedPathsTruncated, nextCwd } = await run_command_and_diagnose({
+			bashFs,
+			command: job.script,
+			abort,
+			threadId: row.threadId,
+		});
+
+		// `/tmp` is a private copy inside a job and is never written back. Name what was dropped.
+		const droppedTmpPaths = [...bashFs.tmp_dirty_roots()].sort();
+		if (droppedTmpPaths.length > 0) {
+			result.stderr += `bash: /tmp writes are dropped when a job ends: ${droppedTmpPaths.map((path) => `${bash_TMP_MOUNT}${path}`).join(", ")}\n`;
+		}
+
+		const response = bash_response({ bashFs, command: job.script, result, nextCwd, observedPaths, observedPathsTruncated });
+		await ctx.runMutation(internal.ai_chat_files.finish_bash_job, { invocationId: row._id, result: response });
+		console.debug("Bash job completed", {
+			threadId: row.threadId,
+			shellName,
+			jobNumber: job.jobNumber,
+			exitCode: result.exitCode,
+			stdoutLength: response.metadata.stdoutLength,
+			stderrLength: response.metadata.stderrLength,
+		});
+		return null;
+	} finally {
+		clearTimeout(deadlineTimer);
+		clearInterval(pollTimer);
 	}
 }
 

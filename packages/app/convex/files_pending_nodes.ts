@@ -640,9 +640,10 @@ export const cleanup_published_nodes = internalMutation({
 						q.eq("preparedParent.kind", "private").eq("preparedParent.id", node._id),
 					)
 					.first(),
+				// Several shells can share one folder; any live shell keeps the node.
 				ctx.db
-					.query("ai_chat_threads_state")
-					.withIndex("by_bashCwdTarget", (q) => q.eq("bashCwdTarget.kind", "private").eq("bashCwdTarget.id", node._id))
+					.query("ai_chat_bash_shells")
+					.withIndex("by_cwdTarget", (q) => q.eq("cwdTarget.kind", "private").eq("cwdTarget.id", node._id))
 					.first(),
 			]);
 			if (references.some((reference) => reference !== null)) continue;

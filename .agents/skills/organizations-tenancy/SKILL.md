@@ -136,7 +136,7 @@ Before the first bounded workspace content purge step, it sets the optional `org
 
 ## Content purge coverage (`process_organization_deletion_request` / `process_workspace_deletion_request`)
 
-This purge includes activities; pending updates; AI files, threads, messages, and thread-state docs; public API credentials, grants, and write stages; plugin runs, handlers, installations, secrets, and UI sessions; chat messages; file metadata, chunks, Yjs state, snapshots, stats, materialization jobs, R2 assets and objects; file permission grants; and file nodes last. Treat [data-deletion: Workspace Content Purge Coverage](../data-deletion/SKILL.md#workspace-content-purge-coverage) as the ordered list.
+This purge includes activities; pending updates; AI files, threads, messages, shells, transcripts, and job-note cursors; public API credentials, grants, and write stages; plugin runs, handlers, installations, secrets, and UI sessions; chat messages; file metadata, chunks, Yjs state, snapshots, stats, materialization jobs, R2 assets and objects; file permission grants; and file nodes last. Treat [data-deletion: Workspace Content Purge Coverage](../data-deletion/SKILL.md#workspace-content-purge-coverage) as the ordered list.
 
 After files, assets, and accepted service records drain, the worker deletes plugin service-account
 bindings and then workspace service accounts in bounded tenant-indexed passes. This preserves identity

@@ -4,6 +4,7 @@ import type { RegisteredMutation } from "convex/server";
 import { components, internal } from "./_generated/api.js";
 import { access_control_changes_db_record } from "./access_control_changes.ts";
 import { activities_db_delete, activities_db_require_by_source_id } from "./activities_db.ts";
+import { ai_chat_files_db_delete_job_batch, ai_chat_files_db_request_job_stop } from "./ai_chat_files.ts";
 import { organizations_membership_lifetimes_db_record } from "./organizations_membership_lifetimes.ts";
 import {
 	internalAction,
@@ -496,6 +497,13 @@ async function db_purge_organization_workspace_content_batch(
 		// A retained result can use 700 KiB. Keep this pass below the transaction byte limit.
 		.take(Math.min(batchSize, 8));
 	if (bashInvocations.length > 0) {
+		// A job row owns an Activity, so it goes through the job delete batch, one per pass. A
+		// batch with no job row is deleted at once.
+		const job = bashInvocations.find((invocation) => invocation.job !== undefined);
+		if (job) {
+			const deleted = await ai_chat_files_db_delete_job_batch(ctx, { invocationId: job._id, batchSize });
+			return { done: false, deletedCount: deleted.deletedCount };
+		}
 		await Promise.all(bashInvocations.map((invocation) => ctx.db.delete("ai_chat_bash_invocations", invocation._id)));
 		return { done: false, deletedCount: bashInvocations.length };
 	}
@@ -523,7 +531,7 @@ async function db_purge_organization_workspace_content_batch(
 		return { done: false, deletedCount: aiFiles.length };
 	}
 
-	// AI thread messages and state are children of the thread docs, so they are
+	// AI thread messages, shells and transcripts are children of the thread docs, so they are
 	// removed before deleting the thread docs themselves.
 	const aiChatMessages = await ctx.db
 		.query("ai_chat_threads_messages_aisdk_5")
@@ -536,15 +544,40 @@ async function db_purge_organization_workspace_content_batch(
 		return { done: false, deletedCount: aiChatMessages.length };
 	}
 
-	const aiChatThreadStates = await ctx.db
-		.query("ai_chat_threads_state")
+	const shellTranscripts = await ctx.db
+		.query("ai_chat_bash_shell_transcripts")
+		.withIndex("by_organization_workspace_thread", (q) =>
+			q.eq("organizationId", organizationId).eq("workspaceId", workspaceId),
+		)
+		// A transcript entry can be about 830 KB. Keep this pass below the transaction byte limit.
+		.take(Math.min(batchSize, 8));
+	if (shellTranscripts.length > 0) {
+		await Promise.all(shellTranscripts.map((doc) => ctx.db.delete("ai_chat_bash_shell_transcripts", doc._id)));
+		return { done: false, deletedCount: shellTranscripts.length };
+	}
+
+	const shells = await ctx.db
+		.query("ai_chat_bash_shells")
+		.withIndex("by_organization_workspace_thread", (q) =>
+			q.eq("organizationId", organizationId).eq("workspaceId", workspaceId),
+		)
+		// A shell state snapshot can be 128 KiB.
+		.take(Math.min(batchSize, 32));
+	if (shells.length > 0) {
+		await Promise.all(shells.map((doc) => ctx.db.delete("ai_chat_bash_shells", doc._id)));
+		return { done: false, deletedCount: shells.length };
+	}
+
+	// There is no per-thread delete, so the per-user notice cursors of a thread die here too.
+	const jobNoticeCursors = await ctx.db
+		.query("ai_chat_bash_job_notice_cursors")
 		.withIndex("by_organization_workspace_thread", (q) =>
 			q.eq("organizationId", organizationId).eq("workspaceId", workspaceId),
 		)
 		.take(batchSize);
-	if (aiChatThreadStates.length > 0) {
-		await Promise.all(aiChatThreadStates.map((doc) => ctx.db.delete("ai_chat_threads_state", doc._id)));
-		return { done: false, deletedCount: aiChatThreadStates.length };
+	if (jobNoticeCursors.length > 0) {
+		await Promise.all(jobNoticeCursors.map((doc) => ctx.db.delete("ai_chat_bash_job_notice_cursors", doc._id)));
+		return { done: false, deletedCount: jobNoticeCursors.length };
 	}
 
 	const aiChatThreads = await ctx.db
@@ -1453,6 +1486,30 @@ async function db_drain_user_transfer_runs_batch(ctx: MutationCtx, args: { userI
 }
 
 /**
+ * Stop and delete one background Bash job, then this user's finished-job note cursors, before
+ * removing the user's memberships. The job's Activity is deleted with the row, not settled.
+ */
+async function db_drain_user_bash_jobs_batch(ctx: MutationCtx, args: { userId: Id<"users">; batchSize: number }) {
+	const job = await ctx.db
+		.query("ai_chat_bash_invocations")
+		.withIndex("by_user_job", (q) => q.eq("userId", args.userId).gt("job.jobNumber", 0))
+		.first();
+	if (job) {
+		if (job.status === "running")
+			await ai_chat_files_db_request_job_stop(ctx, { invocationId: job._id, reason: "user", now: Date.now() });
+		const deleted = await ai_chat_files_db_delete_job_batch(ctx, { invocationId: job._id, batchSize: args.batchSize });
+		return deleted.deletedCount;
+	}
+
+	const cursors = await ctx.db
+		.query("ai_chat_bash_job_notice_cursors")
+		.withIndex("by_user", (q) => q.eq("userId", args.userId))
+		.take(args.batchSize);
+	await Promise.all(cursors.map((cursor) => ctx.db.delete("ai_chat_bash_job_notice_cursors", cursor._id)));
+	return cursors.length;
+}
+
+/**
  * Close review workers before deleting the proposals and prepared content they use.
  */
 async function db_drain_user_pending_review_runs_batch(
@@ -1806,6 +1863,9 @@ async function db_drain_user_finalization_batch(
 	if (transferRunCount > 0) {
 		return transferRunCount;
 	}
+
+	const bashJobCount = await db_drain_user_bash_jobs_batch(ctx, args);
+	if (bashJobCount > 0) return bashJobCount;
 
 	const reviewRunCount = await db_drain_user_pending_review_runs_batch(ctx, args);
 	if (reviewRunCount > 0) return reviewRunCount;
@@ -3012,6 +3072,9 @@ export const prepare_user_for_hard_deletion = internalMutation({
 		if (deletedTransferRunCount > 0) {
 			return false;
 		}
+
+		const deletedBashJobCount = await db_drain_user_bash_jobs_batch(ctx, { userId: args.userId, batchSize });
+		if (deletedBashJobCount > 0) return false;
 
 		const deletedReviewRunCount = await db_drain_user_pending_review_runs_batch(ctx, {
 			userId: args.userId,

@@ -111,22 +111,6 @@ const migrations_test_schema = defineSchema({
 		.index("by_isLatest_name", ["isLatest", "name"])
 		.index("by_name", ["name"])
 		.index("by_name_sourceStatus_updatedAt", ["name", "sourceStatus", "updatedAt"]),
-	ai_chat_threads_state: defineTable({
-		organizationId: v.string(),
-		workspaceId: v.string(),
-		// The threads table is not part of this fixture, so keep the id a plain string here.
-		threadId: v.string(),
-		bashCwd: v.string(),
-		bashCwdTarget: v.optional(
-			v.union(
-				v.object({ kind: v.literal("saved"), id: v.id("files_nodes") }),
-				v.object({ kind: v.literal("private"), id: v.string() }),
-				v.null(),
-			),
-		),
-		updatedBy: v.id("users"),
-		updatedAt: v.number(),
-	}).index("by_thread", ["threadId"]),
 });
 
 /**
@@ -1627,76 +1611,6 @@ describe("backfill_files_nodes_lowercase_extension", () => {
 		expect(result.markdownFile).toMatchObject({ lowercaseExtension: "md" });
 		expect(result.folder).toMatchObject({ lowercaseExtension: null });
 		expect(result.extensionlessFile).toMatchObject({ lowercaseExtension: null });
-	});
-});
-
-describe("backfill_ai_chat_threads_state_bash_cwd_target", () => {
-	test("sets a missing bash cwd target to null and leaves a settled target alone", async () => {
-		const t = convexTest(migrations_test_schema, migrations_test_modules);
-		component.register(t);
-		const legacy = await t.run(async (ctx) => {
-			const userId = await ctx.db.insert("users", { clerkUserId: "clerk-user-bash-cwd-target-backfill" });
-			const savedNodeId = await ctx.db.insert("files_nodes", {
-				organizationId: "organization-bash-cwd-target-backfill",
-				workspaceId: "workspace-bash-cwd-target-backfill",
-				path: "/docs",
-				name: "docs",
-				kind: "folder",
-				parentId: "root",
-				createdBy: userId,
-				updatedBy: userId,
-				updatedAt: 100,
-			});
-			const [missingId, alreadyNullId, savedTargetId] = await Promise.all([
-				ctx.db.insert("ai_chat_threads_state", {
-					organizationId: "organization-bash-cwd-target-backfill",
-					workspaceId: "workspace-bash-cwd-target-backfill",
-					threadId: "thread-missing",
-					bashCwd: "/",
-					updatedBy: userId,
-					updatedAt: 100,
-				}),
-				ctx.db.insert("ai_chat_threads_state", {
-					organizationId: "organization-bash-cwd-target-backfill",
-					workspaceId: "workspace-bash-cwd-target-backfill",
-					threadId: "thread-already-null",
-					bashCwd: "/",
-					bashCwdTarget: null,
-					updatedBy: userId,
-					updatedAt: 100,
-				}),
-				ctx.db.insert("ai_chat_threads_state", {
-					organizationId: "organization-bash-cwd-target-backfill",
-					workspaceId: "workspace-bash-cwd-target-backfill",
-					threadId: "thread-saved-target",
-					bashCwd: "/docs",
-					bashCwdTarget: { kind: "saved", id: savedNodeId },
-					updatedBy: userId,
-					updatedAt: 100,
-				}),
-			]);
-
-			return { missingId, alreadyNullId, savedTargetId, savedNodeId };
-		});
-
-		const result = await t.run(async (ctx) => {
-			await runToCompletion(
-				ctx,
-				components.migrations,
-				internal.migrations.backfill_ai_chat_threads_state_bash_cwd_target,
-			);
-
-			const [missing, alreadyNull, savedTarget] = await Promise.all([
-				ctx.db.get("ai_chat_threads_state", legacy.missingId),
-				ctx.db.get("ai_chat_threads_state", legacy.alreadyNullId),
-				ctx.db.get("ai_chat_threads_state", legacy.savedTargetId),
-			]);
-			return { missing, alreadyNull, savedTarget };
-		});
-
-		expect(result.missing).toMatchObject({ bashCwdTarget: null });
-		expect(result.alreadyNull).toMatchObject({ bashCwdTarget: null });
-		expect(result.savedTarget).toMatchObject({ bashCwdTarget: { kind: "saved", id: legacy.savedNodeId } });
 	});
 });
 

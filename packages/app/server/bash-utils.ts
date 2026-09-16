@@ -12,12 +12,15 @@ import type {
 	FileContent,
 	FsStat,
 	IFileSystem,
+	InterpreterStateSnapshot,
 	MkdirOptions,
 	RmOptions,
 } from "just-bash/browser";
+import type { Infer } from "convex/values";
 import { internal } from "../convex/_generated/api.js";
 import type { Doc, Id } from "../convex/_generated/dataModel";
 import type { ActionCtx } from "../convex/_generated/server.js";
+import type { bash_shell_state_validator } from "../convex/schema.ts";
 import type {
 	files_nodes_create_private_node_by_path_Result,
 	files_nodes_get_visible_entry_by_path_Result,
@@ -50,6 +53,24 @@ import { pagination_fan_out_paginate } from "../shared/pagination.ts";
 export const bash_HOME = "/home/cloud-usr";
 export const bash_APP_MOUNT_PATH = `${bash_HOME}/w`;
 export const bash_TMP_MOUNT = "/tmp";
+
+/**
+ * Read-only mount with one folder per shell of the thread: `/shells/<name>/transcript`.
+ */
+export const bash_SHELLS_MOUNT = "/shells";
+
+/**
+ * Keep the stored shell state and the engine snapshot in step. A field added on one side fails
+ * the check on the line after each `ts-ignore`; the ignore only covers the unused type name.
+ */
+type bash_ShellState = Infer<typeof bash_shell_state_validator>;
+type bash_Assignable<_From extends To, To> = true;
+//@ts-ignore
+type _bash_ShellStateToSnapshot = //
+	bash_Assignable<bash_ShellState, InterpreterStateSnapshot>;
+//@ts-ignore
+type _bash_SnapshotToShellState = //
+	bash_Assignable<InterpreterStateSnapshot, bash_ShellState>;
 
 /**
  * Shell mount point for read-only reserved-scope external mounts (e.g. the GitHub mirror of the
@@ -117,8 +138,32 @@ export const bash_READ_HEAD_LARGE_FILE_MAX_LINES = 500;
 const bash_OBSERVED_PATHS_MAX = 100;
 export const bash_COMMAND_EXIT_FAILURE = 1;
 export const bash_COMMAND_EXIT_USAGE = 2;
+/**
+ * Only `wait`, `jobs` and `jobs -o` use 3: the job is still running.
+ */
+export const bash_COMMAND_EXIT_STILL_RUNNING = 3;
 export const bash_COMMAND_EXIT_CANNOT_EXECUTE = 126;
 export const bash_COMMAND_EXIT_NOT_FOUND = 127;
+/**
+ * 128 + 15 (SIGTERM): the user stopped the job. The job worker decides this from its own abort
+ * reason, never from the engine exit code.
+ */
+export const bash_COMMAND_EXIT_STOPPED = 143;
+/**
+ * The job used its whole budget. The job worker decides this from its own abort reason too.
+ */
+export const bash_COMMAND_EXIT_TIMED_OUT = 124;
+/**
+ * The abort reason for a user stop, a lost permission or a deleted job row. Any other reason is
+ * a deadline and reports 124.
+ */
+export const bash_ABORT_REASON_STOPPED = "job stopped";
+/**
+ * How many job numbers `wait` may name in one call. The door reads one index row per number, so
+ * the list has to be bounded somewhere: `wait {1..5000}` is 14 characters for the agent to type.
+ * `wait` refuses a longer list with a usage error, and the door refuses it again.
+ */
+export const bash_JOB_NUMBERS_MAX_COUNT = 12;
 export const bash_NON_NEGATIVE_INTEGER_REGEX = /^\d+$/u;
 export const bash_TERMINAL_LINE_ENDING_REGEX = /\r\n?/g;
 export const bash_SHELL_COMMENT_LINE_REGEX = /^\s*#.*$/gm;

@@ -288,6 +288,132 @@ describe("start_for_agent", () => {
 	);
 });
 
+describe("transfers of a background job", () => {
+	/**
+	 * A folder fixture plus one job row of the user, started through the real door.
+	 */
+	async function create_job_fixture() {
+		const fixture = await create_folder_fixture(["/source"]);
+		const { t, db, asUser } = fixture;
+		const thread = await asUser.mutation(api.ai_chat.thread_create, {
+			membershipId: db.membershipId,
+			clientGeneratedId: "transfer-job-thread",
+			lastMessageAt: Date.now(),
+		});
+		if (thread._nay) throw new Error(thread._nay.message);
+		const scope = {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: db.userId,
+			threadId: thread._yay.threadId,
+		};
+		const begun = await t.mutation(internal.ai_chat_files.begin_bash_invocation, {
+			...scope,
+			toolCallId: "job-parent",
+			commandHash: "a".repeat(64),
+			shellName: "default",
+		});
+		if (begun._nay || !("shell" in begun._yay)) throw new Error("Expected a fresh call");
+		const started = await t.mutation(internal.ai_chat_files.start_bash_job, {
+			parentInvocationId: begun._yay.invocationId,
+			commandNumber: 0,
+			shellId: begun._yay.shell._id,
+			script: "cp -R source target",
+			startCwd: "/",
+			startCwdTarget: null,
+			shellState: {
+			env: [],
+			options: {},
+			shoptOptions: {},
+			readonlyVars: [],
+			associativeArrays: [],
+			namerefs: [],
+			boundNamerefs: [],
+			invalidNamerefs: [],
+			integerVars: [],
+			lowercaseVars: [],
+			uppercaseVars: [],
+			exportedVars: [],
+			declaredVars: [],
+			functions: [],
+			previousDir: "/",
+			directoryStack: [],
+			lastExitCode: 0,
+			lastArg: "",
+			openFileDescriptors: [],
+		},
+			allowDbFilesMkdir: true,
+		});
+		if (started._nay) throw new Error(started._nay.message);
+		const job = await t.run(async (ctx) =>
+			(await ctx.db.query("ai_chat_bash_invocations").collect()).find((row) => row.job?.jobNumber === 1),
+		);
+		if (!job) throw new Error("Expected the job row");
+		const copy = async (commandNumber: number) =>
+			await t.mutation(internal.files_transfer.start_for_agent, {
+				membershipId: db.membershipId,
+				threadId: scope.threadId,
+				invocation: { id: job._id, commandNumber },
+				requestId: `job-copy-${commandNumber}`,
+				kind: "copy",
+				sources: [{ kind: "saved", id: fixture.folders.get("/source")! }],
+				targetParent: { kind: "saved", id: fixture.folders.get("/target")! },
+				targetPath: "/target",
+				targetName: null,
+				missingParentNames: [],
+				conflictPolicy: { file: "replace", folder: "merge" },
+			});
+		return { ...fixture, scope, job, copy };
+	}
+
+	test("hides the job's transfer from the feed, also after a retry, and the lane query sees it", async () => {
+		const f = await create_job_fixture();
+		const laneArgs = { membershipId: f.db.membershipId, threadId: f.scope.threadId };
+		expect(await f.t.query(internal.files_transfer.get_current_activity_for_agent, laneArgs)).toBeNull();
+		const started = await f.copy(0);
+		if (started._nay) throw new Error(started._nay.message);
+		expect(await f.t.run((ctx) => ctx.db.get("activities", started._yay.activityId))).toMatchObject({
+			feedVisible: false,
+			status: "queued",
+		});
+		expect(await f.t.query(internal.files_transfer.get_current_activity_for_agent, laneArgs)).toEqual({
+			activityId: started._yay.activityId,
+			status: "queued",
+		});
+		// The lane query is fenced on the membership and the thread's owner.
+		const other = await add_member(f);
+		expect(
+			await f.t.query(internal.files_transfer.get_current_activity_for_agent, {
+				membershipId: other.membershipId,
+				threadId: f.scope.threadId,
+			}),
+		).toBeNull();
+
+		await f.asUser.mutation(api.files_transfer.stop, { membershipId: f.db.membershipId, runId: started._yay.runId });
+		await finish_folder_copy(f, started._yay.runId);
+		expect(await f.t.query(internal.files_transfer.get_current_activity_for_agent, laneArgs)).toBeNull();
+		const retried = await f.asUser.mutation(api.files_transfer.retry_remaining, {
+			membershipId: f.db.membershipId,
+			runId: started._yay.runId,
+			requestId: "job-copy-retry",
+		});
+		if (retried._nay) throw new Error(retried._nay.message);
+		expect(await f.t.run((ctx) => ctx.db.get("activities", retried._yay.activityId))).toMatchObject({
+			feedVisible: false,
+		});
+	});
+
+	test("refuses a new transfer once the job is stopping, but still answers a replayed one", async () => {
+		const f = await create_job_fixture();
+		const started = await f.copy(0);
+		if (started._nay) throw new Error(started._nay.message);
+		expect(await f.t.mutation(internal.ai_chat_files.request_bash_job_stop, { ...f.scope, jobNumber: 1 })).toBe(true);
+		expect((await f.copy(1))._nay).toMatchObject({ name: "stopped" });
+		expect((await f.copy(0))._yay).toMatchObject({ runId: started._yay.runId, activityId: started._yay.activityId });
+		expect(await f.t.run((ctx) => ctx.db.query("files_transfer_runs").collect())).toHaveLength(1);
+	});
+});
+
 describe("advance", () => {
 	test("finishes canceled when the only preparing leaf is discarded", async () => {
 		const fixture = await create_folder_fixture(["/source"]);

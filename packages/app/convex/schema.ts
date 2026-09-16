@@ -98,6 +98,34 @@ export const files_pending_parent_validator = v.union(
 	v.object({ kind: v.literal("root") }),
 );
 
+/**
+ * A saved Bash interpreter state. It mirrors the engine's `InterpreterStateSnapshot` field by
+ * field; `server/bash-utils.ts` asserts the two types match so a drift fails the type check.
+ * `env` is a pair list, not an object: Convex rejects object keys with non-ASCII characters, and
+ * the env map holds associative-array keys. The cwd is not here; the shell row owns it.
+ */
+export const bash_shell_state_validator = v.object({
+	env: v.array(v.object({ name: v.string(), value: v.string() })),
+	options: v.record(v.string(), v.boolean()),
+	shoptOptions: v.record(v.string(), v.boolean()),
+	readonlyVars: v.array(v.string()),
+	associativeArrays: v.array(v.string()),
+	namerefs: v.array(v.string()),
+	boundNamerefs: v.array(v.string()),
+	invalidNamerefs: v.array(v.string()),
+	integerVars: v.array(v.string()),
+	lowercaseVars: v.array(v.string()),
+	uppercaseVars: v.array(v.string()),
+	exportedVars: v.array(v.string()),
+	declaredVars: v.array(v.string()),
+	functions: v.array(v.object({ name: v.string(), text: v.string() })),
+	previousDir: v.string(),
+	directoryStack: v.array(v.string()),
+	lastExitCode: v.number(),
+	lastArg: v.string(),
+	openFileDescriptors: v.array(v.number()),
+});
+
 export const files_transfer_source_version_validator = v.union(
 	...files_content_version_validator.members,
 	v.object({
@@ -309,7 +337,6 @@ const app_convex_schema = defineSchema({
 		 * The messages table name below has the same `aisdk_5` in it.
 		 */
 		runtime: v.literal("aisdk_5"),
-		stateId: v.union(v.id("ai_chat_threads_state"), v.null()),
 
 		createdBy: v.id("users"),
 		updatedBy: v.id("users"),
@@ -326,6 +353,11 @@ const app_convex_schema = defineSchema({
 		 * The thread is unread while `lastMessageAt > readAt`.
 		 **/
 		readAt: v.optional(v.number()),
+		/**
+		 * The last background job number handed out in this thread. Job numbers are never reused,
+		 * so this only grows. Missing means no job was ever started.
+		 **/
+		bashJobCounter: v.optional(v.number()),
 	}).index("by_organization_workspace_archived_lastMessageAt", [
 		"organizationId",
 		"workspaceId",
@@ -333,17 +365,51 @@ const app_convex_schema = defineSchema({
 		"lastMessageAt",
 	]),
 
-	ai_chat_threads_state: defineTable({
+	/**
+	 * One named Bash shell of a thread. Threads are workspace-shared, so their shells are too.
+	 * A thread has at most 10 shells. `state: null` means a fresh interpreter.
+	 */
+	ai_chat_bash_shells: defineTable({
 		organizationId: v.string(),
 		workspaceId: v.string(),
 		threadId: v.id("ai_chat_threads"),
-		bashCwd: v.string(),
-		bashCwdTarget: v.union(files_pending_target_validator, v.null()),
+		name: v.string(),
+		cwd: v.string(),
+		cwdTarget: v.union(files_pending_target_validator, v.null()),
+		state: v.union(bash_shell_state_validator, v.null()),
+		/**
+		 * Running totals over the transcript entries, so a trim never scans them.
+		 */
+		transcriptBytes: v.number(),
+		transcriptEntries: v.number(),
+		/**
+		 * The next transcript entry sequence number.
+		 */
+		transcriptSeq: v.number(),
 		updatedBy: v.id("users"),
 		updatedAt: v.number(),
 	})
-		.index("by_thread", ["threadId"])
-		.index("by_bashCwdTarget", ["bashCwdTarget.kind", "bashCwdTarget.id"])
+		.index("by_thread_name", ["threadId", "name"])
+		.index("by_cwdTarget", ["cwdTarget.kind", "cwdTarget.id"])
+		.index("by_organization_workspace_thread", ["organizationId", "workspaceId", "threadId"]),
+
+	/**
+	 * One transcript entry of a shell: a call or a job, with its command and output. A transcript
+	 * is up to 1 MiB, the same as one Convex document, so it cannot be one document.
+	 */
+	ai_chat_bash_shell_transcripts: defineTable({
+		organizationId: v.string(),
+		workspaceId: v.string(),
+		threadId: v.id("ai_chat_threads"),
+		shellId: v.id("ai_chat_bash_shells"),
+		seq: v.number(),
+		text: v.string(),
+		/**
+		 * UTF-8 bytes of `text`, measured with TextEncoder. Never a character count.
+		 */
+		bytes: v.number(),
+	})
+		.index("by_shell_seq", ["shellId", "seq"])
 		.index("by_organization_workspace_thread", ["organizationId", "workspaceId", "threadId"]),
 
 	ai_chat_bash_invocations: defineTable({
@@ -361,9 +427,39 @@ const app_convex_schema = defineSchema({
 		finishedAt: v.optional(v.number()),
 		resultExpiresAt: v.optional(v.number()),
 		result: v.optional(ai_chat_bash_result_validator),
+		/**
+		 * Present on a background job row (`cmd &`), missing on a foreground call. `script` and
+		 * `shellState` become `null` once the job finished: a patched document is validated again,
+		 * so a required field cannot be removed, only emptied.
+		 */
+		job: v.optional(
+			v.object({
+				jobNumber: v.number(),
+				shellId: v.id("ai_chat_bash_shells"),
+				/**
+				 * The call or job that launched this job.
+				 */
+				parentInvocationId: v.id("ai_chat_bash_invocations"),
+				commandNumber: v.number(),
+				script: v.union(v.string(), v.null()),
+				/**
+				 * The live cwd at the `&`, which can differ from the call's starting cwd.
+				 */
+				startCwd: v.string(),
+				startCwdTarget: v.union(files_pending_target_validator, v.null()),
+				shellState: v.union(bash_shell_state_validator, v.null()),
+				allowDbFilesMkdir: v.boolean(),
+				workId: v.union(vWorkId, v.null()),
+				watchdogId: v.union(v.id("_scheduled_functions"), v.null()),
+				stopRequestedAt: v.union(v.number(), v.null()),
+			}),
+		),
 	})
 		.index("by_thread_toolCall", ["threadId", "toolCallId"])
 		.index("by_resultExpiresAt", ["resultExpiresAt"])
+		// The user-deletion drain. Foreground rows have no `job`, so they sort first under a bare
+		// `userId` prefix; query with `.gt("job.jobNumber", undefined)` to skip them.
+		.index("by_user_job", ["userId", "job.jobNumber"])
 		.index("by_organization_workspace_thread", ["organizationId", "workspaceId", "threadId"]),
 
 	ai_chat_bash_invocation_transfers: defineTable({
@@ -376,6 +472,21 @@ const app_convex_schema = defineSchema({
 		activityId: v.id("activities"),
 	})
 		.index("by_invocation_commandNumber", ["invocationId", "commandNumber"])
+		.index("by_organization_workspace_thread", ["organizationId", "workspaceId", "threadId"]),
+
+	/**
+	 * Per user and thread: when this user last saw the "job finished" notes. One cursor on the
+	 * shared thread would let member B's call hide member A's notes.
+	 */
+	ai_chat_bash_job_notice_cursors: defineTable({
+		organizationId: v.string(),
+		workspaceId: v.string(),
+		threadId: v.id("ai_chat_threads"),
+		userId: v.id("users"),
+		noticeAt: v.number(),
+	})
+		.index("by_user_thread", ["userId", "threadId"])
+		.index("by_user", ["userId"])
 		.index("by_organization_workspace_thread", ["organizationId", "workspaceId", "threadId"]),
 
 	/**
@@ -3372,6 +3483,25 @@ const app_convex_schema = defineSchema({
 				id: v.id("files_pending_update_runs"),
 				operationKind: v.union(v.literal("accept"), v.literal("discard")),
 			}),
+			/**
+			 * A background bash job (`cmd &`). The extra fields let `jobs` and the finished-job
+			 * note read this small row instead of the invocation row, which can hold 700 KiB.
+			 */
+			v.object({
+				kind: v.literal("ai_chat_bash_job"),
+				id: v.id("ai_chat_bash_invocations"),
+				threadId: v.id("ai_chat_threads"),
+				jobNumber: v.number(),
+				shellName: v.string(),
+				/**
+				 * null when a chat call launched the job, the parent job number when a job did.
+				 */
+				parentJobNumber: v.union(v.number(), v.null()),
+				/**
+				 * The first 80 characters of the script, on one line.
+				 */
+				scriptPreview: v.string(),
+			}),
 		),
 		progress: v.optional(
 			v.object({
@@ -3390,6 +3520,7 @@ const app_convex_schema = defineSchema({
 			v.literal("ready_for_review"),
 			v.literal("discarded"),
 			v.literal("plugin_result"),
+			v.literal("bash_result"),
 		),
 		/**
 		 * Status-neutral display text, e.g. "Video plugin · speakers.mp4".
@@ -3446,6 +3577,14 @@ const app_convex_schema = defineSchema({
 			"source.installationId",
 			"source.serializationKey",
 			"status",
+		])
+		// Bash job doors resolve a job number through this index, so the user and thread are
+		// fenced by the index itself. Rows of other source kinds have no `source.jobNumber`.
+		.index("by_user_source_kind_thread_jobNumber", [
+			"userId",
+			"source.kind",
+			"source.threadId",
+			"source.jobNumber",
 		]),
 
 	activities_user_states: defineTable({

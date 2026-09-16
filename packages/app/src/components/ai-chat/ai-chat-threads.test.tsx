@@ -38,7 +38,6 @@ function makeThread(args: {
 		archived: false,
 		starred: false,
 		runtime: "aisdk_5",
-		stateId: null,
 		createdBy: "user_1",
 		updatedBy: "user_1",
 		updatedAt: 1,

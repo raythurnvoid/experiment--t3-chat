@@ -84,7 +84,7 @@ export async function activities_db_start(
 	});
 }
 
-async function activities_db_get_by_source_id(
+export async function activities_db_get_by_source_id(
 	ctx: QueryCtx | MutationCtx,
 	sourceId: Doc<"activities">["source"]["id"],
 ) {

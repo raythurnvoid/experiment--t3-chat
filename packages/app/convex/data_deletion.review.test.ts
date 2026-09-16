@@ -518,19 +518,23 @@ async function data_deletion_test_seed_workspace_content_bulk(
 			title: `${args.tag} ${i}`,
 			archived: false,
 			runtime: "aisdk_5",
-			stateId: null,
 			createdBy: args.userId,
 			updatedBy: args.userId,
 			updatedAt: Date.now(),
 			lastMessageAt: Date.now(),
 		});
-		const [stateId, aiFileNodeId] = await Promise.all([
-			ctx.db.insert("ai_chat_threads_state", {
+		const [shellId, aiFileNodeId] = await Promise.all([
+			ctx.db.insert("ai_chat_bash_shells", {
 				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
 				threadId,
-				bashCwd: "~",
-				bashCwdTarget: null,
+				name: "default",
+				cwd: "~",
+				cwdTarget: null,
+				state: null,
+				transcriptBytes: 11,
+				transcriptEntries: 1,
+				transcriptSeq: 1,
 				updatedBy: args.userId,
 				updatedAt: Date.now(),
 			}),
@@ -546,7 +550,22 @@ async function data_deletion_test_seed_workspace_content_bulk(
 			}),
 		]);
 		await Promise.all([
-			ctx.db.patch("ai_chat_threads", threadId, { stateId }),
+			ctx.db.insert("ai_chat_bash_shell_transcripts", {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				threadId,
+				shellId,
+				seq: 0,
+				text: "$ printf hi",
+				bytes: 11,
+			}),
+			ctx.db.insert("ai_chat_bash_job_notice_cursors", {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				threadId,
+				userId: args.userId,
+				noticeAt: Date.now(),
+			}),
 			ctx.db.insert("ai_chat_threads_messages_aisdk_5", {
 				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
@@ -630,7 +649,9 @@ const review_workspace_tables = [
 	"ai_chat_files_content",
 	"ai_chat_files",
 	"ai_chat_threads_messages_aisdk_5",
-	"ai_chat_threads_state",
+	"ai_chat_bash_shell_transcripts",
+	"ai_chat_bash_shells",
+	"ai_chat_bash_job_notice_cursors",
 	"ai_chat_threads",
 	"api_credentials",
 	"public_api_grants",
@@ -2467,7 +2488,6 @@ describe("review: account event producer during workspace purge", () => {
 					title: "Thread",
 					archived: false,
 					runtime: "aisdk_5",
-					stateId: null,
 					createdBy: user.userId,
 					updatedBy: user.userId,
 					updatedAt: Date.now(),

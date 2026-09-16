@@ -1,7 +1,7 @@
 # Files transfer runs
 
-`packages/app/convex/files_transfer.ts` owns human Cut/Copy/Paste and agent Bash `cp`, `mv`, and
-`transfer` runs. `files_nodes_content.ts` captures and publishes copied content. Agent output uses
+`packages/app/convex/files_transfer.ts` owns human Cut/Copy/Paste and agent Bash `cp` and `mv` runs,
+in a call or in a background job. `files_nodes_content.ts` captures and publishes copied content. Agent output uses
 the same producer with private proposals. `files_pending_updates.ts` and
 `files_pending_update_runs.ts` own later Save and Discard.
 
@@ -150,8 +150,11 @@ the same producer with private proposals. `files_pending_updates.ts` and
   conflict choices expire after 24 hours. Finished history lasts seven days. The transfer cron
   releases expired attempts; common Activity recovery stops overdue jobs and owns history cleanup.
 - Ordinary Bash transfers share the durable invocation's fixed deadline and command-number receipt.
-  Replaying a completed tool call does not start the transfer twice. Explicit background `transfer`
-  runs can outlive the shell call and have start/status/wait/stop controls. A shell success means its
+  Replaying a completed tool call does not start the transfer twice. A `cp` or `mv` inside a
+  background job (`&`) runs under the job's deadline: `start_for_agent` takes the job's invocation,
+  hides the run's Activity from the feed (`feedVisible: false`; the job Activity is what the user
+  sees), refuses a stopping job, and a job waits up to 60 seconds for a busy lane instead of failing
+  (`get_current_activity_for_agent`). A job Stop stops only that job's own runs. A shell success means its
   requested saved or proposal work completed; waiting, refusal, Stop, and deadline results keep their
   actual exit status.
 - Failed or expired attempts hand unfinished upload staging to the exact-key deletion ledger,
@@ -179,7 +182,7 @@ the same producer with private proposals. `files_pending_updates.ts` and
   contributor review, empty folders, late edits and children, partial Save, Discard, and expiry.
 - `convex/files_pending_update_runs*.test.ts`: selected connected units, transaction bounds,
   preparation, retry, Stop, and cleanup.
-- `server/bash*.test.ts`: normal and explicit transfer commands, invocation replay, cwd identity,
+- `server/bash*.test.ts`: foreground and background-job transfer commands, invocation replay, cwd identity,
   mixed operations, exit status, and deadlines.
 - `convex/activities.test.ts` and `convex/data_deletion.test.ts`: private controls and bounded cleanup.
 - Browser steps: [Files Cut, Copy, And Paste](../../app-playwriter-harness/references/files.md#file-cut-copy-and-paste).

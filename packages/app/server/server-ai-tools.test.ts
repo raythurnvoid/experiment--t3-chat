@@ -170,8 +170,67 @@ describe("ai_chat_tool_create_bash", () => {
 				organizationName: "personal",
 				workspaceName: "home",
 				allowDbFilesMkdir: true,
+				shellName: "default",
 			}),
 		);
+	});
+
+	test("passes the named shell to the action and refuses a bad shell name in the schema", async () => {
+		const { ctx, runAction } = makeCtx(async () => null, {
+			runActionImpl: async () => ({
+				title: "exit 0",
+				output: "$ pwd",
+				stdout: "",
+				stderr: "",
+				metadata: { exitCode: 0, observedPaths: [], observedPathsTruncated: false },
+			}),
+		});
+		const tool = ai_chat_tool_create_bash(ctx, server_ai_tools_test_ctx_data, { allowDbFilesMkdir: true });
+		await tool.execute?.({ command: "pwd", shell: "tests" }, { toolCallId: "test", messages: [] });
+		expect(runAction).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ shellName: "tests" }));
+
+		const schema = tool.inputSchema;
+		if (!has_defined_property(schema, "parse")) {
+			throw new Error("inputSchema has no parse");
+		}
+		expect(schema.parse({ command: "pwd" })).toEqual({ command: "pwd" });
+		expect(schema.parse({ command: "pwd", shell: "a-b_1" })).toEqual({ command: "pwd", shell: "a-b_1" });
+		for (const shell of ["", "Tests", "a b", "a/b", "x".repeat(33)]) {
+			expect(() => schema.parse({ command: "pwd", shell })).toThrow();
+		}
+	});
+
+	test("describes shells, transcripts and background jobs", () => {
+		const { ctx } = makeCtx(async () => null);
+		const tool = ai_chat_tool_create_bash(ctx, server_ai_tools_test_ctx_data, { allowDbFilesMkdir: true });
+		for (const sentence of [
+			"Each new shell starts in the current workspace path",
+			"cwd, variables, options and functions persist per shell",
+			"a chat has at most 10 shells and none can be deleted",
+			"Shell options persist per shell: set -e stays on in later calls of that shell until set +e.",
+			"appends its full output to /shells/<name>/transcript",
+			"Read it with tail, head -c or grep, not cat",
+			"cmd & starts a background job and is the only way to start one; cmd1 && cmd2 is not a background job",
+			"$! is the job number in that call only (0 in the next call",
+			"Inside a background job (&), /tmp is a private copy; its writes are dropped when the job ends",
+			"& binds to the last statement only",
+			"to put several commands in one job write { cmd1; cmd2; } & or cmd1 && cmd2 &",
+			"A job starts in the cwd at the &",
+			"At most 4 of your own jobs in this workspace can be queued, running or stopping at once",
+			"a script over 64 KiB, a shell state over 128 KiB, and a launch from a job that is already stopping are refused every time",
+			"put sequential cp or mv commands in one job: the second job's copy waits up to 60 s for the lane and then fails with exit 1",
+			"jobs -o N prints the stored stdout then stderr of job N, then one final [job N exit C] line on stderr",
+			"wait N waits for the named jobs",
+			"wait is a shell builtin, so which wait finds nothing even though wait works",
+			"wait normally returns 3 (still running)",
+			"a stopped job reports 143 (status stopped), a job that used its whole budget reports 124 (timed out)",
+			"the next Bash call prints bash: job N done|failed|timed out|stopped. Output: /shells/<name>/transcript",
+			"Stopping the chat leaves jobs running; the Notifications panel lists every job with its Stop button",
+			"fg, bg, disown and suspend are unavailable (127)",
+		]) {
+			expect(tool.description).toContain(sentence);
+		}
+		expect(tool.description).not.toContain("transfer");
 	});
 
 	test("returns scoped rules once beside the unchanged shell output", async () => {

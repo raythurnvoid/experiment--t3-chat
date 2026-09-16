@@ -106,10 +106,6 @@ type LegacyFilesR2AssetConversionWorkId = Omit<Doc<"files_r2_assets">, "conversi
 	conversionWorkId?: Doc<"files_r2_assets">["processingWorkId"];
 };
 
-type LegacyAiChatThreadStateBashCwdTarget = Omit<Doc<"ai_chat_threads_state">, "bashCwdTarget"> & {
-	bashCwdTarget?: Doc<"ai_chat_threads_state">["bashCwdTarget"];
-};
-
 type RebrandCleanupTableName = Exclude<TableNames, "users" | "users_anagraphics">;
 
 const rebrand_cleanup_tables = [
@@ -119,7 +115,6 @@ const rebrand_cleanup_tables = [
 	"ai_chat_files_content",
 	"ai_chat_files",
 	"ai_chat_threads_messages_aisdk_5",
-	"ai_chat_threads_state",
 	"ai_chat_threads",
 	"api_credentials",
 	"billing_cancel_polar_subscription_jobs",
@@ -453,20 +448,6 @@ export const backfill_ai_chat_threads_read_at = app_migrations.define({
 		}
 
 		await ctx.db.patch("ai_chat_threads", thread._id, { readAt: thread.lastMessageAt });
-	},
-});
-
-/** Threads that ran before Bash could follow a file have no cwd target. Null means the workspace root. */
-export const backfill_ai_chat_threads_state_bash_cwd_target = app_migrations.define({
-	table: "ai_chat_threads_state",
-	migrateOne: async (ctx, threadState) => {
-		const legacyThreadState = threadState as LegacyAiChatThreadStateBashCwdTarget;
-		// `in` check: a stored null is already the settled value, so only a missing field needs a write.
-		if ("bashCwdTarget" in legacyThreadState) {
-			return;
-		}
-
-		await ctx.db.patch("ai_chat_threads_state", threadState._id, { bashCwdTarget: null });
 	},
 });
 
@@ -1402,9 +1383,6 @@ export const run_backfill_plugins_versions_backend_entrypoint_file_sha256 = app_
 );
 export const run_backfill_ai_chat_threads_read_at = app_migrations.runner(
 	internal.migrations.backfill_ai_chat_threads_read_at,
-);
-export const run_backfill_ai_chat_threads_state_bash_cwd_target = app_migrations.runner(
-	internal.migrations.backfill_ai_chat_threads_state_bash_cwd_target,
 );
 export const run_backfill_plugins_versions_ui_outbound_origins = app_migrations.runner(
 	internal.migrations.backfill_plugins_versions_ui_outbound_origins,

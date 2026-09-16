@@ -4,7 +4,12 @@ import type { CommandContext } from "just-bash/browser";
 import type { Id } from "../convex/_generated/dataModel.js";
 import type { ActionCtx } from "../convex/_generated/server.js";
 import { internal } from "../convex/_generated/api.js";
-import { bash_DbFilesFs, bash_parse_cp_mv_operands, type bash_DbFilesRoots } from "./bash-utils.ts";
+import {
+	bash_ABORT_REASON_STOPPED,
+	bash_DbFilesFs,
+	bash_parse_cp_mv_operands,
+	type bash_DbFilesRoots,
+} from "./bash-utils.ts";
 import { bash_transfer_command_run } from "./bash-transfer-command.ts";
 
 afterEach(() => {
@@ -75,8 +80,9 @@ function create_runner() {
 		signal: controller.signal,
 		abort: vi.fn((reason?: unknown) => controller.abort(reason)),
 		nextCommandNumber: vi.fn().mockReturnValue(4),
+		jobId: null as Id<"ai_chat_bash_invocations"> | null,
 	};
-	const run = (command: "cp" | "mv", args: string[], background = false) => {
+	const run = (command: "cp" | "mv", args: string[]) => {
 		const parsed = bash_parse_cp_mv_operands(command, args);
 		if (parsed._nay) throw new Error(parsed._nay.message);
 		return bash_transfer_command_run({
@@ -86,7 +92,6 @@ function create_runner() {
 			command,
 			commandCtx: { cwd: currentWorkspacePath } as CommandContext,
 			parsed: parsed._yay,
-			background,
 		});
 	};
 	return { run, runMutation, runQuery, runId, activityId, entries, transferContext, reset };
@@ -99,7 +104,7 @@ describe("bash_transfer_command_run", () => {
 		expect(runner.runMutation).toHaveBeenCalledWith(
 			internal.files_transfer.start_for_agent,
 			expect.objectContaining({
-				invocation: { id: runner.transferContext.invocationId, commandNumber: 4, background: false },
+				invocation: { id: runner.transferContext.invocationId, commandNumber: 4 },
 				sources: [
 					{ kind: "saved", id: "/a.txt" },
 					{ kind: "saved", id: "/b.txt" },
@@ -140,11 +145,113 @@ describe("bash_transfer_command_run", () => {
 		);
 	});
 
-	test("background start returns its durable ID without waiting", async () => {
+	test("a job stop ends the copy as a user stop with 143", async () => {
 		const runner = create_runner();
-		const result = await runner.run("cp", ["a.txt", "copy.txt"], true);
-		expect(result).toMatchObject({ exitCode: 0, stdout: expect.stringContaining(`Running. Transfer ${runner.runId}`) });
-		expect(runner.runQuery).not.toHaveBeenCalled();
+		runner.runQuery.mockImplementation(async () => {
+			runner.transferContext.abort(bash_ABORT_REASON_STOPPED);
+			return { activity: { status: "running" } };
+		});
+		runner.runMutation.mockImplementation(async (ref) =>
+			getFunctionName(ref) === "files_transfer:stop_for_agent"
+				? { _yay: null }
+				: { _yay: { runId: runner.runId, activityId: runner.activityId } },
+		);
+		expect(await runner.run("cp", ["a.txt", "copy.txt"])).toMatchObject({
+			exitCode: 143,
+			stderr: expect.stringContaining("transfer stopped"),
+		});
+		expect(runner.runMutation).toHaveBeenLastCalledWith(
+			internal.files_transfer.stop_for_agent,
+			expect.objectContaining({ reason: "user", runId: runner.runId }),
+		);
+	});
+
+	test("returns 143 before starting when the job was already stopped", async () => {
+		const runner = create_runner();
+		runner.transferContext.abort(bash_ABORT_REASON_STOPPED);
+		expect(await runner.run("cp", ["a.txt", "copy.txt"])).toMatchObject({ exitCode: 143 });
+		expect(runner.runMutation).not.toHaveBeenCalled();
+	});
+
+	test("a job waits for a busy lane without charging a start, then starts once", async () => {
+		vi.useFakeTimers();
+		const runner = create_runner();
+		runner.transferContext.jobId = "job_1" as Id<"ai_chat_bash_invocations">;
+		let laneChecks = 0;
+		runner.runQuery.mockImplementation(async (ref) => {
+			if (getFunctionName(ref) === "files_transfer:get_current_activity_for_agent") {
+				laneChecks += 1;
+				return laneChecks < 3 ? { activityId: runner.activityId, status: "running" } : null;
+			}
+			return {
+				runId: runner.runId,
+				activity: { _id: runner.activityId, status: "succeeded", progress: { completed: 1, skipped: 0, failed: 0 } },
+			};
+		});
+		const pending = runner.run("cp", ["a.txt", "copy.txt"]);
+		await vi.advanceTimersByTimeAsync(4_000);
+		expect(await pending).toMatchObject({ exitCode: 0 });
+		expect(laneChecks).toBe(3);
+		expect(runner.runMutation).toHaveBeenCalledTimes(1);
+	});
+
+	test("a Stop during the lane wait never starts a copy", async () => {
+		vi.useFakeTimers();
+		const runner = create_runner();
+		runner.transferContext.jobId = "job_1" as Id<"ai_chat_bash_invocations">;
+		let laneChecks = 0;
+		// The lane stays busy, so the wait keeps polling. The Stop lands between two polls.
+		runner.runQuery.mockImplementation(async (ref) => {
+			if (getFunctionName(ref) === "files_transfer:get_current_activity_for_agent") {
+				laneChecks += 1;
+				if (laneChecks === 2) runner.transferContext.abort(bash_ABORT_REASON_STOPPED);
+				return { activityId: runner.activityId, status: "running" };
+			}
+			return {
+				runId: runner.runId,
+				activity: { _id: runner.activityId, status: "succeeded", progress: { completed: 1, skipped: 0, failed: 0 } },
+			};
+		});
+		const pending = runner.run("cp", ["a.txt", "copy.txt"]);
+		await vi.advanceTimersByTimeAsync(6_000);
+		expect(await pending).toMatchObject({ exitCode: 143 });
+		expect(runner.runMutation).not.toHaveBeenCalled();
+	});
+
+	test("a job gives up the lane wait after 60 s and lets the start decide", async () => {
+		vi.useFakeTimers();
+		const runner = create_runner();
+		runner.transferContext.jobId = "job_1" as Id<"ai_chat_bash_invocations">;
+		// The lane never frees, so the wait runs out its 60 s and `start_for_agent` answers `busy`.
+		// That answer is final: the command fails instead of waiting again.
+		let laneChecks = 0;
+		runner.runQuery.mockImplementation(async () => {
+			laneChecks += 1;
+			return { activityId: runner.activityId, status: "running" };
+		});
+		runner.runMutation.mockResolvedValue({
+			_nay: { name: "nay", message: "another transfer is running", data: { activityId: runner.activityId } },
+		});
+		const pending = runner.run("cp", ["a.txt", "copy.txt"]);
+		await vi.advanceTimersByTimeAsync(61_000);
+		expect(await pending).toMatchObject({
+			exitCode: 1,
+			stderr: expect.stringContaining("another transfer is running"),
+		});
+		// It really waited the whole minute at one poll every two seconds, instead of giving up early.
+		expect(laneChecks).toBeGreaterThanOrEqual(25);
+		expect(runner.runMutation).toHaveBeenCalledTimes(1);
+	});
+
+	test("a job gives up the lane wait at once on a transfer awaiting input", async () => {
+		const runner = create_runner();
+		runner.transferContext.jobId = "job_1" as Id<"ai_chat_bash_invocations">;
+		runner.runQuery.mockResolvedValue({ activityId: runner.activityId, status: "awaiting_input" });
+		expect(await runner.run("cp", ["a.txt", "copy.txt"])).toMatchObject({
+			exitCode: 1,
+			stderr: expect.stringContaining("waiting for input"),
+		});
+		expect(runner.runMutation).not.toHaveBeenCalled();
 	});
 
 	test("confirms Stop before returning timeout and allows the shell to continue", async () => {

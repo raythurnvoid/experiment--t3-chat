@@ -1153,6 +1153,11 @@ async function db_start(
 		missingParentNames: string[];
 		conflictPolicy: Doc<"files_transfer_runs">["conflictPolicy"];
 		origin: Doc<"files_transfer_runs">["origin"];
+		/**
+		 * A transfer started by a background Bash job hides its Activity from the feed: the job's
+		 * own Activity is the one row with the Stop button.
+		 */
+		feedVisible: boolean;
 		executionDeadlineAt?: number;
 	},
 ) {
@@ -1369,7 +1374,7 @@ async function db_start(
 		membershipLifetime,
 		status: "queued",
 		visibility: "requester",
-		feedVisible: true,
+		feedVisible: args.feedVisible,
 		source: { kind: "files_transfer_run", id: runId, transferKind: args.kind },
 		progress: {
 			unit: "files",
@@ -1425,6 +1430,7 @@ export const start = mutation({
 			missingParentNames: [],
 			conflictPolicy: { file: "ask", folder: "ask" },
 			origin: { kind: "clipboard" },
+			feedVisible: true,
 		});
 	},
 });
@@ -1433,9 +1439,7 @@ export const start_for_agent = internalMutation({
 	args: {
 		membershipId: v.id("organizations_workspaces_users"),
 		threadId: v.id("ai_chat_threads"),
-		invocation: v.optional(
-			v.object({ id: v.id("ai_chat_bash_invocations"), commandNumber: v.number(), background: v.boolean() }),
-		),
+		invocation: v.optional(v.object({ id: v.id("ai_chat_bash_invocations"), commandNumber: v.number() })),
 		requestId: v.string(),
 		kind: doc(app_convex_schema, "files_transfer_runs").fields.kind,
 		sources: v.array(files_pending_target_validator),
@@ -1480,22 +1484,20 @@ export const start_for_agent = internalMutation({
 					commandNumber: args.invocation.commandNumber,
 				})
 			: null;
-		if (
-			invocation &&
-			!existing &&
-			(invocation.status !== "running" ||
-				(args.invocation?.background ? invocation.deadlineAt : invocation.transferDeadlineAt) <= Date.now())
-		)
+		if (invocation && !existing && (invocation.status !== "running" || invocation.transferDeadlineAt <= Date.now()))
 			return Result({ _nay: { name: "timed_out", message: "This Bash call has ended. Start a new command." } });
+		// A user stop does not change the row status, so the flag is checked on its own.
+		if (invocation?.job && !existing && invocation.job.stopRequestedAt !== null)
+			return Result({ _nay: { name: "stopped", message: "This job is stopping. No new transfer can start." } });
 
 		const started = await db_start(ctx, {
 			...args,
 			membership,
 			requestId: args.invocation ? `${args.invocation.id}:${args.invocation.commandNumber}` : args.requestId,
-			executionDeadlineAt: args.invocation?.background
-				? undefined
-				: (invocation?.transferDeadlineAt ?? args.executionDeadlineAt),
+			executionDeadlineAt: invocation?.transferDeadlineAt ?? args.executionDeadlineAt,
 			origin: { kind: "agent", threadId: args.threadId },
+			// One command must not make two feed rows: a job's copy hides behind the job's Activity.
+			feedVisible: !invocation?.job,
 		});
 		if (started._nay || !args.invocation) return started;
 
@@ -1536,6 +1538,39 @@ async function db_get_agent_run(
 		return null;
 	return run;
 }
+
+/**
+ * The lane check a background Bash job polls before it starts a copy: one transfer per user and
+ * workspace, and four jobs can share that lane. This query never charges the rate limiter, unlike
+ * a refused `start_for_agent`. Fenced like `db_get_agent_run`.
+ */
+export const get_current_activity_for_agent = internalQuery({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		threadId: v.id("ai_chat_threads"),
+	},
+	returns: v.union(
+		v.object({
+			activityId: v.id("activities"),
+			status: doc(app_convex_schema, "activities").fields.status,
+		}),
+		v.null(),
+	),
+	handler: async (ctx, args) => {
+		const membership = await ctx.db.get("organizations_workspaces_users", args.membershipId);
+		const thread = await ctx.db.get("ai_chat_threads", args.threadId);
+		if (
+			!membership?.active ||
+			!thread ||
+			thread.createdBy !== membership.userId ||
+			thread.organizationId !== membership.organizationId ||
+			thread.workspaceId !== membership.workspaceId
+		)
+			return null;
+		const activity = await db_get_current_activity(ctx, { userId: membership.userId, workspaceId: membership.workspaceId });
+		return activity ? { activityId: activity._id, status: activity.status } : null;
+	},
+});
 
 export const get_for_agent = internalQuery({
 	args: {
@@ -1782,7 +1817,8 @@ export const retry_remaining = mutation({
 			membershipLifetime: await organizations_membership_lifetimes_db_ensure(ctx, membership),
 			source: { kind: "files_transfer_run", id: runId, transferKind: run.kind },
 			visibility: "requester",
-			feedVisible: true,
+			// A retry of a job-owned copy stays out of the feed like its source.
+			feedVisible: activity.feedVisible,
 			status: "queued",
 			progress: {
 				unit: "files",

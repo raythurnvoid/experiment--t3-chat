@@ -7,6 +7,7 @@ import type { Doc, Id } from "./_generated/dataModel.js";
 import { internal } from "./_generated/api.js";
 import { internalMutation, mutation, query, type MutationCtx, type QueryCtx } from "./_generated/server.js";
 import { activities_get_controls, activities_is_active } from "./activities_db.ts";
+import { ai_chat_files_db_delete_job_batch, ai_chat_files_db_request_job_stop } from "./ai_chat_files.ts";
 import { files_transfer_db_delete_run_batch, files_transfer_db_request_stop } from "./files_transfer.ts";
 import {
 	files_pending_update_runs_db_delete_run_batch,
@@ -32,6 +33,12 @@ export const experimental_reuseContext = true;
  * Each page bounds both the scan and its access checks.
  */
 const ACTIVITIES_LIST_MAX = 50;
+
+/**
+ * A Bash job row can hold a 700 KiB result, and a row's size is unknown until it is read. The
+ * cron passes read at most this many job rows each, and reschedule for the rest.
+ */
+const ACTIVITIES_BASH_JOB_ROWS_MAX = 8;
 
 /**
  * Keep only the activities the user may see.
@@ -218,6 +225,14 @@ export const request_stop = mutation({
 				await files_transfer_db_request_stop(ctx, { runId: activity.source.id, reason: "user", now: Date.now() });
 				break;
 			}
+			case "ai_chat_bash_job": {
+				await ai_chat_files_db_request_job_stop(ctx, {
+					invocationId: activity.source.id,
+					reason: "user",
+					now: Date.now(),
+				});
+				break;
+			}
 			case "plugin_run":
 				return Result({ _nay: { message: "This activity cannot be stopped" } });
 			default:
@@ -345,7 +360,15 @@ export const recover_expired = internalMutation({
 					.take(batchSize - activities.length)),
 			);
 		}
+		let processedCount = 0;
+		let bashJobCount = 0;
+		let deferred = false;
 		for (const activity of activities) {
+			// Job rows past the cap wait for the reschedule.
+			if (activity.source.kind === "ai_chat_bash_job" && bashJobCount >= ACTIVITIES_BASH_JOB_ROWS_MAX) {
+				deferred = true;
+				continue;
+			}
 			switch (activity.source.kind) {
 				case "files_pending_update_run": {
 					await files_pending_update_runs_db_request_stop(ctx, { runId: activity.source.id, reason: "timeout", now });
@@ -359,12 +382,17 @@ export const recover_expired = internalMutation({
 					await files_transfer_db_request_stop(ctx, { runId: activity.source.id, reason: "timeout", now });
 					break;
 				}
+				case "ai_chat_bash_job": {
+					bashJobCount += 1;
+					await ai_chat_files_db_request_job_stop(ctx, { invocationId: activity.source.id, reason: "timeout", now });
+					break;
+				}
 				default:
 					throw should_never_happen("Unknown Activity source", activity.source satisfies never);
 			}
+			processedCount += 1;
 		}
-		const processedCount = activities.length;
-		const done = processedCount < batchSize;
+		const done = processedCount < batchSize && !deferred;
 		// Stopping work may still hold an upload lease. The next cron can retry it without a busy loop.
 		if (!done && activities.some((activity) => activity.status !== "stopping") && !args._test_disableReschedule) {
 			await ctx.scheduler.runAfter(0, internal.activities.recover_expired, {
@@ -391,10 +419,11 @@ export const cleanup_history = internalMutation({
 		const batchSize = Math.max(1, Math.min(args.batchSize ?? 50, 50));
 		let processedCount = 0;
 		let deletedCount = 0;
+		let bashJobCount = 0;
 		let pendingCleanup = false;
 
 		for (const status of ["succeeded", "partial", "failed", "canceled", "timed_out"] as const) {
-			if (processedCount >= batchSize || deletedCount >= 50) break;
+			if (processedCount >= batchSize || deletedCount >= 50 || bashJobCount >= ACTIVITIES_BASH_JOB_ROWS_MAX) break;
 
 			const activities = await ctx.db
 				.query("activities")
@@ -403,6 +432,11 @@ export const cleanup_history = internalMutation({
 
 			for (const activity of activities) {
 				if (deletedCount >= 50) {
+					pendingCleanup = true;
+					break;
+				}
+				// The arm cannot cap itself: it runs inside the loop over five statuses.
+				if (activity.source.kind === "ai_chat_bash_job" && bashJobCount >= ACTIVITIES_BASH_JOB_ROWS_MAX) {
 					pendingCleanup = true;
 					break;
 				}
@@ -422,6 +456,11 @@ export const cleanup_history = internalMutation({
 					}
 					case "files_transfer_run": {
 						deletion = await files_transfer_db_delete_run_batch(ctx, { runId: activity.source.id, batchSize: 50 });
+						break;
+					}
+					case "ai_chat_bash_job": {
+						bashJobCount += 1;
+						deletion = await ai_chat_files_db_delete_job_batch(ctx, { invocationId: activity.source.id, batchSize: 50 });
 						break;
 					}
 					default:

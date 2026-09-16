@@ -135,8 +135,11 @@ export async function bash_delegate_builtin_command(args: {
 		commands: [args.command],
 		executionLimits: args.commandCtx.limits,
 	});
+	// The nested exec bypasses `ctx.exec` on purpose, so it must carry the call's abort signal
+	// itself, or a delegated command inside a stopped background job would run to completion.
 	return await inner.exec([args.command, ...args.args.map(bash_shell_arg_quote)].join(" "), {
 		cwd,
+		signal: args.commandCtx.signal,
 		stdin: args.commandCtx.stdin as unknown as string,
 		stdinKind: "bytes",
 		env: {
@@ -215,7 +218,11 @@ function native_just_bash_tmp_command_path_app_operand(
 	return null;
 }
 
-function native_just_bash_tmp_command_rg_app_operand(args: string[], ctx: CommandContext, currentWorkspacePath: string) {
+function native_just_bash_tmp_command_rg_app_operand(
+	args: string[],
+	ctx: CommandContext,
+	currentWorkspacePath: string,
+) {
 	let pattern: string | null = null;
 	for (const arg of args) {
 		if (arg.startsWith("-")) {
@@ -240,43 +247,6 @@ function native_just_bash_tmp_command_rg_app_operand(args: string[], ctx: Comman
 	return null;
 }
 
-function native_just_bash_tmp_command_app_hint_path(
-	args: string[],
-	ctx: CommandContext,
-	currentWorkspacePath: string,
-	stderr: string,
-) {
-	let hasExplicitScratchOperand = false;
-	for (const arg of args) {
-		if (arg.startsWith("-")) {
-			continue;
-		}
-		const resolvedPath = bash_resolve_path(ctx.cwd, arg);
-		if (is_native_just_bash_tmp_path(resolvedPath)) {
-			hasExplicitScratchOperand = true;
-			continue;
-		}
-		const isPathLike =
-			arg === "." ||
-			arg === ".." ||
-			arg.startsWith("/") ||
-			arg.startsWith("./") ||
-			arg.startsWith("../") ||
-			arg.includes("/");
-		if (isPathLike && bash_is_path_under_current_workspace_path(currentWorkspacePath, resolvedPath)) {
-			return resolvedPath;
-		}
-	}
-	if (stderr.includes(currentWorkspacePath)) {
-		return currentWorkspacePath;
-	}
-	const hasStdin = ctx.stdin != null && String(ctx.stdin).length > 0;
-	if (!hasStdin && !hasExplicitScratchOperand && bash_is_path_under_current_workspace_path(currentWorkspacePath, ctx.cwd)) {
-		return ctx.cwd;
-	}
-	return null;
-}
-
 /**
  * Run a Native Just Bash command through the `/tmp`-restricted filesystem view.
  *
@@ -284,8 +254,8 @@ function native_just_bash_tmp_command_app_hint_path(
  * they can process `/tmp` paths and stdin, but cannot directly operate on
  * db-backed paths under `currentWorkspacePath`. It keeps direct operands away
  * from the app tree, permits `/tmp`, `/dev/null`, `/dev/zero`, and synthetic command lookup
- * paths, and adds app-file guidance when the command likely failed because it
- * tried to touch the mounted app file tree directly.
+ * paths, and adds app-file guidance when the command failed after the restricted
+ * view turned it away from a path inside the app file tree.
  *
  * Examples: `sort`, `uniq`, `cut`, `awk`, `sed`, `du`, `diff`, `rg`, `rev`,
  * `tac`, `nl`, `base64`, `jq`, and `sha256sum` run through this path.
@@ -330,8 +300,9 @@ export async function bash_delegate_native_just_bash_tmp_command(
 		};
 	}
 
+	const restrictedFs = new RestrictedNativeJustBashTmpCommandFs(ctx.fs, currentWorkspacePath, ctx.cwd);
 	const inner = new Bash({
-		fs: new RestrictedNativeJustBashTmpCommandFs(ctx.fs, currentWorkspacePath, ctx.cwd),
+		fs: restrictedFs,
 		cwd,
 		env,
 		commands: [...bash_ALLOWED_COMMANDS],
@@ -340,6 +311,7 @@ export async function bash_delegate_native_just_bash_tmp_command(
 
 	const result = await inner.exec([command, ...args.map(bash_shell_arg_quote)].join(" "), {
 		cwd,
+		signal: ctx.signal,
 		stdin: ctx.stdin as unknown as string,
 		stdinKind: "bytes",
 		env: {
@@ -348,7 +320,18 @@ export async function bash_delegate_native_just_bash_tmp_command(
 		},
 	});
 
-	const guidancePath = native_just_bash_tmp_command_app_hint_path(args, ctx, currentWorkspacePath, result.stderr);
+	// Add the guidance only for a path the user named that the restricted view really refused.
+	// Both halves matter. Argv alone cannot prove a refusal: a sed script looks like a relative
+	// path, a bare file name looks like a bad `sleep` duration, and a Stop or a bad option also
+	// ends the command non-zero. A refusal alone is not enough either: rg reads `.gitignore` next
+	// to the cwd and swallows the miss, so that path must not be blamed for an unrelated failure.
+	// The cwd counts as named because a command with no operand, such as `du`, reads `.`.
+	// A propagated access error already carries this text, so do not add it twice.
+	const namedPaths = new Set([
+		ctx.cwd,
+		...args.filter((arg) => !arg.startsWith("-")).map((arg) => bash_resolve_path(ctx.cwd, arg)),
+	]);
+	const guidancePath = [...restrictedFs.refusedAppPaths].find((path) => namedPaths.has(path));
 	if (result.exitCode !== 0 && guidancePath != null && !result.stderr.includes("db-backed")) {
 		return {
 			...result,
@@ -389,6 +372,14 @@ class NativeJustBashTmpCommandAccessError extends Error {
  * They exist only to satisfy Just Bash command lookup and null-device behavior.
  */
 class RestrictedNativeJustBashTmpCommandFs implements IFileSystem {
+	/**
+	 * Every path inside the app file tree that this view turned away, in first-seen order. The
+	 * delegate reads it after the command ends to decide whether the failure deserves the
+	 * app-files guidance. A method added below must add to this set before it refuses a path, or
+	 * the delegate cannot name the file the command asked for.
+	 */
+	readonly refusedAppPaths = new Set<string>();
+
 	constructor(
 		private readonly fs: IFileSystem,
 		private readonly currentWorkspacePath: string,
@@ -398,6 +389,9 @@ class RestrictedNativeJustBashTmpCommandFs implements IFileSystem {
 	async readFile(path: string, options?: Parameters<IFileSystem["readFile"]>[1]) {
 		const normalizedPath = bash_normalize_path(path);
 		if (!is_native_just_bash_tmp_path(normalizedPath)) {
+			if (bash_is_path_under_current_workspace_path(this.currentWorkspacePath, normalizedPath)) {
+				this.refusedAppPaths.add(normalizedPath);
+			}
 			throw new NativeJustBashTmpCommandAccessError(this.currentWorkspacePath, normalizedPath);
 		}
 		return await this.fs.readFile(normalizedPath, options);
@@ -406,6 +400,9 @@ class RestrictedNativeJustBashTmpCommandFs implements IFileSystem {
 	async readFileBuffer(path: string) {
 		const normalizedPath = bash_normalize_path(path);
 		if (!is_native_just_bash_tmp_path(normalizedPath)) {
+			if (bash_is_path_under_current_workspace_path(this.currentWorkspacePath, normalizedPath)) {
+				this.refusedAppPaths.add(normalizedPath);
+			}
 			throw new NativeJustBashTmpCommandAccessError(this.currentWorkspacePath, normalizedPath);
 		}
 		return await this.fs.readFileBuffer(normalizedPath);
@@ -414,6 +411,9 @@ class RestrictedNativeJustBashTmpCommandFs implements IFileSystem {
 	async writeFile(path: string, content: FileContent, options?: Parameters<IFileSystem["writeFile"]>[2]) {
 		const normalizedPath = bash_normalize_path(path);
 		if (!is_native_just_bash_tmp_path(normalizedPath)) {
+			if (bash_is_path_under_current_workspace_path(this.currentWorkspacePath, normalizedPath)) {
+				this.refusedAppPaths.add(normalizedPath);
+			}
 			throw new NativeJustBashTmpCommandAccessError(this.currentWorkspacePath, normalizedPath);
 		}
 		await this.fs.writeFile(normalizedPath, content, options);
@@ -422,6 +422,9 @@ class RestrictedNativeJustBashTmpCommandFs implements IFileSystem {
 	async appendFile(path: string, content: FileContent, options?: Parameters<IFileSystem["appendFile"]>[2]) {
 		const normalizedPath = bash_normalize_path(path);
 		if (!is_native_just_bash_tmp_path(normalizedPath)) {
+			if (bash_is_path_under_current_workspace_path(this.currentWorkspacePath, normalizedPath)) {
+				this.refusedAppPaths.add(normalizedPath);
+			}
 			throw new NativeJustBashTmpCommandAccessError(this.currentWorkspacePath, normalizedPath);
 		}
 		await this.fs.appendFile(normalizedPath, content, options);
@@ -438,8 +441,14 @@ class RestrictedNativeJustBashTmpCommandFs implements IFileSystem {
 			return true;
 		}
 
-		// Native Just Bash commands are limited to synthetic lookup paths, /dev, and /tmp.
+		// Native Just Bash commands are limited to synthetic lookup paths, /dev, and /tmp. This
+		// answers false instead of throwing, but it must still remember an app path: a command
+		// such as rmdir checks exists first and prints its own "No such file" error, and the
+		// delegate can only name that path if the view recorded it here.
 		if (!is_native_just_bash_tmp_path(normalizedPath)) {
+			if (bash_is_path_under_current_workspace_path(this.currentWorkspacePath, normalizedPath)) {
+				this.refusedAppPaths.add(normalizedPath);
+			}
 			return false;
 		}
 		return normalizedPath === "/dev" || normalizedPath === bash_DEV_ZERO_PATH || (await this.fs.exists(normalizedPath));
@@ -473,6 +482,9 @@ class RestrictedNativeJustBashTmpCommandFs implements IFileSystem {
 		}
 
 		if (!is_native_just_bash_tmp_path(normalizedPath)) {
+			if (bash_is_path_under_current_workspace_path(this.currentWorkspacePath, normalizedPath)) {
+				this.refusedAppPaths.add(normalizedPath);
+			}
 			throw new NativeJustBashTmpCommandAccessError(this.currentWorkspacePath, normalizedPath);
 		}
 
@@ -503,6 +515,9 @@ class RestrictedNativeJustBashTmpCommandFs implements IFileSystem {
 	async mkdir(path: string, options?: MkdirOptions) {
 		const normalizedPath = bash_normalize_path(path);
 		if (!is_native_just_bash_tmp_path(normalizedPath)) {
+			if (bash_is_path_under_current_workspace_path(this.currentWorkspacePath, normalizedPath)) {
+				this.refusedAppPaths.add(normalizedPath);
+			}
 			throw new NativeJustBashTmpCommandAccessError(this.currentWorkspacePath, normalizedPath);
 		}
 		await this.fs.mkdir(normalizedPath, options);
@@ -520,6 +535,9 @@ class RestrictedNativeJustBashTmpCommandFs implements IFileSystem {
 			return bash_ALLOWED_COMMANDS.toSorted();
 		}
 		if (!is_native_just_bash_tmp_path(normalizedPath)) {
+			if (bash_is_path_under_current_workspace_path(this.currentWorkspacePath, normalizedPath)) {
+				this.refusedAppPaths.add(normalizedPath);
+			}
 			throw new NativeJustBashTmpCommandAccessError(this.currentWorkspacePath, normalizedPath);
 		}
 		if (normalizedPath === "/") {
@@ -534,6 +552,9 @@ class RestrictedNativeJustBashTmpCommandFs implements IFileSystem {
 	async rm(path: string, options?: RmOptions) {
 		const normalizedPath = bash_normalize_path(path);
 		if (!is_native_just_bash_tmp_path(normalizedPath)) {
+			if (bash_is_path_under_current_workspace_path(this.currentWorkspacePath, normalizedPath)) {
+				this.refusedAppPaths.add(normalizedPath);
+			}
 			throw new NativeJustBashTmpCommandAccessError(this.currentWorkspacePath, normalizedPath);
 		}
 		await this.fs.rm(normalizedPath, options);
@@ -542,11 +563,17 @@ class RestrictedNativeJustBashTmpCommandFs implements IFileSystem {
 	async cp(src: string, dest: string, options?: CpOptions) {
 		const normalizedSrc = bash_normalize_path(src);
 		if (!is_native_just_bash_tmp_path(normalizedSrc)) {
+			if (bash_is_path_under_current_workspace_path(this.currentWorkspacePath, normalizedSrc)) {
+				this.refusedAppPaths.add(normalizedSrc);
+			}
 			throw new NativeJustBashTmpCommandAccessError(this.currentWorkspacePath, normalizedSrc);
 		}
 
 		const normalizedDest = bash_normalize_path(dest);
 		if (!is_native_just_bash_tmp_path(normalizedDest)) {
+			if (bash_is_path_under_current_workspace_path(this.currentWorkspacePath, normalizedDest)) {
+				this.refusedAppPaths.add(normalizedDest);
+			}
 			throw new NativeJustBashTmpCommandAccessError(this.currentWorkspacePath, normalizedDest);
 		}
 
@@ -556,11 +583,17 @@ class RestrictedNativeJustBashTmpCommandFs implements IFileSystem {
 	async mv(src: string, dest: string) {
 		const normalizedSrc = bash_normalize_path(src);
 		if (!is_native_just_bash_tmp_path(normalizedSrc)) {
+			if (bash_is_path_under_current_workspace_path(this.currentWorkspacePath, normalizedSrc)) {
+				this.refusedAppPaths.add(normalizedSrc);
+			}
 			throw new NativeJustBashTmpCommandAccessError(this.currentWorkspacePath, normalizedSrc);
 		}
 
 		const normalizedDest = bash_normalize_path(dest);
 		if (!is_native_just_bash_tmp_path(normalizedDest)) {
+			if (bash_is_path_under_current_workspace_path(this.currentWorkspacePath, normalizedDest)) {
+				this.refusedAppPaths.add(normalizedDest);
+			}
 			throw new NativeJustBashTmpCommandAccessError(this.currentWorkspacePath, normalizedDest);
 		}
 
@@ -592,6 +625,9 @@ class RestrictedNativeJustBashTmpCommandFs implements IFileSystem {
 	async chmod(path: string, mode: number) {
 		const normalizedPath = bash_normalize_path(path);
 		if (!is_native_just_bash_tmp_path(normalizedPath)) {
+			if (bash_is_path_under_current_workspace_path(this.currentWorkspacePath, normalizedPath)) {
+				this.refusedAppPaths.add(normalizedPath);
+			}
 			throw new NativeJustBashTmpCommandAccessError(this.currentWorkspacePath, normalizedPath);
 		}
 		await this.fs.chmod(normalizedPath, mode);
@@ -600,6 +636,9 @@ class RestrictedNativeJustBashTmpCommandFs implements IFileSystem {
 	async symlink(target: string, linkPath: string) {
 		const normalizedLinkPath = bash_normalize_path(linkPath);
 		if (!is_native_just_bash_tmp_path(normalizedLinkPath)) {
+			if (bash_is_path_under_current_workspace_path(this.currentWorkspacePath, normalizedLinkPath)) {
+				this.refusedAppPaths.add(normalizedLinkPath);
+			}
 			throw new NativeJustBashTmpCommandAccessError(this.currentWorkspacePath, normalizedLinkPath);
 		}
 
@@ -607,6 +646,9 @@ class RestrictedNativeJustBashTmpCommandFs implements IFileSystem {
 			? bash_normalize_path(target)
 			: bash_resolve_path(bash_normalize_path(`${normalizedLinkPath}/..`), target);
 		if (!is_native_just_bash_tmp_path(resolvedTarget)) {
+			if (bash_is_path_under_current_workspace_path(this.currentWorkspacePath, resolvedTarget)) {
+				this.refusedAppPaths.add(resolvedTarget);
+			}
 			throw new NativeJustBashTmpCommandAccessError(this.currentWorkspacePath, resolvedTarget);
 		}
 
@@ -616,11 +658,17 @@ class RestrictedNativeJustBashTmpCommandFs implements IFileSystem {
 	async link(existingPath: string, newPath: string) {
 		const normalizedExistingPath = bash_normalize_path(existingPath);
 		if (!is_native_just_bash_tmp_path(normalizedExistingPath)) {
+			if (bash_is_path_under_current_workspace_path(this.currentWorkspacePath, normalizedExistingPath)) {
+				this.refusedAppPaths.add(normalizedExistingPath);
+			}
 			throw new NativeJustBashTmpCommandAccessError(this.currentWorkspacePath, normalizedExistingPath);
 		}
 
 		const normalizedNewPath = bash_normalize_path(newPath);
 		if (!is_native_just_bash_tmp_path(normalizedNewPath)) {
+			if (bash_is_path_under_current_workspace_path(this.currentWorkspacePath, normalizedNewPath)) {
+				this.refusedAppPaths.add(normalizedNewPath);
+			}
 			throw new NativeJustBashTmpCommandAccessError(this.currentWorkspacePath, normalizedNewPath);
 		}
 
@@ -630,6 +678,9 @@ class RestrictedNativeJustBashTmpCommandFs implements IFileSystem {
 	async readlink(path: string) {
 		const normalizedPath = bash_normalize_path(path);
 		if (!is_native_just_bash_tmp_path(normalizedPath)) {
+			if (bash_is_path_under_current_workspace_path(this.currentWorkspacePath, normalizedPath)) {
+				this.refusedAppPaths.add(normalizedPath);
+			}
 			throw new NativeJustBashTmpCommandAccessError(this.currentWorkspacePath, normalizedPath);
 		}
 		return await this.fs.readlink(normalizedPath);
@@ -645,6 +696,9 @@ class RestrictedNativeJustBashTmpCommandFs implements IFileSystem {
 		}
 
 		if (!is_native_just_bash_tmp_path(normalizedPath)) {
+			if (bash_is_path_under_current_workspace_path(this.currentWorkspacePath, normalizedPath)) {
+				this.refusedAppPaths.add(normalizedPath);
+			}
 			throw new NativeJustBashTmpCommandAccessError(this.currentWorkspacePath, normalizedPath);
 		}
 
@@ -668,12 +722,18 @@ class RestrictedNativeJustBashTmpCommandFs implements IFileSystem {
 		}
 
 		if (!is_native_just_bash_tmp_path(normalizedPath)) {
+			if (bash_is_path_under_current_workspace_path(this.currentWorkspacePath, normalizedPath)) {
+				this.refusedAppPaths.add(normalizedPath);
+			}
 			throw new NativeJustBashTmpCommandAccessError(this.currentWorkspacePath, normalizedPath);
 		}
 
 		const realPath = await this.fs.realpath(normalizedPath);
 		const normalizedRealPath = bash_normalize_path(realPath);
 		if (!is_native_just_bash_tmp_path(normalizedRealPath)) {
+			if (bash_is_path_under_current_workspace_path(this.currentWorkspacePath, normalizedRealPath)) {
+				this.refusedAppPaths.add(normalizedRealPath);
+			}
 			throw new NativeJustBashTmpCommandAccessError(this.currentWorkspacePath, normalizedRealPath);
 		}
 
@@ -683,6 +743,9 @@ class RestrictedNativeJustBashTmpCommandFs implements IFileSystem {
 	async utimes(path: string, atime: Date, mtime: Date) {
 		const normalizedPath = bash_normalize_path(path);
 		if (!is_native_just_bash_tmp_path(normalizedPath)) {
+			if (bash_is_path_under_current_workspace_path(this.currentWorkspacePath, normalizedPath)) {
+				this.refusedAppPaths.add(normalizedPath);
+			}
 			throw new NativeJustBashTmpCommandAccessError(this.currentWorkspacePath, normalizedPath);
 		}
 		await this.fs.utimes(normalizedPath, atime, mtime);

@@ -34,10 +34,10 @@ export type BonoboHttpApi = {
 							createdBy: import("convex/values").GenericId<"users">;
 							updatedBy: import("convex/values").GenericId<"users">;
 							updatedAt: number;
-							createdAt: number;
 							value: {
 								[x: string]: any;
 							};
+							createdAt: number;
 							revision: number;
 							key: string;
 							collection: string;
@@ -135,10 +135,10 @@ export type BonoboHttpApi = {
 							createdBy: import("convex/values").GenericId<"users">;
 							updatedBy: import("convex/values").GenericId<"users">;
 							updatedAt: number;
-							createdAt: number;
 							value: {
 								[x: string]: any;
 							};
+							createdAt: number;
 							revision: number;
 							key: string;
 							collection: string;

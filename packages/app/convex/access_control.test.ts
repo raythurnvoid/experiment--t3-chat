@@ -1653,10 +1653,22 @@ describe("enforcement", () => {
 				bytes: bytes.buffer as ArrayBuffer,
 			});
 
-			// Move the source thread away from the default folder, so the branch's `bashCwd` shows which
-			// of the two values it copied.
-			const sourceThread = await ctx.db.get("ai_chat_threads", sourceThreadId);
-			await ctx.db.patch("ai_chat_threads_state", sourceThread!.stateId!, { bashCwd: "/tmp" });
+			// Give the source thread a shell that sits in `/tmp`, so a copied shell row would show up on
+			// the branch.
+			await ctx.db.insert("ai_chat_bash_shells", {
+				organizationId: fixture.organizationId,
+				workspaceId: fixture.defaultWorkspaceId,
+				threadId: sourceThreadId,
+				name: "default",
+				cwd: "/tmp",
+				cwdTarget: null,
+				state: null,
+				transcriptBytes: 0,
+				transcriptEntries: 0,
+				transcriptSeq: 0,
+				updatedBy: fixture.ownerId,
+				updatedAt: Date.now(),
+			});
 		});
 
 		// Branching is allowed for a reader: they can already read the messages it copies.
@@ -1678,13 +1690,15 @@ describe("enforcement", () => {
 		);
 		expect(copied).toEqual([]);
 
-		// `bashCwd` is part of the same scratch state, so it follows the same rule: the branch starts in
-		// the folder a brand-new thread starts in, not where the source thread was.
-		const branchedState = await t.run(async (ctx) => {
-			const thread = await ctx.db.get("ai_chat_threads", branched._yay!.threadId);
-			return await ctx.db.get("ai_chat_threads_state", thread!.stateId!);
-		});
-		expect(branchedState!.bashCwd).toBe("~");
+		// The shells are part of the same scratch state, so they follow the same rule: the branch gets no
+		// shell rows, and its first call starts in the folder a brand-new thread starts in.
+		const branchedShells = await t.run((ctx) =>
+			ctx.db
+				.query("ai_chat_bash_shells")
+				.withIndex("by_thread_name", (q) => q.eq("threadId", branched._yay!.threadId))
+				.collect(),
+		);
+		expect(branchedShells).toEqual([]);
 	});
 
 	test("a role without content.read cannot start a chat thread either", async () => {
@@ -1829,6 +1843,64 @@ describe("enforcement", () => {
 		expect(widened._nay).toBeUndefined();
 
 		expect((await post_chat("thread-writeonly-allowed")).status).not.toBe(403);
+	});
+
+	test("/api/chat refuses a regenerate in somebody else's thread to a viewer", async () => {
+		const t = test_convex();
+		const fixture = await access_control_test_seed_enforcement_fixture(t, {
+			name: "chat-regen-org",
+			suffix: "chat-regen",
+		});
+
+		const [ownerThread, viewerThread] = await Promise.all([
+			fixture.asOwner.mutation(api.ai_chat.thread_create, {
+				membershipId: fixture.ownerMembershipId,
+				clientGeneratedId: "thread-regen-theirs",
+				lastMessageAt: 1,
+			}),
+			fixture.asMember.mutation(api.ai_chat.thread_create, {
+				membershipId: fixture.memberMembershipId,
+				clientGeneratedId: "thread-regen-mine",
+				lastMessageAt: 1,
+			}),
+		]);
+		expect(ownerThread._nay).toBeUndefined();
+		expect(viewerThread._nay).toBeUndefined();
+
+		// A regenerate in Ask mode sends no user message, so `thread_messages_add` never runs and its
+		// author check never happens. Without the route's own check a read-only role could run turns in
+		// the whole workspace's chat history, and each turn's Bash calls overwrite that thread's shells.
+		const post_regenerate = (threadId: string) =>
+			fixture.asMember.fetch("/api/chat", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					messages: [],
+					parentId: null,
+					mode: "ask",
+					model: "gpt-5.4-nano",
+					trigger: "regenerate-message",
+					threadId,
+					membershipId: fixture.memberMembershipId,
+				}),
+			});
+
+		// A member holds `content.write`, so the same call passing here means the 403 below can only
+		// come from the permission check.
+		expect((await post_regenerate(ownerThread._yay!.threadId)).status).not.toBe(403);
+
+		await access_control_test_demote_to_viewer(fixture);
+		await access_control_test_reset_write_rate_limit(t, fixture.memberId);
+
+		const refused = await post_regenerate(ownerThread._yay!.threadId);
+		expect(refused.status).toBe(403);
+		expect(await refused.json()).toMatchObject({ message: "Permission denied" });
+
+		await access_control_test_reset_write_rate_limit(t, fixture.memberId);
+
+		// Control: the viewer's own thread still passes, so the refusal above is about the author and
+		// not about Ask mode or the role on its own.
+		expect((await post_regenerate(viewerThread._yay!.threadId)).status).not.toBe(403);
 	});
 
 	test("never returns a file node from another organization", async () => {

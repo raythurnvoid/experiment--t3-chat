@@ -2343,6 +2343,38 @@ pushes the working tree once and exits, and it is safe next to a running watcher
 re-run. Remove the marker and push again when you are done. Observed 2026-09-15 on the files review
 worker.
 
+## Another agent editing the same tree ruins live background-job QA, and your test runs too
+
+The `convex dev` watcher pushes the working tree, not your commit. So while a review subagent is
+doing its own break-on-purpose pass on `packages/app/server/**` or `packages/app/convex/**`, the
+deployment is serving that half-broken state, and every push restarts the deployment and kills the
+`bash_run_job` action that is mid-flight.
+
+The symptom does not look like a race. A stopped job answers `bash: jobs: no stored output for
+job N; read the shell transcript` and exits 1, because the worker died before `finish_bash_job`
+could store a result. That reads as "my fix broke result storage", and the same flow had worked
+minutes earlier. Two break-proof runs were burned this way on 2026-09-16 before the cause was clear.
+
+Anything under `packages/app/vendor/just-bash` counts too: the app imports the built bundle, so the
+watcher re-pushes when that tree changes even though you never rebuilt it.
+
+A peer Claude session does the same damage, and it is harder to see coming than a subagent, because
+you did not start it and it does not report to you. A task chip spun off with `spawn_task` becomes a
+full session in the same working tree. On 2026-09-16 one of those was rewriting
+`packages/app/server/bash-delegate.ts` while a full `server/bash.test.ts` run was in flight, and the
+run reported 9 unrelated failures, one of them `du: native_just_bash_tmp_command_app_hint_path is not
+defined` — a ReferenceError from a file that was consistent again 30 seconds later. Nothing in the
+output says another agent is typing.
+
+Check before you believe a broad run or a browser result: `ListAgents` shows peer sessions on this
+machine with busy or idle, and the `LastWriteTime` of the files under test says whether one of them
+changed during your run. When a peer is live, message it, split file ownership by name, and ask it to
+tell you when it is done. Do not revert its file to unbreak your own run.
+
+Sequence the work instead. Either finish the live QA before spawning agents that edit app files, or
+wait for them to report and confirm `git status --short` is clean before the browser run. A job
+takes 5–10 seconds to reach its Stop, and one push inside that window is enough.
+
 ## `files_nodes.get_file_node_for_membership` returns the node fields at the top level
 
 It returns `v.union(v.object(files_node_public_doc_fields), v.null())` — **not** a `Result`. So

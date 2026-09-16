@@ -10,7 +10,7 @@ description: Activity job status, progress, controls, visibility, plugin opt-in,
 The producer owns its files, credentials, attempts, conflicts, and result receipts. Update both
 in one mutation. Workpool delivers work; it does not decide whether a job succeeded.
 
-- Every transfer, pending review, and plugin run has one Activity, created with the run.
+- Every transfer, pending review, plugin run, and Bash background job has one Activity, created with the run.
 - `source.id` and `activities.by_source_id` are the only link. Do not add a backlink to the run.
 - Activity owns requester, status, progress, result kind, safe errors, and common times.
   Producer copies of tenant and user IDs exist only for immutable indexes.
@@ -37,8 +37,8 @@ natural completion, with counts from their item receipts:
 - Failed or blocked items without completed items fail. Canceled items without completed,
   failed, or blocked items settle as canceled, including a discarded Preparing file.
 - User Stop settles as canceled; an execution deadline settles as timed out. Completed outputs stay.
-- `resultKind` distinguishes saved work, proposals ready for review, discarded proposals, and
-  plugin results. A proposal preparation job does not claim that the proposed file was saved.
+- `resultKind` distinguishes saved work, proposals ready for review, discarded proposals, plugin
+  results, and Bash job results (`bash_result`). A proposal preparation job does not claim that the proposed file was saved.
 
 Progress has one unit and counts discovered, completed, skipped, failed, blocked, and canceled
 items. A retry does not add another item. `total` stays null while discovery is incomplete. A
@@ -56,7 +56,7 @@ their own expiry. These clocks serve different owners.
 Current membership is required. Hidden or dismissed entries can consume a page. Keep the raw
 continuation and follow `isDone`; an empty visible page does not prove the feed ended.
 
-- Transfer and review Activities are private to their requester, including against other workspace owners.
+- Transfer, review, and Bash job Activities are private to their requester, including against other workspace owners.
   Their summaries contain no source names or paths. Details recheck file access separately.
 - Shared plugin Activities require current access to every target. A missing target or a changed
   target path hides the whole Activity. A shared Activity with no target requires workspace read.
@@ -97,8 +97,8 @@ See the [plugin runtime spec](../plugin-system/SKILL.md).
 - `files_pending_update_runs.recover` checks interrupted selection uploads, planning leases, and
   active units every five minutes. It retries planning at most three times and checks the Activity
   deadline before resuming work. It does not scan finished history.
-- `activities.cleanup_history` owns retention: seven days after transfer or review finish and thirty days
-  after plugin finish. It stops a pass after a bounded child cleanup page. Each producer deletes
+- `activities.cleanup_history` owns retention: seven days after transfer, review, or Bash job finish and thirty days
+  after plugin finish. A Bash job row can hold a 700 KiB result, so a pass reads at most eight job rows and reschedules for the rest; the job row is deleted with its Activity, while the foreground Bash call row beside it stays until thread purge. It stops a pass after a bounded child cleanup page. Each producer deletes
   its own receipts. Dismissal docs drain first. The Activity and its producer are then deleted together.
 - Deleting history does not delete saved files or pending proposals. Asset deletion jobs retain
   exact R2 keys and late-upload deadlines independently of Activity history.

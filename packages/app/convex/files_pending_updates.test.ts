@@ -824,7 +824,6 @@ async function seed_chat_thread(args: {
 		title: null,
 		archived: false,
 		runtime: "aisdk_5",
-		stateId: null,
 		createdBy: args.userId,
 		updatedBy: args.userId,
 		updatedAt: Date.now(),

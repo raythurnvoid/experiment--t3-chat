@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { api, internal } from "./_generated/api.js";
+import { ai_chat_files_db_append_shell_transcript } from "./ai_chat_files.ts";
 import type { Id } from "./_generated/dataModel.js";
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
 
@@ -42,6 +43,7 @@ async function create_thread() {
 		threadId: created._yay!.threadId,
 		toolCallId: "scratch-test",
 		commandHash: "a".repeat(64),
+		shellName: "default",
 	});
 	if (begun._nay) throw new Error(begun._nay.message);
 
@@ -221,5 +223,136 @@ describe("ai_chat_files /tmp persistence", () => {
 					: [],
 			),
 		).toEqual([["/a.txt", "one"]]);
+	});
+});
+
+describe("read_shell_transcript", () => {
+	test("a workspace member reads the entries in order; a non-member and another thread cannot", async () => {
+		const owner = await create_thread();
+		const shell = await owner.t.run(async (ctx) => {
+			const shellId = await ctx.db.insert("ai_chat_bash_shells", {
+				organizationId: owner.organizationId,
+				workspaceId: owner.workspaceId,
+				threadId: owner.threadId,
+				name: "work",
+				cwd: "~",
+				cwdTarget: null,
+				state: null,
+				transcriptBytes: 0,
+				transcriptEntries: 0,
+				transcriptSeq: 0,
+				updatedBy: owner.userId,
+				updatedAt: Date.now(),
+			});
+			const shell = await ctx.db.get("ai_chat_bash_shells", shellId);
+			if (!shell) throw new Error("Expected the shell");
+			await ai_chat_files_db_append_shell_transcript(ctx, shell, "$ first");
+			await ai_chat_files_db_append_shell_transcript(ctx, { ...shell, transcriptSeq: 1 }, "$ second");
+			return shell;
+		});
+		const identity = {
+			organizationId: owner.organizationId,
+			workspaceId: owner.workspaceId,
+			userId: owner.userId,
+			threadId: owner.threadId,
+			shellId: shell._id,
+		};
+
+		expect(await owner.t.query(internal.ai_chat_files.read_shell_transcript, identity)).toEqual([
+			{ seq: 0, text: "$ first" },
+			{ seq: 1, text: "$ second" },
+		]);
+
+		// A user with no membership in the workspace gets the same refusal as any other door.
+		const stranger = await owner.t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		await expect(
+			owner.t.query(internal.ai_chat_files.read_shell_transcript, { ...identity, userId: stranger.userId }),
+		).rejects.toThrow("Unauthorized");
+
+		// The shell id must belong to the named thread.
+		const otherThread = await owner.asUser.mutation(api.ai_chat.thread_create, {
+			membershipId: owner.membershipId,
+			clientGeneratedId: "client_ai_chat_files_other",
+			title: "Other",
+			lastMessageAt: Date.now(),
+		});
+		if (otherThread._nay) throw new Error(otherThread._nay.message);
+		await expect(
+			owner.t.query(internal.ai_chat_files.read_shell_transcript, {
+				...identity,
+				threadId: otherThread._yay.threadId,
+			}),
+		).rejects.toThrow("Not found");
+	});
+});
+
+describe("ai_chat_files_db_append_shell_transcript", () => {
+	async function seed_shell() {
+		const owner = await create_thread();
+		const shellId = await owner.t.run((ctx) =>
+			ctx.db.insert("ai_chat_bash_shells", {
+				organizationId: owner.organizationId,
+				workspaceId: owner.workspaceId,
+				threadId: owner.threadId,
+				name: "default",
+				cwd: "~",
+				cwdTarget: null,
+				state: null,
+				transcriptBytes: 0,
+				transcriptEntries: 0,
+				transcriptSeq: 0,
+				updatedBy: owner.userId,
+				updatedAt: Date.now(),
+			}),
+		);
+		// Re-read the row before every append: the helper trusts the counters on the doc it gets.
+		const append = (texts: string[]) =>
+			owner.t.run(async (ctx) => {
+				for (const entryText of texts) {
+					const shell = await ctx.db.get("ai_chat_bash_shells", shellId);
+					if (!shell) throw new Error("Expected the shell");
+					await ai_chat_files_db_append_shell_transcript(ctx, shell, entryText);
+				}
+			});
+		const read = () =>
+			owner.t.run(async (ctx) => ({
+				shell: await ctx.db.get("ai_chat_bash_shells", shellId),
+				entries: await ctx.db
+					.query("ai_chat_bash_shell_transcripts")
+					.withIndex("by_shell_seq", (q) => q.eq("shellId", shellId))
+					.collect(),
+			}));
+		return { append, read };
+	}
+
+	test("drops the oldest entries to stay under 1 MiB", async () => {
+		const { append, read } = await seed_shell();
+		const big = "a".repeat(300 * 1024);
+		await append([big, big, big]);
+		expect((await read()).entries.map((entry) => entry.seq)).toEqual([0, 1, 2]);
+
+		// The fourth entry pushes the total to 1200 KiB, so the oldest one goes.
+		await append([big]);
+		const after = await read();
+		expect(after.entries.map((entry) => entry.seq)).toEqual([1, 2, 3]);
+		expect(after.shell).toMatchObject({ transcriptBytes: 3 * big.length, transcriptEntries: 3, transcriptSeq: 4 });
+	});
+
+	test("keeps at most 1,000 entries and drops the oldest sequence", async () => {
+		const { append, read } = await seed_shell();
+		await append(Array.from({ length: 1001 }, (_, i) => `$ ${i}`));
+		const after = await read();
+		expect(after.entries).toHaveLength(1000);
+		expect(after.entries[0]).toMatchObject({ seq: 1, text: "$ 1" });
+		expect(after.entries[999]).toMatchObject({ seq: 1000, text: "$ 1000" });
+		expect(after.shell).toMatchObject({ transcriptEntries: 1000, transcriptSeq: 1001 });
+	});
+
+	test("counts bytes in UTF-8, not characters", async () => {
+		const { append, read } = await seed_shell();
+		await append(["語語語"]);
+		const after = await read();
+		expect(after.entries[0]).toMatchObject({ bytes: 9 });
+		expect(after.shell).toMatchObject({ transcriptBytes: 9 });
 	});
 });

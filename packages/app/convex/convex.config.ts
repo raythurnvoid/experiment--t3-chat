@@ -20,6 +20,7 @@ app.use(workpool, { name: "files_transfer_workpool" });
 app.use(workpool, { name: "data_deletion_workpool" });
 app.use(workpool, { name: "github_mounts_workpool" });
 app.use(workpool, { name: "plugins_runtime_workpool" });
+app.use(workpool, { name: "ai_chat_bash_jobs_workpool" });
 app.use(rateLimiter, { name: "rate_limiter" });
 app.use(r2);
 

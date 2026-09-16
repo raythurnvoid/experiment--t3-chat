@@ -429,13 +429,17 @@ describe("cleanup_published_nodes", () => {
 			threadId,
 			toolCallId: "select-folder",
 			commandHash: "a".repeat(64),
+			shellName: "default",
 		});
-		if (begin._nay) throw new Error(begin._nay.message);
-		await t.mutation(internal.ai_chat.set_thread_state, {
+		if (begin._nay || !("shell" in begin._yay)) throw new Error("Expected a fresh shell");
+		await t.mutation(internal.ai_chat.save_shell, {
 			...scope,
 			threadId,
 			invocationId: begin._yay.invocationId,
-			patch: { bashCwd: "/cwd", bashCwdTarget: created._yay.target },
+			shellId: begin._yay.shell._id,
+			cwd: "/cwd",
+			cwdTarget: created._yay.target,
+			transcriptEntry: "$ cd /cwd",
 		});
 		const proposal = await t.run((ctx) => ctx.db.get("files_pending_updates", created._yay.pendingUpdateId!));
 		if (!proposal) throw new Error("Expected the folder proposal");
@@ -464,13 +468,17 @@ describe("cleanup_published_nodes", () => {
 			threadId,
 			toolCallId: "leave-folder",
 			commandHash: "b".repeat(64),
+			shellName: "default",
 		});
 		if (next._nay) throw new Error(next._nay.message);
-		await t.mutation(internal.ai_chat.set_thread_state, {
+		await t.mutation(internal.ai_chat.save_shell, {
 			...scope,
 			threadId,
 			invocationId: next._yay.invocationId,
-			patch: { bashCwd: "/", bashCwdTarget: null },
+			shellId: begin._yay.shell._id,
+			cwd: "/",
+			cwdTarget: null,
+			transcriptEntry: "$ cd /",
 		});
 		await t.mutation(internal.files_pending_nodes.cleanup_published_nodes, {});
 		expect(await t.run((ctx) => ctx.db.get("files_pending_nodes", privateId))).toBeNull();

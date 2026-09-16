@@ -303,12 +303,18 @@ const AppNotificationsActivityItem = memo(function AppNotificationsActivityItem(
 						ready_for_review: "Ready for review",
 						discarded: "Discarded",
 						plugin_result: "Completed",
+						bash_result: "Command finished",
 					}[activity.resultKind],
 					partial: "Partly completed",
 					failed: "Failed",
 					canceled: "Stopped",
 					timed_out: "Timed out",
 				}[activity.status];
+	const stopLabel = reviewRun
+		? "Stop and keep completed changes"
+		: transferRun && (progress?.completed ?? 0) > 0 && transferRun.transferKind === "copy"
+			? "Stop and keep completed copies"
+			: "Stop";
 
 	return (
 		<article className={"AppNotificationsActivityItem" satisfies AppNotificationsActivityItem_ClassNames}>
@@ -391,14 +397,15 @@ const AppNotificationsActivityItem = memo(function AppNotificationsActivityItem(
 				</div>
 			) : null}
 			{activity.controls.canStop ? (
-				<MyButton variant="ghost" disabled={isStopPending} onClick={handleStop}>
-					{reviewRun
-						? "Stop and keep completed changes"
-						: transferRun
-							? (progress?.completed ?? 0) > 0 && transferRun.transferKind === "copy"
-								? "Stop and keep completed copies"
-								: "Stop"
-							: "Stop"}
+				<MyButton
+					variant="ghost"
+					// Several bare "Stop" buttons can sit in one feed; the name says which one. The
+					// longer labels keep their visible text as the name.
+					aria-label={stopLabel === "Stop" ? `Stop ${activity.title}` : undefined}
+					disabled={isStopPending}
+					onClick={handleStop}
+				>
+					{stopLabel}
 				</MyButton>
 			) : null}
 			{activity.targets.length > 0 ? (

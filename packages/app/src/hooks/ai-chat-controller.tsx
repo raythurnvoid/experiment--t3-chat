@@ -354,7 +354,6 @@ function create_optimistic_thread(tenant: {
 		archived: false,
 		starred: false,
 		runtime: "aisdk_5",
-		stateId: null,
 		createdBy: "" as app_convex_Id<"users">,
 		updatedBy: "" as app_convex_Id<"users">,
 		updatedAt: now,

@@ -2,7 +2,7 @@ import { R2 } from "@convex-dev/r2";
 import { Workpool, type WorkId } from "@convex-dev/workpool";
 import { afterEach, beforeEach, describe, expect, test as baseTest, vi } from "vitest";
 import { api, components, internal } from "./_generated/api.js";
-import type { Id } from "./_generated/dataModel.js";
+import type { Doc, Id } from "./_generated/dataModel.js";
 import type { MutationCtx } from "./_generated/server.js";
 import { presence } from "./presence.ts";
 import { test_convex, test_mocks_cancel_pending_home_file_seeds, test_mocks_fill_db_with } from "./setup.test.ts";
@@ -555,19 +555,23 @@ async function data_deletion_test_seed_workspace_content_bulk(
 			title: `${args.tag} ${i}`,
 			archived: false,
 			runtime: "aisdk_5",
-			stateId: null,
 			createdBy: args.userId,
 			updatedBy: args.userId,
 			updatedAt: Date.now(),
 			lastMessageAt: Date.now(),
 		});
-		const [stateId, aiFileNodeId] = await Promise.all([
-			ctx.db.insert("ai_chat_threads_state", {
+		const [shellId, aiFileNodeId] = await Promise.all([
+			ctx.db.insert("ai_chat_bash_shells", {
 				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
 				threadId,
-				bashCwd: "~",
-				bashCwdTarget: null,
+				name: "default",
+				cwd: "~",
+				cwdTarget: null,
+				state: null,
+				transcriptBytes: 11,
+				transcriptEntries: 1,
+				transcriptSeq: 1,
 				updatedBy: args.userId,
 				updatedAt: Date.now(),
 			}),
@@ -583,7 +587,22 @@ async function data_deletion_test_seed_workspace_content_bulk(
 			}),
 		]);
 		await Promise.all([
-			ctx.db.patch("ai_chat_threads", threadId, { stateId }),
+			ctx.db.insert("ai_chat_bash_shell_transcripts", {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				threadId,
+				shellId,
+				seq: 0,
+				text: "$ printf hi",
+				bytes: 11,
+			}),
+			ctx.db.insert("ai_chat_bash_job_notice_cursors", {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				threadId,
+				userId: args.userId,
+				noticeAt: Date.now(),
+			}),
 			ctx.db.insert("ai_chat_threads_messages_aisdk_5", {
 				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
@@ -674,7 +693,9 @@ async function data_deletion_test_count_workspace_content(
 		lastSequenceSaved,
 		materializationJobs,
 		aiThreads,
-		aiStates,
+		aiShells,
+		aiShellTranscripts,
+		aiJobNoticeCursors,
 		aiMessages,
 		aiFiles,
 		aiFileContents,
@@ -698,7 +719,9 @@ async function data_deletion_test_count_workspace_content(
 		ctx.db.query("files_pending_updates_last_sequence_saved").collect(),
 		ctx.db.query("files_content_materialization_jobs").collect(),
 		ctx.db.query("ai_chat_threads").collect(),
-		ctx.db.query("ai_chat_threads_state").collect(),
+		ctx.db.query("ai_chat_bash_shells").collect(),
+		ctx.db.query("ai_chat_bash_shell_transcripts").collect(),
+		ctx.db.query("ai_chat_bash_job_notice_cursors").collect(),
 		ctx.db.query("ai_chat_threads_messages_aisdk_5").collect(),
 		ctx.db.query("ai_chat_files").collect(),
 		ctx.db.query("ai_chat_files_content").collect(),
@@ -726,7 +749,9 @@ async function data_deletion_test_count_workspace_content(
 			lastSequenceSaved,
 			materializationJobs,
 			aiThreads,
-			aiStates,
+			aiShells,
+			aiShellTranscripts,
+			aiJobNoticeCursors,
 			aiMessages,
 			aiFiles,
 			aiFileContents,
@@ -794,6 +819,69 @@ async function data_deletion_test_hard_delete_user_data_until_done(
 	}
 
 	throw new Error("User data hard delete did not finish");
+}
+
+/**
+ * A background Bash job as `start_bash_job` inserts it: the row and its Activity. The pool item
+ * and the watchdog stay null; the delete batch guards both.
+ */
+async function data_deletion_test_seed_bash_job(
+	ctx: MutationCtx,
+	args: { parent: Doc<"ai_chat_bash_invocations">; shellId: Id<"ai_chat_bash_shells">; jobNumber: number },
+) {
+	const now = Date.now();
+	const invocationId = await ctx.db.insert("ai_chat_bash_invocations", {
+		organizationId: args.parent.organizationId,
+		workspaceId: args.parent.workspaceId,
+		userId: args.parent.userId,
+		threadId: args.parent.threadId,
+		toolCallId: `job:${args.parent._id}:${args.jobNumber}`,
+		commandHash: "b".repeat(64),
+		membershipId: args.parent.membershipId,
+		membershipLifetime: args.parent.membershipLifetime,
+		status: "running",
+		deadlineAt: now + 600_000,
+		transferDeadlineAt: now + 600_000,
+		job: {
+			jobNumber: args.jobNumber,
+			shellId: args.shellId,
+			parentInvocationId: args.parent._id,
+			commandNumber: args.jobNumber,
+			script: "sleep 1",
+			startCwd: "/",
+			startCwdTarget: null,
+			shellState: null,
+			allowDbFilesMkdir: false,
+			workId: null,
+			watchdogId: null,
+			stopRequestedAt: null,
+		},
+	});
+	const activityId = await activities_db_start(ctx, {
+		organizationId: args.parent.organizationId,
+		workspaceId: args.parent.workspaceId,
+		userId: args.parent.userId,
+		membershipId: args.parent.membershipId,
+		membershipLifetime: args.parent.membershipLifetime,
+		source: {
+			kind: "ai_chat_bash_job",
+			id: invocationId,
+			threadId: args.parent.threadId,
+			jobNumber: args.jobNumber,
+			shellName: "default",
+			parentJobNumber: null,
+			scriptPreview: "sleep 1",
+		},
+		title: `Background command ${args.jobNumber}`,
+		targets: [],
+		visibility: "requester",
+		feedVisible: true,
+		status: "running",
+		resultKind: "bash_result",
+		deadlineAt: now + 600_000,
+		now,
+	});
+	return { invocationId, activityId };
 }
 
 async function data_deletion_test_finalize_user_until_done(
@@ -2787,6 +2875,7 @@ describe("process_workspace_deletion_request", () => {
 			threadId: thread._yay.threadId,
 			toolCallId: "purge-bash-call",
 			commandHash: "a".repeat(64),
+			shellName: "default",
 		});
 		if (invocation._nay) throw new Error(invocation._nay.message);
 		await t.mutation(internal.ai_chat_files.interrupt_bash_invocation, { invocationId: invocation._yay.invocationId });
@@ -2869,6 +2958,68 @@ describe("process_workspace_deletion_request", () => {
 		expect(done).toBe(true);
 		expect(await t.run((ctx) => ctx.db.get("ai_chat_bash_invocation_transfers", linkId))).toBeNull();
 		expect(await t.run((ctx) => ctx.db.get("ai_chat_bash_invocations", invocation._yay.invocationId))).toBeNull();
+	});
+
+	test("purges a Bash job through its Activity and job-less calls as a batch", async () => {
+		const t = test_convex();
+		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+		const thread = await asUser.mutation(api.ai_chat.thread_create, {
+			membershipId: db.membershipId,
+			clientGeneratedId: "purge-bash-job",
+			lastMessageAt: Date.now(),
+		});
+		if (thread._nay) throw new Error(thread._nay.message);
+		const begin = (toolCallId: string) =>
+			t.mutation(internal.ai_chat_files.begin_bash_invocation, {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userId: db.userId,
+				threadId: thread._yay.threadId,
+				toolCallId,
+				commandHash: "a".repeat(64),
+				shellName: "default",
+			});
+		const first = await begin("purge-job-call-1");
+		if (first._nay || !("shell" in first._yay)) throw new Error("Expected a fresh call");
+		const shellId = first._yay.shell._id;
+		const second = await begin("purge-job-call-2");
+		if (second._nay) throw new Error(second._nay.message);
+		const calls = [first._yay.invocationId, second._yay.invocationId];
+		const { job, requestId } = await t.run(async (ctx) => {
+			const parent = await ctx.db.get("ai_chat_bash_invocations", first._yay.invocationId);
+			if (!parent) throw new Error("Expected the parent call");
+			const job = await data_deletion_test_seed_bash_job(ctx, { parent, shellId, jobNumber: 1 });
+			const requestId = await data_deletion_db_request(ctx, {
+				userId: db.userId,
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				scope: "workspace",
+				eligibleAt: 0,
+			});
+			return { job, requestId };
+		});
+		// One batch of 8 holds both calls and the job. The job goes first and alone, together with
+		// its Activity; the job-less calls go together in the next pass.
+		let sawJobGoneFirst = false;
+		let done = false;
+		for (let index = 0; index < 100 && !done; index += 1) {
+			const step = await t.mutation(internal.data_deletion.process_workspace_deletion_request, {
+				requestId,
+				_test_batchSize: 8,
+			});
+			done = step.done;
+			const state = await t.run(async (ctx) => ({
+				job: await ctx.db.get("ai_chat_bash_invocations", job.invocationId),
+				activity: await ctx.db.get("activities", job.activityId),
+				calls: await Promise.all(calls.map((id) => ctx.db.get("ai_chat_bash_invocations", id))),
+			}));
+			expect(state.activity === null).toBe(state.job === null);
+			if (state.job === null && state.calls.every((call) => call !== null)) sawJobGoneFirst = true;
+		}
+		expect(done).toBe(true);
+		expect(sawJobGoneFirst).toBe(true);
+		expect(await t.run((ctx) => ctx.db.query("ai_chat_bash_invocations").collect())).toEqual([]);
 	});
 
 	test("purges workspace content in retryable batches without touching sibling workspaces", async () => {
@@ -6202,6 +6353,80 @@ describe("finalize_user_deletion_data", () => {
 			status: "queued",
 		});
 		expect(after.workspace).not.toBeNull();
+	});
+
+	test("drains a Bash job and the finished-job note cursors before memberships", async () => {
+		const t = test_convex();
+		const victim = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-delete-bash-job",
+				displayName: "Bash Job Victim",
+			}),
+		);
+		const membership = await t.run((ctx) =>
+			ctx.db
+				.query("organizations_workspaces_users")
+				.withIndex("by_workspace_user_active", (q) =>
+					q.eq("workspaceId", victim.defaultWorkspaceId).eq("userId", victim.userId),
+				)
+				.first(),
+		);
+		if (!membership) throw new Error("Expected the victim's membership");
+		const asVictim = t.withIdentity({ issuer: "https://clerk.test", subject: victim.userId, external_id: victim.userId });
+		const thread = await asVictim.mutation(api.ai_chat.thread_create, {
+			membershipId: membership._id,
+			clientGeneratedId: "drain-bash-job",
+			lastMessageAt: Date.now(),
+		});
+		if (thread._nay) throw new Error(thread._nay.message);
+		const begun = await t.mutation(internal.ai_chat_files.begin_bash_invocation, {
+			organizationId: victim.defaultOrganizationId,
+			workspaceId: victim.defaultWorkspaceId,
+			userId: victim.userId,
+			threadId: thread._yay.threadId,
+			toolCallId: "drain-job-call",
+			commandHash: "a".repeat(64),
+			shellName: "default",
+		});
+		if (begun._nay || !("shell" in begun._yay)) throw new Error("Expected a fresh call");
+		const shellId = begun._yay.shell._id;
+		const { job, cursorId } = await t.run(async (ctx) => {
+			const parent = await ctx.db.get("ai_chat_bash_invocations", begun._yay.invocationId);
+			if (!parent) throw new Error("Expected the parent call");
+			const job = await data_deletion_test_seed_bash_job(ctx, { parent, shellId, jobNumber: 1 });
+			const cursorId = await ctx.db.insert("ai_chat_bash_job_notice_cursors", {
+				organizationId: victim.defaultOrganizationId,
+				workspaceId: victim.defaultWorkspaceId,
+				threadId: thread._yay.threadId,
+				userId: victim.userId,
+				noticeAt: Date.now(),
+			});
+			return { job, cursorId };
+		});
+		const read = () =>
+			t.run(async (ctx) => ({
+				job: await ctx.db.get("ai_chat_bash_invocations", job.invocationId),
+				activity: await ctx.db.get("activities", job.activityId),
+				cursor: await ctx.db.get("ai_chat_bash_job_notice_cursors", cursorId),
+				membership: await ctx.db.get("organizations_workspaces_users", membership._id),
+			}));
+		const finalize = () =>
+			t.mutation(internal.data_deletion.finalize_user_deletion_data, { userId: victim.userId, _test_batchSize: 1 });
+
+		// Pass 1: the job and its Activity. Pass 2: the cursor. The membership waits for both.
+		expect(await finalize()).toBe(false);
+		const afterJob = await read();
+		expect(afterJob.job).toBeNull();
+		expect(afterJob.activity).toBeNull();
+		expect(afterJob.cursor).not.toBeNull();
+		expect(afterJob.membership).not.toBeNull();
+		expect(await finalize()).toBe(false);
+		const afterCursor = await read();
+		expect(afterCursor.cursor).toBeNull();
+		expect(afterCursor.membership).not.toBeNull();
+
+		await data_deletion_test_finalize_user_until_done(t, { userId: victim.userId, batchSize: 1 });
+		expect((await read()).membership).toBeNull();
 	});
 
 	test("drains service grants in bounded batches before memberships", async () => {

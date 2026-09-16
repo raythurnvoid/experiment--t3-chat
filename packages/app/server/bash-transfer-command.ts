@@ -1,10 +1,13 @@
 import type { Id } from "../convex/_generated/dataModel.js";
 import type { ActionCtx } from "../convex/_generated/server.js";
-import { defineCommand, type Command, type CommandContext, type ExecResult } from "just-bash/browser";
+import type { CommandContext, ExecResult } from "just-bash/browser";
 import { internal } from "../convex/_generated/api.js";
 import type { files_PendingParent, files_PendingTarget } from "../shared/files.ts";
 import { path_name_of, path_extract_segments_from } from "../shared/paths.ts";
 import {
+	bash_ABORT_REASON_STOPPED,
+	bash_COMMAND_EXIT_STOPPED,
+	bash_COMMAND_EXIT_TIMED_OUT,
 	bash_current_workspace_path_to_db_files_path,
 	bash_resolve_path,
 	bash_parse_cp_mv_operands,
@@ -18,7 +21,16 @@ export type bash_TransferContext = {
 	signal: AbortSignal;
 	abort: (reason?: unknown) => void;
 	nextCommandNumber: () => number;
+	/**
+	 * The job row when this shell is a background job's worker, `null` in a foreground call. A
+	 * job's copy waits for a busy lane instead of failing, and polls slower.
+	 */
+	jobId: Id<"ai_chat_bash_invocations"> | null;
 };
+
+// Four jobs share one transfer lane per user and workspace. A job's copy waits this long for it.
+const LANE_WAIT_MAX_MS = 60_000;
+const LANE_WAIT_POLL_MS = 2_000;
 
 async function stop_transfer(
 	ctx: ActionCtx,
@@ -42,6 +54,16 @@ async function stop_transfer(
 }
 
 /**
+ * How an abort ends a copy. A job Stop aborts the shell with its own reason: the transfer is
+ * stopped as "user" and the command reports 143. Anything else is the deadline: "timeout", 124.
+ */
+function abort_outcome(signal: AbortSignal) {
+	return signal.reason === bash_ABORT_REASON_STOPPED
+		? { reason: "user" as const, exitCode: bash_COMMAND_EXIT_STOPPED, word: "stopped" }
+		: { reason: "timeout" as const, exitCode: bash_COMMAND_EXIT_TIMED_OUT, word: "timed out" };
+}
+
+/**
  * App copies and moves use the same durable transfer jobs as Files.
  */
 export async function bash_transfer_command_run(args: {
@@ -51,7 +73,6 @@ export async function bash_transfer_command_run(args: {
 	command: "cp" | "mv";
 	commandCtx: CommandContext;
 	parsed: NonNullable<ReturnType<typeof bash_parse_cp_mv_operands>["_yay"]>;
-	background?: boolean;
 }): Promise<ExecResult> {
 	const { ctx, dbFilesRoots, command, commandCtx, parsed, transferContext } = args;
 	const fail = (message: string) => ({ stdout: "", stderr: `${command}: ${message}\n`, exitCode: 1 });
@@ -61,8 +82,11 @@ export async function bash_transfer_command_run(args: {
 	const threadId = dbFilesRoots.app.fs.ctxData.threadId;
 	if (!transferContext || !threadId) return fail("this command has no active Bash invocation");
 
-	if (transferContext.signal.aborted || (!args.background && Date.now() >= transferContext.deadlineAt))
-		return { stdout: "", stderr: `${command}: transfer timed out\n`, exitCode: 124 };
+	const aborted = () => {
+		const outcome = abort_outcome(transferContext.signal);
+		return { stdout: "", stderr: `${command}: transfer ${outcome.word}\n`, exitCode: outcome.exitCode };
+	};
+	if (transferContext.signal.aborted || Date.now() >= transferContext.deadlineAt) return aborted();
 
 	const commandNumber = transferContext.nextCommandNumber();
 
@@ -132,11 +156,31 @@ export async function bash_transfer_command_run(args: {
 			return { stdout: "", stderr: "", exitCode: 0 };
 	}
 
+	// A job waits for a busy lane instead of failing: four jobs share one lane per user and
+	// workspace. The wait reads only this non-charging query, so it never spends the rate limit
+	// the user's own Files UI shares; `start_for_agent` then runs once, and its `busy` is final.
+	if (transferContext.jobId !== null) {
+		const until = Math.min(Date.now() + LANE_WAIT_MAX_MS, transferContext.deadlineAt);
+		for (;;) {
+			const current = await ctx.runQuery(internal.files_transfer.get_current_activity_for_agent, {
+				membershipId: transferContext.membershipId,
+				threadId,
+			});
+			if (!current) break;
+			if (current.status === "awaiting_input")
+				return fail(`a transfer in this workspace is waiting for input (activity ${current.activityId})`);
+			if (transferContext.signal.aborted || Date.now() >= until) break;
+			await new Promise<void>((resolve) => setTimeout(resolve, Math.min(LANE_WAIT_POLL_MS, until - Date.now())));
+		}
+		// A Stop that landed during the wait must not start a copy.
+		if (transferContext.signal.aborted) return aborted();
+	}
+
 	const started = await ctx
 		.runMutation(internal.files_transfer.start_for_agent, {
 			membershipId: transferContext.membershipId,
 			threadId,
-			invocation: { id: transferContext.invocationId, commandNumber, background: args.background === true },
+			invocation: { id: transferContext.invocationId, commandNumber },
 			requestId: `${transferContext.invocationId}:${commandNumber}`,
 			kind: command === "cp" ? "copy" : "move",
 			sources,
@@ -165,18 +209,10 @@ export async function bash_transfer_command_run(args: {
 	if (started._nay)
 		return {
 			...fail(started._nay.message + (started._nay.data ? ` (activity ${started._nay.data.activityId})` : "")),
-			exitCode: started._nay.name === "timed_out" ? 124 : 1,
+			exitCode: started._nay.name === "timed_out" ? bash_COMMAND_EXIT_TIMED_OUT : 1,
 		};
 
 	const { runId, activityId } = started._yay;
-
-	if (args.background)
-		return {
-			stdout: `Running. Transfer ${runId}. Activity ${activityId}. Use transfer status ${runId} to check progress.\n`,
-			stderr: "",
-			exitCode: 0,
-		};
-
 	const scope = { membershipId: transferContext.membershipId, threadId, runId };
 
 	try {
@@ -196,90 +232,22 @@ export async function bash_transfer_command_run(args: {
 			}
 
 			if (transferContext.signal.aborted || Date.now() >= transferContext.deadlineAt) {
-				await stop_transfer(ctx, scope, "timeout");
+				const outcome = abort_outcome(transferContext.signal);
+				await stop_transfer(ctx, scope, outcome.reason);
 				dbFilesRoots.app.fs.resetProposalCaches();
 				return {
 					stdout: "",
-					stderr: `${command}: transfer timed out; remaining work was stopped. Activity ${activityId}\n`,
-					exitCode: 124,
+					stderr: `${command}: transfer ${outcome.word}; remaining work was stopped. Activity ${activityId}\n`,
+					exitCode: outcome.exitCode,
 				};
 			}
 
-			await new Promise<void>((resolve) => setTimeout(resolve, 200));
+			// A job's copy is long-lived; a foreground copy answers within the call's 90 seconds.
+			await new Promise<void>((resolve) => setTimeout(resolve, transferContext.jobId !== null ? 2_000 : 200));
 		}
 	} catch (error) {
 		// A failed stop must end this Bash call before a chained command can write.
 		transferContext.abort(error);
 		throw error;
 	}
-}
-
-export function bash_transfer_command_create(
-	ctx: ActionCtx,
-	dbFilesRoots: bash_DbFilesRoots,
-	transferContext?: bash_TransferContext,
-): Command {
-	return defineCommand("transfer", async (args, commandCtx) => {
-		const threadId = dbFilesRoots.app.fs.ctxData.threadId;
-
-		if (!transferContext || !threadId)
-			return { stdout: "", stderr: "transfer: no active Bash invocation\n", exitCode: 1 };
-
-		if (args[0] === "start" && (args[1] === "copy" || args[1] === "move")) {
-			const command = args[1] === "copy" ? "cp" : "mv";
-			const parsed = bash_parse_cp_mv_operands(command, args.slice(2));
-
-			if (parsed._nay) return { stdout: "", stderr: `${parsed._nay.message}\n`, exitCode: 2 };
-
-			return await bash_transfer_command_run({
-				ctx,
-				dbFilesRoots,
-				transferContext,
-				command,
-				commandCtx,
-				parsed: parsed._yay,
-				background: true,
-			});
-		}
-
-		if (args.length !== 2 || !["status", "wait", "stop"].includes(args[0]!))
-			return {
-				stdout: "",
-				stderr: "Usage: transfer start copy|move <sources> <destination>, or transfer status|wait|stop <transfer-id>\n",
-				exitCode: 2,
-			};
-
-		const scope = { membershipId: transferContext.membershipId, threadId, runId: args[1] as Id<"files_transfer_runs"> };
-
-		if (args[0] === "stop") {
-			try {
-				await stop_transfer(ctx, scope, "user");
-			} catch (error) {
-				transferContext.abort(error);
-				throw error;
-			}
-
-			return { stdout: `Stopping. Transfer ${scope.runId}. Ready output is kept.\n`, stderr: "", exitCode: 0 };
-		}
-
-		const observeUntil = Date.now() + 30_000;
-		for (;;) {
-			const view = await ctx.runQuery(internal.files_transfer.get_for_agent, scope);
-
-			if (!view) return { stdout: "", stderr: "transfer: not found\n", exitCode: 1 };
-
-			const active = ["queued", "running", "stopping", "awaiting_input"].includes(view.activity.status);
-
-			if (args[0] === "status" || !active || Date.now() >= observeUntil || transferContext.signal.aborted) {
-				dbFilesRoots.app.fs.resetProposalCaches();
-				return {
-					stdout: `Transfer ${view.runId}: ${view.activity.status}. Activity ${view.activity._id}. ${JSON.stringify(view.activity.progress)}\n`,
-					stderr: "",
-					exitCode: args[0] === "status" || view.activity.status === "succeeded" ? 0 : active ? 3 : 1,
-				};
-			}
-
-			await new Promise<void>((resolve) => setTimeout(resolve, 200));
-		}
-	});
 }

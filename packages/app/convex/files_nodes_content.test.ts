@@ -301,7 +301,6 @@ async function start_agent_copy(
 			title: "Copy draft",
 			archived: false,
 			runtime: "aisdk_5",
-			stateId: null,
 			createdBy: db.userId,
 			updatedBy: db.userId,
 			updatedAt: Date.now(),

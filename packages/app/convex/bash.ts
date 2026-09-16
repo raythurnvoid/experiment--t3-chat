@@ -6,7 +6,7 @@ import { ai_chat_bash_result_validator } from "./schema.ts";
 
 // Shell diagnostics live with `bash_run_command`, so the Convex action imports
 // only the runner and does not need the lower-level shell constants.
-import { bash_run_command, bash_run_plugin_review_command } from "../server/bash.ts";
+import { bash_run_command, bash_run_job, bash_run_plugin_review_command } from "../server/bash.ts";
 
 const review_scratch = v.object({
 	fileNodes: v.array(
@@ -35,10 +35,22 @@ export const run = internalAction({
 		toolCallId: v.string(),
 		command: v.string(),
 		allowDbFilesMkdir: v.boolean(),
+		shellName: v.string(),
 	},
 	returns: ai_chat_bash_result_validator,
 	handler: async (ctx, args) => {
 		return await bash_run_command(ctx, args);
+	},
+});
+
+/**
+ * The background job worker, run by the jobs workpool.
+ */
+export const run_job = internalAction({
+	args: { invocationId: v.id("ai_chat_bash_invocations") },
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		return await bash_run_job(ctx, args);
 	},
 });
 
