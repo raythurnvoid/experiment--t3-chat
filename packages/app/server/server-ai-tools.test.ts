@@ -220,7 +220,7 @@ describe("ai_chat_tool_create_bash", () => {
 			"A job lives at most 24 hours from its &, counting the waits between its runs",
 			"A top-level sleep N with a literal N of 5 seconds or more pauses the job for N seconds (at most one hour) without holding a worker",
 			"a sleep with a redirection or with an assignment in front of it, ! sleep N, time sleep N, a sleep joined by && or ||",
-			"a job waiting to continue after a pause prints [job N queued], and the line is printed even when the job has produced nothing yet",
+			"a job waiting to continue after a pause prints [job N queued] and a job asked to stop prints [job N stopping]",
 			"A paused job shows as queued in jobs and in Notifications, the transcript gets one entry per run of the job, and jobs -o N shows the head of the whole job's output.",
 			"Using /tmp inside a job for intermediate files is fine. Never redirect a job's output to /tmp and never leave a result file there: read a job's output with jobs -o N or the shell transcript.",
 			"A file a job must keep goes under the current workspace path; in Agent mode that write becomes a pending proposal. In Ask mode a job cannot write files, so its result is its output.",

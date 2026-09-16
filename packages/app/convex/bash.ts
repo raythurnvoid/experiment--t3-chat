@@ -19,7 +19,9 @@ const review_scratch = v.object({
 			symlinkTargetPath: v.optional(v.string()),
 		}),
 	),
-	fileNodesContentDict: v.record(v.string(), v.bytes()),
+	// A path is a value here, never a field name: Convex allows only printable ASCII field names, so a
+	// record keyed by path refuses the whole call for a file named `café.txt`.
+	fileNodesContent: v.array(v.object({ path: v.string(), content: v.bytes() })),
 });
 
 export type bash_ReviewScratch = Infer<typeof review_scratch>;

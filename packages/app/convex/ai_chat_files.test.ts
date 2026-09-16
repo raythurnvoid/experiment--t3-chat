@@ -74,10 +74,10 @@ describe("ai_chat_files /tmp persistence", () => {
 					{ path: "/a.txt", kind: "file", mode: 0o100644, size: 3, mtime: now },
 					{ path: "/b.txt", kind: "file", mode: 0o100644, size: 3, mtime: now },
 				],
-				fileNodesContentDict: {
-					"/a.txt": bytes("one"),
-					"/b.txt": bytes("two"),
-				},
+				fileNodesContent: [
+					{ path: "/a.txt", content: bytes("one") },
+					{ path: "/b.txt", content: bytes("two") },
+				],
 				deletePaths: [],
 			}),
 		);
@@ -89,7 +89,7 @@ describe("ai_chat_files /tmp persistence", () => {
 				workspaceId: ctxData.workspaceId,
 				threadId: ctxData.threadId,
 				fileNodes: [{ path: "/a.txt", kind: "file", mode: 0o100644, size: 3, mtime: now + 1 }],
-				fileNodesContentDict: { "/a.txt": bytes("ONE") },
+				fileNodesContent: [{ path: "/a.txt", content: bytes("ONE") }],
 				deletePaths: ["/b.txt"],
 			}),
 		);
@@ -119,7 +119,7 @@ describe("ai_chat_files /tmp persistence", () => {
 				workspaceId: ctxData.workspaceId,
 				threadId: ctxData.threadId,
 				fileNodes: [{ path: "/node", kind: "file", mode: 0o100644, size: 4, mtime: now }],
-				fileNodesContentDict: { "/node": bytes("file") },
+				fileNodesContent: [{ path: "/node", content: bytes("file") }],
 				deletePaths: [],
 			}),
 		);
@@ -131,7 +131,7 @@ describe("ai_chat_files /tmp persistence", () => {
 				workspaceId: ctxData.workspaceId,
 				threadId: ctxData.threadId,
 				fileNodes: [{ path: "/node", kind: "directory", mode: 0o40755, size: 0, mtime: now + 1 }],
-				fileNodesContentDict: {},
+				fileNodesContent: [],
 				deletePaths: [],
 			}),
 		);
@@ -159,7 +159,7 @@ describe("ai_chat_files /tmp persistence", () => {
 					workspaceId: f.workspaceId,
 					threadId: f.threadId,
 					fileNodes: [{ path: "/late.txt", kind: "file", mode: 0o100644, size: 4, mtime: Date.now() }],
-					fileNodesContentDict: { "/late.txt": bytes("late") },
+					fileNodesContent: [{ path: "/late.txt", content: bytes("late") }],
 					deletePaths: [],
 				}),
 			).rejects.toThrow("no longer available");
@@ -192,7 +192,7 @@ describe("ai_chat_files /tmp persistence", () => {
 					{ path: "/dir", kind: "directory", mode: 0o40755, size: 0, mtime: now },
 					{ path: "/link", kind: "symlink", mode: 0o120777, size: 6, mtime: now, symlinkTargetPath: "/a.txt" },
 				],
-				fileNodesContentDict: { "/a.txt": bytes("one") },
+				fileNodesContent: [{ path: "/a.txt", content: bytes("one") }],
 				deletePaths: [],
 			}),
 		);

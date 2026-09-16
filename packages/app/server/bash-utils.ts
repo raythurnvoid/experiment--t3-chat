@@ -179,9 +179,10 @@ export const bash_ABORT_REASON_STOPPED = "job stopped";
  * declared dead before its worker stops: a watchdog or a Stop settles the Activity while a slow
  * worker is still finishing, and the worker then stores its own code under a `timed_out` or
  * `canceled` Activity. The feed, `jobs -a` and the finished-job note all show the Activity status, so
- * `wait` and the `jobs -o` marker read the Activity first and agree with them instead of reporting
- * the late result's code. A job with no stored code (a crashed worker, or a result the cleanup cron
- * already stripped) reports 0 or 1 from the Activity too.
+ * `wait`, the `jobs -o` marker and the note read the Activity first and agree with them instead of
+ * reporting the late result's code. A job with no stored code at all (stopped before a worker ran, a
+ * crashed worker, or a result the cleanup cron already stripped) answers from the Activity too:
+ * `succeeded` is 0, `timed_out` 124, `canceled` 143 and everything else 1.
  */
 export function bash_job_exit_code(activityStatus: Doc<"activities">["status"], storedExitCode: number | null) {
 	if (activityStatus === "timed_out") return bash_COMMAND_EXIT_TIMED_OUT;
@@ -293,11 +294,11 @@ export function bash_clamp_listing_page_limit(limit: number) {
 /**
  * Keep the first `maxChars` UTF-16 code units of `text`, and never cut a character in half. A
  * character outside the basic range takes two code units, so a cut at a fixed count can land between
- * them. Convex then refuses the whole call: a mutation argument that holds half a character fails
- * with "Invalid arguments provided", which we checked against the dev deployment by running
- * `printf 'A\ud83cB'` in the app. Every Bash cut that carries command output or a script into a
- * document goes through here. Same rule as the chunk cut in server/files-plain-text-chunking.ts. A
- * cut is not the only way to get half a character, so what the script printed is repaired as well.
+ * them, and Convex refuses a string that holds half a character (`.agents/skills/convex/SKILL.md`:
+ * strings "must be valid Unicode sequences"). Every Bash cut that carries command output or a script
+ * into a document goes through here. Same rule as the chunk cut in
+ * server/files-plain-text-chunking.ts. A cut is not the only way to get half a character, so
+ * `bash_text_well_formed` repairs what the script itself printed.
  */
 export function bash_text_head(text: string, maxChars: number) {
 	if (text.length <= maxChars) return text;
@@ -308,15 +309,78 @@ export function bash_text_head(text: string, maxChars: number) {
 }
 
 /**
- * Replace every half character with U+FFFD. The shell can print one half on its own, with no cut
- * involved: `printf '\ud83c'` is a valid command. Convex refuses to store the result, so the Bash
- * call would fail with "Invalid arguments provided" and the model would see no output at all. Every
- * string of engine output this action hands to a mutation goes through here first. The `u` flag makes
- * the pattern read whole characters, so a complete pair is one character and does not match; only an
- * unpaired half does.
+ * Replace every half of a character with U+FFFD. The shell can produce one half on its own, with no
+ * cut involved: `printf '\ud83c'` is a valid command. Convex refuses a string that holds one, and it
+ * refuses the whole call: we ran `printf 'A\ud83cB'` against the dev deployment and the Bash call
+ * failed with "Invalid arguments provided" and stored nothing. The `u` flag makes the pattern read
+ * whole characters, so a complete pair is one character and does not match; only an unpaired half
+ * does. `is_well_formed_string` in convex/plugins_data_http.ts asks the same question with a hand
+ * written scan, and the plugin data route refuses such a string instead of repairing it, because
+ * there the string is a caller's input and here it is the shell's own output.
  */
 export function bash_text_well_formed(text: string) {
 	return text.replace(LONE_SURROGATE_REGEX, "�");
+}
+
+/**
+ * Repair every string inside `value`, however deeply it sits. Pass anything that is not a string, a
+ * plain object or an array through as it is, so file bytes and ids reach the backend untouched.
+ */
+function value_well_formed(value: unknown): unknown {
+	if (typeof value === "string") return bash_text_well_formed(value);
+	if (Array.isArray(value)) return value.map(value_well_formed);
+	if (value !== null && typeof value === "object" && Object.getPrototypeOf(value) === Object.prototype) {
+		return Object.fromEntries(
+			Object.entries(value).map(([key, entry]) => [bash_text_well_formed(key), value_well_formed(entry)]),
+		);
+	}
+	return value;
+}
+
+/**
+ * Repair every string of a value the shell sends to Convex or returns to the model.
+ */
+export function bash_value_well_formed<T>(value: T) {
+	return value_well_formed(value) as T;
+}
+
+/**
+ * The action ctx every Bash call uses, with one repair on the way out. Half a character does not only
+ * come out of a command's output: `mkdir "/tmp/$(printf '\ud83c')"` names a file with one, and that
+ * name then travels as a mutation argument, as does the saved cwd, an observed path and a copy
+ * destination. Convex refuses the whole call for any of them, so a call that already did its work
+ * would die at its last write. Wrapping the ctx once covers every query, mutation and action the
+ * shell sends, including the ones each command sends for itself. The same shape as the accounting
+ * wrapper in convex/files_pending_update_runs.ts.
+ */
+export function bash_well_formed_ctx(ctx: ActionCtx): ActionCtx {
+	// A function reference is not a value the shell built, so repair the args object only.
+	const repaired = (args: unknown[]) => (args.length > 1 ? [args[0], bash_value_well_formed(args[1])] : args);
+
+	// Each Proxy passes the receiver of the call on to the method it wraps, so taking the method here
+	// does not lose its `this`, which is what `unbound-method` guards against. The object below carries
+	// every own member of the real ctx, so that `this` still reaches all of them.
+	return {
+		...ctx,
+		// eslint-disable-next-line @typescript-eslint/unbound-method
+		runQuery: new Proxy(ctx.runQuery, {
+			apply(method, receiver, args: unknown[]) {
+				return Reflect.apply(method, receiver, repaired(args));
+			},
+		}),
+		// eslint-disable-next-line @typescript-eslint/unbound-method
+		runMutation: new Proxy(ctx.runMutation, {
+			apply(method, receiver, args: unknown[]) {
+				return Reflect.apply(method, receiver, repaired(args));
+			},
+		}),
+		// eslint-disable-next-line @typescript-eslint/unbound-method
+		runAction: new Proxy(ctx.runAction, {
+			apply(method, receiver, args: unknown[]) {
+				return Reflect.apply(method, receiver, repaired(args));
+			},
+		}),
+	};
 }
 
 export function bash_regex_validation_error(command: string, pattern: string) {

@@ -954,6 +954,32 @@ describe("job wakeup", () => {
 		expect(wakeups).toHaveLength(1);
 	});
 
+	test("the note of a settled job reports the Activity code, not the late result's", async () => {
+		const f = await fixture();
+		await seed_messages(f);
+		const start = Date.now();
+		const job = await f.seed_job({ jobNumber: 1, status: "running", wakeAgent });
+		// A chat run holds the thread lease, so the watchdog's own note is dropped and this finish is
+		// the last chance to tell the agent. The slow worker then stores the 0 of a script that finished
+		// on its own, and the note must not say the job succeeded while `wait`, `jobs -o` and the feed
+		// all say it timed out.
+		vi.setSystemTime(start + PLACEHOLDER_MS);
+		expect(await f.t.mutation(internal.ai_chat.thread_run_begin, { threadId: f.scope.threadId })).toBe(true);
+		await f.t.mutation(internal.ai_chat_files.timeout_bash_job, {
+			invocationId: job.invocationId,
+			expectedDeadlineAt: start + PLACEHOLDER_MS,
+		});
+		await f.t.mutation(internal.ai_chat.thread_run_end, { threadId: f.scope.threadId, kind: "chat" });
+		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
+			invocationId: job.invocationId,
+			result: job_result(0, "late\n"),
+		});
+
+		expect((await read_thread(f)).messages.at(-1)?.content.parts[0].text).toContain(
+			"Background job 1 finished in shell default with exit 124.",
+		);
+	});
+
 	test("the wakeups stop chaining without the user and chain again after a chat request", async () => {
 		const f = await fixture();
 		await seed_messages(f);
@@ -1706,7 +1732,7 @@ describe("list_thread_jobs", () => {
 });
 
 describe("read_job_output", () => {
-	test("returns the stored result for 7 days, then the Activity status for a stripped one", async () => {
+	test("keeps the stored result for 7 days, then answers with the Activity status and no result", async () => {
 		const f = await fixture();
 		const start = Date.now();
 		const job = await f.seed_job({ jobNumber: 1, status: "running" });
@@ -1762,12 +1788,23 @@ describe("read_job_exit_codes", () => {
 			result: job_result(5),
 		});
 
+		// The stopped twin of job 1, and the only row whose code cannot come from a result: a Stop
+		// settles the Activity and the worker never stores one. Reading the Activity is what turns this
+		// into 143; the plain no-result fallback would say 1.
+		const canceled = await f.seed_job({ jobNumber: 4, stopRequestedAt: Date.now() });
+		await f.t.mutation(internal.ai_chat_files.handle_bash_job_complete, {
+			workId: canceled.workId!,
+			context: { invocationId: canceled.invocationId },
+			result: { kind: "success", returnValue: null },
+		});
+
 		expect(
-			await f.t.query(internal.ai_chat_files.read_job_exit_codes, { ...f.scope, jobNumbers: [1, 2, 3, 99] }),
+			await f.t.query(internal.ai_chat_files.read_job_exit_codes, { ...f.scope, jobNumbers: [1, 2, 3, 4, 99] }),
 		).toEqual([
 			{ jobNumber: 1, exitCode: 124 },
 			{ jobNumber: 2, exitCode: 143 },
 			{ jobNumber: 3, exitCode: 5 },
+			{ jobNumber: 4, exitCode: 143 },
 			{ jobNumber: 99, exitCode: 1 },
 		]);
 	});

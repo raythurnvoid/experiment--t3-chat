@@ -1352,6 +1352,20 @@ describe("bash_run_command", () => {
 		expect(blinded.stderr).toContain("or use words like `readme`");
 	});
 
+	test("does not repeat app-command guidance for a path that holds half a character", async () => {
+		const { run } = await create_bash_runner();
+
+		// The guidance is recorded as the command printed it, so the search for it has to run against
+		// the same raw text. Repairing the output before this point made the search miss: the guidance
+		// was printed a second time, and raw, so the call still sent Convex half a character.
+		const broken = await run(`cat "$(printf 'a\\ud83c')/f.md"`);
+
+		expect(broken.metadata.exitCode).toBe(1);
+		expect(broken.stderr).toContain("No such file or directory");
+		expect(broken.stderr).not.toContain("its stderr was discarded");
+		expect(broken.stderr.isWellFormed()).toBe(true);
+	});
+
 	test("does not repeat app-command guidance that is already visible", async () => {
 		const { run } = await create_bash_runner();
 
@@ -2505,16 +2519,39 @@ describe("bash_run_command", () => {
 		const lastPatchArgs = patchCalls.at(-1)?.[1] as
 			| {
 					fileNodes: ai_chat_files_patch_thread_tmp_files_Args["fileNodes"];
-					fileNodesContentDict: ai_chat_files_patch_thread_tmp_files_Args["fileNodesContentDict"];
+					fileNodesContent: ai_chat_files_patch_thread_tmp_files_Args["fileNodesContent"];
 					deletePaths: string[];
 			  }
 			| undefined;
 		expect(lastPatchArgs?.fileNodes.map((tmpFile) => tmpFile.path)).toEqual(["/a.txt"]);
-		expect(lastPatchArgs?.fileNodesContentDict).toEqual({ "/a.txt": expect.any(ArrayBuffer) });
+		expect(lastPatchArgs?.fileNodesContent).toEqual([{ path: "/a.txt", content: expect.any(ArrayBuffer) }]);
 		expect(lastPatchArgs?.deletePaths).toEqual([]);
 
 		const read = await run("cat /tmp/a.txt /tmp/b.txt");
 		expect(read.stdout).toBe("ONEtwo");
+	});
+
+	test("flushes a /tmp file whose name is not ASCII and one that holds half a character", async () => {
+		const { run, runMutation } = await create_bash_runner();
+
+		// Convex allows only printable ASCII field names, so while this payload kept the content in a
+		// record keyed by path, one file named `café.txt` failed the whole call. A name can also hold
+		// half a character, which Convex refuses anywhere. That one is repaired on its way out, like the
+		// output is.
+		const wrote = await run(`printf hi > /tmp/café.txt && printf hi > "/tmp/$(printf 'a\\ud83c').txt"`);
+		expect(wrote.metadata.exitCode, wrote.stderr).toBe(0);
+
+		const patchCalls = runMutation.mock.calls.filter(
+			([ref]) => function_name_of(ref) === "ai_chat_files:patch_thread_tmp_files",
+		);
+		const lastPatchArgs = patchCalls.at(-1)?.[1] as
+			| {
+					fileNodes: ai_chat_files_patch_thread_tmp_files_Args["fileNodes"];
+					fileNodesContent: ai_chat_files_patch_thread_tmp_files_Args["fileNodesContent"];
+			  }
+			| undefined;
+		expect(lastPatchArgs?.fileNodes.map((tmpFile) => tmpFile.path).sort()).toEqual(["/a�.txt", "/café.txt"]);
+		expect(lastPatchArgs?.fileNodesContent.map((entry) => entry.path).sort()).toEqual(["/a�.txt", "/café.txt"]);
 	});
 
 	test("flushes /tmp removals as delete-only deltas", async () => {
@@ -2580,7 +2617,7 @@ describe("bash_run_command", () => {
 		const lastPatchArgs = patchCalls.at(-1)?.[1] as
 			| {
 					fileNodes: ai_chat_files_patch_thread_tmp_files_Args["fileNodes"];
-					fileNodesContentDict: ai_chat_files_patch_thread_tmp_files_Args["fileNodesContentDict"];
+					fileNodesContent: ai_chat_files_patch_thread_tmp_files_Args["fileNodesContent"];
 					deletePaths: string[];
 			  }
 			| undefined;
@@ -2588,10 +2625,10 @@ describe("bash_run_command", () => {
 			"/copy-dir/a.txt",
 			"/move-dir/to-move.txt",
 		]);
-		expect(lastPatchArgs?.fileNodesContentDict).toEqual({
-			"/copy-dir/a.txt": expect.any(ArrayBuffer),
-			"/move-dir/to-move.txt": expect.any(ArrayBuffer),
-		});
+		expect(lastPatchArgs?.fileNodesContent).toEqual([
+			{ path: "/copy-dir/a.txt", content: expect.any(ArrayBuffer) },
+			{ path: "/move-dir/to-move.txt", content: expect.any(ArrayBuffer) },
+		]);
 		expect(lastPatchArgs?.deletePaths).toEqual(["/to-move.txt"]);
 
 		const read = await run("cat /tmp/copy-dir/a.txt /tmp/move-dir/to-move.txt");
@@ -4155,7 +4192,7 @@ describe("bash_run_command", () => {
 		test("jobs -o spends no read budget on a job that is still live", async () => {
 			const runner = await create_bash_runner();
 			// The budget check sits after the live check, so reading a live job three times in the call
-			// that launched it must not spend the 64 KiB the call may read.
+			// that launched it must not spend the two reads the call may make.
 			const read = await runner.run("sleep 60 & jobs -o 1; jobs -o 1; jobs -o 1; echo done");
 			expect(read.metadata.exitCode).toBe(0);
 			expect(read.stdout).toBe("done\n");
@@ -4254,7 +4291,7 @@ describe("bash_run_command", () => {
 			expect((await runner.run("jobs", "bash-widest-list", widest)).stdout).toBe(`[1] queued    ${widest} echo one\n`);
 		});
 
-		test("jobs -o reads 32 KiB per page and refuses a third read in one call", async () => {
+		test("jobs -o reads one 32k page per stream and refuses a third read in one call", async () => {
 			const runner = await create_bash_runner();
 			expect((await runner.run("seq 1 10000 &")).metadata.exitCode).toBe(0);
 			await run_job(runner, 1);
@@ -4398,21 +4435,19 @@ describe("bash_run_command", () => {
 			expect(mixed.stderr).not.toContain("in a row were refused");
 		});
 
-		test("a wait whose job ended lets the next launch ask the door again", async () => {
+		test("a wait for a job that had already ended leaves the local block in place", async () => {
 			const runner = await create_bash_runner();
-			// Waiting for a job that ended frees its slot, so it has to lift the local block. Otherwise
-			// the script the refusal message asks for - wait for a job, then start yours - is refused for
-			// the rest of the call with every slot free.
+			// Job 1 ended in an earlier call, so its slot was already free while these launches were
+			// refused and this wait frees nothing. Without that rule `true & wait 1` in a loop asks the
+			// door on every turn: `&` costs no command budget, so this count is all that bounds it.
 			expect((await runner.run("echo one &")).metadata.exitCode).toBe(0);
 			await run_job(runner, 1);
 			const tooBig = `true '${"a".repeat(66_000)}' &`;
 			const before = mutation_calls(runner, "ai_chat_files:start_bash_job");
-			const mixed = await runner.run(`${tooBig} ${tooBig} ${tooBig} ${tooBig} wait 1; true & echo rc=$?`);
-			// Three refusals reach the door, the fourth `&` is refused locally, and the launch after the
-			// `wait` reaches the door again and works.
-			expect(mutation_calls(runner, "ai_chat_files:start_bash_job") - before).toBe(4);
-			expect(mixed.stdout).toBe("rc=0\n");
-			expect(mixed.stderr).toContain("bash: started job 2 in shell default");
+			const blocked = await runner.run(`${tooBig} ${tooBig} ${tooBig} wait 1; ${tooBig} echo rc=$?`);
+			expect(mutation_calls(runner, "ai_chat_files:start_bash_job") - before).toBe(3);
+			expect(blocked.stdout).toBe("rc=1\n");
+			expect(blocked.stderr).toContain("3 launches in a row were refused in this call");
 		});
 
 		test("a wait that waited for nothing leaves the local block in place", async () => {
@@ -4422,6 +4457,18 @@ describe("bash_run_command", () => {
 			const tooBig = `true '${"a".repeat(66_000)}' &`;
 			const before = mutation_calls(runner, "ai_chat_files:start_bash_job");
 			const blocked = await runner.run(`${tooBig} ${tooBig} ${tooBig} wait; ${tooBig} echo rc=$?`);
+			expect(mutation_calls(runner, "ai_chat_files:start_bash_job") - before).toBe(3);
+			expect(blocked.stdout).toBe("rc=1\n");
+			expect(blocked.stderr).toContain("3 launches in a row were refused in this call");
+		});
+
+		test("a wait that gave up with its job still live leaves the local block in place", async () => {
+			const runner = await create_bash_runner();
+			// The wait returns 3 with job 1 still queued, so no slot was freed. The reset has to sit
+			// after that return: a reset before it would lift the block on a wait that ended nothing.
+			for (let n = 1; n <= 4; n++) expect((await runner.run("sleep 1 &")).metadata.exitCode).toBe(0);
+			const before = mutation_calls(runner, "ai_chat_files:start_bash_job");
+			const blocked = await runner.run("sleep 1 & sleep 1 & sleep 1 & wait -t 1 1; sleep 1 & echo rc=$?");
 			expect(mutation_calls(runner, "ai_chat_files:start_bash_job") - before).toBe(3);
 			expect(blocked.stdout).toBe("rc=1\n");
 			expect(blocked.stderr).toContain("3 launches in a row were refused in this call");
@@ -11540,7 +11587,7 @@ describe("bash_run_command", () => {
 				expect(created._nay).toBeUndefined();
 			}
 			let cwd = "/.plugins/review";
-			let scratch: bash_ReviewScratch = { fileNodes: [], fileNodesContentDict: {} };
+			let scratch: bash_ReviewScratch = { fileNodes: [], fileNodesContent: [] };
 			const run = async (command: string) => {
 				const result = await runner.t.action(internal.bash.run_plugin_review, {
 					reviewRoot,
@@ -11692,7 +11739,7 @@ describe("bash_run_command", () => {
 					userId: runner.seeded.userId,
 					command: "ls",
 					cwd: "/.plugins/review",
-					scratch: { fileNodes: [], fileNodesContentDict: {} },
+					scratch: { fileNodes: [], fileNodesContent: [] },
 				}),
 			).rejects.toThrow("Invalid plugin review root");
 		});
@@ -11711,7 +11758,7 @@ describe("bash_run_command", () => {
 				userId: runner.seeded.userId,
 				command: "cat dist/worker.js",
 				cwd: "/.plugins/review",
-				scratch: { fileNodes: [], fileNodesContentDict: {} },
+				scratch: { fileNodes: [], fileNodesContent: [] },
 			});
 			expect(read.exitCode).toBe(0);
 			expect(read.output).toContain("// café 🦜\nexport const value = 1;");
@@ -11770,7 +11817,7 @@ describe("bash_run_command", () => {
 				userId: runner.seeded.userId,
 				command: "grep --start-index 780000 --max-chars 2000 payload dist/large.js",
 				cwd: "/.plugins/review",
-				scratch: { fileNodes: [], fileNodesContentDict: {} },
+				scratch: { fileNodes: [], fileNodesContent: [] },
 			});
 			expect(read.exitCode, read.output).toBe(0);
 			expect(read.output).toContain("Largetailneedle");

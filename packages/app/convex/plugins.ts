@@ -1765,7 +1765,7 @@ export const run_version_review = internalAction({
 		let pendingSummary: string | null = null;
 		let reviewRoot: string | null = null;
 		let cwd = "/.plugins/review";
-		let scratch: bash_ReviewScratch = { fileNodes: [], fileNodesContentDict: {} };
+		let scratch: bash_ReviewScratch = { fileNodes: [], fileNodesContent: [] };
 
 		try {
 			const staged = await ctx.runAction(internal.plugins_review.stage_sources, {

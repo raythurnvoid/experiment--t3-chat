@@ -884,11 +884,7 @@ async function db_settle_bash_job(
 		});
 		// The worker stored no result, so the output it flushed so far is all the transcript gets.
 		const outcome = {
-			exitCode: {
-				failed: bash_COMMAND_EXIT_FAILURE,
-				canceled: bash_COMMAND_EXIT_STOPPED,
-				timed_out: bash_COMMAND_EXIT_TIMED_OUT,
-			}[args.status],
+			exitCode: bash_job_exit_code(args.status, null),
 			stdout: invocation.job.liveOutput?.stdout ?? "",
 			stderr: invocation.job.liveOutput?.stderr ?? "",
 			now: args.now,
@@ -1144,13 +1140,23 @@ export const finish_bash_job = internalMutation({
 			invocationId: invocation._id,
 		});
 
-		const outcome = { exitCode, stdout: args.result.stdout, stderr: args.result.stderr, now };
+		const activity = await activities_db_get_by_source_id(ctx, invocation._id);
+		const outcome = {
+			// The note the agent reads must not contradict `wait`, `jobs -o` and the feed. A watchdog or
+			// a Stop can settle the Activity while this worker is still finishing, and the code stored
+			// above is then the code of a script that ran to its end. The Activity decides, as it does
+			// for the two commands. On the normal path the Activity is still running here, so this is
+			// the stored code.
+			exitCode: bash_job_exit_code(activity?.status ?? status, exitCode),
+			stdout: args.result.stdout,
+			stderr: args.result.stderr,
+			now,
+		};
 		// A settle that ran first already wrote the finish entry and ended the Activity. The result
 		// above is still stored, because that is the worker's real output, but these two run once: a
 		// second entry would contradict the first one's exit code.
 		if (!settled) {
 			// The transcript keeps the full output; the row keeps the bounded copy.
-			const activity = await activities_db_get_by_source_id(ctx, invocation._id);
 			await db_append_job_finish_entry(ctx, invocation, { ...outcome, startedAt: activity?.startedAt });
 			await activities_db_finish(ctx, {
 				sourceId: invocation._id,
@@ -1755,9 +1761,11 @@ export type ai_chat_files_read_job_output_Result =
  * `jobs -o` marker reports the same code for the same job.
  *
  * Only the codes come back, because a stored result is up to 700 KiB and `wait` needs one number per
- * job. The rows are still read here: reading 12 of them costs at most 8.4 MiB in one transaction,
- * against a 16 MiB read limit. The batch passes elsewhere in this file keep job-row reads at 8
- * because they page over an unbounded set; this list cannot be longer than
+ * job. The rows are still read here. A row whose Activity settled as timed out or stopped is skipped,
+ * and the rest are finished rows, whose other large fields are already nulled, so the read is about
+ * 700 KiB per job: 12 of them stay near 8.2 MiB in one transaction, against the 16 MiB a transaction
+ * may read. The cleanup pass in this file keeps its own job-row reads at 8 for the same byte reason,
+ * over a set whose length it does not know; this list cannot be longer than
  * `bash_JOB_NUMBERS_MAX_COUNT`.
  */
 export const read_job_exit_codes = internalQuery({
@@ -1967,7 +1975,9 @@ export const patch_thread_tmp_files = internalMutation({
 				symlinkTargetPath: v.optional(v.string()),
 			}),
 		),
-		fileNodesContentDict: v.record(v.string(), v.bytes()),
+		// A path is a value here, never a field name: Convex allows only printable ASCII field names, so a
+		// record keyed by path refuses the whole call for a file named `café.txt`.
+		fileNodesContent: v.array(v.object({ path: v.string(), content: v.bytes() })),
 		deletePaths: v.array(v.string()),
 	},
 	returns: v.null(),
@@ -2007,6 +2017,7 @@ export const patch_thread_tmp_files = internalMutation({
 			}),
 		);
 
+		const contentByPath = new Map(args.fileNodesContent.map((entry) => [entry.path, entry.content]));
 		await Promise.all(
 			args.fileNodes.map(async (fileNode) => {
 				const doc = {
@@ -2039,7 +2050,7 @@ export const patch_thread_tmp_files = internalMutation({
 					return;
 				}
 
-				const bytes = args.fileNodesContentDict[fileNode.path];
+				const bytes = contentByPath.get(fileNode.path);
 				if (bytes === undefined) {
 					return;
 				}

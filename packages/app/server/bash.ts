@@ -123,7 +123,8 @@ import {
 	bash_SHELL_COMMENT_LINE_REGEX,
 	bash_WHITESPACE_RUN_REGEX,
 	bash_text_head,
-	bash_text_well_formed,
+	bash_value_well_formed,
+	bash_well_formed_ctx,
 	type bash_DbFilesRoots,
 } from "./bash-utils.ts";
 import { bash_ALLOWED_COMMANDS, bash_delegate_native_just_bash_tmp_command } from "./bash-delegate.ts";
@@ -138,10 +139,12 @@ const SHELL_STATE_MAX_BYTES = 128 * 1024;
 const BASH_JOB_MAX_COMMAND_COUNT = 2_000;
 // The worker reads the Stop flag, the row status and its permissions this often.
 const BASH_JOB_POLL_MS = 5_000;
-// After this many launches refused in a row, the hook refuses the rest without a query. A launch
-// that succeeds starts the count again, and so does a `wait` whose jobs all ended, because that is
-// how a script frees a slot inside one call. Without one of those two the count could never come
-// back down: the local refusal returns before the query that would clear it.
+// After this many launches refused in a row, the hook refuses the rest without a query. A launch that
+// succeeds starts the count again, and so does a `wait` that found a job live and saw it end, because
+// those are the two ways a script frees a slot inside one call. If neither reset existed the count
+// could never come back down: the local refusal returns before the query that would clear it. The
+// engine charges no command for `cmd &`, so this count is the only bound on how often one call can ask
+// the jobs door.
 const BASH_JOB_LAUNCH_MAX_REFUSALS = 3;
 // A bare top-level `sleep` of at least this long pauses the job instead of holding a worker, and
 // waits at most as long as the sleep command itself would (its own cap is one hour).
@@ -172,7 +175,7 @@ const BASH_TMP_SESSION_MAX_FILE_BYTES = 2_000;
 
 type BashTmpPatchEntry = ai_chat_files_patch_thread_tmp_files_Args["fileNodes"][number];
 
-type BashTmpPatchContentDict = ai_chat_files_patch_thread_tmp_files_Args["fileNodesContentDict"];
+type BashTmpPatchContent = ai_chat_files_patch_thread_tmp_files_Args["fileNodesContent"];
 
 /**
  * Whitelist of commands allowed to operate on db-files roots.
@@ -229,7 +232,7 @@ async function tmp_fs_delta_payload(tmpFs: BashTmpFs) {
 	const finalPaths = tmpFs.fs.getAllPaths().filter((path) => path !== "/");
 	const finalPathSet = new Set(finalPaths);
 	const deletePaths = [...tmpFs.baselinePaths].filter((path) => !finalPathSet.has(path)).sort();
-	const tmpFilesContentDict: BashTmpPatchContentDict = {};
+	const tmpFilesContent: BashTmpPatchContent = [];
 	const tmpFileEntryPromises: Promise<BashTmpPatchEntry>[] = [];
 
 	for (const path of finalPaths) {
@@ -272,7 +275,7 @@ async function tmp_fs_delta_payload(tmpFs: BashTmpFs) {
 				}
 
 				const bytes = await tmpFs.fs.readFileBuffer(path);
-				tmpFilesContentDict[path] = new Uint8Array(bytes).buffer;
+				tmpFilesContent.push({ path, content: new Uint8Array(bytes).buffer });
 				return {
 					path,
 					kind: "file" as const,
@@ -287,7 +290,7 @@ async function tmp_fs_delta_payload(tmpFs: BashTmpFs) {
 	const tmpFileEntries = await Promise.all(tmpFileEntryPromises);
 	return {
 		fileNodes: tmpFileEntries,
-		fileNodesContentDict: tmpFilesContentDict,
+		fileNodesContent: tmpFilesContent,
 		deletePaths,
 	};
 }
@@ -598,17 +601,16 @@ class BashTmpFs implements IFileSystem {
 
 		return await BashTmpFs.from_files({
 			fileNodes: loaded.file_nodes,
-			fileNodesContentDict: Object.fromEntries(
-				loaded.file_nodes.map((file) => [
-					file.path,
-					loaded.file_nodes_content_dict[file._id]?.bytes ?? new ArrayBuffer(0),
-				]),
-			),
+			fileNodesContent: loaded.file_nodes.map((file) => ({
+				path: file.path,
+				content: loaded.file_nodes_content_dict[file._id]?.bytes ?? new ArrayBuffer(0),
+			})),
 		});
 	}
 
 	static async from_files(loaded: bash_ReviewScratch) {
 		const tmpFs = new BashTmpFs();
+		const contentByPath = new Map(loaded.fileNodesContent.map((entry) => [entry.path, entry.content]));
 		for (const tmpFile of loaded.fileNodes) {
 			if (tmpFile.kind === "directory") {
 				await tmpFs.fs.mkdir(tmpFile.path, { recursive: true });
@@ -618,7 +620,7 @@ class BashTmpFs implements IFileSystem {
 				await tmpFs.fs.symlink(tmpFile.symlinkTargetPath ?? "", tmpFile.path);
 				await tmpFs.fs.chmod(tmpFile.path, tmpFile.mode);
 			} else {
-				const bytes = loaded.fileNodesContentDict[tmpFile.path] ?? new ArrayBuffer(0);
+				const bytes = contentByPath.get(tmpFile.path) ?? new ArrayBuffer(0);
 				tmpFs.fs.writeFileSync(tmpFile.path, new Uint8Array(bytes), undefined, {
 					mode: tmpFile.mode,
 					mtime: new Date(tmpFile.mtime),
@@ -1420,27 +1422,26 @@ function bash_shell_create(
 						PWD: cwd,
 					},
 				}));
-			// The engine can hand back half a character: `printf '\ud83c'` prints one. Convex refuses a
-			// mutation argument that holds one, so the result, the transcript entry and the tool output
-			// all have to be repaired here, before any caller stores them.
-			return {
-				...result,
-				stdout: bash_text_well_formed(result.stdout),
-				stderr: bash_text_well_formed(result.stderr),
-			};
+			// Do not repair the output here. Callers below keep appending to `result.stderr`, and one of
+			// them looks for text it recorded earlier. A repair in the middle would make that search miss,
+			// so the text would be printed twice. `bash_well_formed_ctx` and the return of this call repair
+			// the output after every append.
+			return result;
 		},
 		app_command_diagnostics: () => appCommandDiagnostics,
 	};
 }
 
 export async function bash_run_plugin_review_command(
-	ctx: ActionCtx,
+	actionCtx: ActionCtx,
 	args: { reviewRoot: string; userId: Id<"users">; command: string; cwd: string; scratch: bash_ReviewScratch },
 ) {
 	// Only the host supplies this root. Never accept a tenant or published-version path here.
 	if (!/^\/review-[a-f0-9]{32}$/u.test(args.reviewRoot)) {
 		throw new Error("Invalid plugin review root");
 	}
+
+	const ctx = bash_well_formed_ctx(actionCtx);
 
 	const currentWorkspacePath = `${bash_PLUGINS_MOUNT_ROOT}/review`;
 	const sourceFs = new bash_DbFilesFs({
@@ -1494,9 +1495,11 @@ export async function bash_run_plugin_review_command(
 
 	// Return the bounded scratch snapshot to this review, without creating a UI chat thread.
 	tmpFs.baselinePaths.clear();
-	const { fileNodes, fileNodesContentDict } = await tmp_fs_delta_payload(tmpFs);
+	const { fileNodes, fileNodesContent } = await tmp_fs_delta_payload(tmpFs);
 
-	return {
+	// A scratch file can be named with half a character. This action's return validator refuses that,
+	// so repair the whole snapshot here.
+	return bash_value_well_formed({
 		output: format_bash_output({
 			command: args.command,
 			cwd,
@@ -1507,8 +1510,8 @@ export async function bash_run_plugin_review_command(
 		}),
 		exitCode: result.exitCode,
 		cwd: nextCwd,
-		scratch: { fileNodes, fileNodesContentDict },
-	};
+		scratch: { fileNodes, fileNodesContent },
+	});
 }
 
 /**
@@ -1519,7 +1522,7 @@ export async function bash_run_plugin_review_command(
  * deltas, then return the formatted transcript and metadata.
  */
 export async function bash_run_command(
-	ctx: ActionCtx,
+	actionCtx: ActionCtx,
 	args: {
 		organizationId: Id<"organizations">;
 		workspaceId: Id<"organizations_workspaces">;
@@ -1537,6 +1540,8 @@ export async function bash_run_command(
 		wakeAgent: { modelId: ai_chat_ModelId } | null;
 	},
 ): Promise<NonNullable<Doc<"ai_chat_bash_invocations">["result"]>> {
+	const ctx = bash_well_formed_ctx(actionCtx);
+
 	// The shell is part of the call identity: a replay with another shell must not rejoin.
 	const digest = await crypto.subtle.digest(
 		"SHA-256",
@@ -1727,7 +1732,7 @@ export async function bash_run_command(
 					workspaceId: args.workspaceId,
 					threadId: args.threadId,
 					fileNodes: tmpPatch.fileNodes,
-					fileNodesContentDict: tmpPatch.fileNodesContentDict,
+					fileNodesContent: tmpPatch.fileNodesContent,
 					deletePaths: tmpPatch.deletePaths,
 				}),
 			);
@@ -1905,7 +1910,9 @@ async function run_command_and_diagnose(args: {
 
 /**
  * The stored result of a chat call or a job: the transcript for the model, and the bounded copy
- * of the output the row keeps.
+ * of the output the row keeps. This is the last thing built from engine output, so it is where the
+ * repair for half a character belongs: the action returns this object, and its own return validator
+ * refuses a string that holds one.
  */
 function bash_response(args: {
 	bashFs: Awaited<ReturnType<typeof bash_fs_create>>;
@@ -1923,7 +1930,7 @@ function bash_response(args: {
 	const { bashFs, command, result, nextCwd } = args;
 	const stdout = bashFs.truncate_output(result.stdout);
 	const stderr = bashFs.truncate_output(result.stderr);
-	return {
+	return bash_value_well_formed({
 		title: `exit ${result.exitCode} · ${nextCwd}`,
 		output: bashFs.format_output({
 			command,
@@ -1949,7 +1956,7 @@ function bash_response(args: {
 			observedPathsTruncated: args.observedPathsTruncated,
 			...(args.waitingForJobs?.length ? { waitingForJobs: args.waitingForJobs } : {}),
 		},
-	};
+	});
 }
 
 /**
@@ -1967,9 +1974,11 @@ function bash_response(args: {
  * counting the waits between its runs, because every pause arms a fresh budget.
  */
 export async function bash_run_job(
-	ctx: ActionCtx,
+	actionCtx: ActionCtx,
 	args: { invocationId: Id<"ai_chat_bash_invocations"> },
 ): Promise<null> {
+	const ctx = bash_well_formed_ctx(actionCtx);
+
 	const claimed = (await ctx.runMutation(internal.ai_chat_files.claim_bash_job, {
 		invocationId: args.invocationId,
 	})) as ai_chat_files_claim_bash_job_Result;
@@ -2004,9 +2013,9 @@ export async function bash_run_job(
 	const onOutput: NonNullable<BashOptions["onOutput"]> = (stream, text) => {
 		const truncatedKey = stream === "stdout" ? "stdoutTruncated" : "stderrTruncated";
 		if (liveOutput[truncatedKey]) return;
-		// Cut what the head would become, not the new piece on its own. A character's two halves can
-		// arrive in two hand-overs, and cutting each piece by itself would keep the first half and
-		// leave the head with a broken character Convex refuses to store.
+		// Cut what the head would become, not the new piece on its own. The engine can pass the two
+		// halves of one character in two calls of this hook, and cutting each piece by itself would keep
+		// the first half and leave the head with a broken character.
 		const kept = liveOutput[stream] + text;
 		if (kept.length > bash_JOB_OUTPUT_READ_MAX_CHARS) {
 			liveOutput[stream] = bash_text_head(kept, bash_JOB_OUTPUT_READ_MAX_CHARS);
@@ -2016,13 +2025,6 @@ export async function bash_run_job(
 		}
 		liveOutputDirty = true;
 	};
-	// The script can also print half a character on its own, which no cut can help. Repair the head
-	// on its way into the row, so a pair that arrived in two hand-overs still joins in the head.
-	const stored_live_output = () => ({
-		...liveOutput,
-		stdout: bash_text_well_formed(liveOutput.stdout),
-		stderr: bash_text_well_formed(liveOutput.stderr),
-	});
 	// The Stop button, a deleted row, a lost permission and the watchdog all reach the script
 	// through this poll. A missing row and a lost permission count as a stop.
 	let polling = false;
@@ -2040,7 +2042,7 @@ export async function bash_run_job(
 				.runMutation(internal.ai_chat_files.flush_bash_job_output, {
 					invocationId: row._id,
 					workId,
-					liveOutput: stored_live_output(),
+					liveOutput: { ...liveOutput },
 				})
 				.catch((error: unknown) => {
 					liveOutputDirty = true;
@@ -2226,7 +2228,7 @@ export async function bash_run_job(
 					cwd: nextCwd,
 					cwdTarget: await bashFs.get_cwd_target(nextCwd),
 				},
-				liveOutput: liveOutput.stdout || liveOutput.stderr ? stored_live_output() : null,
+				liveOutput: liveOutput.stdout || liveOutput.stderr ? { ...liveOutput } : null,
 				outcome: { exitCode: result.exitCode, stdout: result.stdout, stderr: result.stderr },
 				reason: pause.reason,
 				runAfterMs: pause.runAfterMs,

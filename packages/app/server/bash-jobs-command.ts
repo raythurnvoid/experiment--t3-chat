@@ -50,18 +50,21 @@ export type bash_JobContext = {
 	 */
 	launchedJobNumbers: number[];
 	/**
-	 * Launches refused in a row; after 3 the hook refuses locally without a database round trip. A
-	 * launch that succeeds puts this back to 0, and so does a `wait` that saw every job it waited for
-	 * end, because that is how slots free up inside one call: a script can hit the jobs cap, `wait` for
-	 * those jobs, and start more. So this bounds a run of refusals, not the refusals of a whole call.
-	 * Without one of those two resets nothing could put it back, since the local refusal returns before
-	 * the query whose success clears it. A `wait` that waited for nothing resets nothing either, so a
-	 * loop of `cmd & wait` cannot use it to keep asking the door.
+	 * Launches refused in a row; after 3 the hook refuses locally without a database round trip. Two
+	 * things put it back to 0, because they are the two ways a slot frees up inside one call: a launch
+	 * that succeeds, and a `wait` that found a job live and then saw it end. A script can hit the jobs
+	 * cap, `wait` for those jobs, and start more. So this bounds a run of refusals, not the refusals of
+	 * a whole call. If neither reset existed the count could never come down, since the local refusal
+	 * returns before the query whose success would clear it. A `wait` for jobs that had already ended
+	 * frees nothing and resets nothing, so a loop of `cmd & wait 1` cannot use it to keep asking the
+	 * door. The jobs of another chat cannot be waited on at all, so a call blocked by those keeps the
+	 * block until it ends.
 	 */
 	launchRefusals: number;
 	/**
-	 * How much `jobs -o` may still print in this call, in UTF-16 code units; starts at 64k. Every read
-	 * costs a whole page, so this is two reads.
+	 * How much of the `jobs -o` read budget is left in this call, in UTF-16 code units so it can be
+	 * compared with one page. It starts at two pages, and every read costs a whole page whatever it
+	 * prints.
 	 */
 	readBudgetRemaining: number;
 	/**
@@ -80,8 +83,9 @@ export type bash_JobContext = {
 export const bash_JOB_OUTPUT_READ_BUDGET_CHARS = 64 * 1024;
 /**
  * One `jobs -o` page per stream, counted in UTF-16 code units. The worker keeps this much of a
- * running job's output head, so a live read and a finished read are cut at the same place. Two reads
- * print at most four of these pages, which is exactly one call's whole output limit.
+ * running job's output head, so a live read and a finished read are cut at the same place. One read
+ * can print one page on each stream, so the two reads the budget allows fill half of the 128k a call
+ * may print on a stream.
  */
 export const bash_JOB_OUTPUT_READ_MAX_CHARS = 32 * 1024;
 const WAIT_DEFAULT_MS = 30_000;
@@ -187,8 +191,8 @@ async function print_job_output(ctx: ActionCtx, job: bash_JobContext, jobNumber:
 			stderr: `bash: jobs: job ${jobNumber} ${bash_job_status_word(output.activityStatus)} and stored no output; read the shell transcript\n`,
 			exitCode: bash_COMMAND_EXIT_FAILURE,
 		};
-	// Every read costs the same, so the budget is two reads per call whatever they print. Say that,
-	// not the byte total: after two short reads the call has printed a few bytes, not 64 KiB.
+	// Every read costs the same, so the budget is two reads per call whatever they print. Say that, not
+	// the character total: after two short reads the call has printed a few characters, not two pages.
 	if (job.readBudgetRemaining < bash_JOB_OUTPUT_READ_MAX_CHARS)
 		return {
 			stdout: "",
@@ -212,9 +216,9 @@ async function print_job_output(ctx: ActionCtx, job: bash_JobContext, jobNumber:
 		};
 	}
 	const result = output.result!;
-	// The Activity decides the code, like `wait` and the status word above: a job settled as timed out
-	// or stopped can still store the code of a script that finished on its own, and printing that code
-	// here would tell the model the job succeeded.
+	// The Activity decides the code, like `wait`, the finished-job note and the status word above: a job
+	// settled as timed out or stopped can still store the code of a script that finished on its own, and
+	// a stored 0 printed here would say the job succeeded while every other surface says it did not.
 	const exitCode = bash_job_exit_code(output.activityStatus, result.metadata.exitCode);
 	return {
 		stdout: bounded(result.stdout, result.metadata.stdoutTruncated),
@@ -319,6 +323,9 @@ export function bash_wait_command_create(ctx: ActionCtx, job: bash_JobContext): 
 			};
 
 		const is_live = () => found.some((summary) => activities_is_active(summary.status));
+		// Whether this wait has a slot to free at all. A job that had already ended when the wait
+		// started frees nothing: its slot was free while the launches were refused.
+		const waitedOnLive = is_live();
 		if (job.wakeAgent !== null && is_live()) {
 			const armed = await ctx.runMutation(internal.ai_chat_files.arm_bash_job_wakeup, {
 				...scope,
@@ -345,10 +352,12 @@ export function bash_wait_command_create(ctx: ActionCtx, job: bash_JobContext): 
 		}
 		if (is_live()) return { stdout: "", stderr: "", exitCode: bash_COMMAND_EXIT_STILL_RUNNING };
 
-		// Every waited job has ended, so its slot is free. Let the next `&` ask the door again even when
-		// three launches in a row were refused before this `wait`. A `wait` that timed out with a job
-		// still live, or that waited for nothing, frees no slot and leaves the count alone.
-		job.launchRefusals = 0;
+		// A job this wait found live has ended, so its slot is free now. Let the next `&` ask the door
+		// again even when three launches in a row were refused before this wait. A wait for jobs that
+		// had already ended frees nothing, and neither does one that gave up with a job still live or
+		// waited for nothing. `&` costs no command budget in the engine, so this count is the only
+		// thing that bounds how often one call can ask the jobs door.
+		if (waitedOnLive) job.launchRefusals = 0;
 		// One query for every waited job, and it returns codes only. Reading each job's stored result
 		// here would move up to 700 KiB per job over the wire to learn one number.
 		const codes = (await ctx.runQuery(internal.ai_chat_files.read_job_exit_codes, {
