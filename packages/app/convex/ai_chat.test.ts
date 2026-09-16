@@ -9,6 +9,7 @@ import { access_control_db_ensure_role_assignment } from "./access_control.ts";
  */
 const snapshot = (env: { name: string; value: string }[]) => ({
 	env,
+	arrays: [],
 	options: {},
 	shoptOptions: {},
 	readonlyVars: [],

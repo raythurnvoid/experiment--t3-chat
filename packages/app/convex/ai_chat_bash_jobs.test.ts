@@ -25,6 +25,7 @@ const pool = new Workpool(components.ai_chat_bash_jobs_workpool, { retryActionsB
  */
 const empty_shell_state = {
 	env: [],
+	arrays: [],
 	options: {},
 	shoptOptions: {},
 	readonlyVars: [],

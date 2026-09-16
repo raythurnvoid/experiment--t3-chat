@@ -323,6 +323,7 @@ describe("transfers of a background job", () => {
 			startCwdTarget: null,
 			shellState: {
 			env: [],
+			arrays: [],
 			options: {},
 			shoptOptions: {},
 			readonlyVars: [],

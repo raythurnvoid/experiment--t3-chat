@@ -106,6 +106,13 @@ export const files_pending_parent_validator = v.union(
  */
 export const bash_shell_state_validator = v.object({
 	env: v.array(v.object({ name: v.string(), value: v.string() })),
+	arrays: v.array(
+		v.object({
+			name: v.string(),
+			kind: v.union(v.literal("indexed"), v.literal("associative")),
+			elements: v.array(v.object({ key: v.string(), value: v.string() })),
+		}),
+	),
 	options: v.record(v.string(), v.boolean()),
 	shoptOptions: v.record(v.string(), v.boolean()),
 	readonlyVars: v.array(v.string()),

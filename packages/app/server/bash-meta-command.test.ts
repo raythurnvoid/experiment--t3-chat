@@ -1,4 +1,4 @@
-import { InMemoryFs, type CommandContext } from "just-bash/browser";
+import { createCommandContext, InMemoryFs } from "just-bash/browser";
 import { describe, expect, test, vi } from "vitest";
 import type { Id } from "../convex/_generated/dataModel";
 import type { ActionCtx } from "../convex/_generated/server";
@@ -57,12 +57,11 @@ function create_command_runner() {
 			mounts: new Map(),
 		},
 	};
-	const commandCtx = {
+	const commandCtx = createCommandContext({
 		fs: new InMemoryFs(),
 		cwd: currentWorkspacePath,
 		env: new Map(),
-		stdin: "" as unknown as CommandContext["stdin"],
-	} satisfies CommandContext;
+	});
 	return {
 		command: bash_meta_command_create(ctx, dbFilesRoots),
 		commandCtx,
