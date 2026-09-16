@@ -139,9 +139,9 @@ const BASH_JOB_MAX_COMMAND_COUNT = 2_000;
 // The worker reads the Stop flag, the row status and its permissions this often.
 const BASH_JOB_POLL_MS = 5_000;
 // After this many launches refused in a row, the hook refuses the rest without a query. A launch
-// that succeeds starts the count again, and so does a `wait`, because that is how a script frees a
-// slot inside one call. Without the `wait` reset the count could never come back down: the local
-// refusal returns before the query that would clear it.
+// that succeeds starts the count again, and so does a `wait` whose jobs all ended, because that is
+// how a script frees a slot inside one call. Without one of those two the count could never come
+// back down: the local refusal returns before the query that would clear it.
 const BASH_JOB_LAUNCH_MAX_REFUSALS = 3;
 // A bare top-level `sleep` of at least this long pauses the job instead of holding a worker, and
 // waits at most as long as the sleep command itself would (its own cap is one hour).

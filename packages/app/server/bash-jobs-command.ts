@@ -51,10 +51,12 @@ export type bash_JobContext = {
 	launchedJobNumbers: number[];
 	/**
 	 * Launches refused in a row; after 3 the hook refuses locally without a database round trip. A
-	 * launch that succeeds puts this back to 0, and so does a `wait`, because slots free up inside one
-	 * call: a script can hit the jobs cap, `wait` for those jobs, and start more. So this bounds a run
-	 * of refusals, not the refusals of a whole call. Without the `wait` reset nothing could put it
-	 * back: the local refusal returns before the query whose success clears it.
+	 * launch that succeeds puts this back to 0, and so does a `wait` that saw every job it waited for
+	 * end, because that is how slots free up inside one call: a script can hit the jobs cap, `wait` for
+	 * those jobs, and start more. So this bounds a run of refusals, not the refusals of a whole call.
+	 * Without one of those two resets nothing could put it back, since the local refusal returns before
+	 * the query whose success clears it. A `wait` that waited for nothing resets nothing either, so a
+	 * loop of `cmd & wait` cannot use it to keep asking the door.
 	 */
 	launchRefusals: number;
 	/**
@@ -285,9 +287,6 @@ export function bash_wait_command_create(ctx: ActionCtx, job: bash_JobContext): 
 			if (jobNumber === null) return usage_error(`wait: ${arg}: arguments must be job numbers`, WAIT_USAGE);
 			jobNumbers.push(jobNumber);
 		}
-		// Waiting is how a script frees a slot inside one call, so let the next `&` ask the door again
-		// even when three launches in a row were refused before this `wait`.
-		job.launchRefusals = 0;
 		// The door reads one index row per number, so drop repeats and refuse a long list here
 		// instead of sending it. `wait {1..5000}` expands to 5000 words.
 		const named = jobNumbers.length > 0;
@@ -346,6 +345,10 @@ export function bash_wait_command_create(ctx: ActionCtx, job: bash_JobContext): 
 		}
 		if (is_live()) return { stdout: "", stderr: "", exitCode: bash_COMMAND_EXIT_STILL_RUNNING };
 
+		// Every waited job has ended, so its slot is free. Let the next `&` ask the door again even when
+		// three launches in a row were refused before this `wait`. A `wait` that timed out with a job
+		// still live, or that waited for nothing, frees no slot and leaves the count alone.
+		job.launchRefusals = 0;
 		// One query for every waited job, and it returns codes only. Reading each job's stored result
 		// here would move up to 700 KiB per job over the wire to learn one number.
 		const codes = (await ctx.runQuery(internal.ai_chat_files.read_job_exit_codes, {

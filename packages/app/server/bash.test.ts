@@ -4398,19 +4398,33 @@ describe("bash_run_command", () => {
 			expect(mixed.stderr).not.toContain("in a row were refused");
 		});
 
-		test("a wait after three refusals lets the next launch ask the door again", async () => {
+		test("a wait whose job ended lets the next launch ask the door again", async () => {
 			const runner = await create_bash_runner();
-			// `wait` is how a script frees a slot inside one call, so it has to lift the local block.
-			// Otherwise the script the refusal message asks for - wait for a job, then start yours -
-			// is refused for the rest of the call with four slots free.
+			// Waiting for a job that ended frees its slot, so it has to lift the local block. Otherwise
+			// the script the refusal message asks for - wait for a job, then start yours - is refused for
+			// the rest of the call with every slot free.
+			expect((await runner.run("echo one &")).metadata.exitCode).toBe(0);
+			await run_job(runner, 1);
 			const tooBig = `true '${"a".repeat(66_000)}' &`;
 			const before = mutation_calls(runner, "ai_chat_files:start_bash_job");
-			const mixed = await runner.run(`${tooBig} ${tooBig} ${tooBig} ${tooBig} wait; true & echo rc=$?`);
+			const mixed = await runner.run(`${tooBig} ${tooBig} ${tooBig} ${tooBig} wait 1; true & echo rc=$?`);
 			// Three refusals reach the door, the fourth `&` is refused locally, and the launch after the
-			// `wait` reaches the door again.
+			// `wait` reaches the door again and works.
 			expect(mutation_calls(runner, "ai_chat_files:start_bash_job") - before).toBe(4);
 			expect(mixed.stdout).toBe("rc=0\n");
-			expect(mixed.stderr).toContain("bash: started job 1 in shell default");
+			expect(mixed.stderr).toContain("bash: started job 2 in shell default");
+		});
+
+		test("a wait that waited for nothing leaves the local block in place", async () => {
+			const runner = await create_bash_runner();
+			// A loop of `cmd & wait` starts nothing and waits for nothing, so it must not be able to keep
+			// asking the door. Only a wait that saw a job end frees a slot.
+			const tooBig = `true '${"a".repeat(66_000)}' &`;
+			const before = mutation_calls(runner, "ai_chat_files:start_bash_job");
+			const blocked = await runner.run(`${tooBig} ${tooBig} ${tooBig} wait; ${tooBig} echo rc=$?`);
+			expect(mutation_calls(runner, "ai_chat_files:start_bash_job") - before).toBe(3);
+			expect(blocked.stdout).toBe("rc=1\n");
+			expect(blocked.stderr).toContain("3 launches in a row were refused in this call");
 		});
 
 		test("a nested job counts against the cap and survives its parent's stop", async () => {
