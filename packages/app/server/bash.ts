@@ -122,6 +122,7 @@ import {
 	bash_TERMINAL_LINE_ENDING_REGEX,
 	bash_SHELL_COMMENT_LINE_REGEX,
 	bash_WHITESPACE_RUN_REGEX,
+	bash_text_head,
 	type bash_DbFilesRoots,
 } from "./bash-utils.ts";
 import { bash_ALLOWED_COMMANDS, bash_delegate_native_just_bash_tmp_command } from "./bash-delegate.ts";
@@ -484,7 +485,7 @@ function truncate_output(value: string) {
 		};
 	}
 
-	const truncated = `${value.slice(0, OUTPUT_LIMIT)}\n\n[truncated after ${OUTPUT_LIMIT} characters]`;
+	const truncated = `${bash_text_head(value, OUTPUT_LIMIT)}\n\n[truncated after ${OUTPUT_LIMIT} characters]`;
 	const trimmed = value.trimEnd();
 	const lastLineStart = trimmed.lastIndexOf("\n") + 1;
 	const lastLine = trimmed.slice(lastLineStart);
@@ -1198,7 +1199,7 @@ async function bash_fs_create(args: {
 			return { jobNumber: null, stderr: `bash: cannot start a job: ${started._nay.message}\n` };
 		}
 		const { jobNumber } = started._yay;
-		// A slot freed up, so the next refusal starts the count again.
+		// The launch worked, so the refusals before it were not a lasting block. Start the count again.
 		job.launchRefusals = 0;
 		job.launchedJobNumbers.push(jobNumber);
 		// Extra fds (`exec 3>out`) are in the snapshot for report only; the job does not get them.
@@ -1995,7 +1996,7 @@ export async function bash_run_job(
 		if (liveOutput[truncatedKey]) return;
 		const room = bash_JOB_OUTPUT_READ_MAX_BYTES - liveOutput[stream].length;
 		if (text.length > room) {
-			liveOutput[stream] += text.slice(0, room);
+			liveOutput[stream] += bash_text_head(text, room);
 			liveOutput[truncatedKey] = true;
 		} else {
 			liveOutput[stream] += text;

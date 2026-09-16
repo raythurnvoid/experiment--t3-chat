@@ -31,6 +31,7 @@ import {
 	bash_COMMAND_EXIT_STOPPED,
 	bash_COMMAND_EXIT_TIMED_OUT,
 	bash_JOB_NUMBERS_MAX_COUNT,
+	bash_text_head,
 } from "../server/bash-utils.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import { crypto_sha256_hex } from "../server/crypto-utils.ts";
@@ -76,8 +77,8 @@ const BASH_JOB_PLACEHOLDER_MS = 10 * 60 * 1000;
 // the shell snapshot are bounded at launch and emptied when the result lands.
 const BASH_JOB_SCRIPT_MAX_BYTES = 64 * 1024;
 const BASH_JOB_SHELL_STATE_MAX_BYTES = 128 * 1024;
-// The wakeup message carries this much of each output stream; `jobs -o N` has the rest. The cut
-// counts UTF-16 code units, so it can land inside a character that takes two of them.
+// The wakeup message carries this much of each output stream; `jobs -o N` has the rest. The count is
+// in UTF-16 code units, so `bash_text_head` keeps the cut off the middle of a character.
 const BASH_JOB_WAKEUP_HEAD_CHARS = 4 * 1024;
 // A wakeup run holds the thread's run lease this long at most. A Convex action cannot run longer.
 const BASH_JOB_WAKEUP_RUN_MS = 10 * 60 * 1000;
@@ -232,18 +233,18 @@ export async function ai_chat_files_db_get_invocation_membership(
  */
 function bash_result_bounded(result: NonNullable<Doc<"ai_chat_bash_invocations">["result"]>) {
 	if (new TextEncoder().encode(JSON.stringify(result)).byteLength <= BASH_RESULT_MAX_BYTES) return result;
-	const stdout = result.stdout.slice(0, 16_384);
-	const stderr = result.stderr.slice(0, 16_384);
+	const stdout = bash_text_head(result.stdout, 16_384);
+	const stderr = bash_text_head(result.stderr, 16_384);
 	return {
-		title: result.title.slice(0, 256),
+		title: bash_text_head(result.title, 256),
 		output: `${stdout}${stderr ? `\n${stderr}` : ""}\n[Saved Bash result was truncated.]`,
 		stdout,
 		stderr,
 		metadata: {
 			...result.metadata,
-			command: result.metadata.command.slice(0, 8192),
-			cwd: result.metadata.cwd.slice(0, 1024),
-			nextCwd: result.metadata.nextCwd.slice(0, 1024),
+			command: bash_text_head(result.metadata.command, 8192),
+			cwd: bash_text_head(result.metadata.cwd, 1024),
+			nextCwd: bash_text_head(result.metadata.nextCwd, 1024),
 			stdoutTruncated: true,
 			stderrTruncated: true,
 			observedPaths: result.metadata.observedPaths.filter((path) => path.length <= 256).slice(0, 20),
@@ -278,8 +279,10 @@ function invocation_result(
  * The "job finished" notes for this user's next fresh call in a thread. The cursor row is per
  * user and thread, so one member's call never hides another member's notes. It moves to
  * `now - 1`: a finish stamped in the same millisecond that commits after this call would
- * otherwise be hidden forever, and a rare duplicate note is cheap. More than 8 jobs that ended
- * since the cursor are dropped while the cursor still moves; the transcript keeps their output.
+ * otherwise be hidden forever, and a rare duplicate note is cheap. The notes come newest finish
+ * first, so a job that ends long after jobs with newer numbers is noted before them. More than 8
+ * jobs that ended since the cursor are dropped while the cursor still moves; the transcript keeps
+ * their output.
  */
 async function db_take_job_notes(
 	ctx: MutationCtx,
@@ -300,9 +303,10 @@ async function db_take_job_notes(
 		.unique();
 	// `5 > undefined` is false: without the `?? 0` the first wave of notes would never print.
 	const noticeAt = cursor?.noticeAt ?? 0;
+
 	// The index range asks for the jobs that ended after the cursor, so a job that ended long after
-	// the newer job numbers still comes back. A job that is still running sorts before every number
-	// and is left out by the range itself.
+	// the newer job numbers still comes back. A job that is still running has no `finishedAt`, which
+	// sorts before every number, so the range leaves it out and no status filter is needed here.
 	const ended = await ctx.db
 		.query("activities")
 		.withIndex("by_user_source_kind_thread_finishedAt", (q) =>
@@ -314,14 +318,13 @@ async function db_take_job_notes(
 		)
 		.order("desc")
 		.take(BASH_JOB_LIST_MAX_COUNT);
-	const notes = ended
-		.filter((activity) => !activities_is_active(activity.status))
-		.map((activity) => {
-			const source = activity.source;
-			if (source.kind !== "ai_chat_bash_job")
-				throw should_never_happen("Job Activity has another source kind", { activityId: activity._id });
-			return { jobNumber: source.jobNumber, status: activity.status, shellName: source.shellName };
-		});
+
+	const notes = ended.map((activity) => {
+		const source = activity.source;
+		if (source.kind !== "ai_chat_bash_job")
+			throw should_never_happen("Job Activity has another source kind", { activityId: activity._id });
+		return { jobNumber: source.jobNumber, status: activity.status, shellName: source.shellName };
+	});
 	if (cursor) {
 		await ctx.db.patch("ai_chat_bash_job_notice_cursors", cursor._id, { noticeAt: args.now - 1 });
 	} else {
@@ -738,7 +741,7 @@ async function db_append_job_finish_entry(
  * job's outcome under the newest leaf of the thread, take the `job_wakeup` lease and schedule
  * `run_job_wakeup`, which answers that message. `wakeNotifiedAt` keeps a job to one note, so the
  * settle and a late worker result can both try: whichever finds no lease writes it.
- * `bashJobWakeupCount` limits how many wakeups may follow each other without the user. Past that
+ * `bashJobWakeupCount` limits how many notes may follow each other without the user. Past that
  * limit the note is still stored, and nothing answers it until the user writes again.
  *
  * While a chat request or another wakeup holds the thread's run lease, do nothing at all: the note
@@ -794,7 +797,9 @@ async function db_wake_agent_for_job(
 	const leafId = newestMessage?._id ?? null;
 
 	const head = (text: string) =>
-		text.length > BASH_JOB_WAKEUP_HEAD_CHARS ? `${text.slice(0, BASH_JOB_WAKEUP_HEAD_CHARS)}\n[truncated]` : text;
+		text.length > BASH_JOB_WAKEUP_HEAD_CHARS
+			? `${bash_text_head(text, BASH_JOB_WAKEUP_HEAD_CHARS)}\n[truncated]`
+			: text;
 	const jobNumber = invocation.job.jobNumber;
 	// Count this wakeup. Past the cap the note is still stored, so the next turn the user starts
 	// reads what the job did, but no run starts on its own.
@@ -987,7 +992,7 @@ export const start_bash_job = internalMutation({
 				return Result({
 					_nay: {
 						name: "limit",
-						message: `${BASH_JOB_LIVE_MAX_COUNT} jobs are already active across your workspace (queued, running or stopping). Try \`jobs\`, or wait.`,
+						message: `${BASH_JOB_LIVE_MAX_COUNT} jobs are already active across your workspace (queued, running or stopping). Some may be in another chat, where \`jobs\` cannot see them. Wait for one to end.`,
 					},
 				});
 		}
@@ -1001,7 +1006,7 @@ export const start_bash_job = internalMutation({
 
 		const now = Date.now();
 		const deadlineAt = now + BASH_JOB_PLACEHOLDER_MS;
-		const scriptPreview = args.script.replace(/\s+/g, " ").trim().slice(0, 80);
+		const scriptPreview = bash_text_head(args.script.replace(/\s+/g, " ").trim(), 80);
 		const invocationId = await ctx.db.insert("ai_chat_bash_invocations", {
 			organizationId: parent.organizationId,
 			workspaceId: parent.workspaceId,
@@ -1697,9 +1702,9 @@ export type ai_chat_files_list_thread_jobs_Result =
 		: never;
 
 /**
- * The door behind `jobs -o N` and the exit code `wait` reads at the end. `activityStatus` gives
- * the code for a finished row with no stored result (a crashed or watchdog-settled worker, or a
- * result the cron already stripped). `liveOutput` is the head a running worker flushed so far.
+ * The door behind `jobs -o N`. `activityStatus` says whether the job is still live, because that is
+ * the status the feed, `jobs -a` and the finished-job note show. `liveOutput` is the head a running
+ * worker flushed so far. `wait` reads `read_job_exit_codes` instead, which returns no output.
  */
 export const read_job_output = internalQuery({
 	args: {
@@ -1748,6 +1753,71 @@ export const read_job_output = internalQuery({
 
 export type ai_chat_files_read_job_output_Result =
 	typeof read_job_output extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
+
+/**
+ * The exit code `wait` reports for each job it waited. A job can be declared dead before its worker
+ * stops: a watchdog or a Stop settles the Activity while a slow worker is still finishing, and the
+ * worker then stores its own result under a `timed_out` or `canceled` Activity. The feed, `jobs -a`
+ * and the finished-job note all show the Activity status, so `wait` agrees with them instead of
+ * reporting the late result's code. Every other job reports its stored result's code, and a finished
+ * row without one (a crashed worker, or a result the cron already stripped) falls back to the
+ * Activity too. Only the code comes back: a stored result is up to 700 KiB and `wait` needs one
+ * number per job.
+ */
+export const read_job_exit_codes = internalQuery({
+	args: {
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		userId: v.id("users"),
+		threadId: v.id("ai_chat_threads"),
+		jobNumbers: v.array(v.number()),
+	},
+	returns: v.array(v.object({ jobNumber: v.number(), exitCode: v.number() })),
+	handler: async (ctx, args) => {
+		const membership = await db_get_door_membership(ctx, args);
+		if (membership._nay) throw convex_error({ message: membership._nay.message });
+		// One index read per named number, so the list must be bounded. A validator cannot limit an
+		// array's length, so refuse it here as well as in `wait`.
+		if (args.jobNumbers.length > bash_JOB_NUMBERS_MAX_COUNT)
+			throw convex_error({
+				message: `Too many job numbers: at most ${bash_JOB_NUMBERS_MAX_COUNT} can be read at once`,
+			});
+
+		const codes = [];
+		for (const jobNumber of args.jobNumbers) {
+			const activity = await db_get_job_activity(ctx, { userId: args.userId, threadId: args.threadId, jobNumber });
+			if (
+				!activity ||
+				activity.organizationId !== membership._yay.organizationId ||
+				activity.workspaceId !== membership._yay.workspaceId
+			) {
+				codes.push({ jobNumber, exitCode: bash_COMMAND_EXIT_FAILURE });
+				continue;
+			}
+			if (activity.status === "timed_out") {
+				codes.push({ jobNumber, exitCode: bash_COMMAND_EXIT_TIMED_OUT });
+				continue;
+			}
+			if (activity.status === "canceled") {
+				codes.push({ jobNumber, exitCode: bash_COMMAND_EXIT_STOPPED });
+				continue;
+			}
+			// The delete batch removes the Activity and the row in one pass, so the row is here.
+			const invocation = await ctx.db.get("ai_chat_bash_invocations", activity.source.id);
+			if (!invocation)
+				throw should_never_happen("Job Activity points to a missing invocation", { activityId: activity._id });
+			const { result } = invocation_result(invocation);
+			const fallback = activity.status === "succeeded" ? 0 : bash_COMMAND_EXIT_FAILURE;
+			codes.push({ jobNumber, exitCode: result?.metadata.exitCode ?? fallback });
+		}
+		return codes;
+	},
+});
+
+export type ai_chat_files_read_job_exit_codes_Result =
+	typeof read_job_exit_codes extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
 		? Awaited<ReturnValue>
 		: never;
 

@@ -62,7 +62,9 @@ export const bash_SHELLS_MOUNT = "/shells";
 /**
  * Keep the stored shell state and the engine snapshot in step. A field that one side has and the
  * other does not fails one of the four lines below, and the message names the field. The declaration
- * is ambient, so it needs no value and no suppression.
+ * is ambient, so it needs no value and no suppression. Do not turn it into the unused `type _Name`
+ * alias this repo uses elsewhere: that form needs a suppression comment on the line above, and once
+ * the declaration fits on one line the drift error lands on that line too and the check goes quiet.
  *
  * The first pair compares the two as `Required`, because a field that one side marks optional and
  * the other side does not have at all is assignable in both directions. The second pair compares
@@ -264,6 +266,22 @@ export function bash_is_path_under_read_only_mounts(path: string) {
 export function bash_clamp_listing_page_limit(limit: number) {
 	const finiteLimit = Number.isFinite(limit) ? Math.trunc(limit) : LISTING_PAGE_LIMIT_MAX;
 	return math_clamp(finiteLimit, 1, LISTING_PAGE_LIMIT_MAX);
+}
+
+/**
+ * Keep the first `maxChars` UTF-16 code units of `text`, and never cut a character in half. A
+ * character outside the basic range takes two code units, so a cut at a fixed count can land
+ * between them. The model would then read one broken glyph, and this repo's own write checks call
+ * such a string unstorable (`find_unstorable_value_part` in convex/plugins_data_http.ts), so a
+ * document write may refuse it. Every Bash cut that carries command output or a script into a
+ * document goes through here. Same rule as the chunk cut in server/files-plain-text-chunking.ts.
+ */
+export function bash_text_head(text: string, maxChars: number) {
+	if (text.length <= maxChars) return text;
+	const codeUnit = text.charCodeAt(maxChars - 1);
+	// A high surrogate at the last kept position is the first half of a character. Drop it.
+	const end = codeUnit >= 0xd800 && codeUnit <= 0xdbff ? maxChars - 1 : maxChars;
+	return text.slice(0, end);
 }
 
 export function bash_regex_validation_error(command: string, pattern: string) {

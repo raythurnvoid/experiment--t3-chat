@@ -314,9 +314,23 @@ describe("start_bash_job", () => {
 		const refused = await launch(f);
 		expect(refused._nay).toMatchObject({
 			name: "limit",
-			message: "4 jobs are already active across your workspace (queued, running or stopping). Try `jobs`, or wait.",
+			message:
+				"4 jobs are already active across your workspace (queued, running or stopping). Some may be in another chat, where `jobs` cannot see them. Wait for one to end.",
 		});
 		expect(await job_rows(f)).toHaveLength(4);
+	});
+
+	test("cuts the script preview without splitting a character", async () => {
+		const f = await fixture();
+		// The preview keeps 80 code units, and a character outside the basic range takes two of them.
+		// Here the emoji starts at unit 79, so a plain cut would store half of it and this repo's own
+		// write checks call such a string unstorable.
+		const emoji = String.fromCodePoint(0x1f389);
+		expect(await launch(f, { script: `true ${"a".repeat(74)}${emoji}` })).toEqual({ _yay: { jobNumber: 1 } });
+		const [row] = await job_rows(f);
+		if (!row) throw new Error("Expected the job row");
+		const { activity } = await f.read(row._id);
+		expect(activity?.source).toMatchObject({ scriptPreview: `true ${"a".repeat(74)}` });
 	});
 
 	test("a job may start a child, but not while it is stopping or after its Activity is gone", async () => {
@@ -436,18 +450,30 @@ describe("begin_bash_invocation", () => {
 		const longLived = await f.seed_job({ jobNumber: 1, status: "running" });
 		for (let jobNumber = 2; jobNumber <= 13; jobNumber++) {
 			const job = await f.seed_job({ jobNumber, status: "running" });
+			// Each job finishes a second after the one before, so the notes below are ordered by finish
+			// time and not by the creation time two jobs of the same millisecond would fall back to.
+			vi.setSystemTime(Date.now() + 1000);
 			await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 				invocationId: job.invocationId,
 				result: job_result(0),
 			});
 		}
 
-		// The newer jobs are noted first, eight of them, and the cursor moves past all twelve.
+		// The newest finishes are noted first, eight of them, and the cursor moves past all twelve.
 		vi.setSystemTime(Date.now() + 1000);
 		const noted = await begin(f, "long-1");
 		if (!("notes" in noted)) throw new Error("Expected a fresh call");
-		expect(noted.notes).toHaveLength(8);
+		expect(noted.notes.map((note) => note.jobNumber)).toEqual([13, 12, 11, 10, 9, 8, 7, 6]);
 
+		// A fourteenth job ends, and only then does job 1. Job 1 must be noted first: its finish is the
+		// newest, though its number is the oldest of the fourteen. No read keyed on the job number can
+		// answer that, however wide its window is.
+		const later = await f.seed_job({ jobNumber: 14, status: "running" });
+		vi.setSystemTime(Date.now() + 1000);
+		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
+			invocationId: later.invocationId,
+			result: job_result(0),
+		});
 		vi.setSystemTime(Date.now() + 1000);
 		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 			invocationId: longLived.invocationId,
@@ -456,9 +482,10 @@ describe("begin_bash_invocation", () => {
 		vi.setSystemTime(Date.now() + 1000);
 		const late = await begin(f, "long-2");
 		if (!("notes" in late)) throw new Error("Expected a fresh call");
-		// Job 1 has the oldest number of the thirteen, so reading the newest twelve numbers would hide
-		// it for good even though its finish is the newest one of the thread.
-		expect(late.notes).toEqual([{ jobNumber: 1, status: "succeeded", shellName: "default" }]);
+		expect(late.notes).toEqual([
+			{ jobNumber: 1, status: "succeeded", shellName: "default" },
+			{ jobNumber: 14, status: "succeeded", shellName: "default" },
+		]);
 	});
 
 	test("one member's call does not hide another member's notes", async () => {
@@ -816,7 +843,27 @@ describe("job wakeup", () => {
 			],
 		});
 		if (branchA._nay) throw new Error(branchA._nay.message);
-		const newestMessageId = branchA._yay.ids[0]!;
+
+		// The last word in the thread is another member's, and the chat shows their message as the leaf
+		// for everyone. The note belongs there too, so this pins the newest message of the thread and
+		// not the newest message of the user whose job it is.
+		const other = await add_member(f, "bash-jobs-leaf");
+		vi.setSystemTime(Date.now() + 1000);
+		const otherMessage = await f.t
+			.withIdentity({ issuer: "https://clerk.test", external_id: other.userId })
+			.mutation(api.ai_chat.thread_messages_add, {
+				membershipId: other.membershipId,
+				threadId: f.scope.threadId,
+				parentId: branchA._yay.ids[0]!,
+				messages: [
+					{
+						clientGeneratedMessageId: "user-c",
+						content: { id: "user-c", role: "user", parts: [{ type: "text", text: "me too" }] },
+					},
+				],
+			});
+		if (otherMessage._nay) throw new Error(otherMessage._nay.message);
+		const newestMessageId = otherMessage._yay.ids[0]!;
 
 		const job = await f.seed_job({ jobNumber: 1, status: "running", wakeAgent });
 		vi.setSystemTime(Date.now() + 1000);
@@ -831,6 +878,22 @@ describe("job wakeup", () => {
 		// The newest root is `user-b`, whose branch the chat does not render. Hanging the note there
 		// would hide it and give the woken run only that one turn to answer.
 		expect(note?.parentId).toBe(newestMessageId);
+	});
+
+	test("cuts the note's output head without splitting a character", async () => {
+		const f = await fixture();
+		await seed_messages(f);
+		// The note carries 4096 code units of each stream, and the emoji starts at unit 4095, so a plain
+		// cut would keep only its first half. `[truncated]` must follow the last whole character.
+		const emoji = String.fromCodePoint(0x1f389);
+		const job = await f.seed_job({ jobNumber: 1, status: "running", wakeAgent });
+		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
+			invocationId: job.invocationId,
+			result: job_result(0, `${"x".repeat(4095)}${emoji}`),
+		});
+
+		const { messages } = await read_thread(f);
+		expect(messages.at(-1)?.content.parts[0].text).toContain(`stdout:\n${"x".repeat(4095)}\n[truncated]\nstderr:`);
 	});
 
 	test("a job that ends while a chat run streams does not wake; an expired lease does not block", async () => {
@@ -907,6 +970,12 @@ describe("job wakeup", () => {
 		const chained = await read_thread(f);
 		expect(chained.wakeups).toHaveLength(5);
 		expect(chained.thread?.bashJobWakeupCount).toBe(5);
+		// Nothing answered these notes, so each one is the thread's newest message when the next job
+		// ends, and the notes form one chain. A rule that skipped system messages would hang all five
+		// off the last user message instead, and the chat would render only the newest of them.
+		const notes = chained.messages.filter((message) => message.content.role === "system");
+		expect(notes).toHaveLength(5);
+		expect(notes.slice(1).map((note) => note.parentId)).toEqual(notes.slice(0, -1).map((note) => note._id));
 
 		// The sixth job still writes its note, and the note says why nothing answers it.
 		await wake_once(6);

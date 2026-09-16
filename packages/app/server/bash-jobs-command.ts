@@ -4,6 +4,7 @@ import { defineCommand, type Command } from "just-bash/browser";
 import { internal } from "../convex/_generated/api.js";
 import type {
 	ai_chat_files_list_thread_jobs_Result,
+	ai_chat_files_read_job_exit_codes_Result,
 	ai_chat_files_read_job_output_Result,
 } from "../convex/ai_chat_files.ts";
 import { activities_is_active } from "../convex/activities_db.ts";
@@ -11,10 +12,9 @@ import type { ai_chat_ModelId } from "../shared/ai-chat.ts";
 import {
 	bash_COMMAND_EXIT_FAILURE,
 	bash_COMMAND_EXIT_STILL_RUNNING,
-	bash_COMMAND_EXIT_STOPPED,
-	bash_COMMAND_EXIT_TIMED_OUT,
 	bash_COMMAND_EXIT_USAGE,
 	bash_JOB_NUMBERS_MAX_COUNT,
+	bash_text_head,
 } from "./bash-utils.ts";
 
 /**
@@ -51,8 +51,9 @@ export type bash_JobContext = {
 	/**
 	 * Launches refused in a row; after 3 the hook refuses locally without a database round trip. A
 	 * launch that succeeds puts this back to 0, because slots free up inside one call: a script can
-	 * hit the jobs cap, `wait` for those jobs, and start more. A runaway loop never succeeds, so it
-	 * still stops after three.
+	 * hit the jobs cap, `wait` for those jobs, and start more. So this bounds a run of refusals, not
+	 * the refusals of a whole call: a loop that starts one job for every two it gets refused keeps
+	 * asking the door, and only the call's command cap stops it.
 	 */
 	launchRefusals: number;
 	/**
@@ -103,28 +104,6 @@ export function bash_job_status_word(status: Doc<"activities">["status"]) {
 		timed_out: "timed out",
 		canceled: "stopped",
 	}[status];
-}
-
-/**
- * The exit code `wait` and `jobs -o` report for one job. The Activity decides a job that was
- * declared dead: a watchdog or a Stop can settle the Activity while a slow worker is still
- * finishing, and the worker then stores its own result under a `timed_out` or `canceled` Activity.
- * The feed, `jobs -a` and the finished-job note all show that Activity status, so these two
- * commands must agree with them instead of reporting the late result's code. Every other job reads
- * its stored result, and a finished row without one (a crashed worker, or a result the cron already
- * stripped) falls back to the Activity too.
- */
-function job_exit_code(output: ai_chat_files_read_job_output_Result) {
-	if (!output) return bash_COMMAND_EXIT_FAILURE;
-	if (output.activityStatus === "timed_out") return bash_COMMAND_EXIT_TIMED_OUT;
-	if (output.activityStatus === "canceled") return bash_COMMAND_EXIT_STOPPED;
-	if (output.result) return output.result.metadata.exitCode;
-	switch (output.activityStatus) {
-		case "succeeded":
-			return 0;
-		default:
-			return bash_COMMAND_EXIT_FAILURE;
-	}
 }
 
 function parse_job_number(arg: string | undefined) {
@@ -187,12 +166,15 @@ async function print_job_output(ctx: ActionCtx, job: bash_JobContext, jobNumber:
 	// read it too. Otherwise a paused job would say running here while `jobs` calls it queued.
 	const liveMarker = `[job ${jobNumber} ${bash_job_status_word(output.activityStatus)}]\n`;
 	// A live job that flushed nothing yet gets the marker alone: it names the job and says the job is
-	// not done. That line costs no read budget.
-	if (output.status === "running" && !output.liveOutput)
+	// not done. That line costs no read budget. Liveness is the Activity's, like the word above and
+	// like `jobs` and `wait`: the invocation row calls itself interrupted as soon as its deadline
+	// passes, which is minutes before the watchdog settles the job, and during that time this command
+	// would otherwise call a running job ended and throw away the head it printed a moment ago.
+	if (!output.result && activities_is_active(output.activityStatus) && !output.liveOutput)
 		return { stdout: "", stderr: liveMarker, exitCode: bash_COMMAND_EXIT_STILL_RUNNING };
 	// A job settled by the watchdog or stopped while it waited stores no result. Name the outcome the
-	// Activity already carries, so the reader learns why the job ended without another call.
-	if (output.status !== "running" && !output.result)
+	// Activity already carries, so the model learns why the job ended without another call.
+	if (!output.result && !activities_is_active(output.activityStatus))
 		return {
 			stdout: "",
 			stderr: `bash: jobs: job ${jobNumber} ${bash_job_status_word(output.activityStatus)} and stored no output; read the shell transcript\n`,
@@ -210,11 +192,11 @@ async function print_job_output(ctx: ActionCtx, job: bash_JobContext, jobNumber:
 
 	const bounded = (text: string, truncated: boolean) => {
 		const cut = text.length > bash_JOB_OUTPUT_READ_MAX_BYTES;
-		const kept = cut ? text.slice(0, bash_JOB_OUTPUT_READ_MAX_BYTES) : text;
+		const kept = cut ? bash_text_head(text, bash_JOB_OUTPUT_READ_MAX_BYTES) : text;
 		if (!truncated && !cut) return kept;
 		return `${kept}${kept.endsWith("\n") || kept === "" ? "" : "\n"}[truncated]\n`;
 	};
-	if (output.status === "running" && output.liveOutput) {
+	if (!output.result && output.liveOutput) {
 		const live = output.liveOutput;
 		return {
 			stdout: bounded(live.stdout, live.stdoutTruncated),
@@ -314,8 +296,9 @@ export function bash_wait_command_create(ctx: ActionCtx, job: bash_JobContext): 
 		let found = await list();
 		// Another member's job or a deleted row resolves to nothing: say so, never poll it. One bad
 		// number refuses the whole list, because one exit code cannot say two things at once: 3 tells
-		// the model to wait again, 1 tells it the call was wrong. The lines below name every missing
-		// number, so the next call knows exactly which ones to drop.
+		// the model to wait again, 1 tells it one of the numbers is not its job. The lines below name
+		// every missing number, so a next call can leave out the ones it named itself. A bare `wait`
+		// named none of them, so there the lines only say which of its own jobs are already gone.
 		const missing = wanted.filter((jobNumber) => !found.some((summary) => summary.jobNumber === jobNumber));
 		if (missing.length > 0)
 			return {
@@ -351,15 +334,13 @@ export function bash_wait_command_create(ctx: ActionCtx, job: bash_JobContext): 
 		}
 		if (is_live()) return { stdout: "", stderr: "", exitCode: bash_COMMAND_EXIT_STILL_RUNNING };
 
-		let worst = 0;
-		for (const summary of found) {
-			const output = (await ctx.runQuery(internal.ai_chat_files.read_job_output, {
-				...scope,
-				jobNumber: summary.jobNumber,
-			})) as ai_chat_files_read_job_output_Result;
-			worst = Math.max(worst, job_exit_code(output));
-		}
-		return { stdout: "", stderr: "", exitCode: worst };
+		// One query for every waited job, and it returns codes only. Reading each job's stored result
+		// here would carry up to 700 KiB per job across for one number.
+		const codes = (await ctx.runQuery(internal.ai_chat_files.read_job_exit_codes, {
+			...scope,
+			jobNumbers: found.map((summary) => summary.jobNumber),
+		})) as ai_chat_files_read_job_exit_codes_Result;
+		return { stdout: "", stderr: "", exitCode: Math.max(0, ...codes.map((code) => code.exitCode)) };
 	});
 }
 

@@ -4153,6 +4153,31 @@ describe("bash_run_command", () => {
 			);
 		});
 
+		test("jobs -o still prints a live job's head after the row's deadline passes", async () => {
+			const runner = await create_bash_runner();
+			// The pool is mocked, so job 1 stays queued. Give it a flushed head and put its deadline in
+			// the past: the invocation row then calls itself interrupted, which happens minutes before the
+			// watchdog settles the job. `jobs` and `wait` read the Activity, so this command must agree
+			// with them instead of calling the job ended and dropping the head.
+			expect((await runner.run("sleep 60 &")).metadata.exitCode).toBe(0);
+			const row = await job_row(runner, 1);
+			if (!row.job) throw new Error("Expected the job row");
+			const job = row.job;
+			await runner.t.run((ctx) =>
+				ctx.db.patch("ai_chat_bash_invocations", row._id, {
+					deadlineAt: Date.now() - 1,
+					job: {
+						...job,
+						liveOutput: { stdout: "half\n", stderr: "", stdoutTruncated: false, stderrTruncated: false },
+					},
+				}),
+			);
+			const read = await runner.run("jobs -o 1");
+			expect(read.metadata.exitCode).toBe(3);
+			expect(read.stdout).toBe("half\n");
+			expect(read.stderr).toBe("[job 1 queued]\n");
+		});
+
 		test("another member's jobs stay out of this member's list", async () => {
 			const owner = await create_bash_runner();
 			expect((await owner.run("sleep 60 &")).metadata.exitCode).toBe(0);
@@ -4293,7 +4318,7 @@ describe("bash_run_command", () => {
 			const refused = await runner.run("sleep 1 & echo rc=$?");
 			expect(refused.stdout).toBe("rc=1\n");
 			expect(refused.stderr).toBe(
-				"bash: cannot start a job: 4 jobs are already active across your workspace (queued, running or stopping). Try `jobs`, or wait.\n",
+				"bash: cannot start a job: 4 jobs are already active across your workspace (queued, running or stopping). Some may be in another chat, where `jobs` cannot see them. Wait for one to end.\n",
 			);
 			const before = mutation_calls(runner, "ai_chat_files:start_bash_job");
 			const many = await runner.run("true & true & true & true & true &");
@@ -4597,7 +4622,7 @@ describe("bash_run_command", () => {
 
 			// The watchdog settles the paused row, and nothing will ever run it again. So the script and
 			// the state it stored for the next run must not sit on the row until the row is deleted.
-			vi.useFakeTimers();
+			vi.useFakeTimers({ toFake: ["Date"] });
 			try {
 				vi.setSystemTime(paused.deadlineAt + 1);
 				await runner.t.mutation(internal.ai_chat_files.timeout_bash_job, {
