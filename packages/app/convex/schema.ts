@@ -99,6 +99,17 @@ export const files_pending_parent_validator = v.union(
 );
 
 /**
+ * The head of a running job's output, for `jobs -o N`. The worker keeps up to 32 KiB per stream
+ * and flushes it into the job row on its 5-second poll tick when new bytes arrived.
+ */
+export const ai_chat_bash_job_live_output_validator = v.object({
+	stdout: v.string(),
+	stderr: v.string(),
+	stdoutTruncated: v.boolean(),
+	stderrTruncated: v.boolean(),
+});
+
+/**
  * A saved Bash interpreter state. It mirrors the engine's `InterpreterStateSnapshot` field by
  * field; `server/bash-utils.ts` asserts the two types match so a drift fails the type check.
  * `env` is a pair list, not an object: Convex rejects object keys with non-ASCII characters, and
@@ -459,6 +470,11 @@ const app_convex_schema = defineSchema({
 				workId: v.union(vWorkId, v.null()),
 				watchdogId: v.union(v.id("_scheduled_functions"), v.null()),
 				stopRequestedAt: v.union(v.number(), v.null()),
+				/**
+				 * Present only while the job runs and after its first flush. The settle that ends
+				 * the job drops it: the result and the transcript carry the full output.
+				 */
+				liveOutput: v.optional(ai_chat_bash_job_live_output_validator),
 			}),
 		),
 	})

@@ -58,7 +58,11 @@ export type bash_JobContext = {
 };
 
 export const bash_JOB_OUTPUT_READ_BUDGET_BYTES = 64 * 1024;
-const JOB_OUTPUT_READ_MAX_BYTES = 32 * 1024;
+/**
+ * One `jobs -o` page per stream. The worker keeps this much of a running job's output head, so
+ * a live read and a finished read are cut at the same place.
+ */
+export const bash_JOB_OUTPUT_READ_MAX_BYTES = 32 * 1024;
 const WAIT_DEFAULT_MS = 30_000;
 const WAIT_POLL_MS = 2_000;
 
@@ -152,7 +156,8 @@ function job_line(summary: ai_chat_files_list_thread_jobs_Result[number]) {
 
 /**
  * `jobs -o N`: the stored stdout, then stderr, each with a `[truncated]` line when it is cut.
- * The transcript keeps the full output; this read is bounded so two big reads cannot push the
+ * While the job runs it prints the head the worker flushed so far and still exits 3. The
+ * transcript keeps the full output; this read is bounded so two big reads cannot push the
  * reading call over its own output limit.
  */
 async function print_job_output(ctx: ActionCtx, job: bash_JobContext, jobNumber: number) {
@@ -161,28 +166,38 @@ async function print_job_output(ctx: ActionCtx, job: bash_JobContext, jobNumber:
 		jobNumber,
 	})) as ai_chat_files_read_job_output_Result;
 	if (!output) return { stdout: "", stderr: `bash: jobs: no such job ${jobNumber}\n`, exitCode: bash_COMMAND_EXIT_FAILURE };
-	if (output.status === "running") return { stdout: "", stderr: "", exitCode: bash_COMMAND_EXIT_STILL_RUNNING };
-	if (!output.result)
+	// A running job with nothing flushed yet costs no read budget.
+	if (output.status === "running" && !output.liveOutput)
+		return { stdout: "", stderr: "", exitCode: bash_COMMAND_EXIT_STILL_RUNNING };
+	if (output.status !== "running" && !output.result)
 		return {
 			stdout: "",
 			stderr: `bash: jobs: no stored output for job ${jobNumber}; read the shell transcript\n`,
 			exitCode: bash_COMMAND_EXIT_FAILURE,
 		};
-	if (job.readBudgetRemaining < JOB_OUTPUT_READ_MAX_BYTES)
+	if (job.readBudgetRemaining < bash_JOB_OUTPUT_READ_MAX_BYTES)
 		return {
 			stdout: "",
 			stderr: "bash: jobs: this call already read its 64 KiB of job output; read the shell transcript\n",
 			exitCode: bash_COMMAND_EXIT_FAILURE,
 		};
-	job.readBudgetRemaining -= JOB_OUTPUT_READ_MAX_BYTES;
+	job.readBudgetRemaining -= bash_JOB_OUTPUT_READ_MAX_BYTES;
 
 	const bounded = (text: string, truncated: boolean) => {
-		const cut = text.length > JOB_OUTPUT_READ_MAX_BYTES;
-		const kept = cut ? text.slice(0, JOB_OUTPUT_READ_MAX_BYTES) : text;
+		const cut = text.length > bash_JOB_OUTPUT_READ_MAX_BYTES;
+		const kept = cut ? text.slice(0, bash_JOB_OUTPUT_READ_MAX_BYTES) : text;
 		if (!truncated && !cut) return kept;
 		return `${kept}${kept.endsWith("\n") || kept === "" ? "" : "\n"}[truncated]\n`;
 	};
-	const { result } = output;
+	if (output.status === "running" && output.liveOutput) {
+		const live = output.liveOutput;
+		return {
+			stdout: bounded(live.stdout, live.stdoutTruncated),
+			stderr: `${bounded(live.stderr, live.stderrTruncated)}[job ${jobNumber} running]\n`,
+			exitCode: bash_COMMAND_EXIT_STILL_RUNNING,
+		};
+	}
+	const result = output.result!;
 	return {
 		stdout: bounded(result.stdout, result.metadata.stdoutTruncated),
 		stderr: `${bounded(result.stderr, result.metadata.stderrTruncated)}[job ${jobNumber} exit ${result.metadata.exitCode}]\n`,

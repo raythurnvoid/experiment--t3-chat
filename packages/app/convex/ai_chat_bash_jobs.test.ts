@@ -494,6 +494,44 @@ describe("claim_bash_job", () => {
 	});
 });
 
+describe("flush_bash_job_output", () => {
+	const head = { stdout: "partial\n", stderr: "", stdoutTruncated: false, stderrTruncated: false };
+
+	test("stores the head on a running row, refuses a settled one, and the finish drops it", async () => {
+		const f = await fixture();
+		const job = await f.seed_job({ jobNumber: 1, status: "running" });
+		await f.t.mutation(internal.ai_chat_files.flush_bash_job_output, { invocationId: job.invocationId, liveOutput: head });
+		expect((await f.read(job.invocationId)).row).toMatchObject({ job: { liveOutput: head } });
+		expect(await f.t.query(internal.ai_chat_files.read_job_output, { ...f.scope, jobNumber: 1 })).toMatchObject({
+			status: "running",
+			liveOutput: head,
+		});
+
+		await f.t.mutation(internal.ai_chat_files.finish_bash_job, { invocationId: job.invocationId, result: job_result(0) });
+		const finished = await f.read(job.invocationId);
+		expect(finished.row?.job?.liveOutput).toBeUndefined();
+		await f.t.mutation(internal.ai_chat_files.flush_bash_job_output, { invocationId: job.invocationId, liveOutput: head });
+		expect((await f.read(job.invocationId)).row?.job?.liveOutput).toBeUndefined();
+	});
+
+	test("a settle with no result writes the flushed head into the finish entry", async () => {
+		const f = await fixture();
+		const start = Date.now();
+		const job = await f.seed_job({ jobNumber: 1, status: "running" });
+		await f.t.mutation(internal.ai_chat_files.flush_bash_job_output, { invocationId: job.invocationId, liveOutput: head });
+		vi.setSystemTime(start + PLACEHOLDER_MS);
+		await f.t.mutation(internal.ai_chat_files.timeout_bash_job, {
+			invocationId: job.invocationId,
+			expectedDeadlineAt: start + PLACEHOLDER_MS,
+		});
+		const after = await f.read(job.invocationId);
+		expect(after.row).toMatchObject({ status: "interrupted" });
+		expect(after.row?.job?.liveOutput).toBeUndefined();
+		expect(after.transcript[1]).toContain("job 1 finished (exit 124)");
+		expect(after.transcript[1]?.endsWith("\nsleep 1\npartial\n\n")).toBe(true);
+	});
+});
+
 describe("timeout_bash_job", () => {
 	test("a placeholder watchdog that runs after the claim re-armed the clocks no-ops", async () => {
 		const f = await fixture();

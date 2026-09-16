@@ -7,6 +7,7 @@ import { internalMutation, internalQuery, query, type MutationCtx, type QueryCtx
 import type { Doc, Id } from "./_generated/dataModel";
 import { components, internal } from "./_generated/api.js";
 import app_convex_schema, {
+	ai_chat_bash_job_live_output_validator,
 	ai_chat_bash_result_validator,
 	bash_shell_state_validator,
 	files_pending_target_validator,
@@ -724,15 +725,20 @@ async function db_settle_bash_job(
 ) {
 	if (invocation.status === "running") {
 		const activity = await activities_db_get_by_source_id(ctx, invocation._id);
-		await ctx.db.patch("ai_chat_bash_invocations", invocation._id, { status: "interrupted", finishedAt: args.now });
+		await ctx.db.patch("ai_chat_bash_invocations", invocation._id, {
+			status: "interrupted",
+			finishedAt: args.now,
+			job: { ...invocation.job, liveOutput: undefined },
+		});
+		// The worker stored no result, so the output it flushed so far is all the transcript gets.
 		await db_append_job_finish_entry(ctx, invocation, {
 			exitCode: {
 				failed: bash_COMMAND_EXIT_FAILURE,
 				canceled: bash_COMMAND_EXIT_STOPPED,
 				timed_out: bash_COMMAND_EXIT_TIMED_OUT,
 			}[args.status],
-			stdout: "",
-			stderr: "",
+			stdout: invocation.job.liveOutput?.stdout ?? "",
+			stderr: invocation.job.liveOutput?.stderr ?? "",
 			startedAt: activity?.startedAt,
 			now: args.now,
 		});
@@ -951,12 +957,14 @@ export const finish_bash_job = internalMutation({
 					: exitCode === bash_COMMAND_EXIT_TIMED_OUT
 						? "timed_out"
 						: "failed";
+		// `liveOutput: undefined` drops the field: Convex leaves an undefined field out of a nested
+		// object, and the patch replaces the whole `job` object.
 		await ctx.db.patch("ai_chat_bash_invocations", invocation._id, {
 			status: "finished",
 			finishedAt: now,
 			result: bash_result_bounded(args.result),
 			resultExpiresAt: now + BASH_RESULT_RETENTION_MS,
-			job: { ...invocation.job, script: null, shellState: null },
+			job: { ...invocation.job, script: null, shellState: null, liveOutput: undefined },
 		});
 		if (invocation.job.watchdogId !== null) await ctx.scheduler.cancel(invocation.job.watchdogId);
 		// Strip this row's own result on time, like a foreground call does. Without it the daily
@@ -1188,6 +1196,24 @@ export const request_bash_job_stop = internalMutation({
 });
 
 /**
+ * The worker's flush on its poll tick: the output head so far, for `jobs -o N`. Only a running
+ * row takes it; a settle that raced ahead already wrote the finish entry and must not get a
+ * head back on the row.
+ */
+export const flush_bash_job_output = internalMutation({
+	args: { invocationId: v.id("ai_chat_bash_invocations"), liveOutput: ai_chat_bash_job_live_output_validator },
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		const invocation = await db_get_job_row(ctx, args.invocationId);
+		if (!invocation || invocation.status !== "running") return null;
+		await ctx.db.patch("ai_chat_bash_invocations", invocation._id, {
+			job: { ...invocation.job, liveOutput: args.liveOutput },
+		});
+		return null;
+	},
+});
+
+/**
  * The worker's 5 s poll. `stopRequested` is the flag itself, not the row status: the watchdog can
  * mark the row `interrupted` while a slow worker is alive in its last 30 seconds, and that
  * worker must abort with the deadline reason, not the stop reason. `authorized` re-checks what
@@ -1352,7 +1378,7 @@ export type ai_chat_files_list_thread_jobs_Result =
 /**
  * The door behind `jobs -o N` and the exit code `wait` reads at the end. `activityStatus` gives
  * the code for a finished row with no stored result (a crashed or watchdog-settled worker, or a
- * result the cron already stripped).
+ * result the cron already stripped). `liveOutput` is the head a running worker flushed so far.
  */
 export const read_job_output = internalQuery({
 	args: {
@@ -1370,6 +1396,7 @@ export const read_job_output = internalQuery({
 			activityStatus: app_convex_schema.tables.activities.validator.fields.status,
 			result: v.union(ai_chat_bash_result_validator, v.null()),
 			resultExpired: v.boolean(),
+			liveOutput: v.union(ai_chat_bash_job_live_output_validator, v.null()),
 		}),
 	),
 	handler: async (ctx, args) => {
@@ -1386,7 +1413,14 @@ export const read_job_output = internalQuery({
 		const invocation = await ctx.db.get("ai_chat_bash_invocations", activity.source.id);
 		if (!invocation) throw should_never_happen("Job Activity points to a missing invocation", { activityId: activity._id });
 		const { status, result, resultExpired } = invocation_result(invocation);
-		return { invocationId: invocation._id, status, activityStatus: activity.status, result, resultExpired };
+		return {
+			invocationId: invocation._id,
+			status,
+			activityStatus: activity.status,
+			result,
+			resultExpired,
+			liveOutput: invocation.job?.liveOutput ?? null,
+		};
 	},
 });
 

@@ -33,6 +33,7 @@ import {
 	defineCommand,
 	InMemoryFs,
 	MountableFs,
+	type BashOptions,
 	type Command,
 	type CommandName,
 	type CpOptions,
@@ -74,6 +75,7 @@ import { bash_mv_command_create } from "./bash-mv-command.ts";
 import type { bash_TransferContext } from "./bash-transfer-command.ts";
 import {
 	bash_JOB_OUTPUT_READ_BUDGET_BYTES,
+	bash_JOB_OUTPUT_READ_MAX_BYTES,
 	bash_job_status_word,
 	bash_jobs_command_create,
 	bash_kill_command_create,
@@ -969,6 +971,7 @@ async function bash_fs_create(args: {
 	shells: { _id: Id<"ai_chat_bash_shells">; name: string }[];
 	restoreState: InterpreterStateSnapshot | undefined;
 	onExecEnd?: (snapshot: InterpreterStateSnapshot) => void;
+	onOutput?: NonNullable<BashOptions["onOutput"]>;
 	executionLimitsOverride?: { maxCommandCount: number };
 }) {
 	// Organization and workspace names are validated slugs, so they are stable shell
@@ -1195,6 +1198,7 @@ async function bash_fs_create(args: {
 		onBackground,
 		restoreState: args.restoreState,
 		onExecEnd: args.onExecEnd,
+		onOutput: args.onOutput,
 		executionLimitsOverride: args.executionLimitsOverride,
 	});
 
@@ -1255,6 +1259,10 @@ function bash_shell_create(
 		executionLimitsOverride?: { maxCommandCount: number };
 		restoreState?: InterpreterStateSnapshot;
 		onExecEnd?: (snapshot: InterpreterStateSnapshot) => void;
+		/**
+		 * A job worker's live output hook. A chat call has none: its output goes to the tool result.
+		 */
+		onOutput?: NonNullable<BashOptions["onOutput"]>;
 	},
 ) {
 	const { fs, cwd, dbFilesRoots } = args;
@@ -1283,6 +1291,7 @@ function bash_shell_create(
 		env: {
 			HOME: bash_HOME,
 		},
+		onOutput: args.onOutput,
 		commands: bash_ALLOWED_COMMANDS,
 		customCommands: [
 			// Indexed app discovery.
@@ -1910,12 +1919,41 @@ export async function bash_run_job(
 		() => abort.abort(BASH_JOB_DEADLINE_ABORT_REASON),
 		Math.max(0, row.transferDeadlineAt - Date.now()),
 	);
+	// The head of each stream for `jobs -o N` while the job runs: one read page per stream, then
+	// the rest is dropped here and the transcript gets it at the end. The engine hands over each
+	// statement's output once, so appending is enough.
+	const liveOutput = { stdout: "", stderr: "", stdoutTruncated: false, stderrTruncated: false };
+	let liveOutputDirty = false;
+	const onOutput: NonNullable<BashOptions["onOutput"]> = (stream, text) => {
+		const truncatedKey = stream === "stdout" ? "stdoutTruncated" : "stderrTruncated";
+		if (liveOutput[truncatedKey]) return;
+		const room = bash_JOB_OUTPUT_READ_MAX_BYTES - liveOutput[stream].length;
+		if (text.length > room) {
+			liveOutput[stream] += text.slice(0, room);
+			liveOutput[truncatedKey] = true;
+		} else {
+			liveOutput[stream] += text;
+		}
+		liveOutputDirty = true;
+	};
 	// The Stop button, a deleted row, a lost permission and the watchdog all reach the script
 	// through this poll. A missing row and a lost permission count as a stop.
 	let polling = false;
 	const pollTimer = setInterval(() => {
 		if (polling) return;
 		polling = true;
+		// Flush the head on the same tick, only when new bytes arrived. The mutation refuses a row
+		// that is no longer running, so a flush that lands after the settle changes nothing.
+		if (liveOutputDirty) {
+			liveOutputDirty = false;
+			ctx.runMutation(internal.ai_chat_files.flush_bash_job_output, {
+				invocationId: row._id,
+				liveOutput: { ...liveOutput },
+			}).catch((error: unknown) => {
+				liveOutputDirty = true;
+				console.warn("Bash job output flush failed", { invocationId: row._id, error });
+			});
+		}
 		(ctx.runQuery(internal.ai_chat_files.poll_bash_job, { invocationId: row._id }) as Promise<ai_chat_files_poll_bash_job_Result>)
 			.then((poll) => {
 				if (poll.status === "missing" || poll.stopRequested || !poll.authorized) abort.abort(bash_ABORT_REASON_STOPPED);
@@ -1982,6 +2020,7 @@ export async function bash_run_job(
 			},
 			shells,
 			restoreState: job.shellState,
+			onOutput,
 			executionLimitsOverride: { maxCommandCount: BASH_JOB_MAX_COMMAND_COUNT },
 		});
 

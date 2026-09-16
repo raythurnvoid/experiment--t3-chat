@@ -4199,6 +4199,53 @@ describe("bash_run_command", () => {
 			);
 		});
 
+		test("jobs -o shows the output a running job flushed so far, with exit 3", async () => {
+			const runner = await create_bash_runner();
+			expect((await runner.run("{ echo first; echo warn >&2; sleep 60; echo last; } &")).metadata.exitCode).toBe(0);
+			const row = await job_row(runner, 1);
+			vi.useFakeTimers();
+			try {
+				const worker = bash_run_job(runner.ctx, { invocationId: row._id });
+				// Before the first poll tick nothing is flushed, so the read costs nothing and prints nothing.
+				await vi.advanceTimersByTimeAsync(1_000);
+				const early = await runner.run("jobs -o 1");
+				expect(early.metadata.exitCode).toBe(3);
+				expect(early.stdout).toBe("");
+				expect(early.stderr).toBe("");
+
+				// The tick flushes the head; the mutation runs off the timer, so wait for the row.
+				await vi.advanceTimersByTimeAsync(5_000);
+				await vi.waitFor(async () => expect((await job_row(runner, 1)).job?.liveOutput).toBeDefined());
+				expect((await job_row(runner, 1)).job?.liveOutput).toEqual({
+					stdout: "first\n",
+					stderr: "warn\n",
+					stdoutTruncated: false,
+					stderrTruncated: false,
+				});
+				const partial = await runner.run("jobs -o 1");
+				expect(partial.metadata.exitCode).toBe(3);
+				expect(partial.stdout).toBe("first\n");
+				expect(partial.stderr).toBe("warn\n[job 1 running]\n");
+
+				// The job's `sleep` runs on the real clock (see the permission test below), so end the
+				// job with a Stop instead of waiting for it.
+				expect((await runner.run("kill 1")).metadata.exitCode).toBe(0);
+				await vi.advanceTimersByTimeAsync(5_000);
+				await worker;
+			} finally {
+				vi.useRealTimers();
+			}
+			// The finish drops the head; the result and the transcript carry the output.
+			const finished = await job_row(runner, 1);
+			expect(finished.job?.liveOutput).toBeUndefined();
+			expect(finished.result).toMatchObject({ stdout: "first\n", metadata: { exitCode: 143 } });
+			const done = await runner.run("jobs -o 1");
+			expect(done.metadata.exitCode).toBe(0);
+			expect(done.stdout).toBe("first\n");
+			expect(done.stderr.startsWith("bash: job 1 stopped. Output: /shells/default/transcript\nwarn\n")).toBe(true);
+			expect(done.stderr.endsWith("[job 1 exit 143]\n")).toBe(true);
+		});
+
 		test("prints the finished-job note once, on the next fresh call only", async () => {
 			const runner = await create_bash_runner();
 			expect((await runner.run("true", "before")).metadata.exitCode).toBe(0);
