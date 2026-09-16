@@ -429,6 +429,38 @@ describe("begin_bash_invocation", () => {
 		expect(third.notes).toEqual([{ jobNumber: 2, status: "failed", shellName: "default" }]);
 	});
 
+	test("notes a job that ended after twelve jobs with newer numbers", async () => {
+		const f = await fixture();
+		// A job may live 24 hours, so a low job number can end last. Job 1 keeps running while twelve
+		// newer jobs start and end.
+		const longLived = await f.seed_job({ jobNumber: 1, status: "running" });
+		for (let jobNumber = 2; jobNumber <= 13; jobNumber++) {
+			const job = await f.seed_job({ jobNumber, status: "running" });
+			await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
+				invocationId: job.invocationId,
+				result: job_result(0),
+			});
+		}
+
+		// The newer jobs are noted first, eight of them, and the cursor moves past all twelve.
+		vi.setSystemTime(Date.now() + 1000);
+		const noted = await begin(f, "long-1");
+		if (!("notes" in noted)) throw new Error("Expected a fresh call");
+		expect(noted.notes).toHaveLength(8);
+
+		vi.setSystemTime(Date.now() + 1000);
+		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
+			invocationId: longLived.invocationId,
+			result: job_result(0),
+		});
+		vi.setSystemTime(Date.now() + 1000);
+		const late = await begin(f, "long-2");
+		if (!("notes" in late)) throw new Error("Expected a fresh call");
+		// Job 1 has the oldest number of the thirteen, so reading the newest twelve numbers would hide
+		// it for good even though its finish is the newest one of the thread.
+		expect(late.notes).toEqual([{ jobNumber: 1, status: "succeeded", shellName: "default" }]);
+	});
+
 	test("one member's call does not hide another member's notes", async () => {
 		const f = await fixture();
 		const job = await f.seed_job({ jobNumber: 1, status: "running" });
@@ -750,6 +782,55 @@ describe("job wakeup", () => {
 			state: { kind: "pending" },
 			args: [{ invocationId: job.invocationId, threadId: f.scope.threadId, noteMessageId: note?._id }],
 		});
+	});
+
+	test("the note goes under the newest message, not under the newest root's branch", async () => {
+		const f = await fixture();
+		const { assistantId } = await seed_messages(f);
+
+		// Editing the first user message stores the new one with no parent, so the thread gets a second
+		// root. The chat still shows the branch of the newest message, and the user keeps talking there.
+		vi.setSystemTime(Date.now() + 1000);
+		const otherRoot = await f.asUser.mutation(api.ai_chat.thread_messages_add, {
+			membershipId: f.db.membershipId,
+			threadId: f.scope.threadId,
+			parentId: null,
+			messages: [
+				{
+					clientGeneratedMessageId: "user-b",
+					content: { id: "user-b", role: "user", parts: [{ type: "text", text: "run it again" }] },
+				},
+			],
+		});
+		if (otherRoot._nay) throw new Error(otherRoot._nay.message);
+		vi.setSystemTime(Date.now() + 1000);
+		const branchA = await f.asUser.mutation(api.ai_chat.thread_messages_add, {
+			membershipId: f.db.membershipId,
+			threadId: f.scope.threadId,
+			parentId: assistantId,
+			messages: [
+				{
+					clientGeneratedMessageId: "user-a2",
+					content: { id: "user-a2", role: "user", parts: [{ type: "text", text: "and again" }] },
+				},
+			],
+		});
+		if (branchA._nay) throw new Error(branchA._nay.message);
+		const newestMessageId = branchA._yay.ids[0]!;
+
+		const job = await f.seed_job({ jobNumber: 1, status: "running", wakeAgent });
+		vi.setSystemTime(Date.now() + 1000);
+		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
+			invocationId: job.invocationId,
+			result: job_result(0),
+		});
+
+		const { messages } = await read_thread(f);
+		const note = messages.at(-1);
+		expect(note?.content.role).toBe("system");
+		// The newest root is `user-b`, whose branch the chat does not render. Hanging the note there
+		// would hide it and give the woken run only that one turn to answer.
+		expect(note?.parentId).toBe(newestMessageId);
 	});
 
 	test("a job that ends while a chat run streams does not wake; an expired lease does not block", async () => {

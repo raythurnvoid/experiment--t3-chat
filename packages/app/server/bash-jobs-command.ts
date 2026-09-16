@@ -49,9 +49,12 @@ export type bash_JobContext = {
 	 */
 	launchedJobNumbers: number[];
 	/**
-	 * Refused launches so far; after 3 the hook refuses locally without a database round trip.
+	 * Launches refused in a row; after 3 the hook refuses locally without a database round trip. A
+	 * launch that succeeds puts this back to 0, because slots free up inside one call: a script can
+	 * hit the jobs cap, `wait` for those jobs, and start more. A runaway loop never succeeds, so it
+	 * still stops after three.
 	 */
-	launchAttempts: number;
+	launchRefusals: number;
 	/**
 	 * Bytes `jobs -o` may still print in this call; starts at 64 KiB.
 	 */
@@ -187,16 +190,20 @@ async function print_job_output(ctx: ActionCtx, job: bash_JobContext, jobNumber:
 	// not done. That line costs no read budget.
 	if (output.status === "running" && !output.liveOutput)
 		return { stdout: "", stderr: liveMarker, exitCode: bash_COMMAND_EXIT_STILL_RUNNING };
+	// A job settled by the watchdog or stopped while it waited stores no result. Name the outcome the
+	// Activity already carries, so the reader learns why the job ended without another call.
 	if (output.status !== "running" && !output.result)
 		return {
 			stdout: "",
-			stderr: `bash: jobs: no stored output for job ${jobNumber}; read the shell transcript\n`,
+			stderr: `bash: jobs: job ${jobNumber} ${bash_job_status_word(output.activityStatus)} and stored no output; read the shell transcript\n`,
 			exitCode: bash_COMMAND_EXIT_FAILURE,
 		};
+	// Every read costs the same, so the budget is two reads per call whatever they print. Say that,
+	// not the byte total: after two short reads the call has printed a few bytes, not 64 KiB.
 	if (job.readBudgetRemaining < bash_JOB_OUTPUT_READ_MAX_BYTES)
 		return {
 			stdout: "",
-			stderr: "bash: jobs: this call already read its 64 KiB of job output; read the shell transcript\n",
+			stderr: "bash: jobs: this call already read job output twice; read the shell transcript\n",
 			exitCode: bash_COMMAND_EXIT_FAILURE,
 		};
 	job.readBudgetRemaining -= bash_JOB_OUTPUT_READ_MAX_BYTES;
@@ -325,7 +332,7 @@ export function bash_wait_command_create(ctx: ActionCtx, job: bash_JobContext): 
 				job.waitingJobNumbers.push(...armed);
 				return {
 					stdout: "",
-					stderr: `bash: waiting for job ${armed.join(", ")}: end this turn. The finish then starts your next run, or leaves a note for your next call.\n`,
+					stderr: `bash: waiting for job ${armed.join(", ")}: end this turn. The finish then starts your next run, or leaves its result in the shell transcript.\n`,
 					exitCode: bash_COMMAND_EXIT_STILL_RUNNING,
 				};
 			}

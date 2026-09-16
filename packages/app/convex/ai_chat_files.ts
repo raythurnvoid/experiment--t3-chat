@@ -76,9 +76,8 @@ const BASH_JOB_PLACEHOLDER_MS = 10 * 60 * 1000;
 // the shell snapshot are bounded at launch and emptied when the result lands.
 const BASH_JOB_SCRIPT_MAX_BYTES = 64 * 1024;
 const BASH_JOB_SHELL_STATE_MAX_BYTES = 128 * 1024;
-// The finished-job notes read this many newest jobs: 8 finished plus the 4 that can be live.
-const BASH_JOB_NOTE_WINDOW = BASH_JOB_LIST_MAX_COUNT + BASH_JOB_LIVE_MAX_COUNT;
-// The wakeup message carries this many characters of each output stream; `jobs -o N` has the rest.
+// The wakeup message carries this much of each output stream; `jobs -o N` has the rest. The cut
+// counts UTF-16 code units, so it can land inside a character that takes two of them.
 const BASH_JOB_WAKEUP_HEAD_CHARS = 4 * 1024;
 // A wakeup run holds the thread's run lease this long at most. A Convex action cannot run longer.
 const BASH_JOB_WAKEUP_RUN_MS = 10 * 60 * 1000;
@@ -279,22 +278,21 @@ function invocation_result(
  * The "job finished" notes for this user's next fresh call in a thread. The cursor row is per
  * user and thread, so one member's call never hides another member's notes. It moves to
  * `now - 1`: a finish stamped in the same millisecond that commits after this call would
- * otherwise be hidden forever, and a rare duplicate note is cheap. More than 8 newly finished
- * jobs in the window are dropped while the cursor still moves; the transcript keeps their output.
+ * otherwise be hidden forever, and a rare duplicate note is cheap. More than 8 jobs that ended
+ * since the cursor are dropped while the cursor still moves; the transcript keeps their output.
  */
 async function db_take_job_notes(
 	ctx: MutationCtx,
 	args: { thread: Doc<"ai_chat_threads">; userId: Id<"users">; now: number },
 ) {
-	const recent = await ctx.db
+	const anyJob = await ctx.db
 		.query("activities")
 		.withIndex("by_user_source_kind_thread_jobNumber", (q) =>
 			q.eq("userId", args.userId).eq("source.kind", "ai_chat_bash_job").eq("source.threadId", args.thread._id),
 		)
-		.order("desc")
-		.take(BASH_JOB_NOTE_WINDOW);
+		.first();
 	// No job Activity means nothing to note and nothing to hide: keep the thread without a cursor row.
-	if (recent.length === 0) return [];
+	if (!anyJob) return [];
 
 	const cursor = await ctx.db
 		.query("ai_chat_bash_job_notice_cursors")
@@ -302,9 +300,22 @@ async function db_take_job_notes(
 		.unique();
 	// `5 > undefined` is false: without the `?? 0` the first wave of notes would never print.
 	const noticeAt = cursor?.noticeAt ?? 0;
-	const notes = recent
-		.filter((activity) => !activities_is_active(activity.status) && (activity.finishedAt ?? 0) > noticeAt)
-		.slice(0, BASH_JOB_LIST_MAX_COUNT)
+	// The index range asks for the jobs that ended after the cursor, so a job that ended long after
+	// the newer job numbers still comes back. A job that is still running sorts before every number
+	// and is left out by the range itself.
+	const ended = await ctx.db
+		.query("activities")
+		.withIndex("by_user_source_kind_thread_finishedAt", (q) =>
+			q
+				.eq("userId", args.userId)
+				.eq("source.kind", "ai_chat_bash_job")
+				.eq("source.threadId", args.thread._id)
+				.gt("finishedAt", noticeAt),
+		)
+		.order("desc")
+		.take(BASH_JOB_LIST_MAX_COUNT);
+	const notes = ended
+		.filter((activity) => !activities_is_active(activity.status))
 		.map((activity) => {
 			const source = activity.source;
 			if (source.kind !== "ai_chat_bash_job")
@@ -768,19 +779,19 @@ async function db_wake_agent_for_job(
 	const shell = await ctx.db.get("ai_chat_bash_shells", invocation.job.shellId);
 	if (!shell) throw should_never_happen("Job shell not found", { shellId: invocation.job.shellId });
 
-	// The newest root, then its newest child, and so on: the branch the chat shows by default.
-	const messages = await ctx.db
+	// The newest message of the thread. That is the leaf of the branch the chat shows: with no branch
+	// picked the client starts from the newest message and walks up to its root. A thread can have
+	// more than one root, because editing the first user message stores the new one with no parent,
+	// so walking down from the newest root instead would put the note on a branch the chat does not
+	// render and give the woken run the wrong conversation to answer.
+	const newestMessage = await ctx.db
 		.query("ai_chat_threads_messages_aisdk_5")
 		.withIndex("by_organization_workspace_thread", (q) =>
 			q.eq("organizationId", thread.organizationId).eq("workspaceId", thread.workspaceId).eq("threadId", thread._id),
 		)
 		.order("desc")
-		.collect();
-	let leafId: Id<"ai_chat_threads_messages_aisdk_5"> | null = null;
-	let child: Doc<"ai_chat_threads_messages_aisdk_5"> | undefined;
-	while ((child = messages.find((message) => message.parentId === leafId))) {
-		leafId = child._id;
-	}
+		.first();
+	const leafId = newestMessage?._id ?? null;
 
 	const head = (text: string) =>
 		text.length > BASH_JOB_WAKEUP_HEAD_CHARS ? `${text.slice(0, BASH_JOB_WAKEUP_HEAD_CHARS)}\n[truncated]` : text;

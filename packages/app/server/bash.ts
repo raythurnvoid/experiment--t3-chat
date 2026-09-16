@@ -136,7 +136,8 @@ const SHELL_STATE_MAX_BYTES = 128 * 1024;
 const BASH_JOB_MAX_COMMAND_COUNT = 2_000;
 // The worker reads the Stop flag, the row status and its permissions this often.
 const BASH_JOB_POLL_MS = 5_000;
-// After this many refused launches in one call, the hook refuses the rest without a query.
+// After this many launches refused in a row, the hook refuses the rest without a query. A launch
+// that succeeds starts the count again, so a script that waits for a slot is not locked out.
 const BASH_JOB_LAUNCH_MAX_REFUSALS = 3;
 // A bare top-level `sleep` of at least this long pauses the job instead of holding a worker, and
 // waits at most as long as the sleep command itself would (its own cap is one hour).
@@ -1172,10 +1173,10 @@ async function bash_fs_create(args: {
 	// start the job in `x`, and the mutation cannot resolve a path on its own.
 	const onBackground: NonNullable<ExecOptions["onBackground"]> = async (launch) => {
 		const job = args.jobContext;
-		if (job.launchAttempts >= BASH_JOB_LAUNCH_MAX_REFUSALS)
+		if (job.launchRefusals >= BASH_JOB_LAUNCH_MAX_REFUSALS)
 			return {
 				jobNumber: null,
-				stderr: `bash: cannot start a job: ${BASH_JOB_LAUNCH_MAX_REFUSALS} launches were already refused in this call\n`,
+				stderr: `bash: cannot start a job: ${BASH_JOB_LAUNCH_MAX_REFUSALS} launches in a row were refused in this call\n`,
 			};
 		const started = (await args.ctx.runMutation(internal.ai_chat_files.start_bash_job, {
 			parentInvocationId: job.invocationId,
@@ -1193,10 +1194,12 @@ async function bash_fs_create(args: {
 			wakeAgent: job.wakeAgent ?? undefined,
 		})) as ai_chat_files_start_bash_job_Result;
 		if (started._nay) {
-			job.launchAttempts += 1;
+			job.launchRefusals += 1;
 			return { jobNumber: null, stderr: `bash: cannot start a job: ${started._nay.message}\n` };
 		}
 		const { jobNumber } = started._yay;
+		// A slot freed up, so the next refusal starts the count again.
+		job.launchRefusals = 0;
 		job.launchedJobNumbers.push(jobNumber);
 		// Extra fds (`exec 3>out`) are in the snapshot for report only; the job does not get them.
 		let stderr = "";
@@ -1629,7 +1632,7 @@ export async function bash_run_command(
 			signal: abort.signal,
 			nextCommandNumber: () => commandNumber++,
 			launchedJobNumbers: [],
-			launchAttempts: 0,
+			launchRefusals: 0,
 			readBudgetRemaining: bash_JOB_OUTPUT_READ_BUDGET_BYTES,
 			wakeAgent: args.wakeAgent,
 			waitingJobNumbers: [],
@@ -2142,7 +2145,7 @@ export async function bash_run_job(
 				signal: abort.signal,
 				nextCommandNumber: () => commandNumber++,
 				launchedJobNumbers,
-				launchAttempts: 0,
+				launchRefusals: 0,
 				readBudgetRemaining: bash_JOB_OUTPUT_READ_BUDGET_BYTES,
 				wakeAgent: null,
 				waitingJobNumbers: [],

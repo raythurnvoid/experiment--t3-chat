@@ -3676,7 +3676,12 @@ const app_convex_schema = defineSchema({
 		])
 		// Bash job doors resolve a job number through this index, so the user and thread are
 		// fenced by the index itself. Rows of other source kinds have no `source.jobNumber`.
-		.index("by_user_source_kind_thread_jobNumber", ["userId", "source.kind", "source.threadId", "source.jobNumber"]),
+		.index("by_user_source_kind_thread_jobNumber", ["userId", "source.kind", "source.threadId", "source.jobNumber"])
+		// The finished-job notes read this one. They ask which jobs ended since the cursor, so they
+		// need the finish time, not the job number: a job may live 24 hours, so job 1 can end after
+		// job 20 and must still get its note. A job that is still running has no `finishedAt`, which
+		// sorts before every number, so the range leaves it out on its own.
+		.index("by_user_source_kind_thread_finishedAt", ["userId", "source.kind", "source.threadId", "finishedAt"]),
 
 	activities_user_states: defineTable({
 		userId: v.id("users"),

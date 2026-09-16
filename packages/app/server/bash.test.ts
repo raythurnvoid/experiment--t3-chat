@@ -4135,7 +4135,8 @@ describe("bash_run_command", () => {
 			const stripped = await runner.run("jobs -o 1");
 			expect(stripped.metadata.exitCode).toBe(1);
 			expect(stripped.stdout).toBe("");
-			expect(stripped.stderr).toContain("no stored output for job 1");
+			// The row lost its result, so the message answers from the Activity's own outcome instead.
+			expect(stripped.stderr).toBe("bash: jobs: job 1 done and stored no output; read the shell transcript\n");
 		});
 
 		test("jobs -o spends no read budget on a job that is still live", async () => {
@@ -4206,7 +4207,7 @@ describe("bash_run_command", () => {
 			expect(read.stdout.startsWith("1\n2\n3\n")).toBe(true);
 			expect(read.stdout).toContain("\n[truncated]\n");
 			expect(read.stderr).toBe(
-				"bash: job 1 done. Output: /shells/default/transcript\n[job 1 exit 0]\n[job 1 exit 0]\nbash: jobs: this call already read its 64 KiB of job output; read the shell transcript\n",
+				"bash: job 1 done. Output: /shells/default/transcript\n[job 1 exit 0]\n[job 1 exit 0]\nbash: jobs: this call already read job output twice; read the shell transcript\n",
 			);
 		});
 
@@ -4297,8 +4298,22 @@ describe("bash_run_command", () => {
 			const before = mutation_calls(runner, "ai_chat_files:start_bash_job");
 			const many = await runner.run("true & true & true & true & true &");
 			expect(mutation_calls(runner, "ai_chat_files:start_bash_job") - before).toBe(3);
-			expect(many.stderr).toContain("3 launches were already refused in this call");
+			expect(many.stderr).toContain("3 launches in a row were refused in this call");
 			expect((await runner.run("set -e; true & echo after")).stdout).toBe("");
+		});
+
+		test("a launch that succeeds lets the call be refused three more times", async () => {
+			const runner = await create_bash_runner();
+			// A script over 64 KiB is refused every time, whatever the live jobs are, so one call can
+			// mix refusals with a launch that works. Two refusals, a success, two more refusals: the
+			// count only ever reaches two in a row, so the sixth launch must still ask the door.
+			const tooBig = `true '${"a".repeat(66_000)}' &`;
+			const before = mutation_calls(runner, "ai_chat_files:start_bash_job");
+			const mixed = await runner.run(`${tooBig} ${tooBig} true & ${tooBig} ${tooBig} true & echo rc=$?; jobs -a`);
+			expect(mutation_calls(runner, "ai_chat_files:start_bash_job") - before).toBe(6);
+			expect(mixed.stdout).toBe("rc=0\n[2] queued    default  true\n[1] queued    default  true\n");
+			expect(mixed.stderr).toContain("bash: started job 2 in shell default");
+			expect(mixed.stderr).not.toContain("in a row were refused");
 		});
 
 		test("a nested job counts against the cap and survives its parent's stop", async () => {
@@ -4543,7 +4558,7 @@ describe("bash_run_command", () => {
 			);
 
 			// The bare `wait` keeps the newest twelve, which all finished, so it waits for nothing and
-			// prints the worst exit code among them, which is job 2's 7. The job's own exit code is the
+			// prints the worst exit code among them, which is job 1's 7. The job's own exit code is the
 			// `echo`'s.
 			const finished = await run_job(runner, 13);
 			expect(finished.result?.stderr).toBe("");
@@ -4648,7 +4663,7 @@ describe("bash_run_command", () => {
 			});
 			const waited = await waiter.run("wait 1 2");
 			expect(waited.stderr).toBe(
-				"bash: waiting for job 1: end this turn. The finish then starts your next run, or leaves a note for your next call.\n",
+				"bash: waiting for job 1: end this turn. The finish then starts your next run, or leaves its result in the shell transcript.\n",
 			);
 			expect(waited.metadata.exitCode).toBe(3);
 			expect(waited.metadata.waitingForJobs).toEqual([1]);
