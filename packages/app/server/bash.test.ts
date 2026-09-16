@@ -4207,7 +4207,9 @@ describe("bash_run_command", () => {
 
 		test("jobs -o shows the output a running job flushed so far, with exit 3", async () => {
 			const runner = await create_bash_runner();
-			expect((await runner.run("{ echo first; echo warn >&2; sleep 60; echo last; } &")).metadata.exitCode).toBe(0);
+			// A long `sleep $t` runs inline and keeps the worker busy. A literal `sleep 60` would pause the job
+			// instead (see the pause tests below). The tests below use the same form for the same reason.
+			expect((await runner.run("{ echo first; echo warn >&2; t=60; sleep $t; echo last; } &")).metadata.exitCode).toBe(0);
 			const row = await job_row(runner, 1);
 			vi.useFakeTimers();
 			try {
@@ -4302,6 +4304,97 @@ describe("bash_run_command", () => {
 			expect(child.result?.stdout).toBe("nested\n");
 		});
 
+		test("pauses before a top-level sleep, keeps its state and cwd, and finishes in a later run", async () => {
+			const runner = await create_bash_runner();
+			const script = "{ x=1; echo before $x; cd docs; sleep 30; x=$((x + 1)); echo after $x; pwd; }";
+			expect((await runner.run(`${script} &`)).metadata.exitCode).toBe(0);
+
+			// The first run stops before the sleep: the rest, the state, the cwd and the output head
+			// go on the row, the Activity waits as `queued`, and the next run is due after the sleep.
+			const paused = await run_job(runner, 1);
+			expect(paused.status).toBe("running");
+			expect(paused.job).toMatchObject({
+				script,
+				resumeScript: "x=$((x + 1))\necho after $x\npwd",
+				startCwd: `${test_db_files_mount}/docs`,
+				liveOutput: { stdout: "before 1\n", stderr: "", stdoutTruncated: false, stderrTruncated: false },
+			});
+			expect(paused.job?.shellState?.env).toContainEqual({ name: "x", value: "1" });
+			const pausedActivity = await activity_of(runner, 1);
+			expect(pausedActivity).toMatchObject({ status: "queued" });
+			expect(vi.mocked(Workpool.prototype).enqueueAction.mock.calls.at(-1)?.[3]).toMatchObject({ runAfter: 30_000 });
+			const partial = await runner.run("jobs -o 1");
+			expect(partial.metadata.exitCode).toBe(3);
+			expect(partial.stdout).toBe("before 1\n");
+			expect(partial.stderr).toBe("[job 1 running]\n");
+
+			// The next run continues with the saved state and prints the whole job's output.
+			const finished = await run_job(runner, 1);
+			expect(finished.status).toBe("finished");
+			expect(finished.job).toMatchObject({ script: null, shellState: null });
+			expect(finished.job?.resumeScript).toBeUndefined();
+			expect(finished.result).toMatchObject({
+				stdout: `before 1\nafter 2\n${test_db_files_mount}/docs\n`,
+				stderr: "",
+				metadata: { exitCode: 0 },
+			});
+			expect(await activity_of(runner, 1)).toMatchObject({ status: "succeeded", startedAt: pausedActivity?.startedAt });
+			const entries = await runner.t.run(async (ctx) =>
+				(await ctx.db.query("ai_chat_bash_shell_transcripts").collect())
+					.sort((a, b) => a.seq - b.seq)
+					.map((entry) => entry.text),
+			);
+			expect(entries.find((entry) => entry.includes("job 1 paused"))).toMatch(
+				/^\$ \[[^\]]+\] job 1 paused \(exit 0\) in shell default: sleep 30s, continues at [^\n]+\nbefore 1\n\n$/,
+			);
+			expect(entries.at(-1)).toMatch(
+				/^\$ \[[^\]]+\] job 1 finished \(exit 0\) in shell default, started \d\d:\d\d:\d\d\n\{ x=1; [^\n]+\nbefore 1\nafter 2\n/,
+			);
+		});
+
+		test("pauses when the run budget is nearly used and continues at once", async () => {
+			const runner = await create_bash_runner();
+			expect((await runner.run("{ sleep 1; echo one; echo two; } &")).metadata.exitCode).toBe(0);
+			const row = await job_row(runner, 1);
+			vi.useFakeTimers({ toFake: ["Date"] });
+			try {
+				const start = Date.now();
+				const worker = bash_run_job(runner.ctx, { invocationId: row._id });
+				// The first statement sleeps on the real clock; meanwhile the run budget runs out.
+				await new Promise((resolve) => setTimeout(resolve, 300));
+				vi.setSystemTime(start + 7 * 60 * 1000);
+				await worker;
+			} finally {
+				vi.useRealTimers();
+			}
+			const paused = await job_row(runner, 1);
+			expect(paused.status).toBe("running");
+			expect(paused.job).toMatchObject({ resumeScript: "echo one\necho two" });
+			expect(paused.job?.liveOutput).toBeUndefined();
+			expect(vi.mocked(Workpool.prototype).enqueueAction.mock.calls.at(-1)?.[3]).toMatchObject({ runAfter: 0 });
+			const entries = await runner.t.run(async (ctx) =>
+				(await ctx.db.query("ai_chat_bash_shell_transcripts").collect()).map((entry) => entry.text),
+			);
+			expect(entries.some((entry) => entry.includes("job 1 paused (exit 0) in shell default: run budget used, continues at once\n"))).toBe(true);
+
+			const finished = await run_job(runner, 1);
+			expect(finished.result).toMatchObject({ stdout: "one\ntwo\n", metadata: { exitCode: 0 } });
+		});
+
+		test("a Stop lands at the next statement boundary, not only at the next 5-second tick", async () => {
+			const runner = await create_bash_runner();
+			expect((await runner.run("{ sleep 1.2; echo after; } &")).metadata.exitCode).toBe(0);
+			const row = await job_row(runner, 1);
+			const worker = bash_run_job(runner.ctx, { invocationId: row._id });
+			await new Promise((resolve) => setTimeout(resolve, 200));
+			expect((await runner.run("kill 1")).metadata.exitCode).toBe(0);
+			// Without the boundary poll `echo after` would run at 1.2 s, well before the 5-second tick.
+			await worker;
+			const finished = await job_row(runner, 1);
+			expect(finished.result).toMatchObject({ stdout: "", metadata: { exitCode: 143 } });
+			expect(await activity_of(runner, 1)).toMatchObject({ status: "canceled" });
+		});
+
 		test("a call with the wake flag arms the jobs it starts, and a job a job starts is never armed", async () => {
 			const runner = await create_bash_runner({ wakeAgent: { modelId: "gpt-5.4-nano" } });
 			expect((await runner.run("{ echo nested & } &")).metadata.exitCode).toBe(0);
@@ -4341,7 +4434,7 @@ describe("bash_run_command", () => {
 
 		test("kill stops a running job with 143, also inside a sleep, and never ends the call", async () => {
 			const runner = await create_bash_runner();
-			expect((await runner.run("{ echo before; sleep 60; } &")).metadata.exitCode).toBe(0);
+			expect((await runner.run("{ echo before; t=60; sleep $t; } &")).metadata.exitCode).toBe(0);
 			const row = await job_row(runner, 1);
 			vi.useFakeTimers();
 			try {
@@ -4400,7 +4493,7 @@ describe("bash_run_command", () => {
 				allowDbFilesMkdir: false,
 				shared: { t: owner.t, seeded: { ...owner.seeded, ...member } },
 			});
-			expect((await runner.run("sleep 60 &")).metadata.exitCode).toBe(0);
+			expect((await runner.run("{ t=60; sleep $t; } &")).metadata.exitCode).toBe(0);
 			const row = await job_row(runner, 1);
 			expect(row.job?.allowDbFilesMkdir).toBe(false);
 			vi.useFakeTimers();
@@ -4425,7 +4518,7 @@ describe("bash_run_command", () => {
 
 		test("a running job stops when its write permission is taken away", async () => {
 			const runner = await create_bash_runner();
-			expect((await runner.run("{ echo before; sleep 60; } &")).metadata.exitCode).toBe(0);
+			expect((await runner.run("{ echo before; t=60; sleep $t; } &")).metadata.exitCode).toBe(0);
 			const row = await job_row(runner, 1);
 			// Only an Agent-mode job is checked for `content.write`, so say that out loud here. Without
 			// this the test would go red with a puzzling 124 if the runner's default ever flipped.
@@ -4469,7 +4562,7 @@ describe("bash_run_command", () => {
 
 		test("an Ask-mode job keeps running when its write permission is taken away", async () => {
 			const runner = await create_bash_runner({ allowDbFilesMkdir: false });
-			expect((await runner.run("{ echo before; sleep 600; } &")).metadata.exitCode).toBe(0);
+			expect((await runner.run("{ echo before; t=600; sleep $t; } &")).metadata.exitCode).toBe(0);
 			const row = await job_row(runner, 1);
 			expect(row.job?.allowDbFilesMkdir).toBe(false);
 			// Only the poll can stop a job, so count its turns to prove it really ran.
@@ -4517,7 +4610,7 @@ describe("bash_run_command", () => {
 
 		test("a job that uses its whole budget keeps its output and reports 124", async () => {
 			const runner = await create_bash_runner();
-			expect((await runner.run("{ echo partial; sleep 600; } &")).metadata.exitCode).toBe(0);
+			expect((await runner.run("{ echo partial; t=600; sleep $t; } &")).metadata.exitCode).toBe(0);
 			const row = await job_row(runner, 1);
 			vi.useFakeTimers();
 			try {
@@ -4537,7 +4630,7 @@ describe("bash_run_command", () => {
 
 		test("wait -t stops at the call's own deadline, not at the seconds it was given", async () => {
 			const runner = await create_bash_runner();
-			expect((await runner.run("sleep 600 &")).metadata.exitCode).toBe(0);
+			expect((await runner.run("{ t=600; sleep $t; } &")).metadata.exitCode).toBe(0);
 			// Only `wait` reads the jobs it was named, so this counts its own polls.
 			const wait_polls = () =>
 				runner.runQuery.mock.calls.filter(
@@ -4611,7 +4704,7 @@ describe("bash_run_command", () => {
 
 		test("a job whose row was already settled interrupted stops with 124, not 143", async () => {
 			const runner = await create_bash_runner();
-			expect((await runner.run("{ echo partial; sleep 600; } &")).metadata.exitCode).toBe(0);
+			expect((await runner.run("{ echo partial; t=600; sleep $t; } &")).metadata.exitCode).toBe(0);
 			const row = await job_row(runner, 1);
 			vi.useFakeTimers();
 			try {
@@ -4666,7 +4759,7 @@ describe("bash_run_command", () => {
 		test("wait answers from the Activity when the result is gone or the watchdog settled the job", async () => {
 			const runner = await create_bash_runner();
 			expect((await runner.run("true &")).metadata.exitCode).toBe(0);
-			expect((await runner.run("sleep 600 &")).metadata.exitCode).toBe(0);
+			expect((await runner.run("{ t=600; sleep $t; } &")).metadata.exitCode).toBe(0);
 			const done = await run_job(runner, 1);
 			await runner.t.run((ctx) => ctx.db.patch("ai_chat_bash_invocations", done._id, { result: undefined }));
 

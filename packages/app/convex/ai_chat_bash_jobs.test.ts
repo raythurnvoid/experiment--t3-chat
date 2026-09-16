@@ -503,7 +503,11 @@ describe("flush_bash_job_output", () => {
 	test("stores the head on a running row, refuses a settled one, and the finish drops it", async () => {
 		const f = await fixture();
 		const job = await f.seed_job({ jobNumber: 1, status: "running" });
-		await f.t.mutation(internal.ai_chat_files.flush_bash_job_output, { invocationId: job.invocationId, liveOutput: head });
+		await f.t.mutation(internal.ai_chat_files.flush_bash_job_output, {
+			invocationId: job.invocationId,
+			workId: job.workId!,
+			liveOutput: head,
+		});
 		expect((await f.read(job.invocationId)).row).toMatchObject({ job: { liveOutput: head } });
 		expect(await f.t.query(internal.ai_chat_files.read_job_output, { ...f.scope, jobNumber: 1 })).toMatchObject({
 			status: "running",
@@ -513,7 +517,11 @@ describe("flush_bash_job_output", () => {
 		await f.t.mutation(internal.ai_chat_files.finish_bash_job, { invocationId: job.invocationId, result: job_result(0) });
 		const finished = await f.read(job.invocationId);
 		expect(finished.row?.job?.liveOutput).toBeUndefined();
-		await f.t.mutation(internal.ai_chat_files.flush_bash_job_output, { invocationId: job.invocationId, liveOutput: head });
+		await f.t.mutation(internal.ai_chat_files.flush_bash_job_output, {
+			invocationId: job.invocationId,
+			workId: job.workId!,
+			liveOutput: head,
+		});
 		expect((await f.read(job.invocationId)).row?.job?.liveOutput).toBeUndefined();
 	});
 
@@ -521,7 +529,11 @@ describe("flush_bash_job_output", () => {
 		const f = await fixture();
 		const start = Date.now();
 		const job = await f.seed_job({ jobNumber: 1, status: "running" });
-		await f.t.mutation(internal.ai_chat_files.flush_bash_job_output, { invocationId: job.invocationId, liveOutput: head });
+		await f.t.mutation(internal.ai_chat_files.flush_bash_job_output, {
+			invocationId: job.invocationId,
+			workId: job.workId!,
+			liveOutput: head,
+		});
 		vi.setSystemTime(start + PLACEHOLDER_MS);
 		await f.t.mutation(internal.ai_chat_files.timeout_bash_job, {
 			invocationId: job.invocationId,
@@ -532,6 +544,94 @@ describe("flush_bash_job_output", () => {
 		expect(after.row?.job?.liveOutput).toBeUndefined();
 		expect(after.transcript[1]).toContain("job 1 finished (exit 124)");
 		expect(after.transcript[1]?.endsWith("\nsleep 1\npartial\n\n")).toBe(true);
+	});
+});
+
+describe("pause_bash_job", () => {
+	const head = { stdout: "one\n", stderr: "", stdoutTruncated: false, stderrTruncated: false };
+	const pause = async (
+		f: Awaited<ReturnType<typeof fixture>>,
+		invocationId: Id<"ai_chat_bash_invocations">,
+		liveOutput: typeof head | null = head,
+	) =>
+		await f.t.mutation(internal.ai_chat_files.pause_bash_job, {
+			invocationId,
+			resume: { script: "echo two", shellState: empty_shell_state, cwd: "/docs", cwdTarget: null },
+			liveOutput,
+			outcome: { exitCode: 0, stdout: "one\n", stderr: "" },
+			reason: "sleep 30s, continues at soon",
+			runAfterMs: 30_000,
+		});
+
+	test("stores the next run, re-queues the Activity, swaps the pool item and the watchdog, and appends the pause entry", async () => {
+		const f = await fixture();
+		const start = Date.now();
+		const job = await f.seed_job({ jobNumber: 1 });
+		vi.setSystemTime(start + 60_000);
+		const claimed = await f.t.mutation(internal.ai_chat_files.claim_bash_job, { invocationId: job.invocationId });
+		if (!claimed) throw new Error("Expected the claim");
+		vi.setSystemTime(start + 90_000);
+		expect(await pause(f, job.invocationId)).toBe(true);
+
+		const after = await f.read(job.invocationId);
+		const deadlineAt = start + 90_000 + 30_000 + PLACEHOLDER_MS;
+		expect(after.row).toMatchObject({
+			status: "running",
+			deadlineAt,
+			transferDeadlineAt: deadlineAt,
+			job: {
+				script: "sleep 1",
+				resumeScript: "echo two",
+				shellState: empty_shell_state,
+				startCwd: "/docs",
+				startCwdTarget: null,
+				liveOutput: head,
+			},
+		});
+		expect(after.row?.job?.workId).not.toBe(job.workId);
+		expect(after.row?.job?.watchdogId).not.toBe(claimed.row.job?.watchdogId);
+		expect(await f.scheduled_state(claimed.row.job!.watchdogId!)).toBe("canceled");
+		expect(await f.scheduled_state(after.row!.job!.watchdogId!)).toBe("pending");
+		expect(after.activity).toMatchObject({ status: "queued", startedAt: start + 60_000, deadlineAt });
+		expect(after.transcript[1]).toBe(
+			`$ [${new Date(start + 90_000).toISOString()}] job 1 paused (exit 0) in shell default: sleep 30s, continues at soon\none\n\n`,
+		);
+
+		// The next claim keeps the first start time, and the finish drops the resume script.
+		vi.setSystemTime(start + 120_000);
+		await f.t.mutation(internal.ai_chat_files.claim_bash_job, { invocationId: job.invocationId });
+		expect((await f.read(job.invocationId)).activity).toMatchObject({ status: "running", startedAt: start + 60_000 });
+		await f.t.mutation(internal.ai_chat_files.finish_bash_job, { invocationId: job.invocationId, result: job_result(0) });
+		const finished = await f.read(job.invocationId);
+		expect(finished.row?.job?.resumeScript).toBeUndefined();
+		expect(finished.row?.job?.liveOutput).toBeUndefined();
+		expect(finished.transcript[2]).toContain(`started ${new Date(start + 60_000).toISOString().slice(11, 19)}\nsleep 1\n`);
+	});
+
+	test("refuses a row with a Stop pending or one that already settled", async () => {
+		const f = await fixture();
+		const stopping = await f.seed_job({ jobNumber: 1, status: "running", stopRequestedAt: Date.now() });
+		expect(await pause(f, stopping.invocationId)).toBe(false);
+		const settled = await f.seed_job({ jobNumber: 2, status: "running" });
+		await f.t.mutation(internal.ai_chat_files.finish_bash_job, { invocationId: settled.invocationId, result: job_result(0) });
+		expect(await pause(f, settled.invocationId)).toBe(false);
+		for (const job of [stopping, settled]) {
+			const after = await f.read(job.invocationId);
+			expect(after.row?.job?.resumeScript).toBeUndefined();
+			expect(after.row?.job?.workId).toBe(job.workId);
+		}
+	});
+
+	test("a flush from the paused run's pool item is refused", async () => {
+		const f = await fixture();
+		const job = await f.seed_job({ jobNumber: 1, status: "running" });
+		expect(await pause(f, job.invocationId)).toBe(true);
+		await f.t.mutation(internal.ai_chat_files.flush_bash_job_output, {
+			invocationId: job.invocationId,
+			workId: job.workId!,
+			liveOutput: { ...head, stdout: "stale\n" },
+		});
+		expect((await f.read(job.invocationId)).row?.job?.liveOutput).toEqual(head);
 	});
 });
 
@@ -644,6 +744,7 @@ describe("job wakeup", () => {
 		const armed = await f.seed_job({ jobNumber: 2, status: "running", wakeAgent });
 		await f.t.mutation(internal.ai_chat_files.flush_bash_job_output, {
 			invocationId: armed.invocationId,
+			workId: armed.workId!,
 			liveOutput: { stdout: "partial\n", stderr: "", stdoutTruncated: false, stderrTruncated: false },
 		});
 		vi.setSystemTime(start + PLACEHOLDER_MS);

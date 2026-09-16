@@ -483,10 +483,20 @@ const app_convex_schema = defineSchema({
 				commandNumber: v.number(),
 				script: v.union(v.string(), v.null()),
 				/**
-				 * The live cwd at the `&`, which can differ from the call's starting cwd.
+				 * Present after a pause: the statements the next run continues with. `script` keeps
+				 * the whole script for the finish entry. Dropped when the job finished.
+				 */
+				resumeScript: v.optional(v.string()),
+				/**
+				 * The cwd the next run starts in: the live cwd at the `&`, which can differ from the
+				 * call's starting cwd, and after a pause the cwd the paused run ended in.
 				 */
 				startCwd: v.string(),
 				startCwdTarget: v.union(files_pending_target_validator, v.null()),
+				/**
+				 * The state the next run seeds: a copy of the shell state at the `&`, and after a
+				 * pause the snapshot the paused run ended with.
+				 */
 				shellState: v.union(bash_shell_state_validator, v.null()),
 				allowDbFilesMkdir: v.boolean(),
 				workId: v.union(vWorkId, v.null()),

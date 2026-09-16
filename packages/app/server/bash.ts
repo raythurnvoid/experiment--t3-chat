@@ -137,6 +137,15 @@ const BASH_JOB_MAX_COMMAND_COUNT = 2_000;
 const BASH_JOB_POLL_MS = 5_000;
 // After this many refused launches in one call, the hook refuses the rest without a query.
 const BASH_JOB_LAUNCH_MAX_REFUSALS = 3;
+// A bare top-level `sleep` of at least this long pauses the job instead of holding a worker, and
+// waits at most as long as the sleep command itself would (its own cap is one hour).
+const BASH_JOB_SLEEP_PAUSE_MIN_MS = 5_000;
+const BASH_JOB_SLEEP_PAUSE_MAX_MS = 60 * 60 * 1000;
+// The job pauses before a statement when less than this remains before the worker's own abort.
+const BASH_JOB_PAUSE_HEADROOM_MS = 60_000;
+// A statement boundary re-reads the Stop flag when the last poll is at least this old, so a Stop
+// lands at the next boundary instead of the next 5-second tick.
+const BASH_JOB_BOUNDARY_POLL_MS = 1_000;
 // Any abort reason other than `bash_ABORT_REASON_STOPPED` reports 124, so this text is what the
 // user reads in the job's stderr. It is not the flag that picks the exit code.
 const BASH_JOB_DEADLINE_ABORT_REASON = "Bash deadline reached";
@@ -973,6 +982,7 @@ async function bash_fs_create(args: {
 	restoreState: InterpreterStateSnapshot | undefined;
 	onExecEnd?: (snapshot: InterpreterStateSnapshot) => void;
 	onOutput?: NonNullable<BashOptions["onOutput"]>;
+	onStatementBoundary?: NonNullable<ExecOptions["onStatementBoundary"]>;
 	executionLimitsOverride?: { maxCommandCount: number };
 }) {
 	// Organization and workspace names are validated slugs, so they are stable shell
@@ -1201,6 +1211,7 @@ async function bash_fs_create(args: {
 		restoreState: args.restoreState,
 		onExecEnd: args.onExecEnd,
 		onOutput: args.onOutput,
+		onStatementBoundary: args.onStatementBoundary,
 		executionLimitsOverride: args.executionLimitsOverride,
 	});
 
@@ -1265,6 +1276,10 @@ function bash_shell_create(
 		 * A job worker's live output hook. A chat call has none: its output goes to the tool result.
 		 */
 		onOutput?: NonNullable<BashOptions["onOutput"]>;
+		/**
+		 * A job worker's pause hook, asked before each top-level statement. A chat call has none.
+		 */
+		onStatementBoundary?: NonNullable<ExecOptions["onStatementBoundary"]>;
 	},
 ) {
 	const { fs, cwd, dbFilesRoots } = args;
@@ -1381,6 +1396,7 @@ function bash_shell_create(
 					restoreState: args.restoreState,
 					onExecEnd: args.onExecEnd,
 					onBackground: args.onBackground,
+					onStatementBoundary: args.onStatementBoundary,
 				})
 				.catch((error: unknown) => ({
 					stdout: "",
@@ -1920,6 +1936,12 @@ function bash_response(args: {
  * script through the same runner, and store the result. Stops, the deadline and a lost
  * permission reach the script through the worker's own abort signal. The pool's `onComplete`
  * settles a worker that throws; the watchdog settles a dead one.
+ *
+ * The script runs one top-level statement at a time. Before a bare `sleep` of 5 seconds or more,
+ * and before any statement once the run budget is nearly used, the worker pauses the job instead:
+ * `pause_bash_job` stores the remaining statements, the state snapshot and the cwd, and the next
+ * run of the same row continues from there. So a script of several statements is not bound by
+ * the 8-minute budget; one statement still is.
  */
 export async function bash_run_job(
 	ctx: ActionCtx,
@@ -1933,9 +1955,16 @@ export async function bash_run_job(
 	const { row, organizationName, workspaceName, shells } = claimed;
 	const job = row.job;
 	const shellName = shells.find((shell) => shell._id === job?.shellId)?.name;
-	if (!job || job.script === null || job.shellState === null || shellName === undefined) {
-		throw should_never_happen("Claimed job row without its script, state or shell", { invocationId: row._id });
+	if (!job || job.script === null || job.shellState === null || shellName === undefined || job.workId === null) {
+		throw should_never_happen("Claimed job row without its script, state, shell or pool item", {
+			invocationId: row._id,
+		});
 	}
+	// A run after a pause continues with the statements the pause left and carries the head of
+	// the output the earlier runs printed.
+	const script = job.resumeScript ?? job.script;
+	const carried = job.liveOutput ?? null;
+	const workId = job.workId;
 
 	const abort = new AbortController();
 	const deadlineTimer = setTimeout(
@@ -1945,7 +1974,9 @@ export async function bash_run_job(
 	// The head of each stream for `jobs -o N` while the job runs: one read page per stream, then
 	// the rest is dropped here and the transcript gets it at the end. The engine hands over each
 	// statement's output once, so appending is enough.
-	const liveOutput = { stdout: "", stderr: "", stdoutTruncated: false, stderrTruncated: false };
+	const liveOutput = carried
+		? { ...carried }
+		: { stdout: "", stderr: "", stdoutTruncated: false, stderrTruncated: false };
 	let liveOutputDirty = false;
 	const onOutput: NonNullable<BashOptions["onOutput"]> = (stream, text) => {
 		const truncatedKey = stream === "stdout" ? "stdoutTruncated" : "stderrTruncated";
@@ -1962,22 +1993,26 @@ export async function bash_run_job(
 	// The Stop button, a deleted row, a lost permission and the watchdog all reach the script
 	// through this poll. A missing row and a lost permission count as a stop.
 	let polling = false;
-	const pollTimer = setInterval(() => {
+	let lastPollAt = Date.now();
+	const poll = async () => {
 		if (polling) return;
 		polling = true;
+		lastPollAt = Date.now();
 		// Flush the head on the same tick, only when new bytes arrived. The mutation refuses a row
-		// that is no longer running, so a flush that lands after the settle changes nothing.
+		// that is no longer running or that a pause handed to a later run, so a flush that lands
+		// after the settle or the pause changes nothing.
 		if (liveOutputDirty) {
 			liveOutputDirty = false;
 			ctx.runMutation(internal.ai_chat_files.flush_bash_job_output, {
 				invocationId: row._id,
+				workId,
 				liveOutput: { ...liveOutput },
 			}).catch((error: unknown) => {
 				liveOutputDirty = true;
 				console.warn("Bash job output flush failed", { invocationId: row._id, error });
 			});
 		}
-		(ctx.runQuery(internal.ai_chat_files.poll_bash_job, { invocationId: row._id }) as Promise<ai_chat_files_poll_bash_job_Result>)
+		await (ctx.runQuery(internal.ai_chat_files.poll_bash_job, { invocationId: row._id }) as Promise<ai_chat_files_poll_bash_job_Result>)
 			.then((poll) => {
 				if (poll.status === "missing" || poll.stopRequested || !poll.authorized) abort.abort(bash_ABORT_REASON_STOPPED);
 				// The watchdog marks the row `interrupted` at the deadline. That is a deadline, not
@@ -1989,7 +2024,38 @@ export async function bash_run_job(
 			.finally(() => {
 				polling = false;
 			});
-	}, BASH_JOB_POLL_MS);
+	};
+	const pollTimer = setInterval(poll, BASH_JOB_POLL_MS);
+
+	// Set by the boundary hook when the job pauses; the exec then ends before that statement.
+	let pause: { script: string; shellState: InterpreterStateSnapshot; runAfterMs: number; reason: string } | undefined;
+	let stateTooLargeToPause = false;
+	const onStatementBoundary: NonNullable<ExecOptions["onStatementBoundary"]> = async (boundary) => {
+		// A Stop lands at this boundary when the last poll is old; the engine then stops the script.
+		if (Date.now() - lastPollAt >= BASH_JOB_BOUNDARY_POLL_MS) await poll();
+		const sleepMs = boundary.sleepMs !== null && boundary.sleepMs >= BASH_JOB_SLEEP_PAUSE_MIN_MS ? boundary.sleepMs : null;
+		const budgetUsed = Date.now() >= row.transferDeadlineAt - BASH_JOB_PAUSE_HEADROOM_MS;
+		if (sleepMs === null && !budgetUsed) return "run";
+		// The same cap as the launch: a state the row cannot hold means the job runs on as before.
+		const shellState = boundary.snapshot();
+		if (new TextEncoder().encode(JSON.stringify(shellState)).byteLength > SHELL_STATE_MAX_BYTES) {
+			stateTooLargeToPause = true;
+			return "run";
+		}
+		if (sleepMs !== null) {
+			// The sleep statement itself is dropped: the wait before the next run replaces it.
+			const runAfterMs = Math.min(sleepMs, BASH_JOB_SLEEP_PAUSE_MAX_MS);
+			pause = {
+				script: boundary.scriptAfter(),
+				shellState,
+				runAfterMs,
+				reason: `sleep ${runAfterMs / 1000}s, continues at ${new Date(Date.now() + runAfterMs).toISOString()}`,
+			};
+		} else {
+			pause = { script: boundary.remainingScript(), shellState, runAfterMs: 0, reason: "run budget used, continues at once" };
+		}
+		return "stop";
+	};
 	let commandNumber = 0;
 	try {
 		// The same mount visibility as the launching call: without these queries `/.mounts` and
@@ -2046,20 +2112,52 @@ export async function bash_run_job(
 			shells,
 			restoreState: job.shellState,
 			onOutput,
+			onStatementBoundary,
 			executionLimitsOverride: { maxCommandCount: BASH_JOB_MAX_COMMAND_COUNT },
 		});
 
 		const { result, observedPaths, observedPathsTruncated, nextCwd } = await run_command_and_diagnose({
 			bashFs,
-			command: job.script,
+			command: script,
 			abort,
 			threadId: row.threadId,
 		});
+		// An abort in the moment between the pause decision and the end of the exec is a Stop or
+		// a timeout like any other: the job ends now.
+		const pausing = pause !== undefined && !abort.signal.aborted;
 
+		if (stateTooLargeToPause) {
+			result.stderr += "bash: the shell state is larger than 128 KiB, so the job cannot pause; it runs on with its budget.\n";
+		}
 		// `/tmp` is a private copy inside a job and is never written back. Name what was dropped.
 		const droppedTmpPaths = [...bashFs.tmp_dirty_roots()].sort();
 		if (droppedTmpPaths.length > 0) {
-			result.stderr += `bash: /tmp writes are dropped when a job ends: ${droppedTmpPaths.map((path) => `${bash_TMP_MOUNT}${path}`).join(", ")}\n`;
+			result.stderr += `bash: /tmp writes are dropped when a job ${pausing ? "pauses" : "ends"}: ${droppedTmpPaths.map((path) => `${bash_TMP_MOUNT}${path}`).join(", ")}\n`;
+		}
+
+		if (pausing && pause) {
+			const paused = await ctx.runMutation(internal.ai_chat_files.pause_bash_job, {
+				invocationId: row._id,
+				resume: { script: pause.script, shellState: pause.shellState, cwd: nextCwd, cwdTarget: await bashFs.get_cwd_target(nextCwd) },
+				liveOutput: liveOutput.stdout || liveOutput.stderr ? { ...liveOutput } : null,
+				outcome: { exitCode: result.exitCode, stdout: result.stdout, stderr: result.stderr },
+				reason: pause.reason,
+				runAfterMs: pause.runAfterMs,
+			});
+			// A refused pause means the job was stopped or settled meanwhile; the settle path ends it.
+			if (paused) {
+				console.debug("Bash job paused", { threadId: row.threadId, shellName, jobNumber: job.jobNumber, reason: pause.reason });
+			}
+			return null;
+		}
+
+		// The final result starts with the head the earlier runs printed, so `jobs -o`, `wait` and
+		// a wakeup show the whole job. The pause entries in the transcript hold the full output.
+		if (carried) {
+			const with_earlier_output = (stream: "stdout" | "stderr") =>
+				`${carried[stream]}${carried[`${stream}Truncated`] ? "\n[earlier output truncated; the transcript has it]\n" : ""}${result[stream]}`;
+			result.stdout = with_earlier_output("stdout");
+			result.stderr = with_earlier_output("stderr");
 		}
 
 		const response = bash_response({ bashFs, command: job.script, result, nextCwd, observedPaths, observedPathsTruncated });

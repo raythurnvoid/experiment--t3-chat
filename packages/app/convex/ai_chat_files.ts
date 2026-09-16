@@ -1,4 +1,4 @@
-import { vOnCompleteArgs, Workpool } from "@convex-dev/workpool";
+import { vOnCompleteArgs, vWorkId, Workpool } from "@convex-dev/workpool";
 import { v } from "convex/values";
 import { paginationOptsValidator, type RegisteredMutation, type RegisteredQuery } from "convex/server";
 import { doc } from "convex-helpers/validators";
@@ -1048,7 +1048,7 @@ export const finish_bash_job = internalMutation({
 			finishedAt: now,
 			result: bash_result_bounded(args.result),
 			resultExpiresAt: now + BASH_RESULT_RETENTION_MS,
-			job: { ...invocation.job, script: null, shellState: null, liveOutput: undefined },
+			job: { ...invocation.job, script: null, shellState: null, resumeScript: undefined, liveOutput: undefined },
 		});
 		if (invocation.job.watchdogId !== null) await ctx.scheduler.cancel(invocation.job.watchdogId);
 		// Strip this row's own result on time, like a foreground call does. Without it the daily
@@ -1171,7 +1171,13 @@ export const claim_bash_job = internalMutation({
 			job: { ...invocation.job, watchdogId },
 		};
 		await ctx.db.patch("ai_chat_bash_invocations", invocation._id, patch);
-		await ctx.db.patch("activities", activity._id, { status: "running", startedAt: now, deadlineAt, updatedAt: now });
+		// A run after a pause keeps the job's first start time.
+		await ctx.db.patch("activities", activity._id, {
+			status: "running",
+			startedAt: activity.startedAt ?? now,
+			deadlineAt,
+			updatedAt: now,
+		});
 
 		const shells = await ctx.db
 			.query("ai_chat_bash_shells")
@@ -1318,18 +1324,107 @@ export const request_bash_job_stop = internalMutation({
 /**
  * The worker's flush on its poll tick: the output head so far, for `jobs -o N`. Only a running
  * row takes it; a settle that raced ahead already wrote the finish entry and must not get a
- * head back on the row.
+ * head back on the row. The pool item id fences a worker that paused: its late flush must not
+ * put an older head over the one the next run stores.
  */
 export const flush_bash_job_output = internalMutation({
-	args: { invocationId: v.id("ai_chat_bash_invocations"), liveOutput: ai_chat_bash_job_live_output_validator },
+	args: {
+		invocationId: v.id("ai_chat_bash_invocations"),
+		workId: vWorkId,
+		liveOutput: ai_chat_bash_job_live_output_validator,
+	},
 	returns: v.null(),
 	handler: async (ctx, args) => {
 		const invocation = await db_get_job_row(ctx, args.invocationId);
-		if (!invocation || invocation.status !== "running") return null;
+		if (!invocation || invocation.status !== "running" || invocation.job.workId !== args.workId) return null;
 		await ctx.db.patch("ai_chat_bash_invocations", invocation._id, {
 			job: { ...invocation.job, liveOutput: args.liveOutput },
 		});
 		return null;
+	},
+});
+
+/**
+ * The worker's pause before a top-level statement: a bare `sleep` of 5 seconds or more, or the
+ * run budget nearly used. Store what the next run needs (the remaining statements, the state
+ * snapshot, the cwd, the output head), enqueue the next run on the same pool after the sleep,
+ * swap the watchdog for a placeholder one, put the Activity back to `queued` and append the
+ * pause entry with this run's output. Refuse a row that is no longer running or has a Stop
+ * pending: the worker then returns without a result and the usual settle path ends the job.
+ */
+export const pause_bash_job = internalMutation({
+	args: {
+		invocationId: v.id("ai_chat_bash_invocations"),
+		resume: v.object({
+			script: v.string(),
+			shellState: bash_shell_state_validator,
+			cwd: v.string(),
+			cwdTarget: v.union(files_pending_target_validator, v.null()),
+		}),
+		/**
+		 * The head of the whole job's output so far, `null` while nothing was printed.
+		 */
+		liveOutput: v.union(ai_chat_bash_job_live_output_validator, v.null()),
+		/**
+		 * This run's output and exit code, for the pause entry.
+		 */
+		outcome: v.object({ exitCode: v.number(), stdout: v.string(), stderr: v.string() }),
+		/**
+		 * Why the job pauses, for the pause entry.
+		 */
+		reason: v.string(),
+		runAfterMs: v.number(),
+	},
+	returns: v.boolean(),
+	handler: async (ctx, args) => {
+		const invocation = await db_get_job_row(ctx, args.invocationId);
+		if (!invocation || invocation.status !== "running" || invocation.job.stopRequestedAt !== null) return false;
+		const activity = await activities_db_get_by_source_id(ctx, invocation._id);
+		if (!activity || !activities_is_active(activity.status) || activity.status === "stopping") return false;
+		const shell = await ctx.db.get("ai_chat_bash_shells", invocation.job.shellId);
+		if (!shell) throw should_never_happen("Job shell not found", { shellId: invocation.job.shellId });
+
+		// The placeholder clocks cover the wait; the next claim re-arms them from its start.
+		const now = Date.now();
+		const deadlineAt = now + args.runAfterMs + BASH_JOB_PLACEHOLDER_MS;
+		if (invocation.job.watchdogId !== null) await ctx.scheduler.cancel(invocation.job.watchdogId);
+		const workId = await ai_chat_bash_jobs_workpool.enqueueAction(
+			ctx,
+			internal.bash.run_job,
+			{ invocationId: invocation._id },
+			{
+				onComplete: internal.ai_chat_files.handle_bash_job_complete,
+				context: { invocationId: invocation._id },
+				runAfter: args.runAfterMs,
+			},
+		);
+		const watchdogId: Id<"_scheduled_functions"> = await ctx.scheduler.runAt(
+			deadlineAt,
+			internal.ai_chat_files.timeout_bash_job,
+			{ invocationId: invocation._id, expectedDeadlineAt: deadlineAt },
+		);
+		await ctx.db.patch("ai_chat_bash_invocations", invocation._id, {
+			deadlineAt,
+			transferDeadlineAt: deadlineAt,
+			job: {
+				...invocation.job,
+				resumeScript: args.resume.script,
+				shellState: args.resume.shellState,
+				startCwd: args.resume.cwd,
+				startCwdTarget: args.resume.cwdTarget,
+				liveOutput: args.liveOutput ?? undefined,
+				workId,
+				watchdogId,
+			},
+		});
+		// The job waits for its next run like a fresh job waits for its first; `startedAt` stays.
+		await ctx.db.patch("activities", activity._id, { status: "queued", deadlineAt, updatedAt: now });
+		await ai_chat_files_db_append_shell_transcript(
+			ctx,
+			shell,
+			`$ [${new Date(now).toISOString()}] job ${invocation.job.jobNumber} paused (exit ${args.outcome.exitCode}) in shell ${shell.name}: ${args.reason}\n${args.outcome.stdout}\n${args.outcome.stderr}`,
+		);
+		return true;
 	},
 });
 
