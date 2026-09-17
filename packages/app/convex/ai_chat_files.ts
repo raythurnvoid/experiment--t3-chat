@@ -138,6 +138,7 @@ const bash_begin_result = v.union(
 		}),
 		shells: v.array(v.object({ _id: v.id("ai_chat_bash_shells"), name: v.string() })),
 		notes: v.array(bash_job_note),
+		noticeAt: v.union(v.number(), v.null()),
 	}),
 );
 
@@ -277,16 +278,16 @@ function invocation_result(
 }
 
 /**
- * The "job finished" notes for this user's next fresh call in a thread. The cursor row is per
- * user and thread, so one member's call never hides another member's notes. It moves to
- * `now - 1`: a finish stamped in the same millisecond that commits after this call would
- * otherwise be hidden forever, and a rare duplicate note is cheap. The notes come newest finish
- * first, so a job that ends long after jobs with newer numbers is noted before them. More than 8
- * jobs that ended since the cursor are dropped while the cursor still moves; the transcript keeps
- * their output.
+ * Read the "job finished" notes for this user's next fresh call in a thread. Keep the cursor per
+ * user and thread, so one member's call never hides another member's notes. Return `now - 1` for
+ * `finish_bash_invocation` to commit with the stored result. A finish stamped in the same
+ * millisecond that commits after begin would otherwise be hidden forever, and a rare duplicate
+ * note is cheap. Read the newest finishes first, so a job that ends after jobs with newer numbers
+ * is noted first. Keep at most 8 notes; when finish advances the cursor, the transcript keeps the
+ * other jobs' output.
  */
-async function db_take_job_notes(
-	ctx: MutationCtx,
+async function db_read_job_notes(
+	ctx: QueryCtx,
 	args: { thread: Doc<"ai_chat_threads">; userId: Id<"users">; now: number },
 ) {
 	const anyJob = await ctx.db
@@ -296,7 +297,7 @@ async function db_take_job_notes(
 		)
 		.first();
 	// No job Activity means nothing to note and nothing to hide: keep the thread without a cursor row.
-	if (!anyJob) return [];
+	if (!anyJob) return { notes: [], noticeAt: null };
 
 	const cursor = await ctx.db
 		.query("ai_chat_bash_job_notice_cursors")
@@ -326,18 +327,28 @@ async function db_take_job_notes(
 			throw should_never_happen("Job Activity has another source kind", { activityId: activity._id });
 		return { jobNumber: source.jobNumber, status: activity.status, shellName: source.shellName };
 	});
+	return { notes, noticeAt: args.now - 1 };
+}
+
+export async function ai_chat_files_db_commit_job_notice_cursor(
+	ctx: MutationCtx,
+	args: { thread: Doc<"ai_chat_threads">; userId: Id<"users">; noticeAt: number },
+) {
+	const cursor = await ctx.db
+		.query("ai_chat_bash_job_notice_cursors")
+		.withIndex("by_user_thread", (q) => q.eq("userId", args.userId).eq("threadId", args.thread._id))
+		.unique();
 	if (cursor) {
-		await ctx.db.patch("ai_chat_bash_job_notice_cursors", cursor._id, { noticeAt: args.now - 1 });
+		await ctx.db.patch("ai_chat_bash_job_notice_cursors", cursor._id, { noticeAt: args.noticeAt });
 	} else {
 		await ctx.db.insert("ai_chat_bash_job_notice_cursors", {
 			organizationId: args.thread.organizationId,
 			workspaceId: args.thread.workspaceId,
 			threadId: args.thread._id,
 			userId: args.userId,
-			noticeAt: args.now - 1,
+			noticeAt: args.noticeAt,
 		});
 	}
-	return notes;
 }
 
 export const begin_bash_invocation = internalMutation({
@@ -460,13 +471,14 @@ export const begin_bash_invocation = internalMutation({
 			invocationId,
 		});
 		// Only a fresh call prints the notes; a rejoined call above never had them.
-		const notes = await db_take_job_notes(ctx, { thread, userId: args.userId, now });
+		const { notes, noticeAt } = await db_read_job_notes(ctx, { thread, userId: args.userId, now });
 		return Result({
 			_yay: {
 				...invocation_result({ ...invocation, _id: invocationId }, true),
 				shell: { _id: shell._id, name: shell.name, cwd: shell.cwd, cwdTarget: shell.cwdTarget, state: shell.state },
 				shells: shells.map((row) => ({ _id: row._id, name: row.name })),
 				notes,
+				noticeAt,
 			},
 		});
 	},
@@ -541,6 +553,7 @@ export const finish_bash_invocation = internalMutation({
 		invocationId: v.id("ai_chat_bash_invocations"),
 		commandHash: v.string(),
 		result: ai_chat_bash_result_validator,
+		noticeAt: v.optional(v.number()),
 	},
 	returns: v_result({ _yay: bash_invocation_result }),
 	handler: async (ctx, args) => {
@@ -552,6 +565,18 @@ export const finish_bash_invocation = internalMutation({
 			return Result({
 				_nay: { name: "invocation_changed", message: "This Bash call already has a different command." },
 			});
+		// The call already printed begin's notes into its own result, so commit the cursor in the
+		// same transaction that stores that result. A call that never reaches this mutation keeps
+		// the cursor put and its notes print again on the next call.
+		if (args.noticeAt !== undefined) {
+			const thread = await ctx.db.get("ai_chat_threads", invocation.threadId);
+			if (thread)
+				await ai_chat_files_db_commit_job_notice_cursor(ctx, {
+					thread,
+					userId: invocation.userId,
+					noticeAt: args.noticeAt,
+				});
+		}
 		if (invocation.status !== "running") return Result({ _yay: invocation_result(invocation) });
 
 		if (invocation.deadlineAt <= Date.now()) {

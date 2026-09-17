@@ -71,10 +71,11 @@ describe("begin_bash_invocation", () => {
 		vi.setSystemTime(now + 15_000);
 		// Only the claim that created the shell returns the shell fields; a replay returns the bare claim.
 		if (first._nay || !("shell" in first._yay)) throw new Error("Expected a fresh shell");
-		const { shell, shells, notes, ...claim } = first._yay;
+		const { shell, shells, notes, noticeAt, ...claim } = first._yay;
 		expect(shell).toMatchObject({ name: "default", cwd: "~", cwdTarget: null, state: null });
 		expect(shells).toEqual([{ _id: shell._id, name: "default" }]);
 		expect(notes).toEqual([]);
+		expect(noticeAt).toBeNull();
 		const duplicate = await f.t.mutation(internal.ai_chat_files.begin_bash_invocation, f.beginArgs);
 		expect(duplicate._yay).toEqual({ ...claim, isNew: false });
 		expect(await f.t.run((ctx) => ctx.db.query("ai_chat_bash_invocations").collect())).toHaveLength(1);

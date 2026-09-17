@@ -405,6 +405,49 @@ describe("begin_bash_invocation", () => {
 		return begun._yay;
 	};
 
+	const save = async (f: Awaited<ReturnType<typeof fixture>>, begun: Awaited<ReturnType<typeof begin>>) => {
+		if (!("shell" in begun)) throw new Error("Expected a fresh call");
+		await f.t.mutation(internal.ai_chat.save_shell, {
+			...f.scope,
+			invocationId: begun.invocationId,
+			shellId: begun.shell._id,
+			cwd: begun.shell.cwd,
+			cwdTarget: begun.shell.cwdTarget,
+			transcriptEntry: "foreground call",
+		});
+	};
+
+	const call_result = {
+		title: "echo fg",
+		output: "fg\n",
+		stdout: "fg\n",
+		stderr: "",
+		metadata: {
+			command: "echo fg",
+			cwd: "/",
+			nextCwd: "/",
+			exitCode: 0,
+			stdoutTruncated: false,
+			stderrTruncated: false,
+			stdoutLength: 3,
+			stderrLength: 0,
+			pathIndexTruncated: false,
+			observedPaths: [],
+			observedPathsTruncated: false,
+		},
+	};
+
+	const finish = async (f: Awaited<ReturnType<typeof fixture>>, begun: Awaited<ReturnType<typeof begin>>) => {
+		if (!("shell" in begun)) throw new Error("Expected a fresh call");
+		const finished = await f.t.mutation(internal.ai_chat_files.finish_bash_invocation, {
+			invocationId: begun.invocationId,
+			commandHash: "d".repeat(64),
+			result: call_result,
+			...(begun.noticeAt !== null ? { noticeAt: begun.noticeAt } : {}),
+		});
+		if (finished._nay) throw new Error(finished._nay.message);
+	};
+
 	const cursor_rows = async (f: Awaited<ReturnType<typeof fixture>>) =>
 		await f.t.run((ctx) => ctx.db.query("ai_chat_bash_job_notice_cursors").collect());
 
@@ -424,6 +467,10 @@ describe("begin_bash_invocation", () => {
 		const first = await begin(f, "notes-1");
 		if (!("notes" in first)) throw new Error("Expected a fresh call");
 		expect(first.notes).toEqual([{ jobNumber: 1, status: "succeeded", shellName: "default" }]);
+		expect(await cursor_rows(f)).toEqual([]);
+		await save(f, first);
+		expect(await cursor_rows(f)).toEqual([]);
+		await finish(f, first);
 		expect(await cursor_rows(f)).toMatchObject([
 			{ userId: f.db.userId, threadId: f.scope.threadId, noticeAt: finishedAt + 999 },
 		]);
@@ -432,6 +479,8 @@ describe("begin_bash_invocation", () => {
 		const second = await begin(f, "notes-2");
 		if (!("notes" in second)) throw new Error("Expected a fresh call");
 		expect(second.notes).toEqual([]);
+		await save(f, second);
+		await finish(f, second);
 
 		// A job finished in the same millisecond as the previous begin is still noted (`now - 1`).
 		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
@@ -441,6 +490,83 @@ describe("begin_bash_invocation", () => {
 		const third = await begin(f, "notes-3");
 		if (!("notes" in third)) throw new Error("Expected a fresh call");
 		expect(third.notes).toEqual([{ jobNumber: 2, status: "failed", shellName: "default" }]);
+	});
+
+	test("a call that does not finish still prints its notes on the next call", async () => {
+		const f = await fixture();
+		const job = await f.seed_job({ jobNumber: 1, status: "running" });
+		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
+			invocationId: job.invocationId,
+			result: job_result(0),
+		});
+		vi.setSystemTime(Date.now() + 1000);
+
+		const first = await begin(f, "throw-1");
+		if (!("notes" in first)) throw new Error("Expected a fresh call");
+		expect(first.notes).toEqual([{ jobNumber: 1, status: "succeeded", shellName: "default" }]);
+
+		// Skip finish, as when the call throws after begin. Check the next notes before the cursor assertion.
+		const second = await begin(f, "throw-2");
+		if (!("notes" in second)) throw new Error("Expected a fresh call");
+		expect(second.notes).toEqual([{ jobNumber: 1, status: "succeeded", shellName: "default" }]);
+		expect(await cursor_rows(f)).toEqual([]);
+
+		await finish(f, second);
+		const third = await begin(f, "throw-3");
+		if (!("notes" in third)) throw new Error("Expected a fresh call");
+		expect(third.notes).toEqual([]);
+	});
+
+	test("a call that saves but does not finish still prints its notes on the next call", async () => {
+		const f = await fixture();
+		const job = await f.seed_job({ jobNumber: 1, status: "running" });
+		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
+			invocationId: job.invocationId,
+			result: job_result(0),
+		});
+		vi.setSystemTime(Date.now() + 1000);
+
+		const first = await begin(f, "saved-1");
+		if (!("notes" in first)) throw new Error("Expected a fresh call");
+		expect(first.notes).toEqual([{ jobNumber: 1, status: "succeeded", shellName: "default" }]);
+
+		// Save the shell but never finish, as when the /tmp write or the finish fails after save.
+		await save(f, first);
+		expect(await cursor_rows(f)).toEqual([]);
+
+		const second = await begin(f, "saved-2");
+		if (!("notes" in second)) throw new Error("Expected a fresh call");
+		expect(second.notes).toEqual([{ jobNumber: 1, status: "succeeded", shellName: "default" }]);
+
+		await finish(f, second);
+		const third = await begin(f, "saved-3");
+		if (!("notes" in third)) throw new Error("Expected a fresh call");
+		expect(third.notes).toEqual([]);
+	});
+
+	test("keeps a job that finishes between begin and finish visible to the next call", async () => {
+		const f = await fixture();
+		const job = await f.seed_job({ jobNumber: 1, status: "running" });
+		const begunAt = Date.now();
+		const first = await begin(f, "during-1");
+		if (!("notes" in first)) throw new Error("Expected a fresh call");
+		expect(first.notes).toEqual([]);
+		expect(first.noticeAt).toBe(begunAt - 1);
+
+		vi.setSystemTime(begunAt + 1000);
+		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
+			invocationId: job.invocationId,
+			result: job_result(0),
+		});
+		vi.setSystemTime(begunAt + 2000);
+		await save(f, first);
+		expect(await cursor_rows(f)).toEqual([]);
+		await finish(f, first);
+		expect(await cursor_rows(f)).toMatchObject([{ noticeAt: begunAt - 1 }]);
+
+		const second = await begin(f, "during-2");
+		if (!("notes" in second)) throw new Error("Expected a fresh call");
+		expect(second.notes).toEqual([{ jobNumber: 1, status: "succeeded", shellName: "default" }]);
 	});
 
 	test("notes a job that ended after twelve jobs with newer numbers", async () => {
@@ -464,6 +590,8 @@ describe("begin_bash_invocation", () => {
 		const noted = await begin(f, "long-1");
 		if (!("notes" in noted)) throw new Error("Expected a fresh call");
 		expect(noted.notes.map((note) => note.jobNumber)).toEqual([13, 12, 11, 10, 9, 8, 7, 6]);
+		await save(f, noted);
+		await finish(f, noted);
 
 		// A fourteenth job ends, and only then does job 1. Job 1 must be noted first: its finish is the
 		// newest, though its number is the oldest of the fourteen. No read keyed on the job number can

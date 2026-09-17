@@ -1794,6 +1794,7 @@ export async function bash_run_command(
 			invocationId: invocation.invocationId,
 			commandHash,
 			result: response,
+			...(invocation.noticeAt != null ? { noticeAt: invocation.noticeAt } : {}),
 		});
 		if (finished._nay) throw new Error(finished._nay.message);
 		if (finished._yay.result) return finished._yay.result;

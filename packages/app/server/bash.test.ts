@@ -4446,7 +4446,59 @@ describe("bash_run_command", () => {
 			expect((await runner.run("true")).stderr).toBe("");
 		});
 
-		test("a job cannot change its shell and starts in the live cwd of the &", async () => {
+		test("prints the finished-job note on a fresh call after losing the begin reply", async () => {
+			const runner = await create_bash_runner();
+			expect((await runner.run("echo bg &")).metadata.exitCode).toBe(0);
+			await run_job(runner, 1);
+
+			const mutate = runner.runMutation.getMockImplementation()!;
+			let lostReply = false;
+			runner.runMutation.mockImplementation(async (ref, args) => {
+				const result = await mutate(ref, args);
+				if (!lostReply && function_name_of(ref) === "ai_chat_files:begin_bash_invocation") {
+					lostReply = true;
+					throw new Error("Lost begin reply");
+				}
+				return result;
+			});
+			const lost = await runner.run("echo lost", "lost-begin");
+			expect(lost.metadata.exitCode).toBe(3);
+			expect(lost.stdout).toBe("");
+			expect(lost.stderr).not.toContain("bash: job 1 done");
+
+		const second = await runner.run("echo fresh");
+		expect(second.stdout).toBe("fresh\n");
+		expect(second.stderr).toBe("bash: job 1 done. Output: /shells/default/transcript\n");
+		expect((await runner.run("true")).stderr).toBe("");
+	});
+
+	test("prints the finished-job note on a fresh call after losing the finish reply", async () => {
+		const runner = await create_bash_runner();
+		expect((await runner.run("echo bg &")).metadata.exitCode).toBe(0);
+		await run_job(runner, 1);
+		vi.setSystemTime(Date.now() + 1000);
+
+		// The shell save lands but the finish never does, so the notes printed into the lost
+		// result never reach the agent. The cursor must stay put and the notes must print again.
+		const mutate = runner.runMutation.getMockImplementation()!;
+		let lostReply = false;
+		runner.runMutation.mockImplementation(async (ref, args) => {
+			if (!lostReply && function_name_of(ref) === "ai_chat_files:finish_bash_invocation") {
+				lostReply = true;
+				throw new Error("Lost finish reply");
+			}
+			return await mutate(ref, args);
+		});
+		const lost = await runner.run("echo lost", "lost-finish").catch((error: unknown) => error);
+		expect(lost).toBeInstanceOf(Error);
+
+		const second = await runner.run("echo fresh");
+		expect(second.stdout).toBe("fresh\n");
+		expect(second.stderr).toBe("bash: job 1 done. Output: /shells/default/transcript\n");
+		expect((await runner.run("true")).stderr).toBe("");
+	});
+
+	test("a job cannot change its shell and starts in the live cwd of the &", async () => {
 			const runner = await create_bash_runner();
 			expect((await runner.run("cd docs; { x=1; cd nested; pwd; } & cd ..")).metadata.exitCode).toBe(0);
 			const row = await job_row(runner, 1);
