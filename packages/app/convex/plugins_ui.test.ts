@@ -1056,7 +1056,6 @@ describe("plugin ui sessions", () => {
 					contentFrontmatterTooLargeFieldCount: null,
 					contentFrontmatterTooLargeIndexDocumentCount: null,
 					restrictedScopeNodeId: null,
-					writePolicyScopeNodeId: null,
 					writePolicy: null,
 					archiveOperationId: null,
 				});
@@ -1091,7 +1090,6 @@ describe("plugin ui sessions", () => {
 					contentFrontmatterTooLargeFieldCount: null,
 					contentFrontmatterTooLargeIndexDocumentCount: null,
 					restrictedScopeNodeId: null,
-					writePolicyScopeNodeId: null,
 					writePolicy: null,
 					archiveOperationId: null,
 				});

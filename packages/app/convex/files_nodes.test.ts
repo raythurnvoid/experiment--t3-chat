@@ -1039,7 +1039,6 @@ describe("get_path_by_id", () => {
 				contentType: "application/pdf",
 			});
 			await ctx.db.patch("files_nodes", binaryId, {
-				writePolicyScopeNodeId: binaryId,
 				writePolicy: { mode: "read_only" },
 			});
 			return [textId, binaryId];
@@ -1470,7 +1469,6 @@ describe("files_nodes_db_preflight_move", () => {
 		await t.run(async (ctx) => {
 			await ctx.db.patch("files_nodes", target._id, {
 				restrictedScopeNodeId: target._id,
-				writePolicyScopeNodeId: target._id,
 				writePolicy: { mode: "writer", writer: { kind: "user", userId: db.userId } },
 			});
 			await ctx.db.patch("files_nodes", archivedChild._id, { archiveOperationId: "old-archive" });
@@ -1519,21 +1517,19 @@ describe("files_nodes_db_preflight_move", () => {
 			expect(createdFolders).toHaveLength(2);
 			const shared = createdFolders.find((node) => node.name === "shared")!;
 			for (const folder of createdFolders) {
-				expect(folder).toMatchObject({ restrictedScopeNodeId: target._id, writePolicyScopeNodeId: target._id });
+				expect(folder).toMatchObject({ restrictedScopeNodeId: target._id});
 			}
 			for (const source of sources) {
 				expect(await ctx.db.get("files_nodes", source._id)).toMatchObject({
 					parentId: shared._id,
 					path: `${target.path}/${anchor.name}/new/shared/${source.name}`,
 					restrictedScopeNodeId: target._id,
-					writePolicyScopeNodeId: target._id,
 				});
 			}
 			expect(await ctx.db.get("files_nodes", archivedChild._id)).toMatchObject({
 				archiveOperationId: "old-archive",
 				path: `${target.path}/${anchor.name}/new/shared/${sources[0].name}/${archivedChild.name}`,
 				restrictedScopeNodeId: target._id,
-				writePolicyScopeNodeId: target._id,
 			});
 		});
 	});
@@ -1603,7 +1599,6 @@ describe("files_nodes_db_preflight_move", () => {
 		await t.run(async (ctx) => {
 			await ctx.db.patch("files_nodes", second._id, {
 				restrictedScopeNodeId: second._id,
-				writePolicyScopeNodeId: second._id,
 				writePolicy: { mode: "writer", writer: { kind: "user", userId: db.userId } },
 			});
 			const membership = (await ctx.db.get("organizations_workspaces_users", db.membershipId))!;
@@ -1658,19 +1653,16 @@ describe("files_nodes_db_preflight_move", () => {
 				parentId: second._id,
 				path: `${first.path}/explicit-child`,
 				restrictedScopeNodeId: second._id,
-				writePolicyScopeNodeId: second._id,
 			});
 			expect(await ctx.db.get("files_nodes", db.files.file_root_1_child_1_deep_1._id)).toMatchObject({
 				parentId: child._id,
 				path: `${first.path}/explicit-child/${db.files.file_root_1_child_1_deep_1.name}`,
 				restrictedScopeNodeId: second._id,
-				writePolicyScopeNodeId: second._id,
 			});
 			expect(await ctx.db.get("files_nodes", db.files.file_root_1_child_2._id)).toMatchObject({
 				parentId: first._id,
 				path: `${second.path}/${db.files.file_root_1_child_2.name}`,
 				restrictedScopeNodeId: null,
-				writePolicyScopeNodeId: null,
 			});
 		});
 	});
@@ -2039,7 +2031,7 @@ describe("files_nodes_db_preflight_move", () => {
 					await ctx.db.patch("files_nodes", child._id, {
 						archiveOperationId: "earlier-archive",
 						...(childState === "read_only"
-							? { writePolicy: { mode: "read_only" as const }, writePolicyScopeNodeId: child._id }
+							? { writePolicy: { mode: "read_only" as const }}
 							: {}),
 					});
 				}
@@ -2221,7 +2213,7 @@ describe("files_nodes_db_preflight_move policy reach", () => {
 		{ policyReach: "direct", lockedParent: "final" },
 		{ policyReach: "ancestors", lockedParent: "final" },
 	] as const)(
-		"keeps $policyReach reach when the $lockedParent parent names the account",
+		"moves an existing node with $policyReach reach when the $lockedParent parent names the account",
 		async ({ policyReach, lockedParent }) => {
 			const t = test_convex();
 			const db = await t.run((ctx) => test_mocks_fill_db_with.nested_files(ctx));
@@ -2244,14 +2236,8 @@ describe("files_nodes_db_preflight_move policy reach", () => {
 			const policyNode = lockedParent === "current" ? db.files.file_root_1 : target;
 			const result = await t.run(async (ctx) => {
 				await ctx.db.patch("files_nodes", policyNode._id, {
-					writePolicyScopeNodeId: policyNode._id,
 					writePolicy: { mode: "writer", writer: { kind: "service_account", serviceAccountId } },
 				});
-				if (lockedParent === "current") {
-					for (const node of [source, db.files.file_root_1_child_1, db.files.file_root_1_child_1_deep_1]) {
-						await ctx.db.patch("files_nodes", node._id, { writePolicyScopeNodeId: policyNode._id });
-					}
-				}
 				const membership = (await ctx.db.get("organizations_workspaces_users", db.membershipId))!;
 				const before = await ctx.db.query("files_nodes").collect();
 				const plan = await files_nodes_db_preflight_move(ctx, {
@@ -2276,8 +2262,9 @@ describe("files_nodes_db_preflight_move policy reach", () => {
 				expect(await ctx.db.query("files_nodes").collect()).toEqual(before);
 				return plan;
 			});
-			if (policyReach === "ancestors") expect(result._nay).toBeUndefined();
-			else expect(result._nay?.name).toBe("read_only");
+			// A move checks the named node and its immediate parents as local rules.
+			// Reach does not change that. Create into a writer-locked parent still needs ancestors.
+			expect(result._nay).toBeUndefined();
 		},
 	);
 });
@@ -3659,7 +3646,6 @@ test("home file can be renamed and moved like any file", async () => {
 			contentFrontmatterTooLargeFieldCount: null,
 			contentFrontmatterTooLargeIndexDocumentCount: null,
 			restrictedScopeNodeId: null,
-			writePolicyScopeNodeId: null,
 			writePolicy: null,
 
 			organizationId: db.organizationId,
@@ -3728,7 +3714,6 @@ test("home file can be archived like any file", async () => {
 			contentFrontmatterTooLargeFieldCount: null,
 			contentFrontmatterTooLargeIndexDocumentCount: null,
 			restrictedScopeNodeId: null,
-			writePolicyScopeNodeId: null,
 			writePolicy: null,
 
 			organizationId: db.organizationId,
@@ -7792,7 +7777,6 @@ async function test_insert_searchable_markdown_file(
 			contentFrontmatterTooLargeFieldCount: null,
 			contentFrontmatterTooLargeIndexDocumentCount: null,
 			restrictedScopeNodeId: null,
-			writePolicyScopeNodeId: null,
 			writePolicy: null,
 
 			archiveOperationId: null,
@@ -8317,7 +8301,6 @@ async function test_insert_committed_external_markdown(
 			contentFrontmatterTooLargeFieldCount: null,
 			contentFrontmatterTooLargeIndexDocumentCount: null,
 			restrictedScopeNodeId: null,
-			writePolicyScopeNodeId: null,
 			writePolicy: null,
 
 			archiveOperationId: null,
@@ -8618,7 +8601,6 @@ describe("non-collaborative files", () => {
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: null,
-				writePolicyScopeNodeId: null,
 				writePolicy: null,
 
 				archiveOperationId: null,
@@ -11424,7 +11406,6 @@ test("metadata search updates indexed scope when files are renamed and moved", a
 			contentFrontmatterTooLargeFieldCount: null,
 			contentFrontmatterTooLargeIndexDocumentCount: null,
 			restrictedScopeNodeId: null,
-			writePolicyScopeNodeId: null,
 			writePolicy: null,
 
 			archiveOperationId: null,
@@ -11989,9 +11970,12 @@ describe("folder metadata", () => {
 		).toMatchObject({ fields: [], values: [], sourceKind: "committed" });
 	});
 
-	test.each(["direct", "inherited"] as const)(
-		"both folder write doors refuse a %s lock and work after unlock",
-		async (lockKind) => {
+	test.each([
+		{ lockKind: "direct", expectRefusal: true },
+		{ lockKind: "parent", expectRefusal: false },
+	] as const)(
+		"both folder write doors treat a $lockKind lock on nested metadata",
+		async ({ lockKind, expectRefusal }) => {
 			const { t, db, asOwner, scope, folderId, nestedId } = await seed_folder_metadata();
 			const lockId = lockKind === "direct" ? nestedId : folderId;
 			expect(
@@ -12003,52 +11987,65 @@ describe("folder metadata", () => {
 					})
 				)._nay,
 			).toBeUndefined();
-			expect(
-				await asOwner.mutation(api.files_metadata.set_entries, {
-					membershipId: db.membershipId,
-					fileNodeId: nestedId,
-					metadataYaml: "status: blocked",
-				}),
-			).toMatchObject({ _nay: { name: "read_only" } });
-			expect(
-				await t.mutation(internal.files_metadata.update_entries_by_path, {
-					...scope,
-					path: "/folder-metadata/nested",
-					set: [{ key: "status", value: "blocked" }],
-					remove: [],
-				}),
-			).toMatchObject({ _nay: { name: "read_only" } });
-			expect(
-				await asOwner.query(api.files_metadata.get_entries, {
-					membershipId: db.membershipId,
-					fileNodeId: nestedId,
-				}),
-			).toEqual([]);
-			expect(
-				(
-					await asOwner.mutation(api.files_nodes.set_node_write_policy, {
-						writePolicy: null,
+
+			const publicWrite = await asOwner.mutation(api.files_metadata.set_entries, {
+				membershipId: db.membershipId,
+				fileNodeId: nestedId,
+				metadataYaml: "status: blocked",
+			});
+			const internalWrite = await t.mutation(internal.files_metadata.update_entries_by_path, {
+				...scope,
+				path: "/folder-metadata/nested",
+				set: [{ key: "status", value: "blocked" }],
+				remove: [],
+			});
+
+			// A parent lock never blocks nested metadata. Only a lock on the nested folder itself refuses.
+			if (expectRefusal) {
+				expect(publicWrite).toMatchObject({ _nay: { name: "read_only" } });
+				expect(internalWrite).toMatchObject({ _nay: { name: "read_only" } });
+				expect(
+					await asOwner.query(api.files_metadata.get_entries, {
 						membershipId: db.membershipId,
-						nodeId: lockId,
-					})
-				)._nay,
-			).toBeUndefined();
-			expect(
-				(
-					await t.mutation(internal.files_metadata.update_entries_by_path, {
-						...scope,
-						path: "/folder-metadata/nested",
-						set: [{ key: "status", value: "open" }],
-						remove: [],
-					})
-				)._nay,
-			).toBeUndefined();
+						fileNodeId: nestedId,
+					}),
+				).toEqual([]);
+				expect(
+					(
+						await asOwner.mutation(api.files_nodes.set_node_write_policy, {
+							writePolicy: null,
+							membershipId: db.membershipId,
+							nodeId: lockId,
+						})
+					)._nay,
+				).toBeUndefined();
+				expect(
+					(
+						await t.mutation(internal.files_metadata.update_entries_by_path, {
+							...scope,
+							path: "/folder-metadata/nested",
+							set: [{ key: "status", value: "open" }],
+							remove: [],
+						})
+					)._nay,
+				).toBeUndefined();
+				expect(
+					await asOwner.query(api.files_metadata.get_entries, {
+						membershipId: db.membershipId,
+						fileNodeId: nestedId,
+					}),
+				).toEqual([{ key: "status", value: "open" }]);
+				return;
+			}
+
+			expect(publicWrite).toEqual({ _yay: null });
+			expect(internalWrite._nay).toBeUndefined();
 			expect(
 				await asOwner.query(api.files_metadata.get_entries, {
 					membershipId: db.membershipId,
 					fileNodeId: nestedId,
 				}),
-			).toEqual([{ key: "status", value: "open" }]);
+			).toEqual([{ key: "status", value: "blocked" }]);
 		},
 	);
 
@@ -13617,7 +13614,6 @@ test("text_search_files updates unified search scope when files are renamed and 
 			contentFrontmatterTooLargeFieldCount: null,
 			contentFrontmatterTooLargeIndexDocumentCount: null,
 			restrictedScopeNodeId: null,
-			writePolicyScopeNodeId: null,
 			writePolicy: null,
 
 			archiveOperationId: null,
@@ -14564,7 +14560,6 @@ describe("restore_snapshot_r2 whole-file restore", () => {
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: null,
-				writePolicyScopeNodeId: null,
 				writePolicy: null,
 
 				archiveOperationId: null,
@@ -17537,7 +17532,7 @@ function read_lock_node(t: ReturnType<typeof test_convex>, nodeId: Id<"files_nod
 }
 
 describe("files_nodes.set_node_write_policy", () => {
-	test("locks a folder and cascades over active and archived descendants", async () => {
+	test("locks a folder and leaves other items unchanged", async () => {
 		const t = test_convex();
 		const { db, asUser, outerId, innerId, deepId, siblingId, frozenId } = await seed_read_only_lock_tree(t);
 
@@ -17549,23 +17544,19 @@ describe("files_nodes.set_node_write_policy", () => {
 		expect(locked._nay).toBeUndefined();
 
 		const outer = await read_lock_node(t, outerId);
-		expect(outer?.writePolicyScopeNodeId).toBe(outerId);
-		expect(outer).toMatchObject({ writePolicy: { mode: "read_only" }, writePolicyScopeNodeId: outerId });
+		expect(outer).toMatchObject({ writePolicy: { mode: "read_only" } });
 
 		for (const nodeId of [innerId, deepId, siblingId]) {
 			const node = await read_lock_node(t, nodeId);
-			expect(node?.writePolicyScopeNodeId).toBe(outerId);
-			expect(node).toMatchObject({ writePolicy: null, writePolicyScopeNodeId: outerId });
+			expect(node).toMatchObject({ writePolicy: null });
 		}
 
-		// The archived child is repointed too: a folder lock covers archived descendants (RO-05).
 		const frozen = await read_lock_node(t, frozenId);
 		expect(frozen?.archiveOperationId).toBeDefined();
-		expect(frozen?.writePolicyScopeNodeId).toBe(outerId);
-		expect(frozen).toMatchObject({ writePolicy: null, writePolicyScopeNodeId: outerId });
+		expect(frozen).toMatchObject({ writePolicy: null });
 	});
 
-	test("a nested explicit lock keeps its own pointer and the cascade stops there", async () => {
+	test("locking a parent does not change a child lock", async () => {
 		const t = test_convex();
 		const { db, asUser, outerId, innerId, deepId, siblingId } = await seed_read_only_lock_tree(t);
 
@@ -17582,21 +17573,13 @@ describe("files_nodes.set_node_write_policy", () => {
 		});
 		expect(outerLocked._nay).toBeUndefined();
 
-		const outer = await read_lock_node(t, outerId);
-		expect(outer?.writePolicyScopeNodeId).toBe(outerId);
-		const sibling = await read_lock_node(t, siblingId);
-		expect(sibling?.writePolicyScopeNodeId).toBe(outerId);
-
-		// The nested explicit root and its subtree keep their own pointer.
-		const inner = await read_lock_node(t, innerId);
-		expect(inner?.writePolicyScopeNodeId).toBe(innerId);
-		expect(inner).toMatchObject({ writePolicy: { mode: "read_only" }, writePolicyScopeNodeId: innerId });
-		const deep = await read_lock_node(t, deepId);
-		expect(deep?.writePolicyScopeNodeId).toBe(innerId);
-		expect(deep).toMatchObject({ writePolicy: null, writePolicyScopeNodeId: innerId });
+		expect(await read_lock_node(t, outerId)).toMatchObject({ writePolicy: { mode: "read_only" } });
+		expect(await read_lock_node(t, siblingId)).toMatchObject({ writePolicy: null });
+		expect(await read_lock_node(t, innerId)).toMatchObject({ writePolicy: { mode: "read_only" } });
+		expect(await read_lock_node(t, deepId)).toMatchObject({ writePolicy: null });
 	});
 
-	test("an inherited node may take its own explicit lock that survives the outer unlock", async () => {
+	test("unlocking a parent does not change a child lock", async () => {
 		const t = test_convex();
 		const { db, asUser, outerId, innerId, deepId, siblingId } = await seed_read_only_lock_tree(t);
 
@@ -17613,13 +17596,8 @@ describe("files_nodes.set_node_write_policy", () => {
 		});
 		expect(innerLocked._nay).toBeUndefined();
 
-		// The inherited node's pointer becomes itself, and its subtree repoints at it.
-		const innerAfterLock = await read_lock_node(t, innerId);
-		expect(innerAfterLock?.writePolicyScopeNodeId).toBe(innerId);
-		expect(innerAfterLock).toMatchObject({ writePolicy: { mode: "read_only" }, writePolicyScopeNodeId: innerId });
-		const deepAfterLock = await read_lock_node(t, deepId);
-		expect(deepAfterLock?.writePolicyScopeNodeId).toBe(innerId);
-		expect(deepAfterLock).toMatchObject({ writePolicy: null, writePolicyScopeNodeId: innerId });
+		expect(await read_lock_node(t, innerId)).toMatchObject({ writePolicy: { mode: "read_only" } });
+		expect(await read_lock_node(t, deepId)).toMatchObject({ writePolicy: null });
 
 		const outerUnlocked = await asUser.mutation(api.files_nodes.set_node_write_policy, {
 			writePolicy: null,
@@ -17628,18 +17606,10 @@ describe("files_nodes.set_node_write_policy", () => {
 		});
 		expect(outerUnlocked._nay).toBeUndefined();
 
-		const outer = await read_lock_node(t, outerId);
-		expect(outer?.writePolicyScopeNodeId).toBeNull();
-		const sibling = await read_lock_node(t, siblingId);
-		expect(sibling?.writePolicyScopeNodeId).toBeNull();
-
-		// The direct lock survives the outer unlock.
-		const inner = await read_lock_node(t, innerId);
-		expect(inner?.writePolicyScopeNodeId).toBe(innerId);
-		expect(inner).toMatchObject({ writePolicy: { mode: "read_only" }, writePolicyScopeNodeId: innerId });
-		const deep = await read_lock_node(t, deepId);
-		expect(deep?.writePolicyScopeNodeId).toBe(innerId);
-		expect(deep).toMatchObject({ writePolicy: null, writePolicyScopeNodeId: innerId });
+		expect(await read_lock_node(t, outerId)).toMatchObject({ writePolicy: null });
+		expect(await read_lock_node(t, siblingId)).toMatchObject({ writePolicy: null });
+		expect(await read_lock_node(t, innerId)).toMatchObject({ writePolicy: { mode: "read_only" } });
+		expect(await read_lock_node(t, deepId)).toMatchObject({ writePolicy: null });
 	});
 
 	test("locking is idempotent", async () => {
@@ -17659,10 +17629,8 @@ describe("files_nodes.set_node_write_policy", () => {
 		});
 		expect(lockedAgain._nay).toBeUndefined();
 
-		const outer = await read_lock_node(t, outerId);
-		expect(outer?.writePolicyScopeNodeId).toBe(outerId);
-		const inner = await read_lock_node(t, innerId);
-		expect(inner?.writePolicyScopeNodeId).toBe(outerId);
+		expect(await read_lock_node(t, outerId)).toMatchObject({ writePolicy: { mode: "read_only" } });
+		expect(await read_lock_node(t, innerId)).toMatchObject({ writePolicy: null });
 	});
 
 	test("locks an archived explicit root", async () => {
@@ -17695,9 +17663,7 @@ describe("files_nodes.set_node_write_policy", () => {
 		});
 		expect(locked._nay).toBeUndefined();
 
-		const coldNode = await read_lock_node(t, cold._yay.nodeId);
-		expect(coldNode?.writePolicyScopeNodeId).toBe(cold._yay.nodeId);
-		expect(coldNode).toMatchObject({ writePolicy: { mode: "read_only" }, writePolicyScopeNodeId: cold._yay.nodeId });
+		expect(await read_lock_node(t, cold._yay.nodeId)).toMatchObject({ writePolicy: { mode: "read_only" } });
 	});
 
 	test("locking a new active folder ignores a restricted archived tree with the same path", async () => {
@@ -17745,11 +17711,11 @@ describe("files_nodes.set_node_write_policy", () => {
 			nodeId: activeRootId,
 		});
 		expect(locked._nay).toBeUndefined();
-		expect((await read_lock_node(t, activeRootId))?.writePolicyScopeNodeId).toBe(activeRootId);
-		expect((await read_lock_node(t, activeChildId))?.writePolicyScopeNodeId).toBe(activeRootId);
-		expect((await read_lock_node(t, archivedChildId))?.writePolicyScopeNodeId).toBe(archivedChildId);
+		expect(await read_lock_node(t, activeRootId)).toMatchObject({ writePolicy: { mode: "read_only" } });
+		expect(await read_lock_node(t, activeChildId)).toMatchObject({ writePolicy: null });
+		expect(await read_lock_node(t, archivedChildId)).toMatchObject({ writePolicy: { mode: "read_only" } });
 	});
-	test("unlocks an explicit root and clears the subtree", async () => {
+	test("unlocks a folder and leaves other items unchanged", async () => {
 		const t = test_convex();
 		const { db, asUser, outerId, innerId, deepId, siblingId, frozenId } = await seed_read_only_lock_tree(t);
 
@@ -17766,15 +17732,12 @@ describe("files_nodes.set_node_write_policy", () => {
 		});
 		expect(unlocked._nay).toBeUndefined();
 
-		// Every affected node, including the archived child, is writable again.
 		for (const nodeId of [outerId, innerId, deepId, siblingId, frozenId]) {
-			const node = await read_lock_node(t, nodeId);
-			expect(node?.writePolicyScopeNodeId).toBeNull();
-			expect(node).toMatchObject({ writePolicy: null, writePolicyScopeNodeId: null });
+			expect(await read_lock_node(t, nodeId)).toMatchObject({ writePolicy: null });
 		}
 	});
 
-	test("unlocking an explicit root under an outer lock falls back to the outer pointer", async () => {
+	test("unlocking a child does not change the parent lock", async () => {
 		const t = test_convex();
 		const { db, asUser, outerId, innerId, deepId } = await seed_read_only_lock_tree(t);
 
@@ -17793,17 +17756,12 @@ describe("files_nodes.set_node_write_policy", () => {
 		});
 		expect(unlocked._nay).toBeUndefined();
 
-		// The direct lock is gone, but the outer lock still covers the subtree, so the node stays
-		// effectively read-only through the inherited pointer.
-		const inner = await read_lock_node(t, innerId);
-		expect(inner?.writePolicyScopeNodeId).toBe(outerId);
-		expect(inner).toMatchObject({ writePolicy: null, writePolicyScopeNodeId: outerId });
-		const deep = await read_lock_node(t, deepId);
-		expect(deep?.writePolicyScopeNodeId).toBe(outerId);
-		expect(deep).toMatchObject({ writePolicy: null, writePolicyScopeNodeId: outerId });
+		expect(await read_lock_node(t, outerId)).toMatchObject({ writePolicy: { mode: "read_only" } });
+		expect(await read_lock_node(t, innerId)).toMatchObject({ writePolicy: null });
+		expect(await read_lock_node(t, deepId)).toMatchObject({ writePolicy: null });
 	});
 
-	test("setting Inherit on an inherited node leaves the outer rule in place", async () => {
+	test("unlocking a child that has no lock is a no-op", async () => {
 		const t = test_convex();
 		const { db, asUser, outerId, innerId } = await seed_read_only_lock_tree(t);
 
@@ -17821,8 +17779,8 @@ describe("files_nodes.set_node_write_policy", () => {
 		});
 		expect(refused._nay).toBeUndefined();
 
-		const inner = await read_lock_node(t, innerId);
-		expect(inner?.writePolicyScopeNodeId).toBe(outerId);
+		expect(await read_lock_node(t, innerId)).toMatchObject({ writePolicy: null });
+		expect(await read_lock_node(t, outerId)).toMatchObject({ writePolicy: { mode: "read_only" } });
 
 		// Use the same path to prove the direct lock can be removed.
 		const unlocked = await asUser.mutation(api.files_nodes.set_node_write_policy, {
@@ -17844,8 +17802,7 @@ describe("files_nodes.set_node_write_policy", () => {
 		});
 		expect(unlocked._nay).toBeUndefined();
 
-		const sibling = await read_lock_node(t, siblingId);
-		expect(sibling?.writePolicyScopeNodeId).toBeNull();
+		expect(await read_lock_node(t, siblingId)).toMatchObject({ writePolicy: null });
 	});
 
 	test("locks and unlocks an archived root", async () => {
@@ -17884,8 +17841,7 @@ describe("files_nodes.set_node_write_policy", () => {
 		});
 		expect(unlocked._nay).toBeUndefined();
 
-		const coldNode = await read_lock_node(t, cold._yay.nodeId);
-		expect(coldNode?.writePolicyScopeNodeId).toBeNull();
+		expect(await read_lock_node(t, cold._yay.nodeId)).toMatchObject({ writePolicy: null });
 	});
 });
 
@@ -17894,8 +17850,8 @@ describe("files_nodes.get_node_write_policy_management_state", () => {
 		const t = test_convex();
 		const { db, asUser, siblingId } = await seed_read_only_lock_tree(t);
 
-		// Properties shows the local choice, parent policy, and effective access separately.
-		// An open node has no local or parent policy and no source to name.
+		// Properties shows this node's own lock and write access.
+		// An open node has no local lock.
 		const state = await asUser.query(api.files_nodes.get_node_write_policy_management_state, {
 			membershipId: db.membershipId,
 			nodeId: siblingId,
@@ -17906,20 +17862,17 @@ describe("files_nodes.get_node_write_policy_management_state", () => {
 			canWrite: true,
 			writeBlockedReason: null,
 			localPolicy: null,
-			hasInheritedPolicy: false,
-			inheritedSource: null,
-			blockedByAncestor: false,
+			localDefault: null,
 		});
 	});
 
-	test("a direct lock with no locked parent reports self and names no source", async () => {
+	test("a direct lock reports the local read-only state", async () => {
 		const t = test_convex();
 		const { db, asUser, outerId } = await seed_read_only_lock_tree(t);
 		await set_read_only_or_throw(asUser, db.membershipId, outerId);
 
-		// For a direct lock the source means "a lock above this node", never the node itself.
-		// `/outer` sits at the root, so choosing Inherit makes it writable at once and the
-		// dialog must not offer to manage another folder.
+		// This node's own lock is read-only. Clearing that local lock makes it writable.
+		// There is no inherit choice and no parent lock to open.
 		const state = await asUser.query(api.files_nodes.get_node_write_policy_management_state, {
 			membershipId: db.membershipId,
 			nodeId: outerId,
@@ -17930,10 +17883,279 @@ describe("files_nodes.get_node_write_policy_management_state", () => {
 			canWrite: false,
 			writeBlockedReason: "read_only",
 			localPolicy: { mode: "read_only" },
-			hasInheritedPolicy: false,
-			inheritedSource: null,
-			blockedByAncestor: false,
+			localDefault: null,
 		});
+	});
+});
+
+describe("files_nodes.set_node_new_child_write_policy", () => {
+	test("copies the folder default onto a brand-new child only", async () => {
+		const t = test_convex();
+		const { db, asUser } = await seed_read_only_lock_tree(t);
+		const folder = await asUser.mutation(api.files_nodes.create_folder_node, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			path: "defaults",
+		});
+		expect(folder._nay).toBeUndefined();
+
+		expect(
+			(
+				await asUser.mutation(api.files_nodes.set_node_new_child_write_policy, {
+					membershipId: db.membershipId,
+					nodeId: folder._yay!.nodeId,
+					newChildWritePolicy: { mode: "read_only" },
+				})
+			)._nay,
+		).toBeUndefined();
+
+		const child = await asUser.mutation(api.files_nodes.create_folder_node, {
+			membershipId: db.membershipId,
+			parentId: folder._yay!.nodeId,
+			path: "child",
+		});
+		expect(child._nay).toBeUndefined();
+		expect(await read_lock_node(t, child._yay!.nodeId)).toMatchObject({
+			writePolicy: { mode: "read_only" },
+			newChildWritePolicy: { mode: "read_only" },
+		});
+
+		expect(
+			(
+				await asUser.mutation(api.files_nodes.set_node_new_child_write_policy, {
+					membershipId: db.membershipId,
+					nodeId: folder._yay!.nodeId,
+					newChildWritePolicy: null,
+				})
+			)._nay,
+		).toBeUndefined();
+		expect(await read_lock_node(t, child._yay!.nodeId)).toMatchObject({
+			writePolicy: { mode: "read_only" },
+			newChildWritePolicy: { mode: "read_only" },
+		});
+
+		const sibling = await asUser.mutation(api.files_nodes.create_folder_node, {
+			membershipId: db.membershipId,
+			parentId: folder._yay!.nodeId,
+			path: "later",
+		});
+		expect(sibling._nay).toBeUndefined();
+		expect(await read_lock_node(t, sibling._yay!.nodeId)).toMatchObject({
+			writePolicy: null,
+			newChildWritePolicy: null,
+		});
+	});
+});
+
+describe("files_nodes.create_upload_nodes locked defaults", () => {
+	test("one call into a locked-default folder succeeds and locks the new files", async () => {
+		const t = test_convex();
+		const { db, asUser } = await seed_read_only_lock_tree(t);
+		const folder = await asUser.mutation(api.files_nodes.create_folder_node, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			path: "upload-default",
+		});
+		expect(folder._nay).toBeUndefined();
+
+		expect(
+			(
+				await asUser.mutation(api.files_nodes.set_node_new_child_write_policy, {
+					membershipId: db.membershipId,
+					nodeId: folder._yay!.nodeId,
+					newChildWritePolicy: { mode: "read_only" },
+				})
+			)._nay,
+		).toBeUndefined();
+
+		const created = await asUser.mutation(api.files_nodes.create_upload_nodes, {
+			membershipId: db.membershipId,
+			parentId: folder._yay!.nodeId,
+			onConflict: "skip",
+			items: [{ relativePath: "a.pdf", contentType: "application/pdf", size: 1 }],
+		});
+		expect(created._nay).toBeUndefined();
+		expect(created._yay!.created).toHaveLength(1);
+
+		const node = await t.run((ctx) => ctx.db.get("files_nodes", created._yay!.created[0]!.nodeId));
+		expect(node?.writePolicy).toEqual({ mode: "read_only" });
+	});
+
+	test("a default change between calls applies live to the next call", async () => {
+		const t = test_convex();
+		const { db, asUser } = await seed_read_only_lock_tree(t);
+		const folder = await asUser.mutation(api.files_nodes.create_folder_node, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			path: "upload-default-live",
+		});
+		expect(folder._nay).toBeUndefined();
+
+		expect(
+			(
+				await asUser.mutation(api.files_nodes.set_node_new_child_write_policy, {
+					membershipId: db.membershipId,
+					nodeId: folder._yay!.nodeId,
+					newChildWritePolicy: { mode: "read_only" },
+				})
+			)._nay,
+		).toBeUndefined();
+
+		const first = await asUser.mutation(api.files_nodes.create_upload_nodes, {
+			membershipId: db.membershipId,
+			parentId: folder._yay!.nodeId,
+			onConflict: "skip",
+			items: [{ relativePath: "a.pdf", contentType: "application/pdf", size: 1 }],
+		});
+		expect(first._nay).toBeUndefined();
+
+		expect(
+			(
+				await asUser.mutation(api.files_nodes.set_node_new_child_write_policy, {
+					membershipId: db.membershipId,
+					nodeId: folder._yay!.nodeId,
+					newChildWritePolicy: null,
+				})
+			)._nay,
+		).toBeUndefined();
+
+		const second = await asUser.mutation(api.files_nodes.create_upload_nodes, {
+			membershipId: db.membershipId,
+			parentId: folder._yay!.nodeId,
+			onConflict: "skip",
+			items: [{ relativePath: "b.pdf", contentType: "application/pdf", size: 1 }],
+		});
+		expect(second._nay).toBeUndefined();
+
+		const docs = await t.run(async (ctx) => ({
+			first: await ctx.db.get("files_nodes", first._yay!.created[0]!.nodeId),
+			second: await ctx.db.get("files_nodes", second._yay!.created[0]!.nodeId),
+		}));
+		expect(docs.first?.writePolicy).toEqual({ mode: "read_only" });
+		expect(docs.second?.writePolicy).toBeNull();
+	});
+});
+
+describe("files_nodes.apply_write_policy_to_contents", () => {
+	test("counts only descendants whose rule changed", async () => {
+		const t = test_convex();
+		const { db, asUser } = await seed_read_only_lock_tree(t);
+		const folder = await asUser.mutation(api.files_nodes.create_folder_node, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			path: "apply-count",
+		});
+		expect(folder._nay).toBeUndefined();
+		const first = await asUser.mutation(api.files_nodes.create_folder_node, {
+			membershipId: db.membershipId,
+			parentId: folder._yay!.nodeId,
+			path: "first",
+		});
+		const second = await asUser.mutation(api.files_nodes.create_folder_node, {
+			membershipId: db.membershipId,
+			parentId: folder._yay!.nodeId,
+			path: "second",
+		});
+		expect(first._nay).toBeUndefined();
+		expect(second._nay).toBeUndefined();
+		await set_read_only_or_throw(asUser, db.membershipId, first._yay!.nodeId);
+
+		const applied = await asUser.mutation(api.files_nodes.apply_write_policy_to_contents, {
+			membershipId: db.membershipId,
+			nodeId: folder._yay!.nodeId,
+			writePolicy: { mode: "read_only" },
+		});
+		expect(applied).toEqual({ _yay: { updatedCount: 1 } });
+		expect(await read_lock_node(t, first._yay!.nodeId)).toMatchObject({ writePolicy: { mode: "read_only" } });
+		expect(await read_lock_node(t, second._yay!.nodeId)).toMatchObject({ writePolicy: { mode: "read_only" } });
+		expect(await read_lock_node(t, folder._yay!.nodeId)).toMatchObject({ writePolicy: null });
+	});
+
+	test("unlocks one child without changing siblings", async () => {
+		const t = test_convex();
+		const { db, asUser } = await seed_read_only_lock_tree(t);
+		const folder = await asUser.mutation(api.files_nodes.create_folder_node, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			path: "apply-unlock",
+		});
+		expect(folder._nay).toBeUndefined();
+		const first = await asUser.mutation(api.files_nodes.create_folder_node, {
+			membershipId: db.membershipId,
+			parentId: folder._yay!.nodeId,
+			path: "first",
+		});
+		const second = await asUser.mutation(api.files_nodes.create_folder_node, {
+			membershipId: db.membershipId,
+			parentId: folder._yay!.nodeId,
+			path: "second",
+		});
+		expect(first._nay).toBeUndefined();
+		expect(second._nay).toBeUndefined();
+		expect(
+			(
+				await asUser.mutation(api.files_nodes.apply_write_policy_to_contents, {
+					membershipId: db.membershipId,
+					nodeId: folder._yay!.nodeId,
+					writePolicy: { mode: "read_only" },
+				})
+			)._nay,
+		).toBeUndefined();
+
+		await set_writable_or_throw(asUser, db.membershipId, first._yay!.nodeId);
+		expect(await read_lock_node(t, first._yay!.nodeId)).toMatchObject({ writePolicy: null });
+		expect(await read_lock_node(t, second._yay!.nodeId)).toMatchObject({ writePolicy: { mode: "read_only" } });
+		expect(
+			await asUser.query(api.files_nodes.get_current_user_file_write_permission, {
+				membershipId: db.membershipId,
+				nodeId: first._yay!.nodeId,
+			}),
+		).toBe(true);
+		expect(
+			await asUser.query(api.files_nodes.get_current_user_file_write_permission, {
+				membershipId: db.membershipId,
+				nodeId: second._yay!.nodeId,
+			}),
+		).toBe(false);
+	});
+
+	test("refuses a folder with more than 500 active descendants", async () => {
+		const t = test_convex();
+		const { db, asUser } = await seed_read_only_lock_tree(t);
+		const folder = await asUser.mutation(api.files_nodes.create_folder_node, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			path: "apply-cap",
+		});
+		expect(folder._nay).toBeUndefined();
+
+		await t.run(async (ctx) => {
+			const now = Date.now();
+			for (let index = 0; index < 501; index += 1) {
+				await ctx.db.insert("files_nodes", {
+					...test_mocks.files.base(),
+					organizationId: db.organizationId,
+					workspaceId: db.workspaceId,
+					createdBy: db.userId,
+					updatedBy: db.userId,
+					parentId: folder._yay!.nodeId,
+					name: `c-${index}`,
+					kind: "folder",
+					path: `/apply-cap/c-${index}`,
+					treePath: `/apply-cap/c-${index}/`,
+					pathDepth: 2,
+					updatedAt: now,
+				});
+			}
+		});
+
+		const refused = await asUser.mutation(api.files_nodes.apply_write_policy_to_contents, {
+			membershipId: db.membershipId,
+			nodeId: folder._yay!.nodeId,
+			writePolicy: { mode: "read_only" },
+		});
+		expect(refused._nay?.name).toBe("too_large");
+		expect(await read_lock_node(t, folder._yay!.nodeId)).toMatchObject({ writePolicy: null });
 	});
 });
 
@@ -17959,7 +18181,7 @@ describe("selected file writers", () => {
 		return { ...fixture, serviceAccountId, writeContext };
 	}
 
-	test("a selected human needs ACL permission and every parent rule must match", async () => {
+	test("a selected human needs ACL permission and only this node's writer rule", async () => {
 		const t = test_convex();
 		const { db, asUser, outerId, innerId, deepId } = await seed_read_only_lock_tree(t);
 		const member = await t.run(async (ctx) => {
@@ -17986,7 +18208,7 @@ describe("selected file writers", () => {
 			(
 				await asUser.mutation(api.files_nodes.set_node_write_policy, {
 					membershipId: db.membershipId,
-					nodeId: innerId,
+					nodeId: deepId,
 					writePolicy: selected,
 				})
 			)._nay,
@@ -18034,6 +18256,7 @@ describe("selected file writers", () => {
 			)._nay?.name,
 		).toBe("read_only");
 
+		// A parent writer rule does not stack onto this node.
 		expect(
 			(
 				await asUser.mutation(api.files_nodes.set_node_write_policy, {
@@ -18048,7 +18271,7 @@ describe("selected file writers", () => {
 				membershipId: member.membershipId,
 				nodeId: deepId,
 			}),
-		).toBe(false);
+		).toBe(true);
 		expect(
 			await asUser.query(api.files_nodes.get_current_user_file_write_permission, {
 				membershipId: db.membershipId,
@@ -18056,28 +18279,12 @@ describe("selected file writers", () => {
 			}),
 		).toBe(false);
 
-		expect(
-			(
-				await asUser.mutation(api.files_nodes.set_node_write_policy, {
-					membershipId: db.membershipId,
-					nodeId: outerId,
-					writePolicy: selected,
-				})
-			)._nay,
-		).toBeUndefined();
-		expect(
-			await asMember.query(api.files_nodes.get_current_user_file_write_permission, {
-				membershipId: member.membershipId,
-				nodeId: deepId,
-			}),
-		).toBe(true);
-
 		const { page: tree } = await asMember.query(api.files_nodes.list_tree, {
 			membershipId: member.membershipId,
 			paginationOpts: { numItems: 500, cursor: null },
 		});
-		expect(tree.find((node) => node._id === innerId)).toMatchObject({ canWrite: true, writePolicyState: "self" });
-		expect(tree.find((node) => node._id === deepId)).toMatchObject({ canWrite: true, writePolicyState: "inherited" });
+		expect(tree.find((node) => node._id === innerId)).toMatchObject({ canWrite: true, writePolicyState: "none" });
+		expect(tree.find((node) => node._id === deepId)).toMatchObject({ canWrite: true, writePolicyState: "writer" });
 	});
 
 	test("direct account reach cannot match a parent rule during creation", async () => {
@@ -18164,7 +18371,6 @@ describe("selected file writers", () => {
 
 		expect((await setPolicy(policy))._nay).toBeUndefined();
 		expect(await read_lock_node(t, fixture.deepId)).toMatchObject({
-			writePolicyScopeNodeId: fixture.outerId,
 			writePolicy: null,
 		});
 
@@ -18265,11 +18471,51 @@ describe("selected file writers", () => {
 		});
 
 		expect(result.node).toMatchObject({
-			writePolicyScopeNodeId: created._yay,
 			writePolicy: { mode: "writer", writer: fixture.writeContext.writer },
 		});
 		expect(result.grants.every((grant) => grant.resourceId === fixture.outerId)).toBe(true);
 		expect(result.state).toMatchObject({ canWrite: false, canManage: false, writeBlockedReason: "permission" });
+	});
+
+	test("creating a folder default checks the named writer", async () => {
+		const t = test_convex();
+		const fixture = await seed_account(t);
+		const strangerId = await t.run(async (ctx) => ctx.db.insert("users", { clerkUserId: "stranger-default-writer" }));
+
+		expect(
+			(
+				await fixture.asUser.mutation(api.access_control.set_service_account_grant, {
+					membershipId: fixture.db.membershipId,
+					serviceAccountId: fixture.serviceAccountId,
+					resource: { kind: "file", nodeId: fixture.outerId },
+					level: "manage",
+				})
+			)._nay,
+		).toBeUndefined();
+
+		const refused = await t.run(
+			async (ctx) =>
+				await files_nodes_db_create_node_recursively_at_path(ctx, {
+					organizationId: fixture.db.organizationId,
+					workspaceId: fixture.db.workspaceId,
+					userId: fixture.db.userId,
+					parentId: fixture.outerId,
+					path: "default-only",
+					kind: "folder",
+					now: Date.now(),
+					writeContext: {
+						...fixture.writeContext,
+						resourceScope: { kind: "create", parentNodeId: fixture.outerId, path: "/outer/default-only" },
+					},
+					newChildWritePolicy: { mode: "writer", writer: { kind: "user", userId: strangerId } },
+				}),
+		);
+		expect(refused._nay?.message).toBe("Writer is not available");
+		expect(
+			await t.run(async (ctx) =>
+				(await ctx.db.query("files_nodes").collect()).some((node) => node.path === "/outer/default-only"),
+			),
+		).toBe(false);
 	});
 
 	test("a moved node no longer belongs to the allowed subtree", async () => {
@@ -18376,7 +18622,7 @@ describe("files_nodes.get_user_file_write_access", () => {
 	});
 });
 
-describe("new-node read-only inheritance", () => {
+describe("new-node write policy defaults", () => {
 	test("a normal creation starts unlocked", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
@@ -18395,13 +18641,11 @@ describe("new-node read-only inheritance", () => {
 			throw new Error(folder._nay.message);
 		}
 
-		// A root child has no local or inherited rule.
 		const node = await read_lock_node(t, folder._yay.nodeId);
-		expect(node?.writePolicyScopeNodeId).toBeNull();
-		expect(node).toMatchObject({ writePolicy: null, writePolicyScopeNodeId: null });
+		expect(node).toMatchObject({ writePolicy: null });
 	});
 
-	test("trusted creation inherits the parent policy for every missing segment", async () => {
+	test("trusted creation does not copy the parent lock onto missing segments", async () => {
 		const t = test_convex();
 		const { db, asUser, outerId } = await seed_read_only_lock_tree(t);
 		await set_read_only_or_throw(asUser, db.membershipId, outerId);
@@ -18427,7 +18671,6 @@ describe("new-node read-only inheritance", () => {
 		for (const node of [parent, child]) {
 			expect(node).toMatchObject({
 				writePolicy: null,
-				writePolicyScopeNodeId: outerId,
 			});
 		}
 	});
@@ -18736,7 +18979,7 @@ describe("files_nodes.rename_node read-only gates", () => {
 		expect((await read_lock_node(t, innerId))?.path).toBe("/outer/inner2");
 	});
 
-	test("an inherited lock refuses the rename too", async () => {
+	test("a locked parent refuses renaming a child", async () => {
 		const t = test_convex();
 		const { db, asUser, outerId, siblingId } = await seed_read_only_lock_tree(t);
 		await set_read_only_or_throw(asUser, db.membershipId, outerId);
@@ -18750,45 +18993,46 @@ describe("files_nodes.rename_node read-only gates", () => {
 		expect((await read_lock_node(t, siblingId))?.path).toBe("/outer/sibling");
 	});
 
-	test("a locked descendant blocks renaming its ancestor folder", async () => {
+	test("a writable ancestor folder can be renamed while a descendant stays locked", async () => {
 		const t = test_convex();
 		const { db, asUser, outerId, deepId, siblingId } = await seed_read_only_lock_tree(t);
 		await set_read_only_or_throw(asUser, db.membershipId, deepId);
 
-		const refused = await asUser.mutation(api.files_nodes.rename_node, {
+		const renamed = await asUser.mutation(api.files_nodes.rename_node, {
 			membershipId: db.membershipId,
 			nodeId: outerId,
 			path: "outer2",
 		});
-		expect(refused._nay?.name).toBe("read_only");
-		expect((await read_lock_node(t, outerId))?.path).toBe("/outer");
-		expect((await read_lock_node(t, deepId))?.path).toBe("/outer/inner/deep");
+		expect(renamed._nay).toBeUndefined();
+		expect((await read_lock_node(t, outerId))?.path).toBe("/outer2");
+		expect((await read_lock_node(t, deepId))?.path).toBe("/outer2/inner/deep");
+		expect(await read_lock_node(t, deepId)).toMatchObject({ writePolicy: { mode: "read_only" } });
 
-		// A folder whose subtree holds no lock still renames while the sibling lock exists.
 		const renamedSibling = await asUser.mutation(api.files_nodes.rename_node, {
 			membershipId: db.membershipId,
 			nodeId: siblingId,
 			path: "sibling2",
 		});
 		expect(renamedSibling._nay).toBeUndefined();
-		expect((await read_lock_node(t, siblingId))?.path).toBe("/outer/sibling2");
+		expect((await read_lock_node(t, siblingId))?.path).toBe("/outer2/sibling2");
 	});
 
-	test("a locked archived descendant also blocks renaming the folder", async () => {
+	test("a writable folder can be renamed while an archived descendant stays locked", async () => {
 		const t = test_convex();
 		const { db, asUser, outerId, frozenId } = await seed_read_only_lock_tree(t);
 		await set_read_only_or_throw(asUser, db.membershipId, frozenId);
 
-		const refused = await asUser.mutation(api.files_nodes.rename_node, {
+		const renamed = await asUser.mutation(api.files_nodes.rename_node, {
 			membershipId: db.membershipId,
 			nodeId: outerId,
 			path: "outer3",
 		});
-		expect(refused._nay?.name).toBe("read_only");
-		expect((await read_lock_node(t, outerId))?.path).toBe("/outer");
+		expect(renamed._nay).toBeUndefined();
+		expect((await read_lock_node(t, outerId))?.path).toBe("/outer3");
 		const frozen = await read_lock_node(t, frozenId);
-		expect(frozen?.path).toBe("/outer/frozen");
+		expect(frozen?.path).toBe("/outer3/frozen");
 		expect(frozen?.archiveOperationId).toBeDefined();
+		expect(frozen).toMatchObject({ writePolicy: { mode: "read_only" } });
 	});
 
 	test("a locked archived tree with the same path does not block renaming the new active tree", async () => {
@@ -18822,21 +19066,20 @@ describe("files_nodes.rename_node read-only gates", () => {
 		expect(sibling?.path).toBe("/outer/sibling");
 	});
 
-	test("a refused rename leaves no partially created intermediate folder", async () => {
+	test("a writable folder can be renamed into a new parent while a descendant stays locked", async () => {
 		const t = test_convex();
 		const { db, asUser, outerId, innerId, deepId } = await seed_read_only_lock_tree(t);
 		await set_read_only_or_throw(asUser, db.membershipId, deepId);
 
-		// The path needs a new `made` folder under `/outer`.
-		// Check the locked descendant before creating that folder.
-		const refused = await asUser.mutation(api.files_nodes.rename_node, {
+		const renamed = await asUser.mutation(api.files_nodes.rename_node, {
 			membershipId: db.membershipId,
 			nodeId: innerId,
 			path: "made/inner2",
 		});
-		expect(refused._nay?.name).toBe("read_only");
-		expect(await read_active_child(t, db, outerId, "made")).toBeNull();
-		expect((await read_lock_node(t, innerId))?.path).toBe("/outer/inner");
+		expect(renamed._nay).toBeUndefined();
+		expect(await read_active_child(t, db, outerId, "made")).not.toBeNull();
+		expect((await read_lock_node(t, innerId))?.path).toBe("/outer/made/inner2");
+		expect((await read_lock_node(t, deepId))?.path).toBe("/outer/made/inner2/deep");
 	});
 });
 
@@ -18876,21 +19119,21 @@ describe("files_nodes.move_nodes read-only gates", () => {
 		expect(sibling?.path).toBe("/outer/sibling");
 	});
 
-	test("a locked descendant blocks moving its ancestor folder", async () => {
+	test("a writable ancestor folder can be moved while a descendant stays locked", async () => {
 		const t = test_convex();
 		const { db, asUser, deepId, innerId, siblingId } = await seed_read_only_lock_tree(t);
 		await set_read_only_or_throw(asUser, db.membershipId, deepId);
 
-		const refused = await asUser.mutation(api.files_nodes.move_nodes, {
+		const moved = await asUser.mutation(api.files_nodes.move_nodes, {
 			membershipId: db.membershipId,
 			itemIds: [innerId],
 			targetParentId: files_ROOT_ID,
 		});
-		expect(refused._nay?.name).toBe("read_only");
-		expect((await read_lock_node(t, innerId))?.path).toBe("/outer/inner");
-		expect((await read_lock_node(t, deepId))?.path).toBe("/outer/inner/deep");
+		expect(moved._nay).toBeUndefined();
+		expect((await read_lock_node(t, innerId))?.path).toBe("/inner");
+		expect((await read_lock_node(t, deepId))?.path).toBe("/inner/deep");
+		expect(await read_lock_node(t, deepId)).toMatchObject({ writePolicy: { mode: "read_only" } });
 
-		// A folder with no locked subtree member still moves while the other lock exists.
 		const movedSibling = await asUser.mutation(api.files_nodes.move_nodes, {
 			membershipId: db.membershipId,
 			itemIds: [siblingId],
@@ -18898,10 +19141,10 @@ describe("files_nodes.move_nodes read-only gates", () => {
 		});
 		expect(movedSibling._nay).toBeUndefined();
 		expect((await read_lock_node(t, siblingId))?.path).toBe("/sibling");
-		expect(await read_lock_node(t, siblingId)).toMatchObject({ writePolicy: null, writePolicyScopeNodeId: null });
+		expect(await read_lock_node(t, siblingId)).toMatchObject({ writePolicy: null});
 	});
 
-	test("a locked archived descendant blocks moving the folder", async () => {
+	test("a writable folder can be moved while an archived descendant stays locked", async () => {
 		const t = test_convex();
 		const { db, asUser, innerId, deepId } = await seed_read_only_lock_tree(t);
 
@@ -18912,16 +19155,17 @@ describe("files_nodes.move_nodes read-only gates", () => {
 		expect(archived._nay).toBeUndefined();
 		await set_read_only_or_throw(asUser, db.membershipId, deepId);
 
-		const refused = await asUser.mutation(api.files_nodes.move_nodes, {
+		const moved = await asUser.mutation(api.files_nodes.move_nodes, {
 			membershipId: db.membershipId,
 			itemIds: [innerId],
 			targetParentId: files_ROOT_ID,
 		});
-		expect(refused._nay?.name).toBe("read_only");
-		expect((await read_lock_node(t, innerId))?.path).toBe("/outer/inner");
+		expect(moved._nay).toBeUndefined();
+		expect((await read_lock_node(t, innerId))?.path).toBe("/inner");
 		const deep = await read_lock_node(t, deepId);
-		expect(deep?.path).toBe("/outer/inner/deep");
+		expect(deep?.path).toBe("/inner/deep");
 		expect(deep?.archiveOperationId).toBeDefined();
+		expect(deep).toMatchObject({ writePolicy: { mode: "read_only" } });
 	});
 
 	test("a locked archived tree with the same path does not block moving the new active tree", async () => {
@@ -19142,7 +19386,7 @@ describe("files_nodes.unarchive_nodes read-only gates", () => {
 		const firstChild = await read_lock_node(t, archivedChildId);
 		expect(firstRoot?.archiveOperationId).toBeDefined();
 		expect(firstChild?.archiveOperationId).toBeDefined();
-		expect(firstChild?.writePolicyScopeNodeId).toBe(archivedChildId);
+		expect(firstChild).toMatchObject({ writePolicy: { mode: "read_only" } });
 	});
 
 	test("a locked node anywhere in the restored subtree blocks the restore until unlock", async () => {
@@ -19360,7 +19604,7 @@ describe("files_nodes.yjs_push_update read-only gates", () => {
 		expect(pushed._yay.newSequence).toBe(1);
 	});
 
-	test("an inherited lock from a parent folder refuses the push", async () => {
+	test("a parent lock does not refuse a push on a writable child", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 		await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
@@ -19387,16 +19631,17 @@ describe("files_nodes.yjs_push_update read-only gates", () => {
 		}
 		await set_read_only_or_throw(asUser, db.membershipId, folder._yay.nodeId);
 
-		const before = await read_yjs_write_state(t, db, createdFile._yay.nodeId);
-		const refused = await asUser.mutation(api.files_nodes.yjs_push_update, {
+		const pushed = await asUser.mutation(api.files_nodes.yjs_push_update, {
 			membershipId: db.membershipId,
 			nodeId: createdFile._yay.nodeId,
 			expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, createdFile._yay.nodeId)).yjsLastSequenceId,
 			update: files_u8_to_array_buffer(new Uint8Array([0, 0])),
-			sessionId: "read-only-push-inherited",
+			sessionId: "read-only-push-parent",
 		});
-		expect(refused._nay?.name).toBe("read_only");
-		expect(await read_yjs_write_state(t, db, createdFile._yay.nodeId)).toEqual(before);
+		if (pushed._nay) {
+			throw new Error(pushed._nay.message);
+		}
+		expect(pushed._yay.newSequence).toBe(1);
 	});
 
 	test("a push succeeds after a lock is removed", async () => {
@@ -19655,8 +19900,8 @@ describe("files_nodes.create_upload_nodes read-only gates", () => {
 	});
 });
 
-describe("files_nodes.discard_failed_upload_node read-only gates", () => {
-	test("a direct lock keeps the failed placeholder and unlock lets the creator discard it", async () => {
+describe("files_nodes.discard_failed_upload_node locks", () => {
+	test("cancel removes the failed placeholder even while it is locked", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 		const asUser = t.withIdentity({
@@ -19678,19 +19923,8 @@ describe("files_nodes.discard_failed_upload_node read-only gates", () => {
 		}
 		await set_read_only_or_throw(asUser, db.membershipId, upload._yay.nodeId);
 
-		const refused = await asUser.mutation(api.files_nodes.discard_failed_upload_node, {
-			membershipId: db.membershipId,
-			nodeId: upload._yay.nodeId,
-		});
-		expect(refused._nay?.name).toBe("read_only");
-		const kept = await t.run(async (ctx) => ({
-			node: await ctx.db.get("files_nodes", upload._yay.nodeId),
-			asset: await ctx.db.get("files_r2_assets", upload._yay.assetId),
-		}));
-		expect(kept.node).not.toBeNull();
-		expect(kept.asset).not.toBeNull();
-
-		await set_writable_or_throw(asUser, db.membershipId, upload._yay.nodeId);
+		// Cancel is cleanup of an upload that never landed, not a delete. The lock stops
+		// new writes, so it does not keep an empty placeholder alive.
 		const discarded = await asUser.mutation(api.files_nodes.discard_failed_upload_node, {
 			membershipId: db.membershipId,
 			nodeId: upload._yay.nodeId,
@@ -19699,9 +19933,15 @@ describe("files_nodes.discard_failed_upload_node read-only gates", () => {
 			throw new Error(discarded._nay.message);
 		}
 		expect(discarded._yay.removed).toBe(true);
+		const gone = await t.run(async (ctx) => ({
+			node: await ctx.db.get("files_nodes", upload._yay.nodeId),
+			asset: await ctx.db.get("files_r2_assets", upload._yay.assetId),
+		}));
+		expect(gone.node).toBeNull();
+		expect(gone.asset).toBeNull();
 	});
 
-	test("an inherited lock keeps the failed placeholder", async () => {
+	test("a parent lock does not keep an unprotected failed placeholder", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 		const asUser = t.withIdentity({
@@ -19729,18 +19969,14 @@ describe("files_nodes.discard_failed_upload_node read-only gates", () => {
 			throw new Error(upload._nay.message);
 		}
 		await set_read_only_or_throw(asUser, db.membershipId, folder._yay.nodeId);
-		const refused = await asUser.mutation(api.files_nodes.discard_failed_upload_node, {
+		const discarded = await asUser.mutation(api.files_nodes.discard_failed_upload_node, {
 			membershipId: db.membershipId,
 			nodeId: upload._yay.nodeId,
 		});
-		expect(refused._nay?.name).toBe("read_only");
-		// Discard deletes the node, so the inherited lock keeps both docs in place.
-		const kept = await t.run(async (ctx) => ({
-			node: await ctx.db.get("files_nodes", upload._yay.nodeId),
-			asset: await ctx.db.get("files_r2_assets", upload._yay.assetId),
-		}));
-		expect(kept.node).not.toBeNull();
-		expect(kept.asset).not.toBeNull();
+		if (discarded._nay) {
+			throw new Error(discarded._nay.message);
+		}
+		expect(discarded._yay.removed).toBe(true);
 	});
 });
 
@@ -20013,7 +20249,7 @@ describe("files_nodes public read-only view", () => {
 		};
 	}
 
-	test("list_tree reports inherited state without naming a lock root the member cannot read", async () => {
+	test("list_tree reports no local lock on children of a hidden locked parent", async () => {
 		const t = test_convex();
 		const f = await seed_hidden_lock_root(t);
 
@@ -20024,15 +20260,13 @@ describe("files_nodes public read-only view", () => {
 		// Only the granted scope is listed; the outer lock root itself never appears.
 		expect(memberTree.map((node) => node.path).sort()).toEqual(["/outer/inner", "/outer/inner/secret.md"]);
 		for (const node of memberTree) {
-			expect(node.writePolicyState).toBe("inherited");
-			expect(node.writePolicySourceNodeId).toBeUndefined();
-			expect(node.writePolicySourcePath).toBeUndefined();
-			// The raw pointer must not leave the backend: it would name the hidden outer folder.
+			// Children keep no rule of their own. The hidden outer lock does not apply here.
+			expect(node.writePolicyState).toBe("none");
+			// Raw lock fields stay on the backend. Public views only expose writePolicyState.
 			expect("writePolicyScopeNodeId" in node).toBe(false);
 			expect("writePolicy" in node).toBe(false);
 		}
 
-		// The owner can read the lock root, so each returned node may name it.
 		const { page: ownerTree } = await f.asOwner.query(api.files_nodes.list_tree, {
 			membershipId: f.db.membershipId,
 			paginationOpts: { numItems: 500, cursor: null },
@@ -20040,18 +20274,14 @@ describe("files_nodes public read-only view", () => {
 		const outerRow = ownerTree.find((node) => node._id === f.outerId);
 		const innerRow = ownerTree.find((node) => node._id === f.innerId);
 		expect(outerRow).toMatchObject({
-			writePolicyState: "self",
-			writePolicySourceNodeId: f.outerId,
-			writePolicySourcePath: "/outer",
+			writePolicyState: "read_only",
 		});
 		expect(innerRow).toMatchObject({
-			writePolicyState: "inherited",
-			writePolicySourceNodeId: f.outerId,
-			writePolicySourcePath: "/outer",
+			writePolicyState: "none",
 		});
 	});
 
-	test("list_tree keeps paging past a hidden node and checks lock sources from another page", async () => {
+	test("list_tree keeps paging past a hidden node", async () => {
 		const t = test_convex();
 		const f = await seed_hidden_lock_root(t);
 		const hiddenPage = await f.asMember.query(api.files_nodes.list_tree, {
@@ -20065,9 +20295,7 @@ describe("files_nodes public read-only view", () => {
 			paginationOpts: { numItems: 1, cursor: hiddenPage.continueCursor },
 		});
 		expect(memberPage.page).toHaveLength(1);
-		expect(memberPage.page[0]).toMatchObject({ _id: f.innerId, writePolicyState: "inherited" });
-		expect(memberPage.page[0]).not.toHaveProperty("writePolicySourceNodeId");
-		expect(memberPage.page[0]).not.toHaveProperty("writePolicySourcePath");
+		expect(memberPage.page[0]).toMatchObject({ _id: f.innerId, writePolicyState: "none" });
 
 		const sourcePage = await f.asOwner.query(api.files_nodes.list_tree, {
 			membershipId: f.db.membershipId,
@@ -20080,13 +20308,11 @@ describe("files_nodes public read-only view", () => {
 		expect(ownerPage.page).toHaveLength(1);
 		expect(ownerPage.page[0]).toMatchObject({
 			_id: f.innerId,
-			writePolicyState: "inherited",
-			writePolicySourceNodeId: f.outerId,
-			writePolicySourcePath: "/outer",
+			writePolicyState: "none",
 		});
 	});
 
-	test("get_file_node_for_membership omits the source for a hidden lock root and names it for the owner", async () => {
+	test("get_file_node_for_membership reports no lock on a child of a hidden locked parent", async () => {
 		const t = test_convex();
 		const f = await seed_hidden_lock_root(t);
 
@@ -20094,9 +20320,7 @@ describe("files_nodes public read-only view", () => {
 			membershipId: f.memberMembershipId,
 			fileNodeId: f.fileId,
 		});
-		expect(memberView).toMatchObject({ writePolicyState: "inherited" });
-		expect(memberView?.writePolicySourceNodeId).toBeUndefined();
-		expect(memberView?.writePolicySourcePath).toBeUndefined();
+		expect(memberView).toMatchObject({ writePolicyState: "none" });
 		expect(memberView).not.toHaveProperty("writePolicyScopeNodeId");
 		expect(memberView).not.toHaveProperty("writePolicy");
 
@@ -20105,20 +20329,15 @@ describe("files_nodes public read-only view", () => {
 			fileNodeId: f.fileId,
 		});
 		expect(ownerView).toMatchObject({
-			writePolicyState: "inherited",
-			writePolicySourceNodeId: f.outerId,
-			writePolicySourcePath: "/outer",
+			writePolicyState: "none",
 		});
 
-		// A self-locked node names itself as the source.
 		const outerView = await f.asOwner.query(api.files_nodes.get_file_node_for_membership, {
 			membershipId: f.db.membershipId,
 			fileNodeId: f.outerId,
 		});
 		expect(outerView).toMatchObject({
-			writePolicyState: "self",
-			writePolicySourceNodeId: f.outerId,
-			writePolicySourcePath: "/outer",
+			writePolicyState: "read_only",
 		});
 	});
 
@@ -20161,7 +20380,7 @@ describe("files_nodes public read-only view", () => {
 			membershipId: db.membershipId,
 			fileNodeId: nodeId,
 		});
-		expect(view).toMatchObject({ writePolicyState: "self" });
+		expect(view).toMatchObject({ writePolicyState: "read_only" });
 		expect(view !== null && "writePolicy" in view).toBe(false);
 		expect(
 			await asUser.query(api.files_metadata.get_entries, {
@@ -20193,8 +20412,8 @@ describe("files_nodes public read-only view", () => {
 			fileNodeId: folder._yay.nodeId,
 		});
 		expect(view).toMatchObject({ writePolicyState: "none" });
-		expect(view?.writePolicySourceNodeId).toBeUndefined();
-		expect(view?.writePolicySourcePath).toBeUndefined();
+		expect(view).not.toHaveProperty("writePolicy");
+		expect(view).not.toHaveProperty("writePolicyScopeNodeId");
 	});
 });
 
@@ -20383,15 +20602,15 @@ describe("member controls on plugin-labeled nodes", () => {
 				(await f.asOwner.mutation(api.files_nodes.set_node_write_policy, { ...args, writePolicy }))._nay,
 			).toBeUndefined();
 		}
-		expect(await read_lock_node(t, f.folderId)).toMatchObject({ writePolicy, writePolicyScopeNodeId: f.folderId });
+		expect(await read_lock_node(t, f.folderId)).toMatchObject({ writePolicy});
 		for (const nodeId of [f.childId, f.leafId]) {
-			expect(await read_lock_node(t, nodeId)).toMatchObject({ writePolicy: null, writePolicyScopeNodeId: f.folderId });
+			expect(await read_lock_node(t, nodeId)).toMatchObject({ writePolicy: null});
 		}
 		expect(
 			(await f.asOwner.mutation(api.files_nodes.set_node_write_policy, { ...args, writePolicy: null }))._nay,
 		).toBeUndefined();
 		for (const nodeId of [f.folderId, f.childId, f.leafId]) {
-			expect(await read_lock_node(t, nodeId)).toMatchObject({ writePolicy: null, writePolicyScopeNodeId: null });
+			expect(await read_lock_node(t, nodeId)).toMatchObject({ writePolicy: null});
 		}
 		expect(
 			await f.asOwner.query(api.files_metadata.get_entries, {
@@ -20404,7 +20623,7 @@ describe("member controls on plugin-labeled nodes", () => {
 		]);
 	});
 
-	test("removing a local writer inherits the outer writer", async () => {
+	test("removing a local writer leaves the child unlocked", async () => {
 		const t = test_convex();
 		const f = await seed_labeled_folders(t);
 		const outerPolicy = { mode: "writer", writer: { kind: "user", userId: f.db.userId } } as const;
@@ -20424,14 +20643,13 @@ describe("member controls on plugin-labeled nodes", () => {
 		).toBeUndefined();
 		expect(await read_lock_node(t, f.childId)).toMatchObject({
 			writePolicy: innerPolicy,
-			writePolicyScopeNodeId: f.childId,
 		});
 		expect(
 			(await f.asOwner.mutation(api.files_nodes.set_node_write_policy, { ...args, writePolicy: null }))._nay,
 		).toBeUndefined();
 		expect(await read_lock_node(t, f.folderId)).toMatchObject({ writePolicy: outerPolicy });
 		for (const nodeId of [f.childId, f.leafId]) {
-			expect(await read_lock_node(t, nodeId)).toMatchObject({ writePolicy: null, writePolicyScopeNodeId: f.folderId });
+			expect(await read_lock_node(t, nodeId)).toMatchObject({ writePolicy: null});
 		}
 	});
 
@@ -20456,9 +20674,9 @@ describe("member controls on plugin-labeled nodes", () => {
 		expect(
 			(await f.asOwner.mutation(api.files_nodes.set_node_write_policy, { ...args, writePolicy: null }))._nay,
 		).toBeUndefined();
-		expect(await read_lock_node(t, f.folderId)).toMatchObject({ writePolicy: null, writePolicyScopeNodeId: null });
-		expect(await read_lock_node(t, f.childId)).toMatchObject({ writePolicy, writePolicyScopeNodeId: f.childId });
-		expect(await read_lock_node(t, f.leafId)).toMatchObject({ writePolicy: null, writePolicyScopeNodeId: f.childId });
+		expect(await read_lock_node(t, f.folderId)).toMatchObject({ writePolicy: null});
+		expect(await read_lock_node(t, f.childId)).toMatchObject({ writePolicy});
+		expect(await read_lock_node(t, f.leafId)).toMatchObject({ writePolicy: null});
 	});
 });
 

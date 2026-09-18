@@ -824,44 +824,51 @@ async function db_is_within_write_scope(
 	return false;
 }
 
+function db_writer_matches_policy(args: {
+	policy: NonNullable<Doc<"files_nodes">["writePolicy"]>;
+	writer: files_nodes_WriteContext["writer"];
+}) {
+	return args.policy.mode === "writer"
+		? args.policy.writer.kind === "user"
+			? args.writer.kind === "user" && args.policy.writer.userId === args.writer.userId
+			: args.writer.kind === "service_account" && args.policy.writer.serviceAccountId === args.writer.serviceAccountId
+		: false;
+}
+
 async function db_get_blocking_write_policy(
 	ctx: QueryCtx | MutationCtx,
 	args: { target: WriteTarget; writeContext: files_nodes_WriteContext },
 ) {
-	const node = args.target.kind === "node" ? args.target.node : args.target.parentNode;
-	let scopeNodeId = node?.writePolicyScopeNodeId ?? null;
-
-	while (scopeNodeId !== null) {
-		const scopeNode = await ctx.db.get("files_nodes", scopeNodeId);
-		if (!scopeNode) {
-			const message = "Write policy scope is missing";
-			console.error(message, { scopeNodeId });
-			throw should_never_happen(message, { scopeNodeId });
+	// Each node's protection is local. A parent rule never blocks a child on its own; only a real
+	// entry change checks the destination folder, and only the named node checks itself.
+	if (args.target.kind === "node") {
+		const policy = args.target.node.writePolicy;
+		if (policy === null) {
+			return null;
 		}
-
-		const policy = scopeNode.writePolicy;
-		const writer = args.writeContext.writer;
-		const writerMatches =
-			policy?.mode === "writer" &&
-			(policy.writer.kind === "user"
-				? writer.kind === "user" && policy.writer.userId === writer.userId
-				: writer.kind === "service_account" && policy.writer.serviceAccountId === writer.serviceAccountId);
-
-		// A create's parent is an ancestor, even when its rule is local to that parent.
-		const policyInReach =
-			args.writeContext.policyReach === "ancestors" ||
-			(args.writeContext.policyReach === "direct" &&
-				args.target.kind === "node" &&
-				scopeNode._id === args.target.node._id);
-		if (!writerMatches || !policyInReach) {
-			return scopeNode;
+		if (policy.mode === "read_only") {
+			return args.target.node;
 		}
-
-		const parent = scopeNode.parentId === files_ROOT_ID ? null : await ctx.db.get("files_nodes", scopeNode.parentId);
-		scopeNodeId = parent?.writePolicyScopeNodeId ?? null;
+		return db_writer_matches_policy({ policy, writer: args.writeContext.writer }) ? null : args.target.node;
 	}
 
-	return null;
+	// A create checks the destination folder's own rule. A matching writer rule still refuses a
+	// direct-only service: the parent rule is not the new child's own rule.
+	const parent = args.target.parentNode;
+	if (!parent) {
+		return null;
+	}
+	const policy = parent.writePolicy;
+	if (policy === null) {
+		return null;
+	}
+	if (policy.mode === "read_only") {
+		return parent;
+	}
+	return db_writer_matches_policy({ policy, writer: args.writeContext.writer }) &&
+		args.writeContext.policyReach === "ancestors"
+		? null
+		: parent;
 }
 
 /**
@@ -888,10 +895,10 @@ export async function files_nodes_db_require_writable(
 }
 
 /**
- * Get the nearest policy from the parent folder.
- * The parent stores that pointer, so one database read is enough.
+ * Get the starting protection for a brand-new child of `parentId`.
+ * The default is copied once. Later changes to the folder do not touch existing children.
  */
-export async function files_nodes_db_resolve_parent_write_policy_scope(
+export async function files_nodes_db_resolve_parent_new_child_policy(
 	ctx: QueryCtx | MutationCtx,
 	args: {
 		parentId: Doc<"files_nodes">["parentId"];
@@ -902,56 +909,38 @@ export async function files_nodes_db_resolve_parent_write_policy_scope(
 	}
 
 	const parent = await ctx.db.get("files_nodes", args.parentId);
-	return parent?.writePolicyScopeNodeId ?? null;
+	return parent?.newChildWritePolicy ?? null;
 }
 
 /**
- * Update the inherited policy pointer on every descendant, including archived descendants.
- * Stop at a descendant with its own local policy. Its subtree keeps that pointer.
- *
- * Convex saves all changes together. If the folder is too large, it saves no changes.
+ * Allow a copy run into the parent it produced while the parent's current policy still equals
+ * the value the run wrote there. A null or changed stored value keeps the live refusal.
  */
-export async function files_nodes_db_cascade_write_policy_scope(
-	ctx: MutationCtx,
+export async function files_nodes_db_require_user_writable_or_matching_policy(
+	ctx: QueryCtx | MutationCtx,
 	args: {
-		organizationId: Doc<"files_nodes">["organizationId"];
-		workspaceId: Doc<"files_nodes">["workspaceId"];
-		parentId: Id<"files_nodes">;
-		scopeNodeId: Id<"files_nodes"> | null;
+		node: Doc<"files_nodes">;
+		userId: Id<"users">;
+		runWrittenWritePolicy?: Doc<"files_nodes">["writePolicy"];
 	},
 ) {
-	const stack: Array<Id<"files_nodes">> = [args.parentId];
-
-	while (stack.length > 0) {
-		const parentId = stack.pop();
-		if (parentId === undefined) {
-			continue;
-		}
-
-		const children = await ctx.db
-			.query("files_nodes")
-			.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
-				q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("parentId", parentId),
-			)
-			.collect();
-
-		await Promise.all(
-			children.map(async (child) => {
-				if (child.writePolicy !== null) {
-					return;
-				}
-
-				if (child.writePolicyScopeNodeId !== args.scopeNodeId) {
-					await ctx.db.patch("files_nodes", child._id, {
-						writePolicyScopeNodeId: args.scopeNodeId,
-						writePolicy: null,
-					});
-				}
-
-				stack.push(child._id);
-			}),
-		);
+	const writable = await files_nodes_db_require_user_writable(ctx, {
+		node: args.node,
+		userId: args.userId,
+	});
+	if (!writable._nay) {
+		return writable;
 	}
+
+	if (
+		writable._nay.name !== "read_only" ||
+		args.runWrittenWritePolicy == null ||
+		JSON.stringify(args.node.writePolicy) !== JSON.stringify(args.runWrittenWritePolicy)
+	) {
+		return writable;
+	}
+
+	return Result({ _yay: null });
 }
 
 /**
@@ -1151,8 +1140,10 @@ export async function files_nodes_db_require_swept_nodes_writable(
 }
 
 /**
- * Refuse a folder move or rename when any descendant is read-only.
- * Include archived descendants because their paths also change.
+ * Refuse removing a folder when any removed descendant is read-only.
+ * Use only for delete, archive, and replace paths. Rename and move never call this:
+ * protected descendants travel along and keep their rules.
+ * Include archived descendants because hiding them changes them too.
  */
 export async function files_nodes_db_require_subtree_writable(
 	ctx: MutationCtx,
@@ -1320,6 +1311,68 @@ async function db_get_visible_policy_writer(
 }
 
 /**
+ * Check that a copied protection rule still names somebody who can edit the destination.
+ * Copies keep access grants separate, so a writer rule must name an active destination
+ * member or account. Refuse clearly instead of silently clearing the rule.
+ */
+export async function files_nodes_db_require_copiable_write_policy(
+	ctx: QueryCtx | MutationCtx,
+	args: {
+		organizationId: Doc<"files_nodes">["organizationId"];
+		workspaceId: Doc<"files_nodes">["workspaceId"];
+		writePolicy: Doc<"files_nodes">["writePolicy"];
+	},
+) {
+	if (args.writePolicy?.mode === "writer") {
+		const visible = await db_get_visible_policy_writer(ctx, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			writer: args.writePolicy.writer,
+		});
+		if (!visible) {
+			return Result({
+				_nay: {
+					message:
+						"The copied protection names a writer who cannot edit this destination. Change the source rule or pick a writer with access first.",
+				},
+			});
+		}
+	}
+
+	return Result({ _yay: null });
+}
+
+/**
+ * Merge freshly read source protection into a copy's `copiedFrom` record.
+ * The first write wins: a retry reuses its target and never applies later source rules
+ * over what the first attempt captured.
+ */
+export function files_nodes_db_copied_from_policy_fields(args: {
+	prev?: Pick<
+		NonNullable<Doc<"files_pending_updates">["copiedFrom"]>,
+		"sourceWritePolicy" | "sourceNewChildWritePolicy"
+	> | null;
+	sourceWritePolicy?: Doc<"files_nodes">["writePolicy"];
+	sourceNewChildWritePolicy?: Doc<"files_nodes">["newChildWritePolicy"];
+}) {
+	if (args.prev?.sourceWritePolicy !== undefined) {
+		return {
+			sourceWritePolicy: args.prev.sourceWritePolicy,
+			...(args.prev.sourceNewChildWritePolicy === undefined
+				? {}
+				: { sourceNewChildWritePolicy: args.prev.sourceNewChildWritePolicy }),
+		};
+	}
+
+	return {
+		...(args.sourceWritePolicy === undefined ? {} : { sourceWritePolicy: args.sourceWritePolicy }),
+		...(args.sourceNewChildWritePolicy === undefined
+			? {}
+			: { sourceNewChildWritePolicy: args.sourceNewChildWritePolicy }),
+	};
+}
+
+/**
  * Validate all management before a create or a larger operation starts writing.
  */
 export async function files_nodes_db_require_write_policy_management(
@@ -1391,26 +1444,13 @@ async function db_set_write_policy(
 	ctx: MutationCtx,
 	args: { node: Doc<"files_nodes">; writePolicy: Doc<"files_nodes">["writePolicy"] },
 ) {
-	const scopeNodeId =
-		args.writePolicy === null
-			? await files_nodes_db_resolve_parent_write_policy_scope(ctx, { parentId: args.node.parentId })
-			: args.node._id;
-	if (
-		scopeNodeId === args.node.writePolicyScopeNodeId &&
-		JSON.stringify(args.writePolicy) === JSON.stringify(args.node.writePolicy)
-	) {
+	if (JSON.stringify(args.writePolicy) === JSON.stringify(args.node.writePolicy)) {
 		return;
 	}
 
+	// Local change only. Children keep their own rules.
 	await ctx.db.patch("files_nodes", args.node._id, {
 		writePolicy: args.writePolicy,
-		writePolicyScopeNodeId: scopeNodeId,
-	});
-	await files_nodes_db_cascade_write_policy_scope(ctx, {
-		organizationId: args.node.organizationId,
-		workspaceId: args.node.workspaceId,
-		parentId: args.node._id,
-		scopeNodeId,
 	});
 }
 
@@ -1446,7 +1486,7 @@ export async function files_nodes_db_get_write_policy_management_state(
 ) {
 	const { node, writeContext } = args;
 	const permissionArgs = { organizationId: node.organizationId, workspaceId: node.workspaceId, node, writeContext };
-	const [management, canWriteContent, blockingPolicy, parentScopeNodeId] = await Promise.all([
+	const [management, canWriteContent, blockingPolicy] = await Promise.all([
 		files_nodes_db_require_write_policy_management(ctx, {
 			...permissionArgs,
 			target: { kind: "node", node },
@@ -1454,28 +1494,18 @@ export async function files_nodes_db_get_write_policy_management_state(
 		}),
 		db_has_write_context_permission(ctx, { ...permissionArgs, permission: "content.write" }),
 		db_get_blocking_write_policy(ctx, { writeContext, target: { kind: "node", node } }),
-		files_nodes_db_resolve_parent_write_policy_scope(ctx, { parentId: node.parentId }),
 	]);
 	const inScope = await db_is_within_write_scope(ctx, { ...permissionArgs, target: { kind: "node", node } });
 
-	let inheritedSource: { nodeId: Id<"files_nodes">; path: string } | null = null;
-	if (parentScopeNodeId !== null) {
-		const source = await ctx.db.get("files_nodes", parentScopeNodeId);
-		if (
-			source &&
-			(await db_has_write_context_permission(ctx, { ...permissionArgs, node: source, permission: "content.read" }))
-		) {
-			inheritedSource = { nodeId: source._id, path: source.path };
-		}
-	}
-
-	const localPolicy =
-		node.writePolicy?.mode === "writer"
+	async function visible_policy(policy: Doc<"files_nodes">["writePolicy"] | Doc<"files_nodes">["newChildWritePolicy"]) {
+		return policy?.mode === "writer"
 			? {
 					mode: "writer" as const,
-					writer: await db_get_visible_policy_writer(ctx, { ...permissionArgs, writer: node.writePolicy.writer }),
+					writer: await db_get_visible_policy_writer(ctx, { ...permissionArgs, writer: policy.writer }),
 				}
-			: node.writePolicy;
+			: (policy ?? null);
+	}
+
 	const writeBlockedReason =
 		!canWriteContent || !inScope ? ("permission" as const) : blockingPolicy ? ("read_only" as const) : null;
 
@@ -1484,37 +1514,35 @@ export async function files_nodes_db_get_write_policy_management_state(
 		canManage: !management._nay,
 		canWrite: writeBlockedReason === null,
 		writeBlockedReason,
-		localPolicy,
-		hasInheritedPolicy: parentScopeNodeId !== null,
-		inheritedSource,
-		blockedByAncestor: blockingPolicy !== null && blockingPolicy._id !== node._id,
+		localPolicy: await visible_policy(node.writePolicy),
+		localDefault: node.kind === "folder" ? await visible_policy(node.newChildWritePolicy ?? null) : null,
 	};
 }
+
+const files_nodes_visible_policy_validator = v.union(
+	v.null(),
+	v.object({ mode: v.literal("read_only") }),
+	v.object({
+		mode: v.literal("writer"),
+		writer: v.union(
+			v.null(),
+			v.object({ kind: v.literal("user"), userId: v.id("users"), name: v.string() }),
+			v.object({
+				kind: v.literal("service_account"),
+				serviceAccountId: v.id("access_control_service_accounts"),
+				name: v.string(),
+			}),
+		),
+	}),
+);
 
 export const files_nodes_write_policy_management_state_validator = v.object({
 	nodeId: v.id("files_nodes"),
 	canManage: v.boolean(),
 	canWrite: v.boolean(),
 	writeBlockedReason: v.union(v.null(), v.literal("permission"), v.literal("read_only")),
-	localPolicy: v.union(
-		v.null(),
-		v.object({ mode: v.literal("read_only") }),
-		v.object({
-			mode: v.literal("writer"),
-			writer: v.union(
-				v.null(),
-				v.object({ kind: v.literal("user"), userId: v.id("users"), name: v.string() }),
-				v.object({
-					kind: v.literal("service_account"),
-					serviceAccountId: v.id("access_control_service_accounts"),
-					name: v.string(),
-				}),
-			),
-		}),
-	),
-	hasInheritedPolicy: v.boolean(),
-	inheritedSource: v.union(v.null(), v.object({ nodeId: v.id("files_nodes"), path: v.string() })),
-	blockedByAncestor: v.boolean(),
+	localPolicy: files_nodes_visible_policy_validator,
+	localDefault: v.union(v.null(), files_nodes_visible_policy_validator),
 });
 
 export const get_node_write_policy_management_state = query({
@@ -1593,6 +1621,194 @@ export const set_node_write_policy = mutation({
 				policyReach: "ancestors",
 			},
 		});
+	},
+});
+
+export async function files_nodes_db_set_new_child_write_policy(
+	ctx: MutationCtx,
+	args: {
+		node: Doc<"files_nodes">;
+		writeContext: files_nodes_WriteContext;
+		newChildWritePolicy: Doc<"files_nodes">["writePolicy"];
+	},
+) {
+	if (args.node.kind !== "folder") {
+		return Result({ _nay: { message: "Only folders have a new-item default." } });
+	}
+
+	const allowed = await files_nodes_db_require_write_policy_management(ctx, {
+		organizationId: args.node.organizationId,
+		workspaceId: args.node.workspaceId,
+		writeContext: args.writeContext,
+		target: { kind: "node", node: args.node },
+		writePolicy: args.newChildWritePolicy,
+	});
+	if (allowed._nay) {
+		return allowed;
+	}
+
+	if (JSON.stringify(args.node.newChildWritePolicy ?? null) === JSON.stringify(args.newChildWritePolicy)) {
+		return Result({ _yay: null });
+	}
+
+	// The default changes, but existing children keep their rules.
+	await ctx.db.patch("files_nodes", args.node._id, {
+		newChildWritePolicy: args.newChildWritePolicy,
+	});
+
+	return Result({ _yay: null });
+}
+
+export const set_node_new_child_write_policy = mutation({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		nodeId: v.id("files_nodes"),
+		newChildWritePolicy: doc(app_convex_schema, "files_nodes").fields.writePolicy,
+	},
+	returns: v_result({ _yay: v.null() }),
+	handler: async (ctx, args) => {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
+			return Result({ _nay: { message: "Unauthenticated" } });
+		}
+
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_tree_write", key: userAuth.id });
+		if (rateLimit) {
+			return Result({ _nay: { message: rateLimit.message } });
+		}
+
+		const authorized = await db_authorize_write_policy_management(ctx, {
+			userAuth,
+			membershipId: args.membershipId,
+			nodeId: args.nodeId,
+		});
+		if (authorized._nay) {
+			return authorized;
+		}
+
+		return await files_nodes_db_set_new_child_write_policy(ctx, {
+			node: authorized._yay.node,
+			newChildWritePolicy: args.newChildWritePolicy,
+			writeContext: {
+				writer: { kind: "user", userId: userAuth.id },
+				actorUserId: userAuth.id,
+				resourceScope: { kind: "workspace" },
+				policyReach: "ancestors",
+			},
+		});
+	},
+});
+
+/**
+ * How many active descendants one apply-to-contents call may rewrite. The call reads every
+ * affected node for its management check before writing anything, so the cap bounds both
+ * sides of the transaction. Raise it only after measuring a bigger run.
+ */
+const APPLY_WRITE_POLICY_TO_CONTENTS_MAX_NODES = 500;
+
+export const apply_write_policy_to_contents = mutation({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		nodeId: v.id("files_nodes"),
+		writePolicy: doc(app_convex_schema, "files_nodes").fields.writePolicy,
+	},
+	returns: v_result({ _yay: v.object({ updatedCount: v.number() }) }),
+	handler: async (ctx, args) => {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
+			return Result({ _nay: { message: "Unauthenticated" } });
+		}
+
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_tree_write", key: userAuth.id });
+		if (rateLimit) {
+			return Result({ _nay: { message: rateLimit.message } });
+		}
+
+		const authorized = await db_authorize_write_policy_management(ctx, {
+			userAuth,
+			membershipId: args.membershipId,
+			nodeId: args.nodeId,
+		});
+		if (authorized._nay) {
+			return authorized;
+		}
+		const { membership, node: folder } = authorized._yay;
+		if (folder.kind !== "folder") {
+			return Result({ _nay: { message: "Only folders have contents to update." } });
+		}
+
+		const writeContext: files_nodes_WriteContext = {
+			writer: { kind: "user", userId: userAuth.id },
+			actorUserId: userAuth.id,
+			resourceScope: { kind: "workspace" },
+			policyReach: "ancestors",
+		};
+
+		// The new rule itself needs one writer check, on the folder being confirmed.
+		const writerAllowed = await files_nodes_db_require_write_policy_management(ctx, {
+			organizationId: folder.organizationId,
+			workspaceId: folder.workspaceId,
+			writeContext,
+			target: { kind: "node", node: folder },
+			writePolicy: args.writePolicy,
+		});
+		if (writerAllowed._nay) {
+			return writerAllowed;
+		}
+
+		// Active descendants only, through the subtree range. Archived contents keep their rules.
+		// The folder itself keeps its own rule; only folder defaults stay untouched as well.
+		const prefix = folder.treePath;
+		const upper = path_tree_prefix_upper_bound(prefix);
+		const page = await ctx.db
+			.query("files_nodes")
+			.withIndex("by_organization_workspace_treePath", (q) =>
+				q
+					.eq("organizationId", membership.organizationId)
+					.eq("workspaceId", membership.workspaceId)
+					.gte("treePath", prefix)
+					.lt("treePath", upper),
+			)
+			.take(APPLY_WRITE_POLICY_TO_CONTENTS_MAX_NODES + 2);
+		const descendants = page.filter((node) => node._id !== folder._id && node.archiveOperationId === null);
+		if (
+			page.length > APPLY_WRITE_POLICY_TO_CONTENTS_MAX_NODES + 1 ||
+			descendants.length > APPLY_WRITE_POLICY_TO_CONTENTS_MAX_NODES
+		) {
+			return Result({
+				_nay: {
+					name: "too_large",
+					message: `This folder holds more than ${APPLY_WRITE_POLICY_TO_CONTENTS_MAX_NODES} items. Split it into smaller folders and try again.`,
+				},
+			});
+		}
+
+		// Every affected scope is checked before any rule is written.
+		for (const descendant of descendants) {
+			const managed = await files_nodes_db_require_write_policy_management(ctx, {
+				organizationId: folder.organizationId,
+				workspaceId: folder.workspaceId,
+				writeContext,
+				target: { kind: "node", node: descendant },
+				writePolicy: args.writePolicy,
+			});
+			if (managed._nay) {
+				return managed;
+			}
+		}
+
+		let updatedCount = 0;
+		for (const descendant of descendants) {
+			if (JSON.stringify(descendant.writePolicy) === JSON.stringify(args.writePolicy)) {
+				continue;
+			}
+			await ctx.db.patch("files_nodes", descendant._id, {
+				writePolicy: args.writePolicy,
+			});
+			updatedCount += 1;
+		}
+
+		return Result({ _yay: { updatedCount } });
 	},
 });
 
@@ -1737,8 +1953,8 @@ function node_insert_fields(args: {
 	assetId?: Id<"files_r2_assets">;
 	archiveOperationId?: Doc<"files_nodes">["archiveOperationId"];
 	restrictedScopeNodeId: Doc<"files_nodes">["restrictedScopeNodeId"];
-	writePolicyScopeNodeId: Doc<"files_nodes">["writePolicyScopeNodeId"];
 	writePolicy?: Doc<"files_nodes">["writePolicy"];
+	newChildWritePolicy?: Doc<"files_nodes">["newChildWritePolicy"];
 	now: number;
 }) {
 	return {
@@ -1764,8 +1980,8 @@ function node_insert_fields(args: {
 		contentFrontmatterTooLargeFieldCount: null,
 		contentFrontmatterTooLargeIndexDocumentCount: null,
 		restrictedScopeNodeId: args.restrictedScopeNodeId,
-		writePolicyScopeNodeId: args.writePolicyScopeNodeId,
 		writePolicy: args.writePolicy ?? null,
+		newChildWritePolicy: args.newChildWritePolicy ?? null,
 		archiveOperationId: args.archiveOperationId ?? null,
 		createdBy: args.userId,
 		updatedBy: args.userId,
@@ -1792,7 +2008,16 @@ async function db_insert_node(
 		 * the initial UNPROCESSABLE stats write so those callers do not double-write stats.
 		 */
 		expectsTextContent?: true;
+		/**
+		 * Omitted means copy the immediate parent's new-child default. An explicit value,
+		 * including null, is an override the caller already checked for management rights.
+		 * Copy operations pass the verified source settings through here instead.
+		 */
 		writePolicy?: Doc<"files_nodes">["writePolicy"];
+		/**
+		 * Omitted on a new folder means copy the parent default too. Files always store null.
+		 */
+		newChildWritePolicy?: Doc<"files_nodes">["newChildWritePolicy"];
 		now: number;
 	},
 ) {
@@ -1803,18 +2028,26 @@ async function db_insert_node(
 		parentId: args.parentId,
 	});
 
-	const writePolicyScopeNodeId = await files_nodes_db_resolve_parent_write_policy_scope(ctx, {
+	// Copying the default is an ordinary creation step. It needs no policy-management right.
+	const parentDefault = await files_nodes_db_resolve_parent_new_child_policy(ctx, {
 		parentId: args.parentId,
 	});
 
 	const nodeId = await ctx.db.insert(
 		"files_nodes",
-		node_insert_fields({ ...args, restrictedScopeNodeId, writePolicyScopeNodeId }),
+		node_insert_fields({
+			...args,
+			restrictedScopeNodeId,
+			writePolicy: args.writePolicy !== undefined ? args.writePolicy : parentDefault,
+			newChildWritePolicy:
+				args.kind === "folder"
+					? args.newChildWritePolicy !== undefined
+						? args.newChildWritePolicy
+						: parentDefault
+					: null,
+		}),
 	);
 
-	if (args.writePolicy != null) {
-		await ctx.db.patch("files_nodes", nodeId, { writePolicyScopeNodeId: nodeId });
-	}
 	if (args.kind === "folder") {
 		return Result({ _yay: nodeId });
 	}
@@ -1883,9 +2116,27 @@ export async function files_nodes_db_create_node_recursively_at_path(
 		 */
 		writeContext?: files_nodes_WriteContext;
 		/**
-		 * Initial local policy on the leaf. It requires manage permission before any insert.
+		 * Initial local policy on the leaf. It requires manage permission before any insert,
+		 * unless `trustPolicySource` marks it as verified source settings from a copy.
 		 */
 		writePolicy?: Doc<"files_nodes">["writePolicy"];
+		/**
+		 * Initial default on a new leaf folder. Same manage rule as `writePolicy`, unless
+		 * `trustPolicySource` marks it as verified source settings from a copy.
+		 */
+		newChildWritePolicy?: Doc<"files_nodes">["newChildWritePolicy"];
+		/**
+		 * Set only by server copy paths that read both settings from the source doc itself.
+		 * It skips the manage check but keeps the destination writer check. Never set this
+		 * from client input.
+		 */
+		trustPolicySource?: true;
+		/**
+		 * Set only by a copy run that produced `parentId` itself. The create may proceed while
+		 * the parent's current policy still equals this value, even when the value is a lock.
+		 * Never set this from client input.
+		 */
+		expectedParentWritePolicy?: Doc<"files_nodes">["writePolicy"];
 	},
 ) {
 	let parentNode = args.parentId === files_ROOT_ID ? null : await ctx.db.get("files_nodes", args.parentId);
@@ -1988,20 +2239,50 @@ export async function files_nodes_db_create_node_recursively_at_path(
 			writeContext,
 			target,
 		});
-		if (writable._nay) {
+		// A copy run may create inside the parent it produced while that parent's current
+		// policy still equals the value the run wrote. Any other refusal stands.
+		if (
+			writable._nay &&
+			(writable._nay.name !== "read_only" ||
+				args.expectedParentWritePolicy == null ||
+				JSON.stringify(parentNode?.writePolicy ?? null) !== JSON.stringify(args.expectedParentWritePolicy))
+		) {
 			return writable;
 		}
 
-		if (args.writePolicy !== undefined) {
-			const managed = await files_nodes_db_require_write_policy_management(ctx, {
-				organizationId: args.organizationId,
-				workspaceId: args.workspaceId,
-				writeContext,
-				target,
-				writePolicy: args.writePolicy,
-			});
-			if (managed._nay) {
-				return managed;
+		if (args.writePolicy !== undefined || args.newChildWritePolicy !== undefined) {
+			if (args.trustPolicySource) {
+				for (const policy of [args.writePolicy, args.newChildWritePolicy]) {
+					if (policy === undefined) {
+						continue;
+					}
+					const copiable = await files_nodes_db_require_copiable_write_policy(ctx, {
+						organizationId: args.organizationId,
+						workspaceId: args.workspaceId,
+						writePolicy: policy,
+					});
+					if (copiable._nay) {
+						return copiable;
+					}
+				}
+			} else {
+				// Check every explicit override. A default-only create must not skip
+				// the writer check by falling back to writePolicy: null.
+				for (const policy of [args.writePolicy, args.newChildWritePolicy]) {
+					if (policy === undefined) {
+						continue;
+					}
+					const managed = await files_nodes_db_require_write_policy_management(ctx, {
+						organizationId: args.organizationId,
+						workspaceId: args.workspaceId,
+						writeContext,
+						target,
+						writePolicy: policy,
+					});
+					if (managed._nay) {
+						return managed;
+					}
+				}
 			}
 		}
 	}
@@ -2024,6 +2305,7 @@ export async function files_nodes_db_create_node_recursively_at_path(
 			archiveOperationId: isLeaf ? args.archiveOperationId : undefined,
 			expectsTextContent: isLeaf ? args.expectsTextContent : undefined,
 			writePolicy: isLeaf ? args.writePolicy : undefined,
+			newChildWritePolicy: isLeaf ? args.newChildWritePolicy : undefined,
 			now: args.now,
 		});
 		if (nodeIdResult._nay) {
@@ -3128,7 +3410,7 @@ export const create_upload_node = mutation({
 		}
 
 		// Keep the URL end time so cleanup can remove a late PUT.
-		// A later lock does not stop this accepted upload.
+		// An accepted upload always finishes. A later lock stops new writes, not this one.
 		await ctx.db.patch("files_r2_assets", assetId, {
 			uploadUrlExpiresAt: now + files_UPLOAD_URL_TTL_MS,
 		});
@@ -3777,12 +4059,8 @@ export const discard_failed_upload_node = mutation({
 		}
 		const serviceTarget = await public_api_service_uploads_db_get_target_by_asset(ctx, asset._id);
 
-		// Keep the failed upload node while it is read-only.
-		// This cleanup deletes the node, so the lock must also block it.
-		const nodeWritable = await files_nodes_db_require_user_writable(ctx, { node: node, userId: userAuth.id });
-		if (nodeWritable._nay) {
-			return nodeWritable;
-		}
+		// Cancel removes the unfinished upload even if it is locked. A lock stops new
+		// writes, not cleanup of an upload that never landed. Landed files return early above.
 
 		const now = Date.now();
 		const liveR2Key = r2_create_asset_key({
@@ -4137,9 +4415,8 @@ export async function files_nodes_db_apply_node_move(
 	// and it is why the callers ask `authorize_leaving_restricted_scope` first: this helper only writes
 	// the result. `args.node` was read before the patch above, so it still holds the scope from before
 	// the move.
-	if (args.node.writePolicy === null && args.node.parentId !== args.destParentId) {
-		await db_set_write_policy(ctx, { node: { ...args.node, parentId: args.destParentId }, writePolicy: null });
-	}
+	//
+	// Protection needs no fixup here. A move keeps every local rule and folder default unchanged.
 	if (args.node.restrictedScopeNodeId !== args.node._id) {
 		const destScopeNodeId = await files_nodes_db_resolve_parent_restricted_scope(ctx, {
 			parentId: args.destParentId,
@@ -4686,14 +4963,7 @@ export async function files_nodes_db_preflight_move(
 
 	type FinalNodeFields = Pick<
 		Doc<"files_nodes">,
-		| "parentId"
-		| "name"
-		| "path"
-		| "treePath"
-		| "pathDepth"
-		| "lowercaseExtension"
-		| "restrictedScopeNodeId"
-		| "writePolicyScopeNodeId"
+		"parentId" | "name" | "path" | "treePath" | "pathDepth" | "lowercaseExtension" | "restrictedScopeNodeId"
 	>;
 	const finalById = new Map<Id<"files_nodes">, FinalNodeFields>();
 	const visiting = new Set<Id<"files_nodes">>();
@@ -4720,7 +4990,6 @@ export async function files_nodes_db_preflight_move(
 			lowercaseExtension: files_lowercase_extension(path, node.kind),
 			restrictedScopeNodeId:
 				node.restrictedScopeNodeId === node._id ? node._id : (parent?.restrictedScopeNodeId ?? null),
-			writePolicyScopeNodeId: node.writePolicy !== null ? node._id : (parent?.writePolicyScopeNodeId ?? null),
 		};
 		visiting.delete(nodeId);
 		finalById.set(nodeId, fields);
@@ -4732,23 +5001,21 @@ export async function files_nodes_db_preflight_move(
 		}
 	}
 
-	function isWritable(node: Doc<"files_nodes">, final: boolean) {
-		let current: Doc<"files_nodes"> | undefined = node;
-		while (current) {
-			const policy = current.writePolicy;
-			if (
-				policy !== null &&
-				((args.policyReach !== "ancestors" && (args.policyReach !== "direct" || current._id !== node._id)) ||
-					policy.mode !== "writer" ||
-					(policy.writer.kind === "user"
-						? writer.kind !== "user" || policy.writer.userId !== writer.userId
-						: writer.kind !== "service_account" || policy.writer.serviceAccountId !== writer.serviceAccountId))
-			)
-				return false;
-			const parentId: Doc<"files_nodes">["parentId"] = final ? finalById.get(current._id)!.parentId : current.parentId;
-			current = parentId === files_ROOT_ID ? undefined : nodesById.get(parentId);
+	// A move checks the named node, its source parent, and its destination parent. Each check is
+	// local: protected descendants never block a move, and their rules travel with them unchanged.
+	function isLocallyWritable(node: Doc<"files_nodes">) {
+		const policy = node.writePolicy;
+		if (policy === null) {
+			return true;
 		}
-		return true;
+		if (policy.mode === "read_only") {
+			return false;
+		}
+		return db_writer_matches_policy({ policy, writer });
+	}
+
+	function readOnlyRefusal() {
+		return Result({ _nay: { name: "read_only" as const, message: "This item is read-only." } });
 	}
 
 	const moved: Array<{ nodeId: Id<"files_nodes">; name: string; path: string }> = [];
@@ -4764,6 +5031,23 @@ export async function files_nodes_db_preflight_move(
 		const parent = parentId === files_ROOT_ID ? null : finalById.get(parentId)!;
 		let parentKey: string | null = null;
 		let path = parent?.path ?? "/";
+
+		// Brand-new middle folders copy the destination default. A nested middle folder lands
+		// inside the previous one, so one protected default refuses the deeper levels too.
+		const destParentDefault =
+			parentId === files_ROOT_ID ? null : ((await readNode(parentId))?.newChildWritePolicy ?? null);
+		if (readBudgetExceeded) {
+			return Result({ _nay: { name: "move_too_large", message: "This move is too large. Select fewer items." } });
+		}
+		if (missingParentNames.length > 1 && destParentDefault !== null) {
+			const nestedBlocked =
+				destParentDefault.mode === "read_only" ||
+				!db_writer_matches_policy({ policy: destParentDefault, writer: args.writer }) ||
+				args.policyReach !== "ancestors";
+			if (nestedBlocked) {
+				return readOnlyRefusal();
+			}
+		}
 
 		for (const [index, name] of missingParentNames.entries()) {
 			const key = JSON.stringify([parentId, ...missingParentNames.slice(0, index + 1)]);
@@ -4806,7 +5090,8 @@ export async function files_nodes_db_preflight_move(
 						path,
 						kind: "folder",
 						restrictedScopeNodeId: parent?.restrictedScopeNodeId ?? null,
-						writePolicyScopeNodeId: parent?.writePolicyScopeNodeId ?? null,
+						writePolicy: destParentDefault,
+						newChildWritePolicy: destParentDefault,
 						now,
 					}),
 				});
@@ -4842,14 +5127,24 @@ export async function files_nodes_db_preflight_move(
 			claimedDestinations.add(destinationKey);
 		}
 
-		if (!isWritable(node, false) || !isWritable(node, true)) {
-			return Result({ _nay: { name: "read_only", message: "This item is read-only." } });
+		if (!isLocallyWritable(node)) {
+			return readOnlyRefusal();
 		}
 
 		if (fields.parentId !== files_ROOT_ID) {
 			const parent = nodesById.get(fields.parentId)!;
-			if (!isWritable(parent, false) || !isWritable(parent, true)) {
-				return Result({ _nay: { name: "read_only", message: "This item is read-only." } });
+			if (!isLocallyWritable(parent)) {
+				return readOnlyRefusal();
+			}
+
+			if (node.parentId !== files_ROOT_ID && node.parentId !== fields.parentId) {
+				const sourceParent = await readNode(node.parentId);
+				if (readBudgetExceeded) {
+					return Result({ _nay: { name: "move_too_large", message: "This move is too large. Select fewer items." } });
+				}
+				if (!sourceParent || !isLocallyWritable(sourceParent)) {
+					return readOnlyRefusal();
+				}
 			}
 
 			if (node.parentId !== fields.parentId || plannedParentKeys.has(node._id)) {
@@ -4881,8 +5176,7 @@ export async function files_nodes_db_preflight_move(
 			node.parentId === fields.parentId &&
 			node.name === fields.name &&
 			node.path === fields.path &&
-			node.restrictedScopeNodeId === fields.restrictedScopeNodeId &&
-			node.writePolicyScopeNodeId === fields.writePolicyScopeNodeId
+			node.restrictedScopeNodeId === fields.restrictedScopeNodeId
 		) {
 			unchangedNodeIds.push(node._id);
 		} else {
@@ -5084,7 +5378,15 @@ export async function files_nodes_db_preflight_move(
 
 	for (const node of new Map([...affectedNodes, ...archivedDescendants]).values()) {
 		const final = finalById.get(node._id)!;
-		if (!isWritable(node, false) || (changedById.has(node._id) && !isWritable(node, true))) {
+		// Path-only descendants of a moved folder keep their rules and need no check. Named
+		// nodes, archived nodes, archived descendants, and replaced occupants are all removed
+		// or hidden, so each one needs its own local check.
+		const isPathOnlyDescendant =
+			changedById.has(node._id) &&
+			!intentsById.has(node._id) &&
+			!archiveNodes.has(node._id) &&
+			!archivedDescendants.has(node._id);
+		if (!isPathOnlyDescendant && !isLocallyWritable(node)) {
 			const readable = await access_control_db_authorize_membership(ctx, {
 				userAuth,
 				membership,
@@ -5216,8 +5518,7 @@ export async function files_nodes_db_preflight_move(
 			node.parentId === fields.parentId &&
 			node.name === fields.name &&
 			node.path === fields.path &&
-			node.restrictedScopeNodeId === fields.restrictedScopeNodeId &&
-			node.writePolicyScopeNodeId === fields.writePolicyScopeNodeId
+			node.restrictedScopeNodeId === fields.restrictedScopeNodeId
 		)
 			continue;
 
@@ -6043,12 +6344,6 @@ export const unarchive_nodes = mutation({
 		// folder: the destination is picked by this code, not by the caller, and the only people who can
 		// see the folder are the ones its share list names.
 		for (const plan of plans) {
-			if (plan.targetParentId !== plan.fileNode.parentId && plan.fileNode.writePolicy === null) {
-				await db_set_write_policy(ctx, {
-					node: { ...plan.fileNode, parentId: plan.targetParentId },
-					writePolicy: null,
-				});
-			}
 			if (plan.targetParentId === plan.fileNode.parentId || plan.fileNode.restrictedScopeNodeId === plan.fileNode._id) {
 				continue;
 			}
@@ -6171,14 +6466,13 @@ export const unarchive_nodes = mutation({
 /**
  * Fields for a node returned by public queries.
  *
- * Do not return raw policy fields. They are internal authority, and the scope may name
- * a hidden folder.
- * Return the actor's write access and only a policy source they can read.
+ * Raw policy fields stay private. They are write authority, and a writer choice names accounts
+ * the reader may not see. Return the actor's write access and only the local rule kind.
  */
 const files_node_public_doc_fields = ((/* iife */) => {
 	const {
-		writePolicyScopeNodeId: _writePolicyScopeNodeId,
 		writePolicy: _writePolicy,
+		newChildWritePolicy: _newChildWritePolicy,
 		...rest
 	} = doc(app_convex_schema, "files_nodes").fields;
 
@@ -6186,40 +6480,34 @@ const files_node_public_doc_fields = ((/* iife */) => {
 		...rest,
 		canWrite: v.boolean(),
 		writeBlockedReason: v.union(v.null(), v.literal("permission"), v.literal("read_only")),
-		writePolicyState: v.union(v.literal("none"), v.literal("self"), v.literal("inherited")),
-		writePolicySourceNodeId: v.optional(v.id("files_nodes")),
-		writePolicySourcePath: v.optional(v.string()),
+		writePolicyState: v.union(v.literal("none"), v.literal("read_only"), v.literal("writer")),
 	};
 })();
 
 /**
  * Build the public write access fields for one node.
- * Pass `readableSource` only when the caller may read the policy source.
- * Pass null to hide its id and path.
+ * The state names the node's own rule only. A parent lock never marks a child.
  */
-function get_public_node_fields(
-	fileNode: Doc<"files_nodes">,
-	readableSource: Pick<Doc<"files_nodes">, "_id" | "path"> | null,
-	writeBlockedReason: "permission" | "read_only" | null,
-) {
-	const { writePolicyScopeNodeId, writePolicy: _writePolicy, ...rest } = fileNode;
+function get_public_node_fields(fileNode: Doc<"files_nodes">, writeBlockedReason: "permission" | "read_only" | null) {
+	const {
+		writePolicy,
+		newChildWritePolicy: _newChildWritePolicy,
+		...rest
+	} = fileNode;
 
 	// Keep these values as exact literals so they match the return validator.
 	const writePolicyState =
-		writePolicyScopeNodeId === null
+		writePolicy === null
 			? ("none" as const)
-			: writePolicyScopeNodeId === fileNode._id
-				? ("self" as const)
-				: ("inherited" as const);
+			: writePolicy.mode === "read_only"
+				? ("read_only" as const)
+				: ("writer" as const);
 
 	return {
 		...rest,
 		canWrite: writeBlockedReason === null,
 		writeBlockedReason,
 		writePolicyState,
-		...(writePolicyScopeNodeId !== null && readableSource
-			? { writePolicySourceNodeId: readableSource._id, writePolicySourcePath: readableSource.path }
-			: {}),
 	};
 }
 
@@ -6266,24 +6554,6 @@ export const get_file_node_for_membership = query({
 
 		// Return the lock source only when this member can read it.
 		// Keep hidden folder ids and paths private.
-		let readableSource: Pick<Doc<"files_nodes">, "_id" | "path"> | null = null;
-		if (fileNode.writePolicyScopeNodeId === fileNode._id) {
-			readableSource = fileNode;
-		} else if (fileNode.writePolicyScopeNodeId) {
-			const sourceNode = await ctx.db.get("files_nodes", fileNode.writePolicyScopeNodeId);
-			if (sourceNode) {
-				const sourceAuthorized = await access_control_db_authorize_membership(ctx, {
-					userAuth,
-					membership,
-					permission: "content.read",
-					fileNode: sourceNode,
-				});
-				if (!sourceAuthorized._nay) {
-					readableSource = sourceNode;
-				}
-			}
-		}
-
 		const canWriteContent = await access_control_db_authorize_membership(ctx, {
 			userAuth,
 			membership,
@@ -6291,11 +6561,7 @@ export const get_file_node_for_membership = query({
 			fileNode,
 		});
 		const writable = await files_nodes_db_require_user_writable(ctx, { node: fileNode, userId: userAuth.id });
-		return get_public_node_fields(
-			fileNode,
-			readableSource,
-			canWriteContent._nay ? "permission" : writable._nay ? "read_only" : null,
-		);
+		return get_public_node_fields(fileNode, canWriteContent._nay ? "permission" : writable._nay ? "read_only" : null);
 	},
 });
 
@@ -6429,27 +6695,7 @@ export const list_tree = query({
 			hasWorkspaceRead: !authorized._nay,
 		});
 
-		// A policy source can be on another page. Check its read access before naming it.
-		const readableById = new Map(fileNodes.map((fileNode) => [fileNode._id, fileNode]));
-		const sourceIds = new Set(
-			fileNodes
-				.map((fileNode) => fileNode.writePolicyScopeNodeId)
-				.filter((nodeId): nodeId is Id<"files_nodes"> => nodeId !== null && !readableById.has(nodeId)),
-		);
-		const sources = await Promise.all([...sourceIds].map((nodeId) => ctx.db.get("files_nodes", nodeId)));
-		const readableSources = await access_control_db_filter_readable_file_nodes(ctx, {
-			organizationId: membership.organizationId,
-			workspaceId: membership.workspaceId,
-			userId: userAuth.id,
-			nodes: sources.filter((source) => source !== null),
-			hasWorkspaceRead: !authorized._nay,
-		});
-		for (const source of readableSources) {
-			readableById.set(source._id, source);
-		}
-
 		const canWriteContentByScope = new Map<Id<"files_nodes"> | null, Promise<boolean>>();
-		const policyWritableByScope = new Map<Id<"files_nodes"> | null, Promise<boolean>>();
 		const page = await Promise.all(
 			fileNodes.map(async (fileNode) => {
 				if (fileNode.createdBy === users_SYSTEM_AUTHOR || fileNode.updatedBy === users_SYSTEM_AUTHOR) {
@@ -6463,9 +6709,6 @@ export const list_tree = query({
 					throw should_never_happen(errorMessage, errorData);
 				}
 
-				const readableSource = fileNode.writePolicyScopeNodeId
-					? (readableById.get(fileNode.writePolicyScopeNodeId) ?? null)
-					: null;
 				let canWriteContent = canWriteContentByScope.get(fileNode.restrictedScopeNodeId);
 				if (!canWriteContent) {
 					canWriteContent = access_control_db_authorize_membership(ctx, {
@@ -6477,23 +6720,17 @@ export const list_tree = query({
 					canWriteContentByScope.set(fileNode.restrictedScopeNodeId, canWriteContent);
 				}
 
-				// Nodes with the same policy source have the same human write-policy answer.
-				let policyWritable = policyWritableByScope.get(fileNode.writePolicyScopeNodeId);
-				if (!policyWritable) {
-					policyWritable = files_nodes_db_require_user_writable(ctx, { node: fileNode, userId: userAuth.id }).then(
-						(result) => !result._nay,
-					);
-					policyWritableByScope.set(fileNode.writePolicyScopeNodeId, policyWritable);
-				}
+				// Each node's rule is local, so each row needs its own answer. The check reads
+				// only the node doc in hand, so no cache key helps here.
+				const policyWritable = await files_nodes_db_require_user_writable(ctx, {
+					node: fileNode,
+					userId: userAuth.id,
+				});
 
-				const writeBlockedReason = !(await canWriteContent)
-					? "permission"
-					: !(await policyWritable)
-						? "read_only"
-						: null;
+				const writeBlockedReason = !(await canWriteContent) ? "permission" : !policyWritable._nay ? null : "read_only";
 
 				return {
-					...get_public_node_fields(fileNode, readableSource, writeBlockedReason),
+					...get_public_node_fields(fileNode, writeBlockedReason),
 					organizationId: membership.organizationId,
 					workspaceId: membership.workspaceId,
 					createdBy: fileNode.createdBy,

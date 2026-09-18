@@ -34,7 +34,7 @@ import type { AppClassName } from "@/lib/dom-utils.ts";
 import { files_truncate_path_for_width } from "@/lib/file-paths.ts";
 import {
 	files_ROOT_ID,
-	files_collect_read_only_ancestor_ids,
+	files_collect_protected_descendant_ids,
 	files_fetch_file_pending_update_yjs_state,
 	files_fetch_file_yjs_state_and_text,
 	files_format_size,
@@ -114,7 +114,7 @@ function build_pending_rows(
 	views: readonly Extract<FileEditorSidebarPendingView, { kind: "entry" }>[],
 	nodesById: Map<
 		app_convex_Id<"files_nodes">,
-		Omit<app_convex_Doc<"files_nodes">, "writePolicyScopeNodeId" | "writePolicy">
+		Omit<app_convex_Doc<"files_nodes">, "writePolicy">
 	>,
 ): FileEditorSidebarPendingRow[] {
 	const pendingUpdates = views.flatMap((view) => (view.entry.pendingUpdate ? [view.entry.pendingUpdate] : []));
@@ -1215,16 +1215,25 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 	);
 	const restrictedRows = pendingUpdatesResult.filter((view) => view.kind === "restricted");
 	const allSources = [...rows.map((row) => row.pendingUpdate), ...restrictedRows];
-	const readOnlyAncestorIds = files_collect_read_only_ancestor_ids(fileNodesList ?? []);
+	const protectedDescendantIds = files_collect_protected_descendant_ids(fileNodesList ?? []);
 
 	// The server checks hidden nodes and current policies again when Accept runs.
-	const getNodeCapabilities = (node: files_VisibleTreeNode | undefined) =>
-		node
-			? files_get_read_only_capabilities({
-					canWrite: node.canWrite,
-					hasVisibleReadOnlyDescendant: readOnlyAncestorIds.has(node._id),
-				})
-			: null;
+	const getNodeCapabilities = (node: files_VisibleTreeNode | undefined) => {
+		if (!node) {
+			return null;
+		}
+
+		const parent = node.parentId === files_ROOT_ID ? undefined : nodesById.get(node.parentId);
+		// A missing parent is the workspace root, or a node this list cannot see. Accept still
+		// re-checks the live parent on the server.
+		const parentCanWrite = parent ? parent.canWrite : true;
+
+		return files_get_read_only_capabilities({
+			canWrite: node.canWrite,
+			parentCanWrite,
+			hasVisibleProtectedDescendant: protectedDescendantIds.has(node._id),
+		});
+	};
 
 	const canAcceptRow = (row: FileEditorSidebarPendingRow) => {
 		if (!row.canAccept || row.readiness !== "ready") {

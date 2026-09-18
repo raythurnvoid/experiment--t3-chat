@@ -37,8 +37,10 @@ import app_convex_schema, {
 import {
 	authorize_file_write,
 	files_nodes_db_create_node_recursively_at_path,
+	files_nodes_db_copied_from_policy_fields,
 	files_nodes_db_move_nodes,
 	files_nodes_db_require_user_writable,
+	files_nodes_db_require_user_writable_or_matching_policy,
 	files_nodes_db_get_content_version,
 } from "./files_nodes.ts";
 import { files_visible_db_create_reader, type files_visible_internal_list_Result } from "./files_visible.ts";
@@ -282,6 +284,7 @@ async function db_get_destination(
 		membership: Doc<"organizations_workspaces_users">;
 		parent: files_PendingParent;
 		expectedPath: string;
+		runWrittenWritePolicy?: Doc<"files_nodes">["writePolicy"];
 	},
 ) {
 	const reader = await files_visible_db_create_reader(ctx, args.run);
@@ -312,7 +315,11 @@ async function db_get_destination(
 	if (authorized._nay) return Result({ _nay: { message: "Permission denied" } });
 
 	if (node) {
-		const writable = await files_nodes_db_require_user_writable(ctx, { node, userId: args.run.userId });
+		const writable = await files_nodes_db_require_user_writable_or_matching_policy(ctx, {
+			node,
+			userId: args.run.userId,
+			runWrittenWritePolicy: args.runWrittenWritePolicy,
+		});
 		if (writable._nay) return writable;
 	}
 	return Result({ _yay: { entry, parent } });
@@ -754,6 +761,7 @@ export async function files_transfer_db_prepare_copy_item(
 
 	let parent = run.preparedParent ?? destination._yay.parent;
 	let parentPath = run.missingParentNames.reduce(path_join, run.targetPath);
+	let runWrittenWritePolicy: Doc<"files_nodes">["writePolicy"] | undefined;
 	if (item.parentItemId) {
 		// A child copies into the folder its parent item produced.
 		const parentItem = await ctx.db.get("files_transfer_items", item.parentItemId);
@@ -763,8 +771,19 @@ export async function files_transfer_db_prepare_copy_item(
 		}
 		parent = parentItem.outputTarget;
 		parentPath = parentItem.outputPath;
-		const parentDestination = await db_get_destination(ctx, { run, membership, parent, expectedPath: parentPath });
+		runWrittenWritePolicy = parentItem.outputWritePolicy;
+		const parentDestination = await db_get_destination(ctx, {
+			run,
+			membership,
+			parent,
+			expectedPath: parentPath,
+			runWrittenWritePolicy,
+		});
 		if (parentDestination._nay) {
+			if (parentDestination._nay.name === "read_only") {
+				return parentDestination;
+			}
+
 			await db_pause_item(ctx, item, "destination_changed");
 			return Result({ _yay: null });
 		}
@@ -819,6 +838,7 @@ export async function files_transfer_db_prepare_copy_item(
 			path: resolved._yay.path,
 			existing: resolved._yay.existing,
 			membership,
+			runWrittenWritePolicy,
 		},
 	});
 }
@@ -886,6 +906,24 @@ export async function files_transfer_db_complete_copy_item(
 	if (!run) return;
 	const activity = await db_require_activity(ctx, run._id);
 
+	// Only folders store the value: they are the only items whose children read it.
+	const savedTarget =
+		args.target.kind === "saved" && item.kind === "folder" && (args.outcome ?? "copied") === "copied"
+			? args.target
+			: null;
+	const outputPolicy =
+		item.outputWritePolicy !== undefined || savedTarget === null
+			? {}
+			: await (async (/* iife */) => {
+					const node = await ctx.db.get("files_nodes", savedTarget.id);
+					if (!node) {
+						return {};
+					}
+
+					// This node's children may be created while its policy still equals this value.
+					return { outputWritePolicy: node.writePolicy };
+				})();
+
 	await ctx.db.patch("files_transfer_items", item._id, {
 		state: "completed",
 		conflictKind: null,
@@ -897,6 +935,7 @@ export async function files_transfer_db_complete_copy_item(
 		// The saved file now owns these assets. Run cleanup must leave them alone.
 		capture: item.capture ? { ...item.capture, artifact: null } : null,
 		...(item.workId === null ? { attemptExpiresAt: null } : {}),
+		...outputPolicy,
 	});
 	await ctx.db.patch("activities", activity._id, {
 		progress: { ...activity.progress, completed: activity.progress.completed + 1 },
@@ -1567,7 +1606,10 @@ export const get_current_activity_for_agent = internalQuery({
 			thread.workspaceId !== membership.workspaceId
 		)
 			return null;
-		const activity = await db_get_current_activity(ctx, { userId: membership.userId, workspaceId: membership.workspaceId });
+		const activity = await db_get_current_activity(ctx, {
+			userId: membership.userId,
+			workspaceId: membership.workspaceId,
+		});
 		return activity ? { activityId: activity._id, status: activity.status } : null;
 	},
 });
@@ -2176,6 +2218,7 @@ async function db_plan(
 				membership,
 				parent: parent.outputTarget,
 				expectedPath: parentPath,
+				runWrittenWritePolicy: parent.outputWritePolicy,
 			});
 			if (destination._nay) {
 				await db_pause_item(ctx, item, "destination_changed");
@@ -2561,7 +2604,7 @@ export const advance = internalMutation({
 			await ctx.scheduler.runAfter(0, internal.files_transfer.advance, args);
 			return null;
 		}
-		const { sourceEntry, parent: outputParent, name, path, existing } = prepared._yay;
+		const { sourceEntry, parent: outputParent, name, path, existing, runWrittenWritePolicy } = prepared._yay;
 
 		// Folder merge retains the destination identity, metadata, and unrelated children.
 		if (item.kind === "folder" && existing) {
@@ -2607,7 +2650,18 @@ export const advance = internalMutation({
 							});
 				await files_db_patch_pending_update(ctx, created._yay.pendingUpdateId, {
 					createIntent: { kind: "folder", metadata },
-					copiedFrom: { target: item.source, path: item.sourcePath },
+					copiedFrom: {
+						target: item.source,
+						path: item.sourcePath,
+						...files_nodes_db_copied_from_policy_fields({
+							...(sourceEntry.kind === "saved"
+								? {
+										sourceWritePolicy: sourceEntry.node.writePolicy,
+										sourceNewChildWritePolicy: sourceEntry.node.newChildWritePolicy ?? null,
+									}
+								: {}),
+						}),
+					},
 				});
 			} else {
 				await ctx.db.patch("files_transfer_items", item._id, {
@@ -2658,6 +2712,16 @@ export const advance = internalMutation({
 				path: name,
 				kind: "folder",
 				metadata,
+				expectedParentWritePolicy: runWrittenWritePolicy,
+				// A copy keeps the source folder's own rule and default. Read here on the server;
+				// the destination default never replaces them.
+				...(sourceEntry.kind === "saved"
+					? {
+							writePolicy: sourceEntry.node.writePolicy,
+							newChildWritePolicy: sourceEntry.node.newChildWritePolicy ?? null,
+							trustPolicySource: true as const,
+						}
+					: {}),
 				now: Date.now(),
 			});
 			if (copied._nay) throw convex_error({ message: "Could not copy folder", cause: copied._nay });

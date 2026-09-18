@@ -32,7 +32,7 @@ export type files_VisibleEntry =
 
 export type files_VisibleTreeNode = Omit<
 	app_convex_Doc<"files_nodes">,
-	"organizationId" | "workspaceId" | "createdBy" | "updatedBy" | "writePolicyScopeNodeId" | "writePolicy"
+	"organizationId" | "workspaceId" | "createdBy" | "updatedBy" | "writePolicy"
 > & {
 	organizationId: app_convex_Id<"organizations">;
 	workspaceId: app_convex_Id<"organizations_workspaces">;
@@ -40,10 +40,9 @@ export type files_VisibleTreeNode = Omit<
 	updatedBy: app_convex_Id<"users">;
 	canWrite: boolean;
 	writeBlockedReason: "permission" | "read_only" | null;
-	// Rule location is display-only. A selected writer may still edit.
-	writePolicyState: "none" | "self" | "inherited";
-	writePolicySourceNodeId?: app_convex_Id<"files_nodes">;
-	writePolicySourcePath?: string;
+	// Local rule only. A parent lock never marks a child. A selected writer may still edit
+	// while the rule shows.
+	writePolicyState: "none" | "read_only" | "writer";
 };
 
 export const files_SYNTHETIC_ROOT_FOLDER = {
@@ -118,12 +117,13 @@ export function files_can_move_node_between_restricted_scopes(args: {
 }
 
 /**
- * Find every visible ancestor of a read-only node. Those ancestors cannot be renamed, moved, or
- * archived because that would also change the read-only node.
+ * Find every visible node that holds a visible protected descendant. Deleting such a node
+ * removes protected items too, so the UI can explain the refusal. Rename and move never
+ * consult this set: protected descendants travel along and keep their rules.
  *
  * Run this once for the whole visible tree instead of searching again for every row.
  */
-export function files_collect_read_only_ancestor_ids(
+export function files_collect_protected_descendant_ids(
 	nodes: Array<Pick<files_VisibleTreeNode, "_id" | "parentId" | "canWrite">>,
 ) {
 	// The map also accepts "root", which has no node.
@@ -132,7 +132,7 @@ export function files_collect_read_only_ancestor_ids(
 		nodesById.set(node._id, node);
 	}
 
-	const ancestorIds = new Set<files_VisibleTreeNode["_id"]>();
+	const holderIds = new Set<files_VisibleTreeNode["_id"]>();
 	for (const node of nodes) {
 		if (node.canWrite) {
 			continue;
@@ -140,53 +140,58 @@ export function files_collect_read_only_ancestor_ids(
 
 		// Walk toward the root. Stop at a parent that was already handled.
 		let parent = nodesById.get(node.parentId);
-		while (parent && !ancestorIds.has(parent._id)) {
-			ancestorIds.add(parent._id);
+		while (parent && !holderIds.has(parent._id)) {
+			holderIds.add(parent._id);
 			parent = nodesById.get(parent.parentId);
 		}
 	}
 
-	return ancestorIds;
+	return holderIds;
 }
 
 /**
- * Get the read-only label and tooltip for one file-tree row. Return null when no label is needed.
+ * Get the protection label and tooltip for one file-tree row. Return null when no label is needed.
  *
- * Describe a refused write without exposing the policy's selected writer.
+ * A selected-writer rule shows even when the current writer can edit. A plain folder that
+ * holds protected children shows no lock; only the protected rows carry one.
  */
 export function files_get_read_only_row_labels(args: {
 	canWrite: boolean;
 	writeBlockedReason: files_VisibleTreeNode["writeBlockedReason"];
-	/** True when a writable row contains a visible read-only child. */
-	hasVisibleReadOnlyDescendant: boolean;
+	writePolicyState: files_VisibleTreeNode["writePolicyState"];
 }) {
+	if (args.writePolicyState === "writer") {
+		return { description: "Protected: selected writer", tooltip: "Only the selected writer can edit" };
+	}
 	if (!args.canWrite) {
 		return args.writeBlockedReason === "read_only"
-			? { description: "protected", tooltip: "A file policy blocks editing" }
+			? { description: "Read-only", tooltip: "This item is read-only." }
 			: { description: "read-only", tooltip: "You don't have permission to edit this item" };
-	}
-	if (args.hasVisibleReadOnlyDescendant) {
-		return { description: "contains read-only items", tooltip: "Contains read-only items" };
 	}
 
 	return null;
 }
 
 /**
- * Use the server's write answer for this user.
+ * Use the server's write answer for this user plus the parent's answer.
  *
- * A folder with a read-only child can still receive new children. It cannot be renamed, moved, or
- * archived because those actions would also change the read-only child.
+ * Rename and move need both the named item and its immediate parent. A folder with a
+ * protected child can still be renamed or moved; the children keep their rules. Delete
+ * and archive need every removed item, so a visible protected descendant only warns: the
+ * server still checks hidden descendants and refuses there.
  */
-export function files_get_read_only_capabilities(args: { canWrite: boolean; hasVisibleReadOnlyDescendant: boolean }) {
-	const isWritable = args.canWrite;
-	const canChangeSubtree = isWritable && !args.hasVisibleReadOnlyDescendant;
+export function files_get_read_only_capabilities(args: {
+	canWrite: boolean;
+	parentCanWrite: boolean;
+	hasVisibleProtectedDescendant: boolean;
+}) {
+	const canRelocateOrRename = args.canWrite && args.parentCanWrite;
 
 	return {
-		canEditContent: isWritable,
-		canReceiveChildren: isWritable,
-		canRelocateOrRename: canChangeSubtree,
-		canArchiveOrRestore: canChangeSubtree,
+		canEditContent: args.canWrite,
+		canReceiveChildren: args.canWrite,
+		canRelocateOrRename,
+		canArchiveOrRestore: args.canWrite && !args.hasVisibleProtectedDescendant,
 	};
 }
 

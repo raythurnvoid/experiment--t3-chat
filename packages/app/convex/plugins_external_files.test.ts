@@ -1389,7 +1389,7 @@ describe("archive", () => {
 	});
 
 	test.each(["account grant", "file policy", "parent policy"] as const)(
-		"checks the current %s before acknowledging an archived file",
+		"%s decides an archived-file acknowledgement",
 		async (condition) => {
 			const { t, fixture, owner, token, root } = await setup();
 			install_object_uploads();
@@ -1467,6 +1467,15 @@ describe("archive", () => {
 				nodes: await ctx.db.query("files_nodes").collect(),
 				receipts: await ctx.db.query("plugins_external_file_receipts").collect(),
 			}));
+			if (condition === "parent policy") {
+				const allowed = await t.fetch("/api/v1/files/plugin-archive", {
+					method: "POST",
+					headers,
+					body: JSON.stringify(archive),
+				});
+				expect(allowed.status, await allowed.clone().text()).toBe(200);
+				return;
+			}
 			for (const request of [
 				archive,
 				{ ...archive, writer: { ...archive.writer, operationId: "archive-3", sequence: 3 } },
@@ -2287,7 +2296,7 @@ describe("rollback_readers", () => {
 					(
 						await owner.mutation(api.files_nodes.set_node_write_policy, {
 							membershipId: fixture.membershipId,
-							nodeId: ensured._yay.rootNodeId,
+							nodeId: ensured._yay.folderNodeId,
 							writePolicy: { mode: "writer", writer: { kind: "user", userId: fixture.userId } },
 						})
 					)._nay,
@@ -2302,7 +2311,7 @@ describe("rollback_readers", () => {
 					(
 						await owner.mutation(api.files_nodes.set_node_write_policy, {
 							membershipId: fixture.membershipId,
-							nodeId: ensured._yay.rootNodeId,
+							nodeId: ensured._yay.folderNodeId,
 							writePolicy: {
 								mode: "writer",
 								writer: { kind: "service_account", serviceAccountId: fixture.serviceAccountId },
@@ -2494,7 +2503,7 @@ describe("rollback_readers", () => {
 		});
 
 		const expectedStatus =
-			change === "manual" || change === "old-lifetime"
+			change === "manual" || change === "old-lifetime" || change === "ancestor-policy"
 				? 200
 				: change.startsWith("wrong-") || change === "revoked-account" || change === "uninstalled"
 					? 401
@@ -2507,8 +2516,10 @@ describe("rollback_readers", () => {
 			});
 		if (change === "manual") expect(await result.json()).toMatchObject({ restored: false, detached: true, _id: null });
 		if (change === "old-lifetime") expect(await result.json()).toMatchObject({ restored: true, detached: false });
-		if (change === "target-policy" || change === "ancestor-policy")
-			expect(await result.json()).toEqual({ message: "This item is read-only." });
+		if (change === "ancestor-policy")
+			expect(await result.json()).toMatchObject({ restored: true, detached: false });
+		if (change === "target-policy") expect(await result.json()).toEqual({ message: "This item is read-only." });
+		if (change === "ancestor-policy") return;
 		expect(await t.run(async (ctx) => await ctx.db.query("access_control_permission_grants").collect())).toEqual(
 			before,
 		);

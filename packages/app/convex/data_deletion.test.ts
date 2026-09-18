@@ -119,7 +119,6 @@ async function data_deletion_test_seed_page(
 		contentFrontmatterTooLargeFieldCount: null,
 		contentFrontmatterTooLargeIndexDocumentCount: null,
 		restrictedScopeNodeId: null,
-		writePolicyScopeNodeId: null,
 		writePolicy: null,
 
 		archiveOperationId: null,
@@ -302,7 +301,6 @@ async function data_deletion_test_seed_workspace_content_bulk(
 			contentFrontmatterTooLargeFieldCount: null,
 			contentFrontmatterTooLargeIndexDocumentCount: null,
 			restrictedScopeNodeId: null,
-			writePolicyScopeNodeId: null,
 			writePolicy: null,
 
 			archiveOperationId: null,
@@ -3264,7 +3262,6 @@ describe("process_workspace_deletion_request", () => {
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: null,
-				writePolicyScopeNodeId: null,
 				writePolicy: null,
 
 				archiveOperationId: null,
@@ -3424,7 +3421,6 @@ describe("process_workspace_deletion_request", () => {
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: null,
-				writePolicyScopeNodeId: null,
 				writePolicy: null,
 
 				archiveOperationId: null,
@@ -3747,7 +3743,6 @@ describe("process_workspace_deletion_request", () => {
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: null,
-				writePolicyScopeNodeId: null,
 				writePolicy: null,
 
 				archiveOperationId: null,
@@ -4290,7 +4285,6 @@ describe("process_workspace_deletion_request", () => {
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: null,
-				writePolicyScopeNodeId: null,
 				writePolicy: null,
 
 				archiveOperationId: null,
@@ -4384,7 +4378,6 @@ describe("process_workspace_deletion_request", () => {
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: null,
-				writePolicyScopeNodeId: null,
 				writePolicy: null,
 
 				archiveOperationId: null,
@@ -4553,13 +4546,11 @@ describe("process_workspace_deletion_request", () => {
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: null,
-				writePolicyScopeNodeId: null,
 				writePolicy: null,
 
 				archiveOperationId: null,
 			});
 			await ctx.db.patch("files_nodes", folderId, {
-				writePolicyScopeNodeId: folderId,
 				writePolicy: { mode: "read_only" },
 			});
 			const assetId = await ctx.db.insert("files_r2_assets", {
@@ -4582,7 +4573,6 @@ describe("process_workspace_deletion_request", () => {
 				kind: "file",
 				lowercaseExtension: "md",
 				parentId: folderId,
-				writePolicyScopeNodeId: folderId,
 				writePolicy: null,
 				createdBy: user.userId,
 				updatedBy: user.userId,
@@ -6221,7 +6211,6 @@ describe("hard_delete_user_data", () => {
 				tag: "reset-locked-page",
 			});
 			await ctx.db.patch("files_nodes", page.nodeId, {
-				writePolicyScopeNodeId: page.nodeId,
 				writePolicy: { mode: "read_only" },
 			});
 			const node = await ctx.db.get("files_nodes", page.nodeId);
@@ -6583,7 +6572,6 @@ describe("finalize_user_deletion_data", () => {
 					contentFrontmatterTooLargeFieldCount: null,
 					contentFrontmatterTooLargeIndexDocumentCount: null,
 					restrictedScopeNodeId: null,
-					writePolicyScopeNodeId: null,
 					writePolicy: null,
 
 					archiveOperationId: null,

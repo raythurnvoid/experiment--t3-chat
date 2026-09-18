@@ -998,7 +998,6 @@ describe("service upload drain", () => {
 		);
 		await t.run(async (ctx) => {
 			await ctx.db.patch("files_nodes", locked.nodeId, {
-				writePolicyScopeNodeId: locked.nodeId,
 				writePolicy: { mode: "read_only" },
 			});
 		});
@@ -1123,7 +1122,6 @@ describe("service upload targets", () => {
 			installation?.serviceAccountId,
 		]);
 		expect(await t.run(async (ctx) => ctx.db.get("files_nodes", target.nodeId))).toMatchObject({
-			writePolicyScopeNodeId: target.nodeId,
 			writePolicy: {
 				mode: "writer",
 				writer: { kind: "service_account", serviceAccountId: installation?.serviceAccountId },
@@ -1267,7 +1265,6 @@ describe("service upload targets", () => {
 		});
 		expect(await t.run((ctx) => ctx.db.get("files_nodes", target.nodeId))).toMatchObject({
 			writePolicy: null,
-			writePolicyScopeNodeId: null,
 		});
 
 		expect(
@@ -1318,7 +1315,6 @@ describe("service upload targets", () => {
 		expect((await read_targets(t))[0]).toMatchObject({ state: "committed", actualBytes: 2 * MIB });
 		const node = await t.run((ctx) => ctx.db.get("files_nodes", target.nodeId));
 		expect(node?.assetId).toBe(newest.assetId);
-		expect(node?.writePolicyScopeNodeId).toBe(target.nodeId);
 		expect(node?.writePolicy).toEqual({ mode: "read_only" });
 		expect(
 			await asUser.query(api.files_metadata.get_entries, {
@@ -1404,25 +1400,28 @@ describe("service upload targets", () => {
 		).toBe(200);
 	});
 
-	test("a selected account on an ancestor does not give a sealed service permission to create below it", async () => {
+	test("a selected account on an ancestor above the destination folder does not block create below it", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
 		const sealed = await seal_token(t, fixture);
 		expect((await call(t, CREATE_TARGET_PATH, sealed, target_body())).status).toBe(200);
 		const target = (await read_targets(t))[0]!;
 		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: fixture.userId });
+		const selectedAccount = {
+			mode: "writer" as const,
+			writer: { kind: "service_account" as const, serviceAccountId: fixture.serviceAccountId },
+		};
+		// destinationNodeId is the sealed /meetings folder. The new file's parent is
+		// /meetings/meeting-1, so this ancestor lock does not block create.
 		expect(
 			await asUser.mutation(api.files_nodes.set_node_write_policy, {
 				membershipId: fixture.membershipId,
 				nodeId: target.destinationNodeId,
-				writePolicy: {
-					mode: "writer",
-					writer: { kind: "service_account", serviceAccountId: fixture.serviceAccountId },
-				},
+				writePolicy: selectedAccount,
 			}),
 		).toEqual({ _yay: null });
 
-		const refused = await call(
+		const created = await call(
 			t,
 			CREATE_TARGET_PATH,
 			sealed,
@@ -1431,8 +1430,38 @@ describe("service upload targets", () => {
 				path: "/meetings/meeting-1/next.mp4",
 			}),
 		);
+		expect(created.status).toBe(200);
+		expect(await read_targets(t)).toHaveLength(2);
+
+		// Creating a child still checks the destination folder itself. A matching selected
+		// account still refuses a direct-only service: the parent rule is not the new child's
+		// own rule.
+		const meetingFolderId = await t.run(async (ctx) => {
+			const nodes = await ctx.db.query("files_nodes").collect();
+			const meeting = nodes.find((node) => node.path === "/meetings/meeting-1");
+			if (!meeting) {
+				throw new Error("Expected the meeting folder");
+			}
+			return meeting._id;
+		});
+		expect(
+			await asUser.mutation(api.files_nodes.set_node_write_policy, {
+				membershipId: fixture.membershipId,
+				nodeId: meetingFolderId,
+				writePolicy: selectedAccount,
+			}),
+		).toEqual({ _yay: null });
+		const refused = await call(
+			t,
+			CREATE_TARGET_PATH,
+			sealed,
+			target_body({
+				targetKey: "later",
+				path: "/meetings/meeting-1/later.mp4",
+			}),
+		);
 		expect(refused.status).toBe(409);
-		expect(await read_targets(t)).toEqual([target]);
+		expect(await read_targets(t)).toHaveLength(2);
 	});
 
 	test("allows 16 targets per upload run, including exact replays, and refuses a seventeenth", async () => {
@@ -1930,7 +1959,7 @@ describe("service upload targets", () => {
 		expect(await read_targets(t)).toEqual([]);
 	});
 
-	test("defers terminal cleanup while a service placeholder is read-only", async () => {
+	test("retires a dead service attempt even while its placeholder is read-only", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
 		const sealed = await seal_token(t, fixture);
@@ -1942,20 +1971,24 @@ describe("service upload targets", () => {
 		}
 		await t.run(async (ctx) => {
 			await ctx.db.patch("files_nodes", target.nodeId, {
-				writePolicyScopeNodeId: target.nodeId,
 				writePolicy: { mode: "read_only" },
 			});
 		});
 
 		const recoveryStartedAt = asset.uploadUrlExpiresAt - 15 * 60 * 1000;
+		const retireNow = recoveryStartedAt + 8 * 24 * 60 * 60 * 1000;
 		await t.mutation(internal.r2.retire_missing_upload, {
 			assetId: target.assetId,
-			_test_now: recoveryStartedAt + 8 * 24 * 60 * 60 * 1000,
+			_test_now: retireNow,
 		});
-		expect(await t.run(async (ctx) => ctx.db.query("files_r2_object_deletion_jobs").collect())).toHaveLength(0);
+		// No bytes ever arrived, so the old attempt retires. The lock stops new writes,
+		// not cleanup of a dead attempt. The target stays pending, so remint can revive it.
+		expect(await t.run(async (ctx) => ctx.db.get("files_r2_assets", target.assetId))).toMatchObject({
+			uploadRetiredAt: retireNow,
+		});
+		expect(await t.run(async (ctx) => ctx.db.query("files_r2_object_deletion_jobs").collect())).toHaveLength(1);
 		expect((await read_targets(t))[0]).toMatchObject({ state: "pending" });
 
-		// The lock must not cancel an upload the member already accepted. Both retry doors stay open.
 		expect((await call(t, CREATE_TARGET_PATH, sealed, target_body())).status).toBe(200);
 		expect(
 			(
@@ -1969,7 +2002,6 @@ describe("service upload targets", () => {
 		expect(newest.assetId).not.toBe(target.assetId);
 		expect(await t.run(async (ctx) => ctx.db.get("files_nodes", target.nodeId))).toMatchObject({
 			assetId: newest.assetId,
-			writePolicyScopeNodeId: target.nodeId,
 		});
 	});
 });
@@ -2189,11 +2221,10 @@ describe("service upload delete", () => {
 
 		const restored = await t.run(async (ctx) => await ctx.db.get("files_nodes", target.nodeId));
 		expect(restored?.archiveOperationId).toBeNull();
-		expect(restored?.writePolicyScopeNodeId).toBeNull();
 		expect(restored?.writePolicy).toBeNull();
 	});
 
-	test("a member folder lock above the file refuses the whole delete and releases nothing", async () => {
+	test("a member folder lock above the file does not refuse the delete", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
 		const sealed = await seal_token(t, fixture);
@@ -2204,51 +2235,50 @@ describe("service upload delete", () => {
 			200,
 		);
 
-		// A member locks the destination folder. The cascade stops at the file, which keeps its own
-		// service lock, so the member lock is visible only in the parent folder's pointer. Releasing
-		// the service lock would leave the file read-only under that member lock, and archiving it
-		// anyway would take a file the member said to leave alone.
 		const asUser = t.withIdentity({
 			issuer: "https://clerk.test",
 			external_id: fixture.userId,
 			name: "Test User",
 		});
-		const destinationNodeId = await t.run(async (ctx) => {
+		// A lock on the file itself still refuses. Delete checks in-scope nodes, not a parent above
+		// the delete set.
+		expect(
+			await asUser.mutation(api.files_nodes.set_node_write_policy, {
+				writePolicy: { mode: "read_only" },
+				membershipId: fixture.membershipId,
+				nodeId: target.nodeId,
+			}),
+		).toEqual({ _yay: null });
+		const refused = await call(t, DELETE_PATH, sealed, { idempotencyKey: "delete-meeting-1", targetKey: "recording" });
+		expect(refused.status).toBe(409);
+		expect(await refused.json()).toEqual({ message: "This item is read-only." });
+		expect(await t.run(async (ctx) => (await ctx.db.get("files_nodes", target.nodeId))?.archiveOperationId)).toBeNull();
+
+		// Put the service writer back so the service can pass the file's own lock.
+		expect(
+			await asUser.mutation(api.files_nodes.set_node_write_policy, {
+				writePolicy: {
+					mode: "writer",
+					writer: { kind: "service_account", serviceAccountId: fixture.serviceAccountId },
+				},
+				membershipId: fixture.membershipId,
+				nodeId: target.nodeId,
+			}),
+		).toEqual({ _yay: null });
+
+		const meetingsNodeId = await t.run(async (ctx) => {
 			const nodes = await ctx.db.query("files_nodes").collect();
-			const destination = nodes.find((node) => node.path === "/meetings");
-			if (!destination) {
+			const meetings = nodes.find((node) => node.path === "/meetings");
+			if (!meetings) {
 				throw new Error("Expected the sealed destination folder");
 			}
-			return destination._id;
+			return meetings._id;
 		});
 		expect(
 			await asUser.mutation(api.files_nodes.set_node_write_policy, {
 				writePolicy: { mode: "read_only" },
 				membershipId: fixture.membershipId,
-				nodeId: destinationNodeId,
-			}),
-		).toEqual({ _yay: null });
-
-		const refused = await call(t, DELETE_PATH, sealed, { idempotencyKey: "delete-meeting-1", targetKey: "recording" });
-		expect(refused.status).toBe(409);
-		expect(await refused.json()).toEqual({ message: "This item is read-only." });
-
-		const kept = await t.run(async (ctx) => await ctx.db.get("files_nodes", target.nodeId));
-		expect(kept?.archiveOperationId).toBeNull();
-		expect(kept?.writePolicyScopeNodeId).toBe(target.nodeId);
-		expect(kept?.writePolicy).toEqual({
-			mode: "writer",
-			writer: { kind: "service_account", serviceAccountId: fixture.serviceAccountId },
-		});
-		expect((await read_targets(t))[0]!.deleteRequestedAt).toBeUndefined();
-
-		// Positive control: the member unlocks the folder and the same call goes through, so the
-		// refusal came from that folder lock and not from something else about this target.
-		expect(
-			await asUser.mutation(api.files_nodes.set_node_write_policy, {
-				writePolicy: null,
-				membershipId: fixture.membershipId,
-				nodeId: destinationNodeId,
+				nodeId: meetingsNodeId,
 			}),
 		).toEqual({ _yay: null });
 		expect(
@@ -2485,7 +2515,6 @@ describe("service upload delete", () => {
 		const target = (await read_targets(t))[0]!;
 		await t.run(async (ctx) => {
 			await ctx.db.patch("files_nodes", target.nodeId, {
-				writePolicyScopeNodeId: target.nodeId,
 				writePolicy: { mode: "read_only" },
 			});
 		});
@@ -2500,7 +2529,7 @@ describe("service upload delete", () => {
 		// Positive control: unlock the placeholder and the same call goes through, so the refusal came
 		// from the lock and not from something else about a pending target.
 		await t.run(async (ctx) => {
-			await ctx.db.patch("files_nodes", target.nodeId, { writePolicyScopeNodeId: null, writePolicy: null });
+			await ctx.db.patch("files_nodes", target.nodeId, { writePolicy: null });
 		});
 		expect((await call(t, DELETE_PATH, sealed, { idempotencyKey: "delete-1", targetKey: "recording" })).status).toBe(
 			200,
@@ -2520,7 +2549,6 @@ describe("service upload delete", () => {
 
 		await t.run(async (ctx) => {
 			await ctx.db.patch("files_nodes", target.nodeId, {
-				writePolicyScopeNodeId: target.nodeId,
 				writePolicy: { mode: "read_only" },
 			});
 		});
@@ -3032,25 +3060,46 @@ describe("service upload archive", () => {
 		const restored = await t.run(async (ctx) => await ctx.db.query("files_nodes").collect());
 		expect(restored.every((node) => node.archiveOperationId === null)).toBe(true);
 		const restoredFile = restored.find((node) => node._id === target.nodeId);
-		expect(restoredFile?.writePolicyScopeNodeId).toBeNull();
 		expect(restoredFile?.writePolicy).toBeNull();
 	});
 
-	test("an inherited lock refuses the whole archive and releases nothing", async () => {
+	test("an ancestor lock outside the archive set does not refuse the archive", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
 		const sealed = await seal_token(t, fixture, "/meetings/meeting-1");
 		expect((await call(t, CREATE_TARGET_PATH, sealed, target_body({ readOnly: true }))).status).toBe(200);
 		const target = (await read_targets(t))[0]!;
 
-		// A member locks the folder above the meeting. The cascade stops at the file, which keeps its
-		// own service lock, so only the destination folder ends up inheriting. An inherited lock is
-		// never this door's to clear.
 		const asUser = t.withIdentity({
 			issuer: "https://clerk.test",
 			external_id: fixture.userId,
 			name: "Test User",
 		});
+		// A lock on an in-scope node still refuses. The destination folder is part of the archive set.
+		expect(
+			await asUser.mutation(api.files_nodes.set_node_write_policy, {
+				writePolicy: { mode: "read_only" },
+				membershipId: fixture.membershipId,
+				nodeId: target.destinationNodeId,
+			}),
+		).toEqual({ _yay: null });
+		const refused = await call(t, ARCHIVE_PATH, sealed, {});
+		expect(refused.status).toBe(409);
+		expect(await refused.json()).toEqual({ message: "This item is read-only." });
+		expect(
+			(await t.run(async (ctx) => await ctx.db.query("files_nodes").collect())).every(
+				(node) => node.archiveOperationId === null,
+			),
+		).toBe(true);
+
+		expect(
+			await asUser.mutation(api.files_nodes.set_node_write_policy, {
+				writePolicy: null,
+				membershipId: fixture.membershipId,
+				nodeId: target.destinationNodeId,
+			}),
+		).toEqual({ _yay: null });
+
 		const meetingsNodeId = await t.run(async (ctx) => {
 			const nodes = await ctx.db.query("files_nodes").collect();
 			const meetings = nodes.find((node) => node.path === "/meetings");
@@ -3059,6 +3108,7 @@ describe("service upload archive", () => {
 			}
 			return meetings._id;
 		});
+		// /meetings sits above the in-scope set. That ancestor lock does not block this archive.
 		expect(
 			await asUser.mutation(api.files_nodes.set_node_write_policy, {
 				writePolicy: { mode: "read_only" },
@@ -3066,17 +3116,13 @@ describe("service upload archive", () => {
 				nodeId: meetingsNodeId,
 			}),
 		).toEqual({ _yay: null });
-
 		const response = await call(t, ARCHIVE_PATH, sealed, {});
-		expect(response.status).toBe(409);
-		expect(await response.json()).toEqual({ message: "This item is read-only." });
-
+		expect(response.status).toBe(200);
+		expect(await response.json()).toEqual({ archivedNodes: 2 });
 		const nodes = await t.run(async (ctx) => await ctx.db.query("files_nodes").collect());
-		expect(nodes.every((node) => node.archiveOperationId === null)).toBe(true);
-		expect(nodes.find((node) => node._id === target.nodeId)).toMatchObject({
-			writePolicyScopeNodeId: target.nodeId,
-			writePolicy: { mode: "writer", writer: { kind: "service_account", serviceAccountId: fixture.serviceAccountId } },
-		});
+		expect(nodes.find((node) => node._id === target.destinationNodeId)?.archiveOperationId).toBeTypeOf("string");
+		expect(nodes.find((node) => node._id === target.nodeId)?.archiveOperationId).toBeTypeOf("string");
+		expect(nodes.find((node) => node._id === meetingsNodeId)?.archiveOperationId).toBeNull();
 	});
 
 	test("archives the destination folder with its whole subtree and keeps the stored bytes charged", async () => {
@@ -3513,7 +3559,6 @@ describe("service upload archive", () => {
 					contentFrontmatterTooLargeFieldCount: null,
 					contentFrontmatterTooLargeIndexDocumentCount: null,
 					restrictedScopeNodeId: null,
-					writePolicyScopeNodeId: null,
 					writePolicy: null,
 				});
 			}
@@ -3764,7 +3809,6 @@ describe("service upload archive", () => {
 		const target = (await read_targets(t))[0]!;
 		await t.run(async (ctx) => {
 			await ctx.db.patch("files_nodes", target.nodeId, {
-				writePolicyScopeNodeId: target.nodeId,
 				writePolicy: { mode: "read_only" },
 			});
 		});

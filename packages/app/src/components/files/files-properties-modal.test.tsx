@@ -138,7 +138,6 @@ import { FilesPropertiesModal } from "./files-properties-modal.tsx";
 
 const MEMBERSHIP_ID = "membership_1" as app_convex_Id<"organizations_workspaces_users">;
 const NODE_ID = "node_1" as app_convex_Id<"files_nodes">;
-const SOURCE_ID = "source_1" as app_convex_Id<"files_nodes">;
 
 const NODE = {
 	_id: NODE_ID,
@@ -172,9 +171,10 @@ type ManagementState = {
 		| null
 		| { mode: "read_only" }
 		| { mode: "writer"; writer: null | { kind: "user"; userId: string; name: string } };
-	hasInheritedPolicy: boolean;
-	inheritedSource: { nodeId: app_convex_Id<"files_nodes">; path: string } | null;
-	blockedByAncestor: boolean;
+	localDefault:
+		| null
+		| { mode: "read_only" }
+		| { mode: "writer"; writer: null | { kind: "user"; userId: string; name: string } };
 };
 
 const WRITABLE_POLICY: ManagementState = {
@@ -182,9 +182,7 @@ const WRITABLE_POLICY: ManagementState = {
 	canWrite: true,
 	writeBlockedReason: null,
 	localPolicy: null,
-	hasInheritedPolicy: false,
-	inheritedSource: null,
-	blockedByAncestor: false,
+	localDefault: null,
 };
 
 function mockQueries(args: {
@@ -236,7 +234,6 @@ function renderModal(overrides?: Partial<Parameters<typeof FilesPropertiesModal>
 			nodeId={NODE_ID}
 			nodeName="notes.md"
 			nodeKind="file"
-			hasVisibleReadOnlyDescendant={false}
 			onClose={() => {}}
 			{...overrides}
 		/>,
@@ -370,23 +367,11 @@ describe("FilesPropertiesModalFacts", () => {
 
 describe("FilesPropertiesModalWritePolicy", () => {
 	test.each([
-		[WRITABLE_POLICY, "Inherit", "You can edit this file."],
+		[WRITABLE_POLICY, "Editable", "You can edit this file."],
 		[
 			{ ...WRITABLE_POLICY, canWrite: false, writeBlockedReason: "read_only", localPolicy: { mode: "read_only" } },
 			"Read-only",
-			"The local policy blocks editing.",
-		],
-		[
-			{
-				...WRITABLE_POLICY,
-				canWrite: false,
-				writeBlockedReason: "read_only",
-				hasInheritedPolicy: true,
-				blockedByAncestor: true,
-				inheritedSource: { nodeId: SOURCE_ID, path: "/outer" },
-			},
-			"Inherit",
-			"A policy on a parent folder blocks editing.",
+			"This file is read-only.",
 		],
 	] satisfies [ManagementState, string, string][])(
 		"shows the local choice and effective result",
@@ -403,7 +388,7 @@ describe("FilesPropertiesModalWritePolicy", () => {
 		for (const radio of screen.getAllByRole("radio")) {
 			expect((radio as HTMLInputElement).disabled).toBe(true);
 		}
-		expect(screen.getByText("Loading write policy…")).toBeTruthy();
+		expect(screen.getByText("Loading protection…")).toBeTruthy();
 	});
 
 	test("saves an explicit policy and ignores a second press while saving", async () => {
@@ -434,14 +419,11 @@ describe("FilesPropertiesModalWritePolicy", () => {
 		});
 	});
 
-	test("removes only the local policy under a parent policy", () => {
+	test("saves Editable to clear a local read-only rule", () => {
 		mockQueries({
 			management: {
 				...WRITABLE_POLICY,
 				localPolicy: { mode: "read_only" },
-				hasInheritedPolicy: true,
-				blockedByAncestor: true,
-				inheritedSource: { nodeId: SOURCE_ID, path: "/outer" },
 				canWrite: false,
 				writeBlockedReason: "read_only",
 			},
@@ -449,7 +431,7 @@ describe("FilesPropertiesModalWritePolicy", () => {
 			canWrite: false,
 		});
 		renderModal();
-		fireEvent.click(screen.getByRole("radio", { name: "Inherit" }));
+		fireEvent.click(screen.getByRole("radio", { name: "Editable" }));
 		fireEvent.click(screen.getByRole("button", { name: "Save policy" }));
 		expect(mutationMock).toHaveBeenCalledWith("set_node_write_policy", {
 			membershipId: MEMBERSHIP_ID,
@@ -458,26 +440,20 @@ describe("FilesPropertiesModalWritePolicy", () => {
 		});
 	});
 
-	test("offers a readable parent without disabling local policy management", () => {
+	test("keeps local radios enabled when the item is read-only", () => {
 		mockQueries({
 			management: {
 				...WRITABLE_POLICY,
-				hasInheritedPolicy: true,
-				blockedByAncestor: true,
-				inheritedSource: { nodeId: SOURCE_ID, path: "/outer" },
+				localPolicy: { mode: "read_only" },
 				canWrite: false,
 				writeBlockedReason: "read_only",
 			},
 			entries: [],
 			canWrite: false,
 		});
-		const onNavigateNode = vi.fn();
-		const onClose = vi.fn();
-		renderModal({ onNavigateNode, onClose });
+		renderModal();
 		expect((screen.getByRole("radio", { name: "Read-only" }) as HTMLInputElement).disabled).toBe(false);
-		fireEvent.click(screen.getByRole("button", { name: "Open parent policy" }));
-		expect(onNavigateNode).toHaveBeenCalledWith(SOURCE_ID);
-		expect(onClose).toHaveBeenCalledTimes(1);
+		expect(screen.queryByRole("button", { name: "Open parent policy" })).toBeNull();
 	});
 
 	test("keeps a hidden writer protected without making a write", () => {
@@ -487,7 +463,7 @@ describe("FilesPropertiesModalWritePolicy", () => {
 			canWrite: true,
 		});
 		renderModal();
-		expect(screen.getByText("Protected file. The selected writer is unavailable.")).toBeTruthy();
+		expect(screen.getByText("Only the selected writer can edit.", { exact: false })).toBeTruthy();
 		expect((screen.getByRole("radio", { name: "Selected writer" }) as HTMLInputElement).checked).toBe(true);
 		expect(screen.getByRole("button", { name: "Save policy" }).hasAttribute("disabled")).toBe(true);
 		expect(mutationMock).not.toHaveBeenCalled();
@@ -511,7 +487,7 @@ describe("FilesPropertiesModalWritePolicy", () => {
 		mockQueries({ management: { ...WRITABLE_POLICY, canManage: false }, entries: [], canWrite: true });
 		renderModal();
 		expect((screen.getByRole("radio", { name: "Read-only" }) as HTMLInputElement).disabled).toBe(true);
-		expect(screen.getByText("You cannot change this policy.", { exact: false })).toBeTruthy();
+		expect(screen.getByText("You cannot change this protection.", { exact: false })).toBeTruthy();
 		expect(editorHandle.options.readOnly).toBe(false);
 	});
 
@@ -539,7 +515,6 @@ describe("FilesPropertiesModalWritePolicy", () => {
 						nodeId={nodeId}
 						nodeName="notes.md"
 						nodeKind="file"
-						hasVisibleReadOnlyDescendant={false}
 						returnFocusRef={returnFocusRef}
 						onClose={() => {
 							onClose();
@@ -931,7 +906,6 @@ describe("FilesPropertiesModalMetadata", () => {
 					nodeId={nodeId}
 					nodeName="notes.md"
 					nodeKind="file"
-					hasVisibleReadOnlyDescendant={false}
 					onClose={() => {
 						onClose();
 						setNodeId(null);

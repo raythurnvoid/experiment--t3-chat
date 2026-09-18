@@ -337,13 +337,13 @@ Important behavior:
 # Write Policies
 
 Current file policy protects both proposal creation and proposal commit. Ordinary app, agent, and
-Bash proposals use the human actor as writer. Selecting that user does not grant file access, and
-every parent policy still applies. The full contract lives in
+Bash proposals use the human actor as writer. Selecting that user does not grant file access.
+Only destination, occupant, and immediate-parent checks apply. The full contract lives in
 `../files-read-only/SKILL.md`.
 
-- New content, move, replace, archive, and delete proposals require every node they would change to
-  be writable. Copy may read a locked source, but its destination and replacement occupant must be
-  writable.
+- New content checks the destination folder. Move checks the named item and its immediate parent.
+  Replace, archive, and delete still check every removed or replaced item. Copy may read a locked
+  source, but its destination and replacement occupant must be writable.
 - Proposal creation, rebase, Save, and Accept check ACL and policy before their action work. The final
   mutation checks current policy again before its first write. It checks the destination,
   replacement occupant, and the occupant a replace-move archives.

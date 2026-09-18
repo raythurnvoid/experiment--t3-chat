@@ -1004,6 +1004,7 @@ export const finalize_text_file_node_from_r2_assets = internalMutation({
 		if (fileNode?.assetId === args.versionSnapshotAssetId) {
 			return null;
 		}
+
 		if (!fileNode || fileNode.assetId !== args.expectedUploadAssetId) {
 			// The action lost its node while writing R2. Delete only its unpublished output.
 			for (const assetId of [args.versionSnapshotAssetId, ...(args.yjsSnapshot ? [args.yjsSnapshot.assetId] : [])]) {
@@ -1021,8 +1022,7 @@ export const finalize_text_file_node_from_r2_assets = internalMutation({
 			return null;
 		}
 
-		// Creating the node and upload URL accepted this upload. Finish it even if the node becomes
-		// read-only while conversion runs.
+		// An accepted upload always finishes. A later lock stops new writes, not this one.
 		await db_finalize_editable_text_file_node_from_r2_assets(ctx, {
 			...args,
 			organizationId: finalizeScope.organizationId,
@@ -1386,7 +1386,7 @@ export const process_uploaded_asset_event = internalMutation({
 			now,
 		});
 
-		// Creating the node and URL accepted this upload. A later lock does not stop it from finishing.
+		// An accepted upload always finishes. A later lock stops new writes, not this one.
 		await ctx.db.patch("files_r2_assets", asset._id, {
 			r2Key: args.r2Key,
 			size: args.size,
@@ -1659,14 +1659,9 @@ export const retire_missing_upload = internalMutation({
 			return null;
 		}
 
-		// Background cleanup cannot act as a selected writer. Keep protected placeholders.
-		if (node.writePolicyScopeNodeId !== null) {
-			await ctx.db.patch("files_r2_assets", asset._id, {
-				unfinalizedExpiresAt: now + UNFINALIZED_ASSET_RECHECK_DELAY_MS,
-			});
-			return null;
-		}
-
+		// The recovery window passed with no object. The upload is dead, so remove its
+		// placeholder even if it is locked. A lock stops new writes, not cleanup of an
+		// upload that never landed.
 		const target = await public_api_service_uploads_db_get_target_by_asset(ctx, asset._id);
 		const keepPlaceholder = target?.state === "pending" && target.assetId === asset._id;
 		await r2_enqueue_object_deletion_job(ctx, {

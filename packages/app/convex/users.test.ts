@@ -228,7 +228,6 @@ async function users_test_seed_page(
 		contentFrontmatterTooLargeFieldCount: null,
 		contentFrontmatterTooLargeIndexDocumentCount: null,
 		restrictedScopeNodeId: null,
-		writePolicyScopeNodeId: null,
 		writePolicy: null,
 
 		archiveOperationId: null,

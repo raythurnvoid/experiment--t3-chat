@@ -4591,7 +4591,6 @@ describe("file sharing", () => {
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: args.restrictedScopeNodeId ?? null,
-				writePolicyScopeNodeId: null,
 				writePolicy: null,
 				archiveOperationId: null,
 			});
@@ -6744,7 +6743,6 @@ describe("file sharing", () => {
 				contentYjsStateTooLargeByteSize: null,
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
-				writePolicyScopeNodeId: null,
 				writePolicy: null,
 				archiveOperationId: null,
 			});
@@ -7309,7 +7307,6 @@ describe("file sharing", () => {
 				contentYjsStateTooLargeByteSize: null,
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
-				writePolicyScopeNodeId: null,
 				writePolicy: null,
 				archiveOperationId: null,
 			});
@@ -8890,7 +8887,6 @@ describe("file sharing", () => {
 				contentYjsStateTooLargeByteSize: null,
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
-				writePolicyScopeNodeId: null,
 				writePolicy: null,
 			});
 		});
@@ -8960,7 +8956,6 @@ describe("file sharing", () => {
 				contentYjsStateTooLargeByteSize: null,
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
-				writePolicyScopeNodeId: null,
 				writePolicy: null,
 			});
 		});
@@ -9069,7 +9064,6 @@ describe("file sharing", () => {
 				contentYjsStateTooLargeByteSize: null,
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
-				writePolicyScopeNodeId: null,
 				writePolicy: null,
 			});
 		});
@@ -9269,11 +9263,11 @@ describe("file sharing", () => {
 });
 
 describe("file write policy management", () => {
-	/** The node's stored lock pointer, so refusal tests can prove nothing was written. */
-	async function read_lock_pointer(t: TestConvex, nodeId: Id<"files_nodes">) {
+	/** The node's own lock rule, so refusal tests can prove nothing was written. */
+	async function read_write_policy(t: TestConvex, nodeId: Id<"files_nodes">) {
 		return await t.run(async (ctx) => {
 			const node = await ctx.db.get("files_nodes", nodeId);
-			return node?.writePolicyScopeNodeId;
+			return node?.writePolicy;
 		});
 	}
 
@@ -9376,7 +9370,7 @@ describe("file write policy management", () => {
 			nodeId: folderId,
 		});
 		expect(memberLock._nay?.message).toBe("Permission denied");
-		expect(await read_lock_pointer(t, folderId)).toBeNull();
+		expect(await read_write_policy(t, folderId)).toBeNull();
 
 		// A viewer may not either.
 		await access_control_test_demote_to_viewer(fixture);
@@ -9394,7 +9388,7 @@ describe("file write policy management", () => {
 			nodeId: folderId,
 		});
 		expect(ownerLock._nay).toBeUndefined();
-		expect(await read_lock_pointer(t, folderId)).toBe(folderId);
+		expect(await read_write_policy(t, folderId)).toEqual({ mode: "read_only" });
 
 		// Unlock is gated the same way.
 		const viewerUnlock = await fixture.asMember.mutation(api.files_nodes.set_node_write_policy, {
@@ -9403,7 +9397,7 @@ describe("file write policy management", () => {
 			nodeId: folderId,
 		});
 		expect(viewerUnlock._nay?.message).toBe("Permission denied");
-		expect(await read_lock_pointer(t, folderId)).toBe(folderId);
+		expect(await read_write_policy(t, folderId)).toEqual({ mode: "read_only" });
 
 		// A custom role carrying content.permissions.manage may lock and unlock.
 		await promote_member_to_manager(fixture);
@@ -9413,7 +9407,7 @@ describe("file write policy management", () => {
 			nodeId: folderId,
 		});
 		expect(managerUnlock._nay).toBeUndefined();
-		expect(await read_lock_pointer(t, folderId)).toBeNull();
+		expect(await read_write_policy(t, folderId)).toBeNull();
 
 		const managerLock = await fixture.asMember.mutation(api.files_nodes.set_node_write_policy, {
 			writePolicy: { mode: "read_only" },
@@ -9421,7 +9415,7 @@ describe("file write policy management", () => {
 			nodeId: folderId,
 		});
 		expect(managerLock._nay).toBeUndefined();
-		expect(await read_lock_pointer(t, folderId)).toBe(folderId);
+		expect(await read_write_policy(t, folderId)).toEqual({ mode: "read_only" });
 	});
 
 	test("a hidden restricted subtree blocks the lock without being revealed", async () => {
@@ -9458,8 +9452,8 @@ describe("file write policy management", () => {
 			nodeId: open._yay!.nodeId,
 		});
 		expect(memberLock._nay?.message).toBe("Permission denied");
-		expect(await read_lock_pointer(t, open._yay!.nodeId)).toBeNull();
-		expect(await read_lock_pointer(t, secret._yay!.nodeId)).toBeNull();
+		expect(await read_write_policy(t, open._yay!.nodeId)).toBeNull();
+		expect(await read_write_policy(t, secret._yay!.nodeId)).toBeNull();
 
 		// Use the same path to prove the member can lock a folder without a hidden descendant.
 		const plain = await fixture.asMember.mutation(api.files_nodes.create_folder_node, {
@@ -9488,7 +9482,7 @@ describe("file write policy management", () => {
 			nodeId: open._yay!.nodeId,
 		});
 		expect(memberUnlock._nay?.message).toBe("Permission denied");
-		expect(await read_lock_pointer(t, open._yay!.nodeId)).toBe(open._yay!.nodeId);
+		expect(await read_write_policy(t, open._yay!.nodeId)).toEqual({ mode: "read_only" });
 	});
 
 	test("a direct lock inside a hidden outer lock reports the flag but never the outer node", async () => {
@@ -9557,20 +9551,23 @@ describe("file write policy management", () => {
 			canWrite: false,
 			writeBlockedReason: "read_only",
 			localPolicy: { mode: "read_only" },
-			hasInheritedPolicy: true,
-			inheritedSource: null,
-			blockedByAncestor: false,
+			localDefault: null,
 		});
 
-		// The owner may read the outer lock root, so they get its id and path.
 		const ownerState = await fixture.asOwner.query(api.files_nodes.get_node_write_policy_management_state, {
 			membershipId: fixture.ownerMembershipId,
 			nodeId: inner._yay!.nodeId,
 		});
-		expect(ownerState?.inheritedSource).toEqual({ nodeId: closed._yay!.nodeId, path: "/closed" });
+		expect(ownerState).toEqual({
+			nodeId: inner._yay!.nodeId,
+			canManage: true,
+			canWrite: false,
+			writeBlockedReason: "read_only",
+			localPolicy: { mode: "read_only" },
+			localDefault: null,
+		});
 
-		// Removing the direct lock leaves the inherited lock in place.
-		// The result still does not name the hidden outer node.
+		// Clearing the local rule unlocks this node. A parent lock does not stay on the child.
 		const innerUnlock = await fixture.asMember.mutation(api.files_nodes.set_node_write_policy, {
 			writePolicy: null,
 			membershipId: fixture.memberMembershipId,
@@ -9585,17 +9582,15 @@ describe("file write policy management", () => {
 		expect(memberStateAfter).toEqual({
 			nodeId: inner._yay!.nodeId,
 			canManage: true,
-			canWrite: false,
-			writeBlockedReason: "read_only",
+			canWrite: true,
+			writeBlockedReason: null,
 			localPolicy: null,
-			hasInheritedPolicy: true,
-			inheritedSource: null,
-			blockedByAncestor: true,
+			localDefault: null,
 		});
-		expect(await read_lock_pointer(t, inner._yay!.nodeId)).toBe(closed._yay!.nodeId);
+		expect(await read_write_policy(t, inner._yay!.nodeId)).toBeNull();
 	});
 
-	test("an inherited lock names its source only when the caller may read it", async () => {
+	test("a parent lock leaves a child writable and names no source", async () => {
 		const t = test_convex();
 		const fixture = await access_control_test_seed_enforcement_fixture(t, {
 			name: "lock-projection-org",
@@ -9622,8 +9617,8 @@ describe("file write policy management", () => {
 		});
 		expect(locked._nay).toBeUndefined();
 
-		// The source folder is open, so a plain member may read it and the state names it. The
-		// member still holds no manage permission, so `canManage` stays false.
+		// The child has no local lock, so it stays writable. A parent lock does not apply here.
+		// The member still holds no manage permission, so `canManage` stays false.
 		const memberState = await fixture.asMember.query(api.files_nodes.get_node_write_policy_management_state, {
 			membershipId: fixture.memberMembershipId,
 			nodeId: child._yay!.nodeId,
@@ -9631,12 +9626,10 @@ describe("file write policy management", () => {
 		expect(memberState).toEqual({
 			nodeId: child._yay!.nodeId,
 			canManage: false,
-			canWrite: false,
-			writeBlockedReason: "read_only",
+			canWrite: true,
+			writeBlockedReason: null,
 			localPolicy: null,
-			hasInheritedPolicy: true,
-			inheritedSource: { nodeId: pub._yay!.nodeId, path: "/pub" },
-			blockedByAncestor: true,
+			localDefault: null,
 		});
 
 		const ownerState = await fixture.asOwner.query(api.files_nodes.get_node_write_policy_management_state, {

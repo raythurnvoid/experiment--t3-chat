@@ -290,7 +290,6 @@ export const test_mocks = {
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: null,
-				writePolicyScopeNodeId: null,
 				writePolicy: null,
 				archiveOperationId: null,
 			});

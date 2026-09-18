@@ -969,8 +969,8 @@ For the editable plugin-label flow, verify these cases through the app and read 
 - Recreate a missing private folder through a normal Chitchat invoke. Its initial reader binding must
   exist before transcript publication. The fresh folder ID is passed as `expectedParentNodeId` on
   every private write. Staged host tests cover a parent move/archive/replacement during that gap.
-- Relock an outer folder while a nested plugin lock remains. Ensure, write, access, and archive must
-  refuse without changing any content, grants, or lock origin.
+- Relock an outer folder while a nested plugin lock remains. Nested ensure, write, access, and
+  archive still succeed. A create whose immediate parent is that outer lock must refuse.
 
 For recovery after uninstall, use only an installation created for the test. Record its output,
 metadata, grants, and locks first. Uninstall through the detail page, then check that output remains
@@ -999,8 +999,8 @@ channel's scope. Before the fix that table was empty across the whole deployment
 >
 > Defect 1 hid defect 2: while the call refused, nobody could see that the folder would not have been
 > locked anyway. Fixing only the refusal produces a private folder that is NOT read-only — a worse
-> outcome than the 409. For the current model, assert the folder's `writePolicyScopeNodeId` and
-> local `writePolicy`, including the selected account, as well as the status code.
+> outcome than the 409. For the current model, assert the folder's own `writePolicy`, including
+> the selected account, as well as the status code.
 
 Two things that will mislead you while setting this up, both hit 2026-09-01:
 

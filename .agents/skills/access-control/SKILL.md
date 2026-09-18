@@ -22,7 +22,7 @@ Membership says where you are. Access control says what you may do there.
   3. **Direct grant** — an `access_control_permission_grants` doc for per-file sharing.
 - Grants are allow-only. There are no deny grants.
 - A file's write policy is separate from ACL. Check the actor and any service account first.
-  Then apply `writePolicyScopeNodeId` and the inline `writePolicy`. Owners do not bypass a
+  Then apply that node's own `writePolicy`. Owners do not bypass a
   read-only or named-writer policy. See `../files-read-only/SKILL.md` for the policy rules.
 - Human/role sharing changes detach the node's `plugins_file_access_bindings` only when they
   change sharing. Service-account grant edits preserve that reader binding. Unrestricting clears

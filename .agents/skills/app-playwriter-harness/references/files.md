@@ -34,13 +34,16 @@ Use this file as a quick testing map for `/files`. Keep it short and selector-or
 ### File Node View
 
 - Detailed editor-surface notes: [file-node-view.md](file-node-view.md).
-- Rich text editable content: `.FileEditorRichText-editor-content`. **Use that exact class, never bare
-  `.ProseMirror` and never `main`.** The route mounts at least three ProseMirror editors — the file,
-  the AI chat composer (`.AiChatComposer-editor-content`), and the comment composer
+- Rich text editable content: `.FileEditorRichText-editor-content` while collaboration is on.
+  After Properties turns collaboration off, the Save path uses
+  `.FileEditorRichTextNonCollab-editor-content` instead. **Never use bare `.ProseMirror` and never
+  `main`.** The route mounts at least three ProseMirror editors — the file, the AI chat composer
+  (`.AiChatComposer-editor-content`), and the comment composer
   (`.FileEditorCommentsComposerControl-editor`) — so `querySelector(".ProseMirror")` can answer
   with the composer, and `main.innerText` returns the file text glued to the whole agent panel
   transcript. Either way a `text.includes(marker)` check reads as a pass on content the file does
-  not hold. Verified 2026-09-01 while proving a Chitchat transcript write.
+  not hold. Verified 2026-09-01 while proving a Chitchat transcript write; non-collab class checked
+  2026-09-18.
 - Comments region: `getByRole("complementary", { name: "Document comments" })`.
 - View picker: `[aria-label^="View:"]` in the toolbar; options render in `.FileNodeViewViewSelect-popover`
   (labels like `Rich text`, `Markdown`, `Review changes`, `File details`). Scope clicks to that
@@ -58,7 +61,7 @@ Use this file as a quick testing map for `/files`. Keep it short and selector-or
 - Sidebar row primary action: `.FilesSidebarTreeItemPrimaryAction`.
 - Sidebar row more action: `.FilesSidebarTreeItemMoreAction`.
 - Sidebar search input: `#app_files_sidebar_search input` (combobox named `Search files by name, path, or key:value filters`); filter chips `.FilesSearchInputFilterChip`; suggestions `.FilesSearchInput-popover [role=option]`; sr-only status `.FilesSidebarTopSection [role=status]`. Recipes under "Sidebar Search Box" below.
-- Locked row accessible name: `getByRole("treeitem", { name: "<name>, read-only" })` when the lock is on that node, `"<name>, read-only from /path"` when it is inherited, or `"<name>, contains read-only items"` when the folder itself is writable but a child is locked. `/meetings` after a Council meeting upload is that last shape. Expand it with `getByRole("button", { name: "Expand folder <name>, contains read-only items" })`. The visible title is an input, so `.FilesSidebarTreeItemTitle` with `hasText: /^name$/` does not match (verified 2026-08-26).
+- Locked row accessible name: `getByRole("treeitem", { name: "<name>, Read-only" })` when the lock is on that node. A parent lock does not mark a child `read-only from /path`. A writable folder with locked children can say it contains read-only items. `/meetings` after a Council meeting upload is that last shape. Expand it with `getByRole("button", { name: "Expand folder <name>, contains read-only items" })`. The visible title is an input, so `.FilesSidebarTreeItemTitle` with `hasText: /^name$/` does not match (verified 2026-08-26; row suffix recased 2026-09-18).
 - Sidebar context menu: `[data-files-sidebar-tree-context][role="menu"]`.
 - Folder explorer root: `.FileNodeViewFolderExplorer`.
 - Folder explorer rows: `.FileNodeViewFolderExplorer-row`.
@@ -415,23 +418,26 @@ do not depend on signing in or out.
 - Fixture: one directly locked file, one locked folder with rich/plain/nested descendants, one free
   folder, and one unlocked outer folder with a locked child plus writable sibling. Create one pending
   content proposal before locking.
-- In Properties, use `.FilesPropertiesModalWritePolicy`: choose `Read-only` in the `Local write policy`
-  radio group, then click `Save policy`. `Inherit` clears only the local policy. A readable inherited
-  source offers `Open parent policy`. A member without management rights gets disabled policy controls.
-  Query `list_tree` as each identity and assert `canWrite`, `writeBlockedReason`, `writePolicyState`,
-  and source visibility. Policy presence alone does not mean that the current writer is blocked.
-- Assert the exact accessible row descriptions for a direct lock, a visible inherited lock, a hidden
-  inherited lock, and an unlocked folder that contains read-only items. Locked rows must still open,
-  expand, search, and expose safe Copy and Share actions.
+- In Properties, use `.FilesPropertiesModalWritePolicy`: radios are `Editable`, `Read-only`, and
+  `Selected writer`. Click `Read-only`, then `Save policy`. There is no `Inherit` radio and no
+  `Open parent policy`. Unlock later with `Editable` + `Save policy`. A member without management
+  rights gets disabled policy controls.
+  Query `list_tree` as each identity and assert `canWrite`, `writeBlockedReason`, and
+  `writePolicyState`. Policy presence alone does not mean that the current writer is blocked.
+- Assert the exact accessible row descriptions for a lock on that node, and for an unlocked folder
+  that contains read-only items. A parent lock does not mark the child `read-only from /path`.
+  Locked rows must still open, expand, search, and expose safe Copy and Share actions.
 - Try F2/menu rename, source drag, folder drops, archive/restore, mixed-selection archive, New file,
   New folder, `Create a README.md`, Upload, and Import folder. Check the tree and pending rows after each
-  refusal; a toast alone does not prove zero writes. Copy a locked source out and confirm the new copy
-  is writable.
+  refusal; a toast alone does not prove zero writes. Copy a locked source with the row menu exact
+  `Copy` (not `Copy path`), then folder-row `Paste`. The transfer dialog reports `1 copied` and the
+  destination path. The new copy keeps the source lock (`data-file-write-policy="read_only"`,
+  `"<name>, Read-only"`, editor `contenteditable=false`). Verified 2026-09-18.
 - Start rename, create/upload UI, drag, and a dirty editor in the member session. Lock from the owner
   session. Assert each UI cancels or disables live, keeps useful draft text copyable, announces why,
   and returns or moves focus as documented in the plan.
-- For a signed-upload race, mint the target first, lock the parent, then finish the PUT. The existing
-  node must publish normally, become downloadable, and keep its inherited lock. Read back the live
+- For a signed-upload race, mint the target first, lock the file itself, then finish the PUT. The
+  existing node must publish normally, become downloadable, and keep its local lock. Read back the live
   `r2Key`, cleared `unfinalizedExpiresAt`, normal processing completion, and the expected upload plugin
   run. Reuse the signed staging URL and prove the immutable live bytes do not change.
 - Run `auditAccessibility({ selector: "body", minTargetSize: 24 })`, then separately audit the lock
@@ -473,7 +479,7 @@ accounts, and their own keys. Keep the existing signed-in identity.
    `list_service_account_grants`, `public_api.api_credentials_list` (a Result with `_yay` array), and
    `files_nodes.get_node_write_policy_management_state`. Keep all created IDs in a safe manifest.
    A no-plugin claim needs a separate complete, paged database check for references to those IDs.
-8. Clear only the QA policy with Inherit → `Save policy`; remove A/B's grants, revoke their keys and
+8. Clear only the QA policy with Editable → `Save policy`; remove A/B's grants, revoke their keys and
    accounts, then archive the QA folder. Revoked accounts still offer `Manage grants` and `Remove`.
    Confirm every created key is revoked, both grant pages are empty and complete, and both nodes have
    no policy and share an archive operation. Clear secrets from memory and close only the owned tab.
@@ -505,7 +511,7 @@ To build a writable one, follow the UI steps below.
 1. Create a `.md` file from the sidebar. A new file is collaborative.
 2. Open it, switch to the **Markdown** view, and give it a body that carries a real Markdown escape, for example a line holding `2026\-08\-30`. Save.
 3. Open the breadcrumb Properties dialog (see "File Properties Modal" below for its two click hazards) and uncheck `Collaboration` by clicking its label, `.FilesPropertiesModalCollaboration-checkbox`. Focusing the 1px input and pressing Space does NOT toggle it (tried 2026-08-31: the input stayed `checked`), so use the label. The confirmation is not a separate dialog — it appears INSIDE the properties modal as a `Turn collaboration off` / `Cancel` pair, so do not wait for a new `[role=dialog]` to show up.
-4. For a read-only variant, choose `Read-only` in the `Local write policy` radio group, then click `Save policy`.
+4. For a read-only variant, choose `Read-only` in the write-policy radios, then click `Save policy`. Unlock with `Editable` + `Save policy`.
 5. Reopen the dialog and read both states back before you start the checks.
 
 The rich view must then render the content un-escaped (`2026-08-30`) while the Markdown view shows the raw bytes. Selectors and behaviors of the non-collaborative rich and diff editors are in `file-node-view.md` under "Non-Collaborative Editors (No Yjs)".
@@ -526,6 +532,7 @@ Use this after changing the bulk import flow (`run_folder_import` in `files-side
 - First import of a nested fixture should recreate the folder structure; `readme.md` (markdown MIME) lands as `README.md`, `*.markdown` lands as `*.md`, `.DS_Store`/`Thumbs.db` and extension-less files never appear. Verify via `app_convex.query(app_convex_api.files_nodes.list_tree, { membershipId })` paths, not the sidebar alone.
 - Re-importing the same fixture opens `.FilesSidebarImportConflictModal` listing the existing paths, with buttons `Cancel import`, `Skip existing`, `Replace existing`; `Escape` cancels. Replace soft-archives the old node (old id gains `archiveOperationId`, new id appears at the same path — `list_tree` returns both, so filter archived rows before asserting).
 - The progress toast (`Preparing files to import...` / `Uploading N of M files...`) carries a `Cancel` action; after a cancel, files under the import prefix must equal the summary's imported count (no phantom "waiting for upload" rows). The summary toast (`Import finished/cancelled: N imported, ...`) auto-dismisses in ~4s — read it in the same execute call or from `latestLogs` (`[FilesSidebar.runFolderImport] Skipped files`).
+- Row UI during upload (the `Uploading` pill) only renders for visible rows: the tree is virtualized, so expand the destination folder (click the row, then `ArrowRight`) and scroll it into view before asserting. A missing pill on a collapsed or below-fold row proves nothing. Verified 2026-09-18.
 - Markdown finalization proof: open an imported `.md` node and assert its token text in `.FileEditorRichText-editor-content` (needs a few seconds for the R2 event + finalizer).
 - Clean up by archiving the fixture root folders through `app_convex.mutation(app_convex_api.files_nodes.archive_nodes, ...)`.
 
@@ -603,6 +610,36 @@ Use this after changing bash `cp`, `pendingReplacement` accept, or the version r
 - Unsaved-edit timing: `cp` first, then type in `.FileEditorRichText-editor-content`, wait about 3 s for the push, and click `Accept changes to <path>` in the Pending tab within 30 s of the last keystroke. The materializer runs 30 s after the last update and moves the file's asset, after which the accept refuses with `The file changed after this copy was proposed. Discard the copy and copy again.` — discard, `cp` again, type again.
 - Break on purpose: an early `return Result({ _nay: { name: "nay", message: "PROBE-<runid>" } })` at the top of `files_nodes_reconstruct_latest_file_content_from_materialization_state` (`convex/files_nodes_reconstruct_content.ts`) makes the unsaved-edit accept fail with that toast and leaves the row pending. Read the toast from `[data-sonner-toast]` in the same call. Revert, wait for the watcher push, and repeat the accept with a fresh copy.
 
+### Pending Proposal Under A Lock
+
+Use this to check the desktop rule on pending proposals: Save and Accept must read the live lock,
+keep the proposal, and accept the retry after unlock. Verified 2026-09-18 through the real editor
+and review UI (not page-context doors).
+
+- Create a throwaway `aaa-*-qa-*.md` with the sidebar `New file` button, then rename. Collaboration
+  starts ON. Turn it OFF in Properties (click `.FilesPropertiesModalCollaboration-checkbox`, then
+  keyboard-confirm `Turn collaboration off`) so the real `Save` button exists. Type in
+  `.FileEditorRichTextNonCollab-editor-content` and click `Save`.
+- Create the proposal from the Agent tab: new chat, then the "Run exactly these Bash commands"
+  prompt and one `printf` / `echo` write to that path. Wait until
+  `.FileEditorSidebarPendingTabBadge` shows a count.
+- Lock the **file itself** (not a parent). Breadcrumb `getByRole("button", { name: /^Properties of / })`
+  — click the box middle with `page.mouse.click` if locator click hangs. Scope to
+  `[data-files-properties-modal][data-open="true"]`. Radios are `Editable`, `Read-only`,
+  `Selected writer`. Click `Read-only`, then `Save policy`. The row becomes `"<name>, Read-only"`.
+- Open `#app_file_editor_sidebar_tabs_pending`. The row button is
+  `Accept changes to /<path>` (leading slash). While locked it stays **disabled**, the editor
+  `contenteditable` is `false`, and `Save` stays disabled. The proposal row remains. Do not use
+  `{ force: true }`.
+- Unlock with `Editable` + `Save policy`. The same Accept button enables. Click it. The review
+  dialog says `Changes saved.` / `1 saved`. The badge and Accept row go away. Close the dialog
+  with `[role=dialog][data-open=true] button[data-dialog-dismiss]` (the dialog has two `Close`
+  buttons).
+- A parent lock does not block this file. Locks are local.
+
+Page-context helpers (`files_upsert_file_pending_update`, `set_node_write_policy`, review-run
+`start`/`seal`) still exist for runners, but they are not the UI proof.
+
 ### Saved Snapshot Fields And History
 
 Verified 2026-09-07 with rich and plain text in both collaboration modes, plus PNG and invalid UTF-8 uploads.
@@ -663,6 +700,7 @@ Selectors and a proven flow for the sidebar search box with metadata filters (ve
 - Status: `.FilesSidebarTopSection [role=status]` (sr-only) reads `Added filter status:open. 4 matches`, `Searching…`, `Search failed`, or `Filter x cannot run. <reason>`. The tree empty state `.FilesSidebarTree-empty-state` shows `Searching…` while a metadata answer is pending, `The search failed. Change a filter to try again.` when a chip's query threw, and `No files match your search.` when it is empty. The doors answer bad input with their empty shape, so the failed state needs a working-tree throw in `search_nodes` to see it.
 - An open quote commits as a closed chip: `assignee:"Denys` + Enter makes the chip `assignee:"Denys"`, and a chip typed after it stays separate. `"raw-media"` as free text stays in the box and in `?q=` with its quotes, and matches the name without them.
 - Type `status:open` and press `Enter` to commit a chip; the debounced `q` param follows in ~300 ms. Read the results as the `aria-label` of each `[role=treeitem]` that ends with `.md`, about 1 s after the commit.
+- After typing a file name into sidebar search, press Escape to close suggestions **before** clicking a row. A click while the suggestion popover is open can commit a `due:` filter (`?q=…+due%3A`) and empty the tree. Clear that with Control+A, Backspace in the search input (verified 2026-09-18).
 - Clear every chip from the keyboard: focus the empty input, `Backspace` (focuses the last chip's remove button), `Enter`, repeat until `.FilesSearchInputFilterChip` counts 0. Escape closes suggestions and keeps text and chips. Use Clear search to clear everything.
 - Space commits only the complete filters in the text, and only with the caret at the end. `priority:>high status:open` plus Space leaves `priority:>high ` in the input and makes one `status:open` chip; Enter commits the broken one as an invalid chip. With the caret in the middle, Space just types a space (`input.setSelectionRange(n, n)` before `keyboard.press("Space")`).
 - Enter inside the 300 ms debounce: remove the last chip with `.FilesSearchInputFilterChip button` `.last().click()`, `focus()` the input, press Enter at once. With a metadata chip in the query the status reads "Still searching. Press Enter again when the results are in" and `?nodeId=` stays; with only `file.*` chips and text the match opens right away (`?nodeId=` becomes the file id). The `/tasks` folder in the dev workspace holds the fixture files (`/tasks-archive` holds one): scope to `/tasks` and read the first `aria-label` ending in `.md`. The folder rows are capped and sorted, so `file.path:/` never reaches `/tasks`; type `file.path:/tasks` to list the two.
@@ -708,7 +746,7 @@ Selectors and a proven flow for the media embeds in the rich text editor (verifi
 - `files_nodes.get_file_node_for_membership` takes **`fileNodeId`**, not `nodeId` (nearly every other files door takes `nodeId`). It returns the raw node doc plus `canWrite`, so it is the quickest way to read `assetId`, `collaborationEnabled`, `textKind` and `writePolicyState` for a node. Verified 2026-09-15.
 - To decode a pending branch by hand in page context, the two helpers live in different modules: `files_yjs_doc_create_from_array_buffer_update` is in `/shared/files-yjs.ts` and `files_yjs_doc_get_text` is in `/shared/files-tiptap.ts`. Pair either with `files_fetch_file_pending_update_yjs_state({ membershipId, target, stateId })` from `/src/lib/files.ts` to read the base, staged or unstaged text of a saved-target proposal. Verified 2026-09-15.
 - A copy is **not** byte-identical to its source for a `rich_text` file. The copy runs the text through a headless Tiptap editor to drop comment marks, and that markdown round-trip removes a single trailing newline (`"a\nb\n"` becomes `"a\nb"`; a trailing blank line, `"a\n\nb\n\n"`, survives) and writes a fresh asset. A file written straight through `replace_file_content` keeps whatever bytes you passed, so a fixture built that way and then copied shows a one-byte diff that is the serializer, not the transfer. Compare content after the same round-trip, or assert without the trailing newline. Verified 2026-09-15.
-- **`create_text_node` and `create_folder_node` take `path` relative to `parentId`.** `create_text_node({ parentId: <the /u39 folder>, path: "/u39/target.md" })` silently makes `/u39/u39/target.md`. The failure shows up much later and looks like something else: the agent's Bash then answers `ls: No such file or directory` for the path you think you created, and a `>` write there creates a *new private draft* (`Added` row, `target.kind: "private"`) instead of a content proposal on your file. Pass the leaf name (`path: "target.md"`) when `parentId` is a folder; pass the full path only with `parentId: "root"`. Verified 2026-09-15.
+- **`create_text_node` and `create_folder_node` take `path` relative to `parentId`.** `create_text_node({ parentId: <the /u39 folder>, path: "/u39/target.md" })` silently makes `/u39/u39/target.md`. The failure shows up much later and looks like something else: the agent's Bash then answers `ls: No such file or directory` for the path you think you created, and a `>` write there creates a _new private draft_ (`Added` row, `target.kind: "private"`) instead of a content proposal on your file. Pass the leaf name (`path: "target.md"`) when `parentId` is a folder; pass the full path only with `parentId: "root"`. Verified 2026-09-15.
 - To sign a url without opening a document, import the module in page context: `const media = await import("/src/lib/files-media-src.ts")`, then `media.files_media_get_signed_url({ membershipId, fileNodeId })`. Call it twice and time the second call — a cached hit returns the same url in ~0 ms. `files_media_get_signed_chat_image_url({ membershipId, assetId })` does the same for a picture the chat agent drew, out of the same cache.
 - Slash-menu drive (current, verified 2026-08-08 — supersedes the historical `rich-text-slash-command-keyboard.md`): type `/image` into the editor, wait for `.FileEditorRichTextToolsSlashCommand-item`, ArrowDown until `[aria-selected="true"]`'s `-item-title` matches, then Enter. Start each drive from a fresh paragraph (press Enter first): a refused URL prompt leaves the `/query` text in the doc, and typing another `/` right after it does not reopen the menu.
 - `Image`/`Video` open a real file chooser from the hidden inputs — intercept with `state.page.waitForEvent("filechooser")` started before the Enter, then `chooser.setFiles("C:/absolute/path")`. Works under a Windows relay.
@@ -747,12 +785,13 @@ One dialog holding the file's facts, its write policy, and the flat key-value ma
   directions every time. Use the keyboard for the confirm step. Read the state from
   `.FilesPropertiesModalCollaboration-description`, not from the tick: the Metadata section repeats
   the same "read-only" and "no permission" sentences, so `getByText` finds several matches.
-- Scope policy controls to `.FilesPropertiesModalWritePolicy`. The `Local write policy` radio group
-  offers `Inherit`, `Read-only`, and `Selected writer`. Click the visible label. For a selected writer,
-  choose `Writer type` (`Person` or `Service account`), then the matching picker. Only active accounts
-  appear in the account picker. Nothing is saved until `Save policy` is clicked.
+- Scope policy controls to `.FilesPropertiesModalWritePolicy`. The radios are `Editable`,
+  `Read-only`, and `Selected writer`. There is no `Inherit` radio. Click the visible label. Unlock
+  with `Editable` + `Save policy`. For a selected writer, choose `Writer type` (`Person` or
+  `Service account`), then the matching picker. Only active accounts appear in the account picker.
+  Nothing is saved until `Save policy` is clicked. Folders also have a New items default.
 - Read `files_nodes.get_node_write_policy_management_state({ membershipId, nodeId })` through a fresh
-  `ConvexHttpClient`. Check `localPolicy`, `canWrite`, `canManage`, and the inherited source separately.
+  `ConvexHttpClient`. Check `localPolicy`, `canWrite`, and `canManage`.
   After a native click, wait for the saved UI state before readback; the click can finish before its
   mutation. A selected human can edit when their access permits it. Revoking a selected account keeps
   the file protected and shows `Protected file. The selected writer is unavailable.`
@@ -951,7 +990,7 @@ const rowFor = (id) => page.locator(`[data-file-id="${id}"][role="treeitem"]`).f
 await rowFor(ids.aReport).click();
 await rowFor(ids.bReport).click({ modifiers: ["Control"] });
 await page.keyboard.press("Control+c");
-await rowFor(ids.targetId).click();          // the paste destination follows the selection
+await rowFor(ids.targetId).click(); // the paste destination follows the selection
 await page.getByRole("button", { name: "Paste files" }).first().click();
 ```
 
@@ -964,7 +1003,11 @@ Answer the conflicts by fieldset legend (they are `group`, not `radiogroup`):
 ```js
 const modal = page.locator(".FilesTransferRunModal").first();
 const set = modal.locator("fieldset").filter({ hasText: "Apply to remaining folder name conflicts" }).first();
-await set.locator("label").filter({ hasText: /^Keep both$/ }).first().click();
+await set
+	.locator("label")
+	.filter({ hasText: /^Keep both$/ })
+	.first()
+	.click();
 await modal.getByRole("button", { name: "Continue" }).first().click();
 ```
 
@@ -976,8 +1019,12 @@ which answers nothing, so `Continue` stays disabled and the run never moves. Alw
 legend text of the conflict you mean:
 
 ```js
-await modal.locator("fieldset").filter({ hasText: "/run/src/skipme.md" })
-	.getByText("Skip", { exact: true }).first().click();
+await modal
+	.locator("fieldset")
+	.filter({ hasText: "/run/src/skipme.md" })
+	.getByText("Skip", { exact: true })
+	.first()
+	.click();
 ```
 
 The Files clipboard lives in the page, not on the server, so **a full page load clears it**. After a
@@ -998,7 +1045,6 @@ A run that ends blocked stays reachable. Reopen it from the notifications bell (
 Playwriter toolbar covers it) and click "Review conflicts" inside `.AppNotifications-popover`.
 Pasting the same sources again is the way to check that duplicate names keep a stable order: the
 counter must continue past the existing siblings, in source order.
-
 
 ### Reading A Reservation That Is Still "Preparing"
 
@@ -1031,25 +1077,25 @@ A private node the transfer created but has not filled yet reports `preparing: t
   long as you need it. It can die two ways, and either is fine: the 1 s Convex mutation limit
   (`Uncaught Error: Function execution timed out (maximum duration: 1s)`), or a write conflict with
   another transfer running at the same time (`Documents read from or written to the
-  "files_pending_review_versions" table changed while this mutation was being run ... A call to
-  "files_nodes_content.js:finalize_transfer_file_copy" changed the document`). Discard it when you
+"files_pending_review_versions" table changed while this mutation was being run ... A call to
+"files_nodes_content.js:finalize_transfer_file_copy" changed the document`). Discard it when you
   are done.
 
 What the readers say about one of these is not uniform, so do not assert "the file is missing" or
 "the file is binary" from a single command:
 
-| reader | answer |
-| --- | --- |
-| `ls` / `find` / `tree` | a plain row, no marker of any kind |
-| `stat` | `Size: (content size not tracked for this file)`, `Type: regular file` |
-| `cat` / `tail -n` / `head -n` | `content is not available from materialized chunks` |
-| `head -c` | `No such file or directory` |
-| `wc -c` | the binary/media `[ADVISORY]`, even for `text/markdown` |
-| `grep` | silent |
-| `meta get` | `item not found` |
-| `edit_file` | `Cannot edit <path>: this draft is still preparing` |
-| `cp <preparing> <dest>` | **rc 1**, `cp: draft '<path>' is still preparing` — the clearest of them all |
-| review-run Accept | `blocked`, run `failed`, `Pending changes changed during review. Review them again.` (misleading: nothing changed) |
+| reader                        | answer                                                                                                             |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `ls` / `find` / `tree`        | a plain row, no marker of any kind                                                                                 |
+| `stat`                        | `Size: (content size not tracked for this file)`, `Type: regular file`                                             |
+| `cat` / `tail -n` / `head -n` | `content is not available from materialized chunks`                                                                |
+| `head -c`                     | `No such file or directory`                                                                                        |
+| `wc -c`                       | the binary/media `[ADVISORY]`, even for `text/markdown`                                                            |
+| `grep`                        | silent                                                                                                             |
+| `meta get`                    | `item not found`                                                                                                   |
+| `edit_file`                   | `Cannot edit <path>: this draft is still preparing`                                                                |
+| `cp <preparing> <dest>`       | **rc 1**, `cp: draft '<path>' is still preparing` — the clearest of them all                                       |
+| review-run Accept             | `blocked`, run `failed`, `Pending changes changed during review. Review them again.` (misleading: nothing changed) |
 
 Only the writers name the state. Use `edit_file`, or a redirect write, when you need a command
 that actually tells you a target is preparing.
@@ -1229,9 +1275,9 @@ The full shape, proven end to end with a second identity (see `second-user-fixtu
    staleness is derived from the base asset, not from that flag).
 3. The owner's row caption becomes `<path>, review to update`.
 4. `Accept changes to <path>` toasts `This file changed. Open Review to update the proposal, or
-   discard it.` and writes nothing — same proposal id, revision and state ids afterwards.
+discard it.` and writes nothing — same proposal id, revision and state ids afterwards.
 5. `Accept all shown pending changes` toasts `Changes waiting for review are skipped. Open Review to
-   update them.`, saves the fresh rows and leaves the stale one alone.
+update them.`, saves the fresh rows and leaves the stale one alone.
 
 ## Script Pattern
 

@@ -238,7 +238,6 @@ async function seed_markdown_file(args: {
 				}
 				parentId = await ctx.db.insert("files_nodes", {
 					writePolicy: null,
-					writePolicyScopeNodeId: null,
 					organizationId: args.organizationId,
 					workspaceId: args.workspaceId,
 					path: parentPath,
@@ -329,7 +328,6 @@ async function seed_markdown_file(args: {
 
 		const fileNodeId = await ctx.db.insert("files_nodes", {
 			writePolicy: null,
-			writePolicyScopeNodeId: null,
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
 			path: args.path,
@@ -585,12 +583,20 @@ describe("service-bound API credentials", () => {
 		if (personal._nay) {
 			throw new Error(personal._nay.message);
 		}
+		// The folder lock does not protect this file. Only the file's own lock can refuse the write.
 		const humanWrite = await t.fetch("/api/v1/files/write", {
 			method: "POST",
 			headers: auth_headers(personal._yay.credential),
 			body: JSON.stringify({ path: "/logs/run.md", content: "Human overwrite" }),
 		});
-		expect(humanWrite.status).toBe(409);
+		expect(humanWrite.status).toBe(200);
+		const humanRead = await t.fetch("/api/v1/files/read", {
+			method: "POST",
+			headers,
+			body: JSON.stringify({ path: "/logs/run.md" }),
+		});
+		expect(humanRead.status).toBe(200);
+		expect(await humanRead.json()).toMatchObject({ content: expect.stringContaining("Human overwrite") });
 
 		vi.spyOn(Date, "now").mockReturnValue(Date.now() + 60_000);
 		const writeOnly = await asUser.mutation(api.public_api.api_credential_create, {
@@ -618,12 +624,12 @@ describe("service-bound API credentials", () => {
 				})
 			).status,
 		).toBe(200);
-		const blocked = await t.fetch("/api/v1/files/write", {
+		const folderLockedWrite = await t.fetch("/api/v1/files/write", {
 			method: "POST",
 			headers,
-			body: JSON.stringify({ path: "/logs/run.md", content: "Blocked overwrite" }),
+			body: JSON.stringify({ path: "/logs/run.md", content: "Folder lock overwrite" }),
 		});
-		expect(blocked.status).toBe(409);
+		expect(folderLockedWrite.status).toBe(200);
 
 		const stored = await t.run(async (ctx) => ({
 			node: await ctx.db.get("files_nodes", nodeId),
@@ -2034,7 +2040,6 @@ describe("public files API", () => {
 			const now = Date.now();
 			const outerId = await ctx.db.insert("files_nodes", {
 				writePolicy: null,
-				writePolicyScopeNodeId: null,
 				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
 				parentId: files_ROOT_ID,
@@ -2064,7 +2069,6 @@ describe("public files API", () => {
 			});
 			const innerId = await ctx.db.insert("files_nodes", {
 				writePolicy: null,
-				writePolicyScopeNodeId: null,
 				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
 				parentId: outerId,
@@ -2209,7 +2213,6 @@ describe("public files API", () => {
 			const now = Date.now();
 			const folderId = await ctx.db.insert("files_nodes", {
 				writePolicy: null,
-				writePolicyScopeNodeId: null,
 				organizationId: owner.organizationId,
 				workspaceId: owner.workspaceId,
 				parentId: files_ROOT_ID,
@@ -2260,7 +2263,6 @@ describe("public files API", () => {
 			// the ancestor walk refuses the write before that check is ever reached.
 			const nodeId = await ctx.db.insert("files_nodes", {
 				writePolicy: null,
-				writePolicyScopeNodeId: null,
 				organizationId: owner.organizationId,
 				workspaceId: owner.workspaceId,
 				parentId: files_ROOT_ID,
@@ -3913,7 +3915,6 @@ describe("files upload-urls", () => {
 			const now = Date.now();
 			const outerId = await ctx.db.insert("files_nodes", {
 				writePolicy: null,
-				writePolicyScopeNodeId: null,
 				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
 				parentId: files_ROOT_ID,
@@ -5151,7 +5152,6 @@ describe("files read-only locks", () => {
 			const now = Date.now();
 			const nodeId = await ctx.db.insert("files_nodes", {
 				writePolicy: null,
-				writePolicyScopeNodeId: null,
 				organizationId: args.db.organizationId,
 				workspaceId: args.db.workspaceId,
 				parentId: files_ROOT_ID,
@@ -5962,7 +5962,6 @@ describe("files read-only locks", () => {
 			const now = Date.now();
 			return await ctx.db.insert("files_nodes", {
 				writePolicy: null,
-				writePolicyScopeNodeId: null,
 				organizationId: writer.db.organizationId,
 				workspaceId: writer.db.workspaceId,
 				parentId: folder!._id,
@@ -6110,7 +6109,6 @@ describe("files read-only locks", () => {
 			const now = Date.now();
 			const nodeId = await ctx.db.insert("files_nodes", {
 				writePolicy: null,
-				writePolicyScopeNodeId: null,
 				organizationId: writer.db.organizationId,
 				workspaceId: writer.db.workspaceId,
 				parentId: files_ROOT_ID,
@@ -6179,7 +6177,6 @@ describe("files read-only locks", () => {
 			const now = Date.now();
 			const nodeId = await ctx.db.insert("files_nodes", {
 				writePolicy: null,
-				writePolicyScopeNodeId: null,
 				organizationId: writer.db.organizationId,
 				workspaceId: writer.db.workspaceId,
 				parentId: outerId,
@@ -6938,7 +6935,6 @@ describe("service file writes", () => {
 		const installation = await t.run((ctx) => ctx.db.get("plugins_workspace_installations", service.installationId));
 		expect(installation?.serviceAccountId).toEqual(expect.any(String));
 		expect(node).toMatchObject({
-			writePolicyScopeNodeId: node!._id,
 			writePolicy: {
 				mode: "writer",
 				writer: { kind: "service_account", serviceAccountId: installation?.serviceAccountId },
@@ -6967,7 +6963,6 @@ describe("service file writes", () => {
 		});
 		expect(unlocked._nay).toBeUndefined();
 		const afterUnlock = await find_active_node({ t, db, path: "/meetings/meeting-1/transcript.md" });
-		expect(afterUnlock?.writePolicyScopeNodeId).toBeNull();
 		expect(afterUnlock?.writePolicy).toBeNull();
 		expect(
 			(
@@ -6981,7 +6976,7 @@ describe("service file writes", () => {
 			).status,
 		).toBe(200);
 		expect(
-			(await find_active_node({ t, db, path: "/meetings/meeting-1/transcript.md" }))?.writePolicyScopeNodeId,
+			(await find_active_node({ t, db, path: "/meetings/meeting-1/transcript.md" }))?.writePolicy,
 		).toBeNull();
 
 		// A member re-lock carries no plugin name, so the service cannot pass it.
@@ -7225,7 +7220,6 @@ describe("service file writes", () => {
 		enqueueActionSpy.mockRestore();
 		const storedNode = await find_active_node({ t, db, path: "/meetings/meeting-1/notes.md" });
 		expect(storedNode).toMatchObject({
-			writePolicyScopeNodeId: storedNode!._id,
 			writePolicy: { mode: "writer", writer: { kind: "service_account", serviceAccountId: service.serviceAccountId } },
 		});
 
@@ -7328,7 +7322,6 @@ describe("service file writes", () => {
 		expect(await t.run(async (ctx) => ctx.db.get("files_nodes", lockedNode!._id))).toMatchObject({
 			archiveOperationId: expect.any(String),
 		});
-		expect((await t.run(async (ctx) => ctx.db.get("files_nodes", lockedNode!._id)))?.writePolicyScopeNodeId).toBeNull();
 		expect((await t.run(async (ctx) => ctx.db.get("files_nodes", lockedNode!._id)))?.writePolicy).toBeNull();
 
 		// Archiving an absent path is satisfied by doing nothing.
@@ -7440,7 +7433,6 @@ describe("service file writes", () => {
 		// exception that lets the service pass it, so a member restore gets writable files back.
 		const after = await t.run(async (ctx) => ctx.db.get("files_nodes", node!._id));
 		expect(after?.archiveOperationId).toEqual(expect.any(String));
-		expect(after?.writePolicyScopeNodeId).toBeNull();
 		expect(after?.writePolicy).toBeNull();
 		expect(await find_active_node({ t, db, path: "/meetings" })).toBeNull();
 
@@ -7465,7 +7457,7 @@ describe("service file writes", () => {
 		});
 		expect(restored).toEqual({ _yay: null });
 		const restoredFile = await find_active_node({ t, db, path: "/meetings/meeting-1/transcript.md" });
-		expect(restoredFile?.writePolicyScopeNodeId).toBeNull();
+		expect(restoredFile?.writePolicy).toBeNull();
 	});
 
 	test("another plugin's grant cannot archive through the lock this plugin created", async () => {

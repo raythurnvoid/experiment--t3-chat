@@ -119,6 +119,32 @@ async function finish_copy_worker(
 	});
 }
 
+// File children run on queued workers. Drive each one until the run settles.
+async function finish_copy_with_workers(
+	fixture: Awaited<ReturnType<typeof create_folder_fixture>>,
+	runId: Id<"files_transfer_runs">,
+) {
+	for (let step = 0; step < 300; step += 1) {
+		const view = await fixture.asUser.query(api.files_transfer.get, { membershipId: fixture.db.membershipId, runId });
+		if (!view) throw new Error("Missing run");
+		if (view.activity.status !== "queued" && view.activity.status !== "running" && view.activity.status !== "stopping")
+			return view;
+		const items = await fixture.t.run((ctx) =>
+			ctx.db
+				.query("files_transfer_items")
+				.withIndex("by_run_order", (q) => q.eq("runId", runId))
+				.collect(),
+		);
+		const working = items.find((item) => item.workId !== null);
+		if (working) {
+			await finish_copy_worker(fixture, working);
+		} else {
+			await fixture.t.mutation(internal.files_transfer.advance, { runId });
+		}
+	}
+	throw new Error("Copy did not finish");
+}
+
 async function get_node(fixture: Awaited<ReturnType<typeof create_folder_fixture>>, path: string) {
 	return await fixture.t.run((ctx) =>
 		ctx.db
@@ -322,27 +348,27 @@ describe("transfers of a background job", () => {
 			startCwd: "/",
 			startCwdTarget: null,
 			shellState: {
-			env: [],
-			arrays: [],
-			options: {},
-			shoptOptions: {},
-			readonlyVars: [],
-			associativeArrays: [],
-			namerefs: [],
-			boundNamerefs: [],
-			invalidNamerefs: [],
-			integerVars: [],
-			lowercaseVars: [],
-			uppercaseVars: [],
-			exportedVars: [],
-			declaredVars: [],
-			functions: [],
-			previousDir: "/",
-			directoryStack: [],
-			lastExitCode: 0,
-			lastArg: "",
-			openFileDescriptors: [],
-		},
+				env: [],
+				arrays: [],
+				options: {},
+				shoptOptions: {},
+				readonlyVars: [],
+				associativeArrays: [],
+				namerefs: [],
+				boundNamerefs: [],
+				invalidNamerefs: [],
+				integerVars: [],
+				lowercaseVars: [],
+				uppercaseVars: [],
+				exportedVars: [],
+				declaredVars: [],
+				functions: [],
+				previousDir: "/",
+				directoryStack: [],
+				lastExitCode: 0,
+				lastArg: "",
+				openFileDescriptors: [],
+			},
 			allowDbFilesMkdir: true,
 		});
 		if (started._nay) throw new Error(started._nay.message);
@@ -481,6 +507,270 @@ describe("advance", () => {
 		});
 		expect(await get_node(fixture, "/target/report.txt")).toBeNull();
 		expect((await get_node(fixture, "/source/report.txt"))?._id).toBe(sourceId);
+	});
+
+	test("a later lock on a copied parent refuses the next child", async () => {
+		const fixture = await create_folder_fixture(["/source"]);
+		const { t, db, asUser, folders } = fixture;
+		await test_create_saved_text_file(t, {
+			membershipId: db.membershipId,
+			path: "/source/child.txt",
+			textContent: "Child\n",
+		});
+		const runId = await start_copy(fixture, [folders.get("/source")!]);
+		await finish_discovery(fixture, runId);
+		await t.mutation(internal.files_transfer.advance, { runId });
+
+		const copiedParent = await get_node(fixture, "/target/source");
+		expect(copiedParent).not.toBeNull();
+		expect(
+			(
+				await asUser.mutation(api.files_nodes.set_node_write_policy, {
+					membershipId: db.membershipId,
+					nodeId: copiedParent!._id,
+					writePolicy: { mode: "read_only" },
+				})
+			)._nay,
+		).toBeUndefined();
+
+		const finished = await finish_folder_copy(fixture, runId);
+		expect(finished.activity.status).toBe("partial");
+		expect(await get_node(fixture, "/target/source/child.txt")).toBeNull();
+		const failedChild = await t.run((ctx) =>
+			ctx.db
+				.query("files_transfer_items")
+				.withIndex("by_run_order", (q) => q.eq("runId", runId))
+				.collect(),
+		);
+		expect(failedChild.some((item) => item.sourcePath === "/source/child.txt" && item.state === "failed")).toBe(true);
+	});
+
+	test("copies children into a locked copy of a read-only folder", async () => {
+		const fixture = await create_folder_fixture(["/source", "/source/nested"]);
+		const { t, db, asUser, folders } = fixture;
+		for (const name of ["a.txt", "b.txt"]) {
+			await test_create_saved_text_file(t, {
+				membershipId: db.membershipId,
+				path: `/source/${name}`,
+				textContent: `${name}\n`,
+			});
+		}
+		expect(
+			(
+				await asUser.mutation(api.files_nodes.set_node_write_policy, {
+					membershipId: db.membershipId,
+					nodeId: folders.get("/source")!,
+					writePolicy: { mode: "read_only" },
+				})
+			)._nay,
+		).toBeUndefined();
+		const runId = await start_copy(fixture, [folders.get("/source")!]);
+		await finish_discovery(fixture, runId);
+
+		const finished = await finish_copy_with_workers(fixture, runId);
+		expect(finished.activity).toMatchObject({
+			status: "succeeded",
+			progress: { total: 4, completed: 4, failed: 0 },
+		});
+		expect(await get_node(fixture, "/target/source")).toMatchObject({ writePolicy: { mode: "read_only" } });
+		for (const path of ["/target/source/nested", "/target/source/a.txt", "/target/source/b.txt"]) {
+			expect(await get_node(fixture, path)).not.toBeNull();
+		}
+	});
+
+	test("still copies children after the produced parent's new-item default changes", async () => {
+		const fixture = await create_folder_fixture(["/source"]);
+		const { t, db, asUser, folders } = fixture;
+		await test_create_saved_text_file(t, {
+			membershipId: db.membershipId,
+			path: "/source/child.txt",
+			textContent: "Child\n",
+		});
+		const runId = await start_copy(fixture, [folders.get("/source")!]);
+		await finish_discovery(fixture, runId);
+		await t.mutation(internal.files_transfer.advance, { runId });
+
+		const copiedParent = await get_node(fixture, "/target/source");
+		expect(
+			(
+				await asUser.mutation(api.files_nodes.set_node_new_child_write_policy, {
+					membershipId: db.membershipId,
+					nodeId: copiedParent!._id,
+					newChildWritePolicy: { mode: "read_only" },
+				})
+			)._nay,
+		).toBeUndefined();
+
+		// The default change moves the folder's revision but leaves it writable.
+		const finished = await finish_copy_with_workers(fixture, runId);
+		expect(finished.activity).toMatchObject({
+			status: "succeeded",
+			progress: { total: 2, completed: 2, failed: 0 },
+		});
+		expect(await get_node(fixture, "/target/source/child.txt")).not.toBeNull();
+	});
+
+	test("still copies children after the produced parent is locked then unlocked", async () => {
+		const fixture = await create_folder_fixture(["/source"]);
+		const { t, db, asUser, folders } = fixture;
+		await test_create_saved_text_file(t, {
+			membershipId: db.membershipId,
+			path: "/source/child.txt",
+			textContent: "Child\n",
+		});
+		const runId = await start_copy(fixture, [folders.get("/source")!]);
+		await finish_discovery(fixture, runId);
+		await t.mutation(internal.files_transfer.advance, { runId });
+
+		const copiedParent = await get_node(fixture, "/target/source");
+		for (const writePolicy of [{ mode: "read_only" as const }, null]) {
+			expect(
+				(
+					await asUser.mutation(api.files_nodes.set_node_write_policy, {
+						membershipId: db.membershipId,
+						nodeId: copiedParent!._id,
+						writePolicy,
+					})
+				)._nay,
+			).toBeUndefined();
+		}
+
+		// The lock and unlock moved the revision twice, but the folder is writable again.
+		const finished = await finish_copy_with_workers(fixture, runId);
+		expect(finished.activity).toMatchObject({
+			status: "succeeded",
+			progress: { total: 2, completed: 2, failed: 0 },
+		});
+		expect(await get_node(fixture, "/target/source/child.txt")).not.toBeNull();
+	});
+
+	test("fails children when the produced parent is locked with a different policy", async () => {
+		const fixture = await create_folder_fixture(["/source"]);
+		const { t, db, asUser, folders } = fixture;
+		const member = await add_member(fixture);
+		await test_create_saved_text_file(t, {
+			membershipId: db.membershipId,
+			path: "/source/child.txt",
+			textContent: "Child\n",
+		});
+		expect(
+			(
+				await asUser.mutation(api.files_nodes.set_node_write_policy, {
+					membershipId: db.membershipId,
+					nodeId: folders.get("/source")!,
+					writePolicy: { mode: "read_only" },
+				})
+			)._nay,
+		).toBeUndefined();
+		const runId = await start_copy(fixture, [folders.get("/source")!]);
+		await finish_discovery(fixture, runId);
+		await t.mutation(internal.files_transfer.advance, { runId });
+
+		const copiedParent = await get_node(fixture, "/target/source");
+		expect(
+			(
+				await asUser.mutation(api.files_nodes.set_node_write_policy, {
+					membershipId: db.membershipId,
+					nodeId: copiedParent!._id,
+					writePolicy: { mode: "writer", writer: { kind: "user", userId: member.userId } },
+				})
+			)._nay,
+		).toBeUndefined();
+
+		// The copy kept the run's lock, but someone replaced it with a different one.
+		const finished = await finish_copy_with_workers(fixture, runId);
+		expect(finished.activity).toMatchObject({
+			status: "partial",
+			progress: { total: 2, completed: 1, failed: 1 },
+		});
+		const items = await t.run((ctx) =>
+			ctx.db
+				.query("files_transfer_items")
+				.withIndex("by_run_order", (q) => q.eq("runId", runId))
+				.collect(),
+		);
+		expect(items.find((entry) => entry.sourcePath === "/source/child.txt")).toMatchObject({
+			state: "failed",
+			errorMessage: "This item is read-only.",
+		});
+		expect(await get_node(fixture, "/target/source/child.txt")).toBeNull();
+	});
+
+	test("fails children copied into a merged folder that locks after the merge", async () => {
+		const fixture = await create_folder_fixture(["/source", "/target/source"]);
+		const { t, db, asUser, folders } = fixture;
+		await test_create_saved_text_file(t, {
+			membershipId: db.membershipId,
+			path: "/source/child.txt",
+			textContent: "Child\n",
+		});
+		const runId = await start_copy(fixture, [folders.get("/source")!]);
+		const waiting = await finish_discovery(fixture, runId);
+		expect(waiting.activity.status).toBe("awaiting_input");
+
+		const item = await t.run((ctx) =>
+			ctx.db
+				.query("files_transfer_items")
+				.withIndex("by_run_parentItem", (q) => q.eq("runId", runId).eq("parentItemId", null))
+				.unique(),
+		);
+		if (!item?.conflictTarget) throw new Error("Expected a destination conflict");
+		expect(
+			(
+				await asUser.mutation(api.files_transfer.resolve_conflicts, {
+					membershipId: db.membershipId,
+					runId,
+					revision: waiting.revision,
+					choices: [
+						{
+							itemId: item._id,
+							choice: "merge",
+							reviewedTarget: item.conflictTarget,
+							reviewedVersion: item.conflictVersion,
+						},
+					],
+					applyToRemaining: { file: null, folder: null },
+				})
+			)._nay,
+		).toBeUndefined();
+
+		// Finish the merge first, then lock the destination before children copy.
+		for (let step = 0; step < 50; step += 1) {
+			const merged = await t.run((ctx) => ctx.db.get("files_transfer_items", item._id));
+			if (merged?.state === "completed") break;
+			await t.mutation(internal.files_transfer.advance, { runId });
+		}
+		expect(await t.run((ctx) => ctx.db.get("files_transfer_items", item._id))).toMatchObject({
+			state: "completed",
+			outcome: "merged",
+		});
+		expect(
+			(
+				await asUser.mutation(api.files_nodes.set_node_write_policy, {
+					membershipId: db.membershipId,
+					nodeId: folders.get("/target/source")!,
+					writePolicy: { mode: "read_only" },
+				})
+			)._nay,
+		).toBeUndefined();
+
+		// The run did not write the merged folder's lock, so the child fails on the live check.
+		const finished = await finish_copy_with_workers(fixture, runId);
+		expect(finished.activity).toMatchObject({
+			status: "partial",
+			progress: { total: 2, completed: 1, failed: 1 },
+		});
+		const items = await t.run((ctx) =>
+			ctx.db
+				.query("files_transfer_items")
+				.withIndex("by_run_order", (q) => q.eq("runId", runId))
+				.collect(),
+		);
+		expect(items.find((entry) => entry.sourcePath === "/source/child.txt")).toMatchObject({
+			state: "failed",
+			errorMessage: "This item is read-only.",
+		});
+		expect(await get_node(fixture, "/target/source/child.txt")).toBeNull();
 	});
 
 	test.each([
@@ -1420,9 +1710,11 @@ describe("resolve_conflicts", () => {
 			new TextEncoder().encode(`Report ${reversed ? "b" : "a"}: café 😀\n`),
 		);
 		const proposal = await t.run((ctx) => ctx.db.get("files_pending_updates", output!.pendingUpdateId!));
+		// These sources have no local lock. The copy still records that empty rule.
 		expect(proposal?.copiedFrom).toEqual({
 			target: { kind: "saved", id: sourceIds[0] },
 			path: `/${reversed ? "b" : "a"}/report.txt`,
+			sourceWritePolicy: null,
 		});
 		expect(await get_node(fixture, "/target/report.txt")).toBeNull();
 	});
@@ -2013,7 +2305,9 @@ describe("retry_remaining", () => {
 		if (created._nay) throw new Error(created._nay.message);
 		const runId = await start_copy(fixture, [folders.get("/source")!]);
 		await finish_discovery(fixture, runId);
-		expect((await asUser.mutation(api.files_transfer.stop, { membershipId: db.membershipId, runId }))._nay).toBeUndefined();
+		expect(
+			(await asUser.mutation(api.files_transfer.stop, { membershipId: db.membershipId, runId }))._nay,
+		).toBeUndefined();
 		await finish_folder_copy(fixture, runId);
 
 		// The manifest is frozen, so the retry still names the old path. Moving the file out must not

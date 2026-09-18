@@ -118,7 +118,6 @@ async function data_deletion_test_seed_page(
 		contentFrontmatterTooLargeFieldCount: null,
 		contentFrontmatterTooLargeIndexDocumentCount: null,
 		restrictedScopeNodeId: null,
-		writePolicyScopeNodeId: null,
 		writePolicy: null,
 
 		archiveOperationId: null,
@@ -265,7 +264,6 @@ async function data_deletion_test_seed_workspace_content_bulk(
 			contentFrontmatterTooLargeFieldCount: null,
 			contentFrontmatterTooLargeIndexDocumentCount: null,
 			restrictedScopeNodeId: null,
-			writePolicyScopeNodeId: null,
 			writePolicy: null,
 
 			archiveOperationId: null,
@@ -1069,7 +1067,6 @@ async function review_seed_all_workspace_content(
 			contentFrontmatterTooLargeFieldCount: null,
 			contentFrontmatterTooLargeIndexDocumentCount: null,
 			restrictedScopeNodeId: null,
-			writePolicyScopeNodeId: null,
 			writePolicy: null,
 
 			archiveOperationId: null,
@@ -1108,7 +1105,6 @@ async function review_seed_all_workspace_content(
 			contentFrontmatterTooLargeFieldCount: null,
 			contentFrontmatterTooLargeIndexDocumentCount: null,
 			restrictedScopeNodeId: null,
-			writePolicyScopeNodeId: null,
 			writePolicy: null,
 
 			archiveOperationId: null,

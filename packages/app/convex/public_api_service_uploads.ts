@@ -547,8 +547,6 @@ async function db_authorize_live_target_node(
 		return Result({ _nay: { name: REFUSAL_CONFLICT, message: "This file's content changed" } });
 	}
 
-	// Do not check the file lock here. Creating the target accepted the upload, so a later lock does
-	// not cancel its R2 completion or the retry URL needed to finish it.
 	return Result({ _yay: node });
 }
 
@@ -962,6 +960,8 @@ export const create_upload_target = internalMutation({
 				});
 			}
 
+			// A replay refreshes transport for the same accepted operation. A later lock
+			// does not stop it. Cancel (discard + release) is the stop button, not the lock.
 			return await db_remint_pending_target(ctx, { target: liveTarget, asset, now });
 		}
 
@@ -1426,6 +1426,8 @@ export const remint_upload_target = internalMutation({
 			});
 		}
 
+		// Remint refreshes transport for the same accepted operation. A later lock does
+		// not stop it. Cancel (discard + release) is the stop button, not the lock.
 		return await db_remint_pending_target(ctx, { target: liveTarget, asset, now });
 	},
 });

@@ -36,7 +36,6 @@ import { useFn } from "@/hooks/utils-hooks.ts";
 import {
 	app_convex,
 	app_convex_api,
-	type app_convex_FunctionArgs,
 	type app_convex_Id,
 } from "@/lib/app-convex-client.ts";
 import { app_monaco_THEME_NAME_DARK } from "@/lib/app-monaco-config.ts";
@@ -219,33 +218,217 @@ type FilesPropertiesModalWritePolicy_ClassNames =
 	| "FilesPropertiesModalWritePolicy-actions"
 	| "FilesPropertiesModalWritePolicy-error";
 
+type PolicyDraft = {
+	mode: "editable" | "read_only" | "writer";
+	writerKind: "user" | "service_account";
+	userId: app_convex_Id<"users"> | null;
+	serviceAccountId: app_convex_Id<"access_control_service_accounts"> | null;
+};
+
+type SavedPolicy = {
+	mode: "read_only";
+} | {
+	mode: "writer";
+	writer:
+		| { kind: "user"; userId: app_convex_Id<"users"> }
+		| { kind: "service_account"; serviceAccountId: app_convex_Id<"access_control_service_accounts"> };
+} | null;
+
+function policy_draft_from_saved(
+	policy: { mode: "read_only" } | { mode: "writer"; writer: unknown } | null | undefined,
+): PolicyDraft {
+	if (policy?.mode === "writer") {
+		return { mode: "writer", writerKind: "user", userId: null, serviceAccountId: null };
+	}
+	return { mode: policy?.mode === "read_only" ? "read_only" : "editable", writerKind: "user", userId: null, serviceAccountId: null };
+}
+
+function saved_policy_from_draft(draft: PolicyDraft): SavedPolicy {
+	if (draft.mode === "read_only") {
+		return { mode: "read_only" };
+	}
+	if (draft.mode === "writer") {
+		if (draft.writerKind === "user" && draft.userId) {
+			return { mode: "writer", writer: { kind: "user", userId: draft.userId } };
+		}
+		if (draft.writerKind === "service_account" && draft.serviceAccountId) {
+			return { mode: "writer", writer: { kind: "service_account", serviceAccountId: draft.serviceAccountId } };
+		}
+		return null;
+	}
+	return null;
+}
+
+function policy_choice_label(policy: SavedPolicy) {
+	if (!policy) {
+		return "Editable";
+	}
+	if (policy.mode === "read_only") {
+		return "Read-only";
+	}
+	return "Selected writer";
+}
+
+/**
+ * Strip the display name off a queried rule so it fits the mutation validator.
+ * A redacted writer (null) cannot be sent back: there is no identity to keep.
+ */
+function mutation_policy_from_visible(
+	policy: { mode: "read_only" } | { mode: "writer"; writer: unknown } | null | undefined,
+): { policy: SavedPolicy; writerKnown: boolean } {
+	if (policy?.mode === "writer") {
+		const writer = policy.writer as
+			| { kind: "user"; userId: app_convex_Id<"users"> }
+			| { kind: "service_account"; serviceAccountId: app_convex_Id<"access_control_service_accounts"> }
+			| null
+			| undefined;
+		if (writer && typeof writer === "object" && "kind" in writer) {
+			return {
+				policy:
+					writer.kind === "user"
+						? { mode: "writer", writer: { kind: "user", userId: writer.userId } }
+						: { mode: "writer", writer: { kind: "service_account", serviceAccountId: writer.serviceAccountId } },
+				writerKnown: true,
+			};
+		}
+		return { policy: null, writerKnown: false };
+	}
+	return { policy: policy?.mode === "read_only" ? { mode: "read_only" } : null, writerKnown: true };
+}
+
+type PolicyWriterPicker_Props = {
+	choice: PolicyDraft;
+	onChoice: (choice: PolicyDraft) => void;
+	canManage: boolean;
+	isRunning: boolean;
+	userIds: app_convex_Id<"users">[] | undefined;
+	users: Record<string, { displayName?: string } | Error | undefined>;
+	currentWriterName: string | null;
+};
+
+const PolicyWriterPicker = memo(function PolicyWriterPicker(props: PolicyWriterPicker_Props) {
+	const { choice, onChoice, canManage, isRunning, userIds, users, currentWriterName } = props;
+
+	return (
+		<>
+			<MySelect
+				value={choice.writerKind}
+				setValue={(value) => {
+					if (!isRunning && (value === "user" || value === "service_account")) {
+						onChoice({ ...choice, writerKind: value });
+					}
+				}}
+			>
+				<MySelectLabel>Writer type</MySelectLabel>
+				<MySelectTrigger disabled={!canManage}>
+					<MyButton variant="outline">
+						{choice.writerKind === "user" ? "Person" : "Service account"}
+						<MySelectOpenIndicator />
+					</MyButton>
+				</MySelectTrigger>
+				<MySelectPopover>
+					<MySelectPopoverContent>
+						<MySelectItem value="user">Person</MySelectItem>
+						<MySelectItem value="service_account">Service account</MySelectItem>
+					</MySelectPopoverContent>
+				</MySelectPopover>
+			</MySelect>
+			{choice.writerKind === "service_account" ? (
+				<ServiceAccountSelect
+					value={choice.serviceAccountId}
+					disabled={!canManage}
+					onChange={(serviceAccountId) => {
+						if (!isRunning) {
+							onChoice({ ...choice, serviceAccountId });
+						}
+					}}
+				/>
+			) : (
+				<MySelect
+					value={choice.userId ?? ""}
+					setValue={(value) => {
+						const userId = userIds?.find((id) => id === value);
+						if (!isRunning && userId) {
+							onChoice({ ...choice, userId });
+						}
+					}}
+				>
+					<MySelectLabel>Person</MySelectLabel>
+					<MySelectTrigger disabled={!canManage || userIds === undefined}>
+						<MyButton variant="outline">
+							{choice.userId
+								? (() => {
+										const user = users[choice.userId];
+										return user && !(user instanceof Error)
+											? (user.displayName ?? "Person")
+											: (currentWriterName ?? "Person unavailable");
+									})()
+								: "Choose a person"}
+							<MySelectOpenIndicator />
+						</MyButton>
+					</MySelectTrigger>
+					<MySelectPopover>
+						<MySelectPopoverScrollableArea>
+							<MySelectPopoverContent>
+								{(userIds ?? []).map((userId) => {
+									const user = users[userId];
+									return user && !(user instanceof Error) ? (
+										<MySelectItem key={userId} value={userId}>
+											{user.displayName ?? "Person"}
+										</MySelectItem>
+									) : null;
+								})}
+							</MySelectPopoverContent>
+						</MySelectPopoverScrollableArea>
+					</MySelectPopover>
+				</MySelect>
+			)}
+			<p
+				className={
+					"FilesPropertiesModalWritePolicy-description" satisfies FilesPropertiesModalWritePolicy_ClassNames
+				}
+			>
+				Only the selected writer can edit. Each item&apos;s content has its own protection.
+			</p>
+		</>
+	);
+});
+
 type FilesPropertiesModalWritePolicy_Props = {
 	nodeId: app_convex_Id<"files_nodes">;
 	nodeKind: "file" | "folder";
-	hasVisibleReadOnlyDescendant: boolean;
-	onNavigateNode?: (nodeId: app_convex_Id<"files_nodes">) => void;
-	onClose: () => void;
 };
 
+const RADIO_MODES = [
+	["editable", "Editable"],
+	["read_only", "Read-only"],
+	["writer", "Selected writer"],
+] as const;
+
 /**
- * Edit the local rule separately from the current user's effective write access.
- * Clearing this rule leaves every parent policy in force.
+ * Edit this item's own rule and, for folders, the starting rule for new items.
+ * Choosing Editable unlocks only this item. Saving never touches other items.
  */
 const FilesPropertiesModalWritePolicy = memo(function FilesPropertiesModalWritePolicy(
 	props: FilesPropertiesModalWritePolicy_Props,
 ) {
-	const { nodeId, nodeKind, hasVisibleReadOnlyDescendant, onNavigateNode, onClose } = props;
+	const { nodeId, nodeKind } = props;
 	const { membershipId, organizationId, workspaceId } = AppTenantProvider.useContext();
-	const descriptionId = useId();
+	const descriptionId = `FilesPropertiesModalWritePolicy-${useId()}-description`;
+	const defaultDescriptionId = `FilesPropertiesModalWritePolicy-default-${useId()}-description`;
 	const choicesRef = useRef<HTMLFieldSetElement>(null);
+	const defaultChoicesRef = useRef<HTMLFieldSetElement>(null);
+	const applyCancelRef = useRef<HTMLButtonElement>(null);
 	const [isRunning, setIsRunning] = useState(false);
+	const [isDefaultRunning, setIsDefaultRunning] = useState(false);
+	const [isApplying, setIsApplying] = useState(false);
 	const [error, setError] = useState<string | null>(null);
-	const [draft, setDraft] = useState<{
-		mode: "inherit" | "read_only" | "writer";
-		writerKind: "user" | "service_account";
-		userId: app_convex_Id<"users"> | null;
-		serviceAccountId: app_convex_Id<"access_control_service_accounts"> | null;
-	} | null>(null);
+	const [defaultError, setDefaultError] = useState<string | null>(null);
+	const [applyError, setApplyError] = useState<string | null>(null);
+	const [applyResult, setApplyResult] = useState<string | null>(null);
+	const [applyConfirm, setApplyConfirm] = useState<SavedPolicy | undefined>(undefined);
+	const [draft, setDraft] = useState<PolicyDraft | null>(null);
+	const [defaultDraft, setDefaultDraft] = useState<PolicyDraft | null>(null);
 
 	const managementState = useQuery(app_convex_api.files_nodes.get_node_write_policy_management_state, {
 		membershipId,
@@ -271,49 +454,39 @@ const FilesPropertiesModalWritePolicy = memo(function FilesPropertiesModalWriteP
 		),
 	);
 
-	const localPolicy = managementState?.localPolicy;
-	const writer = localPolicy?.mode === "writer" ? localPolicy.writer : null;
-	const choice = draft ?? {
-		mode: localPolicy?.mode ?? "inherit",
-		writerKind: writer?.kind ?? "user",
-		userId: writer?.kind === "user" ? writer.userId : null,
-		serviceAccountId: writer?.kind === "service_account" ? writer.serviceAccountId : null,
-	};
+	const savedPolicy = (managementState?.localPolicy ?? null) as SavedPolicy;
+	const savedDefault = (managementState?.localDefault ?? null) as SavedPolicy;
+	const choice = draft ?? policy_draft_from_saved(savedPolicy);
+	const defaultChoice = defaultDraft ?? policy_draft_from_saved(savedDefault);
 	const canManage = managementState?.canManage === true;
+	const savedWriterName = (() => {
+		const writer = (managementState?.localPolicy as { writer?: { name?: string } | null } | undefined)?.writer;
+		return writer && typeof writer === "object" && "name" in writer ? (writer.name ?? null) : null;
+	})();
 	const writerSelected = choice.writerKind === "user" ? choice.userId !== null : choice.serviceAccountId !== null;
+	const defaultWriterSelected =
+		defaultChoice.writerKind === "user" ? defaultChoice.userId !== null : defaultChoice.serviceAccountId !== null;
+	const policyUnsaved =
+		draft !== null && JSON.stringify(saved_policy_from_draft(draft)) !== JSON.stringify(savedPolicy);
+	const applySource = mutation_policy_from_visible(savedPolicy);
+	const applyUnavailable = savedPolicy?.mode === "writer" && !applySource.writerKnown;
 	const description =
 		managementState === undefined
-			? "Loading write policy…"
+			? "Loading protection…"
 			: managementState === null
-				? "Write policy is unavailable."
+				? "Protection is unavailable."
 				: managementState.canWrite
 					? `You can edit this ${nodeKind}.`
 					: managementState.writeBlockedReason === "permission"
 						? `You don't have permission to edit this ${nodeKind}.`
-						: managementState.blockedByAncestor
-							? "A policy on a parent folder blocks editing."
-							: "The local policy blocks editing.";
+						: nodeKind === "file"
+							? "This file is read-only."
+							: "This folder is read-only. Items keep their own protection.";
 
 	const handleSavePolicy = () => {
+		const writePolicy = saved_policy_from_draft(choice);
 		if (isRunning || !canManage || !draft || (choice.mode === "writer" && !writerSelected)) {
 			return;
-		}
-
-		let writePolicy: app_convex_FunctionArgs<typeof app_convex_api.files_nodes.set_node_write_policy>["writePolicy"] =
-			null;
-		if (choice.mode === "read_only") {
-			writePolicy = { mode: "read_only" };
-		}
-		if (choice.mode === "writer") {
-			if (choice.writerKind === "user" && choice.userId) {
-				writePolicy = { mode: "writer", writer: { kind: "user", userId: choice.userId } };
-			}
-			if (choice.writerKind === "service_account" && choice.serviceAccountId) {
-				writePolicy = {
-					mode: "writer",
-					writer: { kind: "service_account", serviceAccountId: choice.serviceAccountId },
-				};
-			}
 		}
 
 		setError(null);
@@ -330,159 +503,173 @@ const FilesPropertiesModalWritePolicy = memo(function FilesPropertiesModalWriteP
 				}
 			})
 			.catch((caughtError: unknown) => {
-				console.error("[FilesPropertiesModalWritePolicy.handleSavePolicy] Failed to change write policy", {
+				console.error("[FilesPropertiesModalWritePolicy.handleSavePolicy] Failed to change protection", {
 					error: caughtError,
 					nodeId,
 				});
-				setError("Failed to change write policy");
+				setError("Failed to change protection");
 			})
 			.finally(() => {
 				setIsRunning(false);
 			});
 	};
 
-	const handleManageSource = useFn(() => {
-		if (!managementState?.inheritedSource || !onNavigateNode) {
+	const handleSaveDefault = () => {
+		const newChildWritePolicy = saved_policy_from_draft(defaultChoice);
+		if (isDefaultRunning || !canManage || !defaultDraft || (defaultChoice.mode === "writer" && !defaultWriterSelected)) {
 			return;
 		}
 
-		onNavigateNode(managementState.inheritedSource.nodeId);
-		onClose();
-	});
+		setDefaultError(null);
+		setIsDefaultRunning(true);
+
+		app_convex
+			.mutation(app_convex_api.files_nodes.set_node_new_child_write_policy, {
+				membershipId,
+				nodeId,
+				newChildWritePolicy,
+			})
+			.then((result) => {
+				if (result._nay) {
+					setDefaultError(result._nay.message);
+				} else {
+					defaultChoicesRef.current?.querySelector<HTMLInputElement>("input:checked")?.focus();
+					setDefaultDraft(null);
+				}
+			})
+			.catch((caughtError: unknown) => {
+				console.error("[FilesPropertiesModalWritePolicy.handleSaveDefault] Failed to change new-item default", {
+					error: caughtError,
+					nodeId,
+				});
+				setDefaultError("Failed to change new-item default");
+			})
+			.finally(() => {
+				setIsDefaultRunning(false);
+			});
+	};
+
+	const handleOpenApplyConfirm = () => {
+		if (isApplying || !canManage || policyUnsaved || applyUnavailable) {
+			return;
+		}
+
+		// Capture the saved rule now. A rule saved elsewhere while confirming does not leak in.
+		setApplyError(null);
+		setApplyResult(null);
+		setApplyConfirm(applySource.policy);
+	};
+
+	const handleApplyToContents = () => {
+		if (isApplying || !canManage || applyConfirm === undefined) {
+			return;
+		}
+		const writePolicy = applyConfirm;
+
+		setApplyError(null);
+		setIsApplying(true);
+
+		app_convex
+			.mutation(app_convex_api.files_nodes.apply_write_policy_to_contents, { membershipId, nodeId, writePolicy })
+			.then((result) => {
+				if (result._nay) {
+					setApplyError(result._nay.message);
+					return;
+				}
+				setApplyResult(
+					`Set ${result._yay.updatedCount} ${result._yay.updatedCount === 1 ? "item" : "items"} to ${policy_choice_label(writePolicy)}. New-item defaults stay unchanged.`,
+				);
+				setApplyConfirm(undefined);
+				toast.success("Protection updated");
+			})
+			.catch((caughtError: unknown) => {
+				console.error("[FilesPropertiesModalWritePolicy.handleApplyToContents] Failed to apply protection", {
+					error: caughtError,
+					nodeId,
+				});
+				setApplyError("Failed to apply protection");
+			})
+			.finally(() => {
+				setIsApplying(false);
+			});
+	};
+
+	useEffect(() => {
+		if (applyConfirm !== undefined) {
+			applyCancelRef.current?.focus();
+		}
+	}, [applyConfirm]);
+
+	const choiceFieldset = (
+		choiceValue: PolicyDraft,
+		onChoice: (choice: PolicyDraft) => void,
+		groupName: string,
+		fieldsetRef: RefObject<HTMLFieldSetElement | null>,
+		describedBy: string,
+		running: boolean,
+		groupKind: "policy" | "default",
+	) => (
+		<fieldset
+			ref={fieldsetRef}
+			className={"FilesPropertiesModalWritePolicy-choices" satisfies FilesPropertiesModalWritePolicy_ClassNames}
+			aria-describedby={describedBy}
+		>
+			{RADIO_MODES.map(([mode, label]) => (
+				<label key={mode}>
+					<MyRadio
+						name={groupName}
+						checked={choiceValue.mode === mode}
+						disabled={!canManage}
+						aria-busy={running || undefined}
+						onChange={() => {
+							if (!running) {
+								onChoice({ ...choiceValue, mode });
+								if (groupKind === "policy") {
+									setError(null);
+								} else {
+									setDefaultError(null);
+								}
+							}
+						}}
+					/>
+					{label}
+				</label>
+			))}
+		</fieldset>
+	);
 
 	return (
 		<div className={"FilesPropertiesModalWritePolicy" satisfies FilesPropertiesModalWritePolicy_ClassNames}>
-			<fieldset
-				ref={choicesRef}
-				className={"FilesPropertiesModalWritePolicy-choices" satisfies FilesPropertiesModalWritePolicy_ClassNames}
-				aria-describedby={descriptionId}
-			>
-				<legend>Local write policy</legend>
-				{(
-					[
-						["inherit", "Inherit"],
-						["read_only", "Read-only"],
-						["writer", "Selected writer"],
-					] as const
-				).map(([mode, label]) => (
-					<label key={mode}>
-						<MyRadio
-							name={descriptionId}
-							checked={choice.mode === mode}
-							disabled={!canManage}
-							aria-busy={isRunning || undefined}
-							onChange={() => {
-								if (!isRunning) {
-									setDraft({ ...choice, mode });
-									setError(null);
-								}
-							}}
-						/>
-						{label}
-					</label>
-				))}
-			</fieldset>
+			<h3>{nodeKind === "folder" ? "This folder" : "Protection"}</h3>
+			{choiceFieldset(
+				choice,
+				(choiceValue) => setDraft(choiceValue),
+				`${descriptionId}-group`,
+				choicesRef,
+				descriptionId,
+				isRunning,
+				"policy",
+			)}
 			{choice.mode === "writer" ? (
-				<>
-					{localPolicy?.mode === "writer" && !writer && !draft ? (
-						<p>Protected file. The selected writer is unavailable.</p>
-					) : null}
-					<MySelect
-						value={choice.writerKind}
-						setValue={(value) => {
-							if (!isRunning && (value === "user" || value === "service_account")) {
-								setDraft({ ...choice, writerKind: value });
-							}
-						}}
-					>
-						<MySelectLabel>Writer type</MySelectLabel>
-						<MySelectTrigger disabled={!canManage}>
-							<MyButton variant="outline">
-								{choice.writerKind === "user" ? "Person" : "Service account"}
-								<MySelectOpenIndicator />
-							</MyButton>
-						</MySelectTrigger>
-						<MySelectPopover>
-							<MySelectPopoverContent>
-								<MySelectItem value="user">Person</MySelectItem>
-								<MySelectItem value="service_account">Service account</MySelectItem>
-							</MySelectPopoverContent>
-						</MySelectPopover>
-					</MySelect>
-					{choice.writerKind === "service_account" ? (
-						<ServiceAccountSelect
-							value={choice.serviceAccountId}
-							disabled={!canManage}
-							onChange={(serviceAccountId) => {
-								if (!isRunning) {
-									setDraft({ ...choice, serviceAccountId });
-								}
-							}}
-						/>
-					) : (
-						<MySelect
-							value={choice.userId ?? ""}
-							setValue={(value) => {
-								const userId = userIds?.find((id) => id === value);
-								if (!isRunning && userId) {
-									setDraft({ ...choice, userId });
-								}
-							}}
-						>
-							<MySelectLabel>Person</MySelectLabel>
-							<MySelectTrigger disabled={!canManage || userIds === undefined}>
-								<MyButton variant="outline">
-									{choice.userId
-										? (() => {
-												const user = users[choice.userId];
-												return user && !(user instanceof Error)
-													? (user.displayName ?? "Person")
-													: writer?.kind === "user"
-														? writer.name
-														: "Person unavailable";
-											})()
-										: "Choose a person"}
-									<MySelectOpenIndicator />
-								</MyButton>
-							</MySelectTrigger>
-							<MySelectPopover>
-								<MySelectPopoverScrollableArea>
-									<MySelectPopoverContent>
-										{(userIds ?? []).map((userId) => {
-											const user = users[userId];
-											return user && !(user instanceof Error) ? (
-												<MySelectItem key={userId} value={userId}>
-													{user.displayName ?? "Person"}
-												</MySelectItem>
-											) : null;
-										})}
-									</MySelectPopoverContent>
-								</MySelectPopoverScrollableArea>
-							</MySelectPopover>
-						</MySelect>
-					)}
-					<p
-						className={
-							"FilesPropertiesModalWritePolicy-description" satisfies FilesPropertiesModalWritePolicy_ClassNames
-						}
-					>
-						{!draft && writer?.name ? `Only ${writer.name} can edit. ` : "Only the selected writer can edit. "}Parent
-						rules and access permissions still apply.
-					</p>
-				</>
+				<PolicyWriterPicker
+					choice={choice}
+					onChoice={(choiceValue) => setDraft(choiceValue)}
+					canManage={canManage}
+					isRunning={isRunning}
+					userIds={userIds ?? undefined}
+					users={users}
+					currentWriterName={savedWriterName}
+				/>
 			) : null}
 			<p
 				id={descriptionId}
 				className={"FilesPropertiesModalWritePolicy-description" satisfies FilesPropertiesModalWritePolicy_ClassNames}
 			>
 				{description}
-				{managementState?.canManage === false ? " You cannot change this policy." : null}
-				{managementState?.hasInheritedPolicy
-					? ` A parent policy also applies from ${managementState.inheritedSource?.path ?? "a protected folder"}.`
-					: null}
-				{hasVisibleReadOnlyDescendant
-					? " This folder contains read-only items, so it cannot be renamed, moved, or archived."
-					: null}
+				{nodeKind === "folder"
+					? " Controls adding, removing, and renaming items in this folder. Each item's content has its own protection."
+					: null}{" "}
+				{managementState?.canManage === false ? "You cannot change this protection." : null}
 			</p>
 			<div className={"FilesPropertiesModalWritePolicy-actions" satisfies FilesPropertiesModalWritePolicy_ClassNames}>
 				<MyButton
@@ -493,12 +680,72 @@ const FilesPropertiesModalWritePolicy = memo(function FilesPropertiesModalWriteP
 				>
 					{isRunning ? "Saving…" : "Save policy"}
 				</MyButton>
-				{managementState?.inheritedSource && onNavigateNode ? (
-					<MyButton variant="ghost" onClick={handleManageSource}>
-						Open parent policy
+				{nodeKind === "folder" ? (
+					<MyButton
+						variant="ghost"
+						disabled={!canManage || isApplying || policyUnsaved || applyUnavailable}
+						aria-busy={isApplying || undefined}
+						onClick={handleOpenApplyConfirm}
+					>
+						Apply to contents…
 					</MyButton>
 				) : null}
 			</div>
+			{applyUnavailable ? (
+				<p
+					className={
+						"FilesPropertiesModalWritePolicy-description" satisfies FilesPropertiesModalWritePolicy_ClassNames
+					}
+				>
+					The selected writer is unavailable, so bulk apply is off. Pick a writer with access first.
+				</p>
+			) : null}
+			{applyConfirm !== undefined && nodeKind === "folder" ? (
+				<div
+					className={
+						"FilesPropertiesModalWritePolicy-description" satisfies FilesPropertiesModalWritePolicy_ClassNames
+					}
+				>
+					<p>
+						Set all non-archived files and subfolders inside this folder to {policy_choice_label(applyConfirm)}?
+						This replaces their current protection, including selected writers. New-item defaults stay
+						unchanged.
+					</p>
+					<div
+						className={
+							"FilesPropertiesModalWritePolicy-actions" satisfies FilesPropertiesModalWritePolicy_ClassNames
+						}
+					>
+						<MyButton
+							variant="outline"
+							disabled={isApplying}
+							onClick={handleApplyToContents}
+						>
+							{isApplying ? "Applying…" : "Apply"}
+						</MyButton>
+						<MyButton
+							variant="ghost"
+							ref={applyCancelRef}
+							disabled={isApplying}
+							onClick={() => {
+								setApplyConfirm(undefined);
+								setApplyError(null);
+							}}
+						>
+							Cancel
+						</MyButton>
+					</div>
+				</div>
+			) : null}
+			{applyResult ? (
+				<p
+					className={
+						"FilesPropertiesModalWritePolicy-description" satisfies FilesPropertiesModalWritePolicy_ClassNames
+					}
+				>
+					{applyResult}
+				</p>
+			) : null}
 
 			{error ? (
 				<p
@@ -507,6 +754,80 @@ const FilesPropertiesModalWritePolicy = memo(function FilesPropertiesModalWriteP
 				>
 					{error}
 				</p>
+			) : null}
+			{applyError ? (
+				<p
+					className={"FilesPropertiesModalWritePolicy-error" satisfies FilesPropertiesModalWritePolicy_ClassNames}
+					role="alert"
+				>
+					{applyError}
+				</p>
+			) : null}
+
+			{nodeKind === "folder" ? (
+				<>
+					<h3>New items</h3>
+					{choiceFieldset(
+						defaultChoice,
+						(choiceValue) => setDefaultDraft(choiceValue),
+						`${defaultDescriptionId}-group`,
+						defaultChoicesRef,
+						defaultDescriptionId,
+						isDefaultRunning,
+						"default",
+					)}
+					{defaultChoice.mode === "writer" ? (
+						<PolicyWriterPicker
+							choice={defaultChoice}
+							onChoice={(choiceValue) => setDefaultDraft(choiceValue)}
+							canManage={canManage}
+							isRunning={isDefaultRunning}
+							userIds={userIds ?? undefined}
+							users={users}
+							currentWriterName={(() => {
+								const writer = (
+									managementState?.localDefault as { writer?: { name?: string } | null } | undefined
+								)?.writer;
+								return writer && typeof writer === "object" && "name" in writer
+									? (writer.name ?? null)
+									: null;
+							})()}
+						/>
+					) : null}
+					<p
+						id={defaultDescriptionId}
+						className={
+							"FilesPropertiesModalWritePolicy-description" satisfies FilesPropertiesModalWritePolicy_ClassNames
+						}
+					>
+						Copied once to new files and subfolders. Existing items keep their settings. New subfolders
+						copy this default too, but later changes do not cascade. Copies keep their source settings.
+					</p>
+					<div
+						className={
+							"FilesPropertiesModalWritePolicy-actions" satisfies FilesPropertiesModalWritePolicy_ClassNames
+						}
+					>
+						<MyButton
+							variant="outline"
+							disabled={!canManage || !defaultDraft || (defaultChoice.mode === "writer" && !defaultWriterSelected)}
+							aria-busy={isDefaultRunning || undefined}
+							onClick={handleSaveDefault}
+						>
+							{isDefaultRunning ? "Saving…" : "Save default"}
+						</MyButton>
+					</div>
+					{defaultError ? (
+						<p
+							className={
+								"FilesPropertiesModalWritePolicy-error" satisfies FilesPropertiesModalWritePolicy_ClassNames
+							}
+							role="alert"
+						>
+							{defaultError}
+						</p>
+					) : null}
+				</>
 			) : null}
 		</div>
 	);
@@ -1099,14 +1420,12 @@ export type FilesPropertiesModal_Props = {
 	nodeId: app_convex_Id<"files_nodes"> | null;
 	nodeName: string;
 	nodeKind: "file" | "folder";
-	hasVisibleReadOnlyDescendant: boolean;
 	returnFocusRef?: RefObject<HTMLElement | null>;
-	onNavigateNode?: (nodeId: app_convex_Id<"files_nodes">) => void;
 	onClose: () => void;
 };
 
 export const FilesPropertiesModal = memo(function FilesPropertiesModal(props: FilesPropertiesModal_Props) {
-	const { nodeId, nodeName, nodeKind, hasVisibleReadOnlyDescendant, returnFocusRef, onNavigateNode, onClose } = props;
+	const { nodeId, nodeName, nodeKind, returnFocusRef, onClose } = props;
 	const [dirty, setDirty] = useState(false);
 
 	const handleClose = useFn(() => {
@@ -1153,9 +1472,6 @@ export const FilesPropertiesModal = memo(function FilesPropertiesModal(props: Fi
 									<FilesPropertiesModalWritePolicy
 										nodeId={nodeId}
 										nodeKind={nodeKind}
-										hasVisibleReadOnlyDescendant={hasVisibleReadOnlyDescendant}
-										onNavigateNode={onNavigateNode}
-										onClose={handleClose}
 									/>
 								</section>
 

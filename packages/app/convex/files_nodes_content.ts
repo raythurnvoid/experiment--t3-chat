@@ -156,6 +156,7 @@ import {
 	type files_nodes_get_user_file_write_access_Result,
 	type files_nodes_get_visible_entry_by_path_Result,
 	files_nodes_db_create_node_recursively_at_path,
+	files_nodes_db_copied_from_policy_fields,
 	files_nodes_db_validate_occupant_replace,
 	files_nodes_db_preflight_move,
 	files_nodes_db_apply_move,
@@ -1404,6 +1405,17 @@ export async function files_nodes_content_db_publish_private_node(
 		assetId: assets[0]?._id,
 		expectsTextContent: createIntent.kind === "text" ? true : undefined,
 		metadata: createIntent.metadata,
+		// A published copy keeps the protection its transfer captured at first finalize.
+		// Ordinary drafts have no captured source and use the destination default.
+		...(pendingUpdate.copiedFrom?.sourceWritePolicy === undefined
+			? {}
+			: {
+					writePolicy: pendingUpdate.copiedFrom.sourceWritePolicy,
+					...(node.kind === "folder" && pendingUpdate.copiedFrom.sourceNewChildWritePolicy !== undefined
+						? { newChildWritePolicy: pendingUpdate.copiedFrom.sourceNewChildWritePolicy }
+						: {}),
+					trustPolicySource: true as const,
+				}),
 		now,
 	});
 
@@ -2682,7 +2694,7 @@ export const finalize_transfer_file_copy = internalMutation({
 			return prepared._nay ? Result({ _nay: prepared._nay }) : Result({ _yay: null });
 		}
 
-		const { run, item, sourceEntry, parent, name, path, existing, membership } = prepared._yay;
+		const { run, item, sourceEntry, parent, name, path, existing, membership, runWrittenWritePolicy } = prepared._yay;
 		const now = Date.now();
 		if (
 			!item.capture?.artifact ||
@@ -2736,7 +2748,14 @@ export const finalize_transfer_file_copy = internalMutation({
 					preparation: undefined,
 					revision: proposalRevision + 1,
 					size: contentAsset.size,
-					copiedFrom: { target: item.source, path: item.sourcePath },
+					copiedFrom: {
+						target: item.source,
+						path: item.sourcePath,
+						...files_nodes_db_copied_from_policy_fields({
+							prev: previous?.copiedFrom,
+							...(sourceEntry.kind === "saved" ? { sourceWritePolicy: sourceEntry.node.writePolicy } : {}),
+						}),
+					},
 					updatedAt: now,
 				});
 			} else {
@@ -2816,7 +2835,14 @@ export const finalize_transfer_file_copy = internalMutation({
 					preparation: undefined,
 					revision: proposalRevision + 1,
 					size: files_get_utf8_byte_size(capturedText),
-					copiedFrom: { target: item.source, path: item.sourcePath },
+					copiedFrom: {
+						target: item.source,
+						path: item.sourcePath,
+						...files_nodes_db_copied_from_policy_fields({
+							prev: previous?.copiedFrom,
+							...(sourceEntry.kind === "saved" ? { sourceWritePolicy: sourceEntry.node.writePolicy } : {}),
+						}),
+					},
 					updatedAt: now,
 				});
 
@@ -3063,6 +3089,13 @@ export const finalize_transfer_file_copy = internalMutation({
 			assetId: args.contentAssetId,
 			expectsTextContent: textKind === null ? undefined : true,
 			metadata: item.capture.metadata,
+			expectedParentWritePolicy: runWrittenWritePolicy,
+			// A copy keeps the source file's own rule. Read here on the server; the destination
+			// default never replaces it. A retry that finds its already-made target keeps that
+			// target and never applies the source rule over later changes.
+			...(sourceEntry.kind === "saved"
+				? { writePolicy: sourceEntry.node.writePolicy, trustPolicySource: true as const }
+				: {}),
 			now,
 		});
 		if (created._nay) return created;

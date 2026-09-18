@@ -221,7 +221,6 @@ async function organizations_test_seed_workspace_scoped_rows(
 		contentFrontmatterTooLargeFieldCount: null,
 		contentFrontmatterTooLargeIndexDocumentCount: null,
 		restrictedScopeNodeId: null,
-		writePolicyScopeNodeId: null,
 		writePolicy: null,
 
 		archiveOperationId: null,
@@ -4158,7 +4157,6 @@ describe("access_control", () => {
 					contentFrontmatterTooLargeFieldCount: null,
 					contentFrontmatterTooLargeIndexDocumentCount: null,
 					restrictedScopeNodeId: null,
-					writePolicyScopeNodeId: null,
 					writePolicy: null,
 
 					archiveOperationId: null,
@@ -4189,7 +4187,6 @@ describe("access_control", () => {
 					contentFrontmatterTooLargeFieldCount: null,
 					contentFrontmatterTooLargeIndexDocumentCount: null,
 					restrictedScopeNodeId: null,
-					writePolicyScopeNodeId: null,
 					writePolicy: null,
 
 					archiveOperationId: null,

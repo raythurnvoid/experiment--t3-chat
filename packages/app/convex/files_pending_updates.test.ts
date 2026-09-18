@@ -17,7 +17,11 @@ import { billing_db_ensure_anonymous_user_usage_snapshot } from "./billing.ts";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 import { quotas_db_ensure } from "./quotas.ts";
 import { files_private_storage_db_reserve } from "./files_private_storage.ts";
-import { files_nodes_db_insert_file_content_docs } from "./files_nodes_content.ts";
+import {
+	files_nodes_content_db_publish_private_node,
+	files_nodes_db_insert_file_content_docs,
+} from "./files_nodes_content.ts";
+import { files_pending_nodes_db_create } from "./files_pending_nodes.ts";
 import { files_nodes_db_get_content_version } from "./files_nodes.ts";
 import {
 	files_pending_updates_db_drop_content_for_node,
@@ -240,7 +244,6 @@ async function seed_file_with_markdown(args: {
 		contentFrontmatterTooLargeFieldCount: null,
 		contentFrontmatterTooLargeIndexDocumentCount: null,
 		restrictedScopeNodeId: null,
-		writePolicyScopeNodeId: null,
 		writePolicy: null,
 	});
 
@@ -316,7 +319,6 @@ async function seed_folder_node(args: {
 		contentFrontmatterTooLargeFieldCount: null,
 		contentFrontmatterTooLargeIndexDocumentCount: null,
 		restrictedScopeNodeId: null,
-		writePolicyScopeNodeId: null,
 		writePolicy: null,
 
 		archiveOperationId: null,
@@ -444,7 +446,6 @@ async function seed_non_collaborative_file(ctx: MutationCtx, path: string, text:
 		contentFrontmatterTooLargeFieldCount: null,
 		contentFrontmatterTooLargeIndexDocumentCount: null,
 		restrictedScopeNodeId: null,
-		writePolicyScopeNodeId: null,
 		writePolicy: null,
 
 		archiveOperationId: null,
@@ -10044,6 +10045,69 @@ describe("pending text after restore and collaborative edits", () => {
 	});
 });
 
+describe("prepare_file_pending_update_for_agent upload in flight", () => {
+	test("refuses a file whose upload has not landed, then allows it after landing", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const now = Date.now();
+		const ids = await t.run(async (ctx) => {
+			const assetId = await ctx.db.insert("files_r2_assets", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				kind: "upload",
+				r2Bucket: "test-bucket",
+				size: 10,
+				createdBy: db.userId,
+				unfinalizedExpiresAt: now + 60 * 1000,
+				updatedAt: now,
+			});
+			const nodeId = await ctx.db.insert("files_nodes", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				parentId: files_ROOT_ID,
+				path: "/uploading.txt",
+				treePath: "/uploading.txt",
+				pathDepth: 1,
+				lowercaseExtension: "txt",
+				name: "uploading.txt",
+				kind: "file",
+				contentType: "text/plain",
+				assetId,
+				createdBy: db.userId,
+				updatedBy: db.userId,
+				updatedAt: now,
+				textKind: null,
+				collaborationEnabled: null,
+				yjsSnapshotId: null,
+				yjsLastSequenceId: null,
+				statsId: null,
+				contentTooLargeByteSize: null,
+				contentShapeMismatchAt: null,
+				contentYjsStateTooLargeByteSize: null,
+				contentFrontmatterTooLargeFieldCount: null,
+				contentFrontmatterTooLargeIndexDocumentCount: null,
+				restrictedScopeNodeId: null,
+				writePolicy: null,
+				archiveOperationId: null,
+			});
+			return { assetId, nodeId };
+		});
+
+		const args = {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: db.userId,
+			target: { kind: "saved" as const, id: ids.nodeId },
+		};
+		const refused = await t.action(internal.files_pending_updates.prepare_file_pending_update_for_agent, args);
+		expect(refused._nay).toMatchObject({ name: "upload_in_progress" });
+
+		await t.run(async (ctx) => ctx.db.patch("files_r2_assets", ids.assetId, { r2Key: "landed-key" }));
+		const allowed = await t.action(internal.files_pending_updates.prepare_file_pending_update_for_agent, args);
+		expect(allowed._nay?.name).not.toBe("upload_in_progress");
+	});
+});
+
 describe("prepare_file_pending_update_for_review after a member save", () => {
 	async function seed_stale_proposal(args: {
 		base: string;
@@ -12377,7 +12441,6 @@ describe("upsert_file_pending_move_in_db", () => {
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: null,
-				writePolicyScopeNodeId: null,
 				writePolicy: null,
 
 				archiveOperationId: null,
@@ -13505,7 +13568,6 @@ describe("apply_file_pending_move", () => {
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: null,
-				writePolicyScopeNodeId: null,
 				writePolicy: null,
 
 				archiveOperationId: null,
@@ -18607,7 +18669,6 @@ describe("pending path overlay reads", () => {
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: null,
-				writePolicyScopeNodeId: null,
 				writePolicy: null,
 
 				archiveOperationId: null,
@@ -20434,6 +20495,183 @@ describe("pending update read-only checks", () => {
 		expect(await t.run((ctx) => ctx.db.query("files_pending_update_operation_batches").collect())).toEqual([]);
 	});
 
+	test("a batch made on a locked file cannot commit", async () => {
+		const t = test_convex();
+		const seeded = await t.run((ctx) => seed_non_collaborative_file(ctx, "/off-batch-lock.md", "# Off base"));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: seeded.userId,
+			name: "Read-only batch commit user",
+		});
+		await set_pending_test_read_only(asUser, seeded.membershipId, seeded.nodeId);
+
+		// The internal batch door checks nothing by design: its callers check. Only the commit can
+		// still refuse this write, so a batch made after the lock must not carry a write through.
+		const staged = await seal_output_family_for_test(t, seeded);
+		const commit = (family: typeof staged) =>
+			t.mutation(internal.files_pending_updates.commit_file_pending_update_upsert_in_db, {
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId: seeded.userId,
+				nodeId: seeded.nodeId,
+				operationBatchId: family.operationBatchId,
+				expectedRevision: null,
+				base: { kind: "asset", expectedAssetId: seeded.assetId },
+				baseStateId: family.base.stateId,
+				stagedStateId: family.staged.stateId,
+				unstagedStateId: family.unstaged.stateId,
+				baseStateDigest: family.base.digest,
+				stagedStateDigest: family.staged.digest,
+				unstagedStateDigest: family.unstaged.digest,
+				unstagedText: "# Draft",
+				unstagedBranchChanged: true,
+			});
+
+		const committed = await commit(staged);
+		expect(committed._nay?.name).toBe("read_only");
+		expect(await t.run((ctx) => read_pending_update_row({ ctx, ...seeded }))).toBeNull();
+
+		await set_pending_test_writable(asUser, seeded.membershipId, seeded.nodeId);
+		// The refused commit left its batch active; the retry starts over with a fresh one.
+		await t.mutation(internal.files_pending_updates.retire_file_pending_update_operation_batch, {
+			operationBatchId: staged.operationBatchId,
+		});
+		const retry = await seal_output_family_for_test(t, seeded);
+		const retried = await commit(retry);
+		expect(retried._nay).toBeUndefined();
+		expect(await t.run((ctx) => read_pending_update_row({ ctx, ...seeded }))).not.toBeNull();
+	});
+
+	test("a private draft cannot publish while its parent folder is locked", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Read-only draft publish user",
+		});
+		const folderId = await t.run((ctx) =>
+			seed_folder_node({
+				ctx,
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userId: db.userId,
+				path: "/locked-parent",
+				name: "locked-parent",
+			}),
+		);
+		await set_pending_test_read_only(asUser, db.membershipId, folderId);
+
+		// The draft door checks the destination first, so a pending draft never sits under a locked
+		// folder. Seed this one directly: the publish door is shared with transfer drafts, which can
+		// exist under a locked parent, and its own live check must stop the write.
+		const text = "Saved from a private draft\n";
+		const seeded = await t.run(async (ctx) => {
+			const created = await files_pending_nodes_db_create(ctx, {
+				...db,
+				parent: { kind: "saved", id: folderId },
+				name: "draft.txt",
+				kind: "file",
+			});
+			if (created._nay) throw new Error(created._nay.message);
+			await ctx.db.patch("files_pending_updates", created._yay.pendingUpdateId, {
+				createIntent: {
+					kind: "text",
+					contentType: "text/plain",
+					textKind: "plain_text",
+					collaborationEnabled: false,
+					metadata: [],
+				},
+			});
+			const contentAssetId = await ctx.db.insert("files_r2_assets", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				createdBy: db.userId,
+				kind: "content_snapshot",
+				r2Bucket: "test-bucket",
+				size: files_get_utf8_byte_size(text),
+				unfinalizedExpiresAt: Date.now() + 60_000,
+				updatedAt: Date.now(),
+			});
+			const r2Key = r2_create_asset_key({ ...db, assetId: contentAssetId });
+			const held = await files_private_storage_db_reserve(ctx, {
+				...db,
+				resource: { kind: "asset", id: contentAssetId, r2Key },
+				byteCount: files_get_utf8_byte_size(text),
+			});
+			if (held._nay) throw new Error(held._nay.message);
+			r2Objects.set(r2Key, text);
+			const membership = await ctx.db.get("organizations_workspaces_users", db.membershipId);
+			const node = await ctx.db.get("files_pending_nodes", created._yay.privateNodeId);
+			const pendingUpdate = await ctx.db.get("files_pending_updates", created._yay.pendingUpdateId);
+			if (!membership || !node || !pendingUpdate) throw new Error("Expected private draft records");
+			return { membership, node, pendingUpdate, contentAssetId };
+		});
+		const publish = () =>
+			t.run((ctx) =>
+				files_nodes_content_db_publish_private_node(ctx, {
+					membership: seeded.membership,
+					node: seeded.node,
+					pendingUpdate: seeded.pendingUpdate,
+					billedUserId: db.userId,
+					prepared: { text, contentAssetId: seeded.contentAssetId },
+				}),
+			);
+
+		const refused = await publish();
+		expect(refused._nay?.name).toBe("read_only");
+		await t.run(async (ctx) => {
+			expect(await ctx.db.get("files_pending_nodes", seeded.node._id)).toMatchObject({ state: "active" });
+			expect(await ctx.db.get("files_pending_updates", seeded.pendingUpdate._id)).not.toBeNull();
+			expect(await ctx.db.query("files_nodes").collect()).toEqual([expect.objectContaining({ _id: folderId })]);
+		});
+
+		await set_pending_test_writable(asUser, db.membershipId, folderId);
+		const published = await publish();
+		if (published._nay) throw new Error(published._nay.message);
+		expect(published._yay.target.kind).toBe("saved");
+	});
+
+	test("a private draft cannot edit while its parent folder is locked", async () => {
+		const t = test_convex();
+		const seeded = await t.run(async (ctx) => {
+			const db = await test_mocks_fill_db_with.membership(ctx);
+			const folderId = await seed_folder_node({
+				ctx,
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userId: db.userId,
+				path: "/draft-parent",
+				name: "draft-parent",
+			});
+			const created = await files_pending_nodes_db_create(ctx, {
+				...db,
+				parent: { kind: "saved", id: folderId },
+				name: "draft.txt",
+				kind: "file",
+			});
+			if (created._nay) throw new Error(created._nay.message);
+			return { ...db, folderId, privateNodeId: created._yay.privateNodeId };
+		});
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: seeded.userId,
+			name: "Read-only draft edit user",
+		});
+		const target = { kind: "private" as const, id: seeded.privateNodeId };
+		const readTarget = () =>
+			asUser.query(api.files_pending_updates.get_file_pending_target, {
+				membershipId: seeded.membershipId,
+				target,
+			});
+
+		expect((await readTarget())?.canEdit).toBe(true);
+		await set_pending_test_read_only(asUser, seeded.membershipId, seeded.folderId);
+		expect((await readTarget())?.canEdit).toBe(false);
+		await set_pending_test_writable(asUser, seeded.membershipId, seeded.folderId);
+		expect((await readTarget())?.canEdit).toBe(true);
+	});
+
 	test("the agent proposal path refuses a locked file", async () => {
 		const t = test_convex();
 		const seeded = await t.run(async (ctx) =>
@@ -20768,7 +21006,7 @@ describe("pending update read-only checks", () => {
 		});
 	});
 
-	test("a locked move source or a locked file inside a moved folder refuses the move proposal", async () => {
+	test("a locked move source refuses the proposal, and a locked file inside a moved folder does not", async () => {
 		const t = test_convex();
 		const seeded = await t.run(async (ctx) => {
 			const membership = await test_mocks_fill_db_with.membership(ctx);
@@ -20816,10 +21054,10 @@ describe("pending update read-only checks", () => {
 		});
 		expect(refusedLeaf._nay?.name).toBe("read_only");
 
-		// Moving the folder moves every file under it too, so one locked child refuses the whole
-		// proposal even though the folder itself is writable.
+		// A writable folder may move while it holds a locked child. Rename and move check the named
+		// item and its immediate parent, not descendants.
 		await set_pending_test_read_only(asUser, seeded.membershipId, seeded.childNodeId);
-		const refusedFolder = await upsert_file_pending_move_for_test({
+		const movedFolder = await upsert_file_pending_move_for_test({
 			t,
 			organizationId: seeded.organizationId,
 			workspaceId: seeded.workspaceId,
@@ -20828,7 +21066,7 @@ describe("pending update read-only checks", () => {
 			destParentId: files_ROOT_ID,
 			destName: "pending-read-only-move-folder-renamed",
 		});
-		expect(refusedFolder._nay?.name).toBe("read_only");
+		expect(movedFolder._nay).toBeUndefined();
 		expect(
 			await t.run((ctx) =>
 				read_pending_update_row({
@@ -20839,7 +21077,7 @@ describe("pending update read-only checks", () => {
 					nodeId: seeded.folderId,
 				}),
 			),
-		).toBeNull();
+		).not.toBeNull();
 	});
 
 	test("a locked move destination or a locked file inside the replaced folder refuses the move proposal", async () => {

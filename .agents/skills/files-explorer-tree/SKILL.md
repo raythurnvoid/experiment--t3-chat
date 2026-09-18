@@ -138,8 +138,6 @@ Tree-item components:
 - Paging avoids the query read limit, but the first tree view still waits for every page. Virtual
   rows reduce mounted DOM; they do not reduce that initial data load. Measure initial loading and
   expansion after loading separately. A fast expansion does not prove a fast first visit.
-- A lock source can be on another page. The query loads those sources by id and checks read access
-  before returning their names or paths.
 - Tree collection maps/sets are derived from query results (`useMemo`) and rebuilt from server data.
 - Loading/empty states are derived from query presence and visible IDs.
 
@@ -327,23 +325,26 @@ Backend rules, limits, billing, cleanup, and Activity privacy are in
 
 ## Read-Only Files And Folders
 
-- `list_tree` returns `readOnlyState` and only the lock-source details the caller may see. It never
-  returns the stored lock pointer. When the full tree result changes, derive one set of visible
-  ancestors that contain locked nodes. Do not scan a subtree for every rendered row.
+- `list_tree` returns `canWrite`, `writeBlockedReason` (`null`, `permission`, or `read_only`), and
+  `writePolicyState` (`none`, `read_only`, or `writer`). It never returns raw `writePolicy` or
+  `newChildWritePolicy`. When the full tree result changes, derive one set of visible ancestors that
+  contain protected descendants so Archive can warn without scanning a subtree for every rendered row.
 - Keep locked rows selectable, openable, searchable, and expandable. Add the lock mark beside, not in
   place of, the restricted-access icon. Use the exact row descriptions and status text from
   `../files-read-only/SKILL.md`.
-- Disable Rename, Archive/Restore, source drag, and locked-folder drop targets. An unlocked ancestor
-  with a visible locked descendant may receive a new sibling, but it cannot itself be renamed, moved,
-  or archived. A mixed selection is blocked when any affected node is blocked.
+- Disable Rename, source drag, and locked-folder drop targets when the named item or its immediate
+  parent is protected. A writable folder can be renamed or moved while it holds protected children.
+  Archive still looks at protected descendants, so Archive/Restore stays disabled when a visible
+  descendant is protected. An unlocked ancestor with a visible locked descendant may still receive a
+  new sibling. A mixed selection is blocked when any affected node is blocked.
 - A locked folder disables New file, New folder, Create README, Upload file, Import folder, and
   external drops. A drop over a locked file still resolves to its writable parent under the normal
   file-row rule. Upload conflicts keep rename-upload available while Replace is disabled for a locked
   occupant.
-- The row menu and selected-node header use a separate read-only control. Labels are `Make read-only`,
-  `Make writable`, `Remove direct lock`, `Manage <source>`, and `Add direct lock` as described by the
-  lock management query. Share remains a separate control.
-- Archived explicit locks stay marked and manageable. Restore remains blocked until the affected lock
+- The row menu and selected-node header open Files Properties. Files Properties offers Editable,
+  Read-only, and Selected writer. Folders also have a New items default. There is no inherited text
+  and no Open parent policy. Share remains a separate control.
+- Archived local locks stay marked and manageable. Restore remains blocked until that node's lock
   is removed.
 
 ## Drag And Drop

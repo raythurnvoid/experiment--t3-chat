@@ -83,7 +83,6 @@ const NODE = {
 	contentFrontmatterTooLargeFieldCount: null,
 	contentFrontmatterTooLargeIndexDocumentCount: null,
 	restrictedScopeNodeId: null,
-	writePolicyScopeNodeId: null,
 	writePolicy: null,
 	canWrite: true,
 	writeBlockedReason: null,

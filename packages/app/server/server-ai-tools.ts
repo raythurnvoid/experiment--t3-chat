@@ -816,7 +816,7 @@ export function ai_chat_tool_create_edit_file(
 				})) as prepare_file_pending_update_for_agent_Result;
 				if (prepared._nay) {
 					throw new Error(
-						`Cannot edit ${normalizedPath}: ${prepared._nay.message}${prepared._nay.name === "read_only" ? " Do not retry this path with another write tool." : ""}`,
+						`Cannot edit ${normalizedPath}: ${prepared._nay.message}${prepared._nay.name === "read_only" || prepared._nay.name === "upload_in_progress" ? " Do not retry this path with another write tool." : ""}`,
 						{ cause: prepared._nay },
 					);
 				}

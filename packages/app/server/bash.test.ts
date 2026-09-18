@@ -126,6 +126,8 @@ describe("bash_run_command", () => {
 	afterEach(() => {
 		vi.restoreAllMocks();
 		vi.unstubAllGlobals();
+		// Never let a mocked clock leak into the next test. This is a no-op when no test mocked it.
+		vi.useRealTimers();
 	});
 
 	type BashSeedSpec = {
@@ -4476,26 +4478,34 @@ describe("bash_run_command", () => {
 		const runner = await create_bash_runner();
 		expect((await runner.run("echo bg &")).metadata.exitCode).toBe(0);
 		await run_job(runner, 1);
-		vi.setSystemTime(Date.now() + 1000);
+		// Mock only the clock, and restore it in `finally`. Without the restore the frozen
+		// `Date.now()` leaks into later tests, and a later `wait -t` loops its sleep until
+		// the test times out.
+		vi.useFakeTimers({ toFake: ["Date"] });
+		try {
+			vi.setSystemTime(Date.now() + 1000);
 
-		// The shell save lands but the finish never does, so the notes printed into the lost
-		// result never reach the agent. The cursor must stay put and the notes must print again.
-		const mutate = runner.runMutation.getMockImplementation()!;
-		let lostReply = false;
-		runner.runMutation.mockImplementation(async (ref, args) => {
-			if (!lostReply && function_name_of(ref) === "ai_chat_files:finish_bash_invocation") {
-				lostReply = true;
-				throw new Error("Lost finish reply");
-			}
-			return await mutate(ref, args);
-		});
-		const lost = await runner.run("echo lost", "lost-finish").catch((error: unknown) => error);
-		expect(lost).toBeInstanceOf(Error);
+			// The shell save lands but the finish never does, so the notes printed into the lost
+			// result never reach the agent. The cursor must stay put and the notes must print again.
+			const mutate = runner.runMutation.getMockImplementation()!;
+			let lostReply = false;
+			runner.runMutation.mockImplementation(async (ref, args) => {
+				if (!lostReply && function_name_of(ref) === "ai_chat_files:finish_bash_invocation") {
+					lostReply = true;
+					throw new Error("Lost finish reply");
+				}
+				return await mutate(ref, args);
+			});
+			const lost = await runner.run("echo lost", "lost-finish").catch((error: unknown) => error);
+			expect(lost).toBeInstanceOf(Error);
 
-		const second = await runner.run("echo fresh");
-		expect(second.stdout).toBe("fresh\n");
-		expect(second.stderr).toBe("bash: job 1 done. Output: /shells/default/transcript\n");
-		expect((await runner.run("true")).stderr).toBe("");
+			const second = await runner.run("echo fresh");
+			expect(second.stdout).toBe("fresh\n");
+			expect(second.stderr).toBe("bash: job 1 done. Output: /shells/default/transcript\n");
+			expect((await runner.run("true")).stderr).toBe("");
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	test("a job cannot change its shell and starts in the live cwd of the &", async () => {
@@ -5592,7 +5602,7 @@ describe("bash_run_command", () => {
 				const runner = await create_bash_runner({ allowDbFilesMkdir });
 				const nodeId = await get_seeded_node_id(runner, "/docs/readme.md");
 				await runner.t.run((ctx) =>
-					ctx.db.patch("files_nodes", nodeId, { writePolicyScopeNodeId: nodeId, writePolicy: { mode: "read_only" } }),
+					ctx.db.patch("files_nodes", nodeId, { writePolicy: { mode: "read_only" } }),
 				);
 
 				const result = await runner.run(`cd /tmp && resolve '${nodeId}'`);
@@ -9087,11 +9097,12 @@ describe("bash_run_command", () => {
 		expect((await get_private_entry(runner, "/reports/README.md")).node.name).toBe("README.md");
 	});
 
-	test("blocks writes in a read-only subtree but lets cp read its source", async () => {
+	test("blocks writes to a locked folder but lets writable children change and copy out", async () => {
 		const runner = await create_bash_runner();
 
 		const docsId = await get_seeded_node_id(runner, "/docs");
 		const sourceId = await get_seeded_node_id(runner, "/docs/readme.md");
+		const tutorialId = await get_seeded_node_id(runner, "/docs/tutorial.md");
 
 		await runner.t.run(async (ctx) => {
 			const nodes = await ctx.db.query("files_nodes").collect();
@@ -9102,20 +9113,28 @@ describe("bash_run_command", () => {
 					(node.path === "/docs" || node.path.startsWith("/docs/"))
 				) {
 					await ctx.db.patch("files_nodes", node._id, {
-						writePolicyScopeNodeId: docsId,
 						writePolicy: node._id === docsId ? { mode: "read_only" } : null,
 					});
 				}
 			}
 		});
 
-		const refusedCommands = [
+		// Writes to writable children pass. The folder lock does not cover them.
+		const allowedCommands = [
 			`printf changed > ${test_db_files_mount}/docs/readme.md`,
+			`rm ${test_db_files_mount}/docs/tutorial.md`,
+		];
+		for (const command of allowedCommands) {
+			const result = await runner.run(command);
+			expect(result.metadata.exitCode, command).toBe(0);
+			expect(result.stderr, command).toBe("");
+		}
+
+		// Create inside the locked folder, and move through it as the immediate parent, stay refused.
+		const refusedCommands = [
 			`mkdir ${test_db_files_mount}/docs/new-folder`,
 			`mv ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/reports/moved.md`,
 			`mv ${test_db_files_mount}/reports/summary.md ${test_db_files_mount}/docs/moved-in.md`,
-			`rm ${test_db_files_mount}/docs/tutorial.md`,
-			`cp ${test_db_files_mount}/reports/summary.md ${test_db_files_mount}/docs/readme.md`,
 			`cp ${test_db_files_mount}/reports/summary.md ${test_db_files_mount}/docs/copied.md`,
 		];
 		for (const command of refusedCommands) {
@@ -9134,7 +9153,6 @@ describe("bash_run_command", () => {
 			id: await get_seeded_node_id(runner, "/reports"),
 		});
 		expect(await get_seeded_node(runner, "/docs/readme.md")).toMatchObject({
-			writePolicyScopeNodeId: docsId,
 			writePolicy: null,
 		});
 
@@ -9158,18 +9176,32 @@ describe("bash_run_command", () => {
 		expect(activePaths).not.toContain("/reports/moved.md");
 
 		const readBack = await runner.run(`cat ${test_db_files_mount}/docs/readme.md`);
-		expect(readBack.stdout).toContain("# Readme");
-		expect(readBack.stdout).not.toContain("changed");
+		expect(readBack.stdout).toContain("changed");
+		expect(readBack.stdout).not.toContain("# Readme");
+		const tutorialRead = await runner.run(`cat ${test_db_files_mount}/docs/tutorial.md`);
+		expect(tutorialRead.metadata.exitCode).not.toBe(0);
 
 		const pendingRows = await list_pending_updates(runner);
-		expect(pendingRows).toHaveLength(1);
-		expect(pendingRows[0].copiedFrom).toMatchObject({
-			target: { kind: "saved", id: sourceId },
-			path: "/docs/readme.md",
-		});
+		expect(pendingRows).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					target: { kind: "saved", id: sourceId },
+				}),
+				expect.objectContaining({
+					target: { kind: "saved", id: tutorialId },
+					pendingArchive: expect.objectContaining({ fromPath: "/docs/tutorial.md" }),
+				}),
+				expect.objectContaining({
+					copiedFrom: expect.objectContaining({
+						target: { kind: "saved", id: sourceId },
+						path: "/docs/readme.md",
+					}),
+				}),
+			]),
+		);
+		expect(pendingRows).toHaveLength(3);
 		const savedCopyId = await save_private_copy_for_test(runner, "/reports/copied-out.md");
 		expect(await runner.t.run((ctx) => ctx.db.get("files_nodes", savedCopyId))).toMatchObject({
-			writePolicyScopeNodeId: null,
 			writePolicy: null,
 		});
 	});
@@ -9809,7 +9841,7 @@ describe("bash_run_command", () => {
 
 		// Lock: the copy is refused before anything is staged.
 		await runner.t.run((ctx) =>
-			ctx.db.patch("files_nodes", lockedId, { writePolicyScopeNodeId: lockedId, writePolicy: { mode: "read_only" } }),
+			ctx.db.patch("files_nodes", lockedId, { writePolicy: { mode: "read_only" } }),
 		);
 		const locked = await runner.run(`cp ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/data/locked.yaml`);
 		expect(locked.metadata.exitCode).not.toBe(0);

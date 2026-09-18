@@ -1,7 +1,7 @@
 import { Workpool } from "@convex-dev/workpool";
 import { R2 } from "@convex-dev/r2";
 import { afterEach, beforeEach, describe, expect, test, vi, type MockInstance } from "vitest";
-import { internal } from "./_generated/api.js";
+import { api, internal } from "./_generated/api.js";
 import { files_nodes_db_create_node_recursively_at_path } from "./files_nodes.ts";
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
 import { files_MAX_UPLOADS_BYTES, files_ROOT_ID } from "../server/files.ts";
@@ -249,7 +249,6 @@ describe("data_import.create_upload_targets", () => {
 
 		await t.run(async (ctx) => {
 			await ctx.db.patch("files_nodes", occupantNodeId, {
-				writePolicyScopeNodeId: occupantNodeId,
 				writePolicy: { mode: "read_only" },
 			});
 		});
@@ -284,7 +283,6 @@ describe("data_import.create_upload_targets", () => {
 		// Unlocking allows the same import to replace the old file.
 		await t.run(async (ctx) => {
 			await ctx.db.patch("files_nodes", occupantNodeId, {
-				writePolicyScopeNodeId: null,
 				writePolicy: null,
 			});
 		});
@@ -317,7 +315,6 @@ describe("data_import.create_upload_targets", () => {
 				throw new Error(folder._nay.message);
 			}
 			await ctx.db.patch("files_nodes", folder._yay, {
-				writePolicyScopeNodeId: folder._yay,
 				writePolicy: { mode: "read_only" },
 			});
 		});
@@ -535,6 +532,39 @@ describe("data_import.create_upload_targets", () => {
 			message: "Duplicate path in batch",
 			data: { path: "/documents/report.pdf" },
 		});
+	});
+
+	test("a late lock leaves the imported upload publishable", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+
+		const created = await t.mutation(internal.data_import.create_upload_targets, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			createdBy: db.userId,
+			items: [{ path: "/documents/report.pdf", contentType: "application/pdf", size: 100 }],
+		});
+		if (created._nay) {
+			throw new Error(created._nay.message);
+		}
+
+		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+		const locked = await asUser.mutation(api.files_nodes.set_node_write_policy, {
+			membershipId: db.membershipId,
+			nodeId: created._yay[0]!.nodeId,
+			writePolicy: { mode: "read_only" },
+		});
+		expect(locked._nay).toBeUndefined();
+
+		// The lock applies, but nothing else is stored: an accepted upload always finishes.
+		// The R2 event publish is covered in r2.test.ts.
+		const docs = await t.run(async (ctx) => ({
+			node: await ctx.db.get("files_nodes", created._yay[0]!.nodeId),
+			asset: await ctx.db.get("files_r2_assets", created._yay[0]!.assetId),
+		}));
+		expect(docs.node?.writePolicy).toEqual({ mode: "read_only" });
+		expect(docs.asset?.r2Key).toBeUndefined();
+		expect(docs.asset?.unfinalizedExpiresAt).toEqual(expect.any(Number));
 	});
 });
 

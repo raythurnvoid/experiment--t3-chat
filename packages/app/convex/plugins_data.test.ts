@@ -2235,7 +2235,7 @@ describe("invoke file write preconditions", () => {
 		await t.mutation(internal.public_api.cleanup_file_write_stage, { stageId: prepared._yay.stageId });
 	});
 
-	test("a member lock outside a nested plugin lock blocks the write", async () => {
+	test("a member lock outside a nested plugin lock does not block the write", async () => {
 		const t = test_convex();
 		const fixture = await seed_file_writer(t);
 		const parent = await t.run((ctx) => ctx.db.get("files_nodes", fixture.parentId));
@@ -2262,7 +2262,7 @@ describe("invoke file write preconditions", () => {
 				})
 			)._nay,
 		).toBeUndefined();
-		expect((await prepare_file(t, fixture))._nay?.name).toBe("read_only");
+		expect((await prepare_file(t, fixture))._nay).toBeUndefined();
 	});
 });
 
@@ -12958,7 +12958,6 @@ describe("files_sharing.set_node_share_grant", () => {
 		expect((await apply_binding(t, fixture, { nodeId, readScopeId: "p/takeover" }))._nay).toBeUndefined();
 		await t.run(async (ctx) => {
 			await ctx.db.patch("files_nodes", nodeId, {
-				writePolicyScopeNodeId: nodeId,
 				writePolicy: {
 					mode: "writer",
 					writer: { kind: "service_account", serviceAccountId: fixture.serviceAccountId },

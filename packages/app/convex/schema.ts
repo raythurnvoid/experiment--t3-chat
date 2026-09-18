@@ -15,6 +15,25 @@ import { plugins_CAPABILITIES } from "../shared/plugins.ts";
 const plugins_capability_validator = v.union(...plugins_CAPABILITIES.map((capability) => v.literal(capability)));
 
 /**
+ * One node's local write protection. Null means editable. Copied once as a folder default;
+ * never merged with a parent rule.
+ */
+const files_nodes_write_policy_validator = v.union(
+	v.null(),
+	v.object({ mode: v.literal("read_only") }),
+	v.object({
+		mode: v.literal("writer"),
+		writer: v.union(
+			v.object({ kind: v.literal("user"), userId: v.id("users") }),
+			v.object({
+				kind: v.literal("service_account"),
+				serviceAccountId: v.id("access_control_service_accounts"),
+			}),
+		),
+	}),
+);
+
+/**
  * The full list of permissions. Users build roles out of these, but can never add a new one.
  **/
 const access_control_permission_validator = v.union(
@@ -1020,6 +1039,12 @@ const app_convex_schema = defineSchema({
 			v.object({
 				target: files_pending_target_validator,
 				path: v.string(),
+				/**
+				 * Protection read from the source when the copy target was first made. A retry
+				 * reuses the target and never overwrites these with later source rules.
+				 */
+				sourceWritePolicy: v.optional(files_nodes_write_policy_validator),
+				sourceNewChildWritePolicy: v.optional(files_nodes_write_policy_validator),
 			}),
 		),
 		/**
@@ -1463,24 +1488,12 @@ const app_convex_schema = defineSchema({
 		 * stays right without walking up the tree. See `files_nodes_db_cascade_restricted_scope`.
 		 */
 		restrictedScopeNodeId: v.union(v.id("files_nodes"), v.null()),
+		writePolicy: files_nodes_write_policy_validator,
 		/**
-		 * Nearest policy scope, or null when ordinary ACL rules decide writes.
+		 * Starting protection copied once to brand-new files and subfolders.
+		 * Only folders use it; files store null. Absent on docs written before the local model.
 		 */
-		writePolicyScopeNodeId: v.union(v.id("files_nodes"), v.null()),
-		writePolicy: v.union(
-			v.null(),
-			v.object({ mode: v.literal("read_only") }),
-			v.object({
-				mode: v.literal("writer"),
-				writer: v.union(
-					v.object({ kind: v.literal("user"), userId: v.id("users") }),
-					v.object({
-						kind: v.literal("service_account"),
-						serviceAccountId: v.id("access_control_service_accounts"),
-					}),
-				),
-			}),
-		),
+		newChildWritePolicy: v.optional(files_nodes_write_policy_validator),
 		// Lifecycle and authorship
 		/**
 		 * Archive operation UUID, or null for an active node.
@@ -2155,6 +2168,12 @@ const app_convex_schema = defineSchema({
 		outputTarget: v.union(files_pending_target_validator, v.null()),
 		outputName: v.union(v.string(), v.null()),
 		outputPath: v.union(v.string(), v.null()),
+		/**
+		 * The policy this run wrote on the produced node. Its children may be created inside it
+		 * while the node's current policy still equals this value, even when it is a lock.
+		 * Merged or private targets store nothing: the run did not write that policy.
+		 */
+		outputWritePolicy: v.optional(files_nodes_write_policy_validator),
 		errorMessage: v.union(v.string(), v.null()),
 	})
 		.index("by_run_source", ["runId", "source.kind", "source.id"])
@@ -2170,6 +2189,7 @@ const app_convex_schema = defineSchema({
 		.index("by_run_discoveryDone_order", ["runId", "discoveryDone", "order"])
 		.index("by_parentItem", ["parentItemId"])
 		.index("by_organization_workspace", ["organizationId", "workspaceId"]),
+
 	// #endregion files transfer
 
 	// #region plugins core

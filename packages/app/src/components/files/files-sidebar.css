@@ -516,6 +516,19 @@
 		user-select: none;
 	}
 
+	.FilesSidebarTreeItemPrimaryContent-uploading {
+		display: inline-flex;
+		align-items: center;
+		flex: 0 0 auto;
+		margin-left: 6px;
+
+		font-size: 0.75rem;
+		line-height: 1rem;
+		color: var(--color-accent-08);
+		white-space: nowrap;
+		user-select: none;
+	}
+
 	.FilesSidebarTreeItem-content-cut > .FilesSidebarTreeItemPrimaryContent {
 		color: var(--color-fg-06);
 	}
@@ -557,12 +570,22 @@
 	/* #region tree item title */
 	.FilesSidebarTreeItemTitle {
 		display: flex;
-		flex: 1;
+		flex: 0 1 auto;
 		min-width: 0;
-		width: 100%;
+		width: max-content;
+		max-width: 100%;
+
+		/* MyInput uses size containment. Turn it off here so idle titles can shrink to their text
+		   and the lock can sit after the name. */
+		contain: none;
 
 		color: inherit;
 		line-height: 1;
+
+		.FilesSidebarTreeItem-content-renaming & {
+			flex: 1 1 auto;
+			width: 100%;
+		}
 
 		&:has(.FilesSidebarTreeItemTitle-input:disabled) {
 			.MyInputBackground {
@@ -576,12 +599,21 @@
 	}
 
 	.FilesSidebarTreeItemTitle-input {
-		flex: 1;
+		flex: 0 1 auto;
 		min-width: 0;
-		contain: content;
+		width: auto;
+		field-sizing: content;
+		contain: none;
 		text-overflow: ellipsis;
 		white-space: nowrap;
 		padding: 0 3px;
+
+		.FilesSidebarTreeItem-content-renaming & {
+			flex: 1 1 auto;
+			width: 100%;
+			field-sizing: fixed;
+			contain: content;
+		}
 
 		color: inherit;
 		font-size: inherit;

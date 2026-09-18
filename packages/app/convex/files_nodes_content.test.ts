@@ -897,7 +897,7 @@ describe("copy_transfer_file", () => {
 		expect(await t.run((ctx) => ctx.db.get("files_nodes", nodeId))).toEqual(before);
 	});
 
-	test("copies a read-only source into an editable independent document", async () => {
+	test("copies a read-only source into an independent document that stays locked", async () => {
 		vi.useFakeTimers();
 		const fixture = await create_file_fixture();
 		const { t, db, asUser, scope, nodeId } = fixture;
@@ -915,8 +915,8 @@ describe("copy_transfer_file", () => {
 		const item = await t.run((ctx) => ctx.db.get("files_transfer_items", copy.itemId));
 		const copiedId = saved_copy_id(item);
 		const copied = await t.run((ctx) => ctx.db.get("files_nodes", copiedId));
-		expect(copied?.writePolicy).toBeNull();
-		expect(copied?.writePolicyScopeNodeId).toBeNull();
+		// A copy keeps the source file's own rule. The destination default does not unlock it.
+		expect(copied?.writePolicy).toEqual({ mode: "read_only" });
 		const pointers = await test_get_file_yjs_pointers(t, copiedId);
 		const snapshotKey = await t.run(async (ctx) => {
 			const snapshot = await ctx.db.get("files_yjs_snapshots", pointers.yjsSnapshotId);
@@ -926,6 +926,24 @@ describe("copy_transfer_file", () => {
 		applyUpdate(editor, new Uint8Array(await new Response(objects.get(snapshotKey)).arrayBuffer()));
 		const beforeEdit = encodeStateVector(editor);
 		editor.getText(files_YJS_DOC_KEYS.plainText).insert("Original text\n".length, "Copy edit\n");
+		const refused = await asUser.mutation(api.files_nodes.yjs_push_update, {
+			membershipId: db.membershipId,
+			nodeId: copiedId,
+			expectedYjsLastSequenceId: pointers.yjsLastSequenceId,
+			update: files_u8_to_array_buffer(encodeStateAsUpdate(editor, beforeEdit)),
+			sessionId: "clipboard-destination",
+		});
+		expect(refused._nay?.name).toBe("read_only");
+		expect(refused._nay?.message).toBe("This item is read-only.");
+		expect(
+			(
+				await asUser.mutation(api.files_nodes.set_node_write_policy, {
+					membershipId: db.membershipId,
+					nodeId: copiedId,
+					writePolicy: null,
+				})
+			)._nay,
+		).toBeUndefined();
 		expect(
 			(
 				await asUser.mutation(api.files_nodes.yjs_push_update, {

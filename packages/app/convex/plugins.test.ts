@@ -1785,7 +1785,6 @@ describe("plugins Phase 0", () => {
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: null,
-				writePolicyScopeNodeId: null,
 				writePolicy: null,
 				archiveOperationId: null,
 			});
@@ -2440,7 +2439,6 @@ describe("plugins Phase 0", () => {
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: null,
-				writePolicyScopeNodeId: null,
 				writePolicy: null,
 				archiveOperationId: null,
 			});
@@ -13241,7 +13239,6 @@ describe("plugins metadata file doors", () => {
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: null,
-				writePolicyScopeNodeId: null,
 				writePolicy: null,
 				archiveOperationId: null,
 				contentType: null,
@@ -13634,14 +13631,14 @@ describe("plugins metadata file doors", () => {
 		});
 		expect(root.status).toBe(200);
 
-		// Each explicit policy belongs to its own folder. Outer policies still apply to writes.
+		// Each folder keeps its own selected-account rule. A parent lock never blocks a child.
 		const nested = await door_call(t, "/api/v1/files/plugin-folders/ensure", run.apiToken, {
 			path: "/probe/private",
 			access: { readOnly: true },
 		});
 		expect(nested.status).toBe(200);
 
-		// The scope binding is the point of the call, and it is applied after the read-only half.
+		// The scope binding is the point of the call, and it is applied after the writer rule.
 		// The binding needs a live private scope of this installation; the door checks the scope
 		// row, not the page flow that normally creates it.
 		await t.run(async (ctx) => {
@@ -13666,19 +13663,16 @@ describe("plugins metadata file doors", () => {
 
 		const scopedNode = await find_active_node(t, fixture, "/probe/private/channel-a");
 		const rootNode = await find_active_node(t, fixture, "/probe");
-		expect(scopedNode?.writePolicyScopeNodeId).toBe(scopedNode?._id);
 		const installation = await t.run((ctx) => ctx.db.get("plugins_workspace_installations", fixture.installationId));
 		const pinnedRun = await t.run((ctx) => ctx.db.get("plugins_event_runs", run.runId));
 		expect(pinnedRun?.serviceAccountId).toBe(installation?.serviceAccountId);
 		expect(rootNode).toMatchObject({
-			writePolicyScopeNodeId: rootNode?._id,
 			writePolicy: {
 				mode: "writer",
 				writer: { kind: "service_account", serviceAccountId: installation?.serviceAccountId },
 			},
 		});
 		expect(scopedNode).toMatchObject({
-			writePolicyScopeNodeId: scopedNode?._id,
 			writePolicy: { mode: "writer", writer: { kind: "service_account", serviceAccountId: fixture.serviceAccountId } },
 		});
 		const binding = await t.run((ctx) => ctx.db.query("plugins_file_access_bindings").first());
@@ -13933,7 +13927,6 @@ describe("plugins metadata file doors", () => {
 		expect(locked.status).toBe(200);
 		const lockedNode = await find_active_node(t, fixture, "/probe/locked.md");
 		expect(lockedNode).toMatchObject({
-			writePolicyScopeNodeId: lockedNode!._id,
 			writePolicy: { mode: "writer", writer: { kind: "service_account", serviceAccountId: fixture.serviceAccountId } },
 		});
 	});
@@ -13957,7 +13950,9 @@ describe("plugins metadata file doors", () => {
 			expect(written.status).toBe(200);
 		}
 		const lockedNode = await find_active_node(t, fixture, "/probe/a/one.md");
-		expect(lockedNode?.writePolicyScopeNodeId).toBe(lockedNode?._id);
+		expect(lockedNode).toMatchObject({
+			writePolicy: { mode: "writer", writer: { kind: "service_account", serviceAccountId: fixture.serviceAccountId } },
+		});
 
 		const archived = await door_call(t, "/api/v1/files/plugin-archive", run.apiToken, { path: "/probe/a" });
 		expect(archived.status).toBe(200);
@@ -13968,7 +13963,6 @@ describe("plugins metadata file doors", () => {
 		// The plugin's own lock was released before the archive, so a member restore gets a
 		// writable file back.
 		const afterArchive = await t.run(async (ctx) => ctx.db.get("files_nodes", lockedNode!._id));
-		expect(afterArchive?.writePolicyScopeNodeId).toBeNull();
 		expect(afterArchive?.writePolicy).toBeNull();
 
 		// A member's file inside an open plugin folder refuses the whole subtree archive.
@@ -14004,7 +13998,6 @@ describe("plugins metadata file doors", () => {
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: null,
-				writePolicyScopeNodeId: null,
 				writePolicy: null,
 				archiveOperationId: null,
 			});
@@ -14052,7 +14045,6 @@ describe("plugins metadata file doors", () => {
 		expect(await lock.json()).toEqual({ nodeId: String(reportNode!._id) });
 		const installation = await t.run((ctx) => ctx.db.get("plugins_workspace_installations", fixture.installationId));
 		expect(await find_active_node(t, fixture, "/probe/report.md")).toMatchObject({
-			writePolicyScopeNodeId: reportNode!._id,
 			writePolicy: {
 				mode: "writer",
 				writer: { kind: "service_account", serviceAccountId: installation?.serviceAccountId },
@@ -14074,20 +14066,22 @@ describe("plugins metadata file doors", () => {
 		});
 		expect(unlock.status).toBe(200);
 		expect(await find_active_node(t, fixture, "/probe/report.md")).toMatchObject({
-			writePolicyScopeNodeId: null,
 			writePolicy: null,
 		});
 
-		// Locking the plugin's own folder cascades over the subtree, and the plugin still writes
-		// through its own folder lock — the pattern a plugin uses for machine-managed areas.
+		// The plugin still writes through its own folder lock. Child files keep their own rule.
 		const folderLock = await door_call(t, "/api/v1/files/plugin-access/set", run.apiToken, {
 			path: "/probe",
 			access: { readOnly: true },
 		});
 		expect(folderLock.status).toBe(200);
-		const probeRoot = await find_active_node(t, fixture, "/probe");
+		expect(await find_active_node(t, fixture, "/probe")).toMatchObject({
+			writePolicy: {
+				mode: "writer",
+				writer: { kind: "service_account", serviceAccountId: installation?.serviceAccountId },
+			},
+		});
 		expect(await find_active_node(t, fixture, "/probe/report.md")).toMatchObject({
-			writePolicyScopeNodeId: probeRoot!._id,
 			writePolicy: null,
 		});
 		const throughLock = await door_call(t, "/api/v1/files/write", run.apiToken, {
@@ -14217,7 +14211,6 @@ describe("plugins metadata file doors", () => {
 		expect(vault.status).toBe(200);
 		const vaultNode = await find_active_node(t, fixture, "/probe/vault");
 		expect(vaultNode).toMatchObject({
-			writePolicyScopeNodeId: vaultNode!._id,
 			writePolicy: { mode: "writer", writer: { kind: "service_account", serviceAccountId: fixture.serviceAccountId } },
 			restrictedScopeNodeId: vaultNode!._id,
 		});
@@ -14289,7 +14282,6 @@ describe("plugins metadata file doors", () => {
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: null,
-				writePolicyScopeNodeId: null,
 				writePolicy: null,
 				archiveOperationId: null,
 			});
@@ -14338,7 +14330,7 @@ describe("plugins metadata file doors", () => {
 				bindings: await ctx.db.query("plugins_file_access_bindings").collect(),
 			}));
 			expect(before.node?.restrictedScopeNodeId).toBeNull();
-			expect(before.node?.writePolicyScopeNodeId).toBeNull();
+			expect(before.node?.writePolicy).toBeNull();
 			const access = change === "lock" ? { readOnly: true } : { readScopeId: "private" };
 			const refused = await door_call(t, "/api/v1/files/plugin-access/set", run.apiToken, {
 				path: "/member-folder",
@@ -14371,7 +14363,6 @@ describe("plugins metadata file doors", () => {
 			expect(await accepted.json()).toEqual({ nodeId });
 			if (change === "lock") {
 				expect(await t.run((ctx) => ctx.db.get("files_nodes", nodeId))).toMatchObject({
-					writePolicyScopeNodeId: nodeId,
 					writePolicy: {
 						mode: "writer",
 						writer: { kind: "service_account", serviceAccountId: fixture.serviceAccountId },
@@ -14558,7 +14549,7 @@ describe("plugins metadata file doors", () => {
 		},
 	);
 
-	test("an outer member lock wins over a nested plugin lock on every policy door", async () => {
+	test("an outer member lock does not block nested plugin doors", async () => {
 		const t = test_convex();
 		const fixture = await install_file_doors_plugin(t);
 		const run = await start_file_invoke_run(t, fixture);
@@ -14589,17 +14580,30 @@ describe("plugins metadata file doors", () => {
 			}),
 		).toEqual({ _yay: null });
 
-		const before = await t.run((ctx) => ctx.db.query("files_nodes").collect());
-		for (const [route, body] of [
-			["/api/v1/files/plugin-folders/ensure", { path: "/outer/plugin" }],
-			["/api/v1/files/plugin-folders/ensure", { path: "/outer/plugin/new" }],
-			["/api/v1/files/plugin-access/set", { path: "/outer/plugin", access: { readOnly: false } }],
-			["/api/v1/files/plugin-archive", { path: "/outer/plugin" }],
-		] as const) {
-			const refused = await door_call(t, route, run.apiToken, body);
-			expect(refused.status, route).toBe(409);
-			expect(await t.run((ctx) => ctx.db.query("files_nodes").collect())).toEqual(before);
-		}
+		expect(
+			(await door_call(t, "/api/v1/files/plugin-folders/ensure", run.apiToken, { path: "/outer/plugin" })).status,
+		).toBe(200);
+		expect(
+			(await door_call(t, "/api/v1/files/plugin-folders/ensure", run.apiToken, { path: "/outer/plugin/new" })).status,
+		).toBe(200);
+		expect(
+			(
+				await door_call(t, "/api/v1/files/plugin-access/set", run.apiToken, {
+					path: "/outer/plugin",
+					access: { readOnly: false },
+				})
+			).status,
+		).toBe(200);
+
+		// Creating beside the plugin folder still checks the locked parent.
+		const refused = await door_call(t, "/api/v1/files/plugin-folders/ensure", run.apiToken, {
+			path: "/outer/sibling",
+		});
+		expect(refused.status).toBe(409);
+		expect(await refused.json()).toEqual({ message: "This item is read-only." });
+
+		const archived = await door_call(t, "/api/v1/files/plugin-archive", run.apiToken, { path: "/outer/plugin" });
+		expect(archived.status).toBe(200);
 	});
 
 	test.each(["label", "permission", "lock"] as const)(
@@ -14785,7 +14789,6 @@ describe("plugins metadata file doors", () => {
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: null,
-				writePolicyScopeNodeId: null,
 				writePolicy: null,
 				archiveOperationId: null,
 			});

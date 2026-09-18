@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
-	files_collect_read_only_ancestor_ids,
+	files_collect_protected_descendant_ids,
 	files_find_file_stem_end_index,
 	files_get_read_only_capabilities,
 	files_get_read_only_row_labels,
@@ -264,9 +264,9 @@ function read_only_test_id(value: string) {
 	return value as files_VisibleTreeNode["_id"];
 }
 
-describe("files_collect_read_only_ancestor_ids", () => {
+describe("files_collect_protected_descendant_ids", () => {
 	test("marks every visible ancestor of a locked node and nothing else", () => {
-		const ancestorIds = files_collect_read_only_ancestor_ids([
+		const holderIds = files_collect_protected_descendant_ids([
 			read_only_test_node({ id: "a" }),
 			read_only_test_node({ id: "b", parentId: "a" }),
 			read_only_test_node({ id: "f", parentId: "b", canWrite: false }),
@@ -274,11 +274,11 @@ describe("files_collect_read_only_ancestor_ids", () => {
 			read_only_test_node({ id: "g", parentId: "c" }),
 		]);
 
-		expect(ancestorIds).toEqual(new Set([read_only_test_id("a"), read_only_test_id("b")]));
+		expect(holderIds).toEqual(new Set([read_only_test_id("a"), read_only_test_id("b")]));
 	});
 
 	test("marks both branches when two locked nodes share an ancestor", () => {
-		const ancestorIds = files_collect_read_only_ancestor_ids([
+		const holderIds = files_collect_protected_descendant_ids([
 			read_only_test_node({ id: "a" }),
 			read_only_test_node({ id: "b", parentId: "a" }),
 			read_only_test_node({ id: "f1", parentId: "b", canWrite: false }),
@@ -286,45 +286,45 @@ describe("files_collect_read_only_ancestor_ids", () => {
 			read_only_test_node({ id: "f2", parentId: "c", canWrite: false }),
 		]);
 
-		expect(ancestorIds).toEqual(new Set([read_only_test_id("a"), read_only_test_id("b"), read_only_test_id("c")]));
+		expect(holderIds).toEqual(new Set([read_only_test_id("a"), read_only_test_id("b"), read_only_test_id("c")]));
 	});
 
 	test("a locked root-level node has no visible ancestors", () => {
-		const ancestorIds = files_collect_read_only_ancestor_ids([read_only_test_node({ id: "d", canWrite: false })]);
+		const holderIds = files_collect_protected_descendant_ids([read_only_test_node({ id: "d", canWrite: false })]);
 
-		expect(ancestorIds).toEqual(new Set());
+		expect(holderIds).toEqual(new Set());
 	});
 
 	test("a parent missing from the visible list ends the walk", () => {
-		const ancestorIds = files_collect_read_only_ancestor_ids([
+		const holderIds = files_collect_protected_descendant_ids([
 			read_only_test_node({ id: "a" }),
 			// The locked node's direct parent is not visible to this caller, so the chain above it
 			// cannot be walked. `a` is not related to the locked node here.
 			read_only_test_node({ id: "f", parentId: "hidden", canWrite: false }),
 		]);
 
-		expect(ancestorIds).toEqual(new Set());
+		expect(holderIds).toEqual(new Set());
 	});
 
 	test("an all-writable tree yields an empty set", () => {
-		const ancestorIds = files_collect_read_only_ancestor_ids([
+		const holderIds = files_collect_protected_descendant_ids([
 			read_only_test_node({ id: "a" }),
 			read_only_test_node({ id: "b", parentId: "a" }),
 		]);
 
-		expect(ancestorIds).toEqual(new Set());
+		expect(holderIds).toEqual(new Set());
 	});
 });
 
 describe("files_get_read_only_row_labels", () => {
-	test("a policy refusal never needs a source identity", () => {
+	test("a read-only policy uses the local lock copy", () => {
 		expect(
 			files_get_read_only_row_labels({
 				canWrite: false,
 				writeBlockedReason: "read_only",
-				hasVisibleReadOnlyDescendant: false,
+				writePolicyState: "read_only",
 			}),
-		).toEqual({ description: "protected", tooltip: "A file policy blocks editing" });
+		).toEqual({ description: "Read-only", tooltip: "This item is read-only." });
 	});
 
 	test("an ACL refusal explains the missing permission", () => {
@@ -332,29 +332,29 @@ describe("files_get_read_only_row_labels", () => {
 			files_get_read_only_row_labels({
 				canWrite: false,
 				writeBlockedReason: "permission",
-				hasVisibleReadOnlyDescendant: false,
+				writePolicyState: "none",
 			}),
 		).toEqual({ description: "read-only", tooltip: "You don't have permission to edit this item" });
 	});
 
-	test("a selected current writer has no refusal label", () => {
+	test("a selected-writer rule shows even when this user can edit", () => {
 		expect(
 			files_get_read_only_row_labels({
 				canWrite: true,
 				writeBlockedReason: null,
-				hasVisibleReadOnlyDescendant: false,
+				writePolicyState: "writer",
 			}),
-		).toBe(null);
+		).toEqual({ description: "Protected: selected writer", tooltip: "Only the selected writer can edit" });
 	});
 
-	test("a writable ancestor of a locked node says it contains read-only items", () => {
+	test("a writable folder that only holds protected children has no lock", () => {
 		expect(
 			files_get_read_only_row_labels({
 				canWrite: true,
 				writeBlockedReason: null,
-				hasVisibleReadOnlyDescendant: true,
+				writePolicyState: "none",
 			}),
-		).toEqual({ description: "contains read-only items", tooltip: "Contains read-only items" });
+		).toBe(null);
 	});
 
 	test("a plain writable row gets no annotation", () => {
@@ -362,29 +362,51 @@ describe("files_get_read_only_row_labels", () => {
 			files_get_read_only_row_labels({
 				canWrite: true,
 				writeBlockedReason: null,
-				hasVisibleReadOnlyDescendant: false,
+				writePolicyState: "none",
 			}),
 		).toBe(null);
 	});
 });
 
 describe("files_get_read_only_capabilities", () => {
-	test("keeps destination writes separate from subtree-changing writes", () => {
+	test("protected children block delete, not rename or move", () => {
 		expect(
 			files_get_read_only_capabilities({
 				canWrite: true,
-				hasVisibleReadOnlyDescendant: true,
+				parentCanWrite: true,
+				hasVisibleProtectedDescendant: true,
+			}),
+		).toEqual({
+			canEditContent: true,
+			canReceiveChildren: true,
+			canRelocateOrRename: true,
+			canArchiveOrRestore: false,
+		});
+	});
+
+	test("a locked parent blocks rename and move of a writable child", () => {
+		expect(
+			files_get_read_only_capabilities({
+				canWrite: true,
+				parentCanWrite: false,
+				hasVisibleProtectedDescendant: false,
 			}),
 		).toEqual({
 			canEditContent: true,
 			canReceiveChildren: true,
 			canRelocateOrRename: false,
-			canArchiveOrRestore: false,
+			canArchiveOrRestore: true,
 		});
 	});
 
 	test("an effective refusal blocks every write capability", () => {
-		expect(files_get_read_only_capabilities({ canWrite: false, hasVisibleReadOnlyDescendant: false })).toEqual({
+		expect(
+			files_get_read_only_capabilities({
+				canWrite: false,
+				parentCanWrite: true,
+				hasVisibleProtectedDescendant: false,
+			}),
+		).toEqual({
 			canEditContent: false,
 			canReceiveChildren: false,
 			canRelocateOrRename: false,
@@ -396,7 +418,8 @@ describe("files_get_read_only_capabilities", () => {
 		expect(
 			files_get_read_only_capabilities({
 				canWrite: false,
-				hasVisibleReadOnlyDescendant: false,
+				parentCanWrite: false,
+				hasVisibleProtectedDescendant: false,
 			}),
 		).toEqual({
 			canEditContent: false,

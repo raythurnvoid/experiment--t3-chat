@@ -67,7 +67,6 @@ async function seed_markdown_file(args: {
 				}
 				parentId = await ctx.db.insert("files_nodes", {
 					writePolicy: null,
-					writePolicyScopeNodeId: null,
 					organizationId: args.organizationId,
 					workspaceId: args.workspaceId,
 					path: parentPath,
@@ -118,7 +117,6 @@ async function seed_markdown_file(args: {
 		});
 		const fileNodeId = await ctx.db.insert("files_nodes", {
 			writePolicy: null,
-			writePolicyScopeNodeId: null,
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
 			path: args.path,

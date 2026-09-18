@@ -76,6 +76,10 @@ import { MainAppSidebarToggle } from "@/components/main-app-sidebar-toggle.tsx";
 import { FilesNameInputControl } from "./files-name-input.tsx";
 import { FilesShareModal } from "./files-share-modal.tsx";
 import { FilesPropertiesModal } from "./files-properties-modal.tsx";
+import {
+	FileNodeViewFolderCreateNodeModal,
+	type FileNodeViewFolderCreateNodeModal_Ref,
+} from "./file-node-view/file-node-view-folder-create-node-modal.tsx";
 import { FilesClipboardMenuItems, FilesClipboardProvider, FilesClipboardToolbar } from "./files-clipboard.tsx";
 import { MyInput, MyInputArea, MyInputBackground, MyInputBox, MyInputHelperText } from "@/components/my-input.tsx";
 import { MyIconButton, MyIconButtonIcon, type MyIconButton_Props } from "@/components/my-icon-button.tsx";
@@ -133,7 +137,7 @@ import {
 	files_FILE_NODE_DRAG_DATA_TRANSFER_TYPE,
 	files_can_move_node_between_restricted_scopes,
 	files_clear_node_path_cached_validation_messages,
-	files_collect_read_only_ancestor_ids,
+	files_collect_protected_descendant_ids,
 	files_create_tree_items_list_from_nodes,
 	files_get_default_node_name,
 	files_get_read_only_capabilities,
@@ -219,16 +223,20 @@ function can_write_item(args: { item: files_TreeItem; workspaceWritePermission: 
 
 function can_rename_item(args: {
 	item: files_TreeItem;
+	parentItem: files_TreeItem | undefined;
 	canWriteItem: (item: files_TreeItem) => boolean;
-	readOnlyAncestorIds: ReadonlySet<app_convex_Id<"files_nodes">>;
+	canWriteRoot: boolean;
 }) {
-	return (
-		files_is_node(args.item) &&
-		files_get_read_only_capabilities({
-			canWrite: args.canWriteItem(args.item),
-			hasVisibleReadOnlyDescendant: args.readOnlyAncestorIds.has(args.item._id),
-		}).canRelocateOrRename
-	);
+	if (!files_is_node(args.item)) {
+		return false;
+	}
+	// Rename needs the named item and its immediate parent. Protected children never block it.
+	const parentCanWrite = !args.parentItem ? args.canWriteRoot : args.canWriteItem(args.parentItem);
+	return files_get_read_only_capabilities({
+		canWrite: args.canWriteItem(args.item),
+		parentCanWrite,
+		hasVisibleProtectedDescendant: false,
+	}).canRelocateOrRename;
 }
 
 /**
@@ -358,6 +366,27 @@ const FILES_IMPORT_INITIAL_STATE: FilesImportStoreState = {
 
 // Module-level so a sidebar unmount/remount re-attaches to a running import instead of losing it.
 const useFilesImportStore = create<FilesImportStoreState>(() => ({ ...FILES_IMPORT_INITIAL_STATE }));
+
+type FilesInFlightUploadsState = {
+	/** Node ids whose bytes are still traveling, from folder import or single upload. */
+	nodeIds: app_convex_Id<"files_nodes">[];
+};
+
+const useFilesInFlightUploads = create<FilesInFlightUploadsState>(() => ({ nodeIds: [] }));
+
+function files_in_flight_uploads_add(nodeId: app_convex_Id<"files_nodes">) {
+	useFilesInFlightUploads.setState((state) =>
+		state.nodeIds.includes(nodeId) ? state : { nodeIds: [...state.nodeIds, nodeId] },
+	);
+}
+
+function files_in_flight_uploads_remove(nodeId: app_convex_Id<"files_nodes">) {
+	useFilesInFlightUploads.setState((state) => ({ nodeIds: state.nodeIds.filter((id) => id !== nodeId) }));
+}
+
+function files_in_flight_uploads_clear() {
+	useFilesInFlightUploads.setState({ nodeIds: [] });
+}
 
 type FilesImportEntry = {
 	file: FileWithPath;
@@ -589,6 +618,7 @@ function finish_import_run() {
 	}
 
 	useFilesImportStore.setState({ ...FILES_IMPORT_INITIAL_STATE });
+	files_in_flight_uploads_clear();
 }
 
 type FilesImportCreatedItem = {
@@ -710,6 +740,9 @@ async function run_folder_import(args: {
 				}
 			}
 
+			// The bytes are done traveling: landed, deleted, or failed. Stop marking the row.
+			files_in_flight_uploads_remove(created.nodeId);
+
 			// `removed: false` means the R2 event recorded the object first, so the upload landed
 			// after all and the file must count as imported.
 			if (discarded && !discarded._nay && !discarded._yay.removed) {
@@ -766,6 +799,9 @@ async function run_folder_import(args: {
 
 				useFilesImportStore.setState((state) => ({ skipped: [...state.skipped, ...result._yay.skipped] }));
 				createdItems = result._yay.created;
+				for (const created of createdItems) {
+					files_in_flight_uploads_add(created.nodeId);
+				}
 			}
 
 			const itemByPath = new Map(chunk.map((item) => [item.normalizedPath, item]));
@@ -792,6 +828,7 @@ async function run_folder_import(args: {
 					const response = await fetch(created.url, { method: "PUT", headers: created.headers, body: item.file });
 					// This attempt already has an object. Keep its node while the R2 event confirms it.
 					if (response.status === 412) {
+						files_in_flight_uploads_remove(created.nodeId);
 						useFilesImportStore.setState((state) => ({ pendingConfirmation: state.pendingConfirmation + 1 }));
 						show_import_progress_toast();
 						return;
@@ -799,6 +836,7 @@ async function run_folder_import(args: {
 					if (!response.ok) {
 						throw new Error(`R2 upload failed with status ${response.status}`);
 					}
+					files_in_flight_uploads_remove(created.nodeId);
 					useFilesImportStore.setState((state) => ({ done: state.done + 1 }));
 					show_import_progress_toast();
 				} catch (error) {
@@ -839,6 +877,7 @@ async function run_folder_import(args: {
 		toast.dismiss(FILES_IMPORT_PROGRESS_TOAST_ID);
 		toast.error("Import failed.");
 		useFilesImportStore.setState({ ...FILES_IMPORT_INITIAL_STATE });
+		files_in_flight_uploads_clear();
 	}
 }
 // #endregion folder import
@@ -1427,6 +1466,7 @@ const FilesSidebarTreeItemTitle = memo(function FilesSidebarTreeItemTitle(props:
 type FilesSidebarTreeItemPrimaryContent_ClassNames =
 	| "FilesSidebarTreeItemPrimaryContent"
 	| "FilesSidebarTreeItemPrimaryContent-processing"
+	| "FilesSidebarTreeItemPrimaryContent-uploading"
 	| "FilesSidebarTreeItemPrimaryContent-read-only";
 
 type FilesSidebarTreeItemPrimaryContent_Props = {
@@ -1435,6 +1475,7 @@ type FilesSidebarTreeItemPrimaryContent_Props = {
 	nodeId: app_convex_Id<"files_nodes"> | null;
 	renameInputProps: FilesSidebarTreeItemTitle_Props["renameInputProps"];
 	isRestricted: boolean;
+	isUploading: boolean;
 	readOnlyTooltip: string | null;
 	renameError: string | undefined;
 	onRenameErrorClear: () => void;
@@ -1443,7 +1484,7 @@ type FilesSidebarTreeItemPrimaryContent_Props = {
 const FilesSidebarTreeItemPrimaryContent = memo(function FilesSidebarTreeItemPrimaryContent(
 	props: FilesSidebarTreeItemPrimaryContent_Props,
 ) {
-	const { title, kind, nodeId, renameInputProps, isRestricted, readOnlyTooltip, renameError, onRenameErrorClear } =
+	const { title, kind, nodeId, renameInputProps, isRestricted, isUploading, readOnlyTooltip, renameError, onRenameErrorClear } =
 		props;
 	const { membershipId } = AppTenantProvider.useContext();
 
@@ -1453,6 +1494,13 @@ const FilesSidebarTreeItemPrimaryContent = memo(function FilesSidebarTreeItemPri
 	return (
 		<div className={"FilesSidebarTreeItemPrimaryContent" satisfies FilesSidebarTreeItemPrimaryContent_ClassNames}>
 			<FilesSidebarTreeItemIcon kind={kind} isRestricted={isRestricted} />
+			<FilesSidebarTreeItemTitle
+				renameInputProps={renameInputProps}
+				title={title}
+				kind={kind}
+				renameError={renameError}
+				onRenameErrorClear={onRenameErrorClear}
+			/>
 			{readOnlyTooltip ? (
 				<MyIcon
 					className={
@@ -1464,13 +1512,6 @@ const FilesSidebarTreeItemPrimaryContent = memo(function FilesSidebarTreeItemPri
 					<LockKeyhole />
 				</MyIcon>
 			) : null}
-			<FilesSidebarTreeItemTitle
-				renameInputProps={renameInputProps}
-				title={title}
-				kind={kind}
-				renameError={renameError}
-				onRenameErrorClear={onRenameErrorClear}
-			/>
 			{isProcessing ? (
 				<div
 					className={
@@ -1478,6 +1519,15 @@ const FilesSidebarTreeItemPrimaryContent = memo(function FilesSidebarTreeItemPri
 					}
 				>
 					Processing
+				</div>
+			) : null}
+			{isUploading ? (
+				<div
+					className={
+						"FilesSidebarTreeItemPrimaryContent-uploading" satisfies FilesSidebarTreeItemPrimaryContent_ClassNames
+					}
+				>
+					Uploading
 				</div>
 			) : null}
 		</div>
@@ -1781,8 +1831,9 @@ type FilesSidebarTreeItem_Props = {
 	expandedFolderActionsVisible: boolean;
 	canWrite: boolean;
 	canUnarchive: boolean;
-	hasVisibleReadOnlyDescendant: boolean;
-	readOnlyAncestorIds: ReadonlySet<app_convex_Id<"files_nodes">>;
+	canWriteRoot: boolean;
+	hasVisibleProtectedDescendant: boolean;
+	protectedDescendantIds: ReadonlySet<app_convex_Id<"files_nodes">>;
 	onCreateNode: (parentNodeId: string, kind: files_TreeItem["kind"]) => void;
 	onStartRename: (itemId: string) => void;
 	onRenameErrorClear: (itemId: string) => void;
@@ -1940,10 +1991,10 @@ const FilesSidebarTreeRow = memo(
 			isTreeDragging,
 			isFallbackTabStop,
 			expandedFolderActionsVisible,
-			canWrite,
-			canUnarchive,
-			hasVisibleReadOnlyDescendant,
-			readOnlyAncestorIds,
+		canWrite,
+		canUnarchive,
+		canWriteRoot,
+		hasVisibleProtectedDescendant,
 			onCreateNode,
 			onStartRename,
 			onRenameErrorClear,
@@ -2001,32 +2052,48 @@ const FilesSidebarTreeRow = memo(
 			forward_ref(element, itemElementRef);
 		});
 
+		const parentItemData = item.getParent()?.getItemData();
+		const parentCanWrite =
+			!parentItemData || !files_is_node(parentItemData) ? canWriteRoot : parentItemData.canWrite;
 		const capabilities = files_get_read_only_capabilities({
 			canWrite,
-			hasVisibleReadOnlyDescendant,
+			parentCanWrite,
+			hasVisibleProtectedDescendant,
 		});
-		const canRename = files_is_node(itemData) && capabilities.canRelocateOrRename;
+		const isUploading = useFilesInFlightUploads(
+			(state) => files_is_node(itemData) && state.nodeIds.includes(itemData._id),
+		);
+		const canRename = files_is_node(itemData) && capabilities.canRelocateOrRename && !isUploading;
 		const canCutItems =
 			canCopyItems &&
-			canRename &&
-			sourceItems.every(
-				(selected) => selected.canWrite && files_is_node(selected) && !readOnlyAncestorIds.has(selected._id),
-			);
+			sourceItems.every((selected) => {
+				if (!files_is_node(selected) || !selected.canWrite) {
+					return false;
+				}
+				if (selected._id === itemId) {
+					return parentCanWrite;
+				}
+				const selectedParent = item.getTree().getItemInstance(selected._id)?.getParent()?.getItemData();
+				// A parent outside the loaded tree is checked by the server on drop.
+				return !selectedParent || !files_is_node(selectedParent) || selectedParent.canWrite;
+			});
 
 		useEffect(() => {
 			if (isRenaming && !canRename) {
 				item.getTree().abortRenaming();
 				queueMicrotask(() => wrapperElementRef.current?.focus());
 
-				if (!itemData.canWrite) {
+				if (isUploading) {
+					toast.info(`Rename canceled. ${itemData.name} is uploading.`);
+				} else if (!itemData.canWrite) {
 					toast.info(`Rename canceled. ${itemData.name} is read-only.`);
-				} else if (hasVisibleReadOnlyDescendant) {
-					toast.info(`Rename canceled. ${itemData.name} contains read-only items.`);
+				} else if (!parentCanWrite) {
+					toast.info(`Rename canceled. The folder holding ${itemData.name} is read-only.`);
 				} else {
 					toast.info("You no longer have permission to edit this");
 				}
 			}
-		}, [canRename, hasVisibleReadOnlyDescendant, isRenaming, item, itemData.name, itemData.canWrite]);
+		}, [canRename, isUploading, parentCanWrite, isRenaming, item, itemData.name, itemData.canWrite]);
 		// The synthetic root is not a real node, so there is nothing to share it with. Not gated on
 		// `canWrite`: `get_node_share_state` answers for anybody who may read the node, on purpose, so a
 		// reader can see who else can open it. Gating here would only make this disagree with the header
@@ -2036,9 +2103,9 @@ const FilesSidebarTreeRow = memo(
 		const readOnlyLabels = files_get_read_only_row_labels({
 			canWrite,
 			writeBlockedReason: itemData.writeBlockedReason,
-			hasVisibleReadOnlyDescendant,
+			writePolicyState: itemData.writePolicyState,
 		});
-		const label = `${itemData.name}${isRestricted ? " restricted" : ""}${readOnlyLabels ? `, ${readOnlyLabels.description}` : ""}${isArchived ? " archived" : ""}${isCut ? ", ready to move" : ""}`;
+		const label = `${itemData.name}${isRestricted ? " restricted" : ""}${readOnlyLabels ? `, ${readOnlyLabels.description}` : ""}${isArchived ? " archived" : ""}${isCut ? ", ready to move" : ""}${isUploading ? ", uploading" : ""}`;
 
 		const handleCreateFileClick = useFn<FilesSidebarTreeItemSecondaryAction_Props["onClick"]>(() => {
 			onCreateNode(itemId, "file");
@@ -2239,6 +2306,7 @@ const FilesSidebarTreeRow = memo(
 								nodeId={files_is_node(itemData) ? (itemId as app_convex_Id<"files_nodes">) : null}
 								renameInputProps={renameInputProps}
 								isRestricted={isRestricted}
+								isUploading={isUploading}
 								readOnlyTooltip={readOnlyLabels?.tooltip ?? null}
 								renameError={renameError}
 								onRenameErrorClear={handleRenameErrorClear}
@@ -2613,7 +2681,8 @@ type FilesSidebarTree_Props = {
 	renameErrorByNodeId: Map<string, string>;
 	canWriteItem: (item: files_TreeItem) => boolean;
 	canUnarchiveItem: (item: files_TreeItem) => boolean;
-	readOnlyAncestorIds: ReadonlySet<app_convex_Id<"files_nodes">>;
+	canWriteRoot: boolean;
+	protectedDescendantIds: ReadonlySet<app_convex_Id<"files_nodes">>;
 	onCreateNode: (parentNodeId: string, kind: files_TreeItem["kind"]) => void;
 	onStartRename: (itemId: string) => void;
 	onRenameErrorClear: (itemId: string) => void;
@@ -2652,7 +2721,8 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 		renameErrorByNodeId,
 		canWriteItem,
 		canUnarchiveItem,
-		readOnlyAncestorIds,
+		canWriteRoot,
+		protectedDescendantIds,
 		onCreateNode,
 		onStartRename,
 		onRenameErrorClear,
@@ -2967,10 +3037,11 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 										isTreeDragging={isTreeDragging}
 										isFallbackTabStop={!hasFocusedRenderedItem && itemIndex === 0}
 										expandedFolderActionsVisible={expandedFolderActionsVisible}
-										canWrite={canWriteItem(itemData)}
-										canUnarchive={canUnarchiveItem(itemData)}
-										hasVisibleReadOnlyDescendant={files_is_node(itemData) && readOnlyAncestorIds.has(itemData._id)}
-										readOnlyAncestorIds={readOnlyAncestorIds}
+									canWrite={canWriteItem(itemData)}
+									canUnarchive={canUnarchiveItem(itemData)}
+									canWriteRoot={canWriteRoot}
+									hasVisibleProtectedDescendant={files_is_node(itemData) && protectedDescendantIds.has(itemData._id)}
+									protectedDescendantIds={protectedDescendantIds}
 										onCreateNode={onCreateNode}
 										onStartRename={onStartRename}
 										onRenameErrorClear={onRenameErrorClear}
@@ -4114,6 +4185,10 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		fromNodeId: string | null;
 		nodeId: string | null;
 	} | null>(null);
+	const createNodeModalRef = useRef<FileNodeViewFolderCreateNodeModal_Ref | null>(null);
+	const [createModalParentId, setCreateModalParentId] = useState<
+		typeof files_ROOT_ID | app_convex_Id<"files_nodes">
+	>(files_ROOT_ID);
 	const [isArchivingSelection, setIsArchivingSelection] = useState(false);
 	const [isUploadingSingleFile, setIsUploadingSingleFile] = useState(false);
 	const [uploadDraft, setUploadDraft] = useState<FilesSidebarUploadDraft | null>(null);
@@ -4141,7 +4216,10 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 	const selectedFilePathAutoExpandedKeyRef = useRef<string | null>(null);
 	const lastFocusedSelectedNodeIdRef = useRef<string | null | undefined>(undefined);
 
-	const readOnlyAncestorIds = useMemo(() => files_collect_read_only_ancestor_ids(treeNodesList ?? []), [treeNodesList]);
+	const protectedDescendantIds = useMemo(
+		() => files_collect_protected_descendant_ids(treeNodesList ?? []),
+		[treeNodesList],
+	);
 	const workspaceWritePermission = useQuery(app_convex_api.access_control.get_current_user_workspace_permission, {
 		membershipId,
 		permission: "content.write",
@@ -4194,10 +4272,21 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 			workspaceWritePermission,
 		});
 
+	const treeNodeById = useMemo(() => new Map((treeNodesList ?? []).map((node) => [node._id, node])), [treeNodesList]);
+	function parent_can_write(node: files_TreeItem) {
+		if (!files_is_node(node) || node.parentId === files_ROOT_ID) {
+			return workspaceWritePermission === true;
+		}
+		const parent = treeNodeById.get(node.parentId);
+		// A parent outside the loaded tree is checked by the server when the action runs.
+		return !parent || parent.canWrite;
+	}
+
 	const getItemCapabilities = useFn((item: files_TreeItem) =>
 		files_get_read_only_capabilities({
 			canWrite: canWriteItem(item),
-			hasVisibleReadOnlyDescendant: files_is_node(item) && readOnlyAncestorIds.has(item._id),
+			parentCanWrite: parent_can_write(item),
+			hasVisibleProtectedDescendant: files_is_node(item) && protectedDescendantIds.has(item._id),
 		}),
 	);
 	// Keep this as a normal function. `useFn` has a stable identity, so the React Compiler could
@@ -4205,7 +4294,8 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 	const getItemCapabilitiesInRender = (item: files_TreeItem) =>
 		files_get_read_only_capabilities({
 			canWrite: canWriteItemInRender(item),
-			hasVisibleReadOnlyDescendant: files_is_node(item) && readOnlyAncestorIds.has(item._id),
+			parentCanWrite: parent_can_write(item),
+			hasVisibleProtectedDescendant: files_is_node(item) && protectedDescendantIds.has(item._id),
 		});
 
 	const canManageRestrictedScope = useFn((scopeNodeId: app_convex_Id<"files_nodes">) => {
@@ -4213,8 +4303,11 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		return shareState != null && !(shareState instanceof Error) && shareState.canManage;
 	});
 
-	// Resolve updater ids through shared anagraphic queries; React Compiler memoizes these derived values.
-	const updatedByUserIds = ((/* iife */) => {
+	// Resolve updater ids through shared anagraphic queries. Memoize by hand like the
+	// restricted-scope queries above: Convex `useQueries` re-subscribes with a render-phase
+	// setState whenever the queries object identity changes, and the React Compiler leaves
+	// this call unmemoized, so an inline object loops the render until React throws.
+	const updatedByUserIds = useMemo(() => {
 		const result = new Set<app_convex_Id<"users">>();
 		for (const item of treeItemsList ?? []) {
 			if (files_is_node(item)) {
@@ -4222,17 +4315,21 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 			}
 		}
 		return [...result];
-	})();
+	}, [treeItemsList]);
 
 	const updatedByAnagraphicQueryResults = useQueries(
-		Object.fromEntries(
-			updatedByUserIds.map((userId) => [
-				userId,
-				{
-					query: app_convex_api.users.get_anagraphic,
-					args: { userId },
-				},
-			]),
+		useMemo(
+			() =>
+				Object.fromEntries(
+					updatedByUserIds.map((userId) => [
+						userId,
+						{
+							query: app_convex_api.users.get_anagraphic,
+							args: { userId },
+						},
+					]),
+				),
+			[updatedByUserIds],
 		),
 	);
 
@@ -4495,6 +4592,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 			contentType?: string;
 		}) => {
 			setIsUploadingSingleFile(true);
+			let uploadedNodeId: app_convex_Id<"files_nodes"> | null = null;
 			convex
 				.mutation(app_convex_api.files_nodes.create_upload_node, {
 					membershipId,
@@ -4510,6 +4608,8 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 						return null;
 					}
 
+					uploadedNodeId = created._yay.nodeId;
+					files_in_flight_uploads_add(uploadedNodeId);
 					setUploadDraft(null);
 					const uploadResponse = await fetch(created._yay.url, {
 						method: "PUT",
@@ -4539,6 +4639,9 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 					toast.error(error instanceof Error ? error.message : "Failed to upload file");
 				})
 				.finally(() => {
+					if (uploadedNodeId) {
+						files_in_flight_uploads_remove(uploadedNodeId);
+					}
 					setIsUploadingSingleFile(false);
 				});
 		},
@@ -4854,7 +4957,16 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 	});
 
 	const canRename = useFn<NonNullable<Parameters<typeof useTree<files_TreeItem>>[0]["canRename"]>>((item) => {
-		return can_rename_item({ item: item.getItemData(), canWriteItem, readOnlyAncestorIds });
+		const itemData = item.getItemData();
+		if (files_is_node(itemData) && useFilesInFlightUploads.getState().nodeIds.includes(itemData._id)) {
+			return false;
+		}
+		return can_rename_item({
+			item: itemData,
+			parentItem: item.getParent()?.getItemData(),
+			canWriteItem,
+			canWriteRoot: canWriteParentId(files_ROOT_ID),
+		});
 	});
 
 	/**
@@ -4891,7 +5003,14 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 			return;
 		}
 		// Permission can change while rename mode is open, so recheck before starting the mutation.
-		if (!can_rename_item({ item: itemData, canWriteItem, readOnlyAncestorIds })) {
+		if (
+			!can_rename_item({
+				item: itemData,
+				parentItem: item.getParent()?.getItemData(),
+				canWriteItem,
+				canWriteRoot: canWriteParentId(files_ROOT_ID),
+			})
+		) {
 			return;
 		}
 
@@ -5079,7 +5198,14 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		const itemData = item.getItemData();
 		const itemId = item.getId();
 		// Abort when live permission changes so Headless Tree cannot submit a stale rename.
-		if (!can_rename_item({ item: itemData, canWriteItem, readOnlyAncestorIds })) {
+		if (
+			!can_rename_item({
+				item: itemData,
+				parentItem: item.getParent()?.getItemData(),
+				canWriteItem,
+				canWriteRoot: canWriteParentId(files_ROOT_ID),
+			})
+		) {
 			event.preventDefault();
 			currentTree.abortRenaming();
 			return;
@@ -5482,14 +5608,9 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		startRename(itemId);
 	});
 
-	const handleCreateNodeClick = useFn<FilesSidebarTree_Props["onCreateNode"]>((parentNodeId, kind) => {
+	const createWritableSidebarNode = useFn((parentNodeId: typeof files_ROOT_ID | app_convex_Id<"files_nodes">, kind: app_convex_Doc<"files_nodes">["kind"]) => {
 		if (!treeItems) {
-			console.error(should_never_happen("[FilesSidebar.handleCreateNodeClick] missing deps", { treeItems }));
-			return;
-		}
-		if (
-			!canWriteParentId(parentNodeId === files_ROOT_ID ? files_ROOT_ID : (parentNodeId as app_convex_Id<"files_nodes">))
-		) {
+			console.error(should_never_happen("[FilesSidebar.createWritableSidebarNode] missing deps", { treeItems }));
 			return;
 		}
 
@@ -5562,6 +5683,95 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 			});
 	});
 
+	const handleCreateNodeClick = useFn<FilesSidebarTree_Props["onCreateNode"]>((parentNodeId, kind) => {
+		if (!treeItems) {
+			console.error(should_never_happen("[FilesSidebar.handleCreateNodeClick] missing deps", { treeItems }));
+			return;
+		}
+		if (
+			!canWriteParentId(parentNodeId === files_ROOT_ID ? files_ROOT_ID : (parentNodeId as app_convex_Id<"files_nodes">))
+		) {
+			return;
+		}
+
+		const parentId =
+			parentNodeId === files_ROOT_ID ? files_ROOT_ID : (parentNodeId as app_convex_Id<"files_nodes">);
+		if (parentId !== files_ROOT_ID) {
+			convex
+				.query(app_convex_api.files_nodes.get_node_write_policy_management_state, {
+					membershipId,
+					nodeId: parentId,
+				})
+				.then((management) => {
+					if (management?.localDefault != null) {
+						setCreateModalParentId(parentId);
+						createNodeModalRef.current?.open(kind);
+						return;
+					}
+
+					createWritableSidebarNode(parentId, kind);
+				})
+				.catch((error: unknown) => {
+					console.error("[FilesSidebar.handleCreateNodeClick] Failed to read folder default", { error });
+				});
+			return;
+		}
+
+		createWritableSidebarNode(parentId, kind);
+	});
+
+	const handleCreateNodeModalSubmit = useFn(
+		(args: { kind: app_convex_Doc<"files_nodes">["kind"]; path: string }) => {
+			const { kind, path } = args;
+			setIsCreatingFile(true);
+			const createNodePromise =
+				kind === "folder"
+					? convex.mutation(app_convex_api.files_nodes.create_folder_node, {
+							membershipId,
+							parentId: createModalParentId,
+							path,
+						})
+					: convex.action(app_convex_api.files_nodes_content.create_text_node, {
+							membershipId,
+							parentId: createModalParentId,
+							path,
+						});
+
+			return createNodePromise
+				.then((result) => {
+					if (result._nay) {
+						console.error("[FilesSidebar.handleCreateNodeModalSubmit] Failed to create node", {
+							result,
+							parentId: createModalParentId,
+							kind,
+						});
+						if (result._nay.message === "Permission denied") {
+							toast.error("You don't have permission to create files in this workspace.");
+							return "You don't have permission to create files here.";
+						}
+						return result._nay.message;
+					}
+
+					return navigate({
+						to: "/w/$organizationName/$workspaceName/files",
+						params: { organizationName, workspaceName },
+						search: { nodeId: result._yay.nodeId, view },
+					}).then(() => null);
+				})
+				.catch((error: unknown) => {
+					console.error("[FilesSidebar.handleCreateNodeModalSubmit] Error creating node", {
+						error,
+						parentId: createModalParentId,
+						kind,
+					});
+					return `Failed to create ${kind}.`;
+				})
+				.finally(() => {
+					setIsCreatingFile(false);
+				});
+		},
+	);
+
 	const handleCopy = useFn<FilesSidebarTree_Props["onCopy"]>((nodeId) => {
 		const shouldCopySelectedFiles = selectedNodeIds.has(nodeId);
 		const nodeIdsToCopy = shouldCopySelectedFiles ? selectedNodeIds : new Set([nodeId]);
@@ -5618,10 +5828,6 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 			tree().getItemInstance(propertiesNodeId).setFocused();
 		}
 		setPropertiesNodeId(null);
-	});
-
-	const handlePropertiesNavigateNode = useFn((nodeId: app_convex_Id<"files_nodes">) => {
-		onPrimaryAction(nodeId, "folder");
 	});
 
 	const handleSearchQueryChange = useFn<FilesSidebarTopSection_Props["onSearchQueryChange"]>((nextSearchQuery) => {
@@ -5949,8 +6155,13 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		}
 	}, [membershipId]);
 
-	// Rebuild tree when visible files or controlled expansion state changes.
+	// Rebuild tree when visible files or controlled expansion state changes. Skip while
+	// the tree has no data: with no stable item set the effect would rebuild every render.
 	useLayoutEffect(() => {
+		if (!treeItems) {
+			return;
+		}
+
 		tree().rebuildTree();
 	}, [expandedItems, visibleFileIds]);
 
@@ -6138,6 +6349,19 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 				onSkipExisting={handleImportConflictSkip}
 				onCancel={handleImportConflictCancel}
 			/>
+			<FileNodeViewFolderCreateNodeModal
+				ref={createNodeModalRef}
+				membershipId={membershipId}
+				folderItemId={createModalParentId}
+				fileNodesList={(treeItemsList ?? []).filter(files_is_node)}
+				siblingNames={(treeItemsList ?? [])
+					.filter((item) => item.parentId === createModalParentId && item.archiveOperationId === null)
+					.map((child) => child.name)}
+				canWrite={canWriteParentId(createModalParentId)}
+				unavailableMessage={null}
+				isCreatingNode={isCreatingFile}
+				onCreateNode={handleCreateNodeModalSubmit}
+			/>
 			<FilesSidebarTopSection
 				view={view}
 				selectedNodeIdsCount={selectedNodeIds.size}
@@ -6213,7 +6437,8 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 					renameErrorByNodeId={renameErrorByNodeId}
 					canWriteItem={canWriteItem}
 					canUnarchiveItem={canUnarchiveItem}
-					readOnlyAncestorIds={readOnlyAncestorIds}
+					canWriteRoot={canWriteRoot}
+					protectedDescendantIds={protectedDescendantIds}
 					onCreateNode={handleCreateNodeClick}
 					onStartRename={handleStartRename}
 					onRenameErrorClear={clearRenameError}
@@ -6232,9 +6457,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 				nodeId={propertiesNodeId}
 				nodeName={treeNodesList?.find((node) => node._id === propertiesNodeId)?.name ?? "file"}
 				nodeKind={treeNodesList?.find((node) => node._id === propertiesNodeId)?.kind ?? "file"}
-				hasVisibleReadOnlyDescendant={propertiesNodeId ? readOnlyAncestorIds.has(propertiesNodeId) : false}
 				returnFocusRef={propertiesReturnFocusRef}
-				onNavigateNode={handlePropertiesNavigateNode}
 				onClose={handlePropertiesModalClose}
 			/>
 		</aside>
@@ -6294,7 +6517,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			updatedBy: "test-user" as app_convex_Id<"users">,
 			canWrite: args.canWrite ?? true,
 			writeBlockedReason: args.canWrite === false ? "read_only" : null,
-			writePolicyState: args.canWrite === false ? "self" : "none",
+			writePolicyState: args.canWrite === false ? "read_only" : "none",
 		};
 	};
 
@@ -6329,6 +6552,25 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				: {}),
 		} satisfies FilesSidebarUploadDraft;
 	};
+
+	describe("files_in_flight_uploads", () => {
+		test("adds, dedupes, removes, and clears node ids", () => {
+			const first = "node_a" as app_convex_Id<"files_nodes">;
+			const second = "node_b" as app_convex_Id<"files_nodes">;
+
+			files_in_flight_uploads_clear();
+			files_in_flight_uploads_add(first);
+			files_in_flight_uploads_add(first);
+			files_in_flight_uploads_add(second);
+			expect(useFilesInFlightUploads.getState().nodeIds).toEqual([first, second]);
+
+			files_in_flight_uploads_remove(first);
+			expect(useFilesInFlightUploads.getState().nodeIds).toEqual([second]);
+
+			files_in_flight_uploads_clear();
+			expect(useFilesInFlightUploads.getState().nodeIds).toEqual([]);
+		});
+	});
 
 	describe("can_write_item", () => {
 		test("uses workspace permission only for the synthetic root", () => {
@@ -6383,11 +6625,25 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				name: "file.md",
 			});
 
-			expect(can_rename_item({ item: file, canWriteItem: () => true, readOnlyAncestorIds: new Set() })).toBe(true);
-			expect(can_rename_item({ item: file, canWriteItem: () => false, readOnlyAncestorIds: new Set() })).toBe(false);
+			expect(
+				can_rename_item({
+					item: file,
+					parentItem: undefined,
+					canWriteItem: () => true,
+					canWriteRoot: true,
+				}),
+			).toBe(true);
+			expect(
+				can_rename_item({
+					item: file,
+					parentItem: undefined,
+					canWriteItem: () => false,
+					canWriteRoot: true,
+				}),
+			).toBe(false);
 		});
 
-		test("blocks effective locks and writable folders with locked descendants", () => {
+		test("needs write on the named item and its parent", () => {
 			const lockedFile = test_node({
 				id: "file",
 				parentId: files_ROOT_ID,
@@ -6396,17 +6652,32 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				canWrite: false,
 			});
 			const folder = test_node({ id: "folder", parentId: files_ROOT_ID, kind: "folder", name: "folder" });
+			const child = test_node({ id: "child", parentId: "folder", kind: "file", name: "file.md" });
 
 			expect(
-				can_rename_item({ item: lockedFile, canWriteItem: (item) => item.canWrite, readOnlyAncestorIds: new Set() }),
+				can_rename_item({
+					item: lockedFile,
+					parentItem: undefined,
+					canWriteItem: (item) => item.canWrite,
+					canWriteRoot: true,
+				}),
+			).toBe(false);
+			expect(
+				can_rename_item({
+					item: child,
+					parentItem: folder,
+					canWriteItem: (item) => item._id !== folder._id,
+					canWriteRoot: true,
+				}),
 			).toBe(false);
 			expect(
 				can_rename_item({
 					item: folder,
+					parentItem: undefined,
 					canWriteItem: () => true,
-					readOnlyAncestorIds: new Set([folder._id]),
+					canWriteRoot: true,
 				}),
-			).toBe(false);
+			).toBe(true);
 		});
 	});
 
@@ -7125,7 +7396,8 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 									renameErrorByNodeId={new Map()}
 									canWriteItem={() => props.canWrite ?? true}
 									canUnarchiveItem={() => true}
-									readOnlyAncestorIds={new Set()}
+									canWriteRoot={props.canWrite ?? true}
+									protectedDescendantIds={new Set()}
 									onCreateNode={handleAction}
 									onStartRename={handleAction}
 									onRenameErrorClear={handleAction}

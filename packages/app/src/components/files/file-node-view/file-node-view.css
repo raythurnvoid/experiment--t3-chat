@@ -717,25 +717,6 @@
 
 	/* #endregion toolbar */
 
-	/* #region folder create node modal */
-	.FileNodeViewFolderCreateNodeModal {
-		width: min(92vw, 420px);
-	}
-
-	.FileNodeViewFolderCreateNodeModal-form {
-		display: flex;
-		flex-direction: column;
-	}
-
-	.FileNodeViewFolderCreateNodeModal-field {
-		padding: 20px;
-	}
-
-	.FileNodeViewFolderCreateNodeModal-validation {
-		min-height: 1.25rem;
-	}
-	/* #endregion folder create node modal */
-
 	/* #region folder body */
 	.FileNodeViewFolderBody {
 		width: 100%;
@@ -897,6 +878,15 @@
 	.FileNodeViewFolderExplorer-icon {
 		width: 16px;
 		height: 16px;
+
+		flex: 0 0 auto;
+
+		color: var(--color-fg-07);
+	}
+
+	.FileNodeViewFolderExplorer-read-only {
+		width: 14px;
+		height: 14px;
 
 		flex: 0 0 auto;
 
