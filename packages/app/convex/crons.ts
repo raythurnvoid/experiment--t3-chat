@@ -48,6 +48,15 @@ crons.cron(
 // Once hourly — delete asset docs (and any landed bytes) whose R2 object was never confirmed.
 crons.cron("cleanup expired unfinalized assets", "45 * * * *", internal.r2.cleanup_expired_unfinalized_assets, {});
 
+// Once hourly — delete expired browser results with their R2 objects, draft captures with their
+// blobs, starting sessions that never committed, and closed sessions whose results are gone.
+crons.cron(
+	"cleanup expired browser docs",
+	"5 * * * *",
+	internal.files_browser.cleanup_expired_browser_docs,
+	{},
+);
+
 // Each hour, schedule up to 50 R2 deletion jobs whose retry time has passed.
 crons.cron(
 	"process due r2 object deletion jobs",

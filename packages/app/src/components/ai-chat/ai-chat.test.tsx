@@ -159,6 +159,7 @@ describe("AiChatThread", () => {
 			attachments: [],
 			selectedModelId: "gpt-5.4-nano",
 			selectedModeId: "agent",
+			browserSessionId: null,
 		} as const;
 		const controller = makeController({
 			selectedThreadId: "ai_thread-optimistic",
@@ -283,6 +284,7 @@ describe("AiChatThread", () => {
 							attachments: [],
 							selectedModelId: "gpt-5.4-nano",
 							selectedModeId: "agent",
+							browserSessionId: null,
 						},
 					],
 					canQueueUserText: true,
@@ -317,6 +319,7 @@ describe("AiChatThread", () => {
 			attachments: [],
 			selectedModelId: "gpt-5.4-mini",
 			selectedModeId: "ask",
+			browserSessionId: null,
 		} as const;
 		const saveQueuedUserMessageEdit = vi.fn(() => true);
 		const cancelQueuedUserMessageEdit = vi.fn();
@@ -383,6 +386,7 @@ describe("AiChatThread", () => {
 			attachments: [],
 			selectedModelId: "gpt-5.4-mini",
 			selectedModeId: "ask",
+			browserSessionId: null,
 		} as const;
 		const cancelQueuedUserMessageEdit = vi.fn();
 		const sendUserText = vi.fn();
@@ -432,6 +436,7 @@ describe("AiChatThread", () => {
 			attachments: [],
 			selectedModelId: "gpt-5.4-nano",
 			selectedModeId: "agent",
+			browserSessionId: null,
 		} as const;
 		const secondQueuedMessage = {
 			id: "ai_message-second",
@@ -439,6 +444,7 @@ describe("AiChatThread", () => {
 			attachments: [],
 			selectedModelId: "gpt-5.4-mini",
 			selectedModeId: "ask",
+			browserSessionId: null,
 		} as const;
 		const view = render(
 			<AiChatThread

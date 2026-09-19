@@ -1,5 +1,6 @@
 import { test_mocks_hardcoded } from "../convex/setup.test.ts";
-import { describe, test, expect, vi } from "vitest";
+import { R2 } from "@convex-dev/r2";
+import { describe, test, expect, vi, beforeEach, afterEach } from "vitest";
 import type { ActionCtx } from "../convex/_generated/server";
 import type { Id } from "../convex/_generated/dataModel";
 import { files_READ_RANGE_MAX_LINES } from "../convex/files_nodes.ts";
@@ -27,6 +28,10 @@ import {
 	ai_chat_tool_create_set_file_metadata,
 	ai_chat_tool_create_web_search,
 	ai_chat_tool_create_execute_code,
+	ai_chat_tool_create_browser_run,
+	ai_chat_tool_create_browser_run_stored,
+	ai_chat_tool_create_browser_reload,
+	ai_chat_tool_create_browser_close,
 	replace_once_or_all,
 } from "./server-ai-tools.ts";
 import { has_defined_property } from "../shared/shared-utils.ts";
@@ -2044,4 +2049,595 @@ test("execute_code tool: inputSchema rejects empty and oversize code", () => {
 	expect(() => schema.parse({ code: "" })).toThrow();
 	expect(() => schema.parse({ code: "a".repeat(20_001) })).toThrow();
 	expect(schema.parse({ code: "return 1;" })).toEqual({ code: "return 1;" });
+});
+
+describe("browser tools", () => {
+	const runnerQueue: Array<unknown> = [];
+	const runnerCalls: Array<{ route: string; body: Record<string, unknown> }> = [];
+	const r2Objects = new Map<string, Uint8Array>();
+
+	const browserBinding = {
+		membershipId: "membership-1",
+		sessionId: "session-1",
+		navGen: 1,
+		loadGen: 1,
+		controlGen: 1,
+	} as never;
+
+	const browserCtxData = {
+		...server_ai_tools_test_ctx_data,
+		browser: browserBinding,
+		runId: "run-1",
+	};
+
+	const accessOk = {
+		ok: true,
+		control: "ready",
+		controlGen: 1,
+		loadGen: 1,
+		navGen: 1,
+		runnerSessionId: "runner-session-1",
+		targetKind: "saved",
+		nodeId: "node-1",
+		sourceKind: "saved",
+		sourceVersion: "v1",
+		sourceHash: "hash",
+	};
+
+	function runner_run_result(overrides: Record<string, unknown> = {}) {
+		return {
+			ok: true,
+			status: "succeeded",
+			commandId: "cmd-1",
+			codeHash: "hash",
+			elapsedMs: 100,
+			result: { reviewed: true },
+			resultTruncated: false,
+			images: [],
+			consoleEntries: [],
+			pageErrors: [],
+			logs: [],
+			logsTruncated: false,
+			error: null,
+			...overrides,
+		};
+	}
+
+	beforeEach(() => {
+		runnerQueue.length = 0;
+		runnerCalls.length = 0;
+		r2Objects.clear();
+		process.env.AI_CHAT_BROWSER_ENABLED = "true";
+		process.env.BROWSER_RUNNER_URL = "https://browser-runner.test";
+		process.env.BROWSER_RUNNER_SECRET = "secret";
+		vi.spyOn(R2.prototype, "syncMetadata").mockResolvedValue(undefined);
+		vi.spyOn(R2.prototype, "generateUploadUrl").mockImplementation(async (key = "") => ({
+			key,
+			url: `https://r2.test/upload?key=${encodeURIComponent(key)}`,
+		}));
+		vi.spyOn(R2.prototype, "getUrl").mockImplementation(
+			async (key) => `https://r2.test/object?key=${encodeURIComponent(key)}`,
+		);
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+				const url = String(input);
+				if (url.startsWith("https://browser-runner.test/")) {
+					const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+					runnerCalls.push({ route: url.slice(url.lastIndexOf("/") + 1), body });
+					const next = runnerQueue.shift();
+					if (next === undefined) throw new Error("runner mock queue is empty");
+					return Response.json(next);
+				}
+				if (url.startsWith("https://r2.test/upload") && init?.method === "PUT") {
+					const key = new URL(url).searchParams.get("key") ?? "";
+					const body = init.body;
+					r2Objects.set(
+						key,
+						typeof body === "string"
+							? new TextEncoder().encode(body)
+							: body instanceof Uint8Array
+								? new Uint8Array(body)
+								: new Uint8Array(),
+					);
+					return new Response(null, { status: 200 });
+				}
+				if (url.startsWith("https://r2.test/object")) {
+					const key = new URL(url).searchParams.get("key") ?? "";
+					const bytes = r2Objects.get(key);
+					if (!bytes) return new Response("missing", { status: 404 });
+					return new Response(bytes as BodyInit);
+				}
+				throw new Error(`unexpected real fetch: ${url.slice(0, 120)}`);
+			}),
+		);
+	});
+
+	afterEach(() => {
+		vi.restoreAllMocks();
+		vi.unstubAllGlobals();
+		delete process.env.AI_CHAT_BROWSER_ENABLED;
+		delete process.env.BROWSER_RUNNER_URL;
+		delete process.env.BROWSER_RUNNER_SECRET;
+	});
+
+	function runQueryForAccess(access: unknown) {
+		return async () => access;
+	}
+
+	test("browser_run inputSchema caps code at 20 KB", () => {
+		const { ctx } = makeCtx(runQueryForAccess(accessOk));
+		const tool = ai_chat_tool_create_browser_run(ctx, browserCtxData);
+		const schema = tool.inputSchema;
+		if (!has_defined_property(schema, "parse")) {
+			throw new Error("inputSchema has no parse");
+		}
+		expect(() => schema.parse({ code: "x".repeat(20_001) })).toThrow();
+		expect(schema.parse({ code: "return 1;" })).toEqual({ code: "return 1;" });
+	});
+
+	test("browser_run refuses without a live lease and never calls the runner", async () => {
+		const { ctx } = makeCtx(runQueryForAccess({ ok: false, reason: "closed" }));
+		const tool = ai_chat_tool_create_browser_run(ctx, browserCtxData);
+		const result = (await tool.execute?.({ code: "return 1;" }, { toolCallId: "t", messages: [] })) as {
+			output: string;
+			metadata: { status: string };
+		};
+		expect(result.metadata.status).toBe("refused");
+		expect(result.output).toContain("closed");
+		expect(runnerCalls).toEqual([]);
+	});
+
+	test("browser_run refuses a stale control generation", async () => {
+		const { ctx } = makeCtx(runQueryForAccess({ ...accessOk, controlGen: 2 }));
+		const tool = ai_chat_tool_create_browser_run(ctx, browserCtxData);
+		const result = (await tool.execute?.({ code: "return 1;" }, { toolCallId: "t", messages: [] })) as {
+			metadata: { status: string; reason: string };
+		};
+		expect(result.metadata).toEqual({ status: "refused", reason: "stale" });
+		expect(runnerCalls).toEqual([]);
+	});
+
+	test("browser_run stores the result and returns safe output", async () => {
+		let assetCounter = 0;
+		const { ctx } = makeCtx(runQueryForAccess(accessOk), {
+			runMutationImpl: async (_ref: unknown, args: Record<string, unknown>) => {
+				if ("commandId" in args) return "result-1";
+				assetCounter += 1;
+				return `asset-${assetCounter}`;
+			},
+		});
+		runnerQueue.push(runner_run_result());
+		const tool = ai_chat_tool_create_browser_run(ctx, browserCtxData);
+		const result = (await tool.execute?.({ code: "return {reviewed: true};" }, { toolCallId: "t", messages: [] })) as {
+			output: string;
+			metadata: Record<string, unknown>;
+		};
+		expect(result.metadata.status).toBe("succeeded");
+		expect(result.metadata.resultId).toBe("result-1");
+		expect(result.output).toContain('"reviewed":true');
+		expect(runnerCalls.length).toBe(1);
+		expect(runnerCalls[0]?.body.code).toBe("return {reviewed: true};");
+	});
+
+	test("browser_run refuses when the runner is unreachable", async () => {
+		const { ctx } = makeCtx(runQueryForAccess(accessOk));
+		delete process.env.BROWSER_RUNNER_URL;
+		const tool = ai_chat_tool_create_browser_run(ctx, browserCtxData);
+		const result = (await tool.execute?.({ code: "return 1;" }, { toolCallId: "t", messages: [] })) as {
+			metadata: { status: string; reason?: string };
+		};
+		expect(result.metadata).toEqual({ status: "refused", reason: "transport" });
+		expect(runnerCalls).toEqual([]);
+	});
+
+	test("browser_run refuses an invalid runner response", async () => {
+		const { ctx } = makeCtx(runQueryForAccess(accessOk));
+		runnerQueue.push({ ok: true, status: "bogus" });
+		const tool = ai_chat_tool_create_browser_run(ctx, browserCtxData);
+		const result = (await tool.execute?.({ code: "return 1;" }, { toolCallId: "t", messages: [] })) as {
+			metadata: { status: string; reason?: string };
+		};
+		expect(result.metadata).toEqual({ status: "refused", reason: "invalid" });
+	});
+
+	test("browser_run refuses without a thread to attach to", async () => {
+		const { ctx } = makeCtx(runQueryForAccess(accessOk), {
+			runMutationImpl: async () => "asset-1",
+		});
+		runnerQueue.push(runner_run_result());
+		const tool = ai_chat_tool_create_browser_run(ctx, { ...browserCtxData, getThreadId: () => null });
+		const result = (await tool.execute?.({ code: "return 1;" }, { toolCallId: "t", messages: [] })) as {
+			metadata: { status: string; reason?: string };
+		};
+		expect(result.metadata).toEqual({ status: "refused", reason: "thread" });
+	});
+
+	test("browser_run caps stored console and error text", async () => {
+		const { ctx } = makeCtx(runQueryForAccess(accessOk), {
+			runMutationImpl: async (_ref: unknown, args: Record<string, unknown>) => {
+				if ("commandId" in args) return "result-1";
+				return "asset-1";
+			},
+		});
+		runnerQueue.push(
+			runner_run_result({
+				consoleEntries: Array.from({ length: 25 }, () => "c".repeat(300)),
+				pageErrors: ["e".repeat(500)],
+				error: { name: "Error", message: "m".repeat(2000) },
+			}),
+		);
+		const tool = ai_chat_tool_create_browser_run(ctx, browserCtxData);
+		await tool.execute?.({ code: "return 1;" }, { toolCallId: "t", messages: [] });
+
+		const stored = [...r2Objects.values()]
+			.map((bytes) => new TextDecoder().decode(bytes))
+			.find((text) => text.startsWith("Status:"));
+		expect(stored).toBeDefined();
+		const consoleLine = stored!.split("\n").find((line) => line.startsWith("Console: "))!;
+		expect(consoleLine.split(" | ").length).toBe(20);
+		expect(consoleLine.length).toBeLessThanOrEqual("Console: ".length + 20 * 200 + 19 * 3);
+		expect(stored!.length).toBeLessThanOrEqual(16_384);
+	});
+
+	test("browser_run skips images with bad dims or oversize bytes", async () => {
+		let storedImages: unknown = null;
+		const { ctx } = makeCtx(runQueryForAccess(accessOk), {
+			runMutationImpl: async (_ref: unknown, args: Record<string, unknown>) => {
+				if ("commandId" in args) {
+					storedImages = args.images;
+					return "result-1";
+				}
+				return "asset-1";
+			},
+		});
+		const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+		let binary = "";
+		for (const byte of png) binary += String.fromCharCode(byte);
+		const big = new Uint8Array(2_097_153);
+		let bigBinary = "";
+		for (let i = 0; i < big.length; i += 0x8000) {
+			bigBinary += String.fromCharCode(...big.subarray(i, i + 0x8000));
+		}
+		runnerQueue.push(
+			runner_run_result({
+				images: [
+					{ base64: btoa(binary), mime: "image/png", width: 4.5, height: 4 },
+					{ base64: btoa(bigBinary), mime: "image/png", width: 4, height: 4 },
+				],
+			}),
+		);
+		const tool = ai_chat_tool_create_browser_run(ctx, browserCtxData);
+		await tool.execute?.({ code: "return 1;" }, { toolCallId: "t", messages: [] });
+		expect(storedImages).toEqual([]);
+	});
+
+	test("browser_run caps commands per request", async () => {
+		const { ctx } = makeCtx(runQueryForAccess(accessOk));
+		runnerQueue.push(runner_run_result());
+		const tool = ai_chat_tool_create_browser_run(ctx, browserCtxData);
+		for (let i = 0; i < 20; i++) {
+			runnerQueue.push(runner_run_result());
+			await tool.execute?.({ code: "return 1;" }, { toolCallId: `t${i}`, messages: [] });
+		}
+		const capped = (await tool.execute?.({ code: "return 1;" }, { toolCallId: "t21", messages: [] })) as {
+			metadata: { status: string };
+		};
+		expect(capped.metadata.status).toBe("refused");
+		expect(runnerCalls.length).toBe(20);
+	});
+
+	test("browser_run reports taint without storing", async () => {
+		const { ctx, runMutation } = makeCtx(runQueryForAccess(accessOk));
+		runnerQueue.push(runner_run_result({ status: "tainted", result: null }));
+		const tool = ai_chat_tool_create_browser_run(ctx, browserCtxData);
+		const result = (await tool.execute?.({ code: "await page.goto('https://x.test/')" }, { toolCallId: "t", messages: [] })) as {
+			output: string;
+			metadata: { status: string };
+		};
+		expect(result.metadata.status).toBe("tainted");
+		expect(result.output).toContain("closed");
+		expect(runMutation).not.toHaveBeenCalled();
+	});
+
+	test("browser_reload needs a capture for drafts and delegates otherwise", async () => {
+		const session = { _yay: { control: "ready", controlGen: 1, loadGen: 1, navigationGeneration: 1, sourceKind: "draft" as string, path: "/w/f.html" } };
+		const { ctx, runAction } = makeCtx(runQueryForAccess(session), {
+			runActionImpl: async () => ({ _yay: { loadGen: 2, sourceVersion: "v2", sourceHash: "h2" } }),
+		});
+		const tool = ai_chat_tool_create_browser_reload(ctx, browserCtxData);
+		const draft = (await tool.execute?.({}, { toolCallId: "t", messages: [] })) as {
+			metadata: { status: string };
+		};
+		expect(draft.metadata.status).toBe("needs-capture");
+		expect(runAction).not.toHaveBeenCalled();
+
+		session._yay.sourceKind = "saved";
+		const reloaded = (await tool.execute?.({}, { toolCallId: "t", messages: [] })) as {
+			metadata: { status: string };
+		};
+		expect(reloaded.metadata.status).toBe("reloaded");
+		expect(runAction).toHaveBeenCalledTimes(1);
+		expect(runAction.mock.calls.at(-1)?.[1]).toEqual({
+			membershipId: "membership-1",
+			sessionId: "session-1",
+			path: "/w/f.html",
+			expectedAgentLease: { controlGen: 1, loadGen: 1, navGen: 1 },
+		});
+
+		session._yay.loadGen = 2;
+		const stale = (await tool.execute?.({}, { toolCallId: "t", messages: [] })) as {
+			metadata: { status: string; reason?: string };
+		};
+		expect(stale.metadata).toEqual({ status: "refused", reason: "stale" });
+		expect(runAction).toHaveBeenCalledTimes(1);
+
+		session._yay.loadGen = 1;
+		session._yay.control = "human";
+		const driven = (await tool.execute?.({}, { toolCallId: "t", messages: [] })) as {
+			metadata: { status: string; reason?: string };
+		};
+		expect(driven.metadata).toEqual({ status: "refused", reason: "stale" });
+		expect(runAction).toHaveBeenCalledTimes(1);
+	});
+
+	test("browser_close ends through the door", async () => {
+		const session = {
+			_yay: { control: "ready", controlGen: 1, loadGen: 1, navigationGeneration: 1 },
+		};
+		const { ctx, runAction } = makeCtx(runQueryForAccess(session), {
+			runActionImpl: async () => ({ _yay: null }),
+		});
+		const tool = ai_chat_tool_create_browser_close(ctx, browserCtxData);
+		const result = (await tool.execute?.({}, { toolCallId: "t", messages: [] })) as {
+			metadata: { status: string };
+		};
+		expect(result.metadata.status).toBe("closed");
+		expect(runAction).toHaveBeenCalledTimes(1);
+		expect(runAction.mock.calls[0]?.[1]).toEqual({
+			membershipId: "membership-1",
+			sessionId: "session-1",
+			expectedAgentLease: { controlGen: 1, loadGen: 1, navGen: 1 },
+		});
+	});
+
+	test("browser_close refuses a stale lease without ending", async () => {
+		const session = {
+			_yay: { control: "human", controlGen: 1, loadGen: 1, navigationGeneration: 1 },
+		};
+		const { ctx, runAction } = makeCtx(runQueryForAccess(session), {
+			runActionImpl: async () => ({ _yay: null }),
+		});
+		const tool = ai_chat_tool_create_browser_close(ctx, browserCtxData);
+		const result = (await tool.execute?.({}, { toolCallId: "t", messages: [] })) as {
+			metadata: { status: string; reason?: string };
+		};
+		expect(result.metadata).toEqual({ status: "refused", reason: "stale" });
+		expect(runAction).not.toHaveBeenCalled();
+	});
+
+	test("browser_run toModelOutput resolves stored text and images", async () => {
+		const textBytes = new TextEncoder().encode("Status: succeeded.\nResult: 42");
+		const imageBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+		r2Objects.set("text-key", textBytes);
+		r2Objects.set("image-key", imageBytes);
+		const { ctx } = makeCtx(async (_ref: unknown, args: Record<string, unknown>) => {
+			if ("resultId" in args) {
+				return {
+					result: {
+						threadId: server_ai_tools_test_thread_id,
+						textAssetId: "text-asset",
+						images: [{ assetId: "image-asset", mime: "image/png", width: 4, height: 4 }],
+					},
+					membership: {},
+				};
+			}
+			if (args.assetId === "text-asset") return { _id: "text-asset", r2Key: "text-key" };
+			if (args.assetId === "image-asset") return { _id: "image-asset", r2Key: "image-key" };
+			return accessOk;
+		});
+		const tool = ai_chat_tool_create_browser_run(ctx, browserCtxData);
+		if (!tool.toModelOutput) throw new Error("expected toModelOutput");
+		const content = (await tool.toModelOutput({
+			toolCallId: "t",
+			input: { code: "return 1;" },
+			output: { title: "Browser run", output: "Browser succeeded.", metadata: { status: "succeeded", resultId: "result-1" as never, commandId: "cmd-1", elapsedMs: 1, imageCount: 0 } },
+		})) as { type: string; value: Array<{ type: string; text?: string; data?: string; mediaType?: string }> };
+		expect(content.type).toBe("content");
+		expect(content.value[0]?.type).toBe("text");
+		expect(content.value[0]?.text).toContain("[browser-result:result-1]");
+		expect(content.value[0]?.text).toContain("Result: 42");
+		expect(content.value[1]).toMatchObject({ type: "file-data", mediaType: "image/png" });
+	});
+
+	test("browser_run toModelOutput degrades denied results to a placeholder", async () => {
+		const { ctx } = makeCtx(async () => null);
+		const tool = ai_chat_tool_create_browser_run(ctx, browserCtxData);
+		if (!tool.toModelOutput) throw new Error("expected toModelOutput");
+		const content = (await tool.toModelOutput({
+			toolCallId: "t",
+			input: { code: "return 1;" },
+			output: { title: "Browser run", output: "Browser succeeded.", metadata: { status: "succeeded", resultId: "result-gone" as never, commandId: "cmd-1", elapsedMs: 1, imageCount: 0 } },
+		})) as { type: string; value: string };
+		expect(content).toEqual({ type: "text", value: "(Browser result unavailable: it expired or access changed.)" });
+	});
+
+	test("browser_run toModelOutput degrades cross-thread results to a placeholder", async () => {
+		const { ctx } = makeCtx(async () => ({
+			result: { threadId: "thread-other", textAssetId: "text-asset", images: [] },
+			membership: {},
+		}));
+		const tool = ai_chat_tool_create_browser_run(ctx, browserCtxData);
+		if (!tool.toModelOutput) throw new Error("expected toModelOutput");
+		const content = (await tool.toModelOutput({
+			toolCallId: "t",
+			input: { code: "return 1;" },
+			output: { title: "Browser run", output: "Browser succeeded.", metadata: { status: "succeeded", resultId: "result-1" as never, commandId: "cmd-1", elapsedMs: 1, imageCount: 0 } },
+		})) as { type: string; value: string };
+		expect(content).toEqual({ type: "text", value: "(Browser result unavailable: it expired or access changed.)" });
+	});
+
+	test("browser_run toModelOutput degrades missing thread context", async () => {
+		const { ctx } = makeCtx(async () => null);
+		const tool = ai_chat_tool_create_browser_run(ctx, { ...browserCtxData, getThreadId: () => null });
+		if (!tool.toModelOutput) throw new Error("expected toModelOutput");
+		const content = (await tool.toModelOutput({
+			toolCallId: "t",
+			input: { code: "return 1;" },
+			output: { title: "Browser run", output: "Browser succeeded.", metadata: { status: "succeeded", resultId: "result-1" as never, commandId: "cmd-1", elapsedMs: 1, imageCount: 0 } },
+		})) as { type: string; value: string };
+		expect(content).toEqual({ type: "text", value: "(Browser result unavailable: no thread context.)" });
+	});
+
+	test("browser_run toModelOutput degrades results whose text is gone", async () => {
+		const { ctx } = makeCtx(async (_ref: unknown, args: Record<string, unknown>) => {
+			if ("resultId" in args) {
+				return {
+					result: {
+						threadId: server_ai_tools_test_thread_id,
+						textAssetId: "text-asset",
+						images: [],
+					},
+					membership: {},
+				};
+			}
+			return null;
+		});
+		const tool = ai_chat_tool_create_browser_run(ctx, browserCtxData);
+		if (!tool.toModelOutput) throw new Error("expected toModelOutput");
+		const content = (await tool.toModelOutput({
+			toolCallId: "t",
+			input: { code: "return 1;" },
+			output: { title: "Browser run", output: "Browser succeeded.", metadata: { status: "succeeded", resultId: "result-1" as never, commandId: "cmd-1", elapsedMs: 1, imageCount: 0 } },
+		})) as { type: string; value: string };
+		expect(content).toEqual({ type: "text", value: "(Browser result unavailable: its stored text is gone.)" });
+	});
+
+	test("browser_run toModelOutput skips images without stored bytes", async () => {
+		const textBytes = new TextEncoder().encode("Status: succeeded.");
+		r2Objects.set("text-key", textBytes);
+		const { ctx } = makeCtx(async (_ref: unknown, args: Record<string, unknown>) => {
+			if ("resultId" in args) {
+				return {
+					result: {
+						threadId: server_ai_tools_test_thread_id,
+						textAssetId: "text-asset",
+						images: [{ assetId: "image-gone", mime: "image/png", width: 4, height: 4 }],
+					},
+					membership: {},
+				};
+			}
+			if (args.assetId === "text-asset") return { _id: "text-asset", r2Key: "text-key" };
+			return null;
+		});
+		const tool = ai_chat_tool_create_browser_run(ctx, browserCtxData);
+		if (!tool.toModelOutput) throw new Error("expected toModelOutput");
+		const content = (await tool.toModelOutput({
+			toolCallId: "t",
+			input: { code: "return 1;" },
+			output: { title: "Browser run", output: "Browser succeeded.", metadata: { status: "succeeded", resultId: "result-1" as never, commandId: "cmd-1", elapsedMs: 1, imageCount: 1 } },
+		})) as { type: string; value: Array<{ type: string }> };
+		expect(content.type).toBe("content");
+		expect(content.value.map((part) => part.type)).toEqual(["text"]);
+	});
+
+	test("browser_run drops late results when the lease moves mid-run", async () => {
+		let checks = 0;
+		const { ctx, runMutation } = makeCtx(async () => {
+			checks += 1;
+			return checks === 1 ? accessOk : { ...accessOk, controlGen: 2 };
+		});
+		runnerQueue.push(runner_run_result());
+		const tool = ai_chat_tool_create_browser_run(ctx, browserCtxData);
+		const result = (await tool.execute?.({ code: "return 1;" }, { toolCallId: "t", messages: [] })) as {
+			metadata: Record<string, unknown>;
+		};
+		expect(result.metadata).toEqual({ status: "refused", reason: "stale" });
+		expect(runMutation).not.toHaveBeenCalled();
+	});
+
+	test("browser_run skips images whose bytes mismatch the mime", async () => {
+		let storedImages: unknown = null;
+		const { ctx } = makeCtx(runQueryForAccess(accessOk), {
+			runMutationImpl: async (_ref: unknown, args: Record<string, unknown>) => {
+				if ("commandId" in args) {
+					storedImages = args.images;
+					return "result-1";
+				}
+				return "asset-1";
+			},
+		});
+		const fakePng = Buffer.from("not a png at all").toString("base64");
+		runnerQueue.push(
+			runner_run_result({ images: [{ mime: "image/png", width: 4, height: 4, base64: fakePng }] }),
+		);
+		const tool = ai_chat_tool_create_browser_run(ctx, browserCtxData);
+		await tool.execute?.({ code: "return 1;" }, { toolCallId: "t", messages: [] });
+		expect(storedImages).toEqual([]);
+	});
+
+	test("stored browser_run resolves ids for later turns", async () => {
+		r2Objects.set("text-key", new TextEncoder().encode("Status: succeeded.\nResult: 42"));
+		const { ctx } = makeCtx(async (_ref: unknown, args: Record<string, unknown>) => {
+			if ("resultId" in args) {
+				return {
+					result: {
+						threadId: server_ai_tools_test_thread_id,
+						textAssetId: "text-asset",
+						images: [],
+					},
+					membership: {},
+				};
+			}
+			if (args.assetId === "text-asset") return { _id: "text-asset", r2Key: "text-key" };
+			return accessOk;
+		});
+		const tool = ai_chat_tool_create_browser_run_stored(ctx, {
+			userId: browserCtxData.userId,
+			membershipId: "membership-1" as Id<"organizations_workspaces_users">,
+			getThreadId: () => server_ai_tools_test_thread_id,
+		});
+		if (!tool.toModelOutput) throw new Error("expected toModelOutput");
+		const content = (await tool.toModelOutput({
+			toolCallId: "t",
+			input: {},
+			output: { title: "Browser run", output: "Browser succeeded.", metadata: { status: "succeeded", resultId: "result-1" } },
+		})) as { type: string; value: Array<{ type: string; text?: string }> };
+		expect(content.type).toBe("content");
+		expect(content.value[0]?.text).toContain("[browser-result:result-1]");
+		expect(content.value[0]?.text).toContain("Result: 42");
+	});
+
+	test("stored browser_run degrades results revoked mid-read", async () => {
+		r2Objects.set("text-key", new TextEncoder().encode("Status: succeeded."));
+		let authCalls = 0;
+		const { ctx } = makeCtx(async (_ref: unknown, args: Record<string, unknown>) => {
+			if ("resultId" in args) {
+				authCalls += 1;
+				if (authCalls > 1) return null;
+				return {
+					result: {
+						threadId: server_ai_tools_test_thread_id,
+						textAssetId: "text-asset",
+						images: [],
+					},
+					membership: {},
+				};
+			}
+			if (args.assetId === "text-asset") return { _id: "text-asset", r2Key: "text-key" };
+			return accessOk;
+		});
+		const tool = ai_chat_tool_create_browser_run_stored(ctx, {
+			userId: browserCtxData.userId,
+			membershipId: "membership-1" as Id<"organizations_workspaces_users">,
+			getThreadId: () => server_ai_tools_test_thread_id,
+		});
+		if (!tool.toModelOutput) throw new Error("expected toModelOutput");
+		const content = (await tool.toModelOutput({
+			toolCallId: "t",
+			input: {},
+			output: { title: "Browser run", output: "Browser succeeded.", metadata: { status: "succeeded", resultId: "result-1" } },
+		})) as { type: string; value: string };
+		expect(content).toEqual({ type: "text", value: "(Browser result unavailable: it expired or access changed.)" });
+	});
 });

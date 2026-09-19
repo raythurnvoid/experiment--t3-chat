@@ -145,6 +145,7 @@ The tool registry supports these tools. Mode and model support decide which ones
 - `web_search`
 - `execute_code`
 - `image_generation` (run by OpenAI, not by this route; only for models whose `ai_chat_MODELS` entry sets `supportsImageGeneration`)
+- `browser_run`, `browser_reload`, `browser_close` (only when the request carries a `browserSessionId` bound to a live shared browser; both modes; see below)
 
 Skill bodies and references are ordinary Bash output. `execute_code` can run suitable JavaScript after the agent reads it; it does not add a separate skill runtime. Stored tool results replay unchanged. `validationTools` validates current tool shapes, while the SDK accepts completed unknown historical tools without making them callable.
 
@@ -371,6 +372,18 @@ These tools are **deleted**. The sections below explain stored parts in older me
 - It writes straight to the committed map through `files_metadata.update_entries_by_path`. There is no pending review, because pending updates only model content branches and move/copy/archive intents.
 - Works on folders and any file kind, uploads and binaries included, because metadata is not part of the file's text. Folder metadata remains committed during a pending move; the agent uses its visible path.
 - Read the current map with Bash `meta get <path>`; find files or folders by key with Bash `meta search --where '{"exists":"metadata.<key>"}'`.
+
+## `browser_run`, `browser_reload`, `browser_close`
+
+- Inspect and test the request's shared cloud-browser page (one selected HTML file). File-only in v1: no navigation, no page creation, popups blocked. Full system spec: the `cloud-browser` skill; this section only covers the agent side.
+- The client freezes `browserSessionId` into message metadata at send/queue time, and the transport body carries it (submit reads the new message; regenerate and edit replay the last user turn's frozen id). The route resolves it once per turn into a frozen binding (session id plus navigation/load/control generations); unknown or ended sessions run as ordinary turns with an unavailable note. A taken-over session still binds, but `prepareStep` ends the turn at once with a handover message instead of calling tools.
+- Both modes may inspect (no file writes), gated by `AI_CHAT_BROWSER_ENABLED=true`. Ask mode keeps the tools; only write tools leave its registry.
+- A queued message with no browser keeps that absence when it drains. Starting a browser later does not bind the older message to it.
+- `validationTools` always holds the stored browser shapes so old parts validate in every mode. Live and stored tools share one resolver: stored output keeps a safe status plus an opaque result id, and `toModelOutput` re-resolves text plus images under the current actor's access on every conversion. History from another thread degrades to a placeholder.
+- A stream transform scrubs live browser chunks before client delivery and persistence: input start/deltas dropped, code input emptied, outputs reduced to status plus result id, errors converted to the same safe shape. `thread_messages_add` refuses anything else (code input, raw observations, forged ids, mismatched static/dynamic type forms). An aborted call may persist as `input-available` with an empty input; history conversion drops it.
+- `prepareStep` ends the turn gracefully on takeover or session end, and re-checks every expanded browser result before each provider call. `filter_revoked_browser_results` replaces revoked parts; the title model never sees raw payloads.
+- At most 20 commands per request (local cap) and 20 KB of code per call; call bytes also count against the normal tool budget. Reload re-reads the same file and source kind (drafts need a fresh editor capture first); reload and close refuse a stale lease instead of touching a session the user now holds. Close ends the session for everyone watching it.
+- Reload and close pass the frozen `expectedAgentLease` to the runner. This closes the gap between the tool's first access check and the later page change; a human takeover during that wait must win.
 
 ## `execute_code`
 

@@ -6,7 +6,7 @@ import dedent from "dedent";
 import { createPatch } from "diff";
 import type { ActionCtx } from "../convex/_generated/server";
 import type { Id } from "../convex/_generated/dataModel";
-import { internal } from "../convex/_generated/api.js";
+import { api, internal } from "../convex/_generated/api.js";
 import type { public_api_Scope } from "../shared/public-api.ts";
 import {
 	files_READ_RANGE_MAX_LINES,
@@ -15,6 +15,8 @@ import {
 import type { prepare_file_pending_update_for_agent_Result } from "../convex/files_pending_updates.ts";
 import { server_path_normalize } from "./server-utils.ts";
 import { crypto_random_hex, crypto_sha256_hex } from "./crypto-utils.ts";
+import { files_browser_runner_call } from "./files-browser.ts";
+import { r2_create_asset_key, r2_fetch_object_from_bucket, r2_put_object } from "../convex/r2_client.ts";
 import { files_normalize_ai_edit_content, files_normalize_lf_newlines } from "./files.ts";
 import { files_node_has_editable_text_content } from "../shared/files.ts";
 import { ai_chat_GENERATED_IMAGE_FORMAT, type ai_chat_ModelId } from "../shared/ai-chat.ts";
@@ -1455,6 +1457,701 @@ export type ai_chat_tool_create_image_generation_ToolInput =
 export type ai_chat_tool_create_image_generation_ToolOutput =
 	InferToolOutput<ai_chat_tool_create_image_generation_stored_Tool>;
 // #endregion image generation
+
+// #region shared browser
+
+/**
+ * The frozen browser lease for one request. Resolved once when the turn starts from the live
+ * session: session doc, generations, and runner identity. Model arguments can never select a
+ * different file or session; a stale lease is refused instead of rebound.
+ */
+export type ai_chat_tool_BrowserBinding = {
+	membershipId: Id<"organizations_workspaces_users">;
+	sessionId: Id<"files_browser_sessions">;
+	navGen: number;
+	loadGen: number;
+	controlGen: number;
+};
+
+type ai_chat_tool_BrowserContext = {
+	organizationId: Id<"organizations">;
+	workspaceId: Id<"organizations_workspaces">;
+	organizationName: string;
+	workspaceName: string;
+	userId: Id<"users">;
+	getThreadId?: () => Id<"ai_chat_threads"> | null;
+	browser: ai_chat_tool_BrowserBinding;
+};
+
+const ai_chat_tool_browser_CODE_MAX_BYTES = 20_000;
+const ai_chat_tool_browser_COMMANDS_PER_REQUEST = 20;
+const ai_chat_tool_browser_TEXT_ENCODER = new TextEncoder();
+
+const ai_chat_tool_browser_run_image_schema = z.object({
+	mime: z.string(),
+	width: z.number(),
+	height: z.number(),
+	base64: z.string(),
+});
+
+const ai_chat_tool_browser_run_schema = z.object({
+	ok: z.literal(true),
+	status: z.string(),
+	commandId: z.string(),
+	codeHash: z.string(),
+	elapsedMs: z.number(),
+	result: z.unknown(),
+	resultTruncated: z.boolean(),
+	images: z.array(ai_chat_tool_browser_run_image_schema),
+	consoleEntries: z.array(z.string()),
+	pageErrors: z.array(z.string()),
+	logs: z.array(z.string()),
+	logsTruncated: z.boolean(),
+	error: z.unknown(),
+});
+
+const ai_chat_tool_browser_image_mime_schema = z.union([z.literal("image/png"), z.literal("image/jpeg")]);
+
+/**
+ * Resolve one stored browser result into model content: text plus real image bytes. History and
+ * live turns share this path. Anything unavailable becomes a neutral placeholder; a result id
+ * copied into another thread never leaks across it.
+ */
+async function browser_result_to_model_output(
+	ctx: ActionCtx,
+	args: {
+		userId: Id<"users">;
+		membershipId: Id<"organizations_workspaces_users">;
+		threadId: Id<"ai_chat_threads"> | null;
+		resultId: string;
+	},
+) {
+	const placeholder = (reason: string) => ({
+		type: "text" as const,
+		value: `(Browser result unavailable: ${reason}.)`,
+	});
+	const threadId = args.threadId;
+	if (!threadId) {
+		return placeholder("no thread context");
+	}
+
+	const checked = await ctx.runQuery(internal.files_browser.get_authorized_browser_result, {
+		userId: args.userId,
+		membershipId: args.membershipId,
+		resultId: args.resultId as Id<"ai_chat_browser_results">,
+	});
+	if (!checked || checked.result.threadId !== threadId) {
+		return placeholder("it expired or access changed");
+	}
+
+	const textAsset = await ctx.runQuery(internal.files_browser.get_browser_result_asset, {
+		assetId: checked.result.textAssetId,
+	});
+	if (!textAsset?.r2Key) {
+		return placeholder("its stored text is gone");
+	}
+	const text = await r2_fetch_object_from_bucket({ key: textAsset.r2Key }).then((response) => response.text());
+	// Prefix the stored id so per-step rechecks and title sanitizing can resolve the owning
+	// result back from converted model content.
+	const value: Array<
+		| { type: "text"; text: string }
+		| { type: "file-data"; data: string; mediaType: string }
+	> = [{ type: "text", text: `[browser-result:${args.resultId}]\n${text}`.slice(0, 16_512) }];
+	for (const image of checked.result.images.slice(0, 2)) {
+		const asset = await ctx.runQuery(internal.files_browser.get_browser_result_asset, {
+			assetId: image.assetId,
+		});
+		if (!asset?.r2Key) {
+			continue;
+		}
+		const buffer = await r2_fetch_object_from_bucket({ key: asset.r2Key }).then((r) => r.arrayBuffer());
+		const bytes = new Uint8Array(buffer, 0, buffer.byteLength);
+		if (bytes.byteLength === 0 || bytes.byteLength > 2_097_152) {
+			continue;
+		}
+		let binary = "";
+		for (let offset = 0; offset < bytes.byteLength; offset += 0x8000) {
+			binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
+		}
+		value.push({ type: "file-data", data: btoa(binary), mediaType: image.mime });
+	}
+	// Recheck after the reads: access revoked between the first check and the last byte must
+	// not leak through already-fetched content.
+	const rechecked = await ctx.runQuery(internal.files_browser.get_authorized_browser_result, {
+		userId: args.userId,
+		membershipId: args.membershipId,
+		resultId: args.resultId as Id<"ai_chat_browser_results">,
+	});
+	if (!rechecked || rechecked.result.threadId !== threadId) {
+		return placeholder("it expired or access changed");
+	}
+	return { type: "content" as const, value };
+}
+
+/**
+ * Convert one browser run output into model content. Live and stored tools share this: outputs
+ * without a result id use their short status text, while stored ids use the authorized reader.
+ */
+async function browser_run_output_to_model_content(
+	ctx: ActionCtx,
+	ids: {
+		userId: Id<"users">;
+		membershipId: Id<"organizations_workspaces_users">;
+		getThreadId: (() => Id<"ai_chat_threads"> | null) | undefined;
+	},
+	output: unknown,
+) {
+	const parsed = z
+		.object({ metadata: z.object({ resultId: z.string() }).partial(), output: z.string() })
+		.safeParse(output);
+	const resultId = parsed.success ? parsed.data.metadata.resultId : undefined;
+	if (!resultId) {
+		const fallback =
+			parsed.success && typeof parsed.data.output === "string" ? parsed.data.output : "Browser run finished.";
+		return { type: "text" as const, value: fallback.slice(0, 16_384) };
+	}
+	return await browser_result_to_model_output(ctx, {
+		userId: ids.userId,
+		membershipId: ids.membershipId,
+		threadId: ids.getThreadId?.() ?? null,
+		resultId,
+	});
+}
+
+/**
+ * Store one executed run: upload the text JSON and images as private result assets, then record
+ * the result doc. Unstored bytes keep their cleanup deadline and vanish within a day.
+ */
+async function browser_store_run_result(
+	ctx: ActionCtx,
+	args: {
+		ownerId: Id<"users">;
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		threadId: Id<"ai_chat_threads">;
+		sessionId: Id<"files_browser_sessions">;
+		targetKind: "saved" | "private";
+		nodeId: string;
+		sourceKind: "saved" | "proposed" | "draft";
+		sourceVersion: string;
+		sourceHash: string;
+		loadGen: number;
+		runId: string;
+		toolCallId: string;
+		commandId: string;
+		text: string;
+		images: Array<{ base64: string; mime: string; width: number; height: number }>;
+	},
+) {
+	const textBytes = ai_chat_tool_browser_TEXT_ENCODER.encode(args.text);
+	const textAssetId = await ctx.runMutation(internal.r2.insert_asset, {
+		organizationId: args.organizationId,
+		workspaceId: args.workspaceId,
+		kind: "browser_result",
+		size: textBytes.byteLength,
+		createdBy: args.ownerId,
+	});
+	await r2_put_object(ctx, {
+		key: r2_create_asset_key({ organizationId: args.organizationId, workspaceId: args.workspaceId, assetId: textAssetId }),
+		body: textBytes,
+		contentType: "application/json",
+	});
+
+	const images: Array<{ assetId: Id<"files_r2_assets">; mime: string; width: number; height: number }> = [];
+	let imageBytesTotal = 0;
+	for (const image of args.images.slice(0, 2)) {
+		const mime = ai_chat_tool_browser_image_mime_schema.safeParse(image.mime);
+		if (!mime.success || !Number.isInteger(image.width) || !Number.isInteger(image.height)) {
+			continue;
+		}
+		const bytes = Uint8Array.from(atob(image.base64), (char) => char.charCodeAt(0));
+		if (bytes.byteLength === 0 || bytes.byteLength > 2_097_152) {
+			continue;
+		}
+		// The runner validates media signatures and pixel dimensions before responding; re-check
+		// the signature here so a lying mime can never decide the stored content type.
+		const pngMagic = bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47;
+		const jpegMagic = bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+		if (
+			(mime.data === "image/png" && !pngMagic) ||
+			(mime.data === "image/jpeg" && !jpegMagic)
+		) {
+			continue;
+		}
+		const assetId = await ctx.runMutation(internal.r2.insert_asset, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			kind: "browser_result",
+			size: bytes.byteLength,
+			createdBy: args.ownerId,
+		});
+		await r2_put_object(ctx, {
+			key: r2_create_asset_key({ organizationId: args.organizationId, workspaceId: args.workspaceId, assetId }),
+			body: bytes,
+			contentType: mime.data,
+		});
+		images.push({ assetId, mime: mime.data, width: image.width, height: image.height });
+		imageBytesTotal += bytes.byteLength;
+	}
+
+	return await ctx.runMutation(internal.files_browser.store_browser_result, {
+		ownerId: args.ownerId,
+		organizationId: args.organizationId,
+		workspaceId: args.workspaceId,
+		threadId: args.threadId,
+		sessionId: args.sessionId,
+		targetKind: args.targetKind,
+		nodeId: args.nodeId,
+		sourceKind: args.sourceKind,
+		sourceVersion: args.sourceVersion,
+		sourceHash: args.sourceHash,
+		loadGen: args.loadGen,
+		runId: args.runId,
+		toolCallId: args.toolCallId,
+		commandId: args.commandId,
+		textAssetId,
+		images,
+		textBytes: textBytes.byteLength,
+		imageBytes: imageBytesTotal,
+	});
+}
+
+function browser_run_output_text(run: z.infer<typeof ai_chat_tool_browser_run_schema>) {
+	const lines = [`Status: ${run.status}.`];
+	if (typeof run.result !== "undefined" && run.result !== null) {
+		const rendered = typeof run.result === "string" ? run.result : JSON.stringify(run.result);
+		lines.push(`Result: ${rendered ?? "null"}${run.resultTruncated ? " (truncated)" : ""}`);
+	}
+	// Cap entries before joining: a hostile snippet can bypass the runner's closure bounds, so
+	// joining first would build a huge string just to slice it away.
+	const capped = (entries: Array<string>) =>
+		entries
+			.slice(0, 20)
+			.map((entry) => entry.slice(0, 200))
+			.join(" | ");
+	if (run.consoleEntries.length > 0) {
+		lines.push(`Console: ${capped(run.consoleEntries)}`);
+	}
+	if (run.pageErrors.length > 0) {
+		lines.push(`Page errors: ${capped(run.pageErrors)}`);
+	}
+	if (run.error && typeof run.error === "object" && typeof (run.error as { message?: unknown }).message === "string") {
+		lines.push(`Error: ${((run.error as { message: string }).message).slice(0, 1000)}`);
+	}
+	return lines.join("\n").slice(0, 16_384);
+}
+
+/**
+ * Run one Playwright snippet against the request's shared browser page. The snippet sees the
+ * registered page and inner frame plus `expect` and `emitImage`. Results persist as a safe
+ * status plus an opaque result id; the model reads full text and images through conversion.
+ */
+export function ai_chat_tool_create_browser_run(
+	ctx: ActionCtx,
+	ctxData: ai_chat_tool_BrowserContext & { runId: string },
+) {
+	let attempts = 0;
+
+	return tool({
+		description: dedent`\
+			Inspect and test the shared browser page for the currently selected HTML file. \
+			Use this only when the request is bound to a live shared browser; without one, edit source and describe the local Preview instead. \
+			The code is the body of an async function with (page, frame, expect, emitImage) in scope: use Playwright locators on frame, read DOM text, take screenshots with page.screenshot() plus emitImage(bytes), and change the viewport explicitly when a layout needs it. \
+			Return a small JSON-serializable observation; screenshots reach the model as images. \
+			Never navigate, open pages, or close the browser: the page is fixed, popups are blocked, and leaving it ends the session. \
+			After the user drives the page, inspect the current state first instead of acting on an old plan.`,
+		inputSchema: z
+			.object({
+				code: z
+					.string()
+					.min(1)
+					.max(ai_chat_tool_browser_CODE_MAX_BYTES)
+					.describe("JavaScript to run with (page, frame, expect, emitImage) in scope. Use `return` for a small JSON observation."),
+			})
+			.strict(),
+		execute: async (args, options) => {
+			attempts += 1;
+			if (attempts > ai_chat_tool_browser_COMMANDS_PER_REQUEST) {
+				return {
+					title: "Browser run",
+					output: "Browser command limit reached for this request.",
+					metadata: { status: "refused" },
+				};
+			}
+
+			const access = await ctx.runQuery(internal.files_browser.check_browser_source_access, {
+				organizationId: ctxData.organizationId,
+				workspaceId: ctxData.workspaceId,
+				userId: ctxData.userId,
+				membershipId: ctxData.browser.membershipId,
+				sessionId: ctxData.browser.sessionId,
+			});
+			if (!access.ok) {
+				return {
+					title: "Browser run",
+					output: `The browser is unavailable: ${access.reason}.`,
+					metadata: { status: "refused", reason: access.reason },
+				};
+			}
+			if (
+				access.control !== "ready" ||
+				access.controlGen !== ctxData.browser.controlGen ||
+				access.loadGen !== ctxData.browser.loadGen ||
+				access.navGen !== ctxData.browser.navGen
+			) {
+				return {
+					title: "Browser run",
+					output: "The browser moved on: control, file, or source changed since this request started.",
+					metadata: { status: "refused", reason: "stale" },
+				};
+			}
+
+			const run = await files_browser_runner_call({
+				route: "run",
+				body: {
+					sessionId: access.runnerSessionId,
+					ownerId: ctxData.userId,
+					organizationId: ctxData.organizationId,
+					workspaceId: ctxData.workspaceId,
+					navGen: access.navGen,
+					loadGen: access.loadGen,
+					controlGen: access.controlGen,
+					commandId: options?.toolCallId ?? crypto.randomUUID(),
+					code: args.code,
+				},
+				signal: options?.abortSignal,
+			});
+			if (run._nay) {
+				return {
+					title: "Browser run",
+					output: `Browser request failed: ${run._nay.message}`,
+					metadata: { status: "refused", reason: "transport" },
+				};
+			}
+			const parsed = ai_chat_tool_browser_run_schema.safeParse(run._yay);
+			if (!parsed.success) {
+				return {
+					title: "Browser run",
+					output: "Browser returned an invalid response.",
+					metadata: { status: "refused", reason: "invalid" },
+				};
+			}
+			const outcome = parsed.data;
+			if (outcome.status === "tainted") {
+				return {
+					title: "Browser run",
+					output: "The browser left its registered page, so the session was closed.",
+					metadata: { status: "tainted" },
+				};
+			}
+
+			// Recheck the exact lease after the wait: a takeover, reload, or file change during
+			// the run retires these observations instead of storing them under a dead lease.
+			const fresh = await ctx.runQuery(internal.files_browser.check_browser_source_access, {
+				organizationId: ctxData.organizationId,
+				workspaceId: ctxData.workspaceId,
+				userId: ctxData.userId,
+				membershipId: ctxData.browser.membershipId,
+				sessionId: ctxData.browser.sessionId,
+			});
+			if (
+				!fresh.ok ||
+				fresh.control !== "ready" ||
+				fresh.controlGen !== access.controlGen ||
+				fresh.loadGen !== access.loadGen ||
+				fresh.navGen !== access.navGen
+			) {
+				return {
+					title: "Browser run",
+					output: "The browser moved on while the command ran: control, file, or source changed.",
+					metadata: { status: "refused", reason: "stale" },
+				};
+			}
+
+			const threadId = ctxData.getThreadId?.() ?? null;
+			if (!threadId) {
+				return {
+					title: "Browser run",
+					output: "Browser result has no thread to attach to.",
+					metadata: { status: "refused", reason: "thread" },
+				};
+			}
+			const text = browser_run_output_text(outcome);
+			const resultId = await browser_store_run_result(ctx, {
+				ownerId: ctxData.userId,
+				organizationId: ctxData.organizationId,
+				workspaceId: ctxData.workspaceId,
+				threadId,
+				sessionId: ctxData.browser.sessionId,
+				targetKind: access.targetKind,
+				nodeId: access.nodeId,
+				sourceKind: access.sourceKind,
+				sourceVersion: access.sourceVersion,
+				sourceHash: access.sourceHash,
+				loadGen: access.loadGen,
+				runId: ctxData.runId,
+				toolCallId: options?.toolCallId ?? crypto.randomUUID(),
+				commandId: outcome.commandId,
+				text,
+				images: outcome.images,
+			});
+
+			return {
+				title: "Browser run",
+				output: text,
+				metadata: {
+					status: outcome.status,
+					resultId,
+					commandId: outcome.commandId,
+					elapsedMs: outcome.elapsedMs,
+					imageCount: outcome.images.length,
+				},
+			};
+		},
+		toModelOutput: async ({ output }) => {
+			return await browser_run_output_to_model_content(
+				ctx,
+				{
+					userId: ctxData.userId,
+					membershipId: ctxData.browser.membershipId,
+					getThreadId: ctxData.getThreadId,
+				},
+				output,
+			);
+		},
+	});
+}
+
+/**
+ * The same tool as a stored message holds it: no code input, and a safe status plus an opaque
+ * result id instead of raw observations. The stream transform rewrites live parts into this
+ * shape before persistence. History conversion resolves ids through the same authorized reader
+ * as live turns, so later turns see text and images instead of placeholders.
+ */
+export function ai_chat_tool_create_browser_run_stored(
+	ctx: ActionCtx,
+	args: {
+		userId: Id<"users">;
+		membershipId: Id<"organizations_workspaces_users">;
+		getThreadId: () => Id<"ai_chat_threads"> | null;
+	},
+) {
+	return tool({
+		inputSchema: z.object({}).strict(),
+		outputSchema: z.object({
+			title: z.string(),
+			output: z.string(),
+			metadata: z.object({
+				status: z.string(),
+				resultId: z.string().optional(),
+			}),
+		}),
+		toModelOutput: async ({ output }) => {
+			return await browser_run_output_to_model_content(
+				ctx,
+				{ userId: args.userId, membershipId: args.membershipId, getThreadId: args.getThreadId },
+				output,
+			);
+		},
+	});
+}
+
+type ai_chat_tool_create_browser_run_stored_Tool = ReturnType<typeof ai_chat_tool_create_browser_run_stored>;
+export type ai_chat_tool_create_browser_run_ToolInput = InferToolInput<ai_chat_tool_create_browser_run_stored_Tool>;
+export type ai_chat_tool_create_browser_run_ToolOutput = InferToolOutput<ai_chat_tool_create_browser_run_stored_Tool>;
+
+/**
+ * The stored reload shape: safe status text only. Live and stored outputs match because reload
+ * never returns observations.
+ */
+export function ai_chat_tool_create_browser_reload_stored() {
+	return tool({
+		inputSchema: z.object({}).strict(),
+		outputSchema: z.object({
+			title: z.string(),
+			output: z.string(),
+			metadata: z.object({
+				status: z.string(),
+			}),
+		}),
+	});
+}
+
+type ai_chat_tool_create_browser_reload_stored_Tool = ReturnType<typeof ai_chat_tool_create_browser_reload_stored>;
+export type ai_chat_tool_create_browser_reload_ToolInput =
+	InferToolInput<ai_chat_tool_create_browser_reload_stored_Tool>;
+export type ai_chat_tool_create_browser_reload_ToolOutput =
+	InferToolOutput<ai_chat_tool_create_browser_reload_stored_Tool>;
+
+/**
+ * Reload the shared page from the current source of the same file and kind. Drafts always
+ * need a fresh editor capture first; the tool reports that instead of falling back. Only the
+ * user may switch source kinds or reload after driving the page.
+ */
+export function ai_chat_tool_create_browser_reload(
+	ctx: ActionCtx,
+	ctxData: ai_chat_tool_BrowserContext & { runId: string },
+) {
+	return tool({
+		description: dedent`\
+			Reload the shared browser page from the current saved or proposed source of the same file. \
+			Use this after editing the file through normal file tools when the page still shows older source. \
+			Reloading resets page input and scroll. Never use it to switch files or source kinds, and never \
+			use it after the user drove the page: inspect their state and propose source edits instead. \
+			Draft sources need a fresh editor capture first; report that instead of reloading.`,
+		inputSchema: z.object({}).strict(),
+		execute: async () => {
+			const session = await ctx.runQuery(internal.files_browser.load_browser_session, {
+				organizationId: ctxData.organizationId,
+				workspaceId: ctxData.workspaceId,
+				userId: ctxData.userId,
+				membershipId: ctxData.browser.membershipId,
+				sessionId: ctxData.browser.sessionId,
+			});
+			if (session._nay) {
+				return {
+					title: "Browser reload",
+					output: `The browser is unavailable: ${session._nay.message}.`,
+					metadata: { status: "refused", reason: "session" },
+				};
+			}
+			if (
+				session._yay.control !== "ready" ||
+				session._yay.controlGen !== ctxData.browser.controlGen ||
+				session._yay.loadGen !== ctxData.browser.loadGen ||
+				session._yay.navigationGeneration !== ctxData.browser.navGen
+			) {
+				return {
+					title: "Browser reload",
+					output:
+						"The browser moved on: control, file, or source changed since this request started, or the user drives the page.",
+					metadata: { status: "refused", reason: "stale" },
+				};
+			}
+			if (session._yay.sourceKind === "draft") {
+				return {
+					title: "Browser reload",
+					output: "This page shows an editor draft. Capture it again from the editor before reloading.",
+					metadata: { status: "needs-capture" },
+				};
+			}
+
+			// Keep the frozen lease through the source read so a later takeover refuses reload.
+			const reloaded = await ctx.runAction(api.files_browser.reload_browser, {
+				membershipId: ctxData.browser.membershipId,
+				sessionId: ctxData.browser.sessionId,
+				path: session._yay.path,
+				expectedAgentLease: {
+					controlGen: ctxData.browser.controlGen,
+					loadGen: ctxData.browser.loadGen,
+					navGen: ctxData.browser.navGen,
+				},
+			});
+			if (reloaded._nay) {
+				return {
+					title: "Browser reload",
+					output: `Browser reload failed: ${reloaded._nay.message}`,
+					metadata: { status: "refused", reason: "reload" },
+				};
+			}
+			return {
+				title: "Browser reload",
+				output: "The shared page reloaded from the current source. Inspect it again before acting.",
+				metadata: { status: "reloaded", loadGen: reloaded._yay.loadGen },
+			};
+		},
+	});
+}
+
+/**
+ * End the request's shared browser session. The user can start again from Files; ending never
+ * deletes file content or drafts.
+ */
+export function ai_chat_tool_create_browser_close(
+	ctx: ActionCtx,
+	ctxData: ai_chat_tool_BrowserContext & { runId: string },
+) {
+	return tool({
+		description: dedent`\
+			End the shared browser session when its work is done. \
+			Use this after finishing the checks the user asked for. Ending closes the session for \
+			everyone watching it.`,
+		inputSchema: z.object({}).strict(),
+		execute: async () => {
+			const session = await ctx.runQuery(internal.files_browser.load_browser_session, {
+				organizationId: ctxData.organizationId,
+				workspaceId: ctxData.workspaceId,
+				userId: ctxData.userId,
+				membershipId: ctxData.browser.membershipId,
+				sessionId: ctxData.browser.sessionId,
+			});
+			if (session._nay) {
+				return {
+					title: "Browser close",
+					output: `The browser is unavailable: ${session._nay.message}.`,
+					metadata: { status: "refused", reason: "session" },
+				};
+			}
+			if (
+				session._yay.control !== "ready" ||
+				session._yay.controlGen !== ctxData.browser.controlGen ||
+				session._yay.loadGen !== ctxData.browser.loadGen ||
+				session._yay.navigationGeneration !== ctxData.browser.navGen
+			) {
+				return {
+					title: "Browser close",
+					output:
+						"The browser moved on: control, file, or source changed since this request started, or the user drives the page.",
+					metadata: { status: "refused", reason: "stale" },
+				};
+			}
+			const closed = await ctx.runAction(api.files_browser.end_browser, {
+				membershipId: ctxData.browser.membershipId,
+				sessionId: ctxData.browser.sessionId,
+				expectedAgentLease: {
+					controlGen: ctxData.browser.controlGen,
+					loadGen: ctxData.browser.loadGen,
+					navGen: ctxData.browser.navGen,
+				},
+			});
+			if (closed._nay) {
+				return {
+					title: "Browser close",
+					output: `Browser close failed: ${closed._nay.message}`,
+					metadata: { status: "refused", reason: "close" },
+				};
+			}
+			return {
+				title: "Browser close",
+				output: "The shared browser session ended.",
+				metadata: { status: "closed" },
+			};
+		},
+	});
+}
+
+/**
+ * The stored close shape: safe status text only.
+ */
+export function ai_chat_tool_create_browser_close_stored() {
+	return tool({
+		inputSchema: z.object({}).strict(),
+		outputSchema: z.object({
+			title: z.string(),
+			output: z.string(),
+			metadata: z.object({
+				status: z.string(),
+			}),
+		}),
+	});
+}
+
+type ai_chat_tool_create_browser_close_stored_Tool = ReturnType<typeof ai_chat_tool_create_browser_close_stored>;
+export type ai_chat_tool_create_browser_close_ToolInput =
+	InferToolInput<ai_chat_tool_create_browser_close_stored_Tool>;
+export type ai_chat_tool_create_browser_close_ToolOutput =
+	InferToolOutput<ai_chat_tool_create_browser_close_stored_Tool>;
+// #endregion shared browser
 
 // #region tests
 // Vite replaces `process.env.NODE_ENV` statically, so this check must come first to let esbuild

@@ -16,7 +16,12 @@ import {
 	X,
 } from "lucide-react";
 import { AiChatThread } from "@/components/ai-chat/ai-chat.tsx";
+import { AiChatBrowserSurfaceProvider } from "@/components/ai-chat/ai-chat-message.tsx";
 import { FileEditorSidebarPendingStrip } from "@/components/files/file-editor/file-editor-sidebar/file-editor-sidebar-pending-strip.tsx";
+import {
+	FilesBrowserBindingWriter,
+	FilesBrowserResumeThreadMirror,
+} from "@/components/files/file-node-view/files-browser.tsx";
 import { MyContextMenu, MyContextMenuPopover, MyContextMenuTrigger } from "@/components/my-context-menu.tsx";
 import { MyIcon } from "@/components/my-icon.tsx";
 import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
@@ -866,15 +871,27 @@ const FileEditorSidebarAgentChatThread = memo(function FileEditorSidebarAgentCha
 export type FileEditorSidebarAgent_Props = {
 	/** Id of the root sidebar tab that shows this agent panel (used to know when agent is active for auto-start). */
 	rootTabId: string;
+	/**
+	 * Saved or pending node id behind the Files selection. Requests bind the live browser of this file.
+	 */
+	browserNodeId: string | null;
+	/**
+	 * Kind behind `browserNodeId`, so a saved/private id clash cannot bind the wrong file.
+	 */
+	browserNodeKind: "saved" | "private" | null;
 };
 
 export const FileEditorSidebarAgent = memo(function FileEditorSidebarAgent(props: FileEditorSidebarAgent_Props) {
+	const { browserNodeId, browserNodeKind } = props;
 	const { membershipId } = AppTenantProvider.useContext();
 	const selectedTabStorageKey: AiChatControllerStorageKey = `app_state::file_editor_sidebar_agent_selected_tab::scope::${membershipId}`;
 
 	return (
 		<AiChatController key={selectedTabStorageKey} storageKey={selectedTabStorageKey}>
-			<FileEditorSidebarAgentContent {...props} />
+			<AiChatBrowserSurfaceProvider value="files">
+				<FilesBrowserBindingWriter browserNodeId={browserNodeId} browserNodeKind={browserNodeKind} />
+				<FileEditorSidebarAgentContent {...props} />
+			</AiChatBrowserSurfaceProvider>
 		</AiChatController>
 	);
 });
@@ -1098,6 +1115,7 @@ const FileEditorSidebarAgentContent = memo(function FileEditorSidebarAgentConten
 
 	return (
 		<div className={cn("FileEditorSidebarAgent" satisfies FileEditorSidebarAgent_ClassNames)}>
+			<FilesBrowserResumeThreadMirror />
 			<MyTabs selectedId={selectedChatTabId} setSelectedId={handleChatTabChange}>
 				<FileEditorSidebarAgentHeader
 					controller={controller}

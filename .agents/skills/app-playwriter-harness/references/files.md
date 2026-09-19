@@ -179,6 +179,23 @@ Compare against the table's pinned SHA-256. Two caveats: the comparison holds on
 
 ## High-Value Recipes
 
+### Shared Cloud Browser End To End
+
+Needs `AI_CHAT_BROWSER_ENABLED=true` on the dev deployment and an HTML file (search `.html` in the sidebar; dismiss the suggestions dialog with Escape before clicking a row or the click times out behind it).
+
+- Open the HTML file, click `Shared browser`, then `Start shared browser`. Wait for the `Watching. Take control to click and type.` text (up to 120 s for the first provider boot).
+- The live viewer is `role=application` named `Shared browser page. Type and click to drive it; Tab goes to the page, Escape leaves it.` (view-only when input is off, with `tabIndex=-1`); status, source hash, countdown, and controls live in `.FilesBrowser`.
+- `Take control` → `You have control` + `Resume agent`; click/wheel the frame, then Resume back to `Live`.
+- Agent run: sidebar Agent tab, select a `New chat` tab, fill `.AiChatComposer-editor-content`, wait for `[data-testid="ai-chat-send-button"]` to enable, send. Prompt must name the scope (`page, frame, expect, emitImage` — the model otherwise tries `document`). Wait for Stop to appear first, then waitIdle per `agent-panel.md`.
+- A `Browser run` card shows `Browser succeeded.` plus an `Open browser` link (Files) or `Open in Files` link (chat page); refused runs show `Browser refused.` with no link. Past runs list under Results in the panel; click one for its stored text.
+- Reload, Focus/Exit focus (editor collapses but stays mounted; focus returns to it), `End browser` (start card returns, no session left).
+- Popout: `Pop out` opens `/files/browser?session=…`. If its first Playwriter handle hangs, bind the same existing URL in a second owned session (see known-hazards). Check the live Resume button and use native clicks before considering synthetic transfer tests.
+- Pointer check: use an HTML fixture with a click counter, double-click counter, text input, range slider, and a tall page. Compute pointer positions from the contained image rectangle, excluding black margins. Check JPEG dimensions match the hello viewport. Confirm values through a read-only `browser_run` in the same chat after Resume.
+- Keep human control for more than 40 seconds while changing focus or editing the source. This checks two grant renewals; a quick click alone misses a timer reset that drops control after Take.
+- Source check: edit and Save while the browser stays open. Updates must appear without changing the live page. Reload must advance the source version and load generation, then clear Updates.
+- Idle is 5 minutes and watching does not extend it: re-Start when the countdown lapses. Expiry mid-run surfaces as `Browser refused.` (transport), which reads exactly like a broken tool — check the countdown first. Verified 2026-09-19.
+- Binding regression: only the first message of a new chat used to bind. After any transport change, send TWO messages in one thread and require a `Browser run` card in both answers — a follow-up with no card means the runtime body dropped `browserSessionId`. Verified 2026-09-19.
+
 ### Check Row Controls While Creating
 
 Use an owned tab and an empty test folder. To hold the busy state, wrap that tab's

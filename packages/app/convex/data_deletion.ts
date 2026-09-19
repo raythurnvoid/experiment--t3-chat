@@ -34,6 +34,7 @@ import { files_nodes_db_handoff_yjs_cleanup_task } from "./files_nodes.ts";
 import { files_pending_update_db_release_replacement_asset } from "./files_pending_updates.ts";
 import { files_private_storage_db_release_purged_resources } from "./files_private_storage.ts";
 import { files_transfer_db_delete_run_batch } from "./files_transfer.ts";
+import { files_browser_db_delete_user_batch, files_browser_db_purge_workspace_batch } from "./files_browser.ts";
 import { files_pending_update_runs_db_delete_run_batch } from "./files_pending_update_runs.ts";
 import { files_db_delete_pending_update } from "../server/files.ts";
 import { data_deletion_db_request } from "./data_deletion_requests.ts";
@@ -578,6 +579,17 @@ async function db_purge_organization_workspace_content_batch(
 	if (jobNoticeCursors.length > 0) {
 		await Promise.all(jobNoticeCursors.map((doc) => ctx.db.delete("ai_chat_bash_job_notice_cursors", doc._id)));
 		return { done: false, deletedCount: jobNoticeCursors.length };
+	}
+
+	// Private browser captures die with the workspace; their R2 objects go with the generic
+	// asset pass below.
+	const browserPurge = await files_browser_db_purge_workspace_batch(ctx, {
+		organizationId,
+		workspaceId,
+		batchSize,
+	});
+	if (!browserPurge.done) {
+		return browserPurge;
 	}
 
 	const aiChatThreads = await ctx.db
@@ -1870,6 +1882,11 @@ async function db_drain_user_finalization_batch(
 	const reviewRunCount = await db_drain_user_pending_review_runs_batch(ctx, args);
 	if (reviewRunCount > 0) return reviewRunCount;
 
+	const browserCount = (
+		await files_browser_db_delete_user_batch(ctx, { userId: args.userId, batchSize: args.batchSize })
+	).deletedCount;
+	if (browserCount > 0) return browserCount;
+
 	const serviceGrantCount = await db_drain_user_plugin_service_grants_batch(ctx, args);
 	if (serviceGrantCount > 0) {
 		return serviceGrantCount;
@@ -3081,6 +3098,11 @@ export const prepare_user_for_hard_deletion = internalMutation({
 			batchSize,
 		});
 		if (deletedReviewRunCount > 0) return false;
+
+		const deletedBrowserCount = (
+			await files_browser_db_delete_user_batch(ctx, { userId: args.userId, batchSize })
+		).deletedCount;
+		if (deletedBrowserCount > 0) return false;
 
 		const deletedSessionCount = await db_drain_user_plugin_ui_sessions_batch(ctx, {
 			userId: args.userId,

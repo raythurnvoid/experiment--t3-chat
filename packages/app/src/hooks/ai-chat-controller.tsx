@@ -22,7 +22,7 @@ import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { objects_equal_deep } from "@/lib/object.ts";
 import { app_local_storage_get_value, app_local_storage_set_value, type storage_local_Key } from "@/lib/storage.ts";
 import { should_never_happen } from "@/lib/utils.ts";
-import { generate_id, get_id_generator, type GeneratedIdPrefix } from "../../shared/generated-ids.ts";
+import { generate_id, get_id_generator } from "../../shared/generated-ids.ts";
 import { useFn, useLiveRef } from "./utils-hooks.ts";
 import {
 	type ai_chat_UiMessage,
@@ -31,9 +31,11 @@ import {
 	ai_chat_get_message_text,
 	ai_chat_is_model_id,
 	ai_chat_is_mode_id,
+	ai_chat_is_optimistic_thread_id,
 	ai_chat_thread_is_unread,
 	type ai_chat_ModelId,
 	type ai_chat_ModeId,
+	type ai_chat_OptimisticThreadId,
 	type ai_chat_Thread,
 } from "@/lib/ai-chat.ts";
 
@@ -50,6 +52,7 @@ export type AiChatQueuedUserMessage = {
 	attachments: readonly FileUIPart[];
 	selectedModelId: ai_chat_ModelId;
 	selectedModeId: ai_chat_ModeId;
+	browserSessionId: string | null;
 };
 
 type ThreadSession = {
@@ -83,11 +86,17 @@ type ThreadChatOnFinish = Parameters<ChatOnFinishCallback<ai_chat_UiMessage>>[0]
 
 type UseChatResult = ReturnType<typeof useChat<ai_chat_UiMessage>>;
 
-export type AiChatOptimisticThreadId = ReturnType<typeof generate_id<"ai_thread">>;
+export type AiChatOptimisticThreadId = ai_chat_OptimisticThreadId;
 
 type StoreState = {
 	draftSelectedModelId: ai_chat_ModelId;
 	draftSelectedModeId: ai_chat_ModeId;
+	/**
+	 * Live shared-browser session for the selected Files item, or null. Written by the Files
+	 * agent sidebar from the session query; sends freeze it into message metadata. The full
+	 * chat page never sets it.
+	 */
+	browserSessionId: string | null;
 	threadById: Map<string, ThreadSession>;
 	messageById: Map<string, ai_chat_UiMessage>;
 	activeMessageIdsByThreadId: Map<string, readonly string[]>;
@@ -240,10 +249,6 @@ export type AiChatController_Props = {
 
 const SIDEBAR_SELECTED_TAB_STORAGE_KEY_PREFIX = "app_state::file_editor_sidebar_agent_selected_tab::scope::";
 const SIDEBAR_OPEN_TABS_STORAGE_KEY_PREFIX = "app_state::file_editor_sidebar_open_tabs::scope::";
-
-function is_ai_chat_optimistic_thread_id(threadId?: string | null): threadId is AiChatOptimisticThreadId {
-	return Boolean(threadId?.startsWith("ai_thread-" satisfies GeneratedIdPrefix));
-}
 
 function is_sidebar_selected_tab_storage_key(
 	storageKey: AiChatControllerStorageKey,
@@ -435,6 +440,31 @@ function get_message_selected_mode_id(message?: ai_chat_UiMessage | null) {
 	return selectedModeId;
 }
 
+function get_message_browser_session_id(message?: ai_chat_UiMessage | null) {
+	const browserSessionId = message?.metadata?.browserSessionId;
+	if (!browserSessionId || typeof browserSessionId !== "string") {
+		return undefined;
+	}
+
+	return browserSessionId;
+}
+
+/**
+ * Frozen browser session of the turn a regenerate or edit replays. Regenerate sends no new
+ * user message, so the id comes from the last user turn in history. Submit never falls back:
+ * a fresh message without an id means no browser on purpose.
+ */
+function get_replayed_browser_session_id(messages: Array<ai_chat_UiMessage>) {
+	for (let index = messages.length - 1; index >= 0; index--) {
+		const message = messages[index];
+		if (message?.role === "user") {
+			return get_message_browser_session_id(message);
+		}
+	}
+
+	return undefined;
+}
+
 const thread_session_create = (args?: {
 	chat?: Chat<ai_chat_UiMessage> | null;
 	chatArgs?: ThreadChatArgs | undefined;
@@ -528,6 +558,7 @@ const useStore = ((/* iife */) => {
 	const store = create<StoreState>(() => ({
 		draftSelectedModelId: ai_chat_DEFAULT_MODEL_ID,
 		draftSelectedModeId: ai_chat_DEFAULT_MODE_ID,
+		browserSessionId: null,
 		threadById: new Map(),
 		messageById: new Map(),
 		activeMessageIdsByThreadId: new Map(),
@@ -1132,7 +1163,7 @@ const useThreadList = (props?: useThreadList_Props) => {
 		const result: Array<ai_chat_Thread> = [];
 
 		for (const threadId of threadById.keys()) {
-			if (!is_ai_chat_optimistic_thread_id(threadId) || persistedThreadIdByClientGeneratedId.has(threadId)) {
+			if (!ai_chat_is_optimistic_thread_id(threadId) || persistedThreadIdByClientGeneratedId.has(threadId)) {
 				continue;
 			}
 
@@ -1191,7 +1222,7 @@ const useThreadList = (props?: useThreadList_Props) => {
 				options.trigger === "regenerate-message"
 					? options.messages.at(-1)?.id
 					: (messagesToAppend.at(-1)?.metadata?.convexParentId ?? null);
-			const isOptimisticThread = is_ai_chat_optimistic_thread_id(options.id);
+			const isOptimisticThread = ai_chat_is_optimistic_thread_id(options.id);
 			const storeState = useStore.getState();
 			const requestSession = storeState.threadById.get(options.id);
 			const requestSelectedModelId = requestSession?.selectedModelId;
@@ -1199,6 +1230,11 @@ const useThreadList = (props?: useThreadList_Props) => {
 			const requestUserMessage = messagesToAppend.at(-1);
 			const messageSelectedModelId = get_message_selected_model_id(requestUserMessage);
 			const messageSelectedModeId = get_message_selected_mode_id(requestUserMessage);
+			const requestBrowserSessionId =
+				get_message_browser_session_id(requestUserMessage) ??
+				(options.trigger === "submit-message"
+					? undefined
+					: get_replayed_browser_session_id(options.messages));
 			const modelForRequest =
 				messageSelectedModelId ??
 				(requestSelectedModelId && ai_chat_is_model_id(requestSelectedModelId)
@@ -1220,6 +1256,7 @@ const useThreadList = (props?: useThreadList_Props) => {
 				trigger: options.trigger,
 				parentId,
 				membershipId,
+				browserSessionId: requestBrowserSessionId,
 			} satisfies api_schemas_Main["/api/chat"]["POST"]["body"];
 
 			return {
@@ -1239,7 +1276,7 @@ const useThreadList = (props?: useThreadList_Props) => {
 	});
 
 	const markThreadRead = useFn((threadId: string) => {
-		if (is_ai_chat_optimistic_thread_id(threadId)) {
+		if (ai_chat_is_optimistic_thread_id(threadId)) {
 			return;
 		}
 
@@ -1273,7 +1310,7 @@ const useThreadList = (props?: useThreadList_Props) => {
 			return;
 		}
 
-		const threadId = is_ai_chat_optimistic_thread_id(options.chatId)
+		const threadId = ai_chat_is_optimistic_thread_id(options.chatId)
 			? null
 			: (options.chatId as app_convex_Id<"ai_chat_threads">);
 
@@ -1364,6 +1401,7 @@ const useThreadList = (props?: useThreadList_Props) => {
 					parentClientGeneratedId: null,
 					selectedModelId: nextSelectedModelId,
 					selectedModeId: nextSelectedModeId,
+					browserSessionId: useStore.getState().browserSessionId ?? undefined,
 				} satisfies NonNullable<ai_chat_UiMessage["metadata"]>,
 			});
 			track_chat_request(optimisticChat, request);
@@ -1393,7 +1431,7 @@ const useThreadList = (props?: useThreadList_Props) => {
 		markThreadReadIfUnread(selectedThreadId);
 		markThreadReadIfUnread(threadId);
 
-		setSelectedThreadId(threadId, { persist: !is_ai_chat_optimistic_thread_id(threadId) });
+		setSelectedThreadId(threadId, { persist: !ai_chat_is_optimistic_thread_id(threadId) });
 	});
 
 	const branchChat = useFn((threadId: string, messageId?: string) => {
@@ -1440,7 +1478,7 @@ const useThreadList = (props?: useThreadList_Props) => {
 	});
 
 	const archiveThread = useFn((threadId: string, isArchived: boolean) => {
-		if (is_ai_chat_optimistic_thread_id(threadId)) {
+		if (ai_chat_is_optimistic_thread_id(threadId)) {
 			if (!isArchived) {
 				return;
 			}
@@ -1486,7 +1524,7 @@ const useThreadList = (props?: useThreadList_Props) => {
 	});
 
 	const removeOptimisticThread = useFn((threadId: string) => {
-		if (!is_ai_chat_optimistic_thread_id(threadId)) {
+		if (!ai_chat_is_optimistic_thread_id(threadId)) {
 			return;
 		}
 		setSelectedThreadId((currentThreadId) => (currentThreadId === threadId ? null : currentThreadId), {
@@ -1513,7 +1551,7 @@ const useThreadList = (props?: useThreadList_Props) => {
 	}, [membershipId]);
 
 	useEffect(() => {
-		if (!is_ai_chat_optimistic_thread_id(selectedThreadId)) {
+		if (!ai_chat_is_optimistic_thread_id(selectedThreadId)) {
 			return;
 		}
 
@@ -1561,7 +1599,7 @@ const useThreadList = (props?: useThreadList_Props) => {
 
 	useEffect(() => {
 		for (const [optimisticThreadId] of threadById.entries()) {
-			if (!is_ai_chat_optimistic_thread_id(optimisticThreadId)) continue;
+			if (!ai_chat_is_optimistic_thread_id(optimisticThreadId)) continue;
 
 			const threadId = persistedThreadIdByClientGeneratedId.get(optimisticThreadId);
 			if (threadId) {
@@ -1644,7 +1682,7 @@ export type AiChatThreadListController = ReturnType<typeof useThreadList>;
 const useThreadRuntimeController = () => {
 	const { membershipId } = AppTenantProvider.useContext();
 	const { selectedThreadId, setSelectedThreadId } = useControllerSelection();
-	const selectedThreadIsOptimistic = is_ai_chat_optimistic_thread_id(selectedThreadId);
+	const selectedThreadIsOptimistic = ai_chat_is_optimistic_thread_id(selectedThreadId);
 
 	const draftSelectedModelId = useStore((state) => state.draftSelectedModelId);
 	const draftSelectedModeId = useStore((state) => state.draftSelectedModeId);
@@ -1813,11 +1851,16 @@ const useThreadRuntimeController = () => {
 					? options.messages.at(-1)?.id
 					: (messagesToAppend.at(-1)?.metadata?.convexParentId ?? null);
 
-			const isOptimisticThread = is_ai_chat_optimistic_thread_id(options.id);
+			const isOptimisticThread = ai_chat_is_optimistic_thread_id(options.id);
 
 			const requestUserMessage = messagesToAppend.at(-1);
 			const messageSelectedModelId = get_message_selected_model_id(requestUserMessage);
 			const messageSelectedModeId = get_message_selected_mode_id(requestUserMessage);
+			const requestBrowserSessionId =
+				get_message_browser_session_id(requestUserMessage) ??
+				(options.trigger === "submit-message"
+					? undefined
+					: get_replayed_browser_session_id(options.messages));
 			const modelForRequest =
 				messageSelectedModelId ?? (ai_chat_is_model_id(selectedModelId) ? selectedModelId : ai_chat_DEFAULT_MODEL_ID);
 			const modeForRequest =
@@ -1834,6 +1877,7 @@ const useThreadRuntimeController = () => {
 				trigger: options.trigger,
 				parentId,
 				membershipId,
+				browserSessionId: requestBrowserSessionId,
 			} satisfies api_schemas_Main["/api/chat"]["POST"]["body"];
 
 			return {
@@ -1853,7 +1897,7 @@ const useThreadRuntimeController = () => {
 	});
 
 	const markThreadRead = useFn((threadId: string) => {
-		if (is_ai_chat_optimistic_thread_id(threadId)) {
+		if (ai_chat_is_optimistic_thread_id(threadId)) {
 			return;
 		}
 
@@ -1887,7 +1931,7 @@ const useThreadRuntimeController = () => {
 			return;
 		}
 
-		const threadId = is_ai_chat_optimistic_thread_id(options.chatId)
+		const threadId = ai_chat_is_optimistic_thread_id(options.chatId)
 			? null
 			: (options.chatId as app_convex_Id<"ai_chat_threads">);
 
@@ -2141,6 +2185,7 @@ const useThreadRuntimeController = () => {
 					parentClientGeneratedId: null,
 					selectedModelId: nextSelectedModelId,
 					selectedModeId: nextSelectedModeId,
+					browserSessionId: useStore.getState().browserSessionId ?? undefined,
 				} satisfies NonNullable<ai_chat_UiMessage["metadata"]>,
 			});
 			track_chat_request(optimisticChat, request);
@@ -2169,7 +2214,7 @@ const useThreadRuntimeController = () => {
 			});
 		}
 
-		setSelectedThreadId(threadId, { persist: !is_ai_chat_optimistic_thread_id(threadId) });
+		setSelectedThreadId(threadId, { persist: !ai_chat_is_optimistic_thread_id(threadId) });
 	});
 
 	const branchChat = useFn((threadId: string, messageId?: string) => {
@@ -2228,7 +2273,7 @@ const useThreadRuntimeController = () => {
 
 	const archiveThread = useFn((threadId: string, isArchived: boolean) => {
 		// Optimistic threads exist only on the client; "archiving" them just removes the optimistic session.
-		if (is_ai_chat_optimistic_thread_id(threadId)) {
+		if (ai_chat_is_optimistic_thread_id(threadId)) {
 			if (!isArchived) {
 				return;
 			}
@@ -2274,7 +2319,7 @@ const useThreadRuntimeController = () => {
 	});
 
 	const removeOptimisticThread = useFn((threadId: string) => {
-		if (!is_ai_chat_optimistic_thread_id(threadId)) {
+		if (!ai_chat_is_optimistic_thread_id(threadId)) {
 			return;
 		}
 		setSelectedThreadId((currentThreadId) => (currentThreadId === threadId ? null : currentThreadId), {
@@ -2431,9 +2476,18 @@ const useThreadRuntimeController = () => {
 				(targetMessageIsFailedOptimisticUserMessage ? get_message_selected_mode_id(targetMessage) : undefined) ??
 				session.selectedModeId ??
 				selectedModeId;
+			// Queued messages and retries keep their frozen binding, including no browser.
+			// Only a new turn reads the current file selection.
+			const threadBrowserSessionId = options?.queuedMessage
+				? (options.queuedMessage.browserSessionId ?? undefined)
+				: (get_message_browser_session_id(targetMessage) ??
+					get_message_browser_session_id(failedSendUserMessage) ??
+					(targetMessage || shouldReplaceFailedSend
+						? undefined
+						: (useStore.getState().browserSessionId ?? undefined)));
 
 			if (
-				is_ai_chat_optimistic_thread_id(threadId) &&
+				ai_chat_is_optimistic_thread_id(threadId) &&
 				latestMessage &&
 				!targetMessageIsFailedOptimisticUserMessage &&
 				!shouldReplaceFailedSend
@@ -2547,6 +2601,7 @@ const useThreadRuntimeController = () => {
 					parentClientGeneratedId: parentMessageIds.parentClientGeneratedId,
 					selectedModelId: threadSelectedModelId,
 					selectedModeId: threadSelectedModeId,
+					browserSessionId: threadBrowserSessionId,
 				} satisfies NonNullable<ai_chat_UiMessage["metadata"]>,
 			});
 			track_chat_request(chat, request, options?.queuedMessage?.id ?? null);
@@ -2613,6 +2668,7 @@ const useThreadRuntimeController = () => {
 					attachments: options?.attachments ?? [],
 					selectedModelId: session.selectedModelId ?? selectedModelId,
 					selectedModeId: session.selectedModeId ?? selectedModeId,
+					browserSessionId: useStore.getState().browserSessionId,
 				});
 				if (didEnqueue) {
 					setComposerValue(chat, "");

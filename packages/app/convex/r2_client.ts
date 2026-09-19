@@ -375,6 +375,48 @@ export async function r2_db_finalize_generated_image_asset(
 	});
 }
 
+/**
+ * Publish one private browser capture: give the asset its final key and drop its cleanup
+ * deadline. Called by the same flow that stored the owning result doc, so an asset whose
+ * result never arrives keeps the deadline and is deleted a day later.
+ *
+ * The internal result-storage mutation passes asset ids here. Ignore invalid ids, assets
+ * from another workspace, and assets whose kind is not a browser result.
+ */
+export async function r2_db_finalize_browser_result_asset(
+	ctx: MutationCtx,
+	args: {
+		organizationId: string;
+		workspaceId: string;
+		assetId: string;
+	},
+) {
+	const assetId = ctx.db.normalizeId("files_r2_assets", args.assetId);
+	if (!assetId) {
+		return;
+	}
+
+	const asset = await ctx.db.get("files_r2_assets", assetId);
+	if (
+		!asset ||
+		asset.kind !== "browser_result" ||
+		asset.organizationId !== args.organizationId ||
+		asset.workspaceId !== args.workspaceId
+	) {
+		return;
+	}
+
+	await ctx.db.patch("files_r2_assets", assetId, {
+		r2Key: r2_create_asset_key({
+			organizationId: asset.organizationId,
+			workspaceId: asset.workspaceId,
+			assetId,
+		}),
+		unfinalizedExpiresAt: undefined,
+		updatedAt: Date.now(),
+	});
+}
+
 // #region R2 deletion jobs
 
 // Keep one cleanup job for each R2 key that must be deleted. The R2 component retries only a fixed

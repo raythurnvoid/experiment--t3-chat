@@ -1,7 +1,9 @@
 import "./ai-chat-message.css";
 
 import {
+	createContext,
 	memo,
+	use,
 	useDeferredValue,
 	useEffect,
 	useId,
@@ -57,7 +59,10 @@ import { path_name_of } from "@/lib/paths.ts";
 import type { AppClassName } from "@/lib/dom-utils.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { files_media_get_signed_chat_image_url } from "@/lib/files-media-src.ts";
+import { global_custom_event_dispatch } from "@/lib/global-event.tsx";
 import { MyButton, MyButtonIcon } from "../my-button.tsx";
+import { app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
+import { useQuery } from "convex/react";
 
 // Reuse one stable empty array so the store selector does not trigger avoidable re-renders.
 const EMPTY_BRANCH_SIBLING_IDS: readonly string[] = [];
@@ -601,6 +606,142 @@ const AiChatMessagePartToolImageGeneration = memo(function AiChatMessagePartTool
 });
 // #endregion tool image_generation
 
+// #region tool browser
+type AiChatMessagePartToolBrowser_ClassNames =
+	| "AiChatMessagePartToolBrowser"
+	| "AiChatMessagePartToolBrowser-status"
+	| "AiChatMessagePartToolBrowser-link";
+
+/**
+ * Which chat surface renders the message. Browser parts link to the shared page: the full
+ * chat page navigates away to Files, while the Files sidebar opens the adjacent panel.
+ */
+export type AiChatBrowserSurface = "files" | "chat";
+
+const AiChatBrowserSurfaceContext = createContext<AiChatBrowserSurface>("chat");
+
+type AiChatBrowserSurfaceProvider_Props = {
+	value: AiChatBrowserSurface;
+	children: ReactNode;
+};
+
+const AiChatBrowserSurfaceProvider = Object.assign(
+	memo(function AiChatBrowserSurfaceProvider(props: AiChatBrowserSurfaceProvider_Props) {
+		const { value, children } = props;
+
+		return <AiChatBrowserSurfaceContext.Provider value={value}>{children}</AiChatBrowserSurfaceContext.Provider>;
+	}),
+	{
+		useContext: function useContext() {
+			return use(AiChatBrowserSurfaceContext);
+		},
+	},
+);
+
+export { AiChatBrowserSurfaceProvider };
+
+type AiChatMessagePartToolBrowser_Props = {
+	className?: string | undefined;
+	toolName: "browser_run" | "browser_reload" | "browser_close";
+	result: unknown;
+	toolState: ToolUIPart["state"];
+	isChatRunning: boolean;
+};
+
+function ai_chat_message_part_tool_browser_title(toolName: string, title: unknown) {
+	if (typeof title === "string" && title.length > 0) {
+		return title;
+	}
+	return toolName === "browser_run" ? "Browser run" : toolName === "browser_reload" ? "Browser reload" : "Browser close";
+}
+
+function ai_chat_message_part_tool_browser_output(result: unknown) {
+	if (!result || typeof result !== "object") {
+		return { text: null, resultId: null };
+	}
+	const record = result as Record<string, unknown>;
+	const text = typeof record.output === "string" ? record.output : null;
+	const metadata = record.metadata;
+	const resultId =
+		metadata && typeof metadata === "object" && typeof (metadata as Record<string, unknown>).resultId === "string"
+			? ((metadata as Record<string, unknown>).resultId as string)
+			: null;
+	return { text, resultId };
+}
+
+/**
+ * Text-only browser output. Code input and raw observations never render here: the stream
+ * transform strips them before delivery, and this component reads only the safe status text
+ * plus an opaque result id. The link resolves its file through an authorized query, so a
+ * denied or expired result shows status text with no link.
+ */
+const AiChatMessagePartToolBrowser = memo(function AiChatMessagePartToolBrowser(
+	props: AiChatMessagePartToolBrowser_Props,
+) {
+	const { className, toolName, result, toolState, isChatRunning } = props;
+	const { membershipId, organizationName, workspaceName } = AppTenantProvider.useContext();
+	const browserSurface = AiChatBrowserSurfaceProvider.useContext();
+
+	const title = ai_chat_message_part_tool_browser_title(
+		toolName,
+		(result as { title?: unknown } | null)?.title,
+	);
+	const { text, resultId } = ai_chat_message_part_tool_browser_output(result);
+	const file = useQuery(
+		app_convex_api.files_browser.browser_result_file,
+		resultId ? { membershipId, resultId: resultId as app_convex_Id<"ai_chat_browser_results"> } : "skip",
+	);
+
+	const status =
+		toolState === "input-streaming" || toolState === "input-available"
+			? "Running…"
+			: (text ?? "Browser finished.");
+
+	return (
+		<AiChatMessagePartDisclosure
+			className={cn("AiChatMessagePartToolBrowser" satisfies AiChatMessagePartToolBrowser_ClassNames, className)}
+		>
+			<AiChatMessagePartDisclosureButton title={title} state={toolState} isChatRunning={isChatRunning} />
+			<AiChatMessagePartToolBody>
+				<div className={"AiChatMessagePartToolBrowser-status" satisfies AiChatMessagePartToolBrowser_ClassNames}>
+					{status}
+				</div>
+				{file && file.expired && (
+					<div className={"AiChatMessagePartToolBrowser-status" satisfies AiChatMessagePartToolBrowser_ClassNames}>
+						Result expired. Rerun from Files for fresh output.
+					</div>
+				)}
+				{file && (
+					<MyLink
+						className={"AiChatMessagePartToolBrowser-link" satisfies AiChatMessagePartToolBrowser_ClassNames}
+						to="/w/$organizationName/$workspaceName/files"
+						params={{ organizationName, workspaceName }}
+						search={file.targetKind === "private" ? { pendingNodeId: file.nodeId } : { nodeId: file.nodeId }}
+						variant="button-ghost-accent"
+						onClick={(event) => {
+							if (browserSurface !== "files" || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) {
+								return;
+							}
+							event.preventDefault();
+							global_custom_event_dispatch("files::open_browser", {
+								membershipId,
+								nodeId: file.nodeId,
+								targetKind: file.targetKind,
+							});
+						}}
+					>
+						{browserSurface === "files" ? "Open browser" : "Open in Files"}
+						<MyButtonIcon>
+							<ArrowUpRight />
+						</MyButtonIcon>
+					</MyLink>
+				)}
+			</AiChatMessagePartToolBody>
+		</AiChatMessagePartDisclosure>
+	);
+});
+// #endregion tool browser
+
 // #region tool unknown
 type AiChatMessagePartToolUnknown_ClassNames = "AiChatMessagePartToolUnknown" | "AiChatMessagePartToolUnknown-meta";
 
@@ -959,6 +1100,18 @@ const AiChatMessagePartInner = memo(function AiChatMessagePartInner(props: AiCha
 						toolState={part.state}
 						isChatRunning={isChatRunning}
 						errorText={part.errorText}
+					/>
+				);
+			}
+			case "tool-browser_run":
+			case "tool-browser_reload":
+			case "tool-browser_close": {
+				return (
+					<AiChatMessagePartToolBrowser
+						toolName={part.type.slice("tool-".length) as "browser_run" | "browser_reload" | "browser_close"}
+						result={part.output}
+						toolState={part.state}
+						isChatRunning={isChatRunning}
 					/>
 				);
 			}

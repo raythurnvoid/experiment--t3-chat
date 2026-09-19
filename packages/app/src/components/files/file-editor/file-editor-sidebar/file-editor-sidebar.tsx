@@ -33,10 +33,18 @@ export type FileEditorSidebar_Props = {
 	node: Omit<app_convex_Doc<"files_nodes">, "writePolicy"> | null;
 	isPrivate?: boolean;
 	commentsContainerRef: Ref<HTMLDivElement>;
+	/**
+	 * Saved or pending node id behind the selection. The agent binds its browser to this file.
+	 */
+	browserNodeId: string | null;
+	/**
+	 * Kind behind `browserNodeId`, so a saved/private id clash cannot bind the wrong file.
+	 */
+	browserNodeKind: "saved" | "private" | null;
 };
 
 export const FileEditorSidebar = memo(function FileEditorSidebar(props: FileEditorSidebar_Props) {
-	const { node, isPrivate = false, commentsContainerRef } = props;
+	const { node, isPrivate = false, commentsContainerRef, browserNodeId, browserNodeKind } = props;
 
 	const [storedFilesLastTab, setStoredFilesLastTab] = useAppLocalStorageStateValue("app_state::files_last_tab");
 
@@ -119,7 +127,7 @@ export const FileEditorSidebar = memo(function FileEditorSidebar(props: FileEdit
 						className={cn("FileEditorSidebar-panel" satisfies FileEditorSidebar_ClassNames)}
 						tabId={FILE_EDITOR_SIDEBAR_TAB_ID_AGENT}
 					>
-						<FileEditorSidebarAgent rootTabId={FILE_EDITOR_SIDEBAR_TAB_ID_AGENT} />
+						<FileEditorSidebarAgent rootTabId={FILE_EDITOR_SIDEBAR_TAB_ID_AGENT} browserNodeId={browserNodeId} browserNodeKind={browserNodeKind} />
 					</MyTabsPanel>
 					<MyTabsPanel
 						className={cn("FileEditorSidebar-panel" satisfies FileEditorSidebar_ClassNames)}

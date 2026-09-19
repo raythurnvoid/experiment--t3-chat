@@ -13,6 +13,11 @@ import { XCustomEvent } from "./utils.ts";
 // #region custom events
 export class global_custom_event_Event extends XCustomEvent<{
 	"files::review_all_pending": { membershipId: app_convex_Id<"organizations_workspaces_users"> };
+	"files::open_browser": {
+		membershipId: app_convex_Id<"organizations_workspaces_users">;
+		nodeId: string;
+		targetKind: "saved" | "private";
+	};
 }> {}
 
 declare global {

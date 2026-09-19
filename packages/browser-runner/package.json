@@ -1,0 +1,18 @@
+{
+	"name": "bonobo-senate-browser-runner",
+	"private": true,
+	"version": "0.0.0",
+	"license": "Apache-2.0",
+	"type": "module",
+	"scripts": {
+		"build:child": "pnpm --dir ../app exec esbuild ../browser-runner/src/child-entry.ts --bundle --minify --keep-names --format=esm --target=es2022 --platform=node --external:cloudflare:workers --outfile=../browser-runner/src/child-bundle.tmp.js && vp env exec node scripts/wrap-child.mjs",
+		"deploy": "pnpx wrangler deploy",
+		"dev": "pnpx wrangler dev --remote",
+		"tail": "pnpx wrangler tail",
+		"typecheck": "pnpm --dir ../app exec tsc --project ../browser-runner/tsconfig.json --noEmit",
+		"test": "pnpm --dir ../app exec vitest run --config ../browser-runner/vitest.config.mjs"
+	},
+	"dependencies": {
+		"@cloudflare/playwright": "1.3.6"
+	}
+}

@@ -13,6 +13,8 @@ Declare each app custom event in the map owned by `global_custom_event_Event` in
 
 `files::review_all_pending` carries `membershipId`. The review job dialog sends it when opening remaining changes. The matching workspace's pending sidebar resets its chat-source filter to All changes. A newly mounted sidebar already starts at All changes.
 
+`files::open_browser` carries the membership and file target. A browser result link sends it to the Files view, which opens the browser panel even when that same file is already selected. It keeps the mounted editor and its draft.
+
 This is a template, not a registered current event:
 
 ```ts

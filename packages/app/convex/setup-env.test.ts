@@ -120,3 +120,15 @@ if (!process.env.R2_ACCESS_KEY_ID) {
 if (!process.env.R2_SECRET_ACCESS_KEY) {
 	process.env.R2_SECRET_ACCESS_KEY = "R2_SECRET_ACCESS_KEY_TEST";
 }
+
+if (!process.env.BROWSER_RUNNER_URL) {
+	process.env.BROWSER_RUNNER_URL = "https://browser-runner.test";
+}
+
+if (!process.env.BROWSER_RUNNER_SECRET) {
+	process.env.BROWSER_RUNNER_SECRET = "BROWSER_RUNNER_SECRET_TEST";
+}
+
+if (!process.env.AI_CHAT_BROWSER_ENABLED) {
+	process.env.AI_CHAT_BROWSER_ENABLED = "true";
+}

@@ -15,6 +15,7 @@ import {
 	type FileEditor_Ref,
 } from "@/components/files/file-editor/file-editor.tsx";
 import { FileHtmlPreview, type FileHtmlPreview_Source } from "./file-html-preview.tsx";
+import { FilesBrowser } from "./files-browser.tsx";
 import {
 	FileNodeViewFolderCreateNodeModal,
 	type FileNodeViewFolderCreateNodeModal_Ref,
@@ -43,6 +44,7 @@ import {
 	MyMenuTrigger,
 } from "@/components/my-menu.tsx";
 import { MyPanel, MyPanelGroup, MyPanelResizeHandle } from "@/components/my-resizable-panel-group.tsx";
+import type { ImperativePanelHandle } from "react-resizable-panels";
 import {
 	MySearchSelect,
 	MySearchSelectItem,
@@ -91,6 +93,7 @@ import {
 	type files_YjsRootKind,
 } from "@/lib/files.ts";
 import { useAppLocalStorageStateValue } from "@/lib/storage.ts";
+import { useGlobalCustomEvent } from "@/lib/global-event.tsx";
 import { url_path_file_by_node_id } from "@/lib/urls.ts";
 import { cn, sx } from "@/lib/utils.ts";
 import { combine } from "@atlaskit/pragmatic-drag-and-drop/combine";
@@ -113,6 +116,7 @@ import {
 	Link2,
 	Lock,
 	LockKeyhole,
+	MonitorPlay,
 	Users,
 } from "lucide-react";
 import React, { memo, useEffect, useId, useMemo, useRef, useState } from "react";
@@ -843,15 +847,23 @@ function get_editor_view_options(rootKind: files_YjsRootKind) {
 // #endregion view select
 
 // #region file views
-type FileNodeViewFile_ClassNames = "FileNodeViewFile" | "FileNodeViewFile-rich-text" | "FileNodeViewFile-panel";
+type FileNodeViewFile_ClassNames =
+	| "FileNodeViewFile"
+	| "FileNodeViewFile-rich-text"
+	| "FileNodeViewFile-panel"
+	| "FileNodeViewFile-browser-toggle"
+	| "FileNodeViewFile-split";
 
 function file_view_id(match: { plugin: { pluginName: string }; fileView: { id: string } }) {
 	return `plugin_${match.plugin.pluginName}_${match.fileView.id}`;
 }
 
+type FileNodeViewBrowserOpenRequest = { nodeId: string; targetKind: "saved" | "private" };
+
 type FileNodeViewFile_Props = {
 	node: FileNodeViewResolvedNode;
 	selectedFileView: string;
+	browserOpenRequest: FileNodeViewBrowserOpenRequest | null;
 	fileNodesList: FileNodeViewContent_Props["fileNodesList"];
 	protectedDescendantIds: FileNodeViewHeader_Props["protectedDescendantIds"];
 	pendingUpdateId?: app_convex_Id<"files_pending_updates">;
@@ -877,6 +889,7 @@ const FileNodeViewFile = memo(function FileNodeViewFile(props: FileNodeViewFile_
 	const {
 		node,
 		selectedFileView,
+		browserOpenRequest,
 		fileNodesList,
 		protectedDescendantIds,
 		pendingUpdateId,
@@ -949,6 +962,70 @@ const FileNodeViewFile = memo(function FileNodeViewFile(props: FileNodeViewFile_
 
 	const getPreviewSnapshot = useFn(() => editorRef.current?.getPreviewSnapshot() ?? null);
 
+	const [browserOpen, setBrowserOpen] = useState(false);
+	const [browserFocus, setBrowserFocus] = useState(false);
+	const editorSplitPanelRef = useRef<ImperativePanelHandle | null>(null);
+	const browserSession = useQuery(app_convex_api.files_browser.current_browser_session, { membershipId });
+	const browserLive =
+		browserSession && browserSession.nodeId === node._id && browserSession.targetKind === "saved";
+
+	useEffect(() => {
+		// A live session for this file opens its panel: reloads and popout starts reattach.
+		if (browserLive) {
+			setBrowserOpen(true);
+		}
+	}, [browserLive]);
+
+	useEffect(() => {
+		if (
+			hasHtmlPreview &&
+			browserOpenRequest?.nodeId === node._id &&
+			browserOpenRequest.targetKind === "saved"
+		) {
+			setBrowserOpen(true);
+		}
+	}, [browserOpenRequest, hasHtmlPreview, node._id]);
+
+	const getBrowserDraftText = useFn(() => {
+		const draft = editorRef.current?.getPreviewSnapshot() ?? null;
+		if (
+			!draft ||
+			draft.sourceKind !== "editor_draft" ||
+			!draft.isDirty ||
+			draft.membershipId !== membershipId ||
+			draft.target.kind !== "saved" ||
+			draft.target.id !== node._id ||
+			draft.rootKind !== node.textKind ||
+			draft.yjsLastSequenceId !== yjsLastSequenceId
+		) {
+			return null;
+		}
+		return draft.text;
+	});
+
+	const getBrowserDraftRevision = useFn(() => previewRevision + 1);
+
+	const handleBrowserToggle = useFn(() => {
+		setBrowserOpen((open) => !open);
+	});
+
+	const handleBrowserHide = useFn(() => {
+		setBrowserOpen(false);
+		setBrowserFocus(false);
+	});
+
+	const handleBrowserFocusToggle = useFn(() => {
+		// Collapse keeps the editor mounted with its drafts; expand restores the split sizes.
+		if (browserFocus) {
+			editorSplitPanelRef.current?.expand();
+			setBrowserFocus(false);
+			primaryPanelRef.current?.focus();
+		} else {
+			editorSplitPanelRef.current?.collapse();
+			setBrowserFocus(true);
+		}
+	});
+
 	useEffect(() => {
 		if (selectedViewExists) {
 			return;
@@ -959,6 +1036,33 @@ const FileNodeViewFile = memo(function FileNodeViewFile(props: FileNodeViewFile_
 			primaryPanelRef.current?.focus();
 		}
 	}, [isEditable, onFileViewChange, selectedViewExists]);
+
+	const editorContent = isEditable ? (
+		<FileNodeViewFileEditor
+			ref={editorRef}
+			isActive={isEditorActive}
+			nodeId={node._id}
+			writeBlockedReason={node.writeBlockedReason}
+			pendingUpdateId={pendingUpdateId}
+			rootKind={node.textKind}
+			monacoLanguageId={files_monaco_language_id_of_content_type(node.contentType)}
+			nonCollaborative={node.collaborationEnabled === false}
+			committedAssetId={committedAssetId}
+			pendingUpdatesLoaded={pendingUpdatesLoaded}
+			serverSequence={serverSequence}
+			yjsLastSequenceId={yjsLastSequenceId}
+			topSafeArea={topSafeArea}
+			editorMode={editorMode}
+			presenceStore={presenceStore}
+			commentsPortalHost={commentsPortalHost}
+			toolbarPortalHost={toolbarPortalHost}
+			onEditorModeChange={onEditorModeChange}
+			onAutomaticEditorModeChange={onAutomaticEditorModeChange}
+			onPreviewSnapshotChange={hasHtmlPreview ? handlePreviewSnapshotChange : undefined}
+		/>
+	) : (
+		<FileNodeViewStoredFile node={node} asset={asset} />
+	);
 
 	return (
 		<>
@@ -988,6 +1092,16 @@ const FileNodeViewFile = memo(function FileNodeViewFile(props: FileNodeViewFile_
 						("FileNodeViewFile-rich-text" satisfies FileNodeViewFile_ClassNames),
 				)}
 			>
+				{hasHtmlPreview && isEditorActive && (
+					<div className={"FileNodeViewFile-browser-toggle" satisfies FileNodeViewFile_ClassNames}>
+						<MyButton variant="outline" aria-expanded={browserOpen} onClick={handleBrowserToggle}>
+							<MyButtonIcon>
+								<MonitorPlay aria-hidden />
+							</MyButtonIcon>
+							{browserOpen ? "Hide browser" : browserLive ? "Show browser" : "Shared browser"}
+						</MyButton>
+					</div>
+				)}
 				{/* Keep the editor and its local draft mounted while another view is active. */}
 				<div
 					ref={primaryPanelRef}
@@ -998,31 +1112,51 @@ const FileNodeViewFile = memo(function FileNodeViewFile(props: FileNodeViewFile_
 					hidden={!isEditorActive}
 					inert={!isEditorActive}
 				>
-					{isEditable ? (
-						<FileNodeViewFileEditor
-							ref={editorRef}
-							isActive={isEditorActive}
-							nodeId={node._id}
-							writeBlockedReason={node.writeBlockedReason}
-							pendingUpdateId={pendingUpdateId}
-							rootKind={node.textKind}
-							monacoLanguageId={files_monaco_language_id_of_content_type(node.contentType)}
-							nonCollaborative={node.collaborationEnabled === false}
-							committedAssetId={committedAssetId}
-							pendingUpdatesLoaded={pendingUpdatesLoaded}
-							serverSequence={serverSequence}
-							yjsLastSequenceId={yjsLastSequenceId}
-							topSafeArea={topSafeArea}
-							editorMode={editorMode}
-							presenceStore={presenceStore}
-							commentsPortalHost={commentsPortalHost}
-							toolbarPortalHost={toolbarPortalHost}
-							onEditorModeChange={onEditorModeChange}
-							onAutomaticEditorModeChange={onAutomaticEditorModeChange}
-							onPreviewSnapshotChange={hasHtmlPreview ? handlePreviewSnapshotChange : undefined}
-						/>
+					{hasHtmlPreview ? (
+						<MyPanelGroup
+							direction="horizontal"
+							className={"FileNodeViewFile-split" satisfies FileNodeViewFile_ClassNames}
+						>
+							<MyPanel
+								id="file-node-view-editor"
+								order={1}
+								ref={editorSplitPanelRef}
+								defaultSize={browserOpen ? 55 : 100}
+								minSize={30}
+								collapsible
+							>
+								{editorContent}
+							</MyPanel>
+							<MyPanelResizeHandle
+								isOpen={browserOpen}
+								closeBehavior="unmount"
+								aria-label="Resize editor and browser"
+							/>
+							<MyPanel
+								id="file-node-view-browser"
+								order={2}
+								defaultSize={45}
+								minSize={30}
+								isOpen={browserOpen}
+								closeBehavior="unmount"
+							>
+								<FilesBrowser
+									targetKind="saved"
+									nodeId={node._id}
+									path={node.path}
+									host="docked"
+									editorRevision={previewRevision}
+									serverSequence={serverSequence ?? null}
+									getDraftText={getBrowserDraftText}
+									getDraftRevision={getBrowserDraftRevision}
+									focusActive={browserFocus}
+									onToggleFocus={handleBrowserFocusToggle}
+									onHide={handleBrowserHide}
+								/>
+							</MyPanel>
+						</MyPanelGroup>
 					) : (
-						<FileNodeViewStoredFile node={node} asset={asset} />
+						editorContent
 					)}
 				</div>
 				{isEditable && activeFileView === "details" && (
@@ -1287,6 +1421,7 @@ const FileNodeViewPrivateStoredFile = memo(function FileNodeViewPrivateStoredFil
 const FileNodeViewPrivateContent = memo(function FileNodeViewPrivateContent(props: {
 	view: FileNodeViewPrivateView;
 	selectedFileView: string;
+	browserOpenRequest: FileNodeViewBrowserOpenRequest | null;
 	editorMode: FileEditor_Mode;
 	filesSidebarOpen: boolean;
 	fileNodesList: FileNodeViewHeader_Props["fileNodesList"];
@@ -1305,6 +1440,7 @@ const FileNodeViewPrivateContent = memo(function FileNodeViewPrivateContent(prop
 	const {
 		view,
 		selectedFileView,
+		browserOpenRequest,
 		editorMode,
 		filesSidebarOpen,
 		fileNodesList,
@@ -1339,6 +1475,62 @@ const FileNodeViewPrivateContent = memo(function FileNodeViewPrivateContent(prop
 	const handlePreviewSnapshotChange = useFn(() => setPreviewRevision((revision) => revision + 1));
 	const getPreviewSnapshot = useFn(() => editorRef.current?.getPreviewSnapshot() ?? null);
 
+	const { membershipId } = AppTenantProvider.useContext();
+	const [browserOpen, setBrowserOpen] = useState(false);
+	const browserSession = useQuery(app_convex_api.files_browser.current_browser_session, { membershipId });
+	const browserLive =
+		browserSession && browserSession.nodeId === entry.node._id && browserSession.targetKind === "private";
+
+	useEffect(() => {
+		// A live session for this file opens its panel: reloads and popout starts reattach.
+		if (browserLive) {
+			setBrowserOpen(true);
+		}
+	}, [browserLive]);
+
+	useEffect(() => {
+		if (
+			hasHtmlPreview &&
+			browserOpenRequest?.nodeId === entry.node._id &&
+			browserOpenRequest.targetKind === "private"
+		) {
+			setBrowserOpen(true);
+		}
+	}, [browserOpenRequest, hasHtmlPreview, entry.node._id]);
+
+	const handleBrowserToggle = useFn(() => {
+		setBrowserOpen((open) => !open);
+	});
+
+	const handleBrowserHide = useFn(() => {
+		setBrowserOpen(false);
+	});
+
+	const editorContent = textIntent ? (
+		<FileEditor
+			ref={editorRef}
+			isActive={!isPreview}
+			target={{ kind: "private", id: entry.node._id }}
+			privateCanEdit={view.canEdit}
+			writeBlockedReason={null}
+			pendingUpdateId={entry.pendingUpdate._id}
+			rootKind={textIntent.textKind}
+			monacoLanguageId={files_monaco_language_id_of_content_type(textIntent.contentType)}
+			nonCollaborative
+			committedAssetId={null}
+			pendingUpdatesLoaded
+			editorMode={editorMode}
+			topSafeArea={topSafeArea}
+			presenceStore={presenceStore}
+			commentsPortalHost={null}
+			toolbarPortalHost={toolbarPortalHost}
+			onEditorModeChange={onEditorModeChange}
+			onAutomaticEditorModeChange={onAutomaticEditorModeChange}
+			onPreviewSnapshotChange={handlePreviewSnapshotChange}
+			onTargetChange={onTargetChange}
+		/>
+	) : null;
+
 	return (
 		<>
 			<FileNodeViewHeaderPortal
@@ -1369,6 +1561,16 @@ const FileNodeViewPrivateContent = memo(function FileNodeViewPrivateContent(prop
 								("FileNodeViewFile-rich-text" satisfies FileNodeViewFile_ClassNames),
 						)}
 					>
+						{hasHtmlPreview && !isPreview && (
+							<div className={"FileNodeViewFile-browser-toggle" satisfies FileNodeViewFile_ClassNames}>
+								<MyButton variant="outline" aria-expanded={browserOpen} onClick={handleBrowserToggle}>
+									<MyButtonIcon>
+										<MonitorPlay aria-hidden />
+									</MyButtonIcon>
+									{browserOpen ? "Hide browser" : browserLive ? "Show browser" : "Shared browser"}
+								</MyButton>
+							</div>
+						)}
 						{/* Keep local draft edits while Preview is open. */}
 						<div
 							className={"FileNodeViewFile-panel" satisfies FileNodeViewFile_ClassNames}
@@ -1377,28 +1579,50 @@ const FileNodeViewPrivateContent = memo(function FileNodeViewPrivateContent(prop
 							hidden={isPreview}
 							inert={isPreview}
 						>
-							<FileEditor
-								ref={editorRef}
-								isActive={!isPreview}
-								target={{ kind: "private", id: entry.node._id }}
-								privateCanEdit={view.canEdit}
-								writeBlockedReason={null}
-								pendingUpdateId={entry.pendingUpdate._id}
-								rootKind={textIntent.textKind}
-								monacoLanguageId={files_monaco_language_id_of_content_type(textIntent.contentType)}
-								nonCollaborative
-								committedAssetId={null}
-								pendingUpdatesLoaded
-								editorMode={editorMode}
-								topSafeArea={topSafeArea}
-								presenceStore={presenceStore}
-								commentsPortalHost={null}
-								toolbarPortalHost={toolbarPortalHost}
-								onEditorModeChange={onEditorModeChange}
-								onAutomaticEditorModeChange={onAutomaticEditorModeChange}
-								onPreviewSnapshotChange={handlePreviewSnapshotChange}
-								onTargetChange={onTargetChange}
-							/>
+							{hasHtmlPreview ? (
+								<MyPanelGroup
+									direction="horizontal"
+									className={"FileNodeViewFile-split" satisfies FileNodeViewFile_ClassNames}
+								>
+									<MyPanel
+										id="file-node-view-editor"
+										order={1}
+										defaultSize={browserOpen ? 55 : 100}
+										minSize={30}
+									>
+										{editorContent}
+									</MyPanel>
+									<MyPanelResizeHandle
+										isOpen={browserOpen}
+										closeBehavior="unmount"
+										aria-label="Resize editor and browser"
+									/>
+									<MyPanel
+										id="file-node-view-browser"
+										order={2}
+										defaultSize={45}
+										minSize={30}
+										isOpen={browserOpen}
+										closeBehavior="unmount"
+									>
+										<FilesBrowser
+											targetKind="private"
+											nodeId={entry.node._id}
+											path={entry.path}
+											host="docked"
+											editorRevision={previewRevision}
+											serverSequence={null}
+											getDraftText={null}
+											getDraftRevision={null}
+											focusActive={false}
+											onToggleFocus={null}
+											onHide={handleBrowserHide}
+										/>
+									</MyPanel>
+								</MyPanelGroup>
+							) : (
+								editorContent
+							)}
 						</div>
 						{isPreview && (
 							<div className={"FileNodeViewFile-panel" satisfies FileNodeViewFile_ClassNames}>
@@ -3240,6 +3464,7 @@ const FileNodeViewFolderReadmeEditor = memo(function FileNodeViewFolderReadmeEdi
 // #region content
 type FileNodeViewContent_Props = {
 	selectedFileView: string;
+	browserOpenRequest: FileNodeViewBrowserOpenRequest | null;
 	selectedNodeId: string | null | undefined;
 	node: FileNodeViewResolvedNode | null | undefined;
 	fileNodesList: files_VisibleTreeNode[] | undefined;
@@ -3266,6 +3491,7 @@ type FileNodeViewContent_Props = {
 const FileNodeViewContent = memo(function FileNodeViewContent(props: FileNodeViewContent_Props) {
 	const {
 		selectedFileView,
+		browserOpenRequest,
 		selectedNodeId,
 		node,
 		fileNodesList,
@@ -3364,6 +3590,7 @@ const FileNodeViewContent = memo(function FileNodeViewContent(props: FileNodeVie
 			key={node._id}
 			node={node}
 			selectedFileView={selectedFileView}
+			browserOpenRequest={browserOpenRequest}
 			fileNodesList={fileNodesList}
 			protectedDescendantIds={protectedDescendantIds}
 			pendingUpdateId={pendingUpdateId}
@@ -3477,6 +3704,41 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 	const searchPrivateNodeId = searchParams.pendingNodeId;
 	const searchNodeId = searchPrivateNodeId ? undefined : searchParams.nodeId;
 	const selectionKey = searchPrivateNodeId ? `private:${searchPrivateNodeId}` : `saved:${searchNodeId}`;
+	const [browserOpenRequest, setBrowserOpenRequest] = useState<FileNodeViewBrowserOpenRequest | null>(null);
+	const browserSession = useQuery(app_convex_api.files_browser.current_browser_session, { membershipId });
+	const endingBrowserSessionRef = useRef<string | null>(null);
+
+	// Drop an old open request when the user leaves its file.
+	useEffect(() => {
+		setBrowserOpenRequest((request) =>
+			request && `${request.targetKind}:${request.nodeId}` !== selectionKey ? null : request,
+		);
+	}, [selectionKey]);
+
+	// This owner stays mounted when the next selection has no browser panel, including folders.
+	// Wait for last-open restoration before treating an empty URL as a new selection.
+	useEffect(() => {
+		if (
+			(!searchNodeId && !searchPrivateNodeId) ||
+			!browserSession ||
+			`${browserSession.targetKind}:${browserSession.nodeId}` === selectionKey ||
+			endingBrowserSessionRef.current === browserSession.sessionId
+		) {
+			return;
+		}
+		endingBrowserSessionRef.current = browserSession.sessionId;
+		app_convex
+			.action(app_convex_api.files_browser.end_browser, { membershipId, sessionId: browserSession.sessionId })
+			.then((result) => {
+				if (result._nay) {
+					console.error("[FileNodeView] Failed to end previous browser session", { error: result._nay });
+				}
+			})
+			.catch((error: unknown) => {
+				console.error("[FileNodeView] Unexpected browser end error", { error });
+			});
+	}, [membershipId, browserSession, searchNodeId, searchPrivateNodeId, selectionKey]);
+
 	const isRootNodeSelected = searchNodeId === files_ROOT_ID;
 	const [fileViewSelection, setFileViewSelection] = useState({ membershipId, selectionKey, view: "default" });
 	const selectedFileView =
@@ -3486,6 +3748,22 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 	const isEditorActive = selectedFileView === "default";
 	const handleFileViewChange = useFn((view: string) => {
 		setFileViewSelection({ membershipId, selectionKey, view });
+	});
+
+	useGlobalCustomEvent("files::open_browser", (event) => {
+		if (event.detail.membershipId !== membershipId) return;
+		const requestedSelectionKey = `${event.detail.targetKind}:${event.detail.nodeId}`;
+		// The browser shares the editor panel, which other file views hide.
+		setFileViewSelection({ membershipId, selectionKey: requestedSelectionKey, view: "default" });
+		setBrowserOpenRequest(event.detail);
+		if (requestedSelectionKey !== selectionKey) {
+			onNavigateSearch({
+				...(event.detail.targetKind === "private"
+					? { pendingNodeId: event.detail.nodeId }
+					: { nodeId: event.detail.nodeId }),
+				q: searchParams.q,
+			});
+		}
 	});
 
 	const fileNodesList = FilesTreeProvider.useContext();
@@ -3940,6 +4218,7 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 					key={privateSourceKey}
 					view={{ ...privateTargetView, entry: privateEntry }}
 					selectedFileView={selectedFileView}
+					browserOpenRequest={browserOpenRequest}
 					editorMode={effectiveView}
 					filesSidebarOpen={filesSidebarOpen}
 					fileNodesList={fileNodesList}
@@ -3970,6 +4249,7 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 			<FileNodeViewContent
 				key={membershipId}
 				selectedFileView={selectedFileView}
+				browserOpenRequest={browserOpenRequest}
 				selectedNodeId={searchNodeId}
 				node={resolvedNode}
 				fileNodesList={fileNodesList}
@@ -4125,6 +4405,8 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 								node={resolvedNode ?? null}
 								isPrivate={!!searchPrivateNodeId}
 								commentsContainerRef={setCommentsPortalHost}
+								browserNodeId={searchPrivateNodeId ?? resolvedNode?._id ?? null}
+								browserNodeKind={searchPrivateNodeId ? "private" : resolvedNode ? "saved" : null}
 							/>
 						</MyPanel>
 					</MyPanelGroup>

@@ -1,11 +1,12 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import type { ReactNode } from "react";
+import type { MouseEventHandler, ReactNode } from "react";
 import { afterEach, describe, expect, test, vi } from "vitest";
 
 import type { ai_chat_UiMessage } from "@/lib/ai-chat.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import type { app_convex_Id } from "@/lib/app-convex-client.ts";
-import { AiChatMessage, AiChatMessagePendingAssistant, type AiChatMessage_Props } from "./ai-chat-message.tsx";
+import { AiChatBrowserSurfaceProvider, AiChatMessage, AiChatMessagePendingAssistant, type AiChatMessage_Props } from "./ai-chat-message.tsx";
+import { global_custom_event_listen } from "@/lib/global-event.tsx";
 import type { AiChatComposer_Props } from "./ai-chat-composer.tsx";
 
 vi.mock("@/lib/files-tree-context.tsx", () => ({
@@ -16,6 +17,14 @@ vi.mock("@/components/files/files-clipboard.tsx", () => ({
 	FilesClipboardProvider: (props: { children: ReactNode }) => props.children,
 }));
 
+vi.mock("convex/react", async (importOriginal) => {
+	const actual = (await importOriginal()) as Record<string, unknown>;
+	return {
+		...actual,
+		useQuery: () => hookMocks.browserResultFile,
+	};
+});
+
 const hookMocks = vi.hoisted(() => {
 	return {
 		messageById: new Map<string, ai_chat_UiMessage>(),
@@ -23,6 +32,9 @@ const hookMocks = vi.hoisted(() => {
 		editingMessageId: null as string | null,
 		sendErrorMessageId: null as string | null,
 		sendErrorDetails: null as string | null,
+		browserResultFile: undefined as
+			| undefined
+			| { nodeId: string; targetKind: "saved" | "private"; expired: boolean },
 		actions: {
 			addToolOutput: vi.fn(),
 			resumeStream: vi.fn(),
@@ -91,9 +103,9 @@ vi.mock("@/components/ai-chat/ai-chat-markdown.tsx", () => ({
 }));
 
 vi.mock("@tanstack/react-router", () => ({
-	Link: function Link(props: { children?: ReactNode; to?: string; search?: unknown }) {
+	Link: function Link(props: { children?: ReactNode; to?: string; search?: unknown; onClick?: MouseEventHandler<HTMLAnchorElement> }) {
 		return (
-			<a href={props.to ?? "#"} data-search={JSON.stringify(props.search)}>
+			<a href={props.to ?? "#"} data-search={JSON.stringify(props.search)} onClick={props.onClick}>
 				{props.children}
 			</a>
 		);
@@ -197,6 +209,7 @@ describe("AiChatMessage", () => {
 		hookMocks.editingMessageId = null;
 		hookMocks.sendErrorMessageId = null;
 		hookMocks.sendErrorDetails = null;
+		hookMocks.browserResultFile = undefined;
 	});
 
 	test("saves an inline edit with its message id", () => {
@@ -683,6 +696,101 @@ describe("AiChatMessage", () => {
 		expect(result.querySelector(".DiffMonospaceBlock-line-removed")?.textContent).toContain('"n": 1');
 		expect(result.querySelector(".DiffMonospaceBlock-line-added")?.textContent).toContain('"n": 2');
 		expect(result.querySelectorAll(".DiffMonospaceBlock-line-context").length).toBe(3);
+	});
+
+	test.each([
+		{ state: "output-available", output: "Browser succeeded.", link: true, name: "links a live result" },
+		{ state: "output-available", output: "Browser refused.", link: false, name: "hides the link on refusal" },
+		{ state: "input-available", output: "Running…", link: false, name: "shows running before output" },
+	] as const)("browser run card $name", ({ state, output, link }) => {
+		if (link) {
+			hookMocks.browserResultFile = { nodeId: "node_1", targetKind: "saved", expired: false };
+		}
+		const part =
+			state === "output-available"
+				? ({
+						type: "tool-browser_run",
+						toolCallId: "call_browser",
+						state: "output-available",
+						input: {},
+						output: {
+							title: "Browser run",
+							output,
+							metadata:
+								output === "Browser refused."
+									? { status: "refused" }
+									: { status: "succeeded", resultId: "result-1" },
+						},
+					} as const)
+				: ({
+						type: "tool-browser_run",
+						toolCallId: "call_browser",
+						state: "input-available",
+						input: {},
+					} as const);
+		renderMessage({
+			message: {
+				id: "msg_assistant_browser",
+				role: "assistant",
+				parts: [part],
+				metadata: {
+					convexParentId: "msg_user_before",
+					parentClientGeneratedId: null,
+				},
+			} satisfies ai_chat_UiMessage,
+		});
+
+		expect(screen.getByRole("button", { name: "Browser run" })).not.toBeNull();
+		expect(screen.getByText(output)).not.toBeNull();
+		if (link) {
+			expect(screen.queryByRole("link", { name: "Open in Files" })).not.toBeNull();
+		} else {
+			expect(screen.queryByRole("link", { name: "Open in Files" })).toBeNull();
+		}
+	});
+
+	test("Open browser asks the Files owner to open the exact result target", () => {
+		hookMocks.browserResultFile = { nodeId: "node_1", targetKind: "saved", expired: false };
+		const message = {
+			id: "msg_browser_open",
+			role: "assistant",
+			parts: [
+				{
+					type: "tool-browser_run",
+					toolCallId: "call_browser",
+					state: "output-available",
+					input: {},
+					output: {
+						title: "Browser run",
+						output: "Browser succeeded.",
+						metadata: { status: "succeeded", resultId: "result-1" },
+					},
+				},
+			],
+			metadata: { convexParentId: "msg_user_before", parentClientGeneratedId: null },
+		} satisfies ai_chat_UiMessage;
+		hookMocks.messageById.set(message.id, message);
+		render(
+			withTenant(
+				<AiChatBrowserSurfaceProvider value="files">
+					<AiChatMessage
+						messageId={message.id}
+						message={message}
+						selectedThreadId="thread_1"
+						selectedModelId="gpt-5.4-nano"
+						selectedModeId="ask"
+						isRunning={false}
+						liveJobs={[]}
+						actions={hookMocks.actions}
+					/>
+				</AiChatBrowserSurfaceProvider>,
+			),
+		);
+		const opened = vi.fn();
+		const stopListening = global_custom_event_listen("files::open_browser", (event) => opened(event.detail));
+		fireEvent.click(screen.getByRole("link", { name: "Open browser" }));
+		stopListening();
+		expect(opened).toHaveBeenCalledWith({ membershipId: "membership-1", nodeId: "node_1", targetKind: "saved" });
 	});
 
 	test("flags a runner-level execute_code failure in the summary and error section", () => {

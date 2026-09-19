@@ -1,0 +1,67 @@
+{
+	"$schema": "https://unpkg.com/wrangler/config-schema.json",
+	"name": "bonobo-senate-browser-runner",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-09-19",
+	"compatibility_flags": ["nodejs_compat"],
+	"workers_dev": true,
+	"browser": {
+		"binding": "BROWSER",
+		"remote": true
+	},
+	"worker_loaders": [
+		{
+			"binding": "LOADER"
+		}
+	],
+	"durable_objects": {
+		"bindings": [
+			{ "name": "BROWSER_SESSIONS", "class_name": "BrowserSession" },
+			{ "name": "BROWSER_REGISTRY", "class_name": "BrowserRegistry" }
+		]
+	},
+	"migrations": [
+		{ "tag": "v1", "new_sqlite_classes": ["BrowserSession"] },
+		{ "tag": "v2", "new_sqlite_classes": ["BrowserRegistry"] }
+	],
+	"vars": {
+		"BROWSER_RUNNER_DISABLED": "true"
+	},
+	"secrets": {
+		"required": ["BROWSER_RUNNER_SECRET"]
+	},
+	"observability": {
+		"enabled": true
+	},
+	"env": {
+		"dev": {
+			"name": "bonobo-senate-browser-runner-dev",
+			"browser": {
+				"binding": "BROWSER",
+				"remote": true
+			},
+			"worker_loaders": [
+				{
+					"binding": "LOADER"
+				}
+			],
+			"durable_objects": {
+				"bindings": [
+					{ "name": "BROWSER_SESSIONS", "class_name": "BrowserSession" },
+					{ "name": "BROWSER_REGISTRY", "class_name": "BrowserRegistry" }
+				]
+			},
+			"migrations": [
+				{ "tag": "v1", "new_sqlite_classes": ["BrowserSession"] },
+				{ "tag": "v2", "new_sqlite_classes": ["BrowserRegistry"] }
+			],
+			"vars": {
+				"BROWSER_RUNNER_DISABLED": "false",
+				"BROWSER_PREVIEW_URL": "https://bonobo-file-preview-dev.ray-thurne-void.workers.dev/v0"
+			},
+			"secrets": {
+				"required": ["BROWSER_RUNNER_SECRET"]
+			}
+		}
+	}
+}

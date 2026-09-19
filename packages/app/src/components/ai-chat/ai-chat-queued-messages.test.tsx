@@ -12,6 +12,7 @@ const messages = [
 		attachments: [],
 		selectedModelId: "gpt-5.4-nano",
 		selectedModeId: "agent",
+		browserSessionId: null,
 	},
 	{
 		id: "ai_message-second",
@@ -19,6 +20,7 @@ const messages = [
 		attachments: [],
 		selectedModelId: "gpt-5.4-mini",
 		selectedModeId: "ask",
+		browserSessionId: null,
 	},
 	{
 		id: "ai_message-third",
@@ -26,6 +28,7 @@ const messages = [
 		attachments: [],
 		selectedModelId: "gpt-5.4-nano",
 		selectedModeId: "ask",
+		browserSessionId: null,
 	},
 ] satisfies readonly AiChatQueuedUserMessage[];
 

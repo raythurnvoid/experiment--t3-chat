@@ -15,6 +15,7 @@ import { AppActivitiesProvider } from "@/lib/app-activities-context.tsx";
 import type { app_convex_Id } from "@/lib/app-convex-client.ts";
 import type { files_VisibleEntry } from "@/lib/files.ts";
 import { app_local_storage_set_value } from "@/lib/storage.ts";
+import { global_custom_event_dispatch } from "@/lib/global-event.tsx";
 
 const {
 	tenantContextMock,
@@ -44,7 +45,7 @@ const {
 vi.mock("convex/react", async () => {
 	const { useEffect, useState } = await import("react");
 	return {
-		useConvex: () => ({ mutation: mutationMock }),
+		useConvex: () => ({ mutation: mutationMock, action: actionMock }),
 		usePaginatedQuery: (query: never, args: unknown) => {
 			const [, forceRender] = useState(0);
 			useEffect(() => {
@@ -286,6 +287,7 @@ let privateView:
 	| undefined;
 let pendingChildren: unknown[];
 let header: HTMLDivElement;
+let browserSession: unknown;
 
 function pushQueryChanges() {
 	act(() => queryPushListeners.forEach((listener) => listener()));
@@ -302,6 +304,7 @@ beforeEach(() => {
 	loadMorePendingMock.mockReset();
 	privateView = { entry: PRIVATE_ENTRY, readiness: "ready", canEdit: true, canAccept: true };
 	pendingChildren = [];
+	browserSession = null;
 	tenantContextMock.mockReturnValue({
 		membershipId: "membership_1",
 		organizationId: "organization_1",
@@ -370,6 +373,8 @@ beforeEach(() => {
 				return plugins;
 			case "r2:get_asset_by_file_node_id":
 				return null;
+			case "files_browser:current_browser_session":
+				return browserSession ?? null;
 			default:
 				return true;
 		}
@@ -1315,5 +1320,127 @@ describe("FileNodeView file views", () => {
 		expect((nextEditor as HTMLTextAreaElement).value).toBe("saved HTML");
 		expect(screen.getByRole("combobox", { name: "View: Code" })).toBeTruthy();
 		await waitFor(() => expect(screen.queryByTestId("html-preview")).toBeNull());
+	});
+});
+
+describe("FileNodeView shared browser", () => {
+	test.each(["file", "folder", "root"])("ends the old session when selecting a %s", async (kind) => {
+		const { rerender, onNavigateSearch } = renderFileView();
+		await screen.findByRole("textbox", { name: "Code draft" });
+		browserSession = { sessionId: "session_previous", nodeId: NODE._id, targetKind: "saved" };
+		node = {
+			...NODE,
+			_id: "node_next",
+			name: "notes.txt",
+			contentType: "text/plain",
+			kind: kind === "folder" ? "folder" : "file",
+		};
+		rerender(
+			<FileNodeView
+				searchParams={{ nodeId: kind === "root" ? "root" : node._id }}
+				onNavigateSearch={onNavigateSearch}
+			/>,
+		);
+		await waitFor(() => {
+			expect(actionMock.mock.calls.filter((call) => getFunctionName(call[0]) === "files_browser:end_browser")).toEqual([
+				[expect.anything(), { membershipId: "membership_1", sessionId: "session_previous" }],
+			]);
+		});
+	});
+
+	test("an explicit open request restores the hidden panel and keeps the editor draft", async () => {
+		renderFileView();
+		const editor = await screen.findByRole("textbox", { name: "Code draft" });
+		fireEvent.change(editor, { target: { value: "local draft" } });
+		for (let attempt = 0; attempt < 2; attempt += 1) {
+			act(() =>
+				global_custom_event_dispatch("files::open_browser", {
+					membershipId: "membership_1" as app_convex_Id<"organizations_workspaces_users">,
+					nodeId: NODE._id,
+					targetKind: "saved",
+				}),
+			);
+			const panel = await screen.findByRole("region", { name: "Shared browser" });
+			expect(screen.getByRole("textbox", { name: "Code draft" })).toBe(editor);
+			expect(editor).toHaveProperty("value", "local draft");
+			fireEvent.click(within(panel).getByRole("button", { name: "Hide browser" }));
+		}
+		expect(editorMountMock).toHaveBeenCalledTimes(1);
+	});
+
+	test.each(["Preview", "File details", "File viewer"])("an open request leaves %s and keeps the editor draft", async (view) => {
+		plugins = [PLUGIN];
+		renderFileView();
+		const editor = await screen.findByRole("textbox", { name: "Code draft" });
+		fireEvent.change(editor, { target: { value: "local draft" } });
+		await selectView(view);
+		act(() =>
+			global_custom_event_dispatch("files::open_browser", {
+				membershipId: "membership_1" as app_convex_Id<"organizations_workspaces_users">,
+				nodeId: NODE._id,
+				targetKind: "saved",
+			}),
+		);
+		const panel = await screen.findByRole("region", { name: "Shared browser" });
+		expect(panel.closest("[hidden]")).toBeNull();
+		expect(screen.getByRole("textbox", { name: "Code draft" })).toBe(editor);
+		expect(editor).toHaveProperty("value", "local draft");
+		expect(editorMountMock).toHaveBeenCalledTimes(1);
+	});
+
+	test("keeps an open request through navigation and drops it after leaving that file", async () => {
+		const { rerender, onNavigateSearch } = renderFileView();
+		await screen.findByRole("textbox", { name: "Code draft" });
+		act(() =>
+			global_custom_event_dispatch("files::open_browser", {
+				membershipId: "membership_1" as app_convex_Id<"organizations_workspaces_users">,
+				nodeId: "node_next",
+				targetKind: "saved",
+			}),
+		);
+		expect(onNavigateSearch).toHaveBeenCalledWith({ nodeId: "node_next", q: undefined });
+		node = { ...NODE, _id: "node_next" };
+		rerender(<FileNodeView searchParams={{ nodeId: node._id }} onNavigateSearch={onNavigateSearch} />);
+		const panel = await screen.findByRole("region", { name: "Shared browser" });
+		fireEvent.click(within(panel).getByRole("button", { name: "Hide browser" }));
+
+		node = NODE;
+		rerender(<FileNodeView searchParams={{ nodeId: node._id }} onNavigateSearch={onNavigateSearch} />);
+		await screen.findByRole("textbox", { name: "Code draft" });
+		node = { ...NODE, _id: "node_next" };
+		rerender(<FileNodeView searchParams={{ nodeId: node._id }} onNavigateSearch={onNavigateSearch} />);
+		await screen.findByRole("textbox", { name: "Code draft" });
+		expect(screen.queryByRole("region", { name: "Shared browser" })).toBeNull();
+	});
+
+	test("toggles the browser panel for HTML files", async () => {
+		treeNodes = [NODE];
+		renderFileView();
+		fireEvent.click(await screen.findByRole("button", { name: "Shared browser" }));
+		const panel = await screen.findByRole("region", { name: "Shared browser" });
+		expect(panel).toBeTruthy();
+		fireEvent.click(within(panel).getByRole("button", { name: "Hide browser" }));
+		expect(screen.queryByRole("region", { name: "Shared browser" })).toBeNull();
+	});
+
+	test("auto-opens the panel for a live session on this file", async () => {
+		treeNodes = [NODE];
+		browserSession = {
+			sessionId: "session_1",
+			targetKind: "saved",
+			nodeId: NODE._id,
+			path: NODE.path,
+			navigationGeneration: 1,
+			sourceKind: "saved",
+			sourceVersion: "v1",
+			sourceHash: "hash",
+			loadGen: 1,
+			controlGen: 1,
+			control: "ready",
+			idleUntil: Date.now() + 300_000,
+			totalUntil: Date.now() + 1_200_000,
+		};
+		renderFileView();
+		expect(await screen.findByRole("region", { name: "Shared browser" })).toBeTruthy();
 	});
 });

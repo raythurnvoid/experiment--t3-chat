@@ -389,6 +389,19 @@
 		min-height: calc(100cqh - 44px - var(--app-scrollbar-w) - 1px);
 	}
 
+	.FileNodeViewFile-browser-toggle {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+
+		padding-bottom: 8px;
+	}
+
+	.FileNodeViewFile-split {
+		height: 100%;
+		min-height: 0;
+	}
+
 	.FileNodeViewFile-panel {
 		flex: 1;
 		min-height: 0;
