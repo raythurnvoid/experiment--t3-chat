@@ -36,7 +36,7 @@ import {
 
 import { CopyIconButton } from "@/components/copy-icon-button.tsx";
 import { MyIconButton } from "@/components/my-icon-button.tsx";
-import { AiChatController, type AiChatRuntimeActions } from "@/hooks/ai-chat-controller.tsx";
+import { AiChatController, type AiChatRuntimeActions, type AiChatThreadRuntime } from "@/hooks/ai-chat-controller.tsx";
 import { AiChatComposer, type AiChatComposer_Props } from "@/components/ai-chat/ai-chat-composer.tsx";
 import { AiChatMarkdown, type AiChatMarkdown_Props } from "@/components/ai-chat/ai-chat-markdown.tsx";
 import { DiffMonospaceBlock } from "@/components/monospace-block/monospace-block-diff.tsx";
@@ -96,16 +96,17 @@ type AiChatMessagePartToolStatus_ClassNames =
 type AiChatMessagePartToolStatus_Props = {
 	state: ToolUIPart["state"];
 	isChatRunning: boolean;
+	hasLiveJobs?: boolean | undefined;
 };
 
 const AiChatMessagePartToolStatus = memo(function AiChatMessagePartToolStatus(
 	props: AiChatMessagePartToolStatus_Props,
 ) {
-	const { state, isChatRunning } = props;
+	const { state, isChatRunning, hasLiveJobs } = props;
 
 	const isLoading = state === "input-streaming" || state === "input-available";
 	const isSuccess = state === "approval-responded" || state === "output-available";
-	if ((isLoading && !isChatRunning) || isSuccess) {
+	if (((isLoading && !isChatRunning) || isSuccess) && !hasLiveJobs) {
 		return null;
 	}
 
@@ -114,14 +115,15 @@ const AiChatMessagePartToolStatus = memo(function AiChatMessagePartToolStatus(
 			className={cn(
 				"AiChatMessagePartToolStatus" satisfies AiChatMessagePartToolStatus_ClassNames,
 				state === "approval-requested" && ("AiChatMessagePartToolChip" satisfies AiChatMessagePartToolChip_ClassNames),
-				isLoading && ("AiChatMessagePartToolStatus-state-loading" satisfies AiChatMessagePartToolStatus_ClassNames),
+				(isLoading || hasLiveJobs) &&
+					("AiChatMessagePartToolStatus-state-loading" satisfies AiChatMessagePartToolStatus_ClassNames),
 				state === "approval-requested" &&
 					("AiChatMessagePartToolStatus-state-approval" satisfies AiChatMessagePartToolStatus_ClassNames),
 				(state === "output-error" || state === "output-denied") &&
 					("AiChatMessagePartToolStatus-state-error" satisfies AiChatMessagePartToolStatus_ClassNames),
 			)}
 		>
-			{isLoading ? (
+			{isLoading || hasLiveJobs ? (
 				<MySpinner size="14px" aria-label="Running" />
 			) : state === "approval-requested" ? (
 				<>
@@ -175,12 +177,13 @@ type AiChatMessagePartDisclosureButton_Props = {
 	text?: string;
 	state: ToolUIPart["state"];
 	isChatRunning: boolean;
+	hasLiveJobs?: boolean | undefined;
 };
 
 const AiChatMessagePartDisclosureButton = memo(function AiChatMessagePartDisclosureButton(
 	props: AiChatMessagePartDisclosureButton_Props,
 ) {
-	const { className, title, text, state, isChatRunning } = props;
+	const { className, title, text, state, isChatRunning, hasLiveJobs } = props;
 
 	const isLoading = isChatRunning && (state === "input-streaming" || state === "input-available");
 	const labelText = `${title}${text ? ":" : ""}`;
@@ -199,7 +202,7 @@ const AiChatMessagePartDisclosureButton = memo(function AiChatMessagePartDisclos
 			)}
 			role="button"
 			aria-label={text ? `${title}: ${text}` : title}
-			aria-busy={isLoading}
+			aria-busy={isLoading || hasLiveJobs === true}
 			aria-disabled={isLoading}
 			onClick={handleClick}
 		>
@@ -220,7 +223,7 @@ const AiChatMessagePartDisclosureButton = memo(function AiChatMessagePartDisclos
 				>
 					{text}
 				</span>
-				<AiChatMessagePartToolStatus state={state} isChatRunning={isChatRunning} />
+				<AiChatMessagePartToolStatus state={state} isChatRunning={isChatRunning} hasLiveJobs={hasLiveJobs} />
 			</div>
 		</summary>
 	);
@@ -334,6 +337,7 @@ type AiChatMessagePartToolBash_Props = {
 	result: ai_chat_UiTools["bash"]["output"] | undefined;
 	toolState: ToolUIPart["state"];
 	isChatRunning: boolean;
+	liveJobs: AiChatThreadRuntime["liveJobs"];
 	errorText?: string;
 };
 
@@ -353,16 +357,25 @@ function ai_chat_message_part_tool_bash_terminal_text(
 }
 
 const AiChatMessagePartToolBash = memo(function AiChatMessagePartToolBash(props: AiChatMessagePartToolBash_Props) {
-	const { className, args, result, toolState, isChatRunning, errorText } = props;
+	const { className, args, result, toolState, isChatRunning, liveJobs, errorText } = props;
 	const metadata = result?.metadata;
 	const command = metadata?.command ?? args?.command;
 	const terminalText = ai_chat_message_part_tool_bash_terminal_text(args, result, errorText);
+	const hasLiveJobs = (metadata?.launchedJobNumbers ?? []).some((jobNumber) =>
+		liveJobs.some((job) => job.jobNumber === jobNumber),
+	);
 
 	return (
 		<AiChatMessagePartDisclosure
 			className={cn("AiChatMessagePartToolBash" satisfies AiChatMessagePartToolBash_ClassNames, className)}
 		>
-			<AiChatMessagePartDisclosureButton title="Bash" text={command} state={toolState} isChatRunning={isChatRunning} />
+			<AiChatMessagePartDisclosureButton
+				title="Bash"
+				text={command}
+				state={toolState}
+				isChatRunning={isChatRunning}
+				hasLiveJobs={hasLiveJobs}
+			/>
 			<AiChatMessagePartToolBody>
 				<TextMonospaceBlock
 					aria-label="Bash terminal output"
@@ -862,6 +875,7 @@ type AiChatMessagePart_Props = {
 	part: ai_chat_UiMessage["parts"][number];
 	message: ai_chat_UiMessage;
 	isChatRunning: boolean;
+	liveJobs: AiChatThreadRuntime["liveJobs"];
 	onToolOutput: AiChatRuntimeActions["addToolOutput"];
 	onToolResumeStream: AiChatRuntimeActions["resumeStream"];
 	onToolStop: AiChatRuntimeActions["stop"];
@@ -896,7 +910,7 @@ const AiChatMessagePart = memo(function AiChatMessagePart(props: AiChatMessagePa
 });
 
 const AiChatMessagePartInner = memo(function AiChatMessagePartInner(props: AiChatMessagePart_Props) {
-	const { role, part, isChatRunning } = props;
+	const { role, part, isChatRunning, liveJobs } = props;
 
 	if (isToolOrDynamicToolUIPart(part)) {
 		if (part.type === "dynamic-tool") {
@@ -911,6 +925,7 @@ const AiChatMessagePartInner = memo(function AiChatMessagePartInner(props: AiCha
 						result={part.output}
 						toolState={part.state}
 						isChatRunning={isChatRunning}
+						liveJobs={liveJobs}
 						errorText={part.errorText}
 					/>
 				);
@@ -1041,6 +1056,7 @@ type AiChatMessageContent_Props = ComponentPropsWithRef<"div"> & {
 	className?: string;
 	message: ai_chat_UiMessage;
 	isChatRunning: boolean;
+	liveJobs: AiChatThreadRuntime["liveJobs"];
 	onToolOutput: AiChatMessagePart_Props["onToolOutput"];
 	onToolResumeStream: AiChatMessagePart_Props["onToolResumeStream"];
 	onToolStop: AiChatMessagePart_Props["onToolStop"];
@@ -1101,6 +1117,7 @@ const AiChatMessageContent = memo(function AiChatMessageContent(props: AiChatMes
 		className,
 		message,
 		isChatRunning,
+		liveJobs,
 		onToolOutput,
 		onToolResumeStream,
 		onToolStop,
@@ -1153,6 +1170,7 @@ const AiChatMessageContent = memo(function AiChatMessageContent(props: AiChatMes
 							part={item.part}
 							message={message}
 							isChatRunning={isChatRunning}
+							liveJobs={liveJobs}
 							onToolOutput={onToolOutput}
 							onToolResumeStream={onToolResumeStream}
 							onToolStop={onToolStop}
@@ -1272,6 +1290,7 @@ type AiChatMessageUser_Props = ComponentPropsWithRef<"div"> & {
 	selectedModelId: ai_chat_ModelId;
 	selectedModeId: ai_chat_ModeId;
 	isRunning: boolean;
+	liveJobs: AiChatThreadRuntime["liveJobs"];
 	isEditing: boolean;
 	branchAnchorIds: readonly string[];
 	sendErrorText?: string | undefined;
@@ -1298,6 +1317,7 @@ const AiChatMessageUser = memo(function AiChatMessageUser(props: AiChatMessageUs
 		selectedModelId,
 		selectedModeId,
 		isRunning,
+		liveJobs,
 		isEditing,
 		branchAnchorIds,
 		sendErrorText,
@@ -1487,6 +1507,7 @@ const AiChatMessageUser = memo(function AiChatMessageUser(props: AiChatMessageUs
 						key={contentKey}
 						message={message}
 						isChatRunning={isRunning}
+						liveJobs={liveJobs}
 						onToolOutput={onToolOutput}
 						onToolResumeStream={onToolResumeStream}
 						onToolStop={onToolStop}
@@ -1591,6 +1612,7 @@ type AiChatMessageAgent_Props = ComponentPropsWithRef<"div"> & {
 	message: ai_chat_UiMessage;
 	selectedThreadId: string | null;
 	isRunning: boolean;
+	liveJobs: AiChatThreadRuntime["liveJobs"];
 	isEditing: boolean;
 	branchAnchorIds: readonly string[];
 	onToolOutput: AiChatMessageContent_Props["onToolOutput"];
@@ -1609,6 +1631,7 @@ const AiChatMessageAgent = memo(function AiChatMessageAgent(props: AiChatMessage
 		message,
 		selectedThreadId,
 		isRunning,
+		liveJobs,
 		isEditing,
 		branchAnchorIds,
 		onToolOutput,
@@ -1687,6 +1710,7 @@ const AiChatMessageAgent = memo(function AiChatMessageAgent(props: AiChatMessage
 					key={contentKey}
 					message={message}
 					isChatRunning={isRunning}
+					liveJobs={liveJobs}
 					onToolOutput={onToolOutput}
 					onToolResumeStream={onToolResumeStream}
 					onToolStop={onToolStop}
@@ -1782,6 +1806,7 @@ type AiChatMessageSystem_Props = ComponentPropsWithRef<"div"> & {
 	message: ai_chat_UiMessage;
 	selectedThreadId: string | null;
 	isRunning: boolean;
+	liveJobs: AiChatThreadRuntime["liveJobs"];
 	isEditing: boolean;
 	onToolOutput: AiChatMessageContent_Props["onToolOutput"];
 	onToolResumeStream: AiChatMessageContent_Props["onToolResumeStream"];
@@ -1789,7 +1814,7 @@ type AiChatMessageSystem_Props = ComponentPropsWithRef<"div"> & {
 };
 
 const AiChatMessageSystem = memo(function AiChatMessageSystem(props: AiChatMessageSystem_Props) {
-	const { ref, id, className, message, isRunning, onToolOutput, onToolResumeStream, onToolStop, ...rest } = props;
+	const { ref, id, className, message, isRunning, liveJobs, onToolOutput, onToolResumeStream, onToolStop, ...rest } = props;
 
 	/**
 	 * The controller stamps the client-generated id on every rendered message. Keying by it
@@ -1809,6 +1834,7 @@ const AiChatMessageSystem = memo(function AiChatMessageSystem(props: AiChatMessa
 					key={contentKey}
 					message={message}
 					isChatRunning={isRunning}
+					liveJobs={liveJobs}
 					onToolOutput={onToolOutput}
 					onToolResumeStream={onToolResumeStream}
 					onToolStop={onToolStop}
@@ -1833,6 +1859,7 @@ export type AiChatMessage_Props = ComponentPropsWithRef<"div"> & {
 	selectedModelId: ai_chat_ModelId;
 	selectedModeId: ai_chat_ModeId;
 	isRunning: boolean;
+	liveJobs: AiChatThreadRuntime["liveJobs"];
 	actions: AiChatRuntimeActions;
 };
 
@@ -1856,6 +1883,7 @@ export const AiChatMessage = memo(function AiChatMessage(props: AiChatMessage_Pr
 		selectedModelId,
 		selectedModeId,
 		isRunning,
+		liveJobs,
 		actions,
 		...rest
 	} = props;
@@ -1968,6 +1996,7 @@ export const AiChatMessage = memo(function AiChatMessage(props: AiChatMessage_Pr
 				selectedModelId={selectedModelId}
 				selectedModeId={selectedModeId}
 				isRunning={isRunning}
+				liveJobs={liveJobs}
 				isEditing={isEditing}
 				branchAnchorIds={branchAnchorIds}
 				onSelectedModelIdChange={handleSelectedModelIdChange}
@@ -1997,6 +2026,7 @@ export const AiChatMessage = memo(function AiChatMessage(props: AiChatMessage_Pr
 				message={message}
 				selectedThreadId={selectedThreadId}
 				isRunning={isRunning}
+				liveJobs={liveJobs}
 				isEditing={isEditing}
 				branchAnchorIds={branchAnchorIds}
 				onToolOutput={actions.addToolOutput}
@@ -2019,6 +2049,7 @@ export const AiChatMessage = memo(function AiChatMessage(props: AiChatMessage_Pr
 			message={message}
 			selectedThreadId={selectedThreadId}
 			isRunning={isRunning}
+			liveJobs={liveJobs}
 			isEditing={isEditing}
 			onToolOutput={actions.addToolOutput}
 			onToolResumeStream={actions.resumeStream}

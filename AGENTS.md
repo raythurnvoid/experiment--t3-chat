@@ -761,6 +761,15 @@ function example() {
 }
 ```
 
+## Names and vocabulary
+
+Name each symbol for what it holds or does now, not for what it held before. Use concrete nouns; do not invent umbrella terms like `data`, `state`, `handler`, `manager`, or `thing` when listing the real nouns is clearer. Do not keep two names for one thing (a local alias that only renames a prop or a value).
+
+- When a change alters what a parameter, field, or variable holds, rename it in the same diff. A `parentId` that becomes a search anchor is now `finishMessageId`; a `fresh` list of message docs is now `finishedMessages`.
+- When a change alters behavior, sweep the touched modules for words that describe the old behavior: symbol names, comments, JSDoc, schema notes, tool prompts, user-facing strings, and test names. A flag that no longer gates anything must not keep a doc that says it does.
+- User-facing and model-facing strings are behavior. Changing what the code does means updating those strings and their tests in the same diff.
+- Keep names that match a cited external source (a borrowed pattern keeps its published terms) and names that mirror their owning API (a boolean for `thread_run_begin` reads as `begun`). Consistency with the cited source or owner beats local synonyms.
+
 ## IIFE
 
 Mark new IIFEs with an `/* iife */` comment so readers can spot them.

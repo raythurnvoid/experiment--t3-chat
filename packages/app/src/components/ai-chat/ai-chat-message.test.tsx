@@ -5,7 +5,7 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import type { ai_chat_UiMessage } from "@/lib/ai-chat.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import type { app_convex_Id } from "@/lib/app-convex-client.ts";
-import { AiChatMessage, AiChatMessagePendingAssistant } from "./ai-chat-message.tsx";
+import { AiChatMessage, AiChatMessagePendingAssistant, type AiChatMessage_Props } from "./ai-chat-message.tsx";
 import type { AiChatComposer_Props } from "./ai-chat-composer.tsx";
 
 vi.mock("@/lib/files-tree-context.tsx", () => ({
@@ -146,6 +146,7 @@ function renderMessage(args: {
 	branchSiblingIds?: readonly string[] | undefined;
 	isEditing?: boolean | undefined;
 	isRunning?: boolean | undefined;
+	liveJobs?: AiChatMessage_Props["liveJobs"] | undefined;
 }) {
 	hookMocks.messageById.set(args.message.id, args.message);
 	hookMocks.branchSiblingIdsByMessageId.set(args.message.id, args.branchSiblingIds ?? [args.message.id]);
@@ -162,6 +163,7 @@ function renderMessage(args: {
 				selectedModelId="gpt-5.4-nano"
 				selectedModeId="ask"
 				isRunning={Boolean(args.isRunning)}
+				liveJobs={args.liveJobs ?? []}
 				actions={hookMocks.actions}
 			/>,
 		),
@@ -309,6 +311,7 @@ describe("AiChatMessage", () => {
 				selectedModelId="gpt-5.4-nano"
 				selectedModeId="ask"
 				isRunning={true}
+				liveJobs={[]}
 				actions={hookMocks.actions}
 			/>,
 		);
@@ -441,6 +444,82 @@ describe("AiChatMessage", () => {
 		expect(screen.queryByRole("region", { name: "Stdout" })).toBeNull();
 	});
 
+	test("spins a finished bash tool while its jobs run, and stops when they end", () => {
+		const bashMessage = {
+			id: "msg_assistant_bash_jobs",
+			role: "assistant",
+			parts: [
+				{
+					type: "tool-bash",
+					toolCallId: "call_bash_jobs",
+					state: "output-available",
+					input: { command: "sleep 30 &" },
+					output: {
+						title: "exit 0",
+						output: "$ sleep 30 &",
+						metadata: {
+							command: "sleep 30 &",
+							cwd: bashWorkspaceMount,
+							nextCwd: bashWorkspaceMount,
+							exitCode: 0,
+							stdoutTruncated: false,
+							stderrTruncated: false,
+							stdoutLength: 0,
+							stderrLength: 0,
+							pathIndexTruncated: false,
+							launchedJobNumbers: [1],
+						},
+					},
+				},
+			],
+			metadata: {
+				convexParentId: "msg_user_failed",
+				parentClientGeneratedId: null,
+			},
+		} satisfies ai_chat_UiMessage;
+		const liveJob = {
+			jobNumber: 1,
+			status: "running",
+			shellName: "default",
+			scriptPreview: "sleep 30",
+			parentJobNumber: null,
+			invocationId: "invocation_1" as AiChatMessage_Props["liveJobs"][number]["invocationId"],
+			startedAt: Date.now(),
+			finishedAt: undefined,
+		} satisfies AiChatMessage_Props["liveJobs"][number];
+
+		renderMessage({ message: bashMessage, liveJobs: [liveJob] });
+
+		// The tool finished, so the card still opens on click, but its jobs keep the spinner.
+		const button = screen.getByRole("button", { name: "Bash: sleep 30 &" });
+		expect(button.getAttribute("aria-busy")).toBe("true");
+		expect(button.getAttribute("aria-disabled")).toBe("false");
+		expect(screen.getByRole("progressbar", { name: "Running" })).not.toBeNull();
+		fireEvent.click(screen.getByText("Bash:"));
+		expect(screen.getByRole("textbox", { name: "Bash terminal output" })).not.toBeNull();
+
+		cleanup();
+		hookMocks.messageById.clear();
+		hookMocks.branchSiblingIdsByMessageId.clear();
+
+		renderMessage({ message: bashMessage, liveJobs: [] });
+
+		expect(screen.getByRole("button", { name: "Bash: sleep 30 &" }).getAttribute("aria-busy")).toBe("false");
+		expect(screen.queryByRole("progressbar", { name: "Running" })).toBeNull();
+
+		cleanup();
+		hookMocks.messageById.clear();
+		hookMocks.branchSiblingIdsByMessageId.clear();
+
+		const otherLiveJob = {
+			...liveJob,
+			jobNumber: 2,
+			invocationId: "invocation_2" as AiChatMessage_Props["liveJobs"][number]["invocationId"],
+		};
+		renderMessage({ message: bashMessage, liveJobs: [otherLiveJob] });
+		expect(screen.getByRole("button", { name: "Bash: sleep 30 &" }).getAttribute("aria-busy")).toBe("false");
+	});
+
 	test("keeps an open tool output open when the streamed message is persisted", () => {
 		const clientGeneratedId = "ai_message-client_1";
 		const bashPart = {
@@ -506,6 +585,7 @@ describe("AiChatMessage", () => {
 					selectedModelId="gpt-5.4-nano"
 					selectedModeId="ask"
 					isRunning={false}
+					liveJobs={[]}
 					actions={hookMocks.actions}
 				/>,
 			),

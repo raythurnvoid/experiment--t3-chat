@@ -22,6 +22,7 @@ import {
 	activities_is_active,
 } from "./activities_db.ts";
 import { files_transfer_db_request_stop } from "./files_transfer.ts";
+import { organizations_db_get_membership } from "./organizations.ts";
 import {
 	organizations_membership_lifetimes_db_ensure,
 	organizations_membership_lifetimes_db_get,
@@ -69,7 +70,7 @@ const BASH_JOB_RUN_MS = 8 * 60 * 1000;
 // The worker aborts this long before the deadline, so the last 30 seconds store and settle.
 const BASH_JOB_SETTLE_HEADROOM_MS = 30_000;
 // Live jobs per user and workspace, counted on the Activity rows.
-const BASH_JOB_LIVE_MAX_COUNT = 4;
+const BASH_JOB_LIVE_MAX_COUNT = 10;
 // `jobs -a` shows this many of the newest jobs.
 const BASH_JOB_LIST_MAX_COUNT = 8;
 // A job's three clocks start at this placeholder; the worker's claim re-arms them from its start.
@@ -81,15 +82,30 @@ const BASH_JOB_SHELL_STATE_MAX_BYTES = 128 * 1024;
 // The wakeup message carries this much of each output stream; `jobs -o N` has the rest. The count is
 // in UTF-16 code units, so `bash_text_head` keeps the cut off the middle of a character.
 const BASH_JOB_WAKEUP_HEAD_CHARS = 4 * 1024;
+
 // A wakeup run holds the thread's run lease this long at most. A Convex action cannot run longer.
-const BASH_JOB_WAKEUP_RUN_MS = 10 * 60 * 1000;
-// A woken turn may arm the next job, and a wakeup charges no rate limit, so the chain needs an end.
-// This many wakeups may start in a row before the thread waits for the user again.
-const BASH_JOB_WAKEUP_MAX_COUNT = 5;
+export const BASH_JOB_WAKEUP_RUN_MS = 10 * 60 * 1000;
+
+// The fixed head of the finish message, split around the job number. `bash_job_is_finish_message`
+// matches these two halves; the text built below uses them so the two cannot drift apart.
+const BASH_JOB_FINISH_MESSAGE_START = "Background job ";
+const BASH_JOB_FINISH_MESSAGE_MIDDLE = " finished in shell ";
+
+/**
+ * Whether a stored message is a job finish message. The role check keeps user
+ * quotes of the same words out: user text lands as role `user`, never `system`.
+ */
+export function bash_job_is_finish_message(role: string, text: string) {
+	return (
+		role === "system" &&
+		text.startsWith(BASH_JOB_FINISH_MESSAGE_START) &&
+		text.includes(BASH_JOB_FINISH_MESSAGE_MIDDLE)
+	);
+}
 
 const ai_chat_bash_jobs_workpool = new Workpool(components.ai_chat_bash_jobs_workpool, {
 	// Above the live-job cap, so one user cannot fill every slot.
-	maxParallelism: 8,
+	maxParallelism: 12,
 	// A retried worker would replay the job's writes.
 	retryActionsByDefault: false,
 });
@@ -115,16 +131,8 @@ const bash_invocation_result = v.object({
 	resultExpired: v.boolean(),
 });
 
-// A "job finished" note. The next fresh call of the user who launched the job prints it.
-const bash_job_note = v.object({
-	jobNumber: v.number(),
-	status: app_convex_schema.tables.activities.validator.fields.status,
-	shellName: v.string(),
-});
-
-// A fresh begin also returns the shell it will run in, the thread's shell list for the `/shells`
-// mount and the finished-job notes. A replayed begin returns the plain invocation result, like
-// `get_bash_invocation`.
+// A fresh begin also returns the shell it will run in and the thread's shell list for the
+// `/shells` mount. A replayed begin returns the plain invocation result, like `get_bash_invocation`.
 const bash_begin_result = v.union(
 	bash_invocation_result,
 	v.object({
@@ -137,8 +145,6 @@ const bash_begin_result = v.union(
 			state: app_convex_schema.tables.ai_chat_bash_shells.validator.fields.state,
 		}),
 		shells: v.array(v.object({ _id: v.id("ai_chat_bash_shells"), name: v.string() })),
-		notes: v.array(bash_job_note),
-		noticeAt: v.union(v.number(), v.null()),
 	}),
 );
 
@@ -277,80 +283,6 @@ function invocation_result(
 	};
 }
 
-/**
- * Read the "job finished" notes for this user's next fresh call in a thread. Keep the cursor per
- * user and thread, so one member's call never hides another member's notes. Return `now - 1` for
- * `finish_bash_invocation` to commit with the stored result. A finish stamped in the same
- * millisecond that commits after begin would otherwise be hidden forever, and a rare duplicate
- * note is cheap. Read the newest finishes first, so a job that ends after jobs with newer numbers
- * is noted first. Keep at most 8 notes; when finish advances the cursor, the transcript keeps the
- * other jobs' output.
- */
-async function db_read_job_notes(
-	ctx: QueryCtx,
-	args: { thread: Doc<"ai_chat_threads">; userId: Id<"users">; now: number },
-) {
-	const anyJob = await ctx.db
-		.query("activities")
-		.withIndex("by_user_source_kind_thread_jobNumber", (q) =>
-			q.eq("userId", args.userId).eq("source.kind", "ai_chat_bash_job").eq("source.threadId", args.thread._id),
-		)
-		.first();
-	// No job Activity means nothing to note and nothing to hide: keep the thread without a cursor row.
-	if (!anyJob) return { notes: [], noticeAt: null };
-
-	const cursor = await ctx.db
-		.query("ai_chat_bash_job_notice_cursors")
-		.withIndex("by_user_thread", (q) => q.eq("userId", args.userId).eq("threadId", args.thread._id))
-		.unique();
-	// `5 > undefined` is false: without the `?? 0` the first wave of notes would never print.
-	const noticeAt = cursor?.noticeAt ?? 0;
-
-	// The index range asks for the jobs that ended after the cursor, so a job that ended long after
-	// the newer job numbers still comes back. A job that is still running has no `finishedAt`, which
-	// sorts before every number, so the range leaves it out and no status filter is needed here.
-	const ended = await ctx.db
-		.query("activities")
-		.withIndex("by_user_source_kind_thread_finishedAt", (q) =>
-			q
-				.eq("userId", args.userId)
-				.eq("source.kind", "ai_chat_bash_job")
-				.eq("source.threadId", args.thread._id)
-				.gt("finishedAt", noticeAt),
-		)
-		.order("desc")
-		.take(BASH_JOB_LIST_MAX_COUNT);
-
-	const notes = ended.map((activity) => {
-		const source = activity.source;
-		if (source.kind !== "ai_chat_bash_job")
-			throw should_never_happen("Job Activity has another source kind", { activityId: activity._id });
-		return { jobNumber: source.jobNumber, status: activity.status, shellName: source.shellName };
-	});
-	return { notes, noticeAt: args.now - 1 };
-}
-
-export async function ai_chat_files_db_commit_job_notice_cursor(
-	ctx: MutationCtx,
-	args: { thread: Doc<"ai_chat_threads">; userId: Id<"users">; noticeAt: number },
-) {
-	const cursor = await ctx.db
-		.query("ai_chat_bash_job_notice_cursors")
-		.withIndex("by_user_thread", (q) => q.eq("userId", args.userId).eq("threadId", args.thread._id))
-		.unique();
-	if (cursor) {
-		await ctx.db.patch("ai_chat_bash_job_notice_cursors", cursor._id, { noticeAt: args.noticeAt });
-	} else {
-		await ctx.db.insert("ai_chat_bash_job_notice_cursors", {
-			organizationId: args.thread.organizationId,
-			workspaceId: args.thread.workspaceId,
-			threadId: args.thread._id,
-			userId: args.userId,
-			noticeAt: args.noticeAt,
-		});
-	}
-}
-
 export const begin_bash_invocation = internalMutation({
 	// `shellName` is not part of the call identity shared with `get_bash_invocation`; keep it off
 	// the identity object because the handler spreads that object into the invocation row.
@@ -470,15 +402,11 @@ export const begin_bash_invocation = internalMutation({
 		await ctx.scheduler.runAt(invocation.deadlineAt, internal.ai_chat_files.interrupt_bash_invocation, {
 			invocationId,
 		});
-		// Only a fresh call prints the notes; a rejoined call above never had them.
-		const { notes, noticeAt } = await db_read_job_notes(ctx, { thread, userId: args.userId, now });
 		return Result({
 			_yay: {
 				...invocation_result({ ...invocation, _id: invocationId }, true),
 				shell: { _id: shell._id, name: shell.name, cwd: shell.cwd, cwdTarget: shell.cwdTarget, state: shell.state },
 				shells: shells.map((row) => ({ _id: row._id, name: row.name })),
-				notes,
-				noticeAt,
 			},
 		});
 	},
@@ -553,7 +481,6 @@ export const finish_bash_invocation = internalMutation({
 		invocationId: v.id("ai_chat_bash_invocations"),
 		commandHash: v.string(),
 		result: ai_chat_bash_result_validator,
-		noticeAt: v.optional(v.number()),
 	},
 	returns: v_result({ _yay: bash_invocation_result }),
 	handler: async (ctx, args) => {
@@ -565,18 +492,6 @@ export const finish_bash_invocation = internalMutation({
 			return Result({
 				_nay: { name: "invocation_changed", message: "This Bash call already has a different command." },
 			});
-		// The call already printed begin's notes into its own result, so commit the cursor in the
-		// same transaction that stores that result. A call that never reaches this mutation keeps
-		// the cursor put and its notes print again on the next call.
-		if (args.noticeAt !== undefined) {
-			const thread = await ctx.db.get("ai_chat_threads", invocation.threadId);
-			if (thread)
-				await ai_chat_files_db_commit_job_notice_cursor(ctx, {
-					thread,
-					userId: invocation.userId,
-					noticeAt: args.noticeAt,
-				});
-		}
 		if (invocation.status !== "running") return Result({ _yay: invocation_result(invocation) });
 
 		if (invocation.deadlineAt <= Date.now()) {
@@ -763,30 +678,28 @@ async function db_append_job_finish_entry(
 }
 
 /**
- * The wakeup a finished job owes when `job.wakeAgent` is set. Store a system message with the
- * job's outcome under the newest leaf of the thread, take the `job_wakeup` lease and schedule
- * `run_job_wakeup`, which answers that message. `wakeNotifiedAt` keeps a job to one note, so the
- * settle and a late worker result can both try: whichever finds no lease writes it.
- * `bashJobWakeupCount` limits how many notes may follow each other without the user. Past that
- * limit the note is still stored, and nothing answers it until the user writes again.
- *
- * While a chat request or another wakeup holds the thread's run lease, do nothing at all: the note
- * belongs under the newest leaf, which that run is still writing. Nothing tries again for this job.
- * A job that finishes normally reaches this function once, from `finish_bash_job`, so a job that
- * finishes during a run gets no note. The job still shows in the Activity feed of the user who
- * started it, and their next Bash call in the thread prints the plain `bash: job N done` note. That
- * call prints at most eight notes, so a job can fall out of them when many finish at once.
+ * The message a finished job owes the thread. Store a system message with the
+ * job's outcome under the newest leaf of the thread. When no run holds the
+ * thread's lease, also take the `job_wakeup` lease and schedule
+ * `run_job_wakeup`, which answers that message. When a chat request or another
+ * wakeup holds the lease, only the message is stored: the running turn reads it
+ * at its next step boundary, and the turn-end catch schedules a wake run for
+ * anything it never injected. `wakeNotifiedAt` keeps a job to one message, so
+ * the settle and a late worker result can both try: only the first writes.
+ * Shape borrowed from opencode background tasks (`task.ts`: `background`,
+ * `jobId` in metadata, `notify` then `inject` as a fresh prompt), read at pin
+ * `3dd1b305`.
  */
 async function db_wake_agent_for_job(
 	ctx: MutationCtx,
 	invocation: BashJobRow,
 	args: { exitCode: number; stdout: string; stderr: string; now: number },
 ) {
-	if (!invocation.job.wakeAgent || invocation.wakeNotifiedAt !== undefined) return;
+	if (invocation.wakeNotifiedAt !== undefined) return;
 	// A job whose member lost access must not write into the thread or hold its run lease. The claim
 	// settles exactly such a job, and that settle would otherwise wake the agent for a member who is
 	// no longer there. Check the same permissions `get_job_wakeup_context` checks a moment later. A
-	// role change keeps the membership. Without these checks the note would land in a thread the
+	// role change keeps the membership. Without these checks the message would land in a thread the
 	// member may no longer read, and the run it starts would be refused anyway.
 	const membership = await ai_chat_files_db_get_invocation_membership(ctx, invocation);
 	if (!membership) return;
@@ -804,14 +717,17 @@ async function db_wake_agent_for_job(
 		(await access_control_db_authorize_membership(ctx, { userAuth, membership, permission: "content.write" }))._nay
 	)
 		return;
-	if (thread.activeRun && thread.activeRun.expiresAt > args.now) return;
+	// Read the lease once. A re-read later in this mutation would see the same snapshot, so it
+	// cannot catch a release that lands mid-write. Convex serializes the two mutations and retries
+	// this one with fresh state instead, which then takes the freed lease.
+	const runActive = thread.activeRun !== undefined && thread.activeRun.expiresAt > args.now;
 	const shell = await ctx.db.get("ai_chat_bash_shells", invocation.job.shellId);
 	if (!shell) throw should_never_happen("Job shell not found", { shellId: invocation.job.shellId });
 
 	// The newest message of the thread. That is the leaf of the branch the chat shows: with no branch
 	// picked the client starts from the newest message and walks up to its root. A thread can have
 	// more than one root, because editing the first user message stores the new one with no parent,
-	// so walking down from the newest root instead would put the note on a branch the chat does not
+	// so walking down from the newest root instead would put the message on a branch the chat does not
 	// render and give the woken run the wrong conversation to answer.
 	const newestMessage = await ctx.db
 		.query("ai_chat_threads_messages_aisdk_5")
@@ -827,51 +743,54 @@ async function db_wake_agent_for_job(
 			? `${bash_text_head(text, BASH_JOB_WAKEUP_HEAD_CHARS)}\n[truncated]`
 			: text;
 	const jobNumber = invocation.job.jobNumber;
-	// Count this wakeup. Past the cap the note is still stored, so the next turn the user starts
-	// reads what the job did, but no run starts on its own.
-	const wakeupCount = (thread.bashJobWakeupCount ?? 0) + 1;
-	const capReached = wakeupCount > BASH_JOB_WAKEUP_MAX_COUNT;
-	const noteId = get_id_generator("ai_message")();
-	const noteMessageId = await ctx.db.insert("ai_chat_threads_messages_aisdk_5", {
+	const messageId = get_id_generator("ai_message")();
+	const finishMessageId = await ctx.db.insert("ai_chat_threads_messages_aisdk_5", {
 		organizationId: thread.organizationId,
 		workspaceId: thread.workspaceId,
 		parentId: leafId,
 		threadId: thread._id,
 		createdBy: invocation.userId,
 		updatedAt: args.now,
-		clientGeneratedMessageId: noteId,
+		jobFinishInvocationId: invocation._id,
+		clientGeneratedMessageId: messageId,
 		content: {
-			id: noteId,
+			id: messageId,
 			role: "system",
 			parts: [
 				{
 					type: "text",
 					text:
-						`Background job ${jobNumber} finished in shell ${shell.name} with exit ${args.exitCode}.\n` +
+						`${BASH_JOB_FINISH_MESSAGE_START}${jobNumber}${BASH_JOB_FINISH_MESSAGE_MIDDLE}${shell.name} with exit ${args.exitCode}.\n` +
 						`stdout:\n${head(args.stdout)}\nstderr:\n${head(args.stderr)}\n` +
-						`Full output: jobs -o ${jobNumber} or /shells/${shell.name}/transcript.` +
-						(capReached
-							? `\nNothing answered this note: ${BASH_JOB_WAKEUP_MAX_COUNT} job wakeups already started in a row without a message from the user.`
-							: ""),
+						`Full output: jobs -o ${jobNumber} or /shells/${shell.name}/transcript.`,
 				},
 			],
 		},
 	});
-	// Mark the note before anything can try again: the settle and a late worker result both call
+	// Mark the message before anything can try again: the settle and a late worker result both call
 	// this, and only one of them may write.
 	await ctx.db.patch("ai_chat_bash_invocations", invocation._id, { wakeNotifiedAt: args.now });
+	// A run is still writing under this leaf, so take no lease and schedule
+	// nothing. The running turn injects this message at its next step
+	// boundary, and its turn-end catch schedules a wake run for anything left.
+	if (runActive) {
+		await ctx.db.patch("ai_chat_threads", thread._id, {
+			lastMessageAt: args.now,
+			updatedAt: args.now,
+			updatedBy: invocation.userId,
+		});
+		return;
+	}
 	await ctx.db.patch("ai_chat_threads", thread._id, {
 		lastMessageAt: args.now,
 		updatedAt: args.now,
 		updatedBy: invocation.userId,
-		bashJobWakeupCount: wakeupCount,
-		activeRun: capReached ? undefined : { kind: "job_wakeup", expiresAt: args.now + BASH_JOB_WAKEUP_RUN_MS },
+		activeRun: { kind: "job_wakeup", expiresAt: args.now + BASH_JOB_WAKEUP_RUN_MS },
 	});
-	if (capReached) return;
 	await ctx.scheduler.runAfter(0, internal.ai_chat.run_job_wakeup, {
 		invocationId: invocation._id,
 		threadId: thread._id,
-		noteMessageId,
+		finishMessageId,
 	});
 }
 
@@ -1167,7 +1086,7 @@ export const finish_bash_job = internalMutation({
 
 		const activity = await activities_db_get_by_source_id(ctx, invocation._id);
 		const outcome = {
-			// The note the agent reads must not contradict `wait`, `jobs -o` and the feed. A watchdog or
+			// The message the agent reads must not contradict `wait`, `jobs -o` and the feed. A watchdog or
 			// a Stop can settle the Activity while this worker is still finishing, and the code stored
 			// above is then the code of a script that ran to its end. The Activity decides, as it does
 			// for the two commands. On the normal path the Activity is still running here, so this is
@@ -1191,18 +1110,17 @@ export const finish_bash_job = internalMutation({
 			});
 		}
 
-		// The wake runs even on a settled row. A settle drops its own wake while a run holds the
-		// thread lease, and then this is the last chance to tell the agent its job ended.
-		// `wakeNotifiedAt` keeps the job to one note, so this cannot add a second one.
+		// The wake runs even on a settled row. The first of settle or this result stores the
+		// message. The other finds `wakeNotifiedAt` set and adds nothing.
 		await db_wake_agent_for_job(ctx, invocation, outcome);
 		return null;
 	},
 });
 
 /**
- * The `wait` door of a call that will be woken (`wakeOnJobFinish`): arm the caller's own live
- * jobs so their finish wakes the agent, and return the numbers armed. A job that already ended
- * is skipped; `wait` then reads its result the normal way.
+ * The `wait` door of a call that ends the turn (`wakeOnJobFinish`): stamp the caller's own
+ * live jobs with the turn's model for their wake run, and return the numbers armed. A job
+ * that already ended is skipped; `wait` then reads its result the normal way.
  */
 export const arm_bash_job_wakeup = internalMutation({
 	args: {
@@ -1734,9 +1652,71 @@ export type ai_chat_files_list_thread_jobs_Result =
 		: never;
 
 /**
+ * The caller's live jobs in one thread, for the chat's tool spinner and jobs
+ * popover. Same read as the `live` select of `list_thread_jobs`, but through
+ * the caller's own membership: a member sees only the jobs they started.
+ */
+export const list_live_thread_jobs = query({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		threadId: v.string(),
+	},
+	returns: v.array(bash_job_summary),
+	handler: async (ctx, args) => {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) throw convex_error({ message: "Unauthenticated" });
+		const membership = await organizations_db_get_membership(ctx, {
+			userId: userAuth.id,
+			membershipId: args.membershipId,
+		});
+		if (!membership) return [];
+		const threadId = ctx.db.normalizeId("ai_chat_threads", args.threadId);
+		if (!threadId) return [];
+		const thread = await ctx.db.get("ai_chat_threads", threadId);
+		if (
+			!thread ||
+			thread.organizationId !== membership.organizationId ||
+			thread.workspaceId !== membership.workspaceId
+		)
+			return [];
+		const authorized = await access_control_db_authorize_membership(ctx, {
+			userAuth,
+			membership,
+			permission: "content.read",
+		});
+		if (authorized._nay) return [];
+		const live: Doc<"activities">[] = [];
+		for (const status of ["queued", "running", "stopping"] as const) {
+			live.push(
+				...(await ctx.db
+					.query("activities")
+					.withIndex("by_user_workspace_source_kind_status", (q) =>
+						q
+							.eq("userId", userAuth.id)
+							.eq("workspaceId", membership.workspaceId)
+							.eq("source.kind", "ai_chat_bash_job")
+							.eq("status", status),
+					)
+					.take(BASH_JOB_LIVE_MAX_COUNT + 1)),
+			);
+		}
+		return live
+			.filter(
+				(activity) =>
+					activity.organizationId === membership.organizationId &&
+					activity.source.kind === "ai_chat_bash_job" &&
+					activity.source.threadId === threadId,
+			)
+			.map(job_summary)
+			.sort((a, b) => a.jobNumber - b.jobNumber);
+	},
+});
+
+/**
  * The door behind `jobs -o N`. `activityStatus` says whether the job is still live, because that is
- * the status the feed, `jobs -a` and the finished-job note show. `liveOutput` is the head a running
- * worker flushed so far. `wait` reads `read_job_exit_codes` instead, which returns no output.
+ * the status the feed and `jobs -a` show. The finish message prints the matching exit code.
+ * `liveOutput` is the head a running worker flushed so far. `wait` reads `read_job_exit_codes`
+ * instead, which returns no output.
  */
 export const read_job_output = internalQuery({
 	args: {

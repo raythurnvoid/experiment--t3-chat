@@ -178,11 +178,12 @@ export const bash_ABORT_REASON_STOPPED = "job stopped";
  * The exit code one job reports, from its Activity and the code its worker stored. A job can be
  * declared dead before its worker stops: a watchdog or a Stop settles the Activity while a slow
  * worker is still finishing, and the worker then stores its own code under a `timed_out` or
- * `canceled` Activity. The feed, `jobs -a` and the finished-job note all show the Activity status
- * word. `wait` and the `jobs -o` marker read the Activity first and report a code that agrees
- * with that word, instead of the late result's code. A job with no stored code at all (stopped
- * before a worker ran, a crashed worker, or a result the cleanup cron already stripped) answers
- * from the Activity too: `succeeded` is 0, `timed_out` 124, `canceled` 143 and everything else 1.
+ * `canceled` Activity. The feed and `jobs -a` show the Activity status word. The finish message
+ * prints the matching exit code. `wait` and the `jobs -o` marker read the Activity first and report
+ * a code that agrees with that word, instead of the late result's code. A job with no stored code
+ * at all (stopped before a worker ran, a crashed worker, or a result the cleanup cron already
+ * stripped) answers from the Activity too: `succeeded` is 0, `timed_out` 124, `canceled` 143 and
+ * everything else 1.
  */
 export function bash_job_exit_code(activityStatus: Doc<"activities">["status"], storedExitCode: number | null) {
 	if (activityStatus === "timed_out") return bash_COMMAND_EXIT_TIMED_OUT;

@@ -10,6 +10,7 @@ Recipes for driving the in-app AI agent (files-page sidebar and `/chat` page). T
 | Composer (ProseMirror)                                                                | `.AiChatComposer-editor-content`                                                                                                                                                                                                                                                                                         |
 | Send, queue, or save button                                                           | `[data-testid="ai-chat-send-button"]` (`aria-label` is `Send message`, `Queue message`, or `Save queued message`; Queue uses the normal send icon)                                                                                                                                                                       |
 | Stop button (while running with empty input)                                          | `[aria-label="Stop generating"]` (the same action slot becomes Queue when the input has text)                                                                                                                                                                                                                            |
+| Live jobs button (composer row; hidden at count 0 unless the popover is open)        | `getByRole("button", { name: /^Background jobs/ })` (`aria-label` is `Background jobs, N running`, or `Background jobs` while the open popover is empty)                                                                                                                                                                |
 | Queued messages tray                                                                  | `[data-testid="ai-chat-queued-messages"]`                                                                                                                                                                                                                                                                                |
 | Queued message                                                                        | `[data-testid^="ai-chat-queued-message-ai_message-"]` (DOM order is execution order; read `data-queued-message-id`)                                                                                                                                                                                                      |
 | Edit or reorder queued message                                                        | `[data-testid="ai-chat-queued-message-edit"]`                                                                                                                                                                                                                                                                            |
@@ -128,22 +129,45 @@ Shell state (variables, arrays, options, cwd) is kept per named shell, so a cros
 
 Always write `Use the shell name <name> for BOTH calls` into the prompt. To confirm which shell actually ran, read the stored doc rather than the card: `convex data ai_chat_bash_shells --limit 10` prints each shell's `name`, `cwd`, and its saved `state`, including `arrays`.
 
-## A background job only wakes the agent when the prompt asks for `wakeOnJobFinish`
+## A finished job always posts and wakes, with no flag needed
 
-A job's finish starts a new agent run only when the Bash call set `wakeOnJobFinish: true`, and the model sets that field
-only when it sees a reason to. A prompt that just says `{ sleep 25; echo done; } &` gets a job with no wake armed, so
-nothing happens when it ends and the check reads as a broken wake. Write `Set wakeOnJobFinish to true on that Bash call`
-into the prompt. The field exists in Agent mode only.
+Every job the agent started posts one `system` finish message (`Background job <n> finished`) when it
+ends, whether or not the Bash call set `wakeOnJobFinish`. The old flag-gated wake and the stderr
+notes are gone (removed 2026-09-18): do not write `Set wakeOnJobFinish to true` into prompts, and do
+not expect `bash: job N done` in later Bash output — its absence is the point.
 
 Two more ways a wake check comes back empty without a defect:
 
-- A job that finishes **while a run is active** writes no note and starts nothing, by design; that run's next Bash call
-  prints the job note instead. So end the turn first, then let the job finish. A 20-40 s sleep is enough.
-- The note is a `system` message. It renders as its own `.AiChatMessage`, so read roles, not only assistant text.
+- A job that finishes **while a run is active** still stores its message at once. The running turn
+  injects it at the next step. A wake run starts only for finishes that turn never injected. The
+  message can appear before the turn ends; do not require "end the turn first, then let the job
+  finish" for the system line to show. A leftover wake after the turn still needs the turn to end.
+- The finish is a `system` message. It renders as its own `.AiChatMessage`, so read roles, not only
+  assistant text.
 
-A good wake check therefore looks like: one turn that launches the job with the flag and replies at once, then poll the
-message list with no further sends, then assert that new messages appeared, that none of them is a `user` message, and
-that one holds `Background job <n> finished`. Verified 2026-09-16.
+A good wake check therefore looks like: one turn that launches the job and replies at once (tell it
+not to wait), then poll the message list with no further sends, then assert that new messages
+appeared, that none of them is a `user` message, and that one holds `Background job <n> finished`.
+
+## Forcing the 409 wait path without a race
+
+A message sent while a wake run holds the lease gets 409; the client waits and re-sends the same
+request, so exactly one user message is stored. Do not race a real wake run — hold the lease with
+the doors instead (verified 2026-09-18):
+
+```powershell
+vp env exec pnpm --dir packages/app exec convex run ai_chat:thread_run_begin '{"threadId": "<id>"}'
+vp env exec pnpm --dir packages/app exec convex run ai_chat:thread_run_handover_to_wakeup '{"threadId": "<id>"}'
+```
+
+Send in the browser, wait ~12 s, assert no error UI and still running, then release and assert the
+turn completes with one stored copy:
+
+```powershell
+vp env exec pnpm --dir packages/app exec convex run ai_chat:thread_run_end '{"threadId": "<id>", "kind": "job_wakeup"}'
+```
+
+Read back with `ai_chat.thread_messages_list`: exactly one `user` message holds the sent text.
 
 ## Read a finished job's own output with `jobs -o N`, not a transcript tail
 

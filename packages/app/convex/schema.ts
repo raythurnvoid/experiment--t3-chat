@@ -87,6 +87,10 @@ export const ai_chat_bash_result_validator = v.object({
 		 * ends the turn when this is present.
 		 */
 		waitingForJobs: v.optional(v.array(v.number())),
+		/**
+		 * The jobs this call launched. The chat keeps the call's tool card loading until they end.
+		 */
+		launchedJobNumbers: v.optional(v.array(v.number())),
 	}),
 });
 
@@ -424,11 +428,8 @@ const app_convex_schema = defineSchema({
 		 **/
 		bashJobCounter: v.optional(v.number()),
 		/**
-		 * How many job wakeup notes this thread stored in a row without a message from the user. A woken
-		 * turn can arm the next job, so this is what ends the chain. Only the first
-		 * `BASH_JOB_WAKEUP_MAX_COUNT` notes start a run, and a note stored past that cap still counts
-		 * here. A `/api/chat` request that takes the run lease clears it: the user is back in the loop.
-		 * Missing means no note since that request.
+		 * Unused. It once counted job wakeups in a row to end the chain; every finish
+		 * now posts and wakes with no cap. The field stays so old docs still read.
 		 **/
 		bashJobWakeupCount: v.optional(v.number()),
 		activeRun: v.optional(ai_chat_thread_active_run_validator),
@@ -500,11 +501,12 @@ const app_convex_schema = defineSchema({
 		transferDeadlineAt: v.number(),
 		finishedAt: v.optional(v.number()),
 		/**
-		 * When a background job stored its `system` note in the thread. Both the settle and a late
-		 * worker result try to wake the agent, because a settle drops its own wake while a run holds
-		 * the thread lease. This is what keeps them to one note. Missing means no note was stored. It
-		 * cannot live inside `job`: the wake runs after the patch that empties `job`, and it holds the
-		 * copy from before that patch, so a nested write would store `script` and `shellState` again.
+		 * When a background job stored its system finish message in the thread. Both the settle and a
+		 * late worker result try to write. A settle during a run still stores the message; it only
+		 * skips the wake run. This is what keeps them to one message. Missing means no finish message was
+		 * stored. It cannot live inside `job`: the wake runs after the patch that empties `job`, and
+		 * it holds the copy from before that patch, so a nested write would store `script` and
+		 * `shellState` again.
 		 */
 		wakeNotifiedAt: v.optional(v.number()),
 		resultExpiresAt: v.optional(v.number()),
@@ -563,8 +565,9 @@ const app_convex_schema = defineSchema({
 				 */
 				liveOutput: v.optional(ai_chat_bash_job_live_output_validator),
 				/**
-				 * Present when the job's finish must wake the agent: the launch asked for it
-				 * (`wakeOnJobFinish`) or a later `wait` armed it. Holds the model the wakeup runs with.
+				 * The model this job's wake run prefers: the launch set `wakeOnJobFinish`
+				 * or a later `wait` armed it. Missing uses the default model. The finish
+				 * message does not need this.
 				 */
 				wakeAgent: v.optional(v.object({ modelId: ai_chat_model_id_validator })),
 			}),
@@ -590,8 +593,9 @@ const app_convex_schema = defineSchema({
 		.index("by_organization_workspace_thread", ["organizationId", "workspaceId", "threadId"]),
 
 	/**
-	 * Per user and thread: when this user last saw the "job finished" notes. One cursor on the
-	 * shared thread would let member B's call hide member A's notes.
+	 * Unread leftover. The old stderr job notes used one cursor per user and thread so member B's
+	 * call could not hide member A's notes. Code no longer reads these docs. User deletion still
+	 * deletes them.
 	 */
 	ai_chat_bash_job_notice_cursors: defineTable({
 		organizationId: v.string(),
@@ -633,6 +637,11 @@ const app_convex_schema = defineSchema({
 		createdBy: v.id("users"),
 		/** timestamp in milliseconds */
 		updatedAt: v.number(),
+		/**
+		 * Set only on job finish messages: the invocation whose finish wrote this doc. The
+		 * turn-end catch reads it back to schedule the wake run for the right job.
+		 **/
+		jobFinishInvocationId: v.optional(v.id("ai_chat_bash_invocations")),
 	})
 		.index("by_organization_workspace_thread", ["organizationId", "workspaceId", "threadId"])
 		.index("by_organization_workspace_thread_clientGeneratedMessageId", [
@@ -3600,8 +3609,8 @@ const app_convex_schema = defineSchema({
 				operationKind: v.union(v.literal("accept"), v.literal("discard")),
 			}),
 			/**
-			 * A background bash job (`cmd &`). The extra fields let `jobs` and the finished-job
-			 * note read this small row instead of the invocation row, which can hold 700 KiB.
+			 * A background bash job (`cmd &`). The extra fields let `jobs` read this small
+			 * doc instead of the invocation doc, which can hold 700 KiB.
 			 */
 			v.object({
 				kind: v.literal("ai_chat_bash_job"),
@@ -3697,9 +3706,9 @@ const app_convex_schema = defineSchema({
 		// Bash job doors resolve a job number through this index, so the user and thread are
 		// fenced by the index itself. Rows of other source kinds have no `source.jobNumber`.
 		.index("by_user_source_kind_thread_jobNumber", ["userId", "source.kind", "source.threadId", "source.jobNumber"])
-		// The finished-job notes read this one. They ask which jobs ended since the cursor, so they
-		// need the finish time, not the job number: a job may live 24 hours, so job 1 can end after
-		// job 20 and must still get its note. A job that is still running has no `finishedAt`, which
+		// Unread leftover of the old stderr notes. They asked which jobs ended since the cursor, so they
+		// needed the finish time, not the job number: a job may live 24 hours, so job 1 can end after
+		// job 20. A job that is still running has no `finishedAt`, which
 		// sorts before every number, so the range leaves it out on its own.
 		.index("by_user_source_kind_thread_finishedAt", ["userId", "source.kind", "source.threadId", "finishedAt"]),
 

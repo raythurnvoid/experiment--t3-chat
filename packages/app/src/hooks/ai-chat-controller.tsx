@@ -11,6 +11,7 @@ import {
 	type ReactNode,
 } from "react";
 import { useMutation, usePaginatedQuery, useQuery } from "convex/react";
+import type { FunctionReturnType } from "convex/server";
 import { create } from "zustand";
 
 import type { api_schemas_Main } from "@/lib/api-schemas.ts";
@@ -100,6 +101,11 @@ const DERIVED_CACHE_CLEAR_INTERVAL_MS = 60 * 60 * 1000;
 const QUEUED_USER_MESSAGE_LIMIT = 10;
 const EMPTY_QUEUED_USER_MESSAGES: readonly AiChatQueuedUserMessage[] = [];
 
+type AiChatLiveThreadJob = FunctionReturnType<
+	typeof app_convex_api.ai_chat_files.list_live_thread_jobs
+>[number];
+const EMPTY_LIVE_THREAD_JOBS: readonly AiChatLiveThreadJob[] = [];
+
 /**
  * Cache persisted Convex messages by their final message id so query refreshes do not recreate old UIMessage objects.
  * Persisted chat messages are append-only today: editing creates a new branch message, and streaming lives in pending state.
@@ -112,7 +118,7 @@ const threadIdByChat = new WeakMap<Chat<ai_chat_UiMessage>, string>();
 async function ai_chat_fetch(input: RequestInfo | URL, init?: RequestInit) {
 	let response = await fetch(input, init);
 
-	while (response.status === 429) {
+	while (response.status === 429 || response.status === 409) {
 		const body: unknown = await response
 			.clone()
 			.json()
@@ -124,8 +130,12 @@ async function ai_chat_fetch(input: RequestInfo | URL, init?: RequestInit) {
 		if (typeof retryAfterMs !== "number" || !Number.isFinite(retryAfterMs) || retryAfterMs < 0) {
 			return response;
 		}
+		// A 409 means a wake run holds the lease. Cap each wait so a long wake re-checks
+		// instead of sleeping past its end; the same request re-sends and its stored ids dedupe.
+		const waitMs = response.status === 409 ? Math.min(retryAfterMs, 30_000) : retryAfterMs;
 
-		// Keep the same AI SDK request active while the server's chat bucket refills.
+		// Keep the same AI SDK request active while the server asks us to wait: the chat
+		// bucket refills on 429, the wake lease ends on 409.
 		// Stop aborts this wait through the request signal.
 		await new Promise<void>((resolve, reject) => {
 			const signal = init?.signal;
@@ -137,7 +147,7 @@ async function ai_chat_fetch(input: RequestInfo | URL, init?: RequestInit) {
 			const timeoutId = setTimeout(() => {
 				signal?.removeEventListener("abort", handleAbort);
 				resolve();
-			}, retryAfterMs);
+			}, waitMs);
 			const handleAbort = () => {
 				clearTimeout(timeoutId);
 				reject(signal?.reason);
@@ -1660,6 +1670,16 @@ const useThreadRuntimeController = () => {
 			: "skip",
 	);
 
+	const liveJobs = useQuery(
+		app_convex_api.ai_chat_files.list_live_thread_jobs,
+		selectedThreadId && !selectedThreadIsOptimistic
+			? {
+					membershipId,
+					threadId: selectedThreadId,
+				}
+			: "skip",
+	) ?? EMPTY_LIVE_THREAD_JOBS;
+
 	const persistedMessagesLookup = ((/* iife */) => {
 		if (!persistedThreadMessages) return undefined;
 
@@ -3061,6 +3081,7 @@ const useThreadRuntimeController = () => {
 		error: chat.error,
 		activeBranchMessages,
 		messageChildIdsByParentId,
+		liveJobs,
 
 		startNewChat,
 		branchChat,
@@ -3106,3 +3127,61 @@ const AiChatController = Object.assign(ControllerProvider, {
 });
 
 export { AiChatController };
+
+if (process.env.NODE_ENV === "test" && import.meta.vitest) {
+	const { describe, expect, test, vi } = import.meta.vitest;
+
+	describe("ai_chat_fetch", () => {
+		test("re-sends the same request after a 409 wait", async () => {
+			const bodies: Array<BodyInit | null | undefined> = [];
+			const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+				bodies.push(init?.body ?? null);
+				if (bodies.length === 1) {
+					return new Response(JSON.stringify({ message: "busy", retryAfterMs: 5 }), { status: 409 });
+				}
+				return new Response(JSON.stringify({ ok: true }), { status: 200 });
+			});
+			try {
+				const response = await ai_chat_fetch("https://chat.test/api/chat", {
+					method: "POST",
+					body: JSON.stringify({ messages: [{ id: "user-1" }] }),
+				});
+				expect(response.status).toBe(200);
+				// Same body twice: the retry reuses the stored ids, so the persist dedupes.
+				expect(bodies).toHaveLength(2);
+				expect(bodies[0]).toBe(bodies[1]);
+			} finally {
+				fetchSpy.mockRestore();
+			}
+		});
+
+		test("re-sends at once when a 409 wait is zero", async () => {
+			const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+				if (fetchSpy.mock.calls.length === 1) {
+					return new Response(JSON.stringify({ message: "busy", retryAfterMs: 0 }), { status: 409 });
+				}
+				return new Response(JSON.stringify({ ok: true }), { status: 200 });
+			});
+			try {
+				const response = await ai_chat_fetch("https://chat.test/api/chat", { method: "POST" });
+				expect(response.status).toBe(200);
+				expect(fetchSpy).toHaveBeenCalledTimes(2);
+			} finally {
+				fetchSpy.mockRestore();
+			}
+		});
+
+		test("returns the 409 response when it names no wait", async () => {
+			const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+				return new Response(JSON.stringify({ message: "busy" }), { status: 409 });
+			});
+			try {
+				const response = await ai_chat_fetch("https://chat.test/api/chat", { method: "POST" });
+				expect(response.status).toBe(409);
+				expect(fetchSpy).toHaveBeenCalledTimes(1);
+			} finally {
+				fetchSpy.mockRestore();
+			}
+		});
+	});
+}

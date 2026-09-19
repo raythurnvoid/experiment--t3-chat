@@ -307,17 +307,17 @@ describe("start_bash_job", () => {
 		expect(await launch(f, { commandNumber: 1 })).toEqual({ _yay: { jobNumber: 2 } });
 	});
 
-	test("counts live jobs across the workspace, stopping ones too, and refuses the 5th", async () => {
+	test("counts live jobs across the workspace, stopping ones too, and refuses the 11th", async () => {
 		const f = await fixture();
-		for (let n = 1; n <= 3; n += 1) await f.seed_job({ jobNumber: n, status: "running" });
-		await f.seed_job({ jobNumber: 4, status: "running", stopRequestedAt: Date.now() });
+		for (let n = 1; n <= 9; n += 1) await f.seed_job({ jobNumber: n, status: "running" });
+		await f.seed_job({ jobNumber: 10, status: "running", stopRequestedAt: Date.now() });
 		const refused = await launch(f);
 		expect(refused._nay).toMatchObject({
 			name: "limit",
 			message:
-				"4 jobs are already active across your workspace (queued, running or stopping). Some may be in another chat, where `jobs` and `wait` cannot name them. Wait for one of this chat's jobs, or start more in a later call.",
+				"10 jobs are already active across your workspace (queued, running or stopping). Some may be in another chat, where `jobs` and `wait` cannot name them. Wait for one of this chat's jobs, or start more in a later call.",
 		});
-		expect(await job_rows(f)).toHaveLength(4);
+		expect(await job_rows(f)).toHaveLength(10);
 	});
 
 	test("cuts the script preview without splitting a character", async () => {
@@ -394,250 +394,23 @@ describe("start_bash_job", () => {
 });
 
 describe("begin_bash_invocation", () => {
-	const begin = async (f: Awaited<ReturnType<typeof fixture>>, toolCallId: string) => {
+	test("a fresh call after a job finish carries no job fields", async () => {
+		const f = await fixture();
+		const job = await f.seed_job({ jobNumber: 1, status: "running" });
+		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
+			invocationId: job.invocationId,
+			result: job_result(0),
+		});
 		const begun = await f.t.mutation(internal.ai_chat_files.begin_bash_invocation, {
 			...f.scope,
-			toolCallId,
+			toolCallId: "no-notes",
 			commandHash: "d".repeat(64),
 			shellName: "default",
 		});
 		if (begun._nay) throw new Error(begun._nay.message);
-		return begun._yay;
-	};
-
-	const save = async (f: Awaited<ReturnType<typeof fixture>>, begun: Awaited<ReturnType<typeof begin>>) => {
-		if (!("shell" in begun)) throw new Error("Expected a fresh call");
-		await f.t.mutation(internal.ai_chat.save_shell, {
-			...f.scope,
-			invocationId: begun.invocationId,
-			shellId: begun.shell._id,
-			cwd: begun.shell.cwd,
-			cwdTarget: begun.shell.cwdTarget,
-			transcriptEntry: "foreground call",
-		});
-	};
-
-	const call_result = {
-		title: "echo fg",
-		output: "fg\n",
-		stdout: "fg\n",
-		stderr: "",
-		metadata: {
-			command: "echo fg",
-			cwd: "/",
-			nextCwd: "/",
-			exitCode: 0,
-			stdoutTruncated: false,
-			stderrTruncated: false,
-			stdoutLength: 3,
-			stderrLength: 0,
-			pathIndexTruncated: false,
-			observedPaths: [],
-			observedPathsTruncated: false,
-		},
-	};
-
-	const finish = async (f: Awaited<ReturnType<typeof fixture>>, begun: Awaited<ReturnType<typeof begin>>) => {
-		if (!("shell" in begun)) throw new Error("Expected a fresh call");
-		const finished = await f.t.mutation(internal.ai_chat_files.finish_bash_invocation, {
-			invocationId: begun.invocationId,
-			commandHash: "d".repeat(64),
-			result: call_result,
-			...(begun.noticeAt !== null ? { noticeAt: begun.noticeAt } : {}),
-		});
-		if (finished._nay) throw new Error(finished._nay.message);
-	};
-
-	const cursor_rows = async (f: Awaited<ReturnType<typeof fixture>>) =>
-		await f.t.run((ctx) => ctx.db.query("ai_chat_bash_job_notice_cursors").collect());
-
-	test("notes a finished job once, on a fresh call only, and keeps no cursor before the first job", async () => {
-		const f = await fixture();
-		// The fixture's own call ran before any job: no cursor row yet.
-		expect(await cursor_rows(f)).toEqual([]);
-		const finishedAt = Date.now();
-		const job = await f.seed_job({ jobNumber: 1, status: "running" });
-		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
-			invocationId: job.invocationId,
-			result: job_result(0),
-		});
-		const live = await f.seed_job({ jobNumber: 2, status: "running" });
-
-		vi.setSystemTime(finishedAt + 1000);
-		const first = await begin(f, "notes-1");
-		if (!("notes" in first)) throw new Error("Expected a fresh call");
-		expect(first.notes).toEqual([{ jobNumber: 1, status: "succeeded", shellName: "default" }]);
-		expect(await cursor_rows(f)).toEqual([]);
-		await save(f, first);
-		expect(await cursor_rows(f)).toEqual([]);
-		await finish(f, first);
-		expect(await cursor_rows(f)).toMatchObject([
-			{ userId: f.db.userId, threadId: f.scope.threadId, noticeAt: finishedAt + 999 },
-		]);
-		// The rejoin of that call carries no notes, and the next fresh call has nothing new.
-		expect("notes" in (await begin(f, "notes-1"))).toBe(false);
-		const second = await begin(f, "notes-2");
-		if (!("notes" in second)) throw new Error("Expected a fresh call");
-		expect(second.notes).toEqual([]);
-		await save(f, second);
-		await finish(f, second);
-
-		// A job finished in the same millisecond as the previous begin is still noted (`now - 1`).
-		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
-			invocationId: live.invocationId,
-			result: job_result(1),
-		});
-		const third = await begin(f, "notes-3");
-		if (!("notes" in third)) throw new Error("Expected a fresh call");
-		expect(third.notes).toEqual([{ jobNumber: 2, status: "failed", shellName: "default" }]);
-	});
-
-	test("a call that does not finish still prints its notes on the next call", async () => {
-		const f = await fixture();
-		const job = await f.seed_job({ jobNumber: 1, status: "running" });
-		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
-			invocationId: job.invocationId,
-			result: job_result(0),
-		});
-		vi.setSystemTime(Date.now() + 1000);
-
-		const first = await begin(f, "throw-1");
-		if (!("notes" in first)) throw new Error("Expected a fresh call");
-		expect(first.notes).toEqual([{ jobNumber: 1, status: "succeeded", shellName: "default" }]);
-
-		// Skip finish, as when the call throws after begin. Check the next notes before the cursor assertion.
-		const second = await begin(f, "throw-2");
-		if (!("notes" in second)) throw new Error("Expected a fresh call");
-		expect(second.notes).toEqual([{ jobNumber: 1, status: "succeeded", shellName: "default" }]);
-		expect(await cursor_rows(f)).toEqual([]);
-
-		await finish(f, second);
-		const third = await begin(f, "throw-3");
-		if (!("notes" in third)) throw new Error("Expected a fresh call");
-		expect(third.notes).toEqual([]);
-	});
-
-	test("a call that saves but does not finish still prints its notes on the next call", async () => {
-		const f = await fixture();
-		const job = await f.seed_job({ jobNumber: 1, status: "running" });
-		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
-			invocationId: job.invocationId,
-			result: job_result(0),
-		});
-		vi.setSystemTime(Date.now() + 1000);
-
-		const first = await begin(f, "saved-1");
-		if (!("notes" in first)) throw new Error("Expected a fresh call");
-		expect(first.notes).toEqual([{ jobNumber: 1, status: "succeeded", shellName: "default" }]);
-
-		// Save the shell but never finish, as when the /tmp write or the finish fails after save.
-		await save(f, first);
-		expect(await cursor_rows(f)).toEqual([]);
-
-		const second = await begin(f, "saved-2");
-		if (!("notes" in second)) throw new Error("Expected a fresh call");
-		expect(second.notes).toEqual([{ jobNumber: 1, status: "succeeded", shellName: "default" }]);
-
-		await finish(f, second);
-		const third = await begin(f, "saved-3");
-		if (!("notes" in third)) throw new Error("Expected a fresh call");
-		expect(third.notes).toEqual([]);
-	});
-
-	test("keeps a job that finishes between begin and finish visible to the next call", async () => {
-		const f = await fixture();
-		const job = await f.seed_job({ jobNumber: 1, status: "running" });
-		const begunAt = Date.now();
-		const first = await begin(f, "during-1");
-		if (!("notes" in first)) throw new Error("Expected a fresh call");
-		expect(first.notes).toEqual([]);
-		expect(first.noticeAt).toBe(begunAt - 1);
-
-		vi.setSystemTime(begunAt + 1000);
-		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
-			invocationId: job.invocationId,
-			result: job_result(0),
-		});
-		vi.setSystemTime(begunAt + 2000);
-		await save(f, first);
-		expect(await cursor_rows(f)).toEqual([]);
-		await finish(f, first);
-		expect(await cursor_rows(f)).toMatchObject([{ noticeAt: begunAt - 1 }]);
-
-		const second = await begin(f, "during-2");
-		if (!("notes" in second)) throw new Error("Expected a fresh call");
-		expect(second.notes).toEqual([{ jobNumber: 1, status: "succeeded", shellName: "default" }]);
-	});
-
-	test("notes a job that ended after twelve jobs with newer numbers", async () => {
-		const f = await fixture();
-		// A job may live 24 hours, so a low job number can end last. Job 1 keeps running while twelve
-		// newer jobs start and end.
-		const longLived = await f.seed_job({ jobNumber: 1, status: "running" });
-		for (let jobNumber = 2; jobNumber <= 13; jobNumber++) {
-			const job = await f.seed_job({ jobNumber, status: "running" });
-			// Each job finishes a second after the one before, so the notes below are ordered by finish
-			// time and not by the creation time two jobs of the same millisecond would fall back to.
-			vi.setSystemTime(Date.now() + 1000);
-			await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
-				invocationId: job.invocationId,
-				result: job_result(0),
-			});
-		}
-
-		// The newest finishes are noted first, eight of them, and the cursor moves past all twelve.
-		vi.setSystemTime(Date.now() + 1000);
-		const noted = await begin(f, "long-1");
-		if (!("notes" in noted)) throw new Error("Expected a fresh call");
-		expect(noted.notes.map((note) => note.jobNumber)).toEqual([13, 12, 11, 10, 9, 8, 7, 6]);
-		await save(f, noted);
-		await finish(f, noted);
-
-		// A fourteenth job ends, and only then does job 1. Job 1 must be noted first: its finish is the
-		// newest, though its number is the oldest of the fourteen. No read keyed on the job number can
-		// answer that, however wide its window is.
-		const later = await f.seed_job({ jobNumber: 14, status: "running" });
-		vi.setSystemTime(Date.now() + 1000);
-		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
-			invocationId: later.invocationId,
-			result: job_result(0),
-		});
-		vi.setSystemTime(Date.now() + 1000);
-		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
-			invocationId: longLived.invocationId,
-			result: job_result(0),
-		});
-		vi.setSystemTime(Date.now() + 1000);
-		const late = await begin(f, "long-2");
-		if (!("notes" in late)) throw new Error("Expected a fresh call");
-		expect(late.notes).toEqual([
-			{ jobNumber: 1, status: "succeeded", shellName: "default" },
-			{ jobNumber: 14, status: "succeeded", shellName: "default" },
-		]);
-	});
-
-	test("one member's call does not hide another member's notes", async () => {
-		const f = await fixture();
-		const job = await f.seed_job({ jobNumber: 1, status: "running" });
-		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
-			invocationId: job.invocationId,
-			result: job_result(0),
-		});
-		vi.setSystemTime(Date.now() + 1000);
-		const other = await add_member(f, "bash-jobs-noted");
-		const otherCall = await f.t.mutation(internal.ai_chat_files.begin_bash_invocation, {
-			...f.scope,
-			userId: other.userId,
-			toolCallId: "other-notes",
-			commandHash: "d".repeat(64),
-			shellName: "default",
-		});
-		if (otherCall._nay || !("notes" in otherCall._yay)) throw new Error("Expected the other member's fresh call");
-		// The job is the fixture user's, so the other member has nothing to note.
-		expect(otherCall._yay.notes).toEqual([]);
-		const mine = await begin(f, "notes-1");
-		if (!("notes" in mine)) throw new Error("Expected a fresh call");
-		expect(mine.notes).toEqual([{ jobNumber: 1, status: "succeeded", shellName: "default" }]);
+		// The finish message in the chat is the only signal now. The call carries nothing.
+		expect("notes" in begun._yay).toBe(false);
+		expect("noticeAt" in begun._yay).toBe(false);
 	});
 });
 
@@ -862,7 +635,7 @@ describe("job wakeup", () => {
 	const wakeAgent = { modelId: "gpt-5.4-nano" } as const;
 
 	/**
-	 * A user message and its reply, so the thread has a leaf to hang the job note on.
+	 * A user message and its reply, so the thread has a leaf to hang the job finish message on.
 	 */
 	async function seed_messages(f: Awaited<ReturnType<typeof fixture>>) {
 		const stored = await f.asUser.mutation(api.ai_chat.thread_messages_add, {
@@ -903,7 +676,7 @@ describe("job wakeup", () => {
 		}));
 	}
 
-	test("the finish stores a system note under the newest leaf, takes the lease and schedules the run", async () => {
+	test("the finish stores a system message under the newest leaf, takes the lease and schedules the run", async () => {
 		const f = await fixture();
 		const { assistantId } = await seed_messages(f);
 		const job = await f.seed_job({ jobNumber: 1, status: "running", wakeAgent });
@@ -914,8 +687,8 @@ describe("job wakeup", () => {
 		});
 
 		const { thread, messages, wakeups } = await read_thread(f);
-		const note = messages.at(-1);
-		expect(note).toMatchObject({
+		const message = messages.at(-1);
+		expect(message).toMatchObject({
 			parentId: assistantId,
 			createdBy: f.db.userId,
 			content: {
@@ -935,11 +708,11 @@ describe("job wakeup", () => {
 		expect(wakeups).toHaveLength(1);
 		expect(wakeups[0]).toMatchObject({
 			state: { kind: "pending" },
-			args: [{ invocationId: job.invocationId, threadId: f.scope.threadId, noteMessageId: note?._id }],
+			args: [{ invocationId: job.invocationId, threadId: f.scope.threadId, finishMessageId: message?._id }],
 		});
 	});
 
-	test("the note goes under the newest message, not under the newest root's branch", async () => {
+	test("the message goes under the newest message, not under the newest root's branch", async () => {
 		const f = await fixture();
 		const { assistantId } = await seed_messages(f);
 
@@ -973,7 +746,7 @@ describe("job wakeup", () => {
 		if (branchA._nay) throw new Error(branchA._nay.message);
 
 		// The last word in the thread is another member's, and the chat shows their message as the leaf
-		// for everyone. The note belongs there too, so this pins the newest message of the thread and
+		// for everyone. The message belongs there too, so this pins the newest message of the thread and
 		// not the newest message of the user whose job it is.
 		const other = await add_member(f, "bash-jobs-leaf");
 		vi.setSystemTime(Date.now() + 1000);
@@ -1001,17 +774,17 @@ describe("job wakeup", () => {
 		});
 
 		const { messages } = await read_thread(f);
-		const note = messages.at(-1);
-		expect(note?.content.role).toBe("system");
-		// The newest root is `user-b`, whose branch the chat does not render. Hanging the note there
+		const message = messages.at(-1);
+		expect(message?.content.role).toBe("system");
+		// The newest root is `user-b`, whose branch the chat does not render. Hanging the message there
 		// would hide it and give the woken run only that one turn to answer.
-		expect(note?.parentId).toBe(newestMessageId);
+		expect(message?.parentId).toBe(newestMessageId);
 	});
 
-	test("cuts the note's output head without splitting a character", async () => {
+	test("cuts the message's output head without splitting a character", async () => {
 		const f = await fixture();
 		await seed_messages(f);
-		// The note carries 4096 code units of each stream, and the emoji starts at unit 4095, so a plain
+		// The message carries 4096 code units of each stream, and the emoji starts at unit 4095, so a plain
 		// cut would keep only its first half. `[truncated]` must follow the last whole character.
 		const emoji = String.fromCodePoint(0x1f389);
 		const job = await f.seed_job({ jobNumber: 1, status: "running", wakeAgent });
@@ -1024,7 +797,7 @@ describe("job wakeup", () => {
 		expect(messages.at(-1)?.content.parts[0].text).toContain(`stdout:\n${"x".repeat(4095)}\n[truncated]\nstderr:`);
 	});
 
-	test("a job that ends while a chat run streams does not wake; an expired lease does not block", async () => {
+	test("a job that ends while a chat run streams stores the message but schedules nothing; an expired lease does not block", async () => {
 		const f = await fixture();
 		await seed_messages(f);
 		const now = Date.now();
@@ -1036,8 +809,11 @@ describe("job wakeup", () => {
 			invocationId: first.invocationId,
 			result: job_result(0),
 		});
+		// The message is stored at once, so history order stays true. The running turn injects it at
+		// its next step boundary; no lease is taken and no wake run is scheduled.
 		let state = await read_thread(f);
-		expect(state.messages).toHaveLength(2);
+		expect(state.messages).toHaveLength(3);
+		expect(state.messages.at(-1)?.content.role).toBe("system");
 		expect(state.thread?.activeRun).toEqual({ kind: "chat", expiresAt: now + 60_000 });
 		expect(state.wakeups).toHaveLength(0);
 
@@ -1048,12 +824,12 @@ describe("job wakeup", () => {
 			result: job_result(0),
 		});
 		state = await read_thread(f);
-		expect(state.messages).toHaveLength(3);
+		expect(state.messages).toHaveLength(4);
 		expect(state.thread?.activeRun?.kind).toBe("job_wakeup");
 		expect(state.wakeups).toHaveLength(1);
 	});
 
-	test("a job without the flag never wakes, and a settle with no result wakes with the flushed head", async () => {
+	test("a job without the flag still posts and wakes, and a settle with no result wakes with the flushed head", async () => {
 		const f = await fixture();
 		await seed_messages(f);
 		const plain = await f.seed_job({ jobNumber: 1, status: "running" });
@@ -1061,7 +837,9 @@ describe("job wakeup", () => {
 			invocationId: plain.invocationId,
 			result: job_result(0),
 		});
-		expect((await read_thread(f)).messages).toHaveLength(2);
+		// No flag, same message. The wake run answers with the default model (see the door test).
+		expect((await read_thread(f)).messages).toHaveLength(3);
+		await f.t.mutation(internal.ai_chat.thread_run_end, { threadId: f.scope.threadId, kind: "job_wakeup" });
 
 		const start = Date.now();
 		const armed = await f.seed_job({ jobNumber: 2, status: "running", wakeAgent });
@@ -1079,18 +857,17 @@ describe("job wakeup", () => {
 		expect(messages.at(-1)?.content.parts[0].text).toBe(
 			"Background job 2 finished in shell default with exit 124.\nstdout:\npartial\n\nstderr:\n\nFull output: jobs -o 2 or /shells/default/transcript.",
 		);
-		expect(wakeups).toHaveLength(1);
+		expect(wakeups).toHaveLength(2);
 	});
 
-	test("the note of a settled job reports the Activity code, not the late result's", async () => {
+	test("the message of a settled job reports the Activity code, not the late result's", async () => {
 		const f = await fixture();
 		await seed_messages(f);
 		const start = Date.now();
 		const job = await f.seed_job({ jobNumber: 1, status: "running", wakeAgent });
-		// A chat run holds the thread lease, so the watchdog's own note is dropped and this finish is
-		// the last chance to tell the agent. The slow worker then stores the 0 of a script that finished
-		// on its own, and the note must not say the job succeeded while `wait`, `jobs -o` and the feed
-		// all say it timed out.
+		// A chat run holds the thread lease, so the watchdog stores its message but schedules nothing.
+		// The slow worker then stores the 0 of a script that finished on its own, and the message must
+		// not say the job succeeded while `wait`, `jobs -o` and the feed all say it timed out.
 		vi.setSystemTime(start + PLACEHOLDER_MS);
 		expect(await f.t.mutation(internal.ai_chat.thread_run_begin, { threadId: f.scope.threadId })).toBe(true);
 		await f.t.mutation(internal.ai_chat_files.timeout_bash_job, {
@@ -1108,7 +885,7 @@ describe("job wakeup", () => {
 		);
 	});
 
-	test("the wakeups stop chaining without the user and chain again after a chat request", async () => {
+	test("wakeups chain without the user up to any count, and a chat request still takes the lease", async () => {
 		const f = await fixture();
 		await seed_messages(f);
 		// A woken turn gives the lease back when it ends, so the job it armed can wake again.
@@ -1120,34 +897,25 @@ describe("job wakeup", () => {
 			});
 			await f.t.mutation(internal.ai_chat.thread_run_end, { threadId: f.scope.threadId, kind: "job_wakeup" });
 		};
-		for (const jobNumber of [1, 2, 3, 4, 5]) await wake_once(jobNumber);
+		for (const jobNumber of [1, 2, 3, 4, 5, 6, 7]) await wake_once(jobNumber);
 		const chained = await read_thread(f);
-		expect(chained.wakeups).toHaveLength(5);
-		expect(chained.thread?.bashJobWakeupCount).toBe(5);
-		// Nothing answered these notes, so each one is the thread's newest message when the next job
-		// ends, and the notes form one chain. A rule that skipped system messages would hang all five
+		expect(chained.wakeups).toHaveLength(7);
+		// Nothing answered these messages, so each one is the thread's newest message when the next job
+		// ends, and the messages form one chain. A rule that skipped system messages would hang all seven
 		// off the last user message instead, and the chat would render only the newest of them.
-		const notes = chained.messages.filter((message) => message.content.role === "system");
-		expect(notes).toHaveLength(5);
-		expect(notes.slice(1).map((note) => note.parentId)).toEqual(notes.slice(0, -1).map((note) => note._id));
-
-		// The sixth job still writes its note, and the note says why nothing answers it.
-		await wake_once(6);
-		const capped = await read_thread(f);
-		expect(capped.wakeups).toHaveLength(5);
-		expect(capped.thread?.activeRun).toBeUndefined();
-		expect(capped.messages.at(-1)?.content.parts[0].text).toContain(
-			"Nothing answered this note: 5 job wakeups already started in a row without a message from the user.",
+		const messages = chained.messages.filter((message) => message.content.role === "system");
+		expect(messages).toHaveLength(7);
+		expect(messages.slice(1).map((message) => message.parentId)).toEqual(
+			messages.slice(0, -1).map((message) => message._id),
 		);
 
 		expect(await f.t.mutation(internal.ai_chat.thread_run_begin, { threadId: f.scope.threadId })).toBe(true);
-		expect((await read_thread(f)).thread?.bashJobWakeupCount).toBeUndefined();
 		await f.t.mutation(internal.ai_chat.thread_run_end, { threadId: f.scope.threadId, kind: "chat" });
-		await wake_once(7);
-		expect((await read_thread(f)).wakeups).toHaveLength(6);
+		await wake_once(8);
+		expect((await read_thread(f)).wakeups).toHaveLength(8);
 	});
 
-	test("a job whose member lost access writes no note and takes no lease", async () => {
+	test("a job whose member lost access writes no message and takes no lease", async () => {
 		const f = await fixture();
 		await seed_messages(f);
 		const job = await f.seed_job({ jobNumber: 1, status: "running", wakeAgent });
@@ -1160,7 +928,7 @@ describe("job wakeup", () => {
 		expect(state.wakeups).toHaveLength(0);
 	});
 
-	test("a job whose member lost the role writes no note either", async () => {
+	test("a job whose member lost the role writes no message either", async () => {
 		const f = await fixture();
 		await seed_messages(f);
 		const job = await f.seed_job({ jobNumber: 1, status: "running", wakeAgent, allowDbFilesMkdir: true });
@@ -1179,8 +947,8 @@ describe("job wakeup", () => {
 			});
 		});
 
-		// `viewer` reads and does not write. The note of an Agent-mode job starts a turn that may
-		// write app files, and the wakeup run is refused anyway, so no note is stored.
+		// `viewer` reads and does not write. The message of an Agent-mode job starts a turn that may
+		// write app files, and the wakeup run is refused anyway, so no message is stored.
 		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 			invocationId: job.invocationId,
 			result: job_result(0),
@@ -1205,7 +973,7 @@ describe("job wakeup", () => {
 		expect(afterNoRole.wakeups).toHaveLength(0);
 	});
 
-	test("a result stored after the watchdog settled adds no second note", async () => {
+	test("a result stored after the watchdog settled adds no second message", async () => {
 		const f = await fixture();
 		await seed_messages(f);
 		const start = Date.now();
@@ -1218,7 +986,7 @@ describe("job wakeup", () => {
 		const settled = await read_thread(f);
 		expect(settled.messages).toHaveLength(3);
 
-		// The woken turn ended and gave the lease back, so the note the settle already stored is the
+		// The woken turn ended and gave the lease back, so the message the settle already stored is the
 		// only thing that can stop a second one. The worker was alive after all, and its real output
 		// is still kept.
 		await f.t.mutation(internal.ai_chat.thread_run_end, { threadId: f.scope.threadId, kind: "job_wakeup" });
@@ -1235,13 +1003,14 @@ describe("job wakeup", () => {
 		expect(state.wakeups).toHaveLength(1);
 	});
 
-	test("a settle that could not wake leaves the note to the late result", async () => {
+	test("a settle during a run stores the message and the late result adds nothing", async () => {
 		const f = await fixture();
 		await seed_messages(f);
 		const start = Date.now();
 		const job = await f.seed_job({ jobNumber: 1, status: "running", wakeAgent });
-		// A chat run still holds the thread when the watchdog settles, so that settle drops its own
-		// wake. The lease has to outlive the settle below, which happens ten minutes in.
+		// A chat run still holds the thread when the watchdog settles, so that settle stores its
+		// message but schedules nothing. The lease has to outlive the settle below, which happens ten
+		// minutes in.
 		await f.t.run((ctx) =>
 			ctx.db.patch("ai_chat_threads", f.scope.threadId, {
 				activeRun: { kind: "chat", expiresAt: start + PLACEHOLDER_MS + 60_000 },
@@ -1253,14 +1022,14 @@ describe("job wakeup", () => {
 			expectedDeadlineAt: start + PLACEHOLDER_MS,
 		});
 		const settled = await read_thread(f);
-		expect(settled.messages).toHaveLength(2);
+		expect(settled.messages).toHaveLength(3);
 		expect(settled.wakeups).toHaveLength(0);
 		// The settle really ran. A watchdog that did nothing would leave the row running, and the
 		// finish below would then be an ordinary first wake that proves nothing about this case.
 		expect((await f.read(job.invocationId)).row).toMatchObject({ status: "interrupted" });
 
-		// The chat turn ended, and then the slow worker reported. This is the job's last chance to
-		// tell the agent it ended.
+		// The chat turn ended, and then the slow worker reported. The message is already stored, so
+		// this result only stores its output and schedules nothing.
 		await f.t.mutation(internal.ai_chat.thread_run_end, { threadId: f.scope.threadId, kind: "chat" });
 		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 			invocationId: job.invocationId,
@@ -1268,7 +1037,7 @@ describe("job wakeup", () => {
 		});
 		const woken = await read_thread(f);
 		expect(woken.messages).toHaveLength(3);
-		expect(woken.wakeups).toHaveLength(1);
+		expect(woken.wakeups).toHaveLength(0);
 	});
 
 	test("arm_bash_job_wakeup arms the caller's live jobs only", async () => {
@@ -1324,10 +1093,14 @@ describe("job wakeup", () => {
 		});
 		expect(context._yay.messages.map((message) => message.clientGeneratedMessageId)).toEqual(["user-1", "assistant-1"]);
 
+		// A job with no flag still opens the door, with the default model. This is also the shape of
+		// a job a job started, whose worker never carries the flag.
 		const plain = await f.seed_job({ jobNumber: 2, status: "running" });
-		expect(await f.t.query(internal.ai_chat.get_job_wakeup_context, { invocationId: plain.invocationId })).toEqual({
-			_nay: { message: "Not found" },
+		const plainContext = await f.t.query(internal.ai_chat.get_job_wakeup_context, {
+			invocationId: plain.invocationId,
 		});
+		if (plainContext._nay) throw new Error(plainContext._nay.message);
+		expect(plainContext._yay.modelId).toBe("gpt-5.4-nano");
 
 		// A member who was removed and invited again gets a new lifetime, and the job still names the
 		// older one. The step below bumps that counter straight in the row, which is the one thing a
@@ -1355,6 +1128,351 @@ describe("job wakeup", () => {
 		expect(await f.t.query(internal.ai_chat.get_job_wakeup_context, { invocationId: job.invocationId })).toEqual({
 			_nay: { message: "Unauthorized" },
 		});
+	});
+
+	test("get_chat_reply_parent chains under a mid-run finish message and nothing else", async () => {
+		const f = await fixture();
+		const { assistantId } = await seed_messages(f);
+		const job = await f.seed_job({ jobNumber: 1, status: "running", wakeAgent });
+		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
+			invocationId: job.invocationId,
+			result: job_result(0),
+		});
+		const finishId = (await read_thread(f)).messages.at(-1)!._id;
+		// The reply captured its parent before the finish landed; it must chain under the finish.
+		expect(
+			await f.t.query(internal.ai_chat.get_chat_reply_parent, {
+				threadId: f.scope.threadId,
+				fallbackParentId: assistantId,
+			}),
+		).toBe(finishId);
+		// The fallback itself is newest: nothing changed.
+		expect(
+			await f.t.query(internal.ai_chat.get_chat_reply_parent, {
+				threadId: f.scope.threadId,
+				fallbackParentId: finishId,
+			}),
+		).toBe(finishId);
+		const aborted = await f.asUser.mutation(api.ai_chat.thread_messages_add, {
+			membershipId: f.db.membershipId,
+			threadId: f.scope.threadId,
+			parentId: assistantId,
+			messages: [
+				{
+					clientGeneratedMessageId: "abort-reply",
+					content: { id: "abort-reply", role: "assistant", parts: [{ type: "text", text: "stopped" }] },
+				},
+			],
+		});
+		if (aborted._nay) throw new Error(aborted._nay.message);
+		expect((await read_thread(f)).messages.find((message) => message._id === aborted._yay.ids[0])?.parentId).toBe(
+			finishId,
+		);
+	});
+
+	test("get_chat_reply_parent ignores a user quote of the finish words", async () => {
+		const f = await fixture();
+		const { assistantId } = await seed_messages(f);
+		const stored = await f.asUser.mutation(api.ai_chat.thread_messages_add, {
+			membershipId: f.db.membershipId,
+			threadId: f.scope.threadId,
+			parentId: assistantId,
+			messages: [
+				{
+					clientGeneratedMessageId: "user-quote",
+					content: {
+						id: "user-quote",
+						role: "user",
+						parts: [{ type: "text", text: "Background job 1 finished in shell default, really?" }],
+					},
+				},
+			],
+		});
+		if (stored._nay) throw new Error(stored._nay.message);
+		expect(
+			await f.t.query(internal.ai_chat.get_chat_reply_parent, {
+				threadId: f.scope.threadId,
+				fallbackParentId: assistantId,
+			}),
+		).toBe(assistantId);
+	});
+
+	test("get_chat_reply_parent walks a chain of mid-run finishes under the captured parent", async () => {
+		const f = await fixture();
+		const { assistantId } = await seed_messages(f);
+		const first = await f.seed_job({ jobNumber: 1, status: "running", wakeAgent });
+		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
+			invocationId: first.invocationId,
+			result: job_result(0),
+		});
+		const second = await f.seed_job({ jobNumber: 2, status: "running", wakeAgent });
+		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
+			invocationId: second.invocationId,
+			result: job_result(0),
+		});
+		const finishId = (await read_thread(f)).messages.at(-1)!._id;
+		expect(
+			await f.t.query(internal.ai_chat.get_chat_reply_parent, {
+				threadId: f.scope.threadId,
+				fallbackParentId: assistantId,
+			}),
+		).toBe(finishId);
+		const aborted = await f.asUser.mutation(api.ai_chat.thread_messages_add, {
+			membershipId: f.db.membershipId,
+			threadId: f.scope.threadId,
+			parentId: assistantId,
+			messages: [
+				{
+					clientGeneratedMessageId: "abort-two-finishes",
+					content: { id: "abort-two-finishes", role: "assistant", parts: [{ type: "text", text: "stopped" }] },
+				},
+			],
+		});
+		if (aborted._nay) throw new Error(aborted._nay.message);
+		expect((await read_thread(f)).messages.find((message) => message._id === aborted._yay.ids[0])?.parentId).toBe(
+			finishId,
+		);
+	});
+
+	test("get_chat_reply_parent keeps an older captured parent when the finish hangs further down", async () => {
+		const f = await fixture();
+		const { assistantId } = await seed_messages(f);
+		const later = await f.asUser.mutation(api.ai_chat.thread_messages_add, {
+			membershipId: f.db.membershipId,
+			threadId: f.scope.threadId,
+			parentId: assistantId,
+			messages: [
+				{
+					clientGeneratedMessageId: "user-2",
+					content: { id: "user-2", role: "user", parts: [{ type: "text", text: "later" }] },
+				},
+			],
+		});
+		if (later._nay) throw new Error(later._nay.message);
+		const job = await f.seed_job({ jobNumber: 1, status: "running", wakeAgent });
+		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
+			invocationId: job.invocationId,
+			result: job_result(0),
+		});
+		const finishId = (await read_thread(f)).messages.at(-1)!._id;
+		expect(finishId).not.toBe(assistantId);
+		expect(
+			await f.t.query(internal.ai_chat.get_chat_reply_parent, {
+				threadId: f.scope.threadId,
+				fallbackParentId: assistantId,
+			}),
+		).toBe(assistantId);
+		const regenerated = await f.asUser.mutation(api.ai_chat.thread_messages_add, {
+			membershipId: f.db.membershipId,
+			threadId: f.scope.threadId,
+			parentId: assistantId,
+			messages: [
+				{
+					clientGeneratedMessageId: "regenerate-a1",
+					content: { id: "regenerate-a1", role: "assistant", parts: [{ type: "text", text: "new a1" }] },
+				},
+			],
+		});
+		if (regenerated._nay) throw new Error(regenerated._nay.message);
+		expect(
+			(await read_thread(f)).messages.find((message) => message._id === regenerated._yay.ids[0])?.parentId,
+		).toBe(assistantId);
+	});
+
+	test("thread_run_handover_to_wakeup flips one chat lease and refuses the rest", async () => {
+		const f = await fixture();
+		expect(
+			await f.t.mutation(internal.ai_chat.thread_run_handover_to_wakeup, { threadId: f.scope.threadId }),
+		).toBe(false);
+		await f.t.mutation(internal.ai_chat.thread_run_begin, { threadId: f.scope.threadId });
+		expect(
+			await f.t.mutation(internal.ai_chat.thread_run_handover_to_wakeup, { threadId: f.scope.threadId }),
+		).toBe(true);
+		expect((await read_thread(f)).thread?.activeRun?.kind).toBe("job_wakeup");
+		// The second tab hands over nothing: exactly one wake run follows.
+		expect(
+			await f.t.mutation(internal.ai_chat.thread_run_handover_to_wakeup, { threadId: f.scope.threadId }),
+		).toBe(false);
+		// A chat release no longer clears the woken lease.
+		await f.t.mutation(internal.ai_chat.thread_run_end, { threadId: f.scope.threadId, kind: "chat" });
+		expect((await read_thread(f)).thread?.activeRun?.kind).toBe("job_wakeup");
+	});
+
+	test("thread_run_extend_wakeup stretches a live wake lease and refuses the rest", async () => {
+		const f = await fixture();
+		expect(
+			await f.t.mutation(internal.ai_chat.thread_run_extend_wakeup, { threadId: f.scope.threadId }),
+		).toBe(false);
+		const now = Date.now();
+		await f.t.mutation(internal.ai_chat.thread_run_begin, { threadId: f.scope.threadId });
+		expect(
+			await f.t.mutation(internal.ai_chat.thread_run_extend_wakeup, { threadId: f.scope.threadId }),
+		).toBe(false);
+		expect(
+			await f.t.mutation(internal.ai_chat.thread_run_handover_to_wakeup, { threadId: f.scope.threadId }),
+		).toBe(true);
+		vi.setSystemTime(now + 60_000);
+		expect(
+			await f.t.mutation(internal.ai_chat.thread_run_extend_wakeup, { threadId: f.scope.threadId }),
+		).toBe(true);
+		expect((await read_thread(f)).thread?.activeRun).toEqual({
+			kind: "job_wakeup",
+			expiresAt: now + 60_000 + 10 * 60 * 1000,
+		});
+		// Past the extended expiry the lease is gone again.
+		vi.setSystemTime(now + 60_000 + 10 * 60 * 1000 + 1);
+		expect(
+			await f.t.mutation(internal.ai_chat.thread_run_extend_wakeup, { threadId: f.scope.threadId }),
+		).toBe(false);
+	});
+
+	test("get_wake_retry_after_ms names the wake lease end and null otherwise", async () => {
+		const f = await fixture();
+		expect(await f.t.query(internal.ai_chat.get_wake_retry_after_ms, { threadId: f.scope.threadId })).toBeNull();
+		const now = Date.now();
+		await f.t.run((ctx) =>
+			ctx.db.patch("ai_chat_threads", f.scope.threadId, {
+				activeRun: { kind: "job_wakeup", expiresAt: now + 60_000 },
+			}),
+		);
+		expect(await f.t.query(internal.ai_chat.get_wake_retry_after_ms, { threadId: f.scope.threadId })).toBe(61_000);
+	});
+
+	test("thread_run_begin_wakeup takes a free lease and refuses a live run", async () => {
+		const f = await fixture();
+		expect(await f.t.mutation(internal.ai_chat.thread_run_begin_wakeup, { threadId: f.scope.threadId })).toBe(true);
+		expect((await read_thread(f)).thread?.activeRun?.kind).toBe("job_wakeup");
+		expect(await f.t.mutation(internal.ai_chat.thread_run_begin_wakeup, { threadId: f.scope.threadId })).toBe(false);
+		await f.t.mutation(internal.ai_chat.thread_run_end, { threadId: f.scope.threadId, kind: "job_wakeup" });
+		await f.t.mutation(internal.ai_chat.thread_run_begin, { threadId: f.scope.threadId });
+		expect(await f.t.mutation(internal.ai_chat.thread_run_begin_wakeup, { threadId: f.scope.threadId })).toBe(false);
+	});
+
+	test("store_job_wakeup_reply hangs under a later finish on the same branch", async () => {
+		const f = await fixture();
+		await seed_messages(f);
+		const first = await f.seed_job({ jobNumber: 1, status: "running" });
+		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
+			invocationId: first.invocationId,
+			result: job_result(0),
+		});
+		await f.t.mutation(internal.ai_chat.thread_run_end, { threadId: f.scope.threadId, kind: "job_wakeup" });
+		const job1FinishId = (await read_thread(f)).messages.at(-1)!._id;
+		const second = await f.seed_job({ jobNumber: 2, status: "running" });
+		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
+			invocationId: second.invocationId,
+			result: job_result(0),
+		});
+		await f.t.mutation(internal.ai_chat.thread_run_end, { threadId: f.scope.threadId, kind: "job_wakeup" });
+		const job2FinishId = (await read_thread(f)).messages.at(-1)!._id;
+
+		await f.t.mutation(internal.ai_chat.store_job_wakeup_reply, {
+			threadId: f.scope.threadId,
+			userId: f.scope.userId,
+			finishMessageId: job1FinishId,
+			clientGeneratedMessageId: "wake-1",
+			content: { id: "wake-1", role: "assistant", parts: [{ type: "text", text: "both done" }] },
+		});
+		const reply = (await read_thread(f)).messages.find((message) => message.clientGeneratedMessageId === "wake-1");
+		expect(reply?.parentId).toBe(job2FinishId);
+	});
+
+	test("store_job_wakeup_reply hangs under a chat reply that chained onto the finish", async () => {
+		const f = await fixture();
+		await seed_messages(f);
+		const job = await f.seed_job({ jobNumber: 1, status: "running" });
+		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
+			invocationId: job.invocationId,
+			result: job_result(0),
+		});
+		await f.t.mutation(internal.ai_chat.thread_run_end, { threadId: f.scope.threadId, kind: "job_wakeup" });
+		const finishId = (await read_thread(f)).messages.at(-1)!._id;
+		const stored = await f.asUser.mutation(api.ai_chat.thread_messages_add, {
+			membershipId: f.db.membershipId,
+			threadId: f.scope.threadId,
+			parentId: finishId,
+			messages: [
+				{
+					clientGeneratedMessageId: "chat-reply",
+					content: { id: "chat-reply", role: "assistant", parts: [{ type: "text", text: "working" }] },
+				},
+			],
+		});
+		if (stored._nay) throw new Error(stored._nay.message);
+
+		await f.t.mutation(internal.ai_chat.store_job_wakeup_reply, {
+			threadId: f.scope.threadId,
+			userId: f.scope.userId,
+			finishMessageId: finishId,
+			clientGeneratedMessageId: "wake-1",
+			content: { id: "wake-1", role: "assistant", parts: [{ type: "text", text: "job done" }] },
+		});
+		const reply = (await read_thread(f)).messages.find((message) => message.clientGeneratedMessageId === "wake-1");
+		expect(reply?.parentId).toBe(stored._yay.ids[0]);
+	});
+
+	test("store_job_wakeup_reply stays on the finish branch when a newer other-root exists", async () => {
+		const f = await fixture();
+		await seed_messages(f);
+		const job = await f.seed_job({ jobNumber: 1, status: "running" });
+		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
+			invocationId: job.invocationId,
+			result: job_result(0),
+		});
+		await f.t.mutation(internal.ai_chat.thread_run_end, { threadId: f.scope.threadId, kind: "job_wakeup" });
+		const finishId = (await read_thread(f)).messages.at(-1)!._id;
+		vi.setSystemTime(Date.now() + 1000);
+		const otherRoot = await f.asUser.mutation(api.ai_chat.thread_messages_add, {
+			membershipId: f.db.membershipId,
+			threadId: f.scope.threadId,
+			parentId: null,
+			messages: [
+				{
+					clientGeneratedMessageId: "other-root",
+					content: { id: "other-root", role: "user", parts: [{ type: "text", text: "other branch" }] },
+				},
+			],
+		});
+		if (otherRoot._nay) throw new Error(otherRoot._nay.message);
+
+		await f.t.mutation(internal.ai_chat.store_job_wakeup_reply, {
+			threadId: f.scope.threadId,
+			userId: f.scope.userId,
+			finishMessageId: finishId,
+			clientGeneratedMessageId: "wake-1",
+			content: { id: "wake-1", role: "assistant", parts: [{ type: "text", text: "job done" }] },
+		});
+		const reply = (await read_thread(f)).messages.find((message) => message.clientGeneratedMessageId === "wake-1");
+		expect(reply?.parentId).toBe(finishId);
+		expect(reply?.parentId).not.toBe(otherRoot._yay.ids[0]);
+	});
+
+	test("list_finish_messages_since returns linked finishes since the cutoff, oldest first", async () => {
+		const f = await fixture();
+		await seed_messages(f);
+		const start = Date.now();
+		const first = await f.seed_job({ jobNumber: 1, status: "running", wakeAgent });
+		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
+			invocationId: first.invocationId,
+			result: job_result(0),
+		});
+		vi.setSystemTime(start + 1000);
+		const second = await f.seed_job({ jobNumber: 2, status: "running", wakeAgent });
+		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
+			invocationId: second.invocationId,
+			result: job_result(0),
+		});
+		const fresh = await f.t.query(internal.ai_chat.list_finish_messages_since, {
+			threadId: f.scope.threadId,
+			sinceMs: start,
+		});
+		expect(fresh.map((row) => row.invocationId)).toEqual([first.invocationId, second.invocationId]);
+		expect(fresh[0]?.text).toContain("Background job 1 finished");
+		const later = await f.t.query(internal.ai_chat.list_finish_messages_since, {
+			threadId: f.scope.threadId,
+			sinceMs: start + 1000,
+		});
+		expect(later.map((row) => row.invocationId)).toEqual([second.invocationId]);
 	});
 });
 
@@ -1602,7 +1720,7 @@ describe("handle_bash_job_complete", () => {
 		expect(after.transcript[1]).toContain("job 1 finished (exit 1)");
 	});
 
-	test("a Stop on a queued job settles canceled and the row is interrupted", async () => {
+	test("a Stop on a queued job settles canceled, posts a finish message and schedules a wake", async () => {
 		const f = await fixture();
 		const job = await f.seed_job({ jobNumber: 1, stopRequestedAt: Date.now() });
 		await f.t.mutation(
@@ -1612,6 +1730,30 @@ describe("handle_bash_job_complete", () => {
 		const after = await f.read(job.invocationId);
 		expect(after.row).toMatchObject({ status: "interrupted" });
 		expect(after.activity).toMatchObject({ status: "canceled" });
+		const posted = await f.t.run(async (ctx) => {
+			const messages = await ctx.db
+				.query("ai_chat_threads_messages_aisdk_5")
+				.withIndex("by_organization_workspace_thread", (q) =>
+					q
+						.eq("organizationId", f.db.organizationId)
+						.eq("workspaceId", f.db.workspaceId)
+						.eq("threadId", f.scope.threadId),
+				)
+				.collect();
+			const wakeups = (await ctx.db.system.query("_scheduled_functions").collect()).filter(
+				(scheduled) => scheduled.name === getFunctionName(internal.ai_chat.run_job_wakeup),
+			);
+			return { messages, wakeups };
+		});
+		expect(
+			posted.messages.some(
+				(message) =>
+					message.content.role === "system" &&
+					typeof message.content.parts?.[0]?.text === "string" &&
+					message.content.parts[0].text.includes("Background job 1 finished"),
+			),
+		).toBe(true);
+		expect(posted.wakeups).toHaveLength(1);
 	});
 
 	test("a success after a stop settles canceled; a plain success and a superseded worker do nothing", async () => {
@@ -1784,6 +1926,34 @@ describe("poll_bash_job", () => {
 			stopRequested: false,
 			authorized: false,
 		});
+	});
+});
+
+describe("list_live_thread_jobs", () => {
+	test("returns the caller's live jobs only", async () => {
+		const f = await fixture();
+		await f.seed_job({ jobNumber: 1, status: "queued" });
+		await f.seed_job({ jobNumber: 2, status: "running" });
+		await f.seed_job({ jobNumber: 3, status: "running", stopRequestedAt: Date.now() });
+		const done = await f.seed_job({ jobNumber: 4, status: "running" });
+		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
+			invocationId: done.invocationId,
+			result: job_result(0),
+		});
+		const mine = await f.asUser.query(api.ai_chat_files.list_live_thread_jobs, {
+			membershipId: f.db.membershipId,
+			threadId: f.scope.threadId,
+		});
+		expect(mine.map((job) => job.jobNumber)).toEqual([1, 2, 3]);
+		// Another member sees none of these jobs.
+		const other = await add_member(f, "bash-jobs-live");
+		const theirs = await f.t
+			.withIdentity({ issuer: "https://clerk.test", external_id: other.userId })
+			.query(api.ai_chat_files.list_live_thread_jobs, {
+				membershipId: other.membershipId,
+				threadId: f.scope.threadId,
+			});
+		expect(theirs).toEqual([]);
 	});
 });
 

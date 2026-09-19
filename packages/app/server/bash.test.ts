@@ -4177,6 +4177,7 @@ describe("bash_run_command", () => {
 			expect(launched.stderr).toBe(
 				"bash: started job 1 in shell default. Follow it with `jobs`, or in the Notifications panel.\n",
 			);
+			expect(launched.metadata.launchedJobNumbers).toEqual([1]);
 			expect((await runner.run("echo $!")).stdout).toBe("0\n");
 
 			const queued = await job_row(runner, 1);
@@ -4285,7 +4286,8 @@ describe("bash_run_command", () => {
 			const runner = await create_bash_runner();
 			// The watchdog settles a job at its deadline while a slow worker is still storing the result
 			// of a script that finished on its own. The job then holds a `timed_out` Activity and a
-			// stored exit code of 0. `jobs -a` and the note say "timed out", so both commands must too.
+			// stored exit code of 0. `jobs -o` and `wait` must report 124, like the finish line
+			// (`with exit 124`), not the stored 0.
 			expect((await runner.run("echo late &")).metadata.exitCode).toBe(0);
 			expect((await run_job(runner, 1)).result).toMatchObject({ metadata: { exitCode: 0 } });
 			const activity = await activity_of(runner, 1);
@@ -4353,7 +4355,7 @@ describe("bash_run_command", () => {
 			expect(read.stdout.startsWith("1\n2\n3\n")).toBe(true);
 			expect(read.stdout).toContain("\n[truncated]\n");
 			expect(read.stderr).toBe(
-				"bash: job 1 done. Output: /shells/default/transcript\n[job 1 exit 0]\n[job 1 exit 0]\nbash: jobs: this call already read job output twice; read the shell transcript\n",
+				"[job 1 exit 0]\n[job 1 exit 0]\nbash: jobs: this call already read job output twice; read the shell transcript\n",
 			);
 		});
 
@@ -4405,7 +4407,7 @@ describe("bash_run_command", () => {
 			const done = await runner.run("jobs -o 1");
 			expect(done.metadata.exitCode).toBe(0);
 			expect(done.stdout).toBe("first\n");
-			expect(done.stderr.startsWith("bash: job 1 stopped. Output: /shells/default/transcript\nwarn\n")).toBe(true);
+			expect(done.stderr.startsWith("warn\n")).toBe(true);
 			expect(done.stderr.endsWith("[job 1 exit 143]\n")).toBe(true);
 		});
 
@@ -4435,78 +4437,20 @@ describe("bash_run_command", () => {
 			expect(paused.job?.liveOutput?.stdout).toBe("A�B");
 		});
 
-		test("prints the finished-job note once, on the next fresh call only", async () => {
+		test("an unrelated fresh call after a job finish carries no job text", async () => {
 			const runner = await create_bash_runner();
 			expect((await runner.run("true", "before")).metadata.exitCode).toBe(0);
 			expect((await runner.run("echo bg &")).metadata.exitCode).toBe(0);
 			await run_job(runner, 1);
+			// The finish message in the chat is the only signal now. Neither the rejoin nor any
+			// fresh call carries job text in its output.
 			const rejoined = await runner.run("true", "before");
 			expect(rejoined.stderr).toBe("");
-			const noted = await runner.run("echo fg");
-			expect(noted.stdout).toBe("fg\n");
-			expect(noted.stderr).toBe("bash: job 1 done. Output: /shells/default/transcript\n");
+			const fresh = await runner.run("echo fg");
+			expect(fresh.stdout).toBe("fg\n");
+			expect(fresh.stderr).toBe("");
 			expect((await runner.run("true")).stderr).toBe("");
 		});
-
-		test("prints the finished-job note on a fresh call after losing the begin reply", async () => {
-			const runner = await create_bash_runner();
-			expect((await runner.run("echo bg &")).metadata.exitCode).toBe(0);
-			await run_job(runner, 1);
-
-			const mutate = runner.runMutation.getMockImplementation()!;
-			let lostReply = false;
-			runner.runMutation.mockImplementation(async (ref, args) => {
-				const result = await mutate(ref, args);
-				if (!lostReply && function_name_of(ref) === "ai_chat_files:begin_bash_invocation") {
-					lostReply = true;
-					throw new Error("Lost begin reply");
-				}
-				return result;
-			});
-			const lost = await runner.run("echo lost", "lost-begin");
-			expect(lost.metadata.exitCode).toBe(3);
-			expect(lost.stdout).toBe("");
-			expect(lost.stderr).not.toContain("bash: job 1 done");
-
-		const second = await runner.run("echo fresh");
-		expect(second.stdout).toBe("fresh\n");
-		expect(second.stderr).toBe("bash: job 1 done. Output: /shells/default/transcript\n");
-		expect((await runner.run("true")).stderr).toBe("");
-	});
-
-	test("prints the finished-job note on a fresh call after losing the finish reply", async () => {
-		const runner = await create_bash_runner();
-		expect((await runner.run("echo bg &")).metadata.exitCode).toBe(0);
-		await run_job(runner, 1);
-		// Mock only the clock, and restore it in `finally`. Without the restore the frozen
-		// `Date.now()` leaks into later tests, and a later `wait -t` loops its sleep until
-		// the test times out.
-		vi.useFakeTimers({ toFake: ["Date"] });
-		try {
-			vi.setSystemTime(Date.now() + 1000);
-
-			// The shell save lands but the finish never does, so the notes printed into the lost
-			// result never reach the agent. The cursor must stay put and the notes must print again.
-			const mutate = runner.runMutation.getMockImplementation()!;
-			let lostReply = false;
-			runner.runMutation.mockImplementation(async (ref, args) => {
-				if (!lostReply && function_name_of(ref) === "ai_chat_files:finish_bash_invocation") {
-					lostReply = true;
-					throw new Error("Lost finish reply");
-				}
-				return await mutate(ref, args);
-			});
-			const lost = await runner.run("echo lost", "lost-finish").catch((error: unknown) => error);
-			expect(lost).toBeInstanceOf(Error);
-
-			const second = await runner.run("echo fresh");
-			expect(second.stdout).toBe("fresh\n");
-			expect(second.stderr).toBe("bash: job 1 done. Output: /shells/default/transcript\n");
-			expect((await runner.run("true")).stderr).toBe("");
-		} finally {
-			vi.useRealTimers();
-		}
-	});
 
 	test("a job cannot change its shell and starts in the live cwd of the &", async () => {
 			const runner = await create_bash_runner();
@@ -4519,13 +4463,13 @@ describe("bash_run_command", () => {
 			expect((await runner.run("pwd; echo x=$x")).stdout).toBe(`${test_db_files_mount}\nx=\n`);
 		});
 
-		test("refuses the 5th live job across the workspace and stops querying after 3 refusals", async () => {
+		test("refuses the 11th live job across the workspace and stops querying after 3 refusals", async () => {
 			const runner = await create_bash_runner();
-			for (let n = 1; n <= 4; n++) expect((await runner.run("sleep 1 &")).metadata.exitCode).toBe(0);
+			for (let n = 1; n <= 10; n++) expect((await runner.run("sleep 1 &")).metadata.exitCode).toBe(0);
 			const refused = await runner.run("sleep 1 & echo rc=$?");
 			expect(refused.stdout).toBe("rc=1\n");
 			expect(refused.stderr).toBe(
-				"bash: cannot start a job: 4 jobs are already active across your workspace (queued, running or stopping). Some may be in another chat, where `jobs` and `wait` cannot name them. Wait for one of this chat's jobs, or start more in a later call.\n",
+				"bash: cannot start a job: 10 jobs are already active across your workspace (queued, running or stopping). Some may be in another chat, where `jobs` and `wait` cannot name them. Wait for one of this chat's jobs, or start more in a later call.\n",
 			);
 			const before = mutation_calls(runner, "ai_chat_files:start_bash_job");
 			const many = await runner.run("true & true & true & true & true &");
@@ -4580,7 +4524,7 @@ describe("bash_run_command", () => {
 			const runner = await create_bash_runner();
 			// The wait returns 3 with job 1 still queued, so no slot was freed. The reset has to sit
 			// after that return: a reset before it would lift the block on a wait that ended nothing.
-			for (let n = 1; n <= 4; n++) expect((await runner.run("sleep 1 &")).metadata.exitCode).toBe(0);
+			for (let n = 1; n <= 10; n++) expect((await runner.run("sleep 1 &")).metadata.exitCode).toBe(0);
 			const before = mutation_calls(runner, "ai_chat_files:start_bash_job");
 			const blocked = await runner.run("sleep 1 & sleep 1 & sleep 1 & wait -t 1 1; sleep 1 & echo rc=$?");
 			expect(mutation_calls(runner, "ai_chat_files:start_bash_job") - before).toBe(3);
@@ -4590,10 +4534,10 @@ describe("bash_run_command", () => {
 
 		test("a wait that saw a live job end lifts the local block", async () => {
 			const runner = await create_bash_runner();
-			// Four live jobs from earlier calls, then three cap refusals. The wait finds job 1 live,
+			// Ten live jobs from earlier calls, then three cap refusals. The wait finds job 1 live,
 			// the wrapper ends it after that first list, and the launch after the wait must ask the
 			// door again. Deleting the `if (waitedOnLive)` reset leaves every other door test green.
-			for (let n = 1; n <= 4; n++) expect((await runner.run("sleep 1 &")).metadata.exitCode).toBe(0);
+			for (let n = 1; n <= 10; n++) expect((await runner.run("sleep 1 &")).metadata.exitCode).toBe(0);
 			const query = runner.runQuery.getMockImplementation()!;
 			let ended = false;
 			runner.runQuery.mockImplementation(async (ref, args) => {
@@ -4809,7 +4753,7 @@ describe("bash_run_command", () => {
 			expect((await runner.run(`${script} &`)).metadata.exitCode).toBe(0);
 			expect((await run_job(runner, 1)).status).toBe("running");
 
-			// The notes are added after the engine returned, so only this prepares them for the head
+			// The warnings are added after the engine returned, so only this prepares them for the head
 			// `jobs -o` reads; the run's own result reaches the transcript instead.
 			const partial = await runner.run("jobs -o 1");
 			expect(partial.metadata.exitCode).toBe(3);
@@ -5044,7 +4988,7 @@ describe("bash_run_command", () => {
 			});
 			const waited = await waiter.run("wait 1 2");
 			expect(waited.stderr).toBe(
-				"bash: waiting for job 1: end this turn. The finish then starts your next run, or leaves its result in the shell transcript.\n",
+				"bash: waiting for job 1: end this turn. The finish then starts your next run, or leaves its result in the chat message.\n",
 			);
 			expect(waited.metadata.exitCode).toBe(3);
 			expect(waited.metadata.waitingForJobs).toEqual([1]);
@@ -5080,11 +5024,9 @@ describe("bash_run_command", () => {
 			// reads an app file, so the stored output must not tell the user about db-backed paths.
 			expect(stopped.result?.stderr).not.toContain("cannot access app files directly");
 			expect(await activity_of(runner, 1)).toMatchObject({ status: "canceled" });
-			// The stopped job's note comes first: this is the next fresh call after it finished.
+			// No job text precedes the kill errors: this fresh call comes after the finish.
 			const missing = await runner.run("kill 9; kill 1");
-			expect(missing.stderr).toBe(
-				"bash: job 1 stopped. Output: /shells/default/transcript\nbash: kill: no such job 9\nbash: kill: no such job 1\n",
-			);
+			expect(missing.stderr).toBe("bash: kill: no such job 9\nbash: kill: no such job 1\n");
 			expect(missing.metadata.exitCode).toBe(1);
 		});
 

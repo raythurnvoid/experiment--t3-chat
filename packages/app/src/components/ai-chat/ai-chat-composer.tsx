@@ -27,6 +27,7 @@ import {
 	ai_chat_composer_file_mention_create_extension,
 	ai_chat_composer_file_mention_PLUGIN_KEY,
 } from "@/components/ai-chat/ai-chat-composer-file-mention.tsx";
+import { AiChatJobs } from "@/components/ai-chat/ai-chat-jobs.tsx";
 import {
 	MySelect,
 	MySelectItem,
@@ -62,6 +63,7 @@ import type { AppClassName } from "@/lib/dom-utils.ts";
 import { useAppGlobalStore } from "@/lib/app-global-store.ts";
 import { useUiInteractedOutside } from "@/lib/ui.tsx";
 import { useLiveRef } from "@/hooks/utils-hooks.ts";
+import type { AiChatThreadRuntime } from "@/hooks/ai-chat-controller.tsx";
 import {
 	ai_chat_MESSAGE_IMAGE_MAX_COUNT,
 	ai_chat_MESSAGE_IMAGE_MAX_TOTAL_URL_CHARS,
@@ -237,6 +239,11 @@ export type AiChatComposer_Props = Omit<
 	isQueueing: boolean;
 	isQueueEditing?: boolean;
 	isRunning: boolean;
+	/**
+	 * Live jobs for the jobs button. The edit composer omits this, so it hides
+	 * the jobs button while editing.
+	 */
+	liveJobs?: AiChatThreadRuntime["liveJobs"] | undefined;
 	initialValue: string;
 	/** Image attachments to start with: a saved draft or a message being edited. */
 	initialAttachments?: readonly FileUIPart[];
@@ -271,6 +278,7 @@ export const AiChatComposer = memo(function AiChatComposer(props: AiChatComposer
 		isQueueing,
 		isQueueEditing = false,
 		isRunning,
+		liveJobs,
 		initialValue,
 		initialAttachments,
 		inputLabel,
@@ -926,6 +934,8 @@ export const AiChatComposer = memo(function AiChatComposer(props: AiChatComposer
 				>
 					<Plus className={"AiChatComposer-configurations-attach-icon" satisfies AiChatComposer_ClassNames} />
 				</MyIconButton>
+
+				{liveJobs ? <AiChatJobs liveJobs={liveJobs} /> : null}
 			</div>
 
 			<div className={"AiChatComposer-actions" satisfies AiChatComposer_ClassNames}>

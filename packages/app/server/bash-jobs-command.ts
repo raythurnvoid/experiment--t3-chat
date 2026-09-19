@@ -103,7 +103,7 @@ const KILL_USAGE = "Usage: kill [-s SIGNAL | -SIGNAL] JOB...\n";
 const JOB_NUMBER_REGEX = /^%?(\d+)$/u;
 
 /**
- * The status word `jobs`, `jobs -a`, `jobs -o` and the finished-job note print for an Activity
+ * The status word `jobs`, `jobs -a` and `jobs -o` print for an Activity
  * status. A job never waits for input and never ends `partial`; those two map to their nearest
  * word.
  */
@@ -178,7 +178,7 @@ async function print_job_output(ctx: ActionCtx, job: bash_JobContext, jobNumber:
 	})) as ai_chat_files_read_job_output_Result;
 	if (!output)
 		return { stdout: "", stderr: `bash: jobs: no such job ${jobNumber}\n`, exitCode: bash_COMMAND_EXIT_FAILURE };
-	// `jobs`, `jobs -a` and the finished-job note all print the Activity status, so this marker must
+	// `jobs` and `jobs -a` print the Activity status, so this marker must
 	// read it too. Otherwise a paused job would say running here while `jobs` calls it queued.
 	const liveMarker = `[job ${jobNumber} ${bash_job_status_word(output.activityStatus)}]\n`;
 	// A live job that flushed nothing yet gets the marker alone: it names the job and says the job is
@@ -222,10 +222,10 @@ async function print_job_output(ctx: ActionCtx, job: bash_JobContext, jobNumber:
 		};
 	}
 	const result = output.result!;
-	// The Activity decides the code, like `wait` and the status word above. The finished-job note
-	// prints that status word, not this code. A job settled as timed out or stopped can still store
-	// the code of a script that finished on its own, and a stored 0 printed here would say the job
-	// succeeded while every other surface says it did not.
+	// The Activity decides the code, like `wait` and the status word above. The finish message
+	// prints that same code (`with exit N`), not the status word. A job settled as timed out or
+	// stopped can still store the code of a script that finished on its own, and a stored 0 printed
+	// here would say the job succeeded while every other surface says it did not.
 	const exitCode = bash_job_exit_code(output.activityStatus, result.metadata.exitCode);
 	return {
 		stdout: bounded(result.stdout, result.metadata.stdoutTruncated),
@@ -343,7 +343,7 @@ export function bash_wait_command_create(ctx: ActionCtx, job: bash_JobContext): 
 				job.waitingJobNumbers.push(...armed);
 				return {
 					stdout: "",
-					stderr: `bash: waiting for job ${armed.join(", ")}: end this turn. The finish then starts your next run, or leaves its result in the shell transcript.\n`,
+					stderr: `bash: waiting for job ${armed.join(", ")}: end this turn. The finish then starts your next run, or leaves its result in the chat message.\n`,
 					exitCode: bash_COMMAND_EXIT_STILL_RUNNING,
 				};
 			}

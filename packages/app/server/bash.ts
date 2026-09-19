@@ -77,7 +77,6 @@ import type { bash_TransferContext } from "./bash-transfer-command.ts";
 import {
 	bash_JOB_OUTPUT_READ_BUDGET_CHARS,
 	bash_JOB_OUTPUT_READ_MAX_CHARS,
-	bash_job_status_word,
 	bash_jobs_command_create,
 	bash_kill_command_create,
 	bash_wait_command_create,
@@ -1705,15 +1704,6 @@ export async function bash_run_command(
 			threadId: args.threadId,
 		});
 
-		// Jobs that finished since this user's last fresh call are announced first.
-		result.stderr =
-			invocation.notes
-				.map(
-					(note) =>
-						`bash: job ${note.jobNumber} ${bash_job_status_word(note.status)}. Output: ${bash_SHELLS_MOUNT}/${note.shellName}/transcript\n`,
-				)
-				.join("") + result.stderr;
-
 		// Extra fds (`exec 3>out`) are reported by the snapshot but never restored in the next call.
 		// A state over the cap is not saved: the previous state stays, and the call says so.
 		let nextState = endSnapshot;
@@ -1779,6 +1769,7 @@ export async function bash_run_command(
 			observedPaths,
 			observedPathsTruncated,
 			waitingForJobs: jobContext.waitingJobNumbers,
+			launchedJobNumbers: jobContext.launchedJobNumbers,
 		});
 		console.debug("Bash command completed", {
 			threadId: args.threadId,
@@ -1794,7 +1785,6 @@ export async function bash_run_command(
 			invocationId: invocation.invocationId,
 			commandHash,
 			result: response,
-			...(invocation.noticeAt != null ? { noticeAt: invocation.noticeAt } : {}),
 		});
 		if (finished._nay) throw new Error(finished._nay.message);
 		if (finished._yay.result) return finished._yay.result;
@@ -1942,6 +1932,10 @@ function bash_response(args: {
 	 * has any; the tool ends the turn when the result names some.
 	 */
 	waitingForJobs?: number[];
+	/**
+	 * The jobs this call launched. The chat keeps the call's tool card loading until they end.
+	 */
+	launchedJobNumbers?: number[];
 }) {
 	const { bashFs, command, result, nextCwd } = args;
 	const stdout = bashFs.truncate_output(result.stdout);
@@ -1971,6 +1965,7 @@ function bash_response(args: {
 			observedPaths: args.observedPaths,
 			observedPathsTruncated: args.observedPathsTruncated,
 			...(args.waitingForJobs?.length ? { waitingForJobs: args.waitingForJobs } : {}),
+			...(args.launchedJobNumbers?.length ? { launchedJobNumbers: args.launchedJobNumbers } : {}),
 		},
 	});
 }

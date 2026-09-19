@@ -1,5 +1,6 @@
 import { composite_id, omit_properties, should_never_happen } from "../shared/shared-utils.ts";
 import {
+	ai_chat_DEFAULT_MODEL_ID,
 	ai_chat_GENERATED_IMAGE_MEDIA_TYPE,
 	ai_chat_MESSAGE_IMAGE_MAX_COUNT,
 	ai_chat_MESSAGE_IMAGE_MAX_TOTAL_URL_CHARS,
@@ -75,8 +76,10 @@ import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import type { Doc, Id } from "./_generated/dataModel";
 import { ai_chat_context_ENABLED } from "./ai_chat_context.ts";
 import {
+	BASH_JOB_WAKEUP_RUN_MS,
 	ai_chat_files_db_append_shell_transcript,
 	ai_chat_files_db_get_invocation_membership,
+	bash_job_is_finish_message,
 } from "./ai_chat_files.ts";
 import { ai_chat_context_create, type ai_chat_context_Context } from "../server/ai-chat-context.ts";
 import {
@@ -604,10 +607,9 @@ const CHAT_RUN_LEASE_MS = 10 * 60 * 1000;
 
 /**
  * Take the thread's run lease for a `/api/chat` request (see `activeRun` in the schema). Refuse
- * while a job wakeup runs: the wakeup writes the reply under the job note, and a chat reply at
+ * while a job wakeup runs: the wakeup writes the reply under the job finish message, and a chat reply at
  * the same time would fork the branch. A second chat request is still allowed, as before: two
- * tabs or a retry must not lock each other out. This also clears the job wakeup count, because the
- * user is back in the loop.
+ * tabs or a retry must not lock each other out.
  */
 export const thread_run_begin = internalMutation({
 	args: { threadId: v.id("ai_chat_threads") },
@@ -619,8 +621,6 @@ export const thread_run_begin = internalMutation({
 		if (thread.activeRun?.kind === "job_wakeup" && thread.activeRun.expiresAt > now) return false;
 		await ctx.db.patch("ai_chat_threads", thread._id, {
 			activeRun: { kind: "chat", expiresAt: now + CHAT_RUN_LEASE_MS },
-			// The user sent a message, so the job wakeups may chain again from zero.
-			bashJobWakeupCount: undefined,
 		});
 		return true;
 	},
@@ -639,6 +639,83 @@ export const thread_run_end = internalMutation({
 			await ctx.db.patch("ai_chat_threads", thread._id, { activeRun: undefined });
 		}
 		return null;
+	},
+});
+
+/**
+ * Turn-end catch: flip a `chat` lease to `job_wakeup` in one transaction so a
+ * wake run can follow this turn. Returns false when another tab already handed
+ * the lease over, or no chat lease is held. May convert a concurrent tab's
+ * fresh chat lease; that tab keeps streaming and its release turns into a
+ * no-op through the kind guard, the same way a second chat tab's late release
+ * is a no-op.
+ */
+export const thread_run_handover_to_wakeup = internalMutation({
+	args: { threadId: v.id("ai_chat_threads") },
+	returns: v.boolean(),
+	handler: async (ctx, args) => {
+		const thread = await ctx.db.get("ai_chat_threads", args.threadId);
+		if (!thread) throw should_never_happen("Chat thread not found", { threadId: args.threadId });
+		if (thread.activeRun?.kind !== "chat") return false;
+		await ctx.db.patch("ai_chat_threads", thread._id, {
+			activeRun: { kind: "job_wakeup", expiresAt: Date.now() + BASH_JOB_WAKEUP_RUN_MS },
+		});
+		return true;
+	},
+});
+
+/**
+ * Turn-end catch, wake side: extend the held `job_wakeup` lease so the follow-up run owns a
+ * full window. Returns false when the lease is gone or another kind took over; the caller
+ * then tries `thread_run_begin_wakeup`.
+ */
+export const thread_run_extend_wakeup = internalMutation({
+	args: { threadId: v.id("ai_chat_threads") },
+	returns: v.boolean(),
+	handler: async (ctx, args) => {
+		const thread = await ctx.db.get("ai_chat_threads", args.threadId);
+		if (!thread) throw should_never_happen("Chat thread not found", { threadId: args.threadId });
+		const activeRun = thread.activeRun;
+		if (activeRun?.kind !== "job_wakeup" || activeRun.expiresAt <= Date.now()) return false;
+		await ctx.db.patch("ai_chat_threads", thread._id, {
+			activeRun: { kind: "job_wakeup", expiresAt: Date.now() + BASH_JOB_WAKEUP_RUN_MS },
+		});
+		return true;
+	},
+});
+
+/**
+ * Take a free thread lease for a wake run after the chat lease is gone. Returns
+ * false when any live run still holds it, so two leftover catches cannot both
+ * schedule.
+ */
+export const thread_run_begin_wakeup = internalMutation({
+	args: { threadId: v.id("ai_chat_threads") },
+	returns: v.boolean(),
+	handler: async (ctx, args) => {
+		const thread = await ctx.db.get("ai_chat_threads", args.threadId);
+		if (!thread) throw should_never_happen("Chat thread not found", { threadId: args.threadId });
+		const now = Date.now();
+		if (thread.activeRun !== undefined && thread.activeRun.expiresAt > now) return false;
+		await ctx.db.patch("ai_chat_threads", thread._id, {
+			activeRun: { kind: "job_wakeup", expiresAt: now + BASH_JOB_WAKEUP_RUN_MS },
+		});
+		return true;
+	},
+});
+
+/**
+ * Milliseconds until the wake lease ends, plus one second of margin, for the
+ * 409 answer. Null when no wakeup holds the lease: the 409 was already stale.
+ */
+export const get_wake_retry_after_ms = internalQuery({
+	args: { threadId: v.id("ai_chat_threads") },
+	returns: v.union(v.number(), v.null()),
+	handler: async (ctx, args) => {
+		const thread = await ctx.db.get("ai_chat_threads", args.threadId);
+		const expiresAt = thread?.activeRun?.kind === "job_wakeup" ? thread.activeRun.expiresAt : null;
+		if (expiresAt === null) return null;
+		return Math.max(0, expiresAt - Date.now()) + 1000;
 	},
 });
 
@@ -1516,10 +1593,31 @@ export const thread_messages_add = mutation({
 				continue;
 			}
 
+			// An abort persist uses the captured parent. A job can finish mid-run and
+			// hang its message under that parent; store the assistant under the finish
+			// so Stop does not hide it as a sibling. Walk finish messages only, so a
+			// later finish further down the thread does not steal a regenerate.
+			// Re-read newest after earlier inserts in this same call, so a
+			// user-then-assistant batch still chains.
+			let insertParentId = nextParentId;
+			if (message.content.role === "assistant") {
+				const newest = await ctx.db
+					.query("ai_chat_threads_messages_aisdk_5")
+					.withIndex("by_organization_workspace_thread", (q) =>
+						q
+							.eq("organizationId", thread.organizationId)
+							.eq("workspaceId", thread.workspaceId)
+							.eq("threadId", args.threadId),
+					)
+					.order("desc")
+					.first();
+				insertParentId = await chat_reply_parent_if_newest_is_finish(ctx, newest, nextParentId);
+			}
+
 			const messageId = await ctx.db.insert("ai_chat_threads_messages_aisdk_5", {
 				organizationId: thread.organizationId,
 				workspaceId: thread.workspaceId,
-				parentId: nextParentId,
+				parentId: insertParentId,
 				threadId: args.threadId,
 				createdBy: userAuth.id,
 				updatedAt: now,
@@ -1629,6 +1727,29 @@ async function create_agent_turn_stream(args: {
 	 * `/api/chat` names a new thread after its first reply. A wakeup never does.
 	 */
 	generateTitle: boolean;
+	/**
+	 * Cutoff for finish-message injection: finishes written at or after this time. Callers
+	 * pass a time before their lease grant, so anything older saw a free lease and scheduled
+	 * its own wake run.
+	 */
+	runStartedAt: number;
+	/**
+	 * One finish message the turn already answers, never injected again. The wake run passes
+	 * its own finish message; the chat route passes null.
+	 */
+	excludeFinishMessageId: Id<"ai_chat_threads_messages_aisdk_5"> | null;
+	/**
+	 * Finish messages the turn never injected, oldest first. The caller schedules one
+	 * wake run for the oldest, or nothing when empty. Also run after abort or error, and
+	 * once more after the lease is released, so a finish that landed during the last write
+	 * is not left without a wake.
+	 */
+	onUninjectedFinishedMessages: (
+		finishedMessages: Array<{
+			messageId: Id<"ai_chat_threads_messages_aisdk_5">;
+			invocationId: Id<"ai_chat_bash_invocations"> | null;
+		}>,
+	) => Promise<void>;
 	storeReply: (message: ai_chat_UiMessage) => Promise<void>;
 	/**
 	 * Called once when the stream ends, however it ends: the thread's run lease goes back.
@@ -1671,6 +1792,22 @@ async function create_agent_turn_stream(args: {
 
 	let didStreamError = false;
 	let responseStorageError: string | null = null;
+	// Finishes injected into this turn, oldest first. The SDK rebuilds each step's input from
+	// the initial plus response messages, so the step override below re-appends the whole list
+	// at every boundary; without that a finish would vanish after one step.
+	const injectedFinishedMessages: Array<{ messageId: Id<"ai_chat_threads_messages_aisdk_5">; text: string }> = [];
+	const read_uninjected_finished_messages = async () => {
+		const finishedMessagesSinceStart = await ctx.runQuery(internal.ai_chat.list_finish_messages_since, {
+			threadId,
+			sinceMs: args.runStartedAt,
+		});
+		return finishedMessagesSinceStart.filter(
+			(finish) =>
+				finish.messageId !== args.excludeFinishMessageId &&
+				!injectedFinishedMessages.some((injected) => injected.messageId === finish.messageId),
+		);
+	};
+
 	// Captured by `streamText.onFinish` below so `createUIMessageStream.onFinish`
 	// can emit one direct Polar usage event with the actual token cost.
 	let capturedUsage: { inputTokens: number; outputTokens: number } | null = null;
@@ -1707,12 +1844,27 @@ async function create_agent_turn_stream(args: {
 					middleware: drop_preliminary_tool_results_middleware,
 				}),
 				system: `${systemPrompt}\n${workspaceSystem}`,
-				prepareStep: ({ stepNumber }) => {
+				prepareStep: async ({ stepNumber, messages }) => {
+					// Read first: even the branches below that end the turn answer with the latest
+					// finishes. A job can finish mid-run; the model reads its message like any
+					// earlier turn output and decides what to say about it. Like Claude Code
+					// (code.claude.com/docs/en/sub-agents), never break streaming text: a finish
+					// waits for a step boundary.
+					const added = await read_uninjected_finished_messages();
+					for (const finish of added) {
+						injectedFinishedMessages.push({ messageId: finish.messageId, text: finish.text });
+					}
+					const injectedMessages = injectedFinishedMessages.map((finish) => ({
+						role: "system" as const,
+						content: finish.text,
+					}));
+					const withFinishedMessages = injectedMessages.length > 0 ? { messages: [...messages, ...injectedMessages] } : {};
 					// Leave a model step to explain tool results and any unfinished work.
 					if (stepNumber === 9 || toolBudget.exhausted)
 						return {
 							activeTools: [],
 							system: `${systemPrompt}\n${workspaceSystem}\nThis is the last step. Give the result and any remaining checkpoint. Do not claim unfinished work is complete.`,
+							...withFinishedMessages,
 						};
 					// `wait` stopped polling for a job whose finish wakes the agent: end the turn, the
 					// job's finish starts the next run.
@@ -1720,7 +1872,10 @@ async function create_agent_turn_stream(args: {
 						return {
 							activeTools: [],
 							system: `${systemPrompt}\n${workspaceSystem}\nA background job you are waiting for is still running. Its finish will wake you with its result in a new run. End this turn now with a short status of what is done and what the job will decide.`,
+							...withFinishedMessages,
 						};
+					if (injectedMessages.length === 0) return undefined;
+					return { messages: [...messages, ...injectedMessages] };
 				},
 				messages: modelMessages,
 				maxOutputTokens: 2000,
@@ -1925,12 +2080,62 @@ async function create_agent_turn_stream(args: {
 			return error instanceof Error ? error.message : String(error);
 		},
 		onFinish: async (result) => {
+			let caughtUninjected = false;
 			try {
-				if (!result.responseMessage) {
-					return;
-				}
+				if (result.responseMessage && !didStreamError) {
+					if (!ai_chat_message_fits_storage(result.responseMessage)) {
+						responseStorageError =
+							"This reply is too large and was not saved. Start a new message and ask for a shorter result or smaller file pages. Any file changes already made still need review.";
+					} else {
+						const capturedInputTokens = capturedUsage?.inputTokens ?? 0;
+						const capturedOutputTokens = capturedUsage?.outputTokens ?? 0;
+						const capturedTotalTokens = capturedInputTokens + capturedOutputTokens;
+						// Pictures are billed per image, so a turn that drew one is billed even if the model
+						// reported no token usage. An abort still stores the partial reply so a mid-run
+						// finish stays on the shown branch, but it does not bill.
+						if (!result.isAborted && (capturedTotalTokens > 0 || capturedGeneratedImages > 0)) {
+							await billing_ingest_events(ctx, {
+								billedUserEvents: [
+									{
+										billedUser,
+										event: billing_event({
+											name: "ai_usage",
+											externalCustomerId: billedUser._id,
+											externalMemberId: args.userId,
+											externalId: composite_id(
+												"billing",
+												"ai_usage",
+												billedUser._id,
+												args.userId,
+												membership.organizationId,
+												membership.workspaceId,
+												String(threadId ?? ""),
+												String(result.responseMessage.id ?? ""),
+											),
+											metadata: {
+												amount: capturedActualCents,
+												actorUserId: args.userId,
+												billedUserId: billedUser._id,
+												organizationId: membership.organizationId,
+												workspaceId: membership.workspaceId,
+												modelId: args.modelId,
+												inputTokens: capturedInputTokens,
+												outputTokens: capturedOutputTokens,
+												generatedImages: capturedGeneratedImages,
+												threadId: String(threadId ?? ""),
+												messageId: String(result.responseMessage.id ?? ""),
+											},
+										}),
+									},
+								],
+							});
+						}
 
-				if (result.isAborted) {
+						// Persist the assistant reply, including a Stop, below the last persisted request
+						// message. A mid-run finish re-parents through `get_chat_reply_parent`.
+						await args.storeReply(result.responseMessage);
+					}
+				} else if (result.isAborted) {
 					console.info("onFinish aborted", {
 						threadId,
 						parentId: resolvedParentId,
@@ -1938,71 +2143,35 @@ async function create_agent_turn_stream(args: {
 						didStreamError,
 						hasResponseMessage: Boolean(result.responseMessage),
 					});
-					return;
-				}
-
-				if (didStreamError) {
+				} else if (didStreamError) {
 					console.info("onFinish stream error", {
 						threadId,
 						parentId: resolvedParentId,
 						hasResponseMessage: Boolean(result.responseMessage),
 					});
-					return;
 				}
 
-				if (!ai_chat_message_fits_storage(result.responseMessage)) {
-					responseStorageError =
-						"This reply is too large and was not saved. Start a new message and ask for a shorter result or smaller file pages. Any file changes already made still need review.";
-					return;
+				// A finish can land after the last step boundary, including during abort or error.
+				const uninjected = await read_uninjected_finished_messages();
+				if (uninjected.length > 0) {
+					await args.onUninjectedFinishedMessages(
+						uninjected.map((finish) => ({ messageId: finish.messageId, invocationId: finish.invocationId })),
+					);
+					caughtUninjected = true;
 				}
-
-				const capturedInputTokens = capturedUsage?.inputTokens ?? 0;
-				const capturedOutputTokens = capturedUsage?.outputTokens ?? 0;
-				const capturedTotalTokens = capturedInputTokens + capturedOutputTokens;
-				// Pictures are billed per image, so a turn that drew one is billed even if the model
-				// reported no token usage.
-				if (capturedTotalTokens > 0 || capturedGeneratedImages > 0) {
-					await billing_ingest_events(ctx, {
-						billedUserEvents: [
-							{
-								billedUser,
-								event: billing_event({
-									name: "ai_usage",
-									externalCustomerId: billedUser._id,
-									externalMemberId: args.userId,
-									externalId: composite_id(
-										"billing",
-										"ai_usage",
-										billedUser._id,
-										args.userId,
-										membership.organizationId,
-										membership.workspaceId,
-										String(threadId ?? ""),
-										String(result.responseMessage.id ?? ""),
-									),
-									metadata: {
-										amount: capturedActualCents,
-										actorUserId: args.userId,
-										billedUserId: billedUser._id,
-										organizationId: membership.organizationId,
-										workspaceId: membership.workspaceId,
-										modelId: args.modelId,
-										inputTokens: capturedInputTokens,
-										outputTokens: capturedOutputTokens,
-										generatedImages: capturedGeneratedImages,
-										threadId: String(threadId ?? ""),
-										messageId: String(result.responseMessage.id ?? ""),
-									},
-								}),
-							},
-						],
-					});
-				}
-
-				// Persist completed assistant responses below the last persisted request message.
-				await args.storeReply(result.responseMessage);
 			} finally {
 				await args.releaseRun();
+			}
+
+			// A finish can commit after the read above and before the lease drops. Read once more
+			// only when that first catch was empty, so a successful handover is not scheduled twice.
+			if (!caughtUninjected) {
+				const leftover = await read_uninjected_finished_messages();
+				if (leftover.length > 0) {
+					await args.onUninjectedFinishedMessages(
+						leftover.map((finish) => ({ messageId: finish.messageId, invocationId: finish.invocationId })),
+					);
+				}
 			}
 		},
 	});
@@ -2424,13 +2593,32 @@ export async function ai_chat_http_chat(ctx: ActionCtx, request: Request) {
 
 		// The lease tells a finishing job that a run is streaming; `thread_run_begin` refuses while
 		// a job wakeup runs, so two runs never write the same branch at once.
-		if (!(await ctx.runMutation(internal.ai_chat.thread_run_begin, { threadId: runThreadId }))) {
-			return {
-				status: 409,
-				body: {
-					message: "The agent is answering a finished background job. Try again in a moment.",
-				},
-			} as const;
+		let begun = await ctx.runMutation(internal.ai_chat.thread_run_begin, { threadId: runThreadId });
+		if (!begun) {
+			const retryAfterMs = await ctx.runQuery(internal.ai_chat.get_wake_retry_after_ms, {
+				threadId: runThreadId,
+			});
+			// The wake can end between the refused begin and this read. Try the lease once more
+			// so a saved user message still starts a turn instead of showing an error.
+			if (retryAfterMs === null) {
+				begun = await ctx.runMutation(internal.ai_chat.thread_run_begin, { threadId: runThreadId });
+			}
+			if (!begun) {
+				const waitMs =
+					retryAfterMs ??
+					(await ctx.runQuery(internal.ai_chat.get_wake_retry_after_ms, {
+						threadId: runThreadId,
+					})) ??
+					0;
+				return {
+					status: 409,
+					body: {
+						message:
+							"The agent is reporting a finished background job. Your message is saved and will be answered next.",
+						retryAfterMs: waitMs,
+					},
+				} as const;
+			}
 		}
 		runLeaseHeld = true;
 
@@ -2449,11 +2637,18 @@ export async function ai_chat_http_chat(ctx: ActionCtx, request: Request) {
 			userId: user._id,
 			billedUser,
 			generateTitle: true,
+			runStartedAt: now,
+			excludeFinishMessageId: null,
 			storeReply: async (message) => {
+				// A job can finish mid-run; `get_chat_reply_parent` chains under its message.
+				const parentId = await ctx.runQuery(internal.ai_chat.get_chat_reply_parent, {
+					threadId: runThreadId,
+					fallbackParentId: resolvedParentId,
+				});
 				const stored = await ctx.runMutation(api.ai_chat.thread_messages_add, {
 					membershipId: membership._id,
 					threadId: runThreadId,
-					parentId: resolvedParentId,
+					parentId,
 					messages: [{ clientGeneratedMessageId: message.id, content: message }],
 				});
 				if (stored._nay) {
@@ -2463,6 +2658,28 @@ export async function ai_chat_http_chat(ctx: ActionCtx, request: Request) {
 			releaseRun: async () => {
 				runLeaseHeld = false;
 				await ctx.runMutation(internal.ai_chat.thread_run_end, { threadId: runThreadId, kind: "chat" });
+			},
+			onUninjectedFinishedMessages: async (finishedMessages) => {
+				// Oldest first: the wake run answers it as its parent branch and injects the
+				// newer ones at its own step boundaries, so one run covers the whole backlog.
+				const oldest = finishedMessages.find((finish) => finish.invocationId !== null);
+				if (!oldest?.invocationId) return;
+				const handed = await ctx.runMutation(internal.ai_chat.thread_run_handover_to_wakeup, {
+					threadId: runThreadId,
+				});
+				if (!handed) {
+					// The leftover catch runs after this run dropped the lease, so there is no
+					// chat lease to hand over. Take a free wake lease instead.
+					const begunWake = await ctx.runMutation(internal.ai_chat.thread_run_begin_wakeup, {
+						threadId: runThreadId,
+					});
+					if (!begunWake) return;
+				}
+				await ctx.scheduler.runAfter(0, internal.ai_chat.run_job_wakeup, {
+					invocationId: oldest.invocationId,
+					threadId: runThreadId,
+					finishMessageId: oldest.messageId,
+				});
 			},
 		});
 
@@ -2500,7 +2717,7 @@ export async function ai_chat_http_chat_response(ctx: ActionCtx, request: Reques
 }
 
 /**
- * The door of `run_job_wakeup`: what `/api/chat` reads with the request's auth, read with the
+ * The wake context query of `run_job_wakeup`: what `/api/chat` reads with the request's auth, read with the
  * user who launched the job instead. Refuse when that user lost the membership, the workspace
  * permissions of the mode, or the right to write in the thread since the launch. The mode is the
  * one of the launching call: `allowDbFilesMkdir` is set only in Agent mode.
@@ -2518,7 +2735,7 @@ export const get_job_wakeup_context = internalQuery({
 	}),
 	handler: async (ctx, args) => {
 		const invocation = await ctx.db.get("ai_chat_bash_invocations", args.invocationId);
-		if (!invocation?.job?.wakeAgent) return Result({ _nay: { message: "Not found" } });
+		if (!invocation?.job) return Result({ _nay: { message: "Not found" } });
 		const userAuth = { id: invocation.userId };
 		// The same fence as every other job door: it also checks the membership lifetime, so a
 		// member who was removed and invited again cannot be woken by the older membership.
@@ -2548,7 +2765,15 @@ export const get_job_wakeup_context = internalQuery({
 			)
 			.order("asc")
 			.collect();
-		return Result({ _yay: { membership, thread, messages, modelId: invocation.job.wakeAgent.modelId, modeId } });
+		return Result({
+			_yay: {
+				membership,
+				thread,
+				messages,
+				modelId: invocation.job.wakeAgent?.modelId ?? ai_chat_DEFAULT_MODEL_ID,
+				modeId,
+			},
+		});
 	},
 });
 
@@ -2558,14 +2783,16 @@ type get_job_wakeup_context_Result =
 		: never;
 
 /**
- * Store the reply of a wakeup run under the job note. `thread_messages_add` is the public door
- * and needs the request's auth; a wakeup has none, so this one takes the user who launched the job.
+ * Store the reply of a wakeup run on the finish's current branch. `thread_messages_add` is the
+ * public door and needs the request's auth; a wakeup has none, so this one takes the user who
+ * launched the job. A later finish or the chat reply can land under the finish while this run
+ * streams; parenting on that newest descendant keeps one line.
  */
 export const store_job_wakeup_reply = internalMutation({
 	args: {
 		threadId: v.id("ai_chat_threads"),
 		userId: v.id("users"),
-		parentId: v.id("ai_chat_threads_messages_aisdk_5"),
+		finishMessageId: v.id("ai_chat_threads_messages_aisdk_5"),
 		clientGeneratedMessageId:
 			app_convex_schema.tables.ai_chat_threads_messages_aisdk_5.validator.fields.clientGeneratedMessageId,
 		content: app_convex_schema.tables.ai_chat_threads_messages_aisdk_5.validator.fields.content,
@@ -2575,11 +2802,31 @@ export const store_job_wakeup_reply = internalMutation({
 		const thread = await ctx.db.get("ai_chat_threads", args.threadId);
 		if (!thread) throw should_never_happen("Chat thread not found", { threadId: args.threadId });
 
+		let insertParentId = args.finishMessageId;
+		const newest = await ctx.db
+			.query("ai_chat_threads_messages_aisdk_5")
+			.withIndex("by_organization_workspace_thread", (q) =>
+				q.eq("organizationId", thread.organizationId).eq("workspaceId", thread.workspaceId).eq("threadId", thread._id),
+			)
+			.order("desc")
+			.first();
+		if (newest && newest._id !== args.finishMessageId) {
+			let current: typeof newest | null = newest;
+			while (current) {
+				if (current._id === args.finishMessageId) {
+					insertParentId = newest._id;
+					break;
+				}
+				if (current.parentId === null) break;
+				current = await ctx.db.get("ai_chat_threads_messages_aisdk_5", current.parentId);
+			}
+		}
+
 		const now = Date.now();
 		await ctx.db.insert("ai_chat_threads_messages_aisdk_5", {
 			organizationId: thread.organizationId,
 			workspaceId: thread.workspaceId,
-			parentId: args.parentId,
+			parentId: insertParentId,
 			threadId: thread._id,
 			createdBy: args.userId,
 			updatedAt: now,
@@ -2600,20 +2847,132 @@ export const store_job_wakeup_reply = internalMutation({
 });
 
 /**
+ * The first text part of a stored message, for finish-message matching. Stored
+ * content is schemaless, so a message without text parts reads as no text.
+ */
+function message_first_text(content: Doc<"ai_chat_threads_messages_aisdk_5">["content"]) {
+	for (const part of content.parts ?? []) {
+		if (part?.type === "text" && typeof part.text === "string") return part.text;
+	}
+	return "";
+}
+
+/**
+ * Parent for a chat reply or an abort persist when a finish landed mid-run.
+ * Walk up through finish messages only. If that chain hangs off the captured
+ * parent, store under the newest finish so Stop does not hide it. A later
+ * finish after another user or assistant message must not steal a regenerate.
+ * Tab-vs-tab forks keep the captured parent, as before.
+ */
+async function chat_reply_parent_if_newest_is_finish(
+	ctx: QueryCtx | MutationCtx,
+	newest: Doc<"ai_chat_threads_messages_aisdk_5"> | null,
+	fallback: Id<"ai_chat_threads_messages_aisdk_5"> | null,
+) {
+	if (!newest || newest._id === fallback) return fallback;
+	let current: typeof newest | null = newest;
+	while (current && bash_job_is_finish_message(current.content.role, message_first_text(current.content))) {
+		if (current.parentId === fallback) return newest._id;
+		if (current.parentId === null) break;
+		current = await ctx.db.get("ai_chat_threads_messages_aisdk_5", current.parentId);
+	}
+	return fallback;
+}
+
+/**
+ * The parent for a chat-route reply stored after a long stream. A job can
+ * finish mid-run and hang its finish message under the captured parent; store
+ * under the newest finish in that chain, or the reply forks a hidden sibling
+ * branch. Only a finish chain that hangs off the captured parent re-parents.
+ * A later finish further down the thread keeps the captured parent, so
+ * regenerate of an older answer stays on its branch. Tab-vs-tab forks behave
+ * as before. The in-flight `message-metadata` part still names the captured
+ * parent; stored docs carry the true parent and the client reconciles from
+ * them reactively. Abort persist uses the same rule through
+ * `thread_messages_add`.
+ */
+export const get_chat_reply_parent = internalQuery({
+	args: {
+		threadId: v.id("ai_chat_threads"),
+		fallbackParentId: v.optional(v.union(v.string(), v.null())),
+	},
+	returns: v.union(v.id("ai_chat_threads_messages_aisdk_5"), v.null()),
+	handler: async (ctx, args) => {
+		const fallback = args.fallbackParentId
+			? ctx.db.normalizeId("ai_chat_threads_messages_aisdk_5", args.fallbackParentId)
+			: null;
+		const thread = await ctx.db.get("ai_chat_threads", args.threadId);
+		if (!thread) return fallback;
+		const newest = await ctx.db
+			.query("ai_chat_threads_messages_aisdk_5")
+			.withIndex("by_organization_workspace_thread", (q) =>
+				q.eq("organizationId", thread.organizationId).eq("workspaceId", thread.workspaceId).eq("threadId", thread._id),
+			)
+			.order("desc")
+			.first();
+		return await chat_reply_parent_if_newest_is_finish(ctx, newest, fallback);
+	},
+});
+
+/**
+ * Finish messages written since `sinceMs`, oldest first, for step-boundary
+ * injection. Matches role plus the fixed finish head, so user quotes never
+ * match. Reads the newest fifty docs: finishes land at the tail, so a turn
+ * only ever needs a small window there. `invocationId` is null only for docs
+ * written before the link existed.
+ */
+export const list_finish_messages_since = internalQuery({
+	args: { threadId: v.id("ai_chat_threads"), sinceMs: v.number() },
+	returns: v.array(
+		v.object({
+			messageId: v.id("ai_chat_threads_messages_aisdk_5"),
+			text: v.string(),
+			invocationId: v.union(v.id("ai_chat_bash_invocations"), v.null()),
+		}),
+	),
+	handler: async (ctx, args) => {
+		const thread = await ctx.db.get("ai_chat_threads", args.threadId);
+		if (!thread) return [];
+		const newest = await ctx.db
+			.query("ai_chat_threads_messages_aisdk_5")
+			.withIndex("by_organization_workspace_thread", (q) =>
+				q.eq("organizationId", thread.organizationId).eq("workspaceId", thread.workspaceId).eq("threadId", thread._id),
+			)
+			.order("desc")
+			.take(50);
+		const finishedMessages = [];
+		for (const message of newest.reverse()) {
+			if (message.updatedAt < args.sinceMs) continue;
+			const text = message_first_text(message.content);
+			if (!bash_job_is_finish_message(message.content.role, text)) continue;
+			finishedMessages.push({
+				messageId: message._id,
+				text,
+				invocationId: message.jobFinishInvocationId ?? null,
+			});
+		}
+		return finishedMessages;
+	},
+});
+
+/**
  * The agent run a finished job starts (`db_wake_agent_for_job` in `ai_chat_files.ts` stored the
- * job note and took the `job_wakeup` run lease). Same door and same turn as `/api/chat`, with the
- * job's stored user, mode and model, and the reply stored under the note. Nobody reads the
+ * job finish message and took the `job_wakeup` run lease). Same door and same turn as `/api/chat`, with the
+ * job's stored user, mode and model, and the reply stored on the newest message of that finish's branch. Nobody reads the
  * stream, so the action reads it to the end itself. A run this action cannot start (a refused
- * door, no credits) leaves the note in the thread and only gives the lease back.
+ * door, no credits) leaves the message in the thread and only gives the lease back.
  */
 export const run_job_wakeup = internalAction({
 	args: {
 		invocationId: v.id("ai_chat_bash_invocations"),
 		threadId: v.id("ai_chat_threads"),
-		noteMessageId: v.id("ai_chat_threads_messages_aisdk_5"),
+		finishMessageId: v.id("ai_chat_threads_messages_aisdk_5"),
 	},
 	returns: v.null(),
 	handler: async (ctx, args) => {
+		// The turn-end catch can schedule a follow-up wake run; the release below must
+		// see that decision, so the flag lives outside the try block.
+		let followupScheduled = false;
 		try {
 			const context = (await ctx.runQuery(internal.ai_chat.get_job_wakeup_context, {
 				invocationId: args.invocationId,
@@ -2670,12 +3029,12 @@ export const run_job_wakeup = internalAction({
 				workspaceSystem = initialized._yay.system;
 			}
 
-			// The turn continues the branch that ends with the job note.
-			const parentContext = resolve_parent_message_context({ messages, parentId: args.noteMessageId });
+			// The turn continues the branch that ends with the job finish message.
+			const parentContext = resolve_parent_message_context({ messages, parentId: args.finishMessageId });
 			if (parentContext._nay) {
-				throw should_never_happen("Job note message not found", {
+				throw should_never_happen("Job finish message not found", {
 					threadId: thread._id,
-					noteMessageId: args.noteMessageId,
+					finishMessageId: args.finishMessageId,
 				});
 			}
 			const uiMessages: ai_chat_UiMessage[] = [];
@@ -2687,6 +3046,11 @@ export const run_job_wakeup = internalAction({
 				});
 			}
 
+			// The turn already answers its own finish message through the parent branch; step boundaries
+			// inject only finishes written after it.
+			const finishMessageUpdatedAt =
+				messages.find((message) => message._id === args.finishMessageId)?.updatedAt ?? Date.now();
+
 			const stream = await create_agent_turn_stream({
 				ctx,
 				modelId,
@@ -2695,24 +3059,54 @@ export const run_job_wakeup = internalAction({
 				uiMessages,
 				threadId: thread._id,
 				createdThreadId: null,
-				parentId: args.noteMessageId,
+				parentId: args.finishMessageId,
 				parentClientGeneratedId: parentContext._yay.resolvedParentClientGeneratedId,
 				abortSignal: undefined,
 				membership,
 				userId: membership.userId,
 				billedUser: creditCheck.billedUser,
 				generateTitle: false,
+				runStartedAt: finishMessageUpdatedAt,
+				excludeFinishMessageId: args.finishMessageId,
 				storeReply: async (message) => {
 					await ctx.runMutation(internal.ai_chat.store_job_wakeup_reply, {
 						threadId: thread._id,
 						userId: membership.userId,
-						parentId: args.noteMessageId,
+						finishMessageId: args.finishMessageId,
 						clientGeneratedMessageId: message.id,
 						content: message,
 					});
 				},
 				releaseRun: async () => {
+					if (followupScheduled) return;
 					await ctx.runMutation(internal.ai_chat.thread_run_end, { threadId: thread._id, kind: "job_wakeup" });
+				},
+				onUninjectedFinishedMessages: async (finishedMessages) => {
+					// Oldest first: this run already holds the `job_wakeup` lease, so extend it
+					// across the follow-up instead of taking it again. After the lease is gone,
+					// take a free wake lease the same way the chat leftover catch does.
+					const oldest = finishedMessages.find((finish) => finish.invocationId !== null);
+					if (!oldest?.invocationId) return;
+					const extended = await ctx.runMutation(internal.ai_chat.thread_run_extend_wakeup, {
+						threadId: thread._id,
+					});
+					if (extended) {
+						followupScheduled = true;
+					} else {
+						const begunWake = await ctx.runMutation(internal.ai_chat.thread_run_begin_wakeup, {
+							threadId: thread._id,
+						});
+						if (!begunWake) return;
+						// The leftover catch runs after this run dropped the lease. The new
+						// lease belongs to the follow-up. Keep it, or the finally below would
+						// clear it before that run starts.
+						followupScheduled = true;
+					}
+					await ctx.scheduler.runAfter(0, internal.ai_chat.run_job_wakeup, {
+						invocationId: oldest.invocationId,
+						threadId: thread._id,
+						finishMessageId: oldest.messageId,
+					});
 				},
 			});
 			const reader = stream.getReader();
@@ -2720,7 +3114,9 @@ export const run_job_wakeup = internalAction({
 				// The chunks were handled by the stream's own `onFinish`.
 			}
 		} finally {
-			await ctx.runMutation(internal.ai_chat.thread_run_end, { threadId: args.threadId, kind: "job_wakeup" });
+			if (!followupScheduled) {
+				await ctx.runMutation(internal.ai_chat.thread_run_end, { threadId: args.threadId, kind: "job_wakeup" });
+			}
 		}
 		return null;
 	},

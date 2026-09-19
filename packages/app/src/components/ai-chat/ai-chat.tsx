@@ -225,6 +225,7 @@ type AiChatMessagesList_Props = ComponentPropsWithRef<"div"> & {
 	messages: AiChatThreadRuntime["activeBranchMessages"]["list"];
 	status: AiChatThreadRuntime["status"];
 	isRunning: AiChatThreadRuntime["isRunning"];
+	liveJobs: AiChatThreadRuntime["liveJobs"];
 	streamErrorText: string | null;
 	activeBranchAnchorId: string | null | undefined;
 	actions: AiChatRuntimeActions;
@@ -242,6 +243,7 @@ const AiChatMessagesList = memo(function AiChatMessagesList(props: AiChatMessage
 		messages,
 		status,
 		isRunning,
+		liveJobs,
 		streamErrorText,
 		activeBranchAnchorId,
 		actions,
@@ -294,6 +296,7 @@ const AiChatMessagesList = memo(function AiChatMessagesList(props: AiChatMessage
 							selectedModelId={selectedModelId}
 							selectedModeId={selectedModeId}
 							isRunning={isRunning && index === throttledMessages.length - 1}
+							liveJobs={liveJobs}
 							actions={actions}
 						/>
 					);
@@ -914,6 +917,7 @@ export const AiChatThread = memo(function AiChatThread(props: AiChatThread_Props
 						messages={controller.activeBranchMessages.list}
 						status={controller.status}
 						isRunning={controller.isRunning}
+						liveJobs={controller.liveJobs}
 						streamErrorText={controller.error ? "An error occurred during the generation" : null}
 						activeBranchAnchorId={controller.activeBranchMessages.anchorId}
 						actions={runtimeActions}
@@ -957,6 +961,7 @@ export const AiChatThread = memo(function AiChatThread(props: AiChatThread_Props
 							isQueueing={queuedUserMessageEdit ? true : controller.isQueueingUserText}
 							isQueueEditing={Boolean(queuedUserMessageEdit)}
 							isRunning={controller.isRunning}
+							liveJobs={controller.liveJobs}
 							initialValue={initialComposerValue}
 							initialAttachments={initialComposerAttachments}
 							inputLabel={queuedUserMessageEdit ? "Edit queued message" : undefined}
