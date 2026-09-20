@@ -26,6 +26,51 @@ const MAX_PROVIDER_BYTES = 8_388_608;
 const MAX_PENDING = 128;
 const MAX_REQUESTS = 10_000;
 const MAX_TRAFFIC_BYTES = 134_217_728;
+const MAX_SCREENSHOT_BYTES = 2_097_152;
+const MAX_SCREENSHOT_EDGE = 8192;
+const MAX_SCREENSHOT_PIXELS = 16_000_000;
+
+function screenshot_dimensions(bytes: Uint8Array, format: unknown) {
+	if (format === "png") {
+		const magic = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+		if (bytes.length < 24 || !magic.every((byte, index) => bytes[index] === byte)) return null;
+		// IHDR is the first PNG chunk. Its dimensions are enough for this size guard.
+		const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+		if (view.getUint32(8) !== 13 || view.getUint32(12) !== 0x49484452) return null;
+		return { width: view.getUint32(16), height: view.getUint32(20) };
+	}
+	if (bytes.length < 4 || bytes[0] !== 0xff || bytes[1] !== 0xd8) return null;
+	let offset = 2;
+	while (offset + 4 <= bytes.length) {
+		if (bytes[offset] !== 0xff) return null;
+		const marker = bytes[offset + 1];
+		if (marker === 0x01 || (marker >= 0xd0 && marker <= 0xd9)) {
+			offset += 2;
+			continue;
+		}
+		const length = (bytes[offset + 2] << 8) | bytes[offset + 3];
+		if (length < 2 || offset + length + 2 > bytes.length) return null;
+		if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) {
+			if (length < 8) return null;
+			return { width: (bytes[offset + 7] << 8) | bytes[offset + 8], height: (bytes[offset + 5] << 8) | bytes[offset + 6] };
+		}
+		offset += 2 + length;
+	}
+	return null;
+}
+
+function check_screenshot(data: string, format: unknown) {
+	// Bound the encoded string before allocating decoded bytes in the trusted Worker.
+	if (data.length > Math.ceil(MAX_SCREENSHOT_BYTES / 3) * 4) return "too_large";
+	if (data.length === 0 || data.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(data)) return "invalid";
+	const binary = atob(data);
+	if (binary.length > MAX_SCREENSHOT_BYTES) return "too_large";
+	const dimensions = screenshot_dimensions(Uint8Array.from(binary, (char) => char.charCodeAt(0)), format);
+	if (!dimensions || dimensions.width === 0 || dimensions.height === 0) return "invalid";
+	if (dimensions.width > MAX_SCREENSHOT_EDGE || dimensions.height > MAX_SCREENSHOT_EDGE ||
+		dimensions.width * dimensions.height > MAX_SCREENSHOT_PIXELS) return "too_large";
+	return "ok";
+}
 
 function is_record(value: unknown): value is Params {
 	return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -386,6 +431,22 @@ export class AgentConnection {
 			const request = this.pending.get(message.id);
 			if (!request || request.sessionId !== sessionId) return this.fail("unknown_provider_reply");
 			if (!is_record(message.result) && !is_record(message.error)) return this.fail("invalid_provider_reply");
+			if (request.method === "Page.captureScreenshot" && is_record(message.error) &&
+				(message.result !== undefined || !Number.isInteger(message.error.code) || !is_text(message.error.message))) {
+				return this.fail("invalid_provider_reply");
+			}
+			if (request.method === "Page.captureScreenshot" && is_record(message.result)) {
+				if (message.error !== undefined || typeof message.result.data !== "string") return this.fail("invalid_provider_reply");
+				const screenshot = check_screenshot(message.result.data, request.params.format);
+				if (screenshot === "invalid") return this.fail("invalid_provider_reply");
+				// A valid but large capture is a command error, not a lost browser connection.
+				if (screenshot === "too_large") {
+					this.pending.delete(message.id);
+					this.reply({ id: message.id, sessionId, error: { code: -32000, message: "Screenshot exceeds the size limit." } });
+					this.wake();
+					return;
+				}
+			}
 			if (is_record(message.error) && (request.cleanup || request.method.startsWith("Input."))) return this.fail("command_failed");
 			if (is_record(message.result) && !this.track_reply(request, message.result)) return this.fail("invalid_provider_reply");
 			this.pending.delete(message.id);

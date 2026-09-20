@@ -90,6 +90,16 @@ function install_r2_object_reads() {
 			const key = decodeURIComponent(urlString.slice("https://r2.test/object?key=".length));
 			const body = r2Objects.get(key);
 			const metadata = r2ObjectMetadata.get(key);
+			const range = new Headers(init?.headers).get("Range")?.match(/^bytes=(\d+)-(\d+)$/u);
+			if (body !== undefined && range) {
+				const bytes = typeof body === "string" ? new TextEncoder().encode(body) : new Uint8Array(body);
+				const start = Number(range[1]);
+				const end = Math.min(Number(range[2]), bytes.byteLength - 1);
+				return new Response(bytes.slice(start, end + 1), {
+					status: 206,
+					headers: { "Content-Range": `bytes ${start}-${end}/${bytes.byteLength}` },
+				});
+			}
 			return body === undefined
 				? new Response(null, { status: 404 })
 				: new Response(body, {
@@ -187,6 +197,7 @@ async function seed_public_api_grant(args: {
 	workspaceId: Id<"organizations_workspaces">;
 	userId: Id<"users">;
 	token: string;
+	scopes?: Array<"files:list" | "files:read" | "files:download">;
 }) {
 	await args.t.mutation(internal.public_api.create_grant, {
 		organizationId: args.organizationId,
@@ -195,7 +206,7 @@ async function seed_public_api_grant(args: {
 		threadId: null,
 		principalKey: "grant_public_test",
 		tokenHash: await crypto_sha256_hex(args.token),
-		scopes: ["files:list", "files:read"],
+		scopes: args.scopes ?? ["files:list", "files:read"],
 		pathPrefix: null,
 		now: Date.now(),
 	});
@@ -425,6 +436,305 @@ async function seed_markdown_file(args: {
 afterEach(() => {
 	vi.restoreAllMocks();
 	vi.unstubAllGlobals();
+});
+
+describe("public_api_http_read_bytes", () => {
+	async function create_fixture() {
+		const t = test_convex();
+		install_r2_object_reads();
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-byte-reader" });
+		const token = crypto_random_hex(32);
+		await seed_public_api_grant({ t, ...db, token, scopes: ["files:read", "files:download"] });
+		const nodeId = await seed_markdown_file({ t, ...db, path: "/data.bin", committedMarkdown: "unused\n" });
+		const data = new Uint8Array([0, 255, 128, 10, 13, 1]);
+		await t.run(async (ctx) => {
+			const node = await ctx.db.get("files_nodes", nodeId);
+			const asset = node?.assetId && (await ctx.db.get("files_r2_assets", node.assetId));
+			if (!asset?.r2Key) throw new Error("Missing fixture asset");
+			await ctx.db.patch("files_nodes", nodeId, {
+				textKind: null,
+				collaborationEnabled: null,
+				yjsSnapshotId: null,
+				yjsLastSequenceId: null,
+				contentType: "application/octet-stream",
+			});
+			await ctx.db.patch("files_r2_assets", asset._id, { size: data.byteLength });
+			r2Objects.set(asset.r2Key, data.buffer);
+		});
+		const read = (body: Record<string, unknown> = {}) =>
+			t.fetch("/api/v1/files/read-bytes", {
+				method: "POST",
+				headers: auth_headers(token),
+				body: JSON.stringify({ path: "/data.bin", offset: 0, length: 6, revision: null, ...body }),
+			});
+		return { t, db, token, nodeId, data, read };
+	}
+
+	test("returns exact bytes, bounded headers, and a revision for later ranges", async () => {
+		const { read, data } = await create_fixture();
+		const first = await read({ offset: 1, length: 3 });
+		expect(first.status).toBe(200);
+		expect(new Uint8Array(await first.arrayBuffer())).toEqual(data.slice(1, 4));
+		expect(first.headers.get("Content-Type")).toBe("application/octet-stream");
+		expect(first.headers.get("Cache-Control")).toBe("no-store");
+		expect(first.headers.get("X-File-Size")).toBe("6");
+		expect(first.headers.get("X-File-Offset")).toBe("1");
+		expect(first.headers.get("X-File-Content-Type")).toBe("application/octet-stream");
+		const revision = first.headers.get("X-File-Revision");
+		expect(revision).toMatch(/^[0-9a-f]{64}$/u);
+		const next = await read({ offset: 4, length: 4, revision });
+		expect(next.status).toBe(200);
+		expect(new Uint8Array(await next.arrayBuffer())).toEqual(data.slice(4));
+		expect(next.headers.get("X-File-Revision")).toBe(revision);
+		expect((await read({ revision: "f".repeat(64) })).status).toBe(409);
+
+		type ResponseSpec = api_schemas_Main["/api/v1/files/read-bytes"]["POST"]["response"];
+		expectTypeOf<ResponseSpec[200]["body"]>().toEqualTypeOf<Uint8Array<ArrayBuffer>>();
+		expectTypeOf<ResponseSpec[400]["body"] | ResponseSpec[409]["body"]>().toMatchTypeOf<{ message: string }>();
+	});
+
+	test("returns an empty body at EOF and refuses offsets beyond EOF", async () => {
+		const { t, nodeId, read } = await create_fixture();
+		const eof = await read({ offset: 6 });
+		expect(eof.status).toBe(200);
+		expect((await eof.arrayBuffer()).byteLength).toBe(0);
+		expect((await read({ offset: 7 })).status).toBe(416);
+		await t.run(async (ctx) => {
+			const node = await ctx.db.get("files_nodes", nodeId);
+			await ctx.db.patch("files_r2_assets", node!.assetId!, { size: 0 });
+		});
+		const empty = await read();
+		expect(empty.status).toBe(200);
+		expect((await empty.arrayBuffer()).byteLength).toBe(0);
+	});
+
+	test("exposes all byte headers to an allowed browser origin", async () => {
+		const { t, token } = await create_fixture();
+		const origin = new URL(process.env.ALLOWED_ORIGINS!.split(",")[0]).origin;
+		const response = await t.fetch("/api/v1/files/read-bytes", {
+			method: "POST",
+			headers: { ...auth_headers(token), Origin: origin },
+			body: JSON.stringify({ path: "/data.bin", offset: 0, length: 6, revision: null }),
+		});
+		expect(response.status).toBe(200);
+		expect(response.headers.get("Access-Control-Allow-Origin")).toBe(origin);
+		const exposed = response.headers.get("Access-Control-Expose-Headers")?.toLowerCase();
+		for (const header of ["x-file-content-type", "x-file-revision", "x-file-size", "x-file-offset"]) {
+			expect(exposed).toContain(header);
+		}
+	});
+
+	test.each([
+		{ path: "data.bin" },
+		{ path: "/" },
+		{ path: "/a/../data.bin" },
+		{ path: "/a//data.bin" },
+		{ path: "/a\\data.bin" },
+		{ path: "/data*" },
+		{ path: "/data.bin " },
+		{ path: "/data\u0000.bin" },
+		{ offset: -1 },
+		{ offset: 0.5 },
+		{ offset: Number.MAX_SAFE_INTEGER + 1 },
+		{ length: 0 },
+		{ length: 1024 * 1024 + 1 },
+		{ revision: "bad" },
+	])("refuses invalid range or path %j before fetching bytes", async (body) => {
+		const { read } = await create_fixture();
+		vi.mocked(fetch).mockClear();
+		expect((await read(body)).status).toBe(400);
+		expect(fetch).not.toHaveBeenCalled();
+	});
+
+	test("atomically spends the requested length across concurrent reads", async () => {
+		const { t, read } = await create_fixture();
+		const responses = await Promise.all(Array.from({ length: 9 }, () => read({ length: 1024 * 1024 })));
+		expect(responses.filter((response) => response.status === 200)).toHaveLength(8);
+		expect(responses.filter((response) => response.status === 429)).toHaveLength(1);
+		const grants = await t.run((ctx) => ctx.db.query("public_api_grants").collect());
+		expect(grants[0]?.remainingReadBytes).toBe(0);
+	});
+
+	test.each(["source", "grant", "membership", "user"] as const)("refuses a changed %s after fetching", async (change) => {
+		const { t, db, nodeId, read } = await create_fixture();
+		const gate = defer_download_url();
+		const response = read();
+		await gate.started;
+		await t.run(async (ctx) => {
+			if (change === "source") await ctx.db.patch("files_nodes", nodeId, { contentType: "application/pdf" });
+			if (change === "user") await ctx.db.patch("users", db.userId, { deletedAt: Date.now() });
+			if (change === "membership")
+				await ctx.db.patch("organizations_workspaces_users", db.membershipId, { active: false });
+			if (change === "grant") {
+				const grant = await ctx.db.query("public_api_grants").first();
+				await ctx.db.patch("public_api_grants", grant!._id, { expiresAt: 0 });
+			}
+		});
+		gate.release();
+		expect((await response).status).toBe(change === "source" ? 409 : 404);
+	});
+
+	test("refuses an ignored range or oversized response and keeps the charge", async () => {
+		const { t, read } = await create_fixture();
+		vi.mocked(fetch).mockResolvedValueOnce(new Response(new Uint8Array(6)));
+		expect((await read({ offset: 1, length: 2 })).status).toBe(502);
+		vi.mocked(fetch).mockResolvedValueOnce(
+			new Response(new Uint8Array(3), {
+				status: 206,
+				headers: { "Content-Range": "bytes 1-2/6" },
+			}),
+		);
+		expect((await read({ offset: 1, length: 2 })).status).toBe(502);
+		const grant = await t.run((ctx) => ctx.db.query("public_api_grants").first());
+		expect(grant?.remainingReadBytes).toBe(8 * 1024 * 1024 - 4);
+	});
+
+	test("requires download scope, honors prefix, and still denies signed URLs to grants", async () => {
+		const { t, nodeId, token, read } = await create_fixture();
+		const download = await t.fetch("/api/v1/files/download-urls", {
+			method: "POST",
+			headers: auth_headers(token),
+			body: JSON.stringify({ fileNodeIds: [nodeId] }),
+		});
+		expect(download.status).toBe(403);
+		await t.run(async (ctx) => {
+			const grant = await ctx.db.query("public_api_grants").first();
+			await ctx.db.patch("public_api_grants", grant!._id, { pathPrefix: "/other" });
+		});
+		expect((await read()).status).toBe(404);
+		await t.run(async (ctx) => {
+			const grant = await ctx.db.query("public_api_grants").first();
+			await ctx.db.patch("public_api_grants", grant!._id, { pathPrefix: null, scopes: ["files:read"] });
+		});
+		expect((await read()).status).toBe(403);
+	});
+
+	test("uses a service account's saved text and checks its file grant after reading", async () => {
+		const { t, db } = await create_fixture();
+		const nodeId = await seed_markdown_file({
+			t,
+			...db,
+			path: "/saved.md",
+			committedMarkdown: "Saved text\n",
+			pendingMarkdown: "Private draft\n",
+		});
+		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+		const account = await asUser.mutation(api.access_control.create_service_account, {
+			membershipId: db.membershipId,
+			name: "Byte reader",
+		});
+		if (account._nay) throw new Error(account._nay.message);
+		const serviceAccountId = account._yay.serviceAccountId;
+		const granted = await asUser.mutation(api.access_control.set_service_account_grant, {
+			membershipId: db.membershipId,
+			serviceAccountId,
+			resource: { kind: "file", nodeId },
+			level: "read",
+		});
+		if (granted._nay) throw new Error(granted._nay.message);
+		const key = await asUser.mutation(api.public_api.api_credential_create, {
+			membershipId: db.membershipId,
+			serviceAccountId,
+			name: "Byte reader",
+			scopes: ["files:download"],
+		});
+		if (key._nay) throw new Error(key._nay.message);
+		const read = () =>
+			t.fetch("/api/v1/files/read-bytes", {
+				method: "POST",
+				headers: auth_headers(key._yay.credential),
+				body: JSON.stringify({ path: "/saved.md", offset: 0, length: 100, revision: null }),
+			});
+		const saved = await read();
+		expect(saved.status).toBe(200);
+		expect(await saved.text()).toBe("Saved text\n");
+		const gate = defer_download_url();
+		const pending = read();
+		await gate.started;
+		const removed = await asUser.mutation(api.access_control.remove_service_account_grant, {
+			membershipId: db.membershipId,
+			serviceAccountId,
+			resource: { kind: "file", nodeId },
+		});
+		if (removed._nay) throw new Error(removed._nay.message);
+		gate.release();
+		expect((await pending).status).toBe(404);
+	});
+
+	test("does not refund an aborted read", async () => {
+		const { t, token } = await create_fixture();
+		const gate = defer_download_url();
+		const abort = new AbortController();
+		const pending = t.fetch("/api/v1/files/read-bytes", {
+			method: "POST",
+			headers: auth_headers(token),
+			signal: abort.signal,
+			body: JSON.stringify({ path: "/data.bin", offset: 0, length: 6, revision: null }),
+		});
+		await gate.started;
+		abort.abort();
+		gate.release();
+		expect((await pending).status).toBe(502);
+		const grant = await t.run((ctx) => ctx.db.query("public_api_grants").first());
+		expect(grant?.remainingReadBytes).toBe(8 * 1024 * 1024 - 6);
+	});
+
+	test("reads private text as UTF-8 and returns its tagged target through both text routes", async () => {
+		const { t, db, token, read } = await create_fixture();
+		vi.spyOn(Workpool.prototype, "enqueueAction").mockResolvedValue("work_private_text" as never);
+		const scope = { organizationId: db.organizationId, workspaceId: db.workspaceId, userId: db.userId };
+		const created = await t.mutation(internal.files_nodes.create_private_node_by_path, {
+			...scope,
+			path: "/draft.txt",
+			kind: "file",
+		});
+		if (created._nay || !created._yay.operationBatchId) throw new Error("Private text create failed");
+		const { target, operationBatchId } = created._yay;
+		const text = "café\n";
+		const staged = await t.mutation(internal.files_pending_updates.stage_file_pending_update_text_input_internal, {
+			...scope,
+			operationBatchId,
+			role: "unstaged",
+			text,
+		});
+		if (staged._nay) throw new Error(staged._nay.message);
+		const ready = await t.action(internal.files_pending_updates.upsert_file_pending_update_internal_action, {
+			...scope,
+			target,
+			operationBatchId,
+		});
+		if (ready._nay) throw new Error(ready._nay.message);
+		const bytes = await read({ path: "/draft.txt", offset: 3, length: 2 });
+		expect(bytes.status).toBe(200);
+		expect(bytes.headers.get("X-File-Size")).toBe(String(new TextEncoder().encode(text).byteLength));
+		expect(new Uint8Array(await bytes.arrayBuffer())).toEqual(new TextEncoder().encode("é"));
+		const single = await t.fetch("/api/v1/files/read", {
+			method: "POST",
+			headers: auth_headers(token),
+			body: JSON.stringify({ path: "/draft.txt" }),
+		});
+		expect(await single.json()).toEqual({ path: "/draft.txt", target, content: text });
+		const many = await t.fetch("/api/v1/files/read-many", {
+			method: "POST",
+			headers: auth_headers(token),
+			body: JSON.stringify({ paths: ["/draft.txt"] }),
+		});
+		expect(await many.json()).toMatchObject({ files: [{ path: "/draft.txt", target, content: text }], errors: [] });
+		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+		const key = await asUser.mutation(api.public_api.api_credential_create, {
+			membershipId: db.membershipId,
+			serviceAccountId: null,
+			name: "Saved reader",
+			scopes: ["files:download"],
+		});
+		if (key._nay) throw new Error(key._nay.message);
+		const savedOnly = await t.fetch("/api/v1/files/read-bytes", {
+			method: "POST",
+			headers: auth_headers(key._yay.credential),
+			body: JSON.stringify({ path: "/draft.txt", offset: 0, length: 20, revision: null }),
+		});
+		expect(savedOnly.status).toBe(404);
+	});
 });
 
 describe("file write policy API", () => {
@@ -6975,9 +7285,7 @@ describe("service file writes", () => {
 				})
 			).status,
 		).toBe(200);
-		expect(
-			(await find_active_node({ t, db, path: "/meetings/meeting-1/transcript.md" }))?.writePolicy,
-		).toBeNull();
+		expect((await find_active_node({ t, db, path: "/meetings/meeting-1/transcript.md" }))?.writePolicy).toBeNull();
 
 		// A member re-lock carries no plugin name, so the service cannot pass it.
 		const relocked = await asUser.mutation(api.files_nodes.set_node_write_policy, {

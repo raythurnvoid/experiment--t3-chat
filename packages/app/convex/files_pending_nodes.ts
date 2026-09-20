@@ -25,6 +25,40 @@ const DRAFT_IDLE_EXPIRY_MS = 4 * 60 * 60 * 1000;
 const PUBLISH_RECEIPT_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 
 /**
+ * Resolve read links only. The caller still checks current Files access.
+ *
+ * Save turns a private draft into a saved node. Follow an old draft link to that saved node, so a
+ * link written before Save keeps working after it.
+ */
+export async function files_pending_nodes_db_resolve_read_target(
+	ctx: QueryCtx | MutationCtx,
+	args: {
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		target: Doc<"files_pending_updates">["target"];
+	},
+) {
+	if (args.target.kind === "saved") return args.target;
+
+	// The saved node keeps this link after the short-lived publish receipt is removed.
+	const privateNodeId = args.target.id;
+	const saved = await ctx.db
+		.query("files_nodes")
+		.withIndex("by_organization_workspace_publishedFromPrivateNode", (q) =>
+			q
+				.eq("organizationId", args.organizationId)
+				.eq("workspaceId", args.workspaceId)
+				.eq("publishedFromPrivateNodeId", privateNodeId),
+		)
+		.first();
+
+	if (!saved) return args.target;
+
+	// An archived saved file is gone, so answer null instead of the old draft link.
+	return saved.archiveOperationId === null ? { kind: "saved" as const, id: saved._id } : null;
+}
+
+/**
  * Resolve identity only. The caller checks the saved parent's current access and policy.
  */
 export async function files_pending_nodes_db_resolve_saved_parent(
@@ -243,6 +277,9 @@ export async function files_pending_nodes_db_publish(
 	}
 
 	const now = Date.now();
+	// The receipt below is deleted after a week. Store the same link on the saved node, so an old
+	// private link still resolves after that.
+	await ctx.db.patch("files_nodes", args.savedNodeId, { publishedFromPrivateNodeId: node._id });
 	await ctx.db.insert("files_pending_node_publish_receipts", {
 		organizationId: node.organizationId,
 		workspaceId: node.workspaceId,

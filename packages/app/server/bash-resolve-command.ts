@@ -48,11 +48,14 @@ function parse_args(args: string[], scope: { organizationName: string; workspace
 			return Result({ _nay: { message: RESOLVE_UNAVAILABLE_MESSAGE, data: { exitCode: bash_COMMAND_EXIT_FAILURE } } });
 		}
 
-		const nodeIds = url.searchParams.getAll("nodeId");
+		const nodeIds = [...url.searchParams.getAll("nodeId"), ...url.searchParams.getAll("pendingNodeId")];
 		if (nodeIds.length > 0) {
 			if (nodeIds.length !== 1 || !nodeIds[0]) {
 				return Result({
-					_nay: { message: "Expected one nonempty nodeId", data: { exitCode: bash_COMMAND_EXIT_USAGE } },
+					_nay: {
+						message: "Expected one nonempty nodeId or pendingNodeId",
+						data: { exitCode: bash_COMMAND_EXIT_USAGE },
+					},
 				});
 			}
 			return Result({ _yay: { nodeId: nodeIds[0] } });
@@ -61,7 +64,10 @@ function parse_args(args: string[], scope: { organizationName: string; workspace
 		const path = `/${path_extract_segments_from(decodeURIComponent(match[3] ?? "")).join("/")}`;
 		if (path === "/") {
 			return Result({
-				_nay: { message: "The URL needs a nodeId or file path", data: { exitCode: bash_COMMAND_EXIT_USAGE } },
+				_nay: {
+					message: "The URL needs a nodeId, pendingNodeId, or file path",
+					data: { exitCode: bash_COMMAND_EXIT_USAGE },
+				},
 			});
 		}
 		return Result({ _yay: { path } });

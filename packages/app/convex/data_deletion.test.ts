@@ -19,7 +19,8 @@ import { billing_PRODUCTS } from "../shared/billing.ts";
 import { quotas_db_ensure, quotas_db_get } from "./quotas.ts";
 import { files_create_room_id, files_get_utf8_byte_size } from "../shared/files.ts";
 import { app_presence_GLOBAL_ROOM_ID } from "../shared/shared-presence-constants.ts";
-import { r2, r2_PUT_MAY_ARRIVE_MARGIN_MS, r2_create_asset_key } from "./r2_client.ts";
+import { r2, r2_PUT_MAY_ARRIVE_MARGIN_MS, r2_confirmed_object_delete, r2_create_asset_key } from "./r2_client.ts";
+import { files_private_storage_db_reserve } from "./files_private_storage.ts";
 
 const RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -650,6 +651,7 @@ async function data_deletion_test_seed_workspace_content_bulk(
 				principalKey: `grant_${args.tag}_${i}`,
 				tokenHash: `token_hash_${args.tag}_${i}`,
 				scopes: ["files:list", "files:read"],
+				remainingReadBytes: 0,
 				pathPrefix: null,
 				createdAt: Date.now(),
 				expiresAt: Date.now() + 10 * 60 * 1000,
@@ -5112,6 +5114,7 @@ describe("hard_delete_user_data", () => {
 					principalKey: "reset-private-before-plugin-purge",
 					tokenHash: "reset-private-before-plugin-purge-token",
 					scopes: ["files:read"],
+					remainingReadBytes: 0,
 					pathPrefix: null,
 					createdAt: now,
 					expiresAt: now + 60_000,
@@ -5625,6 +5628,9 @@ describe("hard_delete_user_data", () => {
 	});
 
 	test("admin data reset batches content while preserving auth, profile, billing, and default organization/workspace docs", async () => {
+		// The component uses its own S3 client for metadata and confirmed deletion.
+		vi.spyOn(R2.prototype, "syncMetadata").mockResolvedValue(undefined);
+		const confirmedDelete = vi.spyOn(r2_confirmed_object_delete, "delete_object").mockResolvedValue(undefined);
 		const t = test_convex();
 		const user = await t.run((ctx) =>
 			data_deletion_test_bootstrap_user(ctx, {
@@ -5689,6 +5695,12 @@ describe("hard_delete_user_data", () => {
 		// Finish the README seeds scheduled by the workspace creations above so the
 		// fetch assertion below only observes the reset flow.
 		await data_deletion_test_finish_immediate_scheduled_functions(t);
+		const expectedObjectKeys = await t.run(async (ctx) =>
+			(await ctx.db.query("files_r2_assets").collect())
+				.filter((asset) => asset.createdBy === user.userId)
+				.map((asset) => asset.r2Key)
+				.filter((key): key is string => key !== undefined),
+		);
 		fetchSpy.mockClear();
 		const result = await t.action(internal.users.hard_delete_user_now, {
 			userId: user.userId,
@@ -5801,6 +5813,8 @@ describe("hard_delete_user_data", () => {
 		expect(after.extraWorkspace).toBeNull();
 		expect(after.defaultContent).toBe(0);
 		expect(after.extraContent).toBe(0);
+		expect(expectedObjectKeys.length).toBeGreaterThan(0);
+		for (const key of expectedObjectKeys) expect(confirmedDelete).toHaveBeenCalledWith(expect.anything(), key);
 		expect(fetchSpy).not.toHaveBeenCalled();
 	});
 
@@ -6232,6 +6246,66 @@ describe("hard_delete_user_data", () => {
 });
 
 describe("finalize_user_deletion_data", () => {
+	test("purges unlinked image holds across pages without deleting another user's assets", async () => {
+		const t = test_convex();
+		vi.spyOn(r2_confirmed_object_delete, "delete_object").mockResolvedValue(undefined);
+		const victim = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const other = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx, { organizationName: "other-assets" }));
+
+		// The purge reads 50 holds per page, so 52 victim holds force it to follow its cursor. The
+		// last asset belongs to another user and must survive.
+		const assets = await t.run(async (ctx) => {
+			const ids = [];
+			for (let index = 0; index < 53; index++) {
+				const owner = index === 52 ? other : victim;
+				const assetId = await ctx.db.insert("files_r2_assets", {
+					organizationId: owner.organizationId,
+					workspaceId: owner.workspaceId,
+					createdBy: owner.userId,
+					kind: "content",
+					r2Bucket: "test",
+					size: 8,
+					updatedAt: Date.now(),
+					unfinalizedExpiresAt: Date.now() + 86_400_000,
+					putMayArriveUntil: Date.now() + 1_500_000,
+				});
+				const reserved = await files_private_storage_db_reserve(ctx, {
+					...owner,
+					resource: { kind: "asset", id: assetId, r2Key: r2_create_asset_key({ ...owner, assetId }) },
+					byteCount: 8,
+				});
+				if (reserved._nay) throw new Error(reserved._nay.message);
+				ids.push(assetId);
+			}
+			return ids;
+		});
+
+		// The purge only takes holds created before it starts, and fake timers freeze the clock.
+		vi.advanceTimersByTime(1);
+
+		await data_deletion_test_finalize_user_until_done(t, { userId: victim.userId, batchSize: 10 });
+		await data_deletion_test_finish_immediate_scheduled_functions(t);
+
+		const after = await t.run(async (ctx) => ({
+			assets: await Promise.all(assets.map((assetId) => ctx.db.get("files_r2_assets", assetId))),
+			holds: await ctx.db
+				.query("files_private_storage_reservations")
+				.withIndex("by_user_settlement_resource", (q) =>
+					q.eq("userId", victim.userId).eq("settlement.kind", "held").eq("resource.kind", "asset"),
+				)
+				.collect(),
+			jobs: await ctx.db.query("files_r2_object_deletion_jobs").collect(),
+		}));
+		expect(after.assets.slice(0, 52).every((asset) => asset === null)).toBe(true);
+		expect(after.assets[52]).not.toBeNull();
+
+		// Each hold stays until its deletion job reports that R2 removed the object. An upload can
+		// still arrive after the user is gone, so every job keeps a future deadline and tries again.
+		expect(after.holds).toHaveLength(52);
+		expect(after.jobs.filter((job) => job.privateStorageReservationId)).toHaveLength(52);
+		expect(after.jobs.every((job) => job.putMayArriveUntil! > Date.now())).toBe(true);
+	});
+
 	test("drains private Paste runs before memberships and keeps shared copies", async () => {
 		const t = test_convex();
 		const victim = await t.run((ctx) =>
@@ -6361,7 +6435,11 @@ describe("finalize_user_deletion_data", () => {
 				.first(),
 		);
 		if (!membership) throw new Error("Expected the victim's membership");
-		const asVictim = t.withIdentity({ issuer: "https://clerk.test", subject: victim.userId, external_id: victim.userId });
+		const asVictim = t.withIdentity({
+			issuer: "https://clerk.test",
+			subject: victim.userId,
+			external_id: victim.userId,
+		});
 		const thread = await asVictim.mutation(api.ai_chat.thread_create, {
 			membershipId: membership._id,
 			clientGeneratedId: "drain-bash-job",

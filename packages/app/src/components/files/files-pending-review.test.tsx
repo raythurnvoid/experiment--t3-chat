@@ -202,6 +202,39 @@ describe("FilesPendingReviewModal", () => {
 		expect(stopMock).not.toHaveBeenCalled();
 	});
 
+	test.each([false, true])("returns focus after review with the Pending opener removed=%s", async (removed) => {
+		const origin = render(
+			<div className="FileEditorSidebarPending" tabIndex={-1} aria-label="Pending changes">
+				<button>Save file</button>
+			</div>,
+		);
+		const opener = screen.getByRole("button", { name: "Save file" });
+		opener.focus();
+		const review = render(
+			<FilesPendingReviewModal membershipId={membershipId} runId={runId} onClose={() => review.unmount()} />,
+		);
+		await waitFor(() => expect(screen.getByRole("dialog").contains(document.activeElement)).toBe(true));
+
+		// The last pending item disappears while the progress dialog still has focus.
+		if (removed)
+			origin.rerender(
+				<div
+					className="FileEditorSidebarPending FileEditorSidebarPending-empty"
+					tabIndex={-1}
+					aria-label="Pending changes"
+				>
+					No pending changes
+				</div>,
+			);
+		status = "succeeded";
+		pushQueries();
+		fireEvent.click(screen.getByText("Close"));
+
+		await waitFor(() =>
+			expect(document.activeElement).toBe(removed ? screen.getByLabelText("Pending changes") : opener),
+		);
+	});
+
 	test("uses shared Stop state and shows a refused Stop", async () => {
 		stopMock.mockResolvedValue({ _nay: { message: "Stop was refused." } });
 		render(<FilesPendingReviewModal membershipId={membershipId} runId={runId} onClose={vi.fn()} />);

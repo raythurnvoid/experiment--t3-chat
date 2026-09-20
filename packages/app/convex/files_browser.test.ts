@@ -6,12 +6,12 @@ import type { streamText } from "ai";
 import { encodeStateAsUpdate } from "yjs";
 import { api, internal } from "./_generated/api.js";
 import { files_browser_db_delete_user_batch } from "./files_browser.ts";
-import { r2_db_finalize_browser_result_asset } from "./r2_client.ts";
 import { test_convex, test_create_saved_text_file, test_mocks_fill_db_with } from "./setup.test.ts";
-import { r2_create_asset_key } from "./r2_client.ts";
 import type { Id } from "./_generated/dataModel.js";
 import { files_yjs_doc_create_from_text } from "../shared/files-tiptap.ts";
 import { files_u8_to_array_buffer } from "../server/files.ts";
+import { quotas_db_ensure } from "./quotas.ts";
+import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 
 const runnerQueue: Array<unknown> = [];
 const runnerCalls: Array<{ route: string; body: Record<string, unknown> }> = [];
@@ -211,6 +211,539 @@ async function sha256_hex(text: string) {
 	const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
 	return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, "0")).join("");
 }
+
+/**
+ * Open a browser session on an HTML file. File outputs need the session's current lease and
+ * source values, so return those together with the scope and a chat thread.
+ */
+async function seed_browser_file_scope(t: ReturnType<typeof test_convex>) {
+	const fixture = await seed_html_file(t);
+	const started = await start_saved_session(t, fixture);
+	if (started._nay) throw new Error(started._nay.message);
+
+	const session = await t.run((ctx) => ctx.db.get("files_browser_sessions", started._yay.sessionId));
+	if (!session) throw new Error("Expected browser session");
+
+	const threadId = await t.run((ctx) =>
+		ctx.db.insert("ai_chat_threads", {
+			organizationId: fixture.organizationId,
+			workspaceId: fixture.workspaceId,
+			clientGeneratedId: "browser-files",
+			title: null,
+			archived: false,
+			runtime: "aisdk_5",
+			createdBy: fixture.userId,
+			updatedBy: fixture.userId,
+			updatedAt: Date.now(),
+		}),
+	);
+
+	return {
+		membershipId: fixture.membershipId,
+		userId: fixture.userId,
+		organizationId: fixture.organizationId,
+		workspaceId: fixture.workspaceId,
+		threadId,
+		modeId: "agent" as const,
+		sessionId: session._id,
+		expectedAgentLease: {
+			controlGen: session.controlGen,
+			loadGen: session.loadGen,
+			navGen: session.navigationGeneration,
+		},
+		expectedSource: {
+			targetKind: session.targetKind,
+			nodeId: session.nodeId,
+			sourceKind: session.sourceKind,
+			sourceVersion: session.sourceVersion,
+			sourceHash: session.sourceHash,
+		},
+	};
+}
+
+const browserFile = {
+	requestId: "file-output-1",
+	attemptId: "attempt-1",
+	path: "/reports/capture.bin",
+	size: 8,
+	contentType: "application/octet-stream",
+	digest: "a".repeat(64),
+	content: { kind: "stored" as const },
+};
+
+async function prepare_browser_file(
+	t: ReturnType<typeof test_convex>,
+	scope: Awaited<ReturnType<typeof seed_browser_file_scope>>,
+	changes: Partial<typeof browserFile> = {},
+) {
+	const prepared = await t.mutation(internal.files_browser.prepare_file_output, {
+		...scope,
+		...browserFile,
+		...changes,
+	});
+	if (prepared._nay) throw new Error(prepared._nay.message);
+	if (prepared._yay.kind !== "stored") throw new Error("Expected stored file preparation");
+	return prepared._yay;
+}
+
+describe("browser file outputs", () => {
+	test("creates generic files with exact parent review and replays after Save", async () => {
+		const t = test_convex();
+		const scope = await seed_browser_file_scope(t);
+		const first = await prepare_browser_file(t, scope);
+		expect(
+			(await t.run((ctx) => ctx.db.query("files_pending_nodes").collect())).filter((node) => node.state === "active"),
+		).toEqual([]);
+		const finalArgs = { ...scope, receiptId: first.receiptId, attemptId: browserFile.attemptId };
+		const finalized = await t.mutation(internal.files_browser.finalize_file_output, finalArgs);
+		if (finalized._nay) throw new Error(finalized._nay.message);
+		const second = await prepare_browser_file(t, scope, {
+			requestId: "file-output-2",
+			size: 0,
+			contentType: "application/x-custom",
+		});
+		const secondResult = await t.mutation(internal.files_browser.finalize_file_output, {
+			...scope,
+			receiptId: second.receiptId,
+			attemptId: browserFile.attemptId,
+		});
+		expect([finalized._yay.path, secondResult._yay?.path]).toEqual(["/reports/capture.bin", "/reports/capture-2.bin"]);
+		expect(secondResult._yay).toMatchObject({ size: 0, contentType: "application/x-custom" });
+
+		const asUser = authed(t, scope.userId);
+		const target = finalized._yay.target;
+		const view = await asUser.query(api.files_pending_updates.get_file_pending_target, {
+			membershipId: scope.membershipId,
+			target,
+		});
+		expect(view).toMatchObject({ readiness: "ready", canAccept: false, canAcceptWithParents: true });
+		expect(view!.requiredParents.map((parent) => parent.path)).toEqual(["/reports"]);
+		expect(view!.entry.pendingUpdate?.createIntent).toMatchObject({ kind: "stored", size: 8 });
+		expect(view!.entry.pendingUpdate?.threadIds).toEqual([scope.threadId]);
+		const readArgs = {
+			userId: scope.userId,
+			membershipId: scope.membershipId,
+			threadId: scope.threadId,
+			path: finalized._yay.path,
+			target,
+		};
+		expect((await t.query(internal.files_nodes_content.get_file_read_source, readArgs))._yay?.assetId).toBe(
+			first.assetId,
+		);
+		for (const parent of view!.requiredParents) {
+			expect(
+				(
+					await asUser.action(api.files_pending_updates.save_file_pending_update, {
+						membershipId: scope.membershipId,
+						target: parent.target,
+						pendingUpdateId: parent.pendingUpdateId,
+						reviewedRevision: parent.reviewedRevision,
+					})
+				)._nay,
+			).toBeUndefined();
+		}
+		const saved = await asUser.action(api.files_pending_updates.save_file_pending_update, {
+			membershipId: scope.membershipId,
+			target,
+			pendingUpdateId: view!.entry.pendingUpdate!._id,
+			reviewedRevision: view!.entry.pendingUpdate!.revision,
+		});
+		if (saved._nay) throw new Error(saved._nay.message);
+		if (target.kind !== "private") throw new Error("Expected private target");
+		await t.run(async (ctx) => {
+			const receipt = await ctx.db
+				.query("files_pending_node_publish_receipts")
+				.withIndex("by_privateNode", (q) => q.eq("privateNodeId", target.id))
+				.first();
+			if (receipt) await ctx.db.delete("files_pending_node_publish_receipts", receipt._id);
+			await ctx.db.delete("files_pending_nodes", target.id);
+			await ctx.db.patch("files_browser_sessions", scope.sessionId, { control: "closed" });
+		});
+		expect((await t.query(internal.files_nodes_content.get_file_read_source, readArgs))._yay?.target).toEqual(
+			saved._yay.target,
+		);
+		// Completed retries resolve the same file. They cannot create again after the browser closes.
+		expect((await t.mutation(internal.files_browser.finalize_file_output, finalArgs))._yay?.target).toEqual(
+			saved._yay.target,
+		);
+		await t.mutation(internal.files_ingestion.abort_file, {
+			userId: scope.userId,
+			organizationId: scope.organizationId,
+			workspaceId: scope.workspaceId,
+			receiptId: first.receiptId,
+			attemptId: browserFile.attemptId,
+		});
+		expect(await t.run((ctx) => ctx.db.get("files_r2_assets", first.assetId))).not.toBeNull();
+	});
+
+	test("keeps completed files when a later item exceeds the node quota", async () => {
+		const t = test_convex();
+		const scope = await seed_browser_file_scope(t);
+		await t.run(async (ctx) => {
+			const quotaId = await quotas_db_ensure(ctx, { ...scope, quotaName: "files_private_nodes", now: Date.now() });
+			await ctx.db.patch("quotas", quotaId, { maxCount: 2 });
+		});
+		const first = await prepare_browser_file(t, scope);
+		const finalized = await t.mutation(internal.files_browser.finalize_file_output, {
+			...scope,
+			receiptId: first.receiptId,
+			attemptId: browserFile.attemptId,
+		});
+		expect(finalized._yay).toBeDefined();
+		expect(
+			(
+				await t.mutation(internal.files_browser.prepare_file_output, {
+					...scope,
+					...browserFile,
+					requestId: "file-output-2",
+					path: "/reports/second.bin",
+				})
+			)._nay,
+		).toBeDefined();
+		const nodes = await t.run((ctx) => ctx.db.query("files_pending_nodes").collect());
+		expect(nodes.filter((node) => node.state === "active")).toHaveLength(2);
+		expect(await t.run((ctx) => ctx.db.get("files_r2_assets", first.assetId))).not.toBeNull();
+	});
+
+	test.each(["control", "load", "navigation", "source", "thread", "ask"] as const)(
+		"rechecks %s before finalizing bytes",
+		async (change) => {
+			const t = test_convex();
+			const scope = await seed_browser_file_scope(t);
+			const prepared = await prepare_browser_file(t, scope);
+			if (change === "control")
+				await t.run((ctx) =>
+					ctx.db.patch("files_browser_sessions", scope.sessionId, {
+						controlGen: scope.expectedAgentLease.controlGen + 1,
+					}),
+				);
+			if (change === "load")
+				await t.run((ctx) =>
+					ctx.db.patch("files_browser_sessions", scope.sessionId, { loadGen: scope.expectedAgentLease.loadGen + 1 }),
+				);
+			if (change === "navigation")
+				await t.run((ctx) =>
+					ctx.db.patch("files_browser_sessions", scope.sessionId, {
+						navigationGeneration: scope.expectedAgentLease.navGen + 1,
+					}),
+				);
+			if (change === "source")
+				await t.run((ctx) => ctx.db.patch("files_browser_sessions", scope.sessionId, { sourceHash: "changed" }));
+			if (change === "thread")
+				await t.run((ctx) => ctx.db.patch("ai_chat_threads", scope.threadId, { archived: true }));
+			expect(
+				(
+					await t.mutation(internal.files_browser.finalize_file_output, {
+						...scope,
+						...(change === "ask" ? { modeId: "ask" as const } : {}),
+						receiptId: prepared.receiptId,
+						attemptId: browserFile.attemptId,
+					})
+				)._nay,
+			).toBeDefined();
+			expect(
+				(await t.run((ctx) => ctx.db.query("files_pending_nodes").collect())).filter((node) => node.state === "active"),
+			).toEqual([]);
+			await t.mutation(internal.files_ingestion.abort_file, {
+				userId: scope.userId,
+				organizationId: scope.organizationId,
+				workspaceId: scope.workspaceId,
+				receiptId: prepared.receiptId,
+				attemptId: browserFile.attemptId,
+			});
+			const job = await t.run((ctx) =>
+				ctx.db
+					.query("files_r2_object_deletion_jobs")
+					.withIndex("by_r2_key", (q) => q.eq("r2Key", prepared.r2Key))
+					.first(),
+			);
+			expect(job?.putMayArriveUntil).toBeGreaterThan(Date.now());
+			expect(job?.privateStorageReservationId).toBeDefined();
+			expect(
+				(await t.run((ctx) => ctx.db.get("files_private_storage_reservations", job!.privateStorageReservationId!)))
+					?.settlement.kind,
+			).toBe("held");
+		},
+	);
+
+	test("Ask and a foreign thread fail before allocating bytes", async () => {
+		const t = test_convex();
+		const scope = await seed_browser_file_scope(t);
+		expect(
+			(await t.mutation(internal.files_browser.prepare_file_output, { ...scope, ...browserFile, modeId: "ask" }))._nay,
+		).toBeDefined();
+		await t.run((ctx) => ctx.db.patch("ai_chat_threads", scope.threadId, { workspaceId: "other-workspace" }));
+		expect(
+			(await t.mutation(internal.files_browser.prepare_file_output, { ...scope, ...browserFile }))._nay,
+		).toBeDefined();
+		expect(await t.run((ctx) => ctx.db.query("files_ingestion_receipts").collect())).toEqual([]);
+	});
+
+	test.each(["relative.bin", "/a/../out", "/a//out", "/a/*.bin", "/a/out "])(
+		"refuses invalid path %s before reserving bytes",
+		async (path) => {
+			const t = test_convex();
+			const scope = await seed_browser_file_scope(t);
+			const assets = await t.run((ctx) => ctx.db.query("files_r2_assets").collect());
+			expect(
+				(await t.mutation(internal.files_browser.prepare_file_output, { ...scope, ...browserFile, path }))._nay,
+			).toBeDefined();
+			expect(await t.run((ctx) => ctx.db.query("files_r2_assets").collect())).toEqual(assets);
+		},
+	);
+
+	test("never overwrites a saved name hidden by a proposed delete", async () => {
+		const t = test_convex();
+		const scope = await seed_browser_file_scope(t);
+		const nodeId = await test_create_saved_text_file(t, {
+			membershipId: scope.membershipId,
+			path: browserFile.path,
+			textContent: "existing file",
+		});
+		await t.run((ctx) =>
+			ctx.db.insert("files_pending_updates", {
+				organizationId: scope.organizationId,
+				workspaceId: scope.workspaceId,
+				userId: scope.userId,
+				target: { kind: "saved", id: nodeId },
+				revision: 1,
+				pendingArchive: { fromPath: browserFile.path },
+				size: 0,
+				updatedAt: Date.now(),
+			}),
+		);
+		const prepared = await prepare_browser_file(t, scope);
+		const finalized = await t.mutation(internal.files_browser.finalize_file_output, {
+			...scope,
+			receiptId: prepared.receiptId,
+			attemptId: browserFile.attemptId,
+		});
+		expect(finalized._yay?.path).toBe("/reports/capture-2.bin");
+		expect((await t.run((ctx) => ctx.db.get("files_nodes", nodeId)))?.archiveOperationId).toBeNull();
+	});
+
+	test("reads across same-tenant threads and refuses cross-tenant reads and discarded replay", async () => {
+		const t = test_convex();
+		const scope = await seed_browser_file_scope(t);
+		const prepared = await prepare_browser_file(t, scope);
+		const finalArgs = { ...scope, receiptId: prepared.receiptId, attemptId: browserFile.attemptId };
+		const finalized = await t.mutation(internal.files_browser.finalize_file_output, finalArgs);
+		if (finalized._nay) throw new Error(finalized._nay.message);
+		const target = finalized._yay.target;
+		const threadId = await t.run(async (ctx) => {
+			const thread = await ctx.db.get("ai_chat_threads", scope.threadId);
+			const { _id: _id, _creationTime: _time, ...fields } = thread!;
+			return await ctx.db.insert("ai_chat_threads", { ...fields, clientGeneratedId: "branch-files" });
+		});
+		const readArgs = {
+			userId: scope.userId,
+			membershipId: scope.membershipId,
+			threadId,
+			path: finalized._yay.path,
+			target,
+		};
+		expect((await t.query(internal.files_nodes_content.get_file_read_source, readArgs))._yay).toBeDefined();
+		await t.run((ctx) => ctx.db.patch("ai_chat_threads", threadId, { organizationId: "other-tenant" }));
+		expect((await t.query(internal.files_nodes_content.get_file_read_source, readArgs))._nay).toBeDefined();
+		const asUser = authed(t, scope.userId);
+		const view = await asUser.query(api.files_pending_updates.get_file_pending_target, {
+			membershipId: scope.membershipId,
+			target,
+		});
+		expect(
+			(
+				await asUser.mutation(api.files_pending_updates.discard_file_pending_update, {
+					membershipId: scope.membershipId,
+					target,
+					pendingUpdateId: view!.entry.pendingUpdate!._id,
+					reviewedRevision: view!.entry.pendingUpdate!.revision,
+				})
+			)._nay,
+		).toBeUndefined();
+		expect((await t.mutation(internal.files_browser.finalize_file_output, finalArgs))._nay).toBeDefined();
+	});
+
+	test("keeps the first hold when a later item exceeds private byte quota", async () => {
+		const t = test_convex();
+		const scope = await seed_browser_file_scope(t);
+		await t.run(async (ctx) => {
+			const quotaId = await quotas_db_ensure(ctx, { ...scope, quotaName: "files_private_user_bytes", now: Date.now() });
+			await ctx.db.patch("quotas", quotaId, { maxCount: 8 });
+		});
+		const first = await prepare_browser_file(t, scope);
+		await expect(
+			t.mutation(internal.files_browser.prepare_file_output, {
+				...scope,
+				...browserFile,
+				requestId: "file-output-2",
+			}),
+		).rejects.toThrow("pending files");
+		expect(await t.run((ctx) => ctx.db.get("files_r2_assets", first.assetId))).not.toBeNull();
+		expect(await t.run((ctx) => ctx.db.query("files_ingestion_receipts").collect())).toHaveLength(1);
+	});
+});
+
+describe("get_file_read_source", () => {
+	test("keeps pending files owner-only and uses current saved grants through the old private ID", async () => {
+		const t = test_convex();
+		const scope = await seed_browser_file_scope(t);
+		const path = "/reports/shared.bin";
+		const prepared = await prepare_browser_file(t, scope, { path });
+		const finalized = await t.mutation(internal.files_browser.finalize_file_output, {
+			...scope,
+			receiptId: prepared.receiptId,
+			attemptId: browserFile.attemptId,
+		});
+		if (finalized._nay) throw new Error(finalized._nay.message);
+
+		const target = finalized._yay.target;
+
+		// A second member of the same workspace. A capture is still a private draft, so this member
+		// cannot read it, whatever their workspace role says.
+		const member = await t.run(async (ctx) => {
+			const userId = await ctx.db.insert("users", { clerkUserId: null });
+			const membershipId = await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: scope.organizationId,
+				workspaceId: scope.workspaceId,
+				userId,
+				active: true,
+			});
+			await access_control_db_ensure_role_assignment(ctx, { ...scope, userId, role: "member", now: Date.now() });
+			return { userId, membershipId };
+		});
+		const memberRead = { ...member, threadId: scope.threadId, path, target };
+		expect((await t.query(internal.files_nodes_content.get_file_read_source, memberRead))._nay).toBeDefined();
+
+		const asOwner = authed(t, scope.userId);
+		const view = await asOwner.query(api.files_pending_updates.get_file_pending_target, {
+			membershipId: scope.membershipId,
+			target,
+		});
+		for (const parent of view!.requiredParents) {
+			expect(
+				(
+					await asOwner.action(api.files_pending_updates.save_file_pending_update, {
+						membershipId: scope.membershipId,
+						target: parent.target,
+						pendingUpdateId: parent.pendingUpdateId,
+						reviewedRevision: parent.reviewedRevision,
+					})
+				)._nay,
+			).toBeUndefined();
+		}
+		const saved = await asOwner.action(api.files_pending_updates.save_file_pending_update, {
+			membershipId: scope.membershipId,
+			target,
+			pendingUpdateId: view!.entry.pendingUpdate!._id,
+			reviewedRevision: view!.entry.pendingUpdate!.revision,
+		});
+		if (saved._nay || saved._yay.target.kind !== "saved") throw new Error("Expected saved file");
+		const nodeId = saved._yay.target.id;
+
+		// After Save the member reads the file through the same old private target, and their access
+		// follows the saved file's current sharing from here on.
+		expect((await t.query(internal.files_nodes_content.get_file_read_source, memberRead))._yay?.target).toEqual(
+			saved._yay.target,
+		);
+
+		expect(
+			(await asOwner.mutation(api.files_sharing.restrict_node, { membershipId: scope.membershipId, nodeId }))._nay,
+		).toBeUndefined();
+		expect((await t.query(internal.files_nodes_content.get_file_read_source, memberRead))._nay).toBeDefined();
+		expect(
+			(
+				await asOwner.mutation(api.files_sharing.set_node_share_grant, {
+					membershipId: scope.membershipId,
+					nodeId,
+					principal: { kind: "user", userId: member.userId },
+					level: "read",
+				})
+			)._nay,
+		).toBeUndefined();
+		expect((await t.query(internal.files_nodes_content.get_file_read_source, memberRead))._yay).toBeDefined();
+		expect(
+			(
+				await asOwner.mutation(api.files_sharing.remove_node_share_grant, {
+					membershipId: scope.membershipId,
+					nodeId,
+					principal: { kind: "user", userId: member.userId },
+				})
+			)._nay,
+		).toBeUndefined();
+		expect((await t.query(internal.files_nodes_content.get_file_read_source, memberRead))._nay).toBeDefined();
+
+		// A user from another tenant never reads the file, whatever the sharing says.
+		const other = await t.run((ctx) =>
+			test_mocks_fill_db_with.membership(ctx, { organizationName: "other-file-reader" }),
+		);
+		expect(
+			(
+				await t.query(internal.files_nodes_content.get_file_read_source, {
+					userId: other.userId,
+					membershipId: other.membershipId,
+					threadId: scope.threadId,
+					path,
+					target: saved._yay.target,
+				})
+			)._nay,
+		).toBeDefined();
+
+		// An archived file is gone for its owner too, so the old private target stops working.
+		await t.run((ctx) => ctx.db.patch("files_nodes", nodeId, { archiveOperationId: "archived" }));
+		expect(
+			(
+				await t.query(internal.files_nodes_content.get_file_read_source, {
+					userId: scope.userId,
+					membershipId: scope.membershipId,
+					threadId: scope.threadId,
+					path,
+					target,
+				})
+			)._nay,
+		).toBeDefined();
+	});
+
+	test("refuses the file immediately when normal pending expiry fences it", async () => {
+		const t = test_convex();
+		const scope = await seed_browser_file_scope(t);
+		const path = "/reports/expired.bin";
+		const prepared = await prepare_browser_file(t, scope, { path });
+		const finalized = await t.mutation(internal.files_browser.finalize_file_output, {
+			...scope,
+			receiptId: prepared.receiptId,
+			attemptId: browserFile.attemptId,
+		});
+		if (finalized._nay) throw new Error(finalized._nay.message);
+
+		const target = finalized._yay.target;
+		const view = await authed(t, scope.userId).query(api.files_pending_updates.get_file_pending_target, {
+			membershipId: scope.membershipId,
+			target,
+		});
+		const pendingUpdateId = view!.entry.pendingUpdate!._id;
+
+		// A proposal is cleaned up four hours after its last write. Move the capture's proposal past
+		// that age and run the cleanup, and the reader must lose the file with it.
+		const expiredAt = Date.now() - 4 * 60 * 60 * 1000 - 1;
+		await t.run((ctx) => ctx.db.patch("files_pending_updates", pendingUpdateId, { updatedAt: expiredAt }));
+		await t.mutation(internal.files_pending_updates.remove_file_pending_update_if_expired, {
+			pendingUpdateId,
+			expectedUpdatedAt: expiredAt,
+		});
+
+		expect(
+			(
+				await t.query(internal.files_nodes_content.get_file_read_source, {
+					userId: scope.userId,
+					membershipId: scope.membershipId,
+					threadId: scope.threadId,
+					path,
+					target,
+				})
+			)._nay,
+		).toBeDefined();
+	});
+});
 
 describe("start_browser", () => {
 	test.each(["/page.html", "/other.html"])("replaces an expired runner before starting %s", async (path) => {
@@ -517,10 +1050,20 @@ describe("reload_browser", () => {
 			sessionId: started._yay!.sessionId,
 			path: fixture.path,
 		});
-		expect(reloaded._yay).toEqual({ loadGen: 7, sourceVersion: "loaded-7", sourceHash: "hash-7" });
-		expect(await t.run((ctx) => ctx.db.get("files_browser_sessions", started._yay!.sessionId))).toMatchObject(
-			reloaded._yay!,
-		);
+		expect(reloaded._yay).toEqual({
+			controlGen: 1,
+			navGen: 1,
+			loadGen: 7,
+			sourceVersion: "loaded-7",
+			sourceHash: "hash-7",
+		});
+		expect(await t.run((ctx) => ctx.db.get("files_browser_sessions", started._yay!.sessionId))).toMatchObject({
+			controlGen: 1,
+			navigationGeneration: 1,
+			loadGen: 7,
+			sourceVersion: "loaded-7",
+			sourceHash: "hash-7",
+		});
 	});
 
 	test("does not update the source after an incomplete runner reply", async () => {
@@ -652,7 +1195,7 @@ describe("/api/chat browser binding", () => {
 		return model.streamText.mock.calls[0][0] as Parameters<typeof streamText>[0];
 	}
 
-	test("refreshes a new lease and leaves a started turn frozen", async () => {
+	test("takes the initial lease and disables only browser tools after another takeover", async () => {
 		const t = test_convex();
 		const fixture = await seed_html_file(t);
 		const started = await start_saved_session(t, fixture);
@@ -670,15 +1213,45 @@ describe("/api/chat browser binding", () => {
 			experimental_context: call.experimental_context,
 		};
 		await t.run(async () => {
-			expect(await call.prepareStep!(step)).toBeUndefined();
+			expect(await call.prepareStep!(step)).toEqual({ messages: step.messages });
 		});
 		await t.mutation(internal.files_browser.set_browser_control, { sessionId, control: "ready", controlGen: 4 });
 		await t.run(async () => {
 			const next = await call.prepareStep!({ ...step, stepNumber: 1 });
-			expect(next?.activeTools).toEqual([]);
-			expect(next?.system).toContain("since this request started");
+			expect(next?.activeTools).toContain("bash");
+			expect(next?.activeTools).not.toContain("browser_run");
+			expect(next?.activeTools).not.toContain("browser_reload");
+			expect(next?.activeTools).not.toContain("browser_close");
+			expect(next?.system).toContain("no longer available");
 		});
 		expect(runnerCalls.map((call) => call.route)).toEqual(["open", "status"]);
+	});
+
+	test("keeps browser tools available after their own acknowledged reload", async () => {
+		const t = test_convex();
+		const fixture = await seed_html_file(t);
+		const started = await start_saved_session(t, fixture);
+		const sessionId = started._yay!.sessionId;
+		runnerQueue.push({ ...runner_open_session({ nodeId: fixture.nodeId }), alive: true });
+		const call = await send_chat(t, fixture, sessionId);
+		const reload = call.tools?.browser_reload;
+		if (!reload?.execute || !call.prepareStep) throw new Error("Expected live browser tools");
+		runnerQueue.push(runner_open_session({ nodeId: fixture.nodeId, loadGen: 2 }));
+		await authed(t, fixture.userId).run(async () => {
+			expect(await reload.execute!({}, { toolCallId: "reload", messages: [] })).toMatchObject({
+				metadata: { status: "succeeded", reason: null },
+			});
+			const next = await call.prepareStep!({
+				model: call.model,
+				messages: call.messages ?? [],
+				steps: [],
+				stepNumber: 1,
+				experimental_context: call.experimental_context,
+			});
+			expect(next?.activeTools).toBeUndefined();
+			expect(next?.system).toBeUndefined();
+		});
+		expect(runnerCalls.map((call) => call.route)).toEqual(["open", "status", "reload"]);
 	});
 
 	test.each([
@@ -1112,381 +1685,85 @@ describe("viewer and control doors", () => {
 	});
 });
 
-describe("browser results", () => {
-	async function seed_thread(t: ReturnType<typeof test_convex>, fixture: BrowserFixture) {
-		return await t.run((ctx) =>
-			ctx.db.insert("ai_chat_threads", {
-				organizationId: fixture.organizationId as unknown as string,
-				workspaceId: fixture.workspaceId as unknown as string,
-				clientGeneratedId: "thread-1",
-				title: null,
-				archived: false,
-				runtime: "aisdk_5",
-				createdBy: fixture.userId,
-				updatedBy: fixture.userId,
-				updatedAt: Date.now(),
-			}),
-		);
-	}
+describe("cleanup_expired_browser_docs", () => {
+	test.each(["starting", "closing", "closed"] as const)(
+		"reaches an expired %s start behind a full batch of retained sessions",
+		async (control) => {
+			const t = test_convex();
+			const fixture = await seed_html_file(t);
+			const startingId = await t.run(async (ctx) => {
+				const session = {
+					ownerId: fixture.userId,
+					organizationId: fixture.organizationId,
+					workspaceId: fixture.workspaceId,
+					targetKind: "saved" as const,
+					nodeId: String(fixture.nodeId),
+					path: fixture.path,
+					navigationClientId: "client-1",
+					navigationGeneration: 1,
+					sourceKind: "saved" as const,
+					sourceVersion: "v1",
+					sourceHash: "hash",
+					loadGen: 1,
+					controlGen: 1,
+					createdAt: Date.now(),
+					updatedAt: Date.now(),
+				};
+				// These 50 closed just now, so the sweep keeps them. They also fill one whole sweep
+				// batch, so the expired session below is only reached through its own deadline index.
+				for (let index = 0; index < 50; index++) {
+					await ctx.db.insert("files_browser_sessions", { ...session, control: "closed", closedAt: Date.now() });
+				}
 
-	async function store_result(
-		t: ReturnType<typeof test_convex>,
-		fixture: BrowserFixture,
-		threadId: Id<"ai_chat_threads">,
-	) {
-		const textAssetId = await t.mutation(internal.r2.insert_asset, {
-			organizationId: fixture.organizationId,
-			workspaceId: fixture.workspaceId,
-			kind: "browser_result",
-			size: 100,
-			createdBy: fixture.userId,
-		});
-		const imageAssetId = await t.mutation(internal.r2.insert_asset, {
-			organizationId: fixture.organizationId,
-			workspaceId: fixture.workspaceId,
-			kind: "browser_result",
-			size: 200,
-			createdBy: fixture.userId,
-		});
-		const sessionId = await t.run((ctx) =>
-			ctx.db.insert("files_browser_sessions", {
-				ownerId: fixture.userId,
-				organizationId: fixture.organizationId,
-				workspaceId: fixture.workspaceId,
-				targetKind: "saved",
-				nodeId: fixture.nodeId,
-				path: fixture.path,
-				navigationClientId: "client-1",
-				navigationGeneration: 1,
-				sourceKind: "saved",
-				sourceVersion: "v1",
-				sourceHash: "hash",
-				loadGen: 1,
-				controlGen: 1,
-				control: "closed",
-				createdAt: Date.now(),
-				updatedAt: Date.now(),
-			}),
-		);
-		return await t.mutation(internal.files_browser.store_browser_result, {
-			ownerId: fixture.userId,
-			organizationId: fixture.organizationId,
-			workspaceId: fixture.workspaceId,
-			threadId,
-			sessionId,
-			targetKind: "saved",
-			nodeId: fixture.nodeId,
-			sourceKind: "saved",
-			sourceVersion: "v1",
-			sourceHash: "hash",
-			loadGen: 1,
-			runId: "run-1",
-			toolCallId: "call-1",
-			commandId: "cmd-1",
-			textAssetId,
-			images: [{ assetId: imageAssetId, mime: "image/png", width: 1280, height: 900 }],
-			textBytes: 100,
-			imageBytes: 200,
-		});
-	}
+				return await ctx.db.insert("files_browser_sessions", {
+					...session,
+					control,
+					closedAt: control === "closed" ? Date.now() : undefined,
+					startingExpiresAt: Date.now() - 1,
+				});
+			});
 
-	test("stores and reads a result with signed image urls", async () => {
-		const t = test_convex();
-		const fixture = await seed_html_file(t);
-		const threadId = await seed_thread(t, fixture);
-		const resultId = await store_result(t, fixture, threadId);
+			await t.mutation(internal.files_browser.cleanup_expired_browser_docs, {});
 
-		const textKey = r2_create_asset_key({
-			organizationId: fixture.organizationId,
-			workspaceId: fixture.workspaceId,
-			assetId: (await t.run((ctx) => ctx.db.get("ai_chat_browser_results", resultId)))!.textAssetId,
-		});
-		r2Objects.set(textKey, new TextEncoder().encode(JSON.stringify({ reviewed: true })));
+			expect(await t.run((ctx) => ctx.db.get("files_browser_sessions", startingId))).toBe(null);
+			expect(await t.run((ctx) => ctx.db.query("files_browser_sessions").collect())).toHaveLength(50);
+		},
+	);
 
-		const asUser = authed(t, fixture.userId);
-		const read = await asUser.action(api.files_browser.read_browser_result, {
-			membershipId: fixture.membershipId,
-			resultId,
-		});
-		expect(read._nay).toBeUndefined();
-		expect(read._yay?.text).toBe(JSON.stringify({ reviewed: true }));
-		expect(read._yay?.images.length).toBe(1);
-		expect(read._yay?.images[0]).toMatchObject({ mime: "image/png", width: 1280, height: 900 });
-		expect(typeof read._yay?.images[0]?.url).toBe("string");
-	});
-
-	test("refuses another member and expired results", async () => {
-		const t = test_convex();
-		const fixture = await seed_html_file(t);
-		const threadId = await seed_thread(t, fixture);
-		const resultId = await store_result(t, fixture, threadId);
-
-		const other = await t.run((ctx) =>
-			test_mocks_fill_db_with.membership(ctx, { organizationName: "other-org", workspaceName: "other-ws" }),
-		);
-		const asOther = authed(t, other.userId);
-		const foreign = await asOther.action(api.files_browser.read_browser_result, {
-			membershipId: other.membershipId,
-			resultId,
-		});
-		expect(foreign._nay?.message).toBe("Not found");
-
-		await t.run((ctx) => ctx.db.patch("ai_chat_browser_results", resultId, { expiresAt: Date.now() - 1 }));
-		const asUser = authed(t, fixture.userId);
-		const expired = await asUser.action(api.files_browser.read_browser_result, {
-			membershipId: fixture.membershipId,
-			resultId,
-		});
-		expect(expired._nay?.message).toBe("Not found");
-		expect(r2FetchCount).toBe(0);
-	});
-
-	test("links live results to their file and flags expired ones", async () => {
-		const t = test_convex();
-		const fixture = await seed_html_file(t);
-		const threadId = await seed_thread(t, fixture);
-		const resultId = await store_result(t, fixture, threadId);
-
-		const asUser = authed(t, fixture.userId);
-		const live = await asUser.query(api.files_browser.browser_result_file, {
-			membershipId: fixture.membershipId,
-			resultId,
-		});
-		expect(live).toEqual({ nodeId: fixture.nodeId, targetKind: "saved", expired: false });
-
-		await t.run((ctx) => ctx.db.patch("ai_chat_browser_results", resultId, { expiresAt: Date.now() - 1 }));
-		const expired = await asUser.query(api.files_browser.browser_result_file, {
-			membershipId: fixture.membershipId,
-			resultId,
-		});
-		expect(expired).toEqual({ nodeId: fixture.nodeId, targetKind: "saved", expired: true });
-
-		const other = await t.run((ctx) =>
-			test_mocks_fill_db_with.membership(ctx, { organizationName: "other-org", workspaceName: "other-ws" }),
-		);
-		const foreign = await authed(t, other.userId).query(api.files_browser.browser_result_file, {
-			membershipId: other.membershipId,
-			resultId,
-		});
-		expect(foreign).toBe(null);
-	});
-
-	test("lists a thread's live results newest first", async () => {
-		const t = test_convex();
-		const fixture = await seed_html_file(t);
-		const threadId = await seed_thread(t, fixture);
-		const first = await store_result(t, fixture, threadId);
-		await t.run((ctx) => ctx.db.patch("ai_chat_browser_results", first, { createdAt: Date.now() - 1000 }));
-		const second = await store_result(t, fixture, threadId);
-		await t.run((ctx) => ctx.db.patch("ai_chat_browser_results", first, { expiresAt: Date.now() - 1 }));
-
-		const asUser = authed(t, fixture.userId);
-		const listed = await asUser.query(api.files_browser.list_browser_results, {
-			membershipId: fixture.membershipId,
-			threadId,
-		});
-		expect(listed.map((entry) => entry.resultId)).toEqual([second]);
-		expect(listed[0]).toMatchObject({ sourceKind: "saved", loadGen: 1, imageCount: 1 });
-
-		const other = await t.run((ctx) =>
-			test_mocks_fill_db_with.membership(ctx, { organizationName: "other-org", workspaceName: "other-ws" }),
-		);
-		const foreign = await authed(t, other.userId).query(api.files_browser.list_browser_results, {
-			membershipId: other.membershipId,
-			threadId,
-		});
-		expect(foreign).toEqual([]);
-	});
-
-	test("result list shows own entries past foreign ones", async () => {
+	test("deletes old closed sessions and daily counters while keeping recent ones", async () => {
 		const t = test_convex();
 		const fixture = await seed_html_file(t);
 		const started = await start_saved_session(t, fixture);
 		const sessionId = started._yay!.sessionId;
-		const threadId = await t.run((ctx) =>
-			ctx.db.insert("ai_chat_threads", {
-				organizationId: fixture.organizationId as unknown as string,
-				workspaceId: fixture.workspaceId as unknown as string,
-				clientGeneratedId: "thread-1",
-				title: null,
-				archived: false,
-				runtime: "aisdk_5",
-				createdBy: fixture.userId,
-				updatedBy: fixture.userId,
-				updatedAt: Date.now(),
-			}),
-		);
-		const other = await t.run((ctx) => ctx.db.insert("users", { clerkUserId: null }));
-		const textAssetId = await t.mutation(internal.r2.insert_asset, {
-			organizationId: fixture.organizationId,
-			workspaceId: fixture.workspaceId,
-			kind: "browser_result",
-			size: 100,
-			createdBy: fixture.userId,
-		});
-		const base = {
-			organizationId: fixture.organizationId,
-			workspaceId: fixture.workspaceId,
-			threadId,
-			sessionId,
-			targetKind: "saved",
-			nodeId: String(fixture.nodeId),
-			sourceKind: "saved",
-			sourceVersion: "v1",
-			sourceHash: "hash",
-			loadGen: 1,
-			textAssetId,
-		} as const;
-		for (let n = 0; n < 20; n++) {
-			await t.run((ctx) =>
-				ctx.db.insert("ai_chat_browser_results", {
-					...base,
-					ownerId: other,
-					runId: `run-foreign-${n}`,
-					toolCallId: `call-foreign-${n}`,
-					commandId: `cmd-foreign-${n}`,
-					textAssetId,
-					images: [],
-					textBytes: 10,
-					imageBytes: 0,
-					createdAt: Date.now(),
-					expiresAt: Date.now() + 3_600_000,
-				}),
-			);
-		}
-		const ownId = await t.run((ctx) =>
-			ctx.db.insert("ai_chat_browser_results", {
-				...base,
-				ownerId: fixture.userId,
-				runId: "run-own",
-				toolCallId: "call-own",
-				commandId: "cmd-own",
-				textAssetId,
-				images: [],
-				textBytes: 10,
-				imageBytes: 0,
-				createdAt: Date.now(),
-				expiresAt: Date.now() + 3_600_000,
-			}),
-		);
-
-		const asUser = authed(t, fixture.userId);
-		const listed = await asUser.query(api.files_browser.list_browser_results, {
-			membershipId: fixture.membershipId,
-			threadId,
-		});
-		expect(listed.map((entry) => String(entry.resultId))).toEqual([String(ownId)]);
-	});
-});
-
-describe("cleanup_expired_browser_docs", () => {
-	test.each(["starting", "closing", "closed"] as const)("reaches an expired %s start behind a full batch of retained sessions", async (control) => {
-		const t = test_convex();
-		const fixture = await seed_html_file(t);
-		const startingId = await t.run(async (ctx) => {
-			const session = {
-				ownerId: fixture.userId,
-				organizationId: fixture.organizationId,
-				workspaceId: fixture.workspaceId,
-				targetKind: "saved" as const,
-				nodeId: String(fixture.nodeId),
-				path: fixture.path,
-				navigationClientId: "client-1",
-				navigationGeneration: 1,
-				sourceKind: "saved" as const,
-				sourceVersion: "v1",
-				sourceHash: "hash",
-				loadGen: 1,
-				controlGen: 1,
-				createdAt: Date.now(),
-				updatedAt: Date.now(),
-			};
-			for (let index = 0; index < 50; index++) {
-				await ctx.db.insert("files_browser_sessions", { ...session, control: "closed", closedAt: Date.now() });
-			}
-			return await ctx.db.insert("files_browser_sessions", {
-				...session,
-				control,
-				closedAt: control === "closed" ? Date.now() : undefined,
-				startingExpiresAt: Date.now() - 1,
-			});
-		});
-		await t.mutation(internal.files_browser.cleanup_expired_browser_docs, {});
-		expect(await t.run((ctx) => ctx.db.get("files_browser_sessions", startingId))).toBe(null);
-		expect(await t.run((ctx) => ctx.db.query("files_browser_sessions").collect())).toHaveLength(50);
-	});
-
-	test("deletes expired results with deletion jobs and keeps live ones", async () => {
-		const t = test_convex();
-		const fixture = await seed_html_file(t);
-		const threadId = await t.run((ctx) =>
-			ctx.db.insert("ai_chat_threads", {
-				organizationId: fixture.organizationId as unknown as string,
-				workspaceId: fixture.workspaceId as unknown as string,
-				clientGeneratedId: "thread-1",
-				title: null,
-				archived: false,
-				runtime: "aisdk_5",
-				createdBy: fixture.userId,
-				updatedBy: fixture.userId,
-				updatedAt: Date.now(),
-			}),
-		);
-		const textAssetId = await t.mutation(internal.r2.insert_asset, {
-			organizationId: fixture.organizationId,
-			workspaceId: fixture.workspaceId,
-			kind: "browser_result",
-			size: 100,
-			createdBy: fixture.userId,
-		});
-		const sessionId = await t.run((ctx) =>
-			ctx.db.insert("files_browser_sessions", {
-				ownerId: fixture.userId,
-				organizationId: fixture.organizationId,
-				workspaceId: fixture.workspaceId,
-				targetKind: "saved",
-				nodeId: fixture.nodeId,
-				path: fixture.path,
-				navigationClientId: "client-1",
-				navigationGeneration: 1,
-				sourceKind: "saved",
-				sourceVersion: "v1",
-				sourceHash: "hash",
-				loadGen: 1,
-				controlGen: 1,
+		// A closed session is kept for 7 days and a daily counter for 2 days. So this 8-day-old session
+		// and this 3-day-old counter must go, while the session closed just now stays.
+		const recentId = await t.run(async (ctx) => {
+			const { _id, _creationTime, ...session } = (await ctx.db.get("files_browser_sessions", sessionId))!;
+			await ctx.db.patch("files_browser_sessions", sessionId, {
 				control: "closed",
-				createdAt: Date.now(),
+				closedAt: Date.now() - 8 * 24 * 60 * 60 * 1000,
+			});
+
+			await ctx.db.insert("files_browser_daily_use", {
+				organizationId: fixture.organizationId,
+				workspaceId: fixture.workspaceId,
+				day: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10),
+				starts: 1,
+				captures: 0,
 				updatedAt: Date.now(),
-			}),
-		);
-		const liveId = await t.mutation(internal.files_browser.store_browser_result, {
-			ownerId: fixture.userId,
-			organizationId: fixture.organizationId,
-			workspaceId: fixture.workspaceId,
-			threadId,
-			sessionId,
-			targetKind: "saved",
-			nodeId: fixture.nodeId,
-			sourceKind: "saved",
-			sourceVersion: "v1",
-			sourceHash: "hash",
-			loadGen: 1,
-			runId: "run-1",
-			toolCallId: "call-1",
-			commandId: "cmd-1",
-			textAssetId,
-			images: [],
-			textBytes: 100,
-			imageBytes: 0,
+			});
+			return await ctx.db.insert("files_browser_sessions", { ...session, control: "closed", closedAt: Date.now() });
 		});
-		await t.run((ctx) => ctx.db.patch("ai_chat_browser_results", liveId, { expiresAt: Date.now() - 1 }));
 
 		await t.mutation(internal.files_browser.cleanup_expired_browser_docs, {});
-		expect(await t.run((ctx) => ctx.db.get("ai_chat_browser_results", liveId))).toBe(null);
-		expect(await t.run((ctx) => ctx.db.get("files_r2_assets", textAssetId))).toBe(null);
-		const jobs = await t.run((ctx) => ctx.db.query("files_r2_object_deletion_jobs").collect());
-		expect(jobs.length).toBe(1);
-		expect(jobs[0]?.reason).toBe("browser_result_cleanup");
+
+		expect(await t.run((ctx) => ctx.db.get("files_browser_sessions", sessionId))).toBe(null);
+		expect(await t.run((ctx) => ctx.db.get("files_browser_sessions", recentId))).not.toBe(null);
+
+		// Only today's counter is left. The start above created it.
+		const counters = await t.run((ctx) => ctx.db.query("files_browser_daily_use").collect());
+		expect(counters).toHaveLength(1);
+		expect(counters[0]?.day).toBe(new Date().toISOString().slice(0, 10));
 	});
 
 	test("sweep deletes expired captures and starting sessions", async () => {
@@ -1632,85 +1909,6 @@ describe("access loss and daily caps", () => {
 		});
 		expect(capped._nay?.message).toBe("Daily browser start limit reached.");
 	});
-
-	test("result list hides entries whose file access is gone", async () => {
-		const t = test_convex();
-		const fixture = await seed_html_file(t);
-		const threadId = await t.run((ctx) =>
-			ctx.db.insert("ai_chat_threads", {
-				organizationId: fixture.organizationId as unknown as string,
-				workspaceId: fixture.workspaceId as unknown as string,
-				clientGeneratedId: "thread-1",
-				title: null,
-				archived: false,
-				runtime: "aisdk_5",
-				createdBy: fixture.userId,
-				updatedBy: fixture.userId,
-				updatedAt: Date.now(),
-			}),
-		);
-		const textAssetId = await t.mutation(internal.r2.insert_asset, {
-			organizationId: fixture.organizationId,
-			workspaceId: fixture.workspaceId,
-			kind: "browser_result",
-			size: 100,
-			createdBy: fixture.userId,
-		});
-		const sessionId = await t.run((ctx) =>
-			ctx.db.insert("files_browser_sessions", {
-				ownerId: fixture.userId,
-				organizationId: fixture.organizationId,
-				workspaceId: fixture.workspaceId,
-				targetKind: "saved",
-				nodeId: String(fixture.nodeId),
-				path: fixture.path,
-				navigationClientId: "client-1",
-				navigationGeneration: 1,
-				sourceKind: "saved",
-				sourceVersion: "v1",
-				sourceHash: "hash",
-				loadGen: 1,
-				controlGen: 1,
-				control: "closed",
-				createdAt: Date.now(),
-				updatedAt: Date.now(),
-			}),
-		);
-		await t.mutation(internal.files_browser.store_browser_result, {
-			ownerId: fixture.userId,
-			organizationId: fixture.organizationId,
-			workspaceId: fixture.workspaceId,
-			threadId,
-			sessionId,
-			targetKind: "saved",
-			nodeId: String(fixture.nodeId),
-			sourceKind: "saved",
-			sourceVersion: "v1",
-			sourceHash: "hash",
-			loadGen: 1,
-			runId: "run-1",
-			toolCallId: "call-1",
-			commandId: "cmd-1",
-			textAssetId,
-			images: [],
-			textBytes: 100,
-			imageBytes: 0,
-		});
-
-		const asUser = authed(t, fixture.userId);
-		const before = await asUser.query(api.files_browser.list_browser_results, {
-			membershipId: fixture.membershipId,
-			threadId,
-		});
-		expect(before.length).toBe(1);
-
-		await t.run((ctx) => ctx.db.delete("files_nodes", fixture.nodeId));
-		const after = await asUser.query(api.files_browser.list_browser_results, {
-			membershipId: fixture.membershipId,
-			threadId,
-		});
-		expect(after).toEqual([]);
-	});
 });
 
 describe("private sources", () => {
@@ -1829,6 +2027,42 @@ describe("rename and closing slot", () => {
 });
 
 describe("check_browser_source_access", () => {
+	test("denies a private source after workspace read access is revoked", async () => {
+		const t = test_convex();
+		const fixture = await seed_private_html_file(t);
+		runnerQueue.push(runner_open_session({ nodeId: fixture.nodeId, sourceKind: "proposed" }));
+		const started = await authed(t, fixture.userId).action(api.files_browser.start_browser, {
+			membershipId: fixture.membershipId,
+			targetKind: "private",
+			nodeId: fixture.nodeId,
+			path: fixture.path,
+			sourceKind: "proposed",
+			navigationGeneration: 1,
+			navigationClientId: "private-access",
+			viewport: { width: 1280, height: 900 },
+		});
+		if (started._nay) throw new Error(started._nay.message);
+		const args = {
+			organizationId: fixture.organizationId,
+			workspaceId: fixture.workspaceId,
+			userId: fixture.userId,
+			membershipId: fixture.membershipId,
+			sessionId: started._yay.sessionId,
+		};
+		expect((await t.query(internal.files_browser.check_browser_source_access, args)).ok).toBe(true);
+
+		// Hand the organization to someone else. The user's read permission came from owning it, so
+		// they lose access to their own draft while the running session still points at it.
+		await t.run(async (ctx) => {
+			const ownerUserId = await ctx.db.insert("users", { clerkUserId: null });
+			await ctx.db.patch("organizations", fixture.organizationId, { ownerUserId });
+		});
+
+		// The draft itself did not change. Only the access did, and the check must follow it.
+		expect((await t.run((ctx) => ctx.db.get("files_pending_nodes", fixture.nodeId)))?.state).toBe("active");
+		expect((await t.query(internal.files_browser.check_browser_source_access, args)).ok).toBe(false);
+	});
+
 	test("check denies a session whose node is gone", async () => {
 		const t = test_convex();
 		const fixture = await seed_html_file(t);
@@ -1868,29 +2102,9 @@ describe("keep_open_browser", () => {
 });
 
 describe("files_browser_db_delete_user_batch", () => {
-	test("user delete batch removes results and enqueues R2 cleanup", async () => {
+	test("removes sessions and draft captures with their blobs", async () => {
 		const t = test_convex();
 		const fixture = await seed_html_file(t);
-		const threadId = await t.run((ctx) =>
-			ctx.db.insert("ai_chat_threads", {
-				organizationId: fixture.organizationId as unknown as string,
-				workspaceId: fixture.workspaceId as unknown as string,
-				clientGeneratedId: "thread-1",
-				title: null,
-				archived: false,
-				runtime: "aisdk_5",
-				createdBy: fixture.userId,
-				updatedBy: fixture.userId,
-				updatedAt: Date.now(),
-			}),
-		);
-		const textAssetId = await t.mutation(internal.r2.insert_asset, {
-			organizationId: fixture.organizationId,
-			workspaceId: fixture.workspaceId,
-			kind: "browser_result",
-			size: 100,
-			createdBy: fixture.userId,
-		});
 		const sessionId = await t.run((ctx) =>
 			ctx.db.insert("files_browser_sessions", {
 				ownerId: fixture.userId,
@@ -1911,100 +2125,43 @@ describe("files_browser_db_delete_user_batch", () => {
 				updatedAt: Date.now(),
 			}),
 		);
-		const resultId = await t.mutation(internal.files_browser.store_browser_result, {
-			ownerId: fixture.userId,
-			organizationId: fixture.organizationId,
-			workspaceId: fixture.workspaceId,
-			threadId,
-			sessionId,
-			targetKind: "saved",
-			nodeId: String(fixture.nodeId),
-			sourceKind: "saved",
-			sourceVersion: "v1",
-			sourceHash: "hash",
-			loadGen: 1,
-			runId: "run-1",
-			toolCallId: "call-1",
-			commandId: "cmd-1",
-			textAssetId,
-			images: [],
-			textBytes: 100,
-			imageBytes: 0,
+		const captured = await authed(t, fixture.userId).mutation(api.files_browser.capture_browser_draft, {
+			membershipId: fixture.membershipId,
+			nodeId: fixture.nodeId,
+			path: fixture.path,
+			revision: 1,
+			basisKind: "saved",
+			basisVersion: "v1",
+			navigationGeneration: 1,
+			byteSize: new TextEncoder().encode(HTML_TEXT).byteLength,
+			hash: await sha256_hex(HTML_TEXT),
+		});
+		const captureId = captured._yay!.captureId;
+		const storageId = await t.run(async (ctx) => {
+			const storageId = await ctx.storage.store(new Blob([HTML_TEXT]));
+			await ctx.db.patch("files_browser_draft_captures", captureId, { storageId });
+			return storageId;
 		});
 
+		// Each call drains one family, so the sessions go first and the captures follow.
 		const first = await t.run((ctx) =>
 			files_browser_db_delete_user_batch(ctx as never, { userId: fixture.userId, batchSize: 10 }),
 		);
 		expect(first.deletedCount).toBe(1);
-		expect(await t.run((ctx) => ctx.db.get("ai_chat_browser_results", resultId))).toBe(null);
-		expect(await t.run((ctx) => ctx.db.get("files_r2_assets", textAssetId))).toBe(null);
-		const jobs = await t.run((ctx) => ctx.db.query("files_r2_object_deletion_jobs").collect());
-		expect(jobs.length).toBe(1);
-		expect(jobs[0]?.reason).toBe("browser_result_cleanup");
+		expect(await t.run((ctx) => ctx.db.get("files_browser_sessions", sessionId))).toBe(null);
+		expect(await t.run((ctx) => ctx.db.get("files_browser_draft_captures", captureId))).not.toBe(null);
 
 		const second = await t.run((ctx) =>
 			files_browser_db_delete_user_batch(ctx as never, { userId: fixture.userId, batchSize: 10 }),
 		);
 		expect(second.deletedCount).toBe(1);
-		expect(await t.run((ctx) => ctx.db.get("files_browser_sessions", sessionId))).toBe(null);
+		expect(await t.run((ctx) => ctx.db.get("files_browser_draft_captures", captureId))).toBe(null);
+		// A capture's stored HTML goes with its doc. Nothing is left behind in storage.
+		expect(await t.run((ctx) => ctx.storage.get(storageId))).toBe(null);
 
 		const drained = await t.run((ctx) =>
 			files_browser_db_delete_user_batch(ctx as never, { userId: fixture.userId, batchSize: 10 }),
 		);
 		expect(drained).toEqual({ done: true, deletedCount: 0 });
-	});
-});
-
-describe("r2_db_finalize_browser_result_asset", () => {
-	test("finalize ignores bad ids, kinds, and workspaces", async () => {
-		const t = test_convex();
-		const fixture = await seed_html_file(t);
-		const assetId = await t.mutation(internal.r2.insert_asset, {
-			organizationId: fixture.organizationId,
-			workspaceId: fixture.workspaceId,
-			kind: "browser_result",
-			size: 100,
-			createdBy: fixture.userId,
-		});
-
-		await t.run((ctx) =>
-			r2_db_finalize_browser_result_asset(ctx as never, {
-				organizationId: String(fixture.organizationId),
-				workspaceId: String(fixture.workspaceId),
-				assetId: "not-an-id",
-			}),
-		);
-		await t.run((ctx) =>
-			r2_db_finalize_browser_result_asset(ctx as never, {
-				organizationId: String(fixture.organizationId),
-				workspaceId: String(fixture.workspaceId),
-				assetId: String(assetId),
-			}),
-		);
-		expect(await t.run((ctx) => ctx.db.get("files_r2_assets", assetId))).toMatchObject({
-			r2Key: expect.any(String),
-		});
-
-		const foreign = await t.run((ctx) =>
-			test_mocks_fill_db_with.membership(ctx, { organizationName: "other-org", workspaceName: "other-ws" }),
-		);
-		const foreignId = await t.mutation(internal.r2.insert_asset, {
-			organizationId: foreign.organizationId,
-			workspaceId: foreign.workspaceId,
-			kind: "browser_result",
-			size: 100,
-			createdBy: foreign.userId,
-		});
-		await t.run((ctx) =>
-			r2_db_finalize_browser_result_asset(ctx as never, {
-				organizationId: String(fixture.organizationId),
-				workspaceId: String(fixture.workspaceId),
-				assetId: String(foreignId),
-			}),
-		);
-		expect(await t.run((ctx) => ctx.db.get("files_r2_assets", foreignId))).toMatchObject({
-			unfinalizedExpiresAt: expect.any(Number),
-		});
-		expect((await t.run((ctx) => ctx.db.get("files_r2_assets", foreignId)))?.r2Key).toBeUndefined();
 	});
 });

@@ -2767,7 +2767,14 @@ describe("private pending text", () => {
 		const node = await t.run((ctx) => ctx.db.get("files_nodes", savedTarget.id));
 		expect(node).toMatchObject({ path, collaborationEnabled: collaborative });
 		expect(await t.run((ctx) => ctx.db.get("files_pending_updates", pendingUpdateId))).toBeNull();
-		expect(await asUser.query(api.files_pending_updates.get_file_pending_target, { membershipId, target })).toBeNull();
+
+		// The old private target still resolves after Save. It now points at the saved file, which
+		// remembers the private node it came from, so old links keep working.
+		expect(
+			await asUser.query(api.files_pending_updates.get_file_pending_target, { membershipId, target }),
+		).toMatchObject({
+			entry: { kind: "saved", node: { _id: node!._id, publishedFromPrivateNodeId: target.id }, pendingUpdate: null },
+		});
 		expect(await t.run((ctx) => ctx.db.query("files_pending_node_publish_receipts").collect())).toMatchObject([
 			{ privateNodeId: target.id, savedNodeId: node!._id },
 		]);
@@ -2904,6 +2911,8 @@ describe("private pending downloads", () => {
 			(await asUser.action(api.files_pending_updates.create_private_pending_download_url, args))._nay?.message,
 		).toContain("preparing");
 		const assetId = await t.run(async (ctx) => {
+			// Leave `unfinalizedExpiresAt` unset. The download door signs an asset only after its
+			// upload has finished.
 			const assetId = await ctx.db.insert("files_r2_assets", {
 				organizationId: draft.organizationId,
 				workspaceId: draft.workspaceId,
@@ -2913,7 +2922,6 @@ describe("private pending downloads", () => {
 				r2Key: "private/capture.png",
 				size: 8,
 				updatedAt: Date.now(),
-				unfinalizedExpiresAt: Date.now() + 60_000,
 			});
 			expect(
 				(

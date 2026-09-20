@@ -1,9 +1,13 @@
 import { Workpool } from "@convex-dev/workpool";
 import { R2 } from "@convex-dev/r2";
 import { beforeEach, afterEach, describe, expect, test, vi } from "vitest";
-import type { streamText } from "ai";
+import { APICallError, type streamText } from "ai";
+import { MockLanguageModelV3 } from "ai/test";
 import { api, internal } from "./_generated/api.js";
 import { test_convex, test_create_saved_text_file, test_mocks_fill_db_with } from "./setup.test.ts";
+import { files_nodes_db_create_private_node_by_path } from "./files_nodes.ts";
+import { files_private_storage_db_reserve } from "./files_private_storage.ts";
+import { r2_create_asset_key } from "./r2_client.ts";
 
 const model = vi.hoisted(() => ({ streamText: vi.fn() }));
 vi.mock("ai", async (importOriginal) => ({
@@ -76,6 +80,281 @@ async function setup() {
 	if (thread._nay) throw new Error(thread._nay.message);
 	return { t, asUser, membership, threadId: thread._yay.threadId };
 }
+
+describe("/api/chat tool call repair", () => {
+	// The model sometimes answers with a tool name in the wrong case. The route repairs the case and
+	// nothing else. The extra `length` field in the first row is a real input error, so that call
+	// must fail instead of being repaired.
+	test.each([
+		{ toolName: "view_image", extraInput: { length: 1 }, valid: false },
+		{ toolName: "View_Image", extraInput: {}, valid: true },
+	])("keeps validation errors and repairs only the case of $toolName", async ({ toolName, extraInput, valid }) => {
+		const { asUser, membership, threadId } = await setup();
+		const actualAi = await vi.importActual<typeof import("ai")>("ai");
+		const input = { path: "/image.png", ...extraInput };
+		const execute = vi.fn();
+
+		// The fake model answers twice: the first step calls the tool, the second one writes text and
+		// ends the run.
+		let step = 0;
+		const languageModel = new MockLanguageModelV3({
+			doStream: async () => ({
+				stream: new ReadableStream({
+					start(controller) {
+						const firstStep = step++ === 0;
+						controller.enqueue({ type: "stream-start", warnings: [] });
+						if (firstStep) {
+							controller.enqueue({
+								type: "tool-call",
+								toolCallId: "read-image",
+								toolName,
+								input: JSON.stringify(input),
+							});
+						} else {
+							controller.enqueue({ type: "text-start", id: "answer" });
+							controller.enqueue({ type: "text-delta", id: "answer", delta: "Done" });
+							controller.enqueue({ type: "text-end", id: "answer" });
+						}
+						controller.enqueue({
+							type: "finish",
+							finishReason: { unified: firstStep ? "tool-calls" : "stop", raw: undefined },
+							usage: {
+								inputTokens: { total: 1, noCache: 1, cacheRead: undefined, cacheWrite: undefined },
+								outputTokens: { total: 1, text: 1, reasoning: undefined },
+							},
+						});
+						controller.close();
+					},
+				}),
+			}),
+		});
+		// Keep the real streamText, but point it at the fake model and wrap the route's own view_image.
+		// The spy then shows whether the repaired call reached the tool.
+		model.streamText.mockImplementation((options: Parameters<typeof streamText>[0]) => {
+			const viewImage = options.tools?.view_image;
+			if (!viewImage?.execute) throw new Error("Expected view_image");
+			execute.mockImplementation(viewImage.execute);
+			viewImage.execute = execute;
+			return actualAi.streamText({ ...options, model: languageModel });
+		});
+
+		const response = await asUser.fetch("/api/chat", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				messages: [{ id: "read-request", role: "user", parts: [{ type: "text", text: "Read the image." }] }],
+				parentId: null,
+				mode: "ask",
+				model: "gpt-5.4-nano",
+				trigger: "submit-message",
+				threadId,
+				membershipId: membership.membershipId,
+			}),
+		});
+		const body = await response.text();
+		expect(response.status, body).toBe(200);
+		expect(languageModel.doStreamCalls).toHaveLength(2);
+
+		// The second request carries the tool result the model reads back.
+		const results = languageModel.doStreamCalls[1]!.prompt.flatMap((message) =>
+			message.role === "tool" ? message.content.filter((part) => part.type === "tool-result") : [],
+		);
+		expect(results).toHaveLength(1);
+		expect(results[0]).toMatchObject({ type: "tool-result", toolCallId: "read-image", toolName: "view_image" });
+		expect(JSON.stringify(results)).not.toContain('tool "invalid"');
+
+		// A repaired call runs the real tool with the input the model sent. An input error is kept and
+		// handed back instead, so the model can fix its next call.
+		if (valid) {
+			expect(execute).toHaveBeenCalledTimes(1);
+			expect(execute.mock.calls[0]![0]).toEqual(input);
+			expect(results[0]!.output.type).not.toBe("error-text");
+		} else {
+			expect(execute).not.toHaveBeenCalled();
+			expect(results[0]!.output).toMatchObject({
+				type: "error-text",
+				value: expect.stringContaining("Invalid input for tool view_image"),
+			});
+			expect(JSON.stringify(results[0]!.output)).toContain("length");
+		}
+	});
+});
+
+describe("/api/chat private observations", () => {
+	test("does not retry a provider request after its image becomes unavailable", async () => {
+		const { t, asUser, membership, threadId } = await setup();
+		const actualAi = await vi.importActual<typeof import("ai")>("ai");
+		const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+		const pngBase64 =
+			"iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAFElEQVR4AWJiYGD4D8IgBpBmYAAAAAD//7vS9wEAAAAGSURBVAMAGDACA6ybwrYAAAAASUVORK5CYII=";
+		const png = Uint8Array.from(atob(pngBase64), (char) => char.charCodeAt(0));
+		const { organizationId, workspaceId, userId } = membership;
+		const scope = { organizationId, workspaceId, userId };
+		const file = await t.run(async (ctx) => {
+			const assetId = await ctx.db.insert("files_r2_assets", {
+				organizationId,
+				workspaceId,
+				createdBy: userId,
+				kind: "content",
+				r2Bucket: "test",
+				size: png.length,
+				updatedAt: Date.now(),
+			});
+			const r2Key = r2_create_asset_key({ ...scope, assetId });
+			await ctx.db.patch("files_r2_assets", assetId, { r2Key });
+			const reserved = await files_private_storage_db_reserve(ctx, {
+				...scope,
+				resource: { kind: "asset", id: assetId, r2Key },
+				byteCount: png.length,
+			});
+			if (reserved._nay) throw new Error(reserved._nay.message);
+			const created = await files_nodes_db_create_private_node_by_path(ctx, {
+				...scope,
+				path: "/private-image.png",
+				kind: "file",
+				content: { kind: "stored", assetId, size: png.length, contentType: "image/png" },
+			});
+			if (created._nay || !created._yay.pendingUpdateId) throw new Error("Expected a private image");
+			const pending = await ctx.db.get("files_pending_updates", created._yay.pendingUpdateId);
+			return { ...created._yay, pendingUpdateId: created._yay.pendingUpdateId, revision: pending!.revision, r2Key };
+		});
+		await fetch(`https://r2.test/upload?key=${encodeURIComponent(file.r2Key)}`, { method: "PUT", body: png });
+
+		let requestCount = 0;
+		const languageModel = new MockLanguageModelV3({
+			doStream: async (options) => {
+				const firstStep = ++requestCount === 1;
+				if (requestCount === 2) {
+					// Discard after prepareStep checked the image. A hidden SDK retry would reuse its bytes.
+					const discarded = await asUser.mutation(api.files_pending_updates.discard_file_pending_update, {
+						membershipId: membership.membershipId,
+						target: file.target,
+						pendingUpdateId: file.pendingUpdateId,
+						reviewedRevision: file.revision,
+					});
+					expect(discarded._nay).toBeUndefined();
+					throw new APICallError({
+						message: "Rate limited",
+						url: "https://model.test/responses",
+						requestBodyValues: { input: options.prompt, browserText: "PRIVATE_BROWSER_TEXT" },
+						responseBody: "PRIVATE_PROVIDER_RESPONSE",
+						statusCode: 429,
+						responseHeaders: { "retry-after-ms": "1" },
+						isRetryable: true,
+					});
+				}
+				return {
+					stream: new ReadableStream({
+						start(controller) {
+							controller.enqueue({ type: "stream-start", warnings: [] });
+							if (firstStep) {
+								controller.enqueue({
+									type: "tool-call",
+									toolCallId: "private-view",
+									toolName: "view_image",
+									input: JSON.stringify({ path: "/private-image.png" }),
+								});
+							}
+							controller.enqueue({
+								type: "finish",
+								finishReason: { unified: firstStep ? "tool-calls" : "stop", raw: undefined },
+								usage: {
+									inputTokens: { total: 1, noCache: 1, cacheRead: undefined, cacheWrite: undefined },
+									outputTokens: { total: 1, text: 1, reasoning: undefined },
+								},
+							});
+							controller.close();
+						},
+					}),
+				};
+			},
+		});
+		model.streamText.mockImplementation((options: Parameters<typeof streamText>[0]) =>
+			actualAi.streamText({ ...options, model: languageModel }),
+		);
+
+		const response = await asUser.fetch("/api/chat", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				messages: [{ id: "private-request", role: "user", parts: [{ type: "text", text: "Inspect my image." }] }],
+				parentId: null,
+				mode: "ask",
+				model: "gpt-5.4-nano",
+				trigger: "submit-message",
+				threadId,
+				membershipId: membership.membershipId,
+			}),
+		});
+		const body = await response.text();
+		expect(response.status, body).toBe(200);
+		expect(JSON.stringify(languageModel.doStreamCalls[1]!.prompt)).toContain(pngBase64);
+		expect(languageModel.doStreamCalls).toHaveLength(2);
+		expect(body).toContain("Rate limited");
+		expect(body).not.toContain(pngBase64);
+		expect(consoleError).toHaveBeenCalled();
+		const logged = JSON.stringify(consoleError.mock.calls);
+		expect(logged.includes(pngBase64)).toBe(false);
+		expect(logged).not.toContain("PRIVATE_BROWSER_TEXT");
+		expect(logged).not.toContain("PRIVATE_PROVIDER_RESPONSE");
+		const messages = await t.run((ctx) => ctx.db.query("ai_chat_threads_messages_aisdk_5").collect());
+		expect(JSON.stringify(messages)).not.toContain(pngBase64);
+		// A failed stream keeps the request, but does not save a partial assistant reply.
+		expect(messages.map((message) => message.content.role)).toEqual(["user"]);
+		expect(
+			(await t.query(internal.files_nodes_content.get_file_read_source, {
+				userId,
+				membershipId: membership.membershipId,
+				threadId,
+				path: "/private-image.png",
+			}))._nay,
+		).toBeDefined();
+	});
+});
+
+describe("/api/v1/runs/stream provider errors", () => {
+	test.each(["setup", "provider"])("keeps request and response bodies out of %s error logs", async (failure) => {
+		const { asUser, membership, threadId } = await setup();
+		const actualAi = await vi.importActual<typeof import("ai")>("ai");
+		const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+		const error = new APICallError({
+			message: "Provider unavailable",
+			url: "https://model.test/responses",
+			requestBodyValues: { input: "PRIVATE_TITLE_INPUT" },
+			responseBody: "PRIVATE_PROVIDER_RESPONSE",
+			statusCode: 400,
+			isRetryable: false,
+		});
+		const languageModel = new MockLanguageModelV3({
+			doStream: async () => {
+				throw error;
+			},
+		});
+		model.streamText.mockImplementation((options: Parameters<typeof streamText>[0]) => {
+			if (failure === "setup") throw error;
+			return actualAi.streamText({ ...options, model: languageModel });
+		});
+
+		const response = await asUser.fetch("/api/v1/runs/stream", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				membershipId: membership.membershipId,
+				thread_id: threadId,
+				assistant_id: "system/thread_title",
+				messages: [{ role: "user", content: "PRIVATE_TITLE_INPUT" }],
+			}),
+		});
+		const body = await response.text();
+		expect(response.status, body).toBe(failure === "setup" ? 500 : 200);
+		expect(model.streamText).toHaveBeenCalledTimes(1);
+		expect(languageModel.doStreamCalls).toHaveLength(failure === "setup" ? 0 : 1);
+		expect(consoleError).toHaveBeenCalled();
+		const logged = JSON.stringify(consoleError.mock.calls);
+		expect(logged).not.toContain("PRIVATE_TITLE_INPUT");
+		expect(logged).not.toContain("PRIVATE_PROVIDER_RESPONSE");
+	});
+});
 
 describe("/api/chat workspace instructions", () => {
 	test("starts with pending root rules and a catalog, then reads skills and ancestor rules through Bash", async () => {
@@ -160,7 +439,7 @@ describe("/api/chat workspace instructions", () => {
 				stepNumber: 0,
 				experimental_context: call.experimental_context,
 			});
-			expect(first).toBeUndefined();
+			expect(first).toEqual({ messages: call.messages });
 
 			const output = await call.tools!.bash.execute!(
 				{ command: "cat .agents/skills/summarize-invoices/SKILL.md" },
@@ -183,7 +462,7 @@ describe("/api/chat workspace instructions", () => {
 				stepNumber: 1,
 				experimental_context: call.experimental_context,
 			});
-			expect(second).toBeUndefined();
+			expect(second).toEqual({ messages: call.messages });
 
 			const final = await call.prepareStep!({
 				model: call.model,
@@ -229,8 +508,11 @@ describe("/api/chat workspace instructions", () => {
 		expect(JSON.stringify(messages)).not.toContain("EXPLICIT_BODY_276");
 	});
 
-	test("keeps completed old skill results as ordinary stored history", async () => {
+	test("refuses removed skill tools before storage or model replay", async () => {
 		const { t, asUser, membership, threadId } = await setup();
+
+		// `load_skill` is not a tool any more. A client can still send an old result for it, so the
+		// stored-history check and the chat route must both refuse it.
 		const safe = {
 			id: "stored-skill",
 			role: "assistant",
@@ -245,13 +527,13 @@ describe("/api/chat workspace instructions", () => {
 			],
 		};
 
-		const accepted = await asUser.mutation(api.ai_chat.thread_messages_add, {
+		const refused = await asUser.mutation(api.ai_chat.thread_messages_add, {
 			membershipId: membership.membershipId,
 			threadId,
 			parentId: null,
 			messages: [{ clientGeneratedMessageId: "safe", content: safe }],
 		});
-		expect(accepted._nay).toBeUndefined();
+		expect(refused._nay?.message).toBe("Invalid file tool result parts");
 
 		const withBody = await asUser.mutation(api.ai_chat.thread_messages_add, {
 			membershipId: membership.membershipId,
@@ -267,18 +549,17 @@ describe("/api/chat workspace instructions", () => {
 				},
 			],
 		});
-		if (withBody._nay) throw new Error(withBody._nay.message);
+		expect(withBody._nay?.message).toBe("Invalid file tool result parts");
 
 		const docs = await t.run((ctx) => ctx.db.query("ai_chat_threads_messages_aisdk_5").collect());
-		expect(docs.map((doc) => doc.clientGeneratedMessageId)).toEqual(["safe", "with-body"]);
-		expect(JSON.stringify(docs)).toContain("HISTORICAL_SKILL_BODY");
+		expect(docs).toEqual([]);
 
 		const response = await asUser.fetch("/api/chat", {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({
-				messages: [{ id: "followup", role: "user", parts: [{ type: "text", text: "Continue." }] }],
-				parentId: withBody._yay.ids[0],
+				messages: [safe],
+				parentId: null,
 				mode: "ask",
 				model: "gpt-5.4-nano",
 				trigger: "submit-message",
@@ -287,7 +568,10 @@ describe("/api/chat workspace instructions", () => {
 			}),
 		});
 		const body = await response.text();
-		expect(response.status, body).toBe(200);
-		expect(JSON.stringify(model.streamText.mock.calls[0][0].messages)).toContain("HISTORICAL_SKILL_BODY");
+		expect(response.status, body).toBe(400);
+		expect(body).toContain("Invalid file tool result parts");
+
+		// The route stops before it calls the model, so the old result never reaches it.
+		expect(model.streamText).not.toHaveBeenCalled();
 	});
 });

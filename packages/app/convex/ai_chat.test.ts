@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
 import type { Id } from "./_generated/dataModel.js";
@@ -513,7 +513,7 @@ describe("ai_chat thread state", () => {
 			parentId: null,
 			messages: [raw],
 		});
-		expect(refused._nay?.message).toBe("Invalid browser result parts");
+		expect(refused._nay?.message).toBe("Invalid file tool result parts");
 
 		const scrubbed = {
 			...raw,
@@ -529,8 +529,8 @@ describe("ai_chat thread state", () => {
 						input: {},
 						output: {
 							title: "Browser run",
-							output: "Browser succeeded.",
-							metadata: { status: "succeeded", resultId: "result-1" },
+							output: "Browser run: succeeded.",
+							metadata: { status: "succeeded", reason: null, files: [{ kind: "private", id: "private-1" }] },
 						},
 					},
 				],
@@ -577,7 +577,35 @@ describe("ai_chat thread state", () => {
 			parentId: null,
 			messages: [dynamic],
 		});
-		expect(dynamicRefused._nay?.message).toBe("Invalid browser result parts");
+		expect(dynamicRefused._nay?.message).toBe("Invalid file tool result parts");
+
+		// Three more forged shapes. An unfinished call must carry no result. The input must be an
+		// object with no keys, so an array is refused. The output line must read exactly
+		// "<title>: <status>.", so no raw observation can travel inside it.
+		for (const [index, part] of [
+			{ ...raw.content.parts[0], input: {}, state: "input-available" },
+			{ type: "tool-read_image", toolCallId: "call-3", state: "input-available", input: [] },
+			{
+				...scrubbed.content.parts[0],
+				output: { ...scrubbed.content.parts[0].output, output: "short raw observation" },
+			},
+		].entries()) {
+			const malformed = await asUser.mutation(api.ai_chat.thread_messages_add, {
+				membershipId: seeded.membershipId,
+				threadId,
+				parentId: null,
+				messages: [
+					{
+						clientGeneratedMessageId: `malformed-browser-${index}`,
+						content: { ...raw.content, id: `malformed-browser-${index}`, parts: [part] },
+					},
+				],
+			});
+			expect(malformed._nay?.message).toBe("Invalid file tool result parts");
+		}
+
+		// Only the scrubbed message was stored.
+		expect(await t.run((ctx) => ctx.db.query("ai_chat_threads_messages_aisdk_5").collect())).toHaveLength(1);
 	});
 
 	test("thread_messages_add refuses an oversized serialized message without storing it", async () => {
@@ -687,7 +715,7 @@ describe("ai_chat thread state", () => {
 		expect(dataUrlAccepted._yay?.ids).toHaveLength(1);
 	});
 
-	test("thread_messages_add publishes the generated images the stored message shows", async () => {
+	test("file results use the same strict shape in foreground and background writes", async () => {
 		const t = test_convex();
 		const seeded = await t.run((ctx) =>
 			test_mocks_fill_db_with.membership(ctx, {
@@ -695,95 +723,112 @@ describe("ai_chat thread state", () => {
 				workspaceName: "home",
 			}),
 		);
-		const other = await t.run((ctx) =>
-			test_mocks_fill_db_with.membership(ctx, {
-				organizationName: "other",
-				workspaceName: "home",
-			}),
-		);
 		const asUser = t.withIdentity({
 			issuer: "https://clerk.test",
-			subject: "clerk-ai-chat-generated-image",
+			subject: "clerk-ai-chat-files",
 			external_id: seeded.userId,
-			email: "ai-chat-generated-image@test.local",
+			email: "ai-chat-files@test.local",
 		});
 
 		const created = await asUser.mutation(api.ai_chat.thread_create, {
 			membershipId: seeded.membershipId,
-			clientGeneratedId: "client_ai_chat_generated_image",
-			title: "Generated image",
+			clientGeneratedId: "client_file_results",
+			title: "File results",
 			lastMessageAt: Date.now(),
 		});
-		expect(created._yay).toBeTruthy();
 		const threadId = created._yay!.threadId;
 
-		const insertGeneratedImage = (args: { organizationId: string; workspaceId: string }) =>
-			t.run((ctx) =>
-				ctx.db.insert("files_r2_assets", {
-					organizationId: args.organizationId as Id<"organizations">,
-					workspaceId: args.workspaceId as Id<"organizations_workspaces">,
-					kind: "generated_image" as const,
-					r2Bucket: "test-bucket",
-					size: 128,
-					createdBy: seeded.userId,
-					unfinalizedExpiresAt: Date.now() + 60_000,
-					updatedAt: Date.now(),
-				}),
-			);
-
-		const assetId = await insertGeneratedImage(seeded);
-		const otherWorkspaceAssetId = await insertGeneratedImage(other);
+		const safe = {
+			type: "tool-image_generation",
+			toolCallId: "image-1",
+			state: "output-available",
+			input: {},
+			output: {
+				title: "Generate image",
+				output: "Generate image: succeeded.",
+				metadata: {
+					status: "succeeded",
+					reason: null,
+					files: [{ kind: "private", id: "pending-1" }],
+				},
+			},
+		};
+		const content = (part: unknown) => ({
+			id: "file-result",
+			role: "assistant",
+			parts: [part],
+			metadata: { convexParentId: null, parentClientGeneratedId: null },
+		});
 
 		const stored = await asUser.mutation(api.ai_chat.thread_messages_add, {
 			membershipId: seeded.membershipId,
 			threadId,
 			parentId: null,
-			messages: [
-				{
-					clientGeneratedMessageId: "client_message_generated_image",
-					content: {
-						id: "client_message_generated_image",
-						role: "assistant",
-						parts: [
-							{
-								type: "tool-image_generation",
-								toolCallId: "call_image_1",
-								state: "output-available",
-								input: {},
-								output: { assetId, mediaType: "image/webp", size: 128 },
-							},
-							{
-								type: "tool-image_generation",
-								toolCallId: "call_image_2",
-								state: "output-available",
-								input: {},
-								output: { assetId: otherWorkspaceAssetId, mediaType: "image/webp", size: 128 },
-							},
-						],
-						metadata: {
-							convexParentId: null,
-							parentClientGeneratedId: null,
-						},
-					},
-				},
-			],
+			messages: [{ clientGeneratedMessageId: "safe-file-result", content: content(safe) }],
 		});
 		expect(stored._yay?.ids).toHaveLength(1);
+		const finishMessageId = stored._yay!.ids[0]!;
 
-		const assets = await t.run(async (ctx) => ({
-			published: await ctx.db.get("files_r2_assets", assetId),
-			otherWorkspace: await ctx.db.get("files_r2_assets", otherWorkspaceAssetId),
-		}));
+		// Every row below is refused. The first one is the old image output, which named an asset id
+		// instead of a Files target. The others drop the `files` list, name an unknown tool, send a
+		// non-empty input, or name one tool in `type` and another one in `toolName`.
+		const invalid = [
+			{ ...safe, output: { assetId: "old-image-asset", mediaType: "image/webp", size: 8 } },
+			{ ...safe, output: { ...safe.output, metadata: { status: "succeeded" } } },
+			{ ...safe, type: "tool-read_image" },
+			{ ...safe, type: "tool-read_file" },
+			{ ...safe, type: "dynamic-tool", toolName: "IMAGE_GENERATION", input: { result: "raw bytes" } },
+			{ ...safe, type: "tool-browser_run", toolName: "bash" },
+			{ ...safe, type: "tool-execute_code", toolName: "bash" },
+			{
+				...safe,
+				type: "tool-execute_code",
+				output: {
+					title: "Execute code",
+					output: "Result: 1",
+					metadata: {
+						executionId: "exec-1",
+						status: "succeeded",
+						elapsedMs: 1,
+						resultTruncated: false,
+						logsTruncated: false,
+					},
+				},
+			},
+		];
+		for (const [index, part] of invalid.entries()) {
+			const refused = await asUser.mutation(api.ai_chat.thread_messages_add, {
+				membershipId: seeded.membershipId,
+				threadId,
+				parentId: null,
+				messages: [{ clientGeneratedMessageId: `invalid-${index}`, content: content(part) }],
+			});
+			expect(refused._nay?.message).toBe("Invalid file tool result parts");
 
-		// The message shows this picture, so it must survive the unfinalized-asset cleanup.
-		expect(assets.published?.unfinalizedExpiresAt).toBeUndefined();
-		expect(assets.published?.r2Key).toBe(
-			`organizations/${seeded.organizationId}/workspaces/${seeded.workspaceId}/assets/${assetId}`,
-		);
+			// A background job writes its reply through its own door. That door runs the same check
+			// and throws, because no user is waiting for a Result.
+			await expect(
+				t.mutation(internal.ai_chat.store_job_wakeup_reply, {
+					threadId,
+					userId: seeded.userId,
+					finishMessageId,
+					clientGeneratedMessageId: `invalid-job-${index}`,
+					content: content(part),
+				}),
+			).rejects.toThrow("Invalid file tool result parts");
+		}
 
-		// A message cannot publish an asset from another workspace by naming its id.
-		expect(assets.otherWorkspace?.unfinalizedExpiresAt).toBeTypeOf("number");
-		expect(assets.otherWorkspace?.r2Key).toBeUndefined();
+		await t.mutation(internal.ai_chat.store_job_wakeup_reply, {
+			threadId,
+			userId: seeded.userId,
+			finishMessageId,
+			clientGeneratedMessageId: "safe-job",
+			content: content(safe),
+		});
+
+		// Only the two safe writes were stored, one per door.
+		const messages = await t.run((ctx) => ctx.db.query("ai_chat_threads_messages_aisdk_5").collect());
+		expect(messages).toHaveLength(2);
 	});
 
 	test("thread_messages_add returns existing ids when the message write limit is exhausted", async () => {
@@ -896,7 +941,9 @@ describe("ai_chat thread read cursor", () => {
 		},
 	});
 
-	test("a new thread starts read, a new message makes it unread, and thread_mark_read clears it", async () => {
+	test("a new thread starts read, a new message makes it unread, and thread_mark_read clears it", async ({
+		onTestFinished,
+	}) => {
 		const { t, seeded, asUser } = await seed();
 
 		const created = await asUser.mutation(api.ai_chat.thread_create, {
@@ -910,6 +957,10 @@ describe("ai_chat thread read cursor", () => {
 
 		const createdThread = await t.run((ctx) => ctx.db.get("ai_chat_threads", threadId));
 		expect(createdThread?.readAt).toBe(createdThread?.lastMessageAt);
+
+		// Keep the answer in a later millisecond even when both mutations run at once.
+		const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 1);
+		onTestFinished(() => clock.mockRestore());
 
 		// A finished answer moves `lastMessageAt` past the cursor. Nothing writes "unread".
 		const added = await asUser.mutation(api.ai_chat.thread_messages_add, {

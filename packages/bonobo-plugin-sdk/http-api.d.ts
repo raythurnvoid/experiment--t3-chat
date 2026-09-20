@@ -582,7 +582,13 @@ export type BonoboHttpApi = {
 					};
 					body: {
 						path: string;
-						nodeId: import("convex/values").GenericId<"files_nodes">;
+						target: {
+							id: import("convex/values").GenericId<"files_nodes">;
+							kind: "saved";
+						} | {
+							id: import("convex/values").GenericId<"files_pending_nodes">;
+							kind: "private";
+						};
 						content: string;
 					};
 				};
@@ -694,13 +700,13 @@ export type BonoboHttpApi = {
 							_creationTime: number;
 							organizationId: import("convex/values").GenericId<"organizations">;
 							workspaceId: import("convex/values").GenericId<"organizations_workspaces">;
-							nodeId: import("convex/values").GenericId<"files_nodes">;
-							createdAt: number;
 							path: string;
+							createdAt: number;
 							writerId: import("convex/values").GenericId<"plugins_external_file_writers">;
 							writerGeneration: number;
 							operationId: string;
 							sequence: number;
+							nodeId: import("convex/values").GenericId<"files_nodes">;
 							installationId: import("convex/values").GenericId<"plugins_workspace_installations">;
 							operation: "fence" | "write" | "readers" | "archive" | "rollback_readers" | "cancel_readers";
 							fingerprint: string;
@@ -1199,13 +1205,13 @@ export type BonoboHttpApi = {
 							_creationTime: number;
 							organizationId: import("convex/values").GenericId<"organizations">;
 							workspaceId: import("convex/values").GenericId<"organizations_workspaces">;
-							nodeId: import("convex/values").GenericId<"files_nodes">;
-							createdAt: number;
 							path: string;
+							createdAt: number;
 							writerId: import("convex/values").GenericId<"plugins_external_file_writers">;
 							writerGeneration: number;
 							operationId: string;
 							sequence: number;
+							nodeId: import("convex/values").GenericId<"files_nodes">;
 							installationId: import("convex/values").GenericId<"plugins_workspace_installations">;
 							operation: "fence" | "write" | "readers" | "archive" | "rollback_readers" | "cancel_readers";
 							fingerprint: string;
@@ -1313,13 +1319,13 @@ export type BonoboHttpApi = {
 							_creationTime: number;
 							organizationId: import("convex/values").GenericId<"organizations">;
 							workspaceId: import("convex/values").GenericId<"organizations_workspaces">;
-							nodeId: import("convex/values").GenericId<"files_nodes">;
-							createdAt: number;
 							path: string;
+							createdAt: number;
 							writerId: import("convex/values").GenericId<"plugins_external_file_writers">;
 							writerGeneration: number;
 							operationId: string;
 							sequence: number;
+							nodeId: import("convex/values").GenericId<"files_nodes">;
 							installationId: import("convex/values").GenericId<"plugins_workspace_installations">;
 							operation: "fence" | "write" | "readers" | "archive" | "rollback_readers" | "cancel_readers";
 							fingerprint: string;
@@ -1586,13 +1592,13 @@ export type BonoboHttpApi = {
 						_creationTime: number;
 						organizationId: import("convex/values").GenericId<"organizations">;
 						workspaceId: import("convex/values").GenericId<"organizations_workspaces">;
-						nodeId: import("convex/values").GenericId<"files_nodes">;
-						createdAt: number;
 						path: string;
+						createdAt: number;
 						writerId: import("convex/values").GenericId<"plugins_external_file_writers">;
 						writerGeneration: number;
 						operationId: string;
 						sequence: number;
+						nodeId: import("convex/values").GenericId<"files_nodes">;
 						installationId: import("convex/values").GenericId<"plugins_workspace_installations">;
 						operation: "fence" | "write" | "readers" | "archive" | "rollback_readers" | "cancel_readers";
 						fingerprint: string;

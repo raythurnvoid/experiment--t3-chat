@@ -497,27 +497,34 @@
 	}
 	/* #endregion tool bash */
 
-	/* #region tool image_generation */
-	.AiChatMessagePartToolImageGeneration-image {
-		max-width: 100%;
-
-		border: 1px solid var(--color-base-1-05);
-		border-radius: 12px;
+	/* #region tool files */
+	/* A file path has no spaces to break on. Let it wrap anywhere so a long path cannot push the
+	   chat column wider than the panel. */
+	.AiChatMessagePartToolFile {
+		display: flex;
+		flex-direction: column;
+		align-items: flex-start;
+		min-width: 0;
+		overflow-wrap: anywhere;
 	}
-	/* #endregion tool image_generation */
 
-	/* #region tool browser */
-	.AiChatMessagePartToolBrowser-status {
+	.AiChatMessagePartToolFile-link {
+		width: fit-content;
+	}
+
+	.AiChatMessagePartToolFileLinks {
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+	}
+
+	.AiChatMessagePartToolFiles-status {
 		padding: 4px 0 8px 0;
 
 		font-size: 0.8125rem;
 		color: var(--color-fg-07);
 	}
-
-	.AiChatMessagePartToolBrowser-link {
-		width: fit-content;
-	}
-	/* #endregion tool browser */
+	/* #endregion tool files */
 
 	/* #region tool unknown */
 	.AiChatMessagePartToolUnknown-meta {

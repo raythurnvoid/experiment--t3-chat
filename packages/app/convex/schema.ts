@@ -143,6 +143,23 @@ export const files_pending_parent_validator = v.union(
 );
 
 /**
+ * The three sealed Yjs states of one pending-update operation batch: the base the edit started
+ * from, the staged content, and the unstaged content.
+ *
+ * Each state carries its own digest. The commit compares the stored digest with the one the caller
+ * staged, so a state that changed in between is refused instead of committed.
+ */
+export const files_pending_updates_state_family_validator = v.object({
+	operationBatchId: v.id("files_pending_update_operation_batches"),
+	baseStateId: v.id("files_pending_update_yjs_states"),
+	stagedStateId: v.id("files_pending_update_yjs_states"),
+	unstagedStateId: v.id("files_pending_update_yjs_states"),
+	baseStateDigest: v.string(),
+	stagedStateDigest: v.string(),
+	unstagedStateDigest: v.string(),
+});
+
+/**
  * The head of a running job's output, for `jobs -o N`. The worker keeps up to 32 KiB per stream
  * and flushes it into the job row on its 5-second poll tick when new bytes arrived.
  */
@@ -487,47 +504,6 @@ const app_convex_schema = defineSchema({
 		.index("by_shell_seq", ["shellId", "seq"])
 		.index("by_organization_workspace_thread", ["organizationId", "workspaceId", "threadId"]),
 
-	/**
-	 * One private agent browser capture: bounded result JSON/text plus screenshots. Creator-only:
-	 * chats are workspace-shared, but raw browser payloads never enter message docs. Shared chat
-	 * keeps only a safe status and this doc's id. Results outlive their session under their own
-	 * access and expiry checks; the loaded source is labeled, never re-tested silently.
-	 */
-	ai_chat_browser_results: defineTable({
-		ownerId: v.id("users"),
-		organizationId: v.id("organizations"),
-		workspaceId: v.id("organizations_workspaces"),
-		threadId: v.id("ai_chat_threads"),
-		sessionId: v.id("files_browser_sessions"),
-		targetKind: v.union(v.literal("saved"), v.literal("private")),
-		nodeId: v.string(),
-		sourceKind: v.union(v.literal("saved"), v.literal("proposed"), v.literal("draft")),
-		sourceVersion: v.string(),
-		sourceHash: v.string(),
-		loadGen: v.number(),
-		runId: v.string(),
-		toolCallId: v.string(),
-		commandId: v.string(),
-		textAssetId: v.id("files_r2_assets"),
-		images: v.array(
-			v.object({
-				assetId: v.id("files_r2_assets"),
-				mime: v.string(),
-				width: v.number(),
-				height: v.number(),
-			}),
-		),
-		textBytes: v.number(),
-		imageBytes: v.number(),
-		expiresAt: v.number(),
-		createdAt: v.number(),
-	})
-		.index("by_thread", ["threadId"])
-		.index("by_owner", ["ownerId"])
-		.index("by_session", ["sessionId"])
-		.index("by_expiresAt", ["expiresAt"])
-		.index("by_organization_workspace", ["organizationId", "workspaceId"]),
-
 	ai_chat_bash_invocations: defineTable({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
@@ -739,7 +715,8 @@ const app_convex_schema = defineSchema({
 		threadId: v.union(v.id("ai_chat_threads"), v.null()),
 		principalKey: v.string(),
 		tokenHash: v.string(),
-		scopes: v.array(v.union(v.literal("files:list"), v.literal("files:read"))),
+		scopes: v.array(v.union(v.literal("files:list"), v.literal("files:read"), v.literal("files:download"))),
+		remainingReadBytes: v.number(),
 		pathPrefix: v.union(v.string(), v.null()),
 		createdAt: v.number(),
 		expiresAt: v.number(),
@@ -961,6 +938,71 @@ const app_convex_schema = defineSchema({
 	})
 		.index("by_run_order", ["runId", "order"])
 		.index("by_run_status_deleteLast_order", ["runId", "status", "deleteLast", "order"]),
+
+	/**
+	 * One file a chat tool is creating: a generated picture, a file a browser run emitted, or a file
+	 * a code run emitted. One doc per file, not per call.
+	 *
+	 * The doc holds no file bytes. It ties one attempt's retries and its unfinished cleanup
+	 * together. Once the file is committed the doc only stops a lost reply from creating a second
+	 * file, and the file owns its own lifetime.
+	 */
+	files_ingestion_receipts: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		userId: v.id("users"),
+		requestId: v.string(),
+		path: v.string(),
+		contentType: v.string(),
+		size: v.number(),
+		digest: v.string(),
+		content: v.union(
+			v.object({ kind: v.literal("stored") }),
+			v.object({
+				kind: v.literal("text"),
+				textKind: v.union(v.literal("plain_text"), v.literal("rich_text")),
+			}),
+		),
+		threadId: v.optional(v.id("ai_chat_threads")),
+		state: v.union(
+			v.object({
+				kind: v.literal("preparing"),
+				attemptId: v.string(),
+				prepared: v.union(
+					v.object({
+						kind: v.literal("stored"),
+						assetId: v.id("files_r2_assets"),
+						r2Key: v.string(),
+						putMayArriveUntil: v.number(),
+					}),
+					v.object({
+						kind: v.literal("text"),
+						privateNodeId: v.id("files_pending_nodes"),
+						pendingUpdateId: v.id("files_pending_updates"),
+						operationBatchId: v.id("files_pending_update_operation_batches"),
+						expectedRevision: v.number(),
+						createdNodes: v.array(
+							v.object({
+								privateNodeId: v.id("files_pending_nodes"),
+								pendingUpdateId: v.id("files_pending_updates"),
+								revision: v.number(),
+								creationGeneration: v.number(),
+								structuralRevision: v.number(),
+							}),
+						),
+					}),
+				),
+			}),
+			v.object({ kind: v.literal("completed"), target: files_pending_target_validator }),
+			v.object({ kind: v.literal("aborted") }),
+		),
+		createdAt: v.number(),
+		expiresAt: v.number(),
+	})
+		.index("by_organization_workspace_user_request", ["organizationId", "workspaceId", "userId", "requestId"])
+		.index("by_expiresAt", ["expiresAt"])
+		.index("by_user", ["userId"])
+		.index("by_organization_workspace", ["organizationId", "workspaceId"]),
 
 	files_pending_nodes: defineTable({
 		organizationId: v.id("organizations"),
@@ -1429,6 +1471,14 @@ const app_convex_schema = defineSchema({
 		),
 		// Tree identity
 		/**
+		 * The private draft node this saved file was published from.
+		 *
+		 * Keeps old private links valid after publication receipts expire. A publish receipt is
+		 * deleted after a week, so this link is the only way left to turn an old private node id
+		 * into the saved file it became.
+		 */
+		publishedFromPrivateNodeId: v.optional(v.id("files_pending_nodes")),
+		/**
 		 * "root" for root items, otherwise the parent folder id.
 		 */
 		parentId: v.union(v.id("files_nodes"), v.literal("root")),
@@ -1618,6 +1668,11 @@ const app_convex_schema = defineSchema({
 			"updatedAt",
 		])
 		.index("by_organization_workspace_asset", ["organizationId", "workspaceId", "assetId"])
+		.index("by_organization_workspace_publishedFromPrivateNode", [
+			"organizationId",
+			"workspaceId",
+			"publishedFromPrivateNodeId",
+		])
 		.searchIndex("search_path", {
 			searchField: "path",
 			filterFields: ["organizationId", "workspaceId", "archiveOperationId", "kind", "parentId"],
@@ -2013,22 +2068,7 @@ const app_convex_schema = defineSchema({
 			v.literal(organizations_GLOBAL_GITHUB_WORKSPACE_ID),
 			v.literal(organizations_GLOBAL_PLUGINS_WORKSPACE_ID),
 		),
-		/**
-		 * `generated_image` is a picture the chat agent drew. It belongs to a chat message, not to a
-		 * file node, so nothing in the file tree points at it.
-		 *
-		 * `browser_result` is a private agent browser capture: result JSON/text or a screenshot.
-		 * It belongs to an `ai_chat_browser_results` doc, never to a file node. Only its creator
-		 * reads it, through the browser result doors.
-		 */
-		kind: v.union(
-			v.literal("upload"),
-			v.literal("content"),
-			v.literal("yjs_snapshot"),
-			v.literal("content_snapshot"),
-			v.literal("generated_image"),
-			v.literal("browser_result"),
-		),
+		kind: v.union(v.literal("upload"), v.literal("content"), v.literal("yjs_snapshot"), v.literal("content_snapshot")),
 		r2Bucket: v.string(),
 		/**
 		 * The final R2 key. It is set after R2 confirms that the file exists there.
@@ -2067,7 +2107,9 @@ const app_convex_schema = defineSchema({
 
 	/**
 	 * Each doc asks the scheduled worker to delete one exact R2 key. The worker retries until R2
-	 * confirms deletion. Increase `generation` when new bytes may have reached the key. A delete
+	 * confirms deletion.
+	 *
+	 * Increase `generation` when new bytes may have reached the key. A delete
 	 * started for an older generation cannot remove the newer job.
 	 */
 	files_r2_object_deletion_jobs: defineTable({
@@ -2082,7 +2124,6 @@ const app_convex_schema = defineSchema({
 			v.literal("read_only_yjs_repair"),
 			v.literal("untracked_asset_event"),
 			v.literal("discarded_replacement"),
-			v.literal("browser_result_cleanup"),
 		),
 		assetId: v.optional(v.id("files_r2_assets")),
 		privateStorageReservationId: v.optional(v.id("files_private_storage_reservations")),

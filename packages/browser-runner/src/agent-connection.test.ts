@@ -35,6 +35,16 @@ function messages(socket: Socket) {
 	return socket.received.map((value) => JSON.parse(value) as Record<string, unknown>);
 }
 
+const PNG_DATA = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+Xf6sAAAAASUVORK5CYII=";
+
+function png_with_dimensions(width: number, height: number) {
+	// Header-only edits exercise the size guard, not a full image decoder.
+	const bytes = Buffer.from(PNG_DATA, "base64");
+	bytes.writeUInt32BE(width, 16);
+	bytes.writeUInt32BE(height, 20);
+	return bytes.toString("base64");
+}
+
 function make_connection(options: {
 	autoReply?: boolean;
 	onPopup?: (targetId: string) => Promise<void>;
@@ -66,6 +76,7 @@ function make_connection(options: {
 			frameTree: { frame: { id: "main-frame" }, childFrames: [{ frame: { id: "inner-frame" } }] },
 		} : request.method === "Page.addScriptToEvaluateOnNewDocument" ? { identifier: `script-${request.id}` } :
 			request.method === "Browser.getWindowForTarget" ? { windowId: 7 } :
+			request.method === "Page.captureScreenshot" ? { data: PNG_DATA } :
 			request.method === "Page.createIsolatedWorld" ? { executionContextId: 9 } : {};
 		reply(request, result);
 	});
@@ -151,6 +162,85 @@ describe("AgentConnection", () => {
 		send(method, params);
 		expect(messages(provider)).toEqual([]);
 		expect(messages(child).at(-1)?.error).toEqual({ code: -32601, message: `Browser command is not allowed: ${method}.` });
+		expect((await bridge.settle(1000)).safe).toBe(true);
+	});
+
+	it.each([undefined, { x: 0, y: 0, width: 1, height: 1, scale: 1 }])("passes screenshot bytes for page and clipped captures", async (clip) => {
+		const { bridge, send, reply, child, onUnsafe } = make_connection({ autoReply: false });
+		// More than two captures are allowed. File exports have their own budget.
+		for (let count = 0; count < 3; count++) {
+			const request = send("Page.captureScreenshot", { format: "png", ...(clip ? { clip } : {}) });
+			reply(request, { data: PNG_DATA });
+			expect(messages(child).at(-1)).toMatchObject({ id: request.id, result: { data: PNG_DATA } });
+		}
+		expect((await bridge.settle(1000)).safe).toBe(true);
+		expect(onUnsafe).not.toHaveBeenCalled();
+	});
+
+	it.each([
+		"A".repeat(Math.ceil(2_097_152 / 3) * 4 + 4),
+		Buffer.alloc(2_097_153).toString("base64"),
+		png_with_dimensions(8193, 1),
+		png_with_dimensions(5000, 4000),
+	])("refuses a large screenshot and keeps the connection usable", async (data) => {
+		const { bridge, send, reply, child, onUnsafe } = make_connection({ autoReply: false });
+		const decode = vi.spyOn(globalThis, "atob");
+		const request = send("Page.captureScreenshot", { format: "png" });
+		reply(request, { data });
+		expect(messages(child).at(-1)).toEqual({
+			id: request.id, sessionId: "page-session", error: { code: -32000, message: "Screenshot exceeds the size limit." },
+		});
+		if (data.length > Math.ceil(2_097_152 / 3) * 4) expect(decode).not.toHaveBeenCalled();
+		decode.mockRestore();
+		const next = send("Page.captureScreenshot", { format: "png" });
+		reply(next, { data: PNG_DATA });
+		expect(messages(child).at(-1)).toMatchObject({ id: next.id, result: { data: PNG_DATA } });
+		expect((await bridge.settle(1000)).safe).toBe(true);
+		expect(onUnsafe).not.toHaveBeenCalled();
+	});
+
+	it.each([{}, { data: null }, { data: "%%%=" }, { data: "AAAA" }, { data: png_with_dimensions(0, 1) }])("closes on a malformed screenshot reply", async (result) => {
+		const { bridge, send, reply, child, onUnsafe } = make_connection({ autoReply: false });
+		const request = send("Page.captureScreenshot", { format: "png" });
+		reply(request, result);
+		expect(messages(child).some((message) => message.id === request.id)).toBe(false);
+		expect(await bridge.settle(1000)).toMatchObject({ safe: false, reason: "invalid_provider_reply" });
+		expect(onUnsafe).toHaveBeenCalledExactlyOnceWith("invalid_provider_reply");
+	});
+
+	it("requires the screenshot reply to match the pending session", async () => {
+		const { bridge, send, provider } = make_connection({ autoReply: false });
+		const request = send("Page.captureScreenshot", { format: "png" });
+		provider.send(JSON.stringify({ id: request.id, sessionId: "other-session", result: { data: PNG_DATA } }));
+		expect(await bridge.settle(1000)).toMatchObject({ safe: false, reason: "unknown_provider_reply" });
+	});
+
+	it("accepts JPEG dimensions only for a JPEG capture", async () => {
+		// SOF header fixture. The bridge does not decode the compressed image stream.
+		const data = Buffer.from([255, 216, 255, 192, 0, 8, 8, 0, 1, 0, 2, 0]).toString("base64");
+		const { bridge, send, reply, child } = make_connection({ autoReply: false });
+		const request = send("Page.captureScreenshot", { format: "jpeg" });
+		reply(request, { data });
+		expect(messages(child).at(-1)).toMatchObject({ id: request.id, result: { data } });
+		expect((await bridge.settle(1000)).safe).toBe(true);
+		const wrong = make_connection({ autoReply: false });
+		wrong.reply(wrong.send("Page.captureScreenshot", { format: "png" }), { data });
+		expect(await wrong.bridge.settle(1000)).toMatchObject({ safe: false, reason: "invalid_provider_reply" });
+	});
+
+	it.each([{}, { code: -32000, message: null }])("closes on a malformed screenshot error", async (error) => {
+		const { bridge, send, provider } = make_connection({ autoReply: false });
+		const request = send("Page.captureScreenshot", { format: "png" });
+		provider.send(JSON.stringify({ id: request.id, sessionId: "page-session", error }));
+		expect(await bridge.settle(1000)).toMatchObject({ safe: false, reason: "invalid_provider_reply" });
+	});
+
+	it("forwards a normal provider screenshot error without closing the connection", async () => {
+		const { bridge, send, provider, child } = make_connection({ autoReply: false });
+		const request = send("Page.captureScreenshot", { format: "png" });
+		const error = { code: -32000, message: "Unable to capture screenshot" };
+		provider.send(JSON.stringify({ id: request.id, sessionId: "page-session", error }));
+		expect(messages(child).at(-1)).toMatchObject({ id: request.id, error });
 		expect((await bridge.settle(1000)).safe).toBe(true);
 	});
 

@@ -11,14 +11,8 @@ import type {
 	ai_chat_tool_create_web_search_ToolOutput,
 	ai_chat_tool_create_execute_code_ToolInput,
 	ai_chat_tool_create_execute_code_ToolOutput,
-	ai_chat_tool_create_image_generation_ToolInput,
-	ai_chat_tool_create_image_generation_ToolOutput,
-	ai_chat_tool_create_browser_run_ToolInput,
-	ai_chat_tool_create_browser_run_ToolOutput,
-	ai_chat_tool_create_browser_reload_ToolInput,
-	ai_chat_tool_create_browser_reload_ToolOutput,
-	ai_chat_tool_create_browser_close_ToolInput,
-	ai_chat_tool_create_browser_close_ToolOutput,
+	ai_chat_tool_create_file_stored_ToolInput,
+	ai_chat_tool_create_file_stored_ToolOutput,
 } from "../server/server-ai-tools.ts";
 import type { GeneratedIdPrefix } from "./generated-ids.ts";
 
@@ -82,8 +76,7 @@ export const ai_chat_MESSAGE_IMAGE_MAX_TOTAL_URL_CHARS = 700 * 1024;
 /**
  * The picture format the agent's `image_generation` tool asks OpenAI for.
  *
- * Three places must agree on it: the tool options, the media type the chat route stores the bytes
- * with, and the name a signed download serves them under. So it is written once here.
+ * The provider options and the pending Files writer must use the same format.
  */
 export const ai_chat_GENERATED_IMAGE_FORMAT = "webp" as const;
 export const ai_chat_GENERATED_IMAGE_MEDIA_TYPE = `image/${ai_chat_GENERATED_IMAGE_FORMAT}` as const;
@@ -131,29 +124,35 @@ export type ai_chat_UiTools = {
 		output: ai_chat_tool_create_execute_code_ToolOutput;
 	};
 	/**
-	 * The output holds a reference to an R2 asset, not the picture. See
-	 * `ai_chat_tool_create_image_generation_stored`.
+	 * The output holds a pending Files target. Image bytes never enter chat storage.
 	 */
 	image_generation: {
-		input: ai_chat_tool_create_image_generation_ToolInput;
-		output: ai_chat_tool_create_image_generation_ToolOutput;
+		input: ai_chat_tool_create_file_stored_ToolInput;
+		output: ai_chat_tool_create_file_stored_ToolOutput;
 	};
 	/**
-	 * Browser tools hold references to private result docs, never raw observations. Only
-	 * `browser_run` produces images; reload and close share its stored status shape through
-	 * their own narrow tools. See the `ai_chat_tool_create_browser_*_stored` factories.
+	 * The stored part keeps a safe status and ordinary Files references. Raw browser observations
+	 * and image bytes never reach stored tool parts.
 	 */
 	browser_run: {
-		input: ai_chat_tool_create_browser_run_ToolInput;
-		output: ai_chat_tool_create_browser_run_ToolOutput;
+		input: ai_chat_tool_create_file_stored_ToolInput;
+		output: ai_chat_tool_create_file_stored_ToolOutput;
+	};
+	/**
+	 * The stored part keeps the Files targets the model read, never the bytes. Replaying the thread
+	 * hands the model those targets again. Resolve their paths with Bash before a fresh read.
+	 */
+	view_image: {
+		input: ai_chat_tool_create_file_stored_ToolInput;
+		output: ai_chat_tool_create_file_stored_ToolOutput;
 	};
 	browser_reload: {
-		input: ai_chat_tool_create_browser_reload_ToolInput;
-		output: ai_chat_tool_create_browser_reload_ToolOutput;
+		input: ai_chat_tool_create_file_stored_ToolInput;
+		output: ai_chat_tool_create_file_stored_ToolOutput;
 	};
 	browser_close: {
-		input: ai_chat_tool_create_browser_close_ToolInput;
-		output: ai_chat_tool_create_browser_close_ToolOutput;
+		input: ai_chat_tool_create_file_stored_ToolInput;
+		output: ai_chat_tool_create_file_stored_ToolOutput;
 	};
 };
 

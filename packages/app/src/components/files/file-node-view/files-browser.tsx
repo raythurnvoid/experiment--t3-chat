@@ -27,7 +27,6 @@ import {
 	type files_browser_StreamHost,
 	type files_browser_StreamInput,
 } from "@/lib/files-browser-stream.ts";
-import { cn } from "@/lib/utils.ts";
 import { file_preview_MaxHtmlBytes } from "bonobo-file-preview/protocol";
 import { useConvex, useQuery } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
@@ -671,15 +670,7 @@ type FilesBrowser_ClassNames =
 	| "FilesBrowser-actions"
 	| "FilesBrowser-start"
 	| "FilesBrowser-error"
-	| "FilesBrowser-meta"
-	| "FilesBrowser-results"
-	| "FilesBrowser-results-title"
-	| "FilesBrowser-results-list"
-	| "FilesBrowser-results-item"
-	| "FilesBrowser-results-item-selected"
-	| "FilesBrowser-results-detail"
-	| "FilesBrowser-results-text"
-	| "FilesBrowser-results-images";
+	| "FilesBrowser-meta";
 
 export type FilesBrowser_Props = {
 	targetKind: "saved" | "private";
@@ -822,12 +813,6 @@ const FilesBrowser = memo(function FilesBrowser(props: FilesBrowser_Props) {
 				: { kind: "private", id: nodeId as app_convex_Id<"files_pending_nodes"> },
 	});
 	const hasProposal = !!pendingUpdate && files_pending_update_has_content(pendingUpdate);
-	const results = useQuery(
-		app_convex_api.files_browser.list_browser_results,
-		resumeThreadId && !ai_chat_is_optimistic_thread_id(resumeThreadId)
-			? { membershipId, threadId: resumeThreadId as app_convex_Id<"ai_chat_threads"> }
-			: "skip",
-	);
 
 	const [source, setSource] = useState<files_browser_SourceKind>(
 		targetKind === "private" ? "proposed" : "saved",
@@ -845,11 +830,6 @@ const FilesBrowser = memo(function FilesBrowser(props: FilesBrowser_Props) {
 	const [pendingDockAck, setPendingDockAck] = useState(false);
 	const [takeoverSent, setTakeoverSent] = useState(false);
 	const [docking, setDocking] = useState(false);
-	const [selectedResultId, setSelectedResultId] = useState<string | null>(null);
-	const [selectedResult, setSelectedResult] = useState<{
-		text: string;
-		images: Array<{ url: string; mime: string; width: number; height: number }>;
-	} | null>(null);
 	const childRef = useRef<Window | null>(null);
 	const isChild = host === "detached";
 
@@ -1317,43 +1297,6 @@ const FilesBrowser = memo(function FilesBrowser(props: FilesBrowser_Props) {
 	const deadline = mine ? format_remaining_time(mine, now) : null;
 	const sourceMeta = mine ? `${files_browser_source_label(mine.sourceKind)} · ${mine.sourceHash.slice(0, 8)}` : null;
 
-	useEffect(() => {
-		setSelectedResultId(null);
-		setSelectedResult(null);
-	}, [resumeThreadId]);
-
-	useEffect(() => {
-		if (!selectedResultId) {
-			setSelectedResult(null);
-			return;
-		}
-		let cancelled = false;
-		convex
-			.action(app_convex_api.files_browser.read_browser_result, {
-				membershipId,
-				resultId: selectedResultId as app_convex_Id<"ai_chat_browser_results">,
-			})
-			.then((read) => {
-				if (cancelled) {
-					return;
-				}
-				if (read._nay) {
-					toast.error(read._nay.message);
-					setSelectedResult(null);
-					return;
-				}
-				setSelectedResult({ text: read._yay.text, images: read._yay.images });
-			})
-			.catch((error: unknown) => {
-				if (!cancelled) {
-					console.error("[FilesBrowser.result] Unexpected read error", { error });
-				}
-			});
-		return () => {
-			cancelled = true;
-		};
-	}, [convex, membershipId, selectedResultId]);
-
 	return (
 		<div className={"FilesBrowser" satisfies FilesBrowser_ClassNames} role="region" aria-label="Shared browser">
 			<div className={"FilesBrowser-header" satisfies FilesBrowser_ClassNames}>
@@ -1406,7 +1349,11 @@ const FilesBrowser = memo(function FilesBrowser(props: FilesBrowser_Props) {
 									<RefreshCw size={16} />
 								</MyIconButtonIcon>
 							</MyIconButton>
-							<MyIconButton variant="ghost-highlightable" tooltip="Keep open for 5 more minutes" onClick={handleKeepOpen}>
+							<MyIconButton
+								variant="ghost-highlightable"
+								tooltip="Keep open for 5 more minutes"
+								onClick={handleKeepOpen}
+							>
 								<MyIconButtonIcon>
 									<Clock size={16} />
 								</MyIconButtonIcon>
@@ -1445,14 +1392,10 @@ const FilesBrowser = memo(function FilesBrowser(props: FilesBrowser_Props) {
 					<div className={"FilesBrowser-meta" satisfies FilesBrowser_ClassNames}>
 						<span>{sourceMeta}</span>
 						{updatesAvailable && (
-							<span className={"FilesBrowser-status-warn" satisfies FilesBrowser_ClassNames}>
-								Updates available
-							</span>
+							<span className={"FilesBrowser-status-warn" satisfies FilesBrowser_ClassNames}>Updates available</span>
 						)}
 						{deadline && <span>{deadline}</span>}
-						{!connected && connectionDetail && (
-							<span role="status">{connectionDetail}</span>
-						)}
+						{!connected && connectionDetail && <span role="status">{connectionDetail}</span>}
 					</div>
 					{mine.control === "starting" || mine.control === "closing" ? (
 						<div className={"FilesBrowser-start" satisfies FilesBrowser_ClassNames}>
@@ -1516,58 +1459,6 @@ const FilesBrowser = memo(function FilesBrowser(props: FilesBrowser_Props) {
 						<span className={"FilesBrowser-error" satisfies FilesBrowser_ClassNames} role="alert">
 							{error}
 						</span>
-					)}
-				</div>
-			)}
-			{results !== undefined && results.length > 0 && (
-				<div className={"FilesBrowser-results" satisfies FilesBrowser_ClassNames}>
-					<span className={"FilesBrowser-results-title" satisfies FilesBrowser_ClassNames}>
-						Results
-					</span>
-					<div
-						className={"FilesBrowser-results-list" satisfies FilesBrowser_ClassNames}
-						role="group"
-						aria-label="Browser results"
-					>
-						{results.map((entry) => (
-							<button
-								key={entry.resultId}
-								type="button"
-								className={cn(
-									"FilesBrowser-results-item" satisfies FilesBrowser_ClassNames,
-									entry.resultId === selectedResultId &&
-										("FilesBrowser-results-item-selected" satisfies FilesBrowser_ClassNames),
-								)}
-								aria-expanded={entry.resultId === selectedResultId}
-								onClick={() =>
-									setSelectedResultId((current) => (current === entry.resultId ? null : entry.resultId))
-								}
-							>
-								{new Date(entry.createdAt).toLocaleTimeString()} ·{" "}
-								{files_browser_source_label(entry.sourceKind)} · {entry.imageCount} img
-							</button>
-						))}
-					</div>
-					{selectedResult && (
-						<div className={"FilesBrowser-results-detail" satisfies FilesBrowser_ClassNames}>
-							<pre className={"FilesBrowser-results-text" satisfies FilesBrowser_ClassNames}>
-								{selectedResult.text}
-							</pre>
-							{selectedResult.images.length > 0 && (
-								<div className={"FilesBrowser-results-images" satisfies FilesBrowser_ClassNames}>
-									{selectedResult.images.map((image, index) => (
-										<img
-											key={image.url}
-											src={image.url}
-											alt={`Browser capture ${index + 1} of ${selectedResult.images.length}`}
-											width={image.width}
-											height={image.height}
-											loading="lazy"
-										/>
-									))}
-								</div>
-							)}
-						</div>
 					)}
 				</div>
 			)}

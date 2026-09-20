@@ -1,4 +1,4 @@
-import { v } from "convex/values";
+import { v, type Infer } from "convex/values";
 import { z } from "zod";
 import { type RegisteredMutation, type RegisteredQuery } from "convex/server";
 import { doc } from "convex-helpers/validators";
@@ -20,6 +20,17 @@ import {
 	files_db_load_pending_update_yjs_state_bytes,
 } from "../server/files.ts";
 import type { files_nodes_get_visible_entry_by_path_Result } from "./files_nodes.ts";
+import { files_visible_db_create_reader } from "./files_visible.ts";
+import {
+	files_ingestion_db_prepare_file,
+	files_ingestion_db_finalize_file,
+	files_ingestion_scope_validator,
+	files_ingestion_prepare_args_validator,
+	files_ingestion_prepare_result_validator,
+	files_ingestion_finalize_args_validator,
+	files_ingestion_file_validator,
+} from "./files_ingestion.ts";
+import { ai_chat_files_db_authorize_file_output } from "./ai_chat_files.ts";
 import app_convex_schema from "./schema.ts";
 import { files_pending_update_content_is_stale, files_pending_update_has_content } from "../shared/files.ts";
 import { files_yjs_doc_create_from_array_buffer_update } from "../shared/files-yjs.ts";
@@ -30,19 +41,13 @@ import {
 	files_browser_runner_session_schema,
 	files_browser_runner_viewer_url,
 } from "../server/files-browser.ts";
-import {
-	r2,
-	r2_create_asset_key,
-	r2_db_finalize_browser_result_asset,
-	r2_enqueue_object_deletion_job,
-	r2_fetch_object_from_bucket,
-} from "./r2_client.ts";
+import { r2_fetch_object_from_bucket } from "./r2_client.ts";
 import { files_nodes_reconstruct_latest_file_content_from_materialization_state } from "./files_nodes_reconstruct_content.ts";
 import type { files_nodes_get_file_text_content_db_state_by_path_Result } from "./files_nodes_content.ts";
 
 // Shared cloud browser: one live HTML page per selected file, watched and driven together by the
-// user and the agent. Convex owns authorization, source snapshots, session metadata, and private
-// results. The trusted runner owns the provider browser, snippet isolation, leases, and deadlines.
+// user and the agent. Convex owns source access, snapshots, sessions, and capture authorization.
+// Files owns output storage. The trusted runner owns the browser, snippet isolation, and leases.
 //
 // Source reads mirror the local Preview choice exactly: Saved content comes from current committed
 // state, Proposed changes from the actor's own unstaged branch, and Your draft from an explicit
@@ -51,7 +56,7 @@ import type { files_nodes_get_file_text_content_db_state_by_path_Result } from "
 
 const BROWSER_HTML_MAX_BYTES = 900_000;
 
-const BROWSER_RESULT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const BROWSER_SESSION_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 
 const BROWSER_CAPTURE_TTL_MS = 5 * 60 * 1000;
 
@@ -514,11 +519,7 @@ export const create_starting_browser_session = internalMutation({
 });
 
 type create_starting_browser_session_Result =
-	typeof create_starting_browser_session extends RegisteredMutation<
-		infer _Visibility,
-		infer _Args,
-		infer ReturnValue
-	>
+	typeof create_starting_browser_session extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
 		? Awaited<ReturnValue>
 		: never;
 
@@ -561,11 +562,7 @@ export const commit_live_browser_session = internalMutation({
 });
 
 type commit_live_browser_session_Result =
-	typeof commit_live_browser_session extends RegisteredMutation<
-		infer _Visibility,
-		infer _Args,
-		infer ReturnValue
-	>
+	typeof commit_live_browser_session extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
 		? Awaited<ReturnValue>
 		: never;
 
@@ -644,8 +641,9 @@ type load_browser_session_Result =
 
 /**
  * Re-check one session before a browser command: membership, owner, liveness, and live
- * source-node access. Returns the current lease for the runner call. Every check runs on
- * every command; a stale lease is refused instead of rebound.
+ * source-node access. Returns the current lease for the runner call.
+ *
+ * Every check runs on every command; a stale lease is refused instead of rebound.
  */
 export const check_browser_source_access = internalQuery({
 	args: {
@@ -697,6 +695,9 @@ export const check_browser_source_access = internalQuery({
 			return { ok: false as const, reason: "closed" };
 		}
 
+		// A saved source has its own node to authorize. A private draft has none, so the reader
+		// answers only for the user's own active drafts and `canRead` checks the nearest saved
+		// parent folder.
 		if (session.targetKind === "saved") {
 			const nodeId = ctx.db.normalizeId("files_nodes", session.nodeId);
 			if (!nodeId) {
@@ -722,8 +723,9 @@ export const check_browser_source_access = internalQuery({
 			}
 		} else {
 			const pendingNodeId = ctx.db.normalizeId("files_pending_nodes", session.nodeId);
-			const pendingNode = pendingNodeId ? await ctx.db.get("files_pending_nodes", pendingNodeId) : null;
-			if (!pendingNode || pendingNode.userId !== args.userId || pendingNode.state !== "active") {
+			const reader = await files_visible_db_create_reader(ctx, { ...args, readLimit: 2048 });
+			const source = pendingNodeId ? await reader.resolve({ kind: "private", id: pendingNodeId }) : null;
+			if (!source || source.entry.kind !== "private" || !(await reader.canRead(source.accessNode))) {
 				return { ok: false as const, reason: "denied" };
 			}
 		}
@@ -786,7 +788,7 @@ async function read_saved_snapshot_text(
 	})) as files_nodes_get_file_text_content_db_state_by_path_Result;
 	if (!contentState) {
 		return Result({ _nay: { message: "Not found" } });
-	 }
+	}
 
 	const materializationState = contentState.materializationState;
 	let content: string;
@@ -812,7 +814,7 @@ async function read_saved_snapshot_text(
 			return Result({ _nay: { message: "Not found" } });
 		}
 		content = await r2_fetch_object_from_bucket({ key: asset.r2Key }).then((response) => response.text());
-	 }
+	}
 
 	return Result({ _yay: content });
 }
@@ -1395,11 +1397,7 @@ export const begin_close_browser_session = internalMutation({
 });
 
 type begin_close_browser_session_Result =
-	typeof begin_close_browser_session extends RegisteredMutation<
-		infer _Visibility,
-		infer _Args,
-		infer ReturnValue
-	>
+	typeof begin_close_browser_session extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
 		? Awaited<ReturnValue>
 		: never;
 
@@ -1571,6 +1569,8 @@ export const reload_browser = action({
 			loadGen: v.number(),
 			sourceVersion: v.string(),
 			sourceHash: v.string(),
+			controlGen: v.number(),
+			navGen: v.number(),
 		}),
 	}),
 	handler: async (ctx, args) => {
@@ -1724,9 +1724,11 @@ export const reload_browser = action({
 
 		return Result({
 			_yay: {
-				loadGen: updated._yay.loadGen,
-				sourceVersion: updated._yay.sourceVersion,
-				sourceHash: updated._yay.sourceHash,
+				loadGen: parsed.data.session.loadGen,
+				controlGen: parsed.data.session.controlGen,
+				navGen: parsed.data.session.navGen,
+				sourceVersion: parsed.data.session.sourceVersion,
+				sourceHash: parsed.data.session.sourceHash,
 			},
 		});
 	},
@@ -2201,9 +2203,7 @@ export const take_browser_control = action({
 		if (taken._nay) {
 			return taken;
 		}
-		const parsed = z
-			.object({ ok: z.literal(true), control: z.string(), controlGen: z.number() })
-			.safeParse(taken._yay);
+		const parsed = z.object({ ok: z.literal(true), control: z.string(), controlGen: z.number() }).safeParse(taken._yay);
 		if (!parsed.success) {
 			return Result({ _nay: { message: "Browser request failed" } });
 		}
@@ -2432,490 +2432,112 @@ export const browser_source_current_version = query({
 	},
 });
 
-/**
- * The file behind one stored browser result, for chat links. Creator-only like the result
- * itself: a null means the result was deleted or belongs to someone else, and the chat then
- * shows status text without a link. Expired results keep their file pointer with a flag, so
- * the chat can suggest a rerun instead of going silent.
- */
-export const browser_result_file = query({
-	args: {
-		membershipId: v.id("organizations_workspaces_users"),
-		resultId: v.id("ai_chat_browser_results"),
-	},
-	returns: v.union(
-		v.object({
-			nodeId: v.string(),
-			targetKind: v.union(v.literal("saved"), v.literal("private")),
-			expired: v.boolean(),
-		}),
-		v.null(),
-	),
-	handler: async (ctx, args) => {
-		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
-		const user = userAuth ? await ctx.db.get("users", userAuth.id) : null;
-		if (!user || (userAuth?.kind === "anonymous" && user.deletedAt !== undefined)) {
-			throw convex_error({ message: "Unauthenticated" });
-		}
-
-		const checked = (await ctx.runQuery(internal.files_browser.get_authorized_browser_result, {
-			userId: user._id,
-			membershipId: args.membershipId,
-			resultId: args.resultId,
-		})) as get_authorized_browser_result_Result;
-		if (checked) {
-			return { nodeId: checked.result.nodeId, targetKind: checked.result.targetKind, expired: false };
-		}
-
-		// Distinguish "expired" from "never yours": the file pointer stays useful for a rerun,
-		// and Files authorizes the file itself when the link opens.
-		const membership = await organizations_db_get_membership(ctx, {
-			userId: user._id,
-			membershipId: args.membershipId,
-		});
-		const result = await ctx.db.get("ai_chat_browser_results", args.resultId);
-		if (
-			!membership ||
-			!result ||
-			result.ownerId !== user._id ||
-			result.organizationId !== membership.organizationId ||
-			result.workspaceId !== membership.workspaceId ||
-			result.expiresAt > Date.now()
-		) {
-			return null;
-		}
-		return { nodeId: result.nodeId, targetKind: result.targetKind, expired: true };
-	},
-});
-
-/**
- * Recent live results of one chat for the Files panel. Creator-only, newest first. Expired
- * results drop out of the list; the chat link covers the rerun hint.
- */
-export const list_browser_results = query({
-	args: {
-		membershipId: v.id("organizations_workspaces_users"),
-		threadId: v.id("ai_chat_threads"),
-	},
-	returns: v.array(
-		v.object({
-			resultId: v.id("ai_chat_browser_results"),
-			createdAt: v.number(),
-			sourceKind: v.union(v.literal("saved"), v.literal("proposed"), v.literal("draft")),
-			sourceVersion: v.string(),
-			sourceHash: v.string(),
-			loadGen: v.number(),
-			imageCount: v.number(),
-		}),
-	),
-	handler: async (ctx, args) => {
-		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
-		const user = userAuth ? await ctx.db.get("users", userAuth.id) : null;
-		if (!user || (userAuth?.kind === "anonymous" && user.deletedAt !== undefined)) {
-			throw convex_error({ message: "Unauthenticated" });
-		}
-
-		const membership = await organizations_db_get_membership(ctx, {
-			userId: user._id,
-			membershipId: args.membershipId,
-		});
-		if (!membership) {
-			return [];
-		}
-
-		const thread = await ctx.db.get("ai_chat_threads", args.threadId);
-		if (
-			!thread ||
-			thread.organizationId !== membership.organizationId ||
-			thread.workspaceId !== membership.workspaceId
-		) {
-			return [];
-		}
-
-		const now = Date.now();
-		const results = await ctx.db
-			.query("ai_chat_browser_results")
-			.withIndex("by_thread", (q) => q.eq("threadId", args.threadId))
-			.filter((q) =>
-				q.and(
-					q.eq(q.field("ownerId"), user._id),
-					q.eq(q.field("organizationId"), membership.organizationId),
-					q.eq(q.field("workspaceId"), membership.workspaceId),
-					q.gt(q.field("expiresAt"), now),
-				),
-			)
-			.order("desc")
-			.take(20);
-		// Same node gate as the read path: metadata must not outlive file access.
-		const visible = await Promise.all(
-			results.map(async (result) => {
-				if (result.targetKind === "saved") {
-					const nodeId = ctx.db.normalizeId("files_nodes", result.nodeId);
-					if (!nodeId) {
-						return null;
-					}
-					const authorized = await access_control_db_authorize_node(ctx, {
-						userAuth: { id: user._id },
-						membership,
-						nodeId,
-						permission: "content.read",
-					});
-					if (authorized._nay) {
-						return null;
-					}
-				} else {
-					const pendingNodeId = ctx.db.normalizeId("files_pending_nodes", result.nodeId);
-					const pendingNode = pendingNodeId ? await ctx.db.get("files_pending_nodes", pendingNodeId) : null;
-					if (!pendingNode || pendingNode.userId !== user._id) {
-						return null;
-					}
-				}
-				return {
-					resultId: result._id,
-					createdAt: result.createdAt,
-					sourceKind: result.sourceKind,
-					sourceVersion: result.sourceVersion,
-					sourceHash: result.sourceHash,
-					loadGen: result.loadGen,
-					imageCount: result.images.length,
-				};
-			}),
-		);
-		return visible.filter((entry) => entry !== null);
-	},
-});
-
-/**
- * Store one private browser capture. Called by the server tool right after a run, with R2
- * assets already uploaded: the text JSON and every image. Creator-only by construction.
- */
-export const store_browser_result = internalMutation({
-	args: {
-		ownerId: v.id("users"),
-		organizationId: v.id("organizations"),
-		workspaceId: v.id("organizations_workspaces"),
-		threadId: v.id("ai_chat_threads"),
-		sessionId: v.id("files_browser_sessions"),
+// #region browser file outputs
+const file_output_scope_validator = v.object({
+	...files_ingestion_scope_validator.fields,
+	threadId: v.id("ai_chat_threads"),
+	modeId: v.union(v.literal("ask"), v.literal("agent")),
+	sessionId: v.id("files_browser_sessions"),
+	expectedAgentLease: browser_agent_lease_validator,
+	expectedSource: v.object({
 		targetKind: v.union(v.literal("saved"), v.literal("private")),
 		nodeId: v.string(),
 		sourceKind: v.union(v.literal("saved"), v.literal("proposed"), v.literal("draft")),
 		sourceVersion: v.string(),
 		sourceHash: v.string(),
-		loadGen: v.number(),
-		runId: v.string(),
-		toolCallId: v.string(),
-		commandId: v.string(),
-		textAssetId: v.id("files_r2_assets"),
-		images: v.array(
-			v.object({
-				assetId: v.id("files_r2_assets"),
-				mime: v.string(),
-				width: v.number(),
-				height: v.number(),
-			}),
-		),
-		textBytes: v.number(),
-		imageBytes: v.number(),
-	},
-	returns: v.id("ai_chat_browser_results"),
-	handler: async (ctx, args) => {
-		for (const image of args.images) {
-			if (
-				(image.mime !== "image/png" && image.mime !== "image/jpeg") ||
-				!Number.isInteger(image.width) ||
-				!Number.isInteger(image.height) ||
-				image.width <= 0 ||
-				image.height <= 0
-			) {
-				throw convex_error({ message: "Invalid browser result image" });
-			}
-		}
-
-		const now = Date.now();
-		const resultId = await ctx.db.insert("ai_chat_browser_results", {
-			ownerId: args.ownerId,
-			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
-			threadId: args.threadId,
-			sessionId: args.sessionId,
-			targetKind: args.targetKind,
-			nodeId: args.nodeId,
-			sourceKind: args.sourceKind,
-			sourceVersion: args.sourceVersion,
-			sourceHash: args.sourceHash,
-			loadGen: args.loadGen,
-			runId: args.runId,
-			toolCallId: args.toolCallId,
-			commandId: args.commandId,
-			textAssetId: args.textAssetId,
-			images: args.images,
-			textBytes: args.textBytes,
-			imageBytes: args.imageBytes,
-			expiresAt: now + BROWSER_RESULT_TTL_MS,
-			createdAt: now,
-		});
-
-		await r2_db_finalize_browser_result_asset(ctx, {
-			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
-			assetId: args.textAssetId,
-		});
-		for (const image of args.images) {
-			await r2_db_finalize_browser_result_asset(ctx, {
-				organizationId: args.organizationId,
-				workspaceId: args.workspaceId,
-				assetId: image.assetId,
-			});
-		}
-		return resultId;
-	},
+	}),
 });
 
 /**
- * Authorize one result read: creator-only, thread-scoped, with live source access. A removed
- * proposal does not revoke an old capture; node access does.
+ * Refuse a capture whose page is no longer the one the agent ran against, or whose HTML source the
+ * user can no longer read. Both checks run again at finalize, because the upload happens in between.
  */
-async function authorize_browser_result_read(
-	ctx: QueryCtx,
-	args: {
-		userId: Id<"users">;
-		membershipId: Id<"organizations_workspaces_users">;
-		resultId: Id<"ai_chat_browser_results">;
-	},
-): Promise<{ result: Doc<"ai_chat_browser_results">; membership: Doc<"organizations_workspaces_users"> } | null> {
-	const membership = await organizations_db_get_membership(ctx, {
-		userId: args.userId,
-		membershipId: args.membershipId,
-	});
-	if (!membership) {
-		return null;
-	}
+async function authorize_browser_file_source(ctx: MutationCtx, args: Infer<typeof file_output_scope_validator>) {
+	const chat = await ai_chat_files_db_authorize_file_output(ctx, args);
+	if (chat._nay) return chat;
+	const session = await ctx.db.get("files_browser_sessions", args.sessionId);
 
-	const result = await ctx.db.get("ai_chat_browser_results", args.resultId);
+	// The capture belongs to this loaded page and control lease, not just this session id.
 	if (
-		!result ||
-		result.ownerId !== args.userId ||
-		result.organizationId !== membership.organizationId ||
-		result.workspaceId !== membership.workspaceId ||
-		result.expiresAt <= Date.now()
-	) {
-		return null;
-	}
+		!session ||
+		session.ownerId !== args.userId ||
+		session.organizationId !== args.organizationId ||
+		session.workspaceId !== args.workspaceId ||
+		session.control !== "ready" ||
+		!session.runnerSessionId ||
+		(session.totalUntil !== undefined && session.totalUntil <= Date.now()) ||
+		session.controlGen !== args.expectedAgentLease.controlGen ||
+		session.loadGen !== args.expectedAgentLease.loadGen ||
+		session.navigationGeneration !== args.expectedAgentLease.navGen ||
+		session.targetKind !== args.expectedSource.targetKind ||
+		session.nodeId !== args.expectedSource.nodeId ||
+		session.sourceKind !== args.expectedSource.sourceKind ||
+		session.sourceVersion !== args.expectedSource.sourceVersion ||
+		session.sourceHash !== args.expectedSource.sourceHash
+	)
+		return Result({ _nay: { message: "Browser session changed. Run the capture again." } });
 
-	const thread = await ctx.db.get("ai_chat_threads", result.threadId);
-	if (
-		!thread ||
-		thread.organizationId !== membership.organizationId ||
-		thread.workspaceId !== membership.workspaceId
-	) {
-		return null;
-	}
+	// The session stores its node id as a plain string, so it needs the table back before a read.
+	const sourceId =
+		session.targetKind === "private"
+			? ctx.db.normalizeId("files_pending_nodes", session.nodeId)
+			: ctx.db.normalizeId("files_nodes", session.nodeId);
+	if (!sourceId) return Result({ _nay: { message: "Source unavailable" } });
 
-	if (result.targetKind === "saved") {
-		const nodeId = ctx.db.normalizeId("files_nodes", result.nodeId);
-		if (!nodeId) {
-			return null;
-		}
-		const authorized = await access_control_db_authorize_node(ctx, {
-			userAuth: { id: args.userId },
-			membership,
-			nodeId,
-			permission: "content.read",
-		});
-		if (authorized._nay) {
-			return null;
-		}
-	} else {
-		const pendingNodeId = ctx.db.normalizeId("files_pending_nodes", result.nodeId);
-		const pendingNode = pendingNodeId ? await ctx.db.get("files_pending_nodes", pendingNodeId) : null;
-		if (!pendingNode || pendingNode.userId !== args.userId) {
-			return null;
-		}
-	}
+	const reader = await files_visible_db_create_reader(ctx, { ...args, readLimit: 2048 });
+	const source = await reader.resolve(
+		session.targetKind === "private"
+			? { kind: "private", id: sourceId as Id<"files_pending_nodes"> }
+			: { kind: "saved", id: sourceId as Id<"files_nodes"> },
+	);
+	if (!source || !(await reader.canRead(source.accessNode))) return Result({ _nay: { message: "Source unavailable" } });
 
-	// No proposal-ownership check: results are creator-only, so the reader always owns any
-	// live proposal on the source. A proposal accepted or discarded since the capture keeps its
-	// history readable under node access alone.
-	return { result, membership };
+	// Only an HTML file can be the source of a browser session. A draft that is not text yet has
+	// no content type to check, so it is refused too.
+	const sourceType =
+		source.entry.kind === "saved"
+			? source.entry.node.contentType
+			: source.entry.pendingUpdate.createIntent?.kind === "text"
+				? source.entry.pendingUpdate.createIntent.contentType
+				: null;
+	if (files_editable_text_content_type_of(sourceType) !== "text/html;charset=utf-8")
+		return Result({ _nay: { message: "Source unavailable" } });
+
+	return Result({ _yay: null });
 }
 
 /**
- * Read one private result: the stored text plus short signed image URLs. Re-checks access
- * after signing before returning.
+ * Prepare and finalize one browser output file. Both still need the same browser source and the
+ * same lease this run started with.
+ *
+ * A retry whose receipt already completed returns the existing Files target instead. That path
+ * returns before this check runs, so a lease that went stale cannot hide a file the run already
+ * created.
  */
-export const read_browser_result = action({
+export const prepare_file_output = internalMutation({
 	args: {
-		membershipId: v.id("organizations_workspaces_users"),
-		resultId: v.id("ai_chat_browser_results"),
+		...files_ingestion_prepare_args_validator.fields,
+		...file_output_scope_validator.fields,
 	},
-	returns: v_result({
-		_yay: v.object({
-			text: v.string(),
-			sourceKind: v.union(v.literal("saved"), v.literal("proposed"), v.literal("draft")),
-			sourceVersion: v.string(),
-			sourceHash: v.string(),
-			loadGen: v.number(),
-			images: v.array(
-				v.object({
-					url: v.string(),
-					mime: v.string(),
-					width: v.number(),
-					height: v.number(),
-				}),
-			),
-		}),
-	}),
-	handler: async (ctx, args) => {
-		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
-		const user = userAuth ? await ctx.runQuery(internal.users.get, { userId: userAuth.id }) : null;
-		if (!user || (userAuth?.kind === "anonymous" && user.deletedAt !== undefined)) {
-			return Result({ _nay: { message: "Unauthenticated" } });
-		}
-
-		const checked = (await ctx.runQuery(internal.files_browser.get_authorized_browser_result, {
-			userId: user._id,
-			membershipId: args.membershipId,
-			resultId: args.resultId,
-		})) as get_authorized_browser_result_Result;
-		if (!checked) {
-			return Result({ _nay: { message: "Not found" } });
-		}
-
-		const textAsset = (await ctx.runQuery(internal.files_browser.get_browser_result_asset, {
-			assetId: checked.result.textAssetId,
-		})) as get_browser_result_asset_Result;
-		if (!textAsset?.r2Key) {
-			return Result({ _nay: { message: "Not found" } });
-		}
-		const text = await r2_fetch_object_from_bucket({ key: textAsset.r2Key }).then((response) => response.text());
-
-		const images: Array<{ url: string; mime: string; width: number; height: number }> = [];
-		for (const image of checked.result.images) {
-			const asset = (await ctx.runQuery(internal.files_browser.get_browser_result_asset, {
-				assetId: image.assetId,
-			})) as get_browser_result_asset_Result;
-			if (!asset?.r2Key) {
-				return Result({ _nay: { message: "Not found" } });
-			}
-			const url = await r2.getUrl(asset.r2Key, {
-				// 5 minutes. A URL already issued stays usable until expiry.
-				expiresIn: 5 * 60,
-				responseContentType: image.mime,
-				responseContentDisposition: `inline; filename="browser-result-${asset._id}"`,
-			});
-			images.push({ url, mime: image.mime, width: image.width, height: image.height });
-		}
-
-		// Re-check access after signing, before returning anything.
-		const rechecked = (await ctx.runQuery(internal.files_browser.get_authorized_browser_result, {
-			userId: user._id,
-			membershipId: args.membershipId,
-			resultId: args.resultId,
-		})) as get_authorized_browser_result_Result;
-		if (!rechecked) {
-			return Result({ _nay: { message: "Not found" } });
-		}
-
-		return Result({
-			_yay: {
-				text,
-				sourceKind: checked.result.sourceKind,
-				sourceVersion: checked.result.sourceVersion,
-				sourceHash: checked.result.sourceHash,
-				loadGen: checked.result.loadGen,
-				images,
-			},
-		});
-	},
+	returns: v_result({ _yay: files_ingestion_prepare_result_validator }),
+	handler: (ctx, args) => files_ingestion_db_prepare_file(ctx, args, () => authorize_browser_file_source(ctx, args)),
 });
 
-export const get_authorized_browser_result = internalQuery({
+export const finalize_file_output = internalMutation({
 	args: {
-		userId: v.id("users"),
-		membershipId: v.id("organizations_workspaces_users"),
-		resultId: v.string(),
+		...files_ingestion_finalize_args_validator.fields,
+		...file_output_scope_validator.fields,
 	},
-	returns: v.union(
-		v.object({
-			result: doc(app_convex_schema, "ai_chat_browser_results"),
-			membership: doc(app_convex_schema, "organizations_workspaces_users"),
-		}),
-		v.null(),
-	),
-	handler: async (ctx, args) => {
-		const resultId = ctx.db.normalizeId("ai_chat_browser_results", args.resultId);
-		if (!resultId) {
-			return null;
-		}
-		return await authorize_browser_result_read(ctx, { ...args, resultId });
-	},
+	returns: v_result({ _yay: files_ingestion_file_validator }),
+	handler: (ctx, args) => files_ingestion_db_finalize_file(ctx, args, () => authorize_browser_file_source(ctx, args)),
 });
-
-type get_authorized_browser_result_Result =
-	typeof get_authorized_browser_result extends RegisteredQuery<
-		infer _Visibility,
-		infer _Args,
-		infer ReturnValue
-	>
-		? Awaited<ReturnValue>
-		: never;
-
-export const get_browser_result_asset = internalQuery({
-	args: {
-		assetId: v.id("files_r2_assets"),
-	},
-	returns: v.union(doc(app_convex_schema, "files_r2_assets"), v.null()),
-	handler: async (ctx, args) => {
-		const asset = await ctx.db.get("files_r2_assets", args.assetId);
-		if (!asset || asset.kind !== "browser_result") {
-			return null;
-		}
-		return asset;
-	},
-});
-
-type get_browser_result_asset_Result =
-	typeof get_browser_result_asset extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
-		? Awaited<ReturnValue>
-		: never;
+// #endregion browser file outputs
 
 const BROWSER_SWEEP_BATCH_SIZE = 50;
 
 /**
- * Delete one expired result and queue exact-key cleanup for its R2 objects. Jobs enqueue before
- * the doc dies so a crash still cleans the bucket.
- */
-async function delete_browser_result_with_assets(ctx: MutationCtx, resultId: Id<"ai_chat_browser_results">) {
-	const result = await ctx.db.get("ai_chat_browser_results", resultId);
-	if (!result) {
-		return;
-	}
-	const assetIds = [result.textAssetId, ...result.images.map((image) => image.assetId)];
-	for (const assetId of assetIds) {
-		const asset = await ctx.db.get("files_r2_assets", assetId);
-		if (!asset || asset.kind !== "browser_result") {
-			continue;
-		}
-		await r2_enqueue_object_deletion_job(ctx, {
-			organizationId: result.organizationId,
-			workspaceId: result.workspaceId,
-			r2Key:
-				asset.r2Key ??
-				r2_create_asset_key({
-					organizationId: result.organizationId,
-					workspaceId: result.workspaceId,
-					assetId: asset._id,
-				}),
-			reason: "browser_result_cleanup",
-		});
-		await ctx.db.delete("files_r2_assets", asset._id);
-	}
-	await ctx.db.delete("ai_chat_browser_results", resultId);
-}
-
-/**
- * Sweep expired browser docs: results with their R2 objects, draft captures with their blobs,
- * starting sessions that never committed, and closed sessions whose results are gone.
+ * Sweep draft captures with their blobs, unfinished starts, old daily-use counters, and closed
+ * sessions.
  */
 export const cleanup_expired_browser_docs = internalMutation({
 	args: {},
@@ -2923,17 +2545,6 @@ export const cleanup_expired_browser_docs = internalMutation({
 	handler: async (ctx) => {
 		const now = Date.now();
 		let reschedule = false;
-
-		const results = await ctx.db
-			.query("ai_chat_browser_results")
-			.withIndex("by_expiresAt", (q) => q.lte("expiresAt", now))
-			.take(BROWSER_SWEEP_BATCH_SIZE);
-		for (const result of results) {
-			await delete_browser_result_with_assets(ctx, result._id);
-		}
-		if (results.length === BROWSER_SWEEP_BATCH_SIZE) {
-			reschedule = true;
-		}
 
 		const captures = await ctx.db
 			.query("files_browser_draft_captures")
@@ -2974,19 +2585,13 @@ export const cleanup_expired_browser_docs = internalMutation({
 			reschedule = true;
 		}
 
-		const closedCutoff = now - BROWSER_RESULT_TTL_MS;
+		const closedCutoff = now - BROWSER_SESSION_RETENTION_MS;
 		const closedSessions = await ctx.db
 			.query("files_browser_sessions")
 			.withIndex("by_control_closedAt", (q) => q.eq("control", "closed").lt("closedAt", closedCutoff))
 			.take(BROWSER_SWEEP_BATCH_SIZE);
 		for (const session of closedSessions) {
-			const liveResult = await ctx.db
-				.query("ai_chat_browser_results")
-				.withIndex("by_session", (q) => q.eq("sessionId", session._id))
-				.first();
-			if (!liveResult) {
-				await ctx.db.delete("files_browser_sessions", session._id);
-			}
+			await ctx.db.delete("files_browser_sessions", session._id);
 		}
 		if (closedSessions.length === BROWSER_SWEEP_BATCH_SIZE) {
 			reschedule = true;
@@ -3000,24 +2605,13 @@ export const cleanup_expired_browser_docs = internalMutation({
 });
 
 /**
- * Purge one workspace batch of browser docs. R2 objects stay for the generic asset pass, which
- * is exhaustive. Runner sessions orphaned here die on their idle alarm within minutes.
+ * Purge one workspace batch of browser sessions. Runner sessions orphaned here die on their
+ * idle alarm within minutes.
  */
 export async function files_browser_db_purge_workspace_batch(
 	ctx: MutationCtx,
 	args: { organizationId: Id<"organizations">; workspaceId: Id<"organizations_workspaces">; batchSize: number },
 ) {
-	const results = await ctx.db
-		.query("ai_chat_browser_results")
-		.withIndex("by_organization_workspace", (q) =>
-			q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId),
-		)
-		.take(args.batchSize);
-	if (results.length > 0) {
-		await Promise.all(results.map((result) => ctx.db.delete("ai_chat_browser_results", result._id)));
-		return { done: false, deletedCount: results.length };
-	}
-
 	const sessions = await ctx.db
 		.query("files_browser_sessions")
 		.withIndex("by_organization_workspace", (q) =>
@@ -3035,24 +2629,12 @@ export async function files_browser_db_purge_workspace_batch(
 }
 
 /**
- * Drain one user's browser docs. Unlike the workspace purge, result R2 objects are queued here:
- * the shared workspace survives, so no generic asset pass follows.
+ * Drain one user's browser sessions and draft captures, including their stored blobs.
  */
 export async function files_browser_db_delete_user_batch(
 	ctx: MutationCtx,
 	args: { userId: Id<"users">; batchSize: number },
 ) {
-	const results = await ctx.db
-		.query("ai_chat_browser_results")
-		.withIndex("by_owner", (q) => q.eq("ownerId", args.userId))
-		.take(args.batchSize);
-	if (results.length > 0) {
-		for (const result of results) {
-			await delete_browser_result_with_assets(ctx, result._id);
-		}
-		return { done: false, deletedCount: results.length };
-	}
-
 	const sessions = await ctx.db
 		.query("files_browser_sessions")
 		.withIndex("by_owner", (q) => q.eq("ownerId", args.userId))

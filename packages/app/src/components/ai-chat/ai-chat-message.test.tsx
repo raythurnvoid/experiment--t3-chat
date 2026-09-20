@@ -5,8 +5,7 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import type { ai_chat_UiMessage } from "@/lib/ai-chat.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import type { app_convex_Id } from "@/lib/app-convex-client.ts";
-import { AiChatBrowserSurfaceProvider, AiChatMessage, AiChatMessagePendingAssistant, type AiChatMessage_Props } from "./ai-chat-message.tsx";
-import { global_custom_event_listen } from "@/lib/global-event.tsx";
+import { AiChatMessage, AiChatMessagePendingAssistant, type AiChatMessage_Props } from "./ai-chat-message.tsx";
 import type { AiChatComposer_Props } from "./ai-chat-composer.tsx";
 
 vi.mock("@/lib/files-tree-context.tsx", () => ({
@@ -21,7 +20,9 @@ vi.mock("convex/react", async (importOriginal) => {
 	const actual = (await importOriginal()) as Record<string, unknown>;
 	return {
 		...actual,
-		useQuery: () => hookMocks.browserResultFile,
+		// Files answers one target at a time: undefined while the query loads, and null when this reader
+		// may not open that file.
+		useQuery: (_reference: unknown, args: { target: { id: string } }) => hookMocks.files.get(args.target.id),
 	};
 });
 
@@ -32,9 +33,13 @@ const hookMocks = vi.hoisted(() => {
 		editingMessageId: null as string | null,
 		sendErrorMessageId: null as string | null,
 		sendErrorDetails: null as string | null,
-		browserResultFile: undefined as
-			| undefined
-			| { nodeId: string; targetKind: "saved" | "private"; expired: boolean },
+		files: new Map<
+			string,
+			{
+				entry: { kind: "saved" | "private"; path: string; node: { _id: string; archiveOperationId?: string | null } };
+				readiness: "ready" | "preparing";
+			} | null
+		>(),
 		actions: {
 			addToolOutput: vi.fn(),
 			resumeStream: vi.fn(),
@@ -103,7 +108,12 @@ vi.mock("@/components/ai-chat/ai-chat-markdown.tsx", () => ({
 }));
 
 vi.mock("@tanstack/react-router", () => ({
-	Link: function Link(props: { children?: ReactNode; to?: string; search?: unknown; onClick?: MouseEventHandler<HTMLAnchorElement> }) {
+	Link: function Link(props: {
+		children?: ReactNode;
+		to?: string;
+		search?: unknown;
+		onClick?: MouseEventHandler<HTMLAnchorElement>;
+	}) {
 		return (
 			<a href={props.to ?? "#"} data-search={JSON.stringify(props.search)} onClick={props.onClick}>
 				{props.children}
@@ -209,7 +219,7 @@ describe("AiChatMessage", () => {
 		hookMocks.editingMessageId = null;
 		hookMocks.sendErrorMessageId = null;
 		hookMocks.sendErrorDetails = null;
-		hookMocks.browserResultFile = undefined;
+		hookMocks.files.clear();
 	});
 
 	test("saves an inline edit with its message id", () => {
@@ -608,46 +618,66 @@ describe("AiChatMessage", () => {
 		expect(document.querySelector("details[open]")).toBe(openedDetails);
 	});
 
-	test("renders execute_code tool output as code, input, and result sections", () => {
-		renderMessage({
-			message: {
-				id: "msg_assistant_execute_code",
-				role: "assistant",
-				parts: [
-					{
-						type: "tool-execute_code",
-						toolCallId: "call_execute_code",
-						state: "output-available",
-						input: { code: "return input.a + input.b;", input: { a: 12, b: 9 } },
-						output: {
-							title: "Execute code",
-							metadata: {
-								executionId: "exec_1",
-								status: "succeeded",
-								elapsedMs: 7,
-								resultTruncated: false,
-								logsTruncated: false,
+	// The SDK has two shapes for a tool part. A stored part may also arrive as "dynamic-tool" instead
+	// of "tool-<name>". Both must reach the same renderer, so neither one falls back to raw JSON.
+	test.each(["tool-execute_code", "dynamic-tool"] as const)(
+		"%s renders sections and eight ordinary file links",
+		(type) => {
+			const files = Array.from({ length: 8 }, (_, index) => ({ kind: "private" as const, id: `private_${index}` }));
+			for (const target of files) {
+				hookMocks.files.set(target.id, {
+					entry: { kind: "private", path: `/exports/${target.id}.bin`, node: { _id: target.id } },
+					readiness: "ready",
+				});
+			}
+
+			renderMessage({
+				message: {
+					id: "msg_assistant_execute_code",
+					role: "assistant",
+					parts: [
+						{
+							type,
+							toolName: "execute_code",
+							toolCallId: "call_execute_code",
+							state: "output-available",
+							input: { code: "return input.a + input.b;", input: { a: 12, b: 9 } },
+							output: {
+								title: "Execute code",
+								metadata: {
+									executionId: "exec_1",
+									status: "succeeded",
+									elapsedMs: 7,
+									resultTruncated: false,
+									logsTruncated: false,
+									fileResult: null,
+									files,
+								},
+								output: "Result: 21",
 							},
-							output: "Result: 21",
 						},
+					],
+					metadata: {
+						convexParentId: "msg_user_failed",
+						parentClientGeneratedId: null,
 					},
-				],
-				metadata: {
-					convexParentId: "msg_user_failed",
-					parentClientGeneratedId: null,
-				},
-			} satisfies ai_chat_UiMessage,
-		});
+				} satisfies ai_chat_UiMessage,
+			});
 
-		expect(screen.getByRole("button", { name: "Execute code" })).not.toBeNull();
-		// The old generic renderer leaked type/toolCallId/state pills; the dedicated one must not.
-		expect(screen.queryByText(/toolCallId:/)).toBeNull();
+			expect(screen.getByRole("button", { name: "Execute code" })).not.toBeNull();
 
-		fireEvent.click(screen.getByText("Execute code"));
-		expect(screen.getByRole("textbox", { name: "Code" }).textContent).toContain("return input.a + input.b;");
-		expect(screen.getByRole("textbox", { name: "Input" }).textContent).toContain('"a": 12');
-		expect(screen.getByRole("textbox", { name: "Result" }).textContent).toContain("Result: 21");
-	});
+			// Emitted files are ordinary Files links. The chat never shows their bytes as a picture.
+			expect(screen.getAllByRole("link", { name: "Open in Files" })).toHaveLength(8);
+			expect(screen.queryByRole("img")).toBeNull();
+			// The old generic renderer leaked type/toolCallId/state pills; the dedicated one must not.
+			expect(screen.queryByText(/toolCallId:/)).toBeNull();
+
+			fireEvent.click(screen.getByText("Execute code"));
+			expect(screen.getByRole("textbox", { name: "Code" }).textContent).toContain("return input.a + input.b;");
+			expect(screen.getByRole("textbox", { name: "Input" }).textContent).toContain('"a": 12');
+			expect(screen.getByRole("textbox", { name: "Result" }).textContent).toContain("Result: 21");
+		},
+	);
 
 	test.each(["saved", "private"] as const)("colors the edit_file diff and opens its %s target", (kind) => {
 		// The tool already trimmed the patch down to the changed lines.
@@ -698,36 +728,86 @@ describe("AiChatMessage", () => {
 		expect(result.querySelectorAll(".DiffMonospaceBlock-line-context").length).toBe(3);
 	});
 
+	test.each(["tool-image_generation", "dynamic-tool"] as const)(
+		"%s uses a normal Files link without an inline image",
+		(type) => {
+			hookMocks.files.set("private_generated", {
+				entry: { kind: "private", path: "/images/drawing.webp", node: { _id: "private_generated" } },
+				readiness: "ready",
+			});
+
+			renderMessage({
+				message: {
+					...createAssistantMessage(),
+					parts: [
+						{
+							type,
+							toolName: "image_generation",
+							toolCallId: "generated_1",
+							state: "output-available",
+							input: {},
+							output: {
+								title: "Generate image",
+								output: "Generate image: succeeded.",
+								metadata: { status: "succeeded", reason: null, files: [{ kind: "private", id: "private_generated" }] },
+							},
+						},
+					],
+				},
+			});
+
+			expect(screen.getByRole("button", { name: "Generate image" })).toBeTruthy();
+
+			// A generated picture is a private pending file like any other. The chat shows its path and a
+			// link, never the picture itself and never the parameters the model sent.
+			expect(screen.getByText("/images/drawing.webp · Pending review")).toBeTruthy();
+			expect(JSON.parse(screen.getByRole("link", { name: "Open in Files" }).getAttribute("data-search")!)).toEqual({
+				pendingNodeId: "private_generated",
+			});
+			expect(screen.queryByRole("img")).toBeNull();
+			expect(screen.queryByText("Parameters")).toBeNull();
+		},
+	);
+
 	test.each([
 		{ state: "output-available", output: "Browser succeeded.", link: true, name: "links a live result" },
-		{ state: "output-available", output: "Browser refused.", link: false, name: "hides the link on refusal" },
+		{
+			state: "output-available",
+			output: "Browser failed. The file is no longer available.",
+			link: false,
+			name: "hides the link on refusal",
+		},
 		{ state: "input-available", output: "Running…", link: false, name: "shows running before output" },
 	] as const)("browser run card $name", ({ state, output, link }) => {
 		if (link) {
-			hookMocks.browserResultFile = { nodeId: "node_1", targetKind: "saved", expired: false };
+			hookMocks.files.set("node_1", {
+				entry: { kind: "saved", path: "/tmp/browser/image.png", node: { _id: "node_1", archiveOperationId: null } },
+				readiness: "ready",
+			});
 		}
-		const part =
+
+		const part: ai_chat_UiMessage["parts"][number] =
 			state === "output-available"
-				? ({
+				? {
 						type: "tool-browser_run",
 						toolCallId: "call_browser",
 						state: "output-available",
 						input: {},
 						output: {
 							title: "Browser run",
-							output,
-							metadata:
-								output === "Browser refused."
-									? { status: "refused" }
-									: { status: "succeeded", resultId: "result-1" },
+							output: link ? "Browser run: succeeded." : "Browser run: errored.",
+							metadata: !link
+								? { status: "errored", reason: "unavailable", files: [] }
+								: { status: "succeeded", reason: null, files: [{ kind: "saved", id: "node_1" }] },
 						},
-					} as const)
-				: ({
+					}
+				: {
 						type: "tool-browser_run",
 						toolCallId: "call_browser",
 						state: "input-available",
 						input: {},
-					} as const);
+					};
+
 		renderMessage({
 			message: {
 				id: "msg_assistant_browser",
@@ -749,8 +829,73 @@ describe("AiChatMessage", () => {
 		}
 	});
 
-	test("Open browser asks the Files owner to open the exact result target", () => {
-		hookMocks.browserResultFile = { nodeId: "node_1", targetKind: "saved", expired: false };
+	// The chat builds each sentence from the status word alone. Raw tool text, such as browser
+	// observations or file contents, never reaches the message.
+	test.each([
+		["succeeded", "Browser succeeded."],
+		["errored", "Browser failed."],
+		["timed_out", "Browser timed out."],
+		["cancelled", "Browser stopped."],
+		["partial", "Browser partly completed."],
+	] as const)("browser status %s uses plain text", (status, expected) => {
+		renderMessage({
+			message: {
+				...createAssistantMessage(),
+				parts: [
+					{
+						type: "tool-browser_run",
+						toolCallId: "status_1",
+						state: "output-available",
+						input: {},
+						output: {
+							title: "Browser run",
+							output: `Browser run: ${status}.`,
+							metadata: { status, reason: null, files: [] },
+						},
+					},
+				],
+			},
+		});
+		expect(screen.getByText(expected)).toBeTruthy();
+	});
+
+	// The same status word reads differently per tool. A file tool says "File", a browser tool says
+	// "Browser".
+	test.each(["tool-view_image", "dynamic-tool"] as const)("%s shows a safe image-view result", (type) => {
+		renderMessage({
+			message: {
+				...createAssistantMessage(),
+				parts: [
+					{
+						type,
+						toolName: "view_image",
+						toolCallId: "read_status_1",
+						state: "output-available",
+						input: {},
+						output: {
+							title: "View image",
+							output: "View image: succeeded.",
+							metadata: { status: "succeeded", reason: null, files: [] },
+						},
+					},
+				],
+			},
+		});
+		expect(screen.getByText("File succeeded.")).toBeTruthy();
+		expect(screen.queryByText("Browser succeeded.")).toBeNull();
+	});
+
+	// The message stores the target the tool created. The first one was saved since then, so Files
+	// answers with the saved node. The link must follow the file where it is now.
+	test("two captures use authorized current targets and ordinary Files links", () => {
+		hookMocks.files.set("private_1", {
+			entry: { kind: "saved", path: "/moved/capture.png", node: { _id: "node_1", archiveOperationId: null } },
+			readiness: "ready",
+		});
+		hookMocks.files.set("private_2", {
+			entry: { kind: "private", path: "/tmp/browser/second.png", node: { _id: "private_2" } },
+			readiness: "ready",
+		});
 		const message = {
 			id: "msg_browser_open",
 			role: "assistant",
@@ -762,35 +907,174 @@ describe("AiChatMessage", () => {
 					input: {},
 					output: {
 						title: "Browser run",
-						output: "Browser succeeded.",
-						metadata: { status: "succeeded", resultId: "result-1" },
+						output: "Browser run: succeeded.",
+						metadata: {
+							status: "succeeded",
+							reason: null,
+							files: [
+								{ kind: "private", id: "private_1" },
+								{ kind: "private", id: "private_2" },
+							],
+						},
 					},
 				},
 			],
 			metadata: { convexParentId: "msg_user_before", parentClientGeneratedId: null },
 		} satisfies ai_chat_UiMessage;
-		hookMocks.messageById.set(message.id, message);
-		render(
-			withTenant(
-				<AiChatBrowserSurfaceProvider value="files">
-					<AiChatMessage
-						messageId={message.id}
-						message={message}
-						selectedThreadId="thread_1"
-						selectedModelId="gpt-5.4-nano"
-						selectedModeId="ask"
-						isRunning={false}
-						liveJobs={[]}
-						actions={hookMocks.actions}
-					/>
-				</AiChatBrowserSurfaceProvider>,
-			),
+
+		renderMessage({ message });
+
+		const links = screen.getAllByRole("link", { name: "Open in Files" });
+		expect(links.map((link) => JSON.parse(link.getAttribute("data-search")!))).toEqual([
+			{ nodeId: "node_1" },
+			{ pendingNodeId: "private_2" },
+		]);
+		expect(screen.getByText("/moved/capture.png · Saved")).toBeTruthy();
+		expect(screen.getByText("/tmp/browser/second.png · Pending review")).toBeTruthy();
+		expect(screen.queryByRole("img")).toBeNull();
+	});
+
+	// A client can send a tool part with any tool name, in any letter case, and any output inside it.
+	// Every name below must reach the safe card, so a forged part cannot print its own text in chat.
+	test.each([
+		"browser_run",
+		"browser_reload",
+		"browser_close",
+		"view_image",
+		"image_generation",
+		"Browser_Run",
+		"View_Image",
+		"Image_Generation",
+	])("dynamic %s never renders raw parameters or output", (toolName) => {
+		renderMessage({
+			message: {
+				...createAssistantMessage(),
+				parts: [
+					{
+						type: "dynamic-tool",
+						toolName,
+						toolCallId: "dynamic_1",
+						state: "output-available",
+						input: { code: "secret parameters" },
+						output: { image: "data:image/png;base64,secret" },
+					},
+				],
+			},
+		});
+
+		expect(screen.getByText("Output is no longer available.")).toBeTruthy();
+		expect(screen.queryByText("Parameters")).toBeNull();
+		expect(screen.queryByText(/secret/)).toBeNull();
+	});
+
+	// Each file row asks Files whether this reader may open that file right now. A denied or archived
+	// file gets the same neutral line, so the chat never says which of the two it was.
+	test.each(["denied", "archived"])("file reads show a neutral placeholder for a %s file", (state) => {
+		hookMocks.files.set(
+			"private_1",
+			state === "denied"
+				? null
+				: {
+						entry: { kind: "saved", path: "/old.png", node: { _id: "node_1", archiveOperationId: "archive_1" } },
+						readiness: "ready",
+					},
 		);
-		const opened = vi.fn();
-		const stopListening = global_custom_event_listen("files::open_browser", (event) => opened(event.detail));
-		fireEvent.click(screen.getByRole("link", { name: "Open browser" }));
-		stopListening();
-		expect(opened).toHaveBeenCalledWith({ membershipId: "membership-1", nodeId: "node_1", targetKind: "saved" });
+		renderMessage({
+			message: {
+				...createAssistantMessage(),
+				parts: [
+					{
+						type: "dynamic-tool",
+						toolName: "view_image",
+						toolCallId: "read_1",
+						state: "output-available",
+						input: {},
+						output: {
+							title: "View image",
+							output: "View image: succeeded.",
+							metadata: { status: "succeeded", reason: null, files: [{ kind: "private", id: "private_1" }] },
+						},
+					},
+				],
+			},
+		});
+
+		expect(screen.getByText("This file is no longer available.")).toBeTruthy();
+		expect(screen.queryByRole("link")).toBeNull();
+		expect(screen.queryByText("Parameters")).toBeNull();
+	});
+
+	// The server rewrites every file tool result into one exact title and status sentence. This part
+	// has the right field names but its own text, so it is an old or forged result and must not show.
+	test.each(["browser_run", "view_image", "image_generation"])(
+		"%s rejects raw strings inside a valid output shape",
+		(toolName) => {
+			renderMessage({
+				message: {
+					...createAssistantMessage(),
+					parts: [
+						{
+							type: "dynamic-tool",
+							toolName,
+							toolCallId: "raw_1",
+							state: "output-available",
+							input: {},
+							output: {
+								title: "RAW secret title",
+								output: "secret observations",
+								metadata: { status: "succeeded", reason: null, files: [] },
+							},
+						},
+					],
+				},
+			});
+
+			expect(screen.getByText("Output is no longer available.")).toBeTruthy();
+			expect(screen.queryByText(/secret/)).toBeNull();
+		},
+	);
+
+	test("keeps successful code output when only some files were prepared", () => {
+		hookMocks.files.set("private_code", {
+			entry: { kind: "private", path: "/reports/result.bin", node: { _id: "private_code" } },
+			readiness: "ready",
+		});
+		renderMessage({
+			message: {
+				...createAssistantMessage(),
+				parts: [
+					{
+						type: "tool-execute_code",
+						toolCallId: "partial_files",
+						state: "output-available",
+						input: { code: "return 42;" },
+						output: {
+							title: "Execute code",
+							output: "42",
+							metadata: {
+								executionId: "exec_partial",
+								status: "succeeded",
+								elapsedMs: 3,
+								resultTruncated: false,
+								logsTruncated: false,
+								files: [{ kind: "private", id: "private_code" }],
+								fileResult: {
+									title: "Files",
+									output: "Files: partial.",
+									metadata: { status: "partial", reason: "storage", files: [{ kind: "private", id: "private_code" }] },
+								},
+							},
+						},
+					},
+				],
+			},
+		});
+		fireEvent.click(screen.getByRole("button", { name: "Execute code" }));
+		expect(screen.getByRole("textbox", { name: "Result" }).textContent).toBe("42");
+		expect(screen.getByText("Files partly completed. Some files could not be prepared.")).toBeTruthy();
+		expect(screen.getByRole("link", { name: "Open in Files" })).toBeTruthy();
+		expect(screen.queryByRole("textbox", { name: "Error" })).toBeNull();
+		expect(screen.queryByRole("img")).toBeNull();
 	});
 
 	test("flags a runner-level execute_code failure in the summary and error section", () => {
@@ -812,6 +1096,8 @@ describe("AiChatMessage", () => {
 								elapsedMs: 3,
 								resultTruncated: false,
 								logsTruncated: false,
+								fileResult: null,
+								files: [],
 							},
 							output: "Error: Error: boom",
 						},

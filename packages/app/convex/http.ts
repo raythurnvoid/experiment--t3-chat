@@ -28,6 +28,14 @@ const http = httpRouter();
 const appCors = corsRouter(http, {
 	allowedOrigins: allowed_origins(),
 	allowedHeaders: ["Authorization", "Content-Type"],
+	exposedHeaders: [
+		"Content-Range",
+		"Accept-Ranges",
+		"X-File-Content-Type",
+		"X-File-Revision",
+		"X-File-Size",
+		"X-File-Offset",
+	],
 });
 
 // Route definitions stay small and static. Each heavy implementation loads inside its route.

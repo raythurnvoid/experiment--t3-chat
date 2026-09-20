@@ -20,7 +20,7 @@ Before the first attempt at a new interaction type (upload, download, screenshot
 
 ## Playwriter Availability
 
-- Playwriter 0.7.0 accepts `--timeout 5000` on code execution calls, but rejects it on `session list`. Run that listing without the flag; keep the explicit timeout on every `-e` or `-f` call.
+- Playwriter accepts `--timeout 5000` on code execution calls, but rejects it on metadata commands such as `skill`, `browser list`, `session new`, and `session list`. Run those without the flag; keep the explicit timeout on every `-e` or `-f` call.
 - `playwriter session reset <id>` clears `state`. Run `install-harness.js` again, then bind the page before using `state.appPlaywriterHarness`. A successful reconnect does not restore the helper namespace.
 - Vitest 4.1.10 ignores the unsupported `--browser.screenshotFailures=false` CLI option and can still write failure images into the repo. For expected failures, use a temporary config in the personal task folder that imports the app config and sets `test.browser.screenshotFailures: false` on the browser project. Set its `root` to `packages/app` and pass its absolute path with `--config`. This prevented screenshots during a failing check. Capture needed images with Playwriter; a screenshot directory outside the repo can be refused by Vite's file allowlist.
 - Give a temporary Vitest config outside the repo the `.mts` extension. A `.ts` file outside the app's `type: module` package can load as CommonJS and fail on Tailwind's default import with `default is not a function`. Using `.mts` keeps the imported app config in ESM mode.

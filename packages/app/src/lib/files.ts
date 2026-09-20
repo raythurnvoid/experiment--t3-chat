@@ -482,6 +482,35 @@ export async function files_fetch_file_pending_update_yjs_state(args: {
 }
 
 /**
+ * Select exactly the private proposal and its required folders.
+ *
+ * Save includes parents in root-first order. Discard leaves parents and siblings alone.
+ */
+export function files_build_private_review_selection(args: {
+	kind: "accept" | "discard";
+	pendingUpdate: Pick<app_convex_Doc<"files_pending_updates">, "_id" | "revision">;
+	requiredParents: Array<{ pendingUpdateId: app_convex_Id<"files_pending_updates">; reviewedRevision: number }>;
+}) {
+	return {
+		kind: args.kind,
+		items: [
+			...(args.kind === "accept"
+				? args.requiredParents.map((parent) => ({
+						pendingUpdateId: parent.pendingUpdateId,
+						reviewedRevision: parent.reviewedRevision,
+						selectedContentStateId: null,
+					}))
+				: []),
+			{
+				pendingUpdateId: args.pendingUpdate._id,
+				reviewedRevision: args.pendingUpdate.revision,
+				selectedContentStateId: null,
+			},
+		],
+	};
+}
+
+/**
  * Load private text from its owned branch, then check that the same proposal is still readable.
  */
 export async function files_fetch_private_file_pending_text(args: {

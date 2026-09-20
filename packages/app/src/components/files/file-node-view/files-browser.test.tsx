@@ -58,8 +58,6 @@ vi.mock("convex/react", () => {
 						idleUntil: Date.now() + 300_000,
 						totalUntil: Date.now() + 1_200_000,
 					};
-				case "files_browser:list_browser_results":
-					return [];
 				default:
 					return null;
 			}
@@ -116,6 +114,17 @@ async function connectViewer() {
 }
 
 describe("FilesBrowser", () => {
+	// Screenshots are now pending Files, so the panel no longer has its own Results list. The viewer
+	// must still connect, and none of that old surface may come back.
+	test("keeps the live viewer without the old Results surface", async () => {
+		render(browserPanel());
+		await connectViewer();
+
+		expect(screen.queryByRole("group", { name: "Browser results" })).toBeNull();
+		expect(screen.queryByText("Results")).toBeNull();
+		expect(screen.queryByRole("img")).toBeNull();
+	});
+
 	test("keeps the renewal deadline when control and session metadata change", async () => {
 		vi.useFakeTimers();
 		mocks.control = "ready";

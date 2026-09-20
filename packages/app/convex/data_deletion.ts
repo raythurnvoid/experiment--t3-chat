@@ -33,6 +33,7 @@ import { plugins_db_delete_anonymized_review_if_unlinked } from "./plugins.ts";
 import { files_nodes_db_handoff_yjs_cleanup_task } from "./files_nodes.ts";
 import { files_pending_update_db_release_replacement_asset } from "./files_pending_updates.ts";
 import { files_private_storage_db_release_purged_resources } from "./files_private_storage.ts";
+import { files_ingestion_db_delete_receipt } from "./files_ingestion.ts";
 import { files_transfer_db_delete_run_batch } from "./files_transfer.ts";
 import { files_browser_db_delete_user_batch, files_browser_db_purge_workspace_batch } from "./files_browser.ts";
 import { files_pending_update_runs_db_delete_run_batch } from "./files_pending_update_runs.ts";
@@ -334,8 +335,19 @@ async function db_purge_organization_workspace_content_batch(
 		return { done: false, deletedCount: purged.deletedCount };
 	}
 
-	// Paged pending-state families and their operation scaffolding go before the pending-update
-	// parent docs: pages before state docs, text inputs before their operation batches.
+	// Retire unfinished producers before removing their batches or private targets.
+	const ingestionReceipts = await ctx.db
+		.query("files_ingestion_receipts")
+		.withIndex("by_organization_workspace", (q) =>
+			q.eq("organizationId", organizationId).eq("workspaceId", workspaceId),
+		)
+		.take(Math.min(batchSize, 8));
+	if (ingestionReceipts.length > 0) {
+		for (const receipt of ingestionReceipts) await files_ingestion_db_delete_receipt(ctx, receipt);
+		return { done: false, deletedCount: ingestionReceipts.length };
+	}
+
+	// Pages go before states, and staged text goes before operation batches.
 	const statePages = await ctx.db
 		.query("files_pending_update_yjs_state_pages")
 		.withIndex("by_organization_workspace", (q) =>
@@ -581,8 +593,8 @@ async function db_purge_organization_workspace_content_batch(
 		return { done: false, deletedCount: jobNoticeCursors.length };
 	}
 
-	// Private browser captures die with the workspace; their R2 objects go with the generic
-	// asset pass below.
+	// Browser sessions die with the workspace. Their draft captures keep their own short expiry and
+	// the hourly browser sweep deletes them with their stored blobs.
 	const browserPurge = await files_browser_db_purge_workspace_batch(ctx, {
 		organizationId,
 		workspaceId,
@@ -1906,6 +1918,16 @@ async function db_drain_user_finalization_batch(
 		return roleAssignments.length;
 	}
 
+	// Retire unfinished producers before their text batches or private targets disappear.
+	const ingestionReceipts = await ctx.db
+		.query("files_ingestion_receipts")
+		.withIndex("by_user", (q) => q.eq("userId", args.userId))
+		.take(Math.min(args.batchSize, 8));
+	if (ingestionReceipts.length > 0) {
+		for (const receipt of ingestionReceipts) await files_ingestion_db_delete_receipt(ctx, receipt);
+		return ingestionReceipts.length;
+	}
+
 	const pendingUpdateCount = await db_drain_user_pending_updates_batch(ctx, args);
 	if (pendingUpdateCount > 0) {
 		return pendingUpdateCount;
@@ -2048,6 +2070,62 @@ async function db_make_user_deletion_requests_eligible_batch(
 }
 
 /**
+ * Delete the R2 files that this user's unfinished uploads left behind.
+ *
+ * Assets prepared before a file exists still belong to the deleted user's storage holds. No file
+ * node points at them yet, so the passes that walk the file tree never see them. This pass walks
+ * the held reservations instead, because each one keeps the exact key the upload was going to use.
+ */
+export const purge_user_private_assets = internalMutation({
+	args: { userId: v.id("users"), createdBefore: v.number(), cursor: v.union(v.string(), v.null()) },
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		const page = await ctx.db
+			.query("files_private_storage_reservations")
+			.withIndex("by_user_settlement_resource", (q) =>
+				q
+					.eq("userId", args.userId)
+					.eq("settlement.kind", "held")
+					.eq("resource.kind", "asset")
+					.lte("_creationTime", args.createdBefore),
+			)
+			.paginate({ numItems: 50, cursor: args.cursor });
+
+		for (const reservation of page.page) {
+			// The index already selects asset holds. Repeat the check so TypeScript narrows the union.
+			if (reservation.resource.kind !== "asset") continue;
+
+			const asset = await ctx.db.get("files_r2_assets", reservation.resource.id);
+			// The hold keeps the exact object key even if an earlier cleanup already removed its asset doc.
+			await r2_enqueue_object_deletion_job(ctx, {
+				organizationId: reservation.organizationId,
+				workspaceId: reservation.workspaceId,
+				r2Key: reservation.resource.r2Key,
+				reason: "failed_create",
+				mode: "ensure",
+				// The signed upload URL can still be in flight. Tell the job to delete the key again
+				// after that time, so bytes that land later do not survive the user.
+				putMayArriveUntil:
+					asset?.putMayArriveUntil ??
+					(asset?.uploadUrlExpiresAt !== undefined
+						? asset.uploadUrlExpiresAt + r2_PUT_MAY_ARRIVE_MARGIN_MS
+						: undefined),
+			});
+			if (asset) await ctx.db.delete("files_r2_assets", asset._id);
+		}
+
+		// Holds stay until R2 confirms deletion, so advance past them with a cursor.
+		if (!page.isDone)
+			await ctx.scheduler.runAfter(0, internal.data_deletion.purge_user_private_assets, {
+				...args,
+				cursor: page.continueCursor,
+			});
+
+		return null;
+	},
+});
+
+/**
  * Finishes phase 2 after every growing user-scoped family has been drained.
  *
  * The remaining auth and billing tables have one-row user invariants. This final transaction
@@ -2067,6 +2145,14 @@ async function db_finalize_deleted_user(
 	if (!user || user.deletedAt == null) {
 		return;
 	}
+
+	// The leftover upload holds are read one page at a time, so they cannot be cleaned up inside
+	// this transaction. Schedule that pass instead.
+	await ctx.scheduler.runAfter(0, internal.data_deletion.purge_user_private_assets, {
+		userId: args.userId,
+		createdBefore: args.now,
+		cursor: null,
+	});
 
 	await users_db_delete_auth_and_billing_state(ctx, {
 		userId: user._id,
@@ -2300,12 +2386,20 @@ export const process_user_deletion_request = internalMutation({
 				return { done: false, deletedCount: drainedFinalizationDocs };
 			}
 
+			// The user doc is already gone, so nothing else will reach its leftover upload holds.
+			await ctx.scheduler.runAfter(0, internal.data_deletion.purge_user_private_assets, {
+				userId: request.userId,
+				createdBefore: now,
+				cursor: null,
+			});
+
 			// Older tombstone purges could leave these docs after removing the user.
 			await users_db_delete_auth_and_billing_state(ctx, {
 				userId: request.userId,
 				deleteUserAuth: true,
 				deleteBillingState: true,
 			});
+
 			await ctx.db.delete("data_deletion_requests", request._id);
 			return { done: true, deletedCount: 1 };
 		}
@@ -3099,9 +3193,8 @@ export const prepare_user_for_hard_deletion = internalMutation({
 		});
 		if (deletedReviewRunCount > 0) return false;
 
-		const deletedBrowserCount = (
-			await files_browser_db_delete_user_batch(ctx, { userId: args.userId, batchSize })
-		).deletedCount;
+		const deletedBrowserCount = (await files_browser_db_delete_user_batch(ctx, { userId: args.userId, batchSize }))
+			.deletedCount;
 		if (deletedBrowserCount > 0) return false;
 
 		const deletedSessionCount = await db_drain_user_plugin_ui_sessions_batch(ctx, {

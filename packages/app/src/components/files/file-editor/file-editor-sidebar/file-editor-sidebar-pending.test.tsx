@@ -16,6 +16,7 @@ const {
 	startReviewMock,
 	fetchFileYjsStateAndTextMock,
 	fetchPendingStateMock,
+	downloadBlobMock,
 	upsertPendingMock,
 	truncatePathForWidthMock,
 	loadMoreMock,
@@ -31,6 +32,7 @@ const {
 	startReviewMock: vi.fn(),
 	fetchFileYjsStateAndTextMock: vi.fn(),
 	fetchPendingStateMock: vi.fn(),
+	downloadBlobMock: vi.fn(),
 	upsertPendingMock: vi.fn(),
 	truncatePathForWidthMock: vi.fn((args: { path: string }) => args.path),
 	loadMoreMock: vi.fn(),
@@ -87,12 +89,15 @@ vi.mock("@/lib/app-tenant-context.tsx", () => ({
 // The real module creates a live ConvexReactClient at import (needs VITE_CONVEX_URL), and the
 // codegen'd api object is a Proxy; plain-string function refs keep call assertions readable.
 vi.mock("@/lib/app-convex-client.ts", () => ({
+	app_convex: { action: actionMock },
 	app_convex_api: {
+		users: { get_anagraphic: "get_anagraphic" },
 		files_pending_update_runs: { get: "review_get", list_items: "review_list_items" },
 		ai_chat: {
 			thread_get: "thread_get",
 		},
 		files_pending_updates: {
+			create_private_pending_download_url: "create_private_pending_download_url",
 			get_file_pending_target: "get_file_pending_target",
 			list_files_pending_updates: "list_files_pending_updates",
 			get_file_pending_update: "get_file_pending_update",
@@ -123,6 +128,7 @@ vi.mock("@/lib/files.ts", async (importOriginal) => ({
 	...(await importOriginal<typeof import("@/lib/files.ts")>()),
 	files_fetch_file_yjs_state_and_text: (...args: unknown[]) => fetchFileYjsStateAndTextMock(...args),
 	files_fetch_file_pending_update_yjs_state: (...args: unknown[]) => fetchPendingStateMock(...args),
+	files_download_blob: (...args: unknown[]) => downloadBlobMock(...args),
 	files_upsert_file_pending_update: (...args: unknown[]) => upsertPendingMock(...args),
 }));
 
@@ -191,6 +197,10 @@ import { files_u8_to_array_buffer } from "@/lib/files.ts";
 const pendingStateBytesByStateId = new Map<string, ArrayBuffer>();
 const blockedTargetIds = new Set<string>();
 const unreadableTargetIds = new Set<string>();
+const requiredParentsById = new Map<
+	string,
+	Array<{ target: { kind: "private"; id: string }; path: string; pendingUpdateId: string; reviewedRevision: number }>
+>();
 function registerPendingState(stateId: string, text: string) {
 	// Always overwrite: tests reuse fixture ids with different texts.
 	const yjsDoc = files_yjs_doc_create_from_text({ text, rootKind: "rich_text" });
@@ -212,6 +222,8 @@ function makePendingUpdate(args: {
 	pendingReplacement?: { assetId: string; size: number; contentType: string; baseAssetId: string };
 	privatePath?: string;
 	privateKind?: "folder" | "stored";
+	storedContentType?: string;
+	storedSize?: number;
 	preparing?: boolean;
 	pendingArchive?: { fromPath: string };
 	threadIds?: string[];
@@ -267,7 +279,13 @@ function makePendingUpdate(args: {
 						args.privateKind === "folder"
 							? { kind: "folder", metadata: [] }
 							: args.privateKind === "stored"
-								? { kind: "stored", assetId: "asset_private", size: 3, contentType: "image/png", metadata: [] }
+								? {
+										kind: "stored",
+										assetId: "asset_private",
+										size: args.storedSize ?? 3,
+										contentType: args.storedContentType ?? "image/png",
+										metadata: [],
+									}
 								: {
 										kind: "text",
 										textKind: "rich_text",
@@ -322,7 +340,11 @@ function makeOwnerViewFixtures(updates: app_convex_Doc<"files_pending_updates">[
 				},
 				readiness: pendingUpdate.preparation ? "preparing" : "ready",
 				canEdit: canAccept,
-				canAccept,
+				// A draft inside a folder that is itself a proposal cannot be accepted on its own. It can only
+				// be saved together with that folder, which is what canAcceptWithParents means.
+				canAccept: canAccept && !requiredParentsById.has(pendingUpdate.target.id),
+				canAcceptWithParents: canAccept,
+				requiredParents: requiredParentsById.get(pendingUpdate.target.id) ?? [],
 			};
 		}
 		const node = nodes.find((node) => node._id === pendingUpdate.target.id);
@@ -343,6 +365,8 @@ function makeOwnerViewFixtures(updates: app_convex_Doc<"files_pending_updates">[
 			readiness: "ready",
 			canEdit: canAccept,
 			canAccept,
+			canAcceptWithParents: canAccept,
+			requiredParents: [],
 		};
 	});
 }
@@ -417,6 +441,7 @@ beforeEach(() => {
 	pagination.status = "Exhausted";
 	loadMoreMock.mockReset();
 	blockedTargetIds.clear();
+	requiredParentsById.clear();
 	unreadableTargetIds.clear();
 	privatePathsById.clear();
 	tenantContextMock.mockReturnValue({
@@ -435,6 +460,7 @@ beforeEach(() => {
 	fetchFileYjsStateAndTextMock.mockReset();
 	fetchFileYjsStateAndTextMock.mockResolvedValue({ text: { _yay: "Committed content\n" } });
 	fetchPendingStateMock.mockReset();
+	downloadBlobMock.mockReset();
 	fetchPendingStateMock.mockImplementation(async (args: { stateId: string }) => {
 		const bytes = pendingStateBytesByStateId.get(args.stateId);
 		return bytes ? { _yay: bytes } : { _nay: { name: "nay", message: "Missing pending state fixture" } };
@@ -453,6 +479,7 @@ beforeEach(() => {
 
 afterEach(() => {
 	cleanup();
+	vi.unstubAllGlobals();
 });
 
 describe("FileEditorSidebarPending", () => {
@@ -558,10 +585,24 @@ describe("FileEditorSidebarPending", () => {
 			makePendingUpdate({ id: "pu_private", fileNodeId: "private_a", privatePath: "/added", privateKind }),
 		]);
 		treeNodesMock.mockReturnValue(undefined);
+		actionMock.mockResolvedValue({ _yay: { url: "https://assets.test/private.png" } });
 		const { container } = render(<FileEditorSidebarPending />);
-		expect(screen.getByText(privateKind === "folder" ? "Added folder" : "Added file")).toBeTruthy();
-		expect(container.querySelector("details")).toBeNull();
-		fireEvent.click(screen.getByRole("button", { name: "Accept changes to /added" }));
+
+		if (privateKind === "stored") {
+			expect(screen.getByText("/added · Added file")).toBeTruthy();
+			expect(actionMock).not.toHaveBeenCalled();
+
+			// jsdom does not fire the toggle event by itself, so open the row and fire it by hand.
+			const details = container.querySelector("details")!;
+			details.open = true;
+			fireEvent(details, new Event("toggle"));
+			await screen.findByRole("img", { name: "added" });
+			fireEvent.click(screen.getByRole("button", { name: "Save changes to /added" }));
+		} else {
+			expect(screen.getByText("Added folder")).toBeTruthy();
+			expect(container.querySelector("details")).toBeNull();
+			fireEvent.click(screen.getByRole("button", { name: "Accept changes to /added" }));
+		}
 		await waitFor(() =>
 			expect(startReviewMock).toHaveBeenCalledWith({
 				kind: "accept",
@@ -570,6 +611,257 @@ describe("FileEditorSidebarPending", () => {
 		);
 		expect(fetchPendingStateMock).not.toHaveBeenCalled();
 		expect(fetchFileYjsStateAndTextMock).not.toHaveBeenCalled();
+	});
+
+	test.each(["image/png", "image/webp"])(
+		"%s review shows its maker, chat, and exact required folders",
+		async (contentType) => {
+			const update = makePendingUpdate({
+				id: "pu_image",
+				fileNodeId: "private_image",
+				privatePath: "/captures/page.png",
+				privateKind: "stored",
+				storedContentType: contentType,
+				threadIds: ["thread_a"],
+			});
+			useQueryMock.mockImplementation((reference) =>
+				reference === "get_anagraphic" ? { displayName: "Alex" } : [update],
+			);
+			useQueriesMock.mockReturnValue({ thread_a: makeThread({ id: "thread_a", title: "Check page" }) });
+			requiredParentsById.set("private_image", [
+				{
+					target: { kind: "private", id: "private_folder" },
+					path: "/captures",
+					pendingUpdateId: "pu_folder",
+					reviewedRevision: 5,
+				},
+			]);
+			treeNodesMock.mockReturnValue([]);
+			actionMock.mockResolvedValue({ _yay: { url: "https://assets.test/private.png" } });
+
+			const { container } = render(<FileEditorSidebarPending />);
+
+			// A closed row signs nothing. A long list of drafts would otherwise ask for one signed URL per
+			// image just to draw the list.
+			expect(actionMock).not.toHaveBeenCalled();
+
+			const details = container.querySelector("details")!;
+			details.open = true;
+			fireEvent(details, new Event("toggle"));
+			await screen.findByRole("img", { name: "page.png" });
+
+			expect(screen.getByText(/Created by Alex/)).toBeTruthy();
+			expect(screen.getByRole("link", { name: "Check page" }).getAttribute("href")).toContain("threadId=thread_a");
+			// The row names the folder it will create, and bulk Accept stays off while a shown row needs a
+			// parent. Saving this one row sends the folder first, so the file has somewhere to land.
+			expect(screen.getByText("Save also creates: /captures")).toBeTruthy();
+			expect(screen.getByRole("button", { name: "Accept all shown pending changes" }).matches(":disabled")).toBe(true);
+
+			fireEvent.click(screen.getByRole("button", { name: "Save changes to /captures/page.png" }));
+
+			await waitFor(() =>
+				expect(startReviewMock).toHaveBeenCalledWith({
+					kind: "accept",
+					items: [
+						{ pendingUpdateId: "pu_folder", reviewedRevision: 5, selectedContentStateId: null },
+						{ pendingUpdateId: "pu_image", reviewedRevision: 1, selectedContentStateId: null },
+					],
+				}),
+			);
+			const discard = screen.getByRole("button", { name: "Discard changes to /captures/page.png" });
+			await waitFor(() => expect(discard.getAttribute("aria-disabled")).toBe("false"));
+			fireEvent.click(discard);
+			await waitFor(() =>
+				expect(startReviewMock).toHaveBeenLastCalledWith({
+					kind: "discard",
+					items: [{ pendingUpdateId: "pu_image", reviewedRevision: 1, selectedContentStateId: null }],
+				}),
+			);
+		},
+	);
+
+	// Only real pictures get an inline preview. Everything else, including SVG and HTML, shows its type
+	// and size with a Download button. Drawing them in the app would run code the agent produced.
+	test.each([
+		{ contentType: "application/zip", name: "archive.zip", bytes: [0, 255, 128] },
+		{ contentType: "application/pdf", name: "document.pdf", bytes: [0, 255, 128] },
+		{ contentType: "application/octet-stream", name: "empty", bytes: [] },
+		{ contentType: "application/x-custom", name: "binary", bytes: [0, 255, 128] },
+		{ contentType: "image/svg+xml", name: "drawing.svg", bytes: [0, 255, 128] },
+		{ contentType: "text/html", name: "page.html", bytes: [0, 255, 128] },
+	])("reviews and downloads $contentType without an inline preview", async ({ contentType, name, bytes }) => {
+		const update = makePendingUpdate({
+			id: "pu_binary",
+			fileNodeId: "private_binary",
+			privatePath: `/exports/${name}`,
+			privateKind: "stored",
+			storedContentType: contentType,
+			storedSize: bytes.length,
+		});
+		useQueryMock.mockImplementation((reference) =>
+			reference === "get_anagraphic" ? { displayName: "Alex" } : [update],
+		);
+		treeNodesMock.mockReturnValue([]);
+		requiredParentsById.set("private_binary", [
+			{
+				target: { kind: "private", id: "private_exports" },
+				path: "/exports",
+				pendingUpdateId: "pu_exports",
+				reviewedRevision: 7,
+			},
+		]);
+		actionMock.mockResolvedValue({ _yay: { url: "https://assets.test/binary" } });
+		const blob = new Blob([Uint8Array.from(bytes)]);
+		const fetchMock = vi.fn().mockResolvedValue({ ok: true, blob: async () => blob });
+		vi.stubGlobal("fetch", fetchMock);
+
+		const { container } = render(<FileEditorSidebarPending />);
+		const details = container.querySelector("details")!;
+		details.open = true;
+		fireEvent(details, new Event("toggle"));
+
+		expect(screen.getByText(`${contentType} · ${bytes.length} bytes`)).toBeTruthy();
+		expect(screen.queryByRole("img")).toBeNull();
+		expect(container.querySelector("iframe, audio, video, object, embed")).toBeNull();
+		// The signed URL is created only when the user presses Download.
+		expect(actionMock).not.toHaveBeenCalled();
+
+		fireEvent.click(screen.getByRole("button", { name: `Download ${name}` }));
+
+		await waitFor(() => expect(downloadBlobMock).toHaveBeenCalledWith({ blob, filename: name }));
+		expect(fetchMock).toHaveBeenCalledWith("https://assets.test/binary");
+		expect(actionMock).toHaveBeenCalledWith("create_private_pending_download_url", {
+			membershipId: MEMBERSHIP_ID,
+			target: { kind: "private", id: "private_binary" },
+			pendingUpdateId: "pu_binary",
+			reviewedRevision: 1,
+			creationGeneration: 1,
+		});
+
+		// The Download button must be usable again once the download has finished.
+		await waitFor(() =>
+			expect(screen.getByRole("button", { name: `Download ${name}` }).matches(":disabled")).toBe(false),
+		);
+
+		fireEvent.click(screen.getByRole("button", { name: `Save changes to /exports/${name}` }));
+		await waitFor(() =>
+			expect(startReviewMock).toHaveBeenCalledWith({
+				kind: "accept",
+				items: [
+					{ pendingUpdateId: "pu_exports", reviewedRevision: 7, selectedContentStateId: null },
+					{ pendingUpdateId: "pu_binary", reviewedRevision: 1, selectedContentStateId: null },
+				],
+			}),
+		);
+	});
+
+	// The bytes of a preparing file are not in storage yet. So there is nothing to show, download or
+	// save. The user may still throw the draft away.
+	test("preparing stored files block preview, download, and Save while keeping Discard", async () => {
+		useQueryMock.mockReturnValue([
+			makePendingUpdate({
+				id: "pu_preparing",
+				fileNodeId: "private_preparing",
+				privatePath: "/preparing.png",
+				privateKind: "stored",
+				preparing: true,
+			}),
+		]);
+		treeNodesMock.mockReturnValue([]);
+
+		const { container } = render(<FileEditorSidebarPending />);
+		const details = container.querySelector("details")!;
+		details.open = true;
+		fireEvent(details, new Event("toggle"));
+
+		expect(screen.getByText("Preparing…")).toBeTruthy();
+		expect(screen.getByRole("button", { name: "Save changes to /preparing.png" }).matches(":disabled")).toBe(true);
+		expect(screen.getByRole("button", { name: "Download preparing.png" }).matches(":disabled")).toBe(true);
+		expect(screen.queryByRole("img")).toBeNull();
+		expect(actionMock).not.toHaveBeenCalled();
+
+		fireEvent.click(screen.getByRole("button", { name: "Discard changes to /preparing.png" }));
+		await waitFor(() =>
+			expect(startReviewMock).toHaveBeenCalledWith({
+				kind: "discard",
+				items: [{ pendingUpdateId: "pu_preparing", reviewedRevision: 1, selectedContentStateId: null }],
+			}),
+		);
+	});
+
+	test("keeps focus in Pending when the last focused image row disappears", async () => {
+		let updates = [
+			makePendingUpdate({
+				id: "pu_image",
+				fileNodeId: "private_image",
+				privatePath: "/page.png",
+				privateKind: "stored",
+			}),
+		];
+		const listeners = new Set<() => void>();
+		useQueryMock.mockImplementation(() =>
+			useSyncExternalStore(
+				(listener) => {
+					listeners.add(listener);
+					return () => {
+						listeners.delete(listener);
+					};
+				},
+				() => updates,
+			),
+		);
+		treeNodesMock.mockReturnValue([]);
+		actionMock.mockResolvedValue({ _yay: { url: "https://assets.test/private.png" } });
+		const { container } = render(<FileEditorSidebarPending />);
+		const details = container.querySelector("details")!;
+		details.open = true;
+		fireEvent(details, new Event("toggle"));
+		await screen.findByRole("img", { name: "page.png" });
+
+		// The focused row is the last one, and it goes away. Keyboard focus must move to the Pending panel
+		// instead of falling back to the page body.
+		screen.getByRole("button", { name: "Discard changes to /page.png" }).focus();
+		updates = [];
+		act(() => listeners.forEach((listener) => listener()));
+
+		await waitFor(() => expect(document.activeElement?.getAttribute("aria-label")).toBe("Pending changes"));
+		expect(screen.getByText("No pending changes")).toBeTruthy();
+	});
+
+	test("image Discard stays available when Save loses permission and reports review failure", async () => {
+		useQueryMock.mockReturnValue([
+			makePendingUpdate({
+				id: "pu_image",
+				fileNodeId: "private_image",
+				privatePath: "/page.png",
+				privateKind: "stored",
+			}),
+		]);
+		blockedTargetIds.add("private_image");
+		treeNodesMock.mockReturnValue([]);
+		actionMock.mockResolvedValue({ _yay: { url: "https://assets.test/private.png" } });
+		startReviewMock.mockRejectedValue(new Error("The draft changed. Review it again."));
+		const { container } = render(<FileEditorSidebarPending />);
+		const details = container.querySelector("details")!;
+		details.open = true;
+		fireEvent(details, new Event("toggle"));
+		await screen.findByRole("img", { name: "page.png" });
+
+		// The reader lost write access to the file, so Save is off. Discarding their own draft still works.
+		expect(screen.getByRole("button", { name: "Save changes to /page.png" }).matches(":disabled")).toBe(true);
+
+		const discard = screen.getByRole("button", { name: "Discard changes to /page.png" });
+		discard.focus();
+		fireEvent.click(discard);
+
+		await waitFor(() => expect(toast.error).toHaveBeenCalledWith("The draft changed. Review it again."));
+		expect(startReviewMock).toHaveBeenCalledWith({
+			kind: "discard",
+			items: [{ pendingUpdateId: "pu_image", reviewedRevision: 1, selectedContentStateId: null }],
+		});
+
+		// The row is still there after the failure, so focus must stay on the button the user pressed.
+		expect(document.activeElement).toBe(discard);
 	});
 
 	test("preparing drafts show progress, block Accept, and keep whole Discard", async () => {

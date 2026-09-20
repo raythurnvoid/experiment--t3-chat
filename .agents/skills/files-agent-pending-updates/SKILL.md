@@ -56,6 +56,13 @@ Private lifetime and cleanup (`packages/app/convex/files_pending_nodes.ts`):
 - Closing the generation hides the approved subtree at once. Each node gets a durable `files_pending_node_cleanup_tasks` doc. Cleanup removes the proposal indexes, retires its states, hands assets to the deletion ledger, and expires its batches. It keeps the node until its batches, states, and discarded children are gone. Node slots release only after node deletion. A 15-minute cron resumes failed cleanup continuations.
 - Expiry keeps an old parent while a live private descendant still needs it. It reschedules the same proposal timestamp without making an edit. Every producer schedules each proposal's four-hour expiry. A tree over the direct 256-node bound waits while those child jobs shrink it; a newer child still keeps its parent alive.
 - A published parent resolves through its owner-scoped saved receipt; Discard does not remove that saved identity. Daily receipt cleanup keeps the private identity for seven days and while any child, proposal, copy source, state, batch, review item, transfer item or parent, or a Bash shell's cwd still refers to it. It pages past retained identities so they cannot block later cleanup. Removing the unused private identity and receipt never removes the saved file.
+- Every private Save records `files_nodes.publishedFromPrivateNodeId`. Read-only target lookup can use this indexed origin after private cleanup, then checks the saved file's current ACL. Private mutation lookup remains strict. Old chat links therefore survive Save, rename and move without granting access.
+- Producer outputs use `files_ingestion.prepare_file`, `finalize_file`, and `abort_file`. Each file is its own commit. The trusted writer accepts at most eight files and 8 MiB per call, including empty files. It uses canonical Files paths such as `/reports/output.bin`. It checks strict paths, access, policies, depth, and node quota before allocating content. Stored finalization repeats the path check and uses bounded suffixes to avoid saved and private occupants.
+- `files_ingestion_receipts` binds one actor, tenant, and request ID to the path, MIME, byte count, SHA-256 digest, and text shape. A 30-minute preparing receipt owns one attempt token and its asset or initial text batch. The same attempt can recover a lost prepare reply. Another attempt gets `in_progress` and no resource IDs. Finalize adopts the content and completes the receipt in one mutation. Completed and aborted receipts stay for 24 hours. Indexed cleanup handles at most eight receipts per pass. Completed receipt expiry never deletes its file.
+- Stored content uploads before finalization. Valid editable text uses the normal initial private batch and sealed state family. It stays Preparing until the text and receipt commit together. The writer chooses its text shape from resolved MIME before creating the draft. Unsupported, invalid, or over-limit text stays as exact stored bytes. Generated Markdown with over-cap frontmatter also stays stored; normal uploads instead convert with their existing frontmatter markers.
+- Generic ingestion checks current user, membership, plan, destination access, policy, and byte holds. Chat doors add Agent mode and current thread access. Browser doors add source and lease checks. These checks run again inside fresh finalization. Completed retries check current file access and return the current target without rerunning a producer gate. Abort skips completed work. It retires only its own unchanged draft and unused parents. New edits or dependent children survive. Asset holds remain until exact-key deletion settles after the last possible PUT.
+- `files_nodes_content.get_file_read_data` resolves the caller's pending view. Stored replacements use their held asset; pending deletes and preparing content are unavailable. It pins the target, asset, MIME, path, proposal ID/revision, and private generation. Old private links follow Save and then use current saved-file access. Ready private downloads require a cleared `unfinalizedExpiresAt`, a held byte reservation, and the exact active proposal. All outputs keep normal four-hour expiry and Save billing.
+- `get_file_pending_target` and pending rows return `requiredParents` in root-first order plus `canAcceptWithParents`. UI shows those folder paths before connected Save and submits their exact proposal IDs/revisions with the file. It never silently selects siblings.
 
 Bulk review (`packages/app/convex/files_pending_update_runs.ts`):
 
@@ -326,6 +333,20 @@ Important behavior:
 - move-before-content ordering for content-plus-move row acceptance; the content publish re-reads the doc after the move settle bumps `updatedAt`, and the row caption compounds (`Modified · Moved`)
 - delete rows run as their own trailing bulk phase (accepting a folder delete first would archive descendants and fail sibling accepts)
 - private create discard without deleting saved files
+
+Private stored-file rows and `FileNodeViewPrivateActions` use
+`files_build_private_review_selection` in `src/lib/files.ts`. It sends the exact
+proposal revisions shown in the UI. Save selects required parents in root-first
+order, followed by the file. Discard selects only the file. Both locations use
+`AppActivitiesProvider.startReview`, even when no parent is pending. The Activity
+dialog shows progress and keeps failures visible. The detail view follows the
+published target through its normal live Files query.
+
+Images preview only inside Files. Other binary types show file details and
+Download. Preparing files cannot preview, download, or Save; owner Discard stays
+available. Removing the focused row or action returns focus to its panel. Signed
+private image URLs stay local to the preview component and are never shared in a
+cache or chat result.
 
 `packages/app/src/components/files/file-editor/file-editor-sidebar/file-editor-sidebar-pending-strip.tsx` owns:
 

@@ -5443,6 +5443,23 @@ describe("bash_run_command", () => {
 			expect(fetch).not.toHaveBeenCalled();
 		});
 
+		test("resolves private IDs and pendingNodeId links without fetching content", async () => {
+			const runner = await create_bash_runner();
+			expect((await runner.run("printf draft > docs/draft.txt")).metadata.exitCode).toBe(0);
+			const pending = (await list_pending_updates(runner)).find((item) => item.target.kind === "private");
+			if (!pending) throw new Error("Missing private file");
+			vi.mocked(fetch).mockClear();
+			for (const reference of [
+				pending.target.id,
+				`https://app.example/w/personal/home/files?pendingNodeId=${pending.target.id}`,
+			]) {
+				const result = await runner.run(`resolve '${reference}'`);
+				expect(result.metadata.exitCode, result.stderr).toBe(0);
+				expect(result.stdout).toBe(`${test_db_files_mount}/docs/draft.txt\n`);
+			}
+			expect(fetch).not.toHaveBeenCalled();
+		});
+
 		test("reports usage mistakes without looking up a node", async () => {
 			const runner = await create_bash_runner();
 			for (const args of [
@@ -5455,6 +5472,8 @@ describe("bash_run_command", () => {
 				"'https://app.example/w/personal/home/files'",
 				"'https://app.example/w/personal/home/files?nodeId='",
 				"'https://app.example/w/personal/home/files?nodeId=one&nodeId=two'",
+				"'https://app.example/w/personal/home/files?nodeId=one&pendingNodeId=two'",
+				"'https://app.example/w/personal/home/files?pendingNodeId='",
 				"'https://app.example/w/personal/home/files/docs/%ZZ.md'",
 				"'https://app.example/w/%E0%A4%A/home/files?nodeId=one'",
 			]) {

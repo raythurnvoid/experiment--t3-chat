@@ -1,7 +1,7 @@
 // Host Worker for `execute_code`.
 //
 // Runs untrusted JavaScript in a Worker Loader Dynamic Worker and returns a
-// bounded JSON result plus bounded logs.
+// bounded JSON result, logs, and file bytes.
 //
 // Security notes:
 // - The sandbox receives no platform `env`, bindings, or host secrets.
@@ -13,6 +13,8 @@
 // - Execution has an in-sandbox 5s timeout plus a parent 7s wall-clock
 //   backstop. Synchronous CPU loops may hit workerd's resource limit first;
 //   those kills are mapped to `timed_out`.
+// - Emitted files are capped at 8 files and 8 MiB in total. A run that fails or
+//   times out returns none of them.
 // - Operational logs include only execution metadata, never code, input, result,
 //   or sandbox logs.
 // - Auth uses `Authorization: Bearer <CODE_EXECUTION_RUNNER_SECRET>`.
@@ -30,12 +32,22 @@ type CodeWorkerLoaderWorkerCode = {
 	globalOutbound?: Fetcher | null;
 };
 
+type SandboxFile = { path: string; contentType?: string; bytes: Uint8Array };
+
 type SandboxEvaluateResult =
-	| { ok: true; resultJson: string; logs: string[]; logsTruncated: boolean }
+	| {
+			ok: true;
+			result: unknown;
+			resultBytes: number;
+			resultTruncated: boolean;
+			logs: string[];
+			logsTruncated: boolean;
+			files: SandboxFile[];
+	  }
 	| { ok: false; error: { name: string; message: string }; logs: string[]; logsTruncated: boolean };
 
 type CodeWorkerStub = {
-	getEntrypoint: () => { evaluate: (input: unknown) => Promise<SandboxEvaluateResult> };
+	getEntrypoint: () => { evaluate: (input: unknown) => Promise<unknown> };
 };
 
 type CodeWorkerLoader = {
@@ -83,8 +95,15 @@ export const LIMITS = {
 	resultBytes: 16_000,
 	logBytes: 16_000,
 	logLines: 100,
+	// Match the app's ingestion caps: `.max(8)` in `shared/ai-chat-files.ts` and
+	// `files_ingestion_MAX_BYTES` in `server/files-ingestion.ts`.
+	files: 8,
+	fileBytes: 8 * 1024 * 1024,
+	filePathChars: 1024,
+	fileContentTypeChars: 255,
 	fetchRequestBytes: 128_000,
 	fetchResponseBytes: 512_000,
+	fileReadResponseBytes: 1_048_576,
 	fetchRequests: 20,
 	fetchRedirects: 5,
 	fetchTimeoutMs: 5_000,
@@ -93,7 +112,11 @@ export const LIMITS = {
 } as const;
 
 const COMPAT_DATE = "2025-06-01";
-const WRAPPER_VERSION = "v1";
+/**
+ * Bump this whenever the harness below changes. `codeHash` hashes it together with the snippet,
+ * so the same snippet run under a new harness gets a new hash in the logs.
+ */
+const WRAPPER_VERSION = "v2";
 const ENTRY_MODULE = "executor.js";
 const EXECUTE_CODE_REQUEST_FIELDS = new Set(["code", "input", "executionId", "network", "app"]);
 
@@ -138,6 +161,95 @@ function is_record(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/**
+ * The snippet can change its own harness. Check its RPC reply in the trusted host.
+ *
+ * A reply that breaks any limit is rejected whole. The caller turns that into a failed run, instead
+ * of trimming a reply the snippet may have shaped on purpose.
+ */
+function parse_sandbox_result(value: unknown): SandboxEvaluateResult | null {
+	if (
+		!is_record(value) ||
+		typeof value.ok !== "boolean" ||
+		!Array.isArray(value.logs) ||
+		value.logs.length > LIMITS.logLines ||
+		typeof value.logsTruncated !== "boolean"
+	)
+		return null;
+
+	const logs: string[] = [];
+	let logBytes = 0;
+	// The harness already keeps the logs under these limits. A longer list means the snippet wrote
+	// the reply itself, so count the bytes here again.
+	for (const line of value.logs) {
+		if (typeof line !== "string" || line.length > LIMITS.logBytes) return null;
+		logBytes += byte_length(line);
+		if (logBytes > LIMITS.logBytes) return null;
+		logs.push(line);
+	}
+
+	// A failed run reports only its error. It never carries a result or files.
+	if (!value.ok) {
+		if (!is_record(value.error) || typeof value.error.name !== "string" || typeof value.error.message !== "string")
+			return null;
+		return { ok: false, error: sanitize_error(value.error), logs, logsTruncated: value.logsTruncated };
+	}
+
+	if (typeof value.resultJson !== "string" || !Array.isArray(value.files) || value.files.length > LIMITS.files)
+		return null;
+
+	// Drop a result over the limit instead of cutting it. Half a JSON text would not parse. The
+	// caller still sends `resultTruncated`, so the chat can say the result was left out.
+	const resultBytes = byte_length(value.resultJson);
+	const resultTruncated = resultBytes > LIMITS.resultBytes;
+	let result: unknown = null;
+	if (!resultTruncated) {
+		try {
+			result = JSON.parse(value.resultJson);
+		} catch {
+			return null;
+		}
+	}
+
+	const files: SandboxFile[] = [];
+	let fileBytes = 0;
+	// Count typed-array bytes in the host. Sandbox counters can be changed by the snippet.
+	for (const file of value.files) {
+		if (
+			!is_record(file) ||
+			typeof file.path !== "string" ||
+			file.path.length < 1 ||
+			file.path.length > LIMITS.filePathChars ||
+			(file.contentType !== undefined &&
+				(typeof file.contentType !== "string" ||
+					file.contentType.length < 1 ||
+					file.contentType.length > LIMITS.fileContentTypeChars)) ||
+			!(file.bytes instanceof Uint8Array)
+		)
+			return null;
+		fileBytes += file.bytes.byteLength;
+		if (fileBytes > LIMITS.fileBytes) return null;
+		files.push({
+			path: file.path,
+			...(file.contentType === undefined ? {} : { contentType: file.contentType }),
+			bytes: file.bytes,
+		});
+	}
+
+	return { ok: true, result, resultBytes, resultTruncated, logs, logsTruncated: value.logsTruncated, files };
+}
+
+function encode_file_bytes(bytes: Uint8Array) {
+	const parts: string[] = [];
+	// `String.fromCharCode` receives the bytes as arguments, so one call for a whole file would pass
+	// millions of arguments and throw. Encode the file in chunks and join the pieces.
+	// Full chunks are divisible by three, so only the last base64 part has padding.
+	for (let offset = 0; offset < bytes.byteLength; offset += 3 * 8192) {
+		parts.push(btoa(String.fromCharCode(...bytes.subarray(offset, offset + 3 * 8192))));
+	}
+	return parts.join("");
+}
+
 function cap_message(message: string): string {
 	return message.length > 1000 ? `${message.slice(0, 1000)}…` : message;
 }
@@ -145,8 +257,9 @@ function cap_message(message: string): string {
 function sanitize_error(error: unknown): { name: string; message: string } {
 	if (error && typeof error === "object") {
 		const e = error as { name?: unknown; message?: unknown };
+		// The snippet picks both strings, so cap the name the same way as the message.
 		return {
-			name: typeof e.name === "string" ? e.name : "Error",
+			name: typeof e.name === "string" ? cap_message(e.name) : "Error",
 			message: cap_message(typeof e.message === "string" ? e.message : String(error)),
 		};
 	}
@@ -317,12 +430,17 @@ function is_app_public_api_url(url: URL, app: AppRuntime | undefined) {
 	return app !== undefined && url.origin === app.origin && url.pathname.startsWith("/api/v1/files/");
 }
 
-function copy_response_headers(headers: Headers, truncated: boolean) {
+function copy_response_headers(headers: Headers, fileRead: boolean) {
 	const out = new Headers();
 	const contentType = headers.get("content-type");
 	if (contentType) out.set("content-type", contentType.slice(0, 128));
+	if (fileRead) {
+		for (const name of ["X-File-Content-Type", "X-File-Revision", "X-File-Size", "X-File-Offset"]) {
+			const value = headers.get(name);
+			if (value !== null) out.set(name, value.slice(0, 1024));
+		}
+	}
 	out.set("cache-control", "no-store");
-	if (truncated) out.set("x-execute-code-truncated", "true");
 	return out;
 }
 
@@ -331,19 +449,6 @@ function bytes_to_body_init(bytes: Uint8Array | undefined): BodyInit | undefined
 	const copy = new Uint8Array(bytes.byteLength);
 	copy.set(bytes);
 	return copy.buffer;
-}
-
-async function fetch_with_timeout(request: Request) {
-	const controller = new AbortController();
-	const timer = setTimeout(() => controller.abort(), LIMITS.fetchTimeoutMs);
-	try {
-		return await fetch(request, {
-			signal: controller.signal,
-			redirect: "manual",
-		});
-	} finally {
-		clearTimeout(timer);
-	}
 }
 
 async function log_outbound_event(input: {
@@ -365,13 +470,19 @@ async function log_outbound_event(input: {
 	});
 }
 
-async function capped_outbound_response(response: Response) {
-	const { bytes, truncated } = await read_bounded_stream(response.body, LIMITS.fetchResponseBytes);
+async function capped_outbound_response(response: Response, fileRead: boolean) {
+	const { bytes, truncated } = await read_bounded_stream(response.body,
+		fileRead ? LIMITS.fileReadResponseBytes : LIMITS.fetchResponseBytes);
 	return {
-		response: new Response(bytes, {
-			status: response.status,
-			headers: copy_response_headers(response.headers, truncated),
-		}),
+		// Refuse a body over the cap instead of returning its first bytes, because a cut file would
+		// look complete to the snippet. 204, 205 and 304 carry no body at all, and `Response` throws
+		// when one is given to them.
+		response: truncated
+			? new Response("Response body too large", { status: 413, headers: { "Cache-Control": "no-store" } })
+			: new Response([204, 205, 304].includes(response.status) ? null : bytes, {
+					status: response.status,
+					headers: copy_response_headers(response.headers, fileRead),
+				}),
 		bytes: bytes.byteLength,
 		truncated,
 	};
@@ -453,6 +564,9 @@ export async function handle_outbound_gateway_request(request: Request, props: E
 		}
 
 		const app = props.app;
+		// Only the bounded byte API gets a larger body. Other URLs keep the network cap.
+		const fileRead = app !== undefined && nextUrl.origin === app.origin &&
+			nextUrl.pathname === "/api/v1/files/read-bytes" && nextMethod === "POST";
 		if (app && is_app_public_api_url(nextUrl, app)) {
 			nextHeaders.set("authorization", `Bearer ${app.token}`);
 		} else if (originalAuthorization) {
@@ -466,53 +580,71 @@ export async function handle_outbound_gateway_request(request: Request, props: E
 			headers: nextHeaders,
 			body: bytes_to_body_init(nextBody),
 		});
-		const response = await fetch_with_timeout(outboundRequest);
-		const redirectLocation = response.headers.get("location");
-		if (![301, 302, 303, 307, 308].includes(response.status) || !redirectLocation) {
-			const capped = await capped_outbound_response(response);
-			await log_outbound_event({
-				executionId: props.executionId,
-				hostname: normalize_hostname(nextUrl.hostname),
+
+		// Keep one deadline for the response headers and its complete body. The body is read inside
+		// this try, so a server that answers fast and then stalls still hits the same timer.
+		const controller = new AbortController();
+		const timer = setTimeout(() => controller.abort(), LIMITS.fetchTimeoutMs);
+		try {
+			const response = await fetch(outboundRequest, {
+				signal: controller.signal,
+				redirect: "manual",
+			});
+			const redirectLocation = response.headers.get("location");
+			if (![301, 302, 303, 307, 308].includes(response.status) || !redirectLocation) {
+				const capped = await capped_outbound_response(response, fileRead);
+				await log_outbound_event({
+					executionId: props.executionId,
+					hostname: normalize_hostname(nextUrl.hostname),
+					status: capped.response.status,
+					bytes: capped.bytes,
+					truncated: capped.truncated,
+				});
+				return capped.response;
+			}
+
+			// A redirect's body is never read, because the loop follows the redirect itself. Cancel the
+			// body so it does not stay open for the rest of the run.
+			await response.body?.cancel();
+			// A byte read must not move its grant, request body, or larger cap to another URL.
+			if (fileRead) return new Response("File byte reads do not follow redirects", { status: 403 });
+
+			if (redirectCount === LIMITS.fetchRedirects) {
+				return new Response("Too many redirects", { status: 508 });
+			}
+
+			const redirectedUrl = new URL(redirectLocation, nextUrl);
+			const redirectValidation = validate_outbound_url(redirectedUrl.href);
+			if (!redirectValidation.ok) {
+				await log_outbound_event({
+					executionId: props.executionId,
+					hostname: redirectValidation.hostname,
+					status: "blocked",
+					bytes: 0,
+					truncated: false,
+					reason: redirectValidation.reason,
+				});
+				return new Response("Blocked outbound redirect", { status: 403 });
+			}
+
+			const redirect = redirect_next_method({
 				status: response.status,
-				bytes: capped.bytes,
-				truncated: capped.truncated,
+				method: nextMethod,
+				headers: nextHeaders,
+				body: nextBody,
+				sourceOrigin: nextUrl.origin,
+				targetOrigin: redirectValidation.url.origin,
 			});
-			return capped.response;
+			if (nextUrl.origin !== redirectValidation.url.origin) {
+				originalAuthorization = null;
+			}
+			nextUrl = redirectValidation.url;
+			nextMethod = redirect.method;
+			nextHeaders = redirect.headers;
+			nextBody = redirect.body;
+		} finally {
+			clearTimeout(timer);
 		}
-
-		if (redirectCount === LIMITS.fetchRedirects) {
-			return new Response("Too many redirects", { status: 508 });
-		}
-
-		const redirectedUrl = new URL(redirectLocation, nextUrl);
-		const redirectValidation = validate_outbound_url(redirectedUrl.href);
-		if (!redirectValidation.ok) {
-			await log_outbound_event({
-				executionId: props.executionId,
-				hostname: redirectValidation.hostname,
-				status: "blocked",
-				bytes: 0,
-				truncated: false,
-				reason: redirectValidation.reason,
-			});
-			return new Response("Blocked outbound redirect", { status: 403 });
-		}
-
-		const redirect = redirect_next_method({
-			status: response.status,
-			method: nextMethod,
-			headers: nextHeaders,
-			body: nextBody,
-			sourceOrigin: nextUrl.origin,
-			targetOrigin: redirectValidation.url.origin,
-		});
-		if (nextUrl.origin !== redirectValidation.url.origin) {
-			originalAuthorization = null;
-		}
-		nextUrl = redirectValidation.url;
-		nextMethod = redirect.method;
-		nextHeaders = redirect.headers;
-		nextBody = redirect.body;
 	}
 
 	return new Response("Too many redirects", { status: 508 });
@@ -552,11 +684,21 @@ export function with_wall_timeout<T>(promise: Promise<T>, ms: number): Promise<T
 // The generated ES module exports `class CodeExecutor extends WorkerEntrypoint`
 // with an `evaluate(input)` RPC method that hijacks console into a bounded
 // `__logs` array, runs the user body inside `(async (input) => { ... })(input)`
-// with an in-sandbox `Promise.race` timeout, and JSON-stringifies the result so
-// only strings cross the RPC boundary. The user `code` is the BODY of that async
-// function and should `return` a JSON-serializable value.
+// with an in-sandbox `Promise.race` timeout. The result is JSON; emitted files
+// cross RPC as typed arrays. The user `code` is the BODY of that async function.
 
 function build_harness_prefix(executionEnv: Record<string, string>) {
+	// emitFile copies bytes immediately, including only the selected slice of a Uint8Array.
+	// The host checks these values again after RPC; this harness shares scope with untrusted code.
+	//
+	// `__filesOpen` closes the list as soon as the run settles. Without it, a task still running
+	// after a timeout could add files to a run the caller already reported as failed.
+	//
+	// The log cut slices encoded bytes and decodes them with `stream: true`. A character the byte
+	// limit splits in half is dropped, instead of becoming a replacement character.
+	//
+	// `__timer` is cleared at the end, so the timeout does not stay pending in the sandbox after the
+	// snippet has already returned.
 	return `import { WorkerEntrypoint } from "cloudflare:workers";
 
 export default class CodeExecutor extends WorkerEntrypoint {
@@ -568,6 +710,29 @@ export default class CodeExecutor extends WorkerEntrypoint {
     const __MAX_LOG_LINES = ${LIMITS.logLines};
     const __MAX_LOG_BYTES = ${LIMITS.logBytes};
     const __enc = new TextEncoder();
+    const __files = [];
+    let __fileBytes = 0;
+    let __filesOpen = true;
+    const emitFile = (file) => {
+      if (!__filesOpen) throw new Error("Execution has already finished");
+      if (!file || typeof file !== "object" || typeof file.path !== "string" ||
+          file.path.length < 1 || file.path.length > ${LIMITS.filePathChars}) {
+        throw new TypeError("emitFile requires a path of 1-${LIMITS.filePathChars} characters");
+      }
+      if (file.contentType !== undefined && (typeof file.contentType !== "string" ||
+          file.contentType.length < 1 || file.contentType.length > ${LIMITS.fileContentTypeChars})) {
+        throw new TypeError("emitFile contentType must be 1-${LIMITS.fileContentTypeChars} characters");
+      }
+      if (!(file.bytes instanceof Uint8Array) && !(file.bytes instanceof ArrayBuffer)) {
+        throw new TypeError("emitFile bytes must be a Uint8Array or ArrayBuffer");
+      }
+      if (__files.length >= ${LIMITS.files} || __fileBytes + file.bytes.byteLength > ${LIMITS.fileBytes}) {
+        throw new Error("File output limit exceeded");
+      }
+      const bytes = new Uint8Array(file.bytes instanceof ArrayBuffer ? new Uint8Array(file.bytes) : file.bytes);
+      __fileBytes += bytes.byteLength;
+      __files.push({ path: file.path, ...(file.contentType === undefined ? {} : { contentType: file.contentType }), bytes });
+    };
     const __push = (prefix, args) => {
       if (__logsTruncated) return;
       if (__logs.length >= __MAX_LOG_LINES) { __logsTruncated = true; return; }
@@ -577,7 +742,7 @@ export default class CodeExecutor extends WorkerEntrypoint {
       }).join(" ");
       let bytes = __enc.encode(line).length;
       if (__logBytes + bytes > __MAX_LOG_BYTES) {
-        line = line.slice(0, Math.max(0, __MAX_LOG_BYTES - __logBytes));
+        line = new TextDecoder().decode(__enc.encode(line).subarray(0, __MAX_LOG_BYTES - __logBytes), { stream: true });
         __logsTruncated = true;
         bytes = __enc.encode(line).length;
       }
@@ -600,6 +765,7 @@ export default class CodeExecutor extends WorkerEntrypoint {
         return __nativeFetch(...args);
       };
     }
+    let __timer;
     try {
       const __result = await Promise.race([
         (async (input) => {
@@ -608,8 +774,9 @@ export default class CodeExecutor extends WorkerEntrypoint {
 
 const HARNESS_SUFFIX = `
         })(input),
-        new Promise((_, reject) => setTimeout(() => reject(new Error("Execution timed out")), ${LIMITS.sandboxTimeoutMs})),
+        new Promise((_, reject) => { __timer = setTimeout(() => reject(new Error("Execution timed out")), ${LIMITS.sandboxTimeoutMs}); }),
       ]);
+      __filesOpen = false;
       let __resultJson;
       try {
         __resultJson = __result === undefined ? "null" : JSON.stringify(__result);
@@ -617,11 +784,14 @@ const HARNESS_SUFFIX = `
         return { ok: false, error: { name: "TypeError", message: "Result is not JSON-serializable" }, logs: __logs, logsTruncated: __logsTruncated };
       }
       if (typeof __resultJson !== "string") __resultJson = "null";
-      return { ok: true, resultJson: __resultJson, logs: __logs, logsTruncated: __logsTruncated };
+      return { ok: true, resultJson: __resultJson, logs: __logs, logsTruncated: __logsTruncated, files: __files };
     } catch (err) {
       const __name = err && err.name ? String(err.name) : "Error";
       const __message = err && err.message ? String(err.message) : String(err);
       return { ok: false, error: { name: __name, message: __message }, logs: __logs, logsTruncated: __logsTruncated };
+    } finally {
+      __filesOpen = false;
+      clearTimeout(__timer);
     }
   }
 }
@@ -806,7 +976,13 @@ async function handle_execute_code(request: Request, env: Env, ctx?: ExecuteCode
 			// No platform `env`: synthetic values are lexical harness variables only.
 		});
 		const entrypoint = worker.getEntrypoint();
-		sandbox = await with_wall_timeout(entrypoint.evaluate(evaluateInput.input), LIMITS.parentTimeoutMs);
+		const parsed = parse_sandbox_result(
+			await with_wall_timeout(entrypoint.evaluate(evaluateInput.input), LIMITS.parentTimeoutMs),
+		);
+		// An unreadable reply means the snippet changed its harness. Fail the run through the catch
+		// below, like any other execution error.
+		if (!parsed) throw new Error("Code execution returned an invalid sandbox response.");
+		sandbox = parsed;
 	} catch (err) {
 		const elapsedMs = Date.now() - started;
 		const wallTimeout = err instanceof WallTimeoutError;
@@ -834,6 +1010,7 @@ async function handle_execute_code(request: Request, env: Env, ctx?: ExecuteCode
 				resultTruncated: false,
 				logs: [],
 				logsTruncated: false,
+				files: [],
 				error: wallTimeout
 					? { name: "TimeoutError", message: "Execution timed out." }
 					: resourceLimit
@@ -845,9 +1022,9 @@ async function handle_execute_code(request: Request, env: Env, ctx?: ExecuteCode
 	}
 
 	const elapsedMs = Date.now() - started;
-	const logs = Array.isArray(sandbox.logs) ? sandbox.logs : [];
-	const logsTruncated = sandbox.logsTruncated === true;
+	const { logs, logsTruncated } = sandbox;
 
+	// Emitted files are all-or-nothing: an error or timeout drops every file from this execution.
 	if (!sandbox.ok) {
 		const timedOut = sandbox.error?.message === "Execution timed out";
 		log_execution({
@@ -872,6 +1049,7 @@ async function handle_execute_code(request: Request, env: Env, ctx?: ExecuteCode
 				resultTruncated: false,
 				logs,
 				logsTruncated,
+				files: [],
 				error: {
 					name: sandbox.error?.name ?? "Error",
 					message: cap_message(sandbox.error?.message ?? "Unknown error"),
@@ -881,19 +1059,7 @@ async function handle_execute_code(request: Request, env: Env, ctx?: ExecuteCode
 		);
 	}
 
-	const resultJson = typeof sandbox.resultJson === "string" ? sandbox.resultJson : "null";
-	const resultBytes = byte_length(resultJson);
-	let result: unknown = null;
-	let resultTruncated = false;
-	if (resultBytes > LIMITS.resultBytes) {
-		resultTruncated = true;
-	} else {
-		try {
-			result = JSON.parse(resultJson);
-		} catch {
-			result = null;
-		}
-	}
+	const { result, resultBytes, resultTruncated } = sandbox;
 
 	log_execution({
 		executionId,
@@ -917,6 +1083,12 @@ async function handle_execute_code(request: Request, env: Env, ctx?: ExecuteCode
 			resultTruncated,
 			logs,
 			logsTruncated,
+			// RPC carries bytes directly. Only the HTTP response needs base64 for JSON.
+			files: sandbox.files.map((file) => ({
+				path: file.path,
+				...(file.contentType === undefined ? {} : { contentType: file.contentType }),
+				dataBase64: encode_file_bytes(file.bytes),
+			})),
 			error: null,
 		},
 		200,

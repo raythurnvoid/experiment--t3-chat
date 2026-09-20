@@ -50,7 +50,7 @@ type SnippetEvaluateResult =
 	| {
 			ok: true;
 			resultJson: string;
-			images: Uint8Array[];
+			files: Array<{ path: string; contentType?: string; bytes: Uint8Array }>;
 			viewport: { width: number; height: number } | null;
 			popups: { blocked: number; urls: string[] };
 			consoleEntries: string[];
@@ -188,10 +188,11 @@ export const LIMITS = {
 	loadCount: 32,
 	codeBytes: 20_480,
 	textOutBytes: 16_384,
-	imagesPerCall: 2,
-	imageBytes: 2_097_152,
-	imagePixels: 16_000_000,
-	imageEdge: 8192,
+	files: 8,
+	fileBytes: 8_388_608,
+	filePathChars: 1024,
+	fileContentTypeChars: 255,
+	viewerFrameBytes: 2_097_152,
 	consoleEntries: 50,
 	consoleBytes: 4096,
 	logLines: 100,
@@ -609,9 +610,11 @@ export function build_controller_html(input: {
 // Snippet harness
 //
 // The executor resolves the one registered page and its inner preview frame,
-// then runs the agent code with `(page, frame, expect, emitImage)`. Console and
-// page errors are collected separately from tool output. Images cross the RPC
-// boundary as byte arrays; the host validates signatures and dimensions.
+// then runs the agent code with `(page, frame, expect, emitFile)`. Console and
+// page errors are collected separately from tool output. File bytes the snippet
+// emits cross RPC directly, and the host checks their count and total size. The
+// app owns Files path and MIME rules. Screenshots travel the other way: the
+// trusted bridge checks a provider screenshot reply before the child receives it.
 
 const EXECUTOR_PREFIX = `import { WorkerEntrypoint } from "cloudflare:workers";
 import { connect, expect } from "./${CHILD_BUNDLE_MODULE}";
@@ -628,7 +631,10 @@ export default class SnippetExecutor extends WorkerEntrypoint {
       throw new Error("Missing viewport.");
     }
     var timeoutMs = typeof input.timeoutMs === "number" && input.timeoutMs > 0 ? input.timeoutMs : ${LIMITS.commandTimeoutMs};
-    var images = [];
+    var files = [];
+    var fileBytes = 0;
+    var filesOpen = true;
+    var timer;
     var consoleEntries = [];
     var pageErrors = [];
     var consoleBytes = 0;
@@ -663,11 +669,26 @@ export default class SnippetExecutor extends WorkerEntrypoint {
     console.debug = console.log;
     console.warn = function () { pushLog("[warn] " + Array.prototype.map.call(arguments, String).join(" ")); };
     console.error = function () { pushLog("[error] " + Array.prototype.map.call(arguments, String).join(" ")); };
-    function emitImage(bytes) {
-      if (!(bytes instanceof Uint8Array)) throw new Error("emitImage needs image bytes.");
-      if (images.length >= ${LIMITS.imagesPerCall}) throw new Error("Too many images for one command.");
-      if (bytes.byteLength > ${LIMITS.imageBytes}) throw new Error("Image exceeds the size limit.");
-      images.push(bytes);
+    function emitFile(file) {
+      if (!filesOpen) throw new Error("Execution has already finished");
+      if (!file || typeof file !== "object" || typeof file.path !== "string" ||
+          file.path.length < 1 || file.path.length > ${LIMITS.filePathChars}) {
+        throw new TypeError("emitFile requires a path of 1-${LIMITS.filePathChars} characters");
+      }
+      if (file.contentType !== undefined && (typeof file.contentType !== "string" ||
+          file.contentType.length < 1 || file.contentType.length > ${LIMITS.fileContentTypeChars})) {
+        throw new TypeError("emitFile contentType must be 1-${LIMITS.fileContentTypeChars} characters");
+      }
+      if (!(file.bytes instanceof Uint8Array) && !(file.bytes instanceof ArrayBuffer)) {
+        throw new TypeError("emitFile bytes must be a Uint8Array or ArrayBuffer");
+      }
+      if (files.length >= ${LIMITS.files} || fileBytes + file.bytes.byteLength > ${LIMITS.fileBytes}) {
+        throw new Error("File output limit exceeded");
+      }
+      // Copy now, including only the selected typed-array range.
+      var bytes = new Uint8Array(file.bytes instanceof ArrayBuffer ? new Uint8Array(file.bytes) : file.bytes);
+      fileBytes += bytes.byteLength;
+      files.push({ path: file.path, ...(file.contentType === undefined ? {} : { contentType: file.contentType }), bytes });
     }
     function readViewport() {
       try {
@@ -734,13 +755,14 @@ export default class SnippetExecutor extends WorkerEntrypoint {
       var __result = await Promise.race([
         // A regular function called with undefined receiver: user code must
         // not inherit the entrypoint this value (which exposes the loader env).
-        (async function __snippet(page, frame, expect, emitImage) {
+        (async function __snippet(page, frame, expect, emitFile) {
 `;
 
 const EXECUTOR_SUFFIX = `
-        }).call(undefined, page, frame, expect, emitImage),
-        new Promise(function (_, reject) { setTimeout(function () { reject(new Error("Execution timed out")); }, timeoutMs); }),
+        }).call(undefined, page, frame, expect, emitFile),
+        new Promise(function (_, reject) { timer = setTimeout(function () { reject(new Error("Execution timed out")); }, timeoutMs); }),
       ]);
+      filesOpen = false;
       var __resultJson;
       try {
         __resultJson = __result === undefined ? "null" : JSON.stringify(__result);
@@ -748,12 +770,14 @@ const EXECUTOR_SUFFIX = `
         return { ok: false, error: { name: "TypeError", message: "Result is not JSON-serializable" }, consoleEntries: consoleEntries, pageErrors: pageErrors, logs: logs, logsTruncated: logsTruncated };
       }
       if (typeof __resultJson !== "string") __resultJson = "null";
-      return { ok: true, resultJson: __resultJson, images: images, viewport: readViewport(), popups: { blocked: 0, urls: [] }, consoleEntries: consoleEntries, pageErrors: pageErrors, logs: logs, logsTruncated: logsTruncated };
+      return { ok: true, resultJson: __resultJson, files: files, viewport: readViewport(), popups: { blocked: 0, urls: [] }, consoleEntries: consoleEntries, pageErrors: pageErrors, logs: logs, logsTruncated: logsTruncated };
     } catch (err) {
       var __name = err && err.name ? String(err.name) : "Error";
       var __message = err && err.message ? String(err.message) : String(err);
       return { ok: false, error: { name: __name, message: __message }, viewport: readViewport(), popups: { blocked: 0, urls: [] }, consoleEntries: consoleEntries, pageErrors: pageErrors, logs: logs, logsTruncated: logsTruncated };
     } finally {
+      filesOpen = false;
+      clearTimeout(timer);
       try { if (browser) await browser.close(); } catch (e) {}
     }
   }
@@ -826,102 +850,35 @@ export class BrowserConnectionGateway extends WorkerEntrypoint<Env, BrowserConne
 	}
 }
 
-// Snippet image validation
+// Snippet file validation
 //
-// PNG and JPEG only. Magic bytes plus decoded dimensions are checked before
-// any image is stored or returned. Oversize or malformed images are refused,
-// never truncated into a corrupt file.
+// The child shares its harness with untrusted code. Check the transport shape
+// and raw byte budget again here. The app owns Files path and MIME rules.
 
-const PNG_MAGIC = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
-
-function has_png_magic(bytes: Uint8Array): boolean {
-	return PNG_MAGIC.every((byte, index) => bytes[index] === byte);
-}
-
-function read_png_dimensions(bytes: Uint8Array): { width: number; height: number } | null {
-	// IHDR chunk: length(4) + "IHDR"(4) + width(4 BE) + height(4 BE).
-	if (bytes.length < 24) return null;
-	if (bytes[12] !== 0x49 || bytes[13] !== 0x48 || bytes[14] !== 0x44 || bytes[15] !== 0x52) return null;
-	const width = (bytes[16] << 24) | (bytes[17] << 16) | (bytes[18] << 8) | bytes[19];
-	const height = (bytes[20] << 24) | (bytes[21] << 16) | (bytes[22] << 8) | bytes[23];
-	if (!Number.isInteger(width) || !Number.isInteger(height) || width <= 0 || height <= 0) return null;
-	return { width, height };
-}
-
-function read_jpeg_dimensions(bytes: Uint8Array): { width: number; height: number } | null {
-	if (bytes.length < 4 || bytes[0] !== 0xff || bytes[1] !== 0xd8 || bytes[2] !== 0xff) return null;
-	let offset = 2;
-	while (offset + 9 < bytes.length) {
-		if (bytes[offset] !== 0xff) return null;
-		const marker = bytes[offset + 1];
-		// Standalone markers have no length field.
-		if (marker === 0x01 || (marker >= 0xd0 && marker <= 0xd9)) {
-			offset += 2;
-			continue;
-		}
-		const length = (bytes[offset + 2] << 8) | bytes[offset + 3];
-		if (length < 2 || offset + length + 2 > bytes.length) return null;
-		// Start-of-frame markers carry height and width after 5 header bytes.
-		const isSof =
-			(marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc);
-		if (isSof) {
-			const height = (bytes[offset + 5] << 8) | bytes[offset + 6];
-			const width = (bytes[offset + 7] << 8) | bytes[offset + 8];
-			if (width <= 0 || height <= 0) return null;
-			return { width, height };
-		}
-		offset += 2 + length;
-	}
-	return null;
-}
-
-export type ValidatedSnippetImage = {
-	mime: "image/png" | "image/jpeg";
-	width: number;
-	height: number;
-	base64: string;
-};
-
-export function validate_snippet_images(images: unknown): (
-	| { ok: true; images: ValidatedSnippetImage[] }
+export function validate_snippet_files(files: unknown): (
+	| { ok: true; files: Array<{ path: string; contentType?: string; dataBase64: string }>; fileBytes: number }
 	| { ok: false; reason: string }
 ) {
-	if (!Array.isArray(images)) return { ok: false, reason: "images_shape" };
-	if (images.length > LIMITS.imagesPerCall) return { ok: false, reason: "images_count" };
-
-	const validated: ValidatedSnippetImage[] = [];
-	for (const image of images) {
-		if (!(image instanceof Uint8Array)) return { ok: false, reason: "images_shape" };
-		if (image.byteLength === 0 || image.byteLength > LIMITS.imageBytes) {
-			return { ok: false, reason: "images_bytes" };
+	if (!Array.isArray(files)) return { ok: false, reason: "files_shape" };
+	if (files.length > LIMITS.files) return { ok: false, reason: "files_count" };
+	const validated: Array<{ path: string; contentType?: string; dataBase64: string }> = [];
+	let fileBytes = 0;
+	for (const file of files) {
+		if (!is_record(file) || typeof file.path !== "string" || file.path.length < 1 || file.path.length > LIMITS.filePathChars ||
+			!(file.bytes instanceof Uint8Array) || (file.contentType !== undefined &&
+				(typeof file.contentType !== "string" || file.contentType.length < 1 || file.contentType.length > LIMITS.fileContentTypeChars))) {
+			return { ok: false, reason: "files_shape" };
 		}
-
-		let mime: ValidatedSnippetImage["mime"] | null = null;
-		let dimensions: { width: number; height: number } | null = null;
-		if (has_png_magic(image)) {
-			mime = "image/png";
-			dimensions = read_png_dimensions(image);
-		} else if (image[0] === 0xff && image[1] === 0xd8 && image[2] === 0xff) {
-			mime = "image/jpeg";
-			dimensions = read_jpeg_dimensions(image);
+		fileBytes += file.bytes.byteLength;
+		if (fileBytes > LIMITS.fileBytes) return { ok: false, reason: "files_bytes" };
+		// Encode whole three-byte groups so concatenated chunks retain valid base64.
+		const parts: string[] = [];
+		for (let offset = 0; offset < file.bytes.byteLength; offset += 3 * 8192) {
+			parts.push(btoa(String.fromCharCode(...file.bytes.subarray(offset, offset + 3 * 8192))));
 		}
-		if (!mime || !dimensions) return { ok: false, reason: "images_format" };
-		if (dimensions.width > LIMITS.imageEdge || dimensions.height > LIMITS.imageEdge) {
-			return { ok: false, reason: "images_dimensions" };
-		}
-		if (dimensions.width * dimensions.height > LIMITS.imagePixels) {
-			return { ok: false, reason: "images_dimensions" };
-		}
-
-		const copy = new Uint8Array(image.byteLength);
-		copy.set(image);
-		let binary = "";
-		for (let offset = 0; offset < copy.length; offset += 0x8000) {
-			binary += String.fromCharCode(...copy.subarray(offset, offset + 0x8000));
-		}
-		validated.push({ mime, width: dimensions.width, height: dimensions.height, base64: btoa(binary) });
+		validated.push({ path: file.path, ...(file.contentType === undefined ? {} : { contentType: file.contentType }), dataBase64: parts.join("") });
 	}
-	return { ok: true, images: validated };
+	return { ok: true, files: validated, fileBytes };
 }
 
 // Session transitions
@@ -1832,8 +1789,8 @@ export class BrowserSession {
 		commandId: string;
 		tainted: boolean;
 		resultBytes: number;
-		imageCount: number;
-		imageBytes: number;
+		fileCount: number;
+		fileBytes: number;
 		viewport: { width: number; height: number } | null;
 	}): Promise<Response> {
 		let record = await this.load();
@@ -1891,8 +1848,8 @@ export class BrowserSession {
 			route: "run_finish",
 			sessionId: record.sessionId,
 			resultBytes: input.resultBytes,
-			imageCount: input.imageCount,
-			imageBytes: input.imageBytes,
+			fileCount: input.fileCount,
+			fileBytes: input.fileBytes,
 		});
 		return json_response({ ok: true, state: record.control }, 200);
 	}
@@ -2570,13 +2527,13 @@ export class BrowserSession {
 					if (generation === this.viewerProducerGen) this.fail_viewers();
 				}));
 				if (generation !== this.viewerProducerGen) return;
-				if (typeof event.data !== "string" || event.data.length === 0 || event.data.length > Math.ceil(LIMITS.imageBytes * 4 / 3) + 4) {
+				if (typeof event.data !== "string" || event.data.length === 0 || event.data.length > Math.ceil(LIMITS.viewerFrameBytes * 4 / 3) + 4) {
 					this.fail_viewers();
 					return;
 				}
 				try {
 					const bytes = Uint8Array.from(atob(event.data), (char) => char.charCodeAt(0));
-					if (bytes.byteLength > LIMITS.imageBytes) throw new Error("Viewer frame is too large.");
+					if (bytes.byteLength > LIMITS.viewerFrameBytes) throw new Error("Viewer frame is too large.");
 					this.viewerFrame = { seq: ++this.viewerFrameSeq, loadGen: record.loadGen, bytes };
 					for (const stream of this.viewerStreams.values()) this.send_viewer_frame(stream);
 				} catch {
@@ -2915,8 +2872,8 @@ export class BrowserSession {
 				typeof body.commandId !== "string" ||
 				typeof body.tainted !== "boolean" ||
 				typeof body.resultBytes !== "number" ||
-				typeof body.imageCount !== "number" ||
-				typeof body.imageBytes !== "number" ||
+				typeof body.fileCount !== "number" ||
+				typeof body.fileBytes !== "number" ||
 				(body.viewport !== null && !is_record(body.viewport))
 			) {
 				return json_response({ ok: false, error: { code: "invalid_request" } }, 400);
@@ -2927,8 +2884,8 @@ export class BrowserSession {
 				commandId: body.commandId,
 				tainted: body.tainted,
 				resultBytes: body.resultBytes,
-				imageCount: body.imageCount,
-				imageBytes: body.imageBytes,
+				fileCount: body.fileCount,
+				fileBytes: body.fileBytes,
 				viewport:
 					viewport && is_positive_int(viewport.width) && is_positive_int(viewport.height)
 						? { width: viewport.width, height: viewport.height }
@@ -3316,8 +3273,8 @@ async function execute_browser_command(args: {
 		tainted: boolean,
 		meta: {
 			resultBytes: number;
-			imageCount: number;
-			imageBytes: number;
+			fileCount: number;
+			fileBytes: number;
 			viewport: { width: number; height: number } | null;
 		},
 	) => Promise<void>;
@@ -3348,7 +3305,7 @@ async function execute_browser_command(args: {
 	}
 
 	const started = Date.now();
-	const codeHash = await sha256_hex(`browser-v1\n${body.code}`);
+	const codeHash = await sha256_hex(`browser-v2\n${body.code}`);
 	const snippetViewport = (value: unknown): { width: number; height: number } | null => {
 		if (!is_record(value) || !is_positive_int(value.width) || !is_positive_int(value.height)) return null;
 		if (
@@ -3388,7 +3345,7 @@ async function execute_browser_command(args: {
 		const wallTimeout = error instanceof WallTimeoutError;
 		const timedOut = wallTimeout || is_resource_limit_error(error);
 		// A lost or timed-out isolate may still have browser work in flight.
-		await finish(true, { resultBytes: 0, imageCount: 0, imageBytes: 0, viewport: null });
+		await finish(true, { resultBytes: 0, fileCount: 0, fileBytes: 0, viewport: null });
 		log_browser({ route: "run", commandId, status: timedOut ? "timed_out" : "errored", elapsedMs });
 		return json_response(
 			{
@@ -3399,7 +3356,7 @@ async function execute_browser_command(args: {
 				elapsedMs,
 				result: null,
 				resultTruncated: false,
-				images: [],
+				files: [],
 				popups: { blocked: 0, urls: [] },
 				consoleEntries: [],
 				pageErrors: [],
@@ -3418,7 +3375,7 @@ async function execute_browser_command(args: {
 	const timedOut = !sandbox.ok && sandbox.error?.message === "Execution timed out";
 	// A timeout does not prove that the snippet stopped. Close before releasing its lease.
 	if (timedOut) {
-		await finish(true, { resultBytes: 0, imageCount: 0, imageBytes: 0, viewport: null });
+		await finish(true, { resultBytes: 0, fileCount: 0, fileBytes: 0, viewport: null });
 		log_browser({ route: "run", commandId, status: "timed_out", reason: "timeout" });
 		return json_response(
 			{
@@ -3429,7 +3386,7 @@ async function execute_browser_command(args: {
 				elapsedMs,
 				result: null,
 				resultTruncated: false,
-				images: [],
+				files: [],
 				popups: { blocked: 0, urls: [] },
 				consoleEntries: [],
 				pageErrors: [],
@@ -3444,7 +3401,7 @@ async function execute_browser_command(args: {
 	// Stop command access and drain accepted protocol work before checking the target.
 	const check = await args.settle();
 	if (!is_record(check) || check.ok !== true) {
-		await finish(true, { resultBytes: 0, imageCount: 0, imageBytes: 0, viewport: null });
+		await finish(true, { resultBytes: 0, fileCount: 0, fileBytes: 0, viewport: null });
 		// Log only the reason class: the full reason can carry an attacker-influenced page URL.
 		log_browser({ route: "run", commandId, status: "tainted", reason: "settle" });
 		return json_response(
@@ -3456,7 +3413,7 @@ async function execute_browser_command(args: {
 				elapsedMs,
 				result: null,
 				resultTruncated: false,
-				images: [],
+				files: [],
 				popups: { blocked: 0, urls: [] },
 				consoleEntries: [],
 				pageErrors: [],
@@ -3471,7 +3428,7 @@ async function execute_browser_command(args: {
 	sandbox.popups = { blocked: typeof check.blockedPopups === "number" ? check.blockedPopups : 0, urls: [] };
 
 	if (!sandbox.ok) {
-		await finish(false, { resultBytes: 0, imageCount: 0, imageBytes: 0, viewport: snippetViewport(sandbox.viewport) });
+		await finish(false, { resultBytes: 0, fileCount: 0, fileBytes: 0, viewport: snippetViewport(sandbox.viewport) });
 		log_browser({ route: "run", commandId, status: "errored", elapsedMs });
 		const text = cap_snippet_text(sandbox);
 		return json_response(
@@ -3483,7 +3440,7 @@ async function execute_browser_command(args: {
 				elapsedMs,
 				result: null,
 				resultTruncated: false,
-				images: [],
+				files: [],
 				popups: snippetPopups(sandbox.popups),
 				consoleEntries: text.consoleEntries,
 				pageErrors: text.pageErrors,
@@ -3501,10 +3458,10 @@ async function execute_browser_command(args: {
 	// Trust nothing from the isolate: re-check every bound on the host.
 	const resultJson = typeof sandbox.resultJson === "string" ? sandbox.resultJson : "null";
 	const resultBytes = byte_length(resultJson);
-	const images = validate_snippet_images(sandbox.images);
-	if (!images.ok) {
-		await finish(true, { resultBytes, imageCount: 0, imageBytes: 0, viewport: null });
-		log_browser({ route: "run", commandId, status: "tainted", reason: images.reason });
+	const files = validate_snippet_files(sandbox.files);
+	if (!files.ok) {
+		await finish(true, { resultBytes, fileCount: 0, fileBytes: 0, viewport: null });
+		log_browser({ route: "run", commandId, status: "tainted", reason: files.reason });
 		return json_response(
 			{
 				ok: true,
@@ -3514,7 +3471,7 @@ async function execute_browser_command(args: {
 				elapsedMs,
 				result: null,
 				resultTruncated: false,
-				images: [],
+				files: [],
 				popups: { blocked: 0, urls: [] },
 				consoleEntries: [],
 				pageErrors: [],
@@ -3537,15 +3494,14 @@ async function execute_browser_command(args: {
 			result = null;
 		}
 	}
-	const imageBytes = images.images.reduce((sum, image) => sum + Math.ceil((image.base64.length * 3) / 4), 0);
-	await finish(false, { resultBytes, imageCount: images.images.length, imageBytes, viewport: snippetViewport(sandbox.viewport) });
+	await finish(false, { resultBytes, fileCount: files.files.length, fileBytes: files.fileBytes, viewport: snippetViewport(sandbox.viewport) });
 	log_browser({
 		route: "run",
 		commandId,
 		status: "succeeded",
 		elapsedMs,
 		resultBytes,
-		imageCount: images.images.length,
+		fileCount: files.files.length,
 	});
 	const text = cap_snippet_text(sandbox);
 	return json_response(
@@ -3557,7 +3513,7 @@ async function execute_browser_command(args: {
 			elapsedMs,
 			result,
 			resultTruncated,
-			images: images.images,
+			files: files.files,
 			popups: snippetPopups(sandbox.popups),
 			consoleEntries: text.consoleEntries,
 			pageErrors: text.pageErrors,
@@ -3622,8 +3578,8 @@ async function handle_browser_run(request: Request, env: Env, ctx?: BrowserRunne
 		tainted: boolean,
 		meta: {
 			resultBytes: number;
-			imageCount: number;
-			imageBytes: number;
+			fileCount: number;
+			fileBytes: number;
 			viewport: { width: number; height: number } | null;
 		},
 	) => {
@@ -3649,8 +3605,8 @@ async function handle_browser_run(request: Request, env: Env, ctx?: BrowserRunne
 					commandId,
 					tainted: true,
 					resultBytes: 0,
-					imageCount: 0,
-					imageBytes: 0,
+					fileCount: 0,
+					fileBytes: 0,
 					viewport: null,
 				});
 			} catch {

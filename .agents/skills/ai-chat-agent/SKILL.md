@@ -34,6 +34,11 @@ Primary:
 - `../../../packages/app/server/bash-xargs-command.ts`
 - `../../../packages/app/server/bash-which-command.ts`
 - `../../../packages/app/server/server-ai-tools.ts`
+- `../../../packages/app/server/ai-chat-file-tools.ts`
+- `../../../packages/app/server/files-ingestion.ts`
+- `../../../packages/app/server/files-upload-content.ts`
+- `../../../packages/app/convex/files_ingestion.ts`
+- `../../../packages/app/convex/files_nodes_content.ts`
 - `../../../packages/app/convex/files_nodes.ts`
 - `../../../packages/app/convex/r2.ts`
 - `../../../packages/app/convex/files_pending_updates.ts`
@@ -103,7 +108,7 @@ For `POST /api/chat`:
 6. Enforce the image-attachment contract on incoming messages: every file part must use an allowlisted image media type (`ai_chat_MESSAGE_IMAGE_MEDIA_TYPES`) with a matching `data:<mediaType>;base64,` URL, with at most `ai_chat_MESSAGE_IMAGE_MAX_COUNT` file parts and `ai_chat_MESSAGE_IMAGE_MAX_TOTAL_URL_CHARS` total URL chars per message. Anything else returns 400 `Invalid image attachments`.
 7. Resolve the existing thread or keep the optimistic client thread id for a new thread, then credit-gate before LLM work.
 8. Create the thread if needed and persist incoming user messages before generation.
-8a. Take the thread's run lease (`thread_run_begin` sets `activeRun { kind: "chat", expiresAt }`, 10 minutes; a second chat request is still allowed, as before the lease existed, but a request while a job wakeup holds it gets 409 with `retryAfterMs`). The user message is already stored at that point, so the client waits out the wake lease and re-sends the same request; its stored ids dedupe the persist and only the turn starts. The stream's `onFinish` gives the lease back (`thread_run_end` clears only its own kind), or hands it to a wake run through `thread_run_handover_to_wakeup` when the turn never injected a finish. After the lease is gone, a leftover finish takes a free wake lease through `thread_run_begin_wakeup`. Abort persist stores the partial assistant through `thread_messages_add`, which hangs that reply under a mid-run finish the same way `get_chat_reply_parent` does, so Stop does not hide the finish as a sibling. Both walk up through finish messages only: they re-parent when that chain hangs off the captured parent, and they leave a regenerate (or any older captured parent) on its own branch. The route's catch gives the chat lease back when the stream never started. A finished background job always stores its message and reads the lease to decide whether to wake at once (see Job wakeups above).
+   8a. Take the thread's run lease (`thread_run_begin` sets `activeRun { kind: "chat", expiresAt }`, 10 minutes; a second chat request is still allowed, as before the lease existed, but a request while a job wakeup holds it gets 409 with `retryAfterMs`). The user message is already stored at that point, so the client waits out the wake lease and re-sends the same request; its stored ids dedupe the persist and only the turn starts. The stream's `onFinish` gives the lease back (`thread_run_end` clears only its own kind), or hands it to a wake run through `thread_run_handover_to_wakeup` when the turn never injected a finish. After the lease is gone, a leftover finish takes a free wake lease through `thread_run_begin_wakeup`. Abort persist stores the partial assistant through `thread_messages_add`, which hangs that reply under a mid-run finish the same way `get_chat_reply_parent` does, so Stop does not hide the finish as a sibling. Both walk up through finish messages only: they re-parent when that chain hangs off the captured parent, and they leave a regenerate (or any older captured parent) on its own branch. The route's catch gives the chat lease back when the stream never started. A finished background job always stores its message and reads the lease to decide whether to wake at once (see Job wakeups above).
 9. Convert stored UI messages to model messages, then decode image data URLs into bytes. Steps 9 to 14 are `create_agent_turn_stream`, shared with `run_job_wakeup`; the reply is stored through a callback because the two callers use different doors. The AI SDK routes URL-shaped file parts through its download step and Convex `fetch` cannot request `data:` URLs, so without the decode the model call fails with "Failed to download data:...".
 10. Run `streamText(...)` with the current tools and `activeTools`. When workspace instructions are enabled, add root AGENTS.md and the skill catalog to the initial system prompt. File tool results add newly read ancestor rules. `prepareStep` reserves the last step for an answer and disables tools when the response budget is exhausted, and it ends the turn the same way (no tools, a system line asking for a short status) once the Bash tool reports that `wait` stopped polling for a job whose finish wakes the agent (`metadata.waitingForJobs`, flipped into the configuration's `jobWait.requested`).
 11. Stream UI message chunks back through `createUIMessageStreamResponse(...)`.
@@ -143,13 +148,16 @@ The tool registry supports these tools. Mode and model support decide which ones
 - `edit_file` (in `ai_chat_WRITE_TOOL_NAMES`; absent from the registry in ask mode)
 - `set_file_metadata` (in `ai_chat_WRITE_TOOL_NAMES`; absent from the registry in ask mode)
 - `web_search`
+- `view_image` (image inspection by Files path in both modes; no live browser required)
 - `execute_code`
-- `image_generation` (run by OpenAI, not by this route; only for models whose `ai_chat_MODELS` entry sets `supportsImageGeneration`)
+- `image_generation` (OpenAI image output saved as a pending Files file; Agent mode only)
 - `browser_run`, `browser_reload`, `browser_close` (only when the request carries a `browserSessionId` bound to a live shared browser; both modes; see below)
 
-Skill bodies and references are ordinary Bash output. `execute_code` can run suitable JavaScript after the agent reads it; it does not add a separate skill runtime. Stored tool results replay unchanged. `validationTools` validates current tool shapes, while the SDK accepts completed unknown historical tools without making them callable.
+Skill bodies and references are ordinary Bash output. `execute_code` can run suitable JavaScript after the agent reads it. Current tool results replay through `validationTools`. Unknown tools and old file result shapes are refused before model replay.
 
-`read_file`, `list_files`, `glob_files`, `grep_files`, and `write_file` were deleted, not deactivated — `bash` replaced all five, and the `BASH_REPLACED_TOOL_NAMES` list that used to hold them is gone too. Old threads still render their stored parts, because rendering reads the message, not the registry.
+Tool call repair only fixes letter case for a tool present in the current mode's registry. All other failures return `null` from `experimental_repairToolCall`. This keeps the original tool name and input error for the model's next step. Do not replace failed calls with an invented tool name.
+
+Bash owns text reads, listing, search, and text writes. `view_image` supplies image bytes to the model. `execute_code` reads other bytes through the bounded Files byte API.
 
 Important limitation:
 
@@ -162,6 +170,7 @@ Important limitation:
 - `/tmp` native commands are Just Bash browser commands, not host GNU coreutils. Prefer simple portable forms such as `du file`; if a `/tmp` option fails but the command is useful, retry once with simpler native syntax.
 - When retrying a `/tmp` command option, prefer doing related scratch work in one call when convenient, but previous `/tmp` files are available in later calls in the same chat.
 - `/tmp` persists across Bash calls in this chat and reloads from Convex if the warm backend runtime cache is gone. It is not shared with new chats and is not app file storage; use app file tools for durable user-visible files.
+- Files APIs and `emitFile` use canonical workspace paths such as `/reports/result.bin`. Their `/tmp/report.bin` is an ordinary Files path, separate from Bash scratch. Bash reaches that file at `/home/cloud-usr/w/{organizationName}/{workspaceName}/tmp/report.bin`.
 - Do not call `/tmp` ephemeral or temporary in a way that implies same-chat data loss. If a fresh chat cannot read a `/tmp` path created in another chat, that is expected evidence of per-chat isolation, not a global Bash failure.
 - The bash internal action lives in `../../../packages/app/convex/bash.ts` as `internal.bash.run`; keep Convex action registration and validators there. The exported `bash_run_command` runner in `../../../packages/app/server/bash.ts` owns the shell claim and save (`begin_bash_invocation`, `ai_chat.save_shell`), the job worker `bash_run_job`, `/tmp` patch mutations, logging, action result shaping, and Just Bash filesystem/runtime construction. Keep `bash_fs_create`, `BashTmpFs`, `ReadOnlyBaseFs`, command factories, and helpers private there. The command tests live in `../../../packages/app/server/bash.test.ts`; only the private helper tests stay in-source. Shared path and db-files helpers live in `../../../packages/app/server/bash-utils.ts`; built-in delegation and native scratch behavior live in `../../../packages/app/server/bash-delegate.ts`. The `cat`, `cp`, `find`, `grep`, `head`/`tail`/`wc`, `jobs`/`wait`/`kill`, `ls`, `meta`, `mv`, nested-shell, `rm`, `search`, `sed`, `stat`, `tee`, `textgrep`, `touch`, `tree`, `which`, and `xargs` commands live in their matching `bash-*-command.ts` modules. Keep the shell, transcript and job queries/mutations in default-runtime `ai_chat_files.ts` (`save_shell` and the branch copy stay in `ai_chat.ts`), and `internal.bash.run_job` beside `internal.bash.run` in `convex/bash.ts`.
 - Extracted Bash command modules should preserve the original monolithic function signatures, use no command-region markers, and avoid factory dependency bags.
@@ -169,7 +178,7 @@ Important limitation:
 - The prompt and tool description should tell the model that cwd, variables, functions and shell options persist per named shell across tool calls in the same chat, and that it should use bare or relative commands instead of repeating `cd` when the previous Bash output already shows the desired cwd.
 - The prompt and tool description should describe `bash` as the normal shell for this environment, while explicitly warning that only app-mount files are db-backed and do not have full POSIX/GNU filesystem semantics.
 - For file inspection commands without a specific path, cwd is the target. New bash sessions start at the current workspace path, so bare or relative commands inspect app files by default without a special command-level fallback.
-- `resolve [--] NODE_ID_OR_APP_FILE_URL` maps one raw node ID or full HTTP(S) app Files URL to the current user's visible absolute Bash path. It works in Ask and Agent mode. Use it before any file listing or search. Quote both the reference and the path, then use an existing reader or editor: `p=$(resolve -- 'REFERENCE') && cat -- "$p"`. It reads no content and never fetches the URL. A URL must name the current organization/workspace; its origin gives no access. A single nonempty `nodeId` wins over the URL path. A path URL first finds the saved node, then follows that node's pending path. Cwd, `/tmp`, and read-only mounts do not change the lookup scope. Plugin reviews cannot use tenant lookup.
+- `resolve [--] NODE_ID_OR_APP_FILE_URL` maps one saved or private node ID, or a full HTTP(S) app Files URL, to the current user's visible absolute Bash path. It works in Ask and Agent mode. Use it before listing or searching for a referenced file. Quote both the reference and the path: `p=$(resolve -- 'REFERENCE') && cat -- "$p"`. It reads no content and never fetches the URL. A URL must name the current organization/workspace; its origin gives no access. Exactly one nonempty `nodeId` or `pendingNodeId` wins over the URL path. Multiple selectors are refused. A path URL first finds the saved node, then follows its pending path. Old private IDs follow Save through the saved origin, with current access checks. Cwd, `/tmp`, and read-only mounts do not change the lookup scope. Plugin reviews cannot use tenant lookup.
 - `resolve` checks current node access and the caller's fresh pending path overlay on each call. Pending moves follow identity; pending deletes and replaced targets return no path. Missing, archived, denied, and out-of-workspace nodes share one unavailable error (exit 1); malformed arguments/URLs use exit 2. Success prints only the path plus a newline and records it for folder instructions. Pass that absolute path unchanged to the next tool; do not turn it into an `@` mention. `resolve --help` prints usage. A failed lookup is not a reason to scan files or use `execute_code`. Explicit paths and `@/path` mentions keep their normal flow.
 - `/home/cloud-usr` is the bash home directory, `/home/cloud-usr/w` is the app mount, and `/home/cloud-usr/w/{organizationName}/{workspaceName}` is the current workspace path.
 - Bash command behavior is performance-first because app files are a db-backed virtual filesystem, not POSIX files. Match native command shape where practical, but prefer db indexes, then Convex `.filter()` when an index cannot express the condition, and use JavaScript filtering/sorting only as a last resort with an explicit reason.
@@ -201,13 +210,10 @@ Important limitation:
 - Keep Bash commands simple: avoid strict-mode boilerplate such as `set -euo pipefail` because `pipefail` is unsupported, comments inside command strings, and process substitution. For multi-command inspection or eval checks, do not use `set -e` or hide stderr with `2>/dev/null`; later commands and visible stderr should still be observed.
 - Only summarize actual Bash stdout/stderr. The blank line between the shell prompt and output is transcript formatting, not file content. If stdout is empty or a command failed, say that instead of inferring likely filesystem contents.
 - In Agent mode, create or overwrite app files with shell redirects (`cat > file <<'EOF' ... EOF`, `>`), append with `>>`, and use `edit_file` for targeted edits. These content writes create reviewable pending proposals in both collaboration modes. On a file with collaboration turned off, a member save after the write makes the proposal out of date (see the `files-agent-pending-updates` skill). Agent-mode app-to-app `mv` and `rm` stay pending structural proposals (accepting an `rm` archives the file instead of hard-deleting it, and the agent's own reads see a pending-deleted path as gone). Links are still not shell operations. App-to-`/tmp` copy remains immediate thread scratch. Do not work around an unsupported app operation by copying app files to `/tmp` unless the user asked for a scratch copy.
-- Legacy `read_file`, `list_files`, `glob_files`, `grep_files`, and `write_file` no longer exist in code at all — not in the registry, not in `validationTools`, not under any "replaced tool names" list. `bash` and `edit_file` cover what they did. Their stored parts in old threads still render, because rendering reads the message, not the registry.
 - When using the agent itself to create large QA corpora, keep prompts to small batches and verify actual app files after each batch. Assistant summary text can say a batch succeeded even when the model stopped before issuing every requested write.
-- The agent does not currently read raw R2 binaries through this toolbelt.
-- `read_file` and `grep_files` read Markdown-backed content through Convex actions that overlay pending edits and fetch committed Markdown from R2 when needed. Uploaded source paths do not alias to generated Markdown outputs.
-- Uploaded source files are discoverable through path listing; their raw R2 binaries are not directly read by this toolbelt.
+- Uploaded source files are discoverable through Bash. Inspect supported images with `view_image({path})`; read other stored bytes through `execute_code` and `/api/v1/files/read-bytes`. Source paths do not alias to generated Markdown outputs.
 - `web_search` uses the server-side Exa integration and should be used for current public facts, docs, release notes, news, and information outside the app files. Keep file tools first when the answer should come from the user's files.
-- `execute_code` runs an untrusted JavaScript snippet in an isolated Cloudflare Dynamic Worker (Worker Loader) hosted by the separate `bonobo-senate-code-execution-runner` Worker, reached over HTTP from the Convex action (`CODE_EXECUTION_RUNNER_URL` + `CODE_EXECUTION_RUNNER_SECRET` env). Use it for computation, JSON shaping, parsing, quick algorithmic work, gatewayed fetches, or file-aware calculations that are better expressed in code. The snippet body is `async (input) => { ... }`: it `return`s a JSON-serializable value and may `console.*`; `input` is an opaque optional JSON argument. The app tool creates a short-lived `public_api_grants` doc with explicit file read/list scopes and a nullable path prefix, then passes the token privately to the runner gateway; the snippet sees `fetch` and `process.env.T3_APP_ORIGIN`, not the raw grant token. To read app files, code should `POST` to `${process.env.T3_APP_ORIGIN}/api/v1/files/list` for discovery, `/api/v1/files/read-many` for folder-scale reads, and `/api/v1/files/read` for one-off reads; the runner gateway authorizes those app API requests. Do not pass app file paths or contents through `input`.
+- `execute_code` runs untrusted JavaScript in the separate Cloudflare code runner. Use it for computation, parsing, gatewayed fetches, or file calculations. The snippet body is `async (input) => { ... }`; it returns JSON and may log bounded text. The app creates a short grant with `files:list`, `files:read`, and `files:download`, then gives it privately to the gateway. The snippet sees `fetch` and `process.env.T3_APP_ORIGIN`, never the token. Use POST `/api/v1/files/list` for discovery, `read-many` or `read` for text, and `read-bytes` for bounded byte ranges. Do not pass app file paths or contents through `input`. Runner configuration and limits are below.
 - User API credentials and public API grants both authorize through `public_api.ts`. Any signed-in active workspace member can create and manage their own reveal-once `pk_...` credentials, and there is no workspace-wide key administration, so no permission gates this. User credentials support `files:list`, `files:read`, `files:write`, and `files:download`, while public API grants remain read-only. The workspace `API keys` page creates fixed list/read keys, shows the full key only after create or rotate, lets the user test that revealed key through the real list route, and provides list/read examples. User API key reads return committed content only; public API grant reads keep the current user's pending overlay.
 
 # HTML Briefs
@@ -233,7 +239,6 @@ Use normal file tools and pending review. HTML stays `plain_text` source, and `.
 - If a Bash unreadable-source advisory suggests generated output paths, read the exact generated output path when the user wants converted text; do not expect the uploaded source path to auto-read or alias to that sibling.
 - For images and videos, read `/a.png.description.md`, `/clip.mp4.summary.md`, or `/clip.mp4.transcript.md`; do not treat `/a.png` or `/clip.mp4` as aliases for the generated files.
 - Bash discovery commands expose generated outputs as ordinary files. Use exact Bash reads such as `cat /home/cloud-usr/w/{organizationName}/{workspaceName}/report.pdf.md` once generated output is finalized.
-- In an old thread, a stored `read_file("/report.pdf")` part did not read generated Markdown; `read_file("/report.pdf.md")` was the path that did. The tool itself is gone — use a Bash read.
 - Native source-file reading is planned for provider-supported files, especially PDFs. The agent should decide when Markdown search/results are enough and when to read the original source file with provider-native capabilities.
 - Original binary access is exposed to authorized plugin runs through short-lived download URLs. Do not infer a user-facing download UI from that backend route.
 
@@ -299,52 +304,21 @@ Use normal file tools and pending review. HTML stays `plain_text` source, and `.
 - Registry hard deletes sweep each version's `GLOBAL`/`PLUGINS` tree (`files_nodes_db_delete_subtree_batch`, from `files_nodes.ts`) before deleting the version doc; `plugins.delete_plugin_source_tree_batch` drains one version's tree standalone.
 - `execute_code` and the public file API cannot reach `/.plugins`: grants are tenant-scoped and never authorize reserved-scope docs.
 
-## Legacy `read_file`
+## `view_image`
 
-These tools are **deleted**. The sections below explain stored parts in older messages. They cannot be called and are absent from `validationTools`. Completed historical parts still validate and replay through the SDK's normal unknown-tool handling. The app sends at most the new user message, while the server rebuilds prior history. Use Bash exact reads and discovery for new calls.
+`view_image({path})` inspects PNG, JPEG, WEBP, or GIF bytes in either mode without a browser. Its provider schema is a root object with one required canonical Files path and no extra fields. The factory sets SDK `strict: true`; Zod `.strict()` alone only forbids extra properties. Resolve a stored Files target through Bash when its current path is unknown. The model does not supply a database ID or a storage URL to this tool.
 
-- Reads one Markdown file by absolute path and returns numbered lines.
-- Path must be absolute and resolve to an app file.
-- Uploaded source paths do not resolve to generated Markdown outputs; use the generated output file path directly.
-- Output uses line numbers like `00001| ...`.
-- Reads through `internal.files_nodes.get_file_last_available_text_content_by_path`, an internal action because committed Markdown may live in R2.
-- That action overlays the passed `userId` user's pending `unstaged` branch if a pending update exists.
-- Missing files may return sibling suggestions from the parent directory.
+Execute checks the active user, membership, thread tenant, saved ACL or private ownership, and exact asset/revision before and after fetching. It reserves the file size from an 8 MiB turn budget before the GET, so concurrent calls cannot spend the same bytes. Failed reads are not refunded. The bounded reader requires the exact stored length. Header checks use real bytes, not the filename or declared MIME type, and allow at most 8192 pixels per edge and 16 million canvas pixels. The provider validates compressed image content.
 
-## Legacy `list_files`
+Execute returns only safe status, reason, and Files targets. Pixels stay in a private turn map keyed by the SDK tool call ID, beside an exact source recheck. `toModelOutput` is a pure lookup: repeated conversion does not read or charge again. Its `image-data` part becomes OpenAI `input_image`, not `input_file`. The installed-provider test runs the real two-step SDK loop and checks the schema, call identity, and image payload.
 
-- Lists descendant folders and files under an absolute root path.
-- Uses `internal.files_nodes.list_files`.
-- Supports `ignore`, `maxDepth`, and `limit`.
-- Folder items are marked with a trailing `/` in tool output.
-- Generated upload outputs are normal visible files and appear in list results by their actual paths.
+Before each provider step, `filter_revoked_observations` rechecks map entries and replaces the actual expanded message part with the checked output. Missing or revoked entries become safe text. Text markers carry no authority. History conversion never rebuilds this map or fetches bytes. Titles omit observations. These rules also cover live browser text; ordinary Bash text and skill results keep their existing history behavior.
 
-## Legacy `glob_files`
+The main stream sets `maxRetries: 0`. SDK retries would resend the same private data without running `prepareStep` again. A failed provider call ends the turn; a new user retry starts with fresh access checks.
 
-- Finds file/folder paths by glob pattern.
-- Uses `list_files` under the hood with include filtering.
-- Returns paths sorted by newest `updatedAt` first.
-- Follows `list_files`, so generated upload outputs appear by their actual paths.
+Provider errors can hold the full request and response. Chat logs record fixed labels and IDs only. Keep the SDK's default error logger overridden, including title calls, so private text and image bytes cannot reach logs.
 
-## Legacy `grep_files`
-
-- Regex search over file names plus committed/pending Markdown content. Committed content is fetched from R2 through the same read action used by `read_file`.
-- Uses JavaScript `RegExp`.
-- Searches only app files; folders are traversed for discovery but not read.
-- Uploaded source paths are not Markdown-readable unless the source itself has editable Markdown state.
-- Produces grouped line-oriented output similar to ripgrep.
-
-## Legacy `write_file`
-
-- Deleted, like the other legacy tools above. Agent-mode file creation/overwrite goes through `bash` shell writes with the same pending-proposal behavior. The rest of this section describes what its stored parts mean, not something that can run.
-- Proposes full Markdown file content for review.
-- Does not directly commit file content.
-- Creates the file path if it does not exist; intermediate path segments become folders.
-- Missing-file creation uses the internal server file path flow and starts from empty committed content; the proposed body lives in the pending update instead of inheriting the UI welcome document.
-- Paths must be real Markdown paths ending in `.md`, for example `/readme.md` or `/docs/setup.md`.
-- When converting a Bash path, preserve the full suffix after `/home/cloud-usr/w/{organizationName}/{workspaceName}`; do not collapse nested files to their basename.
-- Stores the proposed result in `files_pending_updates` through `upsert_file_pending_update_internal_action`, which fetches the latest R2-backed base before the mutation writes.
-- It was Markdown-path-oriented, so a stored part never targeted a converted upload source such as a PDF directly.
+Read editable text with Bash. Read or transform other bytes through `execute_code` and the Files byte API. Image inspection does not alias uploaded source paths to generated Markdown siblings.
 
 ## `edit_file`
 
@@ -357,7 +331,7 @@ These tools are **deleted**. The sections below explain stored parts in older me
 - A target file with collaboration turned off gets the same pending update. Its three branches are built from the saved text instead of a Yjs document, and the doc stores the content asset it was built from (`baseAssetId`). When a member saves the file after that, the proposal is out of date: the read doors hide it, Accept refuses it with one fixed sentence, and Discard deletes it. Agent-mode shell writes work the same way. A `cp` does not: it stays a whole-file replacement, as described above. See the `files-editable-text` skill for the mode and the `files-agent-pending-updates` skill for the write path.
 - `pendingUpdateId` is only a model-provided lookup hint. The tool normalizes it through Convex and treats an invalid value as absent, so the user-and-file lookup can still find the current pending update.
 - When converting a Bash path, preserve the full suffix after `/home/cloud-usr/w/{organizationName}/{workspaceName}`; do not collapse nested files to their basename.
-- If the user copies text from `read_file`, they must not include line-number prefixes.
+- `edit_file.oldString` must contain exact file text, without printed line-number prefixes.
 - Generated upload outputs are editable Markdown files; pending updates belong to the generated output app file.
 
 ## `set_file_metadata`
@@ -375,18 +349,24 @@ These tools are **deleted**. The sections below explain stored parts in older me
 
 ## `browser_run`, `browser_reload`, `browser_close`
 
-- Inspect and test the request's shared cloud-browser page (one selected HTML file). File-only in v1: no navigation, no page creation, popups blocked. Full system spec: the `cloud-browser` skill; this section only covers the agent side.
-- The client freezes `browserSessionId` into message metadata at send/queue time, and the transport body carries it (submit reads the new message; regenerate and edit replay the last user turn's frozen id). The route checks access and refreshes runner metadata once before freezing the turn's session id and navigation/load/control generations. Per-step checks never refresh or rebind a started turn. Unknown, ended, or unreachable sessions run as ordinary turns with an unavailable note. A taken-over session still binds, but `prepareStep` ends the turn at once with a handover message instead of calling tools.
-- Both modes may inspect (no file writes), gated by `AI_CHAT_BROWSER_ENABLED=true`. Ask mode keeps the tools; only write tools leave its registry.
-- A queued message with no browser keeps that absence when it drains. Starting a browser later does not bind the older message to it.
-- `validationTools` always holds the stored browser shapes so old parts validate in every mode. Live and stored tools share one resolver: stored output keeps a safe status plus an opaque result id, and `toModelOutput` re-resolves text plus images under the current actor's access on every conversion. History from another thread degrades to a placeholder.
-- Screenshot content uses AI SDK `image-data`, which OpenAI sends as `input_image`. `file-data` becomes `input_file`, which rejects PNG images. The tool test checks the actual provider request shape.
-- A stream transform scrubs live browser chunks before client delivery and persistence: input start/deltas dropped, code input emptied, outputs reduced to status plus result id, errors converted to the same safe shape. `thread_messages_add` refuses anything else (code input, raw observations, forged ids, mismatched static/dynamic type forms). An aborted call may persist as `input-available` with an empty input; history conversion drops it.
-- `prepareStep` ends the turn gracefully on takeover or session end, and re-checks every expanded browser result before each provider call. `filter_revoked_browser_results` replaces revoked parts; the title model never sees raw payloads.
-- At most 20 commands per request (local cap) and 20 KB of code per call; call bytes also count against the normal tool budget. Reload re-reads the same file and source kind (drafts need a fresh editor capture first); reload and close refuse a stale lease instead of touching a session the user now holds. Close ends the session for everyone watching it.
-- Reload and close pass the frozen `expectedAgentLease` to the runner. This closes the gap between the tool's first access check and the later page change; a human takeover during that wait must win.
+These tools inspect the shared page for one selected HTML file. V1 refuses navigation and page creation and blocks popups. Both modes may inspect when `AI_CHAT_BROWSER_ENABLED=true`. The `cloud-browser` skill owns the full system rules.
+
+The client fixes `browserSessionId` at send or queue time. Submit carries the new message's id; regenerate and edit reuse the last user turn's selection. A queued message with no browser stays unbound. The route checks access and refreshes runner metadata once to bind the turn. Step checks do not adopt another session or newer live generations. If the browser ends, is taken over, or becomes stale, `prepareStep` removes only browser tools from the next request. Other tools and the final reply remain available. Each browser execute function still checks its own lease.
+
+`browser_run` has one required `code` field. Its snippet receives `page`, `frame`, `expect`, and `emitFile`. Use `emitFile({path:"/reports/page.png",bytes:await page.screenshot(),contentType:"image/png"})` for a screenshot or the same helper for any other file. It allows eight files and 8 MiB total per successful run. The trusted CDP bridge separately caps each PNG/JPEG screenshot at 2 MiB, 8192 pixels per edge, and 16 million pixels before passing it to the child. There is no two-capture limit. Only Agent mode may create output files; Ask refuses them before reservation with `errored` and reason `agent_required`.
+
+Browser files use the shared writer described below. Paths are explicit canonical Files paths, with bounded collision suffixes and no default browser folder. `prepare_file_output` and `finalize_file_output` check the command's source and lease inside the fresh-write transaction. A completed retry resolves its existing readable file without requiring the old browser. Use `view_image` to inspect emitted image bytes.
+
+Browser observations stay in the private turn map keyed by call ID. Execute returns safe status, reason, and Files targets; `toModelOutput` only reads the map. The per-step check validates the exact source and captured lease before sending raw text again. It strips stale expanded message parts as well as map entries. Titles omit this content. `validationTools` and the stream scrubber use the neutral Files result for browser, `view_image`, and image generation. Input deltas are dropped, input becomes `{}`, and history contains no observations or bytes. An aborted call may keep empty input with no output.
+
+The local cap is 20 run commands per request and 20 KB of code per call. Reload reads the same file and source kind; drafts need a fresh editor capture. Reload and close carry this call's exact `expectedAgentLease` through the runner. On success, reload advances the turn binding only to its returned generations and only if that binding still matches the call's starting values. It never refreshes and adopts an unrelated live lease. Close ends the session for every viewer. A human takeover during either action must win.
 
 ## `execute_code`
+
+- `emitFile({ path, contentType?, bytes })` creates arbitrary file output. Bytes must be a `Uint8Array` or `ArrayBuffer`; use `await blob.arrayBuffer()` for a Blob. Bytes are copied at emission. Empty files are allowed. No per-MIME storage function is needed.
+- A run may emit at most eight files and 8 MiB total raw bytes. Paths have at most 1024 characters. A supplied content type has at most 255. The host validates the sandbox return again. Failed or timed-out runs return `files: []` and save nothing.
+- RPC carries typed bytes. The HTTP response carries canonical base64. The app reads at most 12 MiB of HTTP output before parsing and validates all files before sending them through `files_ingestion_write`. The public API grant has only list/read/download scopes; file output uses trusted writer doors.
+- The fetch gateway returns HTTP 413 when a normal response exceeds 512,000 bytes. Only exact `POST /api/v1/files/read-bytes` at the configured app origin allows 1 MiB. It refuses redirects, preserves the four `X-File-*` headers, and never returns truncated success bytes. Code can import bounded HTTPS content and emit it with the same API.
 
 - Stop passes the tool abort signal to the runner's HTTP fetch. This aborts the request; it is not proof that a remote isolate has already stopped.
 - Runs an untrusted JavaScript snippet in an isolated Cloudflare Dynamic Worker. The Convex action creates a `public_api_grants` doc, then `POST`s `{ executionId, code, input?, network, app }` to `bonobo-senate-code-execution-runner` (`/internal/execute-code`) with `Authorization: Bearer <CODE_EXECUTION_RUNNER_SECRET>`; the factory is `ai_chat_tool_create_execute_code` in `../../../packages/app/server/server-ai-tools.ts`, and the host Worker lives in `../../../packages/code-execution-runner/src/index.ts`.
@@ -394,30 +374,36 @@ These tools are **deleted**. The sections below explain stored parts in older me
 - Default isolation of the runner is still sealed when no app/network capability is supplied: `globalOutbound: null` means `fetch()`/`connect()` throw and no platform `env` is passed. The app chat tool normally supplies both gatewayed public HTTP and the app file capability, so snippets can do real fetch work and can call the app file APIs directly.
 - The normal app chat path intentionally allows app file reads and public HTTPS fetches in the same snippet. Treat this as a powerful code-worker capability, not an exfiltration boundary; keep generated snippets scoped to the user's task.
 - App file access is fetch-based. Use `${process.env.T3_APP_ORIGIN}/api/v1/files/list` with `{ path, recursive, kind, extension, cursor, limit }` to discover files, following `cursor` while `isDone` is false before aggregating a whole folder.
-- Use `/api/v1/files/read-many` with `{ paths, maxBytes }` to batch-read Markdown content, and `/api/v1/files/read` with `{ path, maxBytes }` for one-off reads. Folder calculations should inspect `read-many` `errors` and `truncated`, then return compact aggregates rather than file contents so the runner result cap stays small.
+- Use `/api/v1/files/read-many` with `{ paths, maxBytes }` to batch-read editable text, and `/api/v1/files/read` with `{ path, maxBytes }` for one-off reads. They return tagged `target` values for saved and private files. Folder calculations should inspect `read-many` `errors` and `truncated`, then return compact aggregates rather than file contents so the runner result cap stays small.
+- For bytes, POST `{path,offset,length,revision}` to `/api/v1/files/read-bytes`. Use a canonical Files path, a safe nonnegative offset, and length 1–1 MiB. Start with `revision:null`, then reuse `X-File-Revision`. Read the response with `arrayBuffer()`. `X-File-Size`, `X-File-Offset`, and `X-File-Content-Type` describe the range. Stored files yield exact bytes; editable files yield current canonical UTF-8 text. Authority and source are checked before and after the read. An 8 MiB grant budget atomically charges requested length, including failures and retries. Grants cannot obtain signed download URLs.
 - `execute_code` cannot access read-only mounts under `/.mounts` or `/.plugins`: those docs live in the reserved `GLOBAL`/`GITHUB` and `GLOBAL`/`PLUGINS` scopes, while public API grants are tenant-scoped to the current organization/workspace.
 - The public file HTTP routes resolve either a user API credential or a private public API grant token through the public API verifier, enforce expiry/revocation, file scope, active membership, and optional grant path prefix, then call `internal.files_nodes.list_subtree` or `internal.files_nodes_content.get_file_last_available_text_content_by_path`; public API grant reads preserve the current user's pending `unstaged` branch overlay.
 - The runner gateway allows HTTPS fetches through `ExecuteCodeHttpGateway`, blocks IP literals, single-label hostnames, localhost/internal-style hostnames, non-443 explicit ports, and blocked redirects, and caps request/response bytes, redirects, request count, and time. It forwards deliberate public API headers such as `Authorization` but strips cookies, host/proxy/forwarded/CF/security headers. For app public file routes, it injects the private execution grant token at the gateway; the token is not exposed in `process.env`. `CODE_EXECUTION_NETWORK_DISABLED=true` disables outbound fetch.
 - Time bounds: async code is cut at an in-sandbox 5 s timeout (`status: "timed_out"`); a synchronous infinite loop cannot be preempted by either JS timer and runs until workerd's platform CPU limit (~30 s) kills the isolate, which is also reported as `timed_out`. A parent-side 7 s backstop covers a stalled RPC. There is no per-snippet `cpuMs` cap because the Worker Loader API has no `limits` field.
 - Outcomes map to `status: "succeeded" | "errored" | "timed_out"`. Caps: `code` ≤ 20 KB, direct `input` ≤ 32 KB at the app tool boundary, runner input ≤ 64 KB, per-fetch request/response bytes are capped, and result ≤ 16 KB (truncated past that). Operational logs carry only metadata (executionId, codeHash, byte sizes, hashed outbound host metadata), never raw code/input/result/logs, file contents, tokens, or raw hostnames.
-- Available in both Agent and Ask modes (it does not mutate app state). If `CODE_EXECUTION_RUNNER_URL`/`_SECRET` are unset, the tool reports that code execution is unavailable; a `CODE_EXECUTION_DISABLED` kill switch on the Worker returns "disabled".
+- Available in both modes for code. Agent mode may emit pending files. Ask refuses nonempty file output before reservation. Missing runner configuration reports code execution unavailable. `CODE_EXECUTION_DISABLED` stops Worker execution.
+
+Browser output, code output, and provider image generation share `files_ingestion_write`. It validates canonical paths and the full eight-file/8-MiB list before creating the first retry receipt, then handles each item separately. Normal editable UTF-8 becomes private text through the existing initial batch and sealed states. Invalid or oversized text remains exact stored bytes. The same byte-to-text helper serves ordinary uploads. Frontmatter and final text-size checks may also keep generated content stored.
+
+Each output item has a request identity and an attempt identity. Prepare and finalize retry a lost reply with those same values. Fresh writes check current access, mode, plan, destination policy, and quotas. Completed retries return the existing readable Files target. A later failure or Stop keeps earlier completed files and reports `partial`; `execute_code.metadata.fileResult` records that file outcome separately from the runner's execution status. Abort retires only unfinished work. Stored cleanup waits for late PUTs before releasing its hold. Text cleanup removes only unchanged creates and unused parents. Closing a browser, ending a turn, or deleting a completed receipt never deletes its completed file.
 
 ## `image_generation`
 
-- Draws a picture with OpenAI's `gpt-image-2`. It is a provider-executed tool: OpenAI runs it inside the same Responses call, so this route never executes anything. The factory is `ai_chat_tool_create_image_generation` in `../../../packages/app/server/server-ai-tools.ts`, which pins the model and `outputFormat: "webp"`; the model's own input schema is empty, so the agent cannot pass a prompt, size, or quality.
-- Available in both Agent and Ask modes. It writes nothing to app files, so it is not in `ai_chat_WRITE_TOOL_NAMES` and ask mode keeps it.
-- Registered per model, not for every model: `build_agent_configuration` adds it only when the selected model's `ai_chat_MODELS` entry in `../../../packages/app/shared/ai-chat.ts` sets `supportsImageGeneration: true`, and the system prompt drops its sentence for the other models. The field is required, so a new model id must state whether it can draw. All four OpenAI ids can today; a provider that cannot run OpenAI's tool would reject the whole request, not only the picture. `validationTools` still lists the tool for every model, because a thread can hold a picture an earlier turn drew on a model that supports it.
-- The tool output arrives as the whole picture in base64. A picture is around 500 KB and one message is one Convex doc with a ~1 MiB limit, so `create_generated_image_upload_transform` in `ai_chat.ts` writes the bytes to R2 and replaces the output with `{ assetId, mediaType, size }` before the message is stored. `validateUIMessages` therefore checks stored messages against `ai_chat_tool_create_image_generation_stored`, not against the provider tool.
-- The asset is a `files_r2_assets` doc of kind `generated_image` with no file node. It stays unfinalized until `thread_messages_add` stores a message that shows it; a picture whose message never arrives is deleted a day later by `cleanup_expired_unfinalized_assets`.
-- The chat renders it through `r2.create_signed_chat_image_url`, which refuses any asset that is not a `generated_image` in the caller's workspace. That kind check is the access boundary: file assets have per-node visibility that this path does not apply. The client calls it through `files_media_get_signed_chat_image_url` in `../../../packages/app/src/lib/files-media-src.ts`, sharing the signed-url cache with rich text embeds.
-- OpenAI streams a preview of the picture before the finished one. `@ai-sdk/openai` marks the preview `preliminary`, but `runToolsTransformation` in `ai@6.0.253` forwards a provider-executed tool result without that flag, so `drop_preliminary_tool_results_middleware` wraps the model and drops previews while the flag still exists. Without it the picture is stored twice, billed twice, and the assistant message holds two results for one call, which OpenAI rejects with `Duplicate item found` on the next request of the same turn.
-- Billing charges `GENERATED_IMAGE_COST_CENTS` per picture on top of tokens, and the `ai_usage` event carries `generatedImages`.
+- OpenAI draws the image inside its Responses call. The tool requests `gpt-image-2` and WEBP.
+- It is available only in Agent mode and only for models with `supportsImageGeneration`. Ask mode omits it from the callable registry.
+- `create_generated_image_save` decodes the result and calls the same Files writer as browser capture and `execute_code`. It requests `/generated/image.webp`; ordinary bounded suffixes handle occupied names. Save and Discard use normal Files rules.
+- A promise keyed by tool call ID is shared by provider model conversion and UI stream conversion. One result creates one pending file. A failed save returns safe error status with an empty files list.
+- Chat stores a neutral status and Files target. It has no separate image asset store or image download door. Generated images appear as text links and chips; opening them uses Files.
+- OpenAI replays provider results by item ID. A separate safe text summary makes the Files target visible on the next step and after history conversion. Native provider IDs are preserved.
+- The model middleware drops preliminary image results before the SDK loses their preliminary flag. This prevents duplicate files, charges, and provider items.
+- Billing adds `GENERATED_IMAGE_COST_CENTS` per completed provider image to token charges.
 
 ## Public Files API
 
 - Credential management and public file reads live in `../../../packages/app/convex/public_api.ts`. Credentials are reveal-once, stored as `sha256(secret)` plus an obfuscated display value, and scoped to one organization/workspace/user membership.
 - The public file routes accept either a `Bearer pk_...` credential or a gateway-injected public API grant token. They check active membership through the shared verifier, enforce explicit file scopes, rate-limit both pre-auth and per principal, log route use, and update `api_credentials.lastUsedAt` for user API keys. Active signed-in members can create, list, rotate, and revoke only their own keys in the current workspace. Keys are limited to 20 active keys per user/workspace, names are required and limited to 80 characters, and member removal permanently revokes keys for the organization.
-- The file HTTP route family is `/api/v1/files/list`, `/api/v1/files/read`, `/api/v1/files/read-many`, `/api/v1/files/write`, `/api/v1/files/write-many`, `/api/v1/files/touch`, `/api/v1/files/download-urls`, and `/api/v1/files/upload-urls`. The plugin-only doors (`plugin-folders/ensure`, `plugin-archive`, `plugin-access/set`) and the sealed `service-uploads/*` pipeline are documented in `../public-api/SKILL.md`. `write` commits editable text and `touch` creates empty editable text files; binary files use the upload doors. Do not add `/api/code-execution/*` compatibility aliases.
+- The file HTTP route family is `/api/v1/files/list`, `/api/v1/files/read`, `/api/v1/files/read-many`, `/api/v1/files/read-bytes`, `/api/v1/files/write`, `/api/v1/files/write-many`, `/api/v1/files/touch`, `/api/v1/files/download-urls`, and `/api/v1/files/upload-urls`. The plugin-only doors (`plugin-folders/ensure`, `plugin-archive`, `plugin-access/set`) and the sealed `service-uploads/*` pipeline are documented in `../public-api/SKILL.md`. `write` commits editable text and `touch` creates empty editable text files; binary files use the upload doors. Do not add `/api/code-execution/*` compatibility aliases.
+- `read-bytes` accepts personal or service-bound API keys and short grants with `files:download`. Keys read saved content; short grants read the owner's pending overlay. Service keys also need their saved-file ACL grant and path prefix. Plugin principals cannot call this route. Success is raw bytes and errors are JSON. The plugin SDK's JSON-only catalog therefore excludes it; the app API types describe both response kinds.
 - Public file routes are scoped to real tenant organization/workspace ids. They do not authorize reserved `GLOBAL`/`GITHUB` or `GLOBAL`/`PLUGINS` docs, even when the requested path looks like `/.mounts/<name>`, `/.plugins/<pluginName>`, or a stored reserved-scope path.
 
 # Pending Update Integration
@@ -462,9 +448,9 @@ Writes:
 6. Bash writes, `edit_file`, and app Copy create review state in both collaboration modes. Move is structural. Text writes to a saved target with a whole-file replacement are refused until that replacement is accepted or discarded.
 7. Bash shell writes pass the trusted chat user to private creation and pending batch doors. The proposal owner is that same user.
 8. Use Bash `search` for full-text content search, Bash `meta search` for indexed `frontmatter.*` and `metadata.*` fields, and Bash `find` for path discovery; `grep_files` / `glob_files` no longer exist.
-9. Line-numbered `read_file` output in an old thread is not valid `edit_file.oldString` input — the prefixes are not part of the file.
+9. `edit_file.oldString` contains exact text, without line-number prefixes.
 10. Request messages are persisted before generation; assistant responses are persisted after streaming finishes. `thread_messages_add` is idempotent by thread and client-generated message id so finish/abort/retry overlap cannot create duplicate sibling messages.
-11. Current chat file tools do not read raw uploaded R2 binaries; plugin-generated Markdown outputs are ordinary Markdown files whose committed Markdown is also stored in R2.
+11. `view_image` supplies supported image bytes to the model. Other bytes use `execute_code` and the Files byte API. Editable text still uses Bash.
 12. Source-path reads must preserve the product distinction between the original R2 object and generated editable Markdown outputs.
 13. Generated upload outputs are regular visible files; tools should not apply hidden-file or path-alias behavior.
 14. Client-side failed-send feedback is not persisted; retry keeps the existing failed user message as the final chat message and resubmits it in place from that message's original persisted parent.
@@ -476,7 +462,7 @@ Writes:
 
 # Verification Checklist
 
-- Run the focused context, file paging, history, budget, and composer checks in the [skills spec](../ai-chat-skills/SKILL.md). Include pending skill reads, deleted/revoked fresh reads, completed old tool replay, and Stop reaching the code runner.
+- Run the focused context, file paging, history, budget, and composer checks in the [skills spec](../ai-chat-skills/SKILL.md). Include revoked reads, strict stored tool shapes, provider image summaries, and Stop reaching the runner.
 - New threads still dedupe optimistic entries correctly.
 - User messages persist even if generation is aborted mid-stream.
 - Assistant responses persist under the correct parent message.
@@ -496,12 +482,13 @@ Writes:
 - `/tmp` is durable per-thread scratch. It persists across later `bash` calls in the same chat, reloads from Convex after warm runtime cache loss, and is not app file storage. A background job works on a private copy; its writes are dropped when the job ends.
 - Agent-mode `bash` file writes under the app file tree create pending proposals in both collaboration modes. Ask-mode writes and mount writes fail with clear errors.
 - Agent mode can create folders with `bash` `mkdir`, write files with shell redirects/`tee` (and `touch` for new empty files only), propose app-to-app moves and copies with `mv` and `cp`, and call `edit_file`; Ask mode can call `bash` for reads/searches but rejects durable app mutations and does not expose `edit_file`.
-- Bash exact reads, Bash discovery/search surfaces, and legacy file tools see the current user's structural path overlay and pending unstaged content when present.
+- Bash exact reads and discovery/search see the current user’s structural path overlay and pending text.
 - Bash shell writes, `edit_file`, and app-to-app `cp` create reviewable pending state in both collaboration modes. App-to-app `mv` creates reviewable structural state, including the replace-move of `mv -f`.
 - Accept and Discard checks cover pending moves, copies, exact replacements, private destinations, and mixed content/structure groups. Connected moves must be selected together; the server review job cannot settle an unselected member.
 - `edit_file` fails on missing/ambiguous single-match replacements.
-- Stored `grep_files` parts in old threads show regex/line search output.
-- Uploaded source files are not described as raw-binary-readable until a native source-file tool exists.
+- Test text and non-image `emitFile` output, partial completion, a bounded byte read, `view_image`, Ask refusal, failed storage, quota failure, and Save/Discard.
+- Keep the installed-provider proof for `view_image`: strict root object with required path, two-step execution, matching tool call ID, `input_image`, safe execute result, and repeated conversion without extra reads. Also run native real-model image QA; mocked HTTP proves conversion, not provider acceptance.
+- Browser QA includes exact reload advancement, takeover or end disabling only browser tools, and stale observation removal before a later provider step. Replayed history and title input must stay free of raw browser observations and image bytes.
 - With the matching upload plugin installed and enabled, generated outputs are read, searched, edited, and listed by their actual visible paths, preferably through Bash (including shell writes) plus `edit_file`.
 - Pasting, dropping, or picking an image through the configurations-row plus button shows a removable chip; non-image files show a toast and attach nothing. Removing the chip disables an image-only send again. With no attachments the chip bar is absent; the first attach grows the composer by one chip row, the last removal shrinks it back, and extra chips scroll sideways without changing heights. Arrow keys move between chip remove buttons in one tab stop, and a keyboard removal keeps focus on a neighbor chip (or the editor when none is left). Editing a one-line message shows no overlap between the editor text and the configurations row, and editing with attachments grows the edit bubble to fit the bar.
 - A sent image renders in the transcript, survives a reload from Convex, and the model can describe it. Image-only sends work, and a queued message drains with its images.
@@ -512,7 +499,7 @@ Writes:
 
 Defensive limits against pathologically large / long-line content. These are NOT about the
 agent read path — that is already bounded (`bash` reads use a 256,000-character scan window
-(`files_READ_RANGE_MAX_SCAN_CHARS`), a 128 * 1024-character stdout cap (`OUTPUT_LIMIT` in
+(`files_READ_RANGE_MAX_SCAN_CHARS`), a 128 \* 1024-character stdout cap (`OUTPUT_LIMIT` in
 `server/bash.ts`), and per-line display truncation at `files_READ_MAX_LINE_CHARS = 8000` in
 `convex/files_nodes.ts`). The gap below is about **storage and materialization cost** of
 content written/typed into the workspace.

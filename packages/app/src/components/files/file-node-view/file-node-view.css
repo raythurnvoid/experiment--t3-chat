@@ -476,8 +476,22 @@
 	/* #region private file views */
 	.FileNodeViewPrivate-actions {
 		display: flex;
+		flex-wrap: wrap;
 		align-items: center;
 		gap: 8px;
+
+		/* `MyButton` is 36px tall. Raise these buttons to the 44px accessibility target size. */
+		& > .MyButton {
+			min-height: 44px;
+		}
+	}
+
+	/* The folders Save will also create. `flex-basis: 100%` plus the wrap above puts this text on
+	   its own row under the buttons. A long path breaks instead of widening the row. */
+	.FileNodeViewPrivate-parents {
+		flex-basis: 100%;
+		font-size: 0.8125rem;
+		overflow-wrap: anywhere;
 	}
 
 	.FileNodeViewPrivate-status {
@@ -489,6 +503,11 @@
 	.FileNodeViewPrivate-body {
 		padding: 44px 24px 24px;
 		font-size: 0.875rem;
+		overflow-wrap: anywhere;
+
+		& > .FileImagePreview {
+			margin-top: 16px;
+		}
 	}
 
 	.FileNodeViewPrivate-table {

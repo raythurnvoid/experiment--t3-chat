@@ -26,7 +26,7 @@ Recipes for driving the in-app AI agent (files-page sidebar and `/chat` page). T
 | Bash terminal output                                                                  | `[aria-label="Bash terminal output"]` (`role=textbox`)                                                                                                                                                                                                                                                                   |
 | Edit-file tool disclosure                                                             | `.AiChatMessagePartToolEditPage` (`summary` `aria-label="Edit file: <name>"`)                                                                                                                                                                                                                                            |
 | Tool `Parameters` / `Result` / `Error` blocks                                         | `[aria-label="Result"]` etc. inside the card (`role=textbox`)                                                                                                                                                                                                                                                            |
-| Generated picture                                                                     | `.AiChatMessage img[alt="Generated image"]` (class `AiChatMessagePartToolImageGeneration-image`; while it is still drawing, the part is the disclosure titled `Generate image`)                                                                                                                                          |
+| Generated file result                                                                 | `getByRole("button", { name: "Generate image", exact: true })`, then `getByRole("link", { name: "Open in Files" })` inside that tool card; pictures preview in Files, not chat                                                                                                                                           |
 | Chat mode picker                                                                      | `getByRole("combobox", { name: /^Chat mode:/ })`, then `getByRole("option", { name: "Agent" \| "Ask" })`                                                                                                                                                                                                                 |
 | Failed send                                                                           | `role=alert` holds only the text `Message failed to send.`; the `Show error details` and `Retry` buttons are its siblings inside `.AiChatMessageUserSendError`, so search at page scope, not inside `[role=alert]`. The details dialog is named `Error details` and its raw message textbox is named `Raw error message` |
 | Pending-changes strip (above composer, only when the OPEN CHAT touched pending files) | `.FileEditorSidebarPendingStrip` (whole row is a button; clicking switches to the Pending changes tab; counts only docs whose `threadIds` include the open chat, so a fresh chat shows no strip even when the workspace has pending changes)                                                                             |
@@ -333,44 +333,127 @@ Then reinstall the chat helpers and rebind, because the navigation replaces the 
 `goto` an explicit `timeout`: Playwright's own default for that call is 10 s and the CLI
 `--timeout` does not cover it.
 
-## Generated pictures (`image_generation`)
+## Generated files (`image_generation` and `execute_code`)
 
-Prompt that reliably draws one: `Draw a small picture of a red circle on a white background.` The turn takes ~30-60 s. It works in both `Agent` and `Ask` mode; switch with the chat mode picker in the selector table.
+Generated pictures, browser screenshots, and code output become private Files proposals. The user reviews them in Files. Use an owned QA chat and a unique folder for each run.
 
-Assert the DOM, not a screenshot:
+Valid editable UTF-8 becomes a text draft, using the normal upload text rules. Binary, invalid UTF-8, unsupported text, and text over the limits remain exact stored bytes. Generated Markdown also stays stored when its frontmatter or final text exceeds a limit. Do not expect every output to use the stored-file row.
 
-```js
-await state.qa.send("Draw a small picture of a red circle on a white background.");
-await state.qa.waitDone(280000);
-await state.page.evaluate(() =>
-	Array.from(document.querySelectorAll('.AiChatMessage img[alt="Generated image"]')).map((img) => ({
-		naturalWidth: img.naturalWidth, // > 0 proves R2 really served the bytes
-		complete: img.complete,
-	})),
-);
-```
+`image_generation` is available only in Agent mode and on a model whose `supportsImageGeneration` flag is true in `shared/ai-chat.ts`. Try `Draw a small picture of a red circle on a white background.` Send once, then poll the running state in short calls. A slow model turn does not justify a long blocking browser wait.
 
-The message stores only a reference, so check the persisted doc separately (`output` must be `{ assetId, mediaType, size }`, and the whole thread must hold no long base64 run):
+The chat card is titled `Generate image`. It shows a safe status and `Open in Files`; it has no inline generated picture. Its stored output is:
 
 ```js
-const { app_convex, app_convex_api } = await import("/src/lib/app-convex-client.ts");
-const membership = await app_convex.query(app_convex_api.organizations.get_membership_by_organization_workspace_name, {
-	organizationName: "personal",
-	workspaceName: "home",
-});
-const listed = await app_convex.query(app_convex_api.ai_chat.thread_messages_list, {
-	membershipId: membership._id,
-	threadId: new URL(location.href).searchParams.get("threadId"),
-});
+{
+	title: "Generate image",
+	output: "Generate image: succeeded.",
+	metadata: { status: "succeeded", reason: null, files: [{ kind: "private", id: "<pending node id>" }] }
+}
 ```
 
-Reload the page before believing the picture works: the live stream and the reload use different paths, and only the reload exercises `r2.create_signed_chat_image_url`.
+Read the owned thread through `ai_chat.thread_messages_list({ membershipId, threadId })`. It returns `{ messages }`, and each doc holds its UI message in `content`. Check the tool's `input` is `{}` and its output has only the safe fields above. There must be no image bytes, signed URL, or old `{ assetId, mediaType, size }` output. One successful image output must produce one Files target. Preview copies must not create extra files. Reload chat and confirm the same link still works.
 
-Asset state lives outside the browser. Read it with `vp env exec pnpm --dir packages/app exec convex data files_r2_assets --limit 3 --order desc`: one `generated_image` doc per picture, `r2Key` set and `unfinalizedExpiresAt` empty once the message is stored. Two docs with the same `size` for one turn means the preview copy is being stored again (see the `image_generation` section of the `ai-chat-agent` skill).
+File results use `succeeded`, `partial`, `errored`, `cancelled`, or `timed_out`. The `reason` field is always present. It is null or a fixed code such as `agent_required`, `unavailable`, `storage`, or `limit`. Check both fields. For `execute_code`, check `metadata.fileResult` separately from the runner's `metadata.status`. A calculation can succeed while file output fails. A later failure or Stop must keep earlier completed files and report `partial`.
 
-`ai_chat.threads_list` needs `paginationOpts: { cursor: null, numItems: 10 }` and returns `{ page: [...] }`; without it the query throws `ArgumentValidationError`.
+Open a stored target in Files. In Pending changes, expand `.FileEditorSidebarPendingStoredFile` by its path. The row shows MIME, size, Save, Discard, Download, and Open file. Safe images get a preview; assert its `complete` and `naturalWidth > 0`. HTML, SVG, ZIP, and unknown types use Download without an inline image. Text output uses the normal editor and text review. While preparing, Save is blocked and incomplete content must not be exposed. Discard remains available.
 
-To check the per-model gate, count `.AiChatMessagePartToolImageGeneration-image` before and after a turn instead of creating a thread per model. Flip the selected model's `supportsImageGeneration` in `packages/app/shared/ai-chat.ts`, wait ~30 s for `convex dev` to push, reload, and send the same prompt in the same thread: the count must stay put and the assistant must say it cannot draw. Restore the flag and send once more to prove the count moves again. Editing a `shared/` file triggers a Vite reload, so the composer disappears for a moment — always reload and wait for `.AiChatComposer-editor-content` before `state.qa.send`, or the send times out on that selector.
+In the stored-file row, Save uses `getByRole("button", { name: "Save changes to /<path>", exact: true })`. Discard uses `Discard changes to /<path>`. Download uses `Download <filename>`. Save includes only the file's required parent folders. Discard leaves those parents and siblings alone.
+
+Save and Discard use review Activities from both the row and the private-file view. This also applies when the file has no pending parent. Review jobs finish later than the click and the “Started saving” toast. Check the Activity outcome and a fresh file query.
+
+After Save or Discard finishes, its progress dialog stays open. Close it before clicking the chat mode picker or another control behind it. The footer and icon both have the accessible name `Close`, so select the footer text within the named dialog:
+
+```js
+await state.page.getByRole("dialog", { name: "Discard reviewed changes", exact: true })
+	.getByText("Close", { exact: true }).click({ timeout: 4000 });
+```
+
+Use `Save reviewed changes` for a Save run. Read the page again after closing; do not force a click through the dialog.
+
+### Deterministic arbitrary-file check
+
+In Agent mode, ask for one `execute_code` call with the snippet below. Replace `RUN` with a unique run id. Inspect the app folder and its AGENTS.md rules with Bash in an earlier completed step. Put file paths in the snippet, not the tool's `input`. Keep binary bytes out of the normal return value and console logs.
+
+`emitFile` takes a canonical Files path such as `/qa-binary-RUN/empty.zip`. This is not a Bash mount path or the Bash `/tmp` folder. It accepts `Uint8Array` or `ArrayBuffer`. One successful run may emit up to eight files and 8 MiB total. Existing paths receive a bounded name suffix; inspect the returned targets to learn the final paths.
+
+```js
+const folder = "/qa-binary-RUN";
+emitFile({
+	path: `${folder}/nested/opaque`,
+	contentType: "application/x-qa-binary",
+	bytes: new Uint8Array([0, 255, 128, 65, 10]),
+});
+emitFile({
+	path: `${folder}/empty`,
+	contentType: "application/octet-stream",
+	bytes: new Uint8Array(0),
+});
+const zip = new Uint8Array(22);
+zip.set([0x50, 0x4b, 0x05, 0x06]); // Empty ZIP: end record with no entries.
+emitFile({ path: `${folder}/empty.zip`, contentType: "application/zip", bytes: zip });
+return { created: 3 };
+```
+
+Check these steps separately. A successful code result alone does not prove Save, Download, or Discard:
+
+1. Inspect the actual code tool input and result. The result keeps its normal code/result view and has three `metadata.files` targets. Require `metadata.fileResult.metadata.status === "succeeded"` and `reason === null`. Capture the targets from the persisted message. Resolve each with `files_pending_updates.get_file_pending_target` and match its path. Do not assume target order from the sidebar.
+2. In Pending changes, check 5 bytes for `opaque`, 0 bytes for `empty`, and 22 bytes for `empty.zip`. All three must be stored files. Download the pending ZIP and compare all 22 bytes before marking that path verified.
+3. Save `nested/opaque`. Wait for its review job, then query its original private target again. It must resolve to a saved entry with no pending update. Only the required folders may be saved with it. Repeat for the empty file. Download both saved files and compare every byte, including the empty length.
+4. Discard the remaining ZIP. Its old target must become unavailable and its chat link must show that state after reload. Check keyboard Save/Discard and focus after a row disappears. Check the row at narrow width and 200% zoom.
+5. In a later turn, use Bash `resolve` with the original private id or `pendingNodeId` URL. It must still resolve after Save. Use the current canonical Files path for the byte-read check below. For an image, call `view_image({ path: "/qa-binary-RUN/picture.png" })` and ask about a visible detail. That tool takes no format, range, id, or URL fields. Its chat result stays text-only.
+6. Repeat the emit request in Ask mode. It may run calculations, but it must create no pending file. Require `metadata.fileResult.metadata.status === "errored"` and `reason === "agent_required"`. Image generation must also stay unavailable in Ask. Test the model gate using an existing unsupported model; do not change shared source during another agent's QA.
+
+### Read and transform stored bytes
+
+After the folder check with Bash, run this through `execute_code` in Agent mode. Use the saved fixture's actual canonical path. The gateway supplies authorization; do not read or pass a token.
+
+```js
+const response = await fetch(`${process.env.T3_APP_ORIGIN}/api/v1/files/read-bytes`, {
+	method: "POST",
+	headers: { "Content-Type": "application/json" },
+	body: JSON.stringify({ path: "/qa-binary-RUN/nested/opaque", offset: 0, length: 32, revision: null }),
+});
+if (!response.ok) throw new Error(`File read failed: ${response.status}`);
+const bytes = new Uint8Array(await response.arrayBuffer());
+const expected = [0, 255, 128, 65, 10];
+if (bytes.length !== expected.length || !bytes.every((byte, index) => byte === expected[index])) {
+	throw new Error("File bytes changed");
+}
+emitFile({ path: "/qa-binary-RUN/reversed.bin", bytes: bytes.slice().reverse(), contentType: "application/octet-stream" });
+return { checkedBytes: bytes.length, matched: true };
+```
+
+Download the new proposal and require `[10, 65, 128, 255, 0]`. Return only the check result from code. Code returns and logs are stored in chat, so returning the bytes would break this privacy check.
+
+Each byte read allows 1 byte to 1 MiB. Later ranges must reuse `X-File-Revision` from the first response. Check `X-File-Size`, `X-File-Offset`, and `X-File-Content-Type`. The run has an 8 MiB read budget and charges requested length, including retries. A changed revision returns 409; start a fresh read. For editable text, these bytes represent current canonical UTF-8 text, including the caller's pending changes.
+
+### Editable text output
+
+In a separate Agent call, emit Markdown and JSON with their matching content types. Also emit `new Uint8Array([255])` as `text/plain`. Use a fresh canonical folder.
+
+Require Markdown and JSON to become editable private text drafts. Check their pending content before Save. BOM and CRLF input should normalize like a normal upload. The invalid UTF-8 file must stay stored and download as the exact byte `255`.
+
+Check Save and Discard through their normal review controls. Wait for the Activity result. A preparing text draft must not appear ready with empty content. Use Bash to read ready text; use `view_image` only for supported images.
+
+For the Save readback, keep the owned membership and original target in `state.binaryQa`. Run this through Playwriter after the click, then poll in short calls until `kind` is `saved` and `hasPendingUpdate` is false:
+
+```js
+await state.page.evaluate(async ({ membershipId, target }) => {
+	const { app_convex, app_convex_api } = await import("/src/lib/app-convex-client.ts");
+	const file = await app_convex.query(app_convex_api.files_pending_updates.get_file_pending_target, {
+		membershipId,
+		target,
+	});
+	return file && {
+		kind: file.entry.kind,
+		path: file.entry.path,
+		readiness: file.readiness,
+		hasPendingUpdate: !!file.entry.pendingUpdate,
+	};
+}, state.binaryQa);
+```
+
+Verify the Download button itself. Capture the Blob passed to `URL.createObjectURL` while still calling the original function, then restore the spy. Compare its complete bytes with the fixture. Also read the matching native file using the actual download filename. In extension mode, `download.saveAs()` can fail even when the browser wrote the file to `~/Downloads`; see the download entry in [known-hazards.md](known-hazards.md). Do not treat that relay error as a failed app download, or treat a Blob check alone as proof of the native file. Keep owned downloads and evidence in the personal task folder.
 
 ## Workspace instructions and skills
 

@@ -20,6 +20,7 @@ import {
 } from "../server/server-utils.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import { crypto_sha256_hex, crypto_timing_safe_equal } from "../server/crypto-utils.ts";
+import { files_upload_content_from_bytes } from "../server/files-upload-content.ts";
 import {
 	r2,
 	r2_create_asset_key,
@@ -39,7 +40,6 @@ import {
 	organizations_is_reserved_workspace_id,
 } from "../shared/organizations.ts";
 import { users_SYSTEM_AUTHOR } from "../shared/users.ts";
-import { ai_chat_GENERATED_IMAGE_FORMAT } from "../shared/ai-chat.ts";
 import { organizations_db_get_membership } from "./organizations.ts";
 import {
 	access_control_db_authorize_membership,
@@ -59,7 +59,6 @@ import {
 	files_yjs_root_kind_of_content_type,
 	files_node_has_editable_text_content,
 	files_node_has_editable_yjs_state,
-	files_normalize_text_document_input,
 	type files_ContentType,
 	type files_YjsRootKind,
 } from "../server/files.ts";
@@ -70,10 +69,7 @@ import {
 } from "../shared/files-metadata.ts";
 import app_convex_schema from "./schema.ts";
 import { db_get_file_content_materialization_db_state, files_nodes_db_hard_delete_node } from "./files_nodes.ts";
-import {
-	db_insert_file_text_content,
-	files_nodes_create_yjs_snapshot_update_from_text,
-} from "./files_nodes_content.ts";
+import { db_insert_file_text_content } from "./files_nodes_content.ts";
 
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
 // Does NOT work for http actions (see http.ts). Do not keep request state in module-level values.
@@ -620,127 +616,6 @@ export const get_asset_by_file_node_id = query({
 	},
 });
 
-/**
- * Read the asset of a picture the chat agent drew. It answers null for an asset of any other kind.
- *
- * A generated picture has no file node, so this cannot go through the download path above. Workspace
- * `content.read` is the whole check, the same one `ai_chat.thread_messages_list` makes: a member who
- * can read the thread list can already read every thread in the workspace, so scoping the picture to
- * one thread would refuse what the surrounding surface allows.
- *
- * The `generated_image` check is what keeps that safe. A file asset must never be signed here: a
- * file download also puts its node through the per-node visibility filter, and this path has no node
- * to filter, so it would hand out files the member is not allowed to open.
- *
- * `assetId` arrives inside a chat message that the client writes, so it is a plain string here and a
- * value that is not an id answers null.
- */
-export const get_asset = internalQuery({
-	args: {
-		userId: v.id("users"),
-		membershipId: v.id("organizations_workspaces_users"),
-		assetId: v.string(),
-	},
-	returns: v.union(doc(app_convex_schema, "files_r2_assets"), v.null()),
-	handler: async (ctx, args) => {
-		const membership = await organizations_db_get_membership(ctx, {
-			userId: args.userId,
-			membershipId: args.membershipId,
-		});
-		if (!membership) {
-			return null;
-		}
-
-		const authorized = await access_control_db_authorize_membership(ctx, {
-			userAuth: { id: args.userId },
-			membership,
-			permission: "content.read",
-		});
-		if (authorized._nay) {
-			return null;
-		}
-
-		const assetId = ctx.db.normalizeId("files_r2_assets", args.assetId);
-		if (!assetId) {
-			return null;
-		}
-
-		const asset = await ctx.db.get("files_r2_assets", assetId);
-		if (
-			!asset ||
-			asset.kind !== "generated_image" ||
-			asset.organizationId !== membership.organizationId ||
-			asset.workspaceId !== membership.workspaceId
-		) {
-			return null;
-		}
-
-		return asset;
-	},
-});
-
-type get_asset_Result =
-	typeof get_asset extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
-		? Awaited<ReturnValue>
-		: never;
-
-/**
- * Return a signed R2 URL for a picture the chat agent drew.
- */
-export const create_signed_chat_image_url = action({
-	args: {
-		membershipId: v.id("organizations_workspaces_users"),
-		assetId: v.string(),
-	},
-	returns: v_result({
-		_yay: v.object({
-			url: v.string(),
-		}),
-	}),
-	handler: async (ctx, args) => {
-		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!userAuth) {
-			return Result({ _nay: { message: "Unauthenticated" } });
-		}
-
-		const asset = (await ctx.runQuery(internal.r2.get_asset, {
-			userId: userAuth.id,
-			membershipId: args.membershipId,
-			assetId: args.assetId,
-		})) as get_asset_Result;
-		if (!asset) {
-			return Result({ _nay: { message: "Not found" } });
-		}
-
-		// The chat route writes the picture to this deterministic key while it streams, and only
-		// storing the message that shows it sets `r2Key`. Both are the same key, so the picture can
-		// already be shown while the message is still being written.
-		const r2Key =
-			asset.r2Key ??
-			r2_create_asset_key({
-				organizationId: asset.organizationId,
-				workspaceId: asset.workspaceId,
-				assetId: asset._id,
-			});
-
-		// Pin the served type and the disposition for the same reason a file download does: a
-		// presigned R2 GET carries no nosniff and no CSP. The type is ours, because the chat route is
-		// the only writer of this asset kind and it always asks OpenAI for the same format.
-		const serving = files_get_signed_download_serving({
-			contentType: `image/${ai_chat_GENERATED_IMAGE_FORMAT}`,
-			fileName: `generated-image-${asset._id}.${ai_chat_GENERATED_IMAGE_FORMAT}`,
-		});
-		const url = await r2.getUrl(r2Key, {
-			// 15 minutes.
-			expiresIn: 15 * 60,
-			responseContentType: serving.responseContentType,
-			responseContentDisposition: serving.responseContentDisposition,
-		});
-
-		return Result({ _yay: { url } });
-	},
-});
-
 export const get_file_node_by_asset_id = internalQuery({
 	args: {
 		organizationId: doc(app_convex_schema, "files_nodes").fields.organizationId,
@@ -1180,60 +1055,19 @@ export const finalize_uploaded_text_file = internalAction({
 		}
 
 		const response = await r2_fetch_object_from_bucket({ key: asset.r2Key });
-		const rawBytes = await response.arrayBuffer();
-
-		// Decode fatally: `response.text()` would turn invalid UTF-8 into U+FFFD silently and
-		// store corrupted text as an editable document. Invalid bytes, and NUL bytes (valid UTF-8
-		// but a UTF-16/binary tell), are content-deterministic failures — retrying cannot change
-		// the bytes, so the upload stays a stored blob.
-		let decodedText: string;
-		try {
-			decodedText = new TextDecoder("utf-8", { fatal: true }).decode(rawBytes);
-		} catch {
-			await ctx.runMutation(internal.r2.settle_upload_conversion_fallback, {
-				assetId: asset._id,
-				eventId: args.eventId,
-			});
-			return null;
-		}
-		if (decodedText.includes("\u0000")) {
-			await ctx.runMutation(internal.r2.settle_upload_conversion_fallback, {
-				assetId: asset._id,
-				eventId: args.eventId,
-			});
-			return null;
-		}
-
-		// At this producer boundary, drop a leading BOM and store LF before
-		// the byte count and before both consumers below (the snapshot builder and the chunker),
-		// so the document, the R2 snapshot, the chunks and the stored size all see one string.
-		const text = files_normalize_text_document_input(decodedText);
-		// Use the same deterministic fallback as the pre-download check when decoded text is over-cap.
-		if (files_get_utf8_byte_size(text) > files_MAX_TEXT_CONTENT_BYTES) {
-			await ctx.runMutation(internal.r2.settle_upload_conversion_fallback, {
-				assetId: asset._id,
-				eventId: args.eventId,
-			});
-			return null;
-		}
-
-		const snapshotUpdate = files_nodes_create_yjs_snapshot_update_from_text({
-			text,
-			rootKind,
+		const content = files_upload_content_from_bytes({
+			bytes: new Uint8Array(await response.arrayBuffer()),
+			contentType: fileNode.contentType!,
 		});
-		// A refused document build is content-deterministic too: the same text refuses on
-		// every retry, so the upload stays a stored blob.
-		if (snapshotUpdate._nay) {
-			console.error("Upload conversion could not build a document from the decoded text", {
-				assetId: asset._id,
-				nay: snapshotUpdate._nay,
-			});
+		if (content.kind === "stored") {
 			await ctx.runMutation(internal.r2.settle_upload_conversion_fallback, {
 				assetId: asset._id,
 				eventId: args.eventId,
 			});
 			return null;
 		}
+		const { text } = content;
+		const snapshotUpdate = content.snapshotUpdate;
 
 		// A service target may request a non-collaborative text file. Build the Yjs update above as
 		// validation, but create no Yjs asset or docs after that validation succeeds.
@@ -1244,7 +1078,7 @@ export const finalize_uploaded_text_file = internalAction({
 					organizationId: fileNode.organizationId,
 					workspaceId: fileNode.workspaceId,
 					kind: "yjs_snapshot",
-					size: snapshotUpdate._yay.byteLength,
+					size: snapshotUpdate.byteLength,
 					createdBy: fileNode.createdBy,
 				})) as Id<"files_r2_assets">);
 		const versionSnapshotAssetId = (await ctx.runMutation(internal.r2.insert_asset, {
@@ -1275,7 +1109,7 @@ export const finalize_uploaded_text_file = internalAction({
 				: [
 						r2_put_object(ctx, {
 							key: yjsSnapshotR2Key,
-							body: snapshotUpdate._yay,
+							body: snapshotUpdate,
 							contentType: "application/octet-stream" satisfies files_ContentType,
 						}),
 					]),
@@ -1295,7 +1129,7 @@ export const finalize_uploaded_text_file = internalAction({
 			rootKind,
 			contentType: editableTextContentType,
 			yjsSnapshot:
-				yjsSnapshotAssetId === null ? null : { assetId: yjsSnapshotAssetId, size: snapshotUpdate._yay.byteLength },
+				yjsSnapshotAssetId === null ? null : { assetId: yjsSnapshotAssetId, size: snapshotUpdate.byteLength },
 			versionSnapshotAssetId,
 			versionSnapshotSize: files_get_utf8_byte_size(text),
 			text,

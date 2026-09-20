@@ -406,7 +406,7 @@ describe("BrowserSession viewer stream", () => {
 		stored.set("session", record);
 		expect(await post("/run/finish", {
 			sessionId: "session-1", commandId: "command-1", tainted: false,
-			resultBytes: 0, imageCount: 0, imageBytes: 0, viewport: { width: 800, height: 600 },
+			resultBytes: 0, fileCount: 0, fileBytes: 0, viewport: { width: 800, height: 600 },
 		})).toMatchObject({ ok: true, state: "ready" });
 		await drain();
 
@@ -850,7 +850,7 @@ describe("BrowserSession viewer stream", () => {
 
 		expect(await post("/run/finish", {
 			sessionId: "session-1", commandId: "command-1", tainted: false,
-			resultBytes: 0, imageCount: 0, imageBytes: 0, viewport: null,
+			resultBytes: 0, fileCount: 0, fileBytes: 0, viewport: null,
 		})).toMatchObject({ ok: true, state: "ready" });
 		await drain();
 		expect(viewer.socket.closed?.code).toBe(1011);

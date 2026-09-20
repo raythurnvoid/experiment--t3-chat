@@ -28,6 +28,7 @@ Use this before finalizing a broad implementation or PR plan.
 
 - Do comments explain non-obvious intent, invariants, or external-system behavior?
 - Is every new or changed JSDoc multi-line, including one-sentence docs and short labels?
+- Do distinct JSDoc paragraphs have an empty ` *` line between them, so Markdown renders separate paragraphs?
 - Do empty lines separate logical chunks without splitting statements that complete one step?
 - Can any abstract term be replaced by concrete code nouns?
 - Do Convex comments and guidance use `doc/docs` for table entries?

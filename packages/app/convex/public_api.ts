@@ -57,6 +57,7 @@ import {
 	files_resolve_upload_content_type,
 	files_u8_to_array_buffer,
 	type files_ContentType,
+	type files_PendingTarget,
 	type files_YjsRootKind,
 } from "../server/files.ts";
 import { files_yjs_compute_diff_update_from_state_vector } from "../shared/files-yjs.ts";
@@ -81,6 +82,7 @@ import {
 	files_nodes_db_fill_text_node_content,
 	files_nodes_db_finalize_editable_text_node_creation,
 	files_nodes_db_insert_file_content_docs,
+	type files_nodes_get_file_byte_read_source_Result,
 } from "./files_nodes_content.ts";
 import { files_nodes_reconstruct_latest_file_content_from_materialization_state } from "./files_nodes_reconstruct_content.ts";
 import type { r2_get_data_for_public_download_url_Result } from "./r2.ts";
@@ -89,6 +91,7 @@ import {
 	r2_enqueue_object_deletion_job,
 	r2,
 	r2_put_object,
+	r2_fetch_object_range_from_bucket,
 	r2_PUT_MAY_ARRIVE_MARGIN_MS,
 	r2_UNFINALIZED_ASSET_TTL_MS,
 } from "./r2_client.ts";
@@ -134,6 +137,8 @@ type stage_trusted_yjs_update_LocalResult =
 export const experimental_reuseContext = true;
 
 const FILES_READ_MAX_BYTES = 128_000;
+const FILES_READ_BYTES_MAX_LENGTH = 1024 * 1024;
+const FILES_GRANT_READ_BYTES = 8 * FILES_READ_BYTES_MAX_LENGTH;
 const FILES_READ_MANY_MAX_ITEMS = 50;
 const FILES_READ_MANY_MAX_CONTENT_BYTES = 384_000;
 const FILES_DOWNLOAD_URL_MAX_TTL_SECONDS = 15 * 60;
@@ -211,7 +216,11 @@ async function read_request_text_bounded(request: Request, maxBytes: number) {
 }
 
 const grant_scopes_validator = v.array(
-	v.union(v.literal("files:list" satisfies public_api_Scope), v.literal("files:read" satisfies public_api_Scope)),
+	v.union(
+		v.literal("files:list" satisfies public_api_Scope),
+		v.literal("files:read" satisfies public_api_Scope),
+		v.literal("files:download" satisfies public_api_Scope),
+	),
 );
 const user_credential_scopes_validator = v.array(
 	v.union(
@@ -518,12 +527,41 @@ export const create_grant = internalMutation({
 			principalKey: args.principalKey,
 			tokenHash: args.tokenHash,
 			scopes: Array.from(new Set(args.scopes)),
+			remainingReadBytes: args.scopes.includes("files:download") ? FILES_GRANT_READ_BYTES : 0,
 			pathPrefix: args.pathPrefix == null ? null : server_path_normalize(args.pathPrefix),
 			createdAt: args.now,
 			expiresAt: args.now + PUBLIC_API_GRANT_TTL_MS,
 		});
 
 		return null;
+	},
+});
+
+export const reserve_grant_read_bytes = internalMutation({
+	args: { presented: v.string(), length: v.number() },
+	returns: v.boolean(),
+	handler: async (ctx, args) => {
+		if (!Number.isSafeInteger(args.length) || args.length < 1 || args.length > FILES_READ_BYTES_MAX_LENGTH) {
+			return false;
+		}
+		const tokenHash = await crypto_sha256_hex(args.presented);
+		const grant = await ctx.db
+			.query("public_api_grants")
+			.withIndex("by_tokenHash", (q) => q.eq("tokenHash", tokenHash))
+			.first();
+		if (
+			!grant ||
+			grant.expiresAt <= Date.now() ||
+			!grant.scopes.includes("files:download") ||
+			grant.remainingReadBytes < args.length
+		) {
+			return false;
+		}
+		// Reserve before fetching. Failed reads and retries still consume this grant's budget.
+		await ctx.db.patch("public_api_grants", grant._id, {
+			remainingReadBytes: grant.remainingReadBytes - args.length,
+		});
+		return true;
 	},
 });
 
@@ -1785,6 +1823,10 @@ export const resolve_principal = internalQuery({
 		if (!grant) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
+		const user = await ctx.db.get("users", grant.userId);
+		if (!user || user.deletedAt !== undefined) {
+			return Result({ _nay: { message: "Unauthenticated" } });
+		}
 
 		const membership = await ctx.db
 			.query("organizations_workspaces_users")
@@ -1844,7 +1886,7 @@ export type public_api_rotate_plugin_service_grant_Result =
 type Principal = NonNullable<public_api_resolve_principal_Result["_yay"]>;
 
 function has_same_download_authority(
-	initial: Extract<Principal, { kind: "user_api_key" | "plugin_run" | "plugin_ui" }>,
+	initial: Extract<Principal, { kind: "user_api_key" | "public_api_grant" | "plugin_run" | "plugin_ui" }>,
 	current: Principal,
 ) {
 	const currentScopes: readonly public_api_Scope[] = current.scopes;
@@ -1858,6 +1900,14 @@ function has_same_download_authority(
 	}
 
 	switch (initial.kind) {
+		case "public_api_grant":
+			return (
+				current.kind === "public_api_grant" &&
+				current.userId === initial.userId &&
+				current.principalKey === initial.principalKey &&
+				current.pathPrefix === initial.pathPrefix &&
+				current.expiresAt === initial.expiresAt
+			);
 		case "user_api_key":
 			return (
 				current.kind === "user_api_key" &&
@@ -5240,9 +5290,10 @@ export async function public_api_http_read_file(ctx: ActionCtx, request: Request
 		serviceAccountId: principal.serviceAccountId ?? undefined,
 		path: requestedPath,
 		includePending: principal.kind === "public_api_grant",
+		overlayUserId: principal.kind === "public_api_grant" ? principal.userId : undefined,
 		maxBytes: Math.min(body._yay.maxBytes ?? FILES_READ_MAX_BYTES, FILES_READ_MAX_BYTES),
 	});
-	if (!content || content.target.kind !== "saved") {
+	if (!content) {
 		return {
 			status: 404,
 			body: await fail({
@@ -5271,7 +5322,7 @@ export async function public_api_http_read_file(ctx: ActionCtx, request: Request
 		status: 200,
 		body: {
 			path: requestedPath,
-			nodeId: content.target.id,
+			target: content.target,
 			content: content.content,
 		},
 		headers: { "Cache-Control": "no-store" },
@@ -5322,6 +5373,7 @@ export async function public_api_http_read_many(ctx: ActionCtx, request: Request
 				serviceAccountId: principal.serviceAccountId ?? undefined,
 				path: filePath,
 				includePending: principal.kind === "public_api_grant",
+				overlayUserId: principal.kind === "public_api_grant" ? principal.userId : undefined,
 				maxBytes,
 			}),
 		})),
@@ -5332,13 +5384,13 @@ export async function public_api_http_read_many(ctx: ActionCtx, request: Request
 	let contentTruncated = false;
 	const files: Array<{
 		path: string;
-		nodeId: string;
+		target: files_PendingTarget;
 		content: string;
 	}> = [];
 	const errors: Array<{ path: string; message: string }> = [];
 
 	for (const item of contents) {
-		if (!item.content || item.content.target.kind !== "saved") {
+		if (!item.content) {
 			errors.push({
 				path: item.path,
 				message: "File not found or exceeds the read limit.",
@@ -5355,7 +5407,7 @@ export async function public_api_http_read_many(ctx: ActionCtx, request: Request
 		contentBytes += nextContentBytes;
 		files.push({
 			path: item.path,
-			nodeId: item.content.target.id,
+			target: item.content.target,
 			content: item.content.content,
 		});
 	}
@@ -5377,6 +5429,174 @@ export async function public_api_http_read_many(ctx: ActionCtx, request: Request
 			truncated: pathsTruncated || contentTruncated,
 		},
 		headers: { "Cache-Control": "no-store" },
+	} as const;
+}
+
+const read_bytes_body_validator = z
+	.object({
+		path: z.string().min(2).max(4096),
+		offset: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+		length: z.number().int().min(1).max(FILES_READ_BYTES_MAX_LENGTH),
+		revision: z
+			.string()
+			.regex(/^[0-9a-f]{64}$/u)
+			.nullable(),
+	})
+	.strict();
+
+export type public_api_http_read_bytes_Body = z.infer<typeof read_bytes_body_validator>;
+
+export async function public_api_http_read_bytes(ctx: ActionCtx, request: Request, path: "/api/v1/files/read-bytes") {
+	const auth = await public_api_authorize_request(ctx, request, {
+		requiredScope: "files:download",
+		allowedKinds: ["user_api_key", "public_api_grant"],
+		route: path,
+	});
+	if (auth._nay) return auth._nay;
+	const { principal, presentedToken } = auth._yay;
+
+	const body = await server_request_json_parse_and_validate(request, read_bytes_body_validator);
+	if (body._nay) return { status: 400, body: { message: body._nay.message } } as const;
+	const { path: requestedPath, offset, length, revision } = body._yay;
+	// Byte offsets apply only to an exact Files path, never a normalized alias.
+	if (
+		!requestedPath.startsWith("/") ||
+		requestedPath !== server_path_normalize(requestedPath) ||
+		/[\\*?\[\]]|\p{Cc}/u.test(requestedPath) ||
+		requestedPath
+			.slice(1)
+			.split("/")
+			.some((segment) => !segment || segment === "." || segment === "..")
+	) {
+		return { status: 400, body: { message: "Path must be a canonical Files path." } } as const;
+	}
+	if (!public_api_is_path_inside_prefix(requestedPath, principal.pathPrefix)) {
+		return { status: 404, body: { message: "File unavailable" } } as const;
+	}
+
+	const sourceArgs = {
+		organizationId: principal.organizationId,
+		workspaceId: principal.workspaceId,
+		userId: principal.userId,
+		serviceAccountId: principal.serviceAccountId ?? undefined,
+		path: requestedPath,
+		includePending: principal.kind === "public_api_grant",
+	};
+	const source: files_nodes_get_file_byte_read_source_Result = await ctx.runQuery(
+		internal.files_nodes_content.get_file_byte_read_source,
+		sourceArgs,
+	);
+	if (!source) return { status: 404, body: { message: "File unavailable" } } as const;
+	if (revision !== null && revision !== source.revision) {
+		return { status: 409, body: { message: "File changed. Start a new read." } } as const;
+	}
+	if (source.contentType.length > 256 || !/^[\x20-\x7e]+$/u.test(source.contentType)) {
+		return { status: 404, body: { message: "File unavailable" } } as const;
+	}
+
+	if (
+		principal.kind === "public_api_grant" &&
+		!(await ctx.runMutation(internal.public_api.reserve_grant_read_bytes, {
+			presented: presentedToken,
+			length,
+		}))
+	) {
+		return { status: 429, body: { message: "File byte budget exhausted" } } as const;
+	}
+
+	let bytes: Uint8Array<ArrayBuffer>;
+	let size: number;
+	try {
+		request.signal.throwIfAborted();
+		if (source.kind === "text") {
+			const content = await ctx.runAction(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
+				...sourceArgs,
+				overlayUserId: sourceArgs.includePending ? principal.userId : undefined,
+				maxBytes: files_MAX_TEXT_CONTENT_BYTES,
+			});
+			if (!content) {
+				return { status: 404, body: { message: "File unavailable" } } as const;
+			}
+			if (content.target.kind !== source.target.kind || content.target.id !== source.target.id) {
+				return { status: 409, body: { message: "File changed. Start a new read." } } as const;
+			}
+			const textBytes = TEXT_ENCODER.encode(content.content);
+			size = textBytes.byteLength;
+			bytes = textBytes.slice(offset, offset + length);
+		} else {
+			size = source.size;
+			const byteLength = Math.min(length, Math.max(0, size - offset));
+			bytes = new Uint8Array(byteLength);
+			if (byteLength > 0) {
+				const endInclusive = offset + byteLength - 1;
+				const response = await r2_fetch_object_range_from_bucket({
+					key: source.r2Key,
+					start: offset,
+					endInclusive,
+					signal: request.signal,
+				});
+				const validRange =
+					response.status === 206
+						? response.headers.get("Content-Range") === `bytes ${offset}-${endInclusive}/${size}`
+						: response.status === 200 && offset === 0 && byteLength === size;
+				if (!validRange || !response.body) {
+					await response.body?.cancel();
+					return { status: 502, body: { message: "File range unavailable" } } as const;
+				}
+				const reader = response.body.getReader();
+				let received = 0;
+				try {
+					while (true) {
+						const chunk = await reader.read();
+						if (chunk.done) break;
+						if (received + chunk.value.byteLength > byteLength) {
+							return { status: 502, body: { message: "File range unavailable" } } as const;
+						}
+						bytes.set(chunk.value, received);
+						received += chunk.value.byteLength;
+					}
+				} finally {
+					await reader.cancel();
+				}
+				if (received !== byteLength) {
+					return { status: 502, body: { message: "File range unavailable" } } as const;
+				}
+			}
+		}
+		request.signal.throwIfAborted();
+	} catch {
+		return { status: 502, body: { message: "File bytes unavailable" } } as const;
+	}
+
+	// A fetch can outlive a grant, a sharing change, or a file edit. Recheck before releasing bytes.
+	const current = await public_api_resolve_live_principal(ctx, {
+		presented: presentedToken,
+		now: Date.now(),
+		requiredScope: "files:download",
+	});
+	if (current._nay || !has_same_download_authority(principal, current._yay)) {
+		return { status: 404, body: { message: "File unavailable" } } as const;
+	}
+	const after: files_nodes_get_file_byte_read_source_Result = await ctx.runQuery(
+		internal.files_nodes_content.get_file_byte_read_source,
+		sourceArgs,
+	);
+	if (!after) return { status: 404, body: { message: "File unavailable" } } as const;
+	if (after.revision !== source.revision) {
+		return { status: 409, body: { message: "File changed. Start a new read." } } as const;
+	}
+	if (offset > size) return { status: 416, body: { message: "Offset exceeds file size" } } as const;
+	return {
+		status: 200,
+		body: bytes,
+		headers: {
+			"Content-Type": "application/octet-stream",
+			"Cache-Control": "no-store",
+			"X-File-Content-Type": source.contentType,
+			"X-File-Revision": source.revision,
+			"X-File-Size": String(size),
+			"X-File-Offset": String(offset),
+		},
 	} as const;
 }
 

@@ -16,7 +16,6 @@ import {
 	X,
 } from "lucide-react";
 import { AiChatThread } from "@/components/ai-chat/ai-chat.tsx";
-import { AiChatBrowserSurfaceProvider } from "@/components/ai-chat/ai-chat-message.tsx";
 import { FileEditorSidebarPendingStrip } from "@/components/files/file-editor/file-editor-sidebar/file-editor-sidebar-pending-strip.tsx";
 import {
 	FilesBrowserBindingWriter,
@@ -898,10 +897,8 @@ export const FileEditorSidebarAgent = memo(function FileEditorSidebarAgent(props
 
 	return (
 		<AiChatController key={selectedTabStorageKey} storageKey={selectedTabStorageKey}>
-			<AiChatBrowserSurfaceProvider value="files">
-				<FilesBrowserBindingWriter browserNodeId={browserNodeId} browserNodeKind={browserNodeKind} />
-				<FileEditorSidebarAgentContent {...props} />
-			</AiChatBrowserSurfaceProvider>
+			<FilesBrowserBindingWriter browserNodeId={browserNodeId} browserNodeKind={browserNodeKind} />
+			<FileEditorSidebarAgentContent {...props} />
 		</AiChatController>
 	);
 });

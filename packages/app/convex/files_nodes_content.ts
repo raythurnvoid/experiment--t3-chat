@@ -176,8 +176,14 @@ import {
 	files_transfer_db_get_entry_version,
 	files_transfer_source_versions_equal,
 } from "./files_transfer.ts";
-import { files_pending_nodes_db_get_ancestry, files_pending_nodes_db_publish } from "./files_pending_nodes.ts";
+import {
+	files_pending_nodes_db_get_ancestry,
+	files_pending_nodes_db_publish,
+	files_pending_nodes_db_resolve_read_target,
+} from "./files_pending_nodes.ts";
 import { files_private_storage_db_release, files_private_storage_db_reserve } from "./files_private_storage.ts";
+import { files_visible_db_create_reader } from "./files_visible.ts";
+import { crypto_sha256_hex } from "../server/crypto-utils.ts";
 
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
 // Does NOT work for http actions (see http.ts). No mutable module-level state allowed here.
@@ -3595,6 +3601,187 @@ export const create_text_node = action({
 		return Result({ _yay: { nodeId: created._yay.nodeId } });
 	},
 });
+
+async function db_get_stored_file_read_source(ctx: QueryCtx, args: { entry: files_VisibleEntry; userId: Id<"users"> }) {
+	const { entry } = args;
+	const pending = entry.pendingUpdate;
+	if (entry.node.kind !== "file" || pending?.preparation || pending?.content) return null;
+
+	// A pending replacement hides the old saved bytes, including when its type changed.
+	const content =
+		pending?.pendingReplacement ??
+		(entry.kind === "private" && pending?.createIntent?.kind === "stored" ? pending.createIntent : null);
+	if (
+		(pending?.pendingReplacement && pending.pendingReplacement.yjsRootKind !== undefined) ||
+		(entry.kind === "private" && !content) ||
+		(entry.kind === "saved" && !content && entry.node.textKind !== null)
+	) {
+		return null;
+	}
+
+	const assetId = content?.assetId ?? (entry.kind === "saved" ? entry.node.assetId : null);
+	const contentType = content?.contentType ?? (entry.kind === "saved" ? entry.node.contentType : null);
+	if (!assetId || !contentType) return null;
+	const asset = await ctx.db.get("files_r2_assets", assetId);
+	if (
+		!asset?.r2Key ||
+		asset.organizationId !== entry.node.organizationId ||
+		asset.workspaceId !== entry.node.workspaceId ||
+		asset.uploadRetiredAt !== undefined ||
+		asset.unfinalizedExpiresAt !== undefined ||
+		!Number.isSafeInteger(asset.size) ||
+		asset.size < 0
+	) {
+		return null;
+	}
+
+	if (content) {
+		const reservation = await ctx.db
+			.query("files_private_storage_reservations")
+			.withIndex("by_resource", (q) => q.eq("resource.kind", "asset").eq("resource.id", assetId))
+			.first();
+		if (
+			asset.createdBy !== args.userId ||
+			asset.size !== content.size ||
+			!reservation ||
+			reservation.userId !== args.userId ||
+			reservation.organizationId !== entry.node.organizationId ||
+			reservation.workspaceId !== entry.node.workspaceId ||
+			reservation.settlement.kind !== "held" ||
+			reservation.byteCount !== content.size ||
+			reservation.resource.kind !== "asset" ||
+			reservation.resource.r2Key !== asset.r2Key
+		) {
+			return null;
+		}
+	}
+
+	const target: files_PendingTarget =
+		entry.kind === "saved" ? { kind: "saved", id: entry.node._id } : { kind: "private", id: entry.node._id };
+	const revision = await crypto_sha256_hex(
+		JSON.stringify([
+			target.kind,
+			target.id,
+			assetId,
+			asset.r2Key,
+			asset.size,
+			contentType,
+			entry.path,
+			pending?._id,
+			pending?.revision,
+			entry.kind === "private" ? [entry.node.creationGeneration, entry.node.structuralRevision] : null,
+		]),
+	);
+	return { target, assetId, r2Key: asset.r2Key, contentType, size: asset.size, path: entry.path, revision };
+}
+
+export const get_file_read_source = internalQuery({
+	args: {
+		userId: v.id("users"),
+		membershipId: v.id("organizations_workspaces_users"),
+		threadId: v.id("ai_chat_threads"),
+		path: v.string(),
+		target: v.optional(files_pending_target_validator),
+	},
+	returns: v_result({
+		_yay: v.object({
+			target: files_pending_target_validator,
+			assetId: v.id("files_r2_assets"),
+			r2Key: v.string(),
+			contentType: v.string(),
+			size: v.number(),
+			path: v.string(),
+			revision: v.string(),
+		}),
+	}),
+	handler: async (ctx, args) => {
+		const membership = await organizations_db_get_membership(ctx, args);
+		const thread = await ctx.db.get("ai_chat_threads", args.threadId);
+		const user = await ctx.db.get("users", args.userId);
+		if (
+			!membership ||
+			!user ||
+			user.deletedAt !== undefined ||
+			!thread ||
+			thread.organizationId !== membership.organizationId ||
+			thread.workspaceId !== membership.workspaceId
+		) {
+			return Result({ _nay: { message: "File unavailable" } });
+		}
+		const scope = {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			userId: args.userId,
+		};
+		const reader = await files_visible_db_create_reader(ctx, { ...scope, readLimit: 2048 });
+		const target =
+			args.target && (await files_pending_nodes_db_resolve_read_target(ctx, { ...scope, target: args.target }));
+		const entry = args.target ? target && (await reader.resolveTarget(target)) : await reader.resolvePath(args.path);
+		if (!entry || entry.path !== args.path) return Result({ _nay: { message: "File unavailable" } });
+		const source = await db_get_stored_file_read_source(ctx, { entry, userId: args.userId });
+		return source ? Result({ _yay: source }) : Result({ _nay: { message: "File unavailable" } });
+	},
+});
+
+export const get_file_byte_read_source = internalQuery({
+	args: {
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		userId: v.id("users"),
+		serviceAccountId: v.optional(v.id("access_control_service_accounts")),
+		path: v.string(),
+		includePending: v.boolean(),
+	},
+	returns: v.union(
+		v.object({
+			kind: v.literal("stored"),
+			target: files_pending_target_validator,
+			assetId: v.id("files_r2_assets"),
+			r2Key: v.string(),
+			contentType: v.string(),
+			size: v.number(),
+			path: v.string(),
+			revision: v.string(),
+		}),
+		v.object({
+			kind: v.literal("text"),
+			target: files_pending_target_validator,
+			contentType: v.string(),
+			path: v.string(),
+			revision: v.string(),
+		}),
+		v.null(),
+	),
+	handler: async (ctx, args) => {
+		const entry = (await ctx.runQuery(internal.files_nodes.get_visible_entry_by_path, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			path: args.path,
+			visibilityUserId: args.userId,
+			serviceAccountId: args.serviceAccountId,
+			overlayUserId: args.includePending ? args.userId : undefined,
+		})) as files_nodes_get_visible_entry_by_path_Result;
+		if (!entry || entry.node.kind !== "file" || entry.pendingUpdate?.preparation) return null;
+		const version = await files_transfer_db_get_entry_version(ctx, entry);
+		if (!version) return null;
+		if (version.textKind === null) {
+			const source = await db_get_stored_file_read_source(ctx, { entry, userId: args.userId });
+			return source && { kind: "stored" as const, ...source };
+		}
+		const target: files_PendingTarget =
+			entry.kind === "saved" ? { kind: "saved", id: entry.node._id } : { kind: "private", id: entry.node._id };
+		// The head and pending state pin the text that the action reconstructs, not its older R2 snapshot.
+		const revision = await crypto_sha256_hex(
+			JSON.stringify([target.kind, target.id, entry.path, version, entry.pendingUpdate?.content?.unstagedStateId]),
+		);
+		return { kind: "text" as const, target, contentType: version.contentType, path: entry.path, revision };
+	},
+});
+
+export type files_nodes_get_file_byte_read_source_Result =
+	typeof get_file_byte_read_source extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
 
 export const get_file_text_content_db_state_by_path = internalQuery({
 	args: {

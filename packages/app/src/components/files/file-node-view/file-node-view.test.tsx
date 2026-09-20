@@ -201,6 +201,7 @@ vi.mock("@/components/my-link.tsx", () => ({
 }));
 
 import { FileNodeView, type FileNodeView_SearchParams } from "./file-node-view.tsx";
+import { FileEditorSidebarPending } from "../file-editor/file-editor-sidebar/file-editor-sidebar-pending.tsx";
 
 const NODE = {
 	_id: "node_html",
@@ -282,7 +283,19 @@ let pendingUpdates: unknown[];
 let savedPendingUpdate: unknown;
 let pendingListStatus: "CanLoadMore" | "LoadingMore" | "Exhausted";
 let privateView:
-	| { entry: typeof PRIVATE_ENTRY; readiness: "ready" | "preparing"; canEdit: boolean; canAccept: boolean }
+	| {
+			entry: files_VisibleEntry;
+			readiness: "ready" | "preparing";
+			canEdit: boolean;
+			canAccept: boolean;
+			canAcceptWithParents: boolean;
+			requiredParents: Array<{
+				target: { kind: "private"; id: app_convex_Id<"files_pending_nodes"> };
+				path: string;
+				pendingUpdateId: app_convex_Id<"files_pending_updates">;
+				reviewedRevision: number;
+			}>;
+	  }
 	| null
 	| undefined;
 let pendingChildren: unknown[];
@@ -302,7 +315,14 @@ beforeEach(() => {
 	savedPendingUpdate = undefined;
 	pendingListStatus = "Exhausted";
 	loadMorePendingMock.mockReset();
-	privateView = { entry: PRIVATE_ENTRY, readiness: "ready", canEdit: true, canAccept: true };
+	privateView = {
+		entry: PRIVATE_ENTRY,
+		readiness: "ready",
+		canEdit: true,
+		canAccept: true,
+		canAcceptWithParents: true,
+		requiredParents: [],
+	};
 	pendingChildren = [];
 	browserSession = null;
 	tenantContextMock.mockReturnValue({
@@ -559,6 +579,85 @@ describe("FileNodeView node loading", () => {
 	});
 });
 
+describe("FileEditorSidebarPending review focus", () => {
+	test.each([
+		{ kind: "text", action: "Accept changes to /draft.html" },
+		{ kind: "text", action: "Discard changes to /draft.html" },
+		{ kind: "folder", action: "Accept changes to /draft.html" },
+		{ kind: "folder", action: "Discard changes to /draft.html" },
+		{ kind: "text", action: "Accept all shown pending changes" },
+		{ kind: "text", action: "Discard all shown pending changes" },
+		{ kind: "restricted", action: "Discard unavailable draft" },
+	])("keeps focus through delayed $action ($kind)", async ({ kind, action }) => {
+		pendingUpdates = [
+			kind === "restricted"
+				? {
+						kind: "restricted",
+						target: PRIVATE_ENTRY.pendingUpdate.target,
+						pendingUpdateId: "pending_private",
+						revision: 3,
+					}
+				: {
+						...privateView,
+						kind: "entry",
+						entry:
+							kind === "folder"
+								? {
+										...PRIVATE_ENTRY,
+										node: { ...PRIVATE_ENTRY.node, kind: "folder" },
+										pendingUpdate: {
+											...PRIVATE_ENTRY.pendingUpdate,
+											content: undefined,
+											createIntent: { kind: "folder", metadata: [] },
+										},
+									}
+								: PRIVATE_ENTRY,
+					},
+		];
+		const started = Promise.withResolvers<{ _yay: { runId: string } }>();
+		mutationMock.mockImplementation((reference) =>
+			getFunctionName(reference) === "files_pending_update_runs:start"
+				? started.promise
+				: Promise.resolve({ _yay: null }),
+		);
+		let completed = false;
+		const previousQuery = queryMock.getMockImplementation()!;
+		queryMock.mockImplementation((reference, args) => {
+			if (getFunctionName(reference) === "files_pending_update_runs:get")
+				return {
+					run: { kind: action.startsWith("Accept") ? "accept" : "discard", step: "applying" },
+					activity: { status: completed ? "succeeded" : "running", finishedAt: completed ? 2 : undefined },
+					controls: { canStop: false },
+				};
+			if (getFunctionName(reference) === "files_pending_update_runs:list_items") return { page: [], isDone: true };
+			return previousQuery(reference, args);
+		});
+		render(
+			<AppActivitiesProvider membershipId={tenantContextMock().membershipId}>
+				<FileEditorSidebarPending />
+			</AppActivitiesProvider>,
+		);
+		const opener = screen.getByRole("button", { name: action });
+		opener.focus();
+		fireEvent.click(opener);
+
+		// The start reply has not arrived. Busy buttons must keep focus until the modal can capture it.
+		expect(opener.matches(":disabled")).toBe(false);
+		expect(opener.getAttribute("aria-disabled")).toBe("true");
+		expect(document.activeElement).toBe(opener);
+		fireEvent.click(opener);
+		expect(mutationMock).toHaveBeenCalledTimes(1);
+		await act(async () => started.resolve({ _yay: { runId: "review_1" } }));
+		await waitFor(() => expect(screen.getByRole("dialog").contains(document.activeElement)).toBe(true));
+
+		pendingUpdates = [];
+		completed = true;
+		pushQueryChanges();
+		fireEvent.click(screen.getByText("Close"));
+		await waitFor(() => expect(document.activeElement?.getAttribute("aria-label")).toBe("Pending changes"));
+	});
+});
+
 describe("FileNodeView private targets", () => {
 	test("opens only the owner target and keeps the local draft through Preview", async () => {
 		const { onNavigateSearch } = renderFileView({
@@ -645,6 +744,7 @@ describe("FileNodeView private targets", () => {
 			...privateView!,
 			readiness: "preparing",
 			canAccept: false,
+			canAcceptWithParents: false,
 			entry: {
 				...PRIVATE_ENTRY,
 				pendingUpdate: {
@@ -677,7 +777,7 @@ describe("FileNodeView private targets", () => {
 	});
 
 	test("write loss keeps the draft readable and read loss removes it", async () => {
-		privateView = { ...privateView!, canEdit: false, canAccept: false };
+		privateView = { ...privateView!, canEdit: false, canAccept: false, canAcceptWithParents: false };
 		const { onNavigateSearch } = renderFileView({ pendingNodeId: PRIVATE_ENTRY.node._id });
 		await screen.findByRole("textbox", { name: "Code draft" });
 		expect(editorRenderMock.mock.calls.at(-1)![0].privateCanEdit).toBe(false);
@@ -756,12 +856,15 @@ describe("FileNodeView private targets", () => {
 			},
 		};
 		actionMock.mockResolvedValue({ _yay: { url: "https://assets.test/private.png" } });
+
 		renderFileView({ pendingNodeId: PRIVATE_ENTRY.node._id });
-		fireEvent.click(await screen.findByRole("button", { name: "Preview" }));
+
+		// An image draft shows its picture straight away. There is no Preview button to press first.
 		expect(await screen.findByRole("img", { name: "image.png" })).toHaveProperty(
 			"src",
 			"https://assets.test/private.png",
 		);
+
 		expect(getFunctionName(actionMock.mock.calls[0]![0])).toBe(
 			"files_pending_updates:create_private_pending_download_url",
 		);
@@ -772,6 +875,221 @@ describe("FileNodeView private targets", () => {
 			reviewedRevision: 3,
 			creationGeneration: 1,
 		});
+	});
+
+	// This draft sits in a folder that is itself still a proposal, so it cannot be saved on its own.
+	// Save creates the folder too, in one run, and each item carries the revision the user reviewed.
+	test.each([false, true])("saves through Activity with required parents=%s", async (withParents) => {
+		privateView = {
+			...privateView!,
+			canAccept: !withParents,
+			requiredParents: withParents
+				? [
+						{
+							target: { kind: "private", id: "parent_1" as app_convex_Id<"files_pending_nodes"> },
+							path: "/captures",
+							pendingUpdateId: "pending_parent" as app_convex_Id<"files_pending_updates">,
+							reviewedRevision: 8,
+						},
+					]
+				: [],
+			entry: {
+				...PRIVATE_ENTRY,
+				pendingUpdate: {
+					...PRIVATE_ENTRY.pendingUpdate,
+					content: undefined,
+					createIntent: {
+						kind: "stored",
+						contentType: "image/png",
+						size: 18,
+						metadata: [],
+						assetId: "private_asset" as app_convex_Id<"files_r2_assets">,
+					},
+				},
+			},
+		};
+		actionMock.mockResolvedValue({ _yay: { url: "https://assets.test/private.png" } });
+
+		renderFileView({ pendingNodeId: PRIVATE_ENTRY.node._id });
+
+		// The extra folder is named in the UI first, so Save never creates something the user did not see.
+		if (withParents) expect(await screen.findByText("Save also creates: /captures")).toBeTruthy();
+
+		fireEvent.click(screen.getByRole("button", { name: "Save" }));
+		await waitFor(() => expect(mutationMock).toHaveBeenCalledTimes(2));
+
+		expect(mutationMock.mock.calls[0]![1]).toEqual({
+			membershipId: "membership_1",
+			requestId: expect.any(String),
+			kind: "accept",
+			expectedItemCount: withParents ? 2 : 1,
+			items: [
+				...(withParents
+					? [{ pendingUpdateId: "pending_parent", reviewedRevision: 8, selectedContentStateId: null }]
+					: []),
+				{ pendingUpdateId: "pending_private", reviewedRevision: 3, selectedContentStateId: null },
+			],
+		});
+		expect(
+			actionMock.mock.calls.some(
+				([reference]) => getFunctionName(reference) === "files_pending_updates:save_file_pending_update",
+			),
+		).toBe(false);
+	});
+
+	test("keeps the review progress and a failed Save visible", async () => {
+		privateView = {
+			...privateView!,
+			entry: {
+				...PRIVATE_ENTRY,
+				pendingUpdate: {
+					...PRIVATE_ENTRY.pendingUpdate,
+					content: undefined,
+					createIntent: {
+						kind: "stored",
+						contentType: "application/pdf",
+						size: 18,
+						metadata: [],
+						assetId: "asset_pdf" as app_convex_Id<"files_r2_assets">,
+					},
+				},
+			},
+		};
+		let failed = false;
+		const previousQuery = queryMock.getMockImplementation()!;
+		queryMock.mockImplementation((reference, args) => {
+			if (getFunctionName(reference) === "files_pending_update_runs:get")
+				return {
+					run: { kind: "accept", step: "running" },
+					activity: {
+						status: failed ? "failed" : "running",
+						finishedAt: failed ? 2 : undefined,
+						errorMessage: failed ? "The draft changed. Review it again." : undefined,
+						progress: { total: 1, completed: 0, skipped: 0, failed: failed ? 1 : 0, blocked: 0, canceled: 0 },
+					},
+					controls: { canStop: false },
+				};
+			if (getFunctionName(reference) === "files_pending_update_runs:list_items") return { page: [], isDone: true };
+			return previousQuery(reference, args);
+		});
+		renderFileView({ pendingNodeId: PRIVATE_ENTRY.node._id });
+		fireEvent.click(await screen.findByRole("button", { name: "Save" }));
+		expect(await screen.findByText("Saving reviewed changes…")).toBeTruthy();
+		expect(screen.getByText(/1 remaining/)).toBeTruthy();
+		failed = true;
+		pushQueryChanges();
+		expect(await screen.findByRole("alert")).toHaveProperty("textContent", "The draft changed. Review it again.");
+		expect(screen.getByText("Review could not finish. Check the remaining changes.")).toBeTruthy();
+		expect(privateView?.entry.pendingUpdate?._id).toBe("pending_private");
+	});
+
+	test("restores focus when a focused private action disappears", async () => {
+		renderFileView({ pendingNodeId: PRIVATE_ENTRY.node._id });
+		const discard = await screen.findByRole("button", { name: "Discard" });
+		discard.focus();
+
+		// Somebody else saved or discarded this draft, so the focused button unmounts. Keyboard focus must
+		// land on the file content instead of falling back to the page body.
+		privateView = null;
+		pushQueryChanges();
+
+		await waitFor(() => expect(document.activeElement?.getAttribute("aria-label")).toBe("File content"));
+		expect(screen.getByText("This draft is no longer available.")).toBeTruthy();
+	});
+
+	test.each(["Save", "Discard"])("returns focus to file content after closing completed %s", async (action) => {
+		privateView = {
+			...privateView!,
+			entry: {
+				...PRIVATE_ENTRY,
+				pendingUpdate: {
+					...PRIVATE_ENTRY.pendingUpdate,
+					content: undefined,
+					createIntent: {
+						kind: "stored",
+						contentType: "application/octet-stream",
+						size: 18,
+						metadata: [],
+						assetId: "asset_binary" as app_convex_Id<"files_r2_assets">,
+					},
+				},
+			},
+		};
+		let completed = false;
+		const previousQuery = queryMock.getMockImplementation()!;
+		queryMock.mockImplementation((reference, args) => {
+			if (getFunctionName(reference) === "files_pending_update_runs:get")
+				return {
+					run: { kind: action === "Save" ? "accept" : "discard", step: "applying" },
+					activity: { status: completed ? "succeeded" : "running", finishedAt: completed ? 2 : undefined },
+					controls: { canStop: false },
+				};
+			if (getFunctionName(reference) === "files_pending_update_runs:list_items") return { page: [], isDone: true };
+			return previousQuery(reference, args);
+		});
+		const { rerender, onNavigateSearch } = renderFileView({ pendingNodeId: PRIVATE_ENTRY.node._id });
+		const opener = await screen.findByRole("button", { name: action });
+		opener.focus();
+		fireEvent.click(opener);
+		await waitFor(() => expect(screen.getByRole("dialog").contains(document.activeElement)).toBe(true));
+
+		privateView = null;
+		completed = true;
+		pushQueryChanges();
+		if (action === "Save")
+			rerender(<FileNodeView searchParams={{ nodeId: NODE._id }} onNavigateSearch={onNavigateSearch} />);
+		expect(opener.isConnected).toBe(false);
+		fireEvent.click(screen.getByText("Close"));
+
+		await waitFor(() => expect(document.activeElement?.getAttribute("aria-label")).toBe("File content"));
+	});
+
+	test("shows a saved image without a file viewer plugin", async () => {
+		node = {
+			...NODE,
+			name: "capture.png",
+			path: "/capture.png",
+			contentType: "image/png",
+			textKind: null,
+			collaborationEnabled: false,
+			yjsSnapshotId: null,
+			yjsLastSequenceId: null,
+		};
+		// No plugin can open this file. The view must still show the picture itself.
+		plugins = [];
+
+		const query = queryMock.getMockImplementation()!;
+		queryMock.mockImplementation((reference: never, args: unknown) =>
+			getFunctionName(reference) === "r2:get_asset_by_file_node_id"
+				? { r2Key: "capture.png", size: 18 }
+				: query(reference, args),
+		);
+		actionMock.mockResolvedValue({ _yay: { url: "https://assets.test/saved.png" } });
+
+		renderFileView();
+
+		expect(await screen.findByRole("img", { name: "capture.png" })).toHaveProperty(
+			"src",
+			"https://assets.test/saved.png",
+		);
+		expect(getFunctionName(actionMock.mock.calls[0]![0])).toBe("r2:create_signed_download_url");
+		expect(screen.queryByTestId("plugin-frame")).toBeNull();
+	});
+
+	// A chat link still points at the private draft, but that draft was saved in the meantime. Files
+	// answers with the saved node, and the route swaps to it without adding a history entry.
+	test("follows a published private link to the authorized saved target", async () => {
+		privateView = {
+			...privateView!,
+			entry: { kind: "saved", node: NODE, pendingUpdate: null, path: NODE.path } as unknown as files_VisibleEntry,
+		};
+		const { onNavigateSearch } = renderFileView({ pendingNodeId: PRIVATE_ENTRY.node._id, q: "capture" });
+		await waitFor(() =>
+			expect(onNavigateSearch).toHaveBeenCalledWith(
+				{ nodeId: NODE._id, q: "capture", view: undefined },
+				{ replace: true },
+			),
+		);
 	});
 
 	test("restores a tagged private selection and never falls back to saved lookup", async () => {
@@ -942,7 +1260,16 @@ describe("FileNodeView file views", () => {
 			within(list)
 				.getAllByRole("option")
 				.map((option) => option.textContent),
-		).toEqual(["Code", "Review changes", "Preview", "Browser", "Code + Browser", "Review changes + Browser", "File details", "File viewer"]);
+		).toEqual([
+			"Code",
+			"Review changes",
+			"Preview",
+			"Browser",
+			"Code + Browser",
+			"Review changes + Browser",
+			"File details",
+			"File viewer",
+		]);
 		expect(within(list).getByRole("option", { name: "Code" }).getAttribute("aria-selected")).toBe("true");
 		expect(trigger.querySelector("svg")).toBeNull();
 		expect(search.closest(".MySearchSelectPopover")?.querySelector("svg")).toBeNull();
@@ -986,7 +1313,15 @@ describe("FileNodeView file views", () => {
 			name: "HTML",
 			node: NODE,
 			selected: "Code",
-			options: ["Code", "Review changes", "Preview", "Browser", "Code + Browser", "Review changes + Browser", "File details"],
+			options: [
+				"Code",
+				"Review changes",
+				"Preview",
+				"Browser",
+				"Code + Browser",
+				"Review changes + Browser",
+				"File details",
+			],
 		},
 		{
 			name: "stored image",
@@ -1344,7 +1679,15 @@ describe("FileNodeView browser views", () => {
 		renderFileView();
 		await screen.findByRole("textbox", { name: "Code draft" });
 		await openViewPicker();
-		for (const name of ["Code", "Review changes", "Preview", "Browser", "Code + Browser", "Review changes + Browser", "File details"]) {
+		for (const name of [
+			"Code",
+			"Review changes",
+			"Preview",
+			"Browser",
+			"Code + Browser",
+			"Review changes + Browser",
+			"File details",
+		]) {
 			expect(screen.getByRole("option", { name })).toBeTruthy();
 		}
 	});

@@ -117,6 +117,7 @@ import { public_api_service_uploads_db_get_target_by_asset } from "./public_api_
 import {
 	files_pending_nodes_db_create,
 	files_pending_nodes_db_get_ancestry,
+	files_pending_nodes_db_resolve_read_target,
 	files_pending_nodes_db_resolve_saved_parent,
 } from "./files_pending_nodes.ts";
 import { quotas_db_ensure } from "./quotas.ts";
@@ -588,9 +589,16 @@ export const get_path_by_id = internalQuery({
 	returns: v.union(v.string(), v.null()),
 	handler: async (ctx, args) => {
 		const nodeId = ctx.db.normalizeId("files_nodes", args.nodeId);
-		if (!nodeId) {
+		const privateNodeId = ctx.db.normalizeId("files_pending_nodes", args.nodeId);
+		if (!nodeId && !privateNodeId) {
 			return null;
 		}
+		const target = await files_pending_nodes_db_resolve_read_target(ctx, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			target: nodeId ? { kind: "saved", id: nodeId } : { kind: "private", id: privateNodeId! },
+		});
+		if (!target) return null;
 
 		const reader = await files_visible_db_create_reader(ctx, {
 			organizationId: args.organizationId,
@@ -598,7 +606,7 @@ export const get_path_by_id = internalQuery({
 			userId: args.visibilityUserId,
 			readLimit: 2048,
 		});
-		const entry = await reader.resolveTarget({ kind: "saved", id: nodeId });
+		const entry = await reader.resolveTarget(target);
 		if (reader.exhausted) throw convex_error({ message: "File path lookup exceeded its read limit." });
 		return entry?.path ?? null;
 	},
@@ -2496,8 +2504,261 @@ export type files_nodes_create_folder_node_by_path_Result =
 		: never;
 
 /**
- * Reserve a private path for agent creates. Text stays Preparing until its initial batch seals.
+ * Check a private create before allocating content. Commit repeats this same plan because
+ * access, quotas, and occupied names can change while the action prepares the content.
  */
+export async function files_nodes_db_plan_private_node_by_path(
+	ctx: MutationCtx,
+	args: {
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		userId: Id<"users">;
+		path: string;
+		kind: "file" | "folder";
+		uniqueName?: boolean;
+	},
+) {
+	if (
+		args.path.length > 1024 ||
+		!args.path.startsWith("/") ||
+		/[\\*?\[\]{}]/.test(args.path) ||
+		args.path
+			.slice(1)
+			.split("/")
+			.some((segment) => segment === "" || segment === "." || segment === "..")
+	)
+		return Result({ _nay: { message: "Invalid file path" } });
+	const normalized = files_get_normalized_node_path_segments({
+		kind: args.kind,
+		nameOrPath: args.path,
+		fileNamePolicy: "keep_extension",
+	});
+	if (
+		!normalized ||
+		"validationMessage" in normalized ||
+		`/${normalized.normalizedPathSegments.join("/")}` !== args.path
+	) {
+		return Result({ _nay: { message: "Invalid file path" } });
+	}
+	let segments = normalized.normalizedPathSegments;
+
+	const membership = await ctx.db
+		.query("organizations_workspaces_users")
+		.withIndex("by_active_user_organization_workspace", (q) =>
+			q
+				.eq("active", true)
+				.eq("userId", args.userId)
+				.eq("organizationId", args.organizationId)
+				.eq("workspaceId", args.workspaceId),
+		)
+		.first();
+	if (!membership) return Result({ _nay: { message: "Permission denied" } });
+
+	const reader = await files_visible_db_create_reader(ctx, { ...args, readLimit: 4096 });
+	let path = args.path;
+	if (args.uniqueName) {
+		const dot = path.lastIndexOf(".");
+		const extensionStart = dot > path.lastIndexOf("/") + 1 ? dot : path.length;
+		let available = false;
+		for (let suffix = 0; suffix < 100; suffix++) {
+			const candidate =
+				suffix === 0 ? path : `${path.slice(0, extensionStart)}-${suffix + 1}${path.slice(extensionStart)}`;
+			// A pending move or delete can hide a saved occupant from the owner's view.
+			const saved = await ctx.db
+				.query("files_nodes")
+				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
+					q
+						.eq("organizationId", args.organizationId)
+						.eq("workspaceId", args.workspaceId)
+						.eq("path", candidate)
+						.eq("archiveOperationId", null),
+				)
+				.first();
+			if (!saved && !(await reader.findPath(candidate))) {
+				path = candidate;
+				available = true;
+				break;
+			}
+		}
+		if (!available || reader.exhausted) return Result({ _nay: { message: "No free filename was found" } });
+		segments = path.slice(1).split("/");
+	}
+
+	let parent: Doc<"files_pending_nodes">["parent"] = { kind: "root" };
+	let savedParent: Doc<"files_nodes"> | null = null;
+	let privateDepth = 0;
+	let missingFrom = 0;
+
+	// Find existing parents so creation can reuse them and add only the missing path.
+	for (; missingFrom < segments.length; missingFrom++) {
+		const entry = (await reader.findPath(`/${segments.slice(0, missingFrom + 1).join("/")}`))?.entry;
+		if (reader.exhausted) return Result({ _nay: { message: "Create path lookup exceeded its read limit." } });
+		if (!entry) break;
+
+		if (entry.kind === "private") {
+			const ancestry = await files_pending_nodes_db_get_ancestry(ctx, { ...args, privateNodeId: entry.node._id });
+			if (ancestry._nay) return ancestry;
+			savedParent = ancestry._yay.savedParent;
+			privateDepth = ancestry._yay.ancestors.length + 1;
+		} else {
+			savedParent = entry.node;
+			privateDepth = 0;
+		}
+
+		const readable = await access_control_db_authorize_membership(ctx, {
+			userAuth: { id: args.userId },
+			membership,
+			fileNode: savedParent ?? undefined,
+			permission: "content.read",
+		});
+		if (readable._nay) return Result({ _nay: { message: "Permission denied" } });
+
+		if (missingFrom === segments.length - 1) {
+			if (entry.node.kind !== args.kind)
+				return Result({ _nay: { message: "A different entry already exists at this path" } });
+			return Result({
+				_yay: {
+					kind: "existing" as const,
+					target:
+						entry.kind === "saved"
+							? { kind: "saved" as const, id: entry.node._id }
+							: { kind: "private" as const, id: entry.node._id },
+					created: false,
+					pendingUpdateId: entry.pendingUpdate?._id ?? null,
+					operationBatchId: null,
+				},
+			});
+		}
+
+		if (entry.node.kind !== "folder") return Result({ _nay: { message: "Not a directory" } });
+		if (entry.kind === "private" && entry.pendingUpdate.createIntent?.kind !== "folder") {
+			return Result({ _nay: { name: "preparing", message: "This draft folder is still preparing" } });
+		}
+		parent = entry.kind === "saved" ? { kind: "saved", id: entry.node._id } : { kind: "private", id: entry.node._id };
+	}
+
+	const writable = await authorize_file_write(ctx, {
+		userAuth: { id: args.userId },
+		membership,
+		nodeId: savedParent?._id ?? files_ROOT_ID,
+	});
+	if (writable._nay) return writable;
+	if (savedParent) {
+		const policy = await files_nodes_db_require_user_writable(ctx, { node: savedParent, userId: args.userId });
+		if (policy._nay) return policy;
+	}
+
+	const missingCount = segments.length - missingFrom;
+	// Bound the ancestor checks and writes of one implicit-parent create.
+	if (missingCount > 32 || privateDepth + missingCount > 256) {
+		return Result({ _nay: { name: "too_large", message: "Create the parent folders in smaller groups" } });
+	}
+
+	const now = Date.now();
+	const quotaId = await quotas_db_ensure(ctx, { ...args, quotaName: "files_private_nodes", now });
+	const quota = await ctx.db.get("quotas", quotaId);
+	if (!quota) throw should_never_happen("Missing private node quota", { quotaId });
+	if (quota.usedCount + missingCount > quota.maxCount) {
+		return Result({ _nay: { name: "storage_full", message: quotas.files_private_nodes.disabledReason } });
+	}
+	return Result({ _yay: { kind: "create" as const, path, segments, missingFrom, parent, now } });
+}
+
+/**
+ * Create only the missing path. Text stays Preparing until its initial batch commits.
+ * Stored content attaches in the caller's transaction after its upload completes.
+ */
+export async function files_nodes_db_create_private_node_by_path(
+	ctx: MutationCtx,
+	args: {
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		userId: Id<"users">;
+		path: string;
+		kind: "file" | "folder";
+		threadId?: Id<"ai_chat_threads">;
+		content?:
+			| { kind: "stored"; assetId: Id<"files_r2_assets">; size: number; contentType: string }
+			| { kind: "text"; contentType: string; textKind: files_YjsRootKind };
+	},
+) {
+	const planned = await files_nodes_db_plan_private_node_by_path(ctx, {
+		...args,
+		uniqueName: args.content !== undefined,
+	});
+	if (planned._nay) return planned;
+	if (planned._yay.kind === "existing") {
+		const { kind: _kind, ...existing } = planned._yay;
+		return Result({ _yay: { ...existing, createdNodeIds: [] as Id<"files_pending_nodes">[], path: args.path } });
+	}
+	const { path, segments, missingFrom, now } = planned._yay;
+	let parent = planned._yay.parent;
+	const createdNodeIds: Id<"files_pending_nodes">[] = [];
+
+	for (let index = missingFrom; index < segments.length; index++) {
+		const kind = index === segments.length - 1 ? args.kind : "folder";
+		const created = await files_pending_nodes_db_create(ctx, { ...args, parent, name: segments[index]!, kind });
+		if (created._nay) throw should_never_happen("Private path changed after preflight", { path: args.path });
+		const { privateNodeId, pendingUpdateId, updatedAt } = created._yay;
+		createdNodeIds.push(privateNodeId);
+		const shape =
+			args.content?.kind === "text"
+				? { contentType: args.content.contentType, rootKind: args.content.textKind }
+				: files_default_text_shape_for_name(segments[index]!);
+
+		await files_db_patch_pending_update(ctx, pendingUpdateId, {
+			createIntent:
+				kind === "folder"
+					? { kind: "folder", metadata: [] }
+					: args.content?.kind === "stored"
+						? { ...args.content, metadata: [] }
+						: {
+								kind: "text",
+								contentType: shape.contentType,
+								textKind: shape.rootKind,
+								collaborationEnabled: true,
+								metadata: [],
+							},
+			// Uploaded bytes already know their size. A text create keeps size 0 until its first batch.
+			...(kind === "file" && args.content?.kind === "stored" ? { size: args.content.size } : {}),
+		});
+		await files_db_schedule_pending_update_cleanup(ctx, { pendingUpdateId, expectedUpdatedAt: updatedAt });
+		parent = { kind: "private", id: privateNodeId };
+
+		if (index === segments.length - 1) {
+			// Text still needs its first edit batch. Stored bytes are already complete at creation.
+			const operationBatchId =
+				kind === "file" && args.content?.kind !== "stored"
+					? await ctx.db.insert("files_pending_update_operation_batches", {
+							organizationId: args.organizationId,
+							workspaceId: args.workspaceId,
+							userId: args.userId,
+							target: { kind: "private", id: privateNodeId },
+							expectedPendingUpdateId: pendingUpdateId,
+							expectedRevision: 1,
+							expectedPrivateVersion: { creationGeneration: 1, structuralRevision: 1 },
+							initialCreation: true,
+							expiresAt: now + 30 * 60 * 1000,
+							updatedAt: now,
+							lastActivityAt: now,
+						})
+					: null;
+			return Result({
+				_yay: {
+					target: { kind: "private" as const, id: privateNodeId },
+					created: true,
+					pendingUpdateId,
+					operationBatchId,
+					createdNodeIds,
+					path,
+				},
+			});
+		}
+	}
+
+	throw should_never_happen("Private create has no path segments", { path: args.path });
+}
+
 export const create_private_node_by_path = internalMutation({
 	args: {
 		organizationId: v.id("organizations"),
@@ -2516,160 +2777,10 @@ export const create_private_node_by_path = internalMutation({
 		}),
 	}),
 	handler: async (ctx, args) => {
-		const normalized = files_get_normalized_node_path_segments({
-			kind: args.kind,
-			nameOrPath: args.path,
-			fileNamePolicy: "keep_extension",
-		});
-		if (
-			!normalized ||
-			"validationMessage" in normalized ||
-			`/${normalized.normalizedPathSegments.join("/")}` !== args.path
-		) {
-			return Result({ _nay: { message: "Invalid file path" } });
-		}
-		const segments = normalized.normalizedPathSegments;
-
-		const membership = await ctx.db
-			.query("organizations_workspaces_users")
-			.withIndex("by_active_user_organization_workspace", (q) =>
-				q
-					.eq("active", true)
-					.eq("userId", args.userId)
-					.eq("organizationId", args.organizationId)
-					.eq("workspaceId", args.workspaceId),
-			)
-			.first();
-		if (!membership) return Result({ _nay: { message: "Permission denied" } });
-
-		const reader = await files_visible_db_create_reader(ctx, { ...args, readLimit: 4096 });
-		let parent: Doc<"files_pending_nodes">["parent"] = { kind: "root" };
-		let savedParent: Doc<"files_nodes"> | null = null;
-		let privateDepth = 0;
-		let missingFrom = 0;
-
-		for (; missingFrom < segments.length; missingFrom++) {
-			const entry = (await reader.findPath(`/${segments.slice(0, missingFrom + 1).join("/")}`))?.entry;
-			if (reader.exhausted) return Result({ _nay: { message: "Create path lookup exceeded its read limit." } });
-			if (!entry) break;
-
-			if (entry.kind === "private") {
-				const ancestry = await files_pending_nodes_db_get_ancestry(ctx, { ...args, privateNodeId: entry.node._id });
-				if (ancestry._nay) return ancestry;
-				savedParent = ancestry._yay.savedParent;
-				privateDepth = ancestry._yay.ancestors.length + 1;
-			} else {
-				savedParent = entry.node;
-				privateDepth = 0;
-			}
-
-			const readable = await access_control_db_authorize_membership(ctx, {
-				userAuth: { id: args.userId },
-				membership,
-				fileNode: savedParent ?? undefined,
-				permission: "content.read",
-			});
-			if (readable._nay) return Result({ _nay: { message: "Permission denied" } });
-
-			if (missingFrom === segments.length - 1) {
-				if (entry.node.kind !== args.kind)
-					return Result({ _nay: { message: "A different entry already exists at this path" } });
-				return Result({
-					_yay: {
-						target:
-							entry.kind === "saved"
-								? { kind: "saved" as const, id: entry.node._id }
-								: { kind: "private" as const, id: entry.node._id },
-						created: false,
-						pendingUpdateId: entry.pendingUpdate?._id ?? null,
-						operationBatchId: null,
-					},
-				});
-			}
-
-			if (entry.node.kind !== "folder") return Result({ _nay: { message: "Not a directory" } });
-			if (entry.kind === "private" && entry.pendingUpdate.createIntent?.kind !== "folder") {
-				return Result({ _nay: { name: "preparing", message: "This draft folder is still preparing" } });
-			}
-			parent = entry.kind === "saved" ? { kind: "saved", id: entry.node._id } : { kind: "private", id: entry.node._id };
-		}
-
-		const writable = await authorize_file_write(ctx, {
-			userAuth: { id: args.userId },
-			membership,
-			nodeId: savedParent?._id ?? files_ROOT_ID,
-		});
-		if (writable._nay) return writable;
-		if (savedParent) {
-			const policy = await files_nodes_db_require_user_writable(ctx, { node: savedParent, userId: args.userId });
-			if (policy._nay) return policy;
-		}
-
-		const missingCount = segments.length - missingFrom;
-		// Bound the ancestor checks and writes of one implicit-parent create.
-		if (missingCount > 32 || privateDepth + missingCount > 256) {
-			return Result({ _nay: { name: "too_large", message: "Create the parent folders in smaller groups" } });
-		}
-
-		const now = Date.now();
-		const quotaId = await quotas_db_ensure(ctx, { ...args, quotaName: "files_private_nodes", now });
-		const quota = await ctx.db.get("quotas", quotaId);
-		if (!quota) throw should_never_happen("Missing private node quota", { quotaId });
-		if (quota.usedCount + missingCount > quota.maxCount) {
-			return Result({ _nay: { name: "storage_full", message: quotas.files_private_nodes.disabledReason } });
-		}
-
-		for (let index = missingFrom; index < segments.length; index++) {
-			const kind = index === segments.length - 1 ? args.kind : "folder";
-			const created = await files_pending_nodes_db_create(ctx, { ...args, parent, name: segments[index]!, kind });
-			if (created._nay) throw should_never_happen("Private path changed after preflight", { path: args.path });
-			const { privateNodeId, pendingUpdateId, updatedAt } = created._yay;
-			const shape = files_default_text_shape_for_name(segments[index]!);
-
-			await files_db_patch_pending_update(ctx, pendingUpdateId, {
-				createIntent:
-					kind === "folder"
-						? { kind: "folder", metadata: [] }
-						: {
-								kind: "text",
-								contentType: shape.contentType,
-								textKind: shape.rootKind,
-								collaborationEnabled: true,
-								metadata: [],
-							},
-			});
-			await files_db_schedule_pending_update_cleanup(ctx, { pendingUpdateId, expectedUpdatedAt: updatedAt });
-			parent = { kind: "private", id: privateNodeId };
-
-			if (index === segments.length - 1) {
-				const operationBatchId =
-					kind === "file"
-						? await ctx.db.insert("files_pending_update_operation_batches", {
-								organizationId: args.organizationId,
-								workspaceId: args.workspaceId,
-								userId: args.userId,
-								target: { kind: "private", id: privateNodeId },
-								expectedPendingUpdateId: pendingUpdateId,
-								expectedRevision: 1,
-								expectedPrivateVersion: { creationGeneration: 1, structuralRevision: 1 },
-								initialCreation: true,
-								expiresAt: now + 30 * 60 * 1000,
-								updatedAt: now,
-								lastActivityAt: now,
-							})
-						: null;
-				return Result({
-					_yay: {
-						target: { kind: "private" as const, id: privateNodeId },
-						created: true,
-						pendingUpdateId,
-						operationBatchId,
-					},
-				});
-			}
-		}
-
-		throw should_never_happen("Private create has no path segments", { path: args.path });
+		const result = await files_nodes_db_create_private_node_by_path(ctx, args);
+		if (result._nay) return result;
+		const { createdNodeIds: _createdNodeIds, path: _path, ...created } = result._yay;
+		return Result({ _yay: created });
 	},
 });
 
@@ -6489,11 +6600,7 @@ const files_node_public_doc_fields = ((/* iife */) => {
  * The state names the node's own rule only. A parent lock never marks a child.
  */
 function get_public_node_fields(fileNode: Doc<"files_nodes">, writeBlockedReason: "permission" | "read_only" | null) {
-	const {
-		writePolicy,
-		newChildWritePolicy: _newChildWritePolicy,
-		...rest
-	} = fileNode;
+	const { writePolicy, newChildWritePolicy: _newChildWritePolicy, ...rest } = fileNode;
 
 	// Keep these values as exact literals so they match the return validator.
 	const writePolicyState =

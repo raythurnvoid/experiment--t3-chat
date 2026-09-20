@@ -16,7 +16,7 @@ import {
 	session_is_expired,
 	session_next_alarm,
 	validate_gate_request,
-	validate_snippet_images,
+	validate_snippet_files,
 	handle_gate_request,
 	type Env,
 } from "./index";
@@ -133,31 +133,6 @@ function make_record(overrides: Partial<SessionRecord> = {}): SessionRecord {
 	};
 }
 
-function png_bytes(width: number, height: number): Uint8Array {
-	const bytes = new Uint8Array(32);
-	bytes.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], 0);
-	bytes.set([0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52], 8);
-	bytes[16] = (width >>> 24) & 0xff;
-	bytes[17] = (width >>> 16) & 0xff;
-	bytes[18] = (width >>> 8) & 0xff;
-	bytes[19] = width & 0xff;
-	bytes[20] = (height >>> 24) & 0xff;
-	bytes[21] = (height >>> 16) & 0xff;
-	bytes[22] = (height >>> 8) & 0xff;
-	bytes[23] = height & 0xff;
-	return bytes;
-}
-
-function jpeg_bytes(width: number, height: number): Uint8Array {
-	const bytes = new Uint8Array(24);
-	bytes.set([0xff, 0xd8, 0xff, 0xe0, 0, 2], 0);
-	bytes.set([0xff, 0xc0, 0, 8, 8], 6);
-	bytes[11] = (height >>> 8) & 0xff;
-	bytes[12] = height & 0xff;
-	bytes[13] = (width >>> 8) & 0xff;
-	bytes[14] = width & 0xff;
-	return bytes;
-}
 
 describe("routing", () => {
 	it("returns ok for GET /health", async () => {
@@ -433,6 +408,7 @@ describe("execute_browser_command", () => {
 		})), env, ctx);
 		const result = await response.json();
 		expect(result.status).toBe(status);
+		expect(result.files).toEqual([]);
 		expect(finishes).toEqual([expect.objectContaining({ tainted })]);
 		expect(result.consoleEntries).toEqual(tainted ? [] : ["private output"]);
 		expect(calls).toEqual(timeout || lost ? ["/run/begin", "/run/finish"] : ["/run/begin", "/run/settle", "/run/finish"]);
@@ -458,7 +434,7 @@ describe("execute_browser_command", () => {
 			return { ok: true };
 		} });
 		const evaluate = vi.fn(async () => ({
-			ok: true, resultJson: "42", images: [], viewport: null,
+			ok: true, resultJson: "42", files: [{ path: "/reports/result.bin", bytes: new Uint8Array([0, 255, 128]) }], viewport: null,
 			popups: { blocked: 99, urls: ["untrusted"] }, consoleEntries: [], pageErrors: [], logs: [], logsTruncated: false,
 		}));
 		env.LOADER = { load: () => ({ getEntrypoint: () => ({ evaluate }) }) };
@@ -478,6 +454,7 @@ describe("execute_browser_command", () => {
 		settled.resolve();
 		const result = await (await pending).json();
 		expect(result).toMatchObject({ status: "succeeded", result: 42, popups: { blocked: 2, urls: [] } });
+		expect(result.files).toEqual([{ path: "/reports/result.bin", dataBase64: "AP+A" }]);
 		expect(calls).toEqual(["/run/begin", "/run/settle", "/run/finish"]);
 		expect(finishes).toEqual([expect.objectContaining({ tainted: false })]);
 	});
@@ -800,55 +777,46 @@ describe("validate_gate_request", () => {
 	});
 });
 
-describe("validate_snippet_images", () => {
-	it("accepts a small png", () => {
-		const res = validate_snippet_images([png_bytes(4, 4)]);
-		expect(res.ok).toBe(true);
-		if (res.ok) {
-			expect(res.images[0]?.mime).toBe("image/png");
-			expect(res.images[0]?.width).toBe(4);
-			expect(res.images[0]?.height).toBe(4);
+describe("validate_snippet_files", () => {
+	it("preserves arbitrary, empty, and sliced bytes without a forced content type", () => {
+		const source = new Uint8Array([99, 0, 255, 128, 99]);
+		expect(validate_snippet_files([
+			{ path: "/reports/custom", contentType: "application/x-custom", bytes: source.subarray(1, 4) },
+			{ path: "/reports/empty", bytes: new Uint8Array() },
+		])).toEqual({
+			ok: true, fileBytes: 3, files: [
+				{ path: "/reports/custom", contentType: "application/x-custom", dataBase64: "AP+A" },
+				{ path: "/reports/empty", dataBase64: "" },
+			],
+		});
+	});
+
+	it("allows exactly eight files and 8 MiB", () => {
+		const files = Array.from({ length: LIMITS.files }, (_, index) => ({
+			path: "/reports/" + index, bytes: new Uint8Array(LIMITS.fileBytes / LIMITS.files).fill(index),
+		}));
+		const result = validate_snippet_files(files);
+		expect(result.ok).toBe(true);
+		if (!result.ok) throw new Error(result.reason);
+		expect(result.fileBytes).toBe(LIMITS.fileBytes);
+		for (const [index, file] of result.files.entries()) {
+			expect(Buffer.from(file.dataBase64, "base64").equals(Buffer.from(files[index].bytes))).toBe(true);
 		}
+		expect(JSON.stringify(result).length).toBeLessThan(12 * 1024 * 1024);
 	});
 
-	it("accepts a small jpeg", () => {
-		const res = validate_snippet_images([jpeg_bytes(4, 4)]);
-		expect(res.ok).toBe(true);
-		if (res.ok) expect(res.images[0]?.mime).toBe("image/jpeg");
-	});
-
-	it("refuses non-image bytes", () => {
-		expect(validate_snippet_images([new TextEncoder().encode("hello")])).toEqual({
-			ok: false,
-			reason: "images_format",
-		});
-	});
-
-	it("refuses too many images", () => {
-		expect(validate_snippet_images([png_bytes(2, 2), png_bytes(2, 2), png_bytes(2, 2)])).toEqual({
-			ok: false,
-			reason: "images_count",
-		});
-	});
-
-	it("refuses an over-edge image", () => {
-		expect(validate_snippet_images([png_bytes(9000, 4)])).toEqual({
-			ok: false,
-			reason: "images_dimensions",
-		});
-	});
-
-	it("refuses an over-pixel image", () => {
-		expect(validate_snippet_images([png_bytes(5000, 4000)])).toEqual({
-			ok: false,
-			reason: "images_dimensions",
-		});
-	});
-
-	it("refuses oversize bytes", () => {
-		const big = new Uint8Array(LIMITS.imageBytes + 1);
-		big.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], 0);
-		expect(validate_snippet_images([big])).toEqual({ ok: false, reason: "images_bytes" });
+	it.each([
+		[null, "files_shape"],
+		[[{ path: "", bytes: new Uint8Array() }], "files_shape"],
+		[[{ path: "/reports/file", bytes: [1, 2] }], "files_shape"],
+		[[{ path: "/reports/file", contentType: null, bytes: new Uint8Array() }], "files_shape"],
+		[[{ path: "x".repeat(LIMITS.filePathChars + 1), bytes: new Uint8Array() }], "files_shape"],
+		[[{ path: "/reports/file", contentType: "x".repeat(LIMITS.fileContentTypeChars + 1), bytes: new Uint8Array() }], "files_shape"],
+		[Array.from({ length: LIMITS.files + 1 }, () => ({ path: "/reports/file", bytes: new Uint8Array() })), "files_count"],
+		[[{ path: "/reports/file", bytes: new Uint8Array(LIMITS.fileBytes + 1) }], "files_bytes"],
+		[[{ path: "/reports/one", bytes: new Uint8Array(LIMITS.fileBytes) }, { path: "/reports/two", bytes: new Uint8Array([1]) }], "files_bytes"],
+	])("refuses malformed or over-limit output", (files, reason) => {
+		expect(validate_snippet_files(files)).toEqual({ ok: false, reason });
 	});
 });
 
@@ -913,6 +881,74 @@ describe("build_controller_html", () => {
 });
 
 describe("build_executor_module", () => {
+	function run_snippet(code: string, timeoutMs = 1000) {
+		const screenshot = Uint8Array.from(Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+Xf6sAAAAASUVORK5CYII=", "base64"));
+		const outer = { url: () => "https://controller.browser.invalid/v0", childFrames: () => [{}] };
+		const page = {
+			on: () => {}, mainFrame: () => ({ childFrames: () => [outer] }),
+			setViewportSize: async () => {}, viewportSize: () => ({ width: 1280, height: 900 }),
+			screenshot: async () => screenshot,
+		};
+		const source = build_executor_module(code).replace(/^import .*;$/gm, "").replace("export default class", "class") + "\nSnippetExecutor;";
+		const Executor = runInNewContext(source, {
+			WorkerEntrypoint: class {}, TextEncoder, URL, Uint8Array, ArrayBuffer, console: {}, expect: () => {}, setTimeout, clearTimeout,
+			connect: async () => ({ contexts: () => [{ pages: () => [page] }], close: async () => {} }),
+		}) as new () => { evaluate: (input: unknown) => Promise<{
+			ok: boolean; files?: Array<{ path: string; contentType?: string; bytes: Uint8Array }>; error?: { message: string };
+		}> };
+		return new Executor().evaluate({ sessionId: "fixture", runtimeOrigin: "https://controller.browser.invalid", viewport: { width: 1280, height: 900 }, timeoutMs });
+	}
+
+	it("emits a screenshot and arbitrary binary bytes through the same helper", async () => {
+		const result = await run_snippet(`
+			const source = new Uint8Array([99, 0, 255, 128, 99]);
+			emitFile({ path: "/reports/slice.bin", bytes: source.subarray(1, 4) });
+			emitFile({ path: "/reports/buffer.bin", bytes: source.buffer, contentType: "application/x-custom" });
+			emitFile({ path: "/reports/empty", bytes: new ArrayBuffer(0) });
+			emitFile({ path: "/reports/page.png", bytes: await page.screenshot() });
+			source.fill(5);
+		`);
+		expect(result.ok).toBe(true);
+		expect(result.files?.slice(0, 3)).toEqual([
+			{ path: "/reports/slice.bin", bytes: new Uint8Array([0, 255, 128]) },
+			{ path: "/reports/buffer.bin", bytes: new Uint8Array([99, 0, 255, 128, 99]), contentType: "application/x-custom" },
+			{ path: "/reports/empty", bytes: new Uint8Array() },
+		]);
+		expect(result.files?.[3]?.bytes.slice(0, 8)).toEqual(new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]));
+	});
+
+	it("allows the exact file and byte budgets", async () => {
+		const result = await run_snippet(`for (let i = 0; i < ${LIMITS.files}; i++) emitFile({ path: "/reports/" + i, bytes: new Uint8Array(${LIMITS.fileBytes / LIMITS.files}) });`);
+		expect(result.ok).toBe(true);
+		expect(result.files).toHaveLength(LIMITS.files);
+		expect(result.files?.reduce((sum, file) => sum + file.bytes.byteLength, 0)).toBe(LIMITS.fileBytes);
+	});
+
+	it.each([
+		`for (let i = 0; i < ${LIMITS.files}; i++) emitFile({ path: "/reports/" + i, bytes: new Uint8Array() });`,
+		`emitFile({ path: "/reports/large", bytes: new Uint8Array(${LIMITS.fileBytes}) });`,
+		`emitFile({ path: "/reports/bad", bytes: "text" });`,
+		`emitFile({ path: "", bytes: new Uint8Array() });`,
+		`emitFile({ path: "/reports/bad", contentType: null, bytes: new Uint8Array() });`,
+		`throw new Error("failed");`,
+	])("drops all emitted files when the snippet fails", async (failure) => {
+		const result = await run_snippet(`emitFile({ path: "/reports/first", bytes: new Uint8Array([1]) }); ${failure}`);
+		expect(result.ok).toBe(false);
+		expect(result.files).toBeUndefined();
+	});
+
+	it("drops emitted files on timeout and clears the timer after success", async () => {
+		vi.useFakeTimers();
+		try {
+			const pending = run_snippet('emitFile({ path: "/reports/first", bytes: new Uint8Array([1]) }); await new Promise(() => {});', 50);
+			await vi.advanceTimersByTimeAsync(50);
+			expect(await pending).toMatchObject({ ok: false, error: { message: "Execution timed out" } });
+			expect((await pending).files).toBeUndefined();
+			expect((await run_snippet("return 1;")).ok).toBe(true);
+			expect(vi.getTimerCount()).toBe(0);
+		} finally { vi.useRealTimers(); }
+	});
+
 	it("caps Unicode console and log output in the running harness", async () => {
 		const inner = {};
 		const outer = { url: () => "https://controller.browser.invalid/v0", childFrames: () => [inner] };
@@ -926,7 +962,7 @@ describe("build_executor_module", () => {
 		const source = build_executor_module('console.log("€".repeat(6000)); return 42;')
 			.replace(/^import .*;$/gm, "").replace("export default class", "class") + "\nSnippetExecutor;";
 		const Executor = runInNewContext(source, {
-			WorkerEntrypoint: class {}, TextEncoder, URL, console: {}, expect: () => {}, setTimeout: () => 0,
+			WorkerEntrypoint: class {}, TextEncoder, URL, console: {}, expect: () => {}, setTimeout: () => 0, clearTimeout: () => {},
 			connect: async () => ({ contexts: () => [{ pages: () => [page] }], close: async () => {} }),
 		}) as new () => { evaluate: (input: unknown) => Promise<{ ok: boolean; logs: string[]; consoleEntries: string[]; logsTruncated: boolean }> };
 		const result = await new Executor().evaluate({ sessionId: "fixture", runtimeOrigin: "https://controller.browser.invalid", viewport: { width: 1280, height: 900 } });
@@ -943,9 +979,9 @@ describe("build_executor_module", () => {
 		expect(module).toContain("persistent=true&browser_binding=BROWSER");
 		expect(module).not.toContain("providerSessionId");
 		expect(module).toContain("setViewportSize");
-		expect(module).toContain(".call(undefined, page, frame, expect, emitImage)");
+		expect(module).toContain(".call(undefined, page, frame, expect, emitFile)");
 		expect(module).toContain("Preview frame not found");
-		expect(module).toContain("emitImage");
+		expect(module).toContain("emitFile");
 	});
 });
 
@@ -1276,8 +1312,8 @@ describe("BrowserSession viewer", () => {
 			commandId: "c1",
 			tainted: false,
 			resultBytes: 10,
-			imageCount: 0,
-			imageBytes: 0,
+			fileCount: 0,
+			fileBytes: 0,
 			viewport: null,
 		})) as { state: string };
 		expect(finish.state).toBe("human");
@@ -1331,8 +1367,8 @@ describe("BrowserSession viewer", () => {
 			commandId: "c1",
 			tainted: false,
 			resultBytes: 10,
-			imageCount: 0,
-			imageBytes: 0,
+			fileCount: 0,
+			fileBytes: 0,
 			viewport: null,
 		})) as { state: string };
 		expect(finish.state).toBe("ready");

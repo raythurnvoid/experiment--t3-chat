@@ -16,7 +16,19 @@ import type { prepare_file_pending_update_for_agent_Result } from "../convex/fil
 import { server_path_normalize } from "./server-utils.ts";
 import { crypto_random_hex, crypto_sha256_hex } from "./crypto-utils.ts";
 import { files_browser_runner_call } from "./files-browser.ts";
-import { r2_create_asset_key, r2_fetch_object_from_bucket, r2_put_object } from "../convex/r2_client.ts";
+import {
+	ai_chat_execute_code_result_schema,
+	ai_chat_file_result_schema,
+	ai_chat_file_result,
+} from "../shared/ai-chat-files.ts";
+import {
+	files_ingestion_write,
+	files_ingestion_read_bytes,
+	files_ingestion_decode_base64,
+	files_ingestion_MAX_BYTES,
+	files_ingestion_MAX_BASE64_CHARS,
+} from "./files-ingestion.ts";
+import type { ai_chat_Observation } from "./ai-chat-file-tools.ts";
 import { files_normalize_ai_edit_content, files_normalize_lf_newlines } from "./files.ts";
 import { files_node_has_editable_text_content } from "../shared/files.ts";
 import { ai_chat_GENERATED_IMAGE_FORMAT, type ai_chat_ModelId } from "../shared/ai-chat.ts";
@@ -1182,6 +1194,55 @@ export type ai_chat_tool_create_web_search_ToolInput = InferToolInput<ai_chat_to
 export type ai_chat_tool_create_web_search_ToolOutput = InferToolOutput<ai_chat_tool_create_web_search_Tool>;
 // #endregion web search
 
+// #region file outputs
+function file_output_result(title: string, outcomes: Awaited<ReturnType<typeof files_ingestion_write>>) {
+	const files = outcomes.flatMap((item) => (item.status === "succeeded" ? [item.file.target] : []));
+	const failed = outcomes.some((item) => item.status === "errored");
+	const cancelled = outcomes.some((item) => item.status === "cancelled");
+	const status =
+		files.length === outcomes.length ? "succeeded" : files.length > 0 ? "partial" : cancelled ? "cancelled" : "errored";
+	return ai_chat_file_result(title, status, files, failed ? "storage" : null);
+}
+
+/**
+ * Write one tool's output files through the shared Files writer.
+ *
+ * `execute_code`, `browser_run`, and `image_generation` all come through here. Agent mode and
+ * thread access are checked again inside the prepare and finalize mutations, so a turn that loses
+ * either one mid-run cannot still create files.
+ */
+export async function ai_chat_write_file_outputs(
+	ctx: ActionCtx,
+	scope: Parameters<typeof files_ingestion_write>[1] & { threadId: Id<"ai_chat_threads"> },
+	files: Parameters<typeof files_ingestion_write>[2],
+	options: { title: string; requestId: string; modeId: "ask" | "agent"; abortSignal?: AbortSignal },
+) {
+	if (options.modeId !== "agent") return ai_chat_file_result(options.title, "errored", [], "agent_required");
+	const outcomes = await files_ingestion_write(
+		ctx,
+		scope,
+		files,
+		{
+			requestId: options.requestId,
+			prepare: (args) =>
+				ctx.runMutation(internal.ai_chat_files.prepare_file_output, {
+					...args,
+					threadId: scope.threadId,
+					modeId: options.modeId,
+				}),
+			finalize: (args) =>
+				ctx.runMutation(internal.ai_chat_files.finalize_file_output, {
+					...args,
+					threadId: scope.threadId,
+					modeId: options.modeId,
+				}),
+		},
+		options.abortSignal,
+	);
+	return file_output_result(options.title, outcomes);
+}
+// #endregion file outputs
+
 // #region execute code
 const ai_chat_tool_execute_code_CODE_MAX_BYTES = 20_000;
 const ai_chat_tool_execute_code_INPUT_MAX_BYTES = 32_000;
@@ -1197,6 +1258,7 @@ type ai_chat_tool_execute_code_RunnerResult = {
 	logs: string[];
 	logsTruncated: boolean;
 	error: { name: string; message: string } | null;
+	files: Array<{ path: string; contentType?: string; bytes: Uint8Array<ArrayBuffer> }>;
 };
 
 const ai_chat_tool_execute_code_runner_result_schema = z.object({
@@ -1209,6 +1271,19 @@ const ai_chat_tool_execute_code_runner_result_schema = z.object({
 	logs: z.array(z.string()),
 	logsTruncated: z.boolean(),
 	error: z.object({ name: z.string(), message: z.string() }).nullable(),
+	// Files the snippet asked to create. Base64 turns every 3 bytes into 4 characters, so this cap
+	// refuses an oversized string before anything decodes it.
+	files: z
+		.array(
+			z
+				.object({
+					path: z.string().min(1).max(1024),
+					contentType: z.string().min(1).max(255).optional(),
+					dataBase64: z.string().max(files_ingestion_MAX_BASE64_CHARS),
+				})
+				.strict(),
+		)
+		.max(8),
 });
 
 const ai_chat_tool_execute_code_runner_error_schema = z.object({
@@ -1302,7 +1377,7 @@ async function execute_code(
 		threadId: ctxData.getThreadId?.() ?? null,
 		principalKey: executionId,
 		tokenHash: await crypto_sha256_hex(publicApiGrantToken),
-		scopes: ["files:list", "files:read"] satisfies public_api_Scope[],
+		scopes: ["files:list", "files:read", "files:download"] satisfies public_api_Scope[],
 		pathPrefix: null,
 		now: Date.now(),
 	});
@@ -1329,7 +1404,8 @@ async function execute_code(
 	if (!response.ok) {
 		let message = `Code execution request failed (${response.status}).`;
 		try {
-			const body = ai_chat_tool_execute_code_runner_error_schema.parse(await response.json());
+			const bytes = await files_ingestion_read_bytes(response, 64 * 1024);
+			const body = ai_chat_tool_execute_code_runner_error_schema.parse(JSON.parse(new TextDecoder().decode(bytes)));
 			if (body.error?.message) message = body.error.message;
 		} catch {
 			// Keep the status-code fallback message.
@@ -1337,7 +1413,21 @@ async function execute_code(
 		throw new Error(message);
 	}
 	try {
-		return ai_chat_tool_execute_code_runner_result_schema.parse(await response.json());
+		// Bound the encoded HTTP body before parsing, then check the total decoded file size.
+		const bytes = await files_ingestion_read_bytes(response, 12 * 1024 * 1024);
+		const result = ai_chat_tool_execute_code_runner_result_schema.parse(JSON.parse(new TextDecoder().decode(bytes)));
+
+		// Only a successful run may propose files.
+		if (result.status !== "succeeded" && result.files.length !== 0) throw new Error("Failed execution returned files.");
+
+		const files = result.files.map(({ dataBase64, ...file }) => ({
+			...file,
+			bytes: files_ingestion_decode_base64(dataBase64),
+		}));
+		const totalBytes = files.reduce((size, file) => size + file.bytes.byteLength, 0);
+		if (totalBytes > files_ingestion_MAX_BYTES) throw new Error("File batch exceeds 8 MiB.");
+
+		return { ...result, files };
 	} catch {
 		throw new Error("Code execution returned an invalid response.");
 	}
@@ -1346,6 +1436,8 @@ async function execute_code(
 /**
  * Run a short, untrusted JavaScript snippet in the isolated Dynamic Worker
  * sandbox (`bonobo-senate-code-execution-runner`) and return its value plus logs.
+ *
+ * In Agent mode, emitted files become pending Files entries. Return their targets for review.
  *
  * Keep `CODE_EXECUTION_RUNNER_URL` / `CODE_EXECUTION_RUNNER_SECRET` on the server
  * only. The runner receives a short-lived public API grant token for
@@ -1359,6 +1451,8 @@ export function ai_chat_tool_create_execute_code(
 		organizationName: string;
 		workspaceName: string;
 		userId: Id<"users">;
+		membershipId: Id<"organizations_workspaces_users">;
+		canWriteFiles: boolean;
 		getThreadId?: () => Id<"ai_chat_threads"> | null;
 	},
 ) {
@@ -1371,6 +1465,8 @@ export function ai_chat_tool_create_execute_code(
 			To read app files, fetch \`${"${process.env.T3_APP_ORIGIN}"}/api/v1/files/list\` for paths, then \`${"${process.env.T3_APP_ORIGIN}"}/api/v1/files/read-many\` for contents; follow \`cursor\` until \`isDone\`, check \`errors\` and \`truncated\`, and use \`/api/v1/files/read\` only for one known file. \
 			Inspect each app folder with Bash in an earlier completed step and read its AGENTS.md guidance before reading it through these APIs. \
 			Do not pass app file paths or contents through \`input\`; keep \`input\` for ordinary JSON parameters, run file API fetches inside the snippet, and return a compact aggregate instead of raw file contents. \
+			Read exact bytes with POST /api/v1/files/read-bytes and JSON {path, offset, length, revision}. Use a canonical path such as /reports/source.bin, at most 1048576 bytes per read, and revision null on the first read. Pin X-File-Revision on later reads. The response is raw bytes; read it with arrayBuffer(). X-File-Size gives the total size. The run may request at most 8 MiB. \
+			In Agent mode, call emitFile({path, contentType?, bytes}) to propose any file. Bytes must be a Uint8Array or ArrayBuffer; for a Blob use await blob.arrayBuffer(). Use a canonical Files path such as /reports/result.bin. Up to eight files and 8 MiB total are allowed. Empty files are allowed. Files leave the sandbox only on success, and the user must Save them. Ask mode cannot create files. Other fetch responses above 512 KB fail. \
 			Keep snippets small and deterministic: execution is time-limited and both the result and the logs are size-limited.`,
 
 		inputSchema: z
@@ -1389,20 +1485,52 @@ export function ai_chat_tool_create_execute_code(
 			})
 			.strict(),
 
+		outputSchema: ai_chat_execute_code_result_schema,
 		execute: async (args, options) => {
 			const result = await execute_code(ctx, ctxData, args, options.abortSignal);
 			const output = ai_chat_tool_execute_code_format_output(result);
+			let fileResult: z.infer<typeof ai_chat_file_result_schema> | null = null;
+
+			// Ask can run calculations, but emitted bytes cannot reserve storage or create pending files.
+			if (result.files.length > 0) {
+				const threadId = ctxData.getThreadId?.();
+				if (!threadId) throw new Error("File output needs a chat thread.");
+
+				fileResult = await ai_chat_write_file_outputs(
+					ctx,
+					{
+						userId: ctxData.userId,
+						membershipId: ctxData.membershipId,
+						threadId,
+						organizationId: ctxData.organizationId,
+						workspaceId: ctxData.workspaceId,
+					},
+					result.files,
+					{
+						title: "File output",
+						requestId: options.toolCallId,
+						modeId: ctxData.canWriteFiles ? "agent" : "ask",
+						abortSignal: options.abortSignal,
+					},
+				);
+			}
 
 			return {
 				title: "Execute code",
 				metadata: {
 					executionId: result.executionId,
+					files: fileResult?.metadata.files ?? [],
+					fileResult,
 					status: result.status,
 					elapsedMs: result.elapsedMs,
 					resultTruncated: result.resultTruncated,
 					logsTruncated: result.logsTruncated,
 				},
-				output,
+				output:
+					output +
+					(fileResult
+						? `\n${fileResult.output}${fileResult.metadata.reason ? ` (${fileResult.metadata.reason})` : ""}\nFiles: ${JSON.stringify(fileResult.metadata.files)}. Use Bash resolve to find their current paths.`
+						: ""),
 			};
 		},
 	});
@@ -1425,45 +1553,59 @@ export type ai_chat_tool_create_execute_code_ToolOutput = InferToolOutput<ai_cha
  * `partialImages` stays unset because the chat never shows a picture while it is being drawn.
  * OpenAI still sends one preview copy, and setting it to `0` does not stop that, so
  * `drop_preliminary_tool_results_middleware` in `ai_chat.ts` throws the preview away.
+ *
+ * The base64 picture must not reach the stored message. `save` writes it as a private pending
+ * file and returns only its Files target. There is no execute step here to do that in, so the
+ * conversion to model output is replaced below.
  */
-export function ai_chat_tool_create_image_generation() {
-	return openai.tools.imageGeneration({
+export function ai_chat_tool_create_image_generation(
+	save: (toolCallId: string, output: unknown) => Promise<z.infer<typeof ai_chat_file_result_schema>>,
+) {
+	const imageTool = openai.tools.imageGeneration({
 		model: "gpt-image-2",
 		outputFormat: ai_chat_GENERATED_IMAGE_FORMAT,
 	});
+	imageTool.toModelOutput = async ({ toolCallId, output }) => ({
+		type: "json",
+		value: await save(toolCallId, output),
+	});
+	return imageTool;
 }
+// #endregion image generation
+
+// #region file stored result
 
 /**
- * The same tool as a stored message holds it.
+ * The shape a stored message holds for every tool that can return files. `validateUIMessages`
+ * in `ai_chat.ts` checks saved messages against this one.
  *
- * The chat route replaces the base64 picture in the tool output with a reference to an R2 asset
- * before the message is saved, so a saved message no longer matches the output schema of the
- * provider tool above. `validateUIMessages` checks stored messages, so it must be given this one.
+ * Stored results keep only a status and Files targets. Replaying history never fetches file
+ * bytes or browser observations.
  */
-export function ai_chat_tool_create_image_generation_stored() {
+export function ai_chat_tool_create_file_stored() {
 	return tool({
-		inputSchema: z.object({}),
-		outputSchema: z.object({
-			assetId: z.string(),
-			mediaType: z.string(),
-			size: z.number(),
+		inputSchema: z.object({}).strict(),
+		outputSchema: ai_chat_file_result_schema,
+		toModelOutput: ({ output }) => ({
+			type: "text" as const,
+			value: `${output.output}${output.metadata.reason ? ` (${output.metadata.reason})` : ""}${output.metadata.files.length ? `\nFiles: ${JSON.stringify(output.metadata.files)}. Use Bash resolve for their current paths, then view_image for images.` : ""}`,
 		}),
 	});
 }
 
-type ai_chat_tool_create_image_generation_stored_Tool = ReturnType<typeof ai_chat_tool_create_image_generation_stored>;
-export type ai_chat_tool_create_image_generation_ToolInput =
-	InferToolInput<ai_chat_tool_create_image_generation_stored_Tool>;
-export type ai_chat_tool_create_image_generation_ToolOutput =
-	InferToolOutput<ai_chat_tool_create_image_generation_stored_Tool>;
-// #endregion image generation
+type ai_chat_tool_create_file_stored_Tool = ReturnType<typeof ai_chat_tool_create_file_stored>;
+export type ai_chat_tool_create_file_stored_ToolInput = InferToolInput<ai_chat_tool_create_file_stored_Tool>;
+export type ai_chat_tool_create_file_stored_ToolOutput = InferToolOutput<ai_chat_tool_create_file_stored_Tool>;
+// #endregion file stored result
 
 // #region shared browser
 
 /**
- * The frozen browser lease for one request. Resolved once when the turn starts from the live
- * session: session doc, generations, and runner identity. Model arguments can never select a
- * different file or session; a stale lease is refused instead of rebound.
+ * The browser lease shared by tools in one turn. It starts from the live session.
+ * Only a reload completed by this turn can advance its page and control versions.
+ *
+ * Model arguments can never select a different file or session; a stale lease is refused
+ * instead of rebound.
  */
 export type ai_chat_tool_BrowserBinding = {
 	membershipId: Id<"organizations_workspaces_users">;
@@ -1485,237 +1627,22 @@ type ai_chat_tool_BrowserContext = {
 
 const ai_chat_tool_browser_CODE_MAX_BYTES = 20_000;
 const ai_chat_tool_browser_COMMANDS_PER_REQUEST = 20;
-const ai_chat_tool_browser_TEXT_ENCODER = new TextEncoder();
-
-const ai_chat_tool_browser_run_image_schema = z.object({
-	mime: z.string(),
-	width: z.number(),
-	height: z.number(),
-	base64: z.string(),
-});
 
 const ai_chat_tool_browser_run_schema = z.object({
 	ok: z.literal(true),
-	status: z.string(),
+	status: z.enum(["succeeded", "errored", "timed_out", "tainted", "refused"]),
 	commandId: z.string(),
 	codeHash: z.string(),
 	elapsedMs: z.number(),
 	result: z.unknown(),
 	resultTruncated: z.boolean(),
-	images: z.array(ai_chat_tool_browser_run_image_schema),
+	files: ai_chat_tool_execute_code_runner_result_schema.shape.files,
 	consoleEntries: z.array(z.string()),
 	pageErrors: z.array(z.string()),
 	logs: z.array(z.string()),
 	logsTruncated: z.boolean(),
 	error: z.unknown(),
 });
-
-const ai_chat_tool_browser_image_mime_schema = z.union([z.literal("image/png"), z.literal("image/jpeg")]);
-
-/**
- * Resolve one stored browser result into model content: text plus real image bytes. History and
- * live turns share this path. Anything unavailable becomes a neutral placeholder; a result id
- * copied into another thread never leaks across it.
- */
-async function browser_result_to_model_output(
-	ctx: ActionCtx,
-	args: {
-		userId: Id<"users">;
-		membershipId: Id<"organizations_workspaces_users">;
-		threadId: Id<"ai_chat_threads"> | null;
-		resultId: string;
-	},
-) {
-	const placeholder = (reason: string) => ({
-		type: "text" as const,
-		value: `(Browser result unavailable: ${reason}.)`,
-	});
-	const threadId = args.threadId;
-	if (!threadId) {
-		return placeholder("no thread context");
-	}
-
-	const checked = await ctx.runQuery(internal.files_browser.get_authorized_browser_result, {
-		userId: args.userId,
-		membershipId: args.membershipId,
-		resultId: args.resultId as Id<"ai_chat_browser_results">,
-	});
-	if (!checked || checked.result.threadId !== threadId) {
-		return placeholder("it expired or access changed");
-	}
-
-	const textAsset = await ctx.runQuery(internal.files_browser.get_browser_result_asset, {
-		assetId: checked.result.textAssetId,
-	});
-	if (!textAsset?.r2Key) {
-		return placeholder("its stored text is gone");
-	}
-	const text = await r2_fetch_object_from_bucket({ key: textAsset.r2Key }).then((response) => response.text());
-	// Prefix the stored id so per-step rechecks and title sanitizing can resolve the owning
-	// result back from converted model content.
-	const value: Array<
-		| { type: "text"; text: string }
-		| { type: "image-data"; data: string; mediaType: string }
-	> = [{ type: "text", text: `[browser-result:${args.resultId}]\n${text}`.slice(0, 16_512) }];
-	for (const image of checked.result.images.slice(0, 2)) {
-		const asset = await ctx.runQuery(internal.files_browser.get_browser_result_asset, {
-			assetId: image.assetId,
-		});
-		if (!asset?.r2Key) {
-			continue;
-		}
-		const buffer = await r2_fetch_object_from_bucket({ key: asset.r2Key }).then((r) => r.arrayBuffer());
-		const bytes = new Uint8Array(buffer, 0, buffer.byteLength);
-		if (bytes.byteLength === 0 || bytes.byteLength > 2_097_152) {
-			continue;
-		}
-		let binary = "";
-		for (let offset = 0; offset < bytes.byteLength; offset += 0x8000) {
-			binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
-		}
-		// OpenAI's file input rejects image MIME types; screenshots need image input.
-		value.push({ type: "image-data", data: btoa(binary), mediaType: image.mime });
-	}
-	// Recheck after the reads: access revoked between the first check and the last byte must
-	// not leak through already-fetched content.
-	const rechecked = await ctx.runQuery(internal.files_browser.get_authorized_browser_result, {
-		userId: args.userId,
-		membershipId: args.membershipId,
-		resultId: args.resultId as Id<"ai_chat_browser_results">,
-	});
-	if (!rechecked || rechecked.result.threadId !== threadId) {
-		return placeholder("it expired or access changed");
-	}
-	return { type: "content" as const, value };
-}
-
-/**
- * Convert one browser run output into model content. Live and stored tools share this: outputs
- * without a result id use their short status text, while stored ids use the authorized reader.
- */
-async function browser_run_output_to_model_content(
-	ctx: ActionCtx,
-	ids: {
-		userId: Id<"users">;
-		membershipId: Id<"organizations_workspaces_users">;
-		getThreadId: (() => Id<"ai_chat_threads"> | null) | undefined;
-	},
-	output: unknown,
-) {
-	const parsed = z
-		.object({ metadata: z.object({ resultId: z.string() }).partial(), output: z.string() })
-		.safeParse(output);
-	const resultId = parsed.success ? parsed.data.metadata.resultId : undefined;
-	if (!resultId) {
-		const fallback =
-			parsed.success && typeof parsed.data.output === "string" ? parsed.data.output : "Browser run finished.";
-		return { type: "text" as const, value: fallback.slice(0, 16_384) };
-	}
-	return await browser_result_to_model_output(ctx, {
-		userId: ids.userId,
-		membershipId: ids.membershipId,
-		threadId: ids.getThreadId?.() ?? null,
-		resultId,
-	});
-}
-
-/**
- * Store one executed run: upload the text JSON and images as private result assets, then record
- * the result doc. Unstored bytes keep their cleanup deadline and vanish within a day.
- */
-async function browser_store_run_result(
-	ctx: ActionCtx,
-	args: {
-		ownerId: Id<"users">;
-		organizationId: Id<"organizations">;
-		workspaceId: Id<"organizations_workspaces">;
-		threadId: Id<"ai_chat_threads">;
-		sessionId: Id<"files_browser_sessions">;
-		targetKind: "saved" | "private";
-		nodeId: string;
-		sourceKind: "saved" | "proposed" | "draft";
-		sourceVersion: string;
-		sourceHash: string;
-		loadGen: number;
-		runId: string;
-		toolCallId: string;
-		commandId: string;
-		text: string;
-		images: Array<{ base64: string; mime: string; width: number; height: number }>;
-	},
-) {
-	const textBytes = ai_chat_tool_browser_TEXT_ENCODER.encode(args.text);
-	const textAssetId = await ctx.runMutation(internal.r2.insert_asset, {
-		organizationId: args.organizationId,
-		workspaceId: args.workspaceId,
-		kind: "browser_result",
-		size: textBytes.byteLength,
-		createdBy: args.ownerId,
-	});
-	await r2_put_object(ctx, {
-		key: r2_create_asset_key({ organizationId: args.organizationId, workspaceId: args.workspaceId, assetId: textAssetId }),
-		body: textBytes,
-		contentType: "application/json",
-	});
-
-	const images: Array<{ assetId: Id<"files_r2_assets">; mime: string; width: number; height: number }> = [];
-	let imageBytesTotal = 0;
-	for (const image of args.images.slice(0, 2)) {
-		const mime = ai_chat_tool_browser_image_mime_schema.safeParse(image.mime);
-		if (!mime.success || !Number.isInteger(image.width) || !Number.isInteger(image.height)) {
-			continue;
-		}
-		const bytes = Uint8Array.from(atob(image.base64), (char) => char.charCodeAt(0));
-		if (bytes.byteLength === 0 || bytes.byteLength > 2_097_152) {
-			continue;
-		}
-		// The runner validates media signatures and pixel dimensions before responding; re-check
-		// the signature here so a lying mime can never decide the stored content type.
-		const pngMagic = bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47;
-		const jpegMagic = bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
-		if (
-			(mime.data === "image/png" && !pngMagic) ||
-			(mime.data === "image/jpeg" && !jpegMagic)
-		) {
-			continue;
-		}
-		const assetId = await ctx.runMutation(internal.r2.insert_asset, {
-			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
-			kind: "browser_result",
-			size: bytes.byteLength,
-			createdBy: args.ownerId,
-		});
-		await r2_put_object(ctx, {
-			key: r2_create_asset_key({ organizationId: args.organizationId, workspaceId: args.workspaceId, assetId }),
-			body: bytes,
-			contentType: mime.data,
-		});
-		images.push({ assetId, mime: mime.data, width: image.width, height: image.height });
-		imageBytesTotal += bytes.byteLength;
-	}
-
-	return await ctx.runMutation(internal.files_browser.store_browser_result, {
-		ownerId: args.ownerId,
-		organizationId: args.organizationId,
-		workspaceId: args.workspaceId,
-		threadId: args.threadId,
-		sessionId: args.sessionId,
-		targetKind: args.targetKind,
-		nodeId: args.nodeId,
-		sourceKind: args.sourceKind,
-		sourceVersion: args.sourceVersion,
-		sourceHash: args.sourceHash,
-		loadGen: args.loadGen,
-		runId: args.runId,
-		toolCallId: args.toolCallId,
-		commandId: args.commandId,
-		textAssetId,
-		images,
-		textBytes: textBytes.byteLength,
-		imageBytes: imageBytesTotal,
-	});
-}
 
 function browser_run_output_text(run: z.infer<typeof ai_chat_tool_browser_run_schema>) {
 	const lines = [`Status: ${run.status}.`];
@@ -1737,262 +1664,198 @@ function browser_run_output_text(run: z.infer<typeof ai_chat_tool_browser_run_sc
 		lines.push(`Page errors: ${capped(run.pageErrors)}`);
 	}
 	if (run.error && typeof run.error === "object" && typeof (run.error as { message?: unknown }).message === "string") {
-		lines.push(`Error: ${((run.error as { message: string }).message).slice(0, 1000)}`);
+		lines.push(`Error: ${(run.error as { message: string }).message.slice(0, 1000)}`);
 	}
 	return lines.join("\n").slice(0, 16_384);
 }
 
 /**
- * Run one Playwright snippet against the request's shared browser page. The snippet sees the
- * registered page and inner frame plus `expect` and `emitImage`. Results persist as a safe
- * status plus an opaque result id; the model reads full text and images through conversion.
+ * Run one Playwright snippet against the request's shared browser page.
+ *
+ * The snippet sees the registered page and inner frame, plus `expect` and `emitFile`. Files it
+ * emits go through the same Files writer as every other tool output.
+ *
+ * Private observations stay in this turn's observation map. Shared chat keeps only a status and
+ * the Files targets.
  */
 export function ai_chat_tool_create_browser_run(
 	ctx: ActionCtx,
-	ctxData: ai_chat_tool_BrowserContext & { runId: string },
+	ctxData: ai_chat_tool_BrowserContext & { canWriteFiles: boolean; observations: Map<string, ai_chat_Observation> },
 ) {
 	let attempts = 0;
-
 	return tool({
-		description: dedent`\
-			Inspect and test the shared browser page for the currently selected HTML file. \
-			Use this only when the request is bound to a live shared browser; without one, edit source and describe the local Preview instead. \
-			The code is the body of an async function with (page, frame, expect, emitImage) in scope: use Playwright locators on frame, read DOM text, take screenshots with page.screenshot() plus emitImage(bytes), and change the viewport explicitly when a layout needs it. \
-			Return a small JSON-serializable observation; screenshots reach the model as images. \
-			Never navigate, open pages, or close the browser: the page is fixed, popups are blocked, and leaving it ends the session. \
-			After the user drives the page, inspect the current state first instead of acting on an old plan.`,
+		description: dedent`Inspect and test the attached browser page for the selected HTML file.
+			The snippet is an async function body with page, frame, expect, and emitFile.
+			Use frame locators to inspect the app. Return a small JSON observation.
+			In Agent mode, emitFile({path: "/reports/result.bin", bytes, contentType?}) proposes any file.
+			Bytes must be Uint8Array or ArrayBuffer. For a screenshot, use emitFile({path: "/reports/page.png", bytes: await page.screenshot(), contentType: "image/png"}).
+			Up to eight files and 8 MiB total. Empty files are allowed. Only successful runs publish files.
+			Files become private changes for Save or Discard. Use view_image({path}) to inspect image bytes.
+			Ask mode cannot create files. Never navigate, open pages, or close the browser inside a snippet.
+			After the user drives the page, inspect their current state before acting.`,
 		inputSchema: z
 			.object({
 				code: z
 					.string()
 					.min(1)
 					.max(ai_chat_tool_browser_CODE_MAX_BYTES)
-					.describe("JavaScript to run with (page, frame, expect, emitImage) in scope. Use `return` for a small JSON observation."),
+					.describe("JavaScript with page, frame, expect, and emitFile. Return a small JSON observation."),
 			})
 			.strict(),
-		execute: async (args, options) => {
-			attempts += 1;
-			if (attempts > ai_chat_tool_browser_COMMANDS_PER_REQUEST) {
-				return {
-					title: "Browser run",
-					output: "Browser command limit reached for this request.",
-					metadata: { status: "refused" },
-				};
-			}
-
-			const access = await ctx.runQuery(internal.files_browser.check_browser_source_access, {
+		outputSchema: ai_chat_file_result_schema,
+		execute: async ({ code }, options) => {
+			const title = "Browser run";
+			if (++attempts > ai_chat_tool_browser_COMMANDS_PER_REQUEST)
+				return ai_chat_file_result(title, "errored", [], "limit");
+			// Capture this call's exact lease. A later reload may update the turn's live binding.
+			const binding = { ...ctxData.browser };
+			const readArgs = {
 				organizationId: ctxData.organizationId,
 				workspaceId: ctxData.workspaceId,
 				userId: ctxData.userId,
-				membershipId: ctxData.browser.membershipId,
-				sessionId: ctxData.browser.sessionId,
-			});
-			if (!access.ok) {
-				return {
-					title: "Browser run",
-					output: `The browser is unavailable: ${access.reason}.`,
-					metadata: { status: "refused", reason: access.reason },
-				};
-			}
-			if (
-				access.control !== "ready" ||
-				access.controlGen !== ctxData.browser.controlGen ||
-				access.loadGen !== ctxData.browser.loadGen ||
-				access.navGen !== ctxData.browser.navGen
-			) {
-				return {
-					title: "Browser run",
-					output: "The browser moved on: control, file, or source changed since this request started.",
-					metadata: { status: "refused", reason: "stale" },
-				};
-			}
-
-			const run = await files_browser_runner_call({
-				route: "run",
-				body: {
-					sessionId: access.runnerSessionId,
-					ownerId: ctxData.userId,
-					organizationId: ctxData.organizationId,
-					workspaceId: ctxData.workspaceId,
-					navGen: access.navGen,
-					loadGen: access.loadGen,
-					controlGen: access.controlGen,
-					commandId: options?.toolCallId ?? crypto.randomUUID(),
-					code: args.code,
-				},
-				signal: options?.abortSignal,
-			});
-			if (run._nay) {
-				return {
-					title: "Browser run",
-					output: `Browser request failed: ${run._nay.message}`,
-					metadata: { status: "refused", reason: "transport" },
-				};
-			}
-			const parsed = ai_chat_tool_browser_run_schema.safeParse(run._yay);
-			if (!parsed.success) {
-				return {
-					title: "Browser run",
-					output: "Browser returned an invalid response.",
-					metadata: { status: "refused", reason: "invalid" },
-				};
-			}
-			const outcome = parsed.data;
-			if (outcome.status === "tainted") {
-				return {
-					title: "Browser run",
-					output: "The browser left its registered page, so the session was closed.",
-					metadata: { status: "tainted" },
-				};
-			}
-
-			// Recheck the exact lease after the wait: a takeover, reload, or file change during
-			// the run retires these observations instead of storing them under a dead lease.
-			const fresh = await ctx.runQuery(internal.files_browser.check_browser_source_access, {
-				organizationId: ctxData.organizationId,
-				workspaceId: ctxData.workspaceId,
-				userId: ctxData.userId,
-				membershipId: ctxData.browser.membershipId,
-				sessionId: ctxData.browser.sessionId,
-			});
-			if (
-				!fresh.ok ||
-				fresh.control !== "ready" ||
-				fresh.controlGen !== access.controlGen ||
-				fresh.loadGen !== access.loadGen ||
-				fresh.navGen !== access.navGen
-			) {
-				return {
-					title: "Browser run",
-					output: "The browser moved on while the command ran: control, file, or source changed.",
-					metadata: { status: "refused", reason: "stale" },
-				};
-			}
-
-			const threadId = ctxData.getThreadId?.() ?? null;
-			if (!threadId) {
-				return {
-					title: "Browser run",
-					output: "Browser result has no thread to attach to.",
-					metadata: { status: "refused", reason: "thread" },
-				};
-			}
-			const text = browser_run_output_text(outcome);
-			const resultId = await browser_store_run_result(ctx, {
-				ownerId: ctxData.userId,
-				organizationId: ctxData.organizationId,
-				workspaceId: ctxData.workspaceId,
-				threadId,
-				sessionId: ctxData.browser.sessionId,
-				targetKind: access.targetKind,
-				nodeId: access.nodeId,
-				sourceKind: access.sourceKind,
-				sourceVersion: access.sourceVersion,
-				sourceHash: access.sourceHash,
-				loadGen: access.loadGen,
-				runId: ctxData.runId,
-				toolCallId: options?.toolCallId ?? crypto.randomUUID(),
-				commandId: outcome.commandId,
-				text,
-				images: outcome.images,
-			});
-
-			return {
-				title: "Browser run",
-				output: text,
-				metadata: {
-					status: outcome.status,
-					resultId,
-					commandId: outcome.commandId,
-					elapsedMs: outcome.elapsedMs,
-					imageCount: outcome.images.length,
-				},
+				membershipId: binding.membershipId,
+				sessionId: binding.sessionId,
 			};
+			const isCurrent = async () => {
+				const checked = await ctx.runQuery(internal.files_browser.check_browser_source_access, readArgs);
+				return (
+					checked.ok &&
+					checked.control === "ready" &&
+					checked.controlGen === binding.controlGen &&
+					checked.loadGen === binding.loadGen &&
+					checked.navGen === binding.navGen
+				);
+			};
+			try {
+				const access = await ctx.runQuery(internal.files_browser.check_browser_source_access, readArgs);
+				if (
+					!access.ok ||
+					access.control !== "ready" ||
+					access.controlGen !== binding.controlGen ||
+					access.loadGen !== binding.loadGen ||
+					access.navGen !== binding.navGen
+				)
+					return ai_chat_file_result(title, "errored", [], "stale");
+				const run = await files_browser_runner_call({
+					route: "run",
+					body: {
+						sessionId: access.runnerSessionId,
+						ownerId: ctxData.userId,
+						organizationId: ctxData.organizationId,
+						workspaceId: ctxData.workspaceId,
+						navGen: binding.navGen,
+						loadGen: binding.loadGen,
+						controlGen: binding.controlGen,
+						commandId: options.toolCallId,
+						code,
+					},
+					signal: options.abortSignal,
+				});
+				if (run._nay) return ai_chat_file_result(title, "errored", [], "execution");
+				const parsed = ai_chat_tool_browser_run_schema.safeParse(run._yay);
+				if (!parsed.success) return ai_chat_file_result(title, "errored", [], "invalid_result");
+				const outcome = parsed.data;
+				if (
+					outcome.commandId !== options.toolCallId ||
+					outcome.codeHash !== (await crypto_sha256_hex(`browser-v2\n${code}`))
+				)
+					return ai_chat_file_result(title, "errored", [], "invalid_result");
+				if (outcome.status !== "succeeded" && outcome.files.length > 0)
+					return ai_chat_file_result(title, "errored", [], "invalid_result");
+				if (!(await isCurrent())) return ai_chat_file_result(title, "errored", [], "stale");
+
+				let result = ai_chat_file_result(
+					title,
+					outcome.status === "succeeded" ? "succeeded" : outcome.status === "timed_out" ? "timed_out" : "errored",
+					[],
+					outcome.status === "succeeded" ? null : "execution",
+				);
+				let fileNote = "";
+				if (outcome.files.length > 0) {
+					if (!ctxData.canWriteFiles) {
+						result = ai_chat_file_result(title, "errored", [], "agent_required");
+					} else {
+						const threadId = ctxData.getThreadId?.();
+						if (!threadId) return ai_chat_file_result(title, "errored", [], "unavailable");
+						const files = outcome.files.map(({ dataBase64, ...file }) => ({
+							...file,
+							bytes: files_ingestion_decode_base64(dataBase64),
+						}));
+						const scope = {
+							userId: ctxData.userId,
+							organizationId: ctxData.organizationId,
+							workspaceId: ctxData.workspaceId,
+							membershipId: binding.membershipId,
+							threadId,
+						};
+						const browserScope = {
+							threadId,
+							modeId: "agent" as const,
+							sessionId: binding.sessionId,
+							expectedAgentLease: { controlGen: binding.controlGen, loadGen: binding.loadGen, navGen: binding.navGen },
+							expectedSource: {
+								targetKind: access.targetKind,
+								nodeId: access.nodeId,
+								sourceKind: access.sourceKind,
+								sourceVersion: access.sourceVersion,
+								sourceHash: access.sourceHash,
+							},
+						};
+						const outcomes = await files_ingestion_write(
+							ctx,
+							scope,
+							files,
+							{
+								requestId: options.toolCallId,
+								prepare: (args) =>
+									ctx.runMutation(internal.files_browser.prepare_file_output, { ...args, ...browserScope }),
+								finalize: (args) =>
+									ctx.runMutation(internal.files_browser.finalize_file_output, { ...args, ...browserScope }),
+							},
+							options.abortSignal,
+						);
+						result = file_output_result(title, outcomes);
+						fileNote = outcomes
+							.flatMap((item) =>
+								item.status === "succeeded" ? [`${item.file.path}: ${JSON.stringify(item.file.target)}`] : [],
+							)
+							.join("\n");
+					}
+				}
+				// Never put private DOM text in execute's returned value or the persisted stream.
+				if (await isCurrent().catch(() => false))
+					ctxData.observations.set(options.toolCallId, {
+						toolName: "browser_run",
+						isCurrent,
+						output: {
+							type: "content",
+							value: [
+								{
+									type: "text",
+									text:
+										browser_run_output_text(outcome) +
+										`\n${result.output}${result.metadata.reason ? ` (${result.metadata.reason})` : ""}${fileNote ? `\nPending Files:\n${fileNote}` : ""}`,
+								},
+							],
+						},
+					});
+				return result;
+			} catch {
+				return ai_chat_file_result(title, options.abortSignal?.aborted ? "cancelled" : "errored", [], "execution");
+			}
 		},
-		toModelOutput: async ({ output }) => {
-			return await browser_run_output_to_model_content(
-				ctx,
-				{
-					userId: ctxData.userId,
-					membershipId: ctxData.browser.membershipId,
-					getThreadId: ctxData.getThreadId,
-				},
-				output,
-			);
-		},
+		toModelOutput: ({ toolCallId, output }) =>
+			ctxData.observations.get(toolCallId)?.output ?? { type: "text", value: output.output },
 	});
 }
 
 /**
- * The same tool as a stored message holds it: no code input, and a safe status plus an opaque
- * result id instead of raw observations. The stream transform rewrites live parts into this
- * shape before persistence. History conversion resolves ids through the same authorized reader
- * as live turns, so later turns see text and images instead of placeholders.
+ * Reload the shared page from the current source of the same file and kind.
+ *
+ * Drafts always need a fresh editor capture first; the tool reports that instead of falling back.
+ * Only the user may switch source kinds or reload after driving the page.
  */
-export function ai_chat_tool_create_browser_run_stored(
-	ctx: ActionCtx,
-	args: {
-		userId: Id<"users">;
-		membershipId: Id<"organizations_workspaces_users">;
-		getThreadId: () => Id<"ai_chat_threads"> | null;
-	},
-) {
-	return tool({
-		inputSchema: z.object({}).strict(),
-		outputSchema: z.object({
-			title: z.string(),
-			output: z.string(),
-			metadata: z.object({
-				status: z.string(),
-				resultId: z.string().optional(),
-			}),
-		}),
-		toModelOutput: async ({ output }) => {
-			return await browser_run_output_to_model_content(
-				ctx,
-				{ userId: args.userId, membershipId: args.membershipId, getThreadId: args.getThreadId },
-				output,
-			);
-		},
-	});
-}
-
-type ai_chat_tool_create_browser_run_stored_Tool = ReturnType<typeof ai_chat_tool_create_browser_run_stored>;
-export type ai_chat_tool_create_browser_run_ToolInput = InferToolInput<ai_chat_tool_create_browser_run_stored_Tool>;
-export type ai_chat_tool_create_browser_run_ToolOutput = InferToolOutput<ai_chat_tool_create_browser_run_stored_Tool>;
-
-/**
- * The stored reload shape: safe status text only. Live and stored outputs match because reload
- * never returns observations.
- */
-export function ai_chat_tool_create_browser_reload_stored() {
-	return tool({
-		inputSchema: z.object({}).strict(),
-		outputSchema: z.object({
-			title: z.string(),
-			output: z.string(),
-			metadata: z.object({
-				status: z.string(),
-			}),
-		}),
-	});
-}
-
-type ai_chat_tool_create_browser_reload_stored_Tool = ReturnType<typeof ai_chat_tool_create_browser_reload_stored>;
-export type ai_chat_tool_create_browser_reload_ToolInput =
-	InferToolInput<ai_chat_tool_create_browser_reload_stored_Tool>;
-export type ai_chat_tool_create_browser_reload_ToolOutput =
-	InferToolOutput<ai_chat_tool_create_browser_reload_stored_Tool>;
-
-/**
- * Reload the shared page from the current source of the same file and kind. Drafts always
- * need a fresh editor capture first; the tool reports that instead of falling back. Only the
- * user may switch source kinds or reload after driving the page.
- */
-export function ai_chat_tool_create_browser_reload(
-	ctx: ActionCtx,
-	ctxData: ai_chat_tool_BrowserContext & { runId: string },
-) {
+export function ai_chat_tool_create_browser_reload(ctx: ActionCtx, ctxData: ai_chat_tool_BrowserContext) {
 	return tool({
 		description: dedent`\
 			Reload the shared browser page from the current saved or proposed source of the same file. \
@@ -2002,64 +1865,54 @@ export function ai_chat_tool_create_browser_reload(
 			Draft sources need a fresh editor capture first; report that instead of reloading.`,
 		inputSchema: z.object({}).strict(),
 		execute: async () => {
+			const binding = { ...ctxData.browser };
 			const session = await ctx.runQuery(internal.files_browser.load_browser_session, {
 				organizationId: ctxData.organizationId,
 				workspaceId: ctxData.workspaceId,
 				userId: ctxData.userId,
-				membershipId: ctxData.browser.membershipId,
-				sessionId: ctxData.browser.sessionId,
+				membershipId: binding.membershipId,
+				sessionId: binding.sessionId,
 			});
 			if (session._nay) {
-				return {
-					title: "Browser reload",
-					output: `The browser is unavailable: ${session._nay.message}.`,
-					metadata: { status: "refused", reason: "session" },
-				};
+				return ai_chat_file_result("Browser reload", "errored", [], "unavailable");
 			}
 			if (
 				session._yay.control !== "ready" ||
-				session._yay.controlGen !== ctxData.browser.controlGen ||
-				session._yay.loadGen !== ctxData.browser.loadGen ||
-				session._yay.navigationGeneration !== ctxData.browser.navGen
+				session._yay.controlGen !== binding.controlGen ||
+				session._yay.loadGen !== binding.loadGen ||
+				session._yay.navigationGeneration !== binding.navGen
 			) {
-				return {
-					title: "Browser reload",
-					output:
-						"The browser moved on: control, file, or source changed since this request started, or the user drives the page.",
-					metadata: { status: "refused", reason: "stale" },
-				};
+				return ai_chat_file_result("Browser reload", "errored", [], "stale");
 			}
 			if (session._yay.sourceKind === "draft") {
-				return {
-					title: "Browser reload",
-					output: "This page shows an editor draft. Capture it again from the editor before reloading.",
-					metadata: { status: "needs-capture" },
-				};
+				return ai_chat_file_result("Browser reload", "errored", [], "needs_capture");
 			}
 
-			// Keep the frozen lease through the source read so a later takeover refuses reload.
+			// Keep this call's lease through the source read so a later takeover refuses reload.
 			const reloaded = await ctx.runAction(api.files_browser.reload_browser, {
-				membershipId: ctxData.browser.membershipId,
-				sessionId: ctxData.browser.sessionId,
+				membershipId: binding.membershipId,
+				sessionId: binding.sessionId,
 				path: session._yay.path,
 				expectedAgentLease: {
-					controlGen: ctxData.browser.controlGen,
-					loadGen: ctxData.browser.loadGen,
-					navGen: ctxData.browser.navGen,
+					controlGen: binding.controlGen,
+					loadGen: binding.loadGen,
+					navGen: binding.navGen,
 				},
 			});
 			if (reloaded._nay) {
-				return {
-					title: "Browser reload",
-					output: `Browser reload failed: ${reloaded._nay.message}`,
-					metadata: { status: "refused", reason: "reload" },
-				};
+				return ai_chat_file_result("Browser reload", "errored", [], "execution");
 			}
-			return {
-				title: "Browser reload",
-				output: "The shared page reloaded from the current source. Inspect it again before acting.",
-				metadata: { status: "reloaded", loadGen: reloaded._yay.loadGen },
-			};
+			// Adopt only the lease returned by this exact reload. Never read and adopt an unrelated live session.
+			if (
+				ctxData.browser.controlGen !== binding.controlGen ||
+				ctxData.browser.loadGen !== binding.loadGen ||
+				ctxData.browser.navGen !== binding.navGen
+			)
+				return ai_chat_file_result("Browser reload", "errored", [], "stale");
+			ctxData.browser.controlGen = reloaded._yay.controlGen;
+			ctxData.browser.loadGen = reloaded._yay.loadGen;
+			ctxData.browser.navGen = reloaded._yay.navGen;
+			return ai_chat_file_result("Browser reload", "succeeded");
 		},
 	});
 }
@@ -2068,10 +1921,7 @@ export function ai_chat_tool_create_browser_reload(
  * End the request's shared browser session. The user can start again from Files; ending never
  * deletes file content or drafts.
  */
-export function ai_chat_tool_create_browser_close(
-	ctx: ActionCtx,
-	ctxData: ai_chat_tool_BrowserContext & { runId: string },
-) {
+export function ai_chat_tool_create_browser_close(ctx: ActionCtx, ctxData: ai_chat_tool_BrowserContext) {
 	return tool({
 		description: dedent`\
 			End the shared browser session when its work is done. \
@@ -2087,11 +1937,7 @@ export function ai_chat_tool_create_browser_close(
 				sessionId: ctxData.browser.sessionId,
 			});
 			if (session._nay) {
-				return {
-					title: "Browser close",
-					output: `The browser is unavailable: ${session._nay.message}.`,
-					metadata: { status: "refused", reason: "session" },
-				};
+				return ai_chat_file_result("Browser close", "errored", [], "unavailable");
 			}
 			if (
 				session._yay.control !== "ready" ||
@@ -2099,12 +1945,7 @@ export function ai_chat_tool_create_browser_close(
 				session._yay.loadGen !== ctxData.browser.loadGen ||
 				session._yay.navigationGeneration !== ctxData.browser.navGen
 			) {
-				return {
-					title: "Browser close",
-					output:
-						"The browser moved on: control, file, or source changed since this request started, or the user drives the page.",
-					metadata: { status: "refused", reason: "stale" },
-				};
+				return ai_chat_file_result("Browser close", "errored", [], "stale");
 			}
 			const closed = await ctx.runAction(api.files_browser.end_browser, {
 				membershipId: ctxData.browser.membershipId,
@@ -2116,42 +1957,13 @@ export function ai_chat_tool_create_browser_close(
 				},
 			});
 			if (closed._nay) {
-				return {
-					title: "Browser close",
-					output: `Browser close failed: ${closed._nay.message}`,
-					metadata: { status: "refused", reason: "close" },
-				};
+				return ai_chat_file_result("Browser close", "errored", [], "execution");
 			}
-			return {
-				title: "Browser close",
-				output: "The shared browser session ended.",
-				metadata: { status: "closed" },
-			};
+			return ai_chat_file_result("Browser close", "succeeded");
 		},
 	});
 }
 
-/**
- * The stored close shape: safe status text only.
- */
-export function ai_chat_tool_create_browser_close_stored() {
-	return tool({
-		inputSchema: z.object({}).strict(),
-		outputSchema: z.object({
-			title: z.string(),
-			output: z.string(),
-			metadata: z.object({
-				status: z.string(),
-			}),
-		}),
-	});
-}
-
-type ai_chat_tool_create_browser_close_stored_Tool = ReturnType<typeof ai_chat_tool_create_browser_close_stored>;
-export type ai_chat_tool_create_browser_close_ToolInput =
-	InferToolInput<ai_chat_tool_create_browser_close_stored_Tool>;
-export type ai_chat_tool_create_browser_close_ToolOutput =
-	InferToolOutput<ai_chat_tool_create_browser_close_stored_Tool>;
 // #endregion shared browser
 
 // #region tests

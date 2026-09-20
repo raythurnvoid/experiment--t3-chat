@@ -1,6 +1,7 @@
 import { composite_id, omit_properties, should_never_happen } from "../shared/shared-utils.ts";
 import {
 	ai_chat_DEFAULT_MODEL_ID,
+	ai_chat_GENERATED_IMAGE_FORMAT,
 	ai_chat_GENERATED_IMAGE_MEDIA_TYPE,
 	ai_chat_MESSAGE_IMAGE_MAX_COUNT,
 	ai_chat_MESSAGE_IMAGE_MAX_TOTAL_URL_CHARS,
@@ -61,18 +62,22 @@ import {
 	ai_chat_tool_create_set_file_metadata,
 	ai_chat_tool_create_web_search,
 	ai_chat_tool_create_execute_code,
+	ai_chat_write_file_outputs,
 	ai_chat_tool_create_image_generation,
-	ai_chat_tool_create_image_generation_stored,
+	ai_chat_tool_create_file_stored,
 	ai_chat_tool_create_browser_run,
-	ai_chat_tool_create_browser_run_stored,
 	ai_chat_tool_create_browser_reload,
-	ai_chat_tool_create_browser_reload_stored,
 	ai_chat_tool_create_browser_close,
-	ai_chat_tool_create_browser_close_stored,
 	ai_chat_WRITE_TOOL_NAMES,
 	type ai_chat_tool_BrowserBinding,
 } from "../server/server-ai-tools.ts";
-import { r2_create_asset_key, r2_db_finalize_generated_image_asset, r2_put_object } from "./r2_client.ts";
+import {
+	ai_chat_execute_code_result_schema,
+	ai_chat_file_result_schema,
+	ai_chat_file_result,
+} from "../shared/ai-chat-files.ts";
+import { ai_chat_tool_create_view_image, type ai_chat_Observation } from "../server/ai-chat-file-tools.ts";
+import { files_ingestion_decode_base64 } from "../server/files-ingestion.ts";
 import app_convex_schema, {
 	ai_chat_thread_active_run_validator,
 	bash_shell_state_validator,
@@ -173,8 +178,9 @@ function ai_chat_system_prompt(args: {
 		"You are the app chat agent for the user's organization.",
 		"Use the available tools as the working interface for the organization.",
 		`Bash starts in the current workspace path at \`~/w/${args.organizationName}/${args.workspaceName}\` (\`${currentWorkspacePath}\`). \`~\` is \`${HOME}\`, the app mount is \`${appMountPath}\`, and \`/tmp\` is durable scratch scoped to this chat thread.`,
+		`Files tools, the file API, and emitFile use workspace paths such as /reports/result.bin. Bash sees that file at ${currentWorkspacePath}/reports/result.bin. Strip only this current workspace prefix when passing a Bash path to view_image. Bash /tmp is thread scratch; Files /tmp/report.bin is a normal workspace file at ${currentWorkspacePath}/tmp/report.bin.`,
 		`User messages may reference app files with mentions written as \`@/path/to/file.md\` (any app file works the same, for example \`@/data/config.json\`); a trailing slash like \`@/docs/\` means a folder. Resolve them under the current workspace path (\`@/docs/api.md\` is \`${currentWorkspacePath}/docs/api.md\`) before using Bash or \`edit_file\`.`,
-		"When a user provides an app file URL or a node ID, first use Bash `resolve '<reference>'` to get its current path. Do not list or search files before resolving the reference. Then pass that exact absolute path to the existing file readers or editors. Do not turn it into an @ mention.",
+		"When a user provides an app file URL or a node ID, first use Bash `resolve '<reference>'` to get its current path. Do not list or search files before resolving the reference. Use the resolved path with Bash; use its workspace path with Files tools. Do not turn it into an @ mention.",
 		`Link app files with Markdown URLs under \`/w/${args.organizationName}/${args.workspaceName}/files/\`, followed by their workspace-relative path with each path segment URL-encoded.`,
 		`For example, Bash path \`${currentWorkspacePath}/docs/Q3 notes.md\` links to \`/w/${args.organizationName}/${args.workspaceName}/files/docs/Q3%20notes.md\`; do not use Bash paths or bare relative paths as link URLs.`,
 		"The Bash tool description is the authority on its command surface, its flags, and how the db-backed app mount differs from `/tmp`. Follow it instead of assuming POSIX/GNU behavior, and never describe an app-mount limitation as a global Bash limitation.",
@@ -204,10 +210,11 @@ function ai_chat_system_prompt(args: {
 		"To read app files from code, fetch `${process.env.T3_APP_ORIGIN}/api/v1/files/list` for paths, then `${process.env.T3_APP_ORIGIN}/api/v1/files/read-many` for contents; follow `cursor` until `isDone`, check `errors` and `truncated`, and use `/api/v1/files/read` only for one known file.",
 		"Do not pass app file paths or contents through `input`; keep `input` for ordinary JSON parameters, run file API fetches inside the snippet, and return a compact aggregate instead of raw file contents.",
 		"Summarize `execute_code` results and logs in your answer; do not paste large raw output.",
-		// Only the models marked in `ai_chat_MODELS` get the picture tool, so only they hear about it.
+		// The picture tool needs a model marked in `ai_chat_MODELS` and Agent mode, because the picture
+		// is saved as a pending file. Only a turn that really has the tool hears about it.
 		...(args.supportsImageGeneration
 			? [
-					"Use `image_generation` when the user asks for a picture, an illustration, or a logo; it draws one image per call and the chat shows it, so describe it in words only when the user asked for a description instead.",
+					"Use `image_generation` when the user asks for a picture, an illustration, or a logo. It creates one pending file for review. Use the returned Files target to read or open it.",
 				]
 			: []),
 		...args.browserLines,
@@ -331,25 +338,82 @@ const drop_preliminary_tool_results_middleware: LanguageModelMiddleware = {
 };
 
 /**
- * Move a generated picture out of the message and into R2.
+ * Save one generated picture as a private pending file.
  *
- * OpenAI runs the image tool on its own side and sends the finished picture back as base64 inside
- * the tool output. One chat message is stored as one Convex doc with a ~1 MiB limit, and a single
- * picture already fills most of it, so the bytes cannot stay in the message. Each picture is written
- * to R2 here and the output becomes a reference to that asset.
+ * OpenAI draws the picture on its own side and sends the bytes back inside the tool output. One
+ * chat message is stored as one Convex doc with a ~1 MiB limit, so the bytes cannot stay in the
+ * message. The picture goes to Files like any other file, and the chat keeps only a link to it.
  *
- * The asset keeps the cleanup deadline `insert_asset` gave it. `thread_messages_add` clears the
- * deadline when it stores a message that shows the picture, so a picture whose message never arrives
- * is deleted a day later instead of staying in the bucket forever.
+ * The SDK converts provider results for both the model and the UI. Share the save
+ * promise so both receive the same Files target and only one pending file is made.
  */
-function create_generated_image_upload_transform(input: {
+function create_generated_image_save(input: {
 	ctx: ActionCtx;
 	organizationId: Id<"organizations">;
 	workspaceId: Id<"organizations_workspaces">;
 	userId: Id<"users">;
+	membershipId: Id<"organizations_workspaces_users">;
+	getThreadId: () => Id<"ai_chat_threads"> | null;
+	canWriteFiles: boolean;
+	abortSignal?: AbortSignal;
 }) {
-	const { ctx, organizationId, workspaceId, userId } = input;
+	const saved = new Map<string, Promise<z.infer<typeof ai_chat_file_result_schema>>>();
+	return (toolCallId: string, output: unknown) => {
+		let pending = saved.get(toolCallId);
+		if (!pending) {
+			pending = (async () => {
+				const title = "Generate image";
 
+				// Ask mode may not write files, so there is nowhere to put the picture. Say so instead of
+				// saving it, and the model can tell the user to switch to Agent mode.
+				if (!input.canWriteFiles)
+					return ai_chat_file_result(title, "errored", [], "agent_required");
+
+				try {
+					input.abortSignal?.throwIfAborted();
+					const provider = z.object({ result: z.string() }).parse(output);
+					const threadId = input.getThreadId();
+					if (!threadId) throw new Error("A thread is required.");
+
+					// OpenAI sends the picture back as base64. Decode it here, so the Files writer gets plain
+					// bytes like every other file.
+					return await ai_chat_write_file_outputs(
+						input.ctx,
+						{
+							organizationId: input.organizationId,
+							workspaceId: input.workspaceId,
+							userId: input.userId,
+							membershipId: input.membershipId,
+							threadId,
+						},
+						[
+							{
+								path: `/generated/image.${ai_chat_GENERATED_IMAGE_FORMAT}`,
+								contentType: ai_chat_GENERATED_IMAGE_MEDIA_TYPE,
+								bytes: files_ingestion_decode_base64(provider.result),
+							},
+						],
+						{ title, requestId: toolCallId, modeId: "agent", abortSignal: input.abortSignal },
+					);
+				} catch {
+					// Never put the caught error's text in the result. It can name quota or storage details,
+					// and the chat shows this text to the user and replays it to the model.
+					return ai_chat_file_result(title, input.abortSignal?.aborted ? "cancelled" : "errored", [], "storage");
+				}
+			})();
+			saved.set(toolCallId, pending);
+		}
+		return pending;
+	};
+}
+
+/**
+ * Replace the picture bytes with the saved Files result in the stream the browser reads.
+ *
+ * `save` is the same function the model conversion calls, and both ask for the same tool call id,
+ * so the picture is written once and the client and the model see the same link.
+ */
+function create_generated_image_result_transform(save: ReturnType<typeof create_generated_image_save>) {
 	// A `tool-output-available` chunk carries no tool name, so remember which calls are image calls.
 	const imageToolCallIds = new Set<string>();
 
@@ -367,138 +431,100 @@ function create_generated_image_upload_transform(input: {
 				return;
 			}
 
-			const output = chunk.output;
-			const base64 =
-				output !== null && typeof output === "object" && typeof (output as { result?: unknown }).result === "string"
-					? (output as { result: string }).result
-					: null;
-			if (base64 === null) {
-				console.error("Image generation returned an unexpected output shape", { toolCallId: chunk.toolCallId });
-				controller.enqueue({
-					type: "tool-output-error",
-					toolCallId: chunk.toolCallId,
-					errorText: "The image could not be read.",
-					providerExecuted: true,
-				});
-				return;
-			}
-
-			const bytes = Uint8Array.from(atob(base64), (char) => char.charCodeAt(0));
-
-			const assetId = await ctx.runMutation(internal.r2.insert_asset, {
-				organizationId,
-				workspaceId,
-				kind: "generated_image",
-				size: bytes.byteLength,
-				createdBy: userId,
-			});
-
-			try {
-				await r2_put_object(ctx, {
-					key: r2_create_asset_key({ organizationId, workspaceId, assetId }),
-					body: bytes,
-					contentType: ai_chat_GENERATED_IMAGE_MEDIA_TYPE,
-				});
-			} catch (error) {
-				console.error("Failed to store a generated image", { error, assetId, toolCallId: chunk.toolCallId });
-				controller.enqueue({
-					type: "tool-output-error",
-					toolCallId: chunk.toolCallId,
-					errorText: "The image could not be stored.",
-					providerExecuted: true,
-				});
-				return;
-			}
-
 			controller.enqueue({
 				...chunk,
-				output: {
-					assetId,
-					mediaType: ai_chat_GENERATED_IMAGE_MEDIA_TYPE,
-					size: bytes.byteLength,
-				} satisfies ai_chat_UiTools["image_generation"]["output"],
+				output: await save(chunk.toolCallId, chunk.output),
 			});
 		},
 	});
 }
 
+// #region file tool messages
 /**
- * Browser tool names share one stream treatment: no code argument and no raw observations may
- * reach the client or storage. Reload and close return status text only, but their outputs are
- * still normalized so every stored browser part has the same safe shape.
+ * File tools share one stream treatment: no code argument or raw observations may
+ * reach the client or storage.
+ *
+ * Reload and close return status text only, but their outputs are
+ * still normalized so every stored file part has the same safe shape.
  */
-const BROWSER_TOOL_NAMES = new Set(["browser_run", "browser_reload", "browser_close"]);
+const FILE_TOOL_NAMES = new Set(["browser_run", "browser_reload", "browser_close", "view_image", "image_generation"]);
 
-function browser_tool_name(value: unknown): string | null {
+function file_tool_name(value: unknown): string | null {
 	if (typeof value !== "string") {
 		return null;
 	}
 	const name = value.toLowerCase();
-	return BROWSER_TOOL_NAMES.has(name) ? name : null;
+	return FILE_TOOL_NAMES.has(name) ? name : null;
 }
 
 /**
- * Browser tool name behind one stored part. Static parts carry `tool-<name>` with no
- * `toolName` field; dynamic parts carry `toolName`. Missing both means not a browser part.
+ * File tool name behind one stored part.
+ *
+ * Static parts carry `tool-<name>` with no `toolName` field; dynamic parts carry `toolName`.
+ * Missing both means not a file part.
  */
-function stored_browser_part_name(part: { type?: unknown; toolName?: unknown }): string | null {
-	const named = browser_tool_name(part.toolName);
+function stored_file_part_name(part: { type?: unknown; toolName?: unknown }): string | null {
+	const named = file_tool_name(part.toolName);
 	if (named) {
 		return named;
 	}
 	if (typeof part.type === "string" && part.type.startsWith("tool-")) {
-		return browser_tool_name(part.type.slice("tool-".length));
+		return file_tool_name(part.type.slice("tool-".length));
 	}
 
 	return null;
 }
 
-const BROWSER_TOOL_TITLES: Record<string, string> = {
+const FILE_TOOL_TITLES: Record<string, string> = {
 	browser_run: "Browser run",
 	browser_reload: "Browser reload",
 	browser_close: "Browser close",
+	view_image: "View image",
+	image_generation: "Generate image",
 };
 
 /**
- * Rewrite one live browser chunk into its stored shape. Input start and deltas are dropped, so
- * code arguments never reach the client or storage. An aborted call may leave an empty input
- * part. Outputs keep a safe status plus an opaque result id; errors become the same shape, so
+ * Rewrite one live file chunk into its stored shape.
+ *
+ * Input start and deltas are dropped, so code arguments never reach the client or storage.
+ * An aborted call may leave an empty input part.
+ *
+ * Outputs keep a safe status and Files targets; errors become the same shape, so
  * a failed call still persists instead of failing the whole batch. Returns null to drop.
  */
-function scrub_browser_stream_chunk(
+function scrub_file_stream_chunk(
 	chunk: InferUIMessageChunk<ai_chat_UiMessage>,
-	browserCalls: Map<string, string>,
+	fileCalls: Map<string, string>,
 ): Array<InferUIMessageChunk<ai_chat_UiMessage>> | null {
 	if (chunk.type === "tool-input-start") {
-		const name = browser_tool_name(chunk.toolName);
+		const name = file_tool_name(chunk.toolName);
 		if (name) {
-			browserCalls.set(chunk.toolCallId, name);
+			fileCalls.set(chunk.toolCallId, name);
 			return null;
 		}
 		return [chunk];
 	}
 
 	if (chunk.type === "tool-input-delta") {
-		return browserCalls.has(chunk.toolCallId) ? null : [chunk];
+		return fileCalls.has(chunk.toolCallId) ? null : [chunk];
 	}
 
-	if (chunk.type === "tool-input-available") {
-		const name = browser_tool_name(chunk.toolName);
-		if (name) {
-			browserCalls.set(chunk.toolCallId, name);
-			return [{ ...chunk, input: {} }];
-		}
-		return [chunk];
+	// Invalid calls may arrive without an input-start chunk, so learn their name here too.
+	if (chunk.type === "tool-input-available" || chunk.type === "tool-input-error") {
+		const name = file_tool_name(chunk.toolName);
+		if (!name) return [chunk];
+		fileCalls.set(chunk.toolCallId, name);
+		if (chunk.type === "tool-input-available") return [{ ...chunk, input: {} }];
 	}
 
 	if (!("toolCallId" in chunk)) {
 		return [chunk];
 	}
-	const tracked = browserCalls.get(chunk.toolCallId);
+	const tracked = fileCalls.get(chunk.toolCallId);
 	if (!tracked) {
 		return [chunk];
 	}
-	const title = BROWSER_TOOL_TITLES[tracked] ?? "Browser run";
+	const title = FILE_TOOL_TITLES[tracked] ?? "Browser run";
 
 	// Invalid input never assembles a part of its own, so emit the safe input first: the
 	// assembler requires a part before it accepts the converted output below.
@@ -512,7 +538,7 @@ function scrub_browser_stream_chunk(
 		const output = {
 			type: "tool-output-available",
 			toolCallId: chunk.toolCallId,
-			output: { title, output: "Browser error.", metadata: { status: "error" } },
+			output: ai_chat_file_result(title, "errored", [], "invalid_result"),
 		} as InferUIMessageChunk<ai_chat_UiMessage>;
 		return [available, output];
 	}
@@ -522,7 +548,7 @@ function scrub_browser_stream_chunk(
 			{
 				type: "tool-output-available",
 				toolCallId: chunk.toolCallId,
-				output: { title, output: "Browser error.", metadata: { status: "error" } },
+				output: ai_chat_file_result(title, "errored", [], "execution"),
 			} as InferUIMessageChunk<ai_chat_UiMessage>,
 		];
 	}
@@ -531,269 +557,229 @@ function scrub_browser_stream_chunk(
 		return [chunk];
 	}
 
-	const output = chunk.output as { metadata?: unknown; title?: unknown } | null;
+	const output = chunk.output as { metadata?: unknown } | null;
 	const metadata = (output && typeof output === "object" ? output.metadata : null) as {
 		status?: unknown;
-		resultId?: unknown;
+		reason?: unknown;
+		files?: unknown;
 	} | null;
-	const status = typeof metadata?.status === "string" ? metadata.status : "unknown";
-	const resultId = typeof metadata?.resultId === "string" ? metadata.resultId : null;
+
+	const statusCheck = ai_chat_file_result_schema.shape.metadata.shape.status.safeParse(metadata?.status);
+	const status = statusCheck.success ? statusCheck.data : "errored";
+	const reasonCheck = ai_chat_file_result_schema.shape.metadata.shape.reason.safeParse(metadata?.reason);
+	const reason = reasonCheck.success ? reasonCheck.data : "invalid_result";
+	const filesCheck = ai_chat_file_result_schema.shape.metadata.shape.files.safeParse(metadata?.files);
+	// Only these three tools may point at files. Reload and close report a status and nothing else,
+	// so drop any target they claim.
+	const files =
+		(tracked === "browser_run" || tracked === "view_image" || tracked === "image_generation") && filesCheck.success
+			? filesCheck.data
+			: [];
+	// Rebuild the shared result from allowed fields. Never forward the tool's raw text.
 	return [
 		{
 			...chunk,
-			output: {
-				title,
-				output: `Browser ${status}.`,
-				metadata: resultId ? { status, resultId } : { status },
-			},
+			output: ai_chat_file_result(title, status, files, reason),
 		},
 	];
 }
 
-function create_browser_result_scrub_transform() {
+function create_file_result_scrub_transform() {
 	// A `tool-output-available` chunk carries no tool name, so remember which calls are
-	// browser calls, exactly like the image upload transform above.
-	const browserCalls = new Map<string, string>();
+	// file calls, exactly like the image upload transform above.
+	const fileCalls = new Map<string, string>();
 
 	return new TransformStream<InferUIMessageChunk<ai_chat_UiMessage>, InferUIMessageChunk<ai_chat_UiMessage>>({
 		transform: async (chunk, controller) => {
-			for (const next of scrub_browser_stream_chunk(chunk, browserCalls) ?? []) {
+			for (const next of scrub_file_stream_chunk(chunk, fileCalls) ?? []) {
 				controller.enqueue(next);
 			}
 		},
 	});
 }
 
-const BROWSER_RESULT_ID_PREFIX = "[browser-result:";
-
 /**
- * Read the stored result id back from converted model content. `toModelOutput` prefixes the
- * text part with it so per-step rechecks and title sanitizing can find the owning result
- * without trusting the model to echo an id.
+ * Replace browser and image observations with a neutral line before the title model reads them.
+ *
+ * The title model gets the conversation text only. Raw browser observations and image bytes never
+ * reach it.
  */
-function browser_result_id_from_model_part(part: unknown): string | null {
-	if (!part || typeof part !== "object") {
-		return null;
-	}
-	const output = (part as { output?: unknown }).output;
-	if (!output || typeof output !== "object" || (output as { type?: unknown }).type !== "content") {
-		return null;
-	}
-	const value = (output as { value?: unknown }).value;
-	if (!Array.isArray(value)) {
-		return null;
-	}
-	const first = value[0] as { type?: unknown; text?: unknown } | undefined;
-	if (!first || first.type !== "text" || typeof first.text !== "string") {
-		return null;
-	}
-	if (!first.text.startsWith(BROWSER_RESULT_ID_PREFIX)) {
-		return null;
-	}
-	const end = first.text.indexOf("]");
-	if (end < 0) {
-		return null;
-	}
-	const id = first.text.slice(BROWSER_RESULT_ID_PREFIX.length, end);
-	return id.length > 0 ? id : null;
-}
-
-function is_browser_run_model_part(part: unknown) {
-	return (
-		!!part &&
-		typeof part === "object" &&
-		(part as { type?: unknown }).type === "tool-result" &&
-		(part as { toolName?: unknown }).toolName === "browser_run"
-	);
-}
-
-/**
- * Replace converted browser output with a neutral line. Used for revoked results mid-turn and
- * for title input, which must never see raw browser payloads.
- */
-function sanitize_browser_model_part(part: Record<string, unknown>, text: string) {
-	return {
-		...part,
-		output: { type: "text", value: text },
-	};
-}
-
-/**
- * Strip converted browser output from title input. The title model gets conversation metadata,
- * never raw browser payloads or images.
- */
-function sanitize_browser_title_messages(messages: ModelMessage[]): ModelMessage[] {
+function sanitize_observation_title_messages(messages: ModelMessage[]): ModelMessage[] {
 	return messages.map((message) => {
-		if (message.role !== "tool" || !Array.isArray(message.content)) {
-			return message;
-		}
-		let changed = false;
-		const content = message.content.map((part) => {
-			if (!is_browser_run_model_part(part)) {
-				return part;
-			}
-			changed = true;
-			return sanitize_browser_model_part(
-				part as Record<string, unknown>,
-				"(browser result omitted from title input)",
-			);
-		});
-		return changed ? { ...message, content } : message;
+		if ((message.role !== "tool" && message.role !== "assistant") || !Array.isArray(message.content)) return message;
+		const content = message.content.map((part) =>
+			part.type === "tool-result" && (part.toolName === "browser_run" || part.toolName === "view_image")
+				? { ...part, output: { type: "text" as const, value: "(tool observations omitted from title input)" } }
+				: part,
+		);
+		return { ...message, content };
 	}) as ModelMessage[];
 }
 
 /**
- * Re-resolve every expanded browser result in the outgoing messages. Access granted when
- * history loaded may be gone by step N; denied parts are replaced in a copied list, and the
- * original list is returned untouched when nothing needs filtering.
+ * Check the turn's private observations before each provider call.
+ *
+ * The SDK has already expanded tool results into these messages. Deleting a map entry alone
+ * would leave stale bytes there, so replace the actual message part as well.
  */
-async function filter_revoked_browser_results(
-	ctx: ActionCtx,
-	args: {
-		messages: ModelMessage[];
-		userId: Id<"users">;
-		membershipId: Id<"organizations_workspaces_users">;
-		threadId: Id<"ai_chat_threads">;
-	},
+async function filter_revoked_observations(
+	messages: ModelMessage[],
+	observations: Map<string, ai_chat_Observation>,
 ): Promise<ModelMessage[]> {
-	let changed = false;
-	const messages = await Promise.all(
-		args.messages.map(async (message) => {
-			if (message.role !== "tool" || !Array.isArray(message.content)) {
-				return message;
+	return await Promise.all(messages.map(async (message) => {
+		if ((message.role !== "tool" && message.role !== "assistant") || !Array.isArray(message.content)) return message;
+		const content = await Promise.all(message.content.map(async (part) => {
+			if (part.type !== "tool-result" || (part.toolName !== "browser_run" && part.toolName !== "view_image"))
+				return part;
+			const observation = observations.get(part.toolCallId);
+			if (!observation && part.output.type !== "content") return part;
+			let allowed = false;
+			try {
+				allowed = observation?.toolName === part.toolName && await observation.isCurrent();
+			} catch {
+				// A failed query cannot prove current access.
 			}
-			let messageChanged = false;
-			const content = await Promise.all(
-				message.content.map(async (part) => {
-					if (!is_browser_run_model_part(part)) {
-						return part;
-					}
-					const resultId = browser_result_id_from_model_part(part);
-					if (!resultId) {
-						messageChanged = true;
-						return sanitize_browser_model_part(part as Record<string, unknown>, "(Browser result unavailable.)");
-					}
-					const checked = await ctx.runQuery(internal.files_browser.get_authorized_browser_result, {
-						userId: args.userId,
-						membershipId: args.membershipId,
-						resultId: resultId as Id<"ai_chat_browser_results">,
-					});
-					if (!checked || checked.result.threadId !== args.threadId) {
-						messageChanged = true;
-						return sanitize_browser_model_part(
-							part as Record<string, unknown>,
-							"(Browser result unavailable: it expired or access changed.)",
-						);
-					}
-					return part;
-				}),
-			);
-			if (messageChanged) {
-				changed = true;
-				return { ...message, content };
-			}
-			return message;
-		}),
-	);
-	return changed ? (messages as ModelMessage[]) : args.messages;
+			if (allowed && observation) return { ...part, output: observation.output };
+			observations.delete(part.toolCallId);
+			return { ...part, output: { type: "text" as const, value: "(Tool observations unavailable: access or file changed.)" } };
+		}));
+		return { ...message, content };
+	})) as ModelMessage[];
 }
 
 /**
- * Validate one stored browser tool part. Code input and raw observations never persist: only
- * an empty input and a safe status plus an opaque result id may be stored. Static parts carry
- * `tool-<name>`; forged client parts may arrive as `dynamic-tool` or mixed-case, so both type
- * forms are checked against the same shape. An aborted call may persist as `input-available`
- * with an empty input; history conversion drops incomplete calls, so it never reaches a model.
+ * Validate one stored file tool part. Code input and raw observations never persist: only
+ * an empty input, safe status, and Files targets may be stored.
+ *
+ * Static parts carry `tool-<name>`; forged client parts may arrive as `dynamic-tool` or mixed-case,
+ * so both type forms are checked against the same shape.
+ *
+ * An aborted call may persist as `input-available` with an empty input; history conversion drops
+ * incomplete calls, so it never reaches a model.
  */
-function is_valid_stored_browser_part(part: {
+function is_valid_stored_file_part(part: {
 	type?: unknown;
 	toolName?: unknown;
 	state?: unknown;
 	input?: unknown;
 	output?: unknown;
 }) {
-	const name = stored_browser_part_name(part);
+	const name = stored_file_part_name(part);
 	if (!name) {
 		return false;
 	}
 	if (part.type !== `tool-${name}` && part.type !== "dynamic-tool") {
 		return false;
 	}
-	if (!part.input || typeof part.input !== "object" || Object.keys(part.input).length !== 0) {
+	// A forged part could name one tool in `type` and another in `toolName`. Both must agree.
+	if (part.toolName !== undefined && file_tool_name(part.toolName) !== name) return false;
+
+	if (
+		!part.input ||
+		typeof part.input !== "object" ||
+		Array.isArray(part.input) ||
+		Object.keys(part.input).length !== 0
+	) {
 		return false;
 	}
 	if (part.state === "input-available") {
-		return true;
+		return part.output === undefined;
 	}
 	if (part.state !== "output-available") {
 		return false;
 	}
-	if (!part.output || typeof part.output !== "object") {
-		return false;
-	}
-	const output = part.output as Record<string, unknown>;
-	const outputKeys = Object.keys(output);
-	if (outputKeys.length !== 3 || !outputKeys.includes("title") || !outputKeys.includes("output") || !outputKeys.includes("metadata")) {
-		return false;
-	}
-	if (typeof output.title !== "string" || output.title.length > 200) {
-		return false;
-	}
-	if (typeof output.output !== "string" || output.output.length > 500) {
-		return false;
-	}
-	if (!output.metadata || typeof output.metadata !== "object") {
-		return false;
-	}
-	const metadata = output.metadata as Record<string, unknown>;
-	const metadataKeys = Object.keys(metadata);
+
+	// The title and the text must be exactly what the scrub writes, so a client cannot store a
+	// sentence of its own for the model to read later.
+	const parsed = ai_chat_file_result_schema.safeParse(part.output);
 	if (
-		metadataKeys.length < 1 ||
-		metadataKeys.length > 2 ||
-		!metadataKeys.every((key) => key === "status" || key === "resultId") ||
-		!metadataKeys.includes("status") ||
-		typeof metadata.status !== "string" ||
-		(metadata.status as string).length > 32
-	) {
+		!parsed.success ||
+		parsed.data.title !== FILE_TOOL_TITLES[name] ||
+		parsed.data.output !== `${parsed.data.title}: ${parsed.data.metadata.status}.`
+	)
 		return false;
-	}
-	if (
-		metadataKeys.includes("resultId") &&
-		(typeof metadata.resultId !== "string" || (metadata.resultId as string).length > 128)
-	) {
-		return false;
+
+	// A browser run may emit up to eight files. A read or a picture points at one file. Reload and
+	// close create nothing.
+	const maxFiles = name === "browser_run" ? 8 : name === "view_image" || name === "image_generation" ? 1 : 0;
+	return parsed.data.metadata.files.length <= maxFiles;
+}
+
+/**
+ * Check every tool part of one message before it is stored or replayed.
+ *
+ * Any part that names a tool can be replayed to the model later, and anyone can post a message. So
+ * a part of a tool this route no longer registers is refused, and a file tool part must look
+ * exactly like the one the live stream scrubbed.
+ */
+function has_valid_file_tool_parts(content: { parts?: unknown }) {
+	const parts: unknown[] = Array.isArray(content.parts) ? content.parts : [];
+	// Client-supplied history must pass the same rules as the scrubbed live stream.
+	for (const part of parts) {
+		if (!part || typeof part !== "object") continue;
+		const toolPart = part as { type?: unknown; toolName?: unknown; state?: unknown; input?: unknown; output?: unknown };
+		// A static part keeps the name inside `type`, as `tool-<name>`. Cut the first five characters
+		// to get it. A dynamic part keeps the name in `toolName`.
+		const staticName =
+			typeof toolPart.type === "string" && toolPart.type.startsWith("tool-") ? toolPart.type.slice(5) : null;
+		const name = typeof toolPart.toolName === "string" ? toolPart.toolName.toLowerCase() : staticName;
+
+		if (!staticName && toolPart.type !== "dynamic-tool") continue;
+		if (staticName && staticName !== name) return false;
+
+		// Refuse any name this route does not run today, including a tool that was removed. Otherwise
+		// the SDK would replay that stored output to the model without checking it.
+		if (
+			!name ||
+			!new Set([...FILE_TOOL_NAMES, "bash", "edit_file", "set_file_metadata", "web_search", "execute_code"]).has(name)
+		)
+			return false;
+
+		if (FILE_TOOL_NAMES.has(name)) {
+			if (!is_valid_stored_file_part(toolPart)) return false;
+		}
+
+		if (name === "execute_code" && toolPart.state === "output-available") {
+			const parsed = ai_chat_execute_code_result_schema.safeParse(toolPart.output);
+			if (!parsed.success) return false;
+		}
 	}
 	return true;
 }
 
 /**
- * Read the R2 assets a message shows as generated pictures.
+ * OpenAI replays provider results as item IDs. Add the Files result as plain text too.
  *
- * This is the shape `create_generated_image_upload_transform` leaves in the message. `content` is a
- * loose record and any client can post one, so every field is checked before it is used.
+ * The Responses API replays a tool it ran itself by item id, so the result we converted for it is
+ * never sent. Append the same result as an ordinary text part and the model still sees the Files
+ * link. The same text is added only once, because this runs again before every step.
  */
-function read_generated_image_asset_ids(content: Record<string, unknown>) {
-	const parts: unknown[] = Array.isArray(content.parts) ? content.parts : [];
-	const assetIds: string[] = [];
-
-	for (const part of parts) {
-		if (!part || typeof part !== "object") {
-			continue;
+function add_generated_file_summaries(messages: ModelMessage[]): ModelMessage[] {
+	let changed = false;
+	const result = messages.map((message) => {
+		if (message.role !== "assistant" || !Array.isArray(message.content)) return message;
+		const summaries: string[] = [];
+		for (const part of message.content) {
+			if (part.type !== "tool-result" || part.toolName !== "image_generation") continue;
+			const parsed = part.output.type === "json" ? ai_chat_file_result_schema.safeParse(part.output.value) : null;
+			// Live provider output is JSON. Stored Files conversion returns safe text.
+			const summary = parsed?.success
+				? JSON.stringify(parsed.data)
+				: part.output.type === "text"
+					? part.output.value
+					: null;
+			if (summary === null) continue;
+			const text = `Generated Files (${part.toolCallId}): ${summary}`;
+			if (!message.content.some((candidate) => candidate.type === "text" && candidate.text === text))
+				summaries.push(text);
 		}
-
-		const toolPart = part as { type?: unknown; state?: unknown; output?: unknown };
-		if (toolPart.type !== "tool-image_generation" || toolPart.state !== "output-available") {
-			continue;
-		}
-
-		const assetId = (toolPart.output as { assetId?: unknown } | null | undefined)?.assetId;
-		if (typeof assetId === "string") {
-			assetIds.push(assetId);
-		}
-	}
-
-	return assetIds;
+		if (summaries.length === 0) return message;
+		changed = true;
+		return { ...message, content: [...message.content, ...summaries.map((text) => ({ type: "text" as const, text }))] };
+	});
+	return changed ? result : messages;
 }
+// #endregion file tool messages
 
 function build_agent_configuration(input: {
 	ctx: ActionCtx;
@@ -812,8 +798,8 @@ function build_agent_configuration(input: {
 	getWorkspaceContext?: () => ai_chat_context_Context | null;
 	membershipId: Id<"organizations_workspaces_users">;
 	browserBinding?: ai_chat_tool_BrowserBinding | null;
-	runId?: string;
 	browserUnavailableNote?: string | null;
+	abortSignal?: AbortSignal;
 }) {
 	const {
 		ctx,
@@ -823,15 +809,30 @@ function build_agent_configuration(input: {
 		getWorkspaceContext,
 	} = input;
 	const browserBinding = input.browserBinding ?? null;
-	const runId = input.runId ?? crypto.randomUUID();
 	const browserUnavailableNote = input.browserUnavailableNote ?? null;
 	const browserToolsEnabled = browserBinding !== null && process.env.AI_CHAT_BROWSER_ENABLED === "true";
 
-	const supportsImageGeneration = ai_chat_MODELS[modelId].supportsImageGeneration;
+	// A generated picture is saved as a pending file, and only Agent mode may write files, so Ask
+	// mode does not get the tool at all.
+	const supportsImageGeneration = modeId === "agent" && ai_chat_MODELS[modelId].supportsImageGeneration;
 
 	// The tools that write pending updates (or grants) read the running chat's thread id from
 	// their ctxData; the lazy getter resolves after the http handler creates/loads the thread.
-	const toolCtxData = { ...ctxData, getThreadId, getWorkspaceContext };
+	const toolCtxData = {
+		...ctxData,
+		getThreadId,
+		getWorkspaceContext,
+		membershipId: input.membershipId,
+		// `canWriteFiles` answers one question: may a tool save its output as a pending file? The
+		// picture save below and the browser screenshot tools both read it.
+		canWriteFiles: modeId === "agent",
+	};
+
+	// One save for the whole turn. The model conversion and the stream transform below both call it
+	// with the same tool call id, so the picture reaches Files only once.
+	const saveGeneratedImage = create_generated_image_save({ ctx, ...toolCtxData, abortSignal: input.abortSignal });
+	const toolBudget = ai_chat_tool_budget_create();
+	const observations = new Map<string, ai_chat_Observation>();
 
 	// Set by the Bash tool when `wait` stopped polling for a job whose finish wakes the agent;
 	// `prepareStep` then ends the turn. Only Agent mode arms jobs.
@@ -839,6 +840,14 @@ function build_agent_configuration(input: {
 
 	// The tools this route runs itself. Only these can write, so only these are filtered in ask mode.
 	const appTools = {
+		// Reading changes nothing, so both modes get it. The shared budget caps how many bytes one
+		// turn can pull into the model.
+		view_image: ai_chat_tool_create_view_image(ctx, {
+			userId: ctxData.userId,
+			membershipId: input.membershipId,
+			getThreadId,
+			observations,
+		}),
 		bash: ai_chat_tool_create_bash(ctx, toolCtxData, {
 			allowDbFilesMkdir: modeId === "agent",
 			jobWakeup:
@@ -855,12 +864,11 @@ function build_agent_configuration(input: {
 		set_file_metadata: ai_chat_tool_create_set_file_metadata(ctx, toolCtxData),
 		web_search: ai_chat_tool_create_web_search(),
 		execute_code: ai_chat_tool_create_execute_code(ctx, toolCtxData),
-		// Browser tools exist only for a live shared page bound to this request. Both modes
-		// inspect; the tools never write files, so they stay out of the write-tool list.
+		// Both modes inspect the bound page. Only Agent mode may turn emitted bytes into pending files.
 		// The flag gates live tools; validation keeps the stored shapes regardless.
 		...(browserToolsEnabled && browserBinding
 			? ((/* iife */) => {
-					const browserCtxData = { ...toolCtxData, browser: browserBinding, runId };
+					const browserCtxData = { ...toolCtxData, browser: browserBinding, observations, canWriteFiles: modeId === "agent" };
 					return {
 						browser_run: ai_chat_tool_create_browser_run(ctx, browserCtxData),
 						browser_reload: ai_chat_tool_create_browser_reload(ctx, browserCtxData),
@@ -869,25 +877,19 @@ function build_agent_configuration(input: {
 				})()
 			: {}),
 	};
-	const toolBudget = ai_chat_tool_budget_create();
 	ai_chat_tool_budget_apply(appTools, toolBudget);
 
-	// Keep current stored outputs valid across mode and model changes. Unknown completed tool
-	// parts from older messages use the SDK's normal history format.
+	// Keep current stored outputs valid across mode and model changes. Every file tool stores the
+	// same safe shape, so an old part still validates in either mode, and also while the browser
+	// feature is off and the live tool is not registered at all.
 	const validationTools = {
 		...appTools,
-		// Pictures become asset references before storage.
-		image_generation: ai_chat_tool_create_image_generation_stored(),
-		// Browser observations persist as safe statuses plus opaque result ids, in every mode
-		// and while the feature is off. The stored run tool resolves ids through the same
-		// authorized reader as live turns, so later turns see text and images, not placeholders.
-		browser_run: ai_chat_tool_create_browser_run_stored(ctx, {
-			userId: ctxData.userId,
-			membershipId: input.membershipId,
-			getThreadId,
-		}),
-		browser_reload: ai_chat_tool_create_browser_reload_stored(),
-		browser_close: ai_chat_tool_create_browser_close_stored(),
+		image_generation: ai_chat_tool_create_file_stored(),
+		// History keeps references. Images are read only by an explicit live tool call.
+		browser_run: ai_chat_tool_create_file_stored(),
+		view_image: ai_chat_tool_create_file_stored(),
+		browser_reload: ai_chat_tool_create_file_stored(),
+		browser_close: ai_chat_tool_create_file_stored(),
 	};
 
 	const writeToolNames = new Set<string>(ai_chat_WRITE_TOOL_NAMES);
@@ -902,10 +904,10 @@ function build_agent_configuration(input: {
 		...(Object.fromEntries(
 			Object.entries(appTools).filter(([name]) => !(modeId === "ask" && writeToolNames.has(name))),
 		) as Partial<typeof appTools>),
-		// OpenAI runs this one on its own side and it changes nothing in the workspace, so both modes
-		// keep it. Only a model that can run it gets it, because it is not a tool we execute: a model
-		// that does not support it would reject the whole request, not just the picture.
-		...(supportsImageGeneration ? { image_generation: ai_chat_tool_create_image_generation() } : {}),
+		// OpenAI runs this one on its own side, so it is registered, never executed here. Only a model
+		// that supports it may receive it: another model would reject the whole request, not just the
+		// picture.
+		...(supportsImageGeneration ? { image_generation: ai_chat_tool_create_image_generation(saveGeneratedImage) } : {}),
 	};
 
 	const activeTools = Object.keys(tools) as Array<keyof typeof validationTools>;
@@ -914,16 +916,16 @@ function build_agent_configuration(input: {
 		browserToolsEnabled && browserBinding
 			? [
 					"A shared browser page is attached to this request for the selected HTML file. Use `browser_run` to inspect and test that exact live page: click, read, assert, and screenshot it.",
-				"Never navigate, open pages, or close the browser from a snippet: the page is fixed, popups are blocked, and leaving it ends the session.",
-				"After editing the file through normal file tools, reload with `browser_reload` only before the user drives the page, then inspect again. After they do, inspect their state first and propose source edits instead.",
-				"Report the loaded source with every browser result, and claim a live test only when a browser tool actually ran it.",
-			]
-		: browserUnavailableNote
-			? [
-					browserUnavailableNote,
-					"Continue with source editing and the local Preview. Do not claim live page testing.",
+					"Never navigate, open pages, or close the browser from a snippet: the page is fixed, popups are blocked, and leaving it ends the session.",
+					"After editing the file through normal file tools, reload with `browser_reload` only before the user drives the page, then inspect again. After they do, inspect their state first and propose source edits instead.",
+					"Report the loaded source with every browser run, and claim a live test only when a browser tool actually ran it.",
 				]
-			: [];
+			: browserUnavailableNote
+				? [
+						browserUnavailableNote,
+						"Continue with source editing and the local Preview. Do not claim live page testing.",
+					]
+				: [];
 
 	const systemPrompt = ai_chat_system_prompt({
 		...ctxData,
@@ -936,9 +938,11 @@ function build_agent_configuration(input: {
 		systemPrompt: modeId === "ask" ? `${systemPrompt}\n${ASK_MODE_SYSTEM_PROMPT_SUFFIX}` : systemPrompt,
 		tools,
 		validationTools,
+		observations,
 		activeTools,
 		toolBudget,
 		jobWait,
+		saveGeneratedImage,
 	};
 }
 
@@ -1945,27 +1949,10 @@ export const thread_messages_add = mutation({
 				return Result({ _nay: { message: "Invalid image attachments" } });
 			}
 
-			// Stored browser parts hold a safe status plus an opaque result id. Anything else —
-			// code input, raw observations, forged ids, mixed-case names — is refused here so a
-			// direct call cannot plant model-visible browser content.
-			for (const part of parts) {
-				if (!part || typeof part !== "object") {
-					continue;
-				}
-				const toolPart = part as {
-					type?: unknown;
-					toolName?: unknown;
-					state?: unknown;
-					input?: unknown;
-					output?: unknown;
-				};
-				const toolName = stored_browser_part_name(toolPart);
-				if (!toolName) {
-					continue;
-				}
-				if (!is_valid_stored_browser_part(toolPart)) {
-					return Result({ _nay: { message: "Invalid browser result parts" } });
-				}
+			// This is the public door, so a direct call lands here too. A tool part may only carry the
+			// safe status and the Files links that the live stream scrubbed.
+			if (!has_valid_file_tool_parts(message.content)) {
+				return Result({ _nay: { message: "Invalid file tool result parts" } });
 			}
 		}
 
@@ -2012,7 +1999,6 @@ export const thread_messages_add = mutation({
 
 		const now = Date.now();
 		const ids: Array<Id<"ai_chat_threads_messages_aisdk_5">> = [];
-		const generatedImageAssetIds: string[] = [];
 		let nextParentId = parentId;
 		for (const message of args.messages) {
 			const existingMessageId = existingIdsByClientGeneratedMessageId.get(message.clientGeneratedMessageId);
@@ -2055,20 +2041,8 @@ export const thread_messages_add = mutation({
 			});
 
 			existingIdsByClientGeneratedMessageId.set(message.clientGeneratedMessageId, messageId);
-			generatedImageAssetIds.push(...read_generated_image_asset_ids(message.content));
 			ids.push(messageId);
 			nextParentId = messageId;
-		}
-
-		// Storing the message is what makes its pictures permanent. Until now those assets still carry
-		// the cleanup deadline the chat route gave them, so a picture whose message never arrives is
-		// deleted instead of staying in the bucket forever.
-		for (const assetId of generatedImageAssetIds) {
-			await r2_db_finalize_generated_image_asset(ctx, {
-				organizationId: thread.organizationId,
-				workspaceId: thread.workspaceId,
-				assetId,
-			});
 		}
 
 		if (ids.length > 0) {
@@ -2135,8 +2109,11 @@ export type ai_chat_http_chat_Body = z.infer<typeof chat_body_validator>;
 
 /**
  * One agent turn: the model stream with the tools, the title of a new thread, billing and the
- * stored reply. `/api/chat` returns the stream to the browser; `run_job_wakeup` reads it to the
- * end on the server. The reply is stored through a callback because the two callers use
+ * stored reply.
+ *
+ * `/api/chat` returns the stream to the browser; `run_job_wakeup` reads it to the end on the server.
+ *
+ * The reply is stored through a callback because the two callers use
  * different doors: the public `thread_messages_add` needs the request's auth, a wakeup has none.
  */
 async function create_agent_turn_stream(args: {
@@ -2192,8 +2169,8 @@ async function create_agent_turn_stream(args: {
 	 */
 	releaseRun: () => Promise<void>;
 	/**
-	 * The frozen shared-browser lease for this turn, if the request bound one. Step checks
-	 * compare live state against it; a stale lease ends browser work without failing the turn.
+	 * This turn's shared-browser lease, if the request bound one. Only its own reload advances it.
+	 * Step checks refuse stale browser work without failing the turn.
 	 */
 	browserBinding: ai_chat_tool_BrowserBinding | null;
 }) {
@@ -2209,12 +2186,20 @@ async function create_agent_turn_stream(args: {
 		parentClientGeneratedId: resolvedParentClientGeneratedId,
 		browserBinding,
 	} = args;
-	const { systemPrompt, tools, validationTools, activeTools, toolBudget, jobWait } = args.agent;
+	const { systemPrompt, tools, validationTools, activeTools, toolBudget, jobWait, observations } = args.agent;
 
-	const modelMessages = await convertToModelMessages(uiMessages, {
-		ignoreIncompleteToolCalls: true,
-		tools: validationTools,
-	});
+	// The two callers build this history through different doors, so check it once more right where
+	// it turns into model input. A forged tool part must never reach the model.
+	if (uiMessages.some((message) => !has_valid_file_tool_parts(message))) {
+		throw new Error("Invalid file tool result parts");
+	}
+
+	const modelMessages = add_generated_file_summaries(
+		await convertToModelMessages(uiMessages, {
+			ignoreIncompleteToolCalls: true,
+			tools: validationTools,
+		}),
+	);
 
 	// The AI SDK routes every URL-shaped file part through its download
 	// step, and Convex `fetch` cannot request data: URLs, so the model
@@ -2286,6 +2271,8 @@ async function create_agent_turn_stream(args: {
 					middleware: drop_preliminary_tool_results_middleware,
 				}),
 				system: `${systemPrompt}\n${workspaceSystem}`,
+				// SDK retries reuse private observations without running prepareStep's access checks again.
+				maxRetries: 0,
 				prepareStep: async ({ stepNumber, messages }) => {
 					// Read first: even the branches below that end the turn answer with the latest
 					// finishes. A job can finish mid-run; the model reads its message like any
@@ -2300,22 +2287,14 @@ async function create_agent_turn_stream(args: {
 						role: "system" as const,
 						content: finish.text,
 					}));
-					// Recheck expanded browser results every step: access granted at history load
-					// may be gone by step N. Denied parts are replaced, never forwarded. This
-					// runs before the control check so even a turn-ending step sees safe history.
-					const filteredMessages = await filter_revoked_browser_results(ctx, {
-						messages,
-						userId: args.userId,
-						membershipId: membership._id,
-						threadId,
-					});
+					// Access may change after live browser text or image bytes were read.
+					// Recheck before every model call, including the branches that end this turn.
+					const filteredMessages = await filter_revoked_observations(add_generated_file_summaries(messages), observations);
 					const withFilteredMessages =
 						injectedMessages.length > 0 || filteredMessages !== messages
 							? { messages: [...filteredMessages, ...injectedMessages] }
 							: {};
-					// A user take or a session end stops the next browser step at once. The
-					// runner refuses stale leases too; this ends the turn gracefully instead of
-					// burning steps on refused calls.
+					let browserUnavailable: string | null = null;
 					if (browserBinding) {
 						const session = await ctx.runQuery(internal.files_browser.load_browser_session, {
 							organizationId: membership.organizationId,
@@ -2324,33 +2303,11 @@ async function create_agent_turn_stream(args: {
 							membershipId: membership._id,
 							sessionId: browserBinding.sessionId,
 						});
-						const control = session._nay ? null : session._yay.control;
-						if (control === "human" || control === "pausing") {
-							return {
-								activeTools: [],
-								system: `${systemPrompt}\n${workspaceSystem}\nThe user took control of the shared browser. End this turn now with a short status of what you checked. Do not call browser tools.`,
-								...withFilteredMessages,
-							};
-						}
-						if (!session._yay || control === "closing" || control === "closed") {
-							return {
-								activeTools: [],
-								system: `${systemPrompt}\n${workspaceSystem}\nThe shared browser session ended. Continue without it; do not claim live page testing.`,
-								...withFilteredMessages,
-							};
-						}
-						// A reload, resume, or file change mid-turn retires this request's lease. End
-						// now instead of burning steps on calls the runner would refuse as stale.
-						if (
+						if (!session._yay || session._yay.control !== "ready" ||
 							session._yay.controlGen !== browserBinding.controlGen ||
 							session._yay.loadGen !== browserBinding.loadGen ||
-							session._yay.navigationGeneration !== browserBinding.navGen
-						) {
-							return {
-								activeTools: [],
-								system: `${systemPrompt}\n${workspaceSystem}\nThe shared browser moved on (reloaded, resumed, or changed file) since this request started. End this turn now with a short status; do not call browser tools.`,
-								...withFilteredMessages,
-							};
+							session._yay.navigationGeneration !== browserBinding.navGen) {
+							browserUnavailable = "The shared browser is no longer available to this turn. Continue with other tools. Do not claim new browser checks.";
 						}
 					}
 					// Leave a model step to explain tool results and any unfinished work.
@@ -2368,6 +2325,11 @@ async function create_agent_turn_stream(args: {
 							system: `${systemPrompt}\n${workspaceSystem}\nA background job you are waiting for is still running. Its finish will wake you with its result in a new run. End this turn now with a short status of what is done and what the job will decide.`,
 							...withFilteredMessages,
 						};
+					if (browserUnavailable) return {
+						activeTools: activeTools.filter((name) => !["browser_run", "browser_reload", "browser_close"].includes(name)),
+						system: `${systemPrompt}\n${workspaceSystem}\n${browserUnavailable}`,
+						...withFilteredMessages,
+					};
 					if (injectedMessages.length === 0 && filteredMessages === messages) return undefined;
 					return { messages: [...filteredMessages, ...injectedMessages] };
 				},
@@ -2387,18 +2349,16 @@ async function create_agent_turn_stream(args: {
 						};
 					}
 
-					return {
-						...failed.toolCall,
-						input: JSON.stringify({
-							tool: failed.toolCall.toolName,
-							error: failed.error.message,
-						}),
-						toolName: "invalid",
-					};
+					// Keep the original validation error so the model can fix its next call.
+					return null;
 				},
 				toolChoice: "auto",
 				stopWhen: stepCountIs(10),
 				tools,
+				// The SDK's default logger prints request bodies, including private observations.
+				onError: () => {
+					console.error("AI chat provider error", { threadId, modelId: args.modelId });
+				},
 				onAbort: async () => {
 					console.info("streamText.onAbort", {
 						threadId,
@@ -2440,17 +2400,12 @@ async function create_agent_turn_stream(args: {
 			const ui_message_stream = result1.toUIMessageStream<ai_chat_UiMessage>({
 				onError: (error: unknown) => (error instanceof Error ? error.message : String(error)),
 			});
+			// Save first, scrub second. The save swaps the picture bytes for its Files result, and the
+			// scrub then rewrites that result into the same stored shape as the other file tools.
 			writer.merge(
 				ui_message_stream
-					.pipeThrough(
-						create_generated_image_upload_transform({
-							ctx,
-							organizationId: membership.organizationId,
-							workspaceId: membership.workspaceId,
-							userId: args.userId,
-						}),
-					)
-					.pipeThrough(create_browser_result_scrub_transform()),
+					.pipeThrough(create_generated_image_result_transform(args.agent.saveGeneratedImage))
+					.pipeThrough(create_file_result_scrub_transform()),
 			);
 
 			if (args.abortSignal?.aborted) {
@@ -2473,7 +2428,7 @@ async function create_agent_turn_stream(args: {
 					return;
 				}
 
-				const titleMessages = sanitize_browser_title_messages([...modelMessages, ...response1.messages]);
+				const titleMessages = sanitize_observation_title_messages([...modelMessages, ...response1.messages]);
 				let titleInputTokens = 0;
 				let titleOutputTokens = 0;
 				const titleResult = streamText({
@@ -2484,6 +2439,9 @@ async function create_agent_turn_stream(args: {
 					temperature: 0.3,
 					maxOutputTokens: 50,
 					abortSignal: args.abortSignal,
+					onError: () => {
+						console.error("AI chat title provider error", { threadId });
+					},
 					onFinish: async ({ totalUsage }) => {
 						// Keep title usage separate from the response event
 						titleInputTokens = totalUsage.inputTokens ?? 0;
@@ -2572,7 +2530,7 @@ async function create_agent_turn_stream(args: {
 		},
 		onError: (error: unknown) => {
 			didStreamError = true;
-			console.error("AI chat stream error:", error);
+			console.error("AI chat stream error", { threadId });
 			return error instanceof Error ? error.message : String(error);
 		},
 		onFinish: async (result) => {
@@ -2793,9 +2751,6 @@ export async function ai_chat_http_chat(ctx: ActionCtx, request: Request) {
 		let workspaceContext: ai_chat_context_Context | null = null;
 		let workspaceSystem = "";
 
-		// One server run id per request attempt, shared by the browser result records below.
-		const runId = crypto.randomUUID();
-
 		// Refresh the optional shared-browser binding once and freeze its generations for the
 		// whole turn. Unknown, ended, or inaccessible sessions run as ordinary turns with an
 		// unavailable note instead of failing the request.
@@ -2847,8 +2802,8 @@ export async function ai_chat_http_chat(ctx: ActionCtx, request: Request) {
 			getWorkspaceContext: () => workspaceContext,
 			membershipId: membership._id,
 			browserBinding,
-			runId,
 			browserUnavailableNote,
+			abortSignal: request.signal,
 		});
 		if (ai_chat_context_ENABLED) {
 			const initialized = await ai_chat_context_create(ctx, { membershipId: membership._id, userId: user._id });
@@ -2897,6 +2852,12 @@ export async function ai_chat_http_chat(ctx: ActionCtx, request: Request) {
 		// whole message is stored as one Convex document (~1 MiB limit) and
 		// a remote URL must never be forwarded to the model provider.
 		for (const requestMessage of requestMessages) {
+			// The request carries the chat history back, and the client can put anything in it. Refuse
+			// forged tool parts before this turn runs or stores them.
+			if (!has_valid_file_tool_parts(requestMessage)) {
+				return { status: 400, body: { message: "Invalid file tool result parts" } } as const;
+			}
+
 			if (!ai_chat_message_fits_storage(requestMessage)) {
 				return {
 					status: 400,
@@ -3222,7 +3183,7 @@ export async function ai_chat_http_chat(ctx: ActionCtx, request: Request) {
 		return { status: 200, body: stream } as const;
 	} catch (error) {
 		const errorMessage = "AI chat stream error";
-		console.error(`${errorMessage}:`, error);
+		console.error(errorMessage, { threadId });
 		if (runLeaseHeld && threadId) {
 			await ctx.runMutation(internal.ai_chat.thread_run_end, { threadId, kind: "chat" });
 		}
@@ -3321,7 +3282,9 @@ type get_job_wakeup_context_Result =
 /**
  * Store the reply of a wakeup run on the finish's current branch. `thread_messages_add` is the
  * public door and needs the request's auth; a wakeup has none, so this one takes the user who
- * launched the job. A later finish or the chat reply can land under the finish while this run
+ * launched the job.
+ *
+ * A later finish or the chat reply can land under the finish while this run
  * streams; parenting on that newest descendant keeps one line.
  */
 export const store_job_wakeup_reply = internalMutation({
@@ -3337,6 +3300,12 @@ export const store_job_wakeup_reply = internalMutation({
 	handler: async (ctx, args) => {
 		const thread = await ctx.db.get("ai_chat_threads", args.threadId);
 		if (!thread) throw should_never_happen("Chat thread not found", { threadId: args.threadId });
+
+		// A wakeup reply skips `thread_messages_add`, so the size and tool part rules are applied here
+		// instead. Both doors must store the same safe shape.
+		if (!ai_chat_message_fits_storage(args.content) || !has_valid_file_tool_parts(args.content)) {
+			throw new Error("Invalid file tool result parts");
+		}
 
 		let insertParentId = args.finishMessageId;
 		const newest = await ctx.db
@@ -3369,14 +3338,6 @@ export const store_job_wakeup_reply = internalMutation({
 			clientGeneratedMessageId: args.clientGeneratedMessageId,
 			content: args.content,
 		});
-		// Storing the message is what makes its pictures permanent, like in `thread_messages_add`.
-		for (const assetId of read_generated_image_asset_ids(args.content)) {
-			await r2_db_finalize_generated_image_asset(ctx, {
-				organizationId: thread.organizationId,
-				workspaceId: thread.workspaceId,
-				assetId,
-			});
-		}
 		await ctx.db.patch("ai_chat_threads", thread._id, { lastMessageAt: now, updatedAt: now, updatedBy: args.userId });
 		return null;
 	},
@@ -3815,6 +3776,9 @@ export async function ai_chat_http_run_stream(ctx: ActionCtx, request: Request) 
 			experimental_transform: smoothStream({
 				delayInMs: 100,
 			}),
+			onError: () => {
+				console.error("AI chat title provider error", { threadId: thread_id });
+			},
 			onFinish: async ({ totalUsage }) => {
 				titleInputTokens = totalUsage.inputTokens ?? 0;
 				titleOutputTokens = totalUsage.outputTokens ?? 0;
@@ -3908,7 +3872,7 @@ export async function ai_chat_http_run_stream(ctx: ActionCtx, request: Request) 
 		} as const;
 	} catch (error) {
 		const errorMessage = "Title generation error";
-		console.error(`${errorMessage}:`, error);
+		console.error(errorMessage);
 
 		return {
 			status: 500,
@@ -3952,6 +3916,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 	const build_agent_configuration_test_model_id = "gpt-5.4-nano" as const satisfies (typeof ai_chat_MODEL_IDS)[number];
 
 	const build_agent_configuration_expected_tool_keys = [
+		"view_image",
 		"bash",
 		"edit_file",
 		"set_file_metadata",
@@ -4053,6 +4018,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 			expect(Object.keys(configuration.tools)).toEqual(build_agent_configuration_expected_tool_keys);
 			expect(configuration.activeTools).toEqual([
+				"view_image",
 				"bash",
 				"edit_file",
 				"set_file_metadata",
@@ -4078,10 +4044,11 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			// The `tools` object is what really matters. `activeTools` only shapes the request sent to
 			// the model. The SDK parses and runs a tool call by looking its name up in `tools`, so
 			// leaving `edit_file` there would keep it callable in ask mode whatever `activeTools` says.
-			expect(Object.keys(configuration.tools)).toEqual(["bash", "web_search", "execute_code", "image_generation"]);
-			expect(configuration.activeTools).toEqual(["bash", "web_search", "execute_code", "image_generation"]);
+			expect(Object.keys(configuration.tools)).toEqual(["view_image", "bash", "web_search", "execute_code"]);
+			expect(configuration.activeTools).toEqual(["view_image", "bash", "web_search", "execute_code"]);
 			expect("edit_file" in configuration.tools).toBe(false);
 			expect("set_file_metadata" in configuration.tools).toBe(false);
+			expect("image_generation" in configuration.tools).toBe(false);
 
 			// The list used to validate messages still holds every tool. It has to accept the
 			// `edit_file` parts that an earlier agent-mode turn stored in the same thread, and the
@@ -4100,7 +4067,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				const configuration = build_agent_configuration({
 					ctx,
 					ctxData: build_agent_configuration_test_ctx_data,
-				membershipId: build_agent_configuration_test_membership_id,
+					membershipId: build_agent_configuration_test_membership_id,
 					args: { modelId: build_agent_configuration_test_model_id, modeId },
 					getThreadId: () => "thread_1" as Id<"ai_chat_threads">,
 				});
@@ -4121,7 +4088,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				const configuration = build_agent_configuration({
 					ctx,
 					ctxData: build_agent_configuration_test_ctx_data,
-				membershipId: build_agent_configuration_test_membership_id,
+					membershipId: build_agent_configuration_test_membership_id,
 					args: {
 						modelId,
 						modeId: "agent",
@@ -4140,13 +4107,13 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test.each(["load_skill", "read_skill_resource", "run_skill_script", "removed_tool"])(
-			"replays a completed historical %s result without registering the tool",
+			"refuses a removed %s tool before replay",
 			async (toolName) => {
 				const { ctx } = makeCtx();
 				const configuration = build_agent_configuration({
 					ctx,
 					ctxData: build_agent_configuration_test_ctx_data,
-				membershipId: build_agent_configuration_test_membership_id,
+					membershipId: build_agent_configuration_test_membership_id,
 					args: { modelId: build_agent_configuration_test_model_id, modeId: "ask" },
 					getThreadId: () => "thread_1" as Id<"ai_chat_threads">,
 				});
@@ -4166,15 +4133,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				} as unknown as ai_chat_UiMessage;
 
 				expect(configuration.tools).not.toHaveProperty(toolName);
-				const validated = await validateUIMessages<ai_chat_UiMessage>({
-					messages: [message],
-					tools: configuration.validationTools,
-				});
-				const replay = await convertToModelMessages(validated, { tools: configuration.validationTools });
-				expect(replay[1]).toMatchObject({
-					role: "tool",
-					content: [{ type: "tool-result", toolName, output: { type: "json", value: output } }],
-				});
+				expect(has_valid_file_tool_parts(message)).toBe(false);
 			},
 		);
 
@@ -4205,6 +4164,8 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 							output: "Result: 4",
 							metadata: {
 								executionId: "exec_1",
+								fileResult: null,
+								files: [],
 								status: "succeeded",
 								elapsedMs: 3,
 								resultTruncated: false,
@@ -4330,7 +4291,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 			expect(agentSurface).toContain("first use Bash resolve '<reference>' to get its current path");
 			expect(agentSurface).toContain("Do not list or search files before resolving the reference");
-			expect(agentSurface).toContain("pass that exact absolute path to the existing file readers or editors");
+			expect(agentSurface).toContain("Use the resolved path with Bash; use its workspace path with Files tools.");
 			expect(agentSurface).toContain("Do not turn it into an @ mention");
 			expect(agentSurface).toContain(
 				`For a text-read request using a node ID or app file URL, start with one Bash call: p=$(resolve '<reference>') && cat -- "$p"`,
@@ -4560,10 +4521,176 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 	});
 
-	describe("scrub_browser_stream_chunk", () => {
-		test("drops code input and keeps only status plus result id", () => {
+	describe("create_generated_image_save", () => {
+		test("shares one pending file between model and UI conversion", async () => {
+			const files = await import("../server/files-ingestion.ts");
+			const write = vi.spyOn(files, "files_ingestion_write").mockResolvedValue([
+				{
+					status: "succeeded",
+					file: {
+						target: { kind: "private", id: "pending-1" as Id<"files_pending_nodes"> },
+						path: "/generated/image.webp",
+						size: 3,
+						contentType: "image/webp",
+					},
+				},
+			]);
+			try {
+				const controller = new AbortController();
+				const save = create_generated_image_save({
+					ctx: makeCtx().ctx,
+					...build_agent_configuration_test_ctx_data,
+					membershipId: build_agent_configuration_test_membership_id,
+					getThreadId: () => "thread-1" as Id<"ai_chat_threads">,
+					canWriteFiles: true,
+					abortSignal: controller.signal,
+				});
+				const first = save("image-1", { result: "AQID" });
+				const second = save("image-1", { result: "AQID" });
+				expect(first).toBe(second);
+
+				const output = await first;
+				expect(write).toHaveBeenCalledTimes(1);
+				expect(write.mock.calls[0]?.[4]).toBe(controller.signal);
+				expect(write.mock.calls[0]?.[2][0]?.bytes).toEqual(new Uint8Array([1, 2, 3]));
+				expect(output.metadata.files).toEqual([{ kind: "private", id: "pending-1" }]);
+				expect(JSON.stringify(output)).not.toContain("AQID");
+			} finally {
+				write.mockRestore();
+			}
+		});
+
+		test("fails closed for Ask mode, malformed bytes, and failed storage", async () => {
+			const files = await import("../server/files-ingestion.ts");
+			const write = vi.spyOn(files, "files_ingestion_write").mockRejectedValue(new Error("private detail"));
+			try {
+				const scope = {
+					ctx: makeCtx().ctx,
+					...build_agent_configuration_test_ctx_data,
+					membershipId: build_agent_configuration_test_membership_id,
+					getThreadId: () => "thread-1" as Id<"ai_chat_threads">,
+				};
+				const ask = await create_generated_image_save({ ...scope, canWriteFiles: false })("ask", { result: "AQID" });
+				expect(ask.metadata).toEqual({ status: "errored", reason: "agent_required", files: [] });
+
+				const save = create_generated_image_save({ ...scope, canWriteFiles: true });
+				const controller = new AbortController();
+				controller.abort();
+				const canceled = await create_generated_image_save({
+					...scope,
+					canWriteFiles: true,
+					abortSignal: controller.signal,
+				})("canceled", { result: "AQID" });
+				expect(canceled.metadata).toEqual({ status: "cancelled", reason: "storage", files: [] });
+
+				// Bad bytes stop before the write. A failed write reports the same plain status, and the
+				// real error text ("private detail") never appears in the result.
+				expect((await save("invalid", { result: "bad base64" })).metadata).toEqual({ status: "errored", reason: "storage", files: [] });
+				expect(write).not.toHaveBeenCalled();
+				expect((await save("failed", { result: "AQID" })).metadata).toEqual({ status: "errored", reason: "storage", files: [] });
+				expect(write).toHaveBeenCalledTimes(1);
+			} finally {
+				write.mockRestore();
+			}
+		});
+	});
+
+	describe("add_generated_file_summaries", () => {
+		test.each(["live", "history"])(
+			"sends %s Files targets to OpenAI without repeating provider items",
+			async (source) => {
+				const { createOpenAI } = await import("@ai-sdk/openai");
+				const { generateText } = await import("ai");
+				const output = {
+					title: "Generate image",
+					output: "Generate image: succeeded.",
+					metadata: {
+						status: "succeeded",
+						reason: null,
+						files: [{ kind: "private", id: "pending-1" }],
+					},
+				};
+
+				let messages: ModelMessage[] = [
+					{
+						role: "assistant",
+						content: [
+							{
+								type: "tool-call",
+								toolCallId: "ig_1",
+								toolName: "image_generation",
+								input: {},
+								providerExecuted: true,
+							},
+							{
+								type: "tool-result",
+								toolCallId: "ig_1",
+								toolName: "image_generation",
+								output: { type: "json", value: output },
+								providerOptions: { openai: { itemId: "ig_1" } },
+							},
+						],
+					},
+				];
+
+				// The history case builds the same messages from a stored part instead of a live result.
+				if (source === "history") {
+					const configuration = build_agent_configuration({
+						ctx: makeCtx().ctx,
+						ctxData: build_agent_configuration_test_ctx_data,
+						membershipId: build_agent_configuration_test_membership_id,
+						args: { modelId: build_agent_configuration_test_model_id, modeId: "ask" },
+						getThreadId: () => "thread-1" as Id<"ai_chat_threads">,
+					});
+					const ui = {
+						id: "stored-image",
+						role: "assistant",
+						parts: [
+							{
+								type: "tool-image_generation",
+								toolCallId: "ig_1",
+								state: "output-available",
+								input: {},
+								output,
+								providerExecuted: true,
+							},
+						],
+					} as unknown as ai_chat_UiMessage;
+					expect(has_valid_file_tool_parts(ui)).toBe(true);
+					messages = await convertToModelMessages([ui], { tools: configuration.validationTools });
+				}
+
+				const summarized = add_generated_file_summaries(messages);
+				expect(add_generated_file_summaries(summarized)).toBe(summarized);
+
+				let request: unknown;
+				const provider = createOpenAI({
+					apiKey: "test",
+					fetch: async (_url, init) => {
+						request = JSON.parse(String(init?.body));
+						throw new Error("captured request");
+					},
+				});
+				await expect(
+					generateText({ model: provider.responses("gpt-5.4-mini"), messages: summarized, maxRetries: 0 }),
+				).rejects.toThrow("captured request");
+
+				// OpenAI receives one item reference for the tool result it ran itself, so the Files link
+				// reaches the model only through the text this helper added.
+				const parsed = z.object({ input: z.array(z.record(z.string(), z.unknown())) }).parse(request);
+				expect(parsed.input.filter((item) => item.type === "item_reference")).toEqual([
+					{ type: "item_reference", id: "ig_1" },
+				]);
+				expect(JSON.stringify(parsed.input)).toContain("pending-1");
+				expect(JSON.stringify(parsed.input)).toContain("Generate image: succeeded.");
+			},
+		);
+	});
+
+	describe("scrub_file_stream_chunk", () => {
+		test("drops code input and keeps only status plus file references", () => {
 			const calls = new Map<string, string>();
-			const input = scrub_browser_stream_chunk(
+			const input = scrub_file_stream_chunk(
 				{
 					type: "tool-input-available",
 					toolName: "browser_run",
@@ -4574,33 +4701,33 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			) as Array<{ input: unknown }>;
 			expect(input?.[0]?.input).toEqual({});
 
-			const output = scrub_browser_stream_chunk(
+			const output = scrub_file_stream_chunk(
 				{
 					type: "tool-output-available",
 					toolCallId: "call-1",
 					output: {
 						title: "Browser run",
-						output: "Status: succeeded.\nResult: {\"secret\":\"x\"}",
-						metadata: { status: "succeeded", resultId: "result-1", commandId: "cmd-1" },
+						output: 'Status: succeeded.\nResult: {"secret":"x"}',
+						metadata: { status: "succeeded", reason: null, files: [{ kind: "private", id: "private-1" }], commandId: "cmd-1" },
 					},
 				} as never,
 				calls,
 			) as Array<{ output: unknown }>;
 			expect(output?.[0]?.output).toEqual({
 				title: "Browser run",
-				output: "Browser succeeded.",
-				metadata: { status: "succeeded", resultId: "result-1" },
+				output: "Browser run: succeeded.",
+				metadata: { status: "succeeded", reason: null, files: [{ kind: "private", id: "private-1" }] },
 			});
 		});
 
 		test("drops input start and deltas for browser calls", () => {
 			const calls = new Map<string, string>();
-			const start = scrub_browser_stream_chunk(
+			const start = scrub_file_stream_chunk(
 				{ type: "tool-input-start", toolName: "browser_run", toolCallId: "call-1" } as never,
 				calls,
 			);
 			expect(start).toBeNull();
-			const delta = scrub_browser_stream_chunk(
+			const delta = scrub_file_stream_chunk(
 				{ type: "tool-input-delta", toolCallId: "call-1", inputTextDelta: '{"code":"re' } as never,
 				calls,
 			);
@@ -4609,7 +4736,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 		test("converts browser errors into the safe output shape", () => {
 			const calls = new Map<string, string>([["call-1", "browser_run"]]);
-			const converted = scrub_browser_stream_chunk(
+			const converted = scrub_file_stream_chunk(
 				{
 					type: "tool-output-error",
 					toolCallId: "call-1",
@@ -4620,14 +4747,14 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(converted?.[0]?.type).toBe("tool-output-available");
 			expect(converted?.[0]?.output).toEqual({
 				title: "Browser run",
-				output: "Browser error.",
-				metadata: { status: "error" },
+				output: "Browser run: errored.",
+				metadata: { status: "errored", reason: "execution", files: [] },
 			});
 		});
 
-		test("expands invalid browser input into safe input plus output", () => {
-			const calls = new Map<string, string>([["call-1", "browser_run"]]);
-			const expanded = scrub_browser_stream_chunk(
+		test("expands invalid input without a start chunk into safe input plus output", () => {
+			const calls = new Map<string, string>();
+			const expanded = scrub_file_stream_chunk(
 				{
 					type: "tool-input-error",
 					toolCallId: "call-1",
@@ -4642,29 +4769,29 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 		test("normalizes reload output to status only", () => {
 			const calls = new Map<string, string>([["call-2", "browser_reload"]]);
-			const output = scrub_browser_stream_chunk(
+			const output = scrub_file_stream_chunk(
 				{
 					type: "tool-output-available",
 					toolCallId: "call-2",
 					output: {
 						title: "Browser reload",
 						output: "The shared page reloaded from the current source. Inspect it again before acting.",
-						metadata: { status: "reloaded", loadGen: 3 },
+						metadata: { status: "succeeded", reason: null, loadGen: 3 },
 					},
 				} as never,
 				calls,
 			) as Array<{ output: unknown }>;
 			expect(output?.[0]?.output).toEqual({
 				title: "Browser reload",
-				output: "Browser reloaded.",
-				metadata: { status: "reloaded" },
+				output: "Browser reload: succeeded.",
+				metadata: { status: "succeeded", reason: null, files: [] },
 			});
 		});
 
 		test("leaves other tools and unknown calls alone", () => {
 			const calls = new Map<string, string>();
 			const other = { type: "tool-output-available", toolCallId: "call-9", output: { ok: true } } as never;
-			expect(scrub_browser_stream_chunk(other, calls)).toEqual([other]);
+			expect(scrub_file_stream_chunk(other, calls)).toEqual([other]);
 		});
 	});
 
@@ -4684,7 +4811,6 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 					loadGen: 1,
 					controlGen: 1,
 				},
-				runId: "run-1",
 				browserUnavailableNote: null,
 			});
 			expect(Object.keys(bound.tools)).toContain("browser_run");
@@ -4705,7 +4831,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 	});
 
-	describe("is_valid_stored_browser_part", () => {
+	describe("is_valid_stored_file_part", () => {
 		const valid = {
 			type: "tool-browser_run",
 			toolName: "browser_run",
@@ -4713,41 +4839,37 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			input: {},
 			output: {
 				title: "Browser run",
-				output: "Browser succeeded.",
-				metadata: { status: "succeeded", resultId: "result-1" },
+				output: "Browser run: succeeded.",
+				metadata: { status: "succeeded", reason: null, files: [{ kind: "private", id: "private-1" }] },
 			},
 		};
 
 		test("accepts the scrubbed shape", () => {
-			expect(is_valid_stored_browser_part(valid)).toBe(true);
+			expect(is_valid_stored_file_part(valid)).toBe(true);
 		});
 
 		test("accepts the dynamic-tool and mixed-case forms of the same shape", () => {
-			expect(is_valid_stored_browser_part({ ...valid, type: "dynamic-tool" })).toBe(true);
-			expect(is_valid_stored_browser_part({ ...valid, toolName: "Browser_Run" })).toBe(true);
-			expect(
-				is_valid_stored_browser_part({ ...valid, type: "dynamic-tool", toolName: "Browser_Run" }),
-			).toBe(true);
+			expect(is_valid_stored_file_part({ ...valid, type: "dynamic-tool" })).toBe(true);
+			expect(is_valid_stored_file_part({ ...valid, toolName: "Browser_Run" })).toBe(true);
+			expect(is_valid_stored_file_part({ ...valid, type: "dynamic-tool", toolName: "Browser_Run" })).toBe(true);
 		});
 
 		test("derives the name from the static type when toolName is missing", () => {
 			const { toolName: _dropped, ...staticPart } = valid;
-			expect(is_valid_stored_browser_part(staticPart)).toBe(true);
+			expect(is_valid_stored_file_part(staticPart)).toBe(true);
 			expect(
-				is_valid_stored_browser_part({
+				is_valid_stored_file_part({
 					...staticPart,
 					output: { ...valid.output, output: "x".repeat(501) },
 				}),
 			).toBe(false);
-			expect(is_valid_stored_browser_part({ ...staticPart, type: "tool-edit_file" })).toBe(false);
+			expect(is_valid_stored_file_part({ ...staticPart, type: "tool-edit_file" })).toBe(false);
 		});
 
 		test("accepts an aborted call with an empty input", () => {
+			expect(is_valid_stored_file_part({ ...valid, state: "input-available", output: undefined })).toBe(true);
 			expect(
-				is_valid_stored_browser_part({ ...valid, state: "input-available", output: undefined }),
-			).toBe(true);
-			expect(
-				is_valid_stored_browser_part({
+				is_valid_stored_file_part({
 					...valid,
 					state: "input-available",
 					input: { code: "1" },
@@ -4757,126 +4879,84 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("refuses code input, raw output, and extra keys", () => {
-			expect(is_valid_stored_browser_part({ ...valid, input: { code: "1" } })).toBe(false);
+			expect(is_valid_stored_file_part({ ...valid, input: { code: "1" } })).toBe(false);
 			expect(
-				is_valid_stored_browser_part({
+				is_valid_stored_file_part({
 					...valid,
 					output: { ...(valid.output as object), output: "x".repeat(501) },
 				}),
 			).toBe(false);
 			expect(
-				is_valid_stored_browser_part({
+				is_valid_stored_file_part({
 					...valid,
 					output: { ...(valid.output as object), extra: 1 },
 				}),
 			).toBe(false);
 			expect(
-				is_valid_stored_browser_part({
+				is_valid_stored_file_part({
 					...valid,
 					output: { title: "t", output: "o", metadata: { status: "succeeded", forged: true } },
 				}),
 			).toBe(false);
-			expect(is_valid_stored_browser_part({ ...valid, state: "output-error" })).toBe(false);
-			expect(is_valid_stored_browser_part({ ...valid, state: "input-streaming" })).toBe(false);
-			expect(is_valid_stored_browser_part({ ...valid, type: "tool" })).toBe(false);
-			expect(is_valid_stored_browser_part({ ...valid, type: "tool-bash" })).toBe(false);
+			expect(is_valid_stored_file_part({ ...valid, state: "output-error" })).toBe(false);
+			expect(is_valid_stored_file_part({ ...valid, state: "input-streaming" })).toBe(false);
+			expect(is_valid_stored_file_part({ ...valid, type: "tool" })).toBe(false);
+			expect(is_valid_stored_file_part({ ...valid, type: "tool-bash" })).toBe(false);
 		});
 	});
 
-	describe("filter_revoked_browser_results", () => {
-		const tool_message = (text: string) =>
-			({
-				role: "tool",
-				content: [
-					{
-						type: "tool-result",
-						toolName: "browser_run",
-						output: { type: "content", value: [{ type: "text", text }] },
-					},
-				],
-			}) as unknown as ModelMessage;
-
-		test("replaces revoked and cross-thread parts, keeps the rest", async () => {
-			const runQuery = vi.fn(async (_ref: unknown, args: { resultId: string }) => {
-				if (args.resultId === "gone") {
-					return null;
-				}
-				return { result: { threadId: args.resultId === "other" ? "thread-2" : "thread-1" } };
-			});
-			const ctx = { runQuery } as unknown as ActionCtx;
-			const messages = [
-				tool_message("[browser-result:gone]\nbody"),
-				tool_message("[browser-result:other]\nbody"),
-				tool_message("[browser-result:mine]\nbody"),
-				{ role: "user", content: "hi" } as unknown as ModelMessage,
-			];
-
-			const filtered = await filter_revoked_browser_results(ctx, {
-				messages,
-				userId: "user-1" as Id<"users">,
-				membershipId: "membership-1" as Id<"organizations_workspaces_users">,
-				threadId: "thread-1" as Id<"ai_chat_threads">,
-			});
-
-			expect(filtered).not.toBe(messages);
-			const contents = filtered
-				.filter((message) => message.role === "tool")
-				.map((message) => (message.content as Array<{ output: unknown }>)[0]?.output);
-			expect(contents[0]).toEqual({
-				type: "text",
-				value: "(Browser result unavailable: it expired or access changed.)",
-			});
-			expect(contents[1]).toEqual({
-				type: "text",
-				value: "(Browser result unavailable: it expired or access changed.)",
-			});
-			expect(contents[2]).toEqual({
-				type: "content",
-				value: [{ type: "text", text: "[browser-result:mine]\nbody" }],
-			});
+	describe("filter_revoked_observations", () => {
+		test.each(["tool", "assistant"] as const)("rechecks and replaces expanded %s image parts", async (role) => {
+			const output: ai_chat_Observation["output"] = { type: "content", value: [
+				{ type: "text", text: "private observation" },
+				{ type: "image-data", data: "private pixels", mediaType: "image/png" },
+			] };
+			const messages: ModelMessage[] = [{ role, content: [{ type: "tool-result", toolCallId: "view-1", toolName: "view_image", output }] }];
+			const isCurrent = vi.fn().mockResolvedValue(true);
+			const observations = new Map<string, ai_chat_Observation>([["view-1", { toolName: "view_image", output, isCurrent }]]);
+			expect(await filter_revoked_observations(messages, observations)).toEqual(messages);
+			isCurrent.mockResolvedValue(false);
+			const filtered = await filter_revoked_observations(messages, observations);
+			expect(JSON.stringify(filtered)).not.toContain("private");
+			expect(observations.size).toBe(0);
+			expect(isCurrent).toHaveBeenCalledTimes(2);
+			expect(JSON.stringify(sanitize_observation_title_messages(messages))).not.toContain("private");
 		});
 
-		test("returns the same list when nothing is revoked", async () => {
-			const runQuery = vi.fn(async () => ({ result: { threadId: "thread-1" } }));
-			const ctx = { runQuery } as unknown as ActionCtx;
-			const messages = [tool_message("[browser-result:mine]\nbody")];
+		test("checks browser text again before every step", async () => {
+			const output: ai_chat_Observation["output"] = { type: "content", value: [{ type: "text", text: "private browser text" }] };
+			const messages: ModelMessage[] = [{ role: "tool", content: [{ type: "tool-result", toolCallId: "run-1", toolName: "browser_run", output }] }];
+			const isCurrent = vi.fn().mockResolvedValue(true);
+			const observations = new Map<string, ai_chat_Observation>([["run-1", { toolName: "browser_run", output, isCurrent }]]);
+			expect(await filter_revoked_observations(messages, observations)).toEqual(messages);
+			isCurrent.mockRejectedValue(new Error("Access check failed"));
+			expect(JSON.stringify(await filter_revoked_observations(messages, observations))).not.toContain("private browser text");
+			expect(isCurrent).toHaveBeenCalledTimes(2);
+		});
 
-			const filtered = await filter_revoked_browser_results(ctx, {
-				messages,
-				userId: "user-1" as Id<"users">,
-				membershipId: "membership-1" as Id<"organizations_workspaces_users">,
-				threadId: "thread-1" as Id<"ai_chat_threads">,
-			});
+		test("missing or mismatched turn records cannot restore observations from messages", async () => {
+			const output: ai_chat_Observation["output"] = { type: "content", value: [{ type: "text", text: "private text" }] };
+			const messages: ModelMessage[] = [{ role: "tool", content: [{ type: "tool-result", toolCallId: "run-1", toolName: "browser_run", output }] }];
+			expect(JSON.stringify(await filter_revoked_observations(messages, new Map()))).not.toContain("private text");
+			const isCurrent = vi.fn().mockResolvedValue(true);
+			const records = new Map<string, ai_chat_Observation>([["run-1", { toolName: "view_image", output, isCurrent }]]);
+			expect(JSON.stringify(await filter_revoked_observations(messages, records))).not.toContain("private text");
+			expect(isCurrent).not.toHaveBeenCalled();
+		});
 
-			expect(filtered).toBe(messages);
+		test("keeps safe history text without making a read", async () => {
+			const history: ModelMessage[] = [{ role: "tool", content: [{
+				type: "tool-result", toolCallId: "old", toolName: "browser_run",
+				output: { type: "text", value: "Browser run: succeeded." },
+			}] }];
+			expect(await filter_revoked_observations(history, new Map())).toEqual(history);
 		});
 	});
 
-	describe("browser_result_id_from_model_part", () => {
-		test("reads the id from converted content and rejects the rest", () => {
-			expect(
-				browser_result_id_from_model_part({
-					type: "tool-result",
-					toolName: "browser_run",
-					output: { type: "content", value: [{ type: "text", text: "[browser-result:abc]\nbody" }] },
-				}),
-			).toBe("abc");
-			expect(
-				browser_result_id_from_model_part({
-					type: "tool-result",
-					toolName: "browser_run",
-					output: { type: "content", value: [{ type: "text", text: "no marker" }] },
-				}),
-			).toBe(null);
-			expect(browser_result_id_from_model_part({ type: "text", text: "x" })).toBe(null);
-			expect(browser_result_id_from_model_part(null)).toBe(null);
-		});
-	});
-
-	describe("sanitize_browser_title_messages", () => {
+	describe("sanitize_observation_title_messages", () => {
 		test("strips browser tool output and keeps the rest", () => {
 			const other = { role: "user", content: "hi" };
-			const cleaned = sanitize_browser_title_messages([
+			const cleaned = sanitize_observation_title_messages([
 				other,
 				{
 					role: "tool",
@@ -4892,7 +4972,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			] as never);
 			expect(cleaned[0]).toBe(other);
 			expect(cleaned[1]).toMatchObject({
-				content: [{ output: { type: "text", value: "(browser result omitted from title input)" } }],
+				content: [{ output: { type: "text", value: "(tool observations omitted from title input)" } }],
 			});
 		});
 	});

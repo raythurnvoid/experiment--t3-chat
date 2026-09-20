@@ -85,6 +85,10 @@ export const FilesPendingReviewModal = memo(function FilesPendingReviewModal(pro
 	const { membershipId, runId, onClose } = props;
 	const { organizationName, workspaceName } = AppTenantProvider.useContext();
 	const { stop, pendingStopSourceIds } = AppActivitiesProvider.useContext();
+	// A completed review can remove its opener. Keep its panel for focus when the dialog closes.
+	const [focusFallback] = useState(() =>
+		document.activeElement?.closest<HTMLElement>(".FileEditorSidebarPending, .FileNodeView-editor-area"),
+	);
 
 	const run = useQuery(app_convex_api.files_pending_update_runs.get, { membershipId, runId });
 
@@ -165,7 +169,14 @@ export const FilesPendingReviewModal = memo(function FilesPendingReviewModal(pro
 				if (!open) onClose();
 			}}
 		>
-			<MyModalPopover className={"FilesPendingReviewModal" satisfies FilesPendingReviewModal_ClassNames}>
+			<MyModalPopover
+				className={"FilesPendingReviewModal" satisfies FilesPendingReviewModal_ClassNames}
+				autoFocusOnHide={(opener) => {
+					if (opener?.isConnected || !focusFallback?.isConnected) return true;
+					focusFallback.focus({ preventScroll: true });
+					return false;
+				}}
+			>
 				<MyModalHeader>
 					<MyModalHeading>
 						{run?.run.kind === "discard" ? "Discard reviewed changes" : "Save reviewed changes"}

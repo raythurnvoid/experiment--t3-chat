@@ -1,6 +1,6 @@
 ---
 name: cloud-browser
-description: Shared cloud browser for one selected HTML file (Cloudflare Browser Run + trusted runner + Playwright isolate, Convex session doors, Files viewer, agent tools, private results). Use when changing browser sessions, viewer/handoff behavior, browser agent tools, result privacy, or the Files browser panel.
+description: Shared cloud browser for one selected HTML file (Cloudflare Browser Run, trusted runner, Files viewer, agent tools, pending file output). Use when changing browser sessions, viewer handoff, browser tools, screenshot privacy, or the Files browser panel.
 ---
 
 # Source Of Truth Files
@@ -8,9 +8,10 @@ description: Shared cloud browser for one selected HTML file (Cloudflare Browser
 - `../../../packages/browser-runner/src/index.ts` (trusted Worker: sessions, isolate, viewer gateway)
 - `../../../packages/browser-runner/src/agent-connection.ts` (trusted command protocol and cleanup)
 - `../../../packages/app/convex/files_browser.ts` (Convex doors), `../../../packages/app/server/files-browser.ts` (runner client)
-- `../../../packages/app/convex/schema.ts` (`files_browser_sessions`, `ai_chat_browser_results`, `files_browser_draft_captures`)
+- `../../../packages/app/convex/schema.ts` (`files_browser_sessions`, `files_browser_draft_captures`, normal Files proposals and assets)
 - `../../../packages/app/src/components/files/file-node-view/files-browser.tsx` (panel + viewer), `../../../packages/app/src/lib/files-browser-stream.ts` (socket client)
 - `../../../packages/app/server/server-ai-tools.ts` (browser tools), `../../../packages/app/convex/ai_chat.ts` (binding, scrub, per-step checks)
+- `../../../packages/app/server/files-ingestion.ts` (shared file writer), `../../../packages/app/convex/files_ingestion.ts` (retry receipts and cleanup), `../../../packages/app/server/ai-chat-file-tools.ts` (image reads)
 
 # Architecture
 
@@ -19,7 +20,7 @@ One cloud page per selected HTML file, shared by the user and the agent. V1 is f
 - The runner owns the provider browser, snippet isolation (Dynamic Worker), leases, deadlines, and the viewer gateway. The Convex app never touches provider credentials.
 - Cloudflare guardrails own the network allowlist outside snippet code. A blocked navigation can change `page.url()` while returning a 403 guardrails page; check the response status and headers before calling it a network escape. The runner checks the registered page after command errors too and closes it if the check fails.
 - A session loads exactly one file and source kind (`saved`, `proposed`, `draft`). Switching files ends the old session; edits only raise the Updates badge. Switching kinds needs a new Start. Reload re-reads the same kind (drafts need a fresh editor capture first).
-- Control states: `starting`, `ready` (agent may act), `agent` (command running, runner-side only — the doc stays `ready`), `pausing` (take during a run), `human`, `closing`, `closed`. Generations (`navGen`, `loadGen`, `controlGen`) freeze per request; anything stale is refused, never rebound.
+- Control states: `starting`, `ready` (agent may act), `agent` (command running, runner-side only — the doc stays `ready`), `pausing` (take during a run), `human`, `closing`, `closed`. Each command checks its exact generations (`navGen`, `loadGen`, `controlGen`). A successful agent reload advances the turn binding only to the generations returned by that reload. It never adopts another live session or takeover.
 - Detaching the last input holder releases `human` back to `ready` (never to agent work). A stale command closes its browser: a lost caller does not prove its work stopped. Every host run path finishes its command (`try/finally`); duplicates are harmless.
 - Each agent command has one durable connection grant. The child sees an app session id, never the provider id. The trusted protocol bridge allows only the assigned page and its attached frames/workers. It refuses provider methods, raw CDP attachment, target creation, protocol tunnels, downloads, and provider file paths. Normal page actions, screenshots, and context tracing remain supported.
 - Before returning output, the runner revokes the grant, drains accepted protocol calls, removes command scripts/bindings, and releases held input. It then checks Chromium's target/context inventory plus the controller URL and nonce. Only a settled command may release its lock. Lost or uncertain cleanup closes that exact browser; a restart cannot reuse an unproven connection.
@@ -35,8 +36,8 @@ One cloud page per selected HTML file, shared by the user and the agent. V1 is f
 - `take_browser_control` / `resume_browser_agent` (agent resume authorizes the sidebar's selected chat), `reload_browser`, `keep_open_browser`, `end_browser`.
 - Agent reload and close carry `expectedAgentLease` through Convex to the runner. The runner checks ready control plus the frozen control/load/navigation generations before accepting them. Take during an accepted reload waits for it to finish; an overdue reload closes the page before input can resume. Human buttons omit the agent-only guard.
 - Viewer-side doors re-check live file access and close the session on loss (revoke, archive, delete, type change). The agent lease check refuses the same way without closing.
-- Results: `store_browser_result` (internal), `read_browser_result` (action, signed URLs), `list_browser_results` and `browser_result_file` (queries for Files links). Creator-only with expiry; a copied id degrades to a placeholder.
-- Cleanup: `cleanup_expired_browser_docs` cron plus workspace/user purge batches that enqueue exact-key R2 deletes.
+- File output uses thin internal `prepare_file_output` and `finalize_file_output` doors. They call the shared `files_ingestion` backend. Files owns paths, collision names, text or stored content, reservations, retry receipts, and cleanup. Fresh prepare and finalize check the browser source and exact lease in the same transaction. A completed retry needs current Files read access but no live browser. Abort retires only unfinished work. Stored holds remain until exact-key deletion settles after the last possible PUT.
+- Cleanup: the browser cron keeps draft/session/daily-counter cleanup. Screenshots follow normal Files expiry, Discard, Save and purge. Saved screenshots stay until deleted.
 
 # Viewer Protocol
 
@@ -50,24 +51,34 @@ One cloud page per selected HTML file, shared by the user and the agent. V1 is f
 
 # Agent Tools
 
-`browser_run` (inspect/test via a Playwright snippet with `page, frame, expect, emitImage`), `browser_reload`, `browser_close`. Bound per request from the client's frozen `browserSessionId`; at most 20 commands and 20 KB of code per call. Storage keeps status plus an opaque result id; the model re-reads text and images through authorized conversion every time. Screenshots use AI SDK `image-data` so OpenAI receives image input. See the `ai-chat-agent` skill for the stream scrub, history rules, and per-step checks.
+`browser_run` exposes only required `code`. The snippet receives `page`, `frame`, `expect`, and `emitFile`. `browser_reload` and `browser_close` take empty objects. These tools bind to the message's selected `browserSessionId`. Each request allows 20 run commands, with 20 KB of code per call.
 
-The server refreshes runner metadata once before freezing a new chat request's generations. Per-step checks never refresh or rebind that started request. Queued absence stays absent.
+In Agent mode, `emitFile({path:"/reports/page.png",bytes:await page.screenshot(),contentType:"image/png"})` proposes a screenshot. The same helper accepts any file bytes, including empty files. It copies `Uint8Array` or `ArrayBuffer` input at emission. Paths are explicit canonical Files paths; there is no default browser output folder. Ask mode refuses emitted files before reserving storage, with status `errored` and reason `agent_required`.
+
+The shared writer validates the whole output list, then creates items one at a time. Valid editable UTF-8 becomes normal private text through sealed pending states. Other content stays exact stored bytes. Name collisions get bounded suffixes. A later item failure or Stop keeps earlier completed files and reports a partial result. Completed files follow normal Save, Discard, and expiry rules; browser closure and retry-receipt cleanup do not delete them.
+
+Execution stores raw browser observations only in the current turn's map, keyed by tool call ID. Its returned result has only safe status, reason, and tagged Files targets. `toModelOutput` reads that map without I/O. Before every provider call, the server rechecks the exact captured source and lease and replaces stale message content with safe text. Text markers carry no authority. Chat storage, history replay, and titles never rebuild raw observations or image bytes.
+
+`view_image({path})` reads a PNG, JPEG, WEBP, or GIF in either mode without a browser session. It has an explicit SDK `strict: true` object schema with one required Files path. Execute checks current Files access and the exact source before and after the bounded read, then keeps pixels in the same private turn map. Screenshots are ordinary Files output; call `view_image` to inspect them. Read text with Bash and other bytes through `execute_code` and `/api/v1/files/read-bytes`. See `ai-chat-agent` for limits and provider conversion.
+
+The server refreshes runner metadata once when binding a new turn. Step checks compare the current turn binding without refreshing it. Only the exact successful agent reload may advance it. A takeover, end, or changed lease removes browser tools from the next provider step; other tools and the final reply continue. Each tool still checks its own lease at execute time. A message queued without a browser stays unbound.
+
+Files paths use `/` as the workspace root. A Files output at `/tmp/report.png` is a normal reviewable file. Bash `/tmp` is separate per-thread scratch; its Files counterpart is `/home/cloud-usr/w/<organization>/<workspace>/tmp/report.png`.
 
 # UI
 
-- Files panel (`files-browser.tsx`): Start card with source picker, status/controls/meta, live viewer, results list, renew loop. Editor/browser split keeps the editor mounted across toggles; focus collapses it; popout is a session-bound child route with attach → take → close transfer.
+- Files panel (`files-browser.tsx`): Start card with source picker, status/controls/meta, live viewer and renew loop. Editor/browser split keeps the editor mounted across toggles; focus collapses it; popout is a session-bound child route with attach → take → close transfer.
 - A new socket hello replaces the previous socket's control. The newest control generation wins across the query and stream; a completed human handoff wins over pausing at the same generation. Grant renewal depends on session/viewer identity, so Take and metadata updates cannot restart its timer.
 - A session-ended socket close retires that exact app session through `end_browser`, so idle expiry returns to Start even when it stops the renewal timer first. A viewer-moved close leaves the session live.
 - The Files selection owner ends the previous session when another file or folder is selected. The popout receives the opener's selected chat through messages checked against origin, opener, and session id.
-- `Open browser` selects the editor view and opens its browser panel, including from Preview or File details. The existing editor draft stays mounted.
-- Chat is text-only: status plus an authorized file link (`Open in Files` on the chat page, `Open browser` in Files). Images and observations never render in chat.
+- Browser and file tool cards show safe status and authorized Files links marked `Pending review` or `Saved`. Missing or denied targets show unavailable. File links use normal Files navigation. Image bytes and raw observations never render in these cards.
+- Private and saved File details share an image preview with expanded Pending rows. Save shows required private folders and submits their exact reviewed versions with the selected image. Other images remain pending. Discard removes only reviewed proposals. Saved origin links keep old chat targets usable after private receipt cleanup, with current Files ACL checks.
 - Stop aborts the stream, which is the lease release; queued bindings stay frozen per message.
 - Queued absence is frozen too: a message queued with no browser does not adopt one opened later.
 
 # Limits
 
-One active browser per owner/workspace (two per workspace, ten per deployment); one command at a time; 30 s per command; 20 min total; 5 min idle (viewing alone never extends it); 20 commands per request, 60 per session; 32 loads and 8 MiB total HTML per session; 900,000-byte HTML cap; 2 images per call at 2 MiB, 16 Mpx, 8192 px edge. Daily per-workspace brakes: 30 fresh starts, 100 draft captures (date-keyed docs, swept after two days). Per-minute metering is future work.
+One active browser per owner/workspace (two per workspace, ten per deployment); one command at a time; 30 s per command; 20 min total; 5 min idle (viewing alone never extends it); 20 commands per request, 60 per session; 32 loads and 8 MiB total HTML per session; 900,000-byte HTML cap. File output allows eight files and 8 MiB total per call. Screenshots have separate trusted bridge limits: PNG/JPEG, 2 MiB each, 16 million pixels, and 8192 pixels per edge. There is no two-capture limit. Daily per-workspace brakes: 30 fresh starts, 100 draft captures (date-keyed docs, swept after two days). Per-minute metering is future work.
 
 # Runbook
 

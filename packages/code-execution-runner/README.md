@@ -1,8 +1,8 @@
 # bonobo-senate-code-execution-runner
 
 A trusted host Cloudflare Worker that runs an **untrusted JavaScript snippet** inside an
-isolated **Dynamic Worker** (Worker Loader binding) and returns a compact JSON result plus
-bounded logs. It backs the AI agent's `execute_code` tool.
+isolated **Dynamic Worker** (Worker Loader binding) and returns a compact JSON result,
+bounded logs, and optional file bytes. It backs the AI agent's `execute_code` tool.
 
 The host Worker is trusted; the snippet is not. The snippet runs in a fresh Dynamic Worker
 isolate with no access to platform bindings, platform secrets, or Worker `env`. By default it
@@ -66,6 +66,41 @@ return { count: read.files.length };
 
 `code` is the **body of an `async` function**. Use `return` to produce a JSON-serializable
 result. `input` is available as a variable. `console.log/info/debug/warn/error` are captured.
+Use `emitFile` to return a file without putting its bytes in the result or logs:
+
+```js
+emitFile({
+	path: "/reports/output.bin",
+	contentType: "application/octet-stream",
+	bytes: new Uint8Array([0, 255, 128]),
+});
+```
+
+`bytes` accepts `Uint8Array` or `ArrayBuffer`. For a Blob, use `await blob.arrayBuffer()`.
+The call copies the bytes at once, including only the selected range of a typed-array view.
+Later changes to the source buffer do not change the file. Empty files are allowed.
+`path` is 1–1024 characters; optional `contentType` is 1–255 characters. The runner checks
+these transport bounds. The app checks canonical workspace paths and MIME syntax.
+Missing content types use the file name's type hint or `application/octet-stream` in the app.
+
+For binary input, POST to `process.env.T3_APP_ORIGIN + "/api/v1/files/read-bytes"`
+with `{ path: "/reports/input.bin", offset: 0, length: 1048576, revision: null }`.
+Check `response.ok`, then use `await response.arrayBuffer()`. The response is raw
+bytes. `X-File-Content-Type`, `X-File-Revision`, `X-File-Size`, and `X-File-Offset`
+describe the range. Pass the returned revision on later range reads.
+
+Only this exact POST route gets a 1-MiB response cap. Other requests keep the
+512,000-byte cap. Byte reads refuse redirects and use `Cache-Control: no-store`.
+They count toward the existing 20-fetch limit. The app grant enforces the
+8-MiB total read budget, so changing snippet code cannot reset that budget.
+
+At most eight files and 8 MiB of raw file bytes may leave one successful execution.
+Errors, timeouts, and invalid output drop the whole batch. The runner does not store files.
+The app checks Agent mode and Files access, then creates ordinary pending files for review.
+Ask mode keeps calculations and reads but cannot create files. Its public API grant stays
+read-only. A public download may supply file bytes, but check `response.ok` before using
+`arrayBuffer()`: the gateway returns 413 when the response exceeds 512,000 bytes.
+
 Without `network` or `app`, `fetch()` and `connect()` throw. With `network.mode = "public_http"`,
 public `fetch()` is available through the host gateway. With `app`, the gateway authorizes
 requests only to `/api/v1/files/*` at the configured app origin and exposes only
@@ -86,12 +121,17 @@ route logs for containment.
   "resultTruncated": false,
   "logs": ["…"],
   "logsTruncated": false,
+  "files": [{ "path": "/reports/output.bin", "contentType": "application/octet-stream", "dataBase64": "AP+A" }],
   "error": null           // { name, message } when errored/timed_out
 }
 ```
 
 Pre-flight failures (`disabled`, `unauthorized`, `invalid_json`, `invalid_request`, `misconfigured`,
 `too_large`) return a non-2xx status with `{ ok: false, error: { code, message } }`.
+Every 200 response includes `files`. It is `[]` after an error or timeout, and when no file
+was emitted. File bytes cross sandbox RPC as typed arrays. Only the trusted host encodes
+them as canonical base64 for HTTP. There is no caller-supplied size. The app reads at most
+12 MiB before parsing this response, then checks the shape, base64, and decoded byte total.
 
 `GET /health` → `{ "ok": true }`.
 
@@ -105,13 +145,15 @@ Pre-flight failures (`disabled`, `unauthorized`, `invalid_json`, `invalid_reques
   forwarded / host / proxy / Cloudflare-derived headers; blocks
   IP literals, single-label hostnames, localhost/internal-style hostnames, non-443 explicit
   ports, and redirects to blocked targets; caps request/response bytes, redirects, request
-  count, and time.
+  count, and time. Each fetch keeps its five-second deadline through the complete response
+  body read.
 - **App file access is gateway-authenticated.** `app: { origin, token }` enables
   fetches to app public file API routes. The public API grant token stays in
   the gateway and is injected only for `/api/v1/files/*` requests at the configured
   app origin. The snippet can use `process.env.T3_APP_ORIGIN`; it cannot read the
   raw token. Use `/api/v1/files/list` for discovery, `/api/v1/files/read-many` for
-  folder-scale reads, and `/api/v1/files/read` for one-off reads. The gateway only
+  folder-scale text reads, `/api/v1/files/read` for one-off text reads, and
+  `/api/v1/files/read-bytes` for bounded binary ranges. The gateway only
   injects the grant; tenant isolation is enforced by the app public file API. The
   grant does not authorize reserved `GLOBAL`/`GITHUB` mount docs.
 - **No platform bindings/secrets.** No Worker Loader `env` is passed to the Dynamic Worker.
@@ -124,17 +166,20 @@ Pre-flight failures (`disabled`, `unauthorized`, `invalid_json`, `invalid_reques
   isolate limit plus the wall-clock cut.
 - **Bounded output.** Captured logs are capped (100 lines / 16 KB) and the result is capped
   (16 KB); oversize sets `logsTruncated` / `resultTruncated`.
+  Files have a separate eight-file / 8-MiB budget. The trusted host treats the RPC reply as
+  unknown and checks every consumed field, logs, typed arrays, and byte totals. The snippet
+  can change its own harness, so its local checks are not the security boundary.
 - **Privacy.** Operational logs carry only metadata (`executionId`, `codeHash`, byte sizes,
   status) — never raw code, input, result, captured logs, file contents, or app grant tokens.
 
 ## Configuration
 
-| Name                              | Kind                   | Purpose                                                                |
-| --------------------------------- | ---------------------- | ---------------------------------------------------------------------- |
-| `CODE_EXECUTION_RUNNER_SECRET`    | secret (required)      | Bearer token the caller must present.                                  |
-| `CODE_EXECUTION_DISABLED`         | var (optional)         | Set to `"true"` to hard-disable execution (503 kill switch).           |
-| `CODE_EXECUTION_NETWORK_DISABLED` | var (optional)         | Set to `"true"` to reject requests that need outbound access.          |
-| `LOADER`                          | worker_loaders binding | The Worker Loader binding (declared in `wrangler.jsonc`).              |
+| Name                              | Kind                   | Purpose                                                       |
+| --------------------------------- | ---------------------- | ------------------------------------------------------------- |
+| `CODE_EXECUTION_RUNNER_SECRET`    | secret (required)      | Bearer token the caller must present.                         |
+| `CODE_EXECUTION_DISABLED`         | var (optional)         | Set to `"true"` to hard-disable execution (503 kill switch).  |
+| `CODE_EXECUTION_NETWORK_DISABLED` | var (optional)         | Set to `"true"` to reject requests that need outbound access. |
+| `LOADER`                          | worker_loaders binding | The Worker Loader binding (declared in `wrangler.jsonc`).     |
 
 ## Develop / deploy
 
@@ -142,7 +187,7 @@ Pre-flight failures (`disabled`, `unauthorized`, `invalid_json`, `invalid_reques
 vp env exec pnpm --filter bonobo-senate-code-execution-runner test       # vitest (node env, mocked LOADER)
 vp env exec pnpm --filter bonobo-senate-code-execution-runner typecheck
 vp env exec pnpm --filter bonobo-senate-code-execution-runner dev        # wrangler dev --remote
-vp env exec pnpm --filter bonobo-senate-code-execution-runner deploy     # wrangler deploy
+vp env exec pnpm --filter bonobo-senate-code-execution-runner deploy     # base worker; no named env
 
 # set the shared secret (non-prod)
 vp env exec pnpx wrangler secret put CODE_EXECUTION_RUNNER_SECRET --config packages/code-execution-runner/wrangler.jsonc
@@ -150,6 +195,9 @@ vp env exec pnpx wrangler secret put CODE_EXECUTION_RUNNER_SECRET --config packa
 
 The local test suite exercises the host Worker (auth, validation, size caps, capability
 selection, gateway SSRF/header/redirect policy, response shaping, wall-clock backstop) with a
-mocked Worker Loader. **Runtime isolation guarantees** (`globalOutbound: null` egress block,
+mocked Worker Loader. It also runs the generated file harness, checks exact bytes and limits,
+and supplies forged RPC replies to test the trusted host. **Runtime isolation guarantees** (`globalOutbound: null` egress block,
 real timeout, and real Worker Loader behavior) still require **remote smoke tests** against a
-deployed instance.
+deployed instance. Before calling a release verified, test real typed RPC with a sliced array,
+an empty file, an exact 8-MiB batch, an over-limit batch, and emit-then-throw. Confirm that the
+target URL names this base worker; the package has no separate `dev` environment.

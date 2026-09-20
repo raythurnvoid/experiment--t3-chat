@@ -78,6 +78,7 @@ export async function r2_put_object(
 		key: string;
 		body: BodyInit;
 		contentType?: string;
+		signal?: AbortSignal;
 	},
 ) {
 	// Use signed PUT instead of r2.store() so deterministic content keys remain idempotent across Workpool retries.
@@ -86,6 +87,8 @@ export async function r2_put_object(
 		method: "PUT",
 		headers: args.contentType ? { "Content-Type": args.contentType } : undefined,
 		body: args.body,
+		// Stop and a fixed deadline both end an upload wait.
+		signal: args.signal ? AbortSignal.any([args.signal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000),
 	});
 	if (!response.ok) {
 		throw convex_error({
@@ -100,9 +103,9 @@ export async function r2_put_object(
 	await r2.syncMetadata(ctx, args.key);
 }
 
-export async function r2_fetch_object_from_bucket(args: { key: string }) {
+export async function r2_fetch_object_from_bucket(args: { key: string; signal?: AbortSignal }) {
 	const url = await r2.getUrl(args.key, { expiresIn: 60 });
-	const response = await fetch(url);
+	const response = await fetch(url, { signal: args.signal });
 	if (!response.ok) {
 		throw convex_error({
 			message: "Failed to read R2 object",
@@ -122,10 +125,11 @@ export async function r2_fetch_object_from_bucket(args: { key: string }) {
  * whole thing. `start`/`endInclusive` are 0-based byte offsets; the response may be shorter
  * than requested at end-of-object.
  */
-export async function r2_fetch_object_range_from_bucket(args: { key: string; start: number; endInclusive: number }) {
+export async function r2_fetch_object_range_from_bucket(args: { key: string; start: number; endInclusive: number; signal?: AbortSignal }) {
 	const url = await r2.getUrl(args.key, { expiresIn: 60 });
 	const response = await fetch(url, {
 		headers: { Range: `bytes=${args.start}-${args.endInclusive}` },
+		signal: args.signal,
 	});
 	// 206 = partial content (range honored); 200 = full object (range ignored by store) — both usable.
 	if (!response.ok) {
@@ -327,94 +331,6 @@ export async function r2_copy_object_to_immutable_key(
 		size,
 		etag: copied.etag,
 	};
-}
-
-/**
- * Publish a picture the chat agent drew: give the asset its final key and drop its cleanup deadline.
- *
- * A generated image is only reachable from inside a stored chat message, and no index can find it
- * there. So `cleanup_expired_unfinalized_assets` would delete it like any other unfinished asset.
- * The deadline is cleared here instead, when the message that shows the image is stored. An image
- * whose message never arrives keeps the deadline and is deleted a day later.
- *
- * `assetId` travels inside a message body that the client writes, so nothing is trusted: a string
- * that is not an id, an asset from another workspace, and an asset that is not a generated image
- * are all ignored.
- */
-export async function r2_db_finalize_generated_image_asset(
-	ctx: MutationCtx,
-	args: {
-		organizationId: string;
-		workspaceId: string;
-		assetId: string;
-	},
-) {
-	const assetId = ctx.db.normalizeId("files_r2_assets", args.assetId);
-	if (!assetId) {
-		return;
-	}
-
-	const asset = await ctx.db.get("files_r2_assets", assetId);
-	if (
-		!asset ||
-		asset.kind !== "generated_image" ||
-		asset.organizationId !== args.organizationId ||
-		asset.workspaceId !== args.workspaceId
-	) {
-		return;
-	}
-
-	await ctx.db.patch("files_r2_assets", assetId, {
-		r2Key: r2_create_asset_key({
-			organizationId: asset.organizationId,
-			workspaceId: asset.workspaceId,
-			assetId,
-		}),
-		unfinalizedExpiresAt: undefined,
-		updatedAt: Date.now(),
-	});
-}
-
-/**
- * Publish one private browser capture: give the asset its final key and drop its cleanup
- * deadline. Called by the same flow that stored the owning result doc, so an asset whose
- * result never arrives keeps the deadline and is deleted a day later.
- *
- * The internal result-storage mutation passes asset ids here. Ignore invalid ids, assets
- * from another workspace, and assets whose kind is not a browser result.
- */
-export async function r2_db_finalize_browser_result_asset(
-	ctx: MutationCtx,
-	args: {
-		organizationId: string;
-		workspaceId: string;
-		assetId: string;
-	},
-) {
-	const assetId = ctx.db.normalizeId("files_r2_assets", args.assetId);
-	if (!assetId) {
-		return;
-	}
-
-	const asset = await ctx.db.get("files_r2_assets", assetId);
-	if (
-		!asset ||
-		asset.kind !== "browser_result" ||
-		asset.organizationId !== args.organizationId ||
-		asset.workspaceId !== args.workspaceId
-	) {
-		return;
-	}
-
-	await ctx.db.patch("files_r2_assets", assetId, {
-		r2Key: r2_create_asset_key({
-			organizationId: asset.organizationId,
-			workspaceId: asset.workspaceId,
-			assetId,
-		}),
-		unfinalizedExpiresAt: undefined,
-		updatedAt: Date.now(),
-	});
 }
 
 // #region R2 deletion jobs

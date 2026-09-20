@@ -15,6 +15,7 @@ import {
 	type FileEditor_Ref,
 } from "@/components/files/file-editor/file-editor.tsx";
 import { FileHtmlPreview, type FileHtmlPreview_Source } from "./file-html-preview.tsx";
+import { FileImagePreview } from "../file-image-preview.tsx";
 import { FilesBrowser } from "./files-browser.tsx";
 import {
 	FileNodeViewFolderCreateNodeModal,
@@ -71,6 +72,7 @@ import { file_editor_get_content_too_large_message } from "@/lib/file-editor.ts"
 import {
 	files_ROOT_ID,
 	files_FILE_NODE_DRAG_DATA_TRANSFER_TYPE,
+	files_build_private_review_selection,
 	files_can_move_node_between_restricted_scopes,
 	files_collect_protected_descendant_ids,
 	files_download_blob,
@@ -117,7 +119,7 @@ import {
 	LockKeyhole,
 	Users,
 } from "lucide-react";
-import React, { memo, useEffect, useId, useMemo, useRef, useState } from "react";
+import React, { memo, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { RefObject } from "react";
 import { createPortal } from "react-dom";
 import { toast } from "sonner";
@@ -1202,6 +1204,7 @@ const FileNodeViewFile = memo(function FileNodeViewFile(props: FileNodeViewFile_
 type FileNodeViewPrivate_ClassNames =
 	| "FileNodeViewPrivate-actions"
 	| "FileNodeViewPrivate-status"
+	| "FileNodeViewPrivate-parents"
 	| "FileNodeViewPrivate-body"
 	| "FileNodeViewPrivate-media"
 	| "FileNodeViewPrivate-table"
@@ -1211,78 +1214,107 @@ type FileNodeViewPrivateView = NonNullable<
 	FunctionReturnType<typeof app_convex_api.files_pending_updates.get_file_pending_target>
 > & { entry: Extract<files_VisibleEntry, { kind: "private" }> };
 
-const FileNodeViewPrivateActions = memo(function FileNodeViewPrivateActions(props: {
-	view: FileNodeViewPrivateView;
-	onTargetChange: NonNullable<FileEditor_Props["onTargetChange"]>;
-}) {
-	const { view, onTargetChange } = props;
-	const { membershipId } = AppTenantProvider.useContext();
+const FileNodeViewPrivateActions = memo(function FileNodeViewPrivateActions(props: { view: FileNodeViewPrivateView }) {
+	const { view } = props;
 	const { startReview, isStartingReview } = AppActivitiesProvider.useContext();
-	const [busy, setBusy] = useState(false);
+	const [busy, setBusy] = useState<"save" | "discard" | null>(null);
+	const actionsRef = useRef<HTMLDivElement>(null);
 	const pendingUpdate = view.entry.pendingUpdate;
+
+	// Save and Discard remove this whole row, so keyboard focus would fall to <body> and the user
+	// would lose their place. Move it to the file content area instead. The cleanup must be a layout
+	// effect: a passive effect runs after the paint, when the button is no longer the active element.
+	useLayoutEffect(() => {
+		const actions = actionsRef.current;
+		return () => {
+			if (!actions?.contains(document.activeElement)) return;
+			const fileArea = actions.closest<HTMLElement>(".FileNodeView-editor-area");
+			// Wait for button removal to finish. Keep any focus moved by the review dialog.
+			queueMicrotask(() => {
+				if (document.activeElement === document.body) fileArea?.focus();
+			});
+		};
+	}, []);
+
 	const handleSave = useFn(() => {
-		if (busy || !view.canAccept || view.readiness !== "ready") return;
-		setBusy(true);
-		void app_convex
-			.action(app_convex_api.files_pending_updates.save_file_pending_update, {
-				membershipId,
-				target: { kind: "private", id: view.entry.node._id },
-				pendingUpdateId: pendingUpdate._id,
-				reviewedRevision: pendingUpdate.revision,
-			})
-			.then((result) => {
-				if (result._nay) toast.error(result._nay.message);
-				else onTargetChange(result._yay.target, { keepReview: result._yay.pendingUpdateRevision != null });
-			})
-			.catch(() => {
-				toast.error("The draft could not be saved. Try again.");
+		if (busy || isStartingReview || !view.canAcceptWithParents || view.readiness !== "ready") return;
+		setBusy("save");
+
+		// The Activity dialog owns progress and errors, with or without pending parents.
+		void startReview(
+			files_build_private_review_selection({
+				kind: "accept",
+				pendingUpdate,
+				requiredParents: view.requiredParents,
+			}),
+		)
+			.catch((error: unknown) => {
+				toast.error(error instanceof Error ? error.message : "The draft could not be saved. Try again.");
 			})
 			.finally(() => {
-				setBusy(false);
+				setBusy(null);
 			});
 	});
+
 	const handleDiscard = useFn(() => {
 		if (busy || isStartingReview) return;
-		setBusy(true);
-		void startReview({
-			kind: "discard",
-			items: [
-				{
-					pendingUpdateId: pendingUpdate._id,
-					reviewedRevision: pendingUpdate.revision,
-					selectedContentStateId: null,
-				},
-			],
-		})
+		setBusy("discard");
+		void startReview(
+			files_build_private_review_selection({
+				kind: "discard",
+				pendingUpdate,
+				requiredParents: view.requiredParents,
+			}),
+		)
 			.catch((error: unknown) => {
 				toast.error(error instanceof Error ? error.message : "The draft could not be discarded. Try again.");
 			})
 			.finally(() => {
-				setBusy(false);
+				setBusy(null);
 			});
 	});
 
 	return (
-		<div className={"FileNodeViewPrivate-actions" satisfies FileNodeViewPrivate_ClassNames}>
+		<div ref={actionsRef} className={"FileNodeViewPrivate-actions" satisfies FileNodeViewPrivate_ClassNames}>
 			<span className={"FileNodeViewPrivate-status" satisfies FileNodeViewPrivate_ClassNames} role="status">
-				{view.readiness === "preparing"
-					? "Preparing…"
-					: view.entry.node.kind === "folder"
-						? "Added folder"
-						: "Added file"}
+				{busy === "save"
+					? "Saving…"
+					: busy === "discard"
+						? "Discarding…"
+						: view.readiness === "preparing"
+							? "Preparing…"
+							: view.entry.node.kind === "folder"
+								? "Added folder"
+								: "Added file"}
 			</span>
+			{/* While a save or discard runs, both buttons use `aria-disabled` instead of `disabled`. A
+			    real `disabled` button drops out of the tab order and loses focus, which throws a
+			    keyboard user out of this row. The click handlers above already refuse while busy.
+			    Save keeps a real `disabled` for the case where the draft cannot be accepted at all. */}
 			{pendingUpdate.createIntent?.kind !== "text" && (
 				<MyButton
 					variant="outline"
-					disabled={busy || !view.canAccept || view.readiness !== "ready"}
+					disabled={!view.canAcceptWithParents || view.readiness !== "ready"}
+					aria-disabled={!!busy || isStartingReview}
+					aria-busy={busy === "save"}
 					onClick={handleSave}
 				>
 					Save
 				</MyButton>
 			)}
-			<MyButton variant="outline" disabled={busy || isStartingReview} onClick={handleDiscard}>
+			<MyButton
+				variant="outline"
+				aria-disabled={!!busy || isStartingReview}
+				aria-busy={busy === "discard"}
+				onClick={handleDiscard}
+			>
 				Discard
 			</MyButton>
+			{view.requiredParents.length > 0 && (
+				<span className={"FileNodeViewPrivate-parents" satisfies FileNodeViewPrivate_ClassNames}>
+					Save also creates: {view.requiredParents.map((parent) => parent.path).join(", ")}
+				</span>
+			)}
 		</div>
 	);
 });
@@ -1339,6 +1371,8 @@ const FileNodeViewPrivateStoredFile = memo(function FileNodeViewPrivateStoredFil
 	const [busy, setBusy] = useState(false);
 	const serving = files_get_signed_download_serving({ contentType: intent.contentType, fileName: entry.node.name });
 	const canPreview = serving.responseContentDisposition.startsWith("inline");
+	const isImage = serving.responseContentType.startsWith("image/");
+
 	const handleRead = useFn((download: boolean) => {
 		if (busy) return;
 		setBusy(true);
@@ -1381,7 +1415,9 @@ const FileNodeViewPrivateStoredFile = memo(function FileNodeViewPrivateStoredFil
 				{intent.contentType} · {files_format_size(intent.size)}
 			</p>
 			<div className={"FileNodeViewPrivate-actions" satisfies FileNodeViewPrivate_ClassNames}>
-				{canPreview && (
+				{/* An image already loads below on its own, so Preview would add nothing for it. Only
+				    images and video are served inline, so this button is left for video. */}
+				{canPreview && !isImage && (
 					<MyButton variant="outline" disabled={busy} onClick={() => handleRead(false)}>
 						Preview
 					</MyButton>
@@ -1390,14 +1426,20 @@ const FileNodeViewPrivateStoredFile = memo(function FileNodeViewPrivateStoredFil
 					Download
 				</MyButton>
 			</div>
+			{isImage && (
+				<FileImagePreview
+					target={{
+						kind: "private",
+						id: entry.node._id,
+						pendingUpdateId: entry.pendingUpdate._id,
+						reviewedRevision: entry.pendingUpdate.revision,
+						creationGeneration: entry.node.creationGeneration,
+					}}
+					alt={entry.node.name}
+				/>
+			)}
 			{previewUrl &&
-				(serving.responseContentType.startsWith("image/") ? (
-					<img
-						className={"FileNodeViewPrivate-media" satisfies FileNodeViewPrivate_ClassNames}
-						src={previewUrl}
-						alt={entry.node.name}
-					/>
-				) : serving.responseContentType.startsWith("video/") ? (
+				(serving.responseContentType.startsWith("video/") ? (
 					<video
 						className={"FileNodeViewPrivate-media" satisfies FileNodeViewPrivate_ClassNames}
 						src={previewUrl}
@@ -1758,6 +1800,7 @@ const FileNodeViewStoredFile = memo(function FileNodeViewStoredFile(props: FileN
 	})();
 
 	const location = node.path.slice(0, node.path.lastIndexOf("/")) || "/";
+	const serving = files_get_signed_download_serving({ contentType: node.contentType, fileName: node.name });
 
 	return (
 		<section aria-label="File details" className={"FileNodeViewStoredFile" satisfies FileNodeViewStoredFile_ClassNames}>
@@ -1769,6 +1812,11 @@ const FileNodeViewStoredFile = memo(function FileNodeViewStoredFile(props: FileN
 					<h1 className={"FileNodeViewStoredFile-title" satisfies FileNodeViewStoredFile_ClassNames}>{title}</h1>
 				</div>
 			</header>
+			{/* Wait for `r2Key`: an asset that is still uploading has no bytes to sign a URL for. The
+			    preview takes `assetId` so that replacing the file asks for a new URL. */}
+			{asset?.r2Key && node.assetId && serving.responseContentType.startsWith("image/") && (
+				<FileImagePreview target={{ kind: "saved", id: node._id, assetId: node.assetId }} alt={node.name} />
+			)}
 
 			{storedFileMetadataIsLoading || createdByDisplayName === undefined || updatedByDisplayName === undefined ? (
 				<dl className={"FileNodeViewStoredFile-metadata" satisfies FileNodeViewStoredFile_ClassNames}>
@@ -3943,6 +3991,18 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 		},
 	);
 
+	useEffect(() => {
+		// A chat link may still name the private node after Save. Switch the editor to its saved target.
+		// The query answers with the saved file the draft became: a publish receipt links the two ids.
+		if (searchPrivateNodeId && privateTargetView?.entry.kind === "saved") {
+			handleEditorTargetChange(
+				`${membershipId}:private:${searchPrivateNodeId}`,
+				{ kind: "saved", id: privateTargetView.entry.node._id },
+				{ keepReview: false },
+			);
+		}
+	}, [membershipId, searchPrivateNodeId, privateTargetView, handleEditorTargetChange]);
+
 	const handleAutomaticEditorModeChange = useFn<FileNodeViewContent_Props["onEditorModeChange"]>(
 		(nextView, options) => {
 			const view = nextView === "rich_text_editor" ? undefined : nextView;
@@ -4312,10 +4372,14 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 					onNavigateNode={navigateToNode}
 				/>
 			) : (
+				// A saved entry here means the draft was already saved. The effect above is navigating to
+				// the saved file, so say that instead of telling the user the draft is gone.
 				<div className={"FileNodeView-loading-text" satisfies FileNodeView_ClassNames} role="status">
 					{privateTargetView === undefined
 						? "Loading draft…"
-						: "This draft is no longer available. You can discard it in Pending changes."}
+						: privateTargetView?.entry.kind === "saved"
+							? "Opening saved file…"
+							: "This draft is no longer available."}
 				</div>
 			);
 		}
@@ -4391,7 +4455,12 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 				minSize={40}
 				className={"FileNodeView-main-panel" satisfies FileNodeView_ClassNames}
 			>
+				{/* `FileNodeViewPrivateActions` looks this area up by class name and moves focus here when
+				    Save or Discard removes its buttons. `tabIndex={-1}` lets script focus it without
+				    adding it to the tab order, and the label tells a screen reader where focus landed. */}
 				<div
+					tabIndex={-1}
+					aria-label="File content"
 					className={cn(
 						"FileNodeView-editor-area" satisfies FileNodeView_ClassNames,
 						"app-scrollable" satisfies AppClassName,
@@ -4433,9 +4502,6 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 												<FileNodeViewPrivateActions
 													key={privateSourceKey}
 													view={{ ...privateTargetView, entry: privateEntry }}
-													onTargetChange={(target, options) =>
-														handleEditorTargetChange(`${membershipId}:${selectionKey}`, target, options)
-													}
 												/>
 											) : (
 												<FileNodeViewToolbarFileDownloadAction node={resolvedNode} />

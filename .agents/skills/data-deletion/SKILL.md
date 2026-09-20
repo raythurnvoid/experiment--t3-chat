@@ -125,6 +125,7 @@ Deleted-account recovery is handled in `users.resolve_user`.
 - Retained-tombstone finalization removes auth pointers and anonymous tokens only when the caller passes `deleteUserAuth`.
 - `users.purge_deleted_user_tombstone` removes the one anonymous-token doc and billing snapshot in the same transaction as the anagraphic and user. It leaves queued tenant cleanup in place. The normal finalizer and missing-user drain share this auth/billing cleanup helper.
 - Removing a saved-target proposal leaves its saved node in place. Private cleanup fences the draft and drains its owned content before releasing its node slot. Stored create and replacement assets go through exact-key cleanup; existing upload jobs keep their generation and arrival guards.
+- Final user deletion schedules `purge_user_private_assets` for held asset reservations left by interrupted preparation. It pages the existing user/settlement/resource index with a cutoff from before finalization. It queues each exact R2 key and keeps the byte hold until deletion is confirmed. This also reaches browser captures that never attached to a proposal, without touching later uploads after account recovery.
 
 # Organization And Workspace Deletion
 
@@ -178,6 +179,7 @@ that user's dismissals; shared Activities and other viewers' dismissals remain u
 Current purge coverage includes:
 
 - Pending review runs before pending-state payloads. Stop invalidates active workers; retire prepared bytes before deleting item rows. Review units and the paired Activity follow. Delete the owner's review clock only after all proposals, private nodes, and runs are gone.
+- `files_ingestion_receipts` before pending-state payloads and private targets. User and workspace purge retire at most eight receipts per pass. A preparing receipt owns its exact asset key or initial text batch. Cleanup expires that batch and discards only unchanged private creates and unused parents. Newer drafts and dependent children survive this receipt cleanup; the wider purge removes them through their normal owners. Stored cleanup carries the late-PUT deadline into the deletion job. Completed receipts own no file cleanup. The 15-minute ingestion cron expires unfinished work after 30 minutes and drops terminal receipts after 24 hours.
 - Transfer runs before other file docs. Stop each run, hand unpublished assets to exact-key
   deletion jobs, and delete at most 50 item docs per call. Delete its Activity and run docs after
   its items are gone. Late workers cannot publish. Private run cleanup keeps completed files;
@@ -207,12 +209,11 @@ Current purge coverage includes:
 - `files_snapshots`, `file_stats`
 - `files_content_materialization_jobs` with Workpool job cancellation
 - `files_yjs_cleanup_tasks` in bounded batches before the generic asset pass. Hand each task to `files_nodes_db_handoff_yjs_cleanup_task`, which preserves its exact asset key and `putMayArriveUntil` in the deletion ledger before removing the task. The asset doc stays for the generic pass. Drain both pending-history and asset-only tasks.
-- `files_r2_assets` with upload-conversion job cancellation and durable exact-key R2 cleanup. This
-  also covers `generated_image` assets, the pictures the chat agent drew: they belong to a chat
-  message instead of a file node, so nothing in the file tree points at them, but they are ordinary
-  asset docs in the workspace and this pass deletes them with the rest. A picture whose message was
-  never stored keeps its `unfinalizedExpiresAt` deadline and `cleanup_expired_unfinalized_assets`
-  deletes it a day later. A referenced upload retries for at most eight days after its latest signed
+- `files_r2_assets` with upload-conversion job cancellation and durable exact-key R2 cleanup.
+  Agent output uses ordinary `content` assets owned by Files. Pending output keeps its private
+  storage hold until Save or confirmed deletion. Unattached assets keep their
+  `unfinalizedExpiresAt` deadline for `cleanup_expired_unfinalized_assets`.
+  A referenced upload retries for at most eight days after its latest signed
   URL. The terminal action checks the object once more before removing an ordinary failed
   placeholder and handing its canonical key to the deletion ledger. A pending plugin service upload
   keeps its empty placeholder, asset doc, and

@@ -1,9 +1,7 @@
 import "./ai-chat-message.css";
 
 import {
-	createContext,
 	memo,
-	use,
 	useDeferredValue,
 	useEffect,
 	useId,
@@ -58,11 +56,16 @@ import { cn, json_strigify_ensured, sx } from "@/lib/utils.ts";
 import { path_name_of } from "@/lib/paths.ts";
 import type { AppClassName } from "@/lib/dom-utils.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
-import { files_media_get_signed_chat_image_url } from "@/lib/files-media-src.ts";
-import { global_custom_event_dispatch } from "@/lib/global-event.tsx";
 import { MyButton, MyButtonIcon } from "../my-button.tsx";
-import { app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
+import { app_convex_api } from "@/lib/app-convex-client.ts";
 import { useQuery } from "convex/react";
+import type { z } from "zod";
+import {
+	ai_chat_execute_code_result_schema,
+	ai_chat_file_result_schema,
+	ai_chat_file_result,
+	ai_chat_file_target_schema,
+} from "../../../shared/ai-chat-files.ts";
 
 // Reuse one stable empty array so the store selector does not trigger avoidable re-renders.
 const EMPTY_BRANCH_SIBLING_IDS: readonly string[] = [];
@@ -488,6 +491,7 @@ const AiChatMessagePartToolExecuteCode = memo(function AiChatMessagePartToolExec
 	// result, so surface them in the summary like a thrown tool error would be.
 	const isRunnerError = result?.metadata?.status === "errored" || result?.metadata?.status === "timed_out";
 	const summaryState = isRunnerError ? "output-error" : toolState;
+	const fileResult = ai_chat_file_result_schema.safeParse(result?.metadata.fileResult);
 
 	return (
 		<AiChatMessagePartDisclosure
@@ -511,236 +515,182 @@ const AiChatMessagePartToolExecuteCode = memo(function AiChatMessagePartToolExec
 						maxHeight="16lh"
 					/>
 				)}
+				{/* A code run can also write files. They arrive as files waiting for review, so the chat
+				    shows a link to each one instead of its contents. */}
+				{fileResult.success && <p role="status">{file_result_status_text(fileResult.data.metadata, "Files")}</p>}
+				<AiChatMessagePartToolFileLinks files={result?.metadata.files} />
 			</AiChatMessagePartToolBody>
 		</AiChatMessagePartDisclosure>
 	);
 });
 // #endregion tool execute_code
 
-// #region tool image_generation
-type AiChatMessagePartToolImageGeneration_ClassNames =
-	| "AiChatMessagePartToolImageGeneration"
-	| "AiChatMessagePartToolImageGeneration-image";
+// #region tool files
+function file_result_status_text(metadata: z.infer<typeof ai_chat_file_result_schema>["metadata"], subject: string) {
+	const outcome = {
+		succeeded: `${subject} succeeded.`,
+		partial: `${subject} partly completed.`,
+		errored: `${subject} failed.`,
+		cancelled: `${subject} stopped.`,
+		timed_out: `${subject} timed out.`,
+	}[metadata.status];
+	const reason =
+		metadata.reason === null
+			? null
+			: {
+					unavailable: "The file is no longer available.",
+					unsupported_image: "This file cannot be viewed as an image.",
+					limit: "A size or count limit was reached.",
+					agent_required: "Use Agent mode to create files.",
+					invalid_result: "The output could not be read.",
+					storage: "Some files could not be prepared.",
+					stale: "The file or browser changed. Try again.",
+					needs_capture: "Capture the editor draft again.",
+					execution: "The command could not finish.",
+				}[metadata.reason];
+	return reason ? `${outcome} ${reason}` : outcome;
+}
 
-type AiChatMessagePartToolImageGeneration_Props = {
-	className?: string | undefined;
-	result: ai_chat_UiTools["image_generation"]["output"] | undefined;
-	toolState: ToolUIPart["state"];
-	isChatRunning: boolean;
-	errorText?: string | undefined;
+type AiChatMessagePartToolFile_ClassNames = "AiChatMessagePartToolFile" | "AiChatMessagePartToolFile-link";
+
+type AiChatMessagePartToolFile_Props = {
+	target: z.infer<typeof ai_chat_file_target_schema>;
 };
 
-const AiChatMessagePartToolImageGeneration = memo(function AiChatMessagePartToolImageGeneration(
-	props: AiChatMessagePartToolImageGeneration_Props,
-) {
-	const { className, result, toolState, isChatRunning, errorText } = props;
-
-	const { membershipId } = AppTenantProvider.useContext();
-	const [imageUrl, setImageUrl] = useState<string | null>(null);
-	const assetId = result?.assetId;
-
-	// A signed url lives 15 minutes, so it is fetched while the picture is on screen instead of
-	// being stored with the message.
-	useEffect(() => {
-		if (assetId === undefined) {
-			return;
-		}
-
-		let stillMounted = true;
-		files_media_get_signed_chat_image_url({ membershipId, assetId })
-			.then((signed) => {
-				if (!stillMounted) {
-					return;
-				}
-
-				if (signed._nay) {
-					console.error("[AiChatMessagePartToolImageGeneration.resolveUrl] Failed to sign a generated image", {
-						error: signed._nay,
-						assetId,
-					});
-					return;
-				}
-
-				setImageUrl(signed._yay);
-			})
-			.catch((error: unknown) => {
-				console.error("[AiChatMessagePartToolImageGeneration.resolveUrl] Unexpected async error", {
-					error,
-					assetId,
-				});
-			});
-
-		return () => {
-			stillMounted = false;
-		};
-	}, [membershipId, assetId]);
-
-	// The picture is the answer, so show it directly instead of hiding it inside the
-	// `Generate image` disclosure the other tools use.
-	if (imageUrl !== null) {
-		return (
-			<img
-				className={cn(
-					"AiChatMessagePartToolImageGeneration-image" satisfies AiChatMessagePartToolImageGeneration_ClassNames,
-					className,
-				)}
-				src={imageUrl}
-				alt="Generated image"
-			/>
-		);
-	}
+const AiChatMessagePartToolFile = memo(function AiChatMessagePartToolFile(props: AiChatMessagePartToolFile_Props) {
+	const { target } = props;
+	const { membershipId, organizationName, workspaceName } = AppTenantProvider.useContext();
+	// Resolve access and the current saved/private target before showing a path or link in shared chat.
+	const file = useQuery(app_convex_api.files_pending_updates.get_file_pending_target, { membershipId, target });
+	// `undefined` means the query is still loading. `null` means this reader may not see the file.
+	// An archived file is gone for the reader too, so treat it as unavailable.
+	const available = file && !(file.entry.kind === "saved" && file.entry.node.archiveOperationId !== null);
 
 	return (
-		<AiChatMessagePartDisclosure
-			className={cn(
-				"AiChatMessagePartToolImageGeneration" satisfies AiChatMessagePartToolImageGeneration_ClassNames,
-				className,
+		<li className={"AiChatMessagePartToolFile" satisfies AiChatMessagePartToolFile_ClassNames}>
+			{available ? (
+				<>
+					<span>
+						{file.entry.path} ·{" "}
+						{file.entry.kind === "saved" ? "Saved" : file.readiness === "preparing" ? "Preparing…" : "Pending review"}
+					</span>
+					<MyLink
+						className={"AiChatMessagePartToolFile-link" satisfies AiChatMessagePartToolFile_ClassNames}
+						to="/w/$organizationName/$workspaceName/files"
+						params={{ organizationName, workspaceName }}
+						search={
+							file.entry.kind === "private" ? { pendingNodeId: file.entry.node._id } : { nodeId: file.entry.node._id }
+						}
+						variant="button-ghost-accent"
+					>
+						Open in Files
+						<MyButtonIcon>
+							<ArrowUpRight />
+						</MyButtonIcon>
+					</MyLink>
+				</>
+			) : (
+				<span role="status">{file === undefined ? "Loading file…" : "This file is no longer available."}</span>
 			)}
-		>
-			<AiChatMessagePartDisclosureButton title="Generate image" state={toolState} isChatRunning={isChatRunning} />
-			<AiChatMessagePartToolBody>
-				{errorText && <AiChatMessagePartToolTextAreaSection label="Error" code={errorText} state="error" />}
-			</AiChatMessagePartToolBody>
-		</AiChatMessagePartDisclosure>
+		</li>
 	);
 });
-// #endregion tool image_generation
 
-// #region tool browser
-type AiChatMessagePartToolBrowser_ClassNames =
-	| "AiChatMessagePartToolBrowser"
-	| "AiChatMessagePartToolBrowser-status"
-	| "AiChatMessagePartToolBrowser-link";
+type AiChatMessagePartToolFileLinks_ClassNames = "AiChatMessagePartToolFileLinks";
 
-/**
- * Which chat surface renders the message. Browser parts link to the shared page: the full
- * chat page navigates away to Files, while the Files sidebar opens the adjacent panel.
- */
-export type AiChatBrowserSurface = "files" | "chat";
-
-const AiChatBrowserSurfaceContext = createContext<AiChatBrowserSurface>("chat");
-
-type AiChatBrowserSurfaceProvider_Props = {
-	value: AiChatBrowserSurface;
-	children: ReactNode;
+type AiChatMessagePartToolFileLinks_Props = {
+	files: unknown;
 };
 
-const AiChatBrowserSurfaceProvider = Object.assign(
-	memo(function AiChatBrowserSurfaceProvider(props: AiChatBrowserSurfaceProvider_Props) {
-		const { value, children } = props;
+/**
+ * List the files a tool produced. The list comes from a stored message, so check its shape again
+ * here. Each listed file then asks Files whether this reader may open it.
+ */
+const AiChatMessagePartToolFileLinks = memo(function AiChatMessagePartToolFileLinks(
+	props: AiChatMessagePartToolFileLinks_Props,
+) {
+	const parsed = ai_chat_file_result_schema.shape.metadata.shape.files.safeParse(props.files);
+	if (!parsed.success || parsed.data.length === 0) return null;
 
-		return <AiChatBrowserSurfaceContext.Provider value={value}>{children}</AiChatBrowserSurfaceContext.Provider>;
-	}),
-	{
-		useContext: function useContext() {
-			return use(AiChatBrowserSurfaceContext);
-		},
-	},
-);
+	return (
+		<ul className={"AiChatMessagePartToolFileLinks" satisfies AiChatMessagePartToolFileLinks_ClassNames}>
+			{parsed.data.map((target) => (
+				<AiChatMessagePartToolFile key={`${target.kind}:${target.id}`} target={target} />
+			))}
+		</ul>
+	);
+});
 
-export { AiChatBrowserSurfaceProvider };
+type AiChatMessagePartToolFiles_ClassNames = "AiChatMessagePartToolFiles" | "AiChatMessagePartToolFiles-status";
 
-type AiChatMessagePartToolBrowser_Props = {
+type AiChatMessagePartToolFiles_Props = {
 	className?: string | undefined;
-	toolName: "browser_run" | "browser_reload" | "browser_close";
+	toolName: "browser_run" | "browser_reload" | "browser_close" | "view_image" | "image_generation";
 	result: unknown;
 	toolState: ToolUIPart["state"];
 	isChatRunning: boolean;
 };
 
-function ai_chat_message_part_tool_browser_title(toolName: string, title: unknown) {
-	if (typeof title === "string" && title.length > 0) {
-		return title;
-	}
-	return toolName === "browser_run" ? "Browser run" : toolName === "browser_reload" ? "Browser reload" : "Browser close";
-}
-
-function ai_chat_message_part_tool_browser_output(result: unknown) {
-	if (!result || typeof result !== "object") {
-		return { text: null, resultId: null };
-	}
-	const record = result as Record<string, unknown>;
-	const text = typeof record.output === "string" ? record.output : null;
-	const metadata = record.metadata;
-	const resultId =
-		metadata && typeof metadata === "object" && typeof (metadata as Record<string, unknown>).resultId === "string"
-			? ((metadata as Record<string, unknown>).resultId as string)
-			: null;
-	return { text, resultId };
-}
-
 /**
- * Text-only browser output. Code input and raw observations never render here: the stream
- * transform strips them before delivery, and this component reads only the safe status text
- * plus an opaque result id. The link resolves its file through an authorized query, so a
- * denied or expired result shows status text with no link.
+ * File tools show only safe status and authorized Files links.
+ *
+ * Raw tool input, observations, and file bytes never render here.
  */
-const AiChatMessagePartToolBrowser = memo(function AiChatMessagePartToolBrowser(
-	props: AiChatMessagePartToolBrowser_Props,
-) {
+const AiChatMessagePartToolFiles = memo(function AiChatMessagePartToolFiles(props: AiChatMessagePartToolFiles_Props) {
 	const { className, toolName, result, toolState, isChatRunning } = props;
-	const { membershipId, organizationName, workspaceName } = AppTenantProvider.useContext();
-	const browserSurface = AiChatBrowserSurfaceProvider.useContext();
 
-	const title = ai_chat_message_part_tool_browser_title(
-		toolName,
-		(result as { title?: unknown } | null)?.title,
-	);
-	const { text, resultId } = ai_chat_message_part_tool_browser_output(result);
-	const file = useQuery(
-		app_convex_api.files_browser.browser_result_file,
-		resultId ? { membershipId, resultId: resultId as app_convex_Id<"ai_chat_browser_results"> } : "skip",
-	);
+	const parsed = ai_chat_file_result_schema.safeParse(result);
+	const title = {
+		browser_run: "Browser run",
+		browser_reload: "Browser reload",
+		browser_close: "Browser close",
+		view_image: "View image",
+		image_generation: "Generate image",
+	}[toolName];
+	const expected = parsed.success
+		? ai_chat_file_result(title, parsed.data.metadata.status, parsed.data.metadata.files, parsed.data.metadata.reason)
+		: null;
 
+	// The server rewrites every file tool result into one exact shape before the message is stored.
+	// Anything else is an old or untrusted result, so drop it here and show no file links. Each tool
+	// also has its own file limit: close and reload carry none, view_image carries at most one.
+	const output =
+		parsed.success &&
+		parsed.data.title === expected?.title &&
+		parsed.data.output === expected?.output &&
+		((toolName !== "browser_reload" && toolName !== "browser_close") || parsed.data.metadata.files.length === 0) &&
+		(toolName !== "view_image" || parsed.data.metadata.files.length <= 1)
+			? parsed.data
+			: null;
+
+	const subject = toolName.startsWith("browser_") ? "Browser" : "File";
+	// Build the sentence from the status word alone. Raw tool text, such as browser observations or
+	// file contents, never reaches the chat.
+	const statusText = output ? file_result_status_text(output.metadata, subject) : null;
+	// A failed or denied tool says so. Any other unreadable result only says the output is gone.
 	const status =
 		toolState === "input-streaming" || toolState === "input-available"
 			? "Running…"
-			: (text ?? "Browser finished.");
+			: (statusText ??
+				(toolState === "output-error" || toolState === "output-denied"
+					? "The request could not finish."
+					: "Output is no longer available."));
 
 	return (
 		<AiChatMessagePartDisclosure
-			className={cn("AiChatMessagePartToolBrowser" satisfies AiChatMessagePartToolBrowser_ClassNames, className)}
+			className={cn("AiChatMessagePartToolFiles" satisfies AiChatMessagePartToolFiles_ClassNames, className)}
 		>
 			<AiChatMessagePartDisclosureButton title={title} state={toolState} isChatRunning={isChatRunning} />
 			<AiChatMessagePartToolBody>
-				<div className={"AiChatMessagePartToolBrowser-status" satisfies AiChatMessagePartToolBrowser_ClassNames}>
+				<div className={"AiChatMessagePartToolFiles-status" satisfies AiChatMessagePartToolFiles_ClassNames}>
 					{status}
 				</div>
-				{file && file.expired && (
-					<div className={"AiChatMessagePartToolBrowser-status" satisfies AiChatMessagePartToolBrowser_ClassNames}>
-						Result expired. Rerun from Files for fresh output.
-					</div>
-				)}
-				{file && (
-					<MyLink
-						className={"AiChatMessagePartToolBrowser-link" satisfies AiChatMessagePartToolBrowser_ClassNames}
-						to="/w/$organizationName/$workspaceName/files"
-						params={{ organizationName, workspaceName }}
-						search={file.targetKind === "private" ? { pendingNodeId: file.nodeId } : { nodeId: file.nodeId }}
-						variant="button-ghost-accent"
-						onClick={(event) => {
-							if (browserSurface !== "files" || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) {
-								return;
-							}
-							event.preventDefault();
-							global_custom_event_dispatch("files::open_browser", {
-								membershipId,
-								nodeId: file.nodeId,
-								targetKind: file.targetKind,
-							});
-						}}
-					>
-						{browserSurface === "files" ? "Open browser" : "Open in Files"}
-						<MyButtonIcon>
-							<ArrowUpRight />
-						</MyButtonIcon>
-					</MyLink>
-				)}
+				<AiChatMessagePartToolFileLinks files={output?.metadata.files} />
 			</AiChatMessagePartToolBody>
 		</AiChatMessagePartDisclosure>
 	);
 });
-// #endregion tool browser
+// #endregion tool files
 
 // #region tool unknown
 type AiChatMessagePartToolUnknown_ClassNames = "AiChatMessagePartToolUnknown" | "AiChatMessagePartToolUnknown-meta";
@@ -1054,6 +1004,47 @@ const AiChatMessagePartInner = memo(function AiChatMessagePartInner(props: AiCha
 	const { role, part, isChatRunning, liveJobs } = props;
 
 	if (isToolOrDynamicToolUIPart(part)) {
+		// Handle both SDK tool shapes here so file results never fall through to raw JSON rendering.
+		const toolName = (part.type === "dynamic-tool" ? part.toolName : part.type.slice("tool-".length)).toLowerCase();
+
+		if (
+			toolName === "browser_run" ||
+			toolName === "browser_reload" ||
+			toolName === "browser_close" ||
+			toolName === "view_image" ||
+			toolName === "image_generation"
+		) {
+			return (
+				<AiChatMessagePartToolFiles
+					toolName={toolName}
+					result={part.output}
+					toolState={part.state}
+					isChatRunning={isChatRunning}
+				/>
+			);
+		}
+
+		// A stored message part is saved data, not a typed tool result. Show the code only when it
+		// really is a string, and the result only when it matches the tool's schema.
+		if (toolName === "execute_code") {
+			const result = ai_chat_execute_code_result_schema.safeParse(part.output);
+			const input = part.input;
+			const args =
+				typeof input === "object" && input !== null && "code" in input && typeof input.code === "string"
+					? { code: input.code, input: "input" in input ? input.input : undefined }
+					: undefined;
+
+			return (
+				<AiChatMessagePartToolExecuteCode
+					args={args}
+					result={result.success ? result.data : undefined}
+					toolState={part.state}
+					isChatRunning={isChatRunning}
+					errorText={part.errorText}
+				/>
+			);
+		}
+
 		if (part.type === "dynamic-tool") {
 			return <AiChatMessagePartToolUnknown part={part} isChatRunning={isChatRunning} />;
 		}
@@ -1079,39 +1070,6 @@ const AiChatMessagePartInner = memo(function AiChatMessagePartInner(props: AiCha
 						toolState={part.state}
 						isChatRunning={isChatRunning}
 						errorText={part.errorText}
-					/>
-				);
-			}
-			case "tool-execute_code": {
-				return (
-					<AiChatMessagePartToolExecuteCode
-						args={part.input}
-						result={part.output}
-						toolState={part.state}
-						isChatRunning={isChatRunning}
-						errorText={part.errorText}
-					/>
-				);
-			}
-			case "tool-image_generation": {
-				return (
-					<AiChatMessagePartToolImageGeneration
-						result={part.output}
-						toolState={part.state}
-						isChatRunning={isChatRunning}
-						errorText={part.errorText}
-					/>
-				);
-			}
-			case "tool-browser_run":
-			case "tool-browser_reload":
-			case "tool-browser_close": {
-				return (
-					<AiChatMessagePartToolBrowser
-						toolName={part.type.slice("tool-".length) as "browser_run" | "browser_reload" | "browser_close"}
-						result={part.output}
-						toolState={part.state}
-						isChatRunning={isChatRunning}
 					/>
 				);
 			}
@@ -1967,7 +1925,8 @@ type AiChatMessageSystem_Props = ComponentPropsWithRef<"div"> & {
 };
 
 const AiChatMessageSystem = memo(function AiChatMessageSystem(props: AiChatMessageSystem_Props) {
-	const { ref, id, className, message, isRunning, liveJobs, onToolOutput, onToolResumeStream, onToolStop, ...rest } = props;
+	const { ref, id, className, message, isRunning, liveJobs, onToolOutput, onToolResumeStream, onToolStop, ...rest } =
+		props;
 
 	/**
 	 * The controller stamps the client-generated id on every rendered message. Keying by it

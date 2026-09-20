@@ -33,6 +33,8 @@ describe("http routes", () => {
 				"OPTIONS /api/v1/files/list",
 				"POST /api/v1/files/read",
 				"OPTIONS /api/v1/files/read",
+				"POST /api/v1/files/read-bytes",
+				"OPTIONS /api/v1/files/read-bytes",
 				"POST /api/v1/files/read-many",
 				"OPTIONS /api/v1/files/read-many",
 				"POST /api/v1/files/plugin-access/set",

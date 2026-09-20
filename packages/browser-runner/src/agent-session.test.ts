@@ -108,7 +108,7 @@ function make_session() {
 		return session.fetch(new Request(url, { headers: { Upgrade: "websocket" } }));
 	};
 	const settle = (sessionId = "session-1") => post("/run/settle", { sessionId, commandId: "command-1" });
-	const finish = (sessionId = "session-1") => post("/run/finish", { sessionId, commandId: "command-1", tainted: false, resultBytes: 0, imageCount: 0, imageBytes: 0, viewport: null });
+	const finish = (sessionId = "session-1") => post("/run/finish", { sessionId, commandId: "command-1", tainted: false, resultBytes: 0, fileCount: 0, fileBytes: 0, viewport: null });
 	return { stored, state, fetchProvider, ...currentProvider, post, begin, stream, settle, finish,
 		seed_session: (sessionId: string, providerSessionId: string) => {
 			stored.set("session", { ...structuredClone(record), sessionId, providerSessionId });

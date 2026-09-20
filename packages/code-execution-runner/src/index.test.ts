@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
+import { runInNewContext } from "node:vm";
 import {
 	handle_request,
 	build_executor_module,
@@ -12,15 +13,11 @@ import {
 
 const URL_BASE = "https://runner.internal";
 
-type SandboxResult =
-	| { ok: true; resultJson: string; logs: string[]; logsTruncated: boolean }
-	| { ok: false; error: { name: string; message: string }; logs: string[]; logsTruncated: boolean };
-
 function make_env(opts: {
 	secret?: string;
 	disabled?: boolean;
 	networkDisabled?: boolean;
-	evaluate?: (input: unknown, source: string) => SandboxResult | Promise<SandboxResult>;
+	evaluate?: (input: unknown, source: string) => unknown | Promise<unknown>;
 }): Env {
 	const loader = {
 		load: (code: { mainModule: string; modules: Record<string, string> }) => ({
@@ -29,7 +26,7 @@ function make_env(opts: {
 					Promise.resolve(
 						opts.evaluate
 							? opts.evaluate(input, code.modules[code.mainModule])
-							: ({ ok: true, resultJson: "null", logs: [], logsTruncated: false } satisfies SandboxResult),
+							: { ok: true, resultJson: "null", logs: [], logsTruncated: false, files: [] },
 					),
 			}),
 		}),
@@ -65,6 +62,28 @@ function exec_request(
 		method: "POST",
 		headers: { "Content-Type": "application/json", ...headers },
 		body: rawBody,
+	});
+}
+
+/**
+ * Run the real generated module instead of a fake sandbox, so these tests cover the harness code
+ * the runner ships. `runInNewContext` runs a plain script, not an ES module, so the Cloudflare
+ * import and the `export default` are removed first.
+ */
+function evaluate_module(input: unknown, source: string): Promise<unknown> {
+	const script = source
+		.replace('import { WorkerEntrypoint } from "cloudflare:workers";', "")
+		.replace("export default class", "class");
+	return runInNewContext(`${script}\nnew CodeExecutor().evaluate(input)`, {
+		WorkerEntrypoint: class {},
+		input,
+		Uint8Array,
+		ArrayBuffer,
+		TextEncoder,
+		TextDecoder,
+		console: {},
+		setTimeout,
+		clearTimeout,
 	});
 }
 
@@ -147,6 +166,7 @@ describe("execution outcomes", () => {
 				resultJson: JSON.stringify({ doubled: (input as { n: number }).n * 2 }),
 				logs: ["hello"],
 				logsTruncated: false,
+				files: [],
 			}),
 		});
 		const res = await handle_request(
@@ -179,6 +199,7 @@ describe("execution outcomes", () => {
 				resultJson: `"${"a".repeat(LIMITS.resultBytes + 100)}"`,
 				logs: [],
 				logsTruncated: false,
+				files: [],
 			}),
 		});
 		const res = await handle_request(exec_request(JSON.stringify({ code: "return big;" })), env);
@@ -237,7 +258,7 @@ describe("execution outcomes", () => {
 			loaded = code;
 			return {
 				getEntrypoint: () => ({
-					evaluate: () => Promise.resolve({ ok: true, resultJson: "1", logs: [], logsTruncated: false }),
+					evaluate: () => Promise.resolve({ ok: true, resultJson: "1", logs: [], logsTruncated: false, files: [] }),
 				}),
 			};
 		};
@@ -257,7 +278,7 @@ describe("execution outcomes", () => {
 			loaded = code;
 			return {
 				getEntrypoint: () => ({
-					evaluate: () => Promise.resolve({ ok: true, resultJson: "1", logs: [], logsTruncated: false }),
+					evaluate: () => Promise.resolve({ ok: true, resultJson: "1", logs: [], logsTruncated: false, files: [] }),
 				}),
 			};
 		};
@@ -291,7 +312,7 @@ describe("execution outcomes", () => {
 			moduleSource = (code.modules as Record<string, string>)[code.mainModule as string] ?? "";
 			return {
 				getEntrypoint: () => ({
-					evaluate: () => Promise.resolve({ ok: true, resultJson: "1", logs: [], logsTruncated: false }),
+					evaluate: () => Promise.resolve({ ok: true, resultJson: "1", logs: [], logsTruncated: false, files: [] }),
 				}),
 			};
 		};
@@ -353,7 +374,7 @@ describe("execution outcomes", () => {
 				getEntrypoint: () => ({
 					evaluate: (input: unknown) => {
 						evaluatedInput = input;
-						return Promise.resolve({ ok: true, resultJson: "1", logs: [], logsTruncated: false });
+						return Promise.resolve({ ok: true, resultJson: "1", logs: [], logsTruncated: false, files: [] });
 					},
 				}),
 			};
@@ -407,6 +428,7 @@ describe("execution outcomes", () => {
 				resultJson: JSON.stringify("SENTINEL_RESULT"),
 				logs: ["SENTINEL_LOG"],
 				logsTruncated: false,
+				files: [],
 			}),
 		});
 		const captured: string[] = [];
@@ -445,7 +467,9 @@ describe("execution outcomes", () => {
 	});
 
 	it("passes logsTruncated through from the sandbox", async () => {
-		const env = make_env({ evaluate: () => ({ ok: true, resultJson: "1", logs: ["x"], logsTruncated: true }) });
+		const env = make_env({
+			evaluate: () => ({ ok: true, resultJson: "1", logs: ["x"], logsTruncated: true, files: [] }),
+		});
 		const body = await (
 			await handle_request(exec_request(JSON.stringify({ code: "for(;;)console.log('x');" })), env)
 		).json();
@@ -460,6 +484,185 @@ describe("execution outcomes", () => {
 		expect(body.error.name).toBe("SyntaxError");
 		expect(body.error.message.length).toBeLessThanOrEqual(1001);
 		expect(body.error.message.endsWith("…")).toBe(true);
+	});
+});
+
+describe("emitFile", () => {
+	it("copies sliced views and buffers without changing their bytes", async () => {
+		// The code below overwrites the source array after emitting. The emitted files must still hold
+		// the old bytes, which proves emitFile copied them. A sliced view must give only its 3 bytes.
+		const code = `
+			const source = new Uint8Array([7, 0, 255, 128, 9]);
+			emitFile({ path: "/out/unknown", contentType: "application/x-custom", bytes: source.subarray(1, 4) });
+			emitFile({ path: "/out/buffer.bin", bytes: source.buffer });
+			emitFile({ path: "/out/empty", bytes: new Uint8Array() });
+			source.fill(1);
+			return "done";
+		`;
+		const response = await handle_request(
+			exec_request(JSON.stringify({ code })),
+			make_env({ evaluate: evaluate_module }),
+		);
+		const body = await response.json();
+
+		expect(body.status).toBe("succeeded");
+		expect(body.result).toBe("done");
+		expect(body.files).toEqual([
+			{ path: "/out/unknown", contentType: "application/x-custom", dataBase64: "AP+A" },
+			{ path: "/out/buffer.bin", dataBase64: "BwD/gAk=" },
+			{ path: "/out/empty", dataBase64: "" },
+		]);
+	});
+
+	it("allows the exact byte limit within the HTTP response cap", async () => {
+		const code = `
+			const bytes = new Uint8Array(${LIMITS.fileBytes});
+			bytes[0] = 255;
+			bytes[bytes.length - 1] = 128;
+			emitFile({ path: "/out/full.bin", bytes });
+		`;
+		const response = await handle_request(
+			exec_request(JSON.stringify({ code })),
+			make_env({ evaluate: evaluate_module }),
+		);
+		const text = await response.text();
+		const body = JSON.parse(text);
+		const bytes = Uint8Array.from(atob(body.files[0].dataBase64), (char) => char.charCodeAt(0));
+
+		expect(body.status).toBe("succeeded");
+
+		// Base64 makes the JSON body about a third larger than the raw bytes. A file at the exact byte
+		// limit must still fit in the 12 MiB reply the app is willing to read, so check that size too.
+		expect(new TextEncoder().encode(text).byteLength).toBeLessThan(12 * 1024 * 1024);
+		expect(bytes.byteLength).toBe(LIMITS.fileBytes);
+		expect(bytes[0]).toBe(255);
+		expect(bytes.at(-1)).toBe(128);
+	});
+
+	it("allows eight empty files", async () => {
+		const code = `for (let i = 0; i < ${LIMITS.files}; i++) emitFile({ path: "/out/" + i, bytes: new ArrayBuffer(0) });`;
+		const body = await (
+			await handle_request(exec_request(JSON.stringify({ code })), make_env({ evaluate: evaluate_module }))
+		).json();
+
+		expect(body.status).toBe("succeeded");
+		expect(body.files).toHaveLength(LIMITS.files);
+	});
+
+	// Files leave the sandbox only after a fully successful run. Each failure below must drop the
+	// file that emitFile already accepted before it.
+	it.each([
+		["count", `for (let i = 0; i <= ${LIMITS.files}; i++) emitFile({ path: "/out/" + i, bytes: new Uint8Array() });`],
+		["bytes", `emitFile({ path: "/out/big", bytes: new Uint8Array(${LIMITS.fileBytes + 1}) });`],
+		["total bytes", `emitFile({ path: "/out/second", bytes: new Uint8Array(${LIMITS.fileBytes}) });`],
+		["path", `emitFile({ path: "x".repeat(${LIMITS.filePathChars + 1}), bytes: new Uint8Array() });`],
+		[
+			"MIME",
+			`emitFile({ path: "/out/type", contentType: "x".repeat(${LIMITS.fileContentTypeChars + 1}), bytes: new Uint8Array() });`,
+		],
+		["byte type", 'emitFile({ path: "/out/text", bytes: "not bytes" });'],
+		["throw", 'throw new Error("stop");'],
+		["result serialization", "return 1n;"],
+	])("drops all files after a %s failure", async (_name, failure) => {
+		const code = `emitFile({ path: "/out/first", bytes: new Uint8Array([1]) });\n${failure}`;
+		const body = await (
+			await handle_request(exec_request(JSON.stringify({ code })), make_env({ evaluate: evaluate_module }))
+		).json();
+
+		expect(body.status).toBe("errored");
+		expect(body.files).toEqual([]);
+	});
+
+	it("drops files when execution times out", async () => {
+		vi.useFakeTimers();
+		try {
+			// Run the sandbox on its own and move the fake clock until its internal timeout fires. Then
+			// replay that reply through the host to see what the caller gets back.
+			const pending = evaluate_module(
+				null,
+				build_executor_module(
+					'emitFile({ path: "/out/first", bytes: new Uint8Array([1]) }); await new Promise(() => {});',
+				),
+			);
+			await vi.advanceTimersByTimeAsync(LIMITS.sandboxTimeoutMs);
+			const result = await pending;
+
+			const response = await handle_request(
+				exec_request(JSON.stringify({ code: "timeout" })),
+				make_env({ evaluate: () => result }),
+			);
+			const body = await response.json();
+
+			expect(body.status).toBe("timed_out");
+			expect(body.files).toEqual([]);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("keeps a Unicode log within the byte cap", async () => {
+		const body = await (
+			await handle_request(
+				exec_request(JSON.stringify({ code: `console.log("é".repeat(${LIMITS.logBytes}));` })),
+				make_env({ evaluate: evaluate_module }),
+			)
+		).json();
+
+		expect(body.status).toBe("succeeded");
+		expect(body.logsTruncated).toBe(true);
+
+		// "é" takes two bytes in UTF-8. The log cap counts bytes, not characters, so the kept text must
+		// measure exactly logBytes.
+		expect(new TextEncoder().encode(body.logs[0]).byteLength).toBe(LIMITS.logBytes);
+	});
+});
+
+describe("sandbox result validation", () => {
+	// User code runs in the same scope as the harness, so it can return any shape it wants over RPC.
+	// The host must check every field again and return no files when the reply does not match.
+	const file = { path: "/out/file.bin", bytes: new Uint8Array([0, 255]) };
+	const valid = { ok: true, resultJson: "null", logs: [], logsTruncated: false, files: [file] };
+
+	it.each([
+		["null reply", null],
+		["success flag", { ...valid, ok: "true" }],
+		["missing files", { ...valid, files: undefined }],
+		["file count", { ...valid, files: Array.from({ length: LIMITS.files + 1 }, () => file) }],
+		["file bytes", { ...valid, files: [{ ...file, bytes: new Uint8Array(LIMITS.fileBytes + 1) }] }],
+		["total bytes", { ...valid, files: [file, { ...file, bytes: new Uint8Array(LIMITS.fileBytes) }] }],
+		["byte array type", { ...valid, files: [file, { ...file, bytes: [0, 255] }] }],
+		["path type", { ...valid, files: [{ ...file, path: 123 }] }],
+		["path length", { ...valid, files: [{ ...file, path: "a".repeat(LIMITS.filePathChars + 1) }] }],
+		["MIME type", { ...valid, files: [{ ...file, contentType: 123 }] }],
+		["MIME length", { ...valid, files: [{ ...file, contentType: "a".repeat(LIMITS.fileContentTypeChars + 1) }] }],
+		["result type", { ...valid, resultJson: {} }],
+		["invalid JSON", { ...valid, resultJson: "{" }],
+		["log type", { ...valid, logs: [123] }],
+		["log count", { ...valid, logs: Array.from({ length: LIMITS.logLines + 1 }, () => "") }],
+		["log bytes", { ...valid, logs: ["é".repeat(LIMITS.logBytes)] }],
+		["total log bytes", { ...valid, logs: ["x".repeat(LIMITS.logBytes), "x"] }],
+		["log flag", { ...valid, logsTruncated: "false" }],
+		["error type", { ...valid, ok: false, error: { name: 123, message: "bad" } }],
+	])("refuses a forged %s without returning files", async (_name, reply) => {
+		const body = await (
+			await handle_request(exec_request(JSON.stringify({ code: "return null;" })), make_env({ evaluate: () => reply }))
+		).json();
+
+		expect(body.status).toBe("errored");
+		expect(body.result).toBeNull();
+		expect(body.files).toEqual([]);
+	});
+
+	it("ignores files attached to a forged failure", async () => {
+		const body = await (
+			await handle_request(
+				exec_request(JSON.stringify({ code: "throw Error();" })),
+				make_env({ evaluate: () => ({ ...valid, ok: false, error: { name: "Error", message: "bad" } }) }),
+			)
+		).json();
+
+		expect(body.status).toBe("errored");
+		expect(body.files).toEqual([]);
 	});
 });
 
@@ -599,6 +802,69 @@ describe("outbound gateway", () => {
 		}
 	});
 
+	it("reads one MiB through the byte API with only the named file headers", async () => {
+		const bytes = new Uint8Array(LIMITS.fileReadResponseBytes).map((_, index) => index % 256);
+		vi.stubGlobal("fetch", vi.fn(async () => new Response(bytes, { headers: {
+			"Content-Type": "application/octet-stream", "X-File-Content-Type": "application/x-custom",
+			"X-File-Revision": "revision-1", "X-File-Size": "2097152", "X-File-Offset": "0",
+			"Set-Cookie": "private", "X-Private": "secret",
+		} })));
+		try {
+			const response = await handle_outbound_gateway_request(new Request("https://app.example.com/api/v1/files/read-bytes", {
+				method: "POST", body: JSON.stringify({ path: "/reports/input.bin", offset: 0, length: bytes.length, revision: null }),
+			}), { executionId: "exec_1", allowPublic: false, app: { origin: "https://app.example.com", token: "grant-token" } });
+			expect(response.status).toBe(200);
+			expect(new Uint8Array(await response.arrayBuffer())).toEqual(bytes);
+			expect(Object.fromEntries(response.headers)).toEqual({
+				"cache-control": "no-store", "content-type": "application/octet-stream", "x-file-content-type": "application/x-custom",
+				"x-file-revision": "revision-1", "x-file-size": "2097152", "x-file-offset": "0",
+			});
+		} finally { vi.unstubAllGlobals(); }
+	});
+
+	it.each([
+		["https://app.example.com/api/v1/files/read-bytes", "GET"],
+		["https://app.example.com/api/v1/files/read-bytes/", "POST"],
+		["https://app.example.com/api/v1/files/read", "POST"],
+		["https://other.example.com/api/v1/files/read-bytes", "POST"],
+	])("keeps the public body limit for %s %s", async (url, method) => {
+		vi.stubGlobal("fetch", vi.fn(async () => new Response(new Uint8Array(LIMITS.fetchResponseBytes + 1))));
+		try {
+			const response = await handle_outbound_gateway_request(new Request(url, { method }), {
+				executionId: "exec_1", allowPublic: true, app: { origin: "https://app.example.com", token: "grant-token" },
+			});
+			expect(response.status).toBe(413);
+		} finally { vi.unstubAllGlobals(); }
+	});
+
+	it("refuses byte reads over one MiB and cancels their body", async () => {
+		const cancel = vi.fn();
+		vi.stubGlobal("fetch", vi.fn(async () => new Response(new ReadableStream({
+			start(controller) { controller.enqueue(new Uint8Array(LIMITS.fileReadResponseBytes + 1)); }, cancel,
+		}))));
+		try {
+			const response = await handle_outbound_gateway_request(new Request("https://app.example.com/api/v1/files/read-bytes", { method: "POST" }), {
+				executionId: "exec_1", allowPublic: false, app: { origin: "https://app.example.com", token: "grant-token" },
+			});
+			expect(response.status).toBe(413);
+			expect(cancel).toHaveBeenCalledOnce();
+		} finally { vi.unstubAllGlobals(); }
+	});
+
+	it.each(["/api/v1/files/list", "/elsewhere", "https://other.example.com/read"])("does not redirect a byte read to %s", async (location) => {
+		const cancel = vi.fn();
+		const fetchMock = vi.fn(async () => new Response(new ReadableStream({ cancel }), { status: 307, headers: { location } }));
+		vi.stubGlobal("fetch", fetchMock);
+		try {
+			const response = await handle_outbound_gateway_request(new Request("https://app.example.com/api/v1/files/read-bytes", {
+				method: "POST", body: "private file request",
+			}), { executionId: "exec_1", allowPublic: true, app: { origin: "https://app.example.com", token: "grant-token" } });
+			expect(response.status).toBe(403);
+			expect(fetchMock).toHaveBeenCalledOnce();
+			expect(cancel).toHaveBeenCalledOnce();
+		} finally { vi.unstubAllGlobals(); }
+	});
+
 	it("does not forward the app grant token to non-public-API redirects", async () => {
 		const fetchMock = vi.fn(async (request: Request) => {
 			if (request.url.endsWith("/api/v1/files/list")) {
@@ -684,7 +950,7 @@ describe("outbound gateway", () => {
 		}
 	});
 
-	it("truncates large responses from public hosts", async () => {
+	it("refuses large responses instead of returning partial file bytes", async () => {
 		vi.stubGlobal(
 			"fetch",
 			vi.fn(
@@ -699,11 +965,77 @@ describe("outbound gateway", () => {
 				allowPublic: true,
 			});
 
-			expect(response.status).toBe(200);
-			expect(response.headers.get("x-execute-code-truncated")).toBe("true");
-			expect((await response.text()).length).toBe(LIMITS.fetchResponseBytes);
+			expect(response.status).toBe(413);
+			expect(response.headers.get("x-execute-code-truncated")).toBeNull();
+			expect(await response.text()).toBe("Response body too large");
 		} finally {
 			vi.unstubAllGlobals();
+		}
+	});
+
+	// The Response constructor refuses a body for these statuses, so the gateway must pass them
+	// through untouched instead of rebuilding them.
+	it.each([204, 205, 304])("preserves a %s response with no body", async (status) => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => new Response(null, { status })),
+		);
+
+		try {
+			const response = await handle_outbound_gateway_request(new Request("https://example.com/empty"), {
+				executionId: "exec_1",
+				allowPublic: true,
+			});
+
+			expect(response.status).toBe(status);
+			expect(response.body).toBeNull();
+		} finally {
+			vi.unstubAllGlobals();
+		}
+	});
+
+	it.each([false, true])("keeps the original deadline while reading a stalled response body with file read=%s", async (fileRead) => {
+		vi.useFakeTimers();
+		let fetchSignal: AbortSignal | null = null;
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (_request: Request, init?: RequestInit) => {
+				const signal = init?.signal;
+				if (!signal) throw new Error("Expected an abort signal");
+				fetchSignal = signal;
+				await new Promise((resolve) => setTimeout(resolve, LIMITS.fetchTimeoutMs - 1000));
+				return new Response(
+					new ReadableStream<Uint8Array>({
+						start(controller) {
+							controller.enqueue(new Uint8Array([1]));
+							signal.addEventListener("abort", () => controller.error(signal.reason), { once: true });
+						},
+					}),
+				);
+			}),
+		);
+
+		try {
+			const pending = handle_outbound_gateway_request(new Request(fileRead ? "https://app.example.com/api/v1/files/read-bytes" : "https://example.com/stalled", { method: fileRead ? "POST" : "GET" }), {
+				executionId: "exec_1",
+				allowPublic: true,
+				app: { origin: "https://app.example.com", token: "grant-token" },
+			});
+			// Attach the rejection check before moving the clock. Otherwise the promise rejects with no
+			// handler yet and Node reports an unhandled rejection.
+			const rejected = expect(pending).rejects.toMatchObject({ name: "AbortError" });
+
+			// The deadline starts when the request starts, not when the body arrives. So stop one
+			// millisecond short and check nothing aborted yet, then step over the deadline.
+			await vi.advanceTimersByTimeAsync(LIMITS.fetchTimeoutMs - 1);
+			expect(fetchSignal).toMatchObject({ aborted: false });
+			await vi.advanceTimersByTimeAsync(1);
+			await rejected;
+			expect(fetchSignal).toMatchObject({ aborted: true });
+			expect(vi.getTimerCount()).toBe(0);
+		} finally {
+			vi.unstubAllGlobals();
+			vi.useRealTimers();
 		}
 	});
 });

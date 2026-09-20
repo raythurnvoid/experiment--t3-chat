@@ -1,5 +1,5 @@
 import { vOnCompleteArgs, vWorkId, Workpool } from "@convex-dev/workpool";
-import { v } from "convex/values";
+import { v, type Infer } from "convex/values";
 import { paginationOptsValidator, type RegisteredMutation, type RegisteredQuery } from "convex/server";
 import { doc } from "convex-helpers/validators";
 import { Result } from "common/errors-as-values-utils.ts";
@@ -22,6 +22,15 @@ import {
 	activities_is_active,
 } from "./activities_db.ts";
 import { files_transfer_db_request_stop } from "./files_transfer.ts";
+import {
+	files_ingestion_scope_validator,
+	files_ingestion_prepare_args_validator,
+	files_ingestion_prepare_result_validator,
+	files_ingestion_finalize_args_validator,
+	files_ingestion_file_validator,
+	files_ingestion_db_prepare_file,
+	files_ingestion_db_finalize_file,
+} from "./files_ingestion.ts";
 import { organizations_db_get_membership } from "./organizations.ts";
 import {
 	organizations_membership_lifetimes_db_ensure,
@@ -556,6 +565,59 @@ export const cleanup_expired_bash_results = internalMutation({
 			await ctx.scheduler.runAfter(0, internal.ai_chat_files.cleanup_expired_bash_results, {});
 		return null;
 	},
+});
+
+/**
+ * Check that this turn may still create chat files: Agent mode, workspace membership, and read and
+ * write access to a live thread.
+ *
+ * Ingestion runs this as its `beforeCreate` gate. A retry whose receipt already completed returns
+ * the existing file before that gate runs, and that path checks ordinary Files access instead. So
+ * ending the turn cannot hide a file the turn already committed.
+ */
+export async function ai_chat_files_db_authorize_file_output(
+	ctx: MutationCtx,
+	args: Infer<typeof files_ingestion_scope_validator> & { threadId: Id<"ai_chat_threads">; modeId: "ask" | "agent" },
+) {
+	if (args.modeId !== "agent") return Result({ _nay: { message: "Agent mode is required to create files" } });
+	const membership = await organizations_db_get_membership(ctx, args);
+	if (!membership || membership.organizationId !== args.organizationId || membership.workspaceId !== args.workspaceId)
+		return Result({ _nay: { message: "Unauthorized" } });
+	const thread = await ctx.db.get("ai_chat_threads", args.threadId);
+	if (!thread) return Result({ _nay: { message: "Not found" } });
+	if (thread.organizationId !== args.organizationId || thread.workspaceId !== args.workspaceId || thread.archived)
+		return Result({ _nay: { message: "Unauthorized" } });
+	for (const permission of ["content.read", "content.write"] as const) {
+		const authorized = await access_control_db_authorize_membership(ctx, {
+			userAuth: { id: args.userId },
+			membership,
+			permission,
+		});
+		if (authorized._nay) return authorized;
+	}
+	return Result({ _yay: null });
+}
+
+export const prepare_file_output = internalMutation({
+	args: {
+		...files_ingestion_prepare_args_validator.fields,
+		threadId: v.id("ai_chat_threads"),
+		modeId: v.union(v.literal("ask"), v.literal("agent")),
+	},
+	returns: v_result({ _yay: files_ingestion_prepare_result_validator }),
+	handler: (ctx, args) =>
+		files_ingestion_db_prepare_file(ctx, args, () => ai_chat_files_db_authorize_file_output(ctx, args)),
+});
+
+export const finalize_file_output = internalMutation({
+	args: {
+		...files_ingestion_finalize_args_validator.fields,
+		threadId: v.id("ai_chat_threads"),
+		modeId: v.union(v.literal("ask"), v.literal("agent")),
+	},
+	returns: v_result({ _yay: files_ingestion_file_validator }),
+	handler: (ctx, args) =>
+		files_ingestion_db_finalize_file(ctx, args, () => ai_chat_files_db_authorize_file_output(ctx, args)),
 });
 
 /**

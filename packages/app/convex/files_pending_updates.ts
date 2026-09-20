@@ -28,6 +28,7 @@ import app_convex_schema, {
 	file_content_materialization_state_validator,
 	files_pending_prepared_content_validator,
 	files_pending_prepared_state_family_validator,
+	files_pending_updates_state_family_validator,
 } from "./schema.ts";
 import { api, internal } from "./_generated/api.js";
 import {
@@ -55,7 +56,11 @@ import {
 	files_nodes_content_db_publish_private_node,
 	files_nodes_content_db_finalize_pending_replacement,
 } from "./files_nodes_content.ts";
-import { files_pending_nodes_db_discard, files_pending_nodes_db_get_ancestry } from "./files_pending_nodes.ts";
+import {
+	files_pending_nodes_db_discard,
+	files_pending_nodes_db_get_ancestry,
+	files_pending_nodes_db_resolve_read_target,
+} from "./files_pending_nodes.ts";
 import { files_visible_db_create_reader } from "./files_visible.ts";
 import { files_transfer_source_versions_equal } from "./files_transfer.ts";
 import {
@@ -649,7 +654,7 @@ export async function files_pending_updates_db_drop_content_for_node(
  * behind. The insert helper's late throw stays only as an impossible backstop. Returns the
  * refusal `_nay` Result, or `null` when the text passes (plain text has no frontmatter at all).
  */
-function files_pending_update_check_frontmatter_caps(args: {
+export function files_pending_updates_check_frontmatter_caps(args: {
 	fileNode: { textKind: files_YjsRootKind };
 	text: string;
 }) {
@@ -3124,7 +3129,7 @@ export const commit_file_pending_update_upsert_in_db = internalMutation({
 
 		// Frontmatter caps, before any write: the calling action retires the staged input batch
 		// on this refusal, so nothing durable is left behind.
-		const frontmatterRefusal = files_pending_update_check_frontmatter_caps({
+		const frontmatterRefusal = files_pending_updates_check_frontmatter_caps({
 			fileNode: file,
 			text: args.unstagedText,
 		});
@@ -3315,17 +3320,7 @@ type commit_file_pending_update_upsert_in_db_Base =
 		? Args["base"]
 		: never;
 
-const private_pending_state_family_validator = v.object({
-	operationBatchId: v.id("files_pending_update_operation_batches"),
-	baseStateId: v.id("files_pending_update_yjs_states"),
-	stagedStateId: v.id("files_pending_update_yjs_states"),
-	unstagedStateId: v.id("files_pending_update_yjs_states"),
-	baseStateDigest: v.string(),
-	stagedStateDigest: v.string(),
-	unstagedStateDigest: v.string(),
-});
-
-async function action_stage_private_pending_state_family(
+export async function files_pending_updates_action_stage_private_state_family(
 	ctx: ActionCtx,
 	args: {
 		organizationId: Id<"organizations">;
@@ -3336,6 +3331,7 @@ async function action_stage_private_pending_state_family(
 		staged: ArrayBuffer;
 		unstaged: ArrayBuffer;
 	},
+	abortSignal?: AbortSignal,
 ) {
 	const states = new Map<
 		"base" | "staged" | "unstaged",
@@ -3343,11 +3339,13 @@ async function action_stage_private_pending_state_family(
 	>();
 
 	for (const role of ["base", "staged", "unstaged"] as const) {
+		abortSignal?.throwIfAborted();
 		const bytes = new Uint8Array(args[role]);
 		const checked = files_pending_update_check_whole_state_bytes({ stateBytes: args[role] });
 		if (checked._nay) return Result({ _nay: { message: checked._nay.message } });
 
 		for (let pageIndex = 0; pageIndex * files_MAX_YJS_WIRE_BYTES < bytes.byteLength; pageIndex++) {
+			abortSignal?.throwIfAborted();
 			const start = pageIndex * files_MAX_YJS_WIRE_BYTES;
 			const staged = (await ctx.runMutation(
 				internal.files_pending_updates.stage_file_pending_update_state_page_internal,
@@ -3365,6 +3363,7 @@ async function action_stage_private_pending_state_family(
 			if (staged._nay) return staged;
 		}
 
+		abortSignal?.throwIfAborted();
 		const sealed = (await ctx.runMutation(internal.files_pending_updates.seal_file_pending_update_state_internal, {
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
@@ -3391,13 +3390,129 @@ async function action_stage_private_pending_state_family(
 	});
 }
 
+/**
+ * Adopt one sealed private text family. Ingestion completes its receipt in this transaction.
+ */
+export async function files_pending_updates_db_commit_private_file(
+	ctx: MutationCtx,
+	args: {
+		membershipId: Id<"organizations_workspaces_users">;
+		privateNodeId: Id<"files_pending_nodes">;
+		pendingUpdateId: Id<"files_pending_updates">;
+		expectedRevision: number;
+		family: Infer<typeof files_pending_updates_state_family_validator>;
+		phase?: "input" | "output";
+		unstagedText: string;
+		threadId?: Id<"ai_chat_threads">;
+	},
+) {
+	const membership = await ctx.db.get("organizations_workspaces_users", args.membershipId);
+	if (!membership?.active) return Result({ _nay: { message: "Unauthorized" } });
+
+	const data = await db_get_private_pending_target(ctx, {
+		membership,
+		privateNodeId: args.privateNodeId,
+		pendingUpdateId: args.pendingUpdateId,
+	});
+	if (data._nay) return data;
+	const { pendingUpdate } = data._yay;
+	if (!data._yay.canEdit) return Result({ _nay: { message: "This draft is read-only" } });
+	if (pendingUpdate.revision !== args.expectedRevision)
+		return Result({ _nay: { name: "target_changed", message: "This draft changed. Read it again." } });
+	if (pendingUpdate.createIntent?.kind !== "text")
+		return Result({ _nay: { message: "This draft is still preparing" } });
+
+	const caps = files_pending_updates_check_frontmatter_caps({
+		fileNode: { textKind: pendingUpdate.createIntent.textKind },
+		text: args.unstagedText,
+	});
+	if (caps) return caps;
+
+	const scope = {
+		organizationId: membership.organizationId,
+		workspaceId: membership.workspaceId,
+		userId: membership.userId,
+	};
+
+	const batch = await db_get_owned_operation_batch(ctx, {
+		...scope,
+		operationBatchId: args.family.operationBatchId,
+		now: Date.now(),
+	});
+	if (!batch || batch.target.kind !== "private" || batch.target.id !== args.privateNodeId)
+		return Result({ _nay: { message: "Not found" } });
+	if (data._yay.readiness !== "ready" && !batch.initialCreation)
+		return Result({ _nay: { name: "not_ready", message: "This draft is still preparing" } });
+
+	const checked = await db_validate_batch_states_for_commit(ctx, {
+		batch,
+		phase: args.phase ?? "output",
+		baseLineageGeneration: null,
+		states: [
+			{ role: "base", stateId: args.family.baseStateId, digest: args.family.baseStateDigest },
+			{ role: "staged", stateId: args.family.stagedStateId, digest: args.family.stagedStateDigest },
+			{ role: "unstaged", stateId: args.family.unstagedStateId, digest: args.family.unstagedStateDigest },
+		],
+	});
+	if (checked._nay) return checked;
+
+	if (args.phase === "input") {
+		const currentBase = pendingUpdate.content
+			? await ctx.db.get("files_pending_update_yjs_states", pendingUpdate.content.baseStateId)
+			: null;
+		if (currentBase?.digest !== args.family.baseStateDigest)
+			return Result({ _nay: { name: "target_changed", message: "This draft changed. Read it again." } });
+	}
+
+	const now = Date.now();
+	await files_db_patch_pending_update(ctx, pendingUpdate._id, {
+		revision: pendingUpdate.revision + 1,
+		content: {
+			base: { kind: "new" },
+			baseStateId: args.family.baseStateId,
+			stagedStateId: args.family.stagedStateId,
+			unstagedStateId: args.family.unstagedStateId,
+		},
+		...(args.threadId && !pendingUpdate.threadIds?.includes(args.threadId)
+			? { threadIds: [...(pendingUpdate.threadIds ?? []), args.threadId] }
+			: {}),
+		size: files_get_utf8_byte_size(args.unstagedText),
+		updatedAt: now,
+	});
+
+	await db_swap_canonical_states_and_consume_batch(ctx, {
+		...scope,
+		...args.family,
+		pendingUpdateId: pendingUpdate._id,
+		batch,
+	});
+	await files_db_schedule_pending_update_cleanup(ctx, { pendingUpdateId: pendingUpdate._id, expectedUpdatedAt: now });
+
+	const chunks = await files_pending_update_db_replace_chunks(ctx, {
+		...scope,
+		target: pendingUpdate.target,
+		pendingUpdateId: pendingUpdate._id,
+		proposalRevision: pendingUpdate.revision + 1,
+		unstagedText: args.unstagedText,
+	});
+	if (chunks._nay)
+		console.error("Failed to index private pending text", { pendingUpdateId: pendingUpdate._id, error: chunks._nay });
+
+	return Result({
+		_yay: {
+			pendingUpdate: await ctx.db.get("files_pending_updates", pendingUpdate._id),
+			currentYjsLastSequenceId: null,
+		},
+	});
+}
+
 export const commit_private_file_pending_update_in_db = internalMutation({
 	args: {
 		membershipId: v.id("organizations_workspaces_users"),
 		privateNodeId: v.id("files_pending_nodes"),
 		pendingUpdateId: v.id("files_pending_updates"),
 		expectedRevision: v.number(),
-		family: private_pending_state_family_validator,
+		family: files_pending_updates_state_family_validator,
 		phase: v.optional(v.union(v.literal("input"), v.literal("output"))),
 		unstagedText: v.string(),
 		threadId: v.optional(v.id("ai_chat_threads")),
@@ -3408,106 +3523,7 @@ export const commit_private_file_pending_update_in_db = internalMutation({
 			currentYjsLastSequenceId: v.null(),
 		}),
 	}),
-	handler: async (ctx, args) => {
-		const membership = await ctx.db.get("organizations_workspaces_users", args.membershipId);
-		if (!membership?.active) return Result({ _nay: { message: "Unauthorized" } });
-
-		const data = await db_get_private_pending_target(ctx, {
-			membership,
-			privateNodeId: args.privateNodeId,
-			pendingUpdateId: args.pendingUpdateId,
-		});
-		if (data._nay) return data;
-		const { pendingUpdate } = data._yay;
-		if (!data._yay.canEdit) return Result({ _nay: { message: "This draft is read-only" } });
-		if (pendingUpdate.revision !== args.expectedRevision)
-			return Result({ _nay: { name: "target_changed", message: "This draft changed. Read it again." } });
-		if (pendingUpdate.createIntent?.kind !== "text")
-			return Result({ _nay: { message: "This draft is still preparing" } });
-
-		const caps = files_pending_update_check_frontmatter_caps({
-			fileNode: { textKind: pendingUpdate.createIntent.textKind },
-			text: args.unstagedText,
-		});
-		if (caps) return caps;
-
-		const scope = {
-			organizationId: membership.organizationId,
-			workspaceId: membership.workspaceId,
-			userId: membership.userId,
-		};
-
-		const batch = await db_get_owned_operation_batch(ctx, {
-			...scope,
-			operationBatchId: args.family.operationBatchId,
-			now: Date.now(),
-		});
-		if (!batch || batch.target.kind !== "private" || batch.target.id !== args.privateNodeId)
-			return Result({ _nay: { message: "Not found" } });
-		if (data._yay.readiness !== "ready" && !batch.initialCreation)
-			return Result({ _nay: { name: "not_ready", message: "This draft is still preparing" } });
-
-		const checked = await db_validate_batch_states_for_commit(ctx, {
-			batch,
-			phase: args.phase ?? "output",
-			baseLineageGeneration: null,
-			states: [
-				{ role: "base", stateId: args.family.baseStateId, digest: args.family.baseStateDigest },
-				{ role: "staged", stateId: args.family.stagedStateId, digest: args.family.stagedStateDigest },
-				{ role: "unstaged", stateId: args.family.unstagedStateId, digest: args.family.unstagedStateDigest },
-			],
-		});
-		if (checked._nay) return checked;
-
-		if (args.phase === "input") {
-			const currentBase = pendingUpdate.content
-				? await ctx.db.get("files_pending_update_yjs_states", pendingUpdate.content.baseStateId)
-				: null;
-			if (currentBase?.digest !== args.family.baseStateDigest)
-				return Result({ _nay: { name: "target_changed", message: "This draft changed. Read it again." } });
-		}
-
-		const now = Date.now();
-		await files_db_patch_pending_update(ctx, pendingUpdate._id, {
-			revision: pendingUpdate.revision + 1,
-			content: {
-				base: { kind: "new" },
-				baseStateId: args.family.baseStateId,
-				stagedStateId: args.family.stagedStateId,
-				unstagedStateId: args.family.unstagedStateId,
-			},
-			...(args.threadId && !pendingUpdate.threadIds?.includes(args.threadId)
-				? { threadIds: [...(pendingUpdate.threadIds ?? []), args.threadId] }
-				: {}),
-			size: files_get_utf8_byte_size(args.unstagedText),
-			updatedAt: now,
-		});
-
-		await db_swap_canonical_states_and_consume_batch(ctx, {
-			...scope,
-			...args.family,
-			pendingUpdateId: pendingUpdate._id,
-			batch,
-		});
-		await files_db_schedule_pending_update_cleanup(ctx, { pendingUpdateId: pendingUpdate._id, expectedUpdatedAt: now });
-
-		const chunks = await files_pending_update_db_replace_chunks(ctx, {
-			...scope,
-			target: pendingUpdate.target,
-			pendingUpdateId: pendingUpdate._id,
-			proposalRevision: pendingUpdate.revision + 1,
-			unstagedText: args.unstagedText,
-		});
-		if (chunks._nay)
-			console.error("Failed to index private pending text", { pendingUpdateId: pendingUpdate._id, error: chunks._nay });
-
-		return Result({
-			_yay: {
-				pendingUpdate: await ctx.db.get("files_pending_updates", pendingUpdate._id),
-				currentYjsLastSequenceId: null,
-			},
-		});
-	},
+	handler: files_pending_updates_db_commit_private_file,
 });
 
 type commit_private_file_pending_update_in_db_Result =
@@ -3616,7 +3632,7 @@ async function action_upsert_private_file_pending_update(
 		const unstagedText = files_yjs_doc_get_text({ yjsDoc: docs[2]!, rootKind });
 		if (unstagedText._nay) return Result({ _nay: { message: unstagedText._nay.message } });
 
-		const family = await action_stage_private_pending_state_family(ctx, {
+		const family = await files_pending_updates_action_stage_private_state_family(ctx, {
 			...args,
 			base: files_pending_update_encode_yjs_state_update({ yjsDoc: docs[0]! }),
 			staged: files_pending_update_encode_yjs_state_update({ yjsDoc: docs[1]! }),
@@ -5718,7 +5734,7 @@ export const commit_file_pending_update_rebase_in_db = internalMutation({
 		}
 		// Frontmatter caps, before any write: the calling action retires the staged input batch
 		// on this refusal, so nothing durable is left behind.
-		const frontmatterRefusal = files_pending_update_check_frontmatter_caps({
+		const frontmatterRefusal = files_pending_updates_check_frontmatter_caps({
 			fileNode,
 			text: args.unstagedText,
 		});
@@ -6025,7 +6041,7 @@ async function prepare_pending_update(
 			if (text._nay) return Result({ _nay: { message: text._nay.message } });
 			if (files_get_utf8_byte_size(text._yay) > files_MAX_TEXT_CONTENT_BYTES)
 				return Result({ _nay: { message: `Text content exceeds ${files_MAX_TEXT_CONTENT_BYTES}-byte limit` } });
-			const frontmatter = files_pending_update_check_frontmatter_caps({ fileNode: data.fileNode, text: text._yay });
+			const frontmatter = files_pending_updates_check_frontmatter_caps({ fileNode: data.fileNode, text: text._yay });
 			if (frontmatter) return frontmatter;
 
 			texts.set(output.role, text._yay);
@@ -6684,12 +6700,26 @@ const pending_target_entry_validator = v.union(
 	}),
 );
 
+/**
+ * The draft folders a draft file still needs, outermost first. Save creates them in this order.
+ */
+const required_parents_validator = v.array(
+	v.object({
+		target: v.object({ kind: v.literal("private"), id: v.id("files_pending_nodes") }),
+		path: v.string(),
+		pendingUpdateId: v.id("files_pending_updates"),
+		reviewedRevision: v.number(),
+	}),
+);
+
 const pending_target_view_validator = v.object({
 	kind: v.literal("entry"),
 	entry: pending_target_entry_validator,
 	readiness: v.union(v.literal("preparing"), v.literal("ready")),
 	canEdit: v.boolean(),
 	canAccept: v.boolean(),
+	canAcceptWithParents: v.boolean(),
+	requiredParents: required_parents_validator,
 });
 
 async function db_get_pending_target_view(
@@ -6731,16 +6761,41 @@ async function db_get_pending_target_view(
 			!entry.pendingUpdate.preparation &&
 			entry.pendingUpdate.createIntent !== undefined &&
 			(entry.pendingUpdate.createIntent.kind !== "text" || entry.pendingUpdate.content?.base.kind === "new");
-		const parent =
-			entry.node.parent.kind === "private" ? await ctx.db.get("files_pending_nodes", entry.node.parent.id) : null;
 		const canEdit = !writable._nay && !policy?._nay;
+		const ancestry = await files_pending_nodes_db_get_ancestry(ctx, { ...scope, privateNodeId: entry.node._id });
+		if (ancestry._nay) return null;
+		const requiredParents = [];
+		let parentsReady = true;
+		// Review only the folders this file needs, in publish order. Siblings stay pending.
+		for (const parent of ancestry._yay.ancestors.toReversed()) {
+			const parentEntry = await reader.resolveTarget({ kind: "private", id: parent._id });
+			// A parent that is still preparing, or is no longer a folder draft, blocks the whole save.
+			if (
+				parentEntry?.kind !== "private" ||
+				parentEntry.pendingUpdate.preparation ||
+				parentEntry.pendingUpdate.createIntent?.kind !== "folder"
+			) {
+				parentsReady = false;
+				break;
+			}
+			requiredParents.push({
+				target: { kind: "private" as const, id: parent._id },
+				path: parentEntry.path,
+				pendingUpdateId: parentEntry.pendingUpdate._id,
+				reviewedRevision: parentEntry.pendingUpdate.revision,
+			});
+		}
 
 		return {
 			kind: "entry" as const,
 			entry,
 			readiness: ready ? ("ready" as const) : ("preparing" as const),
 			canEdit,
-			canAccept: ready && canEdit && parent?.state !== "active",
+			// Save this draft alone only when every parent folder above it is already saved.
+			canAccept: ready && canEdit && ancestry._yay.ancestors.length === 0,
+			// Otherwise the user can save it together with the draft folders listed below.
+			canAcceptWithParents: ready && canEdit && parentsReady,
+			requiredParents,
 		};
 	}
 
@@ -6785,6 +6840,8 @@ async function db_get_pending_target_view(
 		readiness: "ready" as const,
 		canEdit,
 		canAccept: canEdit && destinationNode?.state !== "active",
+		canAcceptWithParents: canEdit && destinationNode?.state !== "active",
+		requiredParents: [],
 	};
 }
 
@@ -6799,6 +6856,8 @@ export const get_file_pending_target = query({
 			readiness: v.union(v.literal("preparing"), v.literal("ready")),
 			canEdit: v.boolean(),
 			canAccept: v.boolean(),
+			canAcceptWithParents: v.boolean(),
+			requiredParents: required_parents_validator,
 		}),
 		v.null(),
 	),
@@ -6826,9 +6885,19 @@ export const get_file_pending_target = query({
 			userId: userAuth.id,
 		};
 		const reader = await files_visible_db_create_reader(ctx, { ...scope, readLimit: 2048 });
-		const view = await db_get_pending_target_view(ctx, { membership, target, reader });
+		// An old private link keeps working after Save. Null means the file is gone.
+		const readTarget = await files_pending_nodes_db_resolve_read_target(ctx, { ...scope, target });
+		if (!readTarget) return null;
+		const view = await db_get_pending_target_view(ctx, { membership, target: readTarget, reader });
 		return view
-			? { entry: view.entry, readiness: view.readiness, canEdit: view.canEdit, canAccept: view.canAccept }
+			? {
+					entry: view.entry,
+					readiness: view.readiness,
+					canEdit: view.canEdit,
+					canAccept: view.canAccept,
+					canAcceptWithParents: view.canAcceptWithParents,
+					requiredParents: view.requiredParents,
+				}
 			: null;
 	},
 });
@@ -7531,7 +7600,7 @@ async function files_pending_updates_db_save_yjs(
 		}
 		// Frontmatter caps on the surviving unstaged text, before any write; the calling
 		// action retires the partial-output batch on this refusal.
-		const frontmatterRefusal = files_pending_update_check_frontmatter_caps({
+		const frontmatterRefusal = files_pending_updates_check_frontmatter_caps({
 			fileNode: targetNode,
 			text: args.partial.unstagedText,
 		});
@@ -8389,7 +8458,7 @@ async function action_save_file_pending_update_non_collaborative(
 		if (textSize > files_MAX_TEXT_CONTENT_BYTES) {
 			return Result({ _nay: { message: `Text content exceeds ${files_MAX_TEXT_CONTENT_BYTES}-byte limit` } });
 		}
-		const frontmatterRefusal = files_pending_update_check_frontmatter_caps({
+		const frontmatterRefusal = files_pending_updates_check_frontmatter_caps({
 			fileNode: data.fileNode,
 			text: stagedText._yay,
 		});
@@ -8608,14 +8677,16 @@ export const get_private_pending_download_data = internalQuery({
 			.query("files_private_storage_reservations")
 			.withIndex("by_resource", (q) => q.eq("resource.kind", "asset").eq("resource.id", intent.assetId))
 			.first();
+
+		// The draft must still own these bytes. Attaching an asset to a draft clears its cleanup
+		// deadline, so a deadline still set here means the upload never finished.
 		if (
 			!asset?.r2Key ||
 			asset.organizationId !== node.organizationId ||
 			asset.workspaceId !== node.workspaceId ||
 			asset.createdBy !== args.userId ||
 			asset.uploadRetiredAt !== undefined ||
-			asset.unfinalizedExpiresAt === undefined ||
-			asset.unfinalizedExpiresAt <= Date.now() ||
+			asset.unfinalizedExpiresAt !== undefined ||
 			asset.size !== intent.size ||
 			!reservation ||
 			reservation.settlement.kind !== "held" ||
@@ -8820,7 +8891,7 @@ export const save_private_file_pending_update_in_db = internalMutation({
 				yjsSnapshotAssetId: v.optional(v.id("files_r2_assets")),
 			}),
 		),
-		partial: v.optional(v.object({ family: private_pending_state_family_validator, unstagedText: v.string() })),
+		partial: v.optional(v.object({ family: files_pending_updates_state_family_validator, unstagedText: v.string() })),
 	},
 	returns: v_result({
 		_yay: v.object({
@@ -8908,7 +8979,7 @@ async function files_pending_updates_db_save_private(
 		const currentTarget = await db_check_operation_batch_target(ctx, publicationBatch);
 		if (currentTarget._nay) return currentTarget;
 
-		const caps = files_pending_update_check_frontmatter_caps({
+		const caps = files_pending_updates_check_frontmatter_caps({
 			fileNode: { textKind: pendingUpdate.createIntent.textKind },
 			text: args.prepared.text,
 		});
@@ -8966,7 +9037,7 @@ async function files_pending_updates_db_save_private(
 		});
 		if (checked._nay) return checked;
 
-		const caps = files_pending_update_check_frontmatter_caps({
+		const caps = files_pending_updates_check_frontmatter_caps({
 			fileNode: {
 				textKind: pendingUpdate.createIntent!.kind === "text" ? pendingUpdate.createIntent!.textKind : "plain_text",
 			},
@@ -9129,7 +9200,7 @@ async function action_save_private_file_pending_update(
 
 			if (stagedText._yay !== unstagedText._yay) {
 				// Keep the staged state's CRDT IDs as the saved snapshot and the residual base.
-				const family = await action_stage_private_pending_state_family(ctx, {
+				const family = await files_pending_updates_action_stage_private_state_family(ctx, {
 					...scope,
 					operationBatchId,
 					base: files_u8_to_array_buffer(staged._yay),

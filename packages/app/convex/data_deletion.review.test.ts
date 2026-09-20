@@ -613,6 +613,7 @@ async function data_deletion_test_seed_workspace_content_bulk(
 				principalKey: `grant_${args.tag}_${i}`,
 				tokenHash: `token_hash_${args.tag}_${i}`,
 				scopes: ["files:list", "files:read"],
+				remainingReadBytes: 0,
 				pathPrefix: null,
 				createdAt: Date.now(),
 				expiresAt: Date.now() + 10 * 60 * 1000,

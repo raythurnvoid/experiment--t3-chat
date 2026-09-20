@@ -40,7 +40,7 @@ Operational outcomes return HTTP 200 with `{ ok: true }` or
   slot can be reused. Explicit human reload omits this lease.
 - `POST /internal/browser/run` — run one Playwright snippet. Body: owner
   triple, session/nav/load/control ids, command id, code (20 KB max). Returns
-  `succeeded` with result, images, popups, console/page errors, and logs; or
+  `succeeded` with result, files, popups, console/page errors, and logs; or
   `errored`, `timed_out`, or `tainted` (target escape: the session is closed
   and the result is discarded). Refusals: `busy`, `control`, `stale_*`,
   `expired`, `closed`, `session_limit`. Output is accepted only after the
@@ -149,6 +149,34 @@ Socket close codes: 4401 bad grant, 4404 session gone, 4408 grant expired,
   for reuse. Takeover waits for a live command to finish. Detaching the last
   input holder releases `human` back to `ready` (never to agent work).
 
+## File output
+
+Snippets use the same `emitFile` helper as the code runner:
+
+```js
+emitFile({ path: "/reports/page.png", bytes: await page.screenshot() });
+emitFile({ path: "/reports/data.bin", bytes: new Uint8Array([0, 255, 128]) });
+```
+
+`bytes` accepts `Uint8Array` or `ArrayBuffer`. The call copies bytes at once,
+including only the selected range of a typed-array view. Any content type and
+empty files are allowed. Optional `contentType` stays absent when omitted.
+The runner checks transport bounds: eight files, 8 MiB in total, paths of
+1–1024 characters, and content types of 1–255 characters. The app checks
+canonical workspace paths such as `/reports/data.bin` and MIME syntax.
+
+RPC carries typed arrays. The trusted host returns
+`files: [{ path, contentType?, dataBase64 }]` in HTTP JSON. Errors and timeouts
+return `files: []`. File bytes stay out of result text and logs. The app stores
+files as pending changes after its Agent, lease, and Files access checks.
+
+Screenshots have separate limits at the trusted CDP bridge: PNG/JPEG,
+2 MiB, an 8192-pixel edge, and 16 million pixels. The bridge checks the matching
+capture reply before the snippet receives it. A large capture returns a command
+error and leaves the connection usable. A malformed provider reply closes it.
+The header check bounds image dimensions; it does not decode the full image.
+There is no two-capture limit. Generic file exports do not use image checks.
+
 ## Isolation posture
 
 - **One-command gate.** The snippet's only binding allows exactly
@@ -193,8 +221,9 @@ Socket close codes: 4401 bad grant, 4404 session gone, 4408 grant expired,
   A changed target, controller URL, or nonce discards all output and closes the
   session. Timeouts and lost isolate calls also close it, since unfinished work
   may still be running. Use reload to load another snapshot.
-- **Validated output.** PNG/JPEG magic plus decoded dimensions are checked on
-  the host before any image is returned. Text, logs, console, and page-error
+- **Validated output.** The trusted host checks file shape, count, and raw byte
+  totals. The protocol bridge checks screenshot headers and dimensions before
+  forwarding bytes to the child. Text, logs, console, and page-error
   channels are separately bounded in UTF-8 bytes without splitting characters.
 - **Same-origin serving.** The provider transport does not report
   cross-origin child frames (proven with probes), so the trusted bootstrap
@@ -258,7 +287,7 @@ Then typecheck, test, and redeploy.
 
 The unit suite covers routing, auth, validation, admission, generations,
 locks, deadlines, alarms, bridge method/session checks, revocation and cleanup,
-image validation, controller/harness builders, and viewer/control transitions
+file output, screenshot bounds, controller/harness builders, and viewer/control transitions
 with mocked bindings. The generated-bundle regression runs the actual
 screenshot helper in a separate context and checks caret hiding and cleanup.
 Live QA must also check acquire, bootstrap, reconnect, Playwright operations,
