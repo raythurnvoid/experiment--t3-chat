@@ -190,7 +190,7 @@ So do not read an empty card as "the command was killed", and do not use Stop to
 
 ## Doneness: waitIdle pattern
 
-The Stop button blinks out between agent steps (tool-exec gaps), so a single "no Stop button" check fires too early. Require sustained idle — no Stop button AND no **visible** `aria-busy` element — for 3 consecutive 2 s samples. Visible-only matters: hidden hoisted modals keep `aria-busy="true"` while closed (0x0 rect) and would otherwise report busy forever.
+The Stop button blinks out between agent steps (tool-exec gaps), so a single "no Stop button" check fires too early. Require sustained idle — no Stop button AND no **visible** `aria-busy` element — for 3 consecutive 2 s samples. Visible-only matters: hidden hoisted modals keep `aria-busy="true"` while closed (0x0 rect) and would otherwise report busy forever. Start the samples only after the turn visibly starts (wait for the Stop button first, up to 60 s): right after send, the transport is still preparing, so even sustained-idle checks pass on a turn that has not begun. Verified 2026-09-19.
 
 ## Rate limit + retry
 

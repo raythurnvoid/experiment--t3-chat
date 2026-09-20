@@ -1,11 +1,11 @@
 ---
 name: perf-profiling
-description: How to correctly measure and profile latency in Convex functions and in web apps driven through Playwriter/CDP. Load this BEFORE measuring "why is X slow", profiling a Convex mutation/query, timing UI interactions, or capturing CPU profiles. It prevents known measurement traps (frozen Date.now in Convex, module-eval cost hiding in userExecutionTime, throttled backgrounded tabs, React DevTools polluting profiles, dev-build overhead).
+description: How to correctly measure and profile latency in Convex functions, Cloudflare Workers, and web apps driven through Playwriter/CDP. Load this BEFORE measuring "why is X slow", profiling a Convex mutation/query, timing UI interactions, or capturing CPU profiles. It prevents known measurement traps (frozen clocks, module-eval cost hiding in userExecutionTime, throttled backgrounded tabs, React DevTools polluting profiles, dev-build overhead).
 ---
 
-# Measure Convex And Browser Latency Separately
+# Measure Convex, Worker, And Browser Latency Separately
 
-Use the relevant half before measuring Convex or browser latency. To drive the live app in the browser, also load `app-playwriter-harness`.
+Use the relevant section before measuring latency. To drive the live app in the browser, also load `app-playwriter-harness`.
 
 # Convex Functions
 
@@ -32,6 +32,11 @@ Use the relevant half before measuring Convex or browser latency. To drive the l
 - Dev deployments are noisy; take ≥5-7 samples per variant, interleave variants round-robin, compare medians.
 - Server exec time is only one leg. The client perceives: WS round trip + mutation exec + subscription update pushed to the client + client render. Capture Convex WS frames (CDP `Network.webSocketFrameSent/Received`) to split those legs.
 - Before comparing numbers across dependency versions, verify what actually resolves with `vp env exec pnpm --dir packages/app exec node -p "require('<pkg>/package.json').version"`. A pnpm-workspace `overrides:` entry can pin the whole workspace regardless of package.json ranges.
+
+# Cloudflare Workers
+
+- In deployed Workers, both `Date.now()` and `performance.now()` advance only after I/O. Time around awaited storage or provider calls, but do not use these clocks to measure synchronous parsing or encoding. A zero result does not mean that work was free. Local Workers do not freeze these clocks. Docs: https://developers.cloudflare.com/workers/runtime-apis/performance/
+- Report Worker phase durations separately from browser interaction times. Do not subtract timestamps from different machines without aligning their clocks. Keep the full user interaction on the browser's `performance.now()` clock.
 
 # Browser And UI Latency With Playwriter And CDP
 

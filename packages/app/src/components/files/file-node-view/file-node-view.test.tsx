@@ -15,6 +15,7 @@ import { AppActivitiesProvider } from "@/lib/app-activities-context.tsx";
 import type { app_convex_Id } from "@/lib/app-convex-client.ts";
 import type { files_VisibleEntry } from "@/lib/files.ts";
 import { app_local_storage_set_value } from "@/lib/storage.ts";
+import { global_custom_event_dispatch } from "@/lib/global-event.tsx";
 
 const {
 	tenantContextMock,
@@ -44,7 +45,7 @@ const {
 vi.mock("convex/react", async () => {
 	const { useEffect, useState } = await import("react");
 	return {
-		useConvex: () => ({ mutation: mutationMock }),
+		useConvex: () => ({ mutation: mutationMock, action: actionMock }),
 		usePaginatedQuery: (query: never, args: unknown) => {
 			const [, forceRender] = useState(0);
 			useEffect(() => {
@@ -286,6 +287,7 @@ let privateView:
 	| undefined;
 let pendingChildren: unknown[];
 let header: HTMLDivElement;
+let browserSession: unknown;
 
 function pushQueryChanges() {
 	act(() => queryPushListeners.forEach((listener) => listener()));
@@ -302,6 +304,7 @@ beforeEach(() => {
 	loadMorePendingMock.mockReset();
 	privateView = { entry: PRIVATE_ENTRY, readiness: "ready", canEdit: true, canAccept: true };
 	pendingChildren = [];
+	browserSession = null;
 	tenantContextMock.mockReturnValue({
 		membershipId: "membership_1",
 		organizationId: "organization_1",
@@ -370,6 +373,8 @@ beforeEach(() => {
 				return plugins;
 			case "r2:get_asset_by_file_node_id":
 				return null;
+			case "files_browser:current_browser_session":
+				return browserSession ?? null;
 			default:
 				return true;
 		}
@@ -585,10 +590,7 @@ describe("FileNodeView private targets", () => {
 		expect(await screen.findByTestId("html-preview")).toHaveProperty("textContent", "<p>Private local draft</p>");
 		expect(screen.queryByRole("button", { name: "Save draft" })).toBeNull();
 		await selectView("Code");
-		expect(onNavigateSearch).toHaveBeenCalledWith(
-			{ pendingNodeId: PRIVATE_ENTRY.node._id, view: "plain_text_editor", q: "draft" },
-			undefined,
-		);
+		expect(onNavigateSearch).not.toHaveBeenCalled();
 		expect(await screen.findByRole("textbox", { name: "Code draft" })).toBe(editor);
 		expect(editorMountMock).toHaveBeenCalledOnce();
 	});
@@ -940,7 +942,7 @@ describe("FileNodeView file views", () => {
 			within(list)
 				.getAllByRole("option")
 				.map((option) => option.textContent),
-		).toEqual(["Code", "Review changes", "Preview", "File details", "File viewer"]);
+		).toEqual(["Code", "Review changes", "Preview", "Browser", "Code + Browser", "Review changes + Browser", "File details", "File viewer"]);
 		expect(within(list).getByRole("option", { name: "Code" }).getAttribute("aria-selected")).toBe("true");
 		expect(trigger.querySelector("svg")).toBeNull();
 		expect(search.closest(".MySearchSelectPopover")?.querySelector("svg")).toBeNull();
@@ -956,7 +958,7 @@ describe("FileNodeView file views", () => {
 		expect(screen.queryAllByRole("option")).toHaveLength(0);
 
 		fireEvent.change(search, { target: { value: "" } });
-		expect(await screen.findAllByRole("option")).toHaveLength(5);
+		expect(await screen.findAllByRole("option")).toHaveLength(8);
 		expect(screen.queryByRole("radio", { name: "Code" })).toBeNull();
 		expect(screen.queryByRole("tablist", { name: "File views" })).toBeNull();
 	});
@@ -984,7 +986,7 @@ describe("FileNodeView file views", () => {
 			name: "HTML",
 			node: NODE,
 			selected: "Code",
-			options: ["Code", "Review changes", "Preview", "File details"],
+			options: ["Code", "Review changes", "Preview", "Browser", "Code + Browser", "Review changes + Browser", "File details"],
 		},
 		{
 			name: "stored image",
@@ -1039,7 +1041,7 @@ describe("FileNodeView file views", () => {
 		fireEvent.click(trigger);
 		const reopenedSearch = await screen.findByRole<HTMLInputElement>("combobox", { name: "Search views" });
 		expect(reopenedSearch.value).toBe("");
-		expect(screen.getAllByRole("option")).toHaveLength(5);
+		expect(screen.getAllByRole("option")).toHaveLength(8);
 		expect(screen.getByRole("option", { name: "Code" }).getAttribute("aria-selected")).toBe("true");
 
 		fireEvent.change(reopenedSearch, { target: { value: "File viewer" } });
@@ -1192,7 +1194,7 @@ describe("FileNodeView file views", () => {
 	});
 
 	test.each(["Preview", "File details", "File viewer"])(
-		"Review returns from %s even when the URL already selects Diff",
+		"Review opens the flat review view from %s without navigation",
 		async (view) => {
 			plugins = [PLUGIN];
 			pendingUpdates = [
@@ -1223,8 +1225,9 @@ describe("FileNodeView file views", () => {
 			await screen.findByRole("textbox", { name: "Code draft" });
 			await selectView(view);
 			fireEvent.click(await screen.findByRole("button", { name: "Review changes" }));
-			expect(await screen.findByRole("textbox", { name: "Code draft" })).toBeTruthy();
-			expect(onNavigateSearch).toHaveBeenCalledWith({ nodeId: NODE._id, view: "diff_editor", q: "page" }, undefined);
+			expect(await screen.findByRole("combobox", { name: "View: Review changes" })).toBeTruthy();
+			expect(screen.getByTestId("editor").getAttribute("data-mode")).toBe("diff_editor");
+			expect(onNavigateSearch).not.toHaveBeenCalled();
 		},
 	);
 
@@ -1258,20 +1261,13 @@ describe("FileNodeView file views", () => {
 		expect(screen.queryByRole("button", { name: "Review changes" })).toBeNull();
 	});
 
-	test("the Review option leaves a plugin and keeps the sidebar search in navigation", async () => {
+	test("the Review option leaves a plugin without navigation", async () => {
 		plugins = [PLUGIN];
-		const { rerender, onNavigateSearch } = renderFileView({ nodeId: NODE._id, q: "page" });
+		const { onNavigateSearch } = renderFileView({ nodeId: NODE._id, q: "page" });
 		await selectView("File viewer");
 
 		await selectView("Review changes");
-		expect(onNavigateSearch).toHaveBeenCalledWith({ nodeId: NODE._id, view: "diff_editor", q: "page" }, undefined);
-
-		rerender(
-			<FileNodeView
-				searchParams={{ nodeId: NODE._id, view: "diff_editor", q: "page" }}
-				onNavigateSearch={onNavigateSearch}
-			/>,
-		);
+		expect(onNavigateSearch).not.toHaveBeenCalled();
 		expect(screen.getByRole("combobox", { name: "View: Review changes" })).toBeTruthy();
 		expect(screen.getByTestId("editor").getAttribute("data-mode")).toBe("diff_editor");
 		expect(screen.queryByTestId("plugin-frame")).toBeNull();
@@ -1315,5 +1311,237 @@ describe("FileNodeView file views", () => {
 		expect((nextEditor as HTMLTextAreaElement).value).toBe("saved HTML");
 		expect(screen.getByRole("combobox", { name: "View: Code" })).toBeTruthy();
 		await waitFor(() => expect(screen.queryByTestId("html-preview")).toBeNull());
+	});
+});
+
+describe("FileNodeView browser views", () => {
+	test.each(["file", "folder", "root"])("ends the old session when selecting a %s", async (kind) => {
+		const { rerender, onNavigateSearch } = renderFileView();
+		await screen.findByRole("textbox", { name: "Code draft" });
+		browserSession = { sessionId: "session_previous", nodeId: NODE._id, targetKind: "saved" };
+		node = {
+			...NODE,
+			_id: "node_next",
+			name: "notes.txt",
+			contentType: "text/plain",
+			kind: kind === "folder" ? "folder" : "file",
+		};
+		rerender(
+			<FileNodeView
+				searchParams={{ nodeId: kind === "root" ? "root" : node._id }}
+				onNavigateSearch={onNavigateSearch}
+			/>,
+		);
+		await waitFor(() => {
+			expect(actionMock.mock.calls.filter((call) => getFunctionName(call[0]) === "files_browser:end_browser")).toEqual([
+				[expect.anything(), { membershipId: "membership_1", sessionId: "session_previous" }],
+			]);
+		});
+	});
+
+	test("lists the flat browser views for HTML files", async () => {
+		treeNodes = [NODE];
+		renderFileView();
+		await screen.findByRole("textbox", { name: "Code draft" });
+		await openViewPicker();
+		for (const name of ["Code", "Review changes", "Preview", "Browser", "Code + Browser", "Review changes + Browser", "File details"]) {
+			expect(screen.getByRole("option", { name })).toBeTruthy();
+		}
+	});
+
+	test("hides the browser views for non-HTML files", async () => {
+		node = { ...NODE, name: "notes.txt", contentType: "text/plain" };
+		treeNodes = [node];
+		renderFileView();
+		await screen.findByRole("textbox", { name: "Code draft" });
+		await openViewPicker();
+		expect(screen.queryByRole("option", { name: "Browser" })).toBeNull();
+		expect(screen.queryByRole("option", { name: "Code + Browser" })).toBeNull();
+		expect(screen.queryByRole("option", { name: "Review changes + Browser" })).toBeNull();
+	});
+
+	test("the Browser view fills the page and keeps the editor draft mounted once", async () => {
+		treeNodes = [NODE];
+		renderFileView();
+		const editor = await screen.findByRole("textbox", { name: "Code draft" });
+		fireEvent.change(editor, { target: { value: "local draft" } });
+		await selectView("Browser");
+		// Browser-only view hides the editor panel but keeps it mounted.
+		expect(await screen.findByRole("region", { name: "Shared browser" })).toBeTruthy();
+		expect(screen.queryByRole("textbox", { name: "Code draft" })).toBeNull();
+		expect(editorMountMock).toHaveBeenCalledTimes(1);
+		await selectView("Code");
+		expect(screen.getByRole("textbox", { name: "Code draft" })).toBe(editor);
+		expect(editor).toHaveProperty("value", "local draft");
+		expect(editorMountMock).toHaveBeenCalledTimes(1);
+	});
+
+	test("shows both editor and browser in Code + Browser", async () => {
+		treeNodes = [NODE];
+		renderFileView();
+		const editor = await screen.findByRole("textbox", { name: "Code draft" });
+		await selectView("Code + Browser");
+		expect(await screen.findByRole("region", { name: "Shared browser" })).toBeTruthy();
+		expect(screen.getByRole("textbox", { name: "Code draft" })).toBe(editor);
+		expect(editorMountMock).toHaveBeenCalledTimes(1);
+	});
+
+	test("an open_browser event selects the file and opens the Browser view", async () => {
+		renderFileView();
+		await screen.findByRole("textbox", { name: "Code draft" });
+		await selectView("Preview");
+		act(() =>
+			global_custom_event_dispatch("files::open_browser", {
+				membershipId: "membership_1" as app_convex_Id<"organizations_workspaces_users">,
+				nodeId: NODE._id,
+				targetKind: "saved",
+			}),
+		);
+		const panel = await screen.findByRole("region", { name: "Shared browser" });
+		expect(panel.closest("[hidden]")).toBeNull();
+		expect(editorMountMock).toHaveBeenCalledTimes(1);
+	});
+
+	test("an open_browser event for another file navigates to it", async () => {
+		const { rerender, onNavigateSearch } = renderFileView();
+		await screen.findByRole("textbox", { name: "Code draft" });
+		act(() =>
+			global_custom_event_dispatch("files::open_browser", {
+				membershipId: "membership_1" as app_convex_Id<"organizations_workspaces_users">,
+				nodeId: "node_next",
+				targetKind: "saved",
+			}),
+		);
+		expect(onNavigateSearch).toHaveBeenCalledWith({ nodeId: "node_next", q: undefined });
+		node = { ...NODE, _id: "node_next" };
+		rerender(<FileNodeView searchParams={{ nodeId: node._id }} onNavigateSearch={onNavigateSearch} />);
+		expect(await screen.findByRole("region", { name: "Shared browser" })).toBeTruthy();
+	});
+
+	test("leaving a browser view ends its session", async () => {
+		treeNodes = [NODE];
+		renderFileView();
+		await screen.findByRole("textbox", { name: "Code draft" });
+		await selectView("Browser");
+		browserSession = {
+			sessionId: "session_1",
+			targetKind: "saved",
+			nodeId: NODE._id,
+			path: NODE.path,
+			navigationGeneration: 1,
+			sourceKind: "saved",
+			sourceVersion: "v1",
+			sourceHash: "hash",
+			loadGen: 1,
+			controlGen: 1,
+			control: "ready",
+			idleUntil: Date.now() + 300_000,
+			totalUntil: Date.now() + 1_200_000,
+		};
+		pushQueryChanges();
+		await screen.findByRole("region", { name: "Shared browser" });
+		actionMock.mockClear();
+		await selectView("Code");
+		await waitFor(() => {
+			expect(actionMock.mock.calls.filter((call) => getFunctionName(call[0]) === "files_browser:end_browser")).toEqual([
+				[expect.anything(), { membershipId: "membership_1", sessionId: "session_1" }],
+			]);
+		});
+		expect(screen.queryByRole("region", { name: "Shared browser" })).toBeNull();
+	});
+
+	test("a live session does not steal the Code view", async () => {
+		treeNodes = [NODE];
+		browserSession = {
+			sessionId: "session_1",
+			targetKind: "saved",
+			nodeId: NODE._id,
+			path: NODE.path,
+			navigationGeneration: 1,
+			sourceKind: "saved",
+			sourceVersion: "v1",
+			sourceHash: "hash",
+			loadGen: 1,
+			controlGen: 1,
+			control: "ready",
+			idleUntil: Date.now() + 300_000,
+			totalUntil: Date.now() + 1_200_000,
+		};
+		renderFileView();
+		await screen.findByRole("textbox", { name: "Code draft" });
+		expect(screen.queryByRole("region", { name: "Shared browser" })).toBeNull();
+	});
+
+	test("an open_browser event for a non-HTML file stays on Code quietly", async () => {
+		node = { ...NODE, name: "notes.txt", contentType: "text/plain" };
+		treeNodes = [node];
+		renderFileView();
+		await screen.findByRole("textbox", { name: "Code draft" });
+		act(() =>
+			global_custom_event_dispatch("files::open_browser", {
+				membershipId: "membership_1" as app_convex_Id<"organizations_workspaces_users">,
+				nodeId: node._id,
+				targetKind: "saved",
+			}),
+		);
+		await waitFor(() => expect(screen.getByRole("combobox", { name: "View: Code" })).toBeTruthy());
+		expect(screen.queryByRole("region", { name: "Shared browser" })).toBeNull();
+		expect(toast.info).not.toHaveBeenCalled();
+	});
+
+	test("the Review button from Code + Browser keeps the split", async () => {
+		plugins = [PLUGIN];
+		pendingUpdates = [
+			{
+				kind: "entry",
+				readiness: "ready",
+				canEdit: true,
+				canAccept: true,
+				entry: {
+					kind: "saved",
+					node: NODE,
+					path: NODE.path,
+					pendingUpdate: {
+						_id: "pending_1",
+						target: { kind: "saved", id: NODE._id },
+						revision: 1,
+						content: {
+							base: { kind: "asset", assetId: "asset_1" },
+							baseStateId: "base_1",
+							stagedStateId: "staged_1",
+							unstagedStateId: "unstaged_1",
+						},
+					},
+				},
+			},
+		];
+		renderFileView();
+		await screen.findByRole("textbox", { name: "Code draft" });
+		await selectView("Code + Browser");
+		expect(await screen.findByRole("region", { name: "Shared browser" })).toBeTruthy();
+		fireEvent.click(await screen.findByRole("button", { name: "Review changes" }));
+		expect(await screen.findByRole("combobox", { name: "View: Review changes + Browser" })).toBeTruthy();
+		expect(screen.getByTestId("editor").getAttribute("data-mode")).toBe("diff_editor");
+		expect(screen.getByRole("region", { name: "Shared browser" })).toBeTruthy();
+		expect(screen.getByRole("textbox", { name: "Code draft" })).toBeTruthy();
+	});
+
+	test("a private Browser view keeps the draft mounted once", async () => {
+		renderFileView({ pendingNodeId: PRIVATE_ENTRY.node._id });
+		const editor = await screen.findByRole("textbox", { name: "Code draft" });
+		fireEvent.change(editor, { target: { value: "<p>Private local draft</p>" } });
+		act(() =>
+			global_custom_event_dispatch("files::open_browser", {
+				membershipId: "membership_1" as app_convex_Id<"organizations_workspaces_users">,
+				nodeId: PRIVATE_ENTRY.node._id,
+				targetKind: "private",
+			}),
+		);
+		expect(await screen.findByRole("region", { name: "Shared browser" })).toBeTruthy();
+		expect(editorMountMock).toHaveBeenCalledTimes(1);
+		await selectView("Code");
+		expect(screen.getByRole("textbox", { name: "Code draft" })).toBe(editor);
+		expect(editor).toHaveProperty("value", "<p>Private local draft</p>");
+		expect(editorMountMock).toHaveBeenCalledTimes(1);
 	});
 });

@@ -487,6 +487,47 @@ const app_convex_schema = defineSchema({
 		.index("by_shell_seq", ["shellId", "seq"])
 		.index("by_organization_workspace_thread", ["organizationId", "workspaceId", "threadId"]),
 
+	/**
+	 * One private agent browser capture: bounded result JSON/text plus screenshots. Creator-only:
+	 * chats are workspace-shared, but raw browser payloads never enter message docs. Shared chat
+	 * keeps only a safe status and this doc's id. Results outlive their session under their own
+	 * access and expiry checks; the loaded source is labeled, never re-tested silently.
+	 */
+	ai_chat_browser_results: defineTable({
+		ownerId: v.id("users"),
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		threadId: v.id("ai_chat_threads"),
+		sessionId: v.id("files_browser_sessions"),
+		targetKind: v.union(v.literal("saved"), v.literal("private")),
+		nodeId: v.string(),
+		sourceKind: v.union(v.literal("saved"), v.literal("proposed"), v.literal("draft")),
+		sourceVersion: v.string(),
+		sourceHash: v.string(),
+		loadGen: v.number(),
+		runId: v.string(),
+		toolCallId: v.string(),
+		commandId: v.string(),
+		textAssetId: v.id("files_r2_assets"),
+		images: v.array(
+			v.object({
+				assetId: v.id("files_r2_assets"),
+				mime: v.string(),
+				width: v.number(),
+				height: v.number(),
+			}),
+		),
+		textBytes: v.number(),
+		imageBytes: v.number(),
+		expiresAt: v.number(),
+		createdAt: v.number(),
+	})
+		.index("by_thread", ["threadId"])
+		.index("by_owner", ["ownerId"])
+		.index("by_session", ["sessionId"])
+		.index("by_expiresAt", ["expiresAt"])
+		.index("by_organization_workspace", ["organizationId", "workspaceId"]),
+
 	ai_chat_bash_invocations: defineTable({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
@@ -1886,6 +1927,85 @@ const app_convex_schema = defineSchema({
 			"publicationBatchId",
 		]),
 
+	/**
+	 * One shared cloud browser for the selected file. At most one live session per
+	 * owner/organization/workspace; the runner owns control, leases, and deadlines, and this doc
+	 * mirrors what the UI may show. `runnerSessionId` stays server-only: links carry this doc id.
+	 * A `starting` doc that never commits expires fast; closed docs are swept with results.
+	 */
+	files_browser_sessions: defineTable({
+		ownerId: v.id("users"),
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		targetKind: v.union(v.literal("saved"), v.literal("private")),
+		nodeId: v.string(),
+		path: v.string(),
+		navigationClientId: v.string(),
+		navigationGeneration: v.number(),
+		sourceKind: v.union(v.literal("saved"), v.literal("proposed"), v.literal("draft")),
+		sourceVersion: v.string(),
+		sourceHash: v.string(),
+		loadGen: v.number(),
+		controlGen: v.number(),
+		control: v.union(
+			v.literal("starting"),
+			v.literal("ready"),
+			v.literal("human"),
+			v.literal("pausing"),
+			v.literal("closing"),
+			v.literal("closed"),
+		),
+		runnerSessionId: v.optional(v.string()),
+		idleUntil: v.optional(v.number()),
+		totalUntil: v.optional(v.number()),
+		startingExpiresAt: v.optional(v.number()),
+		closedAt: v.optional(v.number()),
+		createdAt: v.number(),
+		updatedAt: v.number(),
+	})
+		.index("by_owner_organization_workspace", ["ownerId", "organizationId", "workspaceId"])
+		.index("by_owner", ["ownerId"])
+		.index("by_organization_workspace", ["organizationId", "workspaceId"])
+		.index("by_workspace_node", ["workspaceId", "nodeId"])
+		.index("by_control_closedAt", ["control", "closedAt"])
+		.index("by_startingExpiresAt", ["startingExpiresAt"]),
+
+	/**
+	 * One explicit editor-draft capture: unsaved Monaco/Diff bytes uploaded for a browser load.
+	 * Consumed once by start, then deleted with its blob. Unclaimed captures expire in minutes.
+	 */
+	files_browser_draft_captures: defineTable({
+		ownerId: v.id("users"),
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		nodeId: v.string(),
+		storageId: v.optional(v.id("_storage")),
+		revision: v.number(),
+		basisKind: v.string(),
+		basisVersion: v.string(),
+		navigationGeneration: v.number(),
+		byteSize: v.number(),
+		hash: v.string(),
+		createdAt: v.number(),
+		expiresAt: v.number(),
+	})
+		.index("by_expiresAt", ["expiresAt"])
+		.index("by_owner", ["ownerId"]),
+
+	/**
+	 * Daily browser-use counters per workspace. The day key makes the window self-resetting:
+	 * a new UTC day starts a new doc, and the expiry sweep deletes docs older than two days.
+	 * This brakes start/end and capture loops; per-minute metering is future work.
+	 */
+	files_browser_daily_use: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		day: v.string(),
+		starts: v.number(),
+		captures: v.number(),
+		updatedAt: v.number(),
+	}).index("by_workspace_day", ["workspaceId", "day"]),
+
 	files_r2_assets: defineTable({
 		organizationId: v.union(v.id("organizations"), v.literal(organizations_GLOBAL_ORGANIZATION_ID)),
 		workspaceId: v.union(
@@ -1896,6 +2016,10 @@ const app_convex_schema = defineSchema({
 		/**
 		 * `generated_image` is a picture the chat agent drew. It belongs to a chat message, not to a
 		 * file node, so nothing in the file tree points at it.
+		 *
+		 * `browser_result` is a private agent browser capture: result JSON/text or a screenshot.
+		 * It belongs to an `ai_chat_browser_results` doc, never to a file node. Only its creator
+		 * reads it, through the browser result doors.
 		 */
 		kind: v.union(
 			v.literal("upload"),
@@ -1903,6 +2027,7 @@ const app_convex_schema = defineSchema({
 			v.literal("yjs_snapshot"),
 			v.literal("content_snapshot"),
 			v.literal("generated_image"),
+			v.literal("browser_result"),
 		),
 		r2Bucket: v.string(),
 		/**
@@ -1957,6 +2082,7 @@ const app_convex_schema = defineSchema({
 			v.literal("read_only_yjs_repair"),
 			v.literal("untracked_asset_event"),
 			v.literal("discarded_replacement"),
+			v.literal("browser_result_cleanup"),
 		),
 		assetId: v.optional(v.id("files_r2_assets")),
 		privateStorageReservationId: v.optional(v.id("files_private_storage_reservations")),

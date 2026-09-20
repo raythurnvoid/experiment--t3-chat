@@ -1331,8 +1331,8 @@ export type BonoboConvexApi = {
 				key: string;
 				createdAt: number;
 				revision: number;
-				collection: string;
 				byteSize: number;
+				collection: string;
 				writeMode: "normal" | "versioned";
 				ownership: "shared" | "owned";
 			}[];
@@ -1359,8 +1359,8 @@ export type BonoboConvexApi = {
 			key: string;
 			createdAt: number;
 			revision: number;
-			collection: string;
 			byteSize: number;
+			collection: string;
 			writeMode: "normal" | "versioned";
 			ownership: "shared" | "owned";
 		}>, string | undefined>;
@@ -1380,8 +1380,8 @@ export type BonoboConvexApi = {
 				key: string;
 				createdAt: number;
 				revision: number;
-				collection: string;
 				byteSize: number;
+				collection: string;
 				writeMode: "normal" | "versioned";
 				ownership: "shared" | "owned";
 			}[];
@@ -1401,8 +1401,8 @@ export type BonoboConvexApi = {
 				key: string;
 				createdAt: number;
 				revision: number;
-				collection: string;
 				byteSize: number;
+				collection: string;
 				writeMode: "normal" | "versioned";
 				ownership: "shared" | "owned";
 			}[];

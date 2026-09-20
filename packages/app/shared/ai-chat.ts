@@ -13,7 +13,14 @@ import type {
 	ai_chat_tool_create_execute_code_ToolOutput,
 	ai_chat_tool_create_image_generation_ToolInput,
 	ai_chat_tool_create_image_generation_ToolOutput,
+	ai_chat_tool_create_browser_run_ToolInput,
+	ai_chat_tool_create_browser_run_ToolOutput,
+	ai_chat_tool_create_browser_reload_ToolInput,
+	ai_chat_tool_create_browser_reload_ToolOutput,
+	ai_chat_tool_create_browser_close_ToolInput,
+	ai_chat_tool_create_browser_close_ToolOutput,
 } from "../server/server-ai-tools.ts";
+import type { GeneratedIdPrefix } from "./generated-ids.ts";
 
 export type ai_chat_Message = Doc<"ai_chat_threads_messages_aisdk_5">;
 
@@ -131,6 +138,23 @@ export type ai_chat_UiTools = {
 		input: ai_chat_tool_create_image_generation_ToolInput;
 		output: ai_chat_tool_create_image_generation_ToolOutput;
 	};
+	/**
+	 * Browser tools hold references to private result docs, never raw observations. Only
+	 * `browser_run` produces images; reload and close share its stored status shape through
+	 * their own narrow tools. See the `ai_chat_tool_create_browser_*_stored` factories.
+	 */
+	browser_run: {
+		input: ai_chat_tool_create_browser_run_ToolInput;
+		output: ai_chat_tool_create_browser_run_ToolOutput;
+	};
+	browser_reload: {
+		input: ai_chat_tool_create_browser_reload_ToolInput;
+		output: ai_chat_tool_create_browser_reload_ToolOutput;
+	};
+	browser_close: {
+		input: ai_chat_tool_create_browser_close_ToolInput;
+		output: ai_chat_tool_create_browser_close_ToolOutput;
+	};
 };
 
 export type ai_chat_UiDataParts = {
@@ -157,6 +181,12 @@ export type ai_chat_UiMessage = UIMessage<
 		parentClientGeneratedId: string | null;
 		selectedModelId?: ai_chat_ModelId | undefined;
 		selectedModeId?: ai_chat_ModeId | undefined;
+		/**
+		 * Frozen shared-browser session for this request. Stamped at queue time from the Files
+		 * selection; the server re-checks the live session, so an ended file degrades instead of
+		 * rebinding to whatever is selected now.
+		 */
+		browserSessionId?: string | undefined;
 	},
 	ai_chat_UiDataParts,
 	ai_chat_UiTools
@@ -168,6 +198,14 @@ export function ai_chat_is_model_id(value: string): value is ai_chat_ModelId {
 
 export function ai_chat_is_mode_id(value: string): value is ai_chat_ModeId {
 	return ai_chat_MODE_IDS.includes(value as ai_chat_ModeId);
+}
+
+export type ai_chat_OptimisticThreadId = `ai_thread-${string}`;
+
+export function ai_chat_is_optimistic_thread_id(
+	threadId: string | null | undefined,
+): threadId is ai_chat_OptimisticThreadId {
+	return Boolean(threadId?.startsWith("ai_thread-" satisfies GeneratedIdPrefix));
 }
 
 export function ai_chat_is_message_image_media_type(value: string): value is ai_chat_MessageImageMediaType {

@@ -464,6 +464,122 @@ describe("ai_chat thread state", () => {
 		expect(messages).toHaveLength(1);
 	});
 
+	test("thread_messages_add refuses raw browser parts with or without toolName", async () => {
+		const t = test_convex();
+		const seeded = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			subject: "clerk-ai-chat-browser-parts",
+			external_id: seeded.userId,
+			email: "ai-chat-browser-parts@test.local",
+		});
+
+		const created = await asUser.mutation(api.ai_chat.thread_create, {
+			membershipId: seeded.membershipId,
+			clientGeneratedId: "client_ai_chat_browser_parts",
+			title: "Browser parts",
+			lastMessageAt: Date.now(),
+		});
+		const threadId = created._yay!.threadId;
+
+		const raw = {
+			clientGeneratedMessageId: "client_message_browser_raw",
+			content: {
+				id: "client_message_browser_raw",
+				role: "assistant",
+				parts: [
+					{
+						type: "tool-browser_run",
+						toolCallId: "call-1",
+						state: "output-available",
+						input: { code: "return 1;" },
+						output: {
+							title: "Browser run",
+							output: "raw observations",
+							metadata: { status: "succeeded", resultId: "result-1" },
+						},
+					},
+				],
+				metadata: {
+					convexParentId: null,
+					parentClientGeneratedId: null,
+				},
+			},
+		} as const;
+
+		const refused = await asUser.mutation(api.ai_chat.thread_messages_add, {
+			membershipId: seeded.membershipId,
+			threadId,
+			parentId: null,
+			messages: [raw],
+		});
+		expect(refused._nay?.message).toBe("Invalid browser result parts");
+
+		const scrubbed = {
+			...raw,
+			clientGeneratedMessageId: "client_message_browser_scrubbed",
+			content: {
+				...raw.content,
+				id: "client_message_browser_scrubbed",
+				parts: [
+					{
+						type: "tool-browser_run",
+						toolCallId: "call-1",
+						state: "output-available",
+						input: {},
+						output: {
+							title: "Browser run",
+							output: "Browser succeeded.",
+							metadata: { status: "succeeded", resultId: "result-1" },
+						},
+					},
+				],
+			},
+		} as const;
+
+		const stored = await asUser.mutation(api.ai_chat.thread_messages_add, {
+			membershipId: seeded.membershipId,
+			threadId,
+			parentId: null,
+			messages: [scrubbed],
+		});
+		expect(stored._yay?.ids).toHaveLength(1);
+
+		const dynamic = {
+			clientGeneratedMessageId: "client_message_browser_dynamic",
+			content: {
+				id: "client_message_browser_dynamic",
+				role: "assistant",
+				parts: [
+					{
+						type: "dynamic-tool",
+						toolName: "browser_run",
+						toolCallId: "call-2",
+						state: "output-available",
+						input: { code: "return 1;" },
+						output: {
+							title: "Browser run",
+							output: "raw observations",
+							metadata: { status: "succeeded", resultId: "result-1" },
+						},
+					},
+				],
+				metadata: {
+					convexParentId: null,
+					parentClientGeneratedId: null,
+				},
+			},
+		} as const;
+
+		const dynamicRefused = await asUser.mutation(api.ai_chat.thread_messages_add, {
+			membershipId: seeded.membershipId,
+			threadId,
+			parentId: null,
+			messages: [dynamic],
+		});
+		expect(dynamicRefused._nay?.message).toBe("Invalid browser result parts");
+	});
+
 	test("thread_messages_add refuses an oversized serialized message without storing it", async () => {
 		const t = test_convex();
 		const seeded = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));

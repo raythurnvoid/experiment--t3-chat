@@ -1,0 +1,16 @@
+@layer components {
+	.RouteBrowser {
+		height: 100dvh;
+		padding: 12px;
+
+		background: var(--color-base-1-01);
+	}
+
+	.RouteBrowser-message {
+		margin: 0;
+		padding: 24px;
+
+		font-size: 0.875rem;
+		color: var(--color-fg-07);
+	}
+}

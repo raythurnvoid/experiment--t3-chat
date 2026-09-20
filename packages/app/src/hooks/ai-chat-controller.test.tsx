@@ -1288,6 +1288,94 @@ describe("AiChatController", () => {
 		expect(body.parentId).toBeNull();
 	});
 
+	test("submit carries the frozen browser session and regenerate replays it", async () => {
+		render(
+			<FullPageSurface initialSelectedThreadId="thread_browser_body">
+				<RuntimeSendProbe />
+			</FullPageSurface>,
+		);
+
+		await waitFor(() => {
+			expect(hookMocks.chatInstances.some((chat) => chat.id === "thread_browser_body")).toBe(true);
+		});
+
+		const chat = hookMocks.chatInstances.find((chat) => chat.id === "thread_browser_body");
+		expect(chat).toBeDefined();
+		if (!chat) {
+			throw new Error("Expected chat instance");
+		}
+
+		const prepareSendMessagesRequest = chat.transport?.options.prepareSendMessagesRequest;
+		expect(prepareSendMessagesRequest).toBeTypeOf("function");
+		if (!prepareSendMessagesRequest) {
+			throw new Error("Expected chat transport");
+		}
+		const preparedBody = async (options: {
+			messages: Array<Record<string, unknown>>;
+			trigger: "submit-message" | "regenerate-message";
+		}) => {
+			const preparedRequest = await prepareSendMessagesRequest({
+				api: "/api/chat",
+				body: {},
+				headers: new Headers(),
+				id: "thread_browser_body",
+				messages: options.messages,
+				trigger: options.trigger,
+			});
+			if (typeof preparedRequest !== "object" || preparedRequest === null || !("body" in preparedRequest)) {
+				throw new Error("Expected prepared request body");
+			}
+			return (preparedRequest as { body: Record<string, unknown> }).body;
+		};
+
+		const bound = await preparedBody({
+			messages: [
+				{
+					id: "msg_browser_bound",
+					role: "user",
+					parts: [{ type: "text", text: "Inspect it" }],
+					metadata: { convexParentId: null, browserSessionId: "session-1" },
+				},
+			],
+			trigger: "submit-message",
+		});
+		expect(bound.browserSessionId).toBe("session-1");
+
+		const replayed = await preparedBody({
+			messages: [
+				{
+					id: "msg_browser_bound",
+					role: "user",
+					parts: [{ type: "text", text: "Inspect it" }],
+					metadata: { convexParentId: null, browserSessionId: "session-1" },
+				},
+				{ id: "msg_browser_answer", role: "assistant", parts: [{ type: "text", text: "Done" }] },
+			],
+			trigger: "regenerate-message",
+		});
+		expect(replayed.browserSessionId).toBe("session-1");
+
+		// A fresh message without an id means no browser on purpose: history must not leak in.
+		const unbound = await preparedBody({
+			messages: [
+				{
+					id: "msg_browser_old",
+					role: "user",
+					parts: [{ type: "text", text: "Inspect it" }],
+					metadata: { convexParentId: null, browserSessionId: "session-1" },
+				},
+				{
+					id: "msg_browser_fresh",
+					role: "user",
+					parts: [{ type: "text", text: "Something else" }],
+					metadata: { convexParentId: null },
+				},
+			],
+			trigger: "submit-message",
+		});
+		expect(unbound.browserSessionId).toBeUndefined();
+	});
+
 	test("retries the same chat request after the server rate limit clears", async () => {
 		render(
 			<FullPageSurface initialSelectedThreadId="thread_rate_limit_retry">
@@ -1674,6 +1762,91 @@ describe("AiChatController", () => {
 		expect(chat.messages).toHaveLength(1);
 	});
 
+	test("retry keeps the failed turn's frozen browser session, not the live selection", async () => {
+		const storageKey: `app_state::ai_chat_last_open::scope::${string}` = `app_state::ai_chat_last_open::scope::${hookMocks.tenant.membershipId}`;
+
+		render(
+			<ControllerSurface storageKey={storageKey}>
+				<RuntimeSendProbe />
+			</ControllerSurface>,
+		);
+
+		fireEvent.click(screen.getByRole("button", { name: "new runtime" }));
+
+		await waitFor(() => {
+			expect(screen.getByTestId("runtime-selected").textContent).toMatch(/^ai_thread-/);
+		});
+
+		AiChatController.useStore.setState({ browserSessionId: "session-frozen" });
+		fireEvent.click(screen.getByRole("button", { name: "send first" }));
+
+		const chat = hookMocks.chatInstances.find((chat) => chat.sendMessage.mock.calls.length === 1);
+		expect(chat).toBeDefined();
+		if (!chat) {
+			throw new Error("Expected selected chat to send first message");
+		}
+
+		await waitFor(() => {
+			expect(screen.getByTestId("runtime-latest-message").textContent).toBe("ai_message_mock_0");
+		});
+
+		fireEvent.click(screen.getByRole("button", { name: "mark failed" }));
+
+		await waitFor(() => {
+			expect(screen.getByTestId("runtime-failed-message").textContent).toBe("ai_message_mock_0");
+		});
+
+		// The user moved to another file: the live selection must not leak into the retry.
+		AiChatController.useStore.setState({ browserSessionId: "session-live" });
+		fireEvent.click(screen.getByRole("button", { name: "retry latest" }));
+
+		expect(chat.sendMessage).toHaveBeenCalledTimes(2);
+		const retried = chat.sendMessage.mock.calls[1]?.[0] as { metadata?: Record<string, unknown> };
+		expect(retried?.metadata?.browserSessionId).toBe("session-frozen");
+	});
+
+	test("retry of an unbound turn binds nothing, not the live selection", async () => {
+		const storageKey: `app_state::ai_chat_last_open::scope::${string}` = `app_state::ai_chat_last_open::scope::${hookMocks.tenant.membershipId}`;
+
+		render(
+			<ControllerSurface storageKey={storageKey}>
+				<RuntimeSendProbe />
+			</ControllerSurface>,
+		);
+
+		fireEvent.click(screen.getByRole("button", { name: "new runtime" }));
+
+		await waitFor(() => {
+			expect(screen.getByTestId("runtime-selected").textContent).toMatch(/^ai_thread-/);
+		});
+
+		AiChatController.useStore.setState({ browserSessionId: null });
+		fireEvent.click(screen.getByRole("button", { name: "send first" }));
+
+		const chat = hookMocks.chatInstances.find((chat) => chat.sendMessage.mock.calls.length === 1);
+		expect(chat).toBeDefined();
+		if (!chat) {
+			throw new Error("Expected selected chat to send first message");
+		}
+
+		await waitFor(() => {
+			expect(screen.getByTestId("runtime-latest-message").textContent).toBe("ai_message_mock_0");
+		});
+
+		fireEvent.click(screen.getByRole("button", { name: "mark failed" }));
+
+		await waitFor(() => {
+			expect(screen.getByTestId("runtime-failed-message").textContent).toBe("ai_message_mock_0");
+		});
+
+		AiChatController.useStore.setState({ browserSessionId: "session-live" });
+		fireEvent.click(screen.getByRole("button", { name: "retry latest" }));
+
+		expect(chat.sendMessage).toHaveBeenCalledTimes(2);
+		const retried = chat.sendMessage.mock.calls[1]?.[0] as { metadata?: Record<string, unknown> };
+		expect(retried?.metadata?.browserSessionId).toBeUndefined();
+	});
+
 	test("keeps Retry on the failed user message when AI SDK adds an assistant placeholder", async () => {
 		const storageKey: `app_state::ai_chat_last_open::scope::${string}` = `app_state::ai_chat_last_open::scope::${hookMocks.tenant.membershipId}`;
 
@@ -1707,6 +1880,48 @@ describe("AiChatController", () => {
 
 		expect(chat.sendMessage).toHaveBeenCalledTimes(2);
 		expect(chat.messages).toHaveLength(1);
+	});
+
+	test.each(["session-queued", null])("drains a queued message with frozen browser session %s", async (browserSessionId) => {
+		hookMocks.holdChatRequests = true;
+		const threadId = `thread_queue_browser_${browserSessionId ?? "none"}`;
+		render(
+			<FullPageSurface initialSelectedThreadId={threadId}>
+				<RuntimeQueueProbe />
+			</FullPageSurface>,
+		);
+
+		await waitFor(() => {
+			expect(screen.getByTestId("queue-session").textContent).toBe("session");
+		});
+
+		AiChatController.useStore.setState({ browserSessionId });
+		fireEvent.click(screen.getByRole("button", { name: "send first queue probe" }));
+		fireEvent.click(screen.getByRole("button", { name: "send second queue probe" }));
+
+		const chat = hookMocks.chatInstances.find((item) => item.id === threadId);
+		expect(chat).toBeDefined();
+		if (!chat) {
+			throw new Error("Expected queue chat instance");
+		}
+		expect(chat.sendMessage).toHaveBeenCalledTimes(1);
+		expect(screen.getByTestId("queue-texts").textContent).toBe("Second");
+
+		// The live selection moves on while the message waits; the drain must keep the freeze.
+		AiChatController.useStore.setState({ browserSessionId: "session-live" });
+		fireEvent.click(screen.getByRole("button", { name: "complete client response queue probe" }));
+
+		await waitFor(() => {
+			expect(chat.pendingRequestResolvers).toHaveLength(0);
+		});
+
+		fireEvent.click(screen.getByRole("button", { name: "persist assistant queue probe" }));
+
+		await waitFor(() => {
+			expect(chat.sendMessage).toHaveBeenCalledTimes(2);
+		});
+		const drained = chat.sendMessage.mock.calls[1]?.[0] as ai_chat_UiMessage | undefined;
+		expect(drained?.metadata?.browserSessionId).toBe(browserSessionId ?? undefined);
 	});
 
 	test("runs queued messages one at a time in FIFO order", async () => {

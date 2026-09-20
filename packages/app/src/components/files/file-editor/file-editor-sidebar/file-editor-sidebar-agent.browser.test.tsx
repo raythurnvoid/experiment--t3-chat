@@ -122,7 +122,7 @@ describe("FileEditorSidebarAgent thread upgrade", () => {
 		);
 		render(
 			<div style={{ width: 480, height: 720 }}>
-				<FileEditorSidebarAgent rootTabId="app_file_editor_sidebar_tabs_agent" />
+				<FileEditorSidebarAgent rootTabId="app_file_editor_sidebar_tabs_agent" browserNodeId={null} browserNodeKind={null} />
 			</div>,
 		);
 		const editor = await screen.findByRole("textbox", { name: "Send a message..." });
@@ -186,7 +186,7 @@ describe("FileEditorSidebarAgent thread upgrade", () => {
 		try {
 			render(
 				<div style={{ width: 480, height: 720 }}>
-					<FileEditorSidebarAgent rootTabId="app_file_editor_sidebar_tabs_agent" />
+					<FileEditorSidebarAgent rootTabId="app_file_editor_sidebar_tabs_agent" browserNodeId={null} browserNodeKind={null} />
 				</div>,
 			);
 			await screen.findByRole("textbox", { name: "Send a message..." });
@@ -208,7 +208,7 @@ describe("FileEditorSidebarAgent thread upgrade", () => {
 	test("restores each chat's draft when switching between different tabs", async () => {
 		render(
 			<div style={{ width: 480, height: 720 }}>
-				<FileEditorSidebarAgent rootTabId="app_file_editor_sidebar_tabs_agent" />
+				<FileEditorSidebarAgent rootTabId="app_file_editor_sidebar_tabs_agent" browserNodeId={null} browserNodeKind={null} />
 			</div>,
 		);
 		const firstEditor = await screen.findByRole("textbox", { name: "Send a message..." });
@@ -228,7 +228,7 @@ describe("FileEditorSidebarAgent thread upgrade", () => {
 	test("scrolls the new chat tab into view when tabs overflow", async () => {
 		render(
 			<div style={{ width: 480, height: 720 }}>
-				<FileEditorSidebarAgent rootTabId="app_file_editor_sidebar_tabs_agent" />
+				<FileEditorSidebarAgent rootTabId="app_file_editor_sidebar_tabs_agent" browserNodeId={null} browserNodeKind={null} />
 			</div>,
 		);
 		await screen.findByRole("textbox", { name: "Send a message..." });

@@ -15,6 +15,7 @@ import {
 	type FileEditor_Ref,
 } from "@/components/files/file-editor/file-editor.tsx";
 import { FileHtmlPreview, type FileHtmlPreview_Source } from "./file-html-preview.tsx";
+import { FilesBrowser } from "./files-browser.tsx";
 import {
 	FileNodeViewFolderCreateNodeModal,
 	type FileNodeViewFolderCreateNodeModal_Ref,
@@ -91,6 +92,7 @@ import {
 	type files_YjsRootKind,
 } from "@/lib/files.ts";
 import { useAppLocalStorageStateValue } from "@/lib/storage.ts";
+import { useGlobalCustomEvent } from "@/lib/global-event.tsx";
 import { url_path_file_by_node_id } from "@/lib/urls.ts";
 import { cn, sx } from "@/lib/utils.ts";
 import { combine } from "@atlaskit/pragmatic-drag-and-drop/combine";
@@ -769,7 +771,8 @@ const FileNodeViewViewSelect = memo(function FileNodeViewViewSelect(props: FileN
 
 	const [searchText, setSearchText] = useState("");
 
-	const selectedOption = options.find((option) => option.value === value)!;
+	// Never crash on a stale value: the owner resets it on the next render.
+	const selectedOption = options.find((option) => option.value === value) ?? { value, label: value };
 	const normalizedSearchText = searchText.trim().toLowerCase();
 	const shownOptions = options.filter((option) => option.label.toLowerCase().includes(normalizedSearchText));
 
@@ -843,7 +846,11 @@ function get_editor_view_options(rootKind: files_YjsRootKind) {
 // #endregion view select
 
 // #region file views
-type FileNodeViewFile_ClassNames = "FileNodeViewFile" | "FileNodeViewFile-rich-text" | "FileNodeViewFile-panel";
+type FileNodeViewFile_ClassNames =
+	| "FileNodeViewFile"
+	| "FileNodeViewFile-rich-text"
+	| "FileNodeViewFile-panel"
+	| "FileNodeViewFile-split";
 
 function file_view_id(match: { plugin: { pluginName: string }; fileView: { id: string } }) {
 	return `plugin_${match.plugin.pluginName}_${match.fileView.id}`;
@@ -921,20 +928,53 @@ const FileNodeViewFile = memo(function FileNodeViewFile(props: FileNodeViewFile_
 		selectedFileView === "default" ||
 		(selectedFileView === "details" && isEditable) ||
 		(selectedFileView === "preview" && hasHtmlPreview) ||
+		(selectedFileView === "code" && hasHtmlPreview) ||
+		(selectedFileView === "review" && hasHtmlPreview) ||
+		(selectedFileView === "browser" && hasHtmlPreview) ||
+		(selectedFileView === "code_browser" && hasHtmlPreview) ||
+		(selectedFileView === "review_browser" && hasHtmlPreview) ||
 		fileViewMatches.some((match) => file_view_id(match) === selectedFileView);
-	const activeFileView = selectedViewExists ? selectedFileView : "default";
+	// Flat HTML views live in local file state. Legacy "default" opens Code.
+	const activeFileView =
+		hasHtmlPreview && selectedViewExists && selectedFileView === "default" ? "code" : selectedViewExists ? selectedFileView : "default";
 	const isEditorActive = activeFileView === "default";
+	const isFlatEditorVisible =
+		!hasHtmlPreview ||
+		activeFileView === "code" ||
+		activeFileView === "review" ||
+		activeFileView === "code_browser" ||
+		activeFileView === "review_browser";
+	const isFlatBrowserVisible =
+		hasHtmlPreview &&
+		(activeFileView === "browser" || activeFileView === "code_browser" || activeFileView === "review_browser");
+	// Flat views ignore the URL editor mode. Code views use plain text, review views use diff.
+	const flatEditorMode: FileEditor_Mode =
+		activeFileView === "review" || activeFileView === "review_browser" ? "diff_editor" : "plain_text_editor";
 
-	const editorOptions = isEditable ? get_editor_view_options(node.textKind) : [];
-	const viewOptions = [
-		...editorOptions,
-		...(hasHtmlPreview ? [{ value: "preview", label: "Preview" }] : []),
-		{ value: isEditable ? "details" : "default", label: "File details" },
-		...fileViewMatches.map((match) => ({ value: file_view_id(match), label: match.fileView.title })),
-	];
+	const editorOptions = isEditable && !hasHtmlPreview ? get_editor_view_options(node.textKind) : [];
+	const viewOptions = hasHtmlPreview
+		? [
+				{ value: "code", label: "Code" },
+				{ value: "review", label: "Review changes" },
+				{ value: "preview", label: "Preview" },
+				{ value: "browser", label: "Browser" },
+				{ value: "code_browser", label: "Code + Browser" },
+				{ value: "review_browser", label: "Review changes + Browser" },
+				{ value: "details", label: "File details" },
+				...fileViewMatches.map((match) => ({ value: file_view_id(match), label: match.fileView.title })),
+			]
+		: [
+				...editorOptions,
+				{ value: isEditable ? "details" : "default", label: "File details" },
+				...fileViewMatches.map((match) => ({ value: file_view_id(match), label: match.fileView.title })),
+			];
 	const activePluginView = fileViewMatches.find((match) => file_view_id(match) === activeFileView);
 
 	const handleViewChange = useFn((value: string) => {
+		if (hasHtmlPreview) {
+			onFileViewChange(value);
+			return;
+		}
 		const editorOption = editorOptions.find((option) => option.value === value);
 		if (editorOption) {
 			onEditorModeChange(editorOption.value);
@@ -949,16 +989,90 @@ const FileNodeViewFile = memo(function FileNodeViewFile(props: FileNodeViewFile_
 
 	const getPreviewSnapshot = useFn(() => editorRef.current?.getPreviewSnapshot() ?? null);
 
+	const getBrowserDraftText = useFn(() => {
+		const draft = editorRef.current?.getPreviewSnapshot() ?? null;
+		if (
+			!draft ||
+			draft.sourceKind !== "editor_draft" ||
+			!draft.isDirty ||
+			draft.membershipId !== membershipId ||
+			draft.target.kind !== "saved" ||
+			draft.target.id !== node._id ||
+			draft.rootKind !== node.textKind ||
+			draft.yjsLastSequenceId !== yjsLastSequenceId
+		) {
+			return null;
+		}
+		return draft.text;
+	});
+
+	const getBrowserDraftRevision = useFn(() => previewRevision + 1);
+
 	useEffect(() => {
 		if (selectedViewExists) {
 			return;
 		}
 		onFileViewChange("default");
-		toast.info(`This file view is no longer available. Showing ${isEditable ? "the editor" : "file details"}.`);
+		// Browser views are only wrong-file-type, not removed: fall back quietly.
+		const isBrowserView =
+			selectedFileView === "browser" ||
+			selectedFileView === "code_browser" ||
+			selectedFileView === "review_browser";
+		if (!isBrowserView) {
+			toast.info(`This file view is no longer available. Showing ${isEditable ? "the editor" : "file details"}.`);
+		}
 		if (document.activeElement === document.body) {
 			primaryPanelRef.current?.focus();
 		}
-	}, [isEditable, onFileViewChange, selectedViewExists]);
+	}, [isEditable, onFileViewChange, selectedFileView, selectedViewExists]);
+
+	const editorContent = isEditable ? (
+		<FileNodeViewFileEditor
+			ref={editorRef}
+			isActive={hasHtmlPreview ? isFlatEditorVisible : isEditorActive}
+			nodeId={node._id}
+			writeBlockedReason={node.writeBlockedReason}
+			pendingUpdateId={pendingUpdateId}
+			rootKind={node.textKind}
+			monacoLanguageId={files_monaco_language_id_of_content_type(node.contentType)}
+			nonCollaborative={node.collaborationEnabled === false}
+			committedAssetId={committedAssetId}
+			pendingUpdatesLoaded={pendingUpdatesLoaded}
+			serverSequence={serverSequence}
+			yjsLastSequenceId={yjsLastSequenceId}
+			topSafeArea={topSafeArea}
+			editorMode={hasHtmlPreview ? flatEditorMode : editorMode}
+			presenceStore={presenceStore}
+			commentsPortalHost={commentsPortalHost}
+			toolbarPortalHost={toolbarPortalHost}
+			onEditorModeChange={onEditorModeChange}
+			onAutomaticEditorModeChange={onAutomaticEditorModeChange}
+			onPreviewSnapshotChange={hasHtmlPreview ? handlePreviewSnapshotChange : undefined}
+		/>
+	) : (
+		<FileNodeViewStoredFile node={node} asset={asset} />
+	);
+
+	const browserContent = isFlatBrowserVisible ? (
+		<FilesBrowser
+			targetKind="saved"
+			nodeId={node._id}
+			path={node.path}
+			host="docked"
+			editorRevision={previewRevision}
+			serverSequence={serverSequence ?? null}
+			getDraftText={getBrowserDraftText}
+			getDraftRevision={getBrowserDraftRevision}
+		/>
+	) : null;
+	// Standalone views hide the whole split group instead of unmounting it, so the
+	// editor keeps its local draft. The editor panel hides instead of unmounting
+	// in browser-only view; the lone visible panel fills the width.
+	const showStandaloneView =
+		hasHtmlPreview &&
+		(activeFileView === "preview" ||
+			activeFileView === "details" ||
+			activePluginView != null);
 
 	return (
 		<>
@@ -974,7 +1088,7 @@ const FileNodeViewFile = memo(function FileNodeViewFile(props: FileNodeViewFile_
 			{createPortal(
 				<FileNodeViewViewSelect
 					options={viewOptions}
-					value={isEditable && isEditorActive ? editorMode : activeFileView}
+					value={hasHtmlPreview ? activeFileView : isEditable && isEditorActive ? editorMode : activeFileView}
 					onValueChange={handleViewChange}
 				/>,
 				viewSelectPortalHost,
@@ -982,49 +1096,67 @@ const FileNodeViewFile = memo(function FileNodeViewFile(props: FileNodeViewFile_
 			<div
 				className={cn(
 					"FileNodeViewFile" satisfies FileNodeViewFile_ClassNames,
-					isEditable &&
+					!hasHtmlPreview &&
+						isEditable &&
 						isEditorActive &&
 						editorMode === "rich_text_editor" &&
 						("FileNodeViewFile-rich-text" satisfies FileNodeViewFile_ClassNames),
 				)}
 			>
-				{/* Keep the editor and its local draft mounted while another view is active. */}
-				<div
-					ref={primaryPanelRef}
-					className={"FileNodeViewFile-panel" satisfies FileNodeViewFile_ClassNames}
-					role="region"
-					aria-label={isEditable ? "File editor" : "Stored file"}
-					tabIndex={-1}
-					hidden={!isEditorActive}
-					inert={!isEditorActive}
-				>
-					{isEditable ? (
-						<FileNodeViewFileEditor
-							ref={editorRef}
-							isActive={isEditorActive}
-							nodeId={node._id}
-							writeBlockedReason={node.writeBlockedReason}
-							pendingUpdateId={pendingUpdateId}
-							rootKind={node.textKind}
-							monacoLanguageId={files_monaco_language_id_of_content_type(node.contentType)}
-							nonCollaborative={node.collaborationEnabled === false}
-							committedAssetId={committedAssetId}
-							pendingUpdatesLoaded={pendingUpdatesLoaded}
-							serverSequence={serverSequence}
-							yjsLastSequenceId={yjsLastSequenceId}
-							topSafeArea={topSafeArea}
-							editorMode={editorMode}
-							presenceStore={presenceStore}
-							commentsPortalHost={commentsPortalHost}
-							toolbarPortalHost={toolbarPortalHost}
-							onEditorModeChange={onEditorModeChange}
-							onAutomaticEditorModeChange={onAutomaticEditorModeChange}
-							onPreviewSnapshotChange={hasHtmlPreview ? handlePreviewSnapshotChange : undefined}
-						/>
-					) : (
-						<FileNodeViewStoredFile node={node} asset={asset} />
-					)}
-				</div>
+				{/* The split group stays mounted across views so the editor keeps its
+				    local draft. Standalone views hide it instead of unmounting it. */}
+				{hasHtmlPreview ? (
+					<div
+						className={"FileNodeViewFile-split" satisfies FileNodeViewFile_ClassNames}
+						hidden={showStandaloneView}
+						inert={showStandaloneView}
+					>
+						<MyPanelGroup direction="horizontal">
+							<MyPanel
+								id="file-node-view-editor"
+								order={1}
+								defaultSize={isFlatBrowserVisible ? 55 : 100}
+								minSize={30}
+								isOpen={isFlatEditorVisible}
+								closeBehavior="hidden"
+							>
+								<div
+									ref={primaryPanelRef}
+									className={"FileNodeViewFile-panel" satisfies FileNodeViewFile_ClassNames}
+									role="region"
+									aria-label="File editor"
+									tabIndex={-1}
+								>
+									{editorContent}
+								</div>
+							</MyPanel>
+							{isFlatBrowserVisible && (
+								<>
+									<MyPanelResizeHandle
+										isOpen
+										closeBehavior="unmount"
+										aria-label="Resize editor and browser"
+									/>
+									<MyPanel id="file-node-view-browser" order={2} defaultSize={45} minSize={30}>
+										{browserContent}
+									</MyPanel>
+								</>
+							)}
+						</MyPanelGroup>
+					</div>
+				) : (
+					<div
+						ref={primaryPanelRef}
+						className={"FileNodeViewFile-panel" satisfies FileNodeViewFile_ClassNames}
+						role="region"
+						aria-label={isEditable ? "File editor" : "Stored file"}
+						tabIndex={-1}
+						hidden={!isEditorActive}
+						inert={!isEditorActive}
+					>
+						{editorContent}
+					</div>
+				)}
 				{isEditable && activeFileView === "details" && (
 					<div className={"FileNodeViewFile-panel" satisfies FileNodeViewFile_ClassNames}>
 						<FileNodeViewStoredFile node={node} asset={asset} />
@@ -1330,14 +1462,115 @@ const FileNodeViewPrivateContent = memo(function FileNodeViewPrivateContent(prop
 		textIntent?.textKind === "plain_text" &&
 		files_editable_text_content_type_of(textIntent.contentType) === "text/html;charset=utf-8";
 	const isPreview = selectedFileView === "preview" && hasHtmlPreview;
-	const editorOptions = textIntent ? get_editor_view_options(textIntent.textKind) : [];
+	// Same guard as saved files: unknown views fall back instead of blanking.
+	const privateSelectedViewExists =
+		selectedFileView === "default" ||
+		(hasHtmlPreview &&
+			(selectedFileView === "code" ||
+				selectedFileView === "review" ||
+				selectedFileView === "preview" ||
+				selectedFileView === "browser" ||
+				selectedFileView === "code_browser" ||
+				selectedFileView === "review_browser"));
+	// Flat HTML views live in local file state. Legacy "default" opens Code.
+	const activePrivateView =
+		!privateSelectedViewExists || (hasHtmlPreview && selectedFileView === "default")
+			? hasHtmlPreview
+				? "code"
+				: "default"
+			: selectedFileView;
+	const isPrivateBrowserView =
+		hasHtmlPreview &&
+		(activePrivateView === "browser" ||
+			activePrivateView === "code_browser" ||
+			activePrivateView === "review_browser");
+	const isPrivateEditorVisible =
+		!hasHtmlPreview ||
+		activePrivateView === "default" ||
+		activePrivateView === "code" ||
+		activePrivateView === "review" ||
+		activePrivateView === "code_browser" ||
+		activePrivateView === "review_browser";
+	const isPrivateBrowserVisible = isPrivateBrowserView;
+	const flatPrivateEditorMode: FileEditor_Mode =
+		activePrivateView === "review" || activePrivateView === "review_browser" ? "diff_editor" : "plain_text_editor";
+	const editorOptions = textIntent && !hasHtmlPreview ? get_editor_view_options(textIntent.textKind) : [];
+	const privateViewOptions = hasHtmlPreview
+		? [
+				{ value: "code", label: "Code" },
+				{ value: "review", label: "Review changes" },
+				{ value: "preview", label: "Preview" },
+				{ value: "browser", label: "Browser" },
+				{ value: "code_browser", label: "Code + Browser" },
+				{ value: "review_browser", label: "Review changes + Browser" },
+			]
+		: [...editorOptions];
 	const handleViewChange = useFn((value: string) => {
+		if (hasHtmlPreview) {
+			onFileViewChange(value);
+			return;
+		}
 		const option = editorOptions.find((item) => item.value === value);
 		if (option) onEditorModeChange(option.value);
 		else onFileViewChange(value);
 	});
 	const handlePreviewSnapshotChange = useFn(() => setPreviewRevision((revision) => revision + 1));
 	const getPreviewSnapshot = useFn(() => editorRef.current?.getPreviewSnapshot() ?? null);
+
+	useEffect(() => {
+		if (privateSelectedViewExists) {
+			return;
+		}
+		onFileViewChange("default");
+		// Browser views are only wrong-file-type, not removed: fall back quietly.
+		const isBrowserView =
+			selectedFileView === "browser" ||
+			selectedFileView === "code_browser" ||
+			selectedFileView === "review_browser";
+		if (!isBrowserView) {
+			toast.info("This file view is no longer available. Showing the editor.");
+		}
+	}, [onFileViewChange, privateSelectedViewExists, selectedFileView]);
+
+	const editorContent = textIntent ? (
+		<FileEditor
+			ref={editorRef}
+			isActive={hasHtmlPreview ? isPrivateEditorVisible : !isPreview}
+			target={{ kind: "private", id: entry.node._id }}
+			privateCanEdit={view.canEdit}
+			writeBlockedReason={null}
+			pendingUpdateId={entry.pendingUpdate._id}
+			rootKind={textIntent.textKind}
+			monacoLanguageId={files_monaco_language_id_of_content_type(textIntent.contentType)}
+			nonCollaborative
+			committedAssetId={null}
+			pendingUpdatesLoaded
+			editorMode={hasHtmlPreview ? flatPrivateEditorMode : editorMode}
+			topSafeArea={topSafeArea}
+			presenceStore={presenceStore}
+			commentsPortalHost={null}
+			toolbarPortalHost={toolbarPortalHost}
+			onEditorModeChange={onEditorModeChange}
+			onAutomaticEditorModeChange={onAutomaticEditorModeChange}
+			onPreviewSnapshotChange={handlePreviewSnapshotChange}
+			onTargetChange={onTargetChange}
+		/>
+	) : null;
+
+	const privateBrowserContent = isPrivateBrowserVisible ? (
+		<FilesBrowser
+			targetKind="private"
+			nodeId={entry.node._id}
+			path={entry.path}
+			host="docked"
+			editorRevision={previewRevision}
+			serverSequence={null}
+			getDraftText={null}
+			getDraftRevision={null}
+		/>
+	) : null;
+	// Same stable-group pattern as saved files: hide instead of unmount so the
+	// editor keeps its local draft. The lone visible panel fills the width.
 
 	return (
 		<>
@@ -1355,8 +1588,8 @@ const FileNodeViewPrivateContent = memo(function FileNodeViewPrivateContent(prop
 				<>
 					{createPortal(
 						<FileNodeViewViewSelect
-							options={[...editorOptions, ...(hasHtmlPreview ? [{ value: "preview", label: "Preview" }] : [])]}
-							value={isPreview ? "preview" : editorMode}
+							options={privateViewOptions}
+							value={hasHtmlPreview ? activePrivateView : isPreview ? "preview" : editorMode}
 							onValueChange={handleViewChange}
 						/>,
 						viewSelectPortalHost,
@@ -1364,42 +1597,60 @@ const FileNodeViewPrivateContent = memo(function FileNodeViewPrivateContent(prop
 					<div
 						className={cn(
 							"FileNodeViewFile" satisfies FileNodeViewFile_ClassNames,
-							!isPreview &&
+							!hasHtmlPreview &&
+								!isPreview &&
 								editorMode === "rich_text_editor" &&
 								("FileNodeViewFile-rich-text" satisfies FileNodeViewFile_ClassNames),
 						)}
 					>
-						{/* Keep local draft edits while Preview is open. */}
-						<div
-							className={"FileNodeViewFile-panel" satisfies FileNodeViewFile_ClassNames}
-							role="region"
-							aria-label="File editor"
-							hidden={isPreview}
-							inert={isPreview}
-						>
-							<FileEditor
-								ref={editorRef}
-								isActive={!isPreview}
-								target={{ kind: "private", id: entry.node._id }}
-								privateCanEdit={view.canEdit}
-								writeBlockedReason={null}
-								pendingUpdateId={entry.pendingUpdate._id}
-								rootKind={textIntent.textKind}
-								monacoLanguageId={files_monaco_language_id_of_content_type(textIntent.contentType)}
-								nonCollaborative
-								committedAssetId={null}
-								pendingUpdatesLoaded
-								editorMode={editorMode}
-								topSafeArea={topSafeArea}
-								presenceStore={presenceStore}
-								commentsPortalHost={null}
-								toolbarPortalHost={toolbarPortalHost}
-								onEditorModeChange={onEditorModeChange}
-								onAutomaticEditorModeChange={onAutomaticEditorModeChange}
-								onPreviewSnapshotChange={handlePreviewSnapshotChange}
-								onTargetChange={onTargetChange}
-							/>
-						</div>
+						{hasHtmlPreview ? (
+							<div
+								className={"FileNodeViewFile-split" satisfies FileNodeViewFile_ClassNames}
+								hidden={isPreview}
+								inert={isPreview}
+							>
+								<MyPanelGroup direction="horizontal">
+									<MyPanel
+										id="file-node-view-editor"
+										order={1}
+										defaultSize={isPrivateBrowserVisible ? 55 : 100}
+										minSize={30}
+										isOpen={isPrivateEditorVisible}
+										closeBehavior="hidden"
+									>
+										<div
+											className={"FileNodeViewFile-panel" satisfies FileNodeViewFile_ClassNames}
+											role="region"
+											aria-label="File editor"
+										>
+											{editorContent}
+										</div>
+									</MyPanel>
+									{isPrivateBrowserVisible && (
+										<>
+											<MyPanelResizeHandle
+												isOpen
+												closeBehavior="unmount"
+												aria-label="Resize editor and browser"
+											/>
+											<MyPanel id="file-node-view-browser" order={2} defaultSize={45} minSize={30}>
+												{privateBrowserContent}
+											</MyPanel>
+										</>
+									)}
+								</MyPanelGroup>
+							</div>
+						) : (
+							<div
+								className={"FileNodeViewFile-panel" satisfies FileNodeViewFile_ClassNames}
+								role="region"
+								aria-label="File editor"
+								hidden={isPreview}
+								inert={isPreview}
+							>
+								{editorContent}
+							</div>
+						)}
 						{isPreview && (
 							<div className={"FileNodeViewFile-panel" satisfies FileNodeViewFile_ClassNames}>
 								<FileHtmlPreview
@@ -3477,15 +3728,91 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 	const searchPrivateNodeId = searchParams.pendingNodeId;
 	const searchNodeId = searchPrivateNodeId ? undefined : searchParams.nodeId;
 	const selectionKey = searchPrivateNodeId ? `private:${searchPrivateNodeId}` : `saved:${searchNodeId}`;
+	const browserSession = useQuery(app_convex_api.files_browser.current_browser_session, { membershipId });
+	const endingBrowserSessionRef = useRef<string | null>(null);
+
+	// One shared end call for both effects below. The ref guard stops double
+	// ends; it clears when the session goes away so a later retry can run.
+	const handleEndBrowserSession = useFn((sessionId: app_convex_Id<"files_browser_sessions">) => {
+		if (endingBrowserSessionRef.current === sessionId) {
+			return;
+		}
+		endingBrowserSessionRef.current = sessionId;
+		app_convex
+			.action(app_convex_api.files_browser.end_browser, { membershipId, sessionId })
+			.then((result) => {
+				if (result._nay) {
+					console.error("[FileNodeView] Failed to end browser session", { error: result._nay });
+				}
+			})
+			.catch((error: unknown) => {
+				console.error("[FileNodeView] Unexpected browser end error", { error });
+			});
+	});
+
+	useEffect(() => {
+		if (!browserSession) {
+			endingBrowserSessionRef.current = null;
+		}
+	}, [browserSession]);
+
+	// This owner stays mounted when the next selection has no browser panel, including folders.
+	// Wait for last-open restoration before treating an empty URL as a new selection.
+	useEffect(() => {
+		if (
+			(!searchNodeId && !searchPrivateNodeId) ||
+			!browserSession ||
+			`${browserSession.targetKind}:${browserSession.nodeId}` === selectionKey
+		) {
+			return;
+		}
+		handleEndBrowserSession(browserSession.sessionId);
+	}, [handleEndBrowserSession, membershipId, browserSession, searchNodeId, searchPrivateNodeId, selectionKey]);
+
 	const isRootNodeSelected = searchNodeId === files_ROOT_ID;
 	const [fileViewSelection, setFileViewSelection] = useState({ membershipId, selectionKey, view: "default" });
 	const selectedFileView =
 		fileViewSelection.membershipId === membershipId && fileViewSelection.selectionKey === selectionKey
 			? fileViewSelection.view
 			: "default";
-	const isEditorActive = selectedFileView === "default";
+	// Flat HTML views keep the editor visible. "default" is the editor for other files.
+	const isEditorActive =
+		selectedFileView === "default" ||
+		selectedFileView === "code" ||
+		selectedFileView === "review" ||
+		selectedFileView === "code_browser" ||
+		selectedFileView === "review_browser";
 	const handleFileViewChange = useFn((view: string) => {
 		setFileViewSelection({ membershipId, selectionKey, view });
+	});
+
+	// Leaving a browser view ends its session: the browser is only a view, never background.
+	useEffect(() => {
+		if (
+			!browserSession ||
+			`${browserSession.targetKind}:${browserSession.nodeId}` !== selectionKey ||
+			selectedFileView === "browser" ||
+			selectedFileView === "code_browser" ||
+			selectedFileView === "review_browser"
+		) {
+			return;
+		}
+		handleEndBrowserSession(browserSession.sessionId);
+	}, [handleEndBrowserSession, browserSession, membershipId, selectedFileView, selectionKey]);
+
+	useGlobalCustomEvent("files::open_browser", (event) => {
+		if (event.detail.membershipId !== membershipId) return;
+		const requestedSelectionKey = `${event.detail.targetKind}:${event.detail.nodeId}`;
+		// The browser is only a view: remember Browser for that file, then navigate to it.
+		setFileViewSelection({ membershipId, selectionKey: requestedSelectionKey, view: "browser" });
+		if (requestedSelectionKey !== selectionKey) {
+			onNavigateSearch({
+				...(event.detail.targetKind === "private"
+					? { pendingNodeId: event.detail.nodeId }
+					: { nodeId: event.detail.nodeId }),
+				q: searchParams.q,
+			});
+		}
 	});
 
 	const fileNodesList = FilesTreeProvider.useContext();
@@ -3715,7 +4042,28 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 				: null
 			: null;
 
+	// Flat HTML views ignore the URL editor mode, so the root uses this for
+	// review routing, scrollbar placement, and panel styles below.
+	const isHtmlFile =
+		(privateTextIntent?.textKind === "plain_text" &&
+			files_editable_text_content_type_of(privateTextIntent.contentType) === "text/html;charset=utf-8") ||
+		(resolvedNode != null &&
+			files_node_has_editable_text_content(resolvedNode) &&
+			files_editable_text_content_type_of(resolvedNode.contentType) === "text/html;charset=utf-8");
+
 	const handleReviewPendingUpdates = useFn(() => {
+		// Flat HTML views keep review in local file state; other files use the URL editor mode.
+		// From a browser view, keep the split: review beside the browser.
+		if (isHtmlFile) {
+			handleFileViewChange(
+				selectedFileView === "browser" ||
+					selectedFileView === "code_browser" ||
+					selectedFileView === "review_browser"
+					? "review_browser"
+					: "review",
+			);
+			return;
+		}
 		navigateToView("diff_editor");
 	});
 
@@ -3765,12 +4113,13 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 
 	// Monaco editors and the non-editor file panels keep a scrollbar at the content panel's
 	// right edge; rich text and folder views scroll on the shared editor-area scroller, whose
-	// bar sits outside the row.
+	// bar sits outside the row. Flat HTML views never use rich text mode.
+	const editorUsesRichText = !isHtmlFile && effectiveView === "rich_text_editor";
 	const topFloatingInnerScrollbar = privateEntry
-		? !privateTextIntent || !isEditorActive || effectiveView !== "rich_text_editor"
+		? !privateTextIntent || !isEditorActive || !editorUsesRichText
 		: resolvedNode?.kind === "file"
-			? !resolvedNodeHasEditableTextContent || !isEditorActive || effectiveView !== "rich_text_editor"
-			: activeEditorNodeId != null && effectiveView !== "rich_text_editor";
+			? !resolvedNodeHasEditableTextContent || !isEditorActive || !editorUsesRichText
+			: activeEditorNodeId != null && !editorUsesRichText;
 
 	// One shared floating surface; the component hides itself when there is nothing to show.
 	const topStickyFloatingSlot = (
@@ -3791,7 +4140,12 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 				hasPendingUpdates ? (
 					<FileEditorPendingUpdatesFloating
 						updatedAt={currentPendingUpdate?.updatedAt}
-						showReviewButton={hasCurrentPendingUpdates && (!isEditorActive || effectiveView !== "diff_editor")}
+						showReviewButton={
+							hasCurrentPendingUpdates &&
+							(isHtmlFile
+								? selectedFileView !== "review" && selectedFileView !== "review_browser"
+								: !isEditorActive || effectiveView !== "diff_editor")
+						}
 						reviewPagerLabel={reviewPagerLabel}
 						canNavigate={canNavigatePendingUpdates}
 						showLoadMore={hasMorePendingUpdates}
@@ -3921,7 +4275,7 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 	}, [navigateToNode, resolvedNode, searchNodeId, setLastOpenTarget]);
 
 	const contentPanelStyle =
-		isEditorActive && effectiveView === "rich_text_editor"
+		isEditorActive && editorUsesRichText
 			? {
 					minHeight: "100%",
 					height: "max-content",
@@ -4125,6 +4479,8 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 								node={resolvedNode ?? null}
 								isPrivate={!!searchPrivateNodeId}
 								commentsContainerRef={setCommentsPortalHost}
+								browserNodeId={searchPrivateNodeId ?? resolvedNode?._id ?? null}
+								browserNodeKind={searchPrivateNodeId ? "private" : resolvedNode ? "saved" : null}
 							/>
 						</MyPanel>
 					</MyPanelGroup>

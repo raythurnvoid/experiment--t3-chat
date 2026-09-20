@@ -3909,6 +3909,9 @@ type get_file_text_content_db_state_by_path_Result =
 		? Awaited<ReturnValue>
 		: never;
 
+export type files_nodes_get_file_text_content_db_state_by_path_Result =
+	get_file_text_content_db_state_by_path_Result;
+
 type get_file_last_available_text_content_by_path_Result = {
 	content: string;
 	target: files_PendingTarget;
