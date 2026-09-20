@@ -224,4 +224,27 @@ describe("FileEditorSidebarAgent thread upgrade", () => {
 		await userEvent.click(firstTab);
 		expect(screen.getByRole("textbox", { name: "Send a message..." }).textContent).toBe("First draft");
 	});
+
+	test("scrolls the new chat tab into view when tabs overflow", async () => {
+		render(
+			<div style={{ width: 480, height: 720 }}>
+				<FileEditorSidebarAgent rootTabId="app_file_editor_sidebar_tabs_agent" />
+			</div>,
+		);
+		await screen.findByRole("textbox", { name: "Send a message..." });
+
+		const newChatButton = screen.getByRole("button", { name: "New chat" });
+		for (let index = 0; index < 8; index++) {
+			await userEvent.click(newChatButton);
+		}
+
+		await waitFor(() => expect(screen.getAllByRole("tab")).toHaveLength(9));
+		const selectedTab = screen.getByRole("tab", { selected: true });
+		const header = document.querySelector(".FileEditorSidebarAgentHeader");
+		expect(header).not.toBeNull();
+		const headerRect = header!.getBoundingClientRect();
+		const tabRect = selectedTab.getBoundingClientRect();
+		expect(tabRect.left).toBeGreaterThanOrEqual(headerRect.left - 1);
+		expect(tabRect.right).toBeLessThanOrEqual(headerRect.right + 1);
+	});
 });

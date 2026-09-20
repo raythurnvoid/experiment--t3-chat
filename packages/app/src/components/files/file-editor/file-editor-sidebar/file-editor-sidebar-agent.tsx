@@ -580,6 +580,15 @@ const FileEditorSidebarAgentHeaderTabs = memo(function FileEditorSidebarAgentHea
 	} = props;
 	const selectedTabStorageKey: `app_state::file_editor_sidebar_agent_selected_tab::scope::${string}` = `app_state::file_editor_sidebar_agent_selected_tab::scope::${membershipId}`;
 	const openTabsStorageKey: `app_state::file_editor_sidebar_open_tabs::scope::${string}` = `app_state::file_editor_sidebar_open_tabs::scope::${membershipId}`;
+	const listRef = useRef<HTMLDivElement | null>(null);
+
+	// Keep the selected chat tab visible when many tabs overflow the header.
+	useEffect(() => {
+		const selectedTab = listRef.current?.querySelector(
+			`[data-ai-chat-thread-id="${CSS.escape(selectedChatTabId)}"]`,
+		);
+		selectedTab?.scrollIntoView({ block: "nearest", inline: "start" });
+	}, [selectedChatTabId, openTabs.length]);
 
 	const handleDragEnd = useFn((result: DropResult) => {
 		const { destination, source } = result;
@@ -673,6 +682,7 @@ const FileEditorSidebarAgentHeaderTabs = memo(function FileEditorSidebarAgentHea
 
 	return (
 		<MyTabsList
+			ref={listRef}
 			className={cn("FileEditorSidebarAgentHeaderTabs" satisfies FileEditorSidebarAgentHeaderTabs_ClassNames)}
 			aria-label="Open chats"
 		>
