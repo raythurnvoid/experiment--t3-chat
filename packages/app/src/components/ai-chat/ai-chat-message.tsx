@@ -525,6 +525,138 @@ const AiChatMessagePartToolExecuteCode = memo(function AiChatMessagePartToolExec
 });
 // #endregion tool execute_code
 
+// #region tool browser
+type AiChatMessagePartToolBrowser_ClassNames = "AiChatMessagePartToolBrowser" | "AiChatMessagePartToolBrowser-status";
+
+type AiChatMessagePartToolBrowser_Props = {
+	className?: string | undefined;
+	toolName: "browser_run" | "browser_reload" | "browser_close";
+	result: unknown;
+	toolState: ToolUIPart["state"];
+	isChatRunning: boolean;
+};
+
+/**
+ * Redact values that must never paint, even from a forged stored part. The
+ * server redacts before storing. This keeps a malformed history row safe too.
+ */
+function browser_debug_display(text: string) {
+	return text
+		.replace(/data:image\/[a-zA-Z0-9+;,=_-]+/g, "[redacted image]")
+		.replace(/\[browser-source:/g, "[redacted source:")
+		.replace(/\[file-read:/g, "[redacted file:");
+}
+
+/**
+ * Browser runs show capped display text from `metadata.debug`. The card never
+ * receives or reads `part.input`. Code comes only from `debug.code`.
+ */
+const AiChatMessagePartToolBrowser = memo(function AiChatMessagePartToolBrowser(
+	props: AiChatMessagePartToolBrowser_Props,
+) {
+	const { className, toolName, result, toolState, isChatRunning } = props;
+
+	const parsed = ai_chat_file_result_schema.safeParse(result);
+	const title = {
+		browser_run: "Browser run",
+		browser_reload: "Browser reload",
+		browser_close: "Browser close",
+	}[toolName];
+	const expected = parsed.success
+		? ai_chat_file_result(title, parsed.data.metadata.status, parsed.data.metadata.files, parsed.data.metadata.reason, parsed.data.metadata.debug)
+		: null;
+
+	// Reload and close carry no files and no observation sections. A result with
+	// files, or with code/result/console/page text, is not a valid reload/close.
+	const debug = parsed.success ? (parsed.data.metadata.debug ?? {}) : null;
+	const debugAllowed =
+		debug !== null &&
+		(toolName === "browser_run" ||
+			(debug.code === undefined &&
+				debug.resultText === undefined &&
+				debug.consoleText === undefined &&
+				debug.pageErrorsText === undefined));
+	const output =
+		parsed.success &&
+		parsed.data.title === expected?.title &&
+		parsed.data.output === expected?.output &&
+		((toolName !== "browser_reload" && toolName !== "browser_close") || parsed.data.metadata.files.length === 0) &&
+		debugAllowed
+			? parsed.data
+			: null;
+
+	// Runner failures arrive as normal `output-available` results, so map them to
+	// `output-error` for the header badge, like the Execute code card does.
+	const isRunnerError =
+		output !== null && (output.metadata.status === "errored" || output.metadata.status === "timed_out");
+	const summaryState = isRunnerError ? "output-error" : toolState;
+
+	const subject = "Browser";
+	const statusText = output ? file_result_status_text(output.metadata, subject) : null;
+	const isLoading = toolState === "input-streaming" || toolState === "input-available";
+	const status = isLoading
+		? "Running…"
+		: (statusText ??
+			(toolState === "output-error" || toolState === "output-denied"
+				? "The request could not finish."
+				: "Output is no longer available."));
+
+	const isFailure = output !== null && (output.metadata.status === "errored" || output.metadata.status === "timed_out");
+	const showCode = toolName === "browser_run" && output?.metadata.debug?.code !== undefined;
+	const showResult = toolName === "browser_run" && output?.metadata.debug?.resultText !== undefined;
+	const showError = isFailure && output?.metadata.debug?.errorText !== undefined;
+	const showConsole = toolName === "browser_run" && output?.metadata.debug?.consoleText !== undefined;
+	const showPageErrors = toolName === "browser_run" && output?.metadata.debug?.pageErrorsText !== undefined;
+
+	return (
+		<AiChatMessagePartDisclosure
+			className={cn("AiChatMessagePartToolBrowser" satisfies AiChatMessagePartToolBrowser_ClassNames, className)}
+		>
+			<AiChatMessagePartDisclosureButton title={title} state={summaryState} isChatRunning={isChatRunning} />
+			<AiChatMessagePartToolBody>
+				<div className={"AiChatMessagePartToolBrowser-status" satisfies AiChatMessagePartToolBrowser_ClassNames}>
+					{status}
+				</div>
+				{showCode && (
+					<AiChatMessagePartToolTextAreaSection
+						label="Code"
+						code={browser_debug_display(output.metadata.debug?.code ?? "")}
+						maxHeight="16lh"
+					/>
+				)}
+				{showResult && (
+					<AiChatMessagePartToolTextAreaSection
+						label="Result"
+						code={browser_debug_display(output.metadata.debug?.resultText ?? "")}
+						maxHeight="16lh"
+					/>
+				)}
+				{showError && (
+					<AiChatMessagePartToolTextAreaSection
+						label="Error"
+						code={browser_debug_display(output.metadata.debug?.errorText ?? "")}
+						state="error"
+					/>
+				)}
+				{showConsole && (
+					<AiChatMessagePartToolTextAreaSection
+						label="Console"
+						code={browser_debug_display(output.metadata.debug?.consoleText ?? "")}
+					/>
+				)}
+				{showPageErrors && (
+					<AiChatMessagePartToolTextAreaSection
+						label="Page errors"
+						code={browser_debug_display(output.metadata.debug?.pageErrorsText ?? "")}
+					/>
+				)}
+				<AiChatMessagePartToolFileLinks files={output?.metadata.files} />
+			</AiChatMessagePartToolBody>
+		</AiChatMessagePartDisclosure>
+	);
+});
+// #endregion tool browser
+
 // #region tool files
 function file_result_status_text(metadata: z.infer<typeof ai_chat_file_result_schema>["metadata"], subject: string) {
 	const outcome = {
@@ -625,7 +757,7 @@ type AiChatMessagePartToolFiles_ClassNames = "AiChatMessagePartToolFiles" | "AiC
 
 type AiChatMessagePartToolFiles_Props = {
 	className?: string | undefined;
-	toolName: "browser_run" | "browser_reload" | "browser_close" | "view_image" | "image_generation";
+	toolName: "view_image" | "image_generation";
 	result: unknown;
 	toolState: ToolUIPart["state"];
 	isChatRunning: boolean;
@@ -641,29 +773,26 @@ const AiChatMessagePartToolFiles = memo(function AiChatMessagePartToolFiles(prop
 
 	const parsed = ai_chat_file_result_schema.safeParse(result);
 	const title = {
-		browser_run: "Browser run",
-		browser_reload: "Browser reload",
-		browser_close: "Browser close",
 		view_image: "View image",
 		image_generation: "Generate image",
 	}[toolName];
 	const expected = parsed.success
-		? ai_chat_file_result(title, parsed.data.metadata.status, parsed.data.metadata.files, parsed.data.metadata.reason)
+		? ai_chat_file_result(title, parsed.data.metadata.status, parsed.data.metadata.files, parsed.data.metadata.reason, parsed.data.metadata.debug)
 		: null;
 
 	// The server rewrites every file tool result into one exact shape before the message is stored.
-	// Anything else is an old or untrusted result, so drop it here and show no file links. Each tool
-	// also has its own file limit: close and reload carry none, view_image carries at most one.
+	// Anything else is an old or untrusted result, so drop it here and show no file links. view_image
+	// carries at most one file. Neither tool stores display debug text.
 	const output =
 		parsed.success &&
 		parsed.data.title === expected?.title &&
 		parsed.data.output === expected?.output &&
-		((toolName !== "browser_reload" && toolName !== "browser_close") || parsed.data.metadata.files.length === 0) &&
+		parsed.data.metadata.debug === undefined &&
 		(toolName !== "view_image" || parsed.data.metadata.files.length <= 1)
 			? parsed.data
 			: null;
 
-	const subject = toolName.startsWith("browser_") ? "Browser" : "File";
+	const subject = "File";
 	// Build the sentence from the status word alone. Raw tool text, such as browser observations or
 	// file contents, never reaches the chat.
 	const statusText = output ? file_result_status_text(output.metadata, subject) : null;
@@ -1007,13 +1136,18 @@ const AiChatMessagePartInner = memo(function AiChatMessagePartInner(props: AiCha
 		// Handle both SDK tool shapes here so file results never fall through to raw JSON rendering.
 		const toolName = (part.type === "dynamic-tool" ? part.toolName : part.type.slice("tool-".length)).toLowerCase();
 
-		if (
-			toolName === "browser_run" ||
-			toolName === "browser_reload" ||
-			toolName === "browser_close" ||
-			toolName === "view_image" ||
-			toolName === "image_generation"
-		) {
+		if (toolName === "browser_run" || toolName === "browser_reload" || toolName === "browser_close") {
+			return (
+				<AiChatMessagePartToolBrowser
+					toolName={toolName}
+					result={part.output}
+					toolState={part.state}
+					isChatRunning={isChatRunning}
+				/>
+			);
+		}
+
+		if (toolName === "view_image" || toolName === "image_generation") {
 			return (
 				<AiChatMessagePartToolFiles
 					toolName={toolName}

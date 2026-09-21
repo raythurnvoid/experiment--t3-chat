@@ -2438,17 +2438,30 @@ describe("browser tools", () => {
 		runnerQueue.push(runner_run_result({ codeHash: await crypto_sha256_hex(`browser-v2\n${code}`) }));
 		expect(await ai_chat_tool_create_browser_run(ctx, browserCtxData).execute?.(
 			{ code }, { toolCallId: "versioned-hash", messages: [] },
-		)).toEqual(ai_chat_file_result("Browser run", "succeeded"));
+		)).toEqual(
+			ai_chat_file_result("Browser run", "succeeded", [], null, {
+				code,
+				resultText: JSON.stringify({ reviewed: true }),
+			}),
+		);
 	});
 
-	test("keeps private observations out of stored output and converts without side effects", async () => {
+	test("stores capped display text while live observations stay live-only", async () => {
 		const { ctx, runQuery, runMutation } = makeCtx(async () => accessOk);
 		runnerQueue.push(runner_run_result({ result: "private DOM text", consoleEntries: ["private console"] }));
 		const tool = ai_chat_tool_create_browser_run(ctx, browserCtxData);
 		const input = { code: "return await frame.textContent('body');" };
 		const output = ai_chat_file_result_schema.parse(await tool.execute?.(input, { toolCallId: "t", messages: [] }));
-		expect(output).toEqual(ai_chat_file_result("Browser run", "succeeded"));
-		expect(JSON.stringify(output)).not.toContain("private");
+		expect(output).toEqual(
+			ai_chat_file_result("Browser run", "succeeded", [], null, {
+				code: input.code,
+				resultText: "private DOM text",
+				consoleText: "private console",
+			}),
+		);
+		expect(JSON.stringify(output)).not.toContain("dataBase64");
+		expect(JSON.stringify(output)).not.toContain("commandId");
+		expect(JSON.stringify(output)).not.toContain("runner-session-1");
 		const reads = runQuery.mock.calls.length;
 		const observation = browserCtxData.observations.get("t");
 		for (let count = 0; count < 2; count++) {
@@ -2532,7 +2545,12 @@ describe("browser tools", () => {
 		const tool = ai_chat_tool_create_browser_run(ctx, { ...browserCtxData, canWriteFiles: false });
 		const input = { code: "return 1;" };
 		const output = ai_chat_file_result_schema.parse(await tool.execute?.(input, { toolCallId: "t", messages: [] }));
-		expect(output).toEqual(ai_chat_file_result("Browser run", "errored", [], "agent_required"));
+		expect(output).toEqual(
+			ai_chat_file_result("Browser run", "errored", [], "agent_required", {
+				code: "return 1;",
+				resultText: "private result",
+			}),
+		);
 		const model = JSON.stringify(await tool.toModelOutput?.({ input, output, toolCallId: "t" }));
 		expect(model).toContain("private result");
 		expect(model).toContain("agent_required");
@@ -2548,7 +2566,12 @@ describe("browser tools", () => {
 				{ code: "return 1;" },
 				{ toolCallId: "t", messages: [] },
 			),
-		).toEqual(ai_chat_file_result("Browser run", "succeeded"));
+		).toEqual(
+			ai_chat_file_result("Browser run", "succeeded", [], null, {
+				code: "return 1;",
+				resultText: JSON.stringify({ reviewed: true }),
+			}),
+		);
 		expect(runMutation).not.toHaveBeenCalled();
 		expect(browserCtxData.observations.has("t")).toBe(true);
 	});
@@ -2577,11 +2600,17 @@ describe("browser tools", () => {
 				files: [binaryFile, { path: "/empty.dat", contentType: "application/x-custom", dataBase64: "" }],
 			}),
 		);
+		const code = "emitFile({path: '/reports/output.bin', bytes: new Uint8Array([0,255,128,1])});";
 		const output = await ai_chat_tool_create_browser_run(ctx, browserCtxData).execute?.(
-			{ code: "emitFile({path: '/reports/output.bin', bytes: new Uint8Array([0,255,128,1])});" },
+			{ code },
 			{ toolCallId: "t", messages: [] },
 		);
-		expect(output).toEqual(ai_chat_file_result("Browser run", "succeeded", targets));
+		expect(output).toEqual(
+			ai_chat_file_result("Browser run", "succeeded", targets, null, {
+				code,
+				resultText: JSON.stringify({ reviewed: true }),
+			}),
+		);
 		expect(runMutation.mock.calls.map(([ref]) => getFunctionName(ref))).toEqual([
 			"files_browser:prepare_file_output",
 			"files_browser:finalize_file_output",
@@ -2626,7 +2655,12 @@ describe("browser tools", () => {
 				{ code: "return 1;" },
 				{ toolCallId: "t", messages: [] },
 			),
-		).toEqual(ai_chat_file_result("Browser run", "partial", [target], "storage"));
+		).toEqual(
+			ai_chat_file_result("Browser run", "partial", [target], "storage", {
+				code: "return 1;",
+				resultText: JSON.stringify({ reviewed: true }),
+			}),
+		);
 		expect(runMutation).toHaveBeenCalledTimes(3);
 		expect(r2Objects.size).toBe(1);
 	});
@@ -2690,7 +2724,12 @@ describe("browser tools", () => {
 				{ code: "return 1;" },
 				{ toolCallId: "t", messages: [] },
 			),
-		).toEqual(ai_chat_file_result("Browser run", "errored", [], "storage"));
+		).toEqual(
+			ai_chat_file_result("Browser run", "errored", [], "storage", {
+				code: "return 1;",
+				resultText: JSON.stringify({ reviewed: true }),
+			}),
+		);
 		expect(getFunctionName(runMutation.mock.calls[2]?.[0])).toBe("files_ingestion:abort_file");
 		expect(runMutation.mock.calls[2]?.[1]).toMatchObject({ receiptId: "receipt-1", attemptId: expect.any(String) });
 	});
@@ -2703,7 +2742,15 @@ describe("browser tools", () => {
 				{ code: "return 1;" },
 				{ toolCallId: "t", messages: [] },
 			),
-		).toEqual(ai_chat_file_result("Browser run", status === "timed_out" ? "timed_out" : "errored", [], "execution"));
+		).toEqual(
+			ai_chat_file_result(
+				"Browser run",
+				status === "timed_out" ? "timed_out" : "errored",
+				[],
+				"execution",
+				{ code: "return 1;", resultText: JSON.stringify({ reviewed: true }) },
+			),
+		);
 		expect(runMutation).not.toHaveBeenCalled();
 	});
 
@@ -2715,7 +2762,11 @@ describe("browser tools", () => {
 				{ code: "return 1;" },
 				{ toolCallId: "t", messages: [] },
 			),
-		).toEqual(ai_chat_file_result("Browser run", "errored", [], "unavailable"));
+		).toEqual(
+			ai_chat_file_result("Browser run", "errored", [], "unavailable", {
+				errorText: "The browser result has no thread to attach to.",
+			}),
+		);
 		expect(runMutation).not.toHaveBeenCalled();
 	});
 
@@ -2727,7 +2778,9 @@ describe("browser tools", () => {
 			await tool.execute?.({ code: "return 1;" }, { toolCallId: "t" + index, messages: [] });
 		}
 		expect(await tool.execute?.({ code: "return 1;" }, { toolCallId: "extra", messages: [] })).toEqual(
-			ai_chat_file_result("Browser run", "errored", [], "limit"),
+			ai_chat_file_result("Browser run", "errored", [], "limit", {
+				errorText: "Browser command limit reached for this request.",
+			}),
 		);
 		expect(runnerCalls).toHaveLength(20);
 	});
@@ -2741,7 +2794,11 @@ describe("browser tools", () => {
 				{ code: "return 1;" },
 				{ toolCallId: "t", messages: [] },
 			),
-		).toEqual(ai_chat_file_result("Browser run", "errored", [], "stale"));
+		).toEqual(
+			ai_chat_file_result("Browser run", "errored", [], "stale", {
+				errorText: "The browser or file changed while the command ran. Try again.",
+			}),
+		);
 		expect(runMutation).not.toHaveBeenCalled();
 		expect(browserCtxData.observations.size).toBe(0);
 	});
@@ -2762,7 +2819,9 @@ describe("browser tools", () => {
 		});
 		const tool = ai_chat_tool_create_browser_reload(ctx, browserCtxData);
 		expect(await tool.execute?.({}, { toolCallId: "t", messages: [] })).toEqual(
-			ai_chat_file_result("Browser reload", "errored", [], "needs_capture"),
+			ai_chat_file_result("Browser reload", "errored", [], "needs_capture", {
+				errorText: "Capture the editor draft again before reloading.",
+			}),
 		);
 		expect(runAction).not.toHaveBeenCalled();
 		session.sourceKind = "saved";
@@ -2781,7 +2840,12 @@ describe("browser tools", () => {
 				{ code: "return 1;" },
 				{ toolCallId: "next", messages: [] },
 			),
-		).toEqual(ai_chat_file_result("Browser run", "succeeded"));
+		).toEqual(
+			ai_chat_file_result("Browser run", "succeeded", [], null, {
+				code: "return 1;",
+				resultText: JSON.stringify({ reviewed: true }),
+			}),
+		);
 		expect(runnerCalls[0]?.body).toMatchObject({ loadGen: 2 });
 	});
 
@@ -2806,7 +2870,11 @@ describe("browser tools", () => {
 		);
 		expect(
 			await ai_chat_tool_create_browser_reload(ctx, browserCtxData).execute?.({}, { toolCallId: "t", messages: [] }),
-		).toEqual(ai_chat_file_result("Browser reload", "errored", [], "stale"));
+		).toEqual(
+			ai_chat_file_result("Browser reload", "errored", [], "stale", {
+				errorText: "The browser or file changed while reloading. Try again.",
+			}),
+		);
 		expect(browserCtxData.browser).toMatchObject({ controlGen: 2, loadGen: 1 });
 	});
 
@@ -2861,5 +2929,107 @@ describe("browser tools", () => {
 		expect(result).toMatchObject({ type: "text", value: expect.stringContaining("view_image") });
 		expect(JSON.stringify(result)).toContain("private-1");
 		expect(fetch).not.toHaveBeenCalled();
+	});
+
+	test("caps debug fields and keeps the total at most 16,000 chars", async () => {
+		const { ctx } = makeCtx(async () => accessOk);
+		runnerQueue.push(
+			runner_run_result({
+				result: "r".repeat(20_000),
+				consoleEntries: Array.from({ length: 30 }, () => "c".repeat(1000)),
+				pageErrors: Array.from({ length: 30 }, () => "p".repeat(1000)),
+				error: { message: "e".repeat(5000) },
+			}),
+		);
+		const code = "x".repeat(10_000);
+		const output = ai_chat_file_result_schema.parse(
+			await ai_chat_tool_create_browser_run(ctx, browserCtxData).execute?.(
+				{ code },
+				{ toolCallId: "t", messages: [] },
+			),
+		);
+		const debug = output.metadata.debug;
+		expect(debug?.code?.length).toBeLessThanOrEqual(4000);
+		expect(debug?.code).toContain("[truncated]");
+		expect(debug?.resultText?.length).toBeLessThanOrEqual(8000);
+		expect(debug?.consoleText?.length).toBeLessThanOrEqual(2000);
+		expect(debug?.pageErrorsText?.length).toBeLessThanOrEqual(1000);
+		expect(debug?.errorText?.length).toBeLessThanOrEqual(1000);
+		const total =
+			(debug?.code?.length ?? 0) +
+			(debug?.resultText?.length ?? 0) +
+			(debug?.consoleText?.length ?? 0) +
+			(debug?.pageErrorsText?.length ?? 0) +
+			(debug?.errorText?.length ?? 0);
+		expect(total).toBeLessThanOrEqual(16_000);
+	});
+
+	test("redacts image data and protocol markers from debug", async () => {
+		const { ctx } = makeCtx(async () => accessOk);
+		runnerQueue.push(
+			runner_run_result({
+				result: "see data:image/png;base64,SECRET and [browser-source:{\"sessionId\":\"s\"}] and [file-read:{\"id\":\"x\"}]",
+				consoleEntries: ["[browser-source:leak]"],
+				pageErrors: ["data:image/jpeg;base64,LEAK"],
+				error: { message: "[file-read:leak] data:image/gif;base64,LEAK" },
+			}),
+		);
+		const output = ai_chat_file_result_schema.parse(
+			await ai_chat_tool_create_browser_run(ctx, browserCtxData).execute?.(
+				{ code: "return [browser-source:s] + 'data:image/png;base64,CODELEAK'" },
+				{ toolCallId: "t", messages: [] },
+			),
+		);
+		const text = JSON.stringify(output.metadata.debug);
+		expect(text).not.toContain("data:image");
+		expect(text).not.toContain("[browser-source:");
+		expect(text).not.toContain("[file-read:");
+		expect(text).not.toContain("CODELEAK");
+		expect(text).not.toContain("SECRET");
+	});
+
+	test("never copies runner ids or screenshot bytes into debug", async () => {
+		const { ctx } = makeCtx(async () => accessOk);
+		runnerQueue.push(runner_run_result({ files: [binaryFile] }));
+		const output = ai_chat_file_result_schema.parse(
+			await ai_chat_tool_create_browser_run(ctx, browserCtxData).execute?.(
+				{ code: "return 1;" },
+				{ toolCallId: "t", messages: [] },
+			),
+		);
+		const text = JSON.stringify(output.metadata.debug);
+		expect(text).not.toContain("dataBase64");
+		expect(text).not.toContain("AP+AAQ");
+		expect(text).not.toContain("commandId");
+		expect(text).not.toContain("codeHash");
+		expect(text).not.toContain("elapsedMs");
+		expect(text).not.toContain("runner-session-1");
+	});
+
+	test("early failures carry only safe error text", async () => {
+		const { ctx } = makeCtx(async () => ({ ok: false }));
+		const output = ai_chat_file_result_schema.parse(
+			await ai_chat_tool_create_browser_run(ctx, browserCtxData).execute?.(
+				{ code: "return 1;" },
+				{ toolCallId: "t", messages: [] },
+			),
+		);
+		expect(output.metadata.debug).toEqual({
+			errorText: "The browser or file changed since this run started. Try again.",
+		});
+	});
+
+	test("file_stored model output never includes debug", async () => {
+		const tool = ai_chat_tool_create_file_stored();
+		const result = await tool.toModelOutput?.({
+			toolCallId: "t",
+			input: {},
+			output: ai_chat_file_result("Browser run", "succeeded", [], null, {
+				code: "secret-code",
+				resultText: "secret-result",
+			}),
+		});
+		expect(JSON.stringify(result)).not.toContain("secret-code");
+		expect(JSON.stringify(result)).not.toContain("secret-result");
 	});
 });

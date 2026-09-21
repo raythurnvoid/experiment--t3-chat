@@ -15,8 +15,24 @@ export const ai_chat_file_target_schema = z.discriminatedUnion("kind", [
 ]);
 
 /**
- * The one stored shape every file tool writes. Shared chat stores status and targets only. File
- * bytes stay behind the Files read APIs.
+ * Capped display text a browser run may store for the human card. Raw live
+ * observations stay live-only. Only these fields may persist, and the chat card
+ * reads only these fields. Never put lease JSON, provider or session ids,
+ * screenshot bytes, or inline image data here.
+ */
+export const ai_chat_file_debug_schema = z
+	.object({
+		code: z.string().max(4000).optional(),
+		resultText: z.string().max(8000).optional(),
+		consoleText: z.string().max(2000).optional(),
+		pageErrorsText: z.string().max(1000).optional(),
+		errorText: z.string().max(1000).optional(),
+	})
+	.strict();
+
+/**
+ * The one stored shape every file tool writes. Shared chat stores status and targets only, plus
+ * optional capped browser display text. File bytes stay behind the Files read APIs.
  *
  * `.strict()` makes a result with any extra field fail the check, so a tool cannot put anything
  * else into the stored thread.
@@ -45,6 +61,8 @@ export const ai_chat_file_result_schema = z
 					.nullable(),
 				// Both runners and the shared writer stop at eight files per call.
 				files: z.array(ai_chat_file_target_schema).max(8),
+				// Display-only browser text. Old results without it stay valid.
+				debug: ai_chat_file_debug_schema.optional(),
 			})
 			.strict(),
 	})
@@ -60,8 +78,13 @@ export function ai_chat_file_result(
 	status: z.infer<typeof ai_chat_file_result_schema>["metadata"]["status"],
 	files: Array<z.infer<typeof ai_chat_file_target_schema>> = [],
 	reason: z.infer<typeof ai_chat_file_result_schema>["metadata"]["reason"] = null,
+	debug?: z.infer<typeof ai_chat_file_debug_schema>,
 ) {
-	return { title, output: `${title}: ${status}.`, metadata: { status, reason, files } };
+	return {
+		title,
+		output: `${title}: ${status}.`,
+		metadata: debug === undefined ? { status, reason, files } : { status, reason, files, debug },
+	};
 }
 
 /**

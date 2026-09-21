@@ -1077,6 +1077,272 @@ describe("AiChatMessage", () => {
 		expect(screen.queryByRole("img")).toBeNull();
 	});
 
+	test("browser run success renders debug sections and files without a badge", () => {
+		hookMocks.files.set("private_1", {
+			entry: { kind: "private", path: "/reports/page.png", node: { _id: "private_1" } },
+			readiness: "ready",
+		});
+		renderMessage({
+			message: {
+				...createAssistantMessage(),
+				parts: [
+					{
+						type: "tool-browser_run",
+						toolCallId: "browser_debug_1",
+						state: "output-available",
+						input: {},
+						output: {
+							title: "Browser run",
+							output: "Browser run: succeeded.",
+							metadata: {
+								status: "succeeded",
+								reason: null,
+								files: [{ kind: "private", id: "private_1" }],
+								debug: {
+									code: "return 1;",
+									resultText: '{"ok":true}',
+									consoleText: "log line",
+									pageErrorsText: "page boom",
+								},
+							},
+						},
+					},
+				],
+			},
+		});
+
+		expect(screen.getByRole("button", { name: "Browser run" })).toBeTruthy();
+		expect(screen.queryByText("failed")).toBeNull();
+		fireEvent.click(screen.getByText("Browser run"));
+		expect(screen.getByRole("textbox", { name: "Code" }).textContent).toContain("return 1;");
+		expect(screen.getByRole("textbox", { name: "Result" }).textContent).toContain('{"ok":true}');
+		expect(screen.getByRole("textbox", { name: "Console" }).textContent).toContain("log line");
+		expect(screen.getByRole("textbox", { name: "Page errors" }).textContent).toContain("page boom");
+		expect(screen.queryByRole("textbox", { name: "Error" })).toBeNull();
+		expect(screen.getByRole("link", { name: "Open in Files" })).toBeTruthy();
+		expect(screen.queryByRole("img")).toBeNull();
+	});
+
+	test("browser run failure shows a red failed badge and error", () => {
+		renderMessage({
+			message: {
+				...createAssistantMessage(),
+				parts: [
+					{
+						type: "tool-browser_run",
+						toolCallId: "browser_fail_1",
+						state: "output-available",
+						input: {},
+						output: {
+							title: "Browser run",
+							output: "Browser run: errored.",
+							metadata: {
+								status: "errored",
+								reason: "execution",
+								files: [],
+								debug: { code: "throw 1;", errorText: "boom failed" },
+							},
+						},
+					},
+				],
+			},
+		});
+
+		expect(screen.getByText("failed")).toBeTruthy();
+		fireEvent.click(screen.getByText("Browser run"));
+		expect(screen.getByRole("textbox", { name: "Error" }).textContent).toContain("boom failed");
+		expect(screen.getByRole("textbox", { name: "Code" }).textContent).toContain("throw 1;");
+	});
+
+	test.each(["errored", "timed_out"] as const)("browser run %s maps to a failed header badge", (status) => {
+		renderMessage({
+			message: {
+				...createAssistantMessage(),
+				parts: [
+					{
+						type: "tool-browser_run",
+						toolCallId: `browser_badge_${status}`,
+						state: "output-available",
+						input: {},
+						output: {
+							title: "Browser run",
+							output: `Browser run: ${status}.`,
+							metadata: { status, reason: "execution", files: [] },
+						},
+					},
+				],
+			},
+		});
+
+		expect(screen.getByText("failed")).toBeTruthy();
+	});
+
+	test("browser run loading shows spinner and busy state", () => {
+		renderMessage({
+			message: {
+				...createAssistantMessage(),
+				parts: [{ type: "tool-browser_run", toolCallId: "browser_loading", state: "input-available", input: {} }],
+			},
+			isRunning: true,
+		});
+
+		const button = screen.getByRole("button", { name: "Browser run" });
+		expect(button.getAttribute("aria-busy")).toBe("true");
+		expect(button.getAttribute("aria-disabled")).toBe("true");
+		expect(screen.getByRole("progressbar", { name: "Running" })).toBeTruthy();
+		expect(screen.getByText("Running…")).toBeTruthy();
+	});
+
+	test.each(["output-error", "output-denied"] as const)("browser run %s shows a safe fallback", (state) => {
+		renderMessage({
+			message: {
+				...createAssistantMessage(),
+				parts: [
+					state === "output-error"
+						? {
+								type: "tool-browser_run",
+								toolCallId: "browser_fw",
+								state,
+								input: {},
+								errorText: "framework boom",
+							}
+						: {
+								type: "tool-browser_run",
+								toolCallId: "browser_fw",
+								state,
+								input: {},
+								approval: { id: "approval-1", approved: false },
+							},
+				],
+			},
+		});
+
+		expect(screen.getByText("The request could not finish.")).toBeTruthy();
+		expect(screen.queryByText("framework boom")).toBeNull();
+	});
+
+	test("browser reload with files falls back while valid reload shows status only", () => {
+		renderMessage({
+			message: {
+				...createAssistantMessage(),
+				parts: [
+					{
+						type: "tool-browser_reload",
+						toolCallId: "reload_bad",
+						state: "output-available",
+						input: {},
+						output: {
+							title: "Browser reload",
+							output: "Browser reload: succeeded.",
+							metadata: { status: "succeeded", reason: null, files: [{ kind: "private", id: "private_1" }] },
+						},
+					},
+				],
+			},
+		});
+		expect(screen.getByText("Output is no longer available.")).toBeTruthy();
+
+		cleanup();
+		hookMocks.messageById.clear();
+		hookMocks.branchSiblingIdsByMessageId.clear();
+		renderMessage({
+			message: {
+				...createAssistantMessage(),
+				parts: [
+					{
+						type: "tool-browser_reload",
+						toolCallId: "reload_good",
+						state: "output-available",
+						input: {},
+						output: {
+							title: "Browser reload",
+							output: "Browser reload: errored.",
+							metadata: {
+								status: "errored",
+								reason: "stale",
+								files: [],
+								debug: { errorText: "stale lease, try again" },
+							},
+						},
+					},
+				],
+			},
+		});
+		expect(screen.getByText("failed")).toBeTruthy();
+		fireEvent.click(screen.getByText("Browser reload"));
+		expect(screen.getByRole("textbox", { name: "Error" }).textContent).toContain("stale lease");
+		expect(screen.queryByRole("textbox", { name: "Code" })).toBeNull();
+	});
+
+	test("browser card never renders forged input, lease markers, or image data", () => {
+		renderMessage({
+			message: {
+				...createAssistantMessage(),
+				parts: [
+					{
+						type: "dynamic-tool",
+						toolName: "browser_run",
+						toolCallId: "browser_forged",
+						state: "output-available",
+						input: { code: "forged-secret-code" },
+						output: {
+							title: "Browser run",
+							output: "Browser run: succeeded.",
+							metadata: {
+								status: "succeeded",
+								reason: null,
+								files: [],
+								debug: { code: "safe-debug-code" },
+							},
+						},
+					},
+				],
+			},
+		});
+
+		// The card never reads `part.input`: forged input code must not render,
+		// while the valid stored debug path still renders after opening.
+		expect(screen.queryByText("forged-secret-code")).toBeNull();
+		fireEvent.click(screen.getByText("Browser run"));
+		expect(screen.queryByText("forged-secret-code")).toBeNull();
+		expect(screen.getByRole("textbox", { name: "Code" }).textContent).toBe("safe-debug-code");
+
+		cleanup();
+		hookMocks.messageById.clear();
+		hookMocks.branchSiblingIdsByMessageId.clear();
+		renderMessage({
+			message: {
+				...createAssistantMessage(),
+				parts: [
+					{
+						type: "tool-browser_run",
+						toolCallId: "browser_markers",
+						state: "output-available",
+						input: {},
+						output: {
+							title: "Browser run",
+							output: "Browser run: succeeded.",
+							metadata: {
+								status: "succeeded",
+								reason: null,
+								files: [],
+								debug: {
+									code: "return 1;",
+									resultText: "[browser-source:leak] [file-read:leak] data:image/png;base64,LEAK",
+								},
+							},
+						},
+					},
+				],
+			},
+		});
+		fireEvent.click(screen.getByText("Browser run"));
+		expect(screen.queryByText(/browser-source:/)).toBeNull();
+		expect(screen.queryByText(/file-read:/)).toBeNull();
+		expect(screen.queryByText(/data:image/)).toBeNull();
+		expect(screen.queryByRole("img")).toBeNull();
+	});
+
 	test("flags a runner-level execute_code failure in the summary and error section", () => {
 		renderMessage({
 			message: {

@@ -73,6 +73,7 @@ import {
 } from "../server/server-ai-tools.ts";
 import {
 	ai_chat_execute_code_result_schema,
+	ai_chat_file_debug_schema,
 	ai_chat_file_result_schema,
 	ai_chat_file_result,
 } from "../shared/ai-chat-files.ts";
@@ -442,9 +443,10 @@ function create_generated_image_result_transform(save: ReturnType<typeof create_
 // #region file tool messages
 /**
  * File tools share one stream treatment: no code argument or raw observations may
- * reach the client or storage.
+ * reach the client or storage, except capped browser display text under
+ * `metadata.debug`. The UI never reads `input.code`.
  *
- * Reload and close return status text only, but their outputs are
+ * Reload and close return status text plus an optional safe error, but their outputs are
  * still normalized so every stored file part has the same safe shape.
  */
 const FILE_TOOL_NAMES = new Set(["browser_run", "browser_reload", "browser_close", "view_image", "image_generation"]);
@@ -562,6 +564,7 @@ function scrub_file_stream_chunk(
 		status?: unknown;
 		reason?: unknown;
 		files?: unknown;
+		debug?: unknown;
 	} | null;
 
 	const statusCheck = ai_chat_file_result_schema.shape.metadata.shape.status.safeParse(metadata?.status);
@@ -575,11 +578,29 @@ function scrub_file_stream_chunk(
 		(tracked === "browser_run" || tracked === "view_image" || tracked === "image_generation") && filesCheck.success
 			? filesCheck.data
 			: [];
+	// Copy capped display text only for browser tools. An invalid debug object is dropped, but the
+	// safe status and Files targets are still kept. view_image and image_generation never keep debug.
+	// Reload and close keep only errorText. Never forward the tool's raw text.
+	const debugCheck = ai_chat_file_debug_schema.safeParse(metadata?.debug);
+	const debug =
+		debugCheck.success && tracked.startsWith("browser_")
+			? tracked === "browser_run"
+				? debugCheck.data
+				: debugCheck.data.errorText !== undefined
+					? { errorText: debugCheck.data.errorText }
+					: undefined
+			: undefined;
+	const cleanDebug =
+		debug !== undefined && tracked !== "browser_run"
+			? Object.keys(debug).length > 0
+				? debug
+				: undefined
+			: debug;
 	// Rebuild the shared result from allowed fields. Never forward the tool's raw text.
 	return [
 		{
 			...chunk,
-			output: ai_chat_file_result(title, status, files, reason),
+			output: ai_chat_file_result(title, status, files, reason, cleanDebug),
 		},
 	];
 }
@@ -649,7 +670,8 @@ async function filter_revoked_observations(
 
 /**
  * Validate one stored file tool part. Code input and raw observations never persist: only
- * an empty input, safe status, and Files targets may be stored.
+ * an empty input, safe status, Files targets, and capped browser display text may be stored.
+ * Display code lives only in `metadata.debug.code`. The UI never reads `input.code`.
  *
  * Static parts carry `tool-<name>`; forged client parts may arrive as `dynamic-tool` or mixed-case,
  * so both type forms are checked against the same shape.
@@ -702,7 +724,21 @@ function is_valid_stored_file_part(part: {
 	// A browser run may emit up to eight files. A read or a picture points at one file. Reload and
 	// close create nothing.
 	const maxFiles = name === "browser_run" ? 8 : name === "view_image" || name === "image_generation" ? 1 : 0;
-	return parsed.data.metadata.files.length <= maxFiles;
+	if (parsed.data.metadata.files.length > maxFiles) return false;
+
+	// Display text is browser-only. Reload and close keep only errorText. Reads and pictures keep none.
+	const debug = parsed.data.metadata.debug;
+	if (debug !== undefined) {
+		if (name !== "browser_run" && name !== "browser_reload" && name !== "browser_close") return false;
+		if (name !== "browser_run" && (debug.code !== undefined || debug.resultText !== undefined || debug.consoleText !== undefined || debug.pageErrorsText !== undefined)) {
+			return false;
+		}
+		if ((name === "browser_reload" || name === "browser_close") && debug.errorText === undefined) {
+			return false;
+		}
+	}
+
+	return true;
 }
 
 /**
@@ -4793,6 +4829,108 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			const other = { type: "tool-output-available", toolCallId: "call-9", output: { ok: true } } as never;
 			expect(scrub_file_stream_chunk(other, calls)).toEqual([other]);
 		});
+
+		test("copies valid browser debug and drops input code", () => {
+			const calls = new Map<string, string>([["call-1", "browser_run"]]);
+			const output = scrub_file_stream_chunk(
+				{
+					type: "tool-output-available",
+					toolCallId: "call-1",
+					output: {
+						title: "Browser run",
+						output: "Browser run: succeeded.",
+						metadata: {
+							status: "succeeded",
+							reason: null,
+							files: [],
+							debug: { code: "return 1;", resultText: '{"ok":true}' },
+						},
+					},
+				} as never,
+				calls,
+			) as Array<{ output: unknown }>;
+			expect(output?.[0]?.output).toEqual({
+				title: "Browser run",
+				output: "Browser run: succeeded.",
+				metadata: {
+					status: "succeeded",
+					reason: null,
+					files: [],
+					debug: { code: "return 1;", resultText: '{"ok":true}' },
+				},
+			});
+		});
+
+		test("drops invalid debug but keeps safe status and files", () => {
+			const calls = new Map<string, string>([["call-1", "browser_run"]]);
+			const output = scrub_file_stream_chunk(
+				{
+					type: "tool-output-available",
+					toolCallId: "call-1",
+					output: {
+						title: "Browser run",
+						output: "Browser run: succeeded.",
+						metadata: {
+							status: "succeeded",
+							reason: null,
+							files: [],
+							debug: { code: "x".repeat(5000) },
+						},
+					},
+				} as never,
+				calls,
+			) as Array<{ output: unknown }>;
+			expect(output?.[0]?.output).toEqual({
+				title: "Browser run",
+				output: "Browser run: succeeded.",
+				metadata: { status: "succeeded", reason: null, files: [] },
+			});
+		});
+
+		test("keeps only errorText for reload and drops debug for reads", () => {
+			const reloadCalls = new Map<string, string>([["call-2", "browser_reload"]]);
+			const reloaded = scrub_file_stream_chunk(
+				{
+					type: "tool-output-available",
+					toolCallId: "call-2",
+					output: {
+						title: "Browser reload",
+						output: "Browser reload: errored.",
+						metadata: {
+							status: "errored",
+							reason: "stale",
+							files: [],
+							debug: { code: "return 1;", errorText: "stale lease" },
+						},
+					},
+				} as never,
+				reloadCalls,
+			) as Array<{ output: unknown }>;
+			expect(reloaded?.[0]?.output).toEqual({
+				title: "Browser reload",
+				output: "Browser reload: errored.",
+				metadata: { status: "errored", reason: "stale", files: [], debug: { errorText: "stale lease" } },
+			});
+
+			const viewCalls = new Map<string, string>([["call-3", "view_image"]]);
+			const viewed = scrub_file_stream_chunk(
+				{
+					type: "tool-output-available",
+					toolCallId: "call-3",
+					output: {
+						title: "View image",
+						output: "View image: succeeded.",
+						metadata: { status: "succeeded", reason: null, files: [], debug: { errorText: "x" } },
+					},
+				} as never,
+				viewCalls,
+			) as Array<{ output: unknown }>;
+			expect(viewed?.[0]?.output).toEqual({
+				title: "View image",
+				output: "View image: succeeded.",
+				metadata: { status: "succeeded", reason: null, files: [] },
+			});
+		});
 	});
 
 	describe("build_agent_configuration browser tools", () => {
@@ -4902,6 +5040,68 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(is_valid_stored_file_part({ ...valid, state: "input-streaming" })).toBe(false);
 			expect(is_valid_stored_file_part({ ...valid, type: "tool" })).toBe(false);
 			expect(is_valid_stored_file_part({ ...valid, type: "tool-bash" })).toBe(false);
+		});
+
+		test("accepts valid browser debug and enforces per-tool rules", () => {
+			expect(
+				is_valid_stored_file_part({
+					...valid,
+					output: {
+						...valid.output,
+						metadata: { ...valid.output.metadata, debug: { code: "return 1;" } },
+					},
+				}),
+			).toBe(true);
+			expect(
+				is_valid_stored_file_part({
+					...valid,
+					output: {
+						...valid.output,
+						metadata: { ...valid.output.metadata, debug: { code: "x".repeat(4001) } },
+					},
+				}),
+			).toBe(false);
+			expect(
+				is_valid_stored_file_part({
+					...valid,
+					output: {
+						...valid.output,
+						metadata: { ...valid.output.metadata, debug: { code: "a", extra: "b" } },
+					},
+				}),
+			).toBe(false);
+			const reload = {
+				type: "tool-browser_reload",
+				state: "output-available",
+				input: {},
+				output: {
+					title: "Browser reload",
+					output: "Browser reload: errored.",
+					metadata: { status: "errored", reason: "stale", files: [], debug: { errorText: "stale" } },
+				},
+			};
+			expect(is_valid_stored_file_part(reload)).toBe(true);
+			expect(
+				is_valid_stored_file_part({
+					...reload,
+					output: {
+						...reload.output,
+						metadata: { ...reload.output.metadata, debug: { code: "return 1;" } },
+					},
+				}),
+			).toBe(false);
+			expect(
+				is_valid_stored_file_part({
+					...reload,
+					output: {
+						...reload.output,
+						metadata: {
+							...reload.output.metadata,
+							files: [{ kind: "private", id: "private-1" }],
+						},
+					},
+				}),
+			).toBe(false);
 		});
 	});
 

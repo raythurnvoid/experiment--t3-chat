@@ -1579,8 +1579,9 @@ export function ai_chat_tool_create_image_generation(
  * The shape a stored message holds for every tool that can return files. `validateUIMessages`
  * in `ai_chat.ts` checks saved messages against this one.
  *
- * Stored results keep only a status and Files targets. Replaying history never fetches file
- * bytes or browser observations.
+ * Stored results keep a status, Files targets, and optional capped browser display text.
+ * Replaying history never fetches file bytes or live browser observations, and `file_stored`
+ * never sends display debug text back to the model.
  */
 export function ai_chat_tool_create_file_stored() {
 	return tool({
@@ -1669,14 +1670,115 @@ function browser_run_output_text(run: z.infer<typeof ai_chat_tool_browser_run_sc
 	return lines.join("\n").slice(0, 16_384);
 }
 
+const ai_chat_tool_browser_DEBUG_CODE_MAX = 4000;
+const ai_chat_tool_browser_DEBUG_RESULT_MAX = 8000;
+const ai_chat_tool_browser_DEBUG_CONSOLE_MAX = 2000;
+const ai_chat_tool_browser_DEBUG_PAGE_ERRORS_MAX = 1000;
+const ai_chat_tool_browser_DEBUG_ERROR_MAX = 1000;
+
+function browser_debug_cap(text: string, max: number) {
+	if (text.length <= max) return text;
+	return `${text.slice(0, Math.max(0, max - 14))}…[truncated]`;
+}
+
+// Remove values that must never persist in chat history. The runner ids and
+// lease objects are dropped by never copying those fields. Inline images and
+// protocol markers are redacted here before the field cap runs.
+function browser_debug_redact(text: string) {
+	return text
+		.replace(/data:image\/[a-zA-Z0-9+;,=_-]+/g, "[redacted image]")
+		.replace(/\[browser-source:/g, "[redacted source:")
+		.replace(/\[file-read:/g, "[redacted file:");
+}
+
+function browser_debug_entries(entries: Array<string>) {
+	return entries
+		.slice(0, 20)
+		.map((entry) => entry.slice(0, 200))
+		.join(" | ");
+}
+
+function browser_run_error_message(error: unknown) {
+	if (error && typeof error === "object" && typeof (error as { message?: unknown }).message === "string") {
+		return (error as { message: string }).message;
+	}
+	return null;
+}
+
+/**
+ * Capped display text for the human card. The live model keeps the full
+ * observation through the observations map. Only selected fields land here,
+ * and every field is redacted before its cap.
+ */
+function browser_run_debug(args: {
+	code: string;
+	outcome: z.infer<typeof ai_chat_tool_browser_run_schema>;
+}): {
+	code?: string;
+	resultText?: string;
+	consoleText?: string;
+	pageErrorsText?: string;
+	errorText?: string;
+} {
+	const debug: {
+		code?: string;
+		resultText?: string;
+		consoleText?: string;
+		pageErrorsText?: string;
+		errorText?: string;
+	} = {};
+
+	const code = browser_debug_cap(browser_debug_redact(args.code), ai_chat_tool_browser_DEBUG_CODE_MAX);
+	if (code.length > 0) debug.code = code;
+
+	if (typeof args.outcome.result !== "undefined" && args.outcome.result !== null) {
+		const rendered =
+			typeof args.outcome.result === "string" ? args.outcome.result : JSON.stringify(args.outcome.result);
+		const resultText = browser_debug_cap(
+			browser_debug_redact(rendered ?? "null"),
+			ai_chat_tool_browser_DEBUG_RESULT_MAX,
+		);
+		if (resultText.length > 0) debug.resultText = resultText;
+	}
+
+	if (args.outcome.consoleEntries.length > 0) {
+		const consoleText = browser_debug_cap(
+			browser_debug_redact(browser_debug_entries(args.outcome.consoleEntries)),
+			ai_chat_tool_browser_DEBUG_CONSOLE_MAX,
+		);
+		if (consoleText.length > 0) debug.consoleText = consoleText;
+	}
+
+	if (args.outcome.pageErrors.length > 0) {
+		const pageErrorsText = browser_debug_cap(
+			browser_debug_redact(browser_debug_entries(args.outcome.pageErrors)),
+			ai_chat_tool_browser_DEBUG_PAGE_ERRORS_MAX,
+		);
+		if (pageErrorsText.length > 0) debug.pageErrorsText = pageErrorsText;
+	}
+
+	const message = browser_run_error_message(args.outcome.error);
+	if (message) {
+		const errorText = browser_debug_cap(browser_debug_redact(message), ai_chat_tool_browser_DEBUG_ERROR_MAX);
+		if (errorText.length > 0) debug.errorText = errorText;
+	}
+
+	return debug;
+}
+
+function browser_debug_error_only(message: string): { errorText: string } {
+	return { errorText: browser_debug_cap(browser_debug_redact(message), ai_chat_tool_browser_DEBUG_ERROR_MAX) };
+}
+
 /**
  * Run one Playwright snippet against the request's shared browser page.
  *
  * The snippet sees the registered page and inner frame, plus `expect` and `emitFile`. Files it
  * emits go through the same Files writer as every other tool output.
  *
- * Private observations stay in this turn's observation map. Shared chat keeps only a status and
- * the Files targets.
+ * Private observations stay in this turn's observation map. Shared chat keeps a status, the Files
+ * targets, and capped display text under `metadata.debug`. Raw lease JSON, ids, screenshot bytes,
+ * and inline image data never enter debug text.
  */
 export function ai_chat_tool_create_browser_run(
 	ctx: ActionCtx,
@@ -1706,7 +1808,13 @@ export function ai_chat_tool_create_browser_run(
 		execute: async ({ code }, options) => {
 			const title = "Browser run";
 			if (++attempts > ai_chat_tool_browser_COMMANDS_PER_REQUEST)
-				return ai_chat_file_result(title, "errored", [], "limit");
+				return ai_chat_file_result(
+					title,
+					"errored",
+					[],
+					"limit",
+					browser_debug_error_only("Browser command limit reached for this request."),
+				);
 			// Capture this call's exact lease. A later reload may update the turn's live binding.
 			const binding = { ...ctxData.browser };
 			const readArgs = {
@@ -1735,7 +1843,13 @@ export function ai_chat_tool_create_browser_run(
 					access.loadGen !== binding.loadGen ||
 					access.navGen !== binding.navGen
 				)
-					return ai_chat_file_result(title, "errored", [], "stale");
+					return ai_chat_file_result(
+						title,
+						"errored",
+						[],
+						"stale",
+						browser_debug_error_only("The browser or file changed since this run started. Try again."),
+					);
 				const run = await files_browser_runner_call({
 					route: "run",
 					body: {
@@ -1751,32 +1865,74 @@ export function ai_chat_tool_create_browser_run(
 					},
 					signal: options.abortSignal,
 				});
-				if (run._nay) return ai_chat_file_result(title, "errored", [], "execution");
+				if (run._nay)
+					return ai_chat_file_result(
+						title,
+						"errored",
+						[],
+						"execution",
+						browser_debug_error_only("The browser command could not finish."),
+					);
 				const parsed = ai_chat_tool_browser_run_schema.safeParse(run._yay);
-				if (!parsed.success) return ai_chat_file_result(title, "errored", [], "invalid_result");
+				if (!parsed.success)
+					return ai_chat_file_result(
+						title,
+						"errored",
+						[],
+						"invalid_result",
+						browser_debug_error_only("The browser returned output that could not be read."),
+					);
 				const outcome = parsed.data;
 				if (
 					outcome.commandId !== options.toolCallId ||
 					outcome.codeHash !== (await crypto_sha256_hex(`browser-v2\n${code}`))
 				)
-					return ai_chat_file_result(title, "errored", [], "invalid_result");
+					return ai_chat_file_result(
+						title,
+						"errored",
+						[],
+						"invalid_result",
+						browser_debug_error_only("The browser returned output that could not be read."),
+					);
 				if (outcome.status !== "succeeded" && outcome.files.length > 0)
-					return ai_chat_file_result(title, "errored", [], "invalid_result");
-				if (!(await isCurrent())) return ai_chat_file_result(title, "errored", [], "stale");
+					return ai_chat_file_result(
+						title,
+						"errored",
+						[],
+						"invalid_result",
+						browser_debug_error_only("The browser returned output that could not be read."),
+					);
+				if (!(await isCurrent()))
+					return ai_chat_file_result(
+						title,
+						"errored",
+						[],
+						"stale",
+						browser_debug_error_only("The browser or file changed while the command ran. Try again."),
+					);
 
+				const debug = browser_run_debug({ code, outcome });
 				let result = ai_chat_file_result(
 					title,
 					outcome.status === "succeeded" ? "succeeded" : outcome.status === "timed_out" ? "timed_out" : "errored",
 					[],
 					outcome.status === "succeeded" ? null : "execution",
+					debug,
 				);
 				let fileNote = "";
 				if (outcome.files.length > 0) {
 					if (!ctxData.canWriteFiles) {
-						result = ai_chat_file_result(title, "errored", [], "agent_required");
+						result = ai_chat_file_result(title, "errored", [], "agent_required", debug);
 					} else {
 						const threadId = ctxData.getThreadId?.();
-						if (!threadId) return ai_chat_file_result(title, "errored", [], "unavailable");
+						if (!threadId)
+							return ai_chat_file_result(
+								title,
+								"errored",
+								[],
+								"unavailable",
+								browser_debug_error_only("The browser result has no thread to attach to."),
+							);
 						const files = outcome.files.map(({ dataBase64, ...file }) => ({
 							...file,
 							bytes: files_ingestion_decode_base64(dataBase64),
@@ -1815,6 +1971,9 @@ export function ai_chat_tool_create_browser_run(
 							options.abortSignal,
 						);
 						result = file_output_result(title, outcomes);
+						// Keep the runner debug with the file result. File targets stay in
+						// `files`. Screenshot bytes and target JSON never enter debug text.
+						result = { ...result, metadata: { ...result.metadata, debug } };
 						fileNote = outcomes
 							.flatMap((item) =>
 								item.status === "succeeded" ? [`${item.file.path}: ${JSON.stringify(item.file.target)}`] : [],
@@ -1841,7 +2000,13 @@ export function ai_chat_tool_create_browser_run(
 					});
 				return result;
 			} catch {
-				return ai_chat_file_result(title, options.abortSignal?.aborted ? "cancelled" : "errored", [], "execution");
+				return ai_chat_file_result(
+					title,
+					options.abortSignal?.aborted ? "cancelled" : "errored",
+					[],
+					"execution",
+					browser_debug_error_only("The browser command could not finish."),
+				);
 			}
 		},
 		toModelOutput: ({ toolCallId, output }) =>
@@ -1874,7 +2039,13 @@ export function ai_chat_tool_create_browser_reload(ctx: ActionCtx, ctxData: ai_c
 				sessionId: binding.sessionId,
 			});
 			if (session._nay) {
-				return ai_chat_file_result("Browser reload", "errored", [], "unavailable");
+				return ai_chat_file_result(
+					"Browser reload",
+					"errored",
+					[],
+					"unavailable",
+					browser_debug_error_only("The browser is no longer available."),
+				);
 			}
 			if (
 				session._yay.control !== "ready" ||
@@ -1882,10 +2053,22 @@ export function ai_chat_tool_create_browser_reload(ctx: ActionCtx, ctxData: ai_c
 				session._yay.loadGen !== binding.loadGen ||
 				session._yay.navigationGeneration !== binding.navGen
 			) {
-				return ai_chat_file_result("Browser reload", "errored", [], "stale");
+				return ai_chat_file_result(
+					"Browser reload",
+					"errored",
+					[],
+					"stale",
+					browser_debug_error_only("The browser or file changed since this run started. Try again."),
+				);
 			}
 			if (session._yay.sourceKind === "draft") {
-				return ai_chat_file_result("Browser reload", "errored", [], "needs_capture");
+				return ai_chat_file_result(
+					"Browser reload",
+					"errored",
+					[],
+					"needs_capture",
+					browser_debug_error_only("Capture the editor draft again before reloading."),
+				);
 			}
 
 			// Keep this call's lease through the source read so a later takeover refuses reload.
@@ -1900,7 +2083,13 @@ export function ai_chat_tool_create_browser_reload(ctx: ActionCtx, ctxData: ai_c
 				},
 			});
 			if (reloaded._nay) {
-				return ai_chat_file_result("Browser reload", "errored", [], "execution");
+				return ai_chat_file_result(
+					"Browser reload",
+					"errored",
+					[],
+					"execution",
+					browser_debug_error_only("The browser reload could not finish."),
+				);
 			}
 			// Adopt only the lease returned by this exact reload. Never read and adopt an unrelated live session.
 			if (
@@ -1908,7 +2097,13 @@ export function ai_chat_tool_create_browser_reload(ctx: ActionCtx, ctxData: ai_c
 				ctxData.browser.loadGen !== binding.loadGen ||
 				ctxData.browser.navGen !== binding.navGen
 			)
-				return ai_chat_file_result("Browser reload", "errored", [], "stale");
+				return ai_chat_file_result(
+					"Browser reload",
+					"errored",
+					[],
+					"stale",
+					browser_debug_error_only("The browser or file changed while reloading. Try again."),
+				);
 			ctxData.browser.controlGen = reloaded._yay.controlGen;
 			ctxData.browser.loadGen = reloaded._yay.loadGen;
 			ctxData.browser.navGen = reloaded._yay.navGen;
@@ -1937,7 +2132,13 @@ export function ai_chat_tool_create_browser_close(ctx: ActionCtx, ctxData: ai_ch
 				sessionId: ctxData.browser.sessionId,
 			});
 			if (session._nay) {
-				return ai_chat_file_result("Browser close", "errored", [], "unavailable");
+				return ai_chat_file_result(
+					"Browser close",
+					"errored",
+					[],
+					"unavailable",
+					browser_debug_error_only("The browser is no longer available."),
+				);
 			}
 			if (
 				session._yay.control !== "ready" ||
@@ -1945,7 +2146,13 @@ export function ai_chat_tool_create_browser_close(ctx: ActionCtx, ctxData: ai_ch
 				session._yay.loadGen !== ctxData.browser.loadGen ||
 				session._yay.navigationGeneration !== ctxData.browser.navGen
 			) {
-				return ai_chat_file_result("Browser close", "errored", [], "stale");
+				return ai_chat_file_result(
+					"Browser close",
+					"errored",
+					[],
+					"stale",
+					browser_debug_error_only("The browser or file changed since this run started. Try again."),
+				);
 			}
 			const closed = await ctx.runAction(api.files_browser.end_browser, {
 				membershipId: ctxData.browser.membershipId,
@@ -1957,7 +2164,13 @@ export function ai_chat_tool_create_browser_close(ctx: ActionCtx, ctxData: ai_ch
 				},
 			});
 			if (closed._nay) {
-				return ai_chat_file_result("Browser close", "errored", [], "execution");
+				return ai_chat_file_result(
+					"Browser close",
+					"errored",
+					[],
+					"execution",
+					browser_debug_error_only("The browser close could not finish."),
+				);
 			}
 			return ai_chat_file_result("Browser close", "succeeded");
 		},

@@ -526,6 +526,15 @@
 	}
 	/* #endregion tool files */
 
+	/* #region tool browser */
+	.AiChatMessagePartToolBrowser-status {
+		padding: 4px 0 8px 0;
+
+		font-size: 0.8125rem;
+		color: var(--color-fg-07);
+	}
+	/* #endregion tool browser */
+
 	/* #region tool unknown */
 	.AiChatMessagePartToolUnknown-meta {
 		display: flex;
