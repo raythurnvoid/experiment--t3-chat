@@ -367,8 +367,7 @@ function create_generated_image_save(input: {
 
 				// Ask mode may not write files, so there is nowhere to put the picture. Say so instead of
 				// saving it, and the model can tell the user to switch to Agent mode.
-				if (!input.canWriteFiles)
-					return ai_chat_file_result(title, "errored", [], "agent_required");
+				if (!input.canWriteFiles) return ai_chat_file_result(title, "errored", [], "agent_required");
 
 				try {
 					input.abortSignal?.throwIfAborted();
@@ -591,11 +590,7 @@ function scrub_file_stream_chunk(
 					: undefined
 			: undefined;
 	const cleanDebug =
-		debug !== undefined && tracked !== "browser_run"
-			? Object.keys(debug).length > 0
-				? debug
-				: undefined
-			: debug;
+		debug !== undefined && tracked !== "browser_run" ? (Object.keys(debug).length > 0 ? debug : undefined) : debug;
 	// Rebuild the shared result from allowed fields. Never forward the tool's raw text.
 	return [
 		{
@@ -647,25 +642,32 @@ async function filter_revoked_observations(
 	messages: ModelMessage[],
 	observations: Map<string, ai_chat_Observation>,
 ): Promise<ModelMessage[]> {
-	return await Promise.all(messages.map(async (message) => {
-		if ((message.role !== "tool" && message.role !== "assistant") || !Array.isArray(message.content)) return message;
-		const content = await Promise.all(message.content.map(async (part) => {
-			if (part.type !== "tool-result" || (part.toolName !== "browser_run" && part.toolName !== "view_image"))
-				return part;
-			const observation = observations.get(part.toolCallId);
-			if (!observation && part.output.type !== "content") return part;
-			let allowed = false;
-			try {
-				allowed = observation?.toolName === part.toolName && await observation.isCurrent();
-			} catch {
-				// A failed query cannot prove current access.
-			}
-			if (allowed && observation) return { ...part, output: observation.output };
-			observations.delete(part.toolCallId);
-			return { ...part, output: { type: "text" as const, value: "(Tool observations unavailable: access or file changed.)" } };
-		}));
-		return { ...message, content };
-	})) as ModelMessage[];
+	return (await Promise.all(
+		messages.map(async (message) => {
+			if ((message.role !== "tool" && message.role !== "assistant") || !Array.isArray(message.content)) return message;
+			const content = await Promise.all(
+				message.content.map(async (part) => {
+					if (part.type !== "tool-result" || (part.toolName !== "browser_run" && part.toolName !== "view_image"))
+						return part;
+					const observation = observations.get(part.toolCallId);
+					if (!observation && part.output.type !== "content") return part;
+					let allowed = false;
+					try {
+						allowed = observation?.toolName === part.toolName && (await observation.isCurrent());
+					} catch {
+						// A failed query cannot prove current access.
+					}
+					if (allowed && observation) return { ...part, output: observation.output };
+					observations.delete(part.toolCallId);
+					return {
+						...part,
+						output: { type: "text" as const, value: "(Tool observations unavailable: access or file changed.)" },
+					};
+				}),
+			);
+			return { ...message, content };
+		}),
+	)) as ModelMessage[];
 }
 
 /**
@@ -730,7 +732,13 @@ function is_valid_stored_file_part(part: {
 	const debug = parsed.data.metadata.debug;
 	if (debug !== undefined) {
 		if (name !== "browser_run" && name !== "browser_reload" && name !== "browser_close") return false;
-		if (name !== "browser_run" && (debug.code !== undefined || debug.resultText !== undefined || debug.consoleText !== undefined || debug.pageErrorsText !== undefined)) {
+		if (
+			name !== "browser_run" &&
+			(debug.code !== undefined ||
+				debug.resultText !== undefined ||
+				debug.consoleText !== undefined ||
+				debug.pageErrorsText !== undefined)
+		) {
 			return false;
 		}
 		if ((name === "browser_reload" || name === "browser_close") && debug.errorText === undefined) {
@@ -904,7 +912,12 @@ function build_agent_configuration(input: {
 		// The flag gates live tools; validation keeps the stored shapes regardless.
 		...(browserToolsEnabled && browserBinding
 			? ((/* iife */) => {
-					const browserCtxData = { ...toolCtxData, browser: browserBinding, observations, canWriteFiles: modeId === "agent" };
+					const browserCtxData = {
+						...toolCtxData,
+						browser: browserBinding,
+						observations,
+						canWriteFiles: modeId === "agent",
+					};
 					return {
 						browser_run: ai_chat_tool_create_browser_run(ctx, browserCtxData),
 						browser_reload: ai_chat_tool_create_browser_reload(ctx, browserCtxData),
@@ -2325,7 +2338,10 @@ async function create_agent_turn_stream(args: {
 					}));
 					// Access may change after live browser text or image bytes were read.
 					// Recheck before every model call, including the branches that end this turn.
-					const filteredMessages = await filter_revoked_observations(add_generated_file_summaries(messages), observations);
+					const filteredMessages = await filter_revoked_observations(
+						add_generated_file_summaries(messages),
+						observations,
+					);
 					const withFilteredMessages =
 						injectedMessages.length > 0 || filteredMessages !== messages
 							? { messages: [...filteredMessages, ...injectedMessages] }
@@ -2339,11 +2355,15 @@ async function create_agent_turn_stream(args: {
 							membershipId: membership._id,
 							sessionId: browserBinding.sessionId,
 						});
-						if (!session._yay || session._yay.control !== "ready" ||
+						if (
+							!session._yay ||
+							session._yay.control !== "ready" ||
 							session._yay.controlGen !== browserBinding.controlGen ||
 							session._yay.loadGen !== browserBinding.loadGen ||
-							session._yay.navigationGeneration !== browserBinding.navGen) {
-							browserUnavailable = "The shared browser is no longer available to this turn. Continue with other tools. Do not claim new browser checks.";
+							session._yay.navigationGeneration !== browserBinding.navGen
+						) {
+							browserUnavailable =
+								"The shared browser is no longer available to this turn. Continue with other tools. Do not claim new browser checks.";
 						}
 					}
 					// Leave a model step to explain tool results and any unfinished work.
@@ -2361,11 +2381,14 @@ async function create_agent_turn_stream(args: {
 							system: `${systemPrompt}\n${workspaceSystem}\nA background job you are waiting for is still running. Its finish will wake you with its result in a new run. End this turn now with a short status of what is done and what the job will decide.`,
 							...withFilteredMessages,
 						};
-					if (browserUnavailable) return {
-						activeTools: activeTools.filter((name) => !["browser_run", "browser_reload", "browser_close"].includes(name)),
-						system: `${systemPrompt}\n${workspaceSystem}\n${browserUnavailable}`,
-						...withFilteredMessages,
-					};
+					if (browserUnavailable)
+						return {
+							activeTools: activeTools.filter(
+								(name) => !["browser_run", "browser_reload", "browser_close"].includes(name),
+							),
+							system: `${systemPrompt}\n${workspaceSystem}\n${browserUnavailable}`,
+							...withFilteredMessages,
+						};
 					if (injectedMessages.length === 0 && filteredMessages === messages) return undefined;
 					return { messages: [...filteredMessages, ...injectedMessages] };
 				},
@@ -4621,9 +4644,17 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 				// Bad bytes stop before the write. A failed write reports the same plain status, and the
 				// real error text ("private detail") never appears in the result.
-				expect((await save("invalid", { result: "bad base64" })).metadata).toEqual({ status: "errored", reason: "storage", files: [] });
+				expect((await save("invalid", { result: "bad base64" })).metadata).toEqual({
+					status: "errored",
+					reason: "storage",
+					files: [],
+				});
 				expect(write).not.toHaveBeenCalled();
-				expect((await save("failed", { result: "AQID" })).metadata).toEqual({ status: "errored", reason: "storage", files: [] });
+				expect((await save("failed", { result: "AQID" })).metadata).toEqual({
+					status: "errored",
+					reason: "storage",
+					files: [],
+				});
 				expect(write).toHaveBeenCalledTimes(1);
 			} finally {
 				write.mockRestore();
@@ -4744,7 +4775,12 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 					output: {
 						title: "Browser run",
 						output: 'Status: succeeded.\nResult: {"secret":"x"}',
-						metadata: { status: "succeeded", reason: null, files: [{ kind: "private", id: "private-1" }], commandId: "cmd-1" },
+						metadata: {
+							status: "succeeded",
+							reason: null,
+							files: [{ kind: "private", id: "private-1" }],
+							commandId: "cmd-1",
+						},
 					},
 				} as never,
 				calls,
@@ -5107,13 +5143,20 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 	describe("filter_revoked_observations", () => {
 		test.each(["tool", "assistant"] as const)("rechecks and replaces expanded %s image parts", async (role) => {
-			const output: ai_chat_Observation["output"] = { type: "content", value: [
-				{ type: "text", text: "private observation" },
-				{ type: "image-data", data: "private pixels", mediaType: "image/png" },
-			] };
-			const messages: ModelMessage[] = [{ role, content: [{ type: "tool-result", toolCallId: "view-1", toolName: "view_image", output }] }];
+			const output: ai_chat_Observation["output"] = {
+				type: "content",
+				value: [
+					{ type: "text", text: "private observation" },
+					{ type: "image-data", data: "private pixels", mediaType: "image/png" },
+				],
+			};
+			const messages: ModelMessage[] = [
+				{ role, content: [{ type: "tool-result", toolCallId: "view-1", toolName: "view_image", output }] },
+			];
 			const isCurrent = vi.fn().mockResolvedValue(true);
-			const observations = new Map<string, ai_chat_Observation>([["view-1", { toolName: "view_image", output, isCurrent }]]);
+			const observations = new Map<string, ai_chat_Observation>([
+				["view-1", { toolName: "view_image", output, isCurrent }],
+			]);
 			expect(await filter_revoked_observations(messages, observations)).toEqual(messages);
 			isCurrent.mockResolvedValue(false);
 			const filtered = await filter_revoked_observations(messages, observations);
@@ -5124,19 +5167,33 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("checks browser text again before every step", async () => {
-			const output: ai_chat_Observation["output"] = { type: "content", value: [{ type: "text", text: "private browser text" }] };
-			const messages: ModelMessage[] = [{ role: "tool", content: [{ type: "tool-result", toolCallId: "run-1", toolName: "browser_run", output }] }];
+			const output: ai_chat_Observation["output"] = {
+				type: "content",
+				value: [{ type: "text", text: "private browser text" }],
+			};
+			const messages: ModelMessage[] = [
+				{ role: "tool", content: [{ type: "tool-result", toolCallId: "run-1", toolName: "browser_run", output }] },
+			];
 			const isCurrent = vi.fn().mockResolvedValue(true);
-			const observations = new Map<string, ai_chat_Observation>([["run-1", { toolName: "browser_run", output, isCurrent }]]);
+			const observations = new Map<string, ai_chat_Observation>([
+				["run-1", { toolName: "browser_run", output, isCurrent }],
+			]);
 			expect(await filter_revoked_observations(messages, observations)).toEqual(messages);
 			isCurrent.mockRejectedValue(new Error("Access check failed"));
-			expect(JSON.stringify(await filter_revoked_observations(messages, observations))).not.toContain("private browser text");
+			expect(JSON.stringify(await filter_revoked_observations(messages, observations))).not.toContain(
+				"private browser text",
+			);
 			expect(isCurrent).toHaveBeenCalledTimes(2);
 		});
 
 		test("missing or mismatched turn records cannot restore observations from messages", async () => {
-			const output: ai_chat_Observation["output"] = { type: "content", value: [{ type: "text", text: "private text" }] };
-			const messages: ModelMessage[] = [{ role: "tool", content: [{ type: "tool-result", toolCallId: "run-1", toolName: "browser_run", output }] }];
+			const output: ai_chat_Observation["output"] = {
+				type: "content",
+				value: [{ type: "text", text: "private text" }],
+			};
+			const messages: ModelMessage[] = [
+				{ role: "tool", content: [{ type: "tool-result", toolCallId: "run-1", toolName: "browser_run", output }] },
+			];
 			expect(JSON.stringify(await filter_revoked_observations(messages, new Map()))).not.toContain("private text");
 			const isCurrent = vi.fn().mockResolvedValue(true);
 			const records = new Map<string, ai_chat_Observation>([["run-1", { toolName: "view_image", output, isCurrent }]]);
@@ -5145,10 +5202,19 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("keeps safe history text without making a read", async () => {
-			const history: ModelMessage[] = [{ role: "tool", content: [{
-				type: "tool-result", toolCallId: "old", toolName: "browser_run",
-				output: { type: "text", value: "Browser run: succeeded." },
-			}] }];
+			const history: ModelMessage[] = [
+				{
+					role: "tool",
+					content: [
+						{
+							type: "tool-result",
+							toolCallId: "old",
+							toolName: "browser_run",
+							output: { type: "text", value: "Browser run: succeeded." },
+						},
+					],
+				},
+			];
 			expect(await filter_revoked_observations(history, new Map())).toEqual(history);
 		});
 	});

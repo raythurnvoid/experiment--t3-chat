@@ -2436,9 +2436,12 @@ describe("browser tools", () => {
 		const code = "return 1;";
 		// The runner includes its harness version in the hash used for its cached child Worker.
 		runnerQueue.push(runner_run_result({ codeHash: await crypto_sha256_hex(`browser-v2\n${code}`) }));
-		expect(await ai_chat_tool_create_browser_run(ctx, browserCtxData).execute?.(
-			{ code }, { toolCallId: "versioned-hash", messages: [] },
-		)).toEqual(
+		expect(
+			await ai_chat_tool_create_browser_run(ctx, browserCtxData).execute?.(
+				{ code },
+				{ toolCallId: "versioned-hash", messages: [] },
+			),
+		).toEqual(
 			ai_chat_file_result("Browser run", "succeeded", [], null, {
 				code,
 				resultText: JSON.stringify({ reviewed: true }),
@@ -2743,13 +2746,10 @@ describe("browser tools", () => {
 				{ toolCallId: "t", messages: [] },
 			),
 		).toEqual(
-			ai_chat_file_result(
-				"Browser run",
-				status === "timed_out" ? "timed_out" : "errored",
-				[],
-				"execution",
-				{ code: "return 1;", resultText: JSON.stringify({ reviewed: true }) },
-			),
+			ai_chat_file_result("Browser run", status === "timed_out" ? "timed_out" : "errored", [], "execution", {
+				code: "return 1;",
+				resultText: JSON.stringify({ reviewed: true }),
+			}),
 		);
 		expect(runMutation).not.toHaveBeenCalled();
 	});
@@ -2943,10 +2943,7 @@ describe("browser tools", () => {
 		);
 		const code = "x".repeat(10_000);
 		const output = ai_chat_file_result_schema.parse(
-			await ai_chat_tool_create_browser_run(ctx, browserCtxData).execute?.(
-				{ code },
-				{ toolCallId: "t", messages: [] },
-			),
+			await ai_chat_tool_create_browser_run(ctx, browserCtxData).execute?.({ code }, { toolCallId: "t", messages: [] }),
 		);
 		const debug = output.metadata.debug;
 		expect(debug?.code?.length).toBeLessThanOrEqual(4000);
@@ -2968,7 +2965,7 @@ describe("browser tools", () => {
 		const { ctx } = makeCtx(async () => accessOk);
 		runnerQueue.push(
 			runner_run_result({
-				result: "see data:image/png;base64,SECRET and [browser-source:{\"sessionId\":\"s\"}] and [file-read:{\"id\":\"x\"}]",
+				result: 'see data:image/png;base64,SECRET and [browser-source:{"sessionId":"s"}] and [file-read:{"id":"x"}]',
 				consoleEntries: ["[browser-source:leak]"],
 				pageErrors: ["data:image/jpeg;base64,LEAK"],
 				error: { message: "[file-read:leak] data:image/gif;base64,LEAK" },

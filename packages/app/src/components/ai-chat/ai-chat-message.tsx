@@ -563,7 +563,13 @@ const AiChatMessagePartToolBrowser = memo(function AiChatMessagePartToolBrowser(
 		browser_close: "Browser close",
 	}[toolName];
 	const expected = parsed.success
-		? ai_chat_file_result(title, parsed.data.metadata.status, parsed.data.metadata.files, parsed.data.metadata.reason, parsed.data.metadata.debug)
+		? ai_chat_file_result(
+				title,
+				parsed.data.metadata.status,
+				parsed.data.metadata.files,
+				parsed.data.metadata.reason,
+				parsed.data.metadata.debug,
+			)
 		: null;
 
 	// Reload and close carry no files and no observation sections. A result with
@@ -777,7 +783,13 @@ const AiChatMessagePartToolFiles = memo(function AiChatMessagePartToolFiles(prop
 		image_generation: "Generate image",
 	}[toolName];
 	const expected = parsed.success
-		? ai_chat_file_result(title, parsed.data.metadata.status, parsed.data.metadata.files, parsed.data.metadata.reason, parsed.data.metadata.debug)
+		? ai_chat_file_result(
+				title,
+				parsed.data.metadata.status,
+				parsed.data.metadata.files,
+				parsed.data.metadata.reason,
+				parsed.data.metadata.debug,
+			)
 		: null;
 
 	// The server rewrites every file tool result into one exact shape before the message is stored.

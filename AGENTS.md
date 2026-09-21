@@ -209,7 +209,8 @@ Consider whether the work needs:
 - New skills: create a focused skill when a new or newly important app area has repeatable workflows, business rules, tooling, or gotchas that future agents should load on demand. Prefer updating an existing skill when it already owns the domain.
 - Tests: add or update the smallest focused unit test for changed business logic, serialization, validation, permissions, data transforms, or regression-prone edge cases when there is a natural public entrypoint. Use integration or browser coverage when the behavior only exists across modules or UI flows.
 - Playwriter harness/docs: put broadly reusable browser primitives in `.agents/skills/app-playwriter-harness/scripts/`, route-specific workflows and selectors in `.agents/skills/app-playwriter-harness/references/`, and deterministic upload fixtures in `.agents/skills/app-playwriter-harness/assets/files/`. Do not create a separate app-level playbooks folder.
-- Accessibility: for UI work, check keyboard access, focus order and management, semantic controls, accessible names and descriptions, form labels and errors, contrast, zoom/responsive fit, target size, and reduced-motion expectations. Fix obvious regressions in the same pass.
+- Accessibility: for UI work, check keyboard access, focus order and management, semantic controls, accessible names and descriptions, form labels and errors, contrast, zoom/responsive fit, target size, and reduced-motion expectations. Fix obvious regressions in the same pass; see the automation-first bullet below for what is deferred by default.
+- Automation first: UI work must make the state readable by Playwriter before anything else. Put the real text in the DOM (no text that only exists in CSS or in a screen-reader-only span), keep one stable attribute per state (`aria-current`, `aria-expanded`, `aria-label` with the full name, `data-*` for app states), and keep keyboard access. Do not add screen-reader-only structures (`sr-only` spans, `aria-describedby` chains, label-in-name work) unless the user asks for them. The accessibility bullet above still applies to what a screen reader shares with automation: roles, names, keyboard, focus.
 - Observability and operations: update runbooks, log or metric expectations, environment variable docs, migration notes, or rollback guidance when deployment, background jobs, external services, or data repair workflows change.
 - Security and privacy: document or test auth, authorization, secret handling, tenant isolation, user data exposure, and webhook or external-boundary behavior when those surfaces are touched.
 
@@ -340,23 +341,20 @@ type finalize_file_content_materialization_Result =
 		? Awaited<ReturnValue>
 		: never;
 
-const finalizationResult = (await ctx.runMutation(
-	internal.files_nodes_content.finalize_file_content_materialization,
-	{
-		organizationId: args.organizationId,
-		workspaceId: args.workspaceId,
-		nodeId: args.nodeId,
-		userId: args.userId,
-		expectedYjsSnapshotId: header.yjsSnapshotDoc._id,
-		expectedYjsLastSequenceId: header.yjsLastSequenceDoc._id,
-		sequence,
-		targetSequence: args.targetSequence,
-		text: extractedText._yay,
-		versionSnapshotAssetId,
-		textSize: markdownByteSize,
-		yjsSnapshotSize: snapshotUpdate.byteLength,
-	},
-)) as finalize_file_content_materialization_Result;
+const finalizationResult = (await ctx.runMutation(internal.files_nodes_content.finalize_file_content_materialization, {
+	organizationId: args.organizationId,
+	workspaceId: args.workspaceId,
+	nodeId: args.nodeId,
+	userId: args.userId,
+	expectedYjsSnapshotId: header.yjsSnapshotDoc._id,
+	expectedYjsLastSequenceId: header.yjsLastSequenceDoc._id,
+	sequence,
+	targetSequence: args.targetSequence,
+	text: extractedText._yay,
+	versionSnapshotAssetId,
+	textSize: markdownByteSize,
+	yjsSnapshotSize: snapshotUpdate.byteLength,
+})) as finalize_file_content_materialization_Result;
 ```
 
 ## Test organization

@@ -1710,10 +1710,7 @@ function browser_run_error_message(error: unknown) {
  * observation through the observations map. Only selected fields land here,
  * and every field is redacted before its cap.
  */
-function browser_run_debug(args: {
-	code: string;
-	outcome: z.infer<typeof ai_chat_tool_browser_run_schema>;
-}): {
+function browser_run_debug(args: { code: string; outcome: z.infer<typeof ai_chat_tool_browser_run_schema> }): {
 	code?: string;
 	resultText?: string;
 	consoleText?: string;
