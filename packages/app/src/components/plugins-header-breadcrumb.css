@@ -26,16 +26,6 @@
 		white-space: nowrap;
 	}
 
-	.PluginsHeaderBreadcrumb-segment {
-		color: var(--gray-600);
-		cursor: pointer;
-
-		&:hover {
-			color: var(--gray-800);
-			text-decoration: underline;
-		}
-	}
-
 	.PluginsHeaderBreadcrumb-segment-current {
 		overflow: hidden;
 		text-overflow: ellipsis;

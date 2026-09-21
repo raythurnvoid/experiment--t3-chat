@@ -208,6 +208,12 @@
 		width: 36px;
 	}
 
+	.FilesSidebarHeader-title {
+		/* Keep the `.MyButton` base padding (`6px 10px`) on the title link. The highlightable
+		   variant's `8px 12px` would move the word by 2px. */
+		padding: 6px 10px;
+	}
+
 	.FilesSidebarHeader-top-section-left {
 		display: flex;
 		align-items: center;

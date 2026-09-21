@@ -18,6 +18,10 @@ export class global_custom_event_Event extends XCustomEvent<{
 		nodeId: string;
 		targetKind: "saved" | "private";
 	};
+	"files::reveal_node": {
+		membershipId: app_convex_Id<"organizations_workspaces_users">;
+		nodeId: app_convex_Id<"files_nodes">;
+	};
 }> {}
 
 declare global {

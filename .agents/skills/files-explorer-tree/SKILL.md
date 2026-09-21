@@ -172,7 +172,7 @@ Tree-item components:
 - `Mod+K` (registered in `FileNodeView`, `ignoreInputs: false`) opens the files sidebar if closed and focuses the search input through the global `app_files_sidebar_search` id on the `MyInput` wrapper. `MyComboboxInputControl` owns its own generated id for the Ariakit wiring, so the global id cannot live on the control.
 - The files route's `q` search param mirrors the search box both ways. The router reads search params as JSON, so a hand-typed `?q=2026` arrives as a number; the route turns a number or a boolean back into text before the length cap. A pasted app link whose path holds a raw `%` (`50% off.md`) is plain text: `url_parse_file_link` answers null instead of throwing from `decodeURIComponent` inside the render. The box serializes the chips' raw tokens plus the text with `files_search_query_serialize`, so the URL holds exactly what the user typed and seeds the chips on mount. It seeds the box on mount (the path route's not-found panel uses that so a failed link lands on a filled, case-insensitive search), and the box writes back to it through `FilesSidebar_Props.onSearchQueryChange` → `FileNodeView.handleSearchQueryChange` → `onNavigateSearch(..., { replace: true })`. The write is already debounced by `FilesSearchInput`; do not add a second timer. `replace` keeps a whole typing session on one history entry, and an empty query drops the param instead of leaving `?q=`. The route caps `q` at 2000 characters (`.catch(undefined)` drops a longer one) and the parser caps a query at `files_search_query_MAX_FILTERS` (20) filters, so a shared link cannot fill the box with thousands of chips and subscriptions.
 - External route changes update the mounted sidebar and its input. The sidebar tracks the last route value. The input compares incoming queries with its debounced value, so its own URL writes do not reset text still being typed.
-- Every link into the files route must preserve `q` with the functional form `search={(prev) => ({ ...prev, nodeId, view })}`. The sidebar stays mounted with its box filled across those navigations, so an object literal would silently desync the URL from what the user sees. This covers the sidebar header title, both breadcrumb link kinds, folder-explorer rows, and the pending-changes panel.
+- Every link into the files route must preserve `q` with the functional form `search={(prev) => ({ ...prev, nodeId, view })}`. The sidebar stays mounted with its box filled across those navigations, so an object literal would silently desync the URL from what the user sees. This covers the sidebar header title, the breadcrumb's Home link and folder crumbs (saved and pending), folder-explorer rows, and the pending-changes panel.
 
 ## Global Search
 
@@ -198,8 +198,10 @@ Tree-item components:
 - Path lookup is exact and case-sensitive in the owner's current view. It includes private entries and proposed moves. A hand-typed `/readme.md` for a stored `README.md` misses on purpose and recovers through the not-found panel's search link. Do not add a case-insensitive server fallback.
 - Canonicalize a splat with `path_extract_segments_from`. Do not use `files_get_normalized_node_path_segments` for lookups: it is the create/rename normalizer and rewrites characters, which would resolve to a different file.
 - `get_visible_target_by_path` uses the same owner, tenant, and read checks as direct target lookup. Private parent paths disappear when destination read access is lost.
-- Three copy actions, all multi-select aware in the sidebar and joined with newlines: Copy path (sidebar row menu and breadcrumb) copies the plain path for pasting into search or an AI chat message; Copy link (same two places) copies the absolute `?nodeId=` URL built from `url_path_file_by_node_id`, so a shared link survives rename and move; Copy node id (sidebar row menu only) copies the bare id.
+- Three copy actions, all multi-select aware in the sidebar and joined with newlines: Copy path (sidebar row menu and breadcrumb) copies the plain path for pasting into search or an AI chat message; Copy link (same two places) copies the absolute `?nodeId=` URL built from `url_path_file_by_node_id`, so a shared link survives rename and move; Copy node id (sidebar row menu and the breadcrumb menu) copies the bare id.
 - Copy link deliberately does not emit the readable `/files/<path>` shape. That shape has no in-app producer: it exists so a hand-written or externally generated path can be opened, and the sidebar search still unwraps it when pasted.
+- The open node's breadcrumb crumb is a menu button: Reveal in sidebar (sends `files::reveal_node`; the sidebar expands the folders above the row, scrolls to it and focuses it), Duplicate tab (`window.open` of the current URL), Copy node id, and Archive (only when the node can be archived). An archived node's menu has no Reveal in sidebar, because its row is hidden from the tree. A pending entry's menu has Duplicate tab and Copy node id.
+- A pending entry's breadcrumb links its saved parents by `nodeId` (from `get_file_pending_target`'s `savedParentId`) and its pending parents by `pendingNodeId` (from `requiredParents`), root-first, then the entry itself. Folder crumbs are shortened with `…` when the row is too narrow; `aria-label` keeps the full name.
 
 ## Folder Contents
 
@@ -266,6 +268,7 @@ Backend rules, limits, billing, cleanup, and Activity privacy are in
 ## Selection And Primary Action
 
 - Primary click implements single select, toggle-select, and shift-range.
+- A pointer down or focus outside the tree's selection areas (`FILES_SIDEBAR_SELECTION_CONTEXT_EVENTS`) drops the multi-selection and selects the open file's row again. The reset is skipped while a tree menu or the Archive dialog is open, so a cancelled multi-select archive keeps its selection.
 - Non-modifier click runs primary action for node items.
 - File primary action navigates to the file.
 - Folder primary action navigates to the folder screen.
@@ -314,7 +317,7 @@ Backend rules, limits, billing, cleanup, and Activity privacy are in
   or inserted nodes, 2,000 Files docs read or written, and 4 MiB in each direction. A refusal writes
   no Files changes. Permission reads and the caller's receipt use separate transaction headroom.
 - The selected file/folder path auto-expands in the sidebar after route changes and path-based create/rename moves so the focused row stays visible.
-- Archive/unarchive uses `files_nodes.archive_nodes` / `files_nodes.unarchive_nodes`.
+- Archive/unarchive uses `files_nodes.archive_nodes` / `files_nodes.unarchive_nodes`. Archive always asks first in the shared `FilesArchiveModal` (`files-archive-modal.tsx`). The sidebar row menu, the toolbar Archive-selected button, the folder explorer row menu and the breadcrumb menu open it with the nodes to archive; the modal owns the mutation, shows a refusal inline in the dialog (`role="alert"`), and reports success to its host. After a sidebar confirm, keyboard focus moves to the first row after the archived rows, or to the last row before them. The sidebar picks that row while the archived rows are still in the tree (Convex resolves the mutation in the same task as the tree update) and moves DOM focus from an effect once the dialog has closed, because the sidebar is inert while the dialog is open and the closing dialog first gives focus back to the button that opened it. A multi-select archive also clears the selection. Cancel puts focus back on the first row of the request. Restore is still direct.
 - The row menu's Restore gate mirrors the backend restore plan (`can_unarchive_item`): a node whose parent is missing or still archived restores to root, so Restore also needs workspace write at root plus scope manage when the node would leave its restricted scope. A node that carries its own restriction only needs its own write answer. An in-place restore only needs the node's write answer.
 
 ## Content Type Checks
@@ -490,7 +493,7 @@ Do not call `parent.getChildren()` for this check in each row: it loads every si
   arrow keys scroll and focus correctly. Scrolling keeps an active rename, menu, drag, or dialog
   source mounted. Search toggles and folder changes leave no blank gaps or stale placeholder height.
 - Root create can create a file and a folder.
-- Root create, upload, folder import, and multi-selection archive controls stay disabled unless every selected node or destination is writable. Archiving a selection that sweeps an unwritable restricted descendant is refused by the backend with a toast.
+- Root create, upload, folder import, and multi-selection archive controls stay disabled unless every selected node or destination is writable. Archiving a selection that sweeps an unwritable restricted descendant is refused by the backend; the Archive dialog shows the refusal inline and stays open.
 - Folder create can create child files/folders.
 - File rows do not show child creation actions and are not expandable.
 - Rename guards and optimistic rename behavior are correct.

@@ -1,0 +1,24 @@
+@layer components {
+	.FilesArchiveModal {
+		width: min(92vw, 480px);
+	}
+
+	.FilesArchiveModal-content {
+		display: grid;
+		gap: 12px;
+	}
+
+	.FilesArchiveModal-list {
+		display: grid;
+		gap: 4px;
+
+		margin: 0;
+		padding-inline-start: 20px;
+	}
+
+	.FilesArchiveModal-error {
+		margin: 0;
+
+		color: var(--color-red-11);
+	}
+}

@@ -9,7 +9,6 @@ type MyLinkSurface_ClassNames =
 	| "MyLinkSurface-variant-default"
 	| "MyLinkSurface-variant-button-outline"
 	| "MyLinkSurface-variant-button-outline_destructive"
-	| "MyLinkSurface-variant-button-tertiary"
 	| "MyLinkSurface-variant-button-ghost"
 	| "MyLinkSurface-variant-button-ghost-accent"
 	| "MyLinkSurface-variant-button-ghost-highlightable"
@@ -20,7 +19,6 @@ export type MyLinkSurface_Props = React.ComponentProps<"span"> & {
 		| "default"
 		| "button-outline"
 		| "button-outline_destructive"
-		| "button-tertiary"
 		| "button-ghost"
 		| "button-ghost-accent"
 		| "button-ghost-highlightable"
@@ -42,8 +40,6 @@ export const MyLinkSurface = memo(function MyLinkSurface(props: MyLinkSurface_Pr
 					("MyLinkSurface-variant-button-outline_destructive" satisfies MyLinkSurface_ClassNames),
 				variant === "button-outline_destructive" &&
 					("MyButton-variant-outline_destructive" satisfies MyButton_ClassNames),
-				variant === "button-tertiary" && ("MyLinkSurface-variant-button-tertiary" satisfies MyLinkSurface_ClassNames),
-				variant === "button-tertiary" && ("MyButton-variant-tertiary" satisfies MyButton_ClassNames),
 				variant === "button-ghost" && ("MyLinkSurface-variant-button-ghost" satisfies MyLinkSurface_ClassNames),
 				variant === "button-ghost" && ("MyButton-variant-ghost" satisfies MyButton_ClassNames),
 				variant === "button-ghost-accent" &&

@@ -53,6 +53,7 @@ Use this file as a quick testing map for `/files`. Keep it short and selector-or
 - Tables in the rich editor: plain `table`, `th`, `td` selectors inside `.FileEditorRichText-editor-content`.
 - Table commands menu: toolbar `getByRole("button", { name: "Table commands" })`; items are `Add row above`, `Add row below`, `Add column left`, `Add column right`, `Delete row`, `Delete column`, `Toggle header row`, `Delete table` (disabled while the caret is outside a table).
 - Properties button in the breadcrumb: `getByRole("button", { name: /^Properties of / })`. It still carries `data-file-write-policy` with the node's lock state. Its `.click()` can hang on "visible, enabled and stable" while `hitTest` shows the button itself on top and nothing covers it (hit 2026-08-21). Read its box in page context and click the middle with `page.mouse.click(x, y)`.
+- Breadcrumb crumbs: folder crumbs are links inside `ol.FileNodeViewHeaderBreadcrumbPath-list` whose `aria-label` holds the full name while the text may end with `…`. The open node's crumb is `[aria-current="page"] button` (named by the full file name, `aria-haspopup="menu"`); its menu items are `Reveal in sidebar`, `Duplicate tab`, `Copy node id`, `Archive` (`Archive` only when the node can be archived; `Reveal in sidebar` is absent for an archived node; a pending entry gets only `Duplicate tab` and `Copy node id`). Recipe under "Breadcrumb Menu And Reveal In Sidebar" below; layout notes in `app-map.md`.
 
 ### Sidebar And Folder Browser
 
@@ -63,6 +64,7 @@ Use this file as a quick testing map for `/files`. Keep it short and selector-or
 - Sidebar search input: `#app_files_sidebar_search input` (combobox named `Search files by name, path, or key:value filters`); filter chips `.FilesSearchInputFilterChip`; suggestions `.FilesSearchInput-popover [role=option]`; sr-only status `.FilesSidebarTopSection [role=status]`. Recipes under "Sidebar Search Box" below.
 - Locked row accessible name: `getByRole("treeitem", { name: "<name>, Read-only" })` when the lock is on that node. A parent lock does not mark a child `read-only from /path`. A writable folder with locked children can say it contains read-only items. `/meetings` after a Council meeting upload is that last shape. Expand it with `getByRole("button", { name: "Expand folder <name>, contains read-only items" })`. The visible title is an input, so `.FilesSidebarTreeItemTitle` with `hasText: /^name$/` does not match (verified 2026-08-26; row suffix recased 2026-09-18).
 - Sidebar context menu: `[data-files-sidebar-tree-context][role="menu"]`.
+- Archive from any menu (sidebar row, toolbar Archive selected, folder explorer row, breadcrumb) opens `getByRole("dialog", { name: /^Archive / })`; confirm with its `Archive` button, cancel with `Cancel`. A refusal is a `role=alert` inside the dialog, not a toast, and the dialog stays open. From page context, match `.FilesArchiveModal:not([hidden])` and read `.MyModalHeading` (the dialog has `aria-labelledby`, no `aria-label`). After a sidebar confirm, `document.activeElement` is the next tree row (or the previous one when the archived row was last); it lands about 100 ms after the dialog has closed, after a brief stop on the button that opened the dialog, so poll for it instead of reading it the moment the dialog hides. Multi-select archive: hold Control and click each row's `.FilesSidebarTreeItemPrimaryAction` (a Control-click on the open file's row removes it from the selection), then the sidebar header `More options` menu item `Archive N selected items` opens `Archive N items?` with the names in a list; after the confirm only the open file's row is selected again. Cancel keeps a multi-selection: the sidebar's click-outside selection reset is off while the dialog is open. Archive with the mutation directly (see "Sidebar Create Then Rename By Id") when the dialog is not what you test.
 - Folder explorer root: `.FileNodeViewFolderExplorer`.
 - Folder explorer rows: `.FileNodeViewFolderExplorer-row`.
 - Folder table drop target state: `.FileNodeViewFolderExplorer-row-drop-target`.
@@ -86,6 +88,10 @@ Use this file as a quick testing map for `/files`. Keep it short and selector-or
 - Narrow-layout limit observed at 512 px: the sidebar header can clip Collapse all and More options.
   Its five 36 px buttons, gap, and padding need 220 px, while the saved panel width is a percentage.
   Check control hit targets as well as document overflow. This limit was not fixed by virtual rows.
+  The QA profile can carry a narrow saved width (14% on 2026-09-20 hid `More options` under the
+  editor). The panel sizes live in `localStorage["app_state::resizable_panel::main_panel"]` as
+  `[sidebarPercent, mainPercent]`; write `[24,76]` (the default) and reload. Only a drag end
+  persists a size, so a keyboard resize on the `Resize files sidebar` separator is lost on reload.
 - A stored binary can be present and downloadable while its workspace has no matching enabled
   viewer plugin. Record that as a preview limit. Verify bytes, node/asset ids, and Properties
   separately; do not re-upload the file or install plugins just to make a preview check pass.
@@ -266,7 +272,17 @@ Use this after changing the right sidebar, tabs, panel group, or chat layout.
 - Create a folder from root; verify the route selects the new node and its default name is selected in the inline rename input.
 - Inside the temp folder, create a file and verify the basename selection for `new-file.md`.
 - Try duplicate deep paths: duplicate file should show `This file already exists.`, duplicate folder should show `This folder already exists.`.
-- Archive the temp folder when done.
+- Archive the temp folder when done: its row menu `Archive` opens the confirm dialog (see the sidebar bullet under "Stable Selectors"), or call the mutation directly.
+
+### Breadcrumb Menu And Reveal In Sidebar
+
+Use this after changing the file header, `files::reveal_node`, or the sidebar's expand/focus effects.
+
+- Open a file at least two folders deep. Read the crumbs with `[...document.querySelectorAll(".FileNodeViewHeaderBreadcrumbPath-segment")].map((el) => ({ shown: el.textContent.trim(), full: el.closest("a").getAttribute("aria-label") }))`; `shown !== full` means the ladder shortened that crumb.
+- Open the menu: `page.getByRole("button", { name: "<file name>", exact: true })` inside `[aria-current="page"]`, then `page.getByRole("menu")`. Read the item names before clicking one; the menu unmounts when it closes.
+- Reveal in sidebar: collapse the parent folder by hand first (the route's own auto-expand runs once per selected path, so it will not undo that), then click `Reveal in sidebar`. Assert the folder row's `aria-expanded === "true"` and `document.activeElement` is `.FilesSidebarTreeItem[data-file-id="<id>"]`. Repeat with the files panel closed (`Close` in the sidebar header): the panel opens and the same row ends focused. With a search query in the box, the reveal drops `?q=` and the full tree comes back first.
+- Duplicate tab: `const [tab] = await Promise.all([context.waitForEvent("page"), item.click()])`; the new tab's URL equals the current one, `view` and `q` included. Close only that tab.
+- Archive: opens the confirm dialog; see the sidebar bullet under "Stable Selectors". Confirming from the breadcrumb navigates to Home.
 
 ### Sidebar Create Then Rename By Id
 
@@ -448,8 +464,9 @@ Use this after changing `files_nodes.unarchive_nodes`, `authorize_leaving_restri
 
 - Build the fixture so the two cases differ: the folder must carry its **own** restriction (`restrictedScopeNodeId === its own _id`, which the restore loop deliberately skips) and the child must **inherit** it (`restrictedScopeNodeId === the folder's _id`). Only the inheriting child exercises the leaving check. Read both from `list_tree` — the sidebar shows neither.
 - Restrict through the row menu `Share` → `Restrict access` (toast `Access restricted`), then `Done`.
+- Archive from the row menu opens the confirm dialog first (`getByRole("dialog", { name: /^Archive / })`); confirm with its `Archive` button. Restore is still direct.
 - To make a restore behave as a **move**, archive the parent folder and then restore the child alone: its parent is still archived, so the restore relocates it to root. That is the only in-app route to the leaving check. Ground truth is the child's `path`, `parentId` and `restrictedScopeNodeId` in `list_tree`; a successful owner restore moves it to root and clears the scope pointer.
-- Reveal archived rows with the sidebar `More options` → `Show N items archived` (`menuitemcheckbox`). It does **not** close the menu on click, so press `Escape` after, and it is **not persisted** — any route load resets it to off, so re-read `aria-checked` instead of assuming your earlier toggle survived.
+- Reveal archived rows with the sidebar `More options` → `Show N items archived` (`menuitemcheckbox`). It does **not** close the menu on click, so press `Escape` after, and it is **not persisted** — any route load resets it to off, so re-read `aria-checked` instead of assuming your earlier toggle survived. Archived rows inside a collapsed folder stay hidden until you expand that folder, so expand it before counting them.
 - Restoring a folder that carries its own restriction must bring it back still restricted (`restrictedScopeNodeId` unchanged, row label keeps ` restricted`).
 - The owner bypasses every permission check, so owner-only runs prove **no over-refusal**, never that the refusal works. The refusal needs a second member holding a `content.write` grant on the folder. Get that member without any sign-in by following `references/second-user-fixtures.md`: an anonymous user in a scratch browser, invited by `userIdToAdd` into a throwaway non-default org. Verified end to end — a `member` with only `write` archives the folder fine, is refused on restoring the child alone with `You need Can manage on the shared folder to move this out of it.`, and still restores the scope-carrying folder itself.
 - A `write`-only member **can** archive the restricted folder. The hole this guards is the pair: archive the folder, then restore one file out of it. With the leaving check removed, that same click succeeds and clears the child's `restrictedScopeNodeId` to `null` at root — the file becomes readable by the whole workspace. Count that pointer, not the toast, when proving the guard.
@@ -474,7 +491,8 @@ do not depend on signing in or out.
   Locked rows must still open, expand, search, and expose safe Copy and Share actions.
 - Try F2/menu rename, source drag, folder drops, archive/restore, mixed-selection archive, New file,
   New folder, `Create a README.md`, Upload, and Import folder. Check the tree and pending rows after each
-  refusal; a toast alone does not prove zero writes. Copy a locked source with the row menu exact
+  refusal; a toast alone does not prove zero writes. Archive and mixed-selection archive go through
+  the confirm dialog: a refused archive shows its `alert` inside the dialog and leaves it open. Copy a locked source with the row menu exact
   `Copy` (not `Copy path`), then folder-row `Paste`. The transfer dialog reports `1 copied` and the
   destination path. The new copy keeps the source lock (`data-file-write-policy="read_only"`,
   `"<name>, Read-only"`, editor `contenteditable=false`). Verified 2026-09-18.

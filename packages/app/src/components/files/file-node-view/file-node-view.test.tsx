@@ -15,7 +15,7 @@ import { AppActivitiesProvider } from "@/lib/app-activities-context.tsx";
 import type { app_convex_Id } from "@/lib/app-convex-client.ts";
 import type { files_VisibleEntry } from "@/lib/files.ts";
 import { app_local_storage_set_value } from "@/lib/storage.ts";
-import { global_custom_event_dispatch } from "@/lib/global-event.tsx";
+import { global_custom_event_dispatch, global_custom_event_listen } from "@/lib/global-event.tsx";
 
 const {
 	tenantContextMock,
@@ -192,11 +192,24 @@ vi.mock("@tanstack/react-router", async (importOriginal) => ({
 	),
 }));
 vi.mock("@/components/my-link.tsx", () => ({
-	MyLink: (props: { children?: ReactNode; "aria-label"?: string }) => (
-		<a href="#" aria-label={props["aria-label"]}>
-			{props.children}
-		</a>
-	),
+	// Expose the link's search params, so a test can tell a saved crumb from a pending one.
+	MyLink: (props: {
+		children?: ReactNode;
+		"aria-label"?: string;
+		search?: Record<string, unknown> | ((prev: Record<string, unknown>) => Record<string, unknown>);
+	}) => {
+		const search = typeof props.search === "function" ? props.search({}) : props.search;
+		return (
+			<a
+				href="#"
+				aria-label={props["aria-label"]}
+				data-node-id={search?.nodeId as string | undefined}
+				data-pending-node-id={search?.pendingNodeId as string | undefined}
+			>
+				{props.children}
+			</a>
+		);
+	},
 	MyLinkIcon: (props: { children?: ReactNode }) => <span>{props.children}</span>,
 }));
 
@@ -295,6 +308,7 @@ let privateView:
 				pendingUpdateId: app_convex_Id<"files_pending_updates">;
 				reviewedRevision: number;
 			}>;
+			savedParentId: app_convex_Id<"files_nodes"> | null;
 	  }
 	| null
 	| undefined;
@@ -322,6 +336,7 @@ beforeEach(() => {
 		canAccept: true,
 		canAcceptWithParents: true,
 		requiredParents: [],
+		savedParentId: null,
 	};
 	pendingChildren = [];
 	browserSession = null;
@@ -1886,5 +1901,190 @@ describe("FileNodeView browser views", () => {
 		expect(screen.getByRole("textbox", { name: "Code draft" })).toBe(editor);
 		expect(editor).toHaveProperty("value", "<p>Private local draft</p>");
 		expect(editorMountMock).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe("FileNodeView header breadcrumb", () => {
+	const DOCS = { ...NODE, _id: "folder_docs", name: "Docs", path: "/Docs", kind: "folder" };
+	const PAGE_IN_DOCS = { ...NODE, parentId: DOCS._id, path: "/Docs/page.html" };
+
+	function currentCrumb() {
+		return header.querySelector<HTMLElement>('[aria-current="page"]')!;
+	}
+
+	async function openCurrentCrumbMenu(name: string) {
+		fireEvent.click(within(currentCrumb()).getByRole("button", { name }));
+		return await screen.findByRole("menu");
+	}
+
+	function archiveCalls() {
+		return mutationMock.mock.calls.filter(([reference]) => getFunctionName(reference) === "files_nodes:archive_nodes");
+	}
+
+	test("renders the ancestors as links and the open file as a menu button", async () => {
+		node = PAGE_IN_DOCS;
+		treeNodes = [DOCS, node];
+		renderFileView();
+		await screen.findByRole("textbox", { name: "Code draft" });
+
+		// The ancestors are their own list, nested in the breadcrumb list.
+		const [breadcrumb, ancestors] = within(header).getAllByRole("list");
+		expect(ancestors!.parentElement!.parentElement).toBe(breadcrumb);
+		expect(within(ancestors!).getAllByRole("link").map((link) => link.getAttribute("aria-label"))).toEqual(["Docs"]);
+		const current = within(currentCrumb()).getByRole("button", { name: "page.html" });
+		expect(current.getAttribute("aria-haspopup")).toBe("menu");
+
+		const menu = await openCurrentCrumbMenu("page.html");
+		expect(within(menu).getAllByRole("menuitem").map((item) => item.textContent)).toEqual([
+			"Reveal in sidebar",
+			"Duplicate tab",
+			"Copy node id",
+			"Archive",
+		]);
+	});
+
+	test.each(["a read-only file", "a folder with a protected descendant"])("hides Archive for %s", async (kind) => {
+		if (kind === "a read-only file") {
+			node = { ...NODE, canWrite: false };
+			treeNodes = [node];
+		} else {
+			node = DOCS;
+			treeNodes = [DOCS, { ...PAGE_IN_DOCS, canWrite: false }];
+		}
+		renderFileView({ nodeId: node._id });
+		await screen.findByRole("button", { name: `Properties of ${node.name}` });
+
+		const menu = await openCurrentCrumbMenu(node.name);
+		expect(within(menu).getByRole("menuitem", { name: "Copy node id" })).toBeTruthy();
+		expect(within(menu).queryByRole("menuitem", { name: "Archive" })).toBeNull();
+	});
+
+	test("hides Reveal in sidebar for an archived file", async () => {
+		node = { ...NODE, archiveOperationId: "qa-archive" };
+		treeNodes = [node];
+		renderFileView();
+		await screen.findByRole("button", { name: `Properties of ${node.name}` });
+
+		const menu = await openCurrentCrumbMenu("page.html");
+		expect(within(menu).getByRole("menuitem", { name: "Copy node id" })).toBeTruthy();
+		expect(within(menu).queryByRole("menuitem", { name: "Reveal in sidebar" })).toBeNull();
+	});
+
+	test("Archive asks first, then archives the open file and returns Home", async () => {
+		const { onNavigateSearch } = renderFileView();
+		await screen.findByRole("textbox", { name: "Code draft" });
+		const menu = await openCurrentCrumbMenu("page.html");
+		fireEvent.click(within(menu).getByRole("menuitem", { name: "Archive" }));
+
+		const dialog = await screen.findByRole("dialog", { name: "Archive “page.html”?" });
+		expect(archiveCalls()).toEqual([]);
+		fireEvent.click(within(dialog).getByRole("button", { name: "Archive" }));
+
+		await waitFor(() => expect(archiveCalls()).toHaveLength(1));
+		expect(archiveCalls()[0]![1]).toEqual({ membershipId: "membership_1", nodeIds: [NODE._id] });
+		await waitFor(() =>
+			expect(onNavigateSearch).toHaveBeenCalledWith({ nodeId: "root", view: undefined, q: undefined }),
+		);
+	});
+
+	test("Cancel closes the Archive dialog without a write", async () => {
+		const { onNavigateSearch } = renderFileView();
+		await screen.findByRole("textbox", { name: "Code draft" });
+		const menu = await openCurrentCrumbMenu("page.html");
+		fireEvent.click(within(menu).getByRole("menuitem", { name: "Archive" }));
+
+		const dialog = await screen.findByRole("dialog", { name: "Archive “page.html”?" });
+		fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+
+		await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+		expect(archiveCalls()).toEqual([]);
+		expect(onNavigateSearch).not.toHaveBeenCalled();
+	});
+
+	test("the folder explorer row menu archives that row through the same dialog", async () => {
+		node = DOCS;
+		treeNodes = [DOCS, PAGE_IN_DOCS];
+		const { onNavigateSearch } = renderFileView({ nodeId: node._id });
+		fireEvent.click(await screen.findByRole("button", { name: "More actions for page.html" }));
+		fireEvent.click(await screen.findByRole("menuitem", { name: "Archive" }));
+
+		const dialog = await screen.findByRole("dialog", { name: "Archive “page.html”?" });
+		fireEvent.click(within(dialog).getByRole("button", { name: "Archive" }));
+
+		await waitFor(() => expect(archiveCalls()).toHaveLength(1));
+		expect(archiveCalls()[0]![1]).toEqual({ membershipId: "membership_1", nodeIds: [PAGE_IN_DOCS._id] });
+		await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+		// The row leaves through the live tree query. The open folder stays open.
+		expect(onNavigateSearch).not.toHaveBeenCalled();
+	});
+
+	test("Reveal in sidebar sends the reveal event for the open file", async () => {
+		const handleReveal = vi.fn();
+		const stopListening = global_custom_event_listen("files::reveal_node", handleReveal);
+		renderFileView();
+		await screen.findByRole("textbox", { name: "Code draft" });
+		const menu = await openCurrentCrumbMenu("page.html");
+		fireEvent.click(within(menu).getByRole("menuitem", { name: "Reveal in sidebar" }));
+
+		expect(handleReveal).toHaveBeenCalled();
+		expect(handleReveal.mock.calls[0]![0].detail).toEqual({ membershipId: "membership_1", nodeId: NODE._id });
+		stopListening();
+	});
+
+	test("Duplicate tab opens the current URL in a new tab", async () => {
+		const open = vi.spyOn(window, "open").mockReturnValue(null);
+		renderFileView();
+		await screen.findByRole("textbox", { name: "Code draft" });
+		const menu = await openCurrentCrumbMenu("page.html");
+		fireEvent.click(within(menu).getByRole("menuitem", { name: "Duplicate tab" }));
+
+		expect(open).toHaveBeenCalledWith(window.location.href, "_blank", "noopener");
+		open.mockRestore();
+	});
+
+	test("the root crumb is not a menu button", async () => {
+		treeNodes = [];
+		renderFileView({ nodeId: "root" });
+		await screen.findByRole("heading", { name: "No README.md" });
+
+		const [breadcrumb] = within(header).getAllByRole("list");
+		expect(within(breadcrumb!).getByText("Home")).toBeTruthy();
+		expect(within(breadcrumb!).queryAllByRole("button")).toEqual([]);
+		expect(header.querySelector('[aria-current="page"]')).toBeNull();
+	});
+
+	test("a pending entry gets crumbs for its saved and pending parents", async () => {
+		const reports = { ...DOCS, _id: "folder_reports", name: "Reports", path: "/Reports" };
+		treeNodes = [reports];
+		privateView = {
+			...privateView!,
+			entry: { ...PRIVATE_ENTRY, path: "/Reports/Drafts/draft.html" },
+			requiredParents: [
+				{
+					target: { kind: "private", id: "private_parent" as app_convex_Id<"files_pending_nodes"> },
+					path: "/Reports/Drafts",
+					pendingUpdateId: "pending_parent" as app_convex_Id<"files_pending_updates">,
+					reviewedRevision: 1,
+				},
+			],
+			savedParentId: reports._id as app_convex_Id<"files_nodes">,
+		};
+		renderFileView({ pendingNodeId: PRIVATE_ENTRY.node._id });
+		await screen.findByRole("textbox", { name: "Code draft" });
+
+		const [, ancestors] = within(header).getAllByRole("list");
+		expect(
+			within(ancestors!)
+				.getAllByRole("link")
+				.map((link) => [link.getAttribute("aria-label"), link.dataset.nodeId, link.dataset.pendingNodeId]),
+		).toEqual([
+			["Reports", reports._id, undefined],
+			["Drafts", undefined, "private_parent"],
+		]);
+		const menu = await openCurrentCrumbMenu("draft.html");
+		expect(within(menu).getAllByRole("menuitem").map((item) => item.textContent)).toEqual([
+			"Duplicate tab",
+			"Copy node id",
+		]);
 	});
 });

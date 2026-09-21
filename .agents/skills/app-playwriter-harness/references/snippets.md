@@ -251,6 +251,27 @@ const after = read(text);
 
 `squeezed.overflowing` must be `true`, and any sibling that must stay readable (a status word, a badge) must keep its full width and stay inside the row's right edge. Compare `before` and `after` to confirm the probe left nothing behind.
 
+## Emulate A Narrower Viewport
+
+Use this when the layout under test depends on the page width itself (a media query, a header that measures its own row), not on one element. Squeezing one element (above) stays the cheaper move otherwise. Capture the original size first; without it, the restore pins a size the tab never had.
+
+```js
+state.cdp = await getCDPSession({ page: state.page });
+state.originalViewport = state.page.viewportSize();
+state.originalLayout = (await state.cdp.send("Page.getLayoutMetrics")).cssVisualViewport;
+state.setWidth = async (width, height = 1024) => {
+	// All four parameters are required by CDP.
+	await state.cdp.send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });
+	await state.page.waitForTimeout(400); // let ResizeObserver and the React commit land
+	return await state.page.evaluate(() => ({ innerWidth: window.innerWidth, clientWidth: document.documentElement.clientWidth }));
+};
+console.log(JSON.stringify(await state.setWidth(768)));
+```
+
+Check `clientWidth`, not `innerWidth`: a classic vertical scrollbar takes ~15px, so a 768px device can give a 753px layout viewport. Raise the device width until `clientWidth` reads the target, and record what you used.
+
+Restore in this order, then verify: `page.setViewportSize(state.originalViewport)` when it was not `null`, `Emulation.clearDeviceMetricsOverride`, `Emulation.resetPageScaleFactor`, then re-read `page.viewportSize()` and `Page.getLayoutMetrics().cssVisualViewport` and compare them with the captured values, and look at a fresh screenshot. The hazards for this (stale Playwright viewport cache, a magnified page that still reports scale 1) are in `known-hazards.md`.
+
 ## Read Real Pixels Out Of A Screenshot
 
 Use this when the thing under test has no computed style to read: a scrollbar track or thumb, a canvas, a shadow, a blend. Take one clipped screenshot with the fix on and one with it off (flip it with an inline style in the page), then compare the same pixels in PowerShell.

@@ -50,7 +50,7 @@ export const PluginsHeaderBreadcrumb = memo(function PluginsHeaderBreadcrumb(pro
 								className={"PluginsHeaderBreadcrumb-segment" satisfies PluginsHeaderBreadcrumb_ClassNames}
 								to="/w/$organizationName/$workspaceName/plugins"
 								params={{ organizationName, workspaceName }}
-								variant="button-tertiary"
+								variant="button-ghost-highlightable"
 							>
 								Plugins
 							</MyLink>
@@ -59,7 +59,7 @@ export const PluginsHeaderBreadcrumb = memo(function PluginsHeaderBreadcrumb(pro
 								className={"PluginsHeaderBreadcrumb-segment" satisfies PluginsHeaderBreadcrumb_ClassNames}
 								to="/w/$organizationName/$workspaceName/plugins/publisher"
 								params={{ organizationName, workspaceName }}
-								variant="button-tertiary"
+								variant="button-ghost-highlightable"
 							>
 								Publisher
 							</MyLink>

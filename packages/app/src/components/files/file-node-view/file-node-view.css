@@ -141,6 +141,50 @@
 	/* #endregion top sticky floating container */
 
 	/* #region header */
+	.FileNodeViewHeaderBreadcrumbPath {
+		/* Only the ancestors shrink when the row is too narrow. Every other `li` keeps
+		   `min-width: auto` and holds nowrap content, so it stays at its natural size without a rule
+		   of its own. */
+		min-width: 0;
+	}
+
+	.FileNodeViewHeaderBreadcrumbPath-list {
+		display: flex;
+		align-items: center;
+		gap: 4px;
+
+		margin: 0;
+		padding: 0;
+
+		list-style: none;
+
+		/* Pretext usually shortens the labels enough. A deep path with long names can still overflow
+		   at 768px, so scroll here and keep the page itself from scrolling. No `tabindex`: every crumb
+		   inside is a link, so the group already has keyboard access. */
+		overflow-x: auto;
+		scrollbar-width: none;
+
+		/* The hover surface of a crumb draws a `0 4px 10px` drop shadow below the box, and a scroll
+		   container clips it. Give the scroll port 6px of room above and below, and take the same 6px
+		   back with a negative margin so the row keeps its height. */
+		padding-block: 6px;
+		margin-block: -6px;
+	}
+
+	.FileNodeViewHeaderBreadcrumbPath-segment,
+	.FileNodeViewHeaderBreadcrumbPath-current {
+		white-space: nowrap;
+
+		/* Keep breadcrumb links at the shared 36px minimum click target. */
+		min-height: 36px;
+		padding: 6px 8px;
+
+		display: inline-flex;
+		gap: 4px;
+		align-items: center;
+		justify-content: center;
+	}
+
 	.FileNodeViewHeader {
 		display: flex;
 		flex: 1;
@@ -157,6 +201,11 @@
 		display: flex;
 		align-items: center;
 		gap: 8px;
+
+		/* The header is `space-between` with two children, so growing this box changes nothing on
+		   screen. It makes `clientWidth` the width the layout allows, which is the only width the
+		   crumb measurement can trust. */
+		flex: 1 1 auto;
 		min-width: 0;
 	}
 
@@ -170,12 +219,15 @@
 		align-items: center;
 		gap: 4px;
 
+		/* The row must be allowed to shrink, or its content pushes the whole page wider. */
+		min-width: 0;
 		margin: 0;
 		padding: 0;
 
 		list-style: none;
 
 		font-size: 0.875rem;
+		/* The `/` separators use this color. The crumbs take theirs from the button variant. */
 		color: var(--gray-800);
 
 		/* `MyLink` puts its class on the inner surface, so the anchor itself stays `display: inline`
@@ -183,30 +235,11 @@
 		   focus ring and the reported hit target are the real 36px control. */
 		a {
 			display: inline-flex;
-		}
-	}
 
-	.FileNodeViewHeader-breadcrumb-segment,
-	.FileNodeViewHeader-breadcrumb-segment-current {
-		white-space: nowrap;
-
-		/* Keep breadcrumb links at the shared 36px minimum click target. */
-		min-height: 36px;
-		padding: 6px 8px;
-
-		display: inline-flex;
-		gap: 4px;
-		align-items: center;
-		justify-content: center;
-	}
-
-	.FileNodeViewHeader-breadcrumb-segment {
-		color: var(--gray-600);
-		cursor: pointer;
-
-		&:hover {
-			color: var(--gray-800);
-			text-decoration: underline;
+			/* The focus ring is drawn on the anchor, not on the `.MyButton` surface inside it, so it
+			   sits 2px outside the box. The scrolling ancestors group would cut those 2px off. Draw
+			   the ring inside the box, the way `.MyButton` does. */
+			outline-offset: -2px;
 		}
 	}
 
@@ -220,9 +253,18 @@
 		height: 36px;
 	}
 
+	/* The root's crumb: plain text with the home icon, no link and no menu. Give it the crumb button
+	   size, so the header keeps the same height at the root as on a file. */
 	.FileNodeViewHeader-breadcrumb-segment-current {
-		padding: 8px;
-		color: var(--gray-700);
+		white-space: nowrap;
+
+		min-height: 36px;
+		padding: 6px 8px;
+
+		display: inline-flex;
+		gap: 4px;
+		align-items: center;
+		justify-content: center;
 	}
 
 	.FileNodeViewHeader-switch-group {

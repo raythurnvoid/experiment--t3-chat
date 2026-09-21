@@ -23,7 +23,6 @@ export type MyButton_ClassNames =
 	| "MyButton-variant-ghost_destructive"
 	| "MyButton-variant-ghost-highlightable"
 	| "MyButton-variant-ghost-highlightable-alt"
-	| "MyButton-variant-tertiary"
 	| "MyButton-variant-link";
 
 export type MyButton_Props = ComponentPropsWithRef<"button"> & {
@@ -53,7 +52,6 @@ export type MyButton_Props = ComponentPropsWithRef<"button"> & {
 		| "ghost_destructive"
 		| "ghost-highlightable"
 		| "ghost-highlightable-alt"
-		| "tertiary"
 		| "link";
 
 	/**
@@ -104,7 +102,6 @@ export const MyButton = memo(function MyButton(props: MyButton_Props) {
 				variant === "ghost-highlightable" && ("MyButton-variant-ghost-highlightable" satisfies MyButton_ClassNames),
 				variant === "ghost-highlightable-alt" &&
 					("MyButton-variant-ghost-highlightable-alt" satisfies MyButton_ClassNames),
-				variant === "tertiary" && ("MyButton-variant-tertiary" satisfies MyButton_ClassNames),
 				variant === "link" && ("MyButton-variant-link" satisfies MyButton_ClassNames),
 				className,
 			)}

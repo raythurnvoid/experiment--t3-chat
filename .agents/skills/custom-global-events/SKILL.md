@@ -15,6 +15,8 @@ Declare each app custom event in the map owned by `global_custom_event_Event` in
 
 `files::open_browser` carries the membership and file target. A browser result link sends it to the Files view, which opens the browser panel even when that same file is already selected. It keeps the mounted editor and its draft.
 
+`files::reveal_node` carries `membershipId` and `nodeId`. The open file's crumb menu (Reveal in sidebar) sends it. Two listeners handle it, in no fixed order. The file view clears the sidebar search through the route and, when the files panel is closed, opens the panel and sends the event again once the panel has mounted (the panel unmounts while closed, so the sidebar's listener was not there). The sidebar expands every folder above the row, waits until the row is visible, then scrolls to it and focuses it. During a search it also adds those folders to the expansion snapshot that comes back when the search closes, so a folder the user collapsed by hand stays open for the reveal.
+
 This is a template, not a registered current event:
 
 ```ts

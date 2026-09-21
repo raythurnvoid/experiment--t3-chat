@@ -504,21 +504,6 @@
 		}
 	}
 
-	.MyButton-variant-tertiary {
-		background: transparent;
-
-		&:hover,
-		&:focus-visible {
-			background: var(--sidebar-accent);
-			color: var(--sidebar-accent-foreground);
-		}
-
-		&:active {
-			background: var(--sidebar-accent);
-			color: var(--sidebar-accent-foreground);
-		}
-	}
-
 	.MyButton-variant-link {
 		background: transparent;
 		color: var(--primary);

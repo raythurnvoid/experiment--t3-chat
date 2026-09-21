@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, waitFor, within } from "@testing-library/react";
 import {
 	createMemoryHistory,
 	createRootRoute,
@@ -13,8 +13,9 @@ import type { FunctionReference } from "convex/server";
 import { FilesSidebar } from "./files-sidebar.tsx";
 import { FilesClipboardProvider } from "./files-clipboard.tsx";
 import { files_ROOT_ID, files_SYNTHETIC_ROOT_FOLDER, type files_VisibleTreeNode } from "@/lib/files.ts";
-import type { app_convex_Id } from "@/lib/app-convex-client.ts";
+import { app_convex, app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { AppActivitiesProvider } from "@/lib/app-activities-context.tsx";
+import { global_custom_event_dispatch } from "@/lib/global-event.tsx";
 
 const { treeState, tenantState, createNode } = vi.hoisted(() => ({
 	treeState: { nodes: [] as files_VisibleTreeNode[], listeners: new Set<() => void>() },
@@ -52,17 +53,22 @@ vi.mock("@/lib/app-tenant-context.tsx", () => ({
 }));
 
 vi.mock("@/lib/files-tree-context.tsx", async () => {
-	const { useSyncExternalStore } = await import("react");
+	const { useEffect, useState } = await import("react");
 	return {
 		FilesTreeProvider: {
+			// State and an effect, like the real Convex query hook. An update sent outside `act` then
+			// renders on React's normal schedule, together with other pending state updates.
 			useContext: function useContext() {
-				return useSyncExternalStore(
-					(listener) => {
-						treeState.listeners.add(listener);
-						return () => treeState.listeners.delete(listener);
-					},
-					() => treeState.nodes,
-				);
+				const [nodes, setNodes] = useState(() => treeState.nodes);
+				useEffect(() => {
+					const listener = () => setNodes(treeState.nodes);
+					treeState.listeners.add(listener);
+					listener();
+					return () => {
+						treeState.listeners.delete(listener);
+					};
+				}, []);
+				return nodes;
 			},
 		},
 	};
@@ -581,4 +587,146 @@ describe("FilesSidebar", () => {
 			);
 		},
 	);
+
+	test("a reveal event expands the folder above the row and focuses the row", async () => {
+		treeState.nodes = treeState.nodes.map((node) =>
+			node._id === "bravo"
+				? {
+						...node,
+						kind: "file",
+						parentId: "alpha" as app_convex_Id<"files_nodes">,
+						path: "/alpha/bravo",
+						treePath: "/alpha/bravo/",
+						pathDepth: 2,
+					}
+				: node,
+		);
+		const router = createRouter({ routeTree: createRootRoute(), history: createMemoryHistory() });
+		// Select a sibling, so the route does not expand `alpha` by itself.
+		const view = render(<CreateSidebar router={router} selectedNodeId="charlie" />);
+		const alpha = await view.findByRole("treeitem", { name: "alpha" });
+		expect(alpha.getAttribute("aria-expanded")).toBe("false");
+		expect(view.queryByRole("treeitem", { name: "bravo" })).toBeNull();
+
+		act(() =>
+			global_custom_event_dispatch("files::reveal_node", {
+				membershipId: "other_membership" as app_convex_Id<"organizations_workspaces_users">,
+				nodeId: "bravo" as app_convex_Id<"files_nodes">,
+			}),
+		);
+		expect(alpha.getAttribute("aria-expanded")).toBe("false");
+
+		act(() =>
+			global_custom_event_dispatch("files::reveal_node", {
+				membershipId: "membership" as app_convex_Id<"organizations_workspaces_users">,
+				nodeId: "bravo" as app_convex_Id<"files_nodes">,
+			}),
+		);
+		await waitFor(() => expect(alpha.getAttribute("aria-expanded")).toBe("true"));
+		const bravo = await view.findByRole("treeitem", { name: "bravo" });
+		// Headless Tree focuses the row from a timer once the row element exists.
+		await waitFor(() => expect(document.activeElement).toBe(bravo), { timeout: 5_000 });
+		expect(bravo.tabIndex).toBe(0);
+		expect(bravo.hasAttribute("data-focused")).toBe(true);
+	});
+
+	test("a confirmed row-menu archive moves focus to the next row", async () => {
+		const router = createRouter({ routeTree: createRootRoute(), history: createMemoryHistory() });
+		// Like Convex, the tree update arrives together with the mutation result, and React renders it
+		// after the mutation promise has resolved. The first `await` leaves the click's `act` scope, so
+		// the update is not rendered at once.
+		const archive = vi.spyOn(app_convex, "mutation").mockImplementation(async () => {
+			await Promise.resolve();
+			treeState.nodes = treeState.nodes.filter((node) => node._id !== "bravo");
+			for (const listener of treeState.listeners) listener();
+			return { _yay: null };
+		});
+		const view = render(<CreateSidebar router={router} selectedNodeId="alpha" />);
+		await view.findByRole("treeitem", { name: "bravo" });
+		fireEvent.click(view.getByRole("button", { name: "More actions for bravo" }));
+		fireEvent.click(await view.findByRole("menuitem", { name: "Archive" }));
+		const dialog = await view.findByRole("dialog", { name: "Archive “bravo”?" });
+		fireEvent.click(within(dialog).getByRole("button", { name: "Archive" }));
+		await waitFor(() =>
+			expect(archive).toHaveBeenCalledWith(app_convex_api.files_nodes.archive_nodes, {
+				membershipId: "membership",
+				nodeIds: ["bravo"],
+			}),
+		);
+		await waitFor(() => expect(view.queryByRole("treeitem", { name: "bravo" })).toBeNull());
+
+		// Bravo's menu button left with its row, so the dialog has nothing to give focus back to. The
+		// sidebar picked the row after bravo while bravo was still there.
+		const charlie = view.getByRole("treeitem", { name: "charlie" });
+		await waitFor(() => expect(document.activeElement).toBe(charlie), { timeout: 5_000 });
+		expect(charlie.hasAttribute("data-focused")).toBe(true);
+	});
+
+	test("a cancelled multi-select archive keeps the selection", async () => {
+		const router = createRouter({ routeTree: createRootRoute(), history: createMemoryHistory() });
+		const view = render(<CreateSidebar router={router} selectedNodeId="alpha" />);
+		const alpha = await view.findByRole("treeitem", { name: "alpha" });
+		await waitFor(() => expect(alpha.getAttribute("aria-selected")).toBe("true"));
+		const bravo = view.getByRole("treeitem", { name: "bravo" });
+		fireEvent.click(bravo.querySelector(".FilesSidebarTreeItemPrimaryAction")!, { ctrlKey: true });
+		expect(bravo.getAttribute("aria-selected")).toBe("true");
+
+		// The header menu is not a tree menu, so nothing else keeps the selection while the dialog is open.
+		fireEvent.click(view.getByRole("button", { name: "More options" }));
+		fireEvent.click(await view.findByRole("menuitem", { name: /^Archive 2 selected/ }));
+		const dialog = await view.findByRole("dialog", { name: "Archive 2 items?" });
+		// The closed menu unmounts a moment later. While it is still there, the sidebar treats every
+		// outside interaction as the menu closing, which would hide what this test checks.
+		await waitFor(() => expect(document.querySelector(".MyMenuPopover[data-files-sidebar-tree-context]")).toBeNull());
+		// Focus and clicks inside the dialog are outside the tree, but they must not reset the selection.
+		const cancel = within(dialog).getByRole("button", { name: "Cancel" });
+		act(() => cancel.focus());
+		fireEvent.pointerDown(cancel);
+		expect(alpha.getAttribute("aria-selected")).toBe("true");
+		expect(bravo.getAttribute("aria-selected")).toBe("true");
+
+		fireEvent.click(cancel);
+		await waitFor(() => expect(view.queryByRole("dialog", { name: "Archive 2 items?" })).toBeNull());
+		expect(alpha.getAttribute("aria-selected")).toBe("true");
+		expect(bravo.getAttribute("aria-selected")).toBe("true");
+	});
+
+	test("a reveal event during a search keeps the folder expanded once the search closes", async () => {
+		treeState.nodes = treeState.nodes.map((node) =>
+			node._id === "bravo"
+				? {
+						...node,
+						kind: "file",
+						parentId: "alpha" as app_convex_Id<"files_nodes">,
+						path: "/alpha/bravo",
+						treePath: "/alpha/bravo/",
+						pathDepth: 2,
+					}
+				: node,
+		);
+		const router = createRouter({ routeTree: createRootRoute(), history: createMemoryHistory() });
+		const view = render(<CreateSidebar router={router} selectedNodeId="charlie" />);
+		const alpha = await view.findByRole("treeitem", { name: "alpha" });
+		expect(alpha.getAttribute("aria-expanded")).toBe("false");
+
+		const searchInput = view.getByRole("combobox");
+		act(() => searchInput.focus());
+		fireEvent.change(searchInput, { target: { value: "charlie" } });
+		await waitFor(() => expect(view.queryAllByRole("treeitem")).toHaveLength(1), { timeout: 5_000 });
+
+		act(() =>
+			global_custom_event_dispatch("files::reveal_node", {
+				membershipId: "membership" as app_convex_Id<"organizations_workspaces_users">,
+				nodeId: "bravo" as app_convex_Id<"files_nodes">,
+			}),
+		);
+		// The file view clears the search through the route. Here the clear button does the same.
+		fireEvent.click(view.getByRole("button", { name: "Clear search" }));
+		await waitFor(
+			() => expect(view.getByRole("treeitem", { name: "alpha" }).getAttribute("aria-expanded")).toBe("true"),
+			{ timeout: 5_000 },
+		);
+		const bravo = await view.findByRole("treeitem", { name: "bravo" });
+		await waitFor(() => expect(document.activeElement).toBe(bravo), { timeout: 5_000 });
+	});
 });

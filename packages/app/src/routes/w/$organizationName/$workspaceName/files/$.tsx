@@ -46,7 +46,7 @@ const RouteFilesPathNotFound = memo(function RouteFilesPathNotFound(props: Route
 					Search for this path
 				</MyLink>
 				<MyLink
-					variant="button-tertiary"
+					variant="button-ghost-highlightable"
 					to="/w/$organizationName/$workspaceName/files"
 					params={{ organizationName, workspaceName }}
 					search={{ nodeId: files_ROOT_ID }}

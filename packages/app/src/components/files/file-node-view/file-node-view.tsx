@@ -22,6 +22,7 @@ import {
 	type FileNodeViewFolderCreateNodeModal_Ref,
 } from "./file-node-view-folder-create-node-modal.tsx";
 import { FilesSidebarToggle } from "../files-sidebar-toggle.tsx";
+import { FilesArchiveModal, type FilesArchiveModal_Node } from "../files-archive-modal.tsx";
 import { FilesShareModal } from "../files-share-modal.tsx";
 import { FilesPropertiesModal } from "../files-properties-modal.tsx";
 import { FilesClipboardMenuItems, FilesClipboardProvider, FilesClipboardToolbar } from "../files-clipboard.tsx";
@@ -40,6 +41,7 @@ import {
 	MyMenuItemContent,
 	MyMenuItemContentIcon,
 	MyMenuItemContentPrimary,
+	MyMenuItemsGroup,
 	MyMenuPopover,
 	MyMenuPopoverContent,
 	MyMenuTrigger,
@@ -69,6 +71,7 @@ import { FilesTreeProvider } from "@/lib/files-tree-context.tsx";
 import { format_relative_time } from "@/lib/date.ts";
 import type { AppClassName, AppElementId } from "@/lib/dom-utils.ts";
 import { file_editor_get_content_too_large_message } from "@/lib/file-editor.ts";
+import { files_truncate_path_segments } from "@/lib/file-paths.ts";
 import {
 	files_ROOT_ID,
 	files_FILE_NODE_DRAG_DATA_TRANSFER_TYPE,
@@ -94,11 +97,13 @@ import {
 	type files_YjsRootKind,
 } from "@/lib/files.ts";
 import { useAppLocalStorageStateValue } from "@/lib/storage.ts";
-import { useGlobalCustomEvent } from "@/lib/global-event.tsx";
+import { global_custom_event_dispatch, useGlobalCustomEvent } from "@/lib/global-event.tsx";
+import { APP_FONT_FAMILY } from "@/lib/ui.tsx";
 import { url_path_file_by_node_id } from "@/lib/urls.ts";
-import { cn, sx } from "@/lib/utils.ts";
+import { cn, copy_to_clipboard, sx } from "@/lib/utils.ts";
 import { combine } from "@atlaskit/pragmatic-drag-and-drop/combine";
 import { draggable, dropTargetForElements } from "@atlaskit/pragmatic-drag-and-drop/element/adapter";
+import { measureNaturalWidth, prepareWithSegments } from "@chenglou/pretext";
 import { Link } from "@tanstack/react-router";
 import { useConvex, usePaginatedQuery, useQueries, useQuery } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
@@ -108,19 +113,22 @@ import {
 	CircleAlert,
 	Download,
 	EllipsisVertical,
+	ExternalLink,
 	FileDigit,
 	FilePlus,
 	FileText,
 	Folder,
 	FolderPlus,
+	Hash,
 	Home,
 	Link2,
 	Lock,
 	LockKeyhole,
+	PanelLeftOpen,
 	Users,
 } from "lucide-react";
 import React, { memo, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { RefObject } from "react";
+import type { ReactNode, RefObject } from "react";
 import { createPortal } from "react-dom";
 import { toast } from "sonner";
 import { FilesSidebar } from "../files-sidebar.tsx";
@@ -241,40 +249,309 @@ const FILE_NODE_VIEW_TOOLBAR_EDITOR_ACTIONS_ID = "app_file_node_view_toolbar_edi
 const FILE_NODE_VIEW_TOP_SAFE_AREA = 44;
 
 // #region header
+type FileNodeViewHeaderBreadcrumbPath_ClassNames =
+	| "FileNodeViewHeaderBreadcrumbPath"
+	| "FileNodeViewHeaderBreadcrumbPath-list"
+	| "FileNodeViewHeaderBreadcrumbPath-segment"
+	| "FileNodeViewHeaderBreadcrumbPath-current";
+
+type FileNodeViewHeaderBreadcrumbPath_Crumb = {
+	id: string;
+	name: string;
+	/**
+	 * Which route param the crumb's link sets: `nodeId` for a saved node, `pendingNodeId` for a
+	 * pending one.
+	 */
+	target: "saved" | "private";
+};
+
+type FileNodeViewHeaderBreadcrumbPath_Props = {
+	/** Lands on the open file's crumb button, so the Archive dialog can give focus back to it. */
+	currentRef: RefObject<HTMLButtonElement | null>;
+	/** The path of the open file, root-first. The last crumb is the open file itself. */
+	crumbs: FileNodeViewHeaderBreadcrumbPath_Crumb[];
+	filesSidebarOpen: boolean;
+	/** The `MyMenuPopover` of the open file's crumb. The header owns its actions. */
+	currentMenu: ReactNode;
+};
+
+// Pretext measures with these values so resize work never calls `getComputedStyle`. Every crumb is
+// a `MyButton` surface (the links through `MyLinkSurface`, the open file's crumb as the menu
+// trigger), so one font covers them all: `.MyButton` in my-button.css sets weight 500 and size
+// 0.875rem (14px). Keep these in sync with that rule.
+const BREADCRUMB_FONT = `500 14px ${APP_FONT_FAMILY}`;
+const BREADCRUMB_LETTER_SPACING = 0;
+// Every crumb lands on 8px each side: `components` beats `common_components`, so the breadcrumb's
+// `6px 8px` wins over the variant's `8px 12px`. Do not "correct" this to 24.
+const BREADCRUMB_SEGMENT_PADDING_X = 16;
+// The `gap` of `.FileNodeViewHeader-start` and the `gap` of the two breadcrumb lists.
+const BREADCRUMB_START_GAP = 8;
+const BREADCRUMB_LIST_GAP = 4;
+
+/**
+ * The crumbs of the open file: the ancestors as links in one scrolling group, then the open file's
+ * crumb as a menu trigger. One ladder call shortens every label so the row fits the header.
+ */
+const FileNodeViewHeaderBreadcrumbPath = memo(function FileNodeViewHeaderBreadcrumbPath(
+	props: FileNodeViewHeaderBreadcrumbPath_Props,
+) {
+	const { currentRef, crumbs, filesSidebarOpen, currentMenu } = props;
+
+	const { organizationName, workspaceName } = AppTenantProvider.useContext();
+
+	const ancestors = crumbs.slice(0, -1);
+	const current = crumbs[crumbs.length - 1];
+	// One string, so the effect below depends on a primitive. File names never contain `/`.
+	const path = crumbs.map((crumb) => crumb.name).join("/");
+
+	const groupRef = useRef<HTMLLIElement>(null);
+	const listRef = useRef<HTMLOListElement>(null);
+	const currentItemRef = useRef<HTMLLIElement>(null);
+	// The shortened label of each crumb, in `crumbs` order. Empty until the first measurement, so
+	// every read falls back to the crumb's name. Right after a navigation it still holds the previous
+	// path's labels for one render; the layout effect replaces them before paint.
+	const [labels, setLabels] = useState<string[]>([]);
+
+	// Tab focus scrolls a crumb into the group only when the crumb is fully hidden. A crumb cut at
+	// the edge keeps its focus ring cut, so bring every focused crumb fully into the scroll port.
+	const handleListFocus = (event: React.FocusEvent<HTMLOListElement>) => {
+		event.target.scrollIntoView({ block: "nearest", inline: "nearest" });
+	};
+
+	useLayoutEffect(() => {
+		const groupElement = groupRef.current;
+		const listElement = listRef.current;
+		const breadcrumbElement = groupElement?.parentElement;
+		const startElement = breadcrumbElement?.closest<HTMLElement>(
+			`.${"FileNodeViewHeader-start" satisfies FileNodeViewHeader_ClassNames}`,
+		);
+		if (!groupElement || !listElement || !breadcrumbElement || !startElement) {
+			return;
+		}
+
+		let cancelled = false;
+
+		const updateLabels = () => {
+			const segments = path.split("/");
+			let next = segments;
+
+			// Skip the measurement while the header is not laid out (hidden, or the happy-dom tests).
+			if (startElement.clientWidth > 0) {
+				// Read a box with the DOM only when its width is set by the layout: the sidebar toggles,
+				// the home link, the icon buttons and the `/` separators. A crumb box follows its label,
+				// so reading it would feed the shortening back into its own input, and the row could
+				// never grow back. Pretext measures the crumbs instead.
+				let fixedWidth = BREADCRUMB_START_GAP * (startElement.children.length - 1);
+				for (const child of startElement.children) {
+					if (child !== breadcrumbElement) {
+						fixedWidth += child.getBoundingClientRect().width;
+					}
+				}
+				fixedWidth += BREADCRUMB_LIST_GAP * (breadcrumbElement.children.length - 1);
+				for (const item of breadcrumbElement.children) {
+					if (item !== groupElement && item !== currentItemRef.current) {
+						fixedWidth += item.getBoundingClientRect().width;
+					}
+				}
+				fixedWidth += BREADCRUMB_LIST_GAP * Math.max(0, listElement.children.length - 1);
+				for (const item of listElement.children) {
+					// The `/` separators between the ancestor crumbs.
+					if (item.getAttribute("aria-hidden") === "true") {
+						fixedWidth += item.getBoundingClientRect().width;
+					}
+				}
+				// `clientWidth` is an integer while rects and Pretext widths are fractional. Erring
+				// small only shortens one character early.
+				const available = startElement.clientWidth - fixedWidth - 1;
+
+				// Pretext caches canvas `measureText` per segment, but `prepareWithSegments` re-segments
+				// on every call. `files_truncate_path_segments` measures unchanged labels many times in
+				// one pass, so keep one map per pass. The map is dropped after the pass, so it needs no
+				// eviction.
+				const widths = new Map<string, number>();
+				const measureLabelWidth = (label: string) => {
+					const cached = widths.get(label);
+					if (cached !== undefined) return cached;
+
+					const width = measureNaturalWidth(
+						prepareWithSegments(label, BREADCRUMB_FONT, {
+							letterSpacing: BREADCRUMB_LETTER_SPACING,
+							whiteSpace: "normal",
+						}),
+					);
+					widths.set(label, width);
+					return width;
+				};
+
+				// Measure only the crumb boxes. `fixedWidth` above already counts every gap and separator.
+				next = files_truncate_path_segments({
+					segments,
+					collapse: "keep",
+					fits: (candidateLabels) => {
+						let used = 0;
+						for (const label of candidateLabels) {
+							used += measureLabelWidth(label) + BREADCRUMB_SEGMENT_PADDING_X;
+						}
+						return used <= available;
+					},
+				});
+			}
+
+			if (cancelled) return;
+
+			// Bail out when nothing changed, so a window drag does not re-render on every pixel.
+			setLabels((previous) =>
+				previous.length === next.length && previous.every((label, index) => label === next[index]) ? previous : next,
+			);
+		};
+
+		updateLabels();
+
+		// The width of `-start` changes when the header or the switch group changes (the billing
+		// indicator appearing, presence avatars), never when the labels change, so the observer
+		// cannot re-fire on its own output. Never observe the ancestors group or a crumb box.
+		const resizeObserver =
+			typeof ResizeObserver === "undefined"
+				? null
+				: new ResizeObserver(() => {
+						updateLabels();
+					});
+		resizeObserver?.observe(startElement);
+		void document.fonts?.ready.then(() => updateLabels());
+
+		return () => {
+			cancelled = true;
+			resizeObserver?.disconnect();
+		};
+		// The sidebar toggle buttons sit inside `-start` and appear or disappear without `-start`
+		// changing width, so the effect must also run on `filesSidebarOpen`.
+	}, [path, filesSidebarOpen]);
+
+	return (
+		<>
+			{/* Keep the ancestors in a nested list so they scroll as one group while the open file name
+			    and the buttons stay put. Render the wrapper even with no ancestors, so the measurement
+			    always has its element. */}
+			<li
+				ref={groupRef}
+				className={cn("FileNodeViewHeaderBreadcrumbPath" satisfies FileNodeViewHeaderBreadcrumbPath_ClassNames)}
+			>
+				<ol
+					ref={listRef}
+					className={cn("FileNodeViewHeaderBreadcrumbPath-list" satisfies FileNodeViewHeaderBreadcrumbPath_ClassNames)}
+					onFocus={handleListFocus}
+				>
+					{ancestors.map((crumb, index) => (
+						<React.Fragment key={crumb.id}>
+							<li>
+								<MyLink
+									className={cn(
+										"FileNodeViewHeaderBreadcrumbPath-segment" satisfies FileNodeViewHeaderBreadcrumbPath_ClassNames,
+									)}
+									to="/w/$organizationName/$workspaceName/files"
+									params={{ organizationName, workspaceName }}
+									// Keep `q` (functional form) so the URL stays in step with the sidebar search box.
+									search={(prev) => ({
+										...prev,
+										nodeId: crumb.target === "saved" ? crumb.id : undefined,
+										pendingNodeId: crumb.target === "private" ? crumb.id : undefined,
+										view: undefined,
+									})}
+									variant="button-ghost-highlightable"
+									// Always pass both. Making `tooltip` conditional changes the element MyLink returns,
+									// which remounts the anchor and drops focus during a resize. `aria-label` keeps the
+									// full name readable next to the shortened text.
+									aria-label={crumb.name}
+									tooltip={crumb.name}
+								>
+									{labels[index] ?? crumb.name}
+								</MyLink>
+							</li>
+							{index < ancestors.length - 1 && <li aria-hidden="true">/</li>}
+						</React.Fragment>
+					))}
+				</ol>
+			</li>
+			{/* Keep the separator before the open file outside the scroller so it never scrolls away. */}
+			{ancestors.length > 0 && <li aria-hidden="true">/</li>}
+			{/* Mark which crumb is the open file. Playwriter finds it by this attribute. */}
+			<li ref={currentItemRef} aria-current="page">
+				<MyMenu placement="bottom-start">
+					<MyMenuTrigger>
+						<MyButton
+							ref={currentRef}
+							className={cn(
+								"FileNodeViewHeaderBreadcrumbPath-current" satisfies FileNodeViewHeaderBreadcrumbPath_ClassNames,
+							)}
+							variant="ghost-highlightable"
+							// `tooltip` also sets `aria-label`, so the full name stays the button's name when the
+							// visible label is shortened.
+							tooltip={current.name}
+						>
+							{labels[ancestors.length] ?? current.name}
+						</MyButton>
+					</MyMenuTrigger>
+					{currentMenu}
+				</MyMenu>
+			</li>
+		</>
+	);
+});
+
 type FileNodeViewHeader_ClassNames =
 	| "FileNodeViewHeader"
 	| "FileNodeViewHeader-start"
 	| "FileNodeViewHeader-sidebars-actions"
 	| "FileNodeViewHeader-breadcrumb"
 	| "FileNodeViewHeader-breadcrumb-home"
-	| "FileNodeViewHeader-breadcrumb-segment"
 	| "FileNodeViewHeader-breadcrumb-segment-current"
 	| "FileNodeViewHeader-switch-group";
 
 type FileNodeViewHeader_Props = {
 	selectedNodeId: string | null | undefined;
-	privateEntry?: Extract<files_VisibleEntry, { kind: "private" }>;
+	privateView?: FileNodeViewPrivateView;
 	fileNodesList: files_VisibleTreeNode[] | undefined;
 	protectedDescendantIds: ReadonlySet<app_convex_Id<"files_nodes">>;
 	filesSidebarOpen: boolean;
 	showFileControls: boolean;
 	onlineUsers: FileEditor_OnlineUser[];
-	onNavigateNode: (nodeId: app_convex_Id<"files_nodes">) => void;
+	onNavigateNode: (nodeId: typeof files_ROOT_ID | app_convex_Id<"files_nodes">) => void;
 };
 
 const FileNodeViewHeader = memo(function FileNodeViewHeader(props: FileNodeViewHeader_Props) {
 	const {
 		selectedNodeId,
-		privateEntry,
+		privateView,
 		fileNodesList,
+		protectedDescendantIds,
 		filesSidebarOpen,
 		showFileControls,
 		onlineUsers,
+		onNavigateNode,
 	} = props;
 
-	const { organizationName, workspaceName } = AppTenantProvider.useContext();
+	const { membershipId, organizationName, workspaceName } = AppTenantProvider.useContext();
 
 	const breadcrumbPath = get_breadcrumb_path(fileNodesList, selectedNodeId);
+	const crumbs: FileNodeViewHeaderBreadcrumbPath_Crumb[] = privateView
+		? [
+				// Saved folders above the pending chain, root-first. `get_breadcrumb_path` stops at the first
+				// folder the user cannot read, exactly as it does for a saved node.
+				...get_breadcrumb_path(fileNodesList, privateView.savedParentId).map((node) => ({
+					id: node._id,
+					name: node.name,
+					target: "saved" as const,
+				})),
+				// The entry's own pending folders, root-first. Their name is the last path segment; `path`
+				// starts with a slash.
+				...privateView.requiredParents.map((parent) => ({
+					id: parent.target.id,
+					name: parent.path.slice(parent.path.lastIndexOf("/") + 1),
+					target: "private" as const,
+				})),
+				{ id: privateView.entry.node._id, name: privateView.entry.node.name, target: "private" },
+			]
+		: breadcrumbPath.map((node) => ({ id: node._id, name: node.name, target: "saved" }));
 
 	const currentNode = breadcrumbPath.at(-1);
 	const currentNodePath = currentNode?.path;
@@ -292,9 +569,23 @@ const FileNodeViewHeader = memo(function FileNodeViewHeader(props: FileNodeViewH
 				? "self"
 				: "inherited";
 
+	// Same gate as the sidebar row menu. `parentCanWrite` does not take part in `canArchiveOrRestore`,
+	// so pass the node's own answer and the call reads like the row's.
+	const canArchive =
+		!!currentNode &&
+		currentNode.archiveOperationId === null &&
+		files_get_read_only_capabilities({
+			canWrite: currentNode.canWrite,
+			parentCanWrite: currentNode.canWrite,
+			hasVisibleProtectedDescendant: protectedDescendantIds.has(currentNode._id),
+		}).canArchiveOrRestore;
+
 	const [shareNodeId, setShareNodeId] = useState<app_convex_Id<"files_nodes"> | null>(null);
 	const [propertiesNodeId, setPropertiesNodeId] = useState<app_convex_Id<"files_nodes"> | null>(null);
+	/** The node the Archive dialog is about, or `null` while it is closed. */
+	const [archiveNode, setArchiveNode] = useState<FilesArchiveModal_Node | null>(null);
 	const propertiesTriggerRef = useRef<HTMLButtonElement>(null);
+	const currentCrumbRef = useRef<HTMLButtonElement>(null);
 
 	const handleShareClick = useFn(() => {
 		if (currentNode) {
@@ -316,6 +607,95 @@ const FileNodeViewHeader = memo(function FileNodeViewHeader(props: FileNodeViewH
 		setPropertiesNodeId(null);
 	});
 
+	const handleRevealInSidebar = useFn(() => {
+		if (!currentNode) return;
+		global_custom_event_dispatch("files::reveal_node", { membershipId, nodeId: currentNode._id });
+	});
+
+	const handleDuplicateTab = useFn(() => {
+		window.open(window.location.href, "_blank", "noopener");
+	});
+
+	const handleCopyNodeId = useFn(() => {
+		const nodeId = privateView ? privateView.entry.node._id : currentNode?._id;
+		if (!nodeId) return;
+		copy_to_clipboard({ text: nodeId }).catch((error) => {
+			console.error("[FileNodeViewHeader.handleCopyNodeId] Failed to copy node id", { error, nodeId });
+		});
+	});
+
+	const handleArchive = useFn(() => {
+		if (!currentNode || !canArchive) return;
+		setArchiveNode({ _id: currentNode._id, name: currentNode.name, kind: currentNode.kind });
+	});
+
+	const handleArchiveModalClose = useFn(() => {
+		setArchiveNode(null);
+	});
+
+	const handleArchived = useFn(() => {
+		setArchiveNode(null);
+		// The open node is gone. Leave the user on the root, as the sidebar's archive does.
+		onNavigateNode(files_ROOT_ID);
+	});
+
+	// The menu of the open file's crumb. The crumb component renders the trigger; the actions live
+	// here because the header already holds the node and its handlers.
+	const currentMenu = (
+		<MyMenuPopover>
+			<MyMenuPopoverContent>
+				<MyMenuItemsGroup>
+					{/* A pending entry has no tree row, and an archived node's row is hidden from the tree, so
+					    there is nothing to reveal. */}
+					{!privateView && currentNode?.archiveOperationId === null && (
+						<MyMenuItem hideOnClick onClick={handleRevealInSidebar}>
+							<MyMenuItemContent>
+								<MyMenuItemContentIcon>
+									<PanelLeftOpen />
+								</MyMenuItemContentIcon>
+								<MyMenuItemContentPrimary>Reveal in sidebar</MyMenuItemContentPrimary>
+							</MyMenuItemContent>
+						</MyMenuItem>
+					)}
+					{/* The browser's Duplicate tab: the page as it is now, in a new tab. Read the URL at
+					    click time, so a `view` or `q` change that did not re-render the header still comes
+					    along. Browsers allow `window.open` inside a click handler, so a popup blocker does
+					    not stop it. */}
+					<MyMenuItem hideOnClick onClick={handleDuplicateTab}>
+						<MyMenuItemContent>
+							<MyMenuItemContentIcon>
+								<ExternalLink />
+							</MyMenuItemContentIcon>
+							<MyMenuItemContentPrimary>Duplicate tab</MyMenuItemContentPrimary>
+						</MyMenuItemContent>
+					</MyMenuItem>
+				</MyMenuItemsGroup>
+				<MyMenuItemsGroup separator>
+					<MyMenuItem hideOnClick onClick={handleCopyNodeId}>
+						<MyMenuItemContent>
+							<MyMenuItemContentIcon>
+								<Hash />
+							</MyMenuItemContentIcon>
+							<MyMenuItemContentPrimary>Copy node id</MyMenuItemContentPrimary>
+						</MyMenuItemContent>
+					</MyMenuItem>
+				</MyMenuItemsGroup>
+				{canArchive && (
+					<MyMenuItemsGroup separator>
+						<MyMenuItem variant="destructive" hideOnClick onClick={handleArchive}>
+							<MyMenuItemContent>
+								<MyMenuItemContentIcon>
+									<Archive />
+								</MyMenuItemContentIcon>
+								<MyMenuItemContentPrimary>Archive</MyMenuItemContentPrimary>
+							</MyMenuItemContent>
+						</MyMenuItem>
+					</MyMenuItemsGroup>
+				)}
+			</MyMenuPopoverContent>
+		</MyMenuPopover>
+	);
+
 	return (
 		<div className={cn("FileNodeViewHeader" satisfies FileNodeViewHeader_ClassNames)}>
 			<div className={cn("FileNodeViewHeader-start" satisfies FileNodeViewHeader_ClassNames)}>
@@ -327,7 +707,7 @@ const FileNodeViewHeader = memo(function FileNodeViewHeader(props: FileNodeViewH
 				)}
 
 				<ol className={cn("FileNodeViewHeader-breadcrumb" satisfies FileNodeViewHeader_ClassNames)}>
-					{privateEntry ? (
+					{privateView ? (
 						<>
 							<li>
 								<MyLink
@@ -345,13 +725,14 @@ const FileNodeViewHeader = memo(function FileNodeViewHeader(props: FileNodeViewH
 								</MyLink>
 							</li>
 							<li aria-hidden="true">/</li>
-							<li
-								className={cn("FileNodeViewHeader-breadcrumb-segment-current" satisfies FileNodeViewHeader_ClassNames)}
-							>
-								{privateEntry.path}
-							</li>
+							<FileNodeViewHeaderBreadcrumbPath
+								currentRef={currentCrumbRef}
+								crumbs={crumbs}
+								filesSidebarOpen={filesSidebarOpen}
+								currentMenu={currentMenu}
+							/>
 							<li>
-								<CopyIconButton variant="ghost-highlightable" tooltipCopy="Copy path" text={privateEntry.path} />
+								<CopyIconButton variant="ghost-highlightable" tooltipCopy="Copy path" text={privateView.entry.path} />
 							</li>
 							<li>
 								<CopyIconButton
@@ -401,37 +782,12 @@ const FileNodeViewHeader = memo(function FileNodeViewHeader(props: FileNodeViewH
 							{/* Separators are list items too: an `ol` may own only `li`, and a screen reader
 							    should not read the slashes out. */}
 							<li aria-hidden="true">/</li>
-							{breadcrumbPath.map((item, index) => {
-								const isCurrentNode = index === breadcrumbPath.length - 1;
-								return (
-									<React.Fragment key={item._id}>
-										{isCurrentNode ? (
-											<li
-												className={cn(
-													"FileNodeViewHeader-breadcrumb-segment-current" satisfies FileNodeViewHeader_ClassNames,
-												)}
-											>
-												{item.name}
-											</li>
-										) : (
-											<li>
-												<MyLink
-													className={cn(
-														"FileNodeViewHeader-breadcrumb-segment" satisfies FileNodeViewHeader_ClassNames,
-													)}
-													to="/w/$organizationName/$workspaceName/files"
-													params={{ organizationName, workspaceName }}
-													search={(prev) => ({ ...prev, nodeId: item._id, pendingNodeId: undefined, view: undefined })}
-													variant="button-tertiary"
-												>
-													{item.name}
-												</MyLink>
-											</li>
-										)}
-										{index < breadcrumbPath.length - 1 && <li aria-hidden="true">/</li>}
-									</React.Fragment>
-								);
-							})}
+							<FileNodeViewHeaderBreadcrumbPath
+								currentRef={currentCrumbRef}
+								crumbs={crumbs}
+								filesSidebarOpen={filesSidebarOpen}
+								currentMenu={currentMenu}
+							/>
 							<li>
 								<CopyIconButton variant="ghost-highlightable" tooltipCopy="Copy path" text={currentNodePath} />
 							</li>
@@ -482,6 +838,12 @@ const FileNodeViewHeader = memo(function FileNodeViewHeader(props: FileNodeViewH
 				nodeKind={currentNode?.kind ?? "file"}
 				returnFocusRef={propertiesTriggerRef}
 				onClose={handlePropertiesModalClose}
+			/>
+			<FilesArchiveModal
+				nodes={archiveNode ? [archiveNode] : null}
+				returnFocusRef={currentCrumbRef}
+				onClose={handleArchiveModalClose}
+				onArchived={handleArchived}
 			/>
 		</div>
 	);
@@ -1618,7 +1980,7 @@ const FileNodeViewPrivateContent = memo(function FileNodeViewPrivateContent(prop
 		<>
 			<FileNodeViewHeaderPortal
 				selectedNodeId={null}
-				privateEntry={entry}
+				privateView={view}
 				fileNodesList={fileNodesList}
 				protectedDescendantIds={protectedDescendantIds}
 				filesSidebarOpen={filesSidebarOpen}
@@ -2343,34 +2705,22 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 			});
 	});
 
-	const handleArchiveNode = useFn((nodeId: app_convex_Id<"files_nodes">) => {
-		setPendingActionNodeIds((current) => new Set(current).add(nodeId));
-		convex
-			.mutation(app_convex_api.files_nodes.archive_nodes, {
-				membershipId,
-				nodeIds: [nodeId],
-			})
-			.then((result) => {
-				if (result._nay) {
-					console.error("[FileNodeViewFolder.handleArchiveNode] Failed to archive node", {
-						result,
-						nodeId,
-					});
-				}
-			})
-			.catch((error) => {
-				console.error("[FileNodeViewFolder.handleArchiveNode] Error archiving node", {
-					error,
-					nodeId,
-				});
-			})
-			.finally(() => {
-				setPendingActionNodeIds((current) => {
-					const next = new Set(current);
-					next.delete(nodeId);
-					return next;
-				});
-			});
+	/** The node the Archive dialog is about, or `null` while it is closed. */
+	const [archiveNode, setArchiveNode] = useState<FilesArchiveModal_Node | null>(null);
+	const archiveReturnFocusRef = useRef<HTMLElement | null>(null);
+
+	const handleArchiveNode = useFn<FileNodeViewFolderExplorer_Props["onArchiveNode"]>((node, returnFocusElement) => {
+		archiveReturnFocusRef.current = returnFocusElement;
+		setArchiveNode({ _id: node._id, name: node.name, kind: node.kind });
+	});
+
+	const handleArchiveModalClose = useFn(() => {
+		setArchiveNode(null);
+	});
+
+	// The archived row leaves through the live tree query, so there is nothing else to do here.
+	const handleArchived = useFn(() => {
+		setArchiveNode(null);
 	});
 
 	const handleCanMoveFileNodeToParent = useFn(
@@ -2530,6 +2880,12 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 					{readmeEditor}
 				</>
 			)}
+			<FilesArchiveModal
+				nodes={archiveNode ? [archiveNode] : null}
+				returnFocusRef={archiveReturnFocusRef}
+				onClose={handleArchiveModalClose}
+				onArchived={handleArchived}
+			/>
 		</div>
 	);
 });
@@ -2940,7 +3296,8 @@ type FileNodeViewFolderExplorerRow_Props = {
 		fileNodeId: app_convex_Id<"files_nodes">;
 		targetParentId: app_convex_Doc<"files_nodes">["parentId"];
 	}) => boolean;
-	onArchiveNode: (nodeId: app_convex_Id<"files_nodes">) => void;
+	/** The row hands over its node and its menu button, so the dialog can give focus back to it. */
+	onArchiveNode: (node: files_VisibleTreeNode, returnFocusElement: HTMLElement | null) => void;
 	onMoveFileNodesToParent: (args: {
 		fileNodeIds: app_convex_Id<"files_nodes">[];
 		targetParentId: app_convex_Doc<"files_nodes">["parentId"];
@@ -2997,9 +3354,11 @@ const FileNodeViewFolderExplorerRow = memo(function FileNodeViewFolderExplorerRo
 	const [isDragging, setIsDragging] = useState(false);
 	const [isDropTarget, setIsDropTarget] = useState(false);
 
+	const moreActionsRef = useRef<HTMLButtonElement>(null);
+
 	const handleArchiveClick = useFn(() => {
 		if (capabilities.canArchiveOrRestore) {
-			onArchiveNode(child._id);
+			onArchiveNode(child, moreActionsRef.current);
 		}
 	});
 
@@ -3174,6 +3533,7 @@ const FileNodeViewFolderExplorerRow = memo(function FileNodeViewFolderExplorerRo
 				<MyMenu placement="bottom-end">
 					<MyMenuTrigger>
 						<MyIconButton
+							ref={moreActionsRef}
 							className={"FileNodeViewFolderExplorer-more-action" satisfies FileNodeViewFolderExplorerRow_ClassNames}
 							variant="ghost-highlightable"
 							tooltip="More actions"
@@ -3238,7 +3598,8 @@ type FileNodeViewFolderExplorer_Props = {
 		fileNodeId: app_convex_Id<"files_nodes">;
 		targetParentId: app_convex_Doc<"files_nodes">["parentId"];
 	}) => boolean;
-	onArchiveNode: (nodeId: app_convex_Id<"files_nodes">) => void;
+	/** The row hands over its node and its menu button, so the dialog can give focus back to it. */
+	onArchiveNode: (node: files_VisibleTreeNode, returnFocusElement: HTMLElement | null) => void;
 	onMoveFileNodesToParent: (args: {
 		fileNodeIds: app_convex_Id<"files_nodes">[];
 		targetParentId: app_convex_Doc<"files_nodes">["parentId"];
@@ -4045,6 +4406,30 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 			);
 		},
 	);
+
+	// Set when a reveal arrives while the sidebar panel is closed. The panel unmounts while closed
+	// (`closeBehavior="unmount"`), so the sidebar's listener was not there to hear that event.
+	const pendingRevealNodeIdRef = useRef<app_convex_Id<"files_nodes"> | null>(null);
+
+	useGlobalCustomEvent("files::reveal_node", (event) => {
+		if (event.detail.membershipId !== membershipId) return;
+		// A search hides rows. Clear it through the route, the same path the search box uses, so the
+		// URL, the box and the tree agree. `handleSearchQueryChange` is a no-op when `q` is already gone.
+		handleSearchQueryChange("");
+		if (!filesSidebarOpen) {
+			pendingRevealNodeIdRef.current = event.detail.nodeId;
+			setFilesSidebarOpen(true);
+		}
+	});
+
+	useEffect(() => {
+		if (!filesSidebarOpen || !pendingRevealNodeIdRef.current) return;
+		// React runs a child's effects before its parent's in the same commit, and the panel mounts
+		// its children in the commit that opens it. So the sidebar's listener is registered by the
+		// time this runs, and sending the event again reaches it.
+		global_custom_event_dispatch("files::reveal_node", { membershipId, nodeId: pendingRevealNodeIdRef.current });
+		pendingRevealNodeIdRef.current = null;
+	}, [filesSidebarOpen, membershipId]);
 
 	const handleToolbarPortalHostChange = useFn((element: HTMLDivElement | null) => {
 		setToolbarPortalHost(element);

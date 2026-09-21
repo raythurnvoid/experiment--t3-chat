@@ -74,6 +74,11 @@ import { defaultRangeExtractor, useVirtualizer, type Range, type Virtualizer } f
 import { useNavigate } from "@tanstack/react-router";
 import { MainAppSidebarToggle } from "@/components/main-app-sidebar-toggle.tsx";
 import { FilesNameInputControl } from "./files-name-input.tsx";
+import {
+	FilesArchiveModal,
+	type FilesArchiveModal_Node,
+	type FilesArchiveModal_Props,
+} from "./files-archive-modal.tsx";
 import { FilesShareModal } from "./files-share-modal.tsx";
 import { FilesPropertiesModal } from "./files-properties-modal.tsx";
 import {
@@ -129,7 +134,7 @@ import { app_convex_api, type app_convex_Doc, type app_convex_Id } from "@/lib/a
 import { url_parse_file_link, url_path_file_by_node_id } from "@/lib/urls.ts";
 import { dom_clear_text_selection, type AppClassName, type AppElementId } from "@/lib/dom-utils.ts";
 import { Result } from "common/errors-as-values-utils.ts";
-import { useGlobalEventList } from "@/lib/global-event.tsx";
+import { useGlobalCustomEvent, useGlobalEventList } from "@/lib/global-event.tsx";
 import { useFn, useVal } from "@/hooks/utils-hooks.ts";
 import {
 	files_ROOT_ID,
@@ -3105,7 +3110,7 @@ const FilesSidebarHeader = memo(function FilesSidebarHeader(props: FilesSidebarH
 					<MyTooltipTrigger>
 						<MyLink
 							className={cn("FilesSidebarHeader-title" satisfies FilesSidebarHeader_ClassNames)}
-							variant="button-tertiary"
+							variant="button-ghost-highlightable"
 							to="/w/$organizationName/$workspaceName/files"
 							params={{ organizationName, workspaceName }}
 							// Keep `q`: the sidebar stays mounted with its search box filled, so dropping the
@@ -4134,6 +4139,27 @@ function get_search_matches(args: {
 	};
 }
 
+/**
+ * The ids of the folders above `nodeId`, nearest first, ending with the root.
+ */
+function get_tree_ancestor_ids(treeItems: Pick<TreeItems, "itemById">, nodeId: string) {
+	const ancestorIds: string[] = [];
+	let currentItemId = treeItems.itemById.get(nodeId)?.parentId;
+
+	while (currentItemId) {
+		ancestorIds.push(currentItemId);
+
+		const currentItem = treeItems.itemById.get(currentItemId);
+		if (!currentItem || currentItem._id === files_ROOT_ID) {
+			break;
+		}
+
+		currentItemId = currentItem.parentId;
+	}
+
+	return ancestorIds;
+}
+
 type FilesSidebar_ClassNames = "FilesSidebar" | "FilesSidebar-content";
 
 export type FilesSidebar_Props = {
@@ -4189,7 +4215,6 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 	const [createModalParentId, setCreateModalParentId] = useState<
 		typeof files_ROOT_ID | app_convex_Id<"files_nodes">
 	>(files_ROOT_ID);
-	const [isArchivingSelection, setIsArchivingSelection] = useState(false);
 	const [isUploadingSingleFile, setIsUploadingSingleFile] = useState(false);
 	const [uploadDraft, setUploadDraft] = useState<FilesSidebarUploadDraft | null>(null);
 	const [pendingActionNodeIds, setPendingActionNodeIds] = useState<Set<string>>(new Set());
@@ -4197,13 +4222,17 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 	const [renameErrorByNodeId, setRenameErrorByNodeId] = useState<Map<string, string>>(new Map());
 	/** The node whose share dialog is open, or `null` when it is closed. */
 	const [shareNodeId, setShareNodeId] = useState<app_convex_Id<"files_nodes"> | null>(null);
+	/** The nodes whose archive dialog is open, or `null` when it is closed. */
+	const [archiveNodes, setArchiveNodes] = useState<FilesArchiveModal_Node[] | null>(null);
+	/** Set by `handleArchived`. The effect that focuses the row after the dialog closes clears it. */
+	const focusRowAfterArchiveRef = useRef(false);
 	const [propertiesNodeId, setPropertiesNodeId] = useState<app_convex_Id<"files_nodes"> | null>(null);
 	const propertiesReturnFocusRef = useRef<HTMLElement | null>(null);
 	const isImportingFiles = useFilesImportStore((state) => state.phase !== "idle");
 	const importConflicts = useFilesImportStore((state) => state.conflicts);
 	// One gate for every upload affordance: the single-file PUT or a running folder import.
 	const isUploadingFile = isUploadingSingleFile || isImportingFiles;
-	const isBusy = isCreatingFile || isArchivingSelection;
+	const isBusy = isCreatingFile;
 	const uploadInputRef = useRef<HTMLInputElement | null>(null);
 	const importFolderInputRef = useRef<HTMLInputElement | null>(null);
 	const treeScrollElementRef = useRef<HTMLDivElement | null>(null);
@@ -4211,6 +4240,8 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 
 	const [expandedItems, setExpandedItems] = useState<string[]>([]);
 	const canCollapseAll = expandedItems.length > 1;
+	/** A `files::reveal_node` request waiting for its row to be in the tree. */
+	const [revealRequest, setRevealRequest] = useState<{ nodeId: string } | null>(null);
 
 	const expandedItemsBeforeSearchRef = useRef<Set<string> | null>(null);
 	const selectedFilePathAutoExpandedKeyRef = useRef<string | null>(null);
@@ -5511,6 +5542,12 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 	useGlobalEventList(
 		FILES_SIDEBAR_SELECTION_CONTEXT_EVENTS,
 		(event) => {
+			// The archive dialog is modal: while it is open, every click and focus belongs to it. A
+			// cancelled multi-select archive must keep the selection as it was.
+			if (archiveNodes !== null) {
+				return;
+			}
+
 			// A click or focus outside the tree selection areas means the user moved on to
 			// other work: drop the multi-selection and select only the open file's row again.
 			if (is_inside_tree_selection_area(event.target)) {
@@ -5898,68 +5935,63 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		return true;
 	});
 
+	// Archive asks first, in the shared dialog. When the clicked row is part of the selection, the
+	// whole selection is archived. Any row that cannot be archived cancels the request.
 	const handleArchive = useFn<FilesSidebarTree_Props["onArchive"]>((nodeId) => {
 		const shouldArchiveSelectedFiles = selectedNodeIds.has(nodeId);
 		const nodeIdsToArchive = shouldArchiveSelectedFiles ? selectedNodeIds : new Set([nodeId]);
-		if (
-			[...nodeIdsToArchive].some((itemId) => {
-				const item = treeItems?.itemById.get(itemId);
-				return !item || !getItemCapabilities(item).canArchiveOrRestore;
-			})
-		) {
-			return;
+		const nodes: FilesArchiveModal_Node[] = [];
+		for (const itemId of nodeIdsToArchive) {
+			const item = treeItems?.itemById.get(itemId);
+			if (!item || !files_is_node(item) || !getItemCapabilities(item).canArchiveOrRestore) {
+				return;
+			}
+			nodes.push({ _id: item._id, name: item.name, kind: item.kind });
 		}
+		setArchiveNodes(nodes);
+	});
 
-		if (shouldArchiveSelectedFiles) {
-			setIsArchivingSelection(true);
-		} else {
-			markFileAsPending(nodeId);
+	const handleArchiveModalClose = useFn(() => {
+		// The menu item that opened the dialog is gone, so put focus back on the row through the tree,
+		// the way the share dialog does. The first id is enough: a cancelled multi-select archive
+		// leaves the selection as it was.
+		const firstNodeId = archiveNodes?.[0]?._id;
+		if (firstNodeId) {
+			tree().getItemInstance(firstNodeId).setFocused();
+			tree().updateDomFocus();
 		}
+		setArchiveNodes(null);
+	});
 
-		convex
-			.mutation(app_convex_api.files_nodes.archive_nodes, {
-				membershipId,
-				nodeIds: Array.from(nodeIdsToArchive),
-			})
-			.then((result) => {
-				if (result._nay) {
-					console.error("[FilesSidebar.handleArchive] Failed to archive files", {
-						result,
-						nodeId,
-						nodeIdsToArchive,
-					});
-					if (result._nay.message === "Permission denied") {
-						toast.error("You don't have permission to edit files in this workspace.");
-						return;
-					}
-					toast.error(result._nay.message);
-					return;
-				}
-
-				if (selectedNodeId && nodeIdsToArchive.has(selectedNodeId)) {
-					onArchive(selectedNodeId);
-					return;
-				}
-
-				if (!shouldArchiveSelectedFiles) {
-					onArchive(nodeId);
-				}
-			})
-			.catch((error) => {
-				console.error("[FilesSidebar.handleArchive] Error archiving files", {
-					error,
-					nodeIdsToArchive,
-				});
-			})
-			.finally(() => {
-				if (shouldArchiveSelectedFiles) {
-					tree().setSelectedItems([]);
-					setIsArchivingSelection(false);
-					return;
-				}
-
-				unmarkFileAsPending(nodeId);
-			});
+	const handleArchived = useFn<FilesArchiveModal_Props["onArchived"]>((nodeIds) => {
+		setArchiveNodes(null);
+		if (nodeIds.length > 1) {
+			tree().setSelectedItems([]);
+		}
+		// The archived rows are still in the tree here: Convex resolves the mutation in the same task
+		// that delivers the tree update, and React renders that update later. Keep keyboard focus in
+		// the tree: focus the first row after the archived rows, or the last row before them.
+		const archivedNodeIdSet = new Set<string>(nodeIds);
+		const rows = tree().getItems();
+		const leavesTree = (row: FilesSidebarTreeItem_Instance) => {
+			for (let current: FilesSidebarTreeItem_Instance | undefined = row; current; current = current.getParent()) {
+				if (archivedNodeIdSet.has(current.getId())) return true;
+			}
+			return false;
+		};
+		const lastArchivedIndex = rows.findLastIndex(leavesTree);
+		const nextRow =
+			rows.slice(lastArchivedIndex + 1).find((row) => !leavesTree(row)) ??
+			rows.slice(0, lastArchivedIndex).findLast((row) => !leavesTree(row));
+		if (nextRow) {
+			nextRow.setFocused();
+			// The sidebar is inert while the dialog is open, so the row cannot take DOM focus here. The
+			// effect below moves it after the dialog has closed.
+			focusRowAfterArchiveRef.current = true;
+		}
+		if (selectedNodeId && nodeIds.some((archivedNodeId) => archivedNodeId === selectedNodeId)) {
+			onArchive(selectedNodeId);
+		}
 	});
 
 	const handleArchiveSelectionClick = useFn(() => {
@@ -6210,19 +6242,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 				return null;
 			}
 
-			const ancestorIds: string[] = [];
-			let currentItemId = treeItems.itemById.get(selectedNodeId)?.parentId;
-
-			while (currentItemId) {
-				ancestorIds.push(currentItemId);
-
-				const currentItem = treeItems.itemById.get(currentItemId);
-				if (!currentItem || currentItem._id === files_ROOT_ID) {
-					break;
-				}
-
-				currentItemId = currentItem.parentId;
-			}
+			const ancestorIds = get_tree_ancestor_ids(treeItems, selectedNodeId);
 
 			return {
 				ancestorIds,
@@ -6306,6 +6326,57 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		lastFocusedSelectedNodeIdRef.current = availableSelectedNodeId;
 		currentTree.getItemInstance(nextFocusedItemId).setFocused();
 	}, [visibleFileIds, selectedNodeId, treeItems]);
+
+	// Move DOM focus to the row picked by `handleArchived` once the archive dialog has closed. The
+	// commit that closes the dialog removes the inert state and runs the dialog's own focus return,
+	// which goes to the button that opened it. This effect runs after that commit, so
+	// `updateDomFocus` lands on the row. The cancel path needs none of this: it runs inside a click
+	// or key event, and React closes the dialog before its timer fires.
+	useEffect(() => {
+		if (archiveNodes !== null || !focusRowAfterArchiveRef.current) return;
+		focusRowAfterArchiveRef.current = false;
+		tree().updateDomFocus();
+	}, [archiveNodes]);
+
+	useGlobalCustomEvent("files::reveal_node", (event) => {
+		if (event.detail.membershipId !== membershipId) return;
+		if (!treeItems?.itemById.has(event.detail.nodeId)) return;
+		// Expand every folder above the row. The auto-expand effect runs once per selected path, so
+		// it does nothing for a folder the user collapsed by hand.
+		const ancestorIds = get_tree_ancestor_ids(treeItems, event.detail.nodeId);
+		// While a search is active, the auto-expand effect rebuilds the expanded set from the matches,
+		// and it restores the snapshot taken before the search once the search closes. Put the folders
+		// in that snapshot too, so the row is still visible after the file view clears the search.
+		if (expandedItemsBeforeSearchRef.current) {
+			for (const ancestorId of ancestorIds) {
+				expandedItemsBeforeSearchRef.current.add(ancestorId);
+			}
+		}
+		setExpandedItems((currentExpandedItems) => {
+			const nextExpandedItemsSet = new Set(currentExpandedItems);
+			for (const ancestorId of ancestorIds) {
+				nextExpandedItemsSet.add(ancestorId);
+			}
+			return nextExpandedItemsSet.size === currentExpandedItems.length
+				? currentExpandedItems
+				: [...nextExpandedItemsSet];
+		});
+		setRevealRequest({ nodeId: event.detail.nodeId });
+	});
+
+	// Finish a reveal once its row is in the tree. State, not a ref: when the row is already visible
+	// and expanded nothing else changes, and a ref alone would never re-run this effect.
+	useLayoutEffect(() => {
+		if (!revealRequest || !visibleFileIds.has(revealRequest.nodeId)) return;
+		const currentTree = tree();
+		// Hidden rows have index -1 until the expanded set reaches the tree.
+		if (currentTree.getItemInstance(revealRequest.nodeId).getItemMeta().index < 0) return;
+		// `setFocused` only writes state. `updateDomFocus` scrolls to the row through the tree's
+		// `scrollToItem` (the virtualizer), waits up to 500ms for the row element, then focuses it.
+		currentTree.getItemInstance(revealRequest.nodeId).setFocused();
+		currentTree.updateDomFocus();
+		setRevealRequest(null);
+	}, [revealRequest, visibleFileIds, expandedItems]);
 
 	// Keep the URL-owned selected node as the single selected tree row; root/home means no tree row is selected.
 	useLayoutEffect(() => {
@@ -6453,6 +6524,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 			</div>
 
 			<FilesShareModal nodeId={shareNodeId} onClose={handleShareModalClose} />
+			<FilesArchiveModal nodes={archiveNodes} onClose={handleArchiveModalClose} onArchived={handleArchived} />
 			<FilesPropertiesModal
 				nodeId={propertiesNodeId}
 				nodeName={treeNodesList?.find((node) => node._id === propertiesNodeId)?.name ?? "file"}
