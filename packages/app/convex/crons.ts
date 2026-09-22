@@ -107,6 +107,12 @@ crons.cron(
 	{},
 );
 
+// Every 15 minutes — delete media mapping docs left by an interrupted cleanup.
+crons.cron("recover media dependency cleanup", "*/15 * * * *", internal.files_media_dependencies.recover_cleanup, {});
+
+// Every 15 minutes — release draft holds left by finished or interrupted jobs.
+crons.cron("recover pending draft holds", "*/15 * * * *", internal.files_pending_holds.recover, {});
+
 // Every 15 minutes — retire unfinished ingestion and remove old retry receipts.
 crons.cron(
 	"cleanup expired file ingestion receipts",

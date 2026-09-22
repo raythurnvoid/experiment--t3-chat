@@ -20,7 +20,7 @@ const { mutationMock, itemQueryMock, queryState, toastErrorMock } = vi.hoisted((
 	queryState: {
 		revision: 0,
 		listeners: new Set<() => void>(),
-		runs: [] as TransferRun[],
+		runs: [] as TransferRun[] | undefined,
 		run: undefined as TransferRun | null | undefined,
 		runsById: {} as Record<string, TransferRun>,
 		itemPages: {} as Record<string, TransferItemPage | null>,
@@ -65,6 +65,7 @@ const SECOND_ID = "second" as app_convex_Id<"files_nodes">;
 const TARGET_ID = "target" as app_convex_Id<"files_nodes">;
 const RUN_ID = "run" as app_convex_Id<"files_transfer_runs">;
 const OLD_RUN_ID = "old-run" as app_convex_Id<"files_transfer_runs">;
+const MANY_SOURCE_IDS = Array.from({ length: 205 }, (_, index) => `source-${index}` as app_convex_Id<"files_nodes">);
 
 function make_item(overrides: Partial<TransferItemPage["page"][number]> = {}): TransferItemPage["page"][number] {
 	return {
@@ -166,6 +167,7 @@ function FileNavigation(props: { blocked?: boolean }) {
 		<>
 			<div ref={navigationRef} role="group" aria-label="File navigation" tabIndex={0}>
 				<button onClick={() => setClipboard("copy", [SOURCE_ID])}>Copy source</button>
+				<button onClick={() => setClipboard("copy", MANY_SOURCE_IDS)}>Copy many sources</button>
 				<button onClick={() => setClipboard("cut", [SOURCE_ID, SECOND_ID])}>Cut sources</button>
 				<button onClick={() => setClipboard("copy", [SECOND_ID])}>Copy another source</button>
 				<button onClick={() => openRun(RUN_ID)}>Review operation</button>
@@ -264,6 +266,30 @@ describe("FilesClipboardProvider", () => {
 		expect(mutationMock).not.toHaveBeenCalled();
 	});
 
+	test.each([undefined, [make_run()]])("waits while the current workspace run is loading or active: %s", (runs) => {
+		queryState.runs = runs;
+		render(<TestClipboard />);
+		fireEvent.click(screen.getByRole("button", { name: "Copy source" }));
+		expect(screen.getByRole("button", { name: "Paste files" }).matches(":disabled")).toBe(true);
+		fireEvent.click(screen.getByRole("button", { name: "Paste files" }));
+		expect(mutationMock).not.toHaveBeenCalled();
+	});
+
+	test("sends Cut once without Copy count, pages, or seal", async () => {
+		render(<TestClipboard />);
+		fireEvent.click(screen.getByRole("button", { name: "Cut sources" }));
+		fireEvent.click(screen.getByRole("button", { name: "Paste files" }));
+		await screen.findByRole("dialog");
+		expect(mutationMock).toHaveBeenCalledOnce();
+		expect(mutationMock.mock.calls[0]![1]).toEqual({
+			membershipId: "membership",
+			requestId: expect.any(String),
+			kind: "move",
+			sourceIds: [SOURCE_ID, SECOND_ID],
+			targetParentId: TARGET_ID,
+		});
+	});
+
 	test("starts one request with source IDs and keeps Copy after completion", async () => {
 		const response = Promise.withResolvers<{ _yay: { runId: typeof RUN_ID } }>();
 		mutationMock.mockReturnValue(response.promise);
@@ -277,6 +303,7 @@ describe("FilesClipboardProvider", () => {
 		expect(mutationMock.mock.calls[0]![1]).toMatchObject({
 			membershipId: "membership",
 			kind: "copy",
+			expectedSourceCount: 1,
 			sourceIds: [SOURCE_ID],
 			targetParentId: TARGET_ID,
 			requestId: expect.any(String),
@@ -342,10 +369,189 @@ describe("FilesClipboardProvider", () => {
 		render(<TestClipboard />);
 		fireEvent.click(screen.getByRole("button", { name: "Copy source" }));
 		fireEvent.click(screen.getByRole("button", { name: "Paste files" }));
-		await waitFor(() => expect(screen.getByRole("button", { name: "Paste files" }).matches(":disabled")).toBe(false));
-		fireEvent.click(screen.getByRole("button", { name: "Paste files" }));
+		fireEvent.click(await screen.findByRole("button", { name: "Retry Paste" }));
 		expect(mutationMock.mock.calls[1]![1]).toEqual(mutationMock.mock.calls[0]![1]);
 		await waitFor(() => expect(screen.getByRole("dialog")).toBeTruthy());
+	});
+
+	test("sends all Copy pages before sealing", async () => {
+		render(<TestClipboard />);
+		fireEvent.click(screen.getByRole("button", { name: "Copy many sources" }));
+		fireEvent.click(screen.getByRole("button", { name: "Paste files" }));
+		await waitFor(() => expect(mutationMock).toHaveBeenCalledTimes(4));
+		expect(mutationMock.mock.calls.map(([reference]) => getFunctionName(reference))).toEqual([
+			"files_transfer:start",
+			"files_transfer:append_sources",
+			"files_transfer:append_sources",
+			"files_transfer:seal",
+		]);
+		expect(mutationMock.mock.calls[0]![1]).toMatchObject({
+			expectedSourceCount: 205,
+			sourceIds: MANY_SOURCE_IDS.slice(0, 100),
+		});
+		for (const [index, offset] of [100, 200].entries()) {
+			expect(mutationMock.mock.calls[index + 1]![1]).toEqual({
+				membershipId: "membership",
+				runId: RUN_ID,
+				offset,
+				sourceIds: MANY_SOURCE_IDS.slice(offset, offset + 100),
+			});
+		}
+		expect(mutationMock.mock.calls[3]![1]).toEqual({ membershipId: "membership", runId: RUN_ID });
+	});
+
+	test.each(["files_transfer:append_sources", "files_transfer:seal"])(
+		"replays the same Copy after a lost %s reply",
+		async (lostDoor) => {
+			let loseReply = true;
+			mutationMock.mockImplementation(async (reference) => {
+				if (getFunctionName(reference) === lostDoor && loseReply) {
+					loseReply = false;
+					throw new Error("offline");
+				}
+				return { _yay: { runId: RUN_ID } };
+			});
+			vi.spyOn(console, "error").mockImplementation(() => {});
+			render(<TestClipboard />);
+			fireEvent.click(screen.getByRole("button", { name: "Copy many sources" }));
+			fireEvent.click(screen.getByRole("button", { name: "Paste files" }));
+			await screen.findByRole("button", { name: "Retry Paste" });
+			push_run(make_run({ step: "uploading", progress: { discovered: 0, total: null } }));
+			fireEvent.click(screen.getByRole("button", { name: "Copy another source" }));
+			fireEvent.click(screen.getByRole("button", { name: "Retry Paste" }));
+			await waitFor(() => expect(screen.queryByRole("button", { name: "Retry Paste" })).toBeNull());
+			const starts = mutationMock.mock.calls.filter(
+				([reference]) => getFunctionName(reference) === "files_transfer:start",
+			);
+			expect(starts).toHaveLength(2);
+			expect(starts[1]![1]).toEqual(starts[0]![1]);
+			const pages = mutationMock.mock.calls.filter(([reference]) => getFunctionName(reference) === lostDoor);
+			expect(pages[1]![1]).toEqual(pages[0]![1]);
+			expect(getFunctionName(mutationMock.mock.lastCall![0])).toBe("files_transfer:seal");
+			expect(screen.getByLabelText("Clipboard sources").textContent).toBe(SECOND_ID);
+		},
+	);
+
+	test("keeps an uncertain request when the clipboard changes", async () => {
+		mutationMock.mockRejectedValueOnce(new Error("offline"));
+		vi.spyOn(console, "error").mockImplementation(() => {});
+		render(<TestClipboard />);
+		fireEvent.click(screen.getByRole("button", { name: "Copy source" }));
+		fireEvent.click(screen.getByRole("button", { name: "Paste files" }));
+		await screen.findByRole("button", { name: "Retry Paste" });
+		fireEvent.click(screen.getByRole("button", { name: "Copy another source" }));
+		expect(screen.getByRole("button", { name: "Paste files" }).matches(":disabled")).toBe(true);
+		fireEvent.click(screen.getByRole("button", { name: "Retry Paste" }));
+		expect(mutationMock.mock.calls[1]![1]).toEqual(mutationMock.mock.calls[0]![1]);
+		await waitFor(() => expect(screen.getByRole("dialog")).toBeTruthy());
+	});
+
+	test("waits for the page reply before sending the next page and seal", async () => {
+		const page = Promise.withResolvers<{ _yay: null }>();
+		mutationMock.mockResolvedValueOnce({ _yay: { runId: RUN_ID } }).mockReturnValueOnce(page.promise);
+		render(<TestClipboard />);
+		fireEvent.click(screen.getByRole("button", { name: "Copy many sources" }));
+		fireEvent.click(screen.getByRole("button", { name: "Paste files" }));
+		await waitFor(() => expect(mutationMock).toHaveBeenCalledTimes(2));
+		fireEvent.click(screen.getByRole("button", { name: "Hide" }));
+		expect(screen.getByRole("button", { name: "Paste files" }).matches(":disabled")).toBe(true);
+		expect(mutationMock).toHaveBeenCalledTimes(2);
+		await act(async () => page.resolve({ _yay: null }));
+		expect(mutationMock).toHaveBeenCalledTimes(4);
+		expect(getFunctionName(mutationMock.mock.lastCall![0])).toBe("files_transfer:seal");
+	});
+
+	test("retries only Stop after a refused page and a lost Stop reply", async () => {
+		let loseReply = true;
+		mutationMock.mockImplementation(async (reference) => {
+			const name = getFunctionName(reference);
+			if (name === "files_transfer:append_sources") return { _nay: { message: "Permission denied" } };
+			if (name === "files_transfer:stop" && loseReply) {
+				loseReply = false;
+				throw new Error("offline");
+			}
+			return { _yay: { runId: RUN_ID } };
+		});
+		vi.spyOn(console, "error").mockImplementation(() => {});
+		render(<TestClipboard />);
+		fireEvent.click(screen.getByRole("button", { name: "Copy many sources" }));
+		fireEvent.click(screen.getByRole("button", { name: "Paste files" }));
+		expect((await screen.findByRole("alert")).textContent).toContain("Stop was not confirmed");
+		fireEvent.click(screen.getByRole("button", { name: "Retry Stop" }));
+		await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+		expect(mutationMock.mock.calls.map(([reference]) => getFunctionName(reference))).toEqual([
+			"files_transfer:start",
+			"files_transfer:append_sources",
+			"files_transfer:stop",
+			"files_transfer:stop",
+		]);
+		expect(mutationMock.mock.calls[3]![1]).toEqual(mutationMock.mock.calls[2]![1]);
+	});
+
+	test.each(["files_transfer:append_sources", "files_transfer:seal"])(
+		"stops accepted Copy after a known %s refusal",
+		async (door) => {
+			mutationMock.mockImplementation(async (reference) =>
+				getFunctionName(reference) === door ? { _nay: { message: "Permission denied" } } : { _yay: { runId: RUN_ID } },
+			);
+			render(<TestClipboard />);
+			fireEvent.click(screen.getByRole("button", { name: "Copy many sources" }));
+			fireEvent.click(screen.getByRole("button", { name: "Paste files" }));
+			await waitFor(() =>
+				expect(
+					mutationMock.mock.calls.some(([reference]) => getFunctionName(reference) === "files_transfer:stop"),
+				).toBe(true),
+			);
+			expect(mutationMock.mock.lastCall![1]).toEqual({ membershipId: "membership", runId: RUN_ID });
+			expect(toastErrorMock).toHaveBeenCalledWith("Permission denied");
+			expect(screen.queryByRole("button", { name: "Retry Paste" })).toBeNull();
+		},
+	);
+
+	test("stops incomplete Copy when the workspace changes during a page", async () => {
+		const page = Promise.withResolvers<{ _yay: null }>();
+		mutationMock.mockImplementation((reference) =>
+			getFunctionName(reference) === "files_transfer:append_sources"
+				? page.promise
+				: Promise.resolve({ _yay: { runId: RUN_ID } }),
+		);
+		const view = render(<TestClipboard />);
+		fireEvent.click(screen.getByRole("button", { name: "Copy many sources" }));
+		fireEvent.click(screen.getByRole("button", { name: "Paste files" }));
+		await waitFor(() => expect(mutationMock).toHaveBeenCalledTimes(2));
+		view.rerender(<TestClipboard membershipId="another-membership" />);
+		await act(async () => page.resolve({ _yay: null }));
+		expect(mutationMock.mock.calls.map(([reference]) => getFunctionName(reference))).toEqual([
+			"files_transfer:start",
+			"files_transfer:append_sources",
+			"files_transfer:stop",
+		]);
+		expect(mutationMock.mock.lastCall![1]).toEqual({ membershipId: "membership", runId: RUN_ID });
+		expect(screen.getByLabelText("Clipboard sources").textContent).toBe("empty");
+	});
+
+	test("does not seal while Stop is pending", async () => {
+		const page = Promise.withResolvers<{ _yay: null }>();
+		const stopped = Promise.withResolvers<{ _yay: null }>();
+		mutationMock.mockImplementation((reference) => {
+			const name = getFunctionName(reference);
+			return name === "files_transfer:append_sources"
+				? page.promise
+				: name === "activities:request_stop"
+					? stopped.promise
+					: Promise.resolve({ _yay: { runId: RUN_ID } });
+		});
+		render(<TestClipboard />);
+		fireEvent.click(screen.getByRole("button", { name: "Copy many sources" }));
+		fireEvent.click(screen.getByRole("button", { name: "Paste files" }));
+		await waitFor(() => expect(mutationMock).toHaveBeenCalledTimes(2));
+		push_run(make_run({ step: "uploading", progress: { discovered: 0, total: null } }));
+		fireEvent.click(screen.getByRole("button", { name: "Stop" }));
+		await act(async () => page.resolve({ _yay: null }));
+		expect(mutationMock.mock.calls.some(([reference]) => getFunctionName(reference) === "files_transfer:seal")).toBe(
+			false,
+		);
+		await act(async () => stopped.resolve({ _yay: null }));
 	});
 
 	test("clears the remaining cut IDs after a retry finishes", async () => {
@@ -380,6 +586,24 @@ describe("FilesClipboardProvider", () => {
 });
 
 describe("FilesTransferRunModal", () => {
+	test.each(["uploading", "select", "normalize"] as const)(
+		"shows selection loading without output counts at %s",
+		async (step) => {
+			queryState.run = make_run({ step, progress: { discovered: 0, total: null } });
+			queryState.runs = [queryState.run];
+			render(<TestClipboard />);
+			fireEvent.click(screen.getByRole("button", { name: "Review operation" }));
+			expect(screen.getByText(step === "uploading" ? "Loading selection…" : "Checking files…")).toBeTruthy();
+			expect(screen.getByText("File counts appear after the selection is checked.")).toBeTruthy();
+			expect(screen.queryByText(/0 copied/)).toBeNull();
+			expect(screen.queryByText("No items on this page.")).toBeNull();
+			if (step === "uploading") expect(screen.getByText(/If you reload, stop this request in Activity/)).toBeTruthy();
+			fireEvent.click(screen.getByRole("button", { name: "Stop" }));
+			await waitFor(() => expect(mutationMock).toHaveBeenCalledOnce());
+			expect(getFunctionName(mutationMock.mock.calls[0]![0])).toBe("activities:request_stop");
+		},
+	);
+
 	test("shows a pending Stop before the run details load", async () => {
 		const response = Promise.withResolvers<{ _yay: null }>();
 		mutationMock.mockReturnValue(response.promise);

@@ -424,17 +424,23 @@ describe("chat file output", () => {
 			lastMessageAt: Date.now(),
 		});
 		if (created._nay) throw new Error(created._nay.message);
-		return created._yay.threadId;
+		const captured = await t.mutation(internal.ai_chat_workspaces.capture, {
+			userId: scope.userId,
+			membershipId: scope.membershipId,
+		});
+		if (captured._nay) throw new Error(captured._nay.message);
+		return { ...scope, threadId: created._yay.threadId, membershipLifetime: captured._yay.membershipLifetime };
 	}
 
 	test("refuses Ask mode before allocating resources", async () => {
 		const t = test_convex();
 		const scope = await seed_scope(t);
-		const threadId = await create_thread(t, scope);
+		const agentSource = await create_thread(t, scope);
 		const result = await t.mutation(internal.ai_chat_files.prepare_file_output, {
 			...scope,
 			...output,
-			threadId,
+			threadId: agentSource.threadId,
+			agentSource,
 			modeId: "ask",
 		});
 		expect(result._nay?.message).toContain("Agent mode");
@@ -448,23 +454,32 @@ describe("chat file output", () => {
 		const other = await t.run((ctx) =>
 			test_mocks_fill_db_with.membership(ctx, { organizationName: "other-organization" }),
 		);
-		const threadId = await create_thread(t, other);
+		const agentSource = await create_thread(t, scope);
 		expect(
-			(await t.mutation(internal.ai_chat_files.prepare_file_output, { ...scope, ...output, threadId, modeId: "agent" }))
-				._nay,
+			(
+				await t.mutation(internal.ai_chat_files.prepare_file_output, {
+					...other,
+					...output,
+					threadId: agentSource.threadId,
+					agentSource,
+					modeId: "agent",
+				})
+			)._nay,
 		).toBeDefined();
 		expect(await t.run((ctx) => ctx.db.query("files_r2_assets").collect())).toEqual([]);
 	});
 
-	test("checks the thread again at commit and keeps completed retries readable", async () => {
+	test("checks the thread at commit and on completed retries without deleting the file", async () => {
 		const t = test_convex();
 		const scope = await seed_scope(t);
-		const threadId = await create_thread(t, scope);
-		const args = { ...scope, ...output, threadId, modeId: "agent" as const };
+		const agentSource = await create_thread(t, scope);
+		const { threadId } = agentSource;
+		const args = { ...scope, ...output, threadId, agentSource, modeId: "agent" as const };
 		const first = await t.mutation(internal.ai_chat_files.prepare_file_output, args);
 		if (!first._yay || first._yay.kind !== "stored") throw new Error("Expected a stored preparation");
 		const finalArgs = {
 			...scope,
+			agentSource,
 			threadId,
 			modeId: "agent" as const,
 			receiptId: first._yay.receiptId,
@@ -478,12 +493,21 @@ describe("chat file output", () => {
 		expect(completed._yay?.path).toBe(output.path);
 		await t.run((ctx) => ctx.db.patch("ai_chat_threads", threadId, { archived: true }));
 		expect(
-			await t.mutation(internal.ai_chat_files.finalize_file_output, {
-				...finalArgs,
-				modeId: "ask",
-				attemptId: "lost-reply",
+			(
+				await t.mutation(internal.ai_chat_files.finalize_file_output, {
+					...finalArgs,
+					modeId: "ask",
+					attemptId: "lost-reply",
+				})
+			)._nay,
+		).toBeDefined();
+		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: scope.userId });
+		expect(
+			await asUser.query(api.files_pending_updates.get_file_pending_target, {
+				membershipId: scope.membershipId,
+				target: completed._yay!.target,
 			}),
-		).toEqual(completed);
+		).not.toBeNull();
 		await t.run((ctx) => ctx.db.patch("organizations_workspaces_users", scope.membershipId, { active: false }));
 		expect((await t.mutation(internal.ai_chat_files.finalize_file_output, finalArgs))._nay).toBeDefined();
 	});

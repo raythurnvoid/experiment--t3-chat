@@ -2,7 +2,7 @@
 //
 // The nodes themselves live in `shared/files-tiptap.ts`, because Convex serializes documents to
 // markdown with that same extension set and a node missing from it is dropped without a word.
-// Only the on-screen part lives here: a document holds a `bonobo-file://<fileNodeId>` reference,
+// Only the on-screen part lives here: a document holds a saved or private `bonobo-file://` reference,
 // and the element needs a real url, which depends on who is looking. The membership is known only
 // once an editor is built, so this extension is configured where the editor is assembled, next to
 // the size limit extension.
@@ -13,11 +13,8 @@ import type { Node as PmNode } from "@tiptap/pm/model";
 import type { EditorView, NodeView } from "@tiptap/pm/view";
 import { app_convex, app_convex_api } from "@/lib/app-convex-client.ts";
 import type { app_convex_Doc, app_convex_Id } from "@/lib/app-convex-client.ts";
-import {
-	files_media_get_signed_url,
-	files_media_parse_src,
-	files_media_resolve_file_node,
-} from "@/lib/files-media-src.ts";
+import { files_media_get_signed_url } from "@/lib/files-media-src.ts";
+import { files_media_parse_src } from "../../../../../shared/files-media.ts";
 import {
 	file_editor_rich_text_local_upload_get,
 	file_editor_rich_text_local_upload_subscribe,
@@ -108,11 +105,7 @@ function media_next_align(align: MediaAlign): MediaAlign {
 // finish this upload.
 const UPLOADING_PLACEHOLDER_EXPIRY_MS = 2 * 60 * 1000;
 
-function media_state_from_asset(asset: app_convex_Doc<"files_r2_assets"> | null): MediaState {
-	if (!asset) {
-		return "missing";
-	}
-
+function media_state_from_asset(asset: app_convex_Doc<"files_r2_assets">): MediaState {
 	if (asset.r2Key) {
 		return "ready";
 	}
@@ -139,6 +132,7 @@ class MediaNodeView implements NodeView {
 	private watchUnsubscribe: (() => void) | null = null;
 	private localUploadUnsubscribe: (() => void) | null = null;
 	private expiryTimer: ReturnType<typeof setTimeout> | null = null;
+	private urlRequestVersion = 0;
 	private isDestroyed = false;
 
 	constructor(
@@ -600,10 +594,8 @@ class MediaNodeView implements NodeView {
 			return;
 		}
 
-		// A re-resolve passes through "processing" even when the media is already on screen: the
-		// uploader swaps the node's src right after finalizing, and the collaborator's embed
-		// resolves the new src from scratch. Keep showing the rendered media instead of flashing
-		// the placeholder. A hard answer (missing, failed, broken) still replaces the media.
+		// Keep local upload previews while the server confirms and signs their bytes.
+		// A hard answer (missing, failed, broken) still replaces the preview.
 		if (state === "processing" && this.media.getAttribute("src")) {
 			return;
 		}
@@ -659,6 +651,8 @@ class MediaNodeView implements NodeView {
 	}
 
 	private resolve() {
+		// Invalidate URL requests even when the new source does not need a query.
+		this.urlRequestVersion++;
 		this.watchUnsubscribe?.();
 		this.watchUnsubscribe = null;
 		this.localUploadUnsubscribe?.();
@@ -681,8 +675,8 @@ class MediaNodeView implements NodeView {
 			}
 			if (localUpload) {
 				this.renderLocalPreview(localUpload.objectUrl);
-				// With no src yet there is nothing to watch. With a src, fall through: the asset
-				// watch below swaps the preview for the signed url once the bytes are confirmed,
+				// With no src yet there is nothing to watch. With a src, fall through: the media
+				// query below swaps the preview for the signed url once the bytes are confirmed,
 				// and the "processing" render on the way is skipped because media is showing.
 				if (!src) {
 					return;
@@ -716,117 +710,89 @@ class MediaNodeView implements NodeView {
 			return;
 		}
 
+		if (
+			!this.dom.classList.contains("FileEditorRichTextMedia-local-preview" satisfies FileEditorRichTextMedia_ClassNames)
+		) {
+			this.media.removeAttribute("src");
+		}
 		this.renderState("processing");
-		files_media_resolve_file_node({ membershipId: this.membershipId, fileNodeId: parsed.fileNodeId })
-			.then((fileNode) => {
-				if (this.isDestroyed) {
-					return;
-				}
-				if (!fileNode?.assetId) {
-					this.renderState("missing");
-					return;
-				}
-
-				// Watch the asset instead of reading it once: the reader may be looking at a file
-				// somebody else is still uploading, and the embed has to swap itself in when the R2
-				// object is confirmed.
-				this.watchAsset(fileNode._id);
-			})
-			.catch((error: unknown) => {
-				console.error("[FileEditorRichTextMedia.resolve] Failed to resolve media reference", {
-					error,
-					src,
-				});
-				this.renderState("missing");
-			});
+		this.watchMedia(src);
 	}
 
-	private watchAsset(fileNodeId: app_convex_Id<"files_nodes">) {
-		const assetWatch = app_convex.watchQuery(app_convex_api.r2.get_asset_by_file_node_id, {
+	private watchMedia(src: string) {
+		// One query checks access, follows published private references, and watches the current bytes.
+		const watch = app_convex.watchQuery(app_convex_api.r2.get_media_by_reference, {
 			membershipId: this.membershipId,
-			fileNodeId,
+			src,
 		});
-		// The file keeps its id when its content is replaced (a whole-file copy, a restored
-		// version), and the new content may not be an image or video. Watch the node too, so the
-		// embed says so instead of handing the bytes of a PDF to an <img>.
-		const nodeWatch = app_convex.watchQuery(app_convex_api.files_nodes.get_file_node_for_membership, {
-			membershipId: this.membershipId,
-			fileNodeId,
-		});
+		let active = true;
 
-		const apply = () => {
-			if (this.isDestroyed) {
+		const apply = async () => {
+			if (this.isDestroyed || !active) {
 				return;
 			}
-
-			// `localQueryResult()` returns `undefined` while the subscription has not received its
-			// first result, and `null` only when the server answered that the asset does not exist.
-			// Treating `undefined` as `null` here made every collaborator see a short "File not
-			// available" flash during an upload, once per subscribe: the embed re-resolves when the
-			// uploader swaps the node's src, and each new watch starts one round trip away from its
-			// first result. Keep the current placeholder until a real result lands.
-			const asset = assetWatch.localQueryResult();
-			const fileNode = nodeWatch.localQueryResult();
-			if (asset === undefined || fileNode === undefined) {
-				return;
-			}
-
+			const urlRequestVersion = ++this.urlRequestVersion;
 			this.clearExpiryTimer();
 
-			const requiredTypePrefix = this.media instanceof HTMLVideoElement ? "video/" : "image/";
-			// Skip this check for a deleted node. It has no asset either, so the asset check below
-			// already reports it as missing.
-			if (fileNode !== null && !fileNode.contentType?.startsWith(requiredTypePrefix)) {
-				this.renderState("incompatible");
-				return;
-			}
-
-			const state = media_state_from_asset(asset);
-			// A missing asset is never "ready"; the null check only tells TypeScript so.
-			if (state !== "ready" || asset === null) {
-				// Nothing in the database changes when the upload deadline passes, so the watch
-				// never fires again on its own and "Processing…" would stay on screen forever.
-				// Re-run this check right after the deadline to flip the placeholder to "failed".
-				if (state === "processing" && asset && asset.unfinalizedExpiresAt !== undefined) {
-					this.expiryTimer = setTimeout(
-						() => {
-							this.expiryTimer = null;
-							apply();
-						},
-						Math.max(0, asset.unfinalizedExpiresAt - Date.now()) + 1000,
-					);
-				}
-				this.renderState(state);
-				return;
-			}
-
-			// The upload pipeline may still be converting the file into a Markdown sibling, but the
-			// bytes are already in R2, so the embed can show them now. The watch fires again when
-			// the file's content is replaced, and the new asset id gets a new url.
-			files_media_get_signed_url({ membershipId: this.membershipId, fileNodeId, assetId: asset._id })
-				.then((signed) => {
-					if (signed._nay) {
-						this.renderState("missing");
-						return;
-					}
-					this.renderState("ready", signed._yay);
-				})
-				.catch((error: unknown) => {
-					console.error("[FileEditorRichTextMedia.watchAsset] Failed to sign a media url", {
-						error,
-						fileNodeId,
-					});
+			try {
+				const media = watch.localQueryResult();
+				// An unanswered watch is still loading. Null is a confirmed missing or unreadable file.
+				if (media === undefined) return;
+				if (media === null) {
 					this.renderState("missing");
-				});
+					return;
+				}
+
+				const requiredTypePrefix = this.media instanceof HTMLVideoElement ? "video/" : "image/";
+				if (!media.contentType.startsWith(requiredTypePrefix)) {
+					this.renderState("incompatible");
+					return;
+				}
+
+				// Keep local upload previews, but clear bytes from an older query result while signing.
+				if (
+					!this.dom.classList.contains("FileEditorRichTextMedia-local-preview" satisfies FileEditorRichTextMedia_ClassNames)
+				) {
+					this.media.removeAttribute("src");
+				}
+				const state = media_state_from_asset(media.asset);
+				if (state !== "ready") {
+					// No database update fires when an unfinished saved upload passes its deadline.
+					if (state === "processing" && media.asset.unfinalizedExpiresAt !== undefined) {
+						this.expiryTimer = setTimeout(
+							() => {
+								this.expiryTimer = null;
+								void apply();
+							},
+							Math.max(0, media.asset.unfinalizedExpiresAt - Date.now()) + 1000,
+						);
+					}
+					this.renderState(state);
+					return;
+				}
+
+				this.renderState("processing");
+				const signed = await files_media_get_signed_url({ membershipId: this.membershipId, media });
+				// A newer source or query answer invalidates both successful URLs and refusals.
+				if (this.isDestroyed || urlRequestVersion !== this.urlRequestVersion) return;
+				if (signed._nay) {
+					this.renderState("missing");
+					return;
+				}
+				this.renderState("ready", signed._yay);
+			} catch (error: unknown) {
+				if (this.isDestroyed || urlRequestVersion !== this.urlRequestVersion) return;
+				console.error("[FileEditorRichTextMedia.watchMedia] Failed to load media", { error, src });
+				this.renderState("missing");
+			}
 		};
 
-		const assetUnsubscribe = assetWatch.onUpdate(apply);
-		const nodeUnsubscribe = nodeWatch.onUpdate(apply);
+		const unsubscribe = watch.onUpdate(() => void apply());
 		this.watchUnsubscribe = () => {
-			assetUnsubscribe();
-			nodeUnsubscribe();
+			active = false;
+			unsubscribe();
 		};
-		apply();
+		void apply();
 	}
 }
 

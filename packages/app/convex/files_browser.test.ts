@@ -12,6 +12,9 @@ import { files_yjs_doc_create_from_text } from "../shared/files-tiptap.ts";
 import { files_u8_to_array_buffer } from "../server/files.ts";
 import { quotas_db_ensure } from "./quotas.ts";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
+import { files_nodes_db_create_private_node_by_path } from "./files_nodes.ts";
+import { files_private_storage_db_reserve } from "./files_private_storage.ts";
+import { r2_create_asset_key } from "./r2_client.ts";
 
 const runnerQueue: Array<unknown> = [];
 const runnerCalls: Array<{ route: string; body: Record<string, unknown> }> = [];
@@ -238,7 +241,20 @@ async function seed_browser_file_scope(t: ReturnType<typeof test_convex>) {
 		}),
 	);
 
+	const captured = await t.mutation(internal.ai_chat_workspaces.capture, {
+		membershipId: fixture.membershipId,
+		userId: fixture.userId,
+	});
+	if (captured._nay) throw new Error(captured._nay.message);
 	return {
+		agentSource: {
+			organizationId: fixture.organizationId,
+			workspaceId: fixture.workspaceId,
+			userId: fixture.userId,
+			membershipId: fixture.membershipId,
+			membershipLifetime: captured._yay.membershipLifetime,
+			threadId,
+		},
 		membershipId: fixture.membershipId,
 		userId: fixture.userId,
 		organizationId: fixture.organizationId,
@@ -318,12 +334,14 @@ describe("browser file outputs", () => {
 		});
 		expect(view).toMatchObject({ readiness: "ready", canAccept: false, canAcceptWithParents: true });
 		expect(view!.requiredParents.map((parent) => parent.path)).toEqual(["/reports"]);
+		// The pending `reports` folder sits at the root, so no saved folder is above the chain.
+		expect(view!.savedParentId).toBeNull();
 		expect(view!.entry.pendingUpdate?.createIntent).toMatchObject({ kind: "stored", size: 8 });
 		expect(view!.entry.pendingUpdate?.threadIds).toEqual([scope.threadId]);
 		const readArgs = {
 			userId: scope.userId,
 			membershipId: scope.membershipId,
-			threadId: scope.threadId,
+			agentSource: scope.agentSource,
 			path: finalized._yay.path,
 			target,
 		};
@@ -538,7 +556,7 @@ describe("browser file outputs", () => {
 		const readArgs = {
 			userId: scope.userId,
 			membershipId: scope.membershipId,
-			threadId,
+			agentSource: { ...scope.agentSource, threadId },
 			path: finalized._yay.path,
 			target,
 		};
@@ -584,6 +602,161 @@ describe("browser file outputs", () => {
 });
 
 describe("get_file_read_source", () => {
+	test.each(["team leave and reinvite", "another user's chat", "archived chat", "third workspace"] as const)(
+		"reads both roots but refuses %s without hiding home files from their owner",
+		async (change) => {
+			const t = test_convex();
+			const owner = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+			const home = await t.run((ctx) =>
+				test_mocks_fill_db_with.membership(ctx, { organizationName: "personal", workspaceName: "home" }),
+			);
+			const third = await t.run((ctx) =>
+				test_mocks_fill_db_with.membership(ctx, { userId: home.userId, organizationName: "third-image-root" }),
+			);
+			const asOwner = authed(t, owner.userId);
+			const asUser = authed(t, home.userId);
+			const invite = { organizationId: owner.organizationId, workspaceId: owner.workspaceId, userIdToAdd: home.userId };
+			expect(await asOwner.mutation(api.organizations.invite_user_to_organization_workspace, invite)).toEqual({
+				_yay: null,
+			});
+			const membership = await t.run((ctx) =>
+				ctx.db
+					.query("organizations_workspaces_users")
+					.withIndex("by_workspace_user_active", (q) =>
+						q.eq("workspaceId", owner.workspaceId).eq("userId", home.userId).eq("active", true),
+					)
+					.first(),
+			);
+			if (!membership) throw new Error("Expected team membership");
+			const thread = await asUser.mutation(api.ai_chat.thread_create, {
+				membershipId: membership._id,
+				clientGeneratedId: "two-root-image-read",
+				lastMessageAt: Date.now(),
+			});
+			if (thread._nay) throw new Error(thread._nay.message);
+			const captured = await t.mutation(internal.ai_chat_workspaces.capture, {
+				userId: home.userId,
+				membershipId: membership._id,
+			});
+			if (captured._nay) throw new Error(captured._nay.message);
+			const agentSource = {
+				organizationId: owner.organizationId,
+				workspaceId: owner.workspaceId,
+				userId: home.userId,
+				membershipId: membership._id,
+				membershipLifetime: captured._yay.membershipLifetime,
+				threadId: thread._yay.threadId,
+			};
+			const path = "/image.png";
+			const files = await t.run(async (ctx) => {
+				const files = [];
+				for (const destination of [captured._yay.current, home, third]) {
+					const scope = {
+						organizationId: destination.organizationId,
+						workspaceId: destination.workspaceId,
+						userId: home.userId,
+					};
+					const assetId = await ctx.db.insert("files_r2_assets", {
+						organizationId: scope.organizationId,
+						workspaceId: scope.workspaceId,
+						createdBy: home.userId,
+						kind: "content",
+						r2Bucket: "test",
+						size: 8,
+						updatedAt: Date.now(),
+					});
+					const r2Key = r2_create_asset_key({ ...scope, assetId });
+					await ctx.db.patch("files_r2_assets", assetId, { r2Key });
+					const reserved = await files_private_storage_db_reserve(ctx, {
+						...scope,
+						resource: { kind: "asset", id: assetId, r2Key },
+						byteCount: 8,
+					});
+					if (reserved._nay) throw new Error(reserved._nay.message);
+					const created = await files_nodes_db_create_private_node_by_path(ctx, {
+						...scope,
+						path,
+						kind: "file",
+						content: { kind: "stored", assetId, size: 8, contentType: "image/png" },
+					});
+					if (created._nay) throw new Error(created._nay.message);
+					files.push({ membershipId: destination.membershipId, target: created._yay.target, assetId });
+				}
+				return files;
+			});
+			for (const file of files.slice(0, 2)) {
+				const read = await t.query(internal.files_nodes_content.get_file_read_source, {
+					userId: home.userId,
+					membershipId: file.membershipId,
+					agentSource,
+					path,
+				});
+				expect(read._yay).toMatchObject({ target: file.target, assetId: file.assetId });
+			}
+			if (change === "team leave and reinvite") {
+				expect(
+					await asUser.mutation(api.organizations.remove_user_from_organization, {
+						organizationId: owner.organizationId,
+						userIdToRemove: home.userId,
+					}),
+				).toEqual({ _yay: null });
+				expect(await asOwner.mutation(api.organizations.invite_user_to_organization_workspace, invite)).toEqual({
+					_yay: null,
+				});
+				const renewedMembership = await t.run((ctx) =>
+					ctx.db
+						.query("organizations_workspaces_users")
+						.withIndex("by_workspace_user_active", (q) =>
+							q.eq("workspaceId", owner.workspaceId).eq("userId", home.userId).eq("active", true),
+						)
+						.first(),
+				);
+				if (!renewedMembership) throw new Error("Expected renewed team membership");
+				const renewed = await t.mutation(internal.ai_chat_workspaces.capture, {
+					userId: home.userId,
+					membershipId: renewedMembership._id,
+				});
+				if (renewed._nay) throw new Error(renewed._nay.message);
+				expect(renewed._yay.membershipLifetime).not.toBe(agentSource.membershipLifetime);
+				expect(
+					(
+						await t.query(internal.files_nodes_content.get_file_read_source, {
+							userId: home.userId,
+							membershipId: home.membershipId,
+							agentSource: {
+								...agentSource,
+								membershipId: renewedMembership._id,
+								membershipLifetime: renewed._yay.membershipLifetime,
+							},
+							path,
+						})
+					)._yay?.target,
+				).toEqual(files[1]!.target);
+			}
+			if (change === "another user's chat")
+				await t.run((ctx) => ctx.db.patch("ai_chat_threads", agentSource.threadId, { createdBy: owner.userId }));
+			if (change === "archived chat")
+				await t.run((ctx) => ctx.db.patch("ai_chat_threads", agentSource.threadId, { archived: true }));
+			const selected = files[change === "third workspace" ? 2 : 1]!;
+			for (const target of [undefined, selected.target])
+				expect(
+					await t.query(internal.files_nodes_content.get_file_read_source, {
+						userId: home.userId,
+						membershipId: selected.membershipId,
+						agentSource,
+						path,
+						target,
+					}),
+				).toEqual({ _nay: { message: "File unavailable" } });
+			// The source chat limits the agent, not the owner's regular Files view.
+			const visible = await asUser.query(api.files_pending_updates.get_file_pending_target, {
+				membershipId: selected.membershipId,
+				target: selected.target,
+			});
+			expect(visible?.entry.node._id).toBe(selected.target.id);
+		},
+	);
+
 	test("keeps pending files owner-only and uses current saved grants through the old private ID", async () => {
 		const t = test_convex();
 		const scope = await seed_browser_file_scope(t);
@@ -601,7 +774,10 @@ describe("get_file_read_source", () => {
 		// A second member of the same workspace. A capture is still a private draft, so this member
 		// cannot read it, whatever their workspace role says.
 		const member = await t.run(async (ctx) => {
-			const userId = await ctx.db.insert("users", { clerkUserId: null });
+			const { userId } = await test_mocks_fill_db_with.membership(ctx, {
+				organizationName: "personal",
+				workspaceName: "home",
+			});
 			const membershipId = await ctx.db.insert("organizations_workspaces_users", {
 				organizationId: scope.organizationId,
 				workspaceId: scope.workspaceId,
@@ -611,7 +787,25 @@ describe("get_file_read_source", () => {
 			await access_control_db_ensure_role_assignment(ctx, { ...scope, userId, role: "member", now: Date.now() });
 			return { userId, membershipId };
 		});
-		const memberRead = { ...member, threadId: scope.threadId, path, target };
+		const memberThread = await authed(t, member.userId).mutation(api.ai_chat.thread_create, {
+			membershipId: member.membershipId,
+			clientGeneratedId: "member-image-reader",
+			lastMessageAt: Date.now(),
+		});
+		if (memberThread._nay) throw new Error(memberThread._nay.message);
+		const captured = await t.mutation(internal.ai_chat_workspaces.capture, member);
+		if (captured._nay) throw new Error(captured._nay.message);
+		const memberRead = {
+			...member,
+			agentSource: {
+				...scope.agentSource,
+				...member,
+				threadId: memberThread._yay.threadId,
+				membershipLifetime: captured._yay.membershipLifetime,
+			},
+			path,
+			target,
+		};
 		expect((await t.query(internal.files_nodes_content.get_file_read_source, memberRead))._nay).toBeDefined();
 
 		const asOwner = authed(t, scope.userId);
@@ -681,7 +875,7 @@ describe("get_file_read_source", () => {
 				await t.query(internal.files_nodes_content.get_file_read_source, {
 					userId: other.userId,
 					membershipId: other.membershipId,
-					threadId: scope.threadId,
+					agentSource: scope.agentSource,
 					path,
 					target: saved._yay.target,
 				})
@@ -695,7 +889,7 @@ describe("get_file_read_source", () => {
 				await t.query(internal.files_nodes_content.get_file_read_source, {
 					userId: scope.userId,
 					membershipId: scope.membershipId,
-					threadId: scope.threadId,
+					agentSource: scope.agentSource,
 					path,
 					target,
 				})
@@ -722,13 +916,17 @@ describe("get_file_read_source", () => {
 		});
 		const pendingUpdateId = view!.entry.pendingUpdate!._id;
 
-		// A proposal is cleaned up four hours after its last write. Move the capture's proposal past
-		// that age and run the cleanup, and the reader must lose the file with it.
-		const expiredAt = Date.now() - 4 * 60 * 60 * 1000 - 1;
-		await t.run((ctx) => ctx.db.patch("files_pending_updates", pendingUpdateId, { updatedAt: expiredAt }));
+		const cleanup = await t.run((ctx) =>
+			ctx.db
+				.query("files_pending_updates_cleanup_tasks")
+				.withIndex("by_pendingUpdate", (q) => q.eq("pendingUpdateId", pendingUpdateId))
+				.first(),
+		);
+		if (!cleanup) throw new Error("Expected pending cleanup task");
+		vi.spyOn(Date, "now").mockReturnValue(cleanup.expiresAt);
 		await t.mutation(internal.files_pending_updates.remove_file_pending_update_if_expired, {
-			pendingUpdateId,
-			expectedUpdatedAt: expiredAt,
+			cleanupTaskId: cleanup._id,
+			expiryGeneration: cleanup.expiryGeneration,
 		});
 
 		expect(
@@ -736,7 +934,7 @@ describe("get_file_read_source", () => {
 				await t.query(internal.files_nodes_content.get_file_read_source, {
 					userId: scope.userId,
 					membershipId: scope.membershipId,
-					threadId: scope.threadId,
+					agentSource: scope.agentSource,
 					path,
 					target,
 				})
@@ -1213,7 +1411,7 @@ describe("/api/chat browser binding", () => {
 			experimental_context: call.experimental_context,
 		};
 		await t.run(async () => {
-			expect(await call.prepareStep!(step)).toEqual({ messages: step.messages });
+			expect(await call.prepareStep!(step)).toEqual({ activeTools: call.activeTools, messages: step.messages });
 		});
 		await t.mutation(internal.files_browser.set_browser_control, { sessionId, control: "ready", controlGen: 4 });
 		await t.run(async () => {
@@ -1248,7 +1446,7 @@ describe("/api/chat browser binding", () => {
 				stepNumber: 1,
 				experimental_context: call.experimental_context,
 			});
-			expect(next?.activeTools).toBeUndefined();
+			expect(next?.activeTools).toEqual(call.activeTools);
 			expect(next?.system).toBeUndefined();
 		});
 		expect(runnerCalls.map((call) => call.route)).toEqual(["open", "status", "reload"]);

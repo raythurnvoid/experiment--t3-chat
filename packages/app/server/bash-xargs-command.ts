@@ -1,7 +1,7 @@
 import { defineCommand, type CommandContext } from "just-bash/browser";
 import { Result } from "common/errors-as-values-utils.ts";
 import {
-	type bash_DbFilesRoot,
+	type bash_DbFilesRoots,
 	bash_command_loads_disallowed_shell_code,
 	bash_disallowed_shell_code_error,
 	bash_shell_arg_quote,
@@ -239,7 +239,7 @@ function parse_args(args: string[]) {
  * no-op safety flag `-r`) and executes each nested command through the same guarded shell
  * context, so app-file protections still apply.
  */
-export function bash_xargs_command_create(appRoot: bash_DbFilesRoot) {
+export function bash_xargs_command_create(dbFilesRoots: bash_DbFilesRoots) {
 	return defineCommand("xargs", async (args, commandCtx) => {
 		const parsed = parse_args(args);
 		if (parsed._nay) {
@@ -311,7 +311,7 @@ export function bash_xargs_command_create(appRoot: bash_DbFilesRoot) {
 				await bash_command_loads_disallowed_shell_code(batch.map(bash_shell_arg_quote).join(" "), {
 					cwd: commandCtx.cwd,
 					fs: commandCtx.fs,
-					appRoot,
+					dbFilesRoots,
 				})
 			) {
 				stderr += bash_disallowed_shell_code_error();

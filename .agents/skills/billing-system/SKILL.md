@@ -167,6 +167,8 @@ Missing snapshots or subscriptions are treated as `hasCredits: false` in gate he
 
 [ai_chat.ts](../../../packages/app/convex/ai_chat.ts) checks credits before LLM work with `minimumRequiredCents: 1`. This applies to the main `/api/chat` stream and the secondary title-generation endpoint. Both signed-in and anonymous users go through this gate. Anonymous users reuse the synthetic snapshot that was seeded at anonymous-user creation.
 
+Using personal files from a team chat does not change who pays for the run. Chat and image usage keep the source organization's billing rule. File plan checks and Save charges use the destination organization instead. Personal/home files therefore use the user's own plan and payer, even when the team owner pays for the chat. Proposals still require review and Save; creating a proposal does not charge a file Save.
+
 - On deny the handler returns `402` with `{ message: "Insufficient funds" }`. If the UI needs richer plan-aware copy, add a separate query for that UI surface instead of expanding the gate result.
 - On successful finish, chat flows always emit direct `billing_event("ai_usage")` events through `billing_ingest_events` when AI SDK reports non-zero token usage. Signed-in billed rows go to Polar via the workpool; anonymous billed rows apply locally to the synthetic snapshot. The main stream emits one event for response usage, and title generation emits a separate title event when title tokens were used.
 - Use deterministic `externalId` values built with `composite_id("billing", "ai_usage", billedUserId, actorUserId, organizationId, workspaceId, threadId, messageId)` so Polar dedupes HTTP retries and ownership-transfer races cannot collide. For title events, the final part is the literal `"title"`.

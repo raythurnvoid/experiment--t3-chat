@@ -13,30 +13,44 @@ the same producer with private proposals. `files_pending_updates.ts` and
   saved/private view and publish proposals. Each run stores `sourceView`, `publication`, and its
   immutable origin. It never changes modes during Retry.
 - Activity owns status, progress, result, deadlines, and membership lifetime. A run keeps only
-  immutable intent and executor state such as `step: discover|apply`, revision, and worker count.
+  immutable intent and executor state such as selection, discovery, planning, retry cursors, revision, and worker count.
+- Agent runs may use the current workspace and the actor's own personal home. Each file scope
+  stores its exact membership and lifetime. Activity and the Bash receipt keep the chat's scope.
+  Recheck all three scopes before later reads and writes. A leave and re-invite cannot revive a run.
 
 - The in-memory clipboard lasts for the current tab and workspace. Paste saves a run, which can
   continue after navigation or reload. Only one run per user and workspace may be active.
-- `start` accepts at most 200 selected nodes. It removes children whose selected ancestor already
-  covers them. Sources and destination parents use tagged saved/private IDs. The destination path,
-  parent, optional target name, and missing Copy parents are fixed at start. A repeated request ID
-  returns its original run; changing that request's intent refuses.
-- Copy discovers active descendants in pages of 50 before creating output, up to 10,000 items.
+- Copy intake uses `start`, `append_sources`, and `seal`, with at most 100 sources per page
+  (`files_TRANSFER_SELECTION_PAGE_SIZE` in `shared/files.ts`; Paste and Bash use the same constant).
+  The expected count includes duplicate entries. Page replay must match the accepted page exactly.
+  An incomplete selection cannot start discovery. After sealing, indexed selection docs remove
+  duplicates and children covered by a selected ancestor, including an ancestor on a later page.
+  There is no total Copy root or item cap. Sources and destination parents use tagged saved/private
+  IDs. The destination path, parent, optional target name, and missing Copy parents are fixed at
+  start. A repeated request ID returns its original run; changed intent or expired membership refuses.
+- Copy discovers active descendants in pages of 50 before creating output.
   This is a paged scan, not a snapshot of the whole tree at one instant. Later additions are not
   guaranteed to be included. Output starts only after discovery ends. The completed manifest stays
-  fixed during Retry. Every publication checks source identity and destination placement. Copy into
+  fixed during Retry. So Retry needs a finished discovery: a run that stopped or failed while
+  Activity `progress.total` is still null offers no Retry, and `retry_remaining` refuses it with
+  "This copy stopped before it found all its files. Start a new copy instead." Every publication checks source identity and destination placement. Copy into
   a descendant is allowed when it cannot replace or merge into a captured source. It never discovers
   its own output. Move into a descendant is refused.
+- Full-folder Copy checks every included saved child. If one cannot be read, discovery refuses
+  with fixed text and creates no output. Apply the actor's pending paths and deletes first.
+  Other users' private drafts are not part of that view. Ordinary lists still hide unreadable items.
 - Two file workers may prepare bytes at once. The item records its attempt, assets, payer, and
-  completed node. A repeated callback cannot create another copy or bill it again.
+  completed node. A repeated callback cannot create another copy or bill it again. Reserving
+  cross-workspace output IDs does not spend one of the three content-worker attempts.
 - Cut uses one atomic move transaction. It allows at most 500 affected nodes, including archived
   descendants, 2,000 scanned nodes, search chunks, and metadata docs, and separate 4 MiB read and write
   budgets. Permission checks are outside that scan counter. Every affected restricted scope needs
   write access, even when its nodes are hidden or archived. An oversized or unauthorized move fails
   before moving anything. It never falls back to partial batches.
 - Saved Move and reviewed pending Move use the common preflight/apply plan in `files_nodes.ts`.
-  Private publication uses that same plan for a saved replacement occupant. Moves stay within one
-  workspace. OS links, ownership bits, timestamps, and subtree replacement are not supported.
+  Private publication uses that same plan for a saved replacement occupant. These path moves stay
+  within one workspace. Cross-workspace Move is refused before creating a transfer or output.
+  OS links, ownership bits, timestamps, and subtree replacement are not supported.
 
 ## Conflicts and concurrent changes
 
@@ -86,7 +100,23 @@ the same producer with private proposals. `files_pending_updates.ts` and
   write policy, Stop, Activity deadline, attempt, and work id still control publication.
 - New saved output gets new node, content, Yjs, asset, and version docs. Rebuild frontmatter and search docs.
   Remove comment marks. Do not copy comment threads, history, pending proposals, grants, or runs.
-- Media links keep their original node ids. Copying a folder does not rewrite those links.
+- Same-workspace media links keep their original IDs. Cross-workspace copies rewrite real image
+  and video embeds to destination IDs. Each linked media file must be explicitly selected with
+  the document, either directly or inside a selected folder. Never copy an unselected asset.
+  Plain links and text inside code are not embeds. Missing or unreadable media refuses the document.
+  Reserve all private output IDs first, copy media before documents, and pin the mapping for retries.
+  A completed image/video item keeps its exact output asset ID, without owning the asset. The first
+  document mapping must still match that ID. Saving unchanged media is allowed; replacing it is not.
+  Save checks the embeds still present in the accepted text. Each must be saved at the copied version
+  or selected in that same atomic Save unit. Large Copy review saves selected media before its
+  dependent documents. Removed embeds need no media Save. See the pending spec.
+- Media mappings live in `files_media_dependency_sets` and indexed `files_media_dependencies` docs.
+  A sealed set belongs to a transfer capture, a proposal, or cleanup. Adoption changes that owner
+  in the publication transaction. Cleanup deletes mapping docs in pages and never owns their assets.
+  Capture and Save proofs pin the exact text, set generation, proposal or attempt, and organization,
+  workspace, and owner-proposal validation versions. A changed version invalidates the proof.
+  Final publication still checks direct access. Do not remove a validation writer without checking
+  both paged proof consumers.
 - Stored files get new R2 assets through server-side object copy. Never share asset ownership.
   Copies do not dispatch upload-completed plugin events. Empty copied folders are normal output.
 - A file whose upload is still saving can fail after its parent folder was copied. Keep completed
@@ -106,7 +136,7 @@ the same producer with private proposals. `files_pending_updates.ts` and
   Accept keeps the saved destination ID, permissions, metadata, and history. Text over text keeps
   the destination collaboration mode. Text over stored content uses the source's mode. Replacing
   collaborative text with stored content requires turning collaboration off first.
-- Agent Move changes a private source's parent and name immediately. A saved source gets a move
+- Same-workspace agent Move changes a private source's parent and name immediately. A saved source gets a move
   proposal. Its saved name and parent stay unchanged until Save. Both keep the source content type.
 - Forced file Move supports every saved/private source and occupant pair. A private occupant must
   be ready and, for a folder, empty. Current access and policies are checked before it is retired.
@@ -117,14 +147,33 @@ the same producer with private proposals. `files_pending_updates.ts` and
   archive that exact occupant and publish the source in one transaction. Active saved children,
   private children, pending moves into the folder, changed content, a new occupant, or lost access
   refuse the affected Save. Discard, expiry, and moving away keep the saved occupant unchanged.
-- Bulk review stores the selected proposal IDs, revisions, and content states. Connected parent,
-  move, content, and replacement work commits as one bounded unit. An unselected affected proposal,
+- Bulk review stores the selected proposal IDs, revisions, and content states. Independent Copy
+  outputs save in small units. Indexed prerequisites put copied parents and selected media first.
+  A failed unit blocks its dependents, not unrelated copies. Completed saves remain after Stop
+  or a later failure. Ordinary connected move, content, and replacement work keeps bounded atomic
+  units. An unselected affected proposal,
   including another chat's proposal on the occupant, requires a new selection. The worker never
   silently includes it. A partial private Save keeps unresolved text on the same proposal, retargets
   it to the saved source, and removes the completed create and move claims.
 - Private destination parents keep their identity through Save using their owner-scoped publication
   receipt. Retry keeps that same parent. A moved or discarded parent pauses instead of adopting
   whichever folder now owns the old path. See the [pending spec](../../files-agent-pending-updates/SKILL.md).
+
+## Workspace boundary
+
+- Compare resolved workspace IDs, not `current` and `personal` selector text. Two selectors can
+  name the same home workspace. Same-workspace Move remains supported.
+- Both the shell adapter and transfer backend refuse cross-workspace Move with
+  `cross_workspace_move`: “Moves between workspaces are not allowed. Use cp to copy files instead,
+  or cp -R for a folder. The originals will stay in place.” Bash prefixes `mv:` and exits 1.
+- The refusal creates no transfer, proposal, asset hold, charge, or source change. Do not turn
+  it into automatic Copy plus Archive or delete. Source cleanup needs a separate user request.
+- New copies use destination read access. Replacements keep the destination identity and access.
+  Never copy grants, invite source readers, or transfer ownership. Personal home stays owner-private.
+  The destination payer pays for storage; agent-run billing is unchanged.
+- Copy current content, metadata, and supported write rules. Keep history, comments, and chats
+  at the source. TODO: revisit copying versions and comments in a future change.
+- Large same-workspace Move remains a separate follow-up. Its transaction safety limits stay.
 
 ## Stop, Activity, and cleanup
 
@@ -153,10 +202,36 @@ the same producer with private proposals. `files_pending_updates.ts` and
   Replaying a completed tool call does not start the transfer twice. A `cp` or `mv` inside a
   background job (`&`) runs under the job's deadline: `start_for_agent` takes the job's invocation,
   hides the run's Activity from the feed (`feedVisible: false`; the job Activity is what the user
-  sees), refuses a stopping job, and a job waits up to 60 seconds for a busy lane instead of failing
-  (`get_current_activity_for_agent`). A job Stop stops only that job's own runs. A shell success means its
+  sees), refuses a stopping job, and on the bounded path a job waits up to 60 seconds for a busy
+  lane instead of failing (`get_current_activity_for_agent`). A job Stop stops only that job's own runs. A shell success means its
   requested saved or proposal work completed; waiting, refusal, Stop, and deadline results keep their
   actual exit status.
+- Supported plain background `cp` statements can suspend the Bash worker while Copy continues.
+  Store expanded arguments, source pages, command number, and shell state before dispatch.
+  Start, append, and seal use the same job work-ID fence and exact saved intent. Waiting polls do
+  not renew the transfer deadline. Terminal delivery resumes the next statement at most once;
+  uncertain delivery fails safely instead of replaying later shell writes. A final admission
+  refusal (for example a changed destination) is delivered once as the failed `cp` result:
+  `cp: <message>` with exit 1, or exit 124 when admission timed out. Errexit or the next
+  statement then applies, and no transfer starts. While another transfer holds the lane, the
+  worker waits through `get_current_activity_for_agent`, which does not charge the Files write
+  rate limit. A lane waiting for input refuses the `cp`. Losing access while the job is requeued
+  ends it as canceled. `save_bash_job_copy_checkpoint` sets the 10-minute admission deadline from
+  the server clock, so host clock drift cannot move it. After that deadline the whole job ends.
+  Loops, pipelines, redirections, substitutions, and other compound forms keep bounded execution.
+- Verified Copy waiting time is excluded from the general 24-hour Bash compute/sleep age.
+  Worker generations reject stale queued actions. Stop fences the linked Copy before clearing
+  its checkpoint. The Bash job and its Activity remain the visible owner of background work.
+- Active Copy and review jobs hold their exact proposals against idle expiry. Source folders
+  also protect their not-yet-discovered private children. Retry protects later manifest pages
+  before their new holds are installed. Holds grant no read or write access.
+- Retry renews holds on its existing private destination and prepared parents at admission.
+  Completed output pins the proposal ID, private creation generation (or null), and replacement
+  asset (or null). Keep that pin across completed-item clones, but clear it for a fresh attempt.
+  Edits and renames of the same proposal keep retention; a new replacement at the same target does not.
+- Completed output gets a fixed four-hour review window from producer completion. Release pages
+  install that deadline before deleting holds; repeated release never starts another window.
+  Cleanup callbacks check the current cleanup-task ID, generation, deadline, and holds.
 - Failed or expired attempts hand unfinished upload staging to the exact-key deletion ledger,
   including the asset's `putMayArriveUntil`. Allocation sets it to 25 minutes later: two ten-minute
   action windows for the worker and nested R2 copy, plus the existing five-minute upload margin.
@@ -167,16 +242,26 @@ the same producer with private proposals. `files_pending_updates.ts` and
 - Publishing the file, its content and version docs, billing event, receipt, and capture ownership
   handoff is one mutation. The item then has no asset ownership. A lost response or later run
   deletion cannot remove saved output or bill it twice.
-- A private completion hands captured assets and states to the exact private proposal in one
-  mutation. Transfer cleanup cannot reclaim them after that handoff. Save later moves those holds
+- A private text completion creates fresh states for the exact destination proposal, then releases
+  the capture states and transport assets. A stored-file completion hands retained asset holds to
+  that proposal. Transfer cleanup cannot reclaim those holds after handoff. Save later moves them
   to the saved file; Discard gives them to durable cleanup.
 - User and tenant purge stop runs before draining their items and Activity viewer state in batches of 50.
   Private run cleanup never deletes completed files retained in a shared workspace.
+- Purge finds runs by source, destination, or chat workspace. It fences workers before draining
+  their items, holds, mapping sets, and Activity. Account cleanup also uses their user indexes.
+  Keep completed output in a surviving workspace. Missing work items prevent late publication.
+  A drain can need another pass while deleting zero docs. Keep its unfinished result through
+  user cleanup; do not remove user or membership records until the producer drain finishes.
 
 ## Verification
 
 - `convex/files_transfer.test.ts`: ownership, discovery, names, Stop, retries, expiry, and receipts.
 - `convex/files_nodes_content.test.ts`: saved content, new assets, comments, billing, and races.
+- `convex/files_transfer_selection.test.ts` and `convex/files_transfer_holds.test.ts`: paged intake,
+  large discovery, exact replay, long-running output, and retry retention.
+- `convex/files_transfer_media.test.ts` and `convex/files_pending_media_save.test.ts`: selected media,
+  exact versions, partial Save, and linked review units.
 - `convex/files_nodes.test.ts`: atomic move scope, cycles, read/write bounds, and policy checks.
 - `convex/files_pending_updates.test.ts`: all saved/private Move pairs, exact replacements,
   contributor review, empty folders, late edits and children, partial Save, Discard, and expiry.

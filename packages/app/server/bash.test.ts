@@ -12,6 +12,7 @@ import {
 } from "../convex/ai_chat_files.ts";
 import type { bash_ReviewScratch } from "../convex/bash.ts";
 import { access_control_db_ensure_role_assignment } from "../convex/access_control.ts";
+import { organizations_membership_lifetimes_db_ensure } from "../convex/organizations_membership_lifetimes.ts";
 import { files_db_yjs_push_update } from "../convex/files_nodes.ts";
 import { db_insert_file_text_content } from "../convex/files_nodes_content.ts";
 import { files_PENDING_REPLACEMENT_BASE_CHANGED_MESSAGE } from "../convex/files_pending_updates.ts";
@@ -36,6 +37,7 @@ import {
 	bash_COMMAND_EXIT_CANNOT_EXECUTE,
 	bash_COMMAND_EXIT_NOT_FOUND,
 	bash_COMMAND_EXIT_USAGE,
+	bash_DbFilesFs,
 	bash_JOB_NUMBERS_MAX_COUNT,
 	bash_READER_FILE_OPERAND_MAX,
 	bash_READ_HEAD_LARGE_FILE_MAX_LINES,
@@ -487,6 +489,12 @@ describe("bash_run_command", () => {
 			threadId = createdThread._yay.threadId;
 		}
 
+		const membershipLifetime = await t.run(async (ctx) => {
+			const membership = await ctx.db.get("organizations_workspaces_users", seeded.membershipId);
+			if (!membership) throw new Error("Expected source membership");
+			return await organizations_membership_lifetimes_db_ensure(ctx, membership);
+		});
+
 		let cwd = "~";
 		if (opts?.initialCwd != null && opts.initialCwd !== "~") {
 			// The first call creates the shell row, so seed it here to start somewhere else.
@@ -557,13 +565,20 @@ describe("bash_run_command", () => {
 		const runMutation = vi.fn((ref: unknown, mutationArgs: Record<string, unknown>) => testMutation(ref, mutationArgs));
 		const runAction = vi.fn((ref: unknown, actionArgs: Record<string, unknown>) => testAction(ref, actionArgs));
 		const ctx = { runQuery, runMutation, runAction } as unknown as ActionCtx;
+		const names = await t.run(async (ctx) => {
+			const organization = await ctx.db.get("organizations", seeded.organizationId);
+			const workspace = await ctx.db.get("organizations_workspaces", seeded.workspaceId);
+			if (!organization || !workspace) throw new Error("Expected the seeded workspace");
+			return { organizationName: organization.name, workspaceName: workspace.name };
+		});
 
 		const ctxData = {
 			organizationId: seeded.organizationId,
 			workspaceId: seeded.workspaceId,
-			organizationName: test_organization_name,
-			workspaceName: test_workspace_name,
+			...names,
 			userId: actingUserId,
+			membershipId: seeded.membershipId,
+			membershipLifetime,
 			threadId,
 		};
 
@@ -629,7 +644,7 @@ describe("bash_run_command", () => {
 			(await ctx.db.query("ai_chat_bash_invocations").collect()).find((row) => row.job?.jobNumber === jobNumber),
 		);
 		if (!row?.job) throw new Error(`Expected job ${jobNumber}`);
-		return row;
+		return { ...row, job: row.job };
 	}
 
 	async function get_private_entry(runner: Awaited<ReturnType<typeof create_bash_runner>>, path: string) {
@@ -1209,12 +1224,79 @@ describe("bash_run_command", () => {
 		expect(completed.title.isWellFormed()).toBe(true);
 	});
 
+	test.each([false, true])("refuses an old HTTP run after rejoin (lost begin reply: %s)", async (lostReply) => {
+		const t = test_convex();
+		const owner = await t.run((ctx) =>
+			test_mocks_fill_db_with.membership(ctx, { organizationName: "bash-run-team", workspaceName: "home" }),
+		);
+		const member = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asOwner = t.withIdentity({ issuer: "https://clerk.test", external_id: owner.userId });
+		const asMember = t.withIdentity({ issuer: "https://clerk.test", external_id: member.userId });
+		const invite = {
+			organizationId: owner.organizationId,
+			workspaceId: owner.workspaceId,
+			userIdToAdd: member.userId,
+		};
+		expect(await asOwner.mutation(api.organizations.invite_user_to_organization_workspace, invite)).toEqual({
+			_yay: null,
+		});
+		const membership = await t.run((ctx) =>
+			ctx.db
+				.query("organizations_workspaces_users")
+				.withIndex("by_workspace_user_active", (q) =>
+					q.eq("workspaceId", owner.workspaceId).eq("userId", member.userId).eq("active", true),
+				)
+				.unique(),
+		);
+		if (!membership) throw new Error("Expected invited membership");
+		const oldRun = await create_bash_runner({
+			shared: { t, seeded: { ...owner, userId: member.userId, membershipId: membership._id } },
+		});
+		expect(
+			await asMember.mutation(api.organizations.remove_user_from_organization, {
+				organizationId: owner.organizationId,
+				userIdToRemove: member.userId,
+			}),
+		).toEqual({ _yay: null });
+		expect(await asOwner.mutation(api.organizations.invite_user_to_organization_workspace, invite)).toEqual({
+			_yay: null,
+		});
+		const rejoined = await t.run((ctx) =>
+			ctx.db
+				.query("organizations_workspaces_users")
+				.withIndex("by_workspace_user_active", (q) =>
+					q.eq("workspaceId", owner.workspaceId).eq("userId", member.userId).eq("active", true),
+				)
+				.unique(),
+		);
+		if (!rejoined) throw new Error("Expected rejoined membership");
+		const currentRun = await create_bash_runner({
+			threadId: oldRun.threadId,
+			shared: { t, seeded: { ...owner, userId: member.userId, membershipId: rejoined._id } },
+		});
+		expect((await currentRun.run("printf current", "current-call")).stdout).toBe("current");
+		const before = await t.run((ctx) => ctx.db.query("ai_chat_bash_invocations").collect());
+		await expect(oldRun.run("printf stale > /tmp/stale.txt", "old-new-call", "stale")).rejects.toThrow("Unauthorized");
+		if (lostReply) {
+			const mutate = oldRun.runMutation.getMockImplementation()!;
+			oldRun.runMutation.mockImplementation(async (ref, args) => {
+				if (function_name_of(ref) === "ai_chat_files:begin_bash_invocation") throw new Error("Lost begin reply");
+				return await mutate(ref, args);
+			});
+		}
+		await expect(oldRun.run("printf current", "current-call")).rejects.toThrow("Unauthorized");
+		expect(await t.run((ctx) => ctx.db.query("ai_chat_bash_invocations").collect())).toEqual(before);
+		expect(await t.run((ctx) => ctx.db.query("ai_chat_bash_shells").collect())).toHaveLength(1);
+		expect(await t.run((ctx) => ctx.db.query("ai_chat_files").collect())).toEqual([]);
+	});
+
 	test.each([
 		{ rejoin: false, persist: "scratch" },
 		{ rejoin: true, persist: "scratch" },
 		{ rejoin: false, persist: "result" },
 		{ rejoin: true, persist: "result" },
 	])("refuses late $persist writes after membership removal (rejoin: $rejoin)", async ({ rejoin, persist }) => {
+		const test_db_files_mount = "/home/cloud-usr/w/bash-team/home";
 		const t = test_convex();
 		const owner = await t.run((ctx) =>
 			test_mocks_fill_db_with.membership(ctx, { organizationName: "bash-team", workspaceName: "home" }),
@@ -1241,12 +1323,10 @@ describe("bash_run_command", () => {
 				.unique(),
 		);
 		if (!membership) throw new Error("Expected invited membership");
-		const ownerRunner = await create_bash_runner({ shared: { t, seeded: owner } });
-		expect((await ownerRunner.run("printf before > /tmp/member.txt")).metadata.exitCode).toBe(0);
 		const runner = await create_bash_runner({
 			shared: { t, seeded: { ...owner, userId: member.userId, membershipId: membership._id } },
-			threadId: ownerRunner.threadId,
 		});
+		expect((await runner.run("printf before > /tmp/member.txt")).metadata.exitCode).toBe(0);
 		const mutate = runner.runMutation.getMockImplementation()!;
 		let removal: Promise<void> | undefined;
 		const writes: Promise<unknown>[] = [];
@@ -1291,15 +1371,37 @@ describe("bash_run_command", () => {
 		);
 		expect(invocation?.status).toBe("interrupted");
 		expect(invocation?.result).toBeUndefined();
-		const stored = await t.query(internal.ai_chat_files.load_thread_tmp_files, { threadId: ownerRunner.threadId });
-		const file = stored.file_nodes.find((node) => node.path === "/member.txt");
-		expect(new TextDecoder().decode(stored.file_nodes_content_dict[file!._id].bytes)).toBe("before");
-		expect((await get_shell(t, ownerRunner.threadId))?.cwd).toBe(test_db_files_mount);
-		expect((await ownerRunner.run("cat /tmp/member.txt")).stdout).toBe("before");
+		// Read stored bytes directly: the removed member cannot use the scratch read door.
+		const content = await t.run(async (ctx) => {
+			const file = await ctx.db
+				.query("ai_chat_files")
+				.withIndex("by_thread_path", (q) => q.eq("threadId", runner.threadId).eq("path", "/member.txt"))
+				.first();
+			if (!file) throw new Error("Expected scratch file");
+			return await ctx.db
+				.query("ai_chat_files_content")
+				.withIndex("by_fileNode", (q) => q.eq("fileNodeId", file._id))
+				.first();
+		});
+		expect(new TextDecoder().decode(content!.bytes)).toBe("before");
+		expect((await get_shell(t, runner.threadId))?.cwd).toBe(test_db_files_mount);
 		if (rejoin) {
-			runner.runMutation.mockImplementation(mutate);
-			expect((await runner.run("printf after > /tmp/member.txt; cd /tmp")).metadata.exitCode).toBe(0);
-			expect((await runner.run("cat /tmp/member.txt")).stdout).toBe("after");
+			const rejoined = await t.run((ctx) =>
+				ctx.db
+					.query("organizations_workspaces_users")
+					.withIndex("by_workspace_user_active", (q) =>
+						q.eq("workspaceId", owner.workspaceId).eq("userId", member.userId).eq("active", true),
+					)
+					.unique(),
+			);
+			if (!rejoined) throw new Error("Expected rejoined membership");
+			const freshRun = await create_bash_runner({
+				threadId: runner.threadId,
+				shared: { t, seeded: { ...owner, userId: member.userId, membershipId: rejoined._id } },
+			});
+			expect((await freshRun.run("cat /tmp/member.txt")).stdout).toBe("before");
+			expect((await freshRun.run("printf after > /tmp/member.txt; cd /tmp")).metadata.exitCode).toBe(0);
+			expect((await freshRun.run("cat /tmp/member.txt")).stdout).toBe("after");
 		}
 	});
 
@@ -1526,6 +1628,92 @@ describe("bash_run_command", () => {
 		expect(result.stdout.split("# Readme").length - 1).toBe(2);
 		expect(readCalls).toHaveLength(1);
 	});
+
+	test.each(["cat", "readFile", "getEntry"] as const)(
+		"%s refuses cached data after a file grant ends",
+		async (door) => {
+			const test_db_files_mount = "/home/cloud-usr/w/cache-team/home";
+			const t = test_convex();
+			const seeded = await t.run((ctx) =>
+				test_mocks_fill_db_with.membership(ctx, { organizationName: "cache-team", workspaceName: "home" }),
+			);
+			const owner = await create_bash_runner({ shared: { t, seeded }, extraFiles: default_organization_files });
+			const nodeId = await get_seeded_node_id(owner, "/docs/readme.md");
+			const member = await t.run(async (ctx) => {
+				const userId = await ctx.db.insert("users", { clerkUserId: "cache-member" });
+				await test_mocks_fill_db_with.membership(ctx, { userId, organizationName: "personal", workspaceName: "home" });
+				const membershipId = await ctx.db.insert("organizations_workspaces_users", {
+					organizationId: seeded.organizationId,
+					workspaceId: seeded.workspaceId,
+					userId,
+					active: true,
+					updatedAt: Date.now(),
+				});
+				await access_control_db_ensure_role_assignment(ctx, {
+					organizationId: seeded.organizationId,
+					workspaceId: seeded.workspaceId,
+					userId,
+					role: "member",
+					now: Date.now(),
+				});
+				return { userId, membershipId };
+			});
+			const asOwner = t.withIdentity({
+				issuer: "https://clerk.test",
+				subject: "cache-owner",
+				external_id: seeded.userId,
+				email: "cache-owner@test.local",
+			});
+			const share = {
+				membershipId: seeded.membershipId,
+				nodeId,
+				principal: { kind: "user" as const, userId: member.userId },
+			};
+			expect(
+				(await asOwner.mutation(api.files_sharing.restrict_node, { membershipId: seeded.membershipId, nodeId }))._nay,
+			).toBeUndefined();
+			expect(
+				(await asOwner.mutation(api.files_sharing.set_node_share_grant, { ...share, level: "read" }))._nay,
+			).toBeUndefined();
+			const runner = await create_bash_runner({ shared: { t, seeded: { ...seeded, ...member } } });
+			const revoke = async () => {
+				expect((await asOwner.mutation(api.files_sharing.remove_node_share_grant, share))._nay).toBeUndefined();
+			};
+			if (door === "cat") {
+				const query = runner.runQuery.getMockImplementation()!;
+				let revoked = false;
+				runner.runQuery.mockImplementation(async (ref, args) => {
+					const result = await query(ref, args);
+					if (!revoked && function_name_of(ref) === "files_nodes:read_file_content_from_chunks") {
+						revoked = true;
+						await revoke();
+					}
+					return result;
+				});
+				const result = await runner.run(
+					`cat ${test_db_files_mount}/docs/readme.md; cat ${test_db_files_mount}/docs/readme.md`,
+				);
+				expect(revoked).toBe(true);
+				expect(result.stdout).toBe(readme_seed_content);
+				expect(result.metadata.exitCode).toBe(1);
+			} else {
+				const fs = new bash_DbFilesFs({
+					ctx: runner.ctx,
+					ctxData: runner.ctxData,
+					currentWorkspacePath: test_db_files_mount,
+					allowDbFilesMkdir: false,
+				});
+				if (door === "readFile") expect(await fs.readFile("/docs/readme.md")).toBe(readme_seed_content);
+				else expect(await fs.getEntry("/docs/readme.md")).toMatchObject({ target: { kind: "saved", id: nodeId } });
+				await revoke();
+				if (door === "readFile") await expect(fs.readFile("/docs/readme.md")).rejects.toThrow("ENOENT");
+				else expect(await fs.getEntry("/docs/readme.md")).toBeNull();
+			}
+			expect((await t.run((ctx) => ctx.db.get("organizations_workspaces_users", member.membershipId)))?.active).toBe(
+				true,
+			);
+		},
+	);
 
 	test("cat does not serve stale cached content after a same-call mv", async () => {
 		const runner = await create_bash_runner();
@@ -3300,9 +3488,13 @@ describe("bash_run_command", () => {
 
 	test("reads and searches a folder map written by the metadata tool", async () => {
 		const runner = await create_bash_runner();
-		const tool = ai_chat_tool_create_set_file_metadata(runner.ctx, runner.ctxData);
+		const tool = ai_chat_tool_create_set_file_metadata(runner.ctx, {
+			...runner.ctxData,
+			getThreadId: () => runner.threadId,
+		});
 		const written = await tool.execute?.(
 			{
+				workspace: "current",
 				path: "/docs",
 				set: [
 					{ key: "plugin-name", value: "chitchat" },
@@ -3334,7 +3526,7 @@ describe("bash_run_command", () => {
 		expect(search.stdout).toBe(`${test_db_files_mount}/docs\n`);
 
 		await tool.execute?.(
-			{ path: "/docs", set: [], remove: ["plugin-name", "reviewed"] },
+			{ workspace: "current", path: "/docs", set: [], remove: ["plugin-name", "reviewed"] },
 			{ toolCallId: "remove-folder-metadata", messages: [] },
 		);
 		const empty = await runner.run(`meta get ${test_db_files_mount}/docs --format json`);
@@ -4149,6 +4341,656 @@ describe("bash_run_command", () => {
 	});
 
 	describe("jobs", () => {
+		test("durable Copy warns when suspension drops job tmp writes", async () => {
+			const runner = await create_bash_runner();
+			await runner.run("{ echo scratch > /tmp/copy-scratch.txt; cp docs/readme.md copy.md; echo after; } &");
+			const waiting = await run_job(runner, 1);
+			expect(waiting.job.copy?.phase).toBe("waiting");
+			expect(waiting.job.liveOutput?.stderr ?? "").toContain(
+				"/tmp writes are dropped when a job pauses for Copy: /tmp/copy-scratch.txt",
+			);
+			const transcript = await runner.t.run((ctx) => ctx.db.query("ai_chat_bash_shell_transcripts").collect());
+			expect(transcript.filter((entry) => entry.text.includes("suspended for Copy"))[0]?.text).toContain(
+				"/tmp/copy-scratch.txt",
+			);
+			expect((await runner.run("cat /tmp/copy-scratch.txt")).metadata.exitCode).not.toBe(0);
+		});
+
+		test("durable Copy result consumes the resumed worker output budget", async () => {
+			const runner = await create_bash_runner();
+			// 249,950 spaces plus the redirected "after" line fit the 250,000-byte budget. The Copy
+			// result line (about 140 bytes) does not, so only a charged Copy result makes this fail.
+			await runner.run("{ cp docs/readme.md copy.md; printf '%249950s' x; echo after > after.txt; } &");
+			const waiting = await run_job(runner, 1);
+			if (waiting.job.copy?.phase !== "waiting") throw new Error("Expected waiting Copy");
+			await runner.runQuery(internal.files_transfer.get_for_agent, {
+				membershipId: waiting.membershipId,
+				threadId: waiting.threadId,
+				runId: waiting.job.copy.runId,
+			});
+			const finished = await run_job(runner, 1);
+			expect(finished.result?.metadata.exitCode).not.toBe(0);
+			expect(finished.result?.stderr).toMatch(/output.*limit/i);
+			expect((await runner.run("cat after.txt")).metadata.exitCode).not.toBe(0);
+
+			// Control: the same output without the Copy result fits the budget.
+			await runner.run("{ true; printf '%249950s' x; echo after > control.txt; } &");
+			const control = await run_job(runner, 2);
+			expect(control.result?.metadata.exitCode, control.result?.stderr).toBe(0);
+			expect((await runner.run("cat control.txt")).stdout).toBe("after\n");
+		});
+
+		test.each([
+			"capture_bash_job_copy_scopes",
+			"save_bash_job_copy_checkpoint",
+			"stage_bash_job_copy_page",
+			"seal_bash_job_copy_checkpoint",
+			"start_for_agent",
+			"append_sources_for_agent",
+			"seal_for_agent",
+			"requeue_bash_job_copy",
+		])("durable Copy worker crash after %s never repeats expansion", async (crashAt) => {
+			let workNumber = 0;
+			vi.spyOn(Workpool.prototype, "enqueueAction").mockImplementation(
+				async () => `copy-crash-work-${workNumber++}` as never,
+			);
+			const runner = await create_bash_runner();
+			await runner.run("mkdir copies");
+			await runner.run(
+				`{ cp $(echo once >> count.txt; echo docs/readme.md) ${Array.from({ length: 100 }, () => "docs/readme.md").join(" ")} copies/; echo after > after.txt; } &`,
+			);
+			const queued = await job_row(runner, 1);
+			const mutate = runner.runMutation.getMockImplementation()!;
+			const query = runner.runQuery.getMockImplementation()!;
+			let crashed = false;
+			runner.runMutation.mockImplementation(async (reference, args) => {
+				const result = await mutate(reference, args);
+				if (function_name_of(reference)?.endsWith(`:${crashAt}`)) {
+					crashed = true;
+					throw new Error("worker crashed");
+				}
+				return result;
+			});
+			runner.runQuery.mockImplementation(async (reference, args) => {
+				if (crashed && function_name_of(reference) === "ai_chat_files:read_bash_job_copy_invocation")
+					throw new Error("worker crashed");
+				return await query(reference, args);
+			});
+			await expect(run_job(runner, 1)).rejects.toThrow("worker crashed");
+			runner.runMutation.mockImplementation(mutate);
+			runner.runQuery.mockImplementation(query);
+			const beforeCallback = await job_row(runner, 1);
+			await runner.t.mutation(internal.ai_chat_files.handle_bash_job_complete, {
+				workId: queued.job.workId!,
+				context: { invocationId: queued._id },
+				result: { kind: "failed", error: "worker crashed" },
+			});
+			// A worker lost after its requeue committed is already stale. Its callback must not requeue
+			// or settle the newer worker's continuation.
+			if (crashAt === "requeue_bash_job_copy") expect(await job_row(runner, 1)).toEqual(beforeCallback);
+			const incomplete =
+				crashAt === "capture_bash_job_copy_scopes" ||
+				crashAt === "save_bash_job_copy_checkpoint" ||
+				crashAt === "stage_bash_job_copy_page";
+			if (incomplete) {
+				expect((await job_row(runner, 1)).status).toBe("interrupted");
+				expect(await runner.t.run((ctx) => ctx.db.query("ai_chat_bash_invocation_transfers").collect())).toHaveLength(
+					0,
+				);
+				await run_job(runner, 1);
+				expect((await runner.run("cat after.txt")).metadata.exitCode).not.toBe(0);
+			} else {
+				await run_job(runner, 1);
+				const waiting = await job_row(runner, 1);
+				if (waiting.job.copy?.phase !== "waiting") throw new Error("Expected waiting Copy");
+				await runner.runQuery(internal.files_transfer.get_for_agent, {
+					membershipId: waiting.membershipId,
+					threadId: waiting.threadId,
+					runId: waiting.job.copy.runId,
+				});
+				await run_job(runner, 1);
+				expect((await runner.run("cat after.txt")).stdout).toBe("after\n");
+				expect(await runner.t.run((ctx) => ctx.db.query("ai_chat_bash_invocation_transfers").collect())).toHaveLength(
+					1,
+				);
+			}
+			expect((await runner.run("cat count.txt")).stdout).toBe("once\n");
+		});
+
+		test("durable Copy admission spreads more than 32 source pages over worker slices", async () => {
+			const runner = await create_bash_runner();
+			await runner.run("mkdir copies");
+			// 3,401 sources need 35 pages. One worker appends at most 32 pages, then requeues the job.
+			await runner.run(
+				"{ cp $(echo once >> count.txt; printf 'docs/readme.md\\n%.0s' $(seq 3401)) copies/; echo after > after.txt; } &",
+			);
+
+			const first = await run_job(runner, 1);
+			if (first.job.copy?.phase !== "admitting" || first.job.copy.runId === null)
+				throw new Error("Expected a linked Copy admission");
+			const scope = { membershipId: first.membershipId, threadId: first.threadId, runId: first.job.copy.runId };
+			expect(first.job.workerGeneration).toBe(1);
+			expect(await runner.t.query(internal.files_transfer.get_for_agent, scope)).toMatchObject({
+				step: "uploading",
+				selection: { expectedCount: 3401, count: 3300 },
+			});
+
+			const second = await run_job(runner, 1);
+			expect(second.job.copy).toMatchObject({ phase: "waiting", runId: scope.runId });
+			expect(await runner.t.query(internal.files_transfer.get_for_agent, scope)).toMatchObject({
+				selection: { expectedCount: 3401, count: 3401 },
+			});
+			expect(await runner.t.run((ctx) => ctx.db.query("ai_chat_bash_invocation_transfers").collect())).toHaveLength(1);
+			expect((await runner.run("cat count.txt")).stdout).toBe("once\n");
+		});
+
+		test.each([
+			"none",
+			"save_bash_job_copy_checkpoint",
+			"stage_bash_job_copy_page",
+			"seal_bash_job_copy_checkpoint",
+			"start_for_agent",
+			"append_sources_for_agent",
+			"seal_for_agent",
+			"take_bash_job_copy_result",
+		])("durable plain Copy survives a lost %s reply without replay", async (lostReply) => {
+			const runner = await create_bash_runner();
+			await runner.run("echo source > source.txt; mkdir copies");
+			const original = runner.runMutation.getMockImplementation()!;
+			let lost = false;
+			runner.runMutation.mockImplementation(async (reference, args) => {
+				const result = await original(reference, args);
+				if (!lost && function_name_of(reference)?.endsWith(`:${lostReply}`)) {
+					lost = true;
+					throw new Error("reply lost");
+				}
+				return result;
+			});
+			await runner.run(
+				`{ echo before; cp $(echo expanded >> count.txt; echo source.txt) ${Array.from({ length: 100 }, () => "source.txt").join(" ")} copies/; echo after; } &`,
+			);
+			const waiting = await run_job(runner, 1);
+			expect(waiting.status).toBe("running");
+			expect(waiting.job.copy?.phase).toBe("waiting");
+			expect(waiting.job.liveOutput?.stdout).toBe("before\n");
+			expect((await runner.run("cat count.txt")).stdout).toBe("expanded\n");
+			if (waiting.job.copy?.phase !== "waiting") throw new Error("Expected waiting Copy");
+			await runner.runQuery(internal.files_transfer.get_for_agent, {
+				membershipId: waiting.membershipId,
+				threadId: waiting.threadId,
+				runId: waiting.job.copy.runId,
+			});
+			const finished = await run_job(runner, 1);
+			expect(finished.status).toBe("finished");
+			expect(finished.result?.stdout).toMatch(/^before\nTransfer .*\nafter\n$/);
+			expect((await runner.run("cat count.txt")).stdout).toBe("expanded\n");
+			if (lostReply !== "none") expect(lost).toBe(true);
+		});
+
+		test("durable Copy clears delivery before a sleep and keeps cumulative wait credit", async () => {
+			const runner = await create_bash_runner();
+			await runner.run("echo source > source.txt");
+			await runner.run("{ cp source.txt first.txt; sleep 5; cp source.txt second.txt; echo after; } &");
+			for (const copyNumber of [1, 2]) {
+				const waiting = await run_job(runner, 1);
+				if (waiting.job.copy?.phase !== "waiting") throw new Error("Expected waiting Copy");
+				await runner.runQuery(internal.files_transfer.get_for_agent, {
+					membershipId: waiting.membershipId,
+					threadId: waiting.threadId,
+					runId: waiting.job.copy.runId,
+				});
+				const after = await run_job(runner, 1);
+				expect(after.job.copy).toBeUndefined();
+				if (copyNumber === 1) expect(after.status).toBe("running");
+				else expect(after.result?.stdout).toMatch(/after\n$/);
+			}
+		});
+
+		test.each(["finish", "stop"])(
+			"durable Copy deletes old input pages after the next Copy, a pause and the %s",
+			async (end) => {
+				const runner = await create_bash_runner();
+				const page_commands = async () =>
+					(await runner.t.run((ctx) => ctx.db.query("ai_chat_bash_job_copy_pages").collect())).map(
+						(page) => page.commandNumber,
+					);
+				// The scheduler does not run by itself in these tests. Run the cleanups the doors scheduled.
+				const run_cleanups = async () => {
+					const tasks = await runner.t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect());
+					for (const task of tasks)
+						if (task.name.endsWith("cleanup_bash_job_copy_pages") && task.state.kind === "pending")
+							await runner.t.mutation(internal.ai_chat_files.cleanup_bash_job_copy_pages, task.args[0]);
+				};
+				const finish_copy = async () => {
+					const waiting = await job_row(runner, 1);
+					if (waiting.job.copy?.phase !== "waiting") throw new Error("Expected waiting Copy");
+					await runner.runQuery(internal.files_transfer.get_for_agent, {
+						membershipId: waiting.membershipId,
+						threadId: waiting.threadId,
+						runId: waiting.job.copy.runId,
+					});
+					return waiting.job.copy.commandNumber;
+				};
+				await runner.run(
+					"{ cp docs/readme.md first.md; cp docs/readme.md second.md; sleep 5; cp docs/readme.md third.md; echo after; } &",
+				);
+
+				await run_job(runner, 1);
+				const first = await finish_copy();
+				expect(await page_commands()).toEqual([first]);
+
+				// The second Copy replaces the delivered first one.
+				await run_job(runner, 1);
+				const second = await finish_copy();
+				expect(second).toBeGreaterThan(first);
+				await run_cleanups();
+				expect(await page_commands()).toEqual([second]);
+
+				// The sleep pause clears the delivered second Copy.
+				expect((await run_job(runner, 1)).job.copy).toBeUndefined();
+				await run_cleanups();
+				expect(await page_commands()).toEqual([]);
+
+				await run_job(runner, 1);
+				const third = await job_row(runner, 1);
+				if (third.job.copy?.phase !== "waiting") throw new Error("Expected waiting Copy");
+				expect(await page_commands()).toEqual([third.job.copy.commandNumber]);
+				if (end === "finish") {
+					await finish_copy();
+					expect((await run_job(runner, 1)).result?.stdout).toMatch(/after\n$/);
+				} else {
+					await runner.run("kill 1");
+					await runner.t.mutation(internal.ai_chat_files.handle_bash_job_complete, {
+						workId: third.job.workId!,
+						context: { invocationId: third._id },
+						result: { kind: "canceled" },
+					});
+					expect(await activity_of(runner, 1)).toMatchObject({ status: "canceled" });
+				}
+				await run_cleanups();
+				expect(await page_commands()).toEqual([]);
+			},
+		);
+
+		test.each([
+			["delivers", 60_000],
+			["times out", 5 * 60_000],
+		])("durable Copy %s when delivery queue time crosses the normal job lifetime", async (outcome, queueMs) => {
+			const runner = await create_bash_runner();
+			await runner.run("{ sleep 5; cp docs/readme.md copy.md; echo after; } &");
+			vi.useFakeTimers({ toFake: ["Date"] });
+			try {
+				const createdAt = (await job_row(runner, 1))._creationTime;
+				expect((await run_job(runner, 1)).job.copy).toBeUndefined();
+
+				// Ordinary time before the Copy counts: 3 minutes of allowance are left.
+				vi.setSystemTime(createdAt + 24 * 60 * 60_000 - 3 * 60_000);
+				const waiting = await run_job(runner, 1);
+				if (waiting.job.copy?.phase !== "waiting") throw new Error("Expected waiting Copy");
+				const runId = waiting.job.copy.runId;
+
+				// A 25-hour Copy is excluded up to the producer's finish time only.
+				vi.setSystemTime(Date.now() + 25 * 60 * 60_000);
+				await runner.t.run(async (ctx) => {
+					const activity = await ctx.db
+						.query("activities")
+						.withIndex("by_source_id", (q) => q.eq("source.id", runId))
+						.unique();
+					await ctx.db.patch("activities", activity!._id, { deadlineAt: Date.now() + 60_000, updatedAt: Date.now() });
+				});
+				await runner.runQuery(internal.files_transfer.get_for_agent, {
+					membershipId: waiting.membershipId,
+					threadId: waiting.threadId,
+					runId,
+				});
+
+				// The delivery queue time after that finish counts like ordinary time.
+				vi.setSystemTime(Date.now() + queueMs);
+				const after = await run_job(runner, 1);
+				if (outcome === "delivers") {
+					expect(after.status).toBe("finished");
+					expect(after.result?.stdout).toMatch(/after\n$/);
+				} else {
+					expect(after.status).toBe("interrupted");
+					expect(after.result?.stdout ?? "").not.toContain("after");
+					expect(await activity_of(runner, 1)).toMatchObject({ status: "timed_out" });
+				}
+			} finally {
+				vi.useRealTimers();
+			}
+		});
+
+		test.each(["source", "destination", "chat", "purge", "stop"])(
+			"durable Copy stops before continuation after %s access changes",
+			async (change) => {
+				const t = test_convex();
+				const seeded = await t.run((ctx) =>
+					test_mocks_fill_db_with.membership(ctx, { organizationName: "copy-team", workspaceName: "shared" }),
+				);
+				const runner = await create_bash_runner({ shared: { t, seeded } });
+				const personal = await t.query(internal.ai_chat_workspaces.resolve, {
+					source: {
+						organizationId: seeded.organizationId,
+						workspaceId: seeded.workspaceId,
+						userId: seeded.userId,
+						threadId: runner.threadId,
+						membershipId: seeded.membershipId,
+						membershipLifetime: runner.ctxData.membershipLifetime,
+					},
+					workspace: "personal",
+				});
+				if (personal._nay) throw new Error(personal._nay.message);
+				const home = `/home/cloud-usr/w/${personal._yay.organizationName}/${personal._yay.workspaceName}`;
+				await runner.run(`echo team > source.txt; echo private > ${home}/source.txt`);
+				await runner.run(
+					change === "source"
+						? `{ cp ${home}/source.txt copy.txt; echo after; } &`
+						: `{ cp source.txt ${home}/copy.txt; echo after; } &`,
+				);
+				const waiting = await run_job(runner, 1);
+				if (waiting.job.copy?.phase !== "waiting") throw new Error("Expected waiting Copy");
+				await runner.runQuery(internal.files_transfer.get_for_agent, {
+					membershipId: waiting.membershipId,
+					threadId: waiting.threadId,
+					runId: waiting.job.copy.runId,
+				});
+				if (change === "stop") await runner.run("kill 1");
+				else
+					await t.run(async (ctx) => {
+						if (change === "purge")
+							await ctx.db.patch("organizations_workspaces", personal._yay.workspaceId, {
+								pluginDataPurgeStartedAt: Date.now(),
+							});
+						else
+							await ctx.db.patch(
+								"organizations_workspaces_users",
+								change === "chat" ? seeded.membershipId : personal._yay.membershipId,
+								{ active: false },
+							);
+					});
+				await run_job(runner, 1);
+				const after = await job_row(runner, 1);
+				expect(after.result?.stdout ?? "").not.toContain("after");
+				expect(after.job.copy?.phase).not.toBe("delivering");
+			},
+		);
+
+		test.each([
+			"",
+			"echo after",
+			"set -e; cp source.txt copy.txt && echo logical",
+			"(cp source.txt copy.txt)",
+			"for x in 1; do cp source.txt copy.txt; done",
+			"cp source.txt copy.txt | cat",
+		])("durable Copy keeps empty remainder or excludes compound form %s", async (tail) => {
+			const runner = await create_bash_runner();
+			await runner.run("echo source > source.txt");
+			const plain = tail === "" || tail === "echo after";
+			await runner.run(`{ ${plain ? `cp source.txt copy.txt; ${tail};` : `${tail};`} } &`);
+			const first = await run_job(runner, 1);
+			if (!plain) {
+				expect(first.status).toBe("finished");
+				expect(first.job.copy).toBeUndefined();
+				return;
+			}
+			if (first.job.copy?.phase !== "waiting") throw new Error("Expected waiting Copy");
+			await runner.runQuery(internal.files_transfer.get_for_agent, {
+				membershipId: first.membershipId,
+				threadId: first.threadId,
+				runId: first.job.copy.runId,
+			});
+			const after = await run_job(runner, 1);
+			expect(after.result?.metadata.exitCode).toBe(0);
+			expect(after.result?.stdout.match(/Transfer /g)).toHaveLength(1);
+		});
+
+		test("durable Copy result obeys errexit", async () => {
+			const runner = await create_bash_runner();
+			await runner.run("echo source > source.txt");
+			await runner.run("{ set -e; cp source.txt copy.txt; echo after; } &");
+			const waiting = await run_job(runner, 1);
+			if (waiting.job.copy?.phase !== "waiting") throw new Error("Expected waiting Copy");
+			const runId = waiting.job.copy.runId;
+			await runner.t.run(async (ctx) => {
+				const activity = await ctx.db
+					.query("activities")
+					.withIndex("by_source_id", (q) => q.eq("source.id", runId))
+					.unique();
+				await ctx.db.patch("activities", activity!._id, {
+					status: "failed",
+					finishedAt: Date.now(),
+					errorMessage: "Copy failed",
+				});
+			});
+			const after = await run_job(runner, 1);
+			expect(after.result?.metadata.exitCode).toBe(1);
+			expect(after.result?.stdout).not.toContain("after");
+		});
+
+		test("durable Copy keeps streamed output beyond the live head in the transcript", async () => {
+			const runner = await create_bash_runner();
+			await runner.run("{ seq 1 10000; cp $(echo expansion-warning >&2; echo docs/readme.md) copy.md; echo after; } &");
+			const waiting = await run_job(runner, 1);
+			if (waiting.job.copy?.phase !== "waiting") throw new Error(`Expected waiting Copy: ${waiting.result?.stderr}`);
+			expect(waiting.job.liveOutput?.stdoutTruncated).toBe(true);
+			expect(waiting.job.liveOutput?.stderr).toBe("expansion-warning\n");
+			const entries = await runner.t.run((ctx) => ctx.db.query("ai_chat_bash_shell_transcripts").collect());
+			const pauses = entries.filter((entry) => entry.text.includes("suspended for Copy"));
+			expect(pauses).toHaveLength(1);
+			expect(pauses[0]!.text).toContain("9999\n10000\n");
+			expect(pauses[0]!.text.match(/expansion-warning/g)).toHaveLength(1);
+		});
+
+		test("durable Copy excludes two 25-hour waits without resetting the normal lifetime", async () => {
+			const runner = await create_bash_runner();
+			await runner.run("{ cp docs/readme.md first.md; sleep 5; cp docs/readme.md second.md; sleep 5; echo after; } &");
+			vi.useFakeTimers({ toFake: ["Date"] });
+			try {
+				for (const waitNumber of [1, 2]) {
+					const waiting = await run_job(runner, 1);
+					if (waiting.job.copy?.phase !== "waiting") throw new Error("Expected waiting Copy");
+					const runId = waiting.job.copy.runId;
+					vi.setSystemTime(Date.now() + 25 * 60 * 60_000);
+					await runner.t.run(async (ctx) => {
+						const activity = await ctx.db
+							.query("activities")
+							.withIndex("by_source_id", (q) => q.eq("source.id", runId))
+							.unique();
+						await ctx.db.patch("activities", activity!._id, { deadlineAt: Date.now() + 60_000, updatedAt: Date.now() });
+					});
+					const stillWaiting = await run_job(runner, 1);
+					expect(stillWaiting.job.copy).toEqual(waiting.job.copy);
+					await runner.runQuery(internal.files_transfer.get_for_agent, {
+						membershipId: waiting.membershipId,
+						threadId: waiting.threadId,
+						runId,
+					});
+					const paused = await run_job(runner, 1);
+					expect(paused.status).toBe("running");
+					expect(paused.job.copy).toBeUndefined();
+					expect(paused.job.excludedCopyWaitMs).toBeGreaterThanOrEqual(waitNumber * 25 * 60 * 60_000);
+					vi.setSystemTime(Date.now() + 5_000);
+				}
+				vi.setSystemTime(Date.now() + 25 * 60 * 60_000);
+				const expired = await run_job(runner, 1);
+				expect(expired.status).toBe("interrupted");
+				expect(await activity_of(runner, 1)).toMatchObject({ status: "timed_out" });
+			} finally {
+				vi.useRealTimers();
+			}
+		});
+
+		test.each(["next statements", "errexit"])(
+			"durable Copy delivers a final admission refusal once as the failed cp result (%s)",
+			async (mode) => {
+				let workNumber = 0;
+				vi.spyOn(Workpool.prototype, "enqueueAction").mockImplementation(
+					async () => `refusal-work-${workNumber++}` as never,
+				);
+				const runner = await create_bash_runner();
+				await runner.run(
+					`{ ${mode === "errexit" ? "set -e; " : ""}cp docs/readme.md docs/copy.md; echo "status=$?"; echo after > after.txt; } &`,
+				);
+				const original = runner.runMutation.getMockImplementation()!;
+				let starts = 0;
+				runner.runMutation.mockImplementation(async (reference, args) => {
+					if (function_name_of(reference) === "files_transfer:start_for_agent" && starts++ === 0)
+						// Files renames the destination folder after the input was staged.
+						await runner.t.run(async (ctx) => {
+							const docs = (await ctx.db.query("files_nodes").collect()).find(
+								(node) => node.path === "/docs" && node.archiveOperationId === null,
+							);
+							await ctx.db.patch("files_nodes", docs!._id, { path: "/docs-renamed", name: "docs-renamed" });
+						});
+					return await original(reference, args);
+				});
+				// Run workers like the pool does: a worker that throws gets a failed callback.
+				for (let attempt = 0; attempt < 5 && (await job_row(runner, 1)).status === "running"; attempt++) {
+					const row = await job_row(runner, 1);
+					const error = await run_job(runner, 1).then(
+						() => null,
+						(error: unknown) => String(error),
+					);
+					if (error !== null && (await job_row(runner, 1)).job.workId === row.job.workId)
+						await runner.t.mutation(internal.ai_chat_files.handle_bash_job_complete, {
+							workId: row.job.workId!,
+							context: { invocationId: row._id },
+							result: { kind: "failed", error },
+						});
+				}
+
+				const finished = await job_row(runner, 1);
+				expect(finished.status).toBe("finished");
+				expect(finished.result?.stderr.match(/cp: Destination changed\n/g)).toHaveLength(1);
+				if (mode === "errexit") {
+					expect(finished.result?.metadata.exitCode).toBe(1);
+					expect(finished.result?.stdout).not.toContain("status=");
+					expect((await runner.run("cat after.txt")).metadata.exitCode).not.toBe(0);
+				} else {
+					expect(finished.result?.metadata.exitCode).toBe(0);
+					expect(finished.result?.stdout).toBe("status=1\n");
+					expect((await runner.run("cat after.txt")).stdout).toBe("after\n");
+				}
+				// The suspended worker and the next one each tried to start once. No transfer exists.
+				expect(starts).toBe(2);
+				expect(await runner.t.run((ctx) => ctx.db.query("files_transfer_runs").collect())).toEqual([]);
+			},
+		);
+
+		test("durable Copy waits for a busy lane without calling the rate-limited start", async () => {
+			const runner = await create_bash_runner();
+			await runner.run("echo source > source.txt");
+			// Job 1's Copy holds the transfer lane while it waits.
+			await runner.run("{ cp source.txt first.txt; } &");
+			const holder = await run_job(runner, 1);
+			if (holder.job.copy?.phase !== "waiting") throw new Error("Expected waiting Copy");
+			await runner.run("{ cp source.txt second.txt; echo after; } &");
+			const starts = () => mutation_calls(runner, "files_transfer:start_for_agent");
+			const startsBefore = starts();
+
+			for (let attempt = 0; attempt < 5; attempt++) await run_job(runner, 2);
+			const waiting = await job_row(runner, 2);
+			expect(waiting.job.copy).toMatchObject({ phase: "admitting", sealed: true, runId: null });
+			expect(starts()).toBe(startsBefore);
+
+			// Once the lane is free, the next worker starts the Copy once.
+			await runner.runQuery(internal.files_transfer.get_for_agent, {
+				membershipId: holder.membershipId,
+				threadId: holder.threadId,
+				runId: holder.job.copy.runId,
+			});
+			const admitted = await run_job(runner, 2);
+			expect(admitted.job.copy?.phase).toBe("waiting");
+			expect(starts()).toBe(startsBefore + 1);
+		});
+
+		test("durable Copy ends as canceled when access is lost just before its requeue", async () => {
+			const runner = await create_bash_runner();
+			await runner.run("{ cp docs/readme.md copy.md; echo after > after.txt; } &");
+			const waiting = await run_job(runner, 1);
+			if (waiting.job.copy?.phase !== "waiting") throw new Error("Expected waiting Copy");
+			const runId = waiting.job.copy.runId;
+			const original = runner.runMutation.getMockImplementation()!;
+			runner.runMutation.mockImplementation(async (reference, args) => {
+				// The member is removed after the worker found the Copy still running.
+				if (function_name_of(reference) === "ai_chat_files:requeue_bash_job_copy")
+					await runner.t.run((ctx) =>
+						ctx.db.patch("organizations_workspaces_users", runner.seeded.membershipId, { active: false }),
+					);
+				return await original(reference, args);
+			});
+
+			const after = await run_job(runner, 1);
+			expect(after.status).toBe("interrupted");
+			expect(after.job.copy).toBeUndefined();
+			expect(await activity_of(runner, 1)).toMatchObject({ status: "canceled" });
+			const transfer = await runner.t.run((ctx) =>
+				ctx.db
+					.query("activities")
+					.withIndex("by_source_id", (q) => q.eq("source.id", runId))
+					.unique(),
+			);
+			expect(transfer?.status).not.toBe("running");
+		});
+
+		test("durable Copy saves its checkpoint when the host clock runs ahead of the server", async () => {
+			const runner = await create_bash_runner();
+			await runner.run("{ cp docs/readme.md copy.md; echo after > after.txt; } &");
+			const original = runner.runMutation.getMockImplementation()!;
+			vi.useFakeTimers({ toFake: ["Date"] });
+			let serverNow = 0;
+			let savedDeadlineAt: number | undefined;
+			try {
+				runner.runMutation.mockImplementation(async (reference, args) => {
+					if (function_name_of(reference) !== "ai_chat_files:save_bash_job_copy_checkpoint")
+						return await original(reference, args);
+					// Run the save on a server clock 2 minutes behind the host clock.
+					vi.setSystemTime(Date.now() - 2 * 60_000);
+					serverNow = Date.now();
+					const saved = await original(reference, args);
+					const row = await job_row(runner, 1);
+					if (row.job.copy?.phase === "admitting") savedDeadlineAt = row.job.copy.admissionDeadlineAt;
+					vi.setSystemTime(Date.now() + 2 * 60_000);
+					return saved;
+				});
+
+				await expect(run_job(runner, 1)).resolves.toMatchObject({ job: { copy: { phase: "waiting" } } });
+				// The server sets the admission deadline from its own clock.
+				expect(savedDeadlineAt).toBe(serverNow + 10 * 60_000);
+			} finally {
+				vi.useRealTimers();
+			}
+		});
+
+		test("durable Copy lost delivery worker cannot replay the remaining shell", async () => {
+			const runner = await create_bash_runner();
+			await runner.run("{ cp docs/readme.md copy.md; echo after > after.txt; } &");
+			const waiting = await run_job(runner, 1);
+			if (waiting.job.copy?.phase !== "waiting") throw new Error("Expected waiting Copy");
+			await runner.runQuery(internal.files_transfer.get_for_agent, {
+				membershipId: waiting.membershipId,
+				threadId: waiting.threadId,
+				runId: waiting.job.copy.runId,
+			});
+			const original = runner.runMutation.getMockImplementation()!;
+			runner.runMutation.mockImplementation(async (reference, args) => {
+				const result = await original(reference, args);
+				if (function_name_of(reference) === "ai_chat_files:take_bash_job_copy_result")
+					throw new Error("worker lost after delivery");
+				return result;
+			});
+			await expect(run_job(runner, 1)).rejects.toThrow("worker lost after delivery");
+			runner.runMutation.mockImplementation(original);
+			await runner.t.mutation(internal.ai_chat_files.handle_bash_job_complete, {
+				workId: waiting.job.workId!,
+				context: { invocationId: waiting._id },
+				result: { kind: "failed", error: "worker lost" },
+			});
+			await run_job(runner, 1);
+			expect((await runner.run("cat after.txt")).metadata.exitCode).not.toBe(0);
+			expect(await activity_of(runner, 1)).toMatchObject({ status: "failed" });
+		});
+
 		const activity_of = async (runner: Awaited<ReturnType<typeof create_bash_runner>>, jobNumber: number) => {
 			const row = await job_row(runner, jobNumber);
 			return await runner.t.run((ctx) =>
@@ -4162,7 +5004,7 @@ describe("bash_run_command", () => {
 		// The pool is mocked, so a job runs only when the test runs its worker.
 		const run_job = async (runner: Awaited<ReturnType<typeof create_bash_runner>>, jobNumber: number) => {
 			const row = await job_row(runner, jobNumber);
-			await bash_run_job(runner.ctx, { invocationId: row._id });
+			await bash_run_job(runner.ctx, { invocationId: row._id, workerGeneration: row.job!.workerGeneration });
 			return await job_row(runner, jobNumber);
 		};
 
@@ -4302,32 +5144,37 @@ describe("bash_run_command", () => {
 		});
 
 		test("another member's jobs stay out of this member's list", async () => {
-			const owner = await create_bash_runner();
+			const t = test_convex();
+			const seeded = await t.run((ctx) =>
+				test_mocks_fill_db_with.membership(ctx, { organizationName: "bash-jobs-team", workspaceName: "home" }),
+			);
+			const owner = await create_bash_runner({ shared: { t, seeded } });
 			expect((await owner.run("sleep 60 &")).metadata.exitCode).toBe(0);
-			const member = await owner.t.run(async (ctx) => {
-				const userId = await ctx.db.insert("users", { clerkUserId: "jobs-list-member" });
-				await test_mocks_fill_db_with.plan(ctx, { userId, plan: "Pay As You Go" });
-				const membershipId = await ctx.db.insert("organizations_workspaces_users", {
-					organizationId: owner.seeded.organizationId,
-					workspaceId: owner.seeded.workspaceId,
-					userId,
-					active: true,
-					updatedAt: Date.now(),
-				});
-				await access_control_db_ensure_role_assignment(ctx, {
-					organizationId: owner.seeded.organizationId,
-					workspaceId: owner.seeded.workspaceId,
-					userId,
-					role: "member",
-					now: Date.now(),
-				});
-				return { userId, membershipId };
-			});
-			// The job index carries the user as well as the thread, so a second member on the same
-			// thread sees none of the first member's jobs and cannot name one either.
+			const member = await t.run((ctx) =>
+				test_mocks_fill_db_with.membership(ctx, { organizationName: "personal", workspaceName: "home" }),
+			);
+			const asOwner = t.withIdentity({ issuer: "https://clerk.test", external_id: seeded.userId });
+			expect(
+				(
+					await asOwner.mutation(api.organizations.invite_user_to_organization_workspace, {
+						organizationId: seeded.organizationId,
+						workspaceId: seeded.workspaceId,
+						userIdToAdd: member.userId,
+					})
+				)._nay,
+			).toBeUndefined();
+			const membership = await t.run((ctx) =>
+				ctx.db
+					.query("organizations_workspaces_users")
+					.withIndex("by_workspace_user_active", (q) =>
+						q.eq("workspaceId", seeded.workspaceId).eq("userId", member.userId).eq("active", true),
+					)
+					.unique(),
+			);
+			if (!membership) throw new Error("Expected invited membership");
+			// Each member runs in their own chat and cannot name the other member's jobs.
 			const runner = await create_bash_runner({
-				threadId: owner.threadId,
-				shared: { t: owner.t, seeded: { ...owner.seeded, ...member } },
+				shared: { t, seeded: { ...seeded, userId: member.userId, membershipId: membership._id } },
 			});
 			const listed = await runner.run("jobs -a");
 			expect(listed.metadata.exitCode, listed.stderr).toBe(0);
@@ -4369,7 +5216,7 @@ describe("bash_run_command", () => {
 			const row = await job_row(runner, 1);
 			vi.useFakeTimers();
 			try {
-				const worker = bash_run_job(runner.ctx, { invocationId: row._id });
+				const worker = bash_run_job(runner.ctx, { invocationId: row._id, workerGeneration: row.job!.workerGeneration });
 				// Before the first poll tick nothing is flushed, so the read costs nothing and prints
 				// only the status marker.
 				await vi.advanceTimersByTimeAsync(1_000);
@@ -4452,7 +5299,7 @@ describe("bash_run_command", () => {
 			expect((await runner.run("true")).stderr).toBe("");
 		});
 
-	test("a job cannot change its shell and starts in the live cwd of the &", async () => {
+		test("a job cannot change its shell and starts in the live cwd of the &", async () => {
 			const runner = await create_bash_runner();
 			expect((await runner.run("cd docs; { x=1; cd nested; pwd; } & cd ..")).metadata.exitCode).toBe(0);
 			const row = await job_row(runner, 1);
@@ -4551,6 +5398,7 @@ describe("bash_run_command", () => {
 					const row = await job_row(runner, 1);
 					await runner.t.mutation(internal.ai_chat_files.finish_bash_job, {
 						invocationId: row._id,
+						workId: row.job!.workId!,
 						result: {
 							title: "job",
 							output: "done\n",
@@ -4652,6 +5500,24 @@ describe("bash_run_command", () => {
 			expect(child.result?.stdout).toBe("nested\n");
 		});
 
+		test("an old worker generation cannot run the statements saved by a pause", async () => {
+			const runner = await create_bash_runner();
+			expect((await runner.run("{ echo before; sleep 30; echo after; } &")).metadata.exitCode).toBe(0);
+			const original = await job_row(runner, 1);
+			const paused = await run_job(runner, 1);
+			expect(paused.job?.workerGeneration).toBe(1);
+			const activity = await activity_of(runner, 1);
+			await bash_run_job(runner.ctx, {
+				invocationId: original._id,
+				workerGeneration: original.job!.workerGeneration,
+			});
+			expect(await job_row(runner, 1)).toEqual(paused);
+			expect(await activity_of(runner, 1)).toEqual(activity);
+			const finished = await run_job(runner, 1);
+			expect(finished.result?.stdout).toBe("before\nafter\n");
+			expect(finished.result?.metadata.exitCode).toBe(0);
+		});
+
 		test("pauses before a top-level sleep, keeps its state and cwd, and finishes in a later run", async () => {
 			const runner = await create_bash_runner();
 			const script = "{ x=1; echo before $x; cd docs; sleep 30; x=$((x + 1)); echo after $x; pwd; }";
@@ -4708,7 +5574,7 @@ describe("bash_run_command", () => {
 			vi.useFakeTimers({ toFake: ["Date"] });
 			try {
 				const start = Date.now();
-				const worker = bash_run_job(runner.ctx, { invocationId: row._id });
+				const worker = bash_run_job(runner.ctx, { invocationId: row._id, workerGeneration: row.job!.workerGeneration });
 				// The first statement sleeps on the real clock; meanwhile the run budget runs out.
 				await new Promise((resolve) => setTimeout(resolve, 300));
 				vi.setSystemTime(start + 7 * 60 * 1000);
@@ -4799,16 +5665,15 @@ describe("bash_run_command", () => {
 			const row = await job_row(runner, 1);
 			vi.useFakeTimers({ toFake: ["Date"] });
 			try {
-				// The claim arms a fresh run budget from this moment, so only the job's age can end
-				// this run. A 25-hour-old job is past the 24-hour lifetime.
+				// Claim refuses this old job before running any shell statement.
 				vi.setSystemTime(row._creationTime + 25 * 60 * 60 * 1000);
-				await bash_run_job(runner.ctx, { invocationId: row._id });
+				await bash_run_job(runner.ctx, { invocationId: row._id, workerGeneration: row.job!.workerGeneration });
 			} finally {
 				vi.useRealTimers();
 			}
 			const finished = await job_row(runner, 1);
-			expect(finished.status).toBe("finished");
-			expect(finished.result?.metadata.exitCode).toBe(124);
+			expect(finished.status).toBe("interrupted");
+			expect(finished.result).toBeUndefined();
 			expect(finished.job?.resumeScript).toBeUndefined();
 			expect(await activity_of(runner, 1)).toMatchObject({ status: "timed_out" });
 		});
@@ -4951,7 +5816,7 @@ describe("bash_run_command", () => {
 			const runner = await create_bash_runner();
 			expect((await runner.run("{ sleep 1.2; echo after; } &")).metadata.exitCode).toBe(0);
 			const row = await job_row(runner, 1);
-			const worker = bash_run_job(runner.ctx, { invocationId: row._id });
+			const worker = bash_run_job(runner.ctx, { invocationId: row._id, workerGeneration: row.job!.workerGeneration });
 			await new Promise((resolve) => setTimeout(resolve, 200));
 			expect((await runner.run("kill 1")).metadata.exitCode).toBe(0);
 			// Without the boundary poll `echo after` would run at 1.2 s, well before the 5-second tick.
@@ -5006,7 +5871,7 @@ describe("bash_run_command", () => {
 			const row = await job_row(runner, 1);
 			vi.useFakeTimers();
 			try {
-				const worker = bash_run_job(runner.ctx, { invocationId: row._id });
+				const worker = bash_run_job(runner.ctx, { invocationId: row._id, workerGeneration: row.job!.workerGeneration });
 				await vi.advanceTimersByTimeAsync(1_000);
 				const killed = await runner.run("kill 1; echo after");
 				expect(killed.stdout).toBe("after\n");
@@ -5031,10 +5896,14 @@ describe("bash_run_command", () => {
 		});
 
 		test("an Ask-mode member can kill its own job", async () => {
-			const owner = await create_bash_runner();
+			const t = test_convex();
+			const seeded = await t.run((ctx) =>
+				test_mocks_fill_db_with.membership(ctx, { organizationName: "job-team", workspaceName: "home" }),
+			);
+			const owner = await create_bash_runner({ shared: { t, seeded } });
 			const member = await owner.t.run(async (ctx) => {
 				const userId = await ctx.db.insert("users", { clerkUserId: "ask-kill-member" });
-				await test_mocks_fill_db_with.plan(ctx, { userId, plan: "Pay As You Go" });
+				await test_mocks_fill_db_with.membership(ctx, { userId, organizationName: "personal", workspaceName: "home" });
 				const membershipId = await ctx.db.insert("organizations_workspaces_users", {
 					organizationId: owner.seeded.organizationId,
 					workspaceId: owner.seeded.workspaceId,
@@ -5064,7 +5933,7 @@ describe("bash_run_command", () => {
 			expect(row.job?.allowDbFilesMkdir).toBe(false);
 			vi.useFakeTimers();
 			try {
-				const worker = bash_run_job(runner.ctx, { invocationId: row._id });
+				const worker = bash_run_job(runner.ctx, { invocationId: row._id, workerGeneration: row.job!.workerGeneration });
 				await vi.advanceTimersByTimeAsync(1_000);
 				const killed = await runner.run("kill 1");
 				expect(killed.metadata.exitCode, killed.stderr).toBe(0);
@@ -5082,27 +5951,19 @@ describe("bash_run_command", () => {
 			expect(await activity_of(runner, 1)).toMatchObject({ status: "canceled" });
 		});
 
-		test("a running job stops when its write permission is taken away", async () => {
+		test("a running job stops when its read permission is taken away", async () => {
 			const runner = await create_bash_runner();
 			expect((await runner.run("{ echo before; t=60; sleep $t; } &")).metadata.exitCode).toBe(0);
 			const row = await job_row(runner, 1);
-			// Only an Agent-mode job is checked for `content.write`, so say that out loud here. Without
-			// this the test would go red with a puzzling 124 if the runner's default ever flipped.
 			expect(row.job?.allowDbFilesMkdir).toBe(true);
 			vi.useFakeTimers();
 			try {
-				const worker = bash_run_job(runner.ctx, { invocationId: row._id });
+				const worker = bash_run_job(runner.ctx, { invocationId: row._id, workerGeneration: row.job!.workerGeneration });
 				await vi.advanceTimersByTimeAsync(1_000);
-				// The runner's user created the organization, so they own it, and the owner passes every
-				// permission check. Hand the organization to somebody else and leave the user a role with
-				// no `content.write`. This job runs in Agent mode, so it could still write app files.
-				// The next poll must stop it.
+				// Hand ownership away and remove the role, keeping the membership active.
 				await runner.t.run(async (ctx) => {
 					const otherOwnerId = await ctx.db.insert("users", { clerkUserId: null });
 					await ctx.db.patch("organizations", runner.seeded.organizationId, { ownerUserId: otherOwnerId });
-					// `ensure` returns an existing assignment unchanged, so patch the role as well. A user
-					// who already held a `member` row would otherwise keep `content.write`, and this test
-					// would pass without ever taking the permission away.
 					const assignmentId = await access_control_db_ensure_role_assignment(ctx, {
 						organizationId: runner.seeded.organizationId,
 						workspaceId: runner.seeded.workspaceId,
@@ -5110,7 +5971,7 @@ describe("bash_run_command", () => {
 						role: "member",
 						now: Date.now(),
 					});
-					await ctx.db.patch("access_control_role_assignments", assignmentId, { role: "viewer" });
+					await ctx.db.delete("access_control_role_assignments", assignmentId);
 				});
 				await vi.advanceTimersByTimeAsync(10_000);
 				// Run out the job's whole 8-minute budget too. The poll has already stopped the job by now.
@@ -5126,53 +5987,58 @@ describe("bash_run_command", () => {
 			expect(await activity_of(runner, 1)).toMatchObject({ status: "canceled" });
 		});
 
-		test("an Ask-mode job keeps running when its write permission is taken away", async () => {
-			const runner = await create_bash_runner({ allowDbFilesMkdir: false });
-			expect((await runner.run("{ echo before; t=600; sleep $t; } &")).metadata.exitCode).toBe(0);
-			const row = await job_row(runner, 1);
-			expect(row.job?.allowDbFilesMkdir).toBe(false);
-			// Only the poll can stop a job, so count its turns to prove it really ran.
-			const poll_count = () =>
-				runner.runQuery.mock.calls.filter(([ref]) => function_name_of(ref) === "ai_chat_files:poll_bash_job").length;
-			vi.useFakeTimers();
-			try {
-				const worker = bash_run_job(runner.ctx, { invocationId: row._id });
-				await vi.advanceTimersByTimeAsync(1_000);
-				const pollsBeforeHandover = poll_count();
-				// The same handover as the Agent-mode test above. An Ask-mode job cannot write app files,
-				// so its poll asks for read only and must leave this job alone.
-				await runner.t.run(async (ctx) => {
-					const otherOwnerId = await ctx.db.insert("users", { clerkUserId: null });
-					await ctx.db.patch("organizations", runner.seeded.organizationId, { ownerUserId: otherOwnerId });
-					// `ensure` returns an existing assignment unchanged, so patch the role as well. A user
-					// who already held a `member` row would otherwise keep `content.write`, and this test
-					// would pass without ever taking the permission away.
-					const assignmentId = await access_control_db_ensure_role_assignment(ctx, {
-						organizationId: runner.seeded.organizationId,
-						workspaceId: runner.seeded.workspaceId,
-						userId: runner.seeded.userId,
-						role: "member",
-						now: Date.now(),
+		test.each([false, true])(
+			"a job keeps running after write permission loss (agent=%s)",
+			async (allowDbFilesMkdir) => {
+				const runner = await create_bash_runner({ allowDbFilesMkdir });
+				expect((await runner.run("{ echo before; t=600; sleep $t; } &")).metadata.exitCode).toBe(0);
+				const row = await job_row(runner, 1);
+				expect(row.job?.allowDbFilesMkdir).toBe(allowDbFilesMkdir);
+				// Only the poll can stop a job, so count its turns to prove it really ran.
+				const poll_count = () =>
+					runner.runQuery.mock.calls.filter(([ref]) => function_name_of(ref) === "ai_chat_files:poll_bash_job").length;
+				vi.useFakeTimers();
+				try {
+					const worker = bash_run_job(runner.ctx, {
+						invocationId: row._id,
+						workerGeneration: row.job!.workerGeneration,
 					});
-					await ctx.db.patch("access_control_role_assignments", assignmentId, { role: "viewer" });
-				});
-				await vi.advanceTimersByTimeAsync(15_000);
-				// Count the polls that ran after the handover. Nothing else in this test would notice a
-				// handover that did not take, and the exit code below reads 124 either way.
-				expect(poll_count()).toBeGreaterThan(pollsBeforeHandover);
-				// The job's own `sleep` runs on the real clock, because just-bash keeps the `setTimeout` it
-				// captured when the module loaded and no fake advance can move it. So let the job's
-				// deadline end it instead of waiting for the sleep. A poll that asked for write would have
-				// stopped the job at 5 seconds and the exit code below would read 143.
-				await vi.advanceTimersByTimeAsync(8 * 60 * 1000);
-				await worker;
-			} finally {
-				vi.useRealTimers();
-			}
-			const finished = await job_row(runner, 1);
-			expect(finished.result).toMatchObject({ stdout: "before\n", metadata: { exitCode: 124 } });
-			expect(await activity_of(runner, 1)).toMatchObject({ status: "timed_out" });
-		});
+					await vi.advanceTimersByTimeAsync(1_000);
+					const pollsBeforeHandover = poll_count();
+					// Both modes need source read access. File writes check their own destination.
+					await runner.t.run(async (ctx) => {
+						const otherOwnerId = await ctx.db.insert("users", { clerkUserId: null });
+						await ctx.db.patch("organizations", runner.seeded.organizationId, { ownerUserId: otherOwnerId });
+						// `ensure` returns an existing assignment unchanged, so patch the role as well. A user
+						// who already held a `member` role-assignment doc would otherwise keep `content.write`,
+						// and this test would pass without ever taking the permission away.
+						const assignmentId = await access_control_db_ensure_role_assignment(ctx, {
+							organizationId: runner.seeded.organizationId,
+							workspaceId: runner.seeded.workspaceId,
+							userId: runner.seeded.userId,
+							role: "member",
+							now: Date.now(),
+						});
+						await ctx.db.patch("access_control_role_assignments", assignmentId, { role: "viewer" });
+					});
+					await vi.advanceTimersByTimeAsync(15_000);
+					// Count the polls that ran after the handover. Nothing else in this test would notice a
+					// handover that did not take, and the exit code below reads 124 either way.
+					expect(poll_count()).toBeGreaterThan(pollsBeforeHandover);
+					// The job's own `sleep` runs on the real clock, because just-bash keeps the `setTimeout` it
+					// captured when the module loaded and no fake advance can move it. So let the job's
+					// deadline end it instead of waiting for the sleep. A poll that asked for write would have
+					// stopped the job at 5 seconds and the exit code below would read 143.
+					await vi.advanceTimersByTimeAsync(8 * 60 * 1000);
+					await worker;
+				} finally {
+					vi.useRealTimers();
+				}
+				const finished = await job_row(runner, 1);
+				expect(finished.result).toMatchObject({ stdout: "before\n", metadata: { exitCode: 124 } });
+				expect(await activity_of(runner, 1)).toMatchObject({ status: "timed_out" });
+			},
+		);
 
 		test("a job that uses its whole budget keeps its output and reports 124", async () => {
 			const runner = await create_bash_runner();
@@ -5180,7 +6046,7 @@ describe("bash_run_command", () => {
 			const row = await job_row(runner, 1);
 			vi.useFakeTimers();
 			try {
-				const worker = bash_run_job(runner.ctx, { invocationId: row._id });
+				const worker = bash_run_job(runner.ctx, { invocationId: row._id, workerGeneration: row.job!.workerGeneration });
 				await vi.advanceTimersByTimeAsync(8 * 60 * 1000);
 				await worker;
 			} finally {
@@ -5256,7 +6122,7 @@ describe("bash_run_command", () => {
 				// report the job's own exit code here; without it `wait` would report 3.
 				const waiting = runner.run("wait -t 20 1");
 				while (wait_lists() === 0) await vi.advanceTimersByTimeAsync(100);
-				const worker = bash_run_job(runner.ctx, { invocationId: row._id });
+				const worker = bash_run_job(runner.ctx, { invocationId: row._id, workerGeneration: row.job!.workerGeneration });
 				await vi.advanceTimersByTimeAsync(5_000);
 				await worker;
 				// Run out the whole `-t` bound too. `wait` has already returned by now, and a `wait`
@@ -5275,7 +6141,7 @@ describe("bash_run_command", () => {
 			const row = await job_row(runner, 1);
 			vi.useFakeTimers();
 			try {
-				const worker = bash_run_job(runner.ctx, { invocationId: row._id });
+				const worker = bash_run_job(runner.ctx, { invocationId: row._id, workerGeneration: row.job!.workerGeneration });
 				await vi.advanceTimersByTimeAsync(1_000);
 				// Somebody else marked the row interrupted while this worker is still alive. That is a
 				// deadline, not a Stop, so the poll must abort with the deadline reason.
@@ -5401,7 +6267,7 @@ describe("bash_run_command", () => {
 			expect(result.metadata.exitCode, result.stderr).toBe(0);
 			expect(result.stdout).toBe(`${test_db_files_mount}/docs/readme.md\n`);
 			expect(result.stderr).toBe("");
-			expect(result.metadata.observedPaths).toEqual(["/docs/readme.md"]);
+			expect(result.metadata.observedPaths).toEqual([{ workspace: "current", path: "/docs/readme.md" }]);
 			const queries = runner.runQuery.mock.calls.map(([ref]) => function_name_of(ref));
 			expect(queries).toContain("files_nodes:get_path_by_id");
 			expect(queries.some((name) => name?.startsWith("files_nodes:list"))).toBe(false);
@@ -5438,7 +6304,7 @@ describe("bash_run_command", () => {
 				const result = await runner.run(`resolve '${reference}'`);
 				expect(result.metadata.exitCode, result.stderr).toBe(0);
 				expect(result.stdout).toBe(`${test_db_files_mount}${path}\n`);
-				expect(result.metadata.observedPaths).toEqual([path]);
+				expect(result.metadata.observedPaths).toEqual([{ workspace: "current", path }]);
 			}
 			expect(fetch).not.toHaveBeenCalled();
 		});
@@ -5562,9 +6428,7 @@ describe("bash_run_command", () => {
 			async (allowDbFilesMkdir) => {
 				const runner = await create_bash_runner({ allowDbFilesMkdir });
 				const nodeId = await get_seeded_node_id(runner, "/docs/readme.md");
-				await runner.t.run((ctx) =>
-					ctx.db.patch("files_nodes", nodeId, { writePolicy: { mode: "read_only" } }),
-				);
+				await runner.t.run((ctx) => ctx.db.patch("files_nodes", nodeId, { writePolicy: { mode: "read_only" } }));
 
 				const result = await runner.run(`cd /tmp && resolve '${nodeId}'`);
 
@@ -5588,7 +6452,7 @@ describe("bash_run_command", () => {
 			expect(read.stdout).toBe("space marker\n");
 			expect(nested.metadata.exitCode, nested.stderr).toBe(0);
 			expect(nested.stdout).toBe(`${test_db_files_mount}/docs/Space name.md\n`);
-			expect(nested.metadata.observedPaths).toEqual(["/docs/Space name.md"]);
+			expect(nested.metadata.observedPaths).toEqual([{ workspace: "current", path: "/docs/Space name.md" }]);
 		});
 
 		test("sees chained moves in the same call and follows discard and accept", async () => {
@@ -5631,7 +6495,7 @@ describe("bash_run_command", () => {
 			expect(folder.stdout).toBe(`${test_db_files_mount}/reports/notes\n`);
 			expect(child.metadata.exitCode, child.stderr).toBe(0);
 			expect(child.stdout).toBe(`${test_db_files_mount}/reports/notes/deep.md\n`);
-			expect(child.metadata.observedPaths).toEqual(["/reports/notes/deep.md"]);
+			expect(child.metadata.observedPaths).toEqual([{ workspace: "current", path: "/reports/notes/deep.md" }]);
 		});
 
 		test("keeps a saved path URL attached to its original node during a pending swap", async () => {
@@ -5649,7 +6513,7 @@ describe("bash_run_command", () => {
 
 			expect(result.metadata.exitCode, result.stderr).toBe(0);
 			expect(result.stdout).toBe(`${test_db_files_mount}/reports/summary.md\n`);
-			expect(result.metadata.observedPaths).toEqual(["/reports/summary.md"]);
+			expect(result.metadata.observedPaths).toEqual([{ workspace: "current", path: "/reports/summary.md" }]);
 			expect((await runner.run(`cat '${result.stdout.trimEnd()}'`)).stdout).toBe("zeta\nalpha\nALPHA\n");
 		});
 
@@ -5826,10 +6690,10 @@ describe("bash_run_command", () => {
 		const read = await run(`cat ${test_db_files_mount}/reports/summary.md`);
 		const listed = await run(`ls ${test_db_files_mount}/reports`);
 
-		expect(read.metadata.observedPaths).toContain("/reports/summary.md");
-		expect(read.metadata.observedPaths).not.toContain("/docs");
-		expect(listed.metadata.observedPaths).toContain("/reports");
-		expect(listed.metadata.observedPaths).not.toContain("/reports/summary.md");
+		expect(read.metadata.observedPaths).toContainEqual({ workspace: "current", path: "/reports/summary.md" });
+		expect(read.metadata.observedPaths).not.toContainEqual({ workspace: "current", path: "/docs" });
+		expect(listed.metadata.observedPaths).toContainEqual({ workspace: "current", path: "/reports" });
+		expect(listed.metadata.observedPaths).not.toContainEqual({ workspace: "current", path: "/reports/summary.md" });
 	});
 
 	test.each([
@@ -5843,8 +6707,8 @@ describe("bash_run_command", () => {
 
 		expect(result.metadata.exitCode).toBe(0);
 		expect(result.stdout).toBe("done\n");
-		expect(result.metadata.observedPaths).toContain("/docs/readme.md");
-		expect(result.metadata.observedPaths).not.toContain("/reports/missing.md");
+		expect(result.metadata.observedPaths).toContainEqual({ workspace: "current", path: "/docs/readme.md" });
+		expect(result.metadata.observedPaths).not.toContainEqual({ workspace: "current", path: "/reports/missing.md" });
 	});
 
 	test("follows byte-limited pages without losing file lines", async () => {
@@ -7827,11 +8691,14 @@ describe("bash_run_command", () => {
 			"printf '%s\\n' '---' 'status: draft' '---' 'privatemetadataword' > private-meta/note.md",
 		);
 		expect(written.metadata.exitCode).toBe(0);
-		const tool = ai_chat_tool_create_set_file_metadata(runner.ctx, runner.ctxData);
+		const tool = ai_chat_tool_create_set_file_metadata(runner.ctx, {
+			...runner.ctxData,
+			getThreadId: () => runner.threadId,
+		});
 		for (const path of ["/private-meta", "/private-meta/note.md"]) {
 			expect(
 				await tool.execute?.(
-					{ path, set: [{ key: "source", value: "draft-copy" }], remove: [] },
+					{ workspace: "current", path, set: [{ key: "source", value: "draft-copy" }], remove: [] },
 					{ toolCallId: `metadata-${path}`, messages: [] },
 				),
 			).toMatchObject({ metadata: { path } });
@@ -8014,7 +8881,7 @@ describe("bash_run_command", () => {
 				});
 				await expect(
 					edit.execute?.(
-						{ path: filePath, oldString: "old", newString: "new", replaceAll: false },
+						{ workspace: "current", path: filePath, oldString: "old", newString: "new", replaceAll: false },
 						{ toolCallId: "new-family", messages: [] },
 					),
 				).resolves.toMatchObject({ metadata: { pendingUpdateId: expect.any(String), matches: 1 } });
@@ -8101,7 +8968,13 @@ describe("bash_run_command", () => {
 			const edit = ai_chat_tool_create_edit_file(runner.ctx, { ...runner.ctxData, getThreadId: () => runner.threadId });
 			await expect(
 				edit.execute?.(
-					{ path: filePath, oldString: "third: old", newString: "third: tool", replaceAll: false },
+					{
+						workspace: "current",
+						path: filePath,
+						oldString: "third: old",
+						newString: "third: tool",
+						replaceAll: false,
+					},
 					{ toolCallId: "preflight-race", messages: [] },
 				),
 			).resolves.toMatchObject({ metadata: { pendingUpdateId: expect.any(String), matches: 1 } });
@@ -8164,7 +9037,7 @@ describe("bash_run_command", () => {
 				});
 				await expect(
 					edit.execute?.(
-						{ path: filePath, oldString: "old", newString: "new", replaceAll: false },
+						{ workspace: "current", path: filePath, oldString: "old", newString: "new", replaceAll: false },
 						{ toolCallId: "stored-type", messages: [] },
 					),
 				).rejects.toThrow(message);
@@ -8298,7 +9171,13 @@ describe("bash_run_command", () => {
 				});
 				await expect(
 					tool.execute?.(
-						{ path: filePath, oldString: "third: old", newString: "third: tool", replaceAll: false },
+						{
+							workspace: "current",
+							path: filePath,
+							oldString: "third: old",
+							newString: "third: tool",
+							replaceAll: false,
+						},
 						{ toolCallId: "read-race", messages: [] },
 					),
 				).resolves.toMatchObject({ metadata: { pendingUpdateId: expect.any(String), matches: 1 } });
@@ -8650,7 +9529,13 @@ describe("bash_run_command", () => {
 	test.each(["cp folder", "cp file", "write", "mkdir"] as const)(
 		"%s refuses a hidden special-name target without changing visible siblings",
 		async (door) => {
+			const test_db_files_mount = "/home/cloud-usr/w/literal-team/home";
+			const t = test_convex();
+			const seeded = await t.run((ctx) =>
+				test_mocks_fill_db_with.membership(ctx, { organizationName: "literal-team", workspaceName: "home" }),
+			);
 			const owner = await create_bash_runner({
+				shared: { t, seeded },
 				extraFiles: [
 					{ path: "/templates/skill.md", content: "Source text\n", withRealYjsSnapshot: true },
 					{ path: "/destination/skill.md", content: "Hidden legacy text\n", withRealYjsSnapshot: true },
@@ -8664,7 +9549,7 @@ describe("bash_run_command", () => {
 			const hiddenId = await get_seeded_node_id(owner, hiddenPath);
 			const member = await owner.t.run(async (ctx) => {
 				const userId = await ctx.db.insert("users", { clerkUserId: "literal-member" });
-				await test_mocks_fill_db_with.plan(ctx, { userId, plan: "Pay As You Go" });
+				await test_mocks_fill_db_with.membership(ctx, { userId, organizationName: "personal", workspaceName: "home" });
 				const membershipId = await ctx.db.insert("organizations_workspaces_users", {
 					organizationId: owner.seeded.organizationId,
 					workspaceId: owner.seeded.workspaceId,
@@ -9801,9 +10686,7 @@ describe("bash_run_command", () => {
 		const savedOverId = await get_seeded_node_id(runner, "/data/settings.yaml");
 
 		// Lock: the copy is refused before anything is staged.
-		await runner.t.run((ctx) =>
-			ctx.db.patch("files_nodes", lockedId, { writePolicy: { mode: "read_only" } }),
-		);
+		await runner.t.run((ctx) => ctx.db.patch("files_nodes", lockedId, { writePolicy: { mode: "read_only" } }));
 		const locked = await runner.run(`cp ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/data/locked.yaml`);
 		expect(locked.metadata.exitCode).not.toBe(0);
 		expect(locked.stderr).toContain("read-only");
@@ -10853,13 +11736,19 @@ describe("bash_run_command", () => {
 	});
 
 	test("a failed cp leaves an existing target and another member's draft unchanged", async () => {
+		const test_db_files_mount = "/home/cloud-usr/w/copy-team/home";
+		const t = test_convex();
+		const seeded = await t.run((ctx) =>
+			test_mocks_fill_db_with.membership(ctx, { organizationName: "copy-team", workspaceName: "home" }),
+		);
 		const runner = await create_bash_runner({
-			extraFiles: [{ path: "/docs/copy-target.md", content: "saved target\n" }],
+			shared: { t, seeded },
+			extraFiles: [...default_organization_files, { path: "/docs/copy-target.md", content: "saved target\n" }],
 		});
 		const targetId = await get_seeded_node_id(runner, "/docs/copy-target.md");
 		const member = await runner.t.run(async (ctx) => {
 			const userId = await ctx.db.insert("users", { clerkUserId: "copy-failure-member" });
-			await test_mocks_fill_db_with.plan(ctx, { userId, plan: "Pay As You Go" });
+			await test_mocks_fill_db_with.membership(ctx, { userId, organizationName: "personal", workspaceName: "home" });
 			const membershipId = await ctx.db.insert("organizations_workspaces_users", {
 				organizationId: runner.seeded.organizationId,
 				workspaceId: runner.seeded.workspaceId,
@@ -11765,7 +12654,7 @@ describe("bash_run_command", () => {
 			// The worker builds its own filesystem, so it must fetch the mount list itself. Without
 			// that query `/.mounts` is empty inside the job even though the launching call saw it.
 			const row = await job_row(runner, 1);
-			await bash_run_job(runner.ctx, { invocationId: row._id });
+			await bash_run_job(runner.ctx, { invocationId: row._id, workerGeneration: row.job!.workerGeneration });
 
 			const finished = await job_row(runner, 1);
 			expect(finished.result?.metadata.exitCode, finished.result?.stderr).toBe(0);
@@ -11862,7 +12751,7 @@ describe("bash_run_command", () => {
 			for (const nodeId of [tenantId, reserved!._id]) {
 				const result = await run(`resolve '${nodeId}'`);
 				expect(result.exitCode).toBe(1);
-				expect(result.output).toContain("unavailable in the current workspace");
+				expect(result.output).toContain("unavailable in this chat's workspaces");
 				expect(result.output).not.toContain("/docs/readme.md");
 				expect(result.output).not.toContain("dist/worker.js");
 			}
@@ -12459,7 +13348,7 @@ describe("bash_run_command", () => {
 			// The worker builds its own filesystem, so it must fetch the installed plugins itself.
 			// Without that query `/.plugins` is empty inside the job.
 			const row = await job_row(runner, 1);
-			await bash_run_job(runner.ctx, { invocationId: row._id });
+			await bash_run_job(runner.ctx, { invocationId: row._id, workerGeneration: row.job!.workerGeneration });
 
 			const finished = await job_row(runner, 1);
 			expect(finished.result?.metadata.exitCode, finished.result?.stderr).toBe(0);

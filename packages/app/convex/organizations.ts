@@ -3,6 +3,7 @@ import { doc } from "convex-helpers/validators";
 import { internal } from "./_generated/api.js";
 import { access_control_changes_db_record } from "./access_control_changes.ts";
 import { organizations_membership_lifetimes_db_record } from "./organizations_membership_lifetimes.ts";
+import { files_media_validation_db_advance_version } from "./files_media_validation.ts";
 import {
 	internalMutation,
 	internalQuery,
@@ -71,6 +72,9 @@ async function organizations_db_drain_member_direct_grants_batch(
 		)
 		.take(ORGANIZATION_MEMBER_GRANT_DRAIN_BATCH_SIZE);
 	await Promise.all(grants.map((grant) => ctx.db.delete("access_control_permission_grants", grant._id)));
+	if (grants.some((grant) => grant.resourceKind === "file")) {
+		await files_media_validation_db_advance_version(ctx, { organizationId: args.organizationId, workspaceId: null });
+	}
 
 	const scopeCleanupPairs = plugins_data_db_get_scope_cleanup_pairs(ctx, grants);
 	if (scopeCleanupPairs.length > 0) {
@@ -1556,7 +1560,14 @@ export const remove_user_from_organization = mutation({
 					q.eq("organizationId", organization._id).eq("userId", args.userIdToRemove),
 				)
 				.collect()
-				.then((docs) => Promise.all(docs.map((doc) => ctx.db.delete("access_control_role_assignments", doc._id)))),
+				.then(async (docs) => {
+					await Promise.all(docs.map((doc) => ctx.db.delete("access_control_role_assignments", doc._id)));
+					if (docs.length > 0)
+						await files_media_validation_db_advance_version(ctx, {
+							organizationId: organization._id,
+							workspaceId: null,
+						});
+				}),
 		]);
 
 		await organizations_membership_lifetimes_db_record(
@@ -2070,6 +2081,10 @@ export const delete_organization = mutation({
 								await ctx.db.patch("organizations_workspaces", workspace._id, {
 									pluginDataPurgeStartedAt: now,
 								});
+								await files_media_validation_db_advance_version(ctx, {
+									organizationId: organization._id,
+									workspaceId: workspace._id,
+								});
 							}
 							const workspaceUsers = await ctx.db
 								.query("organizations_workspaces_users")
@@ -2099,6 +2114,7 @@ export const delete_organization = mutation({
 				event: { kind: "revoked", reason: "organization_deleted" },
 			},
 		]);
+		await files_media_validation_db_advance_version(ctx, { organizationId: organization._id, workspaceId: null });
 		const affectedUserIds = new Set<Id<"users">>(userIdsPerWorkspace.flat());
 
 		const quota = await quotas_db_get(ctx, {
@@ -2272,12 +2288,23 @@ export const delete_workspace = mutation({
 					q.eq("organizationId", organization._id).eq("workspaceId", workspace._id),
 				)
 				.collect()
-				.then((docs) => Promise.all(docs.map((doc) => ctx.db.delete("access_control_role_assignments", doc._id)))),
+				.then(async (docs) => {
+					await Promise.all(docs.map((doc) => ctx.db.delete("access_control_role_assignments", doc._id)));
+					if (docs.length > 0)
+						await files_media_validation_db_advance_version(ctx, {
+							organizationId: organization._id,
+							workspaceId: null,
+						});
+				}),
 		]);
 
 		// The missing workspace and memberships revoke access now.
 		// Grant counts grow with file shares, so the worker drains them in batches.
 		await ctx.db.delete("organizations_workspaces", workspace._id);
+		await files_media_validation_db_advance_version(ctx, {
+			organizationId: organization._id,
+			workspaceId: workspace._id,
+		});
 		await access_control_changes_db_record(ctx, [
 			{
 				scope: { kind: "workspace", organizationId: organization._id, workspaceId: workspace._id },

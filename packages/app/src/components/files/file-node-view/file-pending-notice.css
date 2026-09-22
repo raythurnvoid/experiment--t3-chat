@@ -1,0 +1,12 @@
+@layer components {
+	.FilePendingNotice {
+		padding: 12px 16px;
+		font-size: 0.875rem;
+		overflow-wrap: anywhere;
+		border-bottom: 1px solid var(--color-base-1-07);
+	}
+
+	.FilePendingNotice p {
+		margin: 0 0 8px;
+	}
+}

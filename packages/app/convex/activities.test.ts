@@ -43,9 +43,22 @@ async function create_transfer_activity() {
 		requestId: "copy-activity",
 		sourceIds: [source._yay.nodeId],
 		kind: "copy",
+		expectedSourceCount: 1,
 		targetParentId: files_ROOT_ID,
 	});
 	if (started._nay) throw new Error(started._nay.message);
+	expect(
+		await asMember.mutation(api.files_transfer.seal, {
+			membershipId: member.membershipId,
+			runId: started._yay.runId,
+		}),
+	).toEqual({ _yay: null });
+	for (let step = 0; step < 12; step++) {
+		await t.mutation(internal.files_transfer.advance, { runId: started._yay.runId });
+		const run = await t.run((ctx) => ctx.db.get("files_transfer_runs", started._yay.runId));
+		if (run?.step === "discover") break;
+	}
+	expect(await t.run((ctx) => ctx.db.query("files_transfer_items").collect())).toHaveLength(1);
 	const activity = await t.run((ctx) =>
 		ctx.db
 			.query("activities")
@@ -290,6 +303,12 @@ describe("cleanup_history", () => {
 			done: true,
 		});
 		expect(await t.run((ctx) => ctx.db.get("activities", activity._id))).toEqual(finished);
+		// Selection docs drain before the work items and their Activity.
+		expect(await t.mutation(internal.activities.cleanup_history, { _test_now: finished.expiresAt })).toEqual({
+			deletedCount: 1,
+			done: false,
+		});
+		expect(await t.run((ctx) => ctx.db.query("files_transfer_selection_items").collect())).toEqual([]);
 		expect(await t.mutation(internal.activities.cleanup_history, { _test_now: finished.expiresAt })).toEqual({
 			deletedCount: 3,
 			done: true,

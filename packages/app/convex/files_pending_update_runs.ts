@@ -17,6 +17,7 @@ import {
 	internalQuery,
 	mutation,
 	query,
+	type ActionCtx,
 	type MutationCtx,
 	type QueryCtx,
 } from "./_generated/server.js";
@@ -41,6 +42,7 @@ import app_convex_schema, {
 import {
 	files_pending_nodes_db_fence_discard,
 	files_pending_nodes_db_get_ancestry,
+	files_pending_nodes_db_resolve_read_target,
 	files_pending_nodes_db_resolve_saved_parent,
 } from "./files_pending_nodes.ts";
 import {
@@ -50,14 +52,32 @@ import {
 	files_pending_updates_db_discard_saved,
 	files_pending_update_db_settle_move_row,
 	files_pending_updates_db_apply_archive,
+	type get_file_pending_update_state_page_internal_Result,
 } from "./files_pending_updates.ts";
 import { files_nodes_db_apply_move, files_nodes_db_preflight_move } from "./files_nodes.ts";
-import { files_db_get_pending_update } from "../server/files.ts";
+import { files_db_get_pending_update, files_pending_update_yjs_state_digest } from "../server/files.ts";
 import { path_join, server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import { crypto_sha256_hex } from "../server/crypto-utils.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
+import { files_MAX_TEXT_CONTENT_BYTES, files_MAX_YJS_RECONSTRUCTED_STATE_BYTES } from "../shared/files.ts";
+import { files_yjs_doc_create_from_array_buffer_update } from "../shared/files-yjs.ts";
+import { files_headless_tiptap_editor_create, files_yjs_doc_get_text } from "../shared/files-tiptap.ts";
+import { files_media_parse_src } from "../shared/files-media.ts";
 import { billing_db_check_credits, billing_pick_billed_user_id } from "./billing_db.ts";
+import { r2_fetch_object_from_bucket } from "./r2_client.ts";
+import { files_visible_db_create_reader } from "./files_visible.ts";
+import {
+	files_pending_media_action_validate,
+	files_pending_media_db_validate_prepared,
+	type files_pending_media_ValidatedSave,
+} from "./files_pending_media.ts";
+import {
+	files_pending_holds_db_acquire,
+	files_pending_holds_db_release,
+	files_pending_holds_db_finish,
+	files_pending_holds_db_release_producer_batch,
+} from "./files_pending_holds.ts";
 
 export const experimental_reuseContext = true;
 
@@ -69,6 +89,16 @@ const PLAN_PAGE_SIZE = 8;
 const ATTEMPT_TIMEOUT_MS = 5 * 60 * 1000;
 const MAX_ATTEMPTS = 3;
 
+function is_independent_copy(proposal: Doc<"files_pending_updates">) {
+	return Boolean(
+		proposal.copiedFrom &&
+			!proposal.pendingMove &&
+			!proposal.pendingArchive &&
+			!proposal.preparation &&
+			(proposal.target.kind === "private" ? proposal.createIntent : proposal.pendingReplacement),
+	);
+}
+
 // Use the transfer component so Copy and review preparation share the same two slots.
 const files_review_workpool = new Workpool(components.files_transfer_workpool, {
 	maxParallelism: 2,
@@ -78,6 +108,13 @@ const files_review_workpool = new Workpool(components.files_transfer_workpool, {
 function refuse_unit(code: string, message: string): never {
 	// Throwing rolls back private publication, structural changes, billing, and receipts together.
 	throw convex_error({ message, data: { code } });
+}
+
+/**
+ * Add ids to the run's list of unselected changes to review. Keep ids that earlier steps already recorded.
+ */
+function merge_needs_review_ids(run: Doc<"files_pending_update_runs">, ids: Id<"files_pending_updates">[]) {
+	return [...new Set([...run.needsReviewIds, ...ids])].slice(0, 20);
 }
 
 /**
@@ -480,11 +517,31 @@ async function db_get_planning_run(
 		return Result({ _nay: { name: "timed_out", message: "This review has expired." } });
 	if (!(await db_get_run_membership(ctx, run)))
 		return Result({ _nay: { name: "permission_denied", message: "This review is no longer available." } });
-	if ((await db_get_review_version(ctx, run)) !== run.reviewVersion)
-		return Result({
-			_nay: { name: "needs_review", message: "Pending changes changed during review. Review them again." },
-		});
+	// Do not refuse the whole run when the owner clock moves. The seal clock stays pinned, so every
+	// atomic unit is checked again under a current clock before it saves. Each Copy checks its exact
+	// reviewed revision, paths, and private identity.
 	return Result({ _yay: run });
+}
+
+async function db_hold_selection(
+	ctx: MutationCtx,
+	runId: Id<"files_pending_update_runs">,
+	proposals: Doc<"files_pending_updates">[],
+) {
+	for (const proposal of proposals) {
+		const node =
+			proposal.target.kind === "private" ? await ctx.db.get("files_pending_nodes", proposal.target.id) : null;
+		const held = await files_pending_holds_db_acquire(ctx, {
+			producer: { kind: "files_pending_update_run", id: runId },
+			pendingUpdateId: proposal._id,
+			target: proposal.target,
+			privateGeneration: node?.creationGeneration ?? null,
+			expectedRevision: proposal.revision,
+			role: "review",
+		});
+		// A refusal must roll back the whole new page, including its earlier holds.
+		if (held._nay) throw convex_error(held._nay);
+	}
 }
 
 export const start = mutation({
@@ -512,11 +569,17 @@ export const start = mutation({
 		if (
 			!args.requestId ||
 			args.requestId.length > 200 ||
-			!Number.isInteger(args.expectedItemCount) ||
+			!Number.isSafeInteger(args.expectedItemCount) ||
+			args.expectedItemCount < 1 ||
 			args.expectedItemCount < args.items.length ||
-			args.expectedItemCount > MAX_SELECTED_ITEMS
+			(args.kind === "discard" && args.expectedItemCount > MAX_SELECTED_ITEMS)
 		)
-			return Result({ _nay: { name: "invalid_selection", message: "Select between 1 and 10,000 changes." } });
+			return Result({
+				_nay: {
+					name: "invalid_selection",
+					message: "Select a valid number of changes. Discard supports up to 10,000.",
+				},
+			});
 
 		const scope = {
 			organizationId: membership.organizationId,
@@ -588,6 +651,7 @@ export const start = mutation({
 			unitCount: 0,
 			finishedUnitCount: 0,
 			plannedItemCount: 0,
+			plan: { phase: "classify", cursor: null, itemId: null, dependencyCursor: null, atomicItemCount: 0 },
 			reviewVersion: await db_get_review_version(ctx, scope),
 			revalidateRemaining: false,
 			fence: 0,
@@ -602,6 +666,9 @@ export const start = mutation({
 				order,
 				...item,
 				target: checked._yay[order]!.target,
+				planKind: null,
+				privateVersion: null,
+				mediaDependencySet: null,
 				unitId: null,
 				prepared: null,
 				billedUserId: null,
@@ -635,6 +702,7 @@ export const start = mutation({
 			now,
 		});
 
+		await db_hold_selection(ctx, runId, checked._yay);
 		return Result({ _yay: { runId, activityId } });
 	},
 });
@@ -653,7 +721,7 @@ export const append_items = mutation({
 		const { run } = owned._yay;
 
 		if (
-			!Number.isInteger(args.offset) ||
+			!Number.isSafeInteger(args.offset) ||
 			args.offset < 0 ||
 			args.offset > run.itemCount ||
 			args.items.length === 0 ||
@@ -716,6 +784,9 @@ export const append_items = mutation({
 				order: args.offset + index,
 				...item,
 				target: checked._yay[index]!.target,
+				planKind: null,
+				privateVersion: null,
+				mediaDependencySet: null,
 				unitId: null,
 				prepared: null,
 				billedUserId: null,
@@ -723,6 +794,7 @@ export const append_items = mutation({
 				expectedDestinationParentPath: null,
 			});
 		}
+		await db_hold_selection(ctx, run._id, checked._yay);
 
 		const now = Date.now();
 		await ctx.db.patch("files_pending_update_runs", run._id, {
@@ -733,6 +805,7 @@ export const append_items = mutation({
 		const activity = await activities_db_require_by_source_id(ctx, run._id);
 		await ctx.db.patch("activities", activity._id, {
 			progress: { ...activity.progress!, discovered: run.itemCount + args.items.length },
+			deadlineAt: now + RUN_TIMEOUT_MS,
 			updatedAt: now,
 		});
 
@@ -789,10 +862,21 @@ export const get_plan_selection_page = internalQuery({
 			: await db_get_planning_run(ctx, args);
 		if (planning._nay) return planning;
 		const run = planning._yay;
+		// An earlier pass already blocked the atomic subset. Keep planning on that path after a restart.
+		if (!args.revalidation && args.cursor === null) {
+			const blocked = await ctx.db
+				.query("files_pending_update_run_units")
+				.withIndex("by_run_order", (q) => q.eq("runId", run._id))
+				.first();
+			if (blocked?.errorCode)
+				return Result({
+					_nay: { name: "needs_review", message: blocked.errorMessage ?? "Review this selection again." },
+				});
+		}
 		const itemQuery = ctx.db.query("files_pending_update_run_items");
 		const selection = args.revalidation
 			? itemQuery.withIndex("by_unit_order", (q) => q.eq("unitId", args.revalidation!.unitId))
-			: itemQuery.withIndex("by_run_order", (q) => q.eq("runId", run._id));
+			: itemQuery.withIndex("by_run_planKind_order", (q) => q.eq("runId", run._id).eq("planKind", "atomic"));
 		const items = await selection.paginate({ cursor: args.cursor, numItems: PLAN_PAGE_SIZE });
 		const page = [];
 		for (const item of items.page) {
@@ -800,7 +884,7 @@ export const get_plan_selection_page = internalQuery({
 			if (checked._nay) return checked;
 			const context = await db_get_plan_context(ctx, checked._yay[0]!);
 			if (
-				args.revalidation &&
+				item.planKind !== null &&
 				(context.path !== item.expectedPath || context.destinationParentPath !== item.expectedDestinationParentPath)
 			)
 				return Result({
@@ -825,7 +909,12 @@ export const get_plan_proposals_page = internalQuery({
 		revalidation: v.optional(revalidation_validator),
 	},
 	returns: v_result({
-		_yay: v.object({ page: v.array(plan_context_validator), isDone: v.boolean(), continueCursor: v.string() }),
+		_yay: v.object({
+			page: v.array(plan_context_validator),
+			selectedCopyIds: v.array(v.id("files_pending_updates")),
+			isDone: v.boolean(),
+			continueCursor: v.string(),
+		}),
 	}),
 	handler: async (ctx, args) => {
 		const planning = args.revalidation
@@ -840,8 +929,18 @@ export const get_plan_proposals_page = internalQuery({
 			)
 			.paginate({ cursor: args.cursor, numItems: PLAN_PAGE_SIZE });
 		const page = [];
-		for (const proposal of proposals.page) page.push(await db_get_plan_context(ctx, proposal));
-		return Result({ _yay: { page, isDone: proposals.isDone, continueCursor: proposals.continueCursor } });
+		const selectedCopyIds = [];
+		for (const proposal of proposals.page) {
+			page.push(await db_get_plan_context(ctx, proposal));
+			const selected = await ctx.db
+				.query("files_pending_update_run_items")
+				.withIndex("by_run_pendingUpdate", (q) => q.eq("runId", run._id).eq("pendingUpdateId", proposal._id))
+				.unique();
+			if (selected?.planKind === "copy") selectedCopyIds.push(proposal._id);
+		}
+		return Result({
+			_yay: { page, selectedCopyIds, isDone: proposals.isDone, continueCursor: proposals.continueCursor },
+		});
 	},
 });
 
@@ -861,6 +960,676 @@ export const refresh_plan = internalMutation({
 
 type refresh_plan_Result =
 	typeof refresh_plan extends RegisteredMutation<infer _V, infer _A, infer R> ? Awaited<R> : never;
+
+async function db_plan_progress(
+	ctx: MutationCtx,
+	run: Doc<"files_pending_update_runs">,
+	plan: Doc<"files_pending_update_runs">["plan"],
+) {
+	const now = Date.now();
+	await ctx.db.patch("files_pending_update_runs", run._id, { plan, updatedAt: now });
+	const activity = await activities_db_require_by_source_id(ctx, run._id);
+	await ctx.db.patch("activities", activity._id, { updatedAt: now, deadlineAt: now + RUN_TIMEOUT_MS });
+}
+
+export const classify_plan_page = internalMutation({
+	args: { runId: v.id("files_pending_update_runs"), fence: v.number() },
+	returns: v_result({ _yay: doc(app_convex_schema, "files_pending_update_runs") }),
+	handler: async (ctx, args) => {
+		const checkedRun = await db_get_planning_run(ctx, args);
+		if (checkedRun._nay) return checkedRun;
+		const run = checkedRun._yay;
+		if (run.plan.phase !== "classify") return checkedRun;
+		const page = await ctx.db
+			.query("files_pending_update_run_items")
+			.withIndex("by_run_order", (q) => q.eq("runId", run._id))
+			.paginate({ cursor: run.plan.cursor, numItems: PLAN_PAGE_SIZE });
+		const classified = [];
+		let atomicItemCount = run.plan.atomicItemCount;
+		for (const item of page.page) {
+			const checked = await db_validate_items(ctx, { ...run, items: [item] });
+			if (checked._nay && run.kind === "discard") return checked;
+			// A changed selection never uses the new proposal's intent. Its reviewed links are unknown, so
+			// it joins the bounded atomic subset, which then waits for a new review as a whole.
+			const proposal = checked._yay?.[0];
+			const planKind =
+				run.kind === "accept" && proposal && is_independent_copy(proposal) ? ("copy" as const) : ("atomic" as const);
+			if (planKind === "atomic") atomicItemCount++;
+			const context = proposal ? await db_get_plan_context(ctx, proposal) : null;
+			const set = proposal?.mediaDependencySetId
+				? await ctx.db.get("files_media_dependency_sets", proposal.mediaDependencySetId)
+				: null;
+			if (
+				set &&
+				(!set.sealed ||
+					set.owner.kind !== "proposal" ||
+					set.owner.pendingUpdateId !== item.pendingUpdateId ||
+					set.organizationId !== run.organizationId ||
+					set.workspaceId !== run.workspaceId ||
+					set.userId !== run.userId)
+			)
+				return Result({ _nay: { name: "needs_review", message: "The copied media changed. Review it again." } });
+			classified.push({ item, planKind, context, set });
+		}
+		if (atomicItemCount > MAX_SELECTED_ITEMS)
+			return Result({
+				_nay: { name: "review_too_large", message: "Review a smaller set of linked or ordinary changes." },
+			});
+		for (const { item, planKind, context, set } of classified)
+			await ctx.db.patch("files_pending_update_run_items", item._id, {
+				planKind,
+				privateVersion: context?.privateVersion ?? null,
+				mediaDependencySet: set ? { setId: set._id, generation: set.generation } : null,
+				expectedPath: context?.path ?? null,
+				expectedDestinationParentPath: context?.destinationParentPath ?? null,
+			});
+		await db_plan_progress(ctx, run, {
+			...run.plan,
+			atomicItemCount,
+			phase: page.isDone ? "atomic" : "classify",
+			cursor: page.isDone ? null : page.continueCursor,
+		});
+		return Result({ _yay: (await ctx.db.get("files_pending_update_runs", run._id))! });
+	},
+});
+
+type classify_plan_page_Result =
+	typeof classify_plan_page extends RegisteredMutation<infer _V, infer _A, infer R> ? Awaited<R> : never;
+
+async function db_insert_plan_unit(
+	ctx: MutationCtx,
+	runId: Id<"files_pending_update_runs">,
+	unit: Pick<
+		Doc<"files_pending_update_run_units">,
+		"order" | "kind" | "itemCount" | "deleteLast" | "privateDiscardRoots"
+	>,
+) {
+	return await ctx.db.insert("files_pending_update_run_units", {
+		runId,
+		...unit,
+		remainingPrerequisiteCount: 0,
+		dependentsSettled: false,
+		status: "queued",
+		attemptCount: 0,
+		workId: null,
+		attemptFence: 0,
+		attemptDeadlineAt: null,
+		validatedReviewVersion: null,
+		errorCode: null,
+		errorMessage: null,
+		finishedAt: null,
+	});
+}
+
+export const stage_copy_units_page = internalMutation({
+	args: { runId: v.id("files_pending_update_runs"), fence: v.number() },
+	returns: v_result({ _yay: doc(app_convex_schema, "files_pending_update_runs") }),
+	handler: async (ctx, args) => {
+		const checked = await db_get_planning_run(ctx, args);
+		if (checked._nay) return checked;
+		const run = checked._yay;
+		if (run.plan.phase !== "copy_units") return checked;
+		const page = await ctx.db
+			.query("files_pending_update_run_items")
+			.withIndex("by_run_planKind_order", (q) => q.eq("runId", run._id).eq("planKind", "copy"))
+			.paginate({ cursor: run.plan.cursor, numItems: PLAN_PAGE_SIZE });
+		for (const item of page.page) {
+			const unitId = await db_insert_plan_unit(ctx, run._id, {
+				order: item.order,
+				kind: "copy",
+				itemCount: 1,
+				deleteLast: false,
+				privateDiscardRoots: [],
+			});
+			await ctx.db.patch("files_pending_update_run_items", item._id, { unitId });
+		}
+		await ctx.db.patch("files_pending_update_runs", run._id, {
+			unitCount: run.unitCount + page.page.length,
+			plannedItemCount: run.plannedItemCount + page.page.length,
+		});
+		await db_plan_progress(ctx, run, {
+			...run.plan,
+			phase: page.isDone ? "dependencies" : "copy_units",
+			cursor: page.isDone ? null : page.continueCursor,
+		});
+		return Result({ _yay: (await ctx.db.get("files_pending_update_runs", run._id))! });
+	},
+});
+
+type stage_copy_units_page_Result =
+	typeof stage_copy_units_page extends RegisteredMutation<infer _V, infer _A, infer R> ? Awaited<R> : never;
+
+export const advance_atomic_plan = internalMutation({
+	args: {
+		runId: v.id("files_pending_update_runs"),
+		fence: v.number(),
+		cursor: v.union(v.string(), v.null()),
+		nextCursor: v.union(v.string(), v.null()),
+		promoteIds: v.array(v.id("files_pending_updates")),
+		done: v.boolean(),
+	},
+	returns: v_result({ _yay: v.null() }),
+	handler: async (ctx, args) => {
+		const checked = await db_get_planning_run(ctx, args);
+		if (checked._nay) return checked;
+		const run = checked._yay;
+		if (run.plan.phase !== "atomic" || run.plan.cursor !== args.cursor)
+			return Result({ _nay: { name: "stopped", message: "This plan page already advanced." } });
+		if (args.promoteIds.length > PLAN_PAGE_SIZE)
+			return Result({ _nay: { name: "invalid_plan", message: "Too many linked changes." } });
+		const promote = [];
+		for (const pendingUpdateId of args.promoteIds) {
+			const item = await ctx.db
+				.query("files_pending_update_run_items")
+				.withIndex("by_run_pendingUpdate", (q) => q.eq("runId", run._id).eq("pendingUpdateId", pendingUpdateId))
+				.unique();
+			if (item?.planKind === "copy") promote.push(item);
+			else return Result({ _nay: { name: "needs_review", message: "Review the linked changes together." } });
+		}
+		if (run.plan.atomicItemCount + promote.length > MAX_SELECTED_ITEMS)
+			return Result({ _nay: { name: "review_too_large", message: "Review a smaller set of linked changes." } });
+		if (args.done && run.plannedItemCount !== run.plan.atomicItemCount)
+			return Result({ _nay: { name: "invalid_plan", message: "The atomic plan is incomplete." } });
+		for (const item of promote) await ctx.db.patch("files_pending_update_run_items", item._id, { planKind: "atomic" });
+		await db_plan_progress(ctx, run, {
+			...run.plan,
+			atomicItemCount: run.plan.atomicItemCount + promote.length,
+			phase: args.done ? "copy_units" : "atomic",
+			cursor: args.done || promote.length ? null : args.nextCursor,
+		});
+		return Result({ _yay: null });
+	},
+});
+
+type advance_atomic_plan_Result =
+	typeof advance_atomic_plan extends RegisteredMutation<infer _V, infer _A, infer R> ? Awaited<R> : never;
+
+/**
+ * Put the whole bounded atomic subset into one blocked unit, one page at a time.
+ * The unit stays while planning promotes linked Copies into the subset, so later pages add them too.
+ * Independent Copy units are planned after this and can still save.
+ */
+export const block_atomic_plan_page = internalMutation({
+	args: {
+		runId: v.id("files_pending_update_runs"),
+		fence: v.number(),
+		cursor: v.union(v.string(), v.null()),
+		message: v.string(),
+		unreviewedIds: v.array(v.id("files_pending_updates")),
+	},
+	returns: v_result({ _yay: v.object({ isDone: v.boolean(), continueCursor: v.string() }) }),
+	handler: async (ctx, args) => {
+		const checked = await db_get_planning_run(ctx, args);
+		if (checked._nay) return checked;
+		const run = checked._yay;
+		if (run.plan.phase !== "atomic")
+			return Result({ _nay: { name: "stopped", message: "This plan page already advanced." } });
+
+		const first = await ctx.db
+			.query("files_pending_update_run_items")
+			.withIndex("by_run_planKind_order", (q) => q.eq("runId", run._id).eq("planKind", "atomic"))
+			.first();
+		if (!first) throw should_never_happen("Blocked atomic plan has no atomic items", { runId: run._id });
+		// Copy units are staged only after the atomic phase, so any unit here is atomic. A partly staged
+		// normal plan has units without an error, so refuse it instead of mixing both plans.
+		const existing = await ctx.db
+			.query("files_pending_update_run_units")
+			.withIndex("by_run_order", (q) => q.eq("runId", run._id))
+			.first();
+		if (existing && existing.errorCode === null)
+			return Result({ _nay: { name: "invalid_plan", message: "The review plan changed." } });
+		const page = await ctx.db
+			.query("files_pending_update_run_items")
+			.withIndex("by_run_planKind_order", (q) => q.eq("runId", run._id).eq("planKind", "atomic"))
+			.paginate({ cursor: args.cursor, numItems: SELECTION_PAGE_SIZE });
+		if (page.page.some((item) => item.unitId !== null && item.unitId !== existing?._id))
+			return Result({ _nay: { name: "invalid_plan", message: "The review plan changed." } });
+		const unassigned = page.page.filter((item) => item.unitId === null);
+		const plannedItemCount = run.plannedItemCount + unassigned.length;
+		if (page.isDone && plannedItemCount !== run.plan.atomicItemCount)
+			return Result({ _nay: { name: "invalid_plan", message: "The atomic plan is incomplete." } });
+
+		let unitId = existing?._id;
+		if (!unitId) {
+			unitId = await db_insert_plan_unit(ctx, run._id, {
+				order: first.order,
+				kind: "atomic",
+				itemCount: run.plan.atomicItemCount,
+				deleteLast: false,
+				privateDiscardRoots: [],
+			});
+			await ctx.db.patch("files_pending_update_run_units", unitId, {
+				errorCode: "needs_review",
+				errorMessage: args.message,
+			});
+		}
+		// A promoted Copy joins after the unit exists, so keep the count equal to the whole subset.
+		else await ctx.db.patch("files_pending_update_run_units", unitId, { itemCount: run.plan.atomicItemCount });
+		for (const item of unassigned) await ctx.db.patch("files_pending_update_run_items", item._id, { unitId });
+		await ctx.db.patch("files_pending_update_runs", run._id, {
+			unitCount: run.unitCount + (existing ? 0 : 1),
+			plannedItemCount,
+			needsReviewIds: merge_needs_review_ids(run, args.unreviewedIds),
+		});
+		// A replayed page is not progress, so it does not extend the deadline.
+		if (unassigned.length) await db_plan_progress(ctx, run, run.plan);
+		return Result({ _yay: { isDone: page.isDone, continueCursor: page.continueCursor } });
+	},
+});
+
+type block_atomic_plan_page_Result =
+	typeof block_atomic_plan_page extends RegisteredMutation<infer _V, infer _A, infer R> ? Awaited<R> : never;
+
+/**
+ * Read the paths of the atomic subset, so planning can find the Copies that must wait with it.
+ * A changed item's current proposal may carry a new intent. Its paths only add links here; they are never saved.
+ */
+export const get_atomic_plan_paths_page = internalQuery({
+	args: { runId: v.id("files_pending_update_runs"), fence: v.number(), cursor: v.union(v.string(), v.null()) },
+	returns: v_result({
+		_yay: v.object({
+			paths: v.array(v.string()),
+			destinationParentPaths: v.array(v.string()),
+			isDone: v.boolean(),
+			continueCursor: v.string(),
+		}),
+	}),
+	handler: async (ctx, args) => {
+		const planning = await db_get_planning_run(ctx, args);
+		if (planning._nay) return planning;
+		const run = planning._yay;
+		const items = await ctx.db
+			.query("files_pending_update_run_items")
+			.withIndex("by_run_planKind_order", (q) => q.eq("runId", run._id).eq("planKind", "atomic"))
+			.paginate({ cursor: args.cursor, numItems: PLAN_PAGE_SIZE });
+		const paths = [];
+		const destinationParentPaths = [];
+		for (const item of items.page) {
+			const proposal = await ctx.db.get("files_pending_updates", item.pendingUpdateId);
+			const context = proposal ? await db_get_plan_context(ctx, proposal) : null;
+			// The expected paths are the reviewed placement. Classification stores them before any later change.
+			for (const path of [item.expectedPath, context?.path, context?.destinationPath]) if (path) paths.push(path);
+			for (const path of [item.expectedDestinationParentPath, context?.destinationParentPath])
+				if (path) destinationParentPaths.push(path);
+		}
+		return Result({
+			_yay: { paths, destinationParentPaths, isDone: items.isDone, continueCursor: items.continueCursor },
+		});
+	},
+});
+
+type get_atomic_plan_paths_page_Result =
+	typeof get_atomic_plan_paths_page extends RegisteredQuery<infer _V, infer _A, infer R> ? Awaited<R> : never;
+
+async function db_get_dependency_page(ctx: QueryCtx | MutationCtx, run: Doc<"files_pending_update_runs">) {
+	const selection = await ctx.db
+		.query("files_pending_update_run_items")
+		.withIndex("by_run_order", (q) => q.eq("runId", run._id))
+		.paginate({ cursor: run.plan.cursor, numItems: 1 });
+	const item = selection.page[0] ?? null;
+	let proposal: Doc<"files_pending_updates"> | null = null;
+	let error: string | null = null;
+	if (item) {
+		const checked = await db_validate_items(ctx, { ...run, items: [item] });
+		if (checked._nay) error = checked._nay.message;
+		else proposal = checked._yay[0]!;
+		if (proposal && run.kind === "accept" && item.mediaDependencySet) {
+			const set = await ctx.db.get("files_media_dependency_sets", item.mediaDependencySet.setId);
+			if (
+				!set ||
+				!set.sealed ||
+				set.generation !== item.mediaDependencySet.generation ||
+				proposal.mediaDependencySetId !== set._id ||
+				set.owner.kind !== "proposal" ||
+				set.owner.pendingUpdateId !== proposal._id ||
+				set.organizationId !== run.organizationId ||
+				set.workspaceId !== run.workspaceId ||
+				set.userId !== run.userId
+			)
+				error = "The copied media changed. Review it again.";
+		}
+	}
+	return {
+		item,
+		proposal,
+		error,
+		nextItemCursor: selection.continueCursor,
+		lastItem: selection.isDone,
+	};
+}
+
+export const get_dependency_plan_page = internalQuery({
+	args: { runId: v.id("files_pending_update_runs"), fence: v.number() },
+	returns: v_result({
+		_yay: v.object({
+			run: doc(app_convex_schema, "files_pending_update_runs"),
+			item: v.union(doc(app_convex_schema, "files_pending_update_run_items"), v.null()),
+			proposal: v.union(doc(app_convex_schema, "files_pending_updates"), v.null()),
+			error: v.union(v.string(), v.null()),
+			nextItemCursor: v.string(),
+			lastItem: v.boolean(),
+		}),
+	}),
+	handler: async (ctx, args) => {
+		const checked = await db_get_planning_run(ctx, args);
+		if (checked._nay) return checked;
+		if (checked._yay.plan.phase !== "dependencies")
+			return Result({ _nay: { name: "stopped", message: "This dependency page already advanced." } });
+		return Result({ _yay: { run: checked._yay, ...(await db_get_dependency_page(ctx, checked._yay)) } });
+	},
+});
+
+type get_dependency_plan_page_Result =
+	typeof get_dependency_plan_page extends RegisteredQuery<infer _V, infer _A, infer R> ? Awaited<R> : never;
+
+async function db_get_selected_media(
+	ctx: QueryCtx | MutationCtx,
+	run: Doc<"files_pending_update_runs">,
+	item: Doc<"files_pending_update_run_items">,
+	mediaRefs: string[],
+) {
+	const reviewedArchiveIds = new Set<Id<"files_pending_updates">>();
+	const reader = await files_visible_db_create_reader(ctx, { ...run, readLimit: 4096, reviewedArchiveIds });
+	const selectedItems: Doc<"files_pending_update_run_items">[] = [];
+	let error: string | null = null;
+	for (const src of mediaRefs) {
+		const mapping = item.mediaDependencySet
+			? await ctx.db
+					.query("files_media_dependencies")
+					.withIndex("by_set_src", (q) => q.eq("setId", item.mediaDependencySet!.setId).eq("dependency.src", src))
+					.first()
+			: null;
+		const parsed = files_media_parse_src(src);
+		const savedId = parsed.kind === "file" ? ctx.db.normalizeId("files_nodes", parsed.fileNodeId) : null;
+		const privateId =
+			parsed.kind === "private" ? ctx.db.normalizeId("files_pending_nodes", parsed.privateNodeId) : null;
+		const original: Doc<"files_pending_updates">["target"] | null =
+			mapping?.dependency.target ??
+			(savedId ? { kind: "saved", id: savedId } : privateId ? { kind: "private", id: privateId } : null);
+		const target = original
+			? await files_pending_nodes_db_resolve_read_target(ctx, { ...run, target: original })
+			: null;
+		let selected = target
+			? await ctx.db
+					.query("files_pending_update_run_items")
+					.withIndex("by_run_target", (q) =>
+						q.eq("runId", run._id).eq("target.kind", target.kind).eq("target.id", target.id),
+					)
+					.unique()
+			: null;
+		if (selected) {
+			const proposal = await ctx.db.get("files_pending_updates", selected.pendingUpdateId);
+			if (proposal?.pendingArchive) reviewedArchiveIds.add(proposal._id);
+		}
+		// A selected delete must join the ordinary unit, but never grants read access.
+		const visible = target ? await reader.resolveTarget(target) : null;
+		if (!visible || !original) {
+			error ??= "The copied media is no longer available.";
+			continue;
+		}
+		selected ??= await ctx.db
+			.query("files_pending_update_run_items")
+			.withIndex("by_run_target", (q) =>
+				q.eq("runId", run._id).eq("target.kind", original.kind).eq("target.id", original.id),
+			)
+			.unique();
+		if (!selected && visible.pendingUpdate)
+			selected = await ctx.db
+				.query("files_pending_update_run_items")
+				.withIndex("by_run_pendingUpdate", (q) =>
+					q.eq("runId", run._id).eq("pendingUpdateId", visible.pendingUpdate!._id),
+				)
+				.unique();
+		if (selected) selectedItems.push(selected);
+		else if (target?.kind === "private") error ??= "Save the selected media first, or review it with this document.";
+	}
+	return { selectedItems, error };
+}
+
+export const get_atomic_media_selection_page = internalQuery({
+	args: {
+		runId: v.id("files_pending_update_runs"),
+		fence: v.number(),
+		itemId: v.id("files_pending_update_run_items"),
+		mediaRefs: v.array(v.string()),
+		revalidation: v.optional(revalidation_validator),
+	},
+	returns: v_result({ _yay: v.array(doc(app_convex_schema, "files_pending_update_run_items")) }),
+	handler: async (ctx, args) => {
+		const checked = args.revalidation
+			? await db_get_revalidation_run(ctx, { ...args, ...args.revalidation })
+			: await db_get_planning_run(ctx, args);
+		if (checked._nay) return checked;
+		const item = await ctx.db.get("files_pending_update_run_items", args.itemId);
+		if (!item || item.runId !== args.runId || item.planKind !== "atomic" || args.mediaRefs.length > PLAN_PAGE_SIZE)
+			return Result({ _nay: { name: "invalid_plan", message: "The media selection changed." } });
+		const valid = await db_validate_items(ctx, { ...checked._yay, items: [item] });
+		if (valid._nay) return valid;
+		// Missing media blocks this unit later; still group all of its selected media now.
+		return Result({ _yay: (await db_get_selected_media(ctx, checked._yay, item, args.mediaRefs)).selectedItems });
+	},
+});
+
+type get_atomic_media_selection_page_Result =
+	typeof get_atomic_media_selection_page extends RegisteredQuery<infer _V, infer _A, infer R> ? Awaited<R> : never;
+
+export const stage_dependency_plan_page = internalMutation({
+	args: {
+		runId: v.id("files_pending_update_runs"),
+		fence: v.number(),
+		cursor: v.union(v.string(), v.null()),
+		dependencyCursor: v.union(v.string(), v.null()),
+		itemId: v.union(v.id("files_pending_update_run_items"), v.null()),
+		mediaRefs: v.array(v.string()),
+		isDone: v.boolean(),
+		error: v.union(v.string(), v.null()),
+	},
+	returns: v_result({ _yay: v.null() }),
+	handler: async (ctx, args) => {
+		const checked = await db_get_planning_run(ctx, args);
+		if (checked._nay) return checked;
+		const run = checked._yay;
+		if (
+			run.plan.phase !== "dependencies" ||
+			run.plan.cursor !== args.cursor ||
+			run.plan.dependencyCursor !== args.dependencyCursor
+		)
+			return Result({ _nay: { name: "stopped", message: "This dependency page already advanced." } });
+		const page = await db_get_dependency_page(ctx, run);
+		if (
+			page.item?._id !== (args.itemId ?? undefined) ||
+			args.mediaRefs.length > PLAN_PAGE_SIZE ||
+			(!args.isDone && args.mediaRefs.length !== PLAN_PAGE_SIZE)
+		)
+			return Result({ _nay: { name: "invalid_plan", message: "The dependency page changed." } });
+		const item = page.item;
+		let error = page.error ?? args.error;
+		const prerequisites: { unitId: Id<"files_pending_update_run_units">; kind: "parent" | "media" }[] = [];
+		if (item && !error && page.proposal && run.kind === "accept") {
+			if (args.dependencyCursor === null && page.proposal.target.kind === "private") {
+				const node = await ctx.db.get("files_pending_nodes", page.proposal.target.id);
+				if (node?.parent.kind === "private") {
+					const parent = await ctx.db.get("files_pending_nodes", node.parent.id);
+					if (parent?.state === "active") {
+						const selected = await ctx.db
+							.query("files_pending_update_run_items")
+							.withIndex("by_run_target", (q) =>
+								q.eq("runId", run._id).eq("target.kind", "private").eq("target.id", parent._id),
+							)
+							.unique();
+						if (!selected?.unitId) error = "Review and save the parent draft first.";
+						else prerequisites.push({ unitId: selected.unitId, kind: "parent" });
+					}
+				}
+			}
+			if (args.mediaRefs.length) {
+				const media = await db_get_selected_media(ctx, run, item, args.mediaRefs);
+				error ??= media.error;
+				for (const selected of media.selectedItems)
+					if (selected.unitId) prerequisites.push({ unitId: selected.unitId, kind: "media" });
+			}
+		}
+		if (item) {
+			const unit = item.unitId ? await ctx.db.get("files_pending_update_run_units", item.unitId) : null;
+			if (!unit) throw should_never_happen("Dependency has no review unit", { itemId: item._id });
+			let count = unit.remainingPrerequisiteCount;
+			for (const required of prerequisites) {
+				if (required.unitId === unit._id) continue;
+				const existing = await ctx.db
+					.query("files_pending_update_run_dependencies")
+					.withIndex("by_unit_required_kind", (q) =>
+						q.eq("unitId", unit._id).eq("requiredUnitId", required.unitId).eq("kind", required.kind),
+					)
+					.unique();
+				if (existing) continue;
+				await ctx.db.insert("files_pending_update_run_dependencies", {
+					runId: run._id,
+					unitId: unit._id,
+					requiredUnitId: required.unitId,
+					kind: required.kind,
+					settled: false,
+				});
+				count++;
+			}
+			await ctx.db.patch("files_pending_update_run_units", unit._id, {
+				remainingPrerequisiteCount: count,
+				status: count ? "waiting" : "queued",
+				...(error ? { errorCode: "needs_review", errorMessage: error } : {}),
+			});
+		}
+		const itemDone = !item || args.isDone || error !== null;
+		await db_plan_progress(ctx, run, {
+			...run.plan,
+			phase: itemDone && page.lastItem ? "ready" : "dependencies",
+			cursor: itemDone ? (page.lastItem ? null : page.nextItemCursor) : run.plan.cursor,
+			itemId: itemDone ? null : item!._id,
+			dependencyCursor: itemDone ? null : String(Number(run.plan.dependencyCursor ?? 0) + args.mediaRefs.length),
+		});
+		return Result({ _yay: null });
+	},
+});
+
+type stage_dependency_plan_page_Result =
+	typeof stage_dependency_plan_page extends RegisteredMutation<infer _V, infer _A, infer R> ? Awaited<R> : never;
+
+async function action_read_reviewed_media_refs(
+	ctx: ActionCtx,
+	run: Pick<Doc<"files_pending_update_runs">, "kind" | "organizationId" | "workspaceId" | "userId">,
+	item: Doc<"files_pending_update_run_items">,
+	proposal: Doc<"files_pending_updates">,
+) {
+	let error: string | null = null;
+	let text: string | null = null;
+	if (run.kind === "accept" && item.mediaDependencySet) {
+		if (proposal.pendingReplacement && proposal.target.kind === "saved") {
+			const data = await ctx.runQuery(internal.files_pending_updates.get_data_for_pending_replacement_accept, {
+				organizationId: run.organizationId,
+				workspaceId: run.workspaceId,
+				userId: run.userId,
+				nodeId: proposal.target.id,
+				pendingUpdateId: proposal._id,
+			});
+			if (
+				!data ||
+				data.pendingUpdate.revision !== item.reviewedRevision ||
+				!data.baseMatches ||
+				proposal.pendingReplacement.size > files_MAX_TEXT_CONTENT_BYTES
+			)
+				error = "The copied document changed. Review it again.";
+			else {
+				const response = await r2_fetch_object_from_bucket({ key: data.stagedAssetR2Key });
+				const bytes = await response.arrayBuffer();
+				if (!response.ok || bytes.byteLength > files_MAX_TEXT_CONTENT_BYTES)
+					error = "The copied document is no longer available.";
+				else text = new TextDecoder().decode(bytes);
+			}
+		} else if (item.selectedContentStateId) {
+			const stateArgs = {
+				organizationId: run.organizationId,
+				workspaceId: run.workspaceId,
+				userId: run.userId,
+				stateId: item.selectedContentStateId,
+			};
+			const first = (await ctx.runQuery(internal.files_pending_updates.get_file_pending_update_state_page_internal, {
+				...stateArgs,
+				pageIndex: 0,
+			})) as get_file_pending_update_state_page_internal_Result;
+			if (!first?.sealed || first.totalBytes > files_MAX_YJS_RECONSTRUCTED_STATE_BYTES)
+				error = "The selected text changed. Review it again.";
+			else {
+				const bytes = new Uint8Array(first.totalBytes);
+				let offset = 0;
+				for (let pageIndex = 0; pageIndex < first.pageCount; pageIndex++) {
+					const page =
+						pageIndex === 0
+							? first
+							: ((await ctx.runQuery(internal.files_pending_updates.get_file_pending_update_state_page_internal, {
+									...stateArgs,
+									pageIndex,
+								})) as get_file_pending_update_state_page_internal_Result);
+					if (!page || offset + page.bytes.byteLength > bytes.byteLength) {
+						error = "The selected text changed. Review it again.";
+						break;
+					}
+					bytes.set(new Uint8Array(page.bytes), offset);
+					offset += page.bytes.byteLength;
+				}
+				if (offset !== bytes.byteLength || files_pending_update_yjs_state_digest(bytes) !== first.digest)
+					error = "The selected text changed. Review it again.";
+				if (!error) {
+					const yjsDoc = files_yjs_doc_create_from_array_buffer_update(bytes.buffer);
+					const extracted = files_yjs_doc_get_text({ yjsDoc, rootKind: "rich_text" });
+					yjsDoc.destroy();
+					if (extracted._nay) error = extracted._nay.message;
+					else text = extracted._yay;
+				}
+			}
+		} else error = "The selected document changed. Review it again.";
+	}
+	const used = new Set<string>();
+	if (text !== null && !error) {
+		const editor = files_headless_tiptap_editor_create({ initialContent: { markdown: text } });
+		if (editor._nay) error = editor._nay.message;
+		else
+			try {
+				editor._yay.state.doc.descendants((node) => {
+					if ((node.type.name !== "image" && node.type.name !== "video") || typeof node.attrs.src !== "string") return;
+					const parsed = files_media_parse_src(node.attrs.src);
+					if (parsed.kind === "file" || parsed.kind === "private") used.add(node.attrs.src);
+				});
+			} finally {
+				editor._yay.destroy();
+			}
+	}
+	return { refs: [...used], error };
+}
+
+async function action_plan_dependency_page(
+	ctx: ActionCtx,
+	args: { runId: Id<"files_pending_update_runs">; fence: number },
+) {
+	const checked = (await ctx.runQuery(
+		internal.files_pending_update_runs.get_dependency_plan_page,
+		args,
+	)) as get_dependency_plan_page_Result;
+	if (checked._nay) return checked;
+	const { run, item, proposal } = checked._yay;
+	const media =
+		item && proposal && !checked._yay.error
+			? await action_read_reviewed_media_refs(ctx, run, item, proposal)
+			: { refs: [], error: checked._yay.error };
+	// Reviewed edits can add embeds outside the Copy's captured mapping set.
+	const offset = Number(run.plan.dependencyCursor ?? 0);
+	return (await ctx.runMutation(internal.files_pending_update_runs.stage_dependency_plan_page, {
+		...args,
+		cursor: run.plan.cursor,
+		dependencyCursor: run.plan.dependencyCursor,
+		itemId: item?._id ?? null,
+		mediaRefs: media.refs.slice(offset, offset + PLAN_PAGE_SIZE),
+		isDone: offset + PLAN_PAGE_SIZE >= media.refs.length,
+		error: media.error,
+	})) as stage_dependency_plan_page_Result;
+}
 
 export const fail_plan = internalMutation({
 	args: {
@@ -883,7 +1652,7 @@ export const fail_plan = internalMutation({
 		await ctx.db.patch("files_pending_update_runs", run._id, {
 			step: "finished",
 			fence: run.fence + 1,
-			needsReviewIds: args.unreviewedIds.slice(0, 20),
+			needsReviewIds: merge_needs_review_ids(run, args.unreviewedIds),
 			updatedAt: now,
 		});
 		await ctx.db.patch("activities", activity._id, {
@@ -897,6 +1666,7 @@ export const fail_plan = internalMutation({
 			errorMessage: args.message,
 			now,
 		});
+		await files_pending_holds_db_finish(ctx, { producer: { kind: "files_pending_update_run", id: run._id } });
 		return null;
 	},
 });
@@ -908,6 +1678,7 @@ export const stage_plan_units = internalMutation({
 		offset: v.number(),
 		units: v.array(
 			v.object({
+				order: v.number(),
 				itemCount: v.number(),
 				deleteLast: v.boolean(),
 				privateDiscardRoots:
@@ -925,15 +1696,20 @@ export const stage_plan_units = internalMutation({
 			return Result({ _nay: { name: "invalid_plan", message: "The review plan is out of order." } });
 
 		if (args.offset < run.unitCount) {
-			const units = await ctx.db
-				.query("files_pending_update_run_units")
-				.withIndex("by_run_order", (q) => q.eq("runId", run._id).gte("order", args.offset))
-				.take(args.units.length);
+			const units = await Promise.all(
+				args.units.map((unit) =>
+					ctx.db
+						.query("files_pending_update_run_units")
+						.withIndex("by_run_order", (q) => q.eq("runId", run._id).eq("order", unit.order))
+						.unique(),
+				),
+			);
 
 			if (
 				units.length !== args.units.length ||
 				units.some(
 					(unit, index) =>
+						!unit ||
 						unit.itemCount !== args.units[index]!.itemCount ||
 						unit.deleteLast !== args.units[index]!.deleteLast ||
 						JSON.stringify(unit.privateDiscardRoots) !== JSON.stringify(args.units[index]!.privateDiscardRoots),
@@ -941,25 +1717,15 @@ export const stage_plan_units = internalMutation({
 			)
 				return Result({ _nay: { name: "invalid_plan", message: "The review plan changed." } });
 
-			return Result({ _yay: units.map((unit) => unit._id) });
+			return Result({ _yay: units.map((unit) => unit!._id) });
 		}
 
 		const ids = [];
-		for (const [index, unit] of args.units.entries()) {
+		for (const unit of args.units) {
 			ids.push(
-				await ctx.db.insert("files_pending_update_run_units", {
-					runId: run._id,
-					order: args.offset + index,
+				await db_insert_plan_unit(ctx, run._id, {
+					kind: "atomic",
 					...unit,
-					status: "queued",
-					attemptCount: 0,
-					workId: null,
-					attemptFence: 0,
-					attemptDeadlineAt: null,
-					validatedReviewVersion: null,
-					errorCode: null,
-					errorMessage: null,
-					finishedAt: null,
 				}),
 			);
 		}
@@ -998,13 +1764,13 @@ export const stage_plan_items = internalMutation({
 		if (args.items.length > SELECTION_PAGE_SIZE || args.offset > run.plannedItemCount)
 			return Result({ _nay: { name: "invalid_plan", message: "The review plan is out of order." } });
 		const items = [];
-		for (const [index, assignment] of args.items.entries()) {
+		for (const assignment of args.items) {
 			const item = await ctx.db.get("files_pending_update_run_items", assignment.itemId);
 			const unit = await ctx.db.get("files_pending_update_run_units", assignment.unitId);
 			if (
 				!item ||
 				item.runId !== run._id ||
-				item.order !== args.offset + index ||
+				item.planKind !== "atomic" ||
 				!unit ||
 				unit.runId !== run._id ||
 				(item.unitId !== null &&
@@ -1038,7 +1804,7 @@ export const seal_plan = internalMutation({
 		const planning = await db_get_planning_run(ctx, args);
 		if (planning._nay) return planning;
 		const run = planning._yay;
-		if (run.plannedItemCount !== run.itemCount || run.unitCount === 0)
+		if (run.plan.phase !== "ready" || run.plannedItemCount !== run.itemCount || run.unitCount === 0)
 			return Result({ _nay: { name: "invalid_plan", message: "The review plan is incomplete." } });
 		await ctx.db.patch("files_pending_update_runs", run._id, { step: "running", updatedAt: Date.now() });
 		await ctx.scheduler.runAfter(0, internal.files_pending_update_runs.advance, { runId: run._id });
@@ -1048,7 +1814,13 @@ export const seal_plan = internalMutation({
 
 type seal_plan_Result = typeof seal_plan extends RegisteredMutation<infer _V, infer _A, infer R> ? Awaited<R> : never;
 
-function build_review_dependencies(
+async function build_review_dependencies(
+	ctx: ActionCtx,
+	args: {
+		runId: Id<"files_pending_update_runs">;
+		fence: number;
+		revalidation?: { unitId: Id<"files_pending_update_run_units">; attemptFence: number; reviewVersion: number };
+	},
 	kind: "accept" | "discard",
 	selected: NonNullable<get_plan_selection_page_Result["_yay"]>["page"],
 ) {
@@ -1147,8 +1919,9 @@ function build_review_dependencies(
 				}
 			}
 
-			for (const id of [...context.privateAncestorIds, ...context.destinationPrivateAncestorIds])
-				add(requiredTargets, `private:${id}`, index);
+			if (!is_independent_copy(proposal))
+				for (const id of [...context.privateAncestorIds, ...context.destinationPrivateAncestorIds])
+					add(requiredTargets, `private:${id}`, index);
 			const replaced = proposal.pendingMove?.replacesTarget;
 			if (replaced) add(requiredTargets, `${replaced.kind}:${replaced.id}`, index);
 			if (context.destinationPath) add(selectedDestinations, context.destinationPath, index);
@@ -1197,6 +1970,34 @@ function build_review_dependencies(
 	for (const [index, { context }] of selected.entries())
 		for (const required of requiredBy(context)) join(index, required);
 
+	const promoteIds = new Set<Id<"files_pending_updates">>();
+	// Ordinary documents keep their selected media in the same bounded atomic component.
+	media: for (const [index, { item, context }] of selected.entries()) {
+		if (kind !== "accept" || !item.mediaDependencySet || is_independent_copy(context.proposal)) continue;
+		const media = await action_read_reviewed_media_refs(ctx, { ...context.proposal, kind }, item, context.proposal);
+		for (let offset = 0; offset < media.refs.length; offset += PLAN_PAGE_SIZE) {
+			const page = (await ctx.runQuery(internal.files_pending_update_runs.get_atomic_media_selection_page, {
+				...args,
+				itemId: item._id,
+				mediaRefs: media.refs.slice(offset, offset + PLAN_PAGE_SIZE),
+			})) as get_atomic_media_selection_page_Result;
+			if (page._nay) return page;
+			for (const required of page._yay) {
+				const requiredIndex = indexById.get(required.pendingUpdateId);
+				if (requiredIndex !== undefined) join(index, requiredIndex);
+				else if (args.revalidation)
+					return Result({
+						_nay: {
+							name: "needs_review",
+							message: "The document now uses another selected change. Review them together.",
+						},
+					});
+				else promoteIds.add(required.pendingUpdateId);
+				if (promoteIds.size === PLAN_PAGE_SIZE) break media;
+			}
+		}
+	}
+
 	const groups = new Map<number, typeof selected>();
 	for (const [index, entry] of selected.entries()) {
 		const key = root(index);
@@ -1207,6 +2008,7 @@ function build_review_dependencies(
 
 	return Result({
 		_yay: {
+			promoteIds: [...promoteIds],
 			units: [...groups.values()].sort((a, b) => a[0]!.item.order - b[0]!.item.order),
 			scanRequired: Boolean(
 				requiredTargets.size ||
@@ -1218,6 +2020,18 @@ function build_review_dependencies(
 			),
 			unreviewed: (contexts: Awaited<ReturnType<typeof db_get_plan_context>>[]) =>
 				contexts.filter((context) => !indexById.has(context.proposal._id) && requiredBy(context).size > 0),
+			linkedCopy: (context: Awaited<ReturnType<typeof db_get_plan_context>>) => {
+				if (requiredBy(context).size) return true;
+				let path = context.savedAncestorPath;
+				while (path && path !== "/") {
+					if (selectedMoves.has(path)) return true;
+					path = path.slice(0, path.lastIndexOf("/"));
+				}
+				return (
+					context.destinationPath !== null &&
+					(selectedMoves.has(context.destinationPath) || selectedDestinations.has(context.destinationPath))
+				);
+			},
 		},
 	});
 }
@@ -1227,6 +2041,7 @@ export const plan = internalAction({
 	returns: v.null(),
 	handler: async (ctx, args) => {
 		async function fail(error: { name?: string; message: string }, unreviewedIds: Id<"files_pending_updates">[] = []) {
+			if (error.name === "stopped") return;
 			await ctx.runMutation(internal.files_pending_update_runs.fail_plan, {
 				...args,
 				code: error.name ?? "failed",
@@ -1251,137 +2066,344 @@ export const plan = internalAction({
 			return true;
 		}
 
-		try {
-			const selected: NonNullable<get_plan_selection_page_Result["_yay"]>["page"] = [];
-			let run: Doc<"files_pending_update_runs"> | null = null;
+		/**
+		 * Block the whole bounded atomic subset in one unit, so independent Copy units can still save.
+		 * A changed item's reviewed links are unknown. So every selected Copy that shares a path with the
+		 * subset joins it first, and nothing is planned with the new intent.
+		 * Return true to continue planning, or false when this action must stop.
+		 */
+		async function block_atomic_subset(
+			message: string,
+			unreviewedIds: Id<"files_pending_updates">[],
+			scanCursor: string | null,
+		) {
 			let cursor: string | null = null;
-
 			while (true) {
-				if (!(await refresh())) return null;
-				const page = (await ctx.runQuery(internal.files_pending_update_runs.get_plan_selection_page, {
+				const blocked = (await ctx.runMutation(internal.files_pending_update_runs.block_atomic_plan_page, {
 					...args,
 					cursor,
-				})) as get_plan_selection_page_Result;
+					message,
+					unreviewedIds,
+				})) as block_atomic_plan_page_Result;
+				if (blocked._nay) {
+					await fail(blocked._nay);
+					return false;
+				}
+				if (blocked._yay.isDone) break;
+				cursor = blocked._yay.continueCursor;
+			}
+
+			const paths: string[] = [];
+			const destinationParentPaths: string[] = [];
+			cursor = null;
+			while (true) {
+				if (!(await refresh())) return false;
+				const page = (await ctx.runQuery(internal.files_pending_update_runs.get_atomic_plan_paths_page, {
+					...args,
+					cursor,
+				})) as get_atomic_plan_paths_page_Result;
 				if (page._nay) {
 					await fail(page._nay);
-					return null;
+					return false;
 				}
-				run = page._yay.run;
-				selected.push(...page._yay.page);
+				paths.push(...page._yay.paths);
+				destinationParentPaths.push(...page._yay.destinationParentPaths);
 				if (page._yay.isDone) break;
 				cursor = page._yay.continueCursor;
 			}
 
-			if (!run || selected.length !== run.itemCount) {
-				await fail({ name: "invalid_plan", message: "The review selection is incomplete." });
-				return null;
-			}
+			const within = (path: string, folder: string) => path === folder || path.startsWith(`${folder}/`);
+			// Link a Copy that contains, sits in, or replaces a path of the subset, or that holds a folder the
+			// subset moves into.
+			const linked = (path: string) =>
+				paths.some((linkedPath) => within(path, linkedPath) || within(linkedPath, path)) ||
+				destinationParentPaths.some((parent) => within(parent, path));
 
-			const dependencies = build_review_dependencies(run.kind, selected);
-			if (dependencies._nay) {
-				await fail(dependencies._nay);
-				return null;
+			for (let scanPage = 0; scanPage < 32; scanPage++) {
+				if (!(await refresh())) return false;
+				const page = (await ctx.runQuery(internal.files_pending_update_runs.get_plan_proposals_page, {
+					...args,
+					cursor: scanCursor,
+				})) as get_plan_proposals_page_Result;
+				if (page._nay) {
+					await fail(page._nay);
+					return false;
+				}
+				const selectedCopies = new Set(page._yay.selectedCopyIds);
+				const promoteIds = page._yay.page
+					.filter(
+						(context) =>
+							selectedCopies.has(context.proposal._id) &&
+							[context.path, context.destinationPath].some((path) => path !== null && linked(path)),
+					)
+					.map((context) => context.proposal._id);
+				if (promoteIds.length || !page._yay.isDone) {
+					const advanced = (await ctx.runMutation(internal.files_pending_update_runs.advance_atomic_plan, {
+						...args,
+						cursor: scanCursor,
+						nextCursor: page._yay.continueCursor,
+						promoteIds,
+						done: false,
+					})) as advance_atomic_plan_Result;
+					if (advanced._nay) {
+						await fail(advanced._nay);
+						return false;
+					}
+					// A promoted Copy adds its own paths. Start again, so Copies linked through it join too.
+					if (promoteIds.length) return true;
+				}
+				if (page._yay.isDone) {
+					const advanced = (await ctx.runMutation(internal.files_pending_update_runs.advance_atomic_plan, {
+						...args,
+						cursor: scanCursor,
+						nextCursor: null,
+						promoteIds: [],
+						done: true,
+					})) as advance_atomic_plan_Result;
+					if (advanced._nay) await fail(advanced._nay);
+					return !advanced._nay;
+				}
+				scanCursor = page._yay.continueCursor;
 			}
+			await ctx.scheduler.runAfter(0, internal.files_pending_update_runs.plan, args);
+			return false;
+		}
 
-			// Plain content changes need no workspace scan. Structural changes can invalidate hidden work.
-			if (dependencies._yay.scanRequired) {
-				cursor = null;
+		try {
+			planning: for (let pass = 0; pass < 32; pass++) {
+				const classified = (await ctx.runMutation(
+					internal.files_pending_update_runs.classify_plan_page,
+					args,
+				)) as classify_plan_page_Result;
+				if (classified._nay) {
+					await fail(classified._nay);
+					return null;
+				}
+				if (classified._yay.plan.phase === "classify") continue;
+				if (classified._yay.plan.phase === "copy_units") {
+					const staged = (await ctx.runMutation(
+						internal.files_pending_update_runs.stage_copy_units_page,
+						args,
+					)) as stage_copy_units_page_Result;
+					if (staged._nay) {
+						await fail(staged._nay);
+						return null;
+					}
+					continue;
+				}
+				if (classified._yay.plan.phase === "dependencies") {
+					const dependencies = await action_plan_dependency_page(ctx, args);
+					if (dependencies._nay) {
+						await fail(dependencies._nay);
+						return null;
+					}
+					continue;
+				}
+				if (classified._yay.plan.phase === "ready") {
+					const sealed = (await ctx.runMutation(
+						internal.files_pending_update_runs.seal_plan,
+						args,
+					)) as seal_plan_Result;
+					if (sealed._nay) await fail(sealed._nay);
+					return null;
+				}
+				const selected: NonNullable<get_plan_selection_page_Result["_yay"]>["page"] = [];
+				let run: Doc<"files_pending_update_runs"> | null = null;
+				let cursor: string | null = null;
+				let changed = false;
+
 				while (true) {
 					if (!(await refresh())) return null;
-					const page = (await ctx.runQuery(internal.files_pending_update_runs.get_plan_proposals_page, {
+					const page = (await ctx.runQuery(internal.files_pending_update_runs.get_plan_selection_page, {
 						...args,
 						cursor,
-					})) as get_plan_proposals_page_Result;
+					})) as get_plan_selection_page_Result;
+					// A changed item hides the links it had when it was reviewed. A blocked unit means an earlier
+					// pass found such a change. Block the whole bounded subset, but keep planning the Copy units.
+					if (page._nay?.name === "needs_review" || page._nay?.name === "not_found") {
+						changed = true;
+						break;
+					}
 					if (page._nay) {
 						await fail(page._nay);
 						return null;
 					}
-					const missing = dependencies._yay.unreviewed(page._yay.page);
-					if (missing.length) {
-						await fail(
-							{ name: "needs_review", message: "This action also affects unselected changes. Review them together." },
-							missing.map((context) => context.proposal._id),
-						);
-						return null;
-					}
+					run = page._yay.run;
+					selected.push(...page._yay.page);
 					if (page._yay.isDone) break;
 					cursor = page._yay.continueCursor;
 				}
-			}
 
-			const units = dependencies._yay.units;
-			const unitIds: Id<"files_pending_update_run_units">[] = [];
-
-			for (let offset = 0; offset < units.length; offset += SELECTION_PAGE_SIZE) {
-				const page = units.slice(offset, offset + SELECTION_PAGE_SIZE).map((unit) => {
-					const privateTargets = new Set(
-						unit
-							.filter(({ context }) => context.proposal.target.kind === "private")
-							.map(({ context }) => context.proposal.target.id),
-					);
-					const privateDiscardRoots =
-						run!.kind === "discard"
-							? unit.flatMap(({ item, context }) => {
-									if (
-										context.proposal.target.kind !== "private" ||
-										!context.privateVersion ||
-										context.privateAncestorIds.some((id) => privateTargets.has(id))
-									)
-										return [];
-									return [
-										{
-											privateNodeId: context.proposal.target.id,
-											...context.privateVersion,
-											pendingUpdateId: item.pendingUpdateId,
-											reviewedRevision: item.reviewedRevision,
-										},
-									];
-								})
-							: [];
-					return {
-						itemCount: unit.length,
-						deleteLast: unit.some(({ context }) => context.proposal.pendingArchive !== undefined),
-						privateDiscardRoots,
-					};
-				});
-
-				const staged = (await ctx.runMutation(internal.files_pending_update_runs.stage_plan_units, {
-					...args,
-					offset,
-					units: page,
-				})) as stage_plan_units_Result;
-				if (staged._nay) {
-					await fail(staged._nay);
+				if (changed) {
+					const message = "A reviewed change was revised during Save. Review these linked changes again.";
+					if (await block_atomic_subset(message, [], classified._yay.plan.cursor)) continue planning;
 					return null;
 				}
-				unitIds.push(...staged._yay);
-			}
 
-			const unitIdByItem = new Map(
-				units.flatMap((unit, index) => unit.map(({ item }) => [item._id, unitIds[index]!] as const)),
-			);
+				if (!run || selected.length !== run.plan.atomicItemCount) {
+					await fail({ name: "invalid_plan", message: "The review selection is incomplete." });
+					return null;
+				}
 
-			for (let offset = 0; offset < selected.length; offset += SELECTION_PAGE_SIZE) {
-				const items = selected.slice(offset, offset + SELECTION_PAGE_SIZE).map(({ item, context }) => ({
-					itemId: item._id,
-					unitId: unitIdByItem.get(item._id)!,
-					expectedPath: context.path,
-					expectedDestinationParentPath: context.destinationParentPath,
-				}));
+				const dependencies = await build_review_dependencies(ctx, args, run.kind, selected);
+				if (dependencies._nay) {
+					await fail(dependencies._nay);
+					return null;
+				}
+				if (dependencies._yay.promoteIds.length) {
+					const promoted = (await ctx.runMutation(internal.files_pending_update_runs.advance_atomic_plan, {
+						...args,
+						cursor: run.plan.cursor,
+						nextCursor: null,
+						promoteIds: [...dependencies._yay.promoteIds],
+						done: false,
+					})) as advance_atomic_plan_Result;
+					if (promoted._nay) {
+						await fail(promoted._nay);
+						return null;
+					}
+					continue;
+				}
 
-				const staged = (await ctx.runMutation(internal.files_pending_update_runs.stage_plan_items, {
+				// Plain content changes need no workspace scan. Structural changes can invalidate hidden work.
+				if (dependencies._yay.scanRequired) {
+					cursor = run.plan.cursor;
+					let scanDone = false;
+					for (let scanPage = 0; scanPage < 32; scanPage++) {
+						if (!(await refresh())) return null;
+						const page = (await ctx.runQuery(internal.files_pending_update_runs.get_plan_proposals_page, {
+							...args,
+							cursor,
+						})) as get_plan_proposals_page_Result;
+						if (page._nay) {
+							await fail(page._nay);
+							return null;
+						}
+						const selectedCopies = new Set(page._yay.selectedCopyIds);
+						const missing = dependencies._yay
+							.unreviewed(page._yay.page)
+							.filter((context) => !selectedCopies.has(context.proposal._id));
+						// Block only the ordinary subset. The unselected proposal is never added to this Save.
+						if (missing.length) {
+							const message = "This action also affects unselected changes. Review them together.";
+							const unreviewedIds = missing.map((context) => context.proposal._id);
+							if (await block_atomic_subset(message, unreviewedIds, cursor)) continue planning;
+							return null;
+						}
+						const promoteIds = page._yay.page
+							.filter((context) => selectedCopies.has(context.proposal._id) && dependencies._yay.linkedCopy(context))
+							.map((context) => context.proposal._id);
+						if (promoteIds.length || !page._yay.isDone) {
+							const advanced = (await ctx.runMutation(internal.files_pending_update_runs.advance_atomic_plan, {
+								...args,
+								cursor,
+								nextCursor: page._yay.continueCursor,
+								promoteIds,
+								done: false,
+							})) as advance_atomic_plan_Result;
+							if (advanced._nay) {
+								await fail(advanced._nay);
+								return null;
+							}
+							if (promoteIds.length) continue planning;
+						}
+						if (page._yay.isDone) {
+							scanDone = true;
+							break;
+						}
+						cursor = page._yay.continueCursor;
+					}
+					if (!scanDone) {
+						await ctx.scheduler.runAfter(0, internal.files_pending_update_runs.plan, args);
+						return null;
+					}
+				} else cursor = run.plan.cursor;
+
+				const units = dependencies._yay.units;
+				const unitIds: Id<"files_pending_update_run_units">[] = [];
+
+				for (let offset = 0; offset < units.length; offset += SELECTION_PAGE_SIZE) {
+					const page = units.slice(offset, offset + SELECTION_PAGE_SIZE).map((unit) => {
+						const privateTargets = new Set(
+							unit
+								.filter(({ context }) => context.proposal.target.kind === "private")
+								.map(({ context }) => context.proposal.target.id),
+						);
+						const privateDiscardRoots =
+							run!.kind === "discard"
+								? unit.flatMap(({ item, context }) => {
+										if (
+											context.proposal.target.kind !== "private" ||
+											!context.privateVersion ||
+											context.privateAncestorIds.some((id) => privateTargets.has(id))
+										)
+											return [];
+										return [
+											{
+												privateNodeId: context.proposal.target.id,
+												...context.privateVersion,
+												pendingUpdateId: item.pendingUpdateId,
+												reviewedRevision: item.reviewedRevision,
+											},
+										];
+									})
+								: [];
+						return {
+							order: unit[0]!.item.order,
+							itemCount: unit.length,
+							deleteLast: unit.some(({ context }) => context.proposal.pendingArchive !== undefined),
+							privateDiscardRoots,
+						};
+					});
+
+					const staged = (await ctx.runMutation(internal.files_pending_update_runs.stage_plan_units, {
+						...args,
+						offset,
+						units: page,
+					})) as stage_plan_units_Result;
+					if (staged._nay) {
+						await fail(staged._nay);
+						return null;
+					}
+					unitIds.push(...staged._yay);
+				}
+
+				const unitIdByItem = new Map(
+					units.flatMap((unit, index) => unit.map(({ item }) => [item._id, unitIds[index]!] as const)),
+				);
+
+				for (let offset = 0; offset < selected.length; offset += SELECTION_PAGE_SIZE) {
+					const items = selected.slice(offset, offset + SELECTION_PAGE_SIZE).map(({ item, context }) => ({
+						itemId: item._id,
+						unitId: unitIdByItem.get(item._id)!,
+						expectedPath: context.path,
+						expectedDestinationParentPath: context.destinationParentPath,
+					}));
+
+					const staged = (await ctx.runMutation(internal.files_pending_update_runs.stage_plan_items, {
+						...args,
+						offset,
+						items,
+					})) as stage_plan_items_Result;
+					if (staged._nay) {
+						await fail(staged._nay);
+						return null;
+					}
+				}
+
+				const advanced = (await ctx.runMutation(internal.files_pending_update_runs.advance_atomic_plan, {
 					...args,
-					offset,
-					items,
-				})) as stage_plan_items_Result;
-				if (staged._nay) {
-					await fail(staged._nay);
+					cursor,
+					nextCursor: null,
+					promoteIds: [],
+					done: true,
+				})) as advance_atomic_plan_Result;
+				if (advanced._nay) {
+					await fail(advanced._nay);
 					return null;
 				}
 			}
-
-			const sealed = (await ctx.runMutation(internal.files_pending_update_runs.seal_plan, args)) as seal_plan_Result;
-			if (sealed._nay) await fail(sealed._nay);
+			await ctx.scheduler.runAfter(0, internal.files_pending_update_runs.plan, args);
 		} catch (error) {
 			console.error("Review planning failed", { runId: args.runId, error });
 			// The recovery lease retries this exact selection, including after a lost response.
@@ -1462,9 +2484,10 @@ export const begin_unit_review = internalMutation({
 		if (checked._nay) return checked;
 		const { run, unit } = checked._yay;
 		const reviewVersion = await db_get_review_version(ctx, run);
-		const required = run.revalidateRemaining || reviewVersion !== run.reviewVersion;
+		const changed = run.revalidateRemaining || reviewVersion !== run.reviewVersion;
+		const required = unit.kind === "atomic" && changed;
 		// Own commits advance the run clock. Later units must still check changes seen before that commit.
-		if (required && !run.revalidateRemaining)
+		if (changed && !run.revalidateRemaining)
 			await ctx.db.patch("files_pending_update_runs", run._id, { revalidateRemaining: true });
 		await ctx.db.patch("files_pending_update_run_units", unit._id, {
 			validatedReviewVersion: required ? null : reviewVersion,
@@ -1506,6 +2529,10 @@ async function db_finish_unit(
 	if (unit.workId && args.status !== "completed") await files_review_workpool.cancel(ctx, unit.workId);
 	await ctx.db.patch("files_pending_update_run_units", unit._id, {
 		status: args.status,
+		dependentsSettled: !(await ctx.db
+			.query("files_pending_update_run_dependencies")
+			.withIndex("by_required_settled", (q) => q.eq("requiredUnitId", unit._id).eq("settled", false))
+			.first()),
 		workId: null,
 		errorCode: args.code ?? null,
 		errorMessage: args.message ?? null,
@@ -1520,6 +2547,7 @@ async function db_finish_unit(
 	});
 	await ctx.db.patch("activities", activity._id, {
 		progress: { ...activity.progress!, [args.status]: activity.progress![args.status] + unit.itemCount },
+		deadlineAt: now + RUN_TIMEOUT_MS,
 		updatedAt: now,
 	});
 	await ctx.scheduler.runAfter(0, internal.files_pending_update_runs.advance, { runId: run._id });
@@ -1562,6 +2590,7 @@ export async function files_pending_update_runs_db_request_stop(
 					? "The review reached its execution deadline."
 					: null,
 	});
+	await files_pending_holds_db_finish(ctx, { producer: { kind: "files_pending_update_run", id: run._id } });
 	const preparing = await ctx.db
 		.query("files_pending_update_run_units")
 		.withIndex("by_run_status_deleteLast_order", (q) => q.eq("runId", run._id).eq("status", "preparing"))
@@ -1596,6 +2625,50 @@ export const advance = internalMutation({
 			return null;
 		}
 
+		// Settle one reverse page before choosing work. A large folder never wakes all children in one mutation.
+		for (const status of ["completed", "blocked", "failed"] as const) {
+			const finished = await ctx.db
+				.query("files_pending_update_run_units")
+				.withIndex("by_run_status_dependentsSettled_order", (q) =>
+					q.eq("runId", run._id).eq("status", status).eq("dependentsSettled", false),
+				)
+				.first();
+			if (!finished) continue;
+			const edges = await ctx.db
+				.query("files_pending_update_run_dependencies")
+				.withIndex("by_required_settled", (q) => q.eq("requiredUnitId", finished._id).eq("settled", false))
+				.take(PLAN_PAGE_SIZE);
+			for (const edge of edges) {
+				const dependent = await ctx.db.get("files_pending_update_run_units", edge.unitId);
+				if (!dependent) throw should_never_happen("Missing dependent review unit", { unitId: edge.unitId });
+				const remaining = dependent.remainingPrerequisiteCount - 1;
+				await ctx.db.patch("files_pending_update_run_dependencies", edge._id, { settled: true });
+				await ctx.db.patch("files_pending_update_run_units", dependent._id, { remainingPrerequisiteCount: remaining });
+				if (dependent.status !== "waiting") continue;
+				if (status !== "completed")
+					await db_finish_unit(ctx, {
+						run: (await ctx.db.get("files_pending_update_runs", run._id))!,
+						unit: dependent,
+						status: "blocked",
+						code: "needs_review",
+						message: "A required parent or media change was not saved. Review the remaining changes.",
+					});
+				else if (remaining === 0)
+					await ctx.db.patch("files_pending_update_run_units", dependent._id, { status: "queued" });
+			}
+			const remaining = await ctx.db
+				.query("files_pending_update_run_dependencies")
+				.withIndex("by_required_settled", (q) => q.eq("requiredUnitId", finished._id).eq("settled", false))
+				.first();
+			if (!remaining) await ctx.db.patch("files_pending_update_run_units", finished._id, { dependentsSettled: true });
+			if (edges.length) {
+				await ctx.db.patch("activities", activity._id, { deadlineAt: now + RUN_TIMEOUT_MS, updatedAt: now });
+				await ctx.db.patch("files_pending_update_runs", run._id, { updatedAt: now });
+				await ctx.scheduler.runAfter(0, internal.files_pending_update_runs.advance, args);
+				return null;
+			}
+		}
+
 		if (run.finishedUnitCount === run.unitCount) {
 			await ctx.db.patch("files_pending_update_runs", run._id, {
 				step: "finished",
@@ -1610,6 +2683,7 @@ export const advance = internalMutation({
 				errorMessage: status === "failed" || status === "partial" ? "Some changes still need review." : null,
 				now,
 			});
+			await files_pending_holds_db_finish(ctx, { producer: { kind: "files_pending_update_run", id: run._id } });
 			return null;
 		}
 
@@ -1647,7 +2721,31 @@ export const advance = internalMutation({
 			.withIndex("by_run_status_deleteLast_order", (q) => q.eq("runId", run._id).eq("status", "queued"))
 			.first();
 
-		if (!unit) throw should_never_happen("Review has unfinished units but no queued work", { runId: run._id });
+		if (!unit) {
+			const waiting = await ctx.db
+				.query("files_pending_update_run_units")
+				.withIndex("by_run_status_deleteLast_order", (q) => q.eq("runId", run._id).eq("status", "waiting"))
+				.first();
+			if (!waiting) throw should_never_happen("Review has unfinished units but no queued work", { runId: run._id });
+			await db_finish_unit(ctx, {
+				run,
+				unit: waiting,
+				status: "blocked",
+				code: "needs_review",
+				message: "These changes depend on each other. Review them together.",
+			});
+			return null;
+		}
+		if (unit.errorCode) {
+			await db_finish_unit(ctx, {
+				run,
+				unit,
+				status: "blocked",
+				code: unit.errorCode,
+				message: unit.errorMessage ?? "Review this change again.",
+			});
+			return null;
+		}
 
 		await ctx.db.patch("files_pending_update_run_units", unit._id, {
 			status: "preparing",
@@ -1754,6 +2852,9 @@ export const attach_prepared_item = internalMutation({
 			return Result({ _nay: { name: "needs_review", message: "The reviewed change is no longer current." } });
 		if (item.prepared) await files_pending_updates_db_retire_prepared_content(ctx, item.prepared);
 		await ctx.db.patch("files_pending_update_run_items", item._id, { prepared: args.prepared });
+		const now = Date.now();
+		await ctx.db.patch("files_pending_update_runs", checked._yay.run._id, { updatedAt: now });
+		await ctx.db.patch("activities", checked._yay.activity._id, { updatedAt: now, deadlineAt: now + RUN_TIMEOUT_MS });
 		return Result({ _yay: null });
 	},
 });
@@ -1879,7 +2980,12 @@ export const prepare_unit = internalAction({
 				}
 
 				// This graph contains only this unit. A new link to another unit needs a new review.
-				const dependencies = build_review_dependencies(kind, reviewed);
+				const dependencies = await build_review_dependencies(
+					ctx,
+					{ runId: args.runId, fence: args.fence, revalidation },
+					kind,
+					reviewed,
+				);
 				if (dependencies._nay) {
 					await fail(dependencies._nay);
 					return null;
@@ -2005,6 +3111,7 @@ export const prepare_unit = internalAction({
 							return null;
 						}
 						attached = true;
+						item.prepared = prepared._yay;
 					} finally {
 						if (!attached)
 							await ctx.runMutation(internal.files_pending_updates.retire_prepared_content, {
@@ -2027,6 +3134,24 @@ export const prepare_unit = internalAction({
 							cursor = refreshed._yay.continueCursor;
 						}
 						lastRefreshAt = Date.now();
+					}
+				}
+
+				// Preparation can change clocks. Check media only after every item is ready.
+				const reviewedPendingUpdateIds = new Set(selected.map(({ item }) => item.pendingUpdateId));
+				for (const { item, proposal } of selected) {
+					if (!item.prepared || !proposal.mediaDependencySetId) continue;
+					const media = await files_pending_media_action_validate(ctx, {
+						userId: scope.run.userId,
+						pendingUpdateId: item.pendingUpdateId,
+						reviewedRevision: item.reviewedRevision,
+						operationBatchId: item.prepared.operationBatchIds[0],
+						reviewedPendingUpdateIds,
+						reviewRunId: scope.run._id,
+					});
+					if (media._nay) {
+						await fail(media._nay);
+						return null;
 					}
 				}
 			}
@@ -2082,7 +3207,11 @@ export const commit_unit = internalMutation({
 			const context = run.kind === "accept" ? await db_get_plan_context(ctx, proposal) : null;
 			if (
 				context &&
-				(context.path !== item.expectedPath || context.destinationParentPath !== item.expectedDestinationParentPath)
+				(context.path !== item.expectedPath ||
+					context.destinationParentPath !== item.expectedDestinationParentPath ||
+					(item.privateVersion !== null &&
+						(context.privateVersion?.creationGeneration !== item.privateVersion.creationGeneration ||
+							context.privateVersion?.structuralRevision !== item.privateVersion.structuralRevision)))
 			)
 				refuse_unit("needs_review", "A reviewed source or destination moved. Review it again.");
 			selected.push({ item, proposal, context });
@@ -2145,6 +3274,20 @@ export const commit_unit = internalMutation({
 					!(proposal.target.kind === "saved" && replacedIds.has(proposal.target.id)) &&
 					(proposal.content || proposal.pendingReplacement || proposal.target.kind === "private"),
 			);
+			// Capture every proof before this atomic unit changes media or placement clocks.
+			const validatedMedia = new Map<Id<"files_pending_update_operation_batches">, files_pending_media_ValidatedSave>();
+			for (const { item, proposal } of contentItems) {
+				if (!proposal.mediaDependencySetId) continue;
+				if (!item.prepared) refuse_unit("preparing", "A reviewed file is still preparing.");
+				const validated = await files_pending_media_db_validate_prepared(ctx, {
+					userId: run.userId,
+					prepared: item.prepared,
+					reviewedPendingUpdateIds,
+					reviewRunId: run._id,
+				});
+				if (validated._nay) refuse_unit(validated._nay.name ?? "needs_review", validated._nay.message);
+				if (validated._yay) validatedMedia.set(item.prepared.operationBatchIds[0]!, validated._yay);
+			}
 
 			// Signed-in events do not debit the local meter. Check this unit's full cost before any write.
 			const costByPayer = new Map<Id<"users">, number>();
@@ -2238,6 +3381,7 @@ export const commit_unit = internalMutation({
 					userId: run.userId,
 					prepared: item.prepared,
 					reviewedPendingUpdateIds,
+					reviewRunId: run._id,
 				});
 				if (saved._nay) refuse_unit(saved._nay.name ?? "needs_review", saved._nay.message);
 			}
@@ -2309,8 +3453,28 @@ export const commit_unit = internalMutation({
 					userId: run.userId,
 					prepared: item.prepared!,
 					reviewedPendingUpdateIds,
+					reviewRunId: run._id,
+					validatedMedia: validatedMedia.get(item.prepared!.operationBatchIds[0]!),
 				});
 				if (saved._nay) refuse_unit(saved._nay.name ?? "needs_review", saved._nay.message);
+				if (item.prepared!.kind === "private" && item.prepared!.partial) {
+					// Partial publication keeps this proposal on its new saved target.
+					const producer = { kind: "files_pending_update_run", id: run._id } as const;
+					await files_pending_holds_db_release(ctx, {
+						producer,
+						pendingUpdateId: item.pendingUpdateId,
+						role: "review",
+					});
+					const held = await files_pending_holds_db_acquire(ctx, {
+						producer,
+						pendingUpdateId: item.pendingUpdateId,
+						target: saved._yay.target,
+						privateGeneration: null,
+						expectedRevision: item.reviewedRevision + 1,
+						role: "review",
+					});
+					if (held._nay) refuse_unit(held._nay.name, held._nay.message);
+				}
 			}
 
 			for (const { proposal } of moves) {
@@ -2378,7 +3542,7 @@ export const fail_unit = internalMutation({
 
 		if (args.unreviewedIds?.length)
 			await ctx.db.patch("files_pending_update_runs", run._id, {
-				needsReviewIds: [...new Set([...run.needsReviewIds, ...args.unreviewedIds])].slice(0, 20),
+				needsReviewIds: merge_needs_review_ids(run, args.unreviewedIds),
 			});
 
 		if (
@@ -2468,6 +3632,10 @@ export async function files_pending_update_runs_db_delete_run_batch(
 	if (!run) return { done: true, deletedCount: 0 };
 	if (run.step !== "finished")
 		await files_pending_update_runs_db_request_stop(ctx, { runId: run._id, reason: "permission", now: Date.now() });
+	const released = await files_pending_holds_db_release_producer_batch(ctx, {
+		producer: { kind: "files_pending_update_run", id: run._id },
+	});
+	if (!released.done || released.deletedCount) return { done: false, deletedCount: released.deletedCount };
 	const batchSize = Math.max(1, Math.min(args.batchSize ?? 8, 8));
 	const items = await ctx.db
 		.query("files_pending_update_run_items")
@@ -2484,6 +3652,12 @@ export async function files_pending_update_runs_db_delete_run_batch(
 		.take(batchSize);
 	for (const unit of units) await ctx.db.delete("files_pending_update_run_units", unit._id);
 	if (units.length) return { done: false, deletedCount: units.length };
+	const dependencies = await ctx.db
+		.query("files_pending_update_run_dependencies")
+		.withIndex("by_run", (q) => q.eq("runId", run._id))
+		.take(batchSize);
+	for (const dependency of dependencies) await ctx.db.delete("files_pending_update_run_dependencies", dependency._id);
+	if (dependencies.length) return { done: false, deletedCount: dependencies.length };
 	const activity = await activities_db_require_by_source_id(ctx, run._id);
 	const removed = await activities_db_delete(ctx, activity._id);
 	if (!removed.done) return removed;
@@ -2588,11 +3762,13 @@ export const list_items = query({
 		for (const item of items.page) {
 			const unit = item.unitId ? await ctx.db.get("files_pending_update_run_units", item.unitId) : null;
 			let status: "queued" | "running" | "completed" | "needs_review" | "failed" | "canceled" =
-				unit?.status === "preparing"
-					? "running"
-					: unit?.status === "blocked"
-						? "needs_review"
-						: (unit?.status ?? "queued");
+				unit?.status === "waiting"
+					? "queued"
+					: unit?.status === "preparing"
+						? "running"
+						: unit?.status === "blocked"
+							? "needs_review"
+							: (unit?.status ?? "queued");
 			let message = unit?.errorMessage ?? undefined;
 			if ((status === "queued" || status === "running") && owned._yay.run.step === "finished") {
 				status = activity.status === "canceled" || activity.status === "timed_out" ? "canceled" : "needs_review";

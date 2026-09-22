@@ -65,6 +65,15 @@ const access_control_role_ref_validator = v.union(
 	v.id("access_control_roles"),
 );
 
+export const ai_chat_workspaces_source_validator = v.object({
+	organizationId: v.id("organizations"),
+	workspaceId: v.id("organizations_workspaces"),
+	userId: v.id("users"),
+	threadId: v.id("ai_chat_threads"),
+	membershipId: v.id("organizations_workspaces_users"),
+	membershipLifetime: v.number(),
+});
+
 export const ai_chat_bash_result_validator = v.object({
 	title: v.string(),
 	output: v.string(),
@@ -80,7 +89,9 @@ export const ai_chat_bash_result_validator = v.object({
 		stdoutLength: v.number(),
 		stderrLength: v.number(),
 		pathIndexTruncated: v.boolean(),
-		observedPaths: v.array(v.string()),
+		observedPaths: v.array(
+			v.object({ workspace: v.union(v.literal("current"), v.literal("personal")), path: v.string() }),
+		),
 		observedPathsTruncated: v.boolean(),
 		/**
 		 * The jobs `wait` stopped polling for because their finish wakes the agent. The Bash tool
@@ -212,6 +223,24 @@ export const bash_shell_state_validator = v.object({
 	openFileDescriptors: v.array(v.number()),
 });
 
+export const files_transfer_scope_validator = v.object({
+	organizationId: v.id("organizations"),
+	workspaceId: v.id("organizations_workspaces"),
+	membershipId: v.id("organizations_workspaces_users"),
+	membershipLifetime: v.number(),
+});
+
+export const files_transfer_conflict_policy_validator = v.object({
+	file: v.union(v.literal("ask"), v.literal("replace"), v.literal("skip"), v.literal("error")),
+	folder: v.union(
+		v.literal("ask"),
+		v.literal("merge"),
+		v.literal("replace_empty"),
+		v.literal("skip"),
+		v.literal("error"),
+	),
+});
+
 export const files_transfer_source_version_validator = v.union(
 	...files_content_version_validator.members,
 	v.object({
@@ -225,6 +254,18 @@ export const files_transfer_source_version_validator = v.union(
 		collaborationEnabled: v.union(v.boolean(), v.null()),
 	}),
 );
+
+export const files_media_dependency_validator = v.object({
+	src: v.string(),
+	target: files_pending_target_validator,
+	assetId: v.id("files_r2_assets"),
+	version: files_transfer_source_version_validator,
+});
+
+export const files_media_validation_versions_validator = v.object({
+	versions: v.array(v.object({ id: v.id("files_media_validation_versions"), revision: v.number() })),
+	pendingVersions: v.array(v.object({ id: v.id("files_pending_review_versions"), revision: v.number() })),
+});
 
 export const files_metadata_entries_validator = v.array(
 	v.object({ key: v.string(), value: v.union(v.string(), v.number(), v.boolean()) }),
@@ -450,15 +491,24 @@ const app_convex_schema = defineSchema({
 		 **/
 		bashJobWakeupCount: v.optional(v.number()),
 		activeRun: v.optional(ai_chat_thread_active_run_validator),
-	}).index("by_organization_workspace_archived_lastMessageAt", [
-		"organizationId",
-		"workspaceId",
-		"archived",
-		"lastMessageAt",
-	]),
+	})
+		.index("by_organization_workspace_archived_lastMessageAt", [
+			"organizationId",
+			"workspaceId",
+			"archived",
+			"lastMessageAt",
+		])
+		.index("by_organization_workspace_createdBy_archived_lastMessageAt", [
+			"organizationId",
+			"workspaceId",
+			"createdBy",
+			"archived",
+			"lastMessageAt",
+		])
+		.index("by_createdBy", ["createdBy"]),
 
 	/**
-	 * One named Bash shell of a thread. Threads are workspace-shared, so their shells are too.
+	 * One named Bash shell of a creator-private thread.
 	 * A thread has at most 10 shells. `state: null` means a fresh interpreter.
 	 */
 	ai_chat_bash_shells: defineTable({
@@ -574,6 +624,51 @@ const app_convex_schema = defineSchema({
 				shellState: v.union(bash_shell_state_validator, v.null()),
 				allowDbFilesMkdir: v.boolean(),
 				workId: v.union(vWorkId, v.null()),
+				workerGeneration: v.number(),
+				// Only durable Copy waiting is excluded from the shell lifetime.
+				excludedCopyWaitMs: v.optional(v.number()),
+				copy: v.optional(
+					v.union(
+						v.object({
+							phase: v.literal("admitting"),
+							commandNumber: v.number(),
+							lastArg: v.string(),
+							sourceScope: files_transfer_scope_validator,
+							destinationScope: files_transfer_scope_validator,
+							sourceWorkspace: v.union(v.literal("current"), v.literal("personal")),
+							destinationWorkspace: v.union(v.literal("current"), v.literal("personal")),
+							targetParent: files_pending_parent_validator,
+							targetPath: v.string(),
+							targetName: v.union(v.string(), v.null()),
+							missingParentNames: v.array(v.string()),
+							conflictPolicy: files_transfer_conflict_policy_validator,
+							expectedArgCount: v.number(),
+							expectedSourceCount: v.number(),
+							pageCount: v.number(),
+							argsCount: v.number(),
+							sourcesCount: v.number(),
+							sealed: v.boolean(),
+							admissionDeadlineAt: v.number(),
+							runId: v.union(v.id("files_transfer_runs"), v.null()),
+						}),
+						v.object({
+							phase: v.literal("waiting"),
+							commandNumber: v.number(),
+							lastArg: v.string(),
+							runId: v.id("files_transfer_runs"),
+							waitStartedAt: v.number(),
+						}),
+						v.object({
+							phase: v.literal("delivering"),
+							commandNumber: v.number(),
+							lastArg: v.string(),
+							// Null when Copy admission refused before a transfer run existed.
+							runId: v.union(v.id("files_transfer_runs"), v.null()),
+							workId: vWorkId,
+							result: v.object({ stdout: v.string(), stderr: v.string(), exitCode: v.number() }),
+						}),
+					),
+				),
 				watchdogId: v.union(v.id("_scheduled_functions"), v.null()),
 				stopRequestedAt: v.union(v.number(), v.null()),
 				/**
@@ -596,6 +691,14 @@ const app_convex_schema = defineSchema({
 		// `userId` prefix; query with `.gt("job.jobNumber", undefined)` to skip them.
 		.index("by_user_job", ["userId", "job.jobNumber"])
 		.index("by_organization_workspace_thread", ["organizationId", "workspaceId", "threadId"]),
+
+	ai_chat_bash_job_copy_pages: defineTable({
+		invocationId: v.id("ai_chat_bash_invocations"),
+		commandNumber: v.number(),
+		page: v.number(),
+		args: v.array(v.string()),
+		sources: v.array(files_pending_target_validator),
+	}).index("by_invocation_command_page", ["invocationId", "commandNumber", "page"]),
 
 	ai_chat_bash_invocation_transfers: defineTable({
 		organizationId: v.id("organizations"),
@@ -707,6 +810,18 @@ const app_convex_schema = defineSchema({
 
 	// #endregion ai
 
+	// #region ai code read budgets
+	ai_chat_code_read_budgets: defineTable({
+		threadId: v.id("ai_chat_threads"),
+		userId: v.id("users"),
+		remainingReadBytes: v.number(),
+		expiresAt: v.number(),
+	})
+		.index("by_expiresAt", ["expiresAt"])
+		.index("by_thread", ["threadId"])
+		.index("by_user", ["userId"]),
+	// #endregion ai code read budgets
+
 	// #region public api
 	public_api_grants: defineTable({
 		organizationId: v.id("organizations"),
@@ -715,6 +830,8 @@ const app_convex_schema = defineSchema({
 		threadId: v.union(v.id("ai_chat_threads"), v.null()),
 		principalKey: v.string(),
 		tokenHash: v.string(),
+		agentSource: v.union(ai_chat_workspaces_source_validator, v.null()),
+		codeReadBudgetId: v.union(v.id("ai_chat_code_read_budgets"), v.null()),
 		scopes: v.array(v.union(v.literal("files:list"), v.literal("files:read"), v.literal("files:download"))),
 		remainingReadBytes: v.number(),
 		pathPrefix: v.union(v.string(), v.null()),
@@ -851,6 +968,54 @@ const app_convex_schema = defineSchema({
 	// #endregion value store
 
 	// #region files
+	// Null workspace covers organization-wide access changes without per-workspace writes.
+	files_media_validation_versions: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.union(v.id("organizations_workspaces"), v.null()),
+		revision: v.number(),
+	}).index("by_organization_workspace", ["organizationId", "workspaceId"]),
+
+	// A set owns its mapping docs, not the referenced media assets.
+	files_media_dependency_sets: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		userId: v.id("users"),
+		owner: v.union(
+			v.object({ kind: v.literal("capture"), itemId: v.id("files_transfer_items") }),
+			v.object({ kind: v.literal("proposal"), pendingUpdateId: v.id("files_pending_updates") }),
+			v.object({ kind: v.literal("cleanup") }),
+		),
+		generation: v.number(),
+		expectedCount: v.number(),
+		count: v.number(),
+		sealed: v.boolean(),
+		captureProof: v.optional(
+			v.object({
+				attempt: v.number(),
+				workId: vWorkId,
+				sourceTextDigest: v.string(),
+				textDigest: v.union(v.string(), v.null()),
+				validatedCount: v.number(),
+				...files_media_validation_versions_validator.fields,
+			}),
+		),
+	})
+		.index("by_owner_kind", ["owner.kind"])
+		.index("by_owner_pendingUpdate", ["owner.pendingUpdateId"])
+		.index("by_organization_workspace", ["organizationId", "workspaceId"])
+		.index("by_user", ["userId"]),
+
+	files_media_dependencies: defineTable({
+		setId: v.id("files_media_dependency_sets"),
+		order: v.number(),
+		sourceSrc: v.string(),
+		dependency: files_media_dependency_validator,
+	})
+		.index("by_set_order", ["setId", "order"])
+		.index("by_set_sourceSrc", ["setId", "sourceSrc"])
+		.index("by_set_src", ["setId", "dependency.src"])
+		.index("by_target", ["dependency.target.kind", "dependency.target.id"]),
+
 	/** A paged review must see the same owner's proposal set at its final fence. */
 	files_pending_review_versions: defineTable({
 		organizationId: v.id("organizations"),
@@ -859,6 +1024,31 @@ const app_convex_schema = defineSchema({
 		revision: v.number(),
 	})
 		.index("by_organization_workspace_user", ["organizationId", "workspaceId", "userId"])
+		.index("by_user", ["userId"]),
+
+	files_pending_holds: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		userId: v.id("users"),
+		pendingUpdateId: v.id("files_pending_updates"),
+		target: files_pending_target_validator,
+		privateGeneration: v.union(v.number(), v.null()),
+		producer: v.union(
+			v.object({ kind: v.literal("files_transfer_run"), id: v.id("files_transfer_runs") }),
+			v.object({ kind: v.literal("files_pending_update_run"), id: v.id("files_pending_update_runs") }),
+		),
+		role: v.union(
+			v.literal("source"),
+			v.literal("destination_parent"),
+			v.literal("preparing_output"),
+			v.literal("output"),
+			v.literal("review"),
+		),
+	})
+		.index("by_pendingUpdate", ["pendingUpdateId"])
+		.index("by_target_role", ["target.kind", "target.id", "role"])
+		.index("by_producer_pendingUpdate_role", ["producer.kind", "producer.id", "pendingUpdateId", "role"])
+		.index("by_organization_workspace", ["organizationId", "workspaceId"])
 		.index("by_user", ["userId"]),
 
 	files_pending_update_runs: defineTable({
@@ -874,10 +1064,24 @@ const app_convex_schema = defineSchema({
 		unitCount: v.number(),
 		finishedUnitCount: v.number(),
 		plannedItemCount: v.number(),
+		plan: v.object({
+			phase: v.union(
+				v.literal("classify"),
+				v.literal("atomic"),
+				v.literal("copy_units"),
+				v.literal("dependencies"),
+				v.literal("ready"),
+			),
+			cursor: v.union(v.string(), v.null()),
+			itemId: v.union(v.id("files_pending_update_run_items"), v.null()),
+			dependencyCursor: v.union(v.string(), v.null()),
+			atomicItemCount: v.number(),
+		}),
 		reviewVersion: v.number(),
 		revalidateRemaining: v.boolean(),
 		fence: v.number(),
 		planningAttempts: v.number(),
+		outputReviewUntil: v.optional(v.number()),
 		needsReviewIds: v.array(v.id("files_pending_updates")),
 		updatedAt: v.number(),
 	})
@@ -892,6 +1096,12 @@ const app_convex_schema = defineSchema({
 		pendingUpdateId: v.id("files_pending_updates"),
 		reviewedRevision: v.number(),
 		selectedContentStateId: v.union(v.id("files_pending_update_yjs_states"), v.null()),
+		planKind: v.union(v.literal("copy"), v.literal("atomic"), v.null()),
+		privateVersion: v.union(v.object({ creationGeneration: v.number(), structuralRevision: v.number() }), v.null()),
+		mediaDependencySet: v.union(
+			v.object({ setId: v.id("files_media_dependency_sets"), generation: v.number() }),
+			v.null(),
+		),
 		target: files_pending_target_validator,
 		unitId: v.union(v.id("files_pending_update_run_units"), v.null()),
 		billedUserId: v.union(v.id("users"), v.null()),
@@ -901,6 +1111,8 @@ const app_convex_schema = defineSchema({
 	})
 		.index("by_run_order", ["runId", "order"])
 		.index("by_run_pendingUpdate", ["runId", "pendingUpdateId"])
+		.index("by_run_planKind_order", ["runId", "planKind", "order"])
+		.index("by_run_target", ["runId", "target.kind", "target.id"])
 		.index("by_unit_order", ["unitId", "order"])
 		.index("by_unit_targetKind_order", ["unitId", "target.kind", "order"])
 		.index("by_target", ["target.kind", "target.id"]),
@@ -908,9 +1120,13 @@ const app_convex_schema = defineSchema({
 	files_pending_update_run_units: defineTable({
 		runId: v.id("files_pending_update_runs"),
 		order: v.number(),
+		kind: v.union(v.literal("copy"), v.literal("atomic")),
+		remainingPrerequisiteCount: v.number(),
+		dependentsSettled: v.boolean(),
 		deleteLast: v.boolean(),
 		itemCount: v.number(),
 		status: v.union(
+			v.literal("waiting"),
 			v.literal("queued"),
 			v.literal("preparing"),
 			v.literal("completed"),
@@ -937,7 +1153,19 @@ const app_convex_schema = defineSchema({
 		),
 	})
 		.index("by_run_order", ["runId", "order"])
-		.index("by_run_status_deleteLast_order", ["runId", "status", "deleteLast", "order"]),
+		.index("by_run_status_deleteLast_order", ["runId", "status", "deleteLast", "order"])
+		.index("by_run_status_dependentsSettled_order", ["runId", "status", "dependentsSettled", "order"]),
+
+	files_pending_update_run_dependencies: defineTable({
+		runId: v.id("files_pending_update_runs"),
+		unitId: v.id("files_pending_update_run_units"),
+		requiredUnitId: v.id("files_pending_update_run_units"),
+		kind: v.union(v.literal("parent"), v.literal("media")),
+		settled: v.boolean(),
+	})
+		.index("by_run", ["runId"])
+		.index("by_unit_required_kind", ["unitId", "requiredUnitId", "kind"])
+		.index("by_required_settled", ["requiredUnitId", "settled"]),
 
 	/**
 	 * One file a chat tool is creating: a generated picture, a file a browser run emitted, or a file
@@ -948,6 +1176,7 @@ const app_convex_schema = defineSchema({
 	 * file, and the file owns its own lifetime.
 	 */
 	files_ingestion_receipts: defineTable({
+		agentSource: v.optional(ai_chat_workspaces_source_validator),
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
 		userId: v.id("users"),
@@ -1039,6 +1268,8 @@ const app_convex_schema = defineSchema({
 		structuralRevision: v.number(),
 		proposalRevision: v.number(),
 		savedNodeId: v.id("files_nodes"),
+		copiedWritePolicy: v.optional(files_nodes_write_policy_validator),
+		copiedPath: v.optional(v.string()),
 		createdAt: v.number(),
 	})
 		.index("by_privateNode", ["privateNodeId"])
@@ -1139,6 +1370,7 @@ const app_convex_schema = defineSchema({
 				sourceNewChildWritePolicy: v.optional(files_nodes_write_policy_validator),
 			}),
 		),
+		mediaDependencySetId: v.optional(v.id("files_media_dependency_sets")),
 		/**
 		 * Whole-file replacement proposal (`cp` onto an app path). Accepting replaces the whole
 		 * content state of the destination node with the staged asset: its bytes, its content
@@ -1220,13 +1452,15 @@ const app_convex_schema = defineSchema({
 
 	/**
 	 * Tracks scheduled cleanup tasks for each pending update doc.
-	 * The task is rescheduled whenever the doc changes and becomes a no-op if the doc
-	 * was updated after the task was created.
+	 * Deadline and generation fence old callbacks, including hold-release reschedules.
 	 */
 	files_pending_updates_cleanup_tasks: defineTable({
 		pendingUpdateId: v.id("files_pending_updates"),
-		scheduledFunctionId: v.id("_scheduled_functions"),
+		// Assigned in the same transaction after the task ID is known.
+		scheduledFunctionId: v.union(v.id("_scheduled_functions"), v.null()),
 		expectedUpdatedAt: v.number(),
+		expiresAt: v.number(),
+		expiryGeneration: v.number(),
 	}).index("by_pendingUpdate", ["pendingUpdateId"]),
 
 	/**
@@ -1319,6 +1553,10 @@ const app_convex_schema = defineSchema({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
 		userId: v.id("users"),
+		/**
+		 * Only agent edits carry source chat authority. Human review uses its own new batch.
+		 */
+		agentSource: v.optional(ai_chat_workspaces_source_validator),
 		target: files_pending_target_validator,
 		expectedPendingUpdateId: v.union(v.id("files_pending_updates"), v.null()),
 		expectedRevision: v.union(v.number(), v.null()),
@@ -1377,6 +1615,20 @@ const app_convex_schema = defineSchema({
 		operationBatchId: v.id("files_pending_update_operation_batches"),
 		role: v.union(v.literal("staged"), v.literal("unstaged")),
 		text: v.string(),
+		mediaValidation: v.optional(
+			v.object({
+				setId: v.id("files_media_dependency_sets"),
+				setGeneration: v.number(),
+				pendingUpdateId: v.id("files_pending_updates"),
+				reviewedRevision: v.number(),
+				textDigest: v.string(),
+				reviewSelectionDigest: v.string(),
+				reviewRunId: v.union(v.id("files_pending_update_runs"), v.null()),
+				...files_media_validation_versions_validator.fields,
+				totalCount: v.number(),
+				validatedCount: v.number(),
+			}),
+		),
 		expiresAt: v.number(),
 	})
 		.index("by_operationBatch", ["operationBatchId"])
@@ -2201,9 +2453,13 @@ const app_convex_schema = defineSchema({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
 		userId: v.id("users"),
+		// Activity stays in the workspace that started the transfer. Files keep their own scopes.
+		sourceScope: files_transfer_scope_validator,
+		destinationScope: files_transfer_scope_validator,
 		requestId: v.string(),
 		requestHash: v.string(),
 		kind: v.union(v.literal("move"), v.literal("copy")),
+		bashJob: v.optional(v.object({ invocationId: v.id("ai_chat_bash_invocations"), commandNumber: v.number() })),
 		sourceView: v.union(v.literal("saved"), v.literal("draft")),
 		publication: v.union(v.literal("saved"), v.literal("proposal")),
 		origin: v.union(
@@ -2217,18 +2473,22 @@ const app_convex_schema = defineSchema({
 		preparedParent: v.union(files_pending_parent_validator, v.null()),
 		// The Activity holds the deadline. This flag stops a synchronous run from extending it.
 		fixedDeadline: v.boolean(),
-		conflictPolicy: v.object({
-			file: v.union(v.literal("ask"), v.literal("replace"), v.literal("skip"), v.literal("error")),
-			folder: v.union(
-				v.literal("ask"),
-				v.literal("merge"),
-				v.literal("replace_empty"),
-				v.literal("skip"),
-				v.literal("error"),
-			),
-		}),
-		step: v.union(v.literal("discover"), v.literal("plan"), v.literal("apply"), v.literal("retry")),
+		outputReviewUntil: v.optional(v.number()),
+		conflictPolicy: files_transfer_conflict_policy_validator,
+		step: v.union(
+			v.literal("uploading"),
+			v.literal("select"),
+			v.literal("normalize"),
+			v.literal("discover"),
+			v.literal("plan"),
+			v.literal("reserve"),
+			v.literal("apply"),
+			v.literal("retry"),
+		),
+		// Copy admission pages. Move and manifest retries do not upload a selection.
+		selection: v.optional(v.object({ expectedCount: v.number(), count: v.number(), cursor: v.number() })),
 		planCursor: v.union(v.number(), v.null()),
+		reserveCursor: v.union(v.number(), v.null()),
 		retryOf: v.union(v.id("files_transfer_runs"), v.null()),
 		retryCursor: v.union(v.number(), v.null()),
 		revision: v.number(),
@@ -2243,7 +2503,21 @@ const app_convex_schema = defineSchema({
 		.index("by_preparedParent", ["preparedParent.kind", "preparedParent.id"])
 		.index("by_retryOf", ["retryOf", "step"])
 		.index("by_organization_workspace", ["organizationId", "workspaceId"])
+		.index("by_sourceScope_workspace", ["sourceScope.workspaceId"])
+		.index("by_destinationScope_workspace", ["destinationScope.workspaceId"])
 		.index("by_user", ["userId"]),
+
+	// Input order stays exact for page replay, including repeated sources.
+	files_transfer_selection_items: defineTable({
+		runId: v.id("files_transfer_runs"),
+		order: v.number(),
+		source: files_pending_target_validator,
+		path: v.union(v.string(), v.null()),
+		kind: v.union(v.literal("file"), v.literal("folder"), v.null()),
+	})
+		.index("by_run_order", ["runId", "order"])
+		.index("by_run_source_order", ["runId", "source.kind", "source.id", "order"])
+		.index("by_run_path", ["runId", "path"]),
 
 	/**
 	 * One doc per source in a run. Tracks attempts, temporary assets, and the resulting node.
@@ -2265,6 +2539,7 @@ const app_convex_schema = defineSchema({
 		discoveryCursor: v.union(v.string(), v.null()),
 		state: v.union(
 			v.literal("pending"),
+			v.literal("waiting_media"),
 			v.literal("blocked"),
 			v.literal("copying"),
 			v.literal("conflict"),
@@ -2317,6 +2592,8 @@ const app_convex_schema = defineSchema({
 			v.object({
 				sourceVersion: files_transfer_source_version_validator,
 				sourceAssetId: v.union(v.id("files_r2_assets"), v.null()),
+				mediaDependencySetId: v.optional(v.id("files_media_dependency_sets")),
+				mediaSourceSet: v.optional(v.object({ setId: v.id("files_media_dependency_sets"), generation: v.number() })),
 				sourceStateId: v.union(v.id("files_pending_update_yjs_states"), v.null()),
 				sourceYjsSnapshot: v.union(
 					v.null(),
@@ -2342,6 +2619,17 @@ const app_convex_schema = defineSchema({
 		 */
 		billedUserId: v.union(v.id("users"), v.null()),
 		outputTarget: v.union(files_pending_target_validator, v.null()),
+		/**
+		 * Copied image/video asset identity, kept on completed retries. This does not own the asset.
+		 */
+		outputMediaAssetId: v.optional(v.id("files_r2_assets")),
+		outputProposal: v.optional(
+			v.object({
+				pendingUpdateId: v.id("files_pending_updates"),
+				privateGeneration: v.union(v.number(), v.null()),
+				replacementAssetId: v.union(v.id("files_r2_assets"), v.null()),
+			}),
+		),
 		outputName: v.union(v.string(), v.null()),
 		outputPath: v.union(v.string(), v.null()),
 		/**
@@ -2357,11 +2645,13 @@ const app_convex_schema = defineSchema({
 		.index("by_sourceParent", ["sourceParent.kind", "sourceParent.id"])
 		.index("by_preparation_privateNode", ["preparation.privateNodeId"])
 		.index("by_outputTarget", ["outputTarget.kind", "outputTarget.id"])
+		.index("by_outputProposal_pendingUpdate", ["outputProposal.pendingUpdateId"])
 		.index("by_run_order", ["runId", "order"])
 		.index("by_run_state_order", ["runId", "state", "order"])
 		.index("by_run_work", ["runId", "workId"])
 		.index("by_attemptExpiresAt", ["attemptExpiresAt"])
 		.index("by_run_parentItem", ["runId", "parentItemId"])
+		.index("by_run_parentItem_plannedPath", ["runId", "parentItemId", "plannedPath", "order"])
 		.index("by_run_discoveryDone_order", ["runId", "discoveryDone", "order"])
 		.index("by_parentItem", ["parentItemId"])
 		.index("by_organization_workspace", ["organizationId", "workspaceId"]),

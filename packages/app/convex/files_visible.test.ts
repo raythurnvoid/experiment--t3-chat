@@ -40,6 +40,129 @@ async function create_saved(f: Awaited<ReturnType<typeof fixture>>, path: string
 }
 
 describe("list", () => {
+	test("complete traversal refuses a hidden child on a later page while ordinary lists stay filtered", async () => {
+		const owner = await fixture();
+		const { t, db } = owner;
+		const other = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx, { organizationName: "other" }));
+		expect(
+			await owner.asUser.mutation(api.organizations.invite_user_to_organization_workspace, {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userIdToAdd: other.userId,
+			}),
+		).toEqual({ _yay: null });
+		await create_saved(owner, "source/first");
+		const hidden = await create_saved(owner, "source/secret-name");
+		expect(
+			await owner.asUser.mutation(api.files_sharing.restrict_node, {
+				membershipId: db.membershipId,
+				nodeId: hidden.id,
+			}),
+		).toEqual({ _yay: null });
+		const args = {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			visibilityUserId: other.userId,
+			overlayUserId: other.userId,
+			folderPath: "/source",
+			mode: "children" as const,
+			numItems: 1,
+			cursor: null,
+			requireComplete: true,
+		};
+		const first = await t.query(internal.files_visible.internal_list, args);
+		if (first._nay) throw new Error(first._nay.message);
+		expect(first._yay.items.map((item) => item.path)).toEqual(["/source/first"]);
+		expect(first._yay.isDone).toBe(false);
+		const second = await t.query(internal.files_visible.internal_list, { ...args, cursor: first._yay.continueCursor });
+		expect(second).toEqual({ _nay: { message: "Permission denied" } });
+		expect(JSON.stringify(second)).not.toContain("secret-name");
+		const filtered = await t.query(internal.files_visible.internal_list, {
+			...args,
+			requireComplete: false,
+			numItems: 10,
+		});
+		expect(filtered._yay?.items.map((item) => item.path)).toEqual(["/source/first"]);
+		expect(filtered._yay?.isDone).toBe(true);
+		const readable = await t.query(internal.files_visible.internal_list, {
+			...args,
+			visibilityUserId: db.userId,
+			overlayUserId: db.userId,
+			numItems: 10,
+		});
+		expect(readable._yay?.items.map((item) => item.path)).toEqual(["/source/first", "/source/secret-name"]);
+		expect(readable._yay?.isDone).toBe(true);
+	});
+
+	test("complete traversal keeps the owner's overlay and ignores another user's private drafts", async () => {
+		const f = await fixture();
+		const source = await create_saved(f, "source");
+		const movedOut = await create_saved(f, "source/out");
+		const removed = await create_saved(f, "source/removed");
+		const movedIn = await create_saved(f, "outside");
+		await create_private(f, "/source/mine");
+		for (const [target, destParent, destName] of [
+			[movedOut, { kind: "root" as const }, "out"],
+			[movedIn, source, "in"],
+		] as const) {
+			expect(
+				(
+					await f.t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
+						organizationId: f.db.organizationId,
+						workspaceId: f.db.workspaceId,
+						userId: f.db.userId,
+						target,
+						destParent,
+						destName,
+					})
+				)._nay,
+			).toBeUndefined();
+		}
+		expect(
+			(
+				await f.t.mutation(internal.files_pending_updates.upsert_file_pending_archive_in_db, {
+					organizationId: f.db.organizationId,
+					workspaceId: f.db.workspaceId,
+					userId: f.db.userId,
+					target: removed,
+				})
+			)._nay,
+		).toBeUndefined();
+		const other = await f.t.run((ctx) => test_mocks_fill_db_with.membership(ctx, { organizationName: "other" }));
+		expect(
+			await f.asUser.mutation(api.organizations.invite_user_to_organization_workspace, {
+				organizationId: f.db.organizationId,
+				workspaceId: f.db.workspaceId,
+				userIdToAdd: other.userId,
+			}),
+		).toEqual({ _yay: null });
+		expect(
+			(
+				await f.t.mutation(internal.files_nodes.create_private_node_by_path, {
+					organizationId: f.db.organizationId,
+					workspaceId: f.db.workspaceId,
+					userId: other.userId,
+					path: "/source/foreign-private",
+					kind: "folder",
+				})
+			)._nay,
+		).toBeUndefined();
+		const result = await f.t.query(internal.files_visible.internal_list, {
+			organizationId: f.db.organizationId,
+			workspaceId: f.db.workspaceId,
+			visibilityUserId: f.db.userId,
+			overlayUserId: f.db.userId,
+			folderPath: "/source",
+			mode: "children",
+			numItems: 10,
+			cursor: null,
+			requireComplete: true,
+		});
+		expect(result._yay?.items.map((item) => item.path)).toEqual(["/source/in", "/source/mine"]);
+		expect(result._yay?.isDone).toBe(true);
+		expect(JSON.stringify(result)).not.toContain("foreign-private");
+	});
+
 	test("continues after empty filtered pages without losing later matches", async () => {
 		const f = await fixture();
 		for (let index = 0; index < 110; index++) {

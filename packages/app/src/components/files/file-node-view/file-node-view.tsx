@@ -15,6 +15,8 @@ import {
 	type FileEditor_Ref,
 } from "@/components/files/file-editor/file-editor.tsx";
 import { FileHtmlPreview, type FileHtmlPreview_Source } from "./file-html-preview.tsx";
+import { FileDraftRecovery } from "./file-draft-recovery.tsx";
+import { FilePendingNotice } from "./file-pending-notice.tsx";
 import { FileImagePreview } from "../file-image-preview.tsx";
 import { FilesBrowser } from "./files-browser.tsx";
 import {
@@ -1988,7 +1990,10 @@ const FileNodeViewPrivateContent = memo(function FileNodeViewPrivateContent(prop
 				onlineUsers={[]}
 				onNavigateNode={onNavigateNode}
 			/>
-			{view.readiness === "ready" && textIntent ? (
+			<FilePendingNotice recovery={view.recovery} copyDestination={view.copyDestination} />
+			{view.recovery && textIntent ? (
+				<FileDraftRecovery entry={entry} />
+			) : view.readiness === "ready" && textIntent ? (
 				<>
 					{createPortal(
 						<FileNodeViewViewSelect
@@ -2073,7 +2078,11 @@ const FileNodeViewPrivateContent = memo(function FileNodeViewPrivateContent(prop
 					{view.readiness === "preparing" ? (
 						<p role="status">Preparing this {entry.node.kind}…</p>
 					) : entry.node.kind === "folder" ? (
-						<FileNodeViewPrivateFolder folderPath={entry.path} onNavigateTarget={onNavigateTarget} />
+						view.recovery ? (
+							<p>Open child drafts from Pending changes.</p>
+						) : (
+							<FileNodeViewPrivateFolder folderPath={entry.path} onNavigateTarget={onNavigateTarget} />
+						)
 					) : intent?.kind === "stored" ? (
 						<FileNodeViewPrivateStoredFile key={entry.pendingUpdate.revision} entry={entry} intent={intent} />
 					) : null}
@@ -2601,7 +2610,10 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 		membershipId,
 		nodeId: folderItemId,
 	});
-	const folderCanReceiveChildren = canWriteFolder === true;
+	// The archive answer is not part of the write permission. The create doors refuse an archived parent.
+	const folderNode = fileNodesList?.find((node) => node._id === folderItemId);
+	const folderCanReceiveChildren =
+		canWriteFolder === true && (folderItemId === files_ROOT_ID || folderNode?.archiveOperationId === null);
 
 	// Moving a child out of a restricted folder needs Can manage on its source scope.
 	// Keep manual `useMemo` in this group. Convex `useQueries` re-subscribes with a
@@ -4236,10 +4248,15 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 				}
 			: "skip",
 	);
-	const privateTargetView = useQuery(
+	const selectedTargetView = useQuery(
 		app_convex_api.files_pending_updates.get_file_pending_target,
-		searchPrivateNodeId ? { membershipId, target: { kind: "private", id: searchPrivateNodeId } } : "skip",
+		searchPrivateNodeId
+			? { membershipId, target: { kind: "private", id: searchPrivateNodeId } }
+			: searchNodeId && !isRootNodeSelected
+				? { membershipId, target: { kind: "saved", id: searchNodeId } }
+				: "skip",
 	);
+	const privateTargetView = searchPrivateNodeId ? selectedTargetView : undefined;
 	const privateEntry = privateTargetView?.entry.kind === "private" ? privateTargetView.entry : null;
 	const privateSourceKey = privateEntry
 		? `${membershipId}:private:${privateEntry.node._id}:${privateEntry.node.userId}:${privateEntry.node.creationGeneration}`
@@ -4473,18 +4490,23 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 		? `${activePendingUpdateIndex + 1} of ${pendingUpdates.length}${hasMorePendingUpdates ? "+" : ""}`
 		: "Review";
 
+	// A draft under an archived folder is read-only because of the archive, not because of permissions.
 	const readOnlyMessage = privateEntry
-		? privateTargetView?.canEdit === false
-			? "You don't have permission to save this draft here."
-			: null
-		: resolvedNode
-			? !resolvedNode.canWrite
-				? resolvedNode.writeBlockedReason === "read_only"
-					? resolvedNode.kind === "folder"
-						? "Folder is read-only. Items keep their own protection."
-						: "This file is read-only."
-					: `You don't have permission to edit this ${resolvedNode.kind}.`
+		? privateTargetView?.recovery
+			? "Restore the archived folder before saving this draft."
+			: privateTargetView?.canEdit === false
+				? "You don't have permission to save this draft here."
 				: null
+		: resolvedNode
+			? resolvedNode.kind === "folder" && resolvedNode.archiveOperationId !== null
+				? "This folder is archived. Restore it before adding items."
+				: !resolvedNode.canWrite
+					? resolvedNode.writeBlockedReason === "read_only"
+						? resolvedNode.kind === "folder"
+							? "Folder is read-only. Items keep their own protection."
+							: "This file is read-only."
+						: `You don't have permission to edit this ${resolvedNode.kind}.`
+					: null
 			: null;
 
 	// Flat HTML views ignore the URL editor mode, so the root uses this for
@@ -4770,31 +4792,36 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 		}
 
 		return resolvedNodeId ? (
-			<FileNodeViewContent
-				key={membershipId}
-				selectedFileView={selectedFileView}
-				selectedNodeId={searchNodeId}
-				node={resolvedNode}
-				fileNodesList={fileNodesList}
-				protectedDescendantIds={protectedDescendantIds}
-				pendingUpdateId={currentPendingUpdate?._id}
-				committedAssetId={activeEditorNode?.collaborationEnabled === false ? (activeEditorNode.assetId ?? null) : null}
-				pendingUpdatesLoaded={!activeEditorTarget || editorPendingUpdate !== undefined}
-				serverSequence={activeEditorServerSequenceData?.lastSequence}
-				yjsLastSequenceId={activeEditorServerSequenceData?.yjsLastSequenceId}
-				topSafeArea={topSafeArea}
-				editorMode={effectiveView}
-				filesSidebarOpen={filesSidebarOpen}
-				presenceStore={presenceProps.presenceStore}
-				onlineUsers={presenceProps.onlineUsers}
-				commentsPortalHost={commentsPortalHost}
-				toolbarPortalHost={toolbarPortalHost}
-				viewSelectPortalHost={viewSelectPortalHost}
-				onEditorModeChange={navigateToView}
-				onAutomaticEditorModeChange={handleAutomaticEditorModeChange}
-				onFileViewChange={handleFileViewChange}
-				onNavigateNode={navigateToNode}
-			/>
+			<>
+				<FilePendingNotice copyDestination={selectedTargetView?.copyDestination} />
+				<FileNodeViewContent
+					key={membershipId}
+					selectedFileView={selectedFileView}
+					selectedNodeId={searchNodeId}
+					node={resolvedNode}
+					fileNodesList={fileNodesList}
+					protectedDescendantIds={protectedDescendantIds}
+					pendingUpdateId={currentPendingUpdate?._id}
+					committedAssetId={
+						activeEditorNode?.collaborationEnabled === false ? (activeEditorNode.assetId ?? null) : null
+					}
+					pendingUpdatesLoaded={!activeEditorTarget || editorPendingUpdate !== undefined}
+					serverSequence={activeEditorServerSequenceData?.lastSequence}
+					yjsLastSequenceId={activeEditorServerSequenceData?.yjsLastSequenceId}
+					topSafeArea={topSafeArea}
+					editorMode={effectiveView}
+					filesSidebarOpen={filesSidebarOpen}
+					presenceStore={presenceProps.presenceStore}
+					onlineUsers={presenceProps.onlineUsers}
+					commentsPortalHost={commentsPortalHost}
+					toolbarPortalHost={toolbarPortalHost}
+					viewSelectPortalHost={viewSelectPortalHost}
+					onEditorModeChange={navigateToView}
+					onAutomaticEditorModeChange={handleAutomaticEditorModeChange}
+					onFileViewChange={handleFileViewChange}
+					onNavigateNode={navigateToNode}
+				/>
+			</>
 		) : searchNodeId ? (
 			<div className={"FileNodeView-loading-text" satisfies FileNodeView_ClassNames}>Loading...</div>
 		) : null;

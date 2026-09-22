@@ -16,6 +16,7 @@ import {
 	files_nodes_db_archive_nodes,
 } from "./files_nodes.ts";
 import { files_metadata_db_read_entry } from "./files_metadata.ts";
+import { files_media_validation_db_advance_version } from "./files_media_validation.ts";
 import {
 	plugins_external_files_db_authorize,
 	plugins_external_files_db_content_revision,
@@ -69,6 +70,10 @@ export async function plugins_external_files_db_replace_readers(
 			updatedAt: Date.now(),
 		});
 	}
+	// Reinserting the same readers still replaces their membership-bound grants.
+	if (args.readers.length > 0 || existing.some((grant) => grant.principalKind !== "service_account"))
+		await files_media_validation_db_advance_version(ctx, args.installation);
+
 	// The surviving user grants seed the caller's `previousReaders` for a later rollback.
 	return existing.flatMap((grant) =>
 		grant.principalKind === "user" && grant.userId && grant.externalPluginMembershipLifetime !== undefined
@@ -286,6 +291,8 @@ export const ensure_writer = internalMutation({
 				parentId: nodeId,
 				scopeNodeId: nodeId,
 			});
+			// Restricting an empty folder changes access too.
+			await files_media_validation_db_advance_version(ctx, installation);
 			await plugins_external_files_db_replace_readers(ctx, { installation, nodeId, readers: args.readers });
 			await ctx.db.insert("plugins_external_file_bindings", {
 				organizationId: installation.organizationId,

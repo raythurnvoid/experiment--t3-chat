@@ -70,7 +70,12 @@ import {
 } from "@/lib/ai-chat.ts";
 import type { AppClassName, AppElementId } from "@/lib/dom-utils.ts";
 import { useFn } from "@/hooks/utils-hooks.ts";
-import { app_local_storage_set_value, type storage_local_ValueByKey, useAppLocalStorageValue } from "@/lib/storage.ts";
+import {
+	app_local_storage_get_value,
+	app_local_storage_set_value,
+	type storage_local_ValueByKey,
+	useAppLocalStorageValue,
+} from "@/lib/storage.ts";
 import { cn, copy_to_clipboard } from "@/lib/utils.ts";
 
 const DROPPABLE_ID = "file_editor_sidebar_agent_tabs";
@@ -936,16 +941,34 @@ const FileEditorSidebarAgentContent = memo(function FileEditorSidebarAgentConten
 		mountedOptimisticThreadIdsRef.current.add(threadId);
 	});
 
-	// Start a new chat only when the Agent root tab is actually active.
+	// Start only while Agent is active. Replace the last tab if its chat is refused.
 	useEffect(() => {
-		if (rootSelectedTab === rootTabId && !hasAutoStartedRef.current && !controller.selectedThreadId) {
+		if (
+			rootSelectedTab === rootTabId &&
+			(!hasAutoStartedRef.current || openTabs.length === 0) &&
+			!controller.selectedThreadId
+		) {
 			hasAutoStartedRef.current = true;
 			rememberOptimisticThreadId(controller.startNewChat());
 		}
-	}, [rootSelectedTab, rootTabId, controller.selectedThreadId, controller, rememberOptimisticThreadId]);
+	}, [
+		rootSelectedTab,
+		rootTabId,
+		openTabs.length,
+		controller.selectedThreadId,
+		controller,
+		rememberOptimisticThreadId,
+	]);
 
 	// Replace optimistic open-tab ids with their persisted thread ids once the thread is upgraded.
 	useEffect(() => {
+		// Refusal clears storage in a child layout effect, before these sync effects.
+		if (
+			app_local_storage_get_value(openTabsStorageKey) !== openTabs ||
+			app_local_storage_get_value(selectedTabStorageKey) !== selectedAgentTab
+		) {
+			return;
+		}
 		let changed = false;
 		const nextOpenTabs: storage_local_ValueByKey[`app_state::file_editor_sidebar_open_tabs::scope::${string}`] = [];
 		const seenIds = new Set<string>();
@@ -1004,6 +1027,12 @@ const FileEditorSidebarAgentContent = memo(function FileEditorSidebarAgentConten
 
 	// Keep tab selection authoritative for the sidebar panel, including after reload from local storage.
 	useEffect(() => {
+		if (
+			app_local_storage_get_value(openTabsStorageKey) !== openTabs ||
+			app_local_storage_get_value(selectedTabStorageKey) !== selectedAgentTab
+		) {
+			return;
+		}
 		if (selectedChatTabId === NEW_CHAT_TAB_ID || selectedChatTabId === controller.selectedThreadId) {
 			return;
 		}
@@ -1020,10 +1049,25 @@ const FileEditorSidebarAgentContent = memo(function FileEditorSidebarAgentConten
 		}
 
 		controller.selectThread(selectedChatTabId);
-	}, [selectedChatTabId, controller.selectedThreadId, openTabs, currentThreads, controller]);
+	}, [
+		selectedChatTabId,
+		controller.selectedThreadId,
+		openTabs,
+		currentThreads,
+		controller,
+		openTabsStorageKey,
+		selectedTabStorageKey,
+		selectedAgentTab,
+	]);
 
 	// Keep the stored opened chat tabs in sync with controller selection.
 	useEffect(() => {
+		if (
+			app_local_storage_get_value(openTabsStorageKey) !== openTabs ||
+			app_local_storage_get_value(selectedTabStorageKey) !== selectedAgentTab
+		) {
+			return;
+		}
 		const threadId = controller.selectedThreadId;
 		if (!threadId) {
 			return;
@@ -1090,6 +1134,9 @@ const FileEditorSidebarAgentContent = memo(function FileEditorSidebarAgentConten
 
 	// Keep open tab titles in sync with streaming titles
 	useEffect(() => {
+		if (app_local_storage_get_value(openTabsStorageKey) !== openTabs) {
+			return;
+		}
 		let changed = false;
 		const next = openTabs.map((tab) => {
 			const nextTitle = get_tab_title({

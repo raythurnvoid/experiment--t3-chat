@@ -54,9 +54,18 @@ const server_ai_tools_test_ctx_data = {
 	workspaceName: "home",
 	userId: server_ai_tools_test_user_id,
 	membershipId: "membership-1" as Id<"organizations_workspaces_users">,
+	membershipLifetime: 3,
 	canWriteFiles: true,
 	getThreadId: () => server_ai_tools_test_thread_id,
 } as const;
+const server_ai_tools_test_source = {
+	organizationId: server_ai_tools_test_ctx_data.organizationId,
+	workspaceId: server_ai_tools_test_ctx_data.workspaceId,
+	userId: server_ai_tools_test_ctx_data.userId,
+	threadId: server_ai_tools_test_thread_id,
+	membershipId: server_ai_tools_test_ctx_data.membershipId,
+	membershipLifetime: server_ai_tools_test_ctx_data.membershipLifetime,
+};
 const server_ai_tools_test_db_files_mount = "/home/cloud-usr/w/personal/home";
 
 const server_ai_tools_test_user_identity_default = {
@@ -80,8 +89,26 @@ const makeCtx = (
 	runAction: ReturnType<typeof vi.fn>;
 	getUserIdentity: ReturnType<typeof vi.fn>;
 } => {
-	const runQuery = vi.fn(runQueryImpl);
-	const runMutation = vi.fn(args?.runMutationImpl ?? (async () => null));
+	const runQuery = vi.fn(async (ref: Parameters<ActionCtx["runQuery"]>[0], queryArgs: unknown) => {
+		if (getFunctionName(ref) === "ai_chat_workspaces:resolve") {
+			expect(queryArgs).toEqual({ source: server_ai_tools_test_source, workspace: "current" });
+			return {
+				_yay: {
+					organizationId: server_ai_tools_test_ctx_data.organizationId,
+					workspaceId: server_ai_tools_test_ctx_data.workspaceId,
+					organizationName: server_ai_tools_test_ctx_data.organizationName,
+					workspaceName: server_ai_tools_test_ctx_data.workspaceName,
+					membershipId: server_ai_tools_test_ctx_data.membershipId,
+				},
+			};
+		}
+		return await runQueryImpl(ref, queryArgs);
+	});
+	const runMutation = vi.fn(
+		args?.runMutationImpl ??
+			(async (ref: Parameters<ActionCtx["runMutation"]>[0]) =>
+				getFunctionName(ref) === "public_api:create_code_grants" ? { _yay: { personalIsCurrent: false } } : null),
+	);
 	const runAction = vi.fn(args?.runActionImpl ?? runQueryImpl);
 	const getUserIdentity = vi.fn(async () => args?.userIdentity ?? server_ai_tools_test_user_identity_default);
 	const ctx = {
@@ -100,6 +127,33 @@ function isNotAsyncIterable<T>(value: T | AsyncIterable<T>): value is T {
 }
 
 describe("ai_chat_tool_create_bash", () => {
+	test("explains Copy-only workspace boundaries without a cleanup workaround", () => {
+		const { ctx } = makeCtx(async () => null);
+		const tool = ai_chat_tool_create_bash(ctx, server_ai_tools_test_ctx_data, { allowDbFilesMkdir: true });
+		expect(tool.description).toContain("mv only moves or renames files within one workspace");
+		expect(tool.description).toContain("Use cp for files or cp -R for folders between workspaces");
+		expect(tool.description).toContain("Do not work around a refused mv with cp followed by rm or Archive");
+		expect(tool.description).toContain(
+			"Source cleanup needs a separate user request and its own review and permission checks",
+		);
+	});
+
+	test("explains large background Copy and its bounded shell forms", () => {
+		const { ctx } = makeCtx(async () => null);
+		const tool = ai_chat_tool_create_bash(ctx, server_ai_tools_test_ctx_data, { allowDbFilesMkdir: true });
+		expect(tool.description).toContain("cp -R src dest &");
+		expect(tool.description).toContain("{ first; cp -R src dest; next; } &");
+		expect(tool.description).toContain("Only verified Copy waiting time is excluded");
+		expect(tool.description).toContain(
+			"Loops, functions, logical chains, pipelines, redirects, nested shells, and foreground copies do not use this paged Copy: their Copy must finish within the current call's or job run's time limit, or it is stopped and reports 124.",
+		);
+		expect(tool.description).toContain(
+			"Copies still wait for the user's Review and Save in the destination workspace.",
+		);
+		expect(tool.description).toContain("Select linked app images and videos explicitly");
+		expect(tool.description).not.toContain("pending copy (one source only)");
+	});
+
 	test("describes every app-file write as a pending proposal", () => {
 		const { ctx } = makeCtx(async () => null);
 		const tool = ai_chat_tool_create_bash(ctx, server_ai_tools_test_ctx_data, {
@@ -117,6 +171,10 @@ describe("ai_chat_tool_create_bash", () => {
 			expect.objectContaining({
 				description: expect.not.stringContaining("saves immediately"),
 			}),
+		);
+		expect(tool.description).toContain("New files remain private proposals until the user saves them.");
+		expect(tool.description).toContain(
+			"The user's Files view shows their own proposals in each destination workspace.",
 		);
 		// Stale work stays available while the next agent write prepares it.
 		expect(tool).toEqual(
@@ -179,6 +237,8 @@ describe("ai_chat_tool_create_bash", () => {
 				toolCallId: "test",
 				threadId: "thread_1",
 				userId: server_ai_tools_test_user_id,
+				membershipId: server_ai_tools_test_ctx_data.membershipId,
+				membershipLifetime: server_ai_tools_test_ctx_data.membershipLifetime,
 				organizationName: "personal",
 				workspaceName: "home",
 				allowDbFilesMkdir: true,
@@ -229,7 +289,7 @@ describe("ai_chat_tool_create_bash", () => {
 			"A job runs one top-level statement at a time, and each run of it has an 8-minute budget and 2000 commands",
 			"a minute before that the job pauses after the current statement and continues in a new run",
 			"or it is cut off at 7 minutes 30 seconds and the job reports 124",
-			"A job lives at most 24 hours from its &, counting the waits between its runs",
+			"A job has at most 24 hours of ordinary compute, sleep, and other waiting; verified durable Copy waits are excluded",
 			"A top-level sleep N with a literal N of 5 seconds or more pauses the job for N seconds (at most one hour) without holding a worker",
 			"a sleep with a redirection or with an assignment in front of it, ! sleep N, time sleep N, a sleep joined by && or ||",
 			"a job waiting to continue after a pause prints [job N queued] and a job asked to stop prints [job N stopping]",
@@ -246,7 +306,7 @@ describe("ai_chat_tool_create_bash", () => {
 			"until a launch works or a wait that found a job live and then saw it end starts the count again",
 			"A wait does not make a refused script, state, or stopping launch succeed",
 			"a script over 64 KiB, a shell state over 128 KiB, and a launch from a job that is already stopping are refused every time",
-			"put sequential cp or mv commands in one job: the second job's copy waits up to 60 s for the lane and then fails with exit 1",
+			"put sequential cp or mv commands in one job. While the lane is busy, a plain background cp keeps waiting for up to about 10 minutes, then its whole job ends; other cp and mv forms in a job wait up to 60 s, then fail with exit 1.",
 			"jobs -o N prints the stored stdout then stderr of job N, then one final [job N exit C] line on stderr",
 			"wait N waits for the named jobs",
 			"wait is a shell builtin, so which wait finds nothing even though wait works",
@@ -322,9 +382,8 @@ describe("ai_chat_tool_create_bash", () => {
 
 	test("returns scoped rules once beside the unchanged shell output", async () => {
 		const context: ai_chat_context_Context = {
-			organizationId: server_ai_tools_test_ctx_data.organizationId,
-			workspaceId: server_ai_tools_test_ctx_data.workspaceId,
-			userId: server_ai_tools_test_user_id,
+			source: server_ai_tools_test_source,
+			personalIsCurrent: true,
 			instructions: new Map(),
 			instructionBytes: 0,
 		};
@@ -341,7 +400,11 @@ describe("ai_chat_tool_create_bash", () => {
 					output: "$ cat docs/notes.md\n\nNotes",
 					stdout: "Notes",
 					stderr: "",
-					metadata: { exitCode: 0, observedPaths: ["/docs/notes.md"], observedPathsTruncated: false },
+					metadata: {
+						exitCode: 0,
+						observedPaths: [{ workspace: "current", path: "/docs/notes.md" }],
+						observedPathsTruncated: false,
+					},
 				}),
 			},
 		);
@@ -356,7 +419,12 @@ describe("ai_chat_tool_create_bash", () => {
 		const first = await tool.execute!({ command: "cat docs/notes.md" }, { toolCallId: "first", messages: [] });
 		expect(first).toMatchObject({
 			output: "$ cat docs/notes.md\n\nNotes",
-			instructions: JSON.stringify({ source: "/docs/AGENTS.md", scope: "/docs/", instructions: "Use short headings." }),
+			instructions: JSON.stringify({
+				workspace: "current",
+				source: `${server_ai_tools_test_db_files_mount}/docs/AGENTS.md`,
+				scope: `${server_ai_tools_test_db_files_mount}/docs/`,
+				instructions: "Use short headings.",
+			}),
 		});
 		expect(first).not.toHaveProperty("stdout");
 		expect(first).not.toHaveProperty("stderr");
@@ -366,9 +434,8 @@ describe("ai_chat_tool_create_bash", () => {
 
 	test("warns when a command touched more paths than its rule scan could cover", async () => {
 		const context: ai_chat_context_Context = {
-			organizationId: server_ai_tools_test_ctx_data.organizationId,
-			workspaceId: server_ai_tools_test_ctx_data.workspaceId,
-			userId: server_ai_tools_test_user_id,
+			source: server_ai_tools_test_source,
+			personalIsCurrent: true,
 			instructions: new Map(),
 			instructionBytes: 0,
 		};
@@ -402,6 +469,10 @@ describe("ai_chat_tool_create_bash", () => {
 			allowDbFilesMkdir: true,
 		});
 
+		expect(tool.description).toContain(
+			"It looks in the current workspace and your own personal/home even after cd elsewhere.",
+		);
+		expect(tool.description).toContain("It cannot resolve a third workspace or reserved source nodes.");
 		expect(tool).toEqual(
 			expect.objectContaining({
 				description: expect.stringContaining(
@@ -893,6 +964,12 @@ test("edit tool describes preserving nested app path suffixes", () => {
 		server_ai_tools_test_ctx_data as Parameters<typeof ai_chat_tool_create_edit_file>[1],
 	);
 
+	expect(editTool.description).toContain(
+		'Choose workspace="current" for this chat\'s workspace or workspace="personal" for your own personal/home.',
+	);
+	expect(editTool.description).toContain(
+		"Remove the matching /home/cloud-usr/w/<organization>/<workspace> path prefix",
+	);
 	expect(editTool).toEqual(
 		expect.objectContaining({
 			description: expect.stringContaining(
@@ -934,6 +1011,7 @@ test("edit_file tool treats an invalid pending update id as absent", async () =>
 		tool.execute?.(
 			{
 				path: "/docs/hello.md",
+				workspace: "current",
 				oldString: "world",
 				newString: "team",
 				replaceAll: false,
@@ -985,14 +1063,18 @@ test("edit_file tool surfaces the upsert rejection when the file is archived aft
 	);
 	await expect(
 		tool.execute?.(
-			{ path: "/docs/hello.md", oldString: "world", newString: "team", replaceAll: false },
+			{ workspace: "current", path: "/docs/hello.md", oldString: "world", newString: "team", replaceAll: false },
 			{ toolCallId: "test", messages: [] },
 		),
 	).rejects.toThrow("the proposal was not recorded: Not found");
 
 	// The tool stops at the failed upsert: no success payload, no follow-up pending update doc read.
 	expect(runAction).toHaveBeenCalledTimes(3);
-	expect(runQuery).toHaveBeenCalledTimes(1);
+	expect(runQuery).toHaveBeenCalledTimes(2);
+	expect(runQuery.mock.calls.map(([ref]) => getFunctionName(ref))).toEqual([
+		"ai_chat_workspaces:resolve",
+		"files_nodes:get_visible_entry_by_path",
+	]);
 });
 
 test("edit_file tool stores pending unstaged branch updates from the agent", async () => {
@@ -1006,7 +1088,7 @@ test("edit_file tool stores pending unstaged branch updates from the agent", asy
 		pendingUpdateBaseStateId,
 	};
 
-	const { ctx, runAction, runMutation } = makeCtx(
+	const { ctx, runQuery, runAction, runMutation } = makeCtx(
 		async (_ref, args) =>
 			args.path
 				? {
@@ -1029,6 +1111,7 @@ test("edit_file tool stores pending unstaged branch updates from the agent", asy
 	const result = await tool.execute?.(
 		{
 			path: "/docs/hello.md",
+			workspace: "current",
 			oldString: "world",
 			newString: "team",
 			replaceAll: false,
@@ -1044,8 +1127,35 @@ test("edit_file tool stores pending unstaged branch updates from the agent", asy
 	}
 
 	expect(runAction).toHaveBeenCalledTimes(3);
+	expect(runQuery).toHaveBeenNthCalledWith(1, expect.anything(), {
+		source: server_ai_tools_test_source,
+		workspace: "current",
+	});
+	expect(runQuery).toHaveBeenNthCalledWith(2, expect.anything(), {
+		agentSource: server_ai_tools_test_source,
+		organizationId: server_ai_tools_test_ctx_data.organizationId,
+		workspaceId: server_ai_tools_test_ctx_data.workspaceId,
+		visibilityUserId: server_ai_tools_test_user_id,
+		overlayUserId: server_ai_tools_test_user_id,
+		path: "/docs/hello.md",
+	});
+	expect(runAction).toHaveBeenNthCalledWith(1, expect.anything(), {
+		agentSource: server_ai_tools_test_source,
+		organizationId: server_ai_tools_test_ctx_data.organizationId,
+		workspaceId: server_ai_tools_test_ctx_data.workspaceId,
+		userId: server_ai_tools_test_user_id,
+		target: { kind: "saved", id: nodeId },
+	});
+	expect(runMutation).toHaveBeenNthCalledWith(1, expect.anything(), {
+		agentSource: server_ai_tools_test_source,
+		organizationId: server_ai_tools_test_ctx_data.organizationId,
+		workspaceId: server_ai_tools_test_ctx_data.workspaceId,
+		userId: server_ai_tools_test_user_id,
+		target: { kind: "saved", id: nodeId },
+	});
 	const [, firstQueryArgs] = runAction.mock.calls[1]!;
 	expect(firstQueryArgs).toEqual({
+		agentSource: server_ai_tools_test_source,
 		organizationId: test_mocks_hardcoded.organization_id.organization_1,
 		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
 		userId: server_ai_tools_test_user_id,
@@ -1077,6 +1187,7 @@ test("edit_file tool stores pending unstaged branch updates from the agent", asy
 	});
 
 	expect(result.metadata.target).toEqual({ kind: "saved", id: nodeId });
+	expect(result.metadata.workspace).toBe("current");
 	expect(result.metadata.pendingUpdateId).toBe(pendingUpdateId);
 	expect(result.metadata.matches).toBe(1);
 	expect(result.metadata.matcher).toBe("simple");
@@ -1084,6 +1195,17 @@ test("edit_file tool stores pending unstaged branch updates from the agent", asy
 });
 
 describe("ai_chat_tool_create_edit_file", () => {
+	test("requires a current or personal workspace selector", () => {
+		const { ctx } = makeCtx(async () => null);
+		const schema = ai_chat_tool_create_edit_file(ctx, server_ai_tools_test_ctx_data).inputSchema;
+		if (!has_defined_property(schema, "parse")) throw new Error("inputSchema has no parse");
+		const edit = { path: "/docs/hello.md", oldString: "before", newString: "after", replaceAll: false };
+		for (const workspace of ["current", "personal"])
+			expect(schema.parse({ ...edit, workspace })).toEqual({ ...edit, workspace });
+		expect(() => schema.parse(edit)).toThrow();
+		expect(() => schema.parse({ ...edit, workspace: "third" })).toThrow();
+	});
+
 	test("refuses before opening a write batch when the file disappears after preparation", async () => {
 		const { ctx, runMutation } = makeCtx(
 			async () => ({
@@ -1097,7 +1219,7 @@ describe("ai_chat_tool_create_edit_file", () => {
 		const edit = ai_chat_tool_create_edit_file(ctx, server_ai_tools_test_ctx_data);
 		await expect(
 			edit.execute?.(
-				{ path: "/gone.txt", oldString: "old", newString: "new", replaceAll: false },
+				{ workspace: "current", path: "/gone.txt", oldString: "old", newString: "new", replaceAll: false },
 				{ toolCallId: "gone", messages: [] },
 			),
 		).rejects.toThrow("the file changed while the edit was being prepared. Read it again.");
@@ -1143,7 +1265,7 @@ describe("ai_chat_tool_create_edit_file", () => {
 			);
 			const edit = ai_chat_tool_create_edit_file(ctx, server_ai_tools_test_ctx_data);
 			const result = edit.execute?.(
-				{ path: "/retry.txt", oldString: "old", newString: "new", replaceAll: false },
+				{ workspace: "current", path: "/retry.txt", oldString: "old", newString: "new", replaceAll: false },
 				{ toolCallId: "retry", messages: [] },
 			);
 			if (refuseAgain) {
@@ -1279,6 +1401,7 @@ test("edit_file tool preserves the baseline trailing newline shape", async () =>
 	const result = await tool.execute?.(
 		{
 			path: "/docs/newline.md",
+			workspace: "current",
 			oldString: "world",
 			newString: "team",
 			replaceAll: false,
@@ -1295,6 +1418,7 @@ test("edit_file tool preserves the baseline trailing newline shape", async () =>
 
 	const [, firstQueryArgs] = runAction.mock.calls[1]!;
 	expect(firstQueryArgs).toEqual({
+		agentSource: server_ai_tools_test_source,
 		organizationId: test_mocks_hardcoded.organization_id.organization_1,
 		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
 		userId: server_ai_tools_test_user_id,
@@ -1344,6 +1468,7 @@ test("edit_file edits a plain text .json file and stages the exact text", async 
 	const result = await tool.execute?.(
 		{
 			path: "/data/config.json",
+			workspace: "current",
 			oldString: '"port": 9090',
 			newString: '"port": 8080',
 			replaceAll: false,
@@ -1400,7 +1525,7 @@ test("edit_file describes and preserves a terminal read-only refusal", async () 
 	);
 	await expect(
 		tool.execute?.(
-			{ path: "/docs/locked.md", oldString: "before", newString: "after", replaceAll: false },
+			{ workspace: "current", path: "/docs/locked.md", oldString: "before", newString: "after", replaceAll: false },
 			{ toolCallId: "test", messages: [] },
 		),
 	).rejects.toThrow(
@@ -1431,7 +1556,7 @@ test.each(["saved", "private"])("edit_file's refusal names the %s content type, 
 	// decides this: a Markdown file called `photo.png` would edit fine.
 	await expect(
 		tool.execute?.(
-			{ path: "/assets/photo.png", oldString: "a", newString: "b", replaceAll: false },
+			{ workspace: "current", path: "/assets/photo.png", oldString: "a", newString: "b", replaceAll: false },
 			{ toolCallId: "test", messages: [] },
 		),
 	).rejects.toThrow(
@@ -1439,7 +1564,11 @@ test.each(["saved", "private"])("edit_file's refusal names the %s content type, 
 	);
 
 	expect(runAction).not.toHaveBeenCalled();
-	expect(runQuery).toHaveBeenCalledTimes(1);
+	expect(runQuery).toHaveBeenCalledTimes(2);
+	expect(runQuery.mock.calls.map(([ref]) => getFunctionName(ref))).toEqual([
+		"ai_chat_workspaces:resolve",
+		"files_nodes:get_visible_entry_by_path",
+	]);
 });
 
 describe("ai_chat_tool_create_set_file_metadata", () => {
@@ -1454,9 +1583,20 @@ describe("ai_chat_tool_create_set_file_metadata", () => {
 
 	const run = (tool: ReturnType<typeof ai_chat_tool_create_set_file_metadata>, path: string) =>
 		tool.execute?.(
-			{ path, set: [{ key: "created-by", value: "agent" }], remove: [] },
+			{ workspace: "current", path, set: [{ key: "created-by", value: "agent" }], remove: [] },
 			{ toolCallId: "test", messages: [] },
 		);
+
+	test("requires a current or personal workspace selector", () => {
+		const { tool } = makeTool(async () => null);
+		const schema = tool.inputSchema;
+		if (!has_defined_property(schema, "parse")) throw new Error("inputSchema has no parse");
+		const metadata = { path: "/docs/hello.md", set: [{ key: "status", value: "ready" }], remove: [] };
+		for (const workspace of ["current", "personal"])
+			expect(schema.parse({ ...metadata, workspace })).toEqual({ ...metadata, workspace });
+		expect(() => schema.parse(metadata)).toThrow();
+		expect(() => schema.parse({ ...metadata, workspace: "third" })).toThrow();
+	});
 
 	// Live QA caught this: without the rule the model pastes the bash mount path straight from
 	// `meta get` output, and the write answers "Not found" three times before it recovers.
@@ -1468,8 +1608,9 @@ describe("ai_chat_tool_create_set_file_metadata", () => {
 		);
 
 		expect(tool.description).toContain(
-			"remove the /home/cloud-usr/w/<organization>/<workspace> current workspace path prefix",
+			'Choose workspace="current" for this chat\'s workspace or workspace="personal" for your own personal/home.',
 		);
+		expect(tool.description).toContain("Remove the matching /home/cloud-usr/w/<organization>/<workspace> path prefix");
 		expect(tool.description).toContain(
 			"/home/cloud-usr/w/personal/home/folder/README.md becomes /folder/README.md, never /README.md.",
 		);
@@ -1524,19 +1665,23 @@ describe("ai_chat_tool_create_set_file_metadata", () => {
 			}));
 
 			const result = await tool.execute?.(
-				{ path, set: [{ key: "created-by", value: "agent" }], remove: ["stale"] },
+				{ workspace: "current", path, set: [{ key: "created-by", value: "agent" }], remove: ["stale"] },
 				{ toolCallId: "test", messages: [] },
 			);
 
 			const [, mutationArgs] = runMutation.mock.calls[0]!;
 			expect(mutationArgs).toMatchObject({
+				agentSource: server_ai_tools_test_source,
+				organizationId: server_ai_tools_test_ctx_data.organizationId,
+				workspaceId: server_ai_tools_test_ctx_data.workspaceId,
+				userId: server_ai_tools_test_user_id,
 				path,
 				set: [{ key: "created-by", value: "agent" }],
 				remove: ["stale"],
 			});
 			expect(result).toMatchObject({
 				title: path,
-				metadata: { path },
+				metadata: { workspace: "current", path },
 				output: 'created-by = "agent"\npriority = 3\narchived = false',
 			});
 		},
@@ -1546,7 +1691,7 @@ describe("ai_chat_tool_create_set_file_metadata", () => {
 		const { tool } = makeTool(async () => ({ _yay: { path, entries: [] } }));
 
 		const result = await tool.execute?.(
-			{ path, set: [], remove: ["created-by"] },
+			{ workspace: "current", path, set: [], remove: ["created-by"] },
 			{ toolCallId: "test", messages: [] },
 		);
 
@@ -1807,20 +1952,17 @@ test("execute_code tool: posts to the runner and formats a succeeded result with
 				network: { mode: "public_http" },
 				app: {
 					origin: "https://app.test",
-					token: expect.any(String),
+					tokens: { current: expect.any(String), personal: expect.any(String) },
 				},
 			});
 			expect(runMutation).toHaveBeenCalledTimes(1);
 			expect(runMutation.mock.calls[0]?.[1]).toEqual({
-				organizationId: test_mocks_hardcoded.organization_id.organization_1,
-				workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
-				userId: server_ai_tools_test_user_id,
-				threadId: server_ai_tools_test_thread_id,
+				source: server_ai_tools_test_source,
 				principalKey: runnerBody.executionId,
-				tokenHash: expect.any(String),
-				scopes: ["files:list", "files:read", "files:download"],
-				pathPrefix: null,
-				now: expect.any(Number),
+				tokenHashes: {
+					current: await crypto_sha256_hex(runnerBody.app.tokens.current),
+					personal: await crypto_sha256_hex(runnerBody.app.tokens.personal),
+				},
 			});
 			expect(runAction).not.toHaveBeenCalled();
 
@@ -1844,7 +1986,7 @@ describe("ai_chat_tool_create_execute_code", () => {
 		logsTruncated: false,
 		error: null,
 	};
-	const binaryFile = { path: "/exports/binary", dataBase64: "AP+AAQ==" };
+	const binaryFile = { workspace: "current", path: "/exports/binary", dataBase64: "AP+AAQ==" };
 
 	afterEach(() => vi.restoreAllMocks());
 
@@ -1864,7 +2006,15 @@ describe("ai_chat_tool_create_execute_code", () => {
 						url === "https://runner.test/internal/execute-code"
 							? Response.json({
 									...runnerResult,
-									files: [binaryFile, { path: "/exports/empty", contentType: "application/x-custom", dataBase64: "" }],
+									files: [
+										binaryFile,
+										{
+											workspace: "current",
+											path: "/exports/empty",
+											contentType: "application/x-custom",
+											dataBase64: "",
+										},
+									],
 								})
 							: new Response(null),
 				},
@@ -1873,7 +2023,7 @@ describe("ai_chat_tool_create_execute_code", () => {
 					const first = { kind: "private" as const, id: "private-1" };
 					const second = { kind: "private" as const, id: "private-2" };
 					runMutation
-						.mockResolvedValueOnce(null)
+						.mockResolvedValueOnce({ _yay: { personalIsCurrent: false } })
 						.mockResolvedValueOnce({
 							_yay: { kind: "stored", receiptId: "receipt-1", assetId: "asset-1", r2Key: "file-1" },
 						})
@@ -1961,13 +2111,12 @@ describe("ai_chat_tool_create_execute_code", () => {
 					},
 				});
 
-				// Only the file API grant ran. Ask still gets that grant, but with read scopes alone, so the
-				// snippet can read files and never write them.
+				// Ask receives read grants, but emitted files cannot reserve storage.
 				expect(fetchMock).toHaveBeenCalledTimes(1);
 				expect(runMutation).toHaveBeenCalledTimes(1);
-				expect(getFunctionName(runMutation.mock.calls[0]?.[0])).toBe("public_api:create_grant");
+				expect(getFunctionName(runMutation.mock.calls[0]?.[0])).toBe("public_api:create_code_grants");
 				expect(runMutation.mock.calls[0]?.[1]).toMatchObject({
-					scopes: ["files:list", "files:read", "files:download"],
+					source: server_ai_tools_test_source,
 				});
 			},
 		);
@@ -1998,7 +2147,7 @@ describe("ai_chat_tool_create_execute_code", () => {
 				// uploaded after that, so only the file API grant ran.
 				expect(fetchMock).toHaveBeenCalledTimes(1);
 				expect(runMutation).toHaveBeenCalledTimes(1);
-				expect(getFunctionName(runMutation.mock.calls[0]?.[0])).toBe("public_api:create_grant");
+				expect(getFunctionName(runMutation.mock.calls[0]?.[0])).toBe("public_api:create_code_grants");
 			},
 		);
 	});
@@ -2041,6 +2190,8 @@ describe("ai_chat_tool_create_execute_code", () => {
 	// because files leave the sandbox only on success.
 	test.each([
 		{ name: "missing files", change: {} },
+		{ name: "missing workspace", change: { files: [{ path: binaryFile.path, dataBase64: binaryFile.dataBase64 }] } },
+		{ name: "unknown workspace", change: { files: [{ ...binaryFile, workspace: "other" }] } },
 		{ name: "extra file fields", change: { files: [{ ...binaryFile, bytes: [0, 255] }] } },
 		{ name: "non-string base64", change: { files: [{ ...binaryFile, dataBase64: 10 }] } },
 		{ name: "invalid base64", change: { files: [{ ...binaryFile, dataBase64: "!!!!" }] } },
@@ -2078,7 +2229,7 @@ describe("ai_chat_tool_create_execute_code", () => {
 
 				expect(fetchMock).toHaveBeenCalledTimes(1);
 				expect(runMutation).toHaveBeenCalledTimes(1);
-				expect(getFunctionName(runMutation.mock.calls[0]?.[0])).toBe("public_api:create_grant");
+				expect(getFunctionName(runMutation.mock.calls[0]?.[0])).toBe("public_api:create_code_grants");
 			},
 		);
 	});
@@ -2186,7 +2337,7 @@ test("execute_code tool: always sends gatewayed network and app runtime", async 
 					code: "return await fetch('https://example.com').then(r => r.text());",
 					input: null,
 					network: { mode: "public_http" },
-					app: { origin: "https://app.test", token: expect.any(String) },
+					app: { origin: "https://app.test", tokens: { current: expect.any(String), personal: expect.any(String) } },
 				}),
 			);
 		},
@@ -2328,7 +2479,7 @@ describe("browser tools", () => {
 		sourceVersion: "v1",
 		sourceHash: "hash",
 	};
-	const binaryFile = { path: "/reports/output.bin", dataBase64: "AP+AAQ==" };
+	const binaryFile = { workspace: "current", path: "/reports/output.bin", dataBase64: "AP+AAQ==" };
 
 	function runner_run_result(overrides: Record<string, unknown> = {}) {
 		return {
@@ -2373,7 +2524,7 @@ describe("browser tools", () => {
 					// The real runner binds every reply to the exact command and code.
 					return Response.json({
 						commandId: body.commandId,
-						codeHash: await crypto_sha256_hex(`browser-v2\n${String(body.code)}`),
+						codeHash: await crypto_sha256_hex(`browser-v3\n${String(body.code)}`),
 						...next,
 					});
 				}
@@ -2435,7 +2586,7 @@ describe("browser tools", () => {
 		const { ctx } = makeCtx(async () => accessOk);
 		const code = "return 1;";
 		// The runner includes its harness version in the hash used for its cached child Worker.
-		runnerQueue.push(runner_run_result({ codeHash: await crypto_sha256_hex(`browser-v2\n${code}`) }));
+		runnerQueue.push(runner_run_result({ codeHash: await crypto_sha256_hex(`browser-v3\n${code}`) }));
 		expect(
 			await ai_chat_tool_create_browser_run(ctx, browserCtxData).execute?.(
 				{ code },
@@ -2579,69 +2730,93 @@ describe("browser tools", () => {
 		expect(browserCtxData.observations.has("t")).toBe(true);
 	});
 
-	test("writes arbitrary and empty bytes through per-item browser receipts", async () => {
-		const { ctx, runMutation } = makeCtx(async () => accessOk);
-		const targets = [
-			{ kind: "private" as const, id: "private-1" },
-			{ kind: "private" as const, id: "private-2" },
-		];
-		for (let index = 0; index < 2; index++) {
-			runMutation.mockResolvedValueOnce({
-				_yay: { kind: "stored", receiptId: "receipt-" + index, assetId: "asset-" + index, r2Key: "key-" + index },
+	test.each(["current", "personal"] as const)(
+		"writes arbitrary and empty bytes to %s through browser receipts",
+		async (workspace) => {
+			const { ctx, runQuery, runMutation } = makeCtx(async () => accessOk);
+			const destination =
+				workspace === "current"
+					? server_ai_tools_test_ctx_data
+					: {
+							organizationId: "personal-org",
+							workspaceId: "personal-workspace",
+							membershipId: "personal-membership",
+							organizationName: "personal",
+							workspaceName: "home",
+						};
+			runQuery.mockImplementation(async (ref, args) => {
+				if (getFunctionName(ref) !== "ai_chat_workspaces:resolve") return accessOk;
+				expect(args).toEqual({ source: server_ai_tools_test_source, workspace });
+				return { _yay: destination };
 			});
-			runMutation.mockResolvedValueOnce({
-				_yay: {
-					target: targets[index],
-					path: index ? "/empty.dat" : binaryFile.path,
-					size: index ? 0 : 4,
-					contentType: index ? "application/x-custom" : "application/octet-stream",
+			const targets = [
+				{ kind: "private" as const, id: "private-1" },
+				{ kind: "private" as const, id: "private-2" },
+			];
+			for (let index = 0; index < 2; index++) {
+				runMutation.mockResolvedValueOnce({
+					_yay: { kind: "stored", receiptId: "receipt-" + index, assetId: "asset-" + index, r2Key: "key-" + index },
+				});
+				runMutation.mockResolvedValueOnce({
+					_yay: {
+						target: targets[index],
+						path: index ? "/empty.dat" : binaryFile.path,
+						size: index ? 0 : 4,
+						contentType: index ? "application/x-custom" : "application/octet-stream",
+					},
+				});
+			}
+			runnerQueue.push(
+				runner_run_result({
+					files: [
+						{ ...binaryFile, workspace },
+						{ workspace, path: "/empty.dat", contentType: "application/x-custom", dataBase64: "" },
+					],
+				}),
+			);
+			const code = `emitFile({workspace: '${workspace}', path: '/reports/output.bin', bytes: new Uint8Array([0,255,128,1])});`;
+			const output = await ai_chat_tool_create_browser_run(ctx, browserCtxData).execute?.(
+				{ code },
+				{ toolCallId: "t", messages: [] },
+			);
+			expect(output).toEqual(
+				ai_chat_file_result("Browser run", "succeeded", targets, null, {
+					code,
+					resultText: JSON.stringify({ reviewed: true }),
+				}),
+			);
+			expect(runMutation.mock.calls.map(([ref]) => getFunctionName(ref))).toEqual([
+				"files_browser:prepare_file_output",
+				"files_browser:finalize_file_output",
+				"files_browser:prepare_file_output",
+				"files_browser:finalize_file_output",
+			]);
+			expect(runMutation.mock.calls[0]?.[1]).toMatchObject({
+				organizationId: destination.organizationId,
+				workspaceId: destination.workspaceId,
+				agentSource: server_ai_tools_test_source,
+				path: binaryFile.path,
+				contentType: "application/octet-stream",
+				size: 4,
+				content: { kind: "stored" },
+				threadId: server_ai_tools_test_thread_id,
+				modeId: "agent",
+				sessionId: "session-1",
+				expectedAgentLease: { controlGen: 1, loadGen: 1, navGen: 1 },
+				expectedSource: {
+					targetKind: "saved",
+					nodeId: "node-1",
+					sourceKind: "saved",
+					sourceVersion: "v1",
+					sourceHash: "hash",
 				},
 			});
-		}
-		runnerQueue.push(
-			runner_run_result({
-				files: [binaryFile, { path: "/empty.dat", contentType: "application/x-custom", dataBase64: "" }],
-			}),
-		);
-		const code = "emitFile({path: '/reports/output.bin', bytes: new Uint8Array([0,255,128,1])});";
-		const output = await ai_chat_tool_create_browser_run(ctx, browserCtxData).execute?.(
-			{ code },
-			{ toolCallId: "t", messages: [] },
-		);
-		expect(output).toEqual(
-			ai_chat_file_result("Browser run", "succeeded", targets, null, {
-				code,
-				resultText: JSON.stringify({ reviewed: true }),
-			}),
-		);
-		expect(runMutation.mock.calls.map(([ref]) => getFunctionName(ref))).toEqual([
-			"files_browser:prepare_file_output",
-			"files_browser:finalize_file_output",
-			"files_browser:prepare_file_output",
-			"files_browser:finalize_file_output",
-		]);
-		expect(runMutation.mock.calls[0]?.[1]).toMatchObject({
-			path: binaryFile.path,
-			contentType: "application/octet-stream",
-			size: 4,
-			content: { kind: "stored" },
-			threadId: server_ai_tools_test_thread_id,
-			modeId: "agent",
-			sessionId: "session-1",
-			expectedAgentLease: { controlGen: 1, loadGen: 1, navGen: 1 },
-			expectedSource: {
-				targetKind: "saved",
-				nodeId: "node-1",
-				sourceKind: "saved",
-				sourceVersion: "v1",
-				sourceHash: "hash",
-			},
-		});
-		expect(r2Objects.get("key-0")).toEqual(new Uint8Array([0, 255, 128, 1]));
-		expect(r2Objects.get("key-1")).toEqual(new Uint8Array());
-		expect(JSON.stringify(output)).not.toContain("dataBase64");
-		expect(JSON.stringify(output)).not.toContain("r2.test");
-	});
+			expect(r2Objects.get("key-0")).toEqual(new Uint8Array([0, 255, 128, 1]));
+			expect(r2Objects.get("key-1")).toEqual(new Uint8Array());
+			expect(JSON.stringify(output)).not.toContain("dataBase64");
+			expect(JSON.stringify(output)).not.toContain("r2.test");
+		},
+	);
 
 	test("keeps an earlier file when a later prepare fails", async () => {
 		const { ctx, runMutation } = makeCtx(async () => accessOk);

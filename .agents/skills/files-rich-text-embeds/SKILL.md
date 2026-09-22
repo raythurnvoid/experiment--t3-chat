@@ -10,7 +10,9 @@ description: Spec for image and video embeds in rich text documents — the bono
 - `../../../packages/app/src/components/files/file-editor/file-editor-rich-text/file-editor-rich-text-media-upload.ts` (paste/drop/picked upload flow)
 - `../../../packages/app/src/components/files/file-editor/file-editor-rich-text/file-editor-rich-text-media-insert.tsx` (slash-command insertion UI)
 - `../../../packages/app/src/components/files/file-editor/file-editor-rich-text/file-editor-rich-text-tools-slash-command.tsx` (media slash items)
-- `../../../packages/app/src/lib/files-media-src.ts` (reference parsing and signed-url resolution; its cache also serves the chat agent's generated pictures)
+- `../../../packages/app/shared/files-media.ts` (saved/private reference parsing and builders)
+- `../../../packages/app/src/lib/files-media-src.ts` (signed-url resolution and saved-media cache)
+- `../../../packages/app/convex/r2.ts` (`get_media_by_reference`, current media access)
 - `../../../packages/app/src/lib/files-image-compression.ts` (client-side image compression, shared with the sidebar)
 - `../../../packages/app/convex/files_nodes.ts` (`create_upload_node`, `discard_failed_upload_node`, `get_authorized_by_path`)
 
@@ -21,11 +23,32 @@ A document never stores media bytes or signed urls. An embed's `src` is one of:
 - `bonobo-file://<fileNodeId>` — a workspace file. The markdown form is
   `![alt](bonobo-file://<id>)` for images and `<video src="bonobo-file://<id>"></video>` for
   videos (markdown has no video syntax, so the video node serializes as a raw tag).
+- `bonobo-file://private/<privateNodeId>` — a stable draft reference. Before Save, only the
+  draft owner can resolve ready media. After Save, the permanent saved-origin index resolves
+  the same reference under the saved file's current access rules. Draft receipt cleanup does
+  not break it. Resolution stays inside the requested workspace; the ID grants no access.
 - A plain external `http(s)` url.
 
 Signed R2 urls live for 15 minutes, so one written into a document would be dead on the next
 open. The node view resolves a reference to a signed url only while the embed is on screen,
-with a capped in-memory cache (`files-media-src.ts`).
+with a capped in-memory cache for saved media (`files-media-src.ts`). That cache includes
+membership, file, and asset identity. Private media URLs are never cached; signing checks
+the exact proposal revision and creation generation.
+
+# Copy And Save
+
+Cross-workspace Copy rewrites only real rich-text image/video embeds. The media must be selected
+explicitly, directly or through a selected folder. Plain links and code do not import media.
+New media copies have destination-owned assets and use destination access.
+
+Mappings are sealed paged sets, not arrays on the document. A rich-text Copy gets a set even with
+no embeds, so an embed added before Save still gets checked. Copy adoption and Save pin exact
+accepted text and current media/access versions. Removing an embed removes its Save requirement.
+Adding or changing one needs a fresh check. Large Copy review saves selected media first; it never
+silently selects it. Partial Save keeps the mappings needed by the remaining proposal.
+
+The full contracts live in [pending updates](../files-agent-pending-updates/SKILL.md) and
+[transfer runs](../files-explorer-tree/references/transfer.md).
 
 # The Dual Extension-Set Contract
 
@@ -54,7 +77,7 @@ saved markdown, but it does persist in the Yjs doc until the flow clears it.
 - `uploading` — the node has an `uploadId` and no `src` (this browser's own upload).
 - `processing` — a `bonobo-file://` reference whose asset has no `r2Key` yet and whose
   `unfinalizedExpiresAt` (24h TTL) has not passed. The asset is watched via
-  `app_convex.watchQuery(r2.get_asset_by_file_node_id)`, so the embed swaps to `ready` without a reload when
+  `app_convex.watchQuery(r2.get_media_by_reference)`, so the embed swaps to `ready` without a reload when
   the R2 event confirms the object (~seconds in dev).
 - `ready` — `r2Key` set (signed url minted) or an external url.
 - `failed` — the asset stayed unfinalized past the TTL. Nothing cleans this up; the reader is
@@ -63,8 +86,10 @@ saved markdown, but it does persist in the Yjs doc until the flow clears it.
 - `broken` — the element fired an error while loading.
 - `incompatible` — the file's stored `contentType` no longer starts with `image/` (or `video/`
   for a video node). A whole-file copy or a restored version can replace the content of a file
-  that keeps its id, so the node view watches the node (`files_nodes.get_file_node_for_membership`)
-  next to the asset and re-signs the url per asset id.
+  that keeps its id, so the same media query watches content type and asset identity together.
+
+Each reference change or query update cancels the previous URL result. Access loss clears
+the visible media. A late signing reply cannot restore an old image, video, or destroyed view.
 
 Scheme safety lives entirely here: the shared nodes' `parseHTML` accepts any `img[src]` /
 `video[src]`, and `files_media_parse_src` classifies everything that is not `bonobo-file://`

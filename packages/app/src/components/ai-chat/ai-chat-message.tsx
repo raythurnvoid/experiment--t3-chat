@@ -56,6 +56,10 @@ import { cn, json_strigify_ensured, sx } from "@/lib/utils.ts";
 import { path_name_of } from "@/lib/paths.ts";
 import type { AppClassName } from "@/lib/dom-utils.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
+import {
+	organizations_DEFAULT_ORGANIZATION_NAME,
+	organizations_DEFAULT_WORKSPACE_NAME,
+} from "../../../shared/organizations.ts";
 import { MyButton, MyButtonIcon } from "../my-button.tsx";
 import { app_convex_api } from "@/lib/app-convex-client.ts";
 import { useQuery } from "convex/react";
@@ -440,7 +444,14 @@ const AiChatMessagePartToolEditPage = memo(function AiChatMessagePartToolEditPag
 					<MyLink
 						className={"AiChatMessagePartToolEditPage-link" satisfies AiChatMessagePartToolEditPage_ClassNames}
 						to="/w/$organizationName/$workspaceName/files"
-						params={{ organizationName, workspaceName }}
+						params={
+							result.metadata.workspace === "personal"
+								? {
+										organizationName: organizations_DEFAULT_ORGANIZATION_NAME,
+										workspaceName: organizations_DEFAULT_WORKSPACE_NAME,
+									}
+								: { organizationName, workspaceName }
+						}
 						search={
 							result.metadata.target.kind === "private"
 								? { pendingNodeId: result.metadata.target.id }
@@ -697,28 +708,24 @@ type AiChatMessagePartToolFile_Props = {
 
 const AiChatMessagePartToolFile = memo(function AiChatMessagePartToolFile(props: AiChatMessagePartToolFile_Props) {
 	const { target } = props;
-	const { membershipId, organizationName, workspaceName } = AppTenantProvider.useContext();
-	// Resolve access and the current saved/private target before showing a path or link in shared chat.
-	const file = useQuery(app_convex_api.files_pending_updates.get_file_pending_target, { membershipId, target });
+	const { membershipId } = AppTenantProvider.useContext();
+	// A result can belong to either workspace. Resolve access before showing its path or link.
+	const file = useQuery(app_convex_api.ai_chat_files.get_file_output_target, { membershipId, target });
 	// `undefined` means the query is still loading. `null` means this reader may not see the file.
-	// An archived file is gone for the reader too, so treat it as unavailable.
-	const available = file && !(file.entry.kind === "saved" && file.entry.node.archiveOperationId !== null);
 
 	return (
 		<li className={"AiChatMessagePartToolFile" satisfies AiChatMessagePartToolFile_ClassNames}>
-			{available ? (
+			{file ? (
 				<>
 					<span>
-						{file.entry.path} ·{" "}
-						{file.entry.kind === "saved" ? "Saved" : file.readiness === "preparing" ? "Preparing…" : "Pending review"}
+						{file.path} ·{" "}
+						{file.target.kind === "saved" ? "Saved" : file.readiness === "preparing" ? "Preparing…" : "Pending review"}
 					</span>
 					<MyLink
 						className={"AiChatMessagePartToolFile-link" satisfies AiChatMessagePartToolFile_ClassNames}
 						to="/w/$organizationName/$workspaceName/files"
-						params={{ organizationName, workspaceName }}
-						search={
-							file.entry.kind === "private" ? { pendingNodeId: file.entry.node._id } : { nodeId: file.entry.node._id }
-						}
+						params={{ organizationName: file.organizationName, workspaceName: file.workspaceName }}
+						search={file.target.kind === "private" ? { pendingNodeId: file.target.id } : { nodeId: file.target.id }}
 						variant="button-ghost-accent"
 					>
 						Open in Files

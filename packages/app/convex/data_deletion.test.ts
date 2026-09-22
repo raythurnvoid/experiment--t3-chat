@@ -8,6 +8,7 @@ import { presence } from "./presence.ts";
 import { test_convex, test_mocks_cancel_pending_home_file_seeds, test_mocks_fill_db_with } from "./setup.test.ts";
 import { data_deletion_db_request } from "./data_deletion_requests.ts";
 import { activities_db_require_by_source_id, activities_db_start } from "./activities_db.ts";
+import { organizations_membership_lifetimes_db_ensure } from "./organizations_membership_lifetimes.ts";
 
 const test = baseTest.sequential;
 import {
@@ -21,6 +22,7 @@ import { files_create_room_id, files_get_utf8_byte_size } from "../shared/files.
 import { app_presence_GLOBAL_ROOM_ID } from "../shared/shared-presence-constants.ts";
 import { r2, r2_PUT_MAY_ARRIVE_MARGIN_MS, r2_confirmed_object_delete, r2_create_asset_key } from "./r2_client.ts";
 import { files_private_storage_db_reserve } from "./files_private_storage.ts";
+import { files_db_schedule_pending_update_cleanup } from "../server/files.ts";
 
 const RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -146,6 +148,105 @@ async function data_deletion_test_seed_page(
 	} as const;
 }
 
+async function data_deletion_test_seed_private_chat(
+	ctx: MutationCtx,
+	args: {
+		userId: Id<"users">;
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		membershipId: Id<"organizations_workspaces_users">;
+		archived: boolean;
+		count: number;
+	},
+) {
+	const now = Date.now();
+	const threadId = await ctx.db.insert("ai_chat_threads", {
+		organizationId: args.organizationId,
+		workspaceId: args.workspaceId,
+		clientGeneratedId: crypto.randomUUID(),
+		title: "Private chat",
+		archived: args.archived,
+		runtime: "aisdk_5",
+		createdBy: args.userId,
+		updatedBy: args.userId,
+		updatedAt: now,
+	});
+	const scope = { organizationId: args.organizationId, workspaceId: args.workspaceId, threadId };
+	const shellId = await ctx.db.insert("ai_chat_bash_shells", {
+		...scope,
+		name: "default",
+		cwd: "/tmp",
+		cwdTarget: null,
+		state: null,
+		transcriptBytes: args.count * 7,
+		transcriptEntries: args.count,
+		transcriptSeq: args.count,
+		updatedBy: args.userId,
+		updatedAt: now,
+	});
+	for (let index = 0; index < args.count; index += 1) {
+		const fileNodeId = await ctx.db.insert("ai_chat_files", {
+			...scope,
+			path: `/tmp/private-${index}.txt`,
+			kind: "file",
+			mode: 0o100644,
+			size: 7,
+			mtime: now,
+		});
+		await Promise.all([
+			ctx.db.insert("ai_chat_files_content", {
+				...scope,
+				fileNodeId,
+				bytes: new TextEncoder().encode("private").buffer,
+			}),
+			ctx.db.insert("ai_chat_threads_messages_aisdk_5", {
+				...scope,
+				parentId: null,
+				clientGeneratedMessageId: `private-${index}`,
+				content: { role: "user", parts: [{ type: "text", text: "Private note" }] },
+				createdBy: args.userId,
+				updatedAt: now,
+			}),
+			ctx.db.insert("ai_chat_bash_shell_transcripts", {
+				...scope,
+				shellId,
+				seq: index,
+				text: "private",
+				bytes: 7,
+			}),
+			ctx.db.insert("ai_chat_bash_invocations", {
+				...scope,
+				userId: args.userId,
+				membershipId: args.membershipId,
+				membershipLifetime: 0,
+				toolCallId: `private-${index}`,
+				commandHash: "a".repeat(64),
+				status: "interrupted",
+				deadlineAt: now,
+				transferDeadlineAt: now,
+				finishedAt: now,
+			}),
+		]);
+	}
+	await Promise.all([
+		ctx.db.insert("ai_chat_bash_job_notice_cursors", { ...scope, userId: args.userId, noticeAt: now }),
+		ctx.db.insert("public_api_grants", {
+			...scope,
+			userId: args.userId,
+			principalKey: `grant:${threadId}`,
+			tokenHash: `hash:${threadId}`,
+			agentSource: null,
+			codeReadBudgetId: null,
+			scopes: ["files:read"],
+			remainingReadBytes: 1024,
+			pathPrefix: null,
+			createdAt: now,
+			expiresAt: now + 60_000,
+		}),
+	]);
+	return threadId;
+}
+
 async function data_deletion_test_start_transfer_run(
 	t: ReturnType<typeof test_convex>,
 	args: {
@@ -169,17 +270,44 @@ async function data_deletion_test_start_transfer_run(
 		}
 		return { membershipId: membership._id, sourceIds };
 	});
-	const started = await t
-		.withIdentity({ issuer: "https://clerk.test", subject: args.userId, external_id: args.userId })
-		.mutation(api.files_transfer.start, {
-			membershipId,
-			requestId: args.tag,
-			kind: "copy",
-			sourceIds,
-			targetParentId: "root",
-		});
+	const asUser = t.withIdentity({ issuer: "https://clerk.test", subject: args.userId, external_id: args.userId });
+	const started = await asUser.mutation(api.files_transfer.start, {
+		membershipId,
+		requestId: args.tag,
+		kind: "copy",
+		expectedSourceCount: sourceIds.length,
+		sourceIds: sourceIds.slice(0, 100),
+		targetParentId: "root",
+	});
 	if (started._nay) throw new Error(started._nay.message);
-	return { runId: started._yay.runId, membershipId, sourceIds };
+	const { runId } = started._yay;
+	for (let offset = 100; offset < sourceIds.length; offset += 100) {
+		expect(
+			await asUser.mutation(api.files_transfer.append_sources, {
+				membershipId,
+				runId,
+				offset,
+				sourceIds: sourceIds.slice(offset, offset + 100),
+			}),
+		).toEqual({ _yay: null });
+	}
+	expect(await asUser.mutation(api.files_transfer.seal, { membershipId, runId })).toEqual({ _yay: null });
+	// Select and normalize before tests attach worker state to the real items.
+	for (let step = 0; step < sourceIds.length * 2 + 4; step++) {
+		const run = await t.run((ctx) => ctx.db.get("files_transfer_runs", runId));
+		if (run?.step === "discover") break;
+		await t.mutation(internal.files_transfer.advance, { runId });
+	}
+	expect(await t.run((ctx) => ctx.db.get("files_transfer_runs", runId))).toMatchObject({ step: "discover" });
+	expect(
+		await t.run((ctx) =>
+			ctx.db
+				.query("files_transfer_items")
+				.withIndex("by_run_order", (q) => q.eq("runId", runId))
+				.collect(),
+		),
+	).toHaveLength(sourceIds.length);
+	return { runId, membershipId, sourceIds };
 }
 
 async function data_deletion_test_seed_plugin_ui_sessions(
@@ -525,17 +653,8 @@ async function data_deletion_test_seed_workspace_content_bulk(
 					stringValue: `pending-${args.tag}`,
 				}),
 			]);
-			const scheduledFunctionId = await ctx.scheduler.runAfter(
-				4 * 60 * 60 * 1000,
-				internal.files_pending_updates.remove_file_pending_update_if_expired,
-				{
-					pendingUpdateId,
-					expectedUpdatedAt: pendingUpdateUpdatedAt,
-				},
-			);
-			await ctx.db.insert("files_pending_updates_cleanup_tasks", {
+			await files_db_schedule_pending_update_cleanup(ctx, {
 				pendingUpdateId,
-				scheduledFunctionId,
 				expectedUpdatedAt: pendingUpdateUpdatedAt,
 			});
 		}
@@ -650,6 +769,8 @@ async function data_deletion_test_seed_workspace_content_bulk(
 				threadId,
 				principalKey: `grant_${args.tag}_${i}`,
 				tokenHash: `token_hash_${args.tag}_${i}`,
+				agentSource: null,
+				codeReadBudgetId: null,
 				scopes: ["files:list", "files:read"],
 				remainingReadBytes: 0,
 				pathPrefix: null,
@@ -852,6 +973,7 @@ async function data_deletion_test_seed_bash_job(
 			startCwdTarget: null,
 			shellState: null,
 			allowDbFilesMkdir: false,
+			workerGeneration: 0,
 			workId: null,
 			watchdogId: null,
 			stopRequestedAt: null,
@@ -1577,6 +1699,255 @@ describe("init_user_deletion", () => {
 		expect(after.requests).toHaveLength(1);
 		expect(after.ownerQuota?.usedCount).toBe(0);
 	});
+});
+
+describe("creator-owned private chat deletion", () => {
+	test("caps large chat payload batches during account finalization", async () => {
+		const t = test_convex();
+		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const threadId = await t.run((ctx) =>
+			data_deletion_test_seed_private_chat(ctx, {
+				...db,
+				archived: false,
+				count: 10,
+			}),
+		);
+		const read = () =>
+			t.run(async (ctx) => ({
+				contents: await ctx.db
+					.query("ai_chat_files_content")
+					.withIndex("by_thread_fileNode", (q) => q.eq("threadId", threadId))
+					.collect(),
+				messages: await ctx.db.query("ai_chat_threads_messages_aisdk_5").collect(),
+				transcripts: await ctx.db.query("ai_chat_bash_shell_transcripts").collect(),
+				thread: await ctx.db.get("ai_chat_threads", threadId),
+			}));
+		let previous = await read();
+		const capped = new Set<string>();
+		let done = false;
+		for (let pass = 0; pass < 100 && !done; pass += 1) {
+			done = await t.mutation(internal.data_deletion.finalize_user_deletion_data, {
+				userId: db.userId,
+				_test_disableReschedule: true,
+			});
+			const current = await read();
+			for (const field of ["contents", "messages", "transcripts"] as const) {
+				const deleted = previous[field].length - current[field].length;
+				expect(deleted).toBeLessThanOrEqual(8);
+				if (deleted === 8) capped.add(field);
+				if (current[field].length > 0) expect(current.thread).not.toBeNull();
+			}
+			previous = current;
+		}
+		expect(done).toBe(true);
+		expect(previous).toEqual({ contents: [], messages: [], transcripts: [], thread: null });
+		expect([...capped].sort()).toEqual(["contents", "messages", "transcripts"]);
+	});
+
+	test.each(["queued", "missing user", "admin", "data-only reset"] as const)(
+		"keeps other chats and team files unchanged through %s",
+		async (mode) => {
+			const t = test_convex();
+			const db = await t.run(async (ctx) => {
+				const deletedUser = await data_deletion_test_bootstrap_user(ctx, {
+					clerkUserId: "private-chat-deleted-user",
+					displayName: "Deleted creator",
+				});
+				const owner = await data_deletion_test_bootstrap_user(ctx, {
+					clerkUserId: "private-chat-team-owner",
+					displayName: "Team owner",
+				});
+				const organization = await organizations_db_create(ctx, {
+					userId: owner.userId,
+					name: "private-chat-team",
+					description: "",
+					now: Date.now(),
+					default: false,
+				});
+				if (organization._nay) throw new Error(organization._nay.message);
+				const scope = {
+					organizationId: organization._yay.organizationId,
+					workspaceId: organization._yay.defaultWorkspaceId,
+				};
+				const membershipId = await ctx.db.insert("organizations_workspaces_users", {
+					...scope,
+					userId: deletedUser.userId,
+					active: true,
+				});
+				await ctx.db.insert("access_control_role_assignments", {
+					...scope,
+					userId: deletedUser.userId,
+					role: "member",
+					createdAt: Date.now(),
+					updatedAt: Date.now(),
+				});
+				const ownerMembership = await ctx.db
+					.query("organizations_workspaces_users")
+					.withIndex("by_workspace_user_active", (q) =>
+						q.eq("workspaceId", scope.workspaceId).eq("userId", owner.userId),
+					)
+					.first();
+				if (!ownerMembership) throw new Error("Expected the team owner's membership");
+				const threadIds = [];
+				for (const archived of [false, true]) {
+					threadIds.push(
+						await data_deletion_test_seed_private_chat(ctx, {
+							...scope,
+							membershipId,
+							userId: deletedUser.userId,
+							archived,
+							count: 3,
+						}),
+					);
+				}
+				const keptThreadId = await data_deletion_test_seed_private_chat(ctx, {
+					...scope,
+					membershipId: ownerMembership._id,
+					userId: owner.userId,
+					archived: false,
+					count: 2,
+				});
+				const page = await data_deletion_test_seed_page(ctx, {
+					...scope,
+					userId: deletedUser.userId,
+					tag: "saved-team-file",
+				});
+				return { ...scope, deletedUser, threadIds, keptThreadId, nodeId: page.nodeId };
+			});
+			const transfer = await data_deletion_test_start_transfer_run(t, {
+				userId: db.deletedUser.userId,
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				tag: "private-chat-copy",
+				count: 1,
+			});
+			await t.run(async (ctx) => {
+				const invocation = await ctx.db
+					.query("ai_chat_bash_invocations")
+					.withIndex("by_thread_toolCall", (q) => q.eq("threadId", db.threadIds[0]))
+					.first();
+				if (!invocation) throw new Error("Expected the chat's foreground call");
+				const activity = await activities_db_require_by_source_id(ctx, transfer.runId);
+				await ctx.db.insert("ai_chat_bash_invocation_transfers", {
+					organizationId: db.organizationId,
+					workspaceId: db.workspaceId,
+					threadId: db.threadIds[0],
+					invocationId: invocation._id,
+					commandNumber: 1,
+					runId: transfer.runId,
+					activityId: activity._id,
+				});
+			});
+			const read = () =>
+				t.run(async (ctx) => ({
+					threads: await Promise.all(db.threadIds.map((id) => ctx.db.get("ai_chat_threads", id))),
+					keptThread: await ctx.db.get("ai_chat_threads", db.keptThreadId),
+					children: (
+						await Promise.all(
+							(
+								[
+									"ai_chat_bash_invocation_transfers",
+									"ai_chat_bash_invocations",
+									"ai_chat_files_content",
+									"ai_chat_files",
+									"ai_chat_threads_messages_aisdk_5",
+									"ai_chat_bash_shell_transcripts",
+									"ai_chat_bash_shells",
+									"ai_chat_bash_job_notice_cursors",
+									"public_api_grants",
+								] as const
+							).map((table) => ctx.db.query(table).collect()),
+						)
+					).flat(),
+					user: await ctx.db.get("users", db.deletedUser.userId),
+					file: await ctx.db.get("files_nodes", db.nodeId),
+					assets: await ctx.db.query("files_r2_assets").collect(),
+					workspace: await ctx.db.get("organizations_workspaces", db.workspaceId),
+				}));
+			const before = await read();
+			const keptChildren = before.children.filter((doc) => doc.threadId === db.keptThreadId);
+			expect(keptChildren.length).toBeGreaterThan(0);
+			let requestId: Id<"data_deletion_requests"> | null = null;
+			let eligibleAt = Date.now();
+			if (mode === "queued" || mode === "missing user") {
+				requestId = await t.mutation(internal.data_deletion.init_user_deletion, { userId: db.deletedUser.userId });
+				if (!requestId) throw new Error("Expected a user deletion request");
+				const request = await t.run((ctx) => ctx.db.get("data_deletion_requests", requestId!));
+				eligibleAt = request!.eligibleAt;
+				expect(eligibleAt).toBe(Date.now() + RETENTION_MS);
+				expect(
+					await t.query(internal.data_deletion.list_deletion_request_ids_by_scope, {
+						scope: "user",
+						limit: 10,
+						_test_now: eligibleAt - 1,
+					}),
+				).not.toContain(requestId);
+				expect((await read()).threads).toEqual(before.threads);
+				if (mode === "missing user") {
+					await t.run((ctx) => ctx.db.delete("users", db.deletedUser.userId));
+				}
+			}
+
+			if (mode === "data-only reset") {
+				await data_deletion_test_hard_delete_user_data_until_done(t, { userId: db.deletedUser.userId, batchSize: 1 });
+				expect((await read()).threads).toEqual(before.threads);
+				expect((await read()).children).toEqual(before.children);
+			} else {
+				let previous = before;
+				let done = false;
+				for (let pass = 0; pass < 150 && !done; pass += 1) {
+					done =
+						mode === "admin"
+							? await t.mutation(internal.data_deletion.finalize_user_deletion_data, {
+									userId: db.deletedUser.userId,
+									_test_batchSize: 1,
+									_test_disableReschedule: true,
+								})
+							: (
+									await t.mutation(internal.data_deletion.process_user_deletion_request, {
+										requestId: requestId!,
+										_test_now: eligibleAt,
+										_test_batchSize: 1,
+									})
+								).done;
+					const current = await read();
+					expect(previous.children.length - current.children.length).toBeLessThanOrEqual(1);
+					for (const child of current.children) {
+						if ("invocationId" in child) {
+							expect(current.children.some((doc) => doc._id === child.invocationId)).toBe(true);
+						}
+					}
+					for (let index = 0; index < db.threadIds.length; index += 1) {
+						if (current.children.some((doc) => doc.threadId === db.threadIds[index])) {
+							expect(current.threads[index]).not.toBeNull();
+						}
+					}
+					if (!done) {
+						if (mode !== "missing user") expect(current.user?.deletionFinalizationStartedAt).toBeDefined();
+						if (requestId)
+							expect(await t.run((ctx) => ctx.db.get("data_deletion_requests", requestId!))).not.toBeNull();
+					}
+					previous = current;
+				}
+				expect(done).toBe(true);
+				expect(previous.threads).toEqual([null, null]);
+				expect(previous.children).toEqual(keptChildren);
+				expect(await t.run((ctx) => ctx.db.get("files_transfer_runs", transfer.runId))).toBeNull();
+				if (requestId) {
+					expect(await t.mutation(internal.data_deletion.process_user_deletion_request, { requestId })).toEqual({
+						done: true,
+						deletedCount: 0,
+					});
+				}
+			}
+			const after = await read();
+			expect(after.keptThread).toEqual(before.keptThread);
+			expect(after.file).toEqual(before.file);
+			expect(after.assets).toEqual(before.assets);
+			expect(after.workspace).toEqual(before.workspace);
+			if (mode !== "missing user") expect(after.user?.deletionFinalizationStartedAt).toBeUndefined();
+		},
+	);
 });
 
 describe("process_user_deletion_request", () => {
@@ -2783,25 +3154,45 @@ describe("process_workspace_deletion_request", () => {
 		});
 
 		const first = await t.mutation(internal.data_deletion.process_workspace_deletion_request, { requestId });
-		const progress = await t.run(async (ctx) => ({
-			run: await ctx.db.get("files_transfer_runs", victim.runId),
-			activity: await activities_db_require_by_source_id(ctx, victim.runId),
-			items: await ctx.db
-				.query("files_transfer_items")
-				.withIndex("by_run_order", (q) => q.eq("runId", victim.runId))
-				.collect(),
-			stagedAsset: await ctx.db.get("files_r2_assets", stagedAssetId),
-			deletionJobs: await ctx.db.query("files_r2_object_deletion_jobs").collect(),
-			sources: await Promise.all(victim.sourceIds.map((nodeId) => ctx.db.get("files_nodes", nodeId))),
-		}));
+		const readProgress = () =>
+			t.run(async (ctx) => ({
+				run: await ctx.db.get("files_transfer_runs", victim.runId),
+				activity: await activities_db_require_by_source_id(ctx, victim.runId),
+				selection: await ctx.db
+					.query("files_transfer_selection_items")
+					.withIndex("by_run_order", (q) => q.eq("runId", victim.runId))
+					.collect(),
+				items: await ctx.db
+					.query("files_transfer_items")
+					.withIndex("by_run_order", (q) => q.eq("runId", victim.runId))
+					.collect(),
+				stagedAsset: await ctx.db.get("files_r2_assets", stagedAssetId),
+				deletionJobs: await ctx.db.query("files_r2_object_deletion_jobs").collect(),
+				sources: await Promise.all(victim.sourceIds.map((nodeId) => ctx.db.get("files_nodes", nodeId))),
+			}));
+		let progress = await readProgress();
 		expect(first).toEqual({ done: false, deletedCount: 50 });
 		expect(progress.run).not.toBeNull();
 		expect(progress.activity.status).toBe("stopping");
-		expect(progress.items).toHaveLength(1);
+		expect(progress.selection).toHaveLength(1);
+		expect(progress.items).toHaveLength(51);
 		expect(progress.stagedAsset).toBeNull();
 		expect(progress.deletionJobs).toEqual([expect.objectContaining({ r2Key: stagedKey, putMayArriveUntil })]);
 		expect(progress.sources.every(Boolean)).toBe(true);
 		expect(cancelWork.mock.calls.map((call) => call[1])).toContain(workId);
+		// Selection pages drain before work items, while every source file stays intact.
+		for (let pass = 0; pass < 4 && progress.items.length > 1; pass++) {
+			const remaining = progress.selection.length + progress.items.length;
+			const batch = await t.mutation(internal.data_deletion.process_workspace_deletion_request, { requestId });
+			progress = await readProgress();
+			expect(batch.done).toBe(false);
+			expect(batch.deletedCount).toBeGreaterThan(0);
+			expect(batch.deletedCount).toBeLessThanOrEqual(50);
+			expect(progress.selection.length + progress.items.length).toBe(remaining - batch.deletedCount);
+			expect(progress.sources.every(Boolean)).toBe(true);
+		}
+		expect(progress.selection).toEqual([]);
+		expect(progress.items).toHaveLength(1);
 
 		await data_deletion_test_process_workspace_request_until_done(t, { requestId });
 		const after = await t.run(async (ctx) => ({
@@ -2823,7 +3214,7 @@ describe("process_workspace_deletion_request", () => {
 		expect(after.activities.some((activity) => activity.source.id === victim.runId)).toBe(false);
 		expect(after.controlRun).not.toBeNull();
 		expect(after.activities.find((activity) => activity.source.id === control.runId)).toMatchObject({
-			status: "queued",
+			status: "running",
 		});
 		expect(after.controlItems).toHaveLength(1);
 		expect(after.controlFile).not.toBeNull();
@@ -2868,11 +3259,18 @@ describe("process_workspace_deletion_request", () => {
 			lastMessageAt: Date.now(),
 		});
 		if (thread._nay) throw new Error(thread._nay.message);
+		const captured = await t.mutation(internal.ai_chat_workspaces.capture, {
+			userId: db.userId,
+			membershipId: db.membershipId,
+		});
+		if (captured._nay) throw new Error(captured._nay.message);
 		const invocation = await t.mutation(internal.ai_chat_files.begin_bash_invocation, {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			userId: db.userId,
 			threadId: thread._yay.threadId,
+			membershipId: db.membershipId,
+			membershipLifetime: captured._yay.membershipLifetime,
 			toolCallId: "purge-bash-call",
 			commandHash: "a".repeat(64),
 			shellName: "default",
@@ -2881,11 +3279,20 @@ describe("process_workspace_deletion_request", () => {
 		await t.mutation(internal.ai_chat_files.interrupt_bash_invocation, { invocationId: invocation._yay.invocationId });
 		const { requestId, linkId } = await t.run(async (ctx) => {
 			// History links can outlive their cleaned-up transfer and Activity docs.
+			const scope = {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				membershipId: db.membershipId,
+				membershipLifetime: captured._yay.membershipLifetime,
+			};
 			const runId = await ctx.db.insert("files_transfer_runs", {
 				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
 				userId: db.userId,
+				sourceScope: scope,
+				destinationScope: scope,
 				requestId: "purge-bash-run",
+				reserveCursor: null,
 				requestHash: "hash",
 				kind: "copy",
 				sourceView: "draft",
@@ -2970,12 +3377,19 @@ describe("process_workspace_deletion_request", () => {
 			lastMessageAt: Date.now(),
 		});
 		if (thread._nay) throw new Error(thread._nay.message);
+		const captured = await t.mutation(internal.ai_chat_workspaces.capture, {
+			userId: db.userId,
+			membershipId: db.membershipId,
+		});
+		if (captured._nay) throw new Error(captured._nay.message);
 		const begin = (toolCallId: string) =>
 			t.mutation(internal.ai_chat_files.begin_bash_invocation, {
 				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
 				userId: db.userId,
 				threadId: thread._yay.threadId,
+				membershipId: db.membershipId,
+				membershipLifetime: captured._yay.membershipLifetime,
 				toolCallId,
 				commandHash: "a".repeat(64),
 				shellName: "default",
@@ -3981,11 +4395,30 @@ describe("process_workspace_deletion_request", () => {
 			if (siblingWorkspace._nay) {
 				throw new Error(siblingWorkspace._nay.message);
 			}
+			const siblingMembership = await ctx.db
+				.query("organizations_workspaces_users")
+				.withIndex("by_user_organization_workspace_active", (q) =>
+					q
+						.eq("userId", user.userId)
+						.eq("organizationId", user.defaultOrganizationId)
+						.eq("workspaceId", siblingWorkspace._yay.workspaceId),
+				)
+				.unique();
+			if (!siblingMembership) throw new Error("Missing sibling membership");
+			const siblingScope = {
+				organizationId: user.defaultOrganizationId,
+				workspaceId: siblingWorkspace._yay.workspaceId,
+				membershipId: siblingMembership._id,
+				membershipLifetime: await organizations_membership_lifetimes_db_ensure(ctx, siblingMembership),
+			};
 			const siblingRunId = await ctx.db.insert("files_transfer_runs", {
 				organizationId: user.defaultOrganizationId,
 				workspaceId: siblingWorkspace._yay.workspaceId,
 				userId: user.userId,
+				sourceScope: siblingScope,
+				destinationScope: siblingScope,
 				requestId: "sibling-transfer",
+				reserveCursor: null,
 				requestHash: "sibling-transfer",
 				kind: "copy",
 				sourceView: "saved",
@@ -4941,7 +5374,7 @@ describe("process_organization_deletion_request", () => {
 		expect(after.activities.some((activity) => activity.source.id === victim.runId)).toBe(false);
 		expect(after.controlRun).not.toBeNull();
 		expect(after.activities.find((activity) => activity.source.id === control.runId)).toMatchObject({
-			status: "queued",
+			status: "running",
 		});
 		expect(after.controlFile).not.toBeNull();
 	});
@@ -5113,6 +5546,8 @@ describe("hard_delete_user_data", () => {
 					threadId: null,
 					principalKey: "reset-private-before-plugin-purge",
 					tokenHash: "reset-private-before-plugin-purge-token",
+					agentSource: null,
+					codeReadBudgetId: null,
 					scopes: ["files:read"],
 					remainingReadBytes: 0,
 					pathPrefix: null,
@@ -6380,12 +6815,18 @@ describe("finalize_user_deletion_data", () => {
 			count: 1,
 		});
 
-		for (const remainingCount of [1, 0, 0]) {
+		let remainingCount = paste.sourceIds.length * 2;
+		for (let pass = 0; pass < paste.sourceIds.length * 2 + 2; pass++) {
 			const done = await t.mutation(internal.data_deletion.finalize_user_deletion_data, {
 				userId: victim.userId,
 				_test_batchSize: 1,
 			});
 			const progress = await t.run(async (ctx) => ({
+				run: await ctx.db.get("files_transfer_runs", paste.runId),
+				selection: await ctx.db
+					.query("files_transfer_selection_items")
+					.withIndex("by_run_order", (q) => q.eq("runId", paste.runId))
+					.collect(),
 				items: await ctx.db
 					.query("files_transfer_items")
 					.withIndex("by_run_order", (q) => q.eq("runId", paste.runId))
@@ -6394,10 +6835,14 @@ describe("finalize_user_deletion_data", () => {
 				output: await ctx.db.get("files_nodes", output.nodeId),
 			}));
 			expect(done).toBe(false);
-			expect(progress.items).toHaveLength(remainingCount);
+			remainingCount = Math.max(0, remainingCount - 1);
+			expect(progress.selection.length + progress.items.length).toBe(remainingCount);
+			expect(progress.items).toHaveLength(Math.min(paste.sourceIds.length, remainingCount));
 			expect(progress.membership).not.toBeNull();
 			expect(progress.output).not.toBeNull();
+			if (!progress.run) break;
 		}
+		expect(await t.run((ctx) => ctx.db.get("files_transfer_runs", paste.runId))).toBeNull();
 		await data_deletion_test_finalize_user_until_done(t, { userId: victim.userId, batchSize: 1 });
 		const after = await t.run(async (ctx) => ({
 			run: await ctx.db.get("files_transfer_runs", paste.runId),
@@ -6413,7 +6858,7 @@ describe("finalize_user_deletion_data", () => {
 		expect(after.output).toMatchObject({ _id: output.nodeId });
 		expect(after.controlRun).not.toBeNull();
 		expect(after.activities.find((activity) => activity.source.id === control.runId)).toMatchObject({
-			status: "queued",
+			status: "running",
 		});
 		expect(after.workspace).not.toBeNull();
 	});
@@ -6446,11 +6891,18 @@ describe("finalize_user_deletion_data", () => {
 			lastMessageAt: Date.now(),
 		});
 		if (thread._nay) throw new Error(thread._nay.message);
+		const captured = await t.mutation(internal.ai_chat_workspaces.capture, {
+			userId: victim.userId,
+			membershipId: membership._id,
+		});
+		if (captured._nay) throw new Error(captured._nay.message);
 		const begun = await t.mutation(internal.ai_chat_files.begin_bash_invocation, {
 			organizationId: victim.defaultOrganizationId,
 			workspaceId: victim.defaultWorkspaceId,
 			userId: victim.userId,
 			threadId: thread._yay.threadId,
+			membershipId: membership._id,
+			membershipLifetime: captured._yay.membershipLifetime,
 			toolCallId: "drain-job-call",
 			commandHash: "a".repeat(64),
 			shellName: "default",
@@ -9220,13 +9672,16 @@ describe("prepare_user_for_hard_deletion", () => {
 			tag: "clipboard-hard-delete",
 			count: 1,
 		});
-		for (const expectedDone of [false, false, true]) {
-			const done = await t.mutation(internal.data_deletion.prepare_user_for_hard_deletion, {
+		let done = false;
+		for (let pass = 0; pass < paste.sourceIds.length * 2 + 3 && !done; pass++) {
+			const run = await t.run((ctx) => ctx.db.get("files_transfer_runs", paste.runId));
+			done = await t.mutation(internal.data_deletion.prepare_user_for_hard_deletion, {
 				userId: user.userId,
 				_test_batchSize: 1,
 			});
-			expect(done).toBe(expectedDone);
+			if (run) expect(done).toBe(false);
 		}
+		expect(done).toBe(true);
 		const after = await t.run(async (ctx) => ({
 			run: await ctx.db.get("files_transfer_runs", paste.runId),
 			items: await ctx.db

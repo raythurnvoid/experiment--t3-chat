@@ -3,7 +3,7 @@ import type { ActionCtx } from "../convex/_generated/server.js";
 import {
 	bash_create_glob_syntax_unsupported_message,
 	bash_GLOB_METACHARACTER_REGEX,
-	bash_is_path_under_current_workspace_path,
+	bash_resolve_db_files_shell_path,
 	bash_is_path_under_read_only_mounts,
 	bash_parse_cp_mv_operands,
 	bash_resolve_path,
@@ -23,7 +23,6 @@ export function bash_mv_command_create(
 	dbFilesRoots: bash_DbFilesRoots,
 	transferContext?: bash_TransferContext,
 ): Command {
-	const currentWorkspacePath = dbFilesRoots.app.currentWorkspacePath;
 	return defineCommand("mv", async (args, commandCtx) => {
 		const parsed = bash_parse_cp_mv_operands("mv", args);
 		const { operands } = parsed;
@@ -38,8 +37,9 @@ export function bash_mv_command_create(
 				exitCode: bash_COMMAND_EXIT_FAILURE,
 			};
 
-		const appOperands = operands.filter((operand) =>
-			bash_is_path_under_current_workspace_path(currentWorkspacePath, bash_resolve_path(commandCtx.cwd, operand)),
+		const appOperands = operands.filter(
+			(operand) =>
+				bash_resolve_db_files_shell_path(bash_resolve_path(commandCtx.cwd, operand), dbFilesRoots).kind === "app",
 		);
 		if (appOperands.length === 0) return await bash_delegate_builtin_command({ command: "mv", args, commandCtx });
 

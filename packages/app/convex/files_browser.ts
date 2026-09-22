@@ -31,7 +31,8 @@ import {
 	files_ingestion_file_validator,
 } from "./files_ingestion.ts";
 import { ai_chat_files_db_authorize_file_output } from "./ai_chat_files.ts";
-import app_convex_schema from "./schema.ts";
+import app_convex_schema, { ai_chat_workspaces_source_validator } from "./schema.ts";
+import { ai_chat_workspaces_db_authorize_file_scope } from "./ai_chat_workspaces.ts";
 import { files_pending_update_content_is_stale, files_pending_update_has_content } from "../shared/files.ts";
 import { files_yjs_doc_create_from_array_buffer_update } from "../shared/files-yjs.ts";
 import { files_yjs_doc_get_text } from "../shared/files-tiptap.ts";
@@ -2435,6 +2436,7 @@ export const browser_source_current_version = query({
 // #region browser file outputs
 const file_output_scope_validator = v.object({
 	...files_ingestion_scope_validator.fields,
+	agentSource: ai_chat_workspaces_source_validator,
 	threadId: v.id("ai_chat_threads"),
 	modeId: v.union(v.literal("ask"), v.literal("agent")),
 	sessionId: v.id("files_browser_sessions"),
@@ -2461,8 +2463,6 @@ async function authorize_browser_file_source(ctx: MutationCtx, args: Infer<typeo
 	if (
 		!session ||
 		session.ownerId !== args.userId ||
-		session.organizationId !== args.organizationId ||
-		session.workspaceId !== args.workspaceId ||
 		session.control !== "ready" ||
 		!session.runnerSessionId ||
 		(session.totalUntil !== undefined && session.totalUntil <= Date.now()) ||
@@ -2476,6 +2476,14 @@ async function authorize_browser_file_source(ctx: MutationCtx, args: Infer<typeo
 		session.sourceHash !== args.expectedSource.sourceHash
 	)
 		return Result({ _nay: { message: "Browser session changed. Run the capture again." } });
+	const sourceScope = {
+		agentSource: args.agentSource,
+		organizationId: session.organizationId,
+		workspaceId: session.workspaceId,
+		userId: args.userId,
+	};
+	const sourceAccess = await ai_chat_workspaces_db_authorize_file_scope(ctx, sourceScope);
+	if (sourceAccess._nay) return sourceAccess;
 
 	// The session stores its node id as a plain string, so it needs the table back before a read.
 	const sourceId =
@@ -2484,7 +2492,7 @@ async function authorize_browser_file_source(ctx: MutationCtx, args: Infer<typeo
 			: ctx.db.normalizeId("files_nodes", session.nodeId);
 	if (!sourceId) return Result({ _nay: { message: "Source unavailable" } });
 
-	const reader = await files_visible_db_create_reader(ctx, { ...args, readLimit: 2048 });
+	const reader = await files_visible_db_create_reader(ctx, { ...sourceScope, readLimit: 2048 });
 	const source = await reader.resolve(
 		session.targetKind === "private"
 			? { kind: "private", id: sourceId as Id<"files_pending_nodes"> }

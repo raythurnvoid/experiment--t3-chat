@@ -643,6 +643,12 @@ export const files_MAX_UPLOADS_BYTES = 2 * 1024 * 1024 * 1024;
 export const files_IMPORT_MAX_ITEMS_PER_CALL = 50;
 
 /**
+ * How many sources one transfer selection page accepts. Paste, Bash `cp`, and the Bash job
+ * checkpoint split their sources into pages of this size, and the server refuses bigger pages.
+ */
+export const files_TRANSFER_SELECTION_PAGE_SIZE = 100;
+
+/**
  * What `files_nodes.create_upload_node` answers when the target path is taken and the caller
  * asked it to fail instead of replacing.
  *

@@ -429,6 +429,7 @@ export function bash_tree_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 
 		// The shared list returns descendants only. The first line below prints the requested root.
 		const result = (await ctx.runQuery(internal.files_visible.internal_list, {
+			agentSource: target.pathResolution.ctxData.agentSource,
 			organizationId: target.pathResolution.ctxData.organizationId,
 			workspaceId: target.pathResolution.ctxData.workspaceId,
 			visibilityUserId: target.pathResolution.ctxData.userId,

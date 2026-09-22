@@ -45,6 +45,14 @@
 				inset 0 3px 4px color-mix(in oklch, black 40%, transparent),
 				inset 0 -1px 0 color-mix(in oklch, var(--color-fg-11) 10%, transparent);
 		}
+
+		/* Keep the destination readable when the Files panels leave little room. */
+		@container (width < 320px) {
+			flex-wrap: wrap;
+			min-height: 42px;
+			height: auto;
+			padding: 8px 12px;
+		}
 	}
 
 	/* Square the input's top corners while the strip is attached above it. */
@@ -75,6 +83,13 @@
 		text-overflow: ellipsis;
 		white-space: nowrap;
 		text-align: left;
+
+		@container (width < 320px) {
+			order: -1;
+			flex: 1 0 100%;
+			white-space: normal;
+			line-height: 1.5;
+		}
 	}
 
 	.FileEditorSidebarPendingStrip-review {
@@ -85,6 +100,10 @@
 		flex: none;
 		color: var(--color-accent-07);
 		transition: color 0.1s linear;
+
+		@container (width < 320px) {
+			margin-left: auto;
+		}
 	}
 
 	.FileEditorSidebarPendingStrip:hover .FileEditorSidebarPendingStrip-review {

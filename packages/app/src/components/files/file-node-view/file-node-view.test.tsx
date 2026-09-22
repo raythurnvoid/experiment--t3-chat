@@ -3,6 +3,9 @@ import type { ComponentProps, ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { getFunctionName } from "convex/server";
 import { toast } from "sonner";
+import { encodeStateAsUpdate } from "yjs";
+import { files_yjs_doc_create_from_text } from "../../../../shared/files-tiptap.ts";
+import { files_u8_to_array_buffer } from "../../../../shared/files.ts";
 
 import type {
 	FileEditor_Props,
@@ -55,7 +58,11 @@ vi.mock("convex/react", async () => {
 					queryPushListeners.delete(listener);
 				};
 			}, []);
-			return { results: queryMock(query, args), status: pendingListStatus, loadMore: loadMorePendingMock };
+			return {
+				results: queryMock(query, args),
+				status: pendingListStatus,
+				loadMore: loadMorePendingMock,
+			};
 		},
 		useQueries: (queries: Record<string, { query: never; args: unknown }>) => {
 			const [, forceRender] = useState(0);
@@ -85,7 +92,7 @@ vi.mock("convex/react", async () => {
 });
 vi.mock("@/lib/app-convex-client.ts", async () => {
 	const { api } = await import("../../../../convex/_generated/api.js");
-	return { app_convex_api: api, app_convex: { mutation: mutationMock, action: actionMock } };
+	return { app_convex_api: api, app_convex: { query: queryMock, mutation: mutationMock, action: actionMock } };
 });
 vi.mock("@/lib/app-tenant-context.tsx", () => ({
 	AppTenantProvider: { useContext: () => tenantContextMock() },
@@ -309,6 +316,8 @@ let privateView:
 				reviewedRevision: number;
 			}>;
 			savedParentId: app_convex_Id<"files_nodes"> | null;
+			recovery?: { savedParentId: app_convex_Id<"files_nodes">; expiresAt: number | null };
+			copyDestination?: { folderPath: string; personal: boolean; replacement: boolean };
 	  }
 	| null
 	| undefined;
@@ -595,6 +604,103 @@ describe("FileNodeView node loading", () => {
 });
 
 describe("FileEditorSidebarPending review focus", () => {
+	test("shows replacement sharing rules even when the source is hidden", () => {
+		pendingUpdates = [
+			{
+				...privateView,
+				kind: "entry",
+				entry: {
+					kind: "saved",
+					node: NODE,
+					path: NODE.path,
+					pendingUpdate: {
+						...PRIVATE_ENTRY.pendingUpdate,
+						target: { kind: "saved", id: NODE._id },
+						createIntent: undefined,
+						content: undefined,
+						pendingReplacement: { assetId: "replacement", baseAssetId: "base", contentType: "image/png", size: 3 },
+					},
+				},
+				copyDestination: { personal: false, replacement: true, folderPath: "/" },
+			},
+		];
+		render(
+			<AppActivitiesProvider membershipId={tenantContextMock().membershipId}>
+				<FileEditorSidebarPending />
+			</AppActivitiesProvider>,
+		);
+		expect(screen.getByText("This replaces content and keeps the destination file's sharing rules.")).toBeTruthy();
+		expect(screen.queryByText("New copies use this folder's sharing rules. Source sharing is not copied.")).toBeNull();
+		expect(screen.getByText("The destination organization owner can read saved copies.")).toBeTruthy();
+	});
+
+	test.each([true, false])("shows current Copy destination rules with no source path (personal %s)", (personal) => {
+		pendingUpdates = [
+			{
+				...privateView,
+				kind: "entry",
+				copyDestination: { personal, replacement: false, folderPath: "/restricted/output" },
+			},
+		];
+		render(
+			<AppActivitiesProvider membershipId={tenantContextMock().membershipId}>
+				<FileEditorSidebarPending />
+			</AppActivitiesProvider>,
+		);
+		expect(screen.getByText("Destination: team/home · /restricted/output")).toBeTruthy();
+		expect(screen.getByText("New copies use this folder's sharing rules. Source sharing is not copied.")).toBeTruthy();
+		expect(
+			screen.getByText(
+				personal
+					? "Saved copies here are private to you."
+					: "The destination organization owner can read saved copies.",
+			),
+		).toBeTruthy();
+		expect(mutationMock).not.toHaveBeenCalled();
+	});
+
+	test.each(["text", "folder", "stored"] as const)("shows recovery before opening a %s row", (kind) => {
+		pendingUpdates = [
+			{
+				...privateView,
+				kind: "entry",
+				canAccept: false,
+				canAcceptWithParents: false,
+				recovery: { savedParentId: NODE._id, expiresAt: null },
+				entry:
+					kind === "text"
+						? PRIVATE_ENTRY
+						: {
+								...PRIVATE_ENTRY,
+								node: { ...PRIVATE_ENTRY.node, kind: kind === "folder" ? "folder" : "file" },
+								pendingUpdate: {
+									...PRIVATE_ENTRY.pendingUpdate,
+									content: undefined,
+									createIntent:
+										kind === "folder"
+											? { kind: "folder", metadata: [] }
+											: {
+													kind: "stored",
+													metadata: [],
+													contentType: "application/octet-stream",
+													size: 4,
+													assetId: "asset_private",
+												},
+								},
+							},
+			},
+		];
+		render(
+			<AppActivitiesProvider membershipId={tenantContextMock().membershipId}>
+				<FileEditorSidebarPending />
+			</AppActivitiesProvider>,
+		);
+		expect(screen.getByText(/This draft's folder was archived/)).toBeTruthy();
+		expect(screen.getByText("This unsaved draft still has its normal expiry.")).toBeTruthy();
+		expect(screen.getByRole("button", { name: "Accept all shown pending changes" }).matches(":disabled")).toBe(true);
+		expect(mutationMock).not.toHaveBeenCalled();
+	});
+
 	test.each([
 		{ kind: "text", action: "Accept changes to /draft.html" },
 		{ kind: "text", action: "Discard changes to /draft.html" },
@@ -674,6 +780,126 @@ describe("FileEditorSidebarPending review focus", () => {
 });
 
 describe("FileNodeView private targets", () => {
+	test("shows Copy disclosure in the saved detail view too", async () => {
+		privateView = {
+			...privateView!,
+			entry: {
+				kind: "saved",
+				node: {
+					...NODE,
+					_id: NODE._id as app_convex_Id<"files_nodes">,
+					organizationId: PRIVATE_ENTRY.node.organizationId,
+					workspaceId: PRIVATE_ENTRY.node.workspaceId,
+					createdBy: PRIVATE_ENTRY.node.userId,
+					updatedBy: PRIVATE_ENTRY.node.userId,
+					parentId: "root",
+					kind: "file",
+					assetId: NODE.assetId as app_convex_Id<"files_r2_assets">,
+					textKind: "plain_text",
+					treePath: `/${NODE._id}`,
+					pathDepth: 1,
+					lowercaseExtension: "html",
+					writePolicy: null,
+					statsId: null,
+					contentTooLargeByteSize: null,
+					contentShapeMismatchAt: null,
+					contentYjsStateTooLargeByteSize: null,
+					contentFrontmatterTooLargeFieldCount: null,
+					contentFrontmatterTooLargeIndexDocumentCount: null,
+				},
+				path: NODE.path,
+				pendingUpdate: null,
+			},
+			copyDestination: { personal: false, replacement: true, folderPath: "/" },
+		};
+		renderFileView({ nodeId: NODE._id });
+		expect(
+			await screen.findByText("This replaces content and keeps the destination file's sharing rules."),
+		).toBeTruthy();
+		expect(screen.getByText("Destination: team/home · /")).toBeTruthy();
+	});
+
+	test("shows Copy disclosure in the detail view without changing Save", async () => {
+		privateView = { ...privateView!, copyDestination: { personal: true, replacement: false, folderPath: "/" } };
+		renderFileView({ pendingNodeId: PRIVATE_ENTRY.node._id });
+		expect(await screen.findByText("Saved copies here are private to you.")).toBeTruthy();
+		expect(screen.getByText("Destination: team/home · /")).toBeTruthy();
+		expect(screen.getByRole("button", { name: "Save draft" })).toBeTruthy();
+		expect(mutationMock).not.toHaveBeenCalled();
+	});
+
+	test.each([false, true])("recovery reads both branches and rechecks access (revoked %s)", async (revoked) => {
+		privateView = {
+			...privateView!,
+			canEdit: false,
+			canAccept: false,
+			canAcceptWithParents: false,
+			recovery: { savedParentId: NODE._id as app_convex_Id<"files_nodes">, expiresAt: null },
+		};
+		const previousQuery = queryMock.getMockImplementation()!;
+		queryMock.mockImplementation((reference, args) => {
+			if (getFunctionName(reference) === "files_pending_updates:get_file_pending_update_state_page") {
+				const text = args.stateId === "private_staged" ? "Accepted draft text" : "Proposed draft text";
+				const doc = files_yjs_doc_create_from_text({ rootKind: "plain_text", text });
+				if ("_nay" in doc) throw new Error(doc._nay.message);
+				const bytes = files_u8_to_array_buffer(encodeStateAsUpdate(doc));
+				doc.destroy();
+				return { bytes, pageCount: 1, totalBytes: bytes.byteLength, digest: "test" };
+			}
+			if (getFunctionName(reference) === "files_pending_updates:get_file_pending_update")
+				return revoked ? null : PRIVATE_ENTRY.pendingUpdate;
+			return previousQuery(reference, args);
+		});
+		renderFileView({ pendingNodeId: PRIVATE_ENTRY.node._id });
+		if (revoked) {
+			expect(await screen.findByRole("alert")).toHaveProperty(
+				"textContent",
+				"This draft changed or access ended. Reopen it to try again.",
+			);
+			expect(screen.queryByRole("textbox", { name: "Accepted text" })).toBeNull();
+		} else {
+			expect(await screen.findByRole("textbox", { name: "Accepted text" })).toHaveProperty(
+				"value",
+				"Accepted draft text",
+			);
+			expect(screen.getByRole("textbox", { name: "Proposed text" })).toHaveProperty("value", "Proposed draft text");
+			expect(screen.getByRole("textbox", { name: "Proposed text" })).toHaveProperty("readOnly", true);
+			expect(screen.getByRole("button", { name: "Copy accepted text" })).toBeTruthy();
+			expect(screen.getByRole("button", { name: "Copy proposed text" })).toBeTruthy();
+		}
+		expect(mutationMock).not.toHaveBeenCalled();
+		expect(actionMock).not.toHaveBeenCalled();
+	});
+
+	test("archived-parent recovery never mounts an editor or enables Save", async () => {
+		privateView = {
+			...privateView!,
+			canEdit: false,
+			canAccept: false,
+			canAcceptWithParents: false,
+			recovery: { savedParentId: NODE._id as app_convex_Id<"files_nodes">, expiresAt: 2_000_000_000_000 },
+		};
+		renderFileView({ pendingNodeId: PRIVATE_ENTRY.node._id });
+		expect(
+			await screen.findByText(
+				"This draft's folder was archived. You can copy or download your draft. Restore the folder before saving here.",
+			),
+		).toBeTruthy();
+		expect(screen.getByText(/Unsaved draft expires/)).toBeTruthy();
+		expect(screen.getByRole("link", { name: "Open archived folder" }).getAttribute("data-node-id")).toBe(NODE._id);
+		expect(screen.getByText("Restore the archived folder before saving this draft.")).toBeTruthy();
+		expect(screen.queryByText("You don't have permission to save this draft here.")).toBeNull();
+		expect(screen.queryByTestId("editor")).toBeNull();
+		expect(screen.queryByTestId("html-preview")).toBeNull();
+		expect(screen.queryByRole("button", { name: "Save draft" })).toBeNull();
+		expect(mutationMock).not.toHaveBeenCalled();
+		expect(actionMock).not.toHaveBeenCalled();
+		privateView = null;
+		pushQueryChanges();
+		expect(await screen.findByText(/This draft is no longer available/)).toBeTruthy();
+		expect(screen.queryByText(/Unsaved draft expires/)).toBeNull();
+	});
+
 	test("opens only the owner target and keeps the local draft through Preview", async () => {
 		const { onNavigateSearch } = renderFileView({
 			pendingNodeId: PRIVATE_ENTRY.node._id,
@@ -1203,6 +1429,14 @@ describe("FileNodeView folder clipboard", () => {
 		expect(paste.matches(":disabled")).toBe(true);
 		fireEvent.click(paste);
 		expect(mutationMock).not.toHaveBeenCalled();
+	});
+
+	test("shows an archived folder's state and disables Create a README.md", async () => {
+		node = { ...NODE, _id: "folder_1", name: "Docs", kind: "folder", archiveOperationId: "qa-archive" };
+		treeNodes = [node];
+		renderFileView({ nodeId: node._id });
+		expect(await screen.findByText("This folder is archived. Restore it before adding items.")).toBeTruthy();
+		expect(screen.getByRole("button", { name: "Create a README.md" }).matches(":disabled")).toBe(true);
 	});
 
 	test("explains Paste is busy while a folder is being created", async () => {
@@ -1930,17 +2164,20 @@ describe("FileNodeView header breadcrumb", () => {
 		// The ancestors are their own list, nested in the breadcrumb list.
 		const [breadcrumb, ancestors] = within(header).getAllByRole("list");
 		expect(ancestors!.parentElement!.parentElement).toBe(breadcrumb);
-		expect(within(ancestors!).getAllByRole("link").map((link) => link.getAttribute("aria-label"))).toEqual(["Docs"]);
+		expect(
+			within(ancestors!)
+				.getAllByRole("link")
+				.map((link) => link.getAttribute("aria-label")),
+		).toEqual(["Docs"]);
 		const current = within(currentCrumb()).getByRole("button", { name: "page.html" });
 		expect(current.getAttribute("aria-haspopup")).toBe("menu");
 
 		const menu = await openCurrentCrumbMenu("page.html");
-		expect(within(menu).getAllByRole("menuitem").map((item) => item.textContent)).toEqual([
-			"Reveal in sidebar",
-			"Duplicate tab",
-			"Copy node id",
-			"Archive",
-		]);
+		expect(
+			within(menu)
+				.getAllByRole("menuitem")
+				.map((item) => item.textContent),
+		).toEqual(["Reveal in sidebar", "Duplicate tab", "Copy node id", "Archive"]);
 	});
 
 	test.each(["a read-only file", "a folder with a protected descendant"])("hides Archive for %s", async (kind) => {
@@ -2082,9 +2319,10 @@ describe("FileNodeView header breadcrumb", () => {
 			["Drafts", undefined, "private_parent"],
 		]);
 		const menu = await openCurrentCrumbMenu("draft.html");
-		expect(within(menu).getAllByRole("menuitem").map((item) => item.textContent)).toEqual([
-			"Duplicate tab",
-			"Copy node id",
-		]);
+		expect(
+			within(menu)
+				.getAllByRole("menuitem")
+				.map((item) => item.textContent),
+		).toEqual(["Duplicate tab", "Copy node id"]);
 	});
 });

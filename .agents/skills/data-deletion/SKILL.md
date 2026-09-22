@@ -48,8 +48,13 @@ Load each companion skill that owns the affected boundary:
 - `data_deletion_db_request`: creates or reuses exactly one queue doc for the requested user, organization, or workspace scope.
 - `db_prepare_user_for_deletion`: phase 1 for a user. It tombstones the user, deactivates memberships, and removes presence.
 - `db_drain_user_transfer_runs_batch`: stops and removes one user-owned Paste run in bounded calls before deleting memberships. Completed files stay in retained workspaces.
+  Keep its `done: false` result even when `deletedCount` is zero, for example while a retry
+  manifest is being copied. All user-deletion paths wait before removing memberships or the user.
+- Transfer cleanup drains selection pages and items before its holds and Activity. Completed
+  copies in retained workspaces stay.
 - `db_drain_user_bash_jobs_batch`: stops and deletes one background Bash job the user started (its receipts, Activity and row, at most `batchSize` docs per pass), then the user's `ai_chat_bash_job_notice_cursors` docs, before deleting memberships. Both user-deletion paths run it right after transfer runs.
 - `db_drain_user_pending_review_runs_batch`: fences one review run before deleting its prepared content and at most eight item rows per pass. Units, Activity viewer state, Activity, and the run follow. Completed saves stay in retained workspaces. Both user deletion paths drain reviews before memberships and proposals.
+- `db_drain_user_chat_threads_batch`: uses `ai_chat_threads.by_createdBy` to drain one private chat at a time, including chats in surviving team workspaces. It removes invocation links before foreground calls, scratch bytes before scratch files, messages, transcripts before shells, and notice cursors before the thread. It needs no live user or membership. The shared user-finalization path reaches it after jobs, transfers, reviews, browser records, proposals, and public API grants are gone.
 - `db_drain_user_plugin_ui_sessions_batch`: deletes one bounded batch of a user's `plugins_ui_sessions` docs via `by_user`. Both user-deletion paths drain these to zero before `db_finalize_deleted_user`, which therefore never reads them.
 - `db_drain_user_plugin_publisher_docs_batch`: drains one bounded user-owned publisher phase in child-first order: repository secrets, repository docs, then version reviews. It deletes an unreferenced review. If a global plugin version or another publisher's `lastPublishAttempt` still points at the review, it keeps the immutable decision and clears `createdBy` instead. Replacing that attempt, deleting its repository, or cleaning a failed source snapshot then deletes the anonymized review only after the last version and publish-attempt link is gone. Fresh review persistence, version preparation, and ready finalization recheck the user tombstone and exact repository ownership in their write transactions. A provider call, cached review, or upload that finishes after this drain cannot recreate or expose publisher data. Both user-deletion paths repeat this phase until the deleted user's index is empty before `db_finalize_deleted_user`.
 - `db_drain_user_notifications_batch`: deletes one bounded batch of notifications where the deleted user is the recipient, via `by_user`. Both user-deletion paths drain these to zero before `db_finalize_deleted_user`. The per-user cap sweep in `notifications.cleanup_extra_notifications` walks the `users` table, so without this drain a purged user record would leave its notifications unreachable forever. Notifications that only name the deleted user as `actorUserId` stay in the recipient's inbox with the deleted user's name (product decision 2026-08-09: keep the name, do not anonymize).
@@ -126,6 +131,7 @@ Deleted-account recovery is handled in `users.resolve_user`.
 - `users.purge_deleted_user_tombstone` removes the one anonymous-token doc and billing snapshot in the same transaction as the anagraphic and user. It leaves queued tenant cleanup in place. The normal finalizer and missing-user drain share this auth/billing cleanup helper.
 - Removing a saved-target proposal leaves its saved node in place. Private cleanup fences the draft and drains its owned content before releasing its node slot. Stored create and replacement assets go through exact-key cleanup; existing upload jobs keep their generation and arrival guards.
 - Final user deletion schedules `purge_user_private_assets` for held asset reservations left by interrupted preparation. It pages the existing user/settlement/resource index with a cutoff from before finalization. It queues each exact R2 key and keeps the byte hold until deletion is confirmed. This also reaches browser captures that never attached to a proposal, without touching later uploads after account recovery.
+- Final account deletion removes the creator's active and archived private chats in every workspace, including surviving teams. The queued, missing-user, and auth-removing admin paths share this bounded cleanup. Keep the normal waiting period and recovery fence. Other creators' chats and saved team files stay. Data-only reset keeps its existing tenant-based rules; it does not use this creator-wide chat drain.
 
 # Organization And Workspace Deletion
 
@@ -184,6 +190,16 @@ Current purge coverage includes:
   deletion jobs, and delete at most 50 item docs per call. Delete its Activity and run docs after
   its items are gone. Late workers cannot publish. Private run cleanup keeps completed files;
   tenant content purge removes them later. See [Files transfer runs](../files-explorer-tree/references/transfer.md#stop-activity-and-cleanup).
+- Find transfer runs by all three scopes: source, destination, and chat workspace. Stop fences
+  publication before bounded item cleanup. Once items are gone, finish the Activity and install
+  retained output deadlines before draining holds. Cleanup does not wait forever for canceled
+  worker callbacks. Never delete a destination copy just because its source or chat workspace is purged.
+- Drain `files_pending_holds`, then `files_media_dependencies` in pages of 50 before their
+  `files_media_dependency_sets` header. These docs own references, not assets. Normal producer
+  and proposal owners handle assets first. Both user and workspace finalization reach this drain.
+- Relevant access changes advance the organization or workspace media-validation version in the
+  same transaction. The workspace purge fence invalidates earlier proofs. Delete its version row
+  only after content and quotas are gone; final organization deletion also removes its version row.
 - `files_pending_update_yjs_state_pages`, `files_pending_update_yjs_states`, `files_pending_update_state_cleanup_tasks`, `files_pending_update_text_inputs`, `files_pending_update_operation_batches`, `files_yjs_trusted_update_stages` — the paged pending-state family and its operation scaffolding, child docs first (pages before states, text inputs before batches), all before the pending-update docs they belong to
 - `files_pending_updates_cleanup_tasks`, `files_pending_updates`
 - `files_pending_updates_last_sequence_saved`
@@ -330,6 +346,7 @@ For data-only reset, treat missing or inconsistent default tenant state as an in
 - Every growing user-finalization family uses an indexed `.take(batchSize)` pass, except the chosen successor's organization roles: those are bounded to six by the workspace limit and stay atomic with ownership transfer. Pending-update cleanup tasks, exact chunks, plain chunks, and metadata are deleted before their pending-update parent. Pending Yjs pages are deleted before their state parent. The one-row anonymous-token and billing-snapshot invariants stay in the small final transaction.
 - Private cleanup removes stored create-intent assets and failed Save output assets through the deletion ledger. It deletes private child identities before parents, then releases the remaining DB storage holds after checking their payloads are gone. Remote asset holds stay until confirmed deletion. A private publication receipt never gives this cleanup authority to delete its saved file. Workspace purge carries upload and unfinished-output deadlines into each exact-key job.
 - Pending state pages, text inputs, and trusted Yjs stages use at most eight rows per purge pass. Each row can approach 1 MiB, so the usual 100-row batch would exceed the read budget. Both user and workspace purges use this smaller payload batch.
+- Creator-owned chat cleanup removes one foreground invocation per pass and at most `batchSize` of its transfer links first. Scratch bytes, messages, and transcripts use at most eight docs per pass; shells use at most 32. Every child family drains before its thread. The user deletion request stays queued until all creator-owned threads are gone.
 
 # Guardrails
 

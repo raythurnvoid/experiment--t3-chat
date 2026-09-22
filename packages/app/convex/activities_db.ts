@@ -34,10 +34,13 @@ export function activities_get_controls(activity: Doc<"activities">, userId: Id<
 			activity.userId === userId &&
 			activities_is_active(activity.status) &&
 			activity.status !== "stopping",
+		// A null total means the transfer stopped before it found all its files. Retry reuses that
+		// partial list and never lists folders again, so it would make a partial folder copy.
 		canRetry:
 			activity.source.kind === "files_transfer_run" &&
 			activity.userId === userId &&
 			!activities_is_active(activity.status) &&
+			activity.progress?.total != null &&
 			(activity.progress?.failed ?? 0) + (activity.progress?.blocked ?? 0) + (activity.progress?.canceled ?? 0) > 0,
 		canDismiss: !activities_is_active(activity.status),
 	};

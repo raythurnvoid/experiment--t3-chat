@@ -2,6 +2,7 @@ import "./file-editor-sidebar-pending-strip.css";
 import { ChevronRight, FileDiff } from "lucide-react";
 import { memo, useEffect, useState } from "react";
 import { useQuery } from "convex/react";
+import { Link } from "@tanstack/react-router";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { app_convex_api } from "@/lib/app-convex-client.ts";
 import { useFn } from "@/hooks/utils-hooks.ts";
@@ -16,15 +17,16 @@ import { cn } from "@/lib/utils.ts";
 export const FILE_EDITOR_SIDEBAR_TAB_ID_PENDING = "app_file_editor_sidebar_tabs_pending" satisfies AppElementId;
 
 /**
- * The bounded summary counts the owner or one contributing chat. A new chat skips the query.
+ * The bounded summary counts the user's pending changes in the current workspace. Chat rows
+ * read their own per-workspace summary, so the chat strip skips this query.
  * A truncated count carries a + suffix. Without it the number would look like a complete
  * workspace count.
  */
-function useFilesPendingUpdatesCount(threadId?: string | null) {
+function useFilesPendingUpdatesCount(skip: boolean) {
 	const { membershipId } = AppTenantProvider.useContext();
 	const summary = useQuery(
 		app_convex_api.files_pending_updates.get_files_pending_updates_summary,
-		threadId === null ? "skip" : { membershipId, ...(threadId === undefined ? {} : { threadId }) },
+		skip ? "skip" : { membershipId },
 	);
 	return summary ?? { count: 0, truncated: false };
 }
@@ -58,17 +60,23 @@ export type FileEditorSidebarPendingStrip_Props = {
 	threadId?: string | null;
 };
 
+type FileEditorSidebarPendingStripRow_Props = {
+	count: number;
+	truncated: boolean;
+	destination?: { workspace: "current" | "personal"; organizationName: string; workspaceName: string };
+};
+
 /**
- * One-line notification pinned above the chat composer while pending file changes exist.
- * The whole row is a single button: clicking switches the sidebar to the Pending changes tab.
- * Unmounted at count 0; never dismissable (it represents persistent review state).
+ * Each row opens review in its own workspace. The badge below still counts only the current one.
  */
-export const FileEditorSidebarPendingStrip = memo(function FileEditorSidebarPendingStrip(
-	props: FileEditorSidebarPendingStrip_Props,
+const FileEditorSidebarPendingStripRow = memo(function FileEditorSidebarPendingStripRow(
+	props: FileEditorSidebarPendingStripRow_Props,
 ) {
-	const { threadId } = props;
-	const labelScope = threadId === undefined ? "workspace" : "chat";
-	const { count, truncated } = useFilesPendingUpdatesCount(threadId);
+	const { count, truncated, destination } = props;
+	const labelScope = destination ? "chat" : "workspace";
+	const destinationLabel = destination
+		? ` in ${destination.workspace === "current" ? "current workspace" : "personal home"}`
+		: "";
 	const hasUpdates = count > 0 || truncated;
 
 	// Keep the last non-zero count rendered for 150ms after count drops to 0 so the strip can
@@ -93,10 +101,42 @@ export const FileEditorSidebarPendingStrip = memo(function FileEditorSidebarPend
 
 	const handleClick = useFn(() => {
 		app_local_storage_set_value("app_state::files_last_tab", FILE_EDITOR_SIDEBAR_TAB_ID_PENDING);
-		// Switching tabs hides the panel that contains this button, which would drop focus to
+		// Switching tabs hides this row, which would drop focus to
 		// <body>; hand focus to the now-selected tab instead.
 		document.getElementById(FILE_EDITOR_SIDEBAR_TAB_ID_PENDING)?.focus();
 	});
+	const reviewProps = {
+		className: cn(
+			"FileEditorSidebarPendingStrip" satisfies FileEditorSidebarPendingStrip_ClassNames,
+			isLeaving && ("FileEditorSidebarPendingStrip-leaving" satisfies FileEditorSidebarPendingStrip_ClassNames),
+		),
+		"aria-label": `${displayCountLabel} ${files_pending_strip_label(displayCount.count, labelScope, displayCount.truncated)}${destinationLabel}, review`,
+		onClick: handleClick,
+	};
+	const reviewContent = (
+		<>
+			<FileDiff
+				aria-hidden
+				className={cn("FileEditorSidebarPendingStrip-icon" satisfies FileEditorSidebarPendingStrip_ClassNames)}
+			/>
+			<span className={cn("FileEditorSidebarPendingStrip-count" satisfies FileEditorSidebarPendingStrip_ClassNames)}>
+				{displayCountLabel}
+			</span>
+			<span className={cn("FileEditorSidebarPendingStrip-label" satisfies FileEditorSidebarPendingStrip_ClassNames)}>
+				{destination && `${destination.workspace === "current" ? "Current workspace" : "Personal home"} · `}
+				{files_pending_strip_label(displayCount.count, labelScope, displayCount.truncated)}
+			</span>
+			<span className={cn("FileEditorSidebarPendingStrip-review" satisfies FileEditorSidebarPendingStrip_ClassNames)}>
+				Review
+				<ChevronRight
+					aria-hidden
+					className={cn(
+						"FileEditorSidebarPendingStrip-review-chevron" satisfies FileEditorSidebarPendingStrip_ClassNames,
+					)}
+				/>
+			</span>
+		</>
+	);
 
 	return (
 		<>
@@ -109,46 +149,49 @@ export const FileEditorSidebarPendingStrip = memo(function FileEditorSidebarPend
 				role="status"
 				aria-live="polite"
 			>
-				{hasUpdates ? `${count}${truncated ? "+" : ""} ${files_pending_strip_label(count, labelScope, truncated)}` : ""}
+				{hasUpdates
+					? `${count}${truncated ? "+" : ""} ${files_pending_strip_label(count, labelScope, truncated)}${destinationLabel}`
+					: ""}
 			</span>
 			{displayCount.count > 0 || displayCount.truncated ? (
-				<button
-					type="button"
-					className={cn(
-						"FileEditorSidebarPendingStrip" satisfies FileEditorSidebarPendingStrip_ClassNames,
-						isLeaving && ("FileEditorSidebarPendingStrip-leaving" satisfies FileEditorSidebarPendingStrip_ClassNames),
-					)}
-					aria-label={`${displayCountLabel} ${files_pending_strip_label(displayCount.count, labelScope, displayCount.truncated)}, review`}
-					onClick={handleClick}
-				>
-					<FileDiff
-						aria-hidden
-						className={cn("FileEditorSidebarPendingStrip-icon" satisfies FileEditorSidebarPendingStrip_ClassNames)}
-					/>
-					<span
-						className={cn("FileEditorSidebarPendingStrip-count" satisfies FileEditorSidebarPendingStrip_ClassNames)}
+				destination ? (
+					<Link
+						{...reviewProps}
+						to="/w/$organizationName/$workspaceName/files"
+						params={{ organizationName: destination.organizationName, workspaceName: destination.workspaceName }}
+						search={{}}
 					>
-						{displayCountLabel}
-					</span>
-					<span
-						className={cn("FileEditorSidebarPendingStrip-label" satisfies FileEditorSidebarPendingStrip_ClassNames)}
-					>
-						{files_pending_strip_label(displayCount.count, labelScope, displayCount.truncated)}
-					</span>
-					<span
-						className={cn("FileEditorSidebarPendingStrip-review" satisfies FileEditorSidebarPendingStrip_ClassNames)}
-					>
-						Review
-						<ChevronRight
-							aria-hidden
-							className={cn(
-								"FileEditorSidebarPendingStrip-review-chevron" satisfies FileEditorSidebarPendingStrip_ClassNames,
-							)}
-						/>
-					</span>
-				</button>
+						{reviewContent}
+					</Link>
+				) : (
+					<button {...reviewProps} type="button">
+						{reviewContent}
+					</button>
+				)
 			) : null}
 		</>
+	);
+});
+
+export const FileEditorSidebarPendingStrip = memo(function FileEditorSidebarPendingStrip(
+	props: FileEditorSidebarPendingStrip_Props,
+) {
+	const { threadId } = props;
+	const { membershipId } = AppTenantProvider.useContext();
+	const summary = useFilesPendingUpdatesCount(threadId !== undefined);
+	const destinations = useQuery(
+		app_convex_api.files_pending_updates.get_chat_pending_updates_summary,
+		threadId && !threadId.startsWith("ai_thread-") ? { membershipId, threadId } : "skip",
+	);
+	if (threadId === undefined) return <FileEditorSidebarPendingStripRow {...summary} />;
+	return (
+		destinations?.map((destination) => (
+			<FileEditorSidebarPendingStripRow
+				key={`${threadId}:${destination.workspace}`}
+				{...destination}
+				destination={destination}
+			/>
+		)) ?? null
 	);
 });
 // #endregion strip
@@ -158,7 +201,7 @@ type FileEditorSidebarPendingTabBadge_ClassNames = "FileEditorSidebarPendingTabB
 
 /** Amber count pill for the "Pending changes" tab label. Hidden at count 0. */
 export const FileEditorSidebarPendingTabBadge = memo(function FileEditorSidebarPendingTabBadge() {
-	const { count, truncated } = useFilesPendingUpdatesCount();
+	const { count, truncated } = useFilesPendingUpdatesCount(false);
 
 	if (count === 0 && !truncated) {
 		return null;

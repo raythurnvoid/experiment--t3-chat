@@ -33,7 +33,7 @@ import {
 	type app_convex_FunctionReturnType,
 	type app_convex_Id,
 } from "@/lib/app-convex-client.ts";
-import { files_ROOT_ID } from "@/lib/files.ts";
+import { files_ROOT_ID, files_TRANSFER_SELECTION_PAGE_SIZE } from "@/lib/files.ts";
 
 // #region provider
 type FilesClipboard = {
@@ -60,11 +60,13 @@ const FilesClipboardProvider = Object.assign(
 	}) {
 		const { membershipId, children } = props;
 		const convex = useConvex();
+		const { pendingStopSourceIds } = AppActivitiesProvider.useContext();
 		const currentRuns = useQuery(app_convex_api.files_transfer.list_current, { membershipId });
 		const [clipboard, setClipboardValue] = useState<FilesClipboard | null>(null);
 		const [runId, setRunId] = useState<app_convex_Id<"files_transfer_runs"> | null>(null);
 		const [isRunOpen, setIsRunOpen] = useState(false);
 		const [isStarting, setIsStarting] = useState(false);
+		const [startError, setStartError] = useState<{ message: string; stopRequested: boolean } | null>(null);
 		const run = useQuery(app_convex_api.files_transfer.get, runId ? { membershipId, runId } : "skip");
 		const [cutRun, setCutRun] = useState<{
 			runId: app_convex_Id<"files_transfer_runs">;
@@ -77,13 +79,23 @@ const FilesClipboardProvider = Object.assign(
 			cutRun && !cutRun.finished ? { membershipId, runId: cutRun.runId } : "skip",
 		);
 		const startPendingRef = useRef(false);
+		const mountedRef = useRef(true);
 		const startRequestRef = useRef<{
 			requestId: string;
-			revision: string;
+			clipboard: FilesClipboard;
 			targetParentId: app_convex_Doc<"files_nodes">["parentId"];
+			runId?: app_convex_Id<"files_transfer_runs">;
+			stopRequested?: boolean;
 		} | null>(null);
 		// A still-loading run list may hide an already-active run, so treat it as busy.
-		const isPasting = isStarting || currentRuns === undefined || currentRuns.length > 0;
+		const isPasting = isStarting || startError !== null || currentRuns === undefined || currentRuns.length > 0;
+
+		useEffect(() => {
+			mountedRef.current = true;
+			return () => {
+				mountedRef.current = false;
+			};
+		}, []);
 
 		const setClipboard = useFn((mode: FilesClipboard["mode"], sourceIds: app_convex_Id<"files_nodes">[]) => {
 			if (sourceIds.length === 0) return;
@@ -97,47 +109,111 @@ const FilesClipboardProvider = Object.assign(
 			setIsRunOpen(true);
 		});
 
-		const paste = useFn((targetParentId: app_convex_Doc<"files_nodes">["parentId"]) => {
-			if (!clipboard || isPasting || startPendingRef.current) return;
+		const isIntakeStopped = useFn((nextRunId: app_convex_Id<"files_transfer_runs">) => {
+			const current = run?._id === nextRunId ? run : currentRuns?.find((item) => item._id === nextRunId);
+			return (
+				!mountedRef.current ||
+				pendingStopSourceIds.has(nextRunId) ||
+				current?.activity.status === "stopping" ||
+				current?.activity.finishedAt !== undefined
+			);
+		});
+
+		const sendPaste = useFn(() => {
+			const request = startRequestRef.current;
+			if (!request || startPendingRef.current) return;
 
 			// The ref blocks a second start in the same tick; the state only disables after a render.
 			startPendingRef.current = true;
 			setIsStarting(true);
-			// Keep the same request after a lost response, so a retry cannot start a second run.
-			if (
-				startRequestRef.current?.revision !== clipboard.revision ||
-				startRequestRef.current.targetParentId !== targetParentId
-			) {
-				startRequestRef.current = { requestId: crypto.randomUUID(), revision: clipboard.revision, targetParentId };
-			}
-			convex
-				.mutation(app_convex_api.files_transfer.start, {
-					membershipId,
-					requestId: startRequestRef.current.requestId,
-					kind: clipboard.mode === "cut" ? "move" : "copy",
-					sourceIds: clipboard.sourceIds,
-					targetParentId,
-				})
-				.then((result) => {
-					if (result._nay) {
-						startRequestRef.current = null;
-						toast.error(result._nay.message);
+			const selection = request.clipboard;
+			(async (/* iife */) => {
+				let refusal: string | undefined;
+				if (!request.stopRequested) {
+					// Replay the original selection and pages after a lost reply, even if the clipboard changed.
+					const started = await convex.mutation(app_convex_api.files_transfer.start, {
+						membershipId,
+						requestId: request.requestId,
+						kind: selection.mode === "cut" ? "move" : "copy",
+						...(selection.mode === "copy" ? { expectedSourceCount: selection.sourceIds.length } : {}),
+						sourceIds:
+							selection.mode === "copy"
+								? selection.sourceIds.slice(0, files_TRANSFER_SELECTION_PAGE_SIZE)
+								: selection.sourceIds,
+						targetParentId: request.targetParentId,
+					});
+					refusal = started._nay?.message;
+					if (!started._nay) {
+						request.runId = started._yay.runId;
+						if (mountedRef.current) openRun(request.runId);
+						if (selection.mode === "cut") {
+							setCutRun({ runId: request.runId, revision: selection.revision, finished: false });
+						} else {
+							for (
+								let offset = files_TRANSFER_SELECTION_PAGE_SIZE;
+								offset < selection.sourceIds.length;
+								offset += files_TRANSFER_SELECTION_PAGE_SIZE
+							) {
+								if (isIntakeStopped(request.runId)) break;
+								const appended = await convex.mutation(app_convex_api.files_transfer.append_sources, {
+									membershipId,
+									runId: request.runId,
+									offset,
+									sourceIds: selection.sourceIds.slice(offset, offset + files_TRANSFER_SELECTION_PAGE_SIZE),
+								});
+								if (appended._nay) {
+									refusal = appended._nay.message;
+									break;
+								}
+							}
+							request.stopRequested = !!refusal || isIntakeStopped(request.runId);
+							if (!request.stopRequested) {
+								const sealed = await convex.mutation(app_convex_api.files_transfer.seal, {
+									membershipId,
+									runId: request.runId,
+								});
+								refusal = sealed._nay?.message;
+							}
+						}
+					}
+				}
+				if (refusal) toast.error(refusal);
+				if (request.runId && (refusal || request.stopRequested)) {
+					request.stopRequested = true;
+					const stopped = await convex.mutation(app_convex_api.files_transfer.stop, {
+						membershipId,
+						runId: request.runId,
+					});
+					if (stopped._nay) {
+						setStartError({
+							message: `${stopped._nay.message}. Stop was not confirmed. Retry to stop this request.`,
+							stopRequested: true,
+						});
 						return;
 					}
-					startRequestRef.current = null;
-					if (clipboard.mode === "cut") {
-						setCutRun({ runId: result._yay.runId, revision: clipboard.revision, finished: false });
-					}
-					openRun(result._yay.runId);
-				})
+				}
+				startRequestRef.current = null;
+				setStartError(null);
+			})()
 				.catch((error) => {
-					console.error("[FilesClipboardProvider.paste] Failed to start paste", { error });
-					toast.error("Could not confirm Paste. Try again when connected.");
+					console.error("[FilesClipboardProvider.paste] Failed to send paste request", { error });
+					setStartError({
+						message: request.stopRequested
+							? "Stop was not confirmed. Retry to stop this request."
+							: "Could not confirm Paste. Retry the same request when connected, or stop it from Activity.",
+						stopRequested: !!request.stopRequested,
+					});
 				})
 				.finally(() => {
 					startPendingRef.current = false;
 					setIsStarting(false);
 				});
+		});
+
+		const paste = useFn((targetParentId: app_convex_Doc<"files_nodes">["parentId"]) => {
+			if (!clipboard || isPasting || startPendingRef.current || startRequestRef.current) return;
+			startRequestRef.current = { requestId: crypto.randomUUID(), clipboard, targetParentId };
+			sendPaste();
 		});
 
 		useEffect(() => {
@@ -156,12 +232,23 @@ const FilesClipboardProvider = Object.assign(
 		return (
 			<FilesClipboardContext.Provider value={{ clipboard, isPasting, setClipboard, clearClipboard, paste, openRun }}>
 				{children}
+				{startError && !isRunOpen ? (
+					<div>
+						<p role="alert">{startError.message}</p>
+						<MyButton disabled={isStarting} onClick={sendPaste}>
+							{startError.stopRequested ? "Retry Stop" : "Retry Paste"}
+						</MyButton>
+					</div>
+				) : null}
 				{isRunOpen && runId ? (
 					<FilesTransferRunModal
 						key={runId}
 						membershipId={membershipId}
 						runId={runId}
 						run={run}
+						startError={startError}
+						isStarting={isStarting}
+						onResume={sendPaste}
 						onRetry={(nextRunId) => {
 							if (cutRun?.runId === runId) setCutRun({ ...cutRun, runId: nextRunId, finished: false });
 							openRun(nextRunId);
@@ -349,10 +436,13 @@ const FilesTransferRunModal = memo(function FilesTransferRunModal(props: {
 	membershipId: app_convex_Id<"organizations_workspaces_users">;
 	runId: app_convex_Id<"files_transfer_runs">;
 	run: FilesTransferRun | null | undefined;
+	startError: { message: string; stopRequested: boolean } | null;
+	isStarting: boolean;
+	onResume: () => void;
 	onRetry: (runId: app_convex_Id<"files_transfer_runs">) => void;
 	onClose: () => void;
 }) {
-	const { membershipId, runId, run, onRetry, onClose } = props;
+	const { membershipId, runId, run, startError, isStarting, onResume, onRetry, onClose } = props;
 	const convex = useConvex();
 	const { pendingStopSourceIds, stop } = AppActivitiesProvider.useContext();
 	const [choices, setChoices] = useState<Record<string, ConflictChoices["choices"][number]["choice"]>>({});
@@ -386,6 +476,7 @@ const FilesTransferRunModal = memo(function FilesTransferRunModal(props: {
 	const status = run?.activity.status;
 	const progress = run?.activity.progress;
 	const isTerminal = run?.activity.finishedAt !== undefined;
+	const isSelecting = run?.step === "uploading" || run?.step === "select" || run?.step === "normalize";
 	const isStopPending = pendingStopSourceIds.has(runId);
 	const conflicts = itemPage?.page.filter((item) => item.state === "conflict") ?? [];
 
@@ -431,27 +522,30 @@ const FilesTransferRunModal = memo(function FilesTransferRunModal(props: {
 			? "Stop requested. Waiting for the server…"
 			: !run
 				? "Loading…"
-				: status === "queued" || (status === "running" && (run.step === "discover" || run.step === "retry"))
-					? "Checking files…"
-					: status === "awaiting_input"
-						? "Choose how to handle these files."
-						: status === "running"
-							? run.kind === "move"
-								? "Moving files…"
-								: "Copying files…"
-							: status === "stopping"
-								? "Stopping…"
-								: status === "succeeded"
-									? run.publication === "proposal"
-										? "Ready for review."
-										: "Completed."
-									: status === "canceled"
-										? "Stopped."
-										: status === "partial"
-											? "Some files completed."
-											: status === "timed_out"
-												? "Timed out."
-												: "Failed.";
+				: run.step === "uploading" && !isTerminal && status !== "stopping"
+					? "Loading selection…"
+					: status === "queued" ||
+						  (status === "running" && (isSelecting || run.step === "discover" || run.step === "retry"))
+						? "Checking files…"
+						: status === "awaiting_input"
+							? "Choose how to handle these files."
+							: status === "running"
+								? run.kind === "move"
+									? "Moving files…"
+									: "Copying files…"
+								: status === "stopping"
+									? "Stopping…"
+									: status === "succeeded"
+										? run.publication === "proposal"
+											? "Ready for review."
+											: "Completed."
+										: status === "canceled"
+											? "Stopped."
+											: status === "partial"
+												? "Some files completed."
+												: status === "timed_out"
+													? "Timed out."
+													: "Failed.";
 
 	const handleStop = useFn(() => {
 		if (!run || !run.controls.canStop || isSaving || isStopPending) return;
@@ -531,7 +625,28 @@ const FilesTransferRunModal = memo(function FilesTransferRunModal(props: {
 					</MyModalDescription>
 				</MyModalHeader>
 				<MyModalScrollableArea>
-					{progress ? (
+					{startError ? (
+						<div>
+							<p role="alert">{startError.message}</p>
+							<MyButton disabled={isStarting} onClick={onResume}>
+								{startError.stopRequested ? "Retry Stop" : "Retry Paste"}
+							</MyButton>
+						</div>
+					) : null}
+					{run?.step === "uploading" && !isTerminal ? (
+						<p>
+							Copy starts after the full selection arrives. Keep this tab open. If you reload, stop this request in
+							Activity and paste again.
+						</p>
+					) : null}
+					{progress && isSelecting ? (
+						<p role="status">
+							{isTerminal
+								? "Selection ended before finding files."
+								: "File counts appear after the selection is checked."}
+						</p>
+					) : null}
+					{progress && !isSelecting ? (
 						<p role="status">
 							{progress.completed} {completedLabel}, {progress.skipped} skipped, {progress.failed} failed,{" "}
 							{progress.blocked} need a choice, {progress.canceled} stopped.{" "}
@@ -540,9 +655,9 @@ const FilesTransferRunModal = memo(function FilesTransferRunModal(props: {
 								: `${Math.max(0, progress.total - progress.completed - progress.skipped - progress.failed - progress.blocked - progress.canceled)} remaining.`}
 						</p>
 					) : null}
-					{run && itemPage === undefined ? <p role="status">Loading items…</p> : null}
+					{run && !isSelecting && itemPage === undefined ? <p role="status">Loading items…</p> : null}
 					{itemPage === null ? <p>These items are no longer available.</p> : null}
-					{itemPage ? (
+					{itemPage && !isSelecting ? (
 						<div className={"FilesTransferRunModal-items" satisfies FilesTransferRunModal_ClassNames}>
 							{itemPage.page.map((item) => {
 								const isConflict = status === "awaiting_input" && item.state === "conflict";
@@ -663,7 +778,7 @@ const FilesTransferRunModal = memo(function FilesTransferRunModal(props: {
 							{itemPage.page.length === 0 ? <p>No items on this page.</p> : null}
 						</div>
 					) : null}
-					{run ? (
+					{run && !isSelecting ? (
 						<div className={"FilesTransferRunModal-pages" satisfies FilesTransferRunModal_ClassNames}>
 							<MyButton
 								variant="ghost"

@@ -1,0 +1,23 @@
+@layer components {
+	.FileDraftRecovery {
+		display: grid;
+		gap: 16px;
+		padding: 16px;
+		min-width: 0;
+	}
+
+	.FileDraftRecovery-heading {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+	}
+
+	.FileDraftRecovery textarea {
+		width: 100%;
+		min-height: 12lh;
+		padding: 8px;
+		resize: vertical;
+		border: 1px solid var(--color-base-1-07);
+		border-radius: 6px;
+	}
+}

@@ -8,6 +8,7 @@ import { test_convex, test_mocks_cancel_pending_home_file_seeds, test_mocks_fill
 import { data_deletion_db_request } from "./data_deletion_requests.ts";
 import { files_pending_nodes_db_create } from "./files_pending_nodes.ts";
 import { files_private_storage_db_reserve } from "./files_private_storage.ts";
+import { files_db_schedule_pending_update_cleanup } from "../server/files.ts";
 import {
 	organizations_db_create,
 	organizations_db_create_workspace,
@@ -487,17 +488,8 @@ async function data_deletion_test_seed_workspace_content_bulk(
 					stringValue: `pending-${args.tag}`,
 				}),
 			]);
-			const scheduledFunctionId = await ctx.scheduler.runAfter(
-				4 * 60 * 60 * 1000,
-				internal.files_pending_updates.remove_file_pending_update_if_expired,
-				{
-					pendingUpdateId,
-					expectedUpdatedAt: pendingUpdateUpdatedAt,
-				},
-			);
-			await ctx.db.insert("files_pending_updates_cleanup_tasks", {
+			await files_db_schedule_pending_update_cleanup(ctx, {
 				pendingUpdateId,
-				scheduledFunctionId,
 				expectedUpdatedAt: pendingUpdateUpdatedAt,
 			});
 		}
@@ -612,6 +604,8 @@ async function data_deletion_test_seed_workspace_content_bulk(
 				threadId,
 				principalKey: `grant_${args.tag}_${i}`,
 				tokenHash: `token_hash_${args.tag}_${i}`,
+				agentSource: null,
+				codeReadBudgetId: null,
 				scopes: ["files:list", "files:read"],
 				remainingReadBytes: 0,
 				pathPrefix: null,

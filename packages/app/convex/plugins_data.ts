@@ -20,6 +20,7 @@ import { access_control_db_has_permission } from "./access_control.ts";
 import { activities_db_require_by_source_id } from "./activities_db.ts";
 import { plugins_db_get_live_service_account } from "./plugins_service_accounts.ts";
 import { files_nodes_db_cascade_restricted_scope } from "./files_nodes.ts";
+import { files_media_validation_db_advance_version } from "./files_media_validation.ts";
 import type { access_control_Permission } from "../shared/access-control.ts";
 import type { billing_PRODUCTS } from "../shared/billing.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
@@ -3936,6 +3937,7 @@ async function db_sync_file_access_bindings(
 		.collect();
 
 	const now = Date.now();
+	let readersChanged = false;
 	for (const binding of bindings) {
 		const grants = await db_binding_file_grants(ctx, {
 			organizationId: binding.organizationId,
@@ -3950,6 +3952,7 @@ async function db_sync_file_access_bindings(
 				(grant.principalKind === "user" && grant.userId !== undefined && args.removeUserIds.includes(grant.userId));
 			if (remove) {
 				await ctx.db.delete("access_control_permission_grants", grant._id);
+				if (grant.principalKind !== "service_account") readersChanged = true;
 				continue;
 			}
 			if (grant.principalKind === "user" && grant.userId && grant.permission === "content.read") {
@@ -3977,8 +3980,10 @@ async function db_sync_file_access_bindings(
 				updatedAt: now,
 			});
 			holders.add(userId);
+			readersChanged = true;
 		}
 	}
+	if (readersChanged) await files_media_validation_db_advance_version(ctx, args.installation);
 }
 
 /**
@@ -4058,6 +4063,7 @@ export async function plugins_data_db_apply_file_access_binding(
 		return;
 	}
 
+	let accessChanged = false;
 	// Restrict the node on itself and cascade, like the member share door does.
 	if (args.node.restrictedScopeNodeId !== args.node._id) {
 		await ctx.db.patch("files_nodes", args.node._id, { restrictedScopeNodeId: args.node._id });
@@ -4067,6 +4073,7 @@ export async function plugins_data_db_apply_file_access_binding(
 			parentId: args.node._id,
 			scopeNodeId: args.node._id,
 		});
+		accessChanged = true;
 	}
 
 	// Exactly one `content.read` grant per active scope member. The kept set makes a duplicate
@@ -4109,6 +4116,7 @@ export async function plugins_data_db_apply_file_access_binding(
 			continue;
 		}
 		await ctx.db.delete("access_control_permission_grants", grant._id);
+		accessChanged = true;
 	}
 
 	for (const userId of memberUserIds) {
@@ -4126,7 +4134,10 @@ export async function plugins_data_db_apply_file_access_binding(
 			createdAt: now,
 			updatedAt: now,
 		});
+		accessChanged = true;
 	}
+
+	if (accessChanged) await files_media_validation_db_advance_version(ctx, args.installation);
 
 	if (existingBinding) {
 		await ctx.db.patch("plugins_file_access_bindings", existingBinding._id, {

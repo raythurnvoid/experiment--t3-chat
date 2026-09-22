@@ -15,10 +15,10 @@ import {
 } from "./bash-utils.ts";
 
 const RESOLVE_USAGE = "Usage: resolve [--] NODE_ID_OR_APP_FILE_URL\n";
-const RESOLVE_UNAVAILABLE_MESSAGE = "File or folder is unavailable in the current workspace";
+const RESOLVE_UNAVAILABLE_MESSAGE = "File or folder is unavailable in this chat's workspaces";
 const RESOLVE_FILE_URL_PATH_REGEX = /^\/w\/([^/]+)\/([^/]+)\/files(?:\/(.*))?$/u;
 
-function parse_args(args: string[], scope: { organizationName: string; workspaceName: string }) {
+function parse_args(args: string[]) {
 	if (args.length === 1 && args[0] === "--help") {
 		return Result({ _yay: { help: true } as const });
 	}
@@ -41,12 +41,7 @@ function parse_args(args: string[], scope: { organizationName: string; workspace
 		if ((url.protocol !== "http:" && url.protocol !== "https:") || !match) {
 			return Result({ _nay: { message: "Expected an app file URL", data: { exitCode: bash_COMMAND_EXIT_USAGE } } });
 		}
-		if (
-			decodeURIComponent(match[1]) !== scope.organizationName ||
-			decodeURIComponent(match[2]) !== scope.workspaceName
-		) {
-			return Result({ _nay: { message: RESOLVE_UNAVAILABLE_MESSAGE, data: { exitCode: bash_COMMAND_EXIT_FAILURE } } });
-		}
+		const workspace = { organizationName: decodeURIComponent(match[1]), workspaceName: decodeURIComponent(match[2]) };
 
 		const nodeIds = [...url.searchParams.getAll("nodeId"), ...url.searchParams.getAll("pendingNodeId")];
 		if (nodeIds.length > 0) {
@@ -58,7 +53,7 @@ function parse_args(args: string[], scope: { organizationName: string; workspace
 					},
 				});
 			}
-			return Result({ _yay: { nodeId: nodeIds[0] } });
+			return Result({ _yay: { nodeId: nodeIds[0], workspace } });
 		}
 
 		const path = `/${path_extract_segments_from(decodeURIComponent(match[3] ?? "")).join("/")}`;
@@ -70,7 +65,7 @@ function parse_args(args: string[], scope: { organizationName: string; workspace
 				},
 			});
 		}
-		return Result({ _yay: { path } });
+		return Result({ _yay: { path, workspace } });
 	} catch {
 		return Result({ _nay: { message: "Invalid app file URL", data: { exitCode: bash_COMMAND_EXIT_USAGE } } });
 	}
@@ -81,10 +76,8 @@ function parse_args(args: string[], scope: { organizationName: string; workspace
  * The Command return type breaks the generated API's type-inference cycle.
  */
 export function bash_resolve_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFilesRoots): Command {
-	const { fs, currentWorkspacePath } = dbFilesRoots.app;
-
 	return defineCommand("resolve", async (args) => {
-		const parsed = parse_args(args, fs.ctxData);
+		const parsed = parse_args(args);
 		if (parsed._nay) {
 			return {
 				stdout: "",
@@ -96,47 +89,59 @@ export function bash_resolve_command_create(ctx: ActionCtx, dbFilesRoots: bash_D
 			return { stdout: RESOLVE_USAGE, stderr: "", exitCode: 0 };
 		}
 
-		const { organizationId, workspaceId, userId } = fs.ctxData;
-		// The shared shell also runs plugin reviews, which have no tenant file scope.
-		if (
-			fs.readOnlySource != null ||
-			organizations_is_global_organization_id(organizationId) ||
-			organizations_is_reserved_workspace_id(workspaceId)
-		) {
-			return { stdout: "", stderr: `resolve: ${RESOLVE_UNAVAILABLE_MESSAGE}\n`, exitCode: bash_COMMAND_EXIT_FAILURE };
-		}
+		// IDs are unique across workspaces. URLs select one root before any lookup.
+		for (const root of [dbFilesRoots.app, dbFilesRoots.personal]) {
+			if (!root) continue;
+			const { fs, currentWorkspacePath } = root;
+			const { organizationId, workspaceId, userId } = fs.ctxData;
+			// The shared shell also runs plugin reviews, which have no tenant file scope.
+			if (
+				fs.readOnlySource != null ||
+				organizations_is_global_organization_id(organizationId) ||
+				organizations_is_reserved_workspace_id(workspaceId)
+			)
+				continue;
+			if (
+				"workspace" in parsed._yay &&
+				parsed._yay.workspace &&
+				(parsed._yay.workspace.organizationName !== fs.ctxData.organizationName ||
+					parsed._yay.workspace.workspaceName !== fs.ctxData.workspaceName)
+			)
+				continue;
 
-		let nodeId: string | undefined;
-		if ("nodeId" in parsed._yay) {
-			nodeId = parsed._yay.nodeId;
-		} else {
-			// A path URL identifies the saved node, even if pending moves swap its path.
-			const node = await ctx.runQuery(internal.files_nodes.get_by_path, {
-				organizationId,
-				workspaceId,
-				visibilityUserId: userId,
-				path: parsed._yay.path,
-			});
-			nodeId = node?._id;
-		}
-		const path =
-			nodeId == null
-				? null
-				: await ctx.runQuery(internal.files_nodes.get_path_by_id, {
-						organizationId,
-						workspaceId,
-						visibilityUserId: userId,
-						nodeId,
-					});
-		if (path == null) {
-			return { stdout: "", stderr: `resolve: ${RESOLVE_UNAVAILABLE_MESSAGE}\n`, exitCode: bash_COMMAND_EXIT_FAILURE };
-		}
+			let nodeId: string | undefined;
+			if ("nodeId" in parsed._yay) {
+				nodeId = parsed._yay.nodeId;
+			} else {
+				// A path URL identifies the saved node, even if pending moves swap its path.
+				const node = await ctx.runQuery(internal.files_nodes.get_by_path, {
+					agentSource: fs.ctxData.agentSource,
+					organizationId,
+					workspaceId,
+					visibilityUserId: userId,
+					path: parsed._yay.path,
+				});
+				nodeId = node?._id;
+			}
+			const path =
+				nodeId == null
+					? null
+					: await ctx.runQuery(internal.files_nodes.get_path_by_id, {
+							agentSource: fs.ctxData.agentSource,
+							organizationId,
+							workspaceId,
+							visibilityUserId: userId,
+							nodeId,
+						});
+			if (path == null) continue;
 
-		fs.observePath(path);
-		return {
-			stdout: `${bash_db_files_path_to_current_workspace_path(currentWorkspacePath, path)}\n`,
-			stderr: "",
-			exitCode: 0,
-		};
+			fs.observePath(path);
+			return {
+				stdout: `${bash_db_files_path_to_current_workspace_path(currentWorkspacePath, path)}\n`,
+				stderr: "",
+				exitCode: 0,
+			};
+		}
+		return { stdout: "", stderr: `resolve: ${RESOLVE_UNAVAILABLE_MESSAGE}\n`, exitCode: bash_COMMAND_EXIT_FAILURE };
 	});
 }

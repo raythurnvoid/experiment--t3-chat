@@ -2,13 +2,17 @@ import type { Id } from "../convex/_generated/dataModel.js";
 import type { ActionCtx } from "../convex/_generated/server.js";
 import type { CommandContext, ExecResult } from "just-bash/browser";
 import { internal } from "../convex/_generated/api.js";
-import type { files_PendingParent, files_PendingTarget } from "../shared/files.ts";
+import {
+	files_TRANSFER_SELECTION_PAGE_SIZE,
+	type files_PendingParent,
+	type files_PendingTarget,
+} from "../shared/files.ts";
 import { path_name_of, path_extract_segments_from } from "../shared/paths.ts";
 import {
 	bash_ABORT_REASON_STOPPED,
 	bash_COMMAND_EXIT_STOPPED,
 	bash_COMMAND_EXIT_TIMED_OUT,
-	bash_current_workspace_path_to_db_files_path,
+	bash_resolve_db_files_shell_path,
 	bash_resolve_path,
 	bash_parse_cp_mv_operands,
 	type bash_DbFilesRoots,
@@ -28,7 +32,7 @@ export type bash_TransferContext = {
 	jobId: Id<"ai_chat_bash_invocations"> | null;
 };
 
-// Four jobs share one transfer lane per user and workspace. A job's copy waits this long for it.
+// Up to 10 live jobs share one transfer lane per user and workspace. A job's copy waits this long for it.
 const LANE_WAIT_MAX_MS = 60_000;
 const LANE_WAIT_POLL_MS = 2_000;
 
@@ -64,43 +68,73 @@ function abort_outcome(signal: AbortSignal) {
 }
 
 /**
- * App copies and moves use the same durable transfer jobs as Files.
+ * Resolve exact input before admission. This only reads entries; it starts no work.
  */
-export async function bash_transfer_command_run(args: {
+export async function bash_transfer_command_prepare(args: {
 	ctx: ActionCtx;
 	dbFilesRoots: bash_DbFilesRoots;
 	transferContext: bash_TransferContext | undefined;
 	command: "cp" | "mv";
-	commandCtx: CommandContext;
+	commandCtx: Pick<CommandContext, "cwd">;
 	parsed: NonNullable<ReturnType<typeof bash_parse_cp_mv_operands>["_yay"]>;
-}): Promise<ExecResult> {
-	const { ctx, dbFilesRoots, command, commandCtx, parsed, transferContext } = args;
-	const fail = (message: string) => ({ stdout: "", stderr: `${command}: ${message}\n`, exitCode: 1 });
+}) {
+	const { dbFilesRoots, command, commandCtx, parsed, transferContext } = args;
+	const fail = (message: string) => ({ result: { stdout: "", stderr: `${command}: ${message}\n`, exitCode: 1 } });
 
 	if (!dbFilesRoots.app.fs.allowDbFilesMkdir) return fail("app file writes require Agent mode");
 
+	// The current root owns the chat even when both operands point to personal files.
 	const threadId = dbFilesRoots.app.fs.ctxData.threadId;
 	if (!transferContext || !threadId) return fail("this command has no active Bash invocation");
 
 	const aborted = () => {
 		const outcome = abort_outcome(transferContext.signal);
-		return { stdout: "", stderr: `${command}: transfer ${outcome.word}\n`, exitCode: outcome.exitCode };
+		return { result: { stdout: "", stderr: `${command}: transfer ${outcome.word}\n`, exitCode: outcome.exitCode } };
 	};
 	if (transferContext.signal.aborted || Date.now() >= transferContext.deadlineAt) return aborted();
 
-	const commandNumber = transferContext.nextCommandNumber();
+	const resolvedSources = parsed.sources.map((source) => ({
+		source,
+		root: bash_resolve_db_files_shell_path(bash_resolve_path(commandCtx.cwd, source.path), dbFilesRoots),
+	}));
+	const sourceRoot = resolvedSources[0]!.root;
+	const destinationRoot = bash_resolve_db_files_shell_path(
+		bash_resolve_path(commandCtx.cwd, parsed.destination.path),
+		dbFilesRoots,
+	);
+	const destinationPath = destinationRoot.dbFilesPath;
+	if (
+		resolvedSources.some(({ root }) => root.kind !== "app" || root.dbFilesPath === null) ||
+		destinationRoot.kind !== "app" ||
+		destinationPath === null
+	)
+		return fail("all sources and the destination must be app paths");
 
-	const pathOf = (path: string) =>
-		bash_current_workspace_path_to_db_files_path(
-			dbFilesRoots.app.currentWorkspacePath,
-			bash_resolve_path(commandCtx.cwd, path),
+	// Check every resolved workspace before reading files or preparing any output.
+	if (
+		command === "mv" &&
+		resolvedSources.some(
+			({ root }) =>
+				root.ctxData.organizationId !== destinationRoot.ctxData.organizationId ||
+				root.ctxData.workspaceId !== destinationRoot.ctxData.workspaceId,
+		)
+	)
+		return fail(
+			"Moves between workspaces are not allowed. Use cp to copy files instead, or cp -R for a folder. The originals will stay in place.",
 		);
 
+	if (
+		resolvedSources.some(
+			({ root }) =>
+				root.ctxData.organizationId !== sourceRoot.ctxData.organizationId ||
+				root.ctxData.workspaceId !== sourceRoot.ctxData.workspaceId,
+		)
+	)
+		return fail("all sources must be in one workspace; run a separate command for each source workspace");
+
 	const sources: files_PendingTarget[] = [];
-	for (const source of parsed.sources) {
-		const path = pathOf(source.path);
-		if (path === null) return fail("all sources and the destination must be app paths");
-		const entry = await dbFilesRoots.app.fs.getEntry(path);
+	for (const { source, root } of resolvedSources) {
+		const entry = await root.fs.getEntry(root.dbFilesPath!);
 		if (!entry?.target || entry.target.kind === "root") return fail(`source '${source.path}' is not available`);
 		if (entry.preparing) return fail(`draft '${source.path}' is still preparing`);
 		if (source.requiresFolder && entry.kind !== "folder") return fail(`'${source.path}' is not a directory`);
@@ -108,12 +142,9 @@ export async function bash_transfer_command_run(args: {
 		sources.push(entry.target);
 	}
 
-	if (sources.length > 200) return fail("select at most 200 sources");
+	if (command === "mv" && sources.length > 200) return fail("select at most 200 sources");
 
-	const destinationPath = pathOf(parsed.destination.path);
-	if (destinationPath === null) return fail("all sources and the destination must be app paths");
-
-	const destination = await dbFilesRoots.app.fs.getEntry(destinationPath);
+	const destination = await destinationRoot.fs.getEntry(destinationPath);
 	if (destination?.preparing) return fail("the destination draft is still preparing");
 
 	if (parsed.destination.requiresFolder && destination?.kind !== "folder")
@@ -135,13 +166,13 @@ export async function bash_transfer_command_run(args: {
 		targetName = path_name_of(destinationPath);
 		targetPath = `/${path_extract_segments_from(destinationPath).slice(0, -1).join("/")}`;
 
-		let parent = await dbFilesRoots.app.fs.getEntry(targetPath);
+		let parent = await destinationRoot.fs.getEntry(targetPath);
 		// The transfer start refuses more than 32 missing parents. Stop the walk at that count.
 		// The check below then refuses this command with the destination message.
 		while (!parent && command === "cp" && targetPath !== "/" && missingParentNames.length < 32) {
 			missingParentNames.unshift(path_name_of(targetPath));
 			targetPath = `/${path_extract_segments_from(targetPath).slice(0, -1).join("/")}`;
-			parent = await dbFilesRoots.app.fs.getEntry(targetPath);
+			parent = await destinationRoot.fs.getEntry(targetPath);
 		}
 
 		if (parent?.kind !== "folder" || !parent.target) return fail("the destination parent is not a directory");
@@ -153,10 +184,56 @@ export async function bash_transfer_command_run(args: {
 			destination.target.kind === sources[0]!.kind &&
 			destination.target.id === sources[0]!.id
 		)
-			return { stdout: "", stderr: "", exitCode: 0 };
+			return { result: { stdout: "", stderr: "", exitCode: 0 } };
 	}
 
-	// A job waits for a busy lane instead of failing: four jobs share one lane per user and
+	return {
+		prepared: {
+			threadId,
+			transferContext,
+			sourceRoot,
+			destinationRoot,
+			sourceWorkspace: sourceRoot.fs === dbFilesRoots.app.fs ? ("current" as const) : ("personal" as const),
+			destinationWorkspace: destinationRoot.fs === dbFilesRoots.app.fs ? ("current" as const) : ("personal" as const),
+			sources,
+			targetParent,
+			targetPath,
+			targetName,
+			missingParentNames,
+		},
+	};
+}
+
+/**
+ * App copies and moves use the same durable transfer jobs as Files.
+ */
+export async function bash_transfer_command_run(
+	args: Parameters<typeof bash_transfer_command_prepare>[0],
+): Promise<ExecResult> {
+	const preparation = await bash_transfer_command_prepare(args);
+	if (!("prepared" in preparation)) return preparation.result;
+	const {
+		threadId,
+		transferContext,
+		sourceRoot,
+		destinationRoot,
+		sourceWorkspace,
+		destinationWorkspace,
+		sources,
+		targetParent,
+		targetPath,
+		targetName,
+		missingParentNames,
+	} = preparation.prepared;
+	const { ctx, command, parsed } = args;
+	const commandNumber = transferContext.nextCommandNumber();
+	const fail = (message: string) => ({ stdout: "", stderr: `${command}: ${message}\n`, exitCode: 1 });
+	const aborted = () => {
+		const outcome = abort_outcome(transferContext.signal);
+		return { stdout: "", stderr: `${command}: transfer ${outcome.word}\n`, exitCode: outcome.exitCode };
+	};
+
+	// A job waits for a busy lane instead of failing: up to 10 live jobs share one lane per user and
 	// workspace. The wait reads only this non-charging query, so it never spends the rate limit
 	// the user's own Files UI shares; `start_for_agent` then runs once, and its `busy` is final.
 	if (transferContext.jobId !== null) {
@@ -180,10 +257,13 @@ export async function bash_transfer_command_run(args: {
 		.runMutation(internal.files_transfer.start_for_agent, {
 			membershipId: transferContext.membershipId,
 			threadId,
+			sourceWorkspace,
+			destinationWorkspace,
 			invocation: { id: transferContext.invocationId, commandNumber },
 			requestId: `${transferContext.invocationId}:${commandNumber}`,
 			kind: command === "cp" ? "copy" : "move",
-			sources,
+			sources: command === "cp" ? sources.slice(0, files_TRANSFER_SELECTION_PAGE_SIZE) : sources,
+			...(command === "cp" ? { expectedSourceCount: sources.length } : {}),
 			targetParent,
 			targetPath,
 			targetName,
@@ -216,12 +296,34 @@ export async function bash_transfer_command_run(args: {
 	const scope = { membershipId: transferContext.membershipId, threadId, runId };
 
 	try {
+		if (command === "cp") {
+			// Copy cannot execute until every selected source has been accepted and sealed.
+			for (let offset = files_TRANSFER_SELECTION_PAGE_SIZE; ; offset += files_TRANSFER_SELECTION_PAGE_SIZE) {
+				if (transferContext.signal.aborted || Date.now() >= transferContext.deadlineAt) {
+					await stop_transfer(ctx, scope, abort_outcome(transferContext.signal).reason);
+					return aborted();
+				}
+				const intake =
+					offset < sources.length
+						? await ctx.runMutation(internal.files_transfer.append_sources_for_agent, {
+								...scope,
+								offset,
+								sources: sources.slice(offset, offset + files_TRANSFER_SELECTION_PAGE_SIZE),
+							})
+						: await ctx.runMutation(internal.files_transfer.seal_for_agent, scope);
+				if (intake._nay) {
+					await stop_transfer(ctx, scope, "user");
+					return fail(intake._nay.message);
+				}
+				if (offset >= sources.length) break;
+			}
+		}
+
 		for (;;) {
 			const view = await ctx.runQuery(internal.files_transfer.get_for_agent, scope);
 			if (!view) throw new Error("Transfer access changed");
 			const { activity } = view;
 			if (!["queued", "running", "stopping"].includes(activity.status)) {
-				dbFilesRoots.app.fs.resetProposalCaches();
 				const progress = activity.progress;
 				const summary = `${progress?.completed ?? 0} ready for review, ${progress?.skipped ?? 0} skipped, ${progress?.failed ?? 0} failed`;
 				return {
@@ -234,7 +336,6 @@ export async function bash_transfer_command_run(args: {
 			if (transferContext.signal.aborted || Date.now() >= transferContext.deadlineAt) {
 				const outcome = abort_outcome(transferContext.signal);
 				await stop_transfer(ctx, scope, outcome.reason);
-				dbFilesRoots.app.fs.resetProposalCaches();
 				return {
 					stdout: "",
 					stderr: `${command}: transfer ${outcome.word}; remaining work was stopped. Activity ${activityId}\n`,
@@ -246,8 +347,19 @@ export async function bash_transfer_command_run(args: {
 			await new Promise<void>((resolve) => setTimeout(resolve, transferContext.jobId !== null ? 2_000 : 200));
 		}
 	} catch (error) {
-		// A failed stop must end this Bash call before a chained command can write.
-		transferContext.abort(error);
+		// A lost intake reply may have committed. Stop accepted work before any later shell write.
+		try {
+			await stop_transfer(
+				ctx,
+				scope,
+				transferContext.signal.aborted ? abort_outcome(transferContext.signal).reason : "user",
+			);
+		} finally {
+			transferContext.abort(error);
+		}
 		throw error;
+	} finally {
+		sourceRoot.fs.resetProposalCaches();
+		if (destinationRoot.fs !== sourceRoot.fs) destinationRoot.fs.resetProposalCaches();
 	}
 }

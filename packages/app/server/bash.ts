@@ -34,6 +34,10 @@ import {
 	InMemoryFs,
 	MountableFs,
 	type BashOptions,
+	type BashExecResult,
+	type BashRunOutcome,
+	type PlainCommandContinuation,
+	type PlainCommandHook,
 	type Command,
 	type CommandName,
 	type CpOptions,
@@ -57,7 +61,7 @@ import type {
 	ai_chat_files_read_shell_transcript_Result,
 	ai_chat_files_start_bash_job_Result,
 } from "../convex/ai_chat_files.ts";
-import type { files_PendingTarget } from "../shared/files.ts";
+import { files_TRANSFER_SELECTION_PAGE_SIZE, type files_PendingTarget } from "../shared/files.ts";
 import type { ai_chat_ModelId } from "../shared/ai-chat.ts";
 import type { plugins_list_bash_source_mounts_Result } from "../convex/plugins.ts";
 import {
@@ -73,7 +77,7 @@ import { bash_grep_command_create } from "./bash-grep-command.ts";
 import { bash_ls_command_create } from "./bash-ls-command.ts";
 import { bash_meta_command_create } from "./bash-meta-command.ts";
 import { bash_mv_command_create } from "./bash-mv-command.ts";
-import type { bash_TransferContext } from "./bash-transfer-command.ts";
+import { bash_transfer_command_prepare, type bash_TransferContext } from "./bash-transfer-command.ts";
 import {
 	bash_JOB_OUTPUT_READ_BUDGET_CHARS,
 	bash_JOB_OUTPUT_READ_MAX_CHARS,
@@ -105,8 +109,12 @@ import {
 	bash_DEV_ZERO_PATH,
 	bash_DEV_ZERO_TEXT,
 	bash_HOME,
+	bash_OBSERVED_PATHS_MAX,
 	bash_normalize_path,
 	bash_resolve_path,
+	bash_parse_cp_mv_operands,
+	bash_resolve_db_files_shell_path,
+	bash_GLOB_METACHARACTER_REGEX,
 	bash_shell_arg_quote,
 	bash_disallowed_shell_code_error,
 	bash_TMP_MOUNT,
@@ -117,6 +125,7 @@ import {
 	bash_COMMAND_EXIT_CANNOT_EXECUTE,
 	bash_COMMAND_EXIT_STOPPED,
 	bash_COMMAND_EXIT_TIMED_OUT,
+	bash_JOB_COPY_PAGE_MAX_BYTES,
 	bash_JOB_NUMBERS_MAX_COUNT,
 	bash_TERMINAL_LINE_ENDING_REGEX,
 	bash_SHELL_COMMENT_LINE_REGEX,
@@ -165,6 +174,10 @@ const BASH_JOB_BOUNDARY_POLL_MS = 1_000;
 // Any abort reason other than `bash_ABORT_REASON_STOPPED` reports 124, so this text is what the
 // user reads in the job's stderr. It is not the flag that picks the exit code.
 const BASH_JOB_DEADLINE_ABORT_REASON = "Bash deadline reached";
+// One worker slice appends at most this many Copy source pages, then leaves the rest to the next
+// slice. It also stops this long before the run's transfer deadline.
+const BASH_JOB_COPY_ADMIT_MAX_PAGES = 32;
+const BASH_JOB_COPY_ADMIT_HEADROOM_MS = 10_000;
 
 const TERMINAL_TRAILING_NEWLINE_REGEX = /\n+$/;
 
@@ -549,16 +562,14 @@ function format_bash_output(args: {
 
 // #region native just bash tmp command
 
-function native_just_bash_tmp_command_create(command: CommandName, currentWorkspacePath: string) {
+function native_just_bash_tmp_command_create(command: CommandName, dbFilesRoots: bash_DbFilesRoots) {
 	return defineCommand(command, async (args, commandCtx) => {
-		return await bash_delegate_native_just_bash_tmp_command(command, args, commandCtx, currentWorkspacePath);
+		return await bash_delegate_native_just_bash_tmp_command(command, args, commandCtx, dbFilesRoots);
 	});
 }
 
-function native_just_bash_tmp_command_create_all(currentWorkspacePath: string) {
-	return NATIVE_JUST_BASH_TMP_COMMANDS.map((command) =>
-		native_just_bash_tmp_command_create(command, currentWorkspacePath),
-	);
+function native_just_bash_tmp_command_create_all(dbFilesRoots: bash_DbFilesRoots) {
+	return NATIVE_JUST_BASH_TMP_COMMANDS.map((command) => native_just_bash_tmp_command_create(command, dbFilesRoots));
 }
 // #endregion native just bash tmp command
 
@@ -571,7 +582,7 @@ class ReadOnlyFileSystemError extends Error {
 	constructor(path: string) {
 		const normalizedPath = bash_normalize_path(path);
 		super(
-			`EROFS: read-only file system, '${normalizedPath}'. Writes are only supported under the current workspace app path or /tmp.`,
+			`EROFS: read-only file system, '${normalizedPath}'. Writes are only supported under the current or personal workspace path, or /tmp.`,
 		);
 		this.name = "ReadOnlyFileSystemError";
 		this.path = normalizedPath;
@@ -605,9 +616,14 @@ class BashTmpFs implements IFileSystem {
 	 * runtimes flushed; the collected baseline powers the end-of-call delta
 	 * flush.
 	 */
-	static async create(ctx: ActionCtx, threadId: Id<"ai_chat_threads">): Promise<BashTmpFs> {
+	static async create(
+		ctx: ActionCtx,
+		threadId: Id<"ai_chat_threads">,
+		invocationId: Id<"ai_chat_bash_invocations">,
+	): Promise<BashTmpFs> {
 		const loaded = (await ctx.runQuery(internal.ai_chat_files.load_thread_tmp_files, {
 			threadId,
+			invocationId,
 		})) as ai_chat_files_load_thread_tmp_files_Result;
 
 		return await BashTmpFs.from_files({
@@ -739,12 +755,12 @@ class BashTmpFs implements IFileSystem {
 	}
 }
 
-function stream_utility_command_create_all(currentWorkspacePath: string) {
+function stream_utility_command_create_all(dbFilesRoots: bash_DbFilesRoots) {
 	return [
-		native_just_bash_tmp_command_create("sort", currentWorkspacePath),
-		native_just_bash_tmp_command_create("uniq", currentWorkspacePath),
-		native_just_bash_tmp_command_create("cut", currentWorkspacePath),
-		native_just_bash_tmp_command_create("awk", currentWorkspacePath),
+		native_just_bash_tmp_command_create("sort", dbFilesRoots),
+		native_just_bash_tmp_command_create("uniq", dbFilesRoots),
+		native_just_bash_tmp_command_create("cut", dbFilesRoots),
+		native_just_bash_tmp_command_create("awk", dbFilesRoots),
 	];
 }
 
@@ -993,6 +1009,8 @@ async function bash_fs_create(args: {
 	workspaceName: string;
 	userId: Id<"users">;
 	threadId: Id<"ai_chat_threads">;
+	membershipId: Id<"organizations_workspaces_users">;
+	membershipLifetime: number;
 	persistedCwd: string;
 	persistedCwdTarget: files_PendingTarget | null;
 	allowDbFilesMkdir: boolean;
@@ -1005,13 +1023,30 @@ async function bash_fs_create(args: {
 	onExecEnd?: (snapshot: InterpreterStateSnapshot) => void;
 	onOutput?: NonNullable<BashOptions["onOutput"]>;
 	onStatementBoundary?: NonNullable<ExecOptions["onStatementBoundary"]>;
+	onPlainCommand?: (
+		boundary: Parameters<PlainCommandHook>[0],
+		roots: bash_DbFilesRoots,
+	) => ReturnType<PlainCommandHook>;
 	executionLimitsOverride?: { maxCommandCount: number };
 }) {
 	// Organization and workspace names are validated slugs, so they are stable shell
 	// path segments and do not need path-segment encoding here.
 	const currentWorkspacePath = `${bash_APP_MOUNT_PATH}/${args.organizationName}/${args.workspaceName}`;
+	const agentSource = {
+		organizationId: args.organizationId,
+		workspaceId: args.workspaceId,
+		userId: args.userId,
+		threadId: args.threadId,
+		membershipId: args.membershipId,
+		membershipLifetime: args.membershipLifetime,
+	};
+	const personal = await args.ctx.runQuery(internal.ai_chat_workspaces.resolve, {
+		source: agentSource,
+		workspace: "personal",
+	});
+	if (personal._nay) throw new Error(personal._nay.message);
 
-	const tmpFs = await BashTmpFs.create(args.ctx, args.threadId);
+	const tmpFs = await BashTmpFs.create(args.ctx, args.threadId, args.jobContext.invocationId);
 
 	// `/shells/<name>/transcript` loads on first read. The engine also loads a lazy file on `stat`
 	// (it needs a size), so `ls -l`, `find`, `wc -c` and `test -s` on a transcript run the query;
@@ -1039,10 +1074,21 @@ async function bash_fs_create(args: {
 			workspaceName: args.workspaceName,
 			userId: args.userId,
 			threadId: args.threadId,
+			agentSource,
 		},
 		currentWorkspacePath,
 		allowDbFilesMkdir: args.allowDbFilesMkdir,
 	});
+	const personalDbFilesFs =
+		personal._yay.workspaceId === args.workspaceId
+			? null
+			: new bash_DbFilesFs({
+					ctx: args.ctx,
+					ctxData: { ...personal._yay, userId: args.userId, threadId: args.threadId, agentSource },
+					currentWorkspacePath: `${bash_APP_MOUNT_PATH}/${personal._yay.organizationName}/${personal._yay.workspaceName}`,
+					allowDbFilesMkdir: args.allowDbFilesMkdir,
+				});
+	const appFileSystems = personalDbFilesFs ? [appDbFilesFs, personalDbFilesFs] : [appDbFilesFs];
 
 	// Each synced GitHub mount doc gets its own read-only mount at `/.mounts/<name>`, backed by the
 	// commit-keyed tree `/<name>/<commitSha>/...` in the reserved `GLOBAL`/`GITHUB` scope. Only
@@ -1122,7 +1168,7 @@ async function bash_fs_create(args: {
 	const fs = new MountableFs({
 		base: new ReadOnlyBaseFs(),
 		mounts: [
-			{ mountPoint: currentWorkspacePath, filesystem: appDbFilesFs },
+			...appFileSystems.map((filesystem) => ({ mountPoint: filesystem.currentWorkspacePath, filesystem })),
 			...Array.from(externalMounts.values(), (mount) => ({
 				mountPoint: mount.fs.currentWorkspacePath,
 				filesystem: mount.fs,
@@ -1141,6 +1187,9 @@ async function bash_fs_create(args: {
 			currentWorkspacePath,
 			fs: appDbFilesFs,
 		},
+		personal: personalDbFilesFs
+			? { currentWorkspacePath: personalDbFilesFs.currentWorkspacePath, fs: personalDbFilesFs }
+			: null,
 		externalMounts: {
 			currentWorkspacePath: bash_EXTERNAL_MOUNTS_ROOT,
 			mounts: externalMounts,
@@ -1152,18 +1201,28 @@ async function bash_fs_create(args: {
 	};
 
 	const get_directory_path = async (target: files_PendingTarget) => {
-		const directory = await args.ctx.runQuery(internal.files_visible.internal_get_directory_path, {
-			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
-			userId: args.userId,
-			target,
-		});
-		return directory ? bash_db_files_path_to_current_workspace_path(currentWorkspacePath, directory.path) : null;
+		// Node IDs are unique. Each scoped read still checks the folder's workspace and access.
+		for (const filesystem of appFileSystems) {
+			const directory = await args.ctx.runQuery(internal.files_visible.internal_get_directory_path, {
+				agentSource,
+				organizationId: filesystem.ctxData.organizationId as Id<"organizations">,
+				workspaceId: filesystem.ctxData.workspaceId as Id<"organizations_workspaces">,
+				userId: args.userId,
+				target,
+			});
+			if (directory)
+				return bash_db_files_path_to_current_workspace_path(filesystem.currentWorkspacePath, directory.path);
+		}
+		return null;
 	};
 	const get_cwd_target = async (path: string) => {
-		const dbFilesPath = bash_current_workspace_path_to_db_files_path(currentWorkspacePath, bash_normalize_path(path));
+		const filesystem = appFileSystems.find(
+			(filesystem) => bash_current_workspace_path_to_db_files_path(filesystem.currentWorkspacePath, path) !== null,
+		);
+		if (!filesystem) return null;
+		const dbFilesPath = bash_current_workspace_path_to_db_files_path(filesystem.currentWorkspacePath, path);
 		if (dbFilesPath === null || dbFilesPath === "/") return null;
-		const entry = await appDbFilesFs.getEntry(dbFilesPath, false);
+		const entry = await filesystem.getEntry(dbFilesPath, false);
 		return entry?.kind === "folder" && entry.target?.kind !== "root" ? (entry?.target ?? null) : null;
 	};
 
@@ -1238,6 +1297,7 @@ async function bash_fs_create(args: {
 		onExecEnd: args.onExecEnd,
 		onOutput: args.onOutput,
 		onStatementBoundary: args.onStatementBoundary,
+		onPlainCommand: args.onPlainCommand ? (boundary) => args.onPlainCommand!(boundary, dbFilesRoots) : undefined,
 		executionLimitsOverride: args.executionLimitsOverride,
 	});
 
@@ -1264,13 +1324,25 @@ async function bash_fs_create(args: {
 			tmpFs.dirty = false;
 		},
 		tmp_dirty_roots: () => tmpFs.dirtyRoots,
-		path_index_truncated: () => appDbFilesFs.pathIndexTruncated,
+		path_index_truncated: () => appFileSystems.some((filesystem) => filesystem.pathIndexTruncated),
 		clear_observed_paths: () => {
-			appDbFilesFs.observedPaths.clear();
-			appDbFilesFs.observedPathsTruncated = false;
+			for (const filesystem of appFileSystems) {
+				filesystem.observedPaths.clear();
+				filesystem.observedPathsTruncated = false;
+			}
 		},
-		observed_paths: appDbFilesFs.observedPaths,
-		observed_paths_truncated: () => appDbFilesFs.observedPathsTruncated,
+		observed_paths: () =>
+			appFileSystems
+				.flatMap((filesystem) =>
+					[...filesystem.observedPaths].map((path) => ({
+						workspace: filesystem === appDbFilesFs ? ("current" as const) : ("personal" as const),
+						path,
+					})),
+				)
+				.slice(0, bash_OBSERVED_PATHS_MAX),
+		observed_paths_truncated: () =>
+			appFileSystems.some((filesystem) => filesystem.observedPathsTruncated) ||
+			appFileSystems.reduce((total, filesystem) => total + filesystem.observedPaths.size, 0) > bash_OBSERVED_PATHS_MAX,
 		truncate_output,
 		format_output: format_bash_output,
 	};
@@ -1306,11 +1378,11 @@ function bash_shell_create(
 		 * A job worker's pause hook, asked before each top-level statement. A chat call has none.
 		 */
 		onStatementBoundary?: NonNullable<ExecOptions["onStatementBoundary"]>;
+		onPlainCommand?: PlainCommandHook;
 	},
 ) {
 	const { fs, cwd, dbFilesRoots } = args;
 	const cwdToken = args.cwdToken ?? {};
-	const currentWorkspacePath = dbFilesRoots.app.currentWorkspacePath;
 	// App commands answer a usage mistake on stderr, usually with a `Try:` line naming the command
 	// that works. That answer is tool guidance, not program output, but `2>/dev/null` deletes it and
 	// a pipe replaces the non-zero exit with the last stage's 0 — leaving an empty stdout and exit 0
@@ -1352,7 +1424,7 @@ function bash_shell_create(
 			bash_head_tail_wc_command_create(ctx, dbFilesRoots, "tail"),
 			bash_head_tail_wc_command_create(ctx, dbFilesRoots, "wc"),
 			bash_stat_command_create(ctx, dbFilesRoots),
-			...stream_utility_command_create_all(currentWorkspacePath),
+			...stream_utility_command_create_all(dbFilesRoots),
 			bash_sed_command_create(ctx, dbFilesRoots),
 			// Guarded mutators.
 			bash_touch_command_create(dbFilesRoots),
@@ -1373,13 +1445,13 @@ function bash_shell_create(
 					]
 				: []),
 			// Nested execution.
-			bash_nested_shell_command_create("bash", dbFilesRoots.app),
-			bash_nested_shell_command_create("sh", dbFilesRoots.app),
+			bash_nested_shell_command_create("bash", dbFilesRoots),
+			bash_nested_shell_command_create("sh", dbFilesRoots),
 			// xargs/which.
-			bash_xargs_command_create(dbFilesRoots.app),
+			bash_xargs_command_create(dbFilesRoots),
 			bash_which_command_create(),
 			// Native /tmp wrappers.
-			...native_just_bash_tmp_command_create_all(currentWorkspacePath),
+			...native_just_bash_tmp_command_create_all(dbFilesRoots),
 		].map(record_app_command_diagnostics),
 		executionLimits: {
 			maxCommandCount: args.executionLimitsOverride?.maxCommandCount ?? 200,
@@ -1397,10 +1469,36 @@ function bash_shell_create(
 	});
 
 	return {
+		run_job_command: async (
+			command: string,
+			resume?: { continuation: PlainCommandContinuation; result: { stdout: string; stderr: string; exitCode: number } },
+		): Promise<BashRunOutcome> => {
+			if (await bash_command_loads_disallowed_shell_code(command, { cwd, fs, dbFilesRoots }))
+				return {
+					stdout: "",
+					stderr: bash_disallowed_shell_code_error(),
+					exitCode: bash_COMMAND_EXIT_CANNOT_EXECUTE,
+					cwd: { path: cwd, token: cwdToken },
+					env: { PWD: cwd },
+				};
+			const options = {
+				cwdToken,
+				onCwdChange: args.rememberCwd,
+				signal: args.transferContext?.signal,
+				restoreState: args.restoreState,
+				onExecEnd: args.onExecEnd,
+				onBackground: args.onBackground,
+				onStatementBoundary: args.onStatementBoundary,
+				onPlainCommand: args.onPlainCommand ?? (() => "run" as const),
+			};
+			return resume
+				? await bash.resumePlainCommand(resume.continuation, resume.result, options)
+				: await bash.exec(command, options);
+		},
 		run_command: async (command: string) => {
 			// Block app and read-only mount files before Just Bash can load their
 			// contents as shell code through direct or nested commands.
-			if (await bash_command_loads_disallowed_shell_code(command, { cwd, fs, appRoot: dbFilesRoots.app })) {
+			if (await bash_command_loads_disallowed_shell_code(command, { cwd, fs, dbFilesRoots })) {
 				return {
 					stdout: "",
 					stderr: bash_disallowed_shell_code_error(),
@@ -1486,6 +1584,7 @@ export async function bash_run_plugin_review_command(
 		dbFilesRoots: {
 			// Unscoped search/meta from /tmp uses this root, so it must stay inside this review.
 			app: { currentWorkspacePath, fs: sourceFs },
+			personal: null,
 			externalMounts: { currentWorkspacePath: bash_EXTERNAL_MOUNTS_ROOT, mounts: new Map() },
 			plugins: {
 				currentWorkspacePath: bash_PLUGINS_MOUNT_ROOT,
@@ -1541,6 +1640,8 @@ export async function bash_run_command(
 		workspaceName: string;
 		userId: Id<"users">;
 		threadId: Id<"ai_chat_threads">;
+		membershipId: Id<"organizations_workspaces_users">;
+		membershipLifetime: number;
 		toolCallId: string;
 		command: string;
 		allowDbFilesMkdir: boolean;
@@ -1566,6 +1667,8 @@ export async function bash_run_command(
 		workspaceId: args.workspaceId,
 		userId: args.userId,
 		threadId: args.threadId,
+		membershipId: args.membershipId,
+		membershipLifetime: args.membershipLifetime,
 		toolCallId: args.toolCallId,
 		commandHash,
 	};
@@ -1672,6 +1775,8 @@ export async function bash_run_command(
 			workspaceName: args.workspaceName,
 			userId: args.userId,
 			threadId: args.threadId,
+			membershipId: args.membershipId,
+			membershipLifetime: args.membershipLifetime,
 			persistedCwd: invocation.shell.cwd,
 			persistedCwdTarget: invocation.shell.cwdTarget,
 			allowDbFilesMkdir: args.allowDbFilesMkdir,
@@ -1834,12 +1939,13 @@ async function run_command_and_diagnose(args: {
 	command: string;
 	abort: AbortController;
 	threadId: Id<"ai_chat_threads">;
+	result?: BashExecResult & { cwd: { path: string; token: object } };
 }) {
 	const { bashFs, command, abort } = args;
 
 	// Scope follows shell operations, not the cwd checks before and after them.
-	bashFs.clear_observed_paths();
-	const result = await bashFs.run_command(command);
+	if (!args.result) bashFs.clear_observed_paths();
+	const result = args.result ?? (await bashFs.run_command(command));
 	// The abort reason decides 124 or 143, never the engine's exit code: an aborted last statement
 	// can return 0. Only a job Stop aborts with the stop reason.
 	if (abort.signal.aborted) {
@@ -1847,7 +1953,7 @@ async function run_command_and_diagnose(args: {
 			abort.signal.reason === bash_ABORT_REASON_STOPPED ? bash_COMMAND_EXIT_STOPPED : bash_COMMAND_EXIT_TIMED_OUT;
 		result.stderr += `bash: ${typeof abort.signal.reason === "string" ? abort.signal.reason : "execution deadline reached"}. Remaining commands were stopped.\n`;
 	}
-	const observedPaths = [...bashFs.observed_paths];
+	const observedPaths = bashFs.observed_paths();
 	const observedPathsTruncated = bashFs.observed_paths_truncated();
 
 	// The engine returns its real directory. Shell variables cannot change this selection.
@@ -1925,7 +2031,7 @@ function bash_response(args: {
 	command: string;
 	result: { stdout: string; stderr: string; exitCode: number };
 	nextCwd: string;
-	observedPaths: string[];
+	observedPaths: { workspace: "current" | "personal"; path: string }[];
 	observedPathsTruncated: boolean;
 	/**
 	 * The jobs `wait` stopped polling for because their finish wakes the agent. Only a chat call
@@ -1971,31 +2077,163 @@ function bash_response(args: {
 }
 
 /**
- * The background job worker, run by the jobs workpool. Claim the row, rebuild the file system
- * the launching call had (its cwd, its state, a private `/tmp` copy, the same mounts), run the
- * script through the same runner, and store the result. Stops, the deadline and a lost
- * permission reach the script through the worker's own abort signal. The pool's `onComplete`
- * settles a worker that throws; the watchdog settles a dead one.
- *
- * The script runs one top-level statement at a time. Before a bare `sleep` of 5 seconds or more,
- * and before any statement once the run budget is nearly used, the worker pauses the job instead:
- * `pause_bash_job` stores the remaining statements, the state snapshot and the cwd, and the next
- * run of the same row continues from there. So a script of several statements is not bound by
- * the 8-minute budget; one statement still is. The whole job is bound by 24 hours from its `&`,
- * counting the waits between its runs, because every pause arms a fresh budget.
+ * Upload saved input in bounded steps. Lost replies read or retry the same intent;
+ * they never repeat shell expansion or select sources again.
+ * Returns a final refusal as the failed `cp` result, or null to wait or continue later.
+ */
+async function bash_job_admit_copy(ctx: ActionCtx, row: Doc<"ai_chat_bash_invocations">) {
+	const checkpoint = row.job?.copy;
+	const workId = row.job?.workId;
+	if (!checkpoint || checkpoint.phase !== "admitting" || !checkpoint.sealed || !workId) return null;
+	const fence = { invocationId: row._id, workId, commandNumber: checkpoint.commandNumber };
+	const refusal = (refused: { name?: string; message: string }) =>
+		// An old worker stops here. The newer worker owns the checkpoint.
+		refused.name === "stale_job"
+			? null
+			: {
+					stdout: "",
+					stderr: `cp: ${refused.message}\n`,
+					exitCode: refused.name === "timed_out" ? bash_COMMAND_EXIT_TIMED_OUT : 1,
+				};
+	let runId = checkpoint.runId;
+	if (!runId) {
+		// Check for a busy lane with this query first. It does not charge the Files write rate limit.
+		// Start charges that limit even when the lane is busy.
+		const current = await ctx.runQuery(internal.files_transfer.get_current_activity_for_agent, {
+			membershipId: row.membershipId,
+			threadId: row.threadId,
+		});
+		if (current?.status === "awaiting_input")
+			return refusal({
+				message: `a transfer in this workspace is waiting for input (activity ${current.activityId})`,
+			});
+		if (current) return null;
+		const first = await ctx.runQuery(internal.ai_chat_files.read_bash_job_copy_page, { ...fence, page: 0 });
+		if (!first) throw new Error("Copy input is no longer available.");
+		const started = await ctx
+			.runMutation(internal.files_transfer.start_for_agent, {
+				membershipId: row.membershipId,
+				threadId: row.threadId,
+				invocation: { id: row._id, commandNumber: checkpoint.commandNumber, workId },
+				requestId: `${row._id}:${checkpoint.commandNumber}`,
+				kind: "copy",
+				sourceWorkspace: checkpoint.sourceWorkspace,
+				destinationWorkspace: checkpoint.destinationWorkspace,
+				expectedSourceCount: checkpoint.expectedSourceCount,
+				sources: first.sources,
+				targetParent: checkpoint.targetParent,
+				targetPath: checkpoint.targetPath,
+				targetName: checkpoint.targetName,
+				missingParentNames: checkpoint.missingParentNames,
+				conflictPolicy: checkpoint.conflictPolicy,
+			})
+			.catch(async (error: unknown) => {
+				const saved = await ctx.runQuery(internal.ai_chat_files.read_bash_job_copy_invocation, {
+					invocationId: row._id,
+					workId,
+				});
+				const linked = saved?.job?.copy?.runId;
+				if (!linked) throw error;
+				return { _yay: { runId: linked } };
+			});
+		if ("_nay" in started && started._nay) return started._nay.name === "busy" ? null : refusal(started._nay);
+		runId = started._yay!.runId;
+	}
+	const scope = { membershipId: row.membershipId, threadId: row.threadId, runId };
+	const view = await ctx.runQuery(internal.files_transfer.get_for_agent, scope);
+	if (!view?.selection) throw new Error("Copy admission is no longer available.");
+	let offset = view.selection.count;
+	// Each action does bounded admission work; total selection size has no cap.
+	for (
+		let page = 0;
+		offset < checkpoint.expectedSourceCount &&
+		page < BASH_JOB_COPY_ADMIT_MAX_PAGES &&
+		Date.now() < row.transferDeadlineAt - BASH_JOB_COPY_ADMIT_HEADROOM_MS;
+		page++
+	) {
+		const saved = await ctx.runQuery(internal.ai_chat_files.read_bash_job_copy_page, {
+			...fence,
+			page: Math.floor(offset / files_TRANSFER_SELECTION_PAGE_SIZE),
+		});
+		if (!saved) throw new Error("Copy input is no longer available.");
+		const append = () =>
+			ctx.runMutation(internal.files_transfer.append_sources_for_agent, {
+				...scope,
+				job: fence,
+				offset,
+				sources: saved.sources,
+			});
+		const appended = await append().catch(append);
+		if (appended._nay) return refusal(appended._nay);
+		offset += saved.sources.length;
+	}
+	if (offset === checkpoint.expectedSourceCount) {
+		const sealed = await ctx
+			.runMutation(internal.files_transfer.seal_for_agent, { ...scope, job: fence })
+			.catch(async (error: unknown) => {
+				const saved = await ctx.runQuery(internal.ai_chat_files.read_bash_job_copy_invocation, {
+					invocationId: row._id,
+					workId,
+				});
+				if (saved?.job?.copy?.phase !== "waiting") throw error;
+				return { _yay: null };
+			});
+		if ("_nay" in sealed && sealed._nay) return refusal(sealed._nay);
+	}
+	return null;
+}
+
+/**
+ * Run one worker slice. Plain Copy waits use saved input and result-only continuation.
+ * Other statements use the normal sleep pauses and bounded shell execution.
+ * Only verified Copy waiting is excluded from the normal 24-hour job lifetime.
  */
 export async function bash_run_job(
 	actionCtx: ActionCtx,
-	args: { invocationId: Id<"ai_chat_bash_invocations"> },
+	args: { invocationId: Id<"ai_chat_bash_invocations">; workerGeneration: number },
 ): Promise<null> {
 	const ctx = bash_well_formed_ctx(actionCtx);
 
 	const claimed = (await ctx.runMutation(internal.ai_chat_files.claim_bash_job, {
 		invocationId: args.invocationId,
+		workerGeneration: args.workerGeneration,
 	})) as ai_chat_files_claim_bash_job_Result;
 	// Stopped, settled or purged while queued: nothing to run.
 	if (!claimed) return null;
-	const { row, organizationName, workspaceName, shells } = claimed;
+	let row: Doc<"ai_chat_bash_invocations"> & { job: NonNullable<Doc<"ai_chat_bash_invocations">["job"]> } = claimed.row;
+	const { organizationName, workspaceName, shells } = claimed;
+	if (row.job.copy?.phase === "admitting") {
+		const fence = { invocationId: row._id, workId: row.job.workId!, commandNumber: row.job.copy.commandNumber };
+		const result = await bash_job_admit_copy(ctx, row);
+		if (!result) {
+			await ctx.runMutation(internal.ai_chat_files.requeue_bash_job_copy, {
+				invocationId: fence.invocationId,
+				workId: fence.workId,
+			});
+			return null;
+		}
+		// Claim the refusal as this command's result before any later statement runs.
+		const refused = await ctx
+			.runMutation(internal.ai_chat_files.deliver_bash_job_copy_refusal, { ...fence, result })
+			.catch(() => ctx.runMutation(internal.ai_chat_files.deliver_bash_job_copy_refusal, { ...fence, result }));
+		// Null: the job ended or another worker owns it.
+		if (!refused?.job) return null;
+		row = { ...refused, job: refused.job };
+	}
+	if (row.job.copy?.phase === "waiting") {
+		const fence = { invocationId: row._id, workId: row.job.workId!, commandNumber: row.job.copy.commandNumber };
+		const delivered = await ctx
+			.runMutation(internal.ai_chat_files.take_bash_job_copy_result, fence)
+			.catch(() => ctx.runMutation(internal.ai_chat_files.take_bash_job_copy_result, fence));
+		if (!delivered?.job) {
+			await ctx.runMutation(internal.ai_chat_files.requeue_bash_job_copy, {
+				invocationId: row._id,
+				workId: fence.workId,
+			});
+			return null;
+		}
+		row = { ...delivered, job: delivered.job };
+	}
 	const job = row.job;
 	const shellName = shells.find((shell) => shell._id === job?.shellId)?.name;
 	if (!job || job.script === null || job.shellState === null || shellName === undefined || job.workId === null) {
@@ -2088,7 +2326,7 @@ export async function bash_run_job(
 		// A job past its total lifetime must not pause again. Abort here and let the statement
 		// through: the engine stops on the aborted signal, so the job ends as 124 like a job that
 		// ran out of its run budget.
-		if (Date.now() - row._creationTime >= BASH_JOB_LIFETIME_MS) {
+		if (Date.now() - row._creationTime - (job.excludedCopyWaitMs ?? 0) >= BASH_JOB_LIFETIME_MS) {
 			abort.abort(BASH_JOB_DEADLINE_ABORT_REASON);
 			return "run";
 		}
@@ -2132,6 +2370,7 @@ export async function bash_run_job(
 	// The hook pushes each started job number here, and `wait` with no arguments waits for them.
 	// A continuation starts from the numbers the earlier runs launched.
 	const launchedJobNumbers = [...(job.resumeLaunchedJobNumbers ?? [])];
+	let stageCopy: ((output: { stdout: string; stderr: string }) => Promise<void>) | undefined;
 	try {
 		// The same mount visibility as the launching call: without these queries `/.mounts` and
 		// `/.plugins` would be empty inside a job.
@@ -2151,6 +2390,8 @@ export async function bash_run_job(
 			workspaceName,
 			userId: row.userId,
 			threadId: row.threadId,
+			membershipId: row.membershipId,
+			membershipLifetime: row.membershipLifetime,
 			persistedCwd: job.startCwd,
 			persistedCwdTarget: job.startCwdTarget,
 			allowDbFilesMkdir: job.allowDbFilesMkdir,
@@ -2188,14 +2429,190 @@ export async function bash_run_job(
 			restoreState: job.shellState,
 			onOutput,
 			onStatementBoundary,
+			onPlainCommand: async ({ continuation }, roots) => {
+				if (continuation.command !== "cp") return "run";
+				const parsed = bash_parse_cp_mv_operands("cp", continuation.args);
+				if (
+					parsed._nay ||
+					parsed.operands.some(
+						(operand) =>
+							bash_GLOB_METACHARACTER_REGEX.test(operand) ||
+							bash_resolve_db_files_shell_path(bash_resolve_path(continuation.cwd, operand), roots).kind !== "app",
+					)
+				)
+					return "run";
+				const preparation = await bash_transfer_command_prepare({
+					ctx,
+					dbFilesRoots: roots,
+					command: "cp",
+					commandCtx: continuation,
+					parsed: parsed._yay,
+					transferContext: {
+						invocationId: row._id,
+						membershipId: row.membershipId,
+						deadlineAt: row.transferDeadlineAt,
+						signal: abort.signal,
+						abort: (reason) => abort.abort(reason),
+						nextCommandNumber: () => commandNumber++,
+						jobId: row._id,
+					},
+				});
+				if (!("prepared" in preparation)) return "run";
+				const input = preparation.prepared;
+				// Wait for the suspension outcome so expansion stderr is complete too.
+				stageCopy = async (output) => {
+					// Preparation accepts only app roots, never the reserved read-only scopes.
+					const scopes = await ctx.runMutation(internal.ai_chat_files.capture_bash_job_copy_scopes, {
+						invocationId: row._id,
+						workId,
+						sourceWorkspace: input.sourceWorkspace,
+						destinationWorkspace: input.destinationWorkspace,
+						source: {
+							organizationId: input.sourceRoot.ctxData.organizationId as Id<"organizations">,
+							workspaceId: input.sourceRoot.ctxData.workspaceId as Id<"organizations_workspaces">,
+						},
+						destination: {
+							organizationId: input.destinationRoot.ctxData.organizationId as Id<"organizations">,
+							workspaceId: input.destinationRoot.ctxData.workspaceId as Id<"organizations_workspaces">,
+						},
+					});
+					if (scopes._nay) throw new Error(scopes._nay.message);
+					const copyCommandNumber = commandNumber++;
+					const saveArgs = {
+						invocationId: row._id,
+						workId,
+						output,
+						checkpoint: {
+							phase: "admitting" as const,
+							commandNumber: copyCommandNumber,
+							lastArg: continuation.lastArg,
+							...scopes._yay,
+							sourceWorkspace: input.sourceWorkspace,
+							destinationWorkspace: input.destinationWorkspace,
+							targetParent: input.targetParent,
+							targetPath: input.targetPath,
+							targetName: input.targetName,
+							missingParentNames: input.missingParentNames,
+							conflictPolicy: { file: parsed._yay.conflictPolicy, folder: "merge" as const },
+							expectedArgCount: continuation.args.length,
+							expectedSourceCount: input.sources.length,
+						},
+						resume: {
+							script: continuation.scriptAfter,
+							commandNumber,
+							launchedJobNumbers: launchedJobNumbers.slice(-bash_JOB_NUMBERS_MAX_COUNT),
+							shellState: continuation.snapshot,
+							cwd: continuation.cwd,
+							cwdTarget: await bashFs.get_cwd_target(continuation.cwd),
+						},
+						liveOutput: liveOutput.stdout || liveOutput.stderr ? { ...liveOutput } : null,
+					};
+					const save = () => ctx.runMutation(internal.ai_chat_files.save_bash_job_copy_checkpoint, saveArgs);
+					const saved = await save().catch(save);
+					if (saved._nay) throw new Error(saved._nay.message);
+					let argOffset = 0;
+					for (
+						let page = 0;
+						page * files_TRANSFER_SELECTION_PAGE_SIZE < input.sources.length || argOffset < continuation.args.length;
+						page++
+					) {
+						const sources = input.sources.slice(
+							page * files_TRANSFER_SELECTION_PAGE_SIZE,
+							(page + 1) * files_TRANSFER_SELECTION_PAGE_SIZE,
+						);
+						const pageArgs: string[] = [];
+						while (pageArgs.length < files_TRANSFER_SELECTION_PAGE_SIZE && argOffset < continuation.args.length) {
+							const next = continuation.args[argOffset]!;
+							if (
+								new TextEncoder().encode(JSON.stringify({ args: [...pageArgs, next], sources })).byteLength >
+								bash_JOB_COPY_PAGE_MAX_BYTES
+							)
+								break;
+							pageArgs.push(next);
+							argOffset++;
+						}
+						if (!sources.length && !pageArgs.length)
+							throw new Error("One expanded Copy argument is larger than 64 KiB.");
+						const stage = () =>
+							ctx.runMutation(internal.ai_chat_files.stage_bash_job_copy_page, {
+								invocationId: row._id,
+								workId,
+								commandNumber: copyCommandNumber,
+								page,
+								args: pageArgs,
+								sources,
+							});
+						const staged = await stage().catch(stage);
+						if (staged._nay) throw new Error(staged._nay.message);
+					}
+					const seal = () =>
+						ctx.runMutation(internal.ai_chat_files.seal_bash_job_copy_checkpoint, {
+							invocationId: row._id,
+							workId,
+							commandNumber: copyCommandNumber,
+						});
+					const sealed = await seal().catch(seal);
+					if (sealed._nay) throw new Error(sealed._nay.message);
+				};
+				return "suspend";
+			},
 			executionLimitsOverride: { maxCommandCount: BASH_JOB_MAX_COMMAND_COUNT },
 		});
 
+		bashFs.clear_observed_paths();
+		const outcome = await bashFs.run_job_command(
+			script,
+			job.copy?.phase === "delivering"
+				? {
+						continuation: {
+							command: "cp",
+							args: [],
+							cwd: job.startCwd,
+							snapshot: job.shellState,
+							scriptAfter: script,
+							lastArg: job.copy.lastArg,
+						},
+						result: job.copy.result,
+					}
+				: undefined,
+		);
+		if ("kind" in outcome && outcome.kind === "host_suspended") {
+			if (!stageCopy) throw should_never_happen("Copy suspension has no prepared input");
+			// The next run starts with a fresh private `/tmp` copy, so a Copy suspension drops the
+			// job's `/tmp` writes like a pause does. Name them in the live head and the transcript.
+			const droppedTmpPaths = [...bashFs.tmp_dirty_roots()].sort();
+			const suspended = {
+				stdout: outcome.stdout,
+				stderr:
+					droppedTmpPaths.length > 0
+						? `${outcome.stderr}bash: /tmp writes are dropped when a job pauses for Copy: ${droppedTmpPaths.map((path) => `${bash_TMP_MOUNT}${path}`).join(", ")}\n`
+						: outcome.stderr,
+			};
+			for (const stream of ["stdout", "stderr"] as const) {
+				const full = (carried?.[stream] ?? "") + suspended[stream];
+				liveOutput[stream] = bash_text_head(full, bash_JOB_OUTPUT_READ_MAX_CHARS);
+				liveOutput[`${stream}Truncated`] =
+					Boolean(carried?.[`${stream}Truncated`]) || full.length > bash_JOB_OUTPUT_READ_MAX_CHARS;
+			}
+			await stageCopy(suspended);
+			const saved = await ctx.runQuery(internal.ai_chat_files.read_bash_job_copy_invocation, {
+				invocationId: row._id,
+				workId,
+			});
+			// A refusal here is left to the next worker, which gets it again and delivers it. This run
+			// already used its shell state, so it does not resume the script itself.
+			if (saved) await bash_job_admit_copy(ctx, saved);
+			await ctx.runMutation(internal.ai_chat_files.requeue_bash_job_copy, { invocationId: row._id, workId });
+			return null;
+		}
+		if (!("exitCode" in outcome)) throw should_never_happen("Unexpected Bash outcome");
+		if (!outcome.cwd) throw should_never_happen("Bash job result has no cwd");
 		const { result, observedPaths, observedPathsTruncated, nextCwd } = await run_command_and_diagnose({
 			bashFs,
 			command: script,
 			abort,
 			threadId: row.threadId,
+			result: { ...outcome, cwd: outcome.cwd },
 		});
 		// An abort in the moment between the pause decision and the end of the exec is a Stop or
 		// a timeout like any other: the job ends now.
@@ -2229,6 +2646,7 @@ export async function bash_run_job(
 
 			const paused = await ctx.runMutation(internal.ai_chat_files.pause_bash_job, {
 				invocationId: row._id,
+				workId,
 				resume: {
 					script: pause.script,
 					commandNumber,
@@ -2273,7 +2691,7 @@ export async function bash_run_job(
 			observedPaths,
 			observedPathsTruncated,
 		});
-		await ctx.runMutation(internal.ai_chat_files.finish_bash_job, { invocationId: row._id, result: response });
+		await ctx.runMutation(internal.ai_chat_files.finish_bash_job, { invocationId: row._id, workId, result: response });
 		console.debug("Bash job completed", {
 			threadId: row.threadId,
 			shellName,

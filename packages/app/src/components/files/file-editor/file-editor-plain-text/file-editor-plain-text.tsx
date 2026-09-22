@@ -339,6 +339,8 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 		initialData.kind === "collaborative" ? initialData.yjsLastSequenceId : null,
 	);
 	const baselineMarkdownRef = useRef<string>(initialData.text);
+	// Only this editor's successful upsert can advance the revision used by retries.
+	const reviewedRevisionRef = useRef(initialData.kind === "private" ? initialData.pendingUpdate.revision : 0);
 
 	const [commentThreadIds, setCommentThreadIds] = useState<string[]>([]);
 	const commentThreadIdsKeyRef = useRef<string>("");
@@ -631,8 +633,11 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 					membershipId,
 					target,
 					pendingUpdateId: initialData.pendingUpdate._id,
-					reviewedRevision: initialData.pendingUpdate.revision,
+					reviewedRevision: reviewedRevisionRef.current,
 					text: localMarkdown,
+					onUpserted: (revision) => {
+						reviewedRevisionRef.current = revision;
+					},
 				});
 				if (saved._nay) {
 					toast.error(saved._nay.message);

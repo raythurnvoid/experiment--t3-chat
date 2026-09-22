@@ -20,9 +20,11 @@ import { files_pending_updates_db_commit_private_file } from "./files_pending_up
 import { files_private_storage_db_reserve } from "./files_private_storage.ts";
 import { files_visible_db_create_reader } from "./files_visible.ts";
 import app_convex_schema, {
+	ai_chat_workspaces_source_validator,
 	files_pending_target_validator,
 	files_pending_updates_state_family_validator,
 } from "./schema.ts";
+import { ai_chat_workspaces_db_authorize_file_scope } from "./ai_chat_workspaces.ts";
 import { r2, r2_create_asset_key, r2_enqueue_object_deletion_job, r2_PUT_MAY_ARRIVE_MARGIN_MS } from "./r2_client.ts";
 
 const MAX_FILE_BYTES = 8 * 1024 * 1024;
@@ -31,6 +33,7 @@ const RECEIPT_TTL_MS = 24 * 60 * 60 * 1000;
 const CLEANUP_BATCH_SIZE = 8;
 
 export const files_ingestion_scope_validator = v.object({
+	agentSource: v.optional(ai_chat_workspaces_source_validator),
 	membershipId: v.id("organizations_workspaces_users"),
 	userId: v.id("users"),
 	organizationId: v.id("organizations"),
@@ -85,6 +88,10 @@ export const files_ingestion_finalize_args_validator = v.object({
 });
 
 async function authorize_scope(ctx: QueryCtx | MutationCtx, args: Infer<typeof files_ingestion_scope_validator>) {
+	if (args.agentSource) {
+		const source = await ai_chat_workspaces_db_authorize_file_scope(ctx, { ...args, agentSource: args.agentSource });
+		if (source._nay) return source;
+	}
 	const user = await ctx.db.get("users", args.userId);
 	if (!user || user.deletedAt !== undefined) return Result({ _nay: { message: "Unauthenticated" } });
 	const membership = await organizations_db_get_membership(ctx, args);
@@ -297,6 +304,13 @@ export async function files_ingestion_db_prepare_file(
 		)
 		.first();
 	if (existing) {
+		if (existing.agentSource) {
+			const source = await ai_chat_workspaces_db_authorize_file_scope(ctx, {
+				...existing,
+				agentSource: existing.agentSource,
+			});
+			if (source._nay) return source;
+		}
 		if (
 			existing.path !== args.path ||
 			existing.contentType !== args.contentType ||
@@ -392,6 +406,7 @@ export async function files_ingestion_db_prepare_file(
 	}
 
 	const receiptId = await ctx.db.insert("files_ingestion_receipts", {
+		...(args.agentSource ? { agentSource: args.agentSource } : {}),
 		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
 		userId: args.userId,
@@ -440,6 +455,13 @@ export const get_text_preparation = internalQuery({
 		)
 			return Result({ _nay: { message: "File preparation unavailable" } });
 		const batch = await ctx.db.get("files_pending_update_operation_batches", receipt.state.prepared.operationBatchId);
+		if (receipt.agentSource) {
+			const source = await ai_chat_workspaces_db_authorize_file_scope(ctx, {
+				...receipt,
+				agentSource: receipt.agentSource,
+			});
+			if (source._nay) return source;
+		}
 		if (!batch || batch.expiresAt <= Date.now()) return Result({ _nay: { message: "File preparation unavailable" } });
 		return Result({ _yay: { operationBatchId: batch._id } });
 	},
@@ -476,6 +498,13 @@ export async function files_ingestion_db_finalize_file(
 		return Result({ _nay: { message: "File unavailable" } });
 
 	if (receipt.expiresAt <= Date.now()) return Result({ _nay: { message: "This file request has expired" } });
+	if (receipt.agentSource) {
+		const source = await ai_chat_workspaces_db_authorize_file_scope(ctx, {
+			...receipt,
+			agentSource: receipt.agentSource,
+		});
+		if (source._nay) return source;
+	}
 	if (receipt.state.kind === "completed") return read_completed_file(ctx, receipt);
 	if (receipt.state.kind === "aborted") return Result({ _nay: { message: "This file request was aborted" } });
 	if (receipt.state.attemptId !== args.attemptId)

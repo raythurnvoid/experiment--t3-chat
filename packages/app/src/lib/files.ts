@@ -608,6 +608,7 @@ export async function files_upsert_file_pending_update(args: {
 
 /**
  * Ordinary private editors accept their whole text. Diff keeps its separate staged branch.
+ * Report our upsert's revision before Save, so a refused Save can retry that exact draft.
  */
 export async function files_save_private_file_pending_text(args: {
 	membershipId: app_convex_Id<"organizations_workspaces_users">;
@@ -615,6 +616,7 @@ export async function files_save_private_file_pending_text(args: {
 	pendingUpdateId: app_convex_Id<"files_pending_updates">;
 	reviewedRevision: number;
 	text: string;
+	onUpserted: (revision: number) => void;
 }) {
 	const upserted = await files_upsert_file_pending_update({
 		membershipId: args.membershipId,
@@ -629,6 +631,7 @@ export async function files_save_private_file_pending_text(args: {
 	if (!files_pending_update_has_content(pendingUpdate)) {
 		return Result({ _nay: { message: "The proposed changes changed. Reopen the file and try again." } });
 	}
+	args.onUpserted(pendingUpdate.revision);
 	return await app_convex.action(app_convex_api.files_pending_updates.save_file_pending_update, {
 		membershipId: args.membershipId,
 		target: args.target,

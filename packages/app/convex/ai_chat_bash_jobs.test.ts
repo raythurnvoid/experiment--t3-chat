@@ -4,8 +4,9 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, components, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
-import { activities_db_start } from "./activities_db.ts";
+import { activities_db_get_by_source_id, activities_db_start } from "./activities_db.ts";
 import { ai_chat_files_db_append_shell_transcript, ai_chat_files_db_delete_job_batch } from "./ai_chat_files.ts";
+import * as ai_chat_files from "./ai_chat_files.ts";
 import { bash_JOB_NUMBERS_MAX_COUNT } from "../server/bash-utils.ts";
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
 
@@ -17,6 +18,7 @@ afterEach(() => {
 
 const PLACEHOLDER_MS = 10 * 60 * 1000;
 const RUN_MS = 8 * 60 * 1000;
+const COPY_ADMISSION_MS = 10 * 60 * 1000;
 
 // The pool item never runs here: the fake timers never fire it. It only gives a real work id.
 const pool = new Workpool(components.ai_chat_bash_jobs_workpool, { retryActionsByDefault: false });
@@ -68,8 +70,15 @@ async function fixture() {
 		userId: db.userId,
 		threadId: thread._yay.threadId,
 	};
+	const captured = await t.mutation(internal.ai_chat_workspaces.capture, {
+		userId: db.userId,
+		membershipId: db.membershipId,
+	});
+	if (captured._nay) throw new Error(captured._nay.message);
 	const begun = await t.mutation(internal.ai_chat_files.begin_bash_invocation, {
 		...scope,
+		membershipId: db.membershipId,
+		membershipLifetime: captured._yay.membershipLifetime,
 		toolCallId: "parent-call",
 		commandHash: "a".repeat(64),
 		shellName: "default",
@@ -111,6 +120,7 @@ async function fixture() {
 					startCwdTarget: null,
 					shellState: null,
 					allowDbFilesMkdir: args.allowDbFilesMkdir ?? false,
+					workerGeneration: 0,
 					workId:
 						args.workId === undefined
 							? await pool.enqueueMutation(ctx, internal.ai_chat_files.cleanup_expired_bash_results, {})
@@ -380,6 +390,8 @@ describe("start_bash_job", () => {
 		if (otherThread._nay) throw new Error(otherThread._nay.message);
 		const otherShell = await f.t.mutation(internal.ai_chat_files.begin_bash_invocation, {
 			...f.scope,
+			membershipId: f.parent.membershipId,
+			membershipLifetime: f.parent.membershipLifetime,
 			threadId: otherThread._yay.threadId,
 			toolCallId: "other-call",
 			commandHash: "c".repeat(64),
@@ -399,10 +411,13 @@ describe("begin_bash_invocation", () => {
 		const job = await f.seed_job({ jobNumber: 1, status: "running" });
 		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 			invocationId: job.invocationId,
+			workId: job.workId!,
 			result: job_result(0),
 		});
 		const begun = await f.t.mutation(internal.ai_chat_files.begin_bash_invocation, {
 			...f.scope,
+			membershipId: f.parent.membershipId,
+			membershipLifetime: f.parent.membershipLifetime,
 			toolCallId: "no-notes",
 			commandHash: "d".repeat(64),
 			shellName: "default",
@@ -414,13 +429,912 @@ describe("begin_bash_invocation", () => {
 	});
 });
 
+describe("durable Copy admission helpers", () => {
+	async function admission() {
+		const f = await fixture();
+		const job = await f.seed_job({ jobNumber: 1, status: "running", allowDbFilesMkdir: true });
+		const created = await f.t.mutation(internal.files_nodes.create_folder_node_by_path, {
+			organizationId: f.db.organizationId,
+			workspaceId: f.db.workspaceId,
+			userId: f.db.userId,
+			path: "/source",
+		});
+		if (created._nay) throw new Error(created._nay.message);
+		const source = { kind: "saved" as const, id: created._yay.nodeId };
+		const started = await f.t.mutation(internal.files_transfer.start_for_agent, {
+			membershipId: f.db.membershipId,
+			threadId: f.scope.threadId,
+			requestId: "copy-helper-test",
+			sourceWorkspace: "current",
+			destinationWorkspace: "current",
+			kind: "copy",
+			expectedSourceCount: 201,
+			sources: Array.from({ length: 100 }, () => source),
+			targetParent: { kind: "root" },
+			targetPath: "/",
+			targetName: null,
+			missingParentNames: [],
+			conflictPolicy: { file: "error", folder: "merge" },
+		});
+		if (started._nay) throw new Error(started._nay.message);
+		const scope = {
+			organizationId: f.db.organizationId,
+			workspaceId: f.db.workspaceId,
+			membershipId: f.db.membershipId,
+			membershipLifetime: f.parent.membershipLifetime,
+		};
+		// What the worker sends to `save_bash_job_copy_checkpoint`. The door sets the other fields.
+		const intent = {
+			phase: "admitting" as const,
+			commandNumber: 3,
+			lastArg: "destination",
+			sourceScope: scope,
+			destinationScope: scope,
+			sourceWorkspace: "current" as const,
+			destinationWorkspace: "current" as const,
+			targetParent: { kind: "root" as const },
+			targetPath: "/",
+			targetName: null,
+			missingParentNames: [],
+			conflictPolicy: { file: "error" as const, folder: "merge" as const },
+			expectedArgCount: 202,
+			expectedSourceCount: 201,
+		};
+		const checkpoint = {
+			...intent,
+			pageCount: 3,
+			argsCount: 202,
+			sourcesCount: 201,
+			sealed: true,
+			admissionDeadlineAt: Date.now() + PLACEHOLDER_MS,
+			runId: null,
+		};
+		await f.t.run(async (ctx) => {
+			const row = await ctx.db.get("ai_chat_bash_invocations", job.invocationId);
+			await ctx.db.patch("ai_chat_bash_invocations", job.invocationId, {
+				job: {
+					...row!.job!,
+					shellState: empty_shell_state,
+					resumeScript: "echo after",
+					resumeCommandNumber: 4,
+					resumeLaunchedJobNumbers: [],
+					copy: checkpoint,
+				},
+			});
+			for (let page = 0; page < 3; page++)
+				await ctx.db.insert("ai_chat_bash_job_copy_pages", {
+					invocationId: job.invocationId,
+					commandNumber: 3,
+					page,
+					args: Array.from({ length: page === 2 ? 2 : 100 }, () => "source"),
+					sources: Array.from({ length: page === 2 ? 1 : 100 }, () => source),
+				});
+		});
+		return {
+			...f,
+			job,
+			intent,
+			checkpoint,
+			source,
+			runId: started._yay.runId,
+			fence: { invocationId: job.invocationId, commandNumber: 3, workId: job.workId! },
+		};
+	}
+
+	test("scope capture uses real root IDs and refuses stale workers or changed selectors", async () => {
+		const f = await admission();
+		const personal = await f.t.query(internal.ai_chat_workspaces.resolve, {
+			source: { ...f.scope, membershipId: f.parent.membershipId, membershipLifetime: f.parent.membershipLifetime },
+			workspace: "personal",
+		});
+		if (personal._nay) throw new Error(personal._nay.message);
+		const args = {
+			invocationId: f.job.invocationId,
+			workId: f.fence.workId,
+			sourceWorkspace: "current" as const,
+			destinationWorkspace: "personal" as const,
+			source: { organizationId: f.db.organizationId, workspaceId: f.db.workspaceId },
+			destination: { organizationId: personal._yay.organizationId, workspaceId: personal._yay.workspaceId },
+		};
+		expect(await f.t.mutation(internal.ai_chat_files.capture_bash_job_copy_scopes, args)).toEqual({
+			_yay: {
+				sourceScope: f.checkpoint.sourceScope,
+				destinationScope: { ...args.destination, membershipId: personal._yay.membershipId, membershipLifetime: 1 },
+			},
+		});
+		expect(
+			await f.t.mutation(internal.ai_chat_files.capture_bash_job_copy_scopes, {
+				...args,
+				workId: "old-worker" as WorkId,
+			}),
+		).toHaveProperty("_nay");
+		expect(
+			await f.t.mutation(internal.ai_chat_files.capture_bash_job_copy_scopes, {
+				...args,
+				destination: args.source,
+			}),
+		).toHaveProperty("_nay");
+	});
+
+	test.each([true, false])("a crashed worker requeues only sealed Copy input (sealed=%s)", async (sealed) => {
+		const f = await admission();
+		if (!sealed)
+			await f.t.run(async (ctx) => {
+				const row = await ctx.db.get("ai_chat_bash_invocations", f.job.invocationId);
+				await ctx.db.patch("ai_chat_bash_invocations", f.job.invocationId, {
+					job: { ...row!.job!, copy: { ...f.checkpoint, sealed: false } },
+				});
+			});
+		await f.t.mutation(internal.ai_chat_files.handle_bash_job_complete, {
+			workId: f.fence.workId,
+			context: { invocationId: f.job.invocationId },
+			result: { kind: "failed", error: "worker lost" },
+		});
+		const after = await f.read(f.job.invocationId);
+		if (sealed) {
+			expect(after.row?.status).toBe("running");
+			expect(after.row?.job?.copy).toEqual(f.checkpoint);
+			expect(after.row?.job?.workerGeneration).toBe(1);
+			expect(after.row?.job?.workId).not.toBe(f.fence.workId);
+			expect(after.row?.wakeNotifiedAt).toBeUndefined();
+			expect(after.transcript).toHaveLength(1);
+		} else {
+			expect(after.row?.status).toBe("interrupted");
+			expect(after.row?.job?.copy).toBeUndefined();
+			expect(after.activity?.status).toBe("failed");
+		}
+	});
+
+	test("exports the atomic admission checks and writes", () => {
+		for (const name of [
+			"ai_chat_files_db_check_copy_admission",
+			"ai_chat_files_db_check_copy_sources",
+			"ai_chat_files_db_link_copy_admission",
+			"ai_chat_files_db_seal_copy_admission",
+		] as const)
+			expect(typeof ai_chat_files[name]).toBe("function");
+	});
+
+	test("returns the fenced invocation and sealed checkpoint without writing", async () => {
+		const f = await admission();
+		const before = await f.read(f.job.invocationId);
+		const checked = await f.t.run((ctx) => ai_chat_files.ai_chat_files_db_check_copy_admission(ctx, f.fence));
+		expect(checked).toMatchObject({ _yay: { invocation: { _id: f.job.invocationId }, checkpoint: f.checkpoint } });
+		expect(await f.read(f.job.invocationId)).toEqual(before);
+	});
+
+	test("job deletion drains saved Copy input before deleting its owner", async () => {
+		const f = await admission();
+		const remove = () =>
+			f.t.run((ctx) =>
+				ai_chat_files_db_delete_job_batch(ctx, {
+					invocationId: f.job.invocationId,
+					batchSize: 2,
+				}),
+			);
+		expect(await remove()).toEqual({ done: false, deletedCount: 2 });
+		expect((await f.read(f.job.invocationId)).row).not.toBeNull();
+		expect(await f.t.run((ctx) => ctx.db.query("ai_chat_bash_job_copy_pages").collect())).toHaveLength(1);
+		expect(await remove()).toEqual({ done: true, deletedCount: 3 });
+		expect((await f.read(f.job.invocationId)).row).toBeNull();
+		expect(await f.t.run((ctx) => ctx.db.query("ai_chat_bash_job_copy_pages").collect())).toEqual([]);
+	});
+
+	test.each(["work", "command", "stop", "unsealed", "expired", "membership", "finished"])(
+		"refuses %s admission and leaves the checkpoint unchanged",
+		async (change) => {
+			const f = await admission();
+			const fence = { ...f.fence };
+			if (change === "work") fence.workId = "stale-work" as WorkId;
+			if (change === "command") fence.commandNumber++;
+			await f.t.run(async (ctx) => {
+				const row = await ctx.db.get("ai_chat_bash_invocations", f.job.invocationId);
+				if (change === "stop")
+					await ctx.db.patch("ai_chat_bash_invocations", row!._id, {
+						job: { ...row!.job!, stopRequestedAt: Date.now() },
+					});
+				if (change === "unsealed" || change === "expired")
+					await ctx.db.patch("ai_chat_bash_invocations", row!._id, {
+						job: {
+							...row!.job!,
+							copy: {
+								...f.checkpoint,
+								...(change === "unsealed" ? { sealed: false } : { admissionDeadlineAt: Date.now() }),
+							},
+						},
+					});
+				if (change === "membership")
+					await ctx.db.patch("organizations_workspaces_users", f.db.membershipId, { active: false });
+				if (change === "finished") await ctx.db.patch("activities", f.job.activityId, { status: "succeeded" });
+			});
+			const before = await f.read(f.job.invocationId);
+			expect(await f.t.run((ctx) => ai_chat_files.ai_chat_files_db_check_copy_admission(ctx, fence))).toHaveProperty(
+				"_nay",
+			);
+			expect(await f.read(f.job.invocationId)).toEqual(before);
+		},
+	);
+
+	test("matches exact ordered source slices across a page boundary and refuses gaps or changes", async () => {
+		const f = await admission();
+		const check = (offset: number, count: number) =>
+			f.t.run((ctx) =>
+				ai_chat_files.ai_chat_files_db_check_copy_sources(ctx, {
+					invocationId: f.job.invocationId,
+					commandNumber: 3,
+					offset,
+					sources: Array.from({ length: count }, () => f.source),
+				}),
+			);
+		expect(await check(0, 100)).toEqual({ _yay: null });
+		expect(await check(99, 100)).toEqual({ _yay: null });
+		expect(await check(200, 1)).toEqual({ _yay: null });
+		const other = await f.t.mutation(internal.files_nodes.create_folder_node_by_path, {
+			organizationId: f.db.organizationId,
+			workspaceId: f.db.workspaceId,
+			userId: f.db.userId,
+			path: "/other",
+		});
+		if (other._nay) throw new Error(other._nay.message);
+		expect(
+			await f.t.run((ctx) =>
+				ai_chat_files.ai_chat_files_db_check_copy_sources(ctx, {
+					invocationId: f.job.invocationId,
+					commandNumber: 3,
+					offset: 99,
+					sources: [f.source, { kind: "saved", id: other._yay.nodeId }],
+				}),
+			),
+		).toHaveProperty("_nay");
+		for (const [offset, count] of [
+			[201, 1],
+			[0, 101],
+			[-1, 1],
+			[0, 0],
+			[0.5, 1],
+		] as const)
+			expect(await check(offset, count)).toHaveProperty("_nay");
+		await f.t.run(async (ctx) => {
+			const page = await ctx.db
+				.query("ai_chat_bash_job_copy_pages")
+				.withIndex("by_invocation_command_page", (q) =>
+					q.eq("invocationId", f.job.invocationId).eq("commandNumber", 3).eq("page", 1),
+				)
+				.unique();
+			await ctx.db.delete("ai_chat_bash_job_copy_pages", page!._id);
+		});
+		expect(await check(99, 2)).toHaveProperty("_nay");
+	});
+
+	test("stale link and seal throw before changing the checkpoint or clocks", async () => {
+		const f = await admission();
+		const before = await f.read(f.job.invocationId);
+		const stale = { ...f.fence, workId: "stale-work" as WorkId, runId: f.runId };
+		await expect(f.t.run((ctx) => ai_chat_files.ai_chat_files_db_link_copy_admission(ctx, stale))).rejects.toThrow();
+		await expect(
+			f.t.run((ctx) =>
+				ai_chat_files.ai_chat_files_db_seal_copy_admission(ctx, {
+					...stale,
+					now: Date.now(),
+					deadlineAt: Date.now() + PLACEHOLDER_MS,
+				}),
+			),
+		).rejects.toThrow();
+		expect(await f.read(f.job.invocationId)).toEqual(before);
+	});
+
+	test("links once and seals once without resetting the wait clock or output", async () => {
+		const f = await admission();
+		const linked = { ...f.fence, runId: f.runId };
+		expect(await f.t.run((ctx) => ai_chat_files.ai_chat_files_db_link_copy_admission(ctx, linked))).toBeNull();
+		expect(await f.t.run((ctx) => ai_chat_files.ai_chat_files_db_link_copy_admission(ctx, linked))).toBeNull();
+		const now = Date.now();
+		const deadlineAt = now + 30 * 60_000;
+		expect(
+			await f.t.run((ctx) => ai_chat_files.ai_chat_files_db_seal_copy_admission(ctx, { ...linked, now, deadlineAt })),
+		).toBeNull();
+		const sealed = await f.read(f.job.invocationId);
+		expect(sealed.row?.job?.copy).toEqual({
+			phase: "waiting",
+			commandNumber: 3,
+			lastArg: "destination",
+			runId: f.runId,
+			waitStartedAt: now,
+		});
+		expect(sealed.row?.deadlineAt).toBe(deadlineAt);
+		expect(sealed.activity?.deadlineAt).toBe(deadlineAt);
+		expect(sealed.transcript).toHaveLength(1);
+		expect(sealed.row?.wakeNotifiedAt).toBeUndefined();
+		expect(await f.scheduled_state(f.job.watchdogId)).toBe("canceled");
+		vi.setSystemTime(now + 25 * 60 * 60_000);
+		expect(
+			await f.t.run((ctx) =>
+				ai_chat_files.ai_chat_files_db_seal_copy_admission(ctx, {
+					...linked,
+					now: Date.now(),
+					deadlineAt: Date.now() + 30 * 60_000,
+				}),
+			),
+		).toBeNull();
+		expect(await f.read(f.job.invocationId)).toEqual(sealed);
+	});
+
+	async function start_copy(f: Awaited<ReturnType<typeof admission>>) {
+		await f.t.mutation(internal.files_transfer.stop_for_agent, {
+			membershipId: f.db.membershipId,
+			threadId: f.scope.threadId,
+			runId: f.runId,
+			reason: "user",
+		});
+		const startArgs = {
+			membershipId: f.db.membershipId,
+			threadId: f.scope.threadId,
+			invocation: { id: f.fence.invocationId, commandNumber: f.fence.commandNumber, workId: f.fence.workId },
+			requestId: "durable-helper-integration",
+			kind: "copy" as const,
+			sourceWorkspace: f.checkpoint.sourceWorkspace,
+			destinationWorkspace: f.checkpoint.destinationWorkspace,
+			expectedSourceCount: 201,
+			sources: Array.from({ length: 100 }, () => f.source),
+			targetParent: f.checkpoint.targetParent,
+			targetPath: f.checkpoint.targetPath,
+			targetName: f.checkpoint.targetName,
+			missingParentNames: f.checkpoint.missingParentNames,
+			conflictPolicy: f.checkpoint.conflictPolicy,
+		};
+		const started = await f.t.mutation(internal.files_transfer.start_for_agent, startArgs);
+		if (started._nay) throw new Error(started._nay.message);
+		const scope = { membershipId: f.db.membershipId, threadId: f.scope.threadId, runId: started._yay.runId };
+		return { startArgs, started, scope };
+	}
+
+	async function waiting_copy() {
+		const f = await admission();
+		const copy = await start_copy(f);
+		for (const offset of [100, 200])
+			expect(
+				await f.t.mutation(internal.files_transfer.append_sources_for_agent, {
+					...copy.scope,
+					job: f.fence,
+					offset,
+					sources: Array.from({ length: offset === 100 ? 100 : 1 }, () => f.source),
+				}),
+			).toEqual({ _yay: null });
+		expect(await f.t.mutation(internal.files_transfer.seal_for_agent, { ...copy.scope, job: f.fence })).toEqual({
+			_yay: null,
+		});
+		return { ...f, copy };
+	}
+
+	test("Copy input cleanup is bounded and never deletes the active command", async () => {
+		const f = await admission();
+		const cleanup = (commandNumber: number) =>
+			f.t.mutation(internal.ai_chat_files.cleanup_bash_job_copy_pages, {
+				invocationId: f.job.invocationId,
+				commandNumber,
+			});
+		const pages = () => f.t.run((ctx) => ctx.db.query("ai_chat_bash_job_copy_pages").collect());
+		await cleanup(3);
+		expect(await pages()).toHaveLength(3);
+		await f.t.run(async (ctx) => {
+			for (let page = 0; page < 17; page++)
+				await ctx.db.insert("ai_chat_bash_job_copy_pages", {
+					invocationId: f.job.invocationId,
+					commandNumber: 2,
+					page,
+					args: ["old"],
+					sources: [],
+				});
+		});
+		await cleanup(2);
+		expect((await pages()).filter((page) => page.commandNumber === 2)).toHaveLength(9);
+		expect((await pages()).filter((page) => page.commandNumber === 3)).toHaveLength(3);
+		await cleanup(2);
+		expect((await pages()).filter((page) => page.commandNumber === 2)).toHaveLength(1);
+		await cleanup(2);
+		await cleanup(2);
+		expect(await pages()).toHaveLength(3);
+		const scheduled = await f.t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect());
+		expect(scheduled.filter((task) => task.name.endsWith("cleanup_bash_job_copy_pages"))).toHaveLength(2);
+	});
+
+	test("terminal Copy delivery is one-shot and excludes only the producer wait", async () => {
+		const f = await waiting_copy();
+		const startedAt = Date.now();
+		const take = () => f.t.mutation(internal.ai_chat_files.take_bash_job_copy_result, f.fence);
+		expect(await take()).toBeNull();
+		const finishedAt = startedAt + 25 * 60 * 60_000;
+		vi.setSystemTime(finishedAt + 60_000);
+		await f.t.run(async (ctx) => {
+			const activity = await activities_db_get_by_source_id(ctx, f.copy.scope.runId);
+			await ctx.db.patch("activities", activity!._id, { status: "succeeded", finishedAt });
+		});
+		const delivered = await take();
+		expect(delivered?.job?.copy).toMatchObject({
+			phase: "delivering",
+			workId: f.fence.workId,
+			result: { exitCode: 0 },
+		});
+		expect(delivered?.job?.excludedCopyWaitMs).toBe(25 * 60 * 60_000);
+		vi.setSystemTime(Date.now() + 10_000);
+		expect(await take()).toEqual(delivered);
+		expect(
+			await f.t.mutation(internal.ai_chat_files.take_bash_job_copy_result, { ...f.fence, workId: "old" as WorkId }),
+		).toBeNull();
+		await f.t.mutation(internal.ai_chat_files.handle_bash_job_complete, {
+			workId: f.fence.workId,
+			context: { invocationId: f.job.invocationId },
+			result: { kind: "failed", error: "lost delivery" },
+		});
+		expect((await f.read(f.job.invocationId)).activity?.status).toBe("failed");
+		expect(await take()).toBeNull();
+	});
+
+	test.each(["membership", "purge", "stop"])("terminal Copy refuses %s before delivery", async (change) => {
+		const f = await waiting_copy();
+		await f.t.run(async (ctx) => {
+			const activity = await activities_db_get_by_source_id(ctx, f.copy.scope.runId);
+			await ctx.db.patch("activities", activity!._id, { status: "succeeded", finishedAt: Date.now() });
+			if (change === "membership")
+				await ctx.db.patch("organizations_workspaces_users", f.db.membershipId, { active: false });
+			if (change === "purge")
+				await ctx.db.patch("organizations_workspaces", f.db.workspaceId, { pluginDataPurgeStartedAt: Date.now() });
+		});
+		if (change === "stop")
+			await f.t.mutation(internal.ai_chat_files.request_bash_job_stop, { ...f.scope, jobNumber: 1 });
+		expect(await f.t.mutation(internal.ai_chat_files.take_bash_job_copy_result, f.fence)).toBeNull();
+		expect((await f.read(f.job.invocationId)).row?.job?.copy?.phase).not.toBe("delivering");
+	});
+
+	test.each(["no run", "linked run", "lost access"])(
+		"delivers an admission refusal once under the worker's fence (%s)",
+		async (scenario) => {
+			const f = await admission();
+			const result = { stdout: "", stderr: "cp: Destination changed\n", exitCode: 1 };
+			const deliver = (workId: WorkId) =>
+				f.t.mutation(internal.ai_chat_files.deliver_bash_job_copy_refusal, { ...f.fence, workId, result });
+			const copy = scenario === "linked run" ? await start_copy(f) : null;
+			if (scenario === "lost access")
+				await f.t.run((ctx) => ctx.db.patch("organizations_workspaces_users", f.db.membershipId, { active: false }));
+
+			expect(await deliver("old-worker" as WorkId)).toBeNull();
+			const delivered = await deliver(f.fence.workId);
+			if (scenario === "lost access") {
+				expect(delivered).toBeNull();
+				const after = await f.read(f.job.invocationId);
+				expect(after.row?.status).toBe("interrupted");
+				expect(after.activity?.status).toBe("canceled");
+				return;
+			}
+			expect(delivered?.job?.copy).toEqual({
+				phase: "delivering",
+				commandNumber: 3,
+				lastArg: "destination",
+				runId: copy?.scope.runId ?? null,
+				workId: f.fence.workId,
+				result,
+			});
+			// A lost reply reads back the same claim. Readers accept a delivery without a run.
+			expect(await deliver(f.fence.workId)).toEqual(delivered);
+			expect(await f.t.mutation(internal.ai_chat_files.take_bash_job_copy_result, f.fence)).toEqual(delivered);
+			expect(await f.t.query(internal.ai_chat_files.poll_bash_job, { invocationId: f.job.invocationId })).toEqual({
+				status: "running",
+				stopRequested: false,
+				authorized: true,
+			});
+			if (copy)
+				expect(await f.t.query(internal.files_transfer.get_for_agent, copy.scope)).toMatchObject({
+					activity: { status: expect.stringMatching(/^(stopping|canceled)$/) },
+				});
+			// Another worker can never resume this delivery.
+			expect(await deliver("next-worker" as WorkId)).toBeNull();
+			expect((await f.read(f.job.invocationId)).row).toEqual(delivered);
+		},
+	);
+
+	test.each(["input", "start", "append", "seal"])(
+		"recovers a crash after %s using the same saved Copy",
+		async (stage) => {
+			const f = await admission();
+			let copy = stage === "input" ? null : await start_copy(f);
+			if (copy && (stage === "append" || stage === "seal"))
+				expect(
+					await f.t.mutation(internal.files_transfer.append_sources_for_agent, {
+						...copy.scope,
+						job: f.fence,
+						offset: 100,
+						sources: Array.from({ length: 100 }, () => f.source),
+					}),
+				).toEqual({ _yay: null });
+			if (copy && stage === "seal") {
+				expect(
+					await f.t.mutation(internal.files_transfer.append_sources_for_agent, {
+						...copy.scope,
+						job: f.fence,
+						offset: 200,
+						sources: [f.source],
+					}),
+				).toEqual({ _yay: null });
+				expect(await f.t.mutation(internal.files_transfer.seal_for_agent, { ...copy.scope, job: f.fence })).toEqual({
+					_yay: null,
+				});
+			}
+			const saved = (await f.read(f.job.invocationId)).row?.job?.copy;
+			await f.t.mutation(internal.ai_chat_files.handle_bash_job_complete, {
+				workId: f.fence.workId,
+				context: { invocationId: f.job.invocationId },
+				result: { kind: "failed", error: "reply lost, then worker crashed" },
+			});
+			const queued = (await f.read(f.job.invocationId)).row!;
+			expect(queued.job?.copy).toEqual(saved);
+			expect(queued.job?.workerGeneration).toBe(1);
+			const fence = { ...f.fence, workId: queued.job!.workId! };
+			vi.setSystemTime(Date.now() + 2_000);
+			expect(
+				await f.t.mutation(internal.ai_chat_files.claim_bash_job, { invocationId: queued._id, workerGeneration: 1 }),
+			).not.toBeNull();
+			const resumed = await f.t.query(internal.ai_chat_files.read_bash_job_copy_invocation, {
+				invocationId: queued._id,
+				workId: fence.workId,
+			});
+			expect(resumed?.job?.copy).toEqual(saved);
+			expect(resumed?.job?.resumeScript).toBe("echo after");
+			if (!copy) copy = await start_copy({ ...f, fence });
+			else if (stage !== "seal") {
+				expect(
+					await f.t.mutation(internal.files_transfer.start_for_agent, {
+						...copy.startArgs,
+						invocation: { ...copy.startArgs.invocation, workId: fence.workId },
+					}),
+				).toEqual(copy.started);
+			}
+			if (stage !== "seal") {
+				const accepted = await f.t.query(internal.files_transfer.get_for_agent, copy.scope);
+				for (let offset = accepted!.selection!.count; offset < 201; offset += 100) {
+					const page = await f.t.query(internal.ai_chat_files.read_bash_job_copy_page, {
+						...fence,
+						page: offset / 100,
+					});
+					expect(
+						await f.t.mutation(internal.files_transfer.append_sources_for_agent, {
+							...copy.scope,
+							job: fence,
+							offset,
+							sources: page!.sources,
+						}),
+					).toEqual({ _yay: null });
+				}
+			}
+			expect(await f.t.mutation(internal.files_transfer.seal_for_agent, { ...copy.scope, job: fence })).toEqual({
+				_yay: null,
+			});
+			const done = await f.read(f.job.invocationId);
+			expect(done.row?.job?.copy).toMatchObject({ phase: "waiting", runId: copy.scope.runId });
+			expect(done.row?.wakeNotifiedAt).toBeUndefined();
+			expect(await f.t.run((ctx) => ctx.db.query("ai_chat_bash_invocation_transfers").collect())).toHaveLength(1);
+			expect(await f.t.query(internal.files_transfer.get_for_agent, copy.scope)).toMatchObject({
+				step: "select",
+				selection: { expectedCount: 201, count: 201 },
+			});
+			await f.t.mutation(internal.ai_chat_files.handle_bash_job_complete, {
+				workId: f.fence.workId,
+				context: { invocationId: f.job.invocationId },
+				result: { kind: "failed", error: "late callback" },
+			});
+			expect(await f.read(f.job.invocationId)).toEqual(done);
+		},
+	);
+
+	test.each(["user", "timeout"] as const)(
+		"%s stops a waiting Copy before clearing the job checkpoint",
+		async (reason) => {
+			const f = await waiting_copy();
+			if (reason === "user") {
+				expect(await f.t.mutation(internal.ai_chat_files.request_bash_job_stop, { ...f.scope, jobNumber: 1 })).toBe(
+					true,
+				);
+				await f.t.mutation(internal.ai_chat_files.handle_bash_job_complete, {
+					workId: f.fence.workId,
+					context: { invocationId: f.job.invocationId },
+					result: { kind: "canceled" },
+				});
+			} else {
+				const deadlineAt = (await f.read(f.job.invocationId)).row!.deadlineAt;
+				vi.setSystemTime(deadlineAt);
+				await f.t.mutation(internal.ai_chat_files.timeout_bash_job, {
+					invocationId: f.job.invocationId,
+					expectedDeadlineAt: deadlineAt,
+				});
+			}
+			const after = await f.read(f.job.invocationId);
+			expect(after.row?.job?.copy).toBeUndefined();
+			expect(after.row?.status).toBe("interrupted");
+			expect(after.activity?.status).toBe(reason === "user" ? "canceled" : "timed_out");
+			expect(await f.t.query(internal.files_transfer.get_for_agent, f.copy.scope)).toMatchObject({
+				activity: { status: reason === "user" ? "canceled" : "timed_out" },
+			});
+		},
+	);
+
+	test("waiting claims keep the producer deadline while giving the worker a separate lease", async () => {
+		const f = await waiting_copy();
+		const before = await f.read(f.job.invocationId);
+		vi.setSystemTime(Date.now() + 60_000);
+		const claimed = await f.t.mutation(internal.ai_chat_files.claim_bash_job, {
+			invocationId: f.job.invocationId,
+			workerGeneration: 0,
+		});
+		expect(claimed?.row.deadlineAt).toBe(before.row?.deadlineAt);
+		expect(claimed?.row.transferDeadlineAt).toBe(Date.now() + RUN_MS - 30_000);
+		expect(claimed?.row.job?.copy).toEqual(before.row?.job?.copy);
+		expect((await f.read(f.job.invocationId)).activity?.deadlineAt).toBe(before.activity?.deadlineAt);
+	});
+
+	test("an old worker cannot requeue, save or seal over a newer Copy continuation", async () => {
+		const f = await waiting_copy();
+		await f.t.mutation(internal.ai_chat_files.handle_bash_job_complete, {
+			workId: f.fence.workId,
+			context: { invocationId: f.job.invocationId },
+			result: { kind: "failed", error: "worker lost" },
+		});
+		const before = await f.read(f.job.invocationId);
+		expect(before.row?.job?.workerGeneration).toBe(1);
+		const scheduled = await f.t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect());
+
+		// The lost worker is still alive and calls in with its old work ID.
+		const stale = { invocationId: f.job.invocationId, workId: f.fence.workId };
+		expect(await f.t.mutation(internal.ai_chat_files.requeue_bash_job_copy, stale)).toBe(false);
+		expect(await f.t.mutation(internal.ai_chat_files.seal_bash_job_copy_checkpoint, f.fence)).toMatchObject({
+			_nay: { name: "stale_job" },
+		});
+		expect(
+			await f.t.mutation(internal.ai_chat_files.save_bash_job_copy_checkpoint, {
+				...stale,
+				checkpoint: { ...f.intent, commandNumber: 5 },
+				output: { stdout: "stale\n", stderr: "" },
+				resume: {
+					script: "echo stale",
+					commandNumber: 6,
+					launchedJobNumbers: [],
+					shellState: empty_shell_state,
+					cwd: "/",
+					cwdTarget: null,
+				},
+				liveOutput: null,
+			}),
+		).toMatchObject({ _nay: { name: "stale_job" } });
+		expect(await f.t.query(internal.ai_chat_files.read_bash_job_copy_invocation, stale)).toBeNull();
+		expect(await f.read(f.job.invocationId)).toEqual(before);
+		expect(await f.t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect())).toEqual(scheduled);
+
+		// The newer worker still owns the same waiting Copy.
+		expect(
+			await f.t.mutation(internal.ai_chat_files.requeue_bash_job_copy, {
+				...stale,
+				workId: before.row!.job!.workId!,
+			}),
+		).toBe(true);
+		expect((await f.read(f.job.invocationId)).row?.job?.copy).toEqual(before.row?.job?.copy);
+	});
+
+	test("an old watchdog follows real Copy progress but polling cannot renew its deadline", async () => {
+		const f = await waiting_copy();
+		const before = await f.read(f.job.invocationId);
+		const producerDeadline = before.row!.deadlineAt + 60_000;
+		await f.t.run((ctx) =>
+			ctx.db.patch("activities", f.copy.started._yay.activityId, { deadlineAt: producerDeadline }),
+		);
+		vi.setSystemTime(before.row!.deadlineAt);
+		await f.t.mutation(internal.ai_chat_files.timeout_bash_job, {
+			invocationId: f.job.invocationId,
+			expectedDeadlineAt: before.row!.deadlineAt,
+		});
+		const after = await f.read(f.job.invocationId);
+		expect(after.row?.status).toBe("running");
+		expect(after.row?.deadlineAt).toBe(producerDeadline);
+		expect(after.row?.job?.copy).toEqual(before.row?.job?.copy);
+		expect(after.row?.wakeNotifiedAt).toBeUndefined();
+		expect(
+			await f.t.mutation(internal.ai_chat_files.requeue_bash_job_copy, {
+				invocationId: f.fence.invocationId,
+				workId: f.fence.workId,
+			}),
+		).toBe(true);
+		expect((await f.read(f.job.invocationId)).row?.deadlineAt).toBe(producerDeadline);
+		expect(await f.t.query(internal.files_transfer.get_for_agent, f.copy.scope)).toMatchObject({
+			activity: { deadlineAt: producerDeadline },
+		});
+	});
+
+	test("the real transfer doors replay intake on one checkpoint and read back a lost seal reply", async () => {
+		const f = await admission();
+		const { startArgs, started, scope } = await start_copy(f);
+		expect(await f.t.mutation(internal.files_transfer.start_for_agent, startArgs)).toEqual(started);
+		expect((await f.read(f.job.invocationId)).row?.job?.copy).toMatchObject({ phase: "admitting", runId: scope.runId });
+		expect(await f.t.run((ctx) => ctx.db.get("files_transfer_runs", scope.runId))).toMatchObject({
+			step: "uploading",
+			fixedDeadline: false,
+			bashJob: { invocationId: f.job.invocationId, commandNumber: 3 },
+		});
+		expect(await f.t.run((ctx) => ctx.db.query("files_transfer_items").collect())).toEqual([]);
+		for (const offset of [100, 200]) {
+			const page = {
+				...scope,
+				job: f.fence,
+				offset,
+				sources: Array.from({ length: offset === 100 ? 100 : 1 }, () => f.source),
+			};
+			expect(await f.t.mutation(internal.files_transfer.append_sources_for_agent, page)).toEqual({ _yay: null });
+			expect(await f.t.mutation(internal.files_transfer.append_sources_for_agent, page)).toEqual({ _yay: null });
+		}
+		expect(await f.t.query(internal.files_transfer.get_for_agent, scope)).toMatchObject({
+			step: "uploading",
+			selection: { expectedCount: 201, count: 201 },
+			activity: { feedVisible: false },
+		});
+		// Ignore the first seal response, as a worker does after a lost transport reply.
+		await f.t.mutation(internal.files_transfer.seal_for_agent, { ...scope, job: f.fence });
+		const sealed = await f.read(f.job.invocationId);
+		expect(sealed.row?.job?.copy).toMatchObject({ phase: "waiting", runId: scope.runId });
+		expect(await f.t.query(internal.files_transfer.get_for_agent, scope)).toMatchObject({ step: "select" });
+		expect(await f.t.mutation(internal.files_transfer.seal_for_agent, { ...scope, job: f.fence })).toEqual({
+			_yay: null,
+		});
+		expect(await f.read(f.job.invocationId)).toEqual(sealed);
+		expect(await f.t.mutation(internal.files_transfer.start_for_agent, startArgs)).toMatchObject({
+			_nay: { name: "stale_job" },
+		});
+		const receipts = await f.t.run((ctx) => ctx.db.query("ai_chat_bash_invocation_transfers").collect());
+		expect(receipts).toHaveLength(1);
+		expect(receipts[0]).toMatchObject({ runId: scope.runId, commandNumber: 3 });
+		expect(
+			await f.t.run((ctx) =>
+				ctx.db
+					.query("files_transfer_selection_items")
+					.withIndex("by_run_order", (q) => q.eq("runId", scope.runId))
+					.collect(),
+			),
+		).toHaveLength(201);
+	});
+
+	test("stages bounded complete source pages, replays exact input, and seals only complete input", async () => {
+		const f = await admission();
+		await f.t.run(async (ctx) => {
+			const row = await ctx.db.get("ai_chat_bash_invocations", f.job.invocationId);
+			await ctx.db.patch("ai_chat_bash_invocations", row!._id, { job: { ...row!.job!, copy: undefined } });
+			for (const page of await ctx.db.query("ai_chat_bash_job_copy_pages").collect())
+				await ctx.db.delete("ai_chat_bash_job_copy_pages", page._id);
+		});
+		const header = {
+			invocationId: f.job.invocationId,
+			workId: f.fence.workId,
+			checkpoint: f.intent,
+			resume: {
+				script: "echo after",
+				commandNumber: 4,
+				launchedJobNumbers: [],
+				shellState: empty_shell_state,
+				cwd: "/",
+				cwdTarget: null,
+			},
+			liveOutput: null,
+		};
+		expect(
+			await f.t.mutation(internal.ai_chat_files.save_bash_job_copy_checkpoint, {
+				...header,
+				output: { stdout: "", stderr: "" },
+			}),
+		).toEqual({ _yay: null });
+		// The door starts the counters and takes the admission deadline from the server clock.
+		const saved = (await f.read(f.job.invocationId)).row?.job?.copy;
+		expect(saved).toEqual({
+			...f.intent,
+			pageCount: 0,
+			argsCount: 0,
+			sourcesCount: 0,
+			sealed: false,
+			admissionDeadlineAt: Date.now() + COPY_ADMISSION_MS,
+			runId: null,
+		});
+		// A replay after a lost reply matches on the sent fields and keeps the first deadline.
+		vi.setSystemTime(Date.now() + 1_000);
+		expect(
+			await f.t.mutation(internal.ai_chat_files.save_bash_job_copy_checkpoint, {
+				...header,
+				output: { stdout: "", stderr: "" },
+			}),
+		).toEqual({ _yay: null });
+		expect((await f.read(f.job.invocationId)).row?.job?.copy).toEqual(saved);
+		expect(await f.t.run((ctx) => ai_chat_files.ai_chat_files_db_check_copy_admission(ctx, f.fence))).toMatchObject({
+			_nay: { name: "incomplete_input" },
+		});
+		expect(await f.t.mutation(internal.ai_chat_files.seal_bash_job_copy_checkpoint, f.fence)).toMatchObject({
+			_nay: { name: "incomplete_input" },
+		});
+		const first = {
+			...f.fence,
+			page: 0,
+			args: Array.from({ length: 100 }, () => "source"),
+			sources: Array.from({ length: 100 }, () => f.source),
+		};
+		for (const invalid of [
+			{ ...first, page: 1 },
+			{ ...first, sources: first.sources.slice(0, 99) },
+			{ ...first, sources: [] },
+			{ ...first, args: ["x".repeat(65_536)] },
+			{ ...first, workId: "stale-work" as WorkId },
+		])
+			expect(await f.t.mutation(internal.ai_chat_files.stage_bash_job_copy_page, invalid)).toHaveProperty("_nay");
+		expect(await f.t.run((ctx) => ctx.db.query("ai_chat_bash_job_copy_pages").collect())).toEqual([]);
+		expect(await f.t.mutation(internal.ai_chat_files.stage_bash_job_copy_page, first)).toEqual({ _yay: null });
+		expect(await f.t.mutation(internal.ai_chat_files.stage_bash_job_copy_page, first)).toEqual({ _yay: null });
+		expect(
+			await f.t.mutation(internal.ai_chat_files.stage_bash_job_copy_page, { ...first, args: ["changed"] }),
+		).toMatchObject({ _nay: { name: "request_changed" } });
+		expect(await f.t.mutation(internal.ai_chat_files.stage_bash_job_copy_page, { ...first, page: 1 })).toEqual({
+			_yay: null,
+		});
+		expect(
+			await f.t.mutation(internal.ai_chat_files.stage_bash_job_copy_page, {
+				...first,
+				page: 2,
+				sources: [f.source],
+				args: ["source"],
+			}),
+		).toEqual({ _yay: null });
+		expect(await f.t.mutation(internal.ai_chat_files.seal_bash_job_copy_checkpoint, f.fence)).toMatchObject({
+			_nay: { name: "incomplete_input" },
+		});
+		expect(
+			await f.t.mutation(internal.ai_chat_files.stage_bash_job_copy_page, {
+				...first,
+				page: 3,
+				sources: [],
+				args: ["destination"],
+			}),
+		).toEqual({ _yay: null });
+		expect(await f.t.mutation(internal.ai_chat_files.seal_bash_job_copy_checkpoint, f.fence)).toEqual({ _yay: null });
+		expect(await f.t.mutation(internal.ai_chat_files.seal_bash_job_copy_checkpoint, f.fence)).toEqual({ _yay: null });
+		expect(await f.t.mutation(internal.ai_chat_files.stage_bash_job_copy_page, first)).toEqual({ _yay: null });
+		expect(
+			await f.t.mutation(internal.ai_chat_files.stage_bash_job_copy_page, {
+				...first,
+				page: 4,
+				sources: [],
+				args: ["extra"],
+			}),
+		).toHaveProperty("_nay");
+		expect(await f.t.query(internal.ai_chat_files.read_bash_job_copy_page, { ...f.fence, page: 2 })).toMatchObject({
+			page: 2,
+			sources: [f.source],
+		});
+		expect(
+			await f.t.query(internal.ai_chat_files.read_bash_job_copy_page, {
+				...f.fence,
+				workId: "stale-work" as WorkId,
+				page: 2,
+			}),
+		).toBeNull();
+		expect((await f.read(f.job.invocationId)).row?.job?.copy).toMatchObject({
+			sealed: true,
+			pageCount: 4,
+			sourcesCount: 201,
+			argsCount: 202,
+		});
+		expect(await f.t.run((ctx) => ctx.db.query("files_transfer_items").collect())).toEqual([]);
+	});
+});
+
 describe("claim_bash_job", () => {
 	test("re-arms the three clocks from the worker start, swaps the watchdog and returns the armed row", async () => {
 		const f = await fixture();
 		const start = Date.now();
 		const job = await f.seed_job({ jobNumber: 1 });
 		vi.setSystemTime(start + 60_000);
-		const claimed = await f.t.mutation(internal.ai_chat_files.claim_bash_job, { invocationId: job.invocationId });
+		const claimed = await f.t.mutation(internal.ai_chat_files.claim_bash_job, {
+			invocationId: job.invocationId,
+			workerGeneration: 0,
+		});
 		if (!claimed) throw new Error("Expected the claim");
 		const deadlineAt = start + 60_000 + RUN_MS;
 		expect(claimed.row).toMatchObject({ deadlineAt, transferDeadlineAt: deadlineAt - 30_000, status: "running" });
@@ -439,7 +1353,10 @@ describe("claim_bash_job", () => {
 		const f = await fixture();
 		const stopping = await f.seed_job({ jobNumber: 1, stopRequestedAt: Date.now() });
 		expect(
-			await f.t.mutation(internal.ai_chat_files.claim_bash_job, { invocationId: stopping.invocationId }),
+			await f.t.mutation(internal.ai_chat_files.claim_bash_job, {
+				invocationId: stopping.invocationId,
+				workerGeneration: 0,
+			}),
 		).toBeNull();
 		expect((await f.read(stopping.invocationId)).activity).toMatchObject({ status: "stopping" });
 
@@ -447,7 +1364,10 @@ describe("claim_bash_job", () => {
 		const flagged = await f.seed_job({ jobNumber: 2, stopRequestedAt: Date.now() });
 		await f.t.run((ctx) => ctx.db.patch("activities", flagged.activityId, { status: "queued" }));
 		expect(
-			await f.t.mutation(internal.ai_chat_files.claim_bash_job, { invocationId: flagged.invocationId }),
+			await f.t.mutation(internal.ai_chat_files.claim_bash_job, {
+				invocationId: flagged.invocationId,
+				workerGeneration: 0,
+			}),
 		).toBeNull();
 		expect((await f.read(flagged.invocationId)).activity).toMatchObject({ status: "queued" });
 	});
@@ -456,7 +1376,12 @@ describe("claim_bash_job", () => {
 		const f = await fixture();
 		const job = await f.seed_job({ jobNumber: 1 });
 		await f.t.run((ctx) => ctx.db.patch("organizations_workspaces_users", f.db.membershipId, { active: false }));
-		expect(await f.t.mutation(internal.ai_chat_files.claim_bash_job, { invocationId: job.invocationId })).toBeNull();
+		expect(
+			await f.t.mutation(internal.ai_chat_files.claim_bash_job, {
+				invocationId: job.invocationId,
+				workerGeneration: 0,
+			}),
+		).toBeNull();
 		const after = await f.read(job.invocationId);
 		expect(after.row).toMatchObject({ status: "interrupted" });
 		expect(after.activity).toMatchObject({ status: "canceled", errorMessage: null });
@@ -468,7 +1393,12 @@ describe("claim_bash_job", () => {
 		const f = await fixture();
 		const job = await f.seed_job({ jobNumber: 1 });
 		await f.t.run((ctx) => ctx.db.delete("ai_chat_bash_invocations", job.invocationId));
-		expect(await f.t.mutation(internal.ai_chat_files.claim_bash_job, { invocationId: job.invocationId })).toBeNull();
+		expect(
+			await f.t.mutation(internal.ai_chat_files.claim_bash_job, {
+				invocationId: job.invocationId,
+				workerGeneration: 0,
+			}),
+		).toBeNull();
 	});
 });
 
@@ -491,6 +1421,7 @@ describe("flush_bash_job_output", () => {
 
 		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 			invocationId: job.invocationId,
+			workId: job.workId!,
 			result: job_result(0),
 		});
 		const finished = await f.read(job.invocationId);
@@ -531,9 +1462,11 @@ describe("pause_bash_job", () => {
 		f: Awaited<ReturnType<typeof fixture>>,
 		invocationId: Id<"ai_chat_bash_invocations">,
 		liveOutput: typeof head | null = head,
+		workId?: WorkId,
 	) =>
 		await f.t.mutation(internal.ai_chat_files.pause_bash_job, {
 			invocationId,
+			workId: workId ?? (await f.read(invocationId)).row!.job!.workId!,
 			resume: {
 				script: "echo two",
 				shellState: empty_shell_state,
@@ -548,12 +1481,56 @@ describe("pause_bash_job", () => {
 			runAfterMs: 30_000,
 		});
 
+	test.each(["pause", "finish"])("a superseded worker cannot %s the next slice", async (operation) => {
+		const f = await fixture();
+		const job = await f.seed_job({ jobNumber: 1, status: "running" });
+		expect(await pause(f, job.invocationId)).toBe(true);
+		const before = await f.read(job.invocationId);
+		if (operation === "pause") expect(await pause(f, job.invocationId, head, job.workId!)).toBe(false);
+		else
+			expect(
+				await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
+					invocationId: job.invocationId,
+					workId: job.workId!,
+					result: job_result(0, "stale output"),
+				}),
+			).toBeNull();
+		expect(await f.read(job.invocationId)).toEqual(before);
+		expect(await f.scheduled_state(before.row!.job!.watchdogId!)).toBe("pending");
+	});
+
+	test("a stale queued worker cannot claim the next generation or reset its clocks", async () => {
+		const f = await fixture();
+		const job = await f.seed_job({ jobNumber: 1, status: "running" });
+		expect(await pause(f, job.invocationId)).toBe(true);
+		const before = await f.read(job.invocationId);
+		expect(before.row?.job?.workerGeneration).toBe(1);
+		vi.setSystemTime(Date.now() + 30_000);
+		expect(
+			await f.t.mutation(internal.ai_chat_files.claim_bash_job, {
+				invocationId: job.invocationId,
+				workerGeneration: 0,
+			}),
+		).toBeNull();
+		expect(await f.read(job.invocationId)).toEqual(before);
+		expect(await f.scheduled_state(before.row!.job!.watchdogId!)).toBe("pending");
+		const claimed = await f.t.mutation(internal.ai_chat_files.claim_bash_job, {
+			invocationId: job.invocationId,
+			workerGeneration: 1,
+		});
+		expect(claimed?.row.job?.workerGeneration).toBe(1);
+		expect((await f.read(job.invocationId)).activity?.status).toBe("running");
+	});
+
 	test("stores the next run, re-queues the Activity, swaps the pool item and the watchdog, and appends the pause entry", async () => {
 		const f = await fixture();
 		const start = Date.now();
 		const job = await f.seed_job({ jobNumber: 1 });
 		vi.setSystemTime(start + 60_000);
-		const claimed = await f.t.mutation(internal.ai_chat_files.claim_bash_job, { invocationId: job.invocationId });
+		const claimed = await f.t.mutation(internal.ai_chat_files.claim_bash_job, {
+			invocationId: job.invocationId,
+			workerGeneration: 0,
+		});
 		if (!claimed) throw new Error("Expected the claim");
 		vi.setSystemTime(start + 90_000);
 		expect(await pause(f, job.invocationId)).toBe(true);
@@ -587,10 +1564,11 @@ describe("pause_bash_job", () => {
 
 		// The next claim keeps the first start time, and the finish drops the resume script.
 		vi.setSystemTime(start + 120_000);
-		await f.t.mutation(internal.ai_chat_files.claim_bash_job, { invocationId: job.invocationId });
+		await f.t.mutation(internal.ai_chat_files.claim_bash_job, { invocationId: job.invocationId, workerGeneration: 1 });
 		expect((await f.read(job.invocationId)).activity).toMatchObject({ status: "running", startedAt: start + 60_000 });
 		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 			invocationId: job.invocationId,
+			workId: after.row!.job!.workId!,
 			result: job_result(0),
 		});
 		const finished = await f.read(job.invocationId);
@@ -608,6 +1586,7 @@ describe("pause_bash_job", () => {
 		const settled = await f.seed_job({ jobNumber: 2, status: "running" });
 		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 			invocationId: settled.invocationId,
+			workId: settled.workId!,
 			result: job_result(0),
 		});
 		expect(await pause(f, settled.invocationId)).toBe(false);
@@ -683,6 +1662,7 @@ describe("job wakeup", () => {
 		const now = Date.now();
 		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 			invocationId: job.invocationId,
+			workId: job.workId!,
 			result: job_result(2, "line one\n", "oops\n"),
 		});
 
@@ -745,24 +1725,19 @@ describe("job wakeup", () => {
 		});
 		if (branchA._nay) throw new Error(branchA._nay.message);
 
-		// The last word in the thread is another member's, and the chat shows their message as the leaf
-		// for everyone. The message belongs there too, so this pins the newest message of the thread and
-		// not the newest message of the user whose job it is.
-		const other = await add_member(f, "bash-jobs-leaf");
+		// The creator continues the older branch. The finish follows its newest message.
 		vi.setSystemTime(Date.now() + 1000);
-		const otherMessage = await f.t
-			.withIdentity({ issuer: "https://clerk.test", external_id: other.userId })
-			.mutation(api.ai_chat.thread_messages_add, {
-				membershipId: other.membershipId,
-				threadId: f.scope.threadId,
-				parentId: branchA._yay.ids[0]!,
-				messages: [
-					{
-						clientGeneratedMessageId: "user-c",
-						content: { id: "user-c", role: "user", parts: [{ type: "text", text: "me too" }] },
-					},
-				],
-			});
+		const otherMessage = await f.asUser.mutation(api.ai_chat.thread_messages_add, {
+			membershipId: f.db.membershipId,
+			threadId: f.scope.threadId,
+			parentId: branchA._yay.ids[0]!,
+			messages: [
+				{
+					clientGeneratedMessageId: "user-c",
+					content: { id: "user-c", role: "user", parts: [{ type: "text", text: "one more step" }] },
+				},
+			],
+		});
 		if (otherMessage._nay) throw new Error(otherMessage._nay.message);
 		const newestMessageId = otherMessage._yay.ids[0]!;
 
@@ -770,6 +1745,7 @@ describe("job wakeup", () => {
 		vi.setSystemTime(Date.now() + 1000);
 		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 			invocationId: job.invocationId,
+			workId: job.workId!,
 			result: job_result(0),
 		});
 
@@ -790,6 +1766,7 @@ describe("job wakeup", () => {
 		const job = await f.seed_job({ jobNumber: 1, status: "running", wakeAgent });
 		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 			invocationId: job.invocationId,
+			workId: job.workId!,
 			result: job_result(0, `${"x".repeat(4095)}${emoji}`),
 		});
 
@@ -807,6 +1784,7 @@ describe("job wakeup", () => {
 		const first = await f.seed_job({ jobNumber: 1, status: "running", wakeAgent });
 		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 			invocationId: first.invocationId,
+			workId: first.workId!,
 			result: job_result(0),
 		});
 		// The message is stored at once, so history order stays true. The running turn injects it at
@@ -821,6 +1799,7 @@ describe("job wakeup", () => {
 		const second = await f.seed_job({ jobNumber: 2, status: "running", wakeAgent });
 		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 			invocationId: second.invocationId,
+			workId: second.workId!,
 			result: job_result(0),
 		});
 		state = await read_thread(f);
@@ -835,6 +1814,7 @@ describe("job wakeup", () => {
 		const plain = await f.seed_job({ jobNumber: 1, status: "running" });
 		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 			invocationId: plain.invocationId,
+			workId: plain.workId!,
 			result: job_result(0),
 		});
 		// No flag, same message. The wake run answers with the default model (see the door test).
@@ -877,6 +1857,7 @@ describe("job wakeup", () => {
 		await f.t.mutation(internal.ai_chat.thread_run_end, { threadId: f.scope.threadId, kind: "chat" });
 		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 			invocationId: job.invocationId,
+			workId: job.workId!,
 			result: job_result(0, "late\n"),
 		});
 
@@ -893,6 +1874,7 @@ describe("job wakeup", () => {
 			const job = await f.seed_job({ jobNumber, status: "running", wakeAgent });
 			await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 				invocationId: job.invocationId,
+				workId: job.workId!,
 				result: job_result(0),
 			});
 			await f.t.mutation(internal.ai_chat.thread_run_end, { threadId: f.scope.threadId, kind: "job_wakeup" });
@@ -921,14 +1903,19 @@ describe("job wakeup", () => {
 		const job = await f.seed_job({ jobNumber: 1, status: "running", wakeAgent });
 		await f.t.run((ctx) => ctx.db.patch("organizations_workspaces_users", f.db.membershipId, { active: false }));
 		// The claim of a job with a dead membership settles it, and that settle would wake.
-		expect(await f.t.mutation(internal.ai_chat_files.claim_bash_job, { invocationId: job.invocationId })).toBeNull();
+		expect(
+			await f.t.mutation(internal.ai_chat_files.claim_bash_job, {
+				invocationId: job.invocationId,
+				workerGeneration: 0,
+			}),
+		).toBeNull();
 		const state = await read_thread(f);
 		expect(state.messages).toHaveLength(2);
 		expect(state.thread?.activeRun).toBeUndefined();
 		expect(state.wakeups).toHaveLength(0);
 	});
 
-	test("a job whose member lost the role writes no message either", async () => {
+	test("a viewer's job wakes and replies, but losing read access prevents another finish", async () => {
 		const f = await fixture();
 		await seed_messages(f);
 		const job = await f.seed_job({ jobNumber: 1, status: "running", wakeAgent, allowDbFilesMkdir: true });
@@ -947,15 +1934,27 @@ describe("job wakeup", () => {
 			});
 		});
 
-		// `viewer` reads and does not write. The message of an Agent-mode job starts a turn that may
-		// write app files, and the wakeup run is refused anyway, so no message is stored.
+		// A team viewer can still write in home. Each file tool checks its own destination.
 		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 			invocationId: job.invocationId,
+			workId: job.workId!,
 			result: job_result(0),
 		});
 		const afterViewer = await read_thread(f);
-		expect(afterViewer.messages).toHaveLength(2);
-		expect(afterViewer.thread?.activeRun).toBeUndefined();
+		expect(afterViewer.messages).toHaveLength(3);
+		expect(afterViewer.thread?.activeRun?.kind).toBe("job_wakeup");
+		expect(afterViewer.wakeups).toHaveLength(1);
+		expect(
+			(await f.t.query(internal.ai_chat.get_job_wakeup_context, { invocationId: job.invocationId }))._yay?.modeId,
+		).toBe("agent");
+		await f.t.mutation(internal.ai_chat.store_job_wakeup_reply, {
+			threadId: f.scope.threadId,
+			userId: f.scope.userId,
+			finishMessageId: afterViewer.messages.at(-1)!._id,
+			clientGeneratedMessageId: "viewer-reply",
+			content: { id: "viewer-reply", role: "assistant", parts: [{ type: "text", text: "Done" }] },
+		});
+		expect((await read_thread(f)).messages.at(-1)?.clientGeneratedMessageId).toBe("viewer-reply");
 		// The job did finish. Without this, a `finish_bash_job` that stored nothing at all would pass
 		// every assertion here, because they all check that something is absent.
 		expect((await f.read(job.invocationId)).row).toMatchObject({ status: "finished" });
@@ -966,11 +1965,12 @@ describe("job wakeup", () => {
 		const ask = await f.seed_job({ jobNumber: 2, status: "running", wakeAgent });
 		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 			invocationId: ask.invocationId,
+			workId: ask.workId!,
 			result: job_result(0),
 		});
 		const afterNoRole = await read_thread(f);
-		expect(afterNoRole.messages).toHaveLength(2);
-		expect(afterNoRole.wakeups).toHaveLength(0);
+		expect(afterNoRole.messages).toHaveLength(4);
+		expect(afterNoRole.wakeups).toHaveLength(1);
 	});
 
 	test("a result stored after the watchdog settled adds no second message", async () => {
@@ -992,6 +1992,7 @@ describe("job wakeup", () => {
 		await f.t.mutation(internal.ai_chat.thread_run_end, { threadId: f.scope.threadId, kind: "job_wakeup" });
 		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 			invocationId: job.invocationId,
+			workId: job.workId!,
 			result: job_result(0, "real output\n"),
 		});
 		expect((await f.read(job.invocationId)).row).toMatchObject({
@@ -1033,6 +2034,7 @@ describe("job wakeup", () => {
 		await f.t.mutation(internal.ai_chat.thread_run_end, { threadId: f.scope.threadId, kind: "chat" });
 		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 			invocationId: job.invocationId,
+			workId: job.workId!,
 			result: job_result(0, "real output\n"),
 		});
 		const woken = await read_thread(f);
@@ -1046,6 +2048,7 @@ describe("job wakeup", () => {
 		const done = await f.seed_job({ jobNumber: 2, status: "running" });
 		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 			invocationId: done.invocationId,
+			workId: done.workId!,
 			result: job_result(0),
 		});
 		expect(
@@ -1136,6 +2139,7 @@ describe("job wakeup", () => {
 		const job = await f.seed_job({ jobNumber: 1, status: "running", wakeAgent });
 		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 			invocationId: job.invocationId,
+			workId: job.workId!,
 			result: job_result(0),
 		});
 		const finishId = (await read_thread(f)).messages.at(-1)!._id;
@@ -1203,11 +2207,13 @@ describe("job wakeup", () => {
 		const first = await f.seed_job({ jobNumber: 1, status: "running", wakeAgent });
 		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 			invocationId: first.invocationId,
+			workId: first.workId!,
 			result: job_result(0),
 		});
 		const second = await f.seed_job({ jobNumber: 2, status: "running", wakeAgent });
 		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 			invocationId: second.invocationId,
+			workId: second.workId!,
 			result: job_result(0),
 		});
 		const finishId = (await read_thread(f)).messages.at(-1)!._id;
@@ -1252,6 +2258,7 @@ describe("job wakeup", () => {
 		const job = await f.seed_job({ jobNumber: 1, status: "running", wakeAgent });
 		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 			invocationId: job.invocationId,
+			workId: job.workId!,
 			result: job_result(0),
 		});
 		const finishId = (await read_thread(f)).messages.at(-1)!._id;
@@ -1274,25 +2281,25 @@ describe("job wakeup", () => {
 			],
 		});
 		if (regenerated._nay) throw new Error(regenerated._nay.message);
-		expect(
-			(await read_thread(f)).messages.find((message) => message._id === regenerated._yay.ids[0])?.parentId,
-		).toBe(assistantId);
+		expect((await read_thread(f)).messages.find((message) => message._id === regenerated._yay.ids[0])?.parentId).toBe(
+			assistantId,
+		);
 	});
 
 	test("thread_run_handover_to_wakeup flips one chat lease and refuses the rest", async () => {
 		const f = await fixture();
-		expect(
-			await f.t.mutation(internal.ai_chat.thread_run_handover_to_wakeup, { threadId: f.scope.threadId }),
-		).toBe(false);
+		expect(await f.t.mutation(internal.ai_chat.thread_run_handover_to_wakeup, { threadId: f.scope.threadId })).toBe(
+			false,
+		);
 		await f.t.mutation(internal.ai_chat.thread_run_begin, { threadId: f.scope.threadId });
-		expect(
-			await f.t.mutation(internal.ai_chat.thread_run_handover_to_wakeup, { threadId: f.scope.threadId }),
-		).toBe(true);
+		expect(await f.t.mutation(internal.ai_chat.thread_run_handover_to_wakeup, { threadId: f.scope.threadId })).toBe(
+			true,
+		);
 		expect((await read_thread(f)).thread?.activeRun?.kind).toBe("job_wakeup");
 		// The second tab hands over nothing: exactly one wake run follows.
-		expect(
-			await f.t.mutation(internal.ai_chat.thread_run_handover_to_wakeup, { threadId: f.scope.threadId }),
-		).toBe(false);
+		expect(await f.t.mutation(internal.ai_chat.thread_run_handover_to_wakeup, { threadId: f.scope.threadId })).toBe(
+			false,
+		);
 		// A chat release no longer clears the woken lease.
 		await f.t.mutation(internal.ai_chat.thread_run_end, { threadId: f.scope.threadId, kind: "chat" });
 		expect((await read_thread(f)).thread?.activeRun?.kind).toBe("job_wakeup");
@@ -1300,30 +2307,22 @@ describe("job wakeup", () => {
 
 	test("thread_run_extend_wakeup stretches a live wake lease and refuses the rest", async () => {
 		const f = await fixture();
-		expect(
-			await f.t.mutation(internal.ai_chat.thread_run_extend_wakeup, { threadId: f.scope.threadId }),
-		).toBe(false);
+		expect(await f.t.mutation(internal.ai_chat.thread_run_extend_wakeup, { threadId: f.scope.threadId })).toBe(false);
 		const now = Date.now();
 		await f.t.mutation(internal.ai_chat.thread_run_begin, { threadId: f.scope.threadId });
-		expect(
-			await f.t.mutation(internal.ai_chat.thread_run_extend_wakeup, { threadId: f.scope.threadId }),
-		).toBe(false);
-		expect(
-			await f.t.mutation(internal.ai_chat.thread_run_handover_to_wakeup, { threadId: f.scope.threadId }),
-		).toBe(true);
+		expect(await f.t.mutation(internal.ai_chat.thread_run_extend_wakeup, { threadId: f.scope.threadId })).toBe(false);
+		expect(await f.t.mutation(internal.ai_chat.thread_run_handover_to_wakeup, { threadId: f.scope.threadId })).toBe(
+			true,
+		);
 		vi.setSystemTime(now + 60_000);
-		expect(
-			await f.t.mutation(internal.ai_chat.thread_run_extend_wakeup, { threadId: f.scope.threadId }),
-		).toBe(true);
+		expect(await f.t.mutation(internal.ai_chat.thread_run_extend_wakeup, { threadId: f.scope.threadId })).toBe(true);
 		expect((await read_thread(f)).thread?.activeRun).toEqual({
 			kind: "job_wakeup",
 			expiresAt: now + 60_000 + 10 * 60 * 1000,
 		});
 		// Past the extended expiry the lease is gone again.
 		vi.setSystemTime(now + 60_000 + 10 * 60 * 1000 + 1);
-		expect(
-			await f.t.mutation(internal.ai_chat.thread_run_extend_wakeup, { threadId: f.scope.threadId }),
-		).toBe(false);
+		expect(await f.t.mutation(internal.ai_chat.thread_run_extend_wakeup, { threadId: f.scope.threadId })).toBe(false);
 	});
 
 	test("get_wake_retry_after_ms names the wake lease end and null otherwise", async () => {
@@ -1348,12 +2347,98 @@ describe("job wakeup", () => {
 		expect(await f.t.mutation(internal.ai_chat.thread_run_begin_wakeup, { threadId: f.scope.threadId })).toBe(false);
 	});
 
+	test.each(["membership", "lifetime", "creator"])(
+		"store_job_wakeup_reply writes nothing after losing its %s",
+		async (lost) => {
+			const f = await fixture();
+			await seed_messages(f);
+			const job = await f.seed_job({ jobNumber: 1, status: "running" });
+			await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
+				invocationId: job.invocationId,
+				workId: job.workId!,
+				result: job_result(0),
+			});
+			const finishMessageId = (await read_thread(f)).messages.at(-1)!._id;
+			const reply = {
+				threadId: f.scope.threadId,
+				userId: f.scope.userId,
+				finishMessageId,
+				clientGeneratedMessageId: "wake-before-revocation",
+				content: { id: "wake-before-revocation", role: "assistant", parts: [{ type: "text", text: "done" }] },
+			};
+			await f.t.mutation(internal.ai_chat.store_job_wakeup_reply, reply);
+			expect((await read_thread(f)).messages.at(-1)?.clientGeneratedMessageId).toBe("wake-before-revocation");
+
+			await f.t.run(async (ctx) => {
+				if (lost === "membership") {
+					await ctx.db.patch("organizations_workspaces_users", f.db.membershipId, { active: false });
+				} else if (lost === "lifetime") {
+					const lifetime = (await ctx.db
+						.query("organizations_membership_lifetimes")
+						.withIndex("by_workspace_user", (q) => q.eq("workspaceId", f.db.workspaceId).eq("userId", f.db.userId))
+						.unique())!;
+					await ctx.db.patch("organizations_membership_lifetimes", lifetime._id, { lifetime: lifetime.lifetime + 1 });
+				}
+			});
+			// A different member cannot publish the creator's job reply, even in the same team.
+			const userId = lost === "creator" ? (await add_member(f, "other-wake-user")).userId : f.scope.userId;
+			const before = await read_thread(f);
+			await f.t.mutation(internal.ai_chat.store_job_wakeup_reply, {
+				...reply,
+				userId,
+				clientGeneratedMessageId: "wake-after-revocation",
+			});
+			expect((await read_thread(f)).messages).toEqual(before.messages);
+			expect((await read_thread(f)).thread).toEqual(before.thread);
+		},
+	);
+
+	test("store_job_wakeup_reply keeps the same file result checks as foreground replies", async () => {
+		const f = await fixture();
+		const job = await f.seed_job({ jobNumber: 1, status: "running" });
+		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
+			invocationId: job.invocationId,
+			workId: job.workId!,
+			result: job_result(0),
+		});
+		const finishMessageId = (await read_thread(f)).messages.at(-1)!._id;
+		const part = {
+			type: "tool-image_generation",
+			toolCallId: "image-1",
+			state: "output-available",
+			input: {},
+			output: {
+				title: "Generate image",
+				output: "Generate image: succeeded.",
+				metadata: { status: "succeeded", reason: null, files: [{ kind: "private", id: "pending-1" }] },
+			},
+		};
+		const reply = {
+			threadId: f.scope.threadId,
+			userId: f.scope.userId,
+			finishMessageId,
+			clientGeneratedMessageId: "image-reply",
+			content: { id: "image-reply", role: "assistant", parts: [part] },
+		};
+		const before = await read_thread(f);
+		await expect(
+			f.t.mutation(internal.ai_chat.store_job_wakeup_reply, {
+				...reply,
+				content: { ...reply.content, parts: [{ ...part, input: { result: "private bytes" } }] },
+			}),
+		).rejects.toThrow("Invalid file tool result parts");
+		expect((await read_thread(f)).messages).toEqual(before.messages);
+		await f.t.mutation(internal.ai_chat.store_job_wakeup_reply, reply);
+		expect((await read_thread(f)).messages.at(-1)?.content).toEqual(reply.content);
+	});
+
 	test("store_job_wakeup_reply hangs under a later finish on the same branch", async () => {
 		const f = await fixture();
 		await seed_messages(f);
 		const first = await f.seed_job({ jobNumber: 1, status: "running" });
 		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 			invocationId: first.invocationId,
+			workId: first.workId!,
 			result: job_result(0),
 		});
 		await f.t.mutation(internal.ai_chat.thread_run_end, { threadId: f.scope.threadId, kind: "job_wakeup" });
@@ -1361,6 +2446,7 @@ describe("job wakeup", () => {
 		const second = await f.seed_job({ jobNumber: 2, status: "running" });
 		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 			invocationId: second.invocationId,
+			workId: second.workId!,
 			result: job_result(0),
 		});
 		await f.t.mutation(internal.ai_chat.thread_run_end, { threadId: f.scope.threadId, kind: "job_wakeup" });
@@ -1383,6 +2469,7 @@ describe("job wakeup", () => {
 		const job = await f.seed_job({ jobNumber: 1, status: "running" });
 		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 			invocationId: job.invocationId,
+			workId: job.workId!,
 			result: job_result(0),
 		});
 		await f.t.mutation(internal.ai_chat.thread_run_end, { threadId: f.scope.threadId, kind: "job_wakeup" });
@@ -1417,6 +2504,7 @@ describe("job wakeup", () => {
 		const job = await f.seed_job({ jobNumber: 1, status: "running" });
 		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 			invocationId: job.invocationId,
+			workId: job.workId!,
 			result: job_result(0),
 		});
 		await f.t.mutation(internal.ai_chat.thread_run_end, { threadId: f.scope.threadId, kind: "job_wakeup" });
@@ -1454,25 +2542,37 @@ describe("job wakeup", () => {
 		const first = await f.seed_job({ jobNumber: 1, status: "running", wakeAgent });
 		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 			invocationId: first.invocationId,
+			workId: first.workId!,
 			result: job_result(0),
 		});
 		vi.setSystemTime(start + 1000);
 		const second = await f.seed_job({ jobNumber: 2, status: "running", wakeAgent });
 		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 			invocationId: second.invocationId,
+			workId: second.workId!,
 			result: job_result(0),
 		});
 		const fresh = await f.t.query(internal.ai_chat.list_finish_messages_since, {
-			threadId: f.scope.threadId,
+			source: { ...f.scope, membershipId: f.parent.membershipId, membershipLifetime: f.parent.membershipLifetime },
 			sinceMs: start,
 		});
 		expect(fresh.map((row) => row.invocationId)).toEqual([first.invocationId, second.invocationId]);
 		expect(fresh[0]?.text).toContain("Background job 1 finished");
 		const later = await f.t.query(internal.ai_chat.list_finish_messages_since, {
-			threadId: f.scope.threadId,
+			source: { ...f.scope, membershipId: f.parent.membershipId, membershipLifetime: f.parent.membershipLifetime },
 			sinceMs: start + 1000,
 		});
 		expect(later.map((row) => row.invocationId)).toEqual([second.invocationId]);
+		expect(
+			await f.t.query(internal.ai_chat.list_finish_messages_since, {
+				source: {
+					...f.scope,
+					membershipId: f.parent.membershipId,
+					membershipLifetime: f.parent.membershipLifetime + 1,
+				},
+				sinceMs: start,
+			}),
+		).toEqual([]);
 	});
 });
 
@@ -1482,7 +2582,7 @@ describe("timeout_bash_job", () => {
 		const start = Date.now();
 		const job = await f.seed_job({ jobNumber: 1 });
 		vi.setSystemTime(start + 60_000);
-		await f.t.mutation(internal.ai_chat_files.claim_bash_job, { invocationId: job.invocationId });
+		await f.t.mutation(internal.ai_chat_files.claim_bash_job, { invocationId: job.invocationId, workerGeneration: 0 });
 		vi.setSystemTime(start + PLACEHOLDER_MS + 1);
 		await f.t.mutation(internal.ai_chat_files.timeout_bash_job, {
 			invocationId: job.invocationId,
@@ -1498,7 +2598,10 @@ describe("timeout_bash_job", () => {
 		const start = Date.now();
 		const job = await f.seed_job({ jobNumber: 1 });
 		vi.setSystemTime(start + 60_000);
-		const claimed = await f.t.mutation(internal.ai_chat_files.claim_bash_job, { invocationId: job.invocationId });
+		const claimed = await f.t.mutation(internal.ai_chat_files.claim_bash_job, {
+			invocationId: job.invocationId,
+			workerGeneration: 0,
+		});
 		if (!claimed) throw new Error("Expected the claim");
 		vi.setSystemTime(claimed.row.deadlineAt);
 		await f.t.mutation(internal.ai_chat_files.timeout_bash_job, {
@@ -1535,6 +2638,7 @@ describe("timeout_bash_job", () => {
 		const job = await f.seed_job({ jobNumber: 1, status: "running" });
 		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 			invocationId: job.invocationId,
+			workId: job.workId!,
 			result: job_result(0),
 		});
 		vi.setSystemTime(start + PLACEHOLDER_MS);
@@ -1555,10 +2659,11 @@ describe("finish_bash_job", () => {
 		const start = Date.now();
 		const job = await f.seed_job({ jobNumber: 1, script: "echo hi" });
 		vi.setSystemTime(start + 60_000);
-		await f.t.mutation(internal.ai_chat_files.claim_bash_job, { invocationId: job.invocationId });
+		await f.t.mutation(internal.ai_chat_files.claim_bash_job, { invocationId: job.invocationId, workerGeneration: 0 });
 		vi.setSystemTime(start + 90_000);
 		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 			invocationId: job.invocationId,
+			workId: job.workId!,
 			result: job_result(0, "hi\n"),
 		});
 		const after = await f.read(job.invocationId);
@@ -1586,6 +2691,7 @@ describe("finish_bash_job", () => {
 		const job = await f.seed_job({ jobNumber: 1, status: "running" });
 		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 			invocationId: job.invocationId,
+			workId: job.workId!,
 			result: job_result(exitCode),
 		});
 		expect((await f.read(job.invocationId)).activity).toMatchObject({ status, errorMessage });
@@ -1604,6 +2710,7 @@ describe("finish_bash_job", () => {
 
 		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 			invocationId: job.invocationId,
+			workId: job.workId!,
 			result: job_result(0, "late\n"),
 		});
 		const late = await f.read(job.invocationId);
@@ -1615,6 +2722,7 @@ describe("finish_bash_job", () => {
 
 		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 			invocationId: job.invocationId,
+			workId: job.workId!,
 			result: job_result(1, "again\n"),
 		});
 		const again = await f.read(job.invocationId);
@@ -1628,6 +2736,7 @@ describe("finish_bash_job", () => {
 		const stdout = "x".repeat(800 * 1024);
 		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 			invocationId: job.invocationId,
+			workId: job.workId!,
 			result: job_result(0, stdout),
 		});
 		const after = await f.read(job.invocationId);
@@ -1644,6 +2753,7 @@ describe("finish_bash_job", () => {
 		// work was already done.
 		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 			invocationId: job.invocationId,
+			workId: job.workId!,
 			result: job_result(0, "x".repeat(1_200 * 1024)),
 		});
 		const after = await f.read(job.invocationId);
@@ -1666,6 +2776,7 @@ describe("finish_bash_job", () => {
 		const job = await f.seed_job({ jobNumber: 1, status: "running" });
 		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 			invocationId: job.invocationId,
+			workId: job.workId!,
 			result: job_result(0),
 		});
 		// A job result can be 700 KiB, so a finished job row must empty itself on time like a
@@ -1686,7 +2797,11 @@ describe("finish_bash_job", () => {
 		const job = await f.seed_job({ jobNumber: 1 });
 		await f.t.run((ctx) => ctx.db.delete("ai_chat_bash_invocations", job.invocationId));
 		await expect(
-			f.t.mutation(internal.ai_chat_files.finish_bash_job, { invocationId: job.invocationId, result: job_result(0) }),
+			f.t.mutation(internal.ai_chat_files.finish_bash_job, {
+				invocationId: job.invocationId,
+				workId: job.workId!,
+				result: job_result(0),
+			}),
 		).resolves.toBeNull();
 	});
 });
@@ -1706,6 +2821,39 @@ describe("handle_bash_job_complete", () => {
 					? { kind: "failed" as const, error: "boom" }
 					: { kind: "canceled" as const },
 	});
+
+	test.each(["success", "failed", "canceled"] as const)(
+		"old %s callbacks and watchdogs leave a finished job unchanged",
+		async (kind) => {
+			const f = await fixture();
+			const job = await f.seed_job({ jobNumber: 1, status: "running" });
+			await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
+				invocationId: job.invocationId,
+				workId: job.workId!,
+				result: job_result(0, "kept output"),
+			});
+			await f.t.run((ctx) => ctx.db.patch("organizations_workspaces_users", f.db.membershipId, { active: false }));
+			const before = await f.read(job.invocationId);
+			const scheduled = await f.t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect());
+			vi.setSystemTime(before.row!.deadlineAt + 1);
+			await f.t.mutation(
+				internal.ai_chat_files.handle_bash_job_complete,
+				callback(job.invocationId, job.workId!, kind),
+			);
+			await f.t.mutation(internal.ai_chat_files.timeout_bash_job, {
+				invocationId: job.invocationId,
+				expectedDeadlineAt: before.row!.deadlineAt,
+			});
+			expect(
+				await f.t.mutation(internal.ai_chat_files.claim_bash_job, {
+					invocationId: job.invocationId,
+					workerGeneration: 0,
+				}),
+			).toBeNull();
+			expect(await f.read(job.invocationId)).toEqual(before);
+			expect(await f.t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect())).toEqual(scheduled);
+		},
+	);
 
 	test("a worker that threw settles failed at once and the row is interrupted", async () => {
 		const f = await fixture();
@@ -1805,6 +2953,7 @@ describe("request_bash_job_stop", () => {
 		const finished = await f.seed_job({ jobNumber: 1, status: "running" });
 		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 			invocationId: finished.invocationId,
+			workId: finished.workId!,
 			result: job_result(0),
 		});
 		expect(await f.t.mutation(internal.ai_chat_files.request_bash_job_stop, { ...f.scope, jobNumber: 1 })).toBe(false);
@@ -1874,7 +3023,7 @@ describe("poll_bash_job", () => {
 		});
 	});
 
-	test("an Agent-mode job loses its authorization when write permission is taken away, an Ask-mode job does not", async () => {
+	test("both job modes keep running for a viewer and stop after losing read access", async () => {
 		const f = await fixture();
 		const agentJob = await f.seed_job({ jobNumber: 1, status: "running", allowDbFilesMkdir: true });
 		const askJob = await f.seed_job({ jobNumber: 2, status: "running" });
@@ -1899,13 +3048,12 @@ describe("poll_bash_job", () => {
 			authorized: true,
 		});
 
-		// `viewer` holds `content.read` and not `content.write`: the job may keep reading, but an
-		// Agent-mode job that can still write app files must be stopped within one poll.
+		// Workspace writes are checked by each command, not by the job's source read gate.
 		await f.t.run((ctx) => ctx.db.patch("access_control_role_assignments", assignmentId, { role: "viewer" }));
 		expect(await f.t.query(internal.ai_chat_files.poll_bash_job, { invocationId: agentJob.invocationId })).toEqual({
 			status: "running",
 			stopRequested: false,
-			authorized: false,
+			authorized: true,
 		});
 		expect(await f.t.query(internal.ai_chat_files.poll_bash_job, { invocationId: askJob.invocationId })).toEqual({
 			status: "running",
@@ -1938,6 +3086,7 @@ describe("list_live_thread_jobs", () => {
 		const done = await f.seed_job({ jobNumber: 4, status: "running" });
 		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 			invocationId: done.invocationId,
+			workId: done.workId!,
 			result: job_result(0),
 		});
 		const mine = await f.asUser.query(api.ai_chat_files.list_live_thread_jobs, {
@@ -1965,6 +3114,7 @@ describe("list_thread_jobs", () => {
 			const job = await f.seed_job({ jobNumber: n, status: "running", parentJobNumber: n === 10 ? 1 : undefined });
 			await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 				invocationId: job.invocationId,
+				workId: job.workId!,
 				result: job_result(0),
 			});
 		}
@@ -2005,7 +3155,7 @@ describe("list_thread_jobs", () => {
 		).rejects.toThrow("Too many job numbers");
 	});
 
-	test("shows only the caller's jobs and refuses a non-member", async () => {
+	test("refuses another member and a non-member", async () => {
 		const f = await fixture();
 		await f.seed_job({ jobNumber: 1, status: "running" });
 		const other = await add_member(f, "bash-jobs-lister");
@@ -2014,9 +3164,9 @@ describe("list_thread_jobs", () => {
 			{ kind: "newest" as const },
 			{ kind: "numbers" as const, jobNumbers: [1] },
 		]) {
-			expect(
-				await f.t.query(internal.ai_chat_files.list_thread_jobs, { ...f.scope, userId: other.userId, select }),
-			).toEqual([]);
+			await expect(
+				f.t.query(internal.ai_chat_files.list_thread_jobs, { ...f.scope, userId: other.userId, select }),
+			).rejects.toThrow("Unauthorized");
 		}
 		const stranger = await f.t.run((ctx) => test_mocks_fill_db_with.membership(ctx, { organizationName: "elsewhere" }));
 		await expect(
@@ -2036,6 +3186,7 @@ describe("read_job_output", () => {
 		const job = await f.seed_job({ jobNumber: 1, status: "running" });
 		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 			invocationId: job.invocationId,
+			workId: job.workId!,
 			result: job_result(0, "out\n"),
 		});
 		vi.setSystemTime(start + 7 * 24 * 60 * 60 * 1000 - 1);
@@ -2067,6 +3218,7 @@ describe("read_job_exit_codes", () => {
 		});
 		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 			invocationId: timedOut.invocationId,
+			workId: timedOut.workId!,
 			result: job_result(0, "late\n"),
 		});
 		// The row really holds the worker's own 0, so the 124 below is the Activity winning over it.
@@ -2078,11 +3230,13 @@ describe("read_job_exit_codes", () => {
 		const stopped = await f.seed_job({ jobNumber: 2, status: "running" });
 		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 			invocationId: stopped.invocationId,
+			workId: stopped.workId!,
 			result: job_result(143),
 		});
 		const failed = await f.seed_job({ jobNumber: 3, status: "running" });
 		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 			invocationId: failed.invocationId,
+			workId: failed.workId!,
 			result: job_result(5),
 		});
 
@@ -2117,6 +3271,7 @@ describe("read_job_exit_codes", () => {
 			const job = await f.seed_job({ jobNumber: jobNumber!, status: "running" });
 			await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 				invocationId: job.invocationId,
+				workId: job.workId!,
 				result: job_result(exitCode!),
 			});
 		}
@@ -2130,7 +3285,7 @@ describe("read_job_exit_codes", () => {
 		]);
 	});
 
-	test("refuses a long list, hides another member's job, and refuses a non-member", async () => {
+	test("refuses a long list, another member, and a non-member", async () => {
 		const f = await fixture();
 		await f.seed_job({ jobNumber: 1, status: "running" });
 		await expect(
@@ -2141,13 +3296,13 @@ describe("read_job_exit_codes", () => {
 		).rejects.toThrow("Too many job numbers");
 
 		const other = await add_member(f, "bash-jobs-code-reader");
-		expect(
-			await f.t.query(internal.ai_chat_files.read_job_exit_codes, {
+		await expect(
+			f.t.query(internal.ai_chat_files.read_job_exit_codes, {
 				...f.scope,
 				userId: other.userId,
 				jobNumbers: [1],
 			}),
-		).toEqual([{ jobNumber: 1, exitCode: 1 }]);
+		).rejects.toThrow("Unauthorized");
 
 		const stranger = await f.t.run((ctx) => test_mocks_fill_db_with.membership(ctx, { organizationName: "elsewhere" }));
 		await expect(
@@ -2206,6 +3361,7 @@ describe("activities", () => {
 			const job = await f.seed_job({ jobNumber: n, status: "running" });
 			await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 				invocationId: job.invocationId,
+				workId: job.workId!,
 				result: job_result(0),
 			});
 			jobs.push(job);
@@ -2239,11 +3395,20 @@ describe("ai_chat_files_db_delete_job_batch", () => {
 		const job = await f.seed_job({ jobNumber: 1, status: "running" });
 		await f.t.run(async (ctx) => {
 			// A receipt outlives its cleaned-up run and Activity; only the ids must be real.
+			const scope = {
+				organizationId: f.db.organizationId,
+				workspaceId: f.db.workspaceId,
+				membershipId: f.db.membershipId,
+				membershipLifetime: f.parent.membershipLifetime,
+			};
 			const runId = await ctx.db.insert("files_transfer_runs", {
 				organizationId: f.db.organizationId,
 				workspaceId: f.db.workspaceId,
 				userId: f.db.userId,
+				sourceScope: scope,
+				destinationScope: scope,
 				requestId: "jobs-run",
+				reserveCursor: null,
 				requestHash: "hash",
 				kind: "copy",
 				sourceView: "draft",

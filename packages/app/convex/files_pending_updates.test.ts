@@ -22,6 +22,7 @@ import {
 	files_nodes_db_insert_file_content_docs,
 } from "./files_nodes_content.ts";
 import { files_pending_nodes_db_create } from "./files_pending_nodes.ts";
+import { files_media_dependencies_db_create, files_media_dependencies_db_seal } from "./files_media_dependencies.ts";
 import { files_nodes_db_get_content_version } from "./files_nodes.ts";
 import {
 	files_pending_updates_db_drop_content_for_node,
@@ -37,6 +38,7 @@ import { r2_confirmed_object_delete, r2_create_asset_key } from "./r2_client.ts"
 import {
 	files_db_load_pending_update_yjs_state_bytes,
 	files_db_get_pending_update,
+	files_db_patch_pending_update,
 	files_db_reschedule_pending_update_cleanup_for_user,
 	files_default_text_shape_for_name,
 	files_ROOT_ID,
@@ -1370,6 +1372,8 @@ async function run_agent_move_for_test(
 ) {
 	const started = await draft.t.mutation(internal.files_transfer.start_for_agent, {
 		membershipId: draft.membershipId,
+		sourceWorkspace: "current",
+		destinationWorkspace: "current",
 		threadId: args.threadId,
 		requestId: crypto.randomUUID(),
 		kind: "move",
@@ -1427,7 +1431,8 @@ async function save_pending_review_for_test(
 				.withIndex("by_run_status_deleteLast_order", (q) => q.eq("runId", runId).eq("status", "preparing"))
 				.first(),
 		);
-		if (!unit) throw new Error("Expected a review worker");
+		// A blocked unit settles in this advance, and the next advance finishes the run.
+		if (!unit) continue;
 		await draft.t.action(internal.files_pending_update_runs.prepare_unit, {
 			runId,
 			fence: run.fence,
@@ -1779,6 +1784,8 @@ describe("private pending text", () => {
 			const threadId = await t.run((ctx) => seed_chat_thread({ ctx, ...scope }));
 			const started = await t.mutation(internal.files_transfer.start_for_agent, {
 				membershipId,
+				sourceWorkspace: "current",
+				destinationWorkspace: "current",
 				threadId,
 				requestId: "private-replacement",
 				kind: "move",
@@ -1913,10 +1920,13 @@ describe("private pending text", () => {
 			} else {
 				vi.useFakeTimers();
 				try {
-					vi.setSystemTime(proposal.updatedAt + 4 * 60 * 60 * 1000 + 1);
+					const cleanup = await t.run((ctx) =>
+						list_pending_update_cleanup_tasks({ ctx, pendingUpdateId: proposal._id }),
+					);
+					vi.setSystemTime(cleanup[0]!.expiresAt);
 					await t.mutation(internal.files_pending_updates.remove_file_pending_update_if_expired, {
-						pendingUpdateId: proposal._id,
-						expectedUpdatedAt: proposal.updatedAt,
+						cleanupTaskId: cleanup[0]!._id,
+						expiryGeneration: cleanup[0]!.expiryGeneration,
 					});
 				} finally {
 					vi.useRealTimers();
@@ -2077,7 +2087,8 @@ describe("private pending text", () => {
 			)._nay?.name,
 		).toBe("needs_review");
 		const incomplete = await save_pending_review_for_test(draft, [proposal]);
-		expect(incomplete?.activity).toMatchObject({ status: "failed", errorCode: "needs_review" });
+		// The blocked unit holds `needs_review`; the Activity only says that changes still need review.
+		expect(incomplete?.activity).toMatchObject({ status: "failed", errorMessage: "Some changes still need review." });
 		expect(incomplete?.run.needsReviewIds).toEqual([occupantProposal._id]);
 		expect(await t.run((ctx) => ctx.db.query("files_nodes").collect())).toEqual(savedBefore);
 		expect(await t.run((ctx) => ctx.db.get("files_pending_updates", occupantProposal._id))).toEqual(occupantProposal);
@@ -2899,6 +2910,855 @@ describe("private pending text", () => {
 		expect(
 			await asUser.query(api.files_pending_updates.get_file_pending_target, { membershipId, target }),
 		).toMatchObject({ entry: { path: "/renamed.txt" } });
+	});
+});
+
+describe("pending Copy disclosure", () => {
+	test("text copied over a saved file keeps destination sharing", async () => {
+		const t = test_convex();
+		const source = await t.run((ctx) =>
+			seed_file_with_markdown({ ctx, path: "/source.md", name: "source.md", markdown: "# Source" }),
+		);
+		const destination = await t.run((ctx) =>
+			seed_file_with_markdown({
+				ctx,
+				path: "/destination.md",
+				name: "destination.md",
+				markdown: "# Destination",
+				membership: source,
+			}),
+		);
+		const proposed = await upsert_file_pending_update_internal_for_test({
+			t,
+			...destination,
+			unstagedMarkdown: "# Source",
+			copiedFrom: { nodeId: source.nodeId, path: "/source.md" },
+		});
+		if (proposed._nay) throw new Error(proposed._nay.message);
+		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: source.userId });
+		const args = { membershipId: source.membershipId, target: { kind: "saved" as const, id: destination.nodeId } };
+		const view = await asUser.query(api.files_pending_updates.get_file_pending_target, args);
+		expect(view?.entry.pendingUpdate?.content).toBeDefined();
+		expect(view?.entry.pendingUpdate?.pendingReplacement).toBeUndefined();
+		expect(view?.copyDestination).toEqual({ personal: false, replacement: true, folderPath: "/" });
+	});
+});
+
+describe.each(["saved", "private"] as const)("%s Copy action replies", (kind) => {
+	test.each(["prepare", "upsert", "upsert-refresh", "rebase", "rebase-refresh"] as const)(
+		"omits source proof from %s and keeps the exact stored proposal",
+		async (operation) => {
+			const t = test_convex();
+			const source = await t.run((ctx) =>
+				seed_file_with_markdown({ ctx, path: "/source.md", name: "source.md", markdown: "# Source" }),
+			);
+			const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: source.userId });
+			const scope = { organizationId: source.organizationId, workspaceId: source.workspaceId, userId: source.userId };
+			let target: Doc<"files_pending_updates">["target"];
+			if (kind === "private") {
+				const threadId = await t.run((ctx) => seed_chat_thread({ ctx, ...scope }));
+				const started = await t.mutation(internal.files_transfer.start_for_agent, {
+					membershipId: source.membershipId,
+					threadId,
+					requestId: "action-redaction",
+					sourceWorkspace: "current",
+					destinationWorkspace: "current",
+					kind: "copy",
+					expectedSourceCount: 1,
+					sources: [{ kind: "saved", id: source.nodeId }],
+					targetParent: { kind: "root" },
+					targetPath: "/",
+					targetName: "destination.md",
+					missingParentNames: [],
+					conflictPolicy: { file: "error", folder: "error" },
+				});
+				if (started._nay) throw new Error(started._nay.message);
+				const runId = started._yay.runId;
+				expect(
+					await t.mutation(internal.files_transfer.seal_for_agent, {
+						membershipId: source.membershipId,
+						threadId,
+						runId,
+					}),
+				).toEqual({ _yay: null });
+				for (let step = 0; step < 30; step++) {
+					await t.mutation(internal.files_transfer.advance, { runId });
+					const item = await t.run((ctx) =>
+						ctx.db
+							.query("files_transfer_items")
+							.withIndex("by_run_order", (q) => q.eq("runId", runId))
+							.first(),
+					);
+					if (item?.workId && item.state === "copying") {
+						await t.action(internal.files_nodes_content.copy_transfer_file, {
+							itemId: item._id,
+							attempt: item.attempt,
+						});
+						await t.mutation(internal.files_transfer.handle_copy_complete, {
+							workId: item.workId,
+							context: { itemId: item._id, attempt: item.attempt },
+							result: { kind: "success", returnValue: null },
+						});
+					}
+					const run = await asUser.query(api.files_transfer.get, { membershipId: source.membershipId, runId });
+					if (run?.activity.status === "succeeded") break;
+				}
+				const item = await t.run((ctx) =>
+					ctx.db
+						.query("files_transfer_items")
+						.withIndex("by_run_order", (q) => q.eq("runId", runId))
+						.first(),
+				);
+				if (item?.state !== "completed" || item.outputTarget?.kind !== "private")
+					throw new Error("Expected a copied private file");
+				target = item.outputTarget;
+			} else {
+				const destination = await t.run((ctx) =>
+					seed_file_with_markdown({
+						ctx,
+						path: "/destination.md",
+						name: "destination.md",
+						markdown: "# Destination",
+						membership: source,
+					}),
+				);
+				target = { kind: "saved", id: destination.nodeId };
+				const copied = await upsert_file_pending_update_internal_for_test({
+					t,
+					...destination,
+					unstagedMarkdown: "# Source",
+					copiedFrom: { nodeId: source.nodeId, path: "/source.md" },
+				});
+				if (copied._nay) throw new Error(copied._nay.message);
+			}
+			const args = { membershipId: source.membershipId, target };
+			const visible = await asUser.query(api.files_pending_updates.get_file_pending_update, args);
+			if (!visible?.content) throw new Error("Expected copied text");
+			expect(visible.copiedFrom?.path).toBe("/source.md");
+			const before = await t.run((ctx) => ctx.db.get("files_pending_updates", visible._id));
+			if (!before?.content) throw new Error("Expected the stored Copy");
+			expect(
+				await asUser.mutation(api.files_nodes.rename_node, {
+					membershipId: source.membershipId,
+					nodeId: source.nodeId,
+					path: "renamed.md",
+				}),
+			).toEqual({ _yay: null });
+			let returned: Doc<"files_pending_updates"> | null;
+			if (operation === "prepare") {
+				const result = await asUser.action(api.files_pending_updates.prepare_file_pending_update_for_review, {
+					...args,
+					pendingUpdateId: before._id,
+				});
+				if (result._nay) throw new Error(result._nay.message);
+				returned = result._yay.pendingUpdate;
+			} else {
+				const writing = await asUser.mutation(
+					api.files_pending_updates.create_file_pending_update_operation_batch,
+					args,
+				);
+				if (writing._nay) throw new Error(writing._nay.message);
+				const operationBatchId = writing._yay.operationBatchId;
+				if (operation === "upsert" || operation === "upsert-refresh") {
+					expect(
+						await asUser.mutation(api.files_pending_updates.stage_file_pending_update_text_input, {
+							membershipId: source.membershipId,
+							operationBatchId,
+							role: "unstaged",
+							text: operation === "upsert" ? "# Source\n\nReview edit" : "# Source",
+						}),
+					).toEqual({ _yay: null });
+					const result = await asUser.action(api.files_pending_updates.upsert_file_pending_update, {
+						...args,
+						operationBatchId,
+						pendingUpdateId: before._id,
+						reviewedRevision: before.revision,
+					});
+					if (result._nay) throw new Error(result._nay.message);
+					returned = result._yay.pendingUpdate;
+				} else {
+					const bytes = await t.run((ctx) => read_pending_row_state_bytes({ ctx, pendingUpdate: before }));
+					if (operation === "rebase") {
+						const branch = files_yjs_doc_create_from_array_buffer_update(bytes.unstagedBytes);
+						expect(
+							files_yjs_doc_update_from_text({
+								rootKind: "rich_text",
+								mut_yjsDoc: branch,
+								text: "# Source\n\nReview edit",
+							})._nay,
+						).toBeUndefined();
+						bytes.unstagedBytes = files_u8_to_array_buffer(encodeStateAsUpdate(branch));
+						branch.destroy();
+					}
+					for (const [role, update] of [
+						["base", bytes.baseBytes],
+						["staged", bytes.stagedBytes],
+						["unstaged", bytes.unstagedBytes],
+					] as const) {
+						expect(
+							(
+								await asUser.mutation(api.files_pending_updates.stage_file_pending_update_state_page, {
+									membershipId: source.membershipId,
+									operationBatchId,
+									role,
+									pageIndex: 0,
+									bytes: update,
+								})
+							)._nay,
+						).toBeUndefined();
+						expect(
+							(
+								await asUser.mutation(api.files_pending_updates.seal_file_pending_update_state, {
+									membershipId: source.membershipId,
+									operationBatchId,
+									role,
+									expectedTotalBytes: update.byteLength,
+								})
+							)._nay,
+						).toBeUndefined();
+					}
+					const result = await asUser.action(api.files_pending_updates.persist_file_pending_update_rebased_state, {
+						...args,
+						operationBatchId,
+						pendingUpdateId: before._id,
+						reviewedRevision: before.revision,
+						baseYjsSequence: before.content.base.kind === "yjs" ? before.content.base.sequence : 0,
+					});
+					if (result._nay) throw new Error(result._nay.message);
+					returned = result._yay.pendingUpdate;
+				}
+			}
+			const stored = await t.run((ctx) => ctx.db.get("files_pending_updates", before._id));
+			expect(stored?.copiedFrom).toEqual(before.copiedFrom);
+			expect(returned?._id).toBe(before._id);
+			expect(returned?.copiedFrom).toBeUndefined();
+			expect(returned).toEqual({ ...stored, copiedFrom: undefined });
+			if (operation === "upsert" || operation === "rebase") {
+				const text = await t.run((ctx) => read_pending_row_markdown_state({ ctx, pendingUpdate: stored! }));
+				expect(text.unstagedMarkdown).toContain("Review edit");
+			}
+		},
+	);
+});
+
+describe("copied-parent text Save", () => {
+	test.each(["plain", "rich_text", "asset"] as const)("publishes %s through Save-only preparation", async (kind) => {
+		const f = await create_private_text_for_test();
+		const scope = { organizationId: f.organizationId, workspaceId: f.workspaceId, userId: f.userId };
+		const source = await f.t.mutation(internal.files_nodes.create_folder_node_by_path, { ...scope, path: "/source" });
+		if (source._nay) throw new Error(source._nay.message);
+		await set_pending_test_read_only(f.asUser, f.membershipId, source._yay.nodeId);
+		const thread = await f.asUser.mutation(api.ai_chat.thread_create, {
+			membershipId: f.membershipId,
+			clientGeneratedId: "copied-parent-text",
+			lastMessageAt: Date.now(),
+		});
+		if (thread._nay) throw new Error(thread._nay.message);
+		const started = await f.t.mutation(internal.files_transfer.start_for_agent, {
+			membershipId: f.membershipId,
+			threadId: thread._yay.threadId,
+			requestId: "copied-parent-text",
+			sourceWorkspace: "current",
+			destinationWorkspace: "current",
+			kind: "copy",
+			expectedSourceCount: 1,
+			sources: [{ kind: "saved", id: source._yay.nodeId }],
+			targetParent: { kind: "root" },
+			targetPath: "/",
+			targetName: "copied",
+			missingParentNames: [],
+			conflictPolicy: { file: "error", folder: "error" },
+		});
+		if (started._nay) throw new Error(started._nay.message);
+		expect(
+			await f.t.mutation(internal.files_transfer.seal_for_agent, {
+				membershipId: f.membershipId,
+				threadId: thread._yay.threadId,
+				runId: started._yay.runId,
+			}),
+		).toEqual({ _yay: null });
+		for (let step = 0; step < 20; step++) {
+			await f.t.mutation(internal.files_transfer.advance, { runId: started._yay.runId });
+			if ((await f.t.run((ctx) => ctx.db.get("activities", started._yay.activityId)))?.status === "succeeded") break;
+		}
+		expect(await f.t.run((ctx) => ctx.db.get("activities", started._yay.activityId))).toMatchObject({
+			status: "succeeded",
+		});
+		const child = await create_private_text_for_test(
+			{
+				path: kind === "plain" ? "/copied/child.txt" : "/copied/child.md",
+				staged: "Saved child",
+				collaborative: kind !== "asset",
+			},
+			{ t: f.t, membershipId: f.membershipId },
+		);
+		const parent = await f.t.run((ctx) =>
+			ctx.db
+				.query("files_pending_nodes")
+				.withIndex("by_organization_workspace_user_parent_state_name", (q) =>
+					q
+						.eq("organizationId", f.organizationId)
+						.eq("workspaceId", f.workspaceId)
+						.eq("userId", f.userId)
+						.eq("parent.kind", "root")
+						.eq("parent.id", undefined)
+						.eq("state", "active")
+						.eq("name", "copied"),
+				)
+				.unique(),
+		);
+		if (!parent) throw new Error("Expected the copied parent");
+		const proposal = await f.t.run((ctx) =>
+			ctx.db
+				.query("files_pending_updates")
+				.withIndex("by_target", (q) => q.eq("target.kind", "private").eq("target.id", parent._id))
+				.unique(),
+		);
+		if (!proposal) throw new Error("Expected the parent proposal");
+		expect(
+			(
+				await f.asUser.action(api.files_pending_updates.save_file_pending_update, {
+					membershipId: f.membershipId,
+					target: proposal.target,
+					pendingUpdateId: proposal._id,
+					reviewedRevision: proposal.revision,
+				})
+			)._nay,
+		).toBeUndefined();
+		expect(
+			await f.asUser.query(api.files_pending_updates.get_file_pending_target, {
+				membershipId: f.membershipId,
+				target: child.target,
+			}),
+		).toMatchObject({ canEdit: false, canAccept: true });
+		expect(
+			(
+				await f.asUser.mutation(api.files_pending_updates.create_file_pending_update_operation_batch, {
+					membershipId: f.membershipId,
+					target: child.target,
+				})
+			)._nay,
+		).toBeDefined();
+		const saved = await f.asUser.action(api.files_pending_updates.save_file_pending_update, {
+			membershipId: f.membershipId,
+			target: child.target,
+			pendingUpdateId: child.pendingUpdateId,
+			reviewedRevision: child.proposal.revision,
+		});
+		expect(saved._nay).toBeUndefined();
+		if (saved._nay || saved._yay.target.kind !== "saved") throw new Error("Expected the saved child");
+		expect(await f.t.run((ctx) => ctx.db.get("files_nodes", saved._yay.target.id as Id<"files_nodes">))).toMatchObject({
+			path: child.path,
+			collaborationEnabled: kind !== "asset",
+			textKind: kind === "plain" ? "plain_text" : "rich_text",
+		});
+		expect(await f.t.run((ctx) => ctx.db.get("files_pending_updates", child.pendingUpdateId))).toBeNull();
+	});
+});
+
+describe("prepared Save media proof", () => {
+	test("an asset Save with nothing staged validates media without changing the proposal or file", async () => {
+		vi.useFakeTimers();
+		const f = await create_private_text_for_test({ path: "/noop-proof.md", staged: "# Before", collaborative: false });
+		const saved = await f.asUser.action(api.files_pending_updates.save_file_pending_update, {
+			membershipId: f.membershipId,
+			target: f.target,
+			pendingUpdateId: f.proposal._id,
+			reviewedRevision: f.proposal.revision,
+		});
+		if (saved._nay || saved._yay.target.kind !== "saved") throw new Error("Expected the saved file");
+		const target = saved._yay.target;
+		const edited = await upsert_file_pending_update_public_for_test(f.asUser, {
+			membershipId: f.membershipId,
+			nodeId: target.id,
+			stagedMarkdown: "# Before",
+			unstagedMarkdown: "# After",
+		});
+		if (edited._nay || !edited._yay.pendingUpdate) throw new Error("Expected the pending edit");
+		const proposal = edited._yay.pendingUpdate;
+		await f.t.run(async (ctx) => {
+			const created = await files_media_dependencies_db_create(ctx, {
+				organizationId: f.organizationId,
+				workspaceId: f.workspaceId,
+				userId: f.userId,
+				owner: { kind: "proposal", pendingUpdateId: proposal._id },
+				expectedCount: 0,
+			});
+			if (created._nay) throw new Error(created._nay.message);
+			expect(await files_media_dependencies_db_seal(ctx, { setId: created._yay, generation: 0 })).toEqual({
+				_yay: null,
+			});
+			await files_db_patch_pending_update(ctx, proposal._id, { mediaDependencySetId: created._yay });
+		});
+		const before = await f.t.run(async (ctx) => ({
+			proposal: await ctx.db.get("files_pending_updates", proposal._id),
+			file: await ctx.db.get("files_nodes", target.id),
+		}));
+		const savesBefore = file_save_events().length;
+		expect(
+			(
+				await f.asUser.action(api.files_pending_updates.save_file_pending_update, {
+					membershipId: f.membershipId,
+					target,
+					pendingUpdateId: proposal._id,
+					reviewedRevision: proposal.revision,
+				})
+			)._nay,
+		).toBeUndefined();
+		expect(
+			await f.t.run(async (ctx) => ({
+				proposal: await ctx.db.get("files_pending_updates", proposal._id),
+				file: await ctx.db.get("files_nodes", target.id),
+			})),
+		).toEqual(before);
+		expect(file_save_events()).toHaveLength(savesBefore);
+		const inputs = await f.t.run((ctx) => ctx.db.query("files_pending_update_text_inputs").collect());
+		expect(inputs.some((input) => input.mediaValidation?.pendingUpdateId === proposal._id)).toBe(true);
+	});
+
+	test.each(["save", "discard", "expiry"] as const)("%s retires the proposal's media set", async (operation) => {
+		vi.useFakeTimers();
+		const f = await create_private_text_for_test({ path: "/retire.md", staged: "# Retained" });
+		const setId = await f.t.run(async (ctx) => {
+			const created = await files_media_dependencies_db_create(ctx, {
+				organizationId: f.organizationId,
+				workspaceId: f.workspaceId,
+				userId: f.userId,
+				owner: { kind: "proposal", pendingUpdateId: f.proposal._id },
+				expectedCount: 0,
+			});
+			if (created._nay) throw new Error(created._nay.message);
+			expect(await files_media_dependencies_db_seal(ctx, { setId: created._yay, generation: 0 })).toEqual({
+				_yay: null,
+			});
+			await files_db_patch_pending_update(ctx, f.proposal._id, { mediaDependencySetId: created._yay });
+			return created._yay;
+		});
+		const args = {
+			membershipId: f.membershipId,
+			target: f.target,
+			pendingUpdateId: f.proposal._id,
+			reviewedRevision: f.proposal.revision,
+		};
+		if (operation === "save") {
+			expect((await f.asUser.action(api.files_pending_updates.save_file_pending_update, args))._nay).toBeUndefined();
+		} else if (operation === "discard") {
+			expect(await f.asUser.mutation(api.files_pending_updates.discard_file_pending_update, args)).toEqual({
+				_yay: null,
+			});
+		} else {
+			const cleanup = await f.t.run((ctx) =>
+				ctx.db
+					.query("files_pending_updates_cleanup_tasks")
+					.withIndex("by_pendingUpdate", (q) => q.eq("pendingUpdateId", f.proposal._id))
+					.unique(),
+			);
+			if (!cleanup) throw new Error("Expected the expiry task");
+			vi.setSystemTime(cleanup.expiresAt);
+			await f.t.mutation(internal.files_pending_updates.remove_file_pending_update_if_expired, {
+				cleanupTaskId: cleanup._id,
+				expiryGeneration: cleanup.expiryGeneration,
+			});
+		}
+		if (operation !== "save") {
+			const cleanup = await f.t.run((ctx) => ctx.db.query("files_pending_node_cleanup_tasks").first());
+			if (!cleanup) throw new Error("Expected the private cleanup task");
+			await f.t.mutation(internal.files_pending_nodes.cleanup_discarded_node, { cleanupTaskId: cleanup._id });
+		}
+		expect(await f.t.run((ctx) => ctx.db.get("files_pending_updates", f.proposal._id))).toBeNull();
+		expect(await f.t.run((ctx) => ctx.db.get("files_media_dependency_sets", setId))).toMatchObject({
+			owner: { kind: "cleanup" },
+			generation: 1,
+		});
+		await f.t.mutation(internal.files_media_dependencies.cleanup_set, { setId });
+		expect(await f.t.run((ctx) => ctx.db.get("files_media_dependency_sets", setId))).toBeNull();
+	});
+
+	test.each(["private", "saved_yjs", "saved_asset"] as const)(
+		"%s refuses a missing proof before publishing",
+		async (kind) => {
+			const f = await create_private_text_for_test({
+				path: "/proof.md",
+				staged: "# Before",
+				collaborative: kind !== "saved_asset",
+			});
+			let target: Doc<"files_pending_updates">["target"] = f.target;
+			let proposal = f.proposal;
+			if (kind !== "private") {
+				const saved = await f.asUser.action(api.files_pending_updates.save_file_pending_update, {
+					membershipId: f.membershipId,
+					target,
+					pendingUpdateId: proposal._id,
+					reviewedRevision: proposal.revision,
+				});
+				if (saved._nay || saved._yay.target.kind !== "saved") throw new Error("Expected the saved file");
+				target = saved._yay.target;
+				const edited = await upsert_file_pending_update_public_for_test(f.asUser, {
+					membershipId: f.membershipId,
+					nodeId: target.id,
+					stagedMarkdown: "# After",
+					unstagedMarkdown: "# After",
+				});
+				if (edited._nay || !edited._yay.pendingUpdate) throw new Error("Expected the pending edit");
+				proposal = edited._yay.pendingUpdate;
+			}
+			// The Copy producer owns this empty set. Use its helpers, not raw set docs.
+			await f.t.run(async (ctx) => {
+				const created = await files_media_dependencies_db_create(ctx, {
+					organizationId: f.organizationId,
+					workspaceId: f.workspaceId,
+					userId: f.userId,
+					owner: { kind: "proposal", pendingUpdateId: proposal._id },
+					expectedCount: 0,
+				});
+				if (created._nay) throw new Error(created._nay.message);
+				expect(await files_media_dependencies_db_seal(ctx, { setId: created._yay, generation: 0 })).toEqual({
+					_yay: null,
+				});
+				await files_db_patch_pending_update(ctx, proposal._id, { mediaDependencySetId: created._yay });
+			});
+			const args = {
+				membershipId: f.membershipId,
+				target,
+				pendingUpdateId: proposal._id,
+				reviewedRevision: proposal.revision,
+			};
+			const prepared = await f.t.action((ctx) =>
+				files_pending_updates_action_prepare_content(ctx, {
+					...args,
+					userId: f.userId,
+					reviewedPrivateParentIds: [],
+				}),
+			);
+			if (prepared._nay) throw new Error(prepared._nay.message);
+			const before = await f.t.run(async (ctx) => ({
+				proposal: await ctx.db.get("files_pending_updates", proposal._id),
+				nodes: await ctx.db.query("files_nodes").collect(),
+			}));
+			const refused = await f.t.mutation(internal.files_pending_updates.commit_prepared_content, {
+				userId: f.userId,
+				prepared: prepared._yay,
+			});
+			expect(refused).toMatchObject({ _nay: { name: "media_validation_changed" } });
+			expect(
+				await f.t.run(async (ctx) => ({
+					proposal: await ctx.db.get("files_pending_updates", proposal._id),
+					nodes: await ctx.db.query("files_nodes").collect(),
+				})),
+			).toEqual(before);
+			await f.t.mutation(internal.files_pending_updates.retire_prepared_content, { prepared: prepared._yay });
+			const saved = await f.asUser.action(api.files_pending_updates.save_file_pending_update, args);
+			expect(saved._nay).toBeUndefined();
+			expect(saved._yay?.target.kind).toBe("saved");
+		},
+	);
+});
+
+describe("archived-parent draft recovery", () => {
+	async function fixture(nested = false) {
+		vi.useFakeTimers();
+		vi.spyOn(RateLimiter.prototype, "limit").mockResolvedValue({ ok: true, retryAfter: 0 });
+		const t = test_convex();
+		const owner = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const home = await t.run((ctx) =>
+			test_mocks_fill_db_with.membership(ctx, { organizationName: "personal", workspaceName: "home" }),
+		);
+		const asOwner = t.withIdentity({ issuer: "https://clerk.test", external_id: owner.userId });
+		expect(
+			await asOwner.mutation(api.organizations.invite_user_to_organization_workspace, {
+				organizationId: owner.organizationId,
+				workspaceId: owner.workspaceId,
+				userIdToAdd: home.userId,
+			}),
+		).toEqual({ _yay: null });
+		const membership = await t.run((ctx) =>
+			ctx.db
+				.query("organizations_workspaces_users")
+				.withIndex("by_workspace_user_active", (q) =>
+					q.eq("workspaceId", owner.workspaceId).eq("userId", home.userId).eq("active", true),
+				)
+				.first(),
+		);
+		if (!membership) throw new Error("Expected the draft owner's membership");
+		const folder = await asOwner.mutation(api.files_nodes.create_folder_node, {
+			membershipId: owner.membershipId,
+			parentId: files_ROOT_ID,
+			path: "retained",
+		});
+		if (folder._nay) throw new Error(folder._nay.message);
+		const draft = await create_private_text_for_test(
+			{
+				path: nested ? "/retained/outer/inner/draft.txt" : "/retained/draft.txt",
+				staged: "accepted text\n",
+				unstaged: "proposed text\n",
+			},
+			{ t, membershipId: membership._id },
+		);
+		expect(
+			await asOwner.mutation(api.files_nodes.archive_nodes, {
+				membershipId: owner.membershipId,
+				nodeIds: [folder._yay.nodeId],
+			}),
+		).toEqual({ _yay: null });
+		return { ...draft, owner, asOwner, parentId: folder._yay.nodeId };
+	}
+
+	test.each([false, true])("reads retained branches without reopening paths or Save (nested %s)", async (nested) => {
+		const f = await fixture(nested);
+		const { asUser, membershipId, target, proposal, pendingUpdateId } = f;
+		const before = await read_pending_review_state_for_test(f.t);
+		const view = await asUser.query(api.files_pending_updates.get_file_pending_target, { membershipId, target });
+		expect(view).toMatchObject({
+			entry: { path: f.path, pendingUpdate: { _id: pendingUpdateId } },
+			readiness: "ready",
+			canEdit: false,
+			canAccept: false,
+			canAcceptWithParents: false,
+			recovery: { savedParentId: f.parentId, expiresAt: expect.any(Number) },
+		});
+		const page = await asUser.query(api.files_pending_updates.list_files_pending_updates, {
+			membershipId,
+			paginationOpts: { cursor: null, numItems: 5 },
+		});
+		expect(page.page).toContainEqual(
+			expect.objectContaining({
+				kind: "entry",
+				recovery: expect.objectContaining({ savedParentId: f.parentId }),
+			}),
+		);
+		expect(
+			await asUser.query(api.files_pending_updates.get_file_pending_update, { membershipId, target }),
+		).toMatchObject({ _id: pendingUpdateId, content: proposal.content });
+		for (const [stateId, text] of [
+			[proposal.content!.stagedStateId, "accepted text\n"],
+			[proposal.content!.unstagedStateId, "proposed text\n"],
+		] as const) {
+			const state = await asUser.query(api.files_pending_updates.get_file_pending_update_state_page, {
+				membershipId,
+				target,
+				stateId,
+				pageIndex: 0,
+			});
+			expect(state).not.toBeNull();
+			const decoded = files_yjs_doc_create_from_array_buffer_update(state!.bytes);
+			expect(files_yjs_doc_get_text({ yjsDoc: decoded, rootKind: "plain_text" })._yay).toBe(text);
+			decoded.destroy();
+		}
+		expect(await asUser.query(api.files_nodes.get_visible_target_by_path, { membershipId, path: f.path })).toBeNull();
+		expect(
+			(
+				await asUser.action(api.files_pending_updates.save_file_pending_update, {
+					membershipId,
+					target,
+					pendingUpdateId,
+					reviewedRevision: proposal.revision,
+				})
+			)._nay,
+		).toBeDefined();
+		expect(
+			(
+				await asUser.mutation(api.files_pending_updates.create_file_pending_update_operation_batch, {
+					membershipId,
+					target,
+				})
+			)._nay,
+		).toBeDefined();
+		expect(await read_pending_review_state_for_test(f.t)).toEqual(before);
+		expect(
+			await f.asOwner.mutation(api.files_nodes.unarchive_nodes, {
+				membershipId: f.owner.membershipId,
+				nodeIds: [f.parentId],
+			}),
+		).toEqual({ _yay: null });
+		expect(
+			await asUser.query(api.files_pending_updates.get_file_pending_target, { membershipId, target }),
+		).toMatchObject({ canEdit: true, canAcceptWithParents: true });
+	});
+
+	test("downloads captured bytes under an archived parent without changing its asset or expiry", async () => {
+		const f = await fixture();
+		await f.asOwner.mutation(api.files_nodes.unarchive_nodes, {
+			membershipId: f.owner.membershipId,
+			nodeIds: [f.parentId],
+		});
+		const scope = {
+			organizationId: f.organizationId,
+			workspaceId: f.workspaceId,
+			userId: f.userId,
+			membershipId: f.membershipId,
+		};
+		const prepared = await f.t.mutation(internal.files_ingestion.prepare_file, {
+			...scope,
+			requestId: "recovery-bytes",
+			attemptId: "one",
+			path: "/retained/capture.bin",
+			size: 4,
+			contentType: "application/octet-stream",
+			digest: "a".repeat(64),
+			content: { kind: "stored" },
+		});
+		if (prepared._nay || prepared._yay.kind !== "stored") throw new Error("Expected stored preparation");
+		const capture = prepared._yay;
+		r2Objects.set(capture.r2Key, "bits");
+		const completed = await f.t.mutation(internal.files_ingestion.finalize_file, {
+			...scope,
+			receiptId: capture.receiptId,
+			attemptId: "one",
+		});
+		if (completed._nay || completed._yay.target.kind !== "private") throw new Error("Expected private capture");
+		const target = completed._yay.target;
+		await f.asOwner.mutation(api.files_nodes.archive_nodes, {
+			membershipId: f.owner.membershipId,
+			nodeIds: [f.parentId],
+		});
+		const view = await f.asUser.query(api.files_pending_updates.get_file_pending_target, {
+			membershipId: f.membershipId,
+			target,
+		});
+		if (view?.entry.kind !== "private") throw new Error("Expected recovery view");
+		expect(view.recovery).toMatchObject({ savedParentId: f.parentId, expiresAt: expect.any(Number) });
+		const args = {
+			membershipId: f.membershipId,
+			target,
+			pendingUpdateId: view.entry.pendingUpdate._id,
+			reviewedRevision: view.entry.pendingUpdate.revision,
+			creationGeneration: view.entry.node.creationGeneration,
+		};
+		const before = await read_pending_review_state_for_test(f.t);
+		const assetBefore = await f.t.run((ctx) => ctx.db.get("files_r2_assets", capture.assetId));
+		const download = await f.asUser.action(api.files_pending_updates.create_private_pending_download_url, args);
+		if (download._nay) throw new Error(download._nay.message);
+		expect(await (await fetch(download._yay.url)).text()).toBe("bits");
+		expect(await read_pending_review_state_for_test(f.t)).toEqual(before);
+		expect(await f.t.run((ctx) => ctx.db.get("files_r2_assets", capture.assetId))).toEqual(assetBefore);
+		expect(
+			(
+				await f.asOwner.action(api.files_pending_updates.create_private_pending_download_url, {
+					...args,
+					membershipId: f.owner.membershipId,
+				})
+			)._nay,
+		).toBeDefined();
+		expect(
+			(
+				await f.asUser.action(api.files_pending_updates.create_private_pending_download_url, {
+					...args,
+					reviewedRevision: args.reviewedRevision + 1,
+				})
+			)._nay,
+		).toBeDefined();
+		await f.asUser.mutation(api.organizations.remove_user_from_organization, {
+			organizationId: f.organizationId,
+			userIdToRemove: f.userId,
+		});
+		const denied = await f.asUser.action(api.files_pending_updates.create_private_pending_download_url, args);
+		expect(denied._nay).toBeDefined();
+		expect(JSON.stringify(denied)).not.toContain("retained");
+		expect(JSON.stringify(denied)).not.toContain(capture.r2Key);
+	});
+
+	test("recovery reads keep the real expiry and cannot revive an expired draft", async () => {
+		const f = await fixture();
+		const args = { membershipId: f.membershipId, target: f.target };
+		const view = await f.asUser.query(api.files_pending_updates.get_file_pending_target, args);
+		if (!view?.recovery?.expiresAt) throw new Error("Expected the scheduled expiry");
+		const parentBefore = await f.t.run((ctx) => ctx.db.get("files_nodes", f.parentId));
+		const expiry = view.recovery.expiresAt;
+		vi.setSystemTime(expiry - 1);
+		expect((await f.asUser.query(api.files_pending_updates.get_file_pending_target, args))?.recovery?.expiresAt).toBe(
+			expiry,
+		);
+		vi.setSystemTime(expiry + 1);
+		const cleanup = await f.t.run((ctx) =>
+			list_pending_update_cleanup_tasks({ ctx, pendingUpdateId: f.pendingUpdateId }),
+		);
+		await f.t.mutation(internal.files_pending_updates.remove_file_pending_update_if_expired, {
+			cleanupTaskId: cleanup[0]!._id,
+			expiryGeneration: cleanup[0]!.expiryGeneration,
+		});
+		expect(await f.asUser.query(api.files_pending_updates.get_file_pending_target, args)).toBeNull();
+		expect(await f.asUser.query(api.files_pending_updates.get_file_pending_update, args)).toBeNull();
+		expect(
+			await f.asUser.query(api.files_pending_updates.get_file_pending_update_state_page, {
+				...args,
+				stateId: f.proposal.content!.unstagedStateId,
+				pageIndex: 0,
+			}),
+		).toBeNull();
+		expect(await f.t.run((ctx) => ctx.db.get("files_nodes", f.parentId))).toEqual(parentBefore);
+	});
+
+	test("keeps recovery owner-only and denies revoked ancestor access or membership", async () => {
+		const f = await fixture();
+		const { membershipId, target } = f;
+		expect(
+			await f.asOwner.query(api.files_pending_updates.get_file_pending_target, {
+				membershipId: f.owner.membershipId,
+				target,
+			}),
+		).toBeNull();
+		// Restrict while active through the normal sharing door, then archive again.
+		expect(
+			(
+				await f.asOwner.mutation(api.files_nodes.unarchive_nodes, {
+					membershipId: f.owner.membershipId,
+					nodeIds: [f.parentId],
+				})
+			)._nay,
+		).toBeUndefined();
+		expect(
+			(
+				await f.asOwner.mutation(api.files_sharing.restrict_node, {
+					membershipId: f.owner.membershipId,
+					nodeId: f.parentId,
+				})
+			)._nay,
+		).toBeUndefined();
+		expect(
+			(
+				await f.asOwner.mutation(api.files_nodes.archive_nodes, {
+					membershipId: f.owner.membershipId,
+					nodeIds: [f.parentId],
+				})
+			)._nay,
+		).toBeUndefined();
+		expect(
+			await f.asUser.query(api.files_pending_updates.get_file_pending_target, { membershipId, target }),
+		).toBeNull();
+		expect(
+			await f.asUser.query(api.files_pending_updates.get_file_pending_update_state_page, {
+				membershipId,
+				target,
+				stateId: f.proposal.content!.unstagedStateId,
+				pageIndex: 0,
+			}),
+		).toBeNull();
+		const rows = await f.asUser.query(api.files_pending_updates.list_files_pending_updates, {
+			membershipId,
+			paginationOpts: { cursor: null, numItems: 5 },
+		});
+		expect(rows.page).toMatchObject([{ kind: "restricted", target }]);
+		expect(JSON.stringify(rows)).not.toContain("retained");
+		expect(
+			await f.asOwner.mutation(api.files_sharing.unrestrict_node, {
+				membershipId: f.owner.membershipId,
+				nodeId: f.parentId,
+			}),
+		).toEqual({ _yay: null });
+		expect(
+			await f.asUser.query(api.files_pending_updates.get_file_pending_target, { membershipId, target }),
+		).toMatchObject({ recovery: { savedParentId: f.parentId }, canAccept: false });
+		expect(
+			(
+				await f.asUser.mutation(api.organizations.remove_user_from_organization, {
+					organizationId: f.organizationId,
+					userIdToRemove: f.userId,
+				})
+			)._nay,
+		).toBeUndefined();
+		expect(
+			await f.asUser.query(api.files_pending_updates.get_file_pending_target, { membershipId, target }),
+		).toBeNull();
 	});
 });
 
@@ -6519,9 +7379,11 @@ describe("pending file chunk docs lifecycle", () => {
 			throw new Error("Missing cleanup task while testing expiry chunk cleanup");
 		}
 
+		vi.useFakeTimers();
+		vi.setSystemTime(cleanupTask.expiresAt);
 		await t.mutation(internal.ai_chat.remove_file_pending_update_if_expired, {
-			pendingUpdateId: pendingRow._id,
-			expectedUpdatedAt: cleanupTask.expectedUpdatedAt,
+			cleanupTaskId: cleanupTask._id,
+			expiryGeneration: cleanupTask.expiryGeneration,
 		});
 
 		expect(await read_pending_row({ t, ...seeded })).toBeNull();
@@ -12105,8 +12967,8 @@ describe("remove_file_pending_update_if_expired", () => {
 		}
 
 		await t.mutation(internal.ai_chat.remove_file_pending_update_if_expired, {
-			pendingUpdateId: firstPendingRow._id,
-			expectedUpdatedAt: firstCleanupTask.expectedUpdatedAt,
+			cleanupTaskId: firstCleanupTask._id,
+			expiryGeneration: firstCleanupTask.expiryGeneration,
 		});
 
 		const pendingAfterStaleCleanup = await t.run(async (ctx) =>
@@ -12190,9 +13052,11 @@ describe("remove_file_pending_update_if_expired", () => {
 			throw new Error("Missing cleanup task while testing expired cleanup");
 		}
 
+		vi.useFakeTimers();
+		vi.setSystemTime(cleanupTask.expiresAt);
 		await t.mutation(internal.ai_chat.remove_file_pending_update_if_expired, {
-			pendingUpdateId: pendingRow._id,
-			expectedUpdatedAt: cleanupTask.expectedUpdatedAt,
+			cleanupTaskId: cleanupTask._id,
+			expiryGeneration: cleanupTask.expiryGeneration,
 		});
 
 		const pendingAfterCleanup = await t.run(async (ctx) =>
@@ -16558,10 +17422,12 @@ describe("pending delete discard, save, expiry, and overlay reads", () => {
 		if (!pendingRow) {
 			throw new Error("Missing delete-only row before expiry");
 		}
-
+		const cleanup = await t.run((ctx) => list_pending_update_cleanup_tasks({ ctx, pendingUpdateId: pendingRow._id }));
+		vi.useFakeTimers();
+		vi.setSystemTime(cleanup[0]!.expiresAt);
 		await t.mutation(internal.ai_chat.remove_file_pending_update_if_expired, {
-			pendingUpdateId: pendingRow._id,
-			expectedUpdatedAt: pendingRow.updatedAt,
+			cleanupTaskId: cleanup[0]!._id,
+			expiryGeneration: cleanup[0]!.expiryGeneration,
 		});
 
 		await t.run(async (ctx) => {
@@ -18364,9 +19230,11 @@ describe("remove_file_pending_update_if_expired structural rows", () => {
 			throw new Error(renamed._nay.message);
 		}
 
+		vi.useFakeTimers();
+		vi.setSystemTime(cleanupTask.expiresAt);
 		await t.mutation(internal.ai_chat.remove_file_pending_update_if_expired, {
-			pendingUpdateId: pendingRow._id,
-			expectedUpdatedAt: cleanupTask.expectedUpdatedAt,
+			cleanupTaskId: cleanupTask._id,
+			expiryGeneration: cleanupTask.expiryGeneration,
 		});
 
 		await t.run(async (ctx) => {
@@ -18436,9 +19304,11 @@ describe("remove_file_pending_update_if_expired structural rows", () => {
 			return { pendingRow, cleanupTask };
 		});
 
+		vi.useFakeTimers();
+		vi.setSystemTime(cleanupTask.expiresAt);
 		await t.mutation(internal.ai_chat.remove_file_pending_update_if_expired, {
-			pendingUpdateId: pendingRow._id,
-			expectedUpdatedAt: cleanupTask.expectedUpdatedAt,
+			cleanupTaskId: cleanupTask._id,
+			expiryGeneration: cleanupTask.expiryGeneration,
 		});
 
 		await t.run(async (ctx) => {
@@ -18491,17 +19361,19 @@ describe("remove_file_pending_update_if_expired structural rows", () => {
 			return { pendingRow, cleanupTask };
 		});
 
-		// A stale expected timestamp must not delete the newer row.
+		// A stale expiry token must not delete the newer proposal.
 		await t.mutation(internal.ai_chat.remove_file_pending_update_if_expired, {
-			pendingUpdateId: pendingRow._id,
-			expectedUpdatedAt: cleanupTask.expectedUpdatedAt - 1,
+			cleanupTaskId: cleanupTask._id,
+			expiryGeneration: cleanupTask.expiryGeneration - 1,
 		});
 		const rowAfterStaleRun = await t.run((ctx) => ctx.db.get("files_pending_updates", pendingRow._id));
 		expect(rowAfterStaleRun).not.toBeNull();
 
+		vi.useFakeTimers();
+		vi.setSystemTime(cleanupTask.expiresAt);
 		await t.mutation(internal.ai_chat.remove_file_pending_update_if_expired, {
-			pendingUpdateId: pendingRow._id,
-			expectedUpdatedAt: cleanupTask.expectedUpdatedAt,
+			cleanupTaskId: cleanupTask._id,
+			expiryGeneration: cleanupTask.expiryGeneration,
 		});
 		await t.run(async (ctx) => {
 			expect(await ctx.db.get("files_pending_updates", pendingRow._id)).toBeNull();
@@ -20674,6 +21546,8 @@ describe("pending update read-only checks", () => {
 			});
 
 		expect((await readTarget())?.canEdit).toBe(true);
+		// The header's breadcrumb hangs the pending chain from this saved folder.
+		expect((await readTarget())?.savedParentId).toBe(seeded.folderId);
 		await set_pending_test_read_only(asUser, seeded.membershipId, seeded.folderId);
 		expect((await readTarget())?.canEdit).toBe(false);
 		await set_pending_test_writable(asUser, seeded.membershipId, seeded.folderId);

@@ -1,6 +1,7 @@
 import { createOpenAI } from "@ai-sdk/openai";
 import { R2 } from "@convex-dev/r2";
 import { generateText, stepCountIs } from "ai";
+import { getFunctionName } from "convex/server";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import z from "zod";
 import type { Id } from "../convex/_generated/dataModel.js";
@@ -18,7 +19,7 @@ describe("ai_chat_tool_create_view_image", () => {
 		vi.unstubAllGlobals();
 	});
 
-	test("sends a strict path tool and returns image bytes under the same OpenAI call id", async () => {
+	test("sends a strict workspace/path tool and returns personal image bytes under the same OpenAI call id", async () => {
 		const target = { kind: "private" as const, id: "private-1" };
 		const file = {
 			target,
@@ -29,12 +30,23 @@ describe("ai_chat_tool_create_view_image", () => {
 			path: "/reports/image.bin",
 			revision: "revision-1",
 		};
-		const runQuery = vi.fn().mockResolvedValue({ _yay: file });
-		const observations = new Map<string, ai_chat_Observation>();
-		const viewer = ai_chat_tool_create_view_image({ runQuery } as unknown as ActionCtx, {
+		const agentSource = {
+			organizationId: "organization-1" as Id<"organizations">,
+			workspaceId: "workspace-1" as Id<"organizations_workspaces">,
 			userId: "user-1" as Id<"users">,
 			membershipId: "membership-1" as Id<"organizations_workspaces_users">,
-			getThreadId: () => "thread-1" as Id<"ai_chat_threads">,
+			membershipLifetime: 42,
+			threadId: "thread-1" as Id<"ai_chat_threads">,
+		};
+		const runQuery = vi
+			.fn<(query: Parameters<ActionCtx["runQuery"]>[0], args?: unknown) => Promise<unknown>>()
+			.mockImplementation(async (query) => ({
+				_yay: getFunctionName(query) === "ai_chat_workspaces:resolve" ? { membershipId: "membership-home" } : file,
+			}));
+		const observations = new Map<string, ai_chat_Observation>();
+		const viewer = ai_chat_tool_create_view_image({ runQuery } as unknown as ActionCtx, {
+			...agentSource,
+			getThreadId: () => agentSource.threadId,
 			observations,
 		});
 		vi.spyOn(R2.prototype, "getUrl").mockResolvedValue("https://r2.test/file");
@@ -60,7 +72,7 @@ describe("ai_chat_tool_create_view_image", () => {
 										id: "fc_view_1",
 										call_id: "call_view_1",
 										name: "view_image",
-										arguments: JSON.stringify({ path: file.path }),
+										arguments: JSON.stringify({ workspace: "personal", path: file.path }),
 									},
 								]
 							: [
@@ -94,9 +106,12 @@ describe("ai_chat_tool_create_view_image", () => {
 			strict: true,
 			parameters: {
 				type: "object",
-				required: ["path"],
+				required: ["workspace", "path"],
 				additionalProperties: false,
-				properties: { path: { type: "string", minLength: 1, maxLength: 1024 } },
+				properties: {
+					workspace: { type: "string", enum: ["current", "personal"] },
+					path: { type: "string", minLength: 1, maxLength: 1024 },
+				},
 			},
 		});
 		const parameters = z
@@ -105,7 +120,7 @@ describe("ai_chat_tool_create_view_image", () => {
 			})
 			.passthrough()
 			.parse(first.tools[0]?.parameters);
-		expect(Object.keys(parameters.properties)).toEqual(["path"]);
+		expect(Object.keys(parameters.properties)).toEqual(["workspace", "path"]);
 		for (const keyword of ["oneOf", "anyOf", "allOf"]) expect(parameters).not.toHaveProperty(keyword);
 
 		const second = z.object({ input: z.array(z.record(z.string(), z.unknown())) }).parse(requests[1]);
@@ -114,14 +129,18 @@ describe("ai_chat_tool_create_view_image", () => {
 				type: "function_call_output",
 				call_id: "call_view_1",
 				output: [
-					{ type: "input_text", text: `Image bytes supplied for inspection: ${file.path}` },
+					{ type: "input_text", text: `Image bytes supplied for inspection: personal:${file.path}` },
 					{ type: "input_image", image_url: `data:image/png;base64,${pngBase64}` },
 				],
 			},
 		]);
 		expect(result.steps[0]?.toolResults).toHaveLength(1);
 		const toolResult = result.steps[0]?.toolResults[0];
-		expect(toolResult).toMatchObject({ toolName: "view_image", toolCallId: "call_view_1", input: { path: file.path } });
+		expect(toolResult).toMatchObject({
+			toolName: "view_image",
+			toolCallId: "call_view_1",
+			input: { workspace: "personal", path: file.path },
+		});
 		const output = ai_chat_file_result_schema.parse(toolResult?.output);
 		expect(output).toEqual({
 			title: "View image",
@@ -130,16 +149,21 @@ describe("ai_chat_tool_create_view_image", () => {
 		});
 		expect([...observations.keys()]).toEqual(["call_view_1"]);
 		expect(runQuery.mock.calls.map((call) => call[1])).toEqual([
-			{ userId: "user-1", membershipId: "membership-1", threadId: "thread-1", path: file.path },
-			{ userId: "user-1", membershipId: "membership-1", threadId: "thread-1", path: file.path, target },
+			{ source: agentSource, workspace: "personal" },
+			{ userId: "user-1", membershipId: "membership-home", agentSource, path: file.path },
+			{ userId: "user-1", membershipId: "membership-home", agentSource, path: file.path, target },
 		]);
 
 		for (let count = 0; count < 2; count++) {
-			expect(await viewer.toModelOutput?.({ toolCallId: "call_view_1", input: { path: file.path }, output })).toBe(
-				observations.get("call_view_1")?.output,
-			);
+			expect(
+				await viewer.toModelOutput?.({
+					toolCallId: "call_view_1",
+					input: { workspace: "personal", path: file.path },
+					output,
+				}),
+			).toBe(observations.get("call_view_1")?.output);
 		}
 		expect(readBytes).toHaveBeenCalledTimes(1);
-		expect(runQuery).toHaveBeenCalledTimes(2);
+		expect(runQuery).toHaveBeenCalledTimes(3);
 	});
 });

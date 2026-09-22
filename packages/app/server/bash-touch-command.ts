@@ -1,5 +1,5 @@
 import { defineCommand } from "just-bash/browser";
-import { bash_current_workspace_path_to_db_files_path, bash_is_path_under_read_only_mounts, bash_resolve_path, bash_read_only_mount_error, bash_COMMAND_EXIT_FAILURE, type bash_DbFilesRoots } from "./bash-utils.ts";
+import { bash_resolve_db_files_shell_path, bash_is_path_under_read_only_mounts, bash_resolve_path, bash_read_only_mount_error, bash_COMMAND_EXIT_FAILURE, type bash_DbFilesRoots } from "./bash-utils.ts";
 import { bash_delegate_builtin_command } from "./bash-delegate.ts";
 
 /**
@@ -80,7 +80,6 @@ function path_operands(args: string[]) {
  * is a no-op.
  */
 export function bash_touch_command_create(dbFilesRoots: bash_DbFilesRoots) {
-	const currentWorkspacePath = dbFilesRoots.app.currentWorkspacePath;
 	return defineCommand("touch", async (args, commandCtx) => {
 		for (const { file, kind } of path_operands(args)) {
 			const resolvedPath = bash_resolve_path(commandCtx.cwd, file);
@@ -93,18 +92,18 @@ export function bash_touch_command_create(dbFilesRoots: bash_DbFilesRoots) {
 				};
 			}
 
-			const dbFilesPath = bash_current_workspace_path_to_db_files_path(currentWorkspacePath, resolvedPath);
+			const target = bash_resolve_db_files_shell_path(resolvedPath, dbFilesRoots);
 
-			if (dbFilesPath != null) {
+			if (target.kind === "app") {
 				if (kind === "reference") {
 					return {
 						stdout: "",
-						stderr: `touch: cannot use app file '${file}' as a reference file through bash (app path '${dbFilesPath}').\n`,
+						stderr: `touch: cannot use app file '${file}' as a reference file through bash (app path '${target.dbFilesPath}').\n`,
 						exitCode: bash_COMMAND_EXIT_FAILURE,
 					};
 				}
 
-				if (!dbFilesRoots.app.fs.allowDbFilesMkdir) {
+				if (!target.fs.allowDbFilesMkdir) {
 					return {
 						stdout: "",
 						stderr:

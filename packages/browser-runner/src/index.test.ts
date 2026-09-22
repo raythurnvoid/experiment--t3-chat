@@ -363,6 +363,34 @@ describe("close and keep-open", () => {
 describe("execute_browser_command", () => {
 	afterEach(() => vi.restoreAllMocks());
 
+	it.each([undefined, null, "", "home", "CURRENT", 1])("drops the whole HTTP batch for forged workspace %s", async (workspace) => {
+		const finishes: unknown[] = [];
+		const env = make_env({ sessions: (path, body) => {
+			if (path === "/run/begin") return { ok: true, lease: { sessionId: "session-1", viewport: { width: 1280, height: 900 } } };
+			if (path === "/run/settle") return { ok: true, blockedPopups: 0 };
+			finishes.push(body);
+			return { ok: true };
+		} });
+		// A forged RPC reply can bypass the snippet's local emitFile checks.
+		const evaluate = vi.fn().mockResolvedValue({
+			ok: true, resultJson: "42", files: [
+				{ workspace: "personal", path: "/first.bin", bytes: new Uint8Array([1]) },
+				{ workspace, path: "/bad.bin", bytes: new Uint8Array([2]) },
+			], viewport: null, popups: { blocked: 0, urls: [] }, consoleEntries: [], pageErrors: [], logs: [], logsTruncated: false,
+		});
+		env.LOADER = { load: () => ({ getEntrypoint: () => ({ evaluate }) }) };
+		const response = await handle_request(browser_request("run", JSON.stringify({
+			...OWNERS, sessionId: "session-1", navGen: 1, loadGen: 1, controlGen: 1, code: "forged reply",
+		})), env, { waitUntil: () => {}, exports: { BrowserConnectionGateway: () => ({ fetch }) } });
+		const result = await response.json();
+		expect(response.status).toBe(200);
+		expect(result.status).toBe("tainted");
+		expect(result.result).toBeNull();
+		expect(result.files).toEqual([]);
+		expect(result.error.message).toBe("Snippet output failed host validation.");
+		expect(finishes).toEqual([expect.objectContaining({ tainted: true, fileCount: 0, fileBytes: 0 })]);
+	});
+
 	it.each([
 		{ name: "a failed snippet that changed the page", changed: true, timeout: false, lost: false, status: "tainted", tainted: true },
 		{ name: "a failed snippet on the registered page", changed: false, timeout: false, lost: false, status: "errored", tainted: false },
@@ -434,7 +462,10 @@ describe("execute_browser_command", () => {
 			return { ok: true };
 		} });
 		const evaluate = vi.fn(async () => ({
-			ok: true, resultJson: "42", files: [{ path: "/reports/result.bin", bytes: new Uint8Array([0, 255, 128]) }], viewport: null,
+			ok: true, resultJson: "42", files: [
+				{ workspace: "current" as const, path: "/reports/result.bin", bytes: new Uint8Array([0, 255, 128]) },
+				{ workspace: "personal" as const, path: "/reports/result.bin", bytes: new Uint8Array([1]) },
+			], viewport: null,
 			popups: { blocked: 99, urls: ["untrusted"] }, consoleEntries: [], pageErrors: [], logs: [], logsTruncated: false,
 		}));
 		env.LOADER = { load: () => ({ getEntrypoint: () => ({ evaluate }) }) };
@@ -454,9 +485,12 @@ describe("execute_browser_command", () => {
 		settled.resolve();
 		const result = await (await pending).json();
 		expect(result).toMatchObject({ status: "succeeded", result: 42, popups: { blocked: 2, urls: [] } });
-		expect(result.files).toEqual([{ path: "/reports/result.bin", dataBase64: "AP+A" }]);
+		expect(result.files).toEqual([
+			{ workspace: "current", path: "/reports/result.bin", dataBase64: "AP+A" },
+			{ workspace: "personal", path: "/reports/result.bin", dataBase64: "AQ==" },
+		]);
 		expect(calls).toEqual(["/run/begin", "/run/settle", "/run/finish"]);
-		expect(finishes).toEqual([expect.objectContaining({ tainted: false })]);
+		expect(finishes).toEqual([expect.objectContaining({ tainted: false, fileCount: 2, fileBytes: 4 })]);
 	});
 });
 
@@ -778,21 +812,29 @@ describe("validate_gate_request", () => {
 });
 
 describe("validate_snippet_files", () => {
+	it.each([undefined, null, "", "home", "CURRENT", 1])("refuses missing or invalid workspace %s", (workspace) => {
+		expect(validate_snippet_files([
+			{ workspace: "current", path: "/first.bin", bytes: new Uint8Array([1]) },
+			{ workspace, path: "/bad.bin", bytes: new Uint8Array([2]) },
+		])).toEqual({ ok: false, reason: "files_shape" });
+	});
+
 	it("preserves arbitrary, empty, and sliced bytes without a forced content type", () => {
 		const source = new Uint8Array([99, 0, 255, 128, 99]);
 		expect(validate_snippet_files([
-			{ path: "/reports/custom", contentType: "application/x-custom", bytes: source.subarray(1, 4) },
-			{ path: "/reports/empty", bytes: new Uint8Array() },
+			{ workspace: "current", path: "/reports/custom", contentType: "application/x-custom", bytes: source.subarray(1, 4) },
+			{ workspace: "personal", path: "/reports/empty", bytes: new Uint8Array() },
 		])).toEqual({
 			ok: true, fileBytes: 3, files: [
-				{ path: "/reports/custom", contentType: "application/x-custom", dataBase64: "AP+A" },
-				{ path: "/reports/empty", dataBase64: "" },
+				{ workspace: "current", path: "/reports/custom", contentType: "application/x-custom", dataBase64: "AP+A" },
+				{ workspace: "personal", path: "/reports/empty", dataBase64: "" },
 			],
 		});
 	});
 
-	it("allows exactly eight files and 8 MiB", () => {
+	it("allows exactly eight files and 8 MiB across both workspaces", () => {
 		const files = Array.from({ length: LIMITS.files }, (_, index) => ({
+			workspace: index % 2 ? "personal" : "current",
 			path: "/reports/" + index, bytes: new Uint8Array(LIMITS.fileBytes / LIMITS.files).fill(index),
 		}));
 		const result = validate_snippet_files(files);
@@ -800,6 +842,7 @@ describe("validate_snippet_files", () => {
 		if (!result.ok) throw new Error(result.reason);
 		expect(result.fileBytes).toBe(LIMITS.fileBytes);
 		for (const [index, file] of result.files.entries()) {
+			expect(file.workspace).toBe(files[index].workspace);
 			expect(Buffer.from(file.dataBase64, "base64").equals(Buffer.from(files[index].bytes))).toBe(true);
 		}
 		expect(JSON.stringify(result).length).toBeLessThan(12 * 1024 * 1024);
@@ -807,14 +850,14 @@ describe("validate_snippet_files", () => {
 
 	it.each([
 		[null, "files_shape"],
-		[[{ path: "", bytes: new Uint8Array() }], "files_shape"],
-		[[{ path: "/reports/file", bytes: [1, 2] }], "files_shape"],
-		[[{ path: "/reports/file", contentType: null, bytes: new Uint8Array() }], "files_shape"],
-		[[{ path: "x".repeat(LIMITS.filePathChars + 1), bytes: new Uint8Array() }], "files_shape"],
-		[[{ path: "/reports/file", contentType: "x".repeat(LIMITS.fileContentTypeChars + 1), bytes: new Uint8Array() }], "files_shape"],
-		[Array.from({ length: LIMITS.files + 1 }, () => ({ path: "/reports/file", bytes: new Uint8Array() })), "files_count"],
-		[[{ path: "/reports/file", bytes: new Uint8Array(LIMITS.fileBytes + 1) }], "files_bytes"],
-		[[{ path: "/reports/one", bytes: new Uint8Array(LIMITS.fileBytes) }, { path: "/reports/two", bytes: new Uint8Array([1]) }], "files_bytes"],
+		[[{ workspace: "current", path: "", bytes: new Uint8Array() }], "files_shape"],
+		[[{ workspace: "current", path: "/reports/file", bytes: [1, 2] }], "files_shape"],
+		[[{ workspace: "current", path: "/reports/file", contentType: null, bytes: new Uint8Array() }], "files_shape"],
+		[[{ workspace: "current", path: "x".repeat(LIMITS.filePathChars + 1), bytes: new Uint8Array() }], "files_shape"],
+		[[{ workspace: "current", path: "/reports/file", contentType: "x".repeat(LIMITS.fileContentTypeChars + 1), bytes: new Uint8Array() }], "files_shape"],
+		[Array.from({ length: LIMITS.files + 1 }, (_, index) => ({ workspace: index % 2 ? "personal" : "current", path: "/reports/file", bytes: new Uint8Array() })), "files_count"],
+		[[{ workspace: "current", path: "/reports/file", bytes: new Uint8Array(LIMITS.fileBytes + 1) }], "files_bytes"],
+		[[{ workspace: "current", path: "/reports/one", bytes: new Uint8Array(LIMITS.fileBytes) }, { workspace: "personal", path: "/reports/two", bytes: new Uint8Array([1]) }], "files_bytes"],
 	])("refuses malformed or over-limit output", (files, reason) => {
 		expect(validate_snippet_files(files)).toEqual({ ok: false, reason });
 	});
@@ -894,45 +937,55 @@ describe("build_executor_module", () => {
 			WorkerEntrypoint: class {}, TextEncoder, URL, Uint8Array, ArrayBuffer, console: {}, expect: () => {}, setTimeout, clearTimeout,
 			connect: async () => ({ contexts: () => [{ pages: () => [page] }], close: async () => {} }),
 		}) as new () => { evaluate: (input: unknown) => Promise<{
-			ok: boolean; files?: Array<{ path: string; contentType?: string; bytes: Uint8Array }>; error?: { message: string };
+			ok: boolean; files?: Array<{ workspace: "current" | "personal"; path: string; contentType?: string; bytes: Uint8Array }>; error?: { message: string };
 		}> };
 		return new Executor().evaluate({ sessionId: "fixture", runtimeOrigin: "https://controller.browser.invalid", viewport: { width: 1280, height: 900 }, timeoutMs });
 	}
 
+	it.each([undefined, null, "", "home", "CURRENT", 1])("rejects workspace %s inside the browser harness", async (workspace) => {
+		const result = await run_snippet(`
+			emitFile({ workspace: "personal", path: "/first.bin", bytes: new Uint8Array([1]) });
+			emitFile({ workspace: ${JSON.stringify(workspace)}, path: "/bad.bin", bytes: new Uint8Array([2]) });
+		`);
+		expect(result).toMatchObject({ ok: false, error: { message: "emitFile workspace must be current or personal" } });
+		expect(result.files).toBeUndefined();
+	});
+
 	it("emits a screenshot and arbitrary binary bytes through the same helper", async () => {
 		const result = await run_snippet(`
 			const source = new Uint8Array([99, 0, 255, 128, 99]);
-			emitFile({ path: "/reports/slice.bin", bytes: source.subarray(1, 4) });
-			emitFile({ path: "/reports/buffer.bin", bytes: source.buffer, contentType: "application/x-custom" });
-			emitFile({ path: "/reports/empty", bytes: new ArrayBuffer(0) });
-			emitFile({ path: "/reports/page.png", bytes: await page.screenshot() });
+			emitFile({ workspace: "current", path: "/reports/slice.bin", bytes: source.subarray(1, 4) });
+			emitFile({ workspace: "personal", path: "/reports/buffer.bin", bytes: source.buffer, contentType: "application/x-custom" });
+			emitFile({ workspace: "current", path: "/reports/empty", bytes: new ArrayBuffer(0) });
+			emitFile({ workspace: "personal", path: "/reports/page.png", bytes: await page.screenshot() });
 			source.fill(5);
 		`);
 		expect(result.ok).toBe(true);
 		expect(result.files?.slice(0, 3)).toEqual([
-			{ path: "/reports/slice.bin", bytes: new Uint8Array([0, 255, 128]) },
-			{ path: "/reports/buffer.bin", bytes: new Uint8Array([99, 0, 255, 128, 99]), contentType: "application/x-custom" },
-			{ path: "/reports/empty", bytes: new Uint8Array() },
+			{ workspace: "current", path: "/reports/slice.bin", bytes: new Uint8Array([0, 255, 128]) },
+			{ workspace: "personal", path: "/reports/buffer.bin", bytes: new Uint8Array([99, 0, 255, 128, 99]), contentType: "application/x-custom" },
+			{ workspace: "current", path: "/reports/empty", bytes: new Uint8Array() },
 		]);
 		expect(result.files?.[3]?.bytes.slice(0, 8)).toEqual(new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]));
+		expect(result.files?.[3]?.workspace).toBe("personal");
 	});
 
 	it("allows the exact file and byte budgets", async () => {
-		const result = await run_snippet(`for (let i = 0; i < ${LIMITS.files}; i++) emitFile({ path: "/reports/" + i, bytes: new Uint8Array(${LIMITS.fileBytes / LIMITS.files}) });`);
+		const result = await run_snippet(`for (let i = 0; i < ${LIMITS.files}; i++) emitFile({ workspace: i % 2 ? "personal" : "current", path: "/reports/" + i, bytes: new Uint8Array(${LIMITS.fileBytes / LIMITS.files}) });`);
 		expect(result.ok).toBe(true);
 		expect(result.files).toHaveLength(LIMITS.files);
 		expect(result.files?.reduce((sum, file) => sum + file.bytes.byteLength, 0)).toBe(LIMITS.fileBytes);
 	});
 
 	it.each([
-		`for (let i = 0; i < ${LIMITS.files}; i++) emitFile({ path: "/reports/" + i, bytes: new Uint8Array() });`,
-		`emitFile({ path: "/reports/large", bytes: new Uint8Array(${LIMITS.fileBytes}) });`,
-		`emitFile({ path: "/reports/bad", bytes: "text" });`,
-		`emitFile({ path: "", bytes: new Uint8Array() });`,
-		`emitFile({ path: "/reports/bad", contentType: null, bytes: new Uint8Array() });`,
+		`for (let i = 0; i < ${LIMITS.files}; i++) emitFile({ workspace: i % 2 ? "personal" : "current", path: "/reports/" + i, bytes: new Uint8Array() });`,
+		`emitFile({ workspace: "personal", path: "/reports/large", bytes: new Uint8Array(${LIMITS.fileBytes}) });`,
+		`emitFile({ workspace: "current", path: "/reports/bad", bytes: "text" });`,
+		`emitFile({ workspace: "current", path: "", bytes: new Uint8Array() });`,
+		`emitFile({ workspace: "current", path: "/reports/bad", contentType: null, bytes: new Uint8Array() });`,
 		`throw new Error("failed");`,
 	])("drops all emitted files when the snippet fails", async (failure) => {
-		const result = await run_snippet(`emitFile({ path: "/reports/first", bytes: new Uint8Array([1]) }); ${failure}`);
+		const result = await run_snippet(`emitFile({ workspace: "current", path: "/reports/first", bytes: new Uint8Array([1]) }); ${failure}`);
 		expect(result.ok).toBe(false);
 		expect(result.files).toBeUndefined();
 	});
@@ -940,7 +993,7 @@ describe("build_executor_module", () => {
 	it("drops emitted files on timeout and clears the timer after success", async () => {
 		vi.useFakeTimers();
 		try {
-			const pending = run_snippet('emitFile({ path: "/reports/first", bytes: new Uint8Array([1]) }); await new Promise(() => {});', 50);
+			const pending = run_snippet('emitFile({ workspace: "current", path: "/reports/first", bytes: new Uint8Array([1]) }); await new Promise(() => {});', 50);
 			await vi.advanceTimersByTimeAsync(50);
 			expect(await pending).toMatchObject({ ok: false, error: { message: "Execution timed out" } });
 			expect((await pending).files).toBeUndefined();

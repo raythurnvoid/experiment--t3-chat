@@ -1,6 +1,7 @@
-import { vOnCompleteArgs, vWorkId, Workpool } from "@convex-dev/workpool";
-import { v, type Infer } from "convex/values";
+import { vOnCompleteArgs, vWorkId, Workpool, type WorkId } from "@convex-dev/workpool";
+import { compareValues, v, type Infer } from "convex/values";
 import { paginationOptsValidator, type RegisteredMutation, type RegisteredQuery } from "convex/server";
+import { omit } from "convex-helpers";
 import { doc } from "convex-helpers/validators";
 import { Result } from "common/errors-as-values-utils.ts";
 import { internalMutation, internalQuery, query, type MutationCtx, type QueryCtx } from "./_generated/server.js";
@@ -10,8 +11,10 @@ import app_convex_schema, {
 	ai_chat_bash_job_live_output_validator,
 	ai_chat_bash_result_validator,
 	ai_chat_model_id_validator,
+	ai_chat_workspaces_source_validator,
 	bash_shell_state_validator,
 	files_pending_target_validator,
+	files_transfer_scope_validator,
 } from "./schema.ts";
 import { access_control_db_authorize_membership } from "./access_control.ts";
 import {
@@ -21,7 +24,7 @@ import {
 	activities_db_start,
 	activities_is_active,
 } from "./activities_db.ts";
-import { files_transfer_db_request_stop } from "./files_transfer.ts";
+import { files_transfer_db_get_job_copy, files_transfer_db_request_stop } from "./files_transfer.ts";
 import {
 	files_ingestion_scope_validator,
 	files_ingestion_prepare_args_validator,
@@ -36,10 +39,16 @@ import {
 	organizations_membership_lifetimes_db_ensure,
 	organizations_membership_lifetimes_db_get,
 } from "./organizations_membership_lifetimes.ts";
+import { ai_chat_workspaces_db_authorize_file_scope, ai_chat_workspaces_db_resolve } from "./ai_chat_workspaces.ts";
+import { billing_db_check_paid_plan, billing_pick_billed_user_id } from "./billing_db.ts";
+import { files_nodes_db_plan_private_node_by_path } from "./files_nodes.ts";
+import { files_visible_db_create_reader } from "./files_visible.ts";
+import { files_pending_nodes_db_resolve_read_target } from "./files_pending_nodes.ts";
 import {
 	bash_COMMAND_EXIT_FAILURE,
 	bash_COMMAND_EXIT_STOPPED,
 	bash_COMMAND_EXIT_TIMED_OUT,
+	bash_JOB_COPY_PAGE_MAX_BYTES,
 	bash_JOB_NUMBERS_MAX_COUNT,
 	bash_job_exit_code,
 	bash_text_head,
@@ -48,6 +57,8 @@ import { convex_error, v_result } from "../server/convex-utils.ts";
 import { crypto_sha256_hex } from "../server/crypto-utils.ts";
 import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
 import { get_id_generator } from "../shared/generated-ids.ts";
+import { ai_chat_GENERATED_IMAGE_FORMAT } from "../shared/ai-chat.ts";
+import { files_TRANSFER_SELECTION_PAGE_SIZE } from "../shared/files.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
@@ -76,6 +87,7 @@ const BASH_SHELL_TRANSCRIPT_ENTRY_MAX_BYTES = 960 * 1024;
 const BASH_SHELL_TRANSCRIPT_READ_MAX_ENTRIES = 1000;
 // A job's budget starts when its worker starts, not when it was queued.
 const BASH_JOB_RUN_MS = 8 * 60 * 1000;
+const BASH_JOB_LIFETIME_MS = 24 * 60 * 60 * 1000;
 // The worker aborts this long before the deadline, so the last 30 seconds store and settle.
 const BASH_JOB_SETTLE_HEADROOM_MS = 30_000;
 // Live jobs per user and workspace, counted on the Activity rows.
@@ -88,6 +100,11 @@ const BASH_JOB_PLACEHOLDER_MS = 10 * 60 * 1000;
 // the shell snapshot are bounded at launch and emptied when the result lands.
 const BASH_JOB_SCRIPT_MAX_BYTES = 64 * 1024;
 const BASH_JOB_SHELL_STATE_MAX_BYTES = 128 * 1024;
+// A job's Copy input must be saved, sealed and started within this time after its checkpoint is
+// saved. The server sets it from its own clock, so the host clock does not matter.
+const BASH_JOB_COPY_ADMISSION_MS = 10 * 60 * 1000;
+// Copy input pages each cleanup pass deletes. A page can be 64 KiB, so keep the pass small.
+const BASH_JOB_COPY_CLEANUP_BATCH_COUNT = 8;
 // The wakeup message carries this much of each output stream; `jobs -o N` has the rest. The count is
 // in UTF-16 code units, so `bash_text_head` keeps the cut off the middle of a character.
 const BASH_JOB_WAKEUP_HEAD_CHARS = 4 * 1024;
@@ -106,9 +123,7 @@ const BASH_JOB_FINISH_MESSAGE_MIDDLE = " finished in shell ";
  */
 export function bash_job_is_finish_message(role: string, text: string) {
 	return (
-		role === "system" &&
-		text.startsWith(BASH_JOB_FINISH_MESSAGE_START) &&
-		text.includes(BASH_JOB_FINISH_MESSAGE_MIDDLE)
+		role === "system" && text.startsWith(BASH_JOB_FINISH_MESSAGE_START) && text.includes(BASH_JOB_FINISH_MESSAGE_MIDDLE)
 	);
 }
 
@@ -125,6 +140,8 @@ const bash_invocation_identity = {
 	workspaceId: v.id("organizations_workspaces"),
 	userId: v.id("users"),
 	threadId: v.id("ai_chat_threads"),
+	membershipId: v.id("organizations_workspaces_users"),
+	membershipLifetime: v.number(),
 	toolCallId: v.string(),
 	commandHash: v.string(),
 };
@@ -213,7 +230,10 @@ export async function ai_chat_files_db_append_shell_transcript(
 
 export async function ai_chat_files_db_get_invocation_membership(
 	ctx: QueryCtx | MutationCtx,
-	invocation: Doc<"ai_chat_bash_invocations">,
+	invocation: Pick<
+		Doc<"ai_chat_bash_invocations">,
+		"organizationId" | "workspaceId" | "userId" | "threadId" | "membershipId" | "membershipLifetime"
+	>,
 ) {
 	const membership = await ctx.db.get("organizations_workspaces_users", invocation.membershipId);
 	if (
@@ -240,8 +260,19 @@ export async function ai_chat_files_db_get_invocation_membership(
 	)
 		return null;
 	const thread = await ctx.db.get("ai_chat_threads", invocation.threadId);
-	if (!thread || thread.organizationId !== invocation.organizationId || thread.workspaceId !== invocation.workspaceId)
+	if (
+		!thread ||
+		thread.createdBy !== invocation.userId ||
+		thread.organizationId !== invocation.organizationId ||
+		thread.workspaceId !== invocation.workspaceId
+	)
 		return null;
+	const authorized = await access_control_db_authorize_membership(ctx, {
+		userAuth: { id: invocation.userId },
+		membership,
+		permission: "content.read",
+	});
+	if (authorized._nay) return null;
 	return membership;
 }
 
@@ -264,7 +295,7 @@ function bash_result_bounded(result: NonNullable<Doc<"ai_chat_bash_invocations">
 			nextCwd: bash_text_head(result.metadata.nextCwd, 1024),
 			stdoutTruncated: true,
 			stderrTruncated: true,
-			observedPaths: result.metadata.observedPaths.filter((path) => path.length <= 256).slice(0, 20),
+			observedPaths: result.metadata.observedPaths.filter(({ path }) => path.length <= 256).slice(0, 20),
 			observedPathsTruncated: true,
 		},
 	};
@@ -308,6 +339,9 @@ export const begin_bash_invocation = internalMutation({
 		)
 			return Result({ _nay: { message: "Invalid Bash call identity." } });
 		if (!BASH_SHELL_NAME_REGEX.test(shellName)) return Result({ _nay: { message: "Invalid Bash shell name." } });
+		// Keep the HTTP run's original membership lifetime, even before its first Bash call.
+		if (!(await ai_chat_files_db_get_invocation_membership(ctx, args)))
+			return Result({ _nay: { message: "Unauthorized" } });
 		const existing = await ctx.db
 			.query("ai_chat_bash_invocations")
 			.withIndex("by_thread_toolCall", (q) => q.eq("threadId", args.threadId).eq("toolCallId", args.toolCallId))
@@ -317,7 +351,8 @@ export const begin_bash_invocation = internalMutation({
 				existing.organizationId !== args.organizationId ||
 				existing.workspaceId !== args.workspaceId ||
 				existing.userId !== args.userId ||
-				!(await ai_chat_files_db_get_invocation_membership(ctx, existing))
+				existing.membershipId !== args.membershipId ||
+				existing.membershipLifetime !== args.membershipLifetime
 			)
 				return Result({ _nay: { message: "Unauthorized" } });
 			if (existing.commandHash !== args.commandHash)
@@ -329,38 +364,6 @@ export const begin_bash_invocation = internalMutation({
 			return Result({ _yay: invocation_result(existing) });
 		}
 
-		const membership = await ctx.db
-			.query("organizations_workspaces_users")
-			.withIndex("by_user_organization_workspace_active", (q) =>
-				q
-					.eq("userId", args.userId)
-					.eq("organizationId", args.organizationId)
-					.eq("workspaceId", args.workspaceId)
-					.eq("active", true),
-			)
-			.first();
-		const user = await ctx.db.get("users", args.userId);
-		const workspace = await ctx.db.get("organizations_workspaces", args.workspaceId);
-		const thread = await ctx.db.get("ai_chat_threads", args.threadId);
-		if (
-			!membership ||
-			!user ||
-			user.deletedAt !== undefined ||
-			!workspace ||
-			workspace.organizationId !== args.organizationId ||
-			workspace.pluginDataPurgeStartedAt !== undefined ||
-			!thread ||
-			thread.organizationId !== args.organizationId ||
-			thread.workspaceId !== args.workspaceId
-		)
-			return Result({ _nay: { message: "Unauthorized" } });
-		const authorized = await access_control_db_authorize_membership(ctx, {
-			userAuth: { id: args.userId },
-			membership,
-			permission: "content.read",
-		});
-		if (authorized._nay) return authorized;
-		const membershipLifetime = await organizations_membership_lifetimes_db_ensure(ctx, membership);
 		const now = Date.now();
 
 		// Create-and-run: a shell that does not exist yet is created by the call that names it.
@@ -380,8 +383,8 @@ export const begin_bash_invocation = internalMutation({
 					},
 				});
 			const shellId = await ctx.db.insert("ai_chat_bash_shells", {
-				organizationId: thread.organizationId,
-				workspaceId: thread.workspaceId,
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
 				threadId: args.threadId,
 				name: shellName,
 				// `"~"` means "start in the current workspace path"; the shell runner resolves it.
@@ -401,8 +404,6 @@ export const begin_bash_invocation = internalMutation({
 
 		const invocation = {
 			...args,
-			membershipId: membership._id,
-			membershipLifetime,
 			status: "running" as const,
 			deadlineAt: now + 120_000,
 			transferDeadlineAt: now + 90_000,
@@ -422,9 +423,8 @@ export const begin_bash_invocation = internalMutation({
 });
 
 /**
- * The lazy `/shells/<name>/transcript` provider reads this mid-call. The shell is shared by the
- * thread, so any workspace member with `content.read` may read it; the args scope is bound to the
- * caller's membership first, then the shell's own tenant fields are checked against that scope.
+ * The lazy `/shells/<name>/transcript` provider reads this mid-call. Only the thread creator with
+ * current workspace read access may read it. The shell must belong to that same thread and scope.
  */
 export const read_shell_transcript = internalQuery({
 	args: {
@@ -465,6 +465,8 @@ export const get_bash_invocation = internalQuery({
 	args: bash_invocation_identity,
 	returns: v_result({ _yay: bash_invocation_result }),
 	handler: async (ctx, args) => {
+		if (!(await ai_chat_files_db_get_invocation_membership(ctx, args)))
+			return Result({ _nay: { message: "Unauthorized" } });
 		const invocation = await ctx.db
 			.query("ai_chat_bash_invocations")
 			.withIndex("by_thread_toolCall", (q) => q.eq("threadId", args.threadId).eq("toolCallId", args.toolCallId))
@@ -474,7 +476,8 @@ export const get_bash_invocation = internalQuery({
 			invocation.organizationId !== args.organizationId ||
 			invocation.workspaceId !== args.workspaceId ||
 			invocation.userId !== args.userId ||
-			!(await ai_chat_files_db_get_invocation_membership(ctx, invocation))
+			invocation.membershipId !== args.membershipId ||
+			invocation.membershipLifetime !== args.membershipLifetime
 		)
 			return Result({ _nay: { message: "Unauthorized" } });
 		if (invocation.commandHash !== args.commandHash)
@@ -568,39 +571,124 @@ export const cleanup_expired_bash_results = internalMutation({
 });
 
 /**
- * Check that this turn may still create chat files: Agent mode, workspace membership, and read and
- * write access to a live thread.
- *
- * Ingestion runs this as its `beforeCreate` gate. A retry whose receipt already completed returns
- * the existing file before that gate runs, and that path checks ordinary Files access instead. So
- * ending the turn cannot hide a file the turn already committed.
+ * Keep the original chat separate from the output workspace. Files checks the exact destination.
  */
 export async function ai_chat_files_db_authorize_file_output(
 	ctx: MutationCtx,
-	args: Infer<typeof files_ingestion_scope_validator> & { threadId: Id<"ai_chat_threads">; modeId: "ask" | "agent" },
+	args: Infer<typeof files_ingestion_scope_validator> & {
+		agentSource: Infer<typeof ai_chat_workspaces_source_validator>;
+		threadId: Id<"ai_chat_threads">;
+		modeId: "ask" | "agent";
+	},
 ) {
 	if (args.modeId !== "agent") return Result({ _nay: { message: "Agent mode is required to create files" } });
-	const membership = await organizations_db_get_membership(ctx, args);
-	if (!membership || membership.organizationId !== args.organizationId || membership.workspaceId !== args.workspaceId)
-		return Result({ _nay: { message: "Unauthorized" } });
-	const thread = await ctx.db.get("ai_chat_threads", args.threadId);
-	if (!thread) return Result({ _nay: { message: "Not found" } });
-	if (thread.organizationId !== args.organizationId || thread.workspaceId !== args.workspaceId || thread.archived)
-		return Result({ _nay: { message: "Unauthorized" } });
-	for (const permission of ["content.read", "content.write"] as const) {
-		const authorized = await access_control_db_authorize_membership(ctx, {
-			userAuth: { id: args.userId },
-			membership,
-			permission,
-		});
-		if (authorized._nay) return authorized;
-	}
-	return Result({ _yay: null });
+	if (args.threadId !== args.agentSource.threadId) return Result({ _nay: { message: "Unauthorized" } });
+	return await ai_chat_workspaces_db_authorize_file_scope(ctx, args);
 }
+
+export const get_file_output_target = query({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		target: v.object({ kind: v.union(v.literal("saved"), v.literal("private")), id: v.string() }),
+	},
+	returns: v.union(
+		v.object({
+			target: files_pending_target_validator,
+			path: v.string(),
+			readiness: v.union(v.literal("preparing"), v.literal("ready")),
+			organizationName: v.string(),
+			workspaceName: v.string(),
+		}),
+		v.null(),
+	),
+	handler: async (ctx, args) => {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) throw convex_error({ message: "Unauthenticated" });
+		const current = await organizations_db_get_membership(ctx, {
+			userId: userAuth.id,
+			membershipId: args.membershipId,
+		});
+		if (!current) return null;
+		const user = (await ctx.db.get("users", userAuth.id))!;
+		const personal = await ctx.db
+			.query("organizations_workspaces_users")
+			.withIndex("by_active_user_organization_workspace", (q) =>
+				q
+					.eq("active", true)
+					.eq("userId", userAuth.id)
+					.eq("organizationId", user.defaultOrganizationId!)
+					.eq("workspaceId", user.defaultWorkspaceId!),
+			)
+			.first();
+		let target: Doc<"files_pending_updates">["target"];
+		if (args.target.kind === "saved") {
+			const id = ctx.db.normalizeId("files_nodes", args.target.id);
+			if (!id) return null;
+			target = { kind: "saved", id };
+		} else {
+			const id = ctx.db.normalizeId("files_pending_nodes", args.target.id);
+			if (!id) return null;
+			target = { kind: "private", id };
+		}
+		// The target keeps its ID through Save. Try only these two authorized workspace scopes.
+		for (const membership of personal && personal._id !== current._id ? [current, personal] : [current]) {
+			const scope = {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				userId: userAuth.id,
+			};
+			const readTarget = await files_pending_nodes_db_resolve_read_target(ctx, { ...scope, target });
+			if (!readTarget) continue;
+			const reader = await files_visible_db_create_reader(ctx, { ...scope, readLimit: 2048 });
+			const file = await reader.resolve(readTarget);
+			if (!file || !(await reader.canRead(file.accessNode))) continue;
+			const { entry } = file;
+			if (entry.kind === "saved" && entry.node.archiveOperationId !== null) return null;
+			const organization = (await ctx.db.get("organizations", membership.organizationId))!;
+			const workspace = (await ctx.db.get("organizations_workspaces", membership.workspaceId))!;
+			return {
+				target: readTarget,
+				path: entry.path,
+				readiness: entry.pendingUpdate?.preparation ? ("preparing" as const) : ("ready" as const),
+				organizationName: organization.name,
+				workspaceName: workspace.name,
+			};
+		}
+		return null;
+	},
+});
+
+/**
+ * Check the fixed output path before paying for image generation. Finalize checks it again.
+ */
+export const check_image_output = internalMutation({
+	args: {
+		source: ai_chat_workspaces_source_validator,
+		workspace: v.union(v.literal("current"), v.literal("personal")),
+	},
+	returns: v_result({ _yay: v.null() }),
+	handler: async (ctx, args) => {
+		const destination = await ai_chat_workspaces_db_resolve(ctx, args);
+		if (destination._nay) return destination;
+		const organization = (await ctx.db.get("organizations", destination._yay.organizationId))!;
+		const billedUserId = billing_pick_billed_user_id({ userId: args.source.userId, organization });
+		if (!(await billing_db_check_paid_plan(ctx, { userId: billedUserId })).hasPaidPlan)
+			return Result({ _nay: { message: "This workspace's plan does not include file uploads" } });
+		const planned = await files_nodes_db_plan_private_node_by_path(ctx, {
+			...destination._yay,
+			userId: args.source.userId,
+			path: `/generated/image.${ai_chat_GENERATED_IMAGE_FORMAT}`,
+			kind: "file",
+			uniqueName: true,
+		});
+		return planned._nay ? Result({ _nay: planned._nay }) : Result({ _yay: null });
+	},
+});
 
 export const prepare_file_output = internalMutation({
 	args: {
 		...files_ingestion_prepare_args_validator.fields,
+		agentSource: ai_chat_workspaces_source_validator,
 		threadId: v.id("ai_chat_threads"),
 		modeId: v.union(v.literal("ask"), v.literal("agent")),
 	},
@@ -612,6 +700,7 @@ export const prepare_file_output = internalMutation({
 export const finalize_file_output = internalMutation({
 	args: {
 		...files_ingestion_finalize_args_validator.fields,
+		agentSource: ai_chat_workspaces_source_validator,
 		threadId: v.id("ai_chat_threads"),
 		modeId: v.union(v.literal("ask"), v.literal("agent")),
 	},
@@ -634,14 +723,711 @@ async function db_get_job_row(ctx: QueryCtx | MutationCtx, invocationId: Id<"ai_
 
 type BashJobRow = NonNullable<Awaited<ReturnType<typeof db_get_job_row>>>;
 
+async function db_check_bash_job_worker(
+	ctx: QueryCtx | MutationCtx,
+	args: { invocationId: Id<"ai_chat_bash_invocations">; workId: WorkId },
+) {
+	const invocation = await ctx.db.get("ai_chat_bash_invocations", args.invocationId);
+	const job = invocation?.job;
+	if (
+		!invocation ||
+		!job ||
+		invocation.status !== "running" ||
+		job.stopRequestedAt !== null ||
+		job.workId !== args.workId
+	)
+		return Result({ _nay: { name: "stale_job", message: "This Bash worker is no longer active." } });
+	if (!(await ai_chat_files_db_get_invocation_membership(ctx, invocation)))
+		return Result({ _nay: { message: "Unauthorized" } });
+	const activity = await activities_db_get_by_source_id(ctx, invocation._id);
+	if (!activity || !activities_is_active(activity.status) || activity.status === "stopping")
+		return Result({ _nay: { name: "stopped", message: "This Bash job has ended or is stopping." } });
+	return Result({ _yay: { ...invocation, job } });
+}
+
+/**
+ * The worker check for doors that end a worker slice. The helper checks the work ID before
+ * access, so "Unauthorized" means the current worker lost access. End the job now, like a
+ * refused pause. Without this, the job stays running with no worker until its watchdog reports
+ * a timeout.
+ */
+async function db_check_bash_job_worker_or_cancel(
+	ctx: MutationCtx,
+	args: { invocationId: Id<"ai_chat_bash_invocations">; workId: WorkId },
+) {
+	const checked = await db_check_bash_job_worker(ctx, args);
+	if (checked._nay?.message === "Unauthorized") {
+		const invocation = await db_get_job_row(ctx, args.invocationId);
+		if (invocation)
+			await db_settle_bash_job(ctx, invocation, { status: "canceled", errorMessage: null, now: Date.now() });
+	}
+	return checked;
+}
+
+/**
+ * Checks only. Transfer start uses this before any accepted input is written.
+ */
+export async function ai_chat_files_db_check_copy_admission(
+	ctx: QueryCtx | MutationCtx,
+	args: { invocationId: Id<"ai_chat_bash_invocations">; commandNumber: number; workId: WorkId },
+) {
+	const checked = await db_check_bash_job_worker(ctx, args);
+	if (checked._nay) return checked;
+	const invocation = checked._yay;
+	const checkpoint = invocation.job.copy;
+	if (!checkpoint || checkpoint.commandNumber !== args.commandNumber || checkpoint.phase === "delivering")
+		return Result({ _nay: { name: "stale_job", message: "This Bash Copy checkpoint is no longer active." } });
+	if (checkpoint.phase === "admitting") {
+		if (!checkpoint.sealed)
+			return Result({ _nay: { name: "incomplete_input", message: "Seal the Bash Copy input before starting Copy." } });
+		if (checkpoint.admissionDeadlineAt <= Date.now() || invocation.transferDeadlineAt <= Date.now())
+			return Result({ _nay: { name: "timed_out", message: "This Bash Copy admission timed out." } });
+	}
+	return Result({ _yay: { invocation, checkpoint } });
+}
+
+/**
+ * Source pages have fixed positions, so one request reads at most two docs.
+ */
+export async function ai_chat_files_db_check_copy_sources(
+	ctx: QueryCtx | MutationCtx,
+	args: {
+		invocationId: Id<"ai_chat_bash_invocations">;
+		commandNumber: number;
+		offset: number;
+		sources: Infer<typeof files_pending_target_validator>[];
+	},
+) {
+	if (
+		!Number.isSafeInteger(args.offset) ||
+		args.offset < 0 ||
+		args.sources.length < 1 ||
+		args.sources.length > files_TRANSFER_SELECTION_PAGE_SIZE
+	)
+		return Result({ _nay: { name: "invalid_selection", message: "Invalid source page position or size." } });
+	const firstPage = Math.floor(args.offset / files_TRANSFER_SELECTION_PAGE_SIZE);
+	const lastPage = Math.floor((args.offset + args.sources.length - 1) / files_TRANSFER_SELECTION_PAGE_SIZE);
+	const savedSources: Infer<typeof files_pending_target_validator>[] = [];
+	for (let page = firstPage; page <= lastPage; page++) {
+		const saved = await ctx.db
+			.query("ai_chat_bash_job_copy_pages")
+			.withIndex("by_invocation_command_page", (q) =>
+				q.eq("invocationId", args.invocationId).eq("commandNumber", args.commandNumber).eq("page", page),
+			)
+			.unique();
+		if (!saved)
+			return Result({ _nay: { name: "request_changed", message: "Copy sources do not match the saved Bash input." } });
+		savedSources.push(...saved.sources);
+	}
+	const pageOffset = args.offset % files_TRANSFER_SELECTION_PAGE_SIZE;
+	const selected = savedSources.slice(pageOffset, pageOffset + args.sources.length);
+	if (
+		selected.length !== args.sources.length ||
+		selected.some((source, index) => source.kind !== args.sources[index]!.kind || source.id !== args.sources[index]!.id)
+	)
+		return Result({ _nay: { name: "request_changed", message: "Copy sources do not match the saved Bash input." } });
+	return Result({ _yay: null });
+}
+
+/**
+ * Called after run insertion: a refusal must roll back the whole start mutation.
+ */
+export async function ai_chat_files_db_link_copy_admission(
+	ctx: MutationCtx,
+	args: {
+		invocationId: Id<"ai_chat_bash_invocations">;
+		commandNumber: number;
+		workId: WorkId;
+		runId: Id<"files_transfer_runs">;
+	},
+) {
+	const checked = await ai_chat_files_db_check_copy_admission(ctx, args);
+	if (checked._nay) throw convex_error(checked._nay);
+	const { invocation, checkpoint } = checked._yay;
+	if (checkpoint.runId === args.runId) return null;
+	if (checkpoint.phase !== "admitting" || checkpoint.runId !== null)
+		throw convex_error({ message: "This Bash Copy checkpoint already belongs to another transfer." });
+	await ctx.db.patch("ai_chat_bash_invocations", invocation._id, {
+		job: { ...invocation.job, copy: { ...checkpoint, runId: args.runId } },
+	});
+	return null;
+}
+
+/**
+ * Called inside transfer seal, together with discovery scheduling.
+ */
+export async function ai_chat_files_db_seal_copy_admission(
+	ctx: MutationCtx,
+	args: {
+		invocationId: Id<"ai_chat_bash_invocations">;
+		commandNumber: number;
+		workId: WorkId;
+		runId: Id<"files_transfer_runs">;
+		deadlineAt: number;
+		now: number;
+	},
+) {
+	const checked = await ai_chat_files_db_check_copy_admission(ctx, args);
+	if (checked._nay) throw convex_error(checked._nay);
+	const { invocation, checkpoint } = checked._yay;
+	if (checkpoint.runId !== args.runId)
+		throw convex_error({ message: "This Bash Copy checkpoint belongs to another transfer." });
+	// A lost seal reply must not reset the start of the excluded wait interval.
+	if (checkpoint.phase === "waiting") return null;
+	const activity = await activities_db_get_by_source_id(ctx, invocation._id);
+	if (!activity) throw convex_error({ message: "Bash job Activity not found." });
+	if (invocation.job.watchdogId !== null) await ctx.scheduler.cancel(invocation.job.watchdogId);
+	const watchdogId: Id<"_scheduled_functions"> = await ctx.scheduler.runAt(
+		args.deadlineAt,
+		internal.ai_chat_files.timeout_bash_job,
+		{ invocationId: invocation._id, expectedDeadlineAt: args.deadlineAt },
+	);
+	await ctx.db.patch("ai_chat_bash_invocations", invocation._id, {
+		deadlineAt: args.deadlineAt,
+		job: {
+			...invocation.job,
+			watchdogId,
+			copy: {
+				phase: "waiting",
+				commandNumber: checkpoint.commandNumber,
+				lastArg: checkpoint.lastArg,
+				runId: args.runId,
+				waitStartedAt: args.now,
+			},
+		},
+	});
+	await ctx.db.patch("activities", activity._id, { deadlineAt: args.deadlineAt, updatedAt: args.now });
+	return null;
+}
+
+const bash_copy_admission_validator =
+	app_convex_schema.tables.ai_chat_bash_invocations.validator.fields.job.fields.copy.members[0];
+
+/**
+ * Checkpoint fields that `save_bash_job_copy_checkpoint` sets itself. The worker sends the rest.
+ */
+const BASH_COPY_ADMISSION_SERVER_FIELDS = [
+	"pageCount",
+	"argsCount",
+	"sourcesCount",
+	"sealed",
+	"admissionDeadlineAt",
+	"runId",
+] as const;
+
+/**
+ * Capture both memberships before staging. Do not retarget already resolved operands.
+ */
+export const capture_bash_job_copy_scopes = internalMutation({
+	args: {
+		invocationId: v.id("ai_chat_bash_invocations"),
+		workId: vWorkId,
+		sourceWorkspace: v.union(v.literal("current"), v.literal("personal")),
+		destinationWorkspace: v.union(v.literal("current"), v.literal("personal")),
+		source: v.object({ organizationId: v.id("organizations"), workspaceId: v.id("organizations_workspaces") }),
+		destination: v.object({ organizationId: v.id("organizations"), workspaceId: v.id("organizations_workspaces") }),
+	},
+	returns: v_result({
+		_yay: v.object({ sourceScope: files_transfer_scope_validator, destinationScope: files_transfer_scope_validator }),
+	}),
+	handler: async (ctx, args) => {
+		const checked = await db_check_bash_job_worker(ctx, args);
+		if (checked._nay) return checked;
+		const capture = async (workspace: "current" | "personal", expected: typeof args.source) => {
+			const resolved = await ai_chat_workspaces_db_resolve(ctx, { source: checked._yay, workspace });
+			if (resolved._nay) return resolved;
+			const { organizationId, workspaceId, membershipId } = resolved._yay;
+			if (organizationId !== expected.organizationId || workspaceId !== expected.workspaceId)
+				return Result({ _nay: { message: "The Copy workspace changed. Start a new command." } });
+			const membership = await organizations_db_get_membership(ctx, { userId: checked._yay.userId, membershipId });
+			if (!membership) return Result({ _nay: { message: "Copy workspace access is no longer available." } });
+			const membershipLifetime = await organizations_membership_lifetimes_db_ensure(ctx, membership);
+			return Result({ _yay: { organizationId, workspaceId, membershipId, membershipLifetime } });
+		};
+		const source = await capture(args.sourceWorkspace, args.source);
+		if (source._nay) return source;
+		const destination = await capture(args.destinationWorkspace, args.destination);
+		if (destination._nay) return destination;
+		return Result({ _yay: { sourceScope: source._yay, destinationScope: destination._yay } });
+	},
+});
+
+/**
+ * Save expansion once. Incomplete input is never an automatic shell replay point.
+ */
+export const save_bash_job_copy_checkpoint = internalMutation({
+	args: {
+		invocationId: v.id("ai_chat_bash_invocations"),
+		workId: vWorkId,
+		checkpoint: bash_copy_admission_validator.omit(...BASH_COPY_ADMISSION_SERVER_FIELDS),
+		output: v.object({ stdout: v.string(), stderr: v.string() }),
+		resume: v.object({
+			script: v.string(),
+			commandNumber: v.number(),
+			launchedJobNumbers: v.array(v.number()),
+			shellState: bash_shell_state_validator,
+			cwd: v.string(),
+			cwdTarget: v.union(files_pending_target_validator, v.null()),
+		}),
+		liveOutput: v.union(ai_chat_bash_job_live_output_validator, v.null()),
+	},
+	returns: v_result({ _yay: v.null() }),
+	handler: async (ctx, args) => {
+		const checked = await db_check_bash_job_worker(ctx, args);
+		if (checked._nay) return checked;
+		const invocation = checked._yay;
+		// The cp parser already guarantees at least one source and a destination, so the counts
+		// are not checked again here.
+		if (
+			!Number.isSafeInteger(args.checkpoint.commandNumber) ||
+			args.checkpoint.commandNumber < 0 ||
+			args.resume.commandNumber !== args.checkpoint.commandNumber + 1 ||
+			invocation.transferDeadlineAt <= Date.now() ||
+			new TextEncoder().encode(args.resume.script).byteLength > BASH_JOB_SCRIPT_MAX_BYTES ||
+			new TextEncoder().encode(JSON.stringify(args.resume.shellState)).byteLength > BASH_JOB_SHELL_STATE_MAX_BYTES
+		)
+			return Result({ _nay: { name: "invalid_input", message: "Invalid Bash Copy checkpoint." } });
+		const previous = invocation.job.copy;
+		if (previous && previous.phase !== "delivering") {
+			// A lost reply sends the same input again. Compare only the fields the worker sent,
+			// because this door set the counters and the deadline itself.
+			if (
+				previous.phase === "admitting" &&
+				compareValues(omit(previous, [...BASH_COPY_ADMISSION_SERVER_FIELDS]), args.checkpoint) === 0 &&
+				invocation.job.resumeScript === args.resume.script &&
+				compareValues(invocation.job.shellState, args.resume.shellState) === 0 &&
+				invocation.job.startCwd === args.resume.cwd &&
+				compareValues(invocation.job.startCwdTarget, args.resume.cwdTarget) === 0 &&
+				invocation.job.resumeCommandNumber === args.resume.commandNumber &&
+				compareValues(invocation.job.resumeLaunchedJobNumbers, args.resume.launchedJobNumbers) === 0
+			)
+				return Result({ _yay: null });
+			return Result({
+				_nay: { name: "request_changed", message: "This Bash job already has another Copy checkpoint." },
+			});
+		}
+		if (previous && (previous.workId !== args.workId || args.checkpoint.commandNumber <= previous.commandNumber))
+			return Result({ _nay: { name: "stale_job", message: "This Bash Copy result belongs to another worker." } });
+		if (previous)
+			await ctx.scheduler.runAfter(0, internal.ai_chat_files.cleanup_bash_job_copy_pages, {
+				invocationId: invocation._id,
+				commandNumber: previous.commandNumber,
+			});
+		const shell = await ctx.db.get("ai_chat_bash_shells", invocation.job.shellId);
+		if (!shell) throw should_never_happen("Job shell not found", { shellId: invocation.job.shellId });
+		await ai_chat_files_db_append_shell_transcript(
+			ctx,
+			shell,
+			`$ [${new Date().toISOString()}] job ${invocation.job.jobNumber} suspended for Copy in shell ${shell.name}\n${args.output.stdout}\n${args.output.stderr}`,
+		);
+		await ctx.db.patch("ai_chat_bash_invocations", invocation._id, {
+			job: {
+				...invocation.job,
+				copy: {
+					...args.checkpoint,
+					pageCount: 0,
+					argsCount: 0,
+					sourcesCount: 0,
+					sealed: false,
+					admissionDeadlineAt: Date.now() + BASH_JOB_COPY_ADMISSION_MS,
+					runId: null,
+				},
+				resumeScript: args.resume.script,
+				resumeCommandNumber: args.resume.commandNumber,
+				resumeLaunchedJobNumbers: args.resume.launchedJobNumbers,
+				shellState: args.resume.shellState,
+				startCwd: args.resume.cwd,
+				startCwdTarget: args.resume.cwdTarget,
+				liveOutput: args.liveOutput ?? undefined,
+			},
+		});
+		return Result({ _yay: null });
+	},
+});
+
+export const stage_bash_job_copy_page = internalMutation({
+	args: {
+		invocationId: v.id("ai_chat_bash_invocations"),
+		workId: vWorkId,
+		commandNumber: v.number(),
+		page: v.number(),
+		args: v.array(v.string()),
+		sources: v.array(files_pending_target_validator),
+	},
+	returns: v_result({ _yay: v.null() }),
+	handler: async (ctx, args) => {
+		const checked = await db_check_bash_job_worker(ctx, args);
+		if (checked._nay) return checked;
+		const invocation = checked._yay;
+		const checkpoint = invocation.job.copy;
+		if (
+			!checkpoint ||
+			checkpoint.phase !== "admitting" ||
+			checkpoint.commandNumber !== args.commandNumber ||
+			checkpoint.admissionDeadlineAt <= Date.now() ||
+			invocation.transferDeadlineAt <= Date.now()
+		)
+			return Result({ _nay: { name: "stale_job", message: "This Bash Copy input is no longer active." } });
+		if (
+			!Number.isSafeInteger(args.page) ||
+			args.page < 0 ||
+			args.page > checkpoint.pageCount ||
+			args.args.length > files_TRANSFER_SELECTION_PAGE_SIZE ||
+			args.sources.length > files_TRANSFER_SELECTION_PAGE_SIZE ||
+			args.args.length + args.sources.length === 0 ||
+			new TextEncoder().encode(JSON.stringify({ args: args.args, sources: args.sources })).byteLength >
+				bash_JOB_COPY_PAGE_MAX_BYTES
+		)
+			return Result({ _nay: { name: "invalid_input", message: "Invalid Bash Copy input page." } });
+		if (args.page < checkpoint.pageCount) {
+			const previous = await ctx.db
+				.query("ai_chat_bash_job_copy_pages")
+				.withIndex("by_invocation_command_page", (q) =>
+					q.eq("invocationId", invocation._id).eq("commandNumber", args.commandNumber).eq("page", args.page),
+				)
+				.unique();
+			return previous &&
+				compareValues(previous.args, args.args) === 0 &&
+				compareValues(previous.sources, args.sources) === 0
+				? Result({ _yay: null })
+				: Result({
+						_nay: { name: "request_changed", message: "This Bash Copy page was already saved with different input." },
+					});
+		}
+		// Sources fill full transfer-sized pages first, so each saved page is one transfer page.
+		// Args may spill into later args-only pages.
+		if (
+			checkpoint.sealed ||
+			args.sources.length !==
+				Math.min(files_TRANSFER_SELECTION_PAGE_SIZE, checkpoint.expectedSourceCount - checkpoint.sourcesCount) ||
+			checkpoint.argsCount + args.args.length > checkpoint.expectedArgCount
+		)
+			return Result({ _nay: { name: "invalid_input", message: "Copy input pages must be complete and in order." } });
+		await ctx.db.insert("ai_chat_bash_job_copy_pages", {
+			invocationId: invocation._id,
+			commandNumber: args.commandNumber,
+			page: args.page,
+			args: args.args,
+			sources: args.sources,
+		});
+		await ctx.db.patch("ai_chat_bash_invocations", invocation._id, {
+			job: {
+				...invocation.job,
+				copy: {
+					...checkpoint,
+					pageCount: checkpoint.pageCount + 1,
+					argsCount: checkpoint.argsCount + args.args.length,
+					sourcesCount: checkpoint.sourcesCount + args.sources.length,
+				},
+			},
+		});
+		return Result({ _yay: null });
+	},
+});
+
+export const seal_bash_job_copy_checkpoint = internalMutation({
+	args: { invocationId: v.id("ai_chat_bash_invocations"), workId: vWorkId, commandNumber: v.number() },
+	returns: v_result({ _yay: v.null() }),
+	handler: async (ctx, args) => {
+		const checked = await db_check_bash_job_worker(ctx, args);
+		if (checked._nay) return checked;
+		const invocation = checked._yay;
+		const checkpoint = invocation.job.copy;
+		if (
+			!checkpoint ||
+			checkpoint.phase !== "admitting" ||
+			checkpoint.commandNumber !== args.commandNumber ||
+			checkpoint.admissionDeadlineAt <= Date.now() ||
+			invocation.transferDeadlineAt <= Date.now()
+		)
+			return Result({ _nay: { name: "stale_job", message: "This Bash Copy input is no longer active." } });
+		if (
+			checkpoint.argsCount !== checkpoint.expectedArgCount ||
+			checkpoint.sourcesCount !== checkpoint.expectedSourceCount
+		)
+			return Result({ _nay: { name: "incomplete_input", message: "Save all Bash Copy input before sealing." } });
+		if (!checkpoint.sealed)
+			await ctx.db.patch("ai_chat_bash_invocations", invocation._id, {
+				job: { ...invocation.job, copy: { ...checkpoint, sealed: true } },
+			});
+		return Result({ _yay: null });
+	},
+});
+
+export const read_bash_job_copy_page = internalQuery({
+	args: {
+		invocationId: v.id("ai_chat_bash_invocations"),
+		workId: vWorkId,
+		commandNumber: v.number(),
+		page: v.number(),
+	},
+	returns: v.union(doc(app_convex_schema, "ai_chat_bash_job_copy_pages"), v.null()),
+	handler: async (ctx, args) => {
+		const checked = await ai_chat_files_db_check_copy_admission(ctx, args);
+		if (checked._nay) return null;
+		return await ctx.db
+			.query("ai_chat_bash_job_copy_pages")
+			.withIndex("by_invocation_command_page", (q) =>
+				q.eq("invocationId", args.invocationId).eq("commandNumber", args.commandNumber).eq("page", args.page),
+			)
+			.unique();
+	},
+});
+
+export const read_bash_job_copy_invocation = internalQuery({
+	args: { invocationId: v.id("ai_chat_bash_invocations"), workId: vWorkId },
+	returns: v.union(doc(app_convex_schema, "ai_chat_bash_invocations"), v.null()),
+	handler: async (ctx, args) => {
+		const checked = await db_check_bash_job_worker(ctx, args);
+		return checked._nay ? null : checked._yay;
+	},
+});
+
+/**
+ * Old input is no longer needed after delivery. Delete it in bounded pages.
+ */
+export const cleanup_bash_job_copy_pages = internalMutation({
+	args: { invocationId: v.id("ai_chat_bash_invocations"), commandNumber: v.number() },
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		const invocation = await ctx.db.get("ai_chat_bash_invocations", args.invocationId);
+		if (invocation?.job?.copy?.commandNumber === args.commandNumber) return null;
+		const pages = await ctx.db
+			.query("ai_chat_bash_job_copy_pages")
+			.withIndex("by_invocation_command_page", (q) =>
+				q.eq("invocationId", args.invocationId).eq("commandNumber", args.commandNumber),
+			)
+			.take(BASH_JOB_COPY_CLEANUP_BATCH_COUNT);
+		await Promise.all(pages.map((page) => ctx.db.delete("ai_chat_bash_job_copy_pages", page._id)));
+		if (pages.length === BASH_JOB_COPY_CLEANUP_BATCH_COUNT)
+			await ctx.scheduler.runAfter(0, internal.ai_chat_files.cleanup_bash_job_copy_pages, args);
+		return null;
+	},
+});
+
+/**
+ * Copy progress and terminal delivery have fixed owner deadlines. Reads never extend them.
+ */
+async function db_bash_job_copy_deadline(ctx: QueryCtx | MutationCtx, invocation: BashJobRow) {
+	const copy = invocation.job.copy;
+	if (!copy) return null;
+	if (copy.phase === "admitting") return copy.sealed ? copy.admissionDeadlineAt : null;
+	if (copy.phase === "delivering") return null;
+	const checked = await files_transfer_db_get_job_copy(ctx, {
+		runId: copy.runId,
+		invocationId: invocation._id,
+		commandNumber: copy.commandNumber,
+	});
+	if (checked._nay) return null;
+	const copyActivity = checked._yay.activity;
+	const excluded =
+		(invocation.job.excludedCopyWaitMs ?? 0) +
+		Math.max(0, (copyActivity.finishedAt ?? Date.now()) - copy.waitStartedAt);
+	if (Date.now() - invocation._creationTime - excluded >= BASH_JOB_LIFETIME_MS) return null;
+	return copyActivity.finishedAt === undefined
+		? copyActivity.deadlineAt
+		: copyActivity.finishedAt + BASH_JOB_PLACEHOLDER_MS;
+}
+
+/**
+ * Switch the checkpoint to one-shot delivery under this worker. The worker gets a fresh run
+ * lease for the rest of the shell script.
+ */
+async function db_deliver_bash_job_copy(
+	ctx: MutationCtx,
+	args: {
+		invocation: BashJobRow;
+		copy: {
+			commandNumber: number;
+			lastArg: string;
+			runId: Id<"files_transfer_runs"> | null;
+			workId: WorkId;
+			result: { stdout: string; stderr: string; exitCode: number };
+		};
+		now: number;
+	},
+) {
+	const { invocation, copy, now } = args;
+	const deadlineAt = now + BASH_JOB_RUN_MS;
+	if (invocation.job.watchdogId !== null) await ctx.scheduler.cancel(invocation.job.watchdogId);
+	const watchdogId: Id<"_scheduled_functions"> = await ctx.scheduler.runAt(
+		deadlineAt,
+		internal.ai_chat_files.timeout_bash_job,
+		{ invocationId: invocation._id, expectedDeadlineAt: deadlineAt },
+	);
+	const job = {
+		...invocation.job,
+		watchdogId,
+		copy: {
+			phase: "delivering" as const,
+			commandNumber: copy.commandNumber,
+			lastArg: copy.lastArg,
+			runId: copy.runId,
+			workId: copy.workId,
+			result: copy.result,
+		},
+	};
+	const patch = { job, deadlineAt, transferDeadlineAt: deadlineAt - BASH_JOB_SETTLE_HEADROOM_MS };
+	await ctx.db.patch("ai_chat_bash_invocations", invocation._id, patch);
+	const activity = await activities_db_get_by_source_id(ctx, invocation._id);
+	if (activity) await ctx.db.patch("activities", activity._id, { deadlineAt, updatedAt: now });
+	return { ...invocation, ...patch };
+}
+
+/**
+ * Claim one terminal result before running later shell statements. A lost reply is
+ * readable by this worker only; a lost worker must never replay those statements.
+ */
+export const take_bash_job_copy_result = internalMutation({
+	args: { invocationId: v.id("ai_chat_bash_invocations"), commandNumber: v.number(), workId: vWorkId },
+	returns: v.union(doc(app_convex_schema, "ai_chat_bash_invocations"), v.null()),
+	handler: async (ctx, args) => {
+		const invocation = await db_get_job_row(ctx, args.invocationId);
+		if (
+			!invocation ||
+			invocation.status !== "running" ||
+			invocation.job.workId !== args.workId ||
+			invocation.job.stopRequestedAt !== null
+		)
+			return null;
+		const copy = invocation.job.copy;
+		if (!copy || copy.phase === "admitting" || copy.commandNumber !== args.commandNumber) return null;
+		// A refused start never created a run, so there is no transfer to check.
+		if (copy.runId === null) return copy.phase === "delivering" && copy.workId === args.workId ? invocation : null;
+		const checked = await files_transfer_db_get_job_copy(ctx, { ...args, runId: copy.runId });
+		const now = Date.now();
+		if (checked._nay) {
+			await db_settle_bash_job(ctx, invocation, { status: "canceled", errorMessage: checked._nay.message, now });
+			return null;
+		}
+		if (copy.phase === "delivering") return copy.workId === args.workId ? invocation : null;
+		const copyActivity = checked._yay.activity;
+		if (activities_is_active(copyActivity.status)) return null;
+		const finishedAt = copyActivity.finishedAt;
+		if (finishedAt === undefined)
+			throw should_never_happen("Finished Copy without its finish time", { runId: copy.runId });
+		const excludedCopyWaitMs = (invocation.job.excludedCopyWaitMs ?? 0) + Math.max(0, finishedAt - copy.waitStartedAt);
+		if (
+			finishedAt + BASH_JOB_PLACEHOLDER_MS <= now ||
+			now - invocation._creationTime - excludedCopyWaitMs >= BASH_JOB_LIFETIME_MS
+		) {
+			await db_settle_bash_job(ctx, invocation, { status: "timed_out", errorMessage: null, now });
+			return null;
+		}
+		const progress = copyActivity.progress;
+		const result = {
+			stdout: `Transfer ${copy.runId}: ${progress.completed ?? 0} ready for review, ${progress.skipped ?? 0} skipped, ${progress.failed ?? 0} failed. Activity ${copyActivity._id}. Review in Files.\n`,
+			stderr: copyActivity.errorMessage ? `cp: ${copyActivity.errorMessage}\n` : "",
+			exitCode: copyActivity.status === "succeeded" ? 0 : 1,
+		};
+		return await db_deliver_bash_job_copy(ctx, {
+			invocation: { ...invocation, job: { ...invocation.job, excludedCopyWaitMs } },
+			copy: { ...copy, workId: args.workId, result },
+			now,
+		});
+	},
+});
+
+/**
+ * Deliver a final admission refusal as the failed `cp` result, as the bounded path prints it.
+ * A retry would only get the same refusal until the admission deadline. A lost reply is
+ * readable by this worker only, like a Copy result.
+ */
+export const deliver_bash_job_copy_refusal = internalMutation({
+	args: {
+		invocationId: v.id("ai_chat_bash_invocations"),
+		commandNumber: v.number(),
+		workId: vWorkId,
+		result: v.object({ stdout: v.string(), stderr: v.string(), exitCode: v.number() }),
+	},
+	returns: v.union(doc(app_convex_schema, "ai_chat_bash_invocations"), v.null()),
+	handler: async (ctx, args) => {
+		const checked = await db_check_bash_job_worker_or_cancel(ctx, args);
+		if (checked._nay) return null;
+		const invocation = checked._yay;
+		const copy = invocation.job.copy;
+		if (copy?.phase === "delivering" && copy.commandNumber === args.commandNumber)
+			return copy.workId === args.workId ? invocation : null;
+		if (copy?.phase !== "admitting" || copy.commandNumber !== args.commandNumber) return null;
+		const now = Date.now();
+		// Stop a run that already accepted input, so no Copy work starts after the refusal.
+		if (copy.runId !== null) await files_transfer_db_request_stop(ctx, { runId: copy.runId, reason: "user", now });
+		return await db_deliver_bash_job_copy(ctx, {
+			invocation,
+			copy: { ...copy, workId: args.workId, result: args.result },
+			now,
+		});
+	},
+});
+
+/**
+ * Only complete input or a waiting Copy can survive a lost worker. Never replay shell code.
+ */
+async function db_requeue_bash_job_copy(ctx: MutationCtx, invocation: BashJobRow, now: number) {
+	const copy = invocation.job.copy;
+	if (!copy || copy.phase === "delivering" || (copy.phase === "admitting" && !copy.sealed)) return false;
+	if (invocation.job.workId === null) return false;
+	const checked = await db_check_bash_job_worker(ctx, { invocationId: invocation._id, workId: invocation.job.workId });
+	if (checked._nay) return false;
+	const deadlineAt = await db_bash_job_copy_deadline(ctx, invocation);
+	if (deadlineAt === null || deadlineAt <= now) return false;
+	const activity = await activities_db_get_by_source_id(ctx, invocation._id);
+	if (!activity) return false;
+	const workerGeneration = invocation.job.workerGeneration + 1;
+	const workId = await ai_chat_bash_jobs_workpool.enqueueAction(
+		ctx,
+		internal.bash.run_job,
+		{ invocationId: invocation._id, workerGeneration },
+		{
+			onComplete: internal.ai_chat_files.handle_bash_job_complete,
+			context: { invocationId: invocation._id },
+			runAfter: 2_000,
+		},
+	);
+	if (invocation.job.watchdogId !== null) await ctx.scheduler.cancel(invocation.job.watchdogId);
+	const watchdogId: Id<"_scheduled_functions"> = await ctx.scheduler.runAt(
+		deadlineAt,
+		internal.ai_chat_files.timeout_bash_job,
+		{ invocationId: invocation._id, expectedDeadlineAt: deadlineAt },
+	);
+	await ctx.db.patch("ai_chat_bash_invocations", invocation._id, {
+		deadlineAt,
+		job: { ...invocation.job, workId, workerGeneration, watchdogId },
+	});
+	await ctx.db.patch("activities", activity._id, { status: "queued", deadlineAt, updatedAt: now });
+	return true;
+}
+
+export const requeue_bash_job_copy = internalMutation({
+	args: { invocationId: v.id("ai_chat_bash_invocations"), workId: vWorkId },
+	returns: v.boolean(),
+	handler: async (ctx, args) => {
+		const checked = await db_check_bash_job_worker_or_cancel(ctx, args);
+		if (checked._nay) return false;
+		const queued = await db_requeue_bash_job_copy(ctx, checked._yay, Date.now());
+		if (!queued)
+			await db_settle_bash_job(ctx, checked._yay, {
+				status: "failed",
+				errorMessage: "Copy continuation is no longer available.",
+				now: Date.now(),
+			});
+		return queued;
+	},
+});
+
 /**
  * The fence for the internal doors the Bash worker calls with a passed `userId`. The caller must
- * be an active member of the args scope with `content.read`. Each door then checks the row it
- * reads against this membership's scope: membership proves the caller, not the row.
+ * own the thread and be an active member of its workspace with `content.read`. Each door then
+ * checks the doc it reads against that thread and workspace.
  */
 async function db_get_door_membership(
 	ctx: QueryCtx | MutationCtx,
-	args: { organizationId: Id<"organizations">; workspaceId: Id<"organizations_workspaces">; userId: Id<"users"> },
+	args: {
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		userId: Id<"users">;
+		threadId: Id<"ai_chat_threads">;
+	},
 ) {
 	const membership = await ctx.db
 		.query("organizations_workspaces_users")
@@ -654,6 +1440,14 @@ async function db_get_door_membership(
 		)
 		.first();
 	if (!membership) return Result({ _nay: { message: "Unauthorized" } });
+	const thread = await ctx.db.get("ai_chat_threads", args.threadId);
+	if (
+		!thread ||
+		thread.createdBy !== args.userId ||
+		thread.organizationId !== membership.organizationId ||
+		thread.workspaceId !== membership.workspaceId
+	)
+		return Result({ _nay: { message: "Unauthorized" } });
 	const authorized = await access_control_db_authorize_membership(ctx, {
 		userAuth: { id: args.userId },
 		membership,
@@ -765,20 +1559,8 @@ async function db_wake_agent_for_job(
 	// member may no longer read, and the run it starts would be refused anyway.
 	const membership = await ai_chat_files_db_get_invocation_membership(ctx, invocation);
 	if (!membership) return;
-	const userAuth = { id: invocation.userId };
-	if ((await access_control_db_authorize_membership(ctx, { userAuth, membership, permission: "content.read" }))._nay)
-		return;
 	const thread = await ctx.db.get("ai_chat_threads", invocation.threadId);
 	if (!thread) throw should_never_happen("Job thread not found", { threadId: invocation.threadId });
-	// Writing into a thread somebody else made needs `content.write`, and so does an Agent-mode job.
-	// `ai_chat.authorize_thread_mutation` decides the somebody-else's-thread half. It is private to
-	// that module, so both checks are spelled out here instead of importing it and creating an
-	// import cycle.
-	if (
-		(invocation.job.allowDbFilesMkdir || thread.createdBy !== invocation.userId) &&
-		(await access_control_db_authorize_membership(ctx, { userAuth, membership, permission: "content.write" }))._nay
-	)
-		return;
 	// Read the lease once. A re-read later in this mutation would see the same snapshot, so it
 	// cannot catch a release that lands mid-write. Convex serializes the two mutations and retries
 	// this one with fresh state instead, which then takes the freed lease.
@@ -856,11 +1638,27 @@ async function db_wake_agent_for_job(
 	});
 }
 
+async function db_stop_bash_job_transfers(
+	ctx: MutationCtx,
+	invocation: BashJobRow,
+	reason: "user" | "timeout",
+	now: number,
+) {
+	// One command at a time owns this job's transfer lane, so a live run is among the newest receipts.
+	// Read only the newest five to keep this settle bounded.
+	const transfers = await ctx.db
+		.query("ai_chat_bash_invocation_transfers")
+		.withIndex("by_invocation_commandNumber", (q) => q.eq("invocationId", invocation._id))
+		.order("desc")
+		.take(5);
+	for (const transfer of transfers) await files_transfer_db_request_stop(ctx, { runId: transfer.runId, reason, now });
+}
+
 /**
  * Settle a job that stored no result: the watchdog, a Stop while queued, a crashed worker, or a
- * dead membership at claim. Only the settle that finds the row live marks it `interrupted` and
- * writes the finish entry, so a retried settle cannot write a duplicate line. The first settle
- * wins on the Activity; `activities_db_finish` ignores the rest.
+ * dead membership at claim or pause. Only the settle that finds the job doc still running marks it
+ * `interrupted` and writes the finish entry. A retried settle cannot write a duplicate line.
+ * The first settle wins on the Activity; `activities_db_finish` ignores the rest.
  */
 async function db_settle_bash_job(
 	ctx: MutationCtx,
@@ -868,6 +1666,12 @@ async function db_settle_bash_job(
 	args: { status: "failed" | "canceled" | "timed_out"; errorMessage: string | null; now: number },
 ) {
 	if (invocation.status === "running") {
+		await db_stop_bash_job_transfers(ctx, invocation, args.status === "timed_out" ? "timeout" : "user", args.now);
+		if (invocation.job.copy)
+			await ctx.scheduler.runAfter(0, internal.ai_chat_files.cleanup_bash_job_copy_pages, {
+				invocationId: invocation._id,
+				commandNumber: invocation.job.copy.commandNumber,
+			});
 		const activity = await activities_db_get_by_source_id(ctx, invocation._id);
 		// Empty the same fields `finish_bash_job` empties: the job is over, so nothing needs the script
 		// or the paused state again, and a killed paused job would otherwise keep 128 KiB of state
@@ -886,6 +1690,7 @@ async function db_settle_bash_job(
 				resumeCommandNumber: undefined,
 				resumeLaunchedJobNumbers: undefined,
 				liveOutput: undefined,
+				copy: undefined,
 			},
 		});
 		// The worker stored no result, so the output it flushed so far is all the transcript gets.
@@ -1033,6 +1838,7 @@ export const start_bash_job = internalMutation({
 				shellState: args.shellState,
 				allowDbFilesMkdir: args.allowDbFilesMkdir,
 				workId: null,
+				workerGeneration: 0,
 				watchdogId: null,
 				stopRequestedAt: null,
 				wakeAgent: args.wakeAgent,
@@ -1073,7 +1879,7 @@ export const start_bash_job = internalMutation({
 		const workId = await ai_chat_bash_jobs_workpool.enqueueAction(
 			ctx,
 			internal.bash.run_job,
-			{ invocationId },
+			{ invocationId, workerGeneration: 0 },
 			{ onComplete: internal.ai_chat_files.handle_bash_job_complete, context: { invocationId } },
 		);
 		const watchdogId: Id<"_scheduled_functions"> = await ctx.scheduler.runAt(
@@ -1103,11 +1909,11 @@ export type ai_chat_files_start_bash_job_Result =
  * here would drop its result.
  */
 export const finish_bash_job = internalMutation({
-	args: { invocationId: v.id("ai_chat_bash_invocations"), result: ai_chat_bash_result_validator },
+	args: { invocationId: v.id("ai_chat_bash_invocations"), workId: vWorkId, result: ai_chat_bash_result_validator },
 	returns: v.null(),
 	handler: async (ctx, args) => {
 		const invocation = await db_get_job_row(ctx, args.invocationId);
-		if (!invocation || invocation.status === "finished") return null;
+		if (!invocation || invocation.status === "finished" || invocation.job.workId !== args.workId) return null;
 		// The watchdog beat the worker to the row: it marked it `interrupted` and already told the
 		// user the job ended.
 		const settled = invocation.status !== "running";
@@ -1122,6 +1928,12 @@ export const finish_bash_job = internalMutation({
 					: exitCode === bash_COMMAND_EXIT_TIMED_OUT
 						? "timed_out"
 						: "failed";
+		await db_stop_bash_job_transfers(ctx, invocation, status === "timed_out" ? "timeout" : "user", now);
+		if (invocation.job.copy)
+			await ctx.scheduler.runAfter(0, internal.ai_chat_files.cleanup_bash_job_copy_pages, {
+				invocationId: invocation._id,
+				commandNumber: invocation.job.copy.commandNumber,
+			});
 		// `liveOutput: undefined` drops the field: Convex leaves an undefined field out of a nested
 		// object, and the patch replaces the whole `job` object.
 		await ctx.db.patch("ai_chat_bash_invocations", invocation._id, {
@@ -1137,6 +1949,7 @@ export const finish_bash_job = internalMutation({
 				resumeCommandNumber: undefined,
 				resumeLaunchedJobNumbers: undefined,
 				liveOutput: undefined,
+				copy: undefined,
 			},
 		});
 		if (invocation.job.watchdogId !== null) await ctx.scheduler.cancel(invocation.job.watchdogId);
@@ -1227,7 +2040,7 @@ export const arm_bash_job_wakeup = internalMutation({
  * until `recover_expired` mislabels it.
  */
 export const claim_bash_job = internalMutation({
-	args: { invocationId: v.id("ai_chat_bash_invocations") },
+	args: { invocationId: v.id("ai_chat_bash_invocations"), workerGeneration: v.number() },
 	returns: v.union(
 		v.null(),
 		v.object({
@@ -1239,7 +2052,8 @@ export const claim_bash_job = internalMutation({
 	),
 	handler: async (ctx, args) => {
 		const invocation = await db_get_job_row(ctx, args.invocationId);
-		if (!invocation) return null;
+		// An older queued worker must not claim a later pause or rearm its clocks.
+		if (!invocation || invocation.job.workerGeneration !== args.workerGeneration) return null;
 		const now = Date.now();
 
 		// The membership helper binds the row's tenant fields; read the names only after it.
@@ -1260,7 +2074,25 @@ export const claim_bash_job = internalMutation({
 		)
 			return null;
 
-		const deadlineAt = now + BASH_JOB_RUN_MS;
+		const copy = invocation.job.copy;
+		if (copy && (copy.phase === "delivering" || (copy.phase === "admitting" && !copy.sealed))) {
+			await db_settle_bash_job(ctx, invocation, {
+				status: "failed",
+				errorMessage: "Copy continuation cannot be replayed after a lost worker.",
+				now,
+			});
+			return null;
+		}
+		const deadlineAt = copy ? await db_bash_job_copy_deadline(ctx, invocation) : now + BASH_JOB_RUN_MS;
+		if (
+			deadlineAt === null ||
+			deadlineAt <= now ||
+			(copy?.phase !== "waiting" &&
+				now - invocation._creationTime - (invocation.job.excludedCopyWaitMs ?? 0) >= BASH_JOB_LIFETIME_MS)
+		) {
+			await db_settle_bash_job(ctx, invocation, { status: "timed_out", errorMessage: null, now });
+			return null;
+		}
 		if (invocation.job.watchdogId !== null) await ctx.scheduler.cancel(invocation.job.watchdogId);
 		// The annotation breaks a type cycle: the id flows into the returned row, and the generated
 		// `internal` type depends on this function's return type.
@@ -1274,7 +2106,10 @@ export const claim_bash_job = internalMutation({
 		);
 		const patch = {
 			deadlineAt,
-			transferDeadlineAt: deadlineAt - BASH_JOB_SETTLE_HEADROOM_MS,
+			transferDeadlineAt: Math.min(
+				now + BASH_JOB_RUN_MS - BASH_JOB_SETTLE_HEADROOM_MS,
+				copy?.phase === "admitting" ? deadlineAt : Infinity,
+			),
 			job: { ...invocation.job, watchdogId },
 		};
 		await ctx.db.patch("ai_chat_bash_invocations", invocation._id, patch);
@@ -1340,6 +2175,7 @@ export const handle_bash_job_complete = internalMutation({
 		const stopRequested = invocation.job.stopRequestedAt !== null;
 		if (args.result.kind === "success" && !stopRequested) return null;
 		if (args.result.kind === "failed" && !stopRequested) {
+			if (await db_requeue_bash_job_copy(ctx, invocation, now)) return null;
 			await db_settle_bash_job(ctx, invocation, { status: "failed", errorMessage: "Background command crashed", now });
 			return null;
 		}
@@ -1363,6 +2199,28 @@ export async function ai_chat_files_db_request_job_stop(
 
 	// A user Stop that reaches its deadline is still a stop, not a timeout.
 	if (args.reason === "timeout") {
+		if (
+			invocation.job.copy?.phase === "waiting" &&
+			invocation.job.stopRequestedAt === null &&
+			(await ai_chat_files_db_get_invocation_membership(ctx, invocation))
+		) {
+			const deadlineAt = await db_bash_job_copy_deadline(ctx, invocation);
+			if (deadlineAt !== null && deadlineAt > args.now) {
+				if (invocation.job.watchdogId !== null) await ctx.scheduler.cancel(invocation.job.watchdogId);
+				const watchdogId: Id<"_scheduled_functions"> = await ctx.scheduler.runAt(
+					deadlineAt,
+					internal.ai_chat_files.timeout_bash_job,
+					{ invocationId: invocation._id, expectedDeadlineAt: deadlineAt },
+				);
+				await ctx.db.patch("ai_chat_bash_invocations", invocation._id, {
+					deadlineAt,
+					job: { ...invocation.job, watchdogId },
+				});
+				const activity = await activities_db_get_by_source_id(ctx, invocation._id);
+				if (activity) await ctx.db.patch("activities", activity._id, { deadlineAt, updatedAt: args.now });
+				return;
+			}
+		}
 		await db_settle_bash_job(
 			ctx,
 			invocation,
@@ -1387,15 +2245,7 @@ export async function ai_chat_files_db_request_job_stop(
 	if (invocation.job.workId !== null) await ai_chat_bash_jobs_workpool.cancel(ctx, invocation.job.workId);
 	if (invocation.job.watchdogId !== null) await ctx.scheduler.cancel(invocation.job.watchdogId);
 
-	// Stop only this job's copies: other jobs and Files UI pastes share the same lane. One lane per
-	// user and workspace means at most one of this job's copies is live, and it is the newest.
-	const transfers = await ctx.db
-		.query("ai_chat_bash_invocation_transfers")
-		.withIndex("by_invocation_commandNumber", (q) => q.eq("invocationId", invocation._id))
-		.order("desc")
-		.take(5);
-	for (const transfer of transfers)
-		await files_transfer_db_request_stop(ctx, { runId: transfer.runId, reason: "user", now: args.now });
+	await db_stop_bash_job_transfers(ctx, invocation, "user", args.now);
 }
 
 /**
@@ -1463,6 +2313,7 @@ export const flush_bash_job_output = internalMutation({
 export const pause_bash_job = internalMutation({
 	args: {
 		invocationId: v.id("ai_chat_bash_invocations"),
+		workId: vWorkId,
 		resume: v.object({
 			script: v.string(),
 			/**
@@ -1495,7 +2346,18 @@ export const pause_bash_job = internalMutation({
 	returns: v.boolean(),
 	handler: async (ctx, args) => {
 		const invocation = await db_get_job_row(ctx, args.invocationId);
-		if (!invocation || invocation.status !== "running" || invocation.job.stopRequestedAt !== null) return false;
+		if (
+			!invocation ||
+			invocation.status !== "running" ||
+			invocation.job.stopRequestedAt !== null ||
+			invocation.job.workId !== args.workId
+		)
+			return false;
+		if (!(await ai_chat_files_db_get_invocation_membership(ctx, invocation))) {
+			// A refused pause ends this worker; do not leave its Activity running until the watchdog.
+			await db_settle_bash_job(ctx, invocation, { status: "canceled", errorMessage: null, now: Date.now() });
+			return false;
+		}
 		const activity = await activities_db_get_by_source_id(ctx, invocation._id);
 		if (!activity || !activities_is_active(activity.status) || activity.status === "stopping") return false;
 		const shell = await ctx.db.get("ai_chat_bash_shells", invocation.job.shellId);
@@ -1503,12 +2365,27 @@ export const pause_bash_job = internalMutation({
 
 		// The placeholder clocks cover the wait; the next claim re-arms them from its start.
 		const now = Date.now();
-		const deadlineAt = now + args.runAfterMs + BASH_JOB_PLACEHOLDER_MS;
+		if (
+			invocation.job.copy &&
+			(invocation.job.copy.phase !== "delivering" || invocation.job.copy.workId !== args.workId)
+		)
+			return false;
+		const ageDeadlineAt = invocation._creationTime + BASH_JOB_LIFETIME_MS + (invocation.job.excludedCopyWaitMs ?? 0);
+		if (ageDeadlineAt <= now) {
+			await db_settle_bash_job(ctx, invocation, { status: "timed_out", errorMessage: null, now });
+			return false;
+		}
+		const deadlineAt = Math.min(now + args.runAfterMs + BASH_JOB_PLACEHOLDER_MS, ageDeadlineAt);
+		if (invocation.job.copy)
+			await ctx.scheduler.runAfter(0, internal.ai_chat_files.cleanup_bash_job_copy_pages, {
+				invocationId: invocation._id,
+				commandNumber: invocation.job.copy.commandNumber,
+			});
 		if (invocation.job.watchdogId !== null) await ctx.scheduler.cancel(invocation.job.watchdogId);
 		const workId = await ai_chat_bash_jobs_workpool.enqueueAction(
 			ctx,
 			internal.bash.run_job,
-			{ invocationId: invocation._id },
+			{ invocationId: invocation._id, workerGeneration: invocation.job.workerGeneration + 1 },
 			{
 				onComplete: internal.ai_chat_files.handle_bash_job_complete,
 				context: { invocationId: invocation._id },
@@ -1534,6 +2411,8 @@ export const pause_bash_job = internalMutation({
 				startCwdTarget: args.resume.cwdTarget,
 				liveOutput: args.liveOutput ?? undefined,
 				workId,
+				copy: undefined,
+				workerGeneration: invocation.job.workerGeneration + 1,
 				watchdogId,
 			},
 		});
@@ -1553,7 +2432,7 @@ export const pause_bash_job = internalMutation({
  * The worker's 5 s poll. `stopRequested` is the flag itself, not the row status: the watchdog can
  * mark the row `interrupted` while a slow worker is alive in its last 30 seconds, and that
  * worker must abort with the deadline reason, not the stop reason. `authorized` re-checks what
- * the chat route checked at launch: read always, write only for an Agent-mode job.
+ * the chat route checked at launch: source read access. Each file write checks its destination.
  */
 export const poll_bash_job = internalQuery({
 	args: { invocationId: v.id("ai_chat_bash_invocations") },
@@ -1569,15 +2448,16 @@ export const poll_bash_job = internalQuery({
 		// This helper is what sees a purge in progress and a removed member.
 		const membership = await ai_chat_files_db_get_invocation_membership(ctx, invocation);
 		if (!membership) return { status: invocation.status, stopRequested, authorized: false };
-		const userAuth = { id: invocation.userId };
-		let authorized = !(
-			await access_control_db_authorize_membership(ctx, { userAuth, membership, permission: "content.read" })
-		)._nay;
-		if (authorized && invocation.job.allowDbFilesMkdir)
-			authorized = !(
-				await access_control_db_authorize_membership(ctx, { userAuth, membership, permission: "content.write" })
-			)._nay;
-		return { status: invocation.status, stopRequested, authorized };
+		const copy = invocation.job.copy;
+		if (invocation.status === "running" && copy && copy.phase !== "admitting" && copy.runId !== null) {
+			const checked = await files_transfer_db_get_job_copy(ctx, {
+				invocationId: invocation._id,
+				commandNumber: copy.commandNumber,
+				runId: copy.runId,
+			});
+			if (checked._nay) return { status: invocation.status, stopRequested, authorized: false };
+		}
+		return { status: invocation.status, stopRequested, authorized: true };
 	},
 });
 
@@ -1587,7 +2467,7 @@ export type ai_chat_files_poll_bash_job_Result =
 		: never;
 
 /**
- * Delete one job in bounded passes: pool item and watchdog first, then the transfer receipts,
+ * Delete one job in bounded passes: pool item and watchdog first, then Copy input and transfer receipts,
  * then the Activity, then the row. Never leave an Activity without its row, and never delete the
  * row after a `done: false` Activity page. `cleanup_history` and both deletion paths call this.
  */
@@ -1601,14 +2481,20 @@ export async function ai_chat_files_db_delete_job_batch(
 	if (invocation.job.watchdogId !== null) await ctx.scheduler.cancel(invocation.job.watchdogId);
 
 	const batchSize = Math.max(1, Math.min(50, args.batchSize));
+	const pages = await ctx.db
+		.query("ai_chat_bash_job_copy_pages")
+		.withIndex("by_invocation_command_page", (q) => q.eq("invocationId", invocation._id))
+		.take(batchSize);
+	await Promise.all(pages.map((page) => ctx.db.delete("ai_chat_bash_job_copy_pages", page._id)));
+	if (pages.length === batchSize) return { done: false, deletedCount: pages.length };
 	const transfers = await ctx.db
 		.query("ai_chat_bash_invocation_transfers")
 		.withIndex("by_invocation_commandNumber", (q) => q.eq("invocationId", invocation._id))
-		.take(batchSize);
+		.take(batchSize - pages.length);
 	await Promise.all(transfers.map((transfer) => ctx.db.delete("ai_chat_bash_invocation_transfers", transfer._id)));
-	if (transfers.length === batchSize) return { done: false, deletedCount: transfers.length };
+	if (pages.length + transfers.length === batchSize) return { done: false, deletedCount: batchSize };
 
-	let deletedCount = transfers.length;
+	let deletedCount = pages.length + transfers.length;
 	const activity = await activities_db_get_by_source_id(ctx, invocation._id);
 	if (activity) {
 		const deletedActivity = await activities_db_delete(ctx, activity._id);
@@ -1737,6 +2623,7 @@ export const list_live_thread_jobs = query({
 		const thread = await ctx.db.get("ai_chat_threads", threadId);
 		if (
 			!thread ||
+			thread.createdBy !== userAuth.id ||
 			thread.organizationId !== membership.organizationId ||
 			thread.workspaceId !== membership.workspaceId
 		)
@@ -1995,12 +2882,21 @@ export const list_bash_invocation_transfers = query({
 export const load_thread_tmp_files = internalQuery({
 	args: {
 		threadId: v.id("ai_chat_threads"),
+		invocationId: v.id("ai_chat_bash_invocations"),
 	},
 	returns: v.object({
 		file_nodes: v.array(doc(app_convex_schema, "ai_chat_files")),
 		file_nodes_content_dict: v.record(v.id("ai_chat_files"), doc(app_convex_schema, "ai_chat_files_content")),
 	}),
 	handler: async (ctx, args) => {
+		const invocation = await ctx.db.get("ai_chat_bash_invocations", args.invocationId);
+		if (
+			!invocation ||
+			invocation.threadId !== args.threadId ||
+			!(await ai_chat_files_db_get_invocation_membership(ctx, invocation))
+		)
+			throw convex_error({ message: "Unauthorized" });
+
 		const fileNodes = await ctx.db
 			.query("ai_chat_files")
 			.withIndex("by_thread_path", (q) => q.eq("threadId", args.threadId))
@@ -2060,7 +2956,7 @@ export const patch_thread_tmp_files = internalMutation({
 			throw convex_error({ message: "The Bash thread is no longer available." });
 		}
 
-		// Rejoining does not let an old call write into shared thread scratch.
+		// Rejoining does not let an old call write into the creator's thread scratch.
 		const existingAiChatFiles = await ctx.db
 			.query("ai_chat_files")
 			.withIndex("by_thread_path", (q) => q.eq("threadId", args.threadId))
@@ -2151,13 +3047,25 @@ export type ai_chat_files_patch_thread_tmp_files_Args =
 
 export const copy_thread_tmp_files = internalMutation({
 	args: {
-		organizationId: v.string(),
-		workspaceId: v.string(),
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		userId: v.id("users"),
 		sourceThreadId: v.id("ai_chat_threads"),
 		targetThreadId: v.id("ai_chat_threads"),
 	},
 	returns: v.null(),
 	handler: async (ctx, args) => {
+		const membership = await db_get_door_membership(ctx, { ...args, threadId: args.sourceThreadId });
+		if (membership._nay) throw convex_error({ message: membership._nay.message });
+		const targetThread = await ctx.db.get("ai_chat_threads", args.targetThreadId);
+		if (
+			!targetThread ||
+			targetThread.createdBy !== args.userId ||
+			targetThread.organizationId !== membership._yay.organizationId ||
+			targetThread.workspaceId !== membership._yay.workspaceId
+		)
+			throw convex_error({ message: "Unauthorized" });
+
 		const sourceAiChatFiles = await ctx.db
 			.query("ai_chat_files")
 			.withIndex("by_thread_path", (q) => q.eq("threadId", args.sourceThreadId))

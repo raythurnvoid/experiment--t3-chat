@@ -124,26 +124,42 @@ function image_header(bytes: Uint8Array) {
 export function ai_chat_tool_create_view_image(
 	ctx: ActionCtx,
 	args: {
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
 		userId: Id<"users">;
 		membershipId: Id<"organizations_workspaces_users">;
+		membershipLifetime: number;
 		getThreadId: () => Id<"ai_chat_threads"> | null;
 		observations: Map<string, ai_chat_Observation>;
 	},
 ) {
-	// The same 8 MiB ceiling the file writer uses, spent here on bytes read into the model.
+	// Both roots share one turn budget for bytes read into the model.
 	let imageBytesRemaining = files_ingestion_MAX_BYTES;
 	return tool({
 		description:
-			"Inspect a PNG, JPEG, WEBP, or GIF in Files. Use its canonical workspace path, such as /reports/chart.png. Up to 8 MiB per turn, 8192 pixels per edge, and 16 million canvas pixels. Read text with Bash. Read or transform other bytes with execute_code and the Files byte API.",
-		inputSchema: z.object({ path: z.string().min(1).max(1024).startsWith("/") }).strict(),
+			"Inspect a PNG, JPEG, WEBP, or GIF in Files. Choose current or personal and use the path within that workspace, such as /reports/chart.png. Remove the matching Bash root prefix. Both roots share an 8 MiB turn limit, with 8192 pixels per edge and 16 million canvas pixels. Read text with Bash. Read or transform other bytes with execute_code and the Files byte API.",
+		inputSchema: z
+			.object({ workspace: z.enum(["current", "personal"]), path: z.string().min(1).max(1024).startsWith("/") })
+			.strict(),
 		strict: true,
-		execute: async ({ path }, options) => {
+		execute: async ({ workspace, path }, options) => {
 			const unavailable = () => ai_chat_file_result("View image", "errored", [], "unavailable");
 			const threadId = args.getThreadId();
 			if (!threadId) return unavailable();
-			const readArgs = { userId: args.userId, membershipId: args.membershipId, threadId, path };
+			const agentSource = {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				userId: args.userId,
+				membershipId: args.membershipId,
+				membershipLifetime: args.membershipLifetime,
+				threadId,
+			};
 			try {
 				options.abortSignal?.throwIfAborted();
+				const destination = await ctx.runQuery(internal.ai_chat_workspaces.resolve, { source: agentSource, workspace });
+				if (destination._nay) return unavailable();
+				// Rechecks keep the original source and the selected destination membership.
+				const readArgs = { userId: args.userId, membershipId: destination._yay.membershipId, agentSource, path };
 				const checked = await ctx.runQuery(internal.files_nodes_content.get_file_read_source, readArgs);
 				if (checked._nay) return unavailable();
 				const file = checked._yay;
@@ -179,7 +195,7 @@ export function ai_chat_tool_create_view_image(
 					output: {
 						type: "content",
 						value: [
-							{ type: "text", text: `Image bytes supplied for inspection: ${file.path}` },
+							{ type: "text", text: `Image bytes supplied for inspection: ${workspace}:${file.path}` },
 							{ type: "image-data", data: files_ingestion_encode_base64(bytes), mediaType: header.mediaType },
 						],
 					},

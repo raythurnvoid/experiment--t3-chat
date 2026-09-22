@@ -30,6 +30,7 @@ import {
 import { MyTooltip, MyTooltipContent, MyTooltipTrigger } from "@/components/my-tooltip.tsx";
 import { DiffMonospaceBlock } from "@/components/monospace-block/monospace-block-diff.tsx";
 import { FileImagePreview } from "@/components/files/file-image-preview.tsx";
+import { FilePendingNotice } from "@/components/files/file-node-view/file-pending-notice.tsx";
 import { format_datetime } from "@/lib/date.ts";
 import type { AppClassName } from "@/lib/dom-utils.ts";
 import { files_truncate_path_for_width } from "@/lib/file-paths.ts";
@@ -75,6 +76,8 @@ type FileEditorSidebarPendingRow = {
 	path: string;
 	kind: "content" | "move" | "copy" | "replacement" | "content_and_move" | "delete" | "added";
 	readiness: "preparing" | "ready";
+	recovery?: Extract<FileEditorSidebarPendingView, { kind: "entry" }>["recovery"];
+	copyDestination?: Extract<FileEditorSidebarPendingView, { kind: "entry" }>["copyDestination"];
 	canAccept: boolean;
 	/**
 	 * True when Save can also create the pending parent folders this file still needs.
@@ -185,7 +188,7 @@ function build_pending_rows(
 								? files_pending_update_has_content(pendingUpdate)
 									? ("content_and_move" as const)
 									: ("move" as const)
-								: copiedFrom
+								: copiedFrom || view.copyDestination
 									? ("copy" as const)
 									: ("content" as const);
 
@@ -232,6 +235,8 @@ function build_pending_rows(
 					path: node?.path ?? entry.path,
 					kind,
 					readiness,
+					recovery: view.recovery,
+					copyDestination: view.copyDestination,
 					canAccept,
 					canAcceptWithParents,
 					requiredParents,
@@ -667,6 +672,8 @@ const FileEditorSidebarPendingStoredFile = memo(function FileEditorSidebarPendin
 	intent: Extract<NonNullable<app_convex_Doc<"files_pending_updates">["createIntent"]>, { kind: "stored" }>;
 	requiredParents: FileEditorSidebarPendingRow["requiredParents"];
 	readiness: "preparing" | "ready";
+	recovery?: FileEditorSidebarPendingRow["recovery"];
+	copyDestination?: FileEditorSidebarPendingRow["copyDestination"];
 	canAccept: boolean;
 	disabled: boolean;
 	onActionSuccess: (message: string) => void;
@@ -706,7 +713,7 @@ const FileEditorSidebarPendingStoredFile = memo(function FileEditorSidebarPendin
 					(open ? (entry.pendingUpdate.threadIds ?? []) : []).map((threadId) => [
 						threadId,
 						{
-							query: app_convex_api.ai_chat.thread_get,
+							query: app_convex_api.files_pending_updates.get_pending_source_summary,
 							args: { membershipId, threadId },
 						},
 					]),
@@ -762,6 +769,7 @@ const FileEditorSidebarPendingStoredFile = memo(function FileEditorSidebarPendin
 
 	return (
 		<li ref={itemRef}>
+			<FilePendingNotice recovery={props.recovery} copyDestination={props.copyDestination} />
 			<details
 				className={"FileEditorSidebarPendingStoredFile" satisfies FileEditorSidebarPendingStoredFile_ClassNames}
 				open={open}
@@ -807,7 +815,7 @@ const FileEditorSidebarPendingStoredFile = memo(function FileEditorSidebarPendin
 									{thread && !(thread instanceof Error) ? (
 										<MyLink
 											to="/w/$organizationName/$workspaceName/chat"
-											params={{ organizationName, workspaceName }}
+											params={{ organizationName: thread.organizationName, workspaceName: thread.workspaceName }}
 											search={{ threadId }}
 										>
 											{thread.title || "New Chat"}
@@ -900,6 +908,8 @@ type FileEditorSidebarPendingItem_Props = {
 	isAddedFile: boolean;
 	isFolder: boolean;
 	readiness: "preparing" | "ready";
+	recovery?: FileEditorSidebarPendingRow["recovery"];
+	copyDestination?: FileEditorSidebarPendingRow["copyDestination"];
 	isArchived: boolean;
 	rootKind: files_YjsRootKind | null;
 	isStale: boolean;
@@ -1174,6 +1184,7 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 						</MyButton>
 					</span>
 				</div>
+				<FilePendingNotice recovery={props.recovery} copyDestination={props.copyDestination} />
 			</li>
 		);
 	}
@@ -1211,6 +1222,7 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 
 	return (
 		<li>
+			<FilePendingNotice recovery={props.recovery} copyDestination={props.copyDestination} />
 			<details
 				className={cn("FileEditorSidebarPending-item" satisfies FileEditorSidebarPending_ClassNames)}
 				open={isOpen}
@@ -1291,12 +1303,13 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 						replacedNodeId={sizeOnlyReplacedNodeId}
 						path={path}
 					/>
-				) : isOpen && kind === "replacement" && pendingUpdate.pendingReplacement && pendingUpdate.copiedFrom ? (
+				) : isOpen && kind === "replacement" && pendingUpdate.pendingReplacement ? (
 					<div
 						role="status"
 						className={cn("FileEditorSidebarPending-item-diff" satisfies FileEditorSidebarPending_ClassNames)}
 					>
-						Replaces the file's content and type with a copy of {pendingUpdate.copiedFrom.path} (
+						Replaces the file's content and type with a copy
+						{pendingUpdate.copiedFrom ? ` of ${pendingUpdate.copiedFrom.path}` : ""} (
 						{pendingUpdate.pendingReplacement.contentType}). Save changes in all open editors first. An existing text
 						file keeps its collaboration setting.
 					</div>
@@ -1460,7 +1473,7 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 					threadIds.map((threadId) => [
 						threadId,
 						{
-							query: app_convex_api.ai_chat.thread_get,
+							query: app_convex_api.files_pending_updates.get_pending_source_summary,
 							args: { membershipId, threadId },
 						},
 					]),
@@ -1772,6 +1785,8 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 								intent={row.pendingUpdate.createIntent}
 								requiredParents={row.requiredParents}
 								readiness={row.readiness}
+								recovery={row.recovery}
+								copyDestination={row.copyDestination}
 								canAccept={row.canAcceptWithParents && row.readiness === "ready"}
 								disabled={isBulkBusy}
 								onActionSuccess={announceActionSuccess}
@@ -1789,6 +1804,8 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 								isAddedFile={row.isAddedFile}
 								isFolder={row.isFolder}
 								readiness={row.readiness}
+								recovery={row.recovery}
+								copyDestination={row.copyDestination}
 								isArchived={row.isArchived}
 								rootKind={row.rootKind}
 								isStale={row.isStale}
@@ -1951,6 +1968,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 						canAccept: true,
 						canAcceptWithParents: true,
 						requiredParents: [],
+						savedParentId: null,
 					},
 				];
 			}
@@ -1963,6 +1981,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 					canAccept: true,
 					canAcceptWithParents: true,
 					requiredParents: [],
+					savedParentId: null,
 				},
 			];
 		});
@@ -2000,6 +2019,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 						canAccept: true,
 						canAcceptWithParents: true,
 						requiredParents: [],
+						savedParentId: null,
 					},
 				],
 				new Map(),

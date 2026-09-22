@@ -21,11 +21,18 @@ async function fixture() {
 		lastMessageAt: Date.now(),
 	});
 	if (thread._nay) throw new Error(thread._nay.message);
+	const captured = await t.mutation(internal.ai_chat_workspaces.capture, {
+		userId: db.userId,
+		membershipId: db.membershipId,
+	});
+	if (captured._nay) throw new Error(captured._nay.message);
 	const args = {
 		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
 		userId: db.userId,
 		threadId: thread._yay.threadId,
+		membershipId: db.membershipId,
+		membershipLifetime: captured._yay.membershipLifetime,
 		toolCallId: "tool-call-1",
 		commandHash: "a".repeat(64),
 	};
@@ -211,9 +218,16 @@ describe("list_bash_invocation_transfers", () => {
 			requestId: "linked-job",
 			sourceIds: [source._yay.nodeId],
 			kind: "copy",
+			expectedSourceCount: 1,
 			targetParentId: files_ROOT_ID,
 		});
 		if (started._nay) throw new Error(started._nay.message);
+		expect(
+			await f.asUser.mutation(api.files_transfer.seal, {
+				membershipId: f.db.membershipId,
+				runId: started._yay.runId,
+			}),
+		).toEqual({ _yay: null });
 		const activity = await f.t.run((ctx) =>
 			ctx.db
 				.query("activities")

@@ -6,7 +6,12 @@ import { z } from "zod";
 import { internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import { internalQuery, query, type QueryCtx, type MutationCtx } from "./_generated/server.js";
-import app_convex_schema, { files_pending_target_validator, files_pending_parent_validator } from "./schema.ts";
+import app_convex_schema, {
+	files_pending_target_validator,
+	files_pending_parent_validator,
+	ai_chat_workspaces_source_validator,
+} from "./schema.ts";
+import { ai_chat_workspaces_db_authorize_file_scope } from "./ai_chat_workspaces.ts";
 import {
 	access_control_db_authorize_membership,
 	access_control_db_filter_readable_file_nodes,
@@ -45,6 +50,8 @@ const internal_listing_args = v.object({
 	visibilityUserId: v.id("users"),
 	serviceAccountId: v.optional(v.id("access_control_service_accounts")),
 	overlayUserId: v.optional(v.id("users")),
+	// Transfer discovery must refuse an incomplete folder instead of hiding unreadable children.
+	requireComplete: v.optional(v.boolean()),
 });
 
 /**
@@ -462,6 +469,7 @@ async function db_list(ctx: QueryCtx, args: Infer<typeof internal_listing_args>)
 		args.minDepth,
 		args.maxDepth,
 		args.pathQuery,
+		args.requireComplete,
 	]);
 
 	const parentSchema = z.discriminatedUnion("kind", [
@@ -650,6 +658,7 @@ async function db_list(ctx: QueryCtx, args: Infer<typeof internal_listing_args>)
 			continue;
 		}
 		const item = picked.head.item;
+		if (args.requireComplete && !picked.head.readable) return Result({ _nay: { message: "Permission denied" } });
 		const nextFrame =
 			args.mode === "subtree" &&
 			item.kind === "folder" &&
@@ -804,6 +813,7 @@ const visible_entry_validator = v.union(
 
 export const internal_get_by_path = internalQuery({
 	args: {
+		agentSource: v.optional(ai_chat_workspaces_source_validator),
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
 		userId: v.id("users"),
@@ -811,6 +821,13 @@ export const internal_get_by_path = internalQuery({
 	},
 	returns: visible_entry_validator,
 	handler: async (ctx, args) => {
+		if (args.agentSource) {
+			const authorized = await ai_chat_workspaces_db_authorize_file_scope(ctx, {
+				...args,
+				agentSource: args.agentSource,
+			});
+			if (authorized._nay) return null;
+		}
 		const reader = await files_visible_db_create_reader(ctx, args);
 		const entry = await reader.resolvePath(args.path);
 		if (reader.exhausted) throw convex_error({ message: "This path needs too many reads. Use a shorter folder path." });
@@ -820,6 +837,7 @@ export const internal_get_by_path = internalQuery({
 
 export const internal_get_by_target = internalQuery({
 	args: {
+		agentSource: v.optional(ai_chat_workspaces_source_validator),
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
 		userId: v.id("users"),
@@ -827,6 +845,13 @@ export const internal_get_by_target = internalQuery({
 	},
 	returns: visible_entry_validator,
 	handler: async (ctx, args) => {
+		if (args.agentSource) {
+			const authorized = await ai_chat_workspaces_db_authorize_file_scope(ctx, {
+				...args,
+				agentSource: args.agentSource,
+			});
+			if (authorized._nay) return null;
+		}
 		const reader = await files_visible_db_create_reader(ctx, args);
 		const entry = await reader.resolveTarget(args.target);
 		if (reader.exhausted) throw convex_error({ message: "This path needs too many reads. Use a shorter folder path." });
@@ -839,6 +864,7 @@ export const internal_get_by_target = internalQuery({
  */
 export const internal_get_directory_path = internalQuery({
 	args: {
+		agentSource: v.optional(ai_chat_workspaces_source_validator),
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
 		userId: v.id("users"),
@@ -846,6 +872,13 @@ export const internal_get_directory_path = internalQuery({
 	},
 	returns: v.union(v.object({ target: files_pending_target_validator, path: v.string() }), v.null()),
 	handler: async (ctx, args) => {
+		if (args.agentSource) {
+			const authorized = await ai_chat_workspaces_db_authorize_file_scope(ctx, {
+				...args,
+				agentSource: args.agentSource,
+			});
+			if (authorized._nay) return null;
+		}
 		let target = args.target;
 		if (target.kind === "private") {
 			const node = await ctx.db.get("files_pending_nodes", target.id);
@@ -879,9 +912,22 @@ export const internal_get_directory_path = internalQuery({
 });
 
 export const internal_list = internalQuery({
-	args: internal_listing_args,
+	args: {
+		...internal_listing_args.fields,
+		agentSource: v.optional(ai_chat_workspaces_source_validator),
+	},
 	returns: listing_result,
-	handler: db_list,
+	handler: async (ctx, args) => {
+		if (args.agentSource) {
+			const authorized = await ai_chat_workspaces_db_authorize_file_scope(ctx, {
+				...args,
+				agentSource: args.agentSource,
+				userId: args.visibilityUserId,
+			});
+			if (authorized._nay) return Result({ _yay: { items: [], continueCursor: null, isDone: true } });
+		}
+		return await db_list(ctx, args);
+	},
 });
 
 export type files_visible_internal_list_Result =

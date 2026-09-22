@@ -246,6 +246,7 @@ describe("files_save_private_file_pending_text", () => {
 		pendingUpdateId: "proposal" as Id<"files_pending_updates">,
 		reviewedRevision: 4,
 		text: "current text\n",
+		onUpserted: vi.fn(),
 	};
 
 	beforeEach(() => {
@@ -256,6 +257,7 @@ describe("files_save_private_file_pending_text", () => {
 	afterEach(() => {
 		convexMutationMock.mockReset();
 		convexActionMock.mockReset();
+		args.onUpserted.mockReset();
 	});
 
 	test("accepts both text branches and publishes the returned revision", async () => {
@@ -265,6 +267,7 @@ describe("files_save_private_file_pending_text", () => {
 			.mockResolvedValueOnce({ _yay: { target: savedTarget, newSequence: 0 } });
 
 		expect((await files_save_private_file_pending_text(args))._yay?.target).toEqual(savedTarget);
+		expect(args.onUpserted).toHaveBeenCalledExactlyOnceWith(5);
 		expect(convexMutationMock.mock.calls).toEqual([
 			["create_file_pending_update_operation_batch", { membershipId: args.membershipId, target: args.target }],
 			[
@@ -304,6 +307,53 @@ describe("files_save_private_file_pending_text", () => {
 		expect((await files_save_private_file_pending_text(args))._nay?.message).toBe("The draft changed.");
 		expect(convexActionMock).toHaveBeenCalledTimes(1);
 		expect(convexActionMock.mock.calls[0]?.[0]).toBe("upsert_file_pending_update");
+		expect(args.onUpserted).not.toHaveBeenCalled();
+	});
+
+	test("reports its own upsert revision before a refused Save so the caller can retry", async () => {
+		let reviewedRevision = args.reviewedRevision;
+		args.onUpserted.mockImplementation((revision: number) => {
+			reviewedRevision = revision;
+		});
+		convexActionMock
+			.mockResolvedValueOnce({ _yay: { pendingUpdate: { _id: "proposal", revision: 5, content: {} } } })
+			.mockImplementationOnce(async () => {
+				expect(reviewedRevision).toBe(5);
+				return { _nay: { message: "Save the copied media first." } };
+			})
+			.mockResolvedValueOnce({ _yay: { pendingUpdate: { _id: "proposal", revision: 6, content: {} } } })
+			.mockResolvedValueOnce({ _yay: { target: { kind: "saved", id: "saved_node" } } });
+
+		expect((await files_save_private_file_pending_text(args))._nay?.message).toBe("Save the copied media first.");
+		expect((await files_save_private_file_pending_text({ ...args, reviewedRevision }))._yay?.target).toEqual({
+			kind: "saved",
+			id: "saved_node",
+		});
+		expect(args.onUpserted.mock.calls).toEqual([[5], [6]]);
+		expect(convexActionMock).toHaveBeenNthCalledWith(
+			3,
+			"upsert_file_pending_update",
+			expect.objectContaining({ reviewedRevision: 5 }),
+		);
+	});
+
+	test.each([null, { _id: "proposal", revision: 5 }])(
+		"does not report a revision or Save when the upsert returns no content: %j",
+		async (pendingUpdate) => {
+			convexActionMock.mockResolvedValue({ _yay: { pendingUpdate } });
+			expect((await files_save_private_file_pending_text(args))._nay?.message).toContain("Reopen the file");
+			expect(args.onUpserted).not.toHaveBeenCalled();
+			expect(convexActionMock).toHaveBeenCalledTimes(1);
+		},
+	);
+
+	test("does not report a revision or Save when text staging refuses", async () => {
+		convexMutationMock
+			.mockResolvedValueOnce({ _yay: { operationBatchId: "batch" } })
+			.mockResolvedValueOnce({ _nay: { message: "This draft changed." } });
+		expect((await files_save_private_file_pending_text(args))._nay?.message).toBe("This draft changed.");
+		expect(args.onUpserted).not.toHaveBeenCalled();
+		expect(convexActionMock).not.toHaveBeenCalled();
 	});
 });
 

@@ -6,8 +6,9 @@ import dedent from "dedent";
 import { createPatch } from "diff";
 import type { ActionCtx } from "../convex/_generated/server";
 import type { Id } from "../convex/_generated/dataModel";
+import type { Infer } from "convex/values";
+import type { ai_chat_workspaces_source_validator } from "../convex/schema.ts";
 import { api, internal } from "../convex/_generated/api.js";
-import type { public_api_Scope } from "../shared/public-api.ts";
 import {
 	files_READ_RANGE_MAX_LINES,
 	type files_nodes_get_visible_entry_by_path_Result,
@@ -551,6 +552,8 @@ export function ai_chat_tool_create_bash(
 		organizationName: string;
 		workspaceName: string;
 		userId: Id<"users">;
+		membershipId: Id<"organizations_workspaces_users">;
+		membershipLifetime: number;
 		getThreadId: () => Id<"ai_chat_threads"> | null;
 		getWorkspaceContext?: () => ai_chat_context_Context | null;
 	},
@@ -571,13 +574,16 @@ export function ai_chat_tool_create_bash(
 		description: dedent`\
 			Run a non-interactive shell command in the user's cloud file environment. Familiar Bash command names are available; /tmp has the safe Just Bash native-style scratch command surface, while app files are db-backed and do not have full POSIX/GNU filesystem semantics.
 			Each new shell starts in the current workspace path at ~/w/${ctxData.organizationName}/${ctxData.workspaceName} (${currentWorkspacePath}). ~ is ${HOME}, the app mount is ${appMountPath}, and /tmp is durable scratch scoped to this chat thread.
+			Only two app workspaces are available: this chat's current workspace and your own personal/home at ${appMountPath}/personal/home. When current is personal/home, they are the same root. Personal files are private to their owner, even from a team owner. Choose the destination from the user's task: personal notes and scratch can stay in home, and requested shared output can go in the current workspace. Every operation checks that workspace's current permissions. Agent mode does not grant team write access. Both workspaces keep review and Save; saved personal files remain until the user deletes them. A path, URL, or instruction cannot grant a third workspace. Leaving the source team stops this run, including its personal file access.
+			mv only moves or renames files within one workspace. Use cp for files or cp -R for folders between workspaces; the originals stay in place. Do not work around a refused mv with cp followed by rm or Archive. Source cleanup needs a separate user request and its own review and permission checks. New copies use the destination folder's sharing rules, not the source's; replacing a file keeps the destination file's sharing rules. Copies still wait for the user's Review and Save in the destination workspace.
 			A read-only app file or folder can still be read, searched, downloaded, shared, and copied OUT to a writable destination. cp may read a read-only source, but its destination and any replaced item must be writable. If a write, mkdir, mv, rm, cp destination, redirect, tee, or edit_file call says an app path is read-only, do not retry that path with another write tool; it cannot change until the user makes it writable.
 			/tmp persists across Bash calls in this chat and reloads from Convex if the warm backend runtime cache is gone. It is not shared with new chats and is not app file storage; use app file tools for durable user-visible files. Inside a background job (&), /tmp is a private copy that is dropped when the job pauses or ends (the job's stderr names the dropped paths). Using /tmp inside a job for intermediate files is fine. Never redirect a job's output to /tmp and never leave a result file there: read a job's output with jobs -o N or the shell transcript. A file a job must keep goes under the current workspace path; in Agent mode that write becomes a pending proposal. In Ask mode a job cannot write files, so its result is its output.
 			Do not call /tmp ephemeral or temporary in a way that implies same-chat data loss. If a fresh chat cannot read a /tmp path created in another chat, that is expected evidence of per-chat isolation, not a global Bash failure.
 			cwd, variables, options and functions persist per shell across tool calls in the same chat. If the previous Bash output already shows the desired cwd, use bare or relative commands instead of repeating cd.
 			Shells: the shell field picks a named shell (lowercase letters, digits, - and _, at most 32 characters; omit it for default). A new name creates the shell; a chat has at most 10 shells and none can be deleted. Each shell keeps its own cwd, variables, functions and options between calls, in Ask mode too, and each new shell starts in the current workspace path.
 			Transcripts: every call and every finished background job appends its full output to /shells/<name>/transcript, a read-only rolling 1 MiB log per shell. Read it with tail, head -c or grep, not cat; ls -l, stat and find on it load the whole file. The transcript is for output; jobs is for status.
-			Background jobs: cmd & starts a background job and is the only way to start one; cmd1 && cmd2 is not a background job, and the shell never backgrounds a command by itself. & binds to the last statement only, so echo a; sleep 1 & backgrounds sleep 1 and runs echo a in the foreground; to put several commands in one job write { cmd1; cmd2; } & or cmd1 && cmd2 &. A job starts in the cwd at the &, so cd docs; ls & lists docs. The launch line goes to stderr, stdout stays empty, $? is 0, and $! is the job number in that call only (0 in the next call; use jobs to find a job later). A job gets a copy of the shell state and cannot change the shell (cd or x=1 inside a job does not reach the shell); extra file descriptors are closed with a warning. A job runs a script and ends: no servers, no ports, no curl localhost. A job's /tmp is a private copy that is dropped at a pause and at the end; see the /tmp rules above for where a job's files and output go. A job runs one top-level statement at a time, and each run of it has an 8-minute budget and 2000 commands: the run is stopped 30 seconds before the end of the budget so the result can be stored, and a minute before that the job pauses after the current statement and continues in a new run with its variables, functions, cwd and $!, so a script of several statements is not bound by that budget, but one statement is (a single loop or command must finish within 6 minutes 30 seconds, or it is cut off at 7 minutes 30 seconds and the job reports 124). A job lives at most 24 hours from its &, counting the waits between its runs; past that it stops at the next statement and reports 124 too. The 2000 commands count every command the run executes, loop bodies included, and a run that reaches the cap ends with an error. The statements of a job written as { cmd1; cmd2; } & count as top-level. A top-level sleep N with a literal N of 5 seconds or more pauses the job for N seconds (at most one hour) without holding a worker; a shorter sleep, sleep $var, a sleep with a redirection or with an assignment in front of it, ! sleep N, time sleep N, a sleep joined by && or ||, and a sleep inside a loop, a pipeline or a function all run normally and hold the worker for that time. A paused job shows as queued in jobs and in Notifications, the transcript gets one entry per run of the job, and jobs -o N shows the head of the whole job's output. At most 10 of your own jobs in this workspace can be queued, running or stopping at once; a refused launch prints a line starting with "bash: cannot start a job: " on stderr, $? is 1, and set -e stops the call. After 3 refused launches in a row the call stops asking and refuses the rest locally, until a launch works or a wait that found a job live and then saw it end starts the count again. Waiting for a job that had already ended does not start the count again, and neither does waiting for a job of another chat, which wait cannot name at all: start those jobs in a later call instead. A wait does not make a refused script, state, or stopping launch succeed; those still fail at the door. Only the 10-jobs refusal is worth waiting out; a script over 64 KiB, a shell state over 128 KiB, and a launch from a job that is already stopping are refused every time. Two jobs copying at once share one copy lane, so put sequential cp or mv commands in one job: the second job's copy waits up to 60 s for the lane and then fails with exit 1. A job may start jobs; they are independent, and stopping a job does not stop the jobs it started. jobs lists the live jobs of this chat and jobs -a the newest 8; both print status words and both exit 3 while any listed job is live. jobs -o N prints the stored stdout then stderr of job N, then one final [job N exit C] line on stderr that is the job's exit code, the same code wait reports, and not part of its own output (32k characters each with a [truncated] line, at most two reads per call; the read itself exits 0, or 1 when the job is unknown or has no stored output, then read the transcript). While job N runs, jobs -o N prints the output it has produced so far (updated every 5 seconds, the same 32k characters per stream) with a final [job N running] line instead, and exits 3; a job waiting to continue after a pause prints [job N queued] and a job asked to stop prints [job N stopping], and the line is printed even when the job has produced nothing yet; the transcript gets the full output when the job ends. wait waits up to 30 s for the jobs this call started (0 at once when it started none); wait N waits for the named jobs, which may be any of your jobs in this chat, at most 12 at a time; wait -t SECONDS changes the bound. wait is a shell builtin, so which wait finds nothing even though wait works. wait normally returns 3 (still running) because a job may take minutes; run jobs in a later call instead of waiting again. Otherwise wait returns the worst exit code of the waited jobs. A job's own script can exit 3, 124 or 143 too. A 3 stays the script's own code, so ask jobs for the status word instead of looping on 3. A script's own 124 or 143 becomes the job's outcome everywhere: jobs then says timed out or stopped, and nothing can tell that apart from a real timeout or stop. The exit line jobs -o prints comes from the same rule, so a job settled as timed out prints 124 even when its script ended with another code. Every finished job already posts a system message and wakes you. In Agent mode, set wakeOnJobFinish: true only when wait should end this turn instead of polling. In that call it prints bash: waiting for job N on stderr, exits 3, and you must end the turn with a short status; the job's finish starts your next run once your turn has ended, and a job that finishes before that leaves only the chat message. kill N asks a job to stop; a stopped job reports 143 (status stopped), a job that used its whole budget reports 124 (timed out). When a job finishes, its result lands in the chat as a system message with its number, shell, exit code and output head, so you learn the outcome without polling. Stopping the chat leaves jobs running; the Notifications panel lists every job with its Stop button. fg, bg, disown and suspend are unavailable (127).
+			Large Copy: use a plain background command, cp -R src dest &, or a plain top-level cp in { first; cp -R src dest; next; } &. Copy has no total root, item, or linked-media count limit. It works in small pages and may release its shell worker while waiting. The next statement waits for Copy's real result. Exit 0 means ready for review, not saved. Only verified Copy waiting time is excluded from the job's 24-hour age; repeated Copy waits do not reset its ordinary allowance. Loops, functions, logical chains, pipelines, redirects, nested shells, and foreground copies do not use this paged Copy: their Copy must finish within the current call's or job run's time limit, or it is stopped and reports 124. Select linked app images and videos explicitly, either by naming them or their containing folder. Full-folder Copy refuses an unreadable included saved child; it does not silently skip it. Copy is a paged scan, not a snapshot of the whole tree at one instant. Completed output stays if later work fails or stops.
+			Background jobs: cmd & starts a background job and is the only way to start one; cmd1 && cmd2 is not a background job, and the shell never backgrounds a command by itself. & binds to the last statement only, so echo a; sleep 1 & backgrounds sleep 1 and runs echo a in the foreground; to put several commands in one job write { cmd1; cmd2; } & or cmd1 && cmd2 &. A job starts in the cwd at the &, so cd docs; ls & lists docs. The launch line goes to stderr, stdout stays empty, $? is 0, and $! is the job number in that call only (0 in the next call; use jobs to find a job later). A job gets a copy of the shell state and cannot change the shell (cd or x=1 inside a job does not reach the shell); extra file descriptors are closed with a warning. A job runs a script and ends: no servers, no ports, no curl localhost. A job's /tmp is a private copy that is dropped at a pause and at the end; see the /tmp rules above for where a job's files and output go. A job runs one top-level statement at a time, and each run of it has an 8-minute budget and 2000 commands: the run is stopped 30 seconds before the end of the budget so the result can be stored, and a minute before that the job pauses after the current statement and continues in a new run with its variables, functions, cwd and $!, so a script of several statements is not bound by that budget, but one statement is (a single loop or command must finish within 6 minutes 30 seconds, or it is cut off at 7 minutes 30 seconds and the job reports 124). A job has at most 24 hours of ordinary compute, sleep, and other waiting; verified durable Copy waits are excluded; past that it stops at the next statement and reports 124 too. The 2000 commands count every command the run executes, loop bodies included, and a run that reaches the cap ends with an error. The statements of a job written as { cmd1; cmd2; } & count as top-level. A top-level sleep N with a literal N of 5 seconds or more pauses the job for N seconds (at most one hour) without holding a worker; a shorter sleep, sleep $var, a sleep with a redirection or with an assignment in front of it, ! sleep N, time sleep N, a sleep joined by && or ||, and a sleep inside a loop, a pipeline or a function all run normally and hold the worker for that time. A paused job shows as queued in jobs and in Notifications, the transcript gets one entry per run of the job, and jobs -o N shows the head of the whole job's output. At most 10 of your own jobs in this workspace can be queued, running or stopping at once; a refused launch prints a line starting with "bash: cannot start a job: " on stderr, $? is 1, and set -e stops the call. After 3 refused launches in a row the call stops asking and refuses the rest locally, until a launch works or a wait that found a job live and then saw it end starts the count again. Waiting for a job that had already ended does not start the count again, and neither does waiting for a job of another chat, which wait cannot name at all: start those jobs in a later call instead. A wait does not make a refused script, state, or stopping launch succeed; those still fail at the door. Only the 10-jobs refusal is worth waiting out; a script over 64 KiB, a shell state over 128 KiB, and a launch from a job that is already stopping are refused every time. Two jobs copying at once share one copy lane, so put sequential cp or mv commands in one job. While the lane is busy, a plain background cp keeps waiting for up to about 10 minutes, then its whole job ends; other cp and mv forms in a job wait up to 60 s, then fail with exit 1. A job may start jobs; they are independent, and stopping a job does not stop the jobs it started. jobs lists the live jobs of this chat and jobs -a the newest 8; both print status words and both exit 3 while any listed job is live. jobs -o N prints the stored stdout then stderr of job N, then one final [job N exit C] line on stderr that is the job's exit code, the same code wait reports, and not part of its own output (32k characters each with a [truncated] line, at most two reads per call; the read itself exits 0, or 1 when the job is unknown or has no stored output, then read the transcript). While job N runs, jobs -o N prints the output it has produced so far (updated every 5 seconds, the same 32k characters per stream) with a final [job N running] line instead, and exits 3; a job waiting to continue after a pause prints [job N queued] and a job asked to stop prints [job N stopping], and the line is printed even when the job has produced nothing yet; the transcript gets the full output when the job ends. wait waits up to 30 s for the jobs this call started (0 at once when it started none); wait N waits for the named jobs, which may be any of your jobs in this chat, at most 12 at a time; wait -t SECONDS changes the bound. wait is a shell builtin, so which wait finds nothing even though wait works. wait normally returns 3 (still running) because a job may take minutes; run jobs in a later call instead of waiting again. Otherwise wait returns the worst exit code of the waited jobs. A job's own script can exit 3, 124 or 143 too. A 3 stays the script's own code, so ask jobs for the status word instead of looping on 3. A script's own 124 or 143 becomes the job's outcome everywhere: jobs then says timed out or stopped, and nothing can tell that apart from a real timeout or stop. The exit line jobs -o prints comes from the same rule, so a job settled as timed out prints 124 even when its script ended with another code. Every finished job already posts a system message and wakes you. In Agent mode, set wakeOnJobFinish: true only when wait should end this turn instead of polling. In that call it prints bash: waiting for job N on stderr, exits 3, and you must end the turn with a short status; the job's finish starts your next run once your turn has ended, and a job that finishes before that leaves only the chat message. kill N asks a job to stop; a stopped job reports 143 (status stopped), a job that used its whole budget reports 124 (timed out). When a job finishes, its result lands in the chat as a system message with its number, shell, exit code and output head, so you learn the outcome without polling. Stopping the chat leaves jobs running; the Notifications panel lists every job with its Stop button. fg, bg, disown and suspend are unavailable (127).
 			App-mount limitations apply only to paths under ${currentWorkspacePath} or ${appMountPath}. Do not describe them as global Bash limitations. If a command touches only /tmp or stdin, use normal scratch commands; if it touches the app mount, use the app-aware command forms below.
 			Agent-only read-only external source mounts live under ${bash_EXTERNAL_MOUNTS_ROOT} (for example ${bash_EXTERNAL_MOUNTS_ROOT}/<name>). They are a backend mirror of an external repository for Bash reads, not the user's app files: they never appear in the Files sidebar, public file API, or app file tools. Browse and read them with the same app-aware commands (ls, find, tree, cat, head, tail, wc, stat, grep, textgrep, sed). Bare ls ${bash_EXTERNAL_MOUNTS_ROOT} lists the available mount names; pick a mount with ${bash_EXTERNAL_MOUNTS_ROOT}/<name> before reading files. All writes are rejected: no file writes (redirects, touch, tee, edit_file), rm, mv, or cp into ${bash_EXTERNAL_MOUNTS_ROOT}. App files and read-only mount files cannot be loaded as shell code through bash, sh, eval, source, ., nested command reads, or xargs calling source or .; explicit /tmp scripts remain available. cp ${bash_EXTERNAL_MOUNTS_ROOT}/<name>/<file> /tmp/<name> is allowed to copy mount content into scratch. search, tree, and find at ${bash_EXTERNAL_MOUNTS_ROOT} fan out across every mount in name order (search results are per-mount relevance, concatenated);
 			scope to one mount with ${bash_EXTERNAL_MOUNTS_ROOT}/<name> when you already know the mount. meta search still requires a single mount scope via --path ${bash_EXTERNAL_MOUNTS_ROOT}/<name>. If the mount listing changes between pages, the continuation reports "listing changed"; rerun without --cursor.
@@ -595,7 +601,7 @@ export function ai_chat_tool_create_bash(
 			For xargs path checks, print pathnames into xargs such as printf '%s\n' <path> | xargs cat; do not pipe file content to xargs when the input is meant to be a pathname. When feeding many pathnames such as find ... | xargs cat, add xargs -n 10 so each reader invocation stays within the 10-file per-command cap.
 			Shell pathname expansion works for /tmp scratch paths. General app-file and mount glob operands such as src/**/*.ts, foo?.txt, and [abc].md are unsupported; simple find patterns like *.md are converted to indexed extension search.
 			ls --limit and find --limit are app-file pagination commands. Relative paths resolve against the current working directory.
-			Start with resolve '<reference>' for one raw node ID or full HTTP(S) app file URL. Do not run ls, find, search, or other discovery commands first. It prints only the current absolute Bash path and is available in Ask and Agent modes. It looks in the current workspace even after cd elsewhere; it cannot resolve another workspace or reserved source nodes. IDs and nodeId URLs follow your pending moves and renames; path URLs identify the saved node before applying your pending moves. Pending-deleted or inaccessible nodes are unavailable. Pass the returned absolute path unchanged to cat, stat, ls, or edit_file as needed; do not prefix it with @. Quote the reference and returned path; resolve does not read content. Known paths and @/path mentions need no resolve call. If resolve reports unavailable, do not scan files, fetch the URL, or use execute_code to find a path.
+			Start with resolve '<reference>' for one raw node ID or full HTTP(S) app file URL. Do not run ls, find, search, or other discovery commands first. It prints only the current absolute Bash path and is available in Ask and Agent modes. It looks in the current workspace and your own personal/home even after cd elsewhere. It cannot resolve a third workspace or reserved source nodes. IDs and nodeId URLs follow your pending moves and renames; path URLs identify the saved node before applying your pending moves. Pending-deleted or inaccessible nodes are unavailable. Pass the returned absolute path unchanged to cat, stat, ls, or edit_file as needed; do not prefix it with @. Quote the reference and returned path; resolve does not read content. Known paths and @/path mentions need no resolve call. If resolve reports unavailable, do not scan files, fetch the URL, or use execute_code to find a path.
 			For a text-read request using a node ID or app file URL, start with one Bash call: \`p=$(resolve '<reference>') && cat -- "$p"\`.
 			Content-vs-path rule: use search for text inside files, and use find only for path/name discovery. Plain requests like "search for X with limit N" mean content search, so run search --limit N X. If the user says "search for the X file", "find the X file", "file named X", or "path/name contains X", use find. If the user says "search inside <folder> for X", "where does X appear", or "files mention X", run search --path <folder> X or search X; do not substitute find --path-query.
 			Use meta search --where '{"eq":["frontmatter.from","alice@example.com"]}' to search the indexed metadata of app files and folders. Prefer meta search/meta get over reading raw file text when answering which files or folders have a field or value. Fields must be qualified names of one of two kinds. frontmatter.* is the Markdown YAML frontmatter, which is part of the file's own text. metadata.* is the metadata stored next to the file or folder: every file kind supports it, uploads included, it is not part of the file content, and saving the content does not change it. A metadata key is flat and may contain letters, numbers, "_", "-" and ":", for example {"eq":["metadata.created-by","slack"]} or {"exists":"metadata.slack:message-id"}. One positive predicate per command is supported: exists, eq, prefix, or range. range works on numeric fields and on date-like string fields: strings shaped like ISO dates (e.g. 2026-07-29 or 2026-07-29T14:30:36.264Z) are also indexed as a second maybe_date value, and meta get marks those lines with (maybe_date), so a field is date-filterable only when meta get shows a maybe_date line for it. range takes a bounds object, e.g. {"range":["frontmatter.estimate",{"gte":5,"lte":120}]} or {"range":["frontmatter.realStartTime",{"gte":"2026-07-27","lt":"2026-08-02"}]} (any of gte/gt/lte/lt; bounds must be all numbers or all ISO date strings). The bound type picks which indexed values are scanned: number bounds scan number values, ISO date string bounds scan maybe_date values, so querying a numeric field with date bounds (or the reverse) returns an empty result instead of an error — check the field's kind with meta get first. Write a full YYYY-MM-DD; partial bounds such as 2026-07 are rejected. A date-only bound means midnight UTC, so for a whole day or month use an exclusive upper bound such as {"gte":"2026-07-29","lt":"2026-07-30"} rather than lte on the same day, which would drop that day's later timestamps. Default output is paths; use --format json for metadata details and cursors. Combine multiple predicates outside meta with shell tools over path output. There is no not/neq: to find where a field is NOT a value, first run exists <field> to list every file or folder that has the field, then remove the eq <field> <value> matches (e.g. comm -23 or grep -vxF) — the eq matches are only a subset, so never infer the complement from an eq result alone. Use meta get <path> to inspect one file or folder's indexed metadata; it lists frontmatter.* from file text and metadata.* from the item's map together, and its source: line describes the frontmatter.* lines only, because metadata.* is always the committed map. In Agent mode, use the set_file_metadata tool to write metadata.* keys. If field names are unclear, read nearby README.md files because folders may document frontmatter conventions.
@@ -612,7 +618,7 @@ export function ai_chat_tool_create_bash(
 			To search content across files use search (or search --path <folder> for one folder); to find lines in a SINGLE file use grep [-n] [-i] [-F] PATTERN <file> over the file's stored text chunks. Normal single-file grep uses regex matching; -F/--fixed-strings uses literal substring matching; -n prints lineNumber:line, and without -n it prints raw matching lines; also -c count, -l list-if-matched, -v invert, and -A/-B/-C N context. For rendered plain-text chunk scans, use textgrep [-i] [-F] [-v] [-c] [-l] PATTERN <file> for one app file (regex by default; -F/--fixed-strings uses literal substring matching; -v inverts; -c counts; -l prints the path if matched), or textgrep -R PATTERN <folder> for a recursive folder scan via indexed full-text search (not exact recursive regex/fixed-string grep). Single-file textgrep has no line numbers or context flags; use grep for -n or -A/-B/-C context. Simple grep -R PATTERN <app-folder> is recovered through indexed full-text search, but complex or multi-file grep forms are not exact recursive grep; prefer search --path. Use tree [PATH] [--limit N] [--cursor CURSOR] for paginated app tree shape; unsupported native tree flags fail for app paths.
 			Keep commands simple: avoid comments in command strings and process substitution. For multi-command inspection or eval checks, do not use set -e or hide stderr with 2>/dev/null; later commands and visible stderr should still be observed. Shell options persist per shell: set -e stays on in later calls of that shell until set +e. Only summarize actual Bash stdout/stderr; the blank line between the shell prompt and output is transcript formatting, not file content. If stdout is empty or a command failed, say that instead of inferring likely filesystem contents. Do not work around app read-only write or delete requests by copying app files to /tmp unless the user asked for a scratch copy.
 			App file tree mkdir is available only when this tool is configured for Agent mode; /tmp scratch does not create app file tree folders.
-			In Agent mode, shell writes under ${currentWorkspacePath} create pending proposals the user reviews in Files, exactly like edit_file: create or overwrite a file with a quoted heredoc (cat > '<path>' <<'EOF' ... EOF) or a redirect, append with >>, tee writes each app target as a proposal, and touch on a new path creates an empty-file proposal (touch on an existing app file changes nothing). Every app file has a stored content type, and that type (never the name) decides how the file opens and how a write is stored: a Markdown file keeps rich text and serves back its rendered Markdown text, and any other text type (plain text, JSON, YAML, CSS, JavaScript, and similar) stores bytes exactly as written. A new file takes its type from its normalized name (README.md is Markdown, data.json is JSON, notes.txt or another name with no known extension is plain text). A new bare readme becomes README.md; other names keep their extension. Renaming or moving a file never changes its type: mv data.json data.yaml keeps JSON. Copying a file copies its content and its type: cp notes.md data.json makes data.json a Markdown file, and cp data.json notes.md makes notes.md a JSON file. Your own reads (bash and the file tools) see your pending proposals as if applied, while other users and the Files UI see the committed tree until the user accepts (a brand-new file appears to everyone right away as an empty placeholder). On a file with collaboration off, if a member saves the file after your write, your pending change becomes stale. Your reads show the saved text again. Your next edit or shell write automatically prepares the proposal before reading fresh text. It keeps earlier proposed work and unrelated saved text; a full overwrite replaces the proposed text you choose to overwrite. In Ask mode app files are read-only. rm <app-path> proposes a pending delete: accepting archives the file, and rm -r <app-folder> archives the folder with everything inside. Your own reads see a pending-deleted path as gone; rm on your own not-yet-accepted new file usually removes it immediately (stdout prints removed '<path>'; when it cannot be removed safely it becomes a normal pending delete). ln is not available for app files. mv <app-path> <app-path> proposes a pending move/rename (one source only); accepting a move onto an occupied path replaces that file. Plain mv never overwrites an existing destination; mv -f <app-file> <existing-app-file> proposes replacing it: accepting moves the source file, with its type and history, onto that path and archives the file that was there (a plain folder move can replace an empty folder, and folders never replace files or the reverse). cp <app-file> <app-path> proposes a pending copy (one source only): a new destination file appears immediately with the copied content pending review, your reads at the destination show that pending content, accepting publishes it, and discarding removes the destination file. When the cp destination file already exists, the copy becomes a pending replacement of that file's content and type, and discarding keeps the destination file as it was. Use cp -n or cp --no-clobber to leave an existing final destination unchanged without creating a replacement proposal. cp <app-file> /tmp/<name> stays an immediate durable per-thread scratch copy. Targeted edits to existing text files belong in edit_file with app paths such as /docs/readme.md or /data/config.json; the edit_file description states how to convert a bash path to an app path. If a user asks to delete a file, run rm on it; the delete still waits for their accept in Files.`,
+			In Agent mode, shell writes in the current workspace or your own personal/home create pending proposals the user reviews in Files, exactly like edit_file: create or overwrite a file with a quoted heredoc (cat > '<path>' <<'EOF' ... EOF) or a redirect, append with >>, tee writes each app target as a proposal, and touch on a new path creates an empty-file proposal (touch on an existing app file changes nothing). Every app file has a stored content type, and that type (never the name) decides how the file opens and how a write is stored: a Markdown file keeps rich text and serves back its rendered Markdown text, and any other text type (plain text, JSON, YAML, CSS, JavaScript, and similar) stores bytes exactly as written. A new file takes its type from its normalized name (README.md is Markdown, data.json is JSON, notes.txt or another name with no known extension is plain text). A new bare readme becomes README.md; other names keep their extension. Renaming or moving a file never changes its type: mv data.json data.yaml keeps JSON. Copying a file copies its content and its type: cp notes.md data.json makes data.json a Markdown file, and cp data.json notes.md makes notes.md a JSON file. Your own reads (bash and the file tools) see your pending proposals as if applied, while other users see only the saved tree. New files remain private proposals until the user saves them. The user's Files view shows their own proposals in each destination workspace. On a file with collaboration off, if a member saves the file after your write, your pending change becomes stale. Your reads show the saved text again. Your next edit or shell write automatically prepares the proposal before reading fresh text. It keeps earlier proposed work and unrelated saved text; a full overwrite replaces the proposed text you choose to overwrite. In Ask mode app files are read-only. rm <app-path> proposes a pending delete: accepting archives the file, and rm -r <app-folder> archives the folder with everything inside. Your own reads see a pending-deleted path as gone; rm on your own not-yet-accepted new file usually removes it immediately (stdout prints removed '<path>'; when it cannot be removed safely it becomes a normal pending delete). ln is not available for app files. mv <app-path> <app-path> proposes a pending move/rename within one workspace; accepting a move onto an occupied path replaces that file. Plain mv never overwrites an existing destination; mv -f <app-file> <existing-app-file> proposes replacing it: accepting moves the source file, with its type and history, onto that path and archives the file that was there (a plain folder move can replace an empty folder, and folders never replace files or the reverse). cp <app-file> <app-path> proposes a pending copy: a new destination file appears immediately with the copied content pending review, your reads at the destination show that pending content, accepting publishes it, and discarding removes the destination file. When the cp destination file already exists, the copy becomes a pending replacement of that file's content and type, and discarding keeps the destination file as it was. Use cp -n or cp --no-clobber to leave an existing final destination unchanged without creating a replacement proposal. cp <app-file> /tmp/<name> stays an immediate durable per-thread scratch copy. Targeted edits to existing text files belong in edit_file with app paths such as /docs/readme.md or /data/config.json; the edit_file description states how to convert a bash path to an app path. If a user asks to delete a file, run rm on it; the delete still waits for their accept in Files.`,
 		inputSchema: z.object({
 			command: z
 				.string()
@@ -649,6 +655,8 @@ export function ai_chat_tool_create_bash(
 				threadId,
 				toolCallId: execution.toolCallId,
 				userId: ctxData.userId,
+				membershipId: ctxData.membershipId,
+				membershipLifetime: ctxData.membershipLifetime,
 				command: args.command,
 				organizationName: ctxData.organizationName,
 				workspaceName: ctxData.workspaceName,
@@ -694,7 +702,7 @@ export type ai_chat_tool_create_bash_ToolOutput = InferToolOutput<ai_chat_tool_c
 
 // Tools that write to app files. Ask mode also disables bash app-file-tree mkdir and writes
 // through the bash tool options because file/folder creation is intentionally a shell workflow.
-export const ai_chat_WRITE_TOOL_NAMES = ["edit_file", "set_file_metadata"] as const;
+export const ai_chat_WRITE_TOOL_NAMES = ["edit_file", "set_file_metadata", "prepare_image_generation"] as const;
 export type ai_chat_WriteToolName = (typeof ai_chat_WRITE_TOOL_NAMES)[number];
 
 // #region edit file
@@ -735,6 +743,8 @@ export function ai_chat_tool_create_edit_file(
 		organizationId: Id<"organizations">;
 		workspaceId: Id<"organizations_workspaces">;
 		userId: Id<"users">;
+		membershipId: Id<"organizations_workspaces_users">;
+		membershipLifetime: number;
 		getThreadId: () => Id<"ai_chat_threads"> | null;
 		getWorkspaceContext?: () => ai_chat_context_Context | null;
 	},
@@ -748,7 +758,7 @@ export function ai_chat_tool_create_edit_file(
 			- By default, replaces a single unique occurrence of oldString; fails if not found or ambiguous.
 			- Set replaceAll=true to replace every occurrence.
 			- If copying from numbered output such as cat -n, do NOT include the line-number prefix.
-			- If copying a path from bash, remove the /home/cloud-usr/w/<organization>/<workspace> current workspace path prefix before passing it here.
+			- Choose workspace="current" for this chat's workspace or workspace="personal" for your own personal/home. Remove the matching /home/cloud-usr/w/<organization>/<workspace> path prefix before passing the path here. No other workspace is available.
 			- Preserve the full remaining suffix after that prefix; /home/cloud-usr/w/personal/home/folder/README.md becomes /folder/README.md, never /README.md.
 			- A read-only refusal is terminal for this edit. Do not retry the path with bash redirects, tee, cp, mv, or another write tool; it cannot change until the user makes it writable.
 			- For a Markdown file the text must be valid GitHub Flavored Markdown; preserve valid Markdown structure (headings, code fences, lists). For any other text file, match the file's own format exactly (for example valid JSON in a JSON file) and do not reformat the rest of the file.
@@ -756,6 +766,7 @@ export function ai_chat_tool_create_edit_file(
 			- This tool saves a pending update for human review.`,
 
 		inputSchema: z.object({
+			workspace: z.enum(["current", "personal"]).describe("The chat workspace or your own personal/home."),
 			path: z.string().describe('Absolute path to the file (must start with "/"): an editable text file.'),
 			oldString: z.string().describe("The exact text to replace"),
 			newString: z.string().describe("The replacement text"),
@@ -767,6 +778,8 @@ export function ai_chat_tool_create_edit_file(
 		}),
 
 		execute: async (args) => {
+			const threadId = ctxData.getThreadId();
+			if (!threadId) throw new Error("An active chat is required for file edits");
 			const normalizedPath = server_path_normalize(args.path);
 			// Treat an invalid model-supplied id as absent. The file read can find the current
 			// pending update from the user and file instead.
@@ -788,9 +801,24 @@ export function ai_chat_tool_create_edit_file(
 					`Invalid path: ${normalizedPath}. The ${bash_PLUGINS_MOUNT_ROOT} tree is a read-only mount of installed plugin sources and cannot be edited.`,
 				);
 			}
-			const entry = (await ctx.runQuery(internal.files_nodes.get_visible_entry_by_path, {
+			const agentSource = {
 				organizationId: ctxData.organizationId,
 				workspaceId: ctxData.workspaceId,
+				userId: ctxData.userId,
+				threadId,
+				membershipId: ctxData.membershipId,
+				membershipLifetime: ctxData.membershipLifetime,
+			};
+			const resolved = await ctx.runQuery(internal.ai_chat_workspaces.resolve, {
+				source: agentSource,
+				workspace: args.workspace,
+			});
+			if (resolved._nay) throw new Error(resolved._nay.message);
+			const { organizationId, workspaceId } = resolved._yay;
+			const entry = (await ctx.runQuery(internal.files_nodes.get_visible_entry_by_path, {
+				agentSource,
+				organizationId,
+				workspaceId,
 				visibilityUserId: ctxData.userId,
 				overlayUserId: ctxData.userId,
 				path: normalizedPath,
@@ -823,8 +851,9 @@ export function ai_chat_tool_create_edit_file(
 
 			for (let attempt = 0; ; attempt += 1) {
 				const prepared = (await ctx.runAction(internal.files_pending_updates.prepare_file_pending_update_for_agent, {
-					organizationId: ctxData.organizationId,
-					workspaceId: ctxData.workspaceId,
+					agentSource,
+					organizationId,
+					workspaceId,
 					userId: ctxData.userId,
 					target,
 				})) as prepare_file_pending_update_for_agent_Result;
@@ -838,8 +867,9 @@ export function ai_chat_tool_create_edit_file(
 				const currentFileContent = await ctx.runAction(
 					internal.files_nodes_content.get_file_last_available_text_content_by_path,
 					{
-						organizationId: ctxData.organizationId,
-						workspaceId: ctxData.workspaceId,
+						agentSource,
+						organizationId,
+						workspaceId,
 						userId: ctxData.userId,
 						path: normalizedPath,
 						pendingUpdateId,
@@ -871,14 +901,15 @@ export function ai_chat_tool_create_edit_file(
 				const diff = ai_chat_tool_edit_file_create_diff(normalizedPath, currentFileContent.content, modifiedText);
 
 				const written = await files_agent_write_file_text(ctx, {
-					organizationId: ctxData.organizationId,
-					workspaceId: ctxData.workspaceId,
+					organizationId,
+					workspaceId,
 					userId: ctxData.userId,
 					target,
 					pendingUpdateId: currentFileContent.pendingUpdateId ?? undefined,
 					expectedBaseStateId: currentFileContent.pendingUpdateBaseStateId ?? null,
 					unstagedText: modifiedText,
-					threadId: ctxData.getThreadId() ?? undefined,
+					threadId,
+					agentSource,
 				});
 				// The write can be refused after the read above: the node was archived or deleted, the
 				// text is over the size cap, or a member saved the file in between. Pass the reason on,
@@ -898,8 +929,9 @@ export function ai_chat_tool_create_edit_file(
 				}
 
 				const nextPendingUpdate = await ctx.runQuery(internal.files_pending_updates.get_file_pending_update_internal, {
-					organizationId: ctxData.organizationId,
-					workspaceId: ctxData.workspaceId,
+					agentSource,
+					organizationId,
+					workspaceId,
 					userId: ctxData.userId,
 					target,
 					pendingUpdateId: currentFileContent.pendingUpdateId ?? undefined,
@@ -908,11 +940,17 @@ export function ai_chat_tool_create_edit_file(
 				const replacedCount = args.replaceAll ? `Replaced ${matches} occurrences` : "Replaced 1 occurrence";
 				const context = ctxData.getWorkspaceContext?.();
 				const instructions = context
-					? await ai_chat_context_read_instructions(ctx, context, [normalizedPath], ai_chat_INSTRUCTIONS_READ_MAX_BYTES)
+					? await ai_chat_context_read_instructions(
+							ctx,
+							context,
+							[{ workspace: args.workspace, path: normalizedPath }],
+							ai_chat_INSTRUCTIONS_READ_MAX_BYTES,
+						)
 					: "";
 				return {
 					title: normalizedPath,
 					metadata: {
+						workspace: args.workspace,
 						target,
 						pendingUpdateId: nextPendingUpdate?._id ?? null,
 						path: normalizedPath,
@@ -948,6 +986,9 @@ export function ai_chat_tool_create_set_file_metadata(
 		organizationId: Id<"organizations">;
 		workspaceId: Id<"organizations_workspaces">;
 		userId: Id<"users">;
+		membershipId: Id<"organizations_workspaces_users">;
+		membershipLifetime: number;
+		getThreadId: () => Id<"ai_chat_threads"> | null;
 		getWorkspaceContext?: () => ai_chat_context_Context | null;
 	},
 ) {
@@ -957,7 +998,7 @@ export function ai_chat_tool_create_set_file_metadata(
 
 			Usage:
 			- The path must refer to an existing app file or folder (absolute, starting with "/"). Every file kind works, uploads included, because metadata lives next to the item and not inside its content.
-			- If copying a path from bash, remove the /home/cloud-usr/w/<organization>/<workspace> current workspace path prefix before passing it here.
+			- Choose workspace="current" for this chat's workspace or workspace="personal" for your own personal/home. Remove the matching /home/cloud-usr/w/<organization>/<workspace> path prefix before passing the path here. No other workspace is available.
 			- Preserve the full remaining suffix after that prefix; /home/cloud-usr/w/personal/home/folder/README.md becomes /folder/README.md, never /README.md.
 			- Metadata is a flat map. A value is text, a number, or true/false. There is no nesting and no lists.
 			- A key may contain letters, numbers, "_", "-" and ":", for example created-by or slack:message-id. A dot is not allowed.
@@ -970,6 +1011,7 @@ export function ai_chat_tool_create_set_file_metadata(
 			- Read the current map with the bash command meta get <path>, and find files or folders that have a key with meta search --where '{"exists":"metadata.<key>"}', or a key and a value with '{"eq":["metadata.<key>","<value>"]}'.`,
 
 		inputSchema: z.object({
+			workspace: z.enum(["current", "personal"]).describe("The chat workspace or your own personal/home."),
 			path: z.string().describe('Absolute path to an existing app file or folder (must start with "/").'),
 			set: z
 				.array(
@@ -1002,9 +1044,25 @@ export function ai_chat_tool_create_set_file_metadata(
 				);
 			}
 
-			const written = await ctx.runMutation(internal.files_metadata.update_entries_by_path, {
+			const threadId = ctxData.getThreadId();
+			if (!threadId) throw new Error("An active chat is required for metadata writes");
+			const agentSource = {
 				organizationId: ctxData.organizationId,
 				workspaceId: ctxData.workspaceId,
+				userId: ctxData.userId,
+				threadId,
+				membershipId: ctxData.membershipId,
+				membershipLifetime: ctxData.membershipLifetime,
+			};
+			const resolved = await ctx.runQuery(internal.ai_chat_workspaces.resolve, {
+				source: agentSource,
+				workspace: args.workspace,
+			});
+			if (resolved._nay) throw new Error(resolved._nay.message);
+			const written = await ctx.runMutation(internal.files_metadata.update_entries_by_path, {
+				agentSource,
+				organizationId: resolved._yay.organizationId,
+				workspaceId: resolved._yay.workspaceId,
 				userId: ctxData.userId,
 				path: normalizedPath,
 				set: args.set,
@@ -1026,12 +1084,18 @@ export function ai_chat_tool_create_set_file_metadata(
 			const entries = written._yay.entries;
 			const context = ctxData.getWorkspaceContext?.();
 			const instructions = context
-				? await ai_chat_context_read_instructions(ctx, context, [normalizedPath], ai_chat_INSTRUCTIONS_READ_MAX_BYTES)
+				? await ai_chat_context_read_instructions(
+						ctx,
+						context,
+						[{ workspace: args.workspace, path: normalizedPath }],
+						ai_chat_INSTRUCTIONS_READ_MAX_BYTES,
+					)
 				: "";
 			return {
 				title: normalizedPath,
 				...(instructions ? { instructions } : {}),
 				metadata: {
+					workspace: args.workspace,
 					path: written._yay.path,
 					entries,
 				},
@@ -1213,27 +1277,48 @@ function file_output_result(title: string, outcomes: Awaited<ReturnType<typeof f
  */
 export async function ai_chat_write_file_outputs(
 	ctx: ActionCtx,
-	scope: Parameters<typeof files_ingestion_write>[1] & { threadId: Id<"ai_chat_threads"> },
-	files: Parameters<typeof files_ingestion_write>[2],
+	agentSource: Infer<typeof ai_chat_workspaces_source_validator>,
+	files: Array<{
+		workspace: "current" | "personal";
+		path: string;
+		contentType?: string;
+		bytes: Uint8Array<ArrayBuffer>;
+	}>,
 	options: { title: string; requestId: string; modeId: "ask" | "agent"; abortSignal?: AbortSignal },
 ) {
 	if (options.modeId !== "agent") return ai_chat_file_result(options.title, "errored", [], "agent_required");
+	const destinations = new Map<"current" | "personal", Parameters<typeof files_ingestion_write>[1][number]["scope"]>();
+	for (const { workspace } of files) {
+		if (destinations.has(workspace)) continue;
+		const resolved = await ctx.runQuery(internal.ai_chat_workspaces.resolve, { source: agentSource, workspace });
+		if (resolved._nay) return ai_chat_file_result(options.title, "errored", [], "unavailable");
+		const { organizationId, workspaceId, membershipId } = resolved._yay;
+		destinations.set(workspace, {
+			organizationId,
+			workspaceId,
+			membershipId,
+			userId: agentSource.userId,
+			threadId: agentSource.threadId,
+			agentSource,
+		});
+	}
 	const outcomes = await files_ingestion_write(
 		ctx,
-		scope,
-		files,
+		files.map(({ workspace, ...file }) => ({ ...file, scope: destinations.get(workspace)! })),
 		{
 			requestId: options.requestId,
 			prepare: (args) =>
 				ctx.runMutation(internal.ai_chat_files.prepare_file_output, {
 					...args,
-					threadId: scope.threadId,
+					agentSource,
+					threadId: agentSource.threadId,
 					modeId: options.modeId,
 				}),
 			finalize: (args) =>
 				ctx.runMutation(internal.ai_chat_files.finalize_file_output, {
 					...args,
-					threadId: scope.threadId,
+					agentSource,
+					threadId: agentSource.threadId,
 					modeId: options.modeId,
 				}),
 		},
@@ -1258,7 +1343,12 @@ type ai_chat_tool_execute_code_RunnerResult = {
 	logs: string[];
 	logsTruncated: boolean;
 	error: { name: string; message: string } | null;
-	files: Array<{ path: string; contentType?: string; bytes: Uint8Array<ArrayBuffer> }>;
+	files: Array<{
+		workspace: "current" | "personal";
+		path: string;
+		contentType?: string;
+		bytes: Uint8Array<ArrayBuffer>;
+	}>;
 };
 
 const ai_chat_tool_execute_code_runner_result_schema = z.object({
@@ -1277,6 +1367,7 @@ const ai_chat_tool_execute_code_runner_result_schema = z.object({
 		.array(
 			z
 				.object({
+					workspace: z.enum(["current", "personal"]),
 					path: z.string().min(1).max(1024),
 					contentType: z.string().min(1).max(255).optional(),
 					dataBase64: z.string().max(files_ingestion_MAX_BASE64_CHARS),
@@ -1343,7 +1434,9 @@ async function execute_code(
 		organizationId: Id<"organizations">;
 		workspaceId: Id<"organizations_workspaces">;
 		userId: Id<"users">;
-		getThreadId?: () => Id<"ai_chat_threads"> | null;
+		membershipId: Id<"organizations_workspaces_users">;
+		membershipLifetime: number;
+		getThreadId: () => Id<"ai_chat_threads"> | null;
 	},
 	args: { code: string; input?: unknown },
 	abortSignal: AbortSignal | undefined,
@@ -1369,18 +1462,26 @@ async function execute_code(
 	const url = `${baseUrl.replace(/\/$/u, "")}/internal/execute-code`;
 	const appOrigin = ai_chat_tool_execute_code_app_origin();
 	const executionId = crypto.randomUUID();
-	const publicApiGrantToken = crypto_random_hex(32);
-	await ctx.runMutation(internal.public_api.create_grant, {
-		organizationId: ctxData.organizationId,
-		workspaceId: ctxData.workspaceId,
-		userId: ctxData.userId,
-		threadId: ctxData.getThreadId?.() ?? null,
+	const threadId = ctxData.getThreadId();
+	if (!threadId) throw new Error("Code execution needs a chat thread.");
+	const tokens = { current: crypto_random_hex(32), personal: crypto_random_hex(32) };
+	const grants = await ctx.runMutation(internal.public_api.create_code_grants, {
+		source: {
+			organizationId: ctxData.organizationId,
+			workspaceId: ctxData.workspaceId,
+			userId: ctxData.userId,
+			membershipId: ctxData.membershipId,
+			membershipLifetime: ctxData.membershipLifetime,
+			threadId,
+		},
 		principalKey: executionId,
-		tokenHash: await crypto_sha256_hex(publicApiGrantToken),
-		scopes: ["files:list", "files:read", "files:download"] satisfies public_api_Scope[],
-		pathPrefix: null,
-		now: Date.now(),
+		tokenHashes: {
+			current: await crypto_sha256_hex(tokens.current),
+			personal: await crypto_sha256_hex(tokens.personal),
+		},
 	});
+	if (grants._nay) throw new Error(grants._nay.message);
+	if (grants._yay.personalIsCurrent) tokens.personal = tokens.current;
 
 	let response: Response;
 	try {
@@ -1393,7 +1494,7 @@ async function execute_code(
 				code: args.code,
 				input: args.input ?? null,
 				network: { mode: "public_http" },
-				app: { origin: appOrigin, token: publicApiGrantToken },
+				app: { origin: appOrigin, tokens },
 			}),
 		});
 	} catch (error) {
@@ -1440,8 +1541,9 @@ async function execute_code(
  * In Agent mode, emitted files become pending Files entries. Return their targets for review.
  *
  * Keep `CODE_EXECUTION_RUNNER_URL` / `CODE_EXECUTION_RUNNER_SECRET` on the server
- * only. The runner receives a short-lived public API grant token for
- * gateway-side file API authorization; the snippet sees only the app origin.
+ * only. The gateway receives short-lived read grants for current and personal/home
+ * with one shared byte budget. Both selectors use one grant when current is home.
+ * The snippet sees only the app origin, never the tokens.
  */
 export function ai_chat_tool_create_execute_code(
 	ctx: ActionCtx,
@@ -1453,7 +1555,8 @@ export function ai_chat_tool_create_execute_code(
 		userId: Id<"users">;
 		membershipId: Id<"organizations_workspaces_users">;
 		canWriteFiles: boolean;
-		getThreadId?: () => Id<"ai_chat_threads"> | null;
+		membershipLifetime: number;
+		getThreadId: () => Id<"ai_chat_threads"> | null;
 	},
 ) {
 	return tool({
@@ -1461,12 +1564,12 @@ export function ai_chat_tool_create_execute_code(
 			Run a short snippet of JavaScript in a secure sandbox and get back the returned value plus console output. \
 			Use this for precise calculations, JSON transformation, parsing, public HTTPS fetches, and algorithmic logic that is error-prone to do by hand. \
 			The snippet is the body of an async function: use \`return\` to produce a JSON-serializable result, and read the optional \`input\` argument as the variable \`input\`. \
-			Modern JavaScript, JSON, and \`fetch\` are available. The snippet has \`process.env.T3_APP_ORIGIN\`; the runner gateway adds file API authorization. \
+			Modern JavaScript, JSON, and \`fetch\` are available. The snippet has \`process.env.T3_APP_ORIGIN\`; the runner gateway adds file API authorization. Every app file request must set the header X-Bonobo-Workspace to current or personal. You can read both in one snippet; no other workspace is available. \
 			To read app files, fetch \`${"${process.env.T3_APP_ORIGIN}"}/api/v1/files/list\` for paths, then \`${"${process.env.T3_APP_ORIGIN}"}/api/v1/files/read-many\` for contents; follow \`cursor\` until \`isDone\`, check \`errors\` and \`truncated\`, and use \`/api/v1/files/read\` only for one known file. \
 			Inspect each app folder with Bash in an earlier completed step and read its AGENTS.md guidance before reading it through these APIs. \
 			Do not pass app file paths or contents through \`input\`; keep \`input\` for ordinary JSON parameters, run file API fetches inside the snippet, and return a compact aggregate instead of raw file contents. \
 			Read exact bytes with POST /api/v1/files/read-bytes and JSON {path, offset, length, revision}. Use a canonical path such as /reports/source.bin, at most 1048576 bytes per read, and revision null on the first read. Pin X-File-Revision on later reads. The response is raw bytes; read it with arrayBuffer(). X-File-Size gives the total size. The run may request at most 8 MiB. \
-			In Agent mode, call emitFile({path, contentType?, bytes}) to propose any file. Bytes must be a Uint8Array or ArrayBuffer; for a Blob use await blob.arrayBuffer(). Use a canonical Files path such as /reports/result.bin. Up to eight files and 8 MiB total are allowed. Empty files are allowed. Files leave the sandbox only on success, and the user must Save them. Ask mode cannot create files. Other fetch responses above 512 KB fail. \
+			In Agent mode, call emitFile({workspace: "current" | "personal", path, contentType?, bytes}) to propose a file in that workspace. Bytes must be a Uint8Array or ArrayBuffer; for a Blob use await blob.arrayBuffer(). Use a canonical Files path such as /reports/result.bin. Up to eight files and 8 MiB total across both workspaces are allowed. Empty files are allowed. Files leave the sandbox only on success, and the user must Save them. Ask mode cannot create files. Other fetch responses above 512 KB fail. \
 			Keep snippets small and deterministic: execution is time-limited and both the result and the logs are size-limited.`,
 
 		inputSchema: z
@@ -1501,6 +1604,7 @@ export function ai_chat_tool_create_execute_code(
 					{
 						userId: ctxData.userId,
 						membershipId: ctxData.membershipId,
+						membershipLifetime: ctxData.membershipLifetime,
 						threadId,
 						organizationId: ctxData.organizationId,
 						workspaceId: ctxData.workspaceId,
@@ -1544,19 +1648,42 @@ export type ai_chat_tool_create_execute_code_ToolOutput = InferToolOutput<ai_cha
 // #region image generation
 
 /**
- * Draw an image with OpenAI's `gpt-image-2`.
- *
- * OpenAI runs this tool on its own side and sends the finished picture back inside the tool output,
- * so there is nothing to execute here. The model decides only whether to call it: every option
- * below is ours, and its input schema is empty.
- *
- * `partialImages` stays unset because the chat never shows a picture while it is being drawn.
- * OpenAI still sends one preview copy, and setting it to `0` does not stop that, so
- * `drop_preliminary_tool_results_middleware` in `ai_chat.ts` throws the preview away.
- *
- * The base64 picture must not reach the stored message. `save` writes it as a private pending
- * file and returns only its Files target. There is no execute step here to do that in, so the
- * conversion to model output is replaced below.
+ * Choose a destination without creating a file or changing a shared setting.
+ */
+export function ai_chat_tool_create_prepare_image_generation(canWriteFiles: boolean) {
+	return tool({
+		description:
+			"Choose where the next image generation step will create its pending files. Call once with current or personal. The next step generates the image; this call creates no files.",
+		inputSchema: z.object({ workspace: z.enum(["current", "personal"]) }).strict(),
+		outputSchema: z.object({
+			title: z.string(),
+			output: z.string(),
+			metadata: z.object({ workspace: z.enum(["current", "personal"]) }),
+		}),
+		execute: async ({ workspace }) => {
+			if (!canWriteFiles) throw new Error("Agent mode is required to generate images.");
+			return {
+				title: "Prepare image",
+				output: `The next image generation step will use ${workspace}.`,
+				metadata: { workspace },
+			};
+		},
+	});
+}
+
+type ai_chat_tool_create_prepare_image_generation_Tool = ReturnType<
+	typeof ai_chat_tool_create_prepare_image_generation
+>;
+export type ai_chat_tool_create_prepare_image_generation_ToolInput =
+	InferToolInput<ai_chat_tool_create_prepare_image_generation_Tool>;
+export type ai_chat_tool_create_prepare_image_generation_ToolOutput =
+	InferToolOutput<ai_chat_tool_create_prepare_image_generation_Tool>;
+
+/**
+ * OpenAI draws the picture on its side; its tool has no destination input.
+ * The preceding preparation step chooses the workspace. The image middleware binds
+ * each call to that choice and drops previews before the SDK loses their flag.
+ * Model and UI conversion share one save, keeping picture bytes out of chat storage.
  */
 export function ai_chat_tool_create_image_generation(
 	save: (toolCallId: string, output: unknown) => Promise<z.infer<typeof ai_chat_file_result_schema>>,
@@ -1622,6 +1749,8 @@ type ai_chat_tool_BrowserContext = {
 	organizationName: string;
 	workspaceName: string;
 	userId: Id<"users">;
+	membershipId: Id<"organizations_workspaces_users">;
+	membershipLifetime: number;
 	getThreadId?: () => Id<"ai_chat_threads"> | null;
 	browser: ai_chat_tool_BrowserBinding;
 };
@@ -1786,10 +1915,10 @@ export function ai_chat_tool_create_browser_run(
 		description: dedent`Inspect and test the attached browser page for the selected HTML file.
 			The snippet is an async function body with page, frame, expect, and emitFile.
 			Use frame locators to inspect the app. Return a small JSON observation.
-			In Agent mode, emitFile({path: "/reports/result.bin", bytes, contentType?}) proposes any file.
-			Bytes must be Uint8Array or ArrayBuffer. For a screenshot, use emitFile({path: "/reports/page.png", bytes: await page.screenshot(), contentType: "image/png"}).
+			In Agent mode, emitFile({workspace: "current" | "personal", path: "/reports/result.bin", bytes, contentType?}) proposes a file in that workspace.
+			Bytes must be Uint8Array or ArrayBuffer. For a screenshot, use emitFile({workspace: "personal", path: "/reports/page.png", bytes: await page.screenshot(), contentType: "image/png"}).
 			Up to eight files and 8 MiB total. Empty files are allowed. Only successful runs publish files.
-			Files become private changes for Save or Discard. Use view_image({path}) to inspect image bytes.
+			Files become private changes for Save or Discard. Use view_image({workspace, path}) to inspect image bytes.
 			Ask mode cannot create files. Never navigate, open pages, or close the browser inside a snippet.
 			After the user drives the page, inspect their current state before acting.`,
 		inputSchema: z
@@ -1882,7 +2011,7 @@ export function ai_chat_tool_create_browser_run(
 				const outcome = parsed.data;
 				if (
 					outcome.commandId !== options.toolCallId ||
-					outcome.codeHash !== (await crypto_sha256_hex(`browser-v2\n${code}`))
+					outcome.codeHash !== (await crypto_sha256_hex(`browser-v3\n${code}`))
 				)
 					return ai_chat_file_result(
 						title,
@@ -1930,18 +2059,42 @@ export function ai_chat_tool_create_browser_run(
 								"unavailable",
 								browser_debug_error_only("The browser result has no thread to attach to."),
 							);
-						const files = outcome.files.map(({ dataBase64, ...file }) => ({
-							...file,
-							bytes: files_ingestion_decode_base64(dataBase64),
-						}));
-						const scope = {
+						const agentSource = {
 							userId: ctxData.userId,
 							organizationId: ctxData.organizationId,
 							workspaceId: ctxData.workspaceId,
-							membershipId: binding.membershipId,
+							membershipId: ctxData.membershipId,
+							membershipLifetime: ctxData.membershipLifetime,
 							threadId,
 						};
+						const destinations = new Map<
+							"current" | "personal",
+							Parameters<typeof files_ingestion_write>[1][number]["scope"]
+						>();
+						for (const { workspace } of outcome.files) {
+							if (destinations.has(workspace)) continue;
+							const resolved = await ctx.runQuery(internal.ai_chat_workspaces.resolve, {
+								source: agentSource,
+								workspace,
+							});
+							if (resolved._nay) throw new Error(resolved._nay.message);
+							const { organizationId, workspaceId, membershipId } = resolved._yay;
+							destinations.set(workspace, {
+								organizationId,
+								workspaceId,
+								membershipId,
+								userId: ctxData.userId,
+								threadId,
+								agentSource,
+							});
+						}
+						const files = outcome.files.map(({ dataBase64, workspace, ...file }) => ({
+							...file,
+							scope: destinations.get(workspace)!,
+							bytes: files_ingestion_decode_base64(dataBase64),
+						}));
 						const browserScope = {
+							agentSource,
 							threadId,
 							modeId: "agent" as const,
 							sessionId: binding.sessionId,
@@ -1956,7 +2109,6 @@ export function ai_chat_tool_create_browser_run(
 						};
 						const outcomes = await files_ingestion_write(
 							ctx,
-							scope,
 							files,
 							{
 								requestId: options.toolCallId,

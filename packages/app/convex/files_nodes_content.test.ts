@@ -25,6 +25,7 @@ import { files_yjs_doc_get_text } from "../shared/files-tiptap.ts";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 import { files_nodes_db_hard_delete_node } from "./files_nodes.ts";
 import { files_nodes_content_db_publish_private_node } from "./files_nodes_content.ts";
+import { files_media_validation_db_capture_versions } from "./files_media_validation.ts";
 import { files_pending_nodes_db_create, files_pending_nodes_db_discard } from "./files_pending_nodes.ts";
 import { files_private_storage_db_reserve } from "./files_private_storage.ts";
 import { activities_db_require_by_source_id, activities_db_start } from "./activities_db.ts";
@@ -164,10 +165,20 @@ async function create_transfer_copy_item(
 		const source = await ctx.db.get("files_nodes", sourceId);
 		if (!source) throw new Error("Missing copy source");
 		const now = Date.now();
+		const membership = await ctx.db.get("organizations_workspaces_users", db.membershipId);
+		if (!membership) throw new Error("Missing copy membership");
+		const scope = {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			membershipId: db.membershipId,
+			membershipLifetime: await organizations_membership_lifetimes_db_ensure(ctx, membership),
+		};
 		const runId = await ctx.db.insert("files_transfer_runs", {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			userId: db.userId,
+			sourceScope: scope,
+			destinationScope: scope,
 			requestId: "test-copy",
 			requestHash: "test-copy",
 			kind: "copy",
@@ -183,17 +194,16 @@ async function create_transfer_copy_item(
 			conflictPolicy: { file: "ask", folder: "ask" },
 			step: "apply",
 			planCursor: null,
+			reserveCursor: null,
 			retryOf: null,
 			retryCursor: null,
 			revision: 0,
 			inFlight: 1,
 			applyToRemaining: { file: null, folder: null },
 		});
-		const membership = await ctx.db.get("organizations_workspaces_users", db.membershipId);
-		if (!membership) throw new Error("Missing copy membership");
 		await activities_db_start(ctx, {
 			...db,
-			membershipLifetime: await organizations_membership_lifetimes_db_ensure(ctx, membership),
+			membershipLifetime: scope.membershipLifetime,
 			source: { kind: "files_transfer_run", id: runId, transferKind: "copy" },
 			title: "Copy files",
 			targets: [],
@@ -309,8 +319,11 @@ async function start_agent_copy(
 	const started = await t.mutation(internal.files_transfer.start_for_agent, {
 		membershipId: db.membershipId,
 		threadId,
+		sourceWorkspace: "current",
+		destinationWorkspace: "current",
 		requestId: "agent-copy",
 		kind: "copy",
+		expectedSourceCount: 1,
 		sources: [source],
 		targetParent: { kind: "root" },
 		targetPath: "/",
@@ -319,7 +332,14 @@ async function start_agent_copy(
 		conflictPolicy: { file: "replace", folder: "error" },
 	});
 	if (started._nay) throw new Error(started._nay.message);
-	for (let step = 0; step < 6; step++) {
+	expect(
+		await t.mutation(internal.files_transfer.seal_for_agent, {
+			membershipId: db.membershipId,
+			threadId,
+			runId: started._yay.runId,
+		}),
+	).toEqual({ _yay: null });
+	for (let step = 0; step < 12; step++) {
 		await t.mutation(internal.files_transfer.advance, { runId: started._yay.runId });
 		const item = await t.run((ctx) =>
 			ctx.db
@@ -2950,12 +2970,20 @@ describe("copy_transfer_file saved replacement", () => {
 				membershipId: db.membershipId,
 				requestId: "saved-replacement",
 				kind: "copy",
+				expectedSourceCount: 1,
 				sourceIds: [sourceId],
 				targetParentId: files_ROOT_ID,
 			});
 			if (started._nay) throw new Error(started._nay.message);
 			const { runId } = started._yay;
-			await t.mutation(internal.files_transfer.advance, { runId });
+			expect(await asUser.mutation(api.files_transfer.seal, { membershipId: db.membershipId, runId })).toEqual({
+				_yay: null,
+			});
+			for (let step = 0; step < 12; step++) {
+				await t.mutation(internal.files_transfer.advance, { runId });
+				const run = await asUser.query(api.files_transfer.get, { membershipId: db.membershipId, runId });
+				if (run?.activity.status === "awaiting_input") break;
+			}
 			const waiting = await asUser.query(api.files_transfer.get, { membershipId: db.membershipId, runId });
 			const page = await asUser.query(api.files_transfer.list_items, {
 				membershipId: db.membershipId,
@@ -2988,6 +3016,9 @@ describe("copy_transfer_file saved replacement", () => {
 				const copying = await t.run((ctx) => ctx.db.get("files_transfer_items", item.itemId));
 				if (copying?.workId) break;
 			}
+			const mediaPins = await t.run((ctx) =>
+				files_media_validation_db_capture_versions(ctx, { userId: db.userId, scopes: [scope] }),
+			);
 			await t.action(internal.files_nodes_content.copy_transfer_file, { itemId: item.itemId, attempt: 1 });
 			expect(await t.run((ctx) => ctx.db.get("files_transfer_items", item.itemId))).toMatchObject({
 				state: "completed",
@@ -3004,6 +3035,9 @@ describe("copy_transfer_file saved replacement", () => {
 					})
 				)?.content,
 			).toBe("Replacement text\n");
+			expect(
+				(await t.run((ctx) => ctx.db.get("files_media_validation_versions", mediaPins.versions[1]!.id)))?.revision,
+			).toBeGreaterThan(mediaPins.versions[1]!.revision);
 			expect(
 				await asUser.query(api.files_metadata.get_entries, {
 					membershipId: db.membershipId,
@@ -3035,6 +3069,7 @@ describe("accept_file_pending_replacement", () => {
 	test.each(["text", "stored bytes"] as const)(
 		"drops another owner's retained proposal when copying %s after a stored-byte restore",
 		async (sourceKind) => {
+			vi.useFakeTimers();
 			const fixture = await create_file_fixture("rich_text");
 			const { t, db, asUser, nodeId, snapshotId } = fixture;
 			const otherUserId = await t.run(async (ctx) => {
@@ -3119,6 +3154,9 @@ describe("accept_file_pending_replacement", () => {
 				await t.run((ctx) => ctx.db.patch("files_r2_assets", sourceNode.assetId!, { r2Key }));
 			}
 			const staged = await prepare_agent_replacement(fixture, sourceNode._id);
+			const mediaPins = await t.run((ctx) =>
+				files_media_validation_db_capture_versions(ctx, { userId: db.userId, scopes: [db] }),
+			);
 			expect(
 				(
 					await asUser.action(api.files_pending_updates.accept_file_pending_replacement, {
@@ -3138,6 +3176,9 @@ describe("accept_file_pending_replacement", () => {
 						.collect(),
 				).toHaveLength(0);
 			});
+			expect(
+				(await t.run((ctx) => ctx.db.get("files_media_validation_versions", mediaPins.versions[1]!.id)))?.revision,
+			).toBeGreaterThan(mediaPins.versions[1]!.revision);
 		},
 	);
 

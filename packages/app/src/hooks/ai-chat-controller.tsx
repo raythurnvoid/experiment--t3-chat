@@ -89,6 +89,7 @@ type UseChatResult = ReturnType<typeof useChat<ai_chat_UiMessage>>;
 export type AiChatOptimisticThreadId = ai_chat_OptimisticThreadId;
 
 type StoreState = {
+	membershipId: string | null;
 	draftSelectedModelId: ai_chat_ModelId;
 	draftSelectedModeId: ai_chat_ModeId;
 	/**
@@ -175,7 +176,6 @@ async function ai_chat_fetch(input: RequestInfo | URL, init?: RequestInit) {
  */
 let cacheClearIntervalId: ReturnType<typeof setInterval> | undefined;
 let cacheClearIntervalConsumerCount = 0;
-let storeMembershipId: string | null = null;
 
 /**
  * Normalize identity once so send/retry logic can trust `metadata.convexId`
@@ -237,6 +237,7 @@ type SelectionNext = string | null | ((previousThreadId: string | null) => strin
 type SelectionContextValue = {
 	selectedThreadId: string | null;
 	setSelectedThreadId: (next: SelectionNext, options?: SelectionSetOptions) => void;
+	removeThreadSelection: (threadId: string) => void;
 };
 
 const SelectionContext = createContext<SelectionContextValue | null>(null);
@@ -280,6 +281,7 @@ function get_initial_selected_thread_id(storageKey: AiChatControllerStorageKey, 
 
 function ControllerProvider(props: AiChatController_Props) {
 	const { storageKey, initialSelectedThreadId, children } = props;
+	const { membershipId } = AppTenantProvider.useContext();
 
 	const [selectedThreadId, setSelectedThreadIdState] = useState(() =>
 		get_initial_selected_thread_id(storageKey, initialSelectedThreadId),
@@ -301,9 +303,42 @@ function ControllerProvider(props: AiChatController_Props) {
 		setSelectedThreadIdState(nextThreadId);
 	});
 
+	const removeThreadSelection = useFn((threadId: string) => {
+		// Sidebar storage restores selection, so close the tab before clearing it.
+		let nextThreadId: string | null = null;
+		if (is_sidebar_selected_tab_storage_key(storageKey)) {
+			const openTabsStorageKey = get_sidebar_open_tabs_storage_key(storageKey);
+			const openTabs = app_local_storage_get_value(openTabsStorageKey);
+			const closedTabIndex = openTabs.findIndex((tab) => tab.id === threadId);
+			const nextOpenTabs = openTabs.filter((tab) => tab.id !== threadId);
+			nextThreadId = (nextOpenTabs[closedTabIndex - 1] ?? nextOpenTabs[closedTabIndex] ?? nextOpenTabs[0])?.id ?? null;
+			app_local_storage_set_value(openTabsStorageKey, nextOpenTabs);
+		}
+		if (app_local_storage_get_value(storageKey) === threadId) {
+			app_local_storage_set_value(storageKey, nextThreadId);
+		}
+		setSelectedThreadId((current) => (current === threadId ? nextThreadId : current), { persist: false });
+	});
+
+	// Clear the shared store even on surfaces that mount only the runtime hook.
+	// Hooks hide the old membership's sessions before this layout effect runs.
+	useLayoutEffect(() => {
+		if (useStore.getState().membershipId === membershipId) {
+			return;
+		}
+		for (const threadId of useStore.getState().threadById.keys()) {
+			stop_and_delete_thread_session(threadId);
+		}
+		useStore.actions.clearRenderState();
+		persistedUiMessageById.clear();
+		optimisticThreadListItemByKey.clear();
+		useStore.setState({ membershipId, threadById: new Map(), browserSessionId: null });
+	}, [membershipId]);
+
 	const value = {
 		selectedThreadId,
 		setSelectedThreadId,
+		removeThreadSelection,
 	} satisfies SelectionContextValue;
 
 	return <SelectionContext.Provider value={value}>{children}</SelectionContext.Provider>;
@@ -498,7 +533,17 @@ function create_chat_instance(args: ThreadChatArgs) {
 		transport: new DefaultChatTransport({
 			api: app_fetch_main_api_url("/api/chat"),
 			fetch: ai_chat_fetch,
-			prepareSendMessagesRequest: args.prepareSendMessagesRequest,
+			prepareSendMessagesRequest: async (options) => {
+				if (!threadIdByChat.has(chat)) {
+					throw new Error("Chat is no longer available");
+				}
+				const request = await args.prepareSendMessagesRequest(options);
+				// Access can be refused while the auth token is loading.
+				if (!threadIdByChat.has(chat)) {
+					throw new Error("Chat is no longer available");
+				}
+				return request;
+			},
 		}),
 		onData: (part) => {
 			if (!part.type?.startsWith("data-")) {
@@ -547,6 +592,11 @@ function create_chat_instance(args: ThreadChatArgs) {
 			}
 		},
 		onFinish: (options) => {
+			// A privacy cleanup must not persist the aborted private reply.
+			if (!threadIdByChat.has(chat)) {
+				chat.messages = [];
+				return;
+			}
 			args.onFinish?.({ ...options, chatId: chat.id });
 		},
 	});
@@ -556,6 +606,7 @@ function create_chat_instance(args: ThreadChatArgs) {
 
 const useStore = ((/* iife */) => {
 	const store = create<StoreState>(() => ({
+		membershipId: null,
 		draftSelectedModelId: ai_chat_DEFAULT_MODEL_ID,
 		draftSelectedModeId: ai_chat_DEFAULT_MODE_ID,
 		browserSessionId: null,
@@ -918,6 +969,35 @@ const useStore = ((/* iife */) => {
 					editingMessageIdByThreadId: new Map(),
 				});
 			},
+			clearThreadRenderState(threadId: string) {
+				store.setState((state) => {
+					const activeMessageIdsByThreadId = new Map(state.activeMessageIdsByThreadId);
+					activeMessageIdsByThreadId.delete(threadId);
+					// Keep other open chats, but drop old branches that no chat is showing.
+					const keptMessageIds = new Set([...activeMessageIdsByThreadId.values()].flat());
+					for (const messageId of [...keptMessageIds]) {
+						for (const siblingId of state.branchSiblingIdsByMessageId.get(messageId) ?? []) {
+							keptMessageIds.add(siblingId);
+						}
+					}
+					const failedSendUserMessageIdByThreadId = new Map(state.failedSendUserMessageIdByThreadId);
+					const failedSendErrorMessageByThreadId = new Map(state.failedSendErrorMessageByThreadId);
+					const editingMessageIdByThreadId = new Map(state.editingMessageIdByThreadId);
+					failedSendUserMessageIdByThreadId.delete(threadId);
+					failedSendErrorMessageByThreadId.delete(threadId);
+					editingMessageIdByThreadId.delete(threadId);
+					return {
+						activeMessageIdsByThreadId,
+						messageById: new Map([...state.messageById].filter(([id]) => keptMessageIds.has(id))),
+						branchSiblingIdsByMessageId: new Map(
+							[...state.branchSiblingIdsByMessageId].filter(([id]) => keptMessageIds.has(id)),
+						),
+						failedSendUserMessageIdByThreadId,
+						failedSendErrorMessageByThreadId,
+						editingMessageIdByThreadId,
+					};
+				});
+			},
 			syncThreadRenderState(args: {
 				threadId: string | null;
 				messages: readonly ai_chat_UiMessage[];
@@ -1098,8 +1178,12 @@ function stop_thread_session(threadId: string) {
 }
 
 function stop_and_delete_thread_session(threadId: string) {
+	const chat = useStore.actions.getSession(threadId)?.chat;
 	stop_thread_session(threadId);
 	useStore.actions.deleteSession(threadId);
+	if (chat) {
+		chat.messages = [];
+	}
 }
 
 function set_thread_archive_pending(threadId: string, isArchivePending: boolean) {
@@ -1123,8 +1207,10 @@ const useThreadList = (props?: useThreadList_Props) => {
 
 	const draftSelectedModelId = useStore((state) => state.draftSelectedModelId);
 	const draftSelectedModeId = useStore((state) => state.draftSelectedModeId);
-	const threadById = useStore((state) => state.threadById);
-	const session = useStore((state) => (selectedThreadId ? (state.threadById.get(selectedThreadId) ?? null) : null));
+	const threadById = useStore((state) => (state.membershipId === membershipId ? state.threadById : null));
+	const session = useStore((state) =>
+		state.membershipId === membershipId && selectedThreadId ? (state.threadById.get(selectedThreadId) ?? null) : null,
+	);
 
 	const threads = usePaginatedQuery(
 		app_convex_api.ai_chat.threads_list,
@@ -1162,7 +1248,7 @@ const useThreadList = (props?: useThreadList_Props) => {
 	const optimisticThreads = useMemo(() => {
 		const result: Array<ai_chat_Thread> = [];
 
-		for (const threadId of threadById.keys()) {
+		for (const threadId of threadById?.keys() ?? []) {
 			if (!ai_chat_is_optimistic_thread_id(threadId) || persistedThreadIdByClientGeneratedId.has(threadId)) {
 				continue;
 			}
@@ -1195,7 +1281,7 @@ const useThreadList = (props?: useThreadList_Props) => {
 	// store hook), so this one is by hand. Sidebar tab-sync effects also depend on this identity.
 	const streamingTitleByThreadId = useMemo(() => {
 		const result: Record<string, string | undefined> = {};
-		for (const [threadId, session] of threadById.entries()) {
+		for (const [threadId, session] of threadById?.entries() ?? []) {
 			if (session.streamingTitle) {
 				result[threadId] = session.streamingTitle;
 			}
@@ -1533,23 +1619,6 @@ const useThreadList = (props?: useThreadList_Props) => {
 		stop_and_delete_thread_session(threadId);
 	});
 
-	// Must stay above the optimistic restore effect below: passive effects run in declaration
-	// order, so on first mount this wipe would otherwise delete the session that effect just
-	// restored, and it never re-runs because its deps are stable.
-	useEffect(() => {
-		if (storeMembershipId === membershipId) {
-			return;
-		}
-
-		for (const threadId of useStore.getState().threadById.keys()) {
-			stop_and_delete_thread_session(threadId);
-		}
-		storeMembershipId = membershipId;
-		useStore.setState({ threadById: new Map() });
-		persistedUiMessageById.clear();
-		optimisticThreadListItemByKey.clear();
-	}, [membershipId]);
-
 	useEffect(() => {
 		if (!ai_chat_is_optimistic_thread_id(selectedThreadId)) {
 			return;
@@ -1598,7 +1667,7 @@ const useThreadList = (props?: useThreadList_Props) => {
 	}, []);
 
 	useEffect(() => {
-		for (const [optimisticThreadId] of threadById.entries()) {
+		for (const [optimisticThreadId] of threadById?.entries() ?? []) {
 			if (!ai_chat_is_optimistic_thread_id(optimisticThreadId)) continue;
 
 			const threadId = persistedThreadIdByClientGeneratedId.get(optimisticThreadId);
@@ -1681,16 +1750,12 @@ export type AiChatThreadListController = ReturnType<typeof useThreadList>;
 
 const useThreadRuntimeController = () => {
 	const { membershipId } = AppTenantProvider.useContext();
-	const { selectedThreadId, setSelectedThreadId } = useControllerSelection();
-	const selectedThreadIsOptimistic = ai_chat_is_optimistic_thread_id(selectedThreadId);
+	const { selectedThreadId: requestedThreadId, setSelectedThreadId, removeThreadSelection } = useControllerSelection();
+	const selectedThreadIsOptimistic = ai_chat_is_optimistic_thread_id(requestedThreadId);
+	const isCurrentMembership = useStore((state) => state.membershipId === membershipId);
 
 	const draftSelectedModelId = useStore((state) => state.draftSelectedModelId);
 	const draftSelectedModeId = useStore((state) => state.draftSelectedModeId);
-
-	const session = useStore((state) => (selectedThreadId ? (state.threadById.get(selectedThreadId) ?? null) : null));
-	const selectedThreadFailedSendUserMessageId = useStore((state) =>
-		selectedThreadId ? (state.failedSendUserMessageIdByThreadId.get(selectedThreadId) ?? null) : null,
-	);
 
 	const updateThread = useMutation(app_convex_api.ai_chat.thread_update);
 	const branchThread = useMutation(app_convex_api.ai_chat.thread_branch);
@@ -1699,13 +1764,21 @@ const useThreadRuntimeController = () => {
 
 	const persistedThreadMessages = useQuery(
 		app_convex_api.ai_chat.thread_messages_list,
-		selectedThreadId && !selectedThreadIsOptimistic
+		requestedThreadId && !selectedThreadIsOptimistic
 			? {
 					membershipId,
-					threadId: selectedThreadId,
+					threadId: requestedThreadId,
 					order: "desc",
 				}
 			: "skip",
+	);
+	const isThreadDenied = Boolean(
+		requestedThreadId && !selectedThreadIsOptimistic && persistedThreadMessages === null,
+	);
+	const selectedThreadId = isCurrentMembership && !isThreadDenied ? requestedThreadId : null;
+	const session = useStore((state) => (selectedThreadId ? (state.threadById.get(selectedThreadId) ?? null) : null));
+	const selectedThreadFailedSendUserMessageId = useStore((state) =>
+		selectedThreadId ? (state.failedSendUserMessageIdByThreadId.get(selectedThreadId) ?? null) : null,
 	);
 
 	const liveJobs = useQuery(
@@ -1719,7 +1792,7 @@ const useThreadRuntimeController = () => {
 	) ?? EMPTY_LIVE_THREAD_JOBS;
 
 	const persistedMessagesLookup = ((/* iife */) => {
-		if (!persistedThreadMessages) return undefined;
+		if (!selectedThreadId || !persistedThreadMessages) return undefined;
 
 		const result = {
 			mapById: new Map<string, ai_chat_UiMessage>(),
@@ -2329,6 +2402,9 @@ const useThreadRuntimeController = () => {
 	});
 
 	const regenerate = useFn((threadId: string, messageId: string) => {
+		if (threadId !== selectedThreadId) {
+			return;
+		}
 		const session = useStore.getState().threadById.get(threadId);
 		const chat = session?.chat;
 
@@ -2424,6 +2500,9 @@ const useThreadRuntimeController = () => {
 				attachments?: FileUIPart[];
 			},
 		) => {
+			if (threadId !== selectedThreadId) {
+				return false;
+			}
 			// An explicit attachments option wins even when empty: it means the user
 			// removed every image while editing. `undefined` falls back to the queued
 			// item's attachments or, for a retry/edit target, to the file parts
@@ -2632,6 +2711,9 @@ const useThreadRuntimeController = () => {
 			value: string,
 			options?: { messageId?: string; attachments?: FileUIPart[] },
 		) => {
+			if (threadId !== selectedThreadId) {
+				return false;
+			}
 			// A retry/edit target may be an image-only message with empty text;
 			// `sendUserTextNow` resolves its file parts before deciding.
 			if (!value.trim() && !options?.attachments?.length && !options?.messageId) {
@@ -2948,6 +3030,16 @@ const useThreadRuntimeController = () => {
 			errorMessage: chat.error?.message ?? null,
 		});
 	});
+
+	useLayoutEffect(() => {
+		if (!isThreadDenied || !requestedThreadId || !isCurrentMembership) {
+			return;
+		}
+		stop_and_delete_thread_session(requestedThreadId);
+		useStore.actions.clearThreadRenderState(requestedThreadId);
+		persistedUiMessageById.clear();
+		removeThreadSelection(requestedThreadId);
+	}, [isCurrentMembership, isThreadDenied, requestedThreadId, removeThreadSelection]);
 
 	useEffect(() => {
 		if (!selectedThreadId || !session || session.selectedModelId !== undefined) {

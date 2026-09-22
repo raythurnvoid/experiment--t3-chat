@@ -65,6 +65,23 @@ Plugin backends apply these facts and enforce their own access lease, which last
 They own their private groups and live queries. Press owns workspace membership, Files grants,
 and `organizations_membership_lifetimes`. See [external plugin identity](../auth-system/SKILL.md#identity-for-external-plugin-backends).
 
+## Paged media validation
+
+`files_media_validation.ts` keeps small organization and workspace version docs. Copy and Save
+pin both doc identity and revision, plus the owner's pending version. These are validation tokens,
+not permission caches. Final publication still checks current access.
+
+- Organization role assignments, custom permission changes, role deletion, and ownership changes
+  advance the organization version in the same transaction.
+- Human/role file grants, root restriction, membership lifetime, saved media, placement, and write
+  policy changes advance the workspace version. Unchanged or refused writes do not advance it.
+- Plugin mirrored human readers follow the same rule, including rollback and empty-reader root
+  restriction. Store-only changes and independent service-account grants are not human media access.
+- Purge fencing invalidates proofs before docs are removed. A removed version doc also invalidates
+  its proof. Never recreate a missing doc while checking an old proof.
+
+When adding a writer, check both Copy adoption and final Save. See the pending and transfer specs.
+
 ## Service accounts
 
 Service accounts are workspace identities for software. They are not users and have no roles,
@@ -472,12 +489,11 @@ of a restricted folder has to be able to share what the grant gave them and noth
   scopes. The organization one gates invite, remove and role changes. The workspace one gates only
   role changes inside one workspace — its holder cannot invite or remove anyone. The catalog label
   says so; the key does not.
-- Chat threads are workspace-wide, not private to their author, so they gate on `content.read`
-  (`THREAD_PERMISSION` in `ai_chat.ts`). Changing somebody else's thread — retitle, archive, add
-  messages — needs `content.write` on top, through `authorize_thread_mutation`; the author is exempt.
-  `thread_mark_read` is the deliberate exception and takes no such check: `readAt` is one field on the
-  shared thread, so the unread badge is a workspace-wide signal that anyone who may read the thread
-  may clear, and gating it would leave a read-only role with badges it can never clear.
+- Chat threads are private to their creator. Every read and change also needs current workspace
+  `content.read` (`THREAD_PERMISSION` in `ai_chat.ts`). Team owners, admins, and writers have no
+  override. Lists and branch title numbering use a creator-filtered index. Direct reads return
+  null for another creator's thread. Mark-read changes only the creator's private read cursor.
+  A viewer can manage its own chats; file writes still need their separate file permissions.
 
 ## Known gaps
 
@@ -485,15 +501,6 @@ These are real and confirmed against the code. None is an oversight to patch qui
 product decision, so record the answer here before changing the behaviour. An entry that starts with
 **Decided** already has its answer. Do not report it again as a finding.
 
-- **A chat thread can carry restricted bytes to the whole workspace.** Threads are workspace-wide (see
-  above), and an agent tool result is stored in the thread. So a user who may read a restricted file
-  can `cat` it, and every workspace member with `content.read` then sees those bytes in the shared
-  thread. Comments solved the same problem by putting one `fileNodeId` on the row, but a thread can
-  touch many files, so the fix is either per-tool-result filtering at read time or private threads.
-  Skill tool parts are a narrow exception: their stored inputs and outputs contain only IDs, versions,
-  and status. Source labels recheck the current reader's access. Skill bodies and results stay in the
-  request's system context. Ordinary file-tool output and generated assistant prose still follow the
-  shared-thread rule above. See the [workspace skills spec](../ai-chat-skills/SKILL.md).
 - **The public API refuses a grant-only user.** Each file scope maps to an app permission, which
   `has_workspace_content_permission` answers about the *workspace*.
   Somebody whose only access is a direct grant on one restricted file gets 403 before any per-file
@@ -713,27 +720,15 @@ docs.
 
 Be explicit about this when planning work; do not assume the subsystem is complete.
 
-- **AI tools and the bash shell** reach files through internal functions that take `userId` as an
-  argument and mostly check nothing. **File content and pending writes are the exceptions**: the five
-  readers listed above check that `userId` against the node, so `cat`, `head`, `tail`, `wc`, `grep`,
-  `textgrep`, `sed` and the AI edit tool refuse a restricted file. Pending content writes already ask
-  the node for `content.write`, and the pending `mv` and `rm` mutations now do the same for their
-  source node before writing a proposal. Other internal helpers on this surface, including create and
-  listing helpers, still rely on their caller to check access.
-  `/api/chat` is the entry point for the tool-bearing agent, and it asks
-  two questions: `content.read` in both modes, plus `content.write` for agent mode. Two questions and
-  not one, because the catalog lets an owner compose write-without-read. That role never actually
-  reached bash — `thread_get` and `thread_create` gate on `content.read` too — but it got a 400 that
-  reads like a malformed request, and the route was leaning on another handler's gate to stop it.
-  Asking here makes the route self-gating and the answer a correct 403. Ask mode has a second layer
-  besides that boolean: its one
-  write tool (`edit_file`, the whole of `ai_chat_WRITE_TOOL_NAMES`) is removed from the `tools` record
-  `streamText` receives — not merely from `activeTools`, which is advisory and only shapes the
-  provider payload — and app-file `writeFile`, `mkdir` and `utimes` are all refused by
-  `allowDbFilesMkdir: false`, which despite its name gates every db-files write rather than just
-  directory creation. The internals themselves are still unguarded, so any new caller has to check for
-  itself. The agent has one other door onto file content: `execute_code` mints a public-API grant
-  token scoped to file list and read, which re-enters through the public API and *is* re-checked there.
+- **AI tools and the bash shell** keep the original chat separate from the file workspace.
+  `/api/chat` and background jobs require source `content.read` in both modes. A team viewer can
+  use Agent mode in their own home. Each file door checks the selected workspace, the current
+  node permission and its write policy. Original membership lifetime checks prevent an old run
+  from returning private data or writing after leave/re-invite. Reads check again after external I/O.
+  Ask mode removes write tools from the `tools` registry, not only from advisory `activeTools`.
+  `allowDbFilesMkdir: false` refuses all app-file writes while leaving thread `/tmp` writable.
+  Code execution uses separate current/home read grants with one shared byte budget. The public
+  API checks each grant and its original source again. New internal callers must keep these checks.
 - **Plugin runs have platform file scopes, but writes still answer to the actor and source file.** A
   run gets the platform baseline needed to download its exact triggering upload and write Markdown
   siblings. `db_revalidate_file_write_principal` then reloads the run, installation, source node, and

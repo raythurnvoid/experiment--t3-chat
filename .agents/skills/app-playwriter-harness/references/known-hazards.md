@@ -129,7 +129,7 @@ Before the first attempt at a new interaction type (upload, download, screenshot
 - Observe with `snapshot()` before clicking.
 - Do not use `{ force: true }`, `dispatchEvent`, or DOM `element.click()` to bypass blockers.
 - For clickability bugs, use `hitTest(...)` or `inspectElement(...)` to identify the topmost element instead of retrying alternate selectors.
-- A `locator.click` that fails with `Timeout … - performing click action` has often **already landed** — the post-click actionability check is what timed out. Seen repeatedly on the organization switcher trigger, its row ⋮ buttons, and its menu items. Re-read state (modal open? menu items present? row gone?) before retrying, or the retry double-applies a mutation. Parking the pointer away first (`mouse.move(1400, 500)`) makes the next click more likely to return cleanly.
+- A `locator.click` that fails with `Timeout … - performing click action` has often **already landed** — the post-click actionability check is what timed out. Seen repeatedly on the organization switcher trigger, its row ⋮ buttons, and its menu items. Also seen on the Files `Create folder` modal submit and the row menu `Archive` item: the dev mutation took 5–8 seconds, so a whole `-e` call with a 5000 ms `--timeout` died while the write still landed. Put the click alone in its call, then poll for the result in the next call. Re-read state (modal open? menu items present? row gone?) before retrying, or the retry double-applies a mutation. Parking the pointer away first (`mouse.move(1400, 500)`) makes the next click more likely to return cleanly.
 - A `locator.click`/`locator.focus` that times out on a selector you just read successfully usually means the tab blanked mid-run, not that the selector is wrong. Check `document.getElementById("root").children.length` before rewriting the locator: `0` means the HMR blank described below, and only a reload fixes it.
 - Submit buttons in the org-switcher's nested form dialogs (`Create workspace`, and the plugin Install/consent buttons on the Plugins pages) can refuse every pointer path: `locator.click` times out **without landing** (re-read state to confirm — the workspace list stays unchanged), and `focus()` + `keyboard.press("Enter")` can silently do nothing too. What works: for a dialog with a text field, focus the field and press `Enter` (native form submit); for the plugin Install/consent buttons, `focus()` + `Enter` on the button itself does work. Verified 2026-08-01 on `Create workspace` (only the in-input Enter submitted) after both button paths failed. Before trying those fallbacks, check the locator itself: `getByRole("dialog").getByRole("button", { name: "Create workspace" })` is a strict-mode violation with **three** matches, because the section's opener icon button, the submit button, and the close button (`Close create workspace dialog`) all carry that name. `page.locator("button[type=submit]", { hasText: "Create workspace" }).click()` submitted on the first try (verified 2026-08-15). The same collision hits `Create API key` on `/api-keys`.
 - `MyCheckboxButton` (the API-key permission list, `my-checkbox-button.tsx`) is the same visually-hidden-input pattern as `MyButtonGroupItem` above: a 1x1 `input.MyCheckboxButton-control` plus a visible `<label>`. `getByRole("checkbox", …).check()` waits for the input to become visible and burns the whole CLI timeout with no error text, which reads like a hung page. `isChecked()` and `focus()` work (no actionability wait), so a probe that only reads state looks fine right before the toggle hangs. Click the label text instead: `dialog.getByText("Read plugin data", { exact: true }).click()`. The inputs are keyboard focusable and `Space` toggles them, so the 1x1 size in `auditAccessibility` is by design, not a finding. Verified 2026-08-15.
@@ -968,6 +968,14 @@ lines and left the `/files` tab with no editor until a reload. After the reload,
 `state.appPlaywriterHarness` and `state.qa` live on the Node side and survive, but anything you
 put on `window` (a fresh-read helper, counters) is gone.
 
+Page-context Convex calls break too. On 2026-09-22, parallel fix agents edited many source files
+while QA tabs stayed open. After each hot update, `await import("/src/lib/app-convex-client.ts")`
+calls from `page.evaluate` answered `Unauthenticated`, and the view showed "Something went wrong"
+with an `AppTenantProvider.useContext must be used within ...` error from `?t=` module copies. The
+hot update loads a second copy of the module, and that copy has no auth. A fresh `page.goto` of the
+route, then a 15-25 s wait, fixed it every time. When another agent may edit source during your
+run, do a fresh `goto` before any step whose result you will trust.
+
 ## A long-lived dev server can serve ONE file's old transform, and the app crashes on code you already fixed
 
 Observed 2026-09-04. The editor route rendered `Editor failed to load.` with `ReferenceError: disabledReason is not defined` pointing at `file-editor-rich-text-tools-comment.tsx`. That name had been renamed to `commentCommit` hours earlier, the type check passed, and the whole test suite passed. A page reload did not help.
@@ -995,24 +1003,23 @@ The string era: `ROOM_CSS` in the old `src/room/page.ts` was a JS template liter
 
 - The lasting lesson is the shared blast radius: one agent's syntax error can take the local Worker away from every other agent driving the room and abort unrelated test suites that import the broken module. If the Worker goes silent while you did not touch the room code, check whether someone else is mid-edit before restarting anything. The typecheck names a syntax error instantly: `vp env exec pnpm --dir packages/council run typecheck`.
 
-## No dev server at all is a user-only blocker — check it before you plan a browser pass
+## Check the dev server before a browser pass
 
-Observed 2026-08-31: a long autonomous session reached its browser QA phase, loaded this skill, and
-only then found that nothing was listening on 5173. The QA Edge profile was connected and the
-Playwriter relay was up, so every harness check said "ready". Repo `CLAUDE.md` says "do not run
-`pnpm run dev`; let the user run it manually", so the session could not unblock itself.
+The browser and relay can work while nothing listens on 5173. Check the app separately.
+The current `AGENTS.md` allows starting a missing dev server for implementation or QA. The older
+rule that made this a user-only blocker no longer applies.
 
 - Probe the app before you spend a call on Playwriter: `Invoke-WebRequest http://localhost:5173/
 -TimeoutSec 5 -UseBasicParsing`, or list the listening ports
   (`Get-NetTCPConnection -State Listen | Where-Object LocalPort -in 5173,4173,3000,8787`). A refused
   connection means no server, which is a different problem from the wrong-checkout one below.
-- Do not start it, and do not start a `vite preview` or a second port as a workaround. Report the
-  blocker and say which steps it holds up.
+- Check both ports and process command lines. Reuse a running server. Do not stop it or start a
+  second copy on another port. When no server is running, use
+  `vp env exec pnpm --dir packages/app run dev`. Follow `AGENTS.md` for the Convex dev target too.
 - The relay and the browser being healthy proves nothing about the app. `browser list` answers from
   the Edge extension, not from the dev server.
-- Plan around it: work that needs no browser (tests, typecheck, builds, mirror pushes, commits) can
-  still finish. Say plainly in the report which checks were skipped for this reason, because a run
-  that quietly drops its browser evidence reads as a run that had none to give.
+- If startup fails, record the error and which browser checks remain open. Do not count unit
+  tests as running-app evidence.
 
 ## A dev server on the usual port can serve a completely different checkout
 
@@ -2061,6 +2068,11 @@ It reads as the signed-in user. It is gone after a reload, so reinstall it with 
 
 If `page.close()` hangs, a CDP target close can still work. Get the target id from the owned page with `getCDPSession({ page })` and `Target.getTargetInfo`, then send `Target.closeTarget` with that exact id. The command may time out before the next call reports that the page closed. Check `context.pages()` before retrying. Open a fresh tab and rebind the harness. Do not kill the shared localhost renderer or restart the browser: that closes other people's tabs too. This recovered a full-page `New Chat` hang on 2026-09-07.
 
+After replacing a closed tab, the installed harness may still hold the older browser context.
+If raw `context.pages()` lists the new tab but `bindOpenTab` says there is no match, reinstall
+`install-harness.js` in the same session, then bind again. This recovered the mismatch on
+2026-09-21. Do not open more tabs to work around stale helper state.
+
 ## Streamdown link prompts can log HTML nesting warnings
 
 Opening a link in an assistant Markdown paragraph can log `<div>` and `<p>` inside `<p>` warnings with the installed Streamdown 2.5.0 build. Its default prompt still opens, shows the destination, and closes. This was observed on 2026-09-12 without replacing the library's link or paragraph renderer. Check the installed package when tracing this warning; the reference checkout can contain newer fixes. Keep link checks enabled during style work.
@@ -2402,6 +2414,8 @@ takes 5–10 seconds to reach its Stop, and one push inside that window is enoug
 
 ## `files_nodes.get_file_node_for_membership` returns the node fields at the top level
 
+Its args are `{ membershipId, fileNodeId }`, not `{ membershipId, nodeId }`.
+
 It returns `v.union(v.object(files_node_public_doc_fields), v.null())` — **not** a `Result`. So
 `result._yay.node.writePolicy` is `undefined` and every field silently reads as missing, which
 looks like "the node has no policy" instead of "you used the wrong path". Read `node.path`,
@@ -2640,6 +2654,10 @@ after the server had already created the files.
 probe from page context must match the owner class instead, for example
 `.FilesArchiveModal:not([hidden])`, and read the name from `.MyModalHeading`. The closed dialog stays
 mounted with `hidden`, so drop the `:not([hidden])` and you read the closed one.
+
+## A displayed image can fail a later fetch through the browser cache
+
+For an image byte audit, use `fetch(signedUrl, { cache: "no-store" })`. A copied image decoded normally, but a later default fetch of the same signed URL failed with a missing CORS header; the no-store fetch returned the exact expected bytes. Do not change bucket CORS settings based only on that cached response. Never print the signed URL in the audit log.
 
 ## Focus after a modal confirm lands after the dialog has closed, so trace it, do not read it once
 

@@ -20,7 +20,7 @@ import type { Node as PmNode } from "@tiptap/pm/model";
 import { app_convex, app_convex_api } from "@/lib/app-convex-client.ts";
 import type { app_convex_Doc, app_convex_Id } from "@/lib/app-convex-client.ts";
 import { files_UPLOAD_PATH_TAKEN_MESSAGE, files_normalize_upload_file_name } from "@/lib/files.ts";
-import { files_media_build_file_src } from "@/lib/files-media-src.ts";
+import { files_media_build_file_src } from "../../../../../shared/files-media.ts";
 import { files_prepare_image_upload_file } from "@/lib/files-image-compression.ts";
 
 export function file_editor_rich_text_handle_media_paste(args: {

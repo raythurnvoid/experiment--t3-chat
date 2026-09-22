@@ -1537,6 +1537,114 @@ describe("enforcement", () => {
 		expect(untouched?.isArchived).toBe(false);
 	});
 
+	test.each(["owner", "admin", "member", "viewer"] as const)(
+		"a workspace %s cannot read or change another creator's chat",
+		async (role) => {
+			const t = test_convex();
+			const fixture = await access_control_test_seed_enforcement_fixture(t, {
+				name: `private-chat-${role}`,
+				suffix: `private-chat-${role}`,
+			});
+			if (role !== "owner") {
+				const assigned = await fixture.asOwner.mutation(api.access_control.set_user_role, {
+					organizationId: fixture.organizationId,
+					workspaceId: fixture.defaultWorkspaceId,
+					userId: fixture.memberId,
+					role,
+				});
+				expect(assigned._nay).toBeUndefined();
+			}
+			const asCaller = role === "owner" ? fixture.asOwner : fixture.asMember;
+			const callerId = role === "owner" ? fixture.ownerId : fixture.memberId;
+			const membershipId = role === "owner" ? fixture.ownerMembershipId : fixture.memberMembershipId;
+			const asCreator = role === "owner" ? fixture.asMember : fixture.asOwner;
+			const creatorMembershipId = role === "owner" ? fixture.memberMembershipId : fixture.ownerMembershipId;
+			const own = await asCaller.mutation(api.ai_chat.thread_create, {
+				membershipId,
+				clientGeneratedId: "own-private-chat",
+				lastMessageAt: 1,
+			});
+			const other = await asCreator.mutation(api.ai_chat.thread_create, {
+				membershipId: creatorMembershipId,
+				clientGeneratedId: "other-private-chat",
+				title: "Private title",
+				lastMessageAt: 2,
+			});
+			expect(own._nay).toBeUndefined();
+			expect(other._nay).toBeUndefined();
+			const threadId = other._yay!.threadId;
+			const added = await asCreator.mutation(api.ai_chat.thread_messages_add, {
+				membershipId: creatorMembershipId,
+				threadId,
+				messages: [
+					{
+						clientGeneratedMessageId: "private-message",
+						content: { role: "user", parts: [{ type: "text", text: "Private notes" }] },
+					},
+				],
+			});
+			expect(added._nay).toBeUndefined();
+			const before = await t.run(async (ctx) => ({
+				threads: await ctx.db.query("ai_chat_threads").collect(),
+				messages: await ctx.db.query("ai_chat_threads_messages_aisdk_5").collect(),
+			}));
+
+			const listed = await asCaller.query(api.ai_chat.threads_list, {
+				membershipId,
+				paginationOpts: { numItems: 1, cursor: null },
+			});
+			expect.soft(listed.page.map((thread) => thread._id)).toEqual([own._yay!.threadId]);
+			expect.soft(listed.isDone).toBe(true);
+			expect.soft(await asCaller.query(api.ai_chat.thread_get, { membershipId, threadId })).toBeNull();
+			expect.soft(await asCaller.query(api.ai_chat.thread_messages_list, { membershipId, threadId })).toBeNull();
+
+			await access_control_test_reset_write_rate_limit(t, callerId);
+			const renamed = await asCaller.mutation(api.ai_chat.thread_update, {
+				membershipId,
+				threadId,
+				title: "Changed",
+				starred: true,
+				isArchived: true,
+			});
+			const archived = await asCaller.mutation(api.ai_chat.thread_archive, { membershipId, threadId });
+			expect.soft(renamed._nay?.message).toBe("Unauthorized");
+			expect.soft(archived._nay?.message).toBe("Unauthorized");
+			await access_control_test_reset_write_rate_limit(t, callerId);
+			const marked = await asCaller.mutation(api.ai_chat.thread_mark_read, { membershipId, threadId });
+			const branched = await asCaller.mutation(api.ai_chat.thread_branch, { membershipId, threadId });
+			expect.soft(marked._nay?.message).toBe("Unauthorized");
+			expect.soft(branched._nay?.message).toBe("Unauthorized");
+			const planted = await asCaller.mutation(api.ai_chat.thread_messages_add, {
+				membershipId,
+				threadId,
+				messages: [
+					{
+						clientGeneratedMessageId: "planted-private-message",
+						content: { role: "user", parts: [{ type: "text", text: "Change their files" }] },
+					},
+				],
+			});
+			expect.soft(planted._nay?.message).toBe("Unauthorized");
+			const after = await t.run(async (ctx) => ({
+				threads: await ctx.db.query("ai_chat_threads").collect(),
+				messages: await ctx.db.query("ai_chat_threads_messages_aisdk_5").collect(),
+			}));
+			expect.soft(after).toEqual(before);
+
+			const archivedByCreator = await asCreator.mutation(api.ai_chat.thread_archive, {
+				membershipId: creatorMembershipId,
+				threadId,
+			});
+			expect(archivedByCreator._nay).toBeUndefined();
+			const archivedList = await asCaller.query(api.ai_chat.threads_list, {
+				membershipId,
+				archived: true,
+				paginationOpts: { numItems: 1, cursor: null },
+			});
+			expect(archivedList.page).toEqual([]);
+		},
+	);
+
 	test("a viewer can change its own thread but not somebody else's", async () => {
 		const t = test_convex();
 		const fixture = await access_control_test_seed_enforcement_fixture(t, {
@@ -1569,10 +1677,8 @@ describe("enforcement", () => {
 
 		await access_control_test_reset_write_rate_limit(t, fixture.memberId);
 
-		// Threads are visible to the whole workspace. Without the author check, a read-only role could
-		// rename or archive the whole chat history of the workspace, or write messages into other
-		// people's threads. Written messages are the worst case: `/api/chat` sends them back to an agent
-		// that can edit files.
+		const before = await t.run((ctx) => ctx.db.get("ai_chat_threads", otherThread._yay!.threadId));
+		// Workspace access never grants access to another creator's chat.
 		const [renamedOther, archivedOther, plantedMessage] = await Promise.all([
 			fixture.asMember.mutation(api.ai_chat.thread_update, {
 				membershipId: fixture.memberMembershipId,
@@ -1594,27 +1700,195 @@ describe("enforcement", () => {
 				],
 			}),
 		]);
-		expect(renamedOther._nay?.message).toBe("Permission denied");
-		expect(archivedOther._nay?.message).toBe("Permission denied");
-		expect(plantedMessage._nay?.message).toBe("Permission denied");
+		expect(renamedOther._nay?.message).toBe("Unauthorized");
+		expect(archivedOther._nay?.message).toBe("Unauthorized");
+		expect(plantedMessage._nay?.message).toBe("Unauthorized");
 
 		await access_control_test_reset_write_rate_limit(t, fixture.memberId);
 
-		// Marking a thread as read is the exception, because the list shows threads as unread until
-		// someone opens them. Applying the author rule here would leave a viewer with an unread badge
-		// they can never clear on a thread they are allowed to read, and moving a read marker gives no
-		// new power.
 		const markedOther = await fixture.asMember.mutation(api.ai_chat.thread_mark_read, {
 			membershipId: fixture.memberMembershipId,
 			threadId: otherThread._yay!.threadId,
 		});
-		expect(markedOther._nay).toBeUndefined();
-
-		// Read the value back and check that it changed. `thread_create` already set `readAt` to the
-		// thread's `lastMessageAt`, so only checking that it exists would also pass on a handler that
-		// writes nothing.
+		expect.soft(markedOther._nay?.message).toBe("Unauthorized");
 		const markedThread = await t.run((ctx) => ctx.db.get("ai_chat_threads", otherThread._yay!.threadId));
-		expect(markedThread!.readAt!).toBeGreaterThan(markedThread!.lastMessageAt!);
+		expect(markedThread).toEqual(before);
+		expect(await t.run((ctx) => ctx.db.query("ai_chat_threads_messages_aisdk_5").collect())).toEqual([]);
+
+		const ownThreadId = ownThread._yay!.threadId;
+		const added = await fixture.asMember.mutation(api.ai_chat.thread_messages_add, {
+			membershipId: fixture.memberMembershipId,
+			threadId: ownThreadId,
+			messages: [
+				{
+					clientGeneratedMessageId: "own-message",
+					content: { role: "user", parts: [{ type: "text", text: "My notes" }] },
+				},
+			],
+		});
+		expect(added._nay).toBeUndefined();
+		expect(
+			await fixture.asMember.query(api.ai_chat.thread_get, {
+				membershipId: fixture.memberMembershipId,
+				threadId: ownThreadId,
+			}),
+		).toMatchObject({ title: "My own conversation", createdBy: fixture.memberId });
+		const ownMessages = await fixture.asMember.query(api.ai_chat.thread_messages_list, {
+			membershipId: fixture.memberMembershipId,
+			threadId: ownThreadId,
+		});
+		expect(ownMessages?.messages.map((message) => message._id)).toEqual(added._yay!.ids);
+
+		await access_control_test_reset_write_rate_limit(t, fixture.memberId);
+		const markedOwn = await fixture.asMember.mutation(api.ai_chat.thread_mark_read, {
+			membershipId: fixture.memberMembershipId,
+			threadId: ownThreadId,
+		});
+		const branchedOwn = await fixture.asMember.mutation(api.ai_chat.thread_branch, {
+			membershipId: fixture.memberMembershipId,
+			threadId: ownThreadId,
+		});
+		expect(markedOwn._nay).toBeUndefined();
+		expect(branchedOwn._nay).toBeUndefined();
+		const branchMessages = await fixture.asMember.query(api.ai_chat.thread_messages_list, {
+			membershipId: fixture.memberMembershipId,
+			threadId: branchedOwn._yay!.threadId,
+		});
+		expect(branchMessages?.messages).toMatchObject([
+			{ createdBy: fixture.memberId, content: { parts: [{ text: "My notes" }] } },
+		]);
+		const readOwn = await t.run((ctx) => ctx.db.get("ai_chat_threads", ownThreadId));
+		expect(readOwn!.readAt).toBeGreaterThanOrEqual(readOwn!.lastMessageAt!);
+
+		await access_control_test_reset_write_rate_limit(t, fixture.memberId);
+		const archivedOwn = await fixture.asMember.mutation(api.ai_chat.thread_archive, {
+			membershipId: fixture.memberMembershipId,
+			threadId: ownThreadId,
+		});
+		expect(archivedOwn._nay).toBeUndefined();
+		expect(await t.run((ctx) => ctx.db.get("ai_chat_threads", ownThreadId))).toMatchObject({ archived: true });
+	});
+
+	test("a chat message cannot use a parent from another creator's thread", async () => {
+		const t = test_convex();
+		const fixture = await access_control_test_seed_enforcement_fixture(t, {
+			name: "private-chat-parent",
+			suffix: "private-chat-parent",
+		});
+		const own = await fixture.asMember.mutation(api.ai_chat.thread_create, {
+			membershipId: fixture.memberMembershipId,
+			clientGeneratedId: "own-parent-chat",
+			lastMessageAt: 1,
+		});
+		const other = await fixture.asOwner.mutation(api.ai_chat.thread_create, {
+			membershipId: fixture.ownerMembershipId,
+			clientGeneratedId: "other-parent-chat",
+			lastMessageAt: 1,
+		});
+		expect(own._nay).toBeUndefined();
+		expect(other._nay).toBeUndefined();
+		const otherMessage = await fixture.asOwner.mutation(api.ai_chat.thread_messages_add, {
+			membershipId: fixture.ownerMembershipId,
+			threadId: other._yay!.threadId,
+			messages: [
+				{
+					clientGeneratedMessageId: "private-parent",
+					content: { role: "user", parts: [{ type: "text", text: "Private history" }] },
+				},
+			],
+		});
+		expect(otherMessage._nay).toBeUndefined();
+		const before = await t.run(async (ctx) => ({
+			threads: await ctx.db.query("ai_chat_threads").collect(),
+			messages: await ctx.db.query("ai_chat_threads_messages_aisdk_5").collect(),
+		}));
+		const refused = await fixture.asMember.mutation(api.ai_chat.thread_messages_add, {
+			membershipId: fixture.memberMembershipId,
+			threadId: own._yay!.threadId,
+			parentId: otherMessage._yay!.ids[0],
+			messages: [
+				{
+					clientGeneratedMessageId: "foreign-parent-reply",
+					content: { role: "user", parts: [{ type: "text", text: "Continue that history" }] },
+				},
+			],
+		});
+		expect.soft(refused._nay?.message).toBe("Message not found");
+		const after = await t.run(async (ctx) => ({
+			threads: await ctx.db.query("ai_chat_threads").collect(),
+			messages: await ctx.db.query("ai_chat_threads_messages_aisdk_5").collect(),
+		}));
+		expect(after).toEqual(before);
+	});
+
+	test("branch title numbering only uses the creator's active and archived chats", async () => {
+		const t = test_convex();
+		const fixture = await access_control_test_seed_enforcement_fixture(t, {
+			name: "private-branch-title",
+			suffix: "private-branch-title",
+		});
+		const source = await fixture.asMember.mutation(api.ai_chat.thread_create, {
+			membershipId: fixture.memberMembershipId,
+			clientGeneratedId: "branch-title-source",
+			title: "Notes",
+			lastMessageAt: 1,
+		});
+		expect(source._nay).toBeUndefined();
+		const first = await fixture.asMember.mutation(api.ai_chat.thread_branch, {
+			membershipId: fixture.memberMembershipId,
+			threadId: source._yay!.threadId,
+		});
+		expect(first._nay).toBeUndefined();
+		expect(
+			await fixture.asMember.query(api.ai_chat.thread_get, {
+				membershipId: fixture.memberMembershipId,
+				threadId: first._yay!.threadId,
+			}),
+		).toMatchObject({ title: "Notes (1)" });
+		await access_control_test_reset_write_rate_limit(t, fixture.memberId);
+		expect(
+			(
+				await fixture.asMember.mutation(api.ai_chat.thread_archive, {
+					membershipId: fixture.memberMembershipId,
+					threadId: first._yay!.threadId,
+				})
+			)._nay,
+		).toBeUndefined();
+
+		const foreignActive = await fixture.asOwner.mutation(api.ai_chat.thread_create, {
+			membershipId: fixture.ownerMembershipId,
+			clientGeneratedId: "foreign-active-title",
+			title: "Notes (20)",
+			lastMessageAt: 1,
+		});
+		const foreignArchived = await fixture.asOwner.mutation(api.ai_chat.thread_create, {
+			membershipId: fixture.ownerMembershipId,
+			clientGeneratedId: "foreign-archived-title",
+			title: "Notes (30)",
+			lastMessageAt: 1,
+		});
+		expect(foreignActive._nay).toBeUndefined();
+		expect(foreignArchived._nay).toBeUndefined();
+		await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
+		expect(
+			(
+				await fixture.asOwner.mutation(api.ai_chat.thread_archive, {
+					membershipId: fixture.ownerMembershipId,
+					threadId: foreignArchived._yay!.threadId,
+				})
+			)._nay,
+		).toBeUndefined();
+		const second = await fixture.asMember.mutation(api.ai_chat.thread_branch, {
+			membershipId: fixture.memberMembershipId,
+			threadId: source._yay!.threadId,
+		});
+		expect(second._nay).toBeUndefined();
+		expect(
+			await fixture.asMember.query(api.ai_chat.thread_get, {
+				membershipId: fixture.memberMembershipId,
+				threadId: second._yay!.threadId,
+			}),
+		).toMatchObject({ title: "Notes (2)", createdBy: fixture.memberId });
 	});
 
 	test("branching somebody else's thread does not hand a viewer its scratch files", async () => {
@@ -1671,34 +1945,125 @@ describe("enforcement", () => {
 			});
 		});
 
-		// Branching is allowed for a reader: they can already read the messages it copies.
+		const before = await t.run(async (ctx) => ({
+			threads: await ctx.db.query("ai_chat_threads").collect(),
+			files: await ctx.db.query("ai_chat_files").collect(),
+			contents: await ctx.db.query("ai_chat_files_content").collect(),
+			shells: await ctx.db.query("ai_chat_bash_shells").collect(),
+			messages: await ctx.db.query("ai_chat_threads_messages_aisdk_5").collect(),
+		}));
 		const branched = await fixture.asMember.mutation(api.ai_chat.thread_branch, {
 			membershipId: fixture.memberMembershipId,
 			threadId: sourceThreadId,
 		});
-		expect(branched._nay).toBeUndefined();
+		expect.soft(branched._nay?.message).toBe("Unauthorized");
+		const after = await t.run(async (ctx) => ({
+			threads: await ctx.db.query("ai_chat_threads").collect(),
+			files: await ctx.db.query("ai_chat_files").collect(),
+			contents: await ctx.db.query("ai_chat_files_content").collect(),
+			shells: await ctx.db.query("ai_chat_bash_shells").collect(),
+			messages: await ctx.db.query("ai_chat_threads_messages_aisdk_5").collect(),
+		}));
+		expect(after).toEqual(before);
+	});
 
-		// The scratch state is different. `/tmp` belongs to one thread, and the only way to read it is
-		// to send a prompt inside that thread, which `thread_messages_add` allows only with
-		// `content.write`. Copying it into a thread the viewer owns, where the author rule lets them
-		// through, would be a way around that.
-		const copied = await t.run((ctx) =>
-			ctx.db
-				.query("ai_chat_files")
-				.withIndex("by_thread_path", (q) => q.eq("threadId", branched._yay!.threadId))
-				.collect(),
-		);
-		expect(copied).toEqual([]);
-
-		// The shells are part of the same scratch state, so they follow the same rule: the branch gets no
-		// shell rows, and its first call starts in the folder a brand-new thread starts in.
-		const branchedShells = await t.run((ctx) =>
-			ctx.db
-				.query("ai_chat_bash_shells")
-				.withIndex("by_thread_name", (q) => q.eq("threadId", branched._yay!.threadId))
-				.collect(),
-		);
-		expect(branchedShells).toEqual([]);
+	test.each(["content.read", "membership"] as const)("a creator loses chat access after losing %s", async (revoked) => {
+		const t = test_convex();
+		const fixture = await access_control_test_seed_enforcement_fixture(t, {
+			name: "private-chat-revoked",
+			suffix: "private-chat-revoked",
+		});
+		const created = await fixture.asMember.mutation(api.ai_chat.thread_create, {
+			membershipId: fixture.memberMembershipId,
+			clientGeneratedId: "revoked-chat",
+			lastMessageAt: 1,
+		});
+		expect(created._nay).toBeUndefined();
+		const threadId = created._yay!.threadId;
+		const added = await fixture.asMember.mutation(api.ai_chat.thread_messages_add, {
+			membershipId: fixture.memberMembershipId,
+			threadId,
+			messages: [
+				{
+					clientGeneratedMessageId: "revoked-chat-message",
+					content: { role: "user", parts: [{ type: "text", text: "My notes" }] },
+				},
+			],
+		});
+		expect(added._nay).toBeUndefined();
+		const before = await t.run(async (ctx) => ({
+			threads: await ctx.db.query("ai_chat_threads").collect(),
+			messages: await ctx.db.query("ai_chat_threads_messages_aisdk_5").collect(),
+		}));
+		if (revoked === "membership") {
+			// The shared fixture inserts membership directly; removal also needs its credential quota.
+			await t.run((ctx) =>
+				quotas_db_ensure(ctx, {
+					quotaName: "active_api_credentials",
+					userId: fixture.memberId,
+					organizationId: fixture.organizationId,
+					workspaceId: fixture.defaultWorkspaceId,
+					now: Date.now(),
+				}),
+			);
+			const removed = await fixture.asOwner.mutation(api.organizations.remove_user_from_organization, {
+				organizationId: fixture.organizationId,
+				userIdToRemove: fixture.memberId,
+			});
+			expect(removed._nay).toBeUndefined();
+		} else {
+			const role = await fixture.asOwner.mutation(api.access_control.create_role, {
+				organizationId: fixture.organizationId,
+				name: "Workspace maker",
+				description: "",
+				permissions: ["workspace.create"],
+			});
+			expect(role._nay).toBeUndefined();
+			await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
+			const assigned = await fixture.asOwner.mutation(api.access_control.set_user_role, {
+				organizationId: fixture.organizationId,
+				workspaceId: fixture.defaultWorkspaceId,
+				userId: fixture.memberId,
+				role: role._yay!.roleId,
+			});
+			expect(assigned._nay).toBeUndefined();
+		}
+		const membershipId = fixture.memberMembershipId;
+		const listed = await fixture.asMember.query(api.ai_chat.threads_list, {
+			membershipId,
+			paginationOpts: { numItems: 10, cursor: null },
+		});
+		expect(listed.page).toEqual([]);
+		expect(await fixture.asMember.query(api.ai_chat.thread_get, { membershipId, threadId })).toBeNull();
+		expect(await fixture.asMember.query(api.ai_chat.thread_messages_list, { membershipId, threadId })).toBeNull();
+		await access_control_test_reset_write_rate_limit(t, fixture.memberId);
+		const renamed = await fixture.asMember.mutation(api.ai_chat.thread_update, {
+			membershipId,
+			threadId,
+			title: "Changed",
+		});
+		const archived = await fixture.asMember.mutation(api.ai_chat.thread_archive, { membershipId, threadId });
+		await access_control_test_reset_write_rate_limit(t, fixture.memberId);
+		const marked = await fixture.asMember.mutation(api.ai_chat.thread_mark_read, { membershipId, threadId });
+		const branched = await fixture.asMember.mutation(api.ai_chat.thread_branch, { membershipId, threadId });
+		const replied = await fixture.asMember.mutation(api.ai_chat.thread_messages_add, {
+			membershipId,
+			threadId,
+			messages: [
+				{
+					clientGeneratedMessageId: "revoked-chat-reply",
+					content: { role: "user", parts: [{ type: "text", text: "Continue" }] },
+				},
+			],
+		});
+		for (const refused of [renamed, archived, marked, branched, replied]) {
+			expect(refused._nay?.message).toBe(revoked === "membership" ? "Unauthorized" : "Permission denied");
+		}
+		const after = await t.run(async (ctx) => ({
+			threads: await ctx.db.query("ai_chat_threads").collect(),
+			messages: await ctx.db.query("ai_chat_threads_messages_aisdk_5").collect(),
+		}));
+		expect(after).toEqual(before);
 	});
 
 	test("a role without content.read cannot start a chat thread either", async () => {
@@ -1735,7 +2100,7 @@ describe("enforcement", () => {
 		expect(thread._nay?.message).toBe("Permission denied");
 	});
 
-	test("/api/chat refuses agent mode to a viewer and lets ask mode through", async () => {
+	test("/api/chat lets a viewer use both modes while file tools check destination writes", async () => {
 		const t = test_convex();
 		const fixture = await access_control_test_seed_enforcement_fixture(t, {
 			name: "chat-mode-org",
@@ -1754,25 +2119,24 @@ describe("enforcement", () => {
 			});
 		const headers = { "Content-Type": "application/json" };
 
-		// A member is allowed to use agent mode. So when the same call answers 403 after we lower the
-		// role below, the permission check is the only thing that can have caused it.
+		// Both roles pass the chat read gate.
 		const memberAgent = await fixture.asMember.fetch("/api/chat", { method: "POST", headers, body: body("agent") });
-		expect(memberAgent.status).not.toBe(403);
+		expect(memberAgent.status).toBe(200);
+		await memberAgent.text();
 
 		await access_control_test_demote_to_viewer(fixture);
 		await access_control_test_reset_write_rate_limit(t, fixture.memberId);
 
 		const viewerAgent = await fixture.asMember.fetch("/api/chat", { method: "POST", headers, body: body("agent") });
-		expect(viewerAgent.status).toBe(403);
+		expect(viewerAgent.status).toBe(200);
+		await viewerAgent.text();
 
 		await access_control_test_reset_write_rate_limit(t, fixture.memberId);
 
-		// Ask mode still passes the permission check; it only fails later, because of credits. That is
-		// the whole point of the split: a viewer may ask questions, they just may not let the agent edit
-		// files.
+		// Ask mode reaches the same model route.
 		const viewerAsk = await fixture.asMember.fetch("/api/chat", { method: "POST", headers, body: body("ask") });
-		expect(viewerAsk.status).not.toBe(403);
-		expect(viewerAsk.status).not.toBe(429);
+		expect(viewerAsk.status).toBe(200);
+		await viewerAsk.text();
 	});
 
 	test("/api/chat refuses agent mode to a role that can write but cannot read", async () => {
@@ -1845,63 +2209,94 @@ describe("enforcement", () => {
 		expect((await post_chat("thread-writeonly-allowed")).status).not.toBe(403);
 	});
 
-	test("/api/chat refuses a regenerate in somebody else's thread to a viewer", async () => {
-		const t = test_convex();
-		const fixture = await access_control_test_seed_enforcement_fixture(t, {
-			name: "chat-regen-org",
-			suffix: "chat-regen",
-		});
-
-		const [ownerThread, viewerThread] = await Promise.all([
-			fixture.asOwner.mutation(api.ai_chat.thread_create, {
-				membershipId: fixture.ownerMembershipId,
-				clientGeneratedId: "thread-regen-theirs",
-				lastMessageAt: 1,
-			}),
-			fixture.asMember.mutation(api.ai_chat.thread_create, {
-				membershipId: fixture.memberMembershipId,
-				clientGeneratedId: "thread-regen-mine",
-				lastMessageAt: 1,
-			}),
-		]);
-		expect(ownerThread._nay).toBeUndefined();
-		expect(viewerThread._nay).toBeUndefined();
-
-		// A regenerate in Ask mode sends no user message, so `thread_messages_add` never runs and its
-		// author check never happens. Without the route's own check a read-only role could run turns in
-		// the whole workspace's chat history, and each turn's Bash calls overwrite that thread's shells.
-		const post_regenerate = (threadId: string) =>
-			fixture.asMember.fetch("/api/chat", {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({
-					messages: [],
-					parentId: null,
-					mode: "ask",
-					model: "gpt-5.4-nano",
-					trigger: "regenerate-message",
-					threadId,
-					membershipId: fixture.memberMembershipId,
-				}),
+	test.each(["owner", "admin", "member", "viewer"] as const)(
+		"/api/chat refuses a workspace %s in another creator's thread",
+		async (role) => {
+			const t = test_convex();
+			const fixture = await access_control_test_seed_enforcement_fixture(t, {
+				name: "chat-regen-org",
+				suffix: "chat-regen",
 			});
 
-		// A member holds `content.write`, so the same call passing here means the 403 below can only
-		// come from the permission check.
-		expect((await post_regenerate(ownerThread._yay!.threadId)).status).not.toBe(403);
+			if (role !== "owner") {
+				const assigned = await fixture.asOwner.mutation(api.access_control.set_user_role, {
+					organizationId: fixture.organizationId,
+					workspaceId: fixture.defaultWorkspaceId,
+					userId: fixture.memberId,
+					role,
+				});
+				expect(assigned._nay).toBeUndefined();
+			}
+			const asCaller = role === "owner" ? fixture.asOwner : fixture.asMember;
+			const callerId = role === "owner" ? fixture.ownerId : fixture.memberId;
+			const membershipId = role === "owner" ? fixture.ownerMembershipId : fixture.memberMembershipId;
+			const asCreator = role === "owner" ? fixture.asMember : fixture.asOwner;
+			const creatorMembershipId = role === "owner" ? fixture.memberMembershipId : fixture.ownerMembershipId;
+			const [otherThread, ownThread] = await Promise.all([
+				asCreator.mutation(api.ai_chat.thread_create, {
+					membershipId: creatorMembershipId,
+					clientGeneratedId: "thread-regen-theirs",
+					lastMessageAt: 1,
+				}),
+				asCaller.mutation(api.ai_chat.thread_create, {
+					membershipId,
+					clientGeneratedId: "thread-regen-mine",
+					lastMessageAt: 1,
+				}),
+			]);
+			expect(otherThread._nay).toBeUndefined();
+			expect(ownThread._nay).toBeUndefined();
+			await t.run(async (ctx) => {
+				await test_mocks_fill_db_with.plan(ctx, { userId: callerId, plan: "Free" });
+				const snapshot = await ctx.db
+					.query("billing_usage_snapshots")
+					.withIndex("by_user", (q) => q.eq("userId", callerId))
+					.first();
+				await ctx.db.patch("billing_usage_snapshots", snapshot!._id, {
+					meter: { ...snapshot!.meter!, balance: 0, creditedUnits: 0 },
+				});
+			});
+			const before = await t.run(async (ctx) => ({
+				threads: await ctx.db.query("ai_chat_threads").collect(),
+				messages: await ctx.db.query("ai_chat_threads_messages_aisdk_5").collect(),
+			}));
+			const postChat = (threadId: string, trigger: "submit-message" | "regenerate-message") =>
+				asCaller.fetch("/api/chat", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						messages:
+							trigger === "regenerate-message"
+								? []
+								: [{ id: "foreign-turn", role: "user", parts: [{ type: "text", text: "Continue" }] }],
+						parentId: null,
+						mode: "ask",
+						model: "gpt-5.4-nano",
+						trigger,
+						threadId,
+						membershipId,
+					}),
+				});
 
-		await access_control_test_demote_to_viewer(fixture);
-		await access_control_test_reset_write_rate_limit(t, fixture.memberId);
+			// Regenerate sends no user message, so the HTTP door must check the creator itself.
+			for (const trigger of ["submit-message", "regenerate-message"] as const) {
+				await access_control_test_reset_write_rate_limit(t, callerId);
+				const refused = await postChat(otherThread._yay!.threadId, trigger);
+				expect(refused.status).toBe(400);
+				expect(await refused.json()).toEqual({ message: "Not found" });
+			}
+			const after = await t.run(async (ctx) => ({
+				threads: await ctx.db.query("ai_chat_threads").collect(),
+				messages: await ctx.db.query("ai_chat_threads_messages_aisdk_5").collect(),
+			}));
+			expect(after).toEqual(before);
 
-		const refused = await post_regenerate(ownerThread._yay!.threadId);
-		expect(refused.status).toBe(403);
-		expect(await refused.json()).toMatchObject({ message: "Permission denied" });
-
-		await access_control_test_reset_write_rate_limit(t, fixture.memberId);
-
-		// Control: the viewer's own thread still passes, so the refusal above is about the author and
-		// not about Ask mode or the role on its own.
-		expect((await post_regenerate(viewerThread._yay!.threadId)).status).not.toBe(403);
-	});
+			await access_control_test_reset_write_rate_limit(t, callerId);
+			const ownResponse = await postChat(ownThread._yay!.threadId, "regenerate-message");
+			expect(ownResponse.status).toBe(402);
+			expect(await ownResponse.json()).toEqual({ message: "Insufficient funds" });
+		},
+	);
 
 	test("never returns a file node from another organization", async () => {
 		const t = test_convex();

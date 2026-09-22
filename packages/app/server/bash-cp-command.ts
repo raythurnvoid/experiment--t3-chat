@@ -7,7 +7,7 @@ import {
 	bash_create_glob_syntax_unsupported_message,
 	bash_current_workspace_path_to_db_files_path,
 	bash_GLOB_METACHARACTER_REGEX,
-	bash_is_path_under_current_workspace_path,
+	bash_resolve_db_files_shell_path,
 	bash_is_path_under_read_only_mounts,
 	bash_normalize_path,
 	bash_parse_cp_mv_operands,
@@ -34,7 +34,6 @@ export function bash_cp_command_create(
 	dbFilesRoots: bash_DbFilesRoots,
 	transferContext?: bash_TransferContext,
 ): Command {
-	const currentWorkspacePath = dbFilesRoots.app.currentWorkspacePath;
 	return defineCommand("cp", async (args, commandCtx) => {
 		const parsed = bash_parse_cp_mv_operands("cp", args);
 		const { operands } = parsed;
@@ -46,8 +45,9 @@ export function bash_cp_command_create(
 				return { stdout: "", stderr: bash_read_only_mount_error("cp", path), exitCode: bash_COMMAND_EXIT_FAILURE };
 		}
 
-		const appOperands = operands.filter((operand) =>
-			bash_is_path_under_current_workspace_path(currentWorkspacePath, bash_resolve_path(commandCtx.cwd, operand)),
+		const appOperands = operands.filter(
+			(operand) =>
+				bash_resolve_db_files_shell_path(bash_resolve_path(commandCtx.cwd, operand), dbFilesRoots).kind === "app",
 		);
 		if (appOperands.length === 0) return await bash_delegate_builtin_command({ command: "cp", args, commandCtx });
 
@@ -96,10 +96,11 @@ export function bash_cp_command_create(
 		}
 
 		const sourceShellPath = bash_resolve_path(commandCtx.cwd, operands[0]);
+		const sourceWorkspacePath = bash_resolve_db_files_shell_path(sourceShellPath, dbFilesRoots).basePath;
 		let destShellPath = bash_resolve_path(commandCtx.cwd, operands[1]);
 
 		if (!is_under_tmp_mount(destShellPath)) {
-			const destDbFilesPath = bash_current_workspace_path_to_db_files_path(currentWorkspacePath, destShellPath);
+			const destDbFilesPath = bash_current_workspace_path_to_db_files_path(sourceWorkspacePath, destShellPath);
 			const destHint =
 				destDbFilesPath != null
 					? `To propose that content at '${destDbFilesPath}', redirect instead: cat ${bash_shell_arg_quote(operands[0])} > ${bash_shell_arg_quote(destShellPath)}`
@@ -152,10 +153,10 @@ export function bash_cp_command_create(
 		} catch (error) {
 			if (error instanceof bash_DbFilesContentUnavailableError) {
 				const dbFilesPath =
-					bash_current_workspace_path_to_db_files_path(currentWorkspacePath, error.shellPath) ?? error.shellPath;
+					bash_current_workspace_path_to_db_files_path(sourceWorkspacePath, error.shellPath) ?? error.shellPath;
 				return {
 					stdout: "",
-					stderr: bash_build_unreadable_file_advisory(currentWorkspacePath, dbFilesPath, error.contentType),
+					stderr: bash_build_unreadable_file_advisory(sourceWorkspacePath, dbFilesPath, error.contentType),
 					exitCode: bash_COMMAND_EXIT_FAILURE,
 				};
 			}

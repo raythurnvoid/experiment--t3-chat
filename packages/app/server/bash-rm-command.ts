@@ -9,9 +9,8 @@ import {
 import { should_never_happen } from "../shared/shared-utils.ts";
 import {
 	bash_create_glob_syntax_unsupported_message,
-	bash_current_workspace_path_to_db_files_path,
 	bash_GLOB_METACHARACTER_REGEX,
-	bash_is_path_under_current_workspace_path,
+	bash_resolve_db_files_shell_path,
 	bash_is_path_under_read_only_mounts,
 	bash_resolve_path,
 	bash_read_only_mount_error,
@@ -91,14 +90,6 @@ function parse_rm_operands(args: string[]) {
 // The explicit `Command` return type breaks a type-inference cycle: the handler's inferred
 // type would otherwise flow through internal.* into the bash action and back into this command.
 export function bash_rm_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFilesRoots): Command {
-	const currentWorkspacePath = dbFilesRoots.app.currentWorkspacePath;
-	// Proposals target only the tenant app tree; the reserved mount scopes never back `app.fs`.
-	// Narrow the ctxData union up front for the workspace-only functions below, which declare strict ids.
-	const { organizationId, workspaceId, userId, threadId } = dbFilesRoots.app.fs.ctxData;
-	if (organizations_is_global_organization_id(organizationId) || organizations_is_reserved_workspace_id(workspaceId)) {
-		throw should_never_happen("rm command created for a reserved mount scope", { organizationId, workspaceId });
-	}
-
 	return defineCommand("rm", async (args, commandCtx) => {
 		const { operands, recursive, force, verbose, unknownOption } = parse_rm_operands(args);
 
@@ -120,19 +111,15 @@ export function bash_rm_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 			};
 		}
 
-		const appOperands = operands.filter((operand) =>
-			bash_is_path_under_current_workspace_path(currentWorkspacePath, bash_resolve_path(commandCtx.cwd, operand)),
+		const appOperands = operands.filter(
+			(operand) =>
+				bash_resolve_db_files_shell_path(bash_resolve_path(commandCtx.cwd, operand), dbFilesRoots).kind === "app",
 		);
 		if (appOperands.length === 0) {
 			return await bash_delegate_builtin_command({ command: "rm", args, commandCtx });
 		}
 
 		for (const operand of appOperands) {
-			const path = bash_current_workspace_path_to_db_files_path(
-				currentWorkspacePath,
-				bash_resolve_path(commandCtx.cwd, operand),
-			);
-			if (path != null) dbFilesRoots.app.fs.observePath(path);
 			if (bash_GLOB_METACHARACTER_REGEX.test(operand)) {
 				return {
 					stdout: "",
@@ -143,17 +130,17 @@ export function bash_rm_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 		}
 
 		// Ask mode keeps the read-only rejection; only Agent mode may create pending proposals.
-		if (!dbFilesRoots.app.fs.allowDbFilesMkdir) {
-			const firstAppOperand = appOperands[0];
-			const dbFilesPath = bash_current_workspace_path_to_db_files_path(
-				currentWorkspacePath,
-				bash_resolve_path(commandCtx.cwd, firstAppOperand),
-			);
+		const firstAppOperand = appOperands[0];
+		const firstTarget = bash_resolve_db_files_shell_path(
+			bash_resolve_path(commandCtx.cwd, firstAppOperand),
+			dbFilesRoots,
+		);
+		if (!firstTarget.fs.allowDbFilesMkdir) {
 			return {
 				stdout: "",
 				stderr:
 					`rm: cannot delete app file '${firstAppOperand}' through bash.\n` +
-					`App file deletes are available in Agent mode; Ask mode is read-only for app files. Use the Files sidebar Archive action for path '${dbFilesPath}'.\n`,
+					`App file deletes are available in Agent mode; Ask mode is read-only for app files. Use the Files sidebar Archive action for path '${firstTarget.dbFilesPath}'.\n`,
 				exitCode: bash_COMMAND_EXIT_FAILURE,
 			};
 		}
@@ -166,7 +153,8 @@ export function bash_rm_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 		let exitCode = 0;
 		for (const operand of operands) {
 			const resolvedPath = bash_resolve_path(commandCtx.cwd, operand);
-			if (!bash_is_path_under_current_workspace_path(currentWorkspacePath, resolvedPath)) {
+			const target = bash_resolve_db_files_shell_path(resolvedPath, dbFilesRoots);
+			if (target.kind !== "app") {
 				const delegated = await bash_delegate_builtin_command({
 					command: "rm",
 					args: [...delegatedFlagTokens, "--", operand],
@@ -180,7 +168,7 @@ export function bash_rm_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 				continue;
 			}
 
-			const dbFilesPath = bash_current_workspace_path_to_db_files_path(currentWorkspacePath, resolvedPath);
+			const dbFilesPath = target.dbFilesPath;
 			if (dbFilesPath == null) {
 				throw should_never_happen("rm: app operand lost its app path", { operand, resolvedPath });
 			}
@@ -192,7 +180,7 @@ export function bash_rm_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 
 			// Resolution runs through the calling user's pending path overlay: an already
 			// pending-deleted path reads as missing, like a real fs after rm.
-			const node = await dbFilesRoots.app.fs.getEntry(dbFilesPath);
+			const node = await target.fs.getEntry(dbFilesPath);
 			if (!node?.target || node.target.kind === "root") {
 				if (!force) {
 					stderr += `rm: cannot remove '${operand}': No such file or directory\n`;
@@ -206,12 +194,21 @@ export function bash_rm_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 				continue;
 			}
 
+			const { organizationId, workspaceId, userId, threadId, agentSource } = target.ctxData;
+			if (
+				organizations_is_global_organization_id(organizationId) ||
+				organizations_is_reserved_workspace_id(workspaceId) ||
+				!agentSource
+			) {
+				throw should_never_happen("rm reached a scope without agent write access", { organizationId, workspaceId });
+			}
 			const proposed = (await ctx.runMutation(internal.files_pending_updates.upsert_file_pending_archive_in_db, {
 				organizationId,
 				workspaceId,
 				userId,
 				target: node.target,
 				threadId: threadId ?? undefined,
+				agentSource,
 			})) as upsert_file_pending_archive_in_db_Result;
 			if (proposed._nay) {
 				// The node can be archived between the path lookup above and the mutation; -f
@@ -224,7 +221,7 @@ export function bash_rm_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 				continue;
 			}
 			// Later commands chained in this same bash call must see the path as gone.
-			dbFilesRoots.app.fs.resetProposalCaches();
+			target.fs.resetProposalCaches();
 			if (proposed._yay.outcome === "cancelled_added_file") {
 				// The user's own unaccepted new file: really removed, nothing pends. Always
 				// printed (not only with -v) so the agent knows no proposal was created.

@@ -2,6 +2,7 @@ import type { Doc, Id } from "./_generated/dataModel.js";
 import type { MutationCtx, QueryCtx } from "./_generated/server.js";
 import { access_control_db_has_permission } from "./access_control.ts";
 import { access_control_changes_db_record } from "./access_control_changes.ts";
+import { files_media_validation_db_advance_version } from "./files_media_validation.ts";
 
 export async function organizations_membership_lifetimes_db_get(
 	ctx: QueryCtx | MutationCtx,
@@ -70,6 +71,10 @@ export async function organizations_membership_lifetimes_db_ensure(
 				active: true,
 				lifetime,
 			});
+			await files_media_validation_db_advance_version(ctx, {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+			});
 		}
 
 		return lifetime;
@@ -82,6 +87,10 @@ export async function organizations_membership_lifetimes_db_ensure(
 		membershipId: membership._id,
 		lifetime: 1,
 		active: true,
+	});
+	await files_media_validation_db_advance_version(ctx, {
+		organizationId: membership.organizationId,
+		workspaceId: membership.workspaceId,
 	});
 
 	return 1;
@@ -96,66 +105,73 @@ export async function organizations_membership_lifetimes_db_record(
 		.withIndex("by_key", (q) => q.eq("key", "main"))
 		.first();
 
-	const events = await Promise.all(
-		memberships.map(async ({ membership, active }) => {
-			let lifetime: number;
-			if (active) {
-				lifetime = await organizations_membership_lifetimes_db_ensure(ctx, membership);
-			} else {
-				const existing = await ctx.db
-					.query("organizations_membership_lifetimes")
-					.withIndex("by_workspace_user", (q) =>
-						q.eq("workspaceId", membership.workspaceId).eq("userId", membership.userId),
-					)
-					.first();
-				lifetime = existing ? existing.lifetime + (existing.active ? 1 : 0) : 1;
-				if (existing) {
+	const events = [];
+	// Several members can share one workspace clock. Advance it in order.
+	for (const { membership, active } of memberships) {
+		let lifetime: number;
+		if (active) {
+			lifetime = await organizations_membership_lifetimes_db_ensure(ctx, membership);
+		} else {
+			const existing = await ctx.db
+				.query("organizations_membership_lifetimes")
+				.withIndex("by_workspace_user", (q) =>
+					q.eq("workspaceId", membership.workspaceId).eq("userId", membership.userId),
+				)
+				.first();
+			lifetime = existing ? existing.lifetime + (existing.active ? 1 : 0) : 1;
+			if (existing) {
+				if (existing.active) {
 					await ctx.db.patch("organizations_membership_lifetimes", existing._id, { lifetime, active: false });
-				} else {
-					await ctx.db.insert("organizations_membership_lifetimes", {
+					await files_media_validation_db_advance_version(ctx, {
 						organizationId: membership.organizationId,
 						workspaceId: membership.workspaceId,
-						userId: membership.userId,
-						membershipId: membership._id,
-						lifetime,
-						active: false,
 					});
 				}
-			}
-
-			// Local jobs also use this lifetime, before an external service starts the change feed.
-			if (!state) return null;
-			const organization = active ? await ctx.db.get("organizations", membership.organizationId) : null;
-			const member = organization?.defaultWorkspaceId
-				? await organizations_membership_lifetimes_db_member_facts(ctx, {
-						membership: { ...membership, active },
-						lifetime,
-						organization,
-						defaultWorkspaceId: organization.defaultWorkspaceId,
-					})
-				: {
-						hostUserId: String(membership.userId),
-						hostMembershipId: String(membership._id),
-						membershipLifetime: lifetime,
-						displayName: null,
-						active: false,
-						canRead: false,
-						canWrite: false,
-						isOwner: false,
-					};
-
-			return {
-				scope: {
-					kind: "workspace" as const,
+			} else {
+				await ctx.db.insert("organizations_membership_lifetimes", {
 					organizationId: membership.organizationId,
 					workspaceId: membership.workspaceId,
-				},
-				event: { kind: "member" as const, member },
-			};
-		}),
-	);
-	await access_control_changes_db_record(
-		ctx,
-		events.filter((event) => event !== null),
-	);
+					userId: membership.userId,
+					membershipId: membership._id,
+					lifetime,
+					active: false,
+				});
+				await files_media_validation_db_advance_version(ctx, {
+					organizationId: membership.organizationId,
+					workspaceId: membership.workspaceId,
+				});
+			}
+		}
+
+		// Local jobs also use this lifetime, before an external service starts the change feed.
+		if (!state) continue;
+		const organization = active ? await ctx.db.get("organizations", membership.organizationId) : null;
+		const member = organization?.defaultWorkspaceId
+			? await organizations_membership_lifetimes_db_member_facts(ctx, {
+					membership: { ...membership, active },
+					lifetime,
+					organization,
+					defaultWorkspaceId: organization.defaultWorkspaceId,
+				})
+			: {
+					hostUserId: String(membership.userId),
+					hostMembershipId: String(membership._id),
+					membershipLifetime: lifetime,
+					displayName: null,
+					active: false,
+					canRead: false,
+					canWrite: false,
+					isOwner: false,
+				};
+
+		events.push({
+			scope: {
+				kind: "workspace" as const,
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+			},
+			event: { kind: "member" as const, member },
+		});
+	}
+	await access_control_changes_db_record(ctx, events);
 }

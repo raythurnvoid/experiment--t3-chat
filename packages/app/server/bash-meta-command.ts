@@ -510,6 +510,7 @@ export function bash_meta_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 			}
 
 			const result = (await ctx.runQuery(internal.files_metadata.get_by_path, {
+				agentSource: target.ctxData.agentSource,
 				organizationId: target.ctxData.organizationId,
 				workspaceId: target.ctxData.workspaceId,
 				userId: target.ctxData.userId,
@@ -640,6 +641,7 @@ export function bash_meta_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 		// Scope the metadata scan to the classified folder; the workspace/mount root maps to the whole tree.
 		const path = scope.dbFilesPath != null && scope.dbFilesPath !== "/" ? scope.dbFilesPath : undefined;
 		const result = (await ctx.runQuery(internal.files_metadata.search, {
+			agentSource: scope.ctxData.agentSource,
 			organizationId: scope.ctxData.organizationId,
 			workspaceId: scope.ctxData.workspaceId,
 			userId: scope.ctxData.userId,

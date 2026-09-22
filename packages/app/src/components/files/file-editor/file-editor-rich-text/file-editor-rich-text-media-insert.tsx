@@ -19,7 +19,7 @@ import {
 	type MySearchSelect_Props,
 } from "@/components/my-search-select.tsx";
 import { FilesTreeProvider } from "@/lib/files-tree-context.tsx";
-import { files_media_build_file_src } from "@/lib/files-media-src.ts";
+import { files_media_build_file_src } from "../../../../../shared/files-media.ts";
 import { cn } from "@/lib/utils.ts";
 import { useFn } from "@/hooks/utils-hooks.ts";
 

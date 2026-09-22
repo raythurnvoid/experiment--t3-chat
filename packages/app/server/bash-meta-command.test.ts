@@ -48,6 +48,7 @@ function create_command_runner() {
 			currentWorkspacePath,
 			fs: appDbFilesFs,
 		},
+		personal: null,
 		externalMounts: {
 			currentWorkspacePath: bash_EXTERNAL_MOUNTS_ROOT,
 			mounts: new Map(),

@@ -3,6 +3,12 @@ import { api, internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import type { MutationCtx } from "./_generated/server.js";
 import {
+	files_media_dependencies_db_append,
+	files_media_dependencies_db_create,
+	files_media_dependencies_db_retire,
+	files_media_dependencies_db_seal,
+} from "./files_media_dependencies.ts";
+import {
 	files_pending_nodes_db_create,
 	files_pending_nodes_db_discard,
 	files_pending_nodes_db_fence_discard,
@@ -292,6 +298,104 @@ describe("cleanup_published_nodes", () => {
 		expect(await t.run((ctx) => ctx.db.get("files_nodes", savedId))).toEqual(savedBefore);
 	});
 
+	test.each(["active", "cleanup"])(
+		"keeps a published media alias while its set is %s and still has its dependency",
+		async (state) => {
+			const t = test_convex();
+			const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+			const scope = { organizationId: db.organizationId, workspaceId: db.workspaceId, userId: db.userId };
+			const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+			const prepared = await t.mutation(internal.files_ingestion.prepare_file, {
+				...scope,
+				membershipId: db.membershipId,
+				requestId: "media-alias",
+				attemptId: "one",
+				path: "/photo.png",
+				size: 4,
+				contentType: "image/png",
+				digest: "a".repeat(64),
+				content: { kind: "stored" },
+			});
+			if (prepared._nay || prepared._yay.kind !== "stored") throw new Error("Expected stored preparation");
+			const capture = prepared._yay;
+			const completed = await t.mutation(internal.files_ingestion.finalize_file, {
+				...scope,
+				membershipId: db.membershipId,
+				receiptId: capture.receiptId,
+				attemptId: "one",
+			});
+			if (completed._nay || completed._yay.target.kind !== "private") throw new Error("Expected a private image");
+			const target = completed._yay.target;
+			const proposal = await asUser.query(api.files_pending_updates.get_file_pending_update, {
+				membershipId: db.membershipId,
+				target,
+			});
+			if (!proposal) throw new Error("Expected the image proposal");
+			const draft = await t.mutation(internal.files_nodes.create_private_node_by_path, {
+				...scope,
+				path: "/draft",
+				kind: "folder",
+			});
+			if (draft._nay || !draft._yay.pendingUpdateId) throw new Error("Expected the set owner");
+			const owner = { kind: "proposal" as const, pendingUpdateId: draft._yay.pendingUpdateId };
+			const set = await t.run((ctx) => files_media_dependencies_db_create(ctx, { ...scope, owner, expectedCount: 1 }));
+			if (set._nay) throw new Error(set._nay.message);
+			const pin = { setId: set._yay, generation: 0 };
+			expect(
+				await t.run((ctx) =>
+					files_media_dependencies_db_append(ctx, {
+						...pin,
+						offset: 0,
+						mappings: [
+							{
+								sourceSrc: "source:photo",
+								dependency: {
+									src: `bonobo-file://${target.id}`,
+									target,
+									assetId: capture.assetId,
+									version: {
+										kind: "asset",
+										assetId: capture.assetId,
+										contentType: "image/png",
+										textKind: null,
+										collaborationEnabled: null,
+									},
+								},
+							},
+						],
+					}),
+				),
+			).toEqual({ _yay: null });
+			expect(await t.run((ctx) => files_media_dependencies_db_seal(ctx, pin))).toEqual({ _yay: null });
+			const saved = await asUser.action(api.files_pending_updates.save_file_pending_update, {
+				membershipId: db.membershipId,
+				target,
+				pendingUpdateId: proposal._id,
+				reviewedRevision: proposal.revision,
+			});
+			if (saved._nay) throw new Error(saved._nay.message);
+			if (saved._yay.target.kind !== "saved") throw new Error("Expected a saved image");
+			const savedId = saved._yay.target.id;
+			const savedBefore = await t.run((ctx) => ctx.db.get("files_nodes", savedId));
+			const receiptBefore = await t.run((ctx) => ctx.db.query("files_pending_node_publish_receipts").collect());
+			expect(receiptBefore).toHaveLength(1);
+			if (state === "cleanup") await t.run((ctx) => files_media_dependencies_db_retire(ctx, { ...pin, owner }));
+			vi.setSystemTime(Date.now() + 7 * 24 * 60 * 60 * 1000);
+			await t.mutation(internal.files_pending_nodes.cleanup_published_nodes, {});
+			expect(await t.run((ctx) => ctx.db.get("files_pending_nodes", target.id))).toMatchObject({ state: "published" });
+			expect(await t.run((ctx) => ctx.db.query("files_pending_node_publish_receipts").collect())).toEqual(
+				receiptBefore,
+			);
+			if (state === "active") await t.run((ctx) => files_media_dependencies_db_retire(ctx, { ...pin, owner }));
+			await t.mutation(internal.files_media_dependencies.cleanup_set, { setId: set._yay });
+			expect(await t.run((ctx) => ctx.db.query("files_media_dependencies").collect())).toEqual([]);
+			await t.mutation(internal.files_pending_nodes.cleanup_published_nodes, {});
+			expect(await t.run((ctx) => ctx.db.get("files_pending_nodes", target.id))).toBeNull();
+			expect(await t.run((ctx) => ctx.db.query("files_pending_node_publish_receipts").collect())).toEqual([]);
+			expect(await t.run((ctx) => ctx.db.get("files_nodes", savedId))).toEqual(savedBefore);
+		},
+	);
+
 	test("continues past a full page of retained parents", async () => {
 		const t = test_convex();
 		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
@@ -424,9 +528,16 @@ describe("cleanup_published_nodes", () => {
 		});
 		if (thread._nay) throw new Error(thread._nay.message);
 		const threadId = thread._yay.threadId;
+		const captured = await t.mutation(internal.ai_chat_workspaces.capture, {
+			userId: db.userId,
+			membershipId: db.membershipId,
+		});
+		if (captured._nay) throw new Error(captured._nay.message);
 		const begin = await t.mutation(internal.ai_chat_files.begin_bash_invocation, {
 			...scope,
 			threadId,
+			membershipId: db.membershipId,
+			membershipLifetime: captured._yay.membershipLifetime,
 			toolCallId: "select-folder",
 			commandHash: "a".repeat(64),
 			shellName: "default",
@@ -466,6 +577,8 @@ describe("cleanup_published_nodes", () => {
 		const next = await t.mutation(internal.ai_chat_files.begin_bash_invocation, {
 			...scope,
 			threadId,
+			membershipId: db.membershipId,
+			membershipLifetime: captured._yay.membershipLifetime,
 			toolCallId: "leave-folder",
 			commandHash: "b".repeat(64),
 			shellName: "default",
@@ -488,6 +601,179 @@ describe("cleanup_published_nodes", () => {
 });
 
 describe("files_pending_nodes_db_publish", () => {
+	test.each(["unchanged", "policy", "ancestor_path", "acl", "owner"] as const)(
+		"copied parent lock: %s",
+		async (change) => {
+			const t = test_convex({ transactionLimits: true });
+			const owner = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+			const author = await t.run((ctx) =>
+				test_mocks_fill_db_with.membership(ctx, { organizationName: "author", workspaceName: "home" }),
+			);
+			const asOwner = t.withIdentity({ issuer: "https://clerk.test", external_id: owner.userId });
+			expect(
+				await asOwner.mutation(api.organizations.invite_user_to_organization_workspace, {
+					organizationId: owner.organizationId,
+					workspaceId: owner.workspaceId,
+					userIdToAdd: author.userId,
+				}),
+			).toEqual({ _yay: null });
+			const membership = await t.run((ctx) =>
+				ctx.db
+					.query("organizations_workspaces_users")
+					.withIndex("by_workspace_user_active", (q) =>
+						q.eq("workspaceId", owner.workspaceId).eq("userId", author.userId).eq("active", true),
+					)
+					.unique(),
+			);
+			if (!membership) throw new Error("Expected the author's membership");
+			const db = { ...owner, userId: author.userId, membershipId: membership._id };
+			const scope = { organizationId: db.organizationId, workspaceId: db.workspaceId, userId: db.userId };
+			const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+			const source = await t.mutation(internal.files_nodes.create_folder_node_by_path, { ...scope, path: "/source" });
+			const destination = await t.mutation(internal.files_nodes.create_folder_node_by_path, {
+				...scope,
+				path: "/destination",
+			});
+			if (source._nay || destination._nay) throw new Error("Expected the saved folders");
+			expect(
+				(await t.mutation(internal.files_nodes.create_folder_node_by_path, { ...scope, path: "/source/child" }))._nay,
+			).toBeUndefined();
+			expect(
+				await asOwner.mutation(api.files_nodes.set_node_write_policy, {
+					membershipId: owner.membershipId,
+					nodeId: source._yay.nodeId,
+					writePolicy: { mode: "read_only" },
+				}),
+			).toEqual({ _yay: null });
+			const thread = await asUser.mutation(api.ai_chat.thread_create, {
+				membershipId: db.membershipId,
+				clientGeneratedId: "copied-parent",
+				lastMessageAt: Date.now(),
+			});
+			if (thread._nay) throw new Error(thread._nay.message);
+			const started = await t.mutation(internal.files_transfer.start_for_agent, {
+				membershipId: db.membershipId,
+				threadId: thread._yay.threadId,
+				requestId: "copied-parent",
+				sourceWorkspace: "current",
+				destinationWorkspace: "current",
+				kind: "copy",
+				expectedSourceCount: 1,
+				sources: [{ kind: "saved", id: source._yay.nodeId }],
+				targetParent: { kind: "saved", id: destination._yay.nodeId },
+				targetPath: "/destination",
+				targetName: null,
+				missingParentNames: [],
+				conflictPolicy: { file: "error", folder: "error" },
+			});
+			if (started._nay) throw new Error(started._nay.message);
+			expect(
+				await t.mutation(internal.files_transfer.seal_for_agent, {
+					membershipId: db.membershipId,
+					threadId: thread._yay.threadId,
+					runId: started._yay.runId,
+				}),
+			).toEqual({ _yay: null });
+			for (let step = 0; step < 25; step++) {
+				await t.mutation(internal.files_transfer.advance, { runId: started._yay.runId });
+				const activity = await t.run((ctx) => ctx.db.get("activities", started._yay.activityId));
+				if (activity?.status === "succeeded") break;
+			}
+			expect(await t.run((ctx) => ctx.db.get("activities", started._yay.activityId))).toMatchObject({
+				status: "succeeded",
+			});
+			const nodes = await t.run((ctx) => ctx.db.query("files_pending_nodes").collect());
+			const parent = nodes.find((node) => node.name === "source")!;
+			const child = nodes.find((node) => node.name === "child")!;
+			const proposals = await t.run((ctx) => ctx.db.query("files_pending_updates").collect());
+			const parentProposal = proposals.find((proposal) => proposal.target.id === parent._id)!;
+			const childProposal = proposals.find((proposal) => proposal.target.id === child._id)!;
+			const saved = await asUser.action(api.files_pending_updates.save_file_pending_update, {
+				membershipId: db.membershipId,
+				target: parentProposal.target,
+				pendingUpdateId: parentProposal._id,
+				reviewedRevision: parentProposal.revision,
+			});
+			if (saved._nay || saved._yay.target.kind !== "saved") throw new Error("Expected the saved parent");
+			expect(
+				await t.run((ctx) =>
+					ctx.db
+						.query("files_pending_node_publish_receipts")
+						.withIndex("by_privateNode", (q) => q.eq("privateNodeId", parent._id))
+						.unique(),
+				),
+			).toMatchObject({
+				copiedWritePolicy: { mode: "read_only" },
+				copiedPath: "/destination/source",
+			});
+			expect(
+				await asUser.query(api.files_pending_updates.get_file_pending_target, {
+					membershipId: db.membershipId,
+					target: childProposal.target,
+				}),
+			).toMatchObject({ canEdit: false, canAccept: true, canAcceptWithParents: true });
+			expect(
+				(
+					await t.mutation(internal.files_nodes.create_private_node_by_path, {
+						...scope,
+						path: "/destination/source/new",
+						kind: "folder",
+					})
+				)._nay,
+			).toBeDefined();
+			if (change === "policy")
+				expect(
+					await asOwner.mutation(api.files_nodes.set_node_write_policy, {
+						membershipId: owner.membershipId,
+						nodeId: saved._yay.target.id,
+						writePolicy: { mode: "writer", writer: { kind: "user", userId: owner.userId } },
+					}),
+				).toEqual({ _yay: null });
+			if (change === "ancestor_path")
+				expect(
+					await asOwner.mutation(api.files_nodes.rename_node, {
+						membershipId: owner.membershipId,
+						nodeId: destination._yay.nodeId,
+						path: "moved",
+					}),
+				).toEqual({ _yay: null });
+			if (change === "acl")
+				expect(
+					(
+						await asOwner.mutation(api.files_sharing.restrict_node, {
+							membershipId: owner.membershipId,
+							nodeId: saved._yay.target.id,
+						})
+					)._nay,
+				).toBeUndefined();
+			const caller = change === "owner" ? asOwner : asUser;
+			const membershipId = change === "owner" ? owner.membershipId : db.membershipId;
+			const before = await t.run(async (ctx) => ({
+				proposal: await ctx.db.get("files_pending_updates", childProposal._id),
+				nodes: await ctx.db.query("files_nodes").collect(),
+			}));
+			const savedChild = await caller.action(api.files_pending_updates.save_file_pending_update, {
+				membershipId,
+				target: childProposal.target,
+				pendingUpdateId: childProposal._id,
+				reviewedRevision: childProposal.revision,
+			});
+			if (change === "unchanged") {
+				expect(savedChild._nay).toBeUndefined();
+				expect(savedChild._yay?.target.kind).toBe("saved");
+				expect(await t.run((ctx) => ctx.db.get("files_pending_updates", childProposal._id))).toBeNull();
+			} else {
+				expect(savedChild._nay).toBeDefined();
+				expect(
+					await t.run(async (ctx) => ({
+						proposal: await ctx.db.get("files_pending_updates", childProposal._id),
+						nodes: await ctx.db.query("files_nodes").collect(),
+					})),
+				).toEqual(before);
+			}
+		},
+	);
+
 	test("keeps private children on their parent receipt and releases only the published node slot", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
@@ -576,6 +862,20 @@ describe("files_pending_nodes_db_discard", () => {
 		);
 		if (!parent) throw new Error("Expected the private parent");
 		const parentProposal = oldProposals.find((proposal) => proposal.target.id === parent._id)!;
+		const expireProposal = async (pendingUpdateId: Id<"files_pending_updates">) => {
+			const task = await t.run((ctx) =>
+				ctx.db
+					.query("files_pending_updates_cleanup_tasks")
+					.withIndex("by_pendingUpdate", (q) => q.eq("pendingUpdateId", pendingUpdateId))
+					.unique(),
+			);
+			if (!task) throw new Error("Expected the expiry task");
+			vi.setSystemTime(Math.max(Date.now(), task.expiresAt));
+			await t.mutation(internal.files_pending_updates.remove_file_pending_update_if_expired, {
+				cleanupTaskId: task._id,
+				expiryGeneration: task.expiryGeneration,
+			});
+		};
 		const scheduled = await t.run((ctx) => ctx.db.query("files_pending_updates_cleanup_tasks").collect());
 		expect(new Set(scheduled.map((task) => task.pendingUpdateId)).size).toBe(257);
 		vi.setSystemTime(startedAt + 3 * 60 * 60 * 1000);
@@ -587,27 +887,18 @@ describe("files_pending_nodes_db_discard", () => {
 		if (newer._nay || newer._yay.target.kind !== "private") throw new Error("Expected the newer child");
 		const newerId = newer._yay.target.id;
 		vi.setSystemTime(startedAt + 4 * 60 * 60 * 1000);
-		await t.mutation(internal.files_pending_updates.remove_file_pending_update_if_expired, {
-			pendingUpdateId: parentProposal._id,
-			expectedUpdatedAt: parentProposal.updatedAt,
-		});
+		await expireProposal(parentProposal._id);
 		expect(await t.run((ctx) => ctx.db.get("files_pending_nodes", parent._id))).toEqual(parent);
 		expect(await t.run((ctx) => ctx.db.query("files_pending_nodes").collect())).toHaveLength(258);
 		for (const proposal of oldProposals) {
 			if (proposal._id === parentProposal._id) continue;
-			await t.mutation(internal.files_pending_updates.remove_file_pending_update_if_expired, {
-				pendingUpdateId: proposal._id,
-				expectedUpdatedAt: proposal.updatedAt,
-			});
+			await expireProposal(proposal._id);
 		}
 		const cleanupTasks = await t.run((ctx) => ctx.db.query("files_pending_node_cleanup_tasks").collect());
 		expect(cleanupTasks).toHaveLength(256);
 		for (const task of cleanupTasks)
 			await t.mutation(internal.files_pending_nodes.cleanup_discarded_node, { cleanupTaskId: task._id });
-		await t.mutation(internal.files_pending_updates.remove_file_pending_update_if_expired, {
-			pendingUpdateId: parentProposal._id,
-			expectedUpdatedAt: parentProposal.updatedAt,
-		});
+		await expireProposal(parentProposal._id);
 		expect(await t.run((ctx) => ctx.db.query("files_pending_nodes").collect())).toHaveLength(2);
 		expect(await t.run((ctx) => ctx.db.get("files_pending_nodes", newerId))).toMatchObject({ state: "active" });
 		expect(
@@ -615,10 +906,8 @@ describe("files_pending_nodes_db_discard", () => {
 				?.ancestors,
 		).toEqual([parent]);
 		vi.setSystemTime(startedAt + 7 * 60 * 60 * 1000);
-		await t.mutation(internal.files_pending_updates.remove_file_pending_update_if_expired, {
-			pendingUpdateId: parentProposal._id,
-			expectedUpdatedAt: parentProposal.updatedAt,
-		});
+		await expireProposal(newer._yay.pendingUpdateId!);
+		await expireProposal(parentProposal._id);
 		const finalTasks = await t.run((ctx) => ctx.db.query("files_pending_node_cleanup_tasks").collect());
 		for (const privateNodeId of [newerId, parent._id]) {
 			const task = finalTasks.find((item) => item.privateNodeId === privateNodeId)!;
@@ -794,6 +1083,15 @@ describe("files_pending_nodes_db_discard", () => {
 			{ pendingUpdateId: parent.pendingUpdate._id, expectedUpdatedAt: parent.pendingUpdate.updatedAt },
 		]);
 		vi.setSystemTime(child.pendingUpdate.updatedAt + 4 * 60 * 60 * 1000);
+		await t.run(async (ctx) =>
+			files_pending_nodes_db_discard(ctx, {
+				...db,
+				privateNodeId: child.node._id,
+				pendingUpdateId: child.pendingUpdate._id,
+				expectedRevision: 1,
+				reason: "expired",
+			}),
+		);
 		await t.run(async (ctx) =>
 			files_pending_nodes_db_discard(ctx, {
 				...db,

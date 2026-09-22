@@ -22,7 +22,7 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
 
 // Typed locally to match the in-file binding shape convention.
-// Mirrors `WorkerLoaderWorkerCode`; no `limits` field because Worker Loader does not accept it.
+// The Worker Loader fields used here. This runner does not set per-snippet limits.
 type CodeWorkerLoaderWorkerCode = {
 	compatibilityDate: string;
 	compatibilityFlags?: string[];
@@ -32,7 +32,7 @@ type CodeWorkerLoaderWorkerCode = {
 	globalOutbound?: Fetcher | null;
 };
 
-type SandboxFile = { path: string; contentType?: string; bytes: Uint8Array };
+type SandboxFile = { workspace: "current" | "personal"; path: string; contentType?: string; bytes: Uint8Array };
 
 type SandboxEvaluateResult =
 	| {
@@ -83,7 +83,7 @@ type NetworkPolicy = {
 
 type AppRuntime = {
 	origin: string;
-	token: string;
+	tokens: { current: string; personal: string };
 };
 
 // Limits / constants
@@ -116,7 +116,7 @@ const COMPAT_DATE = "2025-06-01";
  * Bump this whenever the harness below changes. `codeHash` hashes it together with the snippet,
  * so the same snippet run under a new harness gets a new hash in the logs.
  */
-const WRAPPER_VERSION = "v2";
+const WRAPPER_VERSION = "v3";
 const ENTRY_MODULE = "executor.js";
 const EXECUTE_CODE_REQUEST_FIELDS = new Set(["code", "input", "executionId", "network", "app"]);
 
@@ -217,6 +217,7 @@ function parse_sandbox_result(value: unknown): SandboxEvaluateResult | null {
 	for (const file of value.files) {
 		if (
 			!is_record(file) ||
+			(file.workspace !== "current" && file.workspace !== "personal") ||
 			typeof file.path !== "string" ||
 			file.path.length < 1 ||
 			file.path.length > LIMITS.filePathChars ||
@@ -230,6 +231,7 @@ function parse_sandbox_result(value: unknown): SandboxEvaluateResult | null {
 		fileBytes += file.bytes.byteLength;
 		if (fileBytes > LIMITS.fileBytes) return null;
 		files.push({
+			workspace: file.workspace,
 			path: file.path,
 			...(file.contentType === undefined ? {} : { contentType: file.contentType }),
 			bytes: file.bytes,
@@ -410,6 +412,7 @@ const BLOCKED_OUTBOUND_HEADERS = new Set([
 	"trailer",
 	"transfer-encoding",
 	"upgrade",
+	"x-bonobo-workspace",
 	"x-forwarded-for",
 	"x-real-ip",
 ]);
@@ -535,6 +538,14 @@ export async function handle_outbound_gateway_request(request: Request, props: E
 		});
 		return new Response("Blocked outbound request", { status: 403 });
 	}
+	let workspace: "current" | "personal" | null = null;
+	if (is_app_public_api_url(firstValidation.url, props.app)) {
+		const selector = request.headers.get("X-Bonobo-Workspace");
+		if (selector !== "current" && selector !== "personal") {
+			return new Response("X-Bonobo-Workspace must be current or personal", { status: 400 });
+		}
+		workspace = selector;
+	}
 
 	let requestBody: Uint8Array | undefined;
 	if (method_can_have_outbound_body(method)) {
@@ -568,7 +579,9 @@ export async function handle_outbound_gateway_request(request: Request, props: E
 		const fileRead = app !== undefined && nextUrl.origin === app.origin &&
 			nextUrl.pathname === "/api/v1/files/read-bytes" && nextMethod === "POST";
 		if (app && is_app_public_api_url(nextUrl, app)) {
-			nextHeaders.set("authorization", `Bearer ${app.token}`);
+			// A public redirect cannot choose an app grant, even if it started with a selector.
+			if (workspace === null) return new Response("Blocked app redirect", { status: 403 });
+			nextHeaders.set("authorization", `Bearer ${app.tokens[workspace]}`);
 		} else if (originalAuthorization) {
 			nextHeaders.set("authorization", originalAuthorization);
 		} else {
@@ -638,6 +651,7 @@ export async function handle_outbound_gateway_request(request: Request, props: E
 			if (nextUrl.origin !== redirectValidation.url.origin) {
 				originalAuthorization = null;
 			}
+			if (!is_app_public_api_url(redirectValidation.url, props.app)) workspace = null;
 			nextUrl = redirectValidation.url;
 			nextMethod = redirect.method;
 			nextHeaders = redirect.headers;
@@ -719,6 +733,9 @@ export default class CodeExecutor extends WorkerEntrypoint {
           file.path.length < 1 || file.path.length > ${LIMITS.filePathChars}) {
         throw new TypeError("emitFile requires a path of 1-${LIMITS.filePathChars} characters");
       }
+      if (file.workspace !== "current" && file.workspace !== "personal") {
+        throw new TypeError("emitFile workspace must be current or personal");
+      }
       if (file.contentType !== undefined && (typeof file.contentType !== "string" ||
           file.contentType.length < 1 || file.contentType.length > ${LIMITS.fileContentTypeChars})) {
         throw new TypeError("emitFile contentType must be 1-${LIMITS.fileContentTypeChars} characters");
@@ -731,7 +748,7 @@ export default class CodeExecutor extends WorkerEntrypoint {
       }
       const bytes = new Uint8Array(file.bytes instanceof ArrayBuffer ? new Uint8Array(file.bytes) : file.bytes);
       __fileBytes += bytes.byteLength;
-      __files.push({ path: file.path, ...(file.contentType === undefined ? {} : { contentType: file.contentType }), bytes });
+      __files.push({ workspace: file.workspace, path: file.path, ...(file.contentType === undefined ? {} : { contentType: file.contentType }), bytes });
     };
     const __push = (prefix, args) => {
       if (__logsTruncated) return;
@@ -823,11 +840,15 @@ function parse_network_policy(
 
 function parse_app_runtime(value: unknown): { ok: true; app: AppRuntime | null } | { ok: false; response: Response } {
 	if (value === undefined || value === null) return { ok: true, app: null };
-	if (!is_record(value) || typeof value.origin !== "string" || typeof value.token !== "string") {
-		return { ok: false, response: invalid_request("`app` must include `origin` and `token` strings.") };
+	if (!is_record(value) || typeof value.origin !== "string" || !is_record(value.tokens) ||
+		Object.keys(value).some((key) => key !== "origin" && key !== "tokens") ||
+		Object.keys(value.tokens).some((key) => key !== "current" && key !== "personal")) {
+		return { ok: false, response: invalid_request("`app` must include `origin` and `tokens: { current, personal }`.") };
 	}
-	if (value.token.length === 0 || value.token.length > 512) {
-		return { ok: false, response: invalid_request("`app.token` is invalid.") };
+	const { current, personal } = value.tokens;
+	if (typeof current !== "string" || current.length === 0 || current.length > 512 ||
+		typeof personal !== "string" || personal.length === 0 || personal.length > 512) {
+		return { ok: false, response: invalid_request("`app.tokens.current` and `app.tokens.personal` must be 1–512 characters.") };
 	}
 
 	let origin: string;
@@ -841,7 +862,7 @@ function parse_app_runtime(value: unknown): { ok: true; app: AppRuntime | null }
 		return { ok: false, response: invalid_request("`app.origin` must be a valid URL.") };
 	}
 
-	return { ok: true, app: { origin, token: value.token } };
+	return { ok: true, app: { origin, tokens: { current, personal } } };
 }
 
 function build_evaluate_input(
@@ -1085,6 +1106,7 @@ async function handle_execute_code(request: Request, env: Env, ctx?: ExecuteCode
 			logsTruncated,
 			// RPC carries bytes directly. Only the HTTP response needs base64 for JSON.
 			files: sandbox.files.map((file) => ({
+				workspace: file.workspace,
 				path: file.path,
 				...(file.contentType === undefined ? {} : { contentType: file.contentType }),
 				dataBase64: encode_file_bytes(file.bytes),

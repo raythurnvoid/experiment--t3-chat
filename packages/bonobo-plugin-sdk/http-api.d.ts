@@ -516,6 +516,7 @@ export type BonoboHttpApi = {
 						}[];
 						cursor: string;
 						isDone: boolean;
+						message?: undefined;
 					};
 				};
 				429: {
@@ -561,6 +562,17 @@ export type BonoboHttpApi = {
 						message: string;
 					};
 				};
+				404: {
+					headers: {
+						[x: string]: string;
+					};
+					body: {
+						message: "File unavailable";
+						items?: undefined;
+						cursor?: undefined;
+						isDone?: undefined;
+					};
+				};
 			};
 		};
 	};
@@ -590,6 +602,7 @@ export type BonoboHttpApi = {
 							kind: "private";
 						};
 						content: string;
+						message?: undefined;
 					};
 				};
 				429: {
@@ -641,6 +654,11 @@ export type BonoboHttpApi = {
 					};
 					body: {
 						message: string;
+					} | {
+						message: "File unavailable";
+						path?: undefined;
+						target?: undefined;
+						content?: undefined;
 					};
 				};
 			};

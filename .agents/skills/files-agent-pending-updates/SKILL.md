@@ -5,6 +5,14 @@ description: "Current /files pending changes: private file and folder creates, p
 
 # Content And Structural Proposal States
 
+Cross-workspace rule: only Copy may cross workspace boundaries. Copy current content,
+metadata, and allowed write rules. Leave originals, old versions, and comments at the source.
+Cross-workspace `mv` returns `cross_workspace_move` and suggests `cp` or `cp -R`.
+Never turn this refusal into automatic Copy plus Archive or delete.
+TODO: revisit transferring file versions and comments across workspaces in a future change.
+The boundary and Copy lifecycle are in
+[Files transfer runs](../files-explorer-tree/references/transfer.md#workspace-boundary).
+
 Each `files_pending_updates` doc belongs to one user and one saved or private target. It may contain a content proposal, a structural proposal, or both. Saved Files doors still accept a saved `nodeId` and build the tagged target at their boundary.
 
 Pending updates work for both document shapes: a Markdown file's `rich_text` (ProseMirror) Yjs document and every other editable text file's `plain_text` (`Y.Text`) document. The node's `textKind` decides the current shape. After a restore changes shape, `contentRebaseRootKind` keeps the old branches readable until preparation replaces them (see the `files-editable-text` skill). Both shapes use the same three branches and text merge.
@@ -23,6 +31,20 @@ Structural state uses:
 - `copiedFrom` for copy or replace provenance.
 - `pendingArchive` for delete intent (bash `rm`): accepting archives the node; a folder archives its whole subtree, computed at accept time. Setting it clears `pendingMove` — a delete supersedes a move. Content branches survive on the doc (accept ignores them; discard restores them as a Modified row).
 - `createIntent` for a private file or folder. Missing agent write and copy targets stay private until Save. Removing an owned private create discards that private identity and its approved pending work.
+- `mediaDependencySetId` on copied documents points to sealed, indexed image/video mappings.
+  Each set has one owner and a generation. The mappings pin selected destination targets and versions.
+  Save checks real embeds in the actual accepted text before writing. Each used media target must
+  be saved unchanged or in the same reviewed unit. Group by resolved target, including permanent
+  private-origin links after Save. A new replacement or Archive proposal cannot bypass that group.
+  Removing the embed releases its Save requirement; code and plain links do not require media.
+  Bulk review reads the sealed text selected for Save before joining media items. It keeps stored
+  pins for other branches and checks the final merged text again before writing.
+  If a live merge adds a link to media selected in another unit, Save refuses that document and
+  asks for a fresh review. The whole run's selection is never treated as one atomic unit.
+
+There is no separate source-removal review. Saving a Copy never changes its original.
+Completed proposals need current destination access for human Review and Save, not access to the
+old source chat. New copies use destination read access; replacements keep destination access.
 
 Move-only docs have no `content` object and use `size: 0`. Private creates and proposals with a move or delete may remain when the three content states match.
 
@@ -35,7 +57,7 @@ Main table in `packages/app/convex/schema.ts`:
   - `workspaceId`
   - `userId`
   - `target`: exactly `{ kind: "saved", id: Id<"files_nodes"> }` or `{ kind: "private", id: Id<"files_pending_nodes"> }`
-  - `revision`: advances whenever reviewed content or intent changes; `updatedAt` remains the idle expiry clock
+  - `revision`: advances whenever reviewed content or intent changes; `updatedAt` records the last proposal edit
   - optional `content` object:
     - `base`: exactly one of the `new`, `yjs`, or `asset` variants above.
     - `baseStateId` / `stagedStateId` / `unstagedStateId`, each pointing at one sealed `files_pending_update_yjs_states` doc whose pages hold that branch's full Yjs state. Branch bytes never live on the pending update doc itself.
@@ -54,25 +76,60 @@ Private lifetime and cleanup (`packages/app/convex/files_pending_nodes.ts`):
 - Every private node has one proposal. Its owner, parent, creation generation, and structural revision stay on the node. Its create intent, content, contributors, and idle expiry stay on the proposal.
 - Direct Discard checks the exact proposal ID and revision before any writes. A ready child or another chat's child outside the reviewed set returns `needs_review`. A pending move into the folder also needs review. The direct transaction checks up to 256 private nodes; larger sets use bulk review.
 - Closing the generation hides the approved subtree at once. Each node gets a durable `files_pending_node_cleanup_tasks` doc. Cleanup removes the proposal indexes, retires its states, hands assets to the deletion ledger, and expires its batches. It keeps the node until its batches, states, and discarded children are gone. Node slots release only after node deletion. A 15-minute cron resumes failed cleanup continuations.
-- Expiry keeps an old parent while a live private descendant still needs it. It reschedules the same proposal timestamp without making an edit. Every producer schedules each proposal's four-hour expiry. A tree over the direct 256-node bound waits while those child jobs shrink it; a newer child still keeps its parent alive.
+- Expiry removes private leaves first. Any active child keeps its private parent alive without a
+  whole-tree scan. Cleanup records store the current `expiresAt` and `expiryGeneration`; callbacks
+  require that exact task and generation. Rescheduling expiry does not change the proposal revision.
+- `files_pending_holds` keeps exact proposals alive for active Copy and review jobs. Roles separate
+  source, destination parent, preparing output, ready output, and review. Private identities also
+  pin their creation generation. Holds delay expiry only; they grant no access or write permission.
+  A selected source folder protects its private descendants during discovery. A retry's later
+  manifest pages stay protected until their new holds are installed.
+- Retry pins each completed output's exact proposal ID, private creation generation (or null),
+  and replacement asset (or null). Later edits or renames of that proposal keep its hold.
+  A different proposal or replacement at the same target does not inherit it. Completed retry
+  items keep this pin; an item selected for a fresh attempt clears it.
+- Ready output and retained review work get four hours from producer completion. The producer
+  stores that fixed deadline once. Release pages install it before removing holds and preserve any
+  later edit deadline. Old callbacks cannot shorten it. History retains the producer until release ends.
 - A published parent resolves through its owner-scoped saved receipt; Discard does not remove that saved identity. Daily receipt cleanup keeps the private identity for seven days and while any child, proposal, copy source, state, batch, review item, transfer item or parent, or a Bash shell's cwd still refers to it. It pages past retained identities so they cannot block later cleanup. Removing the unused private identity and receipt never removes the saved file.
 - Every private Save records `files_nodes.publishedFromPrivateNodeId`. Read-only target lookup can use this indexed origin after private cleanup, then checks the saved file's current ACL. Private mutation lookup remains strict. Old chat links therefore survive Save, rename and move without granting access.
+- Copied-folder receipts can carry `copiedWritePolicy` and `copiedPath`. Only Save may use this proof
+  to finish a child under its unchanged copied parent. Check owner, private generation, structural
+  revision, saved origin, frozen path and policy, and current ACL. Normal editing and new-child
+  creation still obey the parent's write policy.
+- A new draft under an archived saved parent has a narrow recovery read. It requires the owner,
+  live membership, and current read access to that saved ancestor. Pending and the private detail
+  view expose Copy/Download, the expiry date, and an `Open archived folder` link. A user who may
+  restore the folder does it there. Save stays blocked, and the toolbar says to restore the folder.
+  Missing, purging, or unreadable ancestry does not become export access. Normal path/search,
+  agent traversal, editing, and media signing do not use this recovery exception.
 - Producer outputs use `files_ingestion.prepare_file`, `finalize_file`, and `abort_file`. Each file is its own commit. The trusted writer accepts at most eight files and 8 MiB per call, including empty files. It uses canonical Files paths such as `/reports/output.bin`. It checks strict paths, access, policies, depth, and node quota before allocating content. Stored finalization repeats the path check and uses bounded suffixes to avoid saved and private occupants.
 - `files_ingestion_receipts` binds one actor, tenant, and request ID to the path, MIME, byte count, SHA-256 digest, and text shape. A 30-minute preparing receipt owns one attempt token and its asset or initial text batch. The same attempt can recover a lost prepare reply. Another attempt gets `in_progress` and no resource IDs. Finalize adopts the content and completes the receipt in one mutation. Completed and aborted receipts stay for 24 hours. Indexed cleanup handles at most eight receipts per pass. Completed receipt expiry never deletes its file.
 - Stored content uploads before finalization. Valid editable text uses the normal initial private batch and sealed state family. It stays Preparing until the text and receipt commit together. The writer chooses its text shape from resolved MIME before creating the draft. Unsupported, invalid, or over-limit text stays as exact stored bytes. Generated Markdown with over-cap frontmatter also stays stored; normal uploads instead convert with their existing frontmatter markers.
 - Generic ingestion checks current user, membership, plan, destination access, policy, and byte holds. Chat doors add Agent mode and current thread access. Browser doors add source and lease checks. These checks run again inside fresh finalization. Completed retries check current file access and return the current target without rerunning a producer gate. Abort skips completed work. It retires only its own unchanged draft and unused parents. New edits or dependent children survive. Asset holds remain until exact-key deletion settles after the last possible PUT.
 - `files_nodes_content.get_file_read_data` resolves the caller's pending view. Stored replacements use their held asset; pending deletes and preparing content are unavailable. It pins the target, asset, MIME, path, proposal ID/revision, and private generation. Old private links follow Save and then use current saved-file access. Ready private downloads require a cleared `unfinalizedExpiresAt`, a held byte reservation, and the exact active proposal. All outputs keep normal four-hour expiry and Save billing.
-- `get_file_pending_target` and pending rows return `requiredParents` in root-first order plus `canAcceptWithParents`. UI shows those folder paths before connected Save and submits their exact proposal IDs/revisions with the file. It never silently selects siblings.
+- `get_file_pending_target` and pending rows return `requiredParents` in root-first order plus `canAcceptWithParents`, and `savedParentId`: the saved folder the pending chain hangs from, `null` at the root. The header breadcrumb builds its saved crumbs from it. UI shows those folder paths before connected Save and submits their exact proposal IDs/revisions with the file. It never silently selects siblings.
 
 Bulk review (`packages/app/convex/files_pending_update_runs.ts`):
 
 - One review lane runs per user/workspace, separate from transfer admission. A different busy request returns the active run and Activity IDs. Preparation uses the same two-worker Workpool component as transfers. Each unit keeps its Workpool ID so Stop and retries cancel queued work after fencing publication.
-- The run stores the reviewed proposal IDs, revisions, and selected content state IDs in pages. Planning joins changes that must save or discard together. Each connected unit commits in one transaction; an unrelated unit can finish on its own.
+- The run stores reviewed proposal IDs, revisions, and selected content state IDs in pages.
+  Planning classifies independent Copy outputs separately from ordinary linked work. Copy has no
+  total selection cap: indexed prerequisites order parents and selected media before dependents.
+  Ordinary linked changes keep bounded atomic units. An unrelated edit does not pull thousands
+  of copied files into one transaction. Each unit commits independently, so Copy Save can finish partly.
+  Bulk Discard still accepts at most 10,000 selected changes.
+- A selection whose proposal changed or disappeared before classification never uses the new intent. It joins the bounded atomic subset, because its reviewed links are unknown. If atomic planning finds a changed item, or an unselected change the subset needs, `block_atomic_plan_page` puts the whole subset into one `needs_review` unit, page by page. The unselected change is only listed in `needsReviewIds`; it never joins the Save. Before the Copy units are planned, every selected Copy that shares a reviewed or current path with the subset (contains it, sits in it, replaces it, or holds a folder the subset moves into) is promoted into that blocked unit, repeating until no new Copy links. Current paths only add links; nothing is planned with a changed intent. Independent Copy units still save. An owner clock change during planning does not refuse the whole run: the seal clock stays pinned, and each unit is checked again before it saves. Known limits: a Copy used only as media by a blocked document still saves alone (safe; the document waits), and cycles, `review_too_large`, the media-page window, and a partly staged normal plan still fail the whole run.
 - Planning and later checks use the same dependency graph. It accounts for private parents, moved saved parents, replaced targets, projected paths, and archive or Discard scope. An unselected affected proposal returns `needs_review`; the worker never adds it to the selection.
 - `files_pending_review_versions` is the owner's pending-change clock. The normal path seals each unit against the run's current clock. An outside edit enables `revalidateRemaining` for the rest of the run. Every later unit then checks its original IDs, revisions, content states, paths, and dependency scope in pages, even after an earlier unit's own commit advances the run clock.
 - Every page and the final seal check the same clock. The final transaction requires that unit's `validatedReviewVersion`. A clock change retries the same unit up to three attempts, then returns `needs_review`. A changed reviewed item or new dependency blocks the unit at once.
 - Private subtree Discard checks the selected descendants in pages, then fences the approved roots in one small transaction. The unchanged unit clock protects that checked set. Activity counts the full unit when the roots close; cleanup continues after Stop. Other final transactions count their reads, writes, bytes, and query ranges and roll back as `review_too_large` before exceeding the supported budget.
 - Before final writes, each connected Save checks the full file-save cost for each pinned payer. Folders, moves, unchanged text, and replaced occupants add no charge. Anonymous debits and signed-in billing jobs commit with the files; failed units publish and bill nothing.
+- Copy media validation checks pages against organization/workspace access versions and the owner's
+  pending version. Seal the exact prepared text, selection, set generation, and proposal revision.
+  Final commit checks those pins again. Atomic units validate every media proof before their first
+  write and carry only an in-memory token tied to that mutation; it cannot be reused in another call.
+- Real planning and preparation progress refresh the idle deadline. Waiting alone does not.
 - Stop fences unfinished workers and retires prepared content. It keeps completed units. Recovery bounds lost planning and preparation attempts; user and workspace purge stop review work before removing proposals. Late replies from expired attempts use the watchdog's same three-attempt limit. Whole-run expiry ends as `timed_out` even when delayed planning arrives before the watchdog.
 - Common Activity history cleanup owns the seven-day review retention window. It drains finished run items and units through the producer's bounded delete helper. Review recovery scans only active work; it has no separate finished-history scan.
 
@@ -82,6 +139,9 @@ Paged pending-state storage (`packages/app/convex/schema.ts`; shared helpers in 
 - `files_pending_update_yjs_state_pages` — the bytes, in non-empty pages of at most `files_MAX_YJS_WIRE_BYTES` (930,000 bytes), contiguous by `pageIndex` from 0. A state holds at most 5 pages, which covers the 4 MiB state cap.
 - `files_pending_update_state_cleanup_tasks` — durable cleanup task for a retired family. A commit re-owns the previous states to a task doc instead of deleting pages inline; a bounded scheduled continuation drains pages, states, then the task.
 - `files_pending_update_operation_batches` — one in-flight upsert or rebase per user and tagged target. It captures the expected proposal ID and revision, or null when no proposal exists. Private targets also capture creation generation and structural revision. Staging, sealing, and adoption refuse changed targets. A batch expires after 30 minutes, and a new create by the same user takes over a batch idle past 2 minutes (`lastActivityAt`, refreshed by page staging, text-input staging, and the seal).
+- Agent text batches also store `agentSource`: the chat, creator, source membership, and captured membership lifetime. Batch reads and final adoption recheck that source and its allowed destination. Bash text/folder creation and `edit_file` carry this source. A finished proposal is independent: human Save creates its own batch and does not need the old chat. Non-agent batches have no `agentSource`; this is a caller distinction, not an old-schema fallback.
+- Agent archive proposals and Added-draft removal carry the same `agentSource` into their writing transaction. Removal refuses an ended source membership, including after re-invite. This check does not attach a lasting source-access rule to finished proposals.
+- Agent preparation and proposal readback carry `agentSource` too. A rebase creates its own source-bound batch, so revocation during preparation cannot update a home proposal. Human Review and Save keep their own destination checks and do not depend on the source chat.
 - `files_pending_update_text_inputs` — one staged text value (role `staged` or `unstaged`) per batch, with its batch's tagged target, so no registered call carries two large values at once.
 - `files_yjs_trusted_update_stages` — one server-built Yjs update staged ahead of its commit (pending accept, public fill, snapshot restore), so the commit call carries only ids and one bounded text. 30-minute TTL.
 
@@ -321,7 +381,7 @@ Important behavior:
 `packages/app/src/components/files/file-editor/file-editor-sidebar/file-editor-sidebar-pending.tsx` owns:
 
 - the Pending changes tab content
-- the source selector: `All changes`, `You`, and every persisted agent chat referenced by a pending doc. `You` means docs with no `threadIds`; it stays visible with a zero count. Thread options use the membership-scoped `ai_chat.thread_get` query, so archived contributing chats remain selectable
+- the source selector: `All changes`, `Your edits`, and every persisted agent chat referenced by a pending doc. `Your edits` means docs with no `threadIds`; zero-count sources are hidden. Thread options and stored-file contributor links use `files_pending_updates.get_pending_source_summary`. It checks the destination membership, chat creator, and current source membership plus `content.read`. It returns only the title, dates, archive flag, and real source organization/workspace route. Archived chats remain readable. An unavailable source shows no title or route, but stays selectable while it contributes to loaded proposals. Human review needs only destination access, not the old source chat
 - source filtering after the full pending-row model is built. A doc with multiple `threadIds` appears with its same combined pending content under every linked chat, and source counts can overlap. The UI never tries to split one doc's changes by chat
 - bulk Accept/Discard over only the rows shown by the selected source. A source-scoped accept that would also settle or invalidate a hidden row asks the user to switch to `All changes`; this covers cross-source move chains/cycles, folder deletes with hidden descendants, replacements, and archive-source copies. If a selected chat stops contributing, the selector returns to `All changes`; a zero-row source disables both bulk actions
 - content-only, move-only, copy, content-plus-move, and delete row rendering; the "Deleted" caption wins over every other caption
@@ -350,9 +410,10 @@ cache or chat result.
 
 `packages/app/src/components/files/file-editor/file-editor-sidebar/file-editor-sidebar-pending-strip.tsx` owns:
 
-- the pending-changes strip above the Agent-tab chat composer (rendered through `AiChatThread`'s `composerTopSlot`): a one-line clickable row, hidden at 0, never dismissable. With a `threadId` prop (the agent panel passes the selected persisted thread id) it counts only the docs whose `threadIds` contributor set includes that chat and labels them "from this chat"; without the prop it shows the user's workspace-wide count
+- the pending-changes strip above the Agent-tab chat composer (rendered through `AiChatThread`'s `composerTopSlot`): one row per destination, hidden at 0, never dismissable. With a persisted `threadId`, `get_chat_pending_updates_summary` counts this creator's contributing proposals separately in the current workspace and their own personal/home. It resolves home from the user's saved default pointers and collapses matching roots. Each root scans at most 500 proposals plus one extra doc to detect overflow; incomplete counts show `+`. It checks current chat read access and each destination's access. New and optimistic chats skip the query. Without the prop, the strip keeps the user's current-workspace count
 - the amber count badge inside the "Pending changes" sidebar tab label, hidden at 0 (always the workspace-wide count)
-- both switch the sidebar to the Pending changes tab by writing `app_state::files_last_tab` (the strip on click; the badge is display-only)
+- chat rows link to the destination's existing Files route and select Pending changes through `app_state::files_last_tab`. The workspace-wide strip only switches the current sidebar tab. The badge is display-only. No combined Files view or cross-workspace bulk Save is added
+- below a 320px chat-container width, each strip wraps its label above the count and Review action so the destination stays readable. Wider strips keep the compact 42px row
 - the shared `FILE_EDITOR_SIDEBAR_TAB_ID_PENDING` constant (moved here so the sidebar tabs, the strip, and the agent panel import it without a cycle)
 
 # Write Policies
@@ -424,8 +485,9 @@ Only destination, occupant, and immediate-parent checks apply. The full contract
 - `Accept all + save` should clear the pending update doc when no unresolved changes remain.
 - `Sync` should preserve local intent while rebasing on newer live file state.
 - Verify the Pending changes tab renders and sorts content-only, move-only, copy, content-plus-move, and delete rows.
-- Verify the source selector shows All, threadless You, archived chats, and contributing chats newest first. A shared pending doc should appear as the same complete row under every linked chat.
-- Verify source-scoped bulk actions touch only shown rows, a selected chat falls back to All after its last row settles, and You stays available at zero with disabled bulk actions.
+- Verify the source selector shows All changes, threadless Your edits, archived chats, and contributing chats newest first. A shared pending doc should appear as the same complete row under every linked chat.
+- Verify a home proposal links to its chat's real team route. Another creator and an organization owner receive no chat details. Leave or source deletion hides the source title and link without blocking destination review. Verify current/home strip counts, separate Pending links, same-home deduplication, and `+` for capped counts.
+- Verify source-scoped bulk actions touch only shown rows. Empty sources, including Your edits, disappear; a selected source falls back to All changes after its last row settles.
 - Verify source-scoped accept asks for All instead of settling hidden move-chain/cycle members, hidden folder descendants, hidden replacement occupants, or hidden archive-source rows.
 - Verify editable Markdown delete rows start fetching committed content before expansion and render it as fully removed.
 - Verify binary and folder delete rows have no disclosure control and do not fetch committed Markdown.

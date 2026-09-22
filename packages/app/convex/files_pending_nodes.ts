@@ -17,6 +17,7 @@ import {
 	files_db_schedule_pending_update_cleanup,
 } from "../server/files.ts";
 import { files_transfer_db_fence_private_target } from "./files_transfer.ts";
+import { access_control_db_authorize_membership } from "./access_control.ts";
 
 // Leave room for content, permission, and review reads in the same transaction.
 const MAX_PRIVATE_ANCESTORS = 256;
@@ -97,6 +98,75 @@ export async function files_pending_nodes_db_resolve_saved_parent(
 }
 
 /**
+ * Save-only exception for a copied parent's unchanged lock. It grants no editing access.
+ */
+export async function files_pending_nodes_db_can_save_to_copied_parent(
+	ctx: QueryCtx | MutationCtx,
+	args: {
+		membership: Doc<"organizations_workspaces_users">;
+		node: Doc<"files_pending_nodes">;
+		savedParent: Doc<"files_nodes">;
+	},
+) {
+	const { membership, node, savedParent } = args;
+	if (
+		!membership.active ||
+		node.state !== "active" ||
+		node.parent.kind !== "private" ||
+		node.userId !== membership.userId ||
+		node.organizationId !== membership.organizationId ||
+		node.workspaceId !== membership.workspaceId ||
+		savedParent.organizationId !== node.organizationId ||
+		savedParent.workspaceId !== node.workspaceId ||
+		savedParent.kind !== "folder" ||
+		savedParent.archiveOperationId !== null
+	)
+		return false;
+	const parent = await ctx.db.get("files_pending_nodes", node.parent.id);
+	if (
+		!parent ||
+		parent.state !== "published" ||
+		parent.kind !== "folder" ||
+		parent.userId !== node.userId ||
+		parent.organizationId !== node.organizationId ||
+		parent.workspaceId !== node.workspaceId ||
+		parent.name !== savedParent.name ||
+		savedParent.publishedFromPrivateNodeId !== parent._id
+	)
+		return false;
+	const receipt = await ctx.db
+		.query("files_pending_node_publish_receipts")
+		.withIndex("by_privateNode", (q) => q.eq("privateNodeId", parent._id))
+		.unique();
+	if (
+		!receipt ||
+		receipt.userId !== node.userId ||
+		receipt.organizationId !== node.organizationId ||
+		receipt.workspaceId !== node.workspaceId ||
+		receipt.savedNodeId !== savedParent._id ||
+		receipt.creationGeneration + 1 !== parent.creationGeneration ||
+		receipt.structuralRevision !== parent.structuralRevision ||
+		receipt.copiedWritePolicy == null ||
+		receipt.copiedPath !== savedParent.path ||
+		JSON.stringify(receipt.copiedWritePolicy) !== JSON.stringify(savedParent.writePolicy)
+	)
+		return false;
+	const originalParent = await files_pending_nodes_db_resolve_saved_parent(ctx, {
+		...node,
+		parent: parent.parent,
+	});
+	if (originalParent._nay || originalParent._yay.parentId !== savedParent.parentId) return false;
+	return !(
+		await access_control_db_authorize_membership(ctx, {
+			userAuth: { id: node.userId },
+			membership,
+			fileNode: savedParent,
+			permission: "content.write",
+		})
+	)._nay;
+}
+
+/**
  * Resolve an owner's active private chain to its saved parent or the workspace root.
  * A published parent is followed through its receipt. A discarded parent hides its descendants.
  * Callers still check membership and the saved parent's current access and write policy.
@@ -108,6 +178,8 @@ export async function files_pending_nodes_db_get_ancestry(
 		workspaceId: Id<"organizations_workspaces">;
 		userId: Id<"users">;
 		privateNodeId: Id<"files_pending_nodes">;
+		// Owner recovery reads only. Normal path and write callers must leave this unset.
+		allowArchivedParent?: true;
 	},
 ) {
 	const ancestors: Doc<"files_pending_nodes">[] = [];
@@ -156,7 +228,7 @@ export async function files_pending_nodes_db_get_ancestry(
 			savedParent.organizationId !== args.organizationId ||
 			savedParent.workspaceId !== args.workspaceId ||
 			savedParent.kind !== "folder" ||
-			savedParent.archiveOperationId !== null)
+			(savedParent.archiveOperationId !== null && !args.allowArchivedParent))
 	) {
 		return Result({ _nay: { name: "target_changed", message: "This draft's destination is no longer available" } });
 	}
@@ -277,6 +349,14 @@ export async function files_pending_nodes_db_publish(
 	}
 
 	const now = Date.now();
+	const copiedWritePolicy = node.kind === "folder" ? pendingUpdate.copiedFrom?.sourceWritePolicy : undefined;
+	let copiedPath: string | undefined;
+	if (copiedWritePolicy !== undefined) {
+		const saved = await ctx.db.get("files_nodes", args.savedNodeId);
+		if (!saved || JSON.stringify(saved.writePolicy) !== JSON.stringify(copiedWritePolicy))
+			throw should_never_happen("Copied folder policy changed during publication", { privateNodeId: node._id });
+		copiedPath = saved.path;
+	}
 	// The receipt below is deleted after a week. Store the same link on the saved node, so an old
 	// private link still resolves after that.
 	await ctx.db.patch("files_nodes", args.savedNodeId, { publishedFromPrivateNodeId: node._id });
@@ -289,6 +369,8 @@ export async function files_pending_nodes_db_publish(
 		structuralRevision: node.structuralRevision,
 		proposalRevision: pendingUpdate.revision,
 		savedNodeId: args.savedNodeId,
+		copiedWritePolicy,
+		copiedPath,
 		createdAt: now,
 	});
 	await ctx.db.patch("files_pending_nodes", node._id, {
@@ -410,7 +492,13 @@ export async function files_pending_nodes_db_discard(
 					_nay: { name: "needs_review", message: "Review the moves into this folder before discarding it" },
 				});
 			}
-			keepUntil = Math.max(keepUntil, now + 60_000, dependent.updatedAt + DRAFT_IDLE_EXPIRY_MS);
+			await files_db_schedule_pending_update_cleanup(ctx, {
+				pendingUpdateId: rootProposal._id,
+				expectedUpdatedAt: rootProposal.updatedAt,
+				expiresAt: keepUntil,
+				delayMs: 60_000,
+			});
+			return Result({ _yay: null });
 		}
 		const children = await ctx.db
 			.query("files_pending_nodes")
@@ -423,15 +511,18 @@ export async function files_pending_nodes_db_discard(
 					.eq("parent.id", node._id)
 					.eq("state", "active"),
 			)
-			.take(MAX_DISCARD_NODES - nodes.length + 1);
+			.take(args.reason === "expired" ? 1 : MAX_DISCARD_NODES - nodes.length + 1);
+		if (args.reason === "expired" && children.length > 0) {
+			// Children expire through their own callbacks. One live child protects every ancestor.
+			await files_db_schedule_pending_update_cleanup(ctx, {
+				pendingUpdateId: rootProposal._id,
+				expectedUpdatedAt: rootProposal.updatedAt,
+				expiresAt: keepUntil,
+				delayMs: 60_000,
+			});
+			return Result({ _yay: null });
+		}
 		if (nodes.length + children.length > MAX_DISCARD_NODES) {
-			if (args.reason === "expired") {
-				await files_db_schedule_pending_update_cleanup(ctx, {
-					pendingUpdateId: rootProposal._id,
-					expectedUpdatedAt: rootProposal.updatedAt,
-					delayMs: 60_000,
-				});
-			}
 			return Result({ _nay: { name: "needs_review", message: "Use bulk Discard to review this larger folder" } });
 		}
 		nodes.push(...children);
@@ -440,7 +531,7 @@ export async function files_pending_nodes_db_discard(
 		await files_db_schedule_pending_update_cleanup(ctx, {
 			pendingUpdateId: rootProposal._id,
 			expectedUpdatedAt: rootProposal.updatedAt,
-			delayMs: keepUntil - now,
+			expiresAt: keepUntil,
 		});
 		return Result({ _yay: null });
 	}
@@ -625,6 +716,11 @@ export const cleanup_published_nodes = internalMutation({
 					.withIndex("by_copiedFrom_target", (q) =>
 						q.eq("copiedFrom.target.kind", "private").eq("copiedFrom.target.id", node._id),
 					)
+					.first(),
+				// Retired sets still need the alias until their dependencies are drained.
+				ctx.db
+					.query("files_media_dependencies")
+					.withIndex("by_target", (q) => q.eq("dependency.target.kind", "private").eq("dependency.target.id", node._id))
 					.first(),
 				ctx.db
 					.query("files_pending_update_operation_batches")

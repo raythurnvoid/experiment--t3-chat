@@ -5,7 +5,6 @@ import type { files_visible_internal_list_Result } from "../convex/files_visible
 import { Result } from "common/errors-as-values-utils.ts";
 import {
 	bash_APP_MOUNT_PATH,
-	bash_db_files_path_to_current_workspace_path,
 	bash_clamp_listing_page_limit,
 	bash_create_glob_syntax_unsupported_message,
 	bash_cursor_id_create,
@@ -236,7 +235,6 @@ function build_continuation(args: {
 // The explicit `Command` return type breaks a type-inference cycle: the handler's inferred
 // type would otherwise flow through internal.* into the bash action and back into this command.
 export function bash_ls_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFilesRoots): Command {
-	const currentWorkspacePath = dbFilesRoots.app.currentWorkspacePath;
 	return defineCommand("ls", async (args, commandCtx) => {
 		const parsed = parse_args(args);
 		if (parsed._nay) {
@@ -307,6 +305,7 @@ export function bash_ls_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 		// inside a mount there is no workspace-wide view, so it falls to the per-target mount listing below.
 		if (parsed._yay.time && parsed._yay.paths.length === 0 && targets[0]?.pathResolution.kind === "app") {
 			const result = (await ctx.runQuery(internal.files_visible.internal_list, {
+				agentSource: targets[0].pathResolution.ctxData.agentSource,
 				organizationId: targets[0].pathResolution.ctxData.organizationId,
 				workspaceId: targets[0].pathResolution.ctxData.workspaceId,
 				visibilityUserId: targets[0].pathResolution.ctxData.userId,
@@ -322,7 +321,7 @@ export function bash_ls_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 				return { stdout: "", stderr: `ls: ${result._nay.message}\n`, exitCode: bash_COMMAND_EXIT_FAILURE };
 			const lines = result._yay.items.map(
 				(item) =>
-					`${new Date(item.updatedAt).toISOString()}\t${bash_db_files_path_to_current_workspace_path(currentWorkspacePath, item.path)}${item.kind === "folder" ? "/" : ""}`,
+					`${new Date(item.updatedAt).toISOString()}\t${targets[0].pathResolution.renderShellPath(item.path)}${item.kind === "folder" ? "/" : ""}`,
 			);
 			if (!result._yay.isDone && result._yay.continueCursor !== null) {
 				lines.push(
@@ -455,6 +454,7 @@ export function bash_ls_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 				);
 			} else {
 				const result = (await ctx.runQuery(internal.files_visible.internal_list, {
+					agentSource: target.pathResolution.ctxData.agentSource,
 					organizationId: target.pathResolution.ctxData.organizationId,
 					workspaceId: target.pathResolution.ctxData.workspaceId,
 					visibilityUserId: target.pathResolution.ctxData.userId,

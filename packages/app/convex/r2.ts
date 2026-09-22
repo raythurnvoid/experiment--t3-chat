@@ -40,6 +40,7 @@ import {
 	organizations_is_reserved_workspace_id,
 } from "../shared/organizations.ts";
 import { users_SYSTEM_AUTHOR } from "../shared/users.ts";
+import { files_media_parse_src } from "../shared/files-media.ts";
 import { organizations_db_get_membership } from "./organizations.ts";
 import {
 	access_control_db_authorize_membership,
@@ -67,9 +68,11 @@ import {
 	files_metadata_MAX_FRONTMATTER_INDEX_DOCUMENTS,
 	files_metadata_preflight_frontmatter,
 } from "../shared/files-metadata.ts";
-import app_convex_schema from "./schema.ts";
+import app_convex_schema, { files_pending_target_validator } from "./schema.ts";
 import { db_get_file_content_materialization_db_state, files_nodes_db_hard_delete_node } from "./files_nodes.ts";
 import { db_insert_file_text_content } from "./files_nodes_content.ts";
+import { files_pending_nodes_db_resolve_read_target } from "./files_pending_nodes.ts";
+import { files_visible_db_create_reader } from "./files_visible.ts";
 
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
 // Does NOT work for http actions (see http.ts). Do not keep request state in module-level values.
@@ -613,6 +616,118 @@ export const get_asset_by_file_node_id = query({
 		}
 
 		return asset;
+	},
+});
+
+export const get_media_by_reference = query({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		src: v.string(),
+	},
+	returns: v.union(
+		v.object({
+			target: files_pending_target_validator,
+			contentType: v.string(),
+			asset: doc(app_convex_schema, "files_r2_assets"),
+			privateVersion: v.union(
+				v.object({
+					pendingUpdateId: v.id("files_pending_updates"),
+					reviewedRevision: v.number(),
+					creationGeneration: v.number(),
+				}),
+				v.null(),
+			),
+		}),
+		v.null(),
+	),
+	handler: async (ctx, args) => {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) throw convex_error({ message: "Unauthenticated" });
+		const membership = await organizations_db_get_membership(ctx, {
+			userId: userAuth.id,
+			membershipId: args.membershipId,
+		});
+		if (!membership) return null;
+
+		const parsed = files_media_parse_src(args.src);
+		const fileId = parsed.kind === "file" ? ctx.db.normalizeId("files_nodes", parsed.fileNodeId) : null;
+		const privateId =
+			parsed.kind === "private" ? ctx.db.normalizeId("files_pending_nodes", parsed.privateNodeId) : null;
+		if (!fileId && !privateId) return null;
+		const target = await files_pending_nodes_db_resolve_read_target(ctx, {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			target: fileId ? { kind: "saved", id: fileId } : { kind: "private", id: privateId! },
+		});
+		if (!target) return null;
+
+		if (target.kind === "saved") {
+			const node = await ctx.db.get("files_nodes", target.id);
+			if (
+				!node ||
+				node.organizationId !== membership.organizationId ||
+				node.workspaceId !== membership.workspaceId ||
+				node.archiveOperationId !== null ||
+				!node.assetId ||
+				!node.contentType
+			)
+				return null;
+			const authorized = await access_control_db_authorize_membership(ctx, {
+				userAuth,
+				membership,
+				permission: "content.read",
+				fileNode: node,
+			});
+			if (authorized._nay) return null;
+			const asset = await ctx.db.get("files_r2_assets", node.assetId);
+			if (!asset || asset.organizationId !== node.organizationId || asset.workspaceId !== node.workspaceId) return null;
+			return { target, contentType: node.contentType, asset, privateVersion: null };
+		}
+
+		// Resolve the owner's private tree, not a team owner's saved-file shortcut.
+		const reader = await files_visible_db_create_reader(ctx, {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			userId: userAuth.id,
+		});
+		const entry = await reader.resolveTarget(target);
+		if (!entry || entry.kind !== "private" || entry.node.kind !== "file") return null;
+		const pending = entry.pendingUpdate;
+		const intent = pending.createIntent;
+		if (pending.preparation || intent?.kind !== "stored") return null;
+		const asset = await ctx.db.get("files_r2_assets", intent.assetId);
+		const reservation = await ctx.db
+			.query("files_private_storage_reservations")
+			.withIndex("by_resource", (q) => q.eq("resource.kind", "asset").eq("resource.id", intent.assetId))
+			.first();
+		if (
+			!asset?.r2Key ||
+			asset.organizationId !== membership.organizationId ||
+			asset.workspaceId !== membership.workspaceId ||
+			asset.createdBy !== userAuth.id ||
+			asset.uploadRetiredAt !== undefined ||
+			asset.unfinalizedExpiresAt !== undefined ||
+			asset.size !== intent.size ||
+			!reservation ||
+			reservation.organizationId !== membership.organizationId ||
+			reservation.workspaceId !== membership.workspaceId ||
+			reservation.userId !== userAuth.id ||
+			reservation.settlement.kind !== "held" ||
+			reservation.byteCount !== intent.size ||
+			reservation.resource.kind !== "asset" ||
+			reservation.resource.r2Key !== asset.r2Key
+		)
+			return null;
+		return {
+			target,
+			contentType: intent.contentType,
+			asset,
+			privateVersion: {
+				pendingUpdateId: pending._id,
+				reviewedRevision: pending.revision,
+				creationGeneration: entry.node.creationGeneration,
+			},
+		};
 	},
 });
 

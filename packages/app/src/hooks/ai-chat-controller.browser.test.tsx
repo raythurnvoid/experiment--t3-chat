@@ -21,6 +21,7 @@ const hookMocks = vi.hoisted(() => ({
 		clientGeneratedMessageId?: string | null;
 		content: ai_chat_UiMessage;
 	}>,
+	messagesDenied: false,
 	mutation: vi.fn((): Promise<{ _yay: { threadId: string } }> => Promise.resolve({ _yay: { threadId: "thread_new" } })),
 	// One scripted response per chat request, shifted in order. A test that scripts two responses
 	// is asserting that the app made two requests.
@@ -45,7 +46,8 @@ vi.mock("convex/react", async (importOriginal) => {
 			};
 		},
 		useMutation: () => hookMocks.mutation,
-		useQuery: () => ({ messages: hookMocks.threadMessages }),
+		useQuery: (_query: unknown, args: unknown) =>
+			args !== "skip" && hookMocks.messagesDenied ? null : { messages: hookMocks.threadMessages },
 	};
 });
 
@@ -62,6 +64,7 @@ vi.mock("@/lib/app-tenant-context.tsx", () => ({
 }));
 
 import { AiChatController, type AiChatControllerStorageKey } from "./ai-chat-controller.tsx";
+import { AppAuthProvider } from "@/components/app-auth.tsx";
 
 /**
  * Build the SSE body the AI SDK transport expects: one `data:` line per UI message chunk,
@@ -177,14 +180,18 @@ function RuntimeStreamProbe() {
 	);
 }
 
-function renderRuntime() {
+function RuntimeSurface() {
 	const storageKey: AiChatControllerStorageKey = `app_state::ai_chat_last_open::scope::${hookMocks.tenant.membershipId}`;
 
-	return render(
+	return (
 		<AiChatController key={storageKey} storageKey={storageKey}>
 			<RuntimeStreamProbe />
-		</AiChatController>,
+		</AiChatController>
 	);
+}
+
+function renderRuntime() {
+	return render(<RuntimeSurface />);
 }
 
 describe("AiChatController streaming against the real AI SDK", () => {
@@ -192,6 +199,7 @@ describe("AiChatController streaming against the real AI SDK", () => {
 		hookMocks.tenant.membershipId = `membership_${crypto.randomUUID()}`;
 		hookMocks.threads = [];
 		hookMocks.threadMessages = [];
+		hookMocks.messagesDenied = false;
 		hookMocks.responses = [];
 		hookMocks.requestBodies = [];
 		hookMocks.mutation.mockReset().mockResolvedValue({ _yay: { threadId: "thread_new" } });
@@ -378,6 +386,52 @@ describe("AiChatController streaming against the real AI SDK", () => {
 		expect(screen.getByTestId("error").textContent).toBe("null");
 		// No request was scripted, so a Stop that reached the transport would have thrown.
 		expect(hookMocks.requestBodies).toHaveLength(0);
+	});
+
+	test("drops private streaming bytes and queued sends when the thread query refuses access", async () => {
+		const live = openSseResponse();
+		hookMocks.responses.push(() => live.response);
+		const view = renderRuntime();
+		await userEvent.click(screen.getByRole("button", { name: "select persisted" }));
+		await userEvent.click(screen.getByRole("button", { name: "send" }));
+		live.write({ type: "start" });
+		live.write({ type: "text-start", id: "private_text" });
+		live.write({ type: "text-delta", id: "private_text", delta: "Private live reply" });
+		await waitFor(() => expect(screen.getByTestId("assistant-text").textContent).toBe("Private live reply"));
+		await userEvent.click(screen.getByRole("button", { name: "queue" }));
+		expect(screen.getByTestId("queued").textContent).toBe("1");
+		const chat = AiChatController.useStore.actions.getSession("thread_persisted")!.chat!;
+
+		hookMocks.messagesDenied = true;
+		hookMocks.mutation.mockClear();
+		view.rerender(<RuntimeSurface />);
+		await waitFor(() => expect(screen.getByTestId("chat-id").textContent).toBe("null"));
+		expect(screen.getByTestId("assistant-text").textContent).toBe("");
+		expect(screen.getByTestId("queued").textContent).toBe("0");
+		await waitFor(() => expect(chat.status).toBe("ready"));
+		expect(chat.messages).toEqual([]);
+		expect(hookMocks.mutation).not.toHaveBeenCalled();
+		expect(hookMocks.requestBodies).toHaveLength(1);
+		expect(AiChatController.useStore.actions.getSession("thread_persisted")).toBeNull();
+		expect(AiChatController.useStore.getState().messageById.size).toBe(0);
+	});
+
+	test("does not send private messages when access is refused during token loading", async () => {
+		let resolveToken!: (value: null) => void;
+		vi.spyOn(AppAuthProvider, "getToken").mockReturnValueOnce(new Promise((resolve) => {
+			resolveToken = resolve;
+		}));
+		const view = renderRuntime();
+		await userEvent.click(screen.getByRole("button", { name: "select persisted" }));
+		await userEvent.click(screen.getByRole("button", { name: "send" }));
+		const chat = AiChatController.useStore.actions.getSession("thread_persisted")!.chat!;
+		hookMocks.messagesDenied = true;
+		view.rerender(<RuntimeSurface />);
+		resolveToken(null);
+		await waitFor(() => expect(chat.status).not.toBe("submitted"));
+		expect(hookMocks.requestBodies).toHaveLength(0);
+		expect(screen.getByTestId("chat-id").textContent).toBe("null");
+		expect(AiChatController.useStore.actions.getSession("thread_persisted")).toBeNull();
 	});
 
 	test("fails the request when the finish callback throws", async () => {

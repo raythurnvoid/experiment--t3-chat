@@ -31,6 +31,7 @@ import {
 	files_nodes_db_resolve_parent_restricted_scope,
 } from "./files_nodes.ts";
 import { organizations_db_get_membership } from "./organizations.ts";
+import { files_media_validation_db_advance_version } from "./files_media_validation.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import app_convex_schema from "./schema.ts";
 import { v_result } from "../server/convex-utils.ts";
@@ -209,12 +210,20 @@ async function db_detach_file_access_binding(ctx: MutationCtx, nodeId: Id<"files
 					.eq("resourceId", String(nodeId)),
 			)
 			.take(MAX_FILE_SHARE_GRANT_DOCS);
+		let changed = false;
 		for (const grant of grants) {
 			if (grant.externalPluginMembershipLifetime !== undefined) {
 				await ctx.db.patch("access_control_permission_grants", grant._id, {
 					externalPluginMembershipLifetime: undefined,
 				});
+				changed = true;
 			}
+		}
+		if (changed) {
+			await files_media_validation_db_advance_version(ctx, {
+				organizationId: externalBinding.organizationId,
+				workspaceId: externalBinding.workspaceId,
+			});
 		}
 	}
 }
@@ -397,6 +406,12 @@ async function db_set_principal_level(
 			await ctx.db.delete("access_control_permission_grants", existing._id);
 			changed = true;
 		}
+	}
+	if (changed) {
+		await files_media_validation_db_advance_version(ctx, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+		});
 	}
 	return changed;
 }
@@ -1050,6 +1065,11 @@ export const restrict_node = mutation({
 		const now = Date.now();
 		await db_detach_file_access_binding(ctx, node._id);
 		await ctx.db.patch("files_nodes", node._id, { restrictedScopeNodeId: node._id });
+		// The root changes even when it has no descendants to cascade.
+		await files_media_validation_db_advance_version(ctx, {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+		});
 		await files_nodes_db_cascade_restricted_scope(ctx, {
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
@@ -1119,6 +1139,10 @@ export const unrestrict_node = mutation({
 
 		await db_detach_file_access_binding(ctx, node._id);
 		await ctx.db.patch("files_nodes", node._id, { restrictedScopeNodeId: parentScopeNodeId });
+		await files_media_validation_db_advance_version(ctx, {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+		});
 		await files_nodes_db_cascade_restricted_scope(ctx, {
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,

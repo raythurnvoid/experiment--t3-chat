@@ -290,6 +290,16 @@ Backend rules, limits, billing, cleanup, and Activity privacy are in
 - File rows do not show child-creation actions.
 - Default generated names are sibling-aware: `new-file.md`, `new-file-1.md`, `new-file-2.md`, and the matching `new-folder`, `new-folder-1`, `new-folder-2` sequence.
 - File and folder create support path-like names: missing parent folders are created first, then the final file/folder is created at that path.
+- Only an active folder takes new children. Every create door with a parent id answers `Not found`
+  when the parent is a file or an archived folder: `create_folder_node`, `create_text_node` (its
+  preflight refuses before any R2 write), `create_upload_node(s)`, and the shared
+  `files_nodes_db_create_node_recursively_at_path` that the copy and publish paths use. Paste
+  (`files_transfer.start`) answers `Destination changed`, moves answer `Not found`, and a draft whose
+  saved parent is archived cannot be saved. A live child under an archived parent would stay hidden
+  until the folder is restored.
+- The folder view of an archived folder (reached from the draft recovery link `Open archived folder`)
+  shows `This folder is archived. Restore it before adding items.` and disables New file, New
+  folder, Paste, and Create a README.md. Its archived children are not listed in the folder table.
 - File create/rename input canonicalizes path segments in the frontend. Backend recursive creation trusts callers to pass a non-empty normalized path; do not claim it returns a normal empty-path validation result.
 - Rename input filters draft typing/paste/composition through shared live-name normalization: files and folders allow lowercase letters, digits, `/`, `.`, `-`, `_`; adjacent separators are blocked while typing, except a leading dot can begin `.agents`. Special file-name casing remains submit-time only.
 - File and folder create/rename reject double-dot names; file names with a non-empty basename and a trailing dot are treated as missing the extension, while invalid extension text such as separators inside the final extension is rejected.

@@ -6,6 +6,7 @@ import { access_control_changes_db_record } from "./access_control_changes.ts";
 import { activities_db_delete, activities_db_require_by_source_id } from "./activities_db.ts";
 import { ai_chat_files_db_delete_job_batch, ai_chat_files_db_request_job_stop } from "./ai_chat_files.ts";
 import { organizations_membership_lifetimes_db_record } from "./organizations_membership_lifetimes.ts";
+import { files_media_validation_db_advance_version } from "./files_media_validation.ts";
 import {
 	internalAction,
 	internalMutation,
@@ -288,6 +289,58 @@ async function db_drain_private_node_identities_batch(
 }
 
 /**
+ * Delete leftover proposal holds and media dependency docs in one small batch.
+ * Call it only after the producers and proposals are gone. These docs own no file bytes.
+ */
+async function db_drain_pending_references_batch(
+	ctx: MutationCtx,
+	args: (
+		| { userId: Id<"users"> }
+		| { organizationId: Id<"organizations">; workspaceId: Id<"organizations_workspaces"> }
+	) & { batchSize: number },
+) {
+	const holds =
+		"userId" in args
+			? await ctx.db
+					.query("files_pending_holds")
+					.withIndex("by_user", (q) => q.eq("userId", args.userId))
+					.take(args.batchSize)
+			: await ctx.db
+					.query("files_pending_holds")
+					.withIndex("by_organization_workspace", (q) =>
+						q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId),
+					)
+					.take(args.batchSize);
+	if (holds.length > 0) {
+		for (const hold of holds) await ctx.db.delete("files_pending_holds", hold._id);
+		return holds.length;
+	}
+	const set =
+		"userId" in args
+			? await ctx.db
+					.query("files_media_dependency_sets")
+					.withIndex("by_user", (q) => q.eq("userId", args.userId))
+					.first()
+			: await ctx.db
+					.query("files_media_dependency_sets")
+					.withIndex("by_organization_workspace", (q) =>
+						q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId),
+					)
+					.first();
+	if (!set) return 0;
+	const rows = await ctx.db
+		.query("files_media_dependencies")
+		.withIndex("by_set_order", (q) => q.eq("setId", set._id))
+		.take(Math.min(args.batchSize, 50));
+	if (rows.length > 0) {
+		for (const row of rows) await ctx.db.delete("files_media_dependencies", row._id);
+		return rows.length;
+	}
+	await ctx.db.delete("files_media_dependency_sets", set._id);
+	return 1;
+}
+
+/**
  * Deletes one limited set of workspace-owned content docs.
  *
  * Queue processors call this repeatedly. Each branch deletes one class of docs
@@ -304,6 +357,7 @@ async function db_purge_organization_workspace_content_batch(
 	const workspace = await ctx.db.get("organizations_workspaces", workspaceId);
 	if (workspace?.organizationId === organizationId && workspace.pluginDataPurgeStartedAt === undefined) {
 		await ctx.db.patch("organizations_workspaces", workspace._id, { pluginDataPurgeStartedAt: Date.now() });
+		await files_media_validation_db_advance_version(ctx, { organizationId, workspaceId });
 		await access_control_changes_db_record(ctx, [
 			{
 				scope: { kind: "workspace", organizationId, workspaceId },
@@ -312,18 +366,27 @@ async function db_purge_organization_workspace_content_batch(
 		]);
 	}
 
-	// Stop Paste workers and hand their staged assets to deletion jobs before deleting other file docs.
-	const transferRun = await ctx.db
-		.query("files_transfer_runs")
-		.withIndex("by_organization_workspace", (q) =>
-			q.eq("organizationId", organizationId).eq("workspaceId", workspaceId),
-		)
-		.first();
+	// Stop runs for either file workspace or the chat workspace before deleting tenant files.
+	// Run cleanup owns staged work and history, not completed output in a surviving workspace.
+	const transferRun =
+		(await ctx.db
+			.query("files_transfer_runs")
+			.withIndex("by_organization_workspace", (q) =>
+				q.eq("organizationId", organizationId).eq("workspaceId", workspaceId),
+			)
+			.first()) ??
+		(await ctx.db
+			.query("files_transfer_runs")
+			.withIndex("by_sourceScope_workspace", (q) => q.eq("sourceScope.workspaceId", workspaceId))
+			.first()) ??
+		(await ctx.db
+			.query("files_transfer_runs")
+			.withIndex("by_destinationScope_workspace", (q) => q.eq("destinationScope.workspaceId", workspaceId))
+			.first());
 	if (transferRun) {
 		const purged = await files_transfer_db_delete_run_batch(ctx, { runId: transferRun._id, batchSize });
 		return { done: false, deletedCount: purged.deletedCount };
 	}
-
 	const reviewRun = await ctx.db
 		.query("files_pending_update_runs")
 		.withIndex("by_organization_workspace", (q) =>
@@ -611,6 +674,17 @@ async function db_purge_organization_workspace_content_batch(
 		)
 		.take(batchSize);
 	if (aiChatThreads.length > 0) {
+		// Budgets belong to the source chat, even when one grant reads personal/home.
+		for (const thread of aiChatThreads) {
+			const budgets = await ctx.db
+				.query("ai_chat_code_read_budgets")
+				.withIndex("by_thread", (q) => q.eq("threadId", thread._id))
+				.take(batchSize);
+			if (budgets.length > 0) {
+				await Promise.all(budgets.map((doc) => ctx.db.delete("ai_chat_code_read_budgets", doc._id)));
+				return { done: false, deletedCount: budgets.length };
+			}
+		}
 		await Promise.all(aiChatThreads.map((doc) => ctx.db.delete("ai_chat_threads", doc._id)));
 		return { done: false, deletedCount: aiChatThreads.length };
 	}
@@ -1012,6 +1086,8 @@ async function db_purge_organization_workspace_content_batch(
 		return { done: false, deletedCount: serviceAccounts.length };
 	}
 
+	const pendingReferenceCount = await db_drain_pending_references_batch(ctx, args);
+	if (pendingReferenceCount > 0) return { done: false, deletedCount: pendingReferenceCount };
 	const privateIdentityCount = await db_drain_private_node_identities_batch(ctx, { organizationId, workspaceId });
 	if (privateIdentityCount > 0) return { done: false, deletedCount: privateIdentityCount };
 	const releasedPrivateCount = await files_private_storage_db_release_purged_resources(ctx, args);
@@ -1028,7 +1104,6 @@ async function db_purge_organization_workspace_content_batch(
 		);
 		return { done: false, deletedCount: pendingReviewVersions.length };
 	}
-
 	// Keep monotonic upload budgets until every service target and asset is gone. An R2 event may
 	// still settle accepted bytes during a workspace's retention window. A preserved data-reset
 	// workspace also starts with fresh upload budgets after its content has been cleared.
@@ -1051,7 +1126,14 @@ async function db_purge_organization_workspace_content_batch(
 		}
 	}
 
-	return { done: true, deletedCount: 0 };
+	const mediaVersion = await ctx.db
+		.query("files_media_validation_versions")
+		.withIndex("by_organization_workspace", (q) =>
+			q.eq("organizationId", organizationId).eq("workspaceId", workspaceId),
+		)
+		.unique();
+	if (mediaVersion) await ctx.db.delete("files_media_validation_versions", mediaVersion._id);
+	return { done: true, deletedCount: mediaVersion ? 1 : 0 };
 }
 
 /**
@@ -1162,6 +1244,7 @@ async function db_delete_workspace_structure_batch(
 		.take(args.batchSize);
 	if (roleAssignments.length > 0) {
 		await Promise.all(roleAssignments.map((doc) => ctx.db.delete("access_control_role_assignments", doc._id)));
+		await files_media_validation_db_advance_version(ctx, { organizationId: args.organizationId, workspaceId: null });
 		return { done: false, deletedCount: roleAssignments.length };
 	}
 
@@ -1284,6 +1367,7 @@ async function db_delete_organization_batch(
 		.take(args.batchSize);
 	if (roleAssignments.length > 0) {
 		await Promise.all(roleAssignments.map((doc) => ctx.db.delete("access_control_role_assignments", doc._id)));
+		await files_media_validation_db_advance_version(ctx, { organizationId: args.organizationId, workspaceId: null });
 		return { done: false, deletedCount: roleAssignments.length };
 	}
 
@@ -1293,6 +1377,9 @@ async function db_delete_organization_batch(
 		.take(args.batchSize);
 	if (permissionGrants.length > 0) {
 		await Promise.all(permissionGrants.map((doc) => ctx.db.delete("access_control_permission_grants", doc._id)));
+		if (permissionGrants.some((grant) => grant.resourceKind === "file" && grant.principalKind !== "service_account")) {
+			await files_media_validation_db_advance_version(ctx, { organizationId: args.organizationId, workspaceId: null });
+		}
 		return { done: false, deletedCount: permissionGrants.length };
 	}
 
@@ -1302,6 +1389,7 @@ async function db_delete_organization_batch(
 		.take(args.batchSize);
 	if (customRoles.length > 0) {
 		await Promise.all(customRoles.map((doc) => ctx.db.delete("access_control_roles", doc._id)));
+		await files_media_validation_db_advance_version(ctx, { organizationId: args.organizationId, workspaceId: null });
 		return { done: false, deletedCount: customRoles.length };
 	}
 
@@ -1320,6 +1408,13 @@ async function db_delete_organization_batch(
 	// organization id until all scoped docs are gone.
 	const organization = await ctx.db.get("organizations", args.organizationId);
 	if (organization) {
+		const mediaVersion = await ctx.db
+			.query("files_media_validation_versions")
+			.withIndex("by_organization_workspace", (q) =>
+				q.eq("organizationId", args.organizationId).eq("workspaceId", null),
+			)
+			.unique();
+		if (mediaVersion) await ctx.db.delete("files_media_validation_versions", mediaVersion._id);
 		await ctx.db.delete("organizations", args.organizationId);
 		return { done: true, deletedCount: 1 };
 	}
@@ -1350,7 +1445,8 @@ async function db_queue_organization_deletion_for_owner_account_deletion(
 	// - remove role and permission docs so the organization is no longer usable;
 	// - remove workspace memberships and keep the affected user ids for default
 	//   tenant checks below.
-	const [, , , , userIdsPerWorkspace] = await Promise.all([
+	let workspaceFenced = false;
+	const [, assignments, fileGrantsChanged, roles, userIdsPerWorkspace] = await Promise.all([
 		data_deletion_db_request(ctx, {
 			userId: args.organizationOwnerUserId,
 			organizationId: args.organization._id,
@@ -1367,7 +1463,10 @@ async function db_queue_organization_deletion_for_owner_account_deletion(
 				q.eq("organizationId", args.organization._id),
 			)
 			.collect()
-			.then((docs) => Promise.all(docs.map((doc) => ctx.db.delete("access_control_permission_grants", doc._id)))),
+			.then(async (docs) => {
+				await Promise.all(docs.map((doc) => ctx.db.delete("access_control_permission_grants", doc._id)));
+				return docs.some((grant) => grant.resourceKind === "file" && grant.principalKind !== "service_account");
+			}),
 		ctx.db
 			.query("access_control_roles")
 			.withIndex("by_organization_normalizedName", (q) => q.eq("organizationId", args.organization._id))
@@ -1386,6 +1485,11 @@ async function db_queue_organization_deletion_for_owner_account_deletion(
 							await ctx.db.patch("organizations_workspaces", workspace._id, {
 								pluginDataPurgeStartedAt: args.now,
 							});
+							await files_media_validation_db_advance_version(ctx, {
+								organizationId: args.organization._id,
+								workspaceId: workspace._id,
+							});
+							workspaceFenced = true;
 						}
 
 						const workspaceUsers = await ctx.db
@@ -1403,6 +1507,15 @@ async function db_queue_organization_deletion_for_owner_account_deletion(
 			),
 	]);
 
+	if (
+		workspaceFenced ||
+		assignments.length > 0 ||
+		fileGrantsChanged ||
+		roles.length > 0 ||
+		userIdsPerWorkspace.some((ids) => ids.length > 0)
+	) {
+		await files_media_validation_db_advance_version(ctx, { organizationId: args.organization._id, workspaceId: null });
+	}
 	await access_control_changes_db_record(ctx, [
 		{
 			scope: { kind: "organization", organizationId: args.organization._id },
@@ -1504,9 +1617,12 @@ async function db_drain_user_transfer_runs_batch(ctx: MutationCtx, args: { userI
 		.query("files_transfer_runs")
 		.withIndex("by_user", (q) => q.eq("userId", args.userId))
 		.first();
-	if (!run) return 0;
-	const purged = await files_transfer_db_delete_run_batch(ctx, { runId: run._id, batchSize: args.batchSize });
-	return purged.deletedCount;
+	if (run) {
+		const purged = await files_transfer_db_delete_run_batch(ctx, { runId: run._id, batchSize: args.batchSize });
+		// A retry can block this pass without deleting anything. The family is not empty yet.
+		return { done: false, deletedCount: purged.deletedCount };
+	}
+	return { done: true, deletedCount: 0 };
 }
 
 /**
@@ -1550,6 +1666,100 @@ async function db_drain_user_pending_review_runs_batch(
 		batchSize: args.batchSize,
 	});
 	return purged.deletedCount;
+}
+
+/**
+ * Drain one creator-owned thread, children first, even when its workspace survives or membership is gone.
+ * User finalization stops its writers and removes grants before reaching this pass.
+ */
+async function db_drain_user_chat_threads_batch(ctx: MutationCtx, args: { userId: Id<"users">; batchSize: number }) {
+	const thread = await ctx.db
+		.query("ai_chat_threads")
+		.withIndex("by_createdBy", (q) => q.eq("createdBy", args.userId))
+		.first();
+	if (!thread) return 0;
+
+	const invocation = await ctx.db
+		.query("ai_chat_bash_invocations")
+		.withIndex("by_thread_toolCall", (q) => q.eq("threadId", thread._id))
+		.first();
+	if (invocation) {
+		const transfers = await ctx.db
+			.query("ai_chat_bash_invocation_transfers")
+			.withIndex("by_invocation_commandNumber", (q) => q.eq("invocationId", invocation._id))
+			.take(args.batchSize);
+		if (transfers.length > 0) {
+			await Promise.all(transfers.map((transfer) => ctx.db.delete("ai_chat_bash_invocation_transfers", transfer._id)));
+			return transfers.length;
+		}
+		// Background jobs and their Activities already left through the user-owned job drain.
+		await ctx.db.delete("ai_chat_bash_invocations", invocation._id);
+		return 1;
+	}
+
+	// Scratch bytes and messages can each approach 1 MiB.
+	const contents = await ctx.db
+		.query("ai_chat_files_content")
+		.withIndex("by_thread_fileNode", (q) => q.eq("threadId", thread._id))
+		.take(Math.min(args.batchSize, 8));
+	if (contents.length > 0) {
+		await Promise.all(contents.map((doc) => ctx.db.delete("ai_chat_files_content", doc._id)));
+		return contents.length;
+	}
+
+	const files = await ctx.db
+		.query("ai_chat_files")
+		.withIndex("by_thread_path", (q) => q.eq("threadId", thread._id))
+		.take(args.batchSize);
+	if (files.length > 0) {
+		await Promise.all(files.map((doc) => ctx.db.delete("ai_chat_files", doc._id)));
+		return files.length;
+	}
+
+	const messages = await ctx.db
+		.query("ai_chat_threads_messages_aisdk_5")
+		.withIndex("by_organization_workspace_thread", (q) =>
+			q.eq("organizationId", thread.organizationId).eq("workspaceId", thread.workspaceId).eq("threadId", thread._id),
+		)
+		.take(Math.min(args.batchSize, 8));
+	if (messages.length > 0) {
+		await Promise.all(messages.map((doc) => ctx.db.delete("ai_chat_threads_messages_aisdk_5", doc._id)));
+		return messages.length;
+	}
+
+	const transcripts = await ctx.db
+		.query("ai_chat_bash_shell_transcripts")
+		.withIndex("by_organization_workspace_thread", (q) =>
+			q.eq("organizationId", thread.organizationId).eq("workspaceId", thread.workspaceId).eq("threadId", thread._id),
+		)
+		.take(Math.min(args.batchSize, 8));
+	if (transcripts.length > 0) {
+		await Promise.all(transcripts.map((doc) => ctx.db.delete("ai_chat_bash_shell_transcripts", doc._id)));
+		return transcripts.length;
+	}
+
+	const shells = await ctx.db
+		.query("ai_chat_bash_shells")
+		.withIndex("by_thread_name", (q) => q.eq("threadId", thread._id))
+		.take(Math.min(args.batchSize, 32));
+	if (shells.length > 0) {
+		await Promise.all(shells.map((doc) => ctx.db.delete("ai_chat_bash_shells", doc._id)));
+		return shells.length;
+	}
+
+	const cursors = await ctx.db
+		.query("ai_chat_bash_job_notice_cursors")
+		.withIndex("by_organization_workspace_thread", (q) =>
+			q.eq("organizationId", thread.organizationId).eq("workspaceId", thread.workspaceId).eq("threadId", thread._id),
+		)
+		.take(args.batchSize);
+	if (cursors.length > 0) {
+		await Promise.all(cursors.map((doc) => ctx.db.delete("ai_chat_bash_job_notice_cursors", doc._id)));
+		return cursors.length;
+	}
+
+	await ctx.db.delete("ai_chat_threads", thread._id);
+	return 1;
 }
 
 /**
@@ -1666,6 +1876,15 @@ async function db_drain_user_direct_permission_grants_batch(
 		.withIndex("by_user_organization_workspace_resource_permission", (q) => q.eq("userId", args.userId))
 		.take(args.batchSize);
 	await Promise.all(grants.map((doc) => ctx.db.delete("access_control_permission_grants", doc._id)));
+	const fileScopes = new Map(
+		grants.filter((grant) => grant.resourceKind === "file").map((grant) => [grant.workspaceId, grant]),
+	);
+	for (const grant of fileScopes.values()) {
+		await files_media_validation_db_advance_version(ctx, {
+			organizationId: grant.organizationId,
+			workspaceId: grant.workspaceId,
+		});
+	}
 
 	const scopeCleanupPairs = plugins_data_db_get_scope_cleanup_pairs(ctx, grants);
 	if (scopeCleanupPairs.length > 0) {
@@ -1771,6 +1990,7 @@ async function db_drain_user_memberships_batch(
 					updatedAt: args.now,
 				}),
 			]);
+			await files_media_validation_db_advance_version(ctx, { organizationId: organization._id, workspaceId: null });
 			await access_control_changes_db_record(ctx, [
 				{
 					scope: { kind: "organization", organizationId: organization._id },
@@ -1883,30 +2103,28 @@ async function db_drain_user_finalization_batch(
 	ctx: MutationCtx,
 	args: { userId: Id<"users">; now: number; batchSize: number },
 ) {
-	const transferRunCount = await db_drain_user_transfer_runs_batch(ctx, args);
-	if (transferRunCount > 0) {
-		return transferRunCount;
-	}
+	const transferRuns = await db_drain_user_transfer_runs_batch(ctx, args);
+	if (!transferRuns.done) return transferRuns;
 
 	const bashJobCount = await db_drain_user_bash_jobs_batch(ctx, args);
-	if (bashJobCount > 0) return bashJobCount;
+	if (bashJobCount > 0) return { done: false, deletedCount: bashJobCount };
 
 	const reviewRunCount = await db_drain_user_pending_review_runs_batch(ctx, args);
-	if (reviewRunCount > 0) return reviewRunCount;
+	if (reviewRunCount > 0) return { done: false, deletedCount: reviewRunCount };
 
 	const browserCount = (
 		await files_browser_db_delete_user_batch(ctx, { userId: args.userId, batchSize: args.batchSize })
 	).deletedCount;
-	if (browserCount > 0) return browserCount;
+	if (browserCount > 0) return { done: false, deletedCount: browserCount };
 
 	const serviceGrantCount = await db_drain_user_plugin_service_grants_batch(ctx, args);
 	if (serviceGrantCount > 0) {
-		return serviceGrantCount;
+		return { done: false, deletedCount: serviceGrantCount };
 	}
 
 	const membershipCount = await db_drain_user_memberships_batch(ctx, args);
 	if (membershipCount > 0) {
-		return membershipCount;
+		return { done: false, deletedCount: membershipCount };
 	}
 
 	const roleAssignments = await ctx.db
@@ -1915,7 +2133,10 @@ async function db_drain_user_finalization_batch(
 		.take(args.batchSize);
 	if (roleAssignments.length > 0) {
 		await Promise.all(roleAssignments.map((doc) => ctx.db.delete("access_control_role_assignments", doc._id)));
-		return roleAssignments.length;
+		for (const organizationId of new Set(roleAssignments.map((assignment) => assignment.organizationId))) {
+			await files_media_validation_db_advance_version(ctx, { organizationId, workspaceId: null });
+		}
+		return { done: false, deletedCount: roleAssignments.length };
 	}
 
 	// Retire unfinished producers before their text batches or private targets disappear.
@@ -1925,12 +2146,12 @@ async function db_drain_user_finalization_batch(
 		.take(Math.min(args.batchSize, 8));
 	if (ingestionReceipts.length > 0) {
 		for (const receipt of ingestionReceipts) await files_ingestion_db_delete_receipt(ctx, receipt);
-		return ingestionReceipts.length;
+		return { done: false, deletedCount: ingestionReceipts.length };
 	}
 
 	const pendingUpdateCount = await db_drain_user_pending_updates_batch(ctx, args);
 	if (pendingUpdateCount > 0) {
-		return pendingUpdateCount;
+		return { done: false, deletedCount: pendingUpdateCount };
 	}
 
 	const lastSequenceDocs = await ctx.db
@@ -1941,12 +2162,12 @@ async function db_drain_user_finalization_batch(
 		await Promise.all(
 			lastSequenceDocs.map((doc) => ctx.db.delete("files_pending_updates_last_sequence_saved", doc._id)),
 		);
-		return lastSequenceDocs.length;
+		return { done: false, deletedCount: lastSequenceDocs.length };
 	}
 
 	const yjsStateCount = await db_drain_user_pending_yjs_states_batch(ctx, args);
 	if (yjsStateCount > 0) {
-		return yjsStateCount;
+		return { done: false, deletedCount: yjsStateCount };
 	}
 
 	const textInputs = await ctx.db
@@ -1955,7 +2176,7 @@ async function db_drain_user_finalization_batch(
 		.take(Math.min(args.batchSize, PENDING_PAYLOAD_PURGE_BATCH_SIZE));
 	if (textInputs.length > 0) {
 		await Promise.all(textInputs.map((doc) => ctx.db.delete("files_pending_update_text_inputs", doc._id)));
-		return textInputs.length;
+		return { done: false, deletedCount: textInputs.length };
 	}
 
 	const operationBatches = await ctx.db
@@ -1979,7 +2200,7 @@ async function db_drain_user_finalization_batch(
 			}
 			await ctx.db.delete("files_pending_update_operation_batches", batch._id);
 		}
-		return operationBatches.length;
+		return { done: false, deletedCount: operationBatches.length };
 	}
 
 	const trustedStages = await ctx.db
@@ -1988,13 +2209,15 @@ async function db_drain_user_finalization_batch(
 		.take(Math.min(args.batchSize, PENDING_PAYLOAD_PURGE_BATCH_SIZE));
 	if (trustedStages.length > 0) {
 		await Promise.all(trustedStages.map((doc) => ctx.db.delete("files_yjs_trusted_update_stages", doc._id)));
-		return trustedStages.length;
+		return { done: false, deletedCount: trustedStages.length };
 	}
 
+	const pendingReferenceCount = await db_drain_pending_references_batch(ctx, args);
+	if (pendingReferenceCount > 0) return { done: false, deletedCount: pendingReferenceCount };
 	const privateIdentityCount = await db_drain_private_node_identities_batch(ctx, { userId: args.userId });
-	if (privateIdentityCount > 0) return privateIdentityCount;
+	if (privateIdentityCount > 0) return { done: false, deletedCount: privateIdentityCount };
 	const releasedPrivateCount = await files_private_storage_db_release_purged_resources(ctx, args);
-	if (releasedPrivateCount > 0) return releasedPrivateCount;
+	if (releasedPrivateCount > 0) return { done: false, deletedCount: releasedPrivateCount };
 	const pendingReviewVersions = await ctx.db
 		.query("files_pending_review_versions")
 		.withIndex("by_user", (q) => q.eq("userId", args.userId))
@@ -2003,7 +2226,7 @@ async function db_drain_user_finalization_batch(
 		await Promise.all(
 			pendingReviewVersions.map((version) => ctx.db.delete("files_pending_review_versions", version._id)),
 		);
-		return pendingReviewVersions.length;
+		return { done: false, deletedCount: pendingReviewVersions.length };
 	}
 
 	const appendReplayReceipts = await ctx.db
@@ -2014,7 +2237,7 @@ async function db_drain_user_finalization_batch(
 		for (const receipt of appendReplayReceipts) {
 			await plugins_data_db_delete_append_replay_receipt(ctx, receipt);
 		}
-		return appendReplayReceipts.length;
+		return { done: false, deletedCount: appendReplayReceipts.length };
 	}
 
 	const pluginMemberUsage = await ctx.db
@@ -2023,7 +2246,7 @@ async function db_drain_user_finalization_batch(
 		.take(args.batchSize);
 	if (pluginMemberUsage.length > 0) {
 		await Promise.all(pluginMemberUsage.map((doc) => ctx.db.delete("plugins_data_member_usage", doc._id)));
-		return pluginMemberUsage.length;
+		return { done: false, deletedCount: pluginMemberUsage.length };
 	}
 
 	const quotaDocs = await ctx.db
@@ -2032,7 +2255,7 @@ async function db_drain_user_finalization_batch(
 		.take(args.batchSize);
 	if (quotaDocs.length > 0) {
 		await Promise.all(quotaDocs.map((doc) => quotas_db_delete(ctx, doc)));
-		return quotaDocs.length;
+		return { done: false, deletedCount: quotaDocs.length };
 	}
 
 	const apiCredentials = await ctx.db
@@ -2041,7 +2264,7 @@ async function db_drain_user_finalization_batch(
 		.take(args.batchSize);
 	if (apiCredentials.length > 0) {
 		await Promise.all(apiCredentials.map((doc) => ctx.db.delete("api_credentials", doc._id)));
-		return apiCredentials.length;
+		return { done: false, deletedCount: apiCredentials.length };
 	}
 
 	const publicApiGrants = await ctx.db
@@ -2049,7 +2272,17 @@ async function db_drain_user_finalization_batch(
 		.withIndex("by_user", (q) => q.eq("userId", args.userId))
 		.take(args.batchSize);
 	await Promise.all(publicApiGrants.map((doc) => ctx.db.delete("public_api_grants", doc._id)));
-	return publicApiGrants.length;
+	if (publicApiGrants.length > 0) return { done: false, deletedCount: publicApiGrants.length };
+
+	const codeReadBudgets = await ctx.db
+		.query("ai_chat_code_read_budgets")
+		.withIndex("by_user", (q) => q.eq("userId", args.userId))
+		.take(args.batchSize);
+	await Promise.all(codeReadBudgets.map((doc) => ctx.db.delete("ai_chat_code_read_budgets", doc._id)));
+	if (codeReadBudgets.length > 0) return { done: false, deletedCount: codeReadBudgets.length };
+
+	const deletedCount = await db_drain_user_chat_threads_batch(ctx, args);
+	return { done: deletedCount === 0, deletedCount };
 }
 
 /**
@@ -2382,8 +2615,8 @@ export const process_user_deletion_request = internalMutation({
 				now,
 				batchSize: batch_size(args),
 			});
-			if (drainedFinalizationDocs > 0) {
-				return { done: false, deletedCount: drainedFinalizationDocs };
+			if (!drainedFinalizationDocs.done) {
+				return drainedFinalizationDocs;
 			}
 
 			// The user doc is already gone, so nothing else will reach its leftover upload holds.
@@ -2462,8 +2695,8 @@ export const process_user_deletion_request = internalMutation({
 			now,
 			batchSize: batch_size(args),
 		});
-		if (drainedFinalizationDocs > 0) {
-			return { done: false, deletedCount: drainedFinalizationDocs };
+		if (!drainedFinalizationDocs.done) {
+			return drainedFinalizationDocs;
 		}
 
 		await db_finalize_deleted_user(ctx, {
@@ -2915,6 +3148,12 @@ export const hard_delete_user_data = internalMutation({
 			.withIndex("by_organization_normalizedName", (q) => q.eq("organizationId", defaultTenant.organizationId))
 			.collect();
 		await Promise.all(customRoles.map((role) => ctx.db.delete("access_control_roles", role._id)));
+		if (customRoles.length > 0) {
+			await files_media_validation_db_advance_version(ctx, {
+				organizationId: defaultTenant.organizationId,
+				workspaceId: null,
+			});
+		}
 
 		// Now review every non-default organization connected to the user. Memberships
 		// catch shared organizations; ownership catches owned organizations whose
@@ -3138,6 +3377,10 @@ export const hard_delete_user_data = internalMutation({
 			await ctx.db.patch("organizations_workspaces", resetWorkspace._id, {
 				pluginDataPurgeStartedAt: undefined,
 			});
+			await files_media_validation_db_advance_version(ctx, {
+				organizationId: resetWorkspace.organizationId,
+				workspaceId: resetWorkspace._id,
+			});
 		}
 
 		// No reset-owned data was left to delete.
@@ -3179,8 +3422,8 @@ export const prepare_user_for_hard_deletion = internalMutation({
 		}
 
 		const batchSize = batch_size(args);
-		const deletedTransferRunCount = await db_drain_user_transfer_runs_batch(ctx, { userId: args.userId, batchSize });
-		if (deletedTransferRunCount > 0) {
+		const transferRuns = await db_drain_user_transfer_runs_batch(ctx, { userId: args.userId, batchSize });
+		if (!transferRuns.done) {
 			return false;
 		}
 
@@ -3271,7 +3514,7 @@ export const finalize_user_deletion_data = internalMutation({
 			now,
 			batchSize,
 		});
-		if (drainedFinalizationDocs > 0) {
+		if (!drainedFinalizationDocs.done) {
 			return false;
 		}
 

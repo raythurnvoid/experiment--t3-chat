@@ -154,20 +154,28 @@ Socket close codes: 4401 bad grant, 4404 session gone, 4408 grant expired,
 Snippets use the same `emitFile` helper as the code runner:
 
 ```js
-emitFile({ path: "/reports/page.png", bytes: await page.screenshot() });
-emitFile({ path: "/reports/data.bin", bytes: new Uint8Array([0, 255, 128]) });
+emitFile({ workspace: "personal", path: "/reports/page.png", bytes: await page.screenshot() });
+emitFile({ workspace: "current", path: "/reports/data.bin", bytes: new Uint8Array([0, 255, 128]) });
 ```
+
+Every descriptor requires `workspace: "current" | "personal"`. Missing and invalid
+values are refused; there is no default. A single snippet can emit into both roots.
+This selects the output destination only. It does not change the browser session,
+its source file, or its access grant. The app resolves and authorizes each destination.
 
 `bytes` accepts `Uint8Array` or `ArrayBuffer`. The call copies bytes at once,
 including only the selected range of a typed-array view. Any content type and
 empty files are allowed. Optional `contentType` stays absent when omitted.
-The runner checks transport bounds: eight files, 8 MiB in total, paths of
+The runner checks transport bounds: eight files and 8 MiB combined across both workspaces, paths of
 1–1024 characters, and content types of 1–255 characters. The app checks
 canonical workspace paths such as `/reports/data.bin` and MIME syntax.
 
-RPC carries typed arrays. The trusted host returns
-`files: [{ path, contentType?, dataBase64 }]` in HTTP JSON. Errors and timeouts
-return `files: []`. File bytes stay out of result text and logs. The app stores
+RPC carries typed arrays and the required workspace selector. The trusted host returns
+`files: [{ workspace, path, contentType?, dataBase64 }]` in HTTP JSON. Both the
+harness and the host validate the workspace. Errors and timeouts return `files: []`.
+A forged RPC file with a missing or invalid workspace taints the command, drops
+the whole output batch, and closes the session through the existing cleanup path.
+File bytes stay out of result text and logs. The app stores
 files as pending changes after its Agent, lease, and Files access checks.
 
 Screenshots have separate limits at the trusted CDP bridge: PNG/JPEG,
@@ -221,7 +229,7 @@ There is no two-capture limit. Generic file exports do not use image checks.
   A changed target, controller URL, or nonce discards all output and closes the
   session. Timeouts and lost isolate calls also close it, since unfinished work
   may still be running. Use reload to load another snapshot.
-- **Validated output.** The trusted host checks file shape, count, and raw byte
+- **Validated output.** The trusted host checks each file's workspace, shape, count, and raw byte
   totals. The protocol bridge checks screenshot headers and dimensions before
   forwarding bytes to the child. Text, logs, console, and page-error
   channels are separately bounded in UTF-8 bytes without splitting characters.
@@ -287,7 +295,8 @@ Then typecheck, test, and redeploy.
 
 The unit suite covers routing, auth, validation, admission, generations,
 locks, deadlines, alarms, bridge method/session checks, revocation and cleanup,
-file output, screenshot bounds, controller/harness builders, and viewer/control transitions
+file output (including both destinations and missing/invalid workspace refusal in the harness,
+RPC validation, and HTTP results), screenshot bounds, controller/harness builders, and viewer/control transitions
 with mocked bindings. The generated-bundle regression runs the actual
 screenshot helper in a separate context and checks caret hiding and cleanup.
 Live QA must also check acquire, bootstrap, reconnect, Playwright operations,

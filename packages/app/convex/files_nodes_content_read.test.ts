@@ -32,6 +32,11 @@ async function create_fixture() {
 			updatedAt: Date.now(),
 		}),
 	);
+	const captured = await t.mutation(internal.ai_chat_workspaces.capture, {
+		userId: db.userId,
+		membershipId: db.membershipId,
+	});
+	if (captured._nay) throw new Error(captured._nay.message);
 	const file = await t.run(async (ctx) => {
 		const assetId = await ctx.db.insert("files_r2_assets", {
 			organizationId: db.organizationId,
@@ -59,7 +64,17 @@ async function create_fixture() {
 		if (created._nay || created._yay.target.kind !== "private") throw new Error("Expected private file");
 		return { ...created._yay, target: created._yay.target, assetId };
 	});
-	const readArgs = { userId: db.userId, membershipId: db.membershipId, threadId, path: "/output" };
+	const readArgs = {
+		userId: db.userId,
+		membershipId: db.membershipId,
+		agentSource: {
+			...scope,
+			membershipId: db.membershipId,
+			membershipLifetime: captured._yay.membershipLifetime,
+			threadId,
+		},
+		path: "/output",
+	};
 	const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
 	const save = async () => {
 		const view = await asUser.query(api.files_pending_updates.get_file_pending_target, {

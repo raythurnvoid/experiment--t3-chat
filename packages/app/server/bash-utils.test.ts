@@ -28,7 +28,7 @@ const PLUGIN_VERSION_ID = "plugins_versions_1" as Id<"plugins_versions">;
 
 // The resolver is pure w.r.t. Convex, so these filesystem objects only need to
 // exist; their query methods are never invoked here.
-function create_db_files_roots(): bash_DbFilesRoots {
+function create_db_files_roots(includePersonal = false): bash_DbFilesRoots {
 	const ctx = {
 		runQuery: vi.fn(),
 		runMutation: vi.fn(),
@@ -43,6 +43,19 @@ function create_db_files_roots(): bash_DbFilesRoots {
 		threadId: "thread_1" as Id<"ai_chat_threads">,
 	};
 	const appFs = new bash_DbFilesFs({ ctx, ctxData, currentWorkspacePath, allowDbFilesMkdir: false });
+	const teamWorkspacePath = "/home/cloud-usr/w/team/design";
+	const teamFs = new bash_DbFilesFs({
+		ctx,
+		ctxData: {
+			...ctxData,
+			organizationId: "organization_2" as Id<"organizations">,
+			workspaceId: "workspace_2" as Id<"organizations_workspaces">,
+			organizationName: "team",
+			workspaceName: "design",
+		},
+		currentWorkspacePath: teamWorkspacePath,
+		allowDbFilesMkdir: false,
+	});
 	const mountFs = new bash_DbFilesFs({
 		ctx,
 		ctxData: {
@@ -74,10 +87,10 @@ function create_db_files_roots(): bash_DbFilesRoots {
 		readOnlySource: "plugins",
 	});
 	return {
-		app: {
-			currentWorkspacePath,
-			fs: appFs,
-		},
+		app: includePersonal
+			? { currentWorkspacePath: teamWorkspacePath, fs: teamFs }
+			: { currentWorkspacePath, fs: appFs },
+		personal: includePersonal ? { currentWorkspacePath, fs: appFs } : null,
 		externalMounts: {
 			currentWorkspacePath: bash_EXTERNAL_MOUNTS_ROOT,
 			mounts: new Map([[MOUNT_NAME, { name: MOUNT_NAME, commitSha: MOUNT_COMMIT_SHA, fs: mountFs }]]),
@@ -90,6 +103,31 @@ function create_db_files_roots(): bash_DbFilesRoots {
 }
 
 describe("bash_resolve_db_files_shell_path", () => {
+	test("keeps matching paths in current and personal workspaces separate", () => {
+		const roots = create_db_files_roots(true);
+		for (const root of [roots.app, roots.personal!]) {
+			const result = bash_resolve_db_files_shell_path(`${root.currentWorkspacePath}/docs/../notes.md`, roots);
+			expect(result.kind).toBe("app");
+			expect(result.fs).toBe(root.fs);
+			expect(result.ctxData.workspaceId).toBe(root.fs.ctxData.workspaceId);
+			expect(result.dbFilesPath).toBe("/notes.md");
+			expect(result.renderShellPath("/notes.md")).toBe(`${root.currentWorkspacePath}/notes.md`);
+		}
+	});
+
+	test("does not resolve a third workspace or a similar personal prefix", () => {
+		const roots = create_db_files_roots(true);
+		for (const path of [
+			"/home/cloud-usr/w/team/other/notes.md",
+			"/home/cloud-usr/w/personal/home-other/notes.md",
+			"/home/cloud-usr/w/personal/home/../other/notes.md",
+		]) {
+			const result = bash_resolve_db_files_shell_path(path, roots);
+			expect(result.kind).toBe("outside_db_files");
+			expect(result.dbFilesPath).toBeNull();
+		}
+	});
+
 	test("classifies the synthetic mounts root without a stored tree", () => {
 		const dbFilesRoots = create_db_files_roots();
 		for (const path of [bash_EXTERNAL_MOUNTS_ROOT, "/.mounts/", "/.mounts/."]) {

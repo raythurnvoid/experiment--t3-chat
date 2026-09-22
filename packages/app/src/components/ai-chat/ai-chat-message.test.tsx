@@ -36,7 +36,10 @@ const hookMocks = vi.hoisted(() => {
 		files: new Map<
 			string,
 			{
-				entry: { kind: "saved" | "private"; path: string; node: { _id: string; archiveOperationId?: string | null } };
+				target: { kind: "saved" | "private"; id: string };
+				path: string;
+				organizationName: string;
+				workspaceName: string;
 				readiness: "ready" | "preparing";
 			} | null
 		>(),
@@ -111,11 +114,17 @@ vi.mock("@tanstack/react-router", () => ({
 	Link: function Link(props: {
 		children?: ReactNode;
 		to?: string;
+		params?: unknown;
 		search?: unknown;
 		onClick?: MouseEventHandler<HTMLAnchorElement>;
 	}) {
 		return (
-			<a href={props.to ?? "#"} data-search={JSON.stringify(props.search)} onClick={props.onClick}>
+			<a
+				href={props.to ?? "#"}
+				data-params={JSON.stringify(props.params)}
+				data-search={JSON.stringify(props.search)}
+				onClick={props.onClick}
+			>
 				{props.children}
 			</a>
 		);
@@ -163,6 +172,7 @@ function createAssistantMessage(args?: { id?: string; text?: string; parentId?: 
 
 function renderMessage(args: {
 	message: ai_chat_UiMessage;
+	tenant?: { organizationName: string; workspaceName: string };
 	sendError?: boolean | undefined;
 	sendErrorDetails?: string | undefined;
 	branchSiblingIds?: readonly string[] | undefined;
@@ -188,20 +198,21 @@ function renderMessage(args: {
 				liveJobs={args.liveJobs ?? []}
 				actions={hookMocks.actions}
 			/>,
+			args.tenant,
 		),
 	);
 }
 
 // Tool cards link back to the edited file, so they read the current tenant from this provider.
 // A rerender must reuse it too, otherwise the changed tree remounts the message.
-function withTenant(ui: ReactNode) {
+function withTenant(ui: ReactNode, tenant = { organizationName: "personal", workspaceName: "home" }) {
 	return (
 		<AppTenantProvider
 			membershipId={"membership-1" as app_convex_Id<"organizations_workspaces_users">}
 			workspaceId={"workspace-1" as app_convex_Id<"organizations_workspaces">}
-			workspaceName="home"
+			workspaceName={tenant.workspaceName}
 			organizationId={"organization-1" as app_convex_Id<"organizations">}
-			organizationName="personal"
+			organizationName={tenant.organizationName}
 		>
 			{ui}
 		</AppTenantProvider>
@@ -626,7 +637,10 @@ describe("AiChatMessage", () => {
 			const files = Array.from({ length: 8 }, (_, index) => ({ kind: "private" as const, id: `private_${index}` }));
 			for (const target of files) {
 				hookMocks.files.set(target.id, {
-					entry: { kind: "private", path: `/exports/${target.id}.bin`, node: { _id: target.id } },
+					target,
+					path: `/exports/${target.id}.bin`,
+					organizationName: "team",
+					workspaceName: "project",
 					readiness: "ready",
 				});
 			}
@@ -679,11 +693,17 @@ describe("AiChatMessage", () => {
 		},
 	);
 
-	test.each(["saved", "private"] as const)("colors the edit_file diff and opens its %s target", (kind) => {
+	test.each([
+		{ kind: "saved", workspace: "current" },
+		{ kind: "private", workspace: "current" },
+		{ kind: "saved", workspace: "personal" },
+		{ kind: "private", workspace: "personal" },
+	] as const)("colors the edit_file diff and opens its $workspace $kind target", ({ kind, workspace }) => {
 		// The tool already trimmed the patch down to the changed lines.
 		const diff = [" {", '-	"n": 1', '+	"n": 2', " }", ""].join("\n");
 
 		renderMessage({
+			tenant: { organizationName: "team", workspaceName: "project" },
 			message: {
 				id: "msg_assistant_edit_file",
 				role: "assistant",
@@ -692,10 +712,11 @@ describe("AiChatMessage", () => {
 						type: "tool-edit_file",
 						toolCallId: "call_edit_file",
 						state: "output-available",
-						input: { path: "/qa.json", oldString: '"n": 1', newString: '"n": 2', replaceAll: false },
+						input: { workspace, path: "/qa.json", oldString: '"n": 1', newString: '"n": 2', replaceAll: false },
 						output: {
 							title: "/qa.json",
 							metadata: {
+								workspace,
 								target:
 									kind === "private"
 										? { kind, id: "private_1" as app_convex_Id<"files_pending_nodes"> }
@@ -718,6 +739,11 @@ describe("AiChatMessage", () => {
 		});
 
 		fireEvent.click(screen.getByRole("button", { name: "Edit file: qa.json" }));
+		expect(JSON.parse(screen.getByRole("link", { name: "Open file" }).getAttribute("data-params")!)).toEqual(
+			workspace === "personal"
+				? { organizationName: "personal", workspaceName: "home" }
+				: { organizationName: "team", workspaceName: "project" },
+		);
 		expect(JSON.parse(screen.getByRole("link", { name: "Open file" }).getAttribute("data-search")!)).toEqual(
 			kind === "private" ? { pendingNodeId: "private_1" } : { nodeId: "node_1" },
 		);
@@ -732,7 +758,10 @@ describe("AiChatMessage", () => {
 		"%s uses a normal Files link without an inline image",
 		(type) => {
 			hookMocks.files.set("private_generated", {
-				entry: { kind: "private", path: "/images/drawing.webp", node: { _id: "private_generated" } },
+				target: { kind: "private", id: "private_generated" },
+				path: "/images/drawing.webp",
+				organizationName: "personal",
+				workspaceName: "home",
 				readiness: "ready",
 			});
 
@@ -761,6 +790,10 @@ describe("AiChatMessage", () => {
 			// A generated picture is a private pending file like any other. The chat shows its path and a
 			// link, never the picture itself and never the parameters the model sent.
 			expect(screen.getByText("/images/drawing.webp · Pending review")).toBeTruthy();
+			expect(JSON.parse(screen.getByRole("link", { name: "Open in Files" }).getAttribute("data-params")!)).toEqual({
+				organizationName: "personal",
+				workspaceName: "home",
+			});
 			expect(JSON.parse(screen.getByRole("link", { name: "Open in Files" }).getAttribute("data-search")!)).toEqual({
 				pendingNodeId: "private_generated",
 			});
@@ -781,7 +814,10 @@ describe("AiChatMessage", () => {
 	] as const)("browser run card $name", ({ state, output, link }) => {
 		if (link) {
 			hookMocks.files.set("node_1", {
-				entry: { kind: "saved", path: "/tmp/browser/image.png", node: { _id: "node_1", archiveOperationId: null } },
+				target: { kind: "saved", id: "node_1" },
+				path: "/tmp/browser/image.png",
+				organizationName: "team",
+				workspaceName: "project",
 				readiness: "ready",
 			});
 		}
@@ -889,11 +925,17 @@ describe("AiChatMessage", () => {
 	// answers with the saved node. The link must follow the file where it is now.
 	test("two captures use authorized current targets and ordinary Files links", () => {
 		hookMocks.files.set("private_1", {
-			entry: { kind: "saved", path: "/moved/capture.png", node: { _id: "node_1", archiveOperationId: null } },
+			target: { kind: "saved", id: "node_1" },
+			path: "/moved/capture.png",
+			organizationName: "team",
+			workspaceName: "project",
 			readiness: "ready",
 		});
 		hookMocks.files.set("private_2", {
-			entry: { kind: "private", path: "/tmp/browser/second.png", node: { _id: "private_2" } },
+			target: { kind: "private", id: "private_2" },
+			path: "/tmp/browser/second.png",
+			organizationName: "personal",
+			workspaceName: "home",
 			readiness: "ready",
 		});
 		const message = {
@@ -969,16 +1011,8 @@ describe("AiChatMessage", () => {
 
 	// Each file row asks Files whether this reader may open that file right now. A denied or archived
 	// file gets the same neutral line, so the chat never says which of the two it was.
-	test.each(["denied", "archived"])("file reads show a neutral placeholder for a %s file", (state) => {
-		hookMocks.files.set(
-			"private_1",
-			state === "denied"
-				? null
-				: {
-						entry: { kind: "saved", path: "/old.png", node: { _id: "node_1", archiveOperationId: "archive_1" } },
-						readiness: "ready",
-					},
-		);
+	test("file reads show a neutral placeholder when the query refuses the target", () => {
+		hookMocks.files.set("private_1", null);
 		renderMessage({
 			message: {
 				...createAssistantMessage(),
@@ -1036,7 +1070,10 @@ describe("AiChatMessage", () => {
 
 	test("keeps successful code output when only some files were prepared", () => {
 		hookMocks.files.set("private_code", {
-			entry: { kind: "private", path: "/reports/result.bin", node: { _id: "private_code" } },
+			target: { kind: "private", id: "private_code" },
+			path: "/reports/result.bin",
+			organizationName: "team",
+			workspaceName: "project",
 			readiness: "ready",
 		});
 		renderMessage({
@@ -1079,7 +1116,10 @@ describe("AiChatMessage", () => {
 
 	test("browser run success renders debug sections and files without a badge", () => {
 		hookMocks.files.set("private_1", {
-			entry: { kind: "private", path: "/reports/page.png", node: { _id: "private_1" } },
+			target: { kind: "private", id: "private_1" },
+			path: "/reports/page.png",
+			organizationName: "team",
+			workspaceName: "project",
 			readiness: "ready",
 		});
 		renderMessage({

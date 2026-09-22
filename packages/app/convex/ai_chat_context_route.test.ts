@@ -3,6 +3,7 @@ import { R2 } from "@convex-dev/r2";
 import { beforeEach, afterEach, describe, expect, test, vi } from "vitest";
 import { APICallError, type streamText } from "ai";
 import { MockLanguageModelV3 } from "ai/test";
+import { getFunctionAddress, getFunctionName } from "convex/server";
 import { api, internal } from "./_generated/api.js";
 import { test_convex, test_create_saved_text_file, test_mocks_fill_db_with } from "./setup.test.ts";
 import { files_nodes_db_create_private_node_by_path } from "./files_nodes.ts";
@@ -91,7 +92,7 @@ describe("/api/chat tool call repair", () => {
 	])("keeps validation errors and repairs only the case of $toolName", async ({ toolName, extraInput, valid }) => {
 		const { asUser, membership, threadId } = await setup();
 		const actualAi = await vi.importActual<typeof import("ai")>("ai");
-		const input = { path: "/image.png", ...extraInput };
+		const input = { workspace: "current", path: "/image.png", ...extraInput };
 		const execute = vi.fn();
 
 		// The fake model answers twice: the first step calls the tool, the second one writes text and
@@ -180,7 +181,429 @@ describe("/api/chat tool call repair", () => {
 	});
 });
 
+describe("/api/chat run access", () => {
+	test.each([
+		{ preparation: "chat", revoked: false },
+		{ preparation: "chat", revoked: true },
+		{ preparation: "title", revoked: false },
+		{ preparation: "title", revoked: true },
+	])(
+		"checks source access after $preparation preparation (read revoked: $revoked)",
+		async ({ preparation, revoked }) => {
+			const t = test_convex();
+			const owner = await t.run((ctx) =>
+				test_mocks_fill_db_with.membership(ctx, { organizationName: "model-boundary-team", workspaceName: "home" }),
+			);
+			const member = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+			const asOwner = t.withIdentity({ issuer: "https://clerk.test", external_id: owner.userId });
+			const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: member.userId });
+			expect(
+				await asOwner.mutation(api.organizations.invite_user_to_organization_workspace, {
+					organizationId: owner.organizationId,
+					workspaceId: owner.workspaceId,
+					userIdToAdd: member.userId,
+				}),
+			).toEqual({ _yay: null });
+			const membership = await t.run((ctx) =>
+				ctx.db
+					.query("organizations_workspaces_users")
+					.withIndex("by_workspace_user_active", (q) =>
+						q.eq("workspaceId", owner.workspaceId).eq("userId", member.userId).eq("active", true),
+					)
+					.first(),
+			);
+			if (!membership) throw new Error("Expected invited membership");
+			const created = await asUser.mutation(api.ai_chat.thread_create, {
+				membershipId: membership._id,
+				clientGeneratedId: "model-boundary-thread",
+				lastMessageAt: Date.now(),
+			});
+			if (created._nay) throw new Error(created._nay.message);
+			const threadId = created._yay.threadId;
+			const role = await asOwner.mutation(api.access_control.create_role, {
+				organizationId: owner.organizationId,
+				name: "Workspace maker",
+				description: "",
+				permissions: ["workspace.create"],
+			});
+			if (role._nay) throw new Error(role._nay.message);
+			expect(
+				await asUser.query(api.access_control.get_current_user_workspace_permission, {
+					membershipId: membership._id,
+					permission: "content.read",
+				}),
+			).toBe(true);
+
+			const actualAi = await vi.importActual<typeof import("ai")>("ai");
+			const languageModel = new MockLanguageModelV3({
+				doStream: async () => ({
+					stream: new ReadableStream({
+						start(controller) {
+							controller.enqueue({ type: "stream-start", warnings: [] });
+							controller.enqueue({ type: "text-start", id: "answer" });
+							controller.enqueue({ type: "text-delta", id: "answer", delta: "Done" });
+							controller.enqueue({ type: "text-end", id: "answer" });
+							controller.enqueue({
+								type: "finish",
+								finishReason: { unified: "stop", raw: undefined },
+								usage: {
+									inputTokens: { total: 1, noCache: 1, cacheRead: undefined, cacheWrite: undefined },
+									outputTokens: { total: 1, text: 1, reasoning: undefined },
+								},
+							});
+							controller.close();
+						},
+					}),
+				}),
+			});
+			model.streamText.mockImplementation((options: Parameters<typeof streamText>[0]) =>
+				actualAi.streamText({ ...options, model: languageModel }),
+			);
+
+			// Keep the route, queries and SDK real. Revoke only after the chosen preparation read,
+			// so an earlier access check cannot catch it and a fixture error cannot prove refusal.
+			const chat = await import("./ai_chat.ts");
+			const handle = chat.ai_chat_http_chat_response;
+			let prepared = false;
+			vi.spyOn(chat, "ai_chat_http_chat_response").mockImplementation((ctx, request) =>
+				handle(
+					{
+						...ctx,
+						runQuery: async (query, ...args) => {
+							const result = await ctx.runQuery(query, ...args);
+							const atBoundary =
+								preparation === "chat"
+									? getFunctionName(query) === getFunctionName(internal.ai_chat.list_finish_messages_since) &&
+										languageModel.doStreamCalls.length === 0
+									: getFunctionName(query) === getFunctionName(api.ai_chat.thread_get) &&
+										languageModel.doStreamCalls.length === 1;
+							if (!prepared && atBoundary) {
+								expect(result).not.toBeNull();
+								if (revoked) {
+									expect(
+										await asOwner.mutation(api.access_control.set_user_role, {
+											organizationId: owner.organizationId,
+											workspaceId: owner.workspaceId,
+											userId: member.userId,
+											role: role._yay.roleId,
+										}),
+									).toEqual({ _yay: null });
+								}
+								prepared = true;
+							}
+							return result;
+						},
+					},
+					request,
+				),
+			);
+			const response = await asUser.fetch("/api/chat", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					messages: [{ id: "request", role: "user", parts: [{ type: "text", text: "PRIVATE_RUN_INPUT" }] }],
+					parentId: null,
+					mode: "ask",
+					model: "gpt-5.4-nano",
+					trigger: "submit-message",
+					threadId,
+					membershipId: membership._id,
+				}),
+			});
+			let streamError: unknown;
+			const body = await response.text().catch((error: unknown) => {
+				streamError = error;
+				return "";
+			});
+			expect(response.status, body).toBe(200);
+			expect(prepared).toBe(true);
+			expect(
+				await asUser.query(api.access_control.get_current_user_workspace_permission, {
+					membershipId: membership._id,
+					permission: "content.read",
+				}),
+			).toBe(!revoked);
+			expect.soft(languageModel.doStreamCalls).toHaveLength(revoked ? (preparation === "chat" ? 0 : 1) : 2);
+			for (const call of languageModel.doStreamCalls)
+				expect(JSON.stringify(call.prompt)).toContain("PRIVATE_RUN_INPUT");
+			const stored = await t.run(async (ctx) => ({
+				thread: await ctx.db.get("ai_chat_threads", threadId),
+				messages: await ctx.db.query("ai_chat_threads_messages_aisdk_5").collect(),
+			}));
+			expect(stored.messages.map((message) => message.content.role)).toEqual(
+				revoked ? ["user"] : ["user", "assistant"],
+			);
+			expect(stored.thread?.title).toBe(revoked ? null : "Done");
+			expect(stored.thread?.activeRun).toBeUndefined();
+			// The reply finished before title preparation. Its later save must still refuse lost access.
+			if (preparation === "title" && revoked) {
+				expect(streamError).toMatchObject({
+					message: "Failed to persist assistant message",
+					cause: { message: "Unauthorized" },
+				});
+			} else {
+				expect(streamError).toBeUndefined();
+			}
+		},
+	);
+
+	test.each([false, true])(
+		"checks source access before the next model step (workspace deleted: %s)",
+		async (deleted) => {
+			const { t, asUser, membership, threadId } = await setup();
+			const actualAi = await vi.importActual<typeof import("ai")>("ai");
+			let step = 0;
+			const languageModel = new MockLanguageModelV3({
+				doStream: async () => {
+					const first = step++ === 0;
+					if (first && deleted) {
+						expect(
+							await asUser.mutation(api.organizations.delete_workspace, { workspaceId: membership.workspaceId }),
+						).toEqual({ _yay: null });
+					}
+					return {
+						stream: new ReadableStream({
+							start(controller) {
+								controller.enqueue({ type: "stream-start", warnings: [] });
+								if (first) {
+									controller.enqueue({
+										type: "tool-call",
+										toolCallId: "read-missing",
+										toolName: "view_image",
+										input: JSON.stringify({ workspace: "current", path: "/missing.png" }),
+									});
+								} else {
+									controller.enqueue({ type: "text-start", id: "answer" });
+									controller.enqueue({ type: "text-delta", id: "answer", delta: "Done" });
+									controller.enqueue({ type: "text-end", id: "answer" });
+								}
+								controller.enqueue({
+									type: "finish",
+									finishReason: { unified: first ? "tool-calls" : "stop", raw: undefined },
+									usage: {
+										inputTokens: { total: 1, noCache: 1, cacheRead: undefined, cacheWrite: undefined },
+										outputTokens: { total: 1, text: 1, reasoning: undefined },
+									},
+								});
+								controller.close();
+							},
+						}),
+					};
+				},
+			});
+			model.streamText.mockImplementation((options: Parameters<typeof streamText>[0]) =>
+				actualAi.streamText({ ...options, model: languageModel }),
+			);
+			const response = await asUser.fetch("/api/chat", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					messages: [{ id: "request", role: "user", parts: [{ type: "text", text: "PRIVATE_RUN_INPUT" }] }],
+					parentId: null,
+					mode: "ask",
+					model: "gpt-5.4-nano",
+					trigger: "submit-message",
+					threadId,
+					membershipId: membership.membershipId,
+				}),
+			});
+			const body = await response.text().catch((error: unknown) => {
+				expect.soft(error).toBeUndefined();
+				return "";
+			});
+			expect(response.status, body).toBe(200);
+			expect(JSON.stringify(languageModel.doStreamCalls[0]!.prompt)).toContain("PRIVATE_RUN_INPUT");
+			expect.soft(languageModel.doStreamCalls).toHaveLength(deleted ? 1 : 2);
+			const stored = await t.run(async (ctx) => ({
+				thread: await ctx.db.get("ai_chat_threads", threadId),
+				messages: await ctx.db.query("ai_chat_threads_messages_aisdk_5").collect(),
+			}));
+			expect(stored.messages.map((message) => message.content.role)).toEqual(
+				deleted ? ["user"] : ["user", "assistant"],
+			);
+			expect(stored.thread?.activeRun).toBeUndefined();
+			if (deleted) expect(body).toContain("Chat is no longer available");
+		},
+	);
+});
+
 describe("/api/chat private observations", () => {
+	test.each([false, true])(
+		"rechecks a personal image after output preflight (discarded: %s)",
+		async (discarded) => {
+			const { t, asUser, membership, threadId } = await setup();
+			const personal = await t.run((ctx) =>
+				test_mocks_fill_db_with.membership(ctx, {
+					userId: membership.userId,
+					organizationName: "personal",
+					workspaceName: "home",
+				}),
+			);
+			const actualAi = await vi.importActual<typeof import("ai")>("ai");
+			const pngBase64 =
+				"iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAFElEQVR4AWJiYGD4D8IgBpBmYAAAAAD//7vS9wEAAAAGSURBVAMAGDACA6ybwrYAAAAASUVORK5CYII=";
+			const png = Uint8Array.from(atob(pngBase64), (char) => char.charCodeAt(0));
+			const { organizationId, workspaceId, userId } = personal;
+			const scope = { organizationId, workspaceId, userId };
+			const file = await t.run(async (ctx) => {
+				const assetId = await ctx.db.insert("files_r2_assets", {
+					organizationId,
+					workspaceId,
+					createdBy: userId,
+					kind: "content",
+					r2Bucket: "test",
+					size: png.length,
+					updatedAt: Date.now(),
+				});
+				const r2Key = r2_create_asset_key({ ...scope, assetId });
+				await ctx.db.patch("files_r2_assets", assetId, { r2Key });
+				const reserved = await files_private_storage_db_reserve(ctx, {
+					...scope,
+					resource: { kind: "asset", id: assetId, r2Key },
+					byteCount: png.length,
+				});
+				if (reserved._nay) throw new Error(reserved._nay.message);
+				const created = await files_nodes_db_create_private_node_by_path(ctx, {
+					...scope,
+					path: "/private-image.png",
+					kind: "file",
+					content: { kind: "stored", assetId, size: png.length, contentType: "image/png" },
+				});
+				if (created._nay || !created._yay.pendingUpdateId) throw new Error("Expected a private image");
+				const pending = await ctx.db.get("files_pending_updates", created._yay.pendingUpdateId);
+				return { ...created._yay, pendingUpdateId: created._yay.pendingUpdateId, revision: pending!.revision, r2Key };
+			});
+			await fetch(`https://r2.test/upload?key=${encodeURIComponent(file.r2Key)}`, { method: "PUT", body: png });
+
+			let step = 0;
+			const languageModel = new MockLanguageModelV3({
+				doStream: async () => ({
+					stream: new ReadableStream({
+						start(controller) {
+							const first = step++ === 0;
+							controller.enqueue({ type: "stream-start", warnings: [] });
+							if (first) {
+								controller.enqueue({
+									type: "tool-call",
+									toolCallId: "private-view",
+									toolName: "view_image",
+									input: JSON.stringify({ workspace: "personal", path: "/private-image.png" }),
+								});
+								controller.enqueue({
+									type: "tool-call",
+									toolCallId: "prepare-image",
+									toolName: "prepare_image_generation",
+									input: JSON.stringify({ workspace: "personal" }),
+								});
+							} else {
+								controller.enqueue({ type: "text-start", id: "answer" });
+								controller.enqueue({ type: "text-delta", id: "answer", delta: "Done" });
+								controller.enqueue({ type: "text-end", id: "answer" });
+							}
+							controller.enqueue({
+								type: "finish",
+								finishReason: { unified: first ? "tool-calls" : "stop", raw: undefined },
+								usage: {
+									inputTokens: { total: 1, noCache: 1, cacheRead: undefined, cacheWrite: undefined },
+									outputTokens: { total: 1, text: 1, reasoning: undefined },
+								},
+							});
+							controller.close();
+						},
+					}),
+				}),
+			});
+			model.streamText.mockImplementation((options: Parameters<typeof streamText>[0]) =>
+				actualAi.streamText({
+					...options,
+					model: languageModel,
+					prepareStep: async (step) => {
+						const prepared = await options.prepareStep?.(step);
+						// The forced image step selects its own provider. Replace only that provider;
+						// keep the route's preparation, messages, tools, and SDK loop unchanged.
+						return prepared?.model ? { ...prepared, model: languageModel } : prepared;
+					},
+				}),
+			);
+
+			const started = Promise.withResolvers<void>();
+			const released = Promise.withResolvers<void>();
+			const chat = await import("./ai_chat.ts");
+			const handle = chat.ai_chat_http_chat_response;
+			vi.spyOn(chat, "ai_chat_http_chat_response").mockImplementation((ctx, request) =>
+				handle(
+					{
+						...ctx,
+						runMutation: async (mutation, ...args) => {
+							const result = await ctx.runMutation(mutation, ...args);
+							if (getFunctionAddress(mutation).name === getFunctionName(internal.ai_chat_files.check_image_output)) {
+								expect(result).toEqual({ _yay: null });
+								expect(args[0]).toMatchObject({ workspace: "personal", source: { threadId } });
+								// Pause the actual preflight reply, after its database checks pass.
+								started.resolve();
+								await released.promise;
+							}
+							return result;
+						},
+					},
+					request,
+				),
+			);
+			const response = await asUser.fetch("/api/chat", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					messages: [{ id: "request", role: "user", parts: [{ type: "text", text: "Draw using my personal image." }] }],
+					parentId: null,
+					mode: "agent",
+					model: "gpt-5.4-nano",
+					trigger: "submit-message",
+					threadId,
+					membershipId: membership.membershipId,
+				}),
+			});
+			const bodyPromise = response.text();
+			try {
+				await Promise.race([
+					started.promise,
+					bodyPromise.then((body) => {
+						throw new Error(`Stream ended before image preflight: ${body}`);
+					}),
+				]);
+				expect(languageModel.doStreamCalls).toHaveLength(1);
+				if (discarded) {
+					expect(
+						(await asUser.mutation(api.files_pending_updates.discard_file_pending_update, {
+							membershipId: personal.membershipId,
+							target: file.target,
+							pendingUpdateId: file.pendingUpdateId,
+							reviewedRevision: file.revision,
+						}))._nay,
+					).toBeUndefined();
+				}
+			} finally {
+				released.resolve();
+			}
+			const body = await bodyPromise;
+			expect(response.status, body).toBe(200);
+			expect(languageModel.doStreamCalls).toHaveLength(2);
+			const nextCall = languageModel.doStreamCalls[1]!;
+			expect(nextCall.toolChoice).toEqual({ type: "tool", toolName: "image_generation" });
+			expect(JSON.stringify(nextCall.prompt).includes(pngBase64)).toBe(!discarded);
+			if (discarded) expect(JSON.stringify(nextCall.prompt)).toContain("Tool observations unavailable");
+			expect(body).not.toContain(pngBase64);
+			if (file.target.kind !== "private") throw new Error("Expected a private image target");
+			const privateNodeId = file.target.id;
+			const stored = await t.run(async (ctx) => ({
+				node: await ctx.db.get("files_pending_nodes", privateNodeId),
+				messages: await ctx.db.query("ai_chat_threads_messages_aisdk_5").collect(),
+			}));
+			expect(stored.node?.state).toBe(discarded ? "discarded" : "active");
+			expect(stored.messages.map((message) => message.content.role)).toEqual(["user", "assistant"]);
+			expect(JSON.stringify(stored.messages)).not.toContain(pngBase64);
+		},
+	);
+
 	test("does not retry a provider request after its image becomes unavailable", async () => {
 		const { t, asUser, membership, threadId } = await setup();
 		const actualAi = await vi.importActual<typeof import("ai")>("ai");
@@ -252,7 +675,7 @@ describe("/api/chat private observations", () => {
 									type: "tool-call",
 									toolCallId: "private-view",
 									toolName: "view_image",
-									input: JSON.stringify({ path: "/private-image.png" }),
+									input: JSON.stringify({ workspace: "current", path: "/private-image.png" }),
 								});
 							}
 							controller.enqueue({
@@ -302,12 +725,24 @@ describe("/api/chat private observations", () => {
 		// A failed stream keeps the request, but does not save a partial assistant reply.
 		expect(messages.map((message) => message.content.role)).toEqual(["user"]);
 		expect(
-			(await t.query(internal.files_nodes_content.get_file_read_source, {
-				userId,
-				membershipId: membership.membershipId,
-				threadId,
-				path: "/private-image.png",
-			}))._nay,
+			(
+				await t.query(internal.files_nodes_content.get_file_read_source, {
+					userId,
+					membershipId: membership.membershipId,
+					agentSource: {
+						...scope,
+						threadId,
+						membershipId: membership.membershipId,
+						membershipLifetime: (
+							await t.mutation(internal.ai_chat_workspaces.capture, {
+								userId,
+								membershipId: membership.membershipId,
+							})
+						)._yay!.membershipLifetime,
+					},
+					path: "/private-image.png",
+				})
+			)._nay,
 		).toBeDefined();
 	});
 });
@@ -439,7 +874,7 @@ describe("/api/chat workspace instructions", () => {
 				stepNumber: 0,
 				experimental_context: call.experimental_context,
 			});
-			expect(first).toEqual({ messages: call.messages });
+			expect(first).toEqual({ activeTools: call.activeTools, messages: call.messages });
 
 			const output = await call.tools!.bash.execute!(
 				{ command: "cat .agents/skills/summarize-invoices/SKILL.md" },
@@ -462,7 +897,7 @@ describe("/api/chat workspace instructions", () => {
 				stepNumber: 1,
 				experimental_context: call.experimental_context,
 			});
-			expect(second).toEqual({ messages: call.messages });
+			expect(second).toEqual({ activeTools: call.activeTools, messages: call.messages });
 
 			const final = await call.prepareStep!({
 				model: call.model,

@@ -11,6 +11,8 @@ import type {
 	ai_chat_tool_create_web_search_ToolOutput,
 	ai_chat_tool_create_execute_code_ToolInput,
 	ai_chat_tool_create_execute_code_ToolOutput,
+	ai_chat_tool_create_prepare_image_generation_ToolInput,
+	ai_chat_tool_create_prepare_image_generation_ToolOutput,
 	ai_chat_tool_create_file_stored_ToolInput,
 	ai_chat_tool_create_file_stored_ToolOutput,
 } from "../server/server-ai-tools.ts";
@@ -129,6 +131,10 @@ export type ai_chat_UiTools = {
 	image_generation: {
 		input: ai_chat_tool_create_file_stored_ToolInput;
 		output: ai_chat_tool_create_file_stored_ToolOutput;
+	};
+	prepare_image_generation: {
+		input: ai_chat_tool_create_prepare_image_generation_ToolInput;
+		output: ai_chat_tool_create_prepare_image_generation_ToolOutput;
 	};
 	/**
 	 * The stored part keeps a safe status and ordinary Files references. Raw browser observations

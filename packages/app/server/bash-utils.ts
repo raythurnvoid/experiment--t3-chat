@@ -20,7 +20,7 @@ import type { Infer } from "convex/values";
 import { internal } from "../convex/_generated/api.js";
 import type { Doc, Id } from "../convex/_generated/dataModel";
 import type { ActionCtx } from "../convex/_generated/server.js";
-import type { bash_shell_state_validator } from "../convex/schema.ts";
+import type { ai_chat_workspaces_source_validator, bash_shell_state_validator } from "../convex/schema.ts";
 import type {
 	files_nodes_create_private_node_by_path_Result,
 	files_nodes_get_visible_entry_by_path_Result,
@@ -146,7 +146,7 @@ export const bash_READ_HEAD_LARGE_FILE_MAX_LINES = 500;
  * Cap on distinct paths one Bash call records for scoped-guidance lookup. Each path fans out to
  * ancestor AGENTS.md reads afterwards, so the cap bounds that work per call.
  */
-const bash_OBSERVED_PATHS_MAX = 100;
+export const bash_OBSERVED_PATHS_MAX = 100;
 export const bash_COMMAND_EXIT_FAILURE = 1;
 export const bash_COMMAND_EXIT_USAGE = 2;
 /**
@@ -197,6 +197,12 @@ export function bash_job_exit_code(activityStatus: Doc<"activities">["status"], 
  * `wait` refuses a longer list with a usage error, and the door refuses it again.
  */
 export const bash_JOB_NUMBERS_MAX_COUNT = 12;
+/**
+ * The JSON size limit of one saved job Copy input page. A page also holds at most
+ * `files_TRANSFER_SELECTION_PAGE_SIZE` sources and as many args. The worker fills pages up to
+ * these limits and the checkpoint door refuses bigger pages, so both sides must read the same numbers.
+ */
+export const bash_JOB_COPY_PAGE_MAX_BYTES = 64 * 1024;
 export const bash_NON_NEGATIVE_INTEGER_REGEX = /^\d+$/u;
 export const bash_TERMINAL_LINE_ENDING_REGEX = /\r\n?/g;
 export const bash_SHELL_COMMENT_LINE_REGEX = /^\s*#.*$/gm;
@@ -432,6 +438,10 @@ export type bash_DbFilesFsOptions = {
 		userId: Id<"users">;
 		/** Chat thread running this bash call; stamped on the pending updates mv/cp create. */
 		threadId: Id<"ai_chat_threads"> | null;
+		/**
+		 * Read-only source mounts have no file-writing authority.
+		 */
+		agentSource?: Infer<typeof ai_chat_workspaces_source_validator>;
 	};
 	currentWorkspacePath: string;
 	allowDbFilesMkdir: boolean;
@@ -660,6 +670,9 @@ export class bash_DbFilesFs implements IFileSystem {
 		if (bash_GLOB_METACHARACTER_REGEX.test(dbFilesPath)) {
 			throw new Error(`app file glob patterns are not supported: '${this.shellPathOf(dbFilesPath)}'`);
 		}
+		// A cached body is not a file grant. Resolve the live target before using it.
+		const cacheEntry = await this.getEntry(dbFilesPath);
+		if (!cacheEntry) throw new Error(`ENOENT: no such file or directory, open '${this.shellPathOf(dbFilesPath)}'`);
 		const cached = this.contentCache.get(dbFilesPath);
 		if (cached != null) {
 			return cached;
@@ -669,6 +682,7 @@ export class bash_DbFilesFs implements IFileSystem {
 		// cheap query path first and keep the older action fallback for callers
 		// that still need last-available reconstruction behavior.
 		const chunkRead = (await this.ctx.runQuery(internal.files_nodes.read_file_content_from_chunks, {
+			agentSource: this.ctxData.agentSource,
 			organizationId: this.ctxData.organizationId,
 			workspaceId: this.ctxData.workspaceId,
 			userId: this.ctxData.userId,
@@ -684,19 +698,18 @@ export class bash_DbFilesFs implements IFileSystem {
 			return chunkRead.content;
 		}
 
-		// The action fallback reconstructs last-available content; the parallel
-		// db file lookup preserves precise missing/folder/unreadable errors.
-		const fileContentPromise = this.ctx.runAction(
+		// The action fallback reconstructs last-available content.
+		const fileContent = (await this.ctx.runAction(
 			internal.files_nodes_content.get_file_last_available_text_content_by_path,
 			{
+				agentSource: this.ctxData.agentSource,
 				organizationId: this.ctxData.organizationId,
 				workspaceId: this.ctxData.workspaceId,
 				userId: this.ctxData.userId,
 				path: dbFilesPath,
 				overlayUserId: this.overlayUserId,
 			},
-		) as Promise<files_nodes_get_file_last_available_text_content_by_path_Result>;
-		const [fileContent, cacheEntry] = await Promise.all([fileContentPromise, this.getEntry(dbFilesPath)]);
+		)) as files_nodes_get_file_last_available_text_content_by_path_Result;
 
 		if (!fileContent) {
 			if (cacheEntry?.preparing) throw new Error(`Draft is still preparing: '${this.shellPathOf(dbFilesPath)}'`);
@@ -713,17 +726,6 @@ export class bash_DbFilesFs implements IFileSystem {
 		}
 
 		this.contentCache.set(dbFilesPath, fileContent.content);
-		if (!cacheEntry) {
-			this.rememberEntry({
-				target: fileContent.target,
-				path: dbFilesPath,
-				name: path_name_of(dbFilesPath),
-				kind: "file",
-				updatedAt: Date.now(),
-				assetId: null,
-				textKind: null,
-			});
-		}
 		return fileContent.content;
 	}
 
@@ -857,7 +859,8 @@ export class bash_DbFilesFs implements IFileSystem {
 
 		// Writes only run for the tenant app db-files root: the mounted sources threw above,
 		// so the scope here is never reserved. Narrow the union for the workspace-only functions.
-		const { organizationId, workspaceId, userId, threadId } = this.ctxData;
+		const { organizationId, workspaceId, userId, threadId, agentSource } = this.ctxData;
+		if (!agentSource) throw new Error("An active chat is required for file writes");
 		if (
 			organizations_is_global_organization_id(organizationId) ||
 			organizations_is_reserved_workspace_id(workspaceId)
@@ -882,6 +885,7 @@ export class bash_DbFilesFs implements IFileSystem {
 				path: dbFilesPath,
 				kind: "file",
 				threadId: threadId ?? undefined,
+				agentSource,
 			})) as files_nodes_create_private_node_by_path_Result;
 			if (created._nay) {
 				throw new Error(`cannot write '${shellPath}': ${created._nay.message}`);
@@ -897,6 +901,7 @@ export class bash_DbFilesFs implements IFileSystem {
 					pendingUpdateId: created._yay.pendingUpdateId!,
 					unstagedText: normalizedChunk,
 					threadId: threadId ?? undefined,
+					agentSource,
 				});
 				this.resetProposalCaches();
 				if (written._nay) throw new Error(`cannot write '${shellPath}': ${written._nay.message}`);
@@ -907,6 +912,7 @@ export class bash_DbFilesFs implements IFileSystem {
 		for (let attempt = 0; ; attempt += 1) {
 			// Prepare before reading or opening a write batch: preparation uses its own batch.
 			const prepared = (await this.ctx.runAction(internal.files_pending_updates.prepare_file_pending_update_for_agent, {
+				agentSource,
 				organizationId,
 				workspaceId,
 				userId,
@@ -924,6 +930,7 @@ export class bash_DbFilesFs implements IFileSystem {
 				pendingUpdateId: Id<"files_pending_updates"> | null;
 				pendingUpdateBaseStateId?: Id<"files_pending_update_yjs_states">;
 			} | null = (await this.ctx.runQuery(internal.files_nodes.read_file_content_from_chunks, {
+				agentSource: this.ctxData.agentSource,
 				organizationId,
 				workspaceId,
 				userId,
@@ -935,6 +942,7 @@ export class bash_DbFilesFs implements IFileSystem {
 				currentContent = (await this.ctx.runAction(
 					internal.files_nodes_content.get_file_last_available_text_content_by_path,
 					{
+						agentSource: this.ctxData.agentSource,
 						organizationId,
 						workspaceId,
 						userId,
@@ -968,6 +976,7 @@ export class bash_DbFilesFs implements IFileSystem {
 				expectedBaseStateId: mode === "append" ? (currentContent.pendingUpdateBaseStateId ?? null) : undefined,
 				unstagedText: newText,
 				threadId: threadId ?? undefined,
+				agentSource,
 			});
 
 			if (written._nay) {
@@ -1059,7 +1068,8 @@ export class bash_DbFilesFs implements IFileSystem {
 		// mkdir only runs for the tenant app db-files root: the external mount and plugin
 		// source roots pass allowDbFilesMkdir=false and threw above, so the scope here is never
 		// reserved. Narrow the union before the workspace-only mutation, which declares strict ids.
-		const { organizationId, workspaceId, userId } = this.ctxData;
+		const { organizationId, workspaceId, userId, agentSource } = this.ctxData;
+		if (!agentSource) throw new Error("An active chat is required for file writes");
 		if (
 			organizations_is_global_organization_id(organizationId) ||
 			organizations_is_reserved_workspace_id(workspaceId)
@@ -1072,6 +1082,7 @@ export class bash_DbFilesFs implements IFileSystem {
 			userId,
 			path: dbFilesPath,
 			kind: "folder",
+			agentSource,
 			threadId: this.ctxData.threadId ?? undefined,
 		})) as files_nodes_create_private_node_by_path_Result;
 		if (created._nay) {
@@ -1219,13 +1230,20 @@ export class bash_DbFilesFs implements IFileSystem {
 		const normalizedPath = bash_normalize_path(path);
 		if (recordPath) this.observePath(normalizedPath);
 		const cached = this.entryCache.get(normalizedPath);
-		// Synthetic parent folders make descendant paths navigable. Except for the
-		// synthetic root, only tagged targets prove that an app path exists.
-		if (cached && (normalizedPath === "/" || cached.target != null)) {
+		// Only the synthetic root has no file permission to refresh.
+		if (cached && normalizedPath === "/") {
+			if (this.ctxData.agentSource) {
+				const resolved = await this.ctx.runQuery(internal.ai_chat_workspaces.resolve, {
+					source: this.ctxData.agentSource,
+					workspace: this.ctxData.workspaceId === this.ctxData.agentSource.workspaceId ? "current" : "personal",
+				});
+				if (resolved._nay) return null;
+			}
 			return cached;
 		}
 
 		const entry = (await this.ctx.runQuery(internal.files_nodes.get_visible_entry_by_path, {
+			agentSource: this.ctxData.agentSource,
 			organizationId: this.ctxData.organizationId,
 			workspaceId: this.ctxData.workspaceId,
 			visibilityUserId: this.ctxData.userId,
@@ -1234,7 +1252,17 @@ export class bash_DbFilesFs implements IFileSystem {
 		})) as files_nodes_get_visible_entry_by_path_Result;
 
 		if (!entry) {
+			this.resetProposalCaches();
 			return null;
+		}
+		if (
+			cached &&
+			(cached.target?.kind !== entry.kind ||
+				cached.target.id !== entry.node._id ||
+				cached.updatedAt !== (entry.kind === "saved" ? entry.node.updatedAt : entry.pendingUpdate.updatedAt))
+		) {
+			// A path can be reused by another file while this shell call is running.
+			this.resetProposalCaches();
 		}
 
 		// The overlay can present a moved node here: cache it under the requested path,
@@ -1344,6 +1372,10 @@ export type bash_ExternalSourceMount = {
  */
 export type bash_DbFilesRoots = {
 	app: bash_DbFilesRoot;
+	/**
+	 * Null when the current workspace is already personal/home, or for plugin reviews.
+	 */
+	personal: bash_DbFilesRoot | null;
 	externalMounts: {
 		currentWorkspacePath: string;
 		/** Synced sources keyed by mount name; empty when nothing has finished a sync. */
@@ -1510,16 +1542,20 @@ export function bash_resolve_db_files_shell_path(
 		};
 	}
 
+	const root =
+		dbFilesRoots.personal && bash_is_path_under(dbFilesRoots.personal.currentWorkspacePath, normalized)
+			? dbFilesRoots.personal
+			: dbFilesRoots.app;
 	const renderShellPath = (dbFilesPath: string) =>
-		bash_db_files_path_to_current_workspace_path(dbFilesRoots.app.currentWorkspacePath, dbFilesPath);
-	const dbFilesPath = bash_current_workspace_path_to_db_files_path(dbFilesRoots.app.currentWorkspacePath, normalized);
-	if (dbFilesPath != null) dbFilesRoots.app.fs.observePath(dbFilesPath);
+		bash_db_files_path_to_current_workspace_path(root.currentWorkspacePath, dbFilesPath);
+	const dbFilesPath = bash_current_workspace_path_to_db_files_path(root.currentWorkspacePath, normalized);
+	if (dbFilesPath != null) root.fs.observePath(dbFilesPath);
 	return {
 		kind: dbFilesPath == null ? "outside_db_files" : "app",
-		fs: dbFilesRoots.app.fs,
-		ctxData: dbFilesRoots.app.fs.ctxData,
+		fs: root.fs,
+		ctxData: root.fs.ctxData,
 		dbFilesPath,
-		basePath: dbFilesRoots.app.currentWorkspacePath,
+		basePath: root.currentWorkspacePath,
 		renderShellPath,
 	};
 }
@@ -1556,7 +1592,7 @@ const SHELL_REDIRECTION_WORD_REGEX = /^(?:\d*(?:<>|>>|>\||>|<|<<|<<<|<&|>&)|&>>?
 const SHELL_REDIRECTION_OPERATOR_REGEX = /^(?:\d*(?:<>|>>|>\||>|<|<<|<<<|<&|>&)|&>>?)$/u;
 
 type ShellWordToken = { kind: "separator" } | { kind: "word"; value: string };
-type ShellCodeGuardOptions = { cwd: string; fs: IFileSystem; appRoot: bash_DbFilesRoot };
+type ShellCodeGuardOptions = { cwd: string; fs: IFileSystem; dbFilesRoots: bash_DbFilesRoots };
 
 /**
  * Split only enough shell syntax to find simple commands. Quotes and backslashes
@@ -1801,16 +1837,19 @@ async function command_substitution_loads_disallowed_shell_code(script: string, 
 				}
 				try {
 					const shellPath = bash_resolve_path(options.cwd, word);
+					const appRoot = [options.dbFilesRoots.app, options.dbFilesRoots.personal].find(
+						(root) => root && bash_is_path_under(root.currentWorkspacePath, shellPath),
+					);
 					const dbFilesPath =
-						options.appRoot.fs.readOnlySource == null
-							? bash_current_workspace_path_to_db_files_path(options.appRoot.currentWorkspacePath, shellPath)
+						appRoot && appRoot.fs.readOnlySource == null
+							? bash_current_workspace_path_to_db_files_path(appRoot.currentWorkspacePath, shellPath)
 							: null;
 					// Safety probes inspect shell text, including skipped commands and patterns.
 					// Only actual file operations should load that folder's instructions.
-					if (dbFilesPath != null) {
+					if (appRoot && dbFilesPath != null) {
 						if (
 							!bash_GLOB_METACHARACTER_REGEX.test(dbFilesPath) &&
-							(await options.appRoot.fs.getEntry(dbFilesPath, false))?.kind === "file"
+							(await appRoot.fs.getEntry(dbFilesPath, false))?.kind === "file"
 						) {
 							return true;
 						}
@@ -2252,6 +2291,7 @@ export async function files_agent_write_file_text(
 		organizationId: Id<"organizations">;
 		workspaceId: Id<"organizations_workspaces">;
 		userId: Id<"users">;
+		agentSource: Infer<typeof ai_chat_workspaces_source_validator>;
 		target: files_PendingTarget;
 		operationBatchId?: Id<"files_pending_update_operation_batches">;
 		pendingUpdateId?: Id<"files_pending_updates">;
@@ -2268,6 +2308,7 @@ export async function files_agent_write_file_text(
 				workspaceId: args.workspaceId,
 				userId: args.userId,
 				target: args.target,
+				agentSource: args.agentSource,
 			})) as
 				| {
 						_yay: { operationBatchId: Id<"files_pending_update_operation_batches">; expiresAt: number };
@@ -2492,8 +2533,8 @@ export function bash_external_mounts_fan_out_db_files_path(mount: bash_ExternalS
  */
 export function bash_enforce_reader_operand_cap(
 	command: string,
-	commandCtx: CommandContext,
-	currentWorkspacePath: string,
+	commandCtx: Pick<CommandContext, "cwd">,
+	dbFilesRoots: bash_DbFilesRoots,
 	files: string[],
 ) {
 	let fileOperandCount = 0;
@@ -2502,7 +2543,9 @@ export function bash_enforce_reader_operand_cap(
 		const resolvedPath = bash_resolve_path(commandCtx.cwd, file);
 		// Mount reads pull whole file bodies from the db too, so count them against the same batch cap.
 		if (
-			bash_is_path_under_current_workspace_path(currentWorkspacePath, resolvedPath) ||
+			[dbFilesRoots.app, dbFilesRoots.personal].some(
+				(root) => root && bash_is_path_under(root.currentWorkspacePath, resolvedPath),
+			) ||
 			bash_is_path_under_read_only_mounts(resolvedPath)
 		) {
 			fileOperandCount++;

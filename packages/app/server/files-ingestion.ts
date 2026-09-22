@@ -2,6 +2,8 @@ import type { FunctionArgs, FunctionReturnType } from "convex/server";
 import { internal } from "../convex/_generated/api.js";
 import type { ActionCtx } from "../convex/_generated/server.js";
 import type { Id } from "../convex/_generated/dataModel.js";
+import type { Infer } from "convex/values";
+import type { ai_chat_workspaces_source_validator } from "../convex/schema.ts";
 import { r2_put_object } from "../convex/r2_client.ts";
 import {
 	files_resolve_upload_content_type,
@@ -100,14 +102,19 @@ export function files_ingestion_encode_base64(bytes: Uint8Array) {
  */
 export async function files_ingestion_write(
 	ctx: ActionCtx,
-	scope: {
-		userId: Id<"users">;
-		membershipId: Id<"organizations_workspaces_users">;
-		organizationId: Id<"organizations">;
-		workspaceId: Id<"organizations_workspaces">;
-		threadId?: Id<"ai_chat_threads">;
-	},
-	files: Array<{ path: string; contentType?: string; bytes: Uint8Array<ArrayBuffer> }>,
+	files: Array<{
+		scope: {
+			userId: Id<"users">;
+			membershipId: Id<"organizations_workspaces_users">;
+			organizationId: Id<"organizations">;
+			workspaceId: Id<"organizations_workspaces">;
+			threadId?: Id<"ai_chat_threads">;
+			agentSource?: Infer<typeof ai_chat_workspaces_source_validator>;
+		};
+		path: string;
+		contentType?: string;
+		bytes: Uint8Array<ArrayBuffer>;
+	}>,
 	producer: {
 		requestId: string;
 		prepare: (
@@ -124,7 +131,6 @@ export async function files_ingestion_write(
 
 	// Check every path and content type first. One bad file then fails the whole call before any
 	// receipt exists, instead of after some files are already created.
-	const { threadId: _threadId, ...fileScope } = scope;
 	const checkedFiles = files.map((file) => {
 		const path = file.path;
 		if (
@@ -161,6 +167,8 @@ export async function files_ingestion_write(
 		| { status: "errored" | "cancelled"; index: number }
 	> = [];
 	for (const [index, file] of files.entries()) {
+		const { scope } = file;
+		const { threadId: _threadId, ...fileScope } = scope;
 		if (abortSignal?.aborted) {
 			results.push({ status: "cancelled", index });
 			continue;
@@ -195,7 +203,9 @@ export async function files_ingestion_write(
 			const prepareArgs = {
 				...scope,
 				...item,
-				requestId: await crypto_sha256_hex(`${scope.threadId ?? ""}:${producer.requestId}:${index}`),
+				requestId: await crypto_sha256_hex(
+					`${scope.threadId ?? ""}:${producer.requestId}:${index}:${scope.workspaceId}`,
+				),
 				attemptId,
 				size: file.bytes.byteLength,
 				digest: await crypto_sha256_hex(file.bytes),
@@ -247,6 +257,7 @@ export async function files_ingestion_write(
 
 			abortSignal?.throwIfAborted();
 			const finalizeArgs = {
+				agentSource: scope.agentSource,
 				userId: scope.userId,
 				membershipId: scope.membershipId,
 				organizationId: scope.organizationId,

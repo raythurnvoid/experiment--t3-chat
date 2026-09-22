@@ -29,6 +29,7 @@ import { convex_error, v_result } from "../server/convex-utils.ts";
 import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import { access_control_changes_db_record } from "./access_control_changes.ts";
+import { files_media_validation_db_advance_version } from "./files_media_validation.ts";
 import { organizations_membership_lifetimes_db_get } from "./organizations_membership_lifetimes.ts";
 import { plugins_db_get_live_service_account } from "./plugins_service_accounts.ts";
 import app_convex_schema from "./schema.ts";
@@ -706,7 +707,7 @@ export async function access_control_db_ensure_role_assignment(
 		return existing._id;
 	}
 
-	return await ctx.db.insert("access_control_role_assignments", {
+	const assignmentId = await ctx.db.insert("access_control_role_assignments", {
 		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
 		userId: args.userId,
@@ -714,6 +715,8 @@ export async function access_control_db_ensure_role_assignment(
 		createdAt: args.now,
 		updatedAt: args.now,
 	});
+	await files_media_validation_db_advance_version(ctx, { organizationId: args.organizationId, workspaceId: null });
+	return assignmentId;
 }
 
 /**
@@ -779,11 +782,12 @@ async function db_set_role_assignment(
 				role: args.role,
 				updatedAt: args.now,
 			});
+			await files_media_validation_db_advance_version(ctx, { organizationId: args.organizationId, workspaceId: null });
 		}
 		return existing._id;
 	}
 
-	return await ctx.db.insert("access_control_role_assignments", {
+	const assignmentId = await ctx.db.insert("access_control_role_assignments", {
 		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
 		userId: args.userId,
@@ -791,6 +795,8 @@ async function db_set_role_assignment(
 		createdAt: args.now,
 		updatedAt: args.now,
 	});
+	await files_media_validation_db_advance_version(ctx, { organizationId: args.organizationId, workspaceId: null });
+	return assignmentId;
 }
 
 // #endregion Write helpers
@@ -2651,6 +2657,13 @@ export const update_role = mutation({
 		}
 
 		await ctx.db.patch("access_control_roles", role._id, patch);
+		if (
+			patch.permissions &&
+			(patch.permissions.length !== role.permissions.length ||
+				patch.permissions.some((permission) => !role.permissions.includes(permission)))
+		) {
+			await files_media_validation_db_advance_version(ctx, { organizationId: role.organizationId, workspaceId: null });
+		}
 		if (args.permissions != null) {
 			await access_control_changes_db_record(ctx, [
 				{
@@ -2820,6 +2833,7 @@ export const delete_role = mutation({
 			),
 		);
 		await ctx.db.delete("access_control_roles", role._id);
+		await files_media_validation_db_advance_version(ctx, { organizationId: role.organizationId, workspaceId: null });
 		await access_control_changes_db_record(ctx, [
 			{
 				scope: { kind: "organization", organizationId: organization._id },
@@ -2954,6 +2968,7 @@ export const set_user_role = mutation({
 			});
 			if (assignment) {
 				await ctx.db.delete("access_control_role_assignments", assignment._id);
+				await files_media_validation_db_advance_version(ctx, { organizationId: organization._id, workspaceId: null });
 				await access_control_changes_db_record(ctx, [
 					{
 						scope: { kind: "workspace", organizationId: organization._id, workspaceId: args.workspaceId },
@@ -3222,6 +3237,7 @@ export const transfer_organization_ownership = mutation({
 			}),
 		]);
 
+		await files_media_validation_db_advance_version(ctx, { organizationId: organization._id, workspaceId: null });
 		await access_control_changes_db_record(ctx, [
 			{
 				scope: { kind: "organization", organizationId: organization._id },

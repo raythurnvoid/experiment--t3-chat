@@ -8,6 +8,7 @@ import type { public_api_Scope } from "../shared/public-api.ts";
 import {
 	public_api_authorize_request,
 	public_api_is_path_inside_prefix,
+	public_api_resolve_live_principal,
 	public_api_settle_plugin_call_best_effort,
 	public_api_visibility_user_id,
 } from "./public_api_http_auth.ts";
@@ -90,6 +91,7 @@ export function public_api_files_list_http_routes(router: { route: HttpRouter["r
 							const lowercaseExtension = normalize_extension(body._yay.extension);
 							const numItems = Math.min(body._yay.limit ?? FILES_LIST_MAX_ITEMS, FILES_LIST_MAX_ITEMS);
 							const result = await ctx.runQuery(internal.files_nodes.list_subtree, {
+								agentSource: principal.kind === "public_api_grant" ? (principal.agentSource ?? undefined) : undefined,
 								organizationId: principal.organizationId,
 								workspaceId: principal.workspaceId,
 								visibilityUserId: public_api_visibility_user_id(principal),
@@ -119,6 +121,15 @@ export function public_api_files_list_http_routes(router: { route: HttpRouter["r
 								status: "succeeded",
 								responseStatus: 200,
 							});
+							// The page and asset reads can outlive the source membership or grant.
+							if (principal.kind === "public_api_grant" && principal.agentSource !== null) {
+								const current = await public_api_resolve_live_principal(ctx, {
+									presented: auth._yay.presentedToken,
+									now: Date.now(),
+									requiredScope: "files:list",
+								});
+								if (current._nay) return { status: 404, body: { message: "File unavailable" } } as const;
+							}
 							console.info("Public API files listed", {
 								principalKind: principal.kind,
 								principalKey: principal.principalKey,

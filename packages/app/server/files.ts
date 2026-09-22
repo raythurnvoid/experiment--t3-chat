@@ -23,6 +23,7 @@ import {
 	files_private_storage_db_reserve,
 	files_private_storage_db_release_deleted_resource,
 } from "../convex/files_private_storage.ts";
+import { files_media_dependencies_db_retire } from "../convex/files_media_dependencies.ts";
 
 export * from "../shared/files.ts";
 
@@ -232,6 +233,15 @@ export async function files_db_delete_pending_update(
 	if (!proposal) return;
 	// Paged cleanup follows the root's logical Discard, which already changed this clock.
 	if (!options?.reviewAlreadyFenced) await files_db_advance_pending_review_version(ctx, proposal);
+	if (proposal.mediaDependencySetId) {
+		const set = await ctx.db.get("files_media_dependency_sets", proposal.mediaDependencySetId);
+		if (set)
+			await files_media_dependencies_db_retire(ctx, {
+				setId: set._id,
+				generation: set.generation,
+				owner: { kind: "proposal", pendingUpdateId },
+			});
+	}
 	await ctx.db.delete("files_pending_updates", pendingUpdateId);
 }
 
@@ -580,7 +590,9 @@ export async function files_db_cancel_pending_update_cleanup_tasks(
 
 	await Promise.all([
 		...cleanupTasks.map((cleanupTask) =>
-			files_db_cancel_scheduled_function_if_present(ctx, cleanupTask.scheduledFunctionId),
+			cleanupTask.scheduledFunctionId
+				? files_db_cancel_scheduled_function_if_present(ctx, cleanupTask.scheduledFunctionId)
+				: undefined,
 		),
 		...cleanupTasks.map((cleanupTask) => files_db_delete_pending_update_cleanup_task_if_present(ctx, cleanupTask._id)),
 	]);
@@ -592,38 +604,39 @@ export async function files_db_schedule_pending_update_cleanup(
 		pendingUpdateId: Id<"files_pending_updates">;
 		expectedUpdatedAt: number;
 		delayMs?: number;
+		expiresAt?: number;
 	},
 ) {
-	// Refresh the pending update lifetime on every write. Keep one cleanup task per doc
-	// and replace the older scheduled run whenever the doc changes.
-	const [existingCleanupTasks, scheduledFunctionId] = await Promise.all([
-		ctx.db
-			.query("files_pending_updates_cleanup_tasks")
-			.withIndex("by_pendingUpdate", (q) => q.eq("pendingUpdateId", args.pendingUpdateId))
-			.collect(),
-		ctx.scheduler.runAfter(
-			args.delayMs ?? 4 * 60 * 60 * 1000, // 4 hours
-			internal.files_pending_updates.remove_file_pending_update_if_expired,
-			{
-				pendingUpdateId: args.pendingUpdateId,
-				expectedUpdatedAt: args.expectedUpdatedAt,
-			},
-		),
-	]);
-
-	await Promise.all([
-		ctx.db.insert("files_pending_updates_cleanup_tasks", {
+	const existing = await ctx.db
+		.query("files_pending_updates_cleanup_tasks")
+		.withIndex("by_pendingUpdate", (q) => q.eq("pendingUpdateId", args.pendingUpdateId))
+		.unique();
+	const now = Date.now();
+	const expiresAt = Math.max(existing?.expiresAt ?? 0, args.expiresAt ?? now + (args.delayMs ?? 4 * 60 * 60 * 1000));
+	const expiryGeneration = (existing?.expiryGeneration ?? 0) + 1;
+	const cleanupTaskId =
+		existing?._id ??
+		(await ctx.db.insert("files_pending_updates_cleanup_tasks", {
 			pendingUpdateId: args.pendingUpdateId,
-			scheduledFunctionId,
+			scheduledFunctionId: null,
 			expectedUpdatedAt: args.expectedUpdatedAt,
-		}),
-		...existingCleanupTasks.map((cleanupTask) =>
-			files_db_cancel_scheduled_function_if_present(ctx, cleanupTask.scheduledFunctionId),
-		),
-		...existingCleanupTasks.map((cleanupTask) =>
-			files_db_delete_pending_update_cleanup_task_if_present(ctx, cleanupTask._id),
-		),
-	]);
+			expiresAt,
+			expiryGeneration,
+		}));
+	// A held, due proposal retries without pretending that its content was edited.
+	const scheduledFunctionId = await ctx.scheduler.runAt(
+		Math.max(expiresAt, now + (args.expiresAt === undefined ? 0 : (args.delayMs ?? 0))),
+		internal.files_pending_updates.remove_file_pending_update_if_expired,
+		{ cleanupTaskId, expiryGeneration },
+	);
+	await ctx.db.patch("files_pending_updates_cleanup_tasks", cleanupTaskId, {
+		scheduledFunctionId,
+		expectedUpdatedAt: args.expectedUpdatedAt,
+		expiresAt,
+		expiryGeneration,
+	});
+	if (existing?.scheduledFunctionId)
+		await files_db_cancel_scheduled_function_if_present(ctx, existing.scheduledFunctionId);
 }
 
 export async function files_db_reschedule_pending_update_cleanup_for_user(

@@ -18811,6 +18811,92 @@ describe("files_nodes.create_folder_node read-only gates", () => {
 	});
 });
 
+describe("file parent create doors", () => {
+	test("create_folder_node refuses a file as parent and writes nothing", async () => {
+		const t = test_convex();
+		const { db, asUser, outerId } = await seed_read_only_lock_tree(t);
+		const file = await asUser.action(api.files_nodes_content.create_text_node, {
+			membershipId: db.membershipId,
+			parentId: outerId,
+			path: "notes.md",
+		});
+		if (file._nay) throw new Error(file._nay.message);
+
+		const refused = await asUser.mutation(api.files_nodes.create_folder_node, {
+			membershipId: db.membershipId,
+			parentId: file._yay.nodeId,
+			path: "probe/deep",
+		});
+		expect(refused._nay?.message).toBe("Not found");
+		expect(await read_active_child(t, db, file._yay.nodeId, "probe")).toBeNull();
+	});
+
+	test("create_text_node refuses a file as parent", async () => {
+		const t = test_convex();
+		const { db, asUser, outerId } = await seed_read_only_lock_tree(t);
+		const file = await asUser.action(api.files_nodes_content.create_text_node, {
+			membershipId: db.membershipId,
+			parentId: outerId,
+			path: "notes.md",
+		});
+		if (file._nay) throw new Error(file._nay.message);
+
+		const refused = await asUser.action(api.files_nodes_content.create_text_node, {
+			membershipId: db.membershipId,
+			parentId: file._yay.nodeId,
+			path: "probe.md",
+		});
+		expect(refused._nay?.message).toBe("Not found");
+		expect(await read_active_child(t, db, file._yay.nodeId, "probe.md")).toBeNull();
+	});
+});
+
+describe("archived parent create doors", () => {
+	test("create_folder_node refuses an archived parent and writes nothing", async () => {
+		const t = test_convex();
+		const { db, asUser, frozenId } = await seed_read_only_lock_tree(t);
+
+		const refused = await asUser.mutation(api.files_nodes.create_folder_node, {
+			membershipId: db.membershipId,
+			parentId: frozenId,
+			path: "probe/deep",
+		});
+		expect(refused._nay?.message).toBe("Not found");
+		expect(await read_active_child(t, db, frozenId, "probe")).toBeNull();
+	});
+
+	test("create_text_node refuses an archived parent before any R2 work", async () => {
+		const t = test_convex();
+		const { db, asUser, frozenId } = await seed_read_only_lock_tree(t);
+
+		const refused = await asUser.action(api.files_nodes_content.create_text_node, {
+			membershipId: db.membershipId,
+			parentId: frozenId,
+			path: "probe.md",
+		});
+		expect(refused._nay?.message).toBe("Not found");
+		expect(await read_active_child(t, db, frozenId, "probe.md")).toBeNull();
+		// The preflight refuses before the action creates asset docs, so nothing needs cleanup.
+		expect(await t.run((ctx) => ctx.db.query("files_r2_assets").collect())).toEqual([]);
+		expect(await read_deletion_jobs(t)).toEqual([]);
+	});
+
+	test("create_upload_node refuses an archived parent", async () => {
+		const t = test_convex();
+		const { db, asUser, frozenId } = await seed_read_only_lock_tree(t);
+
+		const refused = await asUser.mutation(api.files_nodes.create_upload_node, {
+			membershipId: db.membershipId,
+			parentId: frozenId,
+			filename: "probe.pdf",
+			contentType: "application/pdf",
+			size: 1234,
+		});
+		expect(refused._nay?.message).toBe("Not found");
+		expect(await read_active_child(t, db, frozenId, "probe.pdf")).toBeNull();
+	});
+});
+
 describe("files_nodes destination conflict privacy", () => {
 	test("rename and move authorize a restricted destination occupant before reporting its conflict", async () => {
 		const t = test_convex();

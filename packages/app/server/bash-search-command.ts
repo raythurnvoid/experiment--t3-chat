@@ -340,11 +340,11 @@ export function bash_search_command_create(ctx: ActionCtx, dbFilesRoots: bash_Db
 			};
 		} else {
 			res = (await ctx.runQuery(internal.files_nodes.text_search_files, {
+				agentSource: scope.ctxData.agentSource,
 				organizationId: scope.ctxData.organizationId,
 				workspaceId: scope.ctxData.workspaceId,
 				userId: scope.ctxData.userId,
-				// The /api/chat gate already required content.read on this workspace before any bash
-				// tool ran, so workspace read is proven upstream.
+				// Agent reads recheck both the source chat and this destination in the query.
 				hasWorkspaceRead: true,
 				query: parsed._yay.query,
 				numItems: bash_clamp_listing_page_limit(parsed._yay.limit),

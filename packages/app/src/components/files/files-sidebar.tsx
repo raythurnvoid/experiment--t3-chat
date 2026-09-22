@@ -7371,6 +7371,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			const { act, cleanup, fireEvent, render, waitFor } = await import("@testing-library/react");
 			const { ConvexProvider } = await import("convex/react");
 			const { app_convex } = await import("@/lib/app-convex-client.ts");
+			const { AppActivitiesProvider } = await import("@/lib/app-activities-context.tsx");
 			const emptyResult: never[] = [];
 			vi.spyOn(app_convex, "watchQuery").mockReturnValue({
 				onUpdate: () => () => {},
@@ -7446,43 +7447,46 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 				return (
 					<ConvexProvider client={app_convex}>
-						<FilesClipboardProvider membershipId={"membership" as app_convex_Id<"organizations_workspaces_users">}>
-							<div ref={scrollElementRef}>
-								<FilesSidebarTree
-									tree={tree}
-									scrollElementRef={scrollElementRef}
-									virtualizerRef={virtualizerRef}
-									isTreeLoading={false}
-									showEmptyState={false}
-									isSearchActive={props.isSearchActive ?? false}
-									isSearchLoading={false}
-									isSearchFailed={false}
-									displayNameByUserId={new Map()}
-									trackActiveFileIds={new Set()}
-									selectedNodeId={props.selectedNodeId ?? null}
-									selectedNodeIds={new Set(childIds)}
-									dialogNodeId={props.dialogNodeId ?? null}
-									isBusy={props.isBusy ?? false}
-									isUploadingFile={false}
-									pendingActionNodeIds={props.pendingActionNodeIds ?? new Set()}
-									renameErrorByNodeId={new Map()}
-									canWriteItem={() => props.canWrite ?? true}
-									canUnarchiveItem={() => true}
-									canWriteRoot={props.canWrite ?? true}
-									protectedDescendantIds={new Set()}
-									onCreateNode={handleAction}
-									onStartRename={handleAction}
-									onRenameErrorClear={handleAction}
-									onCopy={handleAction}
-									onCopyLink={handleAction}
-									onCopyNodeId={handleAction}
-									onShare={handleAction}
-									onProperties={handleAction}
-									onArchive={handleAction}
-									onUnarchive={handleAction}
-								/>
-							</div>
-						</FilesClipboardProvider>
+						{/* The clipboard provider reads pending Stops from the Activity provider. */}
+						<AppActivitiesProvider membershipId={"membership" as app_convex_Id<"organizations_workspaces_users">}>
+							<FilesClipboardProvider membershipId={"membership" as app_convex_Id<"organizations_workspaces_users">}>
+								<div ref={scrollElementRef}>
+									<FilesSidebarTree
+										tree={tree}
+										scrollElementRef={scrollElementRef}
+										virtualizerRef={virtualizerRef}
+										isTreeLoading={false}
+										showEmptyState={false}
+										isSearchActive={props.isSearchActive ?? false}
+										isSearchLoading={false}
+										isSearchFailed={false}
+										displayNameByUserId={new Map()}
+										trackActiveFileIds={new Set()}
+										selectedNodeId={props.selectedNodeId ?? null}
+										selectedNodeIds={new Set(childIds)}
+										dialogNodeId={props.dialogNodeId ?? null}
+										isBusy={props.isBusy ?? false}
+										isUploadingFile={false}
+										pendingActionNodeIds={props.pendingActionNodeIds ?? new Set()}
+										renameErrorByNodeId={new Map()}
+										canWriteItem={() => props.canWrite ?? true}
+										canUnarchiveItem={() => true}
+										canWriteRoot={props.canWrite ?? true}
+										protectedDescendantIds={new Set()}
+										onCreateNode={handleAction}
+										onStartRename={handleAction}
+										onRenameErrorClear={handleAction}
+										onCopy={handleAction}
+										onCopyLink={handleAction}
+										onCopyNodeId={handleAction}
+										onShare={handleAction}
+										onProperties={handleAction}
+										onArchive={handleAction}
+										onUnarchive={handleAction}
+									/>
+								</div>
+							</FilesClipboardProvider>
+						</AppActivitiesProvider>
 					</ConvexProvider>
 				);
 			}

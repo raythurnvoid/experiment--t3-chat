@@ -1,5 +1,6 @@
 import { R2 } from "@convex-dev/r2";
 import { Workpool } from "@convex-dev/workpool";
+import type { FunctionArgs } from "convex/server";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
@@ -8,6 +9,7 @@ import { files_transfer_db_delete_run_batch } from "./files_transfer.ts";
 import { organizations_membership_lifetimes_db_ensure } from "./organizations_membership_lifetimes.ts";
 import { test_convex, test_create_saved_text_file, test_mocks_fill_db_with } from "./setup.test.ts";
 import { files_ROOT_ID } from "../shared/files.ts";
+import { r2_create_asset_key, r2_server_side_copy } from "./r2_client.ts";
 
 const r2Objects = new Map<string, BodyInit>();
 
@@ -67,8 +69,83 @@ async function create_folder_fixture(paths: string[]) {
 	return { t, db, asUser, folders };
 }
 
+// These tests exercise discovery and publication after Copy intake finishes.
+async function finish_selection(
+	t: Pick<ReturnType<typeof test_convex>, "mutation" | "run">,
+	runId: Id<"files_transfer_runs">,
+	activityId: Id<"activities">,
+) {
+	for (let step = 0; step < 300; step++) {
+		const run = await t.run((ctx) => ctx.db.get("files_transfer_runs", runId));
+		if (run?.step !== "select" && run?.step !== "normalize") return;
+		const activity = await t.run((ctx) => ctx.db.get("activities", activityId));
+		if (!activity || !activities_is_active(activity.status)) return;
+		await t.mutation(internal.files_transfer.advance, { runId });
+	}
+	throw new Error("Copy selection did not finish");
+}
+
+async function start_transfer(
+	t: Pick<ReturnType<typeof test_convex>, "mutation" | "run">,
+	args: FunctionArgs<typeof api.files_transfer.start>,
+) {
+	const started = await t.mutation(api.files_transfer.start, {
+		...args,
+		...(args.kind === "copy"
+			? { expectedSourceCount: args.sourceIds.length, sourceIds: args.sourceIds.slice(0, 100) }
+			: {}),
+	});
+	if (started._nay || args.kind === "move") return started;
+	const runId = started._yay.runId;
+	for (let offset = 100; offset < args.sourceIds.length; offset += 100) {
+		expect(
+			await t.mutation(api.files_transfer.append_sources, {
+				membershipId: args.membershipId,
+				runId,
+				offset,
+				sourceIds: args.sourceIds.slice(offset, offset + 100),
+			}),
+		).toEqual({ _yay: null });
+	}
+	expect(await t.mutation(api.files_transfer.seal, { membershipId: args.membershipId, runId })).toEqual({ _yay: null });
+	await finish_selection(t, runId, started._yay.activityId);
+	return started;
+}
+
+async function start_agent_transfer(
+	t: Pick<ReturnType<typeof test_convex>, "mutation" | "run">,
+	args: FunctionArgs<typeof internal.files_transfer.start_for_agent>,
+) {
+	const started = await t.mutation(internal.files_transfer.start_for_agent, {
+		...args,
+		...(args.kind === "copy" ? { expectedSourceCount: args.sources.length, sources: args.sources.slice(0, 100) } : {}),
+	});
+	if (started._nay || args.kind === "move") return started;
+	const runId = started._yay.runId;
+	for (let offset = 100; offset < args.sources.length; offset += 100) {
+		expect(
+			await t.mutation(internal.files_transfer.append_sources_for_agent, {
+				membershipId: args.membershipId,
+				threadId: args.threadId,
+				runId,
+				offset,
+				sources: args.sources.slice(offset, offset + 100),
+			}),
+		).toEqual({ _yay: null });
+	}
+	expect(
+		await t.mutation(internal.files_transfer.seal_for_agent, {
+			membershipId: args.membershipId,
+			threadId: args.threadId,
+			runId,
+		}),
+	).toEqual({ _yay: null });
+	await finish_selection(t, runId, started._yay.activityId);
+	return started;
+}
+
 async function start_copy(fixture: Awaited<ReturnType<typeof create_folder_fixture>>, sourceIds: Id<"files_nodes">[]) {
-	const started = await fixture.asUser.mutation(api.files_transfer.start, {
+	const started = await start_transfer(fixture.asUser, {
 		membershipId: fixture.db.membershipId,
 		requestId: "copy-request",
 		kind: "copy",
@@ -194,21 +271,22 @@ describe("start", () => {
 			sourceIds: [folders.get("/source")!, folders.get("/source/child")!, folders.get("/source")!],
 			targetParentId: folders.get("/target")!,
 		};
-		const first = await asUser.mutation(api.files_transfer.start, args);
+		const first = await start_transfer(asUser, args);
 		if (first._nay) throw new Error(first._nay.message);
-		expect(await asUser.mutation(api.files_transfer.start, args)).toEqual(first);
+		expect(await start_transfer(asUser, args)).toEqual(first);
 		// The same request ID with other sources is a new request, not a retry of this one.
-		expect(
-			(await asUser.mutation(api.files_transfer.start, { ...args, sourceIds: [folders.get("/source/child")!] }))._nay,
-		).toMatchObject({ name: "request_changed", message: "This request ID was already used for another transfer" });
-		expect(
-			(await asUser.mutation(api.files_transfer.start, { ...args, requestId: "another-request" }))._nay?.message,
-		).toBe("A transfer is already running in this workspace");
+		expect((await start_transfer(asUser, { ...args, sourceIds: [folders.get("/source/child")!] }))._nay).toMatchObject({
+			name: "request_changed",
+			message: "This request ID was already used for another transfer",
+		});
+		expect((await start_transfer(asUser, { ...args, requestId: "another-request" }))._nay?.message).toBe(
+			"A transfer is already running in this workspace",
+		);
 		expect(await asUser.query(api.files_transfer.list_current, { membershipId: db.membershipId })).toMatchObject([
 			{
 				_id: first._yay.runId,
 				step: "discover",
-				activity: { status: "queued", progress: { discovered: 1, total: null } },
+				activity: { status: "running", progress: { discovered: 1, total: null } },
 				controls: { canStop: true, canRetry: false, canDismiss: false },
 			},
 		]);
@@ -236,6 +314,26 @@ describe("start", () => {
 		expect((await get_node(fixture, "/source"))?._id).toBe(folders.get("/source"));
 	});
 
+	test("rejects a paste into an archived folder", async () => {
+		const fixture = await create_folder_fixture(["/source", "/archived-target"]);
+		const { t, db, asUser, folders } = fixture;
+		const archived = await asUser.mutation(api.files_nodes.archive_nodes, {
+			membershipId: db.membershipId,
+			nodeIds: [folders.get("/archived-target")!],
+		});
+		if (archived._nay) throw new Error(archived._nay.message);
+
+		const refused = await start_transfer(asUser, {
+			membershipId: db.membershipId,
+			requestId: "archived-target",
+			kind: "copy",
+			sourceIds: [folders.get("/source")!],
+			targetParentId: folders.get("/archived-target")!,
+		});
+		expect(refused._nay?.message).toBe("Destination changed");
+		expect(await t.run((ctx) => ctx.db.query("files_transfer_runs").collect())).toHaveLength(0);
+	});
+
 	test("keeps a run private from another member of the same workspace", async () => {
 		const fixture = await create_folder_fixture(["/source"]);
 		const member = await add_member(fixture);
@@ -251,17 +349,13 @@ describe("start", () => {
 		expect(
 			(await fixture.asUser.query(api.files_transfer.get, { membershipId: fixture.db.membershipId, runId }))?.activity
 				.status,
-		).toBe("queued");
+		).toBe("running");
 	});
-	// The selection cap is 200 roots. Step it by exactly one so the pair names its own limit.
-	test.each([
-		{ label: "starts a copy of two hundred selected roots", count: 200, refused: false },
-		{ label: "refuses two hundred and one selected roots", count: 201, refused: true },
-	])("$label", async ({ count, refused }) => {
+	test.each([200, 201])("starts a copy of %s selected roots across intake pages", async (count) => {
 		const paths = Array.from({ length: count }, (_entry, index) => `/root-${index.toString().padStart(3, "0")}`);
 		const fixture = await create_folder_fixture(paths);
 		const { t, db, asUser, folders } = fixture;
-		const started = await asUser.mutation(api.files_transfer.start, {
+		const started = await start_transfer(asUser, {
 			membershipId: db.membershipId,
 			requestId: "root-limit",
 			kind: "copy",
@@ -269,23 +363,408 @@ describe("start", () => {
 			targetParentId: folders.get("/target")!,
 		});
 
-		if (refused) {
-			expect(started._nay?.message).toBe("Select between 1 and 200 items");
-			expect(await t.run((ctx) => ctx.db.query("files_transfer_runs").collect())).toEqual([]);
-			expect(await t.run((ctx) => ctx.db.query("files_transfer_items").collect())).toEqual([]);
-			return;
-		}
-
 		expect(started._nay).toBeUndefined();
 		if (started._nay) return;
 		expect(
 			await asUser.query(api.files_transfer.get, { membershipId: db.membershipId, runId: started._yay.runId }),
-		).toMatchObject({ step: "discover", activity: { progress: { discovered: 200 } } });
-		expect(await t.run((ctx) => ctx.db.query("files_transfer_items").collect())).toHaveLength(200);
+		).toMatchObject({ step: "discover", activity: { progress: { discovered: count } } });
+		expect(await t.run((ctx) => ctx.db.query("files_transfer_items").collect())).toHaveLength(count);
 	});
 });
 
 describe("start_for_agent", () => {
+	test("cross-workspace Copy keeps three real worker attempts", async () => {
+		const fixture = await create_folder_fixture([]);
+		const { t, db, asUser } = fixture;
+		const sourceId = await test_create_saved_text_file(t, {
+			membershipId: db.membershipId,
+			path: "/retry.txt",
+			textContent: "Keep all retries\n",
+		});
+		const thread = await asUser.mutation(api.ai_chat.thread_create, {
+			membershipId: db.membershipId,
+			clientGeneratedId: "retry-count",
+			lastMessageAt: Date.now(),
+		});
+		if (thread._nay) throw new Error(thread._nay.message);
+		const started = await start_agent_transfer(t, {
+			membershipId: db.membershipId,
+			threadId: thread._yay.threadId,
+			sourceWorkspace: "current",
+			destinationWorkspace: "personal",
+			requestId: "retry-count",
+			kind: "copy",
+			sources: [{ kind: "saved", id: sourceId }],
+			targetParent: { kind: "root" },
+			targetPath: "/",
+			targetName: null,
+			missingParentNames: [],
+			conflictPolicy: { file: "error", folder: "error" },
+		});
+		if (started._nay) throw new Error(started._nay.message);
+		const runId = started._yay.runId;
+		await finish_discovery(fixture, runId);
+		const enqueueAction = vi.spyOn(Workpool.prototype, "enqueueAction").mockClear();
+		for (let worker = 1; worker <= 3; worker++) {
+			await t.mutation(internal.files_transfer.advance, { runId });
+			await t.mutation(internal.files_transfer.advance, { runId });
+			const item = await t.run((ctx) =>
+				ctx.db
+					.query("files_transfer_items")
+					.withIndex("by_run_order", (q) => q.eq("runId", runId))
+					.unique(),
+			);
+			expect(item?.workId, `Worker ${worker} must be queued`).not.toBeNull();
+			if (!item?.workId) throw new Error("Expected a queued worker");
+			if (worker < 3)
+				await t.mutation(internal.files_transfer.handle_copy_complete, {
+					workId: item.workId,
+					context: { itemId: item._id, attempt: item.attempt },
+					result: { kind: "failed", error: "Temporary storage failure" },
+				});
+			else await finish_copy_worker(fixture, item);
+		}
+		expect(enqueueAction).toHaveBeenCalledTimes(3);
+		expect((await finish_folder_copy(fixture, runId)).activity).toMatchObject({
+			status: "succeeded",
+			progress: { completed: 1, failed: 0 },
+		});
+		expect(await t.run((ctx) => ctx.db.get("files_nodes", sourceId))).toMatchObject({ archiveOperationId: null });
+	});
+
+	test.each([false, true])(
+		"reserves every cross-workspace file draft before starting content workers, selected media: %s",
+		async (withMedia) => {
+			const fixture = await create_folder_fixture([]);
+			const { t, db, asUser } = fixture;
+			const sources: Array<{ kind: "saved"; id: Id<"files_nodes"> }> = [];
+			for (const path of ["/document.txt", "/other.txt"]) {
+				const created = await test_create_saved_text_file(t, {
+					membershipId: db.membershipId,
+					path,
+					textContent: `${path}\n`,
+				});
+				sources.push({ kind: "saved", id: created });
+			}
+			let mediaId: Id<"files_nodes"> | null = null;
+			if (withMedia) {
+				const upload = await asUser.mutation(api.files_nodes.create_upload_node, {
+					membershipId: db.membershipId,
+					parentId: files_ROOT_ID,
+					filename: "image.png",
+					contentType: "image/png",
+					size: 3,
+				});
+				if (upload._nay) throw new Error(upload._nay.message);
+				mediaId = upload._yay.nodeId;
+				sources.push({ kind: "saved", id: mediaId });
+				const key = r2_create_asset_key({ ...db, assetId: upload._yay.assetId });
+				r2Objects.set(key, new Uint8Array([1, 2, 3]));
+				await t.run((ctx) =>
+					ctx.db.patch("files_r2_assets", upload._yay.assetId, { r2Key: key, unfinalizedExpiresAt: undefined }),
+				);
+				vi.spyOn(r2_server_side_copy, "copy_object").mockImplementation(async (_ctx, args) => {
+					r2Objects.set(args.destinationKey, r2Objects.get(args.sourceKey)!);
+					return { outcome: "copied", size: 3, etag: "copied" };
+				});
+			}
+			const thread = await asUser.mutation(api.ai_chat.thread_create, {
+				membershipId: db.membershipId,
+				clientGeneratedId: "reserve-copy",
+				lastMessageAt: Date.now(),
+			});
+			if (thread._nay) throw new Error(thread._nay.message);
+			const enqueueAction = vi.spyOn(Workpool.prototype, "enqueueAction").mockClear();
+			const started = await start_agent_transfer(t, {
+				membershipId: db.membershipId,
+				threadId: thread._yay.threadId,
+				sourceWorkspace: "current",
+				destinationWorkspace: "personal",
+				requestId: "reserve-copy",
+				kind: "copy",
+				sources,
+				targetParent: { kind: "root" },
+				targetPath: "/",
+				targetName: null,
+				missingParentNames: [],
+				conflictPolicy: { file: "error", folder: "error" },
+			});
+			if (started._nay) throw new Error(started._nay.message);
+			expect((await finish_discovery(fixture, started._yay.runId)).step).toBe("apply");
+			expect(enqueueAction).not.toHaveBeenCalled();
+			const items = await t.run((ctx) =>
+				ctx.db
+					.query("files_transfer_items")
+					.withIndex("by_run_order", (q) => q.eq("runId", started._yay.runId))
+					.collect(),
+			);
+			expect(items).toHaveLength(sources.length);
+			for (const item of items) {
+				expect(item.state).toBe(item.source.id === mediaId ? "pending" : "waiting_media");
+				expect(item.preparation).not.toBeNull();
+				expect(item.workId).toBeNull();
+			}
+			expect(new Set(items.map((item) => item.preparation?.privateNodeId)).size).toBe(sources.length);
+			await t.mutation(internal.files_transfer.advance, { runId: started._yay.runId });
+			await t.mutation(internal.files_transfer.advance, { runId: started._yay.runId });
+			expect(enqueueAction).toHaveBeenCalledTimes(1);
+			if (withMedia) {
+				const working = await t.run((ctx) =>
+					ctx.db
+						.query("files_transfer_items")
+						.withIndex("by_run_state_order", (q) => q.eq("runId", started._yay.runId).eq("state", "copying"))
+						.unique(),
+				);
+				expect(working?.source.id).toBe(mediaId);
+			}
+			expect((await finish_copy_with_workers(fixture, started._yay.runId)).activity).toMatchObject({
+				status: "succeeded",
+				progress: { completed: sources.length, failed: 0 },
+			});
+		},
+	);
+
+	test.each(["current", "personal"] as const)(
+		"copies folders from %s to the other workspace as private proposals",
+		async (sourceWorkspace) => {
+			const fixture = await create_folder_fixture([]);
+			const { t, db, asUser } = fixture;
+			const thread = await asUser.mutation(api.ai_chat.thread_create, {
+				membershipId: db.membershipId,
+				clientGeneratedId: "cross-workspace-copy",
+				lastMessageAt: Date.now(),
+			});
+			if (thread._nay) throw new Error(thread._nay.message);
+			const captured = await t.mutation(internal.ai_chat_workspaces.capture, {
+				userId: db.userId,
+				membershipId: db.membershipId,
+			});
+			if (captured._nay) throw new Error(captured._nay.message);
+			const destinationWorkspace = sourceWorkspace === "current" ? "personal" : "current";
+			const source = captured._yay[sourceWorkspace];
+			const destination = captured._yay[destinationWorkspace];
+			const created = await t.mutation(internal.files_nodes.create_folder_node_by_path, {
+				organizationId: source.organizationId,
+				workspaceId: source.workspaceId,
+				userId: db.userId,
+				path: "/cross-source/child",
+			});
+			if (created._nay) throw new Error(created._nay.message);
+			const sourceFolder = await t.run((ctx) =>
+				ctx.db
+					.query("files_nodes")
+					.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
+						q
+							.eq("organizationId", source.organizationId)
+							.eq("workspaceId", source.workspaceId)
+							.eq("path", "/cross-source")
+							.eq("archiveOperationId", null),
+					)
+					.unique(),
+			);
+			if (!sourceFolder) throw new Error("Missing source folder");
+			const before = await t.run((ctx) => ctx.db.query("files_nodes").collect());
+			const started = await start_agent_transfer(t, {
+				membershipId: db.membershipId,
+				threadId: thread._yay.threadId,
+				sourceWorkspace,
+				destinationWorkspace,
+				requestId: "cross-copy",
+				kind: "copy",
+				sources: [{ kind: "saved", id: sourceFolder._id }],
+				targetParent: { kind: "root" },
+				targetPath: "/",
+				targetName: null,
+				missingParentNames: [],
+				conflictPolicy: { file: "error", folder: "error" },
+			});
+			if (started._nay) throw new Error(started._nay.message);
+			const finished = await finish_folder_copy(fixture, started._yay.runId);
+			expect(finished.activity).toMatchObject({ status: "succeeded", progress: { completed: 2, failed: 0 } });
+			expect(await t.run((ctx) => ctx.db.get("files_transfer_runs", started._yay.runId))).toMatchObject({
+				workspaceId: db.workspaceId,
+				sourceScope: { workspaceId: source.workspaceId, membershipId: source.membershipId },
+				destinationScope: { workspaceId: destination.workspaceId, membershipId: destination.membershipId },
+			});
+			const drafts = await t.run((ctx) => ctx.db.query("files_pending_nodes").collect());
+			expect(drafts).toHaveLength(2);
+			for (const draft of drafts)
+				expect(draft).toMatchObject({
+					organizationId: destination.organizationId,
+					workspaceId: destination.workspaceId,
+					userId: db.userId,
+					state: "active",
+				});
+			expect(drafts.map((draft) => draft.name)).toEqual(["cross-source", "child"]);
+			expect(await t.run((ctx) => ctx.db.query("files_nodes").collect())).toEqual(before);
+			const items = await asUser.query(api.files_transfer.list_items, {
+				membershipId: db.membershipId,
+				runId: started._yay.runId,
+				paginationOpts: { numItems: 20, cursor: null },
+			});
+			expect(items?.page).toHaveLength(2);
+		},
+	);
+
+	test.each([false, true])(
+		"a viewer can copy to home, but old work stays stopped after leave and re-invite: %s",
+		async (reinvite) => {
+			const fixture = await create_folder_fixture(["/source"]);
+			const { t, db, asUser, folders } = fixture;
+			const visitor = await t.run((ctx) =>
+				test_mocks_fill_db_with.membership(ctx, { organizationName: "personal", workspaceName: "home" }),
+			);
+			expect(
+				await asUser.mutation(api.organizations.invite_user_to_organization_workspace, {
+					organizationId: db.organizationId,
+					workspaceId: db.workspaceId,
+					userIdToAdd: visitor.userId,
+				}),
+			).toEqual({ _yay: null });
+			const organization = await t.run((ctx) => ctx.db.get("organizations", db.organizationId));
+			if (!organization?.defaultWorkspaceId) throw new Error("Missing primary workspace");
+			expect(
+				await asUser.mutation(api.access_control.set_user_role, {
+					organizationId: db.organizationId,
+					workspaceId: organization.defaultWorkspaceId,
+					userId: visitor.userId,
+					role: "viewer",
+				}),
+			).toEqual({ _yay: null });
+			const member = await t.run((ctx) =>
+				ctx.db
+					.query("organizations_workspaces_users")
+					.withIndex("by_workspace_user_active", (q) =>
+						q.eq("workspaceId", db.workspaceId).eq("userId", visitor.userId).eq("active", true),
+					)
+					.unique(),
+			);
+			if (!member) throw new Error("Missing invited membership");
+			const asVisitor = t.withIdentity({ issuer: "https://clerk.test", external_id: visitor.userId });
+			const thread = await asVisitor.mutation(api.ai_chat.thread_create, {
+				membershipId: member._id,
+				clientGeneratedId: "viewer-transfer",
+				lastMessageAt: Date.now(),
+			});
+			if (thread._nay) throw new Error(thread._nay.message);
+			const started = await start_agent_transfer(t, {
+				membershipId: member._id,
+				threadId: thread._yay.threadId,
+				sourceWorkspace: "current",
+				destinationWorkspace: "personal",
+				requestId: "viewer-copy",
+				kind: "copy",
+				sources: [{ kind: "saved", id: folders.get("/source")! }],
+				targetParent: { kind: "root" },
+				targetPath: "/",
+				targetName: null,
+				missingParentNames: [],
+				conflictPolicy: { file: "error", folder: "error" },
+			});
+			if (started._nay) throw new Error(started._nay.message);
+			let membershipId = member._id;
+			if (reinvite) {
+				expect(
+					await asVisitor.mutation(api.organizations.remove_user_from_organization, {
+						organizationId: db.organizationId,
+						userIdToRemove: visitor.userId,
+					}),
+				).toEqual({ _yay: null });
+				expect(
+					await asUser.mutation(api.organizations.invite_user_to_organization_workspace, {
+						organizationId: db.organizationId,
+						workspaceId: db.workspaceId,
+						userIdToAdd: visitor.userId,
+					}),
+				).toEqual({ _yay: null });
+				const rejoined = await t.run((ctx) =>
+					ctx.db
+						.query("organizations_workspaces_users")
+						.withIndex("by_workspace_user_active", (q) =>
+							q.eq("workspaceId", db.workspaceId).eq("userId", visitor.userId).eq("active", true),
+						)
+						.unique(),
+				);
+				if (!rejoined) throw new Error("Missing rejoined membership");
+				membershipId = rejoined._id;
+			}
+			const before = await t.run((ctx) => ctx.db.query("files_nodes").collect());
+			const finished = await finish_folder_copy(
+				{ ...fixture, db: { ...db, userId: visitor.userId, membershipId }, asUser: asVisitor },
+				started._yay.runId,
+			);
+			expect(finished.activity.status).toBe(reinvite ? "failed" : "succeeded");
+			if (reinvite) expect(finished.activity.errorMessage).toBe("Permission denied");
+			const drafts = await t.run((ctx) => ctx.db.query("files_pending_nodes").collect());
+			expect(drafts).toHaveLength(reinvite ? 0 : 1);
+			if (!reinvite)
+				expect(drafts[0]).toMatchObject({ workspaceId: visitor.workspaceId, userId: visitor.userId, name: "source" });
+			expect(await t.run((ctx) => ctx.db.query("files_nodes").collect())).toEqual(before);
+		},
+	);
+
+	test.each(["writePolicy", "newChildWritePolicy"] as const)(
+		"refuses a copied folder's %s when its writer has no destination access",
+		async (field) => {
+			const fixture = await create_folder_fixture(["/source"]);
+			const { t, db, asUser, folders } = fixture;
+			const member = await add_member(fixture);
+			const writePolicy = { mode: "writer" as const, writer: { kind: "user" as const, userId: member.userId } };
+			const policyResult =
+				field === "writePolicy"
+					? await asUser.mutation(api.files_nodes.set_node_write_policy, {
+							membershipId: db.membershipId,
+							nodeId: folders.get("/source")!,
+							writePolicy,
+						})
+					: await asUser.mutation(api.files_nodes.set_node_new_child_write_policy, {
+							membershipId: db.membershipId,
+							nodeId: folders.get("/source")!,
+							newChildWritePolicy: writePolicy,
+						});
+			if (policyResult._nay) throw new Error(policyResult._nay.message);
+			const thread = await asUser.mutation(api.ai_chat.thread_create, {
+				membershipId: db.membershipId,
+				clientGeneratedId: "copied-writer",
+				lastMessageAt: Date.now(),
+			});
+			if (thread._nay) throw new Error(thread._nay.message);
+			const started = await start_agent_transfer(t, {
+				membershipId: db.membershipId,
+				threadId: thread._yay.threadId,
+				sourceWorkspace: "current",
+				destinationWorkspace: "personal",
+				requestId: "writer-copy",
+				kind: "copy",
+				sources: [{ kind: "saved", id: folders.get("/source")! }],
+				targetParent: { kind: "root" },
+				targetPath: "/",
+				targetName: null,
+				missingParentNames: [],
+				conflictPolicy: { file: "error", folder: "error" },
+			});
+			if (started._nay) throw new Error(started._nay.message);
+			expect((await finish_folder_copy(fixture, started._yay.runId)).activity).toMatchObject({
+				status: "failed",
+				progress: { completed: 0, failed: 1 },
+			});
+			const items = await t.run((ctx) =>
+				ctx.db
+					.query("files_transfer_items")
+					.withIndex("by_run_order", (q) => q.eq("runId", started._yay.runId))
+					.collect(),
+			);
+			expect(items[0]?.errorMessage).toBe(
+				"The copied protection names a writer who cannot edit this destination. Change the source rule or pick a writer with access first.",
+			);
+			expect(await t.run((ctx) => ctx.db.query("files_pending_nodes").collect())).toEqual([]);
+			expect(await t.run((ctx) => ctx.db.get("files_nodes", folders.get("/source")!))).toMatchObject({
+				[field]: writePolicy,
+				archiveOperationId: null,
+			});
+		},
+	);
+
 	test.each(["", ".", "../hidden", "nested/name", "nested\\name"])(
 		"rejects a destination that is not one name: %j",
 		async (targetName) => {
@@ -296,8 +775,10 @@ describe("start_for_agent", () => {
 				lastMessageAt: Date.now(),
 			});
 			if (thread._nay) throw new Error(thread._nay.message);
-			const started = await t.mutation(internal.files_transfer.start_for_agent, {
+			const started = await start_agent_transfer(t, {
 				membershipId: db.membershipId,
+				sourceWorkspace: "current",
+				destinationWorkspace: "current",
 				threadId: thread._yay.threadId,
 				requestId: "invalid-name",
 				kind: "copy",
@@ -308,8 +789,17 @@ describe("start_for_agent", () => {
 				missingParentNames: [],
 				conflictPolicy: { file: "replace", folder: "merge" },
 			});
-			expect(started._nay?.message).toBe("Invalid destination name");
-			expect(await t.run((ctx) => ctx.db.query("files_transfer_runs").collect())).toEqual([]);
+			if (started._nay) throw new Error(started._nay.message);
+			expect(await t.run((ctx) => ctx.db.get("activities", started._yay.activityId))).toMatchObject({
+				status: "failed",
+				errorMessage: "Invalid destination name",
+				progress: { completed: 0 },
+			});
+			expect(await t.run((ctx) => ctx.db.query("files_transfer_items").collect())).toEqual([]);
+			expect((await t.run((ctx) => ctx.db.query("files_nodes").collect())).map((node) => node.path).sort()).toEqual([
+				"/source",
+				"/target",
+			]);
 		},
 	);
 });
@@ -333,8 +823,15 @@ describe("transfers of a background job", () => {
 			userId: db.userId,
 			threadId: thread._yay.threadId,
 		};
+		const captured = await t.mutation(internal.ai_chat_workspaces.capture, {
+			userId: db.userId,
+			membershipId: db.membershipId,
+		});
+		if (captured._nay) throw new Error(captured._nay.message);
 		const begun = await t.mutation(internal.ai_chat_files.begin_bash_invocation, {
 			...scope,
+			membershipId: db.membershipId,
+			membershipLifetime: captured._yay.membershipLifetime,
 			toolCallId: "job-parent",
 			commandHash: "a".repeat(64),
 			shellName: "default",
@@ -377,8 +874,10 @@ describe("transfers of a background job", () => {
 		);
 		if (!job) throw new Error("Expected the job row");
 		const copy = async (commandNumber: number) =>
-			await t.mutation(internal.files_transfer.start_for_agent, {
+			await start_agent_transfer(t, {
 				membershipId: db.membershipId,
+				sourceWorkspace: "current",
+				destinationWorkspace: "current",
 				threadId: scope.threadId,
 				invocation: { id: job._id, commandNumber },
 				requestId: `job-copy-${commandNumber}`,
@@ -401,11 +900,11 @@ describe("transfers of a background job", () => {
 		if (started._nay) throw new Error(started._nay.message);
 		expect(await f.t.run((ctx) => ctx.db.get("activities", started._yay.activityId))).toMatchObject({
 			feedVisible: false,
-			status: "queued",
+			status: "running",
 		});
 		expect(await f.t.query(internal.files_transfer.get_current_activity_for_agent, laneArgs)).toEqual({
 			activityId: started._yay.activityId,
-			status: "queued",
+			status: "running",
 		});
 		// The lane query is fenced on the membership and the thread's owner.
 		const other = await add_member(f);
@@ -416,6 +915,8 @@ describe("transfers of a background job", () => {
 			}),
 		).toBeNull();
 
+		// Retry needs a finished discovery, so stop only after it.
+		await finish_discovery(f, started._yay.runId);
 		await f.asUser.mutation(api.files_transfer.stop, { membershipId: f.db.membershipId, runId: started._yay.runId });
 		await finish_folder_copy(f, started._yay.runId);
 		expect(await f.t.query(internal.files_transfer.get_current_activity_for_agent, laneArgs)).toBeNull();
@@ -456,8 +957,10 @@ describe("advance", () => {
 			lastMessageAt: Date.now(),
 		});
 		if (thread._nay) throw new Error(thread._nay.message);
-		const started = await t.mutation(internal.files_transfer.start_for_agent, {
+		const started = await start_agent_transfer(t, {
 			membershipId: db.membershipId,
+			sourceWorkspace: "current",
+			destinationWorkspace: "current",
 			threadId: thread._yay.threadId,
 			requestId: "discard-only-copy",
 			kind: "copy",
@@ -794,15 +1297,17 @@ describe("advance", () => {
 		if (thread._nay) throw new Error(thread._nay.message);
 		const started =
 			publication === "saved"
-				? await asUser.mutation(api.files_transfer.start, {
+				? await start_transfer(asUser, {
 						membershipId: db.membershipId,
 						requestId: "descendant-copy",
 						kind: "copy",
 						sourceIds: [folders.get("/source")!],
 						targetParentId: folders.get("/source/out")!,
 					})
-				: await t.mutation(internal.files_transfer.start_for_agent, {
+				: await start_agent_transfer(t, {
 						membershipId: db.membershipId,
+						sourceWorkspace: "current",
+						destinationWorkspace: "current",
 						threadId: thread._yay.threadId,
 						requestId: "descendant-copy",
 						kind: "copy",
@@ -894,8 +1399,10 @@ describe("advance", () => {
 			{ kind: "saved" as const, id: fileId },
 			{ kind: "saved" as const, id: folders.get("/source")! },
 		];
-		const started = await t.mutation(internal.files_transfer.start_for_agent, {
+		const started = await start_agent_transfer(t, {
 			membershipId: db.membershipId,
+			sourceWorkspace: "current",
+			destinationWorkspace: "current",
 			threadId: thread._yay.threadId,
 			requestId: "merge-source-order",
 			kind: "copy",
@@ -1174,45 +1681,6 @@ describe("advance", () => {
 		expect(await get_node(fixture, "/target/source")).toBeNull();
 	});
 
-	// The copy ceiling is 10,000 items. Seed the count the second page starts from so the run reaches
-	// the real check with a small fixture: the page adds 5 children, so 9,995 lands exactly on the
-	// ceiling and 9,996 goes one past it.
-	test.each([
-		{ label: "lands exactly on the copy ceiling", seeded: 9_995, refused: false },
-		{ label: "goes one item past the copy ceiling", seeded: 9_996, refused: true },
-	])("$label", async ({ seeded, refused }) => {
-		const paths = Array.from({ length: 55 }, (_entry, index) => `/source/folder-${index.toString().padStart(2, "0")}`);
-		const fixture = await create_folder_fixture(["/source", ...paths]);
-		const { t, db, asUser, folders } = fixture;
-		const runId = await start_copy(fixture, [folders.get("/source")!]);
-		await t.mutation(internal.files_transfer.advance, { runId });
-		await t.run(async (ctx) => {
-			const activity = await ctx.db
-				.query("activities")
-				.withIndex("by_source_id", (q) => q.eq("source.id", runId))
-				.unique();
-			if (!activity?.progress) throw new Error("Missing activity");
-			await ctx.db.patch("activities", activity._id, { progress: { ...activity.progress, discovered: seeded } });
-		});
-		await t.mutation(internal.files_transfer.advance, { runId });
-
-		if (refused) {
-			expect(await finish_folder_copy(fixture, runId)).toMatchObject({
-				activity: {
-					status: "failed",
-					errorMessage: "This copy is too large. Select fewer items.",
-					progress: { discovered: seeded, completed: 0 },
-				},
-			});
-			expect(await get_node(fixture, "/target/source")).toBeNull();
-			return;
-		}
-
-		const view = await asUser.query(api.files_transfer.get, { membershipId: db.membershipId, runId });
-		expect(view?.activity.errorMessage).toBeNull();
-		expect(view?.activity.progress).toMatchObject({ discovered: seeded + 5 });
-	});
-
 	test("refuses an unreadable descendant before copying its readable parent", async () => {
 		const fixture = await create_folder_fixture(["/source", "/source/hidden-name"]);
 		const { t, db, asUser, folders } = fixture;
@@ -1225,7 +1693,7 @@ describe("advance", () => {
 				})
 			)._nay,
 		).toBeUndefined();
-		const started = await member.asUser.mutation(api.files_transfer.start, {
+		const started = await start_transfer(member.asUser, {
 			membershipId: member.membershipId,
 			requestId: "hidden-child",
 			kind: "copy",
@@ -1255,7 +1723,7 @@ describe("advance", () => {
 		const fixture = await create_folder_fixture(["/source", "/source/child"]);
 		const { t, db, folders } = fixture;
 		const member = await add_member(fixture);
-		const started = await member.asUser.mutation(api.files_transfer.start, {
+		const started = await start_transfer(member.asUser, {
 			membershipId: member.membershipId,
 			requestId: "re-invited",
 			kind: "copy",
@@ -1337,7 +1805,7 @@ describe("advance", () => {
 			(await asUser.query(api.files_transfer.get, { membershipId: db.membershipId, runId }))!.activity;
 
 		const copying = await read_deadline();
-		expect(copying.status).toBe("queued");
+		expect(copying.status).toBe("running");
 		// A copy must not sit idle for long, so its deadline is half an hour.
 		expect(copying.deadlineAt - Date.now()).toBe(30 * 60 * 1000);
 
@@ -1365,7 +1833,19 @@ describe("advance", () => {
 			});
 			if (path.startsWith("/source/")) sourceIds.push(nodeId);
 		}
-		const runId = await start_copy(fixture, sourceIds);
+		const started = await asUser.mutation(api.files_transfer.start, {
+			membershipId: db.membershipId,
+			requestId: "activity-transitions",
+			kind: "copy",
+			expectedSourceCount: sourceIds.length,
+			sourceIds,
+			targetParentId: fixture.folders.get("/target")!,
+		});
+		if (started._nay) throw new Error(started._nay.message);
+		const runId = started._yay.runId;
+		expect(await asUser.mutation(api.files_transfer.seal, { membershipId: db.membershipId, runId })).toEqual({
+			_yay: null,
+		});
 
 		// The Activity owns the job status and the counters. The run doc must never grow its own copy,
 		// and the counters must always match a fresh count of the items, so nothing can drift apart.
@@ -1577,15 +2057,17 @@ describe("resolve_conflicts", () => {
 		if (thread._nay) throw new Error(thread._nay.message);
 		const started =
 			publication === "saved"
-				? await asUser.mutation(api.files_transfer.start, {
+				? await start_transfer(asUser, {
 						membershipId: db.membershipId,
 						requestId: "duplicate-file-replace",
 						kind: "copy",
 						sourceIds,
 						targetParentId: folders.get("/target")!,
 					})
-				: await t.mutation(internal.files_transfer.start_for_agent, {
+				: await start_agent_transfer(t, {
 						membershipId: db.membershipId,
+						sourceWorkspace: "current",
+						destinationWorkspace: "current",
 						threadId: thread._yay.threadId,
 						requestId: "duplicate-file-replace",
 						kind: "copy",
@@ -1660,8 +2142,10 @@ describe("resolve_conflicts", () => {
 			lastMessageAt: Date.now(),
 		});
 		if (thread._nay) throw new Error(thread._nay.message);
-		const started = await t.mutation(internal.files_transfer.start_for_agent, {
+		const started = await start_agent_transfer(t, {
 			membershipId: db.membershipId,
+			sourceWorkspace: "current",
+			destinationWorkspace: "current",
 			threadId: thread._yay.threadId,
 			requestId: "duplicate-file-skip",
 			kind: "copy",
@@ -1734,8 +2218,10 @@ describe("resolve_conflicts", () => {
 			lastMessageAt: Date.now(),
 		});
 		if (thread._nay) throw new Error(thread._nay.message);
-		const started = await t.mutation(internal.files_transfer.start_for_agent, {
+		const started = await start_agent_transfer(t, {
 			membershipId: db.membershipId,
+			sourceWorkspace: "current",
+			destinationWorkspace: "current",
 			threadId: thread._yay.threadId,
 			requestId: "duplicate-folder-skip",
 			kind: "copy",
@@ -1804,15 +2290,17 @@ describe("resolve_conflicts", () => {
 			if (thread._nay) throw new Error(thread._nay.message);
 			const started =
 				publication === "saved"
-					? await asUser.mutation(api.files_transfer.start, {
+					? await start_transfer(asUser, {
 							membershipId: db.membershipId,
 							requestId: "duplicate-claim",
 							kind: "copy",
 							sourceIds: sources,
 							targetParentId: folders.get("/target")!,
 						})
-					: await t.mutation(internal.files_transfer.start_for_agent, {
+					: await start_agent_transfer(t, {
 							membershipId: db.membershipId,
+							sourceWorkspace: "current",
+							destinationWorkspace: "current",
 							threadId: thread._yay.threadId,
 							requestId: "duplicate-claim",
 							kind: "copy",
@@ -2051,7 +2539,7 @@ describe("stop", () => {
 		expect(stopping?.activity.finishedAt).toBeUndefined();
 		expect(
 			(
-				await asUser.mutation(api.files_transfer.start, {
+				await start_transfer(asUser, {
 					membershipId: db.membershipId,
 					requestId: "during-stop",
 					kind: "copy",
@@ -2066,9 +2554,10 @@ describe("stop", () => {
 		});
 		await t.mutation(internal.files_transfer.advance, { runId });
 		const finished = await asUser.query(api.files_transfer.get, args);
+		// Stop came before discovery ended, so Retry would copy an incomplete list.
 		expect(finished).toMatchObject({
-			activity: { status: "canceled", progress: { canceled: 101, completed: 0, blocked: 0 } },
-			controls: { canStop: false, canRetry: true, canDismiss: true },
+			activity: { status: "canceled", progress: { total: null, canceled: 101, completed: 0, blocked: 0 } },
+			controls: { canStop: false, canRetry: false, canDismiss: true },
 		});
 		expect(finished?.activity.finishedAt).toBeTypeOf("number");
 		await asUser.mutation(api.files_transfer.stop, args);
@@ -2112,7 +2601,7 @@ describe("stop", () => {
 		expect(await get_node(fixture, "/target/source")).toBeNull();
 		expect(
 			(
-				await asUser.mutation(api.files_transfer.start, {
+				await start_transfer(asUser, {
 					membershipId: db.membershipId,
 					requestId: "after-stop",
 					kind: "copy",
@@ -2172,62 +2661,81 @@ describe("stop", () => {
 });
 
 describe("retry_remaining", () => {
-	test.each(["discard", "expiry"] as const)("does not retry a preparing leaf after proposal %s", async (reason) => {
-		const fixture = await create_folder_fixture(["/source", "/source/z-keep"]);
-		const { t, db, asUser, folders } = fixture;
-		const sourceFile = await asUser.mutation(api.files_nodes.create_upload_node, {
-			membershipId: db.membershipId,
-			parentId: folders.get("/source")!,
-			filename: "a.pdf",
-			contentType: "application/pdf",
-			size: 8,
-		});
-		if (sourceFile._nay) throw new Error(sourceFile._nay.message);
-		const thread = await asUser.mutation(api.ai_chat.thread_create, {
-			membershipId: db.membershipId,
-			clientGeneratedId: "retry-leaf-thread",
-			lastMessageAt: Date.now(),
-		});
-		if (thread._nay) throw new Error(thread._nay.message);
-		const started = await t.mutation(internal.files_transfer.start_for_agent, {
-			membershipId: db.membershipId,
-			threadId: thread._yay.threadId,
-			requestId: "copy-leaf",
-			kind: "copy",
-			sources: [{ kind: "saved", id: folders.get("/source")! }],
-			targetParent: { kind: "saved", id: folders.get("/target")! },
-			targetPath: "/target",
-			targetName: null,
-			missingParentNames: [],
-			conflictPolicy: { file: "replace", folder: "merge" },
-		});
-		if (started._nay) throw new Error(started._nay.message);
-		const runId = started._yay.runId;
-		await finish_discovery(fixture, runId);
-		await t.mutation(internal.files_transfer.advance, { runId });
-		const parent = await t.run((ctx) => ctx.db.query("files_pending_updates").first());
-		if (!parent || parent.target.kind !== "private") throw new Error("Expected the copied parent");
-		const saved = await asUser.action(api.files_pending_updates.save_file_pending_update, {
-			membershipId: db.membershipId,
-			target: parent.target,
-			pendingUpdateId: parent._id,
-			reviewedRevision: parent.revision,
-		});
-		if (saved._nay || saved._yay.target.kind !== "saved") throw new Error("Expected its saved parent");
-		const savedParentId = saved._yay.target.id;
-		await t.mutation(internal.files_transfer.advance, { runId });
-		const leaf = await t.run((ctx) =>
-			ctx.db
-				.query("files_transfer_items")
-				.withIndex("by_run_source", (q) =>
-					q.eq("runId", runId).eq("source.kind", "saved").eq("source.id", sourceFile._yay.nodeId),
-				)
-				.unique(),
-		);
-		if (!leaf?.preparation || !leaf.workId) throw new Error("Expected a preparing leaf");
-		const proposal = await t.run((ctx) => ctx.db.get("files_pending_updates", leaf.preparation!.pendingUpdateId));
-		if (!proposal) throw new Error("Expected its proposal");
-		if (reason === "discard") {
+	test.each(["immediately", "after its idle deadline"] as const)(
+		"does not retry a preparing leaf discarded %s",
+		async (when) => {
+			const fixture = await create_folder_fixture(["/source", "/source/z-keep"]);
+			const { t, db, asUser, folders } = fixture;
+			const sourceFile = await asUser.mutation(api.files_nodes.create_upload_node, {
+				membershipId: db.membershipId,
+				parentId: folders.get("/source")!,
+				filename: "a.pdf",
+				contentType: "application/pdf",
+				size: 8,
+			});
+			if (sourceFile._nay) throw new Error(sourceFile._nay.message);
+			const thread = await asUser.mutation(api.ai_chat.thread_create, {
+				membershipId: db.membershipId,
+				clientGeneratedId: "retry-leaf-thread",
+				lastMessageAt: Date.now(),
+			});
+			if (thread._nay) throw new Error(thread._nay.message);
+			const started = await start_agent_transfer(t, {
+				membershipId: db.membershipId,
+				sourceWorkspace: "current",
+				destinationWorkspace: "current",
+				threadId: thread._yay.threadId,
+				requestId: "copy-leaf",
+				kind: "copy",
+				sources: [{ kind: "saved", id: folders.get("/source")! }],
+				targetParent: { kind: "saved", id: folders.get("/target")! },
+				targetPath: "/target",
+				targetName: null,
+				missingParentNames: [],
+				conflictPolicy: { file: "replace", folder: "merge" },
+			});
+			if (started._nay) throw new Error(started._nay.message);
+			const runId = started._yay.runId;
+			await finish_discovery(fixture, runId);
+			await t.mutation(internal.files_transfer.advance, { runId });
+			const parent = await t.run((ctx) => ctx.db.query("files_pending_updates").first());
+			if (!parent || parent.target.kind !== "private") throw new Error("Expected the copied parent");
+			const saved = await asUser.action(api.files_pending_updates.save_file_pending_update, {
+				membershipId: db.membershipId,
+				target: parent.target,
+				pendingUpdateId: parent._id,
+				reviewedRevision: parent.revision,
+			});
+			if (saved._nay || saved._yay.target.kind !== "saved") throw new Error("Expected its saved parent");
+			const savedParentId = saved._yay.target.id;
+			await t.mutation(internal.files_transfer.advance, { runId });
+			const leaf = await t.run((ctx) =>
+				ctx.db
+					.query("files_transfer_items")
+					.withIndex("by_run_source", (q) =>
+						q.eq("runId", runId).eq("source.kind", "saved").eq("source.id", sourceFile._yay.nodeId),
+					)
+					.unique(),
+			);
+			if (!leaf?.preparation || !leaf.workId) throw new Error("Expected a preparing leaf");
+			const proposal = await t.run((ctx) => ctx.db.get("files_pending_updates", leaf.preparation!.pendingUpdateId));
+			if (!proposal) throw new Error("Expected its proposal");
+			if (when === "after its idle deadline") {
+				const cleanup = await t.run((ctx) =>
+					ctx.db
+						.query("files_pending_updates_cleanup_tasks")
+						.withIndex("by_pendingUpdate", (q) => q.eq("pendingUpdateId", proposal._id))
+						.unique(),
+				);
+				if (!cleanup) throw new Error("Expected the proposal cleanup task");
+				vi.setSystemTime(proposal.updatedAt + 4 * 60 * 60 * 1000);
+				await t.mutation(internal.files_pending_updates.remove_file_pending_update_if_expired, {
+					cleanupTaskId: cleanup._id,
+					expiryGeneration: cleanup.expiryGeneration,
+				});
+				expect(await t.run((ctx) => ctx.db.get("files_pending_updates", proposal._id))).toEqual(proposal);
+				expect(await t.run((ctx) => ctx.db.get("files_transfer_items", leaf._id))).toMatchObject({ state: "copying" });
+			}
 			expect(
 				(
 					await asUser.mutation(api.files_pending_updates.discard_file_pending_structural, {
@@ -2238,59 +2746,53 @@ describe("retry_remaining", () => {
 					})
 				)._nay,
 			).toBeUndefined();
-		} else {
-			vi.setSystemTime(proposal.updatedAt + 4 * 60 * 60 * 1000);
-			await t.mutation(internal.files_pending_updates.remove_file_pending_update_if_expired, {
-				pendingUpdateId: proposal._id,
-				expectedUpdatedAt: proposal.updatedAt,
+			expect(await t.run((ctx) => ctx.db.get("files_transfer_items", leaf._id))).toMatchObject({
+				state: "canceled",
+				cancelReason: "proposal_discard",
 			});
-		}
-		expect(await t.run((ctx) => ctx.db.get("files_transfer_items", leaf._id))).toMatchObject({
-			state: "canceled",
-			cancelReason: reason === "discard" ? "proposal_discard" : "proposal_expiry",
-		});
-		await t.mutation(internal.files_transfer.handle_copy_complete, {
-			workId: leaf.workId,
-			context: { itemId: leaf._id, attempt: leaf.attempt },
-			result: { kind: "canceled" },
-		});
-		await asUser.mutation(api.files_transfer.stop, { membershipId: db.membershipId, runId });
-		await finish_folder_copy(fixture, runId);
-		const retried = await asUser.mutation(api.files_transfer.retry_remaining, {
-			membershipId: db.membershipId,
-			runId,
-			requestId: "retry-without-leaf",
-		});
-		if (retried._nay) throw new Error(retried._nay.message);
-		const finished = await finish_folder_copy(fixture, retried._yay.runId);
-		expect(finished.activity).toMatchObject({
-			status: "partial",
-			progress: { total: 3, completed: 2, canceled: 1, failed: 0 },
-		});
-		const retryItems = await t.run((ctx) =>
-			ctx.db
-				.query("files_transfer_items")
-				.withIndex("by_run_order", (q) => q.eq("runId", retried._yay.runId))
-				.collect(),
-		);
-		expect(retryItems.find((item) => item.source.id === sourceFile._yay.nodeId)).toMatchObject({
-			state: "canceled",
-			attempt: 0,
-			outputTarget: null,
-			cancelReason: reason === "discard" ? "proposal_discard" : "proposal_expiry",
-		});
-		const activeDrafts = await t.run((ctx) =>
-			ctx.db
-				.query("files_pending_nodes")
-				.filter((q) => q.eq(q.field("state"), "active"))
-				.collect(),
-		);
-		expect(activeDrafts.map((node) => ({ name: node.name, parent: node.parent }))).toEqual([
-			{ name: "z-keep", parent: { kind: "saved", id: savedParentId } },
-		]);
-		expect((await get_node(fixture, "/source/a.pdf"))?._id).toBe(sourceFile._yay.nodeId);
-		expect(await get_node(fixture, "/target/source/a.pdf")).toBeNull();
-	});
+			await t.mutation(internal.files_transfer.handle_copy_complete, {
+				workId: leaf.workId,
+				context: { itemId: leaf._id, attempt: leaf.attempt },
+				result: { kind: "canceled" },
+			});
+			await asUser.mutation(api.files_transfer.stop, { membershipId: db.membershipId, runId });
+			await finish_folder_copy(fixture, runId);
+			const retried = await asUser.mutation(api.files_transfer.retry_remaining, {
+				membershipId: db.membershipId,
+				runId,
+				requestId: "retry-without-leaf",
+			});
+			if (retried._nay) throw new Error(retried._nay.message);
+			const finished = await finish_folder_copy(fixture, retried._yay.runId);
+			expect(finished.activity).toMatchObject({
+				status: "partial",
+				progress: { total: 3, completed: 2, canceled: 1, failed: 0 },
+			});
+			const retryItems = await t.run((ctx) =>
+				ctx.db
+					.query("files_transfer_items")
+					.withIndex("by_run_order", (q) => q.eq("runId", retried._yay.runId))
+					.collect(),
+			);
+			expect(retryItems.find((item) => item.source.id === sourceFile._yay.nodeId)).toMatchObject({
+				state: "canceled",
+				attempt: 0,
+				outputTarget: null,
+				cancelReason: "proposal_discard",
+			});
+			const activeDrafts = await t.run((ctx) =>
+				ctx.db
+					.query("files_pending_nodes")
+					.filter((q) => q.eq(q.field("state"), "active"))
+					.collect(),
+			);
+			expect(activeDrafts.map((node) => ({ name: node.name, parent: node.parent }))).toEqual([
+				{ name: "z-keep", parent: { kind: "saved", id: savedParentId } },
+			]);
+			expect((await get_node(fixture, "/source/a.pdf"))?._id).toBe(sourceFile._yay.nodeId);
+			expect(await get_node(fixture, "/target/source/a.pdf")).toBeNull();
+		},
+	);
 
 	test("does not copy a source that moved away after the first run", async () => {
 		const fixture = await create_folder_fixture(["/source", "/elsewhere"]);
@@ -2470,8 +2972,10 @@ describe("retry_remaining", () => {
 				lastMessageAt: Date.now(),
 			});
 			if (thread._nay) throw new Error(thread._nay.message);
-			const started = await t.mutation(internal.files_transfer.start_for_agent, {
+			const started = await start_agent_transfer(t, {
 				membershipId: db.membershipId,
+				sourceWorkspace: "current",
+				destinationWorkspace: "current",
 				threadId: thread._yay.threadId,
 				requestId: "private-copy",
 				kind: "copy",
@@ -3141,7 +3645,12 @@ describe("delete_run_batch", () => {
 				})
 			)._nay,
 		).toBeUndefined();
-		await t.mutation(internal.files_transfer.delete_run_batch, { runId });
+		let deleted = false;
+		for (let step = 0; step < 10 && !deleted; step++) {
+			await t.mutation(internal.files_transfer.delete_run_batch, { runId });
+			deleted = (await t.run((ctx) => ctx.db.get("files_transfer_runs", runId))) === null;
+		}
+		expect(deleted).toBe(true);
 		await t.run(async (ctx) => {
 			expect(await ctx.db.get("files_transfer_runs", runId)).toBeNull();
 			expect(await ctx.db.get("activities", finished.activity._id)).toBeNull();

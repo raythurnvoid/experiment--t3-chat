@@ -1,5 +1,6 @@
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import type { ReactNode } from "react";
 
 import type { app_convex_Id } from "@/lib/app-convex-client.ts";
 
@@ -51,7 +52,37 @@ vi.mock("@/lib/app-convex-client.ts", () => ({
 	app_convex_api: {
 		files_pending_updates: {
 			get_files_pending_updates_summary: "get_files_pending_updates_summary",
+			get_chat_pending_updates_summary: "get_chat_pending_updates_summary",
 		},
+	},
+}));
+
+// Router boundary: preserve the real route params, search, and click handler on an anchor.
+vi.mock("@tanstack/react-router", () => ({
+	Link: (props: {
+		to: string;
+		params: Record<string, string>;
+		search: Record<string, string>;
+		children: ReactNode;
+		className: string;
+		"aria-label": string;
+		onClick: () => void;
+	}) => {
+		let href = props.to;
+		for (const [key, value] of Object.entries(props.params)) href = href.replace(`$${key}`, value);
+		return (
+			<a
+				href={href}
+				className={props.className}
+				aria-label={props["aria-label"]}
+				onClick={(event) => {
+					event.preventDefault();
+					props.onClick();
+				}}
+			>
+				{props.children}
+			</a>
+		);
 	},
 }));
 
@@ -68,6 +99,10 @@ const MEMBERSHIP_ID = "membership_1" as app_convex_Id<"organizations_workspaces_
 
 function makeSummary(count: number, truncated = false) {
 	return { count, truncated };
+}
+
+function makeChatSummary(count: number, truncated = false) {
+	return [{ workspace: "current", organizationName: "team", workspaceName: "work", count, truncated }];
 }
 
 beforeEach(() => {
@@ -153,36 +188,42 @@ describe("FileEditorSidebarPendingStrip", () => {
 	});
 
 	test("requests and shows the count for the current chat", () => {
-		queryStore.set(makeSummary(1));
+		queryStore.set(makeChatSummary(1));
 
 		const { container } = render(<FileEditorSidebarPendingStrip threadId="thread_a" />);
 
-		expect(screen.getByRole("button", { name: "1 pending file change from this chat, review" })).toBeTruthy();
+		expect(
+			screen
+				.getByRole("link", { name: "1 pending file change from this chat in current workspace, review" })
+				.getAttribute("href"),
+		).toBe("/w/team/work/files");
 		expect(container.querySelector(".FileEditorSidebarPendingStrip-count")?.textContent).toBe("1");
 		expect(container.querySelector(".FileEditorSidebarPendingStrip-label")?.textContent).toBe(
-			"pending file change from this chat",
+			"Current workspace · pending file change from this chat",
 		);
-		expect(screen.getByRole("status").textContent).toBe("1 pending file change from this chat");
-		expect(summaryQueryMock).toHaveBeenCalledWith("get_files_pending_updates_summary", {
+		expect(screen.getByRole("status").textContent).toBe("1 pending file change from this chat in current workspace");
+		expect(summaryQueryMock).toHaveBeenCalledWith("get_chat_pending_updates_summary", {
 			membershipId: MEMBERSHIP_ID,
 			threadId: "thread_a",
 		});
 	});
 
 	test("with a threadId that touched nothing, renders no strip even when other rows exist", () => {
-		queryStore.set(makeSummary(0));
+		queryStore.set(makeChatSummary(0));
 
 		render(<FileEditorSidebarPendingStrip threadId="thread_a" />);
 
-		expect(screen.queryByRole("button")).toBeNull();
+		expect(screen.queryByRole("link")).toBeNull();
 		expect(screen.getByRole("status").textContent).toBe("");
 	});
 
 	test("shows a plus when the chat count reaches its work limit", () => {
-		queryStore.set(makeSummary(3, true));
+		queryStore.set(makeChatSummary(3, true));
 		render(<FileEditorSidebarPendingStrip threadId="thread_a" />);
-		expect(screen.getByRole("button", { name: "3+ pending file changes from this chat, review" })).toBeTruthy();
-		expect(screen.getByRole("status").textContent).toBe("3+ pending file changes from this chat");
+		expect(
+			screen.getByRole("link", { name: "3+ pending file changes from this chat in current workspace, review" }),
+		).toBeTruthy();
+		expect(screen.getByRole("status").textContent).toBe("3+ pending file changes from this chat in current workspace");
 	});
 
 	test("with a null threadId (New chat state), renders no strip even when the workspace has rows", () => {
@@ -191,8 +232,47 @@ describe("FileEditorSidebarPendingStrip", () => {
 		render(<FileEditorSidebarPendingStrip threadId={null} />);
 
 		expect(screen.queryByRole("button")).toBeNull();
-		expect(screen.getByRole("status").textContent).toBe("");
+		expect(screen.queryByRole("link")).toBeNull();
+		expect(screen.queryByRole("status")).toBeNull();
 		expect(summaryQueryMock).toHaveBeenCalledWith("get_files_pending_updates_summary", "skip");
+		expect(summaryQueryMock).toHaveBeenCalledWith("get_chat_pending_updates_summary", "skip");
+	});
+
+	test("shows separate destination counts and links to each existing Pending tab", () => {
+		queryStore.set([
+			...makeChatSummary(2),
+			{ workspace: "personal", organizationName: "personal", workspaceName: "home", count: 3, truncated: false },
+		]);
+		render(<FileEditorSidebarPendingStrip threadId="thread_a" />);
+		const current = screen.getByRole("link", {
+			name: "2 pending file changes from this chat in current workspace, review",
+		});
+		const home = screen.getByRole("link", { name: "3 pending file changes from this chat in personal home, review" });
+		expect(current.getAttribute("href")).toBe("/w/team/work/files");
+		expect(home.getAttribute("href")).toBe("/w/personal/home/files");
+		fireEvent.click(home);
+		expect(app_local_storage_get_value("app_state::files_last_tab")).toBe(FILE_EDITOR_SIDEBAR_TAB_ID_PENDING);
+	});
+
+	test("renders one destination when current is home and hides revoked routes immediately", () => {
+		queryStore.set([{ ...makeChatSummary(2)[0], organizationName: "personal", workspaceName: "home" }]);
+		render(<FileEditorSidebarPendingStrip threadId="thread_a" />);
+		expect(screen.getAllByRole("link")).toHaveLength(1);
+		expect(screen.getByRole("link").getAttribute("href")).toBe("/w/personal/home/files");
+		act(() => queryStore.set([]));
+		expect(screen.queryByRole("link")).toBeNull();
+	});
+
+	test("does not reuse a previous chat's links while a new query loads or for optimistic ids", () => {
+		queryStore.set(makeChatSummary(2));
+		const { rerender } = render(<FileEditorSidebarPendingStrip threadId="thread_a" />);
+		act(() => queryStore.set(undefined));
+		rerender(<FileEditorSidebarPendingStrip threadId="thread_b" />);
+		expect(screen.queryByRole("link")).toBeNull();
+		queryStore.set(makeChatSummary(2));
+		rerender(<FileEditorSidebarPendingStrip threadId="ai_thread-new" />);
+		expect(screen.queryByRole("link")).toBeNull();
+		expect(summaryQueryMock).toHaveBeenLastCalledWith("get_chat_pending_updates_summary", "skip");
 	});
 
 	test("without a threadId, requests the workspace-wide count", () => {

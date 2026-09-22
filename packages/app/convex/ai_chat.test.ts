@@ -1,4 +1,4 @@
-import { describe, expect, test, vi } from "vitest";
+import { describe, expect, onTestFinished, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
 import type { Id } from "./_generated/dataModel.js";
@@ -64,6 +64,11 @@ describe("ai_chat thread state", () => {
 					.collect(),
 			);
 		expect(await shellsOf(threadId)).toEqual([]);
+		const captured = await t.mutation(internal.ai_chat_workspaces.capture, {
+			userId: seeded.userId,
+			membershipId: seeded.membershipId,
+		});
+		if (captured._nay) throw new Error(captured._nay.message);
 		const identity = {
 			organizationId: seeded.organizationId,
 			workspaceId: seeded.workspaceId,
@@ -72,6 +77,8 @@ describe("ai_chat thread state", () => {
 		};
 		const begun = await t.mutation(internal.ai_chat_files.begin_bash_invocation, {
 			...identity,
+			membershipId: seeded.membershipId,
+			membershipLifetime: captured._yay.membershipLifetime,
 			toolCallId: "cwd-test",
 			commandHash: "a".repeat(64),
 			shellName: "default",
@@ -111,6 +118,8 @@ describe("ai_chat thread state", () => {
 		// The next call on the same name reuses the row and starts where the last call ended.
 		const again = await t.mutation(internal.ai_chat_files.begin_bash_invocation, {
 			...identity,
+			membershipId: seeded.membershipId,
+			membershipLifetime: captured._yay.membershipLifetime,
 			toolCallId: "cwd-test-2",
 			commandHash: "b".repeat(64),
 			shellName: "default",
@@ -120,7 +129,7 @@ describe("ai_chat thread state", () => {
 		expect(await shellsOf(threadId)).toHaveLength(1);
 	});
 
-	test("copies the shells when branching with write permission, never transcripts or jobs", async () => {
+	test("copies the creator's shells when branching, never transcripts or jobs", async () => {
 		const t = test_convex();
 		const seeded = await t.run((ctx) =>
 			test_mocks_fill_db_with.membership(ctx, {
@@ -143,6 +152,11 @@ describe("ai_chat thread state", () => {
 		});
 		expect(created._yay).toBeTruthy();
 		const sourceThreadId = created._yay!.threadId;
+		const captured = await t.mutation(internal.ai_chat_workspaces.capture, {
+			userId: seeded.userId,
+			membershipId: seeded.membershipId,
+		});
+		if (captured._nay) throw new Error(captured._nay.message);
 		const identity = {
 			organizationId: seeded.organizationId,
 			workspaceId: seeded.workspaceId,
@@ -152,6 +166,8 @@ describe("ai_chat thread state", () => {
 		const begun = await t.mutation(internal.ai_chat_files.begin_bash_invocation, {
 			...identity,
 			toolCallId: "cwd-test",
+			membershipId: seeded.membershipId,
+			membershipLifetime: captured._yay.membershipLifetime,
 			commandHash: "a".repeat(64),
 			shellName: "default",
 		});
@@ -214,46 +230,6 @@ describe("ai_chat thread state", () => {
 		expect(await t.query(internal.ai_chat_files.list_thread_jobs, { ...identity, ...live })).toMatchObject([
 			{ jobNumber: 1, status: "queued" },
 		]);
-
-		// A member who cannot write in the source thread gets a branch without shells.
-		const viewer = await t.run(async (ctx) => {
-			const userId = await ctx.db.insert("users", { clerkUserId: "clerk-ai-chat-branch-viewer" });
-			const membershipId = await ctx.db.insert("organizations_workspaces_users", {
-				organizationId: seeded.organizationId,
-				workspaceId: seeded.workspaceId,
-				userId,
-				active: true,
-				updatedAt: Date.now(),
-			});
-			await access_control_db_ensure_role_assignment(ctx, {
-				organizationId: seeded.organizationId,
-				workspaceId: seeded.workspaceId,
-				userId,
-				role: "viewer",
-				now: Date.now(),
-			});
-			return { userId, membershipId };
-		});
-		const asViewer = t.withIdentity({
-			issuer: "https://clerk.test",
-			subject: "clerk-ai-chat-branch-viewer",
-			external_id: viewer.userId,
-			email: "ai-chat-branch-viewer@test.local",
-		});
-		const viewerBranch = await asViewer.mutation(api.ai_chat.thread_branch, {
-			membershipId: viewer.membershipId,
-			threadId: sourceThreadId,
-		});
-		if (viewerBranch._nay) throw new Error(viewerBranch._nay.message);
-		const viewerThreadId = viewerBranch._yay.threadId as Id<"ai_chat_threads">;
-		expect(
-			await t.run((ctx) =>
-				ctx.db
-					.query("ai_chat_bash_shells")
-					.withIndex("by_thread_name", (q) => q.eq("threadId", viewerThreadId))
-					.collect(),
-			),
-		).toEqual([]);
 	});
 
 	test("the last save wins the whole snapshot when two calls save the same shell", async () => {
@@ -284,8 +260,15 @@ describe("ai_chat thread state", () => {
 			threadId: created._yay.threadId,
 		};
 		// Both calls begin before either saves, so the second save does not see the first one's state.
+		const captured = await t.mutation(internal.ai_chat_workspaces.capture, {
+			userId: seeded.userId,
+			membershipId: seeded.membershipId,
+		});
+		if (captured._nay) throw new Error(captured._nay.message);
 		const first = await t.mutation(internal.ai_chat_files.begin_bash_invocation, {
 			...identity,
+			membershipId: seeded.membershipId,
+			membershipLifetime: captured._yay.membershipLifetime,
 			toolCallId: "first",
 			commandHash: "a".repeat(64),
 			shellName: "default",
@@ -294,6 +277,8 @@ describe("ai_chat thread state", () => {
 		const shellId = first._yay.shell._id;
 		const second = await t.mutation(internal.ai_chat_files.begin_bash_invocation, {
 			...identity,
+			membershipId: seeded.membershipId,
+			membershipLifetime: captured._yay.membershipLifetime,
 			toolCallId: "second",
 			commandHash: "b".repeat(64),
 			shellName: "default",
@@ -338,12 +323,33 @@ describe("ai_chat thread state", () => {
 
 	test("save_shell refuses the write when the caller loses read permission during the call", async () => {
 		const t = test_convex();
-		const seeded = await t.run((ctx) =>
+		const owner = await t.run((ctx) =>
 			test_mocks_fill_db_with.membership(ctx, {
-				organizationName: "personal",
+				organizationName: "shell-role-change",
 				workspaceName: "home",
 			}),
 		);
+		const seeded = await t.run(async (ctx) => {
+			const user = await test_mocks_fill_db_with.membership(ctx, {
+				organizationName: "personal",
+				workspaceName: "home",
+			});
+			const membershipId = await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: owner.organizationId,
+				workspaceId: owner.workspaceId,
+				userId: user.userId,
+				active: true,
+				updatedAt: Date.now(),
+			});
+			await access_control_db_ensure_role_assignment(ctx, {
+				organizationId: owner.organizationId,
+				workspaceId: owner.workspaceId,
+				userId: user.userId,
+				role: "viewer",
+				now: Date.now(),
+			});
+			return { ...owner, userId: user.userId, membershipId };
+		});
 		const asUser = t.withIdentity({
 			issuer: "https://clerk.test",
 			subject: "clerk-ai-chat-shell-role-change",
@@ -363,8 +369,15 @@ describe("ai_chat thread state", () => {
 			userId: seeded.userId,
 			threadId: created._yay.threadId,
 		};
+		const captured = await t.mutation(internal.ai_chat_workspaces.capture, {
+			userId: seeded.userId,
+			membershipId: seeded.membershipId,
+		});
+		if (captured._nay) throw new Error(captured._nay.message);
 		const begun = await t.mutation(internal.ai_chat_files.begin_bash_invocation, {
 			...identity,
+			membershipId: seeded.membershipId,
+			membershipLifetime: captured._yay.membershipLifetime,
 			toolCallId: "role-change",
 			commandHash: "a".repeat(64),
 			shellName: "default",
@@ -384,16 +397,29 @@ describe("ai_chat thread state", () => {
 		// The same save passes first, so the refusal below can only come from the role change.
 		await save("~/before");
 
-		// The shell row and its transcript belong to everyone in the thread, and this save can delete
-		// another member's oldest transcript entries, so a role change during the call has to stop it.
-		// The seeded user created the organization and an owner passes every check, so hand the
-		// organization to somebody else and leave the user without a role.
-		await t.run(async (ctx) => {
-			const otherOwnerId = await ctx.db.insert("users", { clerkUserId: null });
-			await ctx.db.patch("organizations", seeded.organizationId, { ownerUserId: otherOwnerId });
+		const asOwner = t.withIdentity({ issuer: "https://clerk.test", external_id: owner.userId });
+		const role = await asOwner.mutation(api.access_control.create_role, {
+			organizationId: owner.organizationId,
+			name: "Workspace maker",
+			description: "",
+			permissions: ["workspace.create"],
 		});
+		expect(role._nay).toBeUndefined();
+		const assigned = await asOwner.mutation(api.access_control.set_user_role, {
+			organizationId: owner.organizationId,
+			workspaceId: owner.workspaceId,
+			userId: seeded.userId,
+			role: role._yay!.roleId,
+		});
+		expect(assigned._nay).toBeUndefined();
 
-		await expect(save("~/after")).rejects.toThrow("Permission denied");
+		expect(
+			await asUser.query(api.access_control.get_current_user_workspace_permission, {
+				membershipId: seeded.membershipId,
+				permission: "content.read",
+			}),
+		).toBe(false);
+		await expect(save("~/after")).rejects.toThrow("Unauthorized");
 		expect(await t.run((ctx) => ctx.db.get("ai_chat_bash_shells", shellId))).toMatchObject({
 			cwd: "~/before",
 			transcriptEntries: 1,
@@ -715,7 +741,7 @@ describe("ai_chat thread state", () => {
 		expect(dataUrlAccepted._yay?.ids).toHaveLength(1);
 	});
 
-	test("file results use the same strict shape in foreground and background writes", async () => {
+	test("thread_messages_add only stores file results with the strict shape", async () => {
 		const t = test_convex();
 		const seeded = await t.run((ctx) =>
 			test_mocks_fill_db_with.membership(ctx, {
@@ -767,7 +793,6 @@ describe("ai_chat thread state", () => {
 			messages: [{ clientGeneratedMessageId: "safe-file-result", content: content(safe) }],
 		});
 		expect(stored._yay?.ids).toHaveLength(1);
-		const finishMessageId = stored._yay!.ids[0]!;
 
 		// Every row below is refused. The first one is the old image output, which named an asset id
 		// instead of a Files target. The others drop the `files` list, name an unknown tool, send a
@@ -804,31 +829,9 @@ describe("ai_chat thread state", () => {
 				messages: [{ clientGeneratedMessageId: `invalid-${index}`, content: content(part) }],
 			});
 			expect(refused._nay?.message).toBe("Invalid file tool result parts");
-
-			// A background job writes its reply through its own door. That door runs the same check
-			// and throws, because no user is waiting for a Result.
-			await expect(
-				t.mutation(internal.ai_chat.store_job_wakeup_reply, {
-					threadId,
-					userId: seeded.userId,
-					finishMessageId,
-					clientGeneratedMessageId: `invalid-job-${index}`,
-					content: content(part),
-				}),
-			).rejects.toThrow("Invalid file tool result parts");
 		}
-
-		await t.mutation(internal.ai_chat.store_job_wakeup_reply, {
-			threadId,
-			userId: seeded.userId,
-			finishMessageId,
-			clientGeneratedMessageId: "safe-job",
-			content: content(safe),
-		});
-
-		// Only the two safe writes were stored, one per door.
 		const messages = await t.run((ctx) => ctx.db.query("ai_chat_threads_messages_aisdk_5").collect());
-		expect(messages).toHaveLength(2);
+		expect(messages.map((message) => message._id)).toEqual(stored._yay!.ids);
 	});
 
 	test("thread_messages_add returns existing ids when the message write limit is exhausted", async () => {
@@ -1136,5 +1139,103 @@ describe("thread_create", () => {
 
 		const threads = await t.run((ctx) => ctx.db.query("ai_chat_threads").collect());
 		expect(threads).toHaveLength(0);
+	});
+});
+
+describe("chat run writes", () => {
+	test.each(["leave", "rejoin", "read permission"] as const)("refuses late replies and titles after %s", async (loss) => {
+		const t = test_convex();
+		const owner = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx, { organizationName: "run-team" }));
+		const member = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asOwner = t.withIdentity({ issuer: "https://clerk.test", external_id: owner.userId });
+		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: member.userId });
+		const invitation = {
+			organizationId: owner.organizationId,
+			workspaceId: owner.workspaceId,
+			userIdToAdd: member.userId,
+		};
+		expect(await asOwner.mutation(api.organizations.invite_user_to_organization_workspace, invitation)).toEqual({ _yay: null });
+		const membership = await t.run((ctx) => ctx.db.query("organizations_workspaces_users")
+			.withIndex("by_workspace_user_active", (q) => q.eq("workspaceId", owner.workspaceId).eq("userId", member.userId).eq("active", true))
+			.first());
+		if (!membership) throw new Error("Expected invited membership");
+		const created = await asUser.mutation(api.ai_chat.thread_create, {
+			membershipId: membership._id,
+			clientGeneratedId: "captured-run",
+			lastMessageAt: Date.now(),
+		});
+		if (created._nay) throw new Error(created._nay.message);
+		const captured = await t.mutation(internal.ai_chat_workspaces.capture, {
+			userId: member.userId,
+			membershipId: membership._id,
+		});
+		if (captured._nay) throw new Error(captured._nay.message);
+		const source = {
+			organizationId: owner.organizationId,
+			workspaceId: owner.workspaceId,
+			userId: member.userId,
+			threadId: created._yay.threadId,
+			membershipId: membership._id,
+			membershipLifetime: captured._yay.membershipLifetime,
+		};
+		const writeReply = (id: string, runSource = source) => asUser.mutation(internal.ai_chat.thread_run_messages_add, {
+			source: runSource,
+			parentId: null,
+			messages: [{ clientGeneratedMessageId: id, content: { id, role: "assistant", parts: [{ type: "text", text: id }] } }],
+		});
+		expect((await writeReply("before"))._yay?.ids).toHaveLength(1);
+		expect(await asUser.mutation(internal.ai_chat.thread_run_set_title, { source, title: "Before" })).toEqual({ _yay: null });
+
+		if (loss === "read permission") {
+			const role = await asOwner.mutation(api.access_control.create_role, {
+				organizationId: owner.organizationId, name: "Workspace maker", description: "", permissions: ["workspace.create"],
+			});
+			if (role._nay) throw new Error(role._nay.message);
+			const organization = await t.run((ctx) => ctx.db.get("organizations", owner.organizationId));
+			expect(await asOwner.mutation(api.access_control.set_user_role, {
+				organizationId: owner.organizationId, workspaceId: organization!.defaultWorkspaceId!, userId: member.userId, role: role._yay.roleId,
+			})).toEqual({ _yay: null });
+		} else {
+			expect(await asUser.mutation(api.organizations.remove_user_from_organization, {
+				organizationId: owner.organizationId, userIdToRemove: member.userId,
+			})).toEqual({ _yay: null });
+			if (loss === "rejoin") {
+				expect(await asOwner.mutation(api.organizations.invite_user_to_organization_workspace, invitation)).toEqual({ _yay: null });
+			}
+		}
+		const read = () => t.run(async (ctx) => ({
+			thread: await ctx.db.get("ai_chat_threads", source.threadId),
+			messages: await ctx.db.query("ai_chat_threads_messages_aisdk_5").collect(),
+		}));
+		// Refill the title write limit so it cannot hide a missing access check.
+		const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 10_000);
+		onTestFinished(() => clock.mockRestore());
+		const before = await read();
+		expect.soft(await writeReply("late")).toEqual({ _nay: { message: "Unauthorized" } });
+		expect.soft(await asUser.mutation(internal.ai_chat.thread_run_set_title, { source, title: "Late" })).toEqual({
+			_nay: { message: "Unauthorized" },
+		});
+		expect.soft(await read()).toEqual(before);
+		expect(before.thread?.title).toBe("Before");
+		expect(before.messages.map((message) => message.clientGeneratedMessageId)).toEqual(["before"]);
+
+		if (loss === "rejoin") {
+			const rejoined = await t.run((ctx) => ctx.db.query("organizations_workspaces_users")
+				.withIndex("by_workspace_user_active", (q) => q.eq("workspaceId", owner.workspaceId).eq("userId", member.userId).eq("active", true))
+				.first());
+			if (!rejoined) throw new Error("Expected rejoined membership");
+			const fresh = await t.mutation(internal.ai_chat_workspaces.capture, { userId: member.userId, membershipId: rejoined._id });
+			if (fresh._nay) throw new Error(fresh._nay.message);
+			const freshSource = { ...source, membershipId: rejoined._id, membershipLifetime: fresh._yay.membershipLifetime };
+			expect(freshSource.membershipLifetime).not.toBe(source.membershipLifetime);
+			// Refreshing a membership id must not refresh a running model's captured lifetime.
+			const staleSource = { ...freshSource, membershipLifetime: source.membershipLifetime };
+			expect.soft((await writeReply("stale-lifetime", staleSource))._yay).toBeUndefined();
+			expect.soft((await asUser.mutation(internal.ai_chat.thread_run_set_title, { source: staleSource, title: "Stale" }))._yay).toBeUndefined();
+			expect.soft(await read()).toEqual(before);
+			expect((await writeReply("fresh", freshSource))._yay?.ids).toHaveLength(1);
+			expect(await asUser.mutation(internal.ai_chat.thread_run_set_title, { source: freshSource, title: "Fresh" })).toEqual({ _yay: null });
+			expect((await read()).thread?.title).toBe("Fresh");
+		}
 	});
 });

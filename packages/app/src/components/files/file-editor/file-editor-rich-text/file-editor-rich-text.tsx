@@ -1498,6 +1498,8 @@ const FileEditorRichTextNonCollabInner = memo(function FileEditorRichTextNonColl
 	// and closing a file then never marks it dirty, and only the first save may reformat once
 	// (`showReformatHint` warns about that).
 	const baselineMarkdownRef = useRef<string>(initialText);
+	// Only this editor's successful upsert can advance the revision used by retries.
+	const reviewedRevisionRef = useRef(pendingUpdate?.revision ?? 0);
 	const [dirtyCheckState, setDirtyCheckState] = useState<"clean" | "checking" | "dirty">("clean");
 	const dirtyCheckTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 	const [isSaving, setIsSaving] = useState(false);
@@ -1627,8 +1629,11 @@ const FileEditorRichTextNonCollabInner = memo(function FileEditorRichTextNonColl
 					membershipId,
 					target,
 					pendingUpdateId: pendingUpdate._id,
-					reviewedRevision: pendingUpdate.revision,
+					reviewedRevision: reviewedRevisionRef.current,
 					text: textToSave,
+					onUpserted: (revision) => {
+						reviewedRevisionRef.current = revision;
+					},
 				});
 				if (saved._nay) {
 					toast.error(saved._nay.message);

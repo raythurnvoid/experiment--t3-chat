@@ -34,6 +34,8 @@ export const run = internalAction({
 		workspaceName: v.string(),
 		userId: v.id("users"),
 		threadId: v.id("ai_chat_threads"),
+		membershipId: v.id("organizations_workspaces_users"),
+		membershipLifetime: v.number(),
 		toolCallId: v.string(),
 		command: v.string(),
 		allowDbFilesMkdir: v.boolean(),
@@ -50,7 +52,7 @@ export const run = internalAction({
  * The background job worker, run by the jobs workpool.
  */
 export const run_job = internalAction({
-	args: { invocationId: v.id("ai_chat_bash_invocations") },
+	args: { invocationId: v.id("ai_chat_bash_invocations"), workerGeneration: v.number() },
 	returns: v.null(),
 	handler: async (ctx, args) => {
 		return await bash_run_job(ctx, args);

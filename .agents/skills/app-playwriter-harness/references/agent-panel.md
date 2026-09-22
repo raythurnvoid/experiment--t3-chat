@@ -29,7 +29,7 @@ Recipes for driving the in-app AI agent (files-page sidebar and `/chat` page). T
 | Generated file result                                                                 | `getByRole("button", { name: "Generate image", exact: true })`, then `getByRole("link", { name: "Open in Files" })` inside that tool card; pictures preview in Files, not chat                                                                                                                                           |
 | Chat mode picker                                                                      | `getByRole("combobox", { name: /^Chat mode:/ })`, then `getByRole("option", { name: "Agent" \| "Ask" })`                                                                                                                                                                                                                 |
 | Failed send                                                                           | `role=alert` holds only the text `Message failed to send.`; the `Show error details` and `Retry` buttons are its siblings inside `.AiChatMessageUserSendError`, so search at page scope, not inside `[role=alert]`. The details dialog is named `Error details` and its raw message textbox is named `Raw error message` |
-| Pending-changes strip (above composer, only when the OPEN CHAT touched pending files) | `.FileEditorSidebarPendingStrip` (whole row is a button; clicking switches to the Pending changes tab; counts only docs whose `threadIds` include the open chat, so a fresh chat shows no strip even when the workspace has pending changes)                                                                             |
+| Pending-changes strip (above composer, only when the OPEN CHAT touched pending files) | `.FileEditorSidebarPendingStrip` (one link per destination: Current workspace or Personal home; each opens that workspace's Pending changes tab; a fresh chat shows no strip) |
 | Pending-changes tab count badge                                                       | `.FileEditorSidebarPendingTabBadge` (inside `#app_file_editor_sidebar_tabs_pending`; absent at count 0; always the workspace-wide count)                                                                                                                                                                                 |
 | Composer image attachment badges                                                      | `[aria-label="Image attachments"] li` (each has an `<img>` data-URL preview, a name `<span>`, and a `Remove <filename>` button)                                                                                                                                                                                          |
 | Chat model picker                                                                     | `button.MySearchSelectTrigger` (its `aria-label` reads `Chat model: <name>`, but `getByRole("button", { name: /^Chat model:/ })` matches nothing — locate it by class)                                                                                                                                                   |
@@ -38,6 +38,59 @@ Recipes for driving the in-app AI agent (files-page sidebar and `/chat` page). T
 `waitForSelector("[role=option]", { state: "visible" })` is a trap in the agent panel: the thread-picker options stay mounted while hidden, so the wait pins the first match — an invisible `FileEditorSidebarAgentThreadPicker-item` — and times out even when the popover you actually opened (for example the `Chat model:` picker) is showing its options. Read all `[role=option]` matches and filter by bounding rect instead of waiting on the first. Same family as the mounted-closed `[role=dialog]` hazard in `known-hazards.md`.
 
 Before sending in a new chat, confirm its tab stays selected. `New Chat` on the full-page route can wedge the tab; a sidebar optimistic `ai_thread-*` tab can also disappear and return selection to an older chat. Do not assume the button created a usable chat. Use an existing chat only when it belongs to your QA run. See the stuck-tab and optimistic-tab entries in `known-hazards.md`.
+
+The Files route does not select a chat from `?threadId=`. Open the Agent tab, then use
+`getByRole("combobox", { name: "Past chats" })`. It looks like a button but has the combobox role.
+Pick a visible option with a title pattern, not an exact accessible name: the option's name also
+includes its favorite and archive actions. For example, use `{ name: /My QA chat/ }`.
+
+To check two-workspace review, select a chat with one proposal in each workspace. The pending strip
+must show two review links. Focus the Personal home link and press Enter; check the destination URL,
+selected Pending tab, and file content before Save. After saving there, read both targets again:
+the personal target must be saved while the team target stays pending. Then review the team target
+separately. Wait for the completed saved target, not just the Save button click.
+
+For narrow layout, measure the strip's real width, not only the viewport. At a 360px viewport,
+the existing split-panel minimum can leave about 150px for a strip even after closing the Files
+tree. Require both destination labels to wrap without clipped text, keep Review inside each row,
+then Tab from Current workspace to Personal home and press Enter. Check the destination and the
+selected Pending tab. Emulate reduced motion and require no row animation. A smaller viewport
+checks reflow, not real browser zoom; do not claim a zoom pass from unchanged shortcut metrics.
+
+Run the accessibility screen on `.AiChatThread-composer-stack`, not the review link itself.
+The screen checks descendants, so a link used as its root produces zero checked controls.
+Require a non-zero control count before treating its result as evidence.
+
+## Private chat and access-loss check
+
+Use a fresh anonymous member invited into a non-default QA organization, plus its owner in a
+separate browser session. See `second-user-fixtures.md`. Create a named fixture chat and message
+through `ai_chat.thread_create` and `thread_messages_add` as the member. Read their current args
+before calling them. These public doors need no model call for an access check.
+
+- Open `/chat?threadId=<id>` as the member and confirm the fixture text. Read back the stored title
+  and messages through the same member's public queries.
+- As the owner, `threads_list` must omit that chat; `thread_get` and `thread_messages_list` must
+  return null. A direct route must clear the inaccessible ID without showing its title or text.
+  An attempted `thread_update` must refuse. Re-read as the creator to prove the title stayed put.
+- In the member's Files Agent panel, open the fixture chat and type an unsent draft. As the owner,
+  give only that fixture member a temporary custom role without `content.read`. Use the default
+  workspace ID in `set_user_role` for the organization role.
+- The private text, draft, saved selected ID, and saved open tab must disappear. Check again on a
+  later call: stale effects must not restore the tab or cause a render loop.
+- Restore the member role. Reopen through `Past chats`; saved messages return, but the discarded
+  private draft does not. Delete the temporary role. Keep account cleanup limited to the fixture.
+
+For a real Bash smoke check, use an empty persisted fixture chat and request one `printf` command.
+`thread_messages_list` returns `{ messages }` or `null`, not an array. Read each message's
+`content.parts`. A saved user message alone does not prove the run finished.
+Stored `tool-bash` output is `{ metadata, output, title }`, not `{ stdout, stderr }`. Check the exact
+terminal text in `output` plus `metadata.exitCode`, `stdoutLength`, and truncation flags. Also
+check the stored assistant text and that the thread's `activeRun` cleared.
+
+Put an exact shell command in its own paragraph or code block, without trailing prose punctuation.
+A period beside a command can become a real operand. Check the stored command and exit code before
+scoring the app; a model's success summary does not prove the command succeeded.
 
 ## Tool cards keep a real rect while their disclosure is closed
 
@@ -379,18 +432,20 @@ In Agent mode, ask for one `execute_code` call with the snippet below. Replace `
 ```js
 const folder = "/qa-binary-RUN";
 emitFile({
+	workspace: "current",
 	path: `${folder}/nested/opaque`,
 	contentType: "application/x-qa-binary",
 	bytes: new Uint8Array([0, 255, 128, 65, 10]),
 });
 emitFile({
+	workspace: "current",
 	path: `${folder}/empty`,
 	contentType: "application/octet-stream",
 	bytes: new Uint8Array(0),
 });
 const zip = new Uint8Array(22);
 zip.set([0x50, 0x4b, 0x05, 0x06]); // Empty ZIP: end record with no entries.
-emitFile({ path: `${folder}/empty.zip`, contentType: "application/zip", bytes: zip });
+emitFile({ workspace: "current", path: `${folder}/empty.zip`, contentType: "application/zip", bytes: zip });
 return { created: 3 };
 ```
 
@@ -400,7 +455,7 @@ Check these steps separately. A successful code result alone does not prove Save
 2. In Pending changes, check 5 bytes for `opaque`, 0 bytes for `empty`, and 22 bytes for `empty.zip`. All three must be stored files. Download the pending ZIP and compare all 22 bytes before marking that path verified.
 3. Save `nested/opaque`. Wait for its review job, then query its original private target again. It must resolve to a saved entry with no pending update. Only the required folders may be saved with it. Repeat for the empty file. Download both saved files and compare every byte, including the empty length.
 4. Discard the remaining ZIP. Its old target must become unavailable and its chat link must show that state after reload. Check keyboard Save/Discard and focus after a row disappears. Check the row at narrow width and 200% zoom.
-5. In a later turn, use Bash `resolve` with the original private id or `pendingNodeId` URL. It must still resolve after Save. Use the current canonical Files path for the byte-read check below. For an image, call `view_image({ path: "/qa-binary-RUN/picture.png" })` and ask about a visible detail. That tool takes no format, range, id, or URL fields. Its chat result stays text-only.
+5. In a later turn, use Bash `resolve` with the original private id or `pendingNodeId` URL. It must still resolve after Save. Use the current canonical Files path for the byte-read check below. For an image, call `view_image({ workspace: "current", path: "/qa-binary-RUN/picture.png" })` and ask about a visible detail. That tool takes no format, range, id, or URL fields. Its chat result stays text-only.
 6. Repeat the emit request in Ask mode. It may run calculations, but it must create no pending file. Require `metadata.fileResult.metadata.status === "errored"` and `reason === "agent_required"`. Image generation must also stay unavailable in Ask. Test the model gate using an existing unsupported model; do not change shared source during another agent's QA.
 
 ### Read and transform stored bytes
@@ -410,7 +465,7 @@ After the folder check with Bash, run this through `execute_code` in Agent mode.
 ```js
 const response = await fetch(`${process.env.T3_APP_ORIGIN}/api/v1/files/read-bytes`, {
 	method: "POST",
-	headers: { "Content-Type": "application/json" },
+	headers: { "Content-Type": "application/json", "X-Bonobo-Workspace": "current" },
 	body: JSON.stringify({ path: "/qa-binary-RUN/nested/opaque", offset: 0, length: 32, revision: null }),
 });
 if (!response.ok) throw new Error(`File read failed: ${response.status}`);
@@ -419,7 +474,7 @@ const expected = [0, 255, 128, 65, 10];
 if (bytes.length !== expected.length || !bytes.every((byte, index) => byte === expected[index])) {
 	throw new Error("File bytes changed");
 }
-emitFile({ path: "/qa-binary-RUN/reversed.bin", bytes: bytes.slice().reverse(), contentType: "application/octet-stream" });
+emitFile({ workspace: "current", path: "/qa-binary-RUN/reversed.bin", bytes: bytes.slice().reverse(), contentType: "application/octet-stream" });
 return { checkedBytes: bytes.length, matched: true };
 ```
 

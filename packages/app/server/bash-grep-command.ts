@@ -416,7 +416,6 @@ function slice_mode_stderr(window: NonNullable<ReturnType<typeof parse_args>["_y
 // The explicit `Command` return type breaks a type-inference cycle: the handler's inferred
 // type would otherwise flow through internal.* into the bash action and back into this command.
 export function bash_grep_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFilesRoots): Command {
-	const currentWorkspacePath = dbFilesRoots.app.currentWorkspacePath;
 	return defineCommand("grep", async (args, commandCtx) => {
 		// Parse only the bounded grep subset that maps cleanly to app-file queries.
 		// Unsupported flags stay recorded so later branches can return focused guidance.
@@ -485,6 +484,7 @@ export function bash_grep_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 				}
 
 				const result = (await ctx.runQuery(internal.files_nodes.match_text_file_lines, {
+					agentSource: pathResolution.ctxData.agentSource,
 					organizationId: pathResolution.ctxData.organizationId,
 					workspaceId: pathResolution.ctxData.workspaceId,
 					userId: pathResolution.ctxData.userId,
@@ -700,7 +700,7 @@ export function bash_grep_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 						"outside_db_files",
 			)
 		) {
-			return await bash_delegate_native_just_bash_tmp_command("grep", args, commandCtx, currentWorkspacePath);
+			return await bash_delegate_native_just_bash_tmp_command("grep", args, commandCtx, dbFilesRoots);
 		}
 
 		// Recursive app-folder grep path:
@@ -749,12 +749,11 @@ export function bash_grep_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 
 				const recursivePattern = parsed._yay.pattern;
 				const res = (await ctx.runQuery(internal.files_nodes.text_search_files, {
+					agentSource: pathResolution.ctxData.agentSource,
 					organizationId: pathResolution.ctxData.organizationId,
 					workspaceId: pathResolution.ctxData.workspaceId,
 					userId: pathResolution.ctxData.userId,
-					// The /api/chat gate already required content.read on the thread's workspace before
-					// any bash tool ran, and reserved-scope trees (mounts/plugins) cannot hold restricted
-					// nodes, so workspace read is proven for whichever scope this path resolved to.
+					// Agent reads recheck their source and destination. Reserved trees have no file restrictions.
 					hasWorkspaceRead: true,
 					query: recursivePattern,
 					numItems: 20,

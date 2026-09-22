@@ -113,6 +113,7 @@ description: Persisted per-user, per-organization, and per-workspace quota count
 
 ## Private prepared storage
 
+- Scope each hold to the workspace that owns its resource, not the chat workspace. Cross-workspace transfer captures remain source-owned; copied assets and proposal states use destination counters. Personal/home follows the same limits. Agent-run billing remains separate from these storage limits.
 - `files_private_storage_reservations` holds one receipt per physical resource: R2 asset/key, pending state family, temporary text input, trusted update stage, or private node. Pages inherit their state's hold. Count stored payload bytes once per resource; separate state encodings and copied assets count separately. Derived search and metadata docs keep their own existing bounds.
 - Reserve before storing payload or starting a remote write. An empty allocation that fails admission must leave no resource behind. State growth reserves the new total in the same mutation as new pages. Both byte counters must fit before either changes. A repeated reservation does not charge again. New positive capacity refuses with `storage_full` while over cap; reading, saving and discarding retained work stay available.
 - Reserve and release resources in sequence within one mutation. Concurrent helper calls in that mutation could both read the same old counter. Separate Convex mutations use normal transaction conflict checks.

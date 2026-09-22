@@ -47,6 +47,8 @@ natural completion, with counts from their item receipts:
 Progress has one unit and counts discovered, completed, skipped, failed, blocked, and canceled
 items. A retry does not add another item. `total` stays null while discovery is incomplete. A
 terminal job stopped during discovery keeps that null and says it stopped while finding files.
+Such a job offers no Retry (`canRetry` needs a known total), because its item list is incomplete.
+The user starts a new Copy instead.
 When the total is known, terminal outcome counts sum to it. Conflict choices move items out of
 blocked; Stop marks only unfinished discovered items canceled.
 
@@ -103,7 +105,7 @@ See the [plugin runtime spec](../plugin-system/SKILL.md).
   deadline before resuming work. It does not scan finished history.
 - `activities.cleanup_history` owns retention: seven days after transfer, review, or Bash job finish and thirty days
   after plugin finish. A Bash job row can hold a 700 KiB result, so a pass reads at most eight job rows and reschedules for the rest; the job row is deleted with its Activity, while the foreground Bash call row beside it stays until thread purge. It stops a pass after a bounded child cleanup page. Each producer deletes
-  its own receipts. Dismissal docs drain first. The Activity and its producer are then deleted together.
+  its own receipts. Transfer and review producers also release their proposal holds first. Dismissal docs drain first. The Activity and its producer are then deleted together.
 - Deleting history does not delete saved files or pending proposals. Asset deletion jobs retain
   exact R2 keys and late-upload deadlines independently of Activity history.
 - User deletion drains that user's dismissal docs. Tenant purge drains all dismissal docs for each

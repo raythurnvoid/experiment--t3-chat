@@ -459,7 +459,7 @@ function parse_args(args: string[]) {
  * returned shell path to pick the right scope and convert it into a trailing-slash
  * `treePath` prefix via `list_subtree`.
  */
-function prefix_to_shell_path(commandCtx: CommandContext, currentWorkspacePath: string, prefix: string) {
+function prefix_to_shell_path(commandCtx: CommandContext, dbFilesRoots: bash_DbFilesRoots, prefix: string) {
 	if (bash_GLOB_METACHARACTER_REGEX.test(prefix)) {
 		return Result({ _nay: { message: bash_create_glob_syntax_unsupported_message("find", prefix) } });
 	}
@@ -472,7 +472,9 @@ function prefix_to_shell_path(commandCtx: CommandContext, currentWorkspacePath: 
 
 	const cwd = bash_normalize_path(commandCtx.cwd);
 	if (
-		bash_is_path_under_current_workspace_path(currentWorkspacePath, cwd) ||
+		[dbFilesRoots.app, dbFilesRoots.personal].some(
+			(root) => root && bash_is_path_under_current_workspace_path(root.currentWorkspacePath, cwd),
+		) ||
 		bash_is_path_under_read_only_mounts(cwd)
 	) {
 		return Result({ _yay: { shellPath: bash_resolve_path(commandCtx.cwd, prefix) } });
@@ -521,7 +523,6 @@ function build_continuation(args: {
 // The explicit `Command` return type breaks a type-inference cycle: the handler's inferred
 // type would otherwise flow through internal.* into the bash action and back into this command.
 export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFilesRoots): Command {
-	const currentWorkspacePath = dbFilesRoots.app.currentWorkspacePath;
 	return defineCommand("find", async (args, commandCtx) => {
 		const parsed = parse_args(args);
 		// Parse failures return usage text before any app-file or built-in command routing.
@@ -534,7 +535,7 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 				tryPathQuery == null
 					? ""
 					: `${build_path_query_retry_hint(
-							tryPathQuery.path == null ? currentWorkspacePath : bash_resolve_path(commandCtx.cwd, tryPathQuery.path),
+							bash_resolve_path(commandCtx.cwd, tryPathQuery.path ?? "."),
 							tryPathQuery,
 						)}\n`;
 			return {
@@ -976,7 +977,7 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 			}
 
 			// Resolve the prefix to a shell path, then classify it to pick the right scope and renderer.
-			const prefixResult = prefix_to_shell_path(commandCtx, currentWorkspacePath, parsed._yay.prefix);
+			const prefixResult = prefix_to_shell_path(commandCtx, dbFilesRoots, parsed._yay.prefix);
 			if (prefixResult._nay) {
 				return {
 					stdout: "",
@@ -1011,6 +1012,7 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 			const prefixFolderPath = prefixResolution.dbFilesPath ?? prefixResult._yay.shellPath;
 
 			const result = (await ctx.runQuery(internal.files_visible.internal_list, {
+				agentSource: prefixResolution.ctxData.agentSource,
 				organizationId: prefixResolution.ctxData.organizationId,
 				workspaceId: prefixResolution.ctxData.workspaceId,
 				visibilityUserId: prefixResolution.ctxData.userId,
@@ -1131,6 +1133,7 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 		}
 
 		const result = (await ctx.runQuery(internal.files_visible.internal_list, {
+			agentSource: pathResolution.ctxData.agentSource,
 			organizationId: pathResolution.ctxData.organizationId,
 			workspaceId: pathResolution.ctxData.workspaceId,
 			visibilityUserId: pathResolution.ctxData.userId,

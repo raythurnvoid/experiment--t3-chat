@@ -70,7 +70,13 @@ async function start_review(
 		runId: started._yay.runId,
 	});
 	expect(sealed).toEqual({ _yay: null });
-	if (plan) await f.t.action(internal.files_pending_update_runs.plan, { runId: started._yay.runId, fence: 0 });
+	if (plan)
+		for (let pass = 0; pass < 100; pass++) {
+			await f.t.action(internal.files_pending_update_runs.plan, { runId: started._yay.runId, fence: 0 });
+			const run = await f.t.run((ctx) => ctx.db.get("files_pending_update_runs", started._yay.runId));
+			if (run?.step !== "planning") break;
+			if (pass === 99) throw new Error("Review planning did not finish");
+		}
 	return started._yay;
 }
 
@@ -87,7 +93,7 @@ async function finish_review(f: Awaited<ReturnType<typeof fixture>>, runId: Id<"
 				.withIndex("by_run_status_deleteLast_order", (q) => q.eq("runId", runId).eq("status", "preparing"))
 				.first(),
 		);
-		if (!unit) throw new Error("Expected a review worker");
+		if (!unit) continue;
 		await f.t.action(internal.files_pending_update_runs.prepare_unit, {
 			runId,
 			fence: run.fence,
@@ -185,6 +191,7 @@ describe("review jobs", () => {
 			membershipId: f.db.membershipId,
 			requestId: "copy-next-to-review",
 			kind: "copy",
+			expectedSourceCount: 1,
 			sourceIds: [source],
 			targetParentId: target,
 		});
@@ -195,9 +202,7 @@ describe("review jobs", () => {
 			section: "active",
 			paginationOpts: { cursor: null, numItems: 50 },
 		});
-		expect(active.page.map((activity) => activity.source.id).sort()).toEqual(
-			[running.runId, copy._yay.runId].sort(),
-		);
+		expect(active.page.map((activity) => activity.source.id).sort()).toEqual([running.runId, copy._yay.runId].sort());
 	});
 
 	test("replays a repeated review request and page and refuses a changed one", async () => {
@@ -534,11 +539,11 @@ describe("review jobs", () => {
 				expect(saved.every((node) => node.archiveOperationId !== null)).toBe(true);
 				return;
 			}
-			expect(result?.activity).toMatchObject({
-				status: "failed",
-				errorCode: "needs_review",
-				progress: { completed: 0 },
-			});
+			// Only the ordinary unit waits. The unselected child is reported, never added to the Save.
+			expect(result?.activity).toMatchObject({ status: "failed", progress: { completed: 0 } });
+			expect(await f.t.run((ctx) => ctx.db.query("files_pending_update_run_units").collect())).toMatchObject([
+				{ status: "blocked", errorCode: "needs_review" },
+			]);
 			expect(result?.run.needsReviewIds).toEqual([child._id]);
 			expect(await f.t.run((ctx) => ctx.db.query("files_nodes").collect())).toEqual(before);
 			expect(await f.t.run((ctx) => ctx.db.query("files_pending_updates").collect())).toEqual(proposals);
@@ -631,11 +636,10 @@ describe("review jobs", () => {
 		const child = await private_folder(f, "/parent/child");
 		const { runId } = await start_review(f, "discard", [parent]);
 		const result = await finish_review(f, runId);
-		expect(result?.activity).toMatchObject({
-			status: "failed",
-			errorCode: "needs_review",
-			progress: { completed: 0, blocked: 1 },
-		});
+		expect(result?.activity).toMatchObject({ status: "failed", progress: { completed: 0, blocked: 1 } });
+		expect(await f.t.run((ctx) => ctx.db.query("files_pending_update_run_units").collect())).toMatchObject([
+			{ status: "blocked", errorCode: "needs_review" },
+		]);
 		expect(result?.run.needsReviewIds).toEqual([child._id]);
 		expect(await f.t.run((ctx) => ctx.db.query("files_pending_nodes").collect())).toMatchObject([
 			{ state: "active" },
@@ -787,6 +791,8 @@ describe("review jobs", () => {
 		await f.t.mutation(internal.files_pending_update_runs.recover, {});
 		expect(await f.t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect())).toEqual(scheduledBefore);
 		await f.t.mutation(internal.activities.cleanup_history, { _test_disableReschedule: true });
+		expect(await f.t.run((ctx) => ctx.db.query("files_pending_holds").collect())).toEqual([]);
+		await f.t.mutation(internal.activities.cleanup_history, { _test_disableReschedule: true });
 		expect(await f.t.run((ctx) => ctx.db.query("files_pending_update_run_items").collect())).toEqual([]);
 		expect(await f.t.run((ctx) => ctx.db.get("files_pending_update_runs", runId))).not.toBeNull();
 		for (let pass = 0; pass < 4; pass++)
@@ -861,6 +867,9 @@ describe("review jobs", () => {
 					_test_disableReschedule: true,
 				});
 			}
+			expect(await purge()).toBe(false);
+			expect(await f.t.run((ctx) => ctx.db.query("files_pending_holds").collect())).toEqual([]);
+			expect(await f.t.run((ctx) => ctx.db.query("files_pending_update_run_items").collect())).toHaveLength(2);
 			expect(await purge()).toBe(false);
 			expect(await f.t.run((ctx) => ctx.db.query("files_pending_update_run_items").collect())).toHaveLength(1);
 			expect(await f.t.run((ctx) => ctx.db.get("files_pending_update_runs", runId))).toMatchObject({

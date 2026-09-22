@@ -81,7 +81,6 @@ export function bash_sed_command_build_next_page_hint(args: {
  * app-file operands must be piped through cat; non-app operands delegate to the builtin.
  */
 export function bash_sed_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFilesRoots) {
-	const currentWorkspacePath = dbFilesRoots.app.currentWorkspacePath;
 	const command = defineCommand("sed", async (args, commandCtx) => {
 		const fastPath = parse_app_fast_path(args);
 		if (fastPath != null) {
@@ -109,6 +108,7 @@ export function bash_sed_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFil
 				}
 
 				const result = (await ctx.runAction(internal.files_nodes_content.read_file_line_range, {
+					agentSource: pathResolution.ctxData.agentSource,
 					organizationId: pathResolution.ctxData.organizationId,
 					workspaceId: pathResolution.ctxData.workspaceId,
 					userId: pathResolution.ctxData.userId,
@@ -164,7 +164,7 @@ export function bash_sed_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFil
 			}
 		}
 
-		return await bash_delegate_native_just_bash_tmp_command("sed", args, commandCtx, currentWorkspacePath);
+		return await bash_delegate_native_just_bash_tmp_command("sed", args, commandCtx, dbFilesRoots);
 	});
 
 	return command;

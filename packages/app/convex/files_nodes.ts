@@ -73,6 +73,7 @@ import {
 } from "../shared/organizations.ts";
 import { users_SYSTEM_AUTHOR } from "../shared/users.ts";
 import app_convex_schema, {
+	ai_chat_workspaces_source_validator,
 	files_content_version_validator,
 	files_pending_target_validator,
 	file_content_materialization_state_validator,
@@ -80,12 +81,14 @@ import app_convex_schema, {
 } from "./schema.ts";
 import { files_search_db_create_reader } from "./files_search.ts";
 import { files_visible_db_create_reader } from "./files_visible.ts";
+import { files_media_validation_db_advance_version } from "./files_media_validation.ts";
 import type { files_PendingTarget } from "../shared/files.ts";
 import { components, internal } from "./_generated/api.js";
 import { doc } from "convex-helpers/validators";
 import { billing_event } from "../server/billing.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import { organizations_db_get_membership } from "./organizations.ts";
+import { ai_chat_workspaces_db_authorize_file_scope } from "./ai_chat_workspaces.ts";
 import {
 	access_control_db_authorize_membership,
 	access_control_db_authorize_node,
@@ -383,6 +386,7 @@ export async function cancel_file_content_materialization(ctx: MutationCtx, args
 
 export const get_by_path = internalQuery({
 	args: {
+		agentSource: v.optional(ai_chat_workspaces_source_validator),
 		organizationId: doc(app_convex_schema, "files_nodes").fields.organizationId,
 		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
 		path: v.string(),
@@ -397,6 +401,14 @@ export const get_by_path = internalQuery({
 	},
 	returns: v.union(doc(app_convex_schema, "files_nodes"), v.null()),
 	handler: async (ctx, args) => {
+		if (args.agentSource) {
+			const authorized = await ai_chat_workspaces_db_authorize_file_scope(ctx, {
+				...args,
+				agentSource: args.agentSource,
+				userId: args.visibilityUserId,
+			});
+			if (authorized._nay) return null;
+		}
 		if (
 			args.overlayUserId &&
 			!args.serviceAccountId &&
@@ -437,6 +449,7 @@ export type files_nodes_get_by_path_Result =
 
 export const get_visible_entry_by_path = internalQuery({
 	args: {
+		agentSource: v.optional(ai_chat_workspaces_source_validator),
 		organizationId: doc(app_convex_schema, "files_nodes").fields.organizationId,
 		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
 		path: v.string(),
@@ -460,6 +473,14 @@ export const get_visible_entry_by_path = internalQuery({
 		v.null(),
 	),
 	handler: async (ctx, args): Promise<files_VisibleEntry | null> => {
+		if (args.agentSource) {
+			const authorized = await ai_chat_workspaces_db_authorize_file_scope(ctx, {
+				...args,
+				agentSource: args.agentSource,
+				userId: args.visibilityUserId,
+			});
+			if (authorized._nay) return null;
+		}
 		if (
 			organizations_is_global_organization_id(args.organizationId) ||
 			organizations_is_reserved_workspace_id(args.workspaceId)
@@ -578,6 +599,7 @@ export const get_visible_target_by_path = query({
  */
 export const get_path_by_id = internalQuery({
 	args: {
+		agentSource: v.optional(ai_chat_workspaces_source_validator),
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
 		visibilityUserId: v.id("users"),
@@ -588,6 +610,14 @@ export const get_path_by_id = internalQuery({
 	},
 	returns: v.union(v.string(), v.null()),
 	handler: async (ctx, args) => {
+		if (args.agentSource) {
+			const authorized = await ai_chat_workspaces_db_authorize_file_scope(ctx, {
+				...args,
+				agentSource: args.agentSource,
+				userId: args.visibilityUserId,
+			});
+			if (authorized._nay) return null;
+		}
 		const nodeId = ctx.db.normalizeId("files_nodes", args.nodeId);
 		const privateNodeId = ctx.db.normalizeId("files_pending_nodes", args.nodeId);
 		if (!nodeId && !privateNodeId) {
@@ -1460,6 +1490,7 @@ async function db_set_write_policy(
 	await ctx.db.patch("files_nodes", args.node._id, {
 		writePolicy: args.writePolicy,
 	});
+	await files_media_validation_db_advance_version(ctx, args.node);
 }
 
 export async function files_nodes_db_set_write_policy(
@@ -1663,6 +1694,7 @@ export async function files_nodes_db_set_new_child_write_policy(
 	await ctx.db.patch("files_nodes", args.node._id, {
 		newChildWritePolicy: args.newChildWritePolicy,
 	});
+	await files_media_validation_db_advance_version(ctx, args.node);
 
 	return Result({ _yay: null });
 }
@@ -1815,6 +1847,7 @@ export const apply_write_policy_to_contents = mutation({
 			});
 			updatedCount += 1;
 		}
+		if (updatedCount > 0) await files_media_validation_db_advance_version(ctx, membership);
 
 		return Result({ _yay: { updatedCount } });
 	},
@@ -2055,6 +2088,7 @@ async function db_insert_node(
 					: null,
 		}),
 	);
+	await files_media_validation_db_advance_version(ctx, args);
 
 	if (args.kind === "folder") {
 		return Result({ _yay: nodeId });
@@ -2148,9 +2182,15 @@ export async function files_nodes_db_create_node_recursively_at_path(
 	},
 ) {
 	let parentNode = args.parentId === files_ROOT_ID ? null : await ctx.db.get("files_nodes", args.parentId);
+	// Only an active folder takes children. An archived parent is hidden, so a live child created
+	// there would be hidden too until a restore.
 	if (
 		args.parentId !== files_ROOT_ID &&
-		(!parentNode || parentNode.organizationId !== args.organizationId || parentNode.workspaceId !== args.workspaceId)
+		(!parentNode ||
+			parentNode.organizationId !== args.organizationId ||
+			parentNode.workspaceId !== args.workspaceId ||
+			parentNode.kind !== "folder" ||
+			parentNode.archiveOperationId !== null)
 	) {
 		return Result({ _nay: { message: "Not found" } });
 	}
@@ -2677,11 +2717,16 @@ export async function files_nodes_db_create_private_node_by_path(
 		path: string;
 		kind: "file" | "folder";
 		threadId?: Id<"ai_chat_threads">;
+		agentSource?: Infer<typeof ai_chat_workspaces_source_validator>;
 		content?:
 			| { kind: "stored"; assetId: Id<"files_r2_assets">; size: number; contentType: string }
 			| { kind: "text"; contentType: string; textKind: files_YjsRootKind };
 	},
 ) {
+	if (args.agentSource) {
+		const allowed = await ai_chat_workspaces_db_authorize_file_scope(ctx, { ...args, agentSource: args.agentSource });
+		if (allowed._nay) return allowed;
+	}
 	const planned = await files_nodes_db_plan_private_node_by_path(ctx, {
 		...args,
 		uniqueName: args.content !== undefined,
@@ -2738,6 +2783,7 @@ export async function files_nodes_db_create_private_node_by_path(
 							expectedRevision: 1,
 							expectedPrivateVersion: { creationGeneration: 1, structuralRevision: 1 },
 							initialCreation: true,
+							...(args.agentSource ? { agentSource: args.agentSource } : {}),
 							expiresAt: now + 30 * 60 * 1000,
 							updatedAt: now,
 							lastActivityAt: now,
@@ -2767,6 +2813,7 @@ export const create_private_node_by_path = internalMutation({
 		path: v.string(),
 		kind: v.union(v.literal("file"), v.literal("folder")),
 		threadId: v.optional(v.id("ai_chat_threads")),
+		agentSource: v.optional(ai_chat_workspaces_source_validator),
 	},
 	returns: v_result({
 		_yay: v.object({
@@ -5707,6 +5754,8 @@ export async function files_nodes_db_preflight_move(
 
 	return Result({
 		_yay: {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
 			folderInserts: [...plannedFolders].map(([key, folder]) => ({ key, ...folder })),
 			nodePatches,
 			chunkPatches,
@@ -5738,6 +5787,8 @@ export async function files_nodes_db_apply_move(
 		});
 	for (const chunk of plan.chunkPatches) await ctx.db.patch("files_plain_text_chunks", chunk.id, chunk.patch);
 	for (const metadata of plan.metadataPatches) await ctx.db.patch("files_metadata_docs", metadata.id, metadata.patch);
+	if (plan.folderInserts.length > 0 || plan.nodePatches.length > 0)
+		await files_media_validation_db_advance_version(ctx, plan);
 }
 
 /**
@@ -5905,6 +5956,7 @@ export async function files_nodes_db_archive_nodes(
 	},
 ) {
 	const archiveOperationId = crypto.randomUUID();
+	const archivedWorkspaces = new Map<Doc<"files_nodes">["workspaceId"], Doc<"files_nodes">["organizationId"]>();
 
 	await Promise.all(
 		args.nodeIds.map(async (nodeId) => {
@@ -5917,6 +5969,7 @@ export async function files_nodes_db_archive_nodes(
 				updatedBy: args.updatedBy,
 				updatedAt: args.now,
 			});
+			archivedWorkspaces.set(fileNode.workspaceId, fileNode.organizationId);
 			await db_patch_node_search_scope(ctx, {
 				organizationId: fileNode.organizationId,
 				workspaceId: fileNode.workspaceId,
@@ -5926,6 +5979,10 @@ export async function files_nodes_db_archive_nodes(
 			});
 		}),
 	);
+
+	// Advance each workspace once, after its parallel Archive writes finish.
+	for (const [workspaceId, organizationId] of archivedWorkspaces)
+		await files_media_validation_db_advance_version(ctx, { organizationId, workspaceId });
 }
 
 export const archive_nodes = mutation({
@@ -6568,6 +6625,7 @@ export const unarchive_nodes = mutation({
 				});
 			}
 		}
+		await files_media_validation_db_advance_version(ctx, membership);
 
 		return Result({ _yay: null });
 	},
@@ -7002,6 +7060,7 @@ export type files_nodes_list_children_Result =
 
 export const list_subtree = internalQuery({
 	args: {
+		agentSource: v.optional(ai_chat_workspaces_source_validator),
 		organizationId: doc(app_convex_schema, "files_nodes").fields.organizationId,
 		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
 		/** Who is looking. Required so a new caller cannot forget it and walk into a restricted folder. */
@@ -7020,6 +7079,14 @@ export const list_subtree = internalQuery({
 	},
 	returns: paginationResultValidator(doc(app_convex_schema, "files_nodes")),
 	handler: async (ctx, args) => {
+		if (args.agentSource) {
+			const authorized = await ai_chat_workspaces_db_authorize_file_scope(ctx, {
+				...args,
+				agentSource: args.agentSource,
+				userId: args.visibilityUserId,
+			});
+			if (authorized._nay) return { page: [], continueCursor: args.cursor ?? "", isDone: true };
+		}
 		const lowercaseExtension = args.lowercaseExtension;
 		const kind = args.kind;
 
@@ -7137,6 +7204,7 @@ export type files_nodes_list_subtree_Result =
 
 export const search_paths = internalQuery({
 	args: {
+		agentSource: v.optional(ai_chat_workspaces_source_validator),
 		organizationId: doc(app_convex_schema, "files_nodes").fields.organizationId,
 		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
 		/** Who is looking. Required so a new caller cannot forget it and match a restricted path. */
@@ -7162,6 +7230,14 @@ export const search_paths = internalQuery({
 		isDone: v.boolean(),
 	}),
 	handler: async (ctx, args) => {
+		if (args.agentSource) {
+			const authorized = await ai_chat_workspaces_db_authorize_file_scope(ctx, {
+				...args,
+				agentSource: args.agentSource,
+				userId: args.visibilityUserId,
+			});
+			if (authorized._nay) return { items: [], continueCursor: args.cursor ?? "", isDone: true };
+		}
 		if (args.parentId != null && args.parentId !== files_ROOT_ID) {
 			const parent = await ctx.db.get("files_nodes", args.parentId);
 			if (
@@ -7923,6 +7999,7 @@ async function files_read_forward_line_range_from_ordered_chunks(
  */
 export const read_committed_file_chunks_line_range = internalQuery({
 	args: {
+		agentSource: v.optional(ai_chat_workspaces_source_validator),
 		organizationId: doc(app_convex_schema, "files_nodes").fields.organizationId,
 		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
 		userId: v.id("users"),
@@ -7944,6 +8021,13 @@ export const read_committed_file_chunks_line_range = internalQuery({
 		}),
 	),
 	handler: async (ctx, args) => {
+		if (args.agentSource) {
+			const authorized = await ai_chat_workspaces_db_authorize_file_scope(ctx, {
+				...args,
+				agentSource: args.agentSource,
+			});
+			if (authorized._nay) return { usable: false as const };
+		}
 		const source = await db_resolve_committed_chunk_source(ctx, args);
 		if (!source) return { usable: false as const };
 		const maxLines = Math.max(1, Math.min(files_READ_RANGE_MAX_LINES, Math.trunc(args.maxLines)));
@@ -8056,6 +8140,7 @@ export type files_nodes_read_committed_file_chunks_line_range_Result =
  */
 export const read_file_content_from_chunks = internalQuery({
 	args: {
+		agentSource: v.optional(ai_chat_workspaces_source_validator),
 		organizationId: doc(app_convex_schema, "files_nodes").fields.organizationId,
 		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
 		userId: v.id("users"),
@@ -8096,6 +8181,13 @@ export const read_file_content_from_chunks = internalQuery({
 		v.null(),
 	),
 	handler: async (ctx, args) => {
+		if (args.agentSource) {
+			const authorized = await ai_chat_workspaces_db_authorize_file_scope(ctx, {
+				...args,
+				agentSource: args.agentSource,
+			});
+			if (authorized._nay) return null;
+		}
 		// Translate the path through the overlay first; the per-user pending-content logic
 		// below then runs on the resolved node, so content-plus-move docs compose.
 		const entry = (await ctx.runQuery(internal.files_nodes.get_visible_entry_by_path, {
@@ -8417,6 +8509,7 @@ export type files_nodes_read_file_content_from_chunks_Result =
  */
 export const read_committed_file_chunk_stats = internalQuery({
 	args: {
+		agentSource: v.optional(ai_chat_workspaces_source_validator),
 		organizationId: doc(app_convex_schema, "files_nodes").fields.organizationId,
 		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
 		userId: v.id("users"),
@@ -8437,6 +8530,13 @@ export const read_committed_file_chunk_stats = internalQuery({
 		}),
 	),
 	handler: async (ctx, args) => {
+		if (args.agentSource) {
+			const authorized = await ai_chat_workspaces_db_authorize_file_scope(ctx, {
+				...args,
+				agentSource: args.agentSource,
+			});
+			if (authorized._nay) return { usable: false as const };
+		}
 		const source = await db_resolve_committed_chunk_source(ctx, args);
 		// Counts are persisted on the node at materialization; if absent (older file), fall back.
 		if (!source || !source.counts) return { usable: false as const };
@@ -9005,6 +9105,7 @@ async function db_get_text_match_source(
  */
 export const match_text_file_lines = internalQuery({
 	args: {
+		agentSource: v.optional(ai_chat_workspaces_source_validator),
 		organizationId: doc(app_convex_schema, "files_nodes").fields.organizationId,
 		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
 		userId: v.id("users"),
@@ -9059,6 +9160,13 @@ export const match_text_file_lines = internalQuery({
 		}),
 	),
 	handler: async (ctx, args) => {
+		if (args.agentSource) {
+			const authorized = await ai_chat_workspaces_db_authorize_file_scope(ctx, {
+				...args,
+				agentSource: args.agentSource,
+			});
+			if (authorized._nay) return null;
+		}
 		const source = await db_get_text_match_source(ctx, args);
 		if (!source) return null;
 		const { fileNode, pendingUpdateId } = source;
@@ -9188,6 +9296,7 @@ export type files_nodes_match_text_file_lines_Result =
  */
 export const match_plain_text_file_lines = internalQuery({
 	args: {
+		agentSource: v.optional(ai_chat_workspaces_source_validator),
 		organizationId: doc(app_convex_schema, "files_nodes").fields.organizationId,
 		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
 		userId: v.id("users"),
@@ -9226,6 +9335,13 @@ export const match_plain_text_file_lines = internalQuery({
 		}),
 	),
 	handler: async (ctx, args) => {
+		if (args.agentSource) {
+			const authorized = await ai_chat_workspaces_db_authorize_file_scope(ctx, {
+				...args,
+				agentSource: args.agentSource,
+			});
+			if (authorized._nay) return null;
+		}
 		const source = await db_get_text_match_source(ctx, args);
 		if (!source) return null;
 		const { fileNode, pendingUpdateId } = source;
@@ -9428,6 +9544,7 @@ const text_search_args = {
 
 export const text_search_files = internalQuery({
 	args: {
+		agentSource: v.optional(ai_chat_workspaces_source_validator),
 		...text_search_args,
 		numItems: v.number(),
 		cursor: paginationOptsValidator.fields.cursor,
@@ -9471,6 +9588,13 @@ export const text_search_files = internalQuery({
 		continueCursor: string;
 		isDone: boolean;
 	}> => {
+		if (args.agentSource) {
+			const authorized = await ai_chat_workspaces_db_authorize_file_scope(ctx, {
+				...args,
+				agentSource: args.agentSource,
+			});
+			if (authorized._nay) return { items: [], continueCursor: args.cursor ?? "", isDone: true };
+		}
 		const result = await db_text_search_filtered_query(ctx, args).paginate({
 			cursor: args.cursor,
 			numItems: Math.max(1, Math.min(100, args.numItems)),

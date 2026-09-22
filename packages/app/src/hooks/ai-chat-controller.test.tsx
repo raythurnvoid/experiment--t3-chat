@@ -58,11 +58,13 @@ const hookMocks = vi.hoisted(() => {
 			clientGeneratedMessageId?: string | null;
 			content: ai_chat_UiMessage;
 		}>,
+		messagesStatus: "loaded" as "loaded" | "loading" | "denied",
 		mutation: vi.fn(
 			(): Promise<{ _yay: { threadId: string }; _nay?: never } | { _nay: { code: string }; _yay?: never }> =>
 				Promise.resolve({ _yay: { threadId: "thread_branch" } }),
 		),
 		renderSelectedThreadId: vi.fn(),
+		renderRuntime: vi.fn(),
 		chatInstances: [] as MockChatInstance[],
 		holdChatRequests: false,
 	};
@@ -194,7 +196,11 @@ vi.mock("convex/react", async (importOriginal) => {
 			};
 		},
 		useMutation: () => hookMocks.mutation,
-		useQuery: () => ({ messages: hookMocks.threadMessages }),
+		useQuery: (_query: unknown, args: unknown) => {
+			if (args === "skip" || hookMocks.messagesStatus === "loading") return undefined;
+			if (hookMocks.messagesStatus === "denied") return null;
+			return { messages: hookMocks.threadMessages };
+		},
 	};
 });
 
@@ -506,6 +512,12 @@ function RuntimeQueueProbe() {
 		selectedThreadId ? (state.failedSendUserMessageIdByThreadId.get(selectedThreadId) ?? null) : null,
 	);
 	const failedMessage = controller.activeBranchMessages.list.find((message) => message.id === failedSendUserMessageId);
+	hookMocks.renderRuntime({
+		membershipId: hookMocks.tenant.membershipId,
+		messages: controller.activeBranchMessages.list.map(ai_chat_get_message_text),
+		queued: controller.queuedUserMessages.map((message) => message.text),
+		draft: controller.session?.draftComposerText ?? "",
+	});
 
 	const send = (value: string) => {
 		if (!selectedThreadId) {
@@ -517,6 +529,10 @@ function RuntimeQueueProbe() {
 
 	return (
 		<div>
+			<div data-testid="queue-status">{controller.status}</div>
+			<div data-testid="queue-transcript">
+				{controller.activeBranchMessages.list.map(ai_chat_get_message_text).join("|")}
+			</div>
 			<div data-testid="queue-session">{selectedChat ? "session" : "no-session"}</div>
 			<div data-testid="queue-selected">{selectedThreadId ?? "null"}</div>
 			<div data-testid="queue-draft">{controller.session?.draftComposerText ?? ""}</div>
@@ -1003,10 +1019,12 @@ describe("AiChatController", () => {
 		hookMocks.tenant.workspaceId = "workspace_test";
 		hookMocks.threads = [];
 		hookMocks.threadMessages = [];
+		hookMocks.messagesStatus = "loaded";
 		hookMocks.chatInstances = [];
 		hookMocks.holdChatRequests = false;
 		hookMocks.mutation.mockClear();
 		hookMocks.renderSelectedThreadId.mockClear();
+		hookMocks.renderRuntime.mockClear();
 	});
 
 	afterEach(() => {
@@ -1926,6 +1944,140 @@ describe("AiChatController", () => {
 		});
 		const drained = chat.sendMessage.mock.calls[1]?.[0] as ai_chat_UiMessage | undefined;
 		expect(drained?.metadata?.browserSessionId).toBe(browserSessionId ?? undefined);
+	});
+
+	test("clears a refused thread, its queue, and cached messages without restarting it", async () => {
+		const threadId = "thread_privacy_refused";
+		const storageKey = `app_state::ai_chat_last_open::scope::${hookMocks.tenant.membershipId}` as const;
+		app_local_storage_set_value(storageKey, threadId);
+		hookMocks.holdChatRequests = true;
+		hookMocks.threadMessages = [
+			createPersistedMessage({
+				id: "message_private_saved",
+				content: {
+					id: "client_private_saved",
+					role: "assistant",
+					parts: [{ type: "text", text: "Private saved reply" }],
+				},
+			}),
+		];
+		const view = render(
+			<FullPageSurface initialSelectedThreadId={threadId}>
+				<RuntimeQueueProbe />
+			</FullPageSurface>,
+		);
+		fireEvent.click(screen.getByRole("button", { name: "send first queue probe" }));
+		fireEvent.click(screen.getByRole("button", { name: "send second queue probe" }));
+		fireEvent.click(screen.getByRole("button", { name: "edit first queued message probe" }));
+		fireEvent.click(screen.getByRole("button", { name: "set normal draft probe" }));
+		const chat = AiChatController.useStore.actions.getSession(threadId)!.chat as unknown as MockChatInstance;
+		expect(screen.getByTestId("queue-transcript").textContent).toContain("Private saved reply");
+		expect(screen.getByTestId("queue-texts").textContent).toBe("Second");
+
+		hookMocks.messagesStatus = "denied";
+		hookMocks.renderRuntime.mockClear();
+		view.rerender(
+			<FullPageSurface initialSelectedThreadId={threadId}>
+				<RuntimeQueueProbe />
+			</FullPageSurface>,
+		);
+		await waitFor(() => expect(screen.getByTestId("queue-selected").textContent).toBe("null"));
+		expect(app_local_storage_get_value(storageKey)).toBeNull();
+		for (const [rendered] of hookMocks.renderRuntime.mock.calls) {
+			expect(rendered).toEqual({ membershipId: hookMocks.tenant.membershipId, messages: [], queued: [], draft: "" });
+		}
+		expect(screen.getByTestId("queue-transcript").textContent).toBe("");
+		expect(screen.getByTestId("queue-texts").textContent).toBe("");
+		expect(screen.getByTestId("queue-draft").textContent).toBe("");
+		expect(screen.getByTestId("queue-edit").textContent).toBe("null");
+		expect(chat.stop).toHaveBeenCalledTimes(1);
+		expect(chat.messages).toEqual([]);
+		expect(AiChatController.useStore.actions.getSession(threadId)).toBeNull();
+		expect(AiChatController.useStore.getState().messageById.size).toBe(0);
+		expect(AiChatController.useStore.getState().activeMessageIdsByThreadId.has(threadId)).toBe(false);
+		fireEvent.click(screen.getByRole("button", { name: "resume queue probe" }));
+		fireEvent.click(screen.getByRole("button", { name: "send third queue probe" }));
+		expect(chat.sendMessage).toHaveBeenCalledTimes(1);
+		expect(AiChatController.useStore.actions.getSession(threadId)).toBeNull();
+	});
+
+	test("does not attach a session for an initially refused persisted thread", () => {
+		hookMocks.messagesStatus = "denied";
+		render(
+			<FullPageSurface initialSelectedThreadId="thread_initially_refused">
+				<RuntimeQueueProbe />
+			</FullPageSurface>,
+		);
+		expect(screen.getByTestId("queue-selected").textContent).toBe("null");
+		expect(screen.getByTestId("queue-session").textContent).toBe("no-session");
+		expect(AiChatController.useStore.actions.getSession("thread_initially_refused")).toBeNull();
+	});
+
+	test("keeps a loading thread and its queued messages until the query answers", () => {
+		const threadId = "thread_privacy_loading";
+		hookMocks.holdChatRequests = true;
+		const view = render(
+			<FullPageSurface initialSelectedThreadId={threadId}>
+				<RuntimeQueueProbe />
+			</FullPageSurface>,
+		);
+		fireEvent.click(screen.getByRole("button", { name: "send first queue probe" }));
+		fireEvent.click(screen.getByRole("button", { name: "send second queue probe" }));
+		const chat = AiChatController.useStore.actions.getSession(threadId)!.chat as unknown as MockChatInstance;
+		hookMocks.messagesStatus = "loading";
+		view.rerender(
+			<FullPageSurface initialSelectedThreadId={threadId}>
+				<RuntimeQueueProbe />
+			</FullPageSurface>,
+		);
+		expect(screen.getByTestId("queue-selected").textContent).toBe(threadId);
+		expect(screen.getByTestId("queue-status").textContent).toBe("loading");
+		expect(screen.getByTestId("queue-transcript").textContent).toBe("First");
+		expect(screen.getByTestId("queue-texts").textContent).toBe("Second");
+		expect(chat.stop).not.toHaveBeenCalled();
+		expect(chat.sendMessage).toHaveBeenCalledTimes(1);
+	});
+
+	test("keeps optimistic sessions when their persisted query is skipped", () => {
+		hookMocks.messagesStatus = "denied";
+		render(
+			<FullPageSurface initialSelectedThreadId="ai_thread-private_new">
+				<RuntimeQueueProbe />
+			</FullPageSurface>,
+		);
+		fireEvent.click(screen.getByRole("button", { name: "send first queue probe" }));
+		expect(screen.getByTestId("queue-selected").textContent).toBe("ai_thread-private_new");
+		expect(screen.getByTestId("queue-transcript").textContent).toBe("First");
+		expect(screen.getByTestId("queue-status").textContent).toBe("loaded");
+	});
+
+	test("never renders the old session under another membership while its query loads", () => {
+		const threadId = "thread_membership_switch";
+		hookMocks.holdChatRequests = true;
+		const view = render(
+			<FullPageSurface initialSelectedThreadId={threadId}>
+				<RuntimeQueueProbe />
+			</FullPageSurface>,
+		);
+		fireEvent.click(screen.getByRole("button", { name: "send first queue probe" }));
+		fireEvent.click(screen.getByRole("button", { name: "send second queue probe" }));
+		fireEvent.click(screen.getByRole("button", { name: "set normal draft probe" }));
+		const chat = AiChatController.useStore.actions.getSession(threadId)!.chat as unknown as MockChatInstance;
+
+		hookMocks.tenant.membershipId = "membership_other_user";
+		hookMocks.messagesStatus = "loading";
+		hookMocks.renderRuntime.mockClear();
+		view.rerender(
+			<FullPageSurface initialSelectedThreadId={threadId}>
+				<RuntimeQueueProbe />
+			</FullPageSurface>,
+		);
+		for (const [rendered] of hookMocks.renderRuntime.mock.calls) {
+			expect(rendered).toEqual({ membershipId: "membership_other_user", messages: [], queued: [], draft: "" });
+		}
+		expect(chat.stop).toHaveBeenCalledTimes(1);
+		expect(chat.messages).toEqual([]);
+		expect(AiChatController.useStore.getState().messageById.size).toBe(0);
 	});
 
 	test("runs queued messages one at a time in FIFO order", async () => {

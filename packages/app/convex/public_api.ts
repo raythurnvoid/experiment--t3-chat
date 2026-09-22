@@ -13,7 +13,8 @@ import type { Doc, Id } from "./_generated/dataModel";
 import type { RegisteredMutation, RegisteredQuery } from "convex/server";
 import { z } from "zod";
 import { doc } from "convex-helpers/validators";
-import app_convex_schema from "./schema.ts";
+import app_convex_schema, { ai_chat_workspaces_source_validator } from "./schema.ts";
+import { ai_chat_workspaces_db_authorize_file_scope, ai_chat_workspaces_db_resolve } from "./ai_chat_workspaces.ts";
 import { access_control_db_can_act_on_file_node, access_control_db_has_permission } from "./access_control.ts";
 import {
 	ACTIVITIES_ESTIMATE_MAX_MS,
@@ -526,6 +527,8 @@ export const create_grant = internalMutation({
 			threadId: args.threadId,
 			principalKey: args.principalKey,
 			tokenHash: args.tokenHash,
+			agentSource: null,
+			codeReadBudgetId: null,
 			scopes: Array.from(new Set(args.scopes)),
 			remainingReadBytes: args.scopes.includes("files:download") ? FILES_GRANT_READ_BYTES : 0,
 			pathPrefix: args.pathPrefix == null ? null : server_path_normalize(args.pathPrefix),
@@ -536,6 +539,68 @@ export const create_grant = internalMutation({
 		return null;
 	},
 });
+
+export const create_code_grants = internalMutation({
+	args: {
+		source: ai_chat_workspaces_source_validator,
+		principalKey: v.string(),
+		tokenHashes: v.object({ current: v.string(), personal: v.string() }),
+	},
+	returns: v_result({ _yay: v.object({ personalIsCurrent: v.boolean() }) }),
+	handler: async (ctx, args) => {
+		const current = await ai_chat_workspaces_db_resolve(ctx, { source: args.source, workspace: "current" });
+		if (current._nay) return current;
+		const personal = await ai_chat_workspaces_db_resolve(ctx, { source: args.source, workspace: "personal" });
+		if (personal._nay) return personal;
+		const personalIsCurrent = current._yay.workspaceId === personal._yay.workspaceId;
+		const now = Date.now();
+		const expiresAt = now + PUBLIC_API_GRANT_TTL_MS;
+		const codeReadBudgetId = await ctx.db.insert("ai_chat_code_read_budgets", {
+			threadId: args.source.threadId,
+			userId: args.source.userId,
+			remainingReadBytes: FILES_GRANT_READ_BYTES,
+			expiresAt,
+		});
+		const roots = personalIsCurrent
+			? [{ root: current._yay, tokenHash: args.tokenHashes.current }]
+			: [
+					{ root: current._yay, tokenHash: args.tokenHashes.current },
+					{ root: personal._yay, tokenHash: args.tokenHashes.personal },
+				];
+		await Promise.all(
+			roots.map(({ root, tokenHash }) =>
+				ctx.db.insert("public_api_grants", {
+					organizationId: root.organizationId,
+					workspaceId: root.workspaceId,
+					userId: args.source.userId,
+					threadId: args.source.threadId,
+					principalKey: args.principalKey,
+					tokenHash,
+					agentSource: args.source,
+					codeReadBudgetId,
+					scopes: ["files:list", "files:read", "files:download"],
+					remainingReadBytes: 0,
+					pathPrefix: null,
+					createdAt: now,
+					expiresAt,
+				}),
+			),
+		);
+		return Result({ _yay: { personalIsCurrent } });
+	},
+});
+
+async function read_code_grant_budget(ctx: QueryCtx | MutationCtx, grant: Doc<"public_api_grants">) {
+	if (grant.agentSource === null || grant.codeReadBudgetId === null) return null;
+	const allowed = await ai_chat_workspaces_db_authorize_file_scope(ctx, {
+		agentSource: grant.agentSource,
+		organizationId: grant.organizationId,
+		workspaceId: grant.workspaceId,
+		userId: grant.userId,
+	});
+	if (allowed._nay) return null;
+	return await ctx.db.get("ai_chat_code_read_budgets", grant.codeReadBudgetId);
+}
 
 export const reserve_grant_read_bytes = internalMutation({
 	args: { presented: v.string(), length: v.number() },
@@ -549,15 +614,20 @@ export const reserve_grant_read_bytes = internalMutation({
 			.query("public_api_grants")
 			.withIndex("by_tokenHash", (q) => q.eq("tokenHash", tokenHash))
 			.first();
-		if (
-			!grant ||
-			grant.expiresAt <= Date.now() ||
-			!grant.scopes.includes("files:download") ||
-			grant.remainingReadBytes < args.length
-		) {
+		if (!grant || grant.expiresAt <= Date.now() || !grant.scopes.includes("files:download")) {
 			return false;
 		}
-		// Reserve before fetching. Failed reads and retries still consume this grant's budget.
+		// Both code tokens spend the same counter. Failed reads and retries are not refunded.
+		if (grant.agentSource !== null) {
+			const budget = await read_code_grant_budget(ctx, grant);
+			if (!budget || budget.expiresAt <= Date.now() || budget.remainingReadBytes < args.length) return false;
+			await ctx.db.patch("ai_chat_code_read_budgets", budget._id, {
+				remainingReadBytes: budget.remainingReadBytes - args.length,
+			});
+			return true;
+		}
+		if (grant.remainingReadBytes < args.length) return false;
+		// Ordinary grants keep their own counter.
 		await ctx.db.patch("public_api_grants", grant._id, {
 			remainingReadBytes: grant.remainingReadBytes - args.length,
 		});
@@ -954,9 +1024,16 @@ async function cleanup_expired_grants_batch(
 
 	await Promise.all(expired.map((grant) => ctx.db.delete("public_api_grants", grant._id)));
 
+	if (expired.length === batchSize) return { deletedCount: expired.length, done: false };
+	const budgets = await ctx.db
+		.query("ai_chat_code_read_budgets")
+		.withIndex("by_expiresAt", (q) => q.lt("expiresAt", now))
+		.take(batchSize - expired.length);
+	await Promise.all(budgets.map((budget) => ctx.db.delete("ai_chat_code_read_budgets", budget._id)));
+	const deletedCount = expired.length + budgets.length;
 	return {
-		deletedCount: expired.length,
-		done: expired.length < batchSize,
+		deletedCount,
+		done: deletedCount < batchSize,
 	};
 }
 
@@ -1275,6 +1352,7 @@ export const resolve_principal = internalQuery({
 		_yay: v.union(
 			v.object({
 				kind: v.literal("public_api_grant"),
+				agentSource: doc(app_convex_schema, "public_api_grants").fields.agentSource,
 				serviceAccountId: v.null(),
 				organizationId: v.id("organizations"),
 				workspaceId: v.id("organizations_workspaces"),
@@ -1823,6 +1901,9 @@ export const resolve_principal = internalQuery({
 		if (!grant) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
+		if (grant.agentSource !== null && !(await read_code_grant_budget(ctx, grant))) {
+			return Result({ _nay: { message: "Unauthenticated" } });
+		}
 		const user = await ctx.db.get("users", grant.userId);
 		if (!user || user.deletedAt !== undefined) {
 			return Result({ _nay: { message: "Unauthenticated" } });
@@ -1850,6 +1931,7 @@ export const resolve_principal = internalQuery({
 		return Result({
 			_yay: {
 				kind: "public_api_grant" as const,
+				agentSource: grant.agentSource,
 				serviceAccountId: null,
 				organizationId: grant.organizationId,
 				workspaceId: grant.workspaceId,
@@ -5283,6 +5365,7 @@ export async function public_api_http_read_file(ctx: ActionCtx, request: Request
 	}
 
 	const content = await ctx.runAction(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
+		agentSource: principal.kind === "public_api_grant" ? (principal.agentSource ?? undefined) : undefined,
 		organizationId: principal.organizationId,
 		workspaceId: principal.workspaceId,
 		// A plugin run has no user of its own, so it reads with its actor's eyes.
@@ -5293,6 +5376,14 @@ export async function public_api_http_read_file(ctx: ActionCtx, request: Request
 		overlayUserId: principal.kind === "public_api_grant" ? principal.userId : undefined,
 		maxBytes: Math.min(body._yay.maxBytes ?? FILES_READ_MAX_BYTES, FILES_READ_MAX_BYTES),
 	});
+	if (principal.kind === "public_api_grant" && principal.agentSource !== null) {
+		const current = await public_api_resolve_live_principal(ctx, {
+			presented: auth._yay.presentedToken,
+			now: Date.now(),
+			requiredScope: "files:read",
+		});
+		if (current._nay) return { status: 404, body: { message: "File unavailable" } } as const;
+	}
 	if (!content) {
 		return {
 			status: 404,
@@ -5367,6 +5458,7 @@ export async function public_api_http_read_many(ctx: ActionCtx, request: Request
 		requestedPaths.map(async (filePath) => ({
 			path: filePath,
 			content: await ctx.runAction(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
+				agentSource: principal.kind === "public_api_grant" ? (principal.agentSource ?? undefined) : undefined,
 				organizationId: principal.organizationId,
 				workspaceId: principal.workspaceId,
 				userId: principal.userId,
@@ -5379,6 +5471,14 @@ export async function public_api_http_read_many(ctx: ActionCtx, request: Request
 		})),
 	);
 
+	if (principal.kind === "public_api_grant" && principal.agentSource !== null) {
+		const current = await public_api_resolve_live_principal(ctx, {
+			presented: auth._yay.presentedToken,
+			now: Date.now(),
+			requiredScope: "files:read",
+		});
+		if (current._nay) return { status: 404, body: { message: "File unavailable" } } as const;
+	}
 	let contentBytes = 0;
 	const pathsTruncated = body._yay.paths.length > requestedPaths.length;
 	let contentTruncated = false;
@@ -5474,130 +5574,143 @@ export async function public_api_http_read_bytes(ctx: ActionCtx, request: Reques
 		return { status: 404, body: { message: "File unavailable" } } as const;
 	}
 
-	const sourceArgs = {
-		organizationId: principal.organizationId,
-		workspaceId: principal.workspaceId,
-		userId: principal.userId,
-		serviceAccountId: principal.serviceAccountId ?? undefined,
-		path: requestedPath,
-		includePending: principal.kind === "public_api_grant",
-	};
-	const source: files_nodes_get_file_byte_read_source_Result = await ctx.runQuery(
-		internal.files_nodes_content.get_file_byte_read_source,
-		sourceArgs,
-	);
-	if (!source) return { status: 404, body: { message: "File unavailable" } } as const;
-	if (revision !== null && revision !== source.revision) {
-		return { status: 409, body: { message: "File changed. Start a new read." } } as const;
-	}
-	if (source.contentType.length > 256 || !/^[\x20-\x7e]+$/u.test(source.contentType)) {
-		return { status: 404, body: { message: "File unavailable" } } as const;
-	}
-
-	if (
-		principal.kind === "public_api_grant" &&
-		!(await ctx.runMutation(internal.public_api.reserve_grant_read_bytes, {
-			presented: presentedToken,
-			length,
-		}))
-	) {
-		return { status: 429, body: { message: "File byte budget exhausted" } } as const;
-	}
-
-	let bytes: Uint8Array<ArrayBuffer>;
-	let size: number;
-	try {
-		request.signal.throwIfAborted();
-		if (source.kind === "text") {
-			const content = await ctx.runAction(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
-				...sourceArgs,
-				overlayUserId: sourceArgs.includePending ? principal.userId : undefined,
-				maxBytes: files_MAX_TEXT_CONTENT_BYTES,
-			});
-			if (!content) {
-				return { status: 404, body: { message: "File unavailable" } } as const;
-			}
-			if (content.target.kind !== source.target.kind || content.target.id !== source.target.id) {
-				return { status: 409, body: { message: "File changed. Start a new read." } } as const;
-			}
-			const textBytes = TEXT_ENCODER.encode(content.content);
-			size = textBytes.byteLength;
-			bytes = textBytes.slice(offset, offset + length);
-		} else {
-			size = source.size;
-			const byteLength = Math.min(length, Math.max(0, size - offset));
-			bytes = new Uint8Array(byteLength);
-			if (byteLength > 0) {
-				const endInclusive = offset + byteLength - 1;
-				const response = await r2_fetch_object_range_from_bucket({
-					key: source.r2Key,
-					start: offset,
-					endInclusive,
-					signal: request.signal,
-				});
-				const validRange =
-					response.status === 206
-						? response.headers.get("Content-Range") === `bytes ${offset}-${endInclusive}/${size}`
-						: response.status === 200 && offset === 0 && byteLength === size;
-				if (!validRange || !response.body) {
-					await response.body?.cancel();
-					return { status: 502, body: { message: "File range unavailable" } } as const;
-				}
-				const reader = response.body.getReader();
-				let received = 0;
-				try {
-					while (true) {
-						const chunk = await reader.read();
-						if (chunk.done) break;
-						if (received + chunk.value.byteLength > byteLength) {
-							return { status: 502, body: { message: "File range unavailable" } } as const;
-						}
-						bytes.set(chunk.value, received);
-						received += chunk.value.byteLength;
-					}
-				} finally {
-					await reader.cancel();
-				}
-				if (received !== byteLength) {
-					return { status: 502, body: { message: "File range unavailable" } } as const;
-				}
-			}
+	// Keep every file-derived response behind the final code-source check, including errors.
+	const result = await (async () => {
+		const sourceArgs = {
+			organizationId: principal.organizationId,
+			workspaceId: principal.workspaceId,
+			userId: principal.userId,
+			serviceAccountId: principal.serviceAccountId ?? undefined,
+			path: requestedPath,
+			includePending: principal.kind === "public_api_grant",
+		};
+		const source: files_nodes_get_file_byte_read_source_Result = await ctx.runQuery(
+			internal.files_nodes_content.get_file_byte_read_source,
+			sourceArgs,
+		);
+		if (!source) return { status: 404, body: { message: "File unavailable" } } as const;
+		if (revision !== null && revision !== source.revision) {
+			return { status: 409, body: { message: "File changed. Start a new read." } } as const;
 		}
-		request.signal.throwIfAborted();
-	} catch {
-		return { status: 502, body: { message: "File bytes unavailable" } } as const;
-	}
+		if (source.contentType.length > 256 || !/^[\x20-\x7e]+$/u.test(source.contentType)) {
+			return { status: 404, body: { message: "File unavailable" } } as const;
+		}
 
-	// A fetch can outlive a grant, a sharing change, or a file edit. Recheck before releasing bytes.
-	const current = await public_api_resolve_live_principal(ctx, {
-		presented: presentedToken,
-		now: Date.now(),
-		requiredScope: "files:download",
-	});
-	if (current._nay || !has_same_download_authority(principal, current._yay)) {
-		return { status: 404, body: { message: "File unavailable" } } as const;
+		if (
+			principal.kind === "public_api_grant" &&
+			!(await ctx.runMutation(internal.public_api.reserve_grant_read_bytes, {
+				presented: presentedToken,
+				length,
+			}))
+		) {
+			return { status: 429, body: { message: "File byte budget exhausted" } } as const;
+		}
+
+		let bytes: Uint8Array<ArrayBuffer>;
+		let size: number;
+		try {
+			request.signal.throwIfAborted();
+			if (source.kind === "text") {
+				const content = await ctx.runAction(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
+					...sourceArgs,
+					agentSource: principal.kind === "public_api_grant" ? (principal.agentSource ?? undefined) : undefined,
+					overlayUserId: sourceArgs.includePending ? principal.userId : undefined,
+					maxBytes: files_MAX_TEXT_CONTENT_BYTES,
+				});
+				if (!content) {
+					return { status: 404, body: { message: "File unavailable" } } as const;
+				}
+				if (content.target.kind !== source.target.kind || content.target.id !== source.target.id) {
+					return { status: 409, body: { message: "File changed. Start a new read." } } as const;
+				}
+				const textBytes = TEXT_ENCODER.encode(content.content);
+				size = textBytes.byteLength;
+				bytes = textBytes.slice(offset, offset + length);
+			} else {
+				size = source.size;
+				const byteLength = Math.min(length, Math.max(0, size - offset));
+				bytes = new Uint8Array(byteLength);
+				if (byteLength > 0) {
+					const endInclusive = offset + byteLength - 1;
+					const response = await r2_fetch_object_range_from_bucket({
+						key: source.r2Key,
+						start: offset,
+						endInclusive,
+						signal: request.signal,
+					});
+					const validRange =
+						response.status === 206
+							? response.headers.get("Content-Range") === `bytes ${offset}-${endInclusive}/${size}`
+							: response.status === 200 && offset === 0 && byteLength === size;
+					if (!validRange || !response.body) {
+						await response.body?.cancel();
+						return { status: 502, body: { message: "File range unavailable" } } as const;
+					}
+					const reader = response.body.getReader();
+					let received = 0;
+					try {
+						while (true) {
+							const chunk = await reader.read();
+							if (chunk.done) break;
+							if (received + chunk.value.byteLength > byteLength) {
+								return { status: 502, body: { message: "File range unavailable" } } as const;
+							}
+							bytes.set(chunk.value, received);
+							received += chunk.value.byteLength;
+						}
+					} finally {
+						await reader.cancel();
+					}
+					if (received !== byteLength) {
+						return { status: 502, body: { message: "File range unavailable" } } as const;
+					}
+				}
+			}
+			request.signal.throwIfAborted();
+		} catch {
+			return { status: 502, body: { message: "File bytes unavailable" } } as const;
+		}
+
+		// A fetch can outlive a grant, a sharing change, or a file edit. Recheck before releasing bytes.
+		const current = await public_api_resolve_live_principal(ctx, {
+			presented: presentedToken,
+			now: Date.now(),
+			requiredScope: "files:download",
+		});
+		if (current._nay || !has_same_download_authority(principal, current._yay)) {
+			return { status: 404, body: { message: "File unavailable" } } as const;
+		}
+		const after: files_nodes_get_file_byte_read_source_Result = await ctx.runQuery(
+			internal.files_nodes_content.get_file_byte_read_source,
+			sourceArgs,
+		);
+		if (!after) return { status: 404, body: { message: "File unavailable" } } as const;
+		if (after.revision !== source.revision) {
+			return { status: 409, body: { message: "File changed. Start a new read." } } as const;
+		}
+		if (offset > size) return { status: 416, body: { message: "Offset exceeds file size" } } as const;
+		return {
+			status: 200,
+			body: bytes,
+			headers: {
+				"Content-Type": "application/octet-stream",
+				"Cache-Control": "no-store",
+				"X-File-Content-Type": source.contentType,
+				"X-File-Revision": source.revision,
+				"X-File-Size": String(size),
+				"X-File-Offset": String(offset),
+			},
+		} as const;
+	})();
+	if (principal.kind === "public_api_grant" && principal.agentSource !== null) {
+		const current = await public_api_resolve_live_principal(ctx, {
+			presented: presentedToken,
+			now: Date.now(),
+			requiredScope: "files:download",
+		});
+		if (current._nay) return { status: 404, body: { message: "File unavailable" } } as const;
 	}
-	const after: files_nodes_get_file_byte_read_source_Result = await ctx.runQuery(
-		internal.files_nodes_content.get_file_byte_read_source,
-		sourceArgs,
-	);
-	if (!after) return { status: 404, body: { message: "File unavailable" } } as const;
-	if (after.revision !== source.revision) {
-		return { status: 409, body: { message: "File changed. Start a new read." } } as const;
-	}
-	if (offset > size) return { status: 416, body: { message: "Offset exceeds file size" } } as const;
-	return {
-		status: 200,
-		body: bytes,
-		headers: {
-			"Content-Type": "application/octet-stream",
-			"Cache-Control": "no-store",
-			"X-File-Content-Type": source.contentType,
-			"X-File-Revision": source.revision,
-			"X-File-Size": String(size),
-			"X-File-Offset": String(offset),
-		},
-	} as const;
+	return result;
 }
 
 const get_file_write_policy_body_validator = z.object({ nodeId: z.string() });

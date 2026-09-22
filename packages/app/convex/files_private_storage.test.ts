@@ -427,6 +427,22 @@ describe("private storage purge", () => {
 				test_mocks_fill_db_with.membership(ctx, { organizationName: "private-control" }),
 			);
 			const tenant = { organizationId: db.organizationId, workspaceId: db.workspaceId, userId: db.userId };
+			const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+			const thread = await asUser.mutation(api.ai_chat.thread_create, {
+				membershipId: db.membershipId,
+				clientGeneratedId: "storage-write",
+				lastMessageAt: Date.now(),
+			});
+			const captured = await t.mutation(internal.ai_chat_workspaces.capture, {
+				membershipId: db.membershipId,
+				userId: db.userId,
+			});
+			if (thread._nay || captured._nay) throw new Error("Expected source chat");
+			const agentSource = {
+				...db,
+				threadId: thread._yay.threadId,
+				membershipLifetime: captured._yay.membershipLifetime,
+			};
 			const parent = await t.mutation(internal.files_nodes.create_private_node_by_path, {
 				...tenant,
 				path: "/private",
@@ -435,6 +451,7 @@ describe("private storage purge", () => {
 			if (parent._nay || !parent._yay.pendingUpdateId) throw new Error("Expected a private folder proposal");
 			const child = await t.mutation(internal.files_nodes.create_private_node_by_path, {
 				...tenant,
+				agentSource,
 				path: "/private/child.txt",
 				kind: "file",
 			});
@@ -442,13 +459,13 @@ describe("private storage purge", () => {
 			const written = await t.action((ctx) =>
 				files_agent_write_file_text(ctx, {
 					...tenant,
+					agentSource,
 					target: child._yay.target,
 					operationBatchId: child._yay.operationBatchId!,
 					unstagedText: "private text",
 				}),
 			);
 			expect(written._nay).toBeUndefined();
-			const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
 			const saved = await asUser.action(api.files_pending_updates.save_file_pending_update, {
 				membershipId: db.membershipId,
 				target: parent._yay.target,

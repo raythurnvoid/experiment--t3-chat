@@ -80,10 +80,15 @@ function add_line_numbers(content: string, startLine: number) {
 
 // The command boundary breaks inference through the generated action API.
 export function bash_cat_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFilesRoots): Command {
-	const currentWorkspacePath = dbFilesRoots.app.currentWorkspacePath;
 	const fileContentCache = new Map<string, string>();
 	// A same-call mv/cp proposal changes what paths serve; clear this cache with the fs caches.
-	dbFilesRoots.app.fs.linkProposalCache(fileContentCache);
+	for (const fs of [
+		dbFilesRoots.app.fs,
+		...(dbFilesRoots.personal ? [dbFilesRoots.personal.fs] : []),
+		...Array.from(dbFilesRoots.externalMounts.mounts.values(), (mount) => mount.fs),
+		...Array.from(dbFilesRoots.plugins.mounts.values(), (mount) => mount.fs),
+	])
+		fs.linkProposalCache(fileContentCache);
 
 	return defineCommand("cat", async (args, commandCtx) => {
 		const parsed = parse_args(args);
@@ -102,7 +107,7 @@ export function bash_cat_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFil
 		}
 
 		const targets = parsed._yay.files.length ? parsed._yay.files : ["-"];
-		const capError = bash_enforce_reader_operand_cap("cat", commandCtx, currentWorkspacePath, targets);
+		const capError = bash_enforce_reader_operand_cap("cat", commandCtx, dbFilesRoots, targets);
 		if (capError != null) return capError;
 
 		// Multi-file cat is all-or-nothing. If one app file is too large to read inline,
@@ -190,6 +195,7 @@ export function bash_cat_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFil
 					const resolvedAppShellPath = pathResolution.renderShellPath(target.dbFilesPath);
 
 					const page = (await ctx.runQuery(internal.files_nodes.read_file_content_from_chunks, {
+						agentSource: pathResolution.ctxData.agentSource,
 						organizationId: pathResolution.ctxData.organizationId,
 						workspaceId: pathResolution.ctxData.workspaceId,
 						userId: pathResolution.ctxData.userId,
@@ -244,13 +250,15 @@ export function bash_cat_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFil
 				// still has a legacy full-content action fallback for other callers, but
 				// cat output should be predictable and should not pull a whole file through
 				// the action path after chunks say they cannot serve it.
-				const cached = fileContentCache.get(target.dbFilesPath);
+				const cacheKey = `${pathResolution.ctxData.organizationId}:${pathResolution.ctxData.workspaceId}:${target.dbFilesPath}`;
+				const cached = fileContentCache.get(cacheKey);
 				if (cached != null) {
 					appendContent(cached, parsed._yay.showLineNumbers);
 					continue;
 				}
 
 				const chunkRead = (await ctx.runQuery(internal.files_nodes.read_file_content_from_chunks, {
+					agentSource: pathResolution.ctxData.agentSource,
 					organizationId: pathResolution.ctxData.organizationId,
 					workspaceId: pathResolution.ctxData.workspaceId,
 					userId: pathResolution.ctxData.userId,
@@ -263,7 +271,7 @@ export function bash_cat_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFil
 				})) as files_nodes_read_file_content_from_chunks_Result;
 
 				if (chunkRead) {
-					fileContentCache.set(target.dbFilesPath, chunkRead.content);
+					fileContentCache.set(cacheKey, chunkRead.content);
 					appendContent(chunkRead.content, parsed._yay.showLineNumbers);
 					continue;
 				}

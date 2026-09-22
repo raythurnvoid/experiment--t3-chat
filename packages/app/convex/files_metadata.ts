@@ -4,7 +4,12 @@ import { doc } from "convex-helpers/validators";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { internalMutation, internalQuery, mutation, query } from "./_generated/server.js";
-import app_convex_schema, { files_pending_target_validator, files_metadata_entries_validator } from "./schema.ts";
+import app_convex_schema, {
+	files_pending_target_validator,
+	files_metadata_entries_validator,
+	ai_chat_workspaces_source_validator,
+} from "./schema.ts";
+import { ai_chat_workspaces_db_authorize_file_scope } from "./ai_chat_workspaces.ts";
 import { files_search_db_create_reader } from "./files_search.ts";
 import { files_visible_db_create_reader } from "./files_visible.ts";
 import { files_pending_update_db_update_index_revision } from "./files_pending_updates.ts";
@@ -569,6 +574,7 @@ const search_plan_validator = v.union(
 
 export const search = internalQuery({
 	args: {
+		agentSource: v.optional(ai_chat_workspaces_source_validator),
 		// Scope accepts the reserved `/.mounts` literals so the mount-backed db-files FS can search mount metadata.
 		organizationId: doc(app_convex_schema, "files_nodes").fields.organizationId,
 		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
@@ -603,6 +609,13 @@ export const search = internalQuery({
 		isDone: v.boolean(),
 	}),
 	handler: async (ctx, args) => {
+		if (args.agentSource) {
+			const authorized = await ai_chat_workspaces_db_authorize_file_scope(ctx, {
+				...args,
+				agentSource: args.agentSource,
+			});
+			if (authorized._nay) return { items: [], continueCursor: args.cursor ?? "", isDone: true };
+		}
 		const treePathPrefix = args.pathPrefix == null ? undefined : tree_path_from_path(args.pathPrefix);
 		const result = await search_query(ctx, args).paginate({
 			cursor: args.cursor,
@@ -1040,6 +1053,7 @@ function format_get_by_path_value(doc: Doc<"files_metadata_docs">) {
 
 export const get_by_path = internalQuery({
 	args: {
+		agentSource: v.optional(ai_chat_workspaces_source_validator),
 		// Scope accepts the reserved `/.mounts` literals so the mount-backed db-files FS can read mount metadata.
 		organizationId: doc(app_convex_schema, "files_nodes").fields.organizationId,
 		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
@@ -1068,6 +1082,13 @@ export const get_by_path = internalQuery({
 		v.null(),
 	),
 	handler: async (ctx, args) => {
+		if (args.agentSource) {
+			const authorized = await ai_chat_workspaces_db_authorize_file_scope(ctx, {
+				...args,
+				agentSource: args.agentSource,
+			});
+			if (authorized._nay) return null;
+		}
 		let entry: files_VisibleEntry | null;
 		if (
 			args.serviceAccountId === undefined &&
@@ -1508,6 +1529,7 @@ export const set_entries = mutation({
  */
 export const update_entries_by_path = internalMutation({
 	args: {
+		agentSource: v.optional(ai_chat_workspaces_source_validator),
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
 		userId: v.id("users"),
@@ -1517,6 +1539,10 @@ export const update_entries_by_path = internalMutation({
 	},
 	returns: v_result({ _yay: v.object({ path: v.string(), entries: files_metadata_entries_validator }) }),
 	handler: async (ctx, args) => {
+		if (args.agentSource) {
+			const allowed = await ai_chat_workspaces_db_authorize_file_scope(ctx, { ...args, agentSource: args.agentSource });
+			if (allowed._nay) return allowed;
+		}
 		const reader = await files_visible_db_create_reader(ctx, args);
 		const resolved = await reader.findPath(args.path);
 		if (reader.exhausted) return Result({ _nay: { message: "Metadata path lookup exceeded its read limit." } });

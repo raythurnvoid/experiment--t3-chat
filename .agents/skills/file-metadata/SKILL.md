@@ -183,6 +183,10 @@ Both live in the `// #region file metadata` of `packages/app/convex/files_metada
 `update_entries_by_path` — the agent's door, an internal mutation. It resolves the owner's current
 saved or private path with the bounded visible reader. It checks active membership, read and write
 access, and the saved node or private draft parent's write policy in the same transaction.
+Agent calls carry `agentSource`. The mutation also checks the original chat creator and captured
+membership lifetime, and allows only the current workspace or the caller's own personal/home.
+Leaving and rejoining the source team does not revive an old metadata write. Agent metadata reads
+and searches carry the same source check; normal Properties reads keep their own membership rules.
 Saved metadata changes immediately. Private metadata stays in the create proposal until Save.
 
 `get_by_path` reads the same owner tree. It returns a tagged `target`, the current path, and current
@@ -251,6 +255,8 @@ The map holds member-defined labels and details recorded by creation flows.
   `Metadata` tab and the separate `Read-only settings` modal; both are gone.
 - **Agent tool**: `set_file_metadata` in `packages/app/server/server-ai-tools.ts`. It is in
   `ai_chat_WRITE_TOOL_NAMES`, so Ask mode drops it from the tool record, not only from `activeTools`.
+  It requires `workspace: "current" | "personal"` beside its root-relative path. The backend resolves
+  the selected workspace; a path or a model-supplied ID cannot add another workspace.
 - **Agent search**: `meta search --where '{"exists":"metadata.<key>"}'` and `meta get <path>`, both in
   `packages/app/server/bash-meta-command.ts`. `meta get` prints frontmatter and metadata fields
   together; its `source:` line describes the frontmatter lines only, because `metadata.*` is always

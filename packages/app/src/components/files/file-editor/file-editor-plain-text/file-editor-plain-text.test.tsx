@@ -318,6 +318,7 @@ describe("FileEditorPlainText", () => {
 			pendingUpdateId: pendingUpdate._id,
 			reviewedRevision: pendingUpdate.revision,
 			text: currentText,
+			onUpserted: expect.any(Function),
 		});
 		expect(onTargetChange).toHaveBeenCalledWith({ kind: "saved", id: NODE_ID });
 		expect(convexActionMock).not.toHaveBeenCalled();
@@ -343,6 +344,68 @@ describe("FileEditorPlainText", () => {
 		expect(monacoHarness.createdModels[0]!.model.getValue()).toBe("local edit\n");
 		expect(onTargetChange).not.toHaveBeenCalled();
 	});
+
+	test.each([false, true])(
+		"retries with its own private revision and keeps local text when another actor changed it: %s",
+		async (anotherActorChanged) => {
+			fetchPrivateFilePendingTextMock.mockResolvedValue({
+				_yay: { text: "draft\n", rootKind: "plain_text", pendingUpdate: { _id: "pending_update_1", revision: 7 } },
+			});
+			savePrivateFilePendingTextMock
+				.mockImplementationOnce(async (args: { onUpserted?: (revision: number) => void }) => {
+					args.onUpserted?.(8);
+					return { _nay: { message: "Save the copied media first." } };
+				})
+				.mockImplementationOnce(async (args: { reviewedRevision: number; onUpserted?: (revision: number) => void }) => {
+					if (args.reviewedRevision !== (anotherActorChanged ? 9 : 8)) {
+						return { _nay: { message: "This draft changed. Reload it." } };
+					}
+					args.onUpserted?.(9);
+					return { _yay: { target: { kind: "saved", id: NODE_ID } } };
+				});
+			const onTargetChange = vi.fn();
+			renderPlainTextEditor({ target: PRIVATE_TARGET, onTargetChange });
+			await act(async () => {});
+			const model = monacoHarness.createdModels[0]!.model;
+			act(() => {
+				model.setValue("local edit\n");
+				monacoHarness.changeListeners.forEach((listener) => listener());
+			});
+			const saveButton = screen.getByRole("button", { name: "Save" });
+			fireEvent.click(saveButton);
+			await act(async () => {});
+
+			expect(toast.error).toHaveBeenCalledWith("Save the copied media first.");
+			expect(saveButton.hasAttribute("disabled")).toBe(false);
+			expect(model.getValue()).toBe("local edit\n");
+			expect(onTargetChange).not.toHaveBeenCalled();
+			// A fresh read could see someone else's edit. Retry must keep our acknowledged revision.
+			fetchPrivateFilePendingTextMock.mockResolvedValue({
+				_yay: { text: "another edit\n", rootKind: "plain_text", pendingUpdate: { _id: "pending_update_1", revision: 9 } },
+			});
+			act(() => {
+				model.setValue("local edit and unsent text\n");
+				monacoHarness.changeListeners.forEach((listener) => listener());
+			});
+			fireEvent.click(saveButton);
+			await act(async () => {});
+
+			expect(savePrivateFilePendingTextMock.mock.calls.map(([args]) => args.reviewedRevision)).toEqual([7, 8]);
+			expect(savePrivateFilePendingTextMock.mock.calls.map(([args]) => args.text)).toEqual([
+				"local edit\n",
+				"local edit and unsent text\n",
+			]);
+			expect(model.getValue()).toBe("local edit and unsent text\n");
+			expect(fetchPrivateFilePendingTextMock).toHaveBeenCalledTimes(1);
+			if (anotherActorChanged) {
+				expect(toast.error).toHaveBeenLastCalledWith("This draft changed. Reload it.");
+				expect(onTargetChange).not.toHaveBeenCalled();
+			} else {
+				expect(toast.error).toHaveBeenCalledTimes(1);
+				expect(onTargetChange).toHaveBeenCalledExactlyOnceWith({ kind: "saved", id: NODE_ID });
+			}
+		},
+	);
 
 	test("keeps an unreadable private file closed", async () => {
 		const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});

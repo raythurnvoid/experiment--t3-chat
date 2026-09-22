@@ -93,10 +93,8 @@ vi.mock("@/lib/app-convex-client.ts", () => ({
 	app_convex_api: {
 		users: { get_anagraphic: "get_anagraphic" },
 		files_pending_update_runs: { get: "review_get", list_items: "review_list_items" },
-		ai_chat: {
-			thread_get: "thread_get",
-		},
 		files_pending_updates: {
+			get_pending_source_summary: "get_pending_source_summary",
 			create_private_pending_download_url: "create_private_pending_download_url",
 			get_file_pending_target: "get_file_pending_target",
 			list_files_pending_updates: "list_files_pending_updates",
@@ -373,19 +371,13 @@ function makeOwnerViewFixtures(updates: app_convex_Doc<"files_pending_updates">[
 
 function makeThread(args: { id: string; title: string | null; archived?: boolean; lastMessageAt?: number }) {
 	return {
-		_id: args.id,
-		_creationTime: 0,
-		organizationId: "organization_1",
-		workspaceId: "workspace_1",
-		clientGeneratedId: `client_${args.id}`,
+		organizationName: "source-team",
+		workspaceName: "source-workspace",
 		title: args.title,
 		archived: args.archived ?? false,
-		runtime: "aisdk_5",
-		createdBy: "user_1",
-		updatedBy: "user_1",
 		updatedAt: 1,
 		lastMessageAt: args.lastMessageAt ?? 1,
-	} as unknown as app_convex_Doc<"ai_chat_threads">;
+	};
 }
 
 function makeNode(args: {
@@ -651,7 +643,9 @@ describe("FileEditorSidebarPending", () => {
 			await screen.findByRole("img", { name: "page.png" });
 
 			expect(screen.getByText(/Created by Alex/)).toBeTruthy();
-			expect(screen.getByRole("link", { name: "Check page" }).getAttribute("href")).toContain("threadId=thread_a");
+			expect(screen.getByRole("link", { name: "Check page" }).getAttribute("href")).toBe(
+				"/w/source-team/source-workspace/chat?threadId=thread_a",
+			);
 			// The row names the folder it will create, and bulk Accept stays off while a shown row needs a
 			// parent. Saving this one row sends the folder first, so the file has somewhere to land.
 			expect(screen.getByText("Save also creates: /captures")).toBeTruthy();
@@ -1027,8 +1021,8 @@ describe("FileEditorSidebarPending", () => {
 		expect(screen.getByRole("combobox", { name: "Pending changes source: All changes, 4 changes" })).toBeTruthy();
 		expect(visiblePaths()).toEqual(["/a.md", "/b.md", "/shared.md", "/user.md"]);
 		expect(useQueriesMock).toHaveBeenCalledWith({
-			thread_a: { query: "thread_get", args: { membershipId: MEMBERSHIP_ID, threadId: "thread_a" } },
-			thread_b: { query: "thread_get", args: { membershipId: MEMBERSHIP_ID, threadId: "thread_b" } },
+			thread_a: { query: "get_pending_source_summary", args: { membershipId: MEMBERSHIP_ID, threadId: "thread_a" } },
+			thread_b: { query: "get_pending_source_summary", args: { membershipId: MEMBERSHIP_ID, threadId: "thread_b" } },
 		});
 
 		fireEvent.click(screen.getByRole("combobox"));
@@ -1110,6 +1104,39 @@ describe("FileEditorSidebarPending", () => {
 		expect(
 			screen.getByRole("option", { name: /^Your edits Changes you made in the editor, not from a chat 1$/ }),
 		).toBeTruthy();
+	});
+
+	test("keeps an unavailable source selectable for review without a title or route", async () => {
+		const update = makePendingUpdate({
+			id: "pu_kept",
+			fileNodeId: "private_kept",
+			privatePath: "/kept.zip",
+			privateKind: "stored",
+			storedContentType: "application/zip",
+			threadIds: ["thread_gone"],
+		});
+		useQueryMock.mockImplementation((reference) =>
+			reference === "get_anagraphic" ? { displayName: "Alex" } : [update],
+		);
+		useQueriesMock.mockReturnValue({ thread_gone: null });
+		treeNodesMock.mockReturnValue([]);
+		const { container } = render(<FileEditorSidebarPending />);
+		fireEvent.click(screen.getByRole("combobox"));
+		fireEvent.click(screen.getByRole("option", { name: /^Unavailable chat/ }));
+		const details = container.querySelector("details")!;
+		details.open = true;
+		fireEvent(details, new Event("toggle"));
+		expect(await screen.findByText("Unavailable chat", { selector: "p" })).toBeTruthy();
+		expect(container.querySelector('a[href*="/chat"]')).toBeNull();
+		expect(container.textContent).not.toContain("Private source title");
+		expect(container.innerHTML).not.toContain("source-team");
+		fireEvent.click(screen.getByRole("button", { name: "Discard all shown pending changes" }));
+		await waitFor(() =>
+			expect(startReviewMock).toHaveBeenCalledWith({
+				kind: "discard",
+				items: [{ pendingUpdateId: "pu_kept", reviewedRevision: 1, selectedContentStateId: null }],
+			}),
+		);
 	});
 
 	test("hides the zero-count Your edits source", () => {
@@ -1821,39 +1848,42 @@ describe("FileEditorSidebarPending", () => {
 		expect(container.querySelector(".FileEditorSidebarPending-item-path-text-added")).toBeNull();
 	});
 
-	test("whole-file copy row shows the Replaced caption, links to the file, and accepts as a whole", async () => {
-		useQueryMock.mockReturnValue([
-			makePendingUpdate({
-				id: "pu_replacement",
-				fileNodeId: "node_a",
-				copiedFrom: { nodeId: "node_src", path: "/photo.png" },
-				pendingReplacement: { assetId: "asset_staged", size: 3, contentType: "image/png", baseAssetId: "asset_base" },
-			}),
-		]);
-		treeNodesMock.mockReturnValue([
-			makeNode({ id: "node_a", path: "/target.md" }),
-			makeNode({ id: "node_src", path: "/photo.png" }),
-		]);
+	test.each([true, false])(
+		"whole-file copy row shows Replaced and accepts without needing its source path (visible %s)",
+		async (sourceVisible) => {
+			useQueryMock.mockReturnValue([
+				makePendingUpdate({
+					id: "pu_replacement",
+					fileNodeId: "node_a",
+					...(sourceVisible ? { copiedFrom: { nodeId: "node_src", path: "/photo.png" } } : {}),
+					pendingReplacement: { assetId: "asset_staged", size: 3, contentType: "image/png", baseAssetId: "asset_base" },
+				}),
+			]);
+			treeNodesMock.mockReturnValue([
+				makeNode({ id: "node_a", path: "/target.md" }),
+				makeNode({ id: "node_src", path: "/photo.png" }),
+			]);
 
-		const { container } = render(<FileEditorSidebarPending />);
+			const { container } = render(<FileEditorSidebarPending />);
 
-		expect(container.querySelector(".FileEditorSidebarPending-item-caption")?.textContent).toBe("Replaced");
-		// No text branches to diff: the link opens the file itself.
-		const link = screen.getByRole("link", { name: "/target.md" });
-		expect(link.getAttribute("href")).toContain("nodeId=node_a");
-		expect(link.getAttribute("href")).not.toContain("view=diff_editor");
+			expect(container.querySelector(".FileEditorSidebarPending-item-caption")?.textContent).toBe("Replaced");
+			// No text branches to diff: the link opens the file itself.
+			const link = screen.getByRole("link", { name: "/target.md" });
+			expect(link.getAttribute("href")).toContain("nodeId=node_a");
+			expect(link.getAttribute("href")).not.toContain("view=diff_editor");
 
-		fireEvent.click(screen.getByText("Accept"));
+			fireEvent.click(screen.getByText("Accept"));
 
-		await waitFor(() => expect(startReviewMock).toHaveBeenCalledTimes(1));
-		expect(startReviewMock).toHaveBeenCalledWith({
-			kind: "accept",
-			items: [{ pendingUpdateId: "pu_replacement", reviewedRevision: 1, selectedContentStateId: null }],
-		});
-		expect(upsertPendingMock).not.toHaveBeenCalled();
-		expect(actionMock).not.toHaveBeenCalled();
-		expect(mutationMock).not.toHaveBeenCalled();
-	});
+			await waitFor(() => expect(startReviewMock).toHaveBeenCalledTimes(1));
+			expect(startReviewMock).toHaveBeenCalledWith({
+				kind: "accept",
+				items: [{ pendingUpdateId: "pu_replacement", reviewedRevision: 1, selectedContentStateId: null }],
+			});
+			expect(upsertPendingMock).not.toHaveBeenCalled();
+			expect(actionMock).not.toHaveBeenCalled();
+			expect(mutationMock).not.toHaveBeenCalled();
+		},
+	);
 	test("plain edit rows show the Modified caption without the green path", () => {
 		useQueryMock.mockReturnValue([
 			makePendingUpdate({ id: "pu_edit", fileNodeId: "node_a", staged: "s", unstaged: "u" }),

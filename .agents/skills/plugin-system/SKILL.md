@@ -684,6 +684,11 @@ Live QA must use the installed frame and read back stored chat and raw transcrip
 
 # Releases
 
+SDK 0.20.6 remains unmirrored. Its generated HTTP types now include the Files
+`File unavailable` response when an agent loses its original chat access during
+a read. Plugin tokens keep their existing workspace scope. No plugin release or
+installation change is part of the private-files change.
+
 Press host door update on 2026-09-10: `archive-destination` now also archives a destination
 folder that the sealed grant created through `files/write` alone. The host finds that folder by
 its own `plugin-name` label; a folder a member or another plugin made still answers zero. Council

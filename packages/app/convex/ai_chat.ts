@@ -26,9 +26,14 @@ import {
 	type QueryCtx,
 } from "./_generated/server.js";
 import { api, internal } from "./_generated/api.js";
-import { paginationOptsValidator, paginationResultValidator, type RegisteredQuery } from "convex/server";
+import {
+	paginationOptsValidator,
+	paginationResultValidator,
+	type RegisteredMutation,
+	type RegisteredQuery,
+} from "convex/server";
 import { doc } from "convex-helpers/validators";
-import { v } from "convex/values";
+import { v, type Infer } from "convex/values";
 import { openai } from "@ai-sdk/openai";
 import {
 	streamText,
@@ -64,6 +69,7 @@ import {
 	ai_chat_tool_create_execute_code,
 	ai_chat_write_file_outputs,
 	ai_chat_tool_create_image_generation,
+	ai_chat_tool_create_prepare_image_generation,
 	ai_chat_tool_create_file_stored,
 	ai_chat_tool_create_browser_run,
 	ai_chat_tool_create_browser_reload,
@@ -81,6 +87,7 @@ import { ai_chat_tool_create_view_image, type ai_chat_Observation } from "../ser
 import { files_ingestion_decode_base64 } from "../server/files-ingestion.ts";
 import app_convex_schema, {
 	ai_chat_thread_active_run_validator,
+	ai_chat_workspaces_source_validator,
 	bash_shell_state_validator,
 	files_pending_target_validator,
 } from "./schema.ts";
@@ -97,6 +104,7 @@ import {
 	bash_job_is_finish_message,
 } from "./ai_chat_files.ts";
 import { ai_chat_context_create, type ai_chat_context_Context } from "../server/ai-chat-context.ts";
+import { ai_chat_workspaces_db_resolve } from "./ai_chat_workspaces.ts";
 import {
 	ai_chat_message_fits_storage,
 	ai_chat_tool_budget_apply,
@@ -118,44 +126,10 @@ export {
 } from "./files_pending_updates.ts";
 
 /**
- * A chat thread is a conversation, not a file. Reading the workspace is enough to open a thread and
- * to run your own: no thread handler in this file touches a file. That is why a read-only role can
- * use ask mode, and why the agent-mode branch of `/api/chat` asks for `content.write` as well.
- *
- * Changing somebody else's thread is a different question — see `authorize_thread_mutation`.
+ * Chats are private to their creator. Workspace read access is also required, so leaving the
+ * workspace removes access to its chats. File writes check their own permissions.
  */
 const THREAD_PERMISSION = "content.read" as const satisfies access_control_Permission;
-
-/**
- * Threads are shared by the whole workspace: `threads_list` reads them by organization and workspace,
- * with no filter on the user. So `THREAD_PERMISSION` decides who may open a thread, and this decides
- * who may change one: its author, or anyone who can edit workspace content.
- *
- * Without this check a read-only role could archive or rename the whole chat history of the
- * workspace. Worse, `thread_messages_add` would let it write text into someone else's thread.
- * `/api/chat` sends the stored messages back to the model as earlier conversation, so the next person
- * who continues that thread in agent mode would hand that text to an agent that can edit files. A
- * read-only role would have turned itself into a writer.
- */
-async function authorize_thread_mutation(
-	ctx: QueryCtx | MutationCtx,
-	args: {
-		userAuth: { id: Id<"users"> };
-		membership: Doc<"organizations_workspaces_users">;
-		thread: Doc<"ai_chat_threads">;
-	},
-) {
-	if (args.thread.createdBy === args.userAuth.id) {
-		return Result({ _yay: null });
-	}
-
-	const authorized = await access_control_db_authorize_membership(ctx, {
-		userAuth: args.userAuth,
-		membership: args.membership,
-		permission: "content.write",
-	});
-	return authorized._nay ? authorized : Result({ _yay: null });
-}
 
 const TITLE_MODEL_ID = "gpt-4.1-nano" as const;
 
@@ -179,12 +153,17 @@ function ai_chat_system_prompt(args: {
 		"You are the app chat agent for the user's organization.",
 		"Use the available tools as the working interface for the organization.",
 		`Bash starts in the current workspace path at \`~/w/${args.organizationName}/${args.workspaceName}\` (\`${currentWorkspacePath}\`). \`~\` is \`${HOME}\`, the app mount is \`${appMountPath}\`, and \`/tmp\` is durable scratch scoped to this chat thread.`,
-		`Files tools, the file API, and emitFile use workspace paths such as /reports/result.bin. Bash sees that file at ${currentWorkspacePath}/reports/result.bin. Strip only this current workspace prefix when passing a Bash path to view_image. Bash /tmp is thread scratch; Files /tmp/report.bin is a normal workspace file at ${currentWorkspacePath}/tmp/report.bin.`,
+		`Files tools, the file API, and emitFile use workspace paths such as /reports/result.bin. Bash sees that file at ${currentWorkspacePath}/reports/result.bin. For view_image, choose current or personal and strip the matching workspace prefix from the Bash path. Bash /tmp is thread scratch; Files /tmp/report.bin is a normal workspace file at ${currentWorkspacePath}/tmp/report.bin.`,
 		`User messages may reference app files with mentions written as \`@/path/to/file.md\` (any app file works the same, for example \`@/data/config.json\`); a trailing slash like \`@/docs/\` means a folder. Resolve them under the current workspace path (\`@/docs/api.md\` is \`${currentWorkspacePath}/docs/api.md\`) before using Bash or \`edit_file\`.`,
 		"When a user provides an app file URL or a node ID, first use Bash `resolve '<reference>'` to get its current path. Do not list or search files before resolving the reference. Use the resolved path with Bash; use its workspace path with Files tools. Do not turn it into an @ mention.",
 		`Link app files with Markdown URLs under \`/w/${args.organizationName}/${args.workspaceName}/files/\`, followed by their workspace-relative path with each path segment URL-encoded.`,
 		`For example, Bash path \`${currentWorkspacePath}/docs/Q3 notes.md\` links to \`/w/${args.organizationName}/${args.workspaceName}/files/docs/Q3%20notes.md\`; do not use Bash paths or bare relative paths as link URLs.`,
 		"The Bash tool description is the authority on its command surface, its flags, and how the db-backed app mount differs from `/tmp`. Follow it instead of assuming POSIX/GNU behavior, and never describe an app-mount limitation as a global Bash limitation.",
+		"mv only moves or renames files within one workspace.",
+		"Use cp for files or cp -R for folders between workspaces; the originals stay in place.",
+		"Do not work around a refused mv with cp followed by rm or Archive.",
+		"Source cleanup needs a separate user request and its own review and permission checks.",
+		"New copies use the destination folder's sharing rules, not the source's; replacing a file keeps the destination file's sharing rules.",
 		"Run the exact printed `Next page:` command to continue a listing, and when the user asks for one continuation, run only the first one and then stop.",
 		"If a failed Bash command prints a `Try:` command that directly matches the user's request, run that `Try:` command next instead of only reporting the failure.",
 		"Only summarize actual Bash stdout/stderr. The blank line between the shell prompt and output is transcript formatting, not file content. If stdout is empty or a command failed, say that instead of inferring likely filesystem contents.",
@@ -215,7 +194,7 @@ function ai_chat_system_prompt(args: {
 		// is saved as a pending file. Only a turn that really has the tool hears about it.
 		...(args.supportsImageGeneration
 			? [
-					"Use `image_generation` when the user asks for a picture, an illustration, or a logo. It creates one pending file for review. Use the returned Files target to read or open it.",
+					"Use `prepare_image_generation` once with workspace current or personal when the user asks for a picture, an illustration, or a logo. The next step runs image_generation in that workspace. It creates pending files for review. Use the returned Files target to read or open them.",
 				]
 			: []),
 		...args.browserLines,
@@ -316,27 +295,33 @@ function compute_token_usage_cost_cents(args: { modelId: string; inputTokens: nu
  * that keeps working after the picture. The chat never shows a preview, so drop them here, where
  * the flag still exists.
  */
-const drop_preliminary_tool_results_middleware: LanguageModelMiddleware = {
-	specificationVersion: "v3",
-	wrapStream: async ({ doStream }) => {
-		const { stream, ...rest } = await doStream();
+function create_image_generation_middleware(bind: ((toolCallId: string) => void) | null): LanguageModelMiddleware {
+	return {
+		specificationVersion: "v3",
+		wrapStream: async ({ doStream }) => {
+			const { stream, ...rest } = await doStream();
 
-		return {
-			...rest,
-			stream: stream.pipeThrough(
-				new TransformStream({
-					transform: (part, controller) => {
-						if (part.type === "tool-result" && part.preliminary) {
-							return;
-						}
+			return {
+				...rest,
+				stream: stream.pipeThrough(
+					new TransformStream({
+						transform: (part, controller) => {
+							if (part.type === "tool-call" && part.toolName === "image_generation") {
+								if (!bind) throw new Error("Choose an image workspace before generating an image.");
+								bind(part.toolCallId);
+							}
+							if (part.type === "tool-result" && part.preliminary) {
+								return;
+							}
 
-						controller.enqueue(part);
-					},
-				}),
-			),
-		};
-	},
-};
+							controller.enqueue(part);
+						},
+					}),
+				),
+			};
+		},
+	};
+}
 
 /**
  * Save one generated picture as a private pending file.
@@ -354,8 +339,10 @@ function create_generated_image_save(input: {
 	workspaceId: Id<"organizations_workspaces">;
 	userId: Id<"users">;
 	membershipId: Id<"organizations_workspaces_users">;
+	membershipLifetime: number;
 	getThreadId: () => Id<"ai_chat_threads"> | null;
 	canWriteFiles: boolean;
+	imageDestinations: ReadonlyMap<string, "current" | "personal">;
 	abortSignal?: AbortSignal;
 }) {
 	const saved = new Map<string, Promise<z.infer<typeof ai_chat_file_result_schema>>>();
@@ -371,6 +358,8 @@ function create_generated_image_save(input: {
 
 				try {
 					input.abortSignal?.throwIfAborted();
+					const workspace = input.imageDestinations.get(toolCallId);
+					if (!workspace) throw new Error("Image destination is missing.");
 					const provider = z.object({ result: z.string() }).parse(output);
 					const threadId = input.getThreadId();
 					if (!threadId) throw new Error("A thread is required.");
@@ -384,10 +373,12 @@ function create_generated_image_save(input: {
 							workspaceId: input.workspaceId,
 							userId: input.userId,
 							membershipId: input.membershipId,
+							membershipLifetime: input.membershipLifetime,
 							threadId,
 						},
 						[
 							{
+								workspace,
 								path: `/generated/image.${ai_chat_GENERATED_IMAGE_FORMAT}`,
 								contentType: ai_chat_GENERATED_IMAGE_MEDIA_TYPE,
 								bytes: files_ingestion_decode_base64(provider.result),
@@ -775,7 +766,15 @@ function has_valid_file_tool_parts(content: { parts?: unknown }) {
 		// the SDK would replay that stored output to the model without checking it.
 		if (
 			!name ||
-			!new Set([...FILE_TOOL_NAMES, "bash", "edit_file", "set_file_metadata", "web_search", "execute_code"]).has(name)
+			!new Set([
+				...FILE_TOOL_NAMES,
+				"bash",
+				"edit_file",
+				"set_file_metadata",
+				"web_search",
+				"execute_code",
+				"prepare_image_generation",
+			]).has(name)
 		)
 			return false;
 
@@ -833,6 +832,7 @@ function build_agent_configuration(input: {
 		organizationName: string;
 		workspaceName: string;
 		userId: Id<"users">;
+		membershipLifetime: number;
 	};
 	args: {
 		modelId: (typeof ai_chat_MODEL_IDS)[number];
@@ -874,7 +874,13 @@ function build_agent_configuration(input: {
 
 	// One save for the whole turn. The model conversion and the stream transform below both call it
 	// with the same tool call id, so the picture reaches Files only once.
-	const saveGeneratedImage = create_generated_image_save({ ctx, ...toolCtxData, abortSignal: input.abortSignal });
+	const imageDestinations = new Map<string, "current" | "personal">();
+	const saveGeneratedImage = create_generated_image_save({
+		ctx,
+		...toolCtxData,
+		imageDestinations,
+		abortSignal: input.abortSignal,
+	});
 	const toolBudget = ai_chat_tool_budget_create();
 	const observations = new Map<string, ai_chat_Observation>();
 
@@ -887,9 +893,7 @@ function build_agent_configuration(input: {
 		// Reading changes nothing, so both modes get it. The shared budget caps how many bytes one
 		// turn can pull into the model.
 		view_image: ai_chat_tool_create_view_image(ctx, {
-			userId: ctxData.userId,
-			membershipId: input.membershipId,
-			getThreadId,
+			...toolCtxData,
 			observations,
 		}),
 		bash: ai_chat_tool_create_bash(ctx, toolCtxData, {
@@ -908,6 +912,7 @@ function build_agent_configuration(input: {
 		set_file_metadata: ai_chat_tool_create_set_file_metadata(ctx, toolCtxData),
 		web_search: ai_chat_tool_create_web_search(),
 		execute_code: ai_chat_tool_create_execute_code(ctx, toolCtxData),
+		prepare_image_generation: ai_chat_tool_create_prepare_image_generation(modeId === "agent"),
 		// Both modes inspect the bound page. Only Agent mode may turn emitted bytes into pending files.
 		// The flag gates live tools; validation keeps the stored shapes regardless.
 		...(browserToolsEnabled && browserBinding
@@ -951,7 +956,11 @@ function build_agent_configuration(input: {
 	// route is meant to be the check.
 	const tools = {
 		...(Object.fromEntries(
-			Object.entries(appTools).filter(([name]) => !(modeId === "ask" && writeToolNames.has(name))),
+			Object.entries(appTools).filter(
+				([name]) =>
+					!(modeId === "ask" && writeToolNames.has(name)) &&
+					!(name === "prepare_image_generation" && !supportsImageGeneration),
+			),
 		) as Partial<typeof appTools>),
 		// OpenAI runs this one on its own side, so it is registered, never executed here. Only a model
 		// that supports it may receive it: another model would reject the whole request, not just the
@@ -959,7 +968,9 @@ function build_agent_configuration(input: {
 		...(supportsImageGeneration ? { image_generation: ai_chat_tool_create_image_generation(saveGeneratedImage) } : {}),
 	};
 
-	const activeTools = Object.keys(tools) as Array<keyof typeof validationTools>;
+	const activeTools = Object.keys(tools).filter((name) => name !== "image_generation") as Array<
+		keyof typeof validationTools
+	>;
 
 	const browserLines =
 		browserToolsEnabled && browserBinding
@@ -992,6 +1003,7 @@ function build_agent_configuration(input: {
 		toolBudget,
 		jobWait,
 		saveGeneratedImage,
+		imageDestinations,
 	};
 }
 
@@ -1023,7 +1035,11 @@ export const save_shell = internalMutation({
 		if (!thread) {
 			throw convex_error({ message: "Not found" });
 		}
-		if (thread.organizationId !== args.organizationId || thread.workspaceId !== args.workspaceId) {
+		if (
+			thread.organizationId !== args.organizationId ||
+			thread.workspaceId !== args.workspaceId ||
+			thread.createdBy !== args.userId
+		) {
 			throw convex_error({ message: "Unauthorized" });
 		}
 
@@ -1033,10 +1049,7 @@ export const save_shell = internalMutation({
 		if (!invocation || invocation.threadId !== thread._id || invocation.userId !== args.userId || !membership)
 			throw convex_error({ message: "Unauthorized" });
 
-		// The shell row and its transcript are shared by everyone in the thread, and this patch can
-		// also delete another member's oldest transcript entries. A role change during the call
-		// must therefore stop the write, so ask the permission question again here. `poll_bash_job`
-		// asks it the same way on every job poll.
+		// A role change during the call must stop writes to the creator's shell and transcript.
 		const authorized = await access_control_db_authorize_membership(ctx, {
 			userAuth: { id: invocation.userId },
 			membership,
@@ -1221,10 +1234,11 @@ export const threads_list = query({
 
 		const threads_query = ctx.db
 			.query("ai_chat_threads")
-			.withIndex("by_organization_workspace_archived_lastMessageAt", (q) =>
+			.withIndex("by_organization_workspace_createdBy_archived_lastMessageAt", (q) =>
 				q
 					.eq("organizationId", membership.organizationId)
 					.eq("workspaceId", membership.workspaceId)
+					.eq("createdBy", userAuth.id)
 					.eq("archived", archived),
 			);
 
@@ -1282,7 +1296,8 @@ export const thread_get = query({
 		if (
 			!thread ||
 			thread.organizationId !== membership.organizationId ||
-			thread.workspaceId !== membership.workspaceId
+			thread.workspaceId !== membership.workspaceId ||
+			thread.createdBy !== userAuth.id
 		) {
 			return null;
 		}
@@ -1338,7 +1353,7 @@ export const thread_create = mutation({
 
 		// We do not trust `lastMessageAt`. This is a public mutation, and the only real caller
 		// (`/api/chat`) sends its own server time anyway. `threads_list` sorts on this field, so a time
-		// in the future would put the thread at the top of the list for every member until the first
+		// in the future would put the thread at the top of the creator's list until the first
 		// message replaces it. `readAt` copies this value too, so until then the thread also looks
 		// read.
 		const lastMessageAt = args.lastMessageAt == null ? undefined : Math.min(args.lastMessageAt, now);
@@ -1417,13 +1432,17 @@ export const thread_branch = mutation({
 		if (!thread) {
 			return Result({ _nay: { message: "Not found" } });
 		}
-		if (thread.organizationId !== membership.organizationId || thread.workspaceId !== membership.workspaceId) {
+		if (
+			thread.organizationId !== membership.organizationId ||
+			thread.workspaceId !== membership.workspaceId ||
+			thread.createdBy !== userAuth.id
+		) {
 			return Result({ _nay: { message: "Unauthorized" } });
 		}
 
 		const now = Date.now();
-		const organizationId = thread.organizationId;
-		const workspaceId = thread.workspaceId;
+		const organizationId = membership.organizationId;
+		const workspaceId = membership.workspaceId;
 
 		const allMessages = await ctx.db
 			.query("ai_chat_threads_messages_aisdk_5")
@@ -1446,15 +1465,23 @@ export const thread_branch = mutation({
 
 		const unarchivedThreads = await ctx.db
 			.query("ai_chat_threads")
-			.withIndex("by_organization_workspace_archived_lastMessageAt", (q) =>
-				q.eq("organizationId", organizationId).eq("workspaceId", workspaceId).eq("archived", false),
+			.withIndex("by_organization_workspace_createdBy_archived_lastMessageAt", (q) =>
+				q
+					.eq("organizationId", organizationId)
+					.eq("workspaceId", workspaceId)
+					.eq("createdBy", userAuth.id)
+					.eq("archived", false),
 			)
 			.collect();
 
 		const archivedThreads = await ctx.db
 			.query("ai_chat_threads")
-			.withIndex("by_organization_workspace_archived_lastMessageAt", (q) =>
-				q.eq("organizationId", organizationId).eq("workspaceId", workspaceId).eq("archived", true),
+			.withIndex("by_organization_workspace_createdBy_archived_lastMessageAt", (q) =>
+				q
+					.eq("organizationId", organizationId)
+					.eq("workspaceId", workspaceId)
+					.eq("createdBy", userAuth.id)
+					.eq("archived", true),
 			)
 			.collect();
 
@@ -1509,47 +1536,34 @@ export const thread_branch = mutation({
 			updatedAt: now,
 			starred: false,
 		});
-		// Branching stays open to any member: it copies messages the caller can already read.
-		// The scratch state is different. It is the `/tmp` files and the shells (cwd, variables and
-		// function bodies) of the source thread. To reach those inside the source thread you must
-		// send a prompt there, and `thread_messages_add` asks for `content.write` unless you created
-		// the thread. Copying them into a new thread that the caller owns would skip that check, so
-		// we copy them only when the caller was allowed to write in the source thread. Without the
-		// permission the branch gets no shell rows and `default` is created on first use.
-		const threadAuthorized = await authorize_thread_mutation(ctx, { userAuth, membership, thread });
-		const canReadSourceScratch = !threadAuthorized._nay;
-
-		if (canReadSourceScratch) {
-			// Transcripts are not copied: the new thread starts with empty history, so the copied
-			// row's transcript counters start at 0 too. Jobs still running in the source thread are
-			// not re-pointed; they keep writing to the source thread's transcript.
-			const sourceShells = await ctx.db
-				.query("ai_chat_bash_shells")
-				.withIndex("by_thread_name", (q) => q.eq("threadId", threadId))
-				.collect();
-			for (const sourceShell of sourceShells) {
-				await ctx.db.insert("ai_chat_bash_shells", {
-					organizationId,
-					workspaceId,
-					threadId: newThreadId,
-					name: sourceShell.name,
-					cwd: sourceShell.cwd,
-					cwdTarget: sourceShell.cwdTarget,
-					state: sourceShell.state,
-					transcriptBytes: 0,
-					transcriptEntries: 0,
-					transcriptSeq: 0,
-					updatedBy: userAuth.id,
-					updatedAt: now,
-				});
-			}
-			await ctx.runMutation(internal.ai_chat_files.copy_thread_tmp_files, {
+		// Copy the creator's scratch and shells, but not transcripts or running jobs.
+		const sourceShells = await ctx.db
+			.query("ai_chat_bash_shells")
+			.withIndex("by_thread_name", (q) => q.eq("threadId", threadId))
+			.collect();
+		for (const sourceShell of sourceShells) {
+			await ctx.db.insert("ai_chat_bash_shells", {
 				organizationId,
 				workspaceId,
-				sourceThreadId: threadId,
-				targetThreadId: newThreadId,
+				threadId: newThreadId,
+				name: sourceShell.name,
+				cwd: sourceShell.cwd,
+				cwdTarget: sourceShell.cwdTarget,
+				state: sourceShell.state,
+				transcriptBytes: 0,
+				transcriptEntries: 0,
+				transcriptSeq: 0,
+				updatedBy: userAuth.id,
+				updatedAt: now,
 			});
 		}
+		await ctx.runMutation(internal.ai_chat_files.copy_thread_tmp_files, {
+			organizationId,
+			workspaceId,
+			userId: userAuth.id,
+			sourceThreadId: threadId,
+			targetThreadId: newThreadId,
+		});
 
 		if (!newestMessage) {
 			return Result({ _yay: { threadId: newThreadId } });
@@ -1665,13 +1679,12 @@ export const thread_update = mutation({
 		if (!thread) {
 			return Result({ _nay: { message: "Not found" } });
 		}
-		if (thread.organizationId !== membership.organizationId || thread.workspaceId !== membership.workspaceId) {
+		if (
+			thread.organizationId !== membership.organizationId ||
+			thread.workspaceId !== membership.workspaceId ||
+			thread.createdBy !== userAuth.id
+		) {
 			return Result({ _nay: { message: "Unauthorized" } });
-		}
-
-		const threadAuthorized = await authorize_thread_mutation(ctx, { userAuth, membership, thread });
-		if (threadAuthorized._nay) {
-			return threadAuthorized;
 		}
 
 		await ctx.db.patch(
@@ -1701,6 +1714,28 @@ export const thread_update = mutation({
 		);
 
 		return Result({ _yay: null });
+	},
+});
+
+type thread_update_Result =
+	typeof thread_update extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
+
+/**
+ * A title from a running model must still belong to the captured membership lifetime.
+ */
+export const thread_run_set_title = internalMutation({
+	args: { source: ai_chat_workspaces_source_validator, title: v.string() },
+	returns: v_result({ _yay: v.null() }),
+	handler: async (ctx, args): Promise<thread_update_Result> => {
+		const allowed = await ai_chat_workspaces_db_resolve(ctx, { source: args.source, workspace: "current" });
+		if (allowed._nay) return Result({ _nay: { message: "Unauthorized" } });
+		return (await ctx.runMutation(api.ai_chat.thread_update, {
+			membershipId: args.source.membershipId,
+			threadId: args.source.threadId,
+			title: args.title,
+		})) as thread_update_Result;
 	},
 });
 
@@ -1753,21 +1788,14 @@ export const thread_mark_read = mutation({
 		if (!thread) {
 			return Result({ _nay: { message: "Not found" } });
 		}
-		if (thread.organizationId !== membership.organizationId || thread.workspaceId !== membership.workspaceId) {
+		if (
+			thread.organizationId !== membership.organizationId ||
+			thread.workspaceId !== membership.workspaceId ||
+			thread.createdBy !== userAuth.id
+		) {
 			return Result({ _nay: { message: "Unauthorized" } });
 		}
 
-		// This write does not call `authorize_thread_mutation`, unlike the other thread writes. Threads
-		// belong to the whole workspace, and the list shows them as unread until someone opens them. So
-		// asking for `content.write` would leave a read-only role with unread badges it can never clear
-		// on threads it is allowed to read. None of the problems that helper exists to stop can happen
-		// by moving a read marker.
-		//
-		// `readAt` is one field on the shared thread, not one marker per user. So whoever opens a
-		// thread clears the badge for the whole workspace. That is how the feature already works for
-		// every member; blocking this one write would only make the badge permanent for readers, it
-		// would not make it private.
-		//
 		// Reading is not a content edit, so `updatedAt`/`updatedBy` stay untouched.
 		// `Math.max` keeps the cursor correct when the newest message is already persisted.
 		await ctx.db.patch("ai_chat_threads", threadId, {
@@ -1820,13 +1848,12 @@ export const thread_archive = mutation({
 			return Result({ _nay: { message: "Not found" } });
 		}
 
-		if (thread.organizationId !== membership.organizationId || thread.workspaceId !== membership.workspaceId) {
+		if (
+			thread.organizationId !== membership.organizationId ||
+			thread.workspaceId !== membership.workspaceId ||
+			thread.createdBy !== userAuth.id
+		) {
 			return Result({ _nay: { message: "Unauthorized" } });
-		}
-
-		const threadAuthorized = await authorize_thread_mutation(ctx, { userAuth, membership, thread });
-		if (threadAuthorized._nay) {
-			return threadAuthorized;
 		}
 
 		const now = Date.now();
@@ -1887,7 +1914,8 @@ export const thread_messages_list = query({
 		if (
 			!thread ||
 			thread.organizationId !== membership.organizationId ||
-			thread.workspaceId !== membership.workspaceId
+			thread.workspaceId !== membership.workspaceId ||
+			thread.createdBy !== userAuth.id
 		) {
 			return null;
 		}
@@ -1904,6 +1932,14 @@ export const thread_messages_list = query({
 	},
 });
 
+const thread_messages_validator = v.array(
+	v.object({
+		clientGeneratedMessageId:
+			app_convex_schema.tables.ai_chat_threads_messages_aisdk_5.validator.fields.clientGeneratedMessageId,
+		content: app_convex_schema.tables.ai_chat_threads_messages_aisdk_5.validator.fields.content,
+	}),
+);
+
 /**
  * Mutation to add one or more messages to a thread.
  *
@@ -1914,13 +1950,7 @@ export const thread_messages_add = mutation({
 		membershipId: v.id("organizations_workspaces_users"),
 		threadId: v.id("ai_chat_threads"),
 		parentId: v.optional(v.union(v.string(), v.null())),
-		messages: v.array(
-			v.object({
-				clientGeneratedMessageId:
-					app_convex_schema.tables.ai_chat_threads_messages_aisdk_5.validator.fields.clientGeneratedMessageId,
-				content: app_convex_schema.tables.ai_chat_threads_messages_aisdk_5.validator.fields.content,
-			}),
-		),
+		messages: thread_messages_validator,
 	},
 	returns: v_result({
 		_yay: v.object({
@@ -1953,13 +1983,12 @@ export const thread_messages_add = mutation({
 		if (!thread) {
 			return Result({ _nay: { message: "Not found" } });
 		}
-		if (thread.organizationId !== membership.organizationId || thread.workspaceId !== membership.workspaceId) {
+		if (
+			thread.organizationId !== membership.organizationId ||
+			thread.workspaceId !== membership.workspaceId ||
+			thread.createdBy !== userAuth.id
+		) {
 			return Result({ _nay: { message: "Unauthorized" } });
-		}
-
-		const threadAuthorized = await authorize_thread_mutation(ctx, { userAuth, membership, thread });
-		if (threadAuthorized._nay) {
-			return threadAuthorized;
 		}
 
 		// The `content` validator is loose (`v.any()` fields), but stored file parts
@@ -2006,6 +2035,12 @@ export const thread_messages_add = mutation({
 		}
 
 		const parentId = args.parentId ? ctx.db.normalizeId("ai_chat_threads_messages_aisdk_5", args.parentId) : null;
+		if (args.parentId) {
+			const parent = parentId ? await ctx.db.get("ai_chat_threads_messages_aisdk_5", parentId) : null;
+			if (!parent || parent.threadId !== thread._id) {
+				return Result({ _nay: { message: "Message not found" } });
+			}
+		}
 
 		const existingIdsByClientGeneratedMessageId = new Map<string, Id<"ai_chat_threads_messages_aisdk_5">>();
 		const newClientGeneratedMessageIds = new Set<string>();
@@ -2106,6 +2141,33 @@ export const thread_messages_add = mutation({
 	},
 });
 
+type thread_messages_add_Result =
+	typeof thread_messages_add extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
+
+/**
+ * Check the run and write its messages in the same transaction.
+ */
+export const thread_run_messages_add = internalMutation({
+	args: {
+		source: ai_chat_workspaces_source_validator,
+		parentId: v.optional(v.union(v.string(), v.null())),
+		messages: thread_messages_validator,
+	},
+	returns: v_result({ _yay: v.object({ ids: v.array(v.id("ai_chat_threads_messages_aisdk_5")) }) }),
+	handler: async (ctx, args): Promise<thread_messages_add_Result> => {
+		const allowed = await ai_chat_workspaces_db_resolve(ctx, { source: args.source, workspace: "current" });
+		if (allowed._nay) return Result({ _nay: { message: "Unauthorized" } });
+		return (await ctx.runMutation(api.ai_chat.thread_messages_add, {
+			membershipId: args.source.membershipId,
+			threadId: args.source.threadId,
+			parentId: args.parentId,
+			messages: args.messages,
+		})) as thread_messages_add_Result;
+	},
+});
+
 /**
  * Keep this in sync with the AI SDK `PrepareSendMessagesRequest` shape used by
  * `AssistantChatTransport.prepareSendMessagesRequest`.
@@ -2175,6 +2237,7 @@ async function create_agent_turn_stream(args: {
 	 */
 	uiMessages: ai_chat_UiMessage[];
 	threadId: Id<"ai_chat_threads">;
+	source: Infer<typeof ai_chat_workspaces_source_validator>;
 	/**
 	 * Set when the request created the thread: the stream tells the browser the new id.
 	 */
@@ -2274,7 +2337,7 @@ async function create_agent_turn_stream(args: {
 	const injectedFinishedMessages: Array<{ messageId: Id<"ai_chat_threads_messages_aisdk_5">; text: string }> = [];
 	const read_uninjected_finished_messages = async () => {
 		const finishedMessagesSinceStart = await ctx.runQuery(internal.ai_chat.list_finish_messages_since, {
-			threadId,
+			source: args.source,
 			sinceMs: args.runStartedAt,
 		});
 		return finishedMessagesSinceStart.filter(
@@ -2317,12 +2380,12 @@ async function create_agent_turn_stream(args: {
 			const result1 = streamText({
 				model: wrapLanguageModel({
 					model: openai(args.modelId),
-					middleware: drop_preliminary_tool_results_middleware,
+					middleware: create_image_generation_middleware(null),
 				}),
 				system: `${systemPrompt}\n${workspaceSystem}`,
 				// SDK retries reuse private observations without running prepareStep's access checks again.
 				maxRetries: 0,
-				prepareStep: async ({ stepNumber, messages }) => {
+				prepareStep: async ({ stepNumber, messages, steps }) => {
 					// Read first: even the branches below that end the turn answer with the latest
 					// finishes. A job can finish mid-run; the model reads its message like any
 					// earlier turn output and decides what to say about it. Like Claude Code
@@ -2336,16 +2399,6 @@ async function create_agent_turn_stream(args: {
 						role: "system" as const,
 						content: finish.text,
 					}));
-					// Access may change after live browser text or image bytes were read.
-					// Recheck before every model call, including the branches that end this turn.
-					const filteredMessages = await filter_revoked_observations(
-						add_generated_file_summaries(messages),
-						observations,
-					);
-					const withFilteredMessages =
-						injectedMessages.length > 0 || filteredMessages !== messages
-							? { messages: [...filteredMessages, ...injectedMessages] }
-							: {};
 					let browserUnavailable: string | null = null;
 					if (browserBinding) {
 						const session = await ctx.runQuery(internal.files_browser.load_browser_session, {
@@ -2366,6 +2419,45 @@ async function create_agent_turn_stream(args: {
 								"The shared browser is no longer available to this turn. Continue with other tools. Do not claim new browser checks.";
 						}
 					}
+
+					const preparations =
+						steps.at(-1)?.toolResults.filter((result) => result?.toolName === "prepare_image_generation") ?? [];
+					let imageWorkspace: "current" | "personal" | null = null;
+					if (
+						stepNumber !== 9 &&
+						!toolBudget.exhausted &&
+						!jobWait.requested &&
+						preparations.length === 1 &&
+						tools.image_generation
+					) {
+						const { workspace } = z
+							.object({ metadata: z.object({ workspace: z.enum(["current", "personal"]) }) })
+							.parse(preparations[0]!.output).metadata;
+						const destination = await ctx.runMutation(internal.ai_chat_files.check_image_output, {
+							source: args.source,
+							workspace,
+						});
+						if (destination._nay) throw new Error(destination._nay.message);
+						args.abortSignal?.throwIfAborted();
+						imageWorkspace = workspace;
+					}
+
+					// Preparation can outlive source access or an observed image. Check both after
+					// all preparation awaits, including on the branches that end this turn.
+					const filteredMessages = await filter_revoked_observations(
+						add_generated_file_summaries(messages),
+						observations,
+					);
+					const withFilteredMessages =
+						injectedMessages.length > 0 || filteredMessages !== messages
+							? { messages: [...filteredMessages, ...injectedMessages] }
+							: {};
+					const allowed = await ctx.runQuery(internal.ai_chat_workspaces.resolve, {
+						source: args.source,
+						workspace: "current",
+					});
+					if (allowed._nay) throw new Error(allowed._nay.message);
+
 					// Leave a model step to explain tool results and any unfinished work.
 					if (stepNumber === 9 || toolBudget.exhausted)
 						return {
@@ -2381,16 +2473,34 @@ async function create_agent_turn_stream(args: {
 							system: `${systemPrompt}\n${workspaceSystem}\nA background job you are waiting for is still running. Its finish will wake you with its result in a new run. End this turn now with a short status of what is done and what the job will decide.`,
 							...withFilteredMessages,
 						};
-					if (browserUnavailable)
+					if (imageWorkspace) {
+						const workspace = imageWorkspace;
 						return {
-							activeTools: activeTools.filter(
-								(name) => !["browser_run", "browser_reload", "browser_close"].includes(name),
-							),
-							system: `${systemPrompt}\n${workspaceSystem}\n${browserUnavailable}`,
+							activeTools: ["image_generation"],
+							toolChoice: { type: "tool", toolName: "image_generation" },
+							model: wrapLanguageModel({
+								model: openai(args.modelId),
+								middleware: create_image_generation_middleware((toolCallId) => {
+									const bound = args.agent.imageDestinations.get(toolCallId);
+									if (bound && bound !== workspace) throw new Error("Image call already has a destination.");
+									args.agent.imageDestinations.set(toolCallId, workspace);
+								}),
+							}),
 							...withFilteredMessages,
 						};
-					if (injectedMessages.length === 0 && filteredMessages === messages) return undefined;
-					return { messages: [...filteredMessages, ...injectedMessages] };
+					}
+					const stepTools = activeTools.filter(
+						(name) =>
+							!(stepNumber >= 8 && name === "prepare_image_generation") &&
+							!(browserUnavailable && ["browser_run", "browser_reload", "browser_close"].includes(name)),
+					);
+					if (browserUnavailable || preparations.length > 1)
+						return {
+							activeTools: stepTools,
+							system: `${systemPrompt}\n${workspaceSystem}\n${browserUnavailable ?? ""}\n${preparations.length > 1 ? "Image generation was not started: choose exactly one workspace with prepare_image_generation in a new step." : ""}`,
+							...withFilteredMessages,
+						};
+					return { activeTools: stepTools, ...withFilteredMessages };
 				},
 				messages: modelMessages,
 				maxOutputTokens: 2000,
@@ -2440,7 +2550,7 @@ async function create_agent_turn_stream(args: {
 
 					// A picture costs per image, not per token. Count the results here rather than in the
 					// upload transform, because a step result holds one entry per finished picture once
-					// `drop_preliminary_tool_results_middleware` has removed the previews.
+					// The image middleware has removed the previews.
 					capturedGeneratedImages = steps.reduce(
 						(count, step) =>
 							count +
@@ -2478,7 +2588,10 @@ async function create_agent_turn_stream(args: {
 			}
 
 			// Generate a title for the new thread. Only `/api/chat` asks for one.
-			const thread = args.generateTitle
+			const titleAccess = args.generateTitle
+				? await ctx.runQuery(internal.ai_chat_workspaces.resolve, { source: args.source, workspace: "current" })
+				: null;
+			const thread = titleAccess?._yay
 				? await ctx.runQuery(api.ai_chat.thread_get, { membershipId: membership._id, threadId })
 				: null;
 			const existingTitle = typeof thread?.title === "string" ? thread.title.trim() : "";
@@ -2492,6 +2605,14 @@ async function create_agent_turn_stream(args: {
 				let titleOutputTokens = 0;
 				const titleResult = streamText({
 					model: openai(TITLE_MODEL_ID),
+					maxRetries: 0,
+					prepareStep: async () => {
+						const allowed = await ctx.runQuery(internal.ai_chat_workspaces.resolve, {
+							source: args.source,
+							workspace: "current",
+						});
+						if (allowed._nay) throw new Error(allowed._nay.message);
+					},
 					system: TITLE_SYSTEM_PROMPT,
 					messages: titleMessages,
 					stopWhen: stepCountIs(1),
@@ -2523,21 +2644,20 @@ async function create_agent_turn_stream(args: {
 
 				const trimmedTitle = title.trim();
 				if (trimmedTitle) {
-					writer.write({
-						type: "data-chat-title",
-						data: { title: trimmedTitle },
-						transient: true,
-					});
-
-					const threadUpdateResult = await ctx.runMutation(api.ai_chat.thread_update, {
-						threadId: thread._id,
-						membershipId: membership._id,
+					const threadUpdateResult = await ctx.runMutation(internal.ai_chat.thread_run_set_title, {
+						source: args.source,
 						title: trimmedTitle,
 					});
 					if (threadUpdateResult._nay) {
 						console.error("Failed to persist generated title", {
 							threadId: thread._id,
 							result: threadUpdateResult,
+						});
+					} else {
+						writer.write({
+							type: "data-chat-title",
+							data: { title: trimmedTitle },
+							transient: true,
 						});
 					}
 				}
@@ -2765,33 +2885,18 @@ export async function ai_chat_http_chat(ctx: ActionCtx, request: Request) {
 			} as const;
 		}
 
-		// In both modes the AI tools read workspace files, and the tools check no permission
-		// themselves — this route is their only check — so `content.read` is always needed.
-		// Agent mode can also edit files, so it asks for `content.write` too.
-		// We ask for both instead of only the stronger one, because a custom role can have
-		// write without read. Such a role was already refused later by the `content.read`
-		// check inside `thread_get` / `thread_create`, but that answers 400, which looks
-		// like a broken request. Checking here lets the route answer 403 itself.
-		// We write the names here instead of reusing `THREAD_PERMISSION`: that one guards
-		// the thread record, these guard file access, so they must not change together.
-		const chatPermissions =
-			body.mode === "agent"
-				? (["content.read", "content.write"] as const satisfies readonly access_control_Permission[])
-				: (["content.read"] as const satisfies readonly access_control_Permission[]);
-		for (const permission of chatPermissions) {
-			const allowed = await ctx.runQuery(api.access_control.get_current_user_workspace_permission, {
-				membershipId: membership._id,
-				permission,
-			});
-			if (!allowed) {
-				return {
-					status: 403,
-					body: {
-						message: "Permission denied",
-					},
-				} as const;
-			}
-		}
+		// A team viewer can work in their own home. Each file tool checks its destination.
+		const allowed = await ctx.runQuery(api.access_control.get_current_user_workspace_permission, {
+			membershipId: membership._id,
+			permission: "content.read",
+		});
+		if (!allowed) return { status: 403, body: { message: "Permission denied" } } as const;
+
+		const workspaces = await ctx.runMutation(internal.ai_chat_workspaces.capture, {
+			userId: user._id,
+			membershipId: membership._id,
+		});
+		if (workspaces._nay) return { status: 403, body: { message: workspaces._nay.message } } as const;
 
 		const tenant = await ctx.runQuery(internal.organizations.get_tenant, {
 			organizationId: membership.organizationId,
@@ -2852,6 +2957,7 @@ export async function ai_chat_http_chat(ctx: ActionCtx, request: Request) {
 				// Pass the same user id into file tools so pending overlays and file-create audit fields
 				// use the identity already accepted by this chat action.
 				userId: user._id,
+				membershipLifetime: workspaces._yay.membershipLifetime,
 			},
 			args: {
 				modelId: body.model,
@@ -2864,12 +2970,6 @@ export async function ai_chat_http_chat(ctx: ActionCtx, request: Request) {
 			browserUnavailableNote,
 			abortSignal: request.signal,
 		});
-		if (ai_chat_context_ENABLED) {
-			const initialized = await ai_chat_context_create(ctx, { membershipId: membership._id, userId: user._id });
-			if (initialized._nay) return { status: 400, body: { message: initialized._nay.message } } as const;
-			workspaceContext = initialized._yay.context;
-			workspaceSystem = initialized._yay.system;
-		}
 
 		// Validate the messages if they are present
 		if (body.messages.length > 0) {
@@ -2960,27 +3060,6 @@ export async function ai_chat_http_chat(ctx: ActionCtx, request: Request) {
 				} as const;
 			}
 
-			// Running a turn in somebody else's thread is a write to that thread: it spends the
-			// owner's history, and its Bash calls restore and overwrite that thread's shells and
-			// append to their transcripts. `thread_messages_add` asks the same question, but a
-			// regenerate sends no user message, so that call is skipped and the question was never
-			// asked. Ask it here. The thread's own creator always passes, like every other thread
-			// write, and Agent mode already required `content.write` above.
-			if (existingThread.createdBy !== membership.userId) {
-				const canWriteThread = await ctx.runQuery(api.access_control.get_current_user_workspace_permission, {
-					membershipId: membership._id,
-					permission: "content.write",
-				});
-				if (!canWriteThread) {
-					return {
-						status: 403,
-						body: {
-							message: "Permission denied",
-						},
-					} as const;
-				}
-			}
-
 			threadId = existingThread._id;
 		} else {
 			if (!body.clientGeneratedThreadId) {
@@ -3050,6 +3129,20 @@ export async function ai_chat_http_chat(ctx: ActionCtx, request: Request) {
 
 			createdThreadId = threadId = created._yay.threadId;
 		}
+		const source = {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			userId: user._id,
+			threadId,
+			membershipId: membership._id,
+			membershipLifetime: workspaces._yay.membershipLifetime,
+		};
+		if (ai_chat_context_ENABLED) {
+			const initialized = await ai_chat_context_create(ctx, { source });
+			if (initialized._nay) return { status: 400, body: { message: initialized._nay.message } } as const;
+			workspaceContext = initialized._yay.context;
+			workspaceSystem = initialized._yay.system;
+		}
 
 		// FIX(parentId-race-condition): Track the resolved Convex doc ID for `onFinish` persistence.
 		let resolvedParentId: string | null | undefined = body.parentId;
@@ -3103,9 +3196,8 @@ export async function ai_chat_http_chat(ctx: ActionCtx, request: Request) {
 		// Persist user-submitted messages before starting assistant streaming.
 		// This keeps edits durable even when the user stops generation.
 		if (requestMessages.length > 0) {
-			const persistedRequestMessages = await ctx.runMutation(api.ai_chat.thread_messages_add, {
-				membershipId: membership._id,
-				threadId: threadId as Id<"ai_chat_threads">,
+			const persistedRequestMessages = await ctx.runMutation(internal.ai_chat.thread_run_messages_add, {
+				source,
 				parentId: resolvedParentId,
 				messages: requestMessages.map((message) => ({
 					clientGeneratedMessageId: message.id,
@@ -3184,6 +3276,7 @@ export async function ai_chat_http_chat(ctx: ActionCtx, request: Request) {
 			workspaceSystem,
 			uiMessages,
 			threadId: runThreadId,
+			source,
 			createdThreadId,
 			parentId: resolvedParentId,
 			parentClientGeneratedId: resolvedParentClientGeneratedId,
@@ -3200,9 +3293,8 @@ export async function ai_chat_http_chat(ctx: ActionCtx, request: Request) {
 					threadId: runThreadId,
 					fallbackParentId: resolvedParentId,
 				});
-				const stored = await ctx.runMutation(api.ai_chat.thread_messages_add, {
-					membershipId: membership._id,
-					threadId: runThreadId,
+				const stored = await ctx.runMutation(internal.ai_chat.thread_run_messages_add, {
+					source,
 					parentId,
 					messages: [{ clientGeneratedMessageId: message.id, content: message }],
 				});
@@ -3275,7 +3367,7 @@ export async function ai_chat_http_chat_response(ctx: ActionCtx, request: Reques
 /**
  * The wake context query of `run_job_wakeup`: what `/api/chat` reads with the request's auth, read with the
  * user who launched the job instead. Refuse when that user lost the membership, the workspace
- * permissions of the mode, or the right to write in the thread since the launch. The mode is the
+ * read permission, or ownership of the thread since the launch. The mode is the
  * one of the launching call: `allowDbFilesMkdir` is set only in Agent mode.
  */
 export const get_job_wakeup_context = internalQuery({
@@ -3283,6 +3375,7 @@ export const get_job_wakeup_context = internalQuery({
 	returns: v_result({
 		_yay: v.object({
 			membership: doc(app_convex_schema, "organizations_workspaces_users"),
+			membershipLifetime: v.number(),
 			thread: doc(app_convex_schema, "ai_chat_threads"),
 			messages: v.array(doc(app_convex_schema, "ai_chat_threads_messages_aisdk_5")),
 			modelId: v.union(...ai_chat_MODEL_IDS.map((modelId) => v.literal(modelId))),
@@ -3299,20 +3392,21 @@ export const get_job_wakeup_context = internalQuery({
 		if (!membership) return Result({ _nay: { message: "Unauthorized" } });
 
 		const modeId = invocation.job.allowDbFilesMkdir ? "agent" : "ask";
-		const permissions =
-			modeId === "agent"
-				? (["content.read", "content.write"] as const satisfies readonly access_control_Permission[])
-				: (["content.read"] as const satisfies readonly access_control_Permission[]);
-		for (const permission of permissions) {
-			const authorized = await access_control_db_authorize_membership(ctx, { userAuth, membership, permission });
-			if (authorized._nay) return Result({ _nay: { message: authorized._nay.message } });
-		}
+		const authorized = await access_control_db_authorize_membership(ctx, {
+			userAuth,
+			membership,
+			permission: "content.read",
+		});
+		if (authorized._nay) return Result({ _nay: { message: authorized._nay.message } });
 
 		const thread = await ctx.db.get("ai_chat_threads", invocation.threadId);
-		if (!thread || thread.organizationId !== membership.organizationId || thread.workspaceId !== membership.workspaceId)
+		if (
+			!thread ||
+			thread.organizationId !== membership.organizationId ||
+			thread.workspaceId !== membership.workspaceId ||
+			thread.createdBy !== invocation.userId
+		)
 			return Result({ _nay: { message: "Not found" } });
-		const threadAuthorized = await authorize_thread_mutation(ctx, { userAuth, membership, thread });
-		if (threadAuthorized._nay) return Result({ _nay: { message: threadAuthorized._nay.message } });
 
 		const messages = await ctx.db
 			.query("ai_chat_threads_messages_aisdk_5")
@@ -3324,6 +3418,7 @@ export const get_job_wakeup_context = internalQuery({
 		return Result({
 			_yay: {
 				membership,
+				membershipLifetime: invocation.membershipLifetime,
 				thread,
 				messages,
 				modelId: invocation.job.wakeAgent?.modelId ?? ai_chat_DEFAULT_MODEL_ID,
@@ -3358,7 +3453,21 @@ export const store_job_wakeup_reply = internalMutation({
 	returns: v.null(),
 	handler: async (ctx, args) => {
 		const thread = await ctx.db.get("ai_chat_threads", args.threadId);
-		if (!thread) throw should_never_happen("Chat thread not found", { threadId: args.threadId });
+		if (!thread || thread.createdBy !== args.userId) return null;
+		const finish = await ctx.db.get("ai_chat_threads_messages_aisdk_5", args.finishMessageId);
+		if (!finish || finish.threadId !== thread._id || !finish.jobFinishInvocationId) return null;
+		const invocation = await ctx.db.get("ai_chat_bash_invocations", finish.jobFinishInvocationId);
+		if (!invocation?.job || invocation.threadId !== thread._id || invocation.userId !== args.userId) return null;
+
+		// A stream can finish after access was removed. Rejoining must not revive that run.
+		const membership = await ai_chat_files_db_get_invocation_membership(ctx, invocation);
+		if (!membership) return null;
+		const authorized = await access_control_db_authorize_membership(ctx, {
+			userAuth: { id: args.userId },
+			membership,
+			permission: "content.read",
+		});
+		if (authorized._nay) return null;
 
 		// A wakeup reply skips `thread_messages_add`, so the size and tool part rules are applied here
 		// instead. Both doors must store the same safe shape.
@@ -3478,7 +3587,7 @@ export const get_chat_reply_parent = internalQuery({
  * written before the link existed.
  */
 export const list_finish_messages_since = internalQuery({
-	args: { threadId: v.id("ai_chat_threads"), sinceMs: v.number() },
+	args: { source: ai_chat_workspaces_source_validator, sinceMs: v.number() },
 	returns: v.array(
 		v.object({
 			messageId: v.id("ai_chat_threads_messages_aisdk_5"),
@@ -3487,12 +3596,15 @@ export const list_finish_messages_since = internalQuery({
 		}),
 	),
 	handler: async (ctx, args) => {
-		const thread = await ctx.db.get("ai_chat_threads", args.threadId);
-		if (!thread) return [];
+		const allowed = await ai_chat_workspaces_db_resolve(ctx, { source: args.source, workspace: "current" });
+		if (allowed._nay) return [];
 		const newest = await ctx.db
 			.query("ai_chat_threads_messages_aisdk_5")
 			.withIndex("by_organization_workspace_thread", (q) =>
-				q.eq("organizationId", thread.organizationId).eq("workspaceId", thread.workspaceId).eq("threadId", thread._id),
+				q
+					.eq("organizationId", args.source.organizationId)
+					.eq("workspaceId", args.source.workspaceId)
+					.eq("threadId", args.source.threadId),
 			)
 			.order("desc")
 			.take(50);
@@ -3537,7 +3649,7 @@ export const run_job_wakeup = internalAction({
 				console.warn("Job wakeup refused", { invocationId: args.invocationId, message: context._nay.message });
 				return null;
 			}
-			const { membership, thread, messages, modelId, modeId } = context._yay;
+			const { membership, membershipLifetime, thread, messages, modelId, modeId } = context._yay;
 
 			// Quota: a wakeup run is billed like a chat turn, so it needs credits like one.
 			const creditCheck = await ctx.runQuery(internal.billing.check_credits, {
@@ -3564,6 +3676,7 @@ export const run_job_wakeup = internalAction({
 					organizationName: tenant.organization.name,
 					workspaceName: tenant.workspace.name,
 					userId: membership.userId,
+					membershipLifetime,
 				},
 				args: { modelId, modeId },
 				getThreadId: () => thread._id,
@@ -3572,8 +3685,14 @@ export const run_job_wakeup = internalAction({
 			});
 			if (ai_chat_context_ENABLED) {
 				const initialized = await ai_chat_context_create(ctx, {
-					membershipId: membership._id,
-					userId: membership.userId,
+					source: {
+						organizationId: membership.organizationId,
+						workspaceId: membership.workspaceId,
+						userId: membership.userId,
+						threadId: thread._id,
+						membershipId: membership._id,
+						membershipLifetime,
+					},
 				});
 				if (initialized._nay) {
 					console.warn("Job wakeup skipped: workspace context", {
@@ -3615,6 +3734,14 @@ export const run_job_wakeup = internalAction({
 				workspaceSystem,
 				uiMessages,
 				threadId: thread._id,
+				source: {
+					organizationId: membership.organizationId,
+					workspaceId: membership.workspaceId,
+					userId: membership.userId,
+					threadId: thread._id,
+					membershipId: membership._id,
+					membershipLifetime,
+				},
 				createdThreadId: null,
 				parentId: args.finishMessageId,
 				parentClientGeneratedId: parentContext._yay.resolvedParentClientGeneratedId,
@@ -3766,6 +3893,13 @@ export async function ai_chat_http_run_stream(ctx: ActionCtx, request: Request) 
 
 		const messages = body.messages || [];
 		const thread_id = body.thread_id;
+		const thread = await ctx.runQuery(api.ai_chat.thread_get, {
+			membershipId: membership._id,
+			threadId: thread_id,
+		});
+		if (!thread) {
+			return { status: 400, body: { message: "Not found" } } as const;
+		}
 
 		// Extract conversation text from messages for title generation
 		const conversation_text = messages
@@ -3795,6 +3929,20 @@ export async function ai_chat_http_run_stream(ctx: ActionCtx, request: Request) 
 			} as const;
 		}
 
+		const workspaces = await ctx.runMutation(internal.ai_chat_workspaces.capture, {
+			userId: user._id,
+			membershipId: membership._id,
+		});
+		if (workspaces._nay) return { status: 403, body: { message: workspaces._nay.message } } as const;
+		const source = {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			userId: user._id,
+			threadId: thread._id,
+			membershipId: membership._id,
+			membershipLifetime: workspaces._yay.membershipLifetime,
+		};
+
 		// Check credits before title generation. One title per thread; the literal
 		// "title" discriminator keeps the usage event id stable across HTTP retries.
 		const creditCheck = await ctx.runQuery(internal.billing.check_credits, {
@@ -3822,6 +3970,11 @@ export async function ai_chat_http_run_stream(ctx: ActionCtx, request: Request) 
 		// Generate title using AI with streaming
 		const result = streamText({
 			model: openai(TITLE_MODEL_ID),
+			maxRetries: 0,
+			prepareStep: async () => {
+				const allowed = await ctx.runQuery(internal.ai_chat_workspaces.resolve, { source, workspace: "current" });
+				if (allowed._nay) throw new Error(allowed._nay.message);
+			},
 			system: TITLE_SYSTEM_PROMPT,
 			messages: [
 				{
@@ -3905,9 +4058,8 @@ export async function ai_chat_http_run_stream(ctx: ActionCtx, request: Request) 
 					return;
 				}
 
-				const threadUpdateResult = await ctx.runMutation(api.ai_chat.thread_update, {
-					membershipId: membership._id,
-					threadId: thread_id,
+				const threadUpdateResult = await ctx.runMutation(internal.ai_chat.thread_run_set_title, {
+					source,
 					title: trimmedTitle,
 				});
 
@@ -3959,6 +4111,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		organizationName: "personal",
 		workspaceName: "home",
 		userId: "user_1" as Id<"users">,
+		membershipLifetime: 1,
 	} as const;
 
 	const build_agent_configuration_test_membership_id = "membership_1" as Id<"organizations_workspaces_users">;
@@ -3981,6 +4134,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		"set_file_metadata",
 		"web_search",
 		"execute_code",
+		"prepare_image_generation",
 		"image_generation",
 	] as const;
 
@@ -4083,7 +4237,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				"set_file_metadata",
 				"web_search",
 				"execute_code",
-				"image_generation",
+				"prepare_image_generation",
 			]);
 		});
 
@@ -4157,7 +4311,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 				const supportsImageGeneration = ai_chat_MODELS[modelId].supportsImageGeneration;
 				expect("image_generation" in configuration.tools).toBe(supportsImageGeneration);
-				expect(configuration.systemPrompt.includes("Use `image_generation`")).toBe(supportsImageGeneration);
+				expect(configuration.systemPrompt.includes("Use `prepare_image_generation`")).toBe(supportsImageGeneration);
 
 				// The list used to validate stored messages always holds it, whatever the model can do.
 				// The thread may hold a picture an earlier turn drew on another model.
@@ -4387,6 +4541,13 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				.join("\n")
 				.replaceAll("`", "");
 
+			expect(configuration.systemPrompt).toContain("mv only moves or renames files within one workspace");
+			expect(configuration.systemPrompt).toContain("Use cp for files or cp -R for folders between workspaces");
+			expect(configuration.systemPrompt).toContain("Do not work around a refused mv with cp followed by rm or Archive");
+			expect(configuration.systemPrompt).toContain(
+				"Source cleanup needs a separate user request and its own review and permission checks",
+			);
+
 			expect(agentSurface).toContain(
 				"Bash starts in the current workspace path at ~/w/personal/home (/home/cloud-usr/w/personal/home). ~ is /home/cloud-usr, the app mount is /home/cloud-usr/w, and /tmp is durable scratch scoped to this chat thread.",
 			);
@@ -4550,9 +4711,9 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(agentSurface).toContain(
 				"The blank line between the shell prompt and output is transcript formatting, not file content.",
 			);
-			expect(agentSurface).toContain("mv <app-path> <app-path> proposes a pending move/rename (one source only)");
+			expect(agentSurface).toContain("mv <app-path> <app-path> proposes a pending move/rename within one workspace");
 			expect(agentSurface).toContain(
-				"If copying a path from bash, remove the /home/cloud-usr/w/<organization>/<workspace> current workspace path prefix before passing it here.",
+				"Remove the matching /home/cloud-usr/w/<organization>/<workspace> path prefix before passing the path here.",
 			);
 			expect(agentSurface).toContain(
 				"create or overwrite a file with a quoted heredoc (cat > '<path>' <<'EOF' ... EOF) or a redirect",
@@ -4597,11 +4758,19 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			try {
 				const controller = new AbortController();
 				const save = create_generated_image_save({
-					ctx: makeCtx().ctx,
+					ctx: makeCtx({
+						runQueryImpl: async () => ({
+							_yay: {
+								...build_agent_configuration_test_ctx_data,
+								membershipId: build_agent_configuration_test_membership_id,
+							},
+						}),
+					}).ctx,
 					...build_agent_configuration_test_ctx_data,
 					membershipId: build_agent_configuration_test_membership_id,
 					getThreadId: () => "thread-1" as Id<"ai_chat_threads">,
 					canWriteFiles: true,
+					imageDestinations: new Map([["image-1", "personal"]]),
 					abortSignal: controller.signal,
 				});
 				const first = save("image-1", { result: "AQID" });
@@ -4610,8 +4779,8 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 				const output = await first;
 				expect(write).toHaveBeenCalledTimes(1);
-				expect(write.mock.calls[0]?.[4]).toBe(controller.signal);
-				expect(write.mock.calls[0]?.[2][0]?.bytes).toEqual(new Uint8Array([1, 2, 3]));
+				expect(write.mock.calls[0]?.[3]).toBe(controller.signal);
+				expect(write.mock.calls[0]?.[1][0]?.bytes).toEqual(new Uint8Array([1, 2, 3]));
 				expect(output.metadata.files).toEqual([{ kind: "private", id: "pending-1" }]);
 				expect(JSON.stringify(output)).not.toContain("AQID");
 			} finally {
@@ -4624,10 +4793,22 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			const write = vi.spyOn(files, "files_ingestion_write").mockRejectedValue(new Error("private detail"));
 			try {
 				const scope = {
-					ctx: makeCtx().ctx,
+					ctx: makeCtx({
+						runQueryImpl: async () => ({
+							_yay: {
+								...build_agent_configuration_test_ctx_data,
+								membershipId: build_agent_configuration_test_membership_id,
+							},
+						}),
+					}).ctx,
 					...build_agent_configuration_test_ctx_data,
 					membershipId: build_agent_configuration_test_membership_id,
 					getThreadId: () => "thread-1" as Id<"ai_chat_threads">,
+					imageDestinations: new Map([
+						["invalid", "current"],
+						["failed", "current"],
+						["canceled", "current"],
+					] as const),
 				};
 				const ask = await create_generated_image_save({ ...scope, canWriteFiles: false })("ask", { result: "AQID" });
 				expect(ask.metadata).toEqual({ status: "errored", reason: "agent_required", files: [] });
