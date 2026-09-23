@@ -179,6 +179,7 @@ Use [references-submodules/README.md](references-submodules/README.md) as the ma
 
 - Repositories under `packages/app/vendor/` are source dependencies only when `pnpm-workspace.yaml` lists their packages. Import their declared package entrypoints, not arbitrary source paths, unless an existing integration requires a source import.
 - Repositories under `references-submodules/` are read-only research sources. Do not import them into app runtime code or add them to the workspace.
+- When you update a direct dependency, and a local checkout of that package already exists under `references-submodules/` or in the personal sources folder, move that checkout to the git commit that published the same version. Do not leave the local source on an older or newer commit than the package you installed.
 - `references-submodules/assistant-ui/` is research-only. The app does not use `@assistant-ui/*` packages at runtime.
 - The app uses the published `file-selector` and `@atlaskit/pragmatic-drag-and-drop` packages. Their repositories under `references-submodules/` are source references only.
 - `packages/council` is a first-party app submodule (the Council Worker, repo `raythurnvoid/bonobo-senate-council`) — neither a vendored dependency nor a research reference. It sits outside the pnpm workspace on purpose and carries its own lockfile and tools; run `vp env exec pnpm --dir packages/council --ignore-workspace install` after a submodule update before using its scripts.
