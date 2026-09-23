@@ -2673,3 +2673,20 @@ to the button that opened it. Whatever the app focuses next (the sidebar archive
 row after the archived rows) lands one or two frames later. A probe that stops at the first sample
 where the dialog is hidden reports `BODY` or that button and looks like a bug. Sample
 `document.activeElement` every 100 ms for about 2 s after the confirm click and report when it landed.
+
+## `page.route` on Clerk requests can leave Clerk stuck in `loading`
+
+To fake a failing auth call, do not intercept Clerk's own requests (`*.clerk.accounts.dev/v1/...`)
+with `page.route`. Even when the handler only aborts the sign-out and continues everything else,
+Clerk can stay in `loading` and the app never leaves the loading screen. Recover with
+`page.unrouteAll()` and a reload. To test a sign-in failure, add a temporary, marked switch in the
+app code instead (for example a `localStorage` flag read next to the call), keep the real sign-out
+skipped while the switch is on, and remove it after the run. Hit 2026-09-23 on `resolve-user`.
+
+## Local startup takes about 10 s, so a timed fake failure can land before the app shows
+
+On the local dev server the signed-in app can take 4-11 s to leave the loading screen (Vite serves
+unbundled modules). A fake failure that answers after a fixed delay then lands while the loading
+screen is still up, and a "does the app show before the failure" check proves nothing. Time a normal
+reload first (the `data-app-ready` attribute on `<html>`), and make the fake delay clearly longer.
+Hit 2026-09-23: a 6 s fake `resolve-user` failure showed no app; a 25 s one did.

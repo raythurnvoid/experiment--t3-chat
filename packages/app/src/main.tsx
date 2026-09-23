@@ -35,13 +35,19 @@ declare module "@tanstack/react-router" {
 		router: ReturnType<typeof app_router>;
 	}
 }
+
+// Pin the exact Clerk script version. With a range like `5`, Clerk's server first redirects to the exact
+// version, which adds about 190 ms to every page load. Update this by hand when you upgrade
+// `@clerk/clerk-react`, and check that the new pair works together.
+const CLERK_JS_VERSION = "5.127.2";
+
 createRoot(document.getElementById("root" satisfies AppElementId)!).render(
 	<StrictMode>
 		<ThemeProvider>
 			<AppHotkeysProvider>
-				<ClerkProvider publishableKey={PUBLISHABLE_KEY} afterSignOutUrl="/">
+				<ClerkProvider publishableKey={PUBLISHABLE_KEY} clerkJSVersion={CLERK_JS_VERSION} afterSignOutUrl="/">
 					<AppAuthProvider>
-						<ConvexProviderWithAuth client={app_convex} useAuth={AppAuthProvider.useAuth}>
+						<ConvexProviderWithAuth client={app_convex} useAuth={AppAuthProvider.useConvexAuth}>
 							<RouterProvider router={app_router()} />
 						</ConvexProviderWithAuth>
 					</AppAuthProvider>

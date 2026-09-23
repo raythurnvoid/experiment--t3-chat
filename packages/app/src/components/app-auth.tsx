@@ -1,5 +1,5 @@
 import { useAuth } from "@clerk/clerk-react";
-import { createContext, Fragment, use, useEffect, useRef, useState, type ReactNode } from "react";
+import { createContext, use, useEffect, useRef, type ReactNode } from "react";
 import { toast } from "sonner";
 import { Result } from "common/errors-as-values-utils.ts";
 import { type app_convex_Id } from "../lib/app-convex-client.ts";
@@ -192,6 +192,11 @@ export type AppAuthContextValue = {
 	isLoaded: boolean;
 	/** Whether the user is authenticated (either via Clerk or anonymous) */
 	isAuthenticated: boolean;
+	/**
+	 * Whether Convex may sign in with the current Clerk token before auth has finished loading.
+	 * Only `AppAuthProvider.useConvexAuth` reads it.
+	 */
+	isConvexTokenReady: boolean;
 	/** Get auth token (Clerk JWT or anonymous token) */
 	getToken: (options?: { skipCache?: boolean }) => Promise<string | null>;
 	/** Same as `getToken` but in Convex auth format */
@@ -226,18 +231,16 @@ export function AppAuthProvider(props: AppAuthProvider_Props) {
 		isLoading: boolean;
 		isLoaded: boolean;
 		isAuthenticated: boolean;
+		isConvexTokenReady: boolean;
 		userId: app_convex_Id<"users"> | null;
 	}>({
 		isAnonymous: undefined,
 		isLoading: true,
 		isLoaded: false,
 		isAuthenticated: false,
+		isConvexTokenReady: false,
 		userId: null,
 	});
-
-	// Change this key to remount everything under auth: the Convex provider (it signs in again) and the router,
-	// with its error boundaries and query subscriptions.
-	const [appKey, setAppKey] = useState(0);
 
 	const fetchAnonymousToken = useFn((options?: { skipCache?: boolean }): Promise<string | null> => {
 		const signal = tokenFlowAbortControllerRef.current.signal;
@@ -271,6 +274,7 @@ export function AppAuthProvider(props: AppAuthProvider_Props) {
 							isLoading: false,
 							isLoaded: true,
 							isAuthenticated: true,
+							isConvexTokenReady: false,
 							userId: result.userId,
 						});
 					}
@@ -286,6 +290,7 @@ export function AppAuthProvider(props: AppAuthProvider_Props) {
 							isLoading: false,
 							isLoaded: true,
 							isAuthenticated: false,
+							isConvexTokenReady: false,
 							userId: null,
 						});
 					}
@@ -301,6 +306,7 @@ export function AppAuthProvider(props: AppAuthProvider_Props) {
 						isLoading: false,
 						isLoaded: true,
 						isAuthenticated: false,
+						isConvexTokenReady: false,
 						userId: null,
 					});
 				}
@@ -451,6 +457,7 @@ export function AppAuthProvider(props: AppAuthProvider_Props) {
 				isLoading: true,
 				isLoaded: false,
 				isAuthenticated: false,
+				isConvexTokenReady: false,
 				userId: null,
 			}));
 
@@ -492,20 +499,15 @@ export function AppAuthProvider(props: AppAuthProvider_Props) {
 
 					let userId = clerkTokenData.userId;
 
-					// A returning user's token already names their Convex user. Start the app with that id now,
-					// so Convex signs in and the first queries run while `resolve-user` checks the id. In the
-					// normal case that check only reads and returns the same id. Wait instead when the token has
-					// no id yet (first sign-in) or when an anonymous token is stored: then `resolve-user` creates
-					// or links the user, and the app must not start before that.
-					const startedBeforeResolve = userId !== null && !anonymousUserToken;
-					if (startedBeforeResolve) {
+					// A returning user's token already names their Convex user. Let Convex sign in with it now,
+					// while `resolve-user` checks the id, so the ~300 ms sign-in does not wait for that check.
+					// The app itself still waits: `isLoaded` stays false until `resolve-user` succeeds, so a
+					// failed check never shows the app. Skip this when the token has no id yet (first sign-in)
+					// or when an anonymous token is stored: then `resolve-user` creates or links the user.
+					if (userId !== null && !anonymousUserToken) {
 						setAuthStatus((prev) => ({
 							...prev,
-							isAnonymous: false,
-							isLoading: false,
-							isLoaded: true,
-							isAuthenticated: true,
-							userId: userId as app_convex_Id<"users">,
+							isConvexTokenReady: true,
 						}));
 						authReadyDeferred.current.resolve(Result({ _yay: null }));
 					}
@@ -532,25 +534,16 @@ export function AppAuthProvider(props: AppAuthProvider_Props) {
 
 					const resolvedUserId = resolveResult._yay.payload._yay.userId;
 
-					// If the app already started, it ran for a moment as a user that `resolve-user` then replaced
-					// (a data reset) or restored (a deleted account). Its queries may have failed.
-					// So show the loading screen now, and remount the app below once the right token is ready.
-					const mustRestartApp =
-						startedBeforeResolve &&
-						(userId !== resolvedUserId || resolveResult._yay.payload._yay.restoredDeletedAccount);
-					if (mustRestartApp) {
-						setAuthStatus((prev) => ({
-							...prev,
-							isLoading: true,
-							isLoaded: false,
-							isAuthenticated: false,
-							userId: null,
-						}));
-					}
-
 					// If `resolve_user` repaired or created the canonical app user id. Wait for Clerk
 					// to issue a JWT whose `external_id` matches that id before Convex auth starts.
 					if (userId !== resolvedUserId) {
+						// Convex may have signed in early with the old id. Sign it out now, so it signs in
+						// again with the new token when auth finishes loading below.
+						setAuthStatus((prev) => ({
+							...prev,
+							isConvexTokenReady: false,
+						}));
+
 						clerkTokenData = await fetchClerkToken({
 							expectedUserId: resolvedUserId,
 							retryUntileUserIdIsSet: true,
@@ -584,9 +577,6 @@ export function AppAuthProvider(props: AppAuthProvider_Props) {
 						isAuthenticated: true,
 						userId: userId as app_convex_Id<"users">,
 					}));
-					if (mustRestartApp) {
-						setAppKey((key) => key + 1);
-					}
 				} while (0);
 			}
 
@@ -628,12 +618,13 @@ export function AppAuthProvider(props: AppAuthProvider_Props) {
 				isLoading: authStatus.isLoading,
 				isLoaded: authStatus.isLoaded,
 				isAuthenticated: authStatus.isAuthenticated,
+				isConvexTokenReady: authStatus.isConvexTokenReady,
 				getToken,
 				fetchAccessToken,
 				resetAnonymousSession,
 			}}
 		>
-			<Fragment key={appKey}>{children}</Fragment>
+			{children}
 		</AppAuthContext.Provider>
 	);
 }
@@ -663,6 +654,22 @@ AppAuthProvider.useAuth = () => {
 	}
 
 	return context;
+};
+
+/**
+ * Auth state for `ConvexProviderWithAuth`.
+ *
+ * It lets Convex sign in as soon as the Clerk token is ready, before `resolve-user` ends.
+ * The app still waits for `isLoaded` from `AppAuthProvider.useAuth`.
+ */
+AppAuthProvider.useConvexAuth = () => {
+	const auth = AppAuthProvider.useAuth();
+
+	return {
+		isLoading: auth.isLoading && !auth.isConvexTokenReady,
+		isAuthenticated: auth.isAuthenticated || auth.isConvexTokenReady,
+		fetchAccessToken: auth.fetchAccessToken,
+	};
 };
 
 /**
