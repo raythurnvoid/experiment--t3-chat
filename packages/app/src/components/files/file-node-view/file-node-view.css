@@ -734,9 +734,20 @@
 		padding-left: 18px;
 	}
 
-	.FileNodeViewToolbar-view-select:not(:empty)::after,
-	.FileNodeViewToolbarFolderActions::after,
-	.FileNodeViewToolbarFileDownloadAction::after {
+	/* Draw a group divider only when another action group follows. An empty or hidden
+	   editor slot is not an action group, so the toolbar does not end with a line. */
+	.FileNodeViewToolbar-view-select:not(:empty):has(
+			~ .FileNodeViewToolbarFolderActions,
+			~ .FileNodeViewToolbarFileDownloadAction,
+			~ .FileNodeViewPrivate-actions,
+			~ .FileNodeViewToolbar-editor-actions:not([hidden]):not(:empty)
+		)::after,
+	.FileNodeViewToolbarFolderActions:has(
+			~ .FileNodeViewToolbarFileDownloadAction,
+			~ .FileNodeViewPrivate-actions,
+			~ .FileNodeViewToolbar-editor-actions:not([hidden]):not(:empty)
+		)::after,
+	.FileNodeViewToolbarFileDownloadAction:has(~ .FileNodeViewToolbar-editor-actions:not([hidden]):not(:empty))::after {
 		content: "";
 
 		align-self: stretch;
