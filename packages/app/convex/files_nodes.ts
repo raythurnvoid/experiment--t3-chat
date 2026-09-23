@@ -6643,20 +6643,43 @@ export const unarchive_nodes = mutation({
  * Raw policy fields stay private. They are write authority, and a writer choice names accounts
  * the reader may not see. Return the actor's write access and only the local rule kind.
  */
-const files_node_public_doc_fields = ((/* iife */) => {
-	const {
-		writePolicy: _writePolicy,
-		newChildWritePolicy: _newChildWritePolicy,
-		...rest
-	} = doc(app_convex_schema, "files_nodes").fields;
-
-	return {
-		...rest,
-		canWrite: v.boolean(),
-		writeBlockedReason: v.union(v.null(), v.literal("permission"), v.literal("read_only")),
-		writePolicyState: v.union(v.literal("none"), v.literal("read_only"), v.literal("writer")),
-	};
-})();
+const files_node_public_doc_fields = {
+	organizationId: doc(app_convex_schema, "files_nodes").fields.organizationId,
+	workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
+	publishedFromPrivateNodeId: doc(app_convex_schema, "files_nodes").fields.publishedFromPrivateNodeId,
+	parentId: doc(app_convex_schema, "files_nodes").fields.parentId,
+	kind: doc(app_convex_schema, "files_nodes").fields.kind,
+	name: doc(app_convex_schema, "files_nodes").fields.name,
+	path: doc(app_convex_schema, "files_nodes").fields.path,
+	treePath: doc(app_convex_schema, "files_nodes").fields.treePath,
+	pathDepth: doc(app_convex_schema, "files_nodes").fields.pathDepth,
+	lowercaseExtension: doc(app_convex_schema, "files_nodes").fields.lowercaseExtension,
+	contentType: doc(app_convex_schema, "files_nodes").fields.contentType,
+	assetId: doc(app_convex_schema, "files_nodes").fields.assetId,
+	textKind: doc(app_convex_schema, "files_nodes").fields.textKind,
+	collaborationEnabled: doc(app_convex_schema, "files_nodes").fields.collaborationEnabled,
+	yjsSnapshotId: doc(app_convex_schema, "files_nodes").fields.yjsSnapshotId,
+	yjsLastSequenceId: doc(app_convex_schema, "files_nodes").fields.yjsLastSequenceId,
+	statsId: doc(app_convex_schema, "files_nodes").fields.statsId,
+	contentTooLargeByteSize: doc(app_convex_schema, "files_nodes").fields.contentTooLargeByteSize,
+	contentShapeMismatchAt: doc(app_convex_schema, "files_nodes").fields.contentShapeMismatchAt,
+	contentYjsStateTooLargeByteSize: doc(app_convex_schema, "files_nodes").fields.contentYjsStateTooLargeByteSize,
+	contentFrontmatterTooLargeFieldCount: doc(app_convex_schema, "files_nodes").fields
+		.contentFrontmatterTooLargeFieldCount,
+	contentFrontmatterTooLargeIndexDocumentCount: doc(app_convex_schema, "files_nodes").fields
+		.contentFrontmatterTooLargeIndexDocumentCount,
+	restrictedScopeNodeId: doc(app_convex_schema, "files_nodes").fields.restrictedScopeNodeId,
+	// Leave writePolicy and newChildWritePolicy out. They name accounts a reader may not see.
+	archiveOperationId: doc(app_convex_schema, "files_nodes").fields.archiveOperationId,
+	createdBy: doc(app_convex_schema, "files_nodes").fields.createdBy,
+	updatedBy: doc(app_convex_schema, "files_nodes").fields.updatedBy,
+	updatedAt: doc(app_convex_schema, "files_nodes").fields.updatedAt,
+	_id: doc(app_convex_schema, "files_nodes").fields._id,
+	_creationTime: doc(app_convex_schema, "files_nodes").fields._creationTime,
+	canWrite: v.boolean(),
+	writeBlockedReason: v.union(v.null(), v.literal("permission"), v.literal("read_only")),
+	writePolicyState: v.union(v.literal("none"), v.literal("read_only"), v.literal("writer")),
+};
 
 /**
  * Build the public write access fields for one node.
@@ -6806,12 +6829,10 @@ const SUBTREE_FILTER_MAX_ROWS_READ = 10_000;
 
 /**
  * One node of the Files tree. Every tree query returns this shape.
- *
- * Use the public node fields above. This keeps new schema fields in sync with the tree queries.
- * These four fields cannot contain reserved `GLOBAL` or `SYSTEM` values in the visible tree.
  */
 const files_node_tree_row_validator = v.object({
 	...files_node_public_doc_fields,
+	// These four fields cannot contain reserved `GLOBAL` or `SYSTEM` values in the visible tree.
 	organizationId: v.id("organizations"),
 	workspaceId: v.id("organizations_workspaces"),
 	createdBy: v.id("users"),
