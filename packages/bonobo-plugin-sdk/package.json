@@ -34,7 +34,7 @@
 	"devDependencies": {
 		"@types/react": "^19.3.0",
 		"convex": "^1.46.0",
-		"happy-dom": "20.0.11",
+		"happy-dom": "20.14.5",
 		"react": "^19.3.0",
 		"typescript": "^7.0.2",
 		"vitest": "4.1.10"
