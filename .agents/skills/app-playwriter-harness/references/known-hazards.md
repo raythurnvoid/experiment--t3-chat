@@ -33,7 +33,7 @@ Before the first attempt at a new interaction type (upload, download, screenshot
 - If a Files screenshot jumps back to the focused editor block or checkbox, focus a header control first, then scroll and capture. `Copy path` can receive focus without activating it.
 - To capture a keyboard focus outline on a native checkbox, pass `caret: "initial"` to `page.screenshot`. The default caret-hiding step can blur the checkbox and remove its outline before capture. Check `document.activeElement` and `:focus-visible` before and after the screenshot. Verified on 2026-09-12.
 - **A new headless session may have a separate browser context.** After compaction, first list sessions and inspect the exact owned fixture's current account and workspace. Do not assume a fresh headless session shares its anonymous account. A surviving owned fixture can be reused after that check; delete only an unused session you just created. Keep fixture IDs in the task notes so cleanup cannot target another account.
-- **Large console values can be truncated before the shell saves them.** Redirecting CLI output to a file does not make a large JSON log complete. For preservation checks, print bounded pages or a compact ID/path/hash list and verify its entry count. A truncated full-row log is not a complete baseline.
+- **Large console values can be truncated before the shell saves them.** Redirecting CLI output to a file does not make a large JSON log complete. For preservation checks, print bounded pages or a compact ID/path/hash list and verify its entry count. A truncated full-row log is not a complete baseline. The CLI cuts printed output at 10,000 characters, and in a trace the cut drops the lines at the end, which are usually the ones you wanted. Filter inside the runner (for example, skip the dev server's module requests) instead of filtering the saved output.
 - **Assertions in runners:** Playwriter 0.5.0 allows `require("assert")` but refuses the `node:assert/strict` subpath. Also, `deepStrictEqual` can reject equal arrays returned by `page.evaluate` because the sandbox and browser results have different prototypes. For a fixed JSON result, compare `JSON.stringify` values with `strictEqual`, or assert each scalar field. Neither harness failure counts as a failed product assertion. Fix the assertion and rerun the check.
 - The global `playwriter` command may not exist on this machine. Run it through Vite Plus: `vp env exec pnpx playwriter`.
 - Create sessions and run CLI calls from the task's personal `+ai` folder so generated scratch files stay outside the repository. Load repo helpers through absolute `-f` paths; the CLI reads them before sandbox execution. Check `session list` before trusting sandbox paths. Propose documentation memories through the harness, then edit them with the agent's targeted edit tool.
@@ -880,6 +880,12 @@ repo's sessions sitting there — so it reads as "my session id is wrong", not a
 replaced". Do not run relay recovery for this and do not touch the other repo's rows. Create a new
 session on the same browser key, re-install the harness, and re-open your own tabs; the tabs you had
 opened in that browser are still there, so `context.pages()` finds them. Hit 2026-09-02, mid-run.
+
+**Your own runner can crash the relay too.** An error thrown inside a CDP event handler
+(`cdp.on("Network.webSocketCreated", ...)` and the like) is not caught by the runner. It kills the relay
+process, and the CLI only prints `Error: fetch failed`. Then every session is gone. The sandbox has no
+`performance` global, so `performance.now()` inside a handler is enough to do it. Keep handlers to
+plain reads, and take timestamps from the CDP event (`e.timestamp`). Hit 2026-09-23.
 
 ## A CDP-attached scratch browser is invisible to `browser list`
 

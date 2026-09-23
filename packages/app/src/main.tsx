@@ -17,6 +17,11 @@ import { app_scrollbar_install } from "./lib/app-scrollbar.ts";
 app_qa_install();
 app_scrollbar_install();
 
+// Open the Convex websocket now. The client opens it only on first use, which comes after the auth
+// bootstrap (Clerk token, then resolve-user). Then the ~300 ms connection setup waits for that too.
+// The socket sends no query and stays unauthenticated until `ConvexProviderWithAuth` sets the token.
+app_convex.connectionState();
+
 // Import your Publishable Key
 const PUBLISHABLE_KEY = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
 

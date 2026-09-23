@@ -101,6 +101,14 @@ Use this file as a quick testing map for `/files`. Keep it short and selector-or
   folder, focus its row, press ArrowRight, and poll `[aria-level="2"]`. Expected on local dev: root
   rows about 300 ms after the first `list_tree_children` frame, `/people` children in about 400–500 ms.
   The first run after a Convex push or a Vite reload is slower; measure twice.
+- Startup before the tree query: most of a page load happens before `list_tree_children` is sent
+  (Clerk token, `resolve-user`, Convex sign-in, billing, membership). To see the chain, listen to CDP
+  `Network.requestWillBeSent`/`responseReceived` and `Network.webSocketFrameSent`/`Received` on one
+  clock (`e.timestamp`), then reload. Map `"queryId":N,"udfPath":"..."` from sent frames, so each
+  received `Transition` can name the queries it answers. For the real first-row time, use
+  `page.addInitScript` with a `MutationObserver` that records `performance.now()` when the first
+  treeitem appears. A poll adds 300–500 ms. Measured on Pages, warm (2026-09-23): tree query sent at
+  about 2.2 s, first row at about 2.65 s.
 - Tree paging: each open folder loads 200 subfolders and 200 files per page. Scroll with
   `.FilesSidebar-content` `scrollTop = scrollHeight`, wait about 1.5 s, and read `aria-setsize` of the
   last `[aria-level="2"]` row: it should grow (`/people`: 403, 803, 1203, …) and stay still once you

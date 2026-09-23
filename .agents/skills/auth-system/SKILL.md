@@ -61,6 +61,10 @@ Auth is coordinated by `ClerkProvider` + `AppAuthProvider` + Convex auth integra
 
 Convex consumes the auth source via `ConvexProviderWithAuth` using `useAuth={AppAuthProvider.useAuth}`.
 
+`main.tsx` opens the Convex websocket at startup, before this bootstrap ends. The socket sends no query and
+stays unauthenticated until `ConvexProviderWithAuth` sets the token. Otherwise the client opens it only on first
+use, after `resolve-user`, and the connection setup (about 300–450 ms) waits for the whole auth bootstrap.
+
 ## Three token identities
 
 `auth.config.ts` verifies three providers: Clerk, the anonymous custom JWT, and the plugin-session custom JWT. Only the first two are member identities; the third is deliberately refused by member functions.
