@@ -71,6 +71,8 @@ export function useStateRef<T>(initialValue: T) {
 	const ref = useRef(initialValue);
 	const [state, setState] = useState(initialValue);
 
+	// The tuple keeps the ref for the setter. Oxlint's refs rule flags that capture.
+	// eslint-disable-next-line react-hooks/refs
 	const [res] = useState(() =>
 		tuple(
 			ref,

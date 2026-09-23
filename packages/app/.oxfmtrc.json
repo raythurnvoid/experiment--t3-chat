@@ -1,0 +1,15 @@
+{
+	"$schema": "../../node_modules/oxfmt/configuration_schema.json",
+	"printWidth": 120,
+	"tabWidth": 2,
+	"useTabs": true,
+	"arrowParens": "always",
+	"endOfLine": "lf",
+	"proseWrap": "preserve",
+	"sortPackageJson": false,
+	"sortTailwindcss": {
+		"stylesheet": "./src/app.css",
+		"functions": ["cn"]
+	},
+	"ignorePatterns": ["vendor", "dist", "convex/_generated"]
+}
