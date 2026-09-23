@@ -30,10 +30,6 @@
 		   when rendering many items inside the tree */
 		contain: strict;
 	}
-
-	.FilesSidebar > .FilesClipboardToolbar {
-		padding: 0 16px 8px;
-	}
 	/* #endregion root */
 
 	/* #region top section more action */

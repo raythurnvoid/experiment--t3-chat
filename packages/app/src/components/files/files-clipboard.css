@@ -1,18 +1,4 @@
 @layer components {
-	/* #region toolbar */
-	.FilesClipboardToolbar {
-		display: flex;
-		align-items: center;
-		gap: 4px;
-		min-width: 0;
-	}
-
-	.FilesClipboardToolbar-status {
-		font-size: 0.75rem;
-		color: var(--color-fg-09);
-	}
-	/* #endregion toolbar */
-
 	/* #region run modal */
 	.FilesTransferRunModal {
 		width: min(560px, calc(100vw - 32px));

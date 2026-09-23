@@ -2,12 +2,11 @@ import "./files-clipboard.css";
 
 import { createContext, memo, use, useEffect, useId, useRef, useState, type ReactNode, type RefObject } from "react";
 import { useConvex, useQuery } from "convex/react";
-import { ClipboardPaste, Copy, Scissors, X } from "lucide-react";
+import { ClipboardPaste, Copy, Scissors } from "lucide-react";
 import { toast } from "sonner";
 import { AppHotkeysProvider } from "@/components/app-hotkeys.tsx";
 import { MyButton } from "@/components/my-button.tsx";
 import { MyRadio } from "@/components/my-radio.tsx";
-import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
 import {
 	MyMenuItem,
 	MyMenuItemContent,
@@ -363,61 +362,6 @@ export const FilesClipboardMenuItems = memo(function FilesClipboardMenuItems(pro
 	);
 });
 // #endregion menu items
-
-// #region toolbar
-type FilesClipboardToolbar_ClassNames = "FilesClipboardToolbar" | "FilesClipboardToolbar-status";
-
-export const FilesClipboardToolbar = memo(function FilesClipboardToolbar(props: {
-	targetParentId: app_convex_Doc<"files_nodes">["parentId"] | null;
-	targetName: string;
-	canPaste: boolean;
-	isBusy?: boolean;
-}) {
-	const { targetParentId, targetName, canPaste, isBusy = false } = props;
-	const { clipboard, isPasting, clearClipboard, paste } = FilesClipboardProvider.useContext();
-	const descriptionId = `FilesClipboardToolbar-${useId()}-description`;
-	const disabledReason = !clipboard
-		? "Choose files with Cut or Copy first."
-		: isPasting
-			? "A paste is already running in this workspace."
-			: isBusy
-				? "Wait for the current file operation to finish."
-				: !canPaste || targetParentId === null
-					? "You cannot paste into this folder."
-					: null;
-	return (
-		<div className={"FilesClipboardToolbar" satisfies FilesClipboardToolbar_ClassNames}>
-			<span role="status" className={"FilesClipboardToolbar-status" satisfies FilesClipboardToolbar_ClassNames}>
-				{clipboard ? `${clipboard.sourceIds.length} ready to ${clipboard.mode === "cut" ? "move" : "copy"}` : ""}
-			</span>
-			<MyIconButton
-				variant="ghost-highlightable"
-				tooltip={disabledReason ?? `Paste into ${targetName}`}
-				aria-label="Paste files"
-				aria-describedby={descriptionId}
-				disabled={disabledReason !== null}
-				onClick={() => {
-					if (targetParentId !== null) paste(targetParentId);
-				}}
-			>
-				<MyIconButtonIcon>
-					<ClipboardPaste />
-				</MyIconButtonIcon>
-			</MyIconButton>
-			<span id={descriptionId} className="sr-only">
-				Paste into {targetName}. {disabledReason}
-			</span>
-			{clipboard ? (
-				<MyIconButton variant="ghost-highlightable" tooltip="Clear file clipboard" onClick={clearClipboard}>
-					<MyIconButtonIcon>
-						<X />
-					</MyIconButtonIcon>
-				</MyIconButton>
-			) : null}
-		</div>
-	);
-});
-// #endregion toolbar
 
 // #region run modal
 type ConflictChoices = app_convex_FunctionArgs<typeof app_convex_api.files_transfer.resolve_conflicts>;

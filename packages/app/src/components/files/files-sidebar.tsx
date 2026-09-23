@@ -86,7 +86,7 @@ import {
 	FileNodeViewFolderCreateNodeModal,
 	type FileNodeViewFolderCreateNodeModal_Ref,
 } from "./file-node-view/file-node-view-folder-create-node-modal.tsx";
-import { FilesClipboardMenuItems, FilesClipboardProvider, FilesClipboardToolbar } from "./files-clipboard.tsx";
+import { FilesClipboardMenuItems, FilesClipboardProvider } from "./files-clipboard.tsx";
 import { MyInput, MyInputArea, MyInputBackground, MyInputBox, MyInputHelperText } from "@/components/my-input.tsx";
 import { MyIconButton, MyIconButtonIcon, type MyIconButton_Props } from "@/components/my-icon-button.tsx";
 import { MyIcon } from "@/components/my-icon.tsx";
@@ -6182,22 +6182,6 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		? getItemCapabilitiesInRender(uploadTargetParentItem).canReceiveChildren
 		: false;
 
-	// The open folder can be archived, so Show archived can hide it from the tree index.
-	const pasteTargetNode =
-		!selectedNodeId || selectedNodeId === files_ROOT_ID
-			? files_SYNTHETIC_ROOT_FOLDER
-			: treeItemsList?.find((item) => item._id === selectedNodeId);
-	const pasteTargetParentId =
-		pasteTargetNode?.kind === "file" ? pasteTargetNode.parentId : (pasteTargetNode?._id ?? null);
-	const pasteTargetParent =
-		pasteTargetParentId === files_ROOT_ID
-			? files_SYNTHETIC_ROOT_FOLDER
-			: treeItemsList?.find((item) => item._id === pasteTargetParentId);
-	const canPasteIntoFolder =
-		pasteTargetParent !== undefined &&
-		pasteTargetParent.archiveOperationId === null &&
-		getItemCapabilitiesInRender(pasteTargetParent).canReceiveChildren;
-
 	const handleUploadFileClick = useFn(() => {
 		if (!canWriteParentId(resolveSelectedFolderParentId())) {
 			return;
@@ -6573,14 +6557,6 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 				onImportFolderClick={handleImportFolderClick}
 			/>
 
-			<FilesClipboardToolbar
-				targetParentId={pasteTargetParentId}
-				targetName={
-					pasteTargetParentId === files_ROOT_ID ? "root folder" : (pasteTargetParent?.name ?? "selected folder")
-				}
-				canPaste={canPasteIntoFolder}
-				isBusy={isBusy}
-			/>
 			<div
 				ref={treeScrollElementRef}
 				className={cn(

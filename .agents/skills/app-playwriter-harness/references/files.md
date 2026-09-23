@@ -381,36 +381,32 @@ Use this when changing tree focus, context menus, selection, or route sync.
 - Use a new QA folder with a source file and two destination folders. Scope duplicate row actions
   to the Files tree or folder table. Open `More actions for <name>` and choose the exact `Copy` or
   `Cut` item; `Copy path`, `Copy link`, and `Copy node id` are separate actions.
-- Control-click two sidebar rows, Copy from either selected row, then navigate elsewhere. The
-  toolbar must still say `2 ready to copy`. Copy from an unselected row must keep only that row.
+- Control-click two sidebar rows, Copy from either selected row, then navigate elsewhere.
+  Copy from an unselected row must keep only that row. There is no "ready to copy" status.
 - Select a folder and its child. Cut and Copy from a row menu, top menu, or keyboard must keep
   only the parent in the clipboard. A completed Cut must clear that parent from the clipboard.
 - Select files under separate folders, then collapse one parent without changing the selection.
   Keyboard, selected-row menu, and top-menu Cut/Copy must all keep both selected files.
 - Folder-row `Paste` targets that folder. `Paste into root folder` targets root. Do not click that
-  root item on a real home tree. The sidebar `Paste files` toolbar targets the open folder, or the
-  open file's parent, and it unmounts when the sidebar is closed. The folder-view header Paste
-  targets the open folder only; a file view has no header Paste. Read `aria-describedby` to confirm
-  the destination. Check the resulting parent ids with Convex.
+  root item on a real home tree. There is no Paste button in the sidebar or the folder toolbar.
+  Control+V pastes into the focused folder, or into the focused file's parent. In the folder
+  table, focus `Open <name>` before the shortcut. Check the resulting parent ids with Convex.
 - Sidebar Control+C / Control+X copy the **selected** rows, not the focused row. Arrow keys move
   focus only. After clicking a folder, ArrowDown onto a child and Control+C still copies the folder.
   A selected row's accessible name can end with `ready to move` after Control+X. Escape clears an
-  idle cut. In the folder table, focus `Open <name>` before the shortcut — that table uses the
-  focused row. Repeat shortcuts in Search files, rename, Monaco, rich text, and chat: they must
-  keep normal text behavior.
-- Open an archived QA folder with a non-empty clipboard. Header and sidebar Paste must both stay
-  disabled, and their descriptions must keep that folder's name with Show archived on or off.
-  A missing route target must also stay disabled without naming root. The Show archived checkbox
-  label is `Show N item(s) archived` / `Hide N item(s) archived`; press Escape after toggling it.
+  idle cut. There is no Clear button. Repeat shortcuts in Search files, rename, Monaco, rich text,
+  and chat: they must keep normal text behavior.
+- Open an archived QA folder with a non-empty clipboard. Control+V must not paste into that
+  archived folder. The Show archived checkbox label is `Show archived items` / `Hide archived items`;
+  press Escape after toggling it.
   In the same view, `New file`, `New folder` and `Create a README.md` inside
   `[aria-label="File content"]` must be disabled, and the top `role=status` surface must say
   `This folder is archived. Restore it before adding items.` Read `button.disabled` from page
   context; the snapshot does not show disabled state. To prove the deployed create doors refuse
   too, run `convex run files_nodes_content:get_create_file_node_write_preflight` with the archived
   folder as `parentId`: it prints nothing (null) for an archived parent and an object for root.
-- While a submitted New folder action is pending, Paste must say
-  `Wait for the current file operation to finish.` and become available when creation completes.
-  A Cut/Paste dialog can briefly say `Paste files` while loading, then `Move files`; it must never
+- While a submitted New folder action is pending, Control+V on the New file / New folder group
+  must not start a paste. A Cut/Paste dialog can briefly say `Paste files` while loading, then `Move files`; it must never
   show `Copy files` for that run. A MutationObserver installed before Paste can record this transition.
 - Closing the files sidebar unmounts the tree. Reopen with `Open files sidebar` before any
   treeitem work. `.FilesTransferRunModal` has two `Close` buttons; scope the footer ghost
@@ -1091,8 +1087,8 @@ const rowFor = (id) => page.locator(`[data-file-id="${id}"][role="treeitem"]`).f
 await rowFor(ids.aReport).click();
 await rowFor(ids.bReport).click({ modifiers: ["Control"] });
 await page.keyboard.press("Control+c");
-await rowFor(ids.targetId).click(); // the paste destination follows the selection
-await page.getByRole("button", { name: "Paste files" }).first().click();
+await rowFor(ids.targetId).click(); // focus follows the click, and Control+V uses that row
+await page.keyboard.press("Control+v");
 ```
 
 Filter the tree first with `#app_files_sidebar_search input`, then press `Escape` — see the

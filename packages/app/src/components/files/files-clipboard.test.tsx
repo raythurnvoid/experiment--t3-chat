@@ -2,7 +2,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import { useRef } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { getFunctionName, type FunctionReference } from "convex/server";
-import { FilesClipboardProvider, FilesClipboardToolbar } from "./files-clipboard.tsx";
+import { FilesClipboardProvider } from "./files-clipboard.tsx";
 import {
 	app_convex,
 	app_convex_api,
@@ -154,6 +154,10 @@ function press_key(target: HTMLElement, key: string, ctrlKey = true) {
 	return result;
 }
 
+function press_paste() {
+	return press_key(screen.getByRole("group", { name: "File navigation" }), "v");
+}
+
 function FileNavigation(props: { blocked?: boolean }) {
 	const navigationRef = useRef<HTMLDivElement | null>(null);
 	const { clipboard, setClipboard, openRun } = FilesClipboardProvider.useContext();
@@ -180,7 +184,6 @@ function FileNavigation(props: { blocked?: boolean }) {
 				<div contentEditable suppressContentEditableWarning role="textbox" aria-label="Editable note">
 					Text
 				</div>
-				<FilesClipboardToolbar targetParentId={TARGET_ID} targetName="target" canPaste={!props.blocked} />
 			</div>
 			<textarea aria-label="Chat message" />
 			<output aria-label="Clipboard sources">{clipboard?.sourceIds.join(",") ?? "empty"}</output>
@@ -261,8 +264,7 @@ describe("FilesClipboardProvider", () => {
 	test("disables Paste without destination write permission", () => {
 		render(<TestClipboard blocked />);
 		fireEvent.click(screen.getByRole("button", { name: "Copy source" }));
-		expect(screen.getByRole("button", { name: "Paste files" }).matches(":disabled")).toBe(true);
-		expect(press_key(screen.getByRole("group", { name: "File navigation" }), "v")).toBe(true);
+		expect(press_paste()).toBe(true);
 		expect(mutationMock).not.toHaveBeenCalled();
 	});
 
@@ -270,15 +272,14 @@ describe("FilesClipboardProvider", () => {
 		queryState.runs = runs;
 		render(<TestClipboard />);
 		fireEvent.click(screen.getByRole("button", { name: "Copy source" }));
-		expect(screen.getByRole("button", { name: "Paste files" }).matches(":disabled")).toBe(true);
-		fireEvent.click(screen.getByRole("button", { name: "Paste files" }));
+		expect(press_paste()).toBe(true);
 		expect(mutationMock).not.toHaveBeenCalled();
 	});
 
 	test("sends Cut once without Copy count, pages, or seal", async () => {
 		render(<TestClipboard />);
 		fireEvent.click(screen.getByRole("button", { name: "Cut sources" }));
-		fireEvent.click(screen.getByRole("button", { name: "Paste files" }));
+		press_paste();
 		await screen.findByRole("dialog");
 		expect(mutationMock).toHaveBeenCalledOnce();
 		expect(mutationMock.mock.calls[0]![1]).toEqual({
@@ -295,9 +296,8 @@ describe("FilesClipboardProvider", () => {
 		mutationMock.mockReturnValue(response.promise);
 		const view = render(<TestClipboard />);
 		fireEvent.click(screen.getByRole("button", { name: "Copy source" }));
-		const paste = screen.getByRole("button", { name: "Paste files" });
-		fireEvent.click(paste);
-		fireEvent.click(paste);
+		press_paste();
+		press_paste();
 		expect(mutationMock).toHaveBeenCalledOnce();
 		expect(getFunctionName(mutationMock.mock.calls[0]![0])).toBe("files_transfer:start");
 		expect(mutationMock.mock.calls[0]![1]).toMatchObject({
@@ -316,7 +316,7 @@ describe("FilesClipboardProvider", () => {
 	test("removes only moved cut IDs and preserves a newer clipboard", async () => {
 		const view = render(<TestClipboard />);
 		fireEvent.click(screen.getByRole("button", { name: "Cut sources" }));
-		fireEvent.click(screen.getByRole("button", { name: "Paste files" }));
+		press_paste();
 		await waitFor(() => expect(screen.getByRole("dialog")).toBeTruthy());
 		push_run(
 			make_run({
@@ -334,7 +334,7 @@ describe("FilesClipboardProvider", () => {
 		fireEvent.click(screen.getByRole("button", { name: "Cut sources" }));
 		const response = Promise.withResolvers<{ _yay: { runId: typeof RUN_ID } }>();
 		mutationMock.mockReturnValue(response.promise);
-		fireEvent.click(screen.getByRole("button", { name: "Paste files" }));
+		press_paste();
 		fireEvent.click(screen.getByRole("button", { name: "Copy another source" }));
 		await act(async () => response.resolve({ _yay: { runId: RUN_ID } }));
 		push_run(
@@ -347,7 +347,7 @@ describe("FilesClipboardProvider", () => {
 		queryState.runsById[OLD_RUN_ID] = make_run({ _id: OLD_RUN_ID, status: "succeeded", progress: { completed: 2 } });
 		render(<TestClipboard />);
 		fireEvent.click(screen.getByRole("button", { name: "Cut sources" }));
-		fireEvent.click(screen.getByRole("button", { name: "Paste files" }));
+		press_paste();
 		await waitFor(() => expect(screen.getByRole("dialog")).toBeTruthy());
 		fireEvent.click(screen.getByRole("button", { name: "Hide" }));
 		fireEvent.click(screen.getByRole("button", { name: "Review older operation" }));
@@ -368,7 +368,7 @@ describe("FilesClipboardProvider", () => {
 		vi.spyOn(console, "error").mockImplementation(() => {});
 		render(<TestClipboard />);
 		fireEvent.click(screen.getByRole("button", { name: "Copy source" }));
-		fireEvent.click(screen.getByRole("button", { name: "Paste files" }));
+		press_paste();
 		fireEvent.click(await screen.findByRole("button", { name: "Retry Paste" }));
 		expect(mutationMock.mock.calls[1]![1]).toEqual(mutationMock.mock.calls[0]![1]);
 		await waitFor(() => expect(screen.getByRole("dialog")).toBeTruthy());
@@ -377,7 +377,7 @@ describe("FilesClipboardProvider", () => {
 	test("sends all Copy pages before sealing", async () => {
 		render(<TestClipboard />);
 		fireEvent.click(screen.getByRole("button", { name: "Copy many sources" }));
-		fireEvent.click(screen.getByRole("button", { name: "Paste files" }));
+		press_paste();
 		await waitFor(() => expect(mutationMock).toHaveBeenCalledTimes(4));
 		expect(mutationMock.mock.calls.map(([reference]) => getFunctionName(reference))).toEqual([
 			"files_transfer:start",
@@ -414,7 +414,7 @@ describe("FilesClipboardProvider", () => {
 			vi.spyOn(console, "error").mockImplementation(() => {});
 			render(<TestClipboard />);
 			fireEvent.click(screen.getByRole("button", { name: "Copy many sources" }));
-			fireEvent.click(screen.getByRole("button", { name: "Paste files" }));
+			press_paste();
 			await screen.findByRole("button", { name: "Retry Paste" });
 			push_run(make_run({ step: "uploading", progress: { discovered: 0, total: null } }));
 			fireEvent.click(screen.getByRole("button", { name: "Copy another source" }));
@@ -437,10 +437,11 @@ describe("FilesClipboardProvider", () => {
 		vi.spyOn(console, "error").mockImplementation(() => {});
 		render(<TestClipboard />);
 		fireEvent.click(screen.getByRole("button", { name: "Copy source" }));
-		fireEvent.click(screen.getByRole("button", { name: "Paste files" }));
+		press_paste();
 		await screen.findByRole("button", { name: "Retry Paste" });
 		fireEvent.click(screen.getByRole("button", { name: "Copy another source" }));
-		expect(screen.getByRole("button", { name: "Paste files" }).matches(":disabled")).toBe(true);
+		expect(press_paste()).toBe(true);
+		expect(mutationMock).toHaveBeenCalledOnce();
 		fireEvent.click(screen.getByRole("button", { name: "Retry Paste" }));
 		expect(mutationMock.mock.calls[1]![1]).toEqual(mutationMock.mock.calls[0]![1]);
 		await waitFor(() => expect(screen.getByRole("dialog")).toBeTruthy());
@@ -451,10 +452,10 @@ describe("FilesClipboardProvider", () => {
 		mutationMock.mockResolvedValueOnce({ _yay: { runId: RUN_ID } }).mockReturnValueOnce(page.promise);
 		render(<TestClipboard />);
 		fireEvent.click(screen.getByRole("button", { name: "Copy many sources" }));
-		fireEvent.click(screen.getByRole("button", { name: "Paste files" }));
+		press_paste();
 		await waitFor(() => expect(mutationMock).toHaveBeenCalledTimes(2));
 		fireEvent.click(screen.getByRole("button", { name: "Hide" }));
-		expect(screen.getByRole("button", { name: "Paste files" }).matches(":disabled")).toBe(true);
+		expect(press_paste()).toBe(true);
 		expect(mutationMock).toHaveBeenCalledTimes(2);
 		await act(async () => page.resolve({ _yay: null }));
 		expect(mutationMock).toHaveBeenCalledTimes(4);
@@ -475,7 +476,7 @@ describe("FilesClipboardProvider", () => {
 		vi.spyOn(console, "error").mockImplementation(() => {});
 		render(<TestClipboard />);
 		fireEvent.click(screen.getByRole("button", { name: "Copy many sources" }));
-		fireEvent.click(screen.getByRole("button", { name: "Paste files" }));
+		press_paste();
 		expect((await screen.findByRole("alert")).textContent).toContain("Stop was not confirmed");
 		fireEvent.click(screen.getByRole("button", { name: "Retry Stop" }));
 		await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
@@ -496,7 +497,7 @@ describe("FilesClipboardProvider", () => {
 			);
 			render(<TestClipboard />);
 			fireEvent.click(screen.getByRole("button", { name: "Copy many sources" }));
-			fireEvent.click(screen.getByRole("button", { name: "Paste files" }));
+			press_paste();
 			await waitFor(() =>
 				expect(
 					mutationMock.mock.calls.some(([reference]) => getFunctionName(reference) === "files_transfer:stop"),
@@ -517,7 +518,7 @@ describe("FilesClipboardProvider", () => {
 		);
 		const view = render(<TestClipboard />);
 		fireEvent.click(screen.getByRole("button", { name: "Copy many sources" }));
-		fireEvent.click(screen.getByRole("button", { name: "Paste files" }));
+		press_paste();
 		await waitFor(() => expect(mutationMock).toHaveBeenCalledTimes(2));
 		view.rerender(<TestClipboard membershipId="another-membership" />);
 		await act(async () => page.resolve({ _yay: null }));
@@ -543,7 +544,7 @@ describe("FilesClipboardProvider", () => {
 		});
 		render(<TestClipboard />);
 		fireEvent.click(screen.getByRole("button", { name: "Copy many sources" }));
-		fireEvent.click(screen.getByRole("button", { name: "Paste files" }));
+		press_paste();
 		await waitFor(() => expect(mutationMock).toHaveBeenCalledTimes(2));
 		push_run(make_run({ step: "uploading", progress: { discovered: 0, total: null } }));
 		fireEvent.click(screen.getByRole("button", { name: "Stop" }));
@@ -557,7 +558,7 @@ describe("FilesClipboardProvider", () => {
 	test("clears the remaining cut IDs after a retry finishes", async () => {
 		render(<TestClipboard />);
 		fireEvent.click(screen.getByRole("button", { name: "Cut sources" }));
-		fireEvent.click(screen.getByRole("button", { name: "Paste files" }));
+		press_paste();
 		await waitFor(() => expect(screen.getByRole("dialog")).toBeTruthy());
 		push_run(
 			make_run({
@@ -677,7 +678,7 @@ describe("FilesTransferRunModal", () => {
 	test("uses a neutral heading while a move is loading", async () => {
 		render(<TestClipboard />);
 		fireEvent.click(screen.getByRole("button", { name: "Cut sources" }));
-		fireEvent.click(screen.getByRole("button", { name: "Paste files" }));
+		press_paste();
 		await waitFor(() => expect(screen.getByRole("dialog")).toBeTruthy());
 		expect(screen.getByRole("heading", { name: "Paste files" })).toBeTruthy();
 		push_run(make_run({ kind: "move" }));

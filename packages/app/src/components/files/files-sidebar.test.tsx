@@ -184,9 +184,13 @@ describe("FilesSidebar", () => {
 		expect(view.getByRole("menuitem", { name: "Copy link" })).toBeTruthy();
 		expect(view.getByRole("menuitem", { name: "Copy node id" })).toBeTruthy();
 		fireEvent.click(view.getByRole("menuitem", { name: /^Copy$/ }));
-		await view.findByText("2 ready to copy");
+		// Control+V does nothing while a tree menu is open.
+		await waitFor(() => expect(view.queryByRole("menu")).toBeNull());
 		view.rerender(<CreateSidebar router={router} selectedNodeId="delta" />);
-		fireEvent.click(view.getByRole("button", { name: "Paste files" }));
+		const delta = await view.findByRole("treeitem", { name: "delta" });
+		await waitFor(() => expect(delta.hasAttribute("data-focused")).toBe(true));
+		fireEvent.keyDown(delta, { key: "v", code: "KeyV", ctrlKey: true });
+		fireEvent.keyUp(delta, { key: "v", code: "KeyV", ctrlKey: true });
 		expect(createNode.mock.calls[0]![1]).toMatchObject({
 			kind: "copy",
 			sourceIds: ["alpha", "bravo"],
@@ -233,10 +237,14 @@ describe("FilesSidebar", () => {
 				view.getByRole("button", { name: entrypoint === "row menu" ? "More actions for alpha" : "More options" }),
 			);
 			fireEvent.click(await view.findByRole("menuitem", { name: new RegExp(`^${mode}$`) }));
+			// Control+V does nothing while a tree menu is open.
+			await waitFor(() => expect(view.queryByRole("menu")).toBeNull());
 		}
-		await view.findByText(mode === "Cut" ? "1 ready to move" : "1 ready to copy");
 		view.rerender(<CreateSidebar router={router} selectedNodeId="delta" />);
-		fireEvent.click(view.getByRole("button", { name: "Paste files" }));
+		const delta = await view.findByRole("treeitem", { name: "delta" });
+		await waitFor(() => expect(delta.hasAttribute("data-focused")).toBe(true));
+		fireEvent.keyDown(delta, { key: "v", code: "KeyV", ctrlKey: true });
+		fireEvent.keyUp(delta, { key: "v", code: "KeyV", ctrlKey: true });
 		expect(createNode.mock.calls[0]![1]).toMatchObject({
 			kind: mode === "Cut" ? "move" : "copy",
 			sourceIds: ["alpha"],
@@ -252,9 +260,9 @@ describe("FilesSidebar", () => {
 		await view.findByRole("treeitem", { name: "bravo" });
 		fireEvent.click(view.getByRole("button", { name: "More actions for bravo" }));
 		fireEvent.click(await view.findByRole("menuitem", { name: /^Copy$/ }));
-		await view.findByText("1 ready to copy");
 		view.rerender(<CreateSidebar router={router} selectedNodeId={files_ROOT_ID} />);
-		fireEvent.click(view.getByRole("button", { name: "Paste files" }));
+		fireEvent.click(view.getByRole("button", { name: "More options" }));
+		fireEvent.click(await view.findByRole("menuitem", { name: "Paste into root folder" }));
 		expect(createNode.mock.calls[0]![1]).toMatchObject({ sourceIds: ["bravo"], targetParentId: files_ROOT_ID });
 		await waitFor(() => expect(view.queryByRole("dialog")).not.toBeNull());
 	});
@@ -298,32 +306,35 @@ describe("FilesSidebar", () => {
 			fireEvent.click(view.getByRole("button", { name: "More options" }));
 			fireEvent.click(await view.findByRole("menuitem", { name: new RegExp(`^${mode}$`) }));
 		}
-		await view.findByText(mode === "Cut" ? "3 ready to move" : "3 ready to copy");
 		view.rerender(<CreateSidebar router={router} selectedNodeId={files_ROOT_ID} />);
-		fireEvent.click(view.getByRole("button", { name: "Paste files" }));
+		fireEvent.click(view.getByRole("button", { name: "More options" }));
+		fireEvent.click(await view.findByRole("menuitem", { name: "Paste into root folder" }));
 		expect(createNode.mock.calls[0]![1]).toMatchObject({ sourceIds: ["bravo", "charlie", "delta"] });
 		await waitFor(() => expect(view.queryByRole("dialog")).not.toBeNull());
 	});
 
-	test.each(["archived", "missing"])("disables Paste when the open folder is %s", async (destination) => {
+	test("does not paste into a focused archived folder", async () => {
 		const router = createRouter({ routeTree: createRootRoute(), history: createMemoryHistory() });
 		const view = render(<CreateSidebar router={router} selectedNodeId="bravo" />);
+		fireEvent.click(await view.findByRole("button", { name: "More options" }));
+		const showArchived = await view.findByRole("menuitemcheckbox", { name: "Show archived items" });
+		fireEvent.click(showArchived);
+		fireEvent.keyDown(showArchived, { key: "Escape" });
+		await waitFor(() => expect(view.queryByRole("menu")).toBeNull());
 		fireEvent.click(await view.findByRole("button", { name: "More actions for bravo" }));
 		fireEvent.click(await view.findByRole("menuitem", { name: /^Copy$/ }));
-		await view.findByText("1 ready to copy");
+		await waitFor(() => expect(view.queryByRole("menuitem", { name: /^Copy$/ })).toBeNull());
 		act(() => {
 			treeState.nodes = treeState.nodes.map((node) =>
 				node._id === "alpha" ? { ...node, archiveOperationId: "qa-archive" } : node,
 			);
 			for (const listener of treeState.listeners) listener();
 		});
-		view.rerender(<CreateSidebar router={router} selectedNodeId={destination === "archived" ? "alpha" : "missing"} />);
-		const paste = view.getByRole("button", { name: "Paste files" });
-		expect(paste.matches(":disabled")).toBe(true);
-		expect(document.getElementById(paste.getAttribute("aria-describedby")!)?.textContent).not.toContain("root folder");
-		if (destination === "archived")
-			expect(document.getElementById(paste.getAttribute("aria-describedby")!)?.textContent).toContain("alpha");
-		fireEvent.click(paste);
+		view.rerender(<CreateSidebar router={router} selectedNodeId="alpha" />);
+		const alpha = await view.findByRole("treeitem", { name: "alpha archived" });
+		await waitFor(() => expect(alpha.hasAttribute("data-focused")).toBe(true));
+		fireEvent.keyDown(alpha, { key: "v", code: "KeyV", ctrlKey: true });
+		fireEvent.keyUp(alpha, { key: "v", code: "KeyV", ctrlKey: true });
 		expect(createNode).not.toHaveBeenCalled();
 	});
 

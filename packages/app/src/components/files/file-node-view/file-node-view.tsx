@@ -27,7 +27,7 @@ import { FilesSidebarToggle } from "../files-sidebar-toggle.tsx";
 import { FilesArchiveModal, type FilesArchiveModal_Node } from "../files-archive-modal.tsx";
 import { FilesShareModal } from "../files-share-modal.tsx";
 import { FilesPropertiesModal } from "../files-properties-modal.tsx";
-import { FilesClipboardMenuItems, FilesClipboardProvider, FilesClipboardToolbar } from "../files-clipboard.tsx";
+import { FilesClipboardMenuItems, FilesClipboardProvider } from "../files-clipboard.tsx";
 import { MainAppHeaderBillingIndicator } from "@/components/main-app-header-billing-indicator.tsx";
 import { MainAppSidebarToggle } from "@/components/main-app-sidebar-toggle.tsx";
 import { CopyIconButton } from "@/components/copy-icon-button.tsx";
@@ -2933,16 +2933,14 @@ type FileNodeViewToolbarFolderActions_ClassNames =
 
 type FileNodeViewToolbarFolderActions_Props = {
 	disabled: boolean;
-	isBusy: boolean;
 	folderItemId: app_convex_Doc<"files_nodes">["parentId"];
-	folderName: string;
 	onCreateNode: (kind: app_convex_Doc<"files_nodes">["kind"]) => void;
 };
 
 const FileNodeViewToolbarFolderActions = memo(function FileNodeViewToolbarFolderActions(
 	props: FileNodeViewToolbarFolderActions_Props,
 ) {
-	const { disabled, isBusy, folderItemId, folderName, onCreateNode } = props;
+	const { disabled, folderItemId, onCreateNode } = props;
 	const actionsRef = useRef<HTMLDivElement | null>(null);
 	FilesClipboardProvider.useHotkeys({
 		target: actionsRef,
@@ -2987,12 +2985,6 @@ const FileNodeViewToolbarFolderActions = memo(function FileNodeViewToolbarFolder
 					<FolderPlus />
 				</MyIconButtonIcon>
 			</MyIconButton>
-			<FilesClipboardToolbar
-				targetParentId={folderItemId}
-				targetName={folderName}
-				canPaste={!disabled}
-				isBusy={isBusy}
-			/>
 		</div>
 	);
 });
@@ -3244,9 +3236,7 @@ const FileNodeViewToolbarCreateNodeActions = memo(function FileNodeViewToolbarCr
 	const folderActionsSlot = folderItemId ? (
 		<FileNodeViewToolbarFolderActions
 			disabled={!canReceiveChildren || isCreatingNode}
-			isBusy={isCreatingNode}
 			folderItemId={folderItemId}
-			folderName={folderItemId === files_ROOT_ID ? "root folder" : (folderNode?.name ?? "selected folder")}
 			onCreateNode={handleCreateNodeModalOpen}
 		/>
 	) : null;

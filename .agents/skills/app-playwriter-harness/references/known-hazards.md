@@ -2192,22 +2192,11 @@ for (const wait of [400, 700, 1200, 2000]) {
 Confirm against the door itself before calling any refusal silent: call the same mutation from page
 context and compare `_nay.message` with what the toast showed.
 
-## The Files clipboard toolbar is rendered twice, and one copy is hidden
+## Files paste has no toolbar button
 
-`[class*=FilesClipboard] button[aria-label="Paste files"]` matches two elements. Clicking the first
-match can hit the hidden copy and nothing happens. Loop to the first visible one:
-
-```js
-const buttons = page.locator('[class*=FilesClipboard] button[aria-label="Paste files"]');
-for (let i = 0; i < (await buttons.count()); i += 1) {
-	if (await buttons.nth(i).isVisible()) { await buttons.nth(i).click(); break; }
-}
-```
-
-The toolbar's buttons are icon-only. Their names are `Paste files` and `Clear file clipboard`, and
-the destination is in a separate `sr-only` span ("Paste into report.") wired through
-`aria-describedby`, so a text selector finds the description, not the button. A `getByRole("button",
-{ name: /Paste/i })` can match that description text instead of the control.
+There is no `Paste files` button and no "ready to copy" status. Paste with Control+V on the focused
+row, or with Paste in a row menu. Do not look for `FilesClipboardToolbar`. A progress dialog can
+still be headed `Paste files` while a run is loading.
 
 ## The Files sidebar tree is virtualized and keeps its scroll offset across a filter change
 

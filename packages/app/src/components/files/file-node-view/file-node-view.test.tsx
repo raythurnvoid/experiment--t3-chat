@@ -1455,23 +1455,6 @@ describe("FileNodeView folder clipboard", () => {
 		expect(screen.queryByRole("link", { name: "Open f.html" })).toBeNull();
 	});
 
-	test("disables toolbar Paste when the open folder is archived", async () => {
-		node = { ...NODE, _id: "folder_1", name: "Docs", kind: "folder" };
-		const child = { ...NODE, parentId: node._id };
-		treeNodes = [node, child];
-		renderFileView({ nodeId: node._id });
-		fireEvent.click(await screen.findByRole("button", { name: "More actions for page.html" }));
-		fireEvent.click(await screen.findByRole("menuitem", { name: /^Copy$/ }));
-		await waitFor(() => expect(screen.queryByRole("menuitem", { name: /^Copy$/ })).toBeNull());
-		node = { ...node, archiveOperationId: "qa-archive" };
-		treeNodes = [node, { ...child, archiveOperationId: "qa-archive" }];
-		pushQueryChanges();
-		const paste = screen.getByRole("button", { name: "Paste files" });
-		expect(paste.matches(":disabled")).toBe(true);
-		fireEvent.click(paste);
-		expect(mutationMock).not.toHaveBeenCalled();
-	});
-
 	test("shows an archived folder's state and disables Create a README.md", async () => {
 		node = { ...NODE, _id: "folder_1", name: "Docs", kind: "folder", archiveOperationId: "qa-archive" };
 		treeNodes = [node];
@@ -1480,27 +1463,7 @@ describe("FileNodeView folder clipboard", () => {
 		expect(screen.getByRole("button", { name: "Create a README.md" }).matches(":disabled")).toBe(true);
 	});
 
-	test("explains Paste is busy while a folder is being created", async () => {
-		node = { ...NODE, _id: "folder_1", name: "Docs", kind: "folder" };
-		treeNodes = [node, { ...NODE, parentId: node._id }];
-		renderFileView({ nodeId: node._id });
-		fireEvent.click(await screen.findByRole("button", { name: "More actions for page.html" }));
-		fireEvent.click(await screen.findByRole("menuitem", { name: /^Copy$/ }));
-		await waitFor(() => expect(screen.queryByRole("menuitem", { name: /^Copy$/ })).toBeNull());
-		const response = Promise.withResolvers<{ _yay: { nodeId: string } }>();
-		mutationMock.mockReturnValue(response.promise);
-		fireEvent.click(screen.getByRole("button", { name: "New folder" }));
-		fireEvent.change(await screen.findByRole("textbox", { name: "Name" }), { target: { value: "New folder" } });
-		fireEvent.click(screen.getByRole("button", { name: "Create folder" }));
-		const paste = screen.getByRole("button", { name: "Paste files", hidden: true });
-		expect(paste.matches(":disabled")).toBe(true);
-		expect(document.getElementById(paste.getAttribute("aria-describedby")!)?.textContent).toContain(
-			"Wait for the current file operation to finish.",
-		);
-		await act(async () => response.resolve({ _yay: { nodeId: "new-folder" } }));
-	});
-
-	test.each(["toolbar", "folder menu"])("copies a row and pastes into the %s destination", async (destination) => {
+	test("copies a row and pastes into a folder from its menu", async () => {
 		node = { ...NODE, _id: "folder_1", name: "Docs", kind: "folder" };
 		const child = { ...NODE, parentId: node._id };
 		const target = { ...node, _id: "folder_2", name: "Target", parentId: node._id };
@@ -1509,31 +1472,27 @@ describe("FileNodeView folder clipboard", () => {
 		fireEvent.click(await screen.findByRole("button", { name: "More actions for page.html" }));
 		fireEvent.click(await screen.findByRole("menuitem", { name: /^Copy$/ }));
 		await waitFor(() => expect(screen.queryByRole("menuitem", { name: /^Copy$/ })).toBeNull());
-		expect(screen.getByText("1 ready to copy")).toBeTruthy();
-		if (destination === "toolbar") {
-			fireEvent.click(screen.getByRole("button", { name: "Paste files" }));
-		} else {
-			fireEvent.click(screen.getByRole("button", { name: "More actions for Target" }));
-			fireEvent.click(await screen.findByRole("menuitem", { name: /^Paste$/ }));
-		}
+		fireEvent.click(screen.getByRole("button", { name: "More actions for Target" }));
+		fireEvent.click(await screen.findByRole("menuitem", { name: /^Paste$/ }));
 		expect(getFunctionName(mutationMock.mock.calls[0]![0])).toBe("files_transfer:start");
 		expect(mutationMock.mock.calls[0]![1]).toMatchObject({
 			kind: "copy",
 			sourceIds: [child._id],
-			targetParentId: destination === "toolbar" ? node._id : target._id,
+			targetParentId: target._id,
 		});
 		await waitFor(() => expect(screen.getByRole("dialog")).toBeTruthy());
+		expect(screen.queryByRole("button", { name: "Paste files" })).toBeNull();
 	});
 
-	test("marks a cut row ready to move and Clear removes the mark", async () => {
+	test("marks a cut row ready to move", async () => {
 		node = { ...NODE, _id: "folder_1", name: "Docs", kind: "folder" };
 		treeNodes = [node, { ...NODE, parentId: node._id }];
 		renderFileView({ nodeId: node._id });
 		fireEvent.click(await screen.findByRole("button", { name: "More actions for page.html" }));
 		fireEvent.click(await screen.findByRole("menuitem", { name: /^Cut$/ }));
+		expect(screen.getByRole("row", { name: "page.html, ready to move" })).toBeTruthy();
 		expect(screen.getByRole("link", { name: "Open page.html, ready to move" })).toBeTruthy();
-		fireEvent.click(screen.getByRole("button", { name: "Clear file clipboard" }));
-		expect(screen.getByRole("link", { name: /^Open page\.html$/ })).toBeTruthy();
+		expect(screen.queryByRole("button", { name: "Clear file clipboard" })).toBeNull();
 		expect(mutationMock).not.toHaveBeenCalled();
 	});
 });

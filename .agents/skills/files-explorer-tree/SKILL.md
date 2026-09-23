@@ -246,21 +246,21 @@ Tree-item components:
   menu and keyboard entry points keep only the top-level selected items in the clipboard. Collapsing
   a folder keeps its selected children available to those clipboard actions.
 - Folder row menus offer Paste into that folder. The top `More options` menu pastes into the root
-  folder. The sidebar toolbar
-  pastes into the open folder or open file's parent. The folder-view header pastes into the open
-  folder; file views have no header Paste. File rows never act as folders.
-  Toolbar descriptions name the destination and explain disabled Paste buttons. Hiding archived
-  nodes does not change that destination. Both toolbars refuse an archived open folder; a missing
-  destination never falls back to root. A pending file action has its own wait message.
+  folder. File rows never act as folders. There is no Paste button in the sidebar or the folder
+  toolbar, and no line that says how many files are ready to copy or move. The selection count
+  already shows how many rows are selected.
 - `FilesClipboardProvider.useHotkeys` scopes Mod+C, Mod+X, Mod+V, and Escape to file navigation.
-  Sidebar Paste uses the focused folder or focused file's parent. Folder-table shortcuts use the
-  focused row; the table does not add multi-selection. Search, rename, editors, chat, and other
+  Sidebar Paste uses the focused folder, or the focused file's parent. Folder-table shortcuts use
+  the focused row. The folder toolbar's New file and New folder group also accepts Mod+V for the
+  open folder. That group refuses when the folder cannot take children, or while a create is still
+  running. The table does not add multi-selection. Search, rename, editors, chat, and other
   editable controls keep normal text shortcuts. Copy and Cut also leave selected text alone.
 - Cut requires source move access, including visible protected descendants. Copy only needs read
   access. Paste requires destination write access. The backend checks the full operation again.
   A move also checks hidden and archived restricted descendants before changing any paths.
-  Cut rows are muted and their accessible names say `ready to move`. Clear removes either mode;
-  Escape clears only an idle cut while file navigation has focus.
+  Cut rows are muted and their accessible names say `ready to move`. Escape clears only an idle
+  cut while file navigation has focus. Copy stays until the next Cut or Copy, or until the
+  workspace changes. There is no Clear button.
 - Paste calls `files_transfer.start`. The provider keeps one request id after a lost response,
   and blocks another start while this member has an active run in the workspace. Run progress
   comes from `get` and `list_current`. Tree changes come from the live `list_tree_children` pages
