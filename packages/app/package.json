@@ -144,8 +144,8 @@
 		"y-protocols": "^1.0.6",
 		"yaml": "^2.8.2",
 		"yjs": "^13.6.27",
-		"zod": "4.3.5",
-		"zod-to-json-schema": "^3.24.6",
+		"zod": "4.6.5",
+		"zod-to-json-schema": "^3.25.2",
 		"zustand": "^5.0.8"
 	},
 	"devDependencies": {

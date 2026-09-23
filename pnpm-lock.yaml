@@ -45,16 +45,16 @@ importers:
     dependencies:
       '@ai-sdk/anthropic':
         specifier: 3.0.121
-        version: 3.0.121(zod@4.3.5)
+        version: 3.0.121(zod@4.6.5)
       '@ai-sdk/openai':
         specifier: 3.0.116
-        version: 3.0.116(zod@4.3.5)
+        version: 3.0.116(zod@4.6.5)
       '@ai-sdk/openai-compatible':
         specifier: 2.0.77
-        version: 2.0.77(zod@4.3.5)
+        version: 2.0.77(zod@4.6.5)
       '@ai-sdk/react':
         specifier: 3.0.292
-        version: 3.0.292(react@19.3.0)(zod@4.3.5)
+        version: 3.0.292(react@19.3.0)(zod@4.6.5)
       '@ariakit/react':
         specifier: ^0.4.19
         version: 0.4.20(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
@@ -75,7 +75,7 @@ importers:
         version: 2.4.57(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
       '@convex-dev/migrations':
         specifier: ^0.3.6
-        version: 0.3.6(convex-helpers@0.1.124(@standard-schema/spec@1.1.0)(convex@1.46.0(@clerk/clerk-react@5.61.3(react-dom@19.3.0(react@19.3.0))(react@19.3.0))(react@19.3.0))(hono@4.11.3)(react@19.3.0)(typescript@6.0.3)(zod@4.3.5))(convex@1.46.0(@clerk/clerk-react@5.61.3(react-dom@19.3.0(react@19.3.0))(react@19.3.0))(react@19.3.0))
+        version: 0.3.6(convex-helpers@0.1.124(@standard-schema/spec@1.1.0)(convex@1.46.0(@clerk/clerk-react@5.61.3(react-dom@19.3.0(react@19.3.0))(react@19.3.0))(react@19.3.0))(hono@4.11.3)(react@19.3.0)(typescript@6.0.3)(zod@4.6.5))(convex@1.46.0(@clerk/clerk-react@5.61.3(react-dom@19.3.0(react@19.3.0))(react@19.3.0))(react@19.3.0))
       '@convex-dev/polar':
         specifier: workspace:*
         version: link:vendor/polar
@@ -90,7 +90,7 @@ importers:
         version: link:vendor/rate-limiter
       '@convex-dev/workpool':
         specifier: ^0.4.12
-        version: 0.4.12(convex-helpers@0.1.124(@standard-schema/spec@1.1.0)(convex@1.46.0(@clerk/clerk-react@5.61.3(react-dom@19.3.0(react@19.3.0))(react@19.3.0))(react@19.3.0))(hono@4.11.3)(react@19.3.0)(typescript@6.0.3)(zod@4.3.5))(convex@1.46.0(@clerk/clerk-react@5.61.3(react-dom@19.3.0(react@19.3.0))(react@19.3.0))(react@19.3.0))(react@19.3.0)
+        version: 0.4.12(convex-helpers@0.1.124(@standard-schema/spec@1.1.0)(convex@1.46.0(@clerk/clerk-react@5.61.3(react-dom@19.3.0(react@19.3.0))(react@19.3.0))(react@19.3.0))(hono@4.11.3)(react@19.3.0)(typescript@6.0.3)(zod@4.6.5))(convex@1.46.0(@clerk/clerk-react@5.61.3(react-dom@19.3.0(react@19.3.0))(react@19.3.0))(react@19.3.0))(react@19.3.0)
       '@floating-ui/dom':
         specifier: ^1.6.13
         version: 1.7.4
@@ -120,7 +120,7 @@ importers:
         version: 8.3.10(react@19.3.0)
       '@mastra/core':
         specifier: ^1.8.0
-        version: 1.8.0(@standard-community/standard-json@0.3.5(@standard-schema/spec@1.1.0)(@types/json-schema@7.0.15)(arktype@2.1.22)(quansync@0.2.11)(zod-to-json-schema@3.25.1(zod@4.3.5))(zod@4.3.5))(@standard-community/standard-openapi@0.2.9(@standard-community/standard-json@0.3.5(@standard-schema/spec@1.1.0)(@types/json-schema@7.0.15)(arktype@2.1.22)(quansync@0.2.11)(zod-to-json-schema@3.25.1(zod@4.3.5))(zod@4.3.5))(@standard-schema/spec@1.1.0)(arktype@2.1.22)(openapi-types@12.1.3)(zod@4.3.5))(@types/json-schema@7.0.15)(openapi-types@12.1.3)(zod@4.3.5)
+        version: 1.8.0(@standard-community/standard-json@0.3.5(@standard-schema/spec@1.1.0)(@types/json-schema@7.0.15)(arktype@2.1.22)(quansync@0.2.11)(zod-to-json-schema@3.25.2(zod@4.6.5))(zod@4.6.5))(@standard-community/standard-openapi@0.2.9(@standard-community/standard-json@0.3.5(@standard-schema/spec@1.1.0)(@types/json-schema@7.0.15)(arktype@2.1.22)(quansync@0.2.11)(zod-to-json-schema@3.25.2(zod@4.6.5))(zod@4.6.5))(@standard-schema/spec@1.1.0)(arktype@2.1.22)(openapi-types@12.1.3)(zod@4.6.5))(@types/json-schema@7.0.15)(openapi-types@12.1.3)(zod@4.6.5)
       '@mastra/rag':
         specifier: workspace:*
         version: link:vendor/mastra/packages/rag
@@ -132,7 +132,7 @@ importers:
         version: 1.8.0
       '@openrouter/ai-sdk-provider':
         specifier: 2.10.0
-        version: 2.10.0(ai@6.0.289(zod@4.3.5))(zod@4.3.5)
+        version: 2.10.0(ai@6.0.289(zod@4.6.5))(zod@4.6.5)
       '@polar-sh/sdk':
         specifier: 0.49.0
         version: 0.49.0
@@ -159,7 +159,7 @@ importers:
         version: 3.13.18(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
       '@tanstack/zod-adapter':
         specifier: ^1.167.0
-        version: 1.167.0(@tanstack/react-router@1.170.39(react-dom@19.3.0(react@19.3.0))(react@19.3.0))(zod@4.3.5)
+        version: 1.167.0(@tanstack/react-router@1.170.39(react-dom@19.3.0(react@19.3.0))(react@19.3.0))(zod@4.6.5)
       '@tiptap/core':
         specifier: workspace:*
         version: link:vendor/tiptap/packages/core
@@ -240,7 +240,7 @@ importers:
         version: 3.0.0(prosemirror-model@1.25.4)(prosemirror-state@1.4.4)(prosemirror-view@1.41.4)(y-protocols@1.0.7(yjs@13.6.29))(yjs@13.6.29)
       ai:
         specifier: 6.0.289
-        version: 6.0.289(zod@4.3.5)
+        version: 6.0.289(zod@4.6.5)
       bonobo-file-preview:
         specifier: workspace:*
         version: link:../file-preview
@@ -258,7 +258,7 @@ importers:
         version: 1.46.0(@clerk/clerk-react@5.61.3(react-dom@19.3.0(react@19.3.0))(react@19.3.0))(react@19.3.0)
       convex-helpers:
         specifier: ^0.1.124
-        version: 0.1.124(@standard-schema/spec@1.1.0)(convex@1.46.0(@clerk/clerk-react@5.61.3(react-dom@19.3.0(react@19.3.0))(react@19.3.0))(react@19.3.0))(hono@4.11.3)(react@19.3.0)(typescript@6.0.3)(zod@4.3.5)
+        version: 0.1.124(@standard-schema/spec@1.1.0)(convex@1.46.0(@clerk/clerk-react@5.61.3(react-dom@19.3.0(react@19.3.0))(react@19.3.0))(react@19.3.0))(hono@4.11.3)(react@19.3.0)(typescript@6.0.3)(zod@4.6.5)
       dedent:
         specifier: ^1.7.0
         version: 1.7.1
@@ -404,11 +404,11 @@ importers:
         specifier: ^13.6.27
         version: 13.6.29
       zod:
-        specifier: 4.3.5
-        version: 4.3.5
+        specifier: 4.6.5
+        version: 4.6.5
       zod-to-json-schema:
-        specifier: ^3.24.6
-        version: 3.25.1(zod@4.3.5)
+        specifier: ^3.25.2
+        version: 3.25.2(zod@4.6.5)
       zustand:
         specifier: ^5.0.8
         version: 5.0.9(@types/react@19.3.0)(immer@11.1.3)(react@19.3.0)(use-sync-external-store@1.6.0(react@19.3.0))
@@ -799,7 +799,7 @@ importers:
     dependencies:
       '@mastra/core':
         specifier: '>=1.0.0-0 <2.0.0-0'
-        version: 1.8.0(@standard-community/standard-json@0.3.5(@standard-schema/spec@1.1.0)(@types/json-schema@7.0.15)(arktype@2.1.22)(quansync@0.2.11)(zod-to-json-schema@3.25.1(zod@4.3.5))(zod@4.3.5))(@standard-community/standard-openapi@0.2.9(@standard-community/standard-json@0.3.5(@standard-schema/spec@1.1.0)(@types/json-schema@7.0.15)(arktype@2.1.22)(quansync@0.2.11)(zod-to-json-schema@3.25.1(zod@4.3.5))(zod@4.3.5))(@standard-schema/spec@1.1.0)(arktype@2.1.22)(openapi-types@12.1.3)(zod@4.3.5))(@types/json-schema@7.0.15)(openapi-types@12.1.3)(zod@4.3.5)
+        version: 1.8.0(@standard-community/standard-json@0.3.5(@standard-schema/spec@1.1.0)(@types/json-schema@7.0.15)(arktype@2.1.22)(quansync@0.2.11)(zod-to-json-schema@3.25.2(zod@4.3.5))(zod@4.3.5))(@standard-community/standard-openapi@0.2.9(@standard-community/standard-json@0.3.5(@standard-schema/spec@1.1.0)(@types/json-schema@7.0.15)(arktype@2.1.22)(quansync@0.2.11)(zod-to-json-schema@3.25.2(zod@4.3.5))(zod@4.3.5))(@standard-schema/spec@1.1.0)(arktype@2.1.22)(openapi-types@12.1.3)(zod@4.3.5))(@types/json-schema@7.0.15)(openapi-types@12.1.3)(zod@4.3.5)
       big.js:
         specifier: ^7.0.1
         version: 7.0.1
@@ -2511,8 +2511,8 @@ importers:
         specifier: 8.0.0
         version: 8.0.0
       zod:
-        specifier: 4.3.5
-        version: 4.3.5
+        specifier: 4.6.5
+        version: 4.6.5
     devDependencies:
       '@types/node':
         specifier: ^24.7.2
@@ -2536,8 +2536,8 @@ importers:
         specifier: workspace:*
         version: link:../common
       zod:
-        specifier: 4.3.5
-        version: 4.3.5
+        specifier: 4.6.5
+        version: 4.6.5
 
   packages/r2-media-transformer: {}
 
@@ -20632,10 +20632,10 @@ packages:
     resolution: {integrity: sha512-tamtgPM3MkP+obfO2dLr/G+nYoYkpJKmuHdYEy6IXRKfLybruoJ5NUj0lM0LxwOpC9PpoGLbll1ecoeyj43Wsg==}
     engines: {node: '>=20'}
 
-  zod-to-json-schema@3.25.1:
-    resolution: {integrity: sha512-pM/SU9d3YAggzi6MtR4h7ruuQlqKtad8e9S0fmxcMi+ueAK5Korys/aWcV9LIIHTVbj01NdzxcnXSN+O74ZIVA==}
+  zod-to-json-schema@3.25.2:
+    resolution: {integrity: sha512-O/PgfnpT1xKSDeQYSCfRI5Gy3hPf91mKVDuYLUHZJMiDFptvP41MSnWofm8dnCm0256ZNfZIM7DSzuSMAFnjHA==}
     peerDependencies:
-      zod: ^3.25 || ^4
+      zod: ^3.25.28 || ^4
 
   zod-validation-error@4.0.2:
     resolution: {integrity: sha512-Q6/nZLe6jxuU80qb/4uJ4t5v2VEZ44lzQjPDhYJNztRQ4wyWc6VF3D3Kb/fAuPetZQnhS3hnajCf9CsWesghLQ==}
@@ -20719,30 +20719,30 @@ snapshots:
 
   '@adobe/css-tools@4.5.0': {}
 
-  '@ai-sdk/anthropic@3.0.121(zod@4.3.5)':
+  '@ai-sdk/anthropic@3.0.121(zod@4.6.5)':
     dependencies:
       '@ai-sdk/provider': 3.0.17
-      '@ai-sdk/provider-utils': 4.0.53(zod@4.3.5)
-      zod: 4.3.5
+      '@ai-sdk/provider-utils': 4.0.53(zod@4.6.5)
+      zod: 4.6.5
 
-  '@ai-sdk/gateway@3.0.199(zod@4.3.5)':
+  '@ai-sdk/gateway@3.0.199(zod@4.6.5)':
     dependencies:
       '@ai-sdk/provider': 3.0.17
-      '@ai-sdk/provider-utils': 4.0.53(zod@4.3.5)
+      '@ai-sdk/provider-utils': 4.0.53(zod@4.6.5)
       '@vercel/oidc': 3.2.0
-      zod: 4.3.5
+      zod: 4.6.5
 
-  '@ai-sdk/openai-compatible@2.0.77(zod@4.3.5)':
+  '@ai-sdk/openai-compatible@2.0.77(zod@4.6.5)':
     dependencies:
       '@ai-sdk/provider': 3.0.17
-      '@ai-sdk/provider-utils': 4.0.53(zod@4.3.5)
-      zod: 4.3.5
+      '@ai-sdk/provider-utils': 4.0.53(zod@4.6.5)
+      zod: 4.6.5
 
-  '@ai-sdk/openai@3.0.116(zod@4.3.5)':
+  '@ai-sdk/openai@3.0.116(zod@4.6.5)':
     dependencies:
       '@ai-sdk/provider': 3.0.17
-      '@ai-sdk/provider-utils': 4.0.53(zod@4.3.5)
-      zod: 4.3.5
+      '@ai-sdk/provider-utils': 4.0.53(zod@4.6.5)
+      zod: 4.6.5
 
   '@ai-sdk/provider-utils@2.2.8(zod@4.3.5)':
     dependencies:
@@ -20751,12 +20751,26 @@ snapshots:
       secure-json-parse: 2.7.0
       zod: 4.3.5
 
+  '@ai-sdk/provider-utils@2.2.8(zod@4.6.5)':
+    dependencies:
+      '@ai-sdk/provider': 1.1.3
+      nanoid: 3.3.16
+      secure-json-parse: 2.7.0
+      zod: 4.6.5
+
   '@ai-sdk/provider-utils@3.0.20(zod@4.3.5)':
     dependencies:
       '@ai-sdk/provider': 2.0.1
       '@standard-schema/spec': 1.1.0
       eventsource-parser: 3.1.0
       zod: 4.3.5
+
+  '@ai-sdk/provider-utils@3.0.20(zod@4.6.5)':
+    dependencies:
+      '@ai-sdk/provider': 2.0.1
+      '@standard-schema/spec': 1.1.0
+      eventsource-parser: 3.1.0
+      zod: 4.6.5
 
   '@ai-sdk/provider-utils@4.0.0(zod@4.3.5)':
     dependencies:
@@ -20765,13 +20779,20 @@ snapshots:
       eventsource-parser: 3.1.0
       zod: 4.3.5
 
-  '@ai-sdk/provider-utils@4.0.53(zod@4.3.5)':
+  '@ai-sdk/provider-utils@4.0.0(zod@4.6.5)':
+    dependencies:
+      '@ai-sdk/provider': 3.0.0
+      '@standard-schema/spec': 1.1.0
+      eventsource-parser: 3.1.0
+      zod: 4.6.5
+
+  '@ai-sdk/provider-utils@4.0.53(zod@4.6.5)':
     dependencies:
       '@ai-sdk/provider': 3.0.17
       '@standard-schema/spec': 1.1.0
       eventsource-parser: 3.1.0
       undici: 6.28.1
-      zod: 4.3.5
+      zod: 4.6.5
 
   '@ai-sdk/provider@1.1.3':
     dependencies:
@@ -20793,10 +20814,10 @@ snapshots:
     dependencies:
       json-schema: 0.4.0
 
-  '@ai-sdk/react@3.0.292(react@19.3.0)(zod@4.3.5)':
+  '@ai-sdk/react@3.0.292(react@19.3.0)(zod@4.6.5)':
     dependencies:
-      '@ai-sdk/provider-utils': 4.0.53(zod@4.3.5)
-      ai: 6.0.289(zod@4.3.5)
+      '@ai-sdk/provider-utils': 4.0.53(zod@4.6.5)
+      ai: 6.0.289(zod@4.6.5)
       react: 19.3.0
       swr: 2.3.8(react@19.3.0)
       throttleit: 2.1.0
@@ -20808,7 +20829,14 @@ snapshots:
       '@ai-sdk/provider': 1.1.3
       '@ai-sdk/provider-utils': 2.2.8(zod@4.3.5)
       zod: 4.3.5
-      zod-to-json-schema: 3.25.1(zod@4.3.5)
+      zod-to-json-schema: 3.25.2(zod@4.3.5)
+
+  '@ai-sdk/ui-utils@1.2.11(zod@4.6.5)':
+    dependencies:
+      '@ai-sdk/provider': 1.1.3
+      '@ai-sdk/provider-utils': 2.2.8(zod@4.6.5)
+      zod: 4.6.5
+      zod-to-json-schema: 3.25.2(zod@4.6.5)
 
   '@algolia/abtesting@1.14.1':
     dependencies:
@@ -23314,16 +23342,16 @@ snapshots:
       - supports-color
       - typescript
 
-  '@convex-dev/migrations@0.3.6(convex-helpers@0.1.124(@standard-schema/spec@1.1.0)(convex@1.46.0(@clerk/clerk-react@5.61.3(react-dom@19.3.0(react@19.3.0))(react@19.3.0))(react@19.3.0))(hono@4.11.3)(react@19.3.0)(typescript@6.0.3)(zod@4.3.5))(convex@1.46.0(@clerk/clerk-react@5.61.3(react-dom@19.3.0(react@19.3.0))(react@19.3.0))(react@19.3.0))':
+  '@convex-dev/migrations@0.3.6(convex-helpers@0.1.124(@standard-schema/spec@1.1.0)(convex@1.46.0(@clerk/clerk-react@5.61.3(react-dom@19.3.0(react@19.3.0))(react@19.3.0))(react@19.3.0))(hono@4.11.3)(react@19.3.0)(typescript@6.0.3)(zod@4.6.5))(convex@1.46.0(@clerk/clerk-react@5.61.3(react-dom@19.3.0(react@19.3.0))(react@19.3.0))(react@19.3.0))':
     dependencies:
       convex: 1.46.0(@clerk/clerk-react@5.61.3(react-dom@19.3.0(react@19.3.0))(react@19.3.0))(react@19.3.0)
-      convex-helpers: 0.1.124(@standard-schema/spec@1.1.0)(convex@1.46.0(@clerk/clerk-react@5.61.3(react-dom@19.3.0(react@19.3.0))(react@19.3.0))(react@19.3.0))(hono@4.11.3)(react@19.3.0)(typescript@6.0.3)(zod@4.3.5)
+      convex-helpers: 0.1.124(@standard-schema/spec@1.1.0)(convex@1.46.0(@clerk/clerk-react@5.61.3(react-dom@19.3.0(react@19.3.0))(react@19.3.0))(react@19.3.0))(hono@4.11.3)(react@19.3.0)(typescript@6.0.3)(zod@4.6.5)
 
-  '@convex-dev/workpool@0.4.12(convex-helpers@0.1.124(@standard-schema/spec@1.1.0)(convex@1.46.0(@clerk/clerk-react@5.61.3(react-dom@19.3.0(react@19.3.0))(react@19.3.0))(react@19.3.0))(hono@4.11.3)(react@19.3.0)(typescript@6.0.3)(zod@4.3.5))(convex@1.46.0(@clerk/clerk-react@5.61.3(react-dom@19.3.0(react@19.3.0))(react@19.3.0))(react@19.3.0))(react@19.3.0)':
+  '@convex-dev/workpool@0.4.12(convex-helpers@0.1.124(@standard-schema/spec@1.1.0)(convex@1.46.0(@clerk/clerk-react@5.61.3(react-dom@19.3.0(react@19.3.0))(react@19.3.0))(react@19.3.0))(hono@4.11.3)(react@19.3.0)(typescript@6.0.3)(zod@4.6.5))(convex@1.46.0(@clerk/clerk-react@5.61.3(react-dom@19.3.0(react@19.3.0))(react@19.3.0))(react@19.3.0))(react@19.3.0)':
     dependencies:
       '@convex-dev/batch-worker': 0.2.2(convex@1.46.0(@clerk/clerk-react@5.61.3(react-dom@19.3.0(react@19.3.0))(react@19.3.0))(react@19.3.0))(react@19.3.0)
       convex: 1.46.0(@clerk/clerk-react@5.61.3(react-dom@19.3.0(react@19.3.0))(react@19.3.0))(react@19.3.0)
-      convex-helpers: 0.1.124(@standard-schema/spec@1.1.0)(convex@1.46.0(@clerk/clerk-react@5.61.3(react-dom@19.3.0(react@19.3.0))(react@19.3.0))(react@19.3.0))(hono@4.11.3)(react@19.3.0)(typescript@6.0.3)(zod@4.3.5)
+      convex-helpers: 0.1.124(@standard-schema/spec@1.1.0)(convex@1.46.0(@clerk/clerk-react@5.61.3(react-dom@19.3.0(react@19.3.0))(react@19.3.0))(react@19.3.0))(hono@4.11.3)(react@19.3.0)(typescript@6.0.3)(zod@4.6.5)
     transitivePeerDependencies:
       - react
 
@@ -26359,7 +26387,7 @@ snapshots:
     dependencies:
       react: 19.3.0
 
-  '@mastra/core@1.8.0(@standard-community/standard-json@0.3.5(@standard-schema/spec@1.1.0)(@types/json-schema@7.0.15)(arktype@2.1.22)(quansync@0.2.11)(zod-to-json-schema@3.25.1(zod@4.3.5))(zod@4.3.5))(@standard-community/standard-openapi@0.2.9(@standard-community/standard-json@0.3.5(@standard-schema/spec@1.1.0)(@types/json-schema@7.0.15)(arktype@2.1.22)(quansync@0.2.11)(zod-to-json-schema@3.25.1(zod@4.3.5))(zod@4.3.5))(@standard-schema/spec@1.1.0)(arktype@2.1.22)(openapi-types@12.1.3)(zod@4.3.5))(@types/json-schema@7.0.15)(openapi-types@12.1.3)(zod@4.3.5)':
+  '@mastra/core@1.8.0(@standard-community/standard-json@0.3.5(@standard-schema/spec@1.1.0)(@types/json-schema@7.0.15)(arktype@2.1.22)(quansync@0.2.11)(zod-to-json-schema@3.25.2(zod@4.3.5))(zod@4.3.5))(@standard-community/standard-openapi@0.2.9(@standard-community/standard-json@0.3.5(@standard-schema/spec@1.1.0)(@types/json-schema@7.0.15)(arktype@2.1.22)(quansync@0.2.11)(zod-to-json-schema@3.25.2(zod@4.3.5))(zod@4.3.5))(@standard-schema/spec@1.1.0)(arktype@2.1.22)(openapi-types@12.1.3)(zod@4.3.5))(@types/json-schema@7.0.15)(openapi-types@12.1.3)(zod@4.3.5)':
     dependencies:
       '@a2a-js/sdk': 0.2.5
       '@ai-sdk/provider-utils-v5': '@ai-sdk/provider-utils@3.0.20(zod@4.3.5)'
@@ -26375,7 +26403,7 @@ snapshots:
       dotenv: 17.2.3
       gray-matter: 4.0.3
       hono: 4.12.3
-      hono-openapi: 1.2.0(@standard-community/standard-json@0.3.5(@standard-schema/spec@1.1.0)(@types/json-schema@7.0.15)(arktype@2.1.22)(quansync@0.2.11)(zod-to-json-schema@3.25.1(zod@4.3.5))(zod@4.3.5))(@standard-community/standard-openapi@0.2.9(@standard-community/standard-json@0.3.5(@standard-schema/spec@1.1.0)(@types/json-schema@7.0.15)(arktype@2.1.22)(quansync@0.2.11)(zod-to-json-schema@3.25.1(zod@4.3.5))(zod@4.3.5))(@standard-schema/spec@1.1.0)(arktype@2.1.22)(openapi-types@12.1.3)(zod@4.3.5))(@types/json-schema@7.0.15)(hono@4.12.3)(openapi-types@12.1.3)
+      hono-openapi: 1.2.0(@standard-community/standard-json@0.3.5(@standard-schema/spec@1.1.0)(@types/json-schema@7.0.15)(arktype@2.1.22)(quansync@0.2.11)(zod-to-json-schema@3.25.2(zod@4.3.5))(zod@4.3.5))(@standard-community/standard-openapi@0.2.9(@standard-community/standard-json@0.3.5(@standard-schema/spec@1.1.0)(@types/json-schema@7.0.15)(arktype@2.1.22)(quansync@0.2.11)(zod-to-json-schema@3.25.2(zod@4.3.5))(zod@4.3.5))(@standard-schema/spec@1.1.0)(arktype@2.1.22)(openapi-types@12.1.3)(zod@4.3.5))(@types/json-schema@7.0.15)(hono@4.12.3)(openapi-types@12.1.3)
       js-tiktoken: 1.0.21
       json-schema: 0.4.0
       lru-cache: 11.2.6
@@ -26394,13 +26422,56 @@ snapshots:
       - openapi-types
       - supports-color
 
+  '@mastra/core@1.8.0(@standard-community/standard-json@0.3.5(@standard-schema/spec@1.1.0)(@types/json-schema@7.0.15)(arktype@2.1.22)(quansync@0.2.11)(zod-to-json-schema@3.25.2(zod@4.6.5))(zod@4.6.5))(@standard-community/standard-openapi@0.2.9(@standard-community/standard-json@0.3.5(@standard-schema/spec@1.1.0)(@types/json-schema@7.0.15)(arktype@2.1.22)(quansync@0.2.11)(zod-to-json-schema@3.25.2(zod@4.6.5))(zod@4.6.5))(@standard-schema/spec@1.1.0)(arktype@2.1.22)(openapi-types@12.1.3)(zod@4.6.5))(@types/json-schema@7.0.15)(openapi-types@12.1.3)(zod@4.6.5)':
+    dependencies:
+      '@a2a-js/sdk': 0.2.5
+      '@ai-sdk/provider-utils-v5': '@ai-sdk/provider-utils@3.0.20(zod@4.6.5)'
+      '@ai-sdk/provider-utils-v6': '@ai-sdk/provider-utils@4.0.0(zod@4.6.5)'
+      '@ai-sdk/provider-v5': '@ai-sdk/provider@2.0.0'
+      '@ai-sdk/provider-v6': '@ai-sdk/provider@3.0.0'
+      '@ai-sdk/ui-utils-v5': '@ai-sdk/ui-utils@1.2.11(zod@4.6.5)'
+      '@isaacs/ttlcache': 2.1.4
+      '@lukeed/uuid': 2.0.1
+      '@mastra/schema-compat': 1.1.3(zod@4.6.5)
+      '@modelcontextprotocol/sdk': 1.25.2(hono@4.12.3)(zod@4.6.5)
+      '@sindresorhus/slugify': 2.2.1
+      dotenv: 17.2.3
+      gray-matter: 4.0.3
+      hono: 4.12.3
+      hono-openapi: 1.2.0(@standard-community/standard-json@0.3.5(@standard-schema/spec@1.1.0)(@types/json-schema@7.0.15)(arktype@2.1.22)(quansync@0.2.11)(zod-to-json-schema@3.25.2(zod@4.6.5))(zod@4.6.5))(@standard-community/standard-openapi@0.2.9(@standard-community/standard-json@0.3.5(@standard-schema/spec@1.1.0)(@types/json-schema@7.0.15)(arktype@2.1.22)(quansync@0.2.11)(zod-to-json-schema@3.25.2(zod@4.6.5))(zod@4.6.5))(@standard-schema/spec@1.1.0)(arktype@2.1.22)(openapi-types@12.1.3)(zod@4.6.5))(@types/json-schema@7.0.15)(hono@4.12.3)(openapi-types@12.1.3)
+      js-tiktoken: 1.0.21
+      json-schema: 0.4.0
+      lru-cache: 11.2.6
+      p-map: 7.0.4
+      p-retry: 7.1.1
+      picomatch: 4.0.3
+      radash: 12.1.1
+      xxhash-wasm: 1.1.0
+      zod: 4.6.5
+    transitivePeerDependencies:
+      - '@cfworker/json-schema'
+      - '@hono/standard-validator'
+      - '@standard-community/standard-json'
+      - '@standard-community/standard-openapi'
+      - '@types/json-schema'
+      - openapi-types
+      - supports-color
+
   '@mastra/schema-compat@1.1.3(zod@4.3.5)':
     dependencies:
       json-schema-to-zod: 2.7.0
       zod: 4.3.5
       zod-from-json-schema: 0.5.2
       zod-from-json-schema-v3: zod-from-json-schema@0.0.5
-      zod-to-json-schema: 3.25.1(zod@4.3.5)
+      zod-to-json-schema: 3.25.2(zod@4.3.5)
+
+  '@mastra/schema-compat@1.1.3(zod@4.6.5)':
+    dependencies:
+      json-schema-to-zod: 2.7.0
+      zod: 4.6.5
+      zod-from-json-schema: 0.5.2
+      zod-from-json-schema-v3: zod-from-json-schema@0.0.5
+      zod-to-json-schema: 3.25.2(zod@4.6.5)
 
   '@mdx-js/mdx@3.1.1':
     dependencies:
@@ -26461,7 +26532,29 @@ snapshots:
       pkce-challenge: 5.0.1
       raw-body: 3.0.2
       zod: 4.3.5
-      zod-to-json-schema: 3.25.1(zod@4.3.5)
+      zod-to-json-schema: 3.25.2(zod@4.3.5)
+    transitivePeerDependencies:
+      - hono
+      - supports-color
+
+  '@modelcontextprotocol/sdk@1.25.2(hono@4.12.3)(zod@4.6.5)':
+    dependencies:
+      '@hono/node-server': 1.19.7(hono@4.12.3)
+      ajv: 8.17.1
+      ajv-formats: 3.0.1(ajv@8.17.1)
+      content-type: 1.0.5
+      cors: 2.8.5
+      cross-spawn: 7.0.6
+      eventsource: 3.0.7
+      eventsource-parser: 3.0.6
+      express: 5.2.1
+      express-rate-limit: 7.5.1(express@5.2.1)
+      jose: 6.1.3
+      json-schema-typed: 8.0.2
+      pkce-challenge: 5.0.1
+      raw-body: 3.0.2
+      zod: 4.6.5
+      zod-to-json-schema: 3.25.2(zod@4.6.5)
     transitivePeerDependencies:
       - hono
       - supports-color
@@ -26618,10 +26711,10 @@ snapshots:
   '@open-draft/until@2.1.0':
     optional: true
 
-  '@openrouter/ai-sdk-provider@2.10.0(ai@6.0.289(zod@4.3.5))(zod@4.3.5)':
+  '@openrouter/ai-sdk-provider@2.10.0(ai@6.0.289(zod@4.6.5))(zod@4.6.5)':
     dependencies:
-      ai: 6.0.289(zod@4.3.5)
-      zod: 4.3.5
+      ai: 6.0.289(zod@4.6.5)
+      zod: 4.6.5
 
   '@opentelemetry/api@1.9.0': {}
 
@@ -27028,7 +27121,7 @@ snapshots:
   '@polar-sh/sdk@0.49.0':
     dependencies:
       standardwebhooks: 1.0.0
-      zod: 4.3.5
+      zod: 4.6.5
 
   '@polar-sh/ui@0.1.2(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.3.0(react@19.3.0))(react-is@18.3.1)(react@19.3.0)(redux@5.0.1)':
     dependencies:
@@ -29032,7 +29125,7 @@ snapshots:
 
   '@stablelib/base64@1.0.1': {}
 
-  '@standard-community/standard-json@0.3.5(@standard-schema/spec@1.1.0)(@types/json-schema@7.0.15)(arktype@2.1.22)(quansync@0.2.11)(zod-to-json-schema@3.25.1(zod@4.3.5))(zod@4.3.5)':
+  '@standard-community/standard-json@0.3.5(@standard-schema/spec@1.1.0)(@types/json-schema@7.0.15)(arktype@2.1.22)(quansync@0.2.11)(zod-to-json-schema@3.25.2(zod@4.3.5))(zod@4.3.5)':
     dependencies:
       '@standard-schema/spec': 1.1.0
       '@types/json-schema': 7.0.15
@@ -29040,16 +29133,35 @@ snapshots:
     optionalDependencies:
       arktype: 2.1.22
       zod: 4.3.5
-      zod-to-json-schema: 3.25.1(zod@4.3.5)
+      zod-to-json-schema: 3.25.2(zod@4.3.5)
 
-  '@standard-community/standard-openapi@0.2.9(@standard-community/standard-json@0.3.5(@standard-schema/spec@1.1.0)(@types/json-schema@7.0.15)(arktype@2.1.22)(quansync@0.2.11)(zod-to-json-schema@3.25.1(zod@4.3.5))(zod@4.3.5))(@standard-schema/spec@1.1.0)(arktype@2.1.22)(openapi-types@12.1.3)(zod@4.3.5)':
+  '@standard-community/standard-json@0.3.5(@standard-schema/spec@1.1.0)(@types/json-schema@7.0.15)(arktype@2.1.22)(quansync@0.2.11)(zod-to-json-schema@3.25.2(zod@4.6.5))(zod@4.6.5)':
     dependencies:
-      '@standard-community/standard-json': 0.3.5(@standard-schema/spec@1.1.0)(@types/json-schema@7.0.15)(arktype@2.1.22)(quansync@0.2.11)(zod-to-json-schema@3.25.1(zod@4.3.5))(zod@4.3.5)
+      '@standard-schema/spec': 1.1.0
+      '@types/json-schema': 7.0.15
+      quansync: 0.2.11
+    optionalDependencies:
+      arktype: 2.1.22
+      zod: 4.6.5
+      zod-to-json-schema: 3.25.2(zod@4.6.5)
+
+  '@standard-community/standard-openapi@0.2.9(@standard-community/standard-json@0.3.5(@standard-schema/spec@1.1.0)(@types/json-schema@7.0.15)(arktype@2.1.22)(quansync@0.2.11)(zod-to-json-schema@3.25.2(zod@4.3.5))(zod@4.3.5))(@standard-schema/spec@1.1.0)(arktype@2.1.22)(openapi-types@12.1.3)(zod@4.3.5)':
+    dependencies:
+      '@standard-community/standard-json': 0.3.5(@standard-schema/spec@1.1.0)(@types/json-schema@7.0.15)(arktype@2.1.22)(quansync@0.2.11)(zod-to-json-schema@3.25.2(zod@4.3.5))(zod@4.3.5)
       '@standard-schema/spec': 1.1.0
       openapi-types: 12.1.3
     optionalDependencies:
       arktype: 2.1.22
       zod: 4.3.5
+
+  '@standard-community/standard-openapi@0.2.9(@standard-community/standard-json@0.3.5(@standard-schema/spec@1.1.0)(@types/json-schema@7.0.15)(arktype@2.1.22)(quansync@0.2.11)(zod-to-json-schema@3.25.2(zod@4.6.5))(zod@4.6.5))(@standard-schema/spec@1.1.0)(arktype@2.1.22)(openapi-types@12.1.3)(zod@4.6.5)':
+    dependencies:
+      '@standard-community/standard-json': 0.3.5(@standard-schema/spec@1.1.0)(@types/json-schema@7.0.15)(arktype@2.1.22)(quansync@0.2.11)(zod-to-json-schema@3.25.2(zod@4.6.5))(zod@4.6.5)
+      '@standard-schema/spec': 1.1.0
+      openapi-types: 12.1.3
+    optionalDependencies:
+      arktype: 2.1.22
+      zod: 4.6.5
 
   '@standard-schema/spec@1.1.0': {}
 
@@ -29663,10 +29775,10 @@ snapshots:
 
   '@tanstack/virtual-file-routes@1.162.0': {}
 
-  '@tanstack/zod-adapter@1.167.0(@tanstack/react-router@1.170.39(react-dom@19.3.0(react@19.3.0))(react@19.3.0))(zod@4.3.5)':
+  '@tanstack/zod-adapter@1.167.0(@tanstack/react-router@1.170.39(react-dom@19.3.0(react@19.3.0))(react@19.3.0))(zod@4.6.5)':
     dependencies:
       '@tanstack/react-router': 1.170.39(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
-      zod: 4.3.5
+      zod: 4.6.5
 
   '@testing-library/dom@10.4.1':
     dependencies:
@@ -31325,13 +31437,13 @@ snapshots:
       clean-stack: 2.2.0
       indent-string: 4.0.0
 
-  ai@6.0.289(zod@4.3.5):
+  ai@6.0.289(zod@4.6.5):
     dependencies:
-      '@ai-sdk/gateway': 3.0.199(zod@4.3.5)
+      '@ai-sdk/gateway': 3.0.199(zod@4.6.5)
       '@ai-sdk/provider': 3.0.17
-      '@ai-sdk/provider-utils': 4.0.53(zod@4.3.5)
+      '@ai-sdk/provider-utils': 4.0.53(zod@4.6.5)
       '@opentelemetry/api': 1.9.0
-      zod: 4.3.5
+      zod: 4.6.5
 
   ajv-formats@2.1.1(ajv@8.17.1):
     optionalDependencies:
@@ -32441,7 +32553,7 @@ snapshots:
       typescript: 5.9.3
       zod: 4.6.5
 
-  convex-helpers@0.1.124(@standard-schema/spec@1.1.0)(convex@1.46.0(@clerk/clerk-react@5.61.3(react-dom@19.3.0(react@19.3.0))(react@19.3.0))(react@19.3.0))(hono@4.11.3)(react@19.3.0)(typescript@6.0.3)(zod@4.3.5):
+  convex-helpers@0.1.124(@standard-schema/spec@1.1.0)(convex@1.46.0(@clerk/clerk-react@5.61.3(react-dom@19.3.0(react@19.3.0))(react@19.3.0))(react@19.3.0))(hono@4.11.3)(react@19.3.0)(typescript@6.0.3)(zod@4.6.5):
     dependencies:
       convex: 1.46.0(@clerk/clerk-react@5.61.3(react-dom@19.3.0(react@19.3.0))(react@19.3.0))(react@19.3.0)
     optionalDependencies:
@@ -32449,7 +32561,7 @@ snapshots:
       hono: 4.11.3
       react: 19.3.0
       typescript: 6.0.3
-      zod: 4.3.5
+      zod: 4.6.5
 
   convex-svelte@0.0.12(convex@1.46.0(@clerk/clerk-react@5.61.3(react-dom@19.3.0(react@19.3.0))(react@19.3.0))(react@19.3.0))(svelte@5.55.5(@typescript-eslint/types@8.65.0)):
     dependencies:
@@ -34158,7 +34270,7 @@ snapshots:
       dotenv: 16.4.7
       openai: 5.23.2(ws@8.21.1)(zod@3.25.76)
       zod: 3.25.76
-      zod-to-json-schema: 3.25.1(zod@3.25.76)
+      zod-to-json-schema: 3.25.2(zod@3.25.76)
     transitivePeerDependencies:
       - encoding
       - ws
@@ -35196,10 +35308,19 @@ snapshots:
     dependencies:
       react-is: 16.13.1
 
-  hono-openapi@1.2.0(@standard-community/standard-json@0.3.5(@standard-schema/spec@1.1.0)(@types/json-schema@7.0.15)(arktype@2.1.22)(quansync@0.2.11)(zod-to-json-schema@3.25.1(zod@4.3.5))(zod@4.3.5))(@standard-community/standard-openapi@0.2.9(@standard-community/standard-json@0.3.5(@standard-schema/spec@1.1.0)(@types/json-schema@7.0.15)(arktype@2.1.22)(quansync@0.2.11)(zod-to-json-schema@3.25.1(zod@4.3.5))(zod@4.3.5))(@standard-schema/spec@1.1.0)(arktype@2.1.22)(openapi-types@12.1.3)(zod@4.3.5))(@types/json-schema@7.0.15)(hono@4.12.3)(openapi-types@12.1.3):
+  hono-openapi@1.2.0(@standard-community/standard-json@0.3.5(@standard-schema/spec@1.1.0)(@types/json-schema@7.0.15)(arktype@2.1.22)(quansync@0.2.11)(zod-to-json-schema@3.25.2(zod@4.3.5))(zod@4.3.5))(@standard-community/standard-openapi@0.2.9(@standard-community/standard-json@0.3.5(@standard-schema/spec@1.1.0)(@types/json-schema@7.0.15)(arktype@2.1.22)(quansync@0.2.11)(zod-to-json-schema@3.25.2(zod@4.3.5))(zod@4.3.5))(@standard-schema/spec@1.1.0)(arktype@2.1.22)(openapi-types@12.1.3)(zod@4.3.5))(@types/json-schema@7.0.15)(hono@4.12.3)(openapi-types@12.1.3):
     dependencies:
-      '@standard-community/standard-json': 0.3.5(@standard-schema/spec@1.1.0)(@types/json-schema@7.0.15)(arktype@2.1.22)(quansync@0.2.11)(zod-to-json-schema@3.25.1(zod@4.3.5))(zod@4.3.5)
-      '@standard-community/standard-openapi': 0.2.9(@standard-community/standard-json@0.3.5(@standard-schema/spec@1.1.0)(@types/json-schema@7.0.15)(arktype@2.1.22)(quansync@0.2.11)(zod-to-json-schema@3.25.1(zod@4.3.5))(zod@4.3.5))(@standard-schema/spec@1.1.0)(arktype@2.1.22)(openapi-types@12.1.3)(zod@4.3.5)
+      '@standard-community/standard-json': 0.3.5(@standard-schema/spec@1.1.0)(@types/json-schema@7.0.15)(arktype@2.1.22)(quansync@0.2.11)(zod-to-json-schema@3.25.2(zod@4.3.5))(zod@4.3.5)
+      '@standard-community/standard-openapi': 0.2.9(@standard-community/standard-json@0.3.5(@standard-schema/spec@1.1.0)(@types/json-schema@7.0.15)(arktype@2.1.22)(quansync@0.2.11)(zod-to-json-schema@3.25.2(zod@4.3.5))(zod@4.3.5))(@standard-schema/spec@1.1.0)(arktype@2.1.22)(openapi-types@12.1.3)(zod@4.3.5)
+      '@types/json-schema': 7.0.15
+      openapi-types: 12.1.3
+    optionalDependencies:
+      hono: 4.12.3
+
+  hono-openapi@1.2.0(@standard-community/standard-json@0.3.5(@standard-schema/spec@1.1.0)(@types/json-schema@7.0.15)(arktype@2.1.22)(quansync@0.2.11)(zod-to-json-schema@3.25.2(zod@4.6.5))(zod@4.6.5))(@standard-community/standard-openapi@0.2.9(@standard-community/standard-json@0.3.5(@standard-schema/spec@1.1.0)(@types/json-schema@7.0.15)(arktype@2.1.22)(quansync@0.2.11)(zod-to-json-schema@3.25.2(zod@4.6.5))(zod@4.6.5))(@standard-schema/spec@1.1.0)(arktype@2.1.22)(openapi-types@12.1.3)(zod@4.6.5))(@types/json-schema@7.0.15)(hono@4.12.3)(openapi-types@12.1.3):
+    dependencies:
+      '@standard-community/standard-json': 0.3.5(@standard-schema/spec@1.1.0)(@types/json-schema@7.0.15)(arktype@2.1.22)(quansync@0.2.11)(zod-to-json-schema@3.25.2(zod@4.6.5))(zod@4.6.5)
+      '@standard-community/standard-openapi': 0.2.9(@standard-community/standard-json@0.3.5(@standard-schema/spec@1.1.0)(@types/json-schema@7.0.15)(arktype@2.1.22)(quansync@0.2.11)(zod-to-json-schema@3.25.2(zod@4.6.5))(zod@4.6.5))(@standard-schema/spec@1.1.0)(arktype@2.1.22)(openapi-types@12.1.3)(zod@4.6.5)
       '@types/json-schema': 7.0.15
       openapi-types: 12.1.3
     optionalDependencies:
@@ -36083,7 +36204,7 @@ snapshots:
       typescript: 5.9.3
       unbash: 2.2.0
       yaml: 2.9.0
-      zod: 4.3.5
+      zod: 4.6.5
 
   lan-network@0.2.1: {}
 
@@ -43398,19 +43519,23 @@ snapshots:
 
   zod-from-json-schema@0.5.2:
     dependencies:
-      zod: 4.3.5
+      zod: 4.6.5
 
   zod-package-json@1.2.0:
     dependencies:
       zod: 3.25.76
 
-  zod-to-json-schema@3.25.1(zod@3.25.76):
+  zod-to-json-schema@3.25.2(zod@3.25.76):
     dependencies:
       zod: 3.25.76
 
-  zod-to-json-schema@3.25.1(zod@4.3.5):
+  zod-to-json-schema@3.25.2(zod@4.3.5):
     dependencies:
       zod: 4.3.5
+
+  zod-to-json-schema@3.25.2(zod@4.6.5):
+    dependencies:
+      zod: 4.6.5
 
   zod-validation-error@4.0.2(zod@4.3.5):
     dependencies:
