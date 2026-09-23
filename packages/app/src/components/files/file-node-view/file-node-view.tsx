@@ -4192,10 +4192,12 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 
 	// This owner stays mounted when the next selection has no browser panel, including folders.
 	// Wait for last-open restoration before treating an empty URL as a new selection.
+	// A web browser does not belong to any file, so selection changes never end it.
 	useEffect(() => {
 		if (
 			(!searchNodeId && !searchPrivateNodeId) ||
 			!browserSession ||
+			browserSession.mode !== "file" ||
 			`${browserSession.targetKind}:${browserSession.nodeId}` === selectionKey
 		) {
 			return;
@@ -4220,10 +4222,12 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 		setFileViewSelection({ membershipId, selectionKey, view });
 	});
 
-	// Leaving a browser view ends its session: the browser is only a view, never background.
+	// Leaving a browser view ends its file session: the file browser is only a view, never
+	// background. A web browser lives on its own page, so this never ends it.
 	useEffect(() => {
 		if (
 			!browserSession ||
+			browserSession.mode !== "file" ||
 			`${browserSession.targetKind}:${browserSession.nodeId}` !== selectionKey ||
 			selectedFileView === "browser" ||
 			selectedFileView === "code_browser" ||

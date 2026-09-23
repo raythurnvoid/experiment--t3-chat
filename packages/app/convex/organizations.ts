@@ -41,6 +41,7 @@ import {
 import { data_deletion_db_request } from "./data_deletion_requests.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import { plugins_data_db_get_scope_cleanup_pairs } from "./plugins_data.ts";
+import { files_browser_db_delete_profile } from "./files_browser.ts";
 
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
 // Does NOT work for http actions (see http.ts). No mutable module-level state allowed here.
@@ -1486,6 +1487,35 @@ export const remove_user_from_organization = mutation({
 					.collect(),
 			),
 		);
+		// Few sessions per user stay in an organization: settled ones are swept after 7 days, and daily
+		// start caps bound new ones.
+		const browserSessionsPromise = ctx.db
+			.query("files_browser_sessions")
+			.withIndex("by_owner_organization_workspace", (q) =>
+				q.eq("ownerId", args.userIdToRemove).eq("organizationId", organization._id),
+			)
+			.filter((q) =>
+				q.or(
+					q.eq(q.field("control"), "starting"),
+					q.eq(q.field("control"), "ready"),
+					q.eq(q.field("control"), "human"),
+					q.eq(q.field("control"), "pausing"),
+				),
+			)
+			.collect();
+		const browserProfilesPromise = Promise.all(
+			memberships.map((membership) =>
+				ctx.db
+					.query("files_browser_profiles")
+					.withIndex("by_organization_workspace_user", (q) =>
+						q
+							.eq("organizationId", organization._id)
+							.eq("workspaceId", membership.workspaceId)
+							.eq("userId", args.userIdToRemove),
+					)
+					.first(),
+			),
+		);
 		const apiCredentialQuotasPromise = Promise.all(
 			memberships.map((membership) =>
 				quotas_db_get(ctx, {
@@ -1534,6 +1564,28 @@ export const remove_user_from_organization = mutation({
 			pluginUiSessionsPromise.then((sessions) =>
 				Promise.all(sessions.flat().map((session) => ctx.db.delete("plugins_ui_sessions", session._id))),
 			),
+			// No viewer door runs for a removed member, so close their live browsers from the server.
+			// Otherwise they stay open and billed until the runner's idle deadline.
+			browserSessionsPromise.then((sessions) =>
+				Promise.all(
+					sessions.map((session) =>
+						ctx.scheduler.runAfter(0, internal.files_browser.end_browser_session_internal, {
+							sessionId: session._id,
+							reason: "member_removed",
+						}),
+					),
+				),
+			),
+			// Saved browser logins belong to the membership. A re-invite starts with a new, empty profile.
+			browserProfilesPromise.then(async (profiles) => {
+				const found = profiles.filter((profile) => profile !== null);
+				for (const profile of found) {
+					await files_browser_db_delete_profile(ctx, profile);
+				}
+				if (found.length > 0) {
+					await ctx.scheduler.runAfter(0, internal.files_browser.process_browser_profile_wipes, {});
+				}
+			}),
 			// A per-member plugin storage row names the member, so it must not outlive their membership.
 			// The documents it counted stay: they belong to the workspace, and the counters they fed are
 			// installation-wide. A later credit that names this member finds no row and does nothing.

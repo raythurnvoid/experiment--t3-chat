@@ -1902,7 +1902,7 @@ describe("FileNodeView browser views", () => {
 	test.each(["file", "folder", "root"])("ends the old session when selecting a %s", async (kind) => {
 		const { rerender, onNavigateSearch } = renderFileView();
 		await screen.findByRole("textbox", { name: "Code draft" });
-		browserSession = { sessionId: "session_previous", nodeId: NODE._id, targetKind: "saved" };
+		browserSession = { mode: "file", sessionId: "session_previous", nodeId: NODE._id, targetKind: "saved" };
 		node = {
 			...NODE,
 			_id: "node_next",
@@ -2016,6 +2016,7 @@ describe("FileNodeView browser views", () => {
 		await screen.findByRole("textbox", { name: "Code draft" });
 		await selectView("Browser");
 		browserSession = {
+			mode: "file",
 			sessionId: "session_1",
 			targetKind: "saved",
 			nodeId: NODE._id,
@@ -2042,9 +2043,37 @@ describe("FileNodeView browser views", () => {
 		expect(screen.queryByRole("region", { name: "Shared browser" })).toBeNull();
 	});
 
+	test("never ends a web session when the view or the selection changes", async () => {
+		treeNodes = [NODE];
+		const { rerender, onNavigateSearch } = renderFileView();
+		await screen.findByRole("textbox", { name: "Code draft" });
+		browserSession = {
+			mode: "web",
+			sessionId: "session_web",
+			navigationGeneration: 1,
+			loadGen: 1,
+			controlGen: 1,
+			control: "ready",
+			agentAccess: true,
+			idleUntil: Date.now() + 300_000,
+			totalUntil: Date.now() + 1_200_000,
+		};
+		pushQueryChanges();
+		await selectView("Browser");
+		expect(await screen.findByText("A web browser is open.")).toBeTruthy();
+		await selectView("Code");
+		node = { ...NODE, _id: "node_next", name: "notes.txt", contentType: "text/plain" };
+		rerender(<FileNodeView searchParams={{ nodeId: node._id }} onNavigateSearch={onNavigateSearch} />);
+		await screen.findByRole("textbox", { name: "Code draft" });
+		await act(async () => {});
+		const endCalls = actionMock.mock.calls.filter((call) => getFunctionName(call[0]) === "files_browser:end_browser");
+		expect(endCalls.map(([, args]) => args)).toEqual([]);
+	});
+
 	test("a live session does not steal the Code view", async () => {
 		treeNodes = [NODE];
 		browserSession = {
+			mode: "file",
 			sessionId: "session_1",
 			targetKind: "saved",
 			nodeId: NODE._id,

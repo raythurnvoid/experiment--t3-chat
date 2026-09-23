@@ -1,0 +1,91 @@
+@layer components {
+	.WebBrowserFileChooser {
+		width: min(92vw, 480px);
+	}
+
+	.WebBrowserFileChooser-content {
+		display: grid;
+		justify-items: start;
+		gap: 12px;
+	}
+
+	.WebBrowserFileChooser-text {
+		margin: 0;
+
+		font-size: 0.875rem;
+		color: var(--color-fg-08);
+	}
+
+	.WebBrowserFileChooser-actions {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		flex-wrap: wrap;
+	}
+
+	.WebBrowserFileChooser-list {
+		display: grid;
+		gap: 4px;
+
+		width: 100%;
+		margin: 0;
+		padding: 0;
+
+		list-style: none;
+	}
+
+	.WebBrowserFileChooser-row {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 8px;
+
+		font-size: 0.875rem;
+		overflow-wrap: anywhere;
+	}
+
+	.WebBrowserFileChooser-picker {
+		min-width: 280px;
+		max-width: 480px;
+	}
+
+	.WebBrowserFileChooser-picker-empty {
+		padding: 12px 16px;
+
+		color: var(--color-fg-07);
+
+		font-size: 0.875rem;
+		text-align: center;
+	}
+
+	.WebBrowserFileChooser-picker-item {
+		display: grid;
+		gap: 2px;
+	}
+
+	.WebBrowserFileChooser-picker-item-name {
+		min-width: 0;
+
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.WebBrowserFileChooser-picker-item-path {
+		min-width: 0;
+
+		color: var(--color-fg-07);
+
+		font-size: 0.75rem;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.WebBrowserFileChooser-error {
+		margin: 0;
+
+		font-size: 0.8125rem;
+		color: var(--color-red-09);
+	}
+}

@@ -49,6 +49,8 @@ function make_connection(options: {
 	autoReply?: boolean;
 	onPopup?: (targetId: string) => Promise<void>;
 	cleanupError?: boolean;
+	mode?: "file" | "web";
+	agentBlockedHosts?: string[];
 } = {}) {
 	const [upstream, provider] = socket_pair();
 	const [downstream, child] = socket_pair();
@@ -58,6 +60,9 @@ function make_connection(options: {
 		upstream: upstream as unknown as WebSocket,
 		downstream: downstream as unknown as WebSocket,
 		targetId: "assigned-page",
+		mode: options.mode ?? "file",
+		deniedHosts: ["blocked.test"],
+		agentBlockedHosts: options.agentBlockedHosts ?? [],
 		deadline: Date.now() + 30_000,
 		onUnsafe,
 		onPopup,
@@ -77,7 +82,10 @@ function make_connection(options: {
 		} : request.method === "Page.addScriptToEvaluateOnNewDocument" ? { identifier: `script-${request.id}` } :
 			request.method === "Browser.getWindowForTarget" ? { windowId: 7 } :
 			request.method === "Page.captureScreenshot" ? { data: PNG_DATA } :
-			request.method === "Page.createIsolatedWorld" ? { executionContextId: 9 } : {};
+			request.method === "Page.createIsolatedWorld" ? { executionContextId: 9 } :
+			request.method === "Page.getNavigationHistory" ? { currentIndex: 1, entries: [
+				{ id: 3, url: "https://example.com/", title: "" }, { id: 4, url: "https://bank.test/account", title: "" },
+			] } : {};
 		reply(request, result);
 	});
 	emit("Target.attachedToTarget", { sessionId: "page-session", targetInfo: { targetId: "assigned-page", type: "page" } }, null);
@@ -295,7 +303,7 @@ describe("AgentConnection", () => {
 	});
 
 	it("does not forward new commands while draining", async () => {
-		const { bridge, send, provider, reply } = make_connection({ autoReply: false });
+		const { bridge, send, provider, child, reply } = make_connection({ autoReply: false });
 		const request = send("Runtime.evaluate", { expression: "1", contextId: 1 });
 		bridge.revoke();
 		send("Input.insertText", { text: "late input" });
@@ -303,6 +311,8 @@ describe("AgentConnection", () => {
 		reply(request, {});
 		expect((await settlement).safe).toBe(true);
 		expect(messages(provider)).toHaveLength(1);
+		// The late request gets an error reply, so the snippet does not wait for its timeout.
+		expect(messages(child).find((message) => message.id === 2)).toEqual({ id: 2, sessionId: "page-session", error: { code: -32000, message: "Browser access was revoked." } });
 	});
 
 	it.each([false, true])("marks undrained work unsafe with child error=%s", async (childError) => {
@@ -396,8 +406,78 @@ describe("AgentConnection", () => {
 		send("Page.captureScreenshot", { format: "png" }, "worker-session");
 		expect(messages(provider)).toHaveLength(1);
 		expect(messages(child).at(-1)?.error).toBeDefined();
-		emit("Target.attachedToTarget", { sessionId: "unrelated", targetInfo: { targetId: "service", type: "service_worker" } }, null);
+		emit("Target.attachedToTarget", { sessionId: "unrelated", targetInfo: { targetId: "other-target", type: "other" } }, null);
 		expect(await bridge.settle(1000)).toMatchObject({ safe: false, reason: "unapproved_target" });
+	});
+
+	it.each([
+		["file", "service_worker", null, true],
+		["web", "service_worker", null, true],
+		["web", "shared_worker", null, false],
+		["web", "service_worker", "page-session", false],
+	] as const)("detaches a %s mode %s (parent %s, paused=%s) without giving the child a session", async (mode, type, parent, waiting) => {
+		const { bridge, emit, send, provider, child, onUnsafe } = make_connection({ mode });
+		emit("Target.attachedToTarget", {
+			sessionId: "worker-session", targetInfo: { targetId: "sw", type, url: "https://example.com/sw.js" }, waitingForDebugger: waiting,
+		}, parent);
+		expect(messages(provider).map(({ method, params, sessionId }) => ({ method, params, sessionId }))).toEqual([
+			...(waiting ? [{ method: "Runtime.runIfWaitingForDebugger", params: {}, sessionId: "worker-session" }] : []),
+			{ method: "Target.detachFromTarget", params: { sessionId: "worker-session" }, sessionId: parent ?? undefined },
+		]);
+		emit("Target.detachedFromTarget", { sessionId: "worker-session", targetId: "sw" }, parent);
+		send("Runtime.evaluate", { expression: "1", contextId: 1 }, "worker-session");
+		expect(messages(child).at(-1)?.error).toBeDefined();
+		expect(child.received.join(" ")).not.toContain("sw.js");
+		expect(await bridge.settle(1000)).toEqual({ safe: true, reason: null, blockedPopups: 0 });
+		expect(onUnsafe).not.toHaveBeenCalled();
+	});
+
+	it("keeps the session when a worker ends before the bridge detaches it", async () => {
+		const { bridge, emit, provider, onUnsafe } = make_connection({ autoReply: false, mode: "web" });
+		emit("Target.attachedToTarget", {
+			sessionId: "worker-session", targetInfo: { targetId: "sw", type: "service_worker" }, waitingForDebugger: true,
+		}, null);
+		const [resume, detach] = messages(provider);
+		// Chrome answers a call to an ended session on the root session, with no session id.
+		expect(resume).toMatchObject({ method: "Runtime.runIfWaitingForDebugger", sessionId: "worker-session" });
+		provider.send(JSON.stringify({ id: resume!.id, error: { code: -32001, message: "Session with given id not found." } }));
+		expect(onUnsafe).not.toHaveBeenCalled();
+		expect(detach).toMatchObject({ method: "Target.detachFromTarget" });
+		provider.send(JSON.stringify({ id: detach!.id, error: { code: -32602, message: "No session with given id" } }));
+		expect(onUnsafe).not.toHaveBeenCalled();
+		expect(await bridge.settle(1000)).toEqual({ safe: true, reason: null, blockedPopups: 0 });
+	});
+
+	it("settles when Chrome never answers the resume call of a worker it detached", async () => {
+		// Live order on a site with a service worker: attach (paused), resume, detach. The detach
+		// closes the worker session first, so Chrome drops the resume reply.
+		const { bridge, emit, provider, onUnsafe } = make_connection({ autoReply: false, mode: "web" });
+		emit("Target.attachedToTarget", {
+			sessionId: "worker-session", targetInfo: { targetId: "sw", type: "service_worker" }, waitingForDebugger: true,
+		}, null);
+		const [resume, detach] = messages(provider);
+		expect(resume).toMatchObject({ method: "Runtime.runIfWaitingForDebugger", sessionId: "worker-session" });
+		provider.send(JSON.stringify({ id: detach!.id, result: {} }));
+		emit("Target.detachedFromTarget", { sessionId: "worker-session", targetId: "sw" }, null);
+		const settled = bridge.settle(1000);
+		await vi.advanceTimersByTimeAsync(1000);
+		expect(await settled).toEqual({ safe: true, reason: null, blockedPopups: 0 });
+		expect(onUnsafe).not.toHaveBeenCalled();
+	});
+
+	it("ignores a late worker reply but still refuses an unknown reply id", async () => {
+		const { bridge, emit, provider, onUnsafe } = make_connection({ autoReply: false, mode: "web" });
+		emit("Target.attachedToTarget", {
+			sessionId: "worker-session", targetInfo: { targetId: "sw", type: "service_worker" }, waitingForDebugger: true,
+		}, null);
+		const [resume, detach] = messages(provider);
+		provider.send(JSON.stringify({ id: detach!.id, result: {} }));
+		provider.send(JSON.stringify({ id: resume!.id, sessionId: "worker-session", result: {} }));
+		expect(onUnsafe).not.toHaveBeenCalled();
+		// The same id again is unknown now.
+		provider.send(JSON.stringify({ id: resume!.id, sessionId: "worker-session", result: {} }));
+		expect(onUnsafe).toHaveBeenCalledWith("unknown_provider_reply");
+		expect((await bridge.settle(1000)).safe).toBe(false);
 	});
 
 	it("retires destroyed execution contexts and reports a lost assigned target", async () => {
@@ -433,5 +513,161 @@ describe("AgentConnection", () => {
 		await vi.advanceTimersByTimeAsync(30_000);
 		expect(await bridge.settle(1000)).toMatchObject({ safe: false, reason: "deadline" });
 		expect(onUnsafe).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe("AgentConnection web mode", () => {
+	it("forwards navigation with the normalized address", async () => {
+		const { bridge, send, provider, child } = make_connection({ mode: "web" });
+		send("Page.getFrameTree");
+		send("Page.navigate", { url: "Example.com/path?q=1", frameId: "main-frame", referrer: "", referrerPolicy: "unsafeUrl" });
+		send("Page.reload", {});
+		send("Page.getNavigationHistory");
+		send("Page.navigateToHistoryEntry", { entryId: 3 });
+		send("Page.stopLoading");
+		expect(messages(child).filter((message) => message.error)).toEqual([]);
+		expect(messages(provider).find((message) => message.method === "Page.navigate")?.params).toEqual({
+			url: "https://example.com/path?q=1", frameId: "main-frame", referrer: "", referrerPolicy: "unsafeUrl",
+		});
+		expect(messages(provider).map((message) => message.method)).toEqual([
+			"Page.getFrameTree", "Page.navigate", "Page.reload", "Page.getNavigationHistory", "Page.navigateToHistoryEntry", "Page.stopLoading",
+		]);
+		expect((await bridge.settle(1000)).safe).toBe(true);
+	});
+
+	it.each([
+		["https://blocked.test/login", "denied_host"],
+		["https://api.blocked.test/", "denied_host"],
+		["javascript:alert(1)", "scheme"],
+		["file:///etc/passwd", "scheme"],
+		["https://user:pass@example.com/", "credentials"],
+	])("refuses navigation to %s without echoing the address", async (url, reason) => {
+		const { bridge, send, provider, child, onUnsafe } = make_connection({ mode: "web" });
+		send("Page.getFrameTree");
+		send("Page.navigate", { url, frameId: "main-frame" });
+		expect(messages(provider).map((message) => message.method)).toEqual(["Page.getFrameTree"]);
+		const refused = messages(child).at(-1);
+		expect(refused?.error).toEqual({ code: -32000, message: `Browser address is not allowed: ${reason}.` });
+		expect(JSON.stringify(refused)).not.toContain(url);
+		expect((await bridge.settle(1000)).safe).toBe(true);
+		expect(onUnsafe).not.toHaveBeenCalled();
+	});
+
+	it.each([
+		["https://bank.test/login"],
+		["https://www.Bank.test./"],
+	])("refuses navigation to the agent's blocked site %s", async (url) => {
+		const { bridge, send, provider, child, onUnsafe } = make_connection({ mode: "web", agentBlockedHosts: ["bank.test"] });
+		send("Page.getFrameTree");
+		send("Page.navigate", { url, frameId: "main-frame" });
+		send("Page.navigate", { url: "https://example.com/", frameId: "main-frame" });
+		expect(messages(provider).map((message) => message.method)).toEqual(["Page.getFrameTree", "Page.navigate"]);
+		expect(messages(child).find((message) => message.id === 2)?.error)
+			.toEqual({ code: -32000, message: "Browser address is not allowed: agent_blocked_site." });
+		expect(JSON.stringify(messages(child))).not.toContain("bank.test");
+		expect((await bridge.settle(1000)).safe).toBe(true);
+		expect(onUnsafe).not.toHaveBeenCalled();
+	});
+
+	it("refuses history navigation to a blocked site or to an entry it never saw", async () => {
+		const { bridge, send, provider, child } = make_connection({ mode: "web", agentBlockedHosts: ["bank.test"] });
+		// Before the bridge saw the history, every entry is unknown.
+		send("Page.navigateToHistoryEntry", { entryId: 3 });
+		send("Page.getNavigationHistory");
+		send("Page.navigateToHistoryEntry", { entryId: 4 });
+		send("Page.navigateToHistoryEntry", { entryId: 99 });
+		send("Page.navigateToHistoryEntry", { entryId: 3 });
+		const refused = messages(child).filter((message) => message.error).map((message) => message.id);
+		expect(refused).toEqual([1, 3, 4]);
+		expect(messages(provider).map((message) => [message.method, message.params])).toEqual([
+			["Page.getNavigationHistory", {}], ["Page.navigateToHistoryEntry", { entryId: 3 }],
+		]);
+		expect((await bridge.settle(1000)).safe).toBe(true);
+	});
+
+	it("allows history navigation to any entry when no site is blocked", async () => {
+		const { bridge, send, provider } = make_connection({ mode: "web" });
+		send("Page.navigateToHistoryEntry", { entryId: 4 });
+		expect(messages(provider).map((message) => message.method)).toEqual(["Page.navigateToHistoryEntry"]);
+		expect((await bridge.settle(1000)).safe).toBe(true);
+	});
+
+	it.each(["Page.navigate", "Page.reload", "Page.getNavigationHistory", "Page.navigateToHistoryEntry", "Page.stopLoading"])(
+		"refuses %s in file mode",
+		async (method) => {
+			const { bridge, send, provider, child } = make_connection();
+			send("Page.getFrameTree");
+			send(method, method === "Page.navigate" ? { url: "https://example.com/", frameId: "main-frame" } :
+				method === "Page.navigateToHistoryEntry" ? { entryId: 1 } : {});
+			expect(messages(provider).map((message) => message.method)).toEqual(["Page.getFrameTree"]);
+			expect(messages(child).at(-1)?.error).toEqual({ code: -32601, message: `Browser command is not allowed: ${method}.` });
+			expect((await bridge.settle(1000)).safe).toBe(true);
+		},
+	);
+
+	it("turns off universal access for isolated worlds in web mode only", async () => {
+		const web = make_connection({ mode: "web" });
+		web.send("Page.getFrameTree");
+		web.send("Page.createIsolatedWorld", { frameId: "main-frame", worldName: "utility", grantUniveralAccess: true });
+		expect(messages(web.provider).at(-1)?.params).toEqual({ frameId: "main-frame", worldName: "utility", grantUniveralAccess: false });
+		const file = make_connection();
+		file.send("Page.getFrameTree");
+		file.send("Page.createIsolatedWorld", { frameId: "main-frame", worldName: "utility", grantUniveralAccess: true });
+		expect(messages(file.provider).at(-1)?.params).toEqual({ frameId: "main-frame", worldName: "utility", grantUniveralAccess: true });
+	});
+
+	it("answers the download setting itself in web mode", async () => {
+		const { bridge, send, provider, child } = make_connection({ mode: "web" });
+		const request = send("Browser.setDownloadBehavior", { behavior: "allowAndName", downloadPath: "/child/path", eventsEnabled: true }, null);
+		expect(messages(provider)).toEqual([]);
+		expect(messages(child).at(-1)).toEqual({ id: request.id, result: {} });
+		expect((await bridge.settle(1000)).safe).toBe(true);
+	});
+
+	it.each(["file", "web"] as const)("removes cookies and credentials from network events (%s mode)", async (mode) => {
+		const { bridge, emit, child } = make_connection({ mode });
+		emit("Network.requestWillBeSent", {
+			requestId: "r1",
+			request: { url: "https://example.com/", headers: { Cookie: "sid=1", AUTHORIZATION: "Bearer t", Accept: "text/html" } },
+			redirectResponse: { url: "https://example.com/old", headers: { "Set-Cookie": "sid=2", Location: "/" }, requestHeaders: { cookie: "sid=0" }, headersText: "Set-Cookie: sid=2" },
+		});
+		emit("Network.requestWillBeSentExtraInfo", {
+			requestId: "r1", headers: { cookie: "sid=1", "Proxy-Authorization": "Basic x", accept: "*/*" },
+			associatedCookies: [{ cookie: { name: "sid" } }], connectTiming: { requestTime: 1 },
+		});
+		emit("Network.responseReceived", {
+			requestId: "r1",
+			response: {
+				url: "https://example.com/", status: 200, statusText: "OK", headers: { "set-cookie": "sid=3", "Content-Type": "text/html" },
+				requestHeaders: { Cookie: "sid=1" }, headersText: "Set-Cookie: sid=3", requestHeadersText: "Cookie: sid=1",
+			},
+		});
+		emit("Network.responseReceivedExtraInfo", {
+			requestId: "r1", headers: { "Set-Cookie": "sid=3", "x-safe": "1" }, headersText: "Set-Cookie: sid=3",
+			blockedCookies: [{ cookieLine: "sid=3" }], exemptedCookies: [], cookiePartitionKey: { topLevelSite: "https://example.com" },
+			statusCode: 200,
+		});
+		emit("Network.webSocketWillSendHandshakeRequest", { requestId: "w1", request: { headers: { Cookie: "sid=1" } } });
+		emit("Network.webSocketHandshakeResponseReceived", {
+			requestId: "w1", response: { status: 101, headers: { "Set-Cookie": "sid=4" }, requestHeaders: { Authorization: "x" }, headersText: "x", requestHeadersText: "y" },
+		});
+		const events = messages(child).filter((message) => typeof message.method === "string" && message.method.startsWith("Network."));
+		expect(events.map((event) => event.params)).toEqual([
+			{
+				requestId: "r1",
+				request: { url: "https://example.com/", headers: { Accept: "text/html" } },
+				redirectResponse: { url: "https://example.com/old", headers: { Location: "/" }, requestHeaders: {} },
+			},
+			{ requestId: "r1", headers: { accept: "*/*" }, connectTiming: { requestTime: 1 } },
+			{
+				requestId: "r1",
+				response: { url: "https://example.com/", status: 200, statusText: "OK", headers: { "Content-Type": "text/html" }, requestHeaders: {} },
+			},
+			{ requestId: "r1", headers: { "x-safe": "1" }, statusCode: 200 },
+			{ requestId: "w1", request: { headers: {} } },
+			{ requestId: "w1", response: { status: 101, headers: {}, requestHeaders: {} } },
+		]);
+		expect(JSON.stringify(events)).not.toMatch(/sid=|Bearer|Basic/u);
+		expect((await bridge.settle(1000)).safe).toBe(true);
 	});
 });

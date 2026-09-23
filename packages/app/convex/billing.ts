@@ -1846,6 +1846,25 @@ const billing_event_validator = v.union(
 			messageId: v.string(),
 		}),
 	}),
+	v.object({
+		name: v.literal("browser_usage"),
+		externalCustomerId: v.id("users"),
+		externalMemberId: v.optional(v.id("users")),
+		externalId: v.string(),
+		metadata: v.object({
+			amount: v.number(),
+			actorUserId: v.id("users"),
+			billedUserId: v.id("users"),
+			organizationId: v.string(),
+			workspaceId: v.string(),
+			sessionId: v.string(),
+			mode: v.union(v.literal("file"), v.literal("web")),
+			/**
+			 * The runner's real browser time for this session. `amount` charges every started minute.
+			 */
+			billedMs: v.number(),
+		}),
+	}),
 );
 
 export const ingest_events = internalAction({

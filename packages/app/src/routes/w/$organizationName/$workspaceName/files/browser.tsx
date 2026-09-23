@@ -36,7 +36,8 @@ const RouteBrowser = memo(function RouteBrowser() {
 		);
 	}
 
-	if (!session || session.sessionId !== search.session) {
+	// Only a file browser pops out. A web browser has its own page.
+	if (!session || session.mode !== "file" || session.sessionId !== search.session) {
 		return (
 			<div className={"RouteBrowser" satisfies RouteBrowser_ClassNames}>
 				<p

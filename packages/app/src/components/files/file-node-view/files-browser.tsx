@@ -1,7 +1,9 @@
 import "./files-browser.css";
 
 import { AppAuthProvider } from "@/components/app-auth.tsx";
+import { BrowserViewer, type BrowserViewer_Ref } from "@/components/browser/browser-viewer.tsx";
 import { MyButton, MyButtonIcon } from "@/components/my-button.tsx";
+import { MyLink } from "@/components/my-link.tsx";
 import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
 import {
 	MySelect,
@@ -20,23 +22,18 @@ import { useFn } from "@/hooks/utils-hooks.ts";
 import { app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { files_pending_update_has_content } from "@/lib/files.ts";
-import {
-	files_browser_stream_connect,
-	type files_browser_StreamControlMessage,
-	type files_browser_StreamHandle,
-	type files_browser_StreamHost,
-	type files_browser_StreamInput,
-} from "@/lib/files-browser-stream.ts";
+import type { files_browser_StreamControlMessage, files_browser_StreamHost } from "@/lib/files-browser-stream.ts";
 import { file_preview_MaxHtmlBytes } from "bonobo-file-preview/protocol";
 import { useConvex, useQuery } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
 import { Bot, Clock, Dock, Hand, MonitorPlay, PictureInPicture2, Play, RefreshCw, Square } from "lucide-react";
-import { memo, useEffect, useRef, useState, type Ref } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { create } from "zustand";
 
-type FilesBrowser_Session = NonNullable<
-	FunctionReturnType<typeof app_convex_api.files_browser.current_browser_session>
+type FilesBrowser_Session = Extract<
+	NonNullable<FunctionReturnType<typeof app_convex_api.files_browser.current_browser_session>>,
+	{ mode: "file" }
 >;
 
 type files_browser_SourceKind = "saved" | "proposed" | "draft";
@@ -109,53 +106,70 @@ const files_browser_nav_store = ((/* iife */) => {
 // #region resume thread bridge
 
 /**
- * The Files agent sidebar's selected chat. Resume authorizes exactly this chat to continue on
- * the shared page; nothing is selected silently. Written by the mirror inside the sidebar's
- * chat provider, read by the browser panel.
+ * The agent panel's selected chat. Resume authorizes exactly this chat to continue on the
+ * shared page; nothing is selected silently. Written by the mirror inside the agent panel's
+ * chat provider, read by the Files and web browser panels.
  */
 const useFilesBrowserResumeThreadStore = create<{ threadId: string | null }>(() => ({
 	threadId: null,
 }));
 
-const FilesBrowserResumeThreadMirror = memo(function FilesBrowserResumeThreadMirror() {
-	const controller = AiChatController.useThreadList({ includeArchived: false });
-	const selectedThreadId = controller.selectedThreadId;
+const FilesBrowserResumeThreadMirror = Object.assign(
+	memo(function FilesBrowserResumeThreadMirror() {
+		const controller = AiChatController.useThreadList({ includeArchived: false });
+		const selectedThreadId = controller.selectedThreadId;
 
-	useEffect(() => {
-		useFilesBrowserResumeThreadStore.setState({ threadId: selectedThreadId });
-	}, [selectedThreadId]);
+		useEffect(() => {
+			useFilesBrowserResumeThreadStore.setState({ threadId: selectedThreadId });
+		}, [selectedThreadId]);
 
-	return null;
-});
+		return null;
+	}),
+	{
+		/**
+		 * Read the agent panel's selected chat from outside its chat provider.
+		 */
+		useThreadId: function useThreadId() {
+			return useFilesBrowserResumeThreadStore((store) => store.threadId);
+		},
+	},
+);
+
+export type FilesBrowserBindingWriter_Props = {
+	/**
+	 * The browser that agent requests from this panel may use. `file` binds the live file browser
+	 * of that exact node (the target kind stops a saved/private id clash). `web` binds the live web browser.
+	 */
+	browserBinding: { mode: "file"; nodeId: string; targetKind: "saved" | "private" } | { mode: "web" } | null;
+};
 
 /**
- * Publishes the live browser session behind the Files selection for agent requests. Sends
- * freeze the published id into message metadata; leaving Files clears it so the full chat
+ * Publishes the live browser session behind the panel's binding for agent requests. Sends
+ * freeze the published id into message metadata; leaving the panel clears it so the full chat
  * page never binds. The effect is a deliberate bridge: the send-time reader lives outside
  * this tree and cannot subscribe to the query, and unmount must clear the published id.
  */
-const FilesBrowserBindingWriter = memo(function FilesBrowserBindingWriter(props: {
-	browserNodeId: string | null;
-	browserNodeKind: "saved" | "private" | null;
-}) {
-	const { browserNodeId, browserNodeKind } = props;
+const FilesBrowserBindingWriter = memo(function FilesBrowserBindingWriter(props: FilesBrowserBindingWriter_Props) {
+	const { browserBinding } = props;
 	const { membershipId } = AppTenantProvider.useContext();
 	const session = useQuery(app_convex_api.files_browser.current_browser_session, { membershipId });
 
+	const bound =
+		session &&
+		((browserBinding?.mode === "web" && session.mode === "web") ||
+			(browserBinding?.mode === "file" &&
+				session.mode === "file" &&
+				session.nodeId === browserBinding.nodeId &&
+				session.targetKind === browserBinding.targetKind))
+			? session.sessionId
+			: null;
+
 	useEffect(() => {
-		const bound =
-			browserNodeId &&
-			browserNodeKind &&
-			session &&
-			session.nodeId === browserNodeId &&
-			session.targetKind === browserNodeKind
-				? session.sessionId
-				: null;
 		AiChatController.useStore.setState({ browserSessionId: bound });
 		return () => {
 			AiChatController.useStore.setState({ browserSessionId: null });
 		};
-	}, [browserNodeId, browserNodeKind, session]);
+	}, [bound]);
 
 	return null;
 });
@@ -238,408 +252,6 @@ async function files_browser_capture_draft(
 }
 
 // #endregion draft capture
-
-// #region viewer
-
-type FilesBrowserViewer_ClassNames =
-	| "FilesBrowserViewer"
-	| "FilesBrowserViewer-frame"
-	| "FilesBrowserViewer-status"
-	| "FilesBrowserViewer-hint";
-
-type FilesBrowserViewer_Ref = {
-	close: () => void;
-	focus: () => void;
-};
-
-type FilesBrowserViewer_Props = {
-	ref?: Ref<FilesBrowserViewer_Ref>;
-	sessionId: app_convex_Id<"files_browser_sessions">;
-	ownerId: string;
-	organizationId: string;
-	workspaceId: string;
-	host: files_browser_StreamHost;
-	inputEnabled: boolean;
-	grant: () => Promise<{ grantId: string; viewerUrl: string } | null>;
-	onViewerHello: (viewerId: string, viewport: { width: number; height: number }, control: string) => void;
-	onControl: (control: files_browser_StreamControlMessage) => void;
-	onConnection: (connected: boolean, detail: string | null) => void;
-	onSessionEnded: (sessionId: app_convex_Id<"files_browser_sessions">) => void;
-};
-
-type FilesBrowserViewer_Status = "connecting" | "live" | "closed";
-
-const FilesBrowserViewer = memo(function FilesBrowserViewer(props: FilesBrowserViewer_Props) {
-	const {
-		ref: outerRef,
-		sessionId,
-		ownerId,
-		organizationId,
-		workspaceId,
-		host,
-		inputEnabled,
-		grant,
-		onViewerHello,
-		onControl,
-		onConnection,
-		onSessionEnded,
-	} = props;
-	const frameRef = useRef<HTMLDivElement>(null);
-	const imgRef = useRef<HTMLImageElement>(null);
-	const streamRef = useRef<files_browser_StreamHandle | null>(null);
-	const closedByClientRef = useRef(false);
-	const objectUrlRef = useRef<string | null>(null);
-	const viewportRef = useRef<{ width: number; height: number }>({ width: 1280, height: 800 });
-	const lastMoveRef = useRef(0);
-	const pressedButtonRef = useRef<{ button: "left" | "middle" | "right"; clickCount: number } | null>(null);
-	const [status, setStatus] = useState<FilesBrowserViewer_Status>("connecting");
-	const [statusDetail, setStatusDetail] = useState<string | null>(null);
-	const [attempt, setAttempt] = useState(0);
-
-	function to_remote_point(clientX: number, clientY: number, clampToPage = false) {
-		const frame = frameRef.current;
-		if (!frame) {
-			return null;
-		}
-		const rect = frame.getBoundingClientRect();
-		if (rect.width <= 0 || rect.height <= 0) {
-			return null;
-		}
-		const viewport = viewportRef.current;
-		// The image uses object-fit: contain. Its empty margins are not part of the remote page.
-		const scale = Math.min(rect.width / viewport.width, rect.height / viewport.height);
-		const x = (clientX - rect.left - (rect.width - viewport.width * scale) / 2) / scale;
-		const y = (clientY - rect.top - (rect.height - viewport.height * scale) / 2) / scale;
-		if (!clampToPage && (x < 0 || y < 0 || x >= viewport.width || y >= viewport.height)) {
-			return null;
-		}
-		return {
-			x: Math.min(Math.max(Math.round(x), 0), viewport.width - 1),
-			y: Math.min(Math.max(Math.round(y), 0), viewport.height - 1),
-		};
-	}
-
-	const send = (input: files_browser_StreamInput) => {
-		if (inputEnabled) {
-			streamRef.current?.sendInput(input);
-		}
-	};
-
-	const handleMouseMove = (event: React.MouseEvent) => {
-		if (!inputEnabled) {
-			return;
-		}
-		const now = Date.now();
-		if (now - lastMoveRef.current < 33) {
-			return;
-		}
-		lastMoveRef.current = now;
-		const point = to_remote_point(event.clientX, event.clientY, pressedButtonRef.current !== null);
-		if (point) {
-			send({ kind: "mouse.move", ...point });
-		}
-	};
-
-	const handleMouseDown = (event: React.MouseEvent) => {
-		if (!inputEnabled || event.button > 2) return;
-		const point = to_remote_point(event.clientX, event.clientY);
-		if (!point) return;
-		event.preventDefault();
-		const button = event.button === 1 ? "middle" : event.button === 2 ? "right" : "left";
-		const clickCount = Math.min(Math.max(event.detail, 1), 10);
-		pressedButtonRef.current = { button, clickCount };
-		send({ kind: "mouse.move", ...point });
-		send({ kind: "mouse.down", button, clickCount });
-		frameRef.current?.focus();
-	};
-
-	const handleMouseUp = (event: React.MouseEvent) => {
-		const pressed = pressedButtonRef.current;
-		if (!pressed) return;
-		pressedButtonRef.current = null;
-		const point = to_remote_point(event.clientX, event.clientY, true);
-		if (point) send({ kind: "mouse.move", ...point });
-		send({ kind: "mouse.up", ...pressed });
-	};
-
-	const handlePointerCancel = () => {
-		const pressed = pressedButtonRef.current;
-		pressedButtonRef.current = null;
-		if (pressed) send({ kind: "mouse.up", ...pressed });
-	};
-
-	const handleKeyDown = (event: React.KeyboardEvent) => {
-		if (!inputEnabled) {
-			return;
-		}
-		// Escape releases the frame; every other key, Tab included, goes to the remote
-		// page so keyboard users can operate it fully.
-		if (event.key === "Escape") {
-			frameRef.current?.blur();
-			return;
-		}
-		if (event.ctrlKey || event.metaKey) {
-			return;
-		}
-		event.preventDefault();
-		if (event.key === "Tab") {
-			send({ kind: "key.press", key: "Tab" });
-		} else if (event.key.length === 1) {
-			// Held keys repeat through here too: each OS repeat is one more typed char.
-			send({ kind: "key.type", text: event.key });
-		} else if (event.key.length > 1) {
-			send({ kind: "key.down", key: event.key });
-		}
-	};
-
-	const handleKeyUp = (event: React.KeyboardEvent) => {
-		if (!inputEnabled) {
-			return;
-		}
-		if (event.ctrlKey || event.metaKey || event.key.length <= 1 || event.key === "Tab") {
-			return;
-		}
-		event.preventDefault();
-		send({ kind: "key.up", key: event.key });
-	};
-
-	useEffect(() => {
-		let cancelled = false;
-		let retries = 0;
-		let retryTimer: ReturnType<typeof setTimeout> | undefined;
-
-		const connect = () => {
-			if (cancelled) {
-				return;
-			}
-			closedByClientRef.current = false;
-			setStatus("connecting");
-			setStatusDetail(null);
-			onConnection(false, null);
-			(async (/* iife */) => {
-				const granted = await grant();
-				if (cancelled) {
-					return;
-				}
-				if (!granted) {
-					setStatus("closed");
-					setStatusDetail("The viewer grant failed.");
-					onConnection(false, "The viewer grant failed.");
-					return;
-				}
-				const stream = files_browser_stream_connect({
-					url: granted.viewerUrl,
-					hello: {
-						ownerId: ownerId,
-						organizationId: organizationId,
-						workspaceId: workspaceId,
-						grantId: granted.grantId,
-						host: host,
-					},
-					events: {
-						onHello: (hello) => {
-							if (cancelled) {
-								return;
-							}
-							retries = 0;
-							viewportRef.current = hello.viewport;
-							setStatus("live");
-							setStatusDetail(null);
-							onControl({ control: hello.control, controlGen: hello.controlGen });
-							onViewerHello(hello.viewerId, hello.viewport, hello.control);
-							onConnection(true, null);
-						},
-						onFrame: (frame) => {
-							if (cancelled) {
-								return;
-							}
-							if (objectUrlRef.current) {
-								URL.revokeObjectURL(objectUrlRef.current);
-							}
-							objectUrlRef.current = URL.createObjectURL(frame);
-							if (imgRef.current) {
-								imgRef.current.src = objectUrlRef.current;
-							}
-						},
-						onControl: (control) => {
-							if (!cancelled) {
-								onControl(control);
-							}
-						},
-						onViewport: (viewport) => {
-							if (!cancelled) {
-								viewportRef.current = viewport;
-							}
-						},
-						onAck: () => {},
-						onClose: (close) => {
-							if (cancelled) {
-								return;
-							}
-							streamRef.current = null;
-							// An intentional close (renewal refused, panel hiding) never retries:
-							// reconnecting would mint a fresh grant right after access failed.
-							if (closedByClientRef.current) {
-								return;
-							}
-							// The session is gone or this viewer moved to another window: stay
-							// closed instead of minting grants against a dead target.
-							if (close.code === 4404 || close.code === 4409) {
-								const detail = close.code === 4404 ? "The session ended." : "The viewer moved.";
-								setStatus("closed");
-								setStatusDetail(detail);
-								onConnection(false, detail);
-								// Socket expiry stops renewal, so retire the matching app session too.
-								if (close.code === 4404) onSessionEnded(sessionId);
-								return;
-							}
-							if (retries >= 3) {
-								const detail = close.reason || "The stream closed.";
-								setStatus("closed");
-								setStatusDetail(detail);
-								onConnection(false, detail);
-								return;
-							}
-							retries += 1;
-							setStatus("connecting");
-							onConnection(false, null);
-							retryTimer = setTimeout(connect, 1000 * retries);
-						},
-					},
-				});
-				streamRef.current = stream;
-			})().catch(() => {
-				if (!cancelled) {
-					setStatus("closed");
-					setStatusDetail("The stream failed.");
-					onConnection(false, "The stream failed.");
-				}
-			});
-		};
-
-		connect();
-		return () => {
-			cancelled = true;
-			if (retryTimer !== undefined) {
-				clearTimeout(retryTimer);
-			}
-			streamRef.current?.close();
-			streamRef.current = null;
-			if (objectUrlRef.current) {
-				URL.revokeObjectURL(objectUrlRef.current);
-				objectUrlRef.current = null;
-			}
-		};
-		// The grant callback is stable per session; a new session id or tenant reconnects.
-		// A manual retry re-runs the whole sequence after a terminal close.
-	}, [sessionId, ownerId, organizationId, workspaceId, host, attempt]);
-
-	useEffect(() => {
-		const frame = frameRef.current;
-		if (!frame) {
-			return;
-		}
-		// React wheel listeners are passive: a native one is needed to keep page scroll local
-		// while the viewer has human control.
-		const handleWheel = (event: WheelEvent) => {
-			if (!inputEnabled) {
-				return;
-			}
-			event.preventDefault();
-			const point = to_remote_point(event.clientX, event.clientY);
-			if (point) {
-				streamRef.current?.sendInput({ kind: "wheel", ...point, dx: event.deltaX, dy: event.deltaY });
-			}
-		};
-		frame.addEventListener("wheel", handleWheel, { passive: false });
-		return () => {
-			frame.removeEventListener("wheel", handleWheel);
-		};
-	}, [inputEnabled]);
-
-	useEffect(() => {
-		const ref = outerRef;
-		if (!ref) {
-			return;
-		}
-		const handle: FilesBrowserViewer_Ref = {
-			close: () => {
-				closedByClientRef.current = true;
-				streamRef.current?.close();
-				streamRef.current = null;
-				setStatus("closed");
-			},
-			focus: () => {
-				frameRef.current?.focus();
-			},
-		};
-		if (typeof ref === "function") {
-			ref(handle);
-			return () => {
-				ref(null);
-			};
-		}
-		ref.current = handle;
-		return () => {
-			ref.current = null;
-		};
-	}, [outerRef]);
-
-	return (
-		<div className={"FilesBrowserViewer" satisfies FilesBrowserViewer_ClassNames}>
-			<div
-				ref={frameRef}
-				className={"FilesBrowserViewer-frame" satisfies FilesBrowserViewer_ClassNames}
-				tabIndex={inputEnabled && status === "live" ? 0 : -1}
-				role="application"
-				aria-label={
-					inputEnabled && status === "live"
-						? "Shared browser page. Type and click to drive it; Tab goes to the page, Escape leaves it."
-						: "Shared browser page, view only. Take control to interact."
-				}
-				onMouseMove={handleMouseMove}
-				onMouseDown={handleMouseDown}
-				onMouseUp={handleMouseUp}
-				onPointerDown={(event) => {
-					if (inputEnabled && to_remote_point(event.clientX, event.clientY)) {
-						event.currentTarget.setPointerCapture(event.pointerId);
-					}
-				}}
-				onPointerCancel={handlePointerCancel}
-				onLostPointerCapture={handlePointerCancel}
-				onContextMenu={(event) => {
-					if (inputEnabled) event.preventDefault();
-				}}
-				onKeyDown={handleKeyDown}
-				onKeyUp={handleKeyUp}
-			>
-				<img ref={imgRef} alt="" draggable={false} />
-			</div>
-			{status !== "live" && (
-				<div
-					className={"FilesBrowserViewer-status" satisfies FilesBrowserViewer_ClassNames}
-					role="status"
-					aria-live="polite"
-				>
-					{status === "connecting" ? <MySpinner size="16px" aria-label="Connecting" /> : null}
-					<span>{status === "connecting" ? "Connecting…" : (statusDetail ?? "Closed.")}</span>
-					{status === "closed" && (
-						<MyButton variant="outline" onClick={() => setAttempt((count) => count + 1)}>
-							Retry
-						</MyButton>
-					)}
-				</div>
-			)}
-			{status === "live" && !inputEnabled && (
-				<div className={"FilesBrowserViewer-hint" satisfies FilesBrowserViewer_ClassNames}>
-					Watching. Take control to click and type.
-				</div>
-			)}
-		</div>
-	);
-});
-
-// #endregion viewer
 
 // #region panel
 
@@ -746,20 +358,13 @@ async function files_browser_start_session(args: {
 			: {}),
 	});
 	if (started._nay) {
+		if (started._nay.message === "Plan required") {
+			return { ok: false, error: "The browser needs a Pay As You Go or Pro plan." };
+		}
 		return { ok: false, error: started._nay.message };
 	}
 	return { ok: true, isDraft: args.sourceKind === "draft" };
 }
-
-const files_browser_CONTROL_LABELS: Record<string, string> = {
-	starting: "Starting…",
-	ready: "Live",
-	agent: "Agent is using the browser",
-	pausing: "Taking control…",
-	human: "You have control",
-	closing: "Closing…",
-	closed: "Ended",
-};
 
 function files_browser_source_label(sourceKind: string) {
 	return sourceKind === "saved" ? "Saved" : sourceKind === "proposed" ? "Proposed" : "Draft";
@@ -796,13 +401,15 @@ const FilesBrowser = memo(function FilesBrowser(props: FilesBrowser_Props) {
 		AppTenantProvider.useContext();
 	const { userId } = AppAuthProvider.useAuthenticated();
 	const convex = useConvex();
-	const viewerRef = useRef<FilesBrowserViewer_Ref | null>(null);
+	const viewerRef = useRef<BrowserViewer_Ref | null>(null);
 
 	const session = useQuery(app_convex_api.files_browser.current_browser_session, { membershipId });
+	// File mode has the same paid-plan rule as web mode. `paidPlan` is the payer's plan.
+	const available = useQuery(app_convex_api.files_browser.web_browser_available, { membershipId });
 	const mine =
-		session && session.nodeId === nodeId && (session.targetKind === targetKind) ? session : null;
+		session && session.mode === "file" && session.nodeId === nodeId && session.targetKind === targetKind ? session : null;
 	const sessionId = mine?.sessionId;
-	const selectedThreadId = useFilesBrowserResumeThreadStore((store) => store.threadId);
+	const selectedThreadId = FilesBrowserResumeThreadMirror.useThreadId();
 	const [openerThreadId, setOpenerThreadId] = useState<string | null>(null);
 	const resumeThreadId = host === "detached" ? openerThreadId : selectedThreadId;
 	const pendingUpdate = useQuery(app_convex_api.files_pending_updates.get_file_pending_update, {
@@ -1306,7 +913,7 @@ const FilesBrowser = memo(function FilesBrowser(props: FilesBrowser_Props) {
 				</span>
 				{mine && control && (
 					<span className={"FilesBrowser-status" satisfies FilesBrowser_ClassNames} role="status">
-						{files_browser_CONTROL_LABELS[control] ?? control}
+						{BrowserViewer.CONTROL_LABELS[control] ?? control}
 					</span>
 				)}
 				<div className={"FilesBrowser-actions" satisfies FilesBrowser_ClassNames}>
@@ -1410,9 +1017,10 @@ const FilesBrowser = memo(function FilesBrowser(props: FilesBrowser_Props) {
 							</MyButton>
 						</div>
 					) : (
-						<FilesBrowserViewer
+						<BrowserViewer
 							ref={viewerRef}
 							key={mine.sessionId}
+							mode="file"
 							sessionId={mine.sessionId}
 							ownerId={userId}
 							organizationId={organizationId}
@@ -1424,9 +1032,30 @@ const FilesBrowser = memo(function FilesBrowser(props: FilesBrowser_Props) {
 							onControl={handleViewerControl}
 							onConnection={handleConnection}
 							onSessionEnded={handleEnd}
+							onWebMessage={null}
 						/>
 					)}
 				</>
+			) : session?.mode === "web" ? (
+				// One live browser per user and workspace: a web browser blocks a file browser here.
+				<div className={"FilesBrowser-start" satisfies FilesBrowser_ClassNames}>
+					<span>A web browser is open.</span>
+					<MyLink
+						to="/w/$organizationName/$workspaceName/browser"
+						params={{ organizationName, workspaceName }}
+						variant="button-ghost-accent"
+					>
+						Open the web browser
+					</MyLink>
+					<MyButton variant="outline" onClick={() => handleEnd(session.sessionId)}>
+						End it
+					</MyButton>
+				</div>
+			) : available?.paidPlan === false ? (
+				// Free plans see the feature but cannot start it. The start door refuses them too.
+				<div className={"FilesBrowser-start" satisfies FilesBrowser_ClassNames}>
+					<span>The browser needs a Pay As You Go or Pro plan. Change your plan in Billing, in your account menu.</span>
+				</div>
 			) : (
 				<div className={"FilesBrowser-start" satisfies FilesBrowser_ClassNames}>
 					{targetKind === "saved" && (

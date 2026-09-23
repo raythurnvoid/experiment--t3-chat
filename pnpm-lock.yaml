@@ -2494,6 +2494,9 @@ importers:
       '@cloudflare/playwright':
         specifier: 1.3.6
         version: 1.3.6(playwright-core@1.62.0)
+      common:
+        specifier: workspace:*
+        version: link:../common
 
   packages/code-execution-runner: {}
 

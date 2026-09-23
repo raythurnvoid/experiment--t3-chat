@@ -144,6 +144,12 @@ export const access_control_PERMISSION_CATALOG = {
 		group: "Integrations",
 		scope: "workspace",
 	},
+	"workspace.browser.use": {
+		label: "Use the web browser",
+		description: "Open the cloud web browser in this workspace and let agent chats use it.",
+		group: "Integrations",
+		scope: "workspace",
+	},
 } as const satisfies Record<
 	access_control_Permission,
 	{
@@ -266,11 +272,12 @@ export const access_control_SYSTEM_ROLE_MATRIX = {
 			"content.permissions.manage",
 			"workspace.plugins.manage",
 			"workspace.service_accounts.manage",
+			"workspace.browser.use",
 		],
 	},
 	member: {
 		label: "Member",
-		permissions: ["workspace.create", "workspace.update", "content.read", "content.write"],
+		permissions: ["workspace.create", "workspace.update", "content.read", "content.write", "workspace.browser.use"],
 	},
 	viewer: {
 		label: "Viewer",

@@ -57,6 +57,7 @@ function make_events() {
 		onControl: vi.fn(),
 		onViewport: vi.fn(),
 		onAck: vi.fn(),
+		onWebMessage: vi.fn(),
 		onClose: vi.fn(),
 	} satisfies files_browser_StreamEvents as unknown as files_browser_StreamEvents & {
 		onHello: ReturnType<typeof vi.fn>;
@@ -64,6 +65,7 @@ function make_events() {
 		onControl: ReturnType<typeof vi.fn>;
 		onViewport: ReturnType<typeof vi.fn>;
 		onAck: ReturnType<typeof vi.fn>;
+		onWebMessage: ReturnType<typeof vi.fn>;
 		onClose: ReturnType<typeof vi.fn>;
 	};
 }
@@ -266,6 +268,7 @@ describe("files_browser_stream_connect", () => {
 		expect(events.onViewport).not.toHaveBeenCalled();
 		expect(events.onAck).not.toHaveBeenCalled();
 		expect(events.onFrame).not.toHaveBeenCalled();
+		expect(events.onWebMessage).not.toHaveBeenCalled();
 	});
 
 	test("stamps inputs after control and a frame arrive, and drops them while closed", () => {
@@ -363,5 +366,106 @@ describe("files_browser_stream_connect", () => {
 
 		handle.close();
 		expect(socket.closed).toEqual({ code: 1000, reason: "client closed" });
+	});
+
+	test("routes the web messages and drops malformed or oversized ones", () => {
+		const socket = make_socket();
+		const events = make_events();
+		files_browser_stream_connect({ url: "wss://runner.test/viewer/stream", hello, events, createSocket: () => socket as never });
+		socket.readyState = 1;
+
+		const location = { t: "location", url: "https://example.com/", title: "Example", loading: false, canGoBack: true, canGoForward: false };
+		socket.emit(JSON.stringify(location));
+		socket.emit(JSON.stringify({ t: "notice", code: "popup_opened_here" }));
+		socket.emit(JSON.stringify({ t: "nav-ack", seq: 4, ok: false, code: "denied_host" }));
+		socket.emit(JSON.stringify({ t: "nav-ack", seq: 5, ok: true }));
+		socket.emit(JSON.stringify({ t: "agent-access", on: false }));
+
+		socket.emit(JSON.stringify({ ...location, loading: "no" }));
+		socket.emit(JSON.stringify({ t: "notice" }));
+		socket.emit(JSON.stringify({ t: "nav-ack", seq: "6", ok: true }));
+		socket.emit(JSON.stringify({ t: "agent-access", on: "off" }));
+		socket.emit(JSON.stringify({ ...location, title: "x".repeat(16_384) }));
+
+		expect(events.onWebMessage.mock.calls.map(([message]) => message)).toEqual([
+			location,
+			{ t: "notice", code: "popup_opened_here" },
+			{ t: "nav-ack", seq: 4, ok: false, code: "denied_host" },
+			{ t: "nav-ack", seq: 5, ok: true },
+			{ t: "agent-access", on: false },
+		]);
+	});
+
+	test("routes download and file chooser messages and drops malformed ones", () => {
+		const socket = make_socket();
+		const events = make_events();
+		files_browser_stream_connect({ url: "wss://runner.test/viewer/stream", hello, events, createSocket: () => socket as never });
+		socket.readyState = 1;
+
+		const download = { t: "download", downloadId: "d-1", name: "report.pdf", size: 1024, contentType: "application/pdf" };
+		const chooser = { t: "file-chooser", chooserId: "c-1", multiple: true, accept: "image/*,.pdf", origin: "https://example.com" };
+		socket.emit(JSON.stringify(download));
+		socket.emit(JSON.stringify(chooser));
+		socket.emit(JSON.stringify({ t: "file-chooser-closed", chooserId: "c-1" }));
+
+		socket.emit(JSON.stringify({ ...download, size: "1024" }));
+		socket.emit(JSON.stringify({ ...download, downloadId: undefined }));
+		socket.emit(JSON.stringify({ ...chooser, multiple: "yes" }));
+		socket.emit(JSON.stringify({ ...chooser, accept: null }));
+		socket.emit(JSON.stringify({ t: "file-chooser-closed", chooserId: 1 }));
+
+		expect(events.onWebMessage.mock.calls.map(([message]) => message)).toEqual([
+			download,
+			chooser,
+			{ t: "file-chooser-closed", chooserId: "c-1" },
+		]);
+	});
+
+	test("sends a file chooser cancel only after control arrives", () => {
+		const socket = make_socket();
+		const events = make_events();
+		const handle = files_browser_stream_connect({ url: "wss://runner.test/viewer/stream", hello, events, createSocket: () => socket as never });
+		socket.readyState = 1;
+
+		expect(handle.sendFileChooserCancel("c-1")).toBe(false);
+		socket.emit(JSON.stringify({ t: "hello", viewerId: "v-1", viewport: { width: 1280, height: 900 }, control: "human", controlGen: 2 }));
+		expect(handle.sendFileChooserCancel("c-1")).toBe(true);
+		socket.readyState = 3;
+		expect(handle.sendFileChooserCancel("c-2")).toBe(false);
+
+		expect(socket.sent).toEqual([JSON.stringify({ t: "file-chooser-cancel", chooserId: "c-1" })]);
+	});
+
+	test("sends nav after control without waiting for a frame, and shares the input sequence", () => {
+		const socket = make_socket();
+		const events = make_events();
+		const handle = files_browser_stream_connect({ url: "wss://runner.test/viewer/stream", hello, events, createSocket: () => socket as never });
+		socket.readyState = 1;
+
+		expect(handle.sendNav({ action: "back" })).toBe(-1);
+		socket.emit(JSON.stringify({ t: "hello", viewerId: "v-1", viewport: { width: 1280, height: 900 }, control: "human", controlGen: 2 }));
+		expect(handle.sendNav({ action: "go", url: "https://example.com/" })).toBe(1);
+		socket.emit(JSON.stringify({ t: "frame", seq: 1, loadGen: 1 }));
+		socket.emit(new Blob([new Uint8Array([1])]));
+		expect(handle.sendInput({ kind: "text.insert", text: "hello" })).toBe(2);
+		expect(handle.sendNav({ action: "reload" })).toBe(3);
+
+		expect(socket.sent.filter((message) => !message.includes("frame-ack"))).toEqual([
+			JSON.stringify({ t: "nav", seq: 1, controlGen: 2, action: "go", url: "https://example.com/" }),
+			JSON.stringify({ t: "input", seq: 2, kind: "text.insert", text: "hello", controlGen: 2, loadGen: 1 }),
+			JSON.stringify({ t: "nav", seq: 3, controlGen: 2, action: "reload" }),
+		]);
+	});
+
+	test("never sends a message over the runner's size cap", () => {
+		const socket = make_socket();
+		const events = make_events();
+		const handle = files_browser_stream_connect({ url: "wss://runner.test/viewer/stream", hello, events, createSocket: () => socket as never });
+		socket.readyState = 1;
+		socket.emit(JSON.stringify({ t: "hello", viewerId: "v-1", viewport: { width: 1280, height: 900 }, control: "human", controlGen: 1 }));
+
+		expect(handle.sendNav({ action: "go", url: `https://example.com/${"a".repeat(16_384)}` })).toBe(-1);
+		expect(handle.sendNav({ action: "stop" })).toBe(1);
+		expect(socket.sent).toEqual([JSON.stringify({ t: "nav", seq: 1, controlGen: 1, action: "stop" })]);
 	});
 });

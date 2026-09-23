@@ -20,6 +20,7 @@ import { FileEditorSidebarPendingStrip } from "@/components/files/file-editor/fi
 import {
 	FilesBrowserBindingWriter,
 	FilesBrowserResumeThreadMirror,
+	type FilesBrowserBindingWriter_Props,
 } from "@/components/files/file-node-view/files-browser.tsx";
 import { MyContextMenu, MyContextMenuPopover, MyContextMenuTrigger } from "@/components/my-context-menu.tsx";
 import { MyIcon } from "@/components/my-icon.tsx";
@@ -883,39 +884,33 @@ const FileEditorSidebarAgentChatThread = memo(function FileEditorSidebarAgentCha
 });
 
 export type FileEditorSidebarAgent_Props = {
-	/** Id of the root sidebar tab that shows this agent panel (used to know when agent is active for auto-start). */
-	rootTabId: string;
 	/**
-	 * Saved or pending node id behind the Files selection. Requests bind the live browser of this file.
+	 * True while this agent panel is visible. A new chat starts on its own only while it is active.
 	 */
-	browserNodeId: string | null;
-	/**
-	 * Kind behind `browserNodeId`, so a saved/private id clash cannot bind the wrong file.
-	 */
-	browserNodeKind: "saved" | "private" | null;
+	isActive: boolean;
+	browserBinding: FilesBrowserBindingWriter_Props["browserBinding"];
 };
 
 export const FileEditorSidebarAgent = memo(function FileEditorSidebarAgent(props: FileEditorSidebarAgent_Props) {
-	const { browserNodeId, browserNodeKind } = props;
+	const { browserBinding } = props;
 	const { membershipId } = AppTenantProvider.useContext();
 	const selectedTabStorageKey: AiChatControllerStorageKey = `app_state::file_editor_sidebar_agent_selected_tab::scope::${membershipId}`;
 
 	return (
 		<AiChatController key={selectedTabStorageKey} storageKey={selectedTabStorageKey}>
-			<FilesBrowserBindingWriter browserNodeId={browserNodeId} browserNodeKind={browserNodeKind} />
+			<FilesBrowserBindingWriter browserBinding={browserBinding} />
 			<FileEditorSidebarAgentContent {...props} />
 		</AiChatController>
 	);
 });
 
 const FileEditorSidebarAgentContent = memo(function FileEditorSidebarAgentContent(props: FileEditorSidebarAgent_Props) {
-	const { rootTabId } = props;
+	const { isActive } = props;
 	const { membershipId } = AppTenantProvider.useContext();
 	const controller = AiChatController.useThreadList({ includeArchived: false });
 	const hasAutoStartedRef = useRef(false);
 	const mountedOptimisticThreadIdsRef = useRef(new Set<string>());
 	const [scrollableContainer, setScrollableContainer] = useState<HTMLElement | null>(null);
-	const rootSelectedTab = useAppLocalStorageValue("app_state::files_last_tab");
 	const openTabsStorageKey: `app_state::file_editor_sidebar_open_tabs::scope::${string}` = `app_state::file_editor_sidebar_open_tabs::scope::${membershipId}`;
 	const selectedTabStorageKey: `app_state::file_editor_sidebar_agent_selected_tab::scope::${string}` = `app_state::file_editor_sidebar_agent_selected_tab::scope::${membershipId}`;
 	const openTabs = useAppLocalStorageValue(openTabsStorageKey);
@@ -944,7 +939,7 @@ const FileEditorSidebarAgentContent = memo(function FileEditorSidebarAgentConten
 	// Start only while Agent is active. Replace the last tab if its chat is refused.
 	useEffect(() => {
 		if (
-			rootSelectedTab === rootTabId &&
+			isActive &&
 			(!hasAutoStartedRef.current || openTabs.length === 0) &&
 			!controller.selectedThreadId
 		) {
@@ -952,8 +947,7 @@ const FileEditorSidebarAgentContent = memo(function FileEditorSidebarAgentConten
 			rememberOptimisticThreadId(controller.startNewChat());
 		}
 	}, [
-		rootSelectedTab,
-		rootTabId,
+		isActive,
 		openTabs.length,
 		controller.selectedThreadId,
 		controller,

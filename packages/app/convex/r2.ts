@@ -470,6 +470,97 @@ export type r2_get_data_for_public_download_url_Result =
 		: never;
 
 /**
+ * Sign an R2 GET URL for one file the user can read. Editable Markdown gets a fresh version
+ * snapshot first when its Yjs log is newer. Returns "Not found" when the node is missing, has no
+ * stored bytes (a folder), or the user has no `content.read` on it.
+ */
+export async function r2_action_create_signed_download_url(
+	ctx: ActionCtx,
+	args: {
+		userId: Id<"users">;
+		membershipId: Id<"organizations_workspaces_users">;
+		fileNodeId: Id<"files_nodes">;
+		expiresInSeconds: number;
+	},
+) {
+	const data = (await ctx.runQuery(internal.r2.get_data_for_create_signed_download_url, {
+		userId: args.userId,
+		membershipId: args.membershipId,
+		fileNodeId: args.fileNodeId,
+	})) as get_data_for_create_signed_download_url_Result;
+	if (!data) {
+		return Result({ _nay: { message: "Not found" } });
+	}
+
+	const { fileNode, materializationState } = data;
+	let asset = data.asset;
+	if (!fileNode.contentType) {
+		return Result({ _nay: { message: "Not found" } });
+	}
+
+	// Editable files: node.assetId points at the newest version snapshot. Materialize first
+	// when the Yjs log is newer than the snapshot, or when the asset has no r2Key (old data).
+	// Each materialization stores a fresh snapshot and points the node at it.
+	if (files_node_has_editable_yjs_state(fileNode)) {
+		if (!materializationState) {
+			console.warn("Markdown file materialization state is missing", {
+				materializationState,
+				fileNodeId: fileNode._id,
+				yjsSnapshotId: fileNode.yjsSnapshotId,
+				yjsLastSequenceId: fileNode.yjsLastSequenceId,
+			});
+		} else if (
+			materializationState.yjsLastSequenceDoc.lastSequence > materializationState.yjsSnapshotDoc.sequence ||
+			!asset.r2Key
+		) {
+			const downloadScope = r2_require_real_scope(fileNode.organizationId, fileNode.workspaceId);
+			// Try to store a fresh version snapshot, but still allow downloading the older one if this fails.
+			const materialized = await ctx.runAction(internal.files_nodes_content.materialize_file_content, {
+				organizationId: downloadScope.organizationId,
+				workspaceId: downloadScope.workspaceId,
+				nodeId: fileNode._id,
+				userId: args.userId,
+				targetSequence: materializationState.yjsLastSequenceDoc.lastSequence,
+			});
+			if (materialized._nay) {
+				console.warn("Failed to materialize Markdown before download", {
+					fileNodeId: fileNode._id,
+					nay: materialized._nay,
+				});
+			}
+			const refreshed = (await ctx.runQuery(internal.r2.get_data_for_create_signed_download_url, {
+				userId: args.userId,
+				membershipId: args.membershipId,
+				fileNodeId: args.fileNodeId,
+			})) as get_data_for_create_signed_download_url_Result;
+			// A null re-read means the caller lost access to the file: refuse instead of
+			// signing a URL for the stale asset.
+			if (!refreshed) {
+				return Result({ _nay: { message: "Not found" } });
+			}
+			asset = refreshed.asset;
+		}
+	}
+
+	if (!asset.r2Key) {
+		return Result({ _nay: { message: "Not found" } });
+	}
+
+	// A presigned R2 GET carries no nosniff/CSP, so the pinned type plus the disposition is
+	// the whole defense. Both come from the stored content type: only the literal media set
+	// serves inline (the app's <img>/<video> sources go through here), everything else
+	// downloads as an attachment.
+	const serving = files_get_signed_download_serving({ contentType: fileNode.contentType, fileName: fileNode.name });
+	const url = await r2.getUrl(asset.r2Key, {
+		expiresIn: args.expiresInSeconds,
+		responseContentType: serving.responseContentType,
+		responseContentDisposition: serving.responseContentDisposition,
+	});
+
+	return Result({ _yay: { url, fileNode, contentType: fileNode.contentType, asset } });
+}
+
+/**
  * Return a signed R2 URL for download.
  *
  * For Markdown files, ensure the R2 snapshot is up to date before returning the URL.
@@ -490,82 +581,16 @@ export const create_signed_download_url = action({
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 
-		const data = (await ctx.runQuery(internal.r2.get_data_for_create_signed_download_url, {
+		const signed = await r2_action_create_signed_download_url(ctx, {
 			userId: userAuth.id,
 			membershipId: args.membershipId,
 			fileNodeId: args.fileNodeId,
-		})) as get_data_for_create_signed_download_url_Result;
-		if (!data) {
-			return Result({ _nay: { message: "Not found" } });
-		}
-
-		const { fileNode, materializationState } = data;
-		let asset = data.asset;
-		if (!fileNode.contentType) {
-			return Result({ _nay: { message: "Not found" } });
-		}
-
-		// Editable files: node.assetId points at the newest version snapshot. Materialize first
-		// when the Yjs log is newer than the snapshot, or when the asset has no r2Key (old data).
-		// Each materialization stores a fresh snapshot and points the node at it.
-		if (files_node_has_editable_yjs_state(fileNode)) {
-			if (!materializationState) {
-				console.warn("Markdown file materialization state is missing", {
-					materializationState,
-					fileNodeId: fileNode._id,
-					yjsSnapshotId: fileNode.yjsSnapshotId,
-					yjsLastSequenceId: fileNode.yjsLastSequenceId,
-				});
-			} else if (
-				materializationState.yjsLastSequenceDoc.lastSequence > materializationState.yjsSnapshotDoc.sequence ||
-				!asset.r2Key
-			) {
-				const downloadScope = r2_require_real_scope(fileNode.organizationId, fileNode.workspaceId);
-				// Try to store a fresh version snapshot, but still allow downloading the older one if this fails.
-				const materialized = await ctx.runAction(internal.files_nodes_content.materialize_file_content, {
-					organizationId: downloadScope.organizationId,
-					workspaceId: downloadScope.workspaceId,
-					nodeId: fileNode._id,
-					userId: userAuth.id,
-					targetSequence: materializationState.yjsLastSequenceDoc.lastSequence,
-				});
-				if (materialized._nay) {
-					console.warn("Failed to materialize Markdown before download", {
-						fileNodeId: fileNode._id,
-						nay: materialized._nay,
-					});
-				}
-				const refreshed = (await ctx.runQuery(internal.r2.get_data_for_create_signed_download_url, {
-					userId: userAuth.id,
-					membershipId: args.membershipId,
-					fileNodeId: args.fileNodeId,
-				})) as get_data_for_create_signed_download_url_Result;
-				// A null re-read means the caller lost access to the file: refuse instead of
-				// signing a URL for the stale asset.
-				if (!refreshed) {
-					return Result({ _nay: { message: "Not found" } });
-				}
-				asset = refreshed.asset;
-			}
-		}
-
-		if (!asset.r2Key) {
-			return Result({ _nay: { message: "Not found" } });
-		}
-
-		// A presigned R2 GET carries no nosniff/CSP, so the pinned type plus the disposition is
-		// the whole defense. Both come from the stored content type: only the literal media set
-		// serves inline (the app's <img>/<video> sources go through here), everything else
-		// downloads as an attachment.
-		const serving = files_get_signed_download_serving({ contentType: fileNode.contentType, fileName: fileNode.name });
-		const url = await r2.getUrl(asset.r2Key, {
 			// 15 minutes.
-			expiresIn: 15 * 60,
-			responseContentType: serving.responseContentType,
-			responseContentDisposition: serving.responseContentDisposition,
+			expiresInSeconds: 15 * 60,
 		});
+		if (signed._nay) return signed;
 
-		return Result({ _yay: { url } });
+		return Result({ _yay: { url: signed._yay.url } });
 	},
 });
 

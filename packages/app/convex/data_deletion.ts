@@ -36,7 +36,11 @@ import { files_pending_update_db_release_replacement_asset } from "./files_pendi
 import { files_private_storage_db_release_purged_resources } from "./files_private_storage.ts";
 import { files_ingestion_db_delete_receipt } from "./files_ingestion.ts";
 import { files_transfer_db_delete_run_batch } from "./files_transfer.ts";
-import { files_browser_db_delete_user_batch, files_browser_db_purge_workspace_batch } from "./files_browser.ts";
+import {
+	files_browser_db_delete_user_batch,
+	files_browser_db_purge_workspace_batch,
+	files_browser_db_schedule_user_deletion,
+} from "./files_browser.ts";
 import { files_pending_update_runs_db_delete_run_batch } from "./files_pending_update_runs.ts";
 import { files_db_delete_pending_update } from "../server/files.ts";
 import { data_deletion_db_request } from "./data_deletion_requests.ts";
@@ -1599,6 +1603,10 @@ async function db_prepare_user_for_deletion(
 		await ctx.scheduler.runAfter(0, internal.plugins_runtime.enqueue_account_deleted_runs, {
 			userId: args.user._id,
 		});
+
+		// Saved browser logins do not wait for the retention window, and account recovery does not
+		// bring them back. This closes live browsers and deletes the profiles in scheduled batches.
+		await files_browser_db_schedule_user_deletion(ctx, { userId: args.user._id });
 	}
 
 	// Remove presence docs so the tombstoned user no longer appears in rooms.
@@ -3368,6 +3376,16 @@ export const hard_delete_user_data = internalMutation({
 				// Delete at most one shared extra workspace doc and its related structure per call.
 				return { done: false, deletedCount: 1 };
 			}
+		}
+
+		// The reset also removes the user's browser records in every workspace, including the saved
+		// logins. Each deleted profile gets its runner wipe.
+		const browserDelete = await files_browser_db_delete_user_batch(ctx, {
+			userId: user._id,
+			batchSize: batch_size(args),
+		});
+		if (!browserDelete.done) {
+			return browserDelete;
 		}
 
 		// The preserved home workspace is usable again only after its store, sessions, and installations

@@ -193,6 +193,18 @@ console.log(require("node:crypto").createHash("sha256").update(buf).digest("hex"
 
 Compare against the table's pinned SHA-256. Two caveats: the comparison holds only for fixtures already stored as LF without a BOM — `qa-plain-bom.csv` deliberately does not round-trip, because the stored document drops the BOM and stores LF. And since 2026-08-10 the signed GET serves editable text as an `attachment` with the name-derived type, so assert on bytes, never on the disposition or the URL string.
 
+To find a saved file's id from its path, use `files_nodes.get_authorized_by_path({ membershipId, path })`
+(`{ nodeId, name, kind, assetId }` or null; an archived file reads null). Its metadata is
+`files_metadata.get_entries({ membershipId, fileNodeId })`, an array of `{ key, value }`.
+
+A private pending file (an agent-created file, the `pendingNodeId` in a tool card's `Open in Files`
+link) needs another door. Read `files_pending_updates.get_file_pending_target({ membershipId, target:
+{ kind: "private", id } })` first, then call `create_private_pending_download_url` with `target`,
+`pendingUpdateId: entry.pendingUpdate._id`, `reviewedRevision: entry.pendingUpdate.revision`, and
+`creationGeneration: entry.node.creationGeneration`. All three are required; a missing one fails
+with an `ArgumentValidationError`. To remove it afterwards, `discard_file_pending_update` takes the
+same `target`, `pendingUpdateId`, and `reviewedRevision`. Verified 2026-09-23.
+
 ## Common Gotchas
 
 - Editor mode radios are small native inputs. If a radio locator times out, click the matching `#app_main_header_content label`.
@@ -688,7 +700,7 @@ Use this after changing the AI bash tool, tool rendering, or agent file-access c
 - In Agent mode, ask it to run `echo draft > /home/cloud-usr/w/personal/home/<unique-qa-name>.md`; verify a private proposal appears and `cat` reads it before Save. In Ask mode, the same write must fail without creating a proposal.
 - Ask it to make one real Markdown edit; verify the new turn uses `edit_file` or Bash and leaves the change pending.
 - **`sed -i` does not work on app files.** The db-backed tree exposes a fixed command set, and `sed` is not in it: `sed -i 's/a/b/' u39/target.md` answers `sed: u39/target.md: No such file or directory` plus `Native Just Bash /tmp commands cannot access app files directly`. To make a content proposal with an exact text, ask the agent for `printf '<the whole new file>' > <path>` instead — that writes the file the tool does know about and produces one proposal per file. Verified 2026-09-15.
-- **Pick fixture names that no name rule rewrites.** The Bash writer leaves an existing occupant's path alone, but a **missing** target is normalized before the file is created (`server/bash-utils.ts:600-660`), and `readme` in any casing becomes `README.md` (`shared/files.test.ts:937-940`). So `mv u05/readme.md u05/guide.md ; echo new > u05/readme.md` puts the new private node at `/u05/README.md`, not at the path you vacated, and the case you were testing quietly stops being the case you meant. `create_text_node` called directly does **not** normalize, so a door-built fixture and a Bash-written file can sit at two different paths for the same requested name. Use a neutral name such as `notes.md`. Verified 2026-09-15.
+- **Pick fixture names that no name rule rewrites.** The Bash writer leaves an existing occupant's path alone, but a **missing** target is normalized before the file is created (`server/bash-utils.ts:600-660`), and `readme` in any casing becomes `README.md` (`shared/files.test.ts:937-940`). So `mv u05/readme.md u05/guide.md ; echo new > u05/readme.md` puts the new private node at `/u05/README.md`, not at the path you vacated, and the case you were testing quietly stops being the case you meant. `create_text_node` called directly does **not** normalize, so a door-built fixture and a Bash-written file can sit at two different paths for the same requested name. Use a neutral name such as `notes.md`. Verified 2026-09-15. Keep fixture names lowercase too: `mkdir -p qa-bugA-0923` exits 1 with `mkdir: cannot create directory 'qa-bugA-0923': Invalid file path`, while `qa-buga-0923` works. Verified 2026-09-23.
 - **The two writers answer that name rule differently, so pick your check deliberately.** A redirect refuses: `echo hello > 'my other.md'` exits 1 with `cannot write '<path>/my other.md': app file names are normalized; write to '<path>/my-other.md' instead`. A `cp` renames silently and still reports `1 ready for review`: `my copy.md` lands at `my-copy.md`, `café 🎉-copy.md` at `cafe-copy.md`, `-weird-copy.md` at `weird-copy.md`. The transfer's success line never names the output path, so always read the destination back from `files_visible.list` instead of trusting the command's own output. Verified 2026-09-15.
 - `cd` works in the agent shell, the terminal footer reports it (`exit 0 · cwd changed: /home/cloud-usr/w/<org>/<ws> -> /home/cloud-usr/w/<org>/<ws>/u10`), and the new cwd **persists into later turns of the same chat**. A runner that sends workspace-relative paths after an earlier `cd` will address the wrong folder, so either `cd` back or keep every command anchored at the workspace root. Verified 2026-09-15.
 - After a `cp -R`, the private nodes appear in `files_visible.list` before their rows appear in `files_pending_updates.list_files_pending_updates`. A read 8 s after the agent turn finished showed 5 of 8 rows; a re-read showed all 8. Poll the pending list until its count stops changing before asserting a missing row. Verified 2026-09-15.
@@ -1386,6 +1398,36 @@ The full shape, proven end to end with a second identity (see `second-user-fixtu
 discard it.` and writes nothing — same proposal id, revision and state ids afterwards.
 5. `Accept all shown pending changes` toasts `Changes waiting for review are skipped. Open Review to
 update them.`, saves the fresh rows and leaves the stale one alone.
+
+### Source-Scoped Accept With A Hidden Row
+
+Proves that a chat-filtered Accept cannot settle another chat's row. Verified 2026-09-23.
+
+1. Build a saved fixture from page context: `files_nodes.create_folder_node({ membershipId, parentId:
+   "root", path: "qa-x" })`, then `files_nodes_content.create_text_node({ membershipId, parentId:
+   <folderId>, path: "a.md" })`. Nothing is pending yet.
+2. Make two chats with `ai_chat:thread_create` (see `agent-panel.md`). Chat B runs
+   `echo "edited" > qa-x/a.md` FIRST. Chat A then runs `rm -r qa-x`. The other order does not work:
+   after the `rm`, the folder is gone from this user's reads, so chat B cannot write under it.
+3. In `Pending changes source`, pick chat A. Only the `Deleted` row shows. Press
+   `Accept delete of /qa-x` (or `Accept all shown pending changes`).
+4. Expected: the `Save reviewed changes` dialog says `0 saved, 1 need review` and
+   `This action also affects unselected changes. Review them together.` No toast. Both rows keep their
+   id and revision, and `get_authorized_by_path` still finds the folder and the file.
+5. The dialog's `Review remaining changes` link switches the source back to `All changes`. Its
+   Playwright `click()` can hang at "performing click action" even though the click landed (the link
+   points at the current route). Read the source combobox label and the dialog's `data-open` before
+   retrying.
+
+### Saving A Private Text Draft From The File View
+
+Verified 2026-09-23. A text draft (`createIntent.kind === "text"`) has no Save in the
+`.FileNodeViewPrivate-actions` header, only `Discard`. The `Save` in the toolbar belongs to the
+editor (`.FileEditorRichTextNonCollabToolbarActions-button`), and it mounts a few seconds after the
+header. It saves a draft at root in about 3 s with no toast: the URL changes from `?pendingNodeId=`
+to `?nodeId=`. For a draft under a new folder it toasts `Review and save the parent draft first`,
+while the header still reads `Save also creates: /<folder>`. Save that pair from the Pending tab
+with `Accept all shown pending changes`, with both rows shown.
 
 ## Cross-Workspace Copy
 

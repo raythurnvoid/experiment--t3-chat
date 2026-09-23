@@ -20,6 +20,7 @@ import {
 	files_node_has_editable_text_content,
 	files_node_has_editable_yjs_state,
 	files_normalize_markdown_name,
+	files_normalize_browser_download_name,
 	files_normalize_file_rename_name,
 	files_normalize_special_node_path,
 	files_normalize_upload_file_name,
@@ -901,6 +902,7 @@ describe("files_normalize_name_input", () => {
 		[{ kind: "file", previousText: "", insertedText: "-file", nextText: "" }, "file"],
 		[{ kind: "folder", previousText: "", insertedText: ".", nextText: "" }, "."],
 		[{ kind: "folder", previousText: "", insertedText: ".agents", nextText: "" }, ".agents"],
+		[{ kind: "folder", previousText: "", insertedText: ".system", nextText: "" }, ".system"],
 		[
 			{ kind: "file", previousText: "docs/", insertedText: ".agents/skills/one/skill.md", nextText: "" },
 			".agents/skills/one/skill.md",
@@ -928,6 +930,8 @@ describe("files_normalize_name", () => {
 		[".test", "test"],
 		[".agents", ".agents"],
 		[".AGENTS", ".agents"],
+		[".system", ".system"],
+		[" .SYSTEM ", ".system"],
 		[".", "untitled"],
 		["test/test.txt", "test-test.txt"],
 		["test//test.txt", "test-test.txt"],
@@ -1046,6 +1050,27 @@ describe("files_normalize_upload_file_name", () => {
 	});
 });
 
+describe("files_normalize_browser_download_name", () => {
+	test.each([
+		// A page must not create an instruction file, so special names get `-download`.
+		["README", "readme-download.md"],
+		["readme.md", "readme-download.md"],
+		["Agents.MD", "agents-download.md"],
+		["AGENTS.md", "agents-download.md"],
+		["skill.txt", "skill-download.txt"],
+		["SKILL", "skill-download"],
+		// Other names follow the upload rules.
+		["report.pdf", "report.pdf"],
+		["Quarterly Report.PDF", "quarterly-report.pdf"],
+		["readme-v2.md", "readme-v2.md"],
+		["my-agents.md", "my-agents.md"],
+		["path/to/agents.md", "agents-download.md"],
+		["", "upload"],
+	])("normalizes %s to %s", (input, expected) => {
+		expect(files_normalize_browser_download_name(input)).toBe(expected);
+	});
+});
+
 describe("files_normalize_file_rename_name", () => {
 	test.each([
 		["readme.md", "README.md"],
@@ -1067,6 +1092,8 @@ describe("files_normalize_special_node_path", () => {
 		["file", "/docs/agents.MD", "/docs/AGENTS.md"],
 		["file", "/docs/readme", "/docs/README.md"],
 		["folder", "/.AGENTS", "/.agents"],
+		["folder", "/.SYSTEM/downloads", "/.system/downloads"],
+		["file", "/.System/downloads/report.pdf", "/.system/downloads/report.pdf"],
 		["file", "/Bad Folder//bad File.md", "/Bad Folder//bad File.md"],
 		["file", "/../.agents/SKILL.md", "/../.agents/SKILL.md"],
 	] as const)("changes only special spelling %#", (kind, path, expected) => {

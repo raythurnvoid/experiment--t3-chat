@@ -1,6 +1,8 @@
 // The child runs the Playwright client and server, so its CDP traffic is untrusted.
 // Keep provider capabilities and connection lifetime checks outside that isolate.
 
+import { browser_web_normalize_url, browser_web_url_host_matches } from "common/browser-web-url.ts";
+
 type Params = Record<string, unknown>;
 type Check = (value: unknown) => boolean;
 type Session = {
@@ -19,7 +21,11 @@ type Session = {
 	screencast: boolean;
 	frameAcks: Set<number>;
 };
-type Pending = { method: string; params: Params; sessionId?: string; cleanup: boolean };
+/**
+ * Who sent a provider request: the child, the bridge's settle cleanup, or the bridge detaching a
+ * worker target that the child never sees.
+ */
+type Pending = { method: string; params: Params; sessionId?: string; source: "child" | "cleanup" | "detach" };
 
 const MAX_MESSAGE_BYTES = 1_048_576;
 const MAX_PROVIDER_BYTES = 8_388_608;
@@ -247,13 +253,65 @@ const PARAMS: Record<string, Record<string, Check>> = {
 		type: (value) => ["dragEnter", "dragOver", "drop", "dragCancel"].includes(String(value)),
 		x: is_number, y: is_number, data: is_drag, modifiers: optional(is_integer),
 	},
+	// Web mode only (see WEB_METHODS). The address rules check `url` before it is forwarded.
+	"Page.navigate": {
+		url: is_text, referrer: optional(is_text), frameId: optional(is_id), referrerPolicy: optional(is_text),
+		transitionType: optional(is_text),
+	},
+	"Page.reload": { ignoreCache: optional(is_boolean) },
+	"Page.getNavigationHistory": {},
+	"Page.navigateToHistoryEntry": { entryId: is_integer },
+	"Page.stopLoading": {},
 };
+
+/**
+ * Navigation methods. Web mode allows them. File mode must keep its one controller document.
+ */
+const WEB_METHODS = new Set(["Page.navigate", "Page.reload", "Page.getNavigationHistory", "Page.navigateToHistoryEntry", "Page.stopLoading"]);
+
+const SECRET_HEADERS = new Set(["cookie", "set-cookie", "authorization", "proxy-authorization"]);
+const COOKIE_FIELDS = new Set(["associatedCookies", "blockedCookies", "exemptedCookies", "cookiePartitionKey"]);
+
+/**
+ * Remove cookies and credentials from a Network event before the snippet sees it. The agent may
+ * read pages, but never the user's session cookies or auth headers. Header objects hide under
+ * several names (`headers`, `requestHeaders`, `redirectResponse.headers`), so walk the event.
+ */
+function sanitize_network_event(value: unknown, depth = 0): void {
+	if (depth > 8) return;
+	if (Array.isArray(value)) {
+		for (const item of value) sanitize_network_event(item, depth + 1);
+		return;
+	}
+	if (!is_record(value)) return;
+	for (const key of Object.keys(value)) {
+		// `headersText` and `requestHeadersText` are raw header blocks with the same secrets.
+		if (COOKIE_FIELDS.has(key) || /headersText$/iu.test(key)) {
+			delete value[key];
+			continue;
+		}
+		const child = value[key];
+		if (/headers$/iu.test(key) && is_record(child)) {
+			for (const name of Object.keys(child)) {
+				if (SECRET_HEADERS.has(name.toLowerCase())) delete child[name];
+			}
+			continue;
+		}
+		sanitize_network_event(child, depth + 1);
+	}
+}
 
 const ROOT_METHODS = new Set(["Browser.getVersion", "Browser.setDownloadBehavior", "Target.getTargetInfo", "Target.setAutoAttach"]);
 const WORKER_METHODS = new Set([
 	"Target.setAutoAttach", "Runtime.enable", "Runtime.runIfWaitingForDebugger", "Runtime.evaluate", "Runtime.callFunctionOn",
 	"Runtime.getProperties", "Runtime.releaseObject", "Network.enable", "Network.getResponseBody",
 ]);
+/**
+ * Worker targets the child never gets. Chrome attaches service and shared workers to Playwright's
+ * browser-wide auto-attach, and real sites run them. The bridge detaches them instead of closing
+ * the session. Any other unknown target type still closes it.
+ */
+const DETACHED_TARGETS = new Set(["service_worker", "shared_worker", "worklet", "shared_storage_worklet", "auction_worklet"]);
 const EVENTS = new Set([
 	"Page.frameAttached", "Page.frameDetached", "Page.frameNavigated", "Page.frameRequestedNavigation", "Page.navigatedWithinDocument",
 	"Page.javascriptDialogOpening", "Page.javascriptDialogClosed", "Page.lifecycleEvent", "Page.windowOpen", "Page.fileChooserOpened", "Page.screencastFrame",
@@ -273,12 +331,22 @@ export class AgentConnection {
 	private trafficBytes = 0;
 	private cleanupId = -1;
 	private pending = new Map<number, Pending>();
+	/**
+	 * Ids of the bridge's worker detach calls. The drain does not wait for them: when the detach
+	 * closes the worker session first, Chrome never answers the resume call. A late reply is dropped.
+	 */
+	private detaching = new Set<number>();
 	private sessions = new Map<string, Session>();
 	private frames = new Set<string>();
 	private windows = new Set<number>();
 	private networkRequests = new Set<string>();
 	private popups = new Set<Promise<void>>();
 	private blockedPopups = 0;
+	/**
+	 * History entry id to url, from the child's last `Page.getNavigationHistory` reply. Playwright's
+	 * `goBack` reads the history first, so the bridge knows where an entry id leads.
+	 */
+	private history = new Map<number, string>();
 	private waiters = new Set<() => void>();
 	private deadlineTimer: ReturnType<typeof setTimeout>;
 	private settlement: Promise<{ safe: boolean; reason: string | null; blockedPopups: number }> | null = null;
@@ -287,6 +355,16 @@ export class AgentConnection {
 		upstream: WebSocket;
 		downstream: WebSocket;
 		targetId: string;
+		mode: "file" | "web";
+		/**
+		 * Web mode: hosts `Page.navigate` may not open.
+		 */
+		deniedHosts: readonly string[];
+		/**
+		 * Web mode: sites the user blocked for the agent. Navigation to them is refused. Best effort:
+		 * the host also fails their requests while the command runs.
+		 */
+		agentBlockedHosts: readonly string[];
 		deadline: number;
 		onPopup: (targetId: string) => Promise<void>;
 		onUnsafe: (reason: string) => void;
@@ -340,7 +418,18 @@ export class AgentConnection {
 	}
 
 	private from_child(data: unknown) {
-		if (!this.accepting) return;
+		if (!this.accepting) {
+			// A revoked command (the user took control or turned agent access off) gets an error
+			// reply. The snippet then fails fast instead of waiting for its timeout, which would
+			// close the whole session.
+			if (this.unsafeReason || this.settled) return;
+			const message = this.parse(data, MAX_MESSAGE_BYTES);
+			if (message && is_integer(message.id)) {
+				this.reply({ id: message.id, ...(is_id(message.sessionId) ? { sessionId: message.sessionId } : {}),
+					error: { code: -32000, message: "Browser access was revoked." } });
+			}
+			return;
+		}
 		if (Date.now() >= this.input.deadline) return this.fail("deadline");
 		const message = this.parse(data, MAX_MESSAGE_BYTES);
 		if (!message || !shape(message, { id: is_integer, method: is_id, params: optional(is_record), sessionId: optional(is_id) }) ||
@@ -350,16 +439,48 @@ export class AgentConnection {
 		const sessionId = typeof message.sessionId === "string" ? message.sessionId : undefined;
 		const session = sessionId ? this.sessions.get(sessionId) : undefined;
 		const params = is_record(message.params) ? message.params : {};
-		const fields = Object.hasOwn(PARAMS, method) ? PARAMS[method] : undefined;
+		const fields = Object.hasOwn(PARAMS, method) && (this.input.mode === "web" || !WEB_METHODS.has(method)) ? PARAMS[method] : undefined;
 		const allowedScope = sessionId ? !!session && (session.kind !== "worker" || WORKER_METHODS.has(method)) : ROOT_METHODS.has(method);
 		if (!fields || !allowedScope || !shape(params, fields) || !this.allowed_params(method, params, session)) {
 			this.reply({ id: message.id, ...(sessionId ? { sessionId } : {}), error: { code: -32601, message: `Browser command is not allowed: ${method}.` } });
 			return;
 		}
+		let forwarded = params;
+		if (this.input.mode === "web" && method === "Browser.setDownloadBehavior") {
+			// The host owns the download policy for the whole session. Answer here and keep it.
+			this.reply({ id: message.id, result: {} });
+			return;
+		}
 		// These startup requests must not choose a provider path or another target.
-		const forwarded = method === "Browser.setDownloadBehavior" ? { behavior: "deny", eventsEnabled: false } :
-			method === "Target.getTargetInfo" ? { targetId: this.input.targetId } : params;
-		this.send(message.id, { method, params: forwarded, sessionId, cleanup: false });
+		if (method === "Browser.setDownloadBehavior") forwarded = { behavior: "deny", eventsEnabled: false };
+		if (method === "Target.getTargetInfo") forwarded = { targetId: this.input.targetId };
+		// Real sites run in web mode. Playwright's utility world must not get universal access.
+		if (this.input.mode === "web" && method === "Page.createIsolatedWorld") forwarded = { ...params, grantUniveralAccess: false };
+		if (method === "Page.navigate") {
+			const normalized = browser_web_normalize_url(String(params.url), this.input.deniedHosts);
+			if (!normalized.ok) {
+				// The reason code only. Echoing the address would put it in logs and tool output.
+				this.reply({ id: message.id, ...(sessionId ? { sessionId } : {}),
+					error: { code: -32000, message: `Browser address is not allowed: ${normalized.reason}.` } });
+				return;
+			}
+			if (browser_web_url_host_matches(normalized.url, this.input.agentBlockedHosts)) {
+				this.reply({ id: message.id, ...(sessionId ? { sessionId } : {}),
+					error: { code: -32000, message: "Browser address is not allowed: agent_blocked_site." } });
+				return;
+			}
+			forwarded = { ...params, url: normalized.url };
+		}
+		// An entry the bridge never saw may lead anywhere, so refuse it while sites are blocked.
+		if (method === "Page.navigateToHistoryEntry" && this.input.agentBlockedHosts.length > 0) {
+			const url = this.history.get(Number(params.entryId));
+			if (url === undefined || browser_web_url_host_matches(url, this.input.agentBlockedHosts)) {
+				this.reply({ id: message.id, ...(sessionId ? { sessionId } : {}),
+					error: { code: -32000, message: "Browser address is not allowed: agent_blocked_site." } });
+				return;
+			}
+		}
+		this.send(message.id, { method, params: forwarded, sessionId, source: "child" });
 	}
 
 	private allowed_params(method: string, params: Params, session: Session | undefined) {
@@ -381,10 +502,15 @@ export class AgentConnection {
 
 	private send(id: number, request: Pending) {
 		if (this.unsafeReason) return;
-		if (this.pending.size >= MAX_PENDING) return this.fail("command_limit");
-		this.pending.set(id, request);
+		if (request.source === "detach") {
+			if (this.detaching.size >= MAX_PENDING) return this.fail("target_limit");
+			this.detaching.add(id);
+		} else {
+			if (this.pending.size >= MAX_PENDING) return this.fail("command_limit");
+			this.pending.set(id, request);
+		}
 		const session = request.sessionId ? this.sessions.get(request.sessionId) : undefined;
-		if (session && !request.cleanup) this.track_input(request.method, request.params, session);
+		if (session && request.source === "child") this.track_input(request.method, request.params, session);
 		if (this.unsafeReason) return;
 		try {
 			this.input.upstream.send(JSON.stringify({ id, method: request.method, params: request.params,
@@ -428,6 +554,9 @@ export class AgentConnection {
 		const sessionId = typeof message.sessionId === "string" ? message.sessionId : undefined;
 		if (message.id !== undefined) {
 			if (typeof message.id !== "number") return this.fail("invalid_provider_reply");
+			// A worker detach reply may be an error or come on the root session (the worker already
+			// ended). Nothing waits for it.
+			if (this.detaching.delete(message.id)) return;
 			const request = this.pending.get(message.id);
 			if (!request || request.sessionId !== sessionId) return this.fail("unknown_provider_reply");
 			if (!is_record(message.result) && !is_record(message.error)) return this.fail("invalid_provider_reply");
@@ -447,10 +576,11 @@ export class AgentConnection {
 					return;
 				}
 			}
-			if (is_record(message.error) && (request.cleanup || request.method.startsWith("Input."))) return this.fail("command_failed");
+			if (is_record(message.error) && (request.source === "cleanup" ||
+				(request.source === "child" && request.method.startsWith("Input.")))) return this.fail("command_failed");
 			if (is_record(message.result) && !this.track_reply(request, message.result)) return this.fail("invalid_provider_reply");
 			this.pending.delete(message.id);
-			if (!request.cleanup) this.reply(message);
+			if (request.source === "child") this.reply(message);
 			this.wake();
 			return;
 		}
@@ -464,6 +594,16 @@ export class AgentConnection {
 			const assigned = targetId === this.input.targetId && kind === "page";
 			const child = !!session && (kind === "iframe" || kind === "worker");
 			if (!assigned && !child) {
+				// Give the child no session for the worker. If Chrome paused it for a debugger, resume it
+				// first, then detach, like Playwright's own `CRSession.detach`. Both modes do this: the
+				// worker runs the same way between commands, when no bridge is attached.
+				if (DETACHED_TARGETS.has(String(kind))) {
+					if (params.waitingForDebugger === true) {
+						this.send(this.cleanupId--, { method: "Runtime.runIfWaitingForDebugger", params: {}, sessionId: params.sessionId, source: "detach" });
+					}
+					this.send(this.cleanupId--, { method: "Target.detachFromTarget", params: { sessionId: params.sessionId }, sessionId, source: "detach" });
+					return;
+				}
 				if (kind !== "page") return this.fail("unapproved_target");
 				this.blockedPopups += 1;
 				const closing = Promise.resolve().then(() => this.input.onPopup(targetId)).catch(() => this.fail("popup_cleanup"));
@@ -515,6 +655,7 @@ export class AgentConnection {
 			if (!is_drag(params.data)) return this.fail("invalid_drag");
 			session.drag = true;
 		}
+		if (message.method.startsWith("Network.")) sanitize_network_event(params);
 		this.reply(message);
 	}
 
@@ -539,6 +680,13 @@ export class AgentConnection {
 			session.bindings.add(String(request.params.name));
 		}
 		if (request.method === "Runtime.removeBinding") session?.bindings.delete(String(request.params.name));
+		if (request.method === "Page.getNavigationHistory") {
+			if (!Array.isArray(result.entries) || result.entries.length > 1024) return false;
+			this.history.clear();
+			for (const entry of result.entries) {
+				if (is_record(entry) && is_integer(entry.id) && typeof entry.url === "string") this.history.set(entry.id, entry.url);
+			}
+		}
 		return true;
 	}
 
@@ -579,7 +727,7 @@ export class AgentConnection {
 				if (session.screencast) cleanup("Page.stopScreencast", {});
 				for (const command of commands) {
 					if (this.unsafeReason) break;
-					this.send(this.cleanupId--, { ...command, sessionId, cleanup: true });
+					this.send(this.cleanupId--, { ...command, sessionId, source: "cleanup" });
 					if (this.pending.size >= 64) await this.drain(deadline);
 				}
 			}

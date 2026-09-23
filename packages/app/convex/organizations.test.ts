@@ -3505,6 +3505,91 @@ describe("remove_user_from_organization", () => {
 		);
 		expect(restoredMembership?.pendingOrganizationRemoval).not.toBe(true);
 	});
+
+	test("deletes the removed member's saved browser logins with their wipe docs", async () => {
+		const t = test_convex();
+		const [ownerId, memberId, otherMemberId] = await t.run(async (ctx) =>
+			Promise.all([
+				ctx.db.insert("users", { clerkUserId: "clerk-user-remove-browser-owner" }),
+				ctx.db.insert("users", { clerkUserId: "clerk-user-remove-browser-member" }),
+				ctx.db.insert("users", { clerkUserId: "clerk-user-remove-browser-other" }),
+			]),
+		);
+		await organizations_test_bootstrap_users(t, { userIds: [ownerId, memberId, otherMemberId] });
+		const created = await t.run((ctx) =>
+			organizations_db_create(ctx, {
+				userId: ownerId,
+				description: "",
+				name: "remove-browser-team",
+				now: Date.now(),
+			}),
+		);
+		const organizationId = created._yay!.organizationId;
+		const workspaceId = created._yay!.defaultWorkspaceId;
+
+		const seeded = await t.run(async (ctx) => {
+			const now = Date.now();
+			for (const userId of [memberId, otherMemberId]) {
+				await ctx.db.insert("organizations_workspaces_users", { organizationId, workspaceId, userId, active: true });
+				await access_control_db_ensure_role_assignment(ctx, {
+					organizationId,
+					workspaceId,
+					userId,
+					role: "member",
+					now,
+				});
+				// The removal clears the member's API credential counter, which a real invite creates.
+				await quotas_db_ensure(ctx, { quotaName: "active_api_credentials", userId, organizationId, workspaceId, now });
+			}
+			const memberUser = await ctx.db.get("users", memberId);
+			const profile = (
+				userId: Id<"users">,
+				organizationId: Id<"organizations">,
+				workspaceId: Id<"organizations_workspaces">,
+			) =>
+				ctx.db.insert("files_browser_profiles", {
+					userId,
+					organizationId,
+					workspaceId,
+					profileKey: new Uint8Array(32).buffer,
+					agentBlockedHosts: [],
+					createdAt: now,
+					lastUsedAt: now,
+				});
+			return {
+				removedProfileId: await profile(memberId, organizationId, workspaceId),
+				otherMemberProfileId: await profile(otherMemberId, organizationId, workspaceId),
+				// The member keeps the logins of their own organization.
+				personalProfileId: await profile(memberId, memberUser!.defaultOrganizationId!, memberUser!.defaultWorkspaceId!),
+			};
+		});
+
+		// Fake timers hold the scheduled wipe job, so the wipe doc stays readable here.
+		vi.useFakeTimers();
+		const removed = await t
+			.withIdentity({ issuer: "https://clerk.test", external_id: ownerId })
+			.mutation(api.organizations.remove_user_from_organization, { organizationId, userIdToRemove: memberId });
+		expect(removed._nay).toBeUndefined();
+
+		const after = await t.run(async (ctx) => ({
+			profiles: (await ctx.db.query("files_browser_profiles").collect()).map((doc) => doc._id).sort(),
+			wipes: await ctx.db.query("files_browser_profile_wipes").collect(),
+			wipeJobs: (await ctx.db.system.query("_scheduled_functions").collect()).filter(
+				(job) => job.state.kind === "pending" && job.name.includes("process_browser_profile_wipes"),
+			),
+		}));
+		expect(after.profiles).toEqual([seeded.otherMemberProfileId, seeded.personalProfileId].sort());
+		expect(after.wipes).toEqual([
+			expect.objectContaining({
+				profileId: seeded.removedProfileId,
+				ownerId: memberId,
+				organizationId,
+				workspaceId,
+				attempts: 0,
+			}),
+		]);
+		expect(after.wipeJobs).toHaveLength(1);
+	});
 });
 
 describe("access_control.transfer_organization_ownership", () => {

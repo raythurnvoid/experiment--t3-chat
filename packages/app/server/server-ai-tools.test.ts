@@ -2459,6 +2459,7 @@ describe("browser tools", () => {
 		...server_ai_tools_test_ctx_data,
 		browser: {
 			membershipId: "membership-1" as Id<"organizations_workspaces_users">,
+			mode: "file" as const,
 			sessionId: "session-1" as Id<"files_browser_sessions">,
 			navGen: 1,
 			loadGen: 1,
@@ -2468,6 +2469,7 @@ describe("browser tools", () => {
 	};
 	const accessOk = {
 		ok: true,
+		mode: "file",
 		control: "ready",
 		controlGen: 1,
 		loadGen: 1,
@@ -2480,6 +2482,7 @@ describe("browser tools", () => {
 		sourceHash: "hash",
 	};
 	const binaryFile = { workspace: "current", path: "/reports/output.bin", dataBase64: "AP+AAQ==" };
+	const pdfDownload = { name: "Quarterly Report.PDF", contentType: "application/pdf", dataBase64: "AP+AAQ==" };
 
 	function runner_run_result(overrides: Record<string, unknown> = {}) {
 		return {
@@ -2496,6 +2499,29 @@ describe("browser tools", () => {
 			error: null,
 			...overrides,
 		};
+	}
+
+	function web_ctx(canWriteFiles: boolean) {
+		const webAccess = {
+			ok: true,
+			mode: "web",
+			control: "ready",
+			controlGen: 1,
+			loadGen: 1,
+			navGen: 1,
+			runnerSessionId: "runner-session-1",
+		};
+		const made = makeCtx(async () => webAccess);
+		made.runQuery.mockImplementation(async (ref) => {
+			if (getFunctionName(ref) !== "ai_chat_workspaces:resolve") return webAccess;
+			return { _yay: server_ai_tools_test_ctx_data };
+		});
+		const ctxData = { ...browserCtxData, canWriteFiles, browser: { ...browserCtxData.browser, mode: "web" as const } };
+		return { ...made, tool: ai_chat_tool_create_browser_run(made.ctx, ctxData) };
+	}
+
+	function observation_text() {
+		return JSON.stringify(browserCtxData.observations.get("t")?.output);
 	}
 
 	beforeEach(() => {
@@ -2945,6 +2971,189 @@ describe("browser tools", () => {
 		expect(runMutation).not.toHaveBeenCalled();
 	});
 
+	test("says another chat is using the browser only for a running command", async () => {
+		const { ctx } = makeCtx(async () => accessOk);
+		runnerQueue.push({ ok: false, error: { code: "busy_command", message: "A command is running" } });
+		const tool = ai_chat_tool_create_browser_run(ctx, browserCtxData);
+		const output = ai_chat_file_result_schema.parse(
+			await tool.execute?.({ code: "return 1;" }, { toolCallId: "t", messages: [] }),
+		);
+		expect(output).toEqual(
+			ai_chat_file_result("Browser run", "errored", [], "busy", {
+				errorText: "Another chat is using the browser. Try again later.",
+			}),
+		);
+		// The model gets the same words, so it knows why the command did not run.
+		expect(await tool.toModelOutput?.({ toolCallId: "t", input: { code: "return 1;" }, output })).toEqual({
+			type: "text",
+			value: "Browser run: errored. Another chat is using the browser. Try again later.",
+		});
+
+		// Other `busy` refusals keep the generic text.
+		runnerQueue.push({ ok: false, error: { code: "busy", message: "Busy" } });
+		expect(
+			await ai_chat_tool_create_browser_run(ctx, browserCtxData).execute?.(
+				{ code: "return 1;" },
+				{ toolCallId: "t2", messages: [] },
+			),
+		).toEqual(
+			ai_chat_file_result("Browser run", "errored", [], "execution", {
+				errorText: "The browser command could not finish.",
+			}),
+		);
+	});
+
+	test("tells the model the user turned agent access off, without asking it to retry", async () => {
+		// Before the run: the access check already sees the switch off.
+		const refused = makeCtx(async () => ({ ok: false, reason: "agent_access_off" }));
+		const tool = ai_chat_tool_create_browser_run(refused.ctx, browserCtxData);
+		const expected = ai_chat_file_result("Browser run", "errored", [], "agent_access_off", {
+			errorText: "The user turned off agent access to this browser.",
+		});
+		const output = ai_chat_file_result_schema.parse(
+			await tool.execute?.({ code: "return 1;" }, { toolCallId: "t", messages: [] }),
+		);
+		expect(output).toEqual(expected);
+		expect(runnerCalls).toEqual([]);
+		expect(await tool.toModelOutput?.({ toolCallId: "t", input: { code: "return 1;" }, output })).toEqual({
+			type: "text",
+			value: "Browser run: errored. The user turned off agent access to this browser.",
+		});
+
+		// During the run: the runner refuses because the switch changed after the check.
+		const { ctx } = makeCtx(async () => accessOk);
+		runnerQueue.push({
+			ok: false,
+			error: { code: "agent_access_off", message: "Agent access to this browser is off." },
+		});
+		expect(
+			await ai_chat_tool_create_browser_run(ctx, browserCtxData).execute?.(
+				{ code: "return 1;" },
+				{ toolCallId: "t2", messages: [] },
+			),
+		).toEqual(expected);
+
+		// After the run: the command finished, but the switch turned off while it ran.
+		let accessChecks = 0;
+		const late = makeCtx(async () => (++accessChecks === 1 ? accessOk : { ok: false, reason: "agent_access_off" }));
+		runnerQueue.push(runner_run_result());
+		expect(
+			await ai_chat_tool_create_browser_run(late.ctx, browserCtxData).execute?.(
+				{ code: "return 1;" },
+				{ toolCallId: "t3", messages: [] },
+			),
+		).toEqual(expected);
+	});
+
+	test("tells the model the page is on a site the user blocked, without asking it to retry", async () => {
+		const { ctx } = makeCtx(async () => accessOk);
+		const tool = ai_chat_tool_create_browser_run(ctx, browserCtxData);
+		runnerQueue.push({
+			ok: false,
+			error: { code: "agent_blocked_site", message: "The page is on a site the agent may not use." },
+		});
+		const output = ai_chat_file_result_schema.parse(
+			await tool.execute?.({ code: "return 1;" }, { toolCallId: "t", messages: [] }),
+		);
+		expect(output).toEqual(
+			ai_chat_file_result("Browser run", "errored", [], "agent_blocked_site", {
+				errorText: "This site is on the list of sites the agent may not use.",
+			}),
+		);
+		expect(await tool.toModelOutput?.({ toolCallId: "t", input: { code: "return 1;" }, output })).toEqual({
+			type: "text",
+			value: "Browser run: errored. This site is on the list of sites the agent may not use.",
+		});
+	});
+
+	test("web browser_run allows navigation and sends a web source to the file doors", async () => {
+		const webAccess = {
+			ok: true,
+			mode: "web",
+			control: "ready",
+			controlGen: 1,
+			loadGen: 1,
+			navGen: 1,
+			runnerSessionId: "runner-session-1",
+		};
+		const webCtxData = { ...browserCtxData, browser: { ...browserCtxData.browser, mode: "web" as const } };
+		const { ctx, runQuery, runMutation } = makeCtx(async () => webAccess);
+		runQuery.mockImplementation(async (ref) => {
+			if (getFunctionName(ref) !== "ai_chat_workspaces:resolve") return webAccess;
+			return { _yay: server_ai_tools_test_ctx_data };
+		});
+		runMutation.mockResolvedValueOnce({ _nay: { message: "Stale browser" } });
+		const tool = ai_chat_tool_create_browser_run(ctx, webCtxData);
+		expect(tool.description).toContain("You may navigate with `page.goto`.");
+		expect(tool.description).not.toContain("Never navigate");
+		// The runner captures downloads itself, so the Playwright download event never fires and a
+		// goto to a download URL is aborted.
+		expect(tool.description).toContain(
+			"To download, click the link or submit the form, then wait a moment in the same snippet",
+		);
+		expect(tool.description).toContain('Do not use page.waitForEvent("download"): it never fires here.');
+		expect(tool.description).toContain(
+			"Do not page.goto a download URL: that navigation is aborted and the snippet fails.",
+		);
+
+		runnerQueue.push(runner_run_result({ files: [binaryFile] }));
+		await tool.execute?.({ code: "return 1;" }, { toolCallId: "t", messages: [] });
+		expect(getFunctionName(runMutation.mock.calls[0]?.[0])).toBe("files_browser:prepare_file_output");
+		expect(runMutation.mock.calls[0]?.[1]).toMatchObject({ expectedSource: { mode: "web" } });
+	});
+
+	test("agent downloads become pending files in /.system/downloads, and a bad one is dropped alone", async () => {
+		const { runMutation, tool } = web_ctx(true);
+		const paths = ["/reports/output.bin", "/.system/downloads/quarterly-report.pdf", "/.system/downloads/agents-download.md"];
+		for (const [index, path] of paths.entries()) {
+			runMutation.mockResolvedValueOnce({
+				_yay: {
+					kind: "completed",
+					file: { target: { kind: "private", id: "private-" + index }, path, size: 4, contentType: "x/y" },
+				},
+			});
+		}
+		runnerQueue.push(
+			runner_run_result({
+				files: [binaryFile],
+				downloads: [
+					pdfDownload,
+					// A broken type from the web server is left out, so the writer guesses from the name.
+					{ name: "AGENTS.md", contentType: "not a type", dataBase64: "" },
+					{ name: "broken.bin", contentType: "application/octet-stream", dataBase64: "!!!!" },
+				],
+				downloadsDropped: 2,
+			}),
+		);
+
+		const output = ai_chat_file_result_schema.parse(
+			await tool.execute?.({ code: "return 1;" }, { toolCallId: "t", messages: [] }),
+		);
+		expect(output.metadata.status).toBe("succeeded");
+		expect(output.metadata.files).toHaveLength(3);
+		expect(runMutation.mock.calls.map(([, args]) => (args as { path: string }).path)).toEqual(paths);
+		expect(runMutation.mock.calls[1]?.[1]).toMatchObject({
+			organizationId: server_ai_tools_test_ctx_data.organizationId,
+			workspaceId: server_ai_tools_test_ctx_data.workspaceId,
+			contentType: "application/pdf",
+			expectedSource: { mode: "web" },
+		});
+		expect(runMutation.mock.calls[2]?.[1]).toMatchObject({ contentType: "text/markdown;charset=utf-8" });
+		expect(observation_text()).toContain(
+			"A download for /.system/downloads/broken.bin was not saved: its data could not be read.",
+		);
+		expect(observation_text()).toContain("Downloads over the limit that were not saved: 2.");
+	});
+
+	test("Ask mode refuses agent downloads like emitted files", async () => {
+		const { runMutation, tool } = web_ctx(false);
+		runnerQueue.push(runner_run_result({ downloads: [pdfDownload] }));
+		expect(await tool.execute?.({ code: "return 1;" }, { toolCallId: "t", messages: [] })).toMatchObject({
+			metadata: { status: "errored", reason: "agent_required", files: [] },
+		});
+		expect(runMutation).not.toHaveBeenCalled();
+	});
+
 	test("caps browser calls at twenty", async () => {
 		const { ctx } = makeCtx(async () => accessOk);
 		const tool = ai_chat_tool_create_browser_run(ctx, browserCtxData);
@@ -2980,6 +3189,7 @@ describe("browser tools", () => {
 
 	test("reload requires a fresh draft capture and adopts its exact returned lease", async () => {
 		const session = {
+			mode: "file",
 			control: "ready",
 			controlGen: 1,
 			loadGen: 1,
@@ -3028,6 +3238,7 @@ describe("browser tools", () => {
 		const { ctx } = makeCtx(
 			async () => ({
 				_yay: {
+					mode: "file",
 					control: "ready",
 					controlGen: 1,
 					loadGen: 1,

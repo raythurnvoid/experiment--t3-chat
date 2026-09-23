@@ -7,6 +7,7 @@ import {
 	FileText,
 	Film,
 	GalleryVerticalEnd,
+	Globe,
 	Image,
 	Images,
 	KeyRound,
@@ -27,6 +28,7 @@ import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { app_convex_api } from "@/lib/app-convex-client.ts";
 import {
 	url_path_api_keys,
+	url_path_browser,
 	url_path_chat,
 	url_path_files,
 	url_path_plugin_page,
@@ -431,9 +433,17 @@ export const MainAppSidebar = memo(function MainAppSidebar(props: MainAppSidebar
 	// Installed plugin pages have their own access checks and stay visible below.
 	const showPluginsManagementNavigation =
 		workspacePermissions === "all" || workspacePermissions?.includes("workspace.plugins.manage") === true;
+	const canUseBrowser =
+		workspacePermissions === "all" || workspacePermissions?.includes("workspace.browser.use") === true;
+	// The query also checks the feature flag. Free plans still see the item, so they can find the feature.
+	const webBrowserAvailable = useQuery(
+		app_convex_api.files_browser.web_browser_available,
+		canUseBrowser ? { membershipId } : "skip",
+	);
 
 	const chatPath = url_path_chat({ organizationName, workspaceName });
 	const filesPath = url_path_files({ organizationName, workspaceName });
+	const browserPath = url_path_browser({ organizationName, workspaceName });
 	const apiKeysPath = url_path_api_keys({ organizationName, workspaceName });
 	const serviceAccountsPath = url_path_service_accounts({ organizationName, workspaceName });
 	const usersPath = url_path_users({ organizationName, workspaceName });
@@ -508,6 +518,14 @@ export const MainAppSidebar = memo(function MainAppSidebar(props: MainAppSidebar
 						icon={FileText}
 						tooltip={mainAppSidebarCollapsed ? "Files" : undefined}
 					/>
+					{canUseBrowser && webBrowserAvailable?.enabled ? (
+						<MainAppSidebarItem
+							to={browserPath}
+							label="Browser"
+							icon={Globe}
+							tooltip={mainAppSidebarCollapsed ? "Browser" : undefined}
+						/>
+					) : null}
 					<MainAppSidebarItem
 						to={apiKeysPath}
 						label="API keys"

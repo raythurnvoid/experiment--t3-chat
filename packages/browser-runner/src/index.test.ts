@@ -23,6 +23,8 @@ import {
 
 const URL_BASE = "https://runner.internal";
 const OWNERS = { ownerId: "user_1", organizationId: "org_1", workspaceId: "ws_1" };
+const PROFILE_SECRET = Buffer.alloc(32, 1).toString("base64");
+const PROFILE = { profileId: "profile_1", profileKey: Buffer.alloc(32, 7).toString("base64"), agentBlockedHosts: [] as string[] };
 
 type SessionRecord = Parameters<typeof session_can_run>[0];
 type DurableObjectState = ConstructorParameters<typeof BrowserRegistry>[0];
@@ -56,6 +58,7 @@ function make_env(opts: {
 		BROWSER_SESSIONS: make_namespace(opts.sessions),
 		BROWSER_REGISTRY: make_namespace(opts.registry),
 		BROWSER_RUNNER_SECRET: opts.secret ?? "test-secret",
+		BROWSER_PROFILE_KEY: PROFILE_SECRET,
 		BROWSER_RUNNER_DISABLED: opts.disabled ? "true" : undefined,
 		BROWSER_PREVIEW_URL: opts.previewUrl ?? "https://preview.invalid/v0",
 	};
@@ -83,6 +86,8 @@ function make_storage(initial: Record<string, unknown> = {}) {
 			id: { toString: () => "test-id" },
 			storage: {
 				get: async <T,>(key: string) => map.get(key) as T | undefined,
+				list: async <T,>(options: { prefix: string }) =>
+					new Map([...map].filter(([key]) => key.startsWith(options.prefix))) as Map<string, T>,
 				put: async (key: string, value: unknown) => {
 					map.set(key, value);
 				},
@@ -103,6 +108,7 @@ function make_storage(initial: Record<string, unknown> = {}) {
 function make_record(overrides: Partial<SessionRecord> = {}): SessionRecord {
 	const now = Date.now();
 	return {
+		mode: "file",
 		version: 1,
 		sessionId: "session-1",
 		grantId: "grant-1",
@@ -130,7 +136,7 @@ function make_record(overrides: Partial<SessionRecord> = {}): SessionRecord {
 		attemptId: "attempt-1",
 		closeAttempts: 0,
 		...overrides,
-	};
+	} as SessionRecord;
 }
 
 
@@ -189,6 +195,7 @@ describe("kill switch", () => {
 
 describe("open validation", () => {
 	const valid = () => ({
+		mode: "file",
 		...OWNERS,
 		nodeId: "node_1",
 		navGen: 1,
@@ -263,6 +270,7 @@ describe("open validation", () => {
 			sessions: () => ({ ok: false, error: { code: "busy", message: "busy" } }),
 		});
 		const validBody = {
+			mode: "file",
 			...OWNERS,
 			nodeId: "node_1",
 			navGen: 1,
@@ -287,6 +295,7 @@ describe("open validation", () => {
 			},
 		});
 		const validBody = {
+			mode: "file",
 			...OWNERS,
 			nodeId: "node_1",
 			navGen: 1,
@@ -298,6 +307,334 @@ describe("open validation", () => {
 		const res = await handle_request(browser_request("open", JSON.stringify(validBody)), env);
 		expect((await res.json()).error.code).toBe("workspace_busy");
 		expect(sessionCalls).toBe(0);
+	});
+
+	it("passes a web open through the claim with the owner ids", async () => {
+		const received: Array<[string, unknown]> = [];
+		const env = make_env({
+			registry: (path, body) => {
+				received.push([`registry:${path}`, body]);
+				return path === "/claim" ? { ok: true, grantId: "g1" } : { ok: true };
+			},
+			sessions: (path, body) => {
+				received.push([`session:${path}`, body]);
+				return { ok: true, session: { sessionId: "s1" } };
+			},
+		});
+		const res = await handle_request(browser_request("open", JSON.stringify({
+			mode: "web", ...OWNERS, navGen: 1, startUrl: "example.com", agentAccess: false, ...PROFILE, agentBlockedHosts: ["bank.test"],
+		})), env);
+		expect(res.status).toBe(200);
+		expect(received).toEqual([
+			["registry:/claim", { workspaceKey: expect.any(String), ownerId: "user_1", organizationId: "org_1" }],
+			["session:/open", {
+				mode: "web", startUrl: "example.com", agentAccess: false, ...PROFILE, agentBlockedHosts: ["bank.test"], grantId: "g1", attemptId: expect.any(String),
+				...OWNERS, navGen: 1, viewport: { width: 1280, height: 900 },
+			}],
+			["registry:/confirm", { grantId: "g1" }],
+		]);
+	});
+
+	it.each([
+		{ name: "no mode", body: { mode: undefined } },
+		{ name: "a file field", body: { nodeId: "node_1" } },
+		{ name: "navGen 2", body: { navGen: 2 } },
+		{ name: "no agentAccess", body: { agentAccess: undefined } },
+		{ name: "a number startUrl", body: { startUrl: 1 } },
+		{ name: "no profileId", body: { profileId: undefined } },
+		{ name: "a profileId with a colon", body: { profileId: "a:b" } },
+		{ name: "no profileKey", body: { profileKey: undefined } },
+		{ name: "a short profileKey", body: { profileKey: Buffer.alloc(16).toString("base64") } },
+		{ name: "a profileKey that is not base64", body: { profileKey: "not base64!" } },
+		{ name: "no agentBlockedHosts", body: { agentBlockedHosts: undefined } },
+		{ name: "51 agentBlockedHosts", body: { agentBlockedHosts: Array.from({ length: 51 }, (_, index) => `site${index}.test`) } },
+		{ name: "a 254-char blocked host", body: { agentBlockedHosts: ["a".repeat(254)] } },
+		{ name: "an empty blocked host", body: { agentBlockedHosts: [""] } },
+	])("rejects a web open with $name", async ({ body }) => {
+		let calls = 0;
+		const env = make_env({ registry: () => { calls += 1; return { ok: true, grantId: "g1" }; } });
+		const res = await handle_request(browser_request("open", JSON.stringify({
+			mode: "web", ...OWNERS, navGen: 1, startUrl: null, agentAccess: true, ...PROFILE, ...body,
+		})), env);
+		expect(res.status).toBe(400);
+		expect(calls).toBe(0);
+	});
+});
+
+describe("web host routes", () => {
+	function host_request(route: "agent-access" | "reload", body: unknown, headers: Record<string, string> = { Authorization: "Bearer test-secret" }) {
+		return new Request(`${URL_BASE}/internal/browser/${route}`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json", ...headers },
+			body: JSON.stringify(body),
+		});
+	}
+
+	it("passes agent access through to the session", async () => {
+		const received: Array<[string, unknown]> = [];
+		const env = make_env({ sessions: (path, body) => { received.push([path, body]); return { ok: true, session: { agentAccess: false } }; } });
+		const res = await handle_request(host_request("agent-access", { ...OWNERS, sessionId: "session-1", on: false }), env);
+		expect(await res.json()).toEqual({ ok: true, session: { agentAccess: false } });
+		expect(received).toEqual([["/agent-access", { sessionId: "session-1", on: false }]]);
+	});
+
+	it.each([
+		{ name: "a string flag", body: { ...OWNERS, sessionId: "session-1", on: "false" } },
+		{ name: "an unknown field", body: { ...OWNERS, sessionId: "session-1", on: false, url: "https://example.com/" } },
+		{ name: "no session id", body: { ...OWNERS, on: false } },
+	])("rejects agent access with $name", async ({ body }) => {
+		let calls = 0;
+		const env = make_env({ sessions: () => { calls += 1; return { ok: true }; } });
+		expect((await handle_request(host_request("agent-access", body), env)).status).toBe(400);
+		expect(calls).toBe(0);
+	});
+
+	it("refuses agent access without a token", async () => {
+		const res = await handle_request(host_request("agent-access", { ...OWNERS, sessionId: "session-1", on: false }, {}), make_env({}));
+		expect(res.status).toBe(401);
+	});
+
+	it("routes a web reload without a file snapshot", async () => {
+		const received: Array<[string, unknown]> = [];
+		const env = make_env({ sessions: (path, body) => { received.push([path, body]); return { ok: true }; } });
+		const expectedAgentLease = { navGen: 1, loadGen: 1, controlGen: 2 };
+		const res = await handle_request(host_request("reload", { mode: "web", ...OWNERS, sessionId: "session-1", navGen: 1, expectedAgentLease }), env);
+		expect(res.status).toBe(200);
+		expect(received).toEqual([["/reload", { mode: "web", sessionId: "session-1", navGen: 1, expectedAgentLease }]]);
+	});
+
+	it.each([
+		{ name: "a file field", body: { html: "<p></p>" } },
+		{ name: "navGen 2", body: { navGen: 2 } },
+	])("rejects a web reload with $name", async ({ body }) => {
+		let calls = 0;
+		const env = make_env({ sessions: () => { calls += 1; return { ok: true }; } });
+		const res = await handle_request(host_request("reload", { mode: "web", ...OWNERS, sessionId: "session-1", navGen: 1, ...body }), env);
+		expect(res.status).toBe(400);
+		expect(calls).toBe(0);
+	});
+});
+
+describe("profile host routes", () => {
+	function profile_request(route: "summary" | "clear" | "delete", body: unknown, headers: Record<string, string> = { Authorization: "Bearer test-secret" }) {
+		return new Request(`${URL_BASE}/internal/browser/profile-${route}`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json", ...headers },
+			body: JSON.stringify(body),
+		});
+	}
+	const { agentBlockedHosts: _hosts, ...PROFILE_INPUT } = PROFILE;
+
+	it.each([
+		{ route: "summary" as const, body: { ...OWNERS, ...PROFILE_INPUT }, sent: { ...OWNERS, ...PROFILE_INPUT } },
+		{ route: "clear" as const, body: { ...OWNERS, ...PROFILE_INPUT, domain: "github.com" }, sent: { ...OWNERS, ...PROFILE_INPUT, domain: "github.com" } },
+		{ route: "delete" as const, body: { ...OWNERS, profileId: "profile_1" }, sent: { profileId: "profile_1" } },
+	])("passes profile-$route to the owner's session object", async ({ route, body, sent }) => {
+		const received: Array<[string, unknown]> = [];
+		const env = make_env({ sessions: (path, value) => { received.push([path, value]); return { ok: true }; } });
+		const res = await handle_request(profile_request(route, body), env);
+		expect(await res.json()).toEqual({ ok: true });
+		expect(received).toEqual([[`/profile/${route}`, sent]]);
+	});
+
+	it.each([
+		{ route: "summary" as const, name: "an unknown field", body: { ...OWNERS, ...PROFILE_INPUT, domain: "github.com" } },
+		{ route: "summary" as const, name: "a short key", body: { ...OWNERS, ...PROFILE_INPUT, profileKey: Buffer.alloc(31).toString("base64") } },
+		{ route: "summary" as const, name: "no profile id", body: { ...OWNERS, profileKey: PROFILE.profileKey } },
+		{ route: "clear" as const, name: "no domain", body: { ...OWNERS, ...PROFILE_INPUT } },
+		{ route: "clear" as const, name: "a 254-char domain", body: { ...OWNERS, ...PROFILE_INPUT, domain: "a".repeat(254) } },
+		{ route: "delete" as const, name: "a profile key", body: { ...OWNERS, ...PROFILE_INPUT } },
+		{ route: "delete" as const, name: "a profile id with a colon", body: { ...OWNERS, profileId: "profile:1" } },
+		{ route: "delete" as const, name: "no owner", body: { profileId: "profile_1" } },
+	])("rejects profile-$route with $name", async ({ route, body }) => {
+		let calls = 0;
+		const env = make_env({ sessions: () => { calls += 1; return { ok: true }; } });
+		expect((await handle_request(profile_request(route, body), env)).status).toBe(400);
+		expect(calls).toBe(0);
+	});
+
+	it.each(["summary", "clear", "delete"] as const)("refuses profile-%s without a token", async (route) => {
+		const res = await handle_request(profile_request(route, { ...OWNERS, profileId: "profile_1" }, {}), make_env({}));
+		expect(res.status).toBe(401);
+	});
+
+	it("keeps profile-delete open while the runner is disabled, but not summary", async () => {
+		const env = make_env({ disabled: true });
+		expect((await handle_request(profile_request("delete", { ...OWNERS, profileId: "profile_1" }), env)).status).toBe(200);
+		expect((await handle_request(profile_request("summary", { ...OWNERS, ...PROFILE_INPUT }), env)).status).not.toBe(200);
+	});
+
+	it("forwards saveProfile on close", async () => {
+		const received: Array<[string, unknown]> = [];
+		const env = make_env({ sessions: (path, value) => { received.push([path, value]); return { ok: true }; } });
+		await handle_request(browser_request("close", JSON.stringify({ ...OWNERS, sessionId: "session-1", saveProfile: true })), env);
+		expect(received).toEqual([["/close", { sessionId: "session-1", saveProfile: true }]]);
+	});
+
+	it("forwards the close reason as `by` and drops a reason that is not a short code", async () => {
+		const received: Array<[string, Record<string, unknown>]> = [];
+		const env = make_env({ sessions: (path, value) => { received.push([path, value as Record<string, unknown>]); return { ok: true }; } });
+		await handle_request(browser_request("close", JSON.stringify({ ...OWNERS, sessionId: "session-1", reason: "access_lost" })), env);
+		expect(received).toEqual([["/close", { sessionId: "session-1", by: "access_lost" }]]);
+
+		// The reason is only logged, so a bad one must not stop the close.
+		const bad = await handle_request(browser_request("close", JSON.stringify({ ...OWNERS, sessionId: "session-1", reason: "Access Lost!" })), env);
+		expect(bad.status).toBe(200);
+		expect(received).toHaveLength(2);
+		expect(received[1]![1].by).toBeUndefined();
+	});
+});
+
+describe("download and upload host routes", () => {
+	function route_request(route: string, body: unknown, headers: Record<string, string> = { Authorization: "Bearer test-secret" }) {
+		return new Request(`${URL_BASE}/internal/browser/${route}`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json", ...headers },
+			body: JSON.stringify(body),
+		});
+	}
+	const FILE = { name: "a.txt", contentType: "text/plain", url: "https://r2.test/a?sig=1" };
+
+	it.each([
+		{ route: "download-info", objectPath: "/download/info", body: { ...OWNERS, sessionId: "s", downloadId: "d" }, sent: { sessionId: "s", downloadId: "d" } },
+		{
+			route: "download-push",
+			objectPath: "/download/push",
+			body: { ...OWNERS, sessionId: "s", downloadId: "d", url: "https://r2.test/put", headers: { "Content-Type": "text/csv" } },
+			sent: { sessionId: "s", downloadId: "d", url: "https://r2.test/put", headers: { "Content-Type": "text/csv" } },
+		},
+		{ route: "upload-grant", objectPath: "/upload/grant", body: { ...OWNERS, sessionId: "s", chooserId: "c", controlGen: 2 }, sent: { sessionId: "s", chooserId: "c", controlGen: 2 } },
+		{
+			route: "upload-fill",
+			objectPath: "/upload/fill",
+			body: { ...OWNERS, sessionId: "s", chooserId: "c", controlGen: 2, files: [FILE] },
+			sent: { sessionId: "s", chooserId: "c", controlGen: 2, files: [FILE] },
+		},
+	])("passes $route to the owner's session object", async ({ route, objectPath, body, sent }) => {
+		const received: Array<[string, unknown]> = [];
+		const env = make_env({ sessions: (path, value) => { received.push([path, value]); return { ok: true }; } });
+		const res = await handle_request(route_request(route, body), env);
+		expect(await res.json()).toEqual({ ok: true });
+		expect(received).toEqual([[objectPath, sent]]);
+	});
+
+	it.each([
+		{ route: "download-info", name: "an unknown field", body: { ...OWNERS, sessionId: "s", downloadId: "d", url: "https://r2.test/" } },
+		{ route: "download-info", name: "no download id", body: { ...OWNERS, sessionId: "s" } },
+		{ route: "download-push", name: "an http URL", body: { ...OWNERS, sessionId: "s", downloadId: "d", url: "http://r2.test/", headers: {} } },
+		{ route: "download-push", name: "a header with a newline", body: { ...OWNERS, sessionId: "s", downloadId: "d", url: "https://r2.test/", headers: { "X-A": "a\r\nb" } } },
+		{ route: "download-push", name: "a bad header name", body: { ...OWNERS, sessionId: "s", downloadId: "d", url: "https://r2.test/", headers: { "X A": "a" } } },
+		{ route: "upload-grant", name: "no controlGen", body: { ...OWNERS, sessionId: "s", chooserId: "c" } },
+		{ route: "upload-fill", name: "no files", body: { ...OWNERS, sessionId: "s", chooserId: "c", controlGen: 2, files: [] } },
+		{ route: "upload-fill", name: "11 files", body: { ...OWNERS, sessionId: "s", chooserId: "c", controlGen: 2, files: Array(11).fill(FILE) } },
+		{ route: "upload-fill", name: "an http file URL", body: { ...OWNERS, sessionId: "s", chooserId: "c", controlGen: 2, files: [{ ...FILE, url: "http://r2.test/a" }] } },
+		{ route: "upload-fill", name: "an extra file field", body: { ...OWNERS, sessionId: "s", chooserId: "c", controlGen: 2, files: [{ ...FILE, size: 1 }] } },
+		{ route: "upload-fill", name: "a 256-char name", body: { ...OWNERS, sessionId: "s", chooserId: "c", controlGen: 2, files: [{ ...FILE, name: "n".repeat(256) }] } },
+	])("rejects $route with $name", async ({ route, body }) => {
+		let calls = 0;
+		const env = make_env({ sessions: () => { calls += 1; return { ok: true }; } });
+		expect((await handle_request(route_request(route, body), env)).status).toBe(400);
+		expect(calls).toBe(0);
+	});
+
+	it.each(["download-info", "download-push", "upload-fill", "upload-grant"])("refuses %s without a token", async (route) => {
+		expect((await handle_request(route_request(route, { ...OWNERS }, {}), make_env({}))).status).toBe(401);
+	});
+});
+
+describe("viewer upload route", () => {
+	const APP = "http://localhost:5173";
+	function upload_env() {
+		const env = make_env({});
+		env.BROWSER_APP_ORIGINS = ` ${APP} , https://app.example`;
+		const forwarded: Request[] = [];
+		env.BROWSER_SESSIONS = {
+			idFromName: (name: string) => ({ toString: () => name }),
+			get: () => ({ fetch: async (request: Request) => { forwarded.push(request); return Response.json({ ok: true }); } }),
+		};
+		return { env, forwarded };
+	}
+	function upload_request(method: string, headers: Record<string, string>, body?: BodyInit) {
+		const url = new URL(`${URL_BASE}/viewer/upload`);
+		for (const [name, value] of Object.entries({ ...OWNERS, grantId: "grant-1", name: "notes.txt" })) url.searchParams.set(name, value);
+		return new Request(url, { method, headers, body });
+	}
+
+	it("answers a preflight from an allowed origin", async () => {
+		const { env } = upload_env();
+		const res = await handle_request(upload_request("OPTIONS", { Origin: APP, "Access-Control-Request-Method": "PUT" }), env);
+		expect(res.status).toBe(204);
+		expect(Object.fromEntries(res.headers)).toMatchObject({
+			"access-control-allow-origin": APP, "access-control-allow-methods": "PUT", "access-control-allow-headers": "Content-Type", vary: "Origin",
+		});
+	});
+
+	it.each([
+		{ name: "another origin", headers: { Origin: "https://evil.test", "Access-Control-Request-Method": "PUT" } },
+		{ name: "no origin", headers: { "Access-Control-Request-Method": "PUT" } },
+		{ name: "another method", headers: { Origin: APP, "Access-Control-Request-Method": "POST" } },
+	])("refuses a preflight with $name", async ({ headers }) => {
+		const { env } = upload_env();
+		const res = await handle_request(upload_request("OPTIONS", headers), env);
+		expect(res.status).toBe(403);
+		expect(res.headers.get("Access-Control-Allow-Origin")).toBeNull();
+	});
+
+	it("forwards a PUT from an allowed origin and adds CORS headers", async () => {
+		const { env, forwarded } = upload_env();
+		const res = await handle_request(upload_request("PUT", { Origin: APP, "Content-Type": "text/plain", "Content-Length": "5" }, "hello"), env);
+		expect(res.status).toBe(200);
+		expect(await res.json()).toEqual({ ok: true });
+		expect(res.headers.get("Access-Control-Allow-Origin")).toBe(APP);
+		expect(forwarded).toHaveLength(1);
+		expect(new URL(forwarded[0]!.url).searchParams.get("grantId")).toBe("grant-1");
+		expect(await forwarded[0]!.text()).toBe("hello");
+	});
+
+	it("answers a failed session call with JSON and CORS headers, not a bare 500", async () => {
+		const { env } = upload_env();
+		env.BROWSER_SESSIONS = {
+			idFromName: (name: string) => ({ toString: () => name }),
+			get: () => ({ fetch: async () => { throw new Error("Session object reset"); } }),
+		};
+		const res = await handle_request(upload_request("PUT", { Origin: APP, "Content-Type": "text/plain", "Content-Length": "5" }, "hello"), env);
+		expect(res.status).toBe(500);
+		expect(await res.json()).toEqual({ ok: false, code: "upload_failed" });
+		expect(res.headers.get("Access-Control-Allow-Origin")).toBe(APP);
+	});
+
+	it("refuses a PUT from another origin, and every PUT when the list is empty", async () => {
+		const { env, forwarded } = upload_env();
+		const refused = await handle_request(upload_request("PUT", { Origin: "https://evil.test", "Content-Length": "5" }, "hello"), env);
+		expect(refused.status).toBe(403);
+		expect(await refused.json()).toEqual({ ok: false, code: "origin_refused" });
+		expect(refused.headers.get("Access-Control-Allow-Origin")).toBeNull();
+		env.BROWSER_APP_ORIGINS = "";
+		expect((await handle_request(upload_request("PUT", { Origin: APP, "Content-Length": "5" }, "hello"), env)).status).toBe(403);
+		expect(forwarded).toEqual([]);
+	});
+
+	it("refuses a PUT over 20 MiB or without a length before reading it", async () => {
+		const { env, forwarded } = upload_env();
+		const large = await handle_request(upload_request("PUT", { Origin: APP, "Content-Length": String(LIMITS.uploadBytes + 1) }, "x"), env);
+		expect(large.status).toBe(413);
+		expect(await large.json()).toEqual({ ok: false, code: "too_large" });
+		expect(large.headers.get("Access-Control-Allow-Origin")).toBe(APP);
+		const url = new URL(`${URL_BASE}/viewer/upload`);
+		for (const [name, value] of Object.entries({ ...OWNERS, grantId: "grant-1", name: "notes.txt" })) url.searchParams.set(name, value);
+		// A stream body has no length, like a chunked upload.
+		const stream = new ReadableStream({ start(controller) { controller.enqueue(new Uint8Array([1])); controller.close(); } });
+		const chunked = new Request(url, { method: "PUT", headers: { Origin: APP }, body: stream, duplex: "half" } as RequestInit);
+		expect((await handle_request(chunked, env)).status).toBe(411);
+		expect(forwarded).toEqual([]);
+	});
+
+	it("refuses a PUT without a grant or a name", async () => {
+		const { env } = upload_env();
+		const url = new URL(`${URL_BASE}/viewer/upload`);
+		for (const [name, value] of Object.entries(OWNERS)) url.searchParams.set(name, value);
+		const res = await handle_request(new Request(url, { method: "PUT", headers: { Origin: APP, "Content-Length": "1" }, body: "x" }), env);
+		expect(res.status).toBe(400);
 	});
 });
 
@@ -366,7 +703,7 @@ describe("execute_browser_command", () => {
 	it.each([undefined, null, "", "home", "CURRENT", 1])("drops the whole HTTP batch for forged workspace %s", async (workspace) => {
 		const finishes: unknown[] = [];
 		const env = make_env({ sessions: (path, body) => {
-			if (path === "/run/begin") return { ok: true, lease: { sessionId: "session-1", viewport: { width: 1280, height: 900 } } };
+			if (path === "/run/begin") return { ok: true, lease: { sessionId: "session-1", mode: "file", viewport: { width: 1280, height: 900 } } };
 			if (path === "/run/settle") return { ok: true, blockedPopups: 0 };
 			finishes.push(body);
 			return { ok: true };
@@ -404,7 +741,7 @@ describe("execute_browser_command", () => {
 				calls.push(path);
 				if (path === "/run/begin") return {
 					ok: true,
-					lease: { sessionId: "session-1", viewport: { width: 1280, height: 900 } },
+					lease: { sessionId: "session-1", mode: "file", viewport: { width: 1280, height: 900 } },
 				};
 				if (path === "/run/settle") return changed
 					? { ok: false, error: { code: "closed", message: "Browser target changed." } }
@@ -450,7 +787,7 @@ describe("execute_browser_command", () => {
 		const env = make_env({ sessions: async (path, body) => {
 			calls.push(path);
 			if (path === "/run/begin") return {
-				ok: true, lease: { sessionId: "session-1", viewport: { width: 1280, height: 900 } },
+				ok: true, lease: { sessionId: "session-1", mode: "file", viewport: { width: 1280, height: 900 } },
 			};
 			if (path === "/run/settle") {
 				expect(body).toEqual({ sessionId: "session-1", commandId: "command-1" });
@@ -480,7 +817,7 @@ describe("execute_browser_command", () => {
 		expect(returned).toBe(false);
 		expect(gateway).toHaveBeenCalledWith({ props: { ...OWNERS, sessionId: "session-1", commandId: "command-1" } });
 		expect(evaluate).toHaveBeenCalledWith({
-			sessionId: "session-1", runtimeOrigin: "https://controller.browser.invalid", viewport: { width: 1280, height: 900 }, timeoutMs: LIMITS.commandTimeoutMs,
+			sessionId: "session-1", mode: "file", runtimeOrigin: "https://controller.browser.invalid", viewport: { width: 1280, height: 900 }, timeoutMs: LIMITS.commandTimeoutMs,
 		});
 		settled.resolve();
 		const result = await (await pending).json();
@@ -491,6 +828,116 @@ describe("execute_browser_command", () => {
 		]);
 		expect(calls).toEqual(["/run/begin", "/run/settle", "/run/finish"]);
 		expect(finishes).toEqual([expect.objectContaining({ tainted: false, fileCount: 2, fileBytes: 4 })]);
+	});
+
+	it("adds agent downloads under the shared 8-file limit and counts the dropped ones", async () => {
+		const env = make_env({ sessions: (path) => {
+			if (path === "/run/begin") return { ok: true, lease: { sessionId: "session-1", mode: "web", viewport: { width: 1280, height: 900 } } };
+			if (path === "/run/settle") return { ok: true, blockedPopups: 0 };
+			// The object already dropped one download of its own.
+			return {
+				ok: true, state: "ready", downloadsDropped: 1,
+				downloads: Array.from({ length: 4 }, (_, index) => ({ name: `d${index}.csv`, contentType: "text/csv", dataBase64: "YWJj" })),
+			};
+		} });
+		env.BROWSER_PREVIEW_URL = undefined;
+		const evaluate = vi.fn(async () => ({
+			ok: true, resultJson: "1", viewport: null, popups: { blocked: 0, urls: [] }, consoleEntries: [], pageErrors: [], logs: [], logsTruncated: false,
+			files: Array.from({ length: 6 }, (_, index) => ({ workspace: "current" as const, path: `/f${index}.bin`, bytes: new Uint8Array([index]) })),
+		}));
+		env.LOADER = { load: () => ({ getEntrypoint: () => ({ evaluate }) }) };
+		const ctx = { exports: { BrowserConnectionGateway: () => ({ fetch }) } } as unknown as NonNullable<Parameters<typeof handle_request>[2]>;
+		const response = await handle_request(browser_request("run", JSON.stringify({
+			...OWNERS, sessionId: "session-1", navGen: 1, loadGen: 1, controlGen: 1, code: "return 1;",
+		})), env, ctx);
+		const result = await response.json();
+		expect(result.status).toBe("succeeded");
+		expect(result.files).toHaveLength(6);
+		expect(result.downloads).toEqual([
+			{ name: "d0.csv", contentType: "text/csv", dataBase64: "YWJj" },
+			{ name: "d1.csv", contentType: "text/csv", dataBase64: "YWJj" },
+		]);
+		expect(result.downloadsDropped).toBe(3);
+	});
+
+	it("drops a download that would pass 8 MiB with the files, and omits downloadsDropped at 0", async () => {
+		const big = Buffer.alloc(LIMITS.fileBytes - 2).toString("base64");
+		const make = (downloads: unknown[]) => {
+			const env = make_env({ sessions: (path) => {
+				if (path === "/run/begin") return { ok: true, lease: { sessionId: "session-1", mode: "web", viewport: { width: 1280, height: 900 } } };
+				if (path === "/run/settle") return { ok: true, blockedPopups: 0 };
+				return { ok: true, state: "ready", downloads };
+			} });
+			env.BROWSER_PREVIEW_URL = undefined;
+			env.LOADER = { load: () => ({ getEntrypoint: () => ({ evaluate: async () => ({
+				ok: true, resultJson: "1", viewport: null, popups: { blocked: 0, urls: [] }, consoleEntries: [], pageErrors: [], logs: [], logsTruncated: false,
+				files: [{ workspace: "current" as const, path: "/f.bin", bytes: new Uint8Array([1, 2]) }],
+			}) }) }) };
+			return env;
+		};
+		const ctx = { exports: { BrowserConnectionGateway: () => ({ fetch }) } } as unknown as NonNullable<Parameters<typeof handle_request>[2]>;
+		const run = async (env: Env) => await (await handle_request(browser_request("run", JSON.stringify({
+			...OWNERS, sessionId: "session-1", navGen: 1, loadGen: 1, controlGen: 1, code: "return 1;",
+		})), env, ctx)).json();
+		const fits = await run(make([{ name: "big.bin", contentType: "application/octet-stream", dataBase64: big }]));
+		expect(fits.downloads).toHaveLength(1);
+		expect(fits).not.toHaveProperty("downloadsDropped");
+		const over = await run(make([
+			{ name: "big.bin", contentType: "application/octet-stream", dataBase64: big },
+			{ name: "one.bin", contentType: "application/octet-stream", dataBase64: "AA==" },
+		]));
+		expect(over.downloads).toHaveLength(1);
+		expect(over.downloadsDropped).toBe(1);
+	});
+
+	it("runs a web command without a preview URL and drops URL queries from the error", async () => {
+		const env = make_env({ sessions: (path) => {
+			if (path === "/run/begin") return { ok: true, lease: { sessionId: "session-1", mode: "web", viewport: { width: 1280, height: 900 } } };
+			if (path === "/run/settle") return { ok: true, blockedPopups: 0 };
+			return { ok: true };
+		} });
+		env.BROWSER_PREVIEW_URL = undefined;
+		const evaluate = vi.fn(async () => ({
+			ok: false, error: { name: "Error", message: "Timeout while loading https://example.com/login?token=abc#code=1 after 5s" },
+			viewport: null, popups: { blocked: 0, urls: [] }, consoleEntries: [], pageErrors: [], logs: [], logsTruncated: false,
+		}));
+		env.LOADER = { load: () => ({ getEntrypoint: () => ({ evaluate }) }) };
+		const ctx = { exports: { BrowserConnectionGateway: () => ({ fetch }) } } as unknown as NonNullable<Parameters<typeof handle_request>[2]>;
+		const response = await handle_request(browser_request("run", JSON.stringify({
+			...OWNERS, sessionId: "session-1", navGen: 1, loadGen: 1, controlGen: 1, code: "await page.goto('https://example.com/');",
+		})), env, ctx);
+		const result = await response.json();
+		expect(evaluate).toHaveBeenCalledWith({
+			sessionId: "session-1", mode: "web", runtimeOrigin: null, viewport: { width: 1280, height: 900 }, timeoutMs: LIMITS.commandTimeoutMs,
+		});
+		expect(result.status).toBe("errored");
+		expect(result.error.message).toBe("Timeout while loading https://example.com/login after 5s");
+	});
+});
+
+describe("agent blocked site result", () => {
+	it("refuses the result, keeps the session, and finishes untainted when the page ends on a blocked site", async () => {
+		const finishes: unknown[] = [];
+		const env = make_env({ sessions: (path, body) => {
+			if (path === "/run/begin") return { ok: true, lease: { sessionId: "session-1", mode: "web", viewport: { width: 1280, height: 900 } } };
+			if (path === "/run/settle") return { ok: true, blockedPopups: 0, blockedSite: true };
+			if (path === "/run/finish") finishes.push(body);
+			return { ok: true };
+		} });
+		env.BROWSER_PREVIEW_URL = undefined;
+		const evaluate = vi.fn(async () => ({
+			ok: true, resultJson: JSON.stringify({ balance: 100 }), files: [], viewport: null, popups: { blocked: 0, urls: [] },
+			consoleEntries: [], pageErrors: [], logs: [], logsTruncated: false,
+		}));
+		env.LOADER = { load: () => ({ getEntrypoint: () => ({ evaluate }) }) };
+		const ctx = { exports: { BrowserConnectionGateway: () => ({ fetch }) } } as unknown as NonNullable<Parameters<typeof handle_request>[2]>;
+		const response = await handle_request(browser_request("run", JSON.stringify({
+			...OWNERS, sessionId: "session-1", navGen: 1, loadGen: 1, controlGen: 1, code: "return 1;",
+		})), env, ctx);
+		const result = await response.json();
+		expect(result).toEqual({ ok: false, error: { code: "agent_blocked_site", message: "The page is on a site the agent may not use." } });
+		expect(JSON.stringify(result)).not.toContain("balance");
+		expect(finishes).toEqual([expect.objectContaining({ tainted: false, resultBytes: 0, fileCount: 0 })]);
 	});
 });
 
@@ -662,15 +1109,16 @@ describe("browser status", () => {
 		const result = await response.json();
 		if (alive && record) {
 			expect(result).toEqual({ ok: true, alive: true, session: {
-				sessionId: record.sessionId, nodeId: record.nodeId, navGen: record.navGen, loadGen: record.loadGen,
+				mode: "file", sessionId: record.sessionId, nodeId: record.nodeId, navGen: record.navGen, loadGen: record.loadGen,
 				controlGen: record.controlGen, control: record.control, sourceKind: record.sourceKind,
 				sourceVersion: record.sourceVersion, sourceHash: record.sourceHash, pageNonce: record.pageNonce,
 				commandCount: record.commandCount, loadCount: record.loadCount,
 				idleUntil: record.lastActiveAt + LIMITS.sessionIdleMs,
 				totalUntil: record.providerAcquiredAt! + LIMITS.sessionTotalMs,
-			} });
+			}, profileStored: false });
 		} else {
-			expect(result).toEqual({ ok: true, alive: false });
+			// A record that still has this session id is closing: its usage receipt may still come.
+			expect(result).toEqual({ ok: true, alive: false, closing: record?.sessionId === "session-1", usage: null, profileStored: false });
 		}
 		expect(put).not.toHaveBeenCalled();
 	});
@@ -939,7 +1387,7 @@ describe("build_executor_module", () => {
 		}) as new () => { evaluate: (input: unknown) => Promise<{
 			ok: boolean; files?: Array<{ workspace: "current" | "personal"; path: string; contentType?: string; bytes: Uint8Array }>; error?: { message: string };
 		}> };
-		return new Executor().evaluate({ sessionId: "fixture", runtimeOrigin: "https://controller.browser.invalid", viewport: { width: 1280, height: 900 }, timeoutMs });
+		return new Executor().evaluate({ sessionId: "fixture", mode: "file", runtimeOrigin: "https://controller.browser.invalid", viewport: { width: 1280, height: 900 }, timeoutMs });
 	}
 
 	it.each([undefined, null, "", "home", "CURRENT", 1])("rejects workspace %s inside the browser harness", async (workspace) => {
@@ -1018,11 +1466,52 @@ describe("build_executor_module", () => {
 			WorkerEntrypoint: class {}, TextEncoder, URL, console: {}, expect: () => {}, setTimeout: () => 0, clearTimeout: () => {},
 			connect: async () => ({ contexts: () => [{ pages: () => [page] }], close: async () => {} }),
 		}) as new () => { evaluate: (input: unknown) => Promise<{ ok: boolean; logs: string[]; consoleEntries: string[]; logsTruncated: boolean }> };
-		const result = await new Executor().evaluate({ sessionId: "fixture", runtimeOrigin: "https://controller.browser.invalid", viewport: { width: 1280, height: 900 } });
+		const result = await new Executor().evaluate({ sessionId: "fixture", mode: "file", runtimeOrigin: "https://controller.browser.invalid", viewport: { width: 1280, height: 900 } });
 		expect(result.ok).toBe(true);
 		expect(result.logsTruncated).toBe(true);
 		expect(result.logs).toEqual(["€".repeat(5461)]);
 		expect(result.consoleEntries.reduce((sum, line) => sum + new TextEncoder().encode(line).length, 0)).toBeLessThanOrEqual(LIMITS.consoleBytes);
+	});
+
+	it("gives web snippets the main frame without waiting for a preview frame", async () => {
+		const mainFrame = { childFrames: () => [] };
+		const page = {
+			on: () => {}, mainFrame: () => mainFrame,
+			setViewportSize: async () => {}, viewportSize: () => ({ width: 1280, height: 900 }),
+		};
+		const source = build_executor_module("return frame === page.mainFrame();")
+			.replace(/^import .*;$/gm, "").replace("export default class", "class") + "\nSnippetExecutor;";
+		const Executor = runInNewContext(source, {
+			WorkerEntrypoint: class {}, TextEncoder, URL, Uint8Array, ArrayBuffer, console: {}, expect: () => {}, setTimeout, clearTimeout,
+			connect: async () => ({ contexts: () => [{ pages: () => [page] }], close: async () => {} }),
+		}) as new () => { evaluate: (input: unknown) => Promise<{ ok: boolean; resultJson?: string }> };
+		const result = await new Executor().evaluate({ sessionId: "fixture", mode: "web", runtimeOrigin: null, viewport: { width: 1280, height: 900 }, timeoutMs: 1000 });
+		expect(result).toMatchObject({ ok: true, resultJson: "true" });
+		// Only web mode may skip the runtime origin.
+		await expect(new Executor().evaluate({ sessionId: "fixture", mode: "file", runtimeOrigin: null, viewport: { width: 1280, height: 900 }, timeoutMs: 1000 }))
+			.rejects.toThrow("Missing runtime origin.");
+	});
+
+	it.each([
+		"async ({ page }) => {\n\tawait page.title();\n\treturn 1;\n}",
+		"// Read the title.\nasync (page) => page.title()",
+		"page => 1",
+		"async function main({ page }) {\n\treturn 1;\n}",
+		"return async ({ page }) => 1;",
+	])("refuses a snippet that only defines or returns a function: %s", async (code) => {
+		expect(await run_snippet(code)).toMatchObject({
+			ok: false, error: { message: "Your code returned a function. Write the function body only, do not wrap it in a function." },
+		});
+	});
+
+	it.each([
+		["return 1;", "1"],
+		["(async () => 1)();", "null"],
+		["async function helper() { return 2; }\nawait helper();", "null"],
+		["function helper() {}\nemitFile({ workspace: \"current\", path: \"/a\", bytes: new Uint8Array() });\nhelper();", "null"],
+		["const run = async () => 3;\nreturn await run();", "3"],
+	])("runs a snippet that uses its own functions: %s", async (code, resultJson) => {
+		expect(await run_snippet(code)).toMatchObject({ ok: true, resultJson });
 	});
 
 	it("wraps user code with the registered page harness", () => {
@@ -1088,8 +1577,11 @@ describe("session transitions", () => {
 
 	it("refuses an overlapping command and closes a stale command before reuse", async () => {
 		const now = Date.now();
-		const fresh = make_record({ command: { id: "c1", startedAt: now - 1000 } });
-		expect(session_can_run(fresh, lease, now)).toEqual({ ok: false, reason: "busy" });
+		const fresh = make_record({ command: { id: "c1", startedAt: now - 1000, connection: "available" } });
+		expect(session_can_run(fresh, lease, now)).toEqual({ ok: false, reason: "busy_command" });
+		// A reload holds the slot without an agent connection. "Another chat" would be the wrong text.
+		const reloading = make_record({ command: { id: "reload:1", startedAt: now - 1000 } });
+		expect(session_can_run(reloading, lease, now)).toEqual({ ok: false, reason: "busy" });
 		const stale = make_record({ command: { id: "c1", startedAt: now - LIMITS.commandTimeoutMs - 20_000 } });
 		const storage = make_storage({ session: stale });
 		const session = new BrowserSession(storage.state, make_env({}));
@@ -1116,6 +1608,24 @@ describe("session transitions", () => {
 		).toBe(true);
 	});
 
+	it("uses web limits and refuses a web command while agent access is off", () => {
+		const now = Date.now();
+		const web = (overrides: Partial<SessionRecord> = {}) =>
+			make_record({ mode: "web", agentAccess: true, pageTargetId: "page-1", ...overrides } as Partial<SessionRecord>);
+		expect(session_can_run(web(), lease, now)).toEqual({ ok: true });
+		expect(session_can_run(web({ agentAccess: false } as Partial<SessionRecord>), lease, now)).toEqual({ ok: false, reason: "agent_access_off" });
+		expect(session_can_run(web({ commandCount: LIMITS.webCommandsPerSession - 1 }), lease, now)).toEqual({ ok: true });
+		expect(session_can_run(web({ commandCount: LIMITS.webCommandsPerSession }), lease, now)).toEqual({ ok: false, reason: "session_limit" });
+		expect(session_is_expired(web({ lastActiveAt: now - LIMITS.webSessionIdleMs + 1000 }), now)).toBe(false);
+		expect(session_is_expired(web({ lastActiveAt: now - LIMITS.webSessionIdleMs }), now)).toBe(true);
+		expect(session_is_expired(web({ providerAcquiredAt: now - LIMITS.webSessionTotalMs + 1000 }), now)).toBe(false);
+		expect(session_is_expired(web({ providerAcquiredAt: now - LIMITS.webSessionTotalMs }), now)).toBe(true);
+		const record = web();
+		expect(session_next_alarm(record)).toBe(record.lastActiveAt + LIMITS.webSessionIdleMs);
+		// The provider keeps an idle browser for keepAliveMs. The runner must end it first.
+		expect(LIMITS.webSessionIdleMs).toBeLessThan(LIMITS.keepAliveMs);
+	});
+
 	it("schedules no alarm for a closed session", () => {
 		expect(session_next_alarm(make_record({ control: "closed" }))).toBe(null);
 		const record = make_record();
@@ -1138,7 +1648,7 @@ describe("BrowserRegistry", () => {
 	it("claims, confirms, and releases a grant", async () => {
 		const storage = make_storage();
 		const registry = new BrowserRegistry(storage.state as unknown as DurableObjectState, make_env({}));
-		const claim = (await post(registry, "/claim", { workspaceKey: "org:ws" })) as { grantId: string };
+		const claim = (await post(registry, "/claim", { workspaceKey: "org:ws", ownerId: "user_1", organizationId: "org" })) as { grantId: string };
 		expect(typeof claim.grantId).toBe("string");
 		expect(await post(registry, "/confirm", { grantId: claim.grantId })).toEqual({ ok: true });
 		expect(await post(registry, "/release", { grantId: claim.grantId })).toEqual({ ok: true });
@@ -1149,23 +1659,46 @@ describe("BrowserRegistry", () => {
 	it("enforces the workspace cap", async () => {
 		const storage = make_storage();
 		const registry = new BrowserRegistry(storage.state as unknown as DurableObjectState, make_env({}));
-		await post(registry, "/claim", { workspaceKey: "org:ws" });
-		await post(registry, "/claim", { workspaceKey: "org:ws" });
-		const third = (await post(registry, "/claim", { workspaceKey: "org:ws" })) as { error: { code: string } };
+		await post(registry, "/claim", { workspaceKey: "org:ws", ownerId: "user_1", organizationId: "org" });
+		await post(registry, "/claim", { workspaceKey: "org:ws", ownerId: "user_1", organizationId: "org" });
+		const third = (await post(registry, "/claim", { workspaceKey: "org:ws", ownerId: "user_1", organizationId: "org" })) as { error: { code: string } };
 		expect(third.error.code).toBe("workspace_busy");
 		// Another workspace still has room.
-		const other = (await post(registry, "/claim", { workspaceKey: "org:ws2" })) as { ok: boolean };
+		const other = (await post(registry, "/claim", { workspaceKey: "org:ws2", ownerId: "user_2", organizationId: "org" })) as { ok: boolean };
 		expect(other.ok).toBe(true);
+	});
+
+	it("enforces the user and organization caps", async () => {
+		const storage = make_storage();
+		const registry = new BrowserRegistry(storage.state as unknown as DurableObjectState, make_env({}));
+		const claim = (workspaceKey: string, ownerId: string, organizationId: string) =>
+			post(registry, "/claim", { workspaceKey, ownerId, organizationId });
+		expect(await claim("org:ws1", "user_1", "org")).toMatchObject({ ok: true });
+		expect(await claim("org:ws2", "user_1", "org")).toMatchObject({ ok: true });
+		expect(await claim("org:ws3", "user_1", "org")).toMatchObject({ ok: false, error: { code: "user_limit" } });
+		expect(await claim("org:ws3", "user_2", "org")).toMatchObject({ ok: true });
+		expect(await claim("org:ws4", "user_3", "org")).toMatchObject({ ok: true });
+		expect(await claim("org:ws5", "user_4", "org")).toMatchObject({ ok: false, error: { code: "organization_limit" } });
+		// The same user in another organization is still capped by the user limit.
+		expect(await claim("org2:ws1", "user_1", "org2")).toMatchObject({ ok: false, error: { code: "user_limit" } });
+		expect(await claim("org2:ws1", "user_4", "org2")).toMatchObject({ ok: true });
+	});
+
+	it("refuses a claim without owner ids", async () => {
+		const storage = make_storage();
+		const registry = new BrowserRegistry(storage.state as unknown as DurableObjectState, make_env({}));
+		expect(await post(registry, "/claim", { workspaceKey: "org:ws" })).toMatchObject({ ok: false });
+		expect(storage.map.has("registry")).toBe(false);
 	});
 
 	it("sweeps expired claims on the next claim", async () => {
 		const storage = make_storage({
 			registry: {
-				grants: { old: { workspaceKey: "org:ws", state: "claimed", expiresAt: Date.now() - 1000 } },
+				grants: { old: { workspaceKey: "org:ws", ownerId: "user_1", organizationId: "org", state: "claimed", expiresAt: Date.now() - 1000 } },
 			},
 		});
 		const registry = new BrowserRegistry(storage.state as unknown as DurableObjectState, make_env({}));
-		const res = (await post(registry, "/claim", { workspaceKey: "org:ws" })) as { ok: boolean };
+		const res = (await post(registry, "/claim", { workspaceKey: "org:ws", ownerId: "user_1", organizationId: "org" })) as { ok: boolean };
 		expect(res.ok).toBe(true);
 		const stored = storage.map.get("registry") as { grants: Record<string, unknown> };
 		expect("old" in stored.grants).toBe(false);
@@ -1228,6 +1761,50 @@ describe("BrowserSession alarm", () => {
 		});
 		await session.alarm();
 		expect(storage.map.has("session")).toBe(false);
+	});
+
+	it("writes an unverified receipt when the last close retry gives up", async () => {
+		const record = make_record({ control: "closing", closeAttempts: LIMITS.closeAttempts });
+		const { storage, session } = make_session({ session: record });
+		const status = async () => await (await session.fetch(new Request("https://do/status", {
+			method: "POST", body: JSON.stringify({ sessionId: "session-1" }),
+		}))).json();
+		// Until the record goes away, the caller must wait: the receipt is not final.
+		expect(await status()).toEqual({ ok: true, alive: false, closing: true, usage: null, profileStored: false });
+		await session.alarm();
+		const usage = { providerAcquiredAt: record.providerAcquiredAt, endedAt: expect.any(Number), reason: "close_unverified" };
+		expect(storage.map.get("usage:session-1")).toEqual({ sessionId: "session-1", ...usage });
+		expect(await status()).toEqual({ ok: true, alive: false, closing: false, usage, profileStored: false });
+	});
+
+	it("writes no receipt when no browser was acquired", async () => {
+		const { storage, session } = make_session({
+			session: make_record({
+				control: "starting",
+				createdAt: Date.now() - LIMITS.startingStaleMs - 1000,
+				providerSessionId: null,
+				providerAcquiredAt: null,
+				pageNonce: null,
+			}),
+		});
+		await session.alarm();
+		expect(storage.map.has("session")).toBe(false);
+		expect([...storage.map.keys()].filter((key) => key.startsWith("usage:"))).toEqual([]);
+	});
+
+	it("deletes receipts older than seven days when a session closes", async () => {
+		const now = Date.now();
+		const old = { sessionId: "old", providerAcquiredAt: now - LIMITS.usageReceiptMs - 60_000, endedAt: now - LIMITS.usageReceiptMs - 1, reason: "close" };
+		const recent = { sessionId: "recent", providerAcquiredAt: now - 120_000, endedAt: now - 60_000, reason: "close" };
+		const { storage, session } = make_session({
+			session: make_record({ control: "closing", closeAttempts: LIMITS.closeAttempts }),
+			"usage:old": old,
+			"usage:recent": recent,
+		});
+		await session.alarm();
+		expect(storage.map.has("usage:old")).toBe(false);
+		expect(storage.map.get("usage:recent")).toEqual(recent);
+		expect(storage.map.has("usage:session-1")).toBe(true);
 	});
 
 	it("closes a pausing session whose command caller died", async () => {

@@ -40,7 +40,7 @@ Load each companion skill that owns the affected boundary:
 - `packages/app/convex/users.ts`: `delete_current_user_account`, deleted-user recovery in `resolve_user`, `hard_delete_user_now`, `purge_deleted_user_tombstone`.
 - `packages/app/convex/organizations.ts`: `delete_workspace` and `delete_organization` phase-1 behavior.
 - `packages/app/convex/schema.ts`: `data_deletion_requests` and indexes.
-- `packages/app/convex/crons.ts`: daily enqueue of `data_deletion.enqueue_deletion_requests_processing`.
+- `packages/app/convex/crons.ts`: daily enqueue of `data_deletion.enqueue_deletion_requests_processing`; hourly `cleanup expired browser docs`; 5-minute `settle browser usage` and `process browser profile wipes`.
 - `packages/app/convex/data_deletion.test.ts`: main behavioral coverage.
 
 # Function Map
@@ -101,6 +101,7 @@ Chitchat has a separate database. The local account tombstone also advances its 
 
 - Internal/admin callers may still reach this with owned non-default organizations. Queue those organizations first through `db_queue_organization_deletion_for_owner_account_deletion`.
 - `db_prepare_user_for_deletion` sets `users.deletedAt`, marks memberships inactive, and removes presence docs.
+- In the same tombstone branch it calls `files_browser_db_schedule_user_deletion`. That schedules a close without saving for each live browser of the user, and `files_browser.delete_user_profiles_batch`. The batch deletes up to 50 saved browser profiles and schedules itself again until none is left. Saved logins are deleted at the request, not after retention, so a recovered account does not get them back.
 - Phase 1 keeps the user doc, anagraphic, auth pointers, billing state, tenant docs, files, and queue docs needed for recovery.
 - Phase 1 creates or reuses one user-scope `data_deletion_requests` doc.
 
@@ -185,6 +186,11 @@ that user's dismissals; shared Activities and other viewers' dismissals remain u
 Current purge coverage includes:
 
 - Pending review runs before pending-state payloads. Stop invalidates active workers; retire prepared bytes before deleting item rows. Review units and the paired Activity follow. Delete the owner's review clock only after all proposals, private nodes, and runs are gone.
+- `files_browser_sessions` with their `files_browser_download_saves` docs. Every session delete, in every path, goes through the private `browser_db_delete_session` helper in `files_browser.ts`, which deletes the session's download saves first (at most 20 per session). The saved download files are ordinary Files nodes and follow Files deletion, not the session.
+- `files_browser_profiles` (saved browser logins) after browser sessions. Every delete, here and in every other path, goes through `files_browser_db_delete_profile`. It writes a `files_browser_profile_wipes` doc in the same transaction, and the wipe job asks the runner to delete the stored cookie bytes. Wipe docs outlive user and workspace deletion on purpose: they hold only ids and retry state, and they leave when the runner confirms the wipe. User finalization and the data-only reset (`hard_delete_user_data`) drain the user's profiles the same way through `files_browser_db_delete_user_batch`.
+  - The wipe job is `files_browser.process_browser_profile_wipes` (20 wipes per run). Each deletion schedules it at once, and the `process browser profile wipes` cron runs it every 5 minutes. A failed wipe retries after 1 minute, doubling up to 6 hours, with no attempt limit (`finish_browser_profile_wipe`). The hourly `cleanup_expired_browser_docs` also deletes profiles unused for 90 days. As a backstop, the runner deletes stored profile bytes by itself 100 days after the last save.
+  - `files_browser_db_delete_user_batch` (user finalization, admin hard delete, data-only reset) drains, in order: sessions (with download saves), `files_browser_draft_captures` with their Convex storage blobs, `files_browser_user_daily_use`, then profiles.
+  - The workspace purge (`files_browser_db_purge_workspace_batch`) deletes only sessions and profiles. It leaves draft captures (5-minute expiry) and the workspace's `files_browser_daily_use` docs to the hourly sweep, which deletes day docs older than 2 days.
 - `files_ingestion_receipts` before pending-state payloads and private targets. User and workspace purge retire at most eight receipts per pass. A preparing receipt owns its exact asset key or initial text batch. Cleanup expires that batch and discards only unchanged private creates and unused parents. Newer drafts and dependent children survive this receipt cleanup; the wider purge removes them through their normal owners. Stored cleanup carries the late-PUT deadline into the deletion job. Completed receipts own no file cleanup. The 15-minute ingestion cron expires unfinished work after 30 minutes and drops terminal receipts after 24 hours.
 - Transfer runs before other file docs. Stop each run, hand unpublished assets to exact-key
   deletion jobs, and delete at most 50 item docs per call. Delete its Activity and run docs after

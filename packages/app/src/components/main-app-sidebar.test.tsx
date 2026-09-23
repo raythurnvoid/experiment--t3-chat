@@ -41,6 +41,9 @@ vi.mock("@/lib/app-convex-client.ts", () => ({
 		plugins_ui: {
 			list_ui_pages: "plugins_ui.list_ui_pages",
 		},
+		files_browser: {
+			web_browser_available: "files_browser.web_browser_available",
+		},
 	},
 }));
 
@@ -215,7 +218,11 @@ function createTenantContext() {
 	} satisfies AppTenantContextValue;
 }
 
-function createOrganizationList(args: { organizationIsDefault: boolean; canManagePlugins: boolean }) {
+function createOrganizationList(args: {
+	organizationIsDefault: boolean;
+	canManagePlugins: boolean;
+	canUseBrowser: boolean;
+}) {
 	return {
 		organizations: [
 			{
@@ -224,7 +231,10 @@ function createOrganizationList(args: { organizationIsDefault: boolean; canManag
 			},
 		],
 		workspaceIdsPermissionsDict: {
-			workspace_1: args.canManagePlugins ? ["workspace.plugins.manage"] : ["content.read"],
+			workspace_1: [
+				args.canManagePlugins ? "workspace.plugins.manage" : "content.read",
+				...(args.canUseBrowser ? ["workspace.browser.use"] : []),
+			],
 		},
 	};
 }
@@ -251,16 +261,22 @@ function mockQueries(args: {
 	organizationIsDefault: boolean;
 	pluginPages?: ReturnType<typeof createPluginPages>;
 	canManagePlugins?: boolean;
+	canUseBrowser?: boolean;
+	webBrowserEnabled?: boolean;
 }) {
-	useQueryMock.mockImplementation((query: unknown) => {
+	useQueryMock.mockImplementation((query: unknown, queryArgs: unknown) => {
 		if (query === "organizations.list") {
 			return createOrganizationList({
 				organizationIsDefault: args.organizationIsDefault,
 				canManagePlugins: args.canManagePlugins ?? true,
+				canUseBrowser: args.canUseBrowser ?? false,
 			});
 		}
 		if (query === "plugins_ui.list_ui_pages") {
 			return args.pluginPages ?? [];
+		}
+		if (query === "files_browser.web_browser_available" && queryArgs !== "skip") {
+			return { enabled: args.webBrowserEnabled ?? true, paidPlan: false };
 		}
 		return undefined;
 	});
@@ -305,6 +321,28 @@ describe("MainAppSidebar", () => {
 		expect(apiKeysLink?.getAttribute("href")).toBe("/w/team/home/api-keys");
 		expect(apiKeysLink?.getAttribute("data-selected")).toBe("true");
 		expect(screen.getByText("Files").closest("a")?.getAttribute("data-selected")).toBeNull();
+	});
+
+	test("shows Browser next to Files with the permission and web mode on, even on a Free plan", () => {
+		mockQueries({ organizationIsDefault: false, canUseBrowser: true });
+
+		render(<MainAppSidebar />);
+
+		const links = screen.getAllByRole("link").map((link) => link.textContent);
+		expect(links.indexOf("Browser")).toBe(links.indexOf("Files") + 1);
+		expect(screen.getByText("Browser").closest("a")?.getAttribute("href")).toBe("/w/team/home/browser");
+	});
+
+	test("hides Browser without the permission or when web mode is off", () => {
+		mockQueries({ organizationIsDefault: false, canUseBrowser: false });
+		const { unmount } = render(<MainAppSidebar />);
+		expect(screen.queryByText("Browser")).toBeNull();
+		expect(useQueryMock).toHaveBeenCalledWith("files_browser.web_browser_available", "skip");
+		unmount();
+
+		mockQueries({ organizationIsDefault: false, canUseBrowser: true, webBrowserEnabled: false });
+		render(<MainAppSidebar />);
+		expect(screen.queryByText("Browser")).toBeNull();
 	});
 
 	test("renders a nav item for plugin pages that declare one", () => {

@@ -803,15 +803,37 @@ describe("AiChatMessage", () => {
 	);
 
 	test.each([
-		{ state: "output-available", output: "Browser succeeded.", link: true, name: "links a live result" },
+		{ state: "output-available", output: "Browser succeeded.", link: true, reason: null, name: "links a live result" },
 		{
 			state: "output-available",
 			output: "Browser failed. The file is no longer available.",
 			link: false,
+			reason: "unavailable",
 			name: "hides the link on refusal",
 		},
-		{ state: "input-available", output: "Running…", link: false, name: "shows running before output" },
-	] as const)("browser run card $name", ({ state, output, link }) => {
+		// A command from another chat is running. This is not a missing file.
+		{
+			state: "output-available",
+			output: "Browser failed. Another chat is using the browser. Try again later.",
+			link: false,
+			reason: "busy",
+			name: "says another chat is using the browser",
+		},
+		{
+			state: "output-available",
+			output: "Browser failed. This site is on the list of sites the agent may not use.",
+			link: false,
+			reason: "agent_blocked_site",
+			name: "says the site is blocked for the agent",
+		},
+		{
+			state: "input-available",
+			output: "Running…",
+			link: false,
+			reason: null,
+			name: "shows running before output",
+		},
+	] as const)("browser run card $name", ({ state, output, link, reason }) => {
 		if (link) {
 			hookMocks.files.set("node_1", {
 				target: { kind: "saved", id: "node_1" },
@@ -833,7 +855,7 @@ describe("AiChatMessage", () => {
 							title: "Browser run",
 							output: link ? "Browser run: succeeded." : "Browser run: errored.",
 							metadata: !link
-								? { status: "errored", reason: "unavailable", files: [] }
+								? { status: "errored", reason, files: [] }
 								: { status: "succeeded", reason: null, files: [{ kind: "saved", id: "node_1" }] },
 						},
 					}

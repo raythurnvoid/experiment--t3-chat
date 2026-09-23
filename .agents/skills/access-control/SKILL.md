@@ -156,7 +156,8 @@ Two names, used everywhere in this subsystem. Nothing else should be called "ext
   `access_control_SYSTEM_ROLE_MATRIX`, not in the database. No seeding, no migration when the matrix
   changes, and nobody can edit them.
   - `admin` — everything except `organization.billing.manage`, because it charges the owner.
-  - `member` — `workspace.create`, `workspace.update`, `content.read`, `content.write`.
+  - `member` — `workspace.create`, `workspace.update`, `content.read`, `content.write`,
+    `workspace.browser.use`.
   - `viewer` — `content.read` only.
 - **Custom roles** are `access_control_roles` docs, organization-wide, capped per organization by
   `MAX_CUSTOM_ROLES` in `convex/access_control.ts`. Users compose them from the fixed permission
@@ -267,6 +268,24 @@ Pick the index that matches the principal kind:
 | `content.write` | workspace |
 | `content.permissions.manage` | workspace |
 | `workspace.plugins.manage` | workspace |
+| `workspace.browser.use` | workspace |
+
+`workspace.browser.use` ("Use the web browser") lets a member open the cloud browser in web mode,
+where it can visit any public address. `admin` and `member` have it. `viewer` does not. File mode
+(showing a workspace file) does not need it; file mode only needs file access.
+`browser_db_authorize_web_use` in `convex/files_browser.ts` checks it. That helper first checks the
+`AI_CHAT_BROWSER_ENABLED` flag and returns `Browser unavailable` when the flag is off. The check runs
+at start, in `authorize_live_browser_session` (reload, keep open, viewer grant and renew, take
+control, resume, agent access, save download, file-chooser fill, upload grant), in the agent's
+`check_browser_session_access`, in `current_browser_session`, `web_browser_available`,
+`set_browser_agent_blocked_hosts`, on every agent file output from a web session, and in the
+5-minute cron `close_web_browser_sessions_without_access`. The saved-data doors
+(`list_browser_profile_sites`, `clear_browser_profile_site`, `clear_browser_profile`) do not need
+it: a user may always see and delete their own data. If a live session loses the permission, the
+server closes it with `end_browser_session_internal` and does not save the browser profile.
+
+Inviting someone as `member` also hands out `workspace.browser.use`. The invite ceiling still
+applies: an inviter who lacks it cannot invite someone as `member`.
 
 Rule: **every permission in the catalog must be enforced somewhere**, or be marked
 `enforcedBy: "file-sharing"`. A permission the role editor offers that nothing checks is a switch

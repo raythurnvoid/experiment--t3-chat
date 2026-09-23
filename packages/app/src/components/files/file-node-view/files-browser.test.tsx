@@ -1,5 +1,6 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { getFunctionName } from "convex/server";
+import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { files_browser_StreamEvents, files_browser_StreamInput } from "@/lib/files-browser-stream.ts";
 import { FilesBrowser, FilesBrowserResumeThreadMirror } from "./files-browser.tsx";
@@ -12,6 +13,8 @@ const mocks = vi.hoisted(() => ({
 	control: "human",
 	controlGen: 1,
 	sessionEnded: false,
+	webSession: false,
+	paidPlan: true,
 }));
 
 vi.mock("@/components/app-auth.tsx", () => ({
@@ -27,6 +30,9 @@ vi.mock("@/lib/app-tenant-context.tsx", () => ({
 			workspaceName: "home",
 		}),
 	},
+}));
+vi.mock("@/components/my-link.tsx", () => ({
+	MyLink: (props: { to: string; children?: ReactNode }) => <a href={props.to}>{props.children}</a>,
 }));
 vi.mock("@/hooks/ai-chat-controller.tsx", () => ({
 	AiChatController: { useThreadList: () => ({ selectedThreadId: mocks.selectedThreadId }) },
@@ -44,7 +50,21 @@ vi.mock("convex/react", () => {
 			switch (getFunctionName(reference)) {
 				case "files_browser:current_browser_session":
 					if (mocks.sessionEnded) return null;
+					if (mocks.webSession) {
+						return {
+							mode: "web",
+							sessionId: "session_web",
+							navigationGeneration: 1,
+							loadGen: 1,
+							controlGen: 1,
+							control: "ready",
+							agentAccess: true,
+							idleUntil: Date.now() + 300_000,
+							totalUntil: Date.now() + 1_200_000,
+						};
+					}
 					return {
+						mode: "file",
 						sessionId: "session_1",
 						nodeId: "node_1",
 						targetKind: "saved",
@@ -58,6 +78,8 @@ vi.mock("convex/react", () => {
 						idleUntil: Date.now() + 300_000,
 						totalUntil: Date.now() + 1_200_000,
 					};
+				case "files_browser:web_browser_available":
+					return { enabled: true, paidPlan: mocks.paidPlan };
 				default:
 					return null;
 			}
@@ -81,6 +103,8 @@ beforeEach(() => {
 	mocks.control = "human";
 	mocks.controlGen = 1;
 	mocks.sessionEnded = false;
+	mocks.webSession = false;
+	mocks.paidPlan = true;
 });
 
 afterEach(() => {
@@ -158,6 +182,32 @@ describe("FilesBrowser", () => {
 			membershipId: "membership_1", sessionId: "session_1",
 		});
 		expect(screen.getByRole("button", { name: "Start shared browser" })).toBeTruthy();
+	});
+
+	test("shows the plan text instead of Start on a free plan", () => {
+		mocks.sessionEnded = true;
+		mocks.paidPlan = false;
+		render(browserPanel());
+		expect(
+			screen.getByText(
+				"The browser needs a Pay As You Go or Pro plan. Change your plan in Billing, in your account menu.",
+			),
+		).toBeTruthy();
+		expect(screen.queryByRole("button", { name: "Start shared browser" })).toBeNull();
+	});
+
+	test("offers to end a live web browser instead of starting a file browser", async () => {
+		mocks.webSession = true;
+		render(browserPanel());
+		expect(screen.getByText("A web browser is open.")).toBeTruthy();
+		expect(screen.getByRole("link", { name: "Open the web browser" })).toBeTruthy();
+		expect(screen.queryByRole("button", { name: "Start shared browser" })).toBeNull();
+		expect(screen.queryByRole("application")).toBeNull();
+
+		fireEvent.click(screen.getByRole("button", { name: "End it" }));
+		expect(
+			mocks.action.mock.calls.find(([reference]) => getFunctionName(reference) === "files_browser:end_browser")?.[1],
+		).toEqual({ membershipId: "membership_1", sessionId: "session_web" });
 	});
 
 	test("does not end the shared session when only the viewer moves", async () => {

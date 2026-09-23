@@ -1,11 +1,16 @@
 /// <reference types="vite/client" />
 import { R2 } from "@convex-dev/r2";
 import { Workpool } from "@convex-dev/workpool";
+import { getFunctionName } from "convex/server";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { streamText } from "ai";
 import { encodeStateAsUpdate } from "yjs";
 import { api, internal } from "./_generated/api.js";
-import { files_browser_db_delete_user_batch } from "./files_browser.ts";
+import {
+	files_browser_db_delete_profile,
+	files_browser_db_delete_user_batch,
+	files_browser_db_purge_workspace_batch,
+} from "./files_browser.ts";
 import { test_convex, test_create_saved_text_file, test_mocks_fill_db_with } from "./setup.test.ts";
 import type { Id } from "./_generated/dataModel.js";
 import { files_yjs_doc_create_from_text } from "../shared/files-tiptap.ts";
@@ -80,7 +85,7 @@ beforeEach(() => {
 			const url = String(input);
 			if (url.startsWith("https://browser-runner.test/")) {
 				const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
-				runnerCalls.push({ route: url.slice(url.lastIndexOf("/") + 1), body });
+				runnerCalls.push({ route: url.slice(url.indexOf("/internal/browser/") + "/internal/browser/".length), body });
 				const next = runnerQueue.shift();
 				if (next === undefined) throw new Error("runner mock queue is empty");
 				return Response.json(next);
@@ -174,6 +179,7 @@ function runner_open_session(overrides: Record<string, unknown> = {}) {
 	return {
 		ok: true,
 		session: {
+			mode: "file" as const,
 			sessionId: "runner-session-1",
 			nodeId: "node-1",
 			navGen: 1,
@@ -187,6 +193,30 @@ function runner_open_session(overrides: Record<string, unknown> = {}) {
 			totalUntil: Date.now() + 1_200_000,
 			...overrides,
 		},
+	};
+}
+
+/**
+ * Run `during` inside the next runner open call, before the runner replies. Other fetch calls keep
+ * the normal mock. Use it to act while a start waits for the runner.
+ *
+ * The runner client swallows fetch errors, so a failed check inside `during` would not fail the
+ * test. Await the returned function after the start to rethrow it.
+ */
+function during_next_runner_open(during: () => Promise<void>, reply: unknown) {
+	const base = vi.mocked(fetch).getMockImplementation();
+	if (!base) throw new Error("Expected the fetch mock");
+	let ran: Promise<void> | null = null;
+	vi.mocked(fetch).mockImplementation(async (input, init) => {
+		if (ran || !String(input).endsWith("/internal/browser/open")) return await base(input, init);
+		runnerCalls.push({ route: "open", body: JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown> });
+		ran = during();
+		await ran.catch(() => {});
+		return Response.json(reply);
+	});
+	return async () => {
+		if (!ran) throw new Error("The runner open never ran");
+		await ran;
 	};
 }
 
@@ -225,7 +255,7 @@ async function seed_browser_file_scope(t: ReturnType<typeof test_convex>) {
 	if (started._nay) throw new Error(started._nay.message);
 
 	const session = await t.run((ctx) => ctx.db.get("files_browser_sessions", started._yay.sessionId));
-	if (!session) throw new Error("Expected browser session");
+	if (!session || session.mode !== "file") throw new Error("Expected a file browser session");
 
 	const threadId = await t.run((ctx) =>
 		ctx.db.insert("ai_chat_threads", {
@@ -268,6 +298,7 @@ async function seed_browser_file_scope(t: ReturnType<typeof test_convex>) {
 			navGen: session.navigationGeneration,
 		},
 		expectedSource: {
+			mode: "file" as const,
 			targetKind: session.targetKind,
 			nodeId: session.nodeId,
 			sourceKind: session.sourceKind,
@@ -956,7 +987,7 @@ describe("start_browser", () => {
 						path,
 						textContent: HTML_TEXT,
 					});
-		runnerQueue.push({ ok: true, alive: false });
+		runnerQueue.push({ ok: true, alive: false, closing: false, usage: null, profileStored: false });
 		const next = await start_saved_session(t, { ...fixture, nodeId, path });
 		expect(next._nay).toBeUndefined();
 		expect(next._yay?.sessionId).not.toBe(first._yay?.sessionId);
@@ -969,7 +1000,7 @@ describe("start_browser", () => {
 		const fixture = await seed_html_file(t);
 		const first = await start_saved_session(t, fixture);
 		await t.run((ctx) => ctx.db.patch("files_browser_sessions", first._yay!.sessionId, { idleUntil: Date.now() - 1 }));
-		runnerQueue.push({ ...runner_open_session({ nodeId: fixture.nodeId }), alive: true });
+		runnerQueue.push({ ...runner_open_session({ nodeId: fixture.nodeId }), alive: true, profileStored: false });
 		const next = await start_saved_session(t, fixture);
 		expect(next._yay?.sessionId).toBe(first._yay?.sessionId);
 		expect(runnerCalls.map((call) => call.route)).toEqual(["open", "status"]);
@@ -1000,6 +1031,72 @@ describe("start_browser", () => {
 		});
 		expect(result._nay?.message).toBe("Unauthenticated");
 		expect(runnerCalls).toEqual([]);
+	});
+
+	// A paid owner would pay for an anonymous member's browser. File mode refuses it like web mode.
+	test("refuses an anonymous user", async () => {
+		const t = test_convex();
+		const fixture = await seed_html_file(t);
+		const result = await t
+			.withIdentity({ issuer: process.env.VITE_CONVEX_HTTP_URL!, subject: fixture.userId })
+			.action(api.files_browser.start_browser, {
+				membershipId: fixture.membershipId,
+				targetKind: "saved",
+				nodeId: fixture.nodeId,
+				path: fixture.path,
+				sourceKind: "saved",
+				navigationGeneration: 1,
+				navigationClientId: "client-1",
+				viewport: { width: 1280, height: 900 },
+			});
+		expect(result._nay?.message).toBe("Unauthenticated");
+		expect(runnerCalls).toEqual([]);
+		expect(await t.run((ctx) => ctx.db.query("files_browser_sessions").collect())).toEqual([]);
+	});
+
+	test("bills the runner time when the file view ends the session during Start", async () => {
+		const t = test_convex();
+		const fixture = await seed_html_file(t);
+		const acquiredAt = Date.now() - 20_000;
+		const checkDuringOpen = during_next_runner_open(
+			async () => {
+				const starting = await t.run((ctx) => ctx.db.query("files_browser_sessions").first());
+				if (!starting) throw new Error("Expected a starting doc");
+				const ended = await authed(t, fixture.userId).action(api.files_browser.end_browser, {
+					membershipId: fixture.membershipId,
+					sessionId: starting._id,
+				});
+				expect(ended._nay).toBeUndefined();
+			},
+			runner_open_session({ nodeId: fixture.nodeId }),
+		);
+		runnerQueue.push({
+			ok: true,
+			existed: true,
+			verified: true,
+			usage: { providerAcquiredAt: acquiredAt, endedAt: acquiredAt + 20_000, reason: "closed" },
+		});
+
+		const started = await authed(t, fixture.userId).action(api.files_browser.start_browser, {
+			membershipId: fixture.membershipId,
+			targetKind: "saved",
+			nodeId: fixture.nodeId,
+			path: fixture.path,
+			sourceKind: "saved",
+			navigationGeneration: 1,
+			navigationClientId: "client-1",
+			viewport: { width: 1280, height: 900 },
+		});
+		await checkDuringOpen();
+		expect(started._nay?.message).toBe("The file changed. Refresh to try again.");
+		expect(runnerCalls.map((call) => call.route)).toEqual(["open", "close"]);
+		const docs = await t.run((ctx) => ctx.db.query("files_browser_sessions").collect());
+		expect(docs).toHaveLength(1);
+		expect(docs[0]).toMatchObject({
+			control: "closed",
+			runnerSessionId: "runner-session-1",
+			billing: { state: "settled", billedMs: 20_000, amountCents: 0.3 },
+		});
 	});
 
 	test("starts a saved session and sends the committed bytes", async () => {
@@ -1039,7 +1136,7 @@ describe("start_browser", () => {
 			textContent: HTML_TEXT,
 		});
 		const asUser = authed(t, fixture.userId);
-		runnerQueue.push({ ...runner_open_session({ nodeId: fixture.nodeId }), alive: true });
+		runnerQueue.push({ ...runner_open_session({ nodeId: fixture.nodeId }), alive: true, profileStored: false });
 		const busy = await asUser.action(api.files_browser.start_browser, {
 			membershipId: fixture.membershipId,
 			targetKind: "saved",
@@ -1058,7 +1155,7 @@ describe("start_browser", () => {
 		const t = test_convex();
 		const fixture = await seed_html_file(t);
 		const first = await start_saved_session(t, fixture);
-		runnerQueue.push({ ...runner_open_session({ nodeId: fixture.nodeId }), alive: true });
+		runnerQueue.push({ ...runner_open_session({ nodeId: fixture.nodeId }), alive: true, profileStored: false });
 		const second = await start_saved_session(t, fixture);
 		expect(second._yay?.sessionId).toBe(first._yay?.sessionId);
 		expect(runnerCalls.map((call) => call.route)).toEqual(["open", "status"]);
@@ -1113,7 +1210,7 @@ describe("start_browser", () => {
 		await start_saved_session(t, fixture);
 
 		const asUser = authed(t, fixture.userId);
-		runnerQueue.push({ ...runner_open_session({ nodeId: fixture.nodeId }), alive: true });
+		runnerQueue.push({ ...runner_open_session({ nodeId: fixture.nodeId }), alive: true, profileStored: false });
 		const second = await asUser.action(api.files_browser.start_browser, {
 			membershipId: fixture.membershipId,
 			targetKind: "saved",
@@ -1249,6 +1346,7 @@ describe("reload_browser", () => {
 			path: fixture.path,
 		});
 		expect(reloaded._yay).toEqual({
+			mode: "file",
 			controlGen: 1,
 			navGen: 1,
 			loadGen: 7,
@@ -1399,7 +1497,7 @@ describe("/api/chat browser binding", () => {
 		const started = await start_saved_session(t, fixture);
 		const sessionId = started._yay!.sessionId;
 		await t.mutation(internal.files_browser.set_browser_control, { sessionId, control: "human", controlGen: 2 });
-		runnerQueue.push({ ...runner_open_session({ nodeId: fixture.nodeId, controlGen: 3, loadGen: 7 }), alive: true });
+		runnerQueue.push({ ...runner_open_session({ nodeId: fixture.nodeId, controlGen: 3, loadGen: 7 }), alive: true, profileStored: false });
 		const call = await send_chat(t, fixture, sessionId);
 		expect(call.tools).toHaveProperty("browser_run");
 		if (!call.prepareStep) throw new Error("Expected prepareStep");
@@ -1430,7 +1528,7 @@ describe("/api/chat browser binding", () => {
 		const fixture = await seed_html_file(t);
 		const started = await start_saved_session(t, fixture);
 		const sessionId = started._yay!.sessionId;
-		runnerQueue.push({ ...runner_open_session({ nodeId: fixture.nodeId }), alive: true });
+		runnerQueue.push({ ...runner_open_session({ nodeId: fixture.nodeId }), alive: true, profileStored: false });
 		const call = await send_chat(t, fixture, sessionId);
 		const reload = call.tools?.browser_reload;
 		if (!reload?.execute || !call.prepareStep) throw new Error("Expected live browser tools");
@@ -1452,10 +1550,38 @@ describe("/api/chat browser binding", () => {
 		expect(runnerCalls.map((call) => call.route)).toEqual(["open", "status", "reload"]);
 	});
 
+	test("drops web browser tools when the owner turns agent access off", async () => {
+		const t = test_convex();
+		const fixture = await seed_html_file(t);
+		const started = await start_web_session(t, fixture);
+		if (started._nay) throw new Error(started._nay.message);
+		const sessionId = started._yay.session.sessionId;
+		runnerQueue.push({ ...runner_web_session(), alive: true, profileStored: false });
+		const call = await send_chat(t, fixture, sessionId);
+		expect(call.tools).toHaveProperty("browser_run");
+		expect(call.system).toContain("You may navigate with `page.goto`.");
+		if (!call.prepareStep) throw new Error("Expected prepareStep");
+
+		// Change only the switch, not the control generation, so this proves the switch check itself.
+		await t.run((ctx) => ctx.db.patch("files_browser_sessions", sessionId, { agentAccess: false }));
+		await t.run(async () => {
+			const next = await call.prepareStep!({
+				model: call.model,
+				messages: call.messages ?? [],
+				steps: [],
+				stepNumber: 1,
+				experimental_context: call.experimental_context,
+			});
+			expect(next?.activeTools).toContain("bash");
+			expect(next?.activeTools).not.toContain("browser_run");
+			expect(next?.system).toContain("no longer available");
+		});
+	});
+
 	test.each([
-		{ reply: { ok: true, alive: false }, control: "closed" },
+		{ reply: { ok: true, alive: false, closing: false, usage: null, profileStored: false }, control: "closed" },
 		{ reply: { ok: false, error: { code: "offline", message: "Unavailable" } }, control: "ready" },
-		{ reply: { ok: true, alive: true }, control: "ready" },
+		{ reply: { ok: true, alive: true, profileStored: false }, control: "ready" },
 	])("omits browser tools after an unavailable status: $reply", async ({ reply, control }) => {
 		const t = test_convex();
 		const fixture = await seed_html_file(t);
@@ -1753,7 +1879,7 @@ describe("viewer and control doors", () => {
 		const fixture = await seed_html_file(t);
 		const started = await start_saved_session(t, fixture);
 		runnerQueue.push({ ok: false, error: { code: "closed", message: "The browser session is closed." } });
-		runnerQueue.push({ ok: true, alive: false });
+		runnerQueue.push({ ok: true, alive: false, closing: false, usage: null, profileStored: false });
 		const granted = await authed(t, fixture.userId).action(api.files_browser.grant_browser_viewer, {
 			membershipId: fixture.membershipId,
 			sessionId: started._yay!.sessionId,
@@ -1769,7 +1895,7 @@ describe("viewer and control doors", () => {
 		const fixture = await seed_html_file(t);
 		const started = await start_saved_session(t, fixture);
 		runnerQueue.push({ ok: false, error: { code: "viewer", message: "The viewer is gone." } });
-		runnerQueue.push({ ok: true, alive: false });
+		runnerQueue.push({ ok: true, alive: false, closing: false, usage: null, profileStored: false });
 		const asUser = authed(t, fixture.userId);
 		const renewed = await asUser.action(api.files_browser.renew_browser_viewer, {
 			membershipId: fixture.membershipId,
@@ -1884,6 +2010,35 @@ describe("viewer and control doors", () => {
 });
 
 describe("cleanup_expired_browser_docs", () => {
+	test("deletes the download saves of an old settled session and keeps the saved file", async () => {
+		const t = test_convex();
+		const fixture = await seed_web_member(t);
+		const started = await start_web_session(t, fixture);
+		if (started._nay) throw new Error(started._nay.message);
+		const sessionId = started._yay.session.sessionId;
+		const created = await t.mutation(internal.files_browser.create_browser_download_node, {
+			...download_node_args(fixture, sessionId),
+		});
+		if (created._nay) throw new Error(created._nay.message);
+
+		const oldAt = Date.now() - 8 * 24 * 60 * 60 * 1000;
+		await t.run((ctx) =>
+			ctx.db.patch("files_browser_sessions", sessionId, {
+				control: "closed",
+				closedAt: oldAt,
+				billing: { state: "settled", billedMs: 0, amountCents: 0, settledAt: oldAt },
+				updatedAt: oldAt,
+			}),
+		);
+		await t.mutation(internal.files_browser.cleanup_expired_browser_docs, {});
+
+		expect(await t.run((ctx) => ctx.db.get("files_browser_sessions", sessionId))).toBe(null);
+		expect(await t.run((ctx) => ctx.db.query("files_browser_download_saves").collect())).toEqual([]);
+		expect(await t.run((ctx) => ctx.db.get("files_nodes", created._yay.nodeId))).toMatchObject({
+			archiveOperationId: null,
+		});
+	});
+
 	test.each(["starting", "closing", "closed"] as const)(
 		"reaches an expired %s start behind a full batch of retained sessions",
 		async (control) => {
@@ -1891,9 +2046,11 @@ describe("cleanup_expired_browser_docs", () => {
 			const fixture = await seed_html_file(t);
 			const startingId = await t.run(async (ctx) => {
 				const session = {
+					mode: "file" as const,
 					ownerId: fixture.userId,
 					organizationId: fixture.organizationId,
 					workspaceId: fixture.workspaceId,
+					billedUserId: fixture.userId,
 					targetKind: "saved" as const,
 					nodeId: String(fixture.nodeId),
 					path: fixture.path,
@@ -1910,12 +2067,18 @@ describe("cleanup_expired_browser_docs", () => {
 				// These 50 closed just now, so the sweep keeps them. They also fill one whole sweep
 				// batch, so the expired session below is only reached through its own deadline index.
 				for (let index = 0; index < 50; index++) {
-					await ctx.db.insert("files_browser_sessions", { ...session, control: "closed", closedAt: Date.now() });
+					await ctx.db.insert("files_browser_sessions", {
+						...session,
+						control: "closed",
+						closedAt: Date.now(),
+						billing: { state: "settled", billedMs: 0, amountCents: 0, settledAt: Date.now() },
+					});
 				}
 
 				return await ctx.db.insert("files_browser_sessions", {
 					...session,
 					control,
+					billing: { state: "pending" },
 					closedAt: control === "closed" ? Date.now() : undefined,
 					startingExpiresAt: Date.now() - 1,
 				});
@@ -1928,40 +2091,68 @@ describe("cleanup_expired_browser_docs", () => {
 		},
 	);
 
-	test("deletes old closed sessions and daily counters while keeping recent ones", async () => {
+	test("deletes old settled sessions and daily counters while keeping recent and unbilled ones", async () => {
 		const t = test_convex();
 		const fixture = await seed_html_file(t);
 		const started = await start_saved_session(t, fixture);
 		const sessionId = started._yay!.sessionId;
-		// A closed session is kept for 7 days and a daily counter for 2 days. So this 8-day-old session
-		// and this 3-day-old counter must go, while the session closed just now stays.
-		const recentId = await t.run(async (ctx) => {
+		const oldAt = Date.now() - 8 * 24 * 60 * 60 * 1000;
+		const threeDaysAgo = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+		// A settled session is kept for 7 days and a daily counter for 2 days. So this 8-day-old session
+		// and these 3-day-old counters must go, while the session settled just now stays. An old session
+		// that is still waiting for its bill also stays: the sweep must never drop unbilled time.
+		const { recentId, pendingId } = await t.run(async (ctx) => {
 			const { _id, _creationTime, ...session } = (await ctx.db.get("files_browser_sessions", sessionId))!;
+			const settled = { state: "settled" as const, billedMs: 0, amountCents: 0, settledAt: oldAt };
 			await ctx.db.patch("files_browser_sessions", sessionId, {
 				control: "closed",
-				closedAt: Date.now() - 8 * 24 * 60 * 60 * 1000,
+				closedAt: oldAt,
+				billing: settled,
+				updatedAt: oldAt,
 			});
 
 			await ctx.db.insert("files_browser_daily_use", {
 				organizationId: fixture.organizationId,
 				workspaceId: fixture.workspaceId,
-				day: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10),
+				day: threeDaysAgo,
 				starts: 1,
 				captures: 0,
 				updatedAt: Date.now(),
 			});
-			return await ctx.db.insert("files_browser_sessions", { ...session, control: "closed", closedAt: Date.now() });
+			await ctx.db.insert("files_browser_user_daily_use", {
+				userId: fixture.userId,
+				day: threeDaysAgo,
+				webStarts: 1,
+				updatedAt: Date.now(),
+			});
+			const recentId = await ctx.db.insert("files_browser_sessions", {
+				...session,
+				control: "closed",
+				closedAt: Date.now(),
+				billing: { ...settled, settledAt: Date.now() },
+				updatedAt: Date.now(),
+			});
+			const pendingId = await ctx.db.insert("files_browser_sessions", {
+				...session,
+				control: "closed",
+				closedAt: oldAt,
+				billing: { state: "pending" },
+				updatedAt: oldAt,
+			});
+			return { recentId, pendingId };
 		});
 
 		await t.mutation(internal.files_browser.cleanup_expired_browser_docs, {});
 
 		expect(await t.run((ctx) => ctx.db.get("files_browser_sessions", sessionId))).toBe(null);
 		expect(await t.run((ctx) => ctx.db.get("files_browser_sessions", recentId))).not.toBe(null);
+		expect(await t.run((ctx) => ctx.db.get("files_browser_sessions", pendingId))).not.toBe(null);
 
 		// Only today's counter is left. The start above created it.
 		const counters = await t.run((ctx) => ctx.db.query("files_browser_daily_use").collect());
 		expect(counters).toHaveLength(1);
 		expect(counters[0]?.day).toBe(new Date().toISOString().slice(0, 10));
+		expect(await t.run((ctx) => ctx.db.query("files_browser_user_daily_use").collect())).toEqual([]);
 	});
 
 	test("sweep deletes expired captures and starting sessions", async () => {
@@ -2169,7 +2360,7 @@ describe("rename and closing slot", () => {
 		const current = await asUser.query(api.files_browser.current_browser_session, {
 			membershipId: fixture.membershipId,
 		});
-		expect(current?.nodeId).toBe(String(fixture.nodeId));
+		expect(current?.mode === "file" ? current.nodeId : null).toBe(String(fixture.nodeId));
 	});
 
 	test("viewer grant survives a rename instead of ending the session", async () => {
@@ -2197,9 +2388,12 @@ describe("rename and closing slot", () => {
 		await t.run((ctx) => ctx.db.patch("files_browser_sessions", staleId, { control: "closing" }));
 		const liveId = await t.run((ctx) =>
 			ctx.db.insert("files_browser_sessions", {
+				mode: "file",
 				ownerId: fixture.userId,
 				organizationId: fixture.organizationId,
 				workspaceId: fixture.workspaceId,
+				billedUserId: fixture.userId,
+				billing: { state: "pending" },
 				targetKind: "saved",
 				nodeId: String(fixture.nodeId),
 				path: fixture.path,
@@ -2224,7 +2418,7 @@ describe("rename and closing slot", () => {
 	});
 });
 
-describe("check_browser_source_access", () => {
+describe("check_browser_session_access", () => {
 	test("denies a private source after workspace read access is revoked", async () => {
 		const t = test_convex();
 		const fixture = await seed_private_html_file(t);
@@ -2247,7 +2441,7 @@ describe("check_browser_source_access", () => {
 			membershipId: fixture.membershipId,
 			sessionId: started._yay.sessionId,
 		};
-		expect((await t.query(internal.files_browser.check_browser_source_access, args)).ok).toBe(true);
+		expect((await t.query(internal.files_browser.check_browser_session_access, args)).ok).toBe(true);
 
 		// Hand the organization to someone else. The user's read permission came from owning it, so
 		// they lose access to their own draft while the running session still points at it.
@@ -2258,7 +2452,7 @@ describe("check_browser_source_access", () => {
 
 		// The draft itself did not change. Only the access did, and the check must follow it.
 		expect((await t.run((ctx) => ctx.db.get("files_pending_nodes", fixture.nodeId)))?.state).toBe("active");
-		expect((await t.query(internal.files_browser.check_browser_source_access, args)).ok).toBe(false);
+		expect((await t.query(internal.files_browser.check_browser_session_access, args)).ok).toBe(false);
 	});
 
 	test("check denies a session whose node is gone", async () => {
@@ -2267,7 +2461,7 @@ describe("check_browser_source_access", () => {
 		const started = await start_saved_session(t, fixture);
 		await t.run((ctx) => ctx.db.delete("files_nodes", fixture.nodeId));
 
-		const checked = await t.query(internal.files_browser.check_browser_source_access, {
+		const checked = await t.query(internal.files_browser.check_browser_session_access, {
 			organizationId: fixture.organizationId,
 			workspaceId: fixture.workspaceId,
 			userId: fixture.userId,
@@ -2305,9 +2499,12 @@ describe("files_browser_db_delete_user_batch", () => {
 		const fixture = await seed_html_file(t);
 		const sessionId = await t.run((ctx) =>
 			ctx.db.insert("files_browser_sessions", {
+				mode: "file",
 				ownerId: fixture.userId,
 				organizationId: fixture.organizationId,
 				workspaceId: fixture.workspaceId,
+				billedUserId: fixture.userId,
+				billing: { state: "pending" },
 				targetKind: "saved",
 				nodeId: String(fixture.nodeId),
 				path: fixture.path,
@@ -2361,5 +2558,1785 @@ describe("files_browser_db_delete_user_batch", () => {
 			files_browser_db_delete_user_batch(ctx as never, { userId: fixture.userId, batchSize: 10 }),
 		);
 		expect(drained).toEqual({ done: true, deletedCount: 0 });
+	});
+
+	test.each(["user", "workspace"] as const)("the %s purge deletes download saves with their session", async (scope) => {
+		const t = test_convex();
+		const fixture = await seed_web_member(t);
+		const started = await start_web_session(t, fixture);
+		if (started._nay) throw new Error(started._nay.message);
+		const sessionId = started._yay.session.sessionId;
+		const created = await t.mutation(internal.files_browser.create_browser_download_node, {
+			...download_node_args(fixture, sessionId),
+		});
+		if (created._nay) throw new Error(created._nay.message);
+
+		await t.run((ctx) =>
+			scope === "user"
+				? files_browser_db_delete_user_batch(ctx as never, { userId: fixture.userId, batchSize: 10 })
+				: files_browser_db_purge_workspace_batch(ctx as never, {
+						organizationId: fixture.organizationId,
+						workspaceId: fixture.workspaceId,
+						batchSize: 10,
+					}),
+		);
+		expect(await t.run((ctx) => ctx.db.get("files_browser_sessions", sessionId))).toBe(null);
+		expect(await t.run((ctx) => ctx.db.query("files_browser_download_saves").collect())).toEqual([]);
+	});
+});
+
+function runner_web_session(overrides: Record<string, unknown> = {}) {
+	return {
+		ok: true,
+		session: {
+			mode: "web" as const,
+			sessionId: "runner-web-1",
+			navGen: 1,
+			loadGen: 0,
+			controlGen: 1,
+			control: "ready" as const,
+			agentAccess: true,
+			pageNonce: "nonce-1",
+			commandCount: 0,
+			idleUntil: Date.now() + 300_000,
+			totalUntil: Date.now() + 3_600_000,
+			...overrides,
+		},
+	};
+}
+
+type WebFixture = {
+	userId: Id<"users">;
+	membershipId: Id<"organizations_workspaces_users">;
+	organizationId: Id<"organizations">;
+	workspaceId: Id<"organizations_workspaces">;
+};
+
+async function seed_web_member(
+	t: ReturnType<typeof test_convex>,
+	plan: "Free" | "Pro" | "Pay As You Go" = "Pay As You Go",
+	organizationName = "test-organization",
+): Promise<WebFixture> {
+	return await t.run((ctx) => test_mocks_fill_db_with.membership(ctx, { plan, organizationName }));
+}
+
+/**
+ * Add a second person to the owner's workspace with one system role and one plan.
+ */
+async function add_workspace_member(
+	t: ReturnType<typeof test_convex>,
+	owner: WebFixture,
+	args: { role: "member" | "viewer"; plan: "Free" | "Pro" | "Pay As You Go" },
+): Promise<WebFixture> {
+	return await t.run(async (ctx) => {
+		const { userId } = await test_mocks_fill_db_with.membership(ctx, {
+			organizationName: "personal",
+			workspaceName: "home",
+			plan: args.plan,
+		});
+		const membershipId = await ctx.db.insert("organizations_workspaces_users", {
+			organizationId: owner.organizationId,
+			workspaceId: owner.workspaceId,
+			userId,
+			active: true,
+		});
+		await access_control_db_ensure_role_assignment(ctx, {
+			organizationId: owner.organizationId,
+			workspaceId: owner.workspaceId,
+			userId,
+			role: args.role,
+			now: Date.now(),
+		});
+		return { userId, membershipId, organizationId: owner.organizationId, workspaceId: owner.workspaceId };
+	});
+}
+
+async function start_web_session(t: ReturnType<typeof test_convex>, fixture: WebFixture, startUrl: string | null = null) {
+	runnerQueue.push(runner_web_session());
+	return await authed(t, fixture.userId).action(api.files_browser.start_web_browser, {
+		membershipId: fixture.membershipId,
+		viewport: { width: 1280, height: 900 },
+		startUrl,
+	});
+}
+
+async function web_starts_today(t: ReturnType<typeof test_convex>, userId: Id<"users">) {
+	const day = new Date().toISOString().slice(0, 10);
+	const dailyUse = await t.run((ctx) =>
+		ctx.db
+			.query("files_browser_user_daily_use")
+			.withIndex("by_user_day", (q) => q.eq("userId", userId).eq("day", day))
+			.first(),
+	);
+	return dailyUse?.webStarts ?? 0;
+}
+
+async function consumed_units(t: ReturnType<typeof test_convex>, userId: Id<"users">) {
+	const snapshot = await t.run((ctx) =>
+		ctx.db
+			.query("billing_usage_snapshots")
+			.withIndex("by_user", (q) => q.eq("userId", userId))
+			.first(),
+	);
+	return snapshot?.meter?.consumedUnits ?? 0;
+}
+
+describe("start_web_browser", () => {
+	test("starts a web session, counts it at commit, and reattaches for free", async () => {
+		const t = test_convex();
+		const fixture = await seed_web_member(t);
+		const started = await start_web_session(t, fixture, "example.com");
+		if (started._nay) throw new Error(started._nay.message);
+		expect(started._yay.session).toMatchObject({ mode: "web", agentAccess: true, control: "ready", loadGen: 0 });
+		expect(runnerCalls[0]).toMatchObject({
+			route: "open",
+			body: { mode: "web", navGen: 1, agentAccess: true, startUrl: "https://example.com/" },
+		});
+		expect(await t.run((ctx) => ctx.db.get("files_browser_sessions", started._yay.session.sessionId))).toMatchObject({
+			mode: "web",
+			billedUserId: fixture.userId,
+			billing: { state: "pending" },
+			runnerSessionId: "runner-web-1",
+		});
+		expect(await web_starts_today(t, fixture.userId)).toBe(1);
+
+		// A repeated start finds the live session and keeps its page: no open, no count.
+		runnerQueue.push({ ...runner_web_session(), alive: true, profileStored: false });
+		const again = await start_web_session(t, fixture);
+		runnerQueue.length = 0;
+		expect(again._yay?.session.sessionId).toBe(started._yay.session.sessionId);
+		expect(runnerCalls.map((call) => call.route)).toEqual(["open", "status"]);
+		expect(await web_starts_today(t, fixture.userId)).toBe(1);
+	});
+
+	test("refuses a viewer", async () => {
+		const t = test_convex();
+		const owner = await seed_web_member(t);
+		const viewer = await add_workspace_member(t, owner, { role: "viewer", plan: "Pro" });
+		const started = await start_web_session(t, viewer);
+		runnerQueue.length = 0;
+		expect(started._nay?.message).toBe("Permission denied");
+		expect(runnerCalls).toEqual([]);
+
+		// A member of the same workspace has the permission.
+		const member = await add_workspace_member(t, owner, { role: "member", plan: "Pro" });
+		expect((await start_web_session(t, member))._nay).toBeUndefined();
+	});
+
+	test("refuses an anonymous user", async () => {
+		const t = test_convex();
+		const fixture = await seed_web_member(t);
+		const started = await t
+			.withIdentity({ issuer: process.env.VITE_CONVEX_HTTP_URL!, subject: fixture.userId })
+			.action(api.files_browser.start_web_browser, {
+				membershipId: fixture.membershipId,
+				viewport: { width: 1280, height: 900 },
+				startUrl: null,
+			});
+		expect(started._nay?.message).toBe("Unauthenticated");
+		expect(runnerCalls).toEqual([]);
+	});
+
+	test.each(["Pay As You Go", "Pro"] as const)("lets %s start both modes", async (plan) => {
+		const t = test_convex();
+		const fixture = await seed_html_file(t);
+		await t.run((ctx) => test_mocks_fill_db_with.plan(ctx, { userId: fixture.userId, plan }));
+		expect((await start_saved_session(t, fixture))._nay).toBeUndefined();
+
+		const other = await seed_web_member(t, plan, "other-organization");
+		expect((await start_web_session(t, other))._nay).toBeUndefined();
+	});
+
+	test("refuses Free with plan_required in both modes", async () => {
+		const t = test_convex();
+		const fixture = await seed_html_file(t);
+		await t.run((ctx) => test_mocks_fill_db_with.plan(ctx, { userId: fixture.userId, plan: "Free" }));
+
+		const web = await start_web_session(t, fixture);
+		expect(web._nay).toMatchObject({ message: "Plan required", data: { code: "plan_required" } });
+		const file = await start_saved_session(t, fixture);
+		expect(file._nay).toMatchObject({ message: "Plan required", data: { code: "plan_required" } });
+		runnerQueue.length = 0;
+		expect(runnerCalls).toEqual([]);
+		expect(await t.run((ctx) => ctx.db.query("files_browser_sessions").collect())).toEqual([]);
+
+		const available = await authed(t, fixture.userId).query(api.files_browser.web_browser_available, {
+			membershipId: fixture.membershipId,
+		});
+		expect(available).toEqual({ enabled: true, paidPlan: false });
+	});
+
+	test("checks the owner's plan in an owner-billed organization", async () => {
+		const t = test_convex();
+		const owner = await seed_web_member(t, "Free");
+		const member = await add_workspace_member(t, owner, { role: "member", plan: "Pro" });
+		await t.run((ctx) => ctx.db.patch("organizations", owner.organizationId, { billingMode: "organization_owner" }));
+
+		// The member pays for Pro, but the owner pays here, and the owner is on Free.
+		const refused = await start_web_session(t, member);
+		runnerQueue.length = 0;
+		expect(refused._nay).toMatchObject({ message: "Plan required", data: { code: "plan_required" } });
+
+		await t.run((ctx) => test_mocks_fill_db_with.plan(ctx, { userId: owner.userId, plan: "Pro" }));
+		await t.run((ctx) => test_mocks_fill_db_with.plan(ctx, { userId: member.userId, plan: "Free" }));
+		const started = await start_web_session(t, member);
+		if (started._nay) throw new Error(started._nay.message);
+		const stored = await t.run((ctx) => ctx.db.get("files_browser_sessions", started._yay.session.sessionId));
+		expect(stored?.billedUserId).toBe(owner.userId);
+	});
+
+	test("refuses while web mode is off", async () => {
+		const t = test_convex();
+		const fixture = await seed_web_member(t);
+		const enabled = process.env.AI_CHAT_BROWSER_ENABLED;
+		process.env.AI_CHAT_BROWSER_ENABLED = "false";
+		try {
+			const started = await start_web_session(t, fixture);
+			expect(started._nay?.message).toBe("Browser unavailable");
+			const available = await authed(t, fixture.userId).query(api.files_browser.web_browser_available, {
+				membershipId: fixture.membershipId,
+			});
+			expect(available).toEqual({ enabled: false, paidPlan: true });
+		} finally {
+			process.env.AI_CHAT_BROWSER_ENABLED = enabled;
+		}
+		runnerQueue.length = 0;
+		expect(runnerCalls).toEqual([]);
+	});
+
+	test("refuses the 51st web start of the day", async () => {
+		const t = test_convex();
+		const fixture = await seed_web_member(t);
+		await t.run((ctx) =>
+			ctx.db.insert("files_browser_user_daily_use", {
+				userId: fixture.userId,
+				day: new Date().toISOString().slice(0, 10),
+				webStarts: 50,
+				updatedAt: Date.now(),
+			}),
+		);
+		const started = await start_web_session(t, fixture);
+		expect(started._nay?.message).toBe("Daily limit reached");
+		runnerQueue.length = 0;
+		expect(runnerCalls).toEqual([]);
+		expect(await web_starts_today(t, fixture.userId)).toBe(50);
+	});
+
+	test.each([
+		{ code: "busy", message: "Browser did not start" },
+		{ code: "address_blocked", message: "Address blocked" },
+		{ code: "user_limit", message: "You already have 2 browsers open in other workspaces. End one first." },
+		{ code: "organization_limit", message: "Your organization already has 4 browsers open. Try again later." },
+	])("does not count a failed open ($code)", async ({ code, message }) => {
+		const t = test_convex();
+		const fixture = await seed_web_member(t);
+		runnerQueue.push({ ok: false, error: { code, message: "refused" } });
+		const started = await authed(t, fixture.userId).action(api.files_browser.start_web_browser, {
+			membershipId: fixture.membershipId,
+			viewport: { width: 1280, height: 900 },
+			startUrl: "https://example.com",
+		});
+		expect(started._nay?.message).toBe(message);
+		expect(await web_starts_today(t, fixture.userId)).toBe(0);
+		expect(await t.run((ctx) => ctx.db.query("files_browser_sessions").collect())).toEqual([]);
+	});
+
+	test("End during Start still bills the browser time, even when the cron runs first", async () => {
+		const t = test_convex();
+		const fixture = await seed_web_member(t);
+		const acquiredAt = Date.now() - 20_000;
+		const checkDuringOpen = during_next_runner_open(async () => {
+			const starting = await t.run((ctx) => ctx.db.query("files_browser_sessions").first());
+			if (!starting) throw new Error("Expected a starting doc");
+			const ended = await authed(t, fixture.userId).action(api.files_browser.end_browser, {
+				membershipId: fixture.membershipId,
+				sessionId: starting._id,
+			});
+			expect(ended._nay).toBeUndefined();
+
+			// The settle cron sees a closed doc with no runner session yet. It must wait for the start
+			// action instead of billing 0.
+			await t.action(internal.files_browser.settle_pending_browser_usage, {});
+			expect((await t.run((ctx) => ctx.db.get("files_browser_sessions", starting._id)))?.billing).toEqual({
+				state: "pending",
+			});
+		}, runner_web_session());
+		runnerQueue.push({
+			ok: true,
+			existed: true,
+			verified: true,
+			usage: { providerAcquiredAt: acquiredAt, endedAt: acquiredAt + 20_000, reason: "closed" },
+		});
+
+		const started = await authed(t, fixture.userId).action(api.files_browser.start_web_browser, {
+			membershipId: fixture.membershipId,
+			viewport: { width: 1280, height: 900 },
+			startUrl: null,
+		});
+		await checkDuringOpen();
+		expect(started._nay?.message).toBe("Browser did not start");
+		expect(runnerCalls.map((call) => call.route)).toEqual(["open", "close"]);
+		const docs = await t.run((ctx) => ctx.db.query("files_browser_sessions").collect());
+		expect(docs).toHaveLength(1);
+		expect(docs[0]).toMatchObject({
+			control: "closed",
+			runnerSessionId: "runner-web-1",
+			billing: { state: "settled", billedMs: 20_000, amountCents: 0.3 },
+		});
+		// The hourly sweep deletes docs by their start deadline, so a billed-later doc must not keep one.
+		expect(docs[0]?.startingExpiresAt).toBeUndefined();
+	});
+
+	test("refuses a bad start address before the runner", async () => {
+		const t = test_convex();
+		const fixture = await seed_web_member(t);
+		const started = await authed(t, fixture.userId).action(api.files_browser.start_web_browser, {
+			membershipId: fixture.membershipId,
+			viewport: { width: 1280, height: 900 },
+			startUrl: "javascript:alert(1)",
+		});
+		expect(started._nay?.message).toBe("Address blocked");
+		expect(runnerCalls).toEqual([]);
+	});
+
+	test("reports busy both ways with the live mode", async () => {
+		const t = test_convex();
+		const fixture = await seed_html_file(t);
+		const file = await start_saved_session(t, fixture);
+		expect(file._nay).toBeUndefined();
+
+		runnerQueue.push({ ...runner_open_session({ nodeId: fixture.nodeId }), alive: true, profileStored: false });
+		const web = await start_web_session(t, fixture);
+		runnerQueue.length = 0;
+		expect(web._nay).toMatchObject({ message: "Browser busy", data: { mode: "file" } });
+
+		runnerQueue.push({ ok: true, existed: true, verified: true, usage: null });
+		await authed(t, fixture.userId).action(api.files_browser.end_browser, {
+			membershipId: fixture.membershipId,
+			sessionId: file._yay!.sessionId,
+		});
+		expect((await start_web_session(t, fixture))._nay).toBeUndefined();
+
+		runnerQueue.push({ ...runner_web_session(), alive: true, profileStored: false });
+		const fileAgain = await start_saved_session(t, fixture, { navigationGeneration: 2 });
+		runnerQueue.length = 0;
+		expect(fileAgain._nay).toMatchObject({ message: "Browser busy", data: { mode: "web" } });
+	});
+});
+
+describe("web browser access", () => {
+	test("internal close works after the owner's membership is gone", async () => {
+		const t = test_convex();
+		const owner = await seed_web_member(t);
+		const member = await add_workspace_member(t, owner, { role: "member", plan: "Pro" });
+		const started = await start_web_session(t, member);
+		if (started._nay) throw new Error(started._nay.message);
+		await t.run((ctx) => ctx.db.delete("organizations_workspaces_users", member.membershipId));
+
+		const acquiredAt = Date.now() - 30_000;
+		runnerQueue.push({
+			ok: true,
+			existed: true,
+			verified: true,
+			usage: { providerAcquiredAt: acquiredAt, endedAt: acquiredAt + 30_000, reason: "access_lost" },
+		});
+		await t.action(internal.files_browser.end_browser_session_internal, {
+			sessionId: started._yay.session.sessionId,
+			reason: "access_lost",
+		});
+		expect(runnerCalls.at(-1)).toMatchObject({ route: "close", body: { saveProfile: false, reason: "access_lost" } });
+		expect(await t.run((ctx) => ctx.db.get("files_browser_sessions", started._yay.session.sessionId))).toMatchObject({
+			control: "closed",
+			billing: { state: "settled", billedMs: 30_000, amountCents: 0.3 },
+		});
+	});
+
+	test("removing a member closes their live browser", async () => {
+		const t = test_convex();
+		const owner = await seed_web_member(t);
+		const member = await add_workspace_member(t, owner, { role: "member", plan: "Pro" });
+		const started = await start_web_session(t, member);
+		if (started._nay) throw new Error(started._nay.message);
+		// The removal clears the member's API credential counter, which a real invite creates.
+		await t.run((ctx) =>
+			quotas_db_ensure(ctx, {
+				quotaName: "active_api_credentials",
+				userId: member.userId,
+				organizationId: owner.organizationId,
+				workspaceId: owner.workspaceId,
+				now: Date.now(),
+			}),
+		);
+
+		const acquiredAt = Date.now() - 30_000;
+		// The close and the wipe of the member's saved profile run as separate scheduled jobs, in any
+		// order. So both replies fit either route.
+		const reply = {
+			ok: true,
+			existed: true,
+			verified: true,
+			deleted: true,
+			usage: { providerAcquiredAt: acquiredAt, endedAt: acquiredAt + 30_000, reason: "closed" },
+		};
+		runnerQueue.push(reply, reply);
+		vi.useFakeTimers();
+		try {
+			const removed = await authed(t, owner.userId).mutation(api.organizations.remove_user_from_organization, {
+				organizationId: owner.organizationId,
+				userIdToRemove: member.userId,
+			});
+			expect(removed._nay).toBeUndefined();
+			await t.finishAllScheduledFunctions(vi.runAllTimers);
+		} finally {
+			vi.useRealTimers();
+		}
+
+		expect(runnerCalls.map((call) => call.route).sort()).toEqual(["close", "open", "profile-delete"]);
+		expect(runnerCalls.find((call) => call.route === "close")).toMatchObject({
+			body: { saveProfile: false, reason: "member_removed" },
+		});
+		expect(await t.run((ctx) => ctx.db.query("files_browser_profiles").collect())).toEqual([]);
+		expect(await t.run((ctx) => ctx.db.query("files_browser_profile_wipes").collect())).toEqual([]);
+		expect(await t.run((ctx) => ctx.db.get("files_browser_sessions", started._yay.session.sessionId))).toMatchObject({
+			control: "closed",
+			billing: { state: "settled", billedMs: 30_000, amountCents: 0.3 },
+		});
+	});
+
+	test("the browser cron closes a live web browser whose owner lost access", async () => {
+		const t = test_convex();
+		const owner = await seed_web_member(t);
+		const member = await add_workspace_member(t, owner, { role: "member", plan: "Pro" });
+		const ownerSession = await start_web_session(t, owner);
+		const memberSession = await start_web_session(t, member);
+		if (ownerSession._nay || memberSession._nay) throw new Error("Expected two web sessions");
+
+		// The member becomes a viewer, and viewers may not use the browser.
+		await t.run(async (ctx) => {
+			const assignments = await ctx.db
+				.query("access_control_role_assignments")
+				.withIndex("by_organization_user_workspace", (q) =>
+					q.eq("organizationId", owner.organizationId).eq("userId", member.userId),
+				)
+				.collect();
+			await Promise.all(
+				assignments.map((assignment) => ctx.db.delete("access_control_role_assignments", assignment._id)),
+			);
+			await access_control_db_ensure_role_assignment(ctx, {
+				organizationId: owner.organizationId,
+				workspaceId: owner.workspaceId,
+				userId: member.userId,
+				role: "viewer",
+				now: Date.now(),
+			});
+		});
+
+		runnerQueue.push({ ok: true, existed: true, verified: true, usage: null });
+		vi.useFakeTimers();
+		try {
+			await t.action(internal.files_browser.settle_pending_browser_usage, {});
+			await t.finishAllScheduledFunctions(vi.runAllTimers);
+		} finally {
+			vi.useRealTimers();
+		}
+
+		expect(runnerCalls.map((call) => call.route)).toEqual(["open", "open", "close"]);
+		expect(
+			(await t.run((ctx) => ctx.db.get("files_browser_sessions", memberSession._yay.session.sessionId)))?.control,
+		).toBe("closed");
+		expect(
+			(await t.run((ctx) => ctx.db.get("files_browser_sessions", ownerSession._yay.session.sessionId)))?.control,
+		).toBe("ready");
+	});
+
+	test("check_browser_session_access refuses when agent access is off", async () => {
+		const t = test_convex();
+		const fixture = await seed_web_member(t);
+		const started = await start_web_session(t, fixture);
+		if (started._nay) throw new Error(started._nay.message);
+		const args = { ...fixture, sessionId: started._yay.session.sessionId };
+		expect(await t.query(internal.files_browser.check_browser_session_access, args)).toMatchObject({
+			ok: true,
+			mode: "web",
+		});
+
+		runnerQueue.push(runner_web_session({ agentAccess: false, controlGen: 2 }));
+		const switched = await authed(t, fixture.userId).action(api.files_browser.set_browser_agent_access, {
+			membershipId: fixture.membershipId,
+			sessionId: started._yay.session.sessionId,
+			on: false,
+		});
+		expect(switched._yay).toEqual({ agentAccess: false, controlGen: 2 });
+		expect(runnerCalls.at(-1)).toMatchObject({ route: "agent-access", body: { on: false } });
+		expect(await t.query(internal.files_browser.check_browser_session_access, args)).toEqual({
+			ok: false,
+			reason: "agent_access_off",
+		});
+	});
+
+	test("human End saves the profile and the agent close does not", async () => {
+		const t = test_convex();
+		const fixture = await seed_web_member(t);
+		const started = await start_web_session(t, fixture);
+		if (started._nay) throw new Error(started._nay.message);
+
+		runnerQueue.push({ ok: true, existed: true, verified: true, usage: null });
+		await authed(t, fixture.userId).action(api.files_browser.end_browser, {
+			membershipId: fixture.membershipId,
+			sessionId: started._yay.session.sessionId,
+			expectedAgentLease: { controlGen: 1, loadGen: 0, navGen: 1 },
+		});
+		expect(runnerCalls.at(-1)?.body).toMatchObject({ saveProfile: false, reason: "agent_close" });
+
+		const again = await start_web_session(t, fixture);
+		if (again._nay) throw new Error(again._nay.message);
+		runnerQueue.push({ ok: true, existed: true, verified: true, usage: null });
+		await authed(t, fixture.userId).action(api.files_browser.end_browser, {
+			membershipId: fixture.membershipId,
+			sessionId: again._yay.session.sessionId,
+		});
+		expect(runnerCalls.at(-1)?.body).toMatchObject({ saveProfile: true, reason: "human_end" });
+	});
+});
+
+describe("browser billing", () => {
+	test("settles once, per started minute", async () => {
+		const t = test_convex();
+		const fixture = await seed_web_member(t);
+		const started = await start_web_session(t, fixture);
+		if (started._nay) throw new Error(started._nay.message);
+		const sessionId = started._yay.session.sessionId;
+		const before = await consumed_units(t, fixture.userId);
+
+		// 121 seconds is three started minutes. 3 x 0.3 must bill exactly 0.9.
+		const acquiredAt = Date.now() - 121_000;
+		runnerQueue.push({
+			ok: true,
+			existed: true,
+			verified: true,
+			usage: { providerAcquiredAt: acquiredAt, endedAt: acquiredAt + 121_000, reason: "closed" },
+		});
+		const ended = await authed(t, fixture.userId).action(api.files_browser.end_browser, {
+			membershipId: fixture.membershipId,
+			sessionId,
+		});
+		expect(ended._nay).toBeUndefined();
+		expect(await t.run((ctx) => ctx.db.get("files_browser_sessions", sessionId))).toMatchObject({
+			control: "closed",
+			billing: { state: "settled", billedMs: 121_000, amountCents: 0.9 },
+		});
+		expect(await consumed_units(t, fixture.userId)).toBeCloseTo(before + 0.9);
+
+		// A second settle, for example from the cron racing End, changes nothing.
+		await t.mutation(internal.files_browser.settle_browser_usage, {
+			sessionId,
+			usage: { providerAcquiredAt: acquiredAt, endedAt: acquiredAt + 600_000, reason: "closed" },
+		});
+		expect(await t.run((ctx) => ctx.db.get("files_browser_sessions", sessionId))).toMatchObject({
+			billing: { state: "settled", billedMs: 121_000, amountCents: 0.9 },
+		});
+		expect(await consumed_units(t, fixture.userId)).toBeCloseTo(before + 0.9);
+	});
+
+	test("bills the payer frozen at start after an ownership transfer", async () => {
+		const t = test_convex();
+		const owner = await seed_web_member(t, "Pro");
+		const member = await add_workspace_member(t, owner, { role: "member", plan: "Free" });
+		await t.run((ctx) => ctx.db.patch("organizations", owner.organizationId, { billingMode: "organization_owner" }));
+		const started = await start_web_session(t, member);
+		if (started._nay) throw new Error(started._nay.message);
+
+		const nextOwner = await seed_web_member(t, "Pro", "other-organization");
+		await t.run((ctx) => ctx.db.patch("organizations", owner.organizationId, { ownerUserId: nextOwner.userId }));
+		const ownerBefore = await consumed_units(t, owner.userId);
+		const nextOwnerBefore = await consumed_units(t, nextOwner.userId);
+
+		const acquiredAt = Date.now() - 60_000;
+		runnerQueue.push({
+			ok: true,
+			existed: true,
+			verified: true,
+			usage: { providerAcquiredAt: acquiredAt, endedAt: acquiredAt + 60_000, reason: "closed" },
+		});
+		await authed(t, member.userId).action(api.files_browser.end_browser, {
+			membershipId: member.membershipId,
+			sessionId: started._yay.session.sessionId,
+		});
+		expect(await consumed_units(t, owner.userId)).toBeCloseTo(ownerBefore + 0.3);
+		expect(await consumed_units(t, nextOwner.userId)).toBe(nextOwnerBefore);
+	});
+
+	test("the cron settles a session whose doc stayed ready", async () => {
+		const t = test_convex();
+		const fixture = await seed_web_member(t);
+		const started = await start_web_session(t, fixture);
+		if (started._nay) throw new Error(started._nay.message);
+		const sessionId = started._yay.session.sessionId;
+		// The runner ended the session at its total deadline, but no app door saw it.
+		const endedAt = Date.now() - 11 * 60 * 1000;
+		await t.run((ctx) => ctx.db.patch("files_browser_sessions", sessionId, { totalUntil: endedAt }));
+
+		runnerQueue.push({
+			ok: true,
+			alive: false,
+			closing: false,
+			usage: { providerAcquiredAt: endedAt - 120_000, endedAt, reason: "total_deadline" },
+			profileStored: false,
+		});
+		await t.action(internal.files_browser.settle_pending_browser_usage, {});
+		expect(runnerCalls.at(-1)?.route).toBe("status");
+		expect(await t.run((ctx) => ctx.db.get("files_browser_sessions", sessionId))).toMatchObject({
+			control: "closed",
+			billing: { state: "settled", billedMs: 120_000, amountCents: 0.6 },
+		});
+	});
+
+	test("does not settle while the runner is still closing", async () => {
+		const t = test_convex();
+		const fixture = await seed_web_member(t);
+		const started = await start_web_session(t, fixture);
+		if (started._nay) throw new Error(started._nay.message);
+		const sessionId = started._yay.session.sessionId;
+		await t.run((ctx) =>
+			ctx.db.patch("files_browser_sessions", sessionId, { totalUntil: Date.now() - 11 * 60 * 1000 }),
+		);
+
+		runnerQueue.push({ ok: true, alive: false, closing: true, usage: null, profileStored: false });
+		await t.action(internal.files_browser.settle_pending_browser_usage, {});
+		expect(await t.run((ctx) => ctx.db.get("files_browser_sessions", sessionId))).toMatchObject({
+			control: "ready",
+			billing: { state: "pending" },
+		});
+
+		// A status check from a door leaves the doc alone too.
+		runnerQueue.push({ ok: true, alive: false, closing: true, usage: null, profileStored: false });
+		const again = await authed(t, fixture.userId).action(api.files_browser.start_web_browser, {
+			membershipId: fixture.membershipId,
+			viewport: { width: 1280, height: 900 },
+			startUrl: null,
+		});
+		expect(again._nay?.message).toBe("The last browser is still closing. Try again in a minute.");
+		expect((await t.run((ctx) => ctx.db.get("files_browser_sessions", sessionId)))?.billing.state).toBe("pending");
+	});
+
+	test("sends one Polar event for a signed-in payer", async () => {
+		const t = test_convex();
+		const fixture = await seed_web_member(t);
+		// A Clerk-backed payer is billed through Polar, not through the local anonymous meter.
+		await t.run((ctx) => ctx.db.patch("users", fixture.userId, { clerkUserId: "clerk_browser_payer" }));
+		const started = await start_web_session(t, fixture);
+		if (started._nay) throw new Error(started._nay.message);
+		const sessionId = started._yay.session.sessionId;
+		const before = await consumed_units(t, fixture.userId);
+		const enqueue = vi.spyOn(Workpool.prototype, "enqueueAction");
+		const polarEvents = () =>
+			enqueue.mock.calls.filter((call) => getFunctionName(call[1]) === "billing:ingest_events").map((call) => call[2]);
+
+		const acquiredAt = Date.now() - 61_000;
+		const usage = { providerAcquiredAt: acquiredAt, endedAt: acquiredAt + 61_000, reason: "closed" };
+		runnerQueue.push({ ok: true, existed: true, verified: true, usage });
+		await authed(t, fixture.userId).action(api.files_browser.end_browser, {
+			membershipId: fixture.membershipId,
+			sessionId,
+		});
+
+		expect(polarEvents()).toEqual([
+			{
+				events: [
+					{
+						name: "browser_usage",
+						externalCustomerId: fixture.userId,
+						externalMemberId: fixture.userId,
+						externalId: expect.stringContaining(sessionId),
+						metadata: {
+							amount: 0.6,
+							actorUserId: fixture.userId,
+							billedUserId: fixture.userId,
+							organizationId: fixture.organizationId,
+							workspaceId: fixture.workspaceId,
+							sessionId,
+							mode: "web",
+							billedMs: 61_000,
+						},
+					},
+				],
+			},
+		]);
+		expect(await consumed_units(t, fixture.userId)).toBe(before);
+
+		// The cron racing End sends no second event.
+		await t.mutation(internal.files_browser.settle_browser_usage, { sessionId, usage });
+		expect(polarEvents()).toHaveLength(1);
+	});
+
+	test("the settle cron moves docs it cannot settle behind newer ones", async () => {
+		const t = test_convex();
+		const fixture = await seed_web_member(t);
+		const now = Date.now();
+		const { goodId } = await t.run(async (ctx) => {
+			const session = {
+				mode: "web" as const,
+				ownerId: fixture.userId,
+				organizationId: fixture.organizationId,
+				workspaceId: fixture.workspaceId,
+				billedUserId: fixture.userId,
+				billing: { state: "pending" as const },
+				agentAccess: true,
+				navigationGeneration: 1,
+				loadGen: 0,
+				controlGen: 1,
+				control: "closed" as const,
+				closedAt: now - 60_000,
+				createdAt: now - 60_000,
+			};
+			// A full batch of old docs the runner still reports as closing.
+			for (let index = 0; index < 50; index++) {
+				await ctx.db.insert("files_browser_sessions", {
+					...session,
+					runnerSessionId: `stuck-${index}`,
+					updatedAt: now - 60_000 + index,
+				});
+			}
+			const goodId = await ctx.db.insert("files_browser_sessions", {
+				...session,
+				runnerSessionId: "good",
+				updatedAt: now - 1000,
+			});
+			return { goodId };
+		});
+		// Answer each status by its session id: stuck docs are still closing, the newer one is gone.
+		vi.mocked(fetch).mockImplementation(async (_input, init) => {
+			const body = JSON.parse(String(init?.body ?? "{}")) as { sessionId: string };
+			return Response.json(
+				body.sessionId === "good"
+					? {
+							ok: true,
+							alive: false,
+							closing: false,
+							usage: { providerAcquiredAt: now - 90_000, endedAt: now - 60_000, reason: "closed" },
+							profileStored: false,
+						}
+					: { ok: true, alive: false, closing: true, usage: null, profileStored: false },
+			);
+		});
+
+		// The first run reads the 50 oldest docs only.
+		await t.action(internal.files_browser.settle_pending_browser_usage, {});
+		expect((await t.run((ctx) => ctx.db.get("files_browser_sessions", goodId)))?.billing.state).toBe("pending");
+
+		// Those docs moved back, so the next run reaches the newer doc.
+		await t.action(internal.files_browser.settle_pending_browser_usage, {});
+		expect((await t.run((ctx) => ctx.db.get("files_browser_sessions", goodId)))?.billing).toMatchObject({
+			state: "settled",
+			billedMs: 30_000,
+		});
+	});
+
+	test("bills nothing when the receipt stays missing past the wait", async () => {
+		const t = test_convex();
+		const fixture = await seed_web_member(t);
+		const started = await start_web_session(t, fixture);
+		if (started._nay) throw new Error(started._nay.message);
+		const sessionId = started._yay.session.sessionId;
+
+		// Just ended: wait for the receipt, but close the doc.
+		await t.mutation(internal.files_browser.settle_browser_usage, { sessionId, usage: null });
+		expect(await t.run((ctx) => ctx.db.get("files_browser_sessions", sessionId))).toMatchObject({
+			control: "closed",
+			billing: { state: "pending" },
+		});
+
+		await t.run((ctx) =>
+			ctx.db.patch("files_browser_sessions", sessionId, { closedAt: Date.now() - 11 * 60 * 1000 }),
+		);
+		await t.mutation(internal.files_browser.settle_browser_usage, { sessionId, usage: null });
+		expect((await t.run((ctx) => ctx.db.get("files_browser_sessions", sessionId)))?.billing).toMatchObject({
+			state: "settled",
+			billedMs: 0,
+			amountCents: 0,
+		});
+	});
+});
+
+describe("saved browser profiles", () => {
+	function key_base64(profileKey: ArrayBuffer) {
+		return btoa(String.fromCharCode(...new Uint8Array(profileKey)));
+	}
+
+	async function list_profiles(t: ReturnType<typeof test_convex>) {
+		return await t.run((ctx) => ctx.db.query("files_browser_profiles").collect());
+	}
+
+	async function list_wipes(t: ReturnType<typeof test_convex>) {
+		return await t.run((ctx) => ctx.db.query("files_browser_profile_wipes").collect());
+	}
+
+	async function pending_jobs(t: ReturnType<typeof test_convex>, name: string) {
+		return await t.run(async (ctx) =>
+			(await ctx.db.system.query("_scheduled_functions").collect()).filter(
+				(job) => job.state.kind === "pending" && job.name.includes(name),
+			),
+		);
+	}
+
+	async function seed_profile(
+		t: ReturnType<typeof test_convex>,
+		fixture: WebFixture,
+		overrides: { lastUsedAt?: number } = {},
+	) {
+		return await t.run((ctx) =>
+			ctx.db.insert("files_browser_profiles", {
+				userId: fixture.userId,
+				organizationId: fixture.organizationId,
+				workspaceId: fixture.workspaceId,
+				profileKey: crypto.getRandomValues(new Uint8Array(32)).buffer,
+				agentBlockedHosts: [],
+				createdAt: Date.now(),
+				lastUsedAt: overrides.lastUsedAt ?? Date.now(),
+			}),
+		);
+	}
+
+	const RUNNER_CLOSED = { ok: true, existed: true, verified: true, usage: null };
+
+	test("keeps one profile per user and workspace and sends it to the runner", async () => {
+		const t = test_convex();
+		const fixture = await seed_web_member(t);
+		const started = await start_web_session(t, fixture);
+		if (started._nay) throw new Error(started._nay.message);
+
+		const [profile, ...others] = await list_profiles(t);
+		expect(others).toEqual([]);
+		expect(profile).toMatchObject({
+			userId: fixture.userId,
+			organizationId: fixture.organizationId,
+			workspaceId: fixture.workspaceId,
+			agentBlockedHosts: [],
+		});
+		expect(profile!.profileKey.byteLength).toBe(32);
+		expect(runnerCalls[0]).toMatchObject({
+			route: "open",
+			body: { profileId: profile!._id, profileKey: key_base64(profile!.profileKey), agentBlockedHosts: [] },
+		});
+
+		// End the browser, then start again: the same profile comes back, with a newer lastUsedAt.
+		runnerQueue.push(RUNNER_CLOSED);
+		await t.action(internal.files_browser.end_browser_session_internal, {
+			sessionId: started._yay.session.sessionId,
+			reason: "test",
+		});
+		await t.run((ctx) => ctx.db.patch("files_browser_profiles", profile!._id, { lastUsedAt: 1 }));
+		expect((await start_web_session(t, fixture))._nay).toBeUndefined();
+		const [again, ...othersAgain] = await list_profiles(t);
+		expect(othersAgain).toEqual([]);
+		expect(again!._id).toBe(profile!._id);
+		expect(key_base64(again!.profileKey)).toBe(key_base64(profile!.profileKey));
+		expect(again!.lastUsedAt).toBeGreaterThan(1);
+		expect(runnerCalls.at(-1)).toMatchObject({
+			route: "open",
+			body: { profileId: profile!._id, profileKey: key_base64(profile!.profileKey) },
+		});
+
+		// Another member of the same workspace gets a profile of their own.
+		const member = await add_workspace_member(t, fixture, { role: "member", plan: "Pro" });
+		expect((await start_web_session(t, member))._nay).toBeUndefined();
+		const profiles = await list_profiles(t);
+		expect(profiles.map((doc) => doc.userId).sort()).toEqual([fixture.userId, member.userId].sort());
+		expect(new Set(profiles.map((doc) => key_base64(doc.profileKey))).size).toBe(2);
+	});
+
+	test("never returns the profile key from a public door", async () => {
+		const t = test_convex();
+		const fixture = await seed_web_member(t);
+		const asUser = authed(t, fixture.userId);
+		const started = await start_web_session(t, fixture);
+		if (started._nay) throw new Error(started._nay.message);
+		const [profile] = await list_profiles(t);
+		const keyText = key_base64(profile!.profileKey);
+
+		const returned: Array<unknown> = [started];
+		returned.push(
+			await asUser.mutation(api.files_browser.set_browser_agent_blocked_hosts, {
+				membershipId: fixture.membershipId,
+				hosts: ["bank.example"],
+			}),
+		);
+		returned.push(
+			await asUser.query(api.files_browser.current_browser_profile, { membershipId: fixture.membershipId }),
+		);
+		returned.push(
+			await asUser.query(api.files_browser.current_browser_session, { membershipId: fixture.membershipId }),
+		);
+		runnerQueue.push(RUNNER_CLOSED, {
+			ok: true,
+			exists: true,
+			savedAt: 123,
+			truncated: false,
+			sites: [{ domain: "example.com", cookies: 2 }],
+		});
+		returned.push(
+			await asUser.action(api.files_browser.list_browser_profile_sites, { membershipId: fixture.membershipId }),
+		);
+		runnerQueue.push({ ok: true, removed: 2 });
+		returned.push(
+			await asUser.action(api.files_browser.clear_browser_profile_site, {
+				membershipId: fixture.membershipId,
+				domain: "example.com",
+			}),
+		);
+		vi.useFakeTimers();
+		try {
+			returned.push(
+				await asUser.action(api.files_browser.clear_browser_profile, { membershipId: fixture.membershipId }),
+			);
+		} finally {
+			vi.useRealTimers();
+		}
+
+		// Write bytes as base64, so a leaked key shows up as its text.
+		const text = JSON.stringify(returned, (_key, value: unknown) =>
+			value instanceof ArrayBuffer ? key_base64(value) : value,
+		);
+		expect(text).not.toContain(keyText);
+		expect(text).not.toContain("profileKey");
+		expect(returned.slice(1, 3)).toEqual([
+			{ _yay: null },
+			{ exists: true, lastUsedAt: profile!.lastUsedAt, agentBlockedHosts: ["bank.example"] },
+		]);
+	});
+
+	test("Clear all ends the browser, deletes the profile, and the next start makes a new one", async () => {
+		const t = test_convex();
+		const fixture = await seed_web_member(t);
+		const asUser = authed(t, fixture.userId);
+		const started = await start_web_session(t, fixture);
+		if (started._nay) throw new Error(started._nay.message);
+		await asUser.mutation(api.files_browser.set_browser_agent_blocked_hosts, {
+			membershipId: fixture.membershipId,
+			hosts: ["bank.example"],
+		});
+		const [before] = await list_profiles(t);
+
+		runnerQueue.push(RUNNER_CLOSED);
+		// Fake timers hold the scheduled wipe job, so the wipe doc stays readable here.
+		vi.useFakeTimers();
+		try {
+			const cleared = await asUser.action(api.files_browser.clear_browser_profile, {
+				membershipId: fixture.membershipId,
+			});
+			expect(cleared).toEqual({ _yay: null });
+			expect(await pending_jobs(t, "process_browser_profile_wipes")).toHaveLength(1);
+		} finally {
+			vi.useRealTimers();
+		}
+
+		expect(runnerCalls.map((call) => call.route)).toEqual(["open", "close"]);
+		expect(runnerCalls.at(-1)).toMatchObject({ body: { saveProfile: false, reason: "profile_cleared" } });
+		expect(await t.run((ctx) => ctx.db.get("files_browser_sessions", started._yay.session.sessionId))).toMatchObject({
+			control: "closed",
+		});
+		expect(await list_profiles(t)).toEqual([]);
+		expect(await list_wipes(t)).toEqual([
+			expect.objectContaining({
+				profileId: before!._id,
+				ownerId: fixture.userId,
+				organizationId: fixture.organizationId,
+				workspaceId: fixture.workspaceId,
+				attempts: 0,
+			}),
+		]);
+
+		expect((await start_web_session(t, fixture))._nay).toBeUndefined();
+		const [after] = await list_profiles(t);
+		expect(after!._id).not.toBe(before!._id);
+		expect(key_base64(after!.profileKey)).not.toBe(key_base64(before!.profileKey));
+		expect(after!.agentBlockedHosts).toEqual([]);
+		expect(runnerCalls.at(-1)).toMatchObject({
+			route: "open",
+			body: { profileId: after!._id, profileKey: key_base64(after!.profileKey), agentBlockedHosts: [] },
+		});
+	});
+
+	test("Clear all without a profile calls nothing", async () => {
+		const t = test_convex();
+		const fixture = await seed_web_member(t);
+		const cleared = await authed(t, fixture.userId).action(api.files_browser.clear_browser_profile, {
+			membershipId: fixture.membershipId,
+		});
+		expect(cleared).toEqual({ _yay: null });
+		expect(runnerCalls).toEqual([]);
+		expect(await list_wipes(t)).toEqual([]);
+	});
+
+	test("listing and clearing sites end the live browser first", async () => {
+		const t = test_convex();
+		const fixture = await seed_web_member(t);
+		const asUser = authed(t, fixture.userId);
+
+		// Without a profile there is nothing to ask the runner.
+		expect(
+			await asUser.action(api.files_browser.list_browser_profile_sites, { membershipId: fixture.membershipId }),
+		).toEqual({ _yay: { exists: false, savedAt: null, truncated: false, sites: [] } });
+		expect(
+			await asUser.action(api.files_browser.clear_browser_profile_site, {
+				membershipId: fixture.membershipId,
+				domain: "example.com",
+			}),
+		).toEqual({ _yay: { removed: 0 } });
+		expect(runnerCalls).toEqual([]);
+
+		const started = await start_web_session(t, fixture);
+		if (started._nay) throw new Error(started._nay.message);
+		const [profile] = await list_profiles(t);
+		const sites = [{ domain: "example.com", cookies: 3 }];
+		runnerQueue.push(RUNNER_CLOSED, { ok: true, exists: true, savedAt: 123, truncated: false, sites });
+		const listed = await asUser.action(api.files_browser.list_browser_profile_sites, {
+			membershipId: fixture.membershipId,
+		});
+		expect(listed).toEqual({ _yay: { exists: true, savedAt: 123, truncated: false, sites } });
+		expect(runnerCalls.map((call) => call.route)).toEqual(["open", "close", "profile-summary"]);
+		expect(runnerCalls.at(-1)?.body).toEqual({
+			ownerId: fixture.userId,
+			organizationId: fixture.organizationId,
+			workspaceId: fixture.workspaceId,
+			profileId: profile!._id,
+			profileKey: key_base64(profile!.profileKey),
+		});
+
+		const invalid = await asUser.action(api.files_browser.clear_browser_profile_site, {
+			membershipId: fixture.membershipId,
+			domain: "https://example.com/login",
+		});
+		expect(invalid._nay?.message).toBe("Invalid site");
+		expect(runnerCalls).toHaveLength(3);
+
+		// The browser is already closed, so only the clear call runs.
+		runnerQueue.push({ ok: true, removed: 3 });
+		const cleared = await asUser.action(api.files_browser.clear_browser_profile_site, {
+			membershipId: fixture.membershipId,
+			domain: " Example.COM. ",
+		});
+		expect(cleared).toEqual({ _yay: { removed: 3 } });
+		expect(runnerCalls.map((call) => call.route)).toEqual(["open", "close", "profile-summary", "profile-clear"]);
+		expect(runnerCalls.at(-1)?.body).toMatchObject({ profileId: profile!._id, domain: "example.com" });
+
+		// A runner refusal comes back with its code.
+		runnerQueue.push({ ok: false, error: { code: "busy", message: "Browser is busy" } });
+		const busy = await asUser.action(api.files_browser.list_browser_profile_sites, {
+			membershipId: fixture.membershipId,
+		});
+		expect(busy._nay).toMatchObject({ message: "Browser is busy", name: "busy" });
+
+		// Stored cookies that do not decrypt get one fixed text, which points to Clear all.
+		const unreadable = {
+			ok: false,
+			error: { code: "profile_unreadable", message: "The saved browser data cannot be read." },
+		};
+		runnerQueue.push(unreadable, unreadable);
+		const refusals = [
+			await asUser.action(api.files_browser.list_browser_profile_sites, { membershipId: fixture.membershipId }),
+			await asUser.action(api.files_browser.clear_browser_profile_site, {
+				membershipId: fixture.membershipId,
+				domain: "example.com",
+			}),
+		];
+		for (const refused of refusals) {
+			expect(refused._nay).toEqual({
+				name: "profile_unreadable",
+				message: "Saved data could not be read. Clear all to start fresh.",
+			});
+		}
+	});
+
+	test("set_browser_agent_blocked_hosts stores canonical hosts and checks them", async () => {
+		const t = test_convex();
+		const fixture = await seed_web_member(t);
+		const asUser = authed(t, fixture.userId);
+		const setHosts = (hosts: Array<string>) =>
+			asUser.mutation(api.files_browser.set_browser_agent_blocked_hosts, { membershipId: fixture.membershipId, hosts });
+
+		expect(await setHosts([" Bank.Example. ", "bank.example", "bücher.de", "10.0.0.1"])).toEqual({ _yay: null });
+		const state = await asUser.query(api.files_browser.current_browser_profile, {
+			membershipId: fixture.membershipId,
+		});
+		expect(state?.agentBlockedHosts).toEqual(["bank.example", "xn--bcher-kva.de", "10.0.0.1"]);
+
+		for (const bad of [
+			"",
+			"https://bank.example",
+			"bank.example/login",
+			"bank.example:443",
+			"user@bank.example",
+			"a b",
+			"-bad.example",
+			"bank..example",
+		]) {
+			expect((await setHosts(["ok.example", bad]))._nay?.message, bad).toBe("Invalid site");
+		}
+
+		const many = Array.from({ length: 51 }, (_, index) => `site${index}.example`);
+		expect((await setHosts(many))._nay?.message).toBe("Too many sites");
+		expect(await setHosts(many.slice(0, 50))).toEqual({ _yay: null });
+		const [profile] = await list_profiles(t);
+		expect(profile!.agentBlockedHosts).toHaveLength(50);
+
+		// The list set before the first start lives in the profile the start then uses.
+		expect(await setHosts(["bank.example"])).toEqual({ _yay: null });
+		expect((await start_web_session(t, fixture))._nay).toBeUndefined();
+		expect(await list_profiles(t)).toHaveLength(1);
+		expect(runnerCalls[0]).toMatchObject({
+			route: "open",
+			body: { profileId: profile!._id, agentBlockedHosts: ["bank.example"] },
+		});
+
+		// A viewer may not use the browser, so a viewer may not set its list either.
+		const viewer = await add_workspace_member(t, fixture, { role: "viewer", plan: "Pro" });
+		const refused = await authed(t, viewer.userId).mutation(api.files_browser.set_browser_agent_blocked_hosts, {
+			membershipId: viewer.membershipId,
+			hosts: ["bank.example"],
+		});
+		expect(refused._nay?.message).toBe("Permission denied");
+	});
+
+	test("another member cannot read or change the profile", async () => {
+		const t = test_convex();
+		const owner = await seed_web_member(t);
+		expect((await start_web_session(t, owner))._nay).toBeUndefined();
+		const [profile] = await list_profiles(t);
+		const member = await add_workspace_member(t, owner, { role: "member", plan: "Pro" });
+		const asMember = authed(t, member.userId);
+
+		expect(
+			await asMember.query(api.files_browser.current_browser_profile, { membershipId: owner.membershipId }),
+		).toBe(null);
+		expect(
+			(await asMember.action(api.files_browser.list_browser_profile_sites, { membershipId: owner.membershipId }))._nay
+				?.message,
+		).toBe("Unauthorized");
+		expect(
+			(
+				await asMember.action(api.files_browser.clear_browser_profile_site, {
+					membershipId: owner.membershipId,
+					domain: "example.com",
+				})
+			)._nay?.message,
+		).toBe("Unauthorized");
+		expect(
+			(await asMember.action(api.files_browser.clear_browser_profile, { membershipId: owner.membershipId }))._nay
+				?.message,
+		).toBe("Unauthorized");
+		expect(
+			(
+				await asMember.mutation(api.files_browser.set_browser_agent_blocked_hosts, {
+					membershipId: owner.membershipId,
+					hosts: ["bank.example"],
+				})
+			)._nay?.message,
+		).toBe("Unauthorized");
+
+		// The member's own view shows no profile, and the owner's profile is untouched.
+		expect(
+			await asMember.query(api.files_browser.current_browser_profile, { membershipId: member.membershipId }),
+		).toEqual({ exists: false, lastUsedAt: null, agentBlockedHosts: [] });
+		expect(await list_profiles(t)).toEqual([profile]);
+		expect(runnerCalls.map((call) => call.route)).toEqual(["open"]);
+	});
+
+	test("the wipe job deletes the wipe doc when the runner deleted the bytes", async () => {
+		const t = test_convex();
+		const fixture = await seed_web_member(t);
+		const profileId = await seed_profile(t, fixture);
+		await t.run(async (ctx) => {
+			const profile = await ctx.db.get("files_browser_profiles", profileId);
+			await files_browser_db_delete_profile(ctx as never, profile!);
+		});
+
+		// Wipes reach the runner while web mode is off too.
+		runnerQueue.push({ ok: true, deleted: true });
+		const enabled = process.env.AI_CHAT_BROWSER_ENABLED;
+		process.env.AI_CHAT_BROWSER_ENABLED = "false";
+		try {
+			await t.action(internal.files_browser.process_browser_profile_wipes, {});
+		} finally {
+			process.env.AI_CHAT_BROWSER_ENABLED = enabled;
+		}
+		expect(runnerCalls).toEqual([
+			{
+				route: "profile-delete",
+				body: {
+					ownerId: fixture.userId,
+					organizationId: fixture.organizationId,
+					workspaceId: fixture.workspaceId,
+					profileId,
+				},
+			},
+		]);
+		expect(await list_wipes(t)).toEqual([]);
+	});
+
+	test("the wipe job backs off after each failure, up to 6 hours", async () => {
+		const t = test_convex();
+		const fixture = await seed_web_member(t);
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const start = Date.now();
+		vi.useFakeTimers({ now: start, toFake: ["Date"] });
+		try {
+			const wipeId = await t.run((ctx) =>
+				ctx.db.insert("files_browser_profile_wipes", {
+					profileId: "profile-1",
+					ownerId: fixture.userId,
+					organizationId: fixture.organizationId,
+					workspaceId: fixture.workspaceId,
+					createdAt: start,
+					attempts: 0,
+					nextAttemptAt: start,
+				}),
+			);
+			const failure = { ok: false, error: { code: "error", message: "boom" } };
+
+			runnerQueue.push(failure);
+			await t.action(internal.files_browser.process_browser_profile_wipes, {});
+			expect(await t.run((ctx) => ctx.db.get("files_browser_profile_wipes", wipeId))).toMatchObject({
+				attempts: 1,
+				nextAttemptAt: start + 60_000,
+			});
+			expect(warn).toHaveBeenCalledWith("browser_profile_wipe_failed", { attempts: 1 });
+
+			// Not due yet: no runner call.
+			await t.action(internal.files_browser.process_browser_profile_wipes, {});
+			expect(runnerCalls).toHaveLength(1);
+
+			vi.setSystemTime(start + 60_000);
+			runnerQueue.push(failure);
+			await t.action(internal.files_browser.process_browser_profile_wipes, {});
+			expect(await t.run((ctx) => ctx.db.get("files_browser_profile_wipes", wipeId))).toMatchObject({
+				attempts: 2,
+				nextAttemptAt: start + 60_000 + 120_000,
+			});
+
+			vi.setSystemTime(start + 60_000 + 120_000);
+			runnerQueue.push(failure);
+			await t.action(internal.files_browser.process_browser_profile_wipes, {});
+			expect(await t.run((ctx) => ctx.db.get("files_browser_profile_wipes", wipeId))).toMatchObject({
+				attempts: 3,
+				nextAttemptAt: start + 60_000 + 120_000 + 240_000,
+			});
+
+			// A reply without `deleted: true` is a failure too. Many failures stop growing at 6 hours.
+			await t.run((ctx) =>
+				ctx.db.patch("files_browser_profile_wipes", wipeId, { attempts: 20, nextAttemptAt: start }),
+			);
+			runnerQueue.push({ ok: true });
+			await t.action(internal.files_browser.process_browser_profile_wipes, {});
+			expect(await t.run((ctx) => ctx.db.get("files_browser_profile_wipes", wipeId))).toMatchObject({
+				attempts: 21,
+				nextAttemptAt: start + 60_000 + 120_000 + 6 * 60 * 60 * 1000,
+			});
+			expect(warn).toHaveBeenLastCalledWith("browser_profile_wipe_failed", { attempts: 21 });
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	test("the account deletion batch continues until every profile is gone", async () => {
+		const t = test_convex();
+		const fixture = await seed_web_member(t);
+		for (let index = 0; index < 51; index++) {
+			await seed_profile(t, fixture);
+		}
+		// Answer every wipe with success, in any order.
+		vi.mocked(fetch).mockImplementation(async () => Response.json({ ok: true, deleted: true }));
+
+		vi.useFakeTimers();
+		try {
+			await t.mutation(internal.files_browser.delete_user_profiles_batch, { userId: fixture.userId });
+			// One batch deletes 50 docs and writes their 50 wipe docs in the same transaction.
+			expect(await list_profiles(t)).toHaveLength(1);
+			expect(await list_wipes(t)).toHaveLength(50);
+			expect(await pending_jobs(t, "delete_user_profiles_batch")).toHaveLength(1);
+			expect(await pending_jobs(t, "process_browser_profile_wipes")).toHaveLength(1);
+
+			await t.finishAllScheduledFunctions(vi.runAllTimers);
+		} finally {
+			vi.useRealTimers();
+		}
+		expect(await list_profiles(t)).toEqual([]);
+		expect(await list_wipes(t)).toEqual([]);
+	});
+
+	test("the hourly cleanup deletes profiles unused for 90 days", async () => {
+		const t = test_convex();
+		const fixture = await seed_web_member(t);
+		const day = 24 * 60 * 60 * 1000;
+		const oldId = await seed_profile(t, fixture, { lastUsedAt: Date.now() - 91 * day });
+		const recentId = await seed_profile(t, fixture, { lastUsedAt: Date.now() - 89 * day });
+
+		vi.useFakeTimers();
+		try {
+			await t.mutation(internal.files_browser.cleanup_expired_browser_docs, {});
+			expect(await pending_jobs(t, "process_browser_profile_wipes")).toHaveLength(1);
+		} finally {
+			vi.useRealTimers();
+		}
+		expect((await list_profiles(t)).map((doc) => doc._id)).toEqual([recentId]);
+		expect((await list_wipes(t)).map((doc) => doc.profileId)).toEqual([oldId]);
+	});
+});
+
+function runner_download_info(overrides: Record<string, unknown> = {}) {
+	return {
+		ok: true,
+		name: "Report.PDF",
+		size: 4,
+		contentType: "application/pdf",
+		origin: "https://example.com",
+		...overrides,
+	};
+}
+
+function download_node_args(fixture: WebFixture, sessionId: Id<"files_browser_sessions">, downloadId = "download-1") {
+	return {
+		userId: fixture.userId,
+		membershipId: fixture.membershipId,
+		sessionId,
+		downloadId,
+		name: "data.bin",
+		contentType: "application/octet-stream",
+		size: 4,
+		origin: null,
+	};
+}
+
+async function save_download(
+	t: ReturnType<typeof test_convex>,
+	fixture: { userId: Id<"users">; membershipId: Id<"organizations_workspaces_users"> },
+	sessionId: Id<"files_browser_sessions">,
+	downloadId = "download-1",
+) {
+	return await authed(t, fixture.userId).action(api.files_browser.save_browser_download, {
+		membershipId: fixture.membershipId,
+		sessionId,
+		downloadId,
+	});
+}
+
+async function node_metadata(t: ReturnType<typeof test_convex>, fixture: WebFixture, nodeId: Id<"files_nodes">) {
+	const docs = await t.run((ctx) =>
+		ctx.db
+			.query("files_metadata_docs")
+			.withIndex("by_organization_workspace_fileNode_fieldPath", (q) =>
+				q.eq("organizationId", fixture.organizationId).eq("workspaceId", fixture.workspaceId).eq("fileNodeId", nodeId),
+			)
+			.collect(),
+	);
+	return Object.fromEntries(docs.filter((doc) => doc.docKind === "value").map((doc) => [doc.fieldPath, doc.stringValue]));
+}
+
+async function saved_node_id_by_path(t: ReturnType<typeof test_convex>, fixture: WebFixture, path: string) {
+	const node = await t.run((ctx) =>
+		ctx.db
+			.query("files_nodes")
+			.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
+				q
+					.eq("organizationId", fixture.organizationId)
+					.eq("workspaceId", fixture.workspaceId)
+					.eq("path", path)
+					.eq("archiveOperationId", null),
+			)
+			.first(),
+	);
+	if (!node) throw new Error(`Expected a saved node at ${path}`);
+	return node._id;
+}
+
+describe("save_browser_download", () => {
+	test("saves to /.system/downloads with the origin only, and a second save pushes nothing", async () => {
+		const t = test_convex();
+		const fixture = await seed_web_member(t);
+		const started = await start_web_session(t, fixture);
+		if (started._nay) throw new Error(started._nay.message);
+		const sessionId = started._yay.session.sessionId;
+
+		// The runner should send an origin. Convex still keeps only the origin, so a page URL with
+		// private values can never reach the metadata of the file.
+		runnerQueue.push(runner_download_info({ origin: "https://example.com/account/export?token=secret#top" }), {
+			ok: true,
+		});
+		const saved = await save_download(t, fixture, sessionId);
+		if (saved._nay) throw new Error(saved._nay.message);
+		expect(saved._yay).toEqual({ nodeId: saved._yay.nodeId, path: "/.system/downloads/report.pdf", shared: true });
+
+		const runnerBody = {
+			sessionId: "runner-web-1",
+			ownerId: fixture.userId,
+			organizationId: fixture.organizationId,
+			workspaceId: fixture.workspaceId,
+			downloadId: "download-1",
+		};
+		const node = await t.run((ctx) => ctx.db.get("files_nodes", saved._yay.nodeId));
+		expect(node).toMatchObject({ path: "/.system/downloads/report.pdf", contentType: "application/pdf" });
+		const key = r2_create_asset_key({
+			organizationId: fixture.organizationId,
+			workspaceId: fixture.workspaceId,
+			assetId: node!.assetId!,
+		});
+		expect(runnerCalls.slice(1)).toEqual([
+			{ route: "download-info", body: runnerBody },
+			{
+				route: "download-push",
+				body: {
+					...runnerBody,
+					url: `https://r2.test/upload?key=${encodeURIComponent(key)}`,
+					headers: { "Content-Type": "application/pdf", "If-None-Match": "*" },
+				},
+			},
+		]);
+		expect(await node_metadata(t, fixture, saved._yay.nodeId)).toEqual({
+			"metadata.source": "browser-download",
+			"metadata.original-url": "https://example.com",
+		});
+
+		// A second viewer tab saves the same download. It gets the saved file, and the runner is not asked again.
+		runnerQueue.push(runner_download_info(), { ok: true });
+		const again = await save_download(t, fixture, sessionId);
+		expect(again).toEqual(saved);
+		expect(runnerCalls).toHaveLength(3);
+		expect(await t.run((ctx) => ctx.db.query("files_browser_download_saves").collect())).toHaveLength(1);
+	});
+
+	test("the create step finds the save: it signs the same asset again until the push worked", async () => {
+		const t = test_convex();
+		const fixture = await seed_web_member(t);
+		const started = await start_web_session(t, fixture);
+		if (started._nay) throw new Error(started._nay.message);
+		const args = download_node_args(fixture, started._yay.session.sessionId);
+
+		const first = await t.mutation(internal.files_browser.create_browser_download_node, args);
+		if (first._nay) throw new Error(first._nay.message);
+		expect(first._yay).toMatchObject({ kind: "push", path: "/.system/downloads/data.bin", shared: true });
+		// A `data:` download has no origin, so no `original-url` is stored.
+		expect(await node_metadata(t, fixture, first._yay.nodeId)).toEqual({ "metadata.source": "browser-download" });
+
+		// Two viewer tabs can pass the first check at the same time. The second create finds the save,
+		// which is not pushed yet, so it gets an upload URL for the same asset. The runner joins the
+		// running push.
+		const second = await t.mutation(internal.files_browser.create_browser_download_node, args);
+		expect(second).toEqual({ _yay: { ...first._yay } });
+		expect(await t.run((ctx) => ctx.db.query("files_r2_assets").collect())).toHaveLength(1);
+
+		await t.mutation(internal.files_browser.mark_browser_download_pushed, {
+			sessionId: args.sessionId,
+			downloadId: args.downloadId,
+		});
+		const third = await t.mutation(internal.files_browser.create_browser_download_node, args);
+		expect(third).toEqual({
+			_yay: { kind: "saved", nodeId: first._yay.nodeId, path: "/.system/downloads/data.bin", shared: true },
+		});
+	});
+
+	test("a failed push can be retried: the next save pushes the same asset, and then it is saved", async () => {
+		const t = test_convex();
+		const fixture = await seed_web_member(t);
+		const started = await start_web_session(t, fixture);
+		if (started._nay) throw new Error(started._nay.message);
+		const sessionId = started._yay.session.sessionId;
+
+		// The runner's PUT to R2 failed. It keeps the bytes for a retry.
+		runnerQueue.push(runner_download_info(), {
+			ok: false,
+			error: { code: "download_push_failed", message: "The download could not be saved." },
+		});
+		expect(await save_download(t, fixture, sessionId)).toEqual({
+			_nay: { name: "download_push_failed", message: "Download not saved: the upload failed." },
+		});
+		const [save] = await t.run((ctx) => ctx.db.query("files_browser_download_saves").collect());
+		expect(save).toMatchObject({ pushedAt: null });
+
+		// Retry. The saved row is not pushed, so the runner is asked to push the same asset again.
+		runnerQueue.push(runner_download_info(), { ok: true });
+		const retried = await save_download(t, fixture, sessionId);
+		if (retried._nay) throw new Error(retried._nay.message);
+		expect(retried._yay).toEqual({ nodeId: save!.nodeId, path: "/.system/downloads/report.pdf", shared: true });
+		const pushes = runnerCalls.filter((call) => call.route === "download-push");
+		expect(pushes).toHaveLength(2);
+		expect(pushes[1]!.body.url).toBe(pushes[0]!.body.url);
+		expect(await t.run((ctx) => ctx.db.query("files_r2_assets").collect())).toHaveLength(1);
+		expect(await t.run((ctx) => ctx.db.get("files_browser_download_saves", save!._id))).toMatchObject({
+			pushedAt: expect.any(Number),
+		});
+
+		// Now it is saved. A third save asks the runner nothing.
+		const callsBefore = runnerCalls.length;
+		expect(await save_download(t, fixture, sessionId)).toEqual(retried);
+		expect(runnerCalls).toHaveLength(callsBefore);
+	});
+
+	test("returns the file another tab saved when the runner already forgot the download", async () => {
+		const t = test_convex();
+		const fixture = await seed_web_member(t);
+		const started = await start_web_session(t, fixture);
+		if (started._nay) throw new Error(started._nay.message);
+		const sessionId = started._yay.session.sessionId;
+		const args = { ...download_node_args(fixture, sessionId), name: "report.pdf" };
+
+		// Tab A saves and pushes the download while tab B asks the runner about it. The runner then
+		// forgot it, because it forgets a download once it is pushed.
+		vi.mocked(fetch).mockImplementationOnce(async () => {
+			const created = await t.mutation(internal.files_browser.create_browser_download_node, args);
+			if (created._nay) throw new Error(created._nay.message);
+			await t.mutation(internal.files_browser.mark_browser_download_pushed, { sessionId, downloadId: "download-1" });
+			return Response.json({ ok: false, error: { code: "download_gone", message: "The download is gone." } });
+		});
+		const saved = await save_download(t, fixture, sessionId);
+
+		expect(saved).toEqual({
+			_yay: { nodeId: expect.any(String), path: "/.system/downloads/report.pdf", shared: true },
+		});
+	});
+
+	test("never replaces a file: a taken name gets -2, and special names get -download", async () => {
+		const t = test_convex();
+		const fixture = await t.run((ctx) =>
+			test_mocks_fill_db_with.membership(ctx, { organizationName: "personal", workspaceName: "home" }),
+		);
+		const started = await start_web_session(t, fixture);
+		if (started._nay) throw new Error(started._nay.message);
+		const sessionId = started._yay.session.sessionId;
+
+		runnerQueue.push(runner_download_info({ name: "report.pdf" }), { ok: true });
+		const first = await save_download(t, fixture, sessionId, "download-1");
+		// The personal workspace has no other members, so the file is not shared.
+		expect(first._yay).toMatchObject({ path: "/.system/downloads/report.pdf", shared: false });
+
+		runnerQueue.push(runner_download_info({ name: "report.pdf" }), { ok: true });
+		const second = await save_download(t, fixture, sessionId, "download-2");
+		expect(second._yay).toMatchObject({ path: "/.system/downloads/report-2.pdf", shared: false });
+		expect(await t.run((ctx) => ctx.db.get("files_nodes", first._yay!.nodeId))).toMatchObject({
+			path: "/.system/downloads/report.pdf",
+			archiveOperationId: null,
+		});
+
+		// A page must not create an instruction file that the agent would read.
+		runnerQueue.push(runner_download_info({ name: "AGENTS.md", contentType: "text/markdown" }), { ok: true });
+		const special = await save_download(t, fixture, sessionId, "download-3");
+		expect(special._yay).toMatchObject({ path: "/.system/downloads/agents-download.md" });
+	});
+
+	test("refuses after the payer's plan drops to Free", async () => {
+		const t = test_convex();
+		const fixture = await seed_web_member(t);
+		const started = await start_web_session(t, fixture);
+		if (started._nay) throw new Error(started._nay.message);
+		await t.run((ctx) => test_mocks_fill_db_with.plan(ctx, { userId: fixture.userId, plan: "Free" }));
+
+		runnerQueue.push(runner_download_info(), { ok: true });
+		expect(await save_download(t, fixture, started._yay.session.sessionId)).toEqual({
+			_nay: { message: "Download not saved: your plan no longer allows the browser." },
+		});
+		expect(runnerCalls.map((call) => call.route)).toEqual(["open", "download-info"]);
+		expect(await t.run((ctx) => ctx.db.query("files_browser_download_saves").collect())).toEqual([]);
+		expect(await t.run((ctx) => ctx.db.query("files_r2_assets").collect())).toEqual([]);
+	});
+
+	test("refuses a workspace member who does not own the session", async () => {
+		const t = test_convex();
+		const owner = await seed_web_member(t);
+		const member = await add_workspace_member(t, owner, { role: "member", plan: "Pro" });
+		const started = await start_web_session(t, owner);
+		if (started._nay) throw new Error(started._nay.message);
+
+		expect(await save_download(t, member, started._yay.session.sessionId)).toEqual({ _nay: { message: "Not found" } });
+		expect(runnerCalls.map((call) => call.route)).toEqual(["open"]);
+	});
+
+	test("refuses a file-mode session", async () => {
+		const t = test_convex();
+		const fixture = await seed_html_file(t);
+		const started = await start_saved_session(t, fixture);
+		if (started._nay) throw new Error(started._nay.message);
+
+		expect(await save_download(t, fixture, started._yay.sessionId)).toEqual({ _nay: { message: "Not found" } });
+		expect(runnerCalls.map((call) => call.route)).toEqual(["open"]);
+	});
+
+	test("says so when the runner no longer has the download", async () => {
+		const t = test_convex();
+		const fixture = await seed_web_member(t);
+		const started = await start_web_session(t, fixture);
+		if (started._nay) throw new Error(started._nay.message);
+
+		runnerQueue.push({ ok: false, error: { code: "download_gone", message: "Unknown download." } });
+		expect(await save_download(t, fixture, started._yay.session.sessionId)).toEqual({
+			_nay: { name: "download_gone", message: "Download not saved: it is no longer available." },
+		});
+	});
+});
+
+describe("fill_browser_chooser_from_files", () => {
+	async function seed_chooser_files(t: ReturnType<typeof test_convex>) {
+		const owner = await seed_web_member(t);
+		const first = await test_create_saved_text_file(t, {
+			membershipId: owner.membershipId,
+			path: "/docs/first.txt",
+			textContent: "first",
+		});
+		const second = await test_create_saved_text_file(t, {
+			membershipId: owner.membershipId,
+			path: "/docs/second.txt",
+			textContent: "second",
+		});
+		return { owner, first, second };
+	}
+
+	async function fill(
+		t: ReturnType<typeof test_convex>,
+		fixture: WebFixture,
+		sessionId: Id<"files_browser_sessions">,
+		nodeIds: Array<Id<"files_nodes">>,
+	) {
+		return await authed(t, fixture.userId).action(api.files_browser.fill_browser_chooser_from_files, {
+			membershipId: fixture.membershipId,
+			sessionId,
+			chooserId: "chooser-1",
+			controlGen: 2,
+			nodeIds,
+		});
+	}
+
+	test("gives the runner short signed URLs for readable files", async () => {
+		const t = test_convex();
+		const { owner, first, second } = await seed_chooser_files(t);
+		const started = await start_web_session(t, owner);
+		if (started._nay) throw new Error(started._nay.message);
+
+		// Spying again returns the spy from `beforeEach`, with its mock URL.
+		const getUrl = vi.spyOn(R2.prototype, "getUrl");
+		const timeout = vi.spyOn(AbortSignal, "timeout");
+		runnerQueue.push({ ok: true });
+		expect(await fill(t, owner, started._yay.session.sessionId, [first, second])).toEqual({ _yay: null });
+		// The runner gives the whole fill 120 seconds. Convex waits a bit longer for its answer.
+		expect(timeout).toHaveBeenLastCalledWith(150_000);
+
+		const nodes = await t.run(async (ctx) => [
+			await ctx.db.get("files_nodes", first),
+			await ctx.db.get("files_nodes", second),
+		]);
+		expect(runnerCalls.at(-1)).toEqual({
+			route: "upload-fill",
+			body: {
+				sessionId: "runner-web-1",
+				ownerId: owner.userId,
+				organizationId: owner.organizationId,
+				workspaceId: owner.workspaceId,
+				chooserId: "chooser-1",
+				controlGen: 2,
+				files: nodes.map((node) => ({
+					name: node!.name,
+					contentType: node!.contentType,
+					url: expect.stringMatching(/^https:\/\/r2\.test\/object\?key=/u),
+				})),
+			},
+		});
+		// The runner may take up to 120 seconds for the whole fill, so the URLs outlive that.
+		expect(getUrl).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ expiresIn: 300 }));
+	});
+
+	test("refuses the whole call when one file is not readable", async () => {
+		const t = test_convex();
+		const { owner, first, second } = await seed_chooser_files(t);
+		const member = await add_workspace_member(t, owner, { role: "member", plan: "Pro" });
+		const restricted = await authed(t, owner.userId).mutation(api.files_sharing.restrict_node, {
+			membershipId: owner.membershipId,
+			nodeId: second,
+		});
+		expect(restricted._nay).toBeUndefined();
+		const started = await start_web_session(t, member);
+		if (started._nay) throw new Error(started._nay.message);
+
+		runnerQueue.push({ ok: true });
+		expect(await fill(t, member, started._yay.session.sessionId, [first, second])).toEqual({
+			_nay: { message: "Not found" },
+		});
+		expect(runnerCalls.map((call) => call.route)).toEqual(["open"]);
+	});
+
+	test("refuses a folder, a total over 20 MiB, and a wrong file count", async () => {
+		const t = test_convex();
+		const { owner, first } = await seed_chooser_files(t);
+		const started = await start_web_session(t, owner);
+		if (started._nay) throw new Error(started._nay.message);
+		const sessionId = started._yay.session.sessionId;
+
+		const folderId = await saved_node_id_by_path(t, owner, "/docs");
+		expect(await fill(t, owner, sessionId, [folderId])).toEqual({ _nay: { message: "Not found" } });
+
+		expect(await fill(t, owner, sessionId, [])).toEqual({ _nay: { message: "Choose 1 to 10 files." } });
+		expect(await fill(t, owner, sessionId, Array.from({ length: 11 }, () => first))).toEqual({
+			_nay: { message: "Choose 1 to 10 files." },
+		});
+
+		await t.run(async (ctx) => {
+			const node = await ctx.db.get("files_nodes", first);
+			await ctx.db.patch("files_r2_assets", node!.assetId!, { size: 20 * 1024 * 1024 + 1 });
+		});
+		expect(await fill(t, owner, sessionId, [first])).toEqual({
+			_nay: { message: "Files too large: a page takes at most 20 MB at once." },
+		});
+		expect(runnerCalls.map((call) => call.route)).toEqual(["open"]);
+	});
+});
+
+describe("grant_browser_upload", () => {
+	test("returns the runner upload URL with the single-use grant", async () => {
+		const t = test_convex();
+		const fixture = await seed_web_member(t);
+		const started = await start_web_session(t, fixture);
+		if (started._nay) throw new Error(started._nay.message);
+
+		const expiresAt = Date.now() + 120_000;
+		runnerQueue.push({ ok: true, grantId: "grant-1", expiresAt });
+		const granted = await authed(t, fixture.userId).action(api.files_browser.grant_browser_upload, {
+			membershipId: fixture.membershipId,
+			sessionId: started._yay.session.sessionId,
+			chooserId: "chooser-1",
+			controlGen: 2,
+		});
+		const query = new URLSearchParams({
+			ownerId: fixture.userId,
+			organizationId: fixture.organizationId,
+			workspaceId: fixture.workspaceId,
+			grantId: "grant-1",
+		});
+		expect(granted).toEqual({
+			_yay: { url: `https://browser-runner.test/viewer/upload?${query.toString()}`, expiresAt },
+		});
+		expect(runnerCalls.at(-1)).toEqual({
+			route: "upload-grant",
+			body: {
+				sessionId: "runner-web-1",
+				ownerId: fixture.userId,
+				organizationId: fixture.organizationId,
+				workspaceId: fixture.workspaceId,
+				chooserId: "chooser-1",
+				controlGen: 2,
+			},
+		});
+	});
+
+	test("refuses a workspace member who does not own the session", async () => {
+		const t = test_convex();
+		const owner = await seed_web_member(t);
+		const member = await add_workspace_member(t, owner, { role: "member", plan: "Pro" });
+		const started = await start_web_session(t, owner);
+		if (started._nay) throw new Error(started._nay.message);
+
+		const granted = await authed(t, member.userId).action(api.files_browser.grant_browser_upload, {
+			membershipId: member.membershipId,
+			sessionId: started._yay.session.sessionId,
+			chooserId: "chooser-1",
+			controlGen: 2,
+		});
+		expect(granted).toEqual({ _nay: { message: "Not found" } });
+		expect(runnerCalls.map((call) => call.route)).toEqual(["open"]);
 	});
 });

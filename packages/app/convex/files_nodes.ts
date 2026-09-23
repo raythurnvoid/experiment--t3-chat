@@ -3301,7 +3301,7 @@ export async function files_nodes_db_hard_delete_node(
  * A signed upload URL works for 15 minutes.
  * Store its end time so cleanup knows when the URL can no longer write the temporary R2 file.
  */
-const files_UPLOAD_URL_TTL_MS = 15 * 60 * 1000;
+export const files_UPLOAD_URL_TTL_MS = 15 * 60 * 1000;
 
 export const create_upload_node = mutation({
 	args: {

@@ -29,3 +29,11 @@ declare module "cloudflare:workers" {
 		readonly ctx: ExecutionContext & { readonly props: Props };
 	}
 }
+
+// `nodejs_compat` gives the Worker `node:buffer`. Playwright `setFiles` needs a real `Buffer`.
+declare module "node:buffer" {
+	export type Buffer = Uint8Array;
+	export const Buffer: {
+		from(buffer: ArrayBufferLike, byteOffset?: number, length?: number): Buffer;
+	};
+}

@@ -25,10 +25,18 @@
 //   viewer URLs, tokens, cookies, input text, or captured console text.
 
 import { WorkerEntrypoint } from "cloudflare:workers";
+import { Buffer } from "node:buffer";
 import { acquire, connect, sessions } from "@cloudflare/playwright";
-import type { CDPSession, Page } from "@cloudflare/playwright";
+import type { CDPSession, FileChooser, Page } from "@cloudflare/playwright";
 import { CHILD_BUNDLE_JS } from "./child-bundle.gen";
 import { AgentConnection } from "./agent-connection";
+import {
+	browser_web_canonical_host,
+	browser_web_host_matches,
+	browser_web_normalize_url,
+	browser_web_URL_MAX_CHARS,
+	browser_web_url_host_matches,
+} from "common/browser-web-url.ts";
 
 // Typed locally to match the in-file binding shape convention.
 // `limits` is verified in the generated workerd types: per-snippet CPU and
@@ -96,6 +104,7 @@ type DurableObjectNamespaceStub = {
 
 type DurableObjectStorageStub = {
 	get: <T>(key: string) => Promise<T | undefined>;
+	list: <T>(options: { prefix: string }) => Promise<Map<string, T>>;
 	put: (key: string, value: unknown) => Promise<void>;
 	delete: (key: string) => Promise<boolean>;
 	setAlarm: (time: number | Date) => Promise<void>;
@@ -117,6 +126,19 @@ export type Env = {
 	BROWSER_RUNNER_SECRET: string;
 	BROWSER_RUNNER_DISABLED?: string;
 	BROWSER_PREVIEW_URL?: string;
+	/**
+	 * Comma list of hosts the web browser may not open: our own app, backend, and Workers.
+	 * A listed host also denies its subdomains.
+	 */
+	BROWSER_WEB_DENIED_HOSTS?: string;
+	/**
+	 * 32 random bytes, base64. Together with the per-profile key from Convex it locks the saved cookies.
+	 */
+	BROWSER_PROFILE_KEY: string;
+	/**
+	 * Comma list of app origins that may send a file to `PUT /viewer/upload` (CORS).
+	 */
+	BROWSER_APP_ORIGINS?: string;
 };
 
 type Fetcher = {
@@ -143,28 +165,22 @@ type SessionControl = "starting" | "ready" | "agent" | "pausing" | "human" | "cl
 
 type AgentLease = { navGen: number; loadGen: number; controlGen: number };
 
-type SessionRecord = {
+type SessionRecordBase = {
 	version: 1;
 	sessionId: string;
 	grantId: string;
 	ownerId: string;
 	organizationId: string;
 	workspaceId: string;
-	nodeId: string;
 	navGen: number;
 	loadGen: number;
 	controlGen: number;
 	control: SessionControl;
-	sourceKind: string;
-	sourceVersion: string;
-	sourceHash: string;
 	providerSessionId: string | null;
 	pageNonce: string | null;
 	viewport: { width: number; height: number };
 	command: { id: string; startedAt: number; connection?: "available" | "consumed" | "revoked" | "settled" } | null;
 	commandCount: number;
-	htmlBytesTotal: number;
-	loadCount: number;
 	createdAt: number;
 	providerAcquiredAt: number | null;
 	lastActiveAt: number;
@@ -175,8 +191,63 @@ type SessionRecord = {
 	viewerGrants: Record<string, { navGen: number; expiresAt: number }>;
 };
 
+/**
+ * File mode shows one workspace file on the controller page. Web mode opens real sites.
+ */
+type SessionRecord = SessionRecordBase &
+	(
+		| {
+				mode: "file";
+				nodeId: string;
+				sourceKind: string;
+				sourceVersion: string;
+				sourceHash: string;
+				htmlBytesTotal: number;
+				loadCount: number;
+		  }
+		| {
+				mode: "web";
+				agentAccess: boolean;
+				/**
+				 * The one page target this session owns. A reconnect keeps it and closes other pages.
+				 * It never leaves the runner.
+				 */
+				pageTargetId: string | null;
+				/**
+				 * The Convex profile doc id. The saved cookies belong to it.
+				 */
+				profileId: string;
+				/**
+				 * Hosts the user's agent may not use. A listed host also covers its subdomains.
+				 */
+				agentBlockedHosts: string[];
+		  }
+	);
+
+type SessionMode = SessionRecord["mode"];
+
+type WebSessionRecord = Extract<SessionRecord, { mode: "web" }>;
+
+/**
+ * The saved cookies of one browser profile, encrypted. Only the dates and `truncated` are plain.
+ */
+type ProfileBlob = { v: 1; profileId: string; iv: string; ciphertext: string; savedAt: number; truncated: boolean };
+
+/**
+ * The fields of a CDP `Network.Cookie` that the runner reads. A saved cookie keeps all its other fields too.
+ */
+type ProfileCookie = { name: string; value: string; domain: string; expires: number; session?: boolean };
+
+/**
+ * Proof of how long the provider browser was held. Convex bills from it.
+ */
+type UsageReceipt = { sessionId: string; providerAcquiredAt: number; endedAt: number; reason: string };
+
 type RegistryRecord = {
-	grants: Record<string, { workspaceKey: string; state: "claimed" | "active"; expiresAt: number | null }>;
+	grants: Record<
+		string,
+		{ workspaceKey: string; ownerId: string; organizationId: string; state: "claimed" | "active"; expiresAt: number | null }
+	>;
 };
 
 // Limits / constants
@@ -205,7 +276,14 @@ export const LIMITS = {
 	sessionIdleMs: 300_000,
 	keepAliveMs: 600_000,
 	commandsPerSession: 60,
+	webSessionTotalMs: 3_600_000,
+	// Keep this below keepAliveMs. The provider ends a browser with no client after keepAliveMs,
+	// so the idle close must run first, while the browser is still alive.
+	webSessionIdleMs: 540_000,
+	webCommandsPerSession: 120,
+	userSessions: 2,
 	workspaceSessions: 2,
+	organizationSessions: 4,
 	deploymentSessions: 10,
 	grantTtlMs: 60_000,
 	grantActiveMs: 24 * 60 * 60 * 1000,
@@ -217,9 +295,55 @@ export const LIMITS = {
 	viewportMaxHeight: 1440,
 	viewersPerSession: 2,
 	viewerGrantTtlMs: 30_000,
-	viewerGrantWindowMs: 30_000,
+	// The app renews every 20 s. A background tab may run that timer only once a minute (Chrome
+	// timer throttling), so the window must outlast a renew that comes about a minute late.
+	viewerGrantWindowMs: 90_000,
 	viewerPollMs: 5_000,
+	viewerMessageChars: 16_384,
+	textInsertChars: 4000,
+	titleChars: 1024,
+	popupUrlWaitMs: 5_000,
+	navWallMs: 5_000,
+	openNavWallMs: 10_000,
+	usageReceiptMs: 7 * 24 * 60 * 60 * 1000,
+	profileCookies: 3000,
+	profileJsonBytes: 1_048_576,
+	profileSaveEveryMs: 120_000,
+	// Above the 90-day Convex profile expiry, so Convex normally deletes the profile first.
+	profileKeepMs: 100 * 24 * 60 * 60 * 1000,
+	profileTombstoneMs: 7 * 24 * 60 * 60 * 1000,
+	profileCdpMs: 10_000,
+	agentBlockedHosts: 50,
+	hostChars: 253,
+	downloadHumanBytes: 26_214_400,
+	downloadAgentBytes: 8_388_608,
+	downloadSessionFiles: 20,
+	downloadSessionBytes: 104_857_600,
+	downloadStarts: 3,
+	downloadStartWindowMs: 10_000,
+	downloadGestureMs: 10_000,
+	downloadKeepMs: 120_000,
+	downloadCaptureMs: 30_000,
+	downloadNameChars: 255,
+	downloadChunkBytes: 1_048_576,
+	uploadBytes: 20_971_520,
+	uploadFiles: 10,
+	uploadGrantMs: 120_000,
+	// One `upload-fill`: all reads plus `setFiles`. Convex waits longer than this for the reply.
+	uploadFillMs: 120_000,
+	uploadSetFilesMs: 30_000,
+	chooserMs: 300_000,
+	chooserAcceptChars: 512,
 } as const;
+
+/**
+ * Time and command limits for one session mode.
+ */
+function mode_limits(mode: SessionMode) {
+	return mode === "web"
+		? { totalMs: LIMITS.webSessionTotalMs, idleMs: LIMITS.webSessionIdleMs, commands: LIMITS.webCommandsPerSession }
+		: { totalMs: LIMITS.sessionTotalMs, idleMs: LIMITS.sessionIdleMs, commands: LIMITS.commandsPerSession };
+}
 
 const COMPAT_DATE = "2026-09-19";
 const CHILD_COMPAT_DATE = "2026-09-19";
@@ -228,9 +352,14 @@ const CHILD_BUNDLE_MODULE = "pw.js";
 const CONTROLLER_ORIGIN = "https://controller.browser.invalid";
 const CONTROLLER_URL = `${CONTROLLER_ORIGIN}/`;
 const SESSION_KEY = "session";
+const USAGE_KEY_PREFIX = "usage:";
+const PROFILE_BLOB_KEY = "profile";
+const PROFILE_DELETE_AT_KEY = "profileDeleteAt";
+const PROFILE_DELETED_KEY_PREFIX = "profileDeleted:";
 const REGISTRY_KEY = "registry";
 const REGISTRY_NAME = "registry";
 const BROWSER_OPEN_FIELDS = new Set([
+	"mode",
 	"attemptId",
 	"ownerId",
 	"organizationId",
@@ -242,6 +371,20 @@ const BROWSER_OPEN_FIELDS = new Set([
 	"sourceHash",
 	"html",
 	"viewport",
+]);
+const BROWSER_WEB_OPEN_FIELDS = new Set([
+	"mode",
+	"attemptId",
+	"ownerId",
+	"organizationId",
+	"workspaceId",
+	"navGen",
+	"startUrl",
+	"viewport",
+	"agentAccess",
+	"profileId",
+	"profileKey",
+	"agentBlockedHosts",
 ]);
 const BROWSER_RUN_FIELDS = new Set(["sessionId", "ownerId", "organizationId", "workspaceId", "navGen", "loadGen", "controlGen", "commandId", "code"]);
 const BROWSER_RELOAD_FIELDS = new Set([
@@ -255,14 +398,33 @@ const BROWSER_RELOAD_FIELDS = new Set([
 	"sourceHash",
 	"html",
 	"expectedAgentLease",
+	"mode",
 ]);
-const BROWSER_CLOSE_FIELDS = new Set(["sessionId", "ownerId", "organizationId", "workspaceId", "reason", "expectedAgentLease"]);
+const BROWSER_WEB_RELOAD_FIELDS = new Set(["sessionId", "ownerId", "organizationId", "workspaceId", "navGen", "mode", "expectedAgentLease"]);
+const BROWSER_CLOSE_FIELDS = new Set([
+	"sessionId",
+	"ownerId",
+	"organizationId",
+	"workspaceId",
+	"reason",
+	"expectedAgentLease",
+	"saveProfile",
+]);
+const BROWSER_AGENT_ACCESS_FIELDS = new Set(["sessionId", "ownerId", "organizationId", "workspaceId", "on"]);
 const BROWSER_STATUS_FIELDS = new Set(["sessionId", "ownerId", "organizationId", "workspaceId"]);
 const BROWSER_KEEP_OPEN_FIELDS = new Set(["sessionId", "ownerId", "organizationId", "workspaceId", "navGen"]);
 const BROWSER_VIEWER_GRANT_FIELDS = new Set(["sessionId", "ownerId", "organizationId", "workspaceId", "navGen"]);
 const BROWSER_VIEWER_RENEW_FIELDS = new Set(["sessionId", "ownerId", "organizationId", "workspaceId", "viewerId"]);
 const BROWSER_CONTROL_TAKE_FIELDS = new Set(["sessionId", "ownerId", "organizationId", "workspaceId", "navGen", "viewerId"]);
 const BROWSER_CONTROL_RESUME_FIELDS = new Set(["sessionId", "ownerId", "organizationId", "workspaceId", "navGen"]);
+const BROWSER_PROFILE_SUMMARY_FIELDS = new Set(["ownerId", "organizationId", "workspaceId", "profileId", "profileKey"]);
+const BROWSER_PROFILE_CLEAR_FIELDS = new Set(["ownerId", "organizationId", "workspaceId", "profileId", "profileKey", "domain"]);
+const BROWSER_PROFILE_DELETE_FIELDS = new Set(["ownerId", "organizationId", "workspaceId", "profileId"]);
+const BROWSER_DOWNLOAD_INFO_FIELDS = new Set(["ownerId", "organizationId", "workspaceId", "sessionId", "downloadId"]);
+const BROWSER_DOWNLOAD_PUSH_FIELDS = new Set([...BROWSER_DOWNLOAD_INFO_FIELDS, "url", "headers"]);
+const BROWSER_UPLOAD_GRANT_FIELDS = new Set(["ownerId", "organizationId", "workspaceId", "sessionId", "chooserId", "controlGen"]);
+const BROWSER_UPLOAD_FILL_FIELDS = new Set([...BROWSER_UPLOAD_GRANT_FIELDS, "files"]);
+const BROWSER_UPLOAD_FILE_FIELDS = new Set(["name", "contentType", "url"]);
 const SOURCE_KINDS = new Set(["saved", "proposed", "draft"]);
 
 const TEXT_ENCODER = new TextEncoder();
@@ -327,7 +489,19 @@ function is_agent_lease(value: unknown): value is AgentLease {
 }
 
 function cap_message(message: string): string {
-	return message.length > 1000 ? `${message.slice(0, 1000)}…` : message;
+	// Drop URL query and fragment: page URLs can carry tokens, and this text reaches Convex.
+	const text = message.replace(/(https?:\/\/[^\s?#"'<>]*)[?#][^\s"'<>]*/giu, "$1");
+	return text.length > 1000 ? `${text.slice(0, 1000)}…` : text;
+}
+
+/**
+ * Read the deny list from the comma list in `BROWSER_WEB_DENIED_HOSTS`.
+ */
+function web_denied_hosts(env: Env) {
+	return (env.BROWSER_WEB_DENIED_HOSTS ?? "")
+		.split(",")
+		.map((host) => host.trim())
+		.filter((host) => host !== "");
 }
 
 function sanitize_error(error: unknown): { name: string; message: string } {
@@ -456,15 +630,25 @@ function append_bytes(chunks: Uint8Array[], size: number) {
 	return out;
 }
 
-async function read_bounded_stream(stream: ReadableStream<Uint8Array> | null, maxBytes: number) {
+/**
+ * Read a body up to `maxBytes`. When `signal` aborts, cancel the body and throw: a caller that
+ * gave up must not keep reading into memory.
+ */
+async function read_bounded_stream(stream: ReadableStream<Uint8Array> | null, maxBytes: number, signal?: AbortSignal) {
 	if (!stream) return { bytes: new Uint8Array(), truncated: false };
 
 	const reader = stream.getReader();
+	const stop = () => {
+		reader.cancel().catch(() => {});
+	};
+	signal?.addEventListener("abort", stop, { once: true });
 	const chunks: Uint8Array[] = [];
 	let size = 0;
 	try {
 		while (true) {
 			const next = await reader.read();
+			// A cancel ends the read like a normal end. Those bytes are not the whole body.
+			signal?.throwIfAborted();
 			if (next.done) break;
 
 			const chunk = next.value;
@@ -483,6 +667,7 @@ async function read_bounded_stream(stream: ReadableStream<Uint8Array> | null, ma
 		}
 		return { bytes: append_bytes(chunks, size), truncated: false };
 	} finally {
+		signal?.removeEventListener("abort", stop);
 		reader.releaseLock();
 	}
 }
@@ -499,6 +684,122 @@ function invalid_request(message: string) {
 
 function operation_refused(code: string, message: string) {
 	return json_response({ ok: false, error: { code, message } }, 200);
+}
+
+// Saved browser profile
+//
+// Web mode keeps the user's cookies between sessions. They are stored in this object's storage,
+// encrypted with AES-GCM. The key needs two parts: the runner secret `BROWSER_PROFILE_KEY` and
+// a random key from the Convex profile doc. So deleting the Convex doc makes the stored bytes
+// unreadable at once. The key lives only in memory, never in storage.
+
+function base64_bytes(value: string) {
+	try {
+		return Uint8Array.from(atob(value), (char) => char.charCodeAt(0));
+	} catch {
+		return null;
+	}
+}
+
+function bytes_base64(bytes: Uint8Array) {
+	// Encode whole three-byte groups so the joined chunks stay valid base64.
+	const parts: string[] = [];
+	for (let offset = 0; offset < bytes.byteLength; offset += 3 * 8192) {
+		parts.push(btoa(String.fromCharCode(...bytes.subarray(offset, offset + 3 * 8192))));
+	}
+	return parts.join("");
+}
+
+/**
+ * True when `value` is base64 for exactly 32 bytes, the size of both key parts.
+ */
+function is_profile_key(value: unknown): value is string {
+	return typeof value === "string" && value.length <= 64 && base64_bytes(value)?.byteLength === 32;
+}
+
+/**
+ * The profile id is a Convex doc id. It is part of a storage key, so pin the charset.
+ */
+function is_profile_id(value: unknown): value is string {
+	return typeof value === "string" && value.length > 0 && value.length <= 128 && /^[A-Za-z0-9_-]+$/u.test(value);
+}
+
+/**
+ * Key = SHA-256(secret, 0, "browser-profile", 0, profileKey), used as an AES-GCM-256 key.
+ */
+async function profile_crypto_key(secret: string | undefined, profileKey: string) {
+	const secretBytes = base64_bytes(secret ?? "");
+	const keyBytes = base64_bytes(profileKey);
+	if (secretBytes?.byteLength !== 32 || keyBytes?.byteLength !== 32) throw new Error("Browser profile key is invalid.");
+	const label = TEXT_ENCODER.encode("browser-profile");
+	const zero = new Uint8Array(1);
+	const material = append_bytes([secretBytes, zero, label, zero, keyBytes], 32 + 1 + label.byteLength + 1 + 32);
+	const digest = await crypto.subtle.digest("SHA-256", material);
+	return await crypto.subtle.importKey("raw", digest, { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
+}
+
+/**
+ * The extra data every encryption binds: a blob from another profile, owner, or workspace does not decrypt.
+ */
+function profile_aad(profileId: string, scope: { ownerId: string; organizationId: string; workspaceId: string }) {
+	return TEXT_ENCODER.encode(JSON.stringify([profileId, scope.ownerId, scope.organizationId, scope.workspaceId]));
+}
+
+async function profile_encrypt(key: CryptoKey, aad: Uint8Array<ArrayBuffer>, cookies: ProfileCookie[]) {
+	const iv = crypto.getRandomValues(new Uint8Array(12));
+	const plain = TEXT_ENCODER.encode(JSON.stringify({ cookies }));
+	const sealed = await crypto.subtle.encrypt({ name: "AES-GCM", iv, additionalData: aad }, key, plain);
+	return { iv: bytes_base64(iv), ciphertext: bytes_base64(new Uint8Array(sealed)) };
+}
+
+async function profile_decrypt(key: CryptoKey, aad: Uint8Array<ArrayBuffer>, blob: ProfileBlob) {
+	const iv = base64_bytes(blob.iv);
+	const sealed = base64_bytes(blob.ciphertext);
+	if (!iv || !sealed) throw new Error("Browser profile is damaged.");
+	const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv, additionalData: aad }, key, sealed);
+	const parsed: unknown = JSON.parse(TEXT_DECODER.decode(plain));
+	if (!is_record(parsed) || !Array.isArray(parsed.cookies)) throw new Error("Browser profile is damaged.");
+	return parsed.cookies.filter(is_profile_cookie);
+}
+
+function is_profile_cookie(value: unknown): value is ProfileCookie {
+	return is_record(value) && typeof value.name === "string" && typeof value.value === "string" &&
+		typeof value.domain === "string" && typeof value.expires === "number";
+}
+
+/**
+ * The site a cookie belongs to: its domain without the leading dot, in canonical form.
+ */
+function cookie_site(cookie: ProfileCookie) {
+	return browser_web_canonical_host(cookie.domain.replace(/^\./u, ""));
+}
+
+/**
+ * Pick the cookies to save: never cookies of our own hosts, at most 3,000, and at most 1 MiB of JSON.
+ */
+function profile_cookies_to_save(value: unknown, deniedHosts: readonly string[]) {
+	const cookies = (Array.isArray(value) ? value : [])
+		.filter(is_profile_cookie)
+		.filter((cookie) => !browser_web_host_matches(cookie_site(cookie), deniedHosts));
+	// Keep the cookies that live longest. A session cookie has no expiry date and is often the
+	// login itself, so it sorts first.
+	const expiry = (cookie: ProfileCookie) => (cookie.session === true || cookie.expires <= 0 ? Number.MAX_VALUE : cookie.expires);
+	cookies.sort((a, b) => expiry(b) - expiry(a));
+
+	let truncated = cookies.length > LIMITS.profileCookies;
+	const kept: ProfileCookie[] = [];
+	let jsonBytes = byte_length(JSON.stringify({ cookies: [] }));
+	for (const cookie of cookies.slice(0, LIMITS.profileCookies)) {
+		// One comma between list items.
+		const size = byte_length(JSON.stringify(cookie)) + (kept.length > 0 ? 1 : 0);
+		if (jsonBytes + size > LIMITS.profileJsonBytes) {
+			truncated = true;
+			break;
+		}
+		kept.push(cookie);
+		jsonBytes += size;
+	}
+	return { cookies: kept, truncated };
 }
 
 // Execution timeout
@@ -610,7 +911,8 @@ export function build_controller_html(input: {
 // Snippet harness
 //
 // The executor resolves the one registered page and its inner preview frame,
-// then runs the agent code with `(page, frame, expect, emitFile)`. Console and
+// then runs the agent code with `(page, frame, expect, emitFile)`. In web mode
+// there is no preview frame: `frame` is the page's main frame. Console and
 // page errors are collected separately from tool output. File bytes the snippet
 // emits cross RPC directly, and the host checks their count and total size. The
 // app owns Files path and MIME rules. Screenshots travel the other way: the
@@ -624,7 +926,10 @@ export default class SnippetExecutor extends WorkerEntrypoint {
     if (!input || typeof input.sessionId !== "string" || !input.sessionId) {
       throw new Error("Missing browser session.");
     }
-    if (!input || typeof input.runtimeOrigin !== "string" || !input.runtimeOrigin) {
+    if (input.mode !== "file" && input.mode !== "web") {
+      throw new Error("Missing session mode.");
+    }
+    if (input.mode === "file" && (typeof input.runtimeOrigin !== "string" || !input.runtimeOrigin)) {
       throw new Error("Missing runtime origin.");
     }
     if (!input.viewport || typeof input.viewport.width !== "number" || typeof input.viewport.height !== "number") {
@@ -747,11 +1052,16 @@ export default class SnippetExecutor extends WorkerEntrypoint {
           await new Promise(function (resolve) { setTimeout(resolve, 100); });
         }
       }
-      var outer = await waitForFrame(findOuter, 10000, "Preview frame not found.");
-      var frame = await waitForFrame(function () {
-        var kids = outer.childFrames();
-        return kids.length === 1 ? kids[0] : null;
-      }, 10000, "Preview content not ready.");
+      var frame;
+      if (input.mode === "web") {
+        frame = page.mainFrame();
+      } else {
+        var outer = await waitForFrame(findOuter, 10000, "Preview frame not found.");
+        frame = await waitForFrame(function () {
+          var kids = outer.childFrames();
+          return kids.length === 1 ? kids[0] : null;
+        }, 10000, "Preview content not ready.");
+      }
       // The viewport is per-connection server-side: re-apply the session size
       // on every fresh connection before user code runs.
       await page.setViewportSize({ width: input.viewport.width, height: input.viewport.height });
@@ -766,6 +1076,11 @@ const EXECUTOR_SUFFIX = `
         new Promise(function (_, reject) { timer = setTimeout(function () { reject(new Error("Execution timed out")); }, timeoutMs); }),
       ]);
       filesOpen = false;
+      // The model often sends a whole function instead of its body. That code only defines the
+      // function, so nothing runs. Say so instead of reporting an empty success.
+      if (typeof __result === "function" || (__result === undefined && __SNIPPET_IS_FUNCTION__)) {
+        return { ok: false, error: { name: "TypeError", message: "Your code returned a function. Write the function body only, do not wrap it in a function." }, consoleEntries: consoleEntries, pageErrors: pageErrors, logs: logs, logsTruncated: logsTruncated };
+      }
       var __resultJson;
       try {
         __resultJson = __result === undefined ? "null" : JSON.stringify(__result);
@@ -787,8 +1102,21 @@ const EXECUTOR_SUFFIX = `
 }
 `;
 
+/**
+ * True when the snippet is one function and nothing else, like `async ({ page }) => { ... }`.
+ * Such code only defines the function, so it never runs. A named function that the code uses
+ * again (a helper it calls) is fine.
+ */
+function snippet_is_function(code: string) {
+	// Skip leading blank lines and comments.
+	const start = code.replace(/^(?:\s|\/\/[^\n]*(?:\n|$)|\/\*[\s\S]*?\*\/)*/u, "");
+	if (/^(?:async\s+)?(?:\([^()]*\)|[A-Za-z_$][\w$]*)\s*=>/u.test(start)) return true;
+	const name = /^(?:async\s+)?function\s*\*?\s*([A-Za-z_$][\w$]*)\s*\(/u.exec(start)?.[1];
+	return name !== undefined && start.split(/[^\w$]+/u).filter((word) => word === name).length === 1;
+}
+
 export function build_executor_module(user_code: string): string {
-	return EXECUTOR_PREFIX + user_code + EXECUTOR_SUFFIX;
+	return EXECUTOR_PREFIX + user_code + EXECUTOR_SUFFIX.replace("__SNIPPET_IS_FUNCTION__", String(snippet_is_function(user_code)));
 }
 
 // One-session connection gate
@@ -901,17 +1229,19 @@ function agent_lease_refusal(record: SessionRecord, lease: AgentLease) {
 }
 
 export function session_is_expired(record: SessionRecord, now: number): boolean {
-	if (record.providerAcquiredAt !== null && now - record.providerAcquiredAt >= LIMITS.sessionTotalMs) {
+	const limits = mode_limits(record.mode);
+	if (record.providerAcquiredAt !== null && now - record.providerAcquiredAt >= limits.totalMs) {
 		return true;
 	}
-	return now - record.lastActiveAt >= LIMITS.sessionIdleMs;
+	return now - record.lastActiveAt >= limits.idleMs;
 }
 
 export function session_next_alarm(record: SessionRecord): number | null {
 	if (record.control === "closed") return null;
-	const deadlines: number[] = [record.lastActiveAt + LIMITS.sessionIdleMs];
+	const limits = mode_limits(record.mode);
+	const deadlines: number[] = [record.lastActiveAt + limits.idleMs];
 	if (record.providerAcquiredAt !== null) {
-		deadlines.push(record.providerAcquiredAt + LIMITS.sessionTotalMs);
+		deadlines.push(record.providerAcquiredAt + limits.totalMs);
 	}
 	if (record.control === "starting") {
 		deadlines.push(record.createdAt + LIMITS.startingStaleMs);
@@ -930,23 +1260,28 @@ export function session_can_run(
 	if (record.sessionId !== input.sessionId) return { ok: false, reason: "stale_session" };
 	if (record.control === "closed" || record.control === "closing") return { ok: false, reason: "closed" };
 	if (session_is_expired(record, now)) return { ok: false, reason: "expired" };
+	// The user turned agent access off for this web session. No new command may start.
+	if (record.mode === "web" && !record.agentAccess) return { ok: false, reason: "agent_access_off" };
 	if (record.navGen !== input.navGen) return { ok: false, reason: "stale_nav" };
 	if (record.loadGen !== input.loadGen) return { ok: false, reason: "stale_load" };
 	// Control state before generations: a caller with a retired lease still
 	// deserves the actionable reason while a human holds the page.
 	if (record.control !== "ready" && record.control !== "agent") return { ok: false, reason: "control" };
 	if (record.controlGen !== input.controlGen) return { ok: false, reason: "stale_control" };
+	// Keep this code apart from the other `busy` causes: the app shows a special message
+	// ("another chat is using the browser") only for this case. A reload holds the same slot
+	// without an agent connection, so it stays plain `busy`.
 	if (record.command && now - record.command.startedAt < LIMITS.commandTimeoutMs + 10_000) {
-		return { ok: false, reason: "busy" };
+		return { ok: false, reason: record.command.connection ? "busy_command" : "busy" };
 	}
-	if (record.commandCount >= LIMITS.commandsPerSession) return { ok: false, reason: "session_limit" };
+	if (record.commandCount >= mode_limits(record.mode).commands) return { ok: false, reason: "session_limit" };
 	if (!record.providerSessionId || !record.pageNonce) return { ok: false, reason: "not_ready" };
 	return { ok: true };
 }
 
 // Registry object
 //
-// Owns deployment-wide and per-workspace admission slots. Claims expire fast so
+// Owns deployment-wide, per-workspace, per-organization, and per-user admission slots. Claims expire fast so
 // a crash between claim and open cannot leak a slot.
 
 function sweep_registry(record: RegistryRecord, now: number): void {
@@ -959,14 +1294,18 @@ function sweep_registry(record: RegistryRecord, now: number): void {
 	}
 }
 
-function count_registry(record: RegistryRecord, workspaceKey: string): { deployment: number; workspace: number } {
+function count_registry(record: RegistryRecord, claim: { workspaceKey: string; ownerId: string; organizationId: string }) {
 	let deployment = 0;
 	let workspace = 0;
+	let organization = 0;
+	let user = 0;
 	for (const grant of Object.values(record.grants)) {
 		deployment += 1;
-		if (grant.workspaceKey === workspaceKey) workspace += 1;
+		if (grant.workspaceKey === claim.workspaceKey) workspace += 1;
+		if (grant.organizationId === claim.organizationId) organization += 1;
+		if (grant.ownerId === claim.ownerId) user += 1;
 	}
-	return { deployment, workspace };
+	return { deployment, workspace, organization, user };
 }
 
 export class BrowserRegistry {
@@ -997,11 +1336,11 @@ export class BrowserRegistry {
 		}
 	}
 
-	private async claim(workspaceKey: string): Promise<Response> {
+	private async claim(claim: { workspaceKey: string; ownerId: string; organizationId: string }): Promise<Response> {
 		const record = await this.load();
 		const now = Date.now();
 		sweep_registry(record, now);
-		const counts = count_registry(record, workspaceKey);
+		const counts = count_registry(record, claim);
 		if (counts.deployment >= LIMITS.deploymentSessions) {
 			log_browser({ route: "registry_claim", refused: "deployment_busy" });
 			return json_response({ ok: false, error: { code: "deployment_busy" } }, 200);
@@ -1010,9 +1349,23 @@ export class BrowserRegistry {
 			log_browser({ route: "registry_claim", refused: "workspace_busy" });
 			return json_response({ ok: false, error: { code: "workspace_busy" } }, 200);
 		}
+		if (counts.organization >= LIMITS.organizationSessions) {
+			log_browser({ route: "registry_claim", refused: "organization_limit" });
+			return json_response({ ok: false, error: { code: "organization_limit" } }, 200);
+		}
+		if (counts.user >= LIMITS.userSessions) {
+			log_browser({ route: "registry_claim", refused: "user_limit" });
+			return json_response({ ok: false, error: { code: "user_limit" } }, 200);
+		}
 
 		const grantId = crypto.randomUUID();
-		record.grants[grantId] = { workspaceKey, state: "claimed", expiresAt: now + LIMITS.grantTtlMs };
+		record.grants[grantId] = {
+			workspaceKey: claim.workspaceKey,
+			ownerId: claim.ownerId,
+			organizationId: claim.organizationId,
+			state: "claimed",
+			expiresAt: now + LIMITS.grantTtlMs,
+		};
 		await this.save(record);
 		return json_response({ ok: true, grantId }, 200);
 	}
@@ -1052,8 +1405,13 @@ export class BrowserRegistry {
 		}
 		if (!is_record(body)) return json_response({ ok: false, error: { code: "invalid_request" } }, 400);
 
-		if (url.pathname === "/claim" && typeof body.workspaceKey === "string") {
-			return await this.claim(body.workspaceKey);
+		if (
+			url.pathname === "/claim" &&
+			typeof body.workspaceKey === "string" &&
+			typeof body.ownerId === "string" &&
+			typeof body.organizationId === "string"
+		) {
+			return await this.claim({ workspaceKey: body.workspaceKey, ownerId: body.ownerId, organizationId: body.organizationId });
 		}
 		if (url.pathname === "/confirm" && typeof body.grantId === "string") {
 			return await this.confirm(body.grantId);
@@ -1238,6 +1596,46 @@ async function bootstrap_browser(input: {
 	}
 }
 
+/**
+ * Acquire a browser for web mode and return its one page target.
+ */
+async function acquire_web_browser(binding: BrowserWorker): Promise<{ providerSessionId: string; pageTargetId: string }> {
+	// No guardrails: web mode opens real sites. The provider egress proxy still refuses private
+	// and metadata addresses, and Chrome blocks loopback.
+	const acquired = await acquire(binding, { keep_alive: LIMITS.keepAliveMs, recording: false });
+	const providerSessionId = acquired.sessionId;
+	try {
+		const browser = await connect_persistent(providerSessionId);
+		try {
+			const context = browser.contexts()[0] ?? (await browser.newContext());
+			const page = context.pages()[0] ?? (await context.newPage());
+			if (browser.contexts().length !== 1 || context.pages().length !== 1) {
+				throw new Error("Unexpected targets after bootstrap.");
+			}
+			const cdp = await context.newCDPSession(page);
+			const info: unknown = await cdp.send("Target.getTargetInfo");
+			await cdp.detach().catch(() => {});
+			if (!is_record(info) || !is_record(info.targetInfo) || !is_non_empty_string(info.targetInfo.targetId)) {
+				throw new Error("Browser target is unavailable.");
+			}
+			return { providerSessionId, pageTargetId: info.targetInfo.targetId };
+		} finally {
+			try {
+				await browser.close();
+			} catch {
+				// The client connection is best-effort; the session persists server-side.
+			}
+		}
+	} catch (error) {
+		try {
+			await close_browser_provider(binding, providerSessionId);
+		} catch {
+			// Ignored: the provider keep-alive expiry is the backstop.
+		}
+		throw error;
+	}
+}
+
 async function close_browser_provider(browser: BrowserWorker, providerSessionId: string): Promise<boolean> {
 	try {
 		const connected = await connect_persistent(providerSessionId);
@@ -1266,6 +1664,228 @@ async function close_browser_provider(browser: BrowserWorker, providerSessionId:
 	return false;
 }
 
+// Downloads and uploads (web mode)
+//
+// A real Chrome download lands on the provider's disk, where CDP cannot read it. So the host
+// pauses page loads at the response stage and reads the body itself when Chrome would save it.
+// Downloads that skip the network (`<a download>`, `data:`) reach the `Browser.downloadWillBegin`
+// safety net. File choosers are answered with bytes the user picked in the app.
+
+/**
+ * The `Fetch` pattern that pauses every page load after its headers arrive. It stays on for the
+ * whole web session.
+ */
+const DOWNLOAD_FETCH_PATTERN = { urlPattern: "*", resourceType: "Document", requestStage: "Response" } as const;
+
+type DownloadOwner = { kind: "human" } | { kind: "agent"; commandId: string };
+
+/**
+ * One captured human download, kept in memory until Convex saves it or it expires.
+ */
+type HeldDownload = {
+	downloadId: string;
+	name: string;
+	size: number;
+	contentType: string;
+	origin: string | null;
+	bytes: Uint8Array<ArrayBuffer>;
+	expiresAt: number;
+	timer: ReturnType<typeof setTimeout>;
+	pushing: Promise<boolean> | null;
+};
+
+type DownloadRead = { over: true } | { over: false; bytes: Uint8Array<ArrayBuffer>; contentType: string };
+
+/**
+ * The value of a header in a CDP header list, or null. Names are case-insensitive.
+ */
+function cdp_header(headers: unknown, name: string) {
+	if (!Array.isArray(headers)) return null;
+	for (const header of headers) {
+		if (is_record(header) && typeof header.name === "string" && typeof header.value === "string" &&
+			header.name.toLowerCase() === name) return header.value;
+	}
+	return null;
+}
+
+/**
+ * The MIME type without parameters, like `application/zip`, or "" when there is none.
+ */
+function mime_essence(contentType: string | null) {
+	return (contentType ?? "").split(";", 1)[0]!.trim().toLowerCase().slice(0, LIMITS.fileContentTypeChars);
+}
+
+/**
+ * The types Chrome shows in the tab, besides `audio/*` and `video/*`. Chrome saves other types,
+ * even some `text/*` and `image/*` ones like `text/csv` or `image/tiff`.
+ */
+const SHOWN_CONTENT_TYPES = new Set([
+	"text/html", "text/plain", "text/css", "text/javascript", "text/xml",
+	"application/xhtml+xml", "application/xml", "application/json", "application/javascript", "application/pdf",
+	"image/png", "image/jpeg", "image/gif", "image/webp", "image/svg+xml", "image/avif", "image/bmp", "image/x-icon",
+	"image/vnd.microsoft.icon",
+]);
+
+/**
+ * True when Chrome would save this response instead of showing it: an `attachment` disposition,
+ * or a type Chrome does not show. A response with no type is left to Chrome.
+ */
+function is_download_response(disposition: string | null, contentType: string | null) {
+	if (disposition !== null && disposition.split(";", 1)[0]!.trim().toLowerCase() === "attachment") return true;
+	const mime = mime_essence(contentType);
+	if (mime === "") return false;
+	const shown = SHOWN_CONTENT_TYPES.has(mime) || mime.startsWith("audio/") || mime.startsWith("video/");
+	return !shown;
+}
+
+/**
+ * The raw file name: `filename*` (RFC 5987), then `filename`, then the last URL path segment,
+ * then `download`. Convex and the app server clean it up; here it is only cut to 255 characters.
+ */
+function download_name(disposition: string | null, url: string) {
+	const params = new Map<string, string>();
+	for (const match of (disposition ?? "").matchAll(/;\s*([^\s=;]+)\s*=\s*("(?:[^"\\]|\\.)*"|[^;]*)/gu)) {
+		const value = match[2]!.trim();
+		params.set(match[1]!.toLowerCase(), value.startsWith("\"") ? value.slice(1, -1).replace(/\\(.)/gu, "$1") : value);
+	}
+	let name = "";
+	const extended = /^([^']*)'[^']*'(.*)$/u.exec(params.get("filename*") ?? "");
+	if (extended) {
+		const charset = extended[1]!.toLowerCase();
+		try {
+			if (charset === "utf-8") name = decodeURIComponent(extended[2]!);
+			// Latin-1 maps each byte to the same code point.
+			if (charset === "iso-8859-1") name = extended[2]!.replace(/%([0-9a-f]{2})/giu, (_, hex: string) => String.fromCharCode(parseInt(hex, 16)));
+		} catch {
+			name = "";
+		}
+	}
+	if (name === "") name = params.get("filename") ?? "";
+	if (name === "" && /^https?:/iu.test(url)) {
+		try {
+			const segment = new URL(url).pathname.split("/").filter((part) => part !== "").at(-1) ?? "";
+			try {
+				name = decodeURIComponent(segment);
+			} catch {
+				name = segment;
+			}
+		} catch {
+			name = "";
+		}
+	}
+	return cap_download_name(name);
+}
+
+function cap_download_name(name: string) {
+	// Do not leave half of a surrogate pair at the cut.
+	const capped = name.slice(0, LIMITS.downloadNameChars).replace(/[\uD800-\uDBFF]$/u, "");
+	return capped === "" ? "download" : capped;
+}
+
+/**
+ * Where a download came from, for the saved file's metadata. `data:` and other opaque URLs have none.
+ */
+function download_origin(url: string) {
+	try {
+		const origin = new URL(url).origin;
+		return origin === "null" ? null : origin;
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * Decode a `data:` URL. Its `%xx` escapes are raw bytes, and the rest is UTF-8.
+ */
+function decode_data_url(url: string) {
+	const comma = url.indexOf(",");
+	if (!/^data:/iu.test(url) || comma < 0) return null;
+	const meta = url.slice(5, comma);
+	const data = url.slice(comma + 1);
+	const contentType = mime_essence(meta.replace(/;base64$/iu, "")) || "text/plain";
+	if (/;base64$/iu.test(meta)) {
+		const bytes = base64_bytes(data.replace(/%([0-9a-f]{2})/giu, (_, hex: string) => String.fromCharCode(parseInt(hex, 16))).replace(/\s/gu, ""));
+		return bytes ? { contentType, bytes } : null;
+	}
+	const chunks = data.split(/(%[0-9a-fA-F]{2})/u).map((part) =>
+		/^%[0-9a-fA-F]{2}$/u.test(part) ? new Uint8Array([parseInt(part.slice(1), 16)]) : TEXT_ENCODER.encode(part));
+	return { contentType, bytes: append_bytes(chunks, chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0)) };
+}
+
+/**
+ * Read a CDP `IO` stream in 1 MiB chunks. Stop as soon as it grows past `maxBytes`, or at the next
+ * chunk after `signal` aborts.
+ */
+async function read_cdp_stream(cdp: CDPSession, handle: string, maxBytes: number, signal: AbortSignal): Promise<{ over: true } | { over: false; bytes: Uint8Array<ArrayBuffer> }> {
+	const chunks: Uint8Array[] = [];
+	let size = 0;
+	while (true) {
+		signal.throwIfAborted();
+		const read = await with_wall_timeout(cdp.send("IO.read", { handle, size: LIMITS.downloadChunkBytes }), 10_000);
+		const chunk = read.base64Encoded ? base64_bytes(read.data) : TEXT_ENCODER.encode(read.data);
+		if (!chunk) throw new Error("Download chunk is damaged.");
+		size += chunk.byteLength;
+		if (size > maxBytes) return { over: true };
+		chunks.push(chunk);
+		if (read.eof) return { over: false, bytes: append_bytes(chunks, size) };
+	}
+}
+
+/**
+ * The file bytes a chooser fill gives to the page.
+ */
+type ChooserFile = { name: string; mimeType: string; buffer: Buffer };
+
+/**
+ * The one open file chooser of the live web session. It stays in memory: the Playwright handle
+ * cannot be stored. It is current only while its host connection, main-frame navigation count,
+ * and `controlGen` are unchanged and it is under 5 minutes old.
+ */
+type OpenFileChooser = {
+	sessionId: string;
+	chooserId: string;
+	host: HostConnection;
+	chooser: FileChooser;
+	multiple: boolean;
+	accept: string;
+	origin: string;
+	mainNavCount: number;
+	controlGen: number;
+	openedAt: number;
+	timer: ReturnType<typeof setTimeout>;
+	busy: boolean;
+};
+
+/**
+ * The origin of the document that owns the chooser's input. It runs in Playwright's utility world,
+ * so page scripts cannot change the answer.
+ */
+async function chooser_origin(chooser: FileChooser) {
+	return await with_wall_timeout(chooser.element().evaluate((node) => node.ownerDocument?.location.origin ?? null), 5000);
+}
+
+/**
+ * The app origins in `BROWSER_APP_ORIGINS` that may upload through the viewer route.
+ */
+function app_origins(env: Env) {
+	return (env.BROWSER_APP_ORIGINS ?? "")
+		.split(",")
+		.map((origin) => origin.trim())
+		.filter((origin) => origin !== "");
+}
+
+/**
+ * Set the host page's `Fetch` patterns. The download pattern is always on in web mode. An agent
+ * command with blocked sites adds the request-stage filter. One `Fetch.enable` replaces the whole
+ * list, so both must go in every call.
+ */
+async function set_fetch_patterns(cdp: CDPSession, agentFilter: boolean) {
+	const filter = agentFilter
+		? (["Document", "XHR", "Fetch"] as const).map((resourceType) => ({ urlPattern: "*", resourceType, requestStage: "Request" as const }))
+		: [];
+	await with_wall_timeout(cdp.send("Fetch.enable", { patterns: [DOWNLOAD_FETCH_PATTERN, ...filter] }), 5000);
+}
+
 // Session object
 //
 // Owns one owner/organization/workspace slot: the session record, the command
@@ -1277,14 +1897,19 @@ type SessionOpenInput = {
 	ownerId: string;
 	organizationId: string;
 	workspaceId: string;
-	nodeId: string;
 	navGen: number;
-	sourceKind: string;
-	sourceVersion: string;
-	sourceHash: string;
-	html: string;
 	viewport: { width: number; height: number };
-};
+} & (
+	| {
+			mode: "file";
+			nodeId: string;
+			sourceKind: string;
+			sourceVersion: string;
+			sourceHash: string;
+			html: string;
+	  }
+	| { mode: "web"; startUrl: string | null; agentAccess: boolean; profileId: string; profileKey: string; agentBlockedHosts: string[] }
+);
 
 type ViewerStream = {
 	socket: WebSocket;
@@ -1293,6 +1918,24 @@ type ViewerStream = {
 	frameSeqs: number[];
 	lastFrameSeq: number;
 	deadlineTimer: ReturnType<typeof setTimeout> | null;
+};
+
+type HostConnection = {
+	sessionId: string;
+	browser: Awaited<ReturnType<typeof connect>>;
+	page: Page;
+	cdp: CDPSession;
+	browserCdp: CDPSession;
+	targetId: string;
+	contextId: string | undefined;
+	/**
+	 * Web mode: true while the main frame loads. The viewer location bar shows it.
+	 */
+	loading: boolean;
+	/**
+	 * Web mode: counts cross-document main-frame navigations. A file chooser from an older page is gone.
+	 */
+	mainNavCount: number;
 };
 
 export class BrowserSession {
@@ -1317,16 +1960,49 @@ export class BrowserSession {
 	private pressedButtons = new Set<"left" | "middle" | "right">();
 	private pressedKeys = new Set<string>();
 	private agentConnection: { sessionId: string; commandId: string; bridge: AgentConnection | null } | null = null;
-	private hostConnection: {
-		sessionId: string;
-		browser: Awaited<ReturnType<typeof connect>>;
-		page: Page;
-		cdp: CDPSession;
-		browserCdp: CDPSession;
-		targetId: string;
-		contextId: string | undefined;
-	} | null = null;
+	private hostConnection: HostConnection | null = null;
+	private locationSeq = 0;
 	private hostStart: { sessionId: string; promise: Promise<void> } | null = null;
+	/**
+	 * Web mode: the live session's profile key, only in memory. After a restart it is gone, and
+	 * saves are skipped until the next open. `dirty` means people or the agent used the page since
+	 * the last save.
+	 */
+	private profile: { sessionId: string; profileId: string; key: CryptoKey; dirty: boolean; savedAt: number } | null = null;
+	/**
+	 * Counts profile saves. A save only writes when no newer save started after it, so a slow
+	 * periodic save cannot overwrite the End save that read a newer cookie jar.
+	 */
+	private profileSaveSeq = 0;
+	/**
+	 * Web mode: the last human click or Enter. One human download may start within 10 seconds of it.
+	 */
+	private humanGesture: { sessionId: string; at: number } | null = null;
+	/**
+	 * Web mode: the live session's downloads, only in memory. `held` is the one human download that
+	 * waits for Convex to save it. `agent` collects the running command's downloads for `run/finish`.
+	 * `pushed` remembers saved ids, so a repeated push answers ok.
+	 */
+	private downloads: {
+		sessionId: string;
+		count: number;
+		bytes: number;
+		starts: number[];
+		capture: Promise<void> | null;
+		held: HeldDownload | null;
+		pushed: Set<string>;
+		agent: { commandId: string; items: Array<{ name: string; contentType: string; bytes: Uint8Array<ArrayBuffer> }>; bytes: number; dropped: number } | null;
+	} | null = null;
+	/**
+	 * Web mode: running safety-net downloads. They check their frame before the capture starts.
+	 * `run/finish` waits for them, so a download from the command's last step joins its result.
+	 */
+	private safetyNetDownloads = new Set<Promise<void>>();
+	private chooser: OpenFileChooser | null = null;
+	/**
+	 * Single-use grants for `PUT /viewer/upload`, each bound to one chooser. Only in memory.
+	 */
+	private uploadGrants = new Map<string, { sessionId: string; chooserId: string; controlGen: number; expiresAt: number }>();
 
 	constructor(state: DurableObjectStateStub, env: Env) {
 		this.state = state;
@@ -1367,12 +2043,24 @@ export class BrowserSession {
 		await this.schedule_alarm(record);
 	}
 
-	private async schedule_alarm(record: SessionRecord): Promise<void> {
-		const next = session_next_alarm(record);
-		if (next === null) {
+	/**
+	 * The only alarm writer. The alarm serves the session deadlines, the saved profile's 100-day
+	 * delete time, and the 7-day delete time of the oldest profile tombstone, so it must always be
+	 * the earliest of them.
+	 */
+	private async schedule_alarm(record: SessionRecord | null): Promise<void> {
+		const [profileDeleteAt, tombstones] = await Promise.all([
+			this.state.storage.get<number>(PROFILE_DELETE_AT_KEY),
+			this.state.storage.list<number>({ prefix: PROFILE_DELETED_KEY_PREFIX }),
+		]);
+		const tombstoneAt = tombstones.size > 0 ? Math.min(...tombstones.values()) + LIMITS.profileTombstoneMs : null;
+		// A close that the provider did not confirm is retried in 30 seconds.
+		const sessionAt = record?.control === "closing" ? Date.now() + 30_000 : record ? session_next_alarm(record) : null;
+		const times = [sessionAt, profileDeleteAt ?? null, tombstoneAt].filter((time) => time !== null);
+		if (times.length === 0) {
 			await this.state.storage.deleteAlarm();
 		} else {
-			await this.state.storage.setAlarm(next);
+			await this.state.storage.setAlarm(Math.min(...times));
 		}
 	}
 
@@ -1400,25 +2088,161 @@ export class BrowserSession {
 	}
 
 	private public_meta(record: SessionRecord) {
-		return {
+		const limits = mode_limits(record.mode);
+		const shared = {
 			sessionId: record.sessionId,
-			nodeId: record.nodeId,
 			navGen: record.navGen,
 			loadGen: record.loadGen,
 			controlGen: record.controlGen,
 			control: record.control,
+			pageNonce: record.pageNonce,
+			commandCount: record.commandCount,
+			idleUntil: record.lastActiveAt + limits.idleMs,
+			totalUntil: record.providerAcquiredAt! + limits.totalMs,
+		};
+		if (record.mode === "web") {
+			return { mode: "web" as const, ...shared, agentAccess: record.agentAccess };
+		}
+		return {
+			mode: "file" as const,
+			...shared,
+			nodeId: record.nodeId,
 			sourceKind: record.sourceKind,
 			sourceVersion: record.sourceVersion,
 			sourceHash: record.sourceHash,
-			pageNonce: record.pageNonce,
-			commandCount: record.commandCount,
 			loadCount: record.loadCount,
-			idleUntil: record.lastActiveAt + LIMITS.sessionIdleMs,
-			totalUntil: record.providerAcquiredAt! + LIMITS.sessionTotalMs,
 		};
 	}
 
+	/**
+	 * Read the usage receipt for a session, without its session id.
+	 */
+	private async usage(sessionId: string) {
+		const receipt = await this.state.storage.get<UsageReceipt>(`${USAGE_KEY_PREFIX}${sessionId}`);
+		if (!receipt) return null;
+		return { providerAcquiredAt: receipt.providerAcquiredAt, endedAt: receipt.endedAt, reason: receipt.reason };
+	}
+
+	/**
+	 * Put the saved cookies of this profile into the new browser. Any failure starts empty and
+	 * logs only a code. A blob of another profile id is ignored; the next save replaces it.
+	 */
+	private async restore_profile(record: WebSessionRecord, host: HostConnection): Promise<void> {
+		const profile = this.profile;
+		if (profile?.sessionId !== record.sessionId) return;
+		try {
+			const stored = await this.state.storage.get<ProfileBlob>(PROFILE_BLOB_KEY);
+			if (stored?.profileId !== profile.profileId) return;
+			const cookies = await profile_decrypt(profile.key, profile_aad(profile.profileId, record), stored);
+			// Without `browserContextId`: the page lives in the default context (checked live on 2026-09-23).
+			if (cookies.length > 0) await with_wall_timeout(host.browserCdp.send("Storage.setCookies", { cookies }), LIMITS.profileCdpMs);
+			log_browser({ route: "profile_restore", sessionId: record.sessionId, cookies: cookies.length });
+		} catch (error) {
+			log_browser({ route: "profile_restore", sessionId: record.sessionId, error: sanitize_error(error).name });
+		}
+	}
+
+	/**
+	 * Decide if a close saves the cookies. Human End asks for it with `saveProfile: true`, and idle
+	 * or total expiry saves too. Security, internal, and failure closes never save: that page may
+	 * not be in a state the user wants to keep. The agent's `browser_close` does not save either;
+	 * its work is saved by the next End, expiry, or periodic save.
+	 */
+	private should_save(record: SessionRecord, reason: string, saveProfile: boolean | undefined) {
+		// After a restart the key is gone, so nothing can be saved.
+		if (record.mode !== "web" || this.profile?.sessionId !== record.sessionId) return false;
+		if (reason === "close") return saveProfile === true;
+		return reason === "expired";
+	}
+
+	/**
+	 * Save the browser cookies, encrypted. A failure only logs a code: it must never block a close.
+	 */
+	private async save_profile(record: SessionRecord): Promise<void> {
+		const profile = this.profile;
+		if (record.mode !== "web" || profile?.sessionId !== record.sessionId) return;
+		const seq = ++this.profileSaveSeq;
+		// Input during the save marks the profile dirty again.
+		profile.dirty = false;
+		profile.savedAt = Date.now();
+		try {
+			if (this.hostConnection?.sessionId !== record.sessionId) {
+				await with_wall_timeout(this.connect_host(record, { closeOnFailure: false }), LIMITS.profileCdpMs);
+			}
+			const host = this.hostConnection;
+			if (!host || host.sessionId !== record.sessionId) throw new Error("Browser session changed.");
+			// Without `browserContextId`: with the page's context id Chromium answers "Failed to find
+			// browser context" (checked live on 2026-09-23).
+			const reply: unknown = await with_wall_timeout(host.browserCdp.send("Storage.getCookies"), LIMITS.profileCdpMs);
+			const { cookies, truncated } = profile_cookies_to_save(is_record(reply) ? reply.cookies : null, web_denied_hosts(this.env));
+			const sealed = await profile_encrypt(profile.key, profile_aad(profile.profileId, record), cookies);
+
+			// A `profile-delete` may have run during the awaits above. Check its tombstone and the
+			// record right before the put, with storage reads only. The object holds other events
+			// while storage reads run, so nothing can slip in between these reads and the put.
+			const [deletedAt, current] = await Promise.all([
+				this.state.storage.get<number>(`${PROFILE_DELETED_KEY_PREFIX}${profile.profileId}`),
+				this.state.storage.get<SessionRecord>(SESSION_KEY),
+			]);
+			if (deletedAt !== undefined || current?.sessionId !== record.sessionId || current.mode !== "web" ||
+				current.profileId !== profile.profileId) {
+				log_browser({ route: "profile_save", sessionId: record.sessionId, skipped: "deleted" });
+				return;
+			}
+			if (seq !== this.profileSaveSeq) {
+				log_browser({ route: "profile_save", sessionId: record.sessionId, skipped: "newer_save" });
+				return;
+			}
+			const savedAt = Date.now();
+			const blob: ProfileBlob = { v: 1, profileId: profile.profileId, ...sealed, savedAt, truncated };
+			await this.state.storage.put(PROFILE_BLOB_KEY, blob);
+			await this.state.storage.put(PROFILE_DELETE_AT_KEY, savedAt + LIMITS.profileKeepMs);
+			await this.schedule_alarm(current);
+			log_browser({ route: "profile_save", sessionId: record.sessionId, cookies: cookies.length, truncated });
+		} catch (error) {
+			profile.dirty = true;
+			log_browser({ route: "profile_save", sessionId: record.sessionId, error: sanitize_error(error).name });
+		}
+	}
+
+	/**
+	 * Web mode: true when the main page is on a site the user's agent may not use.
+	 */
+	private async main_page_blocked(record: WebSessionRecord): Promise<boolean> {
+		await with_wall_timeout(this.connect_host(record), 10_000);
+		const host = this.hostConnection;
+		if (!host || host.sessionId !== record.sessionId) throw new Error("Browser session changed.");
+		const history: unknown = await with_wall_timeout(host.cdp.send("Page.getNavigationHistory"), 5000);
+		if (!is_record(history) || !Array.isArray(history.entries) || typeof history.currentIndex !== "number") {
+			throw new Error("Browser history is unavailable.");
+		}
+		const entry: unknown = history.entries[history.currentIndex];
+		return is_record(entry) && typeof entry.url === "string" && browser_web_url_host_matches(entry.url, record.agentBlockedHosts);
+	}
+
+	/**
+	 * Turn the blocked-site request filter on for an agent command, or off after it. It fails page,
+	 * XHR, and fetch requests to blocked sites at the request stage. This is best effort: other
+	 * request types and cross-site frames are not covered.
+	 */
+	private async set_agent_site_filter(sessionId: string, on: boolean): Promise<void> {
+		const host = this.hostConnection;
+		if (!host || host.sessionId !== sessionId) throw new Error("Browser session changed.");
+		await set_fetch_patterns(host.cdp, on);
+	}
+
 	private async open(input: SessionOpenInput): Promise<Response> {
+		// Check the start address before anything is acquired, so a refusal costs no browser time.
+		let startUrl: string | null = null;
+		if (input.mode === "web" && input.startUrl !== null) {
+			const normalized = browser_web_normalize_url(input.startUrl, web_denied_hosts(this.env));
+			if (!normalized.ok) {
+				log_browser({ route: "open", refused: "address_blocked", reason: normalized.reason });
+				return operation_refused("address_blocked", "The browser cannot open this address.");
+			}
+			startUrl = normalized.url;
+		}
+
 		const now = Date.now();
 		const existing = await this.load();
 		if (existing && existing.control !== "closed") {
@@ -1433,6 +2257,8 @@ export class BrowserSession {
 			await this.close_record(existing, "stale_start");
 		}
 
+		if (input.mode === "web") return await this.open_web(input, startUrl);
+
 		if (!this.env.BROWSER_PREVIEW_URL) {
 			return json_response(
 				{ ok: false, error: { code: "misconfigured", message: "Preview runtime is not configured." } },
@@ -1442,6 +2268,7 @@ export class BrowserSession {
 
 		const sessionId = crypto.randomUUID();
 		const record: SessionRecord = {
+			mode: "file",
 			version: 1,
 			sessionId,
 			grantId: input.grantId,
@@ -1510,7 +2337,101 @@ export class BrowserSession {
 		return json_response({ ok: true, session: this.public_meta(record) }, 200);
 	}
 
-	private async connect_host(record: SessionRecord): Promise<void> {
+	/**
+	 * Open a web session. Acquire first, save the record as `starting`, connect the host,
+	 * open the start address, then mark the session ready.
+	 */
+	private async open_web(input: Extract<SessionOpenInput, { mode: "web" }>, startUrl: string | null): Promise<Response> {
+		let acquired: { providerSessionId: string; pageTargetId: string };
+		const acquiredAt = Date.now();
+		try {
+			acquired = await acquire_web_browser(this.env.BROWSER);
+		} catch (error) {
+			// The helper already closed a browser it acquired. The host releases the admission grant.
+			const failure = sanitize_error(error);
+			log_browser({ route: "open", refused: "bootstrap_failed", attemptId: input.attemptId });
+			return json_response({ ok: false, error: { code: "bootstrap_failed", message: failure.message } }, 200);
+		}
+
+		const sessionId = crypto.randomUUID();
+		const now = Date.now();
+		const record: SessionRecord = {
+			mode: "web",
+			version: 1,
+			sessionId,
+			grantId: input.grantId,
+			ownerId: input.ownerId,
+			organizationId: input.organizationId,
+			workspaceId: input.workspaceId,
+			navGen: input.navGen,
+			loadGen: 1,
+			controlGen: 1,
+			control: "starting",
+			providerSessionId: acquired.providerSessionId,
+			// Web pages have no controller document. A random nonce keeps the lease shape.
+			pageNonce: crypto.randomUUID(),
+			viewport: input.viewport,
+			command: null,
+			commandCount: 0,
+			createdAt: now,
+			providerAcquiredAt: acquiredAt,
+			lastActiveAt: now,
+			attemptId: input.attemptId,
+			closeAttempts: 0,
+			inputHolder: null,
+			viewers: {},
+			viewerGrants: {},
+			agentAccess: input.agentAccess,
+			pageTargetId: acquired.pageTargetId,
+			profileId: input.profileId,
+			agentBlockedHosts: input.agentBlockedHosts,
+		};
+		await this.save(record);
+		// Without a key the session still works. It just starts empty and saves nothing.
+		this.profile = await profile_crypto_key(this.env.BROWSER_PROFILE_KEY, input.profileKey).then(
+			(key) => ({ sessionId, profileId: input.profileId, key, dirty: false, savedAt: Date.now() }),
+			(error: unknown) => {
+				log_browser({ route: "profile_key", sessionId, error: sanitize_error(error).name });
+				return null;
+			},
+		);
+
+		try {
+			await with_wall_timeout(this.connect_host(record), 15_000);
+			const host = this.hostConnection;
+			if (!host || host.sessionId !== sessionId) throw new Error("Browser session changed.");
+			// Size the page before the first load. Some sites pick a mobile or desktop layout from
+			// the first width and keep it.
+			await host.page.setViewportSize(record.viewport);
+			// Restore the saved logins before the first page loads, so the start page is logged in.
+			await this.restore_profile(record, host);
+			// A slow or failing site does not fail the open. The user sees Chrome's error page.
+			if (startUrl !== null) {
+				await with_wall_timeout(host.cdp.send("Page.navigate", { url: startUrl }), LIMITS.openNavWallMs).catch(() => {});
+			}
+			const current = await this.load();
+			if (!current || current.sessionId !== sessionId || current.control !== "starting") {
+				throw new Error("Browser session changed.");
+			}
+			current.control = "ready";
+			current.lastActiveAt = Date.now();
+			await this.save(current);
+			log_browser({ route: "open", sessionId, mode: "web", startUrl: startUrl !== null });
+			return json_response({ ok: true, session: this.public_meta(current) }, 200);
+		} catch (error) {
+			const failure = sanitize_error(error);
+			const current = await this.load();
+			if (current?.sessionId === sessionId && current.control !== "closing") await this.close_record(current, "open_failed");
+			log_browser({ route: "open", refused: "bootstrap_failed", attemptId: input.attemptId });
+			return json_response({ ok: false, error: { code: "bootstrap_failed", message: failure.message } }, 200);
+		}
+	}
+
+	/**
+	 * `closeOnFailure: false` is for the profile save inside `close_record`: a failed connect there
+	 * must not start a second close.
+	 */
+	private async connect_host(record: SessionRecord, options = { closeOnFailure: true }): Promise<void> {
 		if (this.hostStart?.sessionId === record.sessionId) return this.hostStart.promise;
 		if (this.hostConnection?.sessionId === record.sessionId) return;
 		const start = (async () => {
@@ -1523,14 +2444,33 @@ export class BrowserSession {
 					throw new Error("Browser session changed.");
 				}
 				const contexts = browser.contexts();
-				const page = contexts[0]?.pages()[0];
-				if (contexts.length !== 1 || contexts[0]?.pages().length !== 1 || !page) throw new Error("Unexpected browser targets.");
-				const cdp = await page.context().newCDPSession(page);
-				const info: unknown = await cdp.send("Target.getTargetInfo");
-				if (!is_record(info) || !is_record(info.targetInfo) || !is_non_empty_string(info.targetInfo.targetId) ||
-					(info.targetInfo.browserContextId !== undefined && typeof info.targetInfo.browserContextId !== "string")) {
-					throw new Error("Browser target is unavailable.");
+				const candidates = contexts[0]?.pages() ?? [];
+				if (contexts.length !== 1 || (record.mode === "file" && candidates.length !== 1)) {
+					throw new Error("Unexpected browser targets.");
 				}
+				// File mode has exactly one page. Web mode picks the page target chosen at open;
+				// the target check below closes any other page.
+				let picked: { page: Page; cdp: CDPSession; targetId: string; browserContextId: string | undefined } | null = null;
+				for (const candidate of candidates) {
+					const candidateCdp = await candidate.context().newCDPSession(candidate);
+					const info: unknown = await candidateCdp.send("Target.getTargetInfo");
+					if (!is_record(info) || !is_record(info.targetInfo) || !is_non_empty_string(info.targetInfo.targetId) ||
+						(info.targetInfo.browserContextId !== undefined && typeof info.targetInfo.browserContextId !== "string")) {
+						throw new Error("Browser target is unavailable.");
+					}
+					if (record.mode === "file" || info.targetInfo.targetId === record.pageTargetId) {
+						picked = {
+							page: candidate,
+							cdp: candidateCdp,
+							targetId: info.targetInfo.targetId,
+							browserContextId: info.targetInfo.browserContextId,
+						};
+						break;
+					}
+					await candidateCdp.detach().catch(() => {});
+				}
+				if (!picked) throw new Error("Unexpected browser targets.");
+				const { page, cdp } = picked;
 				phase = "browser_attach";
 				const browserCdp = await browser.newBrowserCDPSession();
 				phase = "contexts";
@@ -1538,36 +2478,107 @@ export class BrowserSession {
 				if (!is_record(inventory) || !Array.isArray(inventory.browserContextIds) ||
 					inventory.browserContextIds.some((id) => typeof id !== "string")) throw new Error("Browser contexts are unavailable.");
 				// getBrowserContexts lists explicit contexts; omit the default context id.
-				const contextId = inventory.browserContextIds.includes(info.targetInfo.browserContextId ?? "") ? info.targetInfo.browserContextId : undefined;
+				const contextId = inventory.browserContextIds.includes(picked.browserContextId ?? "") ? picked.browserContextId : undefined;
 				phase = "downloads";
+				// Chrome never saves a file. Web mode turns events on: downloads that skip the network
+				// still report `Browser.downloadWillBegin`, and the safety net below reads them.
 				await browserCdp.send("Browser.setDownloadBehavior", {
-					behavior: "deny", eventsEnabled: false,
+					behavior: "deny", eventsEnabled: record.mode === "web",
 					...(contextId ? { browserContextId: contextId } : {}),
 				});
 				const latest = await this.load();
 				if (!latest || latest.sessionId !== record.sessionId || latest.control === "closing" || latest.control === "closed") {
 					throw new Error("Browser session changed.");
 				}
-				const host = { sessionId: record.sessionId, browser, page, cdp, browserCdp, targetId: info.targetInfo.targetId, contextId };
+				const host = {
+					sessionId: record.sessionId,
+					browser,
+					page,
+					cdp,
+					browserCdp,
+					targetId: picked.targetId,
+					contextId,
+					loading: false,
+					mainNavCount: 0,
+				};
 				this.hostConnection = host;
 				// Page timers can outlive a command, so target checks stay on this connection.
-				page.on("framenavigated", (frame) => {
-					if (this.hostConnection !== host || frame !== page.mainFrame()) return;
-					const command = this.viewerRecord?.command;
-					if (command && command.connection === undefined && frame.url() === CONTROLLER_URL) return;
-					this.agentConnection?.bridge?.revoke();
-					this.state.waitUntil(this.load().then(async (current) => {
-						if (current?.sessionId === host.sessionId) await this.close_record(current, "page_navigated");
-					}));
-				});
+				// Web pages navigate freely, so only file mode closes on a main-frame navigation.
+				if (record.mode === "file") {
+					page.on("framenavigated", (frame) => {
+						if (this.hostConnection !== host || frame !== page.mainFrame()) return;
+						const command = this.viewerRecord?.command;
+						if (command && command.connection === undefined && frame.url() === CONTROLLER_URL) return;
+						this.agentConnection?.bridge?.revoke();
+						this.state.waitUntil(this.load().then(async (current) => {
+							if (current?.sessionId === host.sessionId) await this.close_record(current, "page_navigated");
+						}));
+					});
+				}
 				page.context().on("page", (popup) => {
 					if (this.hostConnection !== host || popup === page) return;
+					if (record.mode === "web") {
+						this.state.waitUntil(this.handle_web_popup(host, popup));
+						return;
+					}
 					this.state.waitUntil(popup.close().catch(async () => {
 						if (popup.isClosed()) return;
 						const current = await this.load();
 						if (current?.sessionId === host.sessionId) await this.close_record(current, "popup_cleanup_failed");
 					}));
 				});
+				if (record.mode === "web") {
+					// Cross-document navigations only: `Page.navigatedWithinDocument` is ignored.
+					// Navigation does not touch idle: only people and agent commands keep a session open.
+					cdp.on("Page.frameNavigated", (event: unknown) => {
+						if (this.hostConnection !== host || !is_record(event) || !is_record(event.frame)) return;
+						if (event.frame.parentId !== undefined) return;
+						// A file chooser belongs to the page that opened it.
+						host.mainNavCount += 1;
+						if (this.chooser?.host === host) this.close_file_chooser();
+						this.push_location(host);
+					});
+					cdp.on("Page.frameStartedLoading", (event: unknown) => {
+						if (this.hostConnection !== host || !is_record(event) || event.frameId !== host.targetId) return;
+						host.loading = true;
+						this.push_location(host);
+					});
+					cdp.on("Page.frameStoppedLoading", (event: unknown) => {
+						if (this.hostConnection !== host || !is_record(event) || event.frameId !== host.targetId) return;
+						host.loading = false;
+						this.push_location(host);
+					});
+					// Playwright's `filechooser` event covers a chooser with an input element. Without one
+					// (for example a picker with no input) there is nothing to fill.
+					cdp.on("Page.fileChooserOpened", (event: unknown) => {
+						if (this.hostConnection !== host || !is_record(event) || event.backendNodeId !== undefined) return;
+						if (!this.viewerRecord?.command) this.push_viewers({ t: "notice", code: "upload_unsupported" });
+					});
+					page.on("filechooser", (chooser: FileChooser) => {
+						if (this.hostConnection !== host) return;
+						this.state.waitUntil(this.open_file_chooser(host, chooser).catch((error: unknown) => {
+							log_browser({ route: "file_chooser", sessionId: host.sessionId, error: sanitize_error(error).name });
+						}));
+					});
+					// `Fetch` pauses every page load at the response stage to catch downloads. Agent
+					// commands add request-stage pauses so requests to the user's blocked sites fail.
+					cdp.on("Fetch.requestPaused", (event: unknown) => {
+						if (!is_record(event) || !is_non_empty_string(event.requestId)) return;
+						this.state.waitUntil(this.answer_fetch_pause(host, record.agentBlockedHosts, event, event.requestId));
+					});
+					browserCdp.on("Browser.downloadWillBegin", (event: unknown) => {
+						if (this.hostConnection !== host || !is_record(event)) return;
+						const running: Promise<void> = this.capture_safety_net_download(host, event).catch((error: unknown) => {
+							log_browser({ route: "download", sessionId: host.sessionId, error: sanitize_error(error).name });
+						}).finally(() => this.safetyNetDownloads.delete(running));
+						this.safetyNetDownloads.add(running);
+						this.state.waitUntil(running);
+					});
+					phase = "page_events";
+					await cdp.send("Page.enable");
+					await cdp.send("Page.setInterceptFileChooserDialog", { enabled: true });
+					await set_fetch_patterns(cdp, false);
+				}
 				browser.on("disconnected", () => {
 					if (this.hostConnection !== host) return;
 					this.hostConnection = null;
@@ -1585,21 +2596,35 @@ export class BrowserSession {
 				if (!Array.isArray(contextIds) || contextIds.some((id) => typeof id !== "string" || id !== contextId) ||
 					!Array.isArray(targetInfos)) throw new Error("Unexpected browser targets.");
 				const pages = targetInfos.filter((target: unknown) => is_record(target) && target.type === "page");
-				if (pages.length !== 1 || !is_record(pages[0]) || pages[0].targetId !== host.targetId) {
-					throw new Error("Unexpected browser targets.");
-				}
-				phase = "page_check";
-				const document: unknown = await page.evaluate("({url: location.href, nonce: window.__browserNonce})");
-				if (!is_record(document) || document.url !== CONTROLLER_URL || document.nonce !== record.pageNonce) {
-					throw new Error("Browser page changed.");
+				if (record.mode === "web") {
+					// A popup can open while no host is connected. Keep the assigned page, close the rest.
+					if (!pages.some((target) => is_record(target) && target.targetId === host.targetId)) {
+						throw new Error("Unexpected browser targets.");
+					}
+					for (const target of pages) {
+						if (!is_record(target) || !is_non_empty_string(target.targetId) || target.targetId === host.targetId) continue;
+						const closed: unknown = await browserCdp.send("Target.closeTarget", { targetId: target.targetId });
+						if (!is_record(closed) || closed.success !== true) throw new Error("Unexpected browser targets.");
+					}
+					if (pages.length > 1) log_browser({ route: "host_connect", closedPages: pages.length - 1 });
+				} else {
+					if (pages.length !== 1 || !is_record(pages[0]) || pages[0].targetId !== host.targetId) {
+						throw new Error("Unexpected browser targets.");
+					}
+					phase = "page_check";
+					const document: unknown = await page.evaluate("({url: location.href, nonce: window.__browserNonce})");
+					if (!is_record(document) || document.url !== CONTROLLER_URL || document.nonce !== record.pageNonce) {
+						throw new Error("Browser page changed.");
+					}
 				}
 				const checked = await this.load();
 				if (this.hostConnection !== host || checked?.sessionId !== record.sessionId ||
 					checked.control === "closing" || checked.control === "closed") throw new Error("Browser session changed.");
 			} catch (error) {
 				log_browser({ route: "host_connect", phase, error: sanitize_error(error).name });
+				if (this.hostConnection?.sessionId === record.sessionId) this.hostConnection = null;
 				const current = await this.load();
-				if (current?.sessionId === record.sessionId) await this.close_record(current, "host_setup_failed");
+				if (options.closeOnFailure && current?.sessionId === record.sessionId) await this.close_record(current, "host_setup_failed");
 				await browser.close().catch(() => {});
 				throw error;
 			}
@@ -1609,6 +2634,699 @@ export class BrowserSession {
 		}) };
 		this.hostStart = pending;
 		return pending.promise;
+	}
+
+	/**
+	 * Send one JSON message to every attached viewer.
+	 */
+	private push_viewers(message: Record<string, unknown>): void {
+		const text = JSON.stringify(message);
+		for (const stream of this.viewerStreams.values()) {
+			try {
+				stream.socket.send(text);
+			} catch {
+				this.end_viewer(stream, 1011, "socket error");
+			}
+		}
+	}
+
+	/**
+	 * Web mode: send the current address, title, and history state to the viewers.
+	 */
+	private push_location(host: HostConnection): void {
+		if (this.viewerStreams.size === 0) return;
+		// Reads can finish out of order. Only the newest read may send.
+		const seq = ++this.locationSeq;
+		this.state.waitUntil((async () => {
+			const history: unknown = await host.cdp.send("Page.getNavigationHistory");
+			if (seq !== this.locationSeq || this.hostConnection !== host || !is_record(history) || !Array.isArray(history.entries) ||
+				typeof history.currentIndex !== "number") return;
+			const index = history.currentIndex;
+			const entry: unknown = history.entries[index];
+			if (!is_record(entry)) return;
+			this.push_viewers({
+				t: "location",
+				url: typeof entry.url === "string" ? entry.url.slice(0, browser_web_URL_MAX_CHARS) : "",
+				title: typeof entry.title === "string" ? entry.title.slice(0, LIMITS.titleChars) : "",
+				loading: host.loading,
+				canGoBack: index > 0,
+				canGoForward: index < history.entries.length - 1,
+			});
+		})().catch(() => {}));
+	}
+
+	/**
+	 * Web mode: the viewer shows one tab. Close each popup. When no agent command runs, open the
+	 * popup's address in the main page instead, if the address rules allow it.
+	 */
+	private async handle_web_popup(host: HostConnection, popup: Page): Promise<void> {
+		const close = () => popup.close().catch(async () => {
+			if (popup.isClosed()) return;
+			const current = await this.load();
+			if (current?.sessionId === host.sessionId) await this.close_record(current, "popup_cleanup_failed");
+		});
+
+		// An agent command owns the page. Do not follow its popups.
+		if (this.viewerRecord?.command) {
+			await close();
+			this.push_viewers({ t: "notice", code: "popup_closed" });
+			return;
+		}
+
+		// `window.open` first shows about:blank. Wait a little for the real address.
+		const blank = (url: string) => url === "" || url === "about:blank";
+		if (blank(popup.url())) {
+			await popup.waitForURL((next) => !blank(next.href), { waitUntil: "commit", timeout: LIMITS.popupUrlWaitMs }).catch(() => {});
+		}
+		const url = popup.isClosed() ? "" : popup.url();
+		await close();
+		if (this.hostConnection !== host) return;
+		if (blank(url) || this.viewerRecord?.command) {
+			this.push_viewers({ t: "notice", code: "popup_closed" });
+			return;
+		}
+		const normalized = browser_web_normalize_url(url, web_denied_hosts(this.env));
+		if (!normalized.ok) {
+			log_browser({ route: "popup", refused: normalized.reason });
+			this.push_viewers({ t: "notice", code: "address_blocked" });
+			return;
+		}
+		await with_wall_timeout(host.cdp.send("Page.navigate", { url: normalized.url }), LIMITS.navWallMs).catch(() => {});
+		this.push_viewers({ t: "notice", code: "popup_opened_here" });
+	}
+
+	/**
+	 * Web mode: answer one paused request. A response-stage pause is a page load that may be a
+	 * download. A request-stage pause comes from the agent's blocked-site filter. Every pause gets
+	 * exactly one answer, even when a step throws, or the page hangs.
+	 */
+	private async answer_fetch_pause(host: HostConnection, blockedHosts: string[], event: Record<string, unknown>, requestId: string) {
+		const pause: { answer: "continue" | "abort" | "block" } = { answer: "continue" };
+		try {
+			if (event.responseStatusCode === undefined && event.responseErrorReason === undefined) {
+				const url = is_record(event.request) && typeof event.request.url === "string" ? event.request.url : "";
+				if (browser_web_url_host_matches(url, blockedHosts)) pause.answer = "block";
+				return;
+			}
+			await this.capture_response_download(host, event, requestId, pause);
+		} catch (error) {
+			log_browser({ route: "download", sessionId: host.sessionId, error: sanitize_error(error).name });
+		} finally {
+			// After the body was taken, only `failRequest` works (checked live on 2026-09-23). Failing a
+			// navigation keeps the current page.
+			await (pause.answer === "continue"
+				? host.cdp.send("Fetch.continueRequest", { requestId })
+				: host.cdp.send("Fetch.failRequest", { requestId, errorReason: pause.answer === "block" ? "BlockedByClient" : "Aborted" })
+			).catch(() => {});
+		}
+	}
+
+	/**
+	 * Web mode: read a paused page response when Chrome would save it. Set `pause.answer` to abort
+	 * as soon as it is a download, so a later failure still stops Chrome's own download.
+	 */
+	private async capture_response_download(host: HostConnection, event: Record<string, unknown>, requestId: string, pause: { answer: string }) {
+		const status = event.responseStatusCode;
+		const request = is_record(event.request) ? event.request : {};
+		if (event.responseErrorReason !== undefined || typeof status !== "number" || (status >= 300 && status < 400) ||
+			status === 204 || status === 205 || request.method === "HEAD") return;
+		const disposition = cdp_header(event.responseHeaders, "content-disposition");
+		const contentType = cdp_header(event.responseHeaders, "content-type");
+		if (!is_download_response(disposition, contentType)) return;
+		pause.answer = "abort";
+
+		const url = typeof request.url === "string" ? request.url : "";
+		const lengthHeader = cdp_header(event.responseHeaders, "content-length")?.trim() ?? "";
+		const length = /^\d+$/u.test(lengthHeader) && Number.isSafeInteger(Number(lengthHeader)) ? Number(lengthHeader) : null;
+		// The stream gives the decoded body. A compressed body's length cannot be compared with it.
+		const encoding = (cdp_header(event.responseHeaders, "content-encoding") ?? "").trim().toLowerCase();
+		const exactLength = encoding === "" || encoding === "identity" ? length : null;
+		await this.capture_download(host, {
+			owner: this.download_owner(host.sessionId, event.frameId === host.targetId),
+			name: download_name(disposition, url),
+			origin: download_origin(url),
+			sizeHint: length,
+			read: async (maxBytes, signal) => {
+				const { stream } = await with_wall_timeout(host.cdp.send("Fetch.takeResponseBodyAsStream", { requestId }), 10_000);
+				try {
+					const read = await read_cdp_stream(host.cdp, stream, maxBytes, signal);
+					if (read.over) return read;
+					// A stream that ends early (the server dropped the connection) still ends with `eof`.
+					// Fewer bytes than the header promised is a broken file, not a small one.
+					if (exactLength !== null && read.bytes.byteLength !== exactLength) throw new Error("Download did not finish.");
+					return { ...read, contentType: mime_essence(contentType) || "application/octet-stream" };
+				} finally {
+					await host.cdp.send("IO.close", { handle: stream }).catch(() => {});
+				}
+			},
+		});
+	}
+
+	/**
+	 * Web mode safety net: Chrome denied a download that never passed the response pause. Read a
+	 * `data:` URL directly. Read a same-origin `http(s)` file again from the page, with its cookies.
+	 * `blob:` downloads send no event at all (checked live on 2026-09-23).
+	 */
+	private async capture_safety_net_download(host: HostConnection, event: Record<string, unknown>) {
+		const url = typeof event.url === "string" ? event.url : "";
+		const frameId = typeof event.frameId === "string" ? event.frameId : "";
+		const name = cap_download_name(typeof event.suggestedFilename === "string" ? event.suggestedFilename : "");
+		// Decide the owner before any await: the agent command may finish while the frame is checked.
+		const owner = this.download_owner(host.sessionId, frameId === host.targetId);
+		if (/^data:/iu.test(url)) {
+			await this.capture_download(host, {
+				owner, name, origin: null, sizeHint: null,
+				read: async (maxBytes) => {
+					// The URL holds the whole file. A URL longer than the cap is too large before decoding.
+					if (url.length > maxBytes) return { over: true };
+					const decoded = decode_data_url(url);
+					if (!decoded) throw new Error("The data URL is damaged.");
+					return { over: false, ...decoded };
+				},
+			});
+			return;
+		}
+
+		let sameOrigin = false;
+		if (/^https?:/iu.test(url)) {
+			const tree: unknown = await with_wall_timeout(host.cdp.send("Page.getFrameTree"), 5000).catch(() => null);
+			if (tree === null) {
+				this.refuse_download(host.sessionId, owner, "download_failed");
+				return;
+			}
+			const find = (node: unknown): string | null => {
+				if (!is_record(node) || !is_record(node.frame)) return null;
+				if (node.frame.id === frameId) return typeof node.frame.url === "string" ? node.frame.url : null;
+				for (const child of Array.isArray(node.childFrames) ? node.childFrames : []) {
+					const found = find(child);
+					if (found !== null) return found;
+				}
+				return null;
+			};
+			const frameUrl = is_record(tree) ? find(tree.frameTree) : null;
+			sameOrigin = frameUrl !== null && download_origin(frameUrl) !== null && download_origin(frameUrl) === download_origin(url);
+		}
+		if (!sameOrigin) {
+			this.refuse_download(host.sessionId, owner, "download_unsupported");
+			return;
+		}
+		await this.capture_download(host, {
+			owner, name, origin: download_origin(url), sizeHint: null,
+			read: (maxBytes, signal) => this.read_in_page(host, frameId, url, maxBytes, signal),
+		});
+	}
+
+	/**
+	 * Fetch a same-origin file again in an isolated world of its frame, with the page's cookies.
+	 * The bytes stay in that world and come back in 1 MiB base64 chunks, so no CDP message is huge.
+	 */
+	private async read_in_page(host: HostConnection, frameId: string, url: string, maxBytes: number, signal: AbortSignal): Promise<DownloadRead> {
+		const cdp = host.cdp;
+		const world = await with_wall_timeout(cdp.send("Page.createIsolatedWorld", { frameId, worldName: "bonobo-download", grantUniveralAccess: false }), 5000);
+		const fetched = await with_wall_timeout(cdp.send("Runtime.evaluate", {
+			contextId: world.executionContextId,
+			awaitPromise: true,
+			expression: `(async () => {
+				const response = await fetch(${JSON.stringify(url)}, { credentials: "include" });
+				if (!response.ok || !response.body) throw new Error("Download failed.");
+				const reader = response.body.getReader();
+				const chunks = [];
+				let size = 0;
+				while (true) {
+					const next = await reader.read();
+					if (next.done) break;
+					size += next.value.byteLength;
+					if (size > ${maxBytes}) {
+						await reader.cancel();
+						return { over: true, size: 0, type: "", bytes: null };
+					}
+					chunks.push(next.value);
+				}
+				const bytes = new Uint8Array(size);
+				let offset = 0;
+				for (const chunk of chunks) {
+					bytes.set(chunk, offset);
+					offset += chunk.byteLength;
+				}
+				return { over: false, size, type: response.headers.get("content-type") || "", bytes };
+			})()`,
+		}), LIMITS.downloadCaptureMs);
+		const objectId = fetched.result.objectId;
+		if (fetched.exceptionDetails || !objectId) throw new Error("Download failed.");
+		try {
+			const summary = await with_wall_timeout(cdp.send("Runtime.callFunctionOn", {
+				objectId, returnByValue: true, functionDeclaration: "function () { return { over: this.over, size: this.size, type: this.type }; }",
+			}), 5000);
+			const value: unknown = summary.result.value;
+			if (!is_record(value) || typeof value.over !== "boolean" || typeof value.size !== "number" || typeof value.type !== "string") {
+				throw new Error("Download failed.");
+			}
+			if (value.over || value.size > maxBytes) return { over: true };
+			const chunks: Uint8Array[] = [];
+			for (let offset = 0; offset < value.size; offset += LIMITS.downloadChunkBytes) {
+				signal.throwIfAborted();
+				const part = await with_wall_timeout(cdp.send("Runtime.callFunctionOn", {
+					objectId, returnByValue: true, arguments: [{ value: offset }, { value: LIMITS.downloadChunkBytes }],
+					functionDeclaration: "function (offset, length) { const part = this.bytes.subarray(offset, offset + length); let text = \"\"; " +
+						"for (let i = 0; i < part.length; i += 8192) text += String.fromCharCode.apply(null, part.subarray(i, i + 8192)); return btoa(text); }",
+				}), 10_000);
+				const bytes = typeof part.result.value === "string" ? base64_bytes(part.result.value) : null;
+				if (!bytes) throw new Error("Download failed.");
+				chunks.push(bytes);
+			}
+			const bytes = append_bytes(chunks, chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0));
+			if (bytes.byteLength !== value.size) throw new Error("Download failed.");
+			return { over: false, bytes, contentType: mime_essence(value.type) || "application/octet-stream" };
+		} finally {
+			await cdp.send("Runtime.releaseObject", { objectId }).catch(() => {});
+		}
+	}
+
+	/**
+	 * The live session's download state. A new session starts with a new one.
+	 */
+	private session_downloads(sessionId: string) {
+		if (this.downloads?.sessionId !== sessionId) {
+			this.downloads = { sessionId, count: 0, bytes: 0, starts: [], capture: null, held: null, pushed: new Set(), agent: null };
+		}
+		return this.downloads;
+	}
+
+	/**
+	 * Who a new download belongs to, or null when nobody asked for it. Call it as soon as the
+	 * download shows up, before any await. An agent command owns every download during its run. A
+	 * human download needs human control, the main frame, and a click or Enter in the last 10
+	 * seconds. Each gesture allows one download.
+	 */
+	private download_owner(sessionId: string, mainFrame: boolean): DownloadOwner | null {
+		const record = this.viewerRecord;
+		if (record?.sessionId !== sessionId) return null;
+		// A reload holds the command slot too, but with no agent connection.
+		if (record.command && record.command.connection !== undefined) {
+			// Make the command's list now. `run/finish` sends it, so a capture that ends near the
+			// command end still has a place to land, or to be counted as dropped.
+			const downloads = this.session_downloads(sessionId);
+			if (downloads.agent?.commandId !== record.command.id) downloads.agent = { commandId: record.command.id, items: [], bytes: 0, dropped: 0 };
+			return { kind: "agent", commandId: record.command.id };
+		}
+		const gesture = this.humanGesture;
+		if (record.control !== "human" || record.command || !mainFrame || gesture?.sessionId !== sessionId ||
+			Date.now() - gesture.at > LIMITS.downloadGestureMs) return null;
+		this.humanGesture = null;
+		return { kind: "human" };
+	}
+
+	/**
+	 * Tell the viewers that a download was not kept. An agent download also counts as dropped in
+	 * its command's result, so the agent learns about it even when no viewer is attached.
+	 */
+	private refuse_download(sessionId: string, owner: DownloadOwner | null, code: string) {
+		log_browser({ route: "download", sessionId, refused: code });
+		this.push_viewers({ t: "notice", code });
+		const agent = this.downloads?.sessionId === sessionId ? this.downloads.agent : null;
+		if (owner?.kind === "agent" && agent?.commandId === owner.commandId) agent.dropped += 1;
+	}
+
+	/**
+	 * Check the limits, read the file, then keep it. A human download waits in memory for Convex;
+	 * an agent download joins its command's result. Every refusal and failure tells the viewers.
+	 */
+	private async capture_download(host: HostConnection, input: {
+		owner: DownloadOwner | null;
+		name: string;
+		origin: string | null;
+		sizeHint: number | null;
+		read: (maxBytes: number, signal: AbortSignal) => Promise<DownloadRead>;
+	}) {
+		const owner = input.owner;
+		if (!owner) {
+			this.refuse_download(host.sessionId, null, "download_blocked");
+			return;
+		}
+		const downloads = this.session_downloads(host.sessionId);
+		const now = Date.now();
+		downloads.starts = downloads.starts.filter((at) => now - at < LIMITS.downloadStartWindowMs);
+		const fileCap = owner.kind === "human" ? LIMITS.downloadHumanBytes : LIMITS.downloadAgentBytes;
+		// No await between these checks and `capture`, so two pauses cannot both pass.
+		const refusal =
+			owner.kind === "human" && downloads.held ? "download_busy" :
+				downloads.capture || downloads.starts.length >= LIMITS.downloadStarts || downloads.count >= LIMITS.downloadSessionFiles ||
+					downloads.bytes >= LIMITS.downloadSessionBytes ? "download_limit" :
+					input.sizeHint !== null && input.sizeHint > fileCap ? "download_too_large" : null;
+		if (refusal) {
+			this.refuse_download(host.sessionId, owner, refusal);
+			return;
+		}
+		downloads.starts.push(now);
+		// The timeout below does not stop the read by itself. `stop` ends it at its next chunk.
+		const stop = new AbortController();
+		const reading = input.read(fileCap, stop.signal);
+		const capture = (async () => {
+			const read = await with_wall_timeout(reading, LIMITS.downloadCaptureMs);
+			if (this.downloads !== downloads) {
+				log_browser({ route: "download", sessionId: host.sessionId, refused: "session_changed" });
+				return;
+			}
+			if (read.over) {
+				this.refuse_download(host.sessionId, owner, "download_too_large");
+				return;
+			}
+			if (downloads.bytes + read.bytes.byteLength > LIMITS.downloadSessionBytes) {
+				this.refuse_download(host.sessionId, owner, "download_limit");
+				return;
+			}
+			downloads.count += 1;
+			downloads.bytes += read.bytes.byteLength;
+			const file = { name: input.name, contentType: read.contentType, bytes: read.bytes };
+			if (owner.kind === "agent") {
+				const agent = downloads.agent?.commandId === owner.commandId ? downloads.agent : null;
+				// The command already sent its result, so nothing can carry the file now.
+				if (!agent) {
+					log_browser({ route: "download", sessionId: host.sessionId, refused: "command_finished" });
+					return;
+				}
+				// Agent output shares one limit per command: 8 files and 8 MiB.
+				if (agent.items.length >= LIMITS.files || agent.bytes + file.bytes.byteLength > LIMITS.fileBytes) {
+					this.refuse_download(host.sessionId, owner, "download_limit");
+					return;
+				}
+				agent.items.push(file);
+				agent.bytes += file.bytes.byteLength;
+				log_browser({ route: "download", sessionId: host.sessionId, owner: "agent", bytes: file.bytes.byteLength });
+				return;
+			}
+			const downloadId = crypto.randomUUID();
+			const held: HeldDownload = {
+				downloadId, ...file, size: file.bytes.byteLength, origin: input.origin, expiresAt: Date.now() + LIMITS.downloadKeepMs,
+				timer: setTimeout(() => this.drop_held_download(held), LIMITS.downloadKeepMs), pushing: null,
+			};
+			downloads.held = held;
+			log_browser({ route: "download", sessionId: host.sessionId, owner: "human", bytes: held.size });
+			this.push_viewers({ t: "download", downloadId, name: held.name, size: held.size, contentType: held.contentType });
+		})();
+		const outcome = capture.catch((error: unknown) => {
+			// A read error, a cut-off body, or the 30-second timeout. The user clicked, so say it failed.
+			stop.abort();
+			log_browser({ route: "download", sessionId: host.sessionId, error: sanitize_error(error).name });
+			if (this.downloads === downloads) this.refuse_download(host.sessionId, owner, "download_failed");
+		});
+		// Keep the one-capture slot until the read really ended, so two reads never fill memory at once.
+		const slot: Promise<void> = Promise.all([outcome, reading.catch(() => {})]).then(() => {
+			if (downloads.capture === slot) downloads.capture = null;
+		});
+		downloads.capture = slot;
+		// The paused page gets its answer as soon as the capture is decided, not when the read ends.
+		await outcome;
+	}
+
+	/**
+	 * Drop the held human download and tell the viewers it was not saved. A running push decides
+	 * first: when it saves the file, the file is not lost.
+	 */
+	private drop_held_download(held: HeldDownload) {
+		if (this.downloads?.held !== held) return;
+		if (held.pushing) {
+			this.state.waitUntil(held.pushing.then(() => this.drop_held_download(held)));
+			return;
+		}
+		this.downloads.held = null;
+		clearTimeout(held.timer);
+		log_browser({ route: "download", sessionId: this.downloads.sessionId, dropped: "download_lost" });
+		this.push_viewers({ t: "notice", code: "download_lost" });
+	}
+
+	/**
+	 * The held human download with this id, if it is still waiting to be saved.
+	 */
+	private held_download(sessionId: string, downloadId: string) {
+		const held = this.downloads?.sessionId === sessionId && this.downloads.held?.downloadId === downloadId ? this.downloads.held : null;
+		if (held && held.expiresAt <= Date.now()) {
+			this.drop_held_download(held);
+			return null;
+		}
+		return held;
+	}
+
+	private download_info(sessionId: string, downloadId: string): Response {
+		const held = this.held_download(sessionId, downloadId);
+		if (!held) return operation_refused("download_gone", "The download is gone.");
+		return json_response({ ok: true, name: held.name, size: held.size, contentType: held.contentType, origin: held.origin }, 200);
+	}
+
+	/**
+	 * Upload the held download to the signed R2 URL from Convex, then free its bytes. A second push
+	 * of the same id answers ok. `If-None-Match: *` makes R2 refuse to replace an object, so a 412
+	 * means an earlier push already stored it. A failed push keeps the bytes for a retry.
+	 */
+	private async download_push(input: { sessionId: string; downloadId: string; url: string; headers: Record<string, string> }): Promise<Response> {
+		const downloads = this.downloads;
+		if (downloads?.sessionId === input.sessionId && downloads.pushed.has(input.downloadId)) return json_response({ ok: true }, 200);
+		const held = this.held_download(input.sessionId, input.downloadId);
+		if (!downloads || !held) return operation_refused("download_gone", "The download is gone.");
+		held.pushing ??= (async () => {
+			const headers = new Headers(input.headers);
+			headers.set("If-None-Match", "*");
+			const response = await with_wall_timeout(fetch(input.url, { method: "PUT", headers, body: held.bytes }), 60_000);
+			await response.body?.cancel().catch(() => {});
+			return response.ok || response.status === 412;
+		})().catch(() => false).then((pushed) => {
+			// Free the file before anyone else sees the push end, so the 2-minute expiry that waits
+			// for this push finds nothing to drop.
+			held.pushing = null;
+			if (!pushed) return false;
+			if (downloads.held === held) {
+				downloads.held = null;
+				clearTimeout(held.timer);
+			}
+			downloads.pushed.add(held.downloadId);
+			return true;
+		});
+		const pushed = await held.pushing;
+		if (!pushed) {
+			log_browser({ route: "download_push", sessionId: input.sessionId, refused: "download_push_failed" });
+			return operation_refused("download_push_failed", "The download could not be saved.");
+		}
+		log_browser({ route: "download_push", sessionId: input.sessionId, bytes: held.size });
+		return json_response({ ok: true }, 200);
+	}
+
+	/**
+	 * Web mode: a page opened a file chooser. Only a human in control gets the app dialog. During
+	 * agent commands the snippet handles its own choosers. A new chooser replaces the old one.
+	 */
+	private async open_file_chooser(host: HostConnection, chooser: FileChooser) {
+		const before = this.viewerRecord;
+		if (before?.sessionId !== host.sessionId || before.control !== "human" || before.command) return;
+		const [accept, origin] = await Promise.all([
+			with_wall_timeout(chooser.element().getAttribute("accept"), 5000),
+			chooser_origin(chooser),
+		]);
+		// The reads above waited for the page. Check that the same human still holds control.
+		const record = this.viewerRecord;
+		if (origin === null || this.hostConnection !== host || record?.sessionId !== host.sessionId || record.control !== "human" || record.command ||
+			record.controlGen !== before.controlGen) return;
+		this.close_file_chooser();
+		const chooserId = crypto.randomUUID();
+		const open: OpenFileChooser = {
+			sessionId: host.sessionId, chooserId, host, chooser, multiple: chooser.isMultiple(),
+			accept: (accept ?? "").slice(0, LIMITS.chooserAcceptChars), origin, mainNavCount: host.mainNavCount,
+			controlGen: record.controlGen, openedAt: Date.now(),
+			timer: setTimeout(() => this.close_file_chooser(open), LIMITS.chooserMs), busy: false,
+		};
+		this.chooser = open;
+		log_browser({ route: "file_chooser", sessionId: host.sessionId, multiple: open.multiple });
+		this.push_viewers({ t: "file-chooser", chooserId, multiple: open.multiple, accept: open.accept, origin });
+	}
+
+	/**
+	 * Forget the open chooser, its upload grants, and tell the viewers it is gone.
+	 */
+	private close_file_chooser(chooser = this.chooser) {
+		if (!chooser || this.chooser !== chooser) return;
+		this.chooser = null;
+		clearTimeout(chooser.timer);
+		for (const [grantId, grant] of this.uploadGrants) {
+			if (grant.chooserId === chooser.chooserId) this.uploadGrants.delete(grantId);
+		}
+		this.push_viewers({ t: "file-chooser-closed", chooserId: chooser.chooserId });
+	}
+
+	/**
+	 * The open chooser, when it is still current for this caller. A chooser that is no longer
+	 * current closes here.
+	 */
+	private async current_file_chooser(input: { sessionId: string; chooserId: string; controlGen: number }):
+		Promise<{ ok: true; chooser: OpenFileChooser } | { ok: false; code: string }> {
+		const record = await this.load();
+		if (!record || record.sessionId !== input.sessionId || record.control === "closing" || record.control === "closed") {
+			return { ok: false, code: "chooser_gone" };
+		}
+		if (record.control !== "human" || record.command) return { ok: false, code: "not_human" };
+		const chooser = this.chooser;
+		if (!chooser || chooser.sessionId !== input.sessionId || chooser.chooserId !== input.chooserId) return { ok: false, code: "chooser_gone" };
+		if (this.hostConnection !== chooser.host || chooser.host.mainNavCount !== chooser.mainNavCount ||
+			record.controlGen !== chooser.controlGen || Date.now() - chooser.openedAt >= LIMITS.chooserMs) {
+			this.close_file_chooser(chooser);
+			return { ok: false, code: "chooser_gone" };
+		}
+		if (input.controlGen !== chooser.controlGen) return { ok: false, code: "chooser_gone" };
+		return { ok: true, chooser };
+	}
+
+	/**
+	 * Give files to the open chooser once. `read_files` fetches the bytes while the chooser is held,
+	 * so a second fill cannot start meanwhile. After the reads, check the frame origin and then the
+	 * chooser again: the page may have moved while the bytes were on the way.
+	 */
+	private async fill_file_chooser(
+		input: { sessionId: string; chooserId: string; controlGen: number },
+		read_files: (chooser: OpenFileChooser) => Promise<{ ok: true; files: ChooserFile[] } | { ok: false; code: string }>,
+	): Promise<{ ok: true } | { ok: false; code: string }> {
+		const claimed = await this.current_file_chooser(input);
+		if (!claimed.ok) return claimed;
+		const chooser = claimed.chooser;
+		if (chooser.busy) return { ok: false, code: "chooser_gone" };
+		chooser.busy = true;
+		try {
+			const read = await read_files(chooser);
+			if (!read.ok) return read;
+			const origin = await chooser_origin(chooser.chooser).catch(() => null);
+			if (origin !== chooser.origin) {
+				this.close_file_chooser(chooser);
+				return { ok: false, code: "chooser_gone" };
+			}
+			// Check the chooser last. The origin read above can take seconds, and a control change or a
+			// navigation during it closes the chooser. Only a storage read runs between this check and
+			// `setFiles`, and the object holds other events during storage reads.
+			const again = await this.current_file_chooser(input);
+			if (!again.ok) return again;
+			// One fill per chooser: it is gone after this call, even when the page refuses the files.
+			this.close_file_chooser(chooser);
+			const filled = await with_wall_timeout(chooser.chooser.setFiles(read.files), LIMITS.uploadSetFilesMs).then(() => true, () => false);
+			log_browser({ route: "file_chooser_fill", sessionId: input.sessionId, files: read.files.length, ok: filled });
+			return filled ? { ok: true } : { ok: false, code: "chooser_gone" };
+		} finally {
+			chooser.busy = false;
+		}
+	}
+
+	/**
+	 * `upload-fill`: fetch the signed Files URLs from Convex and give them to the chooser.
+	 */
+	private async upload_fill(input: {
+		sessionId: string;
+		chooserId: string;
+		controlGen: number;
+		files: Array<{ name: string; contentType: string; url: string }>;
+	}): Promise<Response> {
+		const filled = await this.fill_file_chooser(input, async (chooser) => {
+			if (!chooser.multiple && input.files.length !== 1) return { ok: false, code: "too_many_files" };
+			// Read all files at once. The whole fill must end before Convex stops waiting, so the reads
+			// get the fill budget minus the time the origin check (5 s) and `setFiles` may take.
+			const stop = new AbortController();
+			const timer = setTimeout(() => stop.abort(), LIMITS.uploadFillMs - LIMITS.uploadSetFilesMs - 5_000);
+			// All files share one 20 MiB cap. Count every chunk, so the reads never hold more than that.
+			let total = 0;
+			let tooLarge = false;
+			const read_file = async (file: { name: string; contentType: string; url: string }): Promise<ChooserFile> => {
+				const response = await fetch(file.url, { signal: stop.signal });
+				const reader = response.body?.getReader();
+				const chunks: Uint8Array[] = [];
+				let size = 0;
+				try {
+					if (!response.ok) throw new Error("Fetch failed.");
+					// No body means an empty file.
+					while (reader) {
+						const next = await reader.read();
+						stop.signal.throwIfAborted();
+						if (next.done) break;
+						size += next.value.byteLength;
+						total += next.value.byteLength;
+						if (total > LIMITS.uploadBytes) {
+							tooLarge = true;
+							throw new Error("The files are too large.");
+						}
+						chunks.push(next.value);
+					}
+				} finally {
+					await reader?.cancel().catch(() => {});
+				}
+				const bytes = append_bytes(chunks, size);
+				return { name: file.name, mimeType: file.contentType, buffer: Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength) };
+			};
+			const files = await Promise.all(input.files.map(read_file)).catch(() => {
+				// The first failure stops the other reads.
+				stop.abort();
+				return null;
+			}).finally(() => clearTimeout(timer));
+			if (!files) return { ok: false, code: tooLarge ? "too_large" : "fetch_failed" };
+			return { ok: true, files };
+		});
+		if (!filled.ok) return operation_refused(filled.code, "The file was not given to the page.");
+		return json_response({ ok: true }, 200);
+	}
+
+	/**
+	 * `upload-grant`: a single-use, 2-minute grant for one computer upload to this chooser.
+	 */
+	private async upload_grant(input: { sessionId: string; chooserId: string; controlGen: number }): Promise<Response> {
+		const current = await this.current_file_chooser(input);
+		if (!current.ok) return operation_refused(current.code, "The page no longer asks for a file.");
+		const now = Date.now();
+		for (const [grantId, grant] of this.uploadGrants) {
+			if (grant.expiresAt <= now) this.uploadGrants.delete(grantId);
+		}
+		// Keep the map small. The oldest grant goes first.
+		if (this.uploadGrants.size >= 10) this.uploadGrants.delete(this.uploadGrants.keys().next().value!);
+		const grantId = crypto.randomUUID();
+		const expiresAt = now + LIMITS.uploadGrantMs;
+		this.uploadGrants.set(grantId, { sessionId: input.sessionId, chooserId: input.chooserId, controlGen: input.controlGen, expiresAt });
+		return json_response({ ok: true, grantId, expiresAt }, 200);
+	}
+
+	/**
+	 * `PUT /viewer/upload`: one file from the user's computer. The grant is the secret. It is burned
+	 * on the first try, and nothing is stored. Every refusal is JSON with a code, so the app can
+	 * show a message.
+	 */
+	private async viewer_upload(request: Request, url: URL): Promise<Response> {
+		const reply = (status: number, code?: string) => json_response(code ? { ok: false, code } : { ok: true }, status);
+		const grantId = url.searchParams.get("grantId") ?? "";
+		const grant = this.uploadGrants.get(grantId);
+		this.uploadGrants.delete(grantId);
+		if (!grant || grant.expiresAt <= Date.now()) return reply(403, "grant_invalid");
+		const filled = await this.fill_file_chooser(grant, async () => {
+			// A slow, aborted, or broken body is a refusal. On a timeout, stop reading the body too.
+			const stop = new AbortController();
+			const body = await with_wall_timeout(read_bounded_stream(request.body, LIMITS.uploadBytes, stop.signal), 60_000).catch(() => {
+				stop.abort();
+				return null;
+			});
+			if (!body) return { ok: false, code: "upload_failed" };
+			if (body.truncated) return { ok: false, code: "too_large" };
+			return { ok: true, files: [{
+				name: url.searchParams.get("name") ?? "",
+				mimeType: mime_essence(request.headers.get("Content-Type")) || "application/octet-stream",
+				buffer: Buffer.from(body.bytes.buffer, body.bytes.byteOffset, body.bytes.byteLength),
+			}] };
+		});
+		if (!filled.ok) return reply(filled.code === "too_large" ? 413 : filled.code === "upload_failed" ? 400 : 409, filled.code);
+		return reply(200);
+	}
+
+	/**
+	 * Viewer `file-chooser-cancel`: tell the page the user closed its file dialog, like Chrome does
+	 * after a real cancel. The page keeps any file it already had.
+	 */
+	private async cancel_file_chooser(chooserId: string) {
+		const record = this.viewerRecord;
+		const chooser = this.chooser;
+		if (!record || !chooser || chooser.chooserId !== chooserId || chooser.busy) return;
+		const current = await this.current_file_chooser({ sessionId: record.sessionId, chooserId, controlGen: chooser.controlGen });
+		if (!current.ok) return;
+		this.close_file_chooser(chooser);
+		await with_wall_timeout(chooser.chooser.element().evaluate((node) => node.dispatchEvent(new Event("cancel", { bubbles: true }))), 5000)
+			.catch(() => {});
 	}
 
 	private async agent_stream(url: URL): Promise<Response> {
@@ -1657,6 +3375,8 @@ export class BrowserSession {
 			const [client, server] = Object.values(new WebSocketPair());
 			connection.bridge = new AgentConnection({
 				upstream, downstream: server, targetId: host.targetId,
+				mode: record.mode, deniedHosts: web_denied_hosts(this.env),
+				agentBlockedHosts: record.mode === "web" ? record.agentBlockedHosts : [],
 				deadline: record.command.startedAt + LIMITS.childWallMs,
 				onPopup: async (targetId) => {
 					try {
@@ -1678,6 +3398,8 @@ export class BrowserSession {
 					}));
 				},
 			});
+			// Access may have been turned off after the command began. Refuse its work, but let it settle.
+			if (current.mode === "web" && !current.agentAccess) connection.bridge.revoke();
 			upstream.accept();
 			server.accept();
 			return new Response(null, { status: 101, webSocket: client });
@@ -1723,10 +3445,19 @@ export class BrowserSession {
 					!Array.isArray(targetInfos)) return false;
 				const pages = targetInfos.filter((target: unknown) => is_record(target) && target.type === "page");
 				if (pages.length !== 1 || !is_record(pages[0]) || pages[0].targetId !== host.targetId) return false;
+				// Web pages may be on any site. The assigned page target is the whole check.
+				if (record?.mode === "web") return true;
 				const page: unknown = await host.page.evaluate("({url: location.href, nonce: window.__browserNonce})");
 				return is_record(page) && page.url === CONTROLLER_URL && page.nonce === record?.pageNonce;
 			})(), 10_000);
 			if (!check) throw new Error("Browser target changed.");
+			// The command's page work is over. Stop failing requests, then check where the page is.
+			// On a blocked site the command result is refused, but the session stays.
+			let blockedSite = false;
+			if (record.mode === "web" && record.agentBlockedHosts.length > 0) {
+				await this.set_agent_site_filter(sessionId, false);
+				blockedSite = await this.main_page_blocked(record);
+			}
 			record = await this.load();
 			if (!record || record.sessionId !== sessionId || record.command?.id !== commandId || record.command.connection !== "revoked") {
 				return operation_refused("closed", "Browser command changed.");
@@ -1734,7 +3465,7 @@ export class BrowserSession {
 			record.command.connection = "settled";
 			await this.save(record);
 			if (this.agentConnection === connection) this.agentConnection = null;
-			return json_response({ ok: true, blockedPopups: settled.blockedPopups }, 200);
+			return json_response({ ok: true, blockedPopups: settled.blockedPopups, ...(blockedSite ? { blockedSite: true } : {}) }, 200);
 		} catch {
 			const current = await this.load();
 			if (current?.sessionId === sessionId) await this.close_record(current, "agent_settle_failed");
@@ -1749,7 +3480,7 @@ export class BrowserSession {
 		controlGen: number;
 		commandId: string;
 	}, inputReleased = false): Promise<Response> {
-		const record = await this.load();
+		let record = await this.load();
 		if (!record || record.control === "closed") {
 			return operation_refused("closed", "The browser session is closed.");
 		}
@@ -1772,6 +3503,29 @@ export class BrowserSession {
 		// Recheck the lease after waiting for an in-flight human action to finish.
 		if (!inputReleased) return this.with_input_released(() => this.begin_run(input, true));
 
+		// The user listed sites their agent may not use. Refuse while the page is on one, and fail
+		// requests to them until the command settles. Best effort: the UI says so.
+		if (record.mode === "web" && record.agentBlockedHosts.length > 0) {
+			const blocked = await this.main_page_blocked(record).catch(() => null);
+			if (blocked !== false) {
+				log_browser({ route: "run_begin", refused: blocked ? "agent_blocked_site" : "page_check", sessionId: record.sessionId });
+				return blocked
+					? operation_refused("agent_blocked_site", "The page is on a site the agent may not use.")
+					: operation_refused("not_ready", "The browser page could not be checked.");
+			}
+			if (!(await this.set_agent_site_filter(record.sessionId, true).then(() => true, () => false))) {
+				return operation_refused("not_ready", "The browser page could not be checked.");
+			}
+			// The checks above waited for the provider. Check the lease again before taking the slot.
+			const current = await this.load();
+			const again = current ? session_can_run(current, input, Date.now()) : { ok: false as const, reason: "closed" };
+			if (!current || !again.ok) {
+				await this.set_agent_site_filter(record.sessionId, false).catch(() => {});
+				return operation_refused(again.ok ? "closed" : again.reason, "The browser command was refused.");
+			}
+			record = current;
+		}
+
 		record.command = { id: input.commandId, startedAt: now, connection: "available" };
 		record.control = "agent";
 		record.lastActiveAt = now;
@@ -1781,6 +3535,7 @@ export class BrowserSession {
 				ok: true,
 				lease: {
 					sessionId: record.sessionId,
+					mode: record.mode,
 					viewport: record.viewport,
 					timeoutMs: LIMITS.commandTimeoutMs,
 				},
@@ -1806,6 +3561,7 @@ export class BrowserSession {
 		if (!liveCommand) return json_response({ ok: true, state: "stale" }, 200);
 		if (input.tainted) {
 			log_browser({ route: "run_finish", sessionId: record.sessionId, tainted: true });
+			// A tainted command returns nothing. `close_record` drops its downloads too.
 			await this.close_record(record, "tainted");
 			return json_response({ ok: true, state: "closed", tainted: true }, 200);
 		}
@@ -1841,6 +3597,8 @@ export class BrowserSession {
 		record.command = null;
 		record.commandCount += 1;
 		record.lastActiveAt = Date.now();
+		// The agent may have logged in or out. The next viewer renew saves the cookies.
+		if (this.profile?.sessionId === record.sessionId) this.profile.dirty = true;
 		// A finished command releases a pausing session to its waiting human. When the
 		// holder detached mid-take, there is no human to hand to: fall back to ready.
 		if (record.control === "pausing") {
@@ -1849,25 +3607,33 @@ export class BrowserSession {
 			record.control = "ready";
 		}
 		await this.save(record);
+		// A download the command started may still be reading, or still checking its frame. Let it
+		// land in this command's list.
+		await Promise.all([this.downloads?.capture, ...this.safetyNetDownloads]);
+		const agent = this.downloads?.agent?.commandId === input.commandId ? this.downloads.agent : null;
+		if (agent && this.downloads) this.downloads.agent = null;
 		log_browser({
 			route: "run_finish",
 			sessionId: record.sessionId,
 			resultBytes: input.resultBytes,
 			fileCount: input.fileCount,
 			fileBytes: input.fileBytes,
+			downloads: agent?.items.length ?? 0,
 		});
-		return json_response({ ok: true, state: record.control }, 200);
+		return json_response({
+			ok: true,
+			state: record.control,
+			...(agent?.items.length ? {
+				downloads: agent.items.map((item) => ({ name: item.name, contentType: item.contentType, dataBase64: bytes_base64(item.bytes) })),
+			} : {}),
+			...(agent?.dropped ? { downloadsDropped: agent.dropped } : {}),
+		}, 200);
 	}
 
-	private async reload(input: {
-		sessionId: string;
-		navGen: number;
-		sourceKind: string;
-		sourceVersion: string;
-		sourceHash: string;
-		html: string;
-		expectedAgentLease?: AgentLease;
-	}): Promise<Response> {
+	private async reload(input: { sessionId: string; navGen: number; expectedAgentLease?: AgentLease } & (
+		| { mode: "file"; sourceKind: string; sourceVersion: string; sourceHash: string; html: string }
+		| { mode: "web" }
+	)): Promise<Response> {
 		const record = await this.load();
 		if (!record || record.control === "closed") {
 			return operation_refused("closed", "The browser session is closed.");
@@ -1875,9 +3641,16 @@ export class BrowserSession {
 		if (record.sessionId !== input.sessionId) {
 			return operation_refused("stale_session", "The browser session is retired.");
 		}
+		if (record.mode !== input.mode) {
+			return operation_refused("bad_request", "The browser session has another mode.");
+		}
 		if (input.expectedAgentLease) {
 			const refusal = agent_lease_refusal(record, input.expectedAgentLease);
 			if (refusal) return operation_refused(refusal, "The agent browser lease changed.");
+			// The agent may not reload a web page while the user has turned its access off.
+			if (record.mode === "web" && !record.agentAccess) {
+				return operation_refused("agent_access_off", "Agent access to this browser is off.");
+			}
 		}
 		if (record.control === "closing" || record.control === "starting") {
 			return operation_refused("busy", "The browser session is busy.");
@@ -1892,14 +3665,18 @@ export class BrowserSession {
 			await this.close_record(record, "expired");
 			return operation_refused("expired", "The browser session expired.");
 		}
-		if (record.loadCount >= LIMITS.loadCount) {
-			return operation_refused("session_limit", "The browser session reached its reload limit.");
+		// Web reload only reloads the current page, so the file load and content limits do not apply.
+		const htmlBytes = input.mode === "file" ? byte_length(input.html) : 0;
+		if (record.mode === "file") {
+			if (record.loadCount >= LIMITS.loadCount) {
+				return operation_refused("session_limit", "The browser session reached its reload limit.");
+			}
+			if (record.htmlBytesTotal + htmlBytes > LIMITS.htmlBytesTotal) {
+				return operation_refused("session_limit", "The browser session reached its content limit.");
+			}
 		}
-		const htmlBytes = byte_length(input.html);
-		if (record.htmlBytesTotal + htmlBytes > LIMITS.htmlBytesTotal) {
-			return operation_refused("session_limit", "The browser session reached its content limit.");
-		}
-		if (!record.providerSessionId || !this.env.BROWSER_PREVIEW_URL) {
+		const previewUrl = this.env.BROWSER_PREVIEW_URL;
+		if (!record.providerSessionId || (input.mode === "file" && !previewUrl)) {
 			return json_response(
 				{ ok: false, error: { code: "misconfigured", message: "Browser reload is unavailable." } },
 				503,
@@ -1934,19 +3711,26 @@ export class BrowserSession {
 		if (reserved?.sessionId !== record.sessionId || reserved.command?.id !== reloadId) {
 			return operation_refused("closed", "The browser session changed.");
 		}
-		let reloadedPageNonce: string;
+		let reloadedPageNonce: string | null = null;
 
 		try {
 			// Finish a pending host check before reload changes the page nonce.
 			await this.connect_host(record);
 			const host = this.hostConnection;
 			if (!host || host.sessionId !== record.sessionId) throw new Error("Browser session changed.");
-			// A full navigation resets page input and scroll by design.
-			reloadedPageNonce = await load_controller_page(host.page, {
-				previewUrl: this.env.BROWSER_PREVIEW_URL,
-				html: input.html,
-			});
-			await host.page.setViewportSize(record.viewport);
+			if (input.mode === "web") {
+				// A slow site is not a failure. Only a broken connection closes the session.
+				await with_wall_timeout(host.cdp.send("Page.reload"), LIMITS.navWallMs).catch((error: unknown) => {
+					if (!(error instanceof WallTimeoutError)) throw error;
+				});
+			} else {
+				// A full navigation resets page input and scroll by design.
+				reloadedPageNonce = await load_controller_page(host.page, {
+					previewUrl: previewUrl!,
+					html: input.html,
+				});
+				await host.page.setViewportSize(record.viewport);
+			}
 		} catch (error) {
 			const failure = sanitize_error(error);
 			log_browser({ route: "reload", refused: "reload_failed", sessionId: record.sessionId });
@@ -1973,13 +3757,16 @@ export class BrowserSession {
 		}
 
 		current.command = null;
-		current.loadGen += 1;
-		current.pageNonce = reloadedPageNonce;
-		current.sourceKind = input.sourceKind;
-		current.sourceVersion = input.sourceVersion;
-		current.sourceHash = input.sourceHash;
-		current.htmlBytesTotal += htmlBytes;
-		current.loadCount += 1;
+		// Web mode keeps loadGen: the page changes all the time, and agent leases must stay valid.
+		if (current.mode === "file" && input.mode === "file") {
+			current.loadGen += 1;
+			current.pageNonce = reloadedPageNonce;
+			current.sourceKind = input.sourceKind;
+			current.sourceVersion = input.sourceVersion;
+			current.sourceHash = input.sourceHash;
+			current.htmlBytesTotal += htmlBytes;
+			current.loadCount += 1;
+		}
 		current.lastActiveAt = Date.now();
 		// Input stays blocked until navigation and the source update have both finished.
 		if (current.control === "pausing") {
@@ -1992,18 +3779,48 @@ export class BrowserSession {
 		return json_response({ ok: true, session: this.public_meta(current) }, 200);
 	}
 
-	private async release_closed_session(record: SessionRecord): Promise<void> {
+	/**
+	 * Every close path ends here, including the alarm's last retry. So this is where the usage
+	 * receipt is written: Convex bills the session from it.
+	 */
+	private async release_closed_session(record: SessionRecord, reason: string): Promise<void> {
 		await this.release_grant(record.grantId);
 		// Another close can finish first and leave the slot free for a new Start.
 		const current = await this.state.storage.get<SessionRecord>(SESSION_KEY);
 		if (current?.sessionId !== record.sessionId) return;
+		// Write the receipt before the record goes away. No browser was acquired means nothing to bill.
+		const now = Date.now();
+		if (current.providerAcquiredAt !== null) {
+			const receipt: UsageReceipt = { sessionId: current.sessionId, providerAcquiredAt: current.providerAcquiredAt, endedAt: now, reason };
+			await this.state.storage.put(`${USAGE_KEY_PREFIX}${current.sessionId}`, receipt);
+		}
 		await this.state.storage.delete(SESSION_KEY);
-		await this.state.storage.deleteAlarm();
+		// Keep the saved profile's 100-day delete time, if there is one.
+		await this.schedule_alarm(null);
+		// Convex settles within minutes. Keep receipts for 7 days, then delete them.
+		const receipts = await this.state.storage.list<UsageReceipt>({ prefix: USAGE_KEY_PREFIX });
+		for (const [key, value] of receipts) {
+			if (now - value.endedAt >= LIMITS.usageReceiptMs) await this.state.storage.delete(key);
+		}
 	}
 
-	private async close_record(record: SessionRecord, reason: string): Promise<{ existed: boolean; verified: boolean }> {
-		const current = await this.load();
+	private async close_record(record: SessionRecord, reason: string, saveProfile?: boolean): Promise<{ existed: boolean; verified: boolean }> {
+		let current = await this.load();
 		if (current?.sessionId !== record.sessionId) return { existed: false, verified: true };
+		// Save the cookies while the host connection and the page still exist.
+		if (this.should_save(current, reason, saveProfile)) {
+			await this.save_profile(current);
+			// The save waits for the provider. Another close may have finished meanwhile.
+			current = await this.load();
+			if (current?.sessionId !== record.sessionId) return { existed: false, verified: true };
+		}
+		// No save may run for this session once its close starts.
+		if (this.profile?.sessionId === record.sessionId) this.profile = null;
+		// Drop what only lived in memory for this session. At close there may be no viewer left.
+		if (this.downloads?.held) this.drop_held_download(this.downloads.held);
+		this.downloads = null;
+		this.close_file_chooser();
+		this.uploadGrants.clear();
 		record = current;
 		if (this.agentConnection?.sessionId === record.sessionId) {
 			this.agentConnection.bridge?.close();
@@ -2034,39 +3851,133 @@ export class BrowserSession {
 			// Keep the record and the slot: the alarm retries a bounded number of times, and
 			// only its final attempt frees an unverified slot (provider expiry backstops it).
 			const current = await this.state.storage.get<SessionRecord>(SESSION_KEY);
-			if (current?.sessionId === record.sessionId) {
-				await this.state.storage.setAlarm(Date.now() + 30_000);
-			}
+			if (current?.sessionId === record.sessionId) await this.schedule_alarm(current);
 			log_browser({ route: "close", sessionId: record.sessionId, reason, verified });
 			return { existed: true, verified };
 		}
 
-		await this.release_closed_session(record);
+		await this.release_closed_session(record, reason);
 		log_browser({ route: "close", sessionId: record.sessionId, reason, verified });
 		return { existed: true, verified };
 	}
 
-	private async close(sessionId: string | null, expectedAgentLease?: AgentLease): Promise<Response> {
+	private async close(sessionId: string | null, expectedAgentLease?: AgentLease, saveProfile?: boolean, by: string | null = null): Promise<Response> {
+		log_browser({ route: "close_request", sessionId: sessionId ?? "none", by: by ?? "unknown", saveProfile: saveProfile === true });
 		const record = await this.load();
-		if (!record || (sessionId && record.sessionId !== sessionId)) {
-			return json_response({ ok: true, existed: false, verified: true }, 200);
-		}
-		if (record.control === "closed") {
-			return json_response({ ok: true, existed: false, verified: true }, 200);
+		// A session closed earlier may still have its receipt.
+		if (!record || (sessionId && record.sessionId !== sessionId) || record.control === "closed") {
+			return json_response({ ok: true, existed: false, verified: true, usage: sessionId ? await this.usage(sessionId) : null }, 200);
 		}
 		if (expectedAgentLease) {
 			const refusal = agent_lease_refusal(record, expectedAgentLease);
 			if (refusal) return operation_refused(refusal, "The agent browser lease changed.");
 		}
-		const result = await this.close_record(record, "close");
-		return json_response({ ok: true, ...result }, 200);
+		const result = await this.close_record(record, "close", saveProfile);
+		return json_response({ ok: true, ...result, usage: await this.usage(record.sessionId) }, 200);
 	}
 
 	private async status(sessionId: string): Promise<Response> {
 		const record = await this.load();
 		const alive = !!record && record.sessionId === sessionId &&
 			record.control !== "closed" && record.control !== "closing" && !session_is_expired(record, Date.now());
-		return json_response(alive ? { ok: true, alive, session: this.public_meta(record) } : { ok: true, alive }, 200);
+		// Only whether bytes remain: no profile id and no data. QA and the wipe checks read it.
+		const profileStored = (await this.state.storage.get<ProfileBlob>(PROFILE_BLOB_KEY)) !== undefined;
+		if (alive) return json_response({ ok: true, alive, session: this.public_meta(record), profileStored }, 200);
+		// The record stays until the provider close finishes. Until then the receipt may still change.
+		const closing = !!record && record.sessionId === sessionId;
+		return json_response({ ok: true, alive, closing, usage: await this.usage(sessionId), profileStored }, 200);
+	}
+
+	/**
+	 * True while a session could still save into the profile. A closing session has passed its save.
+	 */
+	private async session_live() {
+		const record = await this.load();
+		return !!record && record.control !== "closing" && record.control !== "closed";
+	}
+
+	/**
+	 * Read the stored profile for these owners. `exists: false` when nothing is stored or the blob
+	 * belongs to another profile id. A blob that does not decrypt is an error, not an empty profile.
+	 */
+	private async read_profile(input: { ownerId: string; organizationId: string; workspaceId: string; profileId: string; profileKey: string }) {
+		const stored = await this.state.storage.get<ProfileBlob>(PROFILE_BLOB_KEY);
+		if (stored?.profileId !== input.profileId) return { ok: true as const, stored: null, cookies: [] };
+		try {
+			const key = await profile_crypto_key(this.env.BROWSER_PROFILE_KEY, input.profileKey);
+			const cookies = await profile_decrypt(key, profile_aad(input.profileId, input), stored);
+			return { ok: true as const, stored, cookies, key };
+		} catch (error) {
+			log_browser({ route: "profile_read", error: sanitize_error(error).name });
+			return { ok: false as const };
+		}
+	}
+
+	/**
+	 * List the saved sites with a cookie count each. Never cookie names or values.
+	 */
+	private async profile_summary(input: { ownerId: string; organizationId: string; workspaceId: string; profileId: string; profileKey: string }): Promise<Response> {
+		if (await this.session_live()) return operation_refused("busy", "End the browser first.");
+		const read = await this.read_profile(input);
+		if (!read.ok) return operation_refused("profile_unreadable", "The saved browser data cannot be read.");
+		const counts = new Map<string, number>();
+		for (const cookie of read.cookies) counts.set(cookie_site(cookie), (counts.get(cookie_site(cookie)) ?? 0) + 1);
+		const sites = [...counts].map(([domain, cookies]) => ({ domain, cookies })).sort((a, b) => (a.domain < b.domain ? -1 : a.domain > b.domain ? 1 : 0));
+		return json_response({
+			ok: true,
+			exists: read.stored !== null,
+			savedAt: read.stored?.savedAt ?? null,
+			truncated: read.stored?.truncated ?? false,
+			sites,
+		}, 200);
+	}
+
+	/**
+	 * Remove the cookies of one site and its subdomains, then store the rest again. `savedAt` stays.
+	 */
+	private async profile_clear(input: { ownerId: string; organizationId: string; workspaceId: string; profileId: string; profileKey: string; domain: string }): Promise<Response> {
+		if (await this.session_live()) return operation_refused("busy", "End the browser first.");
+		const read = await this.read_profile(input);
+		if (!read.ok) return operation_refused("profile_unreadable", "The saved browser data cannot be read.");
+		if (!read.stored) return json_response({ ok: true, removed: 0 }, 200);
+		const domain = browser_web_canonical_host(input.domain.replace(/^\./u, ""));
+		const kept = read.cookies.filter((cookie) => !browser_web_host_matches(cookie_site(cookie), [domain]));
+		const removed = read.cookies.length - kept.length;
+		if (removed === 0) return json_response({ ok: true, removed: 0 }, 200);
+		const sealed = await profile_encrypt(read.key, profile_aad(input.profileId, input), kept);
+
+		// Like the save: a delete or an open may have run during the crypto awaits. Put only when the
+		// blob is still the one read above and no tombstone exists. Storage reads only until the put.
+		const [deletedAt, latest] = await Promise.all([
+			this.state.storage.get<number>(`${PROFILE_DELETED_KEY_PREFIX}${input.profileId}`),
+			this.state.storage.get<ProfileBlob>(PROFILE_BLOB_KEY),
+		]);
+		if (deletedAt !== undefined || latest?.iv !== read.stored.iv) return operation_refused("busy", "The saved browser data changed.");
+		await this.state.storage.put(PROFILE_BLOB_KEY, { ...read.stored, ...sealed } satisfies ProfileBlob);
+		log_browser({ route: "profile_clear", removed });
+		return json_response({ ok: true, removed }, 200);
+	}
+
+	/**
+	 * Delete a profile's stored bytes. Convex already deleted its key, so this is cleanup. The
+	 * tombstone comes first: a save that is still running then skips its put.
+	 */
+	private async profile_delete(profileId: string): Promise<Response> {
+		await this.state.storage.put(`${PROFILE_DELETED_KEY_PREFIX}${profileId}`, Date.now());
+		// A live session of this profile ends without saving. A session of a newer profile (after a
+		// re-invite or a Clear all) stays.
+		const record = await this.load();
+		if (record?.mode === "web" && record.profileId === profileId && record.control !== "closing" && record.control !== "closed") {
+			await this.close_record(record, "profile_deleted");
+		}
+		const stored = await this.state.storage.get<ProfileBlob>(PROFILE_BLOB_KEY);
+		if (stored?.profileId === profileId) {
+			await this.state.storage.delete(PROFILE_BLOB_KEY);
+			await this.state.storage.delete(PROFILE_DELETE_AT_KEY);
+		}
+		await this.schedule_alarm(await this.load());
+		log_browser({ route: "profile_delete", deleted: stored?.profileId === profileId });
+		return json_response({ ok: true, deleted: true }, 200);
 	}
 
 	private async keep_open(sessionId: string, navGen: number): Promise<Response> {
@@ -2089,7 +4000,7 @@ export class BrowserSession {
 		record.lastActiveAt = Date.now();
 		await this.save(record);
 		return json_response(
-			{ ok: true, idleUntil: record.lastActiveAt + LIMITS.sessionIdleMs },
+			{ ok: true, idleUntil: record.lastActiveAt + mode_limits(record.mode).idleMs },
 			200,
 		);
 	}
@@ -2228,6 +4139,12 @@ export class BrowserSession {
 		}
 		viewer.grantedUntil = now + LIMITS.viewerGrantWindowMs;
 		await this.save(record);
+		// Save the cookies now and then while people use the page, so a provider crash loses at
+		// most a few minutes. The renew reply does not wait for it.
+		const profile = this.profile;
+		if (profile?.sessionId === record.sessionId && profile.dirty && now - profile.savedAt > LIMITS.profileSaveEveryMs) {
+			this.state.waitUntil(this.save_profile(record));
+		}
 		return json_response(
 			{
 				ok: true,
@@ -2235,7 +4152,7 @@ export class BrowserSession {
 				session: this.public_meta(record),
 				control: record.control,
 				controlGen: record.controlGen,
-				idleUntil: record.lastActiveAt + LIMITS.sessionIdleMs,
+				idleUntil: record.lastActiveAt + mode_limits(record.mode).idleMs,
 			},
 			200,
 		);
@@ -2334,7 +4251,40 @@ export class BrowserSession {
 		return json_response({ ok: true, control: record.control, controlGen: record.controlGen }, 200);
 	}
 
-	private async viewer_input(viewerId: string, sessionId: string, controlGen: number, loadGen: number): Promise<Response> {
+	/**
+	 * Web mode: the user allows or blocks agent commands on this browser.
+	 */
+	private async set_agent_access(sessionId: string, on: boolean): Promise<Response> {
+		const record = await this.load();
+		if (!record || record.control === "closed" || record.control === "closing") {
+			return operation_refused("closed", "The browser session is closed.");
+		}
+		if (record.sessionId !== sessionId) {
+			return operation_refused("stale_session", "The browser session is retired.");
+		}
+		if (record.mode !== "web") {
+			return operation_refused("bad_request", "Agent access applies to web sessions only.");
+		}
+		if (session_is_expired(record, Date.now())) {
+			await this.close_record(record, "expired");
+			return operation_refused("expired", "The browser session expired.");
+		}
+
+		if (record.agentAccess !== on) {
+			record.agentAccess = on;
+			// Every real change gets a new controlGen. Convex copies `agentAccess` only from a reply
+			// with a controlGen at least as new as its own, so a late reply cannot undo this change.
+			record.controlGen += 1;
+			// Turning access off works like Take: the new controlGen retires every agent lease, and a
+			// running command loses its bridge. Its snippet fails fast and the command settles.
+			if (!on && this.agentConnection?.sessionId === record.sessionId) this.agentConnection.bridge?.revoke();
+			await this.save(record);
+			log_browser({ route: "agent_access", sessionId: record.sessionId, on });
+		}
+		return json_response({ ok: true, session: this.public_meta(record) }, 200);
+	}
+
+	private async viewer_input(viewerId: string, sessionId: string, controlGen: number, loadGen: number | null): Promise<Response> {
 		const record = await this.load();
 		if (!record || record.viewers[viewerId] === undefined) {
 			return operation_refused("viewer", "The viewer is gone.");
@@ -2343,7 +4293,7 @@ export class BrowserSession {
 			return operation_refused("closed", "The browser session is closed.");
 		}
 		if (record.control !== "human" || record.inputHolder !== viewerId || record.command || this.inputTransition ||
-			record.controlGen !== controlGen || record.loadGen !== loadGen) {
+			record.controlGen !== controlGen || (loadGen !== null && record.loadGen !== loadGen)) {
 			return operation_refused("control", "This viewer does not hold input.");
 		}
 		const viewer = record.viewers[viewerId]!;
@@ -2358,6 +4308,8 @@ export class BrowserSession {
 		// Human input extends the idle deadline, never the total cap.
 		record.lastActiveAt = Date.now();
 		viewer.lastInputAt = Date.now();
+		// Address bar navs come through here too.
+		if (this.profile?.sessionId === record.sessionId) this.profile.dirty = true;
 		await this.save(record);
 		return json_response({ ok: true }, 200);
 	}
@@ -2378,6 +4330,7 @@ export class BrowserSession {
 			previous.viewport.height !== record.viewport.height
 		);
 		if (viewportChanged) this.stop_viewer_producer();
+		const agentAccessChanged = previous?.mode === "web" && record.mode === "web" && previous.agentAccess !== record.agentAccess;
 		for (const stream of this.viewerStreams.values()) {
 			const viewer = record.viewers[stream.viewerId];
 			if (record.sessionId !== stream.sessionId || !viewer || record.control === "closing" || record.control === "closed") {
@@ -2385,16 +4338,24 @@ export class BrowserSession {
 				continue;
 			}
 			if (stream.deadlineTimer) clearTimeout(stream.deadlineTimer);
-			const deadline = Math.min(viewer.grantedUntil, record.providerAcquiredAt! + LIMITS.sessionTotalMs, record.lastActiveAt + LIMITS.sessionIdleMs);
+			const limits = mode_limits(record.mode);
+			const deadline = Math.min(viewer.grantedUntil, record.providerAcquiredAt! + limits.totalMs, record.lastActiveAt + limits.idleMs);
 			stream.deadlineTimer = setTimeout(() => this.end_viewer(stream, 4408, "grant expired"), Math.max(0, deadline - Date.now()));
 			try {
 				if (!previous || previous.control !== record.control || previous.controlGen !== record.controlGen) {
 					stream.socket.send(JSON.stringify({ t: "control", control: record.control, controlGen: record.controlGen }));
 				}
 				if (viewportChanged) stream.socket.send(JSON.stringify({ t: "viewport", viewport: record.viewport }));
+				if (agentAccessChanged) stream.socket.send(JSON.stringify({ t: "agent-access", on: record.agentAccess }));
 			} catch {
 				this.end_viewer(stream, 1011, "socket error");
 			}
+		}
+		// A chooser belongs to one human turn. It is gone when control or the session moves on.
+		const chooser = this.chooser;
+		if (chooser && (chooser.sessionId !== record.sessionId || chooser.controlGen !== record.controlGen ||
+			record.control !== "human" || record.command)) {
+			this.close_file_chooser(chooser);
 		}
 		if (viewportChanged && this.viewerStreams.size > 0) {
 			this.state.waitUntil(this.start_viewer_producer().catch(() => {}));
@@ -2404,6 +4365,8 @@ export class BrowserSession {
 	private end_viewer(stream: ViewerStream, code: number, reason: string): void {
 		if (!this.viewerStreams.delete(stream.viewerId)) return;
 		if (stream.deadlineTimer) clearTimeout(stream.deadlineTimer);
+		// Log why each viewer socket ends. A dropped viewer is hard to explain without it.
+		log_browser({ route: "viewer_end", sessionId: stream.sessionId, code, reason });
 		close_socket(stream.socket, code, reason);
 		// Detaches share a record, so each one must read after the previous save.
 		this.viewerCleanup = this.viewerCleanup.then(async () => {
@@ -2654,6 +4617,12 @@ export class BrowserSession {
 					return;
 				}
 				const page = this.viewerProducer.page;
+				// A click or Enter lets the page start one human download in the next 10 s. Record it
+				// before the input runs: the page may start the download while the input is applied.
+				if (input.kind === "mouse.up" || input.kind === "mouse.click" ||
+					((input.kind === "key.down" || input.kind === "key.press") && input.key === "Enter")) {
+					this.humanGesture = { sessionId: stream.sessionId, at: Date.now() };
+				}
 				const applyAt = Date.now();
 				await with_wall_timeout(apply_viewer_input(page, input), 5000);
 				timings.applyMs = Date.now() - applyAt;
@@ -2670,6 +4639,75 @@ export class BrowserSession {
 				ack(false, "apply");
 				const record = await this.load();
 				if (record?.sessionId === stream.sessionId) await this.close_record(record, "input_failed");
+			} finally {
+				this.inputDepth -= 1;
+			}
+		});
+	}
+
+	/**
+	 * Web mode: run one address bar action (go, back, forward, reload, stop) for the viewer that
+	 * holds control. It uses the same ordered queue and checks as mouse and key input.
+	 */
+	private queue_viewer_nav(stream: ViewerStream, parsed: Extract<ReturnType<typeof parse_viewer_nav>, { ok: true }>): void {
+		const ack = (ok: boolean, code?: string) => {
+			try {
+				stream.socket.send(JSON.stringify({ t: "nav-ack", seq: parsed.seq, ok, ...(code ? { code } : {}) }));
+			} catch {
+				this.end_viewer(stream, 1011, "socket error");
+			}
+		};
+		if (this.viewerRecord?.mode !== "web") {
+			ack(false, "bad_request");
+			return;
+		}
+		// Check the address first. A refused address needs no queue slot and no storage write.
+		let url: string | null = null;
+		if (parsed.nav.action === "go") {
+			const normalized = browser_web_normalize_url(parsed.nav.url, web_denied_hosts(this.env));
+			if (!normalized.ok) {
+				ack(false, normalized.reason);
+				return;
+			}
+			url = normalized.url;
+		}
+		if (this.inputDepth >= 50 || this.inputTransition) {
+			ack(false, "busy");
+			return;
+		}
+		const epoch = this.inputEpoch;
+		this.inputDepth += 1;
+		this.inputQueue = this.inputQueue.then(async () => {
+			try {
+				if (epoch !== this.inputEpoch || !this.viewerStreams.has(stream.viewerId)) {
+					ack(false, "not_controller");
+					return;
+				}
+				// Check human control and set lastActiveAt, like input does.
+				const checked: unknown = await (await this.viewer_input(stream.viewerId, stream.sessionId, parsed.controlGen, null)).json();
+				if (!is_record(checked) || checked.ok !== true) {
+					const code = is_record(checked) && is_record(checked.error) && typeof checked.error.code === "string" ? checked.error.code : "denied";
+					ack(false, code === "control" ? "not_controller" : code);
+					return;
+				}
+				await this.start_viewer_producer();
+				const host = this.hostConnection;
+				const current = this.viewerRecord;
+				if (epoch !== this.inputEpoch || this.inputTransition || !host || host.sessionId !== stream.sessionId ||
+					current?.sessionId !== stream.sessionId || current.control !== "human" || current.inputHolder !== stream.viewerId) {
+					ack(false, "not_controller");
+					return;
+				}
+				// Typing an address and pressing Enter is a human gesture too, so a download link works.
+				if (parsed.nav.action === "go") this.humanGesture = { sessionId: stream.sessionId, at: Date.now() };
+				// A slow site is still a good nav. A CDP error fails this nav but keeps the session.
+				const code = await with_wall_timeout(apply_viewer_nav(host.cdp, parsed.nav.action, url), LIMITS.navWallMs).catch(
+					(error: unknown) => (error instanceof WallTimeoutError ? null : "apply"),
+				);
+				if (code === null) ack(true);
+				else ack(false, code);
+			} catch {
+				ack(false, "apply");
 			} finally {
 				this.inputDepth -= 1;
 			}
@@ -2715,7 +4753,7 @@ export class BrowserSession {
 		socket.addEventListener("error", () => this.end_viewer(stream, 1011, "socket error"));
 		let lastPingAt = 0;
 		socket.addEventListener("message", (event) => {
-			if (typeof event.data !== "string" || event.data.length > 4096) return;
+			if (typeof event.data !== "string" || event.data.length > LIMITS.viewerMessageChars) return;
 			let body: unknown;
 			try {
 				body = JSON.parse(event.data);
@@ -2741,50 +4779,88 @@ export class BrowserSession {
 				catch { this.end_viewer(stream, 1011, "socket error"); }
 				return;
 			}
+			if (is_record(body) && body.t === "nav") {
+				const nav = parse_viewer_nav(body);
+				if (nav.ok) this.queue_viewer_nav(stream, nav);
+				return;
+			}
+			if (is_record(body) && body.t === "file-chooser-cancel") {
+				const current = this.viewerRecord;
+				// Only the viewer that holds human control may answer the page's file dialog.
+				if (typeof body.chooserId === "string" && current?.sessionId === stream.sessionId && current.inputHolder === viewerId) {
+					this.state.waitUntil(this.cancel_file_chooser(body.chooserId).catch(() => {}));
+				}
+				return;
+			}
 			const parsed = parse_viewer_input(event.data);
 			if (parsed.ok) this.queue_viewer_input(stream, parsed);
 		});
 		try {
 			socket.send(JSON.stringify({ t: "hello", viewerId, viewport: current.viewport, control: current.control, controlGen: current.controlGen }));
+			if (current.mode === "web") socket.send(JSON.stringify({ t: "agent-access", on: current.agentAccess }));
 			this.sync_viewers(current);
+			// A viewer that reconnects missed what was pushed while it was away. Send the waiting
+			// download and the open chooser again. The Convex save is idempotent per `downloadId`.
+			const held = this.downloads?.held ? this.held_download(current.sessionId, this.downloads.held.downloadId) : null;
+			if (held) socket.send(JSON.stringify({ t: "download", downloadId: held.downloadId, name: held.name, size: held.size, contentType: held.contentType }));
+			const chooser = this.chooser;
+			if (chooser?.sessionId === current.sessionId) {
+				socket.send(JSON.stringify({ t: "file-chooser", chooserId: chooser.chooserId, multiple: chooser.multiple, accept: chooser.accept, origin: chooser.origin }));
+			}
 			await this.start_viewer_producer();
 			this.send_viewer_frame(stream);
+			if (current.mode === "web" && this.hostConnection?.sessionId === current.sessionId) this.push_location(this.hostConnection);
 		} catch {
 			this.end_viewer(stream, 1011, "viewer start failed");
 		}
 	}
 
 	async alarm(): Promise<void> {
+		// The saved profile's backstop: nobody used it for 100 days, so delete it here even if every
+		// Convex wipe failed. An early alarm (for a session deadline, or a stray one) keeps it.
+		const now = Date.now();
+		const profileDeleteAt = await this.state.storage.get<number>(PROFILE_DELETE_AT_KEY);
+		if (profileDeleteAt !== undefined && now >= profileDeleteAt) {
+			await this.state.storage.delete(PROFILE_BLOB_KEY);
+			await this.state.storage.delete(PROFILE_DELETE_AT_KEY);
+			log_browser({ route: "alarm", profileExpired: true });
+		}
+		// A tombstone only has to outlive a save that was running during the delete.
+		const tombstones = await this.state.storage.list<number>({ prefix: PROFILE_DELETED_KEY_PREFIX });
+		for (const [key, deletedAt] of tombstones) {
+			if (now - deletedAt >= LIMITS.profileTombstoneMs) await this.state.storage.delete(key);
+		}
+
 		const record = await this.load();
 		if (!record) {
-			await this.state.storage.deleteAlarm();
+			await this.schedule_alarm(null);
 			return;
 		}
 		if (record.control === "closing") {
 			if (record.closeAttempts >= LIMITS.closeAttempts) {
-				await this.release_closed_session(record);
+				// The provider close was never verified. The provider keep-alive ends the browser.
+				await this.release_closed_session(record, "close_unverified");
 				return;
 			}
 			await this.close_record(record, "closing_retry");
 			return;
 		}
 		if (record.control === "closed") {
-			await this.state.storage.deleteAlarm();
+			await this.schedule_alarm(record);
 			return;
 		}
 		if (
 			record.control === "starting" &&
-			Date.now() - record.createdAt >= LIMITS.startingStaleMs
+			now - record.createdAt >= LIMITS.startingStaleMs
 		) {
 			await this.close_record(record, "stale_start");
 			return;
 		}
-		if (session_is_expired(record, Date.now())) {
+		if (session_is_expired(record, now)) {
 			await this.close_record(record, "expired");
 			return;
 		}
 		// A worker crash can leave browser work running after its caller has gone.
-		const now = Date.now();
 		if (record.command && now - record.command.startedAt >= LIMITS.commandTimeoutMs + 10_000) {
 			await this.close_record(record, "command_timeout");
 			return;
@@ -2809,6 +4885,8 @@ export class BrowserSession {
 			this.state.waitUntil(this.viewer_lifetime(server, scope).catch(() => close_socket(server, 1011, "viewer failed")).finally(() => { this.pendingViewers -= 1; }));
 			return new Response(null, { status: 101, webSocket: client });
 		}
+		// The Worker already checked the query, the size, and the CORS origin.
+		if (request.method === "PUT" && url.pathname === "/viewer/upload") return await this.viewer_upload(request, url);
 		if (request.method !== "POST") return json_response({ ok: false, error: { code: "not_found" } }, 404);
 
 		let body: unknown;
@@ -2825,7 +4903,44 @@ export class BrowserSession {
 
 		if (url.pathname === "/open") {
 			const viewport = is_record(body.viewport) ? body.viewport : null;
+			if (body.mode === "web") {
+				if (
+					typeof body.grantId !== "string" ||
+					typeof body.attemptId !== "string" ||
+					typeof body.ownerId !== "string" ||
+					typeof body.organizationId !== "string" ||
+					typeof body.workspaceId !== "string" ||
+					!is_positive_int(body.navGen) ||
+					(body.startUrl !== null && typeof body.startUrl !== "string") ||
+					typeof body.agentAccess !== "boolean" ||
+					typeof body.profileId !== "string" ||
+					typeof body.profileKey !== "string" ||
+					!Array.isArray(body.agentBlockedHosts) ||
+					!body.agentBlockedHosts.every((host) => typeof host === "string") ||
+					!viewport ||
+					!is_positive_int(viewport.width) ||
+					!is_positive_int(viewport.height)
+				) {
+					return json_response({ ok: false, error: { code: "invalid_request" } }, 400);
+				}
+				return await this.open({
+					mode: "web",
+					grantId: body.grantId,
+					attemptId: body.attemptId,
+					ownerId: body.ownerId,
+					organizationId: body.organizationId,
+					workspaceId: body.workspaceId,
+					navGen: body.navGen,
+					startUrl: body.startUrl,
+					agentAccess: body.agentAccess,
+					profileId: body.profileId,
+					profileKey: body.profileKey,
+					agentBlockedHosts: body.agentBlockedHosts,
+					viewport: { width: viewport.width, height: viewport.height },
+				});
+			}
 			if (
+				body.mode !== "file" ||
 				typeof body.grantId !== "string" ||
 				typeof body.attemptId !== "string" ||
 				typeof body.ownerId !== "string" ||
@@ -2844,6 +4959,7 @@ export class BrowserSession {
 				return json_response({ ok: false, error: { code: "invalid_request" } }, 400);
 			}
 			return await this.open({
+				mode: "file",
 				grantId: body.grantId,
 				attemptId: body.attemptId,
 				ownerId: body.ownerId,
@@ -2898,6 +5014,21 @@ export class BrowserSession {
 			});
 		}
 		if (url.pathname === "/reload") {
+			if (body.mode === "web") {
+				if (
+					typeof body.sessionId !== "string" ||
+					!is_positive_int(body.navGen) ||
+					(body.expectedAgentLease !== undefined && !is_agent_lease(body.expectedAgentLease))
+				) {
+					return json_response({ ok: false, error: { code: "invalid_request" } }, 400);
+				}
+				return await this.reload({
+					mode: "web",
+					sessionId: body.sessionId,
+					navGen: body.navGen,
+					expectedAgentLease: body.expectedAgentLease,
+				});
+			}
 			if (
 				typeof body.sessionId !== "string" ||
 				!is_positive_int(body.navGen) ||
@@ -2910,6 +5041,7 @@ export class BrowserSession {
 				return json_response({ ok: false, error: { code: "invalid_request" } }, 400);
 			}
 			return await this.reload({
+				mode: "file",
 				sessionId: body.sessionId,
 				navGen: body.navGen,
 				sourceKind: body.sourceKind,
@@ -2922,11 +5054,74 @@ export class BrowserSession {
 		if (url.pathname === "/close") {
 			if (
 				(body.sessionId !== undefined && typeof body.sessionId !== "string") ||
-				(body.expectedAgentLease !== undefined && (!is_agent_lease(body.expectedAgentLease) || !is_non_empty_string(body.sessionId)))
+				(body.expectedAgentLease !== undefined && (!is_agent_lease(body.expectedAgentLease) || !is_non_empty_string(body.sessionId))) ||
+				(body.saveProfile !== undefined && typeof body.saveProfile !== "boolean") ||
+				(body.by !== undefined && typeof body.by !== "string")
 			) {
 				return json_response({ ok: false, error: { code: "invalid_request" } }, 400);
 			}
-			return await this.close(typeof body.sessionId === "string" ? body.sessionId : null, body.expectedAgentLease);
+			return await this.close(
+				typeof body.sessionId === "string" ? body.sessionId : null,
+				body.expectedAgentLease,
+				body.saveProfile,
+				typeof body.by === "string" ? body.by : null,
+			);
+		}
+		if (url.pathname === "/profile/summary" || url.pathname === "/profile/clear") {
+			if (
+				typeof body.ownerId !== "string" ||
+				typeof body.organizationId !== "string" ||
+				typeof body.workspaceId !== "string" ||
+				typeof body.profileId !== "string" ||
+				typeof body.profileKey !== "string" ||
+				(url.pathname === "/profile/clear" && typeof body.domain !== "string")
+			) {
+				return json_response({ ok: false, error: { code: "invalid_request" } }, 400);
+			}
+			const input = { ownerId: body.ownerId, organizationId: body.organizationId, workspaceId: body.workspaceId, profileId: body.profileId, profileKey: body.profileKey };
+			if (url.pathname === "/profile/summary") return await this.profile_summary(input);
+			return await this.profile_clear({ ...input, domain: String(body.domain) });
+		}
+		if (url.pathname === "/profile/delete") {
+			if (typeof body.profileId !== "string") return json_response({ ok: false, error: { code: "invalid_request" } }, 400);
+			return await this.profile_delete(body.profileId);
+		}
+		if (url.pathname === "/download/info" || url.pathname === "/download/push") {
+			const headers = is_record(body.headers) ? Object.entries(body.headers) : [];
+			if (
+				typeof body.sessionId !== "string" ||
+				typeof body.downloadId !== "string" ||
+				(url.pathname === "/download/push" && (typeof body.url !== "string" || !is_record(body.headers) ||
+					!headers.every(([, value]) => typeof value === "string")))
+			) {
+				return json_response({ ok: false, error: { code: "invalid_request" } }, 400);
+			}
+			if (url.pathname === "/download/info") return this.download_info(body.sessionId, body.downloadId);
+			return await this.download_push({
+				sessionId: body.sessionId,
+				downloadId: body.downloadId,
+				url: String(body.url),
+				headers: Object.fromEntries(headers.map(([name, value]) => [name, String(value)])),
+			});
+		}
+		if (url.pathname === "/upload/fill" || url.pathname === "/upload/grant") {
+			const files: Array<{ name: string; contentType: string; url: string }> = [];
+			for (const file of Array.isArray(body.files) ? (body.files as unknown[]) : []) {
+				if (is_record(file) && typeof file.name === "string" && typeof file.contentType === "string" && typeof file.url === "string") {
+					files.push({ name: file.name, contentType: file.contentType, url: file.url });
+				}
+			}
+			if (
+				typeof body.sessionId !== "string" ||
+				typeof body.chooserId !== "string" ||
+				!is_positive_int(body.controlGen) ||
+				(url.pathname === "/upload/fill" && (!Array.isArray(body.files) || files.length !== body.files.length))
+			) {
+				return json_response({ ok: false, error: { code: "invalid_request" } }, 400);
+			}
+			const input = { sessionId: body.sessionId, chooserId: body.chooserId, controlGen: body.controlGen };
+			if (url.pathname === "/upload/grant") return await this.upload_grant(input);
+			return await this.upload_fill({ ...input, files });
 		}
 		if (url.pathname === "/status") {
 			if (!is_non_empty_string(body.sessionId)) return invalid_request("`sessionId` is required.");
@@ -2965,6 +5160,12 @@ export class BrowserSession {
 				return json_response({ ok: false, error: { code: "invalid_request" } }, 400);
 			}
 			return await this.control_to_agent(body.sessionId, body.navGen);
+		}
+		if (url.pathname === "/agent-access") {
+			if (typeof body.sessionId !== "string" || typeof body.on !== "boolean") {
+				return json_response({ ok: false, error: { code: "invalid_request" } }, 400);
+			}
+			return await this.set_agent_access(body.sessionId, body.on);
 		}
 		return json_response({ ok: false, error: { code: "not_found" } }, 404);
 	}
@@ -3149,19 +5350,58 @@ async function handle_browser_open(request: Request, env: Env): Promise<Response
 	const access = await require_host_access(request, env);
 	if (!access.ok) return access.response;
 
-	const parsed = await parse_json_body(request, BROWSER_OPEN_FIELDS);
+	const parsed = await parse_json_body(request, new Set([...BROWSER_OPEN_FIELDS, ...BROWSER_WEB_OPEN_FIELDS]));
 	if (!parsed.ok) return parsed.response;
 	const body = parsed.body;
 
+	// Each mode has its own strict field set.
+	const allowed = body.mode === "web" ? BROWSER_WEB_OPEN_FIELDS : body.mode === "file" ? BROWSER_OPEN_FIELDS : null;
+	if (!allowed) return invalid_request("`mode` must be file or web.");
+	for (const key of Object.keys(body)) {
+		if (!allowed.has(key)) return invalid_request(`Unknown request field \`${key}\`.`);
+	}
 	const owners = parse_owner_tuple(body);
 	if (!owners.ok) return owners.response;
 	const viewport = parse_viewport(body);
 	if (!viewport.ok) return viewport.response;
-	const snapshot = parse_snapshot(body);
-	if (!snapshot.ok) return snapshot.response;
-	if (!is_positive_int(body.navGen)) return invalid_request("`navGen` must be a positive int.");
-	if (!is_non_empty_string(body.nodeId) || body.nodeId.length > 128) {
-		return invalid_request("`nodeId` is required.");
+	let modeFields: Record<string, unknown>;
+	if (body.mode === "web") {
+		// Web sessions never change document, so navGen stays 1.
+		if (body.navGen !== 1) return invalid_request("`navGen` must be 1 in web mode.");
+		if (body.startUrl !== null && typeof body.startUrl !== "string") return invalid_request("`startUrl` must be a string or null.");
+		if (typeof body.agentAccess !== "boolean") return invalid_request("`agentAccess` must be a boolean.");
+		// Convex owns the profile doc. Its id names the saved cookies, and its key unlocks them.
+		if (!is_profile_id(body.profileId)) return invalid_request("`profileId` is invalid.");
+		if (!is_profile_key(body.profileKey)) return invalid_request("`profileKey` must be 32 bytes in base64.");
+		if (
+			!Array.isArray(body.agentBlockedHosts) || body.agentBlockedHosts.length > LIMITS.agentBlockedHosts ||
+			!body.agentBlockedHosts.every((host) => is_non_empty_string(host) && host.length <= LIMITS.hostChars)
+		) {
+			return invalid_request("`agentBlockedHosts` must be a short list of hosts.");
+		}
+		modeFields = {
+			mode: "web",
+			startUrl: body.startUrl,
+			agentAccess: body.agentAccess,
+			profileId: body.profileId,
+			profileKey: body.profileKey,
+			agentBlockedHosts: body.agentBlockedHosts,
+		};
+	} else {
+		const snapshot = parse_snapshot(body);
+		if (!snapshot.ok) return snapshot.response;
+		if (!is_positive_int(body.navGen)) return invalid_request("`navGen` must be a positive int.");
+		if (!is_non_empty_string(body.nodeId) || body.nodeId.length > 128) {
+			return invalid_request("`nodeId` is required.");
+		}
+		modeFields = {
+			mode: "file",
+			nodeId: body.nodeId,
+			sourceKind: snapshot.sourceKind,
+			sourceVersion: snapshot.sourceVersion,
+			sourceHash: snapshot.sourceHash,
+			html: snapshot.html,
+		};
 	}
 	const attemptId =
 		typeof body.attemptId === "string" && body.attemptId.length > 0 && body.attemptId.length <= 128
@@ -3171,6 +5411,8 @@ async function handle_browser_open(request: Request, env: Env): Promise<Response
 	// Charge admission before acquisition so simultaneous calls cannot bypass quotas.
 	const claim = await object_json(registry_stub(env), "/claim", {
 		workspaceKey: workspace_key(owners.organizationId, owners.workspaceId),
+		ownerId: owners.ownerId,
+		organizationId: owners.organizationId,
 	});
 	if (!is_record(claim) || claim.ok !== true || typeof claim.grantId !== "string") {
 		const code = is_record(claim) && is_record(claim.error) && typeof claim.error.code === "string"
@@ -3183,17 +5425,13 @@ async function handle_browser_open(request: Request, env: Env): Promise<Response
 		session_stub(env, owners.ownerId, owners.organizationId, owners.workspaceId),
 		"/open",
 		{
+			...modeFields,
 			grantId: claim.grantId,
 			attemptId,
 			ownerId: owners.ownerId,
 			organizationId: owners.organizationId,
 			workspaceId: owners.workspaceId,
-			nodeId: body.nodeId,
 			navGen: body.navGen,
-			sourceKind: snapshot.sourceKind,
-			sourceVersion: snapshot.sourceVersion,
-			sourceHash: snapshot.sourceHash,
-			html: snapshot.html,
 			viewport: viewport.viewport,
 		},
 	);
@@ -3233,7 +5471,8 @@ async function evaluate_snippet(input: {
 	env: Env;
 	ctx: BrowserRunnerContext | undefined;
 	connection: BrowserConnectionGatewayProps;
-	runtimeOrigin: string;
+	mode: SessionMode;
+	runtimeOrigin: string | null;
 	viewport: { width: number; height: number };
 	code: string;
 }): Promise<SnippetEvaluateResult> {
@@ -3258,6 +5497,7 @@ async function evaluate_snippet(input: {
 	return await with_wall_timeout(
 		entrypoint.evaluate({
 			sessionId: input.connection.sessionId,
+			mode: input.mode,
 			runtimeOrigin: input.runtimeOrigin,
 			viewport: input.viewport,
 			timeoutMs: LIMITS.commandTimeoutMs,
@@ -3282,7 +5522,7 @@ async function execute_browser_command(args: {
 			fileBytes: number;
 			viewport: { width: number; height: number } | null;
 		},
-	) => Promise<void>;
+	) => Promise<unknown>;
 }): Promise<Response> {
 	const { env, ctx, body, commandId, lease, finish } = args;
 	// The caller validated `code`, but narrowing does not cross the extraction boundary, so
@@ -3293,6 +5533,7 @@ async function execute_browser_command(args: {
 	const leaseViewport = is_record(lease.viewport) ? lease.viewport : null;
 	if (
 		typeof lease.sessionId !== "string" ||
+		(lease.mode !== "file" && lease.mode !== "web") ||
 		!leaseViewport ||
 		!is_positive_int(leaseViewport.width) ||
 		!is_positive_int(leaseViewport.height)
@@ -3302,7 +5543,9 @@ async function execute_browser_command(args: {
 			200,
 		);
 	}
-	if (!env.BROWSER_PREVIEW_URL) {
+	const mode = lease.mode;
+	// Only file mode loads the preview runtime.
+	if (mode === "file" && !env.BROWSER_PREVIEW_URL) {
 		return json_response(
 			{ ok: false, error: { code: "misconfigured", message: "Preview runtime is not configured." } },
 			503,
@@ -3341,7 +5584,8 @@ async function execute_browser_command(args: {
 			env,
 			ctx,
 			connection: args.connection,
-			runtimeOrigin: CONTROLLER_ORIGIN,
+			mode,
+			runtimeOrigin: mode === "file" ? CONTROLLER_ORIGIN : null,
 			viewport: { width: leaseViewport.width, height: leaseViewport.height },
 			code: body.code,
 		});
@@ -3432,6 +5676,16 @@ async function execute_browser_command(args: {
 	// Popup ownership lives in the trusted bridge, outside the snippet's closure.
 	sandbox.popups = { blocked: typeof check.blockedPopups === "number" ? check.blockedPopups : 0, urls: [] };
 
+	// The page ended on a site the user blocked for the agent. Drop the output, keep the session.
+	if (check.blockedSite === true) {
+		await finish(false, { resultBytes: 0, fileCount: 0, fileBytes: 0, viewport: snippetViewport(sandbox.viewport) });
+		log_browser({ route: "run", commandId, status: "agent_blocked_site", elapsedMs });
+		return json_response(
+			{ ok: false, error: { code: "agent_blocked_site", message: "The page is on a site the agent may not use." } },
+			200,
+		);
+	}
+
 	if (!sandbox.ok) {
 		await finish(false, { resultBytes: 0, fileCount: 0, fileBytes: 0, viewport: snippetViewport(sandbox.viewport) });
 		log_browser({ route: "run", commandId, status: "errored", elapsedMs });
@@ -3499,7 +5753,24 @@ async function execute_browser_command(args: {
 			result = null;
 		}
 	}
-	await finish(false, { resultBytes, fileCount: files.files.length, fileBytes: files.fileBytes, viewport: snippetViewport(sandbox.viewport) });
+	const finished = await finish(false, { resultBytes, fileCount: files.files.length, fileBytes: files.fileBytes, viewport: snippetViewport(sandbox.viewport) });
+	// Web mode: the files the page downloaded during the command. They share the 8-file, 8 MiB
+	// output limit with `emitFile` files, which come first. Downloads over the limit are dropped.
+	const downloads: Array<{ name: string; contentType: string; dataBase64: string }> = [];
+	let downloadsDropped = is_record(finished) && is_positive_int(finished.downloadsDropped) ? finished.downloadsDropped : 0;
+	let outputCount = files.files.length;
+	let outputBytes = files.fileBytes;
+	for (const item of is_record(finished) && Array.isArray(finished.downloads) ? (finished.downloads as unknown[]) : []) {
+		const size = is_record(item) && typeof item.dataBase64 === "string" ? base64_bytes(item.dataBase64)?.byteLength : undefined;
+		if (!is_record(item) || typeof item.name !== "string" || typeof item.contentType !== "string" || typeof item.dataBase64 !== "string" ||
+			size === undefined || outputCount >= LIMITS.files || outputBytes + size > LIMITS.fileBytes) {
+			downloadsDropped += 1;
+			continue;
+		}
+		outputCount += 1;
+		outputBytes += size;
+		downloads.push({ name: item.name, contentType: item.contentType, dataBase64: item.dataBase64 });
+	}
 	log_browser({
 		route: "run",
 		commandId,
@@ -3507,6 +5778,8 @@ async function execute_browser_command(args: {
 		elapsedMs,
 		resultBytes,
 		fileCount: files.files.length,
+		downloadCount: downloads.length,
+		downloadsDropped,
 	});
 	const text = cap_snippet_text(sandbox);
 	return json_response(
@@ -3519,6 +5792,8 @@ async function execute_browser_command(args: {
 			result,
 			resultTruncated,
 			files: files.files,
+			downloads,
+			...(downloadsDropped > 0 ? { downloadsDropped } : {}),
 			popups: snippetPopups(sandbox.popups),
 			consoleEntries: text.consoleEntries,
 			pageErrors: text.pageErrors,
@@ -3588,13 +5863,14 @@ async function handle_browser_run(request: Request, env: Env, ctx?: BrowserRunne
 			viewport: { width: number; height: number } | null;
 		},
 	) => {
-		await object_json(stub, "/run/finish", {
+		const finished = await object_json(stub, "/run/finish", {
 			sessionId: body.sessionId,
 			commandId,
 			tainted,
 			...meta,
 		});
 		runState.finished = true;
+		return finished;
 	};
 	try {
 		return await execute_browser_command({
@@ -3625,12 +5901,30 @@ async function handle_browser_reload(request: Request, env: Env): Promise<Respon
 	const access = await require_host_access(request, env);
 	if (!access.ok) return access.response;
 
-	const parsed = await parse_json_body(request, BROWSER_RELOAD_FIELDS);
+	const parsed = await parse_json_body(request, new Set([...BROWSER_RELOAD_FIELDS, ...BROWSER_WEB_RELOAD_FIELDS]));
 	if (!parsed.ok) return parsed.response;
 	const body = parsed.body;
 
 	const owners = parse_owner_tuple(body);
 	if (!owners.ok) return owners.response;
+	// Web reload reloads the current page. It carries no file snapshot.
+	if (body.mode === "web") {
+		for (const key of Object.keys(body)) {
+			if (!BROWSER_WEB_RELOAD_FIELDS.has(key)) return invalid_request(`Unknown request field \`${key}\`.`);
+		}
+		if (!is_non_empty_string(body.sessionId)) return invalid_request("`sessionId` is required.");
+		if (body.navGen !== 1) return invalid_request("`navGen` must be 1 in web mode.");
+		if (body.expectedAgentLease !== undefined && !is_agent_lease(body.expectedAgentLease)) {
+			return invalid_request("`expectedAgentLease` must contain positive nav, load, and control generations.");
+		}
+		const reloaded = await object_json(
+			session_stub(env, owners.ownerId, owners.organizationId, owners.workspaceId),
+			"/reload",
+			{ mode: "web", sessionId: body.sessionId, navGen: body.navGen, expectedAgentLease: body.expectedAgentLease },
+		);
+		return json_response(is_record(reloaded) ? reloaded : { ok: false, error: { code: "reload_failed" } }, 200);
+	}
+	if (body.mode !== undefined && body.mode !== "file") return invalid_request("`mode` must be file or web.");
 	const snapshot = parse_snapshot(body);
 	if (!snapshot.ok) return snapshot.response;
 	if (!is_non_empty_string(body.sessionId)) return invalid_request("`sessionId` is required.");
@@ -3676,18 +5970,153 @@ async function handle_browser_close(request: Request, env: Env): Promise<Respons
 	if (body.expectedAgentLease !== undefined && (!is_agent_lease(body.expectedAgentLease) || !is_non_empty_string(body.sessionId))) {
 		return invalid_request("`expectedAgentLease` needs a session id and positive nav, load, and control generations.");
 	}
+	// Only a human End sends `saveProfile: true`. Every other close drops the cookies.
+	if (body.saveProfile !== undefined && typeof body.saveProfile !== "boolean") {
+		return invalid_request("`saveProfile` must be a boolean.");
+	}
+	// The app names the path that asked for the close. It is only logged, so a close nobody
+	// expected can be traced back to its caller. A bad code is dropped, never a reason to refuse
+	// the close: the app marks its session closed even when this call fails.
+	const by = typeof body.reason === "string" && /^[a-z_]{1,40}$/u.test(body.reason) ? body.reason : undefined;
 
 	// Send close without the caller's abort signal: cleanup must complete even
 	// when the triggering request is already gone.
 	const closed = await object_json(
 		session_stub(env, owners.ownerId, owners.organizationId, owners.workspaceId),
 		"/close",
-		{ sessionId: body.sessionId, expectedAgentLease: body.expectedAgentLease },
+		{ sessionId: body.sessionId, expectedAgentLease: body.expectedAgentLease, saveProfile: body.saveProfile, by },
 	);
 	return json_response(
 		is_record(closed) ? closed : { ok: false, error: { code: "close_failed" } },
 		200,
 	);
+}
+
+async function handle_browser_profile(request: Request, env: Env, route: "summary" | "clear"): Promise<Response> {
+	const access = await require_host_access(request, env);
+	if (!access.ok) return access.response;
+
+	const parsed = await parse_json_body(request, route === "summary" ? BROWSER_PROFILE_SUMMARY_FIELDS : BROWSER_PROFILE_CLEAR_FIELDS);
+	if (!parsed.ok) return parsed.response;
+	const body = parsed.body;
+
+	const owners = parse_owner_tuple(body);
+	if (!owners.ok) return owners.response;
+	if (!is_profile_id(body.profileId)) return invalid_request("`profileId` is invalid.");
+	if (!is_profile_key(body.profileKey)) return invalid_request("`profileKey` must be 32 bytes in base64.");
+	if (route === "clear" && (!is_non_empty_string(body.domain) || body.domain.length > LIMITS.hostChars)) {
+		return invalid_request("`domain` is invalid.");
+	}
+
+	const replied = await object_json(
+		session_stub(env, owners.ownerId, owners.organizationId, owners.workspaceId),
+		`/profile/${route}`,
+		{ ownerId: owners.ownerId, organizationId: owners.organizationId, workspaceId: owners.workspaceId, profileId: body.profileId, profileKey: body.profileKey, ...(route === "clear" ? { domain: body.domain } : {}) },
+	);
+	return json_response(is_record(replied) ? replied : { ok: false, error: { code: "profile_failed" } }, 200);
+}
+
+async function handle_browser_profile_delete(request: Request, env: Env): Promise<Response> {
+	// Deleting saved data stays available while disabled, like close. Auth still applies.
+	if (!(await is_authorized(request, env))) {
+		return json_response({ ok: false, error: { code: "unauthorized", message: "Unauthorized" } }, 401);
+	}
+
+	const parsed = await parse_json_body(request, BROWSER_PROFILE_DELETE_FIELDS);
+	if (!parsed.ok) return parsed.response;
+	const body = parsed.body;
+
+	const owners = parse_owner_tuple(body);
+	if (!owners.ok) return owners.response;
+	if (!is_profile_id(body.profileId)) return invalid_request("`profileId` is invalid.");
+
+	const deleted = await object_json(
+		session_stub(env, owners.ownerId, owners.organizationId, owners.workspaceId),
+		"/profile/delete",
+		{ profileId: body.profileId },
+	);
+	return json_response(is_record(deleted) ? deleted : { ok: false, error: { code: "profile_failed" } }, 200);
+}
+
+/**
+ * A signed R2 URL from Convex: `https` and at most 8192 characters.
+ */
+function is_signed_url(value: unknown): value is string {
+	if (typeof value !== "string" || value.length > 8192) return false;
+	try {
+		return new URL(value).protocol === "https:";
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * The id fields of the download and upload routes. Each one names one item in DO memory.
+ */
+function is_item_id(value: unknown): value is string {
+	return is_non_empty_string(value) && value.length <= 128;
+}
+
+async function handle_browser_download(request: Request, env: Env, route: "info" | "push"): Promise<Response> {
+	const access = await require_host_access(request, env);
+	if (!access.ok) return access.response;
+
+	const parsed = await parse_json_body(request, route === "info" ? BROWSER_DOWNLOAD_INFO_FIELDS : BROWSER_DOWNLOAD_PUSH_FIELDS);
+	if (!parsed.ok) return parsed.response;
+	const body = parsed.body;
+
+	const owners = parse_owner_tuple(body);
+	if (!owners.ok) return owners.response;
+	if (!is_item_id(body.sessionId) || !is_item_id(body.downloadId)) return invalid_request("`sessionId` and `downloadId` are required.");
+	if (route === "push") {
+		if (!is_signed_url(body.url)) return invalid_request("`url` must be an https URL.");
+		// The signed PUT may need a few headers, like `Content-Type`. Keep them plain and small.
+		const headers = is_record(body.headers) ? Object.entries(body.headers) : null;
+		if (!headers || headers.length > 20 || !headers.every(([name, value]) =>
+			/^[A-Za-z0-9-]{1,64}$/u.test(name) && typeof value === "string" && value.length <= 1024 && !/[\r\n]/u.test(value))) {
+			return invalid_request("`headers` is invalid.");
+		}
+	}
+
+	const replied = await object_json(
+		session_stub(env, owners.ownerId, owners.organizationId, owners.workspaceId),
+		`/download/${route}`,
+		{ sessionId: body.sessionId, downloadId: body.downloadId, ...(route === "push" ? { url: body.url, headers: body.headers } : {}) },
+	);
+	return json_response(is_record(replied) ? replied : { ok: false, error: { code: "download_failed" } }, 200);
+}
+
+async function handle_browser_upload(request: Request, env: Env, route: "fill" | "grant"): Promise<Response> {
+	const access = await require_host_access(request, env);
+	if (!access.ok) return access.response;
+
+	const parsed = await parse_json_body(request, route === "fill" ? BROWSER_UPLOAD_FILL_FIELDS : BROWSER_UPLOAD_GRANT_FIELDS);
+	if (!parsed.ok) return parsed.response;
+	const body = parsed.body;
+
+	const owners = parse_owner_tuple(body);
+	if (!owners.ok) return owners.response;
+	if (!is_item_id(body.sessionId) || !is_item_id(body.chooserId)) return invalid_request("`sessionId` and `chooserId` are required.");
+	if (!is_positive_int(body.controlGen)) return invalid_request("`controlGen` must be a positive int.");
+	if (route === "fill") {
+		if (!Array.isArray(body.files) || body.files.length < 1 || body.files.length > LIMITS.uploadFiles) {
+			return invalid_request("`files` must have 1 to 10 items.");
+		}
+		for (const file of body.files as unknown[]) {
+			if (!is_record(file) || Object.keys(file).some((key) => !BROWSER_UPLOAD_FILE_FIELDS.has(key)) ||
+				!is_non_empty_string(file.name) || file.name.length > 255 ||
+				!is_non_empty_string(file.contentType) || file.contentType.length > 255 || !is_signed_url(file.url)) {
+				return invalid_request("`files` has an invalid item.");
+			}
+		}
+	}
+
+	const replied = await object_json(
+		session_stub(env, owners.ownerId, owners.organizationId, owners.workspaceId),
+		`/upload/${route}`,
+		{ sessionId: body.sessionId, chooserId: body.chooserId, controlGen: body.controlGen, ...(route === "fill" ? { files: body.files } : {}) },
+	);
+	return json_response(is_record(replied) ? replied : { ok: false, error: { code: "upload_failed" } }, 200);
 }
 
 async function handle_browser_keep_open(request: Request, env: Env): Promise<Response> {
@@ -3831,6 +6260,30 @@ async function handle_browser_control_resume(request: Request, env: Env): Promis
 	);
 }
 
+async function handle_browser_agent_access(request: Request, env: Env): Promise<Response> {
+	const access = await require_host_access(request, env);
+	if (!access.ok) return access.response;
+
+	const parsed = await parse_json_body(request, BROWSER_AGENT_ACCESS_FIELDS);
+	if (!parsed.ok) return parsed.response;
+	const body = parsed.body;
+
+	const owners = parse_owner_tuple(body);
+	if (!owners.ok) return owners.response;
+	if (!is_non_empty_string(body.sessionId)) return invalid_request("`sessionId` is required.");
+	if (typeof body.on !== "boolean") return invalid_request("`on` must be a boolean.");
+
+	const changed = await object_json(
+		session_stub(env, owners.ownerId, owners.organizationId, owners.workspaceId),
+		"/agent-access",
+		{ sessionId: body.sessionId, on: body.on },
+	);
+	return json_response(
+		is_record(changed) ? changed : { ok: false, error: { code: "agent_access_failed" } },
+		200,
+	);
+}
+
 // Viewer stream gateway
 //
 // The host routes the upgrade by its non-secret owner scope. The session object
@@ -3853,7 +6306,13 @@ export type ViewerInput =
 	| { kind: "key.press"; key: string }
 	| { kind: "key.down"; key: string }
 	| { kind: "key.up"; key: string }
-	| { kind: "key.type"; text: string };
+	| { kind: "key.type"; text: string }
+	| { kind: "text.insert"; text: string };
+
+/**
+ * One address bar action from the web viewer.
+ */
+type ViewerNav = { action: "go"; url: string } | { action: "back" | "forward" | "reload" | "stop" };
 
 function is_coord(value: unknown): value is number {
 	return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 3000;
@@ -3874,7 +6333,7 @@ function is_key(value: unknown): value is string {
 export function parse_viewer_input(
 	data: unknown,
 ): { ok: true; seq: string | number; controlGen: number; loadGen: number; input: ViewerInput } | { ok: false } {
-	if (typeof data !== "string" || data.length === 0 || data.length > 4096) return { ok: false };
+	if (typeof data !== "string" || data.length === 0 || data.length > LIMITS.viewerMessageChars) return { ok: false };
 	let body: unknown;
 	try {
 		body = JSON.parse(data);
@@ -3939,8 +6398,58 @@ export function parse_viewer_input(
 				return { ok: true, seq: body.seq, ...lease, input: { kind: "key.type", text: body.text } };
 			}
 			break;
+		case "text.insert":
+			if (typeof body.text === "string" && body.text.length > 0 && body.text.length <= LIMITS.textInsertChars) {
+				return { ok: true, seq: body.seq, ...lease, input: { kind: "text.insert", text: body.text } };
+			}
+			break;
 	}
 	return { ok: false };
+}
+
+/**
+ * Parse a `nav` message. The address rules run later, so a bad address gets a nav-ack with its reason.
+ */
+function parse_viewer_nav(
+	body: unknown,
+): { ok: true; seq: string | number; controlGen: number; nav: ViewerNav } | { ok: false } {
+	if (!is_record(body) || body.t !== "nav") return { ok: false };
+	if (typeof body.seq !== "string" && typeof body.seq !== "number") return { ok: false };
+	if (!is_positive_int(body.controlGen) || !Number.isSafeInteger(body.controlGen)) return { ok: false };
+	if (body.action === "go") {
+		if (typeof body.url !== "string") return { ok: false };
+		return { ok: true, seq: body.seq, controlGen: body.controlGen, nav: { action: "go", url: body.url } };
+	}
+	if (body.action === "back" || body.action === "forward" || body.action === "reload" || body.action === "stop") {
+		if (body.url !== undefined) return { ok: false };
+		return { ok: true, seq: body.seq, controlGen: body.controlGen, nav: { action: body.action } };
+	}
+	return { ok: false };
+}
+
+/**
+ * Run one address bar action on the page. Return null on success or a refusal code.
+ */
+async function apply_viewer_nav(cdp: CDPSession, action: ViewerNav["action"], url: string | null): Promise<string | null> {
+	switch (action) {
+		case "go":
+			await cdp.send("Page.navigate", { url: url! });
+			return null;
+		case "reload":
+			await cdp.send("Page.reload");
+			return null;
+		case "stop":
+			await cdp.send("Page.stopLoading");
+			return null;
+		case "back":
+		case "forward": {
+			const history = await cdp.send("Page.getNavigationHistory");
+			const entry = history.entries[history.currentIndex + (action === "back" ? -1 : 1)];
+			if (!entry) return "no_history";
+			await cdp.send("Page.navigateToHistoryEntry", { entryId: entry.id });
+			return null;
+		}
+	}
 }
 
 async function apply_viewer_input(page: Page, input: ViewerInput): Promise<void> {
@@ -3972,6 +6481,10 @@ async function apply_viewer_input(page: Page, input: ViewerInput): Promise<void>
 			break;
 		case "key.type":
 			await page.keyboard.type(input.text);
+			break;
+		case "text.insert":
+			// One CDP Input.insertText call, like a paste. It sends no key events.
+			await page.keyboard.insertText(input.text);
 			break;
 	}
 }
@@ -4043,6 +6556,54 @@ async function handle_viewer_stream(request: Request, env: Env): Promise<Respons
 	return session_stub(env, owners.ownerId, owners.organizationId, owners.workspaceId).fetch(request);
 }
 
+/**
+ * `PUT /viewer/upload`: one file from the user's computer for the open file chooser. It is public:
+ * the single-use grant in the query is the secret. Only the app origins in `BROWSER_APP_ORIGINS`
+ * may call it from a browser (CORS).
+ */
+async function handle_viewer_upload(request: Request, env: Env): Promise<Response> {
+	const origin = request.headers.get("Origin");
+	const cors = origin && app_origins(env).includes(origin) ? { "Access-Control-Allow-Origin": origin, Vary: "Origin" } : null;
+	if (request.method === "OPTIONS") {
+		// A refused preflight has no CORS headers, so the browser never sends the PUT.
+		if (!cors || request.headers.get("Access-Control-Request-Method") !== "PUT") return new Response(null, { status: 403 });
+		return new Response(null, {
+			status: 204,
+			headers: { ...cors, "Access-Control-Allow-Methods": "PUT", "Access-Control-Allow-Headers": "Content-Type", "Access-Control-Max-Age": "600" },
+		});
+	}
+	if (!cors) return json_response({ ok: false, code: "origin_refused" }, 403);
+	const reply = (response: Response) => {
+		const out = new Response(response.body, response);
+		for (const [name, value] of Object.entries(cors)) out.headers.set(name, value);
+		return out;
+	};
+	if (env.BROWSER_RUNNER_DISABLED === "true") return reply(json_response({ ok: false, code: "disabled" }, 503));
+
+	const url = new URL(request.url);
+	const owners = parse_owner_tuple({
+		ownerId: url.searchParams.get("ownerId"),
+		organizationId: url.searchParams.get("organizationId"),
+		workspaceId: url.searchParams.get("workspaceId"),
+	});
+	const name = url.searchParams.get("name") ?? "";
+	if (!owners.ok || !is_item_id(url.searchParams.get("grantId")) || name.length < 1 || name.length > 255) {
+		return reply(json_response({ ok: false, code: "invalid_request" }, 400));
+	}
+	// Refuse a large file before reading it. The session object still caps the bytes it reads.
+	const length = request.headers.get("Content-Length");
+	if (length === null || !/^\d+$/u.test(length)) return reply(json_response({ ok: false, code: "length_required" }, 411));
+	if (Number(length) > LIMITS.uploadBytes) return reply(json_response({ ok: false, code: "too_large" }, 413));
+
+	// A throw would reach the browser as a bare 500 without CORS headers, which the app cannot read.
+	try {
+		return reply(await session_stub(env, owners.ownerId, owners.organizationId, owners.workspaceId).fetch(request));
+	} catch (error) {
+		log_browser({ route: "viewer_upload", error: sanitize_error(error).name });
+		return reply(json_response({ ok: false, code: "upload_failed" }, 500));
+	}
+}
+
 export async function handle_request(
 	request: Request,
 	env: Env,
@@ -4084,6 +6645,33 @@ export async function handle_request(
 	}
 	if (request.method === "POST" && url.pathname === "/internal/browser/control-resume") {
 		return handle_browser_control_resume(request, env);
+	}
+	if (request.method === "POST" && url.pathname === "/internal/browser/agent-access") {
+		return handle_browser_agent_access(request, env);
+	}
+	if (request.method === "POST" && url.pathname === "/internal/browser/profile-summary") {
+		return handle_browser_profile(request, env, "summary");
+	}
+	if (request.method === "POST" && url.pathname === "/internal/browser/profile-clear") {
+		return handle_browser_profile(request, env, "clear");
+	}
+	if (request.method === "POST" && url.pathname === "/internal/browser/profile-delete") {
+		return handle_browser_profile_delete(request, env);
+	}
+	if (request.method === "POST" && url.pathname === "/internal/browser/download-info") {
+		return handle_browser_download(request, env, "info");
+	}
+	if (request.method === "POST" && url.pathname === "/internal/browser/download-push") {
+		return handle_browser_download(request, env, "push");
+	}
+	if (request.method === "POST" && url.pathname === "/internal/browser/upload-fill") {
+		return handle_browser_upload(request, env, "fill");
+	}
+	if (request.method === "POST" && url.pathname === "/internal/browser/upload-grant") {
+		return handle_browser_upload(request, env, "grant");
+	}
+	if ((request.method === "PUT" || request.method === "OPTIONS") && url.pathname === "/viewer/upload") {
+		return handle_viewer_upload(request, env);
 	}
 	return json_response({ ok: false, error: { code: "not_found", message: "Not found" } }, 404);
 }

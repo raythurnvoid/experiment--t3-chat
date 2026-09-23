@@ -50,6 +50,7 @@ const access_control_permission_validator = v.union(
 	v.literal("content.permissions.manage"),
 	v.literal("workspace.plugins.manage"),
 	v.literal("workspace.service_accounts.manage"),
+	v.literal("workspace.browser.use"),
 );
 
 /**
@@ -352,6 +353,55 @@ const files_plain_text_chunk_fields = {
 	plainTextChunk: v.string(),
 	hasChunkAbove: v.boolean(),
 	hasChunkBelow: v.boolean(),
+};
+
+export const files_browser_session_control_validator = v.union(
+	v.literal("starting"),
+	v.literal("ready"),
+	v.literal("human"),
+	v.literal("pausing"),
+	v.literal("closing"),
+	v.literal("closed"),
+);
+
+export const files_browser_session_source_kind_validator = v.union(
+	v.literal("saved"),
+	v.literal("proposed"),
+	v.literal("draft"),
+);
+
+const files_browser_session_shared_fields = {
+	ownerId: v.id("users"),
+	organizationId: v.id("organizations"),
+	workspaceId: v.id("organizations_workspaces"),
+	/**
+	 * Who pays for this session's browser time. Frozen at start, so a later ownership transfer or
+	 * billing mode change does not move a running session to another payer.
+	 */
+	billedUserId: v.id("users"),
+	/**
+	 * `pending` until the runner's usage receipt is billed. A settled doc is always closed.
+	 */
+	billing: v.union(
+		v.object({ state: v.literal("pending") }),
+		v.object({
+			state: v.literal("settled"),
+			billedMs: v.number(),
+			amountCents: v.number(),
+			settledAt: v.number(),
+		}),
+	),
+	navigationGeneration: v.number(),
+	loadGen: v.number(),
+	controlGen: v.number(),
+	control: files_browser_session_control_validator,
+	runnerSessionId: v.optional(v.string()),
+	idleUntil: v.optional(v.number()),
+	totalUntil: v.optional(v.number()),
+	startingExpiresAt: v.optional(v.number()),
+	closedAt: v.optional(v.number()),
+	createdAt: v.number(),
+	updatedAt: v.number(),
 };
 
 export const files_pending_prepared_state_family_validator = v.object({
@@ -2245,46 +2295,40 @@ const app_convex_schema = defineSchema({
 		]),
 
 	/**
-	 * One shared cloud browser for the selected file. At most one live session per
-	 * owner/organization/workspace; the runner owns control, leases, and deadlines, and this doc
-	 * mirrors what the UI may show. `runnerSessionId` stays server-only: links carry this doc id.
-	 * A `starting` doc that never commits expires fast; closed docs are swept with results.
+	 * One shared cloud browser. At most one live session per owner/organization/workspace, in
+	 * either mode. `file` shows one HTML file from Files; `web` is an open web browser with no
+	 * file. The runner owns control, leases, and deadlines, and this doc mirrors what the UI may
+	 * show. `runnerSessionId` stays server-only: links carry this doc id. A `starting` doc that
+	 * never commits expires fast. Closed docs are swept 7 days after their browser time is billed.
 	 */
-	files_browser_sessions: defineTable({
-		ownerId: v.id("users"),
-		organizationId: v.id("organizations"),
-		workspaceId: v.id("organizations_workspaces"),
-		targetKind: v.union(v.literal("saved"), v.literal("private")),
-		nodeId: v.string(),
-		path: v.string(),
-		navigationClientId: v.string(),
-		navigationGeneration: v.number(),
-		sourceKind: v.union(v.literal("saved"), v.literal("proposed"), v.literal("draft")),
-		sourceVersion: v.string(),
-		sourceHash: v.string(),
-		loadGen: v.number(),
-		controlGen: v.number(),
-		control: v.union(
-			v.literal("starting"),
-			v.literal("ready"),
-			v.literal("human"),
-			v.literal("pausing"),
-			v.literal("closing"),
-			v.literal("closed"),
+	files_browser_sessions: defineTable(
+		v.union(
+			v.object({
+				...files_browser_session_shared_fields,
+				mode: v.literal("file"),
+				targetKind: v.union(v.literal("saved"), v.literal("private")),
+				nodeId: v.string(),
+				path: v.string(),
+				navigationClientId: v.string(),
+				sourceKind: files_browser_session_source_kind_validator,
+				sourceVersion: v.string(),
+				sourceHash: v.string(),
+			}),
+			v.object({
+				...files_browser_session_shared_fields,
+				// A web session always has `navigationGeneration` 1, and its `loadGen` never changes.
+				mode: v.literal("web"),
+				/**
+				 * The "Agent can use this browser" switch. The runner owns it; this mirrors it.
+				 */
+				agentAccess: v.boolean(),
+			}),
 		),
-		runnerSessionId: v.optional(v.string()),
-		idleUntil: v.optional(v.number()),
-		totalUntil: v.optional(v.number()),
-		startingExpiresAt: v.optional(v.number()),
-		closedAt: v.optional(v.number()),
-		createdAt: v.number(),
-		updatedAt: v.number(),
-	})
+	)
 		.index("by_owner_organization_workspace", ["ownerId", "organizationId", "workspaceId"])
 		.index("by_owner", ["ownerId"])
 		.index("by_organization_workspace", ["organizationId", "workspaceId"])
-		.index("by_workspace_node", ["workspaceId", "nodeId"])
-		.index("by_control_closedAt", ["control", "closedAt"])
+		.index("by_billing_state_updatedAt", ["billing.state", "updatedAt"])
 		.index("by_startingExpiresAt", ["startingExpiresAt"]),
 
 	/**
@@ -2310,9 +2354,9 @@ const app_convex_schema = defineSchema({
 		.index("by_owner", ["ownerId"]),
 
 	/**
-	 * Daily browser-use counters per workspace. The day key makes the window self-resetting:
-	 * a new UTC day starts a new doc, and the expiry sweep deletes docs older than two days.
-	 * This brakes start/end and capture loops; per-minute metering is future work.
+	 * Daily browser-use counters per workspace for file mode. The day key makes the window
+	 * self-resetting: a new UTC day starts a new doc, and the expiry sweep deletes docs older than
+	 * two days. This brakes start/end and capture loops. Browser time is billed per minute.
 	 */
 	files_browser_daily_use: defineTable({
 		organizationId: v.id("organizations"),
@@ -2322,6 +2366,89 @@ const app_convex_schema = defineSchema({
 		captures: v.number(),
 		updatedAt: v.number(),
 	}).index("by_workspace_day", ["workspaceId", "day"]),
+
+	/**
+	 * Daily web browser starts per user, across all workspaces. A loop brake, not a cost brake:
+	 * only a start that really opened a browser counts, and reattaching is free. Swept after two
+	 * days like the workspace counters.
+	 */
+	files_browser_user_daily_use: defineTable({
+		userId: v.id("users"),
+		day: v.string(),
+		webStarts: v.number(),
+		updatedAt: v.number(),
+	})
+		.index("by_user_day", ["userId", "day"])
+		.index("by_day", ["day"]),
+
+	/**
+	 * The saved web browser profile of one user in one workspace: the key half that Convex holds.
+	 * The runner stores the saved cookies encrypted, and opening them needs this `profileKey` plus
+	 * the runner's own secret. So deleting this doc makes the saved cookies unreadable at once.
+	 * Every deletion writes a `files_browser_profile_wipes` doc in the same transaction, so the
+	 * runner also deletes the bytes. `profileKey` never leaves internal functions.
+	 */
+	files_browser_profiles: defineTable({
+		userId: v.id("users"),
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		/**
+		 * 32 random bytes.
+		 */
+		profileKey: v.bytes(),
+		/**
+		 * Canonical hosts the agent may not use, at most 50. The runner gets them at the next start.
+		 */
+		agentBlockedHosts: v.array(v.string()),
+		createdAt: v.number(),
+		/**
+		 * The last web browser start. The hourly sweep deletes profiles unused for 90 days.
+		 */
+		lastUsedAt: v.number(),
+	})
+		.index("by_organization_workspace_user", ["organizationId", "workspaceId", "userId"])
+		.index("by_user", ["userId"])
+		.index("by_organization_workspace", ["organizationId", "workspaceId"])
+		.index("by_lastUsedAt", ["lastUsedAt"]),
+
+	/**
+	 * One runner wipe still to do for a deleted `files_browser_profiles` doc. The wipe job asks the
+	 * runner to delete the stored bytes and deletes this doc when the runner confirms. Failures
+	 * retry with backoff and never give up; the runner's own 100-day timer is the last backstop.
+	 * These docs outlive user and workspace deletion on purpose: they are how the bytes get deleted.
+	 */
+	files_browser_profile_wipes: defineTable({
+		/**
+		 * The deleted profile doc's id, as a string.
+		 */
+		profileId: v.string(),
+		ownerId: v.id("users"),
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		createdAt: v.number(),
+		attempts: v.number(),
+		nextAttemptAt: v.number(),
+	}).index("by_nextAttemptAt", ["nextAttemptAt"]),
+
+	/**
+	 * One human browser download saved to Files. A second save of the same download returns this
+	 * node and does not create another one. The runner keeps at most 20 downloads per session, so a
+	 * session has few of these docs. They are deleted with their session doc.
+	 */
+	files_browser_download_saves: defineTable({
+		sessionId: v.id("files_browser_sessions"),
+		/**
+		 * The runner's random id for the download.
+		 */
+		downloadId: v.string(),
+		nodeId: v.id("files_nodes"),
+		createdAt: v.number(),
+		/**
+		 * When the runner uploaded the bytes to the node's asset. `null` while no push worked yet: a
+		 * later save then signs a new upload URL for the same asset and asks the runner to push again.
+		 */
+		pushedAt: v.union(v.number(), v.null()),
+	}).index("by_session_download", ["sessionId", "downloadId"]),
 
 	files_r2_assets: defineTable({
 		organizationId: v.union(v.id("organizations"), v.literal(organizations_GLOBAL_ORGANIZATION_ID)),

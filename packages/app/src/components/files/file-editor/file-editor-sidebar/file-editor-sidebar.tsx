@@ -127,7 +127,14 @@ export const FileEditorSidebar = memo(function FileEditorSidebar(props: FileEdit
 						className={cn("FileEditorSidebar-panel" satisfies FileEditorSidebar_ClassNames)}
 						tabId={FILE_EDITOR_SIDEBAR_TAB_ID_AGENT}
 					>
-						<FileEditorSidebarAgent rootTabId={FILE_EDITOR_SIDEBAR_TAB_ID_AGENT} browserNodeId={browserNodeId} browserNodeKind={browserNodeKind} />
+						<FileEditorSidebarAgent
+							isActive={storedFilesLastTab === FILE_EDITOR_SIDEBAR_TAB_ID_AGENT}
+							browserBinding={
+								browserNodeId && browserNodeKind
+									? { mode: "file", nodeId: browserNodeId, targetKind: browserNodeKind }
+									: null
+							}
+						/>
 					</MyTabsPanel>
 					<MyTabsPanel
 						className={cn("FileEditorSidebar-panel" satisfies FileEditorSidebar_ClassNames)}

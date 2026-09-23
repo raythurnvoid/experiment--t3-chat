@@ -18,7 +18,31 @@ export type files_browser_StreamInput =
 	| { kind: "mouse.down" | "mouse.up"; button?: "left" | "middle" | "right"; clickCount?: number }
 	| { kind: "wheel"; x: number; y: number; dx: number; dy: number }
 	| { kind: "key.press" | "key.down" | "key.up"; key: string }
-	| { kind: "key.type"; text: string };
+	| { kind: "key.type"; text: string }
+	| { kind: "text.insert"; text: string };
+
+/**
+ * One address bar action. Web mode only, and only while this viewer holds control.
+ */
+export type files_browser_StreamNav = { action: "go"; url: string } | { action: "back" | "forward" | "reload" | "stop" };
+
+/**
+ * Messages the runner sends only for a web session.
+ */
+export type files_browser_StreamWebMessage =
+	| { t: "location"; url: string; title: string; loading: boolean; canGoBack: boolean; canGoForward: boolean }
+	| { t: "notice"; code: string }
+	| { t: "nav-ack"; seq: number; ok: boolean; code?: string }
+	| { t: "agent-access"; on: boolean }
+	/**
+	 * A human download is held in the runner. The app saves it to Files with this id.
+	 */
+	| { t: "download"; downloadId: string; name: string; size: number; contentType: string }
+	/**
+	 * The page opened a file dialog. `accept` is the input's raw `accept` text, `origin` the frame origin.
+	 */
+	| { t: "file-chooser"; chooserId: string; multiple: boolean; accept: string; origin: string }
+	| { t: "file-chooser-closed"; chooserId: string };
 
 export type files_browser_StreamHelloMessage = {
 	viewerId: string;
@@ -54,6 +78,7 @@ export type files_browser_StreamEvents = {
 	onControl: (control: files_browser_StreamControlMessage) => void;
 	onViewport: (viewport: files_browser_StreamViewportMessage) => void;
 	onAck: (ack: files_browser_StreamAckMessage) => void;
+	onWebMessage: (message: files_browser_StreamWebMessage) => void;
 	onClose: (close: files_browser_StreamCloseMessage) => void;
 };
 
@@ -63,6 +88,16 @@ export type files_browser_StreamHandle = {
 	 * and control plus a frame have arrived. The caller also gates input on human control.
 	 */
 	sendInput: (input: files_browser_StreamInput) => number;
+	/**
+	 * Send one address bar action. Returns its sequence number, or -1 until the socket is open
+	 * and control has arrived. The `nav-ack` web message carries the same number.
+	 */
+	sendNav: (nav: files_browser_StreamNav) => number;
+	/**
+	 * Tell the page its file dialog was closed without a file. The runner accepts it only from the
+	 * viewer that holds human control. Returns false until the socket is open and control has arrived.
+	 */
+	sendFileChooserCancel: (chooserId: string) => boolean;
 	close: () => void;
 };
 
@@ -76,6 +111,9 @@ type files_browser_Socket = Pick<WebSocket, "binaryType" | "readyState" | "send"
 // Numeric WebSocket.OPEN. The module reads no other WebSocket global so unit tests can inject
 // a fake socket in runtimes without one.
 const WEBSOCKET_OPEN = 1;
+
+// The runner refuses longer text messages in both directions.
+const MESSAGE_MAX_CHARS = 16_384;
 
 function is_record(value: unknown): value is Record<string, unknown> {
 	return !!value && typeof value === "object" && !Array.isArray(value);
@@ -147,6 +185,82 @@ function parse_ack(value: unknown): files_browser_StreamAckMessage | null {
 	return { seq: value.seq, ok: value.ok, ...(typeof value.code === "string" ? { code: value.code } : {}) };
 }
 
+function parse_web_message(value: unknown): files_browser_StreamWebMessage | null {
+	if (!is_record(value)) {
+		return null;
+	}
+	switch (value.t) {
+		case "location":
+			if (
+				typeof value.url !== "string" ||
+				typeof value.title !== "string" ||
+				typeof value.loading !== "boolean" ||
+				typeof value.canGoBack !== "boolean" ||
+				typeof value.canGoForward !== "boolean"
+			) {
+				return null;
+			}
+			return {
+				t: "location",
+				url: value.url,
+				title: value.title,
+				loading: value.loading,
+				canGoBack: value.canGoBack,
+				canGoForward: value.canGoForward,
+			};
+		case "notice":
+			return typeof value.code === "string" ? { t: "notice", code: value.code } : null;
+		case "nav-ack":
+			if (typeof value.seq !== "number" || typeof value.ok !== "boolean") {
+				return null;
+			}
+			return {
+				t: "nav-ack",
+				seq: value.seq,
+				ok: value.ok,
+				...(typeof value.code === "string" ? { code: value.code } : {}),
+			};
+		case "agent-access":
+			return typeof value.on === "boolean" ? { t: "agent-access", on: value.on } : null;
+		case "download":
+			if (
+				typeof value.downloadId !== "string" ||
+				typeof value.name !== "string" ||
+				typeof value.size !== "number" ||
+				typeof value.contentType !== "string"
+			) {
+				return null;
+			}
+			return {
+				t: "download",
+				downloadId: value.downloadId,
+				name: value.name,
+				size: value.size,
+				contentType: value.contentType,
+			};
+		case "file-chooser":
+			if (
+				typeof value.chooserId !== "string" ||
+				typeof value.multiple !== "boolean" ||
+				typeof value.accept !== "string" ||
+				typeof value.origin !== "string"
+			) {
+				return null;
+			}
+			return {
+				t: "file-chooser",
+				chooserId: value.chooserId,
+				multiple: value.multiple,
+				accept: value.accept,
+				origin: value.origin,
+			};
+		case "file-chooser-closed":
+			return typeof value.chooserId === "string" ? { t: "file-chooser-closed", chooserId: value.chooserId } : null;
+		default:
+			return null;
+	}
+}
+
 export function files_browser_stream_connect(args: {
 	url: string;
 	hello: files_browser_StreamHello;
@@ -203,7 +317,7 @@ export function files_browser_stream_connect(args: {
 			}
 			return;
 		}
-		if (typeof data !== "string") {
+		if (typeof data !== "string" || data.length > MESSAGE_MAX_CHARS) {
 			return;
 		}
 		let value: unknown;
@@ -245,6 +359,11 @@ export function files_browser_stream_connect(args: {
 		const viewport = parse_viewport(value);
 		if (viewport) {
 			args.events.onViewport(viewport);
+			return;
+		}
+		const webMessage = parse_web_message(value);
+		if (webMessage) {
+			args.events.onWebMessage(webMessage);
 		}
 		// Unknown message types are ignored so the server can add new ones.
 	};
@@ -259,14 +378,37 @@ export function files_browser_stream_connect(args: {
 	// A socket error is always followed by close, which carries the terminal state.
 	socket.onerror = () => {};
 
+	// Send one numbered message. A message over the runner's size cap is never sent.
+	const send_numbered = (message: Record<string, unknown> & { seq: number }) => {
+		const text = JSON.stringify(message);
+		if (text.length > MESSAGE_MAX_CHARS) {
+			return -1;
+		}
+		seq = message.seq;
+		socket.send(text);
+		return seq;
+	};
+
 	return {
 		sendInput: (input) => {
 			if (socket.readyState !== WEBSOCKET_OPEN || controlGen === null || loadGen === null) {
 				return -1;
 			}
-			seq += 1;
-			socket.send(JSON.stringify({ t: "input", seq, ...input, controlGen, loadGen }));
-			return seq;
+			return send_numbered({ t: "input", seq: seq + 1, ...input, controlGen, loadGen });
+		},
+		sendNav: (nav) => {
+			// Navigation does not depend on the image on screen, so it needs only control.
+			if (socket.readyState !== WEBSOCKET_OPEN || controlGen === null) {
+				return -1;
+			}
+			return send_numbered({ t: "nav", seq: seq + 1, controlGen, ...nav });
+		},
+		sendFileChooserCancel: (chooserId) => {
+			if (socket.readyState !== WEBSOCKET_OPEN || controlGen === null) {
+				return false;
+			}
+			socket.send(JSON.stringify({ t: "file-chooser-cancel", chooserId }));
+			return true;
 		},
 		close: () => {
 			pendingFrame = null;

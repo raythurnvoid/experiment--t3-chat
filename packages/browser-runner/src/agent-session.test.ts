@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import * as provider from "@cloudflare/playwright";
-import { BrowserSession, session_can_run, type Env } from "./index";
+import { BrowserSession, LIMITS, session_can_run, type Env } from "./index";
 
 const bridges = vi.hoisted(() => ({
 	revoke: vi.fn(), settle: vi.fn(), close: vi.fn(),
@@ -47,7 +47,7 @@ function make_provider() {
 		if (method === "Target.getBrowserContexts") return { browserContextIds: [] };
 		return {};
 	});
-	const cdp = { send, detach: vi.fn(async () => {}) };
+	const cdp = Object.assign(new EventEmitter(), { send, detach: vi.fn(async () => {}) });
 	const evaluate = vi.fn(async () => ({ url: "https://controller.browser.invalid/", nonce: "nonce-1" }));
 	const mainFrame = { url: vi.fn(() => "https://controller.browser.invalid/"), parentFrame: () => null };
 	const context = Object.assign(new EventEmitter(), { newCDPSession: async () => cdp });
@@ -64,21 +64,32 @@ function make_provider() {
 	return { send, evaluate, mainFrame, context, page, browser };
 }
 
-function make_session() {
-	const record: SessionRecord = {
-		version: 1, ...OWNERS, sessionId: "session-1", grantId: "grant-1", nodeId: "node_1",
+function make_session(options: { web?: boolean } = {}) {
+	const fileRecord: SessionRecord = {
+		mode: "file", version: 1, ...OWNERS, sessionId: "session-1", grantId: "grant-1", nodeId: "node_1",
 		navGen: 1, loadGen: 1, controlGen: 1, control: "ready", sourceKind: "saved", sourceVersion: "v1", sourceHash: "hash",
 		providerSessionId: "provider-1", pageNonce: "nonce-1", viewport: { width: 1280, height: 900 },
 		command: null, commandCount: 0, htmlBytesTotal: 100, loadCount: 1,
 		createdAt: Date.now(), providerAcquiredAt: Date.now(), lastActiveAt: Date.now(), attemptId: "attempt-1", closeAttempts: 0,
 		inputHolder: null, viewers: {}, viewerGrants: {},
 	};
+	const record = ((/* iife */) => {
+		if (!options.web) return fileRecord;
+		// Web records have no file fields. They own page target `page-1`.
+		const copy: Record<string, unknown> = {
+			...fileRecord, mode: "web", agentAccess: true, pageTargetId: "page-1", profileId: "profile_1", agentBlockedHosts: [],
+		};
+		for (const key of ["nodeId", "sourceKind", "sourceVersion", "sourceHash", "htmlBytesTotal", "loadCount"]) delete copy[key];
+		return copy as SessionRecord;
+	})();
 	const stored = new Map<string, unknown>([["session", structuredClone(record)]]);
 	const pending: Promise<unknown>[] = [];
 	const state = {
 		id: { toString: () => "test-id" },
 		storage: {
 			get: async <T,>(key: string) => structuredClone(stored.get(key)) as T | undefined,
+			list: async <T,>(options: { prefix: string }) =>
+				new Map([...stored].filter(([key]) => key.startsWith(options.prefix)).map(([key, value]) => [key, structuredClone(value)])) as Map<string, T>,
 			put: async (key: string, value: unknown) => { stored.set(key, structuredClone(value)); },
 			delete: async (key: string) => stored.delete(key),
 			setAlarm: async () => {}, getAlarm: async () => null, deleteAlarm: async () => {},
@@ -89,7 +100,7 @@ function make_session() {
 	const fetchProvider = vi.fn(async () => new Response(null, { status: 101, webSocket: new WebSocketPair()[0] }));
 	const env: Env = {
 		BROWSER: { fetch: fetchProvider }, BROWSER_SESSIONS: namespace, BROWSER_REGISTRY: namespace,
-		BROWSER_RUNNER_SECRET: "secret", BROWSER_PREVIEW_URL: "https://preview.invalid/v0",
+		BROWSER_RUNNER_SECRET: "secret", BROWSER_PROFILE_KEY: Buffer.alloc(32, 1).toString("base64"), BROWSER_PREVIEW_URL: "https://preview.invalid/v0", BROWSER_WEB_DENIED_HOSTS: "blocked.test,other.test",
 		LOADER: { load: () => { throw new Error("No child in session tests"); } },
 	};
 	const currentProvider = make_provider();
@@ -114,6 +125,7 @@ function make_session() {
 			stored.set("session", { ...structuredClone(record), sessionId, providerSessionId });
 		},
 		restart: () => { session = new BrowserSession(state, env); },
+		alarm: () => session.alarm(),
 		drain: () => Promise.all(pending),
 	};
 }
@@ -455,5 +467,73 @@ describe("BrowserSession agent connection", () => {
 		upstream.resolve(new Response(null, { status: 101, webSocket: socket }));
 		await vi.waitFor(() => expect(socket.readyState).toBe(3));
 		expect(session.stored.has("session")).toBe(false);
+	});
+});
+
+describe("BrowserSession web agent access", () => {
+	it("gives the bridge web mode and the deny list, and settles without the page nonce check", async () => {
+		const session = make_session({ web: true });
+		expect(await session.begin()).toMatchObject({ ok: true });
+		expect((await session.stream()).status).toBe(101);
+		expect(bridges.inputs[0]).toMatchObject({ mode: "web", deniedHosts: ["blocked.test", "other.test"] });
+		expect(await session.settle()).toEqual({ ok: true, blockedPopups: 2 });
+		expect(session.send).toHaveBeenCalledWith("Target.getTargets");
+		expect(session.evaluate).not.toHaveBeenCalled();
+		expect(await session.finish()).toEqual({ ok: true, state: "ready" });
+	});
+
+	it("revokes a running bridge and retires the lease when access turns off", async () => {
+		const session = make_session({ web: true });
+		await session.begin(); await session.stream();
+		expect(await session.post("/agent-access", { sessionId: "session-1", on: false }))
+			.toMatchObject({ ok: true, session: { agentAccess: false, controlGen: 2 } });
+		expect(bridges.revoke).toHaveBeenCalledOnce();
+		expect((await session.settle()).ok).toBe(true);
+		expect(await session.finish()).toEqual({ ok: true, state: "ready" });
+		expect(await session.post("/run/begin", { sessionId: "session-1", navGen: 1, loadGen: 1, controlGen: 2, commandId: "command-2" }))
+			.toMatchObject({ ok: false, error: { code: "agent_access_off" } });
+	});
+
+	it("revokes a bridge that connects after access turned off", async () => {
+		const session = make_session({ web: true });
+		await session.begin();
+		await session.post("/agent-access", { sessionId: "session-1", on: false });
+		expect(bridges.revoke).not.toHaveBeenCalled();
+		expect((await session.stream()).status).toBe(101);
+		expect(bridges.revoke).toHaveBeenCalledOnce();
+		await session.settle(); await session.finish();
+	});
+});
+
+describe("BrowserSession usage receipts", () => {
+	it("writes a receipt on close and returns it from close and status", async () => {
+		const session = make_session();
+		const acquiredAt = (session.stored.get("session") as SessionRecord).providerAcquiredAt;
+		const usage = { providerAcquiredAt: acquiredAt, endedAt: expect.any(Number), reason: "close" };
+		const closed = await session.post("/close", { sessionId: "session-1" });
+		expect(closed).toEqual({ ok: true, existed: true, verified: true, usage });
+		expect(session.stored.get("usage:session-1")).toEqual({ sessionId: "session-1", ...usage });
+		expect(await session.post("/status", { sessionId: "session-1" })).toEqual({ ok: true, alive: false, closing: false, usage: closed.usage, profileStored: false });
+		// A repeated close still returns the receipt.
+		expect(await session.post("/close", { sessionId: "session-1" })).toEqual({ ok: true, existed: false, verified: true, usage: closed.usage });
+	});
+
+	it("writes an expired receipt from the alarm", async () => {
+		const session = make_session();
+		const acquiredAt = Date.now() - LIMITS.sessionTotalMs - 1000;
+		session.stored.set("session", { ...(session.stored.get("session") as SessionRecord), providerAcquiredAt: acquiredAt });
+		await session.alarm();
+		expect(session.stored.has("session")).toBe(false);
+		expect(session.stored.get("usage:session-1")).toEqual({
+			sessionId: "session-1", providerAcquiredAt: acquiredAt, endedAt: expect.any(Number), reason: "expired",
+		});
+	});
+
+	it("reports closing and no receipt while the provider close is unverified", async () => {
+		const session = make_session();
+		vi.mocked(provider.connect).mockRejectedValueOnce(new Error("Provider offline"));
+		expect(await session.post("/close", { sessionId: "session-1" })).toEqual({ ok: true, existed: true, verified: false, usage: null });
+		expect(await session.post("/status", { sessionId: "session-1" })).toEqual({ ok: true, alive: false, closing: true, usage: null, profileStored: false });
+		expect(session.stored.has("usage:session-1")).toBe(false);
 	});
 });

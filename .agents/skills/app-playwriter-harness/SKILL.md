@@ -115,6 +115,7 @@ Do not store secrets, cookies, tokens, user-private payloads, run diaries, raw c
 - Read `references/app-map.md` for stable app routes, landmarks, and selectors.
 - Read `references/agent-panel.md` for AI chat / agent panel selectors, the ProseMirror composer recipe, doneness polling, and backgrounded-tab recovery (`scripts/agent-chat-helpers.js` installs `state.qa`).
 - Read `references/files.md` for `/files` route and file/sidebar basics.
+- Read `references/web-browser.md` for the workspace web browser route (`/browser`): driving the live panel, blocked addresses, popups, saved logins and Manage saved data, downloads and file uploads, the agent and two-chat checks, billing readback, and the viewer-role and no-plan fixtures.
 - Read `references/second-user-fixtures.md` before testing any permission refusal, share grant, or other flow the org owner would bypass. It shows how to get a second identity in the browser without signing anything in.
 - Read `references/clerk-test-accounts.md` when a check needs a specific signed-in account: how to log in and out as the seeded `+clerk_test` QA accounts in an isolated scratch browser, and the hard rules around it.
 - Read `references/plugin-gallery.md` for driving the Gallery plugin page inside its sandboxed iframe.

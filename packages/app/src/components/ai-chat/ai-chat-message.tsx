@@ -696,6 +696,9 @@ function file_result_status_text(metadata: z.infer<typeof ai_chat_file_result_sc
 					stale: "The file or browser changed. Try again.",
 					needs_capture: "Capture the editor draft again.",
 					execution: "The command could not finish.",
+					busy: "Another chat is using the browser. Try again later.",
+					agent_access_off: "The user turned off agent access to this browser.",
+					agent_blocked_site: "This site is on the list of sites the agent may not use.",
 				}[metadata.reason];
 	return reason ? `${outcome} ${reason}` : outcome;
 }

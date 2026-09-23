@@ -57,6 +57,9 @@ export const ai_chat_file_result_schema = z
 						"stale",
 						"needs_capture",
 						"execution",
+						"busy",
+						"agent_access_off",
+						"agent_blocked_site",
 					])
 					.nullable(),
 				// Both runners and the shared writer stop at eight files per call.

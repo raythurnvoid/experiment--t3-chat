@@ -23,7 +23,7 @@ When current is personal/home, discover and read that root once. Both tool selec
 
 `.agents` is an ordinary visible folder. Discover skills only at `/.agents/skills/<name>/SKILL.md`. These are app-relative paths. App folders named `tmp` or `.mounts` are ordinary folders too; they are distinct from the shell's temporary and mounted filesystems.
 
-File names use the normal shared file policy. A new bare `readme` or `README` becomes `README.md`. `agents.md` and `skill.md` become `AGENTS.md` and `SKILL.md`; `.agents` keeps that spelling. Existing literal targets retain their identity. Do not rename files while reading them.
+File names use the normal shared file policy. A new bare `readme` or `README` becomes `README.md`. `agents.md` and `skill.md` become `AGENTS.md` and `SKILL.md`; `.agents` and `.system` keep that spelling. Existing literal targets retain their identity. Do not rename files while reading them.
 
 # Ordinary file behavior
 

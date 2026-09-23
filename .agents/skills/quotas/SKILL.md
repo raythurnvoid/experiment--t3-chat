@@ -178,6 +178,19 @@ The per-member share in `plugins_data_member_usage` is the same kind of thing: a
 
 Ordinary chat traffic moves no `quotas` counter at all. Nothing in the plugin document store touches the `quotas` table, so a workspace can write plugin documents all day and its quota docs never change.
 
+## Cloud browser brakes
+
+The cloud browser has daily brakes. They are safety limits against start and stop loops, not allowances. They never touch the `quotas` table, and the user cannot buy more. The daily-brake constants live in `packages/app/convex/files_browser.ts`.
+
+- File mode: `BROWSER_DAILY_STARTS_MAX` (30 starts) and `BROWSER_DAILY_CAPTURES_MAX` (100 draft captures) per workspace per UTC day, counted in `files_browser_daily_use`.
+- Web mode: `BROWSER_DAILY_WEB_STARTS_MAX` (50 starts) per user per UTC day, counted in `files_browser_user_daily_use`. The limit follows the user, not the workspace, so a user cannot get more starts by opening more workspaces. Web starts do not count against the workspace brake.
+- A file start counts when its starting doc is created. A web start counts only when it commits. So a web start that the runner refused (busy, blocked address, failed open) does not count. A reattach to the live session does not count either.
+- The refusal messages are `Daily browser start limit reached.` and `Daily browser capture limit reached.` in file mode, and `Daily limit reached` in web mode. The web Start card turns it into its own sentence.
+- The sweep cron deletes old day docs of both tables. Account deletion drains the user's `files_browser_user_daily_use` docs.
+- Concurrency caps live in the runner, not in `files_browser.ts` (`LIMITS` in `packages/browser-runner/src/index.ts`, checked by `BrowserRegistry`): at most 2 live browsers per user, 2 per workspace, 4 per organization, and 10 per deployment. `browser_open_refusal_message` turns `user_limit` into `You already have 2 browsers open in other workspaces. End one first.` and `organization_limit` into `Your organization already has 4 browsers open. Try again later.` A full workspace or deployment shows `Browser did not start`.
+
+The browser's paid-plan check and its per-minute price are billing rules, not brakes. See `../billing-system/SKILL.md`.
+
 # Guardrails
 
 - Keep rate limiting separate; rate-limiter names, config, and copy still use rate-limit terminology.

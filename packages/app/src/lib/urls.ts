@@ -9,6 +9,10 @@ export function url_path_files(args: { organizationName: string; workspaceName: 
 	return `/w/${args.organizationName}/${args.workspaceName}/files`;
 }
 
+export function url_path_browser(args: { organizationName: string; workspaceName: string }) {
+	return `/w/${args.organizationName}/${args.workspaceName}/browser`;
+}
+
 /**
  * Build the shareable URL for one file or folder node.
  *

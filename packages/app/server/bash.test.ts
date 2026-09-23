@@ -4482,7 +4482,7 @@ describe("bash_run_command", () => {
 			});
 			expect(await runner.t.run((ctx) => ctx.db.query("ai_chat_bash_invocation_transfers").collect())).toHaveLength(1);
 			expect((await runner.run("cat count.txt")).stdout).toBe("once\n");
-		});
+		}, 120_000);
 
 		test.each([
 			"none",

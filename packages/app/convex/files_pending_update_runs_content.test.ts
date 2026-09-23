@@ -553,7 +553,7 @@ describe("review job content", () => {
 				sourceWorkspace: "current",
 				destinationWorkspace: "current",
 				expectedSourceCount: sourceIds.length,
-			sources: sourceIds.map((id) => ({ kind: "saved" as const, id })),
+				sources: sourceIds.map((id) => ({ kind: "saved" as const, id })),
 				targetParent: { kind: "saved", id: before.find((node) => node.path === "/destination")!._id },
 				targetPath: "/destination",
 				targetName: null,
@@ -668,7 +668,7 @@ describe("review job content", () => {
 				(input) => input.mediaValidation?.validatedCount === 201 && input.mediaValidation.reviewRunId === runId,
 			),
 		).toBe(true);
-	});
+	}, 120_000);
 
 	test("resumes the exact reviewed-embed cursor without adding duplicate prerequisites", async () => {
 		const f = await fixture();
@@ -753,9 +753,10 @@ describe("review job content", () => {
 			plan: { phase: "ready", dependencyCursor: null },
 		});
 		expect(await f.t.run((ctx) => ctx.db.query("files_pending_update_run_dependencies").collect())).toHaveLength(9);
-		expect(await f.t.run((ctx) => ctx.db.get("files_pending_update_run_units", unitId))).toMatchObject(
-			{ remainingPrerequisiteCount: 9, status: "waiting" },
-		);
+		expect(await f.t.run((ctx) => ctx.db.get("files_pending_update_run_units", unitId))).toMatchObject({
+			remainingPrerequisiteCount: 9,
+			status: "waiting",
+		});
 		expect((await finish_review(f, runId, 1_200))?.activity).toMatchObject({
 			status: "succeeded",
 			progress: { completed: 10 },

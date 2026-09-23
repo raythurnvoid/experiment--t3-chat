@@ -1,9 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import * as provider from "@cloudflare/playwright";
-import { BrowserSession, session_can_run, type Env } from "./index";
+import { BrowserSession, LIMITS, session_can_run, type Env } from "./index";
 
 const OWNERS = { ownerId: "user_1", organizationId: "org_1", workspaceId: "ws_1" };
+const PROFILE_SECRET = Buffer.alloc(32, 1).toString("base64");
+const PROFILE = { profileId: "profile_1", profileKey: Buffer.alloc(32, 7).toString("base64"), agentBlockedHosts: [] as string[] };
 const NativeResponse = Response;
 type SessionRecord = Parameters<typeof session_can_run>[0];
 const TIMINGS = { queueMs: expect.any(Number), authorizeMs: expect.any(Number), readyMs: expect.any(Number), applyMs: expect.any(Number) };
@@ -70,7 +72,8 @@ function make_cdp() {
 		send: vi.fn(async (method: string, _params?: unknown): Promise<Record<string, unknown>> =>
 			method === "Target.getTargetInfo" ? { targetInfo: { targetId: "page-1" } } :
 				method === "Target.getBrowserContexts" ? { browserContextIds: [] } :
-					method === "Target.getTargets" ? { targetInfos: [{ targetId: "page-1", type: "page" }] } : {}),
+					method === "Target.getTargets" ? { targetInfos: [{ targetId: "page-1", type: "page" }] } :
+						method === "Page.getNavigationHistory" ? { currentIndex: 0, entries: [{ id: 1, url: "https://example.com/", title: "Example" }] } : {}),
 		detach: vi.fn(async () => {}),
 	});
 }
@@ -104,6 +107,7 @@ function make_provider() {
 			down: vi.fn(async (_key: string) => {}),
 			up: vi.fn(async (_key: string) => {}),
 			type: vi.fn(async () => {}),
+			insertText: vi.fn(async (_text: string) => {}),
 		},
 	});
 	Object.assign(context, { pages: () => [page] });
@@ -112,12 +116,22 @@ function make_provider() {
 		newBrowserCDPSession: async () => hostCdp,
 		close: vi.fn(async () => {}),
 	});
-	return { cdp, hostCdp, viewerCdps, newCDPSession, page, browser };
+	return { cdp, hostCdp, viewerCdps, newCDPSession, context, page, browser };
 }
 
-function make_session() {
+/**
+ * Turn the file-mode fixture into a web session that owns page target `page-1`.
+ */
+function web_record(record: SessionRecord, agentAccess = true): SessionRecord {
+	const copy: Record<string, unknown> = { ...record, mode: "web", agentAccess, pageTargetId: "page-1", profileId: "profile_1", agentBlockedHosts: [] };
+	for (const key of ["nodeId", "sourceKind", "sourceVersion", "sourceHash", "htmlBytesTotal", "loadCount"]) delete copy[key];
+	return copy as SessionRecord;
+}
+
+function make_session(options: { web?: boolean } = {}) {
 	const now = Date.now();
 	const record: SessionRecord = {
+		mode: "file",
 		version: 1,
 		...OWNERS,
 		sessionId: "session-1",
@@ -146,27 +160,32 @@ function make_session() {
 		viewers: {},
 		viewerGrants: {},
 	};
-	const stored = new Map<string, unknown>([["session", structuredClone(record)]]);
+	const stored = new Map<string, unknown>([["session", structuredClone(options.web ? web_record(record) : record)]]);
 	const get = vi.fn(async (key: string) => structuredClone(stored.get(key)));
 	const put = vi.fn(async (key: string, value: unknown) => { stored.set(key, structuredClone(value)); });
 	const setAlarm = vi.fn(async () => {});
 	const pending = new Set<Promise<unknown>>();
+	const registryFetch = vi.fn(async (_request: Request) => Response.json({ ok: true }));
 	const namespace = {
 		idFromName: (name: string) => ({ toString: () => name }),
-		get: () => ({ fetch: async () => Response.json({ ok: true }) }),
+		get: () => ({ fetch: registryFetch }),
 	};
 	const env: Env = {
 		BROWSER: { fetch },
 		BROWSER_SESSIONS: namespace,
 		BROWSER_REGISTRY: namespace,
 		BROWSER_RUNNER_SECRET: "test-secret",
+		BROWSER_PROFILE_KEY: PROFILE_SECRET,
 		BROWSER_PREVIEW_URL: "https://preview.invalid/v0",
+		BROWSER_WEB_DENIED_HOSTS: "blocked.test, other-blocked.test",
 		LOADER: { load: () => { throw new Error("No snippets in viewer tests"); } },
 	};
 	const session = new BrowserSession({
 		id: { toString: () => "test-session" },
 		storage: {
 			get: async <T,>(key: string) => await get(key) as T | undefined,
+			list: async <T,>(options: { prefix: string }) =>
+				new Map([...stored].filter(([key]) => key.startsWith(options.prefix)).map(([key, value]) => [key, structuredClone(value)])) as Map<string, T>,
 			put,
 			delete: async (key) => stored.delete(key),
 			setAlarm,
@@ -214,7 +233,7 @@ function make_session() {
 		mocked.viewerCdps.at(-1)!.emit("Page.screencastFrame", { sessionId: 1, data: btoa(String.fromCharCode(...bytes)) });
 		return bytes;
 	};
-	return { ...mocked, connect, session, stored, get, put, setAlarm, post, open_socket, attach, drain, emit_frame };
+	return { ...mocked, connect, registryFetch, session, stored, get, put, setAlarm, post, open_socket, attach, drain, emit_frame };
 }
 
 beforeEach(() => {
@@ -296,7 +315,7 @@ describe("BrowserSession viewer stream", () => {
 		vi.setSystemTime(now + 1000);
 		viewer.socket.send(JSON.stringify({ t: "ping", seq: 4 }));
 		// Leave the timer pending to check the deadline inside the ping handler too.
-		vi.setSystemTime(now + 30_001);
+		vi.setSystemTime(now + LIMITS.viewerGrantWindowMs + 1);
 		viewer.socket.send(JSON.stringify({ t: "ping", seq: 5 }));
 		await drain();
 
@@ -862,12 +881,23 @@ describe("BrowserSession viewer stream", () => {
 		const { attach, drain, browser, stored } = make_session();
 		const viewer = await attach();
 		await drain();
-		await vi.advanceTimersByTimeAsync(30_001);
+		await vi.advanceTimersByTimeAsync(LIMITS.viewerGrantWindowMs + 1);
 		await drain();
 		expect(viewer.socket.closed?.code).toBe(4408);
 		expect(stored.get("session")).toMatchObject({ viewers: {}, inputHolder: null });
 		expect(browser.close).not.toHaveBeenCalled();
 		expect(frames(viewer.socket)).toEqual([]);
+	});
+
+	it("keeps a viewer whose background tab renews about a minute late", async () => {
+		const { attach, drain, post } = make_session();
+		const viewer = await attach();
+		await drain();
+		// The 20 s renew timer of a background tab may run once a minute.
+		await vi.advanceTimersByTimeAsync(80_000);
+		await drain();
+		expect(viewer.socket.closed).toBeNull();
+		expect(await post("/viewer/renew", { sessionId: "session-1", viewerId: viewer.viewerId })).toMatchObject({ ok: true });
 	});
 
 	it("keeps a live viewer until the provider total deadline", async () => {
@@ -883,7 +913,7 @@ describe("BrowserSession viewer stream", () => {
 		vi.spyOn(crypto, "randomUUID").mockReturnValue(sessionId);
 		vi.spyOn(Math, "random").mockReturnValue(0);
 		vi.stubGlobal("fetch", vi.fn(async () => new Response("<html></html>")));
-		vi.spyOn(provider, "acquire").mockResolvedValue({ sessionId: "provider-2" } as Awaited<ReturnType<typeof provider.acquire>>);
+		const acquire = vi.spyOn(provider, "acquire").mockResolvedValue({ sessionId: "provider-2" } as Awaited<ReturnType<typeof provider.acquire>>);
 		Object.assign(page, {
 			route: async () => {},
 			goto: async () => {},
@@ -891,10 +921,12 @@ describe("BrowserSession viewer stream", () => {
 			evaluate: async () => ({ url: "https://controller.browser.invalid/", ready: true, error: null, nonce: `${sessionId}-0` }),
 		});
 		expect(await post("/open", {
-			...OWNERS, grantId: "admission-2", attemptId: "attempt-2", nodeId: "node_2", navGen: 2,
+			mode: "file", ...OWNERS, grantId: "admission-2", attemptId: "attempt-2", nodeId: "node_2", navGen: 2,
 			sourceKind: "saved", sourceVersion: "v1", sourceHash: "hash2", html: "<input />",
 			viewport: { width: 1280, height: 900 },
 		})).toMatchObject({ ok: true });
+		// File mode keeps its egress guardrail: only esm.sh.
+		expect(acquire).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ guardrails: { allowedDomains: ["esm.sh"] } }));
 		expect(stored.get("session")).toMatchObject({ createdAt, providerAcquiredAt: createdAt + 1000 });
 
 		// Keep open refreshes idle expiry before a fresh viewer attaches near the total cap.
@@ -950,7 +982,7 @@ describe("BrowserSession viewer stream", () => {
 		});
 		connect.mockResolvedValue(next.browser as unknown as Awaited<ReturnType<typeof provider.connect>>);
 		const opened = await post("/open", {
-			...OWNERS, grantId: "admission-2", attemptId: "attempt-2", nodeId: "node_2", navGen: 2,
+			mode: "file", ...OWNERS, grantId: "admission-2", attemptId: "attempt-2", nodeId: "node_2", navGen: 2,
 			sourceKind: "saved", sourceVersion: "v1", sourceHash: "hash2", html: "<input />",
 			viewport: { width: 1280, height: 900 },
 		});
@@ -1002,7 +1034,7 @@ describe("BrowserSession viewer stream", () => {
 		});
 		connect.mockResolvedValue(next.browser as unknown as Awaited<ReturnType<typeof provider.connect>>);
 		expect(await post("/open", {
-			...OWNERS, grantId: "admission-2", attemptId: "attempt-2", nodeId: "node_2", navGen: 2,
+			mode: "file", ...OWNERS, grantId: "admission-2", attemptId: "attempt-2", nodeId: "node_2", navGen: 2,
 			sourceKind: "saved", sourceVersion: "v1", sourceHash: "hash2", html: "<input />",
 			viewport: { width: 1280, height: 900 },
 		})).toMatchObject({ ok: true });
@@ -1043,5 +1075,352 @@ describe("BrowserSession viewer stream", () => {
 		expect(browser.close).toHaveBeenCalledTimes(1);
 		expect(cdp.send).not.toHaveBeenCalled();
 		expect(frames(viewer.socket)).toEqual([]);
+	});
+});
+
+describe("BrowserSession web mode", () => {
+	function page_sends(mocked: { hostCdp: ReturnType<typeof make_cdp>; viewerCdps: Array<ReturnType<typeof make_cdp>> }) {
+		return [mocked.hostCdp, ...mocked.viewerCdps].flatMap((cdp) => cdp.send.mock.calls);
+	}
+
+	function make_popup(url: string, lateUrl?: string) {
+		let current = url;
+		return Object.assign(new EventEmitter(), {
+			url: () => current,
+			waitForURL: vi.fn(async () => { if (lateUrl) current = lateUrl; }),
+			close: vi.fn(async () => {}),
+			isClosed: () => false,
+		});
+	}
+
+	it("opens without guardrails, then goes to the start address", async () => {
+		const mocked = make_session();
+		const { post, stored } = mocked;
+		stored.clear();
+		const acquire = vi.spyOn(provider, "acquire").mockResolvedValue({ sessionId: "provider-2" } as Awaited<ReturnType<typeof provider.acquire>>);
+		const opened = await post("/open", {
+			mode: "web", ...OWNERS, grantId: "admission-2", attemptId: "attempt-2", navGen: 1,
+			startUrl: "Example.com/start", agentAccess: true, ...PROFILE, viewport: { width: 1280, height: 900 },
+		});
+		expect(acquire).toHaveBeenCalledWith(expect.anything(), { keep_alive: LIMITS.keepAliveMs, recording: false });
+		expect(opened).toMatchObject({ ok: true, session: { mode: "web", navGen: 1, loadGen: 1, control: "ready", agentAccess: true } });
+		expect(Object.keys(opened.session as object).sort()).toEqual([
+			"agentAccess", "commandCount", "control", "controlGen", "idleUntil", "loadGen", "mode", "navGen", "pageNonce", "sessionId", "totalUntil",
+		]);
+		expect(page_sends(mocked)).toContainEqual(["Page.navigate", { url: "https://example.com/start" }]);
+		expect(page_sends(mocked)).toContainEqual(["Page.setInterceptFileChooserDialog", { enabled: true }]);
+		// The first load already uses the session size.
+		const navigateOrder = [mocked.hostCdp, ...mocked.viewerCdps].flatMap(({ send }) =>
+			send.mock.calls.flatMap(([method], index) => (method === "Page.navigate" ? [send.mock.invocationCallOrder[index]!] : [])));
+		expect(navigateOrder).toHaveLength(1);
+		expect(mocked.page.setViewportSize).toHaveBeenCalledWith({ width: 1280, height: 900 });
+		expect(mocked.page.setViewportSize.mock.invocationCallOrder[0]).toBeLessThan(navigateOrder[0]!);
+		expect(stored.get("session")).toMatchObject({ mode: "web", control: "ready", providerSessionId: "provider-2", pageTargetId: "page-1" });
+		expect((stored.get("session") as { pageNonce: unknown }).pageNonce).toEqual(expect.any(String));
+	});
+
+	it("refuses a blocked start address before acquiring a browser", async () => {
+		const { post, stored } = make_session();
+		stored.clear();
+		const acquire = vi.spyOn(provider, "acquire");
+		const opened = await post("/open", {
+			mode: "web", ...OWNERS, grantId: "admission-2", attemptId: "attempt-2", navGen: 1,
+			startUrl: "https://www.blocked.test/login", agentAccess: true, ...PROFILE, viewport: { width: 1280, height: 900 },
+		});
+		expect(opened).toMatchObject({ ok: false, error: { code: "address_blocked" } });
+		expect(acquire).not.toHaveBeenCalled();
+		expect(stored.has("session")).toBe(false);
+	});
+
+	it("closes the browser, releases the grant, and writes a receipt when the open fails after acquire", async () => {
+		const { post, stored, connect, browser, hostCdp, registryFetch } = make_session();
+		stored.clear();
+		vi.spyOn(provider, "acquire").mockResolvedValue({ sessionId: "provider-2" } as Awaited<ReturnType<typeof provider.acquire>>);
+		// The acquire check connects once. Then the host connection fails.
+		connect.mockResolvedValueOnce(browser as unknown as Awaited<ReturnType<typeof provider.connect>>)
+			.mockRejectedValueOnce(new Error("Provider socket lost"));
+		const opened = await post("/open", {
+			mode: "web", ...OWNERS, grantId: "admission-2", attemptId: "attempt-2", navGen: 1,
+			startUrl: "https://example.com/start", agentAccess: true, ...PROFILE, viewport: { width: 1280, height: 900 },
+		});
+		expect(opened).toMatchObject({ ok: false, error: { code: "bootstrap_failed" } });
+		expect(hostCdp.send).toHaveBeenCalledWith("Browser.close", {});
+		const registryCalls = await Promise.all(registryFetch.mock.calls.map(async ([request]) => [new URL(request.url).pathname, await request.json()]));
+		expect(registryCalls).toEqual([["/release", { grantId: "admission-2" }]]);
+		expect(stored.has("session")).toBe(false);
+		// Convex never learns this session id, but the provider time is still on record.
+		const receipts = [...stored].filter(([key]) => key.startsWith("usage:")).map(([, value]) => value);
+		expect(receipts).toEqual([{ sessionId: expect.any(String), providerAcquiredAt: Date.now(), endedAt: Date.now(), reason: "open_failed" }]);
+	});
+
+	it("keeps the session and loadGen on navigation, pushes location, and does not extend idle", async () => {
+		const { attach, drain, hostCdp, stored, put } = make_session({ web: true });
+		const viewer = await attach();
+		await drain();
+		await vi.waitFor(() => expect(messages(viewer.socket).filter((message) => message.t === "location")).toHaveLength(1));
+		expect(messages(viewer.socket)).toContainEqual({ t: "agent-access", on: true });
+		const before = structuredClone(stored.get("session")) as SessionRecord;
+		put.mockClear();
+		await vi.advanceTimersByTimeAsync(1000);
+
+		hostCdp.send.mockImplementation(async (method: string) => method === "Page.getNavigationHistory"
+			? { currentIndex: 1, entries: [{ id: 1, url: "https://example.com/", title: "Example" }, { id: 2, url: "https://example.com/next", title: "T".repeat(2000) }] }
+			: {});
+		hostCdp.emit("Page.frameNavigated", { frame: { id: "child", parentId: "page-1", url: "https://ads.example/" } });
+		hostCdp.emit("Page.frameNavigated", { frame: { id: "page-1", url: "https://example.com/next" } });
+		await drain();
+		const locations = messages(viewer.socket).filter((message) => message.t === "location");
+		expect(locations).toHaveLength(2);
+		expect(locations.at(-1)).toEqual({
+			t: "location", url: "https://example.com/next", title: "T".repeat(LIMITS.titleChars), loading: false, canGoBack: true, canGoForward: false,
+		});
+		hostCdp.emit("Page.frameStartedLoading", { frameId: "page-1" });
+		await drain();
+		expect(messages(viewer.socket).filter((message) => message.t === "location").at(-1)).toMatchObject({ loading: true });
+
+		expect(put).not.toHaveBeenCalled();
+		expect(stored.get("session")).toMatchObject({ control: "ready", loadGen: before.loadGen, lastActiveAt: before.lastActiveAt });
+		expect(viewer.socket.closed).toBeNull();
+	});
+
+	it("runs address bar actions only for the controller and checks each address", async () => {
+		const { attach, drain, post, hostCdp, stored } = make_session({ web: true });
+		const viewer = await attach();
+		await drain();
+		const nav = (seq: number, body: Record<string, unknown>) => viewer.socket.send(JSON.stringify({ t: "nav", seq, controlGen: 2, ...body }));
+		const ack = (seq: number) => messages(viewer.socket).find((message) => message.t === "nav-ack" && message.seq === seq);
+
+		// Not the controller yet.
+		nav(1, { action: "go", url: "example.com" });
+		await vi.waitFor(() => expect(ack(1)).toEqual({ t: "nav-ack", seq: 1, ok: false, code: "not_controller" }));
+
+		await post("/control/take-human", { sessionId: "session-1", navGen: 1, viewerId: viewer.viewerId });
+		const before = (stored.get("session") as SessionRecord).lastActiveAt;
+		await vi.advanceTimersByTimeAsync(1000);
+		nav(2, { action: "go", url: "https://blocked.test/admin" });
+		nav(3, { action: "go", url: "javascript:alert(1)" });
+		// Longer than the old 4,096-character socket cap, so this also checks the new cap.
+		nav(4, { action: "go", url: `https://example.com/${"a".repeat(9000)}` });
+		nav(5, { action: "back" });
+		nav(6, { action: "go", url: "example.com/next" });
+		nav(7, { action: "reload" });
+		nav(8, { action: "stop" });
+		await vi.waitFor(() => expect(ack(8)).toBeDefined());
+		expect(ack(2)).toEqual({ t: "nav-ack", seq: 2, ok: false, code: "denied_host" });
+		expect(ack(3)).toEqual({ t: "nav-ack", seq: 3, ok: false, code: "scheme" });
+		expect(ack(4)).toEqual({ t: "nav-ack", seq: 4, ok: false, code: "too_long" });
+		expect(ack(5)).toEqual({ t: "nav-ack", seq: 5, ok: false, code: "no_history" });
+		expect(ack(6)).toEqual({ t: "nav-ack", seq: 6, ok: true });
+		expect(ack(7)).toEqual({ t: "nav-ack", seq: 7, ok: true });
+		expect(ack(8)).toEqual({ t: "nav-ack", seq: 8, ok: true });
+		const navigations = hostCdp.send.mock.calls.filter(([method]) => method === "Page.navigate");
+		expect(navigations).toEqual([["Page.navigate", { url: "https://example.com/next" }]]);
+		expect(hostCdp.send).toHaveBeenCalledWith("Page.reload");
+		expect(hostCdp.send).toHaveBeenCalledWith("Page.stopLoading");
+		// A human nav counts as activity. The session and its loadGen stay.
+		expect(stored.get("session")).toMatchObject({ control: "human", loadGen: 1 });
+		expect((stored.get("session") as SessionRecord).lastActiveAt).toBeGreaterThan(before);
+	});
+
+	it("keeps the session when Resume comes during slow address bar navs", async () => {
+		const { attach, drain, post, hostCdp, stored } = make_session({ web: true });
+		const viewer = await attach();
+		await drain();
+		await post("/control/take-human", { sessionId: "session-1", navGen: 1, viewerId: viewer.viewerId });
+		// `Page.navigate` answers only when the new page commits. This slow site never commits.
+		const send = hostCdp.send.getMockImplementation()!;
+		hostCdp.send.mockImplementation((method: string, params?: unknown) =>
+			method === "Page.navigate" ? new Promise<Record<string, unknown>>(() => {}) : send(method, params));
+		viewer.socket.send(JSON.stringify({ t: "nav", seq: 1, controlGen: 2, action: "go", url: "https://example.com/slow" }));
+		viewer.socket.send(JSON.stringify({ t: "nav", seq: 2, controlGen: 2, action: "go", url: "https://example.com/slower" }));
+		await vi.waitFor(() => expect(hostCdp.send.mock.calls.filter(([method]) => method === "Page.navigate")).toHaveLength(1));
+
+		const resumed = post("/control/to-agent", { sessionId: "session-1", navGen: 1 });
+		await vi.advanceTimersByTimeAsync(12_000);
+		expect(await resumed).toMatchObject({ ok: true, control: "ready", controlGen: 3 });
+		expect(stored.get("session")).toMatchObject({ control: "ready", controlGen: 3 });
+		expect(viewer.socket.closed).toBeNull();
+		// Resume waits only for the running nav, whose 5 s wall started first. The queued nav is
+		// refused without running, so two slow navs do not add up.
+		const acks = messages(viewer.socket).filter((message) => message.t === "nav-ack");
+		expect(acks).toEqual([{ t: "nav-ack", seq: 1, ok: true }, { t: "nav-ack", seq: 2, ok: false, code: "not_controller" }]);
+		expect(hostCdp.send.mock.calls.filter(([method]) => method === "Page.navigate")).toHaveLength(1);
+	});
+
+	it("refuses nav in file mode", async () => {
+		const { attach, drain, post } = make_session();
+		const viewer = await attach();
+		await drain();
+		await post("/control/take-human", { sessionId: "session-1", navGen: 1, viewerId: viewer.viewerId });
+		viewer.socket.send(JSON.stringify({ t: "nav", seq: 1, controlGen: 2, action: "reload" }));
+		await vi.waitFor(() => expect(messages(viewer.socket)).toContainEqual({ t: "nav-ack", seq: 1, ok: false, code: "bad_request" }));
+	});
+
+	it("inserts pasted text with one call and ignores text over the cap", async () => {
+		const { attach, drain, post, page } = make_session({ web: true });
+		const viewer = await attach();
+		await drain();
+		await post("/control/take-human", { sessionId: "session-1", navGen: 1, viewerId: viewer.viewerId });
+		viewer.socket.send(JSON.stringify({ t: "input", controlGen: 2, loadGen: 1, seq: 1, kind: "text.insert", text: "x".repeat(LIMITS.textInsertChars + 1) }));
+		viewer.socket.send(JSON.stringify({ t: "input", controlGen: 2, loadGen: 1, seq: 2, kind: "text.insert", text: "hello world" }));
+		await vi.waitFor(() => expect(messages(viewer.socket)).toContainEqual({ t: "input-ack", timings: TIMINGS, seq: 2, ok: true }));
+		expect(messages(viewer.socket).some((message) => message.t === "input-ack" && message.seq === 1)).toBe(false);
+		expect(page.keyboard.insertText).toHaveBeenCalledTimes(1);
+		expect(page.keyboard.insertText).toHaveBeenCalledWith("hello world");
+		expect(page.keyboard.type).not.toHaveBeenCalled();
+	});
+
+	it("opens a human popup in the main page", async () => {
+		const { attach, drain, context, hostCdp } = make_session({ web: true });
+		const viewer = await attach();
+		await drain();
+		const popup = make_popup("about:blank", "https://example.com/popup");
+		context.emit("page", popup);
+		await drain();
+		expect(popup.waitForURL).toHaveBeenCalledOnce();
+		expect(popup.close).toHaveBeenCalledOnce();
+		expect(hostCdp.send).toHaveBeenCalledWith("Page.navigate", { url: "https://example.com/popup" });
+		expect(messages(viewer.socket)).toContainEqual({ t: "notice", code: "popup_opened_here" });
+	});
+
+	it("only closes a popup while an agent command runs", async () => {
+		const { attach, drain, post, context, hostCdp } = make_session({ web: true });
+		const viewer = await attach();
+		await drain();
+		expect(await post("/run/begin", { sessionId: "session-1", navGen: 1, loadGen: 1, controlGen: 1, commandId: "command-1" })).toMatchObject({ ok: true });
+		const popup = make_popup("https://example.com/popup");
+		context.emit("page", popup);
+		await drain();
+		expect(popup.close).toHaveBeenCalledOnce();
+		expect(popup.waitForURL).not.toHaveBeenCalled();
+		expect(hostCdp.send.mock.calls.filter(([method]) => method === "Page.navigate")).toEqual([]);
+		expect(messages(viewer.socket)).toContainEqual({ t: "notice", code: "popup_closed" });
+	});
+
+	it("closes a popup to a blocked host without following it", async () => {
+		const { attach, drain, context, hostCdp } = make_session({ web: true });
+		const viewer = await attach();
+		await drain();
+		const popup = make_popup("https://blocked.test/steal");
+		context.emit("page", popup);
+		await drain();
+		expect(popup.close).toHaveBeenCalledOnce();
+		expect(hostCdp.send.mock.calls.filter(([method]) => method === "Page.navigate")).toEqual([]);
+		expect(messages(viewer.socket)).toContainEqual({ t: "notice", code: "address_blocked" });
+	});
+
+	it("cancels file choosers and tells the viewer", async () => {
+		const { attach, drain, hostCdp } = make_session({ web: true });
+		const viewer = await attach();
+		await drain();
+		hostCdp.emit("Page.fileChooserOpened", { frameId: "page-1", mode: "selectSingle" });
+		expect(messages(viewer.socket)).toContainEqual({ t: "notice", code: "upload_unsupported" });
+	});
+
+	it("keeps the assigned page and closes other pages on reconnect", async () => {
+		const { attach, drain, hostCdp, stored } = make_session({ web: true });
+		hostCdp.send.mockImplementation(async (method: string) =>
+			method === "Target.getTargetInfo" ? { targetInfo: { targetId: "page-1" } } :
+				method === "Target.getBrowserContexts" ? { browserContextIds: [] } :
+					method === "Target.getTargets" ? { targetInfos: [
+						{ targetId: "page-2", type: "page" }, { targetId: "page-1", type: "page" },
+						{ targetId: "frame-1", type: "iframe" }, { targetId: "worker-1", type: "worker" },
+					] } :
+						method === "Target.closeTarget" ? { success: true } : {});
+		const viewer = await attach();
+		await drain();
+		expect(hostCdp.send.mock.calls.filter(([method]) => method === "Target.closeTarget")).toEqual([["Target.closeTarget", { targetId: "page-2" }]]);
+		expect(stored.get("session")).toMatchObject({ mode: "web", control: "ready" });
+		expect(viewer.socket.closed).toBeNull();
+	});
+
+	it("turns agent access off, retires the lease, and tells viewers", async () => {
+		const { attach, drain, post, stored } = make_session({ web: true });
+		const viewer = await attach();
+		await drain();
+		const changed = await post("/agent-access", { sessionId: "session-1", on: false });
+		expect(changed).toMatchObject({ ok: true, session: { mode: "web", agentAccess: false, controlGen: 2 } });
+		expect(messages(viewer.socket)).toContainEqual({ t: "agent-access", on: false });
+		expect(await post("/run/begin", { sessionId: "session-1", navGen: 1, loadGen: 1, controlGen: 2, commandId: "command-1" }))
+			.toMatchObject({ ok: false, error: { code: "agent_access_off" } });
+		expect(await post("/reload", { mode: "web", sessionId: "session-1", navGen: 1, expectedAgentLease: { navGen: 1, loadGen: 1, controlGen: 2 } }))
+			.toMatchObject({ ok: false, error: { code: "agent_access_off" } });
+		expect(stored.get("session")).toMatchObject({ agentAccess: false, control: "ready" });
+	});
+
+	it("gives each agent access change a new controlGen, in both directions", async () => {
+		const { attach, drain, post, stored } = make_session({ web: true });
+		const viewer = await attach();
+		await drain();
+		expect(await post("/agent-access", { sessionId: "session-1", on: false })).toMatchObject({ ok: true, session: { agentAccess: false, controlGen: 2 } });
+		// Convex applies `agentAccess` from a reply only when its controlGen is not older. Without a
+		// bump here, a late reply that still says "off" at controlGen 2 would undo this change.
+		expect(await post("/agent-access", { sessionId: "session-1", on: true })).toMatchObject({ ok: true, session: { agentAccess: true, controlGen: 3 } });
+		expect(messages(viewer.socket)).toContainEqual({ t: "control", control: "ready", controlGen: 3 });
+		// Setting the same value again is not a change.
+		expect(await post("/agent-access", { sessionId: "session-1", on: true })).toMatchObject({ ok: true, session: { agentAccess: true, controlGen: 3 } });
+		expect(stored.get("session")).toMatchObject({ agentAccess: true, controlGen: 3 });
+		expect(await post("/run/begin", { sessionId: "session-1", navGen: 1, loadGen: 1, controlGen: 3, commandId: "command-1" })).toMatchObject({ ok: true });
+	});
+
+	it("refuses agent access changes for a file session", async () => {
+		const { post } = make_session();
+		expect(await post("/agent-access", { sessionId: "session-1", on: false })).toMatchObject({ ok: false, error: { code: "bad_request" } });
+	});
+
+	it("reloads the current web page without a new loadGen", async () => {
+		const mocked = make_session({ web: true });
+		const reloaded = await mocked.post("/reload", { mode: "web", sessionId: "session-1", navGen: 1 });
+		expect(reloaded).toMatchObject({ ok: true, session: { mode: "web", loadGen: 1 } });
+		expect(page_sends(mocked)).toContainEqual(["Page.reload"]);
+		expect(mocked.stored.get("session")).toMatchObject({ loadGen: 1, command: null, control: "ready" });
+		expect(await mocked.post("/reload", { sessionId: "session-1", navGen: 1, sourceKind: "saved", sourceVersion: "v2", sourceHash: "h", html: "<p></p>" }))
+			.toMatchObject({ ok: false, error: { code: "bad_request" } });
+	});
+
+	it("answers a run during a reload with busy, not busy_command", async () => {
+		const { post, hostCdp } = make_session({ web: true });
+		const reloaded = Promise.withResolvers<Record<string, unknown>>();
+		const send = hostCdp.send.getMockImplementation()!;
+		hostCdp.send.mockImplementation((method: string, params?: unknown) =>
+			method === "Page.reload" ? reloaded.promise : send(method, params));
+		const reload = post("/reload", { mode: "web", sessionId: "session-1", navGen: 1 });
+		await vi.waitFor(() => expect(hostCdp.send).toHaveBeenCalledWith("Page.reload"));
+		// "busy_command" makes the chat say another chat uses the browser. A reload is not a chat.
+		expect(await post("/run/begin", { sessionId: "session-1", navGen: 1, loadGen: 1, controlGen: 1, commandId: "command-1" }))
+			.toMatchObject({ ok: false, error: { code: "busy" } });
+		reloaded.resolve({});
+		expect(await reload).toMatchObject({ ok: true });
+	});
+
+	it("never logs addresses or titles", async () => {
+		const log = vi.spyOn(console, "log").mockImplementation(() => {});
+		const mocked = make_session({ web: true });
+		const viewer = await mocked.attach();
+		await mocked.drain();
+		await mocked.post("/control/take-human", { sessionId: "session-1", navGen: 1, viewerId: viewer.viewerId });
+		viewer.socket.send(JSON.stringify({ t: "nav", seq: 1, controlGen: 2, action: "go", url: "https://example.com/secret?token=abc" }));
+		viewer.socket.send(JSON.stringify({ t: "nav", seq: 2, controlGen: 2, action: "go", url: "https://blocked.test/secret" }));
+		await vi.waitFor(() => expect(messages(viewer.socket).filter((message) => message.t === "nav-ack")).toHaveLength(2));
+		mocked.context.emit("page", make_popup("https://blocked.test/popup"));
+		await mocked.drain();
+		await mocked.post("/control/to-agent", { sessionId: "session-1", navGen: 1 });
+		mocked.context.emit("page", make_popup("https://example.com/popup"));
+		await mocked.drain();
+		mocked.stored.clear();
+		vi.spyOn(provider, "acquire").mockResolvedValue({ sessionId: "provider-2" } as Awaited<ReturnType<typeof provider.acquire>>);
+		await mocked.post("/open", {
+			mode: "web", ...OWNERS, grantId: "admission-2", attemptId: "attempt-2", navGen: 1,
+			startUrl: "https://blocked.test/start", agentAccess: true, ...PROFILE, viewport: { width: 1280, height: 900 },
+		});
+		await mocked.post("/open", {
+			mode: "web", ...OWNERS, grantId: "admission-3", attemptId: "attempt-3", navGen: 1,
+			startUrl: "https://example.com/start", agentAccess: true, ...PROFILE, viewport: { width: 1280, height: 900 },
+		});
+		const lines = log.mock.calls.map((call) => call.map(String).join(" "));
+		expect(lines.length).toBeGreaterThan(3);
+		for (const line of lines) {
+			expect(line).not.toMatch(/example\.com|blocked\.test|secret|token/u);
+		}
 	});
 });

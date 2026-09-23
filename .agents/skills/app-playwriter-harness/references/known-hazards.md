@@ -71,7 +71,7 @@ Before the first attempt at a new interaction type (upload, download, screenshot
 - **Viewport, media, and zoom emulation.** `page.setViewportSize` and CDP `Emulation.setDeviceMetricsOverride` work. `Emulation.setPageScaleFactor` can return success without changing layout; check the actual dimensions. `page.emulateMedia` failed in extension mode on 2026-08-23, but direct CDP works through `const cdp = await getCDPSession({ page })` (verified 2026-09-12). Call `cdp.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: "reduce" }] })`, then check `matchMedia("(prefers-reduced-motion: reduce)").matches` and the affected computed styles. Clear it with `{ features: [] }`. `page.keyboard.press("Control++")` did not change `innerWidth`, `innerHeight`, or `devicePixelRatio`; do not report that as browser zoom. A smaller viewport checks reflow, but does not prove real zoom. Emulate a width with the four-parameter form `Emulation.setDeviceMetricsOverride({ width, height, deviceScaleFactor: 1, mobile: false })` — CDP requires all four. Capture `page.viewportSize()` and `Page.getLayoutMetrics().cssVisualViewport` before the first override, wait ~400ms after each call so ResizeObserver and the React commit land, and verify with `document.documentElement.clientWidth` rather than `innerWidth` (a classic scrollbar takes ~15px). Restore in this order: `page.setViewportSize(original)` when it was not `null`, `Emulation.clearDeviceMetricsOverride`, `Emulation.resetPageScaleFactor`, then re-read both values and a screenshot. The full recipe is "Emulate A Narrower Viewport" in `snippets.md`.
 - **Clearing CDP device metrics leaves Playwright's viewport cache unchanged.** Verified 2026-09-07: after `Emulation.clearDeviceMetricsOverride`, `page.viewportSize()` still returned 512×384 while `Page.getLayoutMetrics().cssVisualViewport` was 2312×1300. Calling `setViewportSize({ width: 512, height: 384 })` again did nothing, and a screenshot cropped the desktop page to the stale size. Compare both values before trusting a resize. To restore, call `page.setViewportSize(originalSize)` before clearing the CDP override. If they already disagree, set explicit CDP metrics for the test size, then restore both. Inspect the saved screenshot too.
 - **A magnified page can still report scale 1.** On 2026-09-20, the user and a screenshot showed a cropped, enlarged page while `visualViewport.scale`, CSS zoom, and `Page.getLayoutMetrics` all reported 1. With `page.viewportSize()` already null, `Emulation.clearDeviceMetricsOverride` followed by `Emulation.resetPageScaleFactor` restored the full view. Use `getCDPSession({ page })`, then inspect a fresh screenshot and check toolbar hit targets. The metrics alone did not prove the view was correct.
-- **The sandbox `fs` cannot write into the personal `+ai` folder**, even with a Windows relay and an absolute path: ScopedFS allows only the session's own directories, and the folder is outside every one of them. The write fails with "access outside allowed directories", which reads like a permissions problem with the folder and is not. Write to `os.tmpdir()` from inside the sandbox, then move the file with a normal shell command. Runners passed with `-f` are unaffected — the CLI reads those from the real disk before the sandbox starts — so a runner may live in `+ai` while its OUTPUT may not be written there directly.
+- **The sandbox `fs` cannot write into the personal `+ai` folder**, even with a Windows relay and an absolute path: ScopedFS allows only the session's own directories, and the folder is outside every one of them. The write fails with "access outside allowed directories", which reads like a permissions problem with the folder and is not. Write to `os.tmpdir()` from inside the sandbox, then move the file with a normal shell command. Runners passed with `-f` are unaffected — the CLI reads those from the real disk before the sandbox starts — so a runner may live in `+ai` while its OUTPUT may not be written there directly. Exception: a session created with `session new` from that `+ai` folder (or a parent of it) can write there, because the folder is then inside the session CWD. Use forward slashes in the path: backslashes inside an `-e` string get eaten, and the broken path fails with the same EPERM. Verified 2026-09-23 saving frames from a session created in the task folder.
 - **A plugin frame is narrower than the layout viewport, and the difference is not a constant.** The host chrome around the frame takes width, so a frame inside a 1440px viewport is not 1440px wide. Measured 2026-08-23: **−40px from 720 up to 1440, and −55px at 390** — so a value derived by subtracting a fixed number from the viewport is wrong at one end or the other. Never compute the frame width from the viewport. Read it from inside the frame (`window.innerWidth` in frame context, or the frame element's own `getBoundingClientRect().width`) before asserting anything about a breakpoint, or a reflow check lands on the wrong side of one.
 - Playwriter execute snippets do not automatically provide Playwright Test's `expect`. Use manual polling or import only the small assertion utility you need.
 - The CLI's cwd is not always the repo root even without `--filter`: after any earlier `pnpm --filter <pkg> exec` in the same shell it can be `packages/app`, and `-f .agents/skills/...` then fails with `File not found: packages\app\.agents\...`. Pass the harness script as an absolute path instead of a repo-relative one.
@@ -528,6 +528,7 @@ Two caveats: only rendered lines exist in the DOM (fine for short fixtures, wron
 - On a backgrounded localhost tab, `snapshot()`, `screenshot()`, and `innerText` are unreliable. Read state via `evaluate()` with `textContent`, `getComputedStyle`, and `getBoundingClientRect`.
 - `getComputedStyle` is reliable on a backgrounded tab **except while a CSS transition is running on the property you are reading**. A backgrounded tab does not run animation frames, so a transition you just started freezes on its first frame, and the value you read back is the start value serialized in the transition's own interpolation space. Measured 2026-08-23 on the Council dashboard preview: toggling `aria-busy="true"` on a `.button` should have computed `background-color` to `color(srgb 0.33 0.38 0.91 / 0.55)`, and returned an opaque `oklab(...)` instead. That reads exactly like `color-mix()` failing to resolve, so the first guess is a broken stylesheet or a stale file being served, and both are wrong. Waiting longer does not help either, because the frames never arrive. Set `el.style.transition = "none"` before the change you want to read, or front the tab.
 - A screenshot of a backgrounded tab can return a STALE frame: the capture succeeds and the file looks valid, but it shows the page as it was before your last change (observed 2026-08-02: a theme switch to light returned the previous dark frame; the new file was nearly byte-identical to the prior capture). Near-identical file size to the previous screenshot is the signature. Call `state.page.bringToFront()` before any screenshot you intend to trust, or verify the change with `getComputedStyle` readbacks instead.
+- You cannot make a Playwriter tab really hidden on purpose. On 2026-09-23 a tab from `context.newPage()` still read `document.visibilityState === "visible"` and `document.hasFocus() === true` after a second owned tab was opened and `bringToFront()` was called on it. So its timers were not throttled, and a check that needs a throttled background tab (a late timer) cannot be reproduced this way. Read `visibilityState` before you claim a background-tab result, and say in the report when the tab stayed visible.
 - `locator.click()` on popover triggers can hang on a backgrounded tab. Prefer foregrounding the tab; if that is not possible, DOM `el.click()` is the documented exception to the no-`element.click()` rule (see `agent-panel.md`).
 - Real wheel input (`mouse.wheel`) is silently dropped on a backgrounded tab: `scrollLeft`/`scrollTop` stays 0 with no error. To prove a wheel handler works, dispatch a synthetic `WheelEvent` with `evaluate()` (`el.dispatchEvent(new WheelEvent("wheel", { deltaY: 220, bubbles: true }))`) and read the scroll position after. A zero from a real wheel on a backgrounded tab is a delivery artifact, not proof the handler is broken.
 - Convex deploy (`convex dev --once`) and Vite HMR can blank a backgrounded tab entirely (empty body, all selectors gone). Recover with the reload recipe in `agent-panel.md` before the next interaction.
@@ -722,7 +723,13 @@ gives you nothing to read. `convex logs --history 300` is accepted but printed o
 deployment header before switching to watch mode, so it is not a way to fetch past logs either
 (both observed 2026-09-01).
 
-Do not plan a check around reading Convex logs from a file. Read durable state instead — the tables
+Exception: `convex logs --jsonl` does write to a redirected file. On 2026-09-23 a backgrounded
+`vp env exec pnpm --dir packages/app exec convex logs --jsonl > <scratch>/convex-logs.jsonl 2>&1`
+held 24 KB within seconds, one JSON object per function call (`identifier`, `udfType`, `timestamp`
+in seconds, `logLines`, `error`). Start it BEFORE the step you may need to explain; it never shows
+past calls. Stop it when done.
+
+Without `--jsonl`, do not plan a check around reading Convex logs from a file. Read durable state instead — the tables
 that record what you want to prove (`plugins_event_runs` and `plugins_event_run_calls` for plugin
 work, the domain table for everything else) — or run the function directly with `convex run` and read
 its returned value and its inline `[CONVEX …] [ERROR]` output, which the CLI does print.
@@ -740,8 +747,9 @@ wants, because it returns what THIS membership may see:
 
 ```js
 const mem = await q("organizations:get_membership_by_organization_workspace_name", { organizationName, workspaceName });
-const tree = await q("files_nodes:list_tree", { membershipId: mem.value._id });
-tree.value.map((n) => n.path).sort();
+// list_tree is paged: follow continueCursor until isDone (see files.md).
+const tree = await q("files_nodes:list_tree", { membershipId: mem.value._id, paginationOpts: { numItems: 500, cursor: null } });
+tree.value.page.map((n) => n.path).sort();
 ```
 
 For a restriction check, run it once per identity and compare the two path lists. That is far more
@@ -2679,3 +2687,21 @@ unbundled modules). A fake failure that answers after a fixed delay then lands w
 screen is still up, and a "does the app show before the failure" check proves nothing. Time a normal
 reload first (the `data-app-ready` attribute on `<html>`), and make the fake delay clearly longer.
 Hit 2026-09-23: a 6 s fake `resolve-user` failure showed no app; a 25 s one did.
+
+## A temporary fake-failure switch from another agent can break your run in a shared app
+
+Other agents edit the same working tree. A temporary repro switch (for example a
+`QA_TEMP_RESOLVE_FAIL` block in `app-auth.tsx`, turned on by a `localStorage` key) and its HMR
+updates can blank your tab or stop it at the loading screen, even when your own checks never touched
+that code. Before a long run, search the tree for `QA_TEMP` and list the `localStorage` keys of your
+tab. Do not remove another agent's switch. Reload the route after its HMR update and check
+`data-app-ready` on `<html>` before the next step. Hit 2026-09-23 on the web browser route.
+
+## The app stops at "Preparing organization" when the host cannot reach Clerk or Convex
+
+When the host network to Cloudflare-hosted services is slow, the app can stay on the loading screen
+with `failed_to_load_clerk_js_timeout` in the console. This is not an app bug. Check the host first:
+`Invoke-WebRequest` to the Convex and Clerk hosts from `packages/app/.env.local` (do not print keys).
+Wait until they answer, then reload. The same outage makes `vp env exec pnpx ...` fail with
+`ENOTFOUND registry.npmjs.org`; setting `npm_config_offline=true` does not stop that lookup, so wait
+and retry instead. Hit 2026-09-23.

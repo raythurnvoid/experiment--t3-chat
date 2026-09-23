@@ -102,4 +102,37 @@ describe("billing_event", () => {
 
 		expect(billing_event(event)).toEqual(event);
 	});
+
+	test("builds the canonical browser_usage usage event payload", () => {
+		const event = {
+			name: "browser_usage",
+			externalCustomerId: "billed_user_1" as Id<"users">,
+			externalMemberId: "actor_user_1" as Id<"users">,
+			externalId: composite_id(
+				"billing",
+				"browser_usage",
+				"billed_user_1" as Id<"users">,
+				"actor_user_1" as Id<"users">,
+				"organization_1",
+				"workspace_1",
+				"session_1",
+			),
+			metadata: {
+				amount: 0.6,
+				actorUserId: "actor_user_1" as Id<"users">,
+				billedUserId: "billed_user_1" as Id<"users">,
+				organizationId: "organization_1",
+				workspaceId: "workspace_1",
+				sessionId: "session_1",
+				mode: "web",
+				billedMs: 61_000,
+			},
+		} satisfies billing_Event;
+
+		expect(billing_event(event)).toEqual(event);
+		// One session is one event: the id ends with the session doc id.
+		expect(event.externalId).toBe(
+			"browser_usage::billed_user_1::actor_user_1::organization_1::workspace_1::session_1",
+		);
+	});
 });

@@ -895,7 +895,7 @@ export function files_normalize_name_input(args: {
 		// Convert each incoming character to the live draft alphabet for the node kind.
 		const normalizedCharacter = files_normalize_name_input_character(args.kind, character);
 		if (files_is_name_input_separator(args.kind, normalizedCharacter)) {
-			// A leading dot stays in the draft so `.agents` can be typed one letter at a time.
+			// A leading dot stays in the draft so `.agents` and `.system` can be typed one letter at a time.
 			const isLeadingDot = normalizedCharacter === "." && (!previousCharacter || previousCharacter === "/");
 			if (!isLeadingDot && (!previousCharacter || files_is_name_input_separator(args.kind, previousCharacter))) {
 				continue;
@@ -926,8 +926,10 @@ export function files_normalize_name(kind: app_convex_Doc<"files_nodes">["kind"]
 	}
 
 	if (kind === "folder") {
-		if (name.trim().toLowerCase() === ".agents") {
-			return Result({ _yay: ".agents" });
+		// Keep the leading dot of the special `.agents` and `.system` folders.
+		const specialName = name.trim().toLowerCase();
+		if (specialName === ".agents" || specialName === ".system") {
+			return Result({ _yay: specialName });
 		}
 		// Keep already-canonical folder names on a cheap fast path; pasted path-like names take the slower cleanup route.
 		if (FILES_NORMALIZED_DOTTED_NAME_REGEX.test(name)) {
@@ -1030,6 +1032,24 @@ export function files_normalize_upload_file_name(fileName: string) {
 }
 
 /**
+ * Normalize the raw name of a browser download for a node in `/.system/downloads/`. A web page
+ * picks this name, so it must not create a README, AGENTS, or SKILL file that the agent would
+ * read as instructions. Those names get `-download` after the base name, for example
+ * `agents-download.md`.
+ */
+export function files_normalize_browser_download_name(rawName: string) {
+	const name = files_normalize_upload_file_name(rawName);
+	const extensionSeparatorIndex = name.lastIndexOf(".");
+	const baseName = (extensionSeparatorIndex === -1 ? name : name.slice(0, extensionSeparatorIndex)).toLowerCase();
+	if (!FILES_SPECIAL_UPPERCASE_FILE_BASE_NAMES.has(baseName)) {
+		return name;
+	}
+
+	const extension = extensionSeparatorIndex === -1 ? "" : name.slice(extensionSeparatorIndex);
+	return `${baseName}-download${extension}`;
+}
+
+/**
  * Apply conventional spelling and the bare README extension. Other names keep strict validation.
  */
 export function files_normalize_special_node_path(kind: "file" | "folder", path: string) {
@@ -1039,8 +1059,8 @@ export function files_normalize_special_node_path(kind: "file" | "folder", path:
 		.map((segment, index) =>
 			kind === "file" && index === segments.length - 1
 				? files_normalize_special_file_name(segment)
-				: segment.toLowerCase() === ".agents"
-					? ".agents"
+				: segment.toLowerCase() === ".agents" || segment.toLowerCase() === ".system"
+					? segment.toLowerCase()
 					: segment,
 		)
 		.join("/");

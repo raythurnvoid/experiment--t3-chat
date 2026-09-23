@@ -12,6 +12,7 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as WOrganizationNameWorkspaceNameRouteRouteImport } from './routes/w/$organizationName/$workspaceName/route'
 import { Route as WOrganizationNameWorkspaceNameApiKeysIndexRouteImport } from './routes/w/$organizationName/$workspaceName/api-keys/index'
+import { Route as WOrganizationNameWorkspaceNameBrowserIndexRouteImport } from './routes/w/$organizationName/$workspaceName/browser/index'
 import { Route as WOrganizationNameWorkspaceNameChatIndexRouteImport } from './routes/w/$organizationName/$workspaceName/chat/index'
 import { Route as WOrganizationNameWorkspaceNameFilesIndexRouteImport } from './routes/w/$organizationName/$workspaceName/files/index'
 import { Route as WOrganizationNameWorkspaceNameFilesSplatRouteImport } from './routes/w/$organizationName/$workspaceName/files/$'
@@ -39,6 +40,12 @@ const WOrganizationNameWorkspaceNameApiKeysIndexRoute =
   WOrganizationNameWorkspaceNameApiKeysIndexRouteImport.update({
     id: '/api-keys/',
     path: '/api-keys/',
+    getParentRoute: () => WOrganizationNameWorkspaceNameRouteRoute,
+  } as any)
+const WOrganizationNameWorkspaceNameBrowserIndexRoute =
+  WOrganizationNameWorkspaceNameBrowserIndexRouteImport.update({
+    id: '/browser/',
+    path: '/browser/',
     getParentRoute: () => WOrganizationNameWorkspaceNameRouteRoute,
   } as any)
 const WOrganizationNameWorkspaceNameChatIndexRoute =
@@ -115,6 +122,7 @@ export interface FileRoutesByFullPath {
   '/w/$organizationName/$workspaceName/files/browser': typeof WOrganizationNameWorkspaceNameFilesBrowserRoute
   '/w/$organizationName/$workspaceName/plugins/$pluginName': typeof WOrganizationNameWorkspaceNamePluginsPluginNameRoute
   '/w/$organizationName/$workspaceName/api-keys/': typeof WOrganizationNameWorkspaceNameApiKeysIndexRoute
+  '/w/$organizationName/$workspaceName/browser/': typeof WOrganizationNameWorkspaceNameBrowserIndexRoute
   '/w/$organizationName/$workspaceName/chat/': typeof WOrganizationNameWorkspaceNameChatIndexRoute
   '/w/$organizationName/$workspaceName/files/': typeof WOrganizationNameWorkspaceNameFilesIndexRoute
   '/w/$organizationName/$workspaceName/plugins/': typeof WOrganizationNameWorkspaceNamePluginsIndexRoute
@@ -131,6 +139,7 @@ export interface FileRoutesByTo {
   '/w/$organizationName/$workspaceName/files/browser': typeof WOrganizationNameWorkspaceNameFilesBrowserRoute
   '/w/$organizationName/$workspaceName/plugins/$pluginName': typeof WOrganizationNameWorkspaceNamePluginsPluginNameRoute
   '/w/$organizationName/$workspaceName/api-keys': typeof WOrganizationNameWorkspaceNameApiKeysIndexRoute
+  '/w/$organizationName/$workspaceName/browser': typeof WOrganizationNameWorkspaceNameBrowserIndexRoute
   '/w/$organizationName/$workspaceName/chat': typeof WOrganizationNameWorkspaceNameChatIndexRoute
   '/w/$organizationName/$workspaceName/files': typeof WOrganizationNameWorkspaceNameFilesIndexRoute
   '/w/$organizationName/$workspaceName/plugins': typeof WOrganizationNameWorkspaceNamePluginsIndexRoute
@@ -148,6 +157,7 @@ export interface FileRoutesById {
   '/w/$organizationName/$workspaceName/files/browser': typeof WOrganizationNameWorkspaceNameFilesBrowserRoute
   '/w/$organizationName/$workspaceName/plugins/$pluginName': typeof WOrganizationNameWorkspaceNamePluginsPluginNameRoute
   '/w/$organizationName/$workspaceName/api-keys/': typeof WOrganizationNameWorkspaceNameApiKeysIndexRoute
+  '/w/$organizationName/$workspaceName/browser/': typeof WOrganizationNameWorkspaceNameBrowserIndexRoute
   '/w/$organizationName/$workspaceName/chat/': typeof WOrganizationNameWorkspaceNameChatIndexRoute
   '/w/$organizationName/$workspaceName/files/': typeof WOrganizationNameWorkspaceNameFilesIndexRoute
   '/w/$organizationName/$workspaceName/plugins/': typeof WOrganizationNameWorkspaceNamePluginsIndexRoute
@@ -166,6 +176,7 @@ export interface FileRouteTypes {
     | '/w/$organizationName/$workspaceName/files/browser'
     | '/w/$organizationName/$workspaceName/plugins/$pluginName'
     | '/w/$organizationName/$workspaceName/api-keys/'
+    | '/w/$organizationName/$workspaceName/browser/'
     | '/w/$organizationName/$workspaceName/chat/'
     | '/w/$organizationName/$workspaceName/files/'
     | '/w/$organizationName/$workspaceName/plugins/'
@@ -182,6 +193,7 @@ export interface FileRouteTypes {
     | '/w/$organizationName/$workspaceName/files/browser'
     | '/w/$organizationName/$workspaceName/plugins/$pluginName'
     | '/w/$organizationName/$workspaceName/api-keys'
+    | '/w/$organizationName/$workspaceName/browser'
     | '/w/$organizationName/$workspaceName/chat'
     | '/w/$organizationName/$workspaceName/files'
     | '/w/$organizationName/$workspaceName/plugins'
@@ -198,6 +210,7 @@ export interface FileRouteTypes {
     | '/w/$organizationName/$workspaceName/files/browser'
     | '/w/$organizationName/$workspaceName/plugins/$pluginName'
     | '/w/$organizationName/$workspaceName/api-keys/'
+    | '/w/$organizationName/$workspaceName/browser/'
     | '/w/$organizationName/$workspaceName/chat/'
     | '/w/$organizationName/$workspaceName/files/'
     | '/w/$organizationName/$workspaceName/plugins/'
@@ -234,6 +247,13 @@ declare module '@tanstack/react-router' {
       path: '/api-keys'
       fullPath: '/w/$organizationName/$workspaceName/api-keys/'
       preLoaderRoute: typeof WOrganizationNameWorkspaceNameApiKeysIndexRouteImport
+      parentRoute: typeof WOrganizationNameWorkspaceNameRouteRoute
+    }
+    '/w/$organizationName/$workspaceName/browser/': {
+      id: '/w/$organizationName/$workspaceName/browser/'
+      path: '/browser'
+      fullPath: '/w/$organizationName/$workspaceName/browser/'
+      preLoaderRoute: typeof WOrganizationNameWorkspaceNameBrowserIndexRouteImport
       parentRoute: typeof WOrganizationNameWorkspaceNameRouteRoute
     }
     '/w/$organizationName/$workspaceName/chat/': {
@@ -321,6 +341,7 @@ interface WOrganizationNameWorkspaceNameRouteRouteChildren {
   WOrganizationNameWorkspaceNameFilesBrowserRoute: typeof WOrganizationNameWorkspaceNameFilesBrowserRoute
   WOrganizationNameWorkspaceNamePluginsPluginNameRoute: typeof WOrganizationNameWorkspaceNamePluginsPluginNameRoute
   WOrganizationNameWorkspaceNameApiKeysIndexRoute: typeof WOrganizationNameWorkspaceNameApiKeysIndexRoute
+  WOrganizationNameWorkspaceNameBrowserIndexRoute: typeof WOrganizationNameWorkspaceNameBrowserIndexRoute
   WOrganizationNameWorkspaceNameChatIndexRoute: typeof WOrganizationNameWorkspaceNameChatIndexRoute
   WOrganizationNameWorkspaceNameFilesIndexRoute: typeof WOrganizationNameWorkspaceNameFilesIndexRoute
   WOrganizationNameWorkspaceNamePluginsIndexRoute: typeof WOrganizationNameWorkspaceNamePluginsIndexRoute
@@ -341,6 +362,8 @@ const WOrganizationNameWorkspaceNameRouteRouteChildren: WOrganizationNameWorkspa
       WOrganizationNameWorkspaceNamePluginsPluginNameRoute,
     WOrganizationNameWorkspaceNameApiKeysIndexRoute:
       WOrganizationNameWorkspaceNameApiKeysIndexRoute,
+    WOrganizationNameWorkspaceNameBrowserIndexRoute:
+      WOrganizationNameWorkspaceNameBrowserIndexRoute,
     WOrganizationNameWorkspaceNameChatIndexRoute:
       WOrganizationNameWorkspaceNameChatIndexRoute,
     WOrganizationNameWorkspaceNameFilesIndexRoute:

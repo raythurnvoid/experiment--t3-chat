@@ -25,10 +25,16 @@
 		{ "tag": "v2", "new_sqlite_classes": ["BrowserRegistry"] }
 	],
 	"vars": {
-		"BROWSER_RUNNER_DISABLED": "true"
+		"BROWSER_RUNNER_DISABLED": "true",
+		// Hosts the web browser may not open. Comma list. Production denies nothing (owner decision,
+		// 2026-09-23); the provider's egress proxy still refuses private and metadata addresses.
+		"BROWSER_WEB_DENIED_HOSTS": "",
+		// App origins that may send a file to `PUT /viewer/upload` (CORS). Comma list. Empty until the
+		// production app origin is known, so no browser can upload.
+		"BROWSER_APP_ORIGINS": ""
 	},
 	"secrets": {
-		"required": ["BROWSER_RUNNER_SECRET"]
+		"required": ["BROWSER_RUNNER_SECRET", "BROWSER_PROFILE_KEY"]
 	},
 	"observability": {
 		"enabled": true
@@ -57,10 +63,12 @@
 			],
 			"vars": {
 				"BROWSER_RUNNER_DISABLED": "false",
-				"BROWSER_PREVIEW_URL": "https://bonobo-file-preview-dev.ray-thurne-void.workers.dev/v0"
+				"BROWSER_PREVIEW_URL": "https://bonobo-file-preview-dev.ray-thurne-void.workers.dev/v0",
+				"BROWSER_WEB_DENIED_HOSTS": "localhost,grand-finch-267.convex.cloud,grand-finch-267.convex.site,direct-bass-17.clerk.accounts.dev,bonobo-senate.com,bonobo-senate-browser-runner-dev.ray-thurne-void.workers.dev,bonobo-file-preview-dev.ray-thurne-void.workers.dev,bonobo-senate-code-execution-runner.ray-thurne-void.workers.dev,bonobo-senate-plugin-runner.ray-thurne-void.workers.dev,bonobo-senate-r2-media-transformer.ray-thurne-void.workers.dev,bonobo-senate-r2-upload-finalizer.ray-thurne-void.workers.dev,bonobo-council-service.ray-thurne-void.workers.dev",
+				"BROWSER_APP_ORIGINS": "http://localhost:5173"
 			},
 			"secrets": {
-				"required": ["BROWSER_RUNNER_SECRET"]
+				"required": ["BROWSER_RUNNER_SECRET", "BROWSER_PROFILE_KEY"]
 			}
 		}
 	}

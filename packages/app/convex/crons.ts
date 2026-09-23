@@ -49,8 +49,17 @@ crons.cron(
 crons.cron("cleanup expired unfinalized assets", "45 * * * *", internal.r2.cleanup_expired_unfinalized_assets, {});
 
 // Once hourly — delete expired draft captures with their blobs, starting sessions that never
-// committed, old daily-use counters, and closed sessions past their retention.
+// committed, old daily-use counters, settled sessions past their retention, and saved browser
+// profiles unused for 90 days.
 crons.cron("cleanup expired browser docs", "5 * * * *", internal.files_browser.cleanup_expired_browser_docs, {});
+
+// Every 5 minutes — close web browsers whose owner lost access, and bill browser sessions that ended
+// without a settle (failed End, lost status check).
+crons.cron("settle browser usage", "*/5 * * * *", internal.files_browser.settle_pending_browser_usage, {});
+
+// Every 5 minutes — ask the browser runner to delete the stored bytes of deleted saved profiles,
+// and retry failed wipes whose backoff is over. Each deletion also starts this job at once.
+crons.cron("process browser profile wipes", "*/5 * * * *", internal.files_browser.process_browser_profile_wipes, {});
 
 // Each hour, schedule up to 50 R2 deletion jobs whose retry time has passed.
 crons.cron(

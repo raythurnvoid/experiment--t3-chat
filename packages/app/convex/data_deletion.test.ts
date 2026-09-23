@@ -10166,3 +10166,210 @@ describe("prepare_user_for_hard_deletion", () => {
 		expect(after.actorOnly).not.toBeNull();
 	});
 });
+
+describe("saved browser profiles", () => {
+	async function seed_browser_profile(
+		ctx: MutationCtx,
+		args: {
+			userId: Id<"users">;
+			organizationId: Id<"organizations">;
+			workspaceId: Id<"organizations_workspaces">;
+		},
+	) {
+		return await ctx.db.insert("files_browser_profiles", {
+			...args,
+			profileKey: new Uint8Array(32).buffer,
+			agentBlockedHosts: [],
+			createdAt: Date.now(),
+			lastUsedAt: Date.now(),
+		});
+	}
+
+	async function read_browser_profiles(t: ReturnType<typeof test_convex>) {
+		return await t.run(async (ctx) => ({
+			profileIds: (await ctx.db.query("files_browser_profiles").collect()).map((doc) => doc._id).sort(),
+			wipes: await ctx.db.query("files_browser_profile_wipes").collect(),
+		}));
+	}
+
+	test("the account deletion request closes live browsers and deletes every saved profile", async () => {
+		const t = test_convex();
+		const user = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-delete-browser-profiles",
+				displayName: "Browser Profiles",
+			}),
+		);
+		const other = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-delete-browser-profiles-other",
+				displayName: "Browser Profiles Other",
+			}),
+		);
+		const seeded = await t.run(async (ctx) => {
+			const now = Date.now();
+			const session = {
+				mode: "web" as const,
+				ownerId: user.userId,
+				organizationId: user.defaultOrganizationId,
+				workspaceId: user.defaultWorkspaceId,
+				billedUserId: user.userId,
+				navigationGeneration: 1,
+				loadGen: 0,
+				controlGen: 1,
+				agentAccess: true,
+				createdAt: now,
+				updatedAt: now,
+			};
+			const extraWorkspace = await organizations_db_create_workspace(ctx, {
+				userId: user.userId,
+				organizationId: user.defaultOrganizationId,
+				name: "profiles-extra",
+				description: "",
+				now,
+			});
+			if (extraWorkspace._nay) throw new Error(extraWorkspace._nay.message);
+			return {
+				liveSessionId: await ctx.db.insert("files_browser_sessions", {
+					...session,
+					control: "ready",
+					billing: { state: "pending" },
+					runnerSessionId: "runner-web-1",
+				}),
+				// A closed browser needs no close.
+				closedSessionId: await ctx.db.insert("files_browser_sessions", {
+					...session,
+					control: "closed",
+					closedAt: now,
+					billing: { state: "settled", billedMs: 0, amountCents: 0, settledAt: now },
+				}),
+				profileIds: [
+					await seed_browser_profile(ctx, {
+						userId: user.userId,
+						organizationId: user.defaultOrganizationId,
+						workspaceId: user.defaultWorkspaceId,
+					}),
+					await seed_browser_profile(ctx, {
+						userId: user.userId,
+						organizationId: user.defaultOrganizationId,
+						workspaceId: extraWorkspace._yay.workspaceId,
+					}),
+				],
+				otherProfileId: await seed_browser_profile(ctx, {
+					userId: other.userId,
+					organizationId: other.defaultOrganizationId,
+					workspaceId: other.defaultWorkspaceId,
+				}),
+			};
+		});
+
+		await t.mutation(internal.data_deletion.init_user_deletion, { userId: user.userId });
+		const jobs = await t.run(async (ctx) =>
+			(await ctx.db.system.query("_scheduled_functions").collect()).filter((job) => job.state.kind === "pending"),
+		);
+		expect(jobs.filter((job) => job.name.includes("end_browser_session_internal")).map((job) => job.args[0])).toEqual([
+			{ sessionId: seeded.liveSessionId, reason: "account_deleted" },
+		]);
+		expect(jobs.filter((job) => job.name.includes("delete_user_profiles_batch")).map((job) => job.args[0])).toEqual([
+			{ userId: user.userId },
+		]);
+
+		// The scheduled batch deletes each profile and writes its wipe doc in the same transaction.
+		await t.mutation(internal.files_browser.delete_user_profiles_batch, { userId: user.userId });
+		const after = await read_browser_profiles(t);
+		expect(after.profileIds).toEqual([seeded.otherProfileId]);
+		expect(after.wipes.map((wipe) => wipe.profileId).sort()).toEqual([...seeded.profileIds].sort());
+		expect(after.wipes.every((wipe) => wipe.ownerId === user.userId && wipe.attempts === 0)).toBe(true);
+	});
+
+	test("the workspace purge deletes the workspace's saved profiles with wipe docs", async () => {
+		const t = test_convex();
+		const user = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-purge-browser-profiles",
+				displayName: "Purge Browser Profiles",
+			}),
+		);
+		const other = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-purge-browser-profiles-other",
+				displayName: "Purge Browser Profiles Other",
+			}),
+		);
+		const seeded = await t.run(async (ctx) => {
+			const sibling = await organizations_db_create_workspace(ctx, {
+				userId: user.userId,
+				organizationId: user.defaultOrganizationId,
+				name: "profiles-sibling",
+				description: "",
+				now: Date.now(),
+			});
+			if (sibling._nay) throw new Error(sibling._nay.message);
+			return {
+				purgedProfileIds: [
+					await seed_browser_profile(ctx, {
+						userId: user.userId,
+						organizationId: user.defaultOrganizationId,
+						workspaceId: user.defaultWorkspaceId,
+					}),
+					await seed_browser_profile(ctx, {
+						userId: other.userId,
+						organizationId: user.defaultOrganizationId,
+						workspaceId: user.defaultWorkspaceId,
+					}),
+				],
+				siblingProfileId: await seed_browser_profile(ctx, {
+					userId: user.userId,
+					organizationId: user.defaultOrganizationId,
+					workspaceId: sibling._yay.workspaceId,
+				}),
+				requestId: await data_deletion_db_request(ctx, {
+					userId: user.userId,
+					organizationId: user.defaultOrganizationId,
+					workspaceId: user.defaultWorkspaceId,
+					scope: "workspace",
+					eligibleAt: 0,
+				}),
+			};
+		});
+
+		await data_deletion_test_process_workspace_request_until_done(t, { requestId: seeded.requestId });
+		const after = await read_browser_profiles(t);
+		expect(after.profileIds).toEqual([seeded.siblingProfileId]);
+		expect(after.wipes.map((wipe) => wipe.profileId).sort()).toEqual([...seeded.purgedProfileIds].sort());
+		expect(after.wipes.every((wipe) => wipe.workspaceId === user.defaultWorkspaceId)).toBe(true);
+	});
+
+	test("the data reset deletes the user's saved profiles with wipe docs", async () => {
+		const t = test_convex();
+		const user = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-reset-browser-profiles",
+				displayName: "Reset Browser Profiles",
+			}),
+		);
+		const other = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-reset-browser-profiles-other",
+				displayName: "Reset Browser Profiles Other",
+			}),
+		);
+		const seeded = await t.run(async (ctx) => ({
+			resetProfileId: await seed_browser_profile(ctx, {
+				userId: user.userId,
+				organizationId: user.defaultOrganizationId,
+				workspaceId: user.defaultWorkspaceId,
+			}),
+			otherProfileId: await seed_browser_profile(ctx, {
+				userId: other.userId,
+				organizationId: other.defaultOrganizationId,
+				workspaceId: other.defaultWorkspaceId,
+			}),
+		}));
+
+		await data_deletion_test_hard_delete_user_data_until_done(t, { userId: user.userId });
+		const after = await read_browser_profiles(t);
+		expect(after.profileIds).toEqual([seeded.otherProfileId]);
+		expect(after.wipes.map((wipe) => wipe.profileId)).toEqual([seeded.resetProfileId]);
+	});
+});

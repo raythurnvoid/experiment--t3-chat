@@ -196,6 +196,17 @@ export type AppCompositeIds = {
 				workspaceId: string,
 				threadId: string,
 				messageId: string,
+		  ]
+		| [
+				kind: "browser_usage",
+				billedUserId: string,
+				actorUserId: string,
+				organizationId: string,
+				workspaceId: string,
+				/**
+				 * The `files_browser_sessions` doc id. One session is billed with one event.
+				 */
+				sessionId: string,
 		  ];
 	plugin:
 		| [kind: "upload_completed", eventId: string, installationId: string]

@@ -13,6 +13,7 @@
 		"test": "pnpm --dir ../app exec vitest run --config ../browser-runner/vitest.config.mjs"
 	},
 	"dependencies": {
-		"@cloudflare/playwright": "1.3.6"
+		"@cloudflare/playwright": "1.3.6",
+		"common": "workspace:*"
 	}
 }
