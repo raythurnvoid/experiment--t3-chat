@@ -5,6 +5,7 @@ settings:
   excludeLinksFromLockfile: false
 
 overrides:
+  '@floating-ui/dom': 1.8.0
   '@polar-sh/sdk': 0.49.0
   '@tiptap/y-tiptap': 3.0.9
   convex: 1.46.0
@@ -57,8 +58,8 @@ importers:
         specifier: 3.0.292
         version: 3.0.292(react@19.3.0)(zod@4.6.5)
       '@ariakit/react':
-        specifier: ^0.4.19
-        version: 0.4.20(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
+        specifier: ^0.4.40
+        version: 0.4.40(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
       '@atlaskit/pragmatic-drag-and-drop':
         specifier: ^1.8.1
         version: 1.8.1
@@ -93,8 +94,8 @@ importers:
         specifier: ^0.4.12
         version: 0.4.12(convex-helpers@0.1.124(@standard-schema/spec@1.1.0)(convex@1.46.0(@clerk/clerk-react@5.61.3(react-dom@19.3.0(react@19.3.0))(react@19.3.0))(react@19.3.0))(hono@4.11.3)(react@19.3.0)(typescript@6.0.3)(zod@4.6.5))(convex@1.46.0(@clerk/clerk-react@5.61.3(react-dom@19.3.0(react@19.3.0))(react@19.3.0))(react@19.3.0))(react@19.3.0)
       '@floating-ui/dom':
-        specifier: ^1.6.13
-        version: 1.7.4
+        specifier: 1.8.0
+        version: 1.8.0
       '@headless-tree/core':
         specifier: workspace:*
         version: link:vendor/headless-tree/packages/core
@@ -820,8 +821,8 @@ importers:
   packages/app/vendor/novel/packages/headless:
     dependencies:
       '@floating-ui/dom':
-        specifier: ^1.6.0
-        version: 1.7.4
+        specifier: 1.8.0
+        version: 1.8.0
       '@radix-ui/react-slot':
         specifier: ^1.1.1
         version: 1.2.4(@types/react@19.2.7)(react@19.3.0)
@@ -1715,8 +1716,8 @@ importers:
   packages/app/vendor/tiptap/packages/extension-bubble-menu:
     dependencies:
       '@floating-ui/dom':
-        specifier: ^1.0.0
-        version: 1.7.4
+        specifier: 1.8.0
+        version: 1.8.0
     devDependencies:
       '@tiptap/core':
         specifier: workspace:^
@@ -1820,8 +1821,8 @@ importers:
   packages/app/vendor/tiptap/packages/extension-drag-handle:
     dependencies:
       '@floating-ui/dom':
-        specifier: ^1.6.13
-        version: 1.7.4
+        specifier: 1.8.0
+        version: 1.8.0
     devDependencies:
       '@tiptap/core':
         specifier: workspace:^
@@ -1942,8 +1943,8 @@ importers:
   packages/app/vendor/tiptap/packages/extension-floating-menu:
     devDependencies:
       '@floating-ui/dom':
-        specifier: ^1.6.12
-        version: 1.7.4
+        specifier: 1.8.0
+        version: 1.8.0
       '@tiptap/core':
         specifier: workspace:^
         version: link:../core
@@ -2440,8 +2441,8 @@ importers:
   packages/app/vendor/tiptap/packages/vue-3:
     dependencies:
       '@floating-ui/dom':
-        specifier: ^1.0.0
-        version: 1.7.4
+        specifier: 1.8.0
+        version: 1.8.0
     devDependencies:
       '@tiptap/core':
         specifier: workspace:^
@@ -2788,20 +2789,36 @@ packages:
     resolution: {integrity: sha512-GiwTmBFOU1/+UVNqqCGzFJYfBXEytUkiI+iRZ6Qx7KmUVtLm00sYySkfe203C9QtPG11yOz1ZaMek8dT/xnlgg==}
     engines: {node: '>=20'}
 
-  '@ariakit/core@0.4.17':
-    resolution: {integrity: sha512-OmbUcVZgmQw0AvpX5urCAi3KtEuD30DG8W8gpQVzFpCUWUtJ21bmc6a4s2rm2g1oKPIVShy61FGLtKdKLaTG6g==}
+  '@ariakit/components@0.1.13':
+    resolution: {integrity: sha512-s2tlnFMCjl7giCKD7TX5pHkRjl7rM0DIWXKytGnyrX1nSOagQ/89sigZJVtxZefcqnbc+4KUWF58VatSHxNmBQ==}
 
-  '@ariakit/react-core@0.4.20':
-    resolution: {integrity: sha512-4rfmaKgSIctHRDrA4wt8MLSI4rNA6wyD7XSTShghHrJfDEXujuOoZqvmPjtMr///kWfW9OV9USOOn8ie/7H/nw==}
+  '@ariakit/react-components@0.6.1':
+    resolution: {integrity: sha512-vwgSmJUB+HhYJci6CojHNSxUPgDosxo+1Y6d9HqEUSdmswFufFQg9Hog8BB1c/mKnxBg6/wdrc7p7iwQotisfQ==}
     peerDependencies:
       react: 19.3.0
       react-dom: 19.3.0
 
-  '@ariakit/react@0.4.20':
-    resolution: {integrity: sha512-1X44x3co7MInk5SV4lSvRdy8Nwrt56YNBreKPkcZ/LlwdmY2/2r4A26I7Kzhv+VYIxDTavZYrqOlWnix5ojceg==}
+  '@ariakit/react-store@0.1.11':
+    resolution: {integrity: sha512-d8RdiRPGqoID6iviasa779NbXgFNrysw8Y4tB33HuBOneHJwxFd2G7tdLATAsqC50vYdYuo/ntXOsAsklt7jWw==}
+    peerDependencies:
+      react: 19.3.0
+
+  '@ariakit/react-utils@0.2.6':
+    resolution: {integrity: sha512-pjHqtwu6CgBgXmkkZQPuXbtuZXcfV25kRkIokLdbE3vrytKdgqRjRAPQ+4Qamwz4n5M6kFnA2Iwd4BK+egatpw==}
+    peerDependencies:
+      react: 19.3.0
+
+  '@ariakit/react@0.4.40':
+    resolution: {integrity: sha512-cfGfuK1oDVp+2B1n0AgB899K7CHDWoDn4mbdDv6URcmLozlBpV3oUIi9nD9xZV6jAAjvCEcq29jEnicQUEGusw==}
     peerDependencies:
       react: 19.3.0
       react-dom: 19.3.0
+
+  '@ariakit/store@0.1.10':
+    resolution: {integrity: sha512-NKjmUzB8wCf4oZX9Ao50ja1SrVw4MMZWI4ednoQNB0qtbHlUN4vTSFqhotvUOXnXv0n26Zk4/HB4SsVgLJ5ebg==}
+
+  '@ariakit/utils@0.2.1':
+    resolution: {integrity: sha512-hJs71Orklyw1tW2bCrDdEDp2nEv6I2c3iP1bof88Chd3rTuJIHAp+3a3yDwU5UKjM3baB6QDrCg4x6jABgsEyw==}
 
   '@ark/attest@0.49.0':
     resolution: {integrity: sha512-LYAJe4iwgA4GY+WLcSZ2ObTgr7F9lSwoQm4hR+B5ko0TfB3gqolXv04hA+7UtoP5HrGR1lVS+0DdwtWNnaSGnQ==}
@@ -6429,11 +6446,11 @@ packages:
     resolution: {integrity: sha512-rTXwAsIxpCqzUnZvrxVh3L0QA0NzToqWBLAhV+zDV3MIIwiQhAZHMdPCIaj5n/yADu/tyk12wIPgL6YHGXJP+g==}
     engines: {node: ^20.19.0 || ^22.13.0 || ^23.5.0 || >=24.0.0, npm: '>=10'}
 
-  '@floating-ui/core@1.7.3':
-    resolution: {integrity: sha512-sGnvb5dmrJaKEZ+LDIpguvdX3bDlEllmv4/ClQ9awcmCZrlx5jQyyMWFM5kBI+EyNOCDDiKk8il0zeuX3Zlg/w==}
+  '@floating-ui/core@1.8.0':
+    resolution: {integrity: sha512-0CIZ5itps/8x7BG8dEIhs53BvCUH2PCoogtakwRTut+Arm58sJooJ0AuZhLw2HJYIR5cMLNPBSS728sPho2khQ==}
 
-  '@floating-ui/dom@1.7.4':
-    resolution: {integrity: sha512-OOchDgh4F2CchOX94cRVqhvy7b3AFb+/rQXyswmzmGakRfkMgoWVjfnLWkRirfLEfuD4ysVW16eXzwt3jHIzKA==}
+  '@floating-ui/dom@1.8.0':
+    resolution: {integrity: sha512-yXSrzeHZBTZadLOlfyhCkJHNeLJnHRnRInwdZ40L7ZiaAtrBwoYlsDrX3v5zB1Utk7CLfzcOVnVVWoXEky7Ceg==}
 
   '@floating-ui/react-dom@2.1.6':
     resolution: {integrity: sha512-4JX6rEatQEvlmgU80wZyq9RT96HZJa88q8hp0pBd+LrczeDI4o6uA2M+uvxngVHo4Ihr8uibXxH6+70zhAFrVw==}
@@ -6449,6 +6466,9 @@ packages:
 
   '@floating-ui/utils@0.2.10':
     resolution: {integrity: sha512-aGTxbpbg8/b5JfU1HXSrbH3wXZuLPJcNEcZQFMxLs3oSzgtVu6nFPkbbGGUvBcUjKV2YyB9Wxxabo+HEH9tcRQ==}
+
+  '@floating-ui/utils@0.2.12':
+    resolution: {integrity: sha512-HpCo8tmWzLVad5s2d19EhAz5zqrrQ6s69qd6moPMQvkOuSwDT1YgRfWSVuc4ennqrgv3OHppiOGMQ7oC13yIww==}
 
   '@hapi/hoek@9.3.0':
     resolution: {integrity: sha512-/c6rf4UJlmHlC9b5BaNvzAcFv7HZ2QHaV0D4/HNlBdvFnvQq8RI4kYdhyPCl7Xj+oWvTWQ8ujhqS53LIgAe6KQ==}
@@ -21143,21 +21163,47 @@ snapshots:
       typescript: 5.6.1-rc
       validate-npm-package-name: 5.0.1
 
-  '@ariakit/core@0.4.17': {}
-
-  '@ariakit/react-core@0.4.20(react-dom@19.3.0(react@19.3.0))(react@19.3.0)':
+  '@ariakit/components@0.1.13':
     dependencies:
-      '@ariakit/core': 0.4.17
-      '@floating-ui/dom': 1.7.4
+      '@ariakit/store': 0.1.10
+      '@ariakit/utils': 0.2.1
+
+  '@ariakit/react-components@0.6.1(react-dom@19.3.0(react@19.3.0))(react@19.3.0)':
+    dependencies:
+      '@ariakit/components': 0.1.13
+      '@ariakit/react-store': 0.1.11(react@19.3.0)
+      '@ariakit/react-utils': 0.2.6(react@19.3.0)
+      '@ariakit/store': 0.1.10
+      '@ariakit/utils': 0.2.1
+      '@floating-ui/dom': 1.8.0
       react: 19.3.0
       react-dom: 19.3.0(react@19.3.0)
+
+  '@ariakit/react-store@0.1.11(react@19.3.0)':
+    dependencies:
+      '@ariakit/react-utils': 0.2.6(react@19.3.0)
+      '@ariakit/store': 0.1.10
+      '@ariakit/utils': 0.2.1
+      react: 19.3.0
       use-sync-external-store: 1.6.0(react@19.3.0)
 
-  '@ariakit/react@0.4.20(react-dom@19.3.0(react@19.3.0))(react@19.3.0)':
+  '@ariakit/react-utils@0.2.6(react@19.3.0)':
     dependencies:
-      '@ariakit/react-core': 0.4.20(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
+      '@ariakit/store': 0.1.10
+      '@ariakit/utils': 0.2.1
+      react: 19.3.0
+
+  '@ariakit/react@0.4.40(react-dom@19.3.0(react@19.3.0))(react@19.3.0)':
+    dependencies:
+      '@ariakit/react-components': 0.6.1(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
       react: 19.3.0
       react-dom: 19.3.0(react@19.3.0)
+
+  '@ariakit/store@0.1.10':
+    dependencies:
+      '@ariakit/utils': 0.2.1
+
+  '@ariakit/utils@0.2.1': {}
 
   '@ark/attest@0.49.0(typescript@5.9.3)':
     dependencies:
@@ -25826,18 +25872,18 @@ snapshots:
 
   '@faker-js/faker@10.2.0': {}
 
-  '@floating-ui/core@1.7.3':
+  '@floating-ui/core@1.8.0':
     dependencies:
-      '@floating-ui/utils': 0.2.10
+      '@floating-ui/utils': 0.2.12
 
-  '@floating-ui/dom@1.7.4':
+  '@floating-ui/dom@1.8.0':
     dependencies:
-      '@floating-ui/core': 1.7.3
-      '@floating-ui/utils': 0.2.10
+      '@floating-ui/core': 1.8.0
+      '@floating-ui/utils': 0.2.12
 
   '@floating-ui/react-dom@2.1.6(react-dom@19.3.0(react@19.3.0))(react@19.3.0)':
     dependencies:
-      '@floating-ui/dom': 1.7.4
+      '@floating-ui/dom': 1.8.0
       react: 19.3.0
       react-dom: 19.3.0(react@19.3.0)
 
@@ -25850,6 +25896,8 @@ snapshots:
       tabbable: 6.4.0
 
   '@floating-ui/utils@0.2.10': {}
+
+  '@floating-ui/utils@0.2.12': {}
 
   '@hapi/hoek@9.3.0': {}
 
