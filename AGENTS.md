@@ -107,7 +107,7 @@ For recoverable auth and permission failures, follow the Convex skill's handler-
 
 - Convex - Real-time backend, HTTP actions, persistence
 - Clerk - Authentication
-- Yjs - Convex-backed collaborative editing. The provider and editor extensions are app code adapted from Liveblocks. `@liveblocks/core` and `@liveblocks/react-ui` are still used as published npm packages.
+- Yjs - Convex-backed collaborative editing. The provider and editor extensions are app code adapted from Liveblocks. `@liveblocks/core` is still used as a published npm package.
 - Novel + Tiptap - Rich text/Markdown editor
 - Monaco Editor - Code and Diff editor
 - TanStack Router - File-based routing

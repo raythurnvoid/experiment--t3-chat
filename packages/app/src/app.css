@@ -4,10 +4,6 @@
 @import "tailwindcss/preflight.css" layer(base);
 @import "tailwindcss/utilities.css" layer(utilities);
 
-/* Liveblocks styles for AI docs editor */
-@import "@liveblocks/react-ui/styles.css" layer(external);
-@import "@liveblocks/react-ui/styles/dark/media-query.css" layer(external);
-
 @import "tw-animate-css";
 
 @custom-variant dark (&:is(.dark *));

@@ -10,7 +10,7 @@ Liveblocks fork. That code now lives in the app:
 - `packages/app/src/lib/file-editor-rich-text-utils.ts` — thread helpers
 - `packages/app/src/lib/file-editor-rich-text-ai-extension.ts` — AI extension
 
-Also run it after upgrading `@liveblocks/core` or `@liveblocks/react-ui`. The app imports **runtime
+Also run it after upgrading `@liveblocks/core`. The app imports **runtime
 internals** from `@liveblocks/core` (`Signal`, `DerivedSignal`, `autoRetry`, `HttpError`), and those are
 not covered by semver.
 

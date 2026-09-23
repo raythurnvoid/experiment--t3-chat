@@ -109,11 +109,8 @@ importers:
         specifier: ^13.8.0
         version: 13.8.0(react@19.3.0)
       '@liveblocks/core':
-        specifier: 3.11.0
-        version: 3.11.0(@types/json-schema@7.0.15)
-      '@liveblocks/react-ui':
-        specifier: 3.11.0
-        version: 3.11.0(@types/json-schema@7.0.15)(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
+        specifier: 3.24.2
+        version: 3.24.2(@types/json-schema@7.0.15)
       '@mantine/core':
         specifier: ^8.3.4
         version: 8.3.10(@mantine/hooks@8.3.10(react@19.3.0))(@types/react@19.3.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
@@ -6904,44 +6901,13 @@ packages:
     peerDependencies:
       tslib: '2'
 
-  '@juggle/resize-observer@3.4.0':
-    resolution: {integrity: sha512-dfLbk+PwWvFzSxwk3n5ySL0hfBog779o8h68wK/7/APo/7cgyWp5jcXockbxdk5kFRkbeXWm4Fbi9FrdN381sA==}
-
   '@leichtgewicht/ip-codec@2.0.5':
     resolution: {integrity: sha512-Vo+PSpZG2/fmgmiNzYK9qWRh8h/CHrwD0mo1h1DzL4yzHNSfWYujGTYsWGreD000gcgmZ7K4Ys6Tx9TxtsKdDw==}
 
-  '@liveblocks/client@3.11.0':
-    resolution: {integrity: sha512-89PnIxYkDAwlGRMlALBo1NsAAUD15Ti2c9NVgnEUpqMpUdFCejwcnyc6jBLSXnS92wsu2lPXeLcQtT6ze7nKMg==}
-
-  '@liveblocks/core@3.11.0':
-    resolution: {integrity: sha512-XWULxi0zdBOXH8UOdQHMA50ayhHLgvDOhLcCrP0VzA5Gn6Oa5tDXms5ekDZ9SBv4y+fxs9ckYaXRDlOYggnwTg==}
+  '@liveblocks/core@3.24.2':
+    resolution: {integrity: sha512-xFtE9RojMLvzIqALxUIvn7wej7EGP+iCU7N8BxkXTj8cMrLHNEnbIYrJPeW/7dLKa2dYyS5WA/Yr3Vif9ZkRow==}
     peerDependencies:
       '@types/json-schema': ^7
-
-  '@liveblocks/react-ui@3.11.0':
-    resolution: {integrity: sha512-CwJofb+jYLpTtMNkDSBoW+jHleDPeB8g8pt+gUBoTyXjXfHKU26sQQOQfW2pN4ux3ENNJxqAOlAS8tFEIY68BQ==}
-    peerDependencies:
-      '@types/react': '*'
-      '@types/react-dom': '*'
-      react: 19.3.0
-      react-dom: 19.3.0
-    peerDependenciesMeta:
-      '@types/react':
-        optional: true
-      '@types/react-dom':
-        optional: true
-
-  '@liveblocks/react@3.11.0':
-    resolution: {integrity: sha512-IgviF3NlXe6a5nxILWZDD4dXaEWyx9zUcqx1+9CPyr2jQY0lD0o+CaO19l0UCEdKWlsJKEV0eV9489IvPd2fDg==}
-    peerDependencies:
-      '@types/react': '*'
-      '@types/react-dom': '*'
-      react: 19.3.0
-    peerDependenciesMeta:
-      '@types/react':
-        optional: true
-      '@types/react-dom':
-        optional: true
 
   '@loaderkit/resolve@1.0.4':
     resolution: {integrity: sha512-rJzYKVcV4dxJv+vW6jlvagF8zvGxHJ2+HTr1e2qOejfmGhAApgJHl8Aog4mMszxceTRiKTTbnpgmTO1bEZHV/A==}
@@ -12071,9 +12037,6 @@ packages:
     resolution: {integrity: sha512-9mAqGPHLakhCLeNyxPkK4xVo746zQ/czLH1Ky+vkitMnWfWZps8r0qXuwhwizagCRttsL4lfG4pIOvaWLpAP0w==}
     engines: {node: '>= 0.8.0'}
 
-  compute-scroll-into-view@3.1.1:
-    resolution: {integrity: sha512-VRhuHOLoKYOy4UbilLbUzbYg93XLjv2PncJC50EuTWPA3gaja1UjBsUP/D/9/juV3vQFr6XBEzn9KCAHdUvOHw==}
-
   concat-map@0.0.1:
     resolution: {integrity: sha512-/Srv4dswyQNBfohGpz9o6Yb3Gz3SrUDqBH5rTuhGR7ahtlbYKnVxw2bCFMRljaA7EXHaXZ8wsHdodFvbkhKmqg==}
 
@@ -12904,10 +12867,6 @@ packages:
   dir-glob@3.0.1:
     resolution: {integrity: sha512-WkrWp9GR4KXfKGYzOLmTuGVi1UWFfws377n9cc55/tb6DuqyF6pcQ5AbiHEshaDpY9v6oaSr2XCDidGmMwdzIA==}
     engines: {node: '>=8'}
-
-  direction@1.0.4:
-    resolution: {integrity: sha512-GYqKi1aH7PJXxdhTeZBFrg8vUBeKXi+cNprXsC1kpJcbcVnV9wBsrOu1cQEdG0WeQwlfHiy3XvnKfIrJ2R0NzQ==}
-    hasBin: true
 
   dns-packet@5.6.1:
     resolution: {integrity: sha512-l4gcSouhcgIKRvyy99RNVOgxXiicE+2jZoNmaNmZ6JXiGajBOJAesk1OBlJuM5k2c+eudGdLxDqXuPCKIj6kpw==}
@@ -13932,11 +13891,6 @@ packages:
     resolution: {integrity: sha512-Rx/WycZ60HOaqLKAi6cHRKKI7zxWbJ31MhntmtwMoaTeF7XFH9hhBp8vITaMidfljRQ6eYWCKkaTK+ykVJHP2A==}
     engines: {node: '>= 0.8'}
 
-  frimousse@0.2.0:
-    resolution: {integrity: sha512-viSrsVQWKR4Q7xzC0lkx3Wu9i1+IHrth0QXn0nlIIJXpltwUnjkGXSTuoW7WHI5aJ4z49WR8E/pyQizFjlNtTA==}
-    peerDependencies:
-      react: 19.3.0
-
   fs-constants@1.0.0:
     resolution: {integrity: sha512-y6OAwoSIf7FyjMIv94u+b5rdheZEjzR63GTyZJm5qh4Bi+2YgwLCcI/fPFZkL5PSixOt6ZNKm+w+Hfp/Bciwow==}
 
@@ -14739,9 +14693,6 @@ packages:
   is-hexadecimal@2.0.1:
     resolution: {integrity: sha512-DgZQp241c8oO6cA1SbTEWiXeoxV42vlcJxgH+B3hi1AiqqKruZR3ZGF8In3fj4+/y/7rHvlOZLZtgJ/4ttYGZg==}
 
-  is-hotkey@0.2.0:
-    resolution: {integrity: sha512-UknnZK4RakDmTgz4PI1wIph5yxSs/mvChWs9ifnlXsKuXgWmOkY/hAE0H/k2MIqH0RlRye0i1oC07MCRSD28Mw==}
-
   is-inside-container@1.0.0:
     resolution: {integrity: sha512-KIYLCCJghfHZxqjYBE7rEy0OBuTd5xCHS7tHVgvCLkx7StIoaxwNW3hCALgEUjFfeRk+MG/Qxmp/vtETEF3tRA==}
     engines: {node: '>=14.16'}
@@ -14808,10 +14759,6 @@ packages:
 
   is-plain-object@2.0.4:
     resolution: {integrity: sha512-h5PpgXkWitc38BBMYawTYMWJHFZJVnBquFE57xFpjB8pJFiF6gZ+bU+WyI/yqXiFR5mdLsgYNaPe8uao6Uv9Og==}
-    engines: {node: '>=0.10.0'}
-
-  is-plain-object@5.0.0:
-    resolution: {integrity: sha512-VRSzKkbMm5jMDoKLbltAkFQ5Qr7VDiTFGXxYFXXowVj387GeGNOCsOH6Msy00SGZ3Fp84b1Naa1psqgcCIEP5Q==}
     engines: {node: '>=0.10.0'}
 
   is-potential-custom-element-name@1.0.1:
@@ -18385,9 +18332,6 @@ packages:
     resolution: {integrity: sha512-eflK8wEtyOE6+hsaRVPxvUKYCpRgzLqDTb8krvAsRIwOGlHoSgYLgBXoubGgLd2fT41/OUYdb48v4k4WWHQurA==}
     engines: {node: '>= 10.13.0'}
 
-  scroll-into-view-if-needed@3.1.0:
-    resolution: {integrity: sha512-49oNpRjWRvnU8NyGVmUaYG4jtTkNonFZI86MmGRDqBphEK2EXT9gdEUoQPZhuBM8yWHxCWbobltqYO5M4XrUvQ==}
-
   search-insights@2.17.3:
     resolution: {integrity: sha512-RQPdCYTa8A68uM2jwxoY842xDhvx3E5LFL1LxvxCNMev4o5mLuokczhzjAgGwUZBAmOKZknArSxLKmXtIi2AxQ==}
 
@@ -18609,26 +18553,6 @@ packages:
   slash@4.0.0:
     resolution: {integrity: sha512-3dOsAHXXUkQTpOYcoAxLIorMTp4gIQr5IW3iVb7A7lFIp0VHhnynm9izx6TssdrIcVIESAlVjtnO2K8bg+Coew==}
     engines: {node: '>=12'}
-
-  slate-history@0.110.3:
-    resolution: {integrity: sha512-sgdff4Usdflmw5ZUbhDkxFwCBQ2qlDKMMkF93w66KdV48vHOgN2BmLrf+2H8SdX8PYIpP/cTB0w8qWC2GwhDVA==}
-    peerDependencies:
-      slate: '>=0.65.3'
-
-  slate-hyperscript@0.100.0:
-    resolution: {integrity: sha512-fb2KdAYg6RkrQGlqaIi4wdqz3oa0S4zKNBJlbnJbNOwa23+9FLD6oPVx9zUGqCSIpy+HIpOeqXrg0Kzwh/Ii4A==}
-    peerDependencies:
-      slate: '>=0.65.3'
-
-  slate-react@0.110.3:
-    resolution: {integrity: sha512-AS8PPjwmsFS3Lq0MOEegLVlFoxhyos68G6zz2nW4sh3WeTXV7pX0exnwtY1a/docn+J3LGQO11aZXTenPXA/kg==}
-    peerDependencies:
-      react: 19.3.0
-      react-dom: 19.3.0
-      slate: '>=0.99.0'
-
-  slate@0.110.2:
-    resolution: {integrity: sha512-4xGULnyMCiEQ0Ml7JAC1A6HVE6MNpPJU7Eq4cXh1LxlrR0dFXC3XC+rNfQtUJ7chHoPkws57x7DDiWiZAt+PBA==}
 
   slice-ansi@2.1.0:
     resolution: {integrity: sha512-Qu+VC3EwYLldKa1fCxuuvULvSJOKEgk9pi8dZeCVK7TqBfUNTH4sFkk4joj8afVSfAYgJoSOetjx9QWOJ5mYoQ==}
@@ -19120,9 +19044,6 @@ packages:
 
   thunky@1.1.0:
     resolution: {integrity: sha512-eHY7nBftgThBqOyHGVN+l8gF0BucP09fMo0oO/Lb0w1OF80dJv+lDVpXG60WMQvkcxAkNybKsrEIE3ZtKGmPrA==}
-
-  tiny-invariant@1.3.1:
-    resolution: {integrity: sha512-AD5ih2NlSssTCwsMznbvwMZpJ1cbhkGd2uueNxzv2jDlEeZdU04JQfRnggJQ8DrcVBGjAsCKwFBbDlVNtEMlzw==}
 
   tiny-invariant@1.3.3:
     resolution: {integrity: sha512-+FbBPE1o9QAYvviau/qC5SE3caw21q3xkvWKBtja5vgqOWIHHJ3ioaq1VPfn/Szqctz2bU/oYeKd9/z5BL+PVg==}
@@ -26409,55 +26330,11 @@ snapshots:
       '@jsonjoy.com/codegen': 17.67.0(tslib@2.8.1)
       tslib: 2.8.1
 
-  '@juggle/resize-observer@3.4.0': {}
-
   '@leichtgewicht/ip-codec@2.0.5': {}
 
-  '@liveblocks/client@3.11.0(@types/json-schema@7.0.15)':
-    dependencies:
-      '@liveblocks/core': 3.11.0(@types/json-schema@7.0.15)
-    transitivePeerDependencies:
-      - '@types/json-schema'
-
-  '@liveblocks/core@3.11.0(@types/json-schema@7.0.15)':
+  '@liveblocks/core@3.24.2(@types/json-schema@7.0.15)':
     dependencies:
       '@types/json-schema': 7.0.15
-
-  '@liveblocks/react-ui@3.11.0(@types/json-schema@7.0.15)(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)':
-    dependencies:
-      '@floating-ui/react-dom': 2.1.6(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
-      '@liveblocks/client': 3.11.0(@types/json-schema@7.0.15)
-      '@liveblocks/core': 3.11.0(@types/json-schema@7.0.15)
-      '@liveblocks/react': 3.11.0(@types/json-schema@7.0.15)(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(react@19.3.0)
-      '@radix-ui/react-dropdown-menu': 2.1.16(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
-      '@radix-ui/react-popover': 1.1.15(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
-      '@radix-ui/react-slot': 1.2.4(@types/react@19.3.0)(react@19.3.0)
-      '@radix-ui/react-toggle': 1.1.10(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
-      '@radix-ui/react-tooltip': 1.2.8(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
-      frimousse: 0.2.0(react@19.3.0)
-      marked: 17.0.1
-      react: 19.3.0
-      react-dom: 19.3.0(react@19.3.0)
-      slate: 0.110.2
-      slate-history: 0.110.3(slate@0.110.2)
-      slate-hyperscript: 0.100.0(slate@0.110.2)
-      slate-react: 0.110.3(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(slate@0.110.2)
-    optionalDependencies:
-      '@types/react': 19.3.0
-      '@types/react-dom': 19.3.0(@types/react@19.3.0)
-    transitivePeerDependencies:
-      - '@types/json-schema'
-
-  '@liveblocks/react@3.11.0(@types/json-schema@7.0.15)(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(react@19.3.0)':
-    dependencies:
-      '@liveblocks/client': 3.11.0(@types/json-schema@7.0.15)
-      '@liveblocks/core': 3.11.0(@types/json-schema@7.0.15)
-      react: 19.3.0
-    optionalDependencies:
-      '@types/react': 19.3.0
-      '@types/react-dom': 19.3.0(@types/react@19.3.0)
-    transitivePeerDependencies:
-      - '@types/json-schema'
 
   '@loaderkit/resolve@1.0.4':
     dependencies:
@@ -33139,8 +33016,6 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  compute-scroll-into-view@3.1.1: {}
-
   concat-map@0.0.1: {}
 
   confbox@0.1.8: {}
@@ -34019,8 +33894,6 @@ snapshots:
   dir-glob@3.0.1:
     dependencies:
       path-type: 4.0.0
-
-  direction@1.0.4: {}
 
   dns-packet@5.6.1:
     dependencies:
@@ -35448,10 +35321,6 @@ snapshots:
 
   fresh@2.0.0: {}
 
-  frimousse@0.2.0(react@19.3.0):
-    dependencies:
-      react: 19.3.0
-
   fs-constants@1.0.0:
     optional: true
 
@@ -36344,8 +36213,6 @@ snapshots:
 
   is-hexadecimal@2.0.1: {}
 
-  is-hotkey@0.2.0: {}
-
   is-inside-container@1.0.0:
     dependencies:
       is-docker: 3.0.0
@@ -36390,8 +36257,6 @@ snapshots:
   is-plain-object@2.0.4:
     dependencies:
       isobject: 3.0.1
-
-  is-plain-object@5.0.0: {}
 
   is-potential-custom-element-name@1.0.1: {}
 
@@ -41439,10 +41304,6 @@ snapshots:
       ajv-formats: 2.1.1(ajv@8.17.1)
       ajv-keywords: 5.1.0(ajv@8.17.1)
 
-  scroll-into-view-if-needed@3.1.0:
-    dependencies:
-      compute-scroll-into-view: 3.1.1
-
   search-insights@2.17.3: {}
 
   section-matter@1.0.0:
@@ -41755,35 +41616,6 @@ snapshots:
   slash@3.0.0: {}
 
   slash@4.0.0: {}
-
-  slate-history@0.110.3(slate@0.110.2):
-    dependencies:
-      is-plain-object: 5.0.0
-      slate: 0.110.2
-
-  slate-hyperscript@0.100.0(slate@0.110.2):
-    dependencies:
-      is-plain-object: 5.0.0
-      slate: 0.110.2
-
-  slate-react@0.110.3(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(slate@0.110.2):
-    dependencies:
-      '@juggle/resize-observer': 3.4.0
-      direction: 1.0.4
-      is-hotkey: 0.2.0
-      is-plain-object: 5.0.0
-      lodash: 4.17.21
-      react: 19.3.0
-      react-dom: 19.3.0(react@19.3.0)
-      scroll-into-view-if-needed: 3.1.0
-      slate: 0.110.2
-      tiny-invariant: 1.3.1
-
-  slate@0.110.2:
-    dependencies:
-      immer: 10.2.0
-      is-plain-object: 5.0.0
-      tiny-warning: 1.0.3
 
   slice-ansi@2.1.0:
     dependencies:
@@ -42347,8 +42179,6 @@ snapshots:
       readable-stream: 3.6.2
 
   thunky@1.1.0: {}
-
-  tiny-invariant@1.3.1: {}
 
   tiny-invariant@1.3.3: {}
 
