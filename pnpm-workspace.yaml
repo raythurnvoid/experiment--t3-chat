@@ -6,6 +6,9 @@ packages:
   # entry for it. CI never clones it, so the same lockfile would then not match CI's disk and
   # `pnpm install --frozen-lockfile` would fail there.
   - "!packages/council"
+  # native-layer is its own repository, mounted as a submodule. It has its own lockfile.
+  # CI does not clone it. Keep it out of the root workspace so a frozen install still matches.
+  - "!packages/native-layer"
   - "packages/app/vendor/novel/packages/*"
   - "packages/app/vendor/headless-tree/packages/*"
   - "packages/app/vendor/remix/packages/*"
