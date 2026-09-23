@@ -95,6 +95,7 @@ import {
 	access_control_db_can_act_on_file_node,
 	access_control_db_filter_readable_file_nodes,
 	access_control_db_has_permission,
+	access_control_db_resolve_role_refs,
 } from "./access_control.ts";
 import type { access_control_Permission } from "../shared/access-control.ts";
 import {
@@ -150,6 +151,10 @@ const files_content_materialization_workpool = new Workpool(components.files_con
 const MAX_MOVE_NODE_COUNT = 500;
 const MAX_MOVE_DOCUMENT_COUNT = 2000;
 const MAX_MOVE_BYTES = 4 * 1024 * 1024;
+
+const TREE_CHILDREN_MAX_ITEMS = 200;
+const TREE_ANCESTORS_MAX_DEPTH = 64;
+const TREE_SHARED_ROOTS_MAX_GRANTS = 500;
 
 /**
  * Rebase an absolute path from one base path to another.
@@ -6799,42 +6804,169 @@ const SUBTREE_FILTER_MAX_ROWS_READ = 10_000;
 
 // #region list
 
+/**
+ * One node of the Files tree. Every tree query returns this shape.
+ *
+ * Use the public node fields above. This keeps new schema fields in sync with the tree queries.
+ * These four fields cannot contain reserved `GLOBAL` or `SYSTEM` values in the visible tree.
+ */
+const files_node_tree_row_validator = v.object({
+	...files_node_public_doc_fields,
+	organizationId: v.id("organizations"),
+	workspaceId: v.id("organizations_workspaces"),
+	createdBy: v.id("users"),
+	updatedBy: v.id("users"),
+});
+
+/**
+ * Resolve the member who reads the Files tree, or `null` when they may read nothing.
+ *
+ * A failed workspace read check does not always end the read. Somebody whose role gives no
+ * workspace-wide read can still have been given one folder, and showing them that folder is the
+ * whole point of sharing. Only "Permission denied" means this grant-only mode. Every other refusal,
+ * such as a deleted user or a broken organization, returns `null`, so it never falls back to grants.
+ */
+async function db_get_tree_reader(ctx: QueryCtx, args: { membershipId: Id<"organizations_workspaces_users"> }) {
+	const [userAuth, membership] = await Promise.all([
+		server_convex_get_user_fallback_to_anonymous(ctx),
+		ctx.db.get("organizations_workspaces_users", args.membershipId),
+	]);
+	if (!userAuth) {
+		throw convex_error({ message: "Unauthenticated" });
+	}
+	if (!membership || membership.userId !== userAuth.id || membership.active === false) {
+		return null;
+	}
+
+	const authorized = await access_control_db_authorize_membership(ctx, {
+		userAuth,
+		membership,
+		permission: "content.read",
+	});
+	if (authorized._nay && authorized._nay.message !== "Permission denied") {
+		return null;
+	}
+
+	// "Permission denied" does not return the organization, so load it here. The check above already
+	// refused an organization without a default workspace; the guard only narrows the type.
+	const organization = await ctx.db.get("organizations", membership.organizationId);
+	if (!organization?.defaultWorkspaceId) {
+		return null;
+	}
+
+	return {
+		userAuth,
+		membership,
+		defaultWorkspaceId: organization.defaultWorkspaceId,
+		isOwner: organization.ownerUserId === userAuth.id,
+		hasWorkspaceRead: !authorized._nay,
+	};
+}
+
+/**
+ * Load one node of the reader's workspace, or `null` when it is missing, in another workspace, or
+ * hidden from the reader. All three cases give the same answer, so a caller cannot learn that a
+ * hidden node exists.
+ */
+async function db_get_readable_tree_node(
+	ctx: QueryCtx,
+	args: {
+		reader: {
+			userAuth: { id: Id<"users"> };
+			membership: Doc<"organizations_workspaces_users">;
+			hasWorkspaceRead: boolean;
+		};
+		nodeId: Id<"files_nodes">;
+	},
+) {
+	const fileNode = await ctx.db.get("files_nodes", args.nodeId);
+	if (
+		!fileNode ||
+		fileNode.organizationId !== args.reader.membership.organizationId ||
+		fileNode.workspaceId !== args.reader.membership.workspaceId
+	) {
+		return null;
+	}
+
+	const readable = await access_control_db_filter_readable_file_nodes(ctx, {
+		organizationId: args.reader.membership.organizationId,
+		workspaceId: args.reader.membership.workspaceId,
+		userId: args.reader.userAuth.id,
+		nodes: [fileNode],
+		hasWorkspaceRead: args.reader.hasWorkspaceRead,
+	});
+	return readable.length > 0 ? fileNode : null;
+}
+
+/**
+ * Build the public tree rows for nodes the caller may read.
+ * Filter the nodes with `access_control_db_filter_readable_file_nodes` first.
+ */
+async function db_get_tree_rows(
+	ctx: QueryCtx,
+	args: {
+		userAuth: { id: Id<"users"> };
+		membership: Doc<"organizations_workspaces_users">;
+		fileNodes: Doc<"files_nodes">[];
+	},
+) {
+	const canWriteContentByScope = new Map<Id<"files_nodes"> | null, Promise<boolean>>();
+	return await Promise.all(
+		args.fileNodes.map(async (fileNode) => {
+			if (fileNode.createdBy === users_SYSTEM_AUTHOR || fileNode.updatedBy === users_SYSTEM_AUTHOR) {
+				const errorMessage = "Reserved SYSTEM author reached visible file tree";
+				const errorData = {
+					fileNodeId: fileNode._id,
+					createdBy: fileNode.createdBy,
+					updatedBy: fileNode.updatedBy,
+				};
+				console.error(errorMessage, errorData);
+				throw should_never_happen(errorMessage, errorData);
+			}
+
+			let canWriteContent = canWriteContentByScope.get(fileNode.restrictedScopeNodeId);
+			if (!canWriteContent) {
+				canWriteContent = access_control_db_authorize_membership(ctx, {
+					userAuth: args.userAuth,
+					membership: args.membership,
+					permission: "content.write",
+					fileNode,
+				}).then((result) => !result._nay);
+				canWriteContentByScope.set(fileNode.restrictedScopeNodeId, canWriteContent);
+			}
+
+			// Each node's rule is local, so each row needs its own answer. The check reads
+			// only the node doc in hand, so no cache key helps here.
+			const policyWritable = await files_nodes_db_require_user_writable(ctx, {
+				node: fileNode,
+				userId: args.userAuth.id,
+			});
+
+			const writeBlockedReason = !(await canWriteContent) ? "permission" : !policyWritable._nay ? null : "read_only";
+
+			return {
+				...get_public_node_fields(fileNode, writeBlockedReason),
+				organizationId: args.membership.organizationId,
+				workspaceId: args.membership.workspaceId,
+				createdBy: fileNode.createdBy,
+				updatedBy: fileNode.updatedBy,
+			};
+		}),
+	);
+}
+
 export const list_tree = query({
 	args: {
 		membershipId: v.id("organizations_workspaces_users"),
 		paginationOpts: paginationOptsValidator,
 	},
-	// Use the public node fields above. This keeps new schema fields in sync with this query.
-	// These four fields cannot contain reserved `GLOBAL` or `SYSTEM` values in the visible tree.
-	returns: paginationResultValidator(
-		v.object({
-			...files_node_public_doc_fields,
-			organizationId: v.id("organizations"),
-			workspaceId: v.id("organizations_workspaces"),
-			createdBy: v.id("users"),
-			updatedBy: v.id("users"),
-		}),
-	),
+	returns: paginationResultValidator(files_node_tree_row_validator),
 	handler: async (ctx, args) => {
-		const [userAuth, membership] = await Promise.all([
-			server_convex_get_user_fallback_to_anonymous(ctx),
-			ctx.db.get("organizations_workspaces_users", args.membershipId),
-		]);
-		if (!userAuth) {
-			throw convex_error({ message: "Unauthenticated" });
-		}
-		if (!membership || membership.userId !== userAuth.id || membership.active === false) {
+		const reader = await db_get_tree_reader(ctx, { membershipId: args.membershipId });
+		if (!reader) {
 			return { page: [], isDone: true, continueCursor: args.paginationOpts.cursor ?? "" };
 		}
-
-		// A failed check does not end the query here. Somebody whose role gives no workspace-wide read
-		// can still have been given one folder, and showing them that folder is the whole point of
-		// sharing. The filter below is told what the check said and keeps only what they were given.
-		const authorized = await access_control_db_authorize_membership(ctx, {
-			userAuth,
-			membership,
-			permission: "content.read",
-		});
+		const { userAuth, membership, hasWorkspaceRead } = reader;
 
 		const result = await ctx.db
 			.query("files_nodes")
@@ -6857,54 +6989,335 @@ export const list_tree = query({
 			workspaceId: membership.workspaceId,
 			userId: userAuth.id,
 			nodes: result.page,
-			hasWorkspaceRead: !authorized._nay,
+			hasWorkspaceRead,
 		});
 
-		const canWriteContentByScope = new Map<Id<"files_nodes"> | null, Promise<boolean>>();
-		const page = await Promise.all(
-			fileNodes.map(async (fileNode) => {
-				if (fileNode.createdBy === users_SYSTEM_AUTHOR || fileNode.updatedBy === users_SYSTEM_AUTHOR) {
-					const errorMessage = "Reserved SYSTEM author reached visible file tree";
-					const errorData = {
-						fileNodeId: fileNode._id,
-						createdBy: fileNode.createdBy,
-						updatedBy: fileNode.updatedBy,
-					};
-					console.error(errorMessage, errorData);
-					throw should_never_happen(errorMessage, errorData);
-				}
-
-				let canWriteContent = canWriteContentByScope.get(fileNode.restrictedScopeNodeId);
-				if (!canWriteContent) {
-					canWriteContent = access_control_db_authorize_membership(ctx, {
-						userAuth,
-						membership,
-						permission: "content.write",
-						fileNode,
-					}).then((result) => !result._nay);
-					canWriteContentByScope.set(fileNode.restrictedScopeNodeId, canWriteContent);
-				}
-
-				// Each node's rule is local, so each row needs its own answer. The check reads
-				// only the node doc in hand, so no cache key helps here.
-				const policyWritable = await files_nodes_db_require_user_writable(ctx, {
-					node: fileNode,
-					userId: userAuth.id,
-				});
-
-				const writeBlockedReason = !(await canWriteContent) ? "permission" : !policyWritable._nay ? null : "read_only";
-
-				return {
-					...get_public_node_fields(fileNode, writeBlockedReason),
-					organizationId: membership.organizationId,
-					workspaceId: membership.workspaceId,
-					createdBy: fileNode.createdBy,
-					updatedBy: fileNode.updatedBy,
-				};
-			}),
-		);
+		const page = await db_get_tree_rows(ctx, { userAuth, membership, fileNodes });
 		// A page can be empty after access checks. Only isDone ends the tree walk.
 		return { ...result, page };
+	},
+});
+
+/**
+ * One page of the children of one folder, of one kind. The Files tree loads each open folder with it.
+ *
+ * The index sorts `"file"` before `"folder"`, and one query can run only one `paginate()`. So the
+ * client pages the folders of a folder first, then its files, each by name in byte order.
+ */
+export const list_tree_children = query({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		parentId: doc(app_convex_schema, "files_nodes").fields.parentId,
+		kind: doc(app_convex_schema, "files_nodes").fields.kind,
+		archived: v.boolean(),
+		paginationOpts: paginationOptsValidator,
+	},
+	returns: paginationResultValidator(files_node_tree_row_validator),
+	handler: async (ctx, args) => {
+		// Every refusal gives this one answer. A different answer for a missing, foreign, or hidden
+		// parent would tell the caller that a hidden folder exists.
+		const refused = { page: [], isDone: true, continueCursor: "" };
+
+		const reader = await db_get_tree_reader(ctx, { membershipId: args.membershipId });
+		if (!reader) {
+			return refused;
+		}
+		const { userAuth, membership, hasWorkspaceRead } = reader;
+
+		// A grant-only member reads no open node, and they get their root rows from
+		// `list_tree_shared_roots` instead.
+		if (args.parentId === files_ROOT_ID) {
+			if (!hasWorkspaceRead) {
+				return refused;
+			}
+		} else if (!(await db_get_readable_tree_node(ctx, { reader, nodeId: args.parentId }))) {
+			return refused;
+		}
+
+		const paginationOpts = {
+			...args.paginationOpts,
+			numItems: Math.min(args.paginationOpts.numItems, TREE_CHILDREN_MAX_ITEMS),
+		};
+		const result = args.archived
+			? await ctx.db
+					.query("files_nodes")
+					.withIndex("by_organization_workspace_parent_archiveOperation_kind_name", (q) =>
+						q
+							.eq("organizationId", membership.organizationId)
+							.eq("workspaceId", membership.workspaceId)
+							.eq("parentId", args.parentId)
+							.gt("archiveOperationId", null),
+					)
+					// Archived docs sort by archive operation before kind, so kind cannot be an index bound here.
+					// Bound the scan, because one folder can hold many archived docs of the other kind.
+					.filter((q) => q.eq(q.field("kind"), args.kind))
+					.paginate({ ...paginationOpts, maximumRowsRead: 1000, maximumBytesRead: 4 * 1024 * 1024 })
+			: await ctx.db
+					.query("files_nodes")
+					.withIndex("by_organization_workspace_parent_archiveOperation_kind_name", (q) =>
+						q
+							.eq("organizationId", membership.organizationId)
+							.eq("workspaceId", membership.workspaceId)
+							.eq("parentId", args.parentId)
+							.eq("archiveOperationId", null)
+							.eq("kind", args.kind),
+					)
+					.paginate(paginationOpts);
+
+		const fileNodes = await access_control_db_filter_readable_file_nodes(ctx, {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			userId: userAuth.id,
+			nodes: result.page,
+			hasWorkspaceRead,
+		});
+
+		const page = await db_get_tree_rows(ctx, { userAuth, membership, fileNodes });
+		// A page can be empty after access checks or a split. Only isDone ends the folder.
+		return { ...result, page };
+	},
+});
+
+/**
+ * A node and the readable folders above it, for deep links, reveal, and the breadcrumb.
+ *
+ * `ancestors` go from the top readable folder down to the node's parent. The walk stops at the
+ * first folder the caller cannot read, because the tree cannot show a row under a folder it cannot
+ * show. So the node's rows hang from the root. Every row still carries its `path` and `parentId`,
+ * like `list_tree` rows, so the names of the hidden folders above it are not secret.
+ */
+export const get_tree_ancestors = query({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		/**
+		 * Keep raw IDs so invalid input returns null instead of an argument error.
+		 */
+		nodeId: v.string(),
+	},
+	returns: v.union(
+		v.null(),
+		v.object({
+			node: files_node_tree_row_validator,
+			ancestors: v.array(files_node_tree_row_validator),
+		}),
+	),
+	handler: async (ctx, args) => {
+		const reader = await db_get_tree_reader(ctx, { membershipId: args.membershipId });
+		if (!reader) {
+			return null;
+		}
+
+		const nodeId = ctx.db.normalizeId("files_nodes", args.nodeId);
+		if (!nodeId) {
+			return null;
+		}
+
+		// Archived nodes are allowed. The caller decides how to show them.
+		const fileNode = await db_get_readable_tree_node(ctx, { reader, nodeId });
+		if (!fileNode) {
+			return null;
+		}
+
+		const ancestors: Doc<"files_nodes">[] = [];
+		let parentId = fileNode.parentId;
+		while (parentId !== files_ROOT_ID && ancestors.length < TREE_ANCESTORS_MAX_DEPTH) {
+			const parent = await db_get_readable_tree_node(ctx, { reader, nodeId: parentId });
+			if (!parent) {
+				break;
+			}
+
+			ancestors.unshift(parent);
+			parentId = parent.parentId;
+		}
+
+		const [node, ...ancestorRows] = await db_get_tree_rows(ctx, {
+			userAuth: reader.userAuth,
+			membership: reader.membership,
+			fileNodes: [fileNode, ...ancestors],
+		});
+		return { node, ancestors: ancestorRows };
+	},
+});
+
+/**
+ * Restricted folders and files the caller may read while the folder above them is hidden.
+ *
+ * The tree shows these at the root, so a member can reach what was shared with them. A root child
+ * is listed here only when the caller has no workspace-wide read, because otherwise the root page
+ * of `list_tree_children` already has it. The owner reads everything, so the owner gets nothing.
+ */
+export const list_tree_shared_roots = query({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		archived: v.boolean(),
+	},
+	returns: v.object({
+		rows: v.array(files_node_tree_row_validator),
+		truncated: v.boolean(),
+	}),
+	handler: async (ctx, args) => {
+		const reader = await db_get_tree_reader(ctx, { membershipId: args.membershipId });
+		if (!reader || reader.isOwner) {
+			return { rows: [], truncated: false };
+		}
+		const { userAuth, membership, defaultWorkspaceId, hasWorkspaceRead } = reader;
+
+		// Grants sit only on restricted scope nodes. Read the member's own grants and the grants of both
+		// roles that apply here: the workspace role and the organization role.
+		const roleRefs = await access_control_db_resolve_role_refs(ctx, {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			defaultWorkspaceId,
+			userId: userAuth.id,
+		});
+		const grantLists = await Promise.all([
+			ctx.db
+				.query("access_control_permission_grants")
+				.withIndex("by_user_org_workspace_kind_principal_permission_resource", (q) =>
+					q
+						.eq("userId", userAuth.id)
+						.eq("organizationId", membership.organizationId)
+						.eq("workspaceId", membership.workspaceId)
+						.eq("resourceKind", "file")
+						.eq("principalKind", "user")
+						.eq("permission", "content.read"),
+				)
+				.take(TREE_SHARED_ROOTS_MAX_GRANTS + 1),
+			...roleRefs.map((role) =>
+				ctx.db
+					.query("access_control_permission_grants")
+					.withIndex("by_organization_role_workspace_resource", (q) =>
+						q
+							.eq("organizationId", membership.organizationId)
+							.eq("principalKind", "role")
+							.eq("role", role)
+							.eq("workspaceId", membership.workspaceId)
+							.eq("resourceKind", "file"),
+					)
+					.filter((q) => q.eq(q.field("permission"), "content.read"))
+					.take(TREE_SHARED_ROOTS_MAX_GRANTS + 1),
+			),
+		]);
+
+		const truncated = grantLists.some((grants) => grants.length > TREE_SHARED_ROOTS_MAX_GRANTS);
+		if (truncated) {
+			console.warn("Shared tree roots reached the grant limit", {
+				membershipId: membership._id,
+				limit: TREE_SHARED_ROOTS_MAX_GRANTS,
+			});
+		}
+
+		const scopeNodeIds = new Set(
+			grantLists
+				.flatMap((grants) => grants.slice(0, TREE_SHARED_ROOTS_MAX_GRANTS))
+				.map((grant) => ctx.db.normalizeId("files_nodes", grant.resourceId))
+				.filter((nodeId) => nodeId !== null),
+		);
+		const scopeNodes = (await Promise.all([...scopeNodeIds].map((nodeId) => ctx.db.get("files_nodes", nodeId)))).filter(
+			(fileNode): fileNode is Doc<"files_nodes"> =>
+				fileNode !== null &&
+				fileNode.organizationId === membership.organizationId &&
+				fileNode.workspaceId === membership.workspaceId &&
+				fileNode.restrictedScopeNodeId === fileNode._id &&
+				(fileNode.archiveOperationId !== null) === args.archived,
+		);
+
+		// A grant doc alone does not prove read access. The filter also checks plugin membership
+		// lifetimes and dead scopes, so every candidate goes through it again.
+		const readableScopeNodes = await access_control_db_filter_readable_file_nodes(ctx, {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			userId: userAuth.id,
+			nodes: scopeNodes,
+			hasWorkspaceRead,
+		});
+
+		const parents = await Promise.all(
+			readableScopeNodes.map(async (fileNode) =>
+				fileNode.parentId === files_ROOT_ID ? null : await ctx.db.get("files_nodes", fileNode.parentId),
+			),
+		);
+		const readableParentIds = new Set(
+			(
+				await access_control_db_filter_readable_file_nodes(ctx, {
+					organizationId: membership.organizationId,
+					workspaceId: membership.workspaceId,
+					userId: userAuth.id,
+					nodes: parents.filter((parent) => parent !== null),
+					hasWorkspaceRead,
+				})
+			).map((parent) => parent._id),
+		);
+
+		// Keep a node only when the tree cannot reach it through its parent.
+		const sharedRoots = readableScopeNodes.filter((fileNode) =>
+			fileNode.parentId === files_ROOT_ID ? !hasWorkspaceRead : !readableParentIds.has(fileNode.parentId),
+		);
+
+		return {
+			rows: await db_get_tree_rows(ctx, { userAuth, membership, fileNodes: sharedRoots }),
+			truncated,
+		};
+	},
+});
+
+/**
+ * The README of one folder: its active file child whose name, in lowercase, is `readme.md`.
+ *
+ * Names sort by raw bytes, so no single index range finds every letter case. Scan the 8 case
+ * variants of the prefix `rea` instead, in byte order. Then the first readable match is the same
+ * README that a byte-ordered listing shows first.
+ */
+export const get_folder_readme = query({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		folderId: doc(app_convex_schema, "files_nodes").fields.parentId,
+	},
+	returns: v.union(v.null(), files_node_tree_row_validator),
+	handler: async (ctx, args) => {
+		const reader = await db_get_tree_reader(ctx, { membershipId: args.membershipId });
+		if (!reader) {
+			return null;
+		}
+		const { userAuth, membership, hasWorkspaceRead } = reader;
+
+		// Use the same folder gate as `list_tree_children`, so a hidden folder answers like a missing one.
+		if (args.folderId !== files_ROOT_ID && !(await db_get_readable_tree_node(ctx, { reader, nodeId: args.folderId }))) {
+			return null;
+		}
+
+		const candidateLists = await Promise.all(
+			["REA", "REa", "ReA", "Rea", "rEA", "rEa", "reA", "rea"].map((prefix) =>
+				ctx.db
+					.query("files_nodes")
+					.withIndex("by_organization_workspace_parent_archiveOperation_kind_name", (q) => {
+						const range = q
+							.eq("organizationId", membership.organizationId)
+							.eq("workspaceId", membership.workspaceId)
+							.eq("parentId", args.folderId)
+							.eq("archiveOperationId", null)
+							.eq("kind", "file")
+							.gte("name", prefix);
+						const upperBound = string_prefix_upper_bound(prefix);
+						return upperBound === null ? range : range.lt("name", upperBound);
+					})
+					.take(50),
+			),
+		);
+
+		const readmes = await access_control_db_filter_readable_file_nodes(ctx, {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			userId: userAuth.id,
+			nodes: candidateLists.flat().filter((fileNode) => fileNode.name.toLowerCase() === "readme.md"),
+			hasWorkspaceRead,
+		});
+		if (readmes.length === 0) {
+			return null;
+		}
+
+		const [readme] = await db_get_tree_rows(ctx, { userAuth, membership, fileNodes: [readmes[0]] });
+		return readme;
 	},
 });
 

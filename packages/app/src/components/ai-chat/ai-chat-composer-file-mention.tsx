@@ -263,7 +263,7 @@ const AiChatComposerFileMentionList = memo(function AiChatComposerFileMentionLis
 
 	const listboxId = `AiChatComposerFileMentionList-${useId()}`;
 
-	const treeNodes = FilesTreeProvider.useContext();
+	const treeNodes = FilesTreeProvider.useFullList(true);
 	const items = treeNodes && filter_mention_items(treeNodes, query);
 
 	// The stored highlight belongs to the query it was set for; a new query

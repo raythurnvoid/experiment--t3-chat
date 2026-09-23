@@ -524,6 +524,617 @@ describe("list_tree", () => {
 	});
 });
 
+/**
+ * Insert one node for the tree query tests. `scope: "self"` makes the node its own restricted scope.
+ */
+async function insert_tree_node(
+	ctx: MutationCtx,
+	owner: { organizationId: Id<"organizations">; workspaceId: Id<"organizations_workspaces">; userId: Id<"users"> },
+	args: {
+		parentId: Id<"files_nodes"> | typeof files_ROOT_ID;
+		path: string;
+		kind: "folder" | "file";
+		scope?: Id<"files_nodes"> | "self";
+		archiveOperationId?: string;
+	},
+) {
+	const nodeId = await ctx.db.insert("files_nodes", {
+		...test_mocks.files.base(),
+		organizationId: owner.organizationId,
+		workspaceId: owner.workspaceId,
+		createdBy: owner.userId,
+		updatedBy: owner.userId,
+		parentId: args.parentId,
+		name: args.path.slice(args.path.lastIndexOf("/") + 1),
+		kind: args.kind,
+		path: args.path,
+		treePath: args.kind === "folder" ? `${args.path}/` : args.path,
+		pathDepth: args.path.split("/").length - 1,
+		lowercaseExtension: args.kind === "file" ? "md" : null,
+		restrictedScopeNodeId: args.scope && args.scope !== "self" ? args.scope : null,
+		archiveOperationId: args.archiveOperationId ?? null,
+	});
+	if (args.scope === "self") {
+		await ctx.db.patch("files_nodes", nodeId, { restrictedScopeNodeId: nodeId });
+	}
+	return nodeId;
+}
+
+/**
+ * A workspace seen by three people: the owner, an admin, and a grant-only member.
+ *
+ * The admin has workspace read through a workspace `admin` role, and `member` as organization role.
+ * The grant-only member has no role, so they read only what is shared with them.
+ * `/top/hidden` and `/box/secret` are restricted and shared with nobody. Scopes inside `/top/hidden`
+ * are shared with the admin or the grant-only member.
+ */
+async function seed_tree_access_fixture(t: ReturnType<typeof test_convex>) {
+	const db = await t.run(async (ctx) => {
+		const owner = await test_mocks_fill_db_with.membership(ctx);
+		const foreign = await test_mocks_fill_db_with.membership(ctx, { organizationName: "other-organization" });
+		const organization = await ctx.db.get("organizations", owner.organizationId);
+		if (!organization?.defaultWorkspaceId) {
+			throw new Error("Expected the organization default workspace");
+		}
+		const now = Date.now();
+
+		const add_member = async (clerkUserId: string) => {
+			const userId = await ctx.db.insert("users", { clerkUserId });
+			const membershipId = await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: owner.organizationId,
+				workspaceId: owner.workspaceId,
+				userId,
+				active: true,
+				updatedAt: now,
+			});
+			return { userId, membershipId };
+		};
+		const admin = await add_member("clerk_tree_admin");
+		const grantOnly = await add_member("clerk_tree_grant_only");
+		await access_control_db_ensure_role_assignment(ctx, {
+			organizationId: owner.organizationId,
+			workspaceId: owner.workspaceId,
+			userId: admin.userId,
+			role: "admin",
+			now,
+		});
+		await access_control_db_ensure_role_assignment(ctx, {
+			organizationId: owner.organizationId,
+			workspaceId: organization.defaultWorkspaceId,
+			userId: admin.userId,
+			role: "member",
+			now,
+		});
+
+		const grant = async (
+			nodeId: Id<"files_nodes">,
+			principal: { userId: Id<"users">; externalPluginMembershipLifetime?: number } | { role: "admin" | "member" },
+		) => {
+			await ctx.db.insert("access_control_permission_grants", {
+				organizationId: owner.organizationId,
+				workspaceId: owner.workspaceId,
+				resourceKind: "file",
+				resourceId: String(nodeId),
+				...("role" in principal
+					? { principalKind: "role" as const, ...principal }
+					: { principalKind: "user" as const, ...principal }),
+				permission: "content.read",
+				createdAt: now,
+				updatedAt: now,
+			});
+		};
+
+		const node = (args: Parameters<typeof insert_tree_node>[2]) => insert_tree_node(ctx, owner, args);
+		const openId = await node({ parentId: files_ROOT_ID, path: "/open", kind: "folder" });
+		const openFileId = await node({ parentId: openId, path: "/open/a.md", kind: "file" });
+		const openSubId = await node({ parentId: openId, path: "/open/sub", kind: "folder" });
+		const deepFileId = await node({ parentId: openSubId, path: "/open/sub/deep.md", kind: "file" });
+		const archivedFileId = await node({
+			parentId: openId,
+			path: "/open/gone-file.md",
+			kind: "file",
+			archiveOperationId: "archive-operation-tree",
+		});
+		const archivedFolderId = await node({
+			parentId: openId,
+			path: "/open/gone-folder",
+			kind: "folder",
+			archiveOperationId: "archive-operation-tree",
+		});
+
+		const boxId = await node({ parentId: files_ROOT_ID, path: "/box", kind: "folder" });
+		const boxSecretId = await node({ parentId: boxId, path: "/box/secret", kind: "folder", scope: "self" });
+
+		const topId = await node({ parentId: files_ROOT_ID, path: "/top", kind: "folder" });
+		const hiddenId = await node({ parentId: topId, path: "/top/hidden", kind: "folder", scope: "self" });
+		const grantedId = await node({ parentId: hiddenId, path: "/top/hidden/granted", kind: "folder", scope: "self" });
+		const grantedFileId = await node({
+			parentId: grantedId,
+			path: "/top/hidden/granted/doc.md",
+			kind: "file",
+			scope: grantedId,
+		});
+		const innerId = await node({
+			parentId: grantedId,
+			path: "/top/hidden/granted/inner",
+			kind: "folder",
+			scope: "self",
+		});
+		const teamId = await node({ parentId: hiddenId, path: "/top/hidden/team", kind: "folder", scope: "self" });
+		const opsId = await node({ parentId: hiddenId, path: "/top/hidden/ops", kind: "folder", scope: "self" });
+		const pluginId = await node({ parentId: hiddenId, path: "/top/hidden/plugin", kind: "folder", scope: "self" });
+		const oldId = await node({
+			parentId: hiddenId,
+			path: "/top/hidden/old",
+			kind: "folder",
+			scope: "self",
+			archiveOperationId: "archive-operation-old",
+		});
+
+		const sharedId = await node({ parentId: files_ROOT_ID, path: "/shared", kind: "folder", scope: "self" });
+		const sharedFileId = await node({ parentId: sharedId, path: "/shared/note.md", kind: "file", scope: sharedId });
+
+		await grant(grantedId, { userId: admin.userId });
+		await grant(grantedId, { userId: grantOnly.userId });
+		await grant(innerId, { userId: admin.userId });
+		// `member` is the admin's organization role and `admin` their workspace role. Both must count.
+		await grant(teamId, { role: "member" });
+		await grant(opsId, { role: "admin" });
+		// A plugin-managed grant from an older membership lifetime no longer gives access.
+		await grant(pluginId, { userId: admin.userId, externalPluginMembershipLifetime: 1 });
+		await ctx.db.insert("organizations_membership_lifetimes", {
+			organizationId: owner.organizationId,
+			workspaceId: owner.workspaceId,
+			userId: admin.userId,
+			membershipId: admin.membershipId,
+			lifetime: 2,
+			active: true,
+		});
+		await grant(oldId, { userId: admin.userId });
+		await grant(sharedId, { userId: admin.userId });
+		await grant(sharedId, { userId: grantOnly.userId });
+
+		const foreignFolderId = await insert_tree_node(ctx, foreign, {
+			parentId: files_ROOT_ID,
+			path: "/foreign",
+			kind: "folder",
+		});
+		const missingNodeId = await node({ parentId: files_ROOT_ID, path: "/missing", kind: "folder" });
+		await ctx.db.delete("files_nodes", missingNodeId);
+
+		return {
+			owner,
+			admin,
+			grantOnly,
+			nodes: {
+				openId,
+				openFileId,
+				openSubId,
+				deepFileId,
+				archivedFileId,
+				archivedFolderId,
+				boxId,
+				boxSecretId,
+				topId,
+				hiddenId,
+				grantedId,
+				grantedFileId,
+				innerId,
+				teamId,
+				opsId,
+				pluginId,
+				oldId,
+				sharedId,
+				sharedFileId,
+				foreignFolderId,
+				missingNodeId,
+			},
+		};
+	});
+
+	const as = (userId: Id<"users">) => t.withIdentity({ issuer: "https://clerk.test", external_id: userId });
+	return {
+		...db,
+		asOwner: as(db.owner.userId),
+		asAdmin: as(db.admin.userId),
+		asGrantOnly: as(db.grantOnly.userId),
+	};
+}
+
+describe("list_tree_children", () => {
+	const REFUSED = { page: [], isDone: true, continueCursor: "" };
+
+	test("pages folders then files in byte order, capped at 200 per page", async () => {
+		const t = test_convex();
+		const fileNames = Array.from(
+			{ length: 450 },
+			(_, index) => `${index % 3 === 0 ? "B" : "a"}-${String(index).padStart(3, "0")}.md`,
+		);
+		const db = await t.run(async (ctx) => {
+			const owner = await test_mocks_fill_db_with.membership(ctx);
+			const bigId = await insert_tree_node(ctx, owner, { parentId: files_ROOT_ID, path: "/big", kind: "folder" });
+			for (const name of ["zeta", "Alpha", "10", "9"]) {
+				await insert_tree_node(ctx, owner, { parentId: bigId, path: `/big/${name}`, kind: "folder" });
+			}
+			await Promise.all(
+				fileNames.map((name) => insert_tree_node(ctx, owner, { parentId: bigId, path: `/big/${name}`, kind: "file" })),
+			);
+			return { ...owner, bigId };
+		});
+		const asOwner = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+		const list_page = (kind: "folder" | "file", cursor: string | null) =>
+			asOwner.query(api.files_nodes.list_tree_children, {
+				membershipId: db.membershipId,
+				parentId: db.bigId,
+				kind,
+				archived: false,
+				paginationOpts: { numItems: 1000, cursor },
+			});
+
+		const folders = await list_page("folder", null);
+		// Byte order, not natural order: "10" sorts before "9", and capitals before lowercase.
+		expect(folders.page.map((row) => row.name)).toEqual(["10", "9", "Alpha", "zeta"]);
+		expect(folders.isDone).toBe(true);
+
+		const first = await list_page("file", null);
+		const second = await list_page("file", first.continueCursor);
+		const third = await list_page("file", second.continueCursor);
+		expect([first.page.length, second.page.length, third.page.length]).toEqual([200, 200, 50]);
+		expect([first.isDone, second.isDone, third.isDone]).toEqual([false, false, true]);
+
+		const names = [...first.page, ...second.page, ...third.page].map((row) => row.name);
+		expect(names).toEqual([...fileNames].sort());
+		expect(new Set(names).size).toBe(450);
+	});
+
+	test("archived mode returns only archived children of the requested kind", async () => {
+		const t = test_convex();
+		const f = await seed_tree_access_fixture(t);
+		const list = (kind: "folder" | "file", archived: boolean) =>
+			f.asOwner.query(api.files_nodes.list_tree_children, {
+				membershipId: f.owner.membershipId,
+				parentId: f.nodes.openId,
+				kind,
+				archived,
+				paginationOpts: { numItems: 50, cursor: null },
+			});
+
+		const [activeFiles, activeFolders, archivedFiles, archivedFolders] = await Promise.all([
+			list("file", false),
+			list("folder", false),
+			list("file", true),
+			list("folder", true),
+		]);
+		expect(activeFiles.page.map((row) => row._id)).toEqual([f.nodes.openFileId]);
+		expect(activeFolders.page.map((row) => row._id)).toEqual([f.nodes.openSubId]);
+		expect(archivedFiles.page.map((row) => row._id)).toEqual([f.nodes.archivedFileId]);
+		expect(archivedFolders.page.map((row) => row._id)).toEqual([f.nodes.archivedFolderId]);
+		// Rows carry the same public fields as `list_tree`.
+		expect(activeFiles.page[0]).toMatchObject({ canWrite: true, writeBlockedReason: null, writePolicyState: "none" });
+		expect("writePolicy" in activeFiles.page[0]).toBe(false);
+	});
+
+	test("a folder whose only child is hidden lists nothing", async () => {
+		const t = test_convex();
+		const f = await seed_tree_access_fixture(t);
+		const list = (as: typeof f.asAdmin, membershipId: Id<"organizations_workspaces_users">) =>
+			as.query(api.files_nodes.list_tree_children, {
+				membershipId,
+				parentId: f.nodes.boxId,
+				kind: "folder",
+				archived: false,
+				paginationOpts: { numItems: 50, cursor: null },
+			});
+
+		const adminPage = await list(f.asAdmin, f.admin.membershipId);
+		expect(adminPage.page).toEqual([]);
+		expect(adminPage.isDone).toBe(true);
+
+		const ownerPage = await list(f.asOwner, f.owner.membershipId);
+		expect(ownerPage.page.map((row) => row._id)).toEqual([f.nodes.boxSecretId]);
+	});
+
+	test("an unreadable, foreign, or missing parent gives the same empty answer", async () => {
+		const t = test_convex();
+		const f = await seed_tree_access_fixture(t);
+		const list = (parentId: Id<"files_nodes">) =>
+			f.asAdmin.query(api.files_nodes.list_tree_children, {
+				membershipId: f.admin.membershipId,
+				parentId,
+				kind: "folder",
+				archived: false,
+				paginationOpts: { numItems: 50, cursor: null },
+			});
+
+		// A readable parent lists its children, so the empty answers below come from the gate.
+		expect((await list(f.nodes.openId)).page.map((row) => row._id)).toEqual([f.nodes.openSubId]);
+
+		// The admin can read `/top/hidden/granted` but not its parent. Listing the parent must not
+		// show the granted child, or it would confirm what the hidden folder holds.
+		expect(await list(f.nodes.hiddenId)).toEqual(REFUSED);
+		expect(await list(f.nodes.foreignFolderId)).toEqual(REFUSED);
+		expect(await list(f.nodes.missingNodeId)).toEqual(REFUSED);
+	});
+
+	test("a grant-only member gets an empty root and no open folder", async () => {
+		const t = test_convex();
+		const f = await seed_tree_access_fixture(t);
+		const list = (parentId: Id<"files_nodes"> | typeof files_ROOT_ID, kind: "folder" | "file") =>
+			f.asGrantOnly.query(api.files_nodes.list_tree_children, {
+				membershipId: f.grantOnly.membershipId,
+				parentId,
+				kind,
+				archived: false,
+				paginationOpts: { numItems: 50, cursor: null },
+			});
+
+		// `/shared` is a root child shared with this member. It comes from `list_tree_shared_roots`.
+		expect(await list(files_ROOT_ID, "folder")).toEqual(REFUSED);
+		expect(await list(files_ROOT_ID, "file")).toEqual(REFUSED);
+		// An open folder needs workspace read, which this member lacks.
+		expect(await list(f.nodes.openId, "file")).toEqual(REFUSED);
+		// Inside a granted scope the member lists normally.
+		expect((await list(f.nodes.sharedId, "file")).page.map((row) => row._id)).toEqual([f.nodes.sharedFileId]);
+	});
+
+	test("refuses missing auth, an inactive membership, and a deleted user", async () => {
+		const t = test_convex();
+		const f = await seed_tree_access_fixture(t);
+		const args = {
+			membershipId: f.grantOnly.membershipId,
+			parentId: f.nodes.sharedId,
+			kind: "file" as const,
+			archived: false,
+			paginationOpts: { numItems: 50, cursor: null },
+		};
+		await expect(t.query(api.files_nodes.list_tree_children, args)).rejects.toThrow("Unauthenticated");
+		expect((await f.asGrantOnly.query(api.files_nodes.list_tree_children, args)).page).toHaveLength(1);
+
+		// Only "Permission denied" means grant-only mode. A deleted user must not keep reading grants.
+		await t.run(async (ctx) => {
+			await ctx.db.patch("users", f.grantOnly.userId, { deletedAt: Date.now() });
+		});
+		expect(await f.asGrantOnly.query(api.files_nodes.list_tree_children, args)).toEqual(REFUSED);
+
+		await t.run(async (ctx) => {
+			await ctx.db.patch("organizations_workspaces_users", f.admin.membershipId, { active: false });
+		});
+		expect(
+			await f.asAdmin.query(api.files_nodes.list_tree_children, {
+				...args,
+				membershipId: f.admin.membershipId,
+				parentId: f.nodes.openId,
+			}),
+		).toEqual(REFUSED);
+	});
+});
+
+describe("get_tree_ancestors", () => {
+	test("returns the node and its folders from the top down", async () => {
+		const t = test_convex();
+		const f = await seed_tree_access_fixture(t);
+
+		const result = await f.asOwner.query(api.files_nodes.get_tree_ancestors, {
+			membershipId: f.owner.membershipId,
+			nodeId: String(f.nodes.deepFileId),
+		});
+		expect(result?.node._id).toBe(f.nodes.deepFileId);
+		expect(result?.ancestors.map((row) => row.path)).toEqual(["/open", "/open/sub"]);
+	});
+
+	test("stops at the granted scope and never returns the hidden folder or anything above it", async () => {
+		const t = test_convex();
+		const f = await seed_tree_access_fixture(t);
+		const ancestors_of = async (
+			as: typeof f.asAdmin,
+			membershipId: Id<"organizations_workspaces_users">,
+			nodeId: Id<"files_nodes">,
+		) =>
+			(await as.query(api.files_nodes.get_tree_ancestors, { membershipId, nodeId: String(nodeId) }))?.ancestors.map(
+				(row) => row.path,
+			);
+
+		// The owner shows the full walk, so the shorter answers below come from the stop.
+		expect(await ancestors_of(f.asOwner, f.owner.membershipId, f.nodes.grantedFileId)).toEqual([
+			"/top",
+			"/top/hidden",
+			"/top/hidden/granted",
+		]);
+		// `/top` is readable for the admin, but it sits above the hidden folder, so it stays out too.
+		expect(await ancestors_of(f.asAdmin, f.admin.membershipId, f.nodes.grantedFileId)).toEqual(["/top/hidden/granted"]);
+		expect(await ancestors_of(f.asGrantOnly, f.grantOnly.membershipId, f.nodes.grantedFileId)).toEqual([
+			"/top/hidden/granted",
+		]);
+		expect(await ancestors_of(f.asGrantOnly, f.grantOnly.membershipId, f.nodes.sharedFileId)).toEqual(["/shared"]);
+	});
+
+	test("returns null for an unreadable, foreign, missing, malformed, or root node id", async () => {
+		const t = test_convex();
+		const f = await seed_tree_access_fixture(t);
+		const get = (nodeId: string) =>
+			f.asAdmin.query(api.files_nodes.get_tree_ancestors, { membershipId: f.admin.membershipId, nodeId });
+
+		expect(await get(String(f.nodes.hiddenId))).toBeNull();
+		expect(await get(String(f.nodes.boxSecretId))).toBeNull();
+		expect(await get(String(f.nodes.foreignFolderId))).toBeNull();
+		expect(await get(String(f.nodes.missingNodeId))).toBeNull();
+		// The client passes the route's `?nodeId` as is, so a bad id must not throw.
+		expect(await get("not-a-node-id")).toBeNull();
+		expect(await get(files_ROOT_ID)).toBeNull();
+		await expect(
+			t.query(api.files_nodes.get_tree_ancestors, {
+				membershipId: f.admin.membershipId,
+				nodeId: String(f.nodes.openId),
+			}),
+		).rejects.toThrow("Unauthenticated");
+	});
+});
+
+describe("list_tree_shared_roots", () => {
+	test("hoists readable scopes under a hidden folder for a member with workspace read", async () => {
+		const t = test_convex();
+		const f = await seed_tree_access_fixture(t);
+		const shared_roots = async (archived: boolean) => {
+			const result = await f.asAdmin.query(api.files_nodes.list_tree_shared_roots, {
+				membershipId: f.admin.membershipId,
+				archived,
+			});
+			return { ...result, rows: result.rows.map((row) => row.path).sort() };
+		};
+
+		// `granted` comes from a user grant, `team` from the organization role, and `ops` from the
+		// workspace role. `inner` sits under the readable `granted`, so the tree reaches it there.
+		// `/shared` is a root child and the admin has workspace read, so the root page lists it.
+		// `plugin` has a grant from an old membership lifetime, so it is not readable.
+		expect(await shared_roots(false)).toEqual({
+			rows: ["/top/hidden/granted", "/top/hidden/ops", "/top/hidden/team"],
+			truncated: false,
+		});
+		expect(await shared_roots(true)).toEqual({ rows: ["/top/hidden/old"], truncated: false });
+	});
+
+	test("gives a grant-only member every shared scope, root children included", async () => {
+		const t = test_convex();
+		const f = await seed_tree_access_fixture(t);
+
+		const result = await f.asGrantOnly.query(api.files_nodes.list_tree_shared_roots, {
+			membershipId: f.grantOnly.membershipId,
+			archived: false,
+		});
+		expect(result.rows.map((row) => row.path).sort()).toEqual(["/shared", "/top/hidden/granted"]);
+		expect(result.truncated).toBe(false);
+	});
+
+	test("gives the owner and refused callers nothing", async () => {
+		const t = test_convex();
+		const f = await seed_tree_access_fixture(t);
+
+		expect(
+			await f.asOwner.query(api.files_nodes.list_tree_shared_roots, {
+				membershipId: f.owner.membershipId,
+				archived: false,
+			}),
+		).toEqual({ rows: [], truncated: false });
+		// Another user's membership.
+		expect(
+			await f.asAdmin.query(api.files_nodes.list_tree_shared_roots, {
+				membershipId: f.grantOnly.membershipId,
+				archived: false,
+			}),
+		).toEqual({ rows: [], truncated: false });
+		await expect(
+			t.query(api.files_nodes.list_tree_shared_roots, { membershipId: f.admin.membershipId, archived: false }),
+		).rejects.toThrow("Unauthenticated");
+	});
+
+	test("reports truncated when the member holds more grants than the limit", async () => {
+		const t = test_convex();
+		const f = await seed_tree_access_fixture(t);
+		await t.run(async (ctx) => {
+			const now = Date.now();
+			for (let index = 0; index < 501; index++) {
+				await ctx.db.insert("access_control_permission_grants", {
+					organizationId: f.owner.organizationId,
+					workspaceId: f.owner.workspaceId,
+					resourceKind: "file",
+					resourceId: `missing-scope-${index}`,
+					principalKind: "user",
+					userId: f.grantOnly.userId,
+					permission: "content.read",
+					createdAt: now,
+					updatedAt: now,
+				});
+			}
+		});
+
+		const result = await f.asGrantOnly.query(api.files_nodes.list_tree_shared_roots, {
+			membershipId: f.grantOnly.membershipId,
+			archived: false,
+		});
+		expect(result.truncated).toBe(true);
+	});
+});
+
+describe("get_folder_readme", () => {
+	test("finds the README in any letter case and prefers byte order", async () => {
+		const t = test_convex();
+		const f = await seed_tree_access_fixture(t);
+		const ids = await t.run(async (ctx) => {
+			const node = (args: Parameters<typeof insert_tree_node>[2]) => insert_tree_node(ctx, f.owner, args);
+			await node({ parentId: f.nodes.openId, path: "/open/reading-list.md", kind: "file" });
+			await node({ parentId: f.nodes.openId, path: "/open/readme.md", kind: "file" });
+			const expectedId = await node({ parentId: f.nodes.openId, path: "/open/Readme.md", kind: "file" });
+			// Archived files and folders are never the README.
+			await node({
+				parentId: f.nodes.openId,
+				path: "/open/README.md",
+				kind: "file",
+				archiveOperationId: "archive-operation-readme",
+			});
+			await node({ parentId: f.nodes.openId, path: "/open/README.md", kind: "folder" });
+			const rootReadmeId = await node({ parentId: files_ROOT_ID, path: "/README.md", kind: "file" });
+			return { expectedId, rootReadmeId };
+		});
+		const get = (folderId: Id<"files_nodes"> | typeof files_ROOT_ID) =>
+			f.asOwner.query(api.files_nodes.get_folder_readme, { membershipId: f.owner.membershipId, folderId });
+
+		expect((await get(f.nodes.openId))?._id).toBe(ids.expectedId);
+		expect((await get(files_ROOT_ID))?._id).toBe(ids.rootReadmeId);
+		expect(await get(f.nodes.openSubId)).toBeNull();
+	});
+
+	test("skips a hidden README and refuses a hidden folder like a missing one", async () => {
+		const t = test_convex();
+		const f = await seed_tree_access_fixture(t);
+		const ids = await t.run(async (ctx) => {
+			const node = (args: Parameters<typeof insert_tree_node>[2]) => insert_tree_node(ctx, f.owner, args);
+			const hiddenReadmeId = await node({
+				parentId: f.nodes.boxId,
+				path: "/box/README.md",
+				kind: "file",
+				scope: f.nodes.boxSecretId,
+			});
+			const openReadmeId = await node({ parentId: f.nodes.boxId, path: "/box/readme.md", kind: "file" });
+			// The admin may read this README, but not the folder that holds it.
+			const grantedReadmeId = await node({
+				parentId: f.nodes.hiddenId,
+				path: "/top/hidden/README.md",
+				kind: "file",
+				scope: "self",
+			});
+			const now = Date.now();
+			await ctx.db.insert("access_control_permission_grants", {
+				organizationId: f.owner.organizationId,
+				workspaceId: f.owner.workspaceId,
+				resourceKind: "file",
+				resourceId: String(grantedReadmeId),
+				principalKind: "user",
+				userId: f.admin.userId,
+				permission: "content.read",
+				createdAt: now,
+				updatedAt: now,
+			});
+			return { hiddenReadmeId, openReadmeId, grantedReadmeId };
+		});
+		const get = (
+			as: typeof f.asAdmin,
+			membershipId: Id<"organizations_workspaces_users">,
+			folderId: Id<"files_nodes">,
+		) => as.query(api.files_nodes.get_folder_readme, { membershipId, folderId });
+
+		expect((await get(f.asOwner, f.owner.membershipId, f.nodes.boxId))?._id).toBe(ids.hiddenReadmeId);
+		expect((await get(f.asAdmin, f.admin.membershipId, f.nodes.boxId))?._id).toBe(ids.openReadmeId);
+
+		expect((await get(f.asOwner, f.owner.membershipId, f.nodes.hiddenId))?._id).toBe(ids.grantedReadmeId);
+		expect(await get(f.asAdmin, f.admin.membershipId, f.nodes.hiddenId)).toBeNull();
+		expect(await get(f.asAdmin, f.admin.membershipId, f.nodes.foreignFolderId)).toBeNull();
+		expect(await get(f.asAdmin, f.admin.membershipId, f.nodes.missingNodeId)).toBeNull();
+		await expect(
+			t.query(api.files_nodes.get_folder_readme, { membershipId: f.admin.membershipId, folderId: f.nodes.boxId }),
+		).rejects.toThrow("Unauthenticated");
+	});
+});
+
 describe("paginated bash listing queries", () => {
 	test("paginates direct children without descendants or archived nodes", async () => {
 		const t = test_convex();

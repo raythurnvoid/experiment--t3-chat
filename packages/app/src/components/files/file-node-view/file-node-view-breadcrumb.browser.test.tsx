@@ -67,6 +67,7 @@ vi.mock("convex/react", async (importOriginal) => {
 				return { _yay: { items: [], isDone: true, continueCursor: null } };
 			case "files_pending_updates:get_file_pending_update":
 			case "files_pending_updates:get_file_pending_target":
+			case "files_nodes:get_folder_readme":
 			case "files_transfer:get":
 			case "files_pending_update_runs:get":
 			case "r2:get_asset_by_file_node_id":
@@ -106,7 +107,11 @@ vi.mock("@/lib/app-tenant-context.tsx", () => ({
 		}),
 	},
 }));
-vi.mock("@/lib/files-tree-context.tsx", () => ({ FilesTreeProvider: { useContext: () => NODES } }));
+vi.mock("@/lib/files-tree-context.tsx", () => ({
+	FilesTreeProvider: {
+		useFolders: () => ({ rows: NODES, statusByFolderId: new Map(), hoistedIds: new Set(), loadMore: () => {} }),
+	},
+}));
 vi.mock("@/components/app-auth.tsx", () => ({
 	AppAuthProvider: { useAuthenticated: () => ({ userId: "user_1" }) },
 }));

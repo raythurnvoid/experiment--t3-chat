@@ -108,6 +108,7 @@ import { draggable, dropTargetForElements } from "@atlaskit/pragmatic-drag-and-d
 import { measureNaturalWidth, prepareWithSegments } from "@chenglou/pretext";
 import { Link } from "@tanstack/react-router";
 import { useConvex, usePaginatedQuery, useQueries, useQuery } from "convex/react";
+import { compareValues } from "convex/values";
 import type { FunctionReturnType } from "convex/server";
 import {
 	Archive,
@@ -172,22 +173,6 @@ function get_breadcrumb_path(fileNodesList: files_VisibleTreeNode[] | undefined,
 	}
 
 	return path;
-}
-
-function get_folder_readme_node_id(
-	fileNodesList: files_VisibleTreeNode[] | undefined,
-	folderItemId: string | null | undefined,
-): app_convex_Id<"files_nodes"> | null {
-	const readmeNode = fileNodesList?.find((node) => {
-		return (
-			node.parentId === folderItemId &&
-			node.kind === "file" &&
-			node.archiveOperationId === null &&
-			node.name.toLowerCase() === ("README.md" satisfies files_SpecialFileName).toLowerCase()
-		);
-	});
-
-	return readmeNode?._id ?? null;
 }
 
 function can_move_file_node_to_parent(args: {
@@ -2600,11 +2585,42 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 		folderItemId === files_ROOT_ID ? "skip" : { membershipId, target: { kind: "saved", id: folderItemId } },
 	);
 
-	const { entries: visibleEntries, isFailed: isFolderFailed } = useFilesVisibleEntries(
+	// Show the first page at once and load the next one on "Show more". A folder can hold thousands of files.
+	const {
+		entries: visibleEntries,
+		isFailed: isFolderFailed,
+		isDone: isFolderDone,
+		loadMore: loadMoreVisibleEntries,
+	} = useFilesVisibleEntries(
 		membershipId,
 		folderItemId === files_ROOT_ID ? "/" : savedFolderPath,
 		"children",
+		"incremental",
 	);
+	// The table rows read their full rows, with write rights, from the tree store. Keep the store's pages
+	// ahead of the table: load its next page when a table row sorts after the last loaded row of its kind.
+	// Compare names, not ids. The table also lists this user's pending moves into the folder, and those
+	// nodes are on no page of this folder, so an id check would load every page. Only a pending move that
+	// sorts after every real child of its kind still loads the rest, which is rare.
+	const folderTree = FilesTreeProvider.useFolders({
+		folderIds: folderItemId === files_ROOT_ID ? [] : [folderItemId],
+		archived: false,
+		pinnedNodeIds: [],
+	});
+	const lastTreeNameByKind = new Map<string, string>();
+	for (const row of folderTree.rows ?? []) {
+		const lastName = lastTreeNameByKind.get(row.kind);
+		if (row.parentId === folderItemId && (lastName === undefined || compareValues(row.name, lastName) > 0)) {
+			lastTreeNameByKind.set(row.kind, row.name);
+		}
+	}
+	const isFolderTreeBehind =
+		folderTree.statusByFolderId.get(folderItemId) === "more" &&
+		(visibleEntries ?? []).some((entry) => {
+			const lastName = lastTreeNameByKind.get(entry.kind);
+			return entry.target.kind === "saved" && (lastName === undefined || compareValues(entry.name, lastName) > 0);
+		});
+	const folderReadme = useQuery(app_convex_api.files_nodes.get_folder_readme, { membershipId, folderId: folderItemId });
 
 	const canWriteFolder = useQuery(app_convex_api.files_nodes.get_current_user_file_write_permission, {
 		membershipId,
@@ -2655,21 +2671,17 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 	const [isCreatingReadme, setIsCreatingReadme] = useState(false);
 	const [pendingActionNodeIds, setPendingActionNodeIds] = useState(() => new Set<string>());
 
-	const childItems = [...(visibleEntries ?? [])].sort((a, b) => {
-		if (a.kind !== b.kind) {
-			return a.kind === "folder" ? -1 : 1;
-		}
-
-		return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" });
-	});
+	// The server already sorts folders first, then names in byte order. Pages that load later add rows at the end.
+	const childItems = visibleEntries ?? [];
 	const visibleChildItems = showAllItems
 		? childItems
 		: childItems.slice(0, FILE_NODE_VIEW_FOLDER_INITIAL_VISIBLE_ITEMS_COUNT);
 	const hiddenChildItemsCount = childItems.length - visibleChildItems.length;
-	const readmeNodeId = get_folder_readme_node_id(fileNodesList, folderItemId);
-	const readmeNode = fileNodesList?.find((node) => node._id === readmeNodeId);
+	const readmeNodeId = folderReadme?._id ?? null;
 	const editorOptions =
-		readmeNode && files_node_has_editable_text_content(readmeNode) ? get_editor_view_options(readmeNode.textKind) : [];
+		folderReadme && files_node_has_editable_text_content(folderReadme)
+			? get_editor_view_options(folderReadme.textKind)
+			: [];
 
 	const handleViewChange = useFn((value: string) => {
 		const editorOption = editorOptions.find((option) => option.value === value);
@@ -2680,6 +2692,10 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 
 	const handleShowMoreClick = useFn(() => {
 		setShowAllItems(true);
+		// Every loaded row is already on screen, so ask the server for the next page.
+		if (hiddenChildItemsCount === 0) {
+			loadMoreVisibleEntries();
+		}
 	});
 
 	const handleShowLessClick = useFn(() => {
@@ -2814,6 +2830,12 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 		setShowAllItems(false);
 	}, [folderItemId]);
 
+	useEffect(() => {
+		if (isFolderTreeBehind) {
+			folderTree.loadMore(folderItemId);
+		}
+	}, [isFolderTreeBehind, folderTree, folderItemId]);
+
 	const folderBrowserContent = (
 		<FileNodeViewFolderBody topSafeArea={topSafeArea}>
 			{isFolderFailed ? (
@@ -2824,7 +2846,7 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 			<FileNodeViewFolderExplorer
 				visibleChildItems={visibleChildItems}
 				fileNodesList={fileNodesList}
-				hiddenChildItemsCount={hiddenChildItemsCount}
+				hasMoreChildItems={hiddenChildItemsCount > 0 || (visibleEntries !== undefined && !isFolderDone)}
 				organizationName={organizationName}
 				workspaceName={workspaceName}
 				pendingActionNodeIds={pendingActionNodeIds}
@@ -2839,7 +2861,7 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 			/>
 			<FileNodeViewFolderReadme
 				readmeNodeId={readmeNodeId}
-				fileNodesList={fileNodesList}
+				isReadmeLoading={folderReadme === undefined}
 				canWrite={folderCanReceiveChildren}
 				isCreatingReadme={isCreatingReadme}
 				onCreateReadmeClick={handleCreateReadmeClick}
@@ -2850,13 +2872,13 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 	const readmeEditor = readmeNodeId ? (
 		<FileNodeViewFolderReadmeEditor
 			readmeNodeId={readmeNodeId}
-			writeBlockedReason={readmeNode?.writeBlockedReason ?? null}
+			writeBlockedReason={folderReadme?.writeBlockedReason ?? null}
 			pendingUpdateId={pendingUpdateId}
 			// The README node owns its shape: a README.md created by copying a plain text file is
 			// plain text, and the embed must open it the same way the file view does.
-			rootKind={readmeNode?.textKind ?? "rich_text"}
-			monacoLanguageId={files_monaco_language_id_of_content_type(readmeNode?.contentType)}
-			nonCollaborative={readmeNode?.collaborationEnabled === false}
+			rootKind={folderReadme?.textKind ?? "rich_text"}
+			monacoLanguageId={files_monaco_language_id_of_content_type(folderReadme?.contentType)}
+			nonCollaborative={folderReadme?.collaborationEnabled === false}
 			committedAssetId={committedAssetId}
 			pendingUpdatesLoaded={pendingUpdatesLoaded}
 			serverSequence={serverSequence}
@@ -3600,7 +3622,8 @@ type FileNodeViewFolderExplorer_ClassNames =
 type FileNodeViewFolderExplorer_Props = {
 	visibleChildItems: FileNodeViewFolderEntry[];
 	fileNodesList: FileNodeViewContent_Props["fileNodesList"];
-	hiddenChildItemsCount: number;
+	/** Rows are hidden behind "Show more", or the server has more pages. */
+	hasMoreChildItems: boolean;
 	organizationName: string;
 	workspaceName: string;
 	pendingActionNodeIds: ReadonlySet<string>;
@@ -3625,7 +3648,7 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 	const {
 		visibleChildItems,
 		fileNodesList,
-		hiddenChildItemsCount,
+		hasMoreChildItems,
 		organizationName,
 		workspaceName,
 		pendingActionNodeIds,
@@ -3639,7 +3662,7 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 		onShowLessClick,
 	} = props;
 
-	if (visibleChildItems.length === 0 && hiddenChildItemsCount <= 0) {
+	if (visibleChildItems.length === 0 && !hasMoreChildItems) {
 		return null;
 	}
 
@@ -3746,7 +3769,7 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 				</MyGridTable>
 			)}
 
-			{hiddenChildItemsCount > 0 && (
+			{hasMoreChildItems && (
 				<MyButton
 					className={"FileNodeViewFolderExplorer-show-more" satisfies FileNodeViewFolderExplorer_ClassNames}
 					variant="ghost"
@@ -3790,14 +3813,14 @@ type FileNodeViewFolderReadme_ClassNames =
 
 type FileNodeViewFolderReadme_Props = {
 	readmeNodeId: app_convex_Id<"files_nodes"> | null;
-	fileNodesList: FileNodeViewContent_Props["fileNodesList"];
+	isReadmeLoading: boolean;
 	canWrite: boolean;
 	isCreatingReadme: boolean;
 	onCreateReadmeClick: () => void;
 };
 
 const FileNodeViewFolderReadme = memo(function FileNodeViewFolderReadme(props: FileNodeViewFolderReadme_Props) {
-	const { readmeNodeId, fileNodesList, canWrite, isCreatingReadme, onCreateReadmeClick } = props;
+	const { readmeNodeId, isReadmeLoading, canWrite, isCreatingReadme, onCreateReadmeClick } = props;
 
 	return (
 		<section className={"FileNodeViewFolderReadme" satisfies FileNodeViewFolderReadme_ClassNames}>
@@ -3808,7 +3831,7 @@ const FileNodeViewFolderReadme = memo(function FileNodeViewFolderReadme(props: F
 					</MyIcon>
 					<h2 className={"FileNodeViewFolderReadme-title" satisfies FileNodeViewFolderReadme_ClassNames}>README.md</h2>
 				</div>
-			) : fileNodesList === undefined ? (
+			) : isReadmeLoading ? (
 				<div className={"FileNodeView-loading-text" satisfies FileNodeView_ClassNames}>Loading...</div>
 			) : (
 				<div className={"FileNodeViewFolderReadme-empty" satisfies FileNodeViewFolderReadme_ClassNames}>
@@ -4236,9 +4259,6 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 		}
 	});
 
-	const fileNodesList = FilesTreeProvider.useContext();
-	const protectedDescendantIds = useMemo(() => files_collect_protected_descendant_ids(fileNodesList ?? []), [fileNodesList]);
-
 	const queriedNode = useQuery(
 		app_convex_api.files_nodes.get_file_node_for_membership,
 		searchNodeId && !isRootNodeSelected
@@ -4263,6 +4283,23 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 		: null;
 	const privateTextIntent =
 		privateEntry?.pendingUpdate.createIntent?.kind === "text" ? privateEntry.pendingUpdate.createIntent : null;
+	// Keep the last shown folder loaded while the next node's query starts. A row of the folder table is
+	// then still in the loaded rows, and the view below can open it before its query answers.
+	const [loadedFolderId, setLoadedFolderId] = useState<app_convex_Id<"files_nodes"> | null>(null);
+	const nextLoadedFolderId =
+		queriedNode === undefined ? loadedFolderId : queriedNode?.kind === "folder" ? queriedNode._id : null;
+	if (nextLoadedFolderId !== loadedFolderId) {
+		setLoadedFolderId(nextLoadedFolderId);
+	}
+
+	// Load the shown folder's rows, and the selected node with the folders above it for the breadcrumb.
+	// The whole workspace can hold many thousands of nodes, so never load all of them here.
+	const fileNodesList = FilesTreeProvider.useFolders({
+		folderIds: loadedFolderId && !isRootNodeSelected ? [loadedFolderId] : [],
+		archived: false,
+		pinnedNodeIds: searchNodeId && !isRootNodeSelected ? [searchNodeId] : [],
+	}).rows;
+
 	// Show the loaded tree node while the query starts. A null answer must still clear the view.
 	const resolvedNode =
 		queriedNode === undefined ? fileNodesList?.find((item) => item._id === searchNodeId) : queriedNode;
@@ -4271,20 +4308,28 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 	const targetFolderId = isRootNodeSelected ? files_ROOT_ID : resolvedNode?.kind === "folder" ? resolvedNode._id : null;
 	const resolvedNodeHasEditableTextContent = files_node_has_editable_text_content(resolvedNode);
 
+	// Only the rows on screen can show the protected mark. The archive door still refuses the rest.
+	const protectedDescendantIds = useMemo(
+		() => files_collect_protected_descendant_ids(fileNodesList ?? []),
+		[fileNodesList],
+	);
+	const folderReadme = useQuery(
+		app_convex_api.files_nodes.get_folder_readme,
+		targetFolderId ? { membershipId, folderId: targetFolderId } : "skip",
+	);
+
 	// Treat a folder README as the active editor node so pending-update and sync subscriptions
 	// have the same owner for selected files and folder README editors.
-	const activeEditorNodeId = isRootNodeSelected
-		? get_folder_readme_node_id(fileNodesList, files_ROOT_ID)
-		: resolvedNode && resolvedNode.kind === "file"
+	const activeEditorNodeId =
+		resolvedNode && resolvedNode.kind === "file"
 			? resolvedNodeHasEditableTextContent
 				? resolvedNode._id
 				: null
-			: resolvedNode?.kind === "folder"
-				? get_folder_readme_node_id(fileNodesList, resolvedNode._id)
+			: targetFolderId
+				? (folderReadme?._id ?? null)
 				: null;
-	const activeEditorTreeNode = fileNodesList?.find((item) => item._id === activeEditorNodeId);
 	const activeEditorNode =
-		resolvedNode?.kind === "file" && resolvedNodeHasEditableTextContent ? resolvedNode : activeEditorTreeNode;
+		resolvedNode?.kind === "file" && resolvedNodeHasEditableTextContent ? resolvedNode : (folderReadme ?? undefined);
 	const activeEditorTarget: files_PendingTarget | null =
 		privateEntry && privateTextIntent
 			? { kind: "private", id: privateEntry.node._id }

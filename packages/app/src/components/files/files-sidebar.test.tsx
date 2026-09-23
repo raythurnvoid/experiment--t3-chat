@@ -53,22 +53,44 @@ vi.mock("@/lib/app-tenant-context.tsx", () => ({
 }));
 
 vi.mock("@/lib/files-tree-context.tsx", async () => {
-	const { useEffect, useState } = await import("react");
+	const { useEffect, useMemo, useState } = await import("react");
+
+	// State and an effect, like the real Convex query hook. An update sent outside `act` then
+	// renders on React's normal schedule, together with other pending state updates.
+	function useTreeNodes() {
+		const [nodes, setNodes] = useState(() => treeState.nodes);
+		useEffect(() => {
+			const listener = () => setNodes(treeState.nodes);
+			treeState.listeners.add(listener);
+			listener();
+			return () => {
+				treeState.listeners.delete(listener);
+			};
+		}, []);
+		return nodes;
+	}
+
 	return {
 		FilesTreeProvider: {
-			// State and an effect, like the real Convex query hook. An update sent outside `act` then
-			// renders on React's normal schedule, together with other pending state updates.
-			useContext: function useContext() {
-				const [nodes, setNodes] = useState(() => treeState.nodes);
-				useEffect(() => {
-					const listener = () => setNodes(treeState.nodes);
-					treeState.listeners.add(listener);
-					listener();
-					return () => {
-						treeState.listeners.delete(listener);
+			useFullList: function useFullList(enabled: boolean) {
+				const nodes = useTreeNodes();
+				return enabled ? nodes : undefined;
+			},
+			// Serve every fixture row as loaded. A row whose parent is not in the fixture was shared on its
+			// own, like a row of `list_tree_shared_roots`, so the store would show it at the top.
+			useFolders: function useFolders() {
+				const nodes = useTreeNodes();
+				return useMemo(() => {
+					const nodeIds = new Set(nodes?.map((node) => node._id));
+					return {
+						rows: nodes,
+						statusByFolderId: new Map(),
+						hoistedIds: new Set(
+							nodes?.filter((node) => node.parentId !== "root" && !nodeIds.has(node.parentId)).map((node) => node._id),
+						),
+						loadMore: () => {},
 					};
-				}, []);
-				return nodes;
+				}, [nodes]);
 			},
 		},
 	};

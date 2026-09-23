@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
-import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
+import { test_convex, test_mocks, test_mocks_fill_db_with } from "./setup.test.ts";
 import { files_visible_db_create_reader, type files_visible_internal_list_Result } from "./files_visible.ts";
 
 beforeEach(() => vi.useFakeTimers());
@@ -231,6 +231,97 @@ describe("list", () => {
 		}
 		expect(done).toBe(true);
 		expect(paths).toEqual(["/a", "/aa", "/b", "/c"]);
+	});
+
+	test("kindThenName lists folders first, then files, each in raw name order across pages", async () => {
+		const f = await fixture();
+		const box = await create_saved(f, "box");
+		for (const name of ["Zeta", "b", "n"]) await create_saved(f, `box/${name}`);
+		const elsewhere = await create_saved(f, "elsewhere");
+
+		// Insert saved files directly. The listing reads only the node fields.
+		const insert_file = (parentId: typeof box.id | "root", path: string) =>
+			f.t.run(async (ctx) => {
+				const name = path.slice(path.lastIndexOf("/") + 1);
+				return {
+					kind: "saved" as const,
+					id: await ctx.db.insert("files_nodes", {
+						...test_mocks.files.base(),
+						organizationId: f.db.organizationId,
+						workspaceId: f.db.workspaceId,
+						createdBy: f.db.userId,
+						updatedBy: f.db.userId,
+						parentId,
+						name,
+						kind: "file",
+						path,
+						treePath: path,
+						pathDepth: path.split("/").length - 1,
+						lowercaseExtension: "txt",
+						contentType: "text/plain",
+					}),
+				};
+			});
+		for (const name of ["a.txt", "file-10.txt", "file-9.txt", "z.txt"]) await insert_file(box.id, `/box/${name}`);
+		const renamed = await insert_file(box.id, "/box/q.txt");
+		const outside = await insert_file("root", "/outside.txt");
+
+		await create_private(f, "/box/c-draft");
+		await create_private(f, "/box/b-draft.txt", "file");
+		for (const [target, destName] of [
+			[renamed, "m.txt"],
+			[outside, "0-moved.txt"],
+			[elsewhere, "x-moved"],
+		] as const) {
+			const moved = await f.t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
+				organizationId: f.db.organizationId,
+				workspaceId: f.db.workspaceId,
+				userId: f.db.userId,
+				target,
+				destParent: box,
+				destName,
+			});
+			expect(moved._nay).toBeUndefined();
+		}
+
+		const list_all = async (args: {
+			mode: "children" | "subtree";
+			numItems: number;
+			kind?: "file" | "folder";
+			orderBy?: "kindThenName";
+		}) => {
+			const names: string[] = [];
+			let cursor: string | null = null;
+			let done = false;
+			for (let page = 0; page < 30 && !done; page++) {
+				const result: files_visible_internal_list_Result = await f.asUser.query(api.files_visible.list, {
+					membershipId: f.db.membershipId,
+					folderPath: "/box",
+					cursor,
+					...args,
+				});
+				if (result._nay) throw new Error(result._nay.message);
+				expect(result._yay.items.length).toBeLessThanOrEqual(args.numItems);
+				names.push(...result._yay.items.map((item) => item.name));
+				cursor = result._yay.continueCursor;
+				done = result._yay.isDone;
+			}
+			expect(done).toBe(true);
+			return names;
+		};
+
+		// Raw order puts digits and capitals before lowercase, and "file-10" before "file-9".
+		const folders = ["Zeta", "b", "c-draft", "n", "x-moved"];
+		const files = ["0-moved.txt", "a.txt", "b-draft.txt", "file-10.txt", "file-9.txt", "m.txt", "z.txt"];
+		// Each page size moves the page boundary, so a skipped or repeated entry changes the list.
+		for (const numItems of [1, 2, 3, 50]) {
+			expect(await list_all({ mode: "children", numItems, orderBy: "kindThenName" })).toEqual([...folders, ...files]);
+		}
+		expect(await list_all({ mode: "children", numItems: 2, kind: "file", orderBy: "kindThenName" })).toEqual(files);
+		expect(await list_all({ mode: "children", numItems: 2, kind: "folder", orderBy: "kindThenName" })).toEqual(folders);
+		// Without it, children and subtree mode keep plain name order, like the agent's `ls` expects.
+		expect(await list_all({ mode: "children", numItems: 2 })).toEqual([...folders, ...files].sort());
+		expect(await list_all({ mode: "subtree", numItems: 50 })).toEqual([...folders, ...files].sort());
 	});
 
 	test("walks private folders and moved-in saved folders once", async () => {

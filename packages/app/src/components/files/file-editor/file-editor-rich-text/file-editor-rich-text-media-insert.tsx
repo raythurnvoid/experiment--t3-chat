@@ -93,7 +93,7 @@ type FileEditorRichTextMediaEmbedPicker_Props = {
 
 /**
  * A caret-anchored picker listing the workspace's image and video files.
- * It reads the same complete tree as the sidebar from the workspace provider.
+ * It loads the full workspace list from the tree provider while it is open.
  */
 export const FileEditorRichTextMediaEmbedPicker = memo(function FileEditorRichTextMediaEmbedPicker(
 	props: FileEditorRichTextMediaEmbedPicker_Props,
@@ -102,7 +102,7 @@ export const FileEditorRichTextMediaEmbedPicker = memo(function FileEditorRichTe
 
 	const [searchText, setSearchText] = useState("");
 
-	const treeNodes = FilesTreeProvider.useContext();
+	const treeNodes = FilesTreeProvider.useFullList(true);
 	const mediaNodes = (treeNodes ?? []).filter(
 		(node) =>
 			node.kind === "file" &&

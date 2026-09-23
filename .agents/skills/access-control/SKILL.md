@@ -520,9 +520,9 @@ product decision, so record the answer here before changing the behaviour. An en
   — so refusing them the folder would mean "you may empty the room but not close the door". Archiving
   discloses nothing and changes nobody's read set. Leaving a restricted scope is the separate
   question, and `content.permissions.manage` guards that in `move_nodes` and `unarchive_nodes`.
-  Recovery is real, not theoretical: `list_tree` reads the tree with no archive filter,
-  `access_control_db_filter_readable_file_nodes` lets the owner read everything, and the sidebar has a
-  "Show N items archived" toggle whose rows carry a Restore action. Known property, not a bug: while
+  Recovery is real, not theoretical: `list_tree_children` with `archived: true` lists a folder's
+  archived children, `access_control_db_filter_readable_file_nodes` lets the owner read everything,
+  and the sidebar has a "Show archived items" toggle whose rows carry a Restore action. Known property, not a bug: while
   the folder sits in the archive nobody can open its share dialog, so restore it first to manage
   sharing.
 - **Removing a member drains direct grants in bounded passes.** `remove_user_from_organization`
@@ -613,6 +613,40 @@ product decision, so record the answer here before changing the behaviour. An en
   query. Same-workspace callers use `users.get_workspace_member_anagraphic`, which
   proves both people are active members of that workspace before it returns the address. The Users
   page is the current caller.
+
+## Files tree reads
+
+The sidebar loads the tree one open folder at a time through four `files_nodes` queries. All of them
+resolve the reader with `db_get_tree_reader` and filter every row with
+`access_control_db_filter_readable_file_nodes`, so they never show more than `list_tree` does.
+
+- `db_get_tree_reader` returns `null` for an inactive or foreign membership and for every refusal
+  except "Permission denied". "Permission denied" means the member has no workspace-wide read, so the
+  queries continue in grant-only mode and show only what was shared with them.
+- `list_tree_children` pages one kind of child of one folder. A missing, foreign, or hidden parent
+  gets the same empty, done page as any other refusal, so the answer does not tell the caller that a
+  hidden folder exists. A grant-only member gets nothing for the root: their root rows come from
+  `list_tree_shared_roots`.
+- `get_tree_ancestors` takes a raw id string, so a bad `?nodeId=` returns `null` instead of an argument
+  error. It walks up from the node and stops at the first folder the caller cannot read, because the
+  tree cannot show a row under a hidden folder. This hides no names: every tree row carries its
+  `path`, `parentId`, and `restrictedScopeNodeId`, the same as `list_tree` rows, so a shared node's
+  path still names the hidden folders above it.
+- `list_tree_shared_roots` returns restricted scope nodes the member can read while the folder above
+  them is hidden. It reads the member's own `content.read` grants and the grants of their workspace
+  and organization roles, capped at `TREE_SHARED_ROOTS_MAX_GRANTS` per list, and checks every
+  candidate again with the readable filter. The owner gets nothing, because the owner reads the whole
+  tree. Known limit: past the cap the query logs a warning and returns `truncated: true`, but the
+  sidebar ignores that flag, so a member with more than 500 grants in one list can miss shared roots
+  without any sign in the UI.
+- `get_folder_readme` uses the same folder gate as `list_tree_children`. Known limit: it reads at most
+  50 active files per case variant of the prefix `rea`, so a folder with 50+ names like `reaction-*.md`
+  before `README.md` shows no README in the Files table.
+- Every folder row shows a chevron, even an empty one. A chevron only on folders with children would
+  tell a reader that a folder holds files they cannot see. Paging is not that tight: the filter runs
+  after the index page, so a caller who pages with `numItems: 1` gets empty pages with
+  `isDone: false` for hidden children and can count them. `list_tree` pages the same way, so this is
+  not new.
 
 ## File sharing
 

@@ -39,6 +39,8 @@ vi.mock("convex/react", async (importOriginal) => {
 				loadMore: vi.fn(),
 			};
 		},
+		// Only the mention popup reads the tree here, so the folder-by-folder queries stay skipped.
+		useQuery: () => undefined,
 	};
 });
 

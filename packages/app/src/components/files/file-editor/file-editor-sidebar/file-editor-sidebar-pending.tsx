@@ -1453,7 +1453,9 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 		{ membershipId },
 		{ initialNumItems: 20 },
 	);
-	const fileNodesList = FilesTreeProvider.useContext();
+	// Saved rows need every node, to find the node a move would replace. Load the whole workspace only
+	// when such a row exists.
+	const fileNodesList = FilesTreeProvider.useFullList(pendingUpdatesResult.some((view) => view.kind === "entry"));
 	// Keep both the id list and queries object stable. `useQueries` treats a new object as a new set
 	// of subscriptions and schedules render-phase state updates while it reconnects them.
 	const threadIds = useMemo(

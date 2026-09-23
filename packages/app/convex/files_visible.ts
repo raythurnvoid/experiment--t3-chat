@@ -40,7 +40,10 @@ const listing_args = {
 	minDepth: v.optional(v.number()),
 	maxDepth: v.optional(v.number()),
 	pathQuery: v.optional(v.string()),
-	orderBy: v.optional(v.union(v.literal("name"), v.literal("updatedAt"))),
+	/**
+	 * `kindThenName` lists folders first, then files, like the Files tree. Only children mode uses it.
+	 */
+	orderBy: v.optional(v.union(v.literal("name"), v.literal("updatedAt"), v.literal("kindThenName"))),
 };
 
 const internal_listing_args = v.object({
@@ -451,6 +454,10 @@ async function db_list(ctx: QueryCtx, args: Infer<typeof internal_listing_args>)
 
 	const timeOrder = args.mode === "recent" || args.orderBy === "updatedAt";
 	const order = args.order ?? (timeOrder ? "desc" : "asc");
+	// The Files table lists folders first, then files, like the Files tree. Each group keeps the raw
+	// name order of the indexes, so a page can be shown as soon as it arrives. The agent's `ls` and
+	// `find` keep plain name order, so they do not ask for it.
+	const kindOrder = args.mode === "children" && args.orderBy === "kindThenName";
 
 	const scope = JSON.stringify([
 		args.organizationId,
@@ -490,27 +497,36 @@ async function db_list(ctx: QueryCtx, args: Infer<typeof internal_listing_args>)
 
 	const streamSchema = z.object({
 		kind: z.enum(["saved", "private", "moved"]),
+		/** Kind order gives each stream one node kind. `null` reads both kinds. */
+		nodeKind: z.enum(["folder", "file"]).nullable(),
 		parent: parentSchema,
 		cursor: z.string().nullable(),
 		done: z.boolean(),
 	});
 
-	const frameSchema = z.object({ parent: parentSchema, path: z.string(), streams: z.array(streamSchema).max(5) });
+	// One saved stream, plus a private and a moved stream for the parent and its private alias.
+	// Kind order doubles them, one set per node kind.
+	const frameSchema = z.object({ parent: parentSchema, path: z.string(), streams: z.array(streamSchema).max(10) });
 	type Stream = z.infer<typeof streamSchema>;
 	type Frame = z.infer<typeof frameSchema>;
 
 	async function create_frame(parent: files_PendingParent, path: string): Promise<Frame> {
+		const nodeKinds: Stream["nodeKind"][] = kindOrder ? (args.kind ? [args.kind] : ["folder", "file"]) : [null];
+		const aliases = reader && !timeOrder ? await reader.parentAliases(parent) : [];
 		const streams: Stream[] = [];
-		if (timeOrder || parent.kind !== "private") streams.push({ kind: "saved", parent, cursor: null, done: false });
-		if (reader) {
-			if (timeOrder) streams.push({ kind: "private", parent, cursor: null, done: false });
-			else
-				for (const alias of await reader.parentAliases(parent)) {
-					streams.push(
-						{ kind: "private", parent: alias, cursor: null, done: false },
-						{ kind: "moved", parent: alias, cursor: null, done: false },
-					);
-				}
+		for (const nodeKind of nodeKinds) {
+			if (timeOrder || parent.kind !== "private")
+				streams.push({ kind: "saved", nodeKind, parent, cursor: null, done: false });
+			if (reader) {
+				if (timeOrder) streams.push({ kind: "private", nodeKind, parent, cursor: null, done: false });
+				else
+					for (const alias of aliases) {
+						streams.push(
+							{ kind: "private", nodeKind, parent: alias, cursor: null, done: false },
+							{ kind: "moved", nodeKind, parent: alias, cursor: null, done: false },
+						);
+					}
+			}
 		}
 		return { parent, path, streams };
 	}
@@ -585,6 +601,7 @@ async function db_list(ctx: QueryCtx, args: Infer<typeof internal_listing_args>)
 				workspaceId: args.workspaceId,
 				visibilityUserId: args.visibilityUserId,
 				kind: stream.kind,
+				nodeKind: stream.nodeKind,
 				parent: stream.parent,
 				cursor: stream.cursor,
 				timeOrder,
@@ -647,7 +664,11 @@ async function db_list(ctx: QueryCtx, args: Infer<typeof internal_listing_args>)
 				? timeOrder
 					? head.item.updatedAt - picked.head.item.updatedAt ||
 						(head.item.target.id < picked.head.item.target.id ? -1 : 1)
-					: compareValues(head.item.name, picked.head.item.name)
+					: kindOrder && head.item.kind !== picked.head.item.kind
+						? head.item.kind === "folder"
+							? -1
+							: 1
+						: compareValues(head.item.name, picked.head.item.name)
 				: 0;
 			if (!picked || (order === "desc" ? comparison > 0 : comparison < 0)) picked = { stream, head };
 		}
@@ -692,6 +713,7 @@ export const internal_page = internalQuery({
 		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
 		visibilityUserId: v.id("users"),
 		kind: v.union(v.literal("saved"), v.literal("private"), v.literal("moved")),
+		nodeKind: v.union(doc(app_convex_schema, "files_nodes").fields.kind, v.null()),
 		parent: files_pending_parent_validator,
 		cursor: paginationOptsValidator.fields.cursor,
 		timeOrder: v.boolean(),
@@ -715,6 +737,7 @@ export const internal_page = internalQuery({
 
 		if (stream.kind === "saved") {
 			const parentId = stream.parent.kind === "saved" ? stream.parent.id : "root";
+			const nodeKind = args.nodeKind;
 
 			const savedQuery = timeOrder
 				? ctx.db
@@ -725,15 +748,26 @@ export const internal_page = internalQuery({
 								.eq("workspaceId", args.workspaceId)
 								.eq("archiveOperationId", null),
 						)
-				: ctx.db
-						.query("files_nodes")
-						.withIndex("by_organization_workspace_parent_archiveOperation_name", (q) =>
-							q
-								.eq("organizationId", args.organizationId)
-								.eq("workspaceId", args.workspaceId)
-								.eq("parentId", parentId)
-								.eq("archiveOperationId", null),
-						);
+				: nodeKind
+					? ctx.db
+							.query("files_nodes")
+							.withIndex("by_organization_workspace_parent_archiveOperation_kind_name", (q) =>
+								q
+									.eq("organizationId", args.organizationId)
+									.eq("workspaceId", args.workspaceId)
+									.eq("parentId", parentId)
+									.eq("archiveOperationId", null)
+									.eq("kind", nodeKind),
+							)
+					: ctx.db
+							.query("files_nodes")
+							.withIndex("by_organization_workspace_parent_archiveOperation_name", (q) =>
+								q
+									.eq("organizationId", args.organizationId)
+									.eq("workspaceId", args.workspaceId)
+									.eq("parentId", parentId)
+									.eq("archiveOperationId", null),
+							);
 
 			const page = await savedQuery.order(order).paginate({ cursor: stream.cursor, numItems: 1 });
 			savedNode = page.page[0] ?? null;
@@ -757,7 +791,10 @@ export const internal_page = internalQuery({
 				.order(order)
 				.paginate({ cursor: stream.cursor, numItems: 1 });
 
-			target = page.page[0] ? { kind: "private", id: page.page[0]._id } : null;
+			// No index has the draft kind, so skip a draft of the other kind here.
+			const node = page.page[0];
+			target =
+				node && (args.nodeKind === null || node.kind === args.nodeKind) ? { kind: "private", id: node._id } : null;
 			cursor = page.continueCursor;
 			done = page.isDone;
 		} else {
@@ -782,6 +819,13 @@ export const internal_page = internalQuery({
 			target = page.page[0]?.target ?? null;
 			// Private replacement claims already appear in the private-node stream.
 			if (!timeOrder && target?.kind === "private") target = null;
+			// A move proposal does not store the node kind, so read the moved node to skip the other kind.
+			if (
+				args.nodeKind !== null &&
+				target?.kind === "saved" &&
+				(await ctx.db.get("files_nodes", target.id))?.kind !== args.nodeKind
+			)
+				target = null;
 			cursor = page.continueCursor;
 			done = page.isDone;
 		}

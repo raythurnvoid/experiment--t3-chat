@@ -132,6 +132,8 @@ export const FileEditorSidebar = memo(function FileEditorSidebar(props: FileEdit
 					<MyTabsPanel
 						className={cn("FileEditorSidebar-panel" satisfies FileEditorSidebar_ClassNames)}
 						tabId={FILE_EDITOR_SIDEBAR_TAB_ID_PENDING}
+						// The pending list reads every node of the workspace. Load it only while this tab is open.
+						unmountOnHide
 					>
 						<FileEditorSidebarPending />
 					</MyTabsPanel>

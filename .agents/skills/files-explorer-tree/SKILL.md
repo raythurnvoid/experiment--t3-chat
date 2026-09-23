@@ -36,7 +36,7 @@ The Files sidebar is implemented in `files-sidebar.tsx` on top of `@headless-tre
 
 - Tree engine: `@headless-tree/core` + `@headless-tree/react`
 - Backend data: Convex `files_nodes` queries and mutations
-- Primary data source: `files_nodes.list_tree`
+- Primary data source: `files_nodes.list_tree_children`, one open folder at a time (see Server-Driven Data)
 - Local state is UI-only (`expandedItems`, search/selection, busy/pending flags) plus derived indexes from query data
 - Prefer Convex mutation `optimisticUpdate` over ad-hoc local mirrored tree state
 - The client prepends `files_SYNTHETIC_ROOT_FOLDER` to the returned `files_nodes` docs.
@@ -121,24 +121,47 @@ Tree-item components:
 
 ## Server-Driven Data
 
-- `files_nodes.list_tree` returns native Convex pages in `treePath` order, including archived nodes.
-- `FilesTreeProvider`, mounted once inside `AppTenantProvider`, loads 500 nodes per page and shares
-  the tree across the sidebar, folder view, pending changes, search, mentions, and media picker.
-  It subscribes only while at least one tree consumer is mounted, so other workspace screens do not
-  load the tree. Closing the last consumer releases every page subscription.
-  It returns `undefined` until every page arrives. During a live page split it keeps the last complete
-  query result so folder README editors stay mounted. This cache contains only the query result and
-  clears on membership changes, first-page resets, or when the last consumer closes. Only `isDone`
-  ends paging; access checks can leave a page empty. Keep the native split fields so live imports can
-  split growing pages safely.
+- The sidebar loads only open folders. A workspace can hold tens of thousands of nodes, and the old
+  whole-tree load took seconds before the first row showed. Keep the first rows within a few hundred
+  milliseconds: never make the default sidebar wait for the whole tree again.
+- `FilesTreeProvider` (`lib/files-tree-context.tsx`), mounted once inside `AppTenantProvider`, has two
+  attached hooks:
+  - `useFolders({ folderIds, archived, pinnedNodeIds })` loads the root and each listed folder. The
+    sidebar passes its expanded folders; the folder view passes the open folder. It returns `rows`
+    (`undefined` until the root page and the shared roots answer), `statusByFolderId` (`loading`,
+    `more`, `done`), `hoistedIds`, and `loadMore(folderId)`.
+  - `useFullList(enabled)` loads the whole workspace through `files_nodes.list_tree`. Only search,
+    AI chat mentions, the media picker, and a Pending panel with entry changes use it. It subscribes
+    only while an enabled caller is mounted, and it keeps the last complete result during a page split.
+- Each open folder runs two `list_tree_children` pagers of 200 rows at once: one for subfolders and
+  one for files. `loadMore` asks for the next subfolders page first, then files. A pager reports rows
+  only when both pagers are settled, because a split page drops its rows for a moment. The provider
+  keeps the old rows until then.
+- The sidebar asks for the next page when the last loaded child of a `more` folder is rendered. The
+  effect runs again after every settled page, because a page can add no row below that last child:
+  the last subfolders page adds rows above the files, and an access-filtered page can be empty.
+- `pinnedNodeIds` (the selected node, a reveal request, a renamed row) load through
+  `get_tree_ancestors`, which returns the node and its readable folders from the top down. Those rows
+  show before their folder's page reaches them. When the top readable folder is not at the root,
+  its row is hoisted to the root level.
+- `list_tree_shared_roots` returns restricted folders and files that were shared with a member whose
+  folder above them is hidden. They are hoisted to the root level. The owner gets none.
+- Every folder has a chevron, because an unopened folder's children are unknown. An open empty folder
+  shows "No files inside"; a loading one shows "Loading…" and sets `aria-busy` on its row.
+- Children sort folders first, then by name in raw byte order (`sort_children`), the same order as
+  the `by_organization_workspace_parent_archiveOperation_kind_name` index. So `B` sorts before `a`.
+  This keeps loaded pages in place while later pages arrive.
+- Show archived items runs extra archived pagers for each open folder. The menu shows no archived
+  count, because counting would need the whole tree.
 - `FileNodeView` uses the matching loaded tree node while `get_file_node_for_membership` is loading.
   Keep that query running: its returned node or `null` always wins over the tree. A node absent from
-  the tree stays loading until the query answers. Do not add an archive filter; both queries return
-  readable archived nodes. Switching from the tree to the query must keep the same editor and draft.
-- Paging avoids the query read limit, but the first tree view still waits for every page. Virtual
-  rows reduce mounted DOM; they do not reduce that initial data load. Measure initial loading and
-  expansion after loading separately. A fast expansion does not prove a fast first visit.
+  the loaded rows stays loading until the query answers. Do not add an archive filter; both queries
+  return readable archived nodes. Switching from the tree to the query must keep the same editor and
+  draft.
+- Measure the first root rows and the first rows of a big folder separately. The Playwriter Files
+  reference has the timing recipe.
 - Tree collection maps/sets are derived from query results (`useMemo`) and rebuilt from server data.
+  A row whose parent is not loaded is dropped unless it is in `hoistedIds`.
 - Loading/empty states are derived from query presence and visible IDs.
 
 ## Search
@@ -205,8 +228,11 @@ Tree-item components:
 
 ## Folder Contents
 
-- Home, saved folders, and private folders read direct children through `files_visible.list` and `useFilesVisibleEntries`. Use the current visible folder path. Keep loading until every page has answered; do not treat a partial page as a complete folder.
-- Combine saved and private children before sorting folders first and names second. Apply Show more and Show less to that full list. Private rows show Added or Preparing and link with `pendingNodeId`.
+- Home, saved folders, and private folders read direct children through `files_visible.list` and `useFilesVisibleEntries` in `"incremental"` mode. Use the current visible folder path. That mode sends `orderBy: "kindThenName"`, so the server returns folders first, then names in byte order, and the table shows each page as it arrives without sorting on the client. The agent's `ls` and `find` do not send it and keep plain name order.
+- Known gap: `files_visible.list` reads each row through its own nested `internal_page` query of one row, then resolves that row's pending overlay. A 50-row page on a big folder (`/people` in `sybill-demo/demo`, 9666 children) takes 5–8 s, so the table is much slower than the sidebar.
+- Show more first shows the rest of the loaded rows. When every loaded row is shown and the folder is not done, it loads the next page. The table's README comes from `files_nodes.get_folder_readme`, not from the loaded rows.
+- The folder view also calls `FilesTreeProvider.useFolders` for the open folder, so row actions find the saved tree row. When a table row is missing from the tree rows, it asks the tree for the next page.
+- Private rows show Added or Preparing and link with `pendingNodeId`.
 - Saved row actions use the real saved document and its current permission data. Never create a fake saved document for a private row. Private folders use tagged children and owner review actions.
 
 ## File Cut, Copy, And Paste
@@ -237,7 +263,8 @@ Tree-item components:
   Escape clears only an idle cut while file navigation has focus.
 - Paste calls `files_transfer.start`. The provider keeps one request id after a lost response,
   and blocks another start while this member has an active run in the workspace. Run progress
-  comes from `get` and `list_current`; tree changes still come from `list_tree`.
+  comes from `get` and `list_current`. Tree changes come from the live `list_tree_children` pages
+  of the open folders.
 - The progress dialog says `Paste files` until the saved run kind is available, then shows
   `Copy files` or `Move files`, counts, and 50-item pages from `list_items`. Previous/Next page
   follows the server cursor, even after an empty page. Each conflict shows its authorized source
@@ -338,10 +365,12 @@ Backend rules, limits, billing, cleanup, and Activity privacy are in
 
 ## Read-Only Files And Folders
 
-- `list_tree` returns `canWrite`, `writeBlockedReason` (`null`, `permission`, or `read_only`), and
-  `writePolicyState` (`none`, `read_only`, or `writer`). It never returns raw `writePolicy` or
-  `newChildWritePolicy`. When the full tree result changes, derive one set of visible ancestors that
-  contain protected descendants so Archive can warn without scanning a subtree for every rendered row.
+- Tree rows (`list_tree`, `list_tree_children`, and the other tree queries) carry `canWrite`,
+  `writeBlockedReason` (`null`, `permission`, or `read_only`), and `writePolicyState` (`none`,
+  `read_only`, or `writer`). They never carry raw `writePolicy` or `newChildWritePolicy`. When the
+  loaded rows change, derive one set of loaded ancestors that contain protected descendants, so
+  Archive can warn without scanning a subtree for every rendered row. The set only knows loaded
+  rows. The server check on archive stays the authority for descendants that are not loaded.
 - Keep locked rows selectable, openable, searchable, and expandable. Add the lock mark beside, not in
   place of, the restricted-access icon. Use the exact row descriptions and status text from
   `../files-read-only/SKILL.md`.
@@ -482,7 +511,8 @@ Do not call `parent.getChildren()` for this check in each row: it loads every si
 
 # Verification Checklist
 
-- Tree updates come from `files_nodes.list_tree`.
+- Tree updates come from `files_nodes.list_tree_children` pages of the open folders, plus pinned
+  rows and shared roots. The default sidebar sends no `list_tree`.
 - Search keeps ancestor chain for matching files/folders.
 - Search-open expands relevant branches and search-close restores prior expansion.
 - Search matches a name fragment, a path, a node id, and a pasted app link, and Enter opens the top match for each.

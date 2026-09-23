@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQueries } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
+import { useFn } from "./utils-hooks.ts";
 import { app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import type { files_TreeItem } from "@/lib/files.ts";
 import { search_path_filter } from "@/lib/files-search.ts";
@@ -10,14 +11,25 @@ import {
 	files_search_query_to_plans,
 } from "../../shared/files-search-query.ts";
 
+/**
+ * Page `files_visible.list` 50 entries at a time.
+ *
+ * `complete` loads every page and returns the entries only when the listing is done.
+ * `incremental` returns the pages loaded so far and loads the next page only on `loadMore()`. It asks for
+ * folders first, then files, so the Files table can show each page as it arrives without sorting again.
+ */
 export function useFilesVisibleEntries(
 	membershipId: app_convex_Id<"organizations_workspaces_users">,
 	folderPath: string | null | undefined,
 	mode: "subtree" | "children",
+	load: "complete" | "incremental" = "complete",
 ) {
 	const scope = JSON.stringify([membershipId, folderPath, mode]);
-	const [pages, setPages] = useState({ scope, cursors: [null] as Array<string | null> });
+	// `pageCount` is how many pages incremental mode was asked for. When an earlier page changes and its
+	// old suffix is dropped, the hook loads pages again up to that count, so the table keeps its length.
+	const [pages, setPages] = useState({ scope, cursors: [null] as Array<string | null>, pageCount: 1 });
 	const cursors = useMemo(() => (pages.scope === scope ? pages.cursors : [null]), [scope, pages]);
+	const pageCount = pages.scope === scope ? pages.pageCount : 1;
 
 	const queries = useMemo(
 		() =>
@@ -28,11 +40,18 @@ export function useFilesVisibleEntries(
 							index,
 							{
 								query: app_convex_api.files_visible.list,
-								args: { membershipId, folderPath, mode, numItems: 50, cursor },
+								args: {
+									membershipId,
+									folderPath,
+									mode,
+									numItems: 50,
+									cursor,
+									...(load === "incremental" ? { orderBy: "kindThenName" as const } : {}),
+								},
 							},
 						]),
 					),
-		[cursors, folderPath, membershipId, mode],
+		[cursors, folderPath, load, membershipId, mode],
 	);
 
 	const responses = useQueries(queries);
@@ -41,6 +60,8 @@ export function useFilesVisibleEntries(
 		type Page = FunctionReturnType<typeof app_convex_api.files_visible.list>;
 		const entries: Array<NonNullable<Page["_yay"]>["items"][number]> = [];
 		let nextCursors: Array<string | null> | null = null;
+		let moreCursor: string | null = null;
+		let loadedPages = 0;
 		let complete = folderPath === null;
 		let failed = false;
 
@@ -53,6 +74,7 @@ export function useFilesVisibleEntries(
 			}
 
 			entries.push(...response._yay.items);
+			loadedPages++;
 			if (response._yay.isDone) {
 				complete = true;
 				if (index + 1 < cursors.length) nextCursors = cursors.slice(0, index + 1);
@@ -64,24 +86,36 @@ export function useFilesVisibleEntries(
 				failed = true;
 				break;
 			}
+			// Incremental mode waits for `loadMore()` before it asks for the next page.
+			if (load === "incremental" && index + 1 >= pageCount) {
+				moreCursor = cursor;
+				break;
+			}
 			if (cursor !== cursors[index + 1]) {
 				nextCursors = [...cursors.slice(0, index + 1), cursor];
 				break;
 			}
 		}
 
-		return { entries: complete && !failed ? entries : undefined, nextCursors, failed };
-	}, [cursors, folderPath, responses]);
+		const hasEntries = complete || (load === "incremental" && loadedPages > 0);
+		return { entries: hasEntries && !failed ? entries : undefined, nextCursors, moreCursor, complete, failed };
+	}, [cursors, folderPath, load, pageCount, responses]);
 
 	// Keep all loaded pages subscribed. If an earlier cursor changes, discard its old suffix.
 	useEffect(() => {
 		if (pages.scope === scope && !progress.nextCursors) return;
 		// Cached pages can resolve all at once. Yield between pages so the input stays responsive.
-		const timer = setTimeout(() => setPages({ scope, cursors: progress.nextCursors ?? cursors }), 0);
+		const timer = setTimeout(() => setPages({ scope, cursors: progress.nextCursors ?? cursors, pageCount }), 0);
 		return () => clearTimeout(timer);
-	}, [cursors, scope, pages.scope, progress.nextCursors]);
+	}, [cursors, scope, pages.scope, pageCount, progress.nextCursors]);
 
-	return { entries: progress.entries, isFailed: progress.failed };
+	// Do nothing while the last page is loading or when the listing is done.
+	const loadMore = useFn(() => {
+		if (progress.moreCursor === null) return;
+		setPages({ scope, cursors: [...cursors, progress.moreCursor], pageCount: cursors.length + 1 });
+	});
+
+	return { entries: progress.entries, isFailed: progress.failed, isDone: progress.complete, loadMore };
 }
 
 export function useFilesSearchMetadata(

@@ -65,6 +65,7 @@ Use this file as a quick testing map for `/files`. Keep it short and selector-or
 - Locked row accessible name: `getByRole("treeitem", { name: "<name>, Read-only" })` when the lock is on that node. A parent lock does not mark a child `read-only from /path`. A writable folder with locked children can say it contains read-only items. `/meetings` after a Council meeting upload is that last shape. Expand it with `getByRole("button", { name: "Expand folder <name>, contains read-only items" })`. The visible title is an input, so `.FilesSidebarTreeItemTitle` with `hasText: /^name$/` does not match (verified 2026-08-26; row suffix recased 2026-09-18).
 - Sidebar context menu: `[data-files-sidebar-tree-context][role="menu"]`.
 - Archive from any menu (sidebar row, toolbar Archive selected, folder explorer row, breadcrumb) opens `getByRole("dialog", { name: /^Archive / })`; confirm with its `Archive` button, cancel with `Cancel`. A refusal is a `role=alert` inside the dialog, not a toast, and the dialog stays open. From page context, match `.FilesArchiveModal:not([hidden])` and read `.MyModalHeading` (the dialog has `aria-labelledby`, no `aria-label`). After a sidebar confirm, `document.activeElement` is the next tree row (or the previous one when the archived row was last); it lands about 100 ms after the dialog has closed, after a brief stop on the button that opened the dialog, so poll for it instead of reading it the moment the dialog hides. Multi-select archive: hold Control and click each row's `.FilesSidebarTreeItemPrimaryAction` (a Control-click on the open file's row removes it from the selection), then the sidebar header `More options` menu item `Archive N selected items` opens `Archive N items?` with the names in a list; after the confirm only the open file's row is selected again. Cancel keeps a multi-selection: the sidebar's click-outside selection reset is off while the dialog is open. Archive with the mutation directly (see "Sidebar Create Then Rename By Id") when the dialog is not what you test.
+- Show archived: the sidebar header `More options` menu has a `menuitemcheckbox` whose `aria-checked` holds the state. Its visible text is `Show archived items` when off and `Hide archived items` when on, and the menu stays open after a click. `getByRole("menuitemcheckbox", { name: "Show archived items" })` timed out, and a locator click on it did not toggle it. Read it with `locator("[role=menuitemcheckbox]")` and click it with `page.mouse.click` on its box center, then press Escape. Archived rows carry ` archived` at the end of their `aria-label` (verified 2026-09-23).
 - Folder explorer root: `.FileNodeViewFolderExplorer`.
 - Folder explorer rows: `.FileNodeViewFolderExplorer-row`.
 - Folder table drop target state: `.FileNodeViewFolderExplorer-row-drop-target`.
@@ -92,6 +93,23 @@ Use this file as a quick testing map for `/files`. Keep it short and selector-or
   editor). The panel sizes live in `localStorage["app_state::resizable_panel::main_panel"]` as
   `[sidebarPercent, mainPercent]`; write `[24,76]` (the default) and reload. Only a drag end
   persists a size, so a keyboard resize on the `Resize files sidebar` separator is lost on reload.
+- Load time (verified 2026-09-23 on `sybill-demo/demo`, whose `/people` holds 9666 children): the
+  sidebar loads open folders only, so time the root and a big folder separately. For the root, open
+  the route in a fresh tab and poll `[role="tree"] [role="treeitem"]` every 100 ms until one exists.
+  Count `files_nodes:list_tree_children` and `files_nodes:list_tree"` in `page.on("websocket")`
+  `framesent` payloads: the default sidebar must send no `list_tree` (the whole-tree query). For a
+  folder, focus its row, press ArrowRight, and poll `[aria-level="2"]`. Expected on local dev: root
+  rows about 300 ms after the first `list_tree_children` frame, `/people` children in about 400–500 ms.
+  The first run after a Convex push or a Vite reload is slower; measure twice.
+- Tree paging: each open folder loads 200 subfolders and 200 files per page. Scroll with
+  `.FilesSidebar-content` `scrollTop = scrollHeight`, wait about 1.5 s, and read `aria-setsize` of the
+  last `[aria-level="2"]` row: it should grow (`/people`: 403, 803, 1203, …) and stay still once you
+  stop scrolling. Scrolling the last rendered row into view does not reach the end: rows are virtual,
+  so that row is only the last one in the DOM. Frames on an already-open socket do not fire
+  `page.on("websocket")`; use `getCDPSession` and `Network.webSocketFrameSent` for a live tab.
+- A deep link `?nodeId=<id>` for a row past the first page shows that row selected under its expanded
+  folder before the folder's pages reach it (`get_tree_ancestors`). Its `aria-posinset` changes as the
+  pages arrive.
 - A stored binary can be present and downloadable while its workspace has no matching enabled
   viewer plugin. Record that as a preview limit. Verify bytes, node/asset ids, and Properties
   separately; do not re-upload the file or install plugins just to make a preview check pass.

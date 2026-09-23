@@ -101,12 +101,24 @@ vi.mock("@/lib/files-tree-context.tsx", async () => {
 	const { useQuery } = await import("convex/react");
 	const { api } = await import("../../../../convex/_generated/api.js");
 	return {
+		// Serve every tree row at once. The store's paging has its own tests.
 		FilesTreeProvider: {
-			useContext: () =>
-				useQuery(api.files_nodes.list_tree, {
+			useFolders: () => ({
+				rows: useQuery(api.files_nodes.list_tree, {
 					membershipId: tenantContextMock().membershipId,
 					paginationOpts: { numItems: 500, cursor: null },
 				}),
+				statusByFolderId: new Map(),
+				hoistedIds: new Set(),
+				loadMore: () => {},
+			}),
+			useFullList: (enabled: boolean) =>
+				useQuery(
+					api.files_nodes.list_tree,
+					enabled
+						? { membershipId: tenantContextMock().membershipId, paginationOpts: { numItems: 500, cursor: null } }
+						: "skip",
+				),
 		},
 	};
 });
@@ -362,6 +374,18 @@ beforeEach(() => {
 		switch (getFunctionName(reference)) {
 			case "files_nodes:list_tree":
 				return treeNodes ?? [node];
+			case "files_nodes:get_folder_readme": {
+				const { folderId } = args as { folderId: string };
+				return (
+					(treeNodes ?? [node]).find(
+						(item) =>
+							item.parentId === folderId &&
+							item.kind === "file" &&
+							item.archiveOperationId === null &&
+							item.name.toLowerCase() === "readme.md",
+					) ?? null
+				);
+			}
 			case "files_nodes:get_file_node_for_membership":
 				return nodeQueryStatus === "loading" ? undefined : nodeQueryStatus === "missing" ? null : node;
 			case "files_pending_updates:list_files_pending_updates":
@@ -1358,7 +1382,7 @@ describe("FileNodeView private targets", () => {
 });
 
 describe("FileNodeView folder clipboard", () => {
-	test("waits for every page and shows more across saved and private children", async () => {
+	test("shows the first page at once and loads the next page on Show more", async () => {
 		node = { ...NODE, _id: "folder_1", name: "Docs", path: "/Docs", kind: "folder" };
 		const children = ["a.html", "c.html", "e.html"].map((name) => ({
 			...NODE,
@@ -1402,14 +1426,31 @@ describe("FileNodeView folder clipboard", () => {
 			};
 		});
 		renderFileView({ nodeId: node._id });
-		expect(await screen.findByText("Loading folder…")).toBeTruthy();
-		expect(screen.queryByRole("link", { name: "Open a.html" })).toBeNull();
+		// The first page shows without waiting for the second one.
+		expect(await screen.findByRole("link", { name: "Open e.html" })).toBeTruthy();
+		expect(screen.queryByRole("link", { name: "Open b.html" })).toBeNull();
+		expect(
+			queryMock.mock.calls.some(
+				([reference, args]) =>
+					getFunctionName(reference) === "files_visible:list" && (args as { cursor?: string | null }).cursor,
+			),
+		).toBe(false);
+
+		fireEvent.click(screen.getByRole("button", { name: /Show more/ }));
 		secondPageReady = true;
 		pushQueryChanges();
-		await screen.findByRole("link", { name: "Open b.html" });
-		expect(screen.queryByRole("link", { name: "Open f.html" })).toBeNull();
-		fireEvent.click(screen.getByRole("button", { name: /Show more/ }));
 		expect(await screen.findByRole("link", { name: "Open f.html" })).toBeTruthy();
+		// A later page adds its rows at the end, in the server's order.
+		expect(screen.getAllByRole("link", { name: /^Open / }).map((link) => link.getAttribute("aria-label"))).toEqual([
+			"Open a.html",
+			"Open c.html",
+			"Open e.html",
+			"Open b.html",
+			"Open d.html",
+			"Open f.html",
+		]);
+		expect(screen.queryByRole("button", { name: /Show more/ })).toBeNull();
+
 		fireEvent.click(screen.getByRole("button", { name: /Show less/ }));
 		expect(screen.queryByRole("link", { name: "Open f.html" })).toBeNull();
 	});

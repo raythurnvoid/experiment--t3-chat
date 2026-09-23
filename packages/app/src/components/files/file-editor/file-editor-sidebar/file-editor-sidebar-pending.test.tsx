@@ -71,7 +71,7 @@ vi.mock("@/lib/app-activities-context.tsx", () => ({
 
 // Feed the complete tree separately from the pending-update queries.
 vi.mock("@/lib/files-tree-context.tsx", () => ({
-	FilesTreeProvider: { useContext: () => treeNodesMock() },
+	FilesTreeProvider: { useFullList: () => treeNodesMock() },
 }));
 
 // Spy target: tests assert on toast.error and toast.warning calls.

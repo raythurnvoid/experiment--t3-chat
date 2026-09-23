@@ -53,6 +53,7 @@ import {
 	type ConvexReactClient,
 } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
+import { compareValues } from "convex/values";
 import {
 	buildProxiedInstance,
 	dragAndDropFeature,
@@ -1737,6 +1738,8 @@ type FilesSidebarTreeItemPlaceholder_CssVars = {
 
 type FilesSidebarTreeItemPlaceholder_Props = {
 	itemId: string;
+	/** The folder's first page has not arrived yet. */
+	isLoading: boolean;
 	ancestorIds: string[];
 	trackActiveFileIds: Set<string>;
 	hiddenTrackFileIds: Set<string>;
@@ -1749,8 +1752,17 @@ type FilesSidebarTreeItemPlaceholder_Props = {
 const FilesSidebarTreeItemPlaceholder = memo(function FilesSidebarTreeItemPlaceholder(
 	props: FilesSidebarTreeItemPlaceholder_Props,
 ) {
-	const { itemId, ancestorIds, trackActiveFileIds, hiddenTrackFileIds, onDragEnter, onDragOver, onDragLeave, onDrop } =
-		props;
+	const {
+		itemId,
+		isLoading,
+		ancestorIds,
+		trackActiveFileIds,
+		hiddenTrackFileIds,
+		onDragEnter,
+		onDragOver,
+		onDragLeave,
+		onDrop,
+	} = props;
 
 	const trackFileIds = [...ancestorIds, itemId];
 	const placeholderDepth = trackFileIds.length;
@@ -1774,7 +1786,7 @@ const FilesSidebarTreeItemPlaceholder = memo(function FilesSidebarTreeItemPlaceh
 				aria-hidden="true"
 			>
 				<FilesSidebarTreeItemIcon kind="folder" />
-				<span>No files inside</span>
+				<span>{isLoading ? "Loading…" : "No files inside"}</span>
 			</div>
 			<FilesSidebarTreeItemTrack
 				trackFileIds={trackFileIds}
@@ -1839,6 +1851,8 @@ type FilesSidebarTreeItem_Props = {
 	canWriteRoot: boolean;
 	hasVisibleProtectedDescendant: boolean;
 	protectedDescendantIds: ReadonlySet<app_convex_Id<"files_nodes">>;
+	/** The folder is open and its first page has not arrived yet. */
+	isFolderLoading: boolean;
 	onCreateNode: (parentNodeId: string, kind: files_TreeItem["kind"]) => void;
 	onStartRename: (itemId: string) => void;
 	onRenameErrorClear: (itemId: string) => void;
@@ -2000,6 +2014,7 @@ const FilesSidebarTreeRow = memo(
 		canUnarchive,
 		canWriteRoot,
 		hasVisibleProtectedDescendant,
+			isFolderLoading,
 			onCreateNode,
 			onStartRename,
 			onRenameErrorClear,
@@ -2274,6 +2289,7 @@ const FilesSidebarTreeRow = memo(
 							aria-posinset={itemAriaPosInSet}
 							aria-level={itemAriaLevel}
 							aria-expanded={itemAriaExpanded}
+							aria-busy={isFolderLoading || undefined}
 							aria-selected={isSelected || isMenuOpen ? "true" : "false"}
 							aria-label={label}
 							data-focused={isFocused || undefined}
@@ -2391,6 +2407,7 @@ const FilesSidebarTreeRow = memo(
 				{shouldRenderPlaceholder ? (
 					<FilesSidebarTreeItemPlaceholder
 						itemId={itemId}
+						isLoading={isFolderLoading}
 						ancestorIds={ancestorIds}
 						trackActiveFileIds={trackActiveFileIds}
 						hiddenTrackFileIds={hiddenTrackFileIds}
@@ -2688,6 +2705,9 @@ type FilesSidebarTree_Props = {
 	canUnarchiveItem: (item: files_TreeItem) => boolean;
 	canWriteRoot: boolean;
 	protectedDescendantIds: ReadonlySet<app_convex_Id<"files_nodes">>;
+	/** How far each open folder has loaded, or `null` while a search shows the full list. */
+	folderStatusById: ReadonlyMap<string, "loading" | "more" | "done"> | null;
+	onLoadMore: (folderId: string) => void;
 	onCreateNode: (parentNodeId: string, kind: files_TreeItem["kind"]) => void;
 	onStartRename: (itemId: string) => void;
 	onRenameErrorClear: (itemId: string) => void;
@@ -2728,6 +2748,8 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 		canUnarchiveItem,
 		canWriteRoot,
 		protectedDescendantIds,
+		folderStatusById,
+		onLoadMore,
 		onCreateNode,
 		onStartRename,
 		onRenameErrorClear,
@@ -2980,6 +3002,37 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 		lastScrolledSelectedNodeIdRef.current = selectedNodeId;
 	}, [selectedNodeId, itemIndexById, virtualizer]);
 
+	// Load the next page of a big folder when its last loaded row is rendered. The key names those folders.
+	// Access checks can leave a page empty. Then an open folder with more pages has no row to render, so
+	// its own row asks instead, and an empty tree asks for the root.
+	const loadMoreKey = [
+		...(renderedTreeItems.length === 0 && folderStatusById?.get(files_ROOT_ID) === "more" ? [files_ROOT_ID] : []),
+		...virtualizer.getVirtualItems().flatMap((virtualItem) => {
+			const item = renderedTreeItems[virtualItem.index];
+			const itemId = item.getId();
+			const parentId = item.getParent()?.getId();
+			const itemMeta = item.getItemMeta();
+			return [
+				...(item.isExpanded() && item.getChildren().length === 0 && folderStatusById?.get(itemId) === "more"
+					? [itemId]
+					: []),
+				...(parentId !== undefined &&
+				itemMeta.posInSet === itemMeta.setSize - 1 &&
+				folderStatusById?.get(parentId) === "more"
+					? [parentId]
+					: []),
+			];
+		}),
+	].join(",");
+	// Run again when a page settles, not only when the last row changes. A page can add no row below the
+	// last one: the last subfolders page adds rows above the files, and a page can be empty. Extra calls are
+	// safe, because Convex ignores a second `loadMore` while that page loads.
+	useEffect(() => {
+		for (const folderId of loadMoreKey ? loadMoreKey.split(",") : []) {
+			onLoadMore(folderId);
+		}
+	}, [loadMoreKey, folderStatusById, onLoadMore]);
+
 	return (
 		<FilesSidebarTreeBusyContext.Provider value={isBusy}>
 			<div
@@ -3047,6 +3100,11 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 									canWriteRoot={canWriteRoot}
 									hasVisibleProtectedDescendant={files_is_node(itemData) && protectedDescendantIds.has(itemData._id)}
 									protectedDescendantIds={protectedDescendantIds}
+									isFolderLoading={
+										item.isExpanded() &&
+										(folderStatusById?.get(itemId) === "loading" ||
+											(folderStatusById?.get(itemId) === "more" && item.getChildren().length === 0))
+									}
 										onCreateNode={onCreateNode}
 										onStartRename={onStartRename}
 										onRenameErrorClear={onRenameErrorClear}
@@ -3150,7 +3208,6 @@ type FilesSidebarTopSectionMoreAction_Props = {
 	canArchiveSelection: boolean;
 	canWriteUploadTarget: boolean;
 	selectedNodeIdsCount: number;
-	archivedCount: number;
 	showArchived: boolean;
 	clipboardSlot: React.ReactNode;
 	onArchiveToggleClick: () => void;
@@ -3170,7 +3227,6 @@ const FilesSidebarTopSectionMoreAction = memo(function FilesSidebarTopSectionMor
 		canArchiveSelection,
 		canWriteUploadTarget,
 		selectedNodeIdsCount,
-		archivedCount,
 		showArchived,
 		clipboardSlot,
 		onArchiveToggleClick,
@@ -3179,9 +3235,8 @@ const FilesSidebarTopSectionMoreAction = memo(function FilesSidebarTopSectionMor
 		onImportFolderClick,
 	} = props;
 
-	const archivedItemsLabel = `${showArchived ? "Hide" : "Show"} ${archivedCount} ${
-		archivedCount === 1 ? "item" : "items"
-	} archived`;
+	// The tree loads folder by folder, so it does not know how many archived items exist.
+	const archivedItemsLabel = `${showArchived ? "Hide" : "Show"} archived items`;
 	const selectedItemsArchiveLabel = `Archive ${selectedNodeIdsCount} selected ${
 		selectedNodeIdsCount === 1 ? "item" : "items"
 	}`;
@@ -3238,11 +3293,11 @@ const FilesSidebarTopSectionMoreAction = memo(function FilesSidebarTopSectionMor
 							<MyMenuCheckboxItem
 								name="showArchivedFiles"
 								checked={showArchived}
-								disabled={isBusy || archivedCount === 0}
+								disabled={isBusy}
 								onClick={handleArchiveToggleClick}
 							>
 								<MyMenuItemContent>
-									<MyMenuCheckboxItemControl checked={showArchived} disabled={isBusy || archivedCount === 0} />
+									<MyMenuCheckboxItemControl checked={showArchived} disabled={isBusy} />
 									<MyMenuItemContentPrimary>{archivedItemsLabel}</MyMenuItemContentPrimary>
 								</MyMenuItemContent>
 							</MyMenuCheckboxItem>
@@ -3342,9 +3397,6 @@ const FilesSidebarTopSection = memo(function FilesSidebarTopSection(props: Files
 		onUploadFileClick,
 		onImportFolderClick,
 	} = props;
-
-	const archivedCount =
-		treeItemsList?.filter((item) => files_is_node(item) && item.archiveOperationId !== null).length ?? 0;
 
 	return (
 		<div className={cn("FilesSidebarTopSection" satisfies FilesSidebarTopSection_ClassNames)}>
@@ -3455,7 +3507,6 @@ const FilesSidebarTopSection = memo(function FilesSidebarTopSection(props: Files
 						canArchiveSelection={canArchiveSelection}
 						canWriteUploadTarget={canWriteUploadTarget}
 						selectedNodeIdsCount={selectedNodeIdsCount}
-						archivedCount={archivedCount}
 						showArchived={showArchived}
 						clipboardSlot={clipboardSlot}
 						onArchiveToggleClick={onArchiveToggleClick}
@@ -3964,12 +4015,10 @@ function sort_children(args: { children: string[]; itemById: Map<string, files_T
 			return itemA.kind === "folder" ? -1 : 1;
 		}
 
-		const nameA = itemA.name || "";
-		const nameB = itemB.name || "";
-		return nameA.localeCompare(nameB, undefined, {
-			numeric: true,
-			sensitivity: "base",
-		});
+		// Use the server's index order, which compares names byte by byte. A big folder loads page by page,
+		// so a later page then adds rows at the end and never moves the rows above them. Do not use `<`:
+		// it compares UTF-16 code units and disagrees with the server for some emoji names.
+		return compareValues(itemA.name || "", itemB.name || "");
 	});
 }
 
@@ -4183,12 +4232,6 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 	const convex = useConvex();
 	const { membershipId, organizationName, workspaceName } = AppTenantProvider.useContext();
 
-	const treeNodesList = FilesTreeProvider.useContext();
-	const treeItemsList = useMemo(
-		() => (treeNodesList ? files_create_tree_items_list_from_nodes(treeNodesList) : undefined),
-		[treeNodesList],
-	);
-
 	const [searchQuery, setSearchQuery] = useState(initialSearchQuery);
 	const [previousRouteQuery, setPreviousRouteQuery] = useState(initialSearchQuery);
 	if (previousRouteQuery !== initialSearchQuery) {
@@ -4198,12 +4241,47 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 	const searchQueryDeferred = useDeferredValue(searchQuery);
 	const isSearchActive = searchQueryDeferred.trim().length > 0;
 
+	const [showArchived, setShowArchived] = useState(false);
+	const [expandedItems, setExpandedItems] = useState<string[]>([]);
+	const canCollapseAll = expandedItems.length > 1;
+	/** A `files::reveal_node` request waiting for its row to be in the tree. */
+	const [revealRequest, setRevealRequest] = useState<{ nodeId: string } | null>(null);
+	/**
+	 * Nodes this sidebar renamed. A big folder may not have loaded the page where they now sort, so the
+	 * tree keeps them pinned to stay visible and focusable. A created node needs no entry: it opens, and
+	 * the open node is pinned already.
+	 */
+	const [keptNodeIds, setKeptNodeIds] = useState<string[]>([]);
+
+	// Load only the root and the open folders. The whole workspace can hold many thousands of nodes.
+	const treeFolders = FilesTreeProvider.useFolders({
+		// Search expands every folder above a match and reads the full list instead, so page no folder then.
+		// Expanded items are always tree rows, so every id except the root is a node id.
+		folderIds: isSearchActive
+			? []
+			: (expandedItems.filter((itemId) => itemId !== files_ROOT_ID) as app_convex_Id<"files_nodes">[]),
+		archived: showArchived,
+		pinnedNodeIds: [
+			...(selectedNodeId && selectedNodeId !== files_ROOT_ID ? [selectedNodeId] : []),
+			...(revealRequest ? [revealRequest.nodeId] : []),
+			...keptNodeIds,
+		],
+	});
+	// Search still matches in the browser, so it needs every node. Load the full list only while a search is active.
+	const fullTreeNodesList = FilesTreeProvider.useFullList(isSearchActive);
+	const treeNodesList = isSearchActive ? fullTreeNodesList : treeFolders.rows;
+	const treeItemsList = useMemo(
+		() => (treeNodesList ? files_create_tree_items_list_from_nodes(treeNodesList) : undefined),
+		[treeNodesList],
+	);
+	// The full list has every parent, so a row with a missing parent there was shared on its own.
+	const hoistedTreeItemIds = isSearchActive ? null : treeFolders.hoistedIds;
+
 	const { searchMetadataTargetKeys, isSearchLoading, isSearchFailed } = useFilesSearchMetadata(
 		membershipId,
 		searchQueryDeferred,
 		treeItemsList,
 	);
-	const [showArchived, setShowArchived] = useState(false);
 
 	const [isCreatingFile, setIsCreatingFile] = useState(false);
 	const createRequestRef = useRef<{
@@ -4237,11 +4315,6 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 	const importFolderInputRef = useRef<HTMLInputElement | null>(null);
 	const treeScrollElementRef = useRef<HTMLDivElement | null>(null);
 	const treeVirtualizerRef = useRef<Virtualizer<HTMLDivElement, HTMLDivElement> | null>(null);
-
-	const [expandedItems, setExpandedItems] = useState<string[]>([]);
-	const canCollapseAll = expandedItems.length > 1;
-	/** A `files::reveal_node` request waiting for its row to be in the tree. */
-	const [revealRequest, setRevealRequest] = useState<{ nodeId: string } | null>(null);
 
 	const expandedItemsBeforeSearchRef = useRef<Set<string> | null>(null);
 	const selectedFilePathAutoExpandedKeyRef = useRef<string | null>(null);
@@ -4416,7 +4489,15 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 			// Somebody who was given one folder gets that folder without the open folders above it, so
 			// its parent is missing here. Show it at the top instead: filed under a parent that never
 			// renders, the folder they were given would be invisible.
-			const parentId = shownItemIds.has(item.parentId) ? item.parentId : files_ROOT_ID;
+			// Folder by folder, a parent can also be missing only because its page is not loaded yet. Such
+			// a row waits for its parent. Only the rows the store marks as hoisted go to the top.
+			let parentId = item.parentId;
+			if (!shownItemIds.has(parentId)) {
+				if (hoistedTreeItemIds && !hoistedTreeItemIds.has(item._id)) {
+					continue;
+				}
+				parentId = files_ROOT_ID;
+			}
 
 			let siblingsIds = result.itemsIdsByParentId.get(parentId);
 			if (!siblingsIds) {
@@ -4458,7 +4539,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		}
 
 		return result;
-	}, [treeItemsList, showArchived]);
+	}, [treeItemsList, showArchived, hoistedTreeItemIds]);
 	const canWriteParentId = useFn((parentId: app_convex_Id<"files_nodes"> | typeof files_ROOT_ID) => {
 		const parentItem = parentId === files_ROOT_ID ? files_SYNTHETIC_ROOT_FOLDER : treeItems?.itemById.get(parentId);
 		return parentItem ? getItemCapabilities(parentItem).canReceiveChildren : false;
@@ -5142,6 +5223,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		clearRenameError(itemId);
 		item.setFocused();
 		markFileAsPending(itemId);
+		setKeptNodeIds((oldValue) => (oldValue.includes(itemId) ? oldValue : [...oldValue, itemId]));
 		convex
 			.mutation(
 				app_convex_api.files_nodes.rename_node,
@@ -5174,21 +5256,34 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 							return;
 						}
 
+						const renameNode = <Node extends { _id: string }>(node: Node) =>
+							node._id === itemId
+								? {
+										...node,
+										name: renamedItem.name,
+										path: renamedItem.path,
+										updatedAt: renamedItem.updatedAt,
+									}
+								: node;
+						// The row is in its folder's pages, and also in the full list while a search is active.
+						optimisticallyUpdateValueInPaginatedQuery(
+							localStore,
+							app_convex_api.files_nodes.list_tree_children,
+							{
+								membershipId,
+								parentId: renamedItem.parentId,
+								kind: renamedItem.kind,
+								archived: renamedItem.archiveOperationId !== null,
+							},
+							renameNode,
+						);
 						optimisticallyUpdateValueInPaginatedQuery(
 							localStore,
 							app_convex_api.files_nodes.list_tree,
 							{
 								membershipId,
 							},
-							(node) =>
-								node._id === itemId
-									? {
-											...node,
-											name: renamedItem.name,
-											path: renamedItem.path,
-											updatedAt: renamedItem.updatedAt,
-										}
-									: node,
+							renameNode,
 						);
 					},
 				},
@@ -5718,6 +5813,11 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 				createRequestRef.current = null;
 				setIsCreatingFile(false);
 			});
+	});
+
+	const handleLoadMore = useFn<FilesSidebarTree_Props["onLoadMore"]>((folderId) => {
+		// Folder ids come from tree rows, so each one is the root or a node id.
+		treeFolders.loadMore(folderId as app_convex_Id<"files_nodes"> | typeof files_ROOT_ID);
 	});
 
 	const handleCreateNodeClick = useFn<FilesSidebarTree_Props["onCreateNode"]>((parentNodeId, kind) => {
@@ -6510,6 +6610,8 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 					canUnarchiveItem={canUnarchiveItem}
 					canWriteRoot={canWriteRoot}
 					protectedDescendantIds={protectedDescendantIds}
+					folderStatusById={isSearchActive ? null : treeFolders.statusByFolderId}
+					onLoadMore={handleLoadMore}
 					onCreateNode={handleCreateNodeClick}
 					onStartRename={handleStartRename}
 					onRenameErrorClear={clearRenameError}
@@ -7367,7 +7469,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 	});
 
 	describe("FilesSidebarTree", () => {
-		test("virtualizes large trees while keeping focus, rename, dialog, and placeholder rows", async () => {
+		test("virtualizes large trees while keeping focus, rename, dialog, placeholder rows, and load-more", async () => {
 			const { act, cleanup, fireEvent, render, waitFor } = await import("@testing-library/react");
 			const { ConvexProvider } = await import("convex/react");
 			const { app_convex } = await import("@/lib/app-convex-client.ts");
@@ -7409,8 +7511,10 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			const virtualizerRef = React.createRef<Virtualizer<HTMLDivElement, HTMLDivElement>>();
 			const handleTreeStateChange = vi.fn();
 			const handleAction = vi.fn();
+			const handleLoadMore = vi.fn();
 
 			function TestTree(props: {
+				folderStatusById?: FilesSidebarTree_Props["folderStatusById"];
 				isSearchActive?: boolean;
 				selectedNodeId?: string;
 				dialogNodeId?: string;
@@ -7473,6 +7577,8 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 										canUnarchiveItem={() => true}
 										canWriteRoot={props.canWrite ?? true}
 										protectedDescendantIds={new Set()}
+										folderStatusById={props.folderStatusById ?? null}
+										onLoadMore={handleLoadMore}
 										onCreateNode={handleAction}
 										onStartRename={handleAction}
 										onRenameErrorClear={handleAction}
@@ -7500,6 +7606,13 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				expect(firstRow.getAttribute("aria-setsize")).toBe("5000");
 				expect(firstRow.getAttribute("aria-posinset")).toBe("1");
 				expect(view.container.querySelectorAll(".FilesSidebarTreeItemPlaceholder")).toHaveLength(1);
+
+				// An open folder whose loaded pages were all emptied by access checks asks for its next page itself.
+				view.rerender(<TestTree folderStatusById={new Map([["child-0", "more"]])} />);
+				expect(handleLoadMore).toHaveBeenLastCalledWith("child-0");
+				expect(view.container.querySelector(".FilesSidebarTreeItemPlaceholder")?.textContent).toBe("Loading…");
+				view.rerender(<TestTree />);
+				handleLoadMore.mockClear();
 
 				// Native focus within the current row must not repeat its tree state update.
 				handleTreeStateChange.mockClear();
@@ -7540,6 +7653,18 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				await waitFor(() => expect(document.activeElement?.getAttribute("data-file-id")).toBe("child-4999"));
 				expect(view.queryAllByRole("treeitem").length).toBeLessThan(30);
 				expect(view.getByRole("treeitem", { name: "child-4999" }).getAttribute("aria-posinset")).toBe("5000");
+
+				// The last loaded row of a folder with more pages asks for the next page. A page that adds no row
+				// below it, such as the last subfolders page, must ask again.
+				expect(handleLoadMore).not.toHaveBeenCalled();
+				view.rerender(<TestTree folderStatusById={new Map([[files_ROOT_ID, "more"]])} />);
+				expect(handleLoadMore).toHaveBeenCalledTimes(1);
+				expect(handleLoadMore).toHaveBeenLastCalledWith(files_ROOT_ID);
+				view.rerender(<TestTree folderStatusById={new Map([[files_ROOT_ID, "more"]])} />);
+				expect(handleLoadMore).toHaveBeenCalledTimes(2);
+				view.rerender(<TestTree folderStatusById={new Map([[files_ROOT_ID, "done"]])} />);
+				expect(handleLoadMore).toHaveBeenCalledTimes(2);
+				view.rerender(<TestTree />);
 
 				act(() => virtualizerRef.current?.scrollToIndex(2_000));
 				await waitFor(() => expect(view.getByRole("treeitem", { name: "child-2000" })).toBeTruthy());

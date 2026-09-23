@@ -1872,6 +1872,16 @@ const app_convex_schema = defineSchema({
 			"archiveOperationId",
 			"name",
 		])
+		// The Files tree and folder table page one folder at a time with this index: folders first, then files,
+		// each by name. `"file"` sorts before `"folder"`, so a reader pages one kind at a time.
+		.index("by_organization_workspace_parent_archiveOperation_kind_name", [
+			"organizationId",
+			"workspaceId",
+			"parentId",
+			"archiveOperationId",
+			"kind",
+			"name",
+		])
 		.index("by_organization_workspace_parent_archiveOperation_updatedAt", [
 			"organizationId",
 			"workspaceId",
