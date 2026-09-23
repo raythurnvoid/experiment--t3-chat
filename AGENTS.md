@@ -112,7 +112,7 @@ For recoverable auth and permission failures, follow the Convex skill's handler-
 - Monaco Editor - Code and Diff editor
 - TanStack Router - File-based routing
 - Zustand - State management
-- CSS + shadcn/ui - Styling and components
+- CSS - Styling and components
 - React 19 - Frontend framework
 - Headless Tree - File explorer
 - Vite - Dev/build tool
@@ -244,7 +244,6 @@ When product requirements or business logic change, update the relevant spec ski
 ## Configuration Files
 
 - [packages/app/convex.json](packages/app/convex.json) - Convex configuration
-- [packages/app/components.json](packages/app/components.json) - shadcn/ui component library configuration
 - [packages/app/tsconfig.json](packages/app/tsconfig.json) - TypeScript configuration for the app
 - [packages/app/index.html](packages/app/index.html) - HTML entry point for Vite
 - [packages/app/vite.config.ts](packages/app/vite.config.ts) - Vite development server configuration

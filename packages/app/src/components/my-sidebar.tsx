@@ -1,6 +1,5 @@
 import "./my-sidebar.css";
 
-import { Slot } from "@radix-ui/react-slot";
 import { PanelLeftIcon } from "lucide-react";
 import { memo, type ComponentPropsWithRef } from "react";
 
@@ -279,24 +278,21 @@ export const MySidebarGroupContent = memo(function MySidebarGroupContent(props: 
 // #region group action
 type MySidebarGroupAction_ClassNames = "MySidebarGroupAction";
 
-export type MySidebarGroupAction_Props = ComponentPropsWithRef<"button"> & {
-	asChild?: boolean;
-};
+export type MySidebarGroupAction_Props = ComponentPropsWithRef<"button">;
 
 export const MySidebarGroupAction = memo(function MySidebarGroupAction(props: MySidebarGroupAction_Props) {
-	const { ref, id, className, asChild = false, children, ...rest } = props;
-	const Comp = asChild ? Slot : "button";
+	const { ref, id, className, children, ...rest } = props;
 
 	return (
-		<Comp
+		<button
 			ref={ref}
 			id={id}
-			type={asChild ? undefined : "button"}
+			type="button"
 			className={cn("MySidebarGroupAction" satisfies MySidebarGroupAction_ClassNames, className)}
 			{...rest}
 		>
 			{children}
-		</Comp>
+		</button>
 	);
 });
 // #endregion group action
@@ -304,23 +300,20 @@ export const MySidebarGroupAction = memo(function MySidebarGroupAction(props: My
 // #region group label
 type MySidebarGroupLabel_ClassNames = "MySidebarGroupLabel";
 
-export type MySidebarGroupLabel_Props = ComponentPropsWithRef<"div"> & {
-	asChild?: boolean;
-};
+export type MySidebarGroupLabel_Props = ComponentPropsWithRef<"div">;
 
 export const MySidebarGroupLabel = memo(function MySidebarGroupLabel(props: MySidebarGroupLabel_Props) {
-	const { ref, id, className, asChild = false, children, ...rest } = props;
-	const Comp = asChild ? Slot : "div";
+	const { ref, id, className, children, ...rest } = props;
 
 	return (
-		<Comp
+		<div
 			ref={ref}
 			id={id}
 			className={cn("MySidebarGroupLabel" satisfies MySidebarGroupLabel_ClassNames, className)}
 			{...rest}
 		>
 			{children}
-		</Comp>
+		</div>
 	);
 });
 // #endregion group label
