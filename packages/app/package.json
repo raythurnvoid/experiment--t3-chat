@@ -24,10 +24,10 @@
 		"test:coverage": "vitest run --coverage --coverage.reporter=text"
 	},
 	"dependencies": {
-		"@ai-sdk/anthropic": "3.0.110",
-		"@ai-sdk/openai": "3.0.96",
-		"@ai-sdk/openai-compatible": "2.0.67",
-		"@ai-sdk/react": "3.0.256",
+		"@ai-sdk/anthropic": "3.0.121",
+		"@ai-sdk/openai": "3.0.116",
+		"@ai-sdk/openai-compatible": "2.0.77",
+		"@ai-sdk/react": "3.0.292",
 		"@ariakit/react": "^0.4.19",
 		"@atlaskit/pragmatic-drag-and-drop": "^1.8.1",
 		"@chenglou/pretext": "^0.0.8",
@@ -105,7 +105,7 @@
 		"@tiptap/starter-kit": "workspace:*",
 		"@tiptap/suggestion": "workspace:*",
 		"@tiptap/y-tiptap": "3.0.0",
-		"ai": "6.0.253",
+		"ai": "6.0.289",
 		"bonobo-file-preview": "workspace:*",
 		"class-variance-authority": "^0.7.1",
 		"clsx": "^2.1.1",
