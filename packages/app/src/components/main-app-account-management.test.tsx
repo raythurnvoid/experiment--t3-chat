@@ -316,9 +316,9 @@ describe("MainAppAccountManagement", () => {
 
 		fireEvent.click(screen.getByLabelText("Delete organization and data"));
 
-		expect(
-			(screen.getByRole("button", { name: "Confirm account deletion" }) as HTMLButtonElement).disabled,
-		).toBe(false);
+		expect((screen.getByRole("button", { name: "Confirm account deletion" }) as HTMLButtonElement).disabled).toBe(
+			false,
+		);
 	});
 
 	test("deletes an organization before account deletion", async () => {

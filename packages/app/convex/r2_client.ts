@@ -125,7 +125,12 @@ export async function r2_fetch_object_from_bucket(args: { key: string; signal?: 
  * whole thing. `start`/`endInclusive` are 0-based byte offsets; the response may be shorter
  * than requested at end-of-object.
  */
-export async function r2_fetch_object_range_from_bucket(args: { key: string; start: number; endInclusive: number; signal?: AbortSignal }) {
+export async function r2_fetch_object_range_from_bucket(args: {
+	key: string;
+	start: number;
+	endInclusive: number;
+	signal?: AbortSignal;
+}) {
 	const url = await r2.getUrl(args.key, { expiresIn: 60 });
 	const response = await fetch(url, {
 		headers: { Range: `bytes=${args.start}-${args.endInclusive}` },

@@ -241,9 +241,7 @@ export interface api_schemas_Main {
 		typeof plugins_service_access_http_routes
 	>["/api/v1/plugins/identity/exchange"];
 
-	"/api/v1/plugins/members/list": ReturnType<
-		typeof plugins_service_access_http_routes
-	>["/api/v1/plugins/members/list"];
+	"/api/v1/plugins/members/list": ReturnType<typeof plugins_service_access_http_routes>["/api/v1/plugins/members/list"];
 
 	"/api/v1/plugins/access/changes": ReturnType<
 		typeof plugins_service_access_http_routes
@@ -268,7 +266,9 @@ export interface api_schemas_Main {
 	"/api/v1/plugins/service-grants/exchange": ReturnType<
 		typeof plugins_service_http_routes
 	>["/api/v1/plugins/service-grants/exchange"];
-	"/api/v1/plugins/service-grants/recover": ReturnType<typeof plugins_service_http_routes>["/api/v1/plugins/service-grants/recover"];
+	"/api/v1/plugins/service-grants/recover": ReturnType<
+		typeof plugins_service_http_routes
+	>["/api/v1/plugins/service-grants/recover"];
 
 	"/api/v1/plugins/service-grants/renew": ReturnType<
 		typeof plugins_service_http_routes

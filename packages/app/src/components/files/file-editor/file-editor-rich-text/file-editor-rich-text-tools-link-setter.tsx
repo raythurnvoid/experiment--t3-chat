@@ -120,7 +120,13 @@ type FileEditorRichTextToolsLinkSetterInner_Props = FileEditorRichTextToolsLinkS
 const FileEditorRichTextToolsLinkSetterInner = memo(function FileEditorRichTextToolsLinkSetterInner(
 	props: FileEditorRichTextToolsLinkSetterInner_Props,
 ) {
-	const { editor, activeHref, isLinkActive, buttonVariant = "ghost-highlightable", setDecorationHighlightOnOpen = false } = props;
+	const {
+		editor,
+		activeHref,
+		isLinkActive,
+		buttonVariant = "ghost-highlightable",
+		setDecorationHighlightOnOpen = false,
+	} = props;
 
 	const [open, setOpen] = useState(false);
 	const inputRef = useRef<HTMLInputElement>(null);

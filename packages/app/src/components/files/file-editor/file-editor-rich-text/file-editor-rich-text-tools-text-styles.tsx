@@ -151,6 +151,8 @@ export const FileEditorRichTextToolsTextStyles = memo(function FileEditorRichTex
 		isActive: itemActiveStates[index] ?? false,
 	}));
 
-	return <FileEditorRichTextToolsTextStylesInner editor={editor} buttonVariant={buttonVariant} itemStates={itemStates} />;
+	return (
+		<FileEditorRichTextToolsTextStylesInner editor={editor} buttonVariant={buttonVariant} itemStates={itemStates} />
+	);
 });
 // #endregion root

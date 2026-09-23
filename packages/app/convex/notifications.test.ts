@@ -89,9 +89,7 @@ describe("list_current_notifications", () => {
 		const newerNotificationId = await t.run((ctx) =>
 			notifications_test_insert(ctx, { ...target, userId: target.userId }),
 		);
-		await t.run((ctx) =>
-			notifications_test_insert(ctx, { ...target, userId: target.userId, archivedAt: Date.now() }),
-		);
+		await t.run((ctx) => notifications_test_insert(ctx, { ...target, userId: target.userId, archivedAt: Date.now() }));
 		await t.run((ctx) => notifications_test_insert(ctx, { ...target, userId: target.otherUserId }));
 		const asUser = t.withIdentity(notifications_test_identity(target.userId));
 
@@ -179,7 +177,9 @@ describe("list_current_notifications", () => {
 					q.eq("active", true).eq("userId", target.userId).eq("organizationId", target.organizationId),
 				)
 				.collect();
-			await Promise.all(memberships.map((membership) => ctx.db.delete("organizations_workspaces_users", membership._id)));
+			await Promise.all(
+				memberships.map((membership) => ctx.db.delete("organizations_workspaces_users", membership._id)),
+			);
 
 			return notificationId;
 		});
@@ -213,10 +213,7 @@ describe("archive_notification", () => {
 		expect(ownResult._yay).toBeNull();
 		expect(otherResult._nay?.message).toBe("Notification not found");
 		const rows = await t.run((ctx) =>
-			Promise.all([
-				ctx.db.get("notifications", ownNotificationId),
-				ctx.db.get("notifications", otherNotificationId),
-			]),
+			Promise.all([ctx.db.get("notifications", ownNotificationId), ctx.db.get("notifications", otherNotificationId)]),
 		);
 		expect(rows[0]?.archivedAt).toBeGreaterThan(0);
 		expect(rows[1]?.archivedAt).toBe(0);
@@ -289,7 +286,9 @@ describe("cleanup_extra_notifications", () => {
 		try {
 			const t = test_convex();
 			const target = await t.run(notifications_test_seed_target);
-			const thirdUserId = await t.run((ctx) => ctx.db.insert("users", { clerkUserId: "clerk-user-notifications-third" }));
+			const thirdUserId = await t.run((ctx) =>
+				ctx.db.insert("users", { clerkUserId: "clerk-user-notifications-third" }),
+			);
 			await t.run(async (ctx) => {
 				for (const userId of [target.userId, target.otherUserId, thirdUserId]) {
 					for (let index = 0; index < 502; index++) {

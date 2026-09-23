@@ -129,10 +129,7 @@ function RouterPublishPage() {
 					{runningManagementAction === action.kind ? `${action.label} running` : action.label}
 				</button>
 			))}
-			<PluginsPublishButton
-				repositoryId={`repository_${pluginName}` as never}
-				repositoryLabel={`octo/${pluginName}`}
-			/>
+			<PluginsPublishButton repositoryId={`repository_${pluginName}` as never} repositoryLabel={`octo/${pluginName}`} />
 		</main>
 	);
 }

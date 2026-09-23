@@ -53,35 +53,36 @@ function expand<T>(): Expand<T> {
  * Check the list against the app with
  * `rg "allowedKinds: \[" packages/app/convex` before changing it.
  */
-export const bonobo_http_api = expand<
-	Pick<
-		api_schemas_Main,
-		| "/api/v1/plugin-data/read"
-		| "/api/v1/plugin-data/list"
-		| "/api/v1/plugin-data/write"
-		| "/api/v1/plugin-data/write-batch"
-		| "/api/v1/plugin-data/delete"
-		| "/api/v1/files/list"
-		| "/api/v1/files/read"
-		| "/api/v1/files/write"
-		| "/api/v1/files/touch"
-		| "/api/v1/files/download-urls"
-		| "/api/v1/files/plugin-folders/ensure"
-		| "/api/v1/files/plugin-archive"
-		| "/api/v1/files/plugin-access/set"
-		| "/api/v1/files/plugin-access/undo"
-		| "/api/v1/files/plugin-writers/inspect"
-		| "/api/v1/files/plugin-writers/advance"
-		| "/api/v1/plugins/identity/exchange"
-		| "/api/v1/plugins/members/list"
-		| "/api/v1/plugins/access/changes"
-		| "/api/v1/plugins/service-grants/exchange"
-		| "/api/v1/plugins/service-grants/recover"
-		| "/api/v1/plugins/service-grants/renew"
-		| "/api/v1/plugins/service-grants/seal-processing"
-		| "/api/v1/plugins/service-grants/verify-live"
-		| "/api/v1/activities/start"
-		| "/api/v1/plugin-backend/invoke"
-		| "/plugins-ui/session-jwt"
-	>
->();
+export const bonobo_http_api =
+	expand<
+		Pick<
+			api_schemas_Main,
+			| "/api/v1/plugin-data/read"
+			| "/api/v1/plugin-data/list"
+			| "/api/v1/plugin-data/write"
+			| "/api/v1/plugin-data/write-batch"
+			| "/api/v1/plugin-data/delete"
+			| "/api/v1/files/list"
+			| "/api/v1/files/read"
+			| "/api/v1/files/write"
+			| "/api/v1/files/touch"
+			| "/api/v1/files/download-urls"
+			| "/api/v1/files/plugin-folders/ensure"
+			| "/api/v1/files/plugin-archive"
+			| "/api/v1/files/plugin-access/set"
+			| "/api/v1/files/plugin-access/undo"
+			| "/api/v1/files/plugin-writers/inspect"
+			| "/api/v1/files/plugin-writers/advance"
+			| "/api/v1/plugins/identity/exchange"
+			| "/api/v1/plugins/members/list"
+			| "/api/v1/plugins/access/changes"
+			| "/api/v1/plugins/service-grants/exchange"
+			| "/api/v1/plugins/service-grants/recover"
+			| "/api/v1/plugins/service-grants/renew"
+			| "/api/v1/plugins/service-grants/seal-processing"
+			| "/api/v1/plugins/service-grants/verify-live"
+			| "/api/v1/activities/start"
+			| "/api/v1/plugin-backend/invoke"
+			| "/plugins-ui/session-jwt"
+		>
+	>();

@@ -40,9 +40,7 @@ export function dom_clear_text_selection(element = document.activeElement) {
 	document.getSelection()?.removeAllRanges();
 }
 
-export function dom_get_native_validation_message(
-	element: HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement,
-) {
+export function dom_get_native_validation_message(element: HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement) {
 	const customErrorMessage = element.validity.customError ? element.validationMessage : undefined;
 	if (customErrorMessage) {
 		// Clear app-owned custom validity briefly so native constraints can expose their browser message.

@@ -340,13 +340,15 @@ describe("FileEditorRichTextNonCollab", () => {
 						args.onUpserted?.(8);
 						return { _nay: { message: "Save the copied media first." } };
 					})
-					.mockImplementationOnce(async (args: { reviewedRevision: number; onUpserted?: (revision: number) => void }) => {
-						if (args.reviewedRevision !== (anotherActorChanged ? 9 : 8)) {
-							return { _nay: { message: "This draft changed. Reload it." } };
-						}
-						args.onUpserted?.(9);
-						return { _yay: { target: { kind: "saved", id: NODE_ID } } };
-					});
+					.mockImplementationOnce(
+						async (args: { reviewedRevision: number; onUpserted?: (revision: number) => void }) => {
+							if (args.reviewedRevision !== (anotherActorChanged ? 9 : 8)) {
+								return { _nay: { message: "This draft changed. Reload it." } };
+							}
+							args.onUpserted?.(9);
+							return { _yay: { target: { kind: "saved", id: NODE_ID } } };
+						},
+					);
 				const onTargetChange = vi.fn();
 				renderNonCollabRichEditor({ target: PRIVATE_TARGET, onTargetChange });
 				await flushEditorMount();
@@ -361,7 +363,11 @@ describe("FileEditorRichTextNonCollab", () => {
 				expect(onTargetChange).not.toHaveBeenCalled();
 				// A fresh read could see someone else's edit. Retry must keep our acknowledged revision.
 				fetchPrivateFilePendingTextMock.mockResolvedValue({
-					_yay: { text: "another edit\n", rootKind: "rich_text", pendingUpdate: { _id: "pending_update_1", revision: 9 } },
+					_yay: {
+						text: "another edit\n",
+						rootKind: "rich_text",
+						pendingUpdate: { _id: "pending_update_1", revision: 9 },
+					},
 				});
 				await typeIntoEditor(" gamma");
 				fireEvent.click(saveButton);

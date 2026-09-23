@@ -1143,99 +1143,147 @@ describe("thread_create", () => {
 });
 
 describe("chat run writes", () => {
-	test.each(["leave", "rejoin", "read permission"] as const)("refuses late replies and titles after %s", async (loss) => {
-		const t = test_convex();
-		const owner = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx, { organizationName: "run-team" }));
-		const member = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const asOwner = t.withIdentity({ issuer: "https://clerk.test", external_id: owner.userId });
-		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: member.userId });
-		const invitation = {
-			organizationId: owner.organizationId,
-			workspaceId: owner.workspaceId,
-			userIdToAdd: member.userId,
-		};
-		expect(await asOwner.mutation(api.organizations.invite_user_to_organization_workspace, invitation)).toEqual({ _yay: null });
-		const membership = await t.run((ctx) => ctx.db.query("organizations_workspaces_users")
-			.withIndex("by_workspace_user_active", (q) => q.eq("workspaceId", owner.workspaceId).eq("userId", member.userId).eq("active", true))
-			.first());
-		if (!membership) throw new Error("Expected invited membership");
-		const created = await asUser.mutation(api.ai_chat.thread_create, {
-			membershipId: membership._id,
-			clientGeneratedId: "captured-run",
-			lastMessageAt: Date.now(),
-		});
-		if (created._nay) throw new Error(created._nay.message);
-		const captured = await t.mutation(internal.ai_chat_workspaces.capture, {
-			userId: member.userId,
-			membershipId: membership._id,
-		});
-		if (captured._nay) throw new Error(captured._nay.message);
-		const source = {
-			organizationId: owner.organizationId,
-			workspaceId: owner.workspaceId,
-			userId: member.userId,
-			threadId: created._yay.threadId,
-			membershipId: membership._id,
-			membershipLifetime: captured._yay.membershipLifetime,
-		};
-		const writeReply = (id: string, runSource = source) => asUser.mutation(internal.ai_chat.thread_run_messages_add, {
-			source: runSource,
-			parentId: null,
-			messages: [{ clientGeneratedMessageId: id, content: { id, role: "assistant", parts: [{ type: "text", text: id }] } }],
-		});
-		expect((await writeReply("before"))._yay?.ids).toHaveLength(1);
-		expect(await asUser.mutation(internal.ai_chat.thread_run_set_title, { source, title: "Before" })).toEqual({ _yay: null });
-
-		if (loss === "read permission") {
-			const role = await asOwner.mutation(api.access_control.create_role, {
-				organizationId: owner.organizationId, name: "Workspace maker", description: "", permissions: ["workspace.create"],
+	test.each(["leave", "rejoin", "read permission"] as const)(
+		"refuses late replies and titles after %s",
+		async (loss) => {
+			const t = test_convex();
+			const owner = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx, { organizationName: "run-team" }));
+			const member = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+			const asOwner = t.withIdentity({ issuer: "https://clerk.test", external_id: owner.userId });
+			const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: member.userId });
+			const invitation = {
+				organizationId: owner.organizationId,
+				workspaceId: owner.workspaceId,
+				userIdToAdd: member.userId,
+			};
+			expect(await asOwner.mutation(api.organizations.invite_user_to_organization_workspace, invitation)).toEqual({
+				_yay: null,
 			});
-			if (role._nay) throw new Error(role._nay.message);
-			const organization = await t.run((ctx) => ctx.db.get("organizations", owner.organizationId));
-			expect(await asOwner.mutation(api.access_control.set_user_role, {
-				organizationId: owner.organizationId, workspaceId: organization!.defaultWorkspaceId!, userId: member.userId, role: role._yay.roleId,
-			})).toEqual({ _yay: null });
-		} else {
-			expect(await asUser.mutation(api.organizations.remove_user_from_organization, {
-				organizationId: owner.organizationId, userIdToRemove: member.userId,
-			})).toEqual({ _yay: null });
-			if (loss === "rejoin") {
-				expect(await asOwner.mutation(api.organizations.invite_user_to_organization_workspace, invitation)).toEqual({ _yay: null });
-			}
-		}
-		const read = () => t.run(async (ctx) => ({
-			thread: await ctx.db.get("ai_chat_threads", source.threadId),
-			messages: await ctx.db.query("ai_chat_threads_messages_aisdk_5").collect(),
-		}));
-		// Refill the title write limit so it cannot hide a missing access check.
-		const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 10_000);
-		onTestFinished(() => clock.mockRestore());
-		const before = await read();
-		expect.soft(await writeReply("late")).toEqual({ _nay: { message: "Unauthorized" } });
-		expect.soft(await asUser.mutation(internal.ai_chat.thread_run_set_title, { source, title: "Late" })).toEqual({
-			_nay: { message: "Unauthorized" },
-		});
-		expect.soft(await read()).toEqual(before);
-		expect(before.thread?.title).toBe("Before");
-		expect(before.messages.map((message) => message.clientGeneratedMessageId)).toEqual(["before"]);
+			const membership = await t.run((ctx) =>
+				ctx.db
+					.query("organizations_workspaces_users")
+					.withIndex("by_workspace_user_active", (q) =>
+						q.eq("workspaceId", owner.workspaceId).eq("userId", member.userId).eq("active", true),
+					)
+					.first(),
+			);
+			if (!membership) throw new Error("Expected invited membership");
+			const created = await asUser.mutation(api.ai_chat.thread_create, {
+				membershipId: membership._id,
+				clientGeneratedId: "captured-run",
+				lastMessageAt: Date.now(),
+			});
+			if (created._nay) throw new Error(created._nay.message);
+			const captured = await t.mutation(internal.ai_chat_workspaces.capture, {
+				userId: member.userId,
+				membershipId: membership._id,
+			});
+			if (captured._nay) throw new Error(captured._nay.message);
+			const source = {
+				organizationId: owner.organizationId,
+				workspaceId: owner.workspaceId,
+				userId: member.userId,
+				threadId: created._yay.threadId,
+				membershipId: membership._id,
+				membershipLifetime: captured._yay.membershipLifetime,
+			};
+			const writeReply = (id: string, runSource = source) =>
+				asUser.mutation(internal.ai_chat.thread_run_messages_add, {
+					source: runSource,
+					parentId: null,
+					messages: [
+						{ clientGeneratedMessageId: id, content: { id, role: "assistant", parts: [{ type: "text", text: id }] } },
+					],
+				});
+			expect((await writeReply("before"))._yay?.ids).toHaveLength(1);
+			expect(await asUser.mutation(internal.ai_chat.thread_run_set_title, { source, title: "Before" })).toEqual({
+				_yay: null,
+			});
 
-		if (loss === "rejoin") {
-			const rejoined = await t.run((ctx) => ctx.db.query("organizations_workspaces_users")
-				.withIndex("by_workspace_user_active", (q) => q.eq("workspaceId", owner.workspaceId).eq("userId", member.userId).eq("active", true))
-				.first());
-			if (!rejoined) throw new Error("Expected rejoined membership");
-			const fresh = await t.mutation(internal.ai_chat_workspaces.capture, { userId: member.userId, membershipId: rejoined._id });
-			if (fresh._nay) throw new Error(fresh._nay.message);
-			const freshSource = { ...source, membershipId: rejoined._id, membershipLifetime: fresh._yay.membershipLifetime };
-			expect(freshSource.membershipLifetime).not.toBe(source.membershipLifetime);
-			// Refreshing a membership id must not refresh a running model's captured lifetime.
-			const staleSource = { ...freshSource, membershipLifetime: source.membershipLifetime };
-			expect.soft((await writeReply("stale-lifetime", staleSource))._yay).toBeUndefined();
-			expect.soft((await asUser.mutation(internal.ai_chat.thread_run_set_title, { source: staleSource, title: "Stale" }))._yay).toBeUndefined();
+			if (loss === "read permission") {
+				const role = await asOwner.mutation(api.access_control.create_role, {
+					organizationId: owner.organizationId,
+					name: "Workspace maker",
+					description: "",
+					permissions: ["workspace.create"],
+				});
+				if (role._nay) throw new Error(role._nay.message);
+				const organization = await t.run((ctx) => ctx.db.get("organizations", owner.organizationId));
+				expect(
+					await asOwner.mutation(api.access_control.set_user_role, {
+						organizationId: owner.organizationId,
+						workspaceId: organization!.defaultWorkspaceId!,
+						userId: member.userId,
+						role: role._yay.roleId,
+					}),
+				).toEqual({ _yay: null });
+			} else {
+				expect(
+					await asUser.mutation(api.organizations.remove_user_from_organization, {
+						organizationId: owner.organizationId,
+						userIdToRemove: member.userId,
+					}),
+				).toEqual({ _yay: null });
+				if (loss === "rejoin") {
+					expect(await asOwner.mutation(api.organizations.invite_user_to_organization_workspace, invitation)).toEqual({
+						_yay: null,
+					});
+				}
+			}
+			const read = () =>
+				t.run(async (ctx) => ({
+					thread: await ctx.db.get("ai_chat_threads", source.threadId),
+					messages: await ctx.db.query("ai_chat_threads_messages_aisdk_5").collect(),
+				}));
+			// Refill the title write limit so it cannot hide a missing access check.
+			const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 10_000);
+			onTestFinished(() => clock.mockRestore());
+			const before = await read();
+			expect.soft(await writeReply("late")).toEqual({ _nay: { message: "Unauthorized" } });
+			expect.soft(await asUser.mutation(internal.ai_chat.thread_run_set_title, { source, title: "Late" })).toEqual({
+				_nay: { message: "Unauthorized" },
+			});
 			expect.soft(await read()).toEqual(before);
-			expect((await writeReply("fresh", freshSource))._yay?.ids).toHaveLength(1);
-			expect(await asUser.mutation(internal.ai_chat.thread_run_set_title, { source: freshSource, title: "Fresh" })).toEqual({ _yay: null });
-			expect((await read()).thread?.title).toBe("Fresh");
-		}
-	});
+			expect(before.thread?.title).toBe("Before");
+			expect(before.messages.map((message) => message.clientGeneratedMessageId)).toEqual(["before"]);
+
+			if (loss === "rejoin") {
+				const rejoined = await t.run((ctx) =>
+					ctx.db
+						.query("organizations_workspaces_users")
+						.withIndex("by_workspace_user_active", (q) =>
+							q.eq("workspaceId", owner.workspaceId).eq("userId", member.userId).eq("active", true),
+						)
+						.first(),
+				);
+				if (!rejoined) throw new Error("Expected rejoined membership");
+				const fresh = await t.mutation(internal.ai_chat_workspaces.capture, {
+					userId: member.userId,
+					membershipId: rejoined._id,
+				});
+				if (fresh._nay) throw new Error(fresh._nay.message);
+				const freshSource = {
+					...source,
+					membershipId: rejoined._id,
+					membershipLifetime: fresh._yay.membershipLifetime,
+				};
+				expect(freshSource.membershipLifetime).not.toBe(source.membershipLifetime);
+				// Refreshing a membership id must not refresh a running model's captured lifetime.
+				const staleSource = { ...freshSource, membershipLifetime: source.membershipLifetime };
+				expect.soft((await writeReply("stale-lifetime", staleSource))._yay).toBeUndefined();
+				expect
+					.soft(
+						(await asUser.mutation(internal.ai_chat.thread_run_set_title, { source: staleSource, title: "Stale" }))
+							._yay,
+					)
+					.toBeUndefined();
+				expect.soft(await read()).toEqual(before);
+				expect((await writeReply("fresh", freshSource))._yay?.ids).toHaveLength(1);
+				expect(
+					await asUser.mutation(internal.ai_chat.thread_run_set_title, { source: freshSource, title: "Fresh" }),
+				).toEqual({ _yay: null });
+				expect((await read()).thread?.title).toBe("Fresh");
+			}
+		},
+	);
 });

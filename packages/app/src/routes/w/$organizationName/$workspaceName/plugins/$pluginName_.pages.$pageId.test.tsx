@@ -152,9 +152,11 @@ function post_ready(nonce: string) {
 // The shadcn aliases in the same file (`--color-accent: var(--accent)`, `--color-border`, …) have
 // no two-digit step and stay out, as they must.
 const APP_COLOR_SCALES: Record<string, string> = Object.fromEntries(
-	[...readFileSync(join(process.cwd(), "src", "app.css"), "utf8").matchAll(/^\s*(--color-[a-z0-9-]+-\d{2}):\s*([^;]+);/gmu)].map(
-		(match) => [match[1], match[2]],
-	),
+	[
+		...readFileSync(join(process.cwd(), "src", "app.css"), "utf8").matchAll(
+			/^\s*(--color-[a-z0-9-]+-\d{2}):\s*([^;]+);/gmu,
+		),
+	].map((match) => [match[1], match[2]]),
 );
 
 // Reads `const <name> = <number>;` out of a file this test cannot import, so a limit that lives in
@@ -389,10 +391,7 @@ describe("RoutePluginsPluginPage", () => {
 		);
 
 		await act(async () => post_ready(nonce));
-		expect(postMessageMock).toHaveBeenCalledWith(
-			expect.objectContaining({ type: "bonobo:init" }),
-			CONVEX_HTTP_ORIGIN,
-		);
+		expect(postMessageMock).toHaveBeenCalledWith(expect.objectContaining({ type: "bonobo:init" }), CONVEX_HTTP_ORIGIN);
 	});
 
 	test("init hands the page its own Convex connection: the deployment url, the session token, and its JWT", async () => {
@@ -585,10 +584,7 @@ describe("RoutePluginsPluginPage", () => {
 		act(() => vi.advanceTimersByTime(1));
 
 		expect(screen.queryByRole("alert")).toBeNull();
-		expect(postMessageMock).toHaveBeenCalledWith(
-			expect.objectContaining({ type: "bonobo:init" }),
-			CONVEX_HTTP_ORIGIN,
-		);
+		expect(postMessageMock).toHaveBeenCalledWith(expect.objectContaining({ type: "bonobo:init" }), CONVEX_HTTP_ORIGIN);
 	});
 
 	test("revokes a session minted after the host deadline without posting init", async () => {
@@ -845,9 +841,9 @@ describe("RoutePluginsPluginPage", () => {
 			requestId: "refresh_1",
 		});
 
-		expect(
-			mutationMock.mock.calls.filter(([reference]) => reference === "plugins_ui.refresh_ui_session"),
-		).toHaveLength(1);
+		expect(mutationMock.mock.calls.filter(([reference]) => reference === "plugins_ui.refresh_ui_session")).toHaveLength(
+			1,
+		);
 		// The rotation answer carries the new JWT too, so the frame never exchanges.
 		expect(postMessageMock).toHaveBeenCalledWith(
 			expect.objectContaining({ type: "bonobo:token", requestId: "refresh_1", token: "plu_2", jwt: "jwt_2" }),
@@ -907,9 +903,9 @@ describe("RoutePluginsPluginPage", () => {
 			await refreshPromise;
 		});
 
-		expect(
-			mutationMock.mock.calls.filter(([reference]) => reference === "plugins_ui.refresh_ui_session"),
-		).toHaveLength(1);
+		expect(mutationMock.mock.calls.filter(([reference]) => reference === "plugins_ui.refresh_ui_session")).toHaveLength(
+			1,
+		);
 		const answers = postMessageMock.mock.calls.filter(
 			([value]) => (value as { requestId?: string }).requestId === "refresh_same",
 		);
@@ -1188,7 +1184,10 @@ describe("RoutePluginsPluginPage", () => {
 		expect(screen.getByRole("alert").textContent).toContain("Not found");
 		const retry = screen.getByRole("button", { name: "Retry" });
 		await waitFor(() => expect(document.activeElement).toBe(retry));
-		expect(postMessageMock).not.toHaveBeenCalledWith(expect.objectContaining({ type: "bonobo:token" }), CONVEX_HTTP_ORIGIN);
+		expect(postMessageMock).not.toHaveBeenCalledWith(
+			expect.objectContaining({ type: "bonobo:token" }),
+			CONVEX_HTTP_ORIGIN,
+		);
 		// Nothing was minted, and the first session doc is already gone, so nothing is revoked.
 		expect(mutationMock).not.toHaveBeenCalledWith("plugins_ui.revoke_ui_session", expect.anything());
 	});
@@ -1281,7 +1280,10 @@ describe("RoutePluginsPluginPage", () => {
 
 		expect(mintCount).toBe(2);
 		expect(screen.getByRole("alert").textContent).toContain("installed plugin version changed");
-		expect(postMessageMock).not.toHaveBeenCalledWith(expect.objectContaining({ type: "bonobo:token" }), CONVEX_HTTP_ORIGIN);
+		expect(postMessageMock).not.toHaveBeenCalledWith(
+			expect.objectContaining({ type: "bonobo:token" }),
+			CONVEX_HTTP_ORIGIN,
+		);
 		expect(mutationMock).toHaveBeenCalledWith("plugins_ui.revoke_ui_session", {
 			membershipId: "membership_1",
 			sessionId: "session_2",
@@ -1620,9 +1622,9 @@ describe("RoutePluginsPluginPage", () => {
 			}),
 			CONVEX_HTTP_ORIGIN,
 		);
-		expect(
-			mutationMock.mock.calls.filter(([reference]) => reference === "plugins_ui.refresh_ui_session"),
-		).toHaveLength(1);
+		expect(mutationMock.mock.calls.filter(([reference]) => reference === "plugins_ui.refresh_ui_session")).toHaveLength(
+			1,
+		);
 	});
 
 	test("a bucket still empty after the wait stops the frame instead of retrying forever", async () => {
@@ -2879,7 +2881,10 @@ describe("RoutePluginsPluginPage", () => {
 		// A different port on the same host is a different origin, and the frame holds a session
 		// token, so it must be refused exactly like any other stranger.
 		await act(async () => post_from_frame({ type: "bonobo:ready", nonce }, "http://localhost:5175"));
-		expect(postMessageMock).not.toHaveBeenCalledWith(expect.objectContaining({ type: "bonobo:init" }), expect.anything());
+		expect(postMessageMock).not.toHaveBeenCalledWith(
+			expect.objectContaining({ type: "bonobo:init" }),
+			expect.anything(),
+		);
 
 		await act(async () => post_from_frame({ type: "bonobo:ready", nonce }, OVERRIDE_ORIGIN));
 		expect(postMessageMock).toHaveBeenCalledWith(expect.objectContaining({ type: "bonobo:init" }), OVERRIDE_ORIGIN);
@@ -2906,7 +2911,10 @@ describe("RoutePluginsPluginPage", () => {
 		expect(iframeUrl.origin).toBe(CONVEX_HTTP_ORIGIN);
 
 		await act(async () => post_from_frame({ type: "bonobo:ready", nonce }, OVERRIDE_ORIGIN));
-		expect(postMessageMock).not.toHaveBeenCalledWith(expect.objectContaining({ type: "bonobo:init" }), expect.anything());
+		expect(postMessageMock).not.toHaveBeenCalledWith(
+			expect.objectContaining({ type: "bonobo:init" }),
+			expect.anything(),
+		);
 	});
 
 	// #endregion dev-only bundle override

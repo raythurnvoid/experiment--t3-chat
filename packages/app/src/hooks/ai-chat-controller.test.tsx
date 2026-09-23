@@ -1904,47 +1904,50 @@ describe("AiChatController", () => {
 		expect(chat.messages).toHaveLength(1);
 	});
 
-	test.each(["session-queued", null])("drains a queued message with frozen browser session %s", async (browserSessionId) => {
-		hookMocks.holdChatRequests = true;
-		const threadId = `thread_queue_browser_${browserSessionId ?? "none"}`;
-		render(
-			<FullPageSurface initialSelectedThreadId={threadId}>
-				<RuntimeQueueProbe />
-			</FullPageSurface>,
-		);
+	test.each(["session-queued", null])(
+		"drains a queued message with frozen browser session %s",
+		async (browserSessionId) => {
+			hookMocks.holdChatRequests = true;
+			const threadId = `thread_queue_browser_${browserSessionId ?? "none"}`;
+			render(
+				<FullPageSurface initialSelectedThreadId={threadId}>
+					<RuntimeQueueProbe />
+				</FullPageSurface>,
+			);
 
-		await waitFor(() => {
-			expect(screen.getByTestId("queue-session").textContent).toBe("session");
-		});
+			await waitFor(() => {
+				expect(screen.getByTestId("queue-session").textContent).toBe("session");
+			});
 
-		AiChatController.useStore.setState({ browserSessionId });
-		fireEvent.click(screen.getByRole("button", { name: "send first queue probe" }));
-		fireEvent.click(screen.getByRole("button", { name: "send second queue probe" }));
+			AiChatController.useStore.setState({ browserSessionId });
+			fireEvent.click(screen.getByRole("button", { name: "send first queue probe" }));
+			fireEvent.click(screen.getByRole("button", { name: "send second queue probe" }));
 
-		const chat = hookMocks.chatInstances.find((item) => item.id === threadId);
-		expect(chat).toBeDefined();
-		if (!chat) {
-			throw new Error("Expected queue chat instance");
-		}
-		expect(chat.sendMessage).toHaveBeenCalledTimes(1);
-		expect(screen.getByTestId("queue-texts").textContent).toBe("Second");
+			const chat = hookMocks.chatInstances.find((item) => item.id === threadId);
+			expect(chat).toBeDefined();
+			if (!chat) {
+				throw new Error("Expected queue chat instance");
+			}
+			expect(chat.sendMessage).toHaveBeenCalledTimes(1);
+			expect(screen.getByTestId("queue-texts").textContent).toBe("Second");
 
-		// The live selection moves on while the message waits; the drain must keep the freeze.
-		AiChatController.useStore.setState({ browserSessionId: "session-live" });
-		fireEvent.click(screen.getByRole("button", { name: "complete client response queue probe" }));
+			// The live selection moves on while the message waits; the drain must keep the freeze.
+			AiChatController.useStore.setState({ browserSessionId: "session-live" });
+			fireEvent.click(screen.getByRole("button", { name: "complete client response queue probe" }));
 
-		await waitFor(() => {
-			expect(chat.pendingRequestResolvers).toHaveLength(0);
-		});
+			await waitFor(() => {
+				expect(chat.pendingRequestResolvers).toHaveLength(0);
+			});
 
-		fireEvent.click(screen.getByRole("button", { name: "persist assistant queue probe" }));
+			fireEvent.click(screen.getByRole("button", { name: "persist assistant queue probe" }));
 
-		await waitFor(() => {
-			expect(chat.sendMessage).toHaveBeenCalledTimes(2);
-		});
-		const drained = chat.sendMessage.mock.calls[1]?.[0] as ai_chat_UiMessage | undefined;
-		expect(drained?.metadata?.browserSessionId).toBe(browserSessionId ?? undefined);
-	});
+			await waitFor(() => {
+				expect(chat.sendMessage).toHaveBeenCalledTimes(2);
+			});
+			const drained = chat.sendMessage.mock.calls[1]?.[0] as ai_chat_UiMessage | undefined;
+			expect(drained?.metadata?.browserSessionId).toBe(browserSessionId ?? undefined);
+		},
+	);
 
 	test("clears a refused thread, its queue, and cached messages without restarting it", async () => {
 		const threadId = "thread_privacy_refused";

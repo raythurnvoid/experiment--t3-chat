@@ -82,9 +82,7 @@ const AiChatJobs = memo(function AiChatJobs(props: AiChatJobs_Props) {
 								<span className={"AiChatJobs-row-head" satisfies AiChatJobs_ClassNames}>
 									#{job.jobNumber} · {job.shellName}
 								</span>
-								<span className={"AiChatJobs-row-command" satisfies AiChatJobs_ClassNames}>
-									{job.scriptPreview}
-								</span>
+								<span className={"AiChatJobs-row-command" satisfies AiChatJobs_ClassNames}>{job.scriptPreview}</span>
 								<span className={"AiChatJobs-row-meta" satisfies AiChatJobs_ClassNames}>
 									{ai_chat_jobs_elapsed_text(job.startedAt, mountedAt)}
 								</span>

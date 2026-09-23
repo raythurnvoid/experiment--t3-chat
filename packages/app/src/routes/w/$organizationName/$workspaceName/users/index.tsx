@@ -190,12 +190,12 @@ const RouteUsersUserListItem = memo(function RouteUsersUserListItem(props: Route
 							value={roleValue}
 							setValue={(value) => onRoleChange(userId, value === "" ? null : (value as access_control_RoleRef))}
 						>
-							{/* 
+							{/*
 							Closed while the change is in flight: the list re-sorts by role when the answer
 							arrives, so a second pick would land on a row that has already moved. 
 							*/}
 							<MySelectTrigger disabled={roleChangePending}>
-								{/* 
+								{/*
 								A button may carry `aria-label`, unlike the badge below. The name repeats the member
 								like the Remove button in this row does, so the control still makes sense on its
 								own in a screen reader's list of form controls. 
@@ -240,7 +240,7 @@ const RouteUsersUserListItem = memo(function RouteUsersUserListItem(props: Route
 							data-role-kind={role?.kind}
 							data-role-value={roleValue}
 						>
-							{/* 
+							{/*
 							The badge is a bare word next to the name, so it says what the word means. Hidden
 							text and not `aria-label`, because ARIA forbids naming a plain span. 
 							*/}
@@ -291,9 +291,7 @@ type RouteUsersList_Props = {
 	workspaceUserIds: app_convex_Id<"users">[];
 	userAnagraphicDict: Record<
 		app_convex_Id<"users">,
-		| app_convex_FunctionReturnType<typeof app_convex_api.users.get_workspace_member_anagraphic>
-		| undefined
-		| Error
+		app_convex_FunctionReturnType<typeof app_convex_api.users.get_workspace_member_anagraphic> | undefined | Error
 	>;
 	userRoleDict: Record<app_convex_Id<"users">, access_control_DisplayRole | null | undefined | Error>;
 	assignableRoles: readonly RouteUsersAssignableRole[];

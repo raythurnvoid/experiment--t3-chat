@@ -60,7 +60,9 @@ export type MyComboboxInputBackground_ClassNames = "MyComboboxInputBackground";
 
 export type MyComboboxInputBackground_Props = ComponentPropsWithRef<"div">;
 
-export const MyComboboxInputBackground = memo(function MyComboboxInputBackground(props: MyComboboxInputBackground_Props) {
+export const MyComboboxInputBackground = memo(function MyComboboxInputBackground(
+	props: MyComboboxInputBackground_Props,
+) {
 	const { ref, className, ...rest } = props;
 
 	return (
@@ -366,7 +368,10 @@ export type MyComboboxGroupHeading_ClassNames = "MyComboboxGroupHeading";
 export type MyComboboxGroupHeading_Props = {
 	children?: ReactNode;
 	className?: string;
-} & Omit<Ariakit.ComboboxGroupLabelProps, ExtractStrict<keyof Ariakit.ComboboxGroupLabelProps, "children" | "className">>;
+} & Omit<
+	Ariakit.ComboboxGroupLabelProps,
+	ExtractStrict<keyof Ariakit.ComboboxGroupLabelProps, "children" | "className">
+>;
 
 export const MyComboboxGroupHeading = memo(function MyComboboxGroupHeading(props: MyComboboxGroupHeading_Props) {
 	const { className, children, ...rest } = props;

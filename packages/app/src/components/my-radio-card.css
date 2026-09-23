@@ -110,9 +110,7 @@
 		transform: scale(1);
 	}
 
-	.MyRadioCard:not(:has(> .MyRadioCard-control:checked)):not(
-			:has(> .MyRadioCard-control:disabled)
-		):hover:not(:active)
+	.MyRadioCard:not(:has(> .MyRadioCard-control:checked)):not(:has(> .MyRadioCard-control:disabled)):hover:not(:active)
 		> .MyRadioCard-surface {
 		background: linear-gradient(var(--color-base-1-06), var(--color-base-1-05));
 		box-shadow:
@@ -121,9 +119,7 @@
 			0 4px 10px color-mix(in oklch, black 38%, transparent);
 	}
 
-	.MyRadioCard:not(:has(> .MyRadioCard-control:checked)):not(
-			:has(> .MyRadioCard-control:disabled)
-		):active
+	.MyRadioCard:not(:has(> .MyRadioCard-control:checked)):not(:has(> .MyRadioCard-control:disabled)):active
 		> .MyRadioCard-surface {
 		background: linear-gradient(var(--color-base-1-07), var(--color-base-1-06));
 		box-shadow:

@@ -62,17 +62,8 @@ export type MyRadioCard_Props = Omit<
 };
 
 export const MyRadioCard = memo(function MyRadioCard(props: MyRadioCard_Props) {
-	const {
-		ref,
-		className,
-		style,
-		inputClassName,
-		surfaceClassName,
-		contentClassName,
-		disabled,
-		children,
-		...rest
-	} = props;
+	const { ref, className, style, inputClassName, surfaceClassName, contentClassName, disabled, children, ...rest } =
+		props;
 
 	return (
 		<div
@@ -90,9 +81,7 @@ export const MyRadioCard = memo(function MyRadioCard(props: MyRadioCard_Props) {
 			/>
 			<span className={cn("MyRadioCard-surface" satisfies MyRadioCard_ClassNames, surfaceClassName)}>
 				<MyRadioSurface aria-hidden />
-				<span className={cn("MyRadioCard-content" satisfies MyRadioCard_ClassNames, contentClassName)}>
-					{children}
-				</span>
+				<span className={cn("MyRadioCard-content" satisfies MyRadioCard_ClassNames, contentClassName)}>{children}</span>
 			</span>
 		</div>
 	);

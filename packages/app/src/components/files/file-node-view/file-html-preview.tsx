@@ -48,10 +48,7 @@ type FileHtmlPreview_ClassNames =
 	| "FileHtmlPreview-message"
 	| "FileHtmlPreview-frame";
 
-type FileHtmlPreview_Node = Omit<
-	Extract<files_VisibleEntry, { kind: "saved" }>["node"],
-	"writePolicy"
->;
+type FileHtmlPreview_Node = Omit<Extract<files_VisibleEntry, { kind: "saved" }>["node"], "writePolicy">;
 type FileHtmlPreview_Entry =
 	| Extract<files_VisibleEntry, { kind: "private" }>
 	| (Omit<Extract<files_VisibleEntry, { kind: "saved" }>, "node"> & { node: FileHtmlPreview_Node });

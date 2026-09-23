@@ -8,7 +8,10 @@ function segment_graphemes(text: string) {
 		return Array.from(text);
 	}
 
-	return Array.from(new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(text), (segment) => segment.segment);
+	return Array.from(
+		new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(text),
+		(segment) => segment.segment,
+	);
 }
 
 /**

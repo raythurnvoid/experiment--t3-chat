@@ -751,7 +751,9 @@ class MediaNodeView implements NodeView {
 
 				// Keep local upload previews, but clear bytes from an older query result while signing.
 				if (
-					!this.dom.classList.contains("FileEditorRichTextMedia-local-preview" satisfies FileEditorRichTextMedia_ClassNames)
+					!this.dom.classList.contains(
+						"FileEditorRichTextMedia-local-preview" satisfies FileEditorRichTextMedia_ClassNames,
+					)
 				) {
 					this.media.removeAttribute("src");
 				}

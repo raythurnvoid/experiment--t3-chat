@@ -55,7 +55,11 @@ import { MyFocus, type MyFocus_ClassNames } from "@/lib/my-focus.ts";
 import { useUiId } from "@/lib/ui.tsx";
 import { cn, ui_create_auto_complete_off_value } from "@/lib/utils.ts";
 import { type app_convex_Doc, type app_convex_Id } from "@/lib/app-convex-client.ts";
-import { ai_chat_is_optimistic_thread, ai_chat_thread_is_unread, ai_chat_get_unread_dot_delay_ms } from "@/lib/ai-chat.ts";
+import {
+	ai_chat_is_optimistic_thread,
+	ai_chat_thread_is_unread,
+	ai_chat_get_unread_dot_delay_ms,
+} from "@/lib/ai-chat.ts";
 import type { AiChatThreadListController } from "@/hooks/ai-chat-controller.tsx";
 
 const ai_chat_threads_RESULTS_LIST_ID = "ai_chat_threads_results_list";

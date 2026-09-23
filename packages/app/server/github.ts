@@ -50,10 +50,7 @@ export function github_codeload_url(args: { owner: string; repo: string; commitS
  * Fetch with bounded backoff for transient GitHub/codeload failures. `allowTransient404` covers codeload
  * archive lag immediately after a push. Returns the first 2xx response or a `_nay` describing the failure.
  */
-export async function github_fetch_with_retry(
-	url: string,
-	options?: { accept?: string; allowTransient404?: boolean },
-) {
+export async function github_fetch_with_retry(url: string, options?: { accept?: string; allowTransient404?: boolean }) {
 	let lastStatus = 0;
 	for (let attempt = 0; attempt < GITHUB_FETCH_MAX_ATTEMPTS; attempt++) {
 		if (attempt > 0) {

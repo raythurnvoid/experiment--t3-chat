@@ -159,10 +159,7 @@ function generate_plugin_sdk_types_build_program(paths: ReturnType<typeof genera
 
 	// The whole app is in the program so every ambient type the app relies on is present. A
 	// program rooted at the entries alone would miss them and type some values as `any`.
-	const program = ts.createProgram(
-		[...parsed.fileNames, ...paths.targets.map((target) => target.entryPath)],
-		options,
-	);
+	const program = ts.createProgram([...parsed.fileNames, ...paths.targets.map((target) => target.entryPath)], options);
 
 	return { program, options };
 }
@@ -271,8 +268,7 @@ function generate_plugin_sdk_types_inline_alias(
 	if (!exportSymbol) {
 		throw new Error(`${moduleFile.fileName} does not export ${ref.name}`);
 	}
-	const aliasSymbol =
-		exportSymbol.flags & ts.SymbolFlags.Alias ? checker.getAliasedSymbol(exportSymbol) : exportSymbol;
+	const aliasSymbol = exportSymbol.flags & ts.SymbolFlags.Alias ? checker.getAliasedSymbol(exportSymbol) : exportSymbol;
 	const declaration = aliasSymbol.declarations?.[0];
 	if (!declaration || !ts.isTypeAliasDeclaration(declaration)) {
 		throw new Error(`${ref.name} from ${moduleFile.fileName} is not a type alias, so it cannot be inlined`);
@@ -315,7 +311,12 @@ function generate_plugin_sdk_types_inline_alias(
 			if (!isGlobal && ts.isImportSpecifier(localDeclaration)) {
 				const importDeclaration = localDeclaration.parent.parent.parent;
 				const importedSpecifier = (importDeclaration.moduleSpecifier as ts.StringLiteral).text;
-				const importedModule = ts.resolveModuleName(importedSpecifier, localFile.fileName, options, ts.sys).resolvedModule;
+				const importedModule = ts.resolveModuleName(
+					importedSpecifier,
+					localFile.fileName,
+					options,
+					ts.sys,
+				).resolvedModule;
 				if (!importedModule) {
 					throw new Error(`${ref.name}: cannot resolve ${importedSpecifier} from ${localFile.fileName}`);
 				}
@@ -369,7 +370,9 @@ function generate_plugin_sdk_types_inline_app_aliases(
 
 		for (const ref of appRefs.sort((a, b) => b.start - a.start)) {
 			text =
-				text.slice(0, ref.start) + generate_plugin_sdk_types_inline_alias(ref, emitted, entryPath) + text.slice(ref.end);
+				text.slice(0, ref.start) +
+				generate_plugin_sdk_types_inline_alias(ref, emitted, entryPath) +
+				text.slice(ref.end);
 		}
 	}
 

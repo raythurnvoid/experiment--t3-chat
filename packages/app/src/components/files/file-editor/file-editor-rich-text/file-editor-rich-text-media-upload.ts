@@ -238,7 +238,9 @@ function insert_upload_placeholders(args: {
 		const isVideo = file.type.startsWith("video/");
 		const uploadId = crypto.randomUUID();
 		const requestedName =
-			args.source === "clipboard" ? build_pasted_media_name(file, isVideo) : files_normalize_upload_file_name(file.name);
+			args.source === "clipboard"
+				? build_pasted_media_name(file, isVideo)
+				: files_normalize_upload_file_name(file.name);
 		const item: PendingUpload = { uploadId, file, isVideo, requestedName };
 
 		// Register the local file before the node lands in the document, so the node view can

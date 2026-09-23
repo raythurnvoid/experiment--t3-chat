@@ -206,16 +206,15 @@ function FileEditorRichTextToolsColorSelectorItem<TItem extends BubbleColorMenuI
 
 	return (
 		<MySelectItem
-			className={cn("FileEditorRichTextToolsColorSelectorItem" satisfies FileEditorRichTextToolsColorSelectorItem_ClassNames)}
+			className={cn(
+				"FileEditorRichTextToolsColorSelectorItem" satisfies FileEditorRichTextToolsColorSelectorItem_ClassNames,
+			)}
 			value={item.color}
 			onClick={handleClick}
 		>
 			<MySelectItemContent>
 				<MySelectItemContentIcon>
-					<FileEditorRichTextToolsColorSelectorPreview
-						activeColor={activeColor}
-						activeBackground={activeBackground}
-					/>
+					<FileEditorRichTextToolsColorSelectorPreview activeColor={activeColor} activeBackground={activeBackground} />
 				</MySelectItemContentIcon>
 				<MySelectItemContentPrimary>{item.name}</MySelectItemContentPrimary>
 			</MySelectItemContent>
@@ -422,10 +421,8 @@ export const FileEditorRichTextToolsColorSelector = memo(function FileEditorRich
 		editor,
 		selector: ({ editor }) => {
 			return {
-				activeColor:
-					TEXT_COLORS.find(({ color }) => editor.isActive("textStyle", { color }))?.color ?? null,
-				activeBackground:
-					HIGHLIGHT_COLORS.find(({ color }) => editor.isActive("highlight", { color }))?.color ?? null,
+				activeColor: TEXT_COLORS.find(({ color }) => editor.isActive("textStyle", { color }))?.color ?? null,
+				activeBackground: HIGHLIGHT_COLORS.find(({ color }) => editor.isActive("highlight", { color }))?.color ?? null,
 			};
 		},
 	});

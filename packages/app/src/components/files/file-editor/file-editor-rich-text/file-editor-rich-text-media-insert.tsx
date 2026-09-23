@@ -60,18 +60,14 @@ export const file_editor_rich_text_MediaInsertExtension = Extension.create<{
 
 	addCommands() {
 		return {
-			filesMediaPickUpload:
-				(kind) =>
-				() => {
-					this.options.pickUploadFile?.(kind);
-					return true;
-				},
-			filesMediaEmbedExisting:
-				() =>
-				() => {
-					this.options.openEmbedExistingPicker?.();
-					return true;
-				},
+			filesMediaPickUpload: (kind) => () => {
+				this.options.pickUploadFile?.(kind);
+				return true;
+			},
+			filesMediaEmbedExisting: () => () => {
+				this.options.openEmbedExistingPicker?.();
+				return true;
+			},
 		};
 	},
 });

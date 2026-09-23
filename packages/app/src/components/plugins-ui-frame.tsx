@@ -179,7 +179,9 @@ function is_bridge_message_id(value: unknown): value is string {
 }
 
 // Both mint actions return the same Result shape, so the page mint's type is the shared contract.
-type PluginsUiFrame_MintSessionResult = app_convex_FunctionReturnType<typeof app_convex_api.plugins_ui.mint_page_session>;
+type PluginsUiFrame_MintSessionResult = app_convex_FunctionReturnType<
+	typeof app_convex_api.plugins_ui.mint_page_session
+>;
 
 /**
  * The `context` a mount point builds for bonobo:init, mirroring the SDK's `BonoboPageContext` and
@@ -852,7 +854,18 @@ export const PluginsUiFrame = memo(function PluginsUiFrame(props: PluginsUiFrame
 			iframeNode.removeEventListener("load", handle_load);
 			revoke_session(sessionId);
 		};
-	}, [nonce, entry, getInitContext, kindLabel, membershipId, mintSession, onError, pluginName, pluginVersionId, userId]);
+	}, [
+		nonce,
+		entry,
+		getInitContext,
+		kindLabel,
+		membershipId,
+		mintSession,
+		onError,
+		pluginName,
+		pluginVersionId,
+		userId,
+	]);
 
 	// Watch the root element rather than the theme context. The provider stamps the class in its own
 	// effect and it is an ancestor of this frame, so a descendant effect keyed on the resolved theme

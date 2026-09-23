@@ -1,5 +1,12 @@
 import { defineCommand } from "just-bash/browser";
-import { bash_resolve_db_files_shell_path, bash_is_path_under_read_only_mounts, bash_resolve_path, bash_read_only_mount_error, bash_COMMAND_EXIT_FAILURE, type bash_DbFilesRoots } from "./bash-utils.ts";
+import {
+	bash_resolve_db_files_shell_path,
+	bash_is_path_under_read_only_mounts,
+	bash_resolve_path,
+	bash_read_only_mount_error,
+	bash_COMMAND_EXIT_FAILURE,
+	type bash_DbFilesRoots,
+} from "./bash-utils.ts";
 import { bash_delegate_builtin_command } from "./bash-delegate.ts";
 
 /**

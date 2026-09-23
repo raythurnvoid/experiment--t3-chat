@@ -304,14 +304,16 @@ describe("AiChatController streaming against the real AI SDK", () => {
 
 	test("shows a storage refusal sent after the finish chunk", async () => {
 		const errorText = "This reply is too large and was not saved. Start a new message with smaller file pages.";
-		hookMocks.responses.push(() => sseResponse([
-			{ type: "start" },
-			{ type: "text-start", id: "t1" },
-			{ type: "text-delta", id: "t1", delta: "The streamed answer" },
-			{ type: "text-end", id: "t1" },
-			{ type: "finish" },
-			{ type: "error", errorText },
-		]));
+		hookMocks.responses.push(() =>
+			sseResponse([
+				{ type: "start" },
+				{ type: "text-start", id: "t1" },
+				{ type: "text-delta", id: "t1", delta: "The streamed answer" },
+				{ type: "text-end", id: "t1" },
+				{ type: "finish" },
+				{ type: "error", errorText },
+			]),
+		);
 		renderRuntime();
 		await userEvent.click(screen.getByRole("button", { name: "new chat" }));
 		await userEvent.click(screen.getByRole("button", { name: "send" }));
@@ -418,9 +420,11 @@ describe("AiChatController streaming against the real AI SDK", () => {
 
 	test("does not send private messages when access is refused during token loading", async () => {
 		let resolveToken!: (value: null) => void;
-		vi.spyOn(AppAuthProvider, "getToken").mockReturnValueOnce(new Promise((resolve) => {
-			resolveToken = resolve;
-		}));
+		vi.spyOn(AppAuthProvider, "getToken").mockReturnValueOnce(
+			new Promise((resolve) => {
+				resolveToken = resolve;
+			}),
+		);
 		const view = renderRuntime();
 		await userEvent.click(screen.getByRole("button", { name: "select persisted" }));
 		await userEvent.click(screen.getByRole("button", { name: "send" }));

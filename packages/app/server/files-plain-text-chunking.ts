@@ -37,7 +37,10 @@ function is_high_surrogate(codeUnit: number) {
  * One accepted regression from mid-line cuts: a search token that straddles a cut inside a split
  * line is findable in neither chunk. Cuts at `\n` never had this problem.
  */
-export function files_chunk_plain_text(text: string, options?: { maxChunkSize?: number }): Array<files_plain_text_chunk> {
+export function files_chunk_plain_text(
+	text: string,
+	options?: { maxChunkSize?: number },
+): Array<files_plain_text_chunk> {
 	if (text.length === 0) {
 		return [];
 	}

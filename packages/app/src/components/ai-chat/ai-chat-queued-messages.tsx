@@ -47,17 +47,8 @@ type AiChatQueuedMessages_DropIndicator = {
 };
 
 export const AiChatQueuedMessages = memo(function AiChatQueuedMessages(props: AiChatQueuedMessages_Props) {
-	const {
-		messages,
-		editingMessageId,
-		isFull,
-		isPaused,
-		onEdit,
-		onRemove,
-		onReorderStateChange,
-		onReorder,
-		onResume,
-	} = props;
+	const { messages, editingMessageId, isFull, isPaused, onEdit, onRemove, onReorderStateChange, onReorder, onResume } =
+		props;
 	const appHoistingContainer = document.getElementById("app_hoisting_container" satisfies AppElementId);
 	const rootRef = useRef<HTMLElement | null>(null);
 	const composerRef = useRef<HTMLElement | null>(null);
@@ -227,8 +218,11 @@ export const AiChatQueuedMessages = memo(function AiChatQueuedMessages(props: Ai
 										disableInteractiveElementBlocking
 									>
 										{(draggableProvided, draggableSnapshot) => {
-											const { role: _dragHandleRole, tabIndex: _dragHandleTabIndex, ...dragHandleProps } =
-												draggableProvided.dragHandleProps ?? {};
+											const {
+												role: _dragHandleRole,
+												tabIndex: _dragHandleTabIndex,
+												...dragHandleProps
+											} = draggableProvided.dragHandleProps ?? {};
 
 											const draggableMessage = (
 												<li
@@ -279,9 +273,7 @@ export const AiChatQueuedMessages = memo(function AiChatQueuedMessages(props: Ai
 																{attachmentsCount}
 															</span>
 														)}
-														<span
-															className={"AiChatQueuedMessages-text" satisfies AiChatQueuedMessages_ClassNames}
-														>
+														<span className={"AiChatQueuedMessages-text" satisfies AiChatQueuedMessages_ClassNames}>
 															{message.text}
 														</span>
 													</MyButton>
@@ -301,9 +293,7 @@ export const AiChatQueuedMessages = memo(function AiChatQueuedMessages(props: Ai
 													>
 														<X
 															aria-hidden="true"
-															className={
-																"AiChatQueuedMessages-remove-icon" satisfies AiChatQueuedMessages_ClassNames
-															}
+															className={"AiChatQueuedMessages-remove-icon" satisfies AiChatQueuedMessages_ClassNames}
 														/>
 													</MyIconButton>
 												</li>

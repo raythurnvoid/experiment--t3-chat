@@ -10,12 +10,8 @@
 	],
 	"compilerOptions": {
 		"paths": {
-			"@/*": [
-				"./src/*"
-			],
-			"convex/_generated/*": [
-				"./convex/_generated/*"
-			]
+			"@/*": ["./src/*"],
+			"convex/_generated/*": ["./convex/_generated/*"]
 		},
 		"noErrorTruncation": true
 	}

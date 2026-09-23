@@ -30,7 +30,10 @@ async function import_byte_size_helpers_without_buffer() {
 			Reflect.deleteProperty(buffer, "byteLength");
 		}
 
-		const [filesModule, stringByteLengthModule] = await Promise.all([import("./files.ts"), import("string-byte-length")]);
+		const [filesModule, stringByteLengthModule] = await Promise.all([
+			import("./files.ts"),
+			import("string-byte-length"),
+		]);
 		return {
 			files_get_utf8_byte_size: filesModule.files_get_utf8_byte_size,
 			stringByteLength: stringByteLengthModule.default,
@@ -157,9 +160,7 @@ describe("utf8 byte size edge runtime", () => {
 						() => {
 							const byteSize = implementation.getByteSize(content);
 							if (byteSize !== expectedBytes) {
-								throw new Error(
-									`${implementation.name} returned ${byteSize} bytes, expected ${expectedBytes}`,
-								);
+								throw new Error(`${implementation.name} returned ${byteSize} bytes, expected ${expectedBytes}`);
 							}
 						},
 						benchOptions,

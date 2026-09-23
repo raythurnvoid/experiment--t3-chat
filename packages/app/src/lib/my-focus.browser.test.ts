@@ -50,7 +50,7 @@ describe("MyFocus", () => {
 		}
 	});
 
-	test("Should initialize roving tabIndex from aria-selected=\"true\" without aria-current", () => {
+	test('Should initialize roving tabIndex from aria-selected="true" without aria-current', () => {
 		const fixture = setup_focus_fixture([
 			{ label: "Organization A" },
 			{ label: "Organization B", ariaSelected: true },
@@ -69,7 +69,7 @@ describe("MyFocus", () => {
 		}
 	});
 
-	test("Should initialize roving tabIndex from data-selected=\"true\" without aria-current", () => {
+	test('Should initialize roving tabIndex from data-selected="true" without aria-current', () => {
 		const fixture = setup_focus_fixture([
 			{ label: "Organization A" },
 			{ label: "Organization B", dataSelected: true },
@@ -461,22 +461,40 @@ describe("MyFocus", () => {
 			await page.getByRole("button", { name: "Inner A" }).click();
 			await userEvent.keyboard("{ArrowDown}");
 			expect(document.activeElement).toBe(get_row_from_container(innerContainerEl, "Inner B"));
-			expect(get_row_from_container(innerContainerEl, "Inner B").classList.contains(my_focus_ROW_ACTIVE_CLASS)).toBe(true);
-			expect(get_row_from_container(outerContainerEl, "Outer A").classList.contains(my_focus_ROW_ACTIVE_CLASS)).toBe(true);
-			expect(get_row_from_container(outerContainerEl, "Outer B").classList.contains(my_focus_ROW_ACTIVE_CLASS)).toBe(false);
+			expect(get_row_from_container(innerContainerEl, "Inner B").classList.contains(my_focus_ROW_ACTIVE_CLASS)).toBe(
+				true,
+			);
+			expect(get_row_from_container(outerContainerEl, "Outer A").classList.contains(my_focus_ROW_ACTIVE_CLASS)).toBe(
+				true,
+			);
+			expect(get_row_from_container(outerContainerEl, "Outer B").classList.contains(my_focus_ROW_ACTIVE_CLASS)).toBe(
+				false,
+			);
 
 			await userEvent.keyboard("{ArrowDown}");
 			expect(document.activeElement).toBe(get_row_from_container(innerContainerEl, "Inner A"));
-			expect(get_row_from_container(innerContainerEl, "Inner A").classList.contains(my_focus_ROW_ACTIVE_CLASS)).toBe(true);
-			expect(get_row_from_container(outerContainerEl, "Outer A").classList.contains(my_focus_ROW_ACTIVE_CLASS)).toBe(true);
+			expect(get_row_from_container(innerContainerEl, "Inner A").classList.contains(my_focus_ROW_ACTIVE_CLASS)).toBe(
+				true,
+			);
+			expect(get_row_from_container(outerContainerEl, "Outer A").classList.contains(my_focus_ROW_ACTIVE_CLASS)).toBe(
+				true,
+			);
 
 			await page.getByRole("button", { name: "Outer A" }).click();
 			await userEvent.keyboard("{ArrowDown}");
 			expect(document.activeElement).toBe(get_row_from_container(outerContainerEl, "Outer B"));
-			expect(get_row_from_container(outerContainerEl, "Outer A").classList.contains(my_focus_ROW_ACTIVE_CLASS)).toBe(false);
-			expect(get_row_from_container(outerContainerEl, "Outer B").classList.contains(my_focus_ROW_ACTIVE_CLASS)).toBe(true);
-			expect(get_row_from_container(innerContainerEl, "Inner A").classList.contains(my_focus_ROW_ACTIVE_CLASS)).toBe(true);
-			expect(get_row_from_container(innerContainerEl, "Inner B").classList.contains(my_focus_ROW_ACTIVE_CLASS)).toBe(false);
+			expect(get_row_from_container(outerContainerEl, "Outer A").classList.contains(my_focus_ROW_ACTIVE_CLASS)).toBe(
+				false,
+			);
+			expect(get_row_from_container(outerContainerEl, "Outer B").classList.contains(my_focus_ROW_ACTIVE_CLASS)).toBe(
+				true,
+			);
+			expect(get_row_from_container(innerContainerEl, "Inner A").classList.contains(my_focus_ROW_ACTIVE_CLASS)).toBe(
+				true,
+			);
+			expect(get_row_from_container(innerContainerEl, "Inner B").classList.contains(my_focus_ROW_ACTIVE_CLASS)).toBe(
+				false,
+			);
 		} finally {
 			fixture.focus.stop();
 		}

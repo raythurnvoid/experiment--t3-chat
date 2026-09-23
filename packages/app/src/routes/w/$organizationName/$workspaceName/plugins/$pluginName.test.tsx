@@ -896,10 +896,12 @@ describe("RoutePluginsPlugin", () => {
 		for (const name of ["plugin_data:read", "plugin_data:write", "files:write"])
 			fireEvent.click(screen.getByRole("checkbox", { name }));
 		fireEvent.click(screen.getByRole("button", { name: "Generate secret" }));
-		await waitFor(() => expect(mutationMock).toHaveBeenCalledWith("plugins.set_plugin_service_registration", {
-			pluginName: "media",
-			scopes: [],
-		}));
+		await waitFor(() =>
+			expect(mutationMock).toHaveBeenCalledWith("plugins.set_plugin_service_registration", {
+				pluginName: "media",
+				scopes: [],
+			}),
+		);
 		expect(await screen.findByText("pse_example")).toBeTruthy();
 	});
 

@@ -26,9 +26,8 @@ export function public_api_service_uploads_http_routes(router: { route: HttpRout
 							path,
 							method,
 							handler: httpAction(async (ctx, request) => {
-								const { public_api_service_uploads_http_create_target } = await import(
-									"./public_api_service_uploads_http.ts"
-								);
+								const { public_api_service_uploads_http_create_target } =
+									await import("./public_api_service_uploads_http.ts");
 								const result = await public_api_service_uploads_http_create_target(ctx, request, path);
 								return Response.json(result.body, result);
 							}),
@@ -92,9 +91,8 @@ export function public_api_service_uploads_http_routes(router: { route: HttpRout
 							path,
 							method,
 							handler: httpAction(async (ctx, request) => {
-								const { public_api_service_uploads_http_finalize } = await import(
-									"./public_api_service_uploads_http.ts"
-								);
+								const { public_api_service_uploads_http_finalize } =
+									await import("./public_api_service_uploads_http.ts");
 								const result = await public_api_service_uploads_http_finalize(ctx, request, path);
 								return Response.json(result.body, result);
 							}),
@@ -160,9 +158,8 @@ export function public_api_service_uploads_http_routes(router: { route: HttpRout
 							path,
 							method,
 							handler: httpAction(async (ctx, request) => {
-								const { public_api_service_uploads_http_archive_destination } = await import(
-									"./public_api_service_uploads_http.ts"
-								);
+								const { public_api_service_uploads_http_archive_destination } =
+									await import("./public_api_service_uploads_http.ts");
 								const result = await public_api_service_uploads_http_archive_destination(ctx, request, path);
 								return Response.json(result.body, result);
 							}),

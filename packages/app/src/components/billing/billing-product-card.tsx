@@ -6,10 +6,7 @@ import { app_convex_api, type app_convex_FunctionReturnType } from "@/lib/app-co
 import { format_cents, type Currency } from "@/lib/currency.ts";
 import type { LiteralUnion } from "type-fest";
 import { cn, should_never_happen } from "../../lib/utils.ts";
-import {
-	billing_get_product_display_name,
-	billing_get_recurring_credits_cents,
-} from "../../../shared/billing.ts";
+import { billing_get_product_display_name, billing_get_recurring_credits_cents } from "../../../shared/billing.ts";
 
 type BillingProductCard_ProductDoc = app_convex_FunctionReturnType<typeof app_convex_api.billing.list_products>[number];
 
@@ -140,7 +137,12 @@ const BillingProductCardPayAsYouGo = memo(function BillingProductCardPayAsYouGo(
 	const includedUsageText = currency != null ? included_usage_text(product, currency) : null;
 
 	return (
-		<BillingProductCardSurface className={"BillingProductCardPayAsYouGo" satisfies BillingProductCardPayAsYouGo_ClassNames} title={displayName} priceText="Only pay for what you use" selectPlanSlot={selectPlanSlot}>
+		<BillingProductCardSurface
+			className={"BillingProductCardPayAsYouGo" satisfies BillingProductCardPayAsYouGo_ClassNames}
+			title={displayName}
+			priceText="Only pay for what you use"
+			selectPlanSlot={selectPlanSlot}
+		>
 			{includedUsageText ? (
 				<li className={"BillingProductCardPayAsYouGo-detail" satisfies BillingProductCardPayAsYouGo_ClassNames}>
 					{includedUsageText}

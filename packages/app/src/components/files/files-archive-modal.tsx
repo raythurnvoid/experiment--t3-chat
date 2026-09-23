@@ -19,7 +19,10 @@ import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import type { files_VisibleTreeNode } from "@/lib/files.ts";
 
 type FilesArchiveModal_ClassNames =
-	"FilesArchiveModal" | "FilesArchiveModal-content" | "FilesArchiveModal-list" | "FilesArchiveModal-error";
+	| "FilesArchiveModal"
+	| "FilesArchiveModal-content"
+	| "FilesArchiveModal-list"
+	| "FilesArchiveModal-error";
 
 /**
  * What the dialog needs to name a row. Hosts already hold these on the tree node they act on.

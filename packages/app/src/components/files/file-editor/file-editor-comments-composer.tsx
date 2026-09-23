@@ -165,7 +165,10 @@ function FileEditorCommentsComposerControl(props: FileEditorCommentsComposerCont
 	return (
 		<EditorContent
 			editor={editor}
-			className={cn("FileEditorCommentsComposerControl" satisfies FileEditorCommentsComposerControl_ClassNames, className)}
+			className={cn(
+				"FileEditorCommentsComposerControl" satisfies FileEditorCommentsComposerControl_ClassNames,
+				className,
+			)}
 		/>
 	);
 }
@@ -224,12 +227,7 @@ export function FileEditorCommentsComposer(props: FileEditorCommentsComposer_Pro
 				/>
 			</MyInputArea>
 			<MyInputActions>
-				<MyIconButton
-					type="submit"
-					variant="default-embedded"
-					tooltip={submitTooltip}
-					disabled={submitDisabled}
-				>
+				<MyIconButton type="submit" variant="default-embedded" tooltip={submitTooltip} disabled={submitDisabled}>
 					<MyIconButtonIcon>
 						<ArrowUp />
 					</MyIconButtonIcon>

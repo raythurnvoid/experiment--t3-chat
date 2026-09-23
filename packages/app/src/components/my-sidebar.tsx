@@ -125,9 +125,7 @@ export const MySidebarListItemPrimaryActionLink = memo(function MySidebarListIte
 			className={cn(
 				"MySidebarListItemPrimaryActionLink" satisfies MySidebarListItemPrimaryActionLink_ClassNames,
 				variant === "button" &&
-					(
-						"MySidebarListItemPrimaryActionLink-variant-button" satisfies MySidebarListItemPrimaryActionLink_ClassNames
-					),
+					("MySidebarListItemPrimaryActionLink-variant-button" satisfies MySidebarListItemPrimaryActionLink_ClassNames),
 				className,
 			)}
 			{...rest}
@@ -218,7 +216,8 @@ export const MySidebarHovercardAction = memo(function MySidebarHovercardAction(p
 			id={id}
 			className={cn(
 				"MySidebarHovercardAction" satisfies MySidebarHovercardAction_ClassNames,
-				variant === "button" && ("MySidebarHovercardAction-variant-button" satisfies MySidebarHovercardAction_ClassNames),
+				variant === "button" &&
+					("MySidebarHovercardAction-variant-button" satisfies MySidebarHovercardAction_ClassNames),
 				className,
 			)}
 			{...rest}
@@ -466,11 +465,7 @@ export const MySidebar = memo(function MySidebar(props: MySidebar_Props) {
 		<aside
 			ref={ref}
 			id={id}
-			className={cn(
-				"MySidebar" satisfies MySidebar_ClassNames,
-				stateClassName,
-				className,
-			)}
+			className={cn("MySidebar" satisfies MySidebar_ClassNames, stateClassName, className)}
 			style={style}
 			{...rest}
 		>

@@ -16,9 +16,7 @@ export function FileEditorError(props: FileEditorError_Props) {
 			layout="embedded"
 			technicalDetailsMode="always"
 			title={title}
-			description={
-				description ?? "Try again, or reload the file if the problem persists."
-			}
+			description={description ?? "Try again, or reload the file if the problem persists."}
 			retryLabel={retryLabel ?? "Try again"}
 		/>
 	);

@@ -381,7 +381,11 @@ describe("FileEditorPlainText", () => {
 			expect(onTargetChange).not.toHaveBeenCalled();
 			// A fresh read could see someone else's edit. Retry must keep our acknowledged revision.
 			fetchPrivateFilePendingTextMock.mockResolvedValue({
-				_yay: { text: "another edit\n", rootKind: "plain_text", pendingUpdate: { _id: "pending_update_1", revision: 9 } },
+				_yay: {
+					text: "another edit\n",
+					rootKind: "plain_text",
+					pendingUpdate: { _id: "pending_update_1", revision: 9 },
+				},
 			});
 			act(() => {
 				model.setValue("local edit and unsent text\n");

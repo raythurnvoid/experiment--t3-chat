@@ -120,13 +120,7 @@ function remove_comment_mark(editor: Editor, threadId: string) {
 const FileEditorRichTextToolsCommentInner = memo(function FileEditorRichTextToolsCommentInner(
 	props: FileEditorRichTextToolsCommentInner_Props,
 ) {
-	const {
-		editor,
-		fileNodeId,
-		commentCommit,
-		buttonVariant = "ghost-highlightable",
-		isSelectionEmpty,
-	} = props;
+	const { editor, fileNodeId, commentCommit, buttonVariant = "ghost-highlightable", isSelectionEmpty } = props;
 
 	const { membershipId } = AppTenantProvider.useContext();
 

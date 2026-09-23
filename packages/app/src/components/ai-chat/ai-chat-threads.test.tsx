@@ -46,10 +46,7 @@ function makeThread(args: {
 	} as unknown as app_convex_Doc<"ai_chat_threads">;
 }
 
-function renderThreads(args: {
-	threads: Array<app_convex_Doc<"ai_chat_threads">>;
-	selectedThreadId?: string | null;
-}) {
+function renderThreads(args: { threads: Array<app_convex_Doc<"ai_chat_threads">>; selectedThreadId?: string | null }) {
 	return render(
 		<AiChatThreads
 			state="expanded"

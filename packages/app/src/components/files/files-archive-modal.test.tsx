@@ -46,7 +46,11 @@ describe("FilesArchiveModal", () => {
 		const { onClose, onArchived } = renderModal([NOTE, REPORTS]);
 		const dialog = await screen.findByRole("dialog", { name: "Archive 2 items?" });
 		const list = within(dialog).getByRole("list");
-		expect(within(list).getAllByRole("listitem").map((item) => item.textContent)).toEqual(["note.md", "Reports"]);
+		expect(
+			within(list)
+				.getAllByRole("listitem")
+				.map((item) => item.textContent),
+		).toEqual(["note.md", "Reports"]);
 
 		fireEvent.click(within(dialog).getByRole("button", { name: "Archive" }));
 
@@ -91,7 +95,9 @@ describe("FilesArchiveModal", () => {
 
 	test("cannot be closed while the write runs", async () => {
 		let finishWrite = () => {};
-		mutationMock.mockReturnValue(new Promise<{ _yay: null }>((resolve) => (finishWrite = () => resolve({ _yay: null }))));
+		mutationMock.mockReturnValue(
+			new Promise<{ _yay: null }>((resolve) => (finishWrite = () => resolve({ _yay: null }))),
+		);
 		const { onClose, onArchived } = renderModal([NOTE]);
 		const dialog = await screen.findByRole("dialog");
 		fireEvent.click(within(dialog).getByRole("button", { name: "Archive" }));

@@ -2516,8 +2516,7 @@ describe("rollback_readers", () => {
 			});
 		if (change === "manual") expect(await result.json()).toMatchObject({ restored: false, detached: true, _id: null });
 		if (change === "old-lifetime") expect(await result.json()).toMatchObject({ restored: true, detached: false });
-		if (change === "ancestor-policy")
-			expect(await result.json()).toMatchObject({ restored: true, detached: false });
+		if (change === "ancestor-policy") expect(await result.json()).toMatchObject({ restored: true, detached: false });
 		if (change === "target-policy") expect(await result.json()).toEqual({ message: "This item is read-only." });
 		if (change === "ancestor-policy") return;
 		expect(await t.run(async (ctx) => await ctx.db.query("access_control_permission_grants").collect())).toEqual(

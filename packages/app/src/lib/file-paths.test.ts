@@ -60,87 +60,75 @@ describe("files_truncate_path_for_width", () => {
 	test("keeps the first segment and last two segments before stronger truncation", () => {
 		const expected = "alpha/inbox…/tasks/task-100.md";
 
-		expect(
-			truncate_path_for_width("alpha/inbox/archive/tasks/task-100.md", expected.length),
-		).toBe(expected);
+		expect(truncate_path_for_width("alpha/inbox/archive/tasks/task-100.md", expected.length)).toBe(expected);
 		expect(expected).not.toContain("/…/");
 	});
 
 	test("truncates middle path segments by one grapheme before collapsing them", () => {
 		const expected = "/test/deep/aaaaa/bbb…/ccccc/random.md";
 
-		expect(
-			truncate_path_for_width("/test/deep/aaaaa/bbbbb/ccccc/random.md", expected.length),
-		).toBe(expected);
+		expect(truncate_path_for_width("/test/deep/aaaaa/bbbbb/ccccc/random.md", expected.length)).toBe(expected);
 	});
 
 	test("does not add an extra slash-separated ellipsis after visible middle content", () => {
 		const expected = "/test/deep/aa…/ccccc/random.md";
 
-		expect(
-			truncate_path_for_width("/test/deep/aaaaa/bbbbb/ccccc/random.md", expected.length),
-		).toBe(expected);
+		expect(truncate_path_for_width("/test/deep/aaaaa/bbbbb/ccccc/random.md", expected.length)).toBe(expected);
 	});
 
 	test("keeps the first segment and last segment when the last two segments do not fit", () => {
 		const expected = "alpha/…/task-100.md";
 
-		expect(
-			truncate_path_for_width("alpha/inbox/archive/tasks/task-100.md", expected.length),
-		).toBe(expected);
+		expect(truncate_path_for_width("alpha/inbox/archive/tasks/task-100.md", expected.length)).toBe(expected);
 	});
 
 	test("truncates inside the first segment while keeping the last segment intact", () => {
 		const expected = "meta-ev…14817z/msg-alice.md";
 
-		expect(
-			truncate_path_for_width("meta-eval-fixture-20260623t014817z/inbox/msg-alice.md", expected.length),
-		).toBe(expected);
+		expect(truncate_path_for_width("meta-eval-fixture-20260623t014817z/inbox/msg-alice.md", expected.length)).toBe(
+			expected,
+		);
 	});
 
 	test("truncates from the first segment through the middle path while keeping the last segment intact", () => {
 		const expected = "me…/msg-alice.md";
 
-		expect(
-			truncate_path_for_width("meta-eval-fixture-20260623t014817z/inbox/msg-alice.md", expected.length),
-		).toBe(expected);
+		expect(truncate_path_for_width("meta-eval-fixture-20260623t014817z/inbox/msg-alice.md", expected.length)).toBe(
+			expected,
+		);
 	});
 
 	test("keeps one grapheme from the first segment and the full last segment", () => {
 		const expected = "m…/msg-alice.md";
 
-		expect(
-			truncate_path_for_width("meta-eval-fixture-20260623t014817z/inbox/msg-alice.md", expected.length),
-		).toBe(expected);
+		expect(truncate_path_for_width("meta-eval-fixture-20260623t014817z/inbox/msg-alice.md", expected.length)).toBe(
+			expected,
+		);
 	});
 
 	test("truncates the last segment only after the first segment reaches one grapheme", () => {
 		const expected = "m…/msg…";
 
-		expect(
-			truncate_path_for_width("meta-eval-fixture-20260623t014817z/inbox/msg-alice.md", expected.length),
-		).toBe(expected);
+		expect(truncate_path_for_width("meta-eval-fixture-20260623t014817z/inbox/msg-alice.md", expected.length)).toBe(
+			expected,
+		);
 	});
 
 	test("falls back to one grapheme from the first and last segment", () => {
-		expect(
-			truncate_path_for_width("meta-eval-fixture-20260623t014817z/inbox/msg-alice.md", "m…/m…".length),
-		).toBe("m…/m…");
+		expect(truncate_path_for_width("meta-eval-fixture-20260623t014817z/inbox/msg-alice.md", "m…/m…".length)).toBe(
+			"m…/m…",
+		);
 	});
 
 	test("returns the smallest informative path when even that cannot fit", () => {
-		expect(
-			truncate_path_for_width("alpha/beta.md", 4),
-		).toBe("a…/b…");
+		expect(truncate_path_for_width("alpha/beta.md", 4)).toBe("a…/b…");
 	});
 
 	test("does not split emoji or combining-character graphemes", () => {
 		const expected = "👨‍👩‍👧‍👦…/e\u0301…";
 		measureCandidateMock.mockImplementation((candidate: string) => grapheme_count(candidate));
 
-		expect(
-			truncate_path_for_width("👨‍👩‍👧‍👦-organization/inbox/e\u0301-file.md", grapheme_count(expected)),
-		).toBe(expected);
+		expect(truncate_path_for_width("👨‍👩‍👧‍👦-organization/inbox/e\u0301-file.md", grapheme_count(expected))).toBe(expected);
 	});
 
 	test("keeps the leading separator when the first segment is empty", () => {

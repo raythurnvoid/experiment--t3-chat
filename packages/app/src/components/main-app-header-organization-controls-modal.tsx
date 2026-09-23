@@ -63,11 +63,7 @@ import {
 	MyModalPopover,
 	MyModalScrollableArea,
 } from "@/components/my-modal.tsx";
-import {
-	MyRadioCard,
-	MyRadioCardDescription,
-	MyRadioCardLabel,
-} from "@/components/my-radio-card.tsx";
+import { MyRadioCard, MyRadioCardDescription, MyRadioCardLabel } from "@/components/my-radio-card.tsx";
 import { MyTooltip, MyTooltipContent, MyTooltipInfoTrigger, MyTooltipTrigger } from "@/components/my-tooltip.tsx";
 import { app_convex, app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import type { AppClassName } from "@/lib/dom-utils.ts";
@@ -84,7 +80,9 @@ import { cn } from "@/lib/utils.ts";
 import { quotas } from "../../shared/quotas.ts";
 
 function is_rejected_name_message(validationMessage: string) {
-	return validationMessage === "Organization name already exists" || validationMessage === "Workspace name already exists";
+	return (
+		validationMessage === "Organization name already exists" || validationMessage === "Workspace name already exists"
+	);
 }
 
 // The menu hides Edit from anyone who cannot use it, so this error only happens when the user's role
@@ -199,191 +197,191 @@ export type MainAppHeaderOrganizationSwitcherModalListItem_Props = {
 	kind: "workspace" | "organization";
 };
 
-export const MainAppHeaderOrganizationSwitcherModalListItem = memo(function MainAppHeaderOrganizationSwitcherModalListItem(
-	props: MainAppHeaderOrganizationSwitcherModalListItem_Props,
-) {
-	const { item, kind } = props;
+export const MainAppHeaderOrganizationSwitcherModalListItem = memo(
+	function MainAppHeaderOrganizationSwitcherModalListItem(props: MainAppHeaderOrganizationSwitcherModalListItem_Props) {
+		const { item, kind } = props;
 
-	const handleSelect = useFn(() => {
-		if (item.isCurrent) {
-			return;
-		}
+		const handleSelect = useFn(() => {
+			if (item.isCurrent) {
+				return;
+			}
 
-		item.onSelect();
-	});
+			item.onSelect();
+		});
 
-	const handleEdit = useFn(() => {
-		item.onEdit?.();
-	});
+		const handleEdit = useFn(() => {
+			item.onEdit?.();
+		});
 
-	const handleDelete = useFn(() => {
-		item.onDelete?.();
-	});
-	const handleManageBilling = useFn(() => {
-		item.onManageBilling?.();
-	});
+		const handleDelete = useFn(() => {
+			item.onDelete?.();
+		});
+		const handleManageBilling = useFn(() => {
+			item.onManageBilling?.();
+		});
 
-	const descriptionText = item.description.trim() ? item.description : "(No description)";
-	const isCurrent = Boolean(item.isCurrent);
-	const isDefault = Boolean(item.isDefault);
-	const canDelete = !isDefault && Boolean(item.onDelete);
-	const showMenu = Boolean(item.onManageBilling || item.onEdit || item.onDelete);
-	const itemKindLabel = kind === "organization" ? "organization" : "workspace";
-	const itemActionLabel = `${itemKindLabel}: ${item.label}`;
-	const selectLabel = isCurrent ? `Current ${itemActionLabel}` : `Select ${itemActionLabel}`;
-	const moreActionsLabel = `More actions for ${itemActionLabel}`;
-	const ownershipBadgeLabel =
-		item.ownershipBadge === "personal"
-			? "Personal"
-			: item.ownershipBadge === "owner"
-				? "Owner"
-				: item.ownershipBadge === "joined"
-					? "Joined"
-					: null;
-	const billingBadgeLabel =
-		item.billingBadge === "members_pay"
-			? "Members pay"
-			: item.billingBadge === "my_balance"
-				? "My balance"
-				: item.billingBadge === "owner_pays"
-					? "Owner pays"
-					: null;
+		const descriptionText = item.description.trim() ? item.description : "(No description)";
+		const isCurrent = Boolean(item.isCurrent);
+		const isDefault = Boolean(item.isDefault);
+		const canDelete = !isDefault && Boolean(item.onDelete);
+		const showMenu = Boolean(item.onManageBilling || item.onEdit || item.onDelete);
+		const itemKindLabel = kind === "organization" ? "organization" : "workspace";
+		const itemActionLabel = `${itemKindLabel}: ${item.label}`;
+		const selectLabel = isCurrent ? `Current ${itemActionLabel}` : `Select ${itemActionLabel}`;
+		const moreActionsLabel = `More actions for ${itemActionLabel}`;
+		const ownershipBadgeLabel =
+			item.ownershipBadge === "personal"
+				? "Personal"
+				: item.ownershipBadge === "owner"
+					? "Owner"
+					: item.ownershipBadge === "joined"
+						? "Joined"
+						: null;
+		const billingBadgeLabel =
+			item.billingBadge === "members_pay"
+				? "Members pay"
+				: item.billingBadge === "my_balance"
+					? "My balance"
+					: item.billingBadge === "owner_pays"
+						? "Owner pays"
+						: null;
 
-	return (
-		<li
-			className={cn(
-				"MainAppHeaderOrganizationSwitcherModalListItem" satisfies MainAppHeaderOrganizationSwitcherModalListItem_ClassNames,
-			)}
-		>
-			<MyPrimaryAction
+		return (
+			<li
 				className={cn(
-					"MainAppHeaderOrganizationSwitcherModalListItem-primary" satisfies MainAppHeaderOrganizationSwitcherModalListItem_ClassNames,
-					"MyFocus-row" satisfies MyFocus_ClassNames,
+					"MainAppHeaderOrganizationSwitcherModalListItem" satisfies MainAppHeaderOrganizationSwitcherModalListItem_ClassNames,
 				)}
-				selected={isCurrent}
-				aria-label={selectLabel}
-				aria-current={isCurrent ? "true" : undefined}
-				aria-disabled={isCurrent || undefined}
-				tabIndex={isCurrent ? -1 : undefined}
-				onClick={handleSelect}
 			>
-				{isCurrent && (
-					<div
-						className={cn(
-							"MainAppHeaderOrganizationSwitcherModalListItem-current-border" satisfies MainAppHeaderOrganizationSwitcherModalListItem_ClassNames,
-						)}
-						aria-hidden
-					/>
-				)}
-
-				<div
+				<MyPrimaryAction
 					className={cn(
-						"MainAppHeaderOrganizationSwitcherModalListItem-label-row" satisfies MainAppHeaderOrganizationSwitcherModalListItem_ClassNames,
+						"MainAppHeaderOrganizationSwitcherModalListItem-primary" satisfies MainAppHeaderOrganizationSwitcherModalListItem_ClassNames,
+						"MyFocus-row" satisfies MyFocus_ClassNames,
 					)}
+					selected={isCurrent}
+					aria-label={selectLabel}
+					aria-current={isCurrent ? "true" : undefined}
+					aria-disabled={isCurrent || undefined}
+					tabIndex={isCurrent ? -1 : undefined}
+					onClick={handleSelect}
 				>
+					{isCurrent && (
+						<div
+							className={cn(
+								"MainAppHeaderOrganizationSwitcherModalListItem-current-border" satisfies MainAppHeaderOrganizationSwitcherModalListItem_ClassNames,
+							)}
+							aria-hidden
+						/>
+					)}
+
 					<div
 						className={cn(
-							"MainAppHeaderOrganizationSwitcherModalListItem-label" satisfies MainAppHeaderOrganizationSwitcherModalListItem_ClassNames,
+							"MainAppHeaderOrganizationSwitcherModalListItem-label-row" satisfies MainAppHeaderOrganizationSwitcherModalListItem_ClassNames,
 						)}
 					>
-						{item.label}
-					</div>
-					{ownershipBadgeLabel ? (
-						<span
+						<div
 							className={cn(
-								"MainAppHeaderOrganizationSwitcherModalListItem-badge" satisfies MainAppHeaderOrganizationSwitcherModalListItem_ClassNames,
-								"MainAppHeaderOrganizationSwitcherModalListItem-ownership-badge" satisfies MainAppHeaderOrganizationSwitcherModalListItem_ClassNames,
+								"MainAppHeaderOrganizationSwitcherModalListItem-label" satisfies MainAppHeaderOrganizationSwitcherModalListItem_ClassNames,
 							)}
 						>
-							{ownershipBadgeLabel}
-						</span>
-					) : null}
-					{billingBadgeLabel ? (
-						<span
-							className={cn(
-								"MainAppHeaderOrganizationSwitcherModalListItem-badge" satisfies MainAppHeaderOrganizationSwitcherModalListItem_ClassNames,
-								"MainAppHeaderOrganizationSwitcherModalListItem-billing-badge" satisfies MainAppHeaderOrganizationSwitcherModalListItem_ClassNames,
-							)}
-						>
-							{billingBadgeLabel}
-						</span>
-					) : null}
-				</div>
-
-				<div
-					className={cn(
-						"MainAppHeaderOrganizationSwitcherModalListItem-description" satisfies MainAppHeaderOrganizationSwitcherModalListItem_ClassNames,
-					)}
-				>
-					{descriptionText}
-				</div>
-			</MyPrimaryAction>
-
-			{showMenu ? (
-				<div
-					className={cn(
-						"MainAppHeaderOrganizationSwitcherModalListItem-actions" satisfies MainAppHeaderOrganizationSwitcherModalListItem_ClassNames,
-					)}
-				>
-					<MyMenu>
-						<MyMenuTrigger>
-							<MyIconButton
+							{item.label}
+						</div>
+						{ownershipBadgeLabel ? (
+							<span
 								className={cn(
-									"MainAppHeaderOrganizationSwitcherModalListItem-action" satisfies MainAppHeaderOrganizationSwitcherModalListItem_ClassNames,
+									"MainAppHeaderOrganizationSwitcherModalListItem-badge" satisfies MainAppHeaderOrganizationSwitcherModalListItem_ClassNames,
+									"MainAppHeaderOrganizationSwitcherModalListItem-ownership-badge" satisfies MainAppHeaderOrganizationSwitcherModalListItem_ClassNames,
 								)}
-								variant="ghost-highlightable"
-								tooltip={moreActionsLabel}
 							>
-								<MyIconButtonIcon>
-									<EllipsisVertical />
-								</MyIconButtonIcon>
-							</MyIconButton>
-						</MyMenuTrigger>
-						<MyMenuPopover>
-							<MyMenuPopoverContent>
-								{item.onManageBilling ? (
-									<MyMenuItem aria-label={`Manage billing for ${itemActionLabel}`} onClick={handleManageBilling}>
-										<MyMenuItemContent>
-											<MyMenuItemContentIcon>
-												<CreditCard />
-											</MyMenuItemContentIcon>
-											<MyMenuItemContentPrimary>Manage billing</MyMenuItemContentPrimary>
-										</MyMenuItemContent>
-									</MyMenuItem>
-								) : null}
-								{item.onEdit ? (
-									<MyMenuItem aria-label={`Edit ${itemActionLabel}`} onClick={handleEdit}>
-										<MyMenuItemContent>
-											<MyMenuItemContentIcon>
-												<Pencil />
-											</MyMenuItemContentIcon>
-											<MyMenuItemContentPrimary>Edit</MyMenuItemContentPrimary>
-										</MyMenuItemContent>
-									</MyMenuItem>
-								) : null}
-								{item.onDelete ? (
-									<MyMenuItem
-										aria-label={`Delete ${itemActionLabel}`}
-										variant="destructive"
-										disabled={!canDelete}
-										onClick={handleDelete}
-									>
-										<MyMenuItemContent>
-											<MyMenuItemContentIcon>
-												<Trash2 />
-											</MyMenuItemContentIcon>
-											<MyMenuItemContentPrimary>Delete</MyMenuItemContentPrimary>
-										</MyMenuItemContent>
-									</MyMenuItem>
-								) : null}
-							</MyMenuPopoverContent>
-						</MyMenuPopover>
-					</MyMenu>
-				</div>
-			) : null}
-		</li>
-	);
-});
+								{ownershipBadgeLabel}
+							</span>
+						) : null}
+						{billingBadgeLabel ? (
+							<span
+								className={cn(
+									"MainAppHeaderOrganizationSwitcherModalListItem-badge" satisfies MainAppHeaderOrganizationSwitcherModalListItem_ClassNames,
+									"MainAppHeaderOrganizationSwitcherModalListItem-billing-badge" satisfies MainAppHeaderOrganizationSwitcherModalListItem_ClassNames,
+								)}
+							>
+								{billingBadgeLabel}
+							</span>
+						) : null}
+					</div>
+
+					<div
+						className={cn(
+							"MainAppHeaderOrganizationSwitcherModalListItem-description" satisfies MainAppHeaderOrganizationSwitcherModalListItem_ClassNames,
+						)}
+					>
+						{descriptionText}
+					</div>
+				</MyPrimaryAction>
+
+				{showMenu ? (
+					<div
+						className={cn(
+							"MainAppHeaderOrganizationSwitcherModalListItem-actions" satisfies MainAppHeaderOrganizationSwitcherModalListItem_ClassNames,
+						)}
+					>
+						<MyMenu>
+							<MyMenuTrigger>
+								<MyIconButton
+									className={cn(
+										"MainAppHeaderOrganizationSwitcherModalListItem-action" satisfies MainAppHeaderOrganizationSwitcherModalListItem_ClassNames,
+									)}
+									variant="ghost-highlightable"
+									tooltip={moreActionsLabel}
+								>
+									<MyIconButtonIcon>
+										<EllipsisVertical />
+									</MyIconButtonIcon>
+								</MyIconButton>
+							</MyMenuTrigger>
+							<MyMenuPopover>
+								<MyMenuPopoverContent>
+									{item.onManageBilling ? (
+										<MyMenuItem aria-label={`Manage billing for ${itemActionLabel}`} onClick={handleManageBilling}>
+											<MyMenuItemContent>
+												<MyMenuItemContentIcon>
+													<CreditCard />
+												</MyMenuItemContentIcon>
+												<MyMenuItemContentPrimary>Manage billing</MyMenuItemContentPrimary>
+											</MyMenuItemContent>
+										</MyMenuItem>
+									) : null}
+									{item.onEdit ? (
+										<MyMenuItem aria-label={`Edit ${itemActionLabel}`} onClick={handleEdit}>
+											<MyMenuItemContent>
+												<MyMenuItemContentIcon>
+													<Pencil />
+												</MyMenuItemContentIcon>
+												<MyMenuItemContentPrimary>Edit</MyMenuItemContentPrimary>
+											</MyMenuItemContent>
+										</MyMenuItem>
+									) : null}
+									{item.onDelete ? (
+										<MyMenuItem
+											aria-label={`Delete ${itemActionLabel}`}
+											variant="destructive"
+											disabled={!canDelete}
+											onClick={handleDelete}
+										>
+											<MyMenuItemContent>
+												<MyMenuItemContentIcon>
+													<Trash2 />
+												</MyMenuItemContentIcon>
+												<MyMenuItemContentPrimary>Delete</MyMenuItemContentPrimary>
+											</MyMenuItemContent>
+										</MyMenuItem>
+									) : null}
+								</MyMenuPopoverContent>
+							</MyMenuPopover>
+						</MyMenu>
+					</div>
+				) : null}
+			</li>
+		);
+	},
+);
 // #endregion list item
 
 // #region select head
@@ -411,7 +409,9 @@ export type MainAppHeaderOrganizationSwitcherModalSelectHead_Props = {
 };
 
 export const MainAppHeaderOrganizationSwitcherModalSelectHead = memo(
-	function MainAppHeaderOrganizationSwitcherModalSelectHead(props: MainAppHeaderOrganizationSwitcherModalSelectHead_Props) {
+	function MainAppHeaderOrganizationSwitcherModalSelectHead(
+		props: MainAppHeaderOrganizationSwitcherModalSelectHead_Props,
+	) {
 		const {
 			title,
 			titleId,
@@ -567,7 +567,9 @@ export type MainAppHeaderOrganizationSwitcherModalSelectList_Props = {
 };
 
 export const MainAppHeaderOrganizationSwitcherModalSelectList = memo(
-	function MainAppHeaderOrganizationSwitcherModalSelectList(props: MainAppHeaderOrganizationSwitcherModalSelectList_Props) {
+	function MainAppHeaderOrganizationSwitcherModalSelectList(
+		props: MainAppHeaderOrganizationSwitcherModalSelectList_Props,
+	) {
 		const { myFocusSyncKey, ariaLabel, children } = props;
 
 		const [list, setList] = useState<HTMLUListElement | null>(null);
@@ -659,7 +661,9 @@ export type MainAppHeaderOrganizationSwitcherModalSelectPane_Props = {
 };
 
 export const MainAppHeaderOrganizationSwitcherModalSelectPane = memo(
-	function MainAppHeaderOrganizationSwitcherModalSelectPane(props: MainAppHeaderOrganizationSwitcherModalSelectPane_Props) {
+	function MainAppHeaderOrganizationSwitcherModalSelectPane(
+		props: MainAppHeaderOrganizationSwitcherModalSelectPane_Props,
+	) {
 		const {
 			dialogOpen,
 			title,
@@ -1187,7 +1191,9 @@ type MainAppHeaderOrganizationSwitcherModalCreateModal_Props = {
 };
 
 export const MainAppHeaderOrganizationSwitcherModalCreateModal = memo(
-	function MainAppHeaderOrganizationSwitcherModalCreateModal(props: MainAppHeaderOrganizationSwitcherModalCreateModal_Props) {
+	function MainAppHeaderOrganizationSwitcherModalCreateModal(
+		props: MainAppHeaderOrganizationSwitcherModalCreateModal_Props,
+	) {
 		const {
 			open,
 			setOpen,
@@ -1435,82 +1441,120 @@ type MainAppHeaderOrganizationSwitcherModalEditModal_Props = {
 	onAfterEdit: (args: MainAppHeaderOrganizationSwitcherModal_AfterEdit) => void;
 };
 
-export const MainAppHeaderOrganizationSwitcherModalEditModal = memo(function MainAppHeaderOrganizationSwitcherModalEditModal(
-	props: MainAppHeaderOrganizationSwitcherModalEditModal_Props,
-) {
-	const { target, editOrganization, editWorkspace, setTarget, onAfterEdit } = props;
+export const MainAppHeaderOrganizationSwitcherModalEditModal = memo(
+	function MainAppHeaderOrganizationSwitcherModalEditModal(
+		props: MainAppHeaderOrganizationSwitcherModalEditModal_Props,
+	) {
+		const { target, editOrganization, editWorkspace, setTarget, onAfterEdit } = props;
 
-	const editFormDomId = `MainAppHeaderOrganizationSwitcherModalEditModal-form-${useId().replace(/:/g, "")}`;
+		const editFormDomId = `MainAppHeaderOrganizationSwitcherModalEditModal-form-${useId().replace(/:/g, "")}`;
 
-	const nameFieldRef = useRef<MainAppHeaderOrganizationNameField_Ref>(null);
-	const descriptionFieldRef = useRef<MainAppHeaderOrganizationDescriptionField_Ref>(null);
-	const [isNameValid, setIsNameValid] = useState(false);
-	const [isDescriptionValid, setIsDescriptionValid] = useState(true);
-	const [nameCanonicalValue, setNameCanonicalValue] = useState("");
-	const [descriptionCanonicalValue, setDescriptionCanonicalValue] = useState("");
-	const [submitValidationMessage, setSubmitValidationMessage] = useState<string | undefined>(undefined);
-	const [isSubmitting, setIsSubmitting] = useState(false);
+		const nameFieldRef = useRef<MainAppHeaderOrganizationNameField_Ref>(null);
+		const descriptionFieldRef = useRef<MainAppHeaderOrganizationDescriptionField_Ref>(null);
+		const [isNameValid, setIsNameValid] = useState(false);
+		const [isDescriptionValid, setIsDescriptionValid] = useState(true);
+		const [nameCanonicalValue, setNameCanonicalValue] = useState("");
+		const [descriptionCanonicalValue, setDescriptionCanonicalValue] = useState("");
+		const [submitValidationMessage, setSubmitValidationMessage] = useState<string | undefined>(undefined);
+		const [isSubmitting, setIsSubmitting] = useState(false);
 
-	const initialCanonicalName = target ? get_canonical_name_value(target.initialName) : "";
-	const initialCanonicalDescription = target ? get_canonical_description_value(target.initialDescription) : "";
-	const isUnchanged =
-		target === null ||
-		(nameCanonicalValue === initialCanonicalName && descriptionCanonicalValue === initialCanonicalDescription);
-	const editFormResetKey = target
-		? `${target.kind}:${target.id}:${target.initialName}:${target.initialDescription}`
-		: "closed";
+		const initialCanonicalName = target ? get_canonical_name_value(target.initialName) : "";
+		const initialCanonicalDescription = target ? get_canonical_description_value(target.initialDescription) : "";
+		const isUnchanged =
+			target === null ||
+			(nameCanonicalValue === initialCanonicalName && descriptionCanonicalValue === initialCanonicalDescription);
+		const editFormResetKey = target
+			? `${target.kind}:${target.id}:${target.initialName}:${target.initialDescription}`
+			: "closed";
 
-	const handleNameValidationStateChange = useFn<MainAppHeaderOrganizationNameField_Props["onValidationStateChange"]>(
-		(state) => {
-			setIsNameValid(!state.validationMessage);
-			setNameCanonicalValue(state.canonicalValue);
-		},
-	);
+		const handleNameValidationStateChange = useFn<MainAppHeaderOrganizationNameField_Props["onValidationStateChange"]>(
+			(state) => {
+				setIsNameValid(!state.validationMessage);
+				setNameCanonicalValue(state.canonicalValue);
+			},
+		);
 
-	const handleDescriptionValidationStateChange = useFn<
-		MainAppHeaderOrganizationDescriptionField_Props["onValidationStateChange"]
-	>((state) => {
-		setIsDescriptionValid(!state.validationMessage);
-		setDescriptionCanonicalValue(state.canonicalValue);
-	});
+		const handleDescriptionValidationStateChange = useFn<
+			MainAppHeaderOrganizationDescriptionField_Props["onValidationStateChange"]
+		>((state) => {
+			setIsDescriptionValid(!state.validationMessage);
+			setDescriptionCanonicalValue(state.canonicalValue);
+		});
 
-	const handleNameUserInput = useFn(() => {
-		setSubmitValidationMessage(undefined);
-	});
-
-	const handlePermissionDenied = useFn(() => {
-		setTarget(null);
-		toast.error("You no longer have permission to edit this");
-	});
-
-	const handleFormSubmit = useFn<NonNullable<ComponentPropsWithoutRef<"form">["onSubmit"]>>((event) => {
-		event.preventDefault();
-		if (isSubmitting || !target) {
-			return;
-		}
-
-		if (!event.currentTarget.checkValidity()) {
-			return;
-		}
-
-		const name = nameCanonicalValue;
-		const description = descriptionCanonicalValue;
-
-		if (name === initialCanonicalName && description === initialCanonicalDescription) {
-			setTarget(null);
-			return;
-		}
-
-		const activeTarget = target;
-
-		void (async (/* iife */) => {
-			setIsSubmitting(true);
+		const handleNameUserInput = useFn(() => {
 			setSubmitValidationMessage(undefined);
+		});
 
-			if (activeTarget.kind === "organization") {
-				const result = await editOrganization({
-					organizationId: activeTarget.id as app_convex_Id<"organizations">,
+		const handlePermissionDenied = useFn(() => {
+			setTarget(null);
+			toast.error("You no longer have permission to edit this");
+		});
+
+		const handleFormSubmit = useFn<NonNullable<ComponentPropsWithoutRef<"form">["onSubmit"]>>((event) => {
+			event.preventDefault();
+			if (isSubmitting || !target) {
+				return;
+			}
+
+			if (!event.currentTarget.checkValidity()) {
+				return;
+			}
+
+			const name = nameCanonicalValue;
+			const description = descriptionCanonicalValue;
+
+			if (name === initialCanonicalName && description === initialCanonicalDescription) {
+				setTarget(null);
+				return;
+			}
+
+			const activeTarget = target;
+
+			void (async (/* iife */) => {
+				setIsSubmitting(true);
+				setSubmitValidationMessage(undefined);
+
+				if (activeTarget.kind === "organization") {
+					const result = await editOrganization({
+						organizationId: activeTarget.id as app_convex_Id<"organizations">,
+						defaultWorkspaceId: activeTarget.defaultWorkspaceId,
+						name,
+						description,
+					});
+
+					if (result == null) {
+						return;
+					}
+
+					if (result._nay) {
+						if (result._nay.message === "Description is too long") {
+							descriptionFieldRef.current?.setServerValidationMessage(result._nay.message);
+						} else if (is_rejected_name_message(result._nay.message)) {
+							nameFieldRef.current?.setRejectedNameValidationMessage(name, result._nay.message);
+						} else if (is_permission_denied_message(result._nay.message)) {
+							handlePermissionDenied();
+						} else {
+							setSubmitValidationMessage(result._nay.message);
+						}
+						return;
+					}
+
+					await app_convex.query(app_convex_api.organizations.list, {});
+
+					setTarget(null);
+					onAfterEdit({
+						kind: "organization",
+						oldName: activeTarget.initialName,
+						newName: result._yay.name,
+						organizationId: activeTarget.id as app_convex_Id<"organizations">,
+					});
+					return;
+				}
+
+				const result = await editWorkspace({
+					organizationId: activeTarget.organizationId,
 					defaultWorkspaceId: activeTarget.defaultWorkspaceId,
+					workspaceId: activeTarget.id as app_convex_Id<"organizations_workspaces">,
 					name,
 					description,
 				});
@@ -1536,158 +1580,122 @@ export const MainAppHeaderOrganizationSwitcherModalEditModal = memo(function Mai
 
 				setTarget(null);
 				onAfterEdit({
-					kind: "organization",
+					kind: "workspace",
 					oldName: activeTarget.initialName,
 					newName: result._yay.name,
-					organizationId: activeTarget.id as app_convex_Id<"organizations">,
+					organizationId: result._yay.organizationId,
+					workspaceId: activeTarget.id as app_convex_Id<"organizations_workspaces">,
 				});
-				return;
-			}
-
-			const result = await editWorkspace({
-				organizationId: activeTarget.organizationId,
-				defaultWorkspaceId: activeTarget.defaultWorkspaceId,
-				workspaceId: activeTarget.id as app_convex_Id<"organizations_workspaces">,
-				name,
-				description,
-			});
-
-			if (result == null) {
-				return;
-			}
-
-			if (result._nay) {
-				if (result._nay.message === "Description is too long") {
-					descriptionFieldRef.current?.setServerValidationMessage(result._nay.message);
-				} else if (is_rejected_name_message(result._nay.message)) {
-					nameFieldRef.current?.setRejectedNameValidationMessage(name, result._nay.message);
-				} else if (is_permission_denied_message(result._nay.message)) {
-					handlePermissionDenied();
-				} else {
-					setSubmitValidationMessage(result._nay.message);
-				}
-				return;
-			}
-
-			await app_convex.query(app_convex_api.organizations.list, {});
-
-			setTarget(null);
-			onAfterEdit({
-				kind: "workspace",
-				oldName: activeTarget.initialName,
-				newName: result._yay.name,
-				organizationId: result._yay.organizationId,
-				workspaceId: activeTarget.id as app_convex_Id<"organizations_workspaces">,
-			});
-		})()
-			.catch((error) => {
-				console.error("[MainAppHeaderOrganizationSwitcherModalEditModal] Unexpected edit error", {
-					error,
-					kind: activeTarget.kind,
+			})()
+				.catch((error) => {
+					console.error("[MainAppHeaderOrganizationSwitcherModalEditModal] Unexpected edit error", {
+						error,
+						kind: activeTarget.kind,
+					});
+				})
+				.finally(() => {
+					setIsSubmitting(false);
 				});
-			})
-			.finally(() => {
-				setIsSubmitting(false);
-			});
-	});
+		});
 
-	const handleEditModalCancel = useFn(() => {
-		setTarget(null);
-	});
-
-	const handleEditModalSetOpen = useFn<Dispatch<SetStateAction<boolean>>>((next) => {
-		const resolved = typeof next === "function" ? next(target !== null) : next;
-		if (!resolved) {
+		const handleEditModalCancel = useFn(() => {
 			setTarget(null);
-		}
-	});
+		});
 
-	useEffect(() => {
-		if (!target) {
-			return;
-		}
+		const handleEditModalSetOpen = useFn<Dispatch<SetStateAction<boolean>>>((next) => {
+			const resolved = typeof next === "function" ? next(target !== null) : next;
+			if (!resolved) {
+				setTarget(null);
+			}
+		});
 
-		setSubmitValidationMessage(undefined);
-		setNameCanonicalValue(get_canonical_name_value(target.initialName));
-		setDescriptionCanonicalValue(get_canonical_description_value(target.initialDescription));
-	}, [target]);
+		useEffect(() => {
+			if (!target) {
+				return;
+			}
 
-	const dialogTitle = target ? (target.kind === "organization" ? "Edit organization" : "Edit workspace") : "Edit";
-	const nameFieldLabel = target ? (target.kind === "organization" ? "Organization name" : "Workspace name") : "Name";
-	const editOpen = target !== null;
+			setSubmitValidationMessage(undefined);
+			setNameCanonicalValue(get_canonical_name_value(target.initialName));
+			setDescriptionCanonicalValue(get_canonical_description_value(target.initialDescription));
+		}, [target]);
 
-	return (
-		<MyModal open={editOpen} setOpen={handleEditModalSetOpen}>
-			<MyModalPopover
-				className={cn(
-					"MainAppHeaderOrganizationSwitcherModalCreateModal" satisfies MainAppHeaderOrganizationSwitcherModalCreateModal_ClassNames,
-					"MainAppHeaderOrganizationSwitcherModalCreateModal-sub" satisfies MainAppHeaderOrganizationSwitcherModalCreateModal_ClassNames,
-				)}
-			>
-				<MyModalHeader>
-					<MyModalHeading>{dialogTitle}</MyModalHeading>
-				</MyModalHeader>
+		const dialogTitle = target ? (target.kind === "organization" ? "Edit organization" : "Edit workspace") : "Edit";
+		const nameFieldLabel = target ? (target.kind === "organization" ? "Organization name" : "Workspace name") : "Name";
+		const editOpen = target !== null;
 
-				<MyModalScrollableArea
+		return (
+			<MyModal open={editOpen} setOpen={handleEditModalSetOpen}>
+				<MyModalPopover
 					className={cn(
-						"MainAppHeaderOrganizationSwitcherModalCreateModal-sub-body" satisfies MainAppHeaderOrganizationSwitcherModalCreateModal_ClassNames,
+						"MainAppHeaderOrganizationSwitcherModalCreateModal" satisfies MainAppHeaderOrganizationSwitcherModalCreateModal_ClassNames,
+						"MainAppHeaderOrganizationSwitcherModalCreateModal-sub" satisfies MainAppHeaderOrganizationSwitcherModalCreateModal_ClassNames,
 					)}
 				>
-					<form
-						id={editFormDomId}
+					<MyModalHeader>
+						<MyModalHeading>{dialogTitle}</MyModalHeading>
+					</MyModalHeader>
+
+					<MyModalScrollableArea
 						className={cn(
-							"MainAppHeaderOrganizationSwitcherModalCreateModal-create-form" satisfies MainAppHeaderOrganizationSwitcherModalCreateModal_ClassNames,
+							"MainAppHeaderOrganizationSwitcherModalCreateModal-sub-body" satisfies MainAppHeaderOrganizationSwitcherModalCreateModal_ClassNames,
 						)}
-						noValidate
-						onSubmit={handleFormSubmit}
 					>
-						<div
+						<form
+							id={editFormDomId}
 							className={cn(
-								"MainAppHeaderOrganizationSwitcherModalCreateModal-sub-form" satisfies MainAppHeaderOrganizationSwitcherModalCreateModal_ClassNames,
+								"MainAppHeaderOrganizationSwitcherModalCreateModal-create-form" satisfies MainAppHeaderOrganizationSwitcherModalCreateModal_ClassNames,
 							)}
+							noValidate
+							onSubmit={handleFormSubmit}
 						>
-							<MainAppHeaderOrganizationNameField
-								ref={nameFieldRef}
-								resetKey={editFormResetKey}
-								initialValue={target?.initialName ?? ""}
-								kind={target?.kind ?? "organization"}
-								label={nameFieldLabel}
-								submitValidationMessage={submitValidationMessage}
-								isSubmitting={isSubmitting}
-								onValidationStateChange={handleNameValidationStateChange}
-								onUserInput={handleNameUserInput}
-							/>
-							<MainAppHeaderOrganizationDescriptionField
-								ref={descriptionFieldRef}
-								resetKey={editFormResetKey}
-								initialValue={target?.initialDescription ?? ""}
-								kind={target?.kind ?? "organization"}
-								isSubmitting={isSubmitting}
-								onValidationStateChange={handleDescriptionValidationStateChange}
-							/>
-						</div>
-					</form>
-				</MyModalScrollableArea>
+							<div
+								className={cn(
+									"MainAppHeaderOrganizationSwitcherModalCreateModal-sub-form" satisfies MainAppHeaderOrganizationSwitcherModalCreateModal_ClassNames,
+								)}
+							>
+								<MainAppHeaderOrganizationNameField
+									ref={nameFieldRef}
+									resetKey={editFormResetKey}
+									initialValue={target?.initialName ?? ""}
+									kind={target?.kind ?? "organization"}
+									label={nameFieldLabel}
+									submitValidationMessage={submitValidationMessage}
+									isSubmitting={isSubmitting}
+									onValidationStateChange={handleNameValidationStateChange}
+									onUserInput={handleNameUserInput}
+								/>
+								<MainAppHeaderOrganizationDescriptionField
+									ref={descriptionFieldRef}
+									resetKey={editFormResetKey}
+									initialValue={target?.initialDescription ?? ""}
+									kind={target?.kind ?? "organization"}
+									isSubmitting={isSubmitting}
+									onValidationStateChange={handleDescriptionValidationStateChange}
+								/>
+							</div>
+						</form>
+					</MyModalScrollableArea>
 
-				<MyModalFooter>
-					<MyButton type="button" variant="outline" disabled={isSubmitting} onClick={handleEditModalCancel}>
-						Cancel
-					</MyButton>
-					<MyButton
-						type="submit"
-						form={editFormDomId}
-						variant="accent"
-						disabled={!isNameValid || !isDescriptionValid || isSubmitting || isUnchanged}
-					>
-						{isSubmitting ? "Saving…" : "Save"}
-					</MyButton>
-				</MyModalFooter>
+					<MyModalFooter>
+						<MyButton type="button" variant="outline" disabled={isSubmitting} onClick={handleEditModalCancel}>
+							Cancel
+						</MyButton>
+						<MyButton
+							type="submit"
+							form={editFormDomId}
+							variant="accent"
+							disabled={!isNameValid || !isDescriptionValid || isSubmitting || isUnchanged}
+						>
+							{isSubmitting ? "Saving…" : "Save"}
+						</MyButton>
+					</MyModalFooter>
 
-				<MyModalCloseTrigger tooltip={`Close ${dialogTitle.toLowerCase()} dialog`} />
-			</MyModalPopover>
-		</MyModal>
-	);
-});
+					<MyModalCloseTrigger tooltip={`Close ${dialogTitle.toLowerCase()} dialog`} />
+				</MyModalPopover>
+			</MyModal>
+		);
+	},
+);
 // #endregion edit modal
 
 type MainAppHeaderOrganizationSwitcherModalBillingModal_ClassNames =
@@ -1767,176 +1775,178 @@ type MainAppHeaderOrganizationSwitcherModalBillingModal_Props = {
 	) => Promise<FunctionReturnType<typeof app_convex_api.organizations.set_organization_billing_mode> | undefined>;
 };
 
-const MainAppHeaderOrganizationSwitcherModalBillingModal = memo(function MainAppHeaderOrganizationSwitcherModalBillingModal(
-	props: MainAppHeaderOrganizationSwitcherModalBillingModal_Props,
-) {
-	const { target, setTarget, setOrganizationBillingMode } = props;
+const MainAppHeaderOrganizationSwitcherModalBillingModal = memo(
+	function MainAppHeaderOrganizationSwitcherModalBillingModal(
+		props: MainAppHeaderOrganizationSwitcherModalBillingModal_Props,
+	) {
+		const { target, setTarget, setOrganizationBillingMode } = props;
 
-	const billingModeRadioName = `MainAppHeaderOrganizationSwitcherModalBillingModal-${useId()}`;
+		const billingModeRadioName = `MainAppHeaderOrganizationSwitcherModalBillingModal-${useId()}`;
 
-	const [selectedMode, setSelectedMode] = useState<"user" | "organization_owner">("user");
-	const [isSubmitting, setIsSubmitting] = useState(false);
-	const [message, setMessage] = useState<string | undefined>(undefined);
+		const [selectedMode, setSelectedMode] = useState<"user" | "organization_owner">("user");
+		const [isSubmitting, setIsSubmitting] = useState(false);
+		const [message, setMessage] = useState<string | undefined>(undefined);
 
-	const billingOpen = target !== null;
-	const isUnchanged = selectedMode === target?.billingMode;
+		const billingOpen = target !== null;
+		const isUnchanged = selectedMode === target?.billingMode;
 
-	const handleSetOpen = useFn<Dispatch<SetStateAction<boolean>>>((next) => {
-		const resolved = typeof next === "function" ? next(target !== null) : next;
-		if (!resolved) {
+		const handleSetOpen = useFn<Dispatch<SetStateAction<boolean>>>((next) => {
+			const resolved = typeof next === "function" ? next(target !== null) : next;
+			if (!resolved) {
+				setTarget(null);
+			}
+		});
+
+		const handleCancel = useFn(() => {
 			setTarget(null);
-		}
-	});
+		});
 
-	const handleCancel = useFn(() => {
-		setTarget(null);
-	});
-
-	const handleBillingModeChange = useFn<NonNullable<ComponentPropsWithoutRef<"input">["onChange"]>>((event) => {
-		if (!event.currentTarget.checked) {
-			return;
-		}
-
-		setSelectedMode(event.currentTarget.value as "user" | "organization_owner");
-	});
-
-	const handleSave = useFn(() => {
-		if (!target || isSubmitting || isUnchanged) {
-			return;
-		}
-
-		const activeTarget = target;
-		void (async (/* iife */) => {
-			setIsSubmitting(true);
-			setMessage(undefined);
-
-			const result = await setOrganizationBillingMode({
-				organizationId: activeTarget.organizationId,
-				billingMode: selectedMode,
-			});
-			if (result == null) {
+		const handleBillingModeChange = useFn<NonNullable<ComponentPropsWithoutRef<"input">["onChange"]>>((event) => {
+			if (!event.currentTarget.checked) {
 				return;
 			}
 
-			if (result._nay) {
-				setMessage(result._nay.message);
+			setSelectedMode(event.currentTarget.value as "user" | "organization_owner");
+		});
+
+		const handleSave = useFn(() => {
+			if (!target || isSubmitting || isUnchanged) {
 				return;
 			}
 
-			await app_convex.query(app_convex_api.organizations.list, {});
-			setTarget(null);
-		})()
-			.catch((error) => {
-				console.error("[MainAppHeaderOrganizationSwitcherModalBillingModal] Unexpected billing mode error", {
-					error,
+			const activeTarget = target;
+			void (async (/* iife */) => {
+				setIsSubmitting(true);
+				setMessage(undefined);
+
+				const result = await setOrganizationBillingMode({
 					organizationId: activeTarget.organizationId,
+					billingMode: selectedMode,
 				});
-			})
-			.finally(() => {
-				setIsSubmitting(false);
-			});
-	});
+				if (result == null) {
+					return;
+				}
 
-	useEffect(() => {
-		if (!target) {
-			return;
-		}
+				if (result._nay) {
+					setMessage(result._nay.message);
+					return;
+				}
 
-		setSelectedMode(target.billingMode);
-		setMessage(undefined);
-	}, [target]);
+				await app_convex.query(app_convex_api.organizations.list, {});
+				setTarget(null);
+			})()
+				.catch((error) => {
+					console.error("[MainAppHeaderOrganizationSwitcherModalBillingModal] Unexpected billing mode error", {
+						error,
+						organizationId: activeTarget.organizationId,
+					});
+				})
+				.finally(() => {
+					setIsSubmitting(false);
+				});
+		});
 
-	return (
-		<MyModal open={billingOpen} setOpen={handleSetOpen}>
-			<MyModalPopover
-				className={cn(
-					"MainAppHeaderOrganizationSwitcherModalBillingModal" satisfies MainAppHeaderOrganizationSwitcherModalBillingModal_ClassNames,
-				)}
-			>
-				<MyModalHeader>
-					<MyModalHeading>Organization billing</MyModalHeading>
-					<MyModalDescription>
-						Choose who pays for usage in {target ? target.organizationName : "this organization"}.
-					</MyModalDescription>
-				</MyModalHeader>
+		useEffect(() => {
+			if (!target) {
+				return;
+			}
 
-				<MyModalScrollableArea
+			setSelectedMode(target.billingMode);
+			setMessage(undefined);
+		}, [target]);
+
+		return (
+			<MyModal open={billingOpen} setOpen={handleSetOpen}>
+				<MyModalPopover
 					className={cn(
-						"MainAppHeaderOrganizationSwitcherModalBillingModal-body" satisfies MainAppHeaderOrganizationSwitcherModalBillingModal_ClassNames,
+						"MainAppHeaderOrganizationSwitcherModalBillingModal" satisfies MainAppHeaderOrganizationSwitcherModalBillingModal_ClassNames,
 					)}
 				>
-					<div
+					<MyModalHeader>
+						<MyModalHeading>Organization billing</MyModalHeading>
+						<MyModalDescription>
+							Choose who pays for usage in {target ? target.organizationName : "this organization"}.
+						</MyModalDescription>
+					</MyModalHeader>
+
+					<MyModalScrollableArea
 						className={cn(
-							"MainAppHeaderOrganizationSwitcherModalBillingModal-options" satisfies MainAppHeaderOrganizationSwitcherModalBillingModal_ClassNames,
-						)}
-						role="radiogroup"
-						aria-label="Organization billing source"
-						aria-disabled={isSubmitting || undefined}
-					>
-						<MainAppHeaderOrganizationSwitcherModalBillingModalOption
-							name={billingModeRadioName}
-							value="user"
-							checked={selectedMode === "user"}
-							disabled={isSubmitting}
-							onChange={handleBillingModeChange}
-							title="Bill each member"
-							description="Each member uses their own balance for their activity."
-						/>
-						<MainAppHeaderOrganizationSwitcherModalBillingModalOption
-							name={billingModeRadioName}
-							value="organization_owner"
-							checked={selectedMode === "organization_owner"}
-							disabled={isSubmitting}
-							onChange={handleBillingModeChange}
-							title="Bill my balance"
-							description="All organization usage is charged to your balance."
-						/>
-					</div>
-					<div
-						role="note"
-						className={cn(
-							"MainAppHeaderOrganizationSwitcherModalBillingModal-note" satisfies MainAppHeaderOrganizationSwitcherModalBillingModal_ClassNames,
+							"MainAppHeaderOrganizationSwitcherModalBillingModal-body" satisfies MainAppHeaderOrganizationSwitcherModalBillingModal_ClassNames,
 						)}
 					>
-						<Info
-							className={cn(
-								"MainAppHeaderOrganizationSwitcherModalBillingModal-note-icon" satisfies MainAppHeaderOrganizationSwitcherModalBillingModal_ClassNames,
-							)}
-							aria-hidden
-						/>
-						<span
-							className={cn(
-								"MainAppHeaderOrganizationSwitcherModalBillingModal-note-copy" satisfies MainAppHeaderOrganizationSwitcherModalBillingModal_ClassNames,
-							)}
-						>
-							This setting applies to all future usage in this organization. You can change it again at any time.
-						</span>
-					</div>
-					{message ? (
 						<div
 							className={cn(
-								"MainAppHeaderOrganizationSwitcherModalBillingModal-message" satisfies MainAppHeaderOrganizationSwitcherModalBillingModal_ClassNames,
+								"MainAppHeaderOrganizationSwitcherModalBillingModal-options" satisfies MainAppHeaderOrganizationSwitcherModalBillingModal_ClassNames,
+							)}
+							role="radiogroup"
+							aria-label="Organization billing source"
+							aria-disabled={isSubmitting || undefined}
+						>
+							<MainAppHeaderOrganizationSwitcherModalBillingModalOption
+								name={billingModeRadioName}
+								value="user"
+								checked={selectedMode === "user"}
+								disabled={isSubmitting}
+								onChange={handleBillingModeChange}
+								title="Bill each member"
+								description="Each member uses their own balance for their activity."
+							/>
+							<MainAppHeaderOrganizationSwitcherModalBillingModalOption
+								name={billingModeRadioName}
+								value="organization_owner"
+								checked={selectedMode === "organization_owner"}
+								disabled={isSubmitting}
+								onChange={handleBillingModeChange}
+								title="Bill my balance"
+								description="All organization usage is charged to your balance."
+							/>
+						</div>
+						<div
+							role="note"
+							className={cn(
+								"MainAppHeaderOrganizationSwitcherModalBillingModal-note" satisfies MainAppHeaderOrganizationSwitcherModalBillingModal_ClassNames,
 							)}
 						>
-							{message}
+							<Info
+								className={cn(
+									"MainAppHeaderOrganizationSwitcherModalBillingModal-note-icon" satisfies MainAppHeaderOrganizationSwitcherModalBillingModal_ClassNames,
+								)}
+								aria-hidden
+							/>
+							<span
+								className={cn(
+									"MainAppHeaderOrganizationSwitcherModalBillingModal-note-copy" satisfies MainAppHeaderOrganizationSwitcherModalBillingModal_ClassNames,
+								)}
+							>
+								This setting applies to all future usage in this organization. You can change it again at any time.
+							</span>
 						</div>
-					) : null}
-				</MyModalScrollableArea>
+						{message ? (
+							<div
+								className={cn(
+									"MainAppHeaderOrganizationSwitcherModalBillingModal-message" satisfies MainAppHeaderOrganizationSwitcherModalBillingModal_ClassNames,
+								)}
+							>
+								{message}
+							</div>
+						) : null}
+					</MyModalScrollableArea>
 
-				<MyModalFooter>
-					<MyButton type="button" variant="outline" disabled={isSubmitting} onClick={handleCancel}>
-						Cancel
-					</MyButton>
-					<MyButton type="button" variant="accent" disabled={isSubmitting || isUnchanged} onClick={handleSave}>
-						{isSubmitting ? "Saving…" : "Save changes"}
-					</MyButton>
-				</MyModalFooter>
+					<MyModalFooter>
+						<MyButton type="button" variant="outline" disabled={isSubmitting} onClick={handleCancel}>
+							Cancel
+						</MyButton>
+						<MyButton type="button" variant="accent" disabled={isSubmitting || isUnchanged} onClick={handleSave}>
+							{isSubmitting ? "Saving…" : "Save changes"}
+						</MyButton>
+					</MyModalFooter>
 
-				<MyModalCloseTrigger />
-			</MyModalPopover>
-		</MyModal>
-	);
-});
+					<MyModalCloseTrigger />
+				</MyModalPopover>
+			</MyModal>
+		);
+	},
+);
 // #endregion billing modal
 
 // #region root
@@ -2054,7 +2064,9 @@ export const MainAppHeaderOrganizationSwitcherModal = memo(function MainAppHeade
 	return (
 		<>
 			<MyModalPopover
-				className={cn("MainAppHeaderOrganizationSwitcherModal" satisfies MainAppHeaderOrganizationSwitcherModal_ClassNames)}
+				className={cn(
+					"MainAppHeaderOrganizationSwitcherModal" satisfies MainAppHeaderOrganizationSwitcherModal_ClassNames,
+				)}
 			>
 				<MyModalHeader>
 					<MyModalHeading>Organizations and workspaces</MyModalHeading>

@@ -460,7 +460,10 @@ export const cleanup_history = internalMutation({
 					}
 					case "ai_chat_bash_job": {
 						bashJobCount += 1;
-						deletion = await ai_chat_files_db_delete_job_batch(ctx, { invocationId: activity.source.id, batchSize: 50 });
+						deletion = await ai_chat_files_db_delete_job_batch(ctx, {
+							invocationId: activity.source.id,
+							batchSize: 50,
+						});
 						break;
 					}
 					default:

@@ -143,9 +143,13 @@ export const MainAppHeaderBillingIndicator = memo(function MainAppHeaderBillingI
 	const shouldQuery = auth.isLoaded && auth.isAuthenticated && convexAuth.isAuthenticated && auth.isAnonymous === false;
 
 	const organizationList = useQuery(app_convex_api.organizations.list, shouldQuery ? {} : "skip");
-	const currentOrganization = organizationList?.organizations.find((organization) => organization._id === organizationId);
+	const currentOrganization = organizationList?.organizations.find(
+		(organization) => organization._id === organizationId,
+	);
 	const isOwnerBilledOrganization =
-		currentOrganization !== undefined && !currentOrganization.default && currentOrganization.billingMode === "organization_owner";
+		currentOrganization !== undefined &&
+		!currentOrganization.default &&
+		currentOrganization.billingMode === "organization_owner";
 	const organizationOwnerUserId = isOwnerBilledOrganization ? currentOrganization.ownerUserId : null;
 	const ownerBilledToAnotherUser = organizationOwnerUserId !== null && organizationOwnerUserId !== auth.userId;
 	const shouldShowCurrentUserBalance = shouldQuery && currentOrganization !== undefined && !ownerBilledToAnotherUser;

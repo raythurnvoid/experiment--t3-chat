@@ -3,14 +3,8 @@
 		"tsBuildInfoFile": "./node_modules/.tmp/tsconfig.app.tsbuildinfo",
 		"target": "ESNext",
 		"useDefineForClassFields": true,
-		"lib": [
-			"ESNext",
-			"DOM",
-			"DOM.Iterable"
-		],
-		"types": [
-			"node"
-		],
+		"lib": ["ESNext", "DOM", "DOM.Iterable"],
+		"types": ["node"],
 		"module": "ESNext",
 		"skipLibCheck": true,
 		"noErrorTruncation": true,
@@ -31,19 +25,9 @@
 		"exactOptionalPropertyTypes": false,
 		/* Paths */
 		"paths": {
-			"@/*": [
-				"./src/*"
-			],
-			"convex/_generated/*": [
-				"./convex/_generated/*"
-			]
+			"@/*": ["./src/*"],
+			"convex/_generated/*": ["./convex/_generated/*"]
 		}
 	},
-	"include": [
-		"src",
-		"convex",
-		"server",
-		"shared",
-		"server"
-	]
+	"include": ["src", "convex", "server", "shared", "server"]
 }

@@ -38,7 +38,9 @@ vi.mock("sonner", () => ({
 
 vi.mock("@/components/billing/billing-active-plan.tsx", () => ({
 	BillingActivePlan: function BillingActivePlan(props: { scheduledChangeProductName?: string | null }) {
-		return <div>{props.scheduledChangeProductName ? `Scheduled:${props.scheduledChangeProductName}` : "Active plan"}</div>;
+		return (
+			<div>{props.scheduledChangeProductName ? `Scheduled:${props.scheduledChangeProductName}` : "Active plan"}</div>
+		);
 	},
 	BillingActivePlanSkeleton: function BillingActivePlanSkeleton() {
 		return <div>Loading active plan</div>;
@@ -68,10 +70,7 @@ vi.mock("@/components/billing/billing-change-plan-button.tsx", () => ({
 }));
 
 vi.mock("@/components/billing/billing-product-card.tsx", () => ({
-	BillingProductCard: function BillingProductCard(props: {
-		product: { name: string };
-		selectPlanSlot?: ReactNode;
-	}) {
+	BillingProductCard: function BillingProductCard(props: { product: { name: string }; selectPlanSlot?: ReactNode }) {
 		return (
 			<div>
 				<div>{props.product.name}</div>

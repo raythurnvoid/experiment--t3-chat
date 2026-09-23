@@ -243,7 +243,7 @@ export function files_pending_text_merge(args: { baseText: string; proposedText:
 	let result = "";
 	let offset = 0;
 
-	for (let index = 0; index < mappedEdits.length; ) {
+	for (let index = 0; index < mappedEdits.length;) {
 		const first = mappedEdits[index]!;
 		let end = first.end;
 		const overlapping = [first];

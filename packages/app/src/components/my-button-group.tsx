@@ -47,10 +47,7 @@ export const MyButtonGroup = memo(function MyButtonGroup(props: MyButtonGroup_Pr
 // #endregion group
 
 // #region item
-export type MyButtonGroupItem_ClassNames =
-	| "MyButtonGroupItem"
-	| "MyButtonGroupItem-input"
-	| "MyButtonGroupItem-button";
+export type MyButtonGroupItem_ClassNames = "MyButtonGroupItem" | "MyButtonGroupItem-input" | "MyButtonGroupItem-button";
 
 export type MyButtonGroupItem_Props = Omit<
 	ComponentPropsWithRef<"input">,

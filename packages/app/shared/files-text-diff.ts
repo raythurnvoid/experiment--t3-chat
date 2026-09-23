@@ -748,7 +748,8 @@ function cleanupMerge(rawDiffs: Diff[]): Diff[] {
 			) {
 				// Shift the edit over the previous equality.
 				diffs[pointer][1] =
-					diffs[pointer - 1][1] + diffs[pointer][1].substring(0, diffs[pointer][1].length - diffs[pointer - 1][1].length);
+					diffs[pointer - 1][1] +
+					diffs[pointer][1].substring(0, diffs[pointer][1].length - diffs[pointer - 1][1].length);
 				diffs[pointer + 1][1] = diffs[pointer - 1][1] + diffs[pointer + 1][1];
 				diffs.splice(pointer - 1, 1);
 				hasChanges = true;

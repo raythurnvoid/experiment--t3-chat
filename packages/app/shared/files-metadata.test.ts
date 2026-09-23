@@ -65,9 +65,15 @@ describe("files_metadata_extract_frontmatter", () => {
 
 	test("normalizes non-breaking spaces in visual YAML indentation", () => {
 		const metadata = files_metadata_extract_frontmatter(
-			["---", "cc:", "\u00a0 - bob@example.com", "\u00a0 - jane@example.com", "subject: alpha\u00a0beta", "---", ""].join(
-				"\n",
-			),
+			[
+				"---",
+				"cc:",
+				"\u00a0 - bob@example.com",
+				"\u00a0 - jane@example.com",
+				"subject: alpha\u00a0beta",
+				"---",
+				"",
+			].join("\n"),
 		);
 
 		expect(metadata._yay?.fields).toEqual(["frontmatter.cc", "frontmatter.subject"]);
@@ -83,7 +89,11 @@ describe("files_metadata_extract_frontmatter", () => {
 			["---", "sender:", "  name: Alice", "  bad.key: skipped", "  team-id: ops", "---", ""].join("\n"),
 		);
 
-		expect(metadata._yay?.fields).toEqual(["frontmatter.sender", "frontmatter.sender.name", "frontmatter.sender.team-id"]);
+		expect(metadata._yay?.fields).toEqual([
+			"frontmatter.sender",
+			"frontmatter.sender.name",
+			"frontmatter.sender.team-id",
+		]);
 		expect(metadata._yay?.values).toEqual([
 			{ fieldPath: "frontmatter.sender.name", valueKind: "string", value: "Alice" },
 			{ fieldPath: "frontmatter.sender.team-id", valueKind: "string", value: "ops" },
@@ -148,7 +158,11 @@ describe("files_metadata_extract_frontmatter", () => {
 
 		expect(metadata._yay?.values).toEqual([
 			{ fieldPath: "frontmatter.realStartTime", valueKind: "string", value: "2026-07-29T14:30:36.264Z" },
-			{ fieldPath: "frontmatter.realStartTime", valueKind: "maybe_date", value: Date.UTC(2026, 6, 29, 14, 30, 36, 264) },
+			{
+				fieldPath: "frontmatter.realStartTime",
+				valueKind: "maybe_date",
+				value: Date.UTC(2026, 6, 29, 14, 30, 36, 264),
+			},
 			{ fieldPath: "frontmatter.days", valueKind: "string", value: "2026-07-27" },
 			{ fieldPath: "frontmatter.days", valueKind: "maybe_date", value: Date.UTC(2026, 6, 27) },
 			{ fieldPath: "frontmatter.days", valueKind: "string", value: "2026-07-28" },
@@ -181,9 +195,16 @@ describe("files_metadata_extract_frontmatter", () => {
 
 	test("keeps non-date and invalid-date strings as string values only", () => {
 		const metadata = files_metadata_extract_frontmatter(
-			["---", "badDay: 2026-02-31", "looseDate: 2026-7-9", "compact: 20260729", "block: |", "  2026-07-29", "---", ""].join(
-				"\n",
-			),
+			[
+				"---",
+				"badDay: 2026-02-31",
+				"looseDate: 2026-7-9",
+				"compact: 20260729",
+				"block: |",
+				"  2026-07-29",
+				"---",
+				"",
+			].join("\n"),
 		);
 
 		// Keep the block scalar's trailing newline to prove it is not parsed as a date.
@@ -209,7 +230,9 @@ describe("files_metadata_parse_maybe_date", () => {
 		expect(files_metadata_parse_maybe_date("2026-07-29T14:30:36.2Z")).toBe(Date.UTC(2026, 6, 29, 14, 30, 36, 200));
 		// A fraction longer than milliseconds is accepted, not rejected. V8 truncates the extra digits
 		// by itself, so this case pins the regex rather than the slice.
-		expect(files_metadata_parse_maybe_date("2026-07-29T14:30:36.2643333Z")).toBe(Date.UTC(2026, 6, 29, 14, 30, 36, 264));
+		expect(files_metadata_parse_maybe_date("2026-07-29T14:30:36.2643333Z")).toBe(
+			Date.UTC(2026, 6, 29, 14, 30, 36, 264),
+		);
 		expect(files_metadata_parse_maybe_date("2029-02-29T00:00:00Z")).toBeNull();
 		expect(files_metadata_parse_maybe_date("2028-02-29T00:00:00Z")).toBe(Date.UTC(2028, 1, 29));
 		// Keep zero as a valid timestamp. Callers must check === null, not falsiness.
@@ -388,7 +411,9 @@ describe("files_metadata_parse_entries_yaml", () => {
 	test("refuses a document over the byte cap before parsing it", () => {
 		const oversized = `key: ${"x".repeat(16 * 1024)}`;
 
-		expect(files_metadata_parse_entries_yaml(oversized)._nay?.message).toBe("Metadata must be at most 16 KiB when written as YAML");
+		expect(files_metadata_parse_entries_yaml(oversized)._nay?.message).toBe(
+			"Metadata must be at most 16 KiB when written as YAML",
+		);
 	});
 });
 
@@ -453,11 +478,15 @@ describe("files_metadata_apply_set_and_remove", () => {
 			{ key: "priority", value: 1 },
 		];
 
-		expect(files_metadata_apply_set_and_remove(current, { set: [{ key: "created-by", value: "agent" }], remove: [] })).toEqual([
+		expect(
+			files_metadata_apply_set_and_remove(current, { set: [{ key: "created-by", value: "agent" }], remove: [] }),
+		).toEqual([
 			{ key: "created-by", value: "agent" },
 			{ key: "priority", value: 1 },
 		]);
-		expect(files_metadata_apply_set_and_remove(current, { set: [{ key: "status", value: "draft" }], remove: [] })).toEqual([
+		expect(
+			files_metadata_apply_set_and_remove(current, { set: [{ key: "status", value: "draft" }], remove: [] }),
+		).toEqual([
 			{ key: "created-by", value: "slack" },
 			{ key: "priority", value: 1 },
 			{ key: "status", value: "draft" },

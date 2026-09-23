@@ -33,11 +33,7 @@ import {
 } from "@/components/my-modal.tsx";
 import { MySkeleton } from "@/components/my-skeleton.tsx";
 import { useFn } from "@/hooks/utils-hooks.ts";
-import {
-	app_convex,
-	app_convex_api,
-	type app_convex_Id,
-} from "@/lib/app-convex-client.ts";
+import { app_convex, app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { app_monaco_THEME_NAME_DARK } from "@/lib/app-monaco-config.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { format_relative_time } from "@/lib/date.ts";
@@ -225,14 +221,17 @@ type PolicyDraft = {
 	serviceAccountId: app_convex_Id<"access_control_service_accounts"> | null;
 };
 
-type SavedPolicy = {
-	mode: "read_only";
-} | {
-	mode: "writer";
-	writer:
-		| { kind: "user"; userId: app_convex_Id<"users"> }
-		| { kind: "service_account"; serviceAccountId: app_convex_Id<"access_control_service_accounts"> };
-} | null;
+type SavedPolicy =
+	| {
+			mode: "read_only";
+	  }
+	| {
+			mode: "writer";
+			writer:
+				| { kind: "user"; userId: app_convex_Id<"users"> }
+				| { kind: "service_account"; serviceAccountId: app_convex_Id<"access_control_service_accounts"> };
+	  }
+	| null;
 
 function policy_draft_from_saved(
 	policy: { mode: "read_only" } | { mode: "writer"; writer: unknown } | null | undefined,
@@ -240,7 +239,12 @@ function policy_draft_from_saved(
 	if (policy?.mode === "writer") {
 		return { mode: "writer", writerKind: "user", userId: null, serviceAccountId: null };
 	}
-	return { mode: policy?.mode === "read_only" ? "read_only" : "editable", writerKind: "user", userId: null, serviceAccountId: null };
+	return {
+		mode: policy?.mode === "read_only" ? "read_only" : "editable",
+		writerKind: "user",
+		userId: null,
+		serviceAccountId: null,
+	};
 }
 
 function saved_policy_from_draft(draft: PolicyDraft): SavedPolicy {
@@ -383,11 +387,7 @@ const PolicyWriterPicker = memo(function PolicyWriterPicker(props: PolicyWriterP
 					</MySelectPopover>
 				</MySelect>
 			)}
-			<p
-				className={
-					"FilesPropertiesModalWritePolicy-description" satisfies FilesPropertiesModalWritePolicy_ClassNames
-				}
-			>
+			<p className={"FilesPropertiesModalWritePolicy-description" satisfies FilesPropertiesModalWritePolicy_ClassNames}>
 				Only the selected writer can edit. Each item&apos;s content has its own protection.
 			</p>
 		</>
@@ -516,7 +516,12 @@ const FilesPropertiesModalWritePolicy = memo(function FilesPropertiesModalWriteP
 
 	const handleSaveDefault = () => {
 		const newChildWritePolicy = saved_policy_from_draft(defaultChoice);
-		if (isDefaultRunning || !canManage || !defaultDraft || (defaultChoice.mode === "writer" && !defaultWriterSelected)) {
+		if (
+			isDefaultRunning ||
+			!canManage ||
+			!defaultDraft ||
+			(defaultChoice.mode === "writer" && !defaultWriterSelected)
+		) {
 			return;
 		}
 
@@ -693,34 +698,23 @@ const FilesPropertiesModalWritePolicy = memo(function FilesPropertiesModalWriteP
 			</div>
 			{applyUnavailable ? (
 				<p
-					className={
-						"FilesPropertiesModalWritePolicy-description" satisfies FilesPropertiesModalWritePolicy_ClassNames
-					}
+					className={"FilesPropertiesModalWritePolicy-description" satisfies FilesPropertiesModalWritePolicy_ClassNames}
 				>
 					The selected writer is unavailable, so bulk apply is off. Pick a writer with access first.
 				</p>
 			) : null}
 			{applyConfirm !== undefined && nodeKind === "folder" ? (
 				<div
-					className={
-						"FilesPropertiesModalWritePolicy-description" satisfies FilesPropertiesModalWritePolicy_ClassNames
-					}
+					className={"FilesPropertiesModalWritePolicy-description" satisfies FilesPropertiesModalWritePolicy_ClassNames}
 				>
 					<p>
-						Set all non-archived files and subfolders inside this folder to {policy_choice_label(applyConfirm)}?
-						This replaces their current protection, including selected writers. New-item defaults stay
-						unchanged.
+						Set all non-archived files and subfolders inside this folder to {policy_choice_label(applyConfirm)}? This
+						replaces their current protection, including selected writers. New-item defaults stay unchanged.
 					</p>
 					<div
-						className={
-							"FilesPropertiesModalWritePolicy-actions" satisfies FilesPropertiesModalWritePolicy_ClassNames
-						}
+						className={"FilesPropertiesModalWritePolicy-actions" satisfies FilesPropertiesModalWritePolicy_ClassNames}
 					>
-						<MyButton
-							variant="outline"
-							disabled={isApplying}
-							onClick={handleApplyToContents}
-						>
+						<MyButton variant="outline" disabled={isApplying} onClick={handleApplyToContents}>
 							{isApplying ? "Applying…" : "Apply"}
 						</MyButton>
 						<MyButton
@@ -739,9 +733,7 @@ const FilesPropertiesModalWritePolicy = memo(function FilesPropertiesModalWriteP
 			) : null}
 			{applyResult ? (
 				<p
-					className={
-						"FilesPropertiesModalWritePolicy-description" satisfies FilesPropertiesModalWritePolicy_ClassNames
-					}
+					className={"FilesPropertiesModalWritePolicy-description" satisfies FilesPropertiesModalWritePolicy_ClassNames}
 				>
 					{applyResult}
 				</p>
@@ -785,12 +777,9 @@ const FilesPropertiesModalWritePolicy = memo(function FilesPropertiesModalWriteP
 							userIds={userIds ?? undefined}
 							users={users}
 							currentWriterName={(() => {
-								const writer = (
-									managementState?.localDefault as { writer?: { name?: string } | null } | undefined
-								)?.writer;
-								return writer && typeof writer === "object" && "name" in writer
-									? (writer.name ?? null)
-									: null;
+								const writer = (managementState?.localDefault as { writer?: { name?: string } | null } | undefined)
+									?.writer;
+								return writer && typeof writer === "object" && "name" in writer ? (writer.name ?? null) : null;
 							})()}
 						/>
 					) : null}
@@ -800,13 +789,11 @@ const FilesPropertiesModalWritePolicy = memo(function FilesPropertiesModalWriteP
 							"FilesPropertiesModalWritePolicy-description" satisfies FilesPropertiesModalWritePolicy_ClassNames
 						}
 					>
-						Copied once to new files and subfolders. Existing items keep their settings. New subfolders
-						copy this default too, but later changes do not cascade. Copies keep their source settings.
+						Copied once to new files and subfolders. Existing items keep their settings. New subfolders copy this
+						default too, but later changes do not cascade. Copies keep their source settings.
 					</p>
 					<div
-						className={
-							"FilesPropertiesModalWritePolicy-actions" satisfies FilesPropertiesModalWritePolicy_ClassNames
-						}
+						className={"FilesPropertiesModalWritePolicy-actions" satisfies FilesPropertiesModalWritePolicy_ClassNames}
 					>
 						<MyButton
 							variant="outline"
@@ -819,9 +806,7 @@ const FilesPropertiesModalWritePolicy = memo(function FilesPropertiesModalWriteP
 					</div>
 					{defaultError ? (
 						<p
-							className={
-								"FilesPropertiesModalWritePolicy-error" satisfies FilesPropertiesModalWritePolicy_ClassNames
-							}
+							className={"FilesPropertiesModalWritePolicy-error" satisfies FilesPropertiesModalWritePolicy_ClassNames}
 							role="alert"
 						>
 							{defaultError}
@@ -1469,10 +1454,7 @@ export const FilesPropertiesModal = memo(function FilesPropertiesModal(props: Fi
 									aria-label="Protection"
 									className={"FilesPropertiesModal-section" satisfies FilesPropertiesModal_ClassNames}
 								>
-									<FilesPropertiesModalWritePolicy
-										nodeId={nodeId}
-										nodeKind={nodeKind}
-									/>
+									<FilesPropertiesModalWritePolicy nodeId={nodeId} nodeKind={nodeKind} />
 								</section>
 
 								{/* Only a text file can have a collaborative document, and the section itself decides

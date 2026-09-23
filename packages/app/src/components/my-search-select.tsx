@@ -74,12 +74,7 @@ export const MySearchSelectSearch = memo(function MySearchSelectSearch(props: My
 			<MyInput variant="floating">
 				<MyInputBackground />
 				<MyInputArea>
-					<MyComboboxInputControl
-						autoFocus={autoFocus}
-						autoSelect={autoSelect}
-						className={inputClassName}
-						{...rest}
-					/>
+					<MyComboboxInputControl autoFocus={autoFocus} autoSelect={autoSelect} className={inputClassName} {...rest} />
 				</MyInputArea>
 				<MyInputBox />
 			</MyInput>

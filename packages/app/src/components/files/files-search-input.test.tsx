@@ -65,7 +65,9 @@ describe("FilesSearchInput", () => {
 	describe.each(["sidebar", "palette"] as const)("%s suggestions", (variant) => {
 		test("opens on entry, respects Escape while typing, and reopens with Ctrl+Space", async () => {
 			const onChange = vi.fn();
-			render(<FilesSearchInput {...props} variant={variant} initialQuery="status:open" onSearchQueryChange={onChange} />);
+			render(
+				<FilesSearchInput {...props} variant={variant} initialQuery="status:open" onSearchQueryChange={onChange} />,
+			);
 			const input = screen.getByRole<HTMLInputElement>("combobox");
 			act(() => input.focus());
 			expect(await screen.findByRole("option", { name: "Path file.path" })).toBeTruthy();

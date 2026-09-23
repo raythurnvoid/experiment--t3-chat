@@ -112,9 +112,7 @@ export const AppRouteError = memo(function AppRouteError(props: AppRouteError_Pr
 					<details className={cn("AppRouteError-technical-details" satisfies AppRouteError_ClassNames)}>
 						<summary className={cn("AppRouteError-technical-details-toggle" satisfies AppRouteError_ClassNames)}>
 							<span>Technical details</span>
-							<MyIcon
-								className={cn("AppRouteError-technical-details-toggle-icon" satisfies AppRouteError_ClassNames)}
-							>
+							<MyIcon className={cn("AppRouteError-technical-details-toggle-icon" satisfies AppRouteError_ClassNames)}>
 								<ChevronRight />
 							</MyIcon>
 						</summary>

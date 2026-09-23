@@ -1490,8 +1490,17 @@ type FilesSidebarTreeItemPrimaryContent_Props = {
 const FilesSidebarTreeItemPrimaryContent = memo(function FilesSidebarTreeItemPrimaryContent(
 	props: FilesSidebarTreeItemPrimaryContent_Props,
 ) {
-	const { title, kind, nodeId, renameInputProps, isRestricted, isUploading, readOnlyTooltip, renameError, onRenameErrorClear } =
-		props;
+	const {
+		title,
+		kind,
+		nodeId,
+		renameInputProps,
+		isRestricted,
+		isUploading,
+		readOnlyTooltip,
+		renameError,
+		onRenameErrorClear,
+	} = props;
 	const { membershipId } = AppTenantProvider.useContext();
 
 	const activities = useFileNodeActivities({ membershipId, nodeId });
@@ -2010,10 +2019,10 @@ const FilesSidebarTreeRow = memo(
 			isTreeDragging,
 			isFallbackTabStop,
 			expandedFolderActionsVisible,
-		canWrite,
-		canUnarchive,
-		canWriteRoot,
-		hasVisibleProtectedDescendant,
+			canWrite,
+			canUnarchive,
+			canWriteRoot,
+			hasVisibleProtectedDescendant,
 			isFolderLoading,
 			onCreateNode,
 			onStartRename,
@@ -2073,8 +2082,7 @@ const FilesSidebarTreeRow = memo(
 		});
 
 		const parentItemData = item.getParent()?.getItemData();
-		const parentCanWrite =
-			!parentItemData || !files_is_node(parentItemData) ? canWriteRoot : parentItemData.canWrite;
+		const parentCanWrite = !parentItemData || !files_is_node(parentItemData) ? canWriteRoot : parentItemData.canWrite;
 		const capabilities = files_get_read_only_capabilities({
 			canWrite,
 			parentCanWrite,
@@ -3095,16 +3103,16 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 										isTreeDragging={isTreeDragging}
 										isFallbackTabStop={!hasFocusedRenderedItem && itemIndex === 0}
 										expandedFolderActionsVisible={expandedFolderActionsVisible}
-									canWrite={canWriteItem(itemData)}
-									canUnarchive={canUnarchiveItem(itemData)}
-									canWriteRoot={canWriteRoot}
-									hasVisibleProtectedDescendant={files_is_node(itemData) && protectedDescendantIds.has(itemData._id)}
-									protectedDescendantIds={protectedDescendantIds}
-									isFolderLoading={
-										item.isExpanded() &&
-										(folderStatusById?.get(itemId) === "loading" ||
-											(folderStatusById?.get(itemId) === "more" && item.getChildren().length === 0))
-									}
+										canWrite={canWriteItem(itemData)}
+										canUnarchive={canUnarchiveItem(itemData)}
+										canWriteRoot={canWriteRoot}
+										hasVisibleProtectedDescendant={files_is_node(itemData) && protectedDescendantIds.has(itemData._id)}
+										protectedDescendantIds={protectedDescendantIds}
+										isFolderLoading={
+											item.isExpanded() &&
+											(folderStatusById?.get(itemId) === "loading" ||
+												(folderStatusById?.get(itemId) === "more" && item.getChildren().length === 0))
+										}
 										onCreateNode={onCreateNode}
 										onStartRename={onStartRename}
 										onRenameErrorClear={onRenameErrorClear}
@@ -4290,9 +4298,9 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		nodeId: string | null;
 	} | null>(null);
 	const createNodeModalRef = useRef<FileNodeViewFolderCreateNodeModal_Ref | null>(null);
-	const [createModalParentId, setCreateModalParentId] = useState<
-		typeof files_ROOT_ID | app_convex_Id<"files_nodes">
-	>(files_ROOT_ID);
+	const [createModalParentId, setCreateModalParentId] = useState<typeof files_ROOT_ID | app_convex_Id<"files_nodes">>(
+		files_ROOT_ID,
+	);
 	const [isUploadingSingleFile, setIsUploadingSingleFile] = useState(false);
 	const [uploadDraft, setUploadDraft] = useState<FilesSidebarUploadDraft | null>(null);
 	const [pendingActionNodeIds, setPendingActionNodeIds] = useState<Set<string>>(new Set());
@@ -5740,80 +5748,85 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		startRename(itemId);
 	});
 
-	const createWritableSidebarNode = useFn((parentNodeId: typeof files_ROOT_ID | app_convex_Id<"files_nodes">, kind: app_convex_Doc<"files_nodes">["kind"]) => {
-		if (!treeItems) {
-			console.error(should_never_happen("[FilesSidebar.createWritableSidebarNode] missing deps", { treeItems }));
-			return;
-		}
+	const createWritableSidebarNode = useFn(
+		(
+			parentNodeId: typeof files_ROOT_ID | app_convex_Id<"files_nodes">,
+			kind: app_convex_Doc<"files_nodes">["kind"],
+		) => {
+			if (!treeItems) {
+				console.error(should_never_happen("[FilesSidebar.createWritableSidebarNode] missing deps", { treeItems }));
+				return;
+			}
 
-		const nextNodeName = get_default_node_name({
-			parentId: parentNodeId,
-			kind,
-			treeItems,
-		});
+			const nextNodeName = get_default_node_name({
+				parentId: parentNodeId,
+				kind,
+				treeItems,
+			});
 
-		const createRequest = { membershipId, fromNodeId: selectedNodeId, nodeId: null as string | null };
-		createRequestRef.current = createRequest;
-		setIsCreatingFile(true);
-		const createNodePromise =
-			kind === "folder"
-				? convex.mutation(app_convex_api.files_nodes.create_folder_node, {
-						membershipId,
-						parentId: parentNodeId === files_ROOT_ID ? files_ROOT_ID : (parentNodeId as app_convex_Id<"files_nodes">),
-						path: nextNodeName,
-					})
-				: convex.action(app_convex_api.files_nodes_content.create_text_node, {
-						membershipId,
-						parentId: parentNodeId === files_ROOT_ID ? files_ROOT_ID : (parentNodeId as app_convex_Id<"files_nodes">),
-						path: nextNodeName,
-					});
+			const createRequest = { membershipId, fromNodeId: selectedNodeId, nodeId: null as string | null };
+			createRequestRef.current = createRequest;
+			setIsCreatingFile(true);
+			const createNodePromise =
+				kind === "folder"
+					? convex.mutation(app_convex_api.files_nodes.create_folder_node, {
+							membershipId,
+							parentId: parentNodeId === files_ROOT_ID ? files_ROOT_ID : (parentNodeId as app_convex_Id<"files_nodes">),
+							path: nextNodeName,
+						})
+					: convex.action(app_convex_api.files_nodes_content.create_text_node, {
+							membershipId,
+							parentId: parentNodeId === files_ROOT_ID ? files_ROOT_ID : (parentNodeId as app_convex_Id<"files_nodes">),
+							path: nextNodeName,
+						});
 
-		createNodePromise
-			.then((result) => {
-				if (createRequestRef.current !== createRequest) {
-					return;
-				}
-				if (result._nay) {
-					console.error("[FilesSidebar.handleCreateNodeClick] Failed to create node", {
-						result,
-					});
-					// A refused permission is not a bad name. Showing it under the name input would tell the
-					// user to pick another name, which never helps here.
-					if (result._nay.message === "Permission denied") {
-						toast.error("You don't have permission to create files in this workspace.");
+			createNodePromise
+				.then((result) => {
+					if (createRequestRef.current !== createRequest) {
 						return;
 					}
-					const createNodeValidation = files_get_node_path_validation({
-						scopeId: membershipId,
-						fileNodesList: treeItems.list,
-						parentId: parentNodeId === files_ROOT_ID ? files_ROOT_ID : (parentNodeId as app_convex_Id<"files_nodes">),
-						kind,
-						nameOrPath: nextNodeName,
-					});
-					createNodeValidation.cacheValidationMessage(result._nay.message);
-					return;
-				}
+					if (result._nay) {
+						console.error("[FilesSidebar.handleCreateNodeClick] Failed to create node", {
+							result,
+						});
+						// A refused permission is not a bad name. Showing it under the name input would tell the
+						// user to pick another name, which never helps here.
+						if (result._nay.message === "Permission denied") {
+							toast.error("You don't have permission to create files in this workspace.");
+							return;
+						}
+						const createNodeValidation = files_get_node_path_validation({
+							scopeId: membershipId,
+							fileNodesList: treeItems.list,
+							parentId: parentNodeId === files_ROOT_ID ? files_ROOT_ID : (parentNodeId as app_convex_Id<"files_nodes">),
+							kind,
+							nameOrPath: nextNodeName,
+						});
+						createNodeValidation.cacheValidationMessage(result._nay.message);
+						return;
+					}
 
-				createRequest.nodeId = result._yay.nodeId;
-				return navigate({
-					to: "/w/$organizationName/$workspaceName/files",
-					params: { organizationName, workspaceName },
-					search: { nodeId: result._yay.nodeId, view },
+					createRequest.nodeId = result._yay.nodeId;
+					return navigate({
+						to: "/w/$organizationName/$workspaceName/files",
+						params: { organizationName, workspaceName },
+						search: { nodeId: result._yay.nodeId, view },
+					});
+				})
+				.catch((error) => {
+					createRequest.nodeId = null;
+					console.error("[FilesSidebar.handleCreateNodeClick] Error creating node", { error });
+				})
+				.finally(() => {
+					// Successful navigation can finish before the new row arrives. The rename effect finishes that request.
+					if (createRequestRef.current !== createRequest || createRequest.nodeId) {
+						return;
+					}
+					createRequestRef.current = null;
+					setIsCreatingFile(false);
 				});
-			})
-			.catch((error) => {
-				createRequest.nodeId = null;
-				console.error("[FilesSidebar.handleCreateNodeClick] Error creating node", { error });
-			})
-			.finally(() => {
-				// Successful navigation can finish before the new row arrives. The rename effect finishes that request.
-				if (createRequestRef.current !== createRequest || createRequest.nodeId) {
-					return;
-				}
-				createRequestRef.current = null;
-				setIsCreatingFile(false);
-			});
-	});
+		},
+	);
 
 	const handleLoadMore = useFn<FilesSidebarTree_Props["onLoadMore"]>((folderId) => {
 		// Folder ids come from tree rows, so each one is the root or a node id.
@@ -5831,8 +5844,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 			return;
 		}
 
-		const parentId =
-			parentNodeId === files_ROOT_ID ? files_ROOT_ID : (parentNodeId as app_convex_Id<"files_nodes">);
+		const parentId = parentNodeId === files_ROOT_ID ? files_ROOT_ID : (parentNodeId as app_convex_Id<"files_nodes">);
 		if (parentId !== files_ROOT_ID) {
 			convex
 				.query(app_convex_api.files_nodes.get_node_write_policy_management_state, {
@@ -5857,57 +5869,55 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		createWritableSidebarNode(parentId, kind);
 	});
 
-	const handleCreateNodeModalSubmit = useFn(
-		(args: { kind: app_convex_Doc<"files_nodes">["kind"]; path: string }) => {
-			const { kind, path } = args;
-			setIsCreatingFile(true);
-			const createNodePromise =
-				kind === "folder"
-					? convex.mutation(app_convex_api.files_nodes.create_folder_node, {
-							membershipId,
-							parentId: createModalParentId,
-							path,
-						})
-					: convex.action(app_convex_api.files_nodes_content.create_text_node, {
-							membershipId,
-							parentId: createModalParentId,
-							path,
-						});
+	const handleCreateNodeModalSubmit = useFn((args: { kind: app_convex_Doc<"files_nodes">["kind"]; path: string }) => {
+		const { kind, path } = args;
+		setIsCreatingFile(true);
+		const createNodePromise =
+			kind === "folder"
+				? convex.mutation(app_convex_api.files_nodes.create_folder_node, {
+						membershipId,
+						parentId: createModalParentId,
+						path,
+					})
+				: convex.action(app_convex_api.files_nodes_content.create_text_node, {
+						membershipId,
+						parentId: createModalParentId,
+						path,
+					});
 
-			return createNodePromise
-				.then((result) => {
-					if (result._nay) {
-						console.error("[FilesSidebar.handleCreateNodeModalSubmit] Failed to create node", {
-							result,
-							parentId: createModalParentId,
-							kind,
-						});
-						if (result._nay.message === "Permission denied") {
-							toast.error("You don't have permission to create files in this workspace.");
-							return "You don't have permission to create files here.";
-						}
-						return result._nay.message;
-					}
-
-					return navigate({
-						to: "/w/$organizationName/$workspaceName/files",
-						params: { organizationName, workspaceName },
-						search: { nodeId: result._yay.nodeId, view },
-					}).then(() => null);
-				})
-				.catch((error: unknown) => {
-					console.error("[FilesSidebar.handleCreateNodeModalSubmit] Error creating node", {
-						error,
+		return createNodePromise
+			.then((result) => {
+				if (result._nay) {
+					console.error("[FilesSidebar.handleCreateNodeModalSubmit] Failed to create node", {
+						result,
 						parentId: createModalParentId,
 						kind,
 					});
-					return `Failed to create ${kind}.`;
-				})
-				.finally(() => {
-					setIsCreatingFile(false);
+					if (result._nay.message === "Permission denied") {
+						toast.error("You don't have permission to create files in this workspace.");
+						return "You don't have permission to create files here.";
+					}
+					return result._nay.message;
+				}
+
+				return navigate({
+					to: "/w/$organizationName/$workspaceName/files",
+					params: { organizationName, workspaceName },
+					search: { nodeId: result._yay.nodeId, view },
+				}).then(() => null);
+			})
+			.catch((error: unknown) => {
+				console.error("[FilesSidebar.handleCreateNodeModalSubmit] Error creating node", {
+					error,
+					parentId: createModalParentId,
+					kind,
 				});
-		},
-	);
+				return `Failed to create ${kind}.`;
+			})
+			.finally(() => {
+				setIsCreatingFile(false);
+			});
+	});
 
 	const handleCopy = useFn<FilesSidebarTree_Props["onCopy"]>((nodeId) => {
 		const shouldCopySelectedFiles = selectedNodeIds.has(nodeId);

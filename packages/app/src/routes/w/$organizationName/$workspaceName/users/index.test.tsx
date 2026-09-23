@@ -412,9 +412,9 @@ describe("RouteUsers member emails", () => {
 	test("shows each member's email under their name", () => {
 		render(<PageComponent />);
 
-		expect(document.querySelector(`[data-user-id="${TARGET_USER_ID}"] .RouteUsersUserListItem-email`)?.textContent).toBe(
-			`${TARGET_USER_ID}@test.local`,
-		);
+		expect(
+			document.querySelector(`[data-user-id="${TARGET_USER_ID}"] .RouteUsersUserListItem-email`)?.textContent,
+		).toBe(`${TARGET_USER_ID}@test.local`);
 		expect(document.querySelector(`[data-user-id="${OWNER_USER_ID}"] .RouteUsersUserListItem-email`)?.textContent).toBe(
 			`${OWNER_USER_ID}@test.local`,
 		);

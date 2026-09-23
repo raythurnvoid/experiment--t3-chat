@@ -15,14 +15,7 @@ type PluginsPublishButton_Props = {
 };
 
 export const PluginsPublishButton = memo(function PluginsPublishButton(props: PluginsPublishButton_Props) {
-	const {
-		repositoryId,
-		repositoryLabel,
-		disabled = false,
-		buttonVariant,
-		onBusyChange,
-		onSessionChange,
-	} = props;
+	const { repositoryId, repositoryLabel, disabled = false, buttonVariant, onBusyChange, onSessionChange } = props;
 	const triggerRef = useRef<HTMLButtonElement>(null);
 	const publishSession = PluginsPublishSessionProvider.useContext();
 	const active = publishSession.session?.repositoryId === repositoryId;

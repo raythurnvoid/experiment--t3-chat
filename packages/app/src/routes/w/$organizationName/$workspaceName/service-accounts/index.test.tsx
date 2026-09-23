@@ -93,13 +93,11 @@ beforeEach(() => {
 		return undefined;
 	});
 
-	pageMock
-		.mockReset()
-		.mockImplementation((query: string) => ({
-			results: query === "accounts" ? [ACCOUNT] : [],
-			status: "Exhausted",
-			loadMore: loadMoreMock,
-		}));
+	pageMock.mockReset().mockImplementation((query: string) => ({
+		results: query === "accounts" ? [ACCOUNT] : [],
+		status: "Exhausted",
+		loadMore: loadMoreMock,
+	}));
 });
 
 afterEach(cleanup);

@@ -92,10 +92,10 @@ const MAX_ATTEMPTS = 3;
 function is_independent_copy(proposal: Doc<"files_pending_updates">) {
 	return Boolean(
 		proposal.copiedFrom &&
-			!proposal.pendingMove &&
-			!proposal.pendingArchive &&
-			!proposal.preparation &&
-			(proposal.target.kind === "private" ? proposal.createIntent : proposal.pendingReplacement),
+		!proposal.pendingMove &&
+		!proposal.pendingArchive &&
+		!proposal.preparation &&
+		(proposal.target.kind === "private" ? proposal.createIntent : proposal.pendingReplacement),
 	);
 }
 
@@ -2012,11 +2012,11 @@ async function build_review_dependencies(
 			units: [...groups.values()].sort((a, b) => a[0]!.item.order - b[0]!.item.order),
 			scanRequired: Boolean(
 				requiredTargets.size ||
-					selectedDestinations.size ||
-					selectedMoveSources.size ||
-					selectedAncestorPaths.size ||
-					archives.size ||
-					privateDiscards.size,
+				selectedDestinations.size ||
+				selectedMoveSources.size ||
+				selectedAncestorPaths.size ||
+				archives.size ||
+				privateDiscards.size,
 			),
 			unreviewed: (contexts: Awaited<ReturnType<typeof db_get_plan_context>>[]) =>
 				contexts.filter((context) => !indexById.has(context.proposal._id) && requiredBy(context).size > 0),

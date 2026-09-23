@@ -242,7 +242,8 @@ export function organizations_is_reserved_workspace_id<T>(
 	workspaceId: T | typeof organizations_GLOBAL_GITHUB_WORKSPACE_ID | typeof organizations_GLOBAL_PLUGINS_WORKSPACE_ID,
 ): workspaceId is typeof organizations_GLOBAL_GITHUB_WORKSPACE_ID | typeof organizations_GLOBAL_PLUGINS_WORKSPACE_ID {
 	return (
-		workspaceId === organizations_GLOBAL_GITHUB_WORKSPACE_ID || workspaceId === organizations_GLOBAL_PLUGINS_WORKSPACE_ID
+		workspaceId === organizations_GLOBAL_GITHUB_WORKSPACE_ID ||
+		workspaceId === organizations_GLOBAL_PLUGINS_WORKSPACE_ID
 	);
 }
 

@@ -109,9 +109,7 @@ export type MyGridTableColumnHeader_ClassNames = "MyGridTableColumnHeader";
 
 export type MyGridTableColumnHeader_Props = MyGridTable_DivProps;
 
-export const MyGridTableColumnHeader = memo(function MyGridTableColumnHeader(
-	props: MyGridTableColumnHeader_Props,
-) {
+export const MyGridTableColumnHeader = memo(function MyGridTableColumnHeader(props: MyGridTableColumnHeader_Props) {
 	const { ref, id, className, children, ...rest } = props;
 
 	return (

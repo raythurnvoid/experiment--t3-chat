@@ -555,24 +555,27 @@ describe("public_api_http_read_bytes", () => {
 		expect(grants[0]?.remainingReadBytes).toBe(0);
 	});
 
-	test.each(["source", "grant", "membership", "user"] as const)("refuses a changed %s after fetching", async (change) => {
-		const { t, db, nodeId, read } = await create_fixture();
-		const gate = defer_download_url();
-		const response = read();
-		await gate.started;
-		await t.run(async (ctx) => {
-			if (change === "source") await ctx.db.patch("files_nodes", nodeId, { contentType: "application/pdf" });
-			if (change === "user") await ctx.db.patch("users", db.userId, { deletedAt: Date.now() });
-			if (change === "membership")
-				await ctx.db.patch("organizations_workspaces_users", db.membershipId, { active: false });
-			if (change === "grant") {
-				const grant = await ctx.db.query("public_api_grants").first();
-				await ctx.db.patch("public_api_grants", grant!._id, { expiresAt: 0 });
-			}
-		});
-		gate.release();
-		expect((await response).status).toBe(change === "source" ? 409 : 404);
-	});
+	test.each(["source", "grant", "membership", "user"] as const)(
+		"refuses a changed %s after fetching",
+		async (change) => {
+			const { t, db, nodeId, read } = await create_fixture();
+			const gate = defer_download_url();
+			const response = read();
+			await gate.started;
+			await t.run(async (ctx) => {
+				if (change === "source") await ctx.db.patch("files_nodes", nodeId, { contentType: "application/pdf" });
+				if (change === "user") await ctx.db.patch("users", db.userId, { deletedAt: Date.now() });
+				if (change === "membership")
+					await ctx.db.patch("organizations_workspaces_users", db.membershipId, { active: false });
+				if (change === "grant") {
+					const grant = await ctx.db.query("public_api_grants").first();
+					await ctx.db.patch("public_api_grants", grant!._id, { expiresAt: 0 });
+				}
+			});
+			gate.release();
+			expect((await response).status).toBe(change === "source" ? 409 : 404);
+		},
+	);
 
 	test("refuses an ignored range or oversized response and keeps the charge", async () => {
 		const { t, read } = await create_fixture();

@@ -963,12 +963,7 @@ export const clear_pending_root_batch = internalMutation({
 	returns: v.object({ done: v.boolean(), deletedCount: v.number(), superseded: v.boolean() }),
 	handler: async (ctx, args) => {
 		const mount = await ctx.db.get("github_mounts", args.mountId);
-		if (
-			!mount ||
-			mount.syncRunId !== args.syncRunId ||
-			mount.status !== "running" ||
-			mount.pendingCommitSha == null
-		) {
+		if (!mount || mount.syncRunId !== args.syncRunId || mount.status !== "running" || mount.pendingCommitSha == null) {
 			return { done: true, deletedCount: 0, superseded: true };
 		}
 

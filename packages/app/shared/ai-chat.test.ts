@@ -1,11 +1,6 @@
 import { describe, expect, test } from "vitest";
 
-import {
-	ai_chat_DEFAULT_MODEL_ID,
-	ai_chat_is_model_id,
-	ai_chat_MODEL_IDS,
-	ai_chat_MODELS,
-} from "./ai-chat.ts";
+import { ai_chat_DEFAULT_MODEL_ID, ai_chat_is_model_id, ai_chat_MODEL_IDS, ai_chat_MODELS } from "./ai-chat.ts";
 
 describe("ai_chat model catalog", () => {
 	test("keeps GPT-5.4 nano as the default allowed model", () => {

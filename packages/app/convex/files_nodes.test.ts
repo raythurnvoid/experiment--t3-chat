@@ -2128,7 +2128,7 @@ describe("files_nodes_db_preflight_move", () => {
 			expect(createdFolders).toHaveLength(2);
 			const shared = createdFolders.find((node) => node.name === "shared")!;
 			for (const folder of createdFolders) {
-				expect(folder).toMatchObject({ restrictedScopeNodeId: target._id});
+				expect(folder).toMatchObject({ restrictedScopeNodeId: target._id });
 			}
 			for (const source of sources) {
 				expect(await ctx.db.get("files_nodes", source._id)).toMatchObject({
@@ -2641,9 +2641,7 @@ describe("files_nodes_db_preflight_move", () => {
 				if (childState !== "active") {
 					await ctx.db.patch("files_nodes", child._id, {
 						archiveOperationId: "earlier-archive",
-						...(childState === "read_only"
-							? { writePolicy: { mode: "read_only" as const }}
-							: {}),
+						...(childState === "read_only" ? { writePolicy: { mode: "read_only" as const } } : {}),
 					});
 				}
 			});
@@ -14393,8 +14391,8 @@ test("text_search_files paginates unified pending and committed chunks with the 
 	expect(
 		Boolean(
 			parsedCursor &&
-				typeof parsedCursor === "object" &&
-				("pendingSkip" in parsedCursor || "pendingDone" in parsedCursor || "committed" in parsedCursor),
+			typeof parsedCursor === "object" &&
+			("pendingSkip" in parsedCursor || "pendingDone" in parsedCursor || "committed" in parsedCursor),
 		),
 	).toBe(false);
 
@@ -19838,7 +19836,7 @@ describe("files_nodes.move_nodes read-only gates", () => {
 		});
 		expect(movedSibling._nay).toBeUndefined();
 		expect((await read_lock_node(t, siblingId))?.path).toBe("/sibling");
-		expect(await read_lock_node(t, siblingId)).toMatchObject({ writePolicy: null});
+		expect(await read_lock_node(t, siblingId)).toMatchObject({ writePolicy: null });
 	});
 
 	test("a writable folder can be moved while an archived descendant stays locked", async () => {
@@ -21299,15 +21297,15 @@ describe("member controls on plugin-labeled nodes", () => {
 				(await f.asOwner.mutation(api.files_nodes.set_node_write_policy, { ...args, writePolicy }))._nay,
 			).toBeUndefined();
 		}
-		expect(await read_lock_node(t, f.folderId)).toMatchObject({ writePolicy});
+		expect(await read_lock_node(t, f.folderId)).toMatchObject({ writePolicy });
 		for (const nodeId of [f.childId, f.leafId]) {
-			expect(await read_lock_node(t, nodeId)).toMatchObject({ writePolicy: null});
+			expect(await read_lock_node(t, nodeId)).toMatchObject({ writePolicy: null });
 		}
 		expect(
 			(await f.asOwner.mutation(api.files_nodes.set_node_write_policy, { ...args, writePolicy: null }))._nay,
 		).toBeUndefined();
 		for (const nodeId of [f.folderId, f.childId, f.leafId]) {
-			expect(await read_lock_node(t, nodeId)).toMatchObject({ writePolicy: null});
+			expect(await read_lock_node(t, nodeId)).toMatchObject({ writePolicy: null });
 		}
 		expect(
 			await f.asOwner.query(api.files_metadata.get_entries, {
@@ -21346,7 +21344,7 @@ describe("member controls on plugin-labeled nodes", () => {
 		).toBeUndefined();
 		expect(await read_lock_node(t, f.folderId)).toMatchObject({ writePolicy: outerPolicy });
 		for (const nodeId of [f.childId, f.leafId]) {
-			expect(await read_lock_node(t, nodeId)).toMatchObject({ writePolicy: null});
+			expect(await read_lock_node(t, nodeId)).toMatchObject({ writePolicy: null });
 		}
 	});
 
@@ -21371,9 +21369,9 @@ describe("member controls on plugin-labeled nodes", () => {
 		expect(
 			(await f.asOwner.mutation(api.files_nodes.set_node_write_policy, { ...args, writePolicy: null }))._nay,
 		).toBeUndefined();
-		expect(await read_lock_node(t, f.folderId)).toMatchObject({ writePolicy: null});
-		expect(await read_lock_node(t, f.childId)).toMatchObject({ writePolicy});
-		expect(await read_lock_node(t, f.leafId)).toMatchObject({ writePolicy: null});
+		expect(await read_lock_node(t, f.folderId)).toMatchObject({ writePolicy: null });
+		expect(await read_lock_node(t, f.childId)).toMatchObject({ writePolicy });
+		expect(await read_lock_node(t, f.leafId)).toMatchObject({ writePolicy: null });
 	});
 });
 

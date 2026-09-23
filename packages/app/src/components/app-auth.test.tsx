@@ -165,9 +165,7 @@ describe("AppAuthProvider anonymous auth", () => {
 			expect(screen.getByTestId("user-id").textContent).toBe("cached-user");
 
 			// Every call must carry the cached refresh token. A call without one is the create path.
-			expect(appFetchAuthAnonymousMock.mock.calls.every((call) => call[0]?.refreshToken === "cached-token")).toBe(
-				true,
-			);
+			expect(appFetchAuthAnonymousMock.mock.calls.every((call) => call[0]?.refreshToken === "cached-token")).toBe(true);
 			expect(window.localStorage.getItem("app::auth::anonymous_token")).toBe("cached-token");
 			expect(window.localStorage.getItem("app::auth::anonymous_token_user_id")).toBe("cached-user");
 		} finally {

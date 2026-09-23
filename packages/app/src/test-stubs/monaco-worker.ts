@@ -1,2 +1,1 @@
-export default class MonacoWorker {
-}
+export default class MonacoWorker {}

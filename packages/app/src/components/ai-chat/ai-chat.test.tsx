@@ -350,9 +350,7 @@ describe("AiChatThread", () => {
 		expect(composer.dataset.selectedModelId).toBe("gpt-5.4-mini");
 		expect(composer.dataset.selectedModeId).toBe("ask");
 		expect(composer.dataset.canQueue).toBe("true");
-		expect(screen.getByRole("status").textContent).toBe(
-			"1 queued message. Queue is full. Editing a queued message.",
-		);
+		expect(screen.getByRole("status").textContent).toBe("1 queued message. Queue is full. Editing a queued message.");
 
 		fireEvent.click(screen.getByRole("button", { name: "Save queued message" }));
 

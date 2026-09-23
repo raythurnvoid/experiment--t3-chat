@@ -161,9 +161,7 @@ describe("AiChatQueuedMessages", () => {
 		});
 		const instructionsId = secondMessageAction.getAttribute("aria-describedby");
 		expect(instructionsId).not.toBeNull();
-		expect(document.getElementById(instructionsId ?? "")?.textContent).toContain(
-			"Press space bar to start a drag",
-		);
+		expect(document.getElementById(instructionsId ?? "")?.textContent).toContain("Press space bar to start a drag");
 	});
 
 	test("cancels keyboard drag without changing order", async () => {

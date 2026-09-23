@@ -120,7 +120,9 @@ describe("FileEditorSidebar", () => {
 	test("a plain text node shows Details instead of Comments and selects it by default", () => {
 		const node = makeNode({ id: "node_json", name: "config.json", path: "docs/config.json", textKind: "plain_text" });
 
-		render(<FileEditorSidebar node={node} commentsContainerRef={() => {}} browserNodeId={null} browserNodeKind={null} />);
+		render(
+			<FileEditorSidebar node={node} commentsContainerRef={() => {}} browserNodeId={null} browserNodeKind={null} />,
+		);
 
 		expect(screen.getByRole("tab", { name: "Details", selected: true })).toBeTruthy();
 		expect(screen.queryByRole("tab", { name: "Comments" })).toBeNull();
@@ -131,7 +133,9 @@ describe("FileEditorSidebar", () => {
 	test("a rich text node keeps the Comments tab", () => {
 		const node = makeNode({ id: "node_md", name: "notes.md", path: "docs/notes.md", textKind: "rich_text" });
 
-		render(<FileEditorSidebar node={node} commentsContainerRef={() => {}} browserNodeId={null} browserNodeKind={null} />);
+		render(
+			<FileEditorSidebar node={node} commentsContainerRef={() => {}} browserNodeId={null} browserNodeKind={null} />,
+		);
 
 		expect(screen.getByRole("tab", { name: "Comments", selected: true })).toBeTruthy();
 		expect(screen.queryByRole("tab", { name: "Details" })).toBeNull();
@@ -146,7 +150,9 @@ describe("FileEditorSidebar", () => {
 			hasEditableYjsState: false,
 		});
 
-		render(<FileEditorSidebar node={node} commentsContainerRef={() => {}} browserNodeId={null} browserNodeKind={null} />);
+		render(
+			<FileEditorSidebar node={node} commentsContainerRef={() => {}} browserNodeId={null} browserNodeKind={null} />,
+		);
 
 		// Its comment marks are saved with the file, so the threads must be reachable...
 		expect(screen.getByRole("tab", { name: "Comments", selected: true })).toBeTruthy();
@@ -157,7 +163,9 @@ describe("FileEditorSidebar", () => {
 	test("a stored file without editable state keeps the Comments tab", () => {
 		const node = makeNode({ id: "node_png", name: "photo.png", path: "docs/photo.png", hasEditableYjsState: false });
 
-		render(<FileEditorSidebar node={node} commentsContainerRef={() => {}} browserNodeId={null} browserNodeKind={null} />);
+		render(
+			<FileEditorSidebar node={node} commentsContainerRef={() => {}} browserNodeId={null} browserNodeKind={null} />,
+		);
 
 		expect(screen.getByRole("tab", { name: "Comments", selected: true })).toBeTruthy();
 		expect(screen.queryByRole("tab", { name: "Details" })).toBeNull();
@@ -167,7 +175,9 @@ describe("FileEditorSidebar", () => {
 		app_local_storage_set_value("app_state::files_last_tab", "app_file_editor_sidebar_tabs_comments");
 		const node = makeNode({ id: "node_yaml", name: "deploy.yaml", path: "ops/deploy.yaml", textKind: "plain_text" });
 
-		render(<FileEditorSidebar node={node} commentsContainerRef={() => {}} browserNodeId={null} browserNodeKind={null} />);
+		render(
+			<FileEditorSidebar node={node} commentsContainerRef={() => {}} browserNodeId={null} browserNodeKind={null} />,
+		);
 
 		// The hidden tab falls back to the first available one for this node...
 		expect(screen.getByRole("tab", { name: "Details", selected: true })).toBeTruthy();
@@ -179,7 +189,9 @@ describe("FileEditorSidebar", () => {
 		app_local_storage_set_value("app_state::files_last_tab", "app_file_editor_sidebar_tabs_agent");
 		const node = makeNode({ id: "node_json", name: "config.json", path: "docs/config.json", textKind: "plain_text" });
 
-		render(<FileEditorSidebar node={node} commentsContainerRef={() => {}} browserNodeId={null} browserNodeKind={null} />);
+		render(
+			<FileEditorSidebar node={node} commentsContainerRef={() => {}} browserNodeId={null} browserNodeKind={null} />,
+		);
 
 		expect(screen.getByRole("tab", { name: "Agent", selected: true })).toBeTruthy();
 	});
@@ -211,7 +223,15 @@ describe("FileEditorSidebarDetails", () => {
 		const labels = Array.from(container.querySelectorAll(".FileEditorSidebarDetails-label")).map(
 			(element) => element.textContent,
 		);
-		expect(labels).toEqual(["Content type", "Size", "Location", "Created", "Created by", "Last edited", "Last edited by"]);
+		expect(labels).toEqual([
+			"Content type",
+			"Size",
+			"Location",
+			"Created",
+			"Created by",
+			"Last edited",
+			"Last edited by",
+		]);
 		const rowValue = (label: string) =>
 			Array.from(container.querySelectorAll(".FileEditorSidebarDetails-row"))
 				.find((row) => row.querySelector(".FileEditorSidebarDetails-label")?.textContent === label)

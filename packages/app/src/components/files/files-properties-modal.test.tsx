@@ -230,13 +230,7 @@ function mockQueries(args: {
 // the second run then reported a conflict that was not there.
 function renderModal(overrides?: Partial<Parameters<typeof FilesPropertiesModal>[0]>) {
 	return render(
-		<FilesPropertiesModal
-			nodeId={NODE_ID}
-			nodeName="notes.md"
-			nodeKind="file"
-			onClose={() => {}}
-			{...overrides}
-		/>,
+		<FilesPropertiesModal nodeId={NODE_ID} nodeName="notes.md" nodeKind="file" onClose={() => {}} {...overrides} />,
 		{ wrapper: StrictMode },
 	);
 }

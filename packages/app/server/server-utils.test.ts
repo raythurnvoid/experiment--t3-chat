@@ -152,7 +152,8 @@ describe("string_prefix_upper_bound", () => {
 			const candidates = [prefix, prefix + random_string(), random_string(), [...prefix].slice(0, -1).join("")];
 			if (upper !== null) candidates.push(upper, upper + random_string());
 			for (const candidate of candidates) {
-				const inRange = compareValues(candidate, prefix) >= 0 && (upper === null || compareValues(candidate, upper) < 0);
+				const inRange =
+					compareValues(candidate, prefix) >= 0 && (upper === null || compareValues(candidate, upper) < 0);
 				if (inRange !== candidate.startsWith(prefix)) {
 					throw new Error(`Wrong prefix range: ${JSON.stringify({ prefix, candidate, upper })}`);
 				}

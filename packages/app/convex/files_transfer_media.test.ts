@@ -851,42 +851,45 @@ describe("copy_transfer_file media", () => {
 		});
 	});
 
-	test.each(["source", "destination"] as const)("rejects %s media Archive after a sealed proof", async (changedSide) => {
-		const f = await fixture();
-		const savedMedia =
-			changedSide === "destination"
-				? await save_media(f.t, f.destination.membershipId, f.destination.userId, f.selectedMedia!.outputTarget!)
-				: null;
-		const capture = await prepare_document_capture(f);
-		const validation = {
-			itemId: capture.itemId,
-			attempt: capture.attempt,
-			workId: capture.workId,
-			text: capture.text,
-			offset: 0,
-		};
-		expect(await f.t.mutation(internal.files_nodes_content.validate_transfer_file_media, validation)).toEqual({
-			_yay: { offset: 1, isDone: true },
-		});
-		const nodeId = changedSide === "source" ? (f.media.target.id as Id<"files_nodes">) : savedMedia!.id;
-		const membershipId = changedSide === "source" ? f.source.membershipId : f.destination.membershipId;
-		expect(await f.asUser.mutation(api.files_nodes.archive_nodes, { membershipId, nodeIds: [nodeId] })).toEqual({
-			_yay: null,
-		});
-		const archived = await f.t.run((ctx) => ctx.db.get("files_nodes", nodeId));
-		expect(archived).not.toBeNull();
-		expect(archived!.archiveOperationId).not.toBeNull();
-		expect(await f.t.mutation(internal.files_nodes_content.finalize_transfer_file_copy, capture)).toMatchObject({
-			_nay: { message: "Media access changed during validation. Try again." },
-		});
-		expect(await f.t.mutation(internal.files_nodes_content.validate_transfer_file_media, validation)).toHaveProperty(
-			"_nay",
-		);
-		expect(await f.t.run((ctx) => ctx.db.get("files_transfer_items", f.document._id))).toMatchObject({
-			state: "copying",
-			outputTarget: null,
-		});
-	});
+	test.each(["source", "destination"] as const)(
+		"rejects %s media Archive after a sealed proof",
+		async (changedSide) => {
+			const f = await fixture();
+			const savedMedia =
+				changedSide === "destination"
+					? await save_media(f.t, f.destination.membershipId, f.destination.userId, f.selectedMedia!.outputTarget!)
+					: null;
+			const capture = await prepare_document_capture(f);
+			const validation = {
+				itemId: capture.itemId,
+				attempt: capture.attempt,
+				workId: capture.workId,
+				text: capture.text,
+				offset: 0,
+			};
+			expect(await f.t.mutation(internal.files_nodes_content.validate_transfer_file_media, validation)).toEqual({
+				_yay: { offset: 1, isDone: true },
+			});
+			const nodeId = changedSide === "source" ? (f.media.target.id as Id<"files_nodes">) : savedMedia!.id;
+			const membershipId = changedSide === "source" ? f.source.membershipId : f.destination.membershipId;
+			expect(await f.asUser.mutation(api.files_nodes.archive_nodes, { membershipId, nodeIds: [nodeId] })).toEqual({
+				_yay: null,
+			});
+			const archived = await f.t.run((ctx) => ctx.db.get("files_nodes", nodeId));
+			expect(archived).not.toBeNull();
+			expect(archived!.archiveOperationId).not.toBeNull();
+			expect(await f.t.mutation(internal.files_nodes_content.finalize_transfer_file_copy, capture)).toMatchObject({
+				_nay: { message: "Media access changed during validation. Try again." },
+			});
+			expect(await f.t.mutation(internal.files_nodes_content.validate_transfer_file_media, validation)).toHaveProperty(
+				"_nay",
+			);
+			expect(await f.t.run((ctx) => ctx.db.get("files_transfer_items", f.document._id))).toMatchObject({
+				state: "copying",
+				outputTarget: null,
+			});
+		},
+	);
 
 	test("clones a same-workspace dependency set in pages without sharing its owner", async () => {
 		const f = await fixture({ mediaCount: 51 });

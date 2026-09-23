@@ -87,6 +87,7 @@ export function app_qa_install() {
 				status: provider.getStatus(),
 				loadFailed: provider.loadFailed,
 			})),
-		monaco: () => Object.fromEntries(active_monaco_editors) as Partial<Record<AppQaMonacoPaneKey, monaco_editor.ICodeEditor>>,
+		monaco: () =>
+			Object.fromEntries(active_monaco_editors) as Partial<Record<AppQaMonacoPaneKey, monaco_editor.ICodeEditor>>,
 	};
 }

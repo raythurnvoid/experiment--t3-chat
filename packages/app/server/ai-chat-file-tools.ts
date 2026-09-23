@@ -55,7 +55,7 @@ function image_header(bytes: Uint8Array) {
 		mediaType = "image/webp";
 
 		// Advance over each chunk once. Never copy the remaining buffer while scanning.
-		for (let offset = 12; offset + 8 <= end; ) {
+		for (let offset = 12; offset + 8 <= end;) {
 			const length = data.getUint32(offset + 4, true);
 			const start = offset + 8;
 			if (start + length > end) return null;

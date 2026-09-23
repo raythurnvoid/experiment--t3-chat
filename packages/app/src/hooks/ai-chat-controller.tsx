@@ -111,9 +111,7 @@ const DERIVED_CACHE_CLEAR_INTERVAL_MS = 60 * 60 * 1000;
 const QUEUED_USER_MESSAGE_LIMIT = 10;
 const EMPTY_QUEUED_USER_MESSAGES: readonly AiChatQueuedUserMessage[] = [];
 
-type AiChatLiveThreadJob = FunctionReturnType<
-	typeof app_convex_api.ai_chat_files.list_live_thread_jobs
->[number];
+type AiChatLiveThreadJob = FunctionReturnType<typeof app_convex_api.ai_chat_files.list_live_thread_jobs>[number];
 const EMPTY_LIVE_THREAD_JOBS: readonly AiChatLiveThreadJob[] = [];
 
 /**
@@ -133,10 +131,7 @@ async function ai_chat_fetch(input: RequestInfo | URL, init?: RequestInit) {
 			.clone()
 			.json()
 			.catch(() => null);
-		const retryAfterMs =
-			typeof body === "object" && body !== null && "retryAfterMs" in body
-				? body.retryAfterMs
-				: null;
+		const retryAfterMs = typeof body === "object" && body !== null && "retryAfterMs" in body ? body.retryAfterMs : null;
 		if (typeof retryAfterMs !== "number" || !Number.isFinite(retryAfterMs) || retryAfterMs < 0) {
 			return response;
 		}
@@ -264,7 +259,10 @@ function get_sidebar_open_tabs_storage_key(storageKey: SidebarSelectedTabStorage
 	) as SidebarOpenTabsStorageKey;
 }
 
-function get_initial_selected_thread_id(storageKey: AiChatControllerStorageKey, initialSelectedThreadId?: string | null) {
+function get_initial_selected_thread_id(
+	storageKey: AiChatControllerStorageKey,
+	initialSelectedThreadId?: string | null,
+) {
 	if (initialSelectedThreadId !== undefined) {
 		return initialSelectedThreadId;
 	}
@@ -371,10 +369,7 @@ const EMPTY_MESSAGE_METADATA: Record<string, unknown> = {};
 
 // AI SDK can return fresh UIMessage objects for the same persisted tool result.
 // Compare the render-relevant fields so no-op syncs keep the existing message reference.
-function ui_messages_have_equal_render_content(
-	a: ai_chat_UiMessage,
-	b: ai_chat_UiMessage,
-) {
+function ui_messages_have_equal_render_content(a: ai_chat_UiMessage, b: ai_chat_UiMessage) {
 	if (a === b) {
 		return true;
 	}
@@ -726,11 +721,7 @@ const useStore = ((/* iife */) => {
 					return { threadById };
 				});
 			},
-			saveQueuedUserMessageEdit(
-				threadId: string,
-				messageId: AiChatQueuedUserMessage["id"],
-				text: string,
-			) {
+			saveQueuedUserMessageEdit(threadId: string, messageId: AiChatQueuedUserMessage["id"], text: string) {
 				let didSave = false;
 				store.setState((state) => {
 					const session = state.threadById.get(threadId);
@@ -793,10 +784,7 @@ const useStore = ((/* iife */) => {
 					return { threadById };
 				});
 			},
-			reorderQueuedUserMessages(
-				threadId: string,
-				orderedMessageIds: readonly AiChatQueuedUserMessage["id"][],
-			) {
+			reorderQueuedUserMessages(threadId: string, orderedMessageIds: readonly AiChatQueuedUserMessage["id"][]) {
 				let didReorder = false;
 				store.setState((state) => {
 					const session = state.threadById.get(threadId);
@@ -1318,9 +1306,7 @@ const useThreadList = (props?: useThreadList_Props) => {
 			const messageSelectedModeId = get_message_selected_mode_id(requestUserMessage);
 			const requestBrowserSessionId =
 				get_message_browser_session_id(requestUserMessage) ??
-				(options.trigger === "submit-message"
-					? undefined
-					: get_replayed_browser_session_id(options.messages));
+				(options.trigger === "submit-message" ? undefined : get_replayed_browser_session_id(options.messages));
 			const modelForRequest =
 				messageSelectedModelId ??
 				(requestSelectedModelId && ai_chat_is_model_id(requestSelectedModelId)
@@ -1700,8 +1686,7 @@ const useThreadList = (props?: useThreadList_Props) => {
 						selectedModelId: session.selectedModelId ?? persistedSession.selectedModelId,
 						selectedModeId: session.selectedModeId ?? persistedSession.selectedModeId,
 						queuedUserMessages: [...session.queuedUserMessages, ...persistedSession.queuedUserMessages],
-						queuedUserMessageEdit:
-							session.queuedUserMessageEdit ?? persistedSession.queuedUserMessageEdit,
+						queuedUserMessageEdit: session.queuedUserMessageEdit ?? persistedSession.queuedUserMessageEdit,
 						isQueueReordering: session.isQueueReordering || persistedSession.isQueueReordering,
 						queuePauseReason: session.queuePauseReason ?? persistedSession.queuePauseReason,
 						claimedQueuedUserMessageId:
@@ -1772,24 +1757,23 @@ const useThreadRuntimeController = () => {
 				}
 			: "skip",
 	);
-	const isThreadDenied = Boolean(
-		requestedThreadId && !selectedThreadIsOptimistic && persistedThreadMessages === null,
-	);
+	const isThreadDenied = Boolean(requestedThreadId && !selectedThreadIsOptimistic && persistedThreadMessages === null);
 	const selectedThreadId = isCurrentMembership && !isThreadDenied ? requestedThreadId : null;
 	const session = useStore((state) => (selectedThreadId ? (state.threadById.get(selectedThreadId) ?? null) : null));
 	const selectedThreadFailedSendUserMessageId = useStore((state) =>
 		selectedThreadId ? (state.failedSendUserMessageIdByThreadId.get(selectedThreadId) ?? null) : null,
 	);
 
-	const liveJobs = useQuery(
-		app_convex_api.ai_chat_files.list_live_thread_jobs,
-		selectedThreadId && !selectedThreadIsOptimistic
-			? {
-					membershipId,
-					threadId: selectedThreadId,
-				}
-			: "skip",
-	) ?? EMPTY_LIVE_THREAD_JOBS;
+	const liveJobs =
+		useQuery(
+			app_convex_api.ai_chat_files.list_live_thread_jobs,
+			selectedThreadId && !selectedThreadIsOptimistic
+				? {
+						membershipId,
+						threadId: selectedThreadId,
+					}
+				: "skip",
+		) ?? EMPTY_LIVE_THREAD_JOBS;
 
 	const persistedMessagesLookup = ((/* iife */) => {
 		if (!selectedThreadId || !persistedThreadMessages) return undefined;
@@ -1931,9 +1915,7 @@ const useThreadRuntimeController = () => {
 			const messageSelectedModeId = get_message_selected_mode_id(requestUserMessage);
 			const requestBrowserSessionId =
 				get_message_browser_session_id(requestUserMessage) ??
-				(options.trigger === "submit-message"
-					? undefined
-					: get_replayed_browser_session_id(options.messages));
+				(options.trigger === "submit-message" ? undefined : get_replayed_browser_session_id(options.messages));
 			const modelForRequest =
 				messageSelectedModelId ?? (ai_chat_is_model_id(selectedModelId) ? selectedModelId : ai_chat_DEFAULT_MODEL_ID);
 			const modeForRequest =
@@ -2541,9 +2523,7 @@ const useThreadRuntimeController = () => {
 				targetMessageIsFailedUserMessage && !targetMessage?.metadata?.convexId,
 			);
 			const failedSendUserMessageIndex =
-				failedSendUserMessage?.role === "user"
-					? activeBranchMessages.list.indexOf(failedSendUserMessage)
-					: -1;
+				failedSendUserMessage?.role === "user" ? activeBranchMessages.list.indexOf(failedSendUserMessage) : -1;
 			const shouldReplaceFailedSend = !targetMessage && failedSendUserMessageIndex >= 0;
 			const threadSelectedModelId =
 				options?.queuedMessage?.selectedModelId ??
@@ -2561,9 +2541,7 @@ const useThreadRuntimeController = () => {
 				? (options.queuedMessage.browserSessionId ?? undefined)
 				: (get_message_browser_session_id(targetMessage) ??
 					get_message_browser_session_id(failedSendUserMessage) ??
-					(targetMessage || shouldReplaceFailedSend
-						? undefined
-						: (useStore.getState().browserSessionId ?? undefined)));
+					(targetMessage || shouldReplaceFailedSend ? undefined : (useStore.getState().browserSessionId ?? undefined)));
 
 			if (
 				ai_chat_is_optimistic_thread_id(threadId) &&
@@ -2706,11 +2684,7 @@ const useThreadRuntimeController = () => {
 	);
 
 	const sendUserText = useFn(
-		(
-			threadId: string,
-			value: string,
-			options?: { messageId?: string; attachments?: FileUIPart[] },
-		) => {
+		(threadId: string, value: string, options?: { messageId?: string; attachments?: FileUIPart[] }) => {
 			if (threadId !== selectedThreadId) {
 				return false;
 			}
@@ -2846,11 +2820,7 @@ const useThreadRuntimeController = () => {
 	);
 
 	const setQueuedUserMessageEditModelId = useFn(
-		(
-			chat: Chat<ai_chat_UiMessage>,
-			messageId: AiChatQueuedUserMessage["id"],
-			selectedModelId: ai_chat_ModelId,
-		) => {
+		(chat: Chat<ai_chat_UiMessage>, messageId: AiChatQueuedUserMessage["id"], selectedModelId: ai_chat_ModelId) => {
 			const threadId = threadIdByChat.get(chat);
 			if (!threadId) {
 				return;
@@ -2864,11 +2834,7 @@ const useThreadRuntimeController = () => {
 	);
 
 	const setQueuedUserMessageEditModeId = useFn(
-		(
-			chat: Chat<ai_chat_UiMessage>,
-			messageId: AiChatQueuedUserMessage["id"],
-			selectedModeId: ai_chat_ModeId,
-		) => {
+		(chat: Chat<ai_chat_UiMessage>, messageId: AiChatQueuedUserMessage["id"], selectedModeId: ai_chat_ModeId) => {
 			const threadId = threadIdByChat.get(chat);
 			if (!threadId) {
 				return;
@@ -2881,15 +2847,13 @@ const useThreadRuntimeController = () => {
 		},
 	);
 
-	const setQueuedUserMessagesReordering = useFn(
-		(chat: Chat<ai_chat_UiMessage>, isQueueReordering: boolean) => {
-			const threadId = threadIdByChat.get(chat);
-			if (!threadId) {
-				return;
-			}
-			useStore.actions.setQueuedUserMessagesReordering(threadId, isQueueReordering);
-		},
-	);
+	const setQueuedUserMessagesReordering = useFn((chat: Chat<ai_chat_UiMessage>, isQueueReordering: boolean) => {
+		const threadId = threadIdByChat.get(chat);
+		if (!threadId) {
+			return;
+		}
+		useStore.actions.setQueuedUserMessagesReordering(threadId, isQueueReordering);
+	});
 
 	const saveQueuedUserMessageEdit = useFn((messageId: AiChatQueuedUserMessage["id"], text: string) => {
 		if (!selectedThreadId) {
@@ -2905,14 +2869,12 @@ const useThreadRuntimeController = () => {
 		useStore.actions.cancelQueuedUserMessageEdit(selectedThreadId, messageId);
 	});
 
-	const reorderQueuedUserMessages = useFn(
-		(orderedMessageIds: readonly AiChatQueuedUserMessage["id"][]) => {
-			if (!selectedThreadId) {
-				return false;
-			}
-			return useStore.actions.reorderQueuedUserMessages(selectedThreadId, orderedMessageIds);
-		},
-	);
+	const reorderQueuedUserMessages = useFn((orderedMessageIds: readonly AiChatQueuedUserMessage["id"][]) => {
+		if (!selectedThreadId) {
+			return false;
+		}
+		return useStore.actions.reorderQueuedUserMessages(selectedThreadId, orderedMessageIds);
+	});
 
 	const removeQueuedUserMessage = useFn((messageId: AiChatQueuedUserMessage["id"]) => {
 		if (!selectedThreadId) {
@@ -3082,9 +3044,9 @@ const useThreadRuntimeController = () => {
 		// Drop it only after its parent is persisted, so the queued follower has a safe anchor.
 		const canDropClientOnlyAssistant = Boolean(
 			latestMessage?.role === "assistant" &&
-				!latestMessage.metadata?.convexId &&
-				!message_has_visible_parts(latestMessage) &&
-				latestMessageParent?.metadata?.convexId,
+			!latestMessage.metadata?.convexId &&
+			!message_has_visible_parts(latestMessage) &&
+			latestMessageParent?.metadata?.convexId,
 		);
 		// A failed turn can be replaced from its parent, including when Convex
 		// persisted the user before its assistant stream failed.
@@ -3101,10 +3063,7 @@ const useThreadRuntimeController = () => {
 			session.queuedUserMessages.length === 0 ||
 			isRunning ||
 			(persistedThreadMessages === undefined && !failedSendUserMessage) ||
-			(latestMessage &&
-				!latestMessage.metadata?.convexId &&
-				!failedSendUserMessage &&
-				!canDropClientOnlyAssistant)
+			(latestMessage && !latestMessage.metadata?.convexId && !failedSendUserMessage && !canDropClientOnlyAssistant)
 		) {
 			return;
 		}

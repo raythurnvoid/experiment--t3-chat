@@ -186,8 +186,7 @@ export function ai_chat_composer_file_mention_create_extension(options: ai_chat_
 						// Mount into the app overlay container so the popup escapes the
 						// composer's overflow. Component tests render without the app
 						// shell, so fall back to the body.
-						const container =
-							document.getElementById("app_hoisting_container" satisfies AppElementId) ?? document.body;
+						const container = document.getElementById("app_hoisting_container" satisfies AppElementId) ?? document.body;
 						container.appendChild(component.element);
 						update_popup_position(props.editor, component.element);
 

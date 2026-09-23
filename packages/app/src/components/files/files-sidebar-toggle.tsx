@@ -5,7 +5,10 @@ import type { ExtractStrict } from "type-fest";
 import { MyIconButton, type MyIconButton_Props } from "@/components/my-icon-button.tsx";
 import { app_local_storage_set_value } from "@/lib/storage.ts";
 
-export type FilesSidebarToggle_Props = Omit<MyIconButton_Props, ExtractStrict<keyof MyIconButton_Props, "children" | "onClick">> & {
+export type FilesSidebarToggle_Props = Omit<
+	MyIconButton_Props,
+	ExtractStrict<keyof MyIconButton_Props, "children" | "onClick">
+> & {
 	ref?: Ref<HTMLButtonElement>;
 	tooltip?: string;
 };

@@ -641,7 +641,7 @@ async function db_resolve_name(
 		(args.run.step === "apply" || args.run.step === "reserve") && args.item.plannedPath !== null
 			? args.item.plannedPath.slice(args.item.plannedPath.lastIndexOf("/") + 1)
 			: args.item.targetName;
-	for (let counter = 0; counter <= MAX_NAME_ATTEMPTS; ) {
+	for (let counter = 0; counter <= MAX_NAME_ATTEMPTS;) {
 		let name = targetName;
 		if (counter > 0) {
 			const renamed = copy_candidate_name(args.item.kind, args.item.targetName, counter);
