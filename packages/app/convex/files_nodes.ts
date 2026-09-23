@@ -6828,18 +6828,6 @@ const SUBTREE_FILTER_MAX_ROWS_READ = 10_000;
 // #region list
 
 /**
- * One node of the Files tree. Every tree query returns this shape.
- */
-const files_node_tree_row_validator = v.object({
-	...files_node_public_doc_fields,
-	// These four fields cannot contain reserved `GLOBAL` or `SYSTEM` values in the visible tree.
-	organizationId: v.id("organizations"),
-	workspaceId: v.id("organizations_workspaces"),
-	createdBy: v.id("users"),
-	updatedBy: v.id("users"),
-});
-
-/**
  * Resolve the member who reads the Files tree, or `null` when they may read nothing.
  *
  * A failed workspace read check does not always end the read. Somebody whose role gives no
@@ -6981,7 +6969,16 @@ export const list_tree = query({
 		membershipId: v.id("organizations_workspaces_users"),
 		paginationOpts: paginationOptsValidator,
 	},
-	returns: paginationResultValidator(files_node_tree_row_validator),
+	returns: paginationResultValidator(
+		v.object({
+			...files_node_public_doc_fields,
+			// These four fields cannot contain reserved `GLOBAL` or `SYSTEM` values in the visible tree.
+			organizationId: v.id("organizations"),
+			workspaceId: v.id("organizations_workspaces"),
+			createdBy: v.id("users"),
+			updatedBy: v.id("users"),
+		}),
+	),
 	handler: async (ctx, args) => {
 		const reader = await db_get_tree_reader(ctx, { membershipId: args.membershipId });
 		if (!reader) {
@@ -7033,7 +7030,16 @@ export const list_tree_children = query({
 		archived: v.boolean(),
 		paginationOpts: paginationOptsValidator,
 	},
-	returns: paginationResultValidator(files_node_tree_row_validator),
+	returns: paginationResultValidator(
+		v.object({
+			...files_node_public_doc_fields,
+			// These four fields cannot contain reserved `GLOBAL` or `SYSTEM` values in the visible tree.
+			organizationId: v.id("organizations"),
+			workspaceId: v.id("organizations_workspaces"),
+			createdBy: v.id("users"),
+			updatedBy: v.id("users"),
+		}),
+	),
 	handler: async (ctx, args) => {
 		// Every refusal gives this one answer. A different answer for a missing, foreign, or hidden
 		// parent would tell the caller that a hidden folder exists.
@@ -7118,8 +7124,24 @@ export const get_tree_ancestors = query({
 	returns: v.union(
 		v.null(),
 		v.object({
-			node: files_node_tree_row_validator,
-			ancestors: v.array(files_node_tree_row_validator),
+			node: v.object({
+				...files_node_public_doc_fields,
+				// These four fields cannot contain reserved `GLOBAL` or `SYSTEM` values in the visible tree.
+				organizationId: v.id("organizations"),
+				workspaceId: v.id("organizations_workspaces"),
+				createdBy: v.id("users"),
+				updatedBy: v.id("users"),
+			}),
+			ancestors: v.array(
+				v.object({
+					...files_node_public_doc_fields,
+					// These four fields cannot contain reserved `GLOBAL` or `SYSTEM` values in the visible tree.
+					organizationId: v.id("organizations"),
+					workspaceId: v.id("organizations_workspaces"),
+					createdBy: v.id("users"),
+					updatedBy: v.id("users"),
+				}),
+			),
 		}),
 	),
 	handler: async (ctx, args) => {
@@ -7173,7 +7195,16 @@ export const list_tree_shared_roots = query({
 		archived: v.boolean(),
 	},
 	returns: v.object({
-		rows: v.array(files_node_tree_row_validator),
+		rows: v.array(
+			v.object({
+				...files_node_public_doc_fields,
+				// These four fields cannot contain reserved `GLOBAL` or `SYSTEM` values in the visible tree.
+				organizationId: v.id("organizations"),
+				workspaceId: v.id("organizations_workspaces"),
+				createdBy: v.id("users"),
+				updatedBy: v.id("users"),
+			}),
+		),
 		truncated: v.boolean(),
 	}),
 	handler: async (ctx, args) => {
@@ -7294,7 +7325,17 @@ export const get_folder_readme = query({
 		membershipId: v.id("organizations_workspaces_users"),
 		folderId: doc(app_convex_schema, "files_nodes").fields.parentId,
 	},
-	returns: v.union(v.null(), files_node_tree_row_validator),
+	returns: v.union(
+		v.null(),
+		v.object({
+			...files_node_public_doc_fields,
+			// These four fields cannot contain reserved `GLOBAL` or `SYSTEM` values in the visible tree.
+			organizationId: v.id("organizations"),
+			workspaceId: v.id("organizations_workspaces"),
+			createdBy: v.id("users"),
+			updatedBy: v.id("users"),
+		}),
+	),
 	handler: async (ctx, args) => {
 		const reader = await db_get_tree_reader(ctx, { membershipId: args.membershipId });
 		if (!reader) {
