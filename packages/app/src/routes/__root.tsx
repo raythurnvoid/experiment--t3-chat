@@ -133,6 +133,9 @@ function RootLayout() {
 			billingUsageSnapshot,
 		});
 
+	// TODO: Waiting for billing adds one round trip (about 130 ms) to every page load. Keep the wait for now:
+	// the app must know whether the user pays before it offers paid features, or a user could reach them
+	// before the plan loads. Remove it only if every paid feature checks the plan on its own.
 	const isLoading = convexAuth.isLoading || !auth.isLoaded || isBillingBootstrapLoading;
 	const isHealthy = auth.isLoaded && auth.isAuthenticated && convexAuth.isAuthenticated;
 

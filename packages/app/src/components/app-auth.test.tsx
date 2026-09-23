@@ -1,4 +1,5 @@
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { useEffect } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 const { appFetchAuthAnonymousMock, appFetchAuthResolveUserMock, useAuthMock } = vi.hoisted(() => ({
@@ -225,5 +226,156 @@ describe("AppAuthProvider anonymous auth", () => {
 		} finally {
 			vi.useRealTimers();
 		}
+	});
+});
+
+describe("AppAuthProvider signed-in bootstrap", () => {
+	// Build a Clerk-shaped JWT. Only the payload is read on the client.
+	const clerk_jwt = (externalId: string | null) =>
+		`header.${btoa(JSON.stringify(externalId ? { external_id: externalId } : {}))}.signature`;
+
+	// Resolve `resolve-user` only when the test says so, to observe the app while the request is open.
+	const hold_resolve_user = () => {
+		let answer: (userId: string, restoredDeletedAccount?: boolean) => void = () => {};
+		appFetchAuthResolveUserMock.mockImplementation(
+			() =>
+				new Promise((resolve) => {
+					answer = (userId, restoredDeletedAccount = false) =>
+						resolve({ _yay: { payload: { _yay: { userId, restoredDeletedAccount } } } });
+				}),
+		);
+		return async (userId: string, restoredDeletedAccount?: boolean) => {
+			await act(async () => answer(userId, restoredDeletedAccount));
+		};
+	};
+
+	// Counts how often the app under auth mounts. A restart remounts it.
+	const handleMount = vi.fn();
+	function MountCounter() {
+		useEffect(() => {
+			handleMount();
+		}, []);
+		return null;
+	}
+
+	// Asks for a token the way Convex does once the app is authenticated.
+	function TokenProbe() {
+		const { fetchAccessToken } = AppAuthProvider.useAuth();
+		return (
+			<button type="button" onClick={() => void fetchAccessToken({ forceRefreshToken: false })}>
+				fetch token
+			</button>
+		);
+	}
+
+	const render_signed_in = () =>
+		render(
+			<AppAuthProvider>
+				<AuthProbe />
+				<MountCounter />
+				<TokenProbe />
+			</AppAuthProvider>,
+		);
+
+	beforeEach(() => {
+		window.localStorage.clear();
+		appFetchAuthResolveUserMock.mockReset();
+		handleMount.mockReset();
+	});
+
+	afterEach(() => {
+		cleanup();
+		window.localStorage.clear();
+		vi.clearAllMocks();
+	});
+
+	test("starts the app with the token's user while resolve-user checks it", async () => {
+		const clerkGetToken = vi.fn(async () => clerk_jwt("user_1"));
+		useAuthMock.mockReturnValue({
+			getToken: clerkGetToken,
+			isLoaded: true,
+			isSignedIn: true,
+			signOut: vi.fn(),
+		});
+		const answerResolveUser = hold_resolve_user();
+
+		render_signed_in();
+
+		await waitFor(() => expect(appFetchAuthResolveUserMock).toHaveBeenCalledTimes(1));
+		expect(screen.getByTestId("is-authenticated").textContent).toBe("true");
+		expect(screen.getByTestId("user-id").textContent).toBe("user_1");
+
+		// Convex asks for a token as soon as the app is authenticated. That must not stop resolve-user.
+		fireEvent.click(screen.getByRole("button", { name: "fetch token" }));
+		await waitFor(() => expect(clerkGetToken).toHaveBeenCalledTimes(2));
+		expect(appFetchAuthResolveUserMock.mock.calls[0]![0].signal.aborted).toBe(false);
+
+		await answerResolveUser("user_1");
+		expect(screen.getByTestId("user-id").textContent).toBe("user_1");
+		expect(handleMount).toHaveBeenCalledTimes(1);
+	});
+
+	test("waits for resolve-user when an anonymous token may be linked", async () => {
+		window.localStorage.setItem("app::auth::anonymous_token", "anonymous-refresh-token");
+		window.localStorage.setItem("app::auth::anonymous_token_user_id", "anonymous-user");
+		useAuthMock.mockReturnValue({
+			getToken: vi.fn(async () => clerk_jwt("user_1")),
+			isLoaded: true,
+			isSignedIn: true,
+			signOut: vi.fn(),
+		});
+		const answerResolveUser = hold_resolve_user();
+
+		render_signed_in();
+
+		await waitFor(() => expect(appFetchAuthResolveUserMock).toHaveBeenCalledTimes(1));
+		expect(screen.getByTestId("is-authenticated").textContent).toBe("false");
+
+		await answerResolveUser("user_1");
+		await waitFor(() => expect(screen.getByTestId("is-authenticated").textContent).toBe("true"));
+		expect(window.localStorage.getItem("app::auth::anonymous_token")).toBeNull();
+	});
+
+	test("restarts the app when resolve-user replaces the token's user", async () => {
+		let currentUserId = "stale_user";
+		useAuthMock.mockReturnValue({
+			getToken: vi.fn(async () => clerk_jwt(currentUserId)),
+			isLoaded: true,
+			isSignedIn: true,
+			signOut: vi.fn(),
+		});
+		const answerResolveUser = hold_resolve_user();
+
+		render_signed_in();
+
+		await waitFor(() => expect(screen.getByTestId("user-id").textContent).toBe("stale_user"));
+		expect(handleMount).toHaveBeenCalledTimes(1);
+
+		// Clerk issues a token with the new id only after resolve-user updates `external_id`.
+		currentUserId = "user_2";
+		await answerResolveUser("user_2");
+
+		await waitFor(() => expect(screen.getByTestId("user-id").textContent).toBe("user_2"));
+		expect(screen.getByTestId("is-authenticated").textContent).toBe("true");
+		expect(handleMount).toHaveBeenCalledTimes(2);
+	});
+
+	test("restarts the app when resolve-user restores a deleted account", async () => {
+		useAuthMock.mockReturnValue({
+			getToken: vi.fn(async () => clerk_jwt("user_1")),
+			isLoaded: true,
+			isSignedIn: true,
+			signOut: vi.fn(),
+		});
+		const answerResolveUser = hold_resolve_user();
+
+		render_signed_in();
+
+		await waitFor(() => expect(screen.getByTestId("is-authenticated").textContent).toBe("true"));
+		await answerResolveUser("user_1", true);
+
+		await waitFor(() => expect(handleMount).toHaveBeenCalledTimes(2));
+		expect(screen.getByTestId("user-id").textContent).toBe("user_1");
+		expect(screen.getByTestId("is-authenticated").textContent).toBe("true");
 	});
 });

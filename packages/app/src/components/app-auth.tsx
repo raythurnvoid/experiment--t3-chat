@@ -1,5 +1,5 @@
 import { useAuth } from "@clerk/clerk-react";
-import { createContext, use, useEffect, useRef, type ReactNode } from "react";
+import { createContext, Fragment, use, useEffect, useRef, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 import { Result } from "common/errors-as-values-utils.ts";
 import { type app_convex_Id } from "../lib/app-convex-client.ts";
@@ -235,6 +235,10 @@ export function AppAuthProvider(props: AppAuthProvider_Props) {
 		userId: null,
 	});
 
+	// Change this key to remount everything under auth: the Convex provider (it signs in again) and the router,
+	// with its error boundaries and query subscriptions.
+	const [appKey, setAppKey] = useState(0);
+
 	const fetchAnonymousToken = useFn((options?: { skipCache?: boolean }): Promise<string | null> => {
 		const signal = tokenFlowAbortControllerRef.current.signal;
 
@@ -457,9 +461,11 @@ export function AppAuthProvider(props: AppAuthProvider_Props) {
 				anonymousTokenDeferredRef.current = undefined;
 				do {
 					const anonymousUserToken = storage_get_anonymous_token()?.token;
+					// Use the effect signal, not `tokenFlowAbortControllerRef`, for this flow. Convex may sign in
+					// before `resolve-user` answers (see below), and every `getToken` call aborts that controller.
 					let clerkTokenData = await fetchClerkToken({
 						retryUntileUserIdIsSet: false,
-						signal: tokenFlowAbortControllerRef.current.signal,
+						signal,
 					});
 
 					if (signal.aborted) return;
@@ -485,6 +491,25 @@ export function AppAuthProvider(props: AppAuthProvider_Props) {
 					}
 
 					let userId = clerkTokenData.userId;
+
+					// A returning user's token already names their Convex user. Start the app with that id now,
+					// so Convex signs in and the first queries run while `resolve-user` checks the id. In the
+					// normal case that check only reads and returns the same id. Wait instead when the token has
+					// no id yet (first sign-in) or when an anonymous token is stored: then `resolve-user` creates
+					// or links the user, and the app must not start before that.
+					const startedBeforeResolve = userId !== null && !anonymousUserToken;
+					if (startedBeforeResolve) {
+						setAuthStatus((prev) => ({
+							...prev,
+							isAnonymous: false,
+							isLoading: false,
+							isLoaded: true,
+							isAuthenticated: true,
+							userId: userId as app_convex_Id<"users">,
+						}));
+						authReadyDeferred.current.resolve(Result({ _yay: null }));
+					}
+
 					// Resolve on every signed-in bootstrap, even when the current token already has
 					// an `external_id`. Clerk can keep that claim after a local/dev data reset, while
 					// Convex is the source of truth for whether the pointed-at `users` doc is valid.
@@ -493,7 +518,7 @@ export function AppAuthProvider(props: AppAuthProvider_Props) {
 						// If this browser was anonymous before sign-in, Convex can link that anonymous
 						// user into the Clerk account instead of creating a second app user.
 						anonymousUserToken,
-						signal: tokenFlowAbortControllerRef.current.signal,
+						signal,
 					});
 
 					if (signal.aborted) return;
@@ -507,14 +532,32 @@ export function AppAuthProvider(props: AppAuthProvider_Props) {
 
 					const resolvedUserId = resolveResult._yay.payload._yay.userId;
 
+					// If the app already started, it ran for a moment as a user that `resolve-user` then replaced
+					// (a data reset) or restored (a deleted account). Its queries may have failed.
+					// So show the loading screen now, and remount the app below once the right token is ready.
+					const mustRestartApp =
+						startedBeforeResolve &&
+						(userId !== resolvedUserId || resolveResult._yay.payload._yay.restoredDeletedAccount);
+					if (mustRestartApp) {
+						setAuthStatus((prev) => ({
+							...prev,
+							isLoading: true,
+							isLoaded: false,
+							isAuthenticated: false,
+							userId: null,
+						}));
+					}
+
 					// If `resolve_user` repaired or created the canonical app user id. Wait for Clerk
 					// to issue a JWT whose `external_id` matches that id before Convex auth starts.
 					if (userId !== resolvedUserId) {
 						clerkTokenData = await fetchClerkToken({
 							expectedUserId: resolvedUserId,
 							retryUntileUserIdIsSet: true,
-							signal: tokenFlowAbortControllerRef.current.signal,
+							signal,
 						});
+
+						if (signal.aborted) return;
 
 						if (!clerkTokenData) {
 							await handleFatalMissingClerkTokenError();
@@ -541,6 +584,9 @@ export function AppAuthProvider(props: AppAuthProvider_Props) {
 						isAuthenticated: true,
 						userId: userId as app_convex_Id<"users">,
 					}));
+					if (mustRestartApp) {
+						setAppKey((key) => key + 1);
+					}
 				} while (0);
 			}
 
@@ -587,7 +633,7 @@ export function AppAuthProvider(props: AppAuthProvider_Props) {
 				resetAnonymousSession,
 			}}
 		>
-			{children}
+			<Fragment key={appKey}>{children}</Fragment>
 		</AppAuthContext.Provider>
 	);
 }
