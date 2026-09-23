@@ -547,6 +547,7 @@ function create_polar_customer_state(args: {
 		emailVerified: true,
 		type: "individual",
 		name: "Billing Test Customer",
+		billingName: null,
 		billingAddress: null,
 		taxId: null,
 		locale: null,
