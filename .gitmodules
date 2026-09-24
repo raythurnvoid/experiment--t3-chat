@@ -193,4 +193,4 @@
 	branch = rt0-updates
 [submodule "packages/native-popovers"]
 	path = packages/native-popovers
-	url = https://github.com/raythurnvoid/native-popovers.git
+	url = https://github.com/raythurnvoid/react-native-popovers.git
