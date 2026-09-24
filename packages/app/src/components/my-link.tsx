@@ -31,7 +31,7 @@ export const MyLink = memo(function MyLink(props: MyLink_Props) {
 	const linkElement = (
 		<Link {...rest}>
 			<MyLinkSurface className={className} style={style} variant={variant}>
-				{typeof children === "function" ? children({ isActive: false, isTransitioning: false }) : children}
+				{typeof children === "function" ? children({ isActive: false }) : children}
 			</MyLinkSurface>
 		</Link>
 	);

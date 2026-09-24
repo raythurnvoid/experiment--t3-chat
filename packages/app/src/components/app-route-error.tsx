@@ -65,19 +65,22 @@ export const AppRouteError = memo(function AppRouteError(props: AppRouteError_Pr
 	const technical_parts: string[] = [];
 
 	if (show_technical_block) {
-		if (error.message) {
-			technical_parts.push(`Error message: ${error.message}`);
-		}
-		if (error.stack) {
-			technical_parts.push(`Stack trace:\n${error.stack}`);
+		// The router passes `unknown`. Only Error values have a message, stack, and cause.
+		if (error instanceof Error) {
+			if (error.message) {
+				technical_parts.push(`Error message: ${error.message}`);
+			}
+			if (error.stack) {
+				technical_parts.push(`Stack trace:\n${error.stack}`);
+			}
+
+			const cause_text = format_error_cause_for_technical_details(error.cause);
+			if (cause_text) {
+				technical_parts.push(`Cause:\n${cause_text}`);
+			}
 		}
 		if (info?.componentStack) {
 			technical_parts.push(`Component stack:\n${info.componentStack}`);
-		}
-
-		const cause_text = format_error_cause_for_technical_details(error.cause);
-		if (cause_text) {
-			technical_parts.push(`Cause:\n${cause_text}`);
 		}
 	}
 

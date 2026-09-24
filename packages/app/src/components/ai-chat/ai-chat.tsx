@@ -854,7 +854,7 @@ export const AiChatThread = memo(function AiChatThread(props: AiChatThread_Props
 		}
 	});
 
-	const handleCatchBoundaryError = useFn((error: Error) => {
+	const handleCatchBoundaryError = useFn((error: unknown) => {
 		console.error("[AiChatThread.handleCatchBoundaryError] Chat render failed", {
 			error,
 			selectedThreadId,

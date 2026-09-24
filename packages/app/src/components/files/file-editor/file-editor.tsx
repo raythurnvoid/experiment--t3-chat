@@ -722,7 +722,7 @@ function FileEditorInner(props: FileEditorInner_Props) {
 		onDiffExit?.();
 	});
 
-	const handleCatchBoundaryError = useFn((err: Error) => {
+	const handleCatchBoundaryError = useFn((err: unknown) => {
 		console.error("[FileEditorInner]", err);
 	});
 
