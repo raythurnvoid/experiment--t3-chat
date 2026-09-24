@@ -37,6 +37,7 @@ import { MyGridTable, MyGridTableBody, MyGridTableCell, MyGridTableRow } from "@
 import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
 import { MyIcon } from "@/components/my-icon.tsx";
 import { MyLink, MyLinkIcon } from "@/components/my-link.tsx";
+import { MyTooltip, MyTooltipContent, MyTooltipTrigger } from "@/components/my-tooltip.tsx";
 import {
 	MyMenu,
 	MyMenuItem,
@@ -298,6 +299,7 @@ const FileNodeViewHeaderBreadcrumbPath = memo(function FileNodeViewHeaderBreadcr
 	// every read falls back to the crumb's name. Right after a navigation it still holds the previous
 	// path's labels for one render; the layout effect replaces them before paint.
 	const [labels, setLabels] = useState<string[]>([]);
+	const currentLabel = labels[ancestors.length] ?? current.name;
 
 	// Tab focus scrolls a crumb into the group only when the crumb is fully hidden. A crumb cut at
 	// the edge keeps its focus ring cut, so bring every focused crumb fully into the scroll port.
@@ -428,35 +430,48 @@ const FileNodeViewHeaderBreadcrumbPath = memo(function FileNodeViewHeaderBreadcr
 					className={cn("FileNodeViewHeaderBreadcrumbPath-list" satisfies FileNodeViewHeaderBreadcrumbPath_ClassNames)}
 					onFocus={handleListFocus}
 				>
-					{ancestors.map((crumb, index) => (
-						<React.Fragment key={crumb.id}>
-							<li>
-								<MyLink
-									className={cn(
-										"FileNodeViewHeaderBreadcrumbPath-segment" satisfies FileNodeViewHeaderBreadcrumbPath_ClassNames,
-									)}
-									to="/w/$organizationName/$workspaceName/files"
-									params={{ organizationName, workspaceName }}
-									// Keep `q` (functional form) so the URL stays in step with the sidebar search box.
-									search={(prev) => ({
-										...prev,
-										nodeId: crumb.target === "saved" ? crumb.id : undefined,
-										pendingNodeId: crumb.target === "private" ? crumb.id : undefined,
-										view: undefined,
-									})}
-									variant="button-ghost-highlightable"
-									// Always pass both. Making `tooltip` conditional changes the element MyLink returns,
-									// which remounts the anchor and drops focus during a resize. `aria-label` keeps the
-									// full name readable next to the shortened text.
-									aria-label={crumb.name}
-									tooltip={crumb.name}
-								>
-									{labels[index] ?? crumb.name}
-								</MyLink>
-							</li>
-							{index < ancestors.length - 1 && <li aria-hidden="true">/</li>}
-						</React.Fragment>
-					))}
+					{ancestors.map((crumb, index) => {
+						const label = labels[index] ?? crumb.name;
+
+						return (
+							<React.Fragment key={crumb.id}>
+								<li>
+									{/* Keep this wrapper mounted even when the name fits. Adding it only after the
+									    label shortens would remount the link and drop focus during a resize.
+									    The tip repeats the name, so it only renders once the visible label is shorter.
+									    Show it immediately. The pointer is already on the short label.
+									    Force the tip closed while the name fits. The code that hides the tip lives in the
+									    content, so once the content unmounts nothing else closes it. A tip opened by focus
+									    would then show again by itself the next time the label shortens. */}
+									<MyTooltip timeout={0} placement="bottom" open={label === crumb.name ? false : undefined}>
+										<MyTooltipTrigger>
+											<MyLink
+												className={cn(
+													"FileNodeViewHeaderBreadcrumbPath-segment" satisfies FileNodeViewHeaderBreadcrumbPath_ClassNames,
+												)}
+												to="/w/$organizationName/$workspaceName/files"
+												params={{ organizationName, workspaceName }}
+												// Keep `q` (functional form) so the URL stays in step with the sidebar search box.
+												search={(prev) => ({
+													...prev,
+													nodeId: crumb.target === "saved" ? crumb.id : undefined,
+													pendingNodeId: crumb.target === "private" ? crumb.id : undefined,
+													view: undefined,
+												})}
+												variant="button-ghost-highlightable"
+												// `aria-label` keeps the full name readable next to the shortened text.
+												aria-label={crumb.name}
+											>
+												{label}
+											</MyLink>
+										</MyTooltipTrigger>
+										{label !== crumb.name ? <MyTooltipContent unmountOnHide>{crumb.name}</MyTooltipContent> : null}
+									</MyTooltip>
+								</li>
+								{index < ancestors.length - 1 && <li aria-hidden="true">/</li>}
+							</React.Fragment>
+						);
+					})}
 				</ol>
 			</li>
 			{/* Keep the separator before the open file outside the scroller so it never scrolls away. */}
@@ -464,20 +479,29 @@ const FileNodeViewHeaderBreadcrumbPath = memo(function FileNodeViewHeaderBreadcr
 			{/* Mark which crumb is the open file. Playwriter finds it by this attribute. */}
 			<li ref={currentItemRef} aria-current="page">
 				<MyMenu placement="bottom-start">
-					<MyMenuTrigger>
-						<MyButton
-							ref={currentRef}
-							className={cn(
-								"FileNodeViewHeaderBreadcrumbPath-current" satisfies FileNodeViewHeaderBreadcrumbPath_ClassNames,
-							)}
-							variant="ghost-highlightable"
-							// `tooltip` also sets `aria-label`, so the full name stays the button's name when the
-							// visible label is shortened.
-							tooltip={current.name}
-						>
-							{labels[ancestors.length] ?? current.name}
-						</MyButton>
-					</MyMenuTrigger>
+					{/* Same rules as the ancestor crumbs above. The wrapper stays mounted. The tip renders
+					    only when this label is shorter than the name, it shows immediately, and it is forced
+					    closed while the name fits.
+					    Ariakit hides the tip when the menu takes focus. Hover could still show it again if the
+					    pointer leaves and comes back while the menu is open, so skip hover while the menu
+					    button is expanded. */}
+					<MyTooltip timeout={0} placement="bottom" open={currentLabel === current.name ? false : undefined}>
+						<MyTooltipTrigger showOnHover={(event) => event.currentTarget.getAttribute("aria-expanded") !== "true"}>
+							<MyMenuTrigger>
+								<MyButton
+									ref={currentRef}
+									className={cn(
+										"FileNodeViewHeaderBreadcrumbPath-current" satisfies FileNodeViewHeaderBreadcrumbPath_ClassNames,
+									)}
+									variant="ghost-highlightable"
+									aria-label={current.name}
+								>
+									{currentLabel}
+								</MyButton>
+							</MyMenuTrigger>
+						</MyTooltipTrigger>
+						{currentLabel !== current.name ? <MyTooltipContent unmountOnHide>{current.name}</MyTooltipContent> : null}
+					</MyTooltip>
 					{currentMenu}
 				</MyMenu>
 			</li>

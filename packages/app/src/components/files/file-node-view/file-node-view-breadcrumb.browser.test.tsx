@@ -1,5 +1,6 @@
 import "@/app.css";
 import { cleanup, render, waitFor, within } from "@testing-library/react";
+import { userEvent } from "vitest/browser";
 import { createMemoryHistory, createRootRoute, createRouter, RouterContextProvider } from "@tanstack/react-router";
 import { afterEach, describe, expect, test, vi } from "vitest";
 
@@ -173,6 +174,13 @@ function ancestorLinks(box: HTMLElement) {
 	return within(ancestors!).getAllByRole("link");
 }
 
+// Ariakit's own tip delay is 500ms. Wait longer than that. A tip that is always
+// mounted still fails this check when the crumb itself uses no delay.
+async function expectTooltipStaysHidden() {
+	await new Promise((resolve) => setTimeout(resolve, 600));
+	expect(within(document.body).queryByRole("tooltip")).toBeNull();
+}
+
 describe("FileNodeView header breadcrumb layout", () => {
 	afterEach(() => {
 		cleanup();
@@ -203,5 +211,90 @@ describe("FileNodeView header breadcrumb layout", () => {
 		});
 		expect(current.textContent).toBe(FILE.name);
 		expect(box.scrollWidth).toBeLessThanOrEqual(box.clientWidth + 1);
+	});
+
+	test("shows a tip for a shortened name and hides it while the menu is open", async () => {
+		const box = renderHeader(700);
+		const current = await within(box).findByRole("button", { name: FILE.name });
+
+		await waitFor(() => {
+			expect(ancestorLinks(box).some((link) => link.textContent !== link.getAttribute("aria-label"))).toBe(true);
+		});
+
+		const shortened = ancestorLinks(box).find((link) => link.textContent !== link.getAttribute("aria-label"));
+		expect(shortened).toBeTruthy();
+		await userEvent.hover(shortened!);
+		const shortenedTip = await within(document.body).findByRole("tooltip");
+		expect(shortenedTip.textContent).toBe(shortened!.getAttribute("aria-label"));
+		await userEvent.unhover(shortened!);
+		await waitFor(() => {
+			expect(within(document.body).queryByRole("tooltip")).toBeNull();
+		});
+
+		// A folder name that still fits must not grow a tip.
+		const whole = ancestorLinks(box).find((link) => link.textContent === link.getAttribute("aria-label"));
+		expect(whole).toBeTruthy();
+		await userEvent.hover(whole!);
+		await expectTooltipStaysHidden();
+		await userEvent.unhover(whole!);
+
+		// The open file name still fits at this width.
+		expect(current.textContent).toBe(FILE.name);
+		await userEvent.hover(current);
+		await expectTooltipStaysHidden();
+		await userEvent.unhover(current);
+
+		box.style.width = "200px";
+		await waitFor(() => {
+			expect(current.textContent).not.toBe(FILE.name);
+		});
+		await userEvent.hover(current);
+		const currentTip = await within(document.body).findByRole("tooltip");
+		expect(currentTip.textContent).toBe(FILE.name);
+
+		await userEvent.click(current);
+		await within(document.body).findByRole("menuitem", { name: "Copy node id" });
+		// The tip must be gone once the menu is open.
+		await waitFor(() => {
+			expect(within(document.body).queryByRole("tooltip")).toBeNull();
+		});
+
+		// Moving the pointer off the crumb and back must not bring the tip back while the menu is open.
+		await userEvent.unhover(current);
+		await userEvent.hover(current);
+		await expectTooltipStaysHidden();
+		expect(within(document.body).getByRole("menuitem", { name: "Copy node id" })).toBeTruthy();
+	});
+
+	test("keeps a tip closed after its name fit for a while", async () => {
+		const box = renderHeader(700);
+
+		await waitFor(() => {
+			expect(ancestorLinks(box).some((link) => link.textContent !== link.getAttribute("aria-label"))).toBe(true);
+		});
+
+		const shortened = ancestorLinks(box).find((link) => link.textContent !== link.getAttribute("aria-label"))!;
+		const name = shortened.getAttribute("aria-label");
+
+		// Press a key first, so Ariakit treats the focus as keyboard focus and opens the tip.
+		await userEvent.keyboard("{Shift}");
+		shortened.focus();
+		const tip = await within(document.body).findByRole("tooltip");
+		expect(tip.textContent).toBe(name);
+
+		// Grow the header while the crumb has focus. The name fits, so the tip content unmounts.
+		box.style.width = "1400px";
+		await waitFor(() => {
+			expect(shortened.textContent).toBe(name);
+		});
+		expect(document.activeElement).toBe(shortened);
+		shortened.blur();
+
+		// Shorten the name again. No pointer or focus is on the crumb, so the tip must stay closed.
+		box.style.width = "700px";
+		await waitFor(() => {
+			expect(shortened.textContent).not.toBe(name);
+		});
+		await expectTooltipStaysHidden();
 	});
 });
