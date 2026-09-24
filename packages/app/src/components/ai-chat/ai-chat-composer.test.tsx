@@ -1,5 +1,5 @@
 import type { ReactElement, ReactNode } from "react";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, test, vi } from "vitest";
 
 import { AiChatComposer } from "./ai-chat-composer.tsx";
@@ -586,6 +586,9 @@ describe("AiChatComposer", () => {
 		);
 
 		const textbox = screen.getByRole("textbox", { name: "Send a message..." });
+		// A user types in a focused editor. Picking a row collapses the DOM selection, and
+		// happy-dom has no selection to collapse until the editor gets focus.
+		act(() => textbox.focus());
 		fireEvent.paste(textbox, {
 			clipboardData: {
 				files: [],
@@ -597,17 +600,20 @@ describe("AiChatComposer", () => {
 		// The popup lists the workspace tree; ArrowDown moves the highlight from
 		// the folder row to the file row, Enter picks it without submitting.
 		const listbox = await screen.findByRole("listbox", { name: "Files and folders" });
+
+		// The editor keeps DOM focus, so the popup is exposed through the
+		// textbox's aria-controls and aria-activedescendant. The popup sets them in an
+		// effect after its rows render, so wait for the first row to be highlighted.
+		await waitFor(() => {
+			expect(textbox.getAttribute("aria-controls")).toBe(listbox.id);
+			expect(textbox.getAttribute("aria-activedescendant")).toBe(screen.getAllByRole("option")[0]!.id);
+		});
+		const [, fileOption] = screen.getAllByRole("option");
 		expect(treeNodesMock).toHaveBeenCalledWith(
 			app_convex_api.files_nodes.list_tree,
 			{ membershipId: "membership-1" },
 			{ initialNumItems: 500 },
 		);
-
-		// The editor keeps DOM focus, so the popup is exposed through the
-		// textbox's aria-controls and aria-activedescendant.
-		expect(textbox.getAttribute("aria-controls")).toBe(listbox.id);
-		const [folderOption, fileOption] = screen.getAllByRole("option");
-		expect(textbox.getAttribute("aria-activedescendant")).toBe(folderOption!.id);
 
 		fireEvent.keyDown(textbox, { key: "ArrowDown" });
 		expect(textbox.getAttribute("aria-activedescendant")).toBe(fileOption!.id);

@@ -343,6 +343,9 @@ describe("FilesSidebar", () => {
 		const view = render(<CreateSidebar router={router} selectedNodeId="alpha" />);
 		const row = await view.findByRole("treeitem", { name: "alpha" });
 		await waitFor(() => expect(row.getAttribute("aria-selected")).toBe("true"));
+		// The search box has focus after mount, and hotkeys skip keys typed while an input has focus.
+		// A user presses Control+X on a focused row, so move focus there first.
+		act(() => row.focus());
 		fireEvent.keyDown(row, { key: "x", code: "KeyX", ctrlKey: true });
 		fireEvent.keyUp(row, { key: "x", code: "KeyX", ctrlKey: true });
 		expect(row.getAttribute("aria-label")).toBe("alpha, ready to move");

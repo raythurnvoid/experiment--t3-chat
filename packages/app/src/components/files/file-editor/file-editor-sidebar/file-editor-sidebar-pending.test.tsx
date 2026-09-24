@@ -21,6 +21,7 @@ const {
 	truncatePathForWidthMock,
 	loadMoreMock,
 	pagination,
+	reviewStart,
 } = vi.hoisted(() => ({
 	tenantContextMock: vi.fn(),
 	useQueryMock: vi.fn(),
@@ -37,6 +38,7 @@ const {
 	truncatePathForWidthMock: vi.fn((args: { path: string }) => args.path),
 	loadMoreMock: vi.fn(),
 	pagination: { status: "Exhausted" as "CanLoadMore" | "LoadingMore" | "Exhausted" },
+	reviewStart: { isStarting: false, listeners: new Set<() => void>() },
 }));
 
 // Network boundary: the real hooks talk to a live Convex client; tests feed query data directly.
@@ -58,16 +60,37 @@ vi.mock("convex/react", () => ({
 }));
 
 // Review submission is tested through the real Activity provider in app-notifications.test.tsx.
-vi.mock("@/lib/app-activities-context.tsx", () => ({
-	AppActivitiesProvider: {
-		useContext: () => ({
-			startReview: startReviewMock,
-			isStartingReview: false,
-			pendingStopSourceIds: new Set(),
-			stop: vi.fn(),
-		}),
-	},
-}));
+// Like the real provider, `isStartingReview` stays true until the `startReview` promise settles.
+// A mock that always says false would let a test click buttons the real panel disables.
+vi.mock("@/lib/app-activities-context.tsx", async () => {
+	const { useSyncExternalStore } = await import("react");
+
+	const setIsStarting = (isStarting: boolean) => {
+		reviewStart.isStarting = isStarting;
+		reviewStart.listeners.forEach((listener) => listener());
+	};
+
+	const subscribe = (listener: () => void) => {
+		reviewStart.listeners.add(listener);
+		return () => {
+			reviewStart.listeners.delete(listener);
+		};
+	};
+
+	return {
+		AppActivitiesProvider: {
+			useContext: () => ({
+				startReview: (...args: unknown[]) => {
+					setIsStarting(true);
+					return Promise.resolve(startReviewMock(...args)).finally(() => setIsStarting(false));
+				},
+				isStartingReview: useSyncExternalStore(subscribe, () => reviewStart.isStarting),
+				pendingStopSourceIds: new Set(),
+				stop: vi.fn(),
+			}),
+		},
+	};
+});
 
 // Feed the complete tree separately from the pending-update queries.
 vi.mock("@/lib/files-tree-context.tsx", () => ({
@@ -436,6 +459,7 @@ const MEMBERSHIP_ID = "membership_1" as app_convex_Id<"organizations_workspaces_
 beforeEach(() => {
 	startReviewMock.mockReset();
 	startReviewMock.mockResolvedValue(undefined);
+	reviewStart.isStarting = false;
 	pagination.status = "Exhausted";
 	loadMoreMock.mockReset();
 	blockedTargetIds.clear();
@@ -1032,6 +1056,41 @@ describe("FileEditorSidebarPending", () => {
 				],
 			}),
 		);
+	});
+
+	// A download started during Accept would read a file that is being saved. So every row button,
+	// Download included, stays disabled until the review request settles.
+	test("disables Download while Accept is starting a review", async () => {
+		useQueryMock.mockReturnValue([
+			makePendingUpdate({
+				id: "pu_binary",
+				fileNodeId: "private_binary",
+				privatePath: "/archive.zip",
+				privateKind: "stored",
+				storedContentType: "application/zip",
+				storedSize: 3,
+			}),
+		]);
+		treeNodesMock.mockReturnValue([]);
+		let finishReview = () => {};
+		startReviewMock.mockReturnValue(new Promise<void>((resolve) => (finishReview = resolve)));
+
+		const { container } = render(<FileEditorSidebarPending />);
+		const details = container.querySelector("details")!;
+		details.open = true;
+		fireEvent(details, new Event("toggle"));
+		const download = screen.getByRole("button", { name: "Download archive.zip" });
+		expect(download.matches(":disabled")).toBe(false);
+
+		fireEvent.click(screen.getByRole("button", { name: "Accept changes to /archive.zip" }));
+
+		expect(startReviewMock).toHaveBeenCalledTimes(1);
+		expect(download.matches(":disabled")).toBe(true);
+		fireEvent.click(download);
+		expect(actionMock).not.toHaveBeenCalled();
+
+		await act(async () => finishReview());
+		expect(download.matches(":disabled")).toBe(false);
 	});
 
 	// The bytes of a preparing file are not in storage yet. So the row cannot open, download or

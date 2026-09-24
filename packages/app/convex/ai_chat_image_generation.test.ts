@@ -256,11 +256,13 @@ describe("image destination steps", () => {
 		expect(requests[0]).toMatchObject({ tool_choice: { type: "image_generation" } });
 		const convert = f.call.tools!.image_generation!.toModelOutput!;
 		// Save in reverse order after both steps have run. Neither result may use the latest choice.
+		// The save uploads the bytes with `fetch`, like the chat HTTP action does. convex-test refuses
+		// `fetch` inside `t.run`, so run it as an action.
 		for (const workspace of ["current", "personal"] as const) {
 			const args = { toolCallId: `${workspace}-image`, input: {}, output: { result: "AQID" } };
-			const saved = await f.t.run(async () => await convert(args));
+			const saved = await f.t.action(async () => await convert(args));
 			expect(JSON.stringify(saved)).toContain("succeeded");
-			expect(await f.t.run(async () => await convert(args))).toEqual(saved);
+			expect(await f.t.action(async () => await convert(args))).toEqual(saved);
 		}
 		const receipts = await f.t.run((ctx) => ctx.db.query("files_ingestion_receipts").collect());
 		expect(receipts).toHaveLength(2);
@@ -269,7 +271,7 @@ describe("image destination steps", () => {
 		);
 		expect(receipts.every((receipt) => receipt.agentSource?.threadId === f.threadId)).toBe(true);
 		expect(await f.t.run((ctx) => ctx.db.query("files_nodes").collect())).toEqual([]);
-		const missing = await f.t.run(
+		const missing = await f.t.action(
 			async () => await convert({ toolCallId: "unbound", input: {}, output: { result: "AQID" } }),
 		);
 		expect(JSON.stringify(missing)).toContain("errored");

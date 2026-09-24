@@ -865,7 +865,9 @@ describe("/api/chat workspace instructions", () => {
 		expect(call.tools).not.toHaveProperty("run_skill_script");
 		if (!call.prepareStep || !call.tools?.bash?.execute) throw new Error("Expected Bash and prepareStep");
 
-		await t.run(async () => {
+		// Bash uses `setTimeout`, like the chat HTTP action it runs in. convex-test refuses timers
+		// inside `t.run`, so run the steps as an action.
+		await t.action(async () => {
 			const first = await call.prepareStep!({
 				model: call.model,
 				messages: call.messages ?? [],
