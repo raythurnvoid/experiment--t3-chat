@@ -289,8 +289,8 @@ importers:
         specifier: ^1.1.5
         version: 1.1.7(react-markdown@10.1.0(@types/react@19.3.0)(react@19.3.0))(react@19.3.0)
       highlight.js:
-        specifier: ^11.11.1
-        version: 11.11.1
+        specifier: 11.11.2
+        version: 11.11.2
       hono:
         specifier: ^4.9.11
         version: 4.11.3
@@ -14326,6 +14326,10 @@ packages:
 
   highlight.js@11.11.1:
     resolution: {integrity: sha512-Xwwo44whKBVCYoliBQwaPvtd/2tYFkRQtXDWj1nackaV2JPXx3L0+Jvd8/qCJ2p+ML0/XVkJ2q+Mr+UVdpJK5w==}
+    engines: {node: '>=12.0.0'}
+
+  highlight.js@11.11.2:
+    resolution: {integrity: sha512-oaXMACAU0kzOMXBjWpNcX+vlwSBCIAiZ9BHa7gA15NOTtT2L/l8OSZDuqS2XppOhZBPJ7hm4o8ep2kyuip2uEQ==}
     engines: {node: '>=12.0.0'}
 
   highlightjs-vue@1.0.0:
@@ -35421,6 +35425,8 @@ snapshots:
 
   highlight.js@11.11.1: {}
 
+  highlight.js@11.11.2: {}
+
   highlightjs-vue@1.0.0: {}
 
   history@4.10.1:
@@ -36626,7 +36632,7 @@ snapshots:
     dependencies:
       '@types/hast': 3.0.4
       devlop: 1.1.0
-      highlight.js: 11.11.1
+      highlight.js: 11.11.2
 
   lru-cache@10.4.3: {}
 

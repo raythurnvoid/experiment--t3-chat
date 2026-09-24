@@ -105,7 +105,7 @@
 		"framer-motion": "^12.23.24",
 		"happy-dom": "20.3.5",
 		"harden-react-markdown": "^1.1.5",
-		"highlight.js": "^11.11.1",
+		"highlight.js": "11.11.2",
 		"hono": "^4.9.11",
 		"i": "^0.3.7",
 		"jose": "^6.2.12",
