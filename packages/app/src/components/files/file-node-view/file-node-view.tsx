@@ -114,6 +114,7 @@ import type { FunctionReturnType } from "convex/server";
 import {
 	Archive,
 	BookOpen,
+	ChevronDown,
 	CircleAlert,
 	Download,
 	EllipsisVertical,
@@ -241,7 +242,10 @@ type FileNodeViewHeaderBreadcrumbPath_ClassNames =
 	| "FileNodeViewHeaderBreadcrumbPath"
 	| "FileNodeViewHeaderBreadcrumbPath-list"
 	| "FileNodeViewHeaderBreadcrumbPath-segment"
-	| "FileNodeViewHeaderBreadcrumbPath-current";
+	| "FileNodeViewHeaderBreadcrumbPath-current"
+	| "FileNodeViewHeaderBreadcrumbPath-current-arrow"
+	| "FileNodeViewHeaderBreadcrumbPath-current-tip-name"
+	| "FileNodeViewHeaderBreadcrumbPath-current-tip-hint";
 
 type FileNodeViewHeaderBreadcrumbPath_Crumb = {
 	id: string;
@@ -272,6 +276,9 @@ const BREADCRUMB_LETTER_SPACING = 0;
 // Every crumb lands on 8px each side: `components` beats `common_components`, so the breadcrumb's
 // `6px 8px` wins over the variant's `8px 12px`. Do not "correct" this to 24.
 const BREADCRUMB_SEGMENT_PADDING_X = 16;
+// The menu arrow after the open file's name: the 12px icon from
+// `.FileNodeViewHeaderBreadcrumbPath-current-arrow` plus the crumb's 4px `gap`. Keep in sync with that CSS.
+const BREADCRUMB_CURRENT_ARROW_WIDTH = 16;
 // The `gap` of `.FileNodeViewHeader-start` and the `gap` of the two breadcrumb lists.
 const BREADCRUMB_START_GAP = 8;
 const BREADCRUMB_LIST_GAP = 4;
@@ -377,7 +384,8 @@ const FileNodeViewHeaderBreadcrumbPath = memo(function FileNodeViewHeaderBreadcr
 					segments,
 					collapse: "keep",
 					fits: (candidateLabels) => {
-						let used = 0;
+						// Only the open file's crumb has the arrow, and it is always there.
+						let used = BREADCRUMB_CURRENT_ARROW_WIDTH;
 						for (const label of candidateLabels) {
 							used += measureLabelWidth(label) + BREADCRUMB_SEGMENT_PADDING_X;
 						}
@@ -479,13 +487,14 @@ const FileNodeViewHeaderBreadcrumbPath = memo(function FileNodeViewHeaderBreadcr
 			{/* Mark which crumb is the open file. Playwriter finds it by this attribute. */}
 			<li ref={currentItemRef} aria-current="page">
 				<MyMenu placement="bottom-start">
-					{/* Same rules as the ancestor crumbs above. The wrapper stays mounted. The tip renders
-					    only when this label is shorter than the name, it shows immediately, and it is forced
-					    closed while the name fits.
+					{/* Unlike the ancestor crumbs, this tip always renders, because it also says what a click
+					    does. A shortened label adds the full name above that hint and shows the tip at once,
+					    since the pointer is already on the short label. A label that fits keeps the normal
+					    tooltip delay.
 					    Ariakit hides the tip when the menu takes focus. Hover could still show it again if the
 					    pointer leaves and comes back while the menu is open, so skip hover while the menu
 					    button is expanded. */}
-					<MyTooltip timeout={0} placement="bottom" open={currentLabel === current.name ? false : undefined}>
+					<MyTooltip timeout={currentLabel === current.name ? undefined : 0} placement="bottom">
 						<MyTooltipTrigger showOnHover={(event) => event.currentTarget.getAttribute("aria-expanded") !== "true"}>
 							<MyMenuTrigger>
 								<MyButton
@@ -497,10 +506,35 @@ const FileNodeViewHeaderBreadcrumbPath = memo(function FileNodeViewHeaderBreadcr
 									aria-label={current.name}
 								>
 									{currentLabel}
+									<MyButtonIcon
+										className={
+											"FileNodeViewHeaderBreadcrumbPath-current-arrow" satisfies FileNodeViewHeaderBreadcrumbPath_ClassNames
+										}
+										aria-hidden
+									>
+										<ChevronDown />
+									</MyButtonIcon>
 								</MyButton>
 							</MyMenuTrigger>
 						</MyTooltipTrigger>
-						{currentLabel !== current.name ? <MyTooltipContent unmountOnHide>{current.name}</MyTooltipContent> : null}
+						<MyTooltipContent unmountOnHide>
+							{currentLabel !== current.name ? (
+								<span
+									className={
+										"FileNodeViewHeaderBreadcrumbPath-current-tip-name" satisfies FileNodeViewHeaderBreadcrumbPath_ClassNames
+									}
+								>
+									{current.name}
+								</span>
+							) : null}
+							<span
+								className={
+									"FileNodeViewHeaderBreadcrumbPath-current-tip-hint" satisfies FileNodeViewHeaderBreadcrumbPath_ClassNames
+								}
+							>
+								Click for file actions
+							</span>
+						</MyTooltipContent>
 					</MyTooltip>
 					{currentMenu}
 				</MyMenu>

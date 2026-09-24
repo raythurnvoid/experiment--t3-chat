@@ -185,6 +185,27 @@
 		justify-content: center;
 	}
 
+	/* Keep the menu arrow smaller than a normal button icon, so it takes less room from the name.
+	   `BREADCRUMB_CURRENT_ARROW_WIDTH` in file-node-view.tsx counts this width plus the crumb's gap. */
+	.FileNodeViewHeaderBreadcrumbPath-current-arrow {
+		width: 12px;
+		height: 12px;
+
+		color: var(--color-fg-08);
+	}
+
+	.FileNodeViewHeaderBreadcrumbPath-current-tip-name,
+	.FileNodeViewHeaderBreadcrumbPath-current-tip-hint {
+		display: block;
+	}
+
+	/* Dim the hint only under the full name. Alone, it is the whole tip and keeps the normal color. */
+	.FileNodeViewHeaderBreadcrumbPath-current-tip-name + .FileNodeViewHeaderBreadcrumbPath-current-tip-hint {
+		margin-top: 2px;
+
+		color: var(--color-fg-08);
+	}
+
 	.FileNodeViewHeader {
 		display: flex;
 		flex: 1;

@@ -202,6 +202,10 @@ describe("FileNodeView header breadcrumb layout", () => {
 		expect(ancestorLinks(box)).toHaveLength(4);
 		expect(current.textContent).toBe(FILE.name);
 		expect(box.scrollWidth).toBeLessThanOrEqual(box.clientWidth + 1);
+		// The folder list scrolls on its own, so a measurement that is too small hides there instead of
+		// in the box. This fails when the open file's menu arrow is not counted.
+		const [, ancestorList] = within(box).getAllByRole("list");
+		expect(ancestorList!.scrollWidth).toBeLessThanOrEqual(ancestorList!.clientWidth + 1);
 
 		box.style.width = "1400px";
 		await waitFor(() => {
@@ -213,7 +217,7 @@ describe("FileNodeView header breadcrumb layout", () => {
 		expect(box.scrollWidth).toBeLessThanOrEqual(box.clientWidth + 1);
 	});
 
-	test("shows a tip for a shortened name and hides it while the menu is open", async () => {
+	test("shows the right tip for each crumb and hides it while the menu is open", async () => {
 		const box = renderHeader(700);
 		const current = await within(box).findByRole("button", { name: FILE.name });
 
@@ -238,11 +242,17 @@ describe("FileNodeView header breadcrumb layout", () => {
 		await expectTooltipStaysHidden();
 		await userEvent.unhover(whole!);
 
-		// The open file name still fits at this width.
+		// The open file name still fits at this width. Its tip only says what a click does, and it keeps
+		// Ariakit's normal delay, so it is not there right after the hover.
 		expect(current.textContent).toBe(FILE.name);
 		await userEvent.hover(current);
-		await expectTooltipStaysHidden();
+		expect(within(document.body).queryByRole("tooltip")).toBeNull();
+		const hintTip = await within(document.body).findByRole("tooltip");
+		expect(hintTip.textContent).toBe("Click for file actions");
 		await userEvent.unhover(current);
+		await waitFor(() => {
+			expect(within(document.body).queryByRole("tooltip")).toBeNull();
+		});
 
 		box.style.width = "200px";
 		await waitFor(() => {
@@ -250,7 +260,7 @@ describe("FileNodeView header breadcrumb layout", () => {
 		});
 		await userEvent.hover(current);
 		const currentTip = await within(document.body).findByRole("tooltip");
-		expect(currentTip.textContent).toBe(FILE.name);
+		expect(currentTip.textContent).toBe(`${FILE.name}Click for file actions`);
 
 		await userEvent.click(current);
 		await within(document.body).findByRole("menuitem", { name: "Copy node id" });
