@@ -191,6 +191,6 @@
 	path = packages/app/vendor/just-bash
 	url = https://github.com/raythurnvoid/just-bash.git
 	branch = rt0-updates
-[submodule "packages/native-layer"]
-	path = packages/native-layer
-	url = https://github.com/raythurnvoid/native-layer.git
+[submodule "packages/native-popovers"]
+	path = packages/native-popovers
+	url = https://github.com/raythurnvoid/native-popovers.git
