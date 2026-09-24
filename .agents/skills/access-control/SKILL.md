@@ -684,11 +684,14 @@ resolve the reader with `db_get_tree_reader` and filter every row with
     and over 200 the member gets none of them, with `tooManyShared`. That answer depends on the
     folder's count of all restricted children, like before this change. No name or order leaks, but
     a member who can add restricted children there can add them one by one and learn that count.
-  - Known limit: the grant lists cost up to 1,500 `db.get` calls, and the walk costs about 9 to 14
-    calls per candidate. The visible reader's own 4096-read budget counts only part of that, so the
-    query throws at Convex's 4,096-call limit before `exhausted` is set. This can happen for a member
-    with hundreds of stale grants in one folder, with three nearly full grant lists and 200 shared
-    rows in one folder, or with 200 shared rows plus 200 pending changes there.
+  - Known limit: loading the grant lists costs one `db.get` per grant. Only the user's own list can
+    reach 500. A role list holds at most 50 nodes, because `set_node_share_grant` puts a role on at
+    most 50 share lists in the organization, and it is the only writer of role grants. So the lists
+    cost about 500 plus 50 per role. The walk costs about 9 to 14 calls per candidate
+    (a review estimate, not measured). The visible reader's own 4096-read budget counts only part of
+    that, so the query can throw at Convex's 4,096-call limit before `exhausted` is set. 200 shown
+    rows alone stay under it. It needs extra checks in the same folder: a member with 200 shared rows
+    plus about 100 stale grants there, or 200 shared rows plus many pending changes there.
 - A folder that the caller can read but that the Files view hides (archived, or hidden by the
   caller's own pending delete or move) gets empty side rows, not a refusal, so the table shows no
   error there.
