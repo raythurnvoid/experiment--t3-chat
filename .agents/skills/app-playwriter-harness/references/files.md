@@ -534,7 +534,8 @@ Verified 2026-09-24 in `qa-browser/home` with `qa.perm.owner` and `qa.perm.viewe
   a few seconds. Typing does not change the node's `updatedAt`, so the Updated sort keeps creation order for them.
 - **Drive the sort.** Header buttons `Name` and `Updated` (`exact: true`); the Sort select options are `Name`,
   `Updated`, `Date created`, `Type`, `Size`, and `<key> (metadata)`; the direction button is named like
-  `Sort z to a`. Updated, Date created, and Size start newest or largest first.
+  `Sort z to a`. Updated, Date created, and Size start newest or largest first. The `(metadata)` options load
+  after the menu opens, so a read of `getByRole("option")` right after the click misses them. Wait for one first.
 - **Read the order.** Wait for `aria-busy` to leave the table, click `Show more` until it is gone, then read the
   overlay link names and `.FileNodeViewFolderExplorer-cell-sort-value`. Expect folders first, then values, then
   `—` rows by name, in both directions.
@@ -546,8 +547,19 @@ Verified 2026-09-24 in `qa-browser/home` with `qa.perm.owner` and `qa.perm.viewe
   proves the counter works.
 - **Hidden child.** The member must not see the restricted child's row, and its metadata value must not appear in
   `.FileNodeViewFolderExplorer-cell-sort-value` or anywhere in `body.innerText`.
+- **Member shared rows from existing data** (verified 2026-09-24). A member builds the restricted rows of a folder
+  from their own grants, by user or by role. `qa-browser` keeps archived restricted fixtures. `unarchive_nodes` on
+  a restricted child alone puts it at root, because its parent stays archived. Then `move_nodes` it into a live
+  folder such as `/qa-search-0905`. Share one by user and one with `{ kind: "role", role: "member" }`, and leave
+  the others without grants. In every sort, the member sees exactly the shared rows, with no `Too many shared`
+  notice and no hidden name in `body.innerText`. The owner sees every row, which proves the text check works.
+  `qa-browser` has fewer than 200 restricted folders and files, so the over-200 case needs new fixtures. To clean
+  up, remove the role grant, restore the original parent folders, move each item back, and archive the parents
+  again. Compare a `list_tree` count taken before the run.
 - **Working-tree proof.** Force `tooManyShared` to true in `list_tree_children_sort_side_rows`, push, and every
-  folder shows `Too many shared items here to sort. Some are not shown.`; push the real code and it goes away.
+  folder shows `Too many shared items here to sort. Some are not shown.`; push the real code and it goes away. For
+  the member walk, skip every grant candidate instead (`if (!is_in_folder(entry) || true)`): the member loses the
+  shared rows. If other agents have unfinished `convex/` edits, push from a worktree (see `known-hazards.md`).
 - Clean up with `files_nodes.archive_nodes` on the fixture roots. Their `files_folder_sorts` docs stay until the
   workspace purge, by design.
 

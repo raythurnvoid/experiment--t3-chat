@@ -2375,6 +2375,31 @@ Enumerate one level at a time and check each parent for the ReparsePoint attribu
 descending. If it already happened, `pnpm install --force --frozen-lockfile` rebuilds every link
 without touching the lockfile.
 
+## A dev push from the shared working tree also ships other agents' unfinished Convex edits
+
+Several agents share one checkout and one dev deployment. `convex dev --once` pushes the whole
+working tree, so a break-on-purpose push also deploys another agent's half-done `convex/` edits. A
+push from a clean HEAD worktree is not safe either: it rolls back whatever that agent already
+pushed, for example a new schema index its code now reads.
+
+When `git status` shows someone else's `packages/app/convex` edits, push from a worktree outside the
+repo instead (verified 2026-09-24):
+
+1. `git worktree add --detach <plan folder>/scratch/wt-head HEAD`.
+2. Link `node_modules`, `packages/app/node_modules`, and every empty `packages/app/vendor/*` folder to
+   the main checkout with `New-Item -ItemType Junction`. The vendor submodules are empty in a new
+   worktree, and the bundle fails with `Could not resolve "../vendor/polar/..."`.
+3. Write a `packages/app/.env.local` holding only the `CONVEX_DEPLOYMENT=` line. Do not copy the
+   whole file, because it holds secrets.
+4. Copy the other agent's changed `convex/` files in (`git diff --name-only -- packages/app/convex`),
+   then add your one-line break. The deployment then differs from their push by your line only.
+5. For the restore push, copy their files again, since they may have changed, without the break.
+6. Clean up: delete each junction on its own with `(Get-Item <path>).Delete()`, check that the main
+   `node_modules` still exists, then `git worktree remove --force`. See the junction hazard above.
+
+`Schema was overwritten by another push` means another push landed during yours. The CLI still exits
+0, so read the output for `Convex functions ready!` every time.
+
 ## A live `convex dev` process is not proof that your Convex edits are on the deployment
 
 `Get-CimInstance Win32_Process ... -match 'convex'` showed a `convex ... dev` watcher running, and
