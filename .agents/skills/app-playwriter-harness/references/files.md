@@ -1599,6 +1599,19 @@ selected, and a row's Discard removes only that row, not the folders it `also ad
 rows; a bigger `--limit` times out). The job must succeed, and the `files_pending_node_cleanup_tasks`
 row and the node must be gone within seconds. Verified 2026-09-24.
 
+To check that a finished child wakes its waiting parent, discard both drafts in one run. The UI
+cannot do that, so call the review door from page context with `import("/src/lib/app-convex-client.ts")`.
+Read each proposal with `files_pending_updates.get_file_pending_target({ membershipId, target: {
+kind: "private", id } })` (`entry.pendingUpdate._id` and `.revision`). Then call
+`files_pending_update_runs.start` with `kind: "discard"`, a new `requestId`, `expectedItemCount: 2`,
+and `items: [{ pendingUpdateId, reviewedRevision, selectedContentStateId: null }, ...]`, and then
+`seal` with the returned `runId`. The two calls can take longer than the 5 s step while they still
+land. Read `files_pending_update_runs` before you retry, or a retry starts a second run. Expected jobs:
+the parent's first job starts the child's cleanup and schedules a run 15 minutes later. The child's
+job then cancels that run, and a new parent job runs at once. Both nodes and tasks are gone within
+seconds. If the child finishes before the parent's first job, the parent never waits; run it again.
+Verified 2026-09-24.
+
 The `Save reviewed changes` / `Discard reviewed changes` dialog does close. Reopen a finished run
 without new data from `Notifications` > `View review progress`. A mouse click on its footer `Close`
 or its X takes about 2 s in Playwriter and can time out at `performing click action`. Poll
