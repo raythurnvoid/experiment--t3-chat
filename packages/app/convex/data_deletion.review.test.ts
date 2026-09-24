@@ -8,7 +8,7 @@ import { test_convex, test_mocks_cancel_pending_home_file_seeds, test_mocks_fill
 import { data_deletion_db_request } from "./data_deletion_requests.ts";
 import { files_pending_nodes_db_create } from "./files_pending_nodes.ts";
 import { files_private_storage_db_reserve } from "./files_private_storage.ts";
-import { files_db_schedule_pending_update_cleanup } from "../server/files.ts";
+import { files_db_insert_pending_update } from "../server/files.ts";
 import {
 	organizations_db_create,
 	organizations_db_create_workspace,
@@ -418,15 +418,14 @@ async function data_deletion_test_seed_workspace_content_bulk(
 			}),
 		]);
 		if (i < 5) {
-			const pendingUpdateUpdatedAt = Date.now();
-			const pendingUpdateId = await ctx.db.insert("files_pending_updates", {
+			const pendingUpdateId = await files_db_insert_pending_update(ctx, {
 				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
 				userId: args.userId,
 				target: { kind: "saved", id: fileNodeId },
 				revision: 1,
 				size: files_get_utf8_byte_size(`# pending ${i}`),
-				updatedAt: pendingUpdateUpdatedAt,
+				updatedAt: Date.now(),
 			});
 			const pendingTextChunkId = await ctx.db.insert("files_text_chunks", {
 				organizationId: args.organizationId,
@@ -495,10 +494,6 @@ async function data_deletion_test_seed_workspace_content_bulk(
 					stringValue: `pending-${args.tag}`,
 				}),
 			]);
-			await files_db_schedule_pending_update_cleanup(ctx, {
-				pendingUpdateId,
-				expectedUpdatedAt: pendingUpdateUpdatedAt,
-			});
 		}
 		await ctx.db.insert("files_pending_updates_last_sequence_saved", {
 			organizationId: args.organizationId,
@@ -643,7 +638,7 @@ const review_workspace_tables = [
 	"files_pending_update_text_inputs",
 	"files_pending_update_operation_batches",
 	"files_yjs_trusted_update_stages",
-	"files_pending_updates_cleanup_tasks",
+	"files_pending_update_expiry_checks",
 	"files_pending_updates",
 	"files_pending_updates_last_sequence_saved",
 	"ai_chat_files_content",
@@ -1190,6 +1185,16 @@ async function review_seed_all_workspace_content(
 			updatedAt: now,
 		});
 	}
+	// One owner has one expiry check per workspace. Add a draft for a second owner, so the purge
+	// must page through two checks too.
+	await files_db_insert_pending_update(ctx, {
+		...tenant,
+		userId: await ctx.db.insert("users", { clerkUserId: `review-second-owner-${args.tag}` }),
+		target: { kind: "saved", id: nodes[0]!._id },
+		revision: 1,
+		size: 0,
+		updatedAt: now,
+	});
 	return { nodes: nodes.map((node) => node._id) };
 }
 
@@ -1240,11 +1245,6 @@ async function review_capture_workspace_rows(
 			.filter((activity) => activity.organizationId === organizationId && activity.workspaceId === workspaceId)
 			.map((activity) => activity._id),
 	);
-	const pendingIds = new Set(
-		(await ctx.db.query("files_pending_updates").collect())
-			.filter((row) => row.organizationId === organizationId && row.workspaceId === workspaceId)
-			.map((row) => row._id),
-	);
 	return await Promise.all(
 		review_workspace_tables.map(async (table) => {
 			const rows = await ctx.db.query(table).collect();
@@ -1252,12 +1252,10 @@ async function review_capture_workspace_rows(
 				.filter((row) =>
 					"activityId" in row
 						? activityIds.has(row.activityId)
-						: "pendingUpdateId" in row && !("workspaceId" in row)
-							? pendingIds.has(row.pendingUpdateId)
-							: "organizationId" in row &&
-								"workspaceId" in row &&
-								row.organizationId === organizationId &&
-								row.workspaceId === workspaceId,
+						: "organizationId" in row &&
+							"workspaceId" in row &&
+							row.organizationId === organizationId &&
+							row.workspaceId === workspaceId,
 				)
 				.map((row) => row._id);
 			return { table, ids };
@@ -1422,11 +1420,14 @@ for (const path of ["queue", "admin"] as const) {
 				meter: null,
 				lastSyncedAt: Date.now(),
 			});
+			// One row per user, so it is checked here and not in the two-row user table list.
+			const lastActiveId = await ctx.db.insert("users_last_active", { userId: user.userId, lastActiveAt: Date.now() });
 			return {
 				user,
 				shared,
 				tokenId,
 				billingId,
+				lastActiveId,
 				workspaceRows: await review_capture_workspace_rows(ctx, user.defaultOrganizationId, user.defaultWorkspaceId),
 				userRows: await review_capture_user_rows(ctx, user.userId),
 			};
@@ -1505,6 +1506,7 @@ for (const path of ["queue", "admin"] as const) {
 		expect(await t.run((ctx) => ctx.db.get("billing_usage_snapshots", seeded.billingId))).toEqual(
 			path === "admin" ? null : expect.any(Object),
 		);
+		expect(await t.run((ctx) => ctx.db.get("users_last_active", seeded.lastActiveId))).toBeNull();
 		console.info("Review path counts", { path, preparePasses, finalizationPasses, actions, steps });
 	});
 }
@@ -1923,7 +1925,7 @@ describe("hard_delete_user_now", () => {
 });
 
 describe("anonymous auth finalization", () => {
-	test("removes auth and billing docs when a tombstone is purged early", async () => {
+	test("removes auth, billing, and activity docs when a tombstone is purged early", async () => {
 		const t = test_convex({ transactionLimits: true });
 		await t.run(async (ctx) => {
 			const seedUser = await ctx.db.insert("users", { clerkUserId: null });
@@ -1931,6 +1933,7 @@ describe("anonymous auth finalization", () => {
 		});
 		const user = await t.mutation(internal.users.create_anonymous_user, {});
 		await t.run(test_mocks_cancel_pending_home_file_seeds);
+		await t.run((ctx) => ctx.db.insert("users_last_active", { userId: user.userId, lastActiveAt: Date.now() }));
 		const requestId = await t.mutation(internal.data_deletion.init_user_deletion, { userId: user.userId });
 		if (!requestId) throw new Error("Expected the user deletion request");
 		await t.mutation(internal.users.purge_deleted_user_tombstone, { userId: user.userId });
@@ -1967,8 +1970,14 @@ describe("anonymous auth finalization", () => {
 					.withIndex("by_user", (q) => q.eq("userId", user.userId))
 					.collect()
 			).length,
+			activity: (
+				await ctx.db
+					.query("users_last_active")
+					.withIndex("by_user", (q) => q.eq("userId", user.userId))
+					.collect()
+			).length,
 		}));
-		expect(after).toEqual({ tokens: 0, snapshots: 0 });
+		expect(after).toEqual({ tokens: 0, snapshots: 0, activity: 0 });
 	});
 
 	for (const userRecord of ["retained", "missing"] as const) {

@@ -51,6 +51,48 @@ async function create_folder(
 	return { node, pendingUpdate };
 }
 
+async function expiry_check(
+	t: ReturnType<typeof test_convex>,
+	scope: {
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		userId: Id<"users">;
+	},
+) {
+	return await t.run((ctx) =>
+		ctx.db
+			.query("files_pending_update_expiry_checks")
+			.withIndex("by_organization_workspace_user", (q) =>
+				q.eq("organizationId", scope.organizationId).eq("workspaceId", scope.workspaceId).eq("userId", scope.userId),
+			)
+			.unique(),
+	);
+}
+
+/**
+ * Run the owner's expiry check like its scheduled job would, until it is not due anymore.
+ * One run handles at most 8 drafts and then continues in a new run.
+ */
+async function expire_drafts(
+	t: ReturnType<typeof test_convex>,
+	scope: {
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		userId: Id<"users">;
+	},
+) {
+	for (let run = 0; run < 100; run++) {
+		await t.mutation(internal.files_pending_updates.expire_file_pending_updates, {
+			organizationId: scope.organizationId,
+			workspaceId: scope.workspaceId,
+			userId: scope.userId,
+		});
+		const check = await expiry_check(t, scope);
+		if (!check || check.nextCheckAt > Date.now()) return;
+	}
+	throw new Error("The expiry check never finished");
+}
+
 describe("files_pending_nodes_db_create", () => {
 	test("creates one owner proposal and node slot without a saved node", async () => {
 		const t = test_convex();
@@ -861,23 +903,9 @@ describe("files_pending_nodes_db_discard", () => {
 				.unique(),
 		);
 		if (!parent) throw new Error("Expected the private parent");
-		const parentProposal = oldProposals.find((proposal) => proposal.target.id === parent._id)!;
-		const expireProposal = async (pendingUpdateId: Id<"files_pending_updates">) => {
-			const task = await t.run((ctx) =>
-				ctx.db
-					.query("files_pending_updates_cleanup_tasks")
-					.withIndex("by_pendingUpdate", (q) => q.eq("pendingUpdateId", pendingUpdateId))
-					.unique(),
-			);
-			if (!task) throw new Error("Expected the expiry task");
-			vi.setSystemTime(Math.max(Date.now(), task.expiresAt));
-			await t.mutation(internal.files_pending_updates.remove_file_pending_update_if_expired, {
-				cleanupTaskId: task._id,
-				expiryGeneration: task.expiryGeneration,
-			});
-		};
-		const scheduled = await t.run((ctx) => ctx.db.query("files_pending_updates_cleanup_tasks").collect());
-		expect(new Set(scheduled.map((task) => task.pendingUpdateId)).size).toBe(257);
+		// Every draft is due 4 hours after its last edit, and one check covers the whole workspace.
+		expect(oldProposals.every((proposal) => proposal.expiresAt === startedAt + 4 * 60 * 60 * 1000)).toBe(true);
+		expect(await expiry_check(t, scope)).toMatchObject({ nextCheckAt: startedAt + 4 * 60 * 60 * 1000 });
 		vi.setSystemTime(startedAt + 3 * 60 * 60 * 1000);
 		const newer = await t.mutation(internal.files_nodes.create_private_node_by_path, {
 			...scope,
@@ -886,28 +914,32 @@ describe("files_pending_nodes_db_discard", () => {
 		});
 		if (newer._nay || newer._yay.target.kind !== "private") throw new Error("Expected the newer child");
 		const newerId = newer._yay.target.id;
+
+		// The old children expire in runs of 8. The parent waits while the newer child is live.
 		vi.setSystemTime(startedAt + 4 * 60 * 60 * 1000);
-		await expireProposal(parentProposal._id);
+		await expire_drafts(t, scope);
 		expect(await t.run((ctx) => ctx.db.get("files_pending_nodes", parent._id))).toEqual(parent);
 		expect(await t.run((ctx) => ctx.db.query("files_pending_nodes").collect())).toHaveLength(258);
-		for (const proposal of oldProposals) {
-			if (proposal._id === parentProposal._id) continue;
-			await expireProposal(proposal._id);
-		}
 		const cleanupTasks = await t.run((ctx) => ctx.db.query("files_pending_node_cleanup_tasks").collect());
 		expect(cleanupTasks).toHaveLength(256);
 		for (const task of cleanupTasks)
 			await t.mutation(internal.files_pending_nodes.cleanup_discarded_node, { cleanupTaskId: task._id });
-		await expireProposal(parentProposal._id);
+		vi.setSystemTime(Date.now() + 60_000);
+		await expire_drafts(t, scope);
 		expect(await t.run((ctx) => ctx.db.query("files_pending_nodes").collect())).toHaveLength(2);
 		expect(await t.run((ctx) => ctx.db.get("files_pending_nodes", newerId))).toMatchObject({ state: "active" });
 		expect(
 			(await t.run((ctx) => files_pending_nodes_db_get_ancestry(ctx, { ...scope, privateNodeId: newerId })))._yay
 				?.ancestors,
 		).toEqual([parent]);
+
+		// The newer child expires first. The parent goes in a later run.
 		vi.setSystemTime(startedAt + 7 * 60 * 60 * 1000);
-		await expireProposal(newer._yay.pendingUpdateId!);
-		await expireProposal(parentProposal._id);
+		await expire_drafts(t, scope);
+		expect(await t.run((ctx) => ctx.db.get("files_pending_nodes", newerId))).toMatchObject({ state: "discarded" });
+		expect(await t.run((ctx) => ctx.db.get("files_pending_nodes", parent._id))).toEqual(parent);
+		vi.setSystemTime(Date.now() + 60_000);
+		await expire_drafts(t, scope);
 		const finalTasks = await t.run((ctx) => ctx.db.query("files_pending_node_cleanup_tasks").collect());
 		for (const privateNodeId of [newerId, parent._id]) {
 			const task = finalTasks.find((item) => item.privateNodeId === privateNodeId)!;
@@ -919,6 +951,11 @@ describe("files_pending_nodes_db_discard", () => {
 		expect(reservations).toHaveLength(258);
 		expect(reservations.every((reservation) => reservation.settlement.kind === "deleted")).toBe(true);
 		expect(await t.run((ctx) => ctx.db.get("quotas", reservations[0]!.userQuotaId))).toMatchObject({ usedCount: 0 });
+
+		// No draft is left, so the next check deletes itself instead of waking up again.
+		vi.setSystemTime(Date.now() + 60_000);
+		await expire_drafts(t, scope);
+		expect(await expiry_check(t, scope)).toBeNull();
 	});
 
 	test("requires review for a ready child and keeps both drafts unchanged", async () => {
@@ -1058,17 +1095,24 @@ describe("files_pending_nodes_db_discard", () => {
 	test("keeps an expired parent while a live child still needs it", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const scope = { organizationId: db.organizationId, workspaceId: db.workspaceId, userId: db.userId };
 		const parent = await t.run(async (ctx) => create_folder(ctx, { ...db, name: "parent" }));
 		vi.setSystemTime(Date.now() + 3 * 60 * 60 * 1000);
-		const child = await t.run(async (ctx) =>
-			create_folder(ctx, {
+		// An unfinished child needs no review, so only the children-first expiry rule keeps the folder.
+		const child = await t.run(async (ctx) => {
+			const created = await files_pending_nodes_db_create(ctx, {
 				...db,
-				name: "child",
+				name: "child.txt",
+				kind: "file",
 				parent: { kind: "private", id: parent.node._id },
-			}),
-		);
-		vi.setSystemTime(Date.now() + 60 * 60 * 1000);
-		await t.run(async (ctx) =>
+			});
+			if (created._nay) throw new Error(created._nay.message);
+			const pendingUpdate = await ctx.db.get("files_pending_updates", created._yay.pendingUpdateId);
+			if (!pendingUpdate) throw new Error("Expected the child proposal");
+			return { nodeId: created._yay.privateNodeId, pendingUpdate };
+		});
+		vi.setSystemTime(parent.pendingUpdate.expiresAt);
+		const refused = await t.run(async (ctx) =>
 			files_pending_nodes_db_discard(ctx, {
 				...db,
 				privateNodeId: parent.node._id,
@@ -1077,34 +1121,72 @@ describe("files_pending_nodes_db_discard", () => {
 				reason: "expired",
 			}),
 		);
+		expect(refused._nay?.name).toBe("needs_review");
+		await expire_drafts(t, scope);
 		expect(await t.run(async (ctx) => ctx.db.get("files_pending_nodes", parent.node._id))).toEqual(parent.node);
 		expect(await t.run(async (ctx) => ctx.db.query("files_pending_node_cleanup_tasks").collect())).toEqual([]);
-		expect(await t.run(async (ctx) => ctx.db.query("files_pending_updates_cleanup_tasks").collect())).toMatchObject([
-			{ pendingUpdateId: parent.pendingUpdate._id, expectedUpdatedAt: parent.pendingUpdate.updatedAt },
-		]);
-		vi.setSystemTime(child.pendingUpdate.updatedAt + 4 * 60 * 60 * 1000);
-		await t.run(async (ctx) =>
-			files_pending_nodes_db_discard(ctx, {
-				...db,
-				privateNodeId: child.node._id,
-				pendingUpdateId: child.pendingUpdate._id,
-				expectedRevision: 1,
-				reason: "expired",
-			}),
-		);
-		await t.run(async (ctx) =>
-			files_pending_nodes_db_discard(ctx, {
-				...db,
-				privateNodeId: parent.node._id,
-				pendingUpdateId: parent.pendingUpdate._id,
-				expectedRevision: 1,
-				reason: "expired",
-			}),
-		);
+		// The job tries the folder again in 60 seconds and changes nothing else.
+		expect(await t.run(async (ctx) => ctx.db.get("files_pending_updates", parent.pendingUpdate._id))).toEqual({
+			...parent.pendingUpdate,
+			expiresAt: Date.now() + 60_000,
+		});
+
+		// One run expires the child. The folder was checked before the child in that run, so it waits.
+		vi.setSystemTime(child.pendingUpdate.expiresAt);
+		await expire_drafts(t, scope);
+		expect(await t.run(async (ctx) => ctx.db.get("files_pending_nodes", child.nodeId))).toMatchObject({
+			state: "discarded",
+		});
+		expect(await t.run(async (ctx) => ctx.db.get("files_pending_nodes", parent.node._id))).toEqual(parent.node);
+		vi.setSystemTime(Date.now() + 60_000);
+		await expire_drafts(t, scope);
 		expect(await t.run(async (ctx) => ctx.db.query("files_pending_nodes").collect())).toMatchObject([
 			{ state: "discarded" },
 			{ state: "discarded" },
 		]);
+	});
+
+	test("keeps an expired folder while another draft moves a node into it", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const scope = { organizationId: db.organizationId, workspaceId: db.workspaceId, userId: db.userId };
+		const folder = await t.run(async (ctx) => create_folder(ctx, { ...db, name: "folder" }));
+		vi.setSystemTime(Date.now() + 3 * 60 * 60 * 1000);
+		const saved = await t.mutation(internal.files_nodes.create_folder_node_by_path, { ...scope, path: "/moved" });
+		if (saved._nay) throw new Error(saved._nay.message);
+		const moved = await t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
+			...scope,
+			target: { kind: "saved", id: saved._yay.nodeId },
+			destParent: { kind: "private", id: folder.node._id },
+			destName: "moved",
+		});
+		expect(moved._nay).toBeUndefined();
+		const move = await t.run(async (ctx) =>
+			ctx.db
+				.query("files_pending_updates")
+				.withIndex("by_target", (q) => q.eq("target.kind", "saved").eq("target.id", saved._yay.nodeId))
+				.unique(),
+		);
+		if (!move) throw new Error("Expected the move draft");
+
+		vi.setSystemTime(folder.pendingUpdate.expiresAt);
+		await expire_drafts(t, scope);
+		expect(await t.run(async (ctx) => ctx.db.get("files_pending_nodes", folder.node._id))).toEqual(folder.node);
+		expect(await t.run(async (ctx) => ctx.db.get("files_pending_updates", folder.pendingUpdate._id))).toEqual({
+			...folder.pendingUpdate,
+			expiresAt: Date.now() + 60_000,
+		});
+
+		// After the move draft expires, a later run removes the folder.
+		vi.setSystemTime(move.expiresAt);
+		await expire_drafts(t, scope);
+		expect(await t.run(async (ctx) => ctx.db.get("files_pending_updates", move._id))).toBeNull();
+		expect(await t.run(async (ctx) => ctx.db.get("files_pending_nodes", folder.node._id))).toEqual(folder.node);
+		vi.setSystemTime(Date.now() + 60_000);
+		await expire_drafts(t, scope);
+		expect(await t.run(async (ctx) => ctx.db.get("files_pending_nodes", folder.node._id))).toMatchObject({
+			state: "discarded",
+		});
 	});
 
 	test("keeps a previously saved parent when its remaining child is discarded", async () => {

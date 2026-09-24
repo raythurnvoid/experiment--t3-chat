@@ -116,7 +116,6 @@ import {
 export const experimental_reuseContext = true;
 
 export {
-	remove_file_pending_update_if_expired,
 	upsert_file_pending_update,
 	persist_file_pending_update_rebased_state,
 	get_file_pending_update,

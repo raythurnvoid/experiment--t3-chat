@@ -27,25 +27,12 @@ import { files_media_dependencies_db_retire } from "../convex/files_media_depend
 
 export * from "../shared/files.ts";
 
-async function files_db_cancel_scheduled_function_if_present(
+export async function files_db_cancel_scheduled_function_if_present(
 	ctx: MutationCtx,
 	scheduledFunctionId: Id<"_scheduled_functions">,
 ) {
 	await ctx.scheduler.cancel(scheduledFunctionId).catch((error) => {
 		if (error instanceof Error && error.message.includes("non-existent document")) {
-			return;
-		}
-
-		throw error;
-	});
-}
-
-async function files_db_delete_pending_update_cleanup_task_if_present(
-	ctx: MutationCtx,
-	cleanupTaskId: Id<"files_pending_updates_cleanup_tasks">,
-) {
-	await ctx.db.delete("files_pending_updates_cleanup_tasks", cleanupTaskId).catch((error) => {
-		if (error instanceof Error && error.message.includes("non-existent doc")) {
 			return;
 		}
 
@@ -205,23 +192,85 @@ export async function files_db_advance_pending_review_version(
 	}
 }
 
+/**
+ * A draft may expire this long after its last edit, if its owner is also inactive this long.
+ */
+export const files_DRAFT_IDLE_EXPIRY_MS = 4 * 60 * 60 * 1000;
+
+/**
+ * Make sure the owner's expiry check runs no later than `checkAt`.
+ * Most calls write nothing, because the check is already due earlier.
+ */
+async function files_db_ensure_pending_update_expiry_check(
+	ctx: MutationCtx,
+	args: {
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		userId: Id<"users">;
+		checkAt: number;
+	},
+) {
+	const check = await ctx.db
+		.query("files_pending_update_expiry_checks")
+		.withIndex("by_organization_workspace_user", (q) =>
+			q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("userId", args.userId),
+		)
+		.unique();
+	if (check && check.nextCheckAt <= args.checkAt) return;
+
+	const scheduledFunctionId = await ctx.scheduler.runAt(
+		args.checkAt,
+		internal.files_pending_updates.expire_file_pending_updates,
+		{ organizationId: args.organizationId, workspaceId: args.workspaceId, userId: args.userId },
+	);
+	if (check) {
+		await ctx.db.patch("files_pending_update_expiry_checks", check._id, {
+			nextCheckAt: args.checkAt,
+			scheduledFunctionId,
+		});
+		await files_db_cancel_scheduled_function_if_present(ctx, check.scheduledFunctionId);
+	} else {
+		await ctx.db.insert("files_pending_update_expiry_checks", {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			userId: args.userId,
+			nextCheckAt: args.checkAt,
+			scheduledFunctionId,
+		});
+	}
+}
+
 export async function files_db_insert_pending_update(
 	ctx: MutationCtx,
-	value: WithoutSystemFields<Doc<"files_pending_updates">>,
+	value: Omit<WithoutSystemFields<Doc<"files_pending_updates">>, "expiresAt">,
 ) {
 	await files_db_advance_pending_review_version(ctx, value);
-	return await ctx.db.insert("files_pending_updates", value);
+	const expiresAt = value.updatedAt + files_DRAFT_IDLE_EXPIRY_MS;
+	const pendingUpdateId = await ctx.db.insert("files_pending_updates", { ...value, expiresAt });
+	await files_db_ensure_pending_update_expiry_check(ctx, { ...value, checkAt: expiresAt });
+	return pendingUpdateId;
 }
 
 export async function files_db_patch_pending_update(
 	ctx: MutationCtx,
 	pendingUpdateId: Id<"files_pending_updates">,
-	value: Partial<WithoutSystemFields<Doc<"files_pending_updates">>>,
+	value: Partial<Omit<WithoutSystemFields<Doc<"files_pending_updates">>, "expiresAt">>,
 ) {
 	const proposal = await ctx.db.get("files_pending_updates", pendingUpdateId);
 	if (!proposal) throw should_never_happen("Pending update disappeared before its write", { pendingUpdateId });
 	await files_db_advance_pending_review_version(ctx, proposal);
-	await ctx.db.patch("files_pending_updates", pendingUpdateId, value);
+	// Every edit writes `updatedAt` and so restarts the idle time. The expiry only moves later, so
+	// the owner's expiry check already runs early enough and needs no change.
+	await ctx.db.patch(
+		"files_pending_updates",
+		pendingUpdateId,
+		value.updatedAt === undefined
+			? value
+			: {
+					...value,
+					expiresAt: Math.max(proposal.expiresAt, value.updatedAt + files_DRAFT_IDLE_EXPIRY_MS),
+				},
+	);
 }
 
 export async function files_db_delete_pending_update(
@@ -575,93 +624,4 @@ export async function files_db_consume_trusted_yjs_update_stage(
 	await ctx.db.delete("files_yjs_trusted_update_stages", stage._id);
 	await files_private_storage_db_release_deleted_resource(ctx, { kind: "trusted_stage", id: stage._id });
 	return Result({ _yay: stage.update });
-}
-
-export async function files_db_cancel_pending_update_cleanup_tasks(
-	ctx: MutationCtx,
-	args: {
-		pendingUpdateId: Id<"files_pending_updates">;
-	},
-) {
-	const cleanupTasks = await ctx.db
-		.query("files_pending_updates_cleanup_tasks")
-		.withIndex("by_pendingUpdate", (q) => q.eq("pendingUpdateId", args.pendingUpdateId))
-		.collect();
-
-	await Promise.all([
-		...cleanupTasks.map((cleanupTask) =>
-			cleanupTask.scheduledFunctionId
-				? files_db_cancel_scheduled_function_if_present(ctx, cleanupTask.scheduledFunctionId)
-				: undefined,
-		),
-		...cleanupTasks.map((cleanupTask) => files_db_delete_pending_update_cleanup_task_if_present(ctx, cleanupTask._id)),
-	]);
-}
-
-export async function files_db_schedule_pending_update_cleanup(
-	ctx: MutationCtx,
-	args: {
-		pendingUpdateId: Id<"files_pending_updates">;
-		expectedUpdatedAt: number;
-		delayMs?: number;
-		expiresAt?: number;
-	},
-) {
-	const existing = await ctx.db
-		.query("files_pending_updates_cleanup_tasks")
-		.withIndex("by_pendingUpdate", (q) => q.eq("pendingUpdateId", args.pendingUpdateId))
-		.unique();
-	const now = Date.now();
-	const expiresAt = Math.max(existing?.expiresAt ?? 0, args.expiresAt ?? now + (args.delayMs ?? 4 * 60 * 60 * 1000));
-	const expiryGeneration = (existing?.expiryGeneration ?? 0) + 1;
-	const cleanupTaskId =
-		existing?._id ??
-		(await ctx.db.insert("files_pending_updates_cleanup_tasks", {
-			pendingUpdateId: args.pendingUpdateId,
-			scheduledFunctionId: null,
-			expectedUpdatedAt: args.expectedUpdatedAt,
-			expiresAt,
-			expiryGeneration,
-		}));
-	// A held, due proposal retries without pretending that its content was edited.
-	const scheduledFunctionId = await ctx.scheduler.runAt(
-		Math.max(expiresAt, now + (args.expiresAt === undefined ? 0 : (args.delayMs ?? 0))),
-		internal.files_pending_updates.remove_file_pending_update_if_expired,
-		{ cleanupTaskId, expiryGeneration },
-	);
-	await ctx.db.patch("files_pending_updates_cleanup_tasks", cleanupTaskId, {
-		scheduledFunctionId,
-		expectedUpdatedAt: args.expectedUpdatedAt,
-		expiresAt,
-		expiryGeneration,
-	});
-	if (existing?.scheduledFunctionId)
-		await files_db_cancel_scheduled_function_if_present(ctx, existing.scheduledFunctionId);
-}
-
-export async function files_db_reschedule_pending_update_cleanup_for_user(
-	ctx: MutationCtx,
-	args: {
-		organizationId: Id<"organizations">;
-		workspaceId: Id<"organizations_workspaces">;
-		userId: Id<"users">;
-		delayMs?: number;
-	},
-) {
-	const pendingUpdates = await ctx.db
-		.query("files_pending_updates")
-		.withIndex("by_organization_workspace_user_target", (q) =>
-			q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("userId", args.userId),
-		)
-		.collect();
-
-	await Promise.all(
-		pendingUpdates.map((pendingUpdate) =>
-			files_db_schedule_pending_update_cleanup(ctx, {
-				pendingUpdateId: pendingUpdate._id,
-				expectedUpdatedAt: pendingUpdate.updatedAt,
-				delayMs: args.delayMs,
-			}),
-		),
-	);
 }

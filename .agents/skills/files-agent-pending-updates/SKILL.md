@@ -70,15 +70,16 @@ Main table in `packages/app/convex/schema.ts`:
   - optional `threadIds` (contributor set: the chat threads that touched this doc, deduped; agent writes append their thread id, client-driven writes leave the field out of their patches so it survives, and it dies with the doc; unset for client-only docs and rows older than the field)
   - `size` (UTF-8 byte size of the current `unstaged` text, or `0` for a structural-only doc)
   - `updatedAt`
+  - `expiresAt`: the earliest time expiry may look at this draft. See "Cleanup And Expiry Model".
 
 Private lifetime and cleanup (`packages/app/convex/files_pending_nodes.ts`):
 
 - Every private node has one proposal. Its owner, parent, creation generation, and structural revision stay on the node. Its create intent, content, contributors, and idle expiry stay on the proposal.
 - Direct Discard checks the exact proposal ID and revision before any writes. A ready child or another chat's child outside the reviewed set returns `needs_review`. A pending move into the folder also needs review. The direct transaction checks up to 256 private nodes; larger sets use bulk review.
 - Closing the generation hides the approved subtree at once. Each node gets a durable `files_pending_node_cleanup_tasks` doc. Cleanup removes the proposal indexes, retires its states, hands assets to the deletion ledger, and expires its batches. It keeps the node until its batches, states, and discarded children are gone. Node slots release only after node deletion. A 15-minute cron resumes failed cleanup continuations.
-- Expiry removes private leaves first. Any active child keeps its private parent alive without a
-  whole-tree scan. Cleanup records store the current `expiresAt` and `expiryGeneration`; callbacks
-  require that exact task and generation. Rescheduling expiry does not change the proposal revision.
+- Expiry removes private leaves first. A private folder with a live child, or with another draft
+  moving into it, gets `needs_review` from Discard. The expiry job then retries it every 60 seconds
+  until the child is gone. No whole-tree scan is needed.
 - `files_pending_holds` keeps exact proposals alive for active Copy and review jobs. Roles separate
   source, destination parent, preparing output, ready output, and review. Private identities also
   pin their creation generation. Holds delay expiry only; they grant no access or write permission.
@@ -89,8 +90,8 @@ Private lifetime and cleanup (`packages/app/convex/files_pending_nodes.ts`):
   A different proposal or replacement at the same target does not inherit it. Completed retry
   items keep this pin; an item selected for a fresh attempt clears it.
 - Ready output and retained review work get four hours from producer completion. The producer
-  stores that fixed deadline once. Release pages install it before removing holds and preserve any
-  later edit deadline. Old callbacks cannot shorten it. History retains the producer until release ends.
+  stores that fixed deadline once. Release pages move the draft's `expiresAt` to it before removing
+  holds, and never move `expiresAt` earlier. History retains the producer until release ends.
 - A published parent resolves through its owner-scoped saved receipt; Discard does not remove that saved identity. Daily receipt cleanup keeps the private identity for seven days and while any child, proposal, copy source, state, batch, review item, transfer item or parent, or a Bash shell's cwd still refers to it. It pages past retained identities so they cannot block later cleanup. Removing the unused private identity and receipt never removes the saved file.
 - Every private Save records `files_nodes.publishedFromPrivateNodeId`. Read-only target lookup can use this indexed origin after private cleanup, then checks the saved file's current ACL. Private mutation lookup remains strict. Old chat links therefore survive Save, rename and move without granting access.
 - Copied-folder receipts can carry `copiedWritePolicy` and `copiedPath`. Only Save may use this proof
@@ -225,12 +226,15 @@ Saved-sequence marker table:
   - `lastSequenceSaved`
   - `updatedAt`
 
-Cleanup table:
+Expiry tables:
 
-- `files_pending_updates_cleanup_tasks`
-  - `pendingUpdateId`
+- `files_pending_update_expiry_checks`: one doc per organization, workspace, and user that has drafts.
+  - `organizationId`, `workspaceId`, `userId`
+  - `nextCheckAt`: when the one scheduled expiry job runs
   - `scheduledFunctionId`
-  - `expectedUpdatedAt`
+- `users_last_active`: one doc per user, written by the presence heartbeat.
+  - `userId`
+  - `lastActiveAt`
 
 The authoritative identity is per user and per file node. Two users can each have independent pending updates on the same file.
 
@@ -268,7 +272,7 @@ Save dispatches to `action_save_file_pending_update_non_collaborative` and `save
 In the UI, a proposal on a file with collaboration off opens in `FileEditorDiff` with `nonCollaborative` and `committedAssetId` (the `assetId` of the editor node `FileNodeView` chose for the route: the selected file, or a folder's README): the editor loads only the proposal's branches, so there is no live-file fetch, no Sync, and no versions button. Save calls the same `save_file_pending_update` and shows "Changes saved". The action result carries `pendingUpdateUpdatedAt` (the doc's `updatedAt` after the save, or null when the save deleted the doc), and the view stays busy until its doc query shows that doc, because the query can deliver the save later than the action result and the reconcile effect would otherwise reload state pages the save deleted. The view exits once the doc is gone (a full save, a Discard, a row action, another tab). These exits replace the current browser history entry, so Back does not reopen the finished review. A failed ordinary branch reload shows "Failed to load the updated proposal. Open it again." and exits. A failed preparation reload keeps the old panes and offers Retry; Retry loads the pages again without preparing an already current proposal. An asset-stale proposal uses the same preparation flow as a marked proposal. The pending row says "Review to update" in its caption and accessible name. Accept explains that Review is needed and sends nothing. "Accept all" skips unprepared content with one explanation.
 Saving in the normal editor has no warning about making a proposal stale. The Pending caption and Review status after Save give that feedback.
 
-**Proposals kept across collaboration changes and restores.** Both toggles and every restore mark all owners' content proposals with `contentNeedsRebase: true`. The mark keeps ids, old base pointers, branch states, chunks, contributor threads, and move/delete intent. It leaves `updatedAt` and the expiry task unchanged. Saved-sequence markers are deleted even when there is no pending content. Structural-only and whole-file copy proposals are not marked. Restore captures the old node shape in `contentRebaseRootKind` only when it is not already set. Both same-shape live restore and replacement-style restore preserve content; the shared replacement installer takes an explicit preserve-or-drop policy. Copy still uses drop.
+**Proposals kept across collaboration changes and restores.** Both toggles and every restore mark all owners' content proposals with `contentNeedsRebase: true`. The mark keeps ids, old base pointers, branch states, chunks, contributor threads, and move/delete intent. It leaves `updatedAt` and `expiresAt` unchanged. Saved-sequence markers are deleted even when there is no pending content. Structural-only and whole-file copy proposals are not marked. Restore captures the old node shape in `contentRebaseRootKind` only when it is not already set. Both same-shape live restore and replacement-style restore preserve content; the shared replacement installer takes an explicit preserve-or-drop policy. Copy still uses drop.
 
 Marked content still counts in Pending. Normal reads and text/frontmatter search use committed content until preparation finishes. Direct upsert, Sync, Save, and their final commits refuse marked content. Agent edit and shell-write entrypoints prepare first. Pending deletes can still be accepted. Discard proposal removes text changes and keeps any pending move or delete. A restore to stored bytes also retains text proposals; applying them to a stored-byte file is not implemented, and the conversion rule remains undecided.
 
@@ -323,7 +327,7 @@ Public and internal functions, grouped by role:
 - Structural: `upsert_file_pending_move_in_db`, `upsert_file_pending_archive_in_db`, `apply_file_pending_move`, `apply_file_pending_archive`, `discard_file_pending_structural`, `discard_file_pending_content`
 - Save: `save_file_pending_update` (action), `save_file_pending_update_in_db`, `save_file_pending_update_non_collaborative_in_db`
 - Reads: `get_file_pending_update`, `get_file_pending_update_internal`, `get_by_file_node`, `list_files_pending_updates`, `get_pending_path_overlay_data`, `get_file_pending_update_last_sequence_saved`
-- Cleanup: `remove_file_pending_update_if_expired`, `cleanup_expired_pending_state_rows` (15-minute cron)
+- Cleanup: `expire_file_pending_updates` (one scheduled job per user and workspace), `recover_file_pending_update_expiry_checks` (15-minute cron), `cleanup_expired_pending_state_rows` (15-minute cron)
 
 Important behavior:
 
@@ -345,7 +349,7 @@ Important behavior:
 - A replacement pins the saved occupant ID and content version at proposal time. A later occupant or changed version requires a new review; Save never adopts either automatically. The occupant's own pending changes must be selected too, even when another chat contributed them.
 - The only stale literal the client treats as benign is `Stale save` (plus `Not found` on in-flight syncs); both come from multi-second ACTIONS, not from panel clicks.
 - One documented cross-tab edge (accepted editing model): an OPEN diff editor owns a live local draft, and a dead doc id with no replacement doc deliberately falls through to the create path — so a diff tab left open on a file can recreate a proposal that was discarded in another tab. The recreated content is pending only (never committed or billed) and shows up in the panel like any proposal. Making Discard authoritative across tabs would need a separate draft-cancellation design.
-- Every proposal edit refreshes the 4-hour expiry, including identical-content upsert and sync. An identical rewrite still bumps `updatedAt`, reschedules cleanup, and records new structural intent. Toggle and restore marking leave the timestamp and expiry task unchanged. Successful preparation refreshes them normally.
+- Every proposal edit refreshes the 4-hour expiry, including identical-content upsert and sync. An identical rewrite still bumps `updatedAt`, moves `expiresAt` later, and records new structural intent. Toggle and restore marking leave both timestamps unchanged. Successful preparation refreshes them normally.
 - Collaborative Save merges both branches against current text with the shared line rule, builds them on current history, and publishes only staged text. It writes the saved-sequence marker, enqueues R2 materialization, and keeps unresolved unstaged work on partial save. It does not replay old branch delete sets onto current content. A branch may contain another Yjs root accepted by the state seal; Save projects only the file's own text shape.
 - Save guards the target node before any write: a missing, out-of-scope, or non-file target returns `Not found` and the doc survives. An archived target still saves: the archive only hides the node, its content stays writable, and unarchiving later shows the saved text. The sidebar marks those rows `· Archived`.
 - A save whose action-read base sequence no longer matches the file's CURRENT committed last sequence returns `Stale save` before any write or billing. This one check covers two races: a second tab replaying an old save (no double billing), and another user committing between the action's read and the mutation (the doc's new base can never silently hide that commit).
@@ -468,12 +472,39 @@ Only destination, occupant, and immediate-parent checks apply. The full contract
 
 - Private cleanup hands captured assets to durable exact-key deletion jobs before removing their records. Physical storage reservations remain until deletion is confirmed.
 
-- Every edit that leaves a pending update doc alive refreshes its four-hour cleanup task. This includes content upserts, move upserts, rebases, preparation, partial saves, and structural accept/discard paths that preserve part of a content-plus-move doc. Toggle and restore marking leave the existing deadline unchanged.
-- If an operation deletes or fully resolves the doc, it removes the cleanup task instead.
-- A new presence session reschedules cleanup for four hours from that session without changing the doc's `updatedAt`. Disconnect does not shorten the lifetime, so unreviewed proposals survive the user closing the app.
-- Every scheduled cleanup carries `expectedUpdatedAt`; stale scheduled work cannot delete a newer doc.
-- Expiry removes saved-target proposals, pending indexes, and cleanup tasks without deleting their saved targets.
-- Private expiry uses the lifetime rules above. Missing folders created with an agent file are private nodes, each with its own proposal and expiry. Live descendants keep their private ancestors alive.
+A draft is removed 4 hours after both its last edit and its owner's last visible app tab. A hidden
+tab does not count: the vendored presence hook stops its heartbeat while the page is hidden. The
+code lives in `files_db_insert_pending_update`,
+`files_db_patch_pending_update`, and `files_db_ensure_pending_update_expiry_check` in
+`packages/app/server/files.ts`, and in `expire_file_pending_updates` in `files_pending_updates.ts`.
+
+- `files_db_insert_pending_update` and `files_db_patch_pending_update` own `expiresAt`. An edit that
+  sets `updatedAt` moves `expiresAt` to `updatedAt + 4h`, and never earlier. Callers never write
+  `expiresAt` themselves. Toggle and restore marking do not set `updatedAt`, so the deadline stays.
+- Each organization, workspace, and user with drafts has one `files_pending_update_expiry_checks`
+  doc and one scheduled job. A new draft only moves that job earlier. Edits do not reschedule it:
+  the job reads `expiresAt` again when it runs. Removing a draft does not touch the check either.
+- The presence heartbeat writes `users_last_active`: on every new session, and otherwise at most
+  once per 5 minutes. It never reads or schedules drafts, so its cost does not grow with the number
+  of drafts. Disconnect leaves `lastActiveAt` alone, so closing the app does not shorten the lifetime.
+- `expire_file_pending_updates` first checks the owner. While the owner was active in the last 4
+  hours and still has an active membership, it only moves the check's `nextCheckAt` to 4 hours after
+  the last heartbeat. It writes no draft.
+- Otherwise it reads up to 8 due drafts by `expiresAt`. It stops early after about one full-size
+  draft (900,000 bytes of `size`), because chunk deletes grow with the draft size. A full or cut
+  batch continues at once in a new job.
+- A due draft that a producer still holds, that another job fenced, or that Discard refuses (for
+  example a private folder with a live child) moves to `now + 60s`, or to the hold's deadline if
+  that is later, and is tried again then. This retry is a raw patch of `expiresAt` only, so the
+  proposal `revision` and the owner's review clock do not change.
+- Expiry deletes saved-target proposals and their pending indexes without touching the saved target.
+  Private drafts go through Discard with reason `expired`, so private cleanup runs normally.
+- A full batch runs again at once. Otherwise the job reschedules at the next draft's `expiresAt`, and
+  deletes its check doc when the user has no drafts left in that workspace.
+- If a job fails, a 15-minute cron (`recover_file_pending_update_expiry_checks`) finds checks more than
+  15 minutes overdue, cancels their old job, and schedules a new one.
+- The recovery notice shows `max(expiresAt, lastActiveAt + 4h)`, the earliest time expiry can remove
+  the draft.
 
 # Architectural Invariants
 
@@ -523,4 +554,5 @@ Only destination, occupant, and immediate-parent checks apply. The full contract
 - Verify pure moves do not enter the diff pager.
 - Verify accept/discard applies pending paths, archive behavior, content, and move-before-save ordering for content-plus-move rows.
 - Verify private discard and expiry leave saved files intact.
+- Verify expiry keeps drafts while the owner has a visible tab and removes them 4 hours after the last heartbeat. A heartbeat must not read drafts, even with thousands of them.
 - Verify the proposing user sees the pending structural path overlay while another user sees the committed tree.

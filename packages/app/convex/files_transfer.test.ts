@@ -2721,19 +2721,19 @@ describe("retry_remaining", () => {
 			const proposal = await t.run((ctx) => ctx.db.get("files_pending_updates", leaf.preparation!.pendingUpdateId));
 			if (!proposal) throw new Error("Expected its proposal");
 			if (when === "after its idle deadline") {
-				const cleanup = await t.run((ctx) =>
-					ctx.db
-						.query("files_pending_updates_cleanup_tasks")
-						.withIndex("by_pendingUpdate", (q) => q.eq("pendingUpdateId", proposal._id))
-						.unique(),
-				);
-				if (!cleanup) throw new Error("Expected the proposal cleanup task");
-				vi.setSystemTime(proposal.updatedAt + 4 * 60 * 60 * 1000);
-				await t.mutation(internal.files_pending_updates.remove_file_pending_update_if_expired, {
-					cleanupTaskId: cleanup._id,
-					expiryGeneration: cleanup.expiryGeneration,
+				const expiresAt = proposal.updatedAt + 4 * 60 * 60 * 1000;
+				expect(proposal.expiresAt).toBe(expiresAt);
+				vi.setSystemTime(expiresAt);
+				await t.mutation(internal.files_pending_updates.expire_file_pending_updates, {
+					organizationId: proposal.organizationId,
+					workspaceId: proposal.workspaceId,
+					userId: proposal.userId,
 				});
-				expect(await t.run((ctx) => ctx.db.get("files_pending_updates", proposal._id))).toEqual(proposal);
+				// The running copy holds the leaf. The job keeps it and only moves its expiry to the next try.
+				expect(await t.run((ctx) => ctx.db.get("files_pending_updates", proposal._id))).toEqual({
+					...proposal,
+					expiresAt: expiresAt + 60_000,
+				});
 				expect(await t.run((ctx) => ctx.db.get("files_transfer_items", leaf._id))).toMatchObject({ state: "copying" });
 			}
 			expect(

@@ -39,7 +39,6 @@ import {
 	files_pending_update_content_is_stale,
 	files_pending_update_content_of,
 	files_REPLACE_FILE_CONTENT_STALE_MESSAGE,
-	files_db_cancel_pending_update_cleanup_tasks,
 	files_db_consume_trusted_yjs_update_stage,
 	files_db_get_pending_update,
 	files_db_insert_pending_update,
@@ -48,7 +47,6 @@ import {
 	files_db_load_pending_update_yjs_state_bytes,
 	files_db_insert_pending_update_yjs_state,
 	files_db_retire_pending_update_yjs_states,
-	files_db_schedule_pending_update_cleanup,
 	type files_ContentType,
 	type files_PendingTarget,
 	type files_VisibleEntry,
@@ -3285,7 +3283,6 @@ export const finalize_transfer_file_copy = internalMutation({
 				pendingUpdateId,
 				previousSetId: previous?.mediaDependencySetId,
 			});
-			await files_db_schedule_pending_update_cleanup(ctx, { pendingUpdateId, expectedUpdatedAt: now });
 
 			await files_transfer_db_complete_copy_item(ctx, {
 				itemId: item._id,
@@ -3392,7 +3389,6 @@ export const finalize_transfer_file_copy = internalMutation({
 				pendingUpdateId,
 				previousSetId: previous?.mediaDependencySetId,
 			});
-			await files_db_schedule_pending_update_cleanup(ctx, { pendingUpdateId, expectedUpdatedAt: now });
 
 			await files_transfer_db_complete_copy_item(ctx, {
 				itemId: item._id,
@@ -7435,14 +7431,9 @@ export async function files_nodes_content_db_finalize_pending_replacement(
 				updatedAt: now,
 			}),
 			files_pending_update_db_delete_chunks(ctx, { pendingUpdateId: pendingUpdate._id }),
-			files_db_schedule_pending_update_cleanup(ctx, {
-				pendingUpdateId: pendingUpdate._id,
-				expectedUpdatedAt: now,
-			}),
 		]);
 	} else {
 		await Promise.all([
-			files_db_cancel_pending_update_cleanup_tasks(ctx, { pendingUpdateId: pendingUpdate._id }),
 			files_pending_update_db_delete_chunks(ctx, { pendingUpdateId: pendingUpdate._id }),
 			files_db_delete_pending_update(ctx, pendingUpdate._id),
 		]);

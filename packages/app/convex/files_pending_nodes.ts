@@ -14,7 +14,6 @@ import {
 	files_db_expire_pending_update_operation_batch,
 	files_db_insert_pending_update,
 	files_db_advance_pending_review_version,
-	files_db_schedule_pending_update_cleanup,
 } from "../server/files.ts";
 import { files_transfer_db_fence_private_target } from "./files_transfer.ts";
 import { access_control_db_authorize_membership } from "./access_control.ts";
@@ -22,7 +21,6 @@ import { access_control_db_authorize_membership } from "./access_control.ts";
 // Leave room for content, permission, and review reads in the same transaction.
 const MAX_PRIVATE_ANCESTORS = 256;
 const MAX_DISCARD_NODES = 256;
-const DRAFT_IDLE_EXPIRY_MS = 4 * 60 * 60 * 1000;
 const PUBLISH_RECEIPT_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 
 /**
@@ -301,7 +299,6 @@ export async function files_pending_nodes_db_create(
 		await ctx.db.delete("files_pending_nodes", privateNodeId);
 		return reservation;
 	}
-	const updatedAt = Date.now();
 	const pendingUpdateId = await files_db_insert_pending_update(ctx, {
 		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
@@ -311,9 +308,9 @@ export async function files_pending_nodes_db_create(
 		...(args.threadId ? { threadIds: [args.threadId] } : {}),
 		...(args.preparation ? { preparation: args.preparation } : {}),
 		size: 0,
-		updatedAt,
+		updatedAt: Date.now(),
 	});
-	return Result({ _yay: { privateNodeId, pendingUpdateId, updatedAt } });
+	return Result({ _yay: { privateNodeId, pendingUpdateId } });
 }
 
 /**
@@ -449,7 +446,6 @@ export async function files_pending_nodes_db_discard(
 	reviewed.set(rootProposal._id, args.expectedRevision);
 	const nodes = [root];
 	const now = Date.now();
-	let keepUntil = 0;
 
 	for (const node of nodes) {
 		const proposal = await ctx.db
@@ -465,9 +461,7 @@ export async function files_pending_nodes_db_discard(
 			.unique();
 		if (!proposal) throw should_never_happen("Active private node has no proposal", { privateNodeId: node._id });
 
-		if (args.reason === "expired") {
-			keepUntil = Math.max(keepUntil, proposal.updatedAt + DRAFT_IDLE_EXPIRY_MS);
-		} else if (reviewed.has(proposal._id)) {
+		if (reviewed.has(proposal._id)) {
 			if (reviewed.get(proposal._id) !== proposal.revision) {
 				return Result({ _nay: { name: "target_changed", message: "A child draft changed. Review it again" } });
 			}
@@ -487,18 +481,9 @@ export async function files_pending_nodes_db_discard(
 			)
 			.first();
 		if (dependent) {
-			if (args.reason !== "expired") {
-				return Result({
-					_nay: { name: "needs_review", message: "Review the moves into this folder before discarding it" },
-				});
-			}
-			await files_db_schedule_pending_update_cleanup(ctx, {
-				pendingUpdateId: rootProposal._id,
-				expectedUpdatedAt: rootProposal.updatedAt,
-				expiresAt: keepUntil,
-				delayMs: 60_000,
+			return Result({
+				_nay: { name: "needs_review", message: "Review the moves into this folder before discarding it" },
 			});
-			return Result({ _yay: null });
 		}
 		const children = await ctx.db
 			.query("files_pending_nodes")
@@ -512,28 +497,16 @@ export async function files_pending_nodes_db_discard(
 					.eq("state", "active"),
 			)
 			.take(args.reason === "expired" ? 1 : MAX_DISCARD_NODES - nodes.length + 1);
+		// Expiry removes one draft at a time, children first. So one live child keeps every
+		// ancestor. Return `needs_review`, because the expiry job already treats it as "try this
+		// folder again later".
 		if (args.reason === "expired" && children.length > 0) {
-			// Children expire through their own callbacks. One live child protects every ancestor.
-			await files_db_schedule_pending_update_cleanup(ctx, {
-				pendingUpdateId: rootProposal._id,
-				expectedUpdatedAt: rootProposal.updatedAt,
-				expiresAt: keepUntil,
-				delayMs: 60_000,
-			});
-			return Result({ _yay: null });
+			return Result({ _nay: { name: "needs_review", message: "A child draft must expire first" } });
 		}
 		if (nodes.length + children.length > MAX_DISCARD_NODES) {
 			return Result({ _nay: { name: "needs_review", message: "Use bulk Discard to review this larger folder" } });
 		}
 		nodes.push(...children);
-	}
-	if (args.reason === "expired" && keepUntil > now) {
-		await files_db_schedule_pending_update_cleanup(ctx, {
-			pendingUpdateId: rootProposal._id,
-			expectedUpdatedAt: rootProposal.updatedAt,
-			expiresAt: keepUntil,
-		});
-		return Result({ _yay: null });
 	}
 
 	for (const node of nodes) {

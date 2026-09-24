@@ -142,6 +142,7 @@ describe("get_file_read_source", () => {
 				revision: 1,
 				size: 2,
 				updatedAt: Date.now(),
+				expiresAt: Date.now() + 4 * 60 * 60 * 1000,
 				pendingReplacement: {
 					assetId: replacementAssetId,
 					size: 2,

@@ -22,7 +22,7 @@ import { files_create_room_id, files_get_utf8_byte_size } from "../shared/files.
 import { app_presence_GLOBAL_ROOM_ID } from "../shared/shared-presence-constants.ts";
 import { r2, r2_PUT_MAY_ARRIVE_MARGIN_MS, r2_confirmed_object_delete, r2_create_asset_key } from "./r2_client.ts";
 import { files_private_storage_db_reserve } from "./files_private_storage.ts";
-import { files_db_schedule_pending_update_cleanup } from "../server/files.ts";
+import { files_db_insert_pending_update } from "../server/files.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
 
 const RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
@@ -583,15 +583,14 @@ async function data_deletion_test_seed_workspace_content_bulk(
 			}),
 		]);
 		if (i < 5) {
-			const pendingUpdateUpdatedAt = Date.now();
-			const pendingUpdateId = await ctx.db.insert("files_pending_updates", {
+			const pendingUpdateId = await files_db_insert_pending_update(ctx, {
 				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
 				userId: args.userId,
 				target: { kind: "saved", id: fileNodeId },
 				revision: 1,
 				size: files_get_utf8_byte_size(`# pending ${i}`),
-				updatedAt: pendingUpdateUpdatedAt,
+				updatedAt: Date.now(),
 			});
 			const pendingTextChunkId = await ctx.db.insert("files_text_chunks", {
 				organizationId: args.organizationId,
@@ -660,10 +659,6 @@ async function data_deletion_test_seed_workspace_content_bulk(
 					stringValue: `pending-${args.tag}`,
 				}),
 			]);
-			await files_db_schedule_pending_update_cleanup(ctx, {
-				pendingUpdateId,
-				expectedUpdatedAt: pendingUpdateUpdatedAt,
-			});
 		}
 		await ctx.db.insert("files_pending_updates_last_sequence_saved", {
 			organizationId: args.organizationId,
@@ -817,7 +812,7 @@ async function data_deletion_test_count_workspace_content(
 		yjsLastSequences,
 		snapshots,
 		pendingUpdates,
-		pendingUpdateCleanupTasks,
+		pendingUpdateExpiryChecks,
 		lastSequenceSaved,
 		materializationJobs,
 		aiThreads,
@@ -843,7 +838,7 @@ async function data_deletion_test_count_workspace_content(
 		ctx.db.query("files_yjs_docs_last_sequences").collect(),
 		ctx.db.query("files_snapshots").collect(),
 		ctx.db.query("files_pending_updates").collect(),
-		ctx.db.query("files_pending_updates_cleanup_tasks").collect(),
+		ctx.db.query("files_pending_update_expiry_checks").collect(),
 		ctx.db.query("files_pending_updates_last_sequence_saved").collect(),
 		ctx.db.query("files_content_materialization_jobs").collect(),
 		ctx.db.query("ai_chat_threads").collect(),
@@ -860,36 +855,33 @@ async function data_deletion_test_count_workspace_content(
 	]);
 	const inWorkspace = (row: { organizationId: string; workspaceId: string }) =>
 		row.organizationId === args.organizationId && row.workspaceId === args.workspaceId;
-	const workspacePendingUpdateIds = new Set(pendingUpdates.filter(inWorkspace).map((doc) => doc._id));
-	return (
-		[
-			files,
-			fileStats,
-			assets,
-			textChunks,
-			plainTextChunks,
-			metadataDocs,
-			yjsSnapshots,
-			yjsUpdates,
-			yjsLastSequences,
-			snapshots,
-			pendingUpdates,
-			lastSequenceSaved,
-			materializationJobs,
-			aiThreads,
-			aiShells,
-			aiShellTranscripts,
-			aiJobNoticeCursors,
-			aiMessages,
-			aiFiles,
-			aiFileContents,
-			apiCredentials,
-			publicApiGrants,
-			permissionGrants,
-			chatMessages,
-		].reduce((total, rows) => total + rows.filter(inWorkspace).length, 0) +
-		pendingUpdateCleanupTasks.filter((doc) => workspacePendingUpdateIds.has(doc.pendingUpdateId)).length
-	);
+	return [
+		files,
+		fileStats,
+		assets,
+		textChunks,
+		plainTextChunks,
+		metadataDocs,
+		yjsSnapshots,
+		yjsUpdates,
+		yjsLastSequences,
+		snapshots,
+		pendingUpdates,
+		pendingUpdateExpiryChecks,
+		lastSequenceSaved,
+		materializationJobs,
+		aiThreads,
+		aiShells,
+		aiShellTranscripts,
+		aiJobNoticeCursors,
+		aiMessages,
+		aiFiles,
+		aiFileContents,
+		apiCredentials,
+		publicApiGrants,
+		permissionGrants,
+		chatMessages,
+	].reduce((total, rows) => total + rows.filter(inWorkspace).length, 0);
 }
 
 async function data_deletion_test_process_workspace_request_until_done(
@@ -1993,7 +1985,7 @@ describe("process_user_deletion_request", () => {
 				active: true,
 			});
 
-			await ctx.db.insert("files_pending_updates", {
+			await files_db_insert_pending_update(ctx, {
 				organizationId: created._yay.organizationId,
 				workspaceId: created._yay.defaultWorkspaceId,
 				userId: deletedUser.userId,
@@ -2012,6 +2004,7 @@ describe("process_user_deletion_request", () => {
 				size: 0,
 				updatedAt: Date.now(),
 			});
+			await ctx.db.insert("users_last_active", { userId: deletedUser.userId, lastActiveAt: Date.now() });
 
 			await ctx.db.insert("files_pending_updates_last_sequence_saved", {
 				organizationId: created._yay.organizationId,
@@ -2153,7 +2146,8 @@ describe("process_user_deletion_request", () => {
 				permissionGrants,
 				pendingUpdates,
 				pendingUpdateSaves,
-				cleanupTasks,
+				expiryChecks,
+				lastActive,
 				purgeRequests,
 				personalOrganization,
 				personalWorkspace,
@@ -2186,7 +2180,14 @@ describe("process_user_deletion_request", () => {
 					.query("files_pending_updates_last_sequence_saved")
 					.withIndex("by_user_fileNode", (q) => q.eq("userId", deletedUser.userId))
 					.collect(),
-				ctx.db.query("files_pending_updates_cleanup_tasks").collect(),
+				ctx.db
+					.query("files_pending_update_expiry_checks")
+					.withIndex("by_user", (q) => q.eq("userId", deletedUser.userId))
+					.collect(),
+				ctx.db
+					.query("users_last_active")
+					.withIndex("by_user", (q) => q.eq("userId", deletedUser.userId))
+					.collect(),
 				ctx.db.query("data_deletion_requests").collect(),
 				ctx.db.get("organizations", deletedUser.defaultOrganizationId),
 				ctx.db.get("organizations_workspaces", deletedUser.defaultWorkspaceId),
@@ -2226,7 +2227,8 @@ describe("process_user_deletion_request", () => {
 				permissionGrants,
 				pendingUpdates,
 				pendingUpdateSaves,
-				cleanupTasks,
+				expiryChecks,
+				lastActive,
 				purgeRequests,
 				personalOrganization,
 				personalWorkspace,
@@ -2249,7 +2251,8 @@ describe("process_user_deletion_request", () => {
 		expect(afterUserDeletion.permissionGrants).toHaveLength(0);
 		expect(afterUserDeletion.pendingUpdates).toHaveLength(0);
 		expect(afterUserDeletion.pendingUpdateSaves).toHaveLength(0);
-		expect(afterUserDeletion.cleanupTasks).toHaveLength(0);
+		expect(afterUserDeletion.expiryChecks).toHaveLength(0);
+		expect(afterUserDeletion.lastActive).toHaveLength(0);
 		expect(afterUserDeletion.personalOrganization).toBeNull();
 		expect(afterUserDeletion.personalWorkspace).toBeNull();
 		expect(afterUserDeletion.personalPages).toHaveLength(0);
@@ -3692,7 +3695,7 @@ describe("process_workspace_deletion_request", () => {
 
 				archiveOperationId: null,
 			});
-			const pendingUpdateId = await ctx.db.insert("files_pending_updates", {
+			const pendingUpdateId = await files_db_insert_pending_update(ctx, {
 				organizationId: user.defaultOrganizationId,
 				workspaceId,
 				userId: user.userId,
@@ -3788,6 +3791,7 @@ describe("process_workspace_deletion_request", () => {
 			textInputs: await ctx.db.query("files_pending_update_text_inputs").collect(),
 			trustedStages: await ctx.db.query("files_yjs_trusted_update_stages").collect(),
 			pendingUpdates: await ctx.db.query("files_pending_updates").collect(),
+			expiryChecks: await ctx.db.query("files_pending_update_expiry_checks").collect(),
 		}));
 		expect(remaining.states).toHaveLength(0);
 		expect(remaining.pages).toHaveLength(0);
@@ -3796,6 +3800,7 @@ describe("process_workspace_deletion_request", () => {
 		expect(remaining.textInputs).toHaveLength(0);
 		expect(remaining.trustedStages).toHaveLength(0);
 		expect(remaining.pendingUpdates).toHaveLength(0);
+		expect(remaining.expiryChecks).toHaveLength(0);
 	});
 
 	test("durably deletes the direct upload key before deleting an unpublished asset", async () => {
@@ -7145,6 +7150,7 @@ describe("finalize_user_deletion_data", () => {
 					revision: 1,
 					size: 0,
 					updatedAt: now,
+					expiresAt: now + 4 * 60 * 60 * 1000,
 				});
 				for (let chunkIndex = 0; chunkIndex < 2; chunkIndex += 1) {
 					await ctx.db.insert("files_text_chunks", {

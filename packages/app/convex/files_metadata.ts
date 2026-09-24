@@ -53,7 +53,6 @@ import {
 } from "../shared/organizations.ts";
 import {
 	files_db_get_visible_node_by_path,
-	files_db_schedule_pending_update_cleanup,
 	files_db_patch_pending_update,
 	files_pending_update_has_pending_chunks,
 } from "../server/files.ts";
@@ -1677,10 +1676,6 @@ export const update_entries_by_path = internalMutation({
 			await files_metadata_db_write_entries(ctx, {
 				privateEntry: { ...entry, pendingUpdate: { ...entry.pendingUpdate, createIntent, revision, updatedAt } },
 				entries: validated._yay.entries,
-			});
-			await files_db_schedule_pending_update_cleanup(ctx, {
-				pendingUpdateId: entry.pendingUpdate._id,
-				expectedUpdatedAt: updatedAt,
 			});
 		} else {
 			await files_metadata_db_write_entries(ctx, { fileNode: entry.node, entries: validated._yay.entries });

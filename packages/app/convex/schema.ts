@@ -1495,6 +1495,12 @@ const app_convex_schema = defineSchema({
 		threadIds: v.optional(v.array(v.id("ai_chat_threads"))),
 		size: v.number(),
 		updatedAt: v.number(),
+		/**
+		 * The draft may expire after this time, if its owner is also inactive.
+		 * Each edit sets it to 4 hours after `updatedAt`. A finished Copy or review, or an expiry
+		 * retry, can move it later. It never moves earlier.
+		 */
+		expiresAt: v.number(),
 	})
 		.index("by_organization_workspace_user_target", [
 			"organizationId",
@@ -1503,6 +1509,7 @@ const app_convex_schema = defineSchema({
 			"target.kind",
 			"target.id",
 		])
+		.index("by_organization_workspace_user_expiresAt", ["organizationId", "workspaceId", "userId", "expiresAt"])
 		.index("by_user_target", ["userId", "target.kind", "target.id"])
 		.index("by_target", ["target.kind", "target.id"])
 		.index("by_user_pendingMove_destParent_destName", [
@@ -1534,17 +1541,20 @@ const app_convex_schema = defineSchema({
 		.index("by_user_fileNode", ["userId", "fileNodeId"]),
 
 	/**
-	 * Tracks scheduled cleanup tasks for each pending update doc.
-	 * Deadline and generation fence old callbacks, including hold-release reschedules.
+	 * One expiry check per owner and workspace. Its scheduled job removes the owner's due drafts.
+	 * `nextCheckAt` is never later than the earliest draft `expiresAt`, except while the owner is
+	 * active. Then it waits until 4 hours after the owner's last heartbeat.
 	 */
-	files_pending_updates_cleanup_tasks: defineTable({
-		pendingUpdateId: v.id("files_pending_updates"),
-		// Assigned in the same transaction after the task ID is known.
-		scheduledFunctionId: v.union(v.id("_scheduled_functions"), v.null()),
-		expectedUpdatedAt: v.number(),
-		expiresAt: v.number(),
-		expiryGeneration: v.number(),
-	}).index("by_pendingUpdate", ["pendingUpdateId"]),
+	files_pending_update_expiry_checks: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		userId: v.id("users"),
+		nextCheckAt: v.number(),
+		scheduledFunctionId: v.id("_scheduled_functions"),
+	})
+		.index("by_organization_workspace_user", ["organizationId", "workspaceId", "userId"])
+		.index("by_user", ["userId"])
+		.index("by_nextCheckAt", ["nextCheckAt"]),
 
 	/**
 	 * Metadata for one paged pending-update Yjs state (one role: base, staged, or unstaged).
@@ -4948,6 +4958,15 @@ const app_convex_schema = defineSchema({
 		 */
 		deletionFinalizationStartedAt: v.optional(v.number()),
 	}).index("by_clerkUser", ["clerkUserId"]),
+
+	/**
+	 * The last presence heartbeat from any visible app tab. It is kept out of `users` because it
+	 * changes often, and many queries read `users`. Pending drafts do not expire while it is recent.
+	 */
+	users_last_active: defineTable({
+		userId: v.id("users"),
+		lastActiveAt: v.number(),
+	}).index("by_user", ["userId"]),
 
 	users_anagraphics: defineTable({
 		userId: v.id("users"),

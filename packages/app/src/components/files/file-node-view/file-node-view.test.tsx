@@ -297,6 +297,7 @@ const PRIVATE_ENTRY = {
 		userId: "user_1" as app_convex_Id<"users">,
 		size: 0,
 		updatedAt: 1,
+		expiresAt: 1,
 		target: { kind: "private", id: "private_1" as app_convex_Id<"files_pending_nodes"> },
 		revision: 3,
 		createIntent: {
@@ -339,7 +340,7 @@ let privateView:
 				reviewedRevision: number;
 			}>;
 			savedParentId: app_convex_Id<"files_nodes"> | null;
-			recovery?: { savedParentId: app_convex_Id<"files_nodes">; expiresAt: number | null };
+			recovery?: { savedParentId: app_convex_Id<"files_nodes">; expiresAt: number };
 			copyDestination?: { folderPath: string; personal: boolean; replacement: boolean };
 	  }
 	| null
@@ -726,7 +727,7 @@ describe("FileEditorSidebarPending review focus", () => {
 				kind: "entry",
 				canAccept: false,
 				canAcceptWithParents: false,
-				recovery: { savedParentId: NODE._id, expiresAt: null },
+				recovery: { savedParentId: NODE._id, expiresAt: 2_000_000_000_000 },
 				entry:
 					kind === "text"
 						? PRIVATE_ENTRY
@@ -756,7 +757,7 @@ describe("FileEditorSidebarPending review focus", () => {
 			</AppActivitiesProvider>,
 		);
 		expect(screen.getByText(/This draft's folder was archived/)).toBeTruthy();
-		expect(screen.getByText("This unsaved draft still has its normal expiry.")).toBeTruthy();
+		expect(screen.getByText(/Unsaved draft expires/)).toBeTruthy();
 		expect(screen.getByRole("button", { name: "Accept all shown pending changes" }).matches(":disabled")).toBe(true);
 		expect(mutationMock).not.toHaveBeenCalled();
 	});
@@ -897,7 +898,7 @@ describe("FileNodeView private targets", () => {
 			canEdit: false,
 			canAccept: false,
 			canAcceptWithParents: false,
-			recovery: { savedParentId: NODE._id as app_convex_Id<"files_nodes">, expiresAt: null },
+			recovery: { savedParentId: NODE._id as app_convex_Id<"files_nodes">, expiresAt: 2_000_000_000_000 },
 		};
 		const previousQuery = queryMock.getMockImplementation()!;
 		queryMock.mockImplementation((reference, args) => {

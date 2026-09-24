@@ -2644,11 +2644,11 @@ describe("restore_snapshot_r2", () => {
 
 			const readProposals = () =>
 				t.run(async (ctx) => {
-					const [pending, states, pages, cleanup, chunks, searchChunks, metadata] = await Promise.all([
+					const [pending, states, pages, expiryChecks, chunks, searchChunks, metadata] = await Promise.all([
 						ctx.db.query("files_pending_updates").collect(),
 						ctx.db.query("files_pending_update_yjs_states").collect(),
 						ctx.db.query("files_pending_update_yjs_state_pages").collect(),
-						ctx.db.query("files_pending_updates_cleanup_tasks").collect(),
+						ctx.db.query("files_pending_update_expiry_checks").collect(),
 						ctx.db
 							.query("files_text_chunks")
 							.filter((q) => q.neq(q.field("pendingUpdateId"), undefined))
@@ -2662,7 +2662,7 @@ describe("restore_snapshot_r2", () => {
 							.filter((q) => q.eq(q.field("sourceKind"), "pending"))
 							.collect(),
 					]);
-					return { pending, states, pages, cleanup, chunks, searchChunks, metadata };
+					return { pending, states, pages, expiryChecks, chunks, searchChunks, metadata };
 				});
 			const before = await readProposals();
 			expect(before.pending).toHaveLength(2);

@@ -1397,14 +1397,15 @@ declare module "convex/server" {
 
 // #region admin
 /**
- * Remove the one-per-user auth and billing docs when their owner is permanently deleted.
- * Retained tombstones remove only the docs requested by the caller.
+ * Remove the one-per-user auth, billing, and activity docs when their owner is permanently deleted.
+ * Retained tombstones remove only the auth and billing docs requested by the caller. The activity
+ * doc always goes.
  */
-export async function users_db_delete_auth_and_billing_state(
+export async function users_db_delete_auth_billing_and_activity_docs(
 	ctx: MutationCtx,
 	args: { userId: Id<"users">; deleteUserAuth?: boolean; deleteBillingState?: boolean },
 ) {
-	const [anonymousAuthToken, billingUsageSnapshot] = await Promise.all([
+	const [anonymousAuthToken, billingUsageSnapshot, lastActive] = await Promise.all([
 		args.deleteUserAuth
 			? ctx.db
 					.query("users_anon_tokens")
@@ -1417,10 +1418,15 @@ export async function users_db_delete_auth_and_billing_state(
 					.withIndex("by_user", (q) => q.eq("userId", args.userId))
 					.first()
 			: Promise.resolve(null),
+		ctx.db
+			.query("users_last_active")
+			.withIndex("by_user", (q) => q.eq("userId", args.userId))
+			.unique(),
 	]);
 	await Promise.all([
 		...(anonymousAuthToken ? [ctx.db.delete("users_anon_tokens", anonymousAuthToken._id)] : []),
 		...(billingUsageSnapshot ? [ctx.db.delete("billing_usage_snapshots", billingUsageSnapshot._id)] : []),
+		...(lastActive ? [ctx.db.delete("users_last_active", lastActive._id)] : []),
 	]);
 }
 
@@ -1439,7 +1445,7 @@ export const purge_deleted_user_tombstone = internalMutation({
 			throw convex_error({ message: "Cannot purge tombstone for a non-deleted user" });
 		}
 
-		await users_db_delete_auth_and_billing_state(ctx, {
+		await users_db_delete_auth_billing_and_activity_docs(ctx, {
 			userId: user._id,
 			deleteUserAuth: true,
 			deleteBillingState: true,

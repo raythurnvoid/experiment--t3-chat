@@ -394,14 +394,11 @@ describe("review job content", () => {
 		await f.t.mutation(internal.files_pending_holds.release_producer, {
 			producer: { kind: "files_pending_update_run", id: runId },
 		});
-		const task = await f.t.run((ctx) =>
-			ctx.db
-				.query("files_pending_updates_cleanup_tasks")
-				.withIndex("by_pendingUpdate", (q) => q.eq("pendingUpdateId", remainder._id))
-				.unique(),
-		);
-		expect(task?.expiresAt).toBe(result!.activity.finishedAt! + 4 * 60 * 60 * 1000);
-		expect(await f.t.run((ctx) => ctx.db.get("files_pending_updates", remainder._id))).toEqual(remainder);
+		// The release moves only the expiry, to the review's fixed deadline.
+		expect(await f.t.run((ctx) => ctx.db.get("files_pending_updates", remainder._id))).toEqual({
+			...remainder,
+			expiresAt: result!.activity.finishedAt! + 4 * 60 * 60 * 1000,
+		});
 		expect(await f.t.run((ctx) => ctx.db.query("files_pending_node_publish_receipts").collect())).toHaveLength(2);
 	});
 

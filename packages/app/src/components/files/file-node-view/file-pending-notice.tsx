@@ -58,11 +58,7 @@ export const FilePendingNotice = memo(function FilePendingNotice(props: FilePend
 						This draft's folder was archived. You can copy or download your draft. Restore the folder before saving
 						here.
 					</p>
-					<p>
-						{recovery.expiresAt === null
-							? "This unsaved draft still has its normal expiry."
-							: `Unsaved draft expires ${format_datetime(recovery.expiresAt)}.`}
-					</p>
+					<p>Unsaved draft expires {format_datetime(recovery.expiresAt)}.</p>
 					<MyLink
 						to="/w/$organizationName/$workspaceName/files"
 						params={{ organizationName, workspaceName }}

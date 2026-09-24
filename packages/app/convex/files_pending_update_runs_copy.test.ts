@@ -5,7 +5,7 @@ import { api, internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import { files_pending_nodes_db_create } from "./files_pending_nodes.ts";
 import { files_pending_update_runs_db_delete_run_batch } from "./files_pending_update_runs.ts";
-import { files_db_patch_pending_update, files_db_schedule_pending_update_cleanup } from "../server/files.ts";
+import { files_db_patch_pending_update } from "../server/files.ts";
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
 
 beforeEach(() => {
@@ -62,6 +62,8 @@ async function copied_folders(
 							...template.nodeFields,
 							name: `copy-${String(index).padStart(5, "0")}`,
 						});
+						// The clone keeps the template's `expiresAt`. The template's create already
+						// scheduled the owner's expiry check.
 						const pendingUpdateId = await ctx.db.insert("files_pending_updates", {
 							...proposalFields,
 							target: { kind: "private", id },
@@ -71,10 +73,6 @@ async function copied_folders(
 							resource: { kind: "node", id },
 						});
 						const proposal = (await ctx.db.get("files_pending_updates", pendingUpdateId))!;
-						await files_db_schedule_pending_update_cleanup(ctx, {
-							pendingUpdateId,
-							expectedUpdatedAt: proposal.updatedAt,
-						});
 						page.push(proposal);
 					}
 					const quota = await ctx.db.get("quotas", template.reservationFields.userQuotaId);
@@ -106,10 +104,6 @@ async function copied_folders(
 					});
 					const proposal = await ctx.db.get("files_pending_updates", created._yay.pendingUpdateId);
 					if (!proposal) throw new Error("Expected the copied proposal");
-					await files_db_schedule_pending_update_cleanup(ctx, {
-						pendingUpdateId: proposal._id,
-						expectedUpdatedAt: proposal.updatedAt,
-					});
 					page.push(proposal);
 				}
 				return page;
@@ -1174,8 +1168,16 @@ describe("scalable Copy Save", () => {
 	test("holds exact appended selections and hands Stop remainder to one fixed review deadline", async () => {
 		const f = await fixture();
 		const copies = await copied_folders(f, 2);
-		const cleanup = await f.t.run((ctx) => ctx.db.query("files_pending_updates_cleanup_tasks").collect());
-		expect(cleanup).toHaveLength(2);
+		expect(copies.every((copy) => copy.expiresAt === copy.updatedAt + 4 * 60 * 60 * 1000)).toBe(true);
+		expect(await f.t.run((ctx) => ctx.db.query("files_pending_update_expiry_checks").collect())).toHaveLength(1);
+		const expire = () => f.t.mutation(internal.files_pending_updates.expire_file_pending_updates, f.scope);
+		// Compare drafts without `expiresAt`, because the expiry job may move it later on a held draft.
+		const withoutExpiry = (proposals: (Doc<"files_pending_updates"> | null)[]) =>
+			proposals.map((proposal) => {
+				if (!proposal) return null;
+				const { expiresAt: _expiresAt, ...rest } = proposal;
+				return rest;
+			});
 		vi.setSystemTime(Date.now() + (3 * 60 + 55) * 60 * 1000);
 		const item = (proposal: Doc<"files_pending_updates">) => ({
 			pendingUpdateId: proposal._id,
@@ -1198,14 +1200,15 @@ describe("scalable Copy Save", () => {
 		expect(holds.every((hold) => hold.role === "review" && hold.producer.id === runId)).toBe(true);
 		expect(await f.asUser.mutation(api.files_pending_update_runs.append_items, page)).toEqual({ _yay: null });
 		expect(await f.t.run((ctx) => ctx.db.query("files_pending_holds").collect())).toEqual(holds);
-		expect(await f.t.run((ctx) => ctx.db.query("files_pending_updates_cleanup_tasks").collect())).toEqual(cleanup);
-		vi.setSystemTime(Date.now() + 6 * 60 * 1000);
-		for (const task of cleanup)
-			await f.t.mutation(internal.files_pending_updates.remove_file_pending_update_if_expired, {
-				cleanupTaskId: task._id,
-				expiryGeneration: task.expiryGeneration,
-			});
+		// Starting and appending the review does not move the drafts' expiry.
 		expect(await f.t.run((ctx) => ctx.db.query("files_pending_updates").collect())).toEqual(copies);
+
+		// The drafts are due, but the running review holds them. The job keeps them and tries again later.
+		vi.setSystemTime(Date.now() + 6 * 60 * 1000);
+		await expire();
+		const held = await f.t.run((ctx) => ctx.db.query("files_pending_updates").collect());
+		expect(withoutExpiry(held)).toEqual(withoutExpiry(copies));
+		expect(held.every((proposal) => proposal.expiresAt === Date.now() + 60_000)).toBe(true);
 		expect(
 			await f.asUser.mutation(api.activities.request_stop, { membershipId: f.db.membershipId, activityId }),
 		).toEqual({ _yay: null });
@@ -1213,24 +1216,23 @@ describe("scalable Copy Save", () => {
 		const activity = await f.t.run((ctx) => ctx.db.get("activities", activityId));
 		expect(run?.outputReviewUntil).toBe(activity!.finishedAt! + 4 * 60 * 60 * 1000);
 		expect(await f.t.run((ctx) => ctx.db.query("files_pending_holds").collect())).toHaveLength(2);
-		const beforeRelease = await f.t.run((ctx) => ctx.db.get("files_pending_updates_cleanup_tasks", cleanup[0]!._id));
-		await f.t.mutation(internal.files_pending_updates.remove_file_pending_update_if_expired, {
-			cleanupTaskId: beforeRelease!._id,
-			expiryGeneration: beforeRelease!.expiryGeneration,
-		});
-		expect(await f.t.run((ctx) => ctx.db.get("files_pending_updates", copies[0]!._id))).toEqual(copies[0]);
+
+		// The review stopped, but its fixed review deadline still keeps the drafts.
+		vi.setSystemTime(Date.now() + 60_000);
+		await expire();
+		expect(withoutExpiry([await f.t.run((ctx) => ctx.db.get("files_pending_updates", copies[0]!._id))])).toEqual(
+			withoutExpiry([copies[0]!]),
+		);
 		await f.t.mutation(internal.files_pending_holds.release_producer, {
 			producer: { kind: "files_pending_update_run", id: runId },
 		});
 		expect(await f.t.run((ctx) => ctx.db.query("files_pending_holds").collect())).toEqual([]);
-		const afterRelease = await f.t.run((ctx) => ctx.db.query("files_pending_updates_cleanup_tasks").collect());
-		expect(afterRelease.every((task) => task.expiresAt === run!.outputReviewUntil)).toBe(true);
-		for (const task of cleanup)
-			await f.t.mutation(internal.files_pending_updates.remove_file_pending_update_if_expired, {
-				cleanupTaskId: task._id,
-				expiryGeneration: task.expiryGeneration,
-			});
-		expect(await f.t.run((ctx) => ctx.db.query("files_pending_updates").collect())).toEqual(copies);
+		const afterRelease = await f.t.run((ctx) => ctx.db.query("files_pending_updates").collect());
+		expect(afterRelease.every((proposal) => proposal.expiresAt === run!.outputReviewUntil)).toBe(true);
+		await expire();
+		expect(withoutExpiry(await f.t.run((ctx) => ctx.db.query("files_pending_updates").collect()))).toEqual(
+			withoutExpiry(copies),
+		);
 		expect(await f.t.run((ctx) => ctx.db.query("files_nodes").collect())).toHaveLength(1);
 	});
 });

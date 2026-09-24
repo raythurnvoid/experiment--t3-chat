@@ -122,6 +122,14 @@ crons.cron("recover media dependency cleanup", "*/15 * * * *", internal.files_me
 // Every 15 minutes — release draft holds left by finished or interrupted jobs.
 crons.cron("recover pending draft holds", "*/15 * * * *", internal.files_pending_holds.recover, {});
 
+// Every 15 minutes — start draft expiry checks again after a failed expiry job.
+crons.cron(
+	"recover pending draft expiry checks",
+	"*/15 * * * *",
+	internal.files_pending_updates.recover_file_pending_update_expiry_checks,
+	{},
+);
+
 // Every 15 minutes — retire unfinished ingestion and remove old retry receipts.
 crons.cron(
 	"cleanup expired file ingestion receipts",

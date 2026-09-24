@@ -64,7 +64,6 @@ import {
 	files_pending_holds_db_release_producer_batch,
 } from "./files_pending_holds.ts";
 import {
-	files_db_schedule_pending_update_cleanup,
 	files_db_patch_pending_update,
 	files_db_get_pending_update,
 } from "../server/files.ts";
@@ -3099,10 +3098,6 @@ async function db_prepare_parent_folders(ctx: MutationCtx, run: Doc<"files_trans
 	await files_db_patch_pending_update(ctx, created._yay.pendingUpdateId, {
 		createIntent: { kind: "folder", metadata: [] },
 	});
-	await files_db_schedule_pending_update_cleanup(ctx, {
-		pendingUpdateId: created._yay.pendingUpdateId,
-		expectedUpdatedAt: created._yay.updatedAt,
-	});
 	const held = await files_pending_holds_db_acquire(ctx, {
 		producer: { kind: "files_transfer_run", id: run._id },
 		pendingUpdateId: created._yay.pendingUpdateId,
@@ -3331,10 +3326,6 @@ export const advance = internalMutation({
 				});
 			}
 
-			await files_db_schedule_pending_update_cleanup(ctx, {
-				pendingUpdateId: created._yay.pendingUpdateId,
-				expectedUpdatedAt: created._yay.updatedAt,
-			});
 			if (item.kind === "file") {
 				const held = await files_pending_holds_db_acquire(ctx, {
 					producer: { kind: "files_transfer_run", id: run._id },

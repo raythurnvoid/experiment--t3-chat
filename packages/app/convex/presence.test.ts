@@ -87,6 +87,42 @@ describe("presence", () => {
 		expect(listed.usersAnagraphics[liveUser.userId]).toEqual({ displayName: "Live User" });
 	});
 
+	test("a heartbeat writes the activity doc for a live user, but not for a deleted one", async () => {
+		const t = test_convex();
+		const { liveUser, deletedUser } = await t.run(async (ctx) => {
+			const liveUser = await presence_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-presence-activity-live",
+				displayName: "Live User",
+			});
+			const deletedUser = await presence_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-presence-activity-deleted",
+				displayName: "Deleted User",
+			});
+			await ctx.db.patch("users", deletedUser.userId, { deletedAt: Date.now() });
+			return { liveUser, deletedUser };
+		});
+
+		for (const userId of [liveUser.userId, deletedUser.userId]) {
+			await t.withIdentity({ issuer: "https://clerk.test", external_id: userId, name: "Test User" }).mutation(
+				api.presence.heartbeat,
+				{ roomId: "presence-activity-room", userId, sessionId: `presence-activity-${userId}`, interval: 10_000 },
+			);
+		}
+
+		const activity = await t.run(async (ctx) =>
+			Promise.all(
+				[liveUser.userId, deletedUser.userId].map((userId) =>
+					ctx.db
+						.query("users_last_active")
+						.withIndex("by_user", (q) => q.eq("userId", userId))
+						.unique(),
+				),
+			),
+		);
+		expect(activity[0]).not.toBeNull();
+		expect(activity[1]).toBeNull();
+	});
+
 	test("refuses a room user list to an unauthenticated caller, by room id and by room token alike", async () => {
 		const t = test_convex();
 		const roomId = app_presence_GLOBAL_ROOM_ID;

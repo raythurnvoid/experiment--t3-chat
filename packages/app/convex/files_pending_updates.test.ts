@@ -39,8 +39,9 @@ import {
 	files_db_load_pending_update_yjs_state_bytes,
 	files_db_get_pending_update,
 	files_db_patch_pending_update,
-	files_db_reschedule_pending_update_cleanup_for_user,
+	files_db_insert_pending_update,
 	files_default_text_shape_for_name,
+	files_DRAFT_IDLE_EXPIRY_MS,
 	files_ROOT_ID,
 	files_pending_update_has_yjs_content,
 	files_u8_to_array_buffer,
@@ -755,14 +756,36 @@ async function read_pending_row_markdown_state(args: {
 	};
 }
 
-async function list_pending_update_cleanup_tasks(args: {
+async function read_pending_update_expiry_check(args: {
 	ctx: MutationCtx;
-	pendingUpdateId: Id<"files_pending_updates">;
+	organizationId: Id<"organizations">;
+	workspaceId: Id<"organizations_workspaces">;
+	userId: Id<"users">;
 }) {
 	return await args.ctx.db
-		.query("files_pending_updates_cleanup_tasks")
-		.withIndex("by_pendingUpdate", (q) => q.eq("pendingUpdateId", args.pendingUpdateId))
-		.collect();
+		.query("files_pending_update_expiry_checks")
+		.withIndex("by_organization_workspace_user", (q) =>
+			q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("userId", args.userId),
+		)
+		.unique();
+}
+
+/**
+ * Move the clock to the draft's `expiresAt` and run the owner's expiry check, as its scheduled job
+ * would. The owner has no heartbeat in these tests, so the check does not keep the draft for activity.
+ */
+async function expire_pending_update_for_test(
+	t: ReturnType<typeof test_convex>,
+	pendingUpdateId: Id<"files_pending_updates">,
+) {
+	const draft = await t.run((ctx) => ctx.db.get("files_pending_updates", pendingUpdateId));
+	if (!draft) throw new Error("Expected a draft");
+	vi.setSystemTime(draft.expiresAt);
+	await t.mutation(internal.files_pending_updates.expire_file_pending_updates, {
+		organizationId: draft.organizationId,
+		workspaceId: draft.workspaceId,
+		userId: draft.userId,
+	});
 }
 
 async function list_pending_update_text_chunks(args: {
@@ -1283,7 +1306,6 @@ async function read_pending_review_state_for_test(t: ReturnType<typeof test_conv
 		proposals: await ctx.db.query("files_pending_updates").collect(),
 		states: await ctx.db.query("files_pending_update_yjs_states").collect(),
 		chunks: await ctx.db.query("files_text_chunks").collect(),
-		cleanup: await ctx.db.query("files_pending_updates_cleanup_tasks").collect(),
 	}));
 }
 
@@ -1930,14 +1952,7 @@ describe("private pending text", () => {
 			} else {
 				vi.useFakeTimers();
 				try {
-					const cleanup = await t.run((ctx) =>
-						list_pending_update_cleanup_tasks({ ctx, pendingUpdateId: proposal._id }),
-					);
-					vi.setSystemTime(cleanup[0]!.expiresAt);
-					await t.mutation(internal.files_pending_updates.remove_file_pending_update_if_expired, {
-						cleanupTaskId: cleanup[0]!._id,
-						expiryGeneration: cleanup[0]!.expiryGeneration,
-					});
+					await expire_pending_update_for_test(t, proposal._id);
 				} finally {
 					vi.useRealTimers();
 				}
@@ -3357,18 +3372,7 @@ describe("prepared Save media proof", () => {
 				_yay: null,
 			});
 		} else {
-			const cleanup = await f.t.run((ctx) =>
-				ctx.db
-					.query("files_pending_updates_cleanup_tasks")
-					.withIndex("by_pendingUpdate", (q) => q.eq("pendingUpdateId", f.proposal._id))
-					.unique(),
-			);
-			if (!cleanup) throw new Error("Expected the expiry task");
-			vi.setSystemTime(cleanup.expiresAt);
-			await f.t.mutation(internal.files_pending_updates.remove_file_pending_update_if_expired, {
-				cleanupTaskId: cleanup._id,
-				expiryGeneration: cleanup.expiryGeneration,
-			});
+			await expire_pending_update_for_test(f.t, f.proposal._id);
 		}
 		if (operation !== "save") {
 			const cleanup = await f.t.run((ctx) => ctx.db.query("files_pending_node_cleanup_tasks").first());
@@ -3671,20 +3675,33 @@ describe("archived-parent draft recovery", () => {
 		const f = await fixture();
 		const args = { membershipId: f.membershipId, target: f.target };
 		const view = await f.asUser.query(api.files_pending_updates.get_file_pending_target, args);
-		if (!view?.recovery?.expiresAt) throw new Error("Expected the scheduled expiry");
+		if (!view?.recovery) throw new Error("Expected the recovery view");
+		const draft = await f.t.run((ctx) => ctx.db.get("files_pending_updates", f.pendingUpdateId));
+		// Without a heartbeat, the recovery view shows the draft's own expiry.
+		expect(view.recovery.expiresAt).toBe(draft?.expiresAt);
 		const parentBefore = await f.t.run((ctx) => ctx.db.get("files_nodes", f.parentId));
-		const expiry = view.recovery.expiresAt;
+
+		// An open app tab keeps the draft 4 hours past the last heartbeat, and the view shows that time.
+		vi.setSystemTime(view.recovery.expiresAt - 1);
+		await f.asUser.mutation(api.presence.heartbeat, {
+			roomId: `recovery-room-${f.pendingUpdateId}`,
+			userId: f.userId,
+			sessionId: "recovery-session",
+			interval: presenceHeartbeatIntervalMs,
+		});
+		const expiry = Date.now() + files_DRAFT_IDLE_EXPIRY_MS;
+		expect((await f.asUser.query(api.files_pending_updates.get_file_pending_target, args))?.recovery?.expiresAt).toBe(
+			expiry,
+		);
 		vi.setSystemTime(expiry - 1);
 		expect((await f.asUser.query(api.files_pending_updates.get_file_pending_target, args))?.recovery?.expiresAt).toBe(
 			expiry,
 		);
 		vi.setSystemTime(expiry + 1);
-		const cleanup = await f.t.run((ctx) =>
-			list_pending_update_cleanup_tasks({ ctx, pendingUpdateId: f.pendingUpdateId }),
-		);
-		await f.t.mutation(internal.files_pending_updates.remove_file_pending_update_if_expired, {
-			cleanupTaskId: cleanup[0]!._id,
-			expiryGeneration: cleanup[0]!.expiryGeneration,
+		await f.t.mutation(internal.files_pending_updates.expire_file_pending_updates, {
+			organizationId: f.organizationId,
+			workspaceId: f.workspaceId,
+			userId: f.userId,
 		});
 		expect(await f.asUser.query(api.files_pending_updates.get_file_pending_target, args)).toBeNull();
 		expect(await f.asUser.query(api.files_pending_updates.get_file_pending_update, args)).toBeNull();
@@ -5105,13 +5122,11 @@ describe("upsert_file_pending_update", () => {
 
 		// Tab B discards proposal one, then the agent creates a NEW proposal on the same file.
 		await t.run(async (ctx) => {
-			const [cleanupTasks, textChunks, plainTextChunks] = await Promise.all([
-				list_pending_update_cleanup_tasks({ ctx, pendingUpdateId: firstRow._id }),
+			const [textChunks, plainTextChunks] = await Promise.all([
 				list_pending_update_text_chunks({ ctx, pendingUpdateId: firstRow._id }),
 				list_pending_update_plain_text_chunks({ ctx, pendingUpdateId: firstRow._id }),
 			]);
 			await Promise.all([
-				...cleanupTasks.map((cleanupTask) => ctx.db.delete("files_pending_updates_cleanup_tasks", cleanupTask._id)),
 				...textChunks.map((chunk) => ctx.db.delete("files_text_chunks", chunk._id)),
 				...plainTextChunks.map((chunk) => ctx.db.delete("files_plain_text_chunks", chunk._id)),
 				ctx.db.delete("files_pending_updates", firstRow._id),
@@ -5217,13 +5232,11 @@ describe("upsert_file_pending_update", () => {
 		// The proposal is discarded and NO newer row exists: a retry with the dead id is the
 		// normal new-proposal path and must still create.
 		await t.run(async (ctx) => {
-			const [cleanupTasks, textChunks, plainTextChunks] = await Promise.all([
-				list_pending_update_cleanup_tasks({ ctx, pendingUpdateId: firstRow._id }),
+			const [textChunks, plainTextChunks] = await Promise.all([
 				list_pending_update_text_chunks({ ctx, pendingUpdateId: firstRow._id }),
 				list_pending_update_plain_text_chunks({ ctx, pendingUpdateId: firstRow._id }),
 			]);
 			await Promise.all([
-				...cleanupTasks.map((cleanupTask) => ctx.db.delete("files_pending_updates_cleanup_tasks", cleanupTask._id)),
 				...textChunks.map((chunk) => ctx.db.delete("files_text_chunks", chunk._id)),
 				...plainTextChunks.map((chunk) => ctx.db.delete("files_plain_text_chunks", chunk._id)),
 				ctx.db.delete("files_pending_updates", firstRow._id),
@@ -5485,7 +5498,7 @@ describe("upsert_file_pending_update", () => {
 		expect(pendingRow).toBeNull();
 	});
 
-	test("pending update cleanup task follows the latest pending doc state", async () => {
+	test("pending update expiry follows the latest pending doc state", async () => {
 		const t = test_convex();
 
 		const seeded = await t.run(async (ctx) =>
@@ -5493,7 +5506,7 @@ describe("upsert_file_pending_update", () => {
 				ctx,
 				path: "/pending-edits-cleanup-task",
 				name: "pending-edits-cleanup-task",
-				markdown: "# Cleanup task base",
+				markdown: "# Expiry base",
 			}),
 		);
 		const asUser = t.withIdentity({
@@ -5502,7 +5515,7 @@ describe("upsert_file_pending_update", () => {
 			name: "Test User",
 		});
 
-		const firstMarkdown = `${seeded.baseMarkdown}\n\nCleanup task first`;
+		const firstMarkdown = `${seeded.baseMarkdown}\n\nExpiry first`;
 		const firstUpsertResult = await upsert_file_pending_update_public_for_test(asUser, {
 			membershipId: seeded.membershipId,
 			nodeId: seeded.nodeId,
@@ -5527,21 +5540,19 @@ describe("upsert_file_pending_update", () => {
 				.first(),
 		);
 		if (!firstPendingRow) {
-			throw new Error("Missing first pending doc while testing cleanup task scheduling");
+			throw new Error("Missing first pending doc while testing expiry scheduling");
 		}
 
-		const firstCleanupTasks = await t.run((ctx) =>
-			list_pending_update_cleanup_tasks({
-				ctx,
-				pendingUpdateId: firstPendingRow._id,
-			}),
-		);
-		expect(firstCleanupTasks).toHaveLength(1);
-		expect(firstCleanupTasks[0]!.expectedUpdatedAt).toBe(firstPendingRow.updatedAt);
+		expect(firstPendingRow.expiresAt).toBe(firstPendingRow.updatedAt + files_DRAFT_IDLE_EXPIRY_MS);
+		const firstCheck = await t.run((ctx) => read_pending_update_expiry_check({ ctx, ...seeded }));
+		if (!firstCheck) {
+			throw new Error("Missing the expiry check after the first upsert");
+		}
+		expect(firstCheck.nextCheckAt).toBe(firstPendingRow.expiresAt);
 
 		await new Promise((resolve) => setTimeout(resolve, 2));
 
-		const secondMarkdown = `${seeded.baseMarkdown}\n\nCleanup task second`;
+		const secondMarkdown = `${seeded.baseMarkdown}\n\nExpiry second`;
 		const secondUpsertResult = await upsert_file_pending_update_public_for_test(asUser, {
 			membershipId: seeded.membershipId,
 			nodeId: seeded.nodeId,
@@ -5566,18 +5577,14 @@ describe("upsert_file_pending_update", () => {
 				.first(),
 		);
 		if (!secondPendingRow) {
-			throw new Error("Missing second pending doc while testing cleanup task rescheduling");
+			throw new Error("Missing second pending doc while testing expiry rescheduling");
 		}
 
-		const secondCleanupTasks = await t.run((ctx) =>
-			list_pending_update_cleanup_tasks({
-				ctx,
-				pendingUpdateId: secondPendingRow._id,
-			}),
-		);
-		expect(secondCleanupTasks).toHaveLength(1);
-		expect(secondCleanupTasks[0]!.expectedUpdatedAt).toBe(secondPendingRow.updatedAt);
-		expect(secondCleanupTasks[0]!.scheduledFunctionId).not.toBe(firstCleanupTasks[0]!.scheduledFunctionId);
+		// The edit moves the draft's expiry later. The check stays at the earlier time, and when it
+		// runs it reschedules itself for the new expiry.
+		expect(secondPendingRow.expiresAt).toBe(secondPendingRow.updatedAt + files_DRAFT_IDLE_EXPIRY_MS);
+		expect(secondPendingRow.expiresAt).toBeGreaterThan(firstPendingRow.updatedAt + files_DRAFT_IDLE_EXPIRY_MS);
+		expect(await t.run((ctx) => read_pending_update_expiry_check({ ctx, ...seeded }))).toEqual(firstCheck);
 
 		const discardResult = await upsert_file_pending_update_internal_for_test({
 			t,
@@ -5592,13 +5599,17 @@ describe("upsert_file_pending_update", () => {
 			throw new Error(discardResult._nay.message);
 		}
 
-		const cleanupTasksAfterDiscard = await t.run((ctx) =>
-			list_pending_update_cleanup_tasks({
-				ctx,
-				pendingUpdateId: secondPendingRow._id,
-			}),
-		);
-		expect(cleanupTasksAfterDiscard).toHaveLength(0);
+		expect(await t.run((ctx) => ctx.db.get("files_pending_updates", secondPendingRow._id))).toBeNull();
+
+		// With no draft left, the next check run deletes the check instead of scheduling again.
+		vi.useFakeTimers();
+		vi.setSystemTime(firstCheck.nextCheckAt);
+		await t.mutation(internal.files_pending_updates.expire_file_pending_updates, {
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+		});
+		expect(await t.run((ctx) => read_pending_update_expiry_check({ ctx, ...seeded }))).toBeNull();
 	});
 
 	test("an identical re-upsert refreshes the pending update lifetime", async () => {
@@ -5641,19 +5652,12 @@ describe("upsert_file_pending_update", () => {
 		if (!firstPendingRow) {
 			throw new Error("Missing pending doc while testing identical re-upsert TTL refresh");
 		}
-		const firstCleanupTasks = await t.run((ctx) =>
-			list_pending_update_cleanup_tasks({
-				ctx,
-				pendingUpdateId: firstPendingRow._id,
-			}),
-		);
-		expect(firstCleanupTasks).toHaveLength(1);
-		expect(firstCleanupTasks[0]!.expectedUpdatedAt).toBe(firstPendingRow.updatedAt);
+		expect(firstPendingRow.expiresAt).toBe(firstPendingRow.updatedAt + files_DRAFT_IDLE_EXPIRY_MS);
 
 		await new Promise((resolve) => setTimeout(resolve, 2));
 
 		// The AI re-writes the exact same pending content: the row bytes do not change, but
-		// the 4h lifetime must still restart or the original cleanup task expires the proposal.
+		// the 4h lifetime must still restart or the old expiry removes the proposal.
 		const secondUpsertResult = await upsert_file_pending_update_public_for_test(asUser, {
 			membershipId: seeded.membershipId,
 			nodeId: seeded.nodeId,
@@ -5679,15 +5683,8 @@ describe("upsert_file_pending_update", () => {
 		expect(secondPendingRow._id).toBe(firstPendingRow._id);
 		expect(secondPendingRow.updatedAt).toBeGreaterThan(firstPendingRow.updatedAt);
 
-		const secondCleanupTasks = await t.run((ctx) =>
-			list_pending_update_cleanup_tasks({
-				ctx,
-				pendingUpdateId: secondPendingRow._id,
-			}),
-		);
-		expect(secondCleanupTasks).toHaveLength(1);
-		expect(secondCleanupTasks[0]!.expectedUpdatedAt).toBe(secondPendingRow.updatedAt);
-		expect(secondCleanupTasks[0]!.scheduledFunctionId).not.toBe(firstCleanupTasks[0]!.scheduledFunctionId);
+		expect(secondPendingRow.expiresAt).toBe(secondPendingRow.updatedAt + files_DRAFT_IDLE_EXPIRY_MS);
+		expect(secondPendingRow.expiresAt).toBeGreaterThan(firstPendingRow.updatedAt + files_DRAFT_IDLE_EXPIRY_MS);
 	});
 
 	test("upsert_file_pending_update keeps a new proposal on an archived file", async () => {
@@ -7378,23 +7375,8 @@ describe("pending file chunk docs lifecycle", () => {
 		expect(textChunksBeforeExpiry.length).toBeGreaterThan(0);
 		expect(plainTextChunksBeforeExpiry.length).toBeGreaterThan(0);
 
-		const cleanupTask = await t.run(async (ctx) => {
-			const cleanupTasks = await list_pending_update_cleanup_tasks({
-				ctx,
-				pendingUpdateId: pendingRow._id,
-			});
-			return cleanupTasks[0] ?? null;
-		});
-		if (!cleanupTask) {
-			throw new Error("Missing cleanup task while testing expiry chunk cleanup");
-		}
-
 		vi.useFakeTimers();
-		vi.setSystemTime(cleanupTask.expiresAt);
-		await t.mutation(internal.ai_chat.remove_file_pending_update_if_expired, {
-			cleanupTaskId: cleanupTask._id,
-			expiryGeneration: cleanupTask.expiryGeneration,
-		});
+		await expire_pending_update_for_test(t, pendingRow._id);
 
 		expect(await read_pending_row({ t, ...seeded })).toBeNull();
 		const textChunksAfterExpiry = await t.run((ctx) =>
@@ -7408,273 +7390,181 @@ describe("pending file chunk docs lifecycle", () => {
 	});
 });
 
-describe("files_db_reschedule_pending_update_cleanup_for_user", () => {
-	test("files_db_reschedule_pending_update_cleanup_for_user refreshes existing cleanup tasks", async () => {
-		const t = test_convex();
-
+describe("expire_file_pending_updates owner activity", () => {
+	async function seed_saved_draft(t: ReturnType<typeof test_convex>, path: string) {
 		const seeded = await t.run(async (ctx) =>
-			seed_file_with_markdown({
-				ctx,
-				path: "/pending-edits-reschedule-for-user",
-				name: "pending-edits-reschedule-for-user",
-				markdown: "# Reschedule base",
-			}),
+			seed_file_with_markdown({ ctx, path, name: path.slice(1), markdown: "# Expiry base" }),
 		);
-		const asUser = t.withIdentity({
-			issuer: "https://clerk.test",
-			external_id: seeded.userId,
-			name: "Test User",
-		});
-
-		const changedMarkdown = `${seeded.baseMarkdown}\n\nReschedule pending`;
-		const upsertResult = await upsert_file_pending_update_public_for_test(asUser, {
+		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: seeded.userId, name: "Test User" });
+		const upserted = await upsert_file_pending_update_public_for_test(asUser, {
 			membershipId: seeded.membershipId,
 			nodeId: seeded.nodeId,
-			stagedMarkdown: seeded.baseMarkdown,
-			unstagedMarkdown: changedMarkdown,
+			unstagedMarkdown: `${seeded.baseMarkdown}
+
+Expiry pending`,
 		});
-		if (upsertResult._nay) {
-			throw new Error(upsertResult._nay.message);
-		}
-
-		const pendingRow = await t.run(async (ctx) =>
-			ctx.db
-				.query("files_pending_updates")
-				.withIndex("by_organization_workspace_user_target", (q) =>
-					q
-						.eq("organizationId", seeded.organizationId)
-						.eq("workspaceId", seeded.workspaceId)
-						.eq("userId", seeded.userId)
-						.eq("target.kind", "saved")
-						.eq("target.id", seeded.nodeId),
-				)
-				.first(),
-		);
-		if (!pendingRow) {
-			throw new Error("Missing pending doc while testing user cleanup reschedule");
-		}
-
-		const firstCleanupTask = await t.run(async (ctx) => {
-			const cleanupTasks = await list_pending_update_cleanup_tasks({
-				ctx,
-				pendingUpdateId: pendingRow._id,
+		if (upserted._nay) throw new Error(upserted._nay.message);
+		const scope = { organizationId: seeded.organizationId, workspaceId: seeded.workspaceId, userId: seeded.userId };
+		const read = () =>
+			t.run(async (ctx) => {
+				const draft = await ctx.db
+					.query("files_pending_updates")
+					.withIndex("by_organization_workspace_user_target", (q) =>
+						q
+							.eq("organizationId", scope.organizationId)
+							.eq("workspaceId", scope.workspaceId)
+							.eq("userId", scope.userId)
+							.eq("target.kind", "saved")
+							.eq("target.id", seeded.nodeId),
+					)
+					.unique();
+				const check = await read_pending_update_expiry_check({ ctx, ...scope });
+				const reviewVersion = await ctx.db
+					.query("files_pending_review_versions")
+					.withIndex("by_organization_workspace_user", (q) =>
+						q.eq("organizationId", scope.organizationId).eq("workspaceId", scope.workspaceId).eq("userId", scope.userId),
+					)
+					.unique();
+				return { draft, check, reviewVersion: reviewVersion?.revision ?? null };
 			});
-			return cleanupTasks[0] ?? null;
-		});
-		if (!firstCleanupTask) {
-			throw new Error("Missing first cleanup task while testing user cleanup reschedule");
-		}
+		return { seeded, asUser, scope, read };
+	}
 
-		await t.run((ctx) =>
-			files_db_reschedule_pending_update_cleanup_for_user(ctx, {
-				organizationId: seeded.organizationId,
-				workspaceId: seeded.workspaceId,
-				userId: seeded.userId,
-			}),
-		);
-
-		const secondCleanupTask = await t.run(async (ctx) => {
-			const cleanupTasks = await list_pending_update_cleanup_tasks({
-				ctx,
-				pendingUpdateId: pendingRow._id,
-			});
-			return cleanupTasks[0] ?? null;
-		});
-		if (!secondCleanupTask) {
-			throw new Error("Missing second cleanup task while testing user cleanup reschedule");
-		}
-
-		expect(secondCleanupTask.expectedUpdatedAt).toBe(firstCleanupTask.expectedUpdatedAt);
-		expect(secondCleanupTask.scheduledFunctionId).not.toBe(firstCleanupTask.scheduledFunctionId);
-	});
-});
-
-describe("presence.disconnect", () => {
-	test("presence.disconnect keeps the long-lived cleanup after the last session disconnects", async () => {
+	test("keeps due drafts while an app tab is open, then removes them 4 hours after the last heartbeat", async () => {
+		vi.useFakeTimers();
 		const t = test_convex();
+		const { seeded, asUser, scope, read } = await seed_saved_draft(t, "/expiry-active-owner");
+		const created = await read();
+		if (!created.draft || !created.check) throw new Error("Missing the draft or its expiry check");
+		expect(created.draft.expiresAt).toBe(created.draft.updatedAt + files_DRAFT_IDLE_EXPIRY_MS);
+		expect(created.check.nextCheckAt).toBe(created.draft.expiresAt);
 
-		const seeded = await t.run(async (ctx) =>
-			seed_file_with_markdown({
-				ctx,
-				path: "/pending-edits-disconnect-last-session",
-				name: "pending-edits-disconnect-last-session",
-				markdown: "# Disconnect base",
-			}),
-		);
-		const asUser = t.withIdentity({
-			issuer: "https://clerk.test",
-			external_id: seeded.userId,
-			name: "Test User",
-		});
-
-		const changedMarkdown = `${seeded.baseMarkdown}\n\nDisconnect pending`;
-		const upsertResult = await upsert_file_pending_update_public_for_test(asUser, {
-			membershipId: seeded.membershipId,
-			nodeId: seeded.nodeId,
-			stagedMarkdown: seeded.baseMarkdown,
-			unstagedMarkdown: changedMarkdown,
-		});
-		if (upsertResult._nay) {
-			throw new Error(upsertResult._nay.message);
-		}
-
-		const pendingRow = await t.run(async (ctx) =>
-			ctx.db
-				.query("files_pending_updates")
-				.withIndex("by_organization_workspace_user_target", (q) =>
-					q
-						.eq("organizationId", seeded.organizationId)
-						.eq("workspaceId", seeded.workspaceId)
-						.eq("userId", seeded.userId)
-						.eq("target.kind", "saved")
-						.eq("target.id", seeded.nodeId),
-				)
-				.first(),
-		);
-		if (!pendingRow) {
-			throw new Error("Missing pending doc while testing last-session disconnect cleanup");
-		}
-
-		const roomId = `pending-edits-room-${seeded.nodeId}`;
-		const presenceHeartbeatResult = await asUser.mutation(api.presence.heartbeat, {
-			roomId,
+		// The tab sends a heartbeat 3 hours later, then the draft's own deadline passes.
+		vi.setSystemTime(created.draft.updatedAt + 3 * 60 * 60 * 1000);
+		const heartbeat = await asUser.mutation(api.presence.heartbeat, {
+			roomId: `expiry-room-${seeded.nodeId}`,
 			userId: seeded.userId,
-			sessionId: "session-last",
+			sessionId: "expiry-session",
 			interval: presenceHeartbeatIntervalMs,
 		});
+		const lastActiveAt = Date.now();
+		vi.setSystemTime(created.draft.expiresAt + 1);
+		await t.mutation(internal.files_pending_updates.expire_file_pending_updates, scope);
 
-		// Capture after the heartbeat so any reconnect-driven refresh is already applied and
-		// the assertion isolates disconnect, which must leave the cleanup schedule untouched.
-		const firstCleanupTask = await t.run(async (ctx) => {
-			const cleanupTasks = await list_pending_update_cleanup_tasks({
-				ctx,
-				pendingUpdateId: pendingRow._id,
-			});
-			return cleanupTasks[0] ?? null;
-		});
-		if (!firstCleanupTask) {
-			throw new Error("Missing first cleanup task while testing last-session disconnect cleanup");
-		}
+		const kept = await read();
+		expect(kept.draft).toEqual(created.draft);
+		expect(kept.reviewVersion).toBe(created.reviewVersion);
+		expect(kept.check?.nextCheckAt).toBe(lastActiveAt + files_DRAFT_IDLE_EXPIRY_MS);
 
-		await asUser.mutation(api.presence.disconnect, {
-			sessionToken: presenceHeartbeatResult.sessionToken,
-		});
+		// Closing the tab does not shorten the lifetime.
+		await asUser.mutation(api.presence.disconnect, { sessionToken: heartbeat.sessionToken });
+		vi.setSystemTime(lastActiveAt + files_DRAFT_IDLE_EXPIRY_MS - 1);
+		await t.mutation(internal.files_pending_updates.expire_file_pending_updates, scope);
+		expect((await read()).draft).not.toBeNull();
 
-		const sessionsAfterDisconnect = await asUser.query(api.presence.listSessions, {
-			roomToken: presenceHeartbeatResult.roomToken,
-		});
-		expect(sessionsAfterDisconnect).toHaveLength(0);
-
-		const secondCleanupTask = await t.run(async (ctx) => {
-			const cleanupTasks = await list_pending_update_cleanup_tasks({
-				ctx,
-				pendingUpdateId: pendingRow._id,
-			});
-			return cleanupTasks[0] ?? null;
-		});
-		if (!secondCleanupTask) {
-			throw new Error("Missing second cleanup task while testing last-session disconnect cleanup");
-		}
-
-		expect(secondCleanupTask.expectedUpdatedAt).toBe(firstCleanupTask.expectedUpdatedAt);
-		expect(secondCleanupTask.scheduledFunctionId).toBe(firstCleanupTask.scheduledFunctionId);
+		vi.setSystemTime(lastActiveAt + files_DRAFT_IDLE_EXPIRY_MS);
+		await t.mutation(internal.files_pending_updates.expire_file_pending_updates, scope);
+		const expired = await read();
+		expect(expired.draft).toBeNull();
+		// No draft is left, so the check deletes itself instead of waking up again.
+		expect(expired.check).toBeNull();
 	});
 
-	test("presence.disconnect keeps cleanup unchanged while another session stays online", async () => {
+	test("removes drafts in a workspace the owner left, even while the owner uses the app", async () => {
+		vi.useFakeTimers();
 		const t = test_convex();
+		const { seeded, asUser, scope, read } = await seed_saved_draft(t, "/expiry-left-workspace");
+		const created = await read();
+		if (!created.draft) throw new Error("Missing the draft");
 
-		const seeded = await t.run(async (ctx) =>
-			seed_file_with_markdown({
-				ctx,
-				path: "/pending-edits-disconnect-multi-session",
-				name: "pending-edits-disconnect-multi-session",
-				markdown: "# Disconnect multi-session base",
-			}),
-		);
-		const asUser = t.withIdentity({
-			issuer: "https://clerk.test",
-			external_id: seeded.userId,
-			name: "Test User",
-		});
-
-		const changedMarkdown = `${seeded.baseMarkdown}\n\nDisconnect multi-session pending`;
-		const upsertResult = await upsert_file_pending_update_public_for_test(asUser, {
-			membershipId: seeded.membershipId,
-			nodeId: seeded.nodeId,
-			stagedMarkdown: seeded.baseMarkdown,
-			unstagedMarkdown: changedMarkdown,
-		});
-		if (upsertResult._nay) {
-			throw new Error(upsertResult._nay.message);
-		}
-
-		const pendingRow = await t.run(async (ctx) =>
-			ctx.db
-				.query("files_pending_updates")
-				.withIndex("by_organization_workspace_user_target", (q) =>
-					q
-						.eq("organizationId", seeded.organizationId)
-						.eq("workspaceId", seeded.workspaceId)
-						.eq("userId", seeded.userId)
-						.eq("target.kind", "saved")
-						.eq("target.id", seeded.nodeId),
-				)
-				.first(),
-		);
-		if (!pendingRow) {
-			throw new Error("Missing pending doc while testing multi-session disconnect cleanup");
-		}
-
-		const roomId = `pending-edits-room-${seeded.nodeId}`;
-		const firstHeartbeatResult = await asUser.mutation(api.presence.heartbeat, {
-			roomId,
-			userId: seeded.userId,
-			sessionId: "session-first",
-			interval: presenceHeartbeatIntervalMs,
-		});
+		vi.setSystemTime(created.draft.expiresAt);
 		await asUser.mutation(api.presence.heartbeat, {
-			roomId,
+			roomId: `expiry-room-${seeded.nodeId}`,
 			userId: seeded.userId,
-			sessionId: "session-second",
+			sessionId: "expiry-session",
+			interval: presenceHeartbeatIntervalMs,
+		});
+		await t.run((ctx) => ctx.db.patch("organizations_workspaces_users", seeded.membershipId, { active: false }));
+		await t.mutation(internal.files_pending_updates.expire_file_pending_updates, scope);
+
+		expect((await read()).draft).toBeNull();
+	});
+
+	test("a new-session heartbeat does not read or schedule drafts, even with 1,500 of them", async () => {
+		vi.useFakeTimers();
+		const t = test_convex({ transactionLimits: true });
+		const seeded = await t.run((ctx) =>
+			seed_file_with_markdown({ ctx, path: "/expiry-many-drafts", name: "expiry-many-drafts", markdown: "# Many" }),
+		);
+		for (let batch = 0; batch < 3; batch++) {
+			await t.run(async (ctx) => {
+				for (let index = 0; index < 500; index++) {
+					await files_db_insert_pending_update(ctx, {
+						organizationId: seeded.organizationId,
+						workspaceId: seeded.workspaceId,
+						userId: seeded.userId,
+						target: { kind: "saved", id: seeded.nodeId },
+						revision: 1,
+						size: 0,
+						updatedAt: Date.now(),
+					});
+				}
+			});
+		}
+
+		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: seeded.userId, name: "Test User" });
+		const heartbeat = await asUser.mutation(api.presence.heartbeat, {
+			roomId: "expiry-many-drafts-room",
+			userId: seeded.userId,
+			sessionId: "expiry-many-drafts-session",
 			interval: presenceHeartbeatIntervalMs,
 		});
 
-		// Capture after both heartbeats so the assertion isolates disconnect from
-		// the heartbeat-driven cleanup refresh.
-		const firstCleanupTask = await t.run(async (ctx) => {
-			const cleanupTasks = await list_pending_update_cleanup_tasks({
-				ctx,
-				pendingUpdateId: pendingRow._id,
-			});
-			return cleanupTasks[0] ?? null;
-		});
-		if (!firstCleanupTask) {
-			throw new Error("Missing first cleanup task while testing multi-session disconnect cleanup");
-		}
+		expect(heartbeat.isNewSession).toBe(true);
+		const lastActive = await t.run((ctx) =>
+			ctx.db
+				.query("users_last_active")
+				.withIndex("by_user", (q) => q.eq("userId", seeded.userId))
+				.unique(),
+		);
+		expect(lastActive?.lastActiveAt).toBe(Date.now());
+	});
 
-		await asUser.mutation(api.presence.disconnect, {
-			sessionToken: firstHeartbeatResult.sessionToken,
+	test("stops a batch after about one full-size draft, then continues at once", async () => {
+		vi.useFakeTimers();
+		const t = test_convex();
+		const seeded = await t.run((ctx) =>
+			seed_file_with_markdown({ ctx, path: "/expiry-large-drafts", name: "expiry-large-drafts", markdown: "# Large" }),
+		);
+		const scope = { organizationId: seeded.organizationId, workspaceId: seeded.workspaceId, userId: seeded.userId };
+		const updatedAt = Date.now();
+		await t.run(async (ctx) => {
+			for (let index = 0; index < 3; index++) {
+				await files_db_insert_pending_update(ctx, {
+					...scope,
+					target: { kind: "saved", id: seeded.nodeId },
+					revision: 1,
+					size: files_MAX_TEXT_CONTENT_BYTES,
+					updatedAt,
+				});
+			}
 		});
 
-		const sessionsAfterDisconnect = await asUser.query(api.presence.listSessions, {
-			roomToken: firstHeartbeatResult.roomToken,
-		});
-		expect(sessionsAfterDisconnect).toHaveLength(1);
-		expect(sessionsAfterDisconnect[0]!.sessionId).toBe("session-second");
+		const dueAt = updatedAt + files_DRAFT_IDLE_EXPIRY_MS;
+		vi.setSystemTime(dueAt);
+		await t.mutation(internal.files_pending_updates.expire_file_pending_updates, scope);
 
-		const secondCleanupTask = await t.run(async (ctx) => {
-			const cleanupTasks = await list_pending_update_cleanup_tasks({
-				ctx,
-				pendingUpdateId: pendingRow._id,
-			});
-			return cleanupTasks[0] ?? null;
-		});
-		if (!secondCleanupTask) {
-			throw new Error("Missing second cleanup task while testing multi-session disconnect cleanup");
-		}
-
-		expect(secondCleanupTask.expectedUpdatedAt).toBe(firstCleanupTask.expectedUpdatedAt);
-		expect(secondCleanupTask.scheduledFunctionId).toBe(firstCleanupTask.scheduledFunctionId);
+		const after = await t.run(async (ctx) => ({
+			drafts: await ctx.db
+				.query("files_pending_updates")
+				.withIndex("by_organization_workspace_user_expiresAt", (q) =>
+					q.eq("organizationId", scope.organizationId).eq("workspaceId", scope.workspaceId).eq("userId", scope.userId),
+				)
+				.collect(),
+			check: await read_pending_update_expiry_check({ ctx, ...scope }),
+		}));
+		expect(after.drafts).toHaveLength(2);
+		expect(after.check?.nextCheckAt).toBe(dueAt);
 	});
 });
 
@@ -7705,6 +7595,7 @@ describe("save_file_pending_update", () => {
 				revision: 1,
 				size: 0,
 				updatedAt: Date.now(),
+				expiresAt: Date.now() + files_DRAFT_IDLE_EXPIRY_MS,
 			});
 			await ctx.db.delete("files_pending_updates", id);
 			return id;
@@ -8460,13 +8351,11 @@ describe("save_file_pending_update", () => {
 
 		// Tab B discards proposal one, then the agent proposes a cp onto the file.
 		await t.run(async (ctx) => {
-			const [cleanupTasks, textChunks, plainTextChunks] = await Promise.all([
-				list_pending_update_cleanup_tasks({ ctx, pendingUpdateId: firstRow._id }),
+			const [textChunks, plainTextChunks] = await Promise.all([
 				list_pending_update_text_chunks({ ctx, pendingUpdateId: firstRow._id }),
 				list_pending_update_plain_text_chunks({ ctx, pendingUpdateId: firstRow._id }),
 			]);
 			await Promise.all([
-				...cleanupTasks.map((cleanupTask) => ctx.db.delete("files_pending_updates_cleanup_tasks", cleanupTask._id)),
 				...textChunks.map((chunk) => ctx.db.delete("files_text_chunks", chunk._id)),
 				...plainTextChunks.map((chunk) => ctx.db.delete("files_plain_text_chunks", chunk._id)),
 				ctx.db.delete("files_pending_updates", firstRow._id),
@@ -10307,6 +10196,7 @@ describe("files_pending_updates_db_mark_content_for_rebase", () => {
 					revision: 1,
 					size: 0,
 					updatedAt: 123,
+					expiresAt: 123 + files_DRAFT_IDLE_EXPIRY_MS,
 					...extra,
 				});
 			}
@@ -10324,7 +10214,7 @@ describe("files_pending_updates_db_mark_content_for_rebase", () => {
 				states: await ctx.db.query("files_pending_update_yjs_states").collect(),
 				pages: await ctx.db.query("files_pending_update_yjs_state_pages").collect(),
 				chunks: await ctx.db.query("files_text_chunks").collect(),
-				cleanup: await ctx.db.query("files_pending_updates_cleanup_tasks").collect(),
+				checks: await ctx.db.query("files_pending_update_expiry_checks").collect(),
 			};
 		});
 
@@ -10361,7 +10251,7 @@ describe("files_pending_updates_db_mark_content_for_rebase", () => {
 			expect(await ctx.db.query("files_pending_update_yjs_states").collect()).toEqual(before.states);
 			expect(await ctx.db.query("files_pending_update_yjs_state_pages").collect()).toEqual(before.pages);
 			expect(await ctx.db.query("files_text_chunks").collect()).toEqual(before.chunks);
-			expect(await ctx.db.query("files_pending_updates_cleanup_tasks").collect()).toEqual(before.cleanup);
+			expect(await ctx.db.query("files_pending_update_expiry_checks").collect()).toEqual(before.checks);
 			expect(await ctx.db.query("files_pending_updates_last_sequence_saved").collect()).toEqual([]);
 		});
 	});
@@ -10411,6 +10301,7 @@ describe("files_db_get_pending_update", () => {
 				revision: 1,
 				size: 0,
 				updatedAt: Date.now(),
+				expiresAt: Date.now() + files_DRAFT_IDLE_EXPIRY_MS,
 			});
 			const privateId = await ctx.db.insert("files_pending_updates", {
 				organizationId,
@@ -10420,6 +10311,7 @@ describe("files_db_get_pending_update", () => {
 				revision: 1,
 				size: 0,
 				updatedAt: Date.now(),
+				expiresAt: Date.now() + files_DRAFT_IDLE_EXPIRY_MS,
 			});
 			expect(
 				(
@@ -12237,13 +12129,11 @@ describe("persist_file_pending_update_rebased_state", () => {
 
 		// Another tab discards the proposal while this tab's sync is in flight.
 		await t.run(async (ctx) => {
-			const [cleanupTasks, textChunks, plainTextChunks] = await Promise.all([
-				list_pending_update_cleanup_tasks({ ctx, pendingUpdateId: pendingRow._id }),
+			const [textChunks, plainTextChunks] = await Promise.all([
 				list_pending_update_text_chunks({ ctx, pendingUpdateId: pendingRow._id }),
 				list_pending_update_plain_text_chunks({ ctx, pendingUpdateId: pendingRow._id }),
 			]);
 			await Promise.all([
-				...cleanupTasks.map((cleanupTask) => ctx.db.delete("files_pending_updates_cleanup_tasks", cleanupTask._id)),
 				...textChunks.map((chunk) => ctx.db.delete("files_text_chunks", chunk._id)),
 				...plainTextChunks.map((chunk) => ctx.db.delete("files_plain_text_chunks", chunk._id)),
 				ctx.db.delete("files_pending_updates", pendingRow._id),
@@ -12344,13 +12234,11 @@ describe("persist_file_pending_update_rebased_state", () => {
 		// Another tab discards the first proposal, then the agent creates a NEW proposal on
 		// the same file while this tab's sync is still in flight.
 		await t.run(async (ctx) => {
-			const [cleanupTasks, textChunks, plainTextChunks] = await Promise.all([
-				list_pending_update_cleanup_tasks({ ctx, pendingUpdateId: firstRow._id }),
+			const [textChunks, plainTextChunks] = await Promise.all([
 				list_pending_update_text_chunks({ ctx, pendingUpdateId: firstRow._id }),
 				list_pending_update_plain_text_chunks({ ctx, pendingUpdateId: firstRow._id }),
 			]);
 			await Promise.all([
-				...cleanupTasks.map((cleanupTask) => ctx.db.delete("files_pending_updates_cleanup_tasks", cleanupTask._id)),
 				...textChunks.map((chunk) => ctx.db.delete("files_text_chunks", chunk._id)),
 				...plainTextChunks.map((chunk) => ctx.db.delete("files_plain_text_chunks", chunk._id)),
 				ctx.db.delete("files_pending_updates", firstRow._id),
@@ -12783,19 +12671,12 @@ describe("persist_file_pending_update_rebased_state", () => {
 		if (!firstRow) {
 			throw new Error("Missing pending row after the first persist");
 		}
-		const firstCleanupTasks = await t.run((ctx) =>
-			list_pending_update_cleanup_tasks({
-				ctx,
-				pendingUpdateId: firstRow._id,
-			}),
-		);
-		expect(firstCleanupTasks).toHaveLength(1);
-		expect(firstCleanupTasks[0]!.expectedUpdatedAt).toBe(firstRow.updatedAt);
+		expect(firstRow.expiresAt).toBe(firstRow.updatedAt + files_DRAFT_IDLE_EXPIRY_MS);
 
 		await new Promise((resolve) => setTimeout(resolve, 2));
 
 		// A retried sync persists the exact same bytes: the row content does not change, but
-		// the 4h lifetime must still restart or the original cleanup task expires the proposal.
+		// the 4h lifetime must still restart or the old expiry removes the proposal.
 		const secondPersistResult = await persist_file_pending_update_rebased_state_for_test(asUser, persistArgs);
 		if (secondPersistResult._nay) {
 			throw new Error(secondPersistResult._nay.message);
@@ -12820,15 +12701,8 @@ describe("persist_file_pending_update_rebased_state", () => {
 		expect(secondRow._id).toBe(firstRow._id);
 		expect(secondRow.updatedAt).toBeGreaterThan(firstRow.updatedAt);
 
-		const secondCleanupTasks = await t.run((ctx) =>
-			list_pending_update_cleanup_tasks({
-				ctx,
-				pendingUpdateId: secondRow._id,
-			}),
-		);
-		expect(secondCleanupTasks).toHaveLength(1);
-		expect(secondCleanupTasks[0]!.expectedUpdatedAt).toBe(secondRow.updatedAt);
-		expect(secondCleanupTasks[0]!.scheduledFunctionId).not.toBe(firstCleanupTasks[0]!.scheduledFunctionId);
+		expect(secondRow.expiresAt).toBe(secondRow.updatedAt + files_DRAFT_IDLE_EXPIRY_MS);
+		expect(secondRow.expiresAt).toBeGreaterThan(firstRow.updatedAt + files_DRAFT_IDLE_EXPIRY_MS);
 	});
 
 	test("persist_file_pending_update_rebased_state returns a message-only nay when branch comparison fails", async () => {
@@ -12909,8 +12783,9 @@ describe("persist_file_pending_update_rebased_state", () => {
 	});
 });
 
-describe("remove_file_pending_update_if_expired", () => {
-	test("remove_file_pending_update_if_expired ignores stale scheduled runs", async () => {
+describe("expire_file_pending_updates saved drafts", () => {
+	test("a check at the old expiry keeps a draft that a newer edit moved later", async () => {
+		vi.useFakeTimers();
 		const t = test_convex();
 
 		const seeded = await t.run(async (ctx) =>
@@ -12951,22 +12826,11 @@ describe("remove_file_pending_update_if_expired", () => {
 				)
 				.first(),
 		);
-		if (!firstPendingRow) {
-			throw new Error("Missing first pending doc while testing stale cleanup");
+		if (!firstPendingRow?.expiresAt) {
+			throw new Error("Missing first pending doc while testing stale expiry");
 		}
 
-		const firstCleanupTask = await t.run(async (ctx) => {
-			const cleanupTasks = await list_pending_update_cleanup_tasks({
-				ctx,
-				pendingUpdateId: firstPendingRow._id,
-			});
-			return cleanupTasks[0] ?? null;
-		});
-		if (!firstCleanupTask) {
-			throw new Error("Missing first cleanup task while testing stale cleanup");
-		}
-
-		await new Promise((resolve) => setTimeout(resolve, 2));
+		vi.setSystemTime(Date.now() + 60_000);
 
 		const secondMarkdown = `${seeded.baseMarkdown}\n\nCleanup pending second`;
 		const secondUpsertResult = await upsert_file_pending_update_public_for_test(asUser, {
@@ -12979,9 +12843,13 @@ describe("remove_file_pending_update_if_expired", () => {
 			throw new Error(secondUpsertResult._nay.message);
 		}
 
-		await t.mutation(internal.ai_chat.remove_file_pending_update_if_expired, {
-			cleanupTaskId: firstCleanupTask._id,
-			expiryGeneration: firstCleanupTask.expiryGeneration,
+		// The check was scheduled for the first expiry. The newer edit moved the draft's expiry later,
+		// so this run keeps the draft and waits for the new expiry.
+		vi.setSystemTime(firstPendingRow.expiresAt);
+		await t.mutation(internal.files_pending_updates.expire_file_pending_updates, {
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
 		});
 
 		const pendingAfterStaleCleanup = await t.run(async (ctx) =>
@@ -12997,19 +12865,14 @@ describe("remove_file_pending_update_if_expired", () => {
 				)
 				.first(),
 		);
-		expect(pendingAfterStaleCleanup).not.toBeNull();
-
-		const cleanupTasksAfterStaleCleanup = await t.run((ctx) =>
-			list_pending_update_cleanup_tasks({
-				ctx,
-				pendingUpdateId: firstPendingRow._id,
-			}),
-		);
-		expect(cleanupTasksAfterStaleCleanup).toHaveLength(1);
-		expect(cleanupTasksAfterStaleCleanup[0]!.expectedUpdatedAt).toBe(pendingAfterStaleCleanup!.updatedAt);
+		expect(pendingAfterStaleCleanup?._id).toBe(firstPendingRow._id);
+		expect(pendingAfterStaleCleanup?.expiresAt).toBe(pendingAfterStaleCleanup!.updatedAt + files_DRAFT_IDLE_EXPIRY_MS);
+		expect(pendingAfterStaleCleanup?.expiresAt).toBeGreaterThan(firstPendingRow.expiresAt);
+		const check = await t.run((ctx) => read_pending_update_expiry_check({ ctx, ...seeded }));
+		expect(check?.nextCheckAt).toBe(pendingAfterStaleCleanup?.expiresAt);
 	});
 
-	test("remove_file_pending_update_if_expired deletes matching pending updates", async () => {
+	test("expire_file_pending_updates deletes due saved drafts and then its check", async () => {
 		const t = test_convex();
 
 		const seeded = await t.run(async (ctx) =>
@@ -13054,23 +12917,8 @@ describe("remove_file_pending_update_if_expired", () => {
 			throw new Error("Missing pending doc while testing expired cleanup");
 		}
 
-		const cleanupTask = await t.run(async (ctx) => {
-			const cleanupTasks = await list_pending_update_cleanup_tasks({
-				ctx,
-				pendingUpdateId: pendingRow._id,
-			});
-			return cleanupTasks[0] ?? null;
-		});
-		if (!cleanupTask) {
-			throw new Error("Missing cleanup task while testing expired cleanup");
-		}
-
 		vi.useFakeTimers();
-		vi.setSystemTime(cleanupTask.expiresAt);
-		await t.mutation(internal.ai_chat.remove_file_pending_update_if_expired, {
-			cleanupTaskId: cleanupTask._id,
-			expiryGeneration: cleanupTask.expiryGeneration,
-		});
+		await expire_pending_update_for_test(t, pendingRow._id);
 
 		const pendingAfterCleanup = await t.run(async (ctx) =>
 			ctx.db
@@ -13086,14 +12934,7 @@ describe("remove_file_pending_update_if_expired", () => {
 				.first(),
 		);
 		expect(pendingAfterCleanup).toBeNull();
-
-		const cleanupTasksAfterCleanup = await t.run((ctx) =>
-			list_pending_update_cleanup_tasks({
-				ctx,
-				pendingUpdateId: pendingRow._id,
-			}),
-		);
-		expect(cleanupTasksAfterCleanup).toHaveLength(0);
+		expect(await t.run((ctx) => read_pending_update_expiry_check({ ctx, ...seeded }))).toBeNull();
 	});
 });
 
@@ -13151,6 +12992,7 @@ describe("membership scoped pending updates", () => {
 				revision: 1,
 				size: 0,
 				updatedAt: Date.now(),
+				expiresAt: Date.now() + files_DRAFT_IDLE_EXPIRY_MS,
 			}),
 		);
 		const unauthorizedSave = await asOtherUser.action(api.ai_chat.save_file_pending_update, {
@@ -13242,11 +13084,9 @@ describe("upsert_file_pending_move_in_db", () => {
 		expect(files_pending_update_has_yjs_content(pendingRow)).toBe(false);
 		expect(pendingRow.size).toBe(0);
 
-		const cleanupTasks = await t.run((ctx) =>
-			list_pending_update_cleanup_tasks({ ctx, pendingUpdateId: pendingRow._id }),
-		);
-		expect(cleanupTasks).toHaveLength(1);
-		expect(cleanupTasks[0]?.expectedUpdatedAt).toBe(pendingRow.updatedAt);
+		expect(pendingRow.expiresAt).toBe(pendingRow.updatedAt + files_DRAFT_IDLE_EXPIRY_MS);
+		const expiryCheck = await t.run((ctx) => read_pending_update_expiry_check({ ctx, ...seeded }));
+		expect(expiryCheck?.nextCheckAt).toBeLessThanOrEqual(pendingRow.updatedAt + files_DRAFT_IDLE_EXPIRY_MS);
 
 		const replaced = await upsert_file_pending_move_for_test({
 			t,
@@ -14019,8 +13859,6 @@ describe("upsert_file_pending_move_in_db", () => {
 		await t.run(async (ctx) => {
 			const row = await ctx.db.get("files_pending_updates", pendingRow._id);
 			expect(row).toBeNull();
-			const cleanupTasks = await list_pending_update_cleanup_tasks({ ctx, pendingUpdateId: pendingRow._id });
-			expect(cleanupTasks).toHaveLength(0);
 		});
 
 		// Without a pending move the same-path mv keeps the current rejection.
@@ -14209,8 +14047,6 @@ describe("apply_file_pending_move", () => {
 
 			const rowAfterApply = await ctx.db.get("files_pending_updates", pendingRow._id);
 			expect(rowAfterApply).toBeNull();
-			const cleanupTasks = await list_pending_update_cleanup_tasks({ ctx, pendingUpdateId: pendingRow._id });
-			expect(cleanupTasks).toHaveLength(0);
 		});
 	});
 
@@ -14691,6 +14527,7 @@ describe("apply_file_pending_move", () => {
 				revision: 1,
 				size: 0,
 				updatedAt: Date.now(),
+				expiresAt: Date.now() + files_DRAFT_IDLE_EXPIRY_MS,
 			}),
 		);
 
@@ -16597,7 +16434,7 @@ describe("apply_file_pending_move", () => {
 });
 
 describe("upsert_file_pending_archive_in_db", () => {
-	test("creates a delete row, schedules cleanup, and is idempotent", async () => {
+	test("creates a delete row, sets its expiry, and is idempotent", async () => {
 		const t = test_convex();
 
 		const seeded = await t.run(async (ctx) =>
@@ -16641,11 +16478,9 @@ describe("upsert_file_pending_archive_in_db", () => {
 		expect(files_pending_update_has_yjs_content(pendingRow)).toBe(false);
 		expect(pendingRow.size).toBe(0);
 
-		const cleanupTasks = await t.run((ctx) =>
-			list_pending_update_cleanup_tasks({ ctx, pendingUpdateId: pendingRow._id }),
-		);
-		expect(cleanupTasks).toHaveLength(1);
-		expect(cleanupTasks[0]?.expectedUpdatedAt).toBe(pendingRow.updatedAt);
+		expect(pendingRow.expiresAt).toBe(pendingRow.updatedAt + files_DRAFT_IDLE_EXPIRY_MS);
+		const expiryCheck = await t.run((ctx) => read_pending_update_expiry_check({ ctx, ...seeded }));
+		expect(expiryCheck?.nextCheckAt).toBeLessThanOrEqual(pendingRow.updatedAt + files_DRAFT_IDLE_EXPIRY_MS);
 
 		const repeated = await upsert_file_pending_archive_for_test({
 			t,
@@ -16837,8 +16672,6 @@ describe("apply_file_pending_archive", () => {
 			const plainTextChunk = await ctx.db.get("files_plain_text_chunks", plainTextChunkId);
 			expect(plainTextChunk?.archiveOperationId).toBe(node?.archiveOperationId);
 			expect(await ctx.db.get("files_pending_updates", pendingRow._id)).toBeNull();
-			const cleanupTasks = await list_pending_update_cleanup_tasks({ ctx, pendingUpdateId: pendingRow._id });
-			expect(cleanupTasks).toHaveLength(0);
 		});
 
 		// Re-accept after settle is a quiet no-op (bulk retries).
@@ -17340,8 +17173,6 @@ describe("pending delete discard, save, expiry, and overlay reads", () => {
 			const node = await ctx.db.get("files_nodes", seeded.nodeId);
 			expect(node?.archiveOperationId).toBeNull();
 			expect(await ctx.db.get("files_pending_updates", pendingRow._id)).toBeNull();
-			const cleanupTasks = await list_pending_update_cleanup_tasks({ ctx, pendingUpdateId: pendingRow._id });
-			expect(cleanupTasks).toHaveLength(0);
 		});
 	});
 
@@ -17441,13 +17272,8 @@ describe("pending delete discard, save, expiry, and overlay reads", () => {
 		if (!pendingRow) {
 			throw new Error("Missing delete-only row before expiry");
 		}
-		const cleanup = await t.run((ctx) => list_pending_update_cleanup_tasks({ ctx, pendingUpdateId: pendingRow._id }));
 		vi.useFakeTimers();
-		vi.setSystemTime(cleanup[0]!.expiresAt);
-		await t.mutation(internal.ai_chat.remove_file_pending_update_if_expired, {
-			cleanupTaskId: cleanup[0]!._id,
-			expiryGeneration: cleanup[0]!.expiryGeneration,
-		});
+		await expire_pending_update_for_test(t, pendingRow._id);
 
 		await t.run(async (ctx) => {
 			const node = await ctx.db.get("files_nodes", seeded.nodeId);
@@ -17774,8 +17600,6 @@ describe("discard_file_pending_structural", () => {
 			expect(node?.path).toBe("/discard-move-src.md");
 			const rowAfterDiscard = await ctx.db.get("files_pending_updates", pendingRow._id);
 			expect(rowAfterDiscard).toBeNull();
-			const cleanupTasks = await list_pending_update_cleanup_tasks({ ctx, pendingUpdateId: pendingRow._id });
-			expect(cleanupTasks).toHaveLength(0);
 		});
 	});
 
@@ -18356,6 +18180,7 @@ describe("discard_file_pending_structural", () => {
 				revision: 1,
 				size: 0,
 				updatedAt: Date.now(),
+				expiresAt: Date.now() + files_DRAFT_IDLE_EXPIRY_MS,
 			}),
 		);
 
@@ -18489,8 +18314,6 @@ describe("discard_file_pending_structural", () => {
 			expect(await ctx.db.get("files_pending_updates", pendingRow._id)).toBeNull();
 			const chunks = await list_pending_update_text_chunks({ ctx, pendingUpdateId: pendingRow._id });
 			expect(chunks).toHaveLength(0);
-			const cleanupTasks = await list_pending_update_cleanup_tasks({ ctx, pendingUpdateId: pendingRow._id });
-			expect(cleanupTasks).toHaveLength(0);
 		});
 	});
 
@@ -18597,8 +18420,6 @@ describe("discard_file_pending_structural", () => {
 			expect(node?.path).toBe("/discard-saved-moved-folder/discard-saved-moved-dest.md");
 			expect(node?.archiveOperationId).toBeNull();
 			expect(await ctx.db.get("files_pending_updates", pendingRow._id)).toBeNull();
-			const cleanupTasks = await list_pending_update_cleanup_tasks({ ctx, pendingUpdateId: pendingRow._id });
-			expect(cleanupTasks).toHaveLength(0);
 		});
 	});
 
@@ -18722,9 +18543,10 @@ describe("structural rows on content collapse", () => {
 			expect(row.size).toBe(0);
 			const chunks = await list_pending_update_text_chunks({ ctx, pendingUpdateId: row._id });
 			expect(chunks).toHaveLength(0);
-			const cleanupTasks = await list_pending_update_cleanup_tasks({ ctx, pendingUpdateId: row._id });
-			expect(cleanupTasks).toHaveLength(1);
-			expect(cleanupTasks[0]?.expectedUpdatedAt).toBe(row.updatedAt);
+			expect(row.expiresAt).toBe(row.updatedAt + files_DRAFT_IDLE_EXPIRY_MS);
+			expect((await read_pending_update_expiry_check({ ctx, ...seeded }))?.nextCheckAt).toBeLessThanOrEqual(
+				row.updatedAt + files_DRAFT_IDLE_EXPIRY_MS,
+			);
 		});
 	});
 
@@ -18779,9 +18601,10 @@ describe("structural rows on content collapse", () => {
 			expect(pendingUpdate?.content).toBeUndefined();
 			expect(pendingUpdate?.size).toBe(0);
 			expect(await list_pending_update_text_chunks({ ctx, pendingUpdateId: pendingUpdate!._id })).toHaveLength(0);
-			const cleanupTasks = await list_pending_update_cleanup_tasks({ ctx, pendingUpdateId: pendingUpdate!._id });
-			expect(cleanupTasks).toHaveLength(1);
-			expect(cleanupTasks[0]?.expectedUpdatedAt).toBe(pendingUpdate?.updatedAt);
+			expect(pendingUpdate!.expiresAt).toBe(pendingUpdate!.updatedAt + files_DRAFT_IDLE_EXPIRY_MS);
+			expect((await read_pending_update_expiry_check({ ctx, ...seeded }))?.nextCheckAt).toBeLessThanOrEqual(
+				pendingUpdate!.updatedAt + files_DRAFT_IDLE_EXPIRY_MS,
+			);
 			expect((await ctx.db.get("files_nodes", seeded.nodeId))?.archiveOperationId).toBeNull();
 		});
 	});
@@ -19000,9 +18823,10 @@ describe("save with structural rows", () => {
 			expect(row.size).toBe(0);
 			const chunks = await list_pending_update_text_chunks({ ctx, pendingUpdateId: row._id });
 			expect(chunks).toHaveLength(0);
-			const cleanupTasks = await list_pending_update_cleanup_tasks({ ctx, pendingUpdateId: row._id });
-			expect(cleanupTasks).toHaveLength(1);
-			expect(cleanupTasks[0]?.expectedUpdatedAt).toBe(row.updatedAt);
+			expect(row.expiresAt).toBe(row.updatedAt + files_DRAFT_IDLE_EXPIRY_MS);
+			expect((await read_pending_update_expiry_check({ ctx, ...seeded }))?.nextCheckAt).toBeLessThanOrEqual(
+				row.updatedAt + files_DRAFT_IDLE_EXPIRY_MS,
+			);
 		});
 	});
 
@@ -19170,7 +18994,7 @@ describe("save with structural rows", () => {
 	});
 });
 
-describe("remove_file_pending_update_if_expired structural rows", () => {
+describe("expire_file_pending_updates structural rows", () => {
 	test("expiry keeps a saved node that another user renamed since the proposal", async () => {
 		const t = test_convex();
 
@@ -19193,7 +19017,7 @@ describe("remove_file_pending_update_if_expired structural rows", () => {
 		if (upserted._nay) {
 			throw new Error(upserted._nay.message);
 		}
-		const { pendingRow, cleanupTask } = await t.run(async (ctx) => {
+		const pendingRow = await t.run(async (ctx) => {
 			const pendingRow = await read_pending_update_row({
 				ctx,
 				organizationId: dest.organizationId,
@@ -19204,12 +19028,7 @@ describe("remove_file_pending_update_if_expired structural rows", () => {
 			if (!pendingRow) {
 				throw new Error("Missing saved row before expiry");
 			}
-			const cleanupTasks = await list_pending_update_cleanup_tasks({ ctx, pendingUpdateId: pendingRow._id });
-			const cleanupTask = cleanupTasks[0];
-			if (!cleanupTask) {
-				throw new Error("Missing cleanup task before expiry");
-			}
-			return { pendingRow, cleanupTask };
+			return pendingRow;
 		});
 
 		// Another member renames the saved file after the proposal.
@@ -19250,11 +19069,7 @@ describe("remove_file_pending_update_if_expired structural rows", () => {
 		}
 
 		vi.useFakeTimers();
-		vi.setSystemTime(cleanupTask.expiresAt);
-		await t.mutation(internal.ai_chat.remove_file_pending_update_if_expired, {
-			cleanupTaskId: cleanupTask._id,
-			expiryGeneration: cleanupTask.expiryGeneration,
-		});
+		await expire_pending_update_for_test(t, pendingRow._id);
 
 		await t.run(async (ctx) => {
 			// The other user's rename must survive expiry: keep the node, drop only the row.
@@ -19304,7 +19119,7 @@ describe("remove_file_pending_update_if_expired structural rows", () => {
 		if (upserted._nay) {
 			throw new Error(upserted._nay.message);
 		}
-		const { pendingRow, cleanupTask } = await t.run(async (ctx) => {
+		const pendingRow = await t.run(async (ctx) => {
 			const pendingRow = await read_pending_update_row({
 				ctx,
 				organizationId: dest.organizationId,
@@ -19315,20 +19130,11 @@ describe("remove_file_pending_update_if_expired structural rows", () => {
 			if (!pendingRow) {
 				throw new Error("Missing copy row before expiry");
 			}
-			const cleanupTasks = await list_pending_update_cleanup_tasks({ ctx, pendingUpdateId: pendingRow._id });
-			const cleanupTask = cleanupTasks[0];
-			if (!cleanupTask) {
-				throw new Error("Missing cleanup task before expiry");
-			}
-			return { pendingRow, cleanupTask };
+			return pendingRow;
 		});
 
 		vi.useFakeTimers();
-		vi.setSystemTime(cleanupTask.expiresAt);
-		await t.mutation(internal.ai_chat.remove_file_pending_update_if_expired, {
-			cleanupTaskId: cleanupTask._id,
-			expiryGeneration: cleanupTask.expiryGeneration,
-		});
+		await expire_pending_update_for_test(t, pendingRow._id);
 
 		await t.run(async (ctx) => {
 			// The row expires like a plain content row; the pre-existing node is never hard-deleted.
@@ -19361,7 +19167,7 @@ describe("remove_file_pending_update_if_expired structural rows", () => {
 		if (created._nay) {
 			throw new Error(created._nay.message);
 		}
-		const { pendingRow, cleanupTask } = await t.run(async (ctx) => {
+		const pendingRow = await t.run(async (ctx) => {
 			const pendingRow = await read_pending_update_row({
 				ctx,
 				organizationId: seeded.organizationId,
@@ -19372,28 +19178,20 @@ describe("remove_file_pending_update_if_expired structural rows", () => {
 			if (!pendingRow) {
 				throw new Error("Missing pending move row before expiry");
 			}
-			const cleanupTasks = await list_pending_update_cleanup_tasks({ ctx, pendingUpdateId: pendingRow._id });
-			const cleanupTask = cleanupTasks[0];
-			if (!cleanupTask) {
-				throw new Error("Missing cleanup task before expiry");
-			}
-			return { pendingRow, cleanupTask };
+			return pendingRow;
 		});
 
-		// A stale expiry token must not delete the newer proposal.
-		await t.mutation(internal.ai_chat.remove_file_pending_update_if_expired, {
-			cleanupTaskId: cleanupTask._id,
-			expiryGeneration: cleanupTask.expiryGeneration - 1,
+		// A check run before the draft's expiry must not delete the proposal.
+		await t.mutation(internal.files_pending_updates.expire_file_pending_updates, {
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
 		});
 		const rowAfterStaleRun = await t.run((ctx) => ctx.db.get("files_pending_updates", pendingRow._id));
 		expect(rowAfterStaleRun).not.toBeNull();
 
 		vi.useFakeTimers();
-		vi.setSystemTime(cleanupTask.expiresAt);
-		await t.mutation(internal.ai_chat.remove_file_pending_update_if_expired, {
-			cleanupTaskId: cleanupTask._id,
-			expiryGeneration: cleanupTask.expiryGeneration,
-		});
+		await expire_pending_update_for_test(t, pendingRow._id);
 		await t.run(async (ctx) => {
 			expect(await ctx.db.get("files_pending_updates", pendingRow._id)).toBeNull();
 			const node = await ctx.db.get("files_nodes", seeded.nodeId);
@@ -19848,6 +19646,7 @@ describe("create_file_pending_update_operation_batch", () => {
 					revision: 1,
 					size: 0,
 					updatedAt: Date.now(),
+					expiresAt: Date.now() + files_DRAFT_IDLE_EXPIRY_MS,
 				});
 				const operationBatchId = await ctx.db.insert("files_pending_update_operation_batches", {
 					organizationId,
@@ -20485,6 +20284,7 @@ describe("cleanup_expired_pending_state_rows", () => {
 				revision: 1,
 				size: 0,
 				updatedAt: now,
+				expiresAt: now + files_DRAFT_IDLE_EXPIRY_MS,
 			}),
 		);
 		const batchId = await t.run(async (ctx) =>
@@ -21054,9 +20854,6 @@ describe("pending update read-only checks", () => {
 		if (!pendingRow) {
 			throw new Error("Missing proposal before save gap");
 		}
-		const cleanupTasksBefore = await t.run((ctx) =>
-			list_pending_update_cleanup_tasks({ ctx, pendingUpdateId: pendingRow._id }),
-		);
 
 		const normalFetch = globalThis.fetch;
 		let releaseSnapshotFetch: (() => void) | undefined;
@@ -21110,9 +20907,6 @@ describe("pending update read-only checks", () => {
 				)
 				.collect();
 			expect(trustedStages).toEqual([]);
-			const cleanupTasksAfter = await list_pending_update_cleanup_tasks({ ctx, pendingUpdateId: pendingRow._id });
-			expect(cleanupTasksBefore).toHaveLength(1);
-			expect(cleanupTasksAfter).toEqual([]);
 			const lastSaved = await ctx.db
 				.query("files_pending_updates_last_sequence_saved")
 				.withIndex("by_organization_workspace_user_fileNode", (q) =>
@@ -22425,6 +22219,7 @@ describe("pending file that was moved while pending", () => {
 				revision: 1,
 				size: 0,
 				updatedAt: Date.now(),
+				expiresAt: Date.now() + files_DRAFT_IDLE_EXPIRY_MS,
 			}),
 		);
 

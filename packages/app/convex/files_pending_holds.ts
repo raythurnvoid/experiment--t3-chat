@@ -6,7 +6,6 @@ import type { Doc, Id } from "./_generated/dataModel.js";
 import { internalMutation, type MutationCtx } from "./_generated/server.js";
 import schema from "./schema.ts";
 import { activities_db_require_by_source_id, activities_is_active } from "./activities_db.ts";
-import { files_db_schedule_pending_update_cleanup } from "../server/files.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 
 const HOLD_BATCH_SIZE = 32;
@@ -140,12 +139,11 @@ async function db_release_hold(ctx: MutationCtx, hold: Doc<"files_pending_holds"
 	if (proposal && (await db_matches_identity(ctx, hold, proposal))) {
 		const producer = await db_get_producer(ctx, hold.producer);
 		if (producer && !activities_is_active(producer.activity.status) && keeps_terminal_output(hold.role)) {
-			// Install the fixed window before dropping the last producer reference.
-			await files_db_schedule_pending_update_cleanup(ctx, {
-				pendingUpdateId: proposal._id,
-				expectedUpdatedAt: proposal.updatedAt,
-				expiresAt: terminal_deadline(producer),
-			});
+			// Install the fixed window before dropping the last producer reference. Patch only the
+			// expiry, so the proposal revision and the review clock stay the same. The expiry moves
+			// later, so the owner's expiry check already runs early enough.
+			const expiresAt = terminal_deadline(producer);
+			if (expiresAt > proposal.expiresAt) await ctx.db.patch("files_pending_updates", proposal._id, { expiresAt });
 		}
 	}
 	await ctx.db.delete("files_pending_holds", hold._id);

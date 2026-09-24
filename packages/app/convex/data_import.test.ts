@@ -678,6 +678,7 @@ describe("data_import.verify_metadata", () => {
 				revision: 1,
 				size: 0,
 				updatedAt: Date.now(),
+				expiresAt: Date.now() + 4 * 60 * 60 * 1000,
 			});
 			await ctx.db.insert("files_metadata_docs", {
 				organizationId: db.organizationId,

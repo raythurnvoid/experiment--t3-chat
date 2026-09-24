@@ -33,22 +33,31 @@ async function draft(f: Awaited<ReturnType<typeof fixture>>, path: string) {
 	return proposal;
 }
 
-async function expiry(f: Awaited<ReturnType<typeof fixture>>, pendingUpdateId: Id<"files_pending_updates">) {
-	const task = await f.t.run((ctx) =>
-		ctx.db
-			.query("files_pending_updates_cleanup_tasks")
-			.withIndex("by_pendingUpdate", (q) => q.eq("pendingUpdateId", pendingUpdateId))
-			.unique(),
-	);
-	if (!task) throw new Error("Expected the expiry task");
-	return task;
+async function read_draft(f: Awaited<ReturnType<typeof fixture>>, pendingUpdateId: Id<"files_pending_updates">) {
+	const proposal = await f.t.run((ctx) => ctx.db.get("files_pending_updates", pendingUpdateId));
+	if (!proposal) throw new Error("Expected the draft");
+	return proposal;
 }
 
-async function expire(f: Awaited<ReturnType<typeof fixture>>, task: Doc<"files_pending_updates_cleanup_tasks">) {
-	await f.t.mutation(internal.files_pending_updates.remove_file_pending_update_if_expired, {
-		cleanupTaskId: task._id,
-		expiryGeneration: task.expiryGeneration,
-	});
+/**
+ * Run the expiry check of the draft's owner and workspace like its scheduled job would, until it
+ * is not due anymore. One run handles at most 8 drafts and then continues in a new run.
+ */
+async function expire(f: Awaited<ReturnType<typeof fixture>>, proposal: Doc<"files_pending_updates">) {
+	const scope = { organizationId: proposal.organizationId, workspaceId: proposal.workspaceId, userId: proposal.userId };
+	for (let run = 0; run < 100; run++) {
+		await f.t.mutation(internal.files_pending_updates.expire_file_pending_updates, scope);
+		const check = await f.t.run((ctx) =>
+			ctx.db
+				.query("files_pending_update_expiry_checks")
+				.withIndex("by_organization_workspace_user", (q) =>
+					q.eq("organizationId", scope.organizationId).eq("workspaceId", scope.workspaceId).eq("userId", scope.userId),
+				)
+				.unique(),
+		);
+		if (!check || check.nextCheckAt > Date.now()) return;
+	}
+	throw new Error("The expiry check never finished");
 }
 
 describe("Copy proposal holds", () => {
@@ -57,8 +66,7 @@ describe("Copy proposal holds", () => {
 		const source = await draft(f, "/source");
 		const second = await draft(f, "/second");
 		const parent = await draft(f, "/target/parent");
-		const sourceTask = await expiry(f, source._id);
-		vi.setSystemTime(sourceTask.expiresAt - 1);
+		vi.setSystemTime(source.expiresAt - 1);
 		const started = await f.t.mutation(internal.files_transfer.start_for_agent, {
 			membershipId: f.db.membershipId,
 			threadId: f.threadId,
@@ -84,10 +92,11 @@ describe("Copy proposal holds", () => {
 				sources: [second.target],
 			}),
 		).toEqual({ _yay: null });
-		vi.setSystemTime(sourceTask.expiresAt + 1);
+		vi.setSystemTime(source.expiresAt + 1);
+		await expire(f, source);
 		for (const proposal of [source, second, parent]) {
-			await expire(f, await expiry(f, proposal._id));
-			expect(await f.t.run((ctx) => ctx.db.get("files_pending_updates", proposal._id))).toEqual(proposal);
+			// The held draft stays. Only its expiry moves, to the next check in 60 seconds.
+			expect(await read_draft(f, proposal._id)).toEqual({ ...proposal, expiresAt: Date.now() + 60_000 });
 			if (proposal.target.kind !== "private") throw new Error("Expected a private target");
 			const id = proposal.target.id;
 			expect((await f.t.run((ctx) => ctx.db.get("files_pending_nodes", id)))?.state).toBe("active");
@@ -166,16 +175,16 @@ describe("Copy proposal holds", () => {
 			await f.t.mutation(internal.files_pending_holds.release_producer, {
 				producer: { kind: "files_transfer_run", id: runId },
 			});
-			const cleanup = await expiry(f, output._id);
-			vi.setSystemTime(cleanup.expiresAt - 1);
+			const released = await read_draft(f, output._id);
+			vi.setSystemTime(released.expiresAt - 1);
 			const retryArgs = { membershipId: f.db.membershipId, runId, requestId: "parent-retry" };
 			const retried = await f.asUser.mutation(api.files_transfer.retry_remaining, retryArgs);
 			if (retried._nay) throw new Error(retried._nay.message);
 			expect(await f.asUser.mutation(api.files_transfer.retry_remaining, retryArgs)).toEqual(retried);
-			vi.setSystemTime(cleanup.expiresAt + 1);
-			await expire(f, cleanup);
+			vi.setSystemTime(released.expiresAt + 1);
+			await expire(f, released);
 			expect((await f.t.run((ctx) => ctx.db.get("files_pending_nodes", targetId)))?.state).toBe("active");
-			expect(await f.t.run((ctx) => ctx.db.get("files_pending_updates", pendingUpdateId))).toEqual(output);
+			expect(await read_draft(f, pendingUpdateId)).toEqual({ ...output, expiresAt: Date.now() + 60_000 });
 			const holds = await f.t.run((ctx) =>
 				ctx.db
 					.query("files_pending_holds")
@@ -247,15 +256,14 @@ describe("Copy proposal holds", () => {
 		);
 		if (!output || output.target.kind !== "private") throw new Error("Expected the first copied folder");
 		const outputId = output.target.id;
-		const original = await expiry(f, output._id);
 		for (let step = 0; step < 13; step++) {
 			vi.setSystemTime(Date.now() + 20 * 60 * 1000);
 			await f.t.mutation(internal.files_transfer.advance, { runId });
 		}
-		expect(Date.now()).toBeGreaterThan(original.expiresAt);
-		await expire(f, original);
+		expect(Date.now()).toBeGreaterThan(output.expiresAt);
+		await expire(f, output);
 		expect((await f.t.run((ctx) => ctx.db.get("files_pending_nodes", outputId)))?.state).toBe("active");
-		expect(await f.t.run((ctx) => ctx.db.get("files_pending_updates", output!._id))).toEqual(output);
+		expect(await read_draft(f, output._id)).toEqual({ ...output, expiresAt: Date.now() + 60_000 });
 		expect(
 			(await f.asUser.mutation(api.files_transfer.stop, { membershipId: f.db.membershipId, runId }))._nay,
 		).toBeUndefined();
@@ -268,8 +276,9 @@ describe("Copy proposal holds", () => {
 		await f.t.mutation(internal.files_pending_holds.release_producer, {
 			producer: { kind: "files_transfer_run", id: runId },
 		});
-		const retained = await expiry(f, output._id);
-		expect(retained.expiresAt).toBe(ended!.outputReviewUntil);
+		// Release moves the expiry to the review deadline and changes nothing else.
+		const retained = await read_draft(f, output._id);
+		expect(retained).toEqual({ ...output, expiresAt: ended!.outputReviewUntil });
 		vi.setSystemTime(retained.expiresAt - 1);
 		const retried = await f.asUser.mutation(api.files_transfer.retry_remaining, {
 			membershipId: f.db.membershipId,
@@ -281,7 +290,7 @@ describe("Copy proposal holds", () => {
 		vi.setSystemTime(retained.expiresAt + 1);
 		await expire(f, retained);
 		expect((await f.t.run((ctx) => ctx.db.get("files_pending_nodes", outputId)))?.state).toBe("active");
-		expect(await f.t.run((ctx) => ctx.db.get("files_pending_updates", output!._id))).toEqual(output);
+		expect(await read_draft(f, output._id)).toEqual({ ...output, expiresAt: Date.now() + 60_000 });
 		const newHolds = await f.t.run((ctx) =>
 			ctx.db
 				.query("files_pending_holds")

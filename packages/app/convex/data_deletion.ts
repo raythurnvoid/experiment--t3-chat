@@ -44,7 +44,7 @@ import {
 import { files_pending_update_runs_db_delete_run_batch } from "./files_pending_update_runs.ts";
 import { files_db_delete_pending_update } from "../server/files.ts";
 import { data_deletion_db_request } from "./data_deletion_requests.ts";
-import { users_db_delete_auth_and_billing_state } from "./users.ts";
+import { users_db_delete_auth_billing_and_activity_docs } from "./users.ts";
 import { r2_PUT_MAY_ARRIVE_MARGIN_MS, r2_create_asset_key, r2_enqueue_object_deletion_job } from "./r2_client.ts";
 
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
@@ -483,8 +483,21 @@ async function db_purge_organization_workspace_content_batch(
 		return { done: false, deletedCount: trustedUpdateStages.length };
 	}
 
-	// Pending-update parent docs have cleanup-task, chunk, and metadata
-	// children. Delete those children first, then delete the parent pending-update doc.
+	// Delete the expiry checks before the drafts, so no expiry job works on drafts during the purge.
+	// A job whose check is gone does nothing.
+	const expiryChecks = await ctx.db
+		.query("files_pending_update_expiry_checks")
+		.withIndex("by_organization_workspace_user", (q) =>
+			q.eq("organizationId", organizationId).eq("workspaceId", workspaceId),
+		)
+		.take(batchSize);
+	if (expiryChecks.length > 0) {
+		await Promise.all(expiryChecks.map((doc) => ctx.db.delete("files_pending_update_expiry_checks", doc._id)));
+		return { done: false, deletedCount: expiryChecks.length };
+	}
+
+	// Pending-update parent docs have chunk and metadata children. Delete those children first,
+	// then delete the parent pending-update doc.
 	const pendingUpdate = await ctx.db
 		.query("files_pending_updates")
 		.withIndex("by_organization_workspace_user_target", (q) =>
@@ -492,15 +505,6 @@ async function db_purge_organization_workspace_content_batch(
 		)
 		.first();
 	if (pendingUpdate) {
-		const cleanupTasks = await ctx.db
-			.query("files_pending_updates_cleanup_tasks")
-			.withIndex("by_pendingUpdate", (q) => q.eq("pendingUpdateId", pendingUpdate._id))
-			.take(batchSize);
-		if (cleanupTasks.length > 0) {
-			await Promise.all(cleanupTasks.map((doc) => ctx.db.delete("files_pending_updates_cleanup_tasks", doc._id)));
-			return { done: false, deletedCount: cleanupTasks.length };
-		}
-
 		const pendingPlainTextChunks = await ctx.db
 			.query("files_plain_text_chunks")
 			.withIndex("by_pendingUpdate_chunkIndex", (q) => q.eq("pendingUpdateId", pendingUpdate._id))
@@ -2024,9 +2028,20 @@ async function db_drain_user_memberships_batch(
 }
 
 /**
- * Deletes one pending-update child family, then its parent in a later pass.
+ * Deletes the owner's expiry checks first. Then deletes one pending-update child family, and its
+ * parent in a later pass.
  */
 async function db_drain_user_pending_updates_batch(ctx: MutationCtx, args: { userId: Id<"users">; batchSize: number }) {
+	// Delete the expiry checks first, so no expiry job works on drafts during the drain.
+	const expiryChecks = await ctx.db
+		.query("files_pending_update_expiry_checks")
+		.withIndex("by_user", (q) => q.eq("userId", args.userId))
+		.take(args.batchSize);
+	if (expiryChecks.length > 0) {
+		await Promise.all(expiryChecks.map((doc) => ctx.db.delete("files_pending_update_expiry_checks", doc._id)));
+		return expiryChecks.length;
+	}
+
 	const pendingUpdates = await ctx.db
 		.query("files_pending_updates")
 		.withIndex("by_user_target", (q) => q.eq("userId", args.userId))
@@ -2034,15 +2049,6 @@ async function db_drain_user_pending_updates_batch(ctx: MutationCtx, args: { use
 	const pendingUpdate = pendingUpdates[0];
 	if (!pendingUpdate) {
 		return 0;
-	}
-
-	const cleanupTasks = await ctx.db
-		.query("files_pending_updates_cleanup_tasks")
-		.withIndex("by_pendingUpdate", (q) => q.eq("pendingUpdateId", pendingUpdate._id))
-		.take(args.batchSize);
-	if (cleanupTasks.length > 0) {
-		await Promise.all(cleanupTasks.map((doc) => ctx.db.delete("files_pending_updates_cleanup_tasks", doc._id)));
-		return cleanupTasks.length;
 	}
 
 	const plainTextChunks = await ctx.db
@@ -2380,7 +2386,7 @@ export const purge_user_private_assets = internalMutation({
 /**
  * Finishes phase 2 after every growing user-scoped family has been drained.
  *
- * The remaining auth and billing tables have one-row user invariants. This final transaction
+ * The remaining auth, billing, and activity tables have one-row user invariants. This final transaction
  * either clears the recovery fence or removes the user record and its anagraphic.
  */
 async function db_finalize_deleted_user(
@@ -2406,7 +2412,7 @@ async function db_finalize_deleted_user(
 		cursor: null,
 	});
 
-	await users_db_delete_auth_and_billing_state(ctx, {
+	await users_db_delete_auth_billing_and_activity_docs(ctx, {
 		userId: user._id,
 		deleteUserAuth: args.deleteUserAuth,
 		deleteBillingState: args.deleteBillingState,
@@ -2646,7 +2652,7 @@ export const process_user_deletion_request = internalMutation({
 			});
 
 			// Older tombstone purges could leave these docs after removing the user.
-			await users_db_delete_auth_and_billing_state(ctx, {
+			await users_db_delete_auth_billing_and_activity_docs(ctx, {
 				userId: request.userId,
 				deleteUserAuth: true,
 				deleteBillingState: true,

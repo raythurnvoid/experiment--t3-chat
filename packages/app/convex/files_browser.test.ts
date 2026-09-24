@@ -559,6 +559,7 @@ describe("browser file outputs", () => {
 				pendingArchive: { fromPath: browserFile.path },
 				size: 0,
 				updatedAt: Date.now(),
+				expiresAt: Date.now() + 4 * 60 * 60 * 1000,
 			}),
 		);
 		const prepared = await prepare_browser_file(t, scope);
@@ -947,17 +948,13 @@ describe("get_file_read_source", () => {
 		});
 		const pendingUpdateId = view!.entry.pendingUpdate!._id;
 
-		const cleanup = await t.run((ctx) =>
-			ctx.db
-				.query("files_pending_updates_cleanup_tasks")
-				.withIndex("by_pendingUpdate", (q) => q.eq("pendingUpdateId", pendingUpdateId))
-				.first(),
-		);
-		if (!cleanup) throw new Error("Expected pending cleanup task");
-		vi.spyOn(Date, "now").mockReturnValue(cleanup.expiresAt);
-		await t.mutation(internal.files_pending_updates.remove_file_pending_update_if_expired, {
-			cleanupTaskId: cleanup._id,
-			expiryGeneration: cleanup.expiryGeneration,
+		const draft = await t.run((ctx) => ctx.db.get("files_pending_updates", pendingUpdateId));
+		if (!draft?.expiresAt) throw new Error("Expected the pending draft expiry");
+		vi.spyOn(Date, "now").mockReturnValue(draft.expiresAt);
+		await t.mutation(internal.files_pending_updates.expire_file_pending_updates, {
+			organizationId: scope.organizationId,
+			workspaceId: scope.workspaceId,
+			userId: scope.userId,
 		});
 
 		expect(

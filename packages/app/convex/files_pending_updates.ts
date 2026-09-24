@@ -95,16 +95,16 @@ import {
 } from "./access_control.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import {
-	files_db_cancel_pending_update_cleanup_tasks,
 	files_db_expire_pending_update_operation_batch,
 	files_db_get_pending_update,
 	files_db_insert_pending_update,
 	files_db_patch_pending_update,
 	files_db_delete_pending_update,
+	files_db_cancel_scheduled_function_if_present,
+	files_DRAFT_IDLE_EXPIRY_MS,
 	files_db_insert_pending_update_yjs_state,
 	files_db_load_pending_update_yjs_state_bytes,
 	files_db_retire_pending_update_yjs_states,
-	files_db_schedule_pending_update_cleanup,
 	files_node_has_editable_yjs_state,
 	files_pending_update_asset_content_of,
 	files_pending_update_content_of,
@@ -636,7 +636,6 @@ export async function files_pending_updates_db_drop_content_for_node(
 			if (!pendingUpdate.pendingMove && !pendingUpdate.pendingArchive) {
 				await Promise.all([
 					...retireStatesAndChunks,
-					files_db_cancel_pending_update_cleanup_tasks(ctx, { pendingUpdateId: pendingUpdate._id }),
 					files_db_delete_pending_update(ctx, pendingUpdate._id),
 				]);
 				return;
@@ -652,10 +651,6 @@ export async function files_pending_updates_db_drop_content_for_node(
 					copiedFrom: undefined,
 					size: 0,
 					updatedAt: now,
-				}),
-				files_db_schedule_pending_update_cleanup(ctx, {
-					pendingUpdateId: pendingUpdate._id,
-					expectedUpdatedAt: now,
 				}),
 			]);
 		}),
@@ -821,7 +816,7 @@ function files_pending_update_log_replace_chunks_nay(
 
 /**
  * Drop the move and keep any remaining content or copy proposal.
- * A move-only proposal is deleted with its chunks and cleanup tasks.
+ * A move-only proposal is deleted with its chunks.
  */
 export async function files_pending_update_db_settle_move_row(
 	ctx: MutationCtx,
@@ -840,16 +835,9 @@ export async function files_pending_update_db_settle_move_row(
 				pendingUpdateId: pendingUpdate._id,
 				proposalRevision: pendingUpdate.revision + 1,
 			}),
-			files_db_schedule_pending_update_cleanup(ctx, {
-				pendingUpdateId: pendingUpdate._id,
-				expectedUpdatedAt: now,
-			}),
 		]);
 	} else {
 		await Promise.all([
-			files_db_cancel_pending_update_cleanup_tasks(ctx, {
-				pendingUpdateId: pendingUpdate._id,
-			}),
 			files_pending_update_db_delete_chunks(ctx, {
 				pendingUpdateId: pendingUpdate._id,
 			}),
@@ -861,7 +849,7 @@ export async function files_pending_update_db_settle_move_row(
 /**
  * Drop a doc's pending delete and settle the doc: docs that still carry a content proposal
  * or copy provenance keep it (the row degrades back to a content/copy row), delete-only
- * docs are deleted with their chunks and cleanup tasks.
+ * docs are deleted with their chunks.
  */
 async function files_pending_update_db_settle_archive_row(
 	ctx: MutationCtx,
@@ -880,16 +868,9 @@ async function files_pending_update_db_settle_archive_row(
 				pendingUpdateId: pendingUpdate._id,
 				proposalRevision: pendingUpdate.revision + 1,
 			}),
-			files_db_schedule_pending_update_cleanup(ctx, {
-				pendingUpdateId: pendingUpdate._id,
-				expectedUpdatedAt: now,
-			}),
 		]);
 	} else {
 		await Promise.all([
-			files_db_cancel_pending_update_cleanup_tasks(ctx, {
-				pendingUpdateId: pendingUpdate._id,
-			}),
 			files_pending_update_db_delete_chunks(ctx, {
 				pendingUpdateId: pendingUpdate._id,
 			}),
@@ -2461,74 +2442,201 @@ export const remove_fenced_private_pending_update = internalMutation({
 		for (const assetId of assetIds) await files_pending_update_db_release_replacement_asset(ctx, { ...scope, assetId });
 		await files_db_retire_pending_update_yjs_states(ctx, { ...scope, pendingUpdateId: pendingUpdate._id });
 		await files_pending_update_db_delete_chunks(ctx, { pendingUpdateId: pendingUpdate._id });
-		await files_db_cancel_pending_update_cleanup_tasks(ctx, { pendingUpdateId: pendingUpdate._id });
 		await files_db_delete_pending_update(ctx, pendingUpdate._id, { reviewAlreadyFenced: true });
 		return null;
 	},
 });
 
-export const remove_file_pending_update_if_expired = internalMutation({
+/**
+ * How many due drafts one expiry job handles before it continues in a new transaction.
+ */
+const EXPIRY_CHECK_BATCH_SIZE = 8;
+
+/**
+ * Try a due draft again after this delay when it cannot expire yet. For example, a running Copy
+ * still holds it, or a private folder still has a child draft.
+ */
+const EXPIRY_RETRY_MS = 60_000;
+
+/**
+ * A check still in the past after this long means its job failed. The recovery cron starts it again.
+ */
+const EXPIRY_CHECK_RECOVERY_MS = 15 * 60 * 1000;
+
+/**
+ * How many late checks one recovery run starts again before it continues in a new transaction.
+ */
+const EXPIRY_CHECK_RECOVERY_BATCH_SIZE = 32;
+
+/**
+ * Point the check at a new job that runs at `checkAt`. This does not cancel the old job. A caller
+ * that moves a check away from a job that may still run must cancel that job itself.
+ */
+async function db_schedule_expiry_check(
+	ctx: MutationCtx,
+	check: app_convex_Doc<"files_pending_update_expiry_checks">,
+	checkAt: number,
+) {
+	const scheduledFunctionId = await ctx.scheduler.runAt(
+		checkAt,
+		internal.files_pending_updates.expire_file_pending_updates,
+		{ organizationId: check.organizationId, workspaceId: check.workspaceId, userId: check.userId },
+	);
+	await ctx.db.patch("files_pending_update_expiry_checks", check._id, { nextCheckAt: checkAt, scheduledFunctionId });
+}
+
+/**
+ * Remove one owner's due drafts in one workspace. A draft expires only when its `expiresAt` has
+ * passed, the owner has had no visible app tab for 4 hours (or left the workspace), and no running
+ * Copy or review holds it. Expiry changes neither the proposal revision nor the review clock of
+ * a kept draft.
+ */
+export const expire_file_pending_updates = internalMutation({
 	args: {
-		cleanupTaskId: v.id("files_pending_updates_cleanup_tasks"),
-		expiryGeneration: v.number(),
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		userId: v.id("users"),
 	},
 	returns: v.null(),
 	handler: async (ctx, args) => {
-		const task = await ctx.db.get("files_pending_updates_cleanup_tasks", args.cleanupTaskId);
-		// Presence and hold release can extend expiry without changing proposal.updatedAt.
-		if (!task || task.expiryGeneration !== args.expiryGeneration || task.expiresAt > Date.now()) return null;
-		const pendingUpdate = await ctx.db.get("files_pending_updates", task.pendingUpdateId);
-		if (!pendingUpdate) {
-			await ctx.db.delete("files_pending_updates_cleanup_tasks", task._id);
-			return null;
-		}
-		if (pendingUpdate.updatedAt !== task.expectedUpdatedAt) {
-			return null;
-		}
-		const retention = await files_pending_holds_db_check_expiry(ctx, { pendingUpdate });
-		if (retention.held || (retention.expiresAt !== null && retention.expiresAt > Date.now())) {
-			await files_db_schedule_pending_update_cleanup(ctx, {
-				pendingUpdateId: pendingUpdate._id,
-				expectedUpdatedAt: pendingUpdate.updatedAt,
-				expiresAt: Math.max(task.expiresAt, retention.expiresAt ?? 0),
-				delayMs: retention.held ? 60_000 : undefined,
-			});
-			return null;
-		}
-		if (pendingUpdate.target.kind === "private") {
-			await files_pending_nodes_db_discard(ctx, {
-				organizationId: pendingUpdate.organizationId,
-				workspaceId: pendingUpdate.workspaceId,
-				userId: pendingUpdate.userId,
-				privateNodeId: pendingUpdate.target.id,
-				pendingUpdateId: pendingUpdate._id,
-				expectedRevision: pendingUpdate.revision,
-				reason: "expired",
-			});
-			return null;
-		}
+		const now = Date.now();
+		const check = await ctx.db
+			.query("files_pending_update_expiry_checks")
+			.withIndex("by_organization_workspace_user", (q) =>
+				q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("userId", args.userId),
+			)
+			.unique();
+		// A purge deleted the check, or a newer job now owns it.
+		if (!check || check.nextCheckAt > now) return null;
 
-		// An expired whole-file copy releases its staged object before the doc goes.
-		if (pendingUpdate.pendingReplacement) {
-			await files_pending_update_db_release_replacement_asset(ctx, {
-				organizationId: pendingUpdate.organizationId,
-				workspaceId: pendingUpdate.workspaceId,
-				assetId: pendingUpdate.pendingReplacement.assetId,
-			});
-		}
-
-		await Promise.all([
-			files_db_delete_pending_update(ctx, pendingUpdate._id),
-			files_db_retire_pending_update_yjs_states(ctx, {
-				organizationId: pendingUpdate.organizationId,
-				workspaceId: pendingUpdate.workspaceId,
-				pendingUpdateId: pendingUpdate._id,
-			}),
-			files_pending_update_db_delete_chunks(ctx, {
-				pendingUpdateId: pendingUpdate._id,
-			}),
-			ctx.db.delete("files_pending_updates_cleanup_tasks", task._id),
+		// Keep every draft while the owner still uses the app and is still a member here.
+		const [lastActive, membership] = await Promise.all([
+			ctx.db
+				.query("users_last_active")
+				.withIndex("by_user", (q) => q.eq("userId", args.userId))
+				.unique(),
+			ctx.db
+				.query("organizations_workspaces_users")
+				.withIndex("by_active_user_organization_workspace", (q) =>
+					q
+						.eq("active", true)
+						.eq("userId", args.userId)
+						.eq("organizationId", args.organizationId)
+						.eq("workspaceId", args.workspaceId),
+				)
+				.first(),
 		]);
+		const activeUntil = lastActive && membership ? lastActive.lastActiveAt + files_DRAFT_IDLE_EXPIRY_MS : 0;
+		if (activeUntil > now) {
+			await db_schedule_expiry_check(ctx, check, activeUntil);
+			return null;
+		}
+
+		const dueDrafts = await ctx.db
+			.query("files_pending_updates")
+			.withIndex("by_organization_workspace_user_expiresAt", (q) =>
+				q
+					.eq("organizationId", args.organizationId)
+					.eq("workspaceId", args.workspaceId)
+					.eq("userId", args.userId)
+					.lte("expiresAt", now),
+			)
+			.take(EXPIRY_CHECK_BATCH_SIZE);
+		let batchBytes = 0;
+		let handledCount = 0;
+		for (const pendingUpdate of dueDrafts) {
+			// Deleting a draft also deletes its text chunks, and their number grows with the draft size.
+			// Stop after about one full-size draft, so one transaction stays well under Convex limits.
+			if (batchBytes >= files_MAX_TEXT_CONTENT_BYTES) break;
+			batchBytes += pendingUpdate.size;
+			handledCount += 1;
+
+			const retention = await files_pending_holds_db_check_expiry(ctx, { pendingUpdate });
+			if (!retention.held && (retention.expiresAt ?? 0) <= now) {
+				if (pendingUpdate.target.kind === "saved") {
+					// An expired whole-file copy releases its staged object before the doc goes.
+					if (pendingUpdate.pendingReplacement) {
+						await files_pending_update_db_release_replacement_asset(ctx, {
+							organizationId: pendingUpdate.organizationId,
+							workspaceId: pendingUpdate.workspaceId,
+							assetId: pendingUpdate.pendingReplacement.assetId,
+						});
+					}
+					await Promise.all([
+						files_db_delete_pending_update(ctx, pendingUpdate._id),
+						files_db_retire_pending_update_yjs_states(ctx, {
+							organizationId: pendingUpdate.organizationId,
+							workspaceId: pendingUpdate.workspaceId,
+							pendingUpdateId: pendingUpdate._id,
+						}),
+						files_pending_update_db_delete_chunks(ctx, { pendingUpdateId: pendingUpdate._id }),
+					]);
+					continue;
+				}
+
+				const discarded = await files_pending_nodes_db_discard(ctx, {
+					organizationId: pendingUpdate.organizationId,
+					workspaceId: pendingUpdate.workspaceId,
+					userId: pendingUpdate.userId,
+					privateNodeId: pendingUpdate.target.id,
+					pendingUpdateId: pendingUpdate._id,
+					expectedRevision: pendingUpdate.revision,
+					reason: "expired",
+				});
+				// `needs_review` means a child or a move into this folder must expire first.
+				if (discarded._nay && discarded._nay.name !== "needs_review") {
+					console.error("Failed to expire a private draft", { pendingUpdateId: pendingUpdate._id, error: discarded._nay });
+				}
+			}
+
+			// Try this draft again later. A fenced private draft also lands here, because its cleanup job
+			// deletes the draft doc in another transaction. Patch only the expiry, so the proposal revision
+			// and the review clock stay the same.
+			await ctx.db.patch("files_pending_updates", pendingUpdate._id, {
+				expiresAt: Math.max(retention.expiresAt ?? 0, now + EXPIRY_RETRY_MS),
+			});
+		}
+
+		// A full or cut batch may have more due drafts behind it.
+		if (handledCount < dueDrafts.length || dueDrafts.length === EXPIRY_CHECK_BATCH_SIZE) {
+			await db_schedule_expiry_check(ctx, check, now);
+			return null;
+		}
+
+		const nextDraft = await ctx.db
+			.query("files_pending_updates")
+			.withIndex("by_organization_workspace_user_expiresAt", (q) =>
+				q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("userId", args.userId),
+			)
+			.first();
+		if (nextDraft) {
+			await db_schedule_expiry_check(ctx, check, nextDraft.expiresAt);
+		} else {
+			await ctx.db.delete("files_pending_update_expiry_checks", check._id);
+		}
+		return null;
+	},
+});
+
+/**
+ * 15-minute cron. A check that is still in the past long after its time means its job failed or
+ * never ran. Cancel that job and start a new one now.
+ */
+export const recover_file_pending_update_expiry_checks = internalMutation({
+	args: {},
+	returns: v.null(),
+	handler: async (ctx) => {
+		const now = Date.now();
+		const checks = await ctx.db
+			.query("files_pending_update_expiry_checks")
+			.withIndex("by_nextCheckAt", (q) => q.lt("nextCheckAt", now - EXPIRY_CHECK_RECOVERY_MS))
+			.take(EXPIRY_CHECK_RECOVERY_BATCH_SIZE);
+		for (const check of checks) {
+			await files_db_cancel_scheduled_function_if_present(ctx, check.scheduledFunctionId);
+			await db_schedule_expiry_check(ctx, check, now);
+		}
+		if (checks.length === EXPIRY_CHECK_RECOVERY_BATCH_SIZE)
+			await ctx.scheduler.runAfter(0, internal.files_pending_updates.recover_file_pending_update_expiry_checks, {});
 		return null;
 	},
 });
@@ -2824,10 +2932,6 @@ export const settle_file_pending_update_no_change_in_db = internalMutation({
 				files_pending_update_db_delete_chunks(ctx, {
 					pendingUpdateId: pendingUpdate._id,
 				}),
-				files_db_schedule_pending_update_cleanup(ctx, {
-					pendingUpdateId: pendingUpdate._id,
-					expectedUpdatedAt: now,
-				}),
 			]);
 
 			return Result({
@@ -2839,9 +2943,6 @@ export const settle_file_pending_update_no_change_in_db = internalMutation({
 		}
 
 		await Promise.all([
-			files_db_cancel_pending_update_cleanup_tasks(ctx, {
-				pendingUpdateId: pendingUpdate._id,
-			}),
 			files_db_retire_pending_update_yjs_states(ctx, {
 				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
@@ -2937,9 +3038,9 @@ export const refresh_file_pending_update_in_db = internalMutation({
 			return Result({ _nay: { message: "Pending update changed, retry the write" } });
 		}
 
-		// Same-bytes rewrites still count as activity: refresh the doc's 4h lifetime, or the
-		// cleanup task scheduled for the old updatedAt expires the untouched proposal. An identical
-		// re-write from another chat still means that chat touched the file.
+		// Same-bytes rewrites still count as activity: refresh the doc's 4h lifetime, or expiry
+		// removes the untouched proposal at its old `expiresAt`. An identical re-write from another
+		// chat still means that chat touched the file.
 		if (files_pending_update_content_is_stale(pendingUpdate, file)) {
 			return Result({
 				_nay: {
@@ -2964,20 +3065,16 @@ export const refresh_file_pending_update_in_db = internalMutation({
 				pendingUpdateId: pendingUpdate._id,
 				proposalRevision: pendingUpdate.revision + 1,
 			}),
-			files_db_schedule_pending_update_cleanup(ctx, {
-				pendingUpdateId: pendingUpdate._id,
-				expectedUpdatedAt: now,
-			}),
 		]);
+		// Read the doc back, because the patch helper also moves `expiresAt`.
+		const refreshedPendingUpdate = await ctx.db.get("files_pending_updates", pendingUpdate._id);
+		if (!refreshedPendingUpdate) {
+			throw should_never_happen("Pending update disappeared after its refresh", { pendingUpdateId: pendingUpdate._id });
+		}
 
 		return Result({
 			_yay: {
-				pendingUpdate: {
-					...pendingUpdate,
-					...(nextThreadIds ? { threadIds: nextThreadIds } : {}),
-					revision: pendingUpdate.revision + 1,
-					updatedAt: now,
-				},
+				pendingUpdate: refreshedPendingUpdate,
 				currentYjsLastSequenceId: file.yjsLastSequenceId ?? null,
 			},
 		});
@@ -3320,10 +3417,6 @@ export const commit_file_pending_update_upsert_in_db = internalMutation({
 			stagedStateId: args.stagedStateId,
 			unstagedStateId: args.unstagedStateId,
 		});
-		await files_db_schedule_pending_update_cleanup(ctx, {
-			pendingUpdateId,
-			expectedUpdatedAt: now,
-		});
 
 		// Staged-only changes (e.g. Accept all) keep the unstaged content intact, so the existing
 		// pending chunk docs and metadata docs stay correct and rebuilding them would be wasted writes.
@@ -3538,7 +3631,6 @@ export async function files_pending_updates_db_commit_private_file(
 		pendingUpdateId: pendingUpdate._id,
 		batch,
 	});
-	await files_db_schedule_pending_update_cleanup(ctx, { pendingUpdateId: pendingUpdate._id, expectedUpdatedAt: now });
 
 	const chunks = await files_pending_update_db_replace_chunks(ctx, {
 		...scope,
@@ -4471,10 +4563,6 @@ export const upsert_file_pending_move_in_db = internalMutation({
 					pendingUpdateId: pendingUpdate._id,
 					proposalRevision: pendingUpdate.revision + 1,
 				});
-				await files_db_schedule_pending_update_cleanup(ctx, {
-					pendingUpdateId: pendingUpdate._id,
-					expectedUpdatedAt: now,
-				});
 			}
 
 			return Result({
@@ -4638,7 +4726,7 @@ export const upsert_file_pending_move_in_db = internalMutation({
 				: {}),
 		};
 		if (!existingPendingUpdate) {
-			const pendingUpdateId = await files_db_insert_pending_update(ctx, {
+			await files_db_insert_pending_update(ctx, {
 				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
 				userId: args.userId,
@@ -4648,10 +4736,6 @@ export const upsert_file_pending_move_in_db = internalMutation({
 				...(nextThreadIds ? { threadIds: nextThreadIds } : {}),
 				size: 0,
 				updatedAt: now,
-			});
-			await files_db_schedule_pending_update_cleanup(ctx, {
-				pendingUpdateId,
-				expectedUpdatedAt: now,
 			});
 		} else {
 			// mv after write_file makes the doc content-plus-move; mv after mv replaces the proposal.
@@ -4665,10 +4749,6 @@ export const upsert_file_pending_move_in_db = internalMutation({
 				files_pending_update_db_update_index_revision(ctx, {
 					pendingUpdateId: existingPendingUpdate._id,
 					proposalRevision: existingPendingUpdate.revision + 1,
-				}),
-				files_db_schedule_pending_update_cleanup(ctx, {
-					pendingUpdateId: existingPendingUpdate._id,
-					expectedUpdatedAt: now,
 				}),
 			]);
 		}
@@ -4822,7 +4902,7 @@ export const upsert_file_pending_archive_in_db = internalMutation({
 				? [...(existingPendingUpdate?.threadIds ?? []), args.threadId]
 				: undefined;
 		if (!existingPendingUpdate) {
-			const pendingUpdateId = await files_db_insert_pending_update(ctx, {
+			await files_db_insert_pending_update(ctx, {
 				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
 				userId: args.userId,
@@ -4832,10 +4912,6 @@ export const upsert_file_pending_archive_in_db = internalMutation({
 				...(nextThreadIds ? { threadIds: nextThreadIds } : {}),
 				size: 0,
 				updatedAt: now,
-			});
-			await files_db_schedule_pending_update_cleanup(ctx, {
-				pendingUpdateId,
-				expectedUpdatedAt: now,
 			});
 		} else {
 			// rm after mv replaces the move (a delete supersedes it); rm after write keeps the
@@ -4851,10 +4927,6 @@ export const upsert_file_pending_archive_in_db = internalMutation({
 				files_pending_update_db_update_index_revision(ctx, {
 					pendingUpdateId: existingPendingUpdate._id,
 					proposalRevision: existingPendingUpdate.revision + 1,
-				}),
-				files_db_schedule_pending_update_cleanup(ctx, {
-					pendingUpdateId: existingPendingUpdate._id,
-					expectedUpdatedAt: now,
 				}),
 			]);
 		}
@@ -5002,9 +5074,6 @@ export async function files_pending_updates_db_apply_archive(
 				assetId: pendingUpdate.pendingReplacement.assetId,
 			});
 		await Promise.all([
-			files_db_cancel_pending_update_cleanup_tasks(ctx, {
-				pendingUpdateId: pendingUpdate._id,
-			}),
 			files_db_retire_pending_update_yjs_states(ctx, {
 				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
@@ -5161,9 +5230,6 @@ export async function files_pending_updates_db_apply_archive(
 				assetId: archivedNodePendingUpdate.pendingReplacement.assetId,
 			});
 		await Promise.all([
-			files_db_cancel_pending_update_cleanup_tasks(ctx, {
-				pendingUpdateId: archivedNodePendingUpdate._id,
-			}),
 			files_db_retire_pending_update_yjs_states(ctx, {
 				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
@@ -5234,7 +5300,6 @@ export async function files_pending_updates_db_discard_saved(
 		});
 	await files_db_retire_pending_update_yjs_states(ctx, { ...scope, pendingUpdateId: pendingUpdate._id });
 	await files_pending_update_db_delete_chunks(ctx, { pendingUpdateId: pendingUpdate._id });
-	await files_db_cancel_pending_update_cleanup_tasks(ctx, { pendingUpdateId: pendingUpdate._id });
 	await files_db_delete_pending_update(ctx, pendingUpdate._id);
 	return Result({ _yay: null });
 }
@@ -5326,9 +5391,6 @@ export const discard_file_pending_structural = mutation({
 			}
 			// Discard the copy proposal and keep the saved file.
 			await Promise.all([
-				files_db_cancel_pending_update_cleanup_tasks(ctx, {
-					pendingUpdateId: pendingUpdate._id,
-				}),
 				files_db_retire_pending_update_yjs_states(ctx, {
 					organizationId: membership.organizationId,
 					workspaceId: membership.workspaceId,
@@ -5360,16 +5422,9 @@ export const discard_file_pending_structural = mutation({
 					pendingUpdateId: pendingUpdate._id,
 					proposalRevision: pendingUpdate.revision + 1,
 				}),
-				files_db_schedule_pending_update_cleanup(ctx, {
-					pendingUpdateId: pendingUpdate._id,
-					expectedUpdatedAt: now,
-				}),
 			]);
 		} else {
 			await Promise.all([
-				files_db_cancel_pending_update_cleanup_tasks(ctx, {
-					pendingUpdateId: pendingUpdate._id,
-				}),
 				files_pending_update_db_delete_chunks(ctx, {
 					pendingUpdateId: pendingUpdate._id,
 				}),
@@ -5468,17 +5523,10 @@ export const discard_file_pending_content = mutation({
 						updatedAt: now,
 					}),
 					files_pending_update_db_delete_chunks(ctx, { pendingUpdateId: pendingUpdate._id }),
-					files_db_schedule_pending_update_cleanup(ctx, {
-						pendingUpdateId: pendingUpdate._id,
-						expectedUpdatedAt: now,
-					}),
 				]);
 				return Result({ _yay: null });
 			}
 			await Promise.all([
-				files_db_cancel_pending_update_cleanup_tasks(ctx, {
-					pendingUpdateId: pendingUpdate._id,
-				}),
 				files_pending_update_db_delete_chunks(ctx, { pendingUpdateId: pendingUpdate._id }),
 				files_db_delete_pending_update(ctx, pendingUpdate._id),
 			]);
@@ -5572,18 +5620,11 @@ export const discard_file_pending_content = mutation({
 					files_pending_update_db_delete_chunks(ctx, {
 						pendingUpdateId: pendingUpdate._id,
 					}),
-					files_db_schedule_pending_update_cleanup(ctx, {
-						pendingUpdateId: pendingUpdate._id,
-						expectedUpdatedAt: now,
-					}),
 				]);
 				return Result({ _yay: null });
 			}
 
 			await Promise.all([
-				files_db_cancel_pending_update_cleanup_tasks(ctx, {
-					pendingUpdateId: pendingUpdate._id,
-				}),
 				files_db_retire_pending_update_yjs_states(ctx, {
 					organizationId: membership.organizationId,
 					workspaceId: membership.workspaceId,
@@ -5625,10 +5666,6 @@ export const discard_file_pending_content = mutation({
 				content: { ...content, unstagedStateId: newUnstagedState._yay },
 				size: files_get_utf8_byte_size(stagedText._yay),
 				updatedAt: now,
-			}),
-			files_db_schedule_pending_update_cleanup(ctx, {
-				pendingUpdateId: pendingUpdate._id,
-				expectedUpdatedAt: now,
 			}),
 			ctx.scheduler.runAfter(0, internal.files_pending_updates.cleanup_expired_pending_state_rows, {}),
 		]);
@@ -5875,17 +5912,11 @@ export const commit_file_pending_update_rebase_in_db = internalMutation({
 					updatedAt: now,
 				});
 
-				await files_db_schedule_pending_update_cleanup(ctx, {
-					pendingUpdateId: existingPendingUpdate._id,
-					expectedUpdatedAt: now,
-				});
-
 				return Result({
 					_yay: { pendingUpdate: await ctx.db.get("files_pending_updates", existingPendingUpdate._id) },
 				});
 			}
 
-			await files_db_cancel_pending_update_cleanup_tasks(ctx, { pendingUpdateId: existingPendingUpdate._id });
 			await files_db_delete_pending_update(ctx, existingPendingUpdate._id);
 			return Result({ _yay: { pendingUpdate: null } });
 		}
@@ -5915,13 +5946,6 @@ export const commit_file_pending_update_rebase_in_db = internalMutation({
 			baseStateId: args.baseStateId,
 			stagedStateId: args.stagedStateId,
 			unstagedStateId: args.unstagedStateId,
-		});
-
-		// Refresh the expiry window from this latest doc version because rebasing changes the
-		// authoritative pending snapshot.
-		await files_db_schedule_pending_update_cleanup(ctx, {
-			pendingUpdateId: existingPendingUpdate._id,
-			expectedUpdatedAt: now,
 		});
 
 		// Rebase rewrites the unstaged branch, so always refresh pending chunk and metadata docs.
@@ -6696,8 +6720,8 @@ export const persist_file_pending_update_rebased_state = action({
 			return Result({ _yay: { pendingUpdate: null } });
 		}
 
-		// Same-bytes rewrites still count as activity: refresh the doc's 4h lifetime, or the
-		// cleanup task scheduled for the old updatedAt expires the untouched proposal.
+		// Same-bytes rewrites still count as activity: refresh the doc's 4h lifetime, or expiry
+		// removes the untouched proposal at its old `expiresAt`.
 		const currentDigests = new Map(
 			data.currentCanonicalStates.flatMap((stateDoc) =>
 				stateDoc.owner.kind === "active" ? [[stateDoc.owner.role, stateDoc.digest] as const] : [],
@@ -6809,7 +6833,7 @@ const pending_target_view_validator = v.object({
 	requiredParents: required_parents_validator,
 	// The saved folder the pending chain hangs from, for the header's breadcrumb. `null` at the root.
 	savedParentId: v.union(v.id("files_nodes"), v.null()),
-	recovery: v.optional(v.object({ savedParentId: v.id("files_nodes"), expiresAt: v.union(v.number(), v.null()) })),
+	recovery: v.optional(v.object({ savedParentId: v.id("files_nodes"), expiresAt: v.number() })),
 	copyDestination: v.optional(v.object({ folderPath: v.string(), personal: v.boolean(), replacement: v.boolean() })),
 });
 
@@ -6857,10 +6881,11 @@ async function db_get_pending_target_view(
 					...(proposal.threadIds ? { threadIds: proposal.threadIds } : {}),
 				});
 			}
-			const cleanup = await ctx.db
-				.query("files_pending_updates_cleanup_tasks")
-				.withIndex("by_pendingUpdate", (q) => q.eq("pendingUpdateId", pendingUpdate._id))
-				.first();
+			// The owner is reading this, so the draft also lives 4 hours past their last heartbeat.
+			const lastActive = await ctx.db
+				.query("users_last_active")
+				.withIndex("by_user", (q) => q.eq("userId", userAuth.id))
+				.unique();
 			return {
 				kind: "entry" as const,
 				entry: { kind: "private" as const, node, pendingUpdate, path: path_join(path, node.name) },
@@ -6870,7 +6895,10 @@ async function db_get_pending_target_view(
 				canAcceptWithParents: false,
 				requiredParents,
 				savedParentId: savedParent._id,
-				recovery: { savedParentId: savedParent._id, expiresAt: cleanup?.expiresAt ?? null },
+				recovery: {
+					savedParentId: savedParent._id,
+					expiresAt: Math.max(pendingUpdate.expiresAt, (lastActive?.lastActiveAt ?? 0) + files_DRAFT_IDLE_EXPIRY_MS),
+				},
 			};
 		}
 		if (!resolved || resolved.entry.kind !== "private" || !(await reader.canRead(resolved.accessNode))) return null;
@@ -8263,10 +8291,6 @@ async function files_pending_updates_db_save_yjs(
 					workspaceId: membership.workspaceId,
 					pendingUpdateId: pendingUpdate._id,
 				}),
-				files_db_schedule_pending_update_cleanup(ctx, {
-					pendingUpdateId: pendingUpdate._id,
-					expectedUpdatedAt: now,
-				}),
 				files_pending_update_db_delete_chunks(ctx, {
 					pendingUpdateId: pendingUpdate._id,
 				}),
@@ -8287,9 +8311,6 @@ async function files_pending_updates_db_save_yjs(
 				nodeId: args.nodeId,
 				lastSequenceSaved: nextBaseYjsSequence,
 				updatedAt: now,
-			}),
-			files_db_cancel_pending_update_cleanup_tasks(ctx, {
-				pendingUpdateId: pendingUpdate._id,
 			}),
 			files_db_retire_pending_update_yjs_states(ctx, {
 				organizationId: membership.organizationId,
@@ -8329,11 +8350,6 @@ async function files_pending_updates_db_save_yjs(
 			copiedFrom: undefined,
 			...(partial.unstagedTextChanged ? { size: files_get_utf8_byte_size(partial.unstagedText) } : {}),
 			updatedAt: now,
-		}),
-		// Partial saves must keep the pending update alive. Reset the expire of the pending update doc.
-		files_db_schedule_pending_update_cleanup(ctx, {
-			pendingUpdateId: pendingUpdate._id,
-			expectedUpdatedAt: now,
 		}),
 		files_pending_update_upsert_last_sequence_saved(ctx, {
 			organizationId: membership.organizationId,
@@ -8746,10 +8762,6 @@ async function files_pending_updates_db_save_asset(
 					workspaceId: membership.workspaceId,
 					pendingUpdateId: pendingUpdate._id,
 				}),
-				files_db_schedule_pending_update_cleanup(ctx, {
-					pendingUpdateId: pendingUpdate._id,
-					expectedUpdatedAt: now,
-				}),
 				files_pending_update_db_delete_chunks(ctx, {
 					pendingUpdateId: pendingUpdate._id,
 				}),
@@ -8759,9 +8771,6 @@ async function files_pending_updates_db_save_asset(
 		}
 
 		await Promise.all([
-			files_db_cancel_pending_update_cleanup_tasks(ctx, {
-				pendingUpdateId: pendingUpdate._id,
-			}),
 			files_db_retire_pending_update_yjs_states(ctx, {
 				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
@@ -8798,11 +8807,6 @@ async function files_pending_updates_db_save_asset(
 		files_pending_update_db_update_index_revision(ctx, {
 			pendingUpdateId: pendingUpdate._id,
 			proposalRevision: pendingUpdate.revision + 1,
-		}),
-		// Partial saves must keep the pending update alive. Reset the expire of the pending update doc.
-		files_db_schedule_pending_update_cleanup(ctx, {
-			pendingUpdateId: pendingUpdate._id,
-			expectedUpdatedAt: now,
 		}),
 	]);
 	await db_swap_canonical_states_and_consume_batch(ctx, {
@@ -9632,11 +9636,6 @@ async function files_pending_updates_db_save_private(
 			updatedAt: now,
 		});
 
-		await files_db_schedule_pending_update_cleanup(ctx, {
-			pendingUpdateId: pendingUpdate._id,
-			expectedUpdatedAt: now,
-		});
-
 		const chunks = await files_pending_update_db_replace_chunks(ctx, {
 			...scope,
 			target: published._yay.target,
@@ -9652,7 +9651,6 @@ async function files_pending_updates_db_save_private(
 	} else {
 		await files_db_retire_pending_update_yjs_states(ctx, { ...scope, pendingUpdateId: pendingUpdate._id });
 		await files_pending_update_db_delete_chunks(ctx, { pendingUpdateId: pendingUpdate._id });
-		await files_db_cancel_pending_update_cleanup_tasks(ctx, { pendingUpdateId: pendingUpdate._id });
 		await files_db_delete_pending_update(ctx, pendingUpdate._id);
 		if (args.operationBatchId)
 			await files_db_expire_pending_update_operation_batch(ctx, { operationBatchId: args.operationBatchId });

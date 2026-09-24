@@ -10,7 +10,7 @@ import {
 	files_pending_holds_db_release,
 	files_pending_holds_db_release_producer_batch,
 } from "./files_pending_holds.ts";
-import { files_db_reschedule_pending_update_cleanup_for_user } from "../server/files.ts";
+import { files_db_patch_pending_update } from "../server/files.ts";
 import { test_convex, test_create_saved_text_file, test_mocks_fill_db_with } from "./setup.test.ts";
 
 const FOUR_HOURS = 4 * 60 * 60 * 1000;
@@ -75,22 +75,61 @@ async function hold(
 	).toEqual({ _yay: null });
 }
 
-async function task(f: Awaited<ReturnType<typeof fixture>>, proposal: Doc<"files_pending_updates">) {
-	const cleanup = await f.t.run((ctx) =>
-		ctx.db
-			.query("files_pending_updates_cleanup_tasks")
-			.withIndex("by_pendingUpdate", (q) => q.eq("pendingUpdateId", proposal._id))
-			.unique(),
-	);
-	if (!cleanup) throw new Error("Expected the expiry task");
-	return cleanup;
+async function read_draft(f: Awaited<ReturnType<typeof fixture>>, proposal: Doc<"files_pending_updates">) {
+	const draft = await f.t.run((ctx) => ctx.db.get("files_pending_updates", proposal._id));
+	if (!draft) throw new Error("Expected the draft");
+	return draft;
 }
 
-async function expire(f: Awaited<ReturnType<typeof fixture>>, cleanup: Doc<"files_pending_updates_cleanup_tasks">) {
-	await f.t.mutation(internal.files_pending_updates.remove_file_pending_update_if_expired, {
-		cleanupTaskId: cleanup._id,
-		expiryGeneration: cleanup.expiryGeneration,
-	});
+async function expiry_check(f: Awaited<ReturnType<typeof fixture>>) {
+	return await f.t.run((ctx) =>
+		ctx.db
+			.query("files_pending_update_expiry_checks")
+			.withIndex("by_organization_workspace_user", (q) =>
+				q
+					.eq("organizationId", f.scope.organizationId)
+					.eq("workspaceId", f.scope.workspaceId)
+					.eq("userId", f.scope.userId),
+			)
+			.unique(),
+	);
+}
+
+async function review_version(f: Awaited<ReturnType<typeof fixture>>) {
+	const version = await f.t.run((ctx) =>
+		ctx.db
+			.query("files_pending_review_versions")
+			.withIndex("by_organization_workspace_user", (q) =>
+				q
+					.eq("organizationId", f.scope.organizationId)
+					.eq("workspaceId", f.scope.workspaceId)
+					.eq("userId", f.scope.userId),
+			)
+			.unique(),
+	);
+	return version?.revision ?? null;
+}
+
+/**
+ * Run the owner's expiry check like its scheduled job would, until it is not due anymore.
+ * One run handles at most 8 drafts and then continues in a new run.
+ */
+async function expire(f: Awaited<ReturnType<typeof fixture>>) {
+	for (let run = 0; run < 100; run++) {
+		await f.t.mutation(internal.files_pending_updates.expire_file_pending_updates, f.scope);
+		const check = await expiry_check(f);
+		if (!check || check.nextCheckAt > Date.now()) return;
+	}
+	throw new Error("The expiry check never finished");
+}
+
+/**
+ * Make the owner's expiry check due now, so a test can prove that a draft is not due yet.
+ */
+async function force_check(f: Awaited<ReturnType<typeof fixture>>) {
+	const check = await expiry_check(f);
+	if (!check) throw new Error("Expected the expiry check");
+	await f.t.run((ctx) => ctx.db.patch("files_pending_update_expiry_checks", check._id, { nextCheckAt: Date.now() }));
 }
 
 async function finish(
@@ -108,38 +147,43 @@ describe("proposal hold expiry", () => {
 		const f = await fixture();
 		const d = await draft(f);
 		await hold(f, d);
-		const original = await task(f, d.proposal);
-		vi.setSystemTime(original.expiresAt + 1);
-		await expire(f, original);
+		const reviewVersionBefore = await review_version(f);
+		vi.setSystemTime(d.proposal.expiresAt + 1);
+		await expire(f);
 		expect(await f.t.run((ctx) => ctx.db.get("files_pending_nodes", d.node._id))).toEqual(d.node);
-		expect(await f.t.run((ctx) => ctx.db.get("files_pending_updates", d.proposal._id))).toEqual(d.proposal);
-		const delayed = await task(f, d.proposal);
-		expect(delayed.expiresAt).toBe(original.expiresAt);
-		expect(delayed.expiryGeneration).toBe(original.expiryGeneration + 1);
-		expect(delayed._id).toBe(original._id);
-		const scheduled = await f.t.run((ctx) => ctx.db.system.get("_scheduled_functions", delayed.scheduledFunctionId!));
+		// The job moves only the expiry. The proposal revision and the review clock stay the same.
+		expect(await read_draft(f, d.proposal)).toEqual({ ...d.proposal, expiresAt: Date.now() + 60_000 });
+		expect(await review_version(f)).toBe(reviewVersionBefore);
+		const check = await expiry_check(f);
+		expect(check?.nextCheckAt).toBe(Date.now() + 60_000);
+		const scheduled = await f.t.run((ctx) => ctx.db.system.get("_scheduled_functions", check!.scheduledFunctionId));
 		expect(scheduled?.scheduledTime).toBe(Date.now() + 60_000);
 	});
 
-	test.each([false, true])("terminal output survives an old callback; release first=%s", async (releaseFirst) => {
+	test.each([false, true])("terminal output keeps its review window; release first=%s", async (releaseFirst) => {
 		const f = await fixture();
 		const d = await draft(f);
 		await hold(f, d);
-		const original = await task(f, d.proposal);
-		vi.setSystemTime(original.expiresAt + 1);
+		vi.setSystemTime(d.proposal.expiresAt + 1);
 		const endedAt = Date.now();
 		await finish(f);
 		if (releaseFirst) await f.t.mutation(internal.files_pending_holds.release_producer, { producer: f.producer });
-		await expire(f, original);
+		await expire(f);
 		expect((await f.t.run((ctx) => ctx.db.get("files_pending_nodes", d.node._id)))?.state).toBe("active");
-		const retained = await task(f, d.proposal);
-		expect(retained.expiresAt).toBe(endedAt + FOUR_HOURS);
-		expect(await f.t.run((ctx) => ctx.db.get("files_pending_updates", d.proposal._id))).toEqual(d.proposal);
+		expect(await read_draft(f, d.proposal)).toEqual({ ...d.proposal, expiresAt: endedAt + FOUR_HOURS });
+
+		// This edit is stamped before the review window ends, so it must not shorten the expiry.
+		await f.t.run((ctx) =>
+			files_db_patch_pending_update(ctx, d.proposal._id, { updatedAt: d.proposal.updatedAt + 1000 }),
+		);
+		expect((await read_draft(f, d.proposal)).expiresAt).toBe(endedAt + FOUR_HOURS);
+
 		vi.setSystemTime(endedAt + FOUR_HOURS - 1);
-		await expire(f, retained);
+		await force_check(f);
+		await expire(f);
 		expect((await f.t.run((ctx) => ctx.db.get("files_pending_nodes", d.node._id)))?.state).toBe("active");
 		vi.setSystemTime(endedAt + FOUR_HOURS);
-		await expire(f, retained);
+		await expire(f);
 		expect((await f.t.run((ctx) => ctx.db.get("files_pending_nodes", d.node._id)))?.state).toBe("discarded");
 		expect(await f.t.run((ctx) => ctx.db.get("files_nodes", f.sourceId))).not.toBeNull();
 	});
@@ -166,49 +210,64 @@ describe("proposal hold expiry", () => {
 		await hold(f, d, "source");
 		await hold(f, d, "destination_parent");
 		await hold(f, d, "destination_parent");
-		const before = await task(f, d.proposal);
+		const before = await read_draft(f, d.proposal);
 		await f.t.run((ctx) =>
 			files_pending_holds_db_release(ctx, { producer: f.producer, pendingUpdateId: d.proposal._id, role: "source" }),
 		);
 		expect((await f.t.run((ctx) => ctx.db.query("files_pending_holds").collect())).map((hold) => hold.role)).toEqual([
 			"destination_parent",
 		]);
-		expect(await task(f, d.proposal)).toEqual(before);
+		expect(await read_draft(f, d.proposal)).toEqual(before);
 		vi.setSystemTime(before.expiresAt + 1);
-		await expire(f, before);
+		await expire(f);
 		expect((await f.t.run((ctx) => ctx.db.get("files_pending_nodes", d.node._id)))?.state).toBe("active");
 	});
 
-	test("presence after finish survives late release and an old callback", async () => {
+	test("presence after finish keeps a due draft through a late release", async () => {
 		const f = await fixture();
 		const d = await draft(f);
 		await hold(f, d);
-		const original = await task(f, d.proposal);
 		await finish(f);
+		// An open app tab marks the owner active shortly before the review window ends.
 		vi.setSystemTime(Date.now() + FOUR_HOURS - 1000);
-		await f.t.run((ctx) => files_db_reschedule_pending_update_cleanup_for_user(ctx, f.scope));
-		const refreshed = await task(f, d.proposal);
+		await f.asUser.mutation(api.presence.heartbeat, {
+			roomId: "holds-presence-room",
+			userId: f.db.userId,
+			sessionId: "holds-presence-session",
+			interval: 60 * 60 * 1000,
+		});
+		const lastActiveAt = Date.now();
 		await f.t.mutation(internal.files_pending_holds.release_producer, { producer: f.producer });
-		expect((await task(f, d.proposal)).expiresAt).toBe(refreshed.expiresAt);
-		vi.setSystemTime(original.expiresAt + 1);
-		await expire(f, original);
+		expect(await read_draft(f, d.proposal)).toEqual(d.proposal);
+		vi.setSystemTime(d.proposal.expiresAt + 1);
+		await expire(f);
 		expect((await f.t.run((ctx) => ctx.db.get("files_pending_nodes", d.node._id)))?.state).toBe("active");
-		expect(await f.t.run((ctx) => ctx.db.get("files_pending_updates", d.proposal._id))).toEqual(d.proposal);
+		expect(await read_draft(f, d.proposal)).toEqual(d.proposal);
+		expect((await expiry_check(f))?.nextCheckAt).toBe(lastActiveAt + FOUR_HOURS);
+		vi.setSystemTime(lastActiveAt + FOUR_HOURS);
+		await expire(f);
+		expect((await f.t.run((ctx) => ctx.db.get("files_pending_nodes", d.node._id)))?.state).toBe("discarded");
 	});
 
-	test("a stale expiry token cannot delete a draft even after both deadlines pass", async () => {
+	test("a newer edit keeps a draft past its first deadline and an early check does nothing", async () => {
 		const f = await fixture();
 		const d = await draft(f);
-		const original = await task(f, d.proposal);
 		vi.setSystemTime(Date.now() + 60_000);
-		await f.t.run((ctx) => files_db_reschedule_pending_update_cleanup_for_user(ctx, f.scope));
-		const refreshed = await task(f, d.proposal);
-		expect(refreshed.expiryGeneration).toBe(original.expiryGeneration + 1);
-		vi.setSystemTime(refreshed.expiresAt);
-		await expire(f, original);
-		expect(await task(f, d.proposal)).toEqual(refreshed);
+		await f.t.run((ctx) => files_db_patch_pending_update(ctx, d.proposal._id, { updatedAt: Date.now() }));
+		const edited = await read_draft(f, d.proposal);
+		expect(edited.expiresAt).toBe(d.proposal.expiresAt + 60_000);
+		// The check still wakes at the first deadline. It finds nothing due and waits for the new one.
+		vi.setSystemTime(d.proposal.expiresAt);
+		await expire(f);
+		expect(await read_draft(f, d.proposal)).toEqual(edited);
 		expect(await f.t.run((ctx) => ctx.db.get("files_pending_nodes", d.node._id))).toEqual(d.node);
-		await expire(f, refreshed);
+		const check = await expiry_check(f);
+		expect(check?.nextCheckAt).toBe(edited.expiresAt);
+		// A second call before that time is a stale job, so it changes nothing.
+		await f.t.mutation(internal.files_pending_updates.expire_file_pending_updates, f.scope);
+		expect(await expiry_check(f)).toEqual(check);
+		vi.setSystemTime(edited.expiresAt);
+		await expire(f);
 		expect((await f.t.run((ctx) => ctx.db.get("files_pending_nodes", d.node._id)))?.state).toBe("discarded");
 	});
 
@@ -217,11 +276,16 @@ describe("proposal hold expiry", () => {
 		const parent = await draft(f, "/parent");
 		const child = await draft(f, "/parent/child");
 		await hold(f, child, "source");
-		const parentTask = await task(f, parent.proposal);
-		vi.setSystemTime(parentTask.expiresAt + 1);
-		await expire(f, parentTask);
+		vi.setSystemTime(parent.proposal.expiresAt + 1);
+		await expire(f);
 		expect((await f.t.run((ctx) => ctx.db.get("files_pending_nodes", parent.node._id)))?.state).toBe("active");
 		expect((await f.t.run((ctx) => ctx.db.get("files_pending_nodes", child.node._id)))?.state).toBe("active");
+		expect(
+			(await f.t.run((ctx) => ctx.db.query("files_pending_holds").collect())).map((hold) => [
+				hold.pendingUpdateId,
+				hold.role,
+			]),
+		).toEqual([[child.proposal._id, "source"]]);
 	});
 
 	test("source folder holds protect descendants before discovery reaches them", async () => {
@@ -230,14 +294,14 @@ describe("proposal hold expiry", () => {
 		await draft(f, "/parent/middle");
 		const leaf = await draft(f, "/parent/middle/leaf");
 		await hold(f, parent, "source");
-		const cleanup = await task(f, leaf.proposal);
-		vi.setSystemTime(cleanup.expiresAt + 1);
-		await expire(f, cleanup);
+		vi.setSystemTime(leaf.proposal.expiresAt + 1);
+		await expire(f);
 		expect((await f.t.run((ctx) => ctx.db.get("files_pending_nodes", leaf.node._id)))?.state).toBe("active");
-		expect(await f.t.run((ctx) => ctx.db.get("files_pending_updates", leaf.proposal._id))).toEqual(leaf.proposal);
+		expect(await read_draft(f, leaf.proposal)).toEqual({ ...leaf.proposal, expiresAt: Date.now() + 60_000 });
 		await finish(f);
 		// A source hold adds no output-review window, even before its release page runs.
-		await expire(f, await task(f, leaf.proposal));
+		vi.setSystemTime(Date.now() + 60_000);
+		await expire(f);
 		expect((await f.t.run((ctx) => ctx.db.get("files_pending_nodes", leaf.node._id)))?.state).toBe("discarded");
 	});
 
@@ -246,9 +310,8 @@ describe("proposal hold expiry", () => {
 		const parent = await draft(f, "/parent");
 		const leaf = await draft(f, "/parent/leaf");
 		await hold(f, parent, "output");
-		const cleanup = await task(f, leaf.proposal);
-		vi.setSystemTime(cleanup.expiresAt);
-		await expire(f, cleanup);
+		vi.setSystemTime(leaf.proposal.expiresAt);
+		await expire(f);
 		expect((await f.t.run((ctx) => ctx.db.get("files_pending_nodes", leaf.node._id)))?.state).toBe("discarded");
 	});
 
@@ -272,15 +335,20 @@ describe("proposal hold expiry", () => {
 			current = { ...f, producer: { kind: "files_transfer_run", id: next._yay.runId } };
 		}
 		await hold(current, parent, "source");
-		const cleanup = await task(f, leaf.proposal);
-		vi.setSystemTime(cleanup.expiresAt);
-		await expire(f, cleanup);
+		// Edit the parent later, so only the leaf is due. Otherwise the expiry run would check the
+		// parent too and drain these holds first.
+		vi.setSystemTime(Date.now() + 60 * 60 * 1000);
+		await f.t.run((ctx) => files_db_patch_pending_update(ctx, parent.proposal._id, { updatedAt: Date.now() }));
+		vi.setSystemTime(leaf.proposal.expiresAt);
+		await expire(f);
 		expect(await f.t.run((ctx) => ctx.db.query("files_pending_holds").collect())).toHaveLength(1);
 		expect((await f.t.run((ctx) => ctx.db.get("files_pending_nodes", leaf.node._id)))?.state).toBe("active");
-		await expire(f, await task(f, leaf.proposal));
+		vi.setSystemTime(Date.now() + 60_000);
+		await expire(f);
 		expect((await f.t.run((ctx) => ctx.db.get("files_pending_nodes", leaf.node._id)))?.state).toBe("active");
 		await finish(current);
-		await expire(f, await task(f, leaf.proposal));
+		vi.setSystemTime(Date.now() + 60_000);
+		await expire(f);
 		expect((await f.t.run((ctx) => ctx.db.get("files_pending_nodes", leaf.node._id)))?.state).toBe("discarded");
 	});
 
@@ -367,8 +435,7 @@ describe("proposal hold expiry", () => {
 				.unique(),
 		);
 		if (!proposal) throw new Error("Expected the late output proposal");
-		const cleanup = await task(f, proposal);
-		vi.setSystemTime(cleanup.expiresAt - 1);
+		vi.setSystemTime(proposal.expiresAt - 1);
 		const retried = await f.asUser.mutation(api.files_transfer.retry_remaining, {
 			membershipId: f.db.membershipId,
 			runId: producer.id,
@@ -380,10 +447,10 @@ describe("proposal hold expiry", () => {
 			step: "retry",
 			retryCursor: 49,
 		});
-		vi.setSystemTime(cleanup.expiresAt + 1);
-		await expire(f, cleanup);
+		vi.setSystemTime(proposal.expiresAt + 1);
+		await expire(f);
 		expect((await f.t.run((ctx) => ctx.db.get("files_pending_nodes", privateNodeId)))?.state).toBe("active");
-		expect(await f.t.run((ctx) => ctx.db.get("files_pending_updates", proposal._id))).toEqual(proposal);
+		expect(await read_draft(f, proposal)).toEqual({ ...proposal, expiresAt: Date.now() + 60_000 });
 		await f.t.mutation(internal.files_transfer.advance, { runId: retried._yay.runId });
 		expect(
 			await f.t.run((ctx) =>
@@ -649,8 +716,7 @@ describe("saved replacement retry expiry", () => {
 			else expect(proposal._id).toBe(original._id);
 			if (change === "same_proposal_renamed") expect(proposal.revision).toBeGreaterThan(original.revision);
 			if (!retained) expect(proposal.pendingReplacement!.assetId).not.toBe(original.pendingReplacement!.assetId);
-			const cleanup = await task(f, proposal);
-			vi.setSystemTime(cleanup.expiresAt - 1);
+			vi.setSystemTime(proposal.expiresAt - 1);
 			const retry = await f.asUser.mutation(api.files_transfer.retry_remaining, {
 				membershipId: f.db.membershipId,
 				runId: originalRunId,
@@ -658,10 +724,11 @@ describe("saved replacement retry expiry", () => {
 			});
 			if (retry._nay) throw new Error(retry._nay.message);
 			if (advanceFirst) await f.t.mutation(internal.files_transfer.advance, { runId: retry._yay.runId });
-			vi.setSystemTime(cleanup.expiresAt + 1);
-			await expire(f, cleanup);
+			vi.setSystemTime(proposal.expiresAt + 1);
+			await expire(f);
+			// A kept draft only waits 60 seconds for the next check.
 			expect(await f.t.run((ctx) => ctx.db.get("files_pending_updates", proposal._id))).toEqual(
-				retained ? proposal : null,
+				retained ? { ...proposal, expiresAt: Date.now() + 60_000 } : null,
 			);
 			expect(await f.t.run((ctx) => ctx.db.get("files_nodes", destinationId))).toEqual(destinationBefore);
 			if (retained) {

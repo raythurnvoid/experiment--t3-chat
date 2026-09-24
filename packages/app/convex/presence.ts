@@ -3,7 +3,6 @@ import { components } from "./_generated/api.js";
 import { v, type Infer } from "convex/values";
 import { Presence } from "@convex-dev/presence";
 import { convex_error } from "../server/convex-utils.ts";
-import { files_db_reschedule_pending_update_cleanup_for_user } from "../server/files.ts";
 import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.js";
 import app_convex_schema from "./schema.ts";
 import { doc } from "convex-helpers/validators";
@@ -16,6 +15,11 @@ import { app_presence_GLOBAL_ROOM_ID } from "../shared/shared-presence-constants
 export const experimental_reuseContext = true;
 
 export const presence = new Presence(components.presence);
+
+/**
+ * Write `users_last_active` at most this often. Every visible tab sends a heartbeat every few seconds.
+ */
+const USERS_LAST_ACTIVE_WRITE_INTERVAL_MS = 5 * 60 * 1000;
 
 /**
  * The user data that presence sends back. On purpose this is not the whole `users_anagraphics` doc:
@@ -72,28 +76,30 @@ export const heartbeat = mutation({
 		const result = await presence.heartbeat(ctx, args.roomId, userAuth.id, args.sessionId, args.interval);
 
 		if (result.isNewSession) {
-			const memberships = await ctx.db
-				.query("organizations_workspaces_users")
-				.withIndex("by_active_user_organization_workspace", (q) => q.eq("active", true).eq("userId", userAuth.id))
-				.collect();
+			await ctx.runMutation(components.presence.public.setSessionData, {
+				sessionToken: result.sessionToken,
+				data: {
+					color: "#" + Math.floor(Math.random() * 16777215).toString(16),
+				},
+			});
+		}
 
-			await Promise.all([
-				ctx.runMutation(components.presence.public.setSessionData, {
-					sessionToken: result.sessionToken,
-					data: {
-						color: "#" + Math.floor(Math.random() * 16777215).toString(16),
-					},
-				}),
-				// Use reconnecting as a signal to refresh the long-lived pending-edit TTL for
-				// the user's scopes, so an active user never loses pending edits to expiry.
-				...memberships.map((membership) =>
-					files_db_reschedule_pending_update_cleanup_for_user(ctx, {
-						organizationId: membership.organizationId,
-						workspaceId: membership.workspaceId,
-						userId: userAuth.id,
-					}),
-				),
-			]);
+		// A visible tab keeps the user's pending drafts from expiring. A new session writes at once, so
+		// reopening the app always counts in full.
+		const now = Date.now();
+		const user = await ctx.db.get("users", userAuth.id);
+		// A deleted user's tab keeps sending heartbeats until its token expires. User deletion
+		// already removed the activity doc, so do not write it again.
+		if (user && user.deletedAt == null) {
+			const lastActive = await ctx.db
+				.query("users_last_active")
+				.withIndex("by_user", (q) => q.eq("userId", userAuth.id))
+				.unique();
+			if (!lastActive) {
+				await ctx.db.insert("users_last_active", { userId: userAuth.id, lastActiveAt: now });
+			} else if (result.isNewSession || now - lastActive.lastActiveAt >= USERS_LAST_ACTIVE_WRITE_INTERVAL_MS) {
+				await ctx.db.patch("users_last_active", lastActive._id, { lastActiveAt: now });
+			}
 		}
 
 		return result;
@@ -334,9 +340,8 @@ export const disconnect = mutation({
 			throw rate_limit_error(rateLimit);
 		}
 
-		// Pending-edit cleanup stays on the normal long-lived TTL regardless of presence:
-		// disconnecting must not shorten the window, or unreviewed AI edits would vanish
-		// shortly after the user closes the app.
+		// Leave `users_last_active` alone. Pending drafts stay for 4 hours after the last heartbeat,
+		// so closing the app does not remove unreviewed AI edits early.
 		await presence.disconnect(ctx, args.sessionToken);
 		return null;
 	},

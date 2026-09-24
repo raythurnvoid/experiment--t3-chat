@@ -141,7 +141,6 @@ const rebrand_cleanup_tables = [
 	"files_text_chunks",
 	"files_metadata_docs",
 	"files_nodes",
-	"files_pending_updates_cleanup_tasks",
 	"files_pending_updates_last_sequence_saved",
 	"files_pending_updates",
 	"files_plain_text_chunks",

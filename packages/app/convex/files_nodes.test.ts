@@ -2517,6 +2517,7 @@ describe("files_nodes_db_preflight_move", () => {
 						revision: 1,
 						size: 0,
 						updatedAt: Date.now(),
+						expiresAt: Date.now() + 4 * 60 * 60 * 1000,
 					});
 					const pendingIndex = {
 						organizationId: db.organizationId,
@@ -10832,6 +10833,7 @@ describe("non-collaborative files", () => {
 							: undefined,
 					size: 12,
 					updatedAt: now,
+					expiresAt: now + 4 * 60 * 60 * 1000,
 				});
 				const [baseStateId, stagedStateId, unstagedStateId] = await Promise.all(
 					(["base", "staged", "unstaged"] as const).map((role) =>
@@ -10946,6 +10948,7 @@ describe("non-collaborative files", () => {
 							: undefined,
 					size: 12,
 					updatedAt: now,
+					expiresAt: now + 4 * 60 * 60 * 1000,
 				});
 				const [baseStateId, stagedStateId, unstagedStateId] = await Promise.all(
 					(["base", "staged", "unstaged"] as const).map((role) =>

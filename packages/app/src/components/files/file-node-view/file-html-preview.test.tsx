@@ -107,6 +107,7 @@ const PENDING = {
 		unstagedStateId: "unstaged_1" as app_convex_Id<"files_pending_update_yjs_states">,
 	},
 	updatedAt: 1,
+	expiresAt: 1,
 	size: 10,
 	currentYjsLastSequenceId: DOCUMENT_ID,
 };

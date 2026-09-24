@@ -54,13 +54,11 @@ import {
 	files_node_has_editable_text_content,
 	files_node_has_editable_yjs_state,
 	files_pending_update_has_pending_chunks,
-	files_db_cancel_pending_update_cleanup_tasks,
 	files_db_delete_pending_update_yjs_states,
 	files_db_get_pending_update,
 	files_db_patch_pending_update,
 	files_db_delete_pending_update,
 	files_db_get_visible_node_by_path,
-	files_db_schedule_pending_update_cleanup,
 	type files_YjsRootKind,
 } from "../server/files.ts";
 import { files_yjs_COMPACTION_RETRY_MESSAGE, files_yjs_scan_client_update } from "../shared/files-yjs.ts";
@@ -2806,7 +2804,7 @@ export async function files_nodes_db_create_private_node_by_path(
 		const kind = index === segments.length - 1 ? args.kind : "folder";
 		const created = await files_pending_nodes_db_create(ctx, { ...args, parent, name: segments[index]!, kind });
 		if (created._nay) throw should_never_happen("Private path changed after preflight", { path: args.path });
-		const { privateNodeId, pendingUpdateId, updatedAt } = created._yay;
+		const { privateNodeId, pendingUpdateId } = created._yay;
 		createdNodeIds.push(privateNodeId);
 		const shape =
 			args.content?.kind === "text"
@@ -2829,7 +2827,6 @@ export async function files_nodes_db_create_private_node_by_path(
 			// Uploaded bytes already know their size. A text create keeps size 0 until its first batch.
 			...(kind === "file" && args.content?.kind === "stored" ? { size: args.content.size } : {}),
 		});
-		await files_db_schedule_pending_update_cleanup(ctx, { pendingUpdateId, expectedUpdatedAt: updatedAt });
 		parent = { kind: "private", id: privateNodeId };
 
 		if (index === segments.length - 1) {
@@ -3274,12 +3271,6 @@ export async function files_nodes_db_hard_delete_node(
 			assetIds.add(pendingUpdate.pendingReplacement.assetId);
 		}
 	}
-
-	await Promise.all(
-		pendingUpdates.map((pendingUpdate) =>
-			files_db_cancel_pending_update_cleanup_tasks(ctx, { pendingUpdateId: pendingUpdate._id }),
-		),
-	);
 
 	// Delete every pending doc's canonical paged state family beside its other children.
 	await Promise.all(
