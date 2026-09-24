@@ -153,7 +153,7 @@
 		"@babel/core": "7.29.7",
 		"@convex-dev/eslint-plugin": "^1.0.0",
 		"@edge-runtime/vm": "5.0.0",
-		"@faker-js/faker": "^10.0.0",
+		"@faker-js/faker": "^10.6.0",
 		"@rolldown/plugin-babel": "0.2.3",
 		"@tanstack/router-plugin": "^1.168.40",
 		"@testing-library/react": "16.3.3",
