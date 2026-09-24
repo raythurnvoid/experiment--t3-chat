@@ -1714,6 +1714,9 @@ describe("r2 asset content", () => {
 		// The promoted node points at its first version snapshot, not a content asset row.
 		expect(docs.contentAsset?.kind).toBe("content_snapshot");
 		expect(docs.contentAsset?.r2Key ? r2_text(docs.contentAsset.r2Key) : null).toBe(markdownContent);
+		// The node byte size follows the version snapshot, not the size the upload declared.
+		expect(docs.contentAsset?.size).toBe(new TextEncoder().encode(markdownContent).byteLength);
+		expect(docs.fileNode?.contentByteSize).toBe(docs.contentAsset?.size);
 		expect(docs.asset?.processingWorkId).toBeNull();
 
 		// Producer shape pair: a node born with a `textKind` that does not match its first Yjs

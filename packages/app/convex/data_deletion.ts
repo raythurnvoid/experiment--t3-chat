@@ -959,6 +959,17 @@ async function db_purge_organization_workspace_content_batch(
 		return { done: false, deletedCount: fileStats.length };
 	}
 
+	const folderSorts = await ctx.db
+		.query("files_folder_sorts")
+		.withIndex("by_organization_workspace_folder", (q) =>
+			q.eq("organizationId", organizationId).eq("workspaceId", workspaceId),
+		)
+		.take(batchSize);
+	if (folderSorts.length > 0) {
+		await Promise.all(folderSorts.map((doc) => ctx.db.delete("files_folder_sorts", doc._id)));
+		return { done: false, deletedCount: folderSorts.length };
+	}
+
 	// Cancel materialization jobs before deleting their tracking docs.
 	const materializationJobs = await ctx.db
 		.query("files_content_materialization_jobs")

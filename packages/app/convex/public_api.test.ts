@@ -26,6 +26,7 @@ import type { plugins_Capability } from "../shared/plugins.ts";
 import { quotas_db_ensure, quotas_db_get } from "./quotas.ts";
 import { rate_limiter_check_by_key, rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import { Doc as YDoc, encodeStateAsUpdate } from "yjs";
+import { files_sort_text_key } from "../shared/files-sort.ts";
 
 const r2Objects = new Map<string, string | ArrayBuffer>();
 const r2ObjectMetadata = new Map<string, { size: number; etag: string }>();
@@ -256,6 +257,7 @@ async function seed_markdown_file(args: {
 					pathDepth: parentPath.split("/").filter(Boolean).length,
 					lowercaseExtension: null,
 					name: parentName,
+					sortName: files_sort_text_key(parentName),
 					kind: "folder",
 					parentId: files_ROOT_ID,
 					createdBy: args.userId,
@@ -263,6 +265,7 @@ async function seed_markdown_file(args: {
 					updatedAt: now,
 					contentType: null,
 					assetId: null,
+					contentByteSize: null,
 					textKind: null,
 					collaborationEnabled: null,
 					yjsSnapshotId: null,
@@ -274,6 +277,7 @@ async function seed_markdown_file(args: {
 					contentFrontmatterTooLargeFieldCount: null,
 					contentFrontmatterTooLargeIndexDocumentCount: null,
 					restrictedScopeNodeId: null,
+					isRestrictedScopeRoot: false,
 					archiveOperationId: null,
 				});
 			}
@@ -346,9 +350,11 @@ async function seed_markdown_file(args: {
 			pathDepth: args.path.split("/").filter(Boolean).length,
 			lowercaseExtension: name.includes(".") ? name.slice(name.lastIndexOf(".") + 1).toLowerCase() : null,
 			name,
+			sortName: files_sort_text_key(name),
 			kind: "file",
 			contentType: "text/markdown;charset=utf-8",
 			assetId: markdownAssetId,
+			contentByteSize: null,
 			textKind: "rich_text",
 			parentId,
 			createdBy: args.userId,
@@ -364,6 +370,7 @@ async function seed_markdown_file(args: {
 			contentFrontmatterTooLargeFieldCount: null,
 			contentFrontmatterTooLargeIndexDocumentCount: null,
 			restrictedScopeNodeId: null,
+			isRestrictedScopeRoot: false,
 			archiveOperationId: null,
 		});
 		const yjsSnapshotId = await ctx.db.insert("files_yjs_snapshots", {
@@ -2357,6 +2364,7 @@ describe("public files API", () => {
 				workspaceId: db.workspaceId,
 				parentId: files_ROOT_ID,
 				name: "outer",
+				sortName: files_sort_text_key("outer"),
 				path: "/outer",
 				treePath: "/outer/",
 				pathDepth: 1,
@@ -2367,6 +2375,7 @@ describe("public files API", () => {
 				updatedAt: now,
 				contentType: null,
 				assetId: null,
+				contentByteSize: null,
 				textKind: null,
 				collaborationEnabled: null,
 				yjsSnapshotId: null,
@@ -2378,6 +2387,7 @@ describe("public files API", () => {
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: null,
+				isRestrictedScopeRoot: false,
 				archiveOperationId: null,
 			});
 			const innerId = await ctx.db.insert("files_nodes", {
@@ -2386,6 +2396,7 @@ describe("public files API", () => {
 				workspaceId: db.workspaceId,
 				parentId: outerId,
 				name: "inner",
+				sortName: files_sort_text_key("inner"),
 				path: "/outer/inner",
 				treePath: "/outer/inner/",
 				pathDepth: 2,
@@ -2396,6 +2407,7 @@ describe("public files API", () => {
 				updatedAt: now,
 				contentType: null,
 				assetId: null,
+				contentByteSize: null,
 				textKind: null,
 				collaborationEnabled: null,
 				yjsSnapshotId: null,
@@ -2407,6 +2419,7 @@ describe("public files API", () => {
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: null,
+				isRestrictedScopeRoot: false,
 				archiveOperationId: null,
 			});
 			await ctx.db.patch("files_nodes", outerId, { restrictedScopeNodeId: outerId });
@@ -2530,6 +2543,7 @@ describe("public files API", () => {
 				workspaceId: owner.workspaceId,
 				parentId: files_ROOT_ID,
 				name: "shared",
+				sortName: files_sort_text_key("shared"),
 				path: "/shared",
 				treePath: "/shared/",
 				pathDepth: 1,
@@ -2540,6 +2554,7 @@ describe("public files API", () => {
 				updatedAt: now,
 				contentType: null,
 				assetId: null,
+				contentByteSize: null,
 				textKind: null,
 				collaborationEnabled: null,
 				yjsSnapshotId: null,
@@ -2551,6 +2566,7 @@ describe("public files API", () => {
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: null,
+				isRestrictedScopeRoot: false,
 				archiveOperationId: null,
 			});
 			await ctx.db.patch("files_nodes", folderId, { restrictedScopeNodeId: folderId });
@@ -2580,6 +2596,7 @@ describe("public files API", () => {
 				workspaceId: owner.workspaceId,
 				parentId: files_ROOT_ID,
 				name: "legacy.md",
+				sortName: files_sort_text_key("legacy.md"),
 				path: "/legacy.md",
 				treePath: "/legacy.md",
 				pathDepth: 1,
@@ -2590,6 +2607,7 @@ describe("public files API", () => {
 				updatedBy: owner.userId,
 				updatedAt: now,
 				assetId: null,
+				contentByteSize: null,
 				textKind: null,
 				collaborationEnabled: null,
 				yjsSnapshotId: null,
@@ -2601,6 +2619,7 @@ describe("public files API", () => {
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: null,
+				isRestrictedScopeRoot: false,
 				archiveOperationId: null,
 			});
 			await ctx.db.patch("files_nodes", nodeId, { restrictedScopeNodeId: nodeId });
@@ -2885,6 +2904,15 @@ describe("public files API", () => {
 					.collect(),
 		);
 		expect(yjsUpdates).toEqual([expect.objectContaining({ origin: { type: "USER_AI_EDIT" } })]);
+
+		// The fill points the node at a new content snapshot, so the node byte size must follow it.
+		const filledSize = await t.run(async (ctx) => {
+			const fileNode = await ctx.db.get("files_nodes", transcriptNodeId);
+			const asset = fileNode?.assetId ? await ctx.db.get("files_r2_assets", fileNode.assetId) : null;
+			return { contentByteSize: fileNode?.contentByteSize, assetSize: asset?.size };
+		});
+		expect(filledSize.assetSize).toBeGreaterThan(0);
+		expect(filledSize.contentByteSize).toBe(filledSize.assetSize);
 
 		// A path blocked by an existing file at an intermediate segment conflicts.
 		const blocked = await t.fetch("/api/v1/files/touch", {
@@ -4232,6 +4260,7 @@ describe("files upload-urls", () => {
 				workspaceId: db.workspaceId,
 				parentId: files_ROOT_ID,
 				name: "outer",
+				sortName: files_sort_text_key("outer"),
 				path: "/outer",
 				treePath: "/outer/",
 				pathDepth: 1,
@@ -4242,6 +4271,7 @@ describe("files upload-urls", () => {
 				updatedAt: now,
 				contentType: null,
 				assetId: null,
+				contentByteSize: null,
 				textKind: null,
 				collaborationEnabled: null,
 				yjsSnapshotId: null,
@@ -4253,6 +4283,7 @@ describe("files upload-urls", () => {
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: null,
+				isRestrictedScopeRoot: false,
 				archiveOperationId: null,
 			});
 			await ctx.db.patch("files_nodes", outerId, { restrictedScopeNodeId: outerId });
@@ -5469,6 +5500,7 @@ describe("files read-only locks", () => {
 				workspaceId: args.db.workspaceId,
 				parentId: files_ROOT_ID,
 				name: args.name,
+				sortName: files_sort_text_key(args.name),
 				path: `/${args.name}`,
 				treePath: `/${args.name}/`,
 				pathDepth: 1,
@@ -5479,6 +5511,7 @@ describe("files read-only locks", () => {
 				updatedAt: now,
 				contentType: null,
 				assetId: null,
+				contentByteSize: null,
 				textKind: null,
 				collaborationEnabled: null,
 				yjsSnapshotId: null,
@@ -5490,6 +5523,7 @@ describe("files read-only locks", () => {
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: null,
+				isRestrictedScopeRoot: false,
 				archiveOperationId: null,
 			});
 			await ctx.db.patch("files_nodes", nodeId, { restrictedScopeNodeId: nodeId });
@@ -6279,6 +6313,7 @@ describe("files read-only locks", () => {
 				workspaceId: writer.db.workspaceId,
 				parentId: folder!._id,
 				name: "mid",
+				sortName: files_sort_text_key("mid"),
 				path: "/aba-dir/mid",
 				treePath: "/aba-dir/mid/",
 				pathDepth: 2,
@@ -6289,6 +6324,7 @@ describe("files read-only locks", () => {
 				updatedAt: now,
 				contentType: null,
 				assetId: null,
+				contentByteSize: null,
 				textKind: null,
 				collaborationEnabled: null,
 				yjsSnapshotId: null,
@@ -6300,6 +6336,7 @@ describe("files read-only locks", () => {
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: null,
+				isRestrictedScopeRoot: false,
 				archiveOperationId: null,
 			});
 		});
@@ -6426,6 +6463,7 @@ describe("files read-only locks", () => {
 				workspaceId: writer.db.workspaceId,
 				parentId: files_ROOT_ID,
 				name: "outer",
+				sortName: files_sort_text_key("outer"),
 				path: "/outer",
 				treePath: "/outer/",
 				pathDepth: 1,
@@ -6436,6 +6474,7 @@ describe("files read-only locks", () => {
 				updatedAt: now,
 				contentType: null,
 				assetId: null,
+				contentByteSize: null,
 				textKind: null,
 				collaborationEnabled: null,
 				yjsSnapshotId: null,
@@ -6447,6 +6486,7 @@ describe("files read-only locks", () => {
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: null,
+				isRestrictedScopeRoot: false,
 				archiveOperationId: null,
 			});
 			await ctx.db.patch("files_nodes", nodeId, { restrictedScopeNodeId: nodeId });
@@ -6494,6 +6534,7 @@ describe("files read-only locks", () => {
 				workspaceId: writer.db.workspaceId,
 				parentId: outerId,
 				name: "inner",
+				sortName: files_sort_text_key("inner"),
 				path: "/outer/inner",
 				treePath: "/outer/inner/",
 				pathDepth: 2,
@@ -6504,6 +6545,7 @@ describe("files read-only locks", () => {
 				updatedAt: now,
 				contentType: null,
 				assetId: null,
+				contentByteSize: null,
 				textKind: null,
 				collaborationEnabled: null,
 				yjsSnapshotId: null,
@@ -6515,6 +6557,7 @@ describe("files read-only locks", () => {
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: null,
+				isRestrictedScopeRoot: false,
 				archiveOperationId: null,
 			});
 			await ctx.db.patch("files_nodes", nodeId, { restrictedScopeNodeId: nodeId });

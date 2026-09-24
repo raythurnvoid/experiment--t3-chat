@@ -20,6 +20,7 @@ import {
 import { quotas_db_ensure } from "./quotas.ts";
 import { api, components, internal } from "./_generated/api.js";
 import { billing_PRODUCTS } from "../shared/billing.ts";
+import { files_sort_text_key } from "../shared/files-sort.ts";
 
 // #region helpers
 
@@ -272,6 +273,7 @@ export const test_mocks = {
 				updatedBy: test_mocks_hardcoded.user.user_1.id as Id<"users">,
 				parentId: test_mocks_hardcoded.files.file_root_1.parentId,
 				name: name,
+				sortName: files_sort_text_key(name),
 				kind: "folder",
 				path: `/${name}`,
 				treePath: `/${name}/`,
@@ -279,6 +281,7 @@ export const test_mocks = {
 				lowercaseExtension: null,
 				contentType: null,
 				assetId: null,
+				contentByteSize: null,
 				textKind: null,
 				collaborationEnabled: null,
 				yjsSnapshotId: null,
@@ -290,6 +293,7 @@ export const test_mocks = {
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: null,
+				isRestrictedScopeRoot: false,
 				writePolicy: null,
 				archiveOperationId: null,
 			});

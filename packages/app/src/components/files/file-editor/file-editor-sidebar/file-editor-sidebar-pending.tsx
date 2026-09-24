@@ -136,7 +136,10 @@ type FileEditorSidebarPendingRow = {
  */
 function build_pending_rows(
 	views: readonly Extract<FileEditorSidebarPendingView, { kind: "entry" }>[],
-	nodesById: Map<app_convex_Id<"files_nodes">, Omit<app_convex_Doc<"files_nodes">, "writePolicy">>,
+	nodesById: Map<
+		app_convex_Id<"files_nodes">,
+		Omit<app_convex_Doc<"files_nodes">, "writePolicy" | "sortName" | "isRestrictedScopeRoot">
+	>,
 ): FileEditorSidebarPendingRow[] {
 	const pendingUpdates = views.flatMap((view) => (view.entry.pendingUpdate ? [view.entry.pendingUpdate] : []));
 	// Active nodes keyed by path, to spot the occupant a pending move's accept would replace.

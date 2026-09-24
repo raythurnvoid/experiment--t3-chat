@@ -17,6 +17,7 @@ import {
 import { quotas_db_ensure, quotas_db_get } from "./quotas.ts";
 import { files_get_utf8_byte_size } from "../shared/files.ts";
 import { r2_confirmed_object_delete, r2_PUT_MAY_ARRIVE_MARGIN_MS, r2_create_asset_key } from "./r2_client.ts";
+import { files_sort_text_key } from "../shared/files-sort.ts";
 
 const test = baseTest.sequential;
 
@@ -100,6 +101,7 @@ async function data_deletion_test_seed_page(
 		treePath: `/${args.tag}`,
 		pathDepth: 1,
 		name: args.tag,
+		sortName: files_sort_text_key(args.tag),
 		kind: "file",
 		lowercaseExtension: null,
 		parentId: "root",
@@ -108,6 +110,7 @@ async function data_deletion_test_seed_page(
 		updatedAt: Date.now(),
 		contentType: null,
 		assetId: null,
+		contentByteSize: null,
 		textKind: null,
 		collaborationEnabled: null,
 		yjsSnapshotId: null,
@@ -119,6 +122,7 @@ async function data_deletion_test_seed_page(
 		contentFrontmatterTooLargeFieldCount: null,
 		contentFrontmatterTooLargeIndexDocumentCount: null,
 		restrictedScopeNodeId: null,
+		isRestrictedScopeRoot: false,
 		writePolicy: null,
 
 		archiveOperationId: null,
@@ -246,6 +250,7 @@ async function data_deletion_test_seed_workspace_content_bulk(
 			treePath: `/${args.tag}-${i}.md`,
 			pathDepth: 1,
 			name: `${args.tag}-${i}.md`,
+			sortName: files_sort_text_key(`${args.tag}-${i}.md`),
 			kind: "file",
 			lowercaseExtension: "md",
 			parentId: "root",
@@ -254,6 +259,7 @@ async function data_deletion_test_seed_workspace_content_bulk(
 			updatedAt: Date.now(),
 			contentType: "text/markdown;charset=utf-8",
 			assetId: null,
+			contentByteSize: null,
 			textKind: null,
 			collaborationEnabled: null,
 			yjsSnapshotId: null,
@@ -265,6 +271,7 @@ async function data_deletion_test_seed_workspace_content_bulk(
 			contentFrontmatterTooLargeFieldCount: null,
 			contentFrontmatterTooLargeIndexDocumentCount: null,
 			restrictedScopeNodeId: null,
+			isRestrictedScopeRoot: false,
 			writePolicy: null,
 
 			archiveOperationId: null,
@@ -679,6 +686,7 @@ const review_workspace_tables = [
 	"files_yjs_docs_last_sequences",
 	"files_snapshots",
 	"file_stats",
+	"files_folder_sorts",
 	"files_content_materialization_jobs",
 	"files_r2_assets",
 	"access_control_permission_grants",
@@ -1043,6 +1051,7 @@ async function review_seed_all_workspace_content(
 			treePath: `/service-${i}`,
 			pathDepth: 1,
 			name: `service-${i}`,
+			sortName: files_sort_text_key(`service-${i}`),
 			kind: "folder",
 			lowercaseExtension: null,
 			parentId: "root",
@@ -1051,6 +1060,7 @@ async function review_seed_all_workspace_content(
 			updatedAt: now,
 			contentType: null,
 			assetId: null,
+			contentByteSize: null,
 			textKind: null,
 			collaborationEnabled: null,
 			yjsSnapshotId: null,
@@ -1062,6 +1072,7 @@ async function review_seed_all_workspace_content(
 			contentFrontmatterTooLargeFieldCount: null,
 			contentFrontmatterTooLargeIndexDocumentCount: null,
 			restrictedScopeNodeId: null,
+			isRestrictedScopeRoot: false,
 			writePolicy: null,
 
 			archiveOperationId: null,
@@ -1081,6 +1092,7 @@ async function review_seed_all_workspace_content(
 			treePath: `/service-${i}/image.png`,
 			pathDepth: 2,
 			name: "image.png",
+			sortName: files_sort_text_key("image.png"),
 			kind: "file",
 			lowercaseExtension: "png",
 			parentId: destinationNodeId,
@@ -1088,6 +1100,7 @@ async function review_seed_all_workspace_content(
 			updatedBy: args.userId,
 			updatedAt: now,
 			assetId: uploadAssetId,
+			contentByteSize: null,
 			contentType: "image/png",
 			textKind: null,
 			collaborationEnabled: null,
@@ -1100,6 +1113,7 @@ async function review_seed_all_workspace_content(
 			contentFrontmatterTooLargeFieldCount: null,
 			contentFrontmatterTooLargeIndexDocumentCount: null,
 			restrictedScopeNodeId: null,
+			isRestrictedScopeRoot: false,
 			writePolicy: null,
 
 			archiveOperationId: null,
@@ -1153,6 +1167,13 @@ async function review_seed_all_workspace_content(
 			r2Bucket: "test-bucket",
 			size: 12,
 			createdBy: args.userId,
+			updatedAt: now,
+		});
+		await ctx.db.insert("files_folder_sorts", {
+			...tenant,
+			folderId: i === 0 ? "root" : node._id,
+			sort: { field: "updated", direction: "desc" },
+			updatedBy: args.userId,
 			updatedAt: now,
 		});
 		await ctx.db.insert("public_api_file_write_stages", {

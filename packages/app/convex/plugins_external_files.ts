@@ -13,6 +13,7 @@ import {
 	files_nodes_db_create_node_recursively_at_path,
 	files_nodes_db_require_write_policy_management,
 	files_nodes_db_cascade_restricted_scope,
+	files_nodes_db_set_restricted_scope,
 	files_nodes_db_archive_nodes,
 } from "./files_nodes.ts";
 import { files_metadata_db_read_entry } from "./files_metadata.ts";
@@ -284,7 +285,12 @@ export const ensure_writer = internalMutation({
 		});
 
 		if (args.readers) {
-			await ctx.db.patch("files_nodes", nodeId, { restrictedScopeNodeId: nodeId });
+			await files_nodes_db_set_restricted_scope(ctx, {
+				organizationId: installation.organizationId,
+				workspaceId: installation.workspaceId,
+				nodeId,
+				restrictedScopeNodeId: nodeId,
+			});
 			await files_nodes_db_cascade_restricted_scope(ctx, {
 				organizationId: installation.organizationId,
 				workspaceId: installation.workspaceId,

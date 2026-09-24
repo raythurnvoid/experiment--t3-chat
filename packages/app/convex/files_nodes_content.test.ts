@@ -2763,6 +2763,15 @@ describe("restore_snapshot_r2", () => {
 			nodeId,
 		});
 		expect(on._nay).toBeUndefined();
+		// Turning collaboration on points the node at the text the new document produced, so the
+		// node byte size must follow that asset.
+		const enabledSize = await t.run(async (ctx) => {
+			const node = await ctx.db.get("files_nodes", nodeId);
+			const asset = node?.assetId ? await ctx.db.get("files_r2_assets", node.assetId) : null;
+			return { contentByteSize: node?.contentByteSize, assetSize: asset?.size };
+		});
+		expect(enabledSize.assetSize).toBeGreaterThan(0);
+		expect(enabledSize.contentByteSize).toBe(enabledSize.assetSize);
 		const pointers = await test_get_file_yjs_pointers(t, nodeId);
 		const restored = await asUser.action(api.files_nodes_content.restore_snapshot_r2, {
 			membershipId: db.membershipId,

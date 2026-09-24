@@ -272,6 +272,17 @@ export const files_metadata_entries_validator = v.array(
 	v.object({ key: v.string(), value: v.union(v.string(), v.number(), v.boolean()) }),
 );
 
+/**
+ * The saved sort of a folder and the sort a query reads. It accepts any field string, so check the
+ * field with `files_sort_field_is_valid`.
+ */
+export const files_sort_validator = v.object({
+	field: v.string(),
+	direction: v.union(v.literal("asc"), v.literal("desc")),
+});
+
+export const files_sort_key_validator = v.array(v.union(v.string(), v.number(), v.null()));
+
 const files_pending_create_intent_validator = v.union(
 	v.object({ kind: v.literal("folder"), metadata: files_metadata_entries_validator }),
 	v.object({
@@ -329,6 +340,28 @@ const files_metadata_index_fields = {
 	stringValue: v.optional(v.string()),
 	numberValue: v.optional(v.number()),
 	booleanValue: v.optional(v.boolean()),
+};
+
+/**
+ * Sort fields of a committed `field` doc, so the folder table can list the children of one folder
+ * that have one key, ordered by its value. Value docs and pending docs never carry them.
+ */
+const files_metadata_committed_sort_fields = {
+	/** The node's parent folder. */
+	parentId: v.optional(v.union(v.id("files_nodes"), v.literal("root"))),
+	nodeKind: v.optional(v.union(v.literal("folder"), v.literal("file"))),
+	/** Copy of the node's flag. See `files_nodes.isRestrictedScopeRoot`. */
+	isRestrictedScopeRoot: v.optional(v.boolean()),
+	name: v.optional(v.string()),
+	/** `files_sort_text_key(name)`. */
+	sortName: v.optional(v.string()),
+	/**
+	 * `files_sort_value_of(values).sortValue`. Unset when the key has no plain value, such as a
+	 * frontmatter map, so the row sorts as missing.
+	 */
+	sortValue: v.optional(v.string()),
+	/** The value the user typed, shown in the table's sort column. Set together with `sortValue`. */
+	sortDisplayValue: v.optional(v.union(v.string(), v.number(), v.boolean())),
 };
 
 const files_text_chunk_fields = {
@@ -1704,7 +1737,11 @@ const app_convex_schema = defineSchema({
 	 */
 	files_metadata_docs: defineTable(
 		v.union(
-			v.object({ ...files_committed_index_fields, ...files_metadata_index_fields }),
+			v.object({
+				...files_committed_index_fields,
+				...files_metadata_index_fields,
+				...files_metadata_committed_sort_fields,
+			}),
 			v.object({ ...files_pending_index_fields, ...files_metadata_index_fields }),
 		),
 	)
@@ -1761,6 +1798,35 @@ const app_convex_schema = defineSchema({
 			"valueKind",
 			"booleanValue",
 			"treePath",
+		])
+		// The children of one folder that have one key, by value. Committed field docs only.
+		.index("by_org_ws_source_archive_docKind_field_parent_restricted_sort", [
+			"organizationId",
+			"workspaceId",
+			"sourceKind",
+			"archiveOperationId",
+			"docKind",
+			"fieldPath",
+			"parentId",
+			"isRestrictedScopeRoot",
+			"nodeKind",
+			"sortValue",
+			"sortName",
+			"name",
+		])
+		// The same docs by name, so the table can find the children that miss the key.
+		.index("by_org_ws_source_archive_docKind_field_parent_restricted_name", [
+			"organizationId",
+			"workspaceId",
+			"sourceKind",
+			"archiveOperationId",
+			"docKind",
+			"fieldPath",
+			"parentId",
+			"isRestrictedScopeRoot",
+			"nodeKind",
+			"sortName",
+			"name",
 		]),
 
 	files_nodes: defineTable({
@@ -1786,6 +1852,11 @@ const app_convex_schema = defineSchema({
 		parentId: v.union(v.id("files_nodes"), v.literal("root")),
 		kind: v.union(v.literal("folder"), v.literal("file")),
 		name: v.string(),
+		/**
+		 * `files_sort_text_key(name)`: the alphabetical key the folder table sorts by. Indexes put the
+		 * raw `name` right after it, so names with the same key still have one fixed order.
+		 */
+		sortName: v.string(),
 		/** Materialized absolute path used for path resolution */
 		path: v.string(),
 		/**
@@ -1812,6 +1883,12 @@ const app_convex_schema = defineSchema({
 		 */
 		contentType: v.union(v.string(), v.null()),
 		assetId: v.union(v.id("files_r2_assets"), v.null()),
+		/**
+		 * Byte size of the `assetId` asset, copied here so the folder table can sort by size. Every
+		 * write that changes `assetId` sets it too. Null for folders and for files whose bytes are not
+		 * known yet.
+		 */
+		contentByteSize: v.union(v.number(), v.null()),
 		/**
 		 * Shape of this file's text: `rich_text` is the ProseMirror document Markdown files use,
 		 * `plain_text` is a flat text document. Folders, stored blobs, and read-only mounts have no
@@ -1890,6 +1967,13 @@ const app_convex_schema = defineSchema({
 		 * stays right without walking up the tree. See `files_nodes_db_cascade_restricted_scope`.
 		 */
 		restrictedScopeNodeId: v.union(v.id("files_nodes"), v.null()),
+		/**
+		 * True exactly when `restrictedScopeNodeId === _id`. Stored so the folder table indexes can
+		 * split the children every folder reader may read from the restricted ones, which need their
+		 * own access check. The restrict and unrestrict writers set it together with
+		 * `restrictedScopeNodeId`, on this node and on its committed metadata field docs.
+		 */
+		isRestrictedScopeRoot: v.boolean(),
 		writePolicy: files_nodes_write_policy_validator,
 		/**
 		 * Starting protection copied once to brand-new files and subfolders.
@@ -1930,6 +2014,60 @@ const app_convex_schema = defineSchema({
 			"parentId",
 			"archiveOperationId",
 			"kind",
+			"name",
+		])
+		// The folder table sort indexes. Each one pages one kind of one folder's children, and only the
+		// readable ones (`isRestrictedScopeRoot: false`) or only the restricted ones. `sortName, name`
+		// at the end breaks ties by name. The created sort uses `_creationTime`, which Convex appends.
+		.index("by_org_ws_parent_archive_restricted_kind_sortName_name", [
+			"organizationId",
+			"workspaceId",
+			"parentId",
+			"archiveOperationId",
+			"isRestrictedScopeRoot",
+			"kind",
+			"sortName",
+			"name",
+		])
+		.index("by_org_ws_parent_archive_restricted_kind", [
+			"organizationId",
+			"workspaceId",
+			"parentId",
+			"archiveOperationId",
+			"isRestrictedScopeRoot",
+			"kind",
+		])
+		.index("by_org_ws_parent_archive_restricted_kind_updatedAt_name", [
+			"organizationId",
+			"workspaceId",
+			"parentId",
+			"archiveOperationId",
+			"isRestrictedScopeRoot",
+			"kind",
+			"updatedAt",
+			"sortName",
+			"name",
+		])
+		.index("by_org_ws_parent_archive_restricted_kind_ext_sortName_name", [
+			"organizationId",
+			"workspaceId",
+			"parentId",
+			"archiveOperationId",
+			"isRestrictedScopeRoot",
+			"kind",
+			"lowercaseExtension",
+			"sortName",
+			"name",
+		])
+		.index("by_org_ws_parent_archive_restricted_kind_size_sortName_name", [
+			"organizationId",
+			"workspaceId",
+			"parentId",
+			"archiveOperationId",
+			"isRestrictedScopeRoot",
+			"kind",
+			"contentByteSize",
+			"sortName",
 			"name",
 		])
 		.index("by_organization_workspace_parent_archiveOperation_updatedAt", [
@@ -2011,6 +2149,24 @@ const app_convex_schema = defineSchema({
 		/** Unicode code-point count (`wc -m`, not UTF-16 units). -1 means cannot be processed. */
 		charCount: v.number(),
 	}).index("by_organization_workspace_fileNode", ["organizationId", "workspaceId", "fileNodeId"]),
+
+	/**
+	 * The saved sort of one folder's table, shared by every member. One row per folder at most, and no
+	 * row means Name, A to Z. It is keyed by folder id, so rename, move, archive, and restore keep it.
+	 * A copied folder does not copy it.
+	 *
+	 * A table and not a node field, because the workspace root has no node, and because a sort change
+	 * then does not re-run every tree page that holds the folder row.
+	 */
+	files_folder_sorts: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		/** The folder, or "root" for the workspace root. */
+		folderId: v.union(v.id("files_nodes"), v.literal("root")),
+		sort: files_sort_validator,
+		updatedBy: v.id("users"),
+		updatedAt: v.number(),
+	}).index("by_organization_workspace_folder", ["organizationId", "workspaceId", "folderId"]),
 
 	/** Exact text chunks for committed Yjs materializations and per-user pending updates. */
 	files_text_chunks: defineTable(

@@ -13,6 +13,7 @@ import { billing_PRODUCTS } from "../shared/billing.ts";
 import { users_get_user_id_from_jwt } from "../shared/users.ts";
 import { quotas_db_ensure } from "./quotas.ts";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
+import { files_sort_text_key } from "../shared/files-sort.ts";
 
 afterEach(() => {
 	vi.restoreAllMocks();
@@ -209,6 +210,7 @@ async function users_test_seed_page(
 		treePath: `/${args.tag}`,
 		pathDepth: 1,
 		name: args.tag,
+		sortName: files_sort_text_key(args.tag),
 		kind: "file",
 		lowercaseExtension: null,
 		parentId: "root",
@@ -217,6 +219,7 @@ async function users_test_seed_page(
 		updatedAt: Date.now(),
 		contentType: null,
 		assetId: null,
+		contentByteSize: null,
 		textKind: null,
 		collaborationEnabled: null,
 		yjsSnapshotId: null,
@@ -228,6 +231,7 @@ async function users_test_seed_page(
 		contentFrontmatterTooLargeFieldCount: null,
 		contentFrontmatterTooLargeIndexDocumentCount: null,
 		restrictedScopeNodeId: null,
+		isRestrictedScopeRoot: false,
 		writePolicy: null,
 
 		archiveOperationId: null,

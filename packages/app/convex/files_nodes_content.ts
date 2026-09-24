@@ -5267,6 +5267,7 @@ export async function files_nodes_db_fill_text_node_content(
 		}),
 		ctx.db.patch("files_nodes", args.fileNode._id, {
 			assetId: args.contentSnapshotAssetId,
+			contentByteSize: args.contentSize,
 			updatedBy: args.userId,
 			updatedAt: now,
 		}),
@@ -5458,6 +5459,7 @@ export const finalize_file_content_materialization = internalMutation({
 				// refusal marker.
 				ctx.db.patch("files_nodes", args.nodeId, {
 					assetId: args.versionSnapshotAssetId,
+					contentByteSize: args.textSize,
 					contentTooLargeByteSize: null,
 					contentShapeMismatchAt: null,
 					contentYjsStateTooLargeByteSize: null,
@@ -6472,6 +6474,7 @@ export async function files_nodes_db_commit_text_replacement(
 			// so downloads sign it and reads use its size as the byte cap.
 			ctx.db.patch("files_nodes", fileNode._id, {
 				assetId: args.versionSnapshotAssetId,
+				contentByteSize: args.textSize,
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				updatedBy: args.userId,
@@ -7002,6 +7005,7 @@ async function db_install_file_content_replacement(
 	// this same text.
 	await ctx.db.patch("files_nodes", nodeId, {
 		assetId: args.contentAssetId,
+		contentByteSize: args.contentSize,
 		contentType: args.contentType,
 		textKind: args.yjsRootKind ?? null,
 		collaborationEnabled: args.yjsRootKind === undefined ? null : args.nonCollaborative !== true,
@@ -7688,6 +7692,7 @@ export const restore_snapshot = internalMutation({
 				// Point the node at the restored snapshot: it now holds the file's current bytes.
 				// The queued materialization will later point it at its own fresh snapshot.
 				assetId: args.restoredSnapshotAssetId,
+				contentByteSize: args.restoredSnapshotSize,
 				contentType: restoredContentType,
 				updatedBy: userId,
 				updatedAt: now,
@@ -8988,6 +8993,7 @@ export const finalize_file_yjs_repair = internalMutation({
 				}),
 				ctx.db.patch("files_nodes", args.nodeId, {
 					assetId: args.contentSnapshotAssetId,
+					contentByteSize: args.textByteSize,
 					yjsLastSequenceId: nextYjsLastSequenceId,
 					contentTooLargeByteSize: null,
 					contentShapeMismatchAt: null,
@@ -9898,6 +9904,7 @@ export const finalize_file_collaboration_enable = internalMutation({
 					yjsSnapshotId,
 					yjsLastSequenceId,
 					assetId: args.contentSnapshotAssetId,
+					contentByteSize: args.textSize,
 					contentTooLargeByteSize: null,
 					contentFrontmatterTooLargeFieldCount: frontmatterOverCapCounts?.fieldCount ?? null,
 					contentFrontmatterTooLargeIndexDocumentCount: frontmatterOverCapCounts?.indexDocumentCount ?? null,

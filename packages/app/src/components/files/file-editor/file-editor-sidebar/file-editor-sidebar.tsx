@@ -30,7 +30,7 @@ export type FileEditorSidebar_ClassNames =
 
 export type FileEditorSidebar_Props = {
 	/** The route-resolved node, or null while nothing (or the root folder) is selected. */
-	node: Omit<app_convex_Doc<"files_nodes">, "writePolicy"> | null;
+	node: Omit<app_convex_Doc<"files_nodes">, "writePolicy" | "sortName" | "isRestrictedScopeRoot"> | null;
 	isPrivate?: boolean;
 	commentsContainerRef: Ref<HTMLDivElement>;
 	/**

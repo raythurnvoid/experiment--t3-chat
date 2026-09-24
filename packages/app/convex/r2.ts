@@ -925,6 +925,7 @@ async function db_finalize_editable_text_file_node_from_r2_assets(
 	await Promise.all([
 		ctx.db.patch("files_nodes", args.fileNodeId, {
 			assetId: args.versionSnapshotAssetId,
+			contentByteSize: args.versionSnapshotSize,
 			contentType: args.contentType,
 			collaborationEnabled: args.yjsSnapshot !== null,
 			yjsSnapshotId,
@@ -1368,6 +1369,11 @@ export const process_uploaded_asset_event = internalMutation({
 			unfinalizedExpiresAt: undefined,
 			updatedAt: now,
 		});
+		// The node was created with the declared size. Patch it only when R2 saw another size, so a
+		// normal upload does not re-run every tree page that holds this node.
+		if (fileNode.contentByteSize !== args.size) {
+			await ctx.db.patch("files_nodes", fileNode._id, { contentByteSize: args.size });
+		}
 
 		if (asset.kind !== "upload") {
 			return Result({ _yay: null });

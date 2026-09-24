@@ -22,7 +22,7 @@ type FileEditorSidebarDetails_ClassNames =
 const FILE_EDITOR_SIDEBAR_DETAILS_SKELETON_ROW_COUNT = 7;
 
 export type FileEditorSidebarDetails_Props = {
-	node: Omit<app_convex_Doc<"files_nodes">, "writePolicy">;
+	node: Omit<app_convex_Doc<"files_nodes">, "writePolicy" | "sortName" | "isRestrictedScopeRoot">;
 };
 
 export const FileEditorSidebarDetails = memo(function FileEditorSidebarDetails(props: FileEditorSidebarDetails_Props) {

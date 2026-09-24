@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
 import { test_convex, test_mocks_cancel_pending_home_file_seeds, test_mocks_fill_db_with } from "./setup.test.ts";
 import { access_control_FILE_SHARE_LEVELS } from "../shared/access-control.ts";
+import { files_sort_text_key } from "../shared/files-sort.ts";
 
 afterEach(() => {
 	vi.useRealTimers();
@@ -53,6 +54,7 @@ describe("tenant deletion with many direct file grants", () => {
 							workspaceId: fixture.workspaceId,
 							parentId: "root",
 							name,
+							sortName: files_sort_text_key(name),
 							path: `/${name}`,
 							treePath: `/${name}/`,
 							pathDepth: 1,
@@ -63,6 +65,7 @@ describe("tenant deletion with many direct file grants", () => {
 							updatedAt: Date.now(),
 							contentType: null,
 							assetId: null,
+							contentByteSize: null,
 							textKind: null,
 							collaborationEnabled: null,
 							yjsSnapshotId: null,
@@ -74,6 +77,7 @@ describe("tenant deletion with many direct file grants", () => {
 							contentFrontmatterTooLargeFieldCount: null,
 							contentFrontmatterTooLargeIndexDocumentCount: null,
 							restrictedScopeNodeId: null,
+							isRestrictedScopeRoot: false,
 							writePolicy: null,
 
 							archiveOperationId: null,
@@ -182,6 +186,8 @@ describe("tenant deletion with many direct file grants", () => {
 					workspaceId: fixture.personalMembership.workspaceId,
 				}),
 			).toMatchObject({ _id: fixture.personalMembership.membershipId, active: true });
-		}, 120_000);
+			// convex-test updates every files_nodes index in memory on each write. With the folder table sort
+			// indexes, seeding and deleting 5,400 folders takes about 75 s alone and more in a full run.
+		}, 240_000);
 	}
 });

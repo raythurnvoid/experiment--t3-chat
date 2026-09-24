@@ -658,6 +658,32 @@ resolve the reader with `db_get_tree_reader` and filter every row with
   tree. Known limit: past the cap the query logs a warning and returns `truncated: true`, but the
   sidebar ignores that flag, so a member with more than 500 grants in one list can miss shared roots
   without any sign in the UI.
+- `list_tree_children_sorted` (the sorted Files table) uses the same folder gate, and a grant-only
+  member gets nothing for the root. It reads only rows with `isRestrictedScopeRoot: false`. Such a
+  row shares its folder's restricted scope, so every row in that index range is readable by anybody
+  who can read the folder. That is why no row is filtered after paging, and a hidden row never takes
+  a page slot or shows its sort value. Rows with `isRestrictedScopeRoot: true` come from
+  `list_tree_children_sort_side_rows`, which checks each one with the visible reader (read access
+  plus the pending hide rules) and caps them at 200. Over the cap a non-owner gets none of them: the
+  hidden rows share the name order, so a cut-off after the first 200 readable rows would move when a
+  hidden row is added and leak that it exists. The owner reads every row, so the owner gets the
+  first 200. A grant-only member's root rows come from these side rows. Known limit: a member of a
+  folder with more than 200 restricted children also loses the ones shared with them. The leak-free
+  fix is to list candidates from the member's own grants, like `list_tree_shared_roots`.
+- A folder that the caller can read but that the Files view hides (archived, or hidden by the
+  caller's own pending delete or move) gets empty side rows, not a refusal, so the table shows no
+  error there.
+- `isRestrictedScopeRoot` on `files_nodes` is a stored copy of `restrictedScopeNodeId === _id`, and
+  committed metadata field docs carry the same copy. `files_nodes_db_set_restricted_scope` writes
+  both whenever a node is restricted or unrestricted. `list_tree_children_sorted` throws
+  `should_never_happen` when a returned row is a restricted root, because a stale `false` would
+  show a hidden row. The side rows need no such guard: they check every row with the visible reader.
+- `files_folder_sorts.get_folder_sort` returns null unless the caller can `content.read` the folder
+  (or the workspace, at the root). A grant-only member at the root gets Name, A to Z with
+  `canSave: false`, not the saved root sort: a saved metadata sort would name a key they may not see. `canSave` and `set_folder_sort` need what a metadata write needs:
+  `content.write` on the folder and a folder whose write policy lets the user write. At the root only
+  the workspace permission applies. The saved sort is shared by every member; a reader's own sort is
+  never stored.
 - `get_folder_readme` uses the same folder gate as `list_tree_children`. Known limit: it reads at most
   50 active files per case variant of the prefix `rea`, so a folder with 50+ names like `reaction-*.md`
   before `README.md` shows no README in the Files table.

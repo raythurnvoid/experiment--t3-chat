@@ -16,6 +16,7 @@ import { billing_PRODUCTS } from "../shared/billing.ts";
 import { files_MAX_UPLOADS_BYTES, files_ROOT_ID } from "../server/files.ts";
 import { crypto_random_hex, crypto_sha256_hex } from "../server/crypto-utils.ts";
 import type { plugins_Capability } from "../shared/plugins.ts";
+import { files_sort_text_key } from "../shared/files-sort.ts";
 
 const SEAL_PROCESSING_PATH = "/api/v1/plugins/service-grants/seal-processing";
 const CREATE_TARGET_PATH = "/api/v1/files/service-uploads/create-target";
@@ -1675,6 +1676,28 @@ describe("service upload targets", () => {
 		expect((await read_quota(t, fixture))?.usedCount).toBe(0);
 		// The URL window moved forward so the next PUT fits inside it.
 		expect(assets[0]!.uploadUrlExpiresAt).toBeGreaterThanOrEqual(assetBefore!.uploadUrlExpiresAt!);
+	});
+
+	test("remint sets the file byte size to the new attempt's declared size", async () => {
+		const t = test_convex();
+		const fixture = await seed_installation(t);
+		const sealed = await seal_token(t, fixture);
+		expect((await call(t, CREATE_TARGET_PATH, sealed, target_body())).status).toBe(200);
+		const targetBefore = (await read_targets(t))[0]!;
+		// Model an R2 event that set the old asset's real size. A new file already holds the declared
+		// size, so only a different value shows whether remint writes the new asset's size.
+		await t.run(async (ctx) => ctx.db.patch("files_nodes", targetBefore.nodeId, { contentByteSize: 1 }));
+
+		const response = await call(t, REMINT_PATH, sealed, { idempotencyKey: "meeting-1", targetKey: "recording" });
+		expect(response.status).toBe(200);
+		const sized = await t.run(async (ctx) => {
+			const node = await ctx.db.get("files_nodes", targetBefore.nodeId);
+			const asset = node?.assetId ? await ctx.db.get("files_r2_assets", node.assetId) : null;
+			return { assetId: node?.assetId, contentByteSize: node?.contentByteSize, assetSize: asset?.size };
+		});
+		expect(sized.assetId).not.toBe(targetBefore.assetId);
+		expect(sized.assetSize).toBe(targetBefore.declaredBytes);
+		expect(sized.contentByteSize).toBe(sized.assetSize);
 	});
 
 	test.each(["before", "after"] as const)(
@@ -3540,6 +3563,7 @@ describe("service upload archive", () => {
 					pathDepth: 3,
 					lowercaseExtension: null,
 					name: `old-${index}`,
+					sortName: files_sort_text_key(`old-${index}`),
 					kind: "folder",
 					archiveOperationId: "older-archive",
 					parentId: target.destinationNodeId!,
@@ -3548,6 +3572,7 @@ describe("service upload archive", () => {
 					updatedAt: now,
 					contentType: null,
 					assetId: null,
+					contentByteSize: null,
 					textKind: null,
 					collaborationEnabled: null,
 					yjsSnapshotId: null,
@@ -3559,6 +3584,7 @@ describe("service upload archive", () => {
 					contentFrontmatterTooLargeFieldCount: null,
 					contentFrontmatterTooLargeIndexDocumentCount: null,
 					restrictedScopeNodeId: null,
+					isRestrictedScopeRoot: false,
 					writePolicy: null,
 				});
 			}

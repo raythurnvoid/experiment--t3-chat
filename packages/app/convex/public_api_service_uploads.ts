@@ -1311,7 +1311,11 @@ async function db_remint_pending_target(
 	});
 
 	await ctx.db.patch("plugin_service_storage_targets", args.target._id, { assetId, updatedAt: args.now });
-	await ctx.db.patch("files_nodes", args.target.nodeId, { assetId, updatedAt: args.now });
+	await ctx.db.patch("files_nodes", args.target.nodeId, {
+		assetId,
+		contentByteSize: args.target.declaredBytes,
+		updatedAt: args.now,
+	});
 
 	await r2_enqueue_object_deletion_job(ctx, {
 		organizationId: args.target.organizationId,

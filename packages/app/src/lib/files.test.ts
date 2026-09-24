@@ -89,6 +89,7 @@ const createTreeItem = (args: {
 		restrictedScopeNodeId: null,
 		contentType: null,
 		assetId: null,
+		contentByteSize: null,
 		textKind: null,
 		collaborationEnabled: null,
 		yjsSnapshotId: null,

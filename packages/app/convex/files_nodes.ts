@@ -17,6 +17,7 @@ import type { Doc, Id } from "./_generated/dataModel";
 import {
 	paginationOptsValidator,
 	paginationResultValidator,
+	type PaginationResult,
 	type RegisteredMutation,
 	type RegisteredQuery,
 } from "convex/server";
@@ -64,6 +65,12 @@ import {
 } from "../server/files.ts";
 import { files_yjs_COMPACTION_RETRY_MESSAGE, files_yjs_scan_client_update } from "../shared/files-yjs.ts";
 import { files_metadata_apply_set_and_remove, type files_metadata_Entry } from "../shared/files-metadata.ts";
+import {
+	files_sort_compare,
+	files_sort_field_is_valid,
+	files_sort_text_key,
+	type files_sort_Key,
+} from "../shared/files-sort.ts";
 import { path_name_of } from "../shared/paths.ts";
 import { Result, Result_all } from "common/errors-as-values-utils.ts";
 import { composite_id, should_never_happen } from "../shared/shared-utils.ts";
@@ -76,13 +83,15 @@ import app_convex_schema, {
 	ai_chat_workspaces_source_validator,
 	files_content_version_validator,
 	files_pending_target_validator,
+	files_sort_key_validator,
+	files_sort_validator,
 	file_content_materialization_state_validator,
 	file_content_materialization_header_validator,
 } from "./schema.ts";
 import { files_search_db_create_reader } from "./files_search.ts";
 import { files_visible_db_create_reader } from "./files_visible.ts";
 import { files_media_validation_db_advance_version } from "./files_media_validation.ts";
-import type { files_PendingTarget } from "../shared/files.ts";
+import type { files_PendingParent, files_PendingTarget } from "../shared/files.ts";
 import { components, internal } from "./_generated/api.js";
 import { doc } from "convex-helpers/validators";
 import { billing_event } from "../server/billing.ts";
@@ -153,6 +162,24 @@ const MAX_MOVE_DOCUMENT_COUNT = 2000;
 const MAX_MOVE_BYTES = 4 * 1024 * 1024;
 
 const TREE_CHILDREN_MAX_ITEMS = 200;
+
+/**
+ * How many children one page of a metadata key's missing segment may scan.
+ */
+const TREE_CHILDREN_SORT_MISSING_MAX_SCAN = 1000;
+
+/**
+ * The most restricted children, and the most pending changes, that one folder table sorts. The
+ * table says so when a folder has more.
+ */
+const TREE_CHILDREN_SIDE_ROWS_MAX_ITEMS = 200;
+
+/**
+ * How many of the caller's pending moves into one folder the side rows may scan. At the root, the
+ * move index holds the moves of every workspace, so most scanned moves can be skipped.
+ */
+const TREE_CHILDREN_SIDE_ROWS_MOVES_MAX_SCAN = 1000;
+
 const TREE_ANCESTORS_MAX_DEPTH = 64;
 const TREE_SHARED_ROOTS_MAX_GRANTS = 500;
 
@@ -315,6 +342,7 @@ async function db_patch_node_search_scope(
 		kind: Doc<"files_nodes">["kind"];
 		path?: string;
 		archiveOperationId?: string;
+		parentId?: Doc<"files_nodes">["parentId"];
 	},
 ) {
 	await Promise.all([
@@ -679,63 +707,6 @@ export const resolve_new_node_path = internalQuery({
 });
 
 /**
- * Recompute path fields for descendants after a file node moves or is renamed.
- * `parentPath` is the already-updated path for `parentId`; each child path is built from it.
- *
- * File descendants also update their chunk scope.
- */
-async function cascade_file_descendants_path(
-	ctx: MutationCtx,
-	args: {
-		organizationId: Doc<"files_nodes">["organizationId"];
-		workspaceId: Doc<"files_nodes">["workspaceId"];
-		parentId: Id<"files_nodes">;
-		parentPath: string;
-	},
-) {
-	const stack: Array<{ parentId: Id<"files_nodes">; parentPath: string }> = [
-		{ parentId: args.parentId, parentPath: args.parentPath },
-	];
-
-	while (stack.length > 0) {
-		const frame = stack.pop();
-		if (!frame) {
-			continue;
-		}
-
-		const children = await ctx.db
-			.query("files_nodes")
-			.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
-				q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("parentId", frame.parentId),
-			)
-			.collect();
-
-		await Promise.all(
-			children.map(async (child) => {
-				const childPath = path_join(frame.parentPath, child.name);
-				await ctx.db.patch("files_nodes", child._id, {
-					path: childPath,
-					treePath: derive_tree_path_for_file_node(childPath, child.kind),
-					pathDepth: files_path_depth(childPath),
-					lowercaseExtension: files_lowercase_extension(childPath, child.kind),
-				});
-				await db_patch_node_search_scope(ctx, {
-					organizationId: args.organizationId,
-					workspaceId: args.workspaceId,
-					nodeId: child._id,
-					kind: child.kind,
-					path: childPath,
-				});
-				stack.push({
-					parentId: child._id,
-					parentPath: childPath,
-				});
-			}),
-		);
-	}
-}
-
-/**
  * The restricted scope a new or moved child inherits from where it sits: the nearest restricted
  * folder at or above `parentId`, or `null` when that chain has none.
  *
@@ -754,6 +725,37 @@ export async function files_nodes_db_resolve_parent_restricted_scope(
 
 	const parent = await ctx.db.get("files_nodes", args.parentId);
 	return parent?.restrictedScopeNodeId ?? null;
+}
+
+/**
+ * Set a node's own `restrictedScopeNodeId` when a restrict or unrestrict makes it its own restricted
+ * root or stops it being one. Call `files_nodes_db_cascade_restricted_scope` after this for the
+ * descendants.
+ *
+ * The folder table indexes split rows by `isRestrictedScopeRoot`, so the node and its committed
+ * metadata field docs get the new flag in the same transaction. Archived docs too, because a restore
+ * does not rewrite the flag.
+ */
+export async function files_nodes_db_set_restricted_scope(
+	ctx: MutationCtx,
+	args: {
+		organizationId: Doc<"files_nodes">["organizationId"];
+		workspaceId: Doc<"files_nodes">["workspaceId"];
+		nodeId: Id<"files_nodes">;
+		restrictedScopeNodeId: Id<"files_nodes"> | null;
+	},
+) {
+	const isRestrictedScopeRoot = args.restrictedScopeNodeId === args.nodeId;
+	await ctx.db.patch("files_nodes", args.nodeId, {
+		restrictedScopeNodeId: args.restrictedScopeNodeId,
+		isRestrictedScopeRoot,
+	});
+	await files_metadata_db_patch_file_scope(ctx, {
+		organizationId: args.organizationId,
+		workspaceId: args.workspaceId,
+		nodeId: args.nodeId,
+		isRestrictedScopeRoot,
+	});
 }
 
 /**
@@ -1997,6 +1999,7 @@ function node_insert_fields(args: {
 	kind: Doc<"files_nodes">["kind"];
 	contentType?: Doc<"files_nodes">["contentType"];
 	assetId?: Id<"files_r2_assets">;
+	contentByteSize?: number;
 	archiveOperationId?: Doc<"files_nodes">["archiveOperationId"];
 	restrictedScopeNodeId: Doc<"files_nodes">["restrictedScopeNodeId"];
 	writePolicy?: Doc<"files_nodes">["writePolicy"];
@@ -2009,12 +2012,14 @@ function node_insert_fields(args: {
 		parentId: args.parentId,
 		kind: args.kind,
 		name: args.name,
+		sortName: files_sort_text_key(args.name),
 		path: args.path,
 		treePath: derive_tree_path_for_file_node(args.path, args.kind),
 		pathDepth: files_path_depth(args.path),
 		lowercaseExtension: files_lowercase_extension(args.path, args.kind),
 		contentType: args.contentType ?? null,
 		assetId: args.assetId ?? null,
+		contentByteSize: args.contentByteSize ?? null,
 		textKind: null,
 		collaborationEnabled: null,
 		yjsSnapshotId: null,
@@ -2026,6 +2031,8 @@ function node_insert_fields(args: {
 		contentFrontmatterTooLargeFieldCount: null,
 		contentFrontmatterTooLargeIndexDocumentCount: null,
 		restrictedScopeNodeId: args.restrictedScopeNodeId,
+		// A new node inherits its parent's scope, so it is never its own restricted root.
+		isRestrictedScopeRoot: false,
 		writePolicy: args.writePolicy ?? null,
 		newChildWritePolicy: args.newChildWritePolicy ?? null,
 		archiveOperationId: args.archiveOperationId ?? null,
@@ -2079,10 +2086,14 @@ async function db_insert_node(
 		parentId: args.parentId,
 	});
 
+	// Upload assets are inserted with their declared size, and the R2 upload event corrects it later.
+	const asset = args.assetId ? await ctx.db.get("files_r2_assets", args.assetId) : null;
+
 	const nodeId = await ctx.db.insert(
 		"files_nodes",
 		node_insert_fields({
 			...args,
+			contentByteSize: asset?.size,
 			restrictedScopeNodeId,
 			writePolicy: args.writePolicy !== undefined ? args.writePolicy : parentDefault,
 			newChildWritePolicy:
@@ -4529,74 +4540,6 @@ export async function files_nodes_db_validate_pending_move_target_for_proposal(
 }
 
 /**
- * Patch one node to its destination and fan out the denormalized paths (chunk scope, descendants).
- **/
-export async function files_nodes_db_apply_node_move(
-	ctx: MutationCtx,
-	args: {
-		organizationId: Id<"organizations">;
-		workspaceId: Id<"organizations_workspaces">;
-		node: Doc<"files_nodes">;
-		destParentId: Id<"files_nodes"> | typeof files_ROOT_ID;
-		destName: string;
-		destPath: string;
-		updatedBy: Id<"users">;
-		now: number;
-	},
-) {
-	// A move or rename changes the name only. The stored content type stays: `data.json` renamed
-	// to `data.yaml` is still JSON, and the editor keeps opening it as JSON.
-	await ctx.db.patch("files_nodes", args.node._id, {
-		parentId: args.destParentId,
-		name: args.destName,
-		path: args.destPath,
-		treePath: derive_tree_path_for_file_node(args.destPath, args.node.kind),
-		pathDepth: files_path_depth(args.destPath),
-		lowercaseExtension: files_lowercase_extension(args.destPath, args.node.kind),
-		updatedBy: args.updatedBy,
-		updatedAt: args.now,
-	});
-	await db_patch_node_search_scope(ctx, {
-		organizationId: args.organizationId,
-		workspaceId: args.workspaceId,
-		nodeId: args.node._id,
-		kind: args.node.kind,
-		path: args.destPath,
-	});
-	await cascade_file_descendants_path(ctx, {
-		organizationId: args.organizationId,
-		workspaceId: args.workspaceId,
-		parentId: args.node._id,
-		parentPath: args.destPath,
-	});
-
-	// The node landed under a new parent, so it inherits that parent's restricted scope. A node that
-	// is restricted itself keeps its own scope, and carries its whole subtree with it, so nothing
-	// below it changes either.
-	//
-	// Moving a file out of a restricted folder does open it to the whole workspace. That is on purpose,
-	// and it is why the callers ask `authorize_leaving_restricted_scope` first: this helper only writes
-	// the result. `args.node` was read before the patch above, so it still holds the scope from before
-	// the move.
-	//
-	// Protection needs no fixup here. A move keeps every local rule and folder default unchanged.
-	if (args.node.restrictedScopeNodeId !== args.node._id) {
-		const destScopeNodeId = await files_nodes_db_resolve_parent_restricted_scope(ctx, {
-			parentId: args.destParentId,
-		});
-		if (destScopeNodeId !== args.node.restrictedScopeNodeId) {
-			await ctx.db.patch("files_nodes", args.node._id, { restrictedScopeNodeId: destScopeNodeId });
-			await files_nodes_db_cascade_restricted_scope(ctx, {
-				organizationId: args.organizationId,
-				workspaceId: args.workspaceId,
-				parentId: args.node._id,
-				scopeNodeId: destScopeNodeId,
-			});
-		}
-	}
-}
-
-/**
  * Apply one independent structural proposal through the same bounded plan as a direct move.
  * Mixed content and connected proposals need one reviewed unit before any saved writes.
  */
@@ -5126,7 +5069,14 @@ export async function files_nodes_db_preflight_move(
 
 	type FinalNodeFields = Pick<
 		Doc<"files_nodes">,
-		"parentId" | "name" | "path" | "treePath" | "pathDepth" | "lowercaseExtension" | "restrictedScopeNodeId"
+		| "parentId"
+		| "name"
+		| "sortName"
+		| "path"
+		| "treePath"
+		| "pathDepth"
+		| "lowercaseExtension"
+		| "restrictedScopeNodeId"
 	>;
 	const finalById = new Map<Id<"files_nodes">, FinalNodeFields>();
 	const visiting = new Set<Id<"files_nodes">>();
@@ -5147,6 +5097,7 @@ export async function files_nodes_db_preflight_move(
 		const fields: FinalNodeFields = {
 			parentId,
 			name,
+			sortName: files_sort_text_key(name),
 			path,
 			treePath: derive_tree_path_for_file_node(path, node.kind),
 			pathDepth: files_path_depth(path),
@@ -5648,7 +5599,9 @@ export async function files_nodes_db_preflight_move(
 	}> = [];
 	const metadataPatches: Array<{
 		id: Id<"files_metadata_docs">;
-		patch: Pick<Doc<"files_metadata_docs">, "path" | "treePath" | "archiveOperationId">;
+		parentKey?: string;
+		patch: Pick<Doc<"files_metadata_docs">, "path" | "treePath" | "archiveOperationId"> &
+			Partial<Pick<Doc<"files_nodes">, "parentId" | "name" | "sortName">>;
 	}> = [];
 	let writeBytes = 0;
 	let writeDocumentCount = 0;
@@ -5748,11 +5701,23 @@ export async function files_nodes_db_preflight_move(
 				),
 		]) {
 			for await (const metadata of metadataDocs) {
-				const metadataPatch = { path, treePath, archiveOperationId: nextArchiveOperationId };
+				// Only committed field docs carry the folder table sort fields.
+				const sortFields =
+					metadata.sourceKind === "committed" && metadata.docKind === "field"
+						? { parentId: fields.parentId, name: fields.name, sortName: fields.sortName }
+						: {};
+				const metadataPatch = { path, treePath, archiveOperationId: nextArchiveOperationId, ...sortFields };
 				if (!fits_move_read_budget(readBudget, metadata) || !fitsWriteBudget({ ...metadata, ...metadataPatch })) {
 					return Result({ _nay: { name: "move_too_large", message: "This move is too large. Select fewer items." } });
 				}
-				metadataPatches.push({ id: metadata._id, patch: metadataPatch });
+				metadataPatches.push({
+					id: metadata._id,
+					// A node under a planned folder gets that folder's id only when the plan is applied.
+					...(plannedParentKeys.has(node._id) && "parentId" in sortFields
+						? { parentKey: plannedParentKeys.get(node._id)! }
+						: {}),
+					patch: metadataPatch,
+				});
 			}
 		}
 	}
@@ -5791,7 +5756,11 @@ export async function files_nodes_db_apply_move(
 			...(node.parentKey ? { parentId: folderIds.get(node.parentKey)! } : {}),
 		});
 	for (const chunk of plan.chunkPatches) await ctx.db.patch("files_plain_text_chunks", chunk.id, chunk.patch);
-	for (const metadata of plan.metadataPatches) await ctx.db.patch("files_metadata_docs", metadata.id, metadata.patch);
+	for (const metadata of plan.metadataPatches)
+		await ctx.db.patch("files_metadata_docs", metadata.id, {
+			...metadata.patch,
+			...(metadata.parentKey ? { parentId: folderIds.get(metadata.parentKey)! } : {}),
+		});
 	if (plan.folderInserts.length > 0 || plan.nodePatches.length > 0)
 		await files_media_validation_db_advance_version(ctx, plan);
 }
@@ -6604,6 +6573,7 @@ export const unarchive_nodes = mutation({
 					kind: plan.fileNode.kind,
 					path: plan.targetPath,
 					archiveOperationId: undefined,
+					parentId: plan.targetParentId,
 				});
 			}),
 		);
@@ -6656,6 +6626,7 @@ const files_node_public_doc_fields = {
 	lowercaseExtension: doc(app_convex_schema, "files_nodes").fields.lowercaseExtension,
 	contentType: doc(app_convex_schema, "files_nodes").fields.contentType,
 	assetId: doc(app_convex_schema, "files_nodes").fields.assetId,
+	contentByteSize: doc(app_convex_schema, "files_nodes").fields.contentByteSize,
 	textKind: doc(app_convex_schema, "files_nodes").fields.textKind,
 	collaborationEnabled: doc(app_convex_schema, "files_nodes").fields.collaborationEnabled,
 	yjsSnapshotId: doc(app_convex_schema, "files_nodes").fields.yjsSnapshotId,
@@ -6670,6 +6641,7 @@ const files_node_public_doc_fields = {
 		.contentFrontmatterTooLargeIndexDocumentCount,
 	restrictedScopeNodeId: doc(app_convex_schema, "files_nodes").fields.restrictedScopeNodeId,
 	// Leave writePolicy and newChildWritePolicy out. They name accounts a reader may not see.
+	// Leave sortName and isRestrictedScopeRoot out too. Only the server indexes read them.
 	archiveOperationId: doc(app_convex_schema, "files_nodes").fields.archiveOperationId,
 	createdBy: doc(app_convex_schema, "files_nodes").fields.createdBy,
 	updatedBy: doc(app_convex_schema, "files_nodes").fields.updatedBy,
@@ -6686,7 +6658,13 @@ const files_node_public_doc_fields = {
  * The state names the node's own rule only. A parent lock never marks a child.
  */
 function get_public_node_fields(fileNode: Doc<"files_nodes">, writeBlockedReason: "permission" | "read_only" | null) {
-	const { writePolicy, newChildWritePolicy: _newChildWritePolicy, ...rest } = fileNode;
+	const {
+		writePolicy,
+		newChildWritePolicy: _newChildWritePolicy,
+		sortName: _sortName,
+		isRestrictedScopeRoot: _isRestrictedScopeRoot,
+		...rest
+	} = fileNode;
 
 	// Keep these values as exact literals so they match the return validator.
 	const writePolicyState =
@@ -7102,6 +7080,797 @@ export const list_tree_children = query({
 		const page = await db_get_tree_rows(ctx, { userAuth, membership, fileNodes });
 		// A page can be empty after access checks or a split. Only isDone ends the folder.
 		return { ...result, page };
+	},
+});
+
+/**
+ * One page of one segment of one folder's children, of one kind, for the folder table.
+ *
+ * Each kind has a `value` segment, the children that have a value for the sort field, in the sort
+ * direction. Some fields also have a `missing` segment: the children without a value, always by
+ * name, A to Z. The table shows folders before files, and each value segment before its missing one.
+ *
+ * Only children that are not their own restricted root are read. When the caller may read the
+ * folder, every such child is readable. So no row is dropped for access after paging, and a hidden
+ * child can never shorten a page. `list_tree_children_sort_side_rows` returns the restricted ones.
+ * This is true for members only; service accounts check each node, so do not reuse this for them.
+ */
+export const list_tree_children_sorted = query({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		parentId: doc(app_convex_schema, "files_nodes").fields.parentId,
+		kind: doc(app_convex_schema, "files_nodes").fields.kind,
+		sort: files_sort_validator,
+		segment: v.union(v.literal("value"), v.literal("missing")),
+		paginationOpts: paginationOptsValidator,
+	},
+	returns: paginationResultValidator(
+		v.object({
+			...files_node_public_doc_fields,
+			// These four fields cannot contain reserved `GLOBAL` or `SYSTEM` values in the visible tree.
+			organizationId: v.id("organizations"),
+			workspaceId: v.id("organizations_workspaces"),
+			createdBy: v.id("users"),
+			updatedBy: v.id("users"),
+			/**
+			 * The row's index tuple after the fields every row of its segment shares. Compare two keys
+			 * with `files_sort_compare`.
+			 */
+			sortKey: files_sort_key_validator,
+			/**
+			 * The value of a metadata sort field, for the table's extra column. Null for built-in fields
+			 * and in the missing segment.
+			 */
+			sortFieldValue: v.union(v.string(), v.number(), v.boolean(), v.null()),
+		}),
+	),
+	handler: async (ctx, args) => {
+		// Every refusal gives this one answer, like `list_tree_children`.
+		const refused = { page: [], isDone: true, continueCursor: "" };
+
+		const reader = await db_get_tree_reader(ctx, { membershipId: args.membershipId });
+		if (!reader) {
+			return refused;
+		}
+		const { userAuth, membership } = reader;
+
+		// A grant-only member reads no open node. The side rows give them their shared root children.
+		if (args.parentId === files_ROOT_ID) {
+			if (!reader.hasWorkspaceRead) {
+				return refused;
+			}
+		} else if (!(await db_get_readable_tree_node(ctx, { reader, nodeId: args.parentId }))) {
+			return refused;
+		}
+
+		if (!files_sort_field_is_valid(args.sort.field)) {
+			return refused;
+		}
+
+		const paginationOpts = {
+			...args.paginationOpts,
+			numItems: Math.min(args.paginationOpts.numItems, TREE_CHILDREN_MAX_ITEMS),
+		};
+		const field = args.sort.field;
+		const direction = args.sort.direction;
+
+		type SortedRow = {
+			node: Doc<"files_nodes">;
+			sortKey: files_sort_Key;
+			sortFieldValue: string | number | boolean | null;
+		};
+		const node_rows = (
+			result: PaginationResult<Doc<"files_nodes">>,
+			sortKey: (node: Doc<"files_nodes">) => files_sort_Key,
+		) => ({
+			...result,
+			page: result.page.map((node): SortedRow => ({ node, sortKey: sortKey(node), sortFieldValue: null })),
+		});
+		const by_name = (node: Doc<"files_nodes">) => [node.sortName, node.name];
+
+		const segment = await (async (/* iife */): Promise<Omit<PaginationResult<SortedRow>, "pageStatus">> => {
+			// Name has no missing value. Folders have no size, so they sort by name.
+			if (field === "name" || (field === "size" && args.kind === "folder")) {
+				if (args.segment === "missing") {
+					return refused;
+				}
+
+				return node_rows(
+					await ctx.db
+						.query("files_nodes")
+						.withIndex("by_org_ws_parent_archive_restricted_kind_sortName_name", (q) =>
+							q
+								.eq("organizationId", membership.organizationId)
+								.eq("workspaceId", membership.workspaceId)
+								.eq("parentId", args.parentId)
+								.eq("archiveOperationId", null)
+								.eq("isRestrictedScopeRoot", false)
+								.eq("kind", args.kind),
+						)
+						.order(field === "name" ? direction : "asc")
+						.paginate(paginationOpts),
+					by_name,
+				);
+			}
+
+			// Convex appends `_creationTime` to every index, so this index is in creation order.
+			if (field === "created") {
+				if (args.segment === "missing") {
+					return refused;
+				}
+
+				return node_rows(
+					await ctx.db
+						.query("files_nodes")
+						.withIndex("by_org_ws_parent_archive_restricted_kind", (q) =>
+							q
+								.eq("organizationId", membership.organizationId)
+								.eq("workspaceId", membership.workspaceId)
+								.eq("parentId", args.parentId)
+								.eq("archiveOperationId", null)
+								.eq("isRestrictedScopeRoot", false)
+								.eq("kind", args.kind),
+						)
+						.order(direction)
+						.paginate(paginationOpts),
+					(node) => [node._creationTime],
+				);
+			}
+
+			if (field === "updated") {
+				if (args.segment === "missing") {
+					return refused;
+				}
+
+				return node_rows(
+					await ctx.db
+						.query("files_nodes")
+						.withIndex("by_org_ws_parent_archive_restricted_kind_updatedAt_name", (q) =>
+							q
+								.eq("organizationId", membership.organizationId)
+								.eq("workspaceId", membership.workspaceId)
+								.eq("parentId", args.parentId)
+								.eq("archiveOperationId", null)
+								.eq("isRestrictedScopeRoot", false)
+								.eq("kind", args.kind),
+						)
+						.order(direction)
+						.paginate(paginationOpts),
+					(node) => [node.updatedAt, node.sortName, node.name],
+				);
+			}
+
+			// Null means no extension or no known size. Those rows are the missing segment, by name.
+			if (field === "type") {
+				return args.segment === "value"
+					? node_rows(
+							await ctx.db
+								.query("files_nodes")
+								.withIndex("by_org_ws_parent_archive_restricted_kind_ext_sortName_name", (q) =>
+									q
+										.eq("organizationId", membership.organizationId)
+										.eq("workspaceId", membership.workspaceId)
+										.eq("parentId", args.parentId)
+										.eq("archiveOperationId", null)
+										.eq("isRestrictedScopeRoot", false)
+										.eq("kind", args.kind)
+										.gt("lowercaseExtension", null),
+								)
+								.order(direction)
+								.paginate(paginationOpts),
+							(node) => [node.lowercaseExtension, node.sortName, node.name],
+						)
+					: node_rows(
+							await ctx.db
+								.query("files_nodes")
+								.withIndex("by_org_ws_parent_archive_restricted_kind_ext_sortName_name", (q) =>
+									q
+										.eq("organizationId", membership.organizationId)
+										.eq("workspaceId", membership.workspaceId)
+										.eq("parentId", args.parentId)
+										.eq("archiveOperationId", null)
+										.eq("isRestrictedScopeRoot", false)
+										.eq("kind", args.kind)
+										.eq("lowercaseExtension", null),
+								)
+								.order("asc")
+								.paginate(paginationOpts),
+							by_name,
+						);
+			}
+
+			if (field === "size") {
+				return args.segment === "value"
+					? node_rows(
+							await ctx.db
+								.query("files_nodes")
+								.withIndex("by_org_ws_parent_archive_restricted_kind_size_sortName_name", (q) =>
+									q
+										.eq("organizationId", membership.organizationId)
+										.eq("workspaceId", membership.workspaceId)
+										.eq("parentId", args.parentId)
+										.eq("archiveOperationId", null)
+										.eq("isRestrictedScopeRoot", false)
+										.eq("kind", args.kind)
+										.gt("contentByteSize", null),
+								)
+								.order(direction)
+								.paginate(paginationOpts),
+							(node) => [node.contentByteSize, node.sortName, node.name],
+						)
+					: node_rows(
+							await ctx.db
+								.query("files_nodes")
+								.withIndex("by_org_ws_parent_archive_restricted_kind_size_sortName_name", (q) =>
+									q
+										.eq("organizationId", membership.organizationId)
+										.eq("workspaceId", membership.workspaceId)
+										.eq("parentId", args.parentId)
+										.eq("archiveOperationId", null)
+										.eq("isRestrictedScopeRoot", false)
+										.eq("kind", args.kind)
+										.eq("contentByteSize", null),
+								)
+								.order("asc")
+								.paginate(paginationOpts),
+							by_name,
+						);
+			}
+
+			// A metadata or frontmatter key: its committed field docs carry the node's sort fields.
+			if (args.segment === "value") {
+				const result = await ctx.db
+					.query("files_metadata_docs")
+					.withIndex("by_org_ws_source_archive_docKind_field_parent_restricted_sort", (q) =>
+						q
+							.eq("organizationId", membership.organizationId)
+							.eq("workspaceId", membership.workspaceId)
+							.eq("sourceKind", "committed")
+							.eq("archiveOperationId", undefined)
+							.eq("docKind", "field")
+							.eq("fieldPath", field)
+							.eq("parentId", args.parentId)
+							.eq("isRestrictedScopeRoot", false)
+							.eq("nodeKind", args.kind)
+							// Leave out docs with no value, such as a frontmatter map. They are in the missing segment.
+							.gte("sortValue", ""),
+					)
+					.order(direction)
+					.paginate(paginationOpts);
+
+				return {
+					...result,
+					page: await Promise.all(
+						result.page.map(async (fieldDoc): Promise<SortedRow> => {
+							const node =
+								fieldDoc.sourceKind === "committed" ? await ctx.db.get("files_nodes", fieldDoc.fileNodeId) : null;
+							if (!node || fieldDoc.sourceKind !== "committed") {
+								const errorMessage = "fieldDoc.fileNodeId points to a missing files_nodes doc";
+								const errorData = { fieldDocId: fieldDoc._id };
+								console.error(errorMessage, errorData);
+								throw should_never_happen(errorMessage, errorData);
+							}
+
+							return {
+								node,
+								sortKey: [fieldDoc.sortValue ?? null, node.sortName, node.name],
+								sortFieldValue: fieldDoc.sortDisplayValue ?? null,
+							};
+						}),
+					),
+				};
+			}
+
+			// The missing segment of a metadata key. No index lists the children that lack a key, so walk
+			// the children and the key's field docs in the same name order, and keep each child that has
+			// no field doc with a value. Iterators keep this at two range reads per page.
+			let after: { sortName: string; name: string } | null = null;
+			if (paginationOpts.cursor) {
+				const parsed: unknown = JSON.parse(paginationOpts.cursor);
+				if (
+					typeof parsed !== "object" ||
+					parsed === null ||
+					!("sortName" in parsed) ||
+					typeof parsed.sortName !== "string" ||
+					!("name" in parsed) ||
+					typeof parsed.name !== "string"
+				) {
+					return refused;
+				}
+				after = { sortName: parsed.sortName, name: parsed.name };
+			}
+
+			// Resume after the last scanned child with two ranges: the rest of its sort name, then every later
+			// sort name. This follows the index order exactly, with no string compare in JavaScript.
+			const ranges = after ? (["same", "later"] as const) : (["all"] as const);
+			const child_nodes = async function* () {
+				for (const range of ranges) {
+					yield* ctx.db
+						.query("files_nodes")
+						.withIndex("by_org_ws_parent_archive_restricted_kind_sortName_name", (q) => {
+							const kindRange = q
+								.eq("organizationId", membership.organizationId)
+								.eq("workspaceId", membership.workspaceId)
+								.eq("parentId", args.parentId)
+								.eq("archiveOperationId", null)
+								.eq("isRestrictedScopeRoot", false)
+								.eq("kind", args.kind);
+							return !after || range === "all"
+								? kindRange
+								: range === "same"
+									? kindRange.eq("sortName", after.sortName).gt("name", after.name)
+									: kindRange.gt("sortName", after.sortName);
+						});
+				}
+			};
+			const child_field_docs = async function* () {
+				for (const range of ranges) {
+					for await (const fieldDoc of ctx.db
+						.query("files_metadata_docs")
+						.withIndex("by_org_ws_source_archive_docKind_field_parent_restricted_name", (q) => {
+							const kindRange = q
+								.eq("organizationId", membership.organizationId)
+								.eq("workspaceId", membership.workspaceId)
+								.eq("sourceKind", "committed")
+								.eq("archiveOperationId", undefined)
+								.eq("docKind", "field")
+								.eq("fieldPath", field)
+								.eq("parentId", args.parentId)
+								.eq("isRestrictedScopeRoot", false)
+								.eq("nodeKind", args.kind);
+							return !after || range === "all"
+								? kindRange
+								: range === "same"
+									? kindRange.eq("sortName", after.sortName).gt("name", after.name)
+									: kindRange.gt("sortName", after.sortName);
+						})) {
+						if (fieldDoc.sourceKind === "committed") {
+							yield fieldDoc;
+						}
+					}
+				}
+			};
+
+			const page: SortedRow[] = [];
+			let last = after;
+			let scanCount = 0;
+			let isDone = true;
+			const fieldDocs = child_field_docs();
+			let fieldDoc = await fieldDocs.next();
+			try {
+				for await (const node of child_nodes()) {
+					scanCount++;
+					last = { sortName: node.sortName, name: node.name };
+
+					// Committed field docs always carry their node's sort fields.
+					while (
+						!fieldDoc.done &&
+						files_sort_compare([fieldDoc.value.sortName!, fieldDoc.value.name!], by_name(node), "asc") < 0
+					) {
+						fieldDoc = await fieldDocs.next();
+					}
+					if (fieldDoc.done || fieldDoc.value.fileNodeId !== node._id || fieldDoc.value.sortValue === undefined) {
+						page.push({ node, sortKey: by_name(node), sortFieldValue: null });
+					}
+
+					if (page.length >= paginationOpts.numItems || scanCount >= TREE_CHILDREN_SORT_MISSING_MAX_SCAN) {
+						isDone = false;
+						break;
+					}
+				}
+			} finally {
+				await fieldDocs.return(undefined);
+			}
+
+			// This cursor is not pinned like a native one. The client reloads later pages when an earlier
+			// page's cursor changes. It is safe to send, because every scanned child is readable.
+			return { page, isDone, continueCursor: last ? JSON.stringify(last) : "" };
+		})();
+
+		// Find the rows this user moved or deleted in a pending change. No index finds those by source
+		// folder, so check each row. Only the caller's own changes can make a page short.
+		const checkedRows = await Promise.all(
+			segment.page.map(async (row) => {
+				// The partition trusts the stored flag. A stale flag would show a hidden row, so fail loudly.
+				if (row.node.isRestrictedScopeRoot || row.node.restrictedScopeNodeId === row.node._id) {
+					const errorMessage = "Stale restricted scope root flag in the folder table";
+					const errorData = { nodeId: row.node._id };
+					console.error(errorMessage, errorData);
+					throw should_never_happen(errorMessage, errorData);
+				}
+
+				const pendingUpdate = await ctx.db
+					.query("files_pending_updates")
+					.withIndex("by_user_target", (q) =>
+						q.eq("userId", userAuth.id).eq("target.kind", "saved").eq("target.id", row.node._id),
+					)
+					.unique();
+				return { ...row, pendingUpdate };
+			}),
+		);
+
+		// A moved or deleted row usually leaves this folder. But when a move's destination is gone, the
+		// Files view keeps the row here under its saved name. So ask the visible reader where each such
+		// row is now. Resolve one row at a time: the reader skips a target it is still resolving, so
+		// parallel calls would drop rows.
+		const stayingRowIds = new Set<Id<"files_nodes">>();
+		if (checkedRows.some((row) => row.pendingUpdate?.pendingArchive || row.pendingUpdate?.pendingMove)) {
+			const visibleReader = await files_visible_db_create_reader(ctx, {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				userId: userAuth.id,
+				readLimit: 4096,
+			});
+			const folderPath =
+				args.parentId === files_ROOT_ID
+					? ""
+					: (await visibleReader.resolveTarget({ kind: "saved", id: args.parentId }))?.path;
+			for (const row of checkedRows) {
+				if (!row.pendingUpdate?.pendingArchive && !row.pendingUpdate?.pendingMove) {
+					continue;
+				}
+
+				const entry = await visibleReader.resolveTarget({ kind: "saved", id: row.node._id });
+				if (folderPath !== undefined && entry?.path === `${folderPath}/${row.node.name}`) {
+					stayingRowIds.add(row.node._id);
+				}
+			}
+		}
+		const rows = checkedRows
+			.filter(
+				(row) =>
+					(!row.pendingUpdate?.pendingArchive && !row.pendingUpdate?.pendingMove) || stayingRowIds.has(row.node._id),
+			)
+			.map((row) => ({
+				...row,
+				contentType: row.pendingUpdate?.pendingReplacement?.contentType ?? row.node.contentType,
+			}));
+
+		const treeRows = await db_get_tree_rows(ctx, { userAuth, membership, fileNodes: rows.map((row) => row.node) });
+		return {
+			...segment,
+			page: treeRows.map((treeRow, index) => ({
+				...treeRow,
+				// Show a pending replacement's type, like the rest of the Files view.
+				contentType: rows[index]!.contentType,
+				sortKey: rows[index]!.sortKey,
+				sortFieldValue: rows[index]!.sortFieldValue,
+			})),
+		};
+	},
+});
+
+/**
+ * The rows of one folder's table that `list_tree_children_sorted` cannot page, with their sort keys:
+ * the readable children that are their own restricted root, and the caller's own pending drafts and
+ * moves into the folder. The table merges them into the sorted pages.
+ *
+ * `nameClaims` are the names in this folder that a draft or a pending move takes. The table hides a
+ * sorted row with one of those names, like the rest of the Files view.
+ */
+export const list_tree_children_sort_side_rows = query({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		parentId: doc(app_convex_schema, "files_nodes").fields.parentId,
+		sort: files_sort_validator,
+	},
+	returns: v.union(
+		v.null(),
+		v.object({
+			rows: v.array(
+				v.object({
+					target: files_pending_target_validator,
+					/**
+					 * The name the caller sees, which is the new name of a pending move.
+					 */
+					name: v.string(),
+					kind: doc(app_convex_schema, "files_nodes").fields.kind,
+					updatedAt: v.number(),
+					updatedBy: v.id("users"),
+					contentType: doc(app_convex_schema, "files_nodes").fields.contentType,
+					preparing: v.boolean(),
+					/**
+					 * The tree row of a saved node. Null for a private draft.
+					 */
+					treeRow: v.union(
+						v.null(),
+						v.object({
+							...files_node_public_doc_fields,
+							// These four fields cannot contain reserved `GLOBAL` or `SYSTEM` values in the visible tree.
+							organizationId: v.id("organizations"),
+							workspaceId: v.id("organizations_workspaces"),
+							createdBy: v.id("users"),
+							updatedBy: v.id("users"),
+						}),
+					),
+					segment: v.union(v.literal("value"), v.literal("missing")),
+					sortKey: files_sort_key_validator,
+					sortFieldValue: v.union(v.string(), v.number(), v.boolean(), v.null()),
+				}),
+			),
+			nameClaims: v.array(v.string()),
+			/**
+			 * The folder has more restricted children than the table sorts, so some are not shown.
+			 */
+			tooManyShared: v.boolean(),
+			/**
+			 * The caller has more pending changes here than the table sorts, so some are not shown.
+			 */
+			tooManyPending: v.boolean(),
+		}),
+	),
+	handler: async (ctx, args) => {
+		const reader = await db_get_tree_reader(ctx, { membershipId: args.membershipId });
+		if (!reader || !files_sort_field_is_valid(args.sort.field)) {
+			return null;
+		}
+		const { userAuth, membership } = reader;
+
+		// Check the folder like `list_tree_children_sorted`. At the root a grant-only member still gets
+		// the restricted children shared with them, because the sorted pages give them nothing there.
+		if (args.parentId !== files_ROOT_ID && !(await db_get_readable_tree_node(ctx, { reader, nodeId: args.parentId }))) {
+			return null;
+		}
+
+		// The visible reader applies the access check and every hide rule of the Files view to each row.
+		// Its read limit fits both caps.
+		const visibleReader = await files_visible_db_create_reader(ctx, {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			userId: userAuth.id,
+			readLimit: 4096,
+		});
+		const parent: files_PendingParent =
+			args.parentId === files_ROOT_ID ? { kind: "root" } : { kind: "saved", id: args.parentId };
+		const folder = parent.kind === "root" ? null : await visibleReader.resolveTarget(parent);
+		// An archive, or this user's own pending delete or move, hides the folder in the Files view. Its
+		// children are hidden with it, so there are no side rows. The user can still read the folder, so
+		// this is not a refusal.
+		if (parent.kind === "saved" && !folder) {
+			return { rows: [], nameClaims: [], tooManyShared: false, tooManyPending: false };
+		}
+		if (folder && folder.node.kind !== "folder") {
+			return null;
+		}
+		const folderPath = folder?.path ?? "";
+
+		// Keep an entry only while the caller sees it in this folder. A row can reach here from two
+		// sources, such as a restricted child the caller renamed, so key entries by target.
+		const entries = new Map<string, files_VisibleEntry>();
+		const add_entry = (entry: files_VisibleEntry | null) => {
+			if (entry && entry.path.slice(0, entry.path.lastIndexOf("/")) === folderPath) {
+				entries.set(`${entry.kind}:${entry.node._id}`, entry);
+			}
+		};
+
+		// Resolve one row at a time. The reader skips a target it is still resolving, so parallel
+		// calls that share a parent would drop rows.
+		//
+		// Over the cap, show a member none of these rows. Hidden rows share the name order, so a cut-off
+		// after the first 200 would move with them: a member could rename their own restricted files
+		// around it and learn the hidden names. This way the answer depends only on the total count.
+		// The owner reads every row, so the owner still gets the first 200.
+		const restrictedNodes = await ctx.db
+			.query("files_nodes")
+			.withIndex("by_org_ws_parent_archive_restricted_kind_sortName_name", (q) =>
+				q
+					.eq("organizationId", membership.organizationId)
+					.eq("workspaceId", membership.workspaceId)
+					.eq("parentId", args.parentId)
+					.eq("archiveOperationId", null)
+					.eq("isRestrictedScopeRoot", true),
+			)
+			.take(TREE_CHILDREN_SIDE_ROWS_MAX_ITEMS + 1);
+		let tooManyShared = restrictedNodes.length > TREE_CHILDREN_SIDE_ROWS_MAX_ITEMS;
+		if (reader.isOwner || !tooManyShared) {
+			for (const node of restrictedNodes.slice(0, TREE_CHILDREN_SIDE_ROWS_MAX_ITEMS)) {
+				add_entry(await visibleReader.resolveTarget({ kind: "saved", id: node._id }));
+			}
+		}
+		// A reader that ran out of reads stops at a position too, so apply the same rule.
+		if (visibleReader.exhausted) {
+			tooManyShared = true;
+			if (!reader.isOwner) {
+				entries.clear();
+			}
+		}
+
+		const nameClaims = new Set<string>();
+		let pendingCount = 0;
+		let tooManyPending = false;
+		for (const alias of await visibleReader.parentAliases(parent)) {
+			const drafts = await ctx.db
+				.query("files_pending_nodes")
+				.withIndex("by_organization_workspace_user_parent_state_name", (q) =>
+					q
+						.eq("organizationId", membership.organizationId)
+						.eq("workspaceId", membership.workspaceId)
+						.eq("userId", userAuth.id)
+						.eq("parent.kind", alias.kind)
+						.eq("parent.id", alias.kind === "root" ? undefined : alias.id)
+						.eq("state", "active"),
+				)
+				.take(TREE_CHILDREN_SIDE_ROWS_MAX_ITEMS + 1);
+			for (const draft of drafts) {
+				if (++pendingCount > TREE_CHILDREN_SIDE_ROWS_MAX_ITEMS) {
+					tooManyPending = true;
+					break;
+				}
+
+				// Any active draft takes its name, like the name claim rule of the visible reader.
+				nameClaims.add(draft.name);
+				add_entry(await visibleReader.resolveTarget({ kind: "private", id: draft._id }));
+			}
+
+			let scanCount = 0;
+			for await (const pendingUpdate of ctx.db
+				.query("files_pending_updates")
+				.withIndex("by_user_pendingMove_destParent_destName", (q) =>
+					q
+						.eq("userId", userAuth.id)
+						.eq("pendingMove.destParent.kind", alias.kind)
+						.eq("pendingMove.destParent.id", alias.kind === "root" ? undefined : alias.id),
+				)) {
+				if (tooManyPending || ++scanCount > TREE_CHILDREN_SIDE_ROWS_MOVES_MAX_SCAN) {
+					tooManyPending = true;
+					break;
+				}
+
+				// Root moves share this index across workspaces. A private draft with a move comes from
+				// the drafts above, so skip it here or it would show twice.
+				if (
+					pendingUpdate.organizationId !== membership.organizationId ||
+					pendingUpdate.workspaceId !== membership.workspaceId ||
+					pendingUpdate.target.kind !== "saved"
+				) {
+					continue;
+				}
+				if (++pendingCount > TREE_CHILDREN_SIDE_ROWS_MAX_ITEMS) {
+					tooManyPending = true;
+					break;
+				}
+
+				// A move takes its name while the moved node is there, even when the caller can no longer
+				// read it. That is the name claim rule of the visible reader. Only a readable node shows.
+				const resolved = await visibleReader.resolve(pendingUpdate.target);
+				if (resolved && pendingUpdate.pendingMove) {
+					nameClaims.add(pendingUpdate.pendingMove.destName);
+				}
+				add_entry(resolved && (await visibleReader.canRead(resolved.accessNode)) ? resolved.entry : null);
+			}
+		}
+		// Past the read limit the reader drops rows, so the list is not complete.
+		tooManyPending ||= visibleReader.exhausted;
+
+		const field = args.sort.field;
+		const rows = await Promise.all(
+			[...entries.values()].map(async (entry) => {
+				const intent = entry.kind === "private" ? entry.pendingUpdate.createIntent : undefined;
+				const name = path_name_of(entry.path);
+				const size =
+					entry.kind === "saved" ? entry.node.contentByteSize : intent?.kind === "stored" ? intent.size : null;
+
+				// Build the sort key exactly like the sorted pages build it for their rows.
+				const byName: files_sort_Key = [files_sort_text_key(name), name];
+				const sortPart = await (async (/* iife */): Promise<{
+					segment: "value" | "missing";
+					sortKey: files_sort_Key;
+					sortFieldValue: string | number | boolean | null;
+				}> => {
+					if (field === "name" || (field === "size" && entry.node.kind === "folder")) {
+						return { segment: "value", sortKey: byName, sortFieldValue: null };
+					}
+					if (field === "created") {
+						return { segment: "value", sortKey: [entry.node._creationTime], sortFieldValue: null };
+					}
+					if (field === "updated") {
+						const updatedAt = entry.kind === "saved" ? entry.node.updatedAt : entry.pendingUpdate.updatedAt;
+						return { segment: "value", sortKey: [updatedAt, ...byName], sortFieldValue: null };
+					}
+					if (field === "type") {
+						const extension = files_lowercase_extension(name, entry.node.kind);
+						return extension === null
+							? { segment: "missing", sortKey: byName, sortFieldValue: null }
+							: { segment: "value", sortKey: [extension, ...byName], sortFieldValue: null };
+					}
+					if (field === "size") {
+						return size === null
+							? { segment: "missing", sortKey: byName, sortFieldValue: null }
+							: { segment: "value", sortKey: [size, ...byName], sortFieldValue: null };
+					}
+
+					// A saved node sorts by its committed field doc, like the sorted pages. A draft keeps its
+					// values in pending docs, so build its key the way `files_sort_value_of` does.
+					const metadataDocs =
+						entry.kind === "saved"
+							? await ctx.db
+									.query("files_metadata_docs")
+									.withIndex("by_organization_workspace_source_fileNode_fieldPath", (q) =>
+										q
+											.eq("organizationId", membership.organizationId)
+											.eq("workspaceId", membership.workspaceId)
+											.eq("sourceKind", "committed")
+											.eq("fileNodeId", entry.node._id)
+											.eq("fieldPath", field),
+									)
+									.collect()
+							: await ctx.db
+									.query("files_metadata_docs")
+									.withIndex("by_organization_workspace_target_fieldPath", (q) =>
+										q
+											.eq("organizationId", membership.organizationId)
+											.eq("workspaceId", membership.workspaceId)
+											.eq("target.kind", "private")
+											.eq("target.id", entry.node._id)
+											.eq("fieldPath", field),
+									)
+									.collect();
+					const fieldDoc = metadataDocs.find((metadataDoc) => metadataDoc.docKind === "field");
+					const valueDoc = metadataDocs.find(
+						(metadataDoc) => metadataDoc.docKind === "value" && metadataDoc.valueKind !== "maybe_date",
+					);
+					const value =
+						entry.kind === "saved"
+							? fieldDoc?.sourceKind === "committed" && fieldDoc.sortValue !== undefined
+								? { sortValue: fieldDoc.sortValue, displayValue: fieldDoc.sortDisplayValue ?? null }
+								: null
+							: valueDoc
+								? ((/* iife */) => {
+										const displayValue = valueDoc.stringValue ?? valueDoc.numberValue ?? valueDoc.booleanValue ?? null;
+										return { sortValue: files_sort_text_key(String(displayValue)), displayValue };
+									})()
+								: null;
+					return value === null
+						? { segment: "missing", sortKey: byName, sortFieldValue: null }
+						: { segment: "value", sortKey: [value.sortValue, ...byName], sortFieldValue: value.displayValue };
+				})();
+
+				return {
+					entry,
+					row: {
+						target:
+							entry.kind === "saved"
+								? { kind: "saved" as const, id: entry.node._id }
+								: { kind: "private" as const, id: entry.node._id },
+						name,
+						kind: entry.node.kind,
+						updatedAt: entry.kind === "saved" ? entry.node.updatedAt : entry.pendingUpdate.updatedAt,
+						contentType:
+							entry.kind === "saved"
+								? (entry.pendingUpdate?.pendingReplacement?.contentType ?? entry.node.contentType)
+								: intent && intent.kind !== "folder"
+									? intent.contentType
+									: null,
+						preparing:
+							entry.kind === "private" && (!intent || (intent.kind === "text" && !entry.pendingUpdate.content)),
+						...sortPart,
+					},
+				};
+			}),
+		);
+
+		const savedNodes = rows.flatMap(({ entry }) => (entry.kind === "saved" ? [entry.node] : []));
+		const treeRowById = new Map(
+			(await db_get_tree_rows(ctx, { userAuth, membership, fileNodes: savedNodes })).map((treeRow) => [
+				treeRow._id,
+				treeRow,
+			]),
+		);
+
+		return {
+			rows: rows.map(({ entry, row }) => {
+				if (entry.kind === "private") {
+					return { ...row, updatedBy: entry.node.userId, treeRow: null };
+				}
+
+				// The tree row refuses the reserved SYSTEM author, so its `updatedBy` is a user.
+				const treeRow = treeRowById.get(entry.node._id)!;
+				return { ...row, updatedBy: treeRow.updatedBy, treeRow: { ...treeRow, contentType: row.contentType } };
+			}),
+			nameClaims: [...nameClaims],
+			tooManyShared,
+			tooManyPending,
+		};
 	},
 });
 

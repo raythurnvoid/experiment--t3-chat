@@ -229,6 +229,11 @@ Current purge coverage includes:
 - `files_plain_text_chunks`, `files_text_chunks`
 - `files_yjs_snapshots`, `files_yjs_updates`, `files_yjs_docs_last_sequences`
 - `files_snapshots`, `file_stats`
+- `files_folder_sorts` (the saved sort of each folder's table). The workspace purge is the only
+  delete path, and organization deletion reaches it through that purge. No per-folder delete is
+  needed: user folders are archived, never hard-deleted, and a row keyed by an archived folder id
+  comes back with the folder on restore. The GLOBAL GitHub and plugin trees that `delete_subtree_batch`
+  removes belong to no membership, so no member can save a sort there.
 - `files_content_materialization_jobs` with Workpool job cancellation
 - `files_yjs_cleanup_tasks` in bounded batches before the generic asset pass. Hand each task to `files_nodes_db_handoff_yjs_cleanup_task`, which preserves its exact asset key and `putMayArriveUntil` in the deletion ledger before removing the task. The asset doc stays for the generic pass. Drain both pending-history and asset-only tasks.
 - `files_r2_assets` with upload-conversion job cancellation and durable exact-key R2 cleanup.

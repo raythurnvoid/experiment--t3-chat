@@ -1,6 +1,7 @@
 import { Workpool } from "@convex-dev/workpool";
 import { R2 } from "@convex-dev/r2";
 import { RateLimiter } from "@convex-dev/rate-limiter";
+import type { FunctionReturnType } from "convex/server";
 import { afterEach, beforeEach, describe, expect, test as baseTest, vi, type MockInstance } from "vitest";
 import {
 	applyUpdate,
@@ -36,6 +37,8 @@ import {
 	files_nodes_db_insert_file_content_docs,
 } from "./files_nodes_content.ts";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
+import { files_metadata_db_replace_pending } from "./files_metadata.ts";
+import { files_pending_nodes_db_create } from "./files_pending_nodes.ts";
 import {
 	test_convex,
 	test_create_saved_text_file,
@@ -79,6 +82,8 @@ import {
 	organizations_GLOBAL_PLUGINS_WORKSPACE_ID,
 } from "../shared/organizations.ts";
 import { users_SYSTEM_AUTHOR } from "../shared/users.ts";
+import type { files_PendingParent } from "../shared/files.ts";
+import { files_sort_text_key } from "../shared/files-sort.ts";
 
 const generateTextMock = vi.hoisted(() => vi.fn());
 const streamTextMock = vi.hoisted(() => vi.fn());
@@ -1638,6 +1643,7 @@ describe("get_path_by_id", () => {
 			const textId = await ctx.db.insert("files_nodes", {
 				...base,
 				name: "notes.txt",
+				sortName: files_sort_text_key("notes.txt"),
 				path: "/notes.txt",
 				treePath: "/notes.txt",
 				contentType: "text/plain",
@@ -1645,6 +1651,7 @@ describe("get_path_by_id", () => {
 			const binaryId = await ctx.db.insert("files_nodes", {
 				...base,
 				name: "report.pdf",
+				sortName: files_sort_text_key("report.pdf"),
 				path: "/report.pdf",
 				treePath: "/report.pdf",
 				contentType: "application/pdf",
@@ -1906,12 +1913,14 @@ test("generated sibling file is visible in the tree query", async () => {
 		const sourceNodeId = await ctx.db.insert("files_nodes", {
 			...sharedNode,
 			name: "report.pdf",
+			sortName: files_sort_text_key("report.pdf"),
 			path: "/report.pdf",
 			treePath: "/report.pdf",
 		});
 		const markdownNodeId = await ctx.db.insert("files_nodes", {
 			...sharedNode,
 			name: "report.pdf.md",
+			sortName: files_sort_text_key("report.pdf.md"),
 			path: "/report.pdf.md",
 			treePath: "/report.pdf.md",
 		});
@@ -2755,6 +2764,7 @@ describe("files_nodes_db_preflight_move", () => {
 				...base,
 				kind: "folder",
 				name: "target",
+				sortName: files_sort_text_key("target"),
 				path: "/target",
 				treePath: "/target/",
 			});
@@ -2763,6 +2773,7 @@ describe("files_nodes_db_preflight_move", () => {
 				kind: occupantKind,
 				parentId: targetId,
 				name: "collide",
+				sortName: files_sort_text_key("collide"),
 				path: "/target/collide",
 				treePath: "/target/collide/",
 				pathDepth: 2,
@@ -2771,6 +2782,7 @@ describe("files_nodes_db_preflight_move", () => {
 				...base,
 				kind: sourceKind,
 				name: "collide",
+				sortName: files_sort_text_key("collide"),
 				path: "/collide",
 				treePath: "/collide/",
 			});
@@ -2951,12 +2963,14 @@ describe("files_nodes_db_preflight_move budgets", () => {
 				const sourceId = await ctx.db.insert("files_nodes", {
 					...base,
 					name: "source",
+					sortName: files_sort_text_key("source"),
 					path: "/source",
 					treePath: "/source/",
 				});
 				const targetId = await ctx.db.insert("files_nodes", {
 					...base,
 					name: "target",
+					sortName: files_sort_text_key("target"),
 					path: "/target",
 					treePath: "/target/",
 				});
@@ -2967,6 +2981,7 @@ describe("files_nodes_db_preflight_move budgets", () => {
 							...base,
 							parentId: sourceId,
 							name: `child-${index}`,
+							sortName: files_sort_text_key(`child-${index}`),
 							path: `/source/child-${index}`,
 							treePath: `/source/child-${index}/`,
 							pathDepth: 2,
@@ -3056,12 +3071,14 @@ describe("files_nodes_db_preflight_move budgets", () => {
 			const sourceId = await ctx.db.insert("files_nodes", {
 				...base,
 				name: "source",
+				sortName: files_sort_text_key("source"),
 				path: "/source",
 				treePath: "/source/",
 			});
 			const targetId = await ctx.db.insert("files_nodes", {
 				...base,
 				name: "target",
+				sortName: files_sort_text_key("target"),
 				path: "/target",
 				treePath: "/target/",
 			});
@@ -3070,6 +3087,7 @@ describe("files_nodes_db_preflight_move budgets", () => {
 					...base,
 					parentId: sourceId,
 					name: `child-${index}`,
+					sortName: files_sort_text_key(`child-${index}`),
 					path: `/source/child-${index}`,
 					treePath: `/source/child-${index}/`,
 					pathDepth: 2,
@@ -3141,6 +3159,7 @@ describe("files_nodes_db_preflight_move budgets", () => {
 						...base,
 						parentId,
 						name: `ancestor-${depth}`,
+						sortName: files_sort_text_key(`ancestor-${depth}`),
 						path,
 						treePath: `${path}/`,
 						pathDepth: depth + 1,
@@ -3151,6 +3170,7 @@ describe("files_nodes_db_preflight_move budgets", () => {
 					...base,
 					parentId,
 					name: "source",
+					sortName: files_sort_text_key("source"),
 					path: sourcePath,
 					treePath: `${sourcePath}/`,
 					pathDepth: 11,
@@ -3158,6 +3178,7 @@ describe("files_nodes_db_preflight_move budgets", () => {
 				const targetId = await ctx.db.insert("files_nodes", {
 					...base,
 					name: "target",
+					sortName: files_sort_text_key("target"),
 					path: "/target",
 					treePath: "/target/",
 				});
@@ -3234,6 +3255,7 @@ describe("files_nodes_db_preflight_move budgets", () => {
 			const ancestorId = await ctx.db.insert("files_nodes", {
 				...base,
 				name: ancestorName,
+				sortName: files_sort_text_key(ancestorName),
 				path: `/${ancestorName}`,
 				treePath: `/${ancestorName}/`,
 			});
@@ -3241,6 +3263,7 @@ describe("files_nodes_db_preflight_move budgets", () => {
 				...base,
 				parentId: ancestorId,
 				name: "source",
+				sortName: files_sort_text_key("source"),
 				path: sourcePath,
 				treePath: `${sourcePath}/`,
 				pathDepth: 2,
@@ -3327,12 +3350,14 @@ describe("files_nodes_db_preflight_move budgets", () => {
 				const sourceId = await ctx.db.insert("files_nodes", {
 					...base,
 					name: "source",
+					sortName: files_sort_text_key("source"),
 					path: "/source",
 					treePath: "/source/",
 				});
 				const targetId = await ctx.db.insert("files_nodes", {
 					...base,
 					name: "target",
+					sortName: files_sort_text_key("target"),
 					path: "/target",
 					treePath: "/target/",
 				});
@@ -3411,12 +3436,14 @@ describe("files_nodes_db_preflight_move budgets", () => {
 			const sourceId = await ctx.db.insert("files_nodes", {
 				...base,
 				name: "source",
+				sortName: files_sort_text_key("source"),
 				path: "/source",
 				treePath: "/source/",
 			});
 			const targetId = await ctx.db.insert("files_nodes", {
 				...base,
 				name: targetName,
+				sortName: files_sort_text_key(targetName),
 				path: `/${targetName}`,
 				treePath: `/${targetName}/`,
 			});
@@ -3828,6 +3855,7 @@ describe("move_nodes", () => {
 				parentId = await ctx.db.insert("files_nodes", {
 					...base,
 					name,
+					sortName: files_sort_text_key(name),
 					parentId,
 					path,
 					treePath: `${path}/`,
@@ -3842,6 +3870,7 @@ describe("move_nodes", () => {
 					kind: "file",
 					parentId: files_ROOT_ID,
 					name: `small-${index}.md`,
+					sortName: files_sort_text_key(`small-${index}.md`),
 					path: filePath,
 					treePath: filePath,
 				});
@@ -3982,6 +4011,7 @@ describe("files_nodes_db_move_nodes", () => {
 				...base,
 				kind: "folder",
 				name: "target",
+				sortName: files_sort_text_key("target"),
 				path: "/target",
 				treePath: "/target/",
 			});
@@ -3992,6 +4022,7 @@ describe("files_nodes_db_move_nodes", () => {
 					await ctx.db.insert("files_nodes", {
 						...base,
 						name,
+						sortName: files_sort_text_key(name),
 						path: `/${name}`,
 						treePath: `/${name}/`,
 					}),
@@ -4244,6 +4275,7 @@ test("home file can be renamed and moved like any file", async () => {
 		ctx.db.insert("files_nodes", {
 			contentType: null,
 			assetId: null,
+			contentByteSize: null,
 			textKind: null,
 			collaborationEnabled: null,
 			yjsSnapshotId: null,
@@ -4255,6 +4287,7 @@ test("home file can be renamed and moved like any file", async () => {
 			contentFrontmatterTooLargeFieldCount: null,
 			contentFrontmatterTooLargeIndexDocumentCount: null,
 			restrictedScopeNodeId: null,
+			isRestrictedScopeRoot: false,
 			writePolicy: null,
 
 			organizationId: db.organizationId,
@@ -4264,6 +4297,7 @@ test("home file can be renamed and moved like any file", async () => {
 			updatedBy: db.userId,
 			parentId: files_ROOT_ID,
 			name: "README.md",
+			sortName: files_sort_text_key("README.md"),
 			kind: "file",
 			path: "/README.md",
 			treePath: "/README.md",
@@ -4312,6 +4346,7 @@ test("home file can be archived like any file", async () => {
 		ctx.db.insert("files_nodes", {
 			contentType: null,
 			assetId: null,
+			contentByteSize: null,
 			textKind: null,
 			collaborationEnabled: null,
 			yjsSnapshotId: null,
@@ -4323,6 +4358,7 @@ test("home file can be archived like any file", async () => {
 			contentFrontmatterTooLargeFieldCount: null,
 			contentFrontmatterTooLargeIndexDocumentCount: null,
 			restrictedScopeNodeId: null,
+			isRestrictedScopeRoot: false,
 			writePolicy: null,
 
 			organizationId: db.organizationId,
@@ -4332,6 +4368,7 @@ test("home file can be archived like any file", async () => {
 			updatedBy: db.userId,
 			parentId: files_ROOT_ID,
 			name: "README.md",
+			sortName: files_sort_text_key("README.md"),
 			kind: "file",
 			path: "/README.md",
 			treePath: "/README.md",
@@ -7071,12 +7108,14 @@ test("archive_nodes and unarchive_nodes leave root generated siblings independen
 		const sourceNodeId = await ctx.db.insert("files_nodes", {
 			...sharedNode,
 			name: "report.pdf",
+			sortName: files_sort_text_key("report.pdf"),
 			path: "/report.pdf",
 			treePath: "/report.pdf",
 		});
 		const generatedNodeId = await ctx.db.insert("files_nodes", {
 			...sharedNode,
 			name: "report.pdf.md",
+			sortName: files_sort_text_key("report.pdf.md"),
 			path: "/report.pdf.md",
 			treePath: "/report.pdf.md",
 		});
@@ -7144,12 +7183,14 @@ test("archive_nodes and unarchive_nodes include generated siblings as normal fol
 		const sourceNodeId = await ctx.db.insert("files_nodes", {
 			...sharedNode,
 			name: "report.pdf",
+			sortName: files_sort_text_key("report.pdf"),
 			path: "/folder/report.pdf",
 			treePath: "/folder/report.pdf",
 		});
 		const generatedNodeId = await ctx.db.insert("files_nodes", {
 			...sharedNode,
 			name: "report.pdf.md",
+			sortName: files_sort_text_key("report.pdf.md"),
 			path: "/folder/report.pdf.md",
 			treePath: "/folder/report.pdf.md",
 		});
@@ -8375,6 +8416,7 @@ async function test_insert_searchable_markdown_file(
 		if (!name) throw new Error("Expected a root-level file path");
 		const nodeId = await ctx.db.insert("files_nodes", {
 			assetId: null,
+			contentByteSize: null,
 			textKind: null,
 			collaborationEnabled: null,
 			yjsSnapshotId: null,
@@ -8386,6 +8428,7 @@ async function test_insert_searchable_markdown_file(
 			contentFrontmatterTooLargeFieldCount: null,
 			contentFrontmatterTooLargeIndexDocumentCount: null,
 			restrictedScopeNodeId: null,
+			isRestrictedScopeRoot: false,
 			writePolicy: null,
 
 			archiveOperationId: null,
@@ -8397,6 +8440,7 @@ async function test_insert_searchable_markdown_file(
 			pathDepth: 1,
 			lowercaseExtension: "md",
 			name,
+			sortName: files_sort_text_key(name),
 			kind: "file",
 			contentType: "text/markdown;charset=utf-8",
 			createdBy: db.userId,
@@ -8899,6 +8943,7 @@ async function test_insert_committed_external_markdown(
 		if (!name) throw new Error("Expected a root-level file path");
 		const nodeId = await ctx.db.insert("files_nodes", {
 			assetId: null,
+			contentByteSize: null,
 			textKind: null,
 			collaborationEnabled: null,
 			yjsSnapshotId: null,
@@ -8910,6 +8955,7 @@ async function test_insert_committed_external_markdown(
 			contentFrontmatterTooLargeFieldCount: null,
 			contentFrontmatterTooLargeIndexDocumentCount: null,
 			restrictedScopeNodeId: null,
+			isRestrictedScopeRoot: false,
 			writePolicy: null,
 
 			archiveOperationId: null,
@@ -8921,6 +8967,7 @@ async function test_insert_committed_external_markdown(
 			pathDepth: 1,
 			lowercaseExtension: "md",
 			name,
+			sortName: files_sort_text_key(name),
 			kind: "file",
 			contentType: "text/markdown;charset=utf-8",
 			createdBy: users_SYSTEM_AUTHOR,
@@ -9210,6 +9257,7 @@ describe("non-collaborative files", () => {
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: null,
+				isRestrictedScopeRoot: false,
 				writePolicy: null,
 
 				archiveOperationId: null,
@@ -9221,9 +9269,11 @@ describe("non-collaborative files", () => {
 				pathDepth: 1,
 				lowercaseExtension: name.split(".").at(-1) ?? null,
 				name,
+				sortName: files_sort_text_key(name),
 				kind: "file",
 				contentType,
 				assetId,
+				contentByteSize: null,
 				createdBy: db.userId,
 				updatedBy: db.userId,
 				updatedAt: now,
@@ -9465,6 +9515,7 @@ describe("non-collaborative files", () => {
 				newAssetKind: newAsset?.kind,
 				newAssetKey: newAsset?.r2Key,
 				newAssetSize: newAsset?.size,
+				contentByteSize: node?.contentByteSize,
 				versionAssetId: versionAsset?._id,
 				versionAssetKey: versionAsset?.r2Key,
 				snapshotCount: snapshots.length,
@@ -9480,6 +9531,7 @@ describe("non-collaborative files", () => {
 		expect(saved._yay).toBeNull();
 		expect(after.newAssetKind).toBe("content_snapshot");
 		expect(after.newAssetSize).toBe(files_get_utf8_byte_size(nextText));
+		expect(after.contentByteSize).toBe(files_get_utf8_byte_size(nextText));
 		expect(after.yjsSnapshots).toBe(0);
 		expect(after.yjsLastSequences).toBe(0);
 		expect(after.yjsUpdates).toBe(0);
@@ -12004,6 +12056,7 @@ test("metadata search updates indexed scope when files are renamed and moved", a
 		ctx.db.insert("files_nodes", {
 			contentType: null,
 			assetId: null,
+			contentByteSize: null,
 			textKind: null,
 			collaborationEnabled: null,
 			yjsSnapshotId: null,
@@ -12015,6 +12068,7 @@ test("metadata search updates indexed scope when files are renamed and moved", a
 			contentFrontmatterTooLargeFieldCount: null,
 			contentFrontmatterTooLargeIndexDocumentCount: null,
 			restrictedScopeNodeId: null,
+			isRestrictedScopeRoot: false,
 			writePolicy: null,
 
 			archiveOperationId: null,
@@ -12026,6 +12080,7 @@ test("metadata search updates indexed scope when files are renamed and moved", a
 			pathDepth: 1,
 			lowercaseExtension: null,
 			name: "metadata-target",
+			sortName: files_sort_text_key("metadata-target"),
 			kind: "folder",
 			createdBy: db.userId,
 			updatedBy: db.userId,
@@ -12908,6 +12963,1223 @@ describe("folder metadata", () => {
 				).targets.map((target) => target.id),
 			),
 		).toEqual(new Set([folderId, nestedId]));
+	});
+});
+
+describe("folder table sort fields", () => {
+	async function seed_sort_fields() {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asOwner = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Sort Fields Owner",
+			email: "sort-fields-owner@example.com",
+		});
+		const scope = { organizationId: db.organizationId, workspaceId: db.workspaceId, userId: db.userId };
+		const create_folder = async (path: string) => {
+			const created = await t.mutation(internal.files_nodes.create_folder_node_by_path, { ...scope, path });
+			if (created._nay) throw new Error(created._nay.message);
+			return created._yay.nodeId;
+		};
+		const set_metadata = async (nodeId: Id<"files_nodes">, metadataYaml: string) => {
+			const saved = await asOwner.mutation(api.files_metadata.set_entries, {
+				membershipId: db.membershipId,
+				fileNodeId: nodeId,
+				metadataYaml,
+			});
+			if (saved._nay) throw new Error(saved._nay.message);
+		};
+		return { t, db, asOwner, create_folder, set_metadata };
+	}
+
+	async function read_sort_fields(t: ReturnType<typeof test_convex>, nodeId: Id<"files_nodes">) {
+		return await t.run(async (ctx) => {
+			const node = await ctx.db.get("files_nodes", nodeId);
+			if (!node) throw new Error("Expected the node");
+			const docs = await ctx.db
+				.query("files_metadata_docs")
+				.withIndex("by_organization_workspace_fileNode_fieldPath", (q) =>
+					q.eq("organizationId", node.organizationId).eq("workspaceId", node.workspaceId).eq("fileNodeId", nodeId),
+				)
+				.collect();
+			return {
+				node: {
+					sortName: node.sortName,
+					contentByteSize: node.contentByteSize,
+					isRestrictedScopeRoot: node.isRestrictedScopeRoot,
+				},
+				fields: docs.flatMap((doc) =>
+					doc.sourceKind === "committed" && doc.docKind === "field"
+						? [
+								{
+									fieldPath: doc.fieldPath,
+									archiveOperationId: doc.archiveOperationId,
+									parentId: doc.parentId,
+									nodeKind: doc.nodeKind,
+									isRestrictedScopeRoot: doc.isRestrictedScopeRoot,
+									name: doc.name,
+									sortName: doc.sortName,
+									sortValue: doc.sortValue,
+									sortDisplayValue: doc.sortDisplayValue,
+								},
+							]
+						: [],
+				),
+				// Value docs never carry the sort fields.
+				valueDocsWithSortFields: docs.filter(
+					(doc) => doc.docKind === "value" && "parentId" in doc && doc.parentId !== undefined,
+				).length,
+			};
+		});
+	}
+
+	test("a new folder and its metadata carry the sort fields", async () => {
+		const { t, create_folder, set_metadata } = await seed_sort_fields();
+		const parentId = await create_folder("/Sort Parent");
+		const folderId = await create_folder("/Sort Parent/Café 10");
+		await set_metadata(folderId, "status: Open\ncount: 12\n");
+
+		const read = await read_sort_fields(t, folderId);
+		expect(read.node).toEqual({ sortName: "cafe 0210", contentByteSize: null, isRestrictedScopeRoot: false });
+		const shared = {
+			parentId,
+			nodeKind: "folder",
+			isRestrictedScopeRoot: false,
+			name: "Café 10",
+			sortName: "cafe 0210",
+		};
+		expect(read.fields).toEqual(
+			expect.arrayContaining([
+				{
+					...shared,
+					fieldPath: "metadata.status",
+					archiveOperationId: undefined,
+					sortValue: "open",
+					sortDisplayValue: "Open",
+				},
+				{
+					...shared,
+					fieldPath: "metadata.count",
+					archiveOperationId: undefined,
+					sortValue: "0212",
+					sortDisplayValue: 12,
+				},
+			]),
+		);
+		expect(read.fields).toHaveLength(2);
+		expect(read.valueDocsWithSortFields).toBe(0);
+	});
+
+	test("a rename into new folders and a folder move update the node and its field docs", async () => {
+		const { t, db, asOwner, create_folder, set_metadata } = await seed_sort_fields();
+		await create_folder("/sort-parent");
+		const leafId = await create_folder("/sort-parent/leaf");
+		await set_metadata(leafId, "status: Open\n");
+
+		// A rename path starts at the node's parent. This one creates two planned folders, and the leaf
+		// gets the inner one's id only when the plan is applied.
+		const renamed = await asOwner.mutation(api.files_nodes.rename_node, {
+			membershipId: db.membershipId,
+			nodeId: leafId,
+			path: "new/deep/zeta",
+		});
+		expect(renamed._nay).toBeUndefined();
+		const { newId, deepId } = await t.run(async (ctx) => {
+			const nodes = await ctx.db.query("files_nodes").collect();
+			return {
+				newId: nodes.find((node) => node.path === "/sort-parent/new")!._id,
+				deepId: nodes.find((node) => node.path === "/sort-parent/new/deep")!._id,
+			};
+		});
+		expect((await read_sort_fields(t, deepId)).node).toEqual({
+			sortName: "deep",
+			contentByteSize: null,
+			isRestrictedScopeRoot: false,
+		});
+		const renamedRead = await read_sort_fields(t, leafId);
+		expect(renamedRead.node.sortName).toBe("zeta");
+		expect(renamedRead.fields).toEqual([
+			expect.objectContaining({ fieldPath: "metadata.status", parentId: deepId, name: "zeta", sortName: "zeta" }),
+		]);
+
+		// Moving a folder with children changes the parent of the moved folder only.
+		await set_metadata(newId, "rank: 1\n");
+		const moved = await asOwner.mutation(api.files_nodes.move_nodes, {
+			membershipId: db.membershipId,
+			itemIds: [newId],
+			targetParentId: files_ROOT_ID,
+		});
+		expect(moved._nay).toBeUndefined();
+		expect((await read_sort_fields(t, newId)).fields).toEqual([
+			expect.objectContaining({ fieldPath: "metadata.rank", parentId: files_ROOT_ID, name: "new" }),
+		]);
+		expect((await read_sort_fields(t, leafId)).fields).toEqual([
+			expect.objectContaining({ fieldPath: "metadata.status", parentId: deepId, name: "zeta" }),
+		]);
+	});
+
+	test("archive keeps the field docs, and a restore to the root moves their parent", async () => {
+		const { t, db, asOwner, create_folder, set_metadata } = await seed_sort_fields();
+		const parentId = await create_folder("/archive-parent");
+		const childId = await create_folder("/archive-parent/child");
+		await set_metadata(childId, "status: Open\n");
+
+		for (const nodeId of [childId, parentId]) {
+			const archived = await asOwner.mutation(api.files_nodes.archive_nodes, {
+				membershipId: db.membershipId,
+				nodeIds: [nodeId],
+			});
+			expect(archived._nay).toBeUndefined();
+		}
+		const archivedRead = await read_sort_fields(t, childId);
+		expect(archivedRead.fields).toEqual([
+			expect.objectContaining({ parentId, archiveOperationId: expect.any(String), sortValue: "open" }),
+		]);
+
+		// The parent stays archived, so the child comes back at the root.
+		const restored = await asOwner.mutation(api.files_nodes.unarchive_nodes, {
+			membershipId: db.membershipId,
+			nodeIds: [childId],
+		});
+		expect(restored._nay).toBeUndefined();
+		const restoredRead = await read_sort_fields(t, childId);
+		expect(restoredRead.fields).toHaveLength(1);
+		expect(restoredRead.fields[0]).toMatchObject({ parentId: files_ROOT_ID, sortValue: "open" });
+		expect(restoredRead.fields[0]?.archiveOperationId).toBeUndefined();
+	});
+
+	test("restrict and unrestrict set the flag on the node and on its field docs, archived ones too", async () => {
+		const { t, db, asOwner, create_folder, set_metadata } = await seed_sort_fields();
+		const folderId = await create_folder("/restricted");
+		await set_metadata(folderId, "status: Open\n");
+
+		const restricted = await asOwner.mutation(api.files_sharing.restrict_node, {
+			membershipId: db.membershipId,
+			nodeId: folderId,
+		});
+		expect(restricted._nay).toBeUndefined();
+		const restrictedRead = await read_sort_fields(t, folderId);
+		expect(restrictedRead.node.isRestrictedScopeRoot).toBe(true);
+		expect(restrictedRead.fields).toEqual([expect.objectContaining({ isRestrictedScopeRoot: true })]);
+		expect(restrictedRead.valueDocsWithSortFields).toBe(0);
+
+		const archived = await asOwner.mutation(api.files_nodes.archive_nodes, {
+			membershipId: db.membershipId,
+			nodeIds: [folderId],
+		});
+		expect(archived._nay).toBeUndefined();
+		const unrestricted = await asOwner.mutation(api.files_sharing.unrestrict_node, {
+			membershipId: db.membershipId,
+			nodeId: folderId,
+		});
+		expect(unrestricted._nay).toBeUndefined();
+		const unrestrictedRead = await read_sort_fields(t, folderId);
+		expect(unrestrictedRead.node.isRestrictedScopeRoot).toBe(false);
+		expect(unrestrictedRead.fields).toEqual([
+			expect.objectContaining({ archiveOperationId: expect.any(String), isRestrictedScopeRoot: false }),
+		]);
+	});
+
+	test("a frontmatter save sorts by the first list item and leaves a map parent without a value", async () => {
+		const { t, db, asOwner } = await seed_sort_fields();
+		await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
+		test_setup_r2_capture();
+		const markdown = "---\ntags: [Zeta, alpha]\ndue: 2026-09-04\nmeta:\n  size: 7\n---\n# Note\n";
+		const nodeId = await test_materialize_markdown_file(t, asOwner, db, "/note-10.md", markdown);
+
+		const read = await read_sort_fields(t, nodeId);
+		expect(read.node).toMatchObject({ sortName: "note-0210.md", isRestrictedScopeRoot: false });
+		const byField = new Map(read.fields.map((field) => [field.fieldPath, field]));
+		expect(byField.get("frontmatter.tags")).toMatchObject({
+			parentId: files_ROOT_ID,
+			nodeKind: "file",
+			name: "note-10.md",
+			sortValue: "zeta",
+			sortDisplayValue: "Zeta",
+		});
+		expect(byField.get("frontmatter.due")).toMatchObject({
+			sortValue: "042026-019-014",
+			sortDisplayValue: "2026-09-04",
+		});
+		expect(byField.get("frontmatter.meta.size")).toMatchObject({ sortValue: "017", sortDisplayValue: 7 });
+		// `t.run` drops undefined fields from its result, so check that the keys are gone.
+		expect(byField.get("frontmatter.meta")).not.toHaveProperty("sortValue");
+		expect(byField.get("frontmatter.meta")).not.toHaveProperty("sortDisplayValue");
+	});
+
+	test("an upload starts with the declared size, and the R2 event corrects it", async () => {
+		const { t, db, asOwner } = await seed_sort_fields();
+
+		const upload = await asOwner.mutation(api.files_nodes.create_upload_node, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			filename: "scan.png",
+			contentType: "image/png",
+			size: 10,
+		});
+		if (upload._nay) throw new Error(upload._nay.message);
+		expect((await read_sort_fields(t, upload._yay.nodeId)).node.contentByteSize).toBe(10);
+		await t.mutation(internal.r2.process_uploaded_asset_event, {
+			assetId: upload._yay.assetId,
+			r2Key: r2_create_asset_key({
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				assetId: upload._yay.assetId,
+			}),
+			size: 2048,
+			etag: "etag-sort-size",
+			eventId: "sort-size-event",
+		});
+		expect((await read_sort_fields(t, upload._yay.nodeId)).node.contentByteSize).toBe(2048);
+	});
+
+	test("a materialization sets contentByteSize to the new version snapshot size", async () => {
+		const { t, db, asOwner } = await seed_sort_fields();
+		await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
+		test_setup_r2_capture();
+		const markdown = "# Longer text than before\n";
+		const nodeId = await test_materialize_markdown_file(t, asOwner, db, "/sized.md", markdown);
+		const sized = await t.run(async (ctx) => {
+			const node = await ctx.db.get("files_nodes", nodeId);
+			const asset = node?.assetId ? await ctx.db.get("files_r2_assets", node.assetId) : null;
+			return { contentByteSize: node?.contentByteSize, assetSize: asset?.size };
+		});
+		// The saved text is the editor's Markdown, so compare with the asset, not with the input text.
+		expect(sized.contentByteSize).toBeGreaterThan(0);
+		expect(sized.contentByteSize).toBe(sized.assetSize);
+	});
+});
+
+/**
+ * A folder `/table` for the folder table queries, with helpers that add children and read its sorted pages.
+ */
+async function seed_folder_table() {
+	const t = test_convex();
+	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+	const asOwner = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+	const created = await t.mutation(internal.files_nodes.create_folder_node_by_path, {
+		organizationId: db.organizationId,
+		workspaceId: db.workspaceId,
+		userId: db.userId,
+		path: "/table",
+	});
+	if (created._nay) throw new Error(created._nay.message);
+	const parentId = created._yay.nodeId;
+
+	const insert_child = (args: {
+		name: string;
+		kind: "file" | "folder";
+		updatedAt: number;
+		lowercaseExtension?: string;
+		contentByteSize?: number;
+	}) =>
+		t.run(async (ctx) =>
+			ctx.db.insert("files_nodes", {
+				...test_mocks.files.base(),
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				createdBy: db.userId,
+				updatedBy: db.userId,
+				updatedAt: args.updatedAt,
+				parentId,
+				name: args.name,
+				sortName: files_sort_text_key(args.name),
+				kind: args.kind,
+				path: `/table/${args.name}`,
+				treePath: args.kind === "folder" ? `/table/${args.name}/` : `/table/${args.name}`,
+				pathDepth: 2,
+				lowercaseExtension: args.lowercaseExtension ?? null,
+				contentByteSize: args.contentByteSize ?? null,
+			}),
+		);
+
+	const walk = async (args: {
+		as: typeof asOwner;
+		membershipId: Id<"organizations_workspaces_users">;
+		kind: "file" | "folder";
+		sort: { field: string; direction: "asc" | "desc" };
+		segment: "value" | "missing";
+		numItems: number;
+	}) => {
+		const pages: string[][] = [];
+		let cursor: string | null = null;
+		for (let index = 0; index < 50; index++) {
+			const result: FunctionReturnType<typeof api.files_nodes.list_tree_children_sorted> = await args.as.query(
+				api.files_nodes.list_tree_children_sorted,
+				{
+					membershipId: args.membershipId,
+					parentId,
+					kind: args.kind,
+					sort: args.sort,
+					segment: args.segment,
+					paginationOpts: { numItems: args.numItems, cursor },
+				},
+			);
+			pages.push(result.page.map((row) => row.name));
+			if (result.isDone) return pages;
+			cursor = result.continueCursor;
+		}
+		throw new Error("Expected the segment to end");
+	};
+
+	// The rows in display order: folders, then files, each value segment before its missing one.
+	const read_table = async (sort: { field: string; direction: "asc" | "desc" }) => {
+		const rows: string[] = [];
+		for (const kind of ["folder", "file"] as const) {
+			for (const segment of ["value", "missing"] as const) {
+				const pages = await walk({ as: asOwner, membershipId: db.membershipId, kind, sort, segment, numItems: 2 });
+				rows.push(...pages.flat());
+			}
+		}
+		return rows;
+	};
+
+	return { t, db, asOwner, parentId, insert_child, walk, read_table };
+}
+
+describe("list_tree_children_sorted", () => {
+	test("every built-in field sorts both ways, folders first and missing values last", async () => {
+		const { read_table, insert_child } = await seed_folder_table();
+		await insert_child({ name: "beta", kind: "folder", updatedAt: 2 });
+		await insert_child({ name: "alpha", kind: "folder", updatedAt: 1 });
+		await insert_child({ name: "b.md", kind: "file", updatedAt: 3, lowercaseExtension: "md", contentByteSize: 30 });
+		await insert_child({ name: "a.txt", kind: "file", updatedAt: 5, lowercaseExtension: "txt", contentByteSize: 10 });
+		await insert_child({ name: "file10.md", kind: "file", updatedAt: 4, lowercaseExtension: "md" });
+		await insert_child({ name: "file2.md", kind: "file", updatedAt: 1, lowercaseExtension: "md", contentByteSize: 20 });
+		await insert_child({ name: "readme", kind: "file", updatedAt: 2, contentByteSize: 5 });
+
+		expect(await read_table({ field: "name", direction: "asc" })).toEqual([
+			"alpha",
+			"beta",
+			"a.txt",
+			"b.md",
+			"file2.md",
+			"file10.md",
+			"readme",
+		]);
+		expect(await read_table({ field: "name", direction: "desc" })).toEqual([
+			"beta",
+			"alpha",
+			"readme",
+			"file10.md",
+			"file2.md",
+			"b.md",
+			"a.txt",
+		]);
+		expect(await read_table({ field: "created", direction: "asc" })).toEqual([
+			"beta",
+			"alpha",
+			"b.md",
+			"a.txt",
+			"file10.md",
+			"file2.md",
+			"readme",
+		]);
+		expect(await read_table({ field: "created", direction: "desc" })).toEqual([
+			"alpha",
+			"beta",
+			"readme",
+			"file2.md",
+			"file10.md",
+			"a.txt",
+			"b.md",
+		]);
+		expect(await read_table({ field: "updated", direction: "asc" })).toEqual([
+			"alpha",
+			"beta",
+			"file2.md",
+			"readme",
+			"b.md",
+			"file10.md",
+			"a.txt",
+		]);
+		expect(await read_table({ field: "updated", direction: "desc" })).toEqual([
+			"beta",
+			"alpha",
+			"a.txt",
+			"file10.md",
+			"b.md",
+			"readme",
+			"file2.md",
+		]);
+		// Folders and files without an extension have no type, so they sort by name after the others.
+		expect(await read_table({ field: "type", direction: "asc" })).toEqual([
+			"alpha",
+			"beta",
+			"b.md",
+			"file2.md",
+			"file10.md",
+			"a.txt",
+			"readme",
+		]);
+		expect(await read_table({ field: "type", direction: "desc" })).toEqual([
+			"alpha",
+			"beta",
+			"a.txt",
+			"file10.md",
+			"file2.md",
+			"b.md",
+			"readme",
+		]);
+		// Folders have no size, so they stay by name in both directions.
+		expect(await read_table({ field: "size", direction: "asc" })).toEqual([
+			"alpha",
+			"beta",
+			"readme",
+			"a.txt",
+			"file2.md",
+			"b.md",
+			"file10.md",
+		]);
+		expect(await read_table({ field: "size", direction: "desc" })).toEqual([
+			"alpha",
+			"beta",
+			"b.md",
+			"file2.md",
+			"a.txt",
+			"readme",
+			"file10.md",
+		]);
+	});
+
+	test("a metadata key sorts its values both ways and puts children without a value last", async () => {
+		const { t, db, asOwner, parentId, read_table, insert_child } = await seed_folder_table();
+		const ids = new Map<string, Id<"files_nodes">>();
+		for (const [name, kind] of [
+			["beta", "folder"],
+			["alpha", "folder"],
+			["b.md", "file"],
+			["a.txt", "file"],
+			["file10.md", "file"],
+			["readme", "file"],
+			["map.md", "file"],
+			// Three missing files before the others. "C.md" and "c.md" share one sort key, so the second
+			// page resumes inside that tie.
+			["0.md", "file"],
+			["C.md", "file"],
+			["c.md", "file"],
+		] as const) {
+			ids.set(name, await insert_child({ name, kind, updatedAt: 1 }));
+		}
+		for (const [name, status] of [
+			["alpha", "x"],
+			["b.md", "Closed"],
+			["a.txt", "open"],
+			["readme", "done"],
+			["map.md", "zzz"],
+		] as const) {
+			const saved = await asOwner.mutation(api.files_metadata.set_entries, {
+				membershipId: db.membershipId,
+				fileNodeId: ids.get(name)!,
+				metadataYaml: `status: ${status}\n`,
+			});
+			expect(saved._nay).toBeUndefined();
+		}
+		// A field doc with no value, like a frontmatter map, counts as missing.
+		await t.run(async (ctx) => {
+			const fieldDoc = await ctx.db
+				.query("files_metadata_docs")
+				.withIndex("by_organization_workspace_fileNode_fieldPath", (q) =>
+					q
+						.eq("organizationId", db.organizationId)
+						.eq("workspaceId", db.workspaceId)
+						.eq("fileNodeId", ids.get("map.md")!)
+						.eq("fieldPath", "metadata.status"),
+				)
+				.filter((q) => q.eq(q.field("docKind"), "field"))
+				.unique();
+			await ctx.db.patch("files_metadata_docs", fieldDoc!._id, { sortValue: undefined, sortDisplayValue: undefined });
+		});
+
+		expect(await read_table({ field: "metadata.status", direction: "asc" })).toEqual([
+			"alpha",
+			"beta",
+			"b.md",
+			"readme",
+			"a.txt",
+			"0.md",
+			"C.md",
+			"c.md",
+			"file10.md",
+			"map.md",
+		]);
+		expect(await read_table({ field: "metadata.status", direction: "desc" })).toEqual([
+			"alpha",
+			"beta",
+			"a.txt",
+			"readme",
+			"b.md",
+			"0.md",
+			"C.md",
+			"c.md",
+			"file10.md",
+			"map.md",
+		]);
+
+		const first = await asOwner.query(api.files_nodes.list_tree_children_sorted, {
+			membershipId: db.membershipId,
+			parentId,
+			kind: "file",
+			sort: { field: "metadata.status", direction: "asc" },
+			segment: "value",
+			paginationOpts: { numItems: 1, cursor: null },
+		});
+		expect(first.page).toEqual([expect.objectContaining({ name: "b.md", sortFieldValue: "Closed" })]);
+	});
+
+	test("a restricted child the member cannot read never takes a page slot", async () => {
+		const { t, db, asOwner, walk, insert_child, parentId } = await seed_folder_table();
+		for (const name of ["a", "b", "c", "d"]) {
+			await insert_child({ name, kind: "folder", updatedAt: 1 });
+		}
+		const hiddenId = await t.run(
+			async (ctx) =>
+				(await ctx.db.query("files_nodes").collect()).find((node) => node.parentId === parentId && node.name === "b")!
+					._id,
+		);
+		expect(
+			await asOwner.mutation(api.files_sharing.restrict_node, { membershipId: db.membershipId, nodeId: hiddenId }),
+		).toEqual({ _yay: null });
+
+		const member = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx, { organizationName: "member-home" }));
+		expect(
+			await asOwner.mutation(api.organizations.invite_user_to_organization_workspace, {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userIdToAdd: member.userId,
+			}),
+		).toEqual({ _yay: null });
+		const membershipId = await t.run(
+			async (ctx) =>
+				(await ctx.db
+					.query("organizations_workspaces_users")
+					.withIndex("by_workspace_user_active", (q) => q.eq("workspaceId", db.workspaceId).eq("userId", member.userId))
+					.first())!._id,
+		);
+		const asMember = t.withIdentity({ issuer: "https://clerk.test", external_id: member.userId });
+
+		for (const [as, id] of [
+			[asMember, membershipId],
+			[asOwner, db.membershipId],
+		] as const) {
+			for (const sort of [
+				{ field: "name", direction: "asc" },
+				{ field: "updated", direction: "desc" },
+			] as const) {
+				const pages = await walk({ as, membershipId: id, kind: "folder", sort, segment: "value", numItems: 1 });
+				// Every page but the last holds exactly one row. The owner gets "b" from the side rows.
+				expect(pages.slice(0, -1).every((page) => page.length === 1)).toBe(true);
+				expect(pages.flat().sort()).toEqual(["a", "c", "d"]);
+			}
+		}
+	});
+
+	test("leaves out archived children and this user's pending moves and deletes", async () => {
+		const { t, db, read_table, insert_child } = await seed_folder_table();
+		await insert_child({ name: "kept.md", kind: "file", updatedAt: 1 });
+		const movedId = await insert_child({ name: "moved.md", kind: "file", updatedAt: 1 });
+		const deletedId = await insert_child({ name: "deleted.md", kind: "file", updatedAt: 1 });
+		const archivedId = await insert_child({ name: "archived.md", kind: "file", updatedAt: 1 });
+		await t.run(async (ctx) => ctx.db.patch("files_nodes", archivedId, { archiveOperationId: "archive-1" }));
+
+		const tenant = { organizationId: db.organizationId, workspaceId: db.workspaceId, userId: db.userId };
+		expect(
+			(
+				await t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
+					...tenant,
+					target: { kind: "saved", id: movedId },
+					destParent: { kind: "root" },
+					destName: "moved.md",
+				})
+			)._nay,
+		).toBeUndefined();
+		expect(
+			(
+				await t.mutation(internal.files_pending_updates.upsert_file_pending_archive_in_db, {
+					...tenant,
+					target: { kind: "saved", id: deletedId },
+				})
+			)._nay,
+		).toBeUndefined();
+
+		expect(await read_table({ field: "name", direction: "asc" })).toEqual(["kept.md"]);
+	});
+
+	test("keeps a row whose pending move points to a folder that is gone, like the Files view", async () => {
+		const { t, db, read_table, insert_child } = await seed_folder_table();
+		const movedId = await insert_child({ name: "moved.md", kind: "file", updatedAt: 1 });
+		const destId = await insert_child({ name: "dest", kind: "folder", updatedAt: 1 });
+		expect(
+			(
+				await t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
+					organizationId: db.organizationId,
+					workspaceId: db.workspaceId,
+					userId: db.userId,
+					target: { kind: "saved", id: movedId },
+					destParent: { kind: "saved", id: destId },
+					destName: "moved.md",
+				})
+			)._nay,
+		).toBeUndefined();
+		expect(await read_table({ field: "name", direction: "asc" })).toEqual(["dest"]);
+
+		await t.run(async (ctx) => ctx.db.patch("files_nodes", destId, { archiveOperationId: "archive-1" }));
+		expect(await read_table({ field: "name", direction: "asc" })).toEqual(["moved.md"]);
+	});
+
+	test("refuses a folder the caller cannot read and a field that cannot be sorted", async () => {
+		const { t, db, asOwner, parentId } = await seed_folder_table();
+		const args = {
+			membershipId: db.membershipId,
+			parentId,
+			kind: "file" as const,
+			sort: { field: "name", direction: "asc" as const },
+			segment: "value" as const,
+			paginationOpts: { numItems: 10, cursor: null },
+		};
+		const refused = { page: [], isDone: true, continueCursor: "" };
+
+		expect(
+			await asOwner.query(api.files_nodes.list_tree_children_sorted, {
+				...args,
+				sort: { field: "metadata.bad key", direction: "asc" },
+			}),
+		).toEqual(refused);
+
+		const other = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx, { organizationName: "other" }));
+		const asOther = t.withIdentity({ issuer: "https://clerk.test", external_id: other.userId });
+		expect(
+			await asOther.query(api.files_nodes.list_tree_children_sorted, { ...args, membershipId: other.membershipId }),
+		).toEqual(refused);
+	});
+
+	test("fails loudly on a stale restricted scope root flag", async () => {
+		const { t, db, asOwner, insert_child, parentId } = await seed_folder_table();
+		const nodeId = await insert_child({ name: "stale", kind: "folder", updatedAt: 1 });
+		// A direct patch skips the writer that keeps the flag in step.
+		await t.run(async (ctx) => ctx.db.patch("files_nodes", nodeId, { restrictedScopeNodeId: nodeId }));
+
+		await expect(
+			asOwner.query(api.files_nodes.list_tree_children_sorted, {
+				membershipId: db.membershipId,
+				parentId,
+				kind: "folder",
+				sort: { field: "name", direction: "asc" },
+				segment: "value",
+				paginationOpts: { numItems: 10, cursor: null },
+			}),
+		).rejects.toThrow();
+	});
+});
+
+describe("list_tree_children_sort_side_rows", () => {
+	async function seed_side_rows() {
+		const seeded = await seed_folder_table();
+		const { t, db, asOwner, parentId } = seeded;
+
+		const insert_root_file = (name: string, contentByteSize: number | null) =>
+			t.run(async (ctx) =>
+				ctx.db.insert("files_nodes", {
+					...test_mocks.files.base(),
+					organizationId: db.organizationId,
+					workspaceId: db.workspaceId,
+					createdBy: db.userId,
+					updatedBy: db.userId,
+					parentId: "root",
+					name,
+					sortName: files_sort_text_key(name),
+					kind: "file",
+					path: `/${name}`,
+					treePath: `/${name}`,
+					pathDepth: 1,
+					lowercaseExtension: "md",
+					contentByteSize,
+				}),
+			);
+
+		/**
+		 * Add a member of the workspace. A member with no role reads only what is shared with them.
+		 */
+		const add_member = async (clerkUserId: string, role: "member" | null) => {
+			const member = await t.run(async (ctx) => {
+				const now = Date.now();
+				const userId = await ctx.db.insert("users", { clerkUserId });
+				const membershipId = await ctx.db.insert("organizations_workspaces_users", {
+					organizationId: db.organizationId,
+					workspaceId: db.workspaceId,
+					userId,
+					active: true,
+					updatedAt: now,
+				});
+				if (role) {
+					await access_control_db_ensure_role_assignment(ctx, {
+						organizationId: db.organizationId,
+						workspaceId: db.workspaceId,
+						userId,
+						role,
+						now,
+					});
+				}
+				return { userId, membershipId };
+			});
+			return { ...member, as: t.withIdentity({ issuer: "https://clerk.test", external_id: member.userId }) };
+		};
+
+		const restrict = async (nodeId: Id<"files_nodes">) => {
+			expect(
+				await asOwner.mutation(api.files_sharing.restrict_node, { membershipId: db.membershipId, nodeId }),
+			).toEqual({ _yay: null });
+		};
+
+		const move = async (args: {
+			userId: Id<"users">;
+			nodeId: Id<"files_nodes">;
+			destParent: files_PendingParent;
+			destName: string;
+		}) => {
+			const moved = await t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userId: args.userId,
+				target: { kind: "saved", id: args.nodeId },
+				destParent: args.destParent,
+				destName: args.destName,
+			});
+			expect(moved._nay).toBeUndefined();
+		};
+
+		const side_rows = (args: {
+			as: typeof asOwner;
+			membershipId: Id<"organizations_workspaces_users">;
+			sort: { field: string; direction: "asc" | "desc" };
+			parentId?: Id<"files_nodes"> | "root";
+		}) =>
+			args.as.query(api.files_nodes.list_tree_children_sort_side_rows, {
+				membershipId: args.membershipId,
+				parentId: args.parentId ?? parentId,
+				sort: args.sort,
+			});
+
+		return { ...seeded, insert_root_file, add_member, restrict, move, side_rows };
+	}
+
+	test("returns readable restricted children with their sort keys, and nothing a member cannot read", async () => {
+		const { db, asOwner, insert_child, add_member, restrict, side_rows } = await seed_side_rows();
+		await insert_child({ name: "open.md", kind: "file", updatedAt: 1, lowercaseExtension: "md" });
+		const sharedId = await insert_child({ name: "shared", kind: "folder", updatedAt: 2 });
+		const secretId = await insert_child({
+			name: "secret.md",
+			kind: "file",
+			updatedAt: 3,
+			lowercaseExtension: "md",
+			contentByteSize: 7,
+		});
+		const saved = await asOwner.mutation(api.files_metadata.set_entries, {
+			membershipId: db.membershipId,
+			fileNodeId: secretId,
+			metadataYaml: "status: Open\n",
+		});
+		expect(saved._nay).toBeUndefined();
+		await restrict(sharedId);
+		await restrict(secretId);
+
+		const byType = await side_rows({
+			as: asOwner,
+			membershipId: db.membershipId,
+			sort: { field: "type", direction: "asc" },
+		});
+		expect(byType).toEqual({ rows: expect.any(Array), nameClaims: [], tooManyShared: false, tooManyPending: false });
+		expect(
+			byType?.rows.map((row) => ({
+				name: row.name,
+				target: row.target,
+				treeRowId: row.treeRow?._id,
+				segment: row.segment,
+				sortKey: row.sortKey,
+			})),
+		).toEqual([
+			{
+				name: "secret.md",
+				target: { kind: "saved", id: secretId },
+				treeRowId: secretId,
+				segment: "value",
+				sortKey: ["md", "secret.md", "secret.md"],
+			},
+			{
+				name: "shared",
+				target: { kind: "saved", id: sharedId },
+				treeRowId: sharedId,
+				segment: "missing",
+				sortKey: ["shared", "shared"],
+			},
+		]);
+
+		const byStatus = await side_rows({
+			as: asOwner,
+			membershipId: db.membershipId,
+			sort: { field: "metadata.status", direction: "desc" },
+		});
+		expect(byStatus?.rows.map((row) => [row.name, row.segment, row.sortKey, row.sortFieldValue])).toEqual([
+			["secret.md", "value", ["open", "secret.md", "secret.md"], "Open"],
+			["shared", "missing", ["shared", "shared"], null],
+		]);
+
+		const member = await add_member("clerk_side_rows_member", "member");
+		expect(
+			await side_rows({ as: member.as, membershipId: member.membershipId, sort: { field: "name", direction: "asc" } }),
+		).toEqual({ rows: [], nameClaims: [], tooManyShared: false, tooManyPending: false });
+
+		expect(
+			(
+				await asOwner.mutation(api.files_sharing.set_node_share_grant, {
+					membershipId: db.membershipId,
+					nodeId: secretId,
+					principal: { kind: "user", userId: member.userId },
+					level: "read",
+				})
+			)._nay,
+		).toBeUndefined();
+		const shared = await side_rows({
+			as: member.as,
+			membershipId: member.membershipId,
+			sort: { field: "name", direction: "asc" },
+		});
+		expect(shared?.rows.map((row) => row.name)).toEqual(["secret.md"]);
+	});
+
+	test("gives a member with no workspace role the root children shared with them", async () => {
+		const { db, asOwner, parentId, add_member, restrict, side_rows } = await seed_side_rows();
+		const member = await add_member("clerk_side_rows_grant_only", null);
+		await restrict(parentId);
+		expect(
+			(
+				await asOwner.mutation(api.files_sharing.set_node_share_grant, {
+					membershipId: db.membershipId,
+					nodeId: parentId,
+					principal: { kind: "user", userId: member.userId },
+					level: "read",
+				})
+			)._nay,
+		).toBeUndefined();
+
+		const rootRows = await side_rows({
+			as: member.as,
+			membershipId: member.membershipId,
+			sort: { field: "name", direction: "asc" },
+			parentId: "root",
+		});
+		expect(rootRows?.rows.map((row) => row.name)).toEqual(["table"]);
+		// The sorted pages give this member nothing at the root.
+		expect(
+			await member.as.query(api.files_nodes.list_tree_children_sorted, {
+				membershipId: member.membershipId,
+				parentId: "root",
+				kind: "folder",
+				sort: { field: "name", direction: "asc" },
+				segment: "value",
+				paginationOpts: { numItems: 10, cursor: null },
+			}),
+		).toEqual({ page: [], isDone: true, continueCursor: "" });
+	});
+
+	test("returns this user's drafts and moves into the folder once, by their new names, and their name claims", async () => {
+		const { t, db, asOwner, parentId, insert_child, insert_root_file, move, side_rows } = await seed_side_rows();
+		await insert_child({ name: "claimed.md", kind: "file", updatedAt: 1, lowercaseExtension: "md" });
+		const renamedId = await insert_child({ name: "renamed.md", kind: "file", updatedAt: 2, lowercaseExtension: "md" });
+		const outsideId = await insert_root_file("outside.md", 5);
+		await move({
+			userId: db.userId,
+			nodeId: outsideId,
+			destParent: { kind: "saved", id: parentId },
+			destName: "moved-in.md",
+		});
+		await move({
+			userId: db.userId,
+			nodeId: renamedId,
+			destParent: { kind: "saved", id: parentId },
+			destName: "renamed-2.md",
+		});
+
+		const draftIds = await t.run(async (ctx) => {
+			const draft = await files_pending_nodes_db_create(ctx, {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userId: db.userId,
+				parent: { kind: "saved", id: parentId },
+				name: "draft.md",
+				kind: "file",
+			});
+			if (draft._nay) throw new Error(draft._nay.message);
+			const assetId = await ctx.db.insert("files_r2_assets", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				createdBy: db.userId,
+				kind: "content_snapshot",
+				r2Bucket: "test",
+				size: 42,
+				updatedAt: Date.now(),
+			});
+			const metadata = [{ key: "status", value: "new" }];
+			await ctx.db.patch("files_pending_updates", draft._yay.pendingUpdateId, {
+				createIntent: { kind: "stored", assetId, size: 42, contentType: "text/markdown", metadata },
+			});
+			const pendingUpdate = await ctx.db.get("files_pending_updates", draft._yay.pendingUpdateId);
+			await files_metadata_db_replace_pending(ctx, {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userId: db.userId,
+				target: { kind: "private", id: draft._yay.privateNodeId },
+				pendingUpdateId: draft._yay.pendingUpdateId,
+				proposalRevision: pendingUpdate!.revision,
+				path: "/table/draft.md",
+				createMetadata: metadata,
+			});
+
+			// A draft that is still being written, over the name of a saved file.
+			const claim = await files_pending_nodes_db_create(ctx, {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userId: db.userId,
+				parent: { kind: "saved", id: parentId },
+				name: "claimed.md",
+				kind: "file",
+			});
+			if (claim._nay) throw new Error(claim._nay.message);
+			return { draftId: draft._yay.privateNodeId, claimId: claim._yay.privateNodeId };
+		});
+
+		const bySize = await side_rows({
+			as: asOwner,
+			membershipId: db.membershipId,
+			sort: { field: "size", direction: "asc" },
+		});
+		expect(bySize?.nameClaims.sort()).toEqual(["claimed.md", "draft.md", "moved-in.md", "renamed-2.md"]);
+		expect(
+			bySize?.rows
+				.map((row) => ({
+					name: row.name,
+					target: row.target,
+					treeRowName: row.treeRow?.name ?? null,
+					preparing: row.preparing,
+					segment: row.segment,
+					sortKey: row.sortKey,
+				}))
+				.sort((left, right) => left.name.localeCompare(right.name)),
+		).toEqual([
+			{
+				name: "claimed.md",
+				target: { kind: "private", id: draftIds.claimId },
+				treeRowName: null,
+				preparing: true,
+				segment: "missing",
+				sortKey: ["claimed.md", "claimed.md"],
+			},
+			{
+				name: "draft.md",
+				target: { kind: "private", id: draftIds.draftId },
+				treeRowName: null,
+				preparing: false,
+				segment: "value",
+				sortKey: [42, "draft.md", "draft.md"],
+			},
+			{
+				name: "moved-in.md",
+				target: { kind: "saved", id: outsideId },
+				treeRowName: "outside.md",
+				preparing: false,
+				segment: "value",
+				sortKey: [5, "moved-in.md", "moved-in.md"],
+			},
+			{
+				name: "renamed-2.md",
+				target: { kind: "saved", id: renamedId },
+				treeRowName: "renamed.md",
+				preparing: false,
+				segment: "missing",
+				sortKey: ["renamed-012.md", "renamed-2.md"],
+			},
+		]);
+
+		const byStatus = await side_rows({
+			as: asOwner,
+			membershipId: db.membershipId,
+			sort: { field: "metadata.status", direction: "asc" },
+		});
+		expect(byStatus?.rows.find((row) => row.name === "draft.md")).toMatchObject({
+			segment: "value",
+			sortKey: ["new", "draft.md", "draft.md"],
+			sortFieldValue: "new",
+		});
+	});
+
+	test("applies the hide rules to restricted children", async () => {
+		const { t, db, asOwner, parentId, insert_child, restrict, move, side_rows } = await seed_side_rows();
+		const ids = new Map<string, Id<"files_nodes">>();
+		for (const name of ["gone.md", "away.md", "renamed.md", "claimed.md", "kept.md"]) {
+			const nodeId = await insert_child({ name, kind: "file", updatedAt: 1, lowercaseExtension: "md" });
+			await restrict(nodeId);
+			ids.set(name, nodeId);
+		}
+		expect(
+			(
+				await t.mutation(internal.files_pending_updates.upsert_file_pending_archive_in_db, {
+					organizationId: db.organizationId,
+					workspaceId: db.workspaceId,
+					userId: db.userId,
+					target: { kind: "saved", id: ids.get("gone.md")! },
+				})
+			)._nay,
+		).toBeUndefined();
+		await move({ userId: db.userId, nodeId: ids.get("away.md")!, destParent: { kind: "root" }, destName: "away.md" });
+		await move({
+			userId: db.userId,
+			nodeId: ids.get("renamed.md")!,
+			destParent: { kind: "saved", id: parentId },
+			destName: "renamed-2.md",
+		});
+		await t.run(async (ctx) => {
+			const claim = await files_pending_nodes_db_create(ctx, {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userId: db.userId,
+				parent: { kind: "saved", id: parentId },
+				name: "claimed.md",
+				kind: "file",
+			});
+			if (claim._nay) throw new Error(claim._nay.message);
+		});
+
+		const result = await side_rows({
+			as: asOwner,
+			membershipId: db.membershipId,
+			sort: { field: "name", direction: "asc" },
+		});
+		expect(result?.rows.map((row) => `${row.target.kind}:${row.name}`).sort()).toEqual([
+			"private:claimed.md",
+			"saved:kept.md",
+			"saved:renamed-2.md",
+		]);
+	});
+
+	test("leaves out a moved file the user can no longer read, but keeps its name claim", async () => {
+		const { parentId, insert_root_file, add_member, restrict, move, side_rows } = await seed_side_rows();
+		const member = await add_member("clerk_side_rows_revoked", "member");
+		const outsideId = await insert_root_file("outside.md", null);
+		await move({
+			userId: member.userId,
+			nodeId: outsideId,
+			destParent: { kind: "saved", id: parentId },
+			destName: "in.md",
+		});
+		const read = () =>
+			side_rows({ as: member.as, membershipId: member.membershipId, sort: { field: "name", direction: "asc" } });
+
+		expect((await read())?.rows.map((row) => row.name)).toEqual(["in.md"]);
+
+		await restrict(outsideId);
+		expect(await read()).toEqual({ rows: [], nameClaims: ["in.md"], tooManyShared: false, tooManyPending: false });
+	});
+
+	test("says when a folder has more restricted children or pending changes than it sorts", async () => {
+		const { t, db, asOwner, parentId, add_member, side_rows } = await seed_side_rows();
+		const insert_shared = (from: number, to: number) =>
+			t.run(async (ctx) => {
+				const nodeIds: Array<Id<"files_nodes">> = [];
+				for (let index = from; index < to; index++) {
+					const name = `shared-${index}`;
+					const nodeId = await ctx.db.insert("files_nodes", {
+						...test_mocks.files.base(),
+						organizationId: db.organizationId,
+						workspaceId: db.workspaceId,
+						createdBy: db.userId,
+						updatedBy: db.userId,
+						parentId,
+						name,
+						sortName: files_sort_text_key(name),
+						kind: "folder",
+						path: `/table/${name}`,
+						treePath: `/table/${name}/`,
+						pathDepth: 2,
+						isRestrictedScopeRoot: true,
+					});
+					await ctx.db.patch("files_nodes", nodeId, { restrictedScopeNodeId: nodeId });
+					nodeIds.push(nodeId);
+				}
+				return nodeIds;
+			});
+		const [firstSharedId] = await insert_shared(0, 200);
+		const member = await add_member("clerk_side_rows_cap", "member");
+		const granted = await asOwner.mutation(api.files_sharing.set_node_share_grant, {
+			membershipId: db.membershipId,
+			nodeId: firstSharedId!,
+			principal: { kind: "user", userId: member.userId },
+			level: "read",
+		});
+		expect(granted._nay).toBeUndefined();
+		const read = () =>
+			side_rows({ as: asOwner, membershipId: db.membershipId, sort: { field: "name", direction: "asc" } });
+		const read_as_member = () =>
+			side_rows({ as: member.as, membershipId: member.membershipId, sort: { field: "name", direction: "asc" } });
+
+		expect((await read_as_member())?.rows.map((row) => row.name)).toEqual(["shared-0"]);
+
+		// Over the cap the owner still gets the first 200, and a member gets none. A cut-off that moved
+		// with the hidden rows would let the member learn their names.
+		await insert_shared(200, 201);
+		const shared = await read();
+		expect(shared?.rows).toHaveLength(200);
+		expect(shared).toMatchObject({ tooManyShared: true, tooManyPending: false });
+		expect(await read_as_member()).toEqual({ rows: [], nameClaims: [], tooManyShared: true, tooManyPending: false });
+
+		await t.run(async (ctx) => {
+			for (let index = 0; index < 201; index++) {
+				const draft = await files_pending_nodes_db_create(ctx, {
+					organizationId: db.organizationId,
+					workspaceId: db.workspaceId,
+					userId: db.userId,
+					parent: { kind: "saved", id: parentId },
+					name: `draft-${index}.md`,
+					kind: "file",
+				});
+				if (draft._nay) throw new Error(draft._nay.message);
+			}
+		});
+		const pending = await read();
+		expect(pending?.rows).toHaveLength(400);
+		expect(pending).toMatchObject({ tooManyShared: true, tooManyPending: true });
+		expect(pending?.nameClaims).toHaveLength(200);
+	});
+
+	test("refuses a folder the caller cannot read and a field that cannot be sorted", async () => {
+		const { t, db, asOwner, side_rows } = await seed_side_rows();
+		expect(
+			await side_rows({
+				as: asOwner,
+				membershipId: db.membershipId,
+				sort: { field: "metadata.bad key", direction: "asc" },
+			}),
+		).toBeNull();
+
+		const other = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx, { organizationName: "other" }));
+		const asOther = t.withIdentity({ issuer: "https://clerk.test", external_id: other.userId });
+		expect(
+			await side_rows({ as: asOther, membershipId: other.membershipId, sort: { field: "name", direction: "asc" } }),
+		).toBeNull();
+	});
+
+	test("gives no side rows, not a refusal, for an archived folder the caller can read", async () => {
+		const { t, db, asOwner, parentId, side_rows } = await seed_side_rows();
+		await t.run(async (ctx) => ctx.db.patch("files_nodes", parentId, { archiveOperationId: "archive-1" }));
+
+		expect(
+			await side_rows({ as: asOwner, membershipId: db.membershipId, sort: { field: "name", direction: "asc" } }),
+		).toEqual({
+			rows: [],
+			nameClaims: [],
+			tooManyShared: false,
+			tooManyPending: false,
+		});
 	});
 });
 
@@ -14212,6 +15484,7 @@ test("text_search_files updates unified search scope when files are renamed and 
 		ctx.db.insert("files_nodes", {
 			contentType: null,
 			assetId: null,
+			contentByteSize: null,
 			textKind: null,
 			collaborationEnabled: null,
 			yjsSnapshotId: null,
@@ -14223,6 +15496,7 @@ test("text_search_files updates unified search scope when files are renamed and 
 			contentFrontmatterTooLargeFieldCount: null,
 			contentFrontmatterTooLargeIndexDocumentCount: null,
 			restrictedScopeNodeId: null,
+			isRestrictedScopeRoot: false,
 			writePolicy: null,
 
 			archiveOperationId: null,
@@ -14234,6 +15508,7 @@ test("text_search_files updates unified search scope when files are renamed and 
 			pathDepth: 1,
 			lowercaseExtension: null,
 			name: "move-target",
+			sortName: files_sort_text_key("move-target"),
 			kind: "folder",
 			createdBy: db.userId,
 			updatedBy: db.userId,
@@ -14747,9 +16022,11 @@ test("restore_snapshot_r2 restores from R2-backed content without Convex Markdow
 		}
 		const asset = await ctx.db.get("files_r2_assets", fileNode.assetId);
 
-		return { asset };
+		return { asset, contentByteSize: fileNode.contentByteSize };
 	});
 	expect(saved.asset?.size).toBe(files_get_utf8_byte_size(restoredMarkdown));
+	// The node points at the restored snapshot, so its byte size must follow it.
+	expect(saved.contentByteSize).toBe(saved.asset?.size);
 	// The node now points at a version snapshot with the restored bytes. The backup snapshot
 	// still holds the previous version.
 	expect(saved.asset?.kind).toBe("content_snapshot");
@@ -14942,6 +16219,14 @@ describe("restore_snapshot_r2 whole-file restore", () => {
 		});
 		expect(after.collaborationEnabled).toBe(true);
 		expect(after.assetId).not.toBe(before.assetId);
+		// The replacement points the node at the restored bytes, so its byte size must follow them.
+		const restoredSize = await t.run(async (ctx) => {
+			const node = await ctx.db.get("files_nodes", nodeId);
+			const asset = node?.assetId ? await ctx.db.get("files_r2_assets", node.assetId) : null;
+			return { contentByteSize: node?.contentByteSize, assetSize: asset?.size };
+		});
+		expect(restoredSize.assetSize).toBe(files_get_utf8_byte_size(versionText));
+		expect(restoredSize.contentByteSize).toBe(restoredSize.assetSize);
 		const readResult = await asUser.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
@@ -15169,6 +16454,7 @@ describe("restore_snapshot_r2 whole-file restore", () => {
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: null,
+				isRestrictedScopeRoot: false,
 				writePolicy: null,
 
 				archiveOperationId: null,
@@ -15180,9 +16466,11 @@ describe("restore_snapshot_r2 whole-file restore", () => {
 				pathDepth: 1,
 				lowercaseExtension: "pdf",
 				name: "scan.pdf",
+				sortName: files_sort_text_key("scan.pdf"),
 				kind: "file",
 				contentType: "application/pdf",
 				assetId,
+				contentByteSize: null,
 				createdBy: db.userId,
 				updatedBy: db.userId,
 				updatedAt: now,
@@ -17933,6 +19221,10 @@ describe("files_nodes_content.repair_file_yjs_state_from_visible_text", () => {
 			// index is rebuilt.
 			expect(node?.contentFrontmatterTooLargeFieldCount).toBeNull();
 			expect(node?.contentFrontmatterTooLargeIndexDocumentCount).toBeNull();
+			// The repair points the node at a new content snapshot, so its byte size must follow it.
+			const contentAsset = node?.assetId ? await ctx.db.get("files_r2_assets", node.assetId) : null;
+			expect(contentAsset?.size).toBeGreaterThan(0);
+			expect(node?.contentByteSize).toBe(contentAsset?.size);
 			const metadataDocs = await ctx.db
 				.query("files_metadata_docs")
 				.withIndex("by_organization_workspace_source_fileNode_fieldPath", (q) =>
@@ -19546,6 +20838,7 @@ describe("files_nodes destination conflict privacy", () => {
 				...commonFile,
 				parentId: files_ROOT_ID,
 				name: "rename-source.md",
+				sortName: files_sort_text_key("rename-source.md"),
 				path: "/rename-source.md",
 				treePath: "/rename-source.md",
 				pathDepth: 1,
@@ -19554,6 +20847,7 @@ describe("files_nodes destination conflict privacy", () => {
 				...commonFile,
 				parentId: files_ROOT_ID,
 				name: "rename-hidden.md",
+				sortName: files_sort_text_key("rename-hidden.md"),
 				path: "/rename-hidden.md",
 				treePath: "/rename-hidden.md",
 				pathDepth: 1,
@@ -19577,6 +20871,7 @@ describe("files_nodes destination conflict privacy", () => {
 				...commonFile,
 				parentId: files_ROOT_ID,
 				name: "move-source.md",
+				sortName: files_sort_text_key("move-source.md"),
 				path: "/move-source.md",
 				treePath: "/move-source.md",
 				pathDepth: 1,
@@ -19585,6 +20880,7 @@ describe("files_nodes destination conflict privacy", () => {
 				...commonFile,
 				parentId: moveTargetId,
 				name: "move-source.md",
+				sortName: files_sort_text_key("move-source.md"),
 				path: "/move-target/move-source.md",
 				treePath: "/move-target/move-source.md",
 				pathDepth: 2,

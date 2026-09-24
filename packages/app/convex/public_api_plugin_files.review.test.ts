@@ -6,6 +6,7 @@ import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
 import { crypto_sha256_hex } from "../server/crypto-utils.ts";
 import { files_ROOT_ID } from "../server/files.ts";
 import type { plugins_Capability } from "../shared/plugins.ts";
+import { files_sort_text_key } from "../shared/files-sort.ts";
 
 describe("ensure_plugin_folder", () => {
 	test.each([
@@ -116,6 +117,7 @@ describe("ensure_plugin_folder", () => {
 					workspaceId: owner.workspaceId,
 					parentId: files_ROOT_ID,
 					name: "tagged",
+					sortName: files_sort_text_key("tagged"),
 					path: "/tagged",
 					treePath: "/tagged/",
 					pathDepth: 1,
@@ -126,6 +128,7 @@ describe("ensure_plugin_folder", () => {
 					updatedAt: now,
 					contentType: null,
 					assetId: null,
+					contentByteSize: null,
 					textKind: null,
 					collaborationEnabled: null,
 					yjsSnapshotId: null,
@@ -137,6 +140,7 @@ describe("ensure_plugin_folder", () => {
 					contentFrontmatterTooLargeFieldCount: null,
 					contentFrontmatterTooLargeIndexDocumentCount: null,
 					restrictedScopeNodeId: null,
+					isRestrictedScopeRoot: false,
 					archiveOperationId: null,
 				});
 				return { owner, userId, membershipId, pluginVersionId, installationId, parentId, serviceAccountId };

@@ -237,7 +237,7 @@ describe("list", () => {
 		expect(paths).toEqual(["/a", "/aa", "/b", "/c"]);
 	});
 
-	test("kindThenName lists folders first, then files, each in raw name order across pages", async () => {
+	test("children and subtree mode list in raw name order across pages, with drafts and moves", async () => {
 		const f = await fixture();
 		const box = await create_saved(f, "box");
 		for (const name of ["Zeta", "b", "n"]) await create_saved(f, `box/${name}`);
@@ -288,12 +288,7 @@ describe("list", () => {
 			expect(moved._nay).toBeUndefined();
 		}
 
-		const list_all = async (args: {
-			mode: "children" | "subtree";
-			numItems: number;
-			kind?: "file" | "folder";
-			orderBy?: "kindThenName";
-		}) => {
+		const list_all = async (args: { mode: "children" | "subtree"; numItems: number }) => {
 			const names: string[] = [];
 			let cursor: string | null = null;
 			let done = false;
@@ -315,17 +310,25 @@ describe("list", () => {
 		};
 
 		// Raw order puts digits and capitals before lowercase, and "file-10" before "file-9".
-		const folders = ["Zeta", "b", "c-draft", "n", "x-moved"];
-		const files = ["0-moved.txt", "a.txt", "b-draft.txt", "file-10.txt", "file-9.txt", "m.txt", "z.txt"];
+		const names = [
+			"0-moved.txt",
+			"Zeta",
+			"a.txt",
+			"b",
+			"b-draft.txt",
+			"c-draft",
+			"file-10.txt",
+			"file-9.txt",
+			"m.txt",
+			"n",
+			"x-moved",
+			"z.txt",
+		];
 		// Each page size moves the page boundary, so a skipped or repeated entry changes the list.
 		for (const numItems of [1, 2, 3, 50]) {
-			expect(await list_all({ mode: "children", numItems, orderBy: "kindThenName" })).toEqual([...folders, ...files]);
+			expect(await list_all({ mode: "children", numItems })).toEqual(names);
 		}
-		expect(await list_all({ mode: "children", numItems: 2, kind: "file", orderBy: "kindThenName" })).toEqual(files);
-		expect(await list_all({ mode: "children", numItems: 2, kind: "folder", orderBy: "kindThenName" })).toEqual(folders);
-		// Without it, children and subtree mode keep plain name order, like the agent's `ls` expects.
-		expect(await list_all({ mode: "children", numItems: 2 })).toEqual([...folders, ...files].sort());
-		expect(await list_all({ mode: "subtree", numItems: 50 })).toEqual([...folders, ...files].sort());
+		expect(await list_all({ mode: "subtree", numItems: 50 })).toEqual(names);
 	});
 
 	test("walks private folders and moved-in saved folders once", async () => {

@@ -7,6 +7,7 @@ import { files_ROOT_ID, files_u8_to_array_buffer } from "../server/files.ts";
 import { files_yjs_create_empty_state_update } from "../shared/files-yjs.ts";
 import { files_yjs_doc_create_from_text } from "../shared/files-tiptap.ts";
 import { crypto_sha256_hex } from "../server/crypto-utils.ts";
+import { files_sort_text_key } from "../shared/files-sort.ts";
 
 async function seed_public_api_grant(args: {
 	t: ReturnType<typeof test_convex>;
@@ -74,6 +75,7 @@ async function seed_markdown_file(args: {
 					pathDepth: parentPath.split("/").filter(Boolean).length,
 					lowercaseExtension: null,
 					name: parentName,
+					sortName: files_sort_text_key(parentName),
 					kind: "folder",
 					parentId: files_ROOT_ID,
 					createdBy: args.userId,
@@ -81,6 +83,7 @@ async function seed_markdown_file(args: {
 					updatedAt: now,
 					contentType: null,
 					assetId: null,
+					contentByteSize: null,
 					textKind: null,
 					collaborationEnabled: null,
 					yjsSnapshotId: null,
@@ -92,6 +95,7 @@ async function seed_markdown_file(args: {
 					contentFrontmatterTooLargeFieldCount: null,
 					contentFrontmatterTooLargeIndexDocumentCount: null,
 					restrictedScopeNodeId: null,
+					isRestrictedScopeRoot: false,
 					archiveOperationId: null,
 				});
 			}
@@ -124,9 +128,11 @@ async function seed_markdown_file(args: {
 			pathDepth: args.path.split("/").filter(Boolean).length,
 			lowercaseExtension: name.includes(".") ? name.slice(name.lastIndexOf(".") + 1).toLowerCase() : null,
 			name,
+			sortName: files_sort_text_key(name),
 			kind: "file",
 			contentType: "text/markdown;charset=utf-8",
 			assetId: markdownAssetId,
+			contentByteSize: null,
 			textKind: "rich_text",
 			parentId,
 			createdBy: args.userId,
@@ -142,6 +148,7 @@ async function seed_markdown_file(args: {
 			contentFrontmatterTooLargeFieldCount: null,
 			contentFrontmatterTooLargeIndexDocumentCount: null,
 			restrictedScopeNodeId: null,
+			isRestrictedScopeRoot: false,
 			archiveOperationId: null,
 		});
 		const yjsSnapshotId = await ctx.db.insert("files_yjs_snapshots", {

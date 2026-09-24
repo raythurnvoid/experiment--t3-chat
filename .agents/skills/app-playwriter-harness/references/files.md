@@ -70,6 +70,23 @@ Use this file as a quick testing map for `/files`. Keep it short and selector-or
 - Folder explorer rows: `.FileNodeViewFolderExplorer-row`.
 - Folder table drop target state: `.FileNodeViewFolderExplorer-row-drop-target`.
 - Folder table dragging state: `.FileNodeViewFolderExplorer-row-dragging`.
+- Folder table sort state: `getByRole("table", { name: "Folder contents" })` carries
+  `data-sort-field` (`name`, `updated`, `created`, `type`, `size`, or `metadata.<key>` /
+  `frontmatter.<key>`), `data-sort-direction` (`asc` / `desc`), and `aria-busy="true"` while a new
+  sort loads. Wait for `aria-busy` to go away before reading rows.
+- Folder table header: `getByRole("columnheader", { name: /^Name/ })` has `aria-sort`
+  (`ascending`, `descending`, `none`). Name and Updated hold sort buttons: `getByRole("button", { name: /^Name/ })`.
+- Folder table sort menu: `getByRole("combobox", { name: /^Sort: / })`, named like
+  `Sort: Name, A to Z`. The direction button next to it has the tooltip `Sort <other direction>`.
+  Metadata options read like `status (metadata)`.
+- Folder table row names in order: the overlay links, `getAllByRole("link", { name: /^Open / })`.
+- Extra sort column cell: `.FileNodeViewFolderExplorer-cell-sort-value` (a dash `—` means no value).
+- The table is a `div` grid, not a `<table>`. In page context use `[role=table][aria-label="Folder contents"]`,
+  rows `.FileNodeViewFolderExplorer-row[role=row]`, and headers `[role=columnheader]`. `querySelector("table")`
+  answers null.
+- The table shows only its first **5** rows until you click `Show more`. The first click shows the rest of the
+  loaded page (50 per kind); later clicks load the next page. So 5 rows plus `Show more` on a fresh load is
+  the design, not a short server page.
 
 ### Large And Virtual Trees
 
@@ -487,6 +504,43 @@ downloadThroughput: -1, uploadThroughput: -1 }`. This affects only the owned QA 
 - Drag a folder row onto another folder row; verify the moved folder appears inside the target.
 - Drag onto a file row; verify no move and no `.FileNodeViewFolderExplorer-row-drop-target`.
 - While a move is pending, verify the row cannot start another drag and its more-actions button is disabled.
+
+### Folder Table Sort
+
+Verified 2026-09-24 in `qa-browser/home` with `qa.perm.owner` and `qa.perm.viewer` in two scratch Chromes
+(ports 9223 and 9224, see `clerk-test-accounts.md`). The whole run, fixtures included, took about 25 minutes.
+
+- **Fixtures from page context.** `files_nodes.create_folder_node` for folders, `files_nodes_content.create_text_node`
+  for files (`j.json`, `k.txt`, and `noext` give Type a value, another value, and a missing value), and
+  `files_metadata.set_entries({ membershipId, fileNodeId, metadataYaml: 'rank: "10"\n' })` for a metadata key.
+  Use string values like `"2"`, `"9"`, `"10"` to see the natural-number order. `files_sharing.restrict_node` on a
+  child with no grant gives the hidden-child case; `restrict_node` plus `set_node_share_grant` with
+  `level: "read"` for the member gives the reader case.
+- **`create_text_node` takes 1.5 to 4 s per call.** 55 files in one `page.evaluate` overran a 90 s timeout. Create
+  more than about 20 files in batches, or race each call against a short timer and log its time.
+- **Sizes.** A new text file is 52 bytes. `qa-browser` refuses uploads (`This workspace's plan does not include file
+  uploads`), and `files_nodes_content.replace_file_content` answers `Not found` on a collaborative file. To vary
+  sizes, open `?nodeId=<id>&view=rich_text_editor` with `waitUntil: "domcontentloaded"` (the `load` wait timed out),
+  click `.ProseMirror[contenteditable=true]`, press `End`, and `keyboard.insertText(...)`. The size updates within
+  a few seconds. Typing does not change the node's `updatedAt`, so the Updated sort keeps creation order for them.
+- **Drive the sort.** Header buttons `Name` and `Updated` (`exact: true`); the Sort select options are `Name`,
+  `Updated`, `Date created`, `Type`, `Size`, and `<key> (metadata)`; the direction button is named like
+  `Sort z to a`. Updated, Date created, and Size start newest or largest first.
+- **Read the order.** Wait for `aria-busy` to leave the table, click `Show more` until it is gone, then read the
+  overlay link names and `.FileNodeViewFolderExplorer-cell-sort-value`. Expect folders first, then values, then
+  `—` rows by name, in both directions.
+- **Saved sort and live update.** A writer's change is saved: reload shows it, and a second member's open table
+  flips to it with no reload (wait for `data-sort-field` to change).
+- **Reader.** Count `set_folder_sort` in `websocket` `framesent` payloads (attach the listener before `goto`). A
+  reader's clicks change their table and send 0 frames; `files_folder_sorts.get_folder_sort` still answers the old
+  sort with `canSave: false`, and reload brings it back. The same counter on the owner reads 1 per click, which
+  proves the counter works.
+- **Hidden child.** The member must not see the restricted child's row, and its metadata value must not appear in
+  `.FileNodeViewFolderExplorer-cell-sort-value` or anywhere in `body.innerText`.
+- **Working-tree proof.** Force `tooManyShared` to true in `list_tree_children_sort_side_rows`, push, and every
+  folder shows `Too many shared items here to sort. Some are not shown.`; push the real code and it goes away.
+- Clean up with `files_nodes.archive_nodes` on the fixture roots. Their `files_folder_sorts` docs stay until the
+  workspace purge, by design.
 
 ### Sidebar Drop Zone Visuals
 

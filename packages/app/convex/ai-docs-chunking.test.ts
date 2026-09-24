@@ -2,6 +2,7 @@ import { expect, test } from "vitest";
 import { db_replace_file_chunks } from "./files_nodes_content.ts";
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
 import { files_ROOT_ID } from "../server/files.ts";
+import { files_sort_text_key } from "../shared/files-sort.ts";
 
 test("db_replace_file_chunks replaces existing chunk rows for a page", async () => {
 	const t = test_convex();
@@ -43,8 +44,10 @@ test("db_replace_file_chunks replaces existing chunk rows for a page", async () 
 			pathDepth: 1,
 			lowercaseExtension: null,
 			name: "chunked-page",
+			sortName: files_sort_text_key("chunked-page"),
 			kind: "file",
 			assetId,
+			contentByteSize: null,
 			textKind: "rich_text",
 			archiveOperationId: null,
 			contentType: null,
@@ -58,6 +61,7 @@ test("db_replace_file_chunks replaces existing chunk rows for a page", async () 
 			contentFrontmatterTooLargeFieldCount: null,
 			contentFrontmatterTooLargeIndexDocumentCount: null,
 			restrictedScopeNodeId: null,
+			isRestrictedScopeRoot: false,
 			writePolicy: null,
 		});
 		const snapshotId = await ctx.db.insert("files_yjs_snapshots", {

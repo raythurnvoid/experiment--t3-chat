@@ -32,7 +32,8 @@ export type files_VisibleEntry =
 
 export type files_VisibleTreeNode = Omit<
 	app_convex_Doc<"files_nodes">,
-	"organizationId" | "workspaceId" | "createdBy" | "updatedBy" | "writePolicy"
+	// The public node queries leave out `sortName` and `isRestrictedScopeRoot`. Only server indexes read them.
+	"organizationId" | "workspaceId" | "createdBy" | "updatedBy" | "writePolicy" | "sortName" | "isRestrictedScopeRoot"
 > & {
 	organizationId: app_convex_Id<"organizations">;
 	workspaceId: app_convex_Id<"organizations_workspaces">;
@@ -59,6 +60,7 @@ export const files_SYNTHETIC_ROOT_FOLDER = {
 	contentType: null,
 	statsId: null,
 	assetId: null,
+	contentByteSize: null,
 	textKind: null,
 	collaborationEnabled: null,
 	archiveOperationId: null,

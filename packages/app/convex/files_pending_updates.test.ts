@@ -64,6 +64,7 @@ import {
 	files_metadata_MAX_FRONTMATTER_INDEX_DOCUMENTS,
 } from "../shared/files-metadata.ts";
 import { Doc as YDoc, XmlElement as YXmlElement, encodeStateAsUpdate, encodeStateAsUpdateV2 } from "yjs";
+import { files_sort_text_key } from "../shared/files-sort.ts";
 
 // Wrap the shared markdown serializer in a delegating mock so focused tests can make one call
 // fail with the real producer's cause-carrying `_nay` shape. A crafted Y.Doc cannot force that
@@ -226,10 +227,12 @@ async function seed_file_with_markdown(args: {
 		treePath: path,
 		pathDepth: path === "/" ? 0 : path.split("/").filter(Boolean).length,
 		name,
+		sortName: files_sort_text_key(name),
 		kind: "file",
 		lowercaseExtension: name.includes(".") ? name.slice(name.lastIndexOf(".") + 1).toLowerCase() : null,
 		contentType: rootKind === "rich_text" ? "text/markdown;charset=utf-8" : "text/plain;charset=utf-8",
 		assetId: markdownAssetId,
+		contentByteSize: null,
 		parentId: files_ROOT_ID,
 		createdBy: userId,
 		updatedBy: userId,
@@ -246,6 +249,7 @@ async function seed_file_with_markdown(args: {
 		contentFrontmatterTooLargeFieldCount: null,
 		contentFrontmatterTooLargeIndexDocumentCount: null,
 		restrictedScopeNodeId: null,
+		isRestrictedScopeRoot: false,
 		writePolicy: null,
 	});
 
@@ -303,6 +307,7 @@ async function seed_folder_node(args: {
 		pathDepth: args.path.split("/").filter(Boolean).length,
 		lowercaseExtension: null,
 		name: args.name,
+		sortName: files_sort_text_key(args.name),
 		kind: "folder",
 		parentId: args.parentId ?? files_ROOT_ID,
 		createdBy: args.userId,
@@ -310,6 +315,7 @@ async function seed_folder_node(args: {
 		updatedAt: now,
 		contentType: null,
 		assetId: null,
+		contentByteSize: null,
 		textKind: null,
 		collaborationEnabled: null,
 		yjsSnapshotId: null,
@@ -321,6 +327,7 @@ async function seed_folder_node(args: {
 		contentFrontmatterTooLargeFieldCount: null,
 		contentFrontmatterTooLargeIndexDocumentCount: null,
 		restrictedScopeNodeId: null,
+		isRestrictedScopeRoot: false,
 		writePolicy: null,
 
 		archiveOperationId: null,
@@ -431,9 +438,11 @@ async function seed_non_collaborative_file(ctx: MutationCtx, path: string, text:
 		pathDepth: 1,
 		lowercaseExtension: name.split(".").at(-1) ?? null,
 		name,
+		sortName: files_sort_text_key(name),
 		kind: "file",
 		contentType,
 		assetId,
+		contentByteSize: null,
 		createdBy: userId,
 		updatedBy: userId,
 		updatedAt: now,
@@ -448,6 +457,7 @@ async function seed_non_collaborative_file(ctx: MutationCtx, path: string, text:
 		contentFrontmatterTooLargeFieldCount: null,
 		contentFrontmatterTooLargeIndexDocumentCount: null,
 		restrictedScopeNodeId: null,
+		isRestrictedScopeRoot: false,
 		writePolicy: null,
 
 		archiveOperationId: null,
@@ -10942,9 +10952,11 @@ describe("prepare_file_pending_update_for_agent upload in flight", () => {
 				pathDepth: 1,
 				lowercaseExtension: "txt",
 				name: "uploading.txt",
+				sortName: files_sort_text_key("uploading.txt"),
 				kind: "file",
 				contentType: "text/plain",
 				assetId,
+				contentByteSize: null,
 				createdBy: db.userId,
 				updatedBy: db.userId,
 				updatedAt: now,
@@ -10959,6 +10971,7 @@ describe("prepare_file_pending_update_for_agent upload in flight", () => {
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: null,
+				isRestrictedScopeRoot: false,
 				writePolicy: null,
 				archiveOperationId: null,
 			});
@@ -13296,6 +13309,7 @@ describe("upsert_file_pending_move_in_db", () => {
 				treePath: "/typed-photo.png",
 				pathDepth: 1,
 				name: "typed-photo.png",
+				sortName: files_sort_text_key("typed-photo.png"),
 				kind: "file",
 				lowercaseExtension: "png",
 				contentType: "image/png",
@@ -13304,6 +13318,7 @@ describe("upsert_file_pending_move_in_db", () => {
 				updatedBy: markdownSeeded.userId,
 				updatedAt: Date.now(),
 				assetId: null,
+				contentByteSize: null,
 				textKind: null,
 				collaborationEnabled: null,
 				yjsSnapshotId: null,
@@ -13315,6 +13330,7 @@ describe("upsert_file_pending_move_in_db", () => {
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: null,
+				isRestrictedScopeRoot: false,
 				writePolicy: null,
 
 				archiveOperationId: null,
@@ -14424,6 +14440,7 @@ describe("apply_file_pending_move", () => {
 				pathDepth: 1,
 				lowercaseExtension: "md",
 				name: "apply-conflict-dest.md",
+				sortName: files_sort_text_key("apply-conflict-dest.md"),
 				kind: "file",
 				parentId: files_ROOT_ID,
 				createdBy: seeded.userId,
@@ -14431,6 +14448,7 @@ describe("apply_file_pending_move", () => {
 				updatedAt: Date.now(),
 				contentType: null,
 				assetId: null,
+				contentByteSize: null,
 				textKind: null,
 				collaborationEnabled: null,
 				yjsSnapshotId: null,
@@ -14442,6 +14460,7 @@ describe("apply_file_pending_move", () => {
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: null,
+				isRestrictedScopeRoot: false,
 				writePolicy: null,
 
 				archiveOperationId: null,
@@ -19533,6 +19552,7 @@ describe("pending path overlay reads", () => {
 				pathDepth: 1,
 				lowercaseExtension: "md",
 				name: "overlay-src.md",
+				sortName: files_sort_text_key("overlay-src.md"),
 				kind: "file",
 				parentId: files_ROOT_ID,
 				createdBy: seeded.userId,
@@ -19540,6 +19560,7 @@ describe("pending path overlay reads", () => {
 				updatedAt: Date.now(),
 				contentType: null,
 				assetId: null,
+				contentByteSize: null,
 				textKind: null,
 				collaborationEnabled: null,
 				yjsSnapshotId: null,
@@ -19551,6 +19572,7 @@ describe("pending path overlay reads", () => {
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: null,
+				isRestrictedScopeRoot: false,
 				writePolicy: null,
 
 				archiveOperationId: null,

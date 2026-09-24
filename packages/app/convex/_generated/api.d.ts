@@ -29,6 +29,7 @@ import type * as data_deletion from "../data_deletion.js";
 import type * as data_deletion_requests from "../data_deletion_requests.js";
 import type * as data_import from "../data_import.js";
 import type * as files_browser from "../files_browser.js";
+import type * as files_folder_sorts from "../files_folder_sorts.js";
 import type * as files_ingestion from "../files_ingestion.js";
 import type * as files_media_dependencies from "../files_media_dependencies.js";
 import type * as files_media_validation from "../files_media_validation.js";
@@ -124,6 +125,7 @@ declare const fullApi: ApiFromModules<{
   data_deletion_requests: typeof data_deletion_requests;
   data_import: typeof data_import;
   files_browser: typeof files_browser;
+  files_folder_sorts: typeof files_folder_sorts;
   files_ingestion: typeof files_ingestion;
   files_media_dependencies: typeof files_media_dependencies;
   files_media_validation: typeof files_media_validation;

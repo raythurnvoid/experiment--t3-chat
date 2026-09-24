@@ -23,6 +23,7 @@ import { app_presence_GLOBAL_ROOM_ID } from "../shared/shared-presence-constants
 import { r2, r2_PUT_MAY_ARRIVE_MARGIN_MS, r2_confirmed_object_delete, r2_create_asset_key } from "./r2_client.ts";
 import { files_private_storage_db_reserve } from "./files_private_storage.ts";
 import { files_db_schedule_pending_update_cleanup } from "../server/files.ts";
+import { files_sort_text_key } from "../shared/files-sort.ts";
 
 const RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -103,6 +104,7 @@ async function data_deletion_test_seed_page(
 		treePath: `/${args.tag}`,
 		pathDepth: 1,
 		name: args.tag,
+		sortName: files_sort_text_key(args.tag),
 		kind: "file",
 		lowercaseExtension: null,
 		parentId: "root",
@@ -111,6 +113,7 @@ async function data_deletion_test_seed_page(
 		updatedAt: Date.now(),
 		contentType: null,
 		assetId: null,
+		contentByteSize: null,
 		textKind: null,
 		collaborationEnabled: null,
 		yjsSnapshotId: null,
@@ -122,6 +125,7 @@ async function data_deletion_test_seed_page(
 		contentFrontmatterTooLargeFieldCount: null,
 		contentFrontmatterTooLargeIndexDocumentCount: null,
 		restrictedScopeNodeId: null,
+		isRestrictedScopeRoot: false,
 		writePolicy: null,
 
 		archiveOperationId: null,
@@ -411,6 +415,7 @@ async function data_deletion_test_seed_workspace_content_bulk(
 			treePath: `/${args.tag}-${i}.md`,
 			pathDepth: 1,
 			name: `${args.tag}-${i}.md`,
+			sortName: files_sort_text_key(`${args.tag}-${i}.md`),
 			kind: "file",
 			lowercaseExtension: "md",
 			parentId: "root",
@@ -419,6 +424,7 @@ async function data_deletion_test_seed_workspace_content_bulk(
 			updatedAt: Date.now(),
 			contentType: "text/markdown;charset=utf-8",
 			assetId: null,
+			contentByteSize: null,
 			textKind: null,
 			collaborationEnabled: null,
 			yjsSnapshotId: null,
@@ -430,6 +436,7 @@ async function data_deletion_test_seed_workspace_content_bulk(
 			contentFrontmatterTooLargeFieldCount: null,
 			contentFrontmatterTooLargeIndexDocumentCount: null,
 			restrictedScopeNodeId: null,
+			isRestrictedScopeRoot: false,
 			writePolicy: null,
 
 			archiveOperationId: null,
@@ -3659,6 +3666,7 @@ describe("process_workspace_deletion_request", () => {
 				treePath: "/state-family.md",
 				pathDepth: 1,
 				name: "state-family.md",
+				sortName: files_sort_text_key("state-family.md"),
 				kind: "file",
 				lowercaseExtension: "md",
 				parentId: "root",
@@ -3667,6 +3675,7 @@ describe("process_workspace_deletion_request", () => {
 				updatedAt: now,
 				contentType: null,
 				assetId: null,
+				contentByteSize: null,
 				textKind: null,
 				collaborationEnabled: null,
 				yjsSnapshotId: null,
@@ -3678,6 +3687,7 @@ describe("process_workspace_deletion_request", () => {
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: null,
+				isRestrictedScopeRoot: false,
 				writePolicy: null,
 
 				archiveOperationId: null,
@@ -3818,6 +3828,7 @@ describe("process_workspace_deletion_request", () => {
 				treePath: "/unfinished.pdf",
 				pathDepth: 1,
 				name: "unfinished.pdf",
+				sortName: files_sort_text_key("unfinished.pdf"),
 				kind: "file",
 				lowercaseExtension: "pdf",
 				parentId: "root",
@@ -3826,6 +3837,7 @@ describe("process_workspace_deletion_request", () => {
 				updatedAt: now,
 				contentType: "application/pdf",
 				assetId,
+				contentByteSize: null,
 				textKind: null,
 				collaborationEnabled: null,
 				yjsSnapshotId: null,
@@ -3837,6 +3849,7 @@ describe("process_workspace_deletion_request", () => {
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: null,
+				isRestrictedScopeRoot: false,
 				writePolicy: null,
 
 				archiveOperationId: null,
@@ -4140,6 +4153,7 @@ describe("process_workspace_deletion_request", () => {
 				treePath: "/plugin-source.png",
 				pathDepth: 1,
 				name: "plugin-source.png",
+				sortName: files_sort_text_key("plugin-source.png"),
 				kind: "file",
 				lowercaseExtension: "png",
 				parentId: "root",
@@ -4148,6 +4162,7 @@ describe("process_workspace_deletion_request", () => {
 				updatedAt: now,
 				contentType: "image/png",
 				assetId,
+				contentByteSize: null,
 				textKind: null,
 				collaborationEnabled: null,
 				yjsSnapshotId: null,
@@ -4159,6 +4174,7 @@ describe("process_workspace_deletion_request", () => {
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: null,
+				isRestrictedScopeRoot: false,
 				writePolicy: null,
 
 				archiveOperationId: null,
@@ -4701,6 +4717,7 @@ describe("process_workspace_deletion_request", () => {
 				treePath: "/materialization-job.md",
 				pathDepth: 1,
 				name: "materialization-job.md",
+				sortName: files_sort_text_key("materialization-job.md"),
 				kind: "file",
 				lowercaseExtension: "md",
 				parentId: "root",
@@ -4709,6 +4726,7 @@ describe("process_workspace_deletion_request", () => {
 				updatedAt: Date.now(),
 				contentType: null,
 				assetId: null,
+				contentByteSize: null,
 				textKind: null,
 				collaborationEnabled: null,
 				yjsSnapshotId: null,
@@ -4720,6 +4738,7 @@ describe("process_workspace_deletion_request", () => {
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: null,
+				isRestrictedScopeRoot: false,
 				writePolicy: null,
 
 				archiveOperationId: null,
@@ -4794,6 +4813,7 @@ describe("process_workspace_deletion_request", () => {
 				treePath: "/plugin-run-cancel.png",
 				pathDepth: 1,
 				name: "plugin-run-cancel.png",
+				sortName: files_sort_text_key("plugin-run-cancel.png"),
 				kind: "file",
 				lowercaseExtension: "png",
 				parentId: "root",
@@ -4802,6 +4822,7 @@ describe("process_workspace_deletion_request", () => {
 				updatedAt: now,
 				contentType: "image/png",
 				assetId,
+				contentByteSize: null,
 				textKind: null,
 				collaborationEnabled: null,
 				yjsSnapshotId: null,
@@ -4813,6 +4834,7 @@ describe("process_workspace_deletion_request", () => {
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: null,
+				isRestrictedScopeRoot: false,
 				writePolicy: null,
 
 				archiveOperationId: null,
@@ -4962,6 +4984,7 @@ describe("process_workspace_deletion_request", () => {
 				treePath: "/locked",
 				pathDepth: 1,
 				name: "locked",
+				sortName: files_sort_text_key("locked"),
 				kind: "folder",
 				lowercaseExtension: null,
 				parentId: "root",
@@ -4970,6 +4993,7 @@ describe("process_workspace_deletion_request", () => {
 				updatedAt: now,
 				contentType: null,
 				assetId: null,
+				contentByteSize: null,
 				textKind: null,
 				collaborationEnabled: null,
 				yjsSnapshotId: null,
@@ -4981,6 +5005,7 @@ describe("process_workspace_deletion_request", () => {
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: null,
+				isRestrictedScopeRoot: false,
 				writePolicy: null,
 
 				archiveOperationId: null,
@@ -5005,6 +5030,7 @@ describe("process_workspace_deletion_request", () => {
 				treePath: "/locked/file.md",
 				pathDepth: 2,
 				name: "file.md",
+				sortName: files_sort_text_key("file.md"),
 				kind: "file",
 				lowercaseExtension: "md",
 				parentId: folderId,
@@ -5014,6 +5040,7 @@ describe("process_workspace_deletion_request", () => {
 				updatedAt: now,
 				contentType: "text/markdown;charset=utf-8",
 				assetId,
+				contentByteSize: null,
 				textKind: null,
 				collaborationEnabled: null,
 				yjsSnapshotId: null,
@@ -5025,6 +5052,7 @@ describe("process_workspace_deletion_request", () => {
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: null,
+				isRestrictedScopeRoot: false,
 
 				archiveOperationId: null,
 			});
@@ -7083,6 +7111,7 @@ describe("finalize_user_deletion_data", () => {
 					treePath: `/${tag}.md`,
 					pathDepth: 1,
 					name: `${tag}.md`,
+					sortName: files_sort_text_key(`${tag}.md`),
 					kind: "file",
 					lowercaseExtension: "md",
 					parentId: "root",
@@ -7091,6 +7120,7 @@ describe("finalize_user_deletion_data", () => {
 					updatedAt: now,
 					contentType: null,
 					assetId: null,
+					contentByteSize: null,
 					textKind: null,
 					collaborationEnabled: null,
 					yjsSnapshotId: null,
@@ -7102,6 +7132,7 @@ describe("finalize_user_deletion_data", () => {
 					contentFrontmatterTooLargeFieldCount: null,
 					contentFrontmatterTooLargeIndexDocumentCount: null,
 					restrictedScopeNodeId: null,
+					isRestrictedScopeRoot: false,
 					writePolicy: null,
 
 					archiveOperationId: null,

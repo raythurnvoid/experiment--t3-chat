@@ -833,6 +833,22 @@
 	}
 	/* #endregion folder body */
 
+	/* #region folder explorer sort select */
+	.FileNodeViewFolderExplorerSortSelect {
+		display: flex;
+		gap: 4px;
+		min-width: 0;
+	}
+
+	.FileNodeViewFolderExplorerSortSelect-note {
+		margin: 0;
+		padding: 8px 10px;
+
+		font-size: 0.8125rem;
+		color: var(--color-fg-09);
+	}
+	/* #endregion folder explorer sort select */
+
 	/* #region folder explorer */
 	.FileNodeViewFolderExplorer {
 		display: flex;
@@ -840,6 +856,20 @@
 		flex: 0 0 auto;
 
 		padding: 0 24px;
+	}
+
+	.FileNodeViewFolderExplorer-toolbar {
+		display: flex;
+		justify-content: end;
+
+		margin-bottom: 8px;
+	}
+
+	.FileNodeViewFolderExplorer-notice {
+		margin: 0 0 8px;
+
+		font-size: 0.875rem;
+		color: var(--color-fg-07);
 	}
 
 	.FileNodeViewFolderExplorer-table {
@@ -856,6 +886,83 @@
 			border-bottom-left-radius: 0;
 			border-bottom-right-radius: 0;
 		}
+	}
+
+	/* A sort by any field other than Name or Updated adds a column for that field before the actions. */
+	.FileNodeViewFolderExplorer-table-has-sort-value {
+		grid-template-columns: minmax(0, 1fr) max-content max-content max-content max-content;
+	}
+
+	.FileNodeViewFolderExplorer-header-row {
+		border-bottom: 1px solid var(--color-fg-03);
+
+		font-size: 0.8125rem;
+		color: var(--color-fg-07);
+	}
+
+	.FileNodeViewFolderExplorer-column-header {
+		grid-row: 1;
+
+		display: flex;
+		align-items: center;
+		gap: 4px;
+
+		padding: 8px 12px;
+
+		font-weight: 500;
+		white-space: nowrap;
+	}
+
+	.FileNodeViewFolderExplorer-column-header-name {
+		grid-column: 1;
+	}
+
+	.FileNodeViewFolderExplorer-column-header-updated-by {
+		grid-column: 2;
+	}
+
+	.FileNodeViewFolderExplorer-column-header-updated {
+		grid-column: 3;
+	}
+
+	.FileNodeViewFolderExplorer-column-header-sort-value {
+		grid-column: 4;
+	}
+
+	.FileNodeViewFolderExplorer-column-header-actions {
+		grid-column: -2;
+	}
+
+	.FileNodeViewFolderExplorer-sort-button {
+		display: inline-flex;
+		align-items: center;
+		gap: 4px;
+
+		padding: 0;
+
+		font: inherit;
+		color: inherit;
+
+		border: none;
+		border-radius: 4px;
+		background: none;
+		cursor: pointer;
+
+		&:hover {
+			color: var(--color-fg-11);
+		}
+
+		&:focus-visible {
+			outline: 2px solid var(--color-fg-12);
+			outline-offset: 2px;
+		}
+	}
+
+	.FileNodeViewFolderExplorer-sort-icon {
+		width: 14px;
+		height: 14px;
+
+		flex: 0 0 auto;
 	}
 
 	.FileNodeViewFolderExplorer-row {
@@ -947,8 +1054,16 @@
 		grid-column: 3;
 	}
 
-	.FileNodeViewFolderExplorer-cell-actions {
+	.FileNodeViewFolderExplorer-cell-sort-value {
 		grid-column: 4;
+
+		max-width: 240px;
+		overflow: hidden;
+	}
+
+	/* The actions are always the last column, whether or not the table has a sort value column. */
+	.FileNodeViewFolderExplorer-cell-actions {
+		grid-column: -2;
 
 		justify-content: center;
 		padding: 4px 6px;
@@ -959,7 +1074,8 @@
 	}
 
 	.FileNodeViewFolderExplorer-cell-updated-by,
-	.FileNodeViewFolderExplorer-cell-updated {
+	.FileNodeViewFolderExplorer-cell-updated,
+	.FileNodeViewFolderExplorer-cell-sort-value {
 		white-space: nowrap;
 		color: var(--color-fg-07);
 	}

@@ -28,6 +28,7 @@ import {
 } from "./access_control.ts";
 import {
 	files_nodes_db_cascade_restricted_scope,
+	files_nodes_db_set_restricted_scope,
 	files_nodes_db_resolve_parent_restricted_scope,
 } from "./files_nodes.ts";
 import { organizations_db_get_membership } from "./organizations.ts";
@@ -1064,7 +1065,12 @@ export const restrict_node = mutation({
 
 		const now = Date.now();
 		await db_detach_file_access_binding(ctx, node._id);
-		await ctx.db.patch("files_nodes", node._id, { restrictedScopeNodeId: node._id });
+		await files_nodes_db_set_restricted_scope(ctx, {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			nodeId: node._id,
+			restrictedScopeNodeId: node._id,
+		});
 		// The root changes even when it has no descendants to cascade.
 		await files_media_validation_db_advance_version(ctx, {
 			organizationId: membership.organizationId,
@@ -1138,7 +1144,12 @@ export const unrestrict_node = mutation({
 		});
 
 		await db_detach_file_access_binding(ctx, node._id);
-		await ctx.db.patch("files_nodes", node._id, { restrictedScopeNodeId: parentScopeNodeId });
+		await files_nodes_db_set_restricted_scope(ctx, {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			nodeId: node._id,
+			restrictedScopeNodeId: parentScopeNodeId,
+		});
 		await files_media_validation_db_advance_version(ctx, {
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,

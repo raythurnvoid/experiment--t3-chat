@@ -15,6 +15,7 @@ import { Result } from "common/errors-as-values-utils.ts";
 import { quotas_db_ensure, quotas_db_get } from "./quotas.ts";
 import { organizations_DESCRIPTION_MAX_LENGTH, organizations_NAME_MAX_LENGTH } from "../shared/organizations.ts";
 import { files_get_utf8_byte_size } from "../server/files.ts";
+import { files_sort_text_key } from "../shared/files-sort.ts";
 
 const RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -202,6 +203,7 @@ async function organizations_test_seed_workspace_scoped_rows(
 		treePath: `/${args.tag}-page`,
 		pathDepth: 1,
 		name: `${args.tag}-page`,
+		sortName: files_sort_text_key(`${args.tag}-page`),
 		kind: "file",
 		lowercaseExtension: null,
 		parentId: "root",
@@ -210,6 +212,7 @@ async function organizations_test_seed_workspace_scoped_rows(
 		updatedAt: Date.now(),
 		contentType: null,
 		assetId: null,
+		contentByteSize: null,
 		textKind: null,
 		collaborationEnabled: null,
 		yjsSnapshotId: null,
@@ -221,6 +224,7 @@ async function organizations_test_seed_workspace_scoped_rows(
 		contentFrontmatterTooLargeFieldCount: null,
 		contentFrontmatterTooLargeIndexDocumentCount: null,
 		restrictedScopeNodeId: null,
+		isRestrictedScopeRoot: false,
 		writePolicy: null,
 
 		archiveOperationId: null,
@@ -4229,6 +4233,7 @@ describe("access_control", () => {
 					treePath: "/access-user-grant",
 					pathDepth: 1,
 					name: "access-user-grant",
+					sortName: files_sort_text_key("access-user-grant"),
 					kind: "file",
 					lowercaseExtension: null,
 					parentId: "root",
@@ -4237,6 +4242,7 @@ describe("access_control", () => {
 					updatedAt: now,
 					contentType: null,
 					assetId: null,
+					contentByteSize: null,
 					textKind: null,
 					collaborationEnabled: null,
 					yjsSnapshotId: null,
@@ -4248,6 +4254,7 @@ describe("access_control", () => {
 					contentFrontmatterTooLargeFieldCount: null,
 					contentFrontmatterTooLargeIndexDocumentCount: null,
 					restrictedScopeNodeId: null,
+					isRestrictedScopeRoot: false,
 					writePolicy: null,
 
 					archiveOperationId: null,
@@ -4259,6 +4266,7 @@ describe("access_control", () => {
 					treePath: "/access-public-other",
 					pathDepth: 1,
 					name: "access-public-other",
+					sortName: files_sort_text_key("access-public-other"),
 					kind: "file",
 					lowercaseExtension: null,
 					parentId: "root",
@@ -4267,6 +4275,7 @@ describe("access_control", () => {
 					updatedAt: now,
 					contentType: null,
 					assetId: null,
+					contentByteSize: null,
 					textKind: null,
 					collaborationEnabled: null,
 					yjsSnapshotId: null,
@@ -4278,6 +4287,7 @@ describe("access_control", () => {
 					contentFrontmatterTooLargeFieldCount: null,
 					contentFrontmatterTooLargeIndexDocumentCount: null,
 					restrictedScopeNodeId: null,
+					isRestrictedScopeRoot: false,
 					writePolicy: null,
 
 					archiveOperationId: null,

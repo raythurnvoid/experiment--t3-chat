@@ -4,6 +4,7 @@ import { getFunctionName, type FunctionReturnType } from "convex/server";
 import { api, components, internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import { test_convex, test_mocks, test_mocks_fill_db_with } from "./setup.test.ts";
+import { files_sort_text_key } from "../shared/files-sort.ts";
 
 beforeEach(() => vi.useFakeTimers());
 afterEach(() => {
@@ -477,6 +478,7 @@ describe("review jobs", () => {
 					...base,
 					parentId: "root",
 					name: "a",
+					sortName: files_sort_text_key("a"),
 					path: "/a",
 					treePath: "/a/",
 				});
@@ -484,6 +486,7 @@ describe("review jobs", () => {
 					...base,
 					parentId: "root",
 					name: "b",
+					sortName: files_sort_text_key("b"),
 					path: "/b",
 					treePath: "/b/",
 				});
@@ -491,6 +494,7 @@ describe("review jobs", () => {
 					...base,
 					parentId: sourceId,
 					name: "child",
+					sortName: files_sort_text_key("child"),
 					path: "/b/child",
 					treePath: "/b/child/",
 					pathDepth: 2,

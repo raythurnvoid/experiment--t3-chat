@@ -17,6 +17,9 @@ Primary:
 - `../../../packages/app/src/routes/w/$organizationName/$workspaceName/files/index.tsx`
 - `../../../packages/app/convex/files_nodes.ts`
 - `../../../packages/app/convex/files_transfer.ts`
+- `../../../packages/app/convex/files_folder_sorts.ts`
+- `../../../packages/app/shared/files-sort.ts`
+- `../../../packages/app/src/hooks/files-search-hooks.ts`
 - `../../../packages/app/convex/r2.ts`
 - `../../../packages/app/convex/plugins_runtime.ts`
 - `../../../packages/app/shared/files.ts`
@@ -228,10 +231,95 @@ Tree-item components:
 
 ## Folder Contents
 
-- Home, saved folders, and private folders read direct children through `files_visible.list` and `useFilesVisibleEntries` in `"incremental"` mode. Use the current visible folder path. That mode sends `orderBy: "kindThenName"`, so the server returns folders first, then names in byte order, and the table shows each page as it arrives without sorting on the client. The agent's `ls` and `find` do not send it and keep plain name order.
-- Known gap: `files_visible.list` reads each row through its own nested `internal_page` query of one row, then resolves that row's pending overlay. A 50-row page on a big folder (`/people` in `sybill-demo/demo`, 9666 children) takes 5–8 s, so the table is much slower than the sidebar.
+The home and saved-folder table (`FileNodeViewFolder`) is sorted and paged on the server. A private
+folder (`FileNodeViewPrivateFolder`) still lists its children through `useFilesVisibleEntries` in
+`"children"` mode, in raw name order. The agent's `ls` and `find` also keep raw name order.
+
+### Sort rules
+
+- Sort by Name, Updated, Date created, Type, Size, or any `metadata.*` / `frontmatter.*` key, in
+  both directions. Folders always come first. Rows with no value come last, by name A to Z.
+- Every value sorts as text through `files_sort_text_key` in `packages/app/shared/files-sort.ts`:
+  case and accents are ignored, and digit runs compare by value (`file2` before `file10`). A number
+  sorts as `String(value)`, a boolean as `true`/`false`, a list by its first item. The raw name
+  breaks ties, so the order is total.
+- Known limits of text sort: decimals compare digit run by digit run (`1.5` after `1.25`), a minus
+  sign is text (`-5` is not below `3`), and dates sort in time order only when they use the same
+  format and time zone. Locale alphabets are not handled (Swedish `å` sorts with `a`, not after `z`).
+- Folders sorted by Size sort by name A to Z in both directions, because a folder has no size.
+  Type uses the lowercase extension; files with no extension are the missing rows.
+- The first click on a header, or the first pick in the menu, sorts Updated and Date created newest
+  first, Size largest first, and everything else A to Z. A second header click flips the direction.
+
+### Saved sort
+
+- Each folder, and the root, has one saved sort in `files_folder_sorts`, shared by every member.
+  `files_folder_sorts.get_folder_sort` returns `{ sort, canSave }` with Name, A to Z filled in when
+  there is no row, or null when the caller cannot read the folder. A grant-only member at the root
+  gets Name, A to Z and cannot save. Saving Name, A to Z deletes the row.
+- The table waits for the saved sort before it loads rows, so it never loads by name and then sorts
+  again.
+- A writer (`canSave: true`) saves with `set_folder_sort`. The table shows the new order at once from
+  a local sort, then follows the saved sort again when the save ends. A failed save goes back to the
+  saved sort and shows the toast "The sort could not be saved. Try again." Other members' tables
+  follow the saved sort live.
+- A reader (`canSave: false`) gets the same controls, but the sort is local only, keyed by folder,
+  and resets when they open another folder. The menu says "Only people who can edit this folder can
+  save its sort." Who may save is in the `access-control` skill.
+- The sidebar still lists children in name order (`list_tree_children`). Table and sidebar disagree
+  until Phase 2 moves the sidebar onto the sorted query.
+
+### Data path
+
+- `files_nodes.list_tree_children_sorted` pages one segment: `kind` (folder or file) x `segment`
+  (`value` or `missing`). Every row carries `sortKey` (its index tuple from the shared encoder) and
+  `sortFieldValue` (the typed value for the extra column).
+  - It reads only rows with `isRestrictedScopeRoot: false`, and only when the caller can read the
+    folder. Every row in that range is readable, so a hidden row never takes a page slot and no
+    page is short because of access. Restricted-root children come from the side rows.
+  - It drops the caller's own pending archives and moves, unless the move destination is gone (a
+    dead move keeps the row in place, like the Files view). A same-folder rename also comes back
+    through the side rows.
+  - A row whose `isRestrictedScopeRoot` does not match `restrictedScopeNodeId === _id` throws: a
+    stale flag would show a hidden row.
+  - Built-in fields and metadata value segments use native Convex pagination. The metadata missing
+    segment walks nodes and field docs in name order with a JSON cursor and a 1000-row scan budget,
+    so a page can be short or empty.
+- `files_nodes.list_tree_children_sort_side_rows` returns the rows the partitioned index cannot
+  serve, each with its `sortKey`: up to 200 readable restricted-root children, and up to 200 of the
+  caller's drafts and pending moves into the folder, plus the saved names those drafts and moves
+  claim. Over a cap it sets `tooManyShared` or `tooManyPending`. Over the shared cap a non-owner gets
+  no restricted rows at all, because a cut-off would move with the hidden rows. The owner still gets
+  the first 200. It returns null when the caller cannot read the folder, and empty side rows for a
+  readable folder the Files view hides (archived, or hidden by the caller's own pending change).
+- `useFilesSortedChildren` in `packages/app/src/hooks/files-search-hooks.ts` merges it all:
+  - Segments show in order folders/value, folders/missing, files/value, files/missing. A later
+    segment shows only after every earlier one is done, so the next folder page never pushes
+    files down.
+  - A missing segment starts when its value segment is done and stays started for that sort.
+    Metadata missing pages use a cursor chain (`useFilesSortedMissingPages`) that reloads later
+    pages when an earlier page's end changes, and loads the next page by itself after an empty one.
+  - A side row shows once its segment is done or the last loaded main row sorts at or after it. So
+    side rows never jump.
+  - While a new sort or a page loads, the last settled rows stay, with `aria-busy="true"` on the
+    table. `rowsSort` is the sort those rows were loaded with, and the value column follows it.
+  - `loadMore()` loads the first shown segment that can load more.
+
+### Table UI
+
+- Header row: Name | Updated by | Updated | [sorted field] | Actions. Name and Updated hold sort
+  buttons; each column header has `aria-sort`. When the sort is not Name or Updated, one extra column
+  shows the field (Date created, Type, Size, or the key without its prefix). A row with no value
+  shows `—`.
+- A sort menu (`MySearchSelect`) sits above the table. Its trigger is named like
+  `Sort: Name, A to Z`. It lists the built-ins, then keys from `files_metadata.list_search_fields`,
+  read once per open (an item reads like `status (metadata)`). A button next to it flips the
+  direction; its tooltip names the other direction.
+- The table root has `data-sort-field` and `data-sort-direction`.
+- Cap notices: "Too many shared items here to sort. Some are not shown." and "Too many pending
+  changes here. Review them in the Pending panel."
 - Show more first shows the rest of the loaded rows. When every loaded row is shown and the folder is not done, it loads the next page. The table's README comes from `files_nodes.get_folder_readme`, not from the loaded rows.
-- The folder view also calls `FilesTreeProvider.useFolders` for the open folder, so row actions find the saved tree row. When a table row is missing from the tree rows, it asks the tree for the next page.
+- Row actions look up the saved row in one merged list: the tree rows from `FilesTreeProvider.useFolders` plus the table rows' `treeRow`. So a row on a page the tree has not loaded still works.
 - Private rows show Added or Preparing and link with `pendingNodeId`.
 - Saved row actions use the real saved document and its current permission data. Never create a fake saved document for a private row. Private folders use tagged children and owner review actions.
 
@@ -528,6 +616,7 @@ Do not call `parent.getChildren()` for this check in each row: it loads every si
   preserves a newer clipboard, and marks rows accessibly. Normal text shortcuts still work.
 - Conflict choices carry the current revision. Hide does not stop a run; Activity can reopen it.
   Stop keeps completed copies, reports an unconfirmed request, and waits for the server result.
+- The folder table sorts by each built-in field and a metadata key in both directions, with folders first and missing values last. A writer's sort shows live for a second member; a reader's sort stays local and resets on another folder. A restricted child the member cannot read never shows, and Show more pages without repeats.
 - Selection modes and anchor behavior are correct.
 - A tree with thousands of visible rows mounts only the viewport plus active rows. Home/End and
   arrow keys scroll and focus correctly. Scrolling keeps an active rename, menu, drag, or dialog

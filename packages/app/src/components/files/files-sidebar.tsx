@@ -6661,6 +6661,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			archiveOperationId: args.archiveOperationId ?? null,
 			contentType: null,
 			assetId: null,
+			contentByteSize: null,
 			textKind: null,
 			collaborationEnabled: null,
 			yjsSnapshotId: null,

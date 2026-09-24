@@ -33,7 +33,14 @@ import { MainAppSidebarToggle } from "@/components/main-app-sidebar-toggle.tsx";
 import { CopyIconButton } from "@/components/copy-icon-button.tsx";
 import { MyButton, MyButtonIcon } from "@/components/my-button.tsx";
 import { MyFloatingSurface } from "@/components/my-floating-surface.tsx";
-import { MyGridTable, MyGridTableBody, MyGridTableCell, MyGridTableRow } from "@/components/my-grid-table.tsx";
+import {
+	MyGridTable,
+	MyGridTableBody,
+	MyGridTableCell,
+	MyGridTableColumnHeader,
+	MyGridTableHeader,
+	MyGridTableRow,
+} from "@/components/my-grid-table.tsx";
 import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
 import { MyIcon } from "@/components/my-icon.tsx";
 import { MyLink, MyLinkIcon } from "@/components/my-link.tsx";
@@ -65,7 +72,7 @@ import { MySkeleton } from "@/components/my-skeleton.tsx";
 import { MySpinner } from "@/components/my-spinner.tsx";
 import { PluginsUiFrame, type PluginsUiFrame_Props } from "@/components/plugins-ui-frame.tsx";
 import { useFn } from "@/hooks/utils-hooks.ts";
-import { useFilesVisibleEntries } from "@/hooks/files-search-hooks.ts";
+import { useFilesSortedChildren, useFilesVisibleEntries } from "@/hooks/files-search-hooks.ts";
 import { useFileNodeActivities } from "@/lib/activities.ts";
 import { app_convex, app_convex_api, type app_convex_Doc, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
@@ -109,10 +116,11 @@ import { draggable, dropTargetForElements } from "@atlaskit/pragmatic-drag-and-d
 import { measureNaturalWidth, prepareWithSegments } from "@chenglou/pretext";
 import { Link } from "@tanstack/react-router";
 import { useConvex, usePaginatedQuery, useQueries, useQuery } from "convex/react";
-import { compareValues } from "convex/values";
 import type { FunctionReturnType } from "convex/server";
 import {
 	Archive,
+	ArrowDown,
+	ArrowUp,
 	BookOpen,
 	ChevronDown,
 	CircleAlert,
@@ -138,9 +146,18 @@ import { createPortal } from "react-dom";
 import { toast } from "sonner";
 import { FilesSidebar } from "../files-sidebar.tsx";
 import {
+	files_metadata_FRONTMATTER_FIELD_PREFIX,
 	files_metadata_MAX_FRONTMATTER_FIELDS,
 	files_metadata_MAX_FRONTMATTER_INDEX_DOCUMENTS,
+	files_metadata_METADATA_FIELD_PREFIX,
 } from "../../../../shared/files-metadata.ts";
+import {
+	files_sort_BUILT_IN_FIELDS,
+	files_sort_DEFAULT,
+	files_sort_field_is_built_in,
+	files_sort_field_is_valid,
+	type files_sort_Sort,
+} from "../../../../shared/files-sort.ts";
 import { plugins_list_file_view_matches } from "../../../../shared/plugins.ts";
 import { users_SYSTEM_AUTHOR } from "../../../../shared/users.ts";
 
@@ -1345,7 +1362,11 @@ const FileNodeViewFile = memo(function FileNodeViewFile(props: FileNodeViewFile_
 		fileViewMatches.some((match) => file_view_id(match) === selectedFileView);
 	// Flat HTML views live in local file state. Legacy "default" opens Code.
 	const activeFileView =
-		hasHtmlPreview && selectedViewExists && selectedFileView === "default" ? "code" : selectedViewExists ? selectedFileView : "default";
+		hasHtmlPreview && selectedViewExists && selectedFileView === "default"
+			? "code"
+			: selectedViewExists
+				? selectedFileView
+				: "default";
 	const isEditorActive = activeFileView === "default";
 	const isFlatEditorVisible =
 		!hasHtmlPreview ||
@@ -1424,9 +1445,7 @@ const FileNodeViewFile = memo(function FileNodeViewFile(props: FileNodeViewFile_
 		onFileViewChange("default");
 		// Browser views are only wrong-file-type, not removed: fall back quietly.
 		const isBrowserView =
-			selectedFileView === "browser" ||
-			selectedFileView === "code_browser" ||
-			selectedFileView === "review_browser";
+			selectedFileView === "browser" || selectedFileView === "code_browser" || selectedFileView === "review_browser";
 		if (!isBrowserView) {
 			toast.info(`This file view is no longer available. Showing ${isEditable ? "the editor" : "file details"}.`);
 		}
@@ -1478,10 +1497,7 @@ const FileNodeViewFile = memo(function FileNodeViewFile(props: FileNodeViewFile_
 	// editor keeps its local draft. The editor panel hides instead of unmounting
 	// in browser-only view; the lone visible panel fills the width.
 	const showStandaloneView =
-		hasHtmlPreview &&
-		(activeFileView === "preview" ||
-			activeFileView === "details" ||
-			activePluginView != null);
+		hasHtmlPreview && (activeFileView === "preview" || activeFileView === "details" || activePluginView != null);
 
 	return (
 		<>
@@ -1541,11 +1557,7 @@ const FileNodeViewFile = memo(function FileNodeViewFile(props: FileNodeViewFile_
 							</MyPanel>
 							{isFlatBrowserVisible && (
 								<>
-									<MyPanelResizeHandle
-										isOpen
-										closeBehavior="unmount"
-										aria-label="Resize editor and browser"
-									/>
+									<MyPanelResizeHandle isOpen closeBehavior="unmount" aria-label="Resize editor and browser" />
 									<MyPanel id="file-node-view-browser" order={2} defaultSize={45} minSize={30}>
 										{browserContent}
 									</MyPanel>
@@ -1930,9 +1942,7 @@ const FileNodeViewPrivateContent = memo(function FileNodeViewPrivateContent(prop
 			: selectedFileView;
 	const isPrivateBrowserView =
 		hasHtmlPreview &&
-		(activePrivateView === "browser" ||
-			activePrivateView === "code_browser" ||
-			activePrivateView === "review_browser");
+		(activePrivateView === "browser" || activePrivateView === "code_browser" || activePrivateView === "review_browser");
 	const isPrivateEditorVisible =
 		!hasHtmlPreview ||
 		activePrivateView === "default" ||
@@ -1973,9 +1983,7 @@ const FileNodeViewPrivateContent = memo(function FileNodeViewPrivateContent(prop
 		onFileViewChange("default");
 		// Browser views are only wrong-file-type, not removed: fall back quietly.
 		const isBrowserView =
-			selectedFileView === "browser" ||
-			selectedFileView === "code_browser" ||
-			selectedFileView === "review_browser";
+			selectedFileView === "browser" || selectedFileView === "code_browser" || selectedFileView === "review_browser";
 		if (!isBrowserView) {
 			toast.info("This file view is no longer available. Showing the editor.");
 		}
@@ -2080,11 +2088,7 @@ const FileNodeViewPrivateContent = memo(function FileNodeViewPrivateContent(prop
 									</MyPanel>
 									{isPrivateBrowserVisible && (
 										<>
-											<MyPanelResizeHandle
-												isOpen
-												closeBehavior="unmount"
-												aria-label="Resize editor and browser"
-											/>
+											<MyPanelResizeHandle isOpen closeBehavior="unmount" aria-label="Resize editor and browser" />
 											<MyPanel id="file-node-view-browser" order={2} defaultSize={45} minSize={30}>
 												{privateBrowserContent}
 											</MyPanel>
@@ -2596,7 +2600,7 @@ const FILE_NODE_VIEW_FOLDER_INITIAL_VISIBLE_ITEMS_COUNT = 5;
 
 type FileNodeViewFolder_ClassNames = "FileNodeViewFolder" | "FileNodeViewFolder-mode-monaco";
 
-type FileNodeViewFolderEntry = NonNullable<ReturnType<typeof useFilesVisibleEntries>["entries"]>[number];
+type FileNodeViewFolderRow = NonNullable<ReturnType<typeof useFilesSortedChildren>["rows"]>[number];
 
 type FileNodeViewFolder_Props = {
 	folderItemId: app_convex_Doc<"files_nodes">["parentId"];
@@ -2638,46 +2642,27 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 	const { membershipId, organizationName, workspaceName } = AppTenantProvider.useContext();
 	const convex = useConvex();
 
-	const savedFolderPath = useQuery(
-		app_convex_api.files_visible.get_path,
-		folderItemId === files_ROOT_ID ? "skip" : { membershipId, target: { kind: "saved", id: folderItemId } },
-	);
-
-	// Show the first page at once and load the next one on "Show more". A folder can hold thousands of files.
-	const {
-		entries: visibleEntries,
-		isFailed: isFolderFailed,
-		isDone: isFolderDone,
-		loadMore: loadMoreVisibleEntries,
-	} = useFilesVisibleEntries(
+	// The table waits for the folder's saved sort, so it never loads by name first and then sorts again.
+	const folderSort = useQuery(app_convex_api.files_folder_sorts.get_folder_sort, {
 		membershipId,
-		folderItemId === files_ROOT_ID ? "/" : savedFolderPath,
-		"children",
-		"incremental",
-	);
-	// The table rows read their full rows, with write rights, from the tree store. Keep the store's pages
-	// ahead of the table: load its next page when a table row sorts after the last loaded row of its kind.
-	// Compare names, not ids. The table also lists this user's pending moves into the folder, and those
-	// nodes are on no page of this folder, so an id check would load every page. Only a pending move that
-	// sorts after every real child of its kind still loads the rest, which is rare.
-	const folderTree = FilesTreeProvider.useFolders({
-		folderIds: folderItemId === files_ROOT_ID ? [] : [folderItemId],
-		archived: false,
-		pinnedNodeIds: [],
+		folderId: folderItemId,
 	});
-	const lastTreeNameByKind = new Map<string, string>();
-	for (const row of folderTree.rows ?? []) {
-		const lastName = lastTreeNameByKind.get(row.kind);
-		if (row.parentId === folderItemId && (lastName === undefined || compareValues(row.name, lastName) > 0)) {
-			lastTreeNameByKind.set(row.kind, row.name);
-		}
-	}
-	const isFolderTreeBehind =
-		folderTree.statusByFolderId.get(folderItemId) === "more" &&
-		(visibleEntries ?? []).some((entry) => {
-			const lastName = lastTreeNameByKind.get(entry.kind);
-			return entry.target.kind === "saved" && (lastName === undefined || compareValues(entry.name, lastName) > 0);
-		});
+	// A reader's own sort, or a writer's new sort while it saves. It belongs to one folder, so opening
+	// another folder shows that folder's saved sort.
+	const [localSort, setLocalSort] = useState<{
+		folderId: app_convex_Doc<"files_nodes">["parentId"];
+		sort: files_sort_Sort;
+	} | null>(null);
+	const sort = (localSort?.folderId === folderItemId ? localSort.sort : null) ?? folderSort?.sort ?? null;
+	const sortedChildren = useFilesSortedChildren({ membershipId, folderId: folderItemId, sort });
+	const isFolderFailed = folderSort === null || sortedChildren.isFailed;
+	// A table row can be on a page the tree store has not loaded, so the move checks read both lists.
+	const savedNodesList = [
+		...(fileNodesList ?? []),
+		...(sortedChildren.rows ?? []).flatMap((row) =>
+			row.treeRow && !fileNodesList?.some((node) => node._id === row.treeRow?._id) ? [row.treeRow] : [],
+		),
+	];
 	const folderReadme = useQuery(app_convex_api.files_nodes.get_folder_readme, { membershipId, folderId: folderItemId });
 
 	const canWriteFolder = useQuery(app_convex_api.files_nodes.get_current_user_file_write_permission, {
@@ -2685,7 +2670,7 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 		nodeId: folderItemId,
 	});
 	// The archive answer is not part of the write permission. The create doors refuse an archived parent.
-	const folderNode = fileNodesList?.find((node) => node._id === folderItemId);
+	const folderNode = savedNodesList.find((node) => node._id === folderItemId);
 	const folderCanReceiveChildren =
 		canWriteFolder === true && (folderItemId === files_ROOT_ID || folderNode?.archiveOperationId === null);
 
@@ -2694,14 +2679,14 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 	// render-phase setState whenever the queries object identity changes, and the React
 	// Compiler leaves these hook arguments unmemoized (checked in the served compiled
 	// output), so an inline object loops the render until React throws.
-	// `restrictedScopeNodeIds` is memoized too because the query objects depend on its identity.
+	// `restrictedScopeNodeIds` is memoized too because the query objects depend on its identity. The
+	// table rows are new objects on every render, so memoize on the ids as text.
+	const restrictedScopeNodeIdsText = JSON.stringify([
+		...new Set(savedNodesList.flatMap((node) => (node.restrictedScopeNodeId ? [node.restrictedScopeNodeId] : []))),
+	]);
 	const restrictedScopeNodeIds = useMemo(
-		() => [
-			...new Set(
-				(fileNodesList ?? []).flatMap((node) => (node.restrictedScopeNodeId ? [node.restrictedScopeNodeId] : [])),
-			),
-		],
-		[fileNodesList],
+		() => JSON.parse(restrictedScopeNodeIdsText) as app_convex_Id<"files_nodes">[],
+		[restrictedScopeNodeIdsText],
 	);
 
 	const restrictedScopeShareStates = useQueries(
@@ -2729,8 +2714,8 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 	const [isCreatingReadme, setIsCreatingReadme] = useState(false);
 	const [pendingActionNodeIds, setPendingActionNodeIds] = useState(() => new Set<string>());
 
-	// The server already sorts folders first, then names in byte order. Pages that load later add rows at the end.
-	const childItems = visibleEntries ?? [];
+	// The hook already sorts folders first, in the folder's sort. Pages that load later add rows at the end.
+	const childItems = sortedChildren.rows ?? [];
 	const visibleChildItems = showAllItems
 		? childItems
 		: childItems.slice(0, FILE_NODE_VIEW_FOLDER_INITIAL_VISIBLE_ITEMS_COUNT);
@@ -2752,8 +2737,42 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 		setShowAllItems(true);
 		// Every loaded row is already on screen, so ask the server for the next page.
 		if (hiddenChildItemsCount === 0) {
-			loadMoreVisibleEntries();
+			sortedChildren.loadMore();
 		}
+	});
+
+	// A writer saves the sort for everyone and sees it at once. A reader sorts only their own view.
+	const handleSortChange = useFn((nextSort: files_sort_Sort) => {
+		setLocalSort({ folderId: folderItemId, sort: nextSort });
+		if (!folderSort?.canSave) {
+			return;
+		}
+
+		convex
+			.mutation(app_convex_api.files_folder_sorts.set_folder_sort, {
+				membershipId,
+				folderId: folderItemId,
+				sort: nextSort,
+			})
+			.then((result) => {
+				if (result._nay) {
+					console.error("[FileNodeViewFolder.handleSortChange] Failed to save the folder sort", {
+						result,
+						folderItemId,
+					});
+					toast.error("The sort could not be saved. Try again.");
+				}
+			})
+			.catch((error) => {
+				console.error("[FileNodeViewFolder.handleSortChange] Error saving the folder sort", {
+					error,
+					folderItemId,
+				});
+				toast.error("The sort could not be saved. Try again.");
+			})
+			// Follow the saved sort again once this save is done, unless a newer sort was chosen meanwhile.
+			// Convex updates the saved sort query before the mutation promise resolves.
+			.finally(() => setLocalSort((current) => (current?.sort === nextSort ? null : current)));
 	});
 
 	const handleShowLessClick = useFn(() => {
@@ -2811,8 +2830,8 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 
 	const handleCanMoveFileNodeToParent = useFn(
 		(args: { fileNodeId: app_convex_Id<"files_nodes">; targetParentId: app_convex_Doc<"files_nodes">["parentId"] }) => {
-			const sourceNode = fileNodesList?.find((node) => node._id === args.fileNodeId);
-			const targetNode = fileNodesList?.find((node) => node._id === args.targetParentId);
+			const sourceNode = savedNodesList.find((node) => node._id === args.fileNodeId);
+			const targetNode = savedNodesList.find((node) => node._id === args.targetParentId);
 
 			// Move needs the named item and its parent. Protected children keep their rules
 			// and do not block the folder.
@@ -2825,7 +2844,7 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 				return false;
 			}
 			return can_move_file_node_to_parent({
-				fileNodesList,
+				fileNodesList: savedNodesList,
 				fileNodeId: args.fileNodeId,
 				targetParentId: args.targetParentId,
 				canManageRestrictedScope,
@@ -2888,23 +2907,23 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 		setShowAllItems(false);
 	}, [folderItemId]);
 
-	useEffect(() => {
-		if (isFolderTreeBehind) {
-			folderTree.loadMore(folderItemId);
-		}
-	}, [isFolderTreeBehind, folderTree, folderItemId]);
-
 	const folderBrowserContent = (
 		<FileNodeViewFolderBody topSafeArea={topSafeArea}>
 			{isFolderFailed ? (
 				<p role="alert">This folder could not be loaded.</p>
-			) : visibleEntries === undefined ? (
+			) : sortedChildren.rows === undefined ? (
 				<p role="status">Loading folder…</p>
 			) : null}
 			<FileNodeViewFolderExplorer
 				visibleChildItems={visibleChildItems}
-				fileNodesList={fileNodesList}
-				hasMoreChildItems={hiddenChildItemsCount > 0 || (visibleEntries !== undefined && !isFolderDone)}
+				hasMoreChildItems={hiddenChildItemsCount > 0 || (sortedChildren.rows !== undefined && !sortedChildren.isDone)}
+				sort={sort ?? files_sort_DEFAULT}
+				rowsSort={sortedChildren.rowsSort ?? sort ?? files_sort_DEFAULT}
+				canSaveSort={folderSort?.canSave === true}
+				isSortBusy={sortedChildren.isBusy}
+				tooManyShared={sortedChildren.tooManyShared}
+				tooManyPending={sortedChildren.tooManyPending}
+				onSortChange={handleSortChange}
 				organizationName={organizationName}
 				workspaceName={workspaceName}
 				pendingActionNodeIds={pendingActionNodeIds}
@@ -3359,6 +3378,7 @@ type FileNodeViewFolderExplorerRow_ClassNames =
 	| "FileNodeViewFolderExplorer-cell-name"
 	| "FileNodeViewFolderExplorer-cell-updated-by"
 	| "FileNodeViewFolderExplorer-cell-updated"
+	| "FileNodeViewFolderExplorer-cell-sort-value"
 	| "FileNodeViewFolderExplorer-cell-actions"
 	| "FileNodeViewFolderExplorer-link"
 	| "FileNodeViewFolderExplorer-icon"
@@ -3369,6 +3389,10 @@ type FileNodeViewFolderExplorerRow_ClassNames =
 type FileNodeViewFolderExplorerRow_Props = {
 	child: files_VisibleTreeNode;
 	visibleName: string;
+	/**
+	 * The text of the sorted field's column, or null when the table has no such column.
+	 */
+	sortValueLabel: string | null;
 	hasVisibleProtectedDescendant: boolean;
 	canPasteIntoFolder: boolean;
 	organizationName: string;
@@ -3392,6 +3416,7 @@ const FileNodeViewFolderExplorerRow = memo(function FileNodeViewFolderExplorerRo
 	const {
 		child,
 		visibleName,
+		sortValueLabel,
 		hasVisibleProtectedDescendant,
 		canPasteIntoFolder,
 		organizationName,
@@ -3606,6 +3631,16 @@ const FileNodeViewFolderExplorerRow = memo(function FileNodeViewFolderExplorerRo
 			>
 				{format_relative_time(child.updatedAt)}
 			</MyGridTableCell>
+			{sortValueLabel !== null && (
+				<MyGridTableCell
+					className={cn(
+						"FileNodeViewFolderExplorer-cell" satisfies FileNodeViewFolderExplorerRow_ClassNames,
+						"FileNodeViewFolderExplorer-cell-sort-value" satisfies FileNodeViewFolderExplorerRow_ClassNames,
+					)}
+				>
+					{sortValueLabel}
+				</MyGridTableCell>
+			)}
 			<MyGridTableCell
 				className={cn(
 					"FileNodeViewFolderExplorer-cell" satisfies FileNodeViewFolderExplorerRow_ClassNames,
@@ -3659,19 +3694,278 @@ const FileNodeViewFolderExplorerRow = memo(function FileNodeViewFolderExplorerRo
 });
 // #endregion folder explorer row
 
+// #region folder explorer sort select
+type FileNodeViewFolderExplorerSortSelect_ClassNames =
+	| "FileNodeViewFolderExplorerSortSelect"
+	| "FileNodeViewFolderExplorerSortSelect-trigger"
+	| "FileNodeViewFolderExplorerSortSelect-popover"
+	| "FileNodeViewFolderExplorerSortSelect-note"
+	| "FileNodeViewFolderExplorerSortSelect-search"
+	| "FileNodeViewFolderExplorerSortSelect-item"
+	| "FileNodeViewFolderExplorerSortSelect-empty";
+
+const FILE_NODE_VIEW_FOLDER_SORT_BUILT_IN_LABELS = {
+	name: "Name",
+	updated: "Updated",
+	created: "Date created",
+	type: "Type",
+	size: "Size",
+} satisfies Record<(typeof files_sort_BUILT_IN_FIELDS)[number], string>;
+
+/**
+ * The column name of a sort field: the built-in name, or a key without its `metadata.` or
+ * `frontmatter.` prefix.
+ */
+function get_folder_sort_field_label(field: string) {
+	if (files_sort_field_is_built_in(field)) {
+		return FILE_NODE_VIEW_FOLDER_SORT_BUILT_IN_LABELS[field];
+	}
+
+	return field.startsWith(files_metadata_METADATA_FIELD_PREFIX)
+		? field.slice(files_metadata_METADATA_FIELD_PREFIX.length)
+		: field.slice(files_metadata_FRONTMATTER_FIELD_PREFIX.length);
+}
+
+function get_folder_sort_direction_label(sort: files_sort_Sort) {
+	const [ascending, descending] =
+		sort.field === "updated" || sort.field === "created"
+			? ["Oldest first", "Newest first"]
+			: sort.field === "size"
+				? ["Smallest first", "Largest first"]
+				: ["A to Z", "Z to A"];
+	return sort.direction === "asc" ? ascending : descending;
+}
+
+/**
+ * The direction a newly chosen field starts with: newest first for dates, largest first for size, and
+ * A to Z for the rest.
+ */
+function get_folder_sort_first_direction(field: string): files_sort_Sort["direction"] {
+	return field === "updated" || field === "created" || field === "size" ? "desc" : "asc";
+}
+
+type FileNodeViewFolderExplorerSortSelect_Props = {
+	sort: files_sort_Sort;
+	canSaveSort: boolean;
+	onSortChange: (sort: files_sort_Sort) => void;
+};
+
+const FileNodeViewFolderExplorerSortSelect = memo(function FileNodeViewFolderExplorerSortSelect(
+	props: FileNodeViewFolderExplorerSortSelect_Props,
+) {
+	const { sort, canSaveSort, onSortChange } = props;
+	const { membershipId } = AppTenantProvider.useContext();
+	const convex = useConvex();
+
+	const [searchText, setSearchText] = useState("");
+	const [searchFields, setSearchFields] = useState<FunctionReturnType<
+		typeof app_convex_api.files_metadata.list_search_fields
+	> | null>(null);
+
+	// Built-in fields first, then the metadata and frontmatter keys of the workspace.
+	const options = [
+		...files_sort_BUILT_IN_FIELDS.map((field) => ({
+			value: field as string,
+			label: FILE_NODE_VIEW_FOLDER_SORT_BUILT_IN_LABELS[field] as string,
+		})),
+		...(searchFields ?? []).flatMap((searchField) =>
+			files_sort_field_is_valid(searchField.fieldPath) && !files_sort_field_is_built_in(searchField.fieldPath)
+				? [
+						{
+							value: searchField.fieldPath,
+							label: `${get_folder_sort_field_label(searchField.fieldPath)} (${
+								searchField.fieldPath.startsWith(files_metadata_METADATA_FIELD_PREFIX) ? "metadata" : "frontmatter"
+							})`,
+						},
+					]
+				: [],
+		),
+	];
+	const normalizedSearchText = searchText.trim().toLowerCase();
+	const shownOptions = options.filter((option) => option.label.toLowerCase().includes(normalizedSearchText));
+	const sortLabel = `${get_folder_sort_field_label(sort.field)}, ${get_folder_sort_direction_label(sort)}`;
+	const otherDirectionLabel = get_folder_sort_direction_label({
+		field: sort.field,
+		direction: sort.direction === "asc" ? "desc" : "asc",
+	});
+
+	// Read the key list once per open instead of subscribing to it, like the search box does. A
+	// subscription would walk every key again after each metadata write in the workspace.
+	const handleOpenChange = useFn((open: boolean) => {
+		if (!open) {
+			setSearchText("");
+			return;
+		}
+
+		convex
+			.query(app_convex_api.files_metadata.list_search_fields, { membershipId })
+			.then(setSearchFields)
+			.catch((error: unknown) => {
+				console.error("[FileNodeViewFolderExplorerSortSelect.handleOpenChange] Failed to load the sort keys", {
+					error,
+					membershipId,
+				});
+			});
+	});
+
+	const handleValueChange = useFn((field: string) => {
+		if (field !== sort.field) {
+			onSortChange({ field, direction: get_folder_sort_first_direction(field) });
+		}
+	});
+
+	const handleDirectionClick = useFn(() => {
+		onSortChange({ field: sort.field, direction: sort.direction === "asc" ? "desc" : "asc" });
+	});
+
+	return (
+		<div className={"FileNodeViewFolderExplorerSortSelect" satisfies FileNodeViewFolderExplorerSortSelect_ClassNames}>
+			<MySearchSelect value={sort.field} setValue={handleValueChange} setOpen={handleOpenChange} setValueOnMove={false}>
+				<MySearchSelectTrigger aria-label={`Sort: ${sortLabel}`} moveOnKeyDown={false} typeahead={false}>
+					<MyButton
+						type="button"
+						variant="outline"
+						className={cn(
+							"FileNodeViewFolderExplorerSortSelect-trigger" satisfies FileNodeViewFolderExplorerSortSelect_ClassNames,
+							"FileNodeViewViewSelect-trigger" satisfies FileNodeViewViewSelect_ClassNames,
+						)}
+					>
+						<span>Sort: {sortLabel}</span>
+					</MyButton>
+				</MySearchSelectTrigger>
+				<MySearchSelectPopover
+					aria-label="Sort fields"
+					className={cn(
+						"FileNodeViewFolderExplorerSortSelect-popover" satisfies FileNodeViewFolderExplorerSortSelect_ClassNames,
+						"FileNodeViewViewSelect-popover" satisfies FileNodeViewViewSelect_ClassNames,
+					)}
+				>
+					<MySearchSelectPopoverScrollableArea>
+						<MySearchSelectPopoverContent>
+							{!canSaveSort && (
+								<p
+									className={
+										"FileNodeViewFolderExplorerSortSelect-note" satisfies FileNodeViewFolderExplorerSortSelect_ClassNames
+									}
+								>
+									Only people who can edit this folder can save its sort.
+								</p>
+							)}
+							<MySearchSelectSearch
+								className={cn(
+									"FileNodeViewFolderExplorerSortSelect-search" satisfies FileNodeViewFolderExplorerSortSelect_ClassNames,
+									"FileNodeViewViewSelect-search" satisfies FileNodeViewViewSelect_ClassNames,
+								)}
+								aria-label="Search sort fields"
+								placeholder="Search fields"
+								value={searchText}
+								onChange={(event) => setSearchText(event.currentTarget.value)}
+							/>
+							<MySearchSelectList aria-label="Sort fields">
+								{shownOptions.map((option) => (
+									<MySearchSelectItem
+										key={option.value}
+										value={option.value}
+										className={cn(
+											"FileNodeViewFolderExplorerSortSelect-item" satisfies FileNodeViewFolderExplorerSortSelect_ClassNames,
+											"FileNodeViewViewSelect-item" satisfies FileNodeViewViewSelect_ClassNames,
+										)}
+									>
+										{option.label}
+									</MySearchSelectItem>
+								))}
+							</MySearchSelectList>
+							{shownOptions.length === 0 && (
+								<div
+									role="status"
+									className={cn(
+										"FileNodeViewFolderExplorerSortSelect-empty" satisfies FileNodeViewFolderExplorerSortSelect_ClassNames,
+										"FileNodeViewViewSelect-empty" satisfies FileNodeViewViewSelect_ClassNames,
+									)}
+								>
+									No fields found
+								</div>
+							)}
+						</MySearchSelectPopoverContent>
+					</MySearchSelectPopoverScrollableArea>
+				</MySearchSelectPopover>
+			</MySearchSelect>
+			<MyIconButton
+				variant="outline"
+				tooltip={`Sort ${otherDirectionLabel.toLowerCase()}`}
+				onClick={handleDirectionClick}
+			>
+				<MyIconButtonIcon>{sort.direction === "asc" ? <ArrowUp /> : <ArrowDown />}</MyIconButtonIcon>
+			</MyIconButton>
+		</div>
+	);
+});
+// #endregion folder explorer sort select
+
 // #region folder explorer
 type FileNodeViewFolderExplorer_ClassNames =
 	| "FileNodeViewFolderExplorer"
+	| "FileNodeViewFolderExplorer-toolbar"
+	| "FileNodeViewFolderExplorer-notice"
 	| "FileNodeViewFolderExplorer-table"
+	| "FileNodeViewFolderExplorer-table-has-sort-value"
+	| "FileNodeViewFolderExplorer-header-row"
+	| "FileNodeViewFolderExplorer-column-header"
+	| "FileNodeViewFolderExplorer-column-header-name"
+	| "FileNodeViewFolderExplorer-column-header-updated-by"
+	| "FileNodeViewFolderExplorer-column-header-updated"
+	| "FileNodeViewFolderExplorer-column-header-sort-value"
+	| "FileNodeViewFolderExplorer-column-header-actions"
+	| "FileNodeViewFolderExplorer-sort-button"
+	| "FileNodeViewFolderExplorer-sort-icon"
 	| "FileNodeViewFolderExplorer-show-more"
 	| "FileNodeViewFolderExplorer-show-less"
 	| "FileNodeViewFolderExplorer-show-less-cover";
 
+type FileNodeViewFolderExplorer_CustomAttributes = {
+	"data-sort-field": string;
+	"data-sort-direction": files_sort_Sort["direction"];
+};
+
+/**
+ * The text of the sorted field's column for one row. A row's sort key starts with the field's value,
+ * so read the value from there. A row without a value shows a dash.
+ */
+function get_folder_explorer_sort_value_label(row: FileNodeViewFolderRow, field: string) {
+	const value = row.sortKey[0];
+	if (row.segment === "missing") {
+		return "—";
+	}
+	// Folders have no size, so their key starts with the name and they show a dash here.
+	if (field === "created" || field === "size") {
+		return typeof value !== "number"
+			? "—"
+			: field === "created"
+				? format_relative_time(value)
+				: files_format_size(value);
+	}
+	if (field === "type") {
+		return String(value);
+	}
+
+	return row.sortFieldValue === null ? "—" : String(row.sortFieldValue);
+}
+
 type FileNodeViewFolderExplorer_Props = {
-	visibleChildItems: FileNodeViewFolderEntry[];
-	fileNodesList: FileNodeViewContent_Props["fileNodesList"];
+	visibleChildItems: FileNodeViewFolderRow[];
 	/** Rows are hidden behind "Show more", or the server has more pages. */
 	hasMoreChildItems: boolean;
+	sort: files_sort_Sort;
+	/**
+	 * The sort the shown rows were loaded with. While a new sort loads, the table still shows the rows
+	 * of the old one, and their sort values belong to the old field.
+	 */
+	rowsSort: files_sort_Sort;
+	canSaveSort: boolean;
+	/** A new sort or a page is loading, and the rows are the last loaded ones. */
+	isSortBusy: boolean;
+	tooManyShared: boolean;
+	tooManyPending: boolean;
 	organizationName: string;
 	workspaceName: string;
 	pendingActionNodeIds: ReadonlySet<string>;
@@ -3687,6 +3981,7 @@ type FileNodeViewFolderExplorer_Props = {
 		fileNodeIds: app_convex_Id<"files_nodes">[];
 		targetParentId: app_convex_Doc<"files_nodes">["parentId"];
 	}) => void;
+	onSortChange: (sort: files_sort_Sort) => void;
 	onShowMoreClick: () => void;
 	canShowLess: boolean;
 	onShowLessClick: () => void;
@@ -3695,8 +3990,13 @@ type FileNodeViewFolderExplorer_Props = {
 const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(props: FileNodeViewFolderExplorer_Props) {
 	const {
 		visibleChildItems,
-		fileNodesList,
 		hasMoreChildItems,
+		sort,
+		rowsSort,
+		canSaveSort,
+		isSortBusy,
+		tooManyShared,
+		tooManyPending,
 		organizationName,
 		workspaceName,
 		pendingActionNodeIds,
@@ -3705,30 +4005,146 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 		canMoveFileNodeToParent,
 		onArchiveNode,
 		onMoveFileNodesToParent,
+		onSortChange,
 		onShowMoreClick,
 		canShowLess,
 		onShowLessClick,
 	} = props;
 
-	if (visibleChildItems.length === 0 && !hasMoreChildItems) {
+	// Name and Updated have their own columns. Any other field gets one more column.
+	const hasSortValueColumn = rowsSort.field !== "name" && rowsSort.field !== "updated";
+	const getAriaSort = (field: string) =>
+		sort.field !== field ? "none" : sort.direction === "asc" ? "ascending" : "descending";
+	const sortIcon = (
+		<MyIcon className={"FileNodeViewFolderExplorer-sort-icon" satisfies FileNodeViewFolderExplorer_ClassNames}>
+			{sort.direction === "asc" ? <ArrowUp aria-hidden /> : <ArrowDown aria-hidden />}
+		</MyIcon>
+	);
+
+	// A second click on the sorted column flips it. A first click starts with the field's first direction.
+	const handleColumnSortClick = (field: string) => {
+		onSortChange({
+			field,
+			direction:
+				sort.field !== field ? get_folder_sort_first_direction(field) : sort.direction === "asc" ? "desc" : "asc",
+		});
+	};
+
+	if (visibleChildItems.length === 0 && !hasMoreChildItems && !tooManyShared && !tooManyPending) {
 		return null;
 	}
 
 	return (
 		<div className={"FileNodeViewFolderExplorer" satisfies FileNodeViewFolderExplorer_ClassNames}>
+			<div className={"FileNodeViewFolderExplorer-toolbar" satisfies FileNodeViewFolderExplorer_ClassNames}>
+				<FileNodeViewFolderExplorerSortSelect sort={sort} canSaveSort={canSaveSort} onSortChange={onSortChange} />
+			</div>
+			{tooManyShared && (
+				<p
+					role="status"
+					className={"FileNodeViewFolderExplorer-notice" satisfies FileNodeViewFolderExplorer_ClassNames}
+				>
+					Too many shared items here to sort. Some are not shown.
+				</p>
+			)}
+			{tooManyPending && (
+				<p
+					role="status"
+					className={"FileNodeViewFolderExplorer-notice" satisfies FileNodeViewFolderExplorer_ClassNames}
+				>
+					Too many pending changes here. Review them in the Pending panel.
+				</p>
+			)}
 			{visibleChildItems.length > 0 && (
 				<MyGridTable
 					aria-label="Folder contents"
-					className={"FileNodeViewFolderExplorer-table" satisfies FileNodeViewFolderExplorer_ClassNames}
+					aria-busy={isSortBusy}
+					className={cn(
+						"FileNodeViewFolderExplorer-table" satisfies FileNodeViewFolderExplorer_ClassNames,
+						hasSortValueColumn &&
+							("FileNodeViewFolderExplorer-table-has-sort-value" satisfies FileNodeViewFolderExplorer_ClassNames),
+					)}
+					{...({
+						"data-sort-field": sort.field,
+						"data-sort-direction": sort.direction,
+					} satisfies FileNodeViewFolderExplorer_CustomAttributes)}
 				>
+					<MyGridTableHeader>
+						<MyGridTableRow
+							className={"FileNodeViewFolderExplorer-header-row" satisfies FileNodeViewFolderExplorer_ClassNames}
+						>
+							<MyGridTableColumnHeader
+								className={cn(
+									"FileNodeViewFolderExplorer-column-header" satisfies FileNodeViewFolderExplorer_ClassNames,
+									"FileNodeViewFolderExplorer-column-header-name" satisfies FileNodeViewFolderExplorer_ClassNames,
+								)}
+								aria-sort={getAriaSort("name")}
+							>
+								<button
+									type="button"
+									className={"FileNodeViewFolderExplorer-sort-button" satisfies FileNodeViewFolderExplorer_ClassNames}
+									onClick={() => handleColumnSortClick("name")}
+								>
+									Name
+									{sort.field === "name" && sortIcon}
+								</button>
+							</MyGridTableColumnHeader>
+							<MyGridTableColumnHeader
+								className={cn(
+									"FileNodeViewFolderExplorer-column-header" satisfies FileNodeViewFolderExplorer_ClassNames,
+									"FileNodeViewFolderExplorer-column-header-updated-by" satisfies FileNodeViewFolderExplorer_ClassNames,
+								)}
+							>
+								Updated by
+							</MyGridTableColumnHeader>
+							<MyGridTableColumnHeader
+								className={cn(
+									"FileNodeViewFolderExplorer-column-header" satisfies FileNodeViewFolderExplorer_ClassNames,
+									"FileNodeViewFolderExplorer-column-header-updated" satisfies FileNodeViewFolderExplorer_ClassNames,
+								)}
+								aria-sort={getAriaSort("updated")}
+							>
+								<button
+									type="button"
+									className={"FileNodeViewFolderExplorer-sort-button" satisfies FileNodeViewFolderExplorer_ClassNames}
+									onClick={() => handleColumnSortClick("updated")}
+								>
+									Updated
+									{sort.field === "updated" && sortIcon}
+								</button>
+							</MyGridTableColumnHeader>
+							{hasSortValueColumn && (
+								<MyGridTableColumnHeader
+									className={cn(
+										"FileNodeViewFolderExplorer-column-header" satisfies FileNodeViewFolderExplorer_ClassNames,
+										"FileNodeViewFolderExplorer-column-header-sort-value" satisfies FileNodeViewFolderExplorer_ClassNames,
+									)}
+									aria-sort={getAriaSort(rowsSort.field)}
+								>
+									{get_folder_sort_field_label(rowsSort.field)}
+									{rowsSort.field === sort.field && sortIcon}
+								</MyGridTableColumnHeader>
+							)}
+							<MyGridTableColumnHeader
+								className={cn(
+									"FileNodeViewFolderExplorer-column-header" satisfies FileNodeViewFolderExplorer_ClassNames,
+									"FileNodeViewFolderExplorer-column-header-actions" satisfies FileNodeViewFolderExplorer_ClassNames,
+								)}
+								aria-label="Actions"
+							/>
+						</MyGridTableRow>
+					</MyGridTableHeader>
 					<MyGridTableBody>
-						{visibleChildItems.map((entry) => {
-							const child =
-								entry.target.kind === "saved" ? fileNodesList?.find((node) => node._id === entry.target.id) : undefined;
+						{visibleChildItems.map((row) => {
+							const sortValueLabel = hasSortValueColumn
+								? get_folder_explorer_sort_value_label(row, rowsSort.field)
+								: null;
+							const child = row.treeRow;
+							// Only a private draft has no saved node, so it shows a reduced row without actions.
 							if (!child) {
 								return (
 									<MyGridTableRow
-										key={`${entry.target.kind}:${entry.target.id}`}
+										key={`${row.target.kind}:${row.target.id}`}
 										className={"FileNodeViewFolderExplorer-row" satisfies FileNodeViewFolderExplorerRow_ClassNames}
 									>
 										<MyGridTableCell
@@ -3738,7 +4154,7 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 											)}
 										>
 											<Link
-												aria-label={`Open ${entry.name}`}
+												aria-label={`Open ${row.name}`}
 												className={
 													"FileNodeViewFolderExplorer-row-action" satisfies FileNodeViewFolderExplorerRow_ClassNames
 												}
@@ -3746,20 +4162,20 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 												params={{ organizationName, workspaceName }}
 												search={(prev) => ({
 													...prev,
-													nodeId: entry.target.kind === "saved" ? entry.target.id : undefined,
-													pendingNodeId: entry.target.kind === "private" ? entry.target.id : undefined,
+													nodeId: row.target.kind === "saved" ? row.target.id : undefined,
+													pendingNodeId: row.target.kind === "private" ? row.target.id : undefined,
 													view: undefined,
 												})}
 											/>
 											<MyIcon
 												className={"FileNodeViewFolderExplorer-icon" satisfies FileNodeViewFolderExplorerRow_ClassNames}
 											>
-												{entry.kind === "folder" ? <Folder /> : <FileText />}
+												{row.kind === "folder" ? <Folder /> : <FileText />}
 											</MyIcon>
 											<span
 												className={"FileNodeViewFolderExplorer-link" satisfies FileNodeViewFolderExplorerRow_ClassNames}
 											>
-												{entry.name}
+												{row.name}
 											</span>
 										</MyGridTableCell>
 										<MyGridTableCell
@@ -3773,7 +4189,7 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 													"FileNodeViewFolderExplorer-updated-by" satisfies FileNodeViewFolderExplorerRow_ClassNames
 												}
 											>
-												{entry.updatedBy || "Unknown"}
+												{row.updatedBy || "Unknown"}
 											</span>
 										</MyGridTableCell>
 										<MyGridTableCell
@@ -3782,15 +4198,25 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 												"FileNodeViewFolderExplorer-cell-updated" satisfies FileNodeViewFolderExplorerRow_ClassNames,
 											)}
 										>
-											{format_relative_time(entry.updatedAt)}
+											{format_relative_time(row.updatedAt)}
 										</MyGridTableCell>
+										{sortValueLabel !== null && (
+											<MyGridTableCell
+												className={cn(
+													"FileNodeViewFolderExplorer-cell" satisfies FileNodeViewFolderExplorerRow_ClassNames,
+													"FileNodeViewFolderExplorer-cell-sort-value" satisfies FileNodeViewFolderExplorerRow_ClassNames,
+												)}
+											>
+												{sortValueLabel}
+											</MyGridTableCell>
+										)}
 										<MyGridTableCell
 											className={cn(
 												"FileNodeViewFolderExplorer-cell" satisfies FileNodeViewFolderExplorerRow_ClassNames,
 												"FileNodeViewFolderExplorer-cell-actions" satisfies FileNodeViewFolderExplorerRow_ClassNames,
 											)}
 										>
-											{entry.preparing ? "Preparing…" : entry.target.kind === "private" ? "Added" : ""}
+											{row.preparing ? "Preparing…" : "Added"}
 										</MyGridTableCell>
 									</MyGridTableRow>
 								);
@@ -3801,7 +4227,8 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 								<FileNodeViewFolderExplorerRow
 									key={child._id}
 									child={child}
-									visibleName={entry.name}
+									visibleName={row.name}
+									sortValueLabel={sortValueLabel}
 									hasVisibleProtectedDescendant={protectedDescendantIds.has(child._id)}
 									canPasteIntoFolder={canPasteIntoFolder}
 									organizationName={organizationName}
@@ -4620,9 +5047,7 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 		// From a browser view, keep the split: review beside the browser.
 		if (isHtmlFile) {
 			handleFileViewChange(
-				selectedFileView === "browser" ||
-					selectedFileView === "code_browser" ||
-					selectedFileView === "review_browser"
+				selectedFileView === "browser" || selectedFileView === "code_browser" || selectedFileView === "review_browser"
 					? "review_browser"
 					: "review",
 			);

@@ -47,6 +47,20 @@ range search over dates works. Value docs carry `entryIndex`, the key's position
 typed — reading the map back in index order would reorder the dialog's lines on every save.
 Frontmatter docs leave `entryIndex` unset.
 
+Committed `field` docs, of both sources, also carry the folder table's sort fields: `parentId`,
+`nodeKind`, `isRestrictedScopeRoot`, `name`, `sortName`, `sortValue`, and `sortDisplayValue` (built
+by `committed_field_sort_fields` in `files_metadata.ts`). Value docs and pending docs never carry
+them. `sortValue` is the value as text, through `files_sort_value_of` in `shared/files-sort.ts`: a
+number as `String(value)`, a boolean as `true`/`false`, a list by its first item, `maybe_date`
+skipped. A key with no plain value (a frontmatter map parent) has no `sortValue`, so the file sorts
+with the missing rows. `sortDisplayValue` is the typed value the table shows. Every writer that
+changes a node's name, parent, or restriction also patches these fields on its committed field docs.
+A restrict or unrestrict patches archived docs too, because a restore does not rewrite the flag. See the `files-explorer-tree` skill, "Folder Contents".
+
+Sort is text only, so dates sort in time order only when they share one format and time zone. A
+later date sort mode would reuse the `maybe_date` companion that search already writes, so search
+and sort keep one date parser.
+
 Saved files keep `metadata.*` docs as `sourceKind: "committed"`, even during a pending content edit.
 Private files and folders keep their map in `createIntent.metadata` and index it as `sourceKind: "pending"`.
 Save publishes that map with the new saved node. Discard removes the private map with its proposal.
@@ -243,6 +257,9 @@ Both are real columns the app already reads, and the Properties dialog shows the
 map. So do not copy them into the map. A copy would go stale the moment the upload conversion
 replaces the bytes or a `cp` gives the file another type, and the user could delete or edit it,
 because everything in the map is the user's to change.
+
+The node keeps its own copy of the byte size in `files_nodes.contentByteSize`, for the table's Size
+sort. The writers that change `assetId` keep it current. It is not part of the map either.
 
 The map holds member-defined labels and details recorded by creation flows.
 

@@ -14,6 +14,7 @@ import { crypto_sha256_hex } from "../server/crypto-utils.ts";
 import { files_ROOT_ID, files_u8_to_array_buffer } from "../server/files.ts";
 import { files_yjs_doc_update_from_text } from "../shared/files-tiptap.ts";
 import { plugins_validate_manifest, type plugins_Capability } from "../shared/plugins.ts";
+import { files_sort_text_key } from "../shared/files-sort.ts";
 
 const r2Objects = new Map<string, BodyInit>();
 
@@ -1038,6 +1039,7 @@ describe("plugin ui sessions", () => {
 					pathDepth: 1,
 					lowercaseExtension: "md",
 					name,
+					sortName: files_sort_text_key(name),
 					kind: "file",
 					contentType: "text/markdown",
 					parentId: "root",
@@ -1045,6 +1047,7 @@ describe("plugin ui sessions", () => {
 					updatedBy: fixture.membership.userId,
 					updatedAt: now,
 					assetId: null,
+					contentByteSize: null,
 					textKind: null,
 					collaborationEnabled: null,
 					yjsSnapshotId: null,
@@ -1056,6 +1059,7 @@ describe("plugin ui sessions", () => {
 					contentFrontmatterTooLargeFieldCount: null,
 					contentFrontmatterTooLargeIndexDocumentCount: null,
 					restrictedScopeNodeId: null,
+					isRestrictedScopeRoot: false,
 					writePolicy: null,
 					archiveOperationId: null,
 				});
@@ -1072,6 +1076,7 @@ describe("plugin ui sessions", () => {
 					pathDepth: 1,
 					lowercaseExtension: name.slice(name.lastIndexOf(".") + 1),
 					name,
+					sortName: files_sort_text_key(name),
 					kind: "file",
 					contentType,
 					parentId: "root",
@@ -1079,6 +1084,7 @@ describe("plugin ui sessions", () => {
 					updatedBy: fixture.membership.userId,
 					updatedAt: now,
 					assetId: null,
+					contentByteSize: null,
 					textKind: null,
 					collaborationEnabled: null,
 					yjsSnapshotId: null,
@@ -1090,6 +1096,7 @@ describe("plugin ui sessions", () => {
 					contentFrontmatterTooLargeFieldCount: null,
 					contentFrontmatterTooLargeIndexDocumentCount: null,
 					restrictedScopeNodeId: null,
+					isRestrictedScopeRoot: false,
 					writePolicy: null,
 					archiveOperationId: null,
 				});

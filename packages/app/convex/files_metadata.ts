@@ -42,7 +42,11 @@ import {
 	type files_metadata_SearchPlan,
 	type files_metadata_Value,
 } from "../shared/files-metadata.ts";
-import { files_search_query_field_path_is_valid } from "../shared/files-search-query.ts";
+import {
+	files_search_query_field_path_is_valid,
+	files_search_query_FIELD_PATH_MAX_LENGTH,
+} from "../shared/files-search-query.ts";
+import { files_sort_text_key, files_sort_value_of } from "../shared/files-sort.ts";
 import {
 	organizations_is_reserved_workspace_id,
 	organizations_is_global_organization_id,
@@ -92,6 +96,25 @@ function value_doc_payload(value: files_metadata_Value) {
 				numberValue: value.value,
 			};
 	}
+}
+
+/**
+ * The folder table sort fields of one committed field doc, built from the node and the values of
+ * that one field. Value docs and pending docs never carry them.
+ *
+ * The flag and the key come from `restrictedScopeNodeId` and `name`, the fields the node's stored
+ * copies are built from, so the field doc always matches the node's real state.
+ */
+function committed_field_sort_fields(fileNode: Doc<"files_nodes">, fieldValues: files_metadata_Value[]) {
+	const sortValue = files_sort_value_of(fieldValues);
+	return {
+		parentId: fileNode.parentId,
+		nodeKind: fileNode.kind,
+		isRestrictedScopeRoot: fileNode.restrictedScopeNodeId === fileNode._id,
+		name: fileNode.name,
+		sortName: files_sort_text_key(fileNode.name),
+		...(sortValue ? { sortValue: sortValue.sortValue, sortDisplayValue: sortValue.displayValue } : {}),
+	};
 }
 
 /**
@@ -200,6 +223,10 @@ export async function files_metadata_db_insert_committed(
 				...scope,
 				fieldPath,
 				docKind: "field" as const,
+				...committed_field_sort_fields(
+					fileNode,
+					metadata.values.filter((value) => value.fieldPath === fieldPath),
+				),
 			}),
 		),
 		...metadata.values.map((value) =>
@@ -289,6 +316,10 @@ export async function files_metadata_db_patch_file_scope(
 		path?: string;
 		treePath?: string;
 		archiveOperationId?: string;
+		/** Written to committed field docs only, like every folder table sort field. */
+		parentId?: Doc<"files_nodes">["parentId"];
+		/** Written to committed field docs only, like every folder table sort field. */
+		isRestrictedScopeRoot?: boolean;
 	},
 ) {
 	const patch: Partial<Pick<Doc<"files_metadata_docs">, "path" | "treePath" | "archiveOperationId">> = {};
@@ -300,6 +331,13 @@ export async function files_metadata_db_patch_file_scope(
 	}
 	if ("archiveOperationId" in args) {
 		patch.archiveOperationId = args.archiveOperationId;
+	}
+	const sortFieldsPatch: Partial<Pick<Doc<"files_nodes">, "parentId" | "isRestrictedScopeRoot">> = {};
+	if (args.parentId !== undefined) {
+		sortFieldsPatch.parentId = args.parentId;
+	}
+	if (args.isRestrictedScopeRoot !== undefined) {
+		sortFieldsPatch.isRestrictedScopeRoot = args.isRestrictedScopeRoot;
 	}
 	const docs = (
 		await Promise.all([
@@ -321,7 +359,17 @@ export async function files_metadata_db_patch_file_scope(
 				.collect(),
 		])
 	).flat();
-	await Promise.all(docs.map((doc) => ctx.db.patch("files_metadata_docs", doc._id, patch)));
+	await Promise.all(
+		docs.flatMap((doc) => {
+			const docPatch =
+				doc.sourceKind === "committed" && doc.docKind === "field" ? { ...patch, ...sortFieldsPatch } : patch;
+			// A restrict change patches only the field docs, so skip the docs it leaves alone.
+			if (Object.keys(docPatch).length === 0) {
+				return [];
+			}
+			return [ctx.db.patch("files_metadata_docs", doc._id, docPatch)];
+		}),
+	);
 }
 
 // #endregion indexed doc writes
@@ -653,7 +701,6 @@ export type files_metadata_search_Result =
 const SEARCH_NODES_MAX_PLANS = 4;
 const SEARCH_NODES_DOCS_PER_PLAN = 1000;
 const SEARCH_PATH_PREFIX_MAX_LENGTH = 1024;
-const SEARCH_FIELD_PATH_MAX_LENGTH = 160;
 
 /**
  * Catalog caps. A key, kind, or value is listed only when one of its first few docs in index
@@ -677,7 +724,9 @@ const SEARCH_VALUE_KINDS = ["string", "number", "boolean", "maybe_date"] as cons
  * app, and the doors answer it with their empty shape.
  */
 function search_field_path_is_valid(fieldPath: string) {
-	return fieldPath.length <= SEARCH_FIELD_PATH_MAX_LENGTH && files_search_query_field_path_is_valid(fieldPath);
+	return (
+		fieldPath.length <= files_search_query_FIELD_PATH_MAX_LENGTH && files_search_query_field_path_is_valid(fieldPath)
+	);
 }
 
 /**
@@ -1366,6 +1415,12 @@ export async function files_metadata_db_write_entries(
 				...scope,
 				fieldPath,
 				docKind: "field" as const,
+				...("fileNode" in args
+					? committed_field_sort_fields(
+							args.fileNode,
+							extracted.values.filter((value) => value.fieldPath === fieldPath),
+						)
+					: {}),
 			}),
 		),
 		...extracted.values.map((value) =>

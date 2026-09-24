@@ -29,6 +29,12 @@ import {
 
 export const files_search_query_MAX_FILTERS = 20;
 
+/**
+ * Longest qualified field path (`metadata.<key>`, `frontmatter.<path>`) the search and sort doors
+ * accept.
+ */
+export const files_search_query_FIELD_PATH_MAX_LENGTH = 160;
+
 export const files_search_query_FILE_FIELDS = ["path", "name", "ext", "kind", "updated"] as const;
 
 export type files_search_query_Key = {

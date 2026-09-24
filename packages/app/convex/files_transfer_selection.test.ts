@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
+import { files_sort_text_key } from "../shared/files-sort.ts";
 
 beforeEach(() => vi.useFakeTimers());
 afterEach(() => vi.useRealTimers());
@@ -168,6 +169,7 @@ describe("Copy selection pages", () => {
 						...fields,
 						parentId: sourceId,
 						name,
+						sortName: files_sort_text_key(name),
 						path: `/source/${name}`,
 						treePath: `/source/${name}/`,
 						pathDepth: 2,

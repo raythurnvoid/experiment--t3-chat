@@ -19,7 +19,7 @@ import type { Doc, Id } from "./_generated/dataModel";
 import { access_control_db_has_permission } from "./access_control.ts";
 import { activities_db_require_by_source_id } from "./activities_db.ts";
 import { plugins_db_get_live_service_account } from "./plugins_service_accounts.ts";
-import { files_nodes_db_cascade_restricted_scope } from "./files_nodes.ts";
+import { files_nodes_db_cascade_restricted_scope, files_nodes_db_set_restricted_scope } from "./files_nodes.ts";
 import { files_media_validation_db_advance_version } from "./files_media_validation.ts";
 import type { access_control_Permission } from "../shared/access-control.ts";
 import type { billing_PRODUCTS } from "../shared/billing.ts";
@@ -4066,7 +4066,12 @@ export async function plugins_data_db_apply_file_access_binding(
 	let accessChanged = false;
 	// Restrict the node on itself and cascade, like the member share door does.
 	if (args.node.restrictedScopeNodeId !== args.node._id) {
-		await ctx.db.patch("files_nodes", args.node._id, { restrictedScopeNodeId: args.node._id });
+		await files_nodes_db_set_restricted_scope(ctx, {
+			organizationId: args.node.organizationId,
+			workspaceId: args.node.workspaceId,
+			nodeId: args.node._id,
+			restrictedScopeNodeId: args.node._id,
+		});
 		await files_nodes_db_cascade_restricted_scope(ctx, {
 			organizationId: args.node.organizationId,
 			workspaceId: args.node.workspaceId,
