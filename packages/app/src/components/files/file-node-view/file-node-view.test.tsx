@@ -44,6 +44,11 @@ const {
 	loadMorePendingMock: vi.fn(),
 }));
 
+// The pending list uses the convex-helpers hook. Serve it from the same mock as every other list.
+vi.mock("convex-helpers/react", async () => ({
+	usePaginatedQuery: (await import("convex/react")).usePaginatedQuery,
+}));
+
 // Push query changes into memoized children, as the live Convex subscriptions do.
 vi.mock("convex/react", async () => {
 	const { useEffect, useState } = await import("react");

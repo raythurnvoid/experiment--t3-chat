@@ -115,8 +115,9 @@ import { combine } from "@atlaskit/pragmatic-drag-and-drop/combine";
 import { draggable, dropTargetForElements } from "@atlaskit/pragmatic-drag-and-drop/element/adapter";
 import { measureNaturalWidth, prepareWithSegments } from "@chenglou/pretext";
 import { Link } from "@tanstack/react-router";
-import { useConvex, usePaginatedQuery, useQueries, useQuery } from "convex/react";
+import { useConvex, useQueries, useQuery } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
+import { usePaginatedQuery } from "convex-helpers/react";
 import {
 	Archive,
 	ArrowDown,
@@ -4831,6 +4832,8 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 	// the tree. A file with collaboration turned off has no Yjs sequence to watch.
 	const activeEditorNodeIsCollaborative = activeEditorNode?.collaborationEnabled === true;
 
+	// The list query pages a convex-helpers stream. Only the convex-helpers hook pins where each
+	// loaded page ends, so a proposal added or removed later cannot skip or repeat a row.
 	const {
 		results: allPendingUpdatesResult,
 		status: pendingListStatus,

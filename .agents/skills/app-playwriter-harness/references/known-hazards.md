@@ -2469,8 +2469,9 @@ assuming the data is missing.
 ## `list_files_pending_updates` never returns more than five rows
 
 `files_pending_updates.list_files_pending_updates` clamps the page size itself:
-`numItems: Math.min(5, args.paginationOpts.numItems)` at `convex/files_pending_updates.ts:6941`.
-Asking for 50 or 100 still gives you 5. Nothing in the result says it was clamped.
+`numItems: Math.min(5, args.paginationOpts.numItems)` in its `paginate` call.
+Asking for 50 or 100 still gives you 5. Nothing in the result says it was clamped. A page can also
+hold fewer rows with `isDone: false` when it read 100 proposals first, so always follow the cursor.
 
 This is dangerous for Accept-all and Discard-all runners, because a review run refuses a partial
 selection. Building the item list from one page selects 5 of, say, 10 proposals, and the run ends

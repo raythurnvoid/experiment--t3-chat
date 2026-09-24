@@ -2671,9 +2671,7 @@ describe("private pending text", () => {
 					paginationOpts: { numItems: 5, cursor: null },
 				})
 			).page,
-		).toEqual([
-			{ kind: "restricted", target, pendingUpdateId, revision: proposal.revision, hasActiveChildDraft: false },
-		]);
+		).toEqual([{ kind: "restricted", target, pendingUpdateId, revision: proposal.revision }]);
 		expect(
 			(
 				await asUser.action(api.files_pending_updates.save_file_pending_update, {

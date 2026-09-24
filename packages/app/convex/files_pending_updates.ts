@@ -19,6 +19,7 @@ import {
 } from "convex/server";
 import { v, type Infer } from "convex/values";
 import { doc } from "convex-helpers/validators";
+import { stream } from "convex-helpers/server/stream";
 import type { app_convex_Doc } from "../src/lib/app-convex-client.ts";
 import { path_join, server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
@@ -6785,6 +6786,8 @@ const pending_target_entry_validator = v.union(
 
 /**
  * The draft folders a draft file still needs, outermost first. Save creates them in this order.
+ * The list never returns these folders as rows, so `threadIds` tells Discard all which chat made
+ * each one.
  */
 const required_parents_validator = v.array(
 	v.object({
@@ -6792,6 +6795,7 @@ const required_parents_validator = v.array(
 		path: v.string(),
 		pendingUpdateId: v.id("files_pending_updates"),
 		reviewedRevision: v.number(),
+		threadIds: v.optional(v.array(v.id("ai_chat_threads"))),
 	}),
 );
 
@@ -6807,8 +6811,6 @@ const pending_target_view_validator = v.object({
 	savedParentId: v.union(v.id("files_nodes"), v.null()),
 	recovery: v.optional(v.object({ savedParentId: v.id("files_nodes"), expiresAt: v.union(v.number(), v.null()) })),
 	copyDestination: v.optional(v.object({ folderPath: v.string(), personal: v.boolean(), replacement: v.boolean() })),
-	// A folder draft with a draft inside is not its own row. See `db_pending_update_has_active_child_draft`.
-	hasActiveChildDraft: v.boolean(),
 });
 
 async function db_get_pending_target_view(
@@ -6852,6 +6854,7 @@ async function db_get_pending_target_view(
 					path,
 					pendingUpdateId: proposal._id,
 					reviewedRevision: proposal.revision,
+					...(proposal.threadIds ? { threadIds: proposal.threadIds } : {}),
 				});
 			}
 			const cleanup = await ctx.db
@@ -6921,6 +6924,7 @@ async function db_get_pending_target_view(
 				path: parentEntry.path,
 				pendingUpdateId: parentEntry.pendingUpdate._id,
 				reviewedRevision: parentEntry.pendingUpdate.revision,
+				...(parentEntry.pendingUpdate.threadIds ? { threadIds: parentEntry.pendingUpdate.threadIds } : {}),
 			});
 		}
 
@@ -7274,17 +7278,24 @@ export const get_file_pending_update_internal = internalQuery({
 });
 
 /**
- * A folder draft that holds an active draft is not a change of its own, like Git: saving the
- * draft inside creates the folder too. The Pending list hides such folders, and every pending
- * count skips them, so the list and the counts always agree.
+ * Decide whether the Pending list draws this proposal as its own row. The list query and every
+ * pending count use this one check, so they always agree.
  */
-async function db_pending_update_has_active_child_draft(
+async function db_pending_update_is_listed(
 	ctx: QueryCtx,
 	pendingUpdate: app_convex_Doc<"files_pending_updates">,
+	threadId: Id<"ai_chat_threads"> | undefined,
 ) {
-	if (pendingUpdate.target.kind !== "private" || pendingUpdate.createIntent?.kind !== "folder") return false;
-	const folderId = pendingUpdate.target.id;
+	if (threadId !== undefined && !pendingUpdate.threadIds?.includes(threadId)) return false;
+	if (pendingUpdate.target.kind === "saved") return true;
+	const privateNodeId = pendingUpdate.target.id;
 
+	// A discarded or saved private draft waits for cleanup. It is no longer a change.
+	if ((await ctx.db.get("files_pending_nodes", privateNodeId))?.state !== "active") return false;
+	if (pendingUpdate.createIntent?.kind !== "folder") return true;
+
+	// A folder draft that holds an active draft is not a change of its own, like Git: saving the
+	// draft inside creates the folder too. The folder shows again when its last draft is gone.
 	const child = await ctx.db
 		.query("files_pending_nodes")
 		.withIndex("by_organization_workspace_user_parent_state_name", (q) =>
@@ -7293,11 +7304,11 @@ async function db_pending_update_has_active_child_draft(
 				.eq("workspaceId", pendingUpdate.workspaceId)
 				.eq("userId", pendingUpdate.userId)
 				.eq("parent.kind", "private")
-				.eq("parent.id", folderId)
+				.eq("parent.id", privateNodeId)
 				.eq("state", "active"),
 		)
 		.first();
-	return child !== null;
+	return child === null;
 }
 
 export const list_files_pending_updates = query({
@@ -7315,7 +7326,6 @@ export const list_files_pending_updates = query({
 				pendingUpdateId: v.id("files_pending_updates"),
 				revision: v.number(),
 				threadIds: v.optional(v.array(v.id("ai_chat_threads"))),
-				hasActiveChildDraft: v.boolean(),
 			}),
 		),
 	),
@@ -7342,29 +7352,35 @@ export const list_files_pending_updates = query({
 			userId: userAuth.id,
 		};
 
-		const page = await ctx.db
+		// Skip unlisted proposals before paging, so a page is filled with rows the list draws. After
+		// `.paginate()`, a hidden folder or another chat's proposal would still use one of the 5
+		// slots, and a page could come back short or even empty. `maximumRowsRead` limits the scan
+		// when many proposals in a row are skipped. The page then ends early, and the client asks
+		// for the rest.
+		// Do not limit a page that has an `endCursor`. That page must reach its end. If it stopped
+		// early, the client would split it at the early stop, and the rows after that stop would
+		// never load.
+		const page = await stream(ctx.db, app_convex_schema)
 			.query("files_pending_updates")
 			.withIndex("by_organization_workspace_user_target", (q) =>
 				q.eq("organizationId", scope.organizationId).eq("workspaceId", scope.workspaceId).eq("userId", scope.userId),
 			)
-			.paginate({ ...args.paginationOpts, numItems: Math.min(5, args.paginationOpts.numItems) });
+			.filterWith(async (pendingUpdate) => await db_pending_update_is_listed(ctx, pendingUpdate, threadId))
+			.paginate({
+				...args.paginationOpts,
+				numItems: Math.min(5, args.paginationOpts.numItems),
+				maximumRowsRead: args.paginationOpts.endCursor ? undefined : 100,
+			});
 
 		// A page can contain unrelated deep paths. Keep its combined ancestor reads bounded too.
 		const reader = await files_visible_db_create_reader(ctx, { ...scope, readLimit: 8192 });
 
 		const views = [];
 		for (const pendingUpdate of page.page) {
-			if (threadId !== undefined && !pendingUpdate.threadIds?.includes(threadId)) continue;
-			const hasActiveChildDraft = await db_pending_update_has_active_child_draft(ctx, pendingUpdate);
 			const view = await db_get_pending_target_view(ctx, { membership, target: pendingUpdate.target, reader });
 			if (view) {
-				views.push({ ...(await db_get_public_pending_target_view(ctx, view)), hasActiveChildDraft });
+				views.push(await db_get_public_pending_target_view(ctx, view));
 				continue;
-			}
-
-			if (pendingUpdate.target.kind === "private") {
-				const node = await ctx.db.get("files_pending_nodes", pendingUpdate.target.id);
-				if (node?.state !== "active") continue;
 			}
 
 			// Keep only the owner's review identity after access is removed.
@@ -7374,7 +7390,6 @@ export const list_files_pending_updates = query({
 				pendingUpdateId: pendingUpdate._id,
 				revision: pendingUpdate.revision,
 				...(pendingUpdate.threadIds ? { threadIds: pendingUpdate.threadIds } : {}),
-				hasActiveChildDraft,
 			});
 		}
 
@@ -7458,15 +7473,7 @@ async function db_get_files_pending_updates_summary(
 		.take(501);
 	let count = 0;
 	for (const pendingUpdate of pendingUpdates.slice(0, 500)) {
-		if (threadId !== undefined && !pendingUpdate.threadIds?.includes(threadId)) continue;
-		if (
-			pendingUpdate.target.kind === "private" &&
-			(await ctx.db.get("files_pending_nodes", pendingUpdate.target.id))?.state !== "active"
-		)
-			continue;
-		// Count only the rows the Pending list draws. It hides a folder draft that holds a draft.
-		if (await db_pending_update_has_active_child_draft(ctx, pendingUpdate)) continue;
-		count++;
+		if (await db_pending_update_is_listed(ctx, pendingUpdate, threadId)) count++;
 	}
 	return { count, truncated: pendingUpdates.length > 500 };
 }

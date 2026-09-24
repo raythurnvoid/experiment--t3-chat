@@ -651,6 +651,7 @@ Rules that follow:
 - **Never treat an empty page as "done".** An empty page can follow JS post-filtering or a budget split. Only `isDone` ends pagination; continue with `continueCursor` whenever it is false.
 - Both approaches scan the same docs overall — choose by who pays. Prefer `.filter()` when the consumer wants full pages (fewer round-trips); prefer the JS post-filter only when per-call read cost must stay flat.
 - Either way, `.filter()`/JS filtering is the fallback, not the default: express the predicate on an index (`withIndex` range, search-index `filterFields` equality) whenever the schema allows.
+- When the predicate needs other reads (for example, "does this folder have a child?"), `.filter()` cannot run it. Use `stream(ctx.db, schema).query(...).withIndex(...).filterWith(async (doc) => ...)` from `convex-helpers/server/stream`, then `.paginate({ ...opts, maximumRowsRead })`. It filters before paging, like `.filter()`. A reactive client must page it with `usePaginatedQuery` from `convex-helpers/react`. The `convex/react` hook does not pin a stream page's end, so rows can be skipped or repeated when docs are added or removed. Leave out `maximumRowsRead` when the request has an `endCursor`. A pinned page that stops at the read limit returns the stop as its `continueCursor`, the hook splits the page there, and the rows between the stop and the old `endCursor` never load. `files_pending_updates.list_files_pending_updates` is the example.
 
 ## Query cache and composition
 

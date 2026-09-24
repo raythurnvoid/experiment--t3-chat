@@ -3,8 +3,9 @@ import { CheckCheck, ChevronDown, ChevronRight, Trash2 } from "lucide-react";
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import { createPatch } from "diff";
 import { measureLineStats, prepareWithSegments } from "@chenglou/pretext";
-import { usePaginatedQuery, useQueries, useQuery } from "convex/react";
+import { useQueries, useQuery } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
+import { usePaginatedQuery } from "convex-helpers/react";
 import { toast } from "sonner";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { AppActivitiesProvider } from "@/lib/app-activities-context.tsx";
@@ -109,11 +110,6 @@ type FileEditorSidebarPendingRow = {
 	canPreviewDeleteDiff: boolean;
 	/** True when this pending row belongs to a folder node. */
 	isFolder: boolean;
-	/**
-	 * True for a folder draft that holds another draft. The list does not draw it and the counts
-	 * skip it, because saving the draft inside creates the folder too.
-	 */
-	hasActiveChildDraft: boolean;
 	/** Private files and folders are shown as Added until publication. */
 	isAddedFile: boolean;
 	/**
@@ -166,14 +162,15 @@ function build_pending_rows(
 			parentIdsWithActiveChildren.add(update.pendingMove.destParent.id);
 		}
 	}
-	for (const { entry } of views) {
-		if (entry.kind === "private" && entry.node.parent.kind === "saved")
-			parentIdsWithActiveChildren.add(entry.node.parent.id);
+	// The list skips a folder draft that holds a draft, so read the saved folder above each private
+	// chain from `savedParentId`, not from the loaded rows.
+	for (const view of views) {
+		if (view.entry.kind === "private" && view.savedParentId) parentIdsWithActiveChildren.add(view.savedParentId);
 	}
 
 	return views
 		.flatMap((view): FileEditorSidebarPendingRow[] => {
-			const { entry, readiness, canAcceptWithParents, requiredParents, hasActiveChildDraft } = view;
+			const { entry, readiness, canAcceptWithParents, requiredParents } = view;
 			const pendingUpdate = entry.pendingUpdate;
 			if (!pendingUpdate) return [];
 			const node = entry.kind === "saved" ? entry.node : null;
@@ -251,7 +248,6 @@ function build_pending_rows(
 					sizeOnlyReplacedNodeId,
 					canPreviewDeleteDiff: kind === "delete" && files_node_has_editable_yjs_state(node),
 					isFolder: entry.node.kind === "folder",
-					hasActiveChildDraft,
 					isAddedFile: entry.kind === "private",
 					isArchived: node != null && node.archiveOperationId !== null,
 					// A file with collaboration off keeps its shape too; its branches decode the same way.
@@ -511,16 +507,16 @@ const PendingSourceOptionLabel = memo(function PendingSourceOptionLabel(props: {
 });
 
 function pending_row_matches_source(
-	row: { threadIds?: app_convex_Id<"ai_chat_threads">[] },
+	proposal: { threadIds?: app_convex_Id<"ai_chat_threads">[] },
 	source: FileEditorSidebarPendingSource,
 ) {
 	if (source === PENDING_SOURCE_ALL) {
 		return true;
 	}
 	if (source === PENDING_SOURCE_USER) {
-		return !row.threadIds?.length;
+		return !proposal.threadIds?.length;
 	}
-	return row.threadIds?.includes(source) ?? false;
+	return proposal.threadIds?.includes(source) ?? false;
 }
 
 const FileEditorSidebarPendingSourceSelect = memo(function FileEditorSidebarPendingSourceSelect(props: {
@@ -1403,6 +1399,8 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 		}
 	});
 
+	// The list query pages a convex-helpers stream. Only the convex-helpers hook pins where each
+	// loaded page ends, so a proposal added or removed later cannot skip or repeat a row.
 	const {
 		results: pendingUpdatesResult,
 		status: pendingUpdatesStatus,
@@ -1449,11 +1447,7 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 		nodesById,
 	);
 	const restrictedRows = pendingUpdatesResult.filter((view) => view.kind === "restricted");
-	// The counts and the empty state follow the rows the list draws, like the tab badge does.
-	const shownSources = [
-		...rows.filter((row) => !row.hasActiveChildDraft).map((row) => row.pendingUpdate),
-		...restrictedRows.filter((view) => !view.hasActiveChildDraft),
-	];
+	const shownSources = [...rows.map((row) => row.pendingUpdate), ...restrictedRows];
 	const protectedDescendantIds = files_collect_protected_descendant_ids(fileNodesList ?? []);
 
 	// The server checks hidden nodes and current policies again when Accept runs.
@@ -1562,10 +1556,8 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 	const activeSource = sourceOptions.some((option) => option.value === selectedSource)
 		? selectedSource
 		: PENDING_SOURCE_ALL;
-	const sourceRows = rows.filter((row) => pending_row_matches_source(row.pendingUpdate, activeSource));
-	const sourceRestrictedRows = restrictedRows.filter((row) => pending_row_matches_source(row, activeSource));
-	const shownRows = sourceRows.filter((row) => !row.hasActiveChildDraft);
-	const shownRestrictedRows = sourceRestrictedRows.filter((view) => !view.hasActiveChildDraft);
+	const shownRows = rows.filter((row) => pending_row_matches_source(row.pendingUpdate, activeSource));
+	const shownRestrictedRows = restrictedRows.filter((row) => pending_row_matches_source(row, activeSource));
 	const canAcceptAllShownRows =
 		shownRows.length > 0 && shownRestrictedRows.length === 0 && shownRows.every(canAcceptRow);
 
@@ -1616,35 +1608,39 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 	// The server would refuse to discard a folder that still holds such a draft or folder.
 	const handleDiscardAll = useFn(() => {
 		if (isBulkBusy) return;
-		const sourcePendingUpdateIds = new Set(sourceRows.map((row) => row.pendingUpdate._id));
 		const keptParentIds = new Set(
 			rows
-				.filter((row) => !row.hasActiveChildDraft && !shownRows.includes(row))
+				.filter((row) => !shownRows.includes(row))
 				.flatMap((row) => row.requiredParents.map((parent) => parent.pendingUpdateId)),
 		);
 		// A parent folder of another source stays. So every folder above it stays too, because it
 		// holds that folder. `requiredParents` is root-first.
 		for (const row of shownRows) {
-			const parentIds = row.requiredParents.map((parent) => parent.pendingUpdateId);
-			const deepestKeptIndex = parentIds.findLastIndex((parentId) => !sourcePendingUpdateIds.has(parentId));
-			for (const parentId of parentIds.slice(0, deepestKeptIndex + 1)) keptParentIds.add(parentId);
+			const deepestKeptIndex = row.requiredParents.findLastIndex(
+				(parent) => !pending_row_matches_source(parent, activeSource),
+			);
+			for (const parent of row.requiredParents.slice(0, deepestKeptIndex + 1)) keptParentIds.add(parent.pendingUpdateId);
 		}
-		const discardParentIds = new Set(
+		const discardParentsById = new Map(
 			shownRows
-				.flatMap((row) => row.requiredParents.map((parent) => parent.pendingUpdateId))
-				.filter((pendingUpdateId) => !keptParentIds.has(pendingUpdateId)),
+				.flatMap((row) => row.requiredParents)
+				.filter((parent) => !keptParentIds.has(parent.pendingUpdateId))
+				.map((parent) => [parent.pendingUpdateId, parent] as const),
 		);
 		setIsSubmitting(true);
 		startReview({
 			kind: "discard",
 			items: [
-				...sourceRows
-					.filter((row) => !row.hasActiveChildDraft || discardParentIds.has(row.pendingUpdate._id))
-					.map(({ pendingUpdate }) => ({
-						pendingUpdateId: pendingUpdate._id,
-						reviewedRevision: pendingUpdate.revision,
-						selectedContentStateId: null,
-					})),
+				...[...discardParentsById.values()].map((parent) => ({
+					pendingUpdateId: parent.pendingUpdateId,
+					reviewedRevision: parent.reviewedRevision,
+					selectedContentStateId: null,
+				})),
+				...shownRows.map(({ pendingUpdate }) => ({
+					pendingUpdateId: pendingUpdate._id,
+					reviewedRevision: pendingUpdate.revision,
+					selectedContentStateId: null,
+				})),
 				...shownRestrictedRows.map((view) => ({
 					pendingUpdateId: view.pendingUpdateId,
 					reviewedRevision: view.revision,
@@ -1946,7 +1942,6 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 						canAcceptWithParents: true,
 						requiredParents: [],
 						savedParentId: null,
-						hasActiveChildDraft: false,
 					},
 				];
 			}
@@ -1960,7 +1955,6 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 					canAcceptWithParents: true,
 					requiredParents: [],
 					savedParentId: null,
-					hasActiveChildDraft: false,
 				},
 			];
 		});
@@ -1999,7 +1993,6 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 						canAcceptWithParents: true,
 						requiredParents: [],
 						savedParentId: null,
-						hasActiveChildDraft: false,
 					},
 				],
 				new Map(),
@@ -2009,36 +2002,65 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(rows[0]?.path).toBe("/owned.md");
 		});
 
-		test("keeps the server's flag for a folder draft that holds a draft", () => {
-			const pendingUpdate = makePendingUpdate({ id: "pu_folder", fileNodeId: "private_folder", isPrivate: true });
-			const [row] = build_pending_rows(
-				[
+		test("does not mark a saved folder as replaced while a private draft chain sits inside it", () => {
+			// The list skips the folder draft `/target/new`, because it holds `note.md`. So only the file's
+			// `savedParentId` tells the rows that the saved folder `/target` is not empty.
+			const nodesById = makeNodesById([
+				makeNode({ id: "node_source", path: "/source", kind: "folder" }),
+				makeNode({ id: "node_target", path: "/target", kind: "folder" }),
+			]);
+			const moveView: Extract<FileEditorSidebarPendingView, { kind: "entry" }> = {
+				kind: "entry",
+				entry: {
+					kind: "saved",
+					node: nodesById.get("node_source" as app_convex_Id<"files_nodes">)!,
+					pendingUpdate: makePendingUpdate({
+						id: "pu_move",
+						fileNodeId: "node_source",
+						pendingMove: { destParentId: files_ROOT_ID, destName: "target", fromPath: "/source" },
+					}),
+					path: "/target",
+				},
+				readiness: "ready",
+				canEdit: true,
+				canAccept: true,
+				canAcceptWithParents: true,
+				requiredParents: [],
+				savedParentId: null,
+			};
+			const draftView: Extract<FileEditorSidebarPendingView, { kind: "entry" }> = {
+				kind: "entry",
+				entry: {
+					kind: "private",
+					node: {
+						_id: "private_note",
+						kind: "file",
+						name: "note.md",
+						parent: { kind: "private", id: "private_new" },
+					} as unknown as app_convex_Doc<"files_pending_nodes">,
+					pendingUpdate: makePendingUpdate({ id: "pu_note", fileNodeId: "private_note", isPrivate: true }),
+					path: "/target/new/note.md",
+				},
+				readiness: "ready",
+				canEdit: true,
+				canAccept: false,
+				canAcceptWithParents: true,
+				requiredParents: [
 					{
-						kind: "entry",
-						entry: {
-							kind: "private",
-							node: {
-								_id: "private_folder",
-								kind: "folder",
-								name: "qa",
-								parent: { kind: "root" },
-							} as unknown as app_convex_Doc<"files_pending_nodes">,
-							pendingUpdate,
-							path: "/qa",
-						},
-						readiness: "ready",
-						canEdit: true,
-						canAccept: true,
-						canAcceptWithParents: true,
-						requiredParents: [],
-						savedParentId: null,
-						hasActiveChildDraft: true,
+						target: { kind: "private", id: "private_new" as app_convex_Id<"files_pending_nodes"> },
+						path: "/target/new",
+						pendingUpdateId: "pu_new" as app_convex_Id<"files_pending_updates">,
+						reviewedRevision: 1,
 					},
 				],
-				new Map(),
-			);
+				savedParentId: "node_target" as app_convex_Id<"files_nodes">,
+			};
 
-			expect(row).toMatchObject({ path: "/qa", isFolder: true, hasActiveChildDraft: true });
+			const replacedTargetId = (views: (typeof moveView)[]) =>
+				build_pending_rows(views, nodesById).find((row) => row.pendingUpdate._id === "pu_move")?.replacedNodeId;
+
+			expect(replacedTargetId([moveView])).toBe("node_target");
+			expect(replacedTargetId([moveView, draftView])).toBeUndefined();
 		});
 
 		test("builds a content row with the node's shape for a proposal on a file with collaboration off", () => {

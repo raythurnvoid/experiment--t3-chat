@@ -1416,9 +1416,9 @@ is usually the second row, not the first — check each one's `_creationTime` ag
 `{kind, canAccept, canEdit, readiness, entry}` with the useful fields one level down in
 `entry.path`, `entry.node` and `entry.pendingUpdate` — there is no `row._id` or `row.path`.
 
-Draining every row for a clean fixture needs **more than one pass**. A folder draft whose children
-still have drafts refuses with `{_nay: {name: "needs_review", message: "Review the child drafts
-before discarding this folder"}}`, so loop until the list is empty:
+Draining every row for a clean fixture needs **more than one pass**. A folder draft that still holds
+a draft is not listed at all, so it shows up only after its children are discarded. Loop until the
+list is empty:
 
 ```js
 for (let pass = 0; pass < 5; pass++) {
@@ -1462,11 +1462,13 @@ returns to the Pending panel or the file view. Cover plain-text rows, stored-fil
 details, and bulk actions. Busy action buttons keep focus with `aria-disabled`; readiness and
 permission refusals still use `disabled`.
 
-Pending starts with one page. Click `Load more pending changes` before counting all rows. A
-server page holds 5 proposals, and a hidden folder draft (`hasActiveChildDraft`) still uses a slot,
-so the first page can draw fewer than 5 rows while the tab badge already counts them all. Switching
-to another sidebar tab and back remounts the list on one page again. A mouse click on `Load more`
-can wait forever for the button to be "stable"; focus it and press Enter. To
+Pending starts with one page. Press `Load more pending changes` before counting all rows. The file
+view has its own `Load more` button for the same list, so match the name exactly. A server page holds up to 5 rows, and the tab badge already counts them all. A
+hidden folder draft is skipped before paging, so it uses no slot. A page is short only when it is
+the last one, or when it read 100 proposals first (then `isDone` is still false). Until every page
+is loaded, the source picker counts only the loaded rows. Switching to another sidebar tab and back
+remounts the list on one page again. A mouse click on `Load more` can wait forever for the button to
+be "stable"; focus it and press Enter. To
 clean up a QA run, select its chat in `Pending changes source`, load every page, and check the
 shown paths before using Discard all. Do not discard unrelated pending work.
 
@@ -1535,10 +1537,18 @@ adds /qa-x`). Accepting it saves both folders (`2 saved`).
 When the agent chat cannot run, make the same folder drafts with the internal mutation
 `files_nodes:create_private_node_by_path` (args: `organizationId`, `workspaceId`, `userId`, `path`,
 `kind: 'folder'`, `threadId`). Pass the args as JSON5 with single quotes, because PowerShell breaks
-escaped double quotes. Verified 2026-09-24. To read the server flag, page through
-`files_pending_updates:list_files_pending_updates` from page context and read `hasActiveChildDraft`
-on each view. Pass function names as strings: importing `/convex/_generated/api.js` in the page can
-take longer than the 5 s step timeout.
+escaped double quotes. Verified 2026-09-24. To check the server list, page through
+`files_pending_updates:list_files_pending_updates` from page context: a folder that holds a draft
+never appears, and each draft row's `requiredParents` carry the folders' `threadIds`. Pass function
+names as strings: importing `/convex/_generated/api.js` in the page can take longer than the 5 s step
+timeout.
+
+To check that hidden folders use no page slot, make one deep chain and five siblings
+(`/qa-x/a/b/c/d/e/f` and `/qa-x/x1` to `/qa-x/x5`), then page the list with `numItems: 5`. Every
+page that is not the last holds 5 rows (verified 2026-09-24: pages `5, 1`). With the filter moved
+after `.paginate()`, the same fixture gave `3, 2, 1`, which also proves the watcher runs your tree.
+`Discard all` on those 6 rows sends 12 items: the rows plus the 6 hidden folders from
+`requiredParents`.
 
 ## Cross-Workspace Copy
 

@@ -42,7 +42,7 @@ const {
 }));
 
 // Network boundary: the real hooks talk to a live Convex client; tests feed query data directly.
-vi.mock("convex/react", () => ({
+vi.mock("convex-helpers/react", () => ({
 	usePaginatedQuery: (...args: unknown[]) => {
 		const result = useQueryMock(...args);
 		return {
@@ -51,6 +51,9 @@ vi.mock("convex/react", () => ({
 			loadMore: loadMoreMock,
 		};
 	},
+}));
+
+vi.mock("convex/react", () => ({
 	useQuery: (...args: unknown[]) => {
 		const result = useQueryMock(...args);
 		return args[0] === "list_files_pending_updates" ? makeOwnerViewFixtures(result) : result;
@@ -218,12 +221,18 @@ import { files_u8_to_array_buffer } from "@/lib/files.ts";
 const pendingStateBytesByStateId = new Map<string, ArrayBuffer>();
 const blockedTargetIds = new Set<string>();
 const unreadableTargetIds = new Set<string>();
+// The server never lists a folder draft that holds a draft. Tests pass only the draft inside and
+// name the folder here, like the server's `requiredParents`.
 const requiredParentsById = new Map<
 	string,
-	Array<{ target: { kind: "private"; id: string }; path: string; pendingUpdateId: string; reviewedRevision: number }>
+	Array<{
+		target: { kind: "private"; id: string };
+		path: string;
+		pendingUpdateId: string;
+		reviewedRevision: number;
+		threadIds?: string[];
+	}>
 >();
-// Folder drafts the server reports as holding another draft (`hasActiveChildDraft`).
-const activeChildDraftTargetIds = new Set<string>();
 function registerPendingState(stateId: string, text: string) {
 	// Always overwrite: tests reuse fixture ids with different texts.
 	const yjsDoc = files_yjs_doc_create_from_text({ text, rootKind: "rich_text" });
@@ -336,7 +345,6 @@ function makeOwnerViewFixtures(updates: app_convex_Doc<"files_pending_updates">[
 	return updates?.map((pendingUpdate) => {
 		const nodes: app_convex_Doc<"files_nodes">[] = treeNodesMock() ?? [];
 		const canAccept = !blockedTargetIds.has(pendingUpdate.target.id) && !pendingUpdate.preparation;
-		const hasActiveChildDraft = activeChildDraftTargetIds.has(pendingUpdate.target.id);
 		if (unreadableTargetIds.has(pendingUpdate.target.id))
 			return {
 				kind: "restricted",
@@ -344,7 +352,6 @@ function makeOwnerViewFixtures(updates: app_convex_Doc<"files_pending_updates">[
 				pendingUpdateId: pendingUpdate._id,
 				revision: pendingUpdate.revision,
 				threadIds: pendingUpdate.threadIds,
-				hasActiveChildDraft,
 			};
 		if (pendingUpdate.target.kind === "private") {
 			const path = privatePathsById.get(pendingUpdate.target.id)!;
@@ -370,7 +377,6 @@ function makeOwnerViewFixtures(updates: app_convex_Doc<"files_pending_updates">[
 				canAccept: canAccept && !requiredParentsById.has(pendingUpdate.target.id),
 				canAcceptWithParents: canAccept,
 				requiredParents: requiredParentsById.get(pendingUpdate.target.id) ?? [],
-				hasActiveChildDraft,
 			};
 		}
 		const node = nodes.find((node) => node._id === pendingUpdate.target.id);
@@ -393,7 +399,6 @@ function makeOwnerViewFixtures(updates: app_convex_Doc<"files_pending_updates">[
 			canAccept,
 			canAcceptWithParents: canAccept,
 			requiredParents: [],
-			hasActiveChildDraft,
 		};
 	});
 }
@@ -464,7 +469,6 @@ beforeEach(() => {
 	loadMoreMock.mockReset();
 	blockedTargetIds.clear();
 	requiredParentsById.clear();
-	activeChildDraftTargetIds.clear();
 	unreadableTargetIds.clear();
 	privatePathsById.clear();
 	tenantContextMock.mockReturnValue({
@@ -637,12 +641,6 @@ describe("FileEditorSidebarPending", () => {
 
 	describe("folder drafts that hold a draft", () => {
 		function renderFolderWithNote() {
-			const folder = makePendingUpdate({
-				id: "pu_folder",
-				fileNodeId: "private_folder",
-				privatePath: "/qa",
-				privateKind: "folder",
-			});
 			const note = makePendingUpdate({
 				id: "pu_note",
 				fileNodeId: "private_note",
@@ -650,7 +648,6 @@ describe("FileEditorSidebarPending", () => {
 				staged: "",
 				unstaged: "hi",
 			});
-			activeChildDraftTargetIds.add("private_folder");
 			requiredParentsById.set("private_note", [
 				{
 					target: { kind: "private", id: "private_folder" },
@@ -659,15 +656,14 @@ describe("FileEditorSidebarPending", () => {
 					reviewedRevision: 3,
 				},
 			]);
-			useQueryMock.mockReturnValue([folder, note]);
+			useQueryMock.mockReturnValue([note]);
 			treeNodesMock.mockReturnValue(undefined);
 			return render(<FileEditorSidebarPending />);
 		}
 
-		test("draws only the draft inside, names the folder, and counts one change", () => {
+		test("names the folder on the draft inside and counts one change", () => {
 			renderFolderWithNote();
 
-			expect(screen.queryByRole("link", { name: "/qa" })).toBeNull();
 			// The row looks like any new file. Only its tooltip and accessible name list the folder.
 			expect(screen.getByRole("link", { name: "/qa/note.md, also adds /qa" })).toBeTruthy();
 			expect(screen.getByText("Added file")).toBeTruthy();
@@ -723,32 +719,65 @@ describe("FileEditorSidebarPending", () => {
 				expect(startReviewMock).toHaveBeenLastCalledWith({
 					kind: "discard",
 					items: [
-						{ pendingUpdateId: "pu_folder", reviewedRevision: 1, selectedContentStateId: null },
+						{ pendingUpdateId: "pu_folder", reviewedRevision: 3, selectedContentStateId: null },
 						{ pendingUpdateId: "pu_note", reviewedRevision: 1, selectedContentStateId: null },
 					],
 				}),
 			);
 		});
 
+		test("Discard all under a chat sends its own folder when no loaded draft needs it", async () => {
+			requiredParentsById.set("private_x", [
+				{
+					target: { kind: "private", id: "private_folder" },
+					path: "/qa",
+					pendingUpdateId: "pu_folder",
+					reviewedRevision: 3,
+					threadIds: ["thread_a"],
+				},
+			]);
+			treeNodesMock.mockReturnValue(undefined);
+			useQueryMock.mockReturnValue([
+				makePendingUpdate({
+					id: "pu_x",
+					fileNodeId: "private_x",
+					privatePath: "/qa/x.md",
+					staged: "",
+					unstaged: "x",
+					threadIds: ["thread_a"],
+				}),
+			]);
+			useQueriesMock.mockReturnValue({
+				thread_a: makeThread({ id: "thread_a", title: "First chat", lastMessageAt: 10 }),
+			});
+			render(<FileEditorSidebarPending />);
+
+			fireEvent.click(screen.getByRole("combobox"));
+			fireEvent.click(screen.getByRole("option", { name: /^First chat/ }));
+			fireEvent.click(screen.getByRole("button", { name: "Discard all shown pending changes" }));
+			await waitFor(() =>
+				expect(startReviewMock).toHaveBeenLastCalledWith({
+					kind: "discard",
+					items: [
+						{ pendingUpdateId: "pu_folder", reviewedRevision: 3, selectedContentStateId: null },
+						{ pendingUpdateId: "pu_x", reviewedRevision: 1, selectedContentStateId: null },
+					],
+				}),
+			);
+		});
+
 		test("bulk actions under a chat never touch a hidden folder that holds another chat's draft", async () => {
-			activeChildDraftTargetIds.add("private_folder");
 			const folderParent = {
-				target: { kind: "private", id: "private_folder" },
+				target: { kind: "private" as const, id: "private_folder" },
 				path: "/qa",
 				pendingUpdateId: "pu_folder",
 				reviewedRevision: 3,
-			} as const;
+				threadIds: ["thread_a"],
+			};
 			requiredParentsById.set("private_note", [folderParent]);
 			requiredParentsById.set("private_x", [folderParent]);
 			treeNodesMock.mockReturnValue(undefined);
 			useQueryMock.mockReturnValue([
-				makePendingUpdate({
-					id: "pu_folder",
-					fileNodeId: "private_folder",
-					privatePath: "/qa",
-					privateKind: "folder",
-					threadIds: ["thread_a"],
-				}),
 				makePendingUpdate({
 					id: "pu_note",
 					fileNodeId: "private_note",
@@ -813,38 +842,24 @@ describe("FileEditorSidebarPending", () => {
 		});
 
 		test("Discard all under a chat keeps the folders above another chat's hidden folder", async () => {
-			activeChildDraftTargetIds.add("private_f");
-			activeChildDraftTargetIds.add("private_g");
-			const parentF = {
-				target: { kind: "private", id: "private_f" },
-				path: "/f",
-				pendingUpdateId: "pu_f",
-				reviewedRevision: 1,
-			} as const;
-			const parentG = {
-				target: { kind: "private", id: "private_g" },
-				path: "/f/g",
-				pendingUpdateId: "pu_g",
-				reviewedRevision: 1,
-			} as const;
-			requiredParentsById.set("private_g", [parentF]);
-			requiredParentsById.set("private_x", [parentF, parentG]);
+			requiredParentsById.set("private_x", [
+				{
+					target: { kind: "private", id: "private_f" },
+					path: "/f",
+					pendingUpdateId: "pu_f",
+					reviewedRevision: 1,
+					threadIds: ["thread_a"],
+				},
+				{
+					target: { kind: "private", id: "private_g" },
+					path: "/f/g",
+					pendingUpdateId: "pu_g",
+					reviewedRevision: 1,
+					threadIds: ["thread_b"],
+				},
+			]);
 			treeNodesMock.mockReturnValue(undefined);
 			useQueryMock.mockReturnValue([
-				makePendingUpdate({
-					id: "pu_f",
-					fileNodeId: "private_f",
-					privatePath: "/f",
-					privateKind: "folder",
-					threadIds: ["thread_a"],
-				}),
-				makePendingUpdate({
-					id: "pu_g",
-					fileNodeId: "private_g",
-					privatePath: "/f/g",
-					privateKind: "folder",
-					threadIds: ["thread_b"],
-				}),
 				makePendingUpdate({
 					id: "pu_x",
 					fileNodeId: "private_x",
@@ -891,26 +906,6 @@ describe("FileEditorSidebarPending", () => {
 
 			expect(screen.getByText("Added file")).toBeTruthy();
 			expect(screen.getByRole("link", { name: "/a/b/c.md, also adds /a, /a/b" })).toBeTruthy();
-		});
-
-		test("a hidden folder without access is not drawn or counted either", () => {
-			const folder = makePendingUpdate({
-				id: "pu_folder",
-				fileNodeId: "private_folder",
-				privatePath: "/qa",
-				privateKind: "folder",
-			});
-			const note = makePendingUpdate({ id: "pu_note", fileNodeId: "private_note", privatePath: "/qa/note.md" });
-			activeChildDraftTargetIds.add("private_folder");
-			unreadableTargetIds.add("private_folder");
-			unreadableTargetIds.add("private_note");
-			useQueryMock.mockReturnValue([folder, note]);
-			treeNodesMock.mockReturnValue(undefined);
-
-			render(<FileEditorSidebarPending />);
-
-			expect(screen.getAllByText("Draft unavailable")).toHaveLength(1);
-			expect(screen.getByRole("combobox", { name: "Pending changes source: All changes, 1 change" })).toBeTruthy();
 		});
 	});
 
