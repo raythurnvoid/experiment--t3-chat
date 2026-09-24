@@ -11,7 +11,7 @@
 		"test": "pnpm --dir ../app exec vitest run --config ../common/vitest.config.mjs"
 	},
 	"dependencies": {
-		"type-fest": "^5.1.0"
+		"type-fest": "^5.10.0"
 	},
 	"devDependencies": {
 		"vitest": "4.1.10"
