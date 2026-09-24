@@ -4,7 +4,7 @@ Use this when a check needs two identities at once: permission refusals, share g
 
 The org owner passes every permission check, so an owner-only run proves **no over-refusal** and never proves a refusal works. Do not report a permission fix as verified from owner flows alone.
 
-For most checks you do not need a second Clerk account. The app mints an anonymous user for any visitor with no Clerk session, and `organizations.invite_user_to_organization_workspace` accepts `userIdToAdd` directly, so that anonymous user can be pulled into a workspace as a normal member.
+Use a seeded Clerk test account first (see below). The app also mints an anonymous user for any visitor with no Clerk session, and `organizations.invite_user_to_organization_workspace` accepts `userIdToAdd` directly, so that anonymous user can be pulled into a workspace as a normal member. That creates new data each time, so keep it for checks that need it.
 
 ## When a check needs a specific Clerk account
 
@@ -13,7 +13,7 @@ The dev database holds signable `qa.perm.owner` / `admin` / `member` / `viewer` 
 Two constraints shape the choice, both checked on 2026-08-02:
 
 - This Clerk instance runs with `singleSessionMode === true` (read it from `Clerk.__unstable__environment.authConfig`). One browser profile holds one signed-in user, and the app has no account switcher (`packages/app/src/components/main-app-sidebar-account-control.tsx` renders only `Manage account` and `Sign out`). So test-account sign-in must happen **only** in the isolated scratch browser from section 1 below — in the user's own profile it would kick the user out of their own session.
-- Prefer the anonymous identity below when the check only needs "some non-owner member": it needs no account and no sign-in, and it produces the same non-owner member with `content.write` that those accounts were created for. Reach for a Clerk test account when the check needs a specific role, a specific configuration, or data already attached to an account.
+- Prefer a seeded Clerk test account, even when the check only needs "some non-owner member". Every new anonymous visitor adds a user, a personal org, a workspace, and quota rows that stay in the dev database, and its token dies with the headless profile, so it can never be reused. On 2026-09-24 the database held 113 such unused users. Use the anonymous identity below only when the check is about anonymous users, or when no seeded account fits. The [qa-data](../../qa-data/SKILL.md) catalog lists the accounts and which workspaces each one reaches.
 
 Hand the work back to the user only when a check needs a **real** account: the user's own data, a real credential, or an invite-by-email flow that needs a real address. That is the single step to ask a human for; everything around it you can still drive yourself.
 

@@ -29,6 +29,10 @@ Use this file as a quick testing map for `/files`. Keep it short and selector-or
 - Comments tab: `#app_file_editor_sidebar_tabs_comments`.
 - Agent tab: `#app_file_editor_sidebar_tabs_agent`.
 - Pending tab: `#app_file_editor_sidebar_tabs_pending`.
+  In the owner's big `personal/home` workspace, a full `snapshot()` of `/files` does not finish inside
+  the 5 s budget. Read the Pending panel with `page.evaluate` instead: take the tab's `aria-controls`
+  id, then read that panel's buttons (row actions are named `Discard changes to <path>`). Verified
+  2026-09-24.
 - There is no Metadata tab. The key-value map moved into the Properties modal; see "File Properties Modal" below.
 
 ### File Node View
@@ -1431,17 +1435,25 @@ is usually the second row, not the first — check each one's `_creationTime` ag
 `entry.path`, `entry.node` and `entry.pendingUpdate` — there is no `row._id` or `row.path`.
 
 Draining every row for a clean fixture needs **more than one pass**. A folder draft that still holds
-a draft is not listed at all, so it shows up only after its children are discarded. Loop until the
-list is empty:
+a draft is not listed at all, so it shows up only after its children are discarded. A page holds at
+most 5 rows, and a page can be empty while `isDone` is false, so follow the cursor to the end. Loop
+until a full walk finds nothing:
 
 ```js
 for (let pass = 0; pass < 5; pass++) {
-	const rows = await m.app_convex.query(m.app_convex_api.files_pending_updates.list_files_pending_updates, {
-		membershipId,
-		paginationOpts: { cursor: null, numItems: 50 },
-	});
-	if (rows.page.length === 0) break;
-	for (const r of rows.page) {
+	const rows = [];
+	let cursor = null;
+	for (;;) {
+		const page = await m.app_convex.query(m.app_convex_api.files_pending_updates.list_files_pending_updates, {
+			membershipId,
+			paginationOpts: { cursor, numItems: 5 },
+		});
+		rows.push(...page.page);
+		if (page.isDone) break;
+		cursor = page.continueCursor;
+	}
+	if (rows.length === 0) break;
+	for (const r of rows) {
 		const pu = r.entry.pendingUpdate;
 		await m.app_convex.mutation(m.app_convex_api.files_pending_updates.discard_file_pending_update, {
 			membershipId,
@@ -1452,6 +1464,13 @@ for (let pass = 0; pass < 5; pass++) {
 	}
 }
 ```
+
+Each single discard of a private draft took about 5 s in a 250-row fixture. For more than a few dozen
+rows, load every page in the Pending panel and use `Discard all shown pending changes` instead. One
+review run took 3,781 items (verified 2026-09-24). After a folder is discarded, its drafts still show
+as `restricted` rows, and the badge still counts them, until cleanup reaches them. Cleanup handled
+about 16 rows per pass: 193 rows took about 12 minutes. Wait for the count to reach 0 before you build
+the next fixture.
 
 ### Catching A Toast That Auto-Dismisses
 
@@ -1480,9 +1499,12 @@ Pending starts with one page. Press `Load more pending changes` before counting 
 view has its own `Load more` button for the same list, so match the name exactly. A server page holds up to 5 rows, and the tab badge already counts them all. A
 hidden folder draft is skipped before paging, so it uses no slot. A page is short only when it is
 the last one, or when it read 100 proposals first (then `isDone` is still false). Until every page
-is loaded, the source picker counts only the loaded rows. Switching to another sidebar tab and back
-remounts the list on one page again. A mouse click on `Load more` can wait forever for the button to
-be "stable"; focus it and press Enter. To
+is loaded, the source picker counts only the loaded rows, and a chat shows in the picker only after
+one of its rows is loaded. The UI never sends `threadId`: it pages the whole list and filters by chat
+in the browser. So only hidden folder drafts can make a UI page stop early. Switching to another
+sidebar tab and back remounts the list on one page again. A mouse click on `Load more` can wait
+forever for the button to be "stable"; focus it and press Enter. The button hides while a page
+loads, so a loop that presses it must wait several seconds before it decides the list is done. To
 clean up a QA run, select its chat in `Pending changes source`, load every page, and check the
 shown paths before using Discard all. Do not discard unrelated pending work.
 
@@ -1563,6 +1585,23 @@ page that is not the last holds 5 rows (verified 2026-09-24: pages `5, 1`). With
 after `.paginate()`, the same fixture gave `3, 2, 1`, which also proves the watcher runs your tree.
 `Discard all` on those 6 rows sends 12 items: the rows plus the 6 hidden folders from
 `requiredParents`.
+
+To reach the 100-read limit, build long chains. One `create_private_node_by_path` call adds at most
+32 missing folders (`Create the parent folders in smaller groups`), so grow a chain 32 folders at a
+time. A path about 96 deep fails with `Create path lookup exceeded its read limit`; 64 works. Each
+chain of 64 gives 63 hidden folders and 1 row. Ids are random, so the rows land at random places in
+the index. 15 chains gave server pages `1s 1s 4s 1s 3s 0s 3s 0s 2s 0!` (verified 2026-09-24; `s`
+means `pageStatus: "SplitRequired"`), and the UI still showed all 15 rows once. Each list query took
+1–3 s on this fixture, so a runner that walks many pages needs a longer timeout or must run in the
+background and be polled.
+
+To check a loaded page that grows past 100 rows: load every page in the UI, then add many more
+chains without reloading. The hook has already split each early-stopped page into halves of about 50
+rows. So the new rows must more than double the fixture before a half passes 100 rows. With 30
+chains loaded, 30 more chains worked: the fix showed 60 of 60. Adding only 15 to 15 was not enough.
+With the server break `maximumRowsRead: 100` (no `endCursor` exception), 7 rows stayed missing even
+after every page was loaded. Check the push first: ask for a range with an `endCursor` that spans two early-stopped pages.
+With the fix it returns that `endCursor` as its `continueCursor`.
 
 ## Cross-Workspace Copy
 
