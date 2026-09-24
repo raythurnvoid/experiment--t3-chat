@@ -951,6 +951,12 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 	}, [isOpen, kind, sizeOnlyReplacedNodeId, deletedCommittedMarkdown, pendingUpdate, path, membershipId, rootKind]);
 
 	const handleToggle = useFn((event: { currentTarget: HTMLDetailsElement }) => {
+		// A preparing draft has nothing to show yet. Close it again when a click or Enter/Space on
+		// the summary opens it.
+		if (readiness === "preparing" && event.currentTarget.open) {
+			event.currentTarget.open = false;
+			return;
+		}
 		setIsOpen(event.currentTarget.open);
 	});
 
@@ -1033,11 +1039,12 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 	});
 
 	// Plain moves have no content to diff. A delete without editable Yjs state also has nothing
-	// useful to preview. A new folder and a preparing draft have nothing to open either. Size-only
-	// replacements are the exception: their accordion compares stored sizes. A ready stored draft
-	// opens its file details.
+	// useful to preview. A new folder has nothing to open either. Size-only replacements are the
+	// exception: their accordion compares stored sizes. A ready stored draft opens its file details.
+	// A preparing draft uses the accordion too, but cannot open yet. It keeps the same row when it
+	// becomes ready, so keyboard focus on its link or buttons is not lost.
 	if (
-		(kind === "added" && !(storedIntent && readiness === "ready")) ||
+		(kind === "added" && readiness === "ready" && !storedIntent) ||
 		(kind === "move" && !sizeOnlyReplacedNodeId) ||
 		(kind === "delete" && !canPreviewDeleteDiff)
 	) {
@@ -1084,17 +1091,15 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 							</span>
 						)}
 						<span className={cn("FileEditorSidebarPending-item-caption" satisfies FileEditorSidebarPending_ClassNames)}>
-							{readiness === "preparing"
-								? "Preparing…"
-								: kind === "added"
-									? isFolder
-										? "Added folder"
-										: "Added file"
-									: kind === "delete"
-										? "Deleted"
-										: replacedNodeId != null
-											? "Replaced"
-											: "Moved"}
+							{kind === "added"
+								? isFolder
+									? "Added folder"
+									: "Added file"
+								: kind === "delete"
+									? "Deleted"
+									: replacedNodeId != null
+										? "Replaced"
+										: "Moved"}
 						</span>
 					</MyLink>
 					<span className={cn("FileEditorSidebarPending-item-actions" satisfies FileEditorSidebarPending_ClassNames)}>
@@ -1166,26 +1171,34 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 				open={isOpen}
 				onToggle={handleToggle}
 			>
-				<summary className={cn("FileEditorSidebarPending-item-summary" satisfies FileEditorSidebarPending_ClassNames)}>
-					<MyIconButton
-						aria-hidden
-						tabIndex={-1}
-						variant="ghost-highlightable"
-						onMouseDown={(event) => event.preventDefault()}
-						onClick={handleChevronToggle}
-					>
-						<MyIconButtonIcon>{isOpen ? <ChevronDown /> : <ChevronRight />}</MyIconButtonIcon>
-					</MyIconButton>
+				<summary
+					className={cn(
+						"FileEditorSidebarPending-item-summary" satisfies FileEditorSidebarPending_ClassNames,
+						readiness === "preparing" &&
+							("FileEditorSidebarPending-item-summary-preparing" satisfies FileEditorSidebarPending_ClassNames),
+					)}
+				>
+					{readiness === "ready" ? (
+						<MyIconButton
+							aria-hidden
+							tabIndex={-1}
+							variant="ghost-highlightable"
+							onMouseDown={(event) => event.preventDefault()}
+							onClick={handleChevronToggle}
+						>
+							<MyIconButtonIcon>{isOpen ? <ChevronDown /> : <ChevronRight />}</MyIconButtonIcon>
+						</MyIconButton>
+					) : null}
 					<MyLink
 						className={cn("FileEditorSidebarPending-item-path" satisfies FileEditorSidebarPending_ClassNames)}
 						to="/w/$organizationName/$workspaceName/files"
 						params={{ organizationName, workspaceName }}
 						search={
 							// The diff editor cannot represent a deleted file, a size-only replacement, a
-							// whole-file copy, or a stored draft (no text branches). The inline preview below
-							// handles those, and the link opens the file itself.
+							// whole-file copy, a stored draft, or a preparing draft (no text branches). The
+							// inline preview below handles those, and the link opens the file itself.
 							pendingUpdate.target.kind === "private"
-								? storedIntent
+								? kind === "added"
 									? { pendingNodeId: pendingUpdate.target.id }
 									: { pendingNodeId: pendingUpdate.target.id, view: "diff_editor" }
 								: kind === "delete" || kind === "replacement" || sizeOnlyReplacedNodeId
@@ -1209,7 +1222,7 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 							/>
 						)}
 						<span className={cn("FileEditorSidebarPending-item-caption" satisfies FileEditorSidebarPending_ClassNames)}>
-							{caption}
+							{readiness === "preparing" ? "Preparing…" : caption}
 						</span>
 					</MyLink>
 					<span className={cn("FileEditorSidebarPending-item-actions" satisfies FileEditorSidebarPending_ClassNames)}>
@@ -1350,6 +1363,7 @@ export type FileEditorSidebarPending_ClassNames =
 	| "FileEditorSidebarPending-list"
 	| "FileEditorSidebarPending-item"
 	| "FileEditorSidebarPending-item-summary"
+	| "FileEditorSidebarPending-item-summary-preparing"
 	| "FileEditorSidebarPending-item-path"
 	| "FileEditorSidebarPending-item-path-text"
 	| "FileEditorSidebarPending-item-actions"

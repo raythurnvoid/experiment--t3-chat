@@ -33,6 +33,9 @@ export default defineConfig({
 					exclude: ["src/**/*.browser.test.{ts,tsx}"],
 					includeSource: ["src/**/*.{ts,tsx}"],
 					name: "src",
+					// happy-dom is pinned to 20.3.5 in package.json. From 20.3.6 on, a click inside a
+					// `<summary>` opens its `<details>` even when React calls `preventDefault()`, and the
+					// Pending changes tests fail. Check those tests before you upgrade it.
 					environment: "happy-dom",
 					server: {
 						deps: {

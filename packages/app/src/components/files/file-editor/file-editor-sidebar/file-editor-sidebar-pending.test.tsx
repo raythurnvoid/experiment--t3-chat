@@ -1034,8 +1034,8 @@ describe("FileEditorSidebarPending", () => {
 		);
 	});
 
-	// The bytes of a preparing file are not in storage yet. So the row has nothing to open, download
-	// or accept. The user may still throw the draft away.
+	// The bytes of a preparing file are not in storage yet. So the row cannot open, download or
+	// accept. The user may still throw the draft away.
 	test("preparing stored files block preview, download, and Accept while keeping Discard", async () => {
 		useQueryMock.mockReturnValue([
 			makePendingUpdate({
@@ -1051,7 +1051,13 @@ describe("FileEditorSidebarPending", () => {
 		const { container } = render(<FileEditorSidebarPending />);
 
 		expect(screen.getByText("Preparing…")).toBeTruthy();
-		expect(container.querySelector("details")).toBeNull();
+		// The row uses the same accordion as a ready draft, but it has no chevron and closes again
+		// when something opens it.
+		const details = container.querySelector("details")!;
+		expect(details.querySelector("summary button[aria-hidden]")).toBeNull();
+		details.open = true;
+		fireEvent(details, new Event("toggle"));
+		expect(details.open).toBe(false);
 		expect(screen.getByRole("button", { name: "Accept changes to /preparing.png" }).matches(":disabled")).toBe(true);
 		expect(screen.queryByRole("button", { name: "Download preparing.png" })).toBeNull();
 		expect(screen.queryByRole("img")).toBeNull();
@@ -1064,6 +1070,46 @@ describe("FileEditorSidebarPending", () => {
 				items: [{ pendingUpdateId: "pu_preparing", reviewedRevision: 1, selectedContentStateId: null }],
 			}),
 		);
+	});
+
+	// The row must keep the same buttons when its draft becomes ready. If the row swapped its layout,
+	// the focused Discard button would leave the page and focus would fall back to the page body.
+	test.each([
+		{ draft: "stored", privateKind: "stored" as const, path: "/preparing.png" },
+		{ draft: "text", staged: "", unstaged: "draft", path: "/preparing.md" },
+	])("keeps focus on Discard when a preparing $draft draft becomes ready", (args) => {
+		const { draft: _draft, ...fixture } = args;
+		const makeDraft = (preparing: boolean) =>
+			makePendingUpdate({
+				id: "pu_preparing",
+				fileNodeId: "private_preparing",
+				privatePath: fixture.path,
+				...fixture,
+				preparing,
+			});
+		let updates = [makeDraft(true)];
+		const listeners = new Set<() => void>();
+		useQueryMock.mockImplementation(() =>
+			useSyncExternalStore(
+				(listener) => {
+					listeners.add(listener);
+					return () => {
+						listeners.delete(listener);
+					};
+				},
+				() => updates,
+			),
+		);
+		treeNodesMock.mockReturnValue([]);
+		render(<FileEditorSidebarPending />);
+
+		const discard = screen.getByRole("button", { name: `Discard changes to ${fixture.path}` });
+		discard.focus();
+		updates = [makeDraft(false)];
+		act(() => listeners.forEach((listener) => listener()));
+
+		expect(screen.queryByText("Preparing…")).toBeNull();
+		expect(document.activeElement).toBe(discard);
 	});
 
 	test("keeps focus in Pending when the last focused image row disappears", async () => {
@@ -1155,7 +1201,10 @@ describe("FileEditorSidebarPending", () => {
 		treeNodesMock.mockReturnValue([]);
 		const { container } = render(<FileEditorSidebarPending />);
 		expect(screen.getByText("Preparing…")).toBeTruthy();
-		expect(container.querySelector("details")).toBeNull();
+		const details = container.querySelector("details")!;
+		details.open = true;
+		fireEvent(details, new Event("toggle"));
+		expect(details.open).toBe(false);
 		expect(screen.getByRole("button", { name: "Accept changes to /draft.md" }).hasAttribute("disabled")).toBe(true);
 		fireEvent.click(screen.getByRole("button", { name: "Discard changes to /draft.md" }));
 		await waitFor(() => expect(startReviewMock).toHaveBeenCalledTimes(1));

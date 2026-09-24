@@ -283,8 +283,8 @@ importers:
         specifier: ^12.23.24
         version: 12.23.26(@emotion/is-prop-valid@0.8.8)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
       happy-dom:
-        specifier: 20.0.11
-        version: 20.0.11
+        specifier: 20.3.5
+        version: 20.3.5
       harden-react-markdown:
         specifier: ^1.1.5
         version: 1.1.7(react-markdown@10.1.0(@types/react@19.3.0)(react@19.3.0))(react@19.3.0)
@@ -489,7 +489,7 @@ importers:
         version: 8.3.0(@types/node@24.10.4)(esbuild@0.28.2)(jiti@2.7.0)(terser@5.49.0)(tsx@4.21.0)(yaml@2.8.2)
       vitest:
         specifier: 4.1.10
-        version: 4.1.10(@edge-runtime/vm@5.0.0)(@opentelemetry/api@1.9.0)(@types/node@24.10.4)(@vitest/browser-playwright@4.1.10)(happy-dom@20.0.11)(jsdom@29.0.1(@noble/hashes@1.8.0))(msw@2.12.7(@types/node@24.10.4)(typescript@6.0.3))(vite@8.3.0(@types/node@24.10.4)(esbuild@0.28.2)(jiti@2.7.0)(terser@5.49.0)(tsx@4.21.0)(yaml@2.8.2))
+        version: 4.1.10(@edge-runtime/vm@5.0.0)(@opentelemetry/api@1.9.0)(@types/node@24.10.4)(@vitest/browser-playwright@4.1.10)(happy-dom@20.3.5)(jsdom@29.0.1(@noble/hashes@1.8.0))(msw@2.12.7(@types/node@24.10.4)(typescript@6.0.3))(vite@8.3.0(@types/node@24.10.4)(esbuild@0.28.2)(jiti@2.7.0)(terser@5.49.0)(tsx@4.21.0)(yaml@2.8.2))
 
   packages/app/vendor/headless-tree/packages/core:
     devDependencies:
@@ -10264,9 +10264,6 @@ packages:
   '@types/node@18.19.130':
     resolution: {integrity: sha512-GRaXQx6jGfL8sKfaIDD6OupbIHBr9jv7Jnaml9tB7l4v068PAOXqfcujMMo5PhbIs6ggR1XODELqahT2R8v0fg==}
 
-  '@types/node@20.19.43':
-    resolution: {integrity: sha512-6oYBAi5ikg4Pl+kGsoYtawUMBT2zZMCvPNF7pVLnHZfd1zf38DRiWn/gT01RYCdUqkv7Fhr+C9ot4/tb+2sVvA==}
-
   '@types/node@22.19.3':
     resolution: {integrity: sha512-1N9SBnWYOJTrNZCdh/yJE+t910Y128BoyY+zBLWhL3r0TYzlTmFdXrPwHL9DyFZmlEXNQQolTZh3KHV31QDhyA==}
 
@@ -13930,12 +13927,12 @@ packages:
   handle-thing@2.0.1:
     resolution: {integrity: sha512-9Qn4yBxelxoh2Ow62nP+Ka/kMnOXRi8BXnRaUwezLNhqelnN49xKz4F/dPP8OYLxLxq6JDtZb2i9XznUQbNPTg==}
 
-  happy-dom@20.0.11:
-    resolution: {integrity: sha512-QsCdAUHAmiDeKeaNojb1OHOPF7NjcWPBR7obdu3NwH2a/oyQaLg5d0aaCy/9My6CdPChYF07dvz5chaXBGaD4g==}
-    engines: {node: '>=20.0.0'}
-
   happy-dom@20.14.5:
     resolution: {integrity: sha512-x/RzkpWO40bTjIoT30iQtt64FLLmH/iRcUCN2X//bLx7H3ifkdfPXyqsro/OYtqzIAhiLMMA7mmiOR9C3NOKjQ==}
+    engines: {node: '>=20.0.0'}
+
+  happy-dom@20.3.5:
+    resolution: {integrity: sha512-QQ5Zh3uG0XH5+6Nw4lNu812Jui6X7jHFudFo9Vytm/8ivxRmJz1aw4r/PDS6oUmjCjzk+dla0VhYRXp0YV1woQ==}
     engines: {node: '>=20.0.0'}
 
   harden-react-markdown@1.1.7:
@@ -29913,10 +29910,6 @@ snapshots:
     dependencies:
       undici-types: 5.26.5
 
-  '@types/node@20.19.43':
-    dependencies:
-      undici-types: 6.21.0
-
   '@types/node@22.19.3':
     dependencies:
       undici-types: 6.21.0
@@ -30537,7 +30530,7 @@ snapshots:
       '@vitest/mocker': 4.1.10(msw@2.12.7(@types/node@24.10.4)(typescript@6.0.3))(vite@8.3.0(@types/node@24.10.4)(esbuild@0.28.2)(jiti@2.7.0)(terser@5.49.0)(tsx@4.21.0)(yaml@2.8.2))
       playwright: 1.63.0
       tinyrainbow: 3.1.0
-      vitest: 4.1.10(@edge-runtime/vm@5.0.0)(@opentelemetry/api@1.9.0)(@types/node@24.10.4)(@vitest/browser-playwright@4.1.10)(happy-dom@20.0.11)(jsdom@29.0.1(@noble/hashes@1.8.0))(msw@2.12.7(@types/node@24.10.4)(typescript@6.0.3))(vite@8.3.0(@types/node@24.10.4)(esbuild@0.28.2)(jiti@2.7.0)(terser@5.49.0)(tsx@4.21.0)(yaml@2.8.2))
+      vitest: 4.1.10(@edge-runtime/vm@5.0.0)(@opentelemetry/api@1.9.0)(@types/node@24.10.4)(@vitest/browser-playwright@4.1.10)(happy-dom@20.3.5)(jsdom@29.0.1(@noble/hashes@1.8.0))(msw@2.12.7(@types/node@24.10.4)(typescript@6.0.3))(vite@8.3.0(@types/node@24.10.4)(esbuild@0.28.2)(jiti@2.7.0)(terser@5.49.0)(tsx@4.21.0)(yaml@2.8.2))
     transitivePeerDependencies:
       - bufferutil
       - msw
@@ -30634,7 +30627,7 @@ snapshots:
       pngjs: 7.0.0
       sirv: 3.0.2
       tinyrainbow: 3.1.0
-      vitest: 4.1.10(@edge-runtime/vm@5.0.0)(@opentelemetry/api@1.9.0)(@types/node@24.10.4)(@vitest/browser-playwright@4.1.10)(happy-dom@20.0.11)(jsdom@29.0.1(@noble/hashes@1.8.0))(msw@2.12.7(@types/node@24.10.4)(typescript@6.0.3))(vite@8.3.0(@types/node@24.10.4)(esbuild@0.28.2)(jiti@2.7.0)(terser@5.49.0)(tsx@4.21.0)(yaml@2.8.2))
+      vitest: 4.1.10(@edge-runtime/vm@5.0.0)(@opentelemetry/api@1.9.0)(@types/node@24.10.4)(@vitest/browser-playwright@4.1.10)(happy-dom@20.3.5)(jsdom@29.0.1(@noble/hashes@1.8.0))(msw@2.12.7(@types/node@24.10.4)(typescript@6.0.3))(vite@8.3.0(@types/node@24.10.4)(esbuild@0.28.2)(jiti@2.7.0)(terser@5.49.0)(tsx@4.21.0)(yaml@2.8.2))
       ws: 8.21.1
     transitivePeerDependencies:
       - bufferutil
@@ -34652,12 +34645,6 @@ snapshots:
 
   handle-thing@2.0.1: {}
 
-  happy-dom@20.0.11:
-    dependencies:
-      '@types/node': 20.19.43
-      '@types/whatwg-mimetype': 3.0.2
-      whatwg-mimetype: 3.0.0
-
   happy-dom@20.14.5:
     dependencies:
       '@types/node': 24.13.2
@@ -34665,6 +34652,18 @@ snapshots:
       '@types/ws': 8.18.1
       buffer-image-size: 0.6.4
       entities: 7.0.1
+      whatwg-mimetype: 3.0.0
+      ws: 8.21.1
+    transitivePeerDependencies:
+      - bufferutil
+      - utf-8-validate
+
+  happy-dom@20.3.5:
+    dependencies:
+      '@types/node': 24.13.2
+      '@types/whatwg-mimetype': 3.0.2
+      '@types/ws': 8.18.1
+      entities: 4.5.0
       whatwg-mimetype: 3.0.0
       ws: 8.21.1
     transitivePeerDependencies:
@@ -42283,7 +42282,7 @@ snapshots:
     transitivePeerDependencies:
       - msw
 
-  vitest@4.1.10(@edge-runtime/vm@5.0.0)(@opentelemetry/api@1.9.0)(@types/node@24.10.4)(@vitest/browser-playwright@4.1.10)(happy-dom@20.0.11)(jsdom@29.0.1(@noble/hashes@1.8.0))(msw@2.12.7(@types/node@24.10.4)(typescript@6.0.3))(vite@8.3.0(@types/node@24.10.4)(esbuild@0.28.2)(jiti@2.7.0)(terser@5.49.0)(tsx@4.21.0)(yaml@2.8.2)):
+  vitest@4.1.10(@edge-runtime/vm@5.0.0)(@opentelemetry/api@1.9.0)(@types/node@24.10.4)(@vitest/browser-playwright@4.1.10)(happy-dom@20.3.5)(jsdom@29.0.1(@noble/hashes@1.8.0))(msw@2.12.7(@types/node@24.10.4)(typescript@6.0.3))(vite@8.3.0(@types/node@24.10.4)(esbuild@0.28.2)(jiti@2.7.0)(terser@5.49.0)(tsx@4.21.0)(yaml@2.8.2)):
     dependencies:
       '@vitest/expect': 4.1.10
       '@vitest/mocker': 4.1.10(msw@2.12.7(@types/node@24.10.4)(typescript@6.0.3))(vite@8.3.0(@types/node@24.10.4)(esbuild@0.28.2)(jiti@2.7.0)(terser@5.49.0)(tsx@4.21.0)(yaml@2.8.2))
@@ -42310,7 +42309,7 @@ snapshots:
       '@opentelemetry/api': 1.9.0
       '@types/node': 24.10.4
       '@vitest/browser-playwright': 4.1.10(msw@2.12.7(@types/node@24.10.4)(typescript@6.0.3))(playwright@1.63.0)(vite@8.3.0(@types/node@24.10.4)(esbuild@0.28.2)(jiti@2.7.0)(terser@5.49.0)(tsx@4.21.0)(yaml@2.8.2))(vitest@4.1.10)
-      happy-dom: 20.0.11
+      happy-dom: 20.3.5
       jsdom: 29.0.1(@noble/hashes@1.8.0)
     transitivePeerDependencies:
       - msw

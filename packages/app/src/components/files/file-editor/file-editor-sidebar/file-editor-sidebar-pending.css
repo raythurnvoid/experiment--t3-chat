@@ -188,6 +188,13 @@
 		display: none;
 	}
 
+	/* A preparing draft cannot open yet, so it has no chevron. Reserve the chevron slot (36px button
+	   + 4px gap) so its label lines up with the other rows. */
+	.FileEditorSidebarPending-item-summary-preparing {
+		padding-left: 56px;
+		cursor: default;
+	}
+
 	/* MyLink renders the className on its inner surface span, so the flex child of the summary is the
 	   <a> wrapper. Grow/clip it here so the path truncates and the actions stay pinned to the right.
 	   The negative margins absorb the summary's vertical padding and the gaps on both sides, so the
