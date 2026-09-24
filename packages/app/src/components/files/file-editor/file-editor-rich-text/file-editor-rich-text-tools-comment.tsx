@@ -289,6 +289,7 @@ const FileEditorRichTextToolsCommentInner = memo(function FileEditorRichTextTool
 					className={cn(
 						"FileEditorRichTextToolsComment-popover-content" satisfies FileEditorRichTextToolsComment_ClassNames,
 					)}
+					aria-label="Comment"
 					gutter={10}
 				>
 					<FileEditorRichTextToolsCommentForm

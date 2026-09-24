@@ -73,7 +73,11 @@ const AiChatJobs = memo(function AiChatJobs(props: AiChatJobs_Props) {
 					) : null}
 				</MyIconButton>
 			</MyPopoverTrigger>
-			<MyPopoverContent unmountOnHide className={"AiChatJobs-popover" satisfies AiChatJobs_ClassNames}>
+			<MyPopoverContent
+				unmountOnHide
+				className={"AiChatJobs-popover" satisfies AiChatJobs_ClassNames}
+				aria-label="Background jobs"
+			>
 				<h2 className={"AiChatJobs-title" satisfies AiChatJobs_ClassNames}>Background jobs</h2>
 				{hasLiveJobs ? (
 					<ul className={"AiChatJobs-list" satisfies AiChatJobs_ClassNames}>

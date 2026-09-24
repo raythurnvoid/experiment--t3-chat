@@ -227,6 +227,7 @@ const FileEditorRichTextToolsLinkSetterInner = memo(function FileEditorRichTextT
 					className={cn(
 						"FileEditorRichTextToolsLinkSetter-popover-content" satisfies FileEditorRichTextToolsLinkSetter_ClassNames,
 					)}
+					aria-label="Link"
 					gutter={10}
 				>
 					<FileEditorRichTextToolsLinkSetterForm inputRef={inputRef} activeHref={activeHref} onSubmit={handleSubmit} />

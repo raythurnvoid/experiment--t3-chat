@@ -43,6 +43,7 @@ describe("AiChatJobs", () => {
 		fireEvent.click(button);
 
 		expect(await screen.findByRole("heading", { name: "Background jobs" })).not.toBeNull();
+		expect(screen.getByRole("dialog", { name: "Background jobs" })).not.toBeNull();
 		expect(screen.getByText("#1 · default")).not.toBeNull();
 		expect(screen.getByText("sleep 30")).not.toBeNull();
 		expect(screen.getByText("1m 5s")).not.toBeNull();

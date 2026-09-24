@@ -616,7 +616,11 @@ export const AppNotifications = memo(function AppNotifications() {
 					) : null}
 				</MyIconButton>
 			</MyPopoverTrigger>
-			<MyPopoverContent unmountOnHide className={"AppNotifications-popover" satisfies AppNotifications_ClassNames}>
+			<MyPopoverContent
+				unmountOnHide
+				className={"AppNotifications-popover" satisfies AppNotifications_ClassNames}
+				aria-label="Notifications"
+			>
 				<header className={"AppNotifications-header" satisfies AppNotifications_ClassNames}>
 					<h2 className={"AppNotifications-title" satisfies AppNotifications_ClassNames}>Notifications</h2>
 					<MyButton
