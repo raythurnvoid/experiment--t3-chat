@@ -663,7 +663,7 @@ describe("review jobs", () => {
 		await f.asUser.mutation(api.activities.request_stop, { membershipId: f.db.membershipId, activityId });
 		const task = await f.t.run((ctx) => ctx.db.query("files_pending_node_cleanup_tasks").first());
 		if (!task) throw new Error("Expected durable cleanup");
-		await f.t.mutation(internal.files_pending_nodes.cleanup_discarded_node, { cleanupTaskId: task._id });
+		await f.t.mutation(internal.files_pending_nodes.cleanup_discarded_node, { privateNodeId: task.privateNodeId });
 		if (child.target.kind !== "private") throw new Error("Expected a private child");
 		const childId = child.target.id;
 		expect(await f.t.run((ctx) => ctx.db.get("files_pending_nodes", childId))).toMatchObject({ state: "discarded" });

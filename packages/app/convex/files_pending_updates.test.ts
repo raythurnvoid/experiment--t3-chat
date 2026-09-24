@@ -3377,7 +3377,7 @@ describe("prepared Save media proof", () => {
 		if (operation !== "save") {
 			const cleanup = await f.t.run((ctx) => ctx.db.query("files_pending_node_cleanup_tasks").first());
 			if (!cleanup) throw new Error("Expected the private cleanup task");
-			await f.t.mutation(internal.files_pending_nodes.cleanup_discarded_node, { cleanupTaskId: cleanup._id });
+			await f.t.mutation(internal.files_pending_nodes.cleanup_discarded_node, { privateNodeId: cleanup.privateNodeId });
 		}
 		expect(await f.t.run((ctx) => ctx.db.get("files_pending_updates", f.proposal._id))).toBeNull();
 		expect(await f.t.run((ctx) => ctx.db.get("files_media_dependency_sets", setId))).toMatchObject({

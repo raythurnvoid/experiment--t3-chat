@@ -1591,6 +1591,14 @@ never appears, and each draft row's `requiredParents` carry the folders' `thread
 names as strings: importing `/convex/_generated/api.js` in the page can take longer than the 5 s step
 timeout.
 
+To check private Discard cleanup, make `/qa-cleanup-wake/child` this way. Then use the Pending
+rows, not the folder view: the parent's `Discard` returns `need review` because the child is not
+selected, and a row's Discard removes only that row, not the folders it `also adds`. Discard
+`/qa-cleanup-wake/child`, then `/qa-cleanup-wake`. Each Discard must leave one
+`cleanup_discarded_node` job with `{ privateNodeId }` in `_scheduled_functions` (read the newest 60
+rows; a bigger `--limit` times out). The job must succeed, and the `files_pending_node_cleanup_tasks`
+row and the node must be gone within seconds. Verified 2026-09-24.
+
 To check that hidden folders use no page slot, make one deep chain and five siblings
 (`/qa-x/a/b/c/d/e/f` and `/qa-x/x1` to `/qa-x/x5`), then page the list with `numItems: 5`. Every
 page that is not the last holds 5 rows (verified 2026-09-24: pages `5, 1`). With the filter moved

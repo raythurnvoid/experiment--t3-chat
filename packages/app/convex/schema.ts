@@ -1360,13 +1360,17 @@ const app_convex_schema = defineSchema({
 		.index("by_user", ["userId"])
 		.index("by_organization_workspace", ["organizationId", "workspaceId"]),
 
-	/** Physical cleanup continues after a private Discard has closed the target. */
+	/**
+	 * Physical cleanup continues after a private Discard has closed the target. Each task owns exactly
+	 * one scheduled job. The job runs at `nextAttemptAt`.
+	 */
 	files_pending_node_cleanup_tasks: defineTable({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
 		userId: v.id("users"),
 		privateNodeId: v.id("files_pending_nodes"),
 		nextAttemptAt: v.number(),
+		scheduledFunctionId: v.id("_scheduled_functions"),
 	})
 		.index("by_privateNode", ["privateNodeId"])
 		.index("by_nextAttemptAt", ["nextAttemptAt"])

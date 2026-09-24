@@ -44,6 +44,7 @@ import {
 	files_pending_nodes_db_get_ancestry,
 	files_pending_nodes_db_resolve_read_target,
 	files_pending_nodes_db_resolve_saved_parent,
+	files_pending_nodes_db_start_cleanup,
 } from "./files_pending_nodes.ts";
 import {
 	files_pending_updates_action_prepare_content,
@@ -3236,14 +3237,7 @@ export const commit_unit = internalMutation({
 				)
 					refuse_unit("needs_review", "A reviewed draft changed. Review it again.");
 				await files_pending_nodes_db_fence_discard(ctx, node);
-				const cleanupTaskId = await ctx.db.insert("files_pending_node_cleanup_tasks", {
-					organizationId: run.organizationId,
-					workspaceId: run.workspaceId,
-					userId: run.userId,
-					privateNodeId: node._id,
-					nextAttemptAt: Date.now(),
-				});
-				await ctx.scheduler.runAfter(0, internal.files_pending_nodes.cleanup_discarded_node, { cleanupTaskId });
+				await files_pending_nodes_db_start_cleanup(ctx, node);
 			}
 
 			for (const { proposal } of selected) {

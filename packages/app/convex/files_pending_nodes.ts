@@ -11,6 +11,7 @@ import {
 	files_private_storage_db_reserve,
 } from "./files_private_storage.ts";
 import {
+	files_db_cancel_scheduled_function_if_present,
 	files_db_expire_pending_update_operation_batch,
 	files_db_insert_pending_update,
 	files_db_advance_pending_review_version,
@@ -445,7 +446,6 @@ export async function files_pending_nodes_db_discard(
 	const reviewed = new Map(args.reviewedProposals?.map((proposal) => [proposal.pendingUpdateId, proposal.revision]));
 	reviewed.set(rootProposal._id, args.expectedRevision);
 	const nodes = [root];
-	const now = Date.now();
 
 	for (const node of nodes) {
 		const proposal = await ctx.db
@@ -511,27 +511,93 @@ export async function files_pending_nodes_db_discard(
 
 	for (const node of nodes) {
 		await files_pending_nodes_db_fence_discard(ctx, node, args.reason ?? "discard");
-		const cleanupTaskId = await ctx.db.insert("files_pending_node_cleanup_tasks", {
-			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
-			userId: args.userId,
-			privateNodeId: node._id,
-			nextAttemptAt: now,
-		});
-		await ctx.scheduler.runAfter(0, internal.files_pending_nodes.cleanup_discarded_node, { cleanupTaskId });
+		await files_pending_nodes_db_start_cleanup(ctx, node);
 	}
 	return Result({ _yay: null });
+}
+
+/**
+ * How many hidden active children one cleanup run closes before it continues in a new job.
+ */
+const CLEANUP_ACTIVE_CHILD_BATCH_SIZE = 16;
+
+/**
+ * Try again after this delay when the node still has a batch, a state, or a preparing transfer item.
+ */
+const CLEANUP_RETRY_MS = 60_000;
+
+/**
+ * A node waiting only for its children runs again after this delay. The last child to finish wakes
+ * it much sooner, so this late run is only a safety net.
+ */
+const CLEANUP_CHILD_WAIT_MS = 15 * 60 * 1000;
+
+/**
+ * A task still in the past after this long means its job failed. The recovery cron starts it again.
+ */
+const CLEANUP_RECOVERY_MS = 15 * 60 * 1000;
+
+/**
+ * How many late tasks one recovery run starts again before it continues in a new transaction.
+ */
+const CLEANUP_RECOVERY_BATCH_SIZE = 32;
+
+/**
+ * Create the cleanup task of a node that was just fenced, with its one job.
+ */
+export async function files_pending_nodes_db_start_cleanup(ctx: MutationCtx, node: Doc<"files_pending_nodes">) {
+	const now = Date.now();
+	const scheduledFunctionId = await ctx.scheduler.runAt(now, internal.files_pending_nodes.cleanup_discarded_node, {
+		privateNodeId: node._id,
+	});
+	await ctx.db.insert("files_pending_node_cleanup_tasks", {
+		organizationId: node.organizationId,
+		workspaceId: node.workspaceId,
+		userId: node.userId,
+		privateNodeId: node._id,
+		nextAttemptAt: now,
+		scheduledFunctionId,
+	});
+}
+
+/**
+ * Point the task at a new job that runs at `runAt`. This does not cancel the old job. A caller that
+ * moves a task away from a job that may still run must cancel that job itself. A running job must
+ * not cancel itself: Convex would then also cancel the job it schedules next.
+ */
+async function db_schedule_cleanup(ctx: MutationCtx, task: Doc<"files_pending_node_cleanup_tasks">, runAt: number) {
+	const scheduledFunctionId = await ctx.scheduler.runAt(runAt, internal.files_pending_nodes.cleanup_discarded_node, {
+		privateNodeId: task.privateNodeId,
+	});
+	await ctx.db.patch("files_pending_node_cleanup_tasks", task._id, { nextAttemptAt: runAt, scheduledFunctionId });
+}
+
+/**
+ * Move a task's job to `runAt` from outside that job, and cancel the job it had before.
+ */
+async function db_reschedule_cleanup(
+	ctx: MutationCtx,
+	task: Doc<"files_pending_node_cleanup_tasks">,
+	runAt: number,
+) {
+	await files_db_cancel_scheduled_function_if_present(ctx, task.scheduledFunctionId);
+	await db_schedule_cleanup(ctx, task, runAt);
 }
 
 /**
  * Remove one proposal, then wait for its owned payloads and children to finish cleanup.
  */
 export const cleanup_discarded_node = internalMutation({
-	args: { cleanupTaskId: v.id("files_pending_node_cleanup_tasks") },
+	args: { privateNodeId: v.id("files_pending_nodes") },
 	returns: v.null(),
 	handler: async (ctx, args) => {
-		const task = await ctx.db.get("files_pending_node_cleanup_tasks", args.cleanupTaskId);
-		if (!task) return null;
+		const now = Date.now();
+		const task = await ctx.db
+			.query("files_pending_node_cleanup_tasks")
+			.withIndex("by_privateNode", (q) => q.eq("privateNodeId", args.privateNodeId))
+			.unique();
+		// A purge deleted the task, or a newer job now owns it.
+		if (!task || task.nextAttemptAt > now) return null;
 
 		const node = await ctx.db.get("files_pending_nodes", task.privateNodeId);
 		if (!node) {
@@ -554,18 +620,11 @@ export const cleanup_discarded_node = internalMutation({
 					.eq("parent.id", node._id)
 					.eq("state", "active"),
 			)
-			.take(16);
+			.take(CLEANUP_ACTIVE_CHILD_BATCH_SIZE);
 
 		for (const child of activeChildren) {
 			await files_pending_nodes_db_fence_discard(ctx, child, "discard", { ancestorAlreadyFenced: true });
-			const cleanupTaskId = await ctx.db.insert("files_pending_node_cleanup_tasks", {
-				organizationId: child.organizationId,
-				workspaceId: child.workspaceId,
-				userId: child.userId,
-				privateNodeId: child._id,
-				nextAttemptAt: Date.now(),
-			});
-			await ctx.scheduler.runAfter(0, internal.files_pending_nodes.cleanup_discarded_node, { cleanupTaskId });
+			await files_pending_nodes_db_start_cleanup(ctx, child);
 		}
 
 		await ctx.runMutation(internal.files_pending_updates.remove_fenced_private_pending_update, {
@@ -616,32 +675,69 @@ export const cleanup_discarded_node = internalMutation({
 			)
 			.first();
 
-		if (activeChildren.length > 0 || batches.length > 0 || state || child || transferItem?.workId) {
-			await ctx.db.patch("files_pending_node_cleanup_tasks", task._id, { nextAttemptAt: Date.now() + 60_000 });
-			await ctx.scheduler.runAfter(60_000, internal.files_pending_nodes.cleanup_discarded_node, args);
+		// More hidden children may be left, so close the next group at once.
+		if (activeChildren.length === CLEANUP_ACTIVE_CHILD_BATCH_SIZE) {
+			await db_schedule_cleanup(ctx, task, now);
+			return null;
+		}
+		// Nothing wakes this task when a batch, a state, or a transfer item goes away, so poll.
+		if (batches.length > 0 || state || transferItem?.workId) {
+			await db_schedule_cleanup(ctx, task, now + CLEANUP_RETRY_MS);
+			return null;
+		}
+		// The last child to finish wakes this task below, so only a safety-net run is needed.
+		if (child) {
+			await db_schedule_cleanup(ctx, task, now + CLEANUP_CHILD_WAIT_MS);
 			return null;
 		}
 
 		await ctx.db.delete("files_pending_nodes", node._id);
 		await files_private_storage_db_release_deleted_resource(ctx, { kind: "node", id: node._id });
 		await ctx.db.delete("files_pending_node_cleanup_tasks", task._id);
+
+		// Wake the parent when its last discarded child is gone. Otherwise a deep folder chain would
+		// wait one safety-net delay per level.
+		if (node.parent.kind === "private") {
+			const parentId = node.parent.id;
+			const sibling = await ctx.db
+				.query("files_pending_nodes")
+				.withIndex("by_organization_workspace_user_parent_state_name", (q) =>
+					q
+						.eq("organizationId", node.organizationId)
+						.eq("workspaceId", node.workspaceId)
+						.eq("userId", node.userId)
+						.eq("parent.kind", "private")
+						.eq("parent.id", parentId)
+						.eq("state", "discarded"),
+				)
+				.first();
+			const parentTask = sibling
+				? null
+				: await ctx.db
+						.query("files_pending_node_cleanup_tasks")
+						.withIndex("by_privateNode", (q) => q.eq("privateNodeId", parentId))
+						.unique();
+			if (parentTask && parentTask.nextAttemptAt > now) await db_reschedule_cleanup(ctx, parentTask, now);
+		}
 		return null;
 	},
 });
 
+/**
+ * 15-minute cron. A task that is still in the past long after its time means its job failed or never
+ * ran. Cancel that job and start a new one now.
+ */
 export const recover_discarded_node_cleanup = internalMutation({
 	args: {},
 	returns: v.null(),
 	handler: async (ctx) => {
+		const now = Date.now();
 		const tasks = await ctx.db
 			.query("files_pending_node_cleanup_tasks")
-			.withIndex("by_nextAttemptAt", (q) => q.lte("nextAttemptAt", Date.now()))
-			.take(32);
-		for (const task of tasks) {
-			await ctx.db.patch("files_pending_node_cleanup_tasks", task._id, { nextAttemptAt: Date.now() + 60_000 });
-			await ctx.scheduler.runAfter(0, internal.files_pending_nodes.cleanup_discarded_node, { cleanupTaskId: task._id });
-		}
-		if (tasks.length === 32)
+			.withIndex("by_nextAttemptAt", (q) => q.lt("nextAttemptAt", now - CLEANUP_RECOVERY_MS))
+			.take(CLEANUP_RECOVERY_BATCH_SIZE);
+		for (const task of tasks) await db_reschedule_cleanup(ctx, task, now);
+		if (tasks.length === CLEANUP_RECOVERY_BATCH_SIZE)
 			await ctx.scheduler.runAfter(0, internal.files_pending_nodes.recover_discarded_node_cleanup, {});
 		return null;
 	},

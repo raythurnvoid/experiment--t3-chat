@@ -542,7 +542,7 @@ describe("cleanup_published_nodes", () => {
 		).toBeUndefined();
 		const task = await t.run((ctx) => ctx.db.query("files_pending_node_cleanup_tasks").first());
 		if (!task) throw new Error("Expected child cleanup");
-		await t.mutation(internal.files_pending_nodes.cleanup_discarded_node, { cleanupTaskId: task._id });
+		await t.mutation(internal.files_pending_nodes.cleanup_discarded_node, { privateNodeId: task.privateNodeId });
 		await t.mutation(internal.files_pending_nodes.cleanup_published_nodes, {});
 		expect(await t.run((ctx) => ctx.db.get("files_pending_nodes", parentId))).toBeNull();
 		expect(await t.run((ctx) => ctx.db.query("files_pending_node_publish_receipts").collect())).toEqual([]);
@@ -923,7 +923,7 @@ describe("files_pending_nodes_db_discard", () => {
 		const cleanupTasks = await t.run((ctx) => ctx.db.query("files_pending_node_cleanup_tasks").collect());
 		expect(cleanupTasks).toHaveLength(256);
 		for (const task of cleanupTasks)
-			await t.mutation(internal.files_pending_nodes.cleanup_discarded_node, { cleanupTaskId: task._id });
+			await t.mutation(internal.files_pending_nodes.cleanup_discarded_node, { privateNodeId: task.privateNodeId });
 		vi.setSystemTime(Date.now() + 60_000);
 		await expire_drafts(t, scope);
 		expect(await t.run((ctx) => ctx.db.query("files_pending_nodes").collect())).toHaveLength(2);
@@ -943,7 +943,7 @@ describe("files_pending_nodes_db_discard", () => {
 		const finalTasks = await t.run((ctx) => ctx.db.query("files_pending_node_cleanup_tasks").collect());
 		for (const privateNodeId of [newerId, parent._id]) {
 			const task = finalTasks.find((item) => item.privateNodeId === privateNodeId)!;
-			await t.mutation(internal.files_pending_nodes.cleanup_discarded_node, { cleanupTaskId: task._id });
+			await t.mutation(internal.files_pending_nodes.cleanup_discarded_node, { privateNodeId: task.privateNodeId });
 		}
 		expect(await t.run((ctx) => ctx.db.query("files_pending_nodes").collect())).toEqual([]);
 		expect(await t.run((ctx) => ctx.db.query("files_pending_updates").collect())).toEqual([]);
@@ -1042,13 +1042,13 @@ describe("files_pending_nodes_db_discard", () => {
 		const tasks = await t.run(async (ctx) => ctx.db.query("files_pending_node_cleanup_tasks").collect());
 		const parentTask = tasks.find((task) => task.privateNodeId === parent.node._id)!;
 		const childTask = tasks.find((task) => task.privateNodeId === child.node._id)!;
-		await t.mutation(internal.files_pending_nodes.cleanup_discarded_node, { cleanupTaskId: parentTask._id });
+		await t.mutation(internal.files_pending_nodes.cleanup_discarded_node, { privateNodeId: parentTask.privateNodeId });
 		expect(await t.run(async (ctx) => ctx.db.get("files_pending_nodes", parent.node._id))).toMatchObject({
 			state: "discarded",
 		});
-		await t.mutation(internal.files_pending_nodes.cleanup_discarded_node, { cleanupTaskId: childTask._id });
-		await t.mutation(internal.files_pending_nodes.cleanup_discarded_node, { cleanupTaskId: parentTask._id });
-		await t.mutation(internal.files_pending_nodes.cleanup_discarded_node, { cleanupTaskId: parentTask._id });
+		await t.mutation(internal.files_pending_nodes.cleanup_discarded_node, { privateNodeId: childTask.privateNodeId });
+		await t.mutation(internal.files_pending_nodes.cleanup_discarded_node, { privateNodeId: parentTask.privateNodeId });
+		await t.mutation(internal.files_pending_nodes.cleanup_discarded_node, { privateNodeId: parentTask.privateNodeId });
 		expect(await t.run(async (ctx) => ctx.db.query("files_pending_nodes").collect())).toEqual([]);
 		expect(await t.run(async (ctx) => ctx.db.query("files_pending_updates").collect())).toEqual([]);
 		expect(await t.run(async (ctx) => ctx.db.query("files_pending_node_cleanup_tasks").collect())).toEqual([]);
@@ -1227,5 +1227,91 @@ describe("files_pending_nodes_db_discard", () => {
 		expect(await t.run(async (ctx) => ctx.db.query("files_pending_node_publish_receipts").collect())).toMatchObject([
 			{ privateNodeId: parent.node._id, savedNodeId: saved._yay.nodeId },
 		]);
+	});
+});
+
+describe("cleanup_discarded_node", () => {
+	async function read_cleanup_task(t: ReturnType<typeof test_convex>, privateNodeId: Id<"files_pending_nodes">) {
+		return await t.run((ctx) =>
+			ctx.db
+				.query("files_pending_node_cleanup_tasks")
+				.withIndex("by_privateNode", (q) => q.eq("privateNodeId", privateNodeId))
+				.unique(),
+		);
+	}
+
+	test("the recovery cron keeps exactly one job for a late task", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const folder = await t.run(async (ctx) => create_folder(ctx, { ...db, name: "late" }));
+		const discarded = await t.run(async (ctx) =>
+			files_pending_nodes_db_discard(ctx, {
+				...db,
+				privateNodeId: folder.node._id,
+				pendingUpdateId: folder.pendingUpdate._id,
+				expectedRevision: 1,
+			}),
+		);
+		expect(discarded).toEqual({ _yay: null });
+
+		// The job never runs here, like a job stuck behind a busy scheduler. So every recovery pass
+		// finds the task late again.
+		for (let pass = 0; pass < 3; pass++) {
+			vi.setSystemTime(Date.now() + 16 * 60 * 1000);
+			await t.mutation(internal.files_pending_nodes.recover_discarded_node_cleanup, {});
+		}
+
+		const task = await read_cleanup_task(t, folder.node._id);
+		const pendingJobs = await t.run(async (ctx) =>
+			(await ctx.db.system.query("_scheduled_functions").collect()).filter((job) => {
+				const jobArgs: unknown = job.args[0];
+				return (
+					job.state.kind === "pending" &&
+					job.name.includes("cleanup_discarded_node") &&
+					typeof jobArgs === "object" &&
+					jobArgs !== null &&
+					"privateNodeId" in jobArgs &&
+					jobArgs.privateNodeId === folder.node._id
+				);
+			}),
+		);
+		expect(pendingJobs.map((job) => job._id)).toEqual([task?.scheduledFunctionId]);
+	});
+
+	test("the last child to finish wakes its waiting parent", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const parent = await t.run(async (ctx) => create_folder(ctx, { ...db, name: "parent" }));
+		const child = await t.run(async (ctx) =>
+			create_folder(ctx, { ...db, name: "child", parent: { kind: "private", id: parent.node._id } }),
+		);
+		await t.run(async (ctx) =>
+			files_pending_nodes_db_discard(ctx, {
+				...db,
+				privateNodeId: parent.node._id,
+				pendingUpdateId: parent.pendingUpdate._id,
+				expectedRevision: 1,
+				reviewedProposals: [{ pendingUpdateId: child.pendingUpdate._id, revision: 1 }],
+			}),
+		);
+
+		// The parent waits for its child with only a late safety-net run.
+		await t.mutation(internal.files_pending_nodes.cleanup_discarded_node, { privateNodeId: parent.node._id });
+		const waiting = await read_cleanup_task(t, parent.node._id);
+		if (!waiting) throw new Error("Expected the waiting parent task");
+		expect(waiting.nextAttemptAt).toBe(Date.now() + 15 * 60 * 1000);
+
+		await t.mutation(internal.files_pending_nodes.cleanup_discarded_node, { privateNodeId: child.node._id });
+		const woken = await read_cleanup_task(t, parent.node._id);
+		if (!woken) throw new Error("Expected the woken parent task");
+		expect(woken.nextAttemptAt).toBe(Date.now());
+		const [oldJob, newJob] = await t.run(async (ctx) =>
+			Promise.all([
+				ctx.db.system.get("_scheduled_functions", waiting.scheduledFunctionId),
+				ctx.db.system.get("_scheduled_functions", woken.scheduledFunctionId),
+			]),
+		);
+		expect(oldJob?.state.kind).toBe("canceled");
+		expect(newJob?.state.kind).toBe("pending");
 	});
 });
