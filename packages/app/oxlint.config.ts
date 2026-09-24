@@ -27,12 +27,11 @@ type OxlintConfigFile = {
 const base = JSON.parse(readFileSync(new URL("./oxlint.rules.json", import.meta.url), "utf8")) as OxlintConfigFile;
 
 // These React Compiler rules are not in Oxlint yet. The native `react/*` rules cover the rest.
+// Plugin 7.1 removed automatic-effect-dependencies and fire.
+// component-hook-factories is still exported, but it checks nothing.
 const reactHooksJsRules = {
-	"react-hooks-js/automatic-effect-dependencies": "error",
-	"react-hooks-js/component-hook-factories": "error",
 	"react-hooks-js/config": "error",
 	"react-hooks-js/fbt": "error",
-	"react-hooks-js/fire": "error",
 	"react-hooks-js/gating": "error",
 	"react-hooks-js/memoized-effect-dependencies": "error",
 } as const;
