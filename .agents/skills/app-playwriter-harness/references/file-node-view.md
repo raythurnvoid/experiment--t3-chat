@@ -177,6 +177,7 @@ await page.evaluate(() => {
 - Save staged changes: `getByRole("button", { name: "Save staged changes" })`.
 - Accept all: `getByRole("button", { name: "Accept all pending changes in this file" })`.
 - Accept all and save: `getByRole("button", { name: "Accept all pending changes and save" })`.
+- Hunk buttons: `button[aria-label="Accept change"]` / `button[aria-label="Discard change"]`. They are Monaco content widgets. Monaco hides them (`display: none`) while their line is outside the editor view, for example after a viewport resize, and `hover()` or `scrollIntoViewIfNeeded()` then waits for the whole timeout. Reveal the line first: `window.__qa.monaco().diffModified.revealLineInCenter(line)` (seen 2026-09-24).
 - Synthetic input cannot drive Monaco at all since `monaco-editor` 0.56.0 — clicks do not focus it, and `keyboard.type` / `keyboard.insertText` / paste never reach the model. For local pane edits, use the keyed editor handle route (`window.__qa.monaco().diffModified` + `trigger`/`executeEdits`, see the Monaco section in `known-hazards.md`). To create the draft as server state instead, write it through the client helper the editor's own flows use — it runs the whole staged-page pipeline (operation batch, text inputs, ids-only action), which replaced the old `upsert_file_pending_update({ unstagedMarkdown })` action shape on 2026-08-10. From page context as the user who owns the draft:
 
 ```js

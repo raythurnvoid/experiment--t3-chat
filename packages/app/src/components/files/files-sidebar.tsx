@@ -5847,12 +5847,13 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		const parentId = parentNodeId === files_ROOT_ID ? files_ROOT_ID : (parentNodeId as app_convex_Id<"files_nodes">);
 		if (parentId !== files_ROOT_ID) {
 			convex
-				.query(app_convex_api.files_nodes.get_node_write_policy_management_state, {
+				.query(app_convex_api.files_nodes.get_folder_new_child_write_policy_state, {
 					membershipId,
 					nodeId: parentId,
 				})
-				.then((management) => {
-					if (management?.localDefault != null) {
+				.then((newChildWritePolicyState) => {
+					// A protected default can make the new item read-only, so ask for the name before creating it.
+					if (newChildWritePolicyState === "read_only" || newChildWritePolicyState === "writer") {
 						setCreateModalParentId(parentId);
 						createNodeModalRef.current?.open(kind);
 						return;
@@ -5861,7 +5862,8 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 					createWritableSidebarNode(parentId, kind);
 				})
 				.catch((error: unknown) => {
-					console.error("[FilesSidebar.handleCreateNodeClick] Failed to read folder default", { error });
+					console.error("[FilesSidebar.handleCreateNodeClick] Failed to read folder default", { error, parentId });
+					toast.error(`Failed to create ${kind}. Try again.`);
 				});
 			return;
 		}

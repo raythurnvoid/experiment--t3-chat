@@ -28,6 +28,8 @@
 		"BROWSER_RUNNER_DISABLED": "true",
 		// Hosts the web browser may not open. Comma list. Production denies nothing (owner decision,
 		// 2026-09-23); the provider's egress proxy still refuses private and metadata addresses.
+		// TODO(cloud-browser-press-hosts): Press hosts are not blocked here yet. A saved Press login
+		// lets the agent act as the member in every organization. See the cloud-browser skill.
 		"BROWSER_WEB_DENIED_HOSTS": "",
 		// App origins that may send a file to `PUT /viewer/upload` (CORS). Comma list. Empty until the
 		// production app origin is known, so no browser can upload.

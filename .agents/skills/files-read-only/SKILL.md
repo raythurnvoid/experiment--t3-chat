@@ -125,6 +125,11 @@ for anchored Create and Resolve. The Yjs gate checks again if a race reaches the
 internal management helpers. HTTP and plugin adapters use the same helpers after their own live
 identity, token, capability, and resource checks.
 
+Known limit: folder management (`files_nodes_db_require_write_policy_management`) walks every
+descendant to find nested restricted folders. On a folder with thousands of children (for example
+`/people` in `sybill-demo/demo`, about 9,700 children) the management state query times out, so
+Properties stays on "Loading protection…", and a policy save on that folder times out too.
+
 The setter requires current actor and optional account `content.permissions.manage` on the actual
 target. Apply to contents checks management on every affected descendant, using the submitted policy,
 and never runs from Save. New selected users must be active workspace members; new selected accounts
@@ -319,7 +324,11 @@ confirms first, and never runs from Save.
 
 Status copy: a read-only file says `This file is read-only.`; a read-only folder says
 `Folder is read-only. Items keep their own protection.` Sidebar create of a protected default asks
-for the name first. Cancel creates nothing.
+for the name first. Cancel creates nothing. The sidebar learns the default from
+`files_nodes.get_folder_new_child_write_policy_state`, which reads only the folder's own
+`newChildWritePolicy` and returns `none`, `read_only`, or `writer` (no account names). Do not use the
+management state there: its `canManage` checks every descendant and times out on a folder with thousands
+of children. If the lookup fails, the sidebar shows a toast and creates nothing.
 
 Policy saves use the dedicated setter. Metadata Save remains a separate action. Keep keyboard focus,
 clear pending feedback, accessible labels, and usable layout at 200% zoom. Do not disable a focused

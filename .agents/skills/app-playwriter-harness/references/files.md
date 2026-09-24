@@ -486,6 +486,15 @@ downloadThroughput: -1, uploadThroughput: -1 }`. This affects only the owned QA 
   Properties/Archive). Do not go looking for it behind the row's `Add file to <folder>` button or
   the toolbar's `New file` button: neither opens a menu, both immediately create a `new-file.md`
   node in inline-rename mode, so probing them litters the tree with files you then have to archive.
+- To check a row's `Add file to <folder>` / `Add folder to <folder>` on a big folder (verified
+  2026-09-24 on `sybill-demo/demo` `/people`, about 9,700 children): hover
+  `getByRole("treeitem", { name: /^people/ })`, click the button, then poll the URL until `nodeId` is
+  a new id. Compare against the `nodeId` the tab had BEFORE the click, not only the folder id: a tab
+  left on the last created file matches at once and you read that old file again. The folder has no
+  protected default, so the click creates `new-file.md` / `new-folder` at once and opens it (about
+  3-5 s on dev). Archive it with `files_nodes.archive_nodes` through a fresh `ConvexHttpClient` (see
+  "`app_convex.query(...)` in page context" in `known-hazards.md`). A cold localhost load of `/people`
+  can take more than 30 s before `data-app-ready`; wait up to 60 s.
 - For a small stored-file check, choose `Upload file` in an isolated folder and give its file chooser
   a known `application/octet-stream` buffer named with a `.bin` extension. Copy it through the menu.
   Sign both downloads, compare every byte, and check the copied file has a different asset id.

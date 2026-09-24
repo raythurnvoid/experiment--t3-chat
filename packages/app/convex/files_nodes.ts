@@ -1630,6 +1630,43 @@ export const get_node_write_policy_management_state = query({
 	},
 });
 
+/**
+ * Return which kind of default a folder gives its new children, without account names.
+ * The sidebar reads it before a create. `get_node_write_policy_management_state` also checks
+ * management of every descendant, which times out on a folder with thousands of children.
+ */
+export const get_folder_new_child_write_policy_state = query({
+	args: { membershipId: v.id("organizations_workspaces_users"), nodeId: v.id("files_nodes") },
+	returns: v.union(v.null(), v.literal("none"), v.literal("read_only"), v.literal("writer")),
+	handler: async (ctx, args) => {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
+			throw convex_error({ message: "Unauthenticated" });
+		}
+
+		const membership = await organizations_db_get_membership(ctx, {
+			userId: userAuth.id,
+			membershipId: args.membershipId,
+		});
+		if (!membership) {
+			return null;
+		}
+
+		const authorized = await access_control_db_authorize_node(ctx, {
+			userAuth,
+			membership,
+			nodeId: args.nodeId,
+			permission: "content.read",
+		});
+		if (authorized._nay || authorized._yay.fileNode.kind !== "folder") {
+			return null;
+		}
+
+		const newChildWritePolicy = authorized._yay.fileNode.newChildWritePolicy ?? null;
+		return newChildWritePolicy === null ? "none" : newChildWritePolicy.mode;
+	},
+});
+
 export const set_node_write_policy = mutation({
 	args: {
 		membershipId: v.id("organizations_workspaces_users"),

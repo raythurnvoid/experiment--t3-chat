@@ -19882,6 +19882,63 @@ describe("files_nodes.get_node_write_policy_management_state", () => {
 	});
 });
 
+describe("files_nodes.get_folder_new_child_write_policy_state", () => {
+	test("returns the kind of the folder's own default for new children", async () => {
+		const t = test_convex();
+		const { db, asUser, outerId, innerId } = await seed_read_only_lock_tree(t);
+		const read_state = async (nodeId: Id<"files_nodes">) =>
+			await asUser.query(api.files_nodes.get_folder_new_child_write_policy_state, {
+				membershipId: db.membershipId,
+				nodeId,
+			});
+
+		expect(await read_state(outerId)).toBe("none");
+
+		expect(
+			(
+				await asUser.mutation(api.files_nodes.set_node_new_child_write_policy, {
+					membershipId: db.membershipId,
+					nodeId: outerId,
+					newChildWritePolicy: { mode: "read_only" },
+				})
+			)._nay,
+		).toBeUndefined();
+		expect(
+			(
+				await asUser.mutation(api.files_nodes.set_node_new_child_write_policy, {
+					membershipId: db.membershipId,
+					nodeId: innerId,
+					newChildWritePolicy: { mode: "writer", writer: { kind: "user", userId: db.userId } },
+				})
+			)._nay,
+		).toBeUndefined();
+
+		// Only the folder's own default counts. The parent's default does not change the child's answer.
+		expect(await read_state(outerId)).toBe("read_only");
+		expect(await read_state(innerId)).toBe("writer");
+	});
+
+	test("returns null for a file", async () => {
+		const t = test_convex();
+		const { db, asUser, outerId } = await seed_read_only_lock_tree(t);
+		const file = await asUser.action(api.files_nodes_content.create_text_node, {
+			membershipId: db.membershipId,
+			parentId: outerId,
+			path: "note.md",
+		});
+		if (file._nay) {
+			throw new Error(file._nay.message);
+		}
+
+		expect(
+			await asUser.query(api.files_nodes.get_folder_new_child_write_policy_state, {
+				membershipId: db.membershipId,
+				nodeId: file._yay.nodeId,
+			}),
+		).toBeNull();
+	});
+});
+
 describe("files_nodes.set_node_new_child_write_policy", () => {
 	test("copies the folder default onto a brand-new child only", async () => {
 		const t = test_convex();
