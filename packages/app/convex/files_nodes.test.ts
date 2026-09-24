@@ -20449,6 +20449,105 @@ describe("selected file writers", () => {
 		expect((await setPolicy(null))._nay).toBeUndefined();
 	});
 
+	test("exact folder management refuses a restricted scope two levels down", async () => {
+		const t = test_convex();
+		const fixture = await seed_account(t);
+		const policy = { mode: "writer", writer: fixture.writeContext.writer } as const;
+
+		expect(
+			(
+				await fixture.asUser.mutation(api.access_control.set_service_account_grant, {
+					membershipId: fixture.db.membershipId,
+					serviceAccountId: fixture.serviceAccountId,
+					resource: { kind: "file", nodeId: fixture.outerId },
+					level: "manage",
+				})
+			)._nay,
+		).toBeUndefined();
+		expect(
+			(
+				await fixture.asUser.mutation(api.files_sharing.restrict_node, {
+					membershipId: fixture.db.membershipId,
+					nodeId: fixture.deepId,
+				})
+			)._nay,
+		).toBeUndefined();
+		const setPolicy = async () =>
+			await t.run(async (ctx) => {
+				const node = await ctx.db.get("files_nodes", fixture.outerId);
+				if (!node) {
+					throw new Error("Missing folder");
+				}
+				return await files_nodes_db_set_write_policy(ctx, {
+					node,
+					writeContext: fixture.writeContext,
+					writePolicy: policy,
+				});
+			});
+
+		expect((await setPolicy())._nay?.message).toBe("Permission denied");
+
+		expect(
+			(
+				await fixture.asUser.mutation(api.access_control.set_service_account_grant, {
+					membershipId: fixture.db.membershipId,
+					serviceAccountId: fixture.serviceAccountId,
+					resource: { kind: "file", nodeId: fixture.deepId },
+					level: "manage",
+				})
+			)._nay,
+		).toBeUndefined();
+		expect((await setPolicy())._nay).toBeUndefined();
+	});
+
+	test("folder management ignores a restricted scope in an archived tree with the same path", async () => {
+		const t = test_convex();
+		const { db, asUser, archivedRootId, activeRootId } = await seed_reused_read_only_path_tree(t);
+		const created = await asUser.mutation(api.access_control.create_service_account, {
+			membershipId: db.membershipId,
+			name: "File Writer",
+		});
+		if (created._nay) {
+			throw new Error(created._nay.message);
+		}
+		const serviceAccountId = created._yay.serviceAccountId;
+		const writeContext: files_nodes_WriteContext = {
+			writer: { kind: "service_account", serviceAccountId },
+			actorUserId: db.userId,
+			resourceScope: { kind: "workspace" },
+			policyReach: "direct",
+		};
+
+		for (const nodeId of [archivedRootId, activeRootId]) {
+			expect(
+				(
+					await asUser.mutation(api.access_control.set_service_account_grant, {
+						membershipId: db.membershipId,
+						serviceAccountId,
+						resource: { kind: "file", nodeId },
+						level: "manage",
+					})
+				)._nay,
+			).toBeUndefined();
+		}
+		const setPolicy = async (nodeId: Id<"files_nodes">) =>
+			await t.run(async (ctx) => {
+				const node = await ctx.db.get("files_nodes", nodeId);
+				if (!node) {
+					throw new Error("Missing folder");
+				}
+				return await files_nodes_db_set_write_policy(ctx, {
+					node,
+					writeContext,
+					writePolicy: { mode: "read_only" },
+				});
+			});
+
+		// The archived `/docs/secret` is restricted and has no grant for this account.
+		expect((await setPolicy(archivedRootId))._nay?.message).toBe("Permission denied");
+		expect((await setPolicy(activeRootId))._nay).toBeUndefined();
+	});
+
 	test("creating a local policy uses parent management and adds no child grant", async () => {
 		const t = test_convex();
 		const fixture = await seed_account(t);

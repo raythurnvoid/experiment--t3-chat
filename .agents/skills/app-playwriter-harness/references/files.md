@@ -495,6 +495,13 @@ downloadThroughput: -1, uploadThroughput: -1 }`. This affects only the owned QA 
   3-5 s on dev). Archive it with `files_nodes.archive_nodes` through a fresh `ConvexHttpClient` (see
   "`app_convex.query(...)` in page context" in `known-hazards.md`). A cold localhost load of `/people`
   can take more than 30 s before `data-app-ready`; wait up to 60 s.
+- To check Properties on the same big folder (verified 2026-09-24): open `/people`, click the
+  breadcrumb `Properties of` button, and poll `.FilesPropertiesModalWritePolicy` text. The status line
+  changes from `Loading protection…` to `You can edit this folder.` in about 0.5 s. If it stays on
+  `Loading protection…` and the logs show `too many system operations` from
+  `files_nodes:get_node_write_policy_management_state`, the management check reads every child again.
+  That error can arrive after a 25 s poll ends, so reset `latestLogs({ sinceLastCall: true })` before
+  the next run. The policy radios repeat for the New items default, so take `.first()`.
 - For a small stored-file check, choose `Upload file` in an isolated folder and give its file chooser
   a known `application/octet-stream` buffer named with a `.bin` extension. Copy it through the menu.
   Sign both downloads, compare every byte, and check the copied file has a different asset id.

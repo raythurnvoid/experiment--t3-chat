@@ -125,10 +125,18 @@ for anchored Create and Resolve. The Yjs gate checks again if a race reaches the
 internal management helpers. HTTP and plugin adapters use the same helpers after their own live
 identity, token, capability, and resource checks.
 
-Known limit: folder management (`files_nodes_db_require_write_policy_management`) walks every
-descendant to find nested restricted folders. On a folder with thousands of children (for example
-`/people` in `sybill-demo/demo`, about 9,700 children) the management state query times out, so
-Properties stays on "Loading protection…", and a policy save on that folder times out too.
+Folder management (`files_nodes_db_require_write_policy_management`) covers open descendants. Each
+nested restricted folder or file needs its own `content.permissions.manage`. The helper does not read
+every child: it range-scans `files_nodes.by_organization_workspace_isRestrictedScopeRoot_treePath` for
+restricted roots under the folder's `treePath`, archived ones included. An archived tree can have the
+same paths, so it walks each match up to the folder's depth and skips matches whose ancestor there is
+another folder. The cost grows with the number of nested restricted roots, not with the number of
+children, so Properties and policy saves work on folders like `/people` (about 9,700 children).
+
+Known limit: each nested restricted root costs one permission check of a few reads. A folder that
+holds thousands of restricted roots, for example one restricted folder per person, can still go over
+Convex's per-call read limits. Restricted roots in archived trees with the same path count toward the
+scan too.
 
 The setter requires current actor and optional account `content.permissions.manage` on the actual
 target. Apply to contents checks management on every affected descendant, using the submitted policy,
@@ -327,8 +335,9 @@ Status copy: a read-only file says `This file is read-only.`; a read-only folder
 for the name first. Cancel creates nothing. The sidebar learns the default from
 `files_nodes.get_folder_new_child_write_policy_state`, which reads only the folder's own
 `newChildWritePolicy` and returns `none`, `read_only`, or `writer` (no account names). Do not use the
-management state there: its `canManage` checks every descendant and times out on a folder with thousands
-of children. If the lookup fails, the sidebar shows a toast and creates nothing.
+management state there: it does more work than a create needs, because `canManage` checks every nested
+restricted folder or file and the state looks up account names. If the lookup fails, the sidebar shows
+a toast and creates nothing.
 
 Policy saves use the dedicated setter. Metadata Save remains a separate action. Keep keyboard focus,
 clear pending feedback, accessible labels, and usable layout at 200% zoom. Do not disable a focused

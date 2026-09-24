@@ -1450,30 +1450,38 @@ export async function files_nodes_db_require_write_policy_management(
 	}
 
 	if (args.target.kind === "node" && args.target.node.kind === "folder") {
-		const descendants = await files_nodes_db_collect_descendants(ctx, {
-			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
-			parentId: args.target.node._id,
-		});
-
-		const checkedScopeNodeIds = new Set<Id<"files_nodes">>();
+		const folder = args.target.node;
 
 		// The folder's management covers open descendants. Nested restricted scopes need their own grant.
-		for (const descendant of descendants) {
-			const scopeNodeId = descendant.restrictedScopeNodeId;
-			if (
-				scopeNodeId === null ||
-				scopeNodeId === args.target.node.restrictedScopeNodeId ||
-				checkedScopeNodeIds.has(scopeNodeId)
-			) {
+		// Find their roots, archived ones too, by path, so a folder with thousands of children is not read
+		// child by child.
+		const scopeRoots = ctx.db
+			.query("files_nodes")
+			.withIndex("by_organization_workspace_isRestrictedScopeRoot_treePath", (q) =>
+				q
+					.eq("organizationId", args.organizationId)
+					.eq("workspaceId", args.workspaceId)
+					.eq("isRestrictedScopeRoot", true)
+					.gt("treePath", folder.treePath)
+					.lt("treePath", path_tree_prefix_upper_bound(folder.treePath)),
+			);
+		for await (const scopeRoot of scopeRoots) {
+			let parentId = scopeRoot.parentId;
+			// An archived tree can have the same paths as this folder. Walk up to this folder's depth and
+			// skip the root when the ancestor there is another folder. A tenant purge deletes nodes in
+			// parent id order, so a parent can be gone for a short time. Skip the root then too, because it
+			// is no longer inside this folder.
+			for (let depth = scopeRoot.pathDepth - 1; depth > folder.pathDepth && parentId !== files_ROOT_ID; depth--) {
+				parentId = (await ctx.db.get("files_nodes", parentId))?.parentId ?? files_ROOT_ID;
+			}
+			if (parentId !== folder._id) {
 				continue;
 			}
 
-			checkedScopeNodeIds.add(scopeNodeId);
 			if (
 				!(await db_has_write_context_permission(ctx, {
 					...args,
-					node: descendant,
+					node: scopeRoot,
 					permission: "content.permissions.manage",
 				}))
 			) {
@@ -1632,8 +1640,9 @@ export const get_node_write_policy_management_state = query({
 
 /**
  * Return which kind of default a folder gives its new children, without account names.
- * The sidebar reads it before a create. `get_node_write_policy_management_state` also checks
- * management of every descendant, which times out on a folder with thousands of children.
+ * The sidebar reads it before a create. `get_node_write_policy_management_state` does more work than
+ * a create needs: it checks management of every nested restricted folder or file and looks up account
+ * names.
  */
 export const get_folder_new_child_write_policy_state = query({
 	args: { membershipId: v.id("organizations_workspaces_users"), nodeId: v.id("files_nodes") },

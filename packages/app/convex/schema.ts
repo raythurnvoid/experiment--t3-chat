@@ -2090,6 +2090,14 @@ const app_convex_schema = defineSchema({
 			"name",
 		])
 		.index("by_organization_workspace_treePath", ["organizationId", "workspaceId", "treePath"])
+		// Folder policy management finds the restricted folders and files inside a folder with this index,
+		// so it does not read every child. Archived ones are included on purpose.
+		.index("by_organization_workspace_isRestrictedScopeRoot_treePath", [
+			"organizationId",
+			"workspaceId",
+			"isRestrictedScopeRoot",
+			"treePath",
+		])
 		.index("by_organization_workspace_archiveOperation_treePath", [
 			"organizationId",
 			"workspaceId",
