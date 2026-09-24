@@ -86,6 +86,7 @@ Sign-in steps for the `qa.perm.*` accounts are in
 | Folder with about 60 files | `chitchat-qa/xfer-qa-0914:/g4-many`, `/u62-mu2qzdr5/src` |
 | Folder with about 25 files | `chitchat-qa/xfer-qa-0914:/u16`, `/u16-q`, `/u42-other2` |
 | Very big folder (read-only) | `sybill-demo/demo:/people` (about 9,700), `/companies` (1,000+) |
+| Throwaway parent for big fixtures | `qa-browser/home:/protection-bulk-qa`: restricted, `qa.perm.viewer` has manage. No active items, but about 1,310 archived ones, so it cannot be archived yet (see `known-hazards.md`). Build new big fixtures inside it. A Copy job of its archived items is not possible, so seed again: 50 paced creates, then Copy jobs to double. |
 | Deep path (22 levels) | `chitchat-qa/xfer-qa-0914:/g4-u15/d01/…/d20/keeper.txt` |
 | Many small subfolders | `chitchat-qa/xfer-qa-0914:/u55/c0` … `c22`, each with `sibling.md` |
 | Move and copy sources and targets | `personal/home:/demo` (`mv-src.md`, `mv-target.md`, `cp-target.md`, `/archive`), `personal/home:/tests` (`eval-*` files and folders) |

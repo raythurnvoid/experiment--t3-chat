@@ -10,7 +10,8 @@ description: Activity job status, progress, controls, visibility, plugin opt-in,
 The producer owns its files, credentials, attempts, conflicts, and result receipts. Update both
 in one mutation. Workpool delivers work; it does not decide whether a job succeeded.
 
-- Every transfer, pending review, plugin run, and Bash background job has one Activity, created with the run.
+- Every transfer, pending review, plugin run, Bash background job, and "Apply to contents" protection job
+  has one Activity, created with the run.
 - `source.id` and `activities.by_source_id` are the only link. Do not add a backlink to the run.
 - Activity owns requester, status, progress, result kind, safe errors, and common times.
   Producer copies of tenant and user IDs exist only for immutable indexes.
@@ -33,7 +34,7 @@ from `running` back to `queued` while it waits for its next run, and `startedAt`
 start. Read a paused job as still alive, not as one that never started.
 
 `activities_db_finish` accepts only active work. A late callback cannot change a finished result
-or extend its retention. Transfer and review producers use `activities_get_result_status` for
+or extend its retention. Transfer, review, and protection producers use `activities_get_result_status` for
 natural completion, with counts from their item receipts:
 
 - Natural completion with no failed, blocked, or canceled items succeeds, including all-skipped work.
@@ -62,8 +63,9 @@ their own expiry. These clocks serve different owners.
 Current membership is required. Hidden or dismissed entries can consume a page. Keep the raw
 continuation and follow `isDone`; an empty visible page does not prove the feed ended.
 
-- Transfer, review, and Bash job Activities are private to their requester, including against other workspace owners.
-  Their summaries contain no source names or paths. Details recheck file access separately.
+- Transfer, review, Bash job, and protection job Activities are private to their requester, including
+  against other workspace owners. Their summaries contain no source names or paths. A protection job
+  has no targets at all. Details recheck file access separately.
 - Shared plugin Activities require current access to every target. A missing target or a changed
   target path hides the whole Activity. A shared Activity with no target requires workspace read.
 - The server returns allowed controls after visibility checks. UI code uses those controls.
@@ -98,12 +100,16 @@ See the [plugin runtime spec](../plugin-system/SKILL.md).
 - `activities.recover_expired` scans at most 50 expired jobs and dispatches to each producer.
   It reads its page before changing statuses. Stopping-only pages wait for the next cron, so an
   upload lease cannot cause an immediate retry loop.
+- A protection job (`files_write_policy_runs`) has no worker. Stop and the deadline finish its Activity
+  at once, and a step that was already scheduled then does nothing. Its progress, `updatedAt`, and `deadlineAt`
+  move only when 50 more items are counted or the job ends, so the deadline works as an idle limit. See the
+  [read-only spec](../files-read-only/SKILL.md#apply-to-contents).
 - `files_transfer.recover_expired_attempts` only releases expired transfer attempts. Do not put
   a second job deadline or history scan back in that module.
 - `files_pending_update_runs.recover` checks interrupted selection uploads, planning leases, and
   active units every five minutes. It retries planning at most three times and checks the Activity
   deadline before resuming work. It does not scan finished history.
-- `activities.cleanup_history` owns retention: seven days after transfer, review, or Bash job finish and thirty days
+- `activities.cleanup_history` owns retention: seven days after transfer, review, Bash job, or protection job finish and thirty days
   after plugin finish. A Bash job row can hold a 700 KiB result, so a pass reads at most eight job rows and reschedules for the rest; the job row is deleted with its Activity, while the foreground Bash call row beside it stays until thread purge. It stops a pass after a bounded child cleanup page. Each producer deletes
   its own receipts. Transfer and review producers also release their proposal holds first. Dismissal docs drain first. The Activity and its producer are then deleted together.
 - Deleting history does not delete saved files or pending proposals. Asset deletion jobs retain
@@ -116,5 +122,6 @@ See the [plugin runtime spec](../plugin-system/SKILL.md).
 Use `convex/activities.test.ts` for feed privacy, pagination, controls, deadline dispatch, and
 retention. Producer tests cover final publication, late callbacks, tokens, and saved outputs.
 `convex/files_pending_update_runs.test.ts` also checks review recovery and shared history cleanup.
+`convex/files_write_policy_runs.test.ts` checks the protection job steps, Stop, deadlines, and cleanup.
 `src/components/app-notifications.test.tsx` and `src/components/files/files-clipboard.test.tsx`
 cover shared Stop state and the visible results. Verify reachable flows in the running app too.

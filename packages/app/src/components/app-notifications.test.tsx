@@ -330,6 +330,76 @@ describe("AppNotifications", () => {
 		expect(mutationMock).not.toHaveBeenCalled();
 	});
 
+	// Only a finished walk sets `total`.
+	test.each([
+		{ status: "running", completed: 1, skipped: 0, blocked: 0, isDone: false, line: "Updated 1 item so far." },
+		{
+			status: "partial",
+			completed: 3,
+			skipped: 2,
+			blocked: 1,
+			isDone: true,
+			line: "Updated 3 items, 2 already set, 1 not allowed.",
+		},
+		{
+			status: "canceled",
+			completed: 50,
+			skipped: 0,
+			blocked: 0,
+			isDone: false,
+			line: "Stopped. 50 items were updated.",
+		},
+		{ status: "timed_out", completed: 1, skipped: 0, blocked: 0, isDone: false, line: "Stopped. 1 item was updated." },
+		{ status: "failed", completed: 50, skipped: 0, blocked: 0, isDone: false, line: "Stopped. 50 items were updated." },
+		{
+			status: "failed",
+			completed: 0,
+			skipped: 0,
+			blocked: 2,
+			isDone: true,
+			line: "No items could be changed. 2 are not allowed.",
+		},
+	])(
+		"shows the protection job line when $status after $completed",
+		({ status, completed, skipped, blocked, isDone, line }) => {
+			const isActive = status === "running";
+			usePaginatedQueryMock.mockImplementation((_query: unknown, args: { section: string }) => ({
+				results:
+					(args.section === "active") !== isActive
+						? []
+						: [
+								{
+									_id: "protection_activity",
+									_creationTime: 1,
+									finishedAt: isActive ? undefined : 2,
+									status,
+									resultKind: "saved",
+									source: { kind: "files_write_policy_run", id: "protection_1" },
+									title: "Apply protection to folder contents",
+									errorMessage: null,
+									targets: [],
+									progress: {
+										unit: "items",
+										discovered: completed + skipped + blocked,
+										total: isDone ? completed + skipped + blocked : null,
+										completed,
+										blocked,
+										failed: 0,
+										skipped,
+										canceled: 0,
+									},
+									controls: { canStop: isActive, canRetry: false, canDismiss: !isActive },
+								},
+							],
+				status: "Exhausted",
+				loadMore: vi.fn(),
+			}));
+			render(<TestNotifications />);
+			expect(screen.getByText(line)).toBeTruthy();
+			expect(screen.queryByText(/need a choice|Finding files/)).toBeNull();
+		},
+	);
+
 	test("reopens conflicts and keeps Stop pending in the Activity provider", async () => {
 		let status = "awaiting_input";
 		usePaginatedQueryMock.mockImplementation((_query: unknown, args: { section: string }) => ({

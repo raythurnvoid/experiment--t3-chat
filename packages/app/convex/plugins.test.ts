@@ -14392,9 +14392,77 @@ describe("plugins metadata file doors", () => {
 		},
 	);
 
-	test.each(["root", "nested"] as const)(
-		"the access door requires live manage permission on the %s scope",
-		async (blockedScope) => {
+	test("the access door requires live manage permission on the target folder", async () => {
+		const t = test_convex();
+		const fixture = await install_file_doors_plugin(t);
+		const ownerRun = await start_file_invoke_run(t, fixture);
+		const member = await seed_file_member(t, fixture);
+
+		expect(
+			(
+				await door_call(t, "/api/v1/files/plugin-folders/ensure", ownerRun.apiToken, {
+					path: "/probe",
+				})
+			).status,
+		).toBe(200);
+		const root = (await find_active_node(t, fixture, "/probe"))!;
+
+		expect(
+			await fixture.asOwner.mutation(api.files_sharing.restrict_node, {
+				membershipId: fixture.membership.membershipId,
+				nodeId: root._id,
+			}),
+		).toEqual({ _yay: null });
+		expect(
+			await fixture.asOwner.mutation(api.files_sharing.set_node_share_grant, {
+				membershipId: fixture.membership.membershipId,
+				nodeId: root._id,
+				principal: { kind: "user", userId: member.userId },
+				level: "write",
+			}),
+		).toEqual({ _yay: null });
+		await grant_file_account(fixture, root._id);
+
+		await t.run(async (ctx) =>
+			ctx.db.patch("activities", (await activities.activities_db_require_by_source_id(ctx, ownerRun.runId))._id, {
+				status: "succeeded",
+			}),
+		);
+		const run = await start_file_invoke_run(t, fixture, { userId: member.userId, tokenSeed: "e" });
+		const before = await t.run((ctx) => ctx.db.get("files_nodes", root._id));
+
+		const refused = await door_call(t, "/api/v1/files/plugin-access/set", run.apiToken, {
+			path: "/probe",
+			access: { readOnly: true },
+		});
+		expect(refused.status).toBe(403);
+		expect(await t.run((ctx) => ctx.db.get("files_nodes", root._id))).toEqual(before);
+
+		expect(
+			await fixture.asOwner.mutation(api.files_sharing.set_node_share_grant, {
+				membershipId: fixture.membership.membershipId,
+				nodeId: root._id,
+				principal: { kind: "user", userId: member.userId },
+				level: "manage",
+			}),
+		).toEqual({ _yay: null });
+
+		expect(
+			(
+				await door_call(t, "/api/v1/files/plugin-access/set", run.apiToken, {
+					path: "/probe",
+					access: { readOnly: true },
+				})
+			).status,
+		).toBe(200);
+	});
+
+	// A folder's lock and binding change only the folder. /probe/sub inherits the /probe scope, so the binding
+	// restricts it and cascades. The cascade stops at the nested restricted folder, so the member needs manage
+	// on the folder only, like the Properties setter.
+	test.each(["lock", "binding"] as const)(
+		"the access door changes the folder %s without manage permission on a nested scope",
+		async (change) => {
 			const t = test_convex();
 			const fixture = await install_file_doors_plugin(t);
 			const ownerRun = await start_file_invoke_run(t, fixture);
@@ -14403,90 +14471,13 @@ describe("plugins metadata file doors", () => {
 			expect(
 				(
 					await door_call(t, "/api/v1/files/plugin-folders/ensure", ownerRun.apiToken, {
-						path: "/probe/nested",
+						path: "/probe/sub/nested",
 					})
 				).status,
 			).toBe(200);
 			const root = (await find_active_node(t, fixture, "/probe"))!;
-			const nested = (await find_active_node(t, fixture, "/probe/nested"))!;
-
-			for (const [nodeId, level] of [
-				[root._id, blockedScope === "root" ? "write" : "manage"],
-				...(blockedScope === "nested" ? [[nested._id, "write"] as const] : []),
-			] as const) {
-				expect(
-					await fixture.asOwner.mutation(api.files_sharing.restrict_node, {
-						membershipId: fixture.membership.membershipId,
-						nodeId,
-					}),
-				).toEqual({ _yay: null });
-				expect(
-					await fixture.asOwner.mutation(api.files_sharing.set_node_share_grant, {
-						membershipId: fixture.membership.membershipId,
-						nodeId,
-						principal: { kind: "user", userId: member.userId },
-						level,
-					}),
-				).toEqual({ _yay: null });
-				await grant_file_account(fixture, nodeId);
-			}
-
-			await t.run(async (ctx) =>
-				ctx.db.patch("activities", (await activities.activities_db_require_by_source_id(ctx, ownerRun.runId))._id, {
-					status: "succeeded",
-				}),
-			);
-			const run = await start_file_invoke_run(t, fixture, { userId: member.userId, tokenSeed: "e" });
-			const before = await t.run((ctx) =>
-				Promise.all([root._id, nested._id].map((id) => ctx.db.get("files_nodes", id))),
-			);
-
-			const refused = await door_call(t, "/api/v1/files/plugin-access/set", run.apiToken, {
-				path: "/probe",
-				access: { readOnly: true },
-			});
-			expect(refused.status).toBe(403);
-			expect(
-				await t.run((ctx) => Promise.all([root._id, nested._id].map((id) => ctx.db.get("files_nodes", id)))),
-			).toEqual(before);
-
-			expect(
-				await fixture.asOwner.mutation(api.files_sharing.set_node_share_grant, {
-					membershipId: fixture.membership.membershipId,
-					nodeId: blockedScope === "root" ? root._id : nested._id,
-					principal: { kind: "user", userId: member.userId },
-					level: "manage",
-				}),
-			).toEqual({ _yay: null });
-
-			expect(
-				(
-					await door_call(t, "/api/v1/files/plugin-access/set", run.apiToken, {
-						path: "/probe",
-						access: { readOnly: true },
-					})
-				).status,
-			).toBe(200);
-		},
-	);
-
-	test.each(["own direct lock", "absent binding"] as const)(
-		"the access door allows an %s no-op without nested manage permission",
-		async (noop) => {
-			const t = test_convex();
-			const fixture = await install_file_doors_plugin(t);
-			const ownerRun = await start_file_invoke_run(t, fixture);
-			const member = await seed_file_member(t, fixture);
-
-			expect(
-				(
-					await door_call(t, "/api/v1/files/plugin-folders/ensure", ownerRun.apiToken, {
-						path: "/probe/nested",
-					})
-				).status,
-			).toBe(200);
-			const root = (await find_active_node(t, fixture, "/probe"))!;
-			const nested = (await find_active_node(t, fixture, "/probe/nested"))!;
+			const sub = (await find_active_node(t, fixture, "/probe/sub"))!;
+			const nested = (await find_active_node(t, fixture, "/probe/sub/nested"))!;
 
 			for (const [nodeId, level] of [
 				[root._id, "manage"],
@@ -14508,17 +14499,7 @@ describe("plugins metadata file doors", () => {
 				).toEqual({ _yay: null });
 				await grant_file_account(fixture, nodeId);
 			}
-
-			if (noop === "own direct lock") {
-				expect(
-					(
-						await door_call(t, "/api/v1/files/plugin-access/set", ownerRun.apiToken, {
-							path: "/probe",
-							access: { readOnly: true },
-						})
-					).status,
-				).toBe(200);
-			} else {
+			if (change === "binding") {
 				await seed_file_scope(t, fixture, "private");
 			}
 
@@ -14528,40 +14509,40 @@ describe("plugins metadata file doors", () => {
 				}),
 			);
 			const run = await start_file_invoke_run(t, fixture, { userId: member.userId, tokenSeed: "e" });
-			const before = await t.run(async (ctx) => ({
-				nodes: await Promise.all([root._id, nested._id].map((id) => ctx.db.get("files_nodes", id))),
-				metadata: await ctx.db.query("files_metadata_docs").collect(),
-				grants: await ctx.db.query("access_control_permission_grants").collect(),
-				bindings: await ctx.db.query("plugins_file_access_bindings").collect(),
+			const nestedBefore = await t.run(async (ctx) => ({
+				node: await ctx.db.get("files_nodes", nested._id),
+				grants: await ctx.db
+					.query("access_control_permission_grants")
+					.collect()
+					.then((grants) => grants.filter((grant) => grant.resourceId === nested._id)),
 			}));
-			expect(before.bindings).toEqual([]);
-			const requests =
-				noop === "own direct lock"
-					? [
-							{ access: { readOnly: true }, status: 200 },
-							{ access: { readOnly: false }, status: 403 },
-						]
-					: [
-							{ access: { readScopeId: null }, status: 200 },
-							{ access: { readScopeId: "private" }, status: 403 },
-						];
 
-			for (const { access, status } of requests) {
-				const response = await door_call(t, "/api/v1/files/plugin-access/set", run.apiToken, {
-					path: "/probe",
-					access,
+			const response = await door_call(t, "/api/v1/files/plugin-access/set", run.apiToken, {
+				path: "/probe/sub",
+				access: change === "lock" ? { readOnly: true } : { readScopeId: "private" },
+			});
+			expect(response.status).toBe(200);
+			expect(await response.json()).toEqual({ nodeId: sub._id });
+
+			if (change === "lock") {
+				expect((await t.run((ctx) => ctx.db.get("files_nodes", sub._id)))?.writePolicy).toMatchObject({
+					mode: "writer",
 				});
-				expect(response.status).toBe(status);
-				expect(await response.json()).toEqual(status === 200 ? { nodeId: root._id } : { message: "Permission denied" });
-				expect(
-					await t.run(async (ctx) => ({
-						nodes: await Promise.all([root._id, nested._id].map((id) => ctx.db.get("files_nodes", id))),
-						metadata: await ctx.db.query("files_metadata_docs").collect(),
-						grants: await ctx.db.query("access_control_permission_grants").collect(),
-						bindings: await ctx.db.query("plugins_file_access_bindings").collect(),
-					})),
-				).toEqual(before);
+			} else {
+				expect(await t.run((ctx) => ctx.db.query("plugins_file_access_bindings").collect())).toEqual([
+					expect.objectContaining({ nodeId: sub._id, scopeId: "private" }),
+				]);
+				expect((await t.run((ctx) => ctx.db.get("files_nodes", sub._id)))?.restrictedScopeNodeId).toBe(sub._id);
 			}
+			expect(
+				await t.run(async (ctx) => ({
+					node: await ctx.db.get("files_nodes", nested._id),
+					grants: await ctx.db
+						.query("access_control_permission_grants")
+						.collect()
+						.then((grants) => grants.filter((grant) => grant.resourceId === nested._id)),
+				})),
+			).toEqual(nestedBefore);
 		},
 	);
 

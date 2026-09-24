@@ -501,11 +501,10 @@ downloadThroughput: -1, uploadThroughput: -1 }`. This affects only the owned QA 
   can take more than 30 s before `data-app-ready`; wait up to 60 s.
 - To check Properties on the same big folder (verified 2026-09-24): open `/people`, click the
   breadcrumb `Properties of` button, and poll `.FilesPropertiesModalWritePolicy` text. The status line
-  changes from `Loading protection…` to `You can edit this folder.` in about 0.5 s. If it stays on
-  `Loading protection…` and the logs show `too many system operations` from
-  `files_nodes:get_node_write_policy_management_state`, the management check reads every child again.
-  That error can arrive after a 25 s poll ends, so reset `latestLogs({ sinceLastCall: true })` before
-  the next run. The policy radios repeat for the New items default, so take `.first()`.
+  changes from `Loading protection…` to `You can edit this folder.` in about 1 s. The management
+  check reads only the folder, so the number of children does not matter. The status can take up to
+  about 2 s on a cold load while the tree is still loading 9,700 rows. The policy radios repeat for
+  the New items default, so take `.first()`.
 - For a small stored-file check, choose `Upload file` in an isolated folder and give its file chooser
   a known `application/octet-stream` buffer named with a `.bin` extension. Copy it through the menu.
   Sign both downloads, compare every byte, and check the copied file has a different asset id.
@@ -1005,6 +1004,19 @@ One dialog holding the file's facts, its write policy, and the flat key-value ma
   After a native click, wait for the saved UI state before readback; the click can finish before its
   mutation. A selected human can edit when their access permits it. Revoking a selected account keeps
   the file protected and shows `Protected file. The selected writer is unavailable.`
+- `Apply to contents…` (folders only, verified 2026-09-24) copies the folder's SAVED rule, so save the
+  folder first. If the folder already has the rule, `Save policy` stays disabled; skip it. Click
+  `Apply to contents…`, then `Apply` (exact name) in the inline confirm. The dialog then shows
+  `Updating protection in the background. Track it in Activity.` The job is an Activity titled
+  `Apply protection to folder contents` with source kind `files_write_policy_run`. Poll it with
+  `activities.list_page` over both `active` and `history`. Pick the row by `startedAt` after your
+  click, not only "newest": `app_convex.query` can answer from its cache, and an older finished run
+  then ends the poll at once. About 1,250 items finish in 7–9 s on dev, in steps of 50.
+  The Activity row text is `Updated N items, M already set, K not allowed.` After Stop, a timeout, or
+  a failed access check it is `Stopped. N items were updated.` To test Stop, open `Notifications` and click
+  `Stop Apply protection to folder contents` within about 2 s of Apply.
+  To clean up a Read-only fixture, set the folder to `Editable` and apply that to contents first.
+  `archive_nodes` refuses a read-only subtree with `This item is read-only.`
 - For screenshots and hit-target checks, scroll the policy block into view first. Tabbing to footer
   controls can leave radios above the scroll area. At 512×768 the dialog scrolls and keeps its footer
   visible. The quick audit counts 18px radio inputs; inspect their clickable labels before treating

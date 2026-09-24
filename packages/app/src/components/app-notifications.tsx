@@ -258,6 +258,10 @@ type AppNotificationsActivityItem_Props = {
 	onArchive: (activityId: app_convex_Id<"activities">) => void;
 };
 
+function items_label(count: number) {
+	return `${count} ${count === 1 ? "item" : "items"}`;
+}
+
 const AppNotificationsActivityItem = memo(function AppNotificationsActivityItem(
 	props: AppNotificationsActivityItem_Props,
 ) {
@@ -266,6 +270,7 @@ const AppNotificationsActivityItem = memo(function AppNotificationsActivityItem(
 	const { stop, pendingStopSourceIds, openReviewRun } = AppActivitiesProvider.useContext();
 	const transferRun = activity.source.kind === "files_transfer_run" ? activity.source : null;
 	const reviewRun = activity.source.kind === "files_pending_update_run" ? activity.source : null;
+	const writePolicyRun = activity.source.kind === "files_write_policy_run" ? activity.source : null;
 	const isStopPending = pendingStopSourceIds.has(activity.source.id);
 	const progress = activity.progress;
 	const isActive = activity.finishedAt === undefined;
@@ -394,6 +399,22 @@ const AppNotificationsActivityItem = memo(function AppNotificationsActivityItem(
 					<MyButton variant="secondary" onClick={() => openReviewRun(reviewRun.id)}>
 						View review progress
 					</MyButton>
+				</div>
+			) : null}
+			{writePolicyRun && progress ? (
+				<div className={"AppNotificationsActivityItem-transfer" satisfies AppNotificationsActivityItem_ClassNames}>
+					{/* Blocked items are the ones the person can see but not manage. Hidden items are never counted. */}
+					<p>
+						{/* Only a finished walk sets `total`. A job without it stopped partway, after a Stop, a
+						    timeout, or a failed access check. */}
+						{isActive
+							? `Updated ${items_label(progress.completed)} so far.`
+							: progress.total === null
+								? `Stopped. ${items_label(progress.completed)} ${progress.completed === 1 ? "was" : "were"} updated.`
+								: activity.status === "failed"
+									? `No items could be changed. ${progress.blocked} ${progress.blocked === 1 ? "is" : "are"} not allowed.`
+									: `Updated ${items_label(progress.completed)}, ${progress.skipped} already set, ${progress.blocked} not allowed.`}
+					</p>
 				</div>
 			) : null}
 			{activity.controls.canStop ? (

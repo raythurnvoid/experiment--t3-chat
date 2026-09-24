@@ -116,7 +116,8 @@ async function db_prepare_plugin_access(
 		binding = prepared._yay;
 	}
 
-	// Existing nodes already passed target management. Only changes affecting descendants need their grants.
+	// Existing nodes already passed target management. Check again for a create or a real change, so a new
+	// lock's writer is checked too. A nested restricted folder keeps its own rule and scope, so it needs no check.
 	if (!args.node || writePolicy !== undefined || (binding && binding.readScopeId !== null)) {
 		const parentNode = args.parentId === files_ROOT_ID ? null : await ctx.db.get("files_nodes", args.parentId);
 		const managed = await files_nodes_db_require_write_policy_management(ctx, {

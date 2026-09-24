@@ -575,17 +575,15 @@ const FilesPropertiesModalWritePolicy = memo(function FilesPropertiesModalWriteP
 		setIsApplying(true);
 
 		app_convex
-			.mutation(app_convex_api.files_nodes.apply_write_policy_to_contents, { membershipId, nodeId, writePolicy })
+			.mutation(app_convex_api.files_write_policy_runs.start, { membershipId, nodeId, writePolicy })
 			.then((result) => {
 				if (result._nay) {
 					setApplyError(result._nay.message);
 					return;
 				}
-				setApplyResult(
-					`Set ${result._yay.updatedCount} ${result._yay.updatedCount === 1 ? "item" : "items"} to ${policy_choice_label(writePolicy)}. New-item defaults stay unchanged.`,
-				);
+				// A big folder takes many steps, so the job runs in the background and reports in Activity.
+				setApplyResult("Updating protection in the background. Track it in Activity.");
 				setApplyConfirm(undefined);
-				toast.success("Protection updated");
 			})
 			.catch((caughtError: unknown) => {
 				console.error("[FilesPropertiesModalWritePolicy.handleApplyToContents] Failed to apply protection", {
@@ -708,8 +706,9 @@ const FilesPropertiesModalWritePolicy = memo(function FilesPropertiesModalWriteP
 					className={"FilesPropertiesModalWritePolicy-description" satisfies FilesPropertiesModalWritePolicy_ClassNames}
 				>
 					<p>
-						Set all non-archived files and subfolders inside this folder to {policy_choice_label(applyConfirm)}? This
-						replaces their current protection, including selected writers. New-item defaults stay unchanged.
+						Set all non-archived files and subfolders you can manage inside this folder to{" "}
+						{policy_choice_label(applyConfirm)}? This replaces their current protection, including selected writers.
+						New-item defaults stay unchanged.
 					</p>
 					<div
 						className={"FilesPropertiesModalWritePolicy-actions" satisfies FilesPropertiesModalWritePolicy_ClassNames}

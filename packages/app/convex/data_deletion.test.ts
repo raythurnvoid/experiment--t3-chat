@@ -314,6 +314,48 @@ async function data_deletion_test_start_transfer_run(
 	return { runId, membershipId, sourceIds };
 }
 
+/**
+ * Start an "Apply to contents" job on a new folder with one child. The job stays queued because
+ * fake timers never run its scheduled step.
+ */
+async function data_deletion_test_start_write_policy_run(
+	t: ReturnType<typeof test_convex>,
+	args: {
+		userId: Id<"users">;
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		tag: string;
+	},
+) {
+	const scope = { organizationId: args.organizationId, workspaceId: args.workspaceId, userId: args.userId };
+	const folder = await t.mutation(internal.files_nodes.create_folder_node_by_path, { ...scope, path: `/${args.tag}` });
+	if (folder._nay) throw new Error(folder._nay.message);
+	const child = await t.mutation(internal.files_nodes.create_folder_node_by_path, {
+		...scope,
+		path: `/${args.tag}/child`,
+	});
+	if (child._nay) throw new Error(child._nay.message);
+	const membershipId = await t.run(async (ctx) => {
+		const membership = await ctx.db
+			.query("organizations_workspaces_users")
+			.withIndex("by_workspace_user_active", (q) => q.eq("workspaceId", args.workspaceId).eq("userId", args.userId))
+			.unique();
+		if (!membership) throw new Error("Expected workspace membership");
+		return membership._id;
+	});
+	const started = await t
+		.withIdentity({ issuer: "https://clerk.test", subject: args.userId, external_id: args.userId })
+		.mutation(api.files_write_policy_runs.start, {
+			membershipId,
+			nodeId: folder._yay.nodeId,
+			writePolicy: { mode: "read_only" },
+		});
+	if (started._nay) throw new Error(started._nay.message);
+	const activity = await t.run((ctx) => ctx.db.get("activities", started._yay.activityId));
+	if (activity?.source.kind !== "files_write_policy_run") throw new Error("Expected protection activity");
+	return { runId: activity.source.id, activityId: activity._id, membershipId };
+}
+
 async function data_deletion_test_seed_plugin_ui_sessions(
 	ctx: MutationCtx,
 	args: {
@@ -3228,6 +3270,60 @@ describe("process_workspace_deletion_request", () => {
 		});
 		expect(after.controlItems).toHaveLength(1);
 		expect(after.controlFile).not.toBeNull();
+	});
+
+	test("drains protection runs and keeps sibling runs", async () => {
+		const t = test_convex();
+		const user = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-delete-protection-workspace",
+				displayName: "Protection Workspace",
+			}),
+		);
+		const sibling = await t.run((ctx) =>
+			organizations_db_create_workspace(ctx, {
+				userId: user.userId,
+				organizationId: user.defaultOrganizationId,
+				name: "protection-sibling",
+				description: "",
+				now: Date.now(),
+			}),
+		);
+		if (sibling._nay) throw new Error(sibling._nay.message);
+		const victim = await data_deletion_test_start_write_policy_run(t, {
+			userId: user.userId,
+			organizationId: user.defaultOrganizationId,
+			workspaceId: user.defaultWorkspaceId,
+			tag: "protection-victim",
+		});
+		const control = await data_deletion_test_start_write_policy_run(t, {
+			userId: user.userId,
+			organizationId: user.defaultOrganizationId,
+			workspaceId: sibling._yay.workspaceId,
+			tag: "protection-control",
+		});
+		const requestId = await t.run((ctx) =>
+			data_deletion_db_request(ctx, {
+				userId: user.userId,
+				organizationId: user.defaultOrganizationId,
+				workspaceId: user.defaultWorkspaceId,
+				scope: "workspace",
+				eligibleAt: 0,
+			}),
+		);
+
+		await data_deletion_test_process_workspace_request_until_done(t, { requestId });
+
+		const after = await t.run(async (ctx) => ({
+			run: await ctx.db.get("files_write_policy_runs", victim.runId),
+			activity: await ctx.db.get("activities", victim.activityId),
+			controlRun: await ctx.db.get("files_write_policy_runs", control.runId),
+			controlActivity: await ctx.db.get("activities", control.activityId),
+		}));
+		expect(after.run).toBeNull();
+		expect(after.activity).toBeNull();
+		expect(after.controlRun).not.toBeNull();
+		expect(after.controlActivity).toMatchObject({ status: "queued" });
 	});
 
 	test("removes invalid workspace requests without a workspace id", async () => {
@@ -6896,6 +6992,44 @@ describe("finalize_user_deletion_data", () => {
 		expect(after.workspace).not.toBeNull();
 	});
 
+	test("drains a protection run before memberships", async () => {
+		const t = test_convex();
+		const victim = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-delete-protection-run",
+				displayName: "Protection Run",
+			}),
+		);
+		const run = await data_deletion_test_start_write_policy_run(t, {
+			userId: victim.userId,
+			organizationId: victim.defaultOrganizationId,
+			workspaceId: victim.defaultWorkspaceId,
+			tag: "protection-finalize",
+		});
+
+		const done = await t.mutation(internal.data_deletion.finalize_user_deletion_data, {
+			userId: victim.userId,
+			_test_batchSize: 1,
+		});
+		const firstPass = await t.run(async (ctx) => ({
+			run: await ctx.db.get("files_write_policy_runs", run.runId),
+			membership: await ctx.db.get("organizations_workspaces_users", run.membershipId),
+		}));
+		expect(done).toBe(false);
+		expect(firstPass.run).toBeNull();
+		expect(firstPass.membership).not.toBeNull();
+
+		await data_deletion_test_finalize_user_until_done(t, { userId: victim.userId, batchSize: 1 });
+		const after = await t.run(async (ctx) => ({
+			run: await ctx.db.get("files_write_policy_runs", run.runId),
+			activity: await ctx.db.get("activities", run.activityId),
+			membership: await ctx.db.get("organizations_workspaces_users", run.membershipId),
+		}));
+		expect(after.run).toBeNull();
+		expect(after.activity).toBeNull();
+		expect(after.membership).toBeNull();
+	});
+
 	test("drains a Bash job and the finished-job note cursors before memberships", async () => {
 		const t = test_convex();
 		const victim = await t.run((ctx) =>
@@ -9730,6 +9864,42 @@ describe("prepare_user_for_hard_deletion", () => {
 		expect(after.run).toBeNull();
 		expect(after.items).toEqual([]);
 		expect(after.user?.deletionFinalizationStartedAt).toBeTypeOf("number");
+	});
+
+	test("drains protection runs before provider deletion can begin", async () => {
+		const t = test_convex();
+		const user = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-hard-delete-protection",
+				displayName: "Protection Hard Delete",
+			}),
+		);
+		const run = await data_deletion_test_start_write_policy_run(t, {
+			userId: user.userId,
+			organizationId: user.defaultOrganizationId,
+			workspaceId: user.defaultWorkspaceId,
+			tag: "protection-hard-delete",
+		});
+
+		const first = await t.mutation(internal.data_deletion.prepare_user_for_hard_deletion, {
+			userId: user.userId,
+			_test_batchSize: 1,
+		});
+		expect(first).toBe(false);
+		let done = false;
+		for (let pass = 0; pass < 5 && !done; pass++) {
+			done = await t.mutation(internal.data_deletion.prepare_user_for_hard_deletion, {
+				userId: user.userId,
+				_test_batchSize: 1,
+			});
+		}
+		expect(done).toBe(true);
+		const after = await t.run(async (ctx) => ({
+			run: await ctx.db.get("files_write_policy_runs", run.runId),
+			activity: await ctx.db.get("activities", run.activityId),
+		}));
+		expect(after.run).toBeNull();
+		expect(after.activity).toBeNull();
 	});
 
 	test("keeps the admin recovery fence until local finalization succeeds", async () => {

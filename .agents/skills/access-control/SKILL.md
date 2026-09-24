@@ -24,6 +24,8 @@ Membership says where you are. Access control says what you may do there.
 - A file's write policy is separate from ACL. Check the actor and any service account first.
   Then apply that node's own `writePolicy`. Owners do not bypass a
   read-only or named-writer policy. See `../files-read-only/SKILL.md` for the policy rules.
+- Changing a folder's write policy needs `content.permissions.manage` on that folder only. A hidden
+  restricted child keeps its own rule, but the folder's rule still blocks its rename and move-out.
 - Human/role sharing changes detach the node's `plugins_file_access_bindings` only when they
   change sharing. Service-account grant edits preserve that reader binding. Unrestricting clears
   human/role grants and keeps independent service grants at their stored node.

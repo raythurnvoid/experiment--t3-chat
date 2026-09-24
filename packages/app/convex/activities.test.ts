@@ -150,6 +150,37 @@ describe("list_page", () => {
 		expect(denied._nay?.message).toBe("Activity not found");
 	});
 
+	test("a protection job is private to its requester and names no item", async () => {
+		const { t, asOwner, asMember, owner, member } = await create_transfer_activity();
+		const folder = await asOwner.mutation(api.files_nodes.create_folder_node, {
+			membershipId: owner.membershipId,
+			parentId: files_ROOT_ID,
+			path: "protected",
+		});
+		if (folder._nay) throw new Error(folder._nay.message);
+		const started = await asOwner.mutation(api.files_write_policy_runs.start, {
+			membershipId: owner.membershipId,
+			nodeId: folder._yay.nodeId,
+			writePolicy: { mode: "read_only" },
+		});
+		if (started._nay) throw new Error(started._nay.message);
+		const activity = await t.run((ctx) => ctx.db.get("activities", started._yay.activityId));
+
+		const listed = await asOwner.query(api.activities.list_page, {
+			membershipId: owner.membershipId,
+			section: "active",
+			paginationOpts: { cursor: null, numItems: 50 },
+		});
+		expect(listed.page).toEqual([{ ...activity, controls: { canStop: true, canRetry: false, canDismiss: false } }]);
+		expect(activity).toMatchObject({ targets: [], feedVisible: true });
+		const memberPage = await asMember.query(api.activities.list_page, {
+			membershipId: member.membershipId,
+			section: "active",
+			paginationOpts: { cursor: null, numItems: 50 },
+		});
+		expect(memberPage.page.some((item) => item._id === started._yay.activityId)).toBe(false);
+	});
+
 	test("an active Paste stays reachable beyond fifty newer finished jobs", async () => {
 		const { t, asMember, member, activity, runId } = await create_transfer_activity();
 		await t.run(async (ctx) => {

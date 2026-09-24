@@ -25,7 +25,13 @@ check every removed or replaced item. A writable folder can be renamed or moved 
 protected children. Readable files may still be copied out. Copy and Duplicate keep the source
 `writePolicy` and a folder's `newChildWritePolicy`. The synthetic root has no local policy.
 
-Human clipboard Cut still needs write access on the source entry and its immediate parent.
+A read-only folder blocks rename and move-out of all its direct children, restricted children
+included, even ones the person who locked it cannot see. This matches write access on a Linux or
+macOS folder. Anyone who manages the folder can unlock it. Known gap: a move to the workspace root
+does not check the old parent's rule yet.
+
+Human clipboard Cut needs write access on the source entry and on the destination folder. The
+source's parent folder must not be protected, but its sharing is not checked.
 See [Files transfer runs](../files-explorer-tree/references/transfer.md#conflicts-and-concurrent-changes).
 
 # Data Model
@@ -125,24 +131,16 @@ for anchored Create and Resolve. The Yjs gate checks again if a race reaches the
 internal management helpers. HTTP and plugin adapters use the same helpers after their own live
 identity, token, capability, and resource checks.
 
-Folder management (`files_nodes_db_require_write_policy_management`) covers open descendants. Each
-nested restricted folder or file needs its own `content.permissions.manage`. The helper does not read
-every child: it range-scans `files_nodes.by_organization_workspace_isRestrictedScopeRoot_treePath` for
-restricted roots under the folder's `treePath`, archived ones included. An archived tree can have the
-same paths, so it walks each match up to the folder's depth and skips matches whose ancestor there is
-another folder. The cost grows with the number of nested restricted roots, not with the number of
-children, so Properties and policy saves work on folders like `/people` (about 9,700 children).
-
-Known limit: each nested restricted root costs one permission check of a few reads. A folder that
-holds thousands of restricted roots, for example one restricted folder per person, can still go over
-Convex's per-call read limits. Restricted roots in archived trees with the same path count toward the
-scan too.
+Folder management (`files_nodes_db_require_write_policy_management`) checks only the target. It
+reads no children, so Properties and policy saves cost the same on a folder like `/people` (about
+9,700 children) as on an empty one. A folder's rule never changes a child's own rule. It only limits
+rename and move-out of its direct children (see above). Each restricted child keeps its own
+`content.permissions.manage` for its own rule.
 
 The setter requires current actor and optional account `content.permissions.manage` on the actual
-target. Apply to contents checks management on every affected descendant, using the submitted policy,
-and never runs from Save. New selected users must be active workspace members; new selected accounts
-must be active in the same workspace. A stored revoked writer remains visible as a redacted choice
-that a manager can replace.
+target. Apply to contents never runs from Save. New selected users must be active workspace members;
+new selected accounts must be active in the same workspace. A stored revoked writer remains visible
+as a redacted choice that a manager can replace.
 
 Creation copies the destination folder's `newChildWritePolicy` once when the caller omits a policy.
 An explicit `writePolicy` or `newChildWritePolicy` override needs a management check. Intermediate
@@ -159,7 +157,45 @@ sharing. A writer policy by itself still creates no access.
 
 Editable (`null`) clears only that node's local policy. It does not change children. Repeating the
 same local choice is an idempotent success. Management stays separate from effective content write
-access. `apply_write_policy_to_contents` is the only door that rewrites descendant rules.
+access. `files_write_policy_runs.start` is the only door that rewrites descendant rules.
+
+## Apply to contents
+
+`files_write_policy_runs.ts` runs "Apply to contents" as a background job with an Activity
+(`source.kind: "files_write_policy_run"`). `start` checks management and the writer rule on the folder,
+refuses while a data reset deletes the workspace files, allows one queued or running job per person
+and workspace, saves the confirmed rule, and schedules `advance`. The Activity title is "Apply protection to folder contents" and its targets stay `[]`, so it
+never names the folder or anything inside it.
+
+Each `advance` step first checks again: the Activity is still active and inside its deadline, the saved
+membership is still the same one (a leave and re-join stops the job), the folder has the same
+`treePath` and is not archived, and the person still manages the folder with the saved rule. A failed
+check ends the job. Items updated before that keep the new rule.
+
+The step then walks active nodes inside the folder in `treePath` order
+(`by_organization_workspace_archiveOperation_treePath` with `archiveOperationId = null`, so archived
+items keep their rules):
+
+- Managed: set the rule (`completed`), or count it as `skipped` when it already matches.
+- Readable but not managed: count it as `blocked`. Walk on into a folder like that, because items
+  inside it may have their own grant.
+- Hidden (not readable): never count or name it. A hidden folder is skipped with everything inside
+  it, like `chmod -R` skips a folder it cannot read. Its contents are skipped inside the same page,
+  and the next page starts at the first path after them. A hidden file skips only itself.
+
+A step ends after 50 counted items, 200 checked nodes, or 1,000 read nodes. The read limit matters
+because the contents of a hidden folder are read but not checked. A step that stops before 50 counted
+items passed hidden items, so it keeps its counts on the run (`unpublishedProgress`) and leaves the
+Activity as it is. The next step fills those counts up to 50. So the Activity progress, `updatedAt`, and the 30-minute
+`deadlineAt` change only at a full 50 or at the end, and the requester never sees how many hidden
+items a step passed. The deadline is an idle limit. A long job that keeps showing progress never
+times out. A step that updated anything advances the media validation clock once. The last step sets
+`total` and finishes with `activities_get_result_status`. Only blocked items give `failed`, and a mix
+gives `partial`. Stop, the deadline cron, and a failed check finish the Activity at once. They add
+the kept `unpublishedProgress` first, so "Stopped. N items were updated." counts every updated item.
+A step that was already scheduled then does nothing. A long stretch with nothing visible does not move
+the deadline, so a job can time out while it walks well over a million hidden items. That is the cost
+of never showing hidden items.
 
 # Enforcement Rules
 
@@ -328,15 +364,17 @@ Files Properties offers Editable, Read-only, and Selected writer. Folders also h
 default. There is no inherited text and no Open parent policy. The shared management state returns
 `canManage`, safe `localPolicy`, `localDefault`, and write access. A hidden or revoked writer is
 redacted to null while the local mode stays `writer`. Apply to contents uses the saved folder policy,
-confirms first, and never runs from Save.
+confirms first, never runs from Save, and then says the job runs in the background. Its progress and
+result show in Activity: "Updated N items so far", "Updated N items, M already set, K not allowed",
+"Stopped. N items were updated.", or "No items could be changed. K are not allowed."
 
 Status copy: a read-only file says `This file is read-only.`; a read-only folder says
 `Folder is read-only. Items keep their own protection.` Sidebar create of a protected default asks
 for the name first. Cancel creates nothing. The sidebar learns the default from
 `files_nodes.get_folder_new_child_write_policy_state`, which reads only the folder's own
 `newChildWritePolicy` and returns `none`, `read_only`, or `writer` (no account names). Do not use the
-management state there: it does more work than a create needs, because `canManage` checks every nested
-restricted folder or file and the state looks up account names. If the lookup fails, the sidebar shows
+management state there: it does more work than a create needs, because it checks management, write
+access and the blocking rule, and looks up account names. If the lookup fails, the sidebar shows
 a toast and creates nothing.
 
 Policy saves use the dedicated setter. Metadata Save remains a separate action. Keep keyboard focus,
@@ -348,7 +386,7 @@ control only because its save is running. Folder radio groups use unique names.
 | ID | Requirement |
 | --- | --- |
 | RO-01 | Every content write passes ACL and the named node's current local policy |
-| RO-02 | Rename and move check the named item and its immediate parent; delete checks every removed item |
+| RO-02 | Rename and move check the named item and its immediate parent, hidden restricted children included; delete checks every removed item |
 | RO-03 | Owners/admins do not bypass policies; selecting a writer grants no access |
 | RO-04 | Policy configuration requires actual target/creation-scope management |
 | RO-05 | A folder default is copied once onto brand-new children; later default changes do not rewrite them |
@@ -364,8 +402,10 @@ control only because its save is running. Folder radio groups use unique names.
 
 # Test Map
 
-- `convex/files_nodes.test.ts`: selected writers, ACL independence, local create defaults, bulk apply,
-  creation management, unlock one child, redaction, and writes.
+- `convex/files_nodes.test.ts`: selected writers, ACL independence, local create defaults, folder-only
+  management, creation management, unlock one child, redaction, and writes.
+- `convex/files_write_policy_runs.test.ts`: Apply to contents steps, blocked and hidden items, rechecks,
+  Stop, deadline, and history cleanup.
 - `convex/files_pending_updates.test.ts`: current-policy proposal, commit, and private discard checks.
 - `convex/files_nodes_content.test.ts`: replacement, collaboration, snapshots, and materialization.
 - `convex/public_api*.test.ts`: bound accounts, current credentials/scopes, service targets, conflicts,

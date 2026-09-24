@@ -13,6 +13,10 @@ import {
 	files_pending_update_runs_db_delete_run_batch,
 	files_pending_update_runs_db_request_stop,
 } from "./files_pending_update_runs.ts";
+import {
+	files_write_policy_runs_db_delete_run_batch,
+	files_write_policy_runs_db_request_stop,
+} from "./files_write_policy_runs.ts";
 import { plugins_runtime_db_delete_run_history, plugins_runtime_db_timeout_run } from "./plugins_runtime.ts";
 import { organizations_db_get_membership } from "./organizations.ts";
 import {
@@ -225,6 +229,14 @@ export const request_stop = mutation({
 				await files_transfer_db_request_stop(ctx, { runId: activity.source.id, reason: "user", now: Date.now() });
 				break;
 			}
+			case "files_write_policy_run": {
+				await files_write_policy_runs_db_request_stop(ctx, {
+					runId: activity.source.id,
+					reason: "user",
+					now: Date.now(),
+				});
+				break;
+			}
 			case "ai_chat_bash_job": {
 				await ai_chat_files_db_request_job_stop(ctx, {
 					invocationId: activity.source.id,
@@ -382,6 +394,10 @@ export const recover_expired = internalMutation({
 					await files_transfer_db_request_stop(ctx, { runId: activity.source.id, reason: "timeout", now });
 					break;
 				}
+				case "files_write_policy_run": {
+					await files_write_policy_runs_db_request_stop(ctx, { runId: activity.source.id, reason: "timeout", now });
+					break;
+				}
 				case "ai_chat_bash_job": {
 					bashJobCount += 1;
 					await ai_chat_files_db_request_job_stop(ctx, { invocationId: activity.source.id, reason: "timeout", now });
@@ -456,6 +472,10 @@ export const cleanup_history = internalMutation({
 					}
 					case "files_transfer_run": {
 						deletion = await files_transfer_db_delete_run_batch(ctx, { runId: activity.source.id, batchSize: 50 });
+						break;
+					}
+					case "files_write_policy_run": {
+						deletion = await files_write_policy_runs_db_delete_run_batch(ctx, { runId: activity.source.id });
 						break;
 					}
 					case "ai_chat_bash_job": {

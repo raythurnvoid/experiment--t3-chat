@@ -85,6 +85,9 @@ vi.mock("@/lib/app-convex-client.ts", () => ({
 			get_node_write_policy_management_state: "get_node_write_policy_management_state",
 			set_node_write_policy: "set_node_write_policy",
 		},
+		files_write_policy_runs: {
+			start: "files_write_policy_runs.start",
+		},
 		files_nodes_content: {
 			get_file_collaboration_cleanup_state: "get_file_collaboration_cleanup_state",
 			set_file_collaborative: "set_file_collaborative",
@@ -494,6 +497,29 @@ describe("FilesPropertiesModalWritePolicy", () => {
 		fireEvent.click(screen.getByRole("button", { name: "Save policy" }));
 		expect((await screen.findByRole("alert")).textContent).toBe("The policy changed in another tab");
 		expect(onClose).not.toHaveBeenCalled();
+	});
+
+	test("starts Apply to contents as a background job with the saved folder rule", async () => {
+		mockQueries({
+			management: { ...WRITABLE_POLICY, localPolicy: { mode: "read_only" } },
+			node: { ...NODE, kind: "folder", name: "docs", path: "/docs" },
+			entries: [],
+			canWrite: true,
+		});
+		mutationMock.mockResolvedValue({ _yay: { activityId: "activity_1" } });
+		renderModal({ nodeKind: "folder", nodeName: "docs" });
+		fireEvent.click(screen.getByRole("button", { name: "Apply to contents…" }));
+		expect(mutationMock).not.toHaveBeenCalled();
+		await act(async () => {
+			fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+		});
+		expect(mutationMock).toHaveBeenCalledWith("files_write_policy_runs.start", {
+			membershipId: MEMBERSHIP_ID,
+			nodeId: NODE_ID,
+			writePolicy: { mode: "read_only" },
+		});
+		expect(screen.getByText("Updating protection in the background. Track it in Activity.")).toBeTruthy();
+		expect(screen.queryByRole("button", { name: "Apply" })).toBeNull();
 	});
 
 	test("restores focus to the control that opened the dialog", async () => {

@@ -20090,129 +20090,6 @@ describe("files_nodes.create_upload_nodes locked defaults", () => {
 	});
 });
 
-describe("files_nodes.apply_write_policy_to_contents", () => {
-	test("counts only descendants whose rule changed", async () => {
-		const t = test_convex();
-		const { db, asUser } = await seed_read_only_lock_tree(t);
-		const folder = await asUser.mutation(api.files_nodes.create_folder_node, {
-			membershipId: db.membershipId,
-			parentId: files_ROOT_ID,
-			path: "apply-count",
-		});
-		expect(folder._nay).toBeUndefined();
-		const first = await asUser.mutation(api.files_nodes.create_folder_node, {
-			membershipId: db.membershipId,
-			parentId: folder._yay!.nodeId,
-			path: "first",
-		});
-		const second = await asUser.mutation(api.files_nodes.create_folder_node, {
-			membershipId: db.membershipId,
-			parentId: folder._yay!.nodeId,
-			path: "second",
-		});
-		expect(first._nay).toBeUndefined();
-		expect(second._nay).toBeUndefined();
-		await set_read_only_or_throw(asUser, db.membershipId, first._yay!.nodeId);
-
-		const applied = await asUser.mutation(api.files_nodes.apply_write_policy_to_contents, {
-			membershipId: db.membershipId,
-			nodeId: folder._yay!.nodeId,
-			writePolicy: { mode: "read_only" },
-		});
-		expect(applied).toEqual({ _yay: { updatedCount: 1 } });
-		expect(await read_lock_node(t, first._yay!.nodeId)).toMatchObject({ writePolicy: { mode: "read_only" } });
-		expect(await read_lock_node(t, second._yay!.nodeId)).toMatchObject({ writePolicy: { mode: "read_only" } });
-		expect(await read_lock_node(t, folder._yay!.nodeId)).toMatchObject({ writePolicy: null });
-	});
-
-	test("unlocks one child without changing siblings", async () => {
-		const t = test_convex();
-		const { db, asUser } = await seed_read_only_lock_tree(t);
-		const folder = await asUser.mutation(api.files_nodes.create_folder_node, {
-			membershipId: db.membershipId,
-			parentId: files_ROOT_ID,
-			path: "apply-unlock",
-		});
-		expect(folder._nay).toBeUndefined();
-		const first = await asUser.mutation(api.files_nodes.create_folder_node, {
-			membershipId: db.membershipId,
-			parentId: folder._yay!.nodeId,
-			path: "first",
-		});
-		const second = await asUser.mutation(api.files_nodes.create_folder_node, {
-			membershipId: db.membershipId,
-			parentId: folder._yay!.nodeId,
-			path: "second",
-		});
-		expect(first._nay).toBeUndefined();
-		expect(second._nay).toBeUndefined();
-		expect(
-			(
-				await asUser.mutation(api.files_nodes.apply_write_policy_to_contents, {
-					membershipId: db.membershipId,
-					nodeId: folder._yay!.nodeId,
-					writePolicy: { mode: "read_only" },
-				})
-			)._nay,
-		).toBeUndefined();
-
-		await set_writable_or_throw(asUser, db.membershipId, first._yay!.nodeId);
-		expect(await read_lock_node(t, first._yay!.nodeId)).toMatchObject({ writePolicy: null });
-		expect(await read_lock_node(t, second._yay!.nodeId)).toMatchObject({ writePolicy: { mode: "read_only" } });
-		expect(
-			await asUser.query(api.files_nodes.get_current_user_file_write_permission, {
-				membershipId: db.membershipId,
-				nodeId: first._yay!.nodeId,
-			}),
-		).toBe(true);
-		expect(
-			await asUser.query(api.files_nodes.get_current_user_file_write_permission, {
-				membershipId: db.membershipId,
-				nodeId: second._yay!.nodeId,
-			}),
-		).toBe(false);
-	});
-
-	test("refuses a folder with more than 500 active descendants", async () => {
-		const t = test_convex();
-		const { db, asUser } = await seed_read_only_lock_tree(t);
-		const folder = await asUser.mutation(api.files_nodes.create_folder_node, {
-			membershipId: db.membershipId,
-			parentId: files_ROOT_ID,
-			path: "apply-cap",
-		});
-		expect(folder._nay).toBeUndefined();
-
-		await t.run(async (ctx) => {
-			const now = Date.now();
-			for (let index = 0; index < 501; index += 1) {
-				await ctx.db.insert("files_nodes", {
-					...test_mocks.files.base(),
-					organizationId: db.organizationId,
-					workspaceId: db.workspaceId,
-					createdBy: db.userId,
-					updatedBy: db.userId,
-					parentId: folder._yay!.nodeId,
-					name: `c-${index}`,
-					kind: "folder",
-					path: `/apply-cap/c-${index}`,
-					treePath: `/apply-cap/c-${index}/`,
-					pathDepth: 2,
-					updatedAt: now,
-				});
-			}
-		});
-
-		const refused = await asUser.mutation(api.files_nodes.apply_write_policy_to_contents, {
-			membershipId: db.membershipId,
-			nodeId: folder._yay!.nodeId,
-			writePolicy: { mode: "read_only" },
-		});
-		expect(refused._nay?.name).toBe("too_large");
-		expect(await read_lock_node(t, folder._yay!.nodeId)).toMatchObject({ writePolicy: null });
-	});
-});
-
 describe("selected file writers", () => {
 	async function seed_account(t: ReturnType<typeof test_convex>) {
 		const fixture = await seed_read_only_lock_tree(t);
@@ -20399,7 +20276,7 @@ describe("selected file writers", () => {
 		expect(result.paths).not.toContain("/outer/new/deep");
 	});
 
-	test("exact folder management covers open children but refuses a nested restricted scope", async () => {
+	test("exact folder management changes the folder even with a nested restricted scope", async () => {
 		const t = test_convex();
 		const fixture = await seed_account(t);
 		const policy = { mode: "writer", writer: fixture.writeContext.writer } as const;
@@ -20436,23 +20313,13 @@ describe("selected file writers", () => {
 				})
 			)._nay,
 		).toBeUndefined();
-		expect((await setPolicy(null))._nay?.message).toBe("Permission denied");
-		expect(await read_lock_node(t, fixture.outerId)).toMatchObject({ writePolicy: policy });
-
-		expect(
-			(
-				await fixture.asUser.mutation(api.access_control.set_service_account_grant, {
-					membershipId: fixture.db.membershipId,
-					serviceAccountId: fixture.serviceAccountId,
-					resource: { kind: "file", nodeId: fixture.frozenId },
-					level: "manage",
-				})
-			)._nay,
-		).toBeUndefined();
+		// The folder's rule is its own. The restricted child needs no grant and keeps its rule.
 		expect((await setPolicy(null))._nay).toBeUndefined();
+		expect(await read_lock_node(t, fixture.outerId)).toMatchObject({ writePolicy: null });
+		expect(await read_lock_node(t, fixture.frozenId)).toMatchObject({ writePolicy: null });
 	});
 
-	test("exact folder management refuses a restricted scope two levels down", async () => {
+	test("exact folder management ignores a restricted scope two levels down", async () => {
 		const t = test_convex();
 		const fixture = await seed_account(t);
 		const policy = { mode: "writer", writer: fixture.writeContext.writer } as const;
@@ -20488,67 +20355,9 @@ describe("selected file writers", () => {
 				});
 			});
 
-		expect((await setPolicy())._nay?.message).toBe("Permission denied");
-
-		expect(
-			(
-				await fixture.asUser.mutation(api.access_control.set_service_account_grant, {
-					membershipId: fixture.db.membershipId,
-					serviceAccountId: fixture.serviceAccountId,
-					resource: { kind: "file", nodeId: fixture.deepId },
-					level: "manage",
-				})
-			)._nay,
-		).toBeUndefined();
 		expect((await setPolicy())._nay).toBeUndefined();
-	});
-
-	test("folder management ignores a restricted scope in an archived tree with the same path", async () => {
-		const t = test_convex();
-		const { db, asUser, archivedRootId, activeRootId } = await seed_reused_read_only_path_tree(t);
-		const created = await asUser.mutation(api.access_control.create_service_account, {
-			membershipId: db.membershipId,
-			name: "File Writer",
-		});
-		if (created._nay) {
-			throw new Error(created._nay.message);
-		}
-		const serviceAccountId = created._yay.serviceAccountId;
-		const writeContext: files_nodes_WriteContext = {
-			writer: { kind: "service_account", serviceAccountId },
-			actorUserId: db.userId,
-			resourceScope: { kind: "workspace" },
-			policyReach: "direct",
-		};
-
-		for (const nodeId of [archivedRootId, activeRootId]) {
-			expect(
-				(
-					await asUser.mutation(api.access_control.set_service_account_grant, {
-						membershipId: db.membershipId,
-						serviceAccountId,
-						resource: { kind: "file", nodeId },
-						level: "manage",
-					})
-				)._nay,
-			).toBeUndefined();
-		}
-		const setPolicy = async (nodeId: Id<"files_nodes">) =>
-			await t.run(async (ctx) => {
-				const node = await ctx.db.get("files_nodes", nodeId);
-				if (!node) {
-					throw new Error("Missing folder");
-				}
-				return await files_nodes_db_set_write_policy(ctx, {
-					node,
-					writeContext,
-					writePolicy: { mode: "read_only" },
-				});
-			});
-
-		// The archived `/docs/secret` is restricted and has no grant for this account.
-		expect((await setPolicy(archivedRootId))._nay?.message).toBe("Permission denied");
-		expect((await setPolicy(activeRootId))._nay).toBeUndefined();
+		expect(await read_lock_node(t, fixture.outerId)).toMatchObject({ writePolicy: policy });
+		expect(await read_lock_node(t, fixture.deepId)).toMatchObject({ writePolicy: null });
 	});
 
 	test("creating a local policy uses parent management and adds no child grant", async () => {

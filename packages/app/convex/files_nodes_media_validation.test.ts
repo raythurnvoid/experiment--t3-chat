@@ -1,11 +1,15 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { R2 } from "@convex-dev/r2";
 import { Workpool } from "@convex-dev/workpool";
+import type { FunctionArgs } from "convex/server";
+import { Result } from "common/errors-as-values-utils.ts";
 import { api, internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
-import { test_convex, test_create_saved_text_file, test_mocks, test_mocks_fill_db_with } from "./setup.test.ts";
+import { test_convex, test_create_saved_text_file, test_mocks_fill_db_with } from "./setup.test.ts";
 import { files_media_validation_db_advance_version } from "./files_media_validation.ts";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
+import { activities_is_active } from "./activities_db.ts";
+import { organizations_membership_lifetimes_db_ensure } from "./organizations_membership_lifetimes.ts";
 
 beforeEach(() => {
 	vi.useFakeTimers();
@@ -32,6 +36,12 @@ async function fixture() {
 	const scope = { organizationId: db.organizationId, workspaceId: db.workspaceId, userId: db.userId };
 	const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
 	await t.run(async (ctx) => {
+		// A real member gets this record on join. Jobs such as "Apply to contents" create it when it is
+		// missing, and that moves the clock once. Create it here so each test sees only its own change.
+		await organizations_membership_lifetimes_db_ensure(
+			ctx,
+			(await ctx.db.get("organizations_workspaces_users", db.membershipId))!,
+		);
 		const organization = await ctx.db.get("organizations", db.organizationId);
 		if (!organization?.defaultWorkspaceId) throw new Error("Expected the default workspace");
 		for (const workspaceId of [null, db.workspaceId, organization.defaultWorkspaceId]) {
@@ -53,6 +63,26 @@ async function folder(
 	});
 	if (result._nay) throw new Error(result._nay.message);
 	return result._yay.nodeId;
+}
+
+/**
+ * Start "Apply to contents" and run its steps until the job finishes.
+ */
+async function apply_to_contents(
+	f: Awaited<ReturnType<typeof fixture>>,
+	asUser: Awaited<ReturnType<typeof fixture>>["asUser"],
+	args: FunctionArgs<typeof api.files_write_policy_runs.start>,
+) {
+	const started = await asUser.mutation(api.files_write_policy_runs.start, args);
+	if (started._nay) return started;
+	for (let count = 0; count < 100; count++) {
+		const activity = await f.t.run((ctx) => ctx.db.get("activities", started._yay.activityId));
+		if (activity?.source.kind !== "files_write_policy_run") throw new Error("Missing protection activity");
+		if (!activities_is_active(activity.status))
+			return Result({ _yay: { status: activity.status, completed: activity.progress!.completed } });
+		await f.t.mutation(internal.files_write_policy_runs.advance, { runId: activity.source.id });
+	}
+	throw new Error("The protection job did not finish");
 }
 
 async function snapshot(f: Awaited<ReturnType<typeof fixture>>) {
@@ -577,13 +607,9 @@ describe("saved file media validation clocks", () => {
 		).toEqual({ _yay: null });
 		for (const writePolicy of [{ mode: "read_only" } as const, null]) {
 			const before = await snapshot(f);
-			expect(
-				await f.asUser.mutation(api.files_nodes.apply_write_policy_to_contents, {
-					membershipId: f.db.membershipId,
-					nodeId,
-					writePolicy,
-				}),
-			).toEqual({ _yay: { updatedCount: writePolicy ? 1 : 2 } });
+			expect(await apply_to_contents(f, f.asUser, { membershipId: f.db.membershipId, nodeId, writePolicy })).toEqual({
+				_yay: { status: "succeeded", completed: writePolicy ? 1 : 2 },
+			});
 			for (const id of [first, second])
 				expect(await f.t.run((ctx) => ctx.db.get("files_nodes", id))).toEqual({
 					...before.nodes.find((node) => node._id === id)!,
@@ -632,9 +658,9 @@ describe("saved file media validation clocks", () => {
 				).toEqual({ _yay: null });
 				break;
 			case "bulk":
-				expect(
-					await f.asUser.mutation(api.files_nodes.apply_write_policy_to_contents, { ...scope, writePolicy: null }),
-				).toEqual({ _yay: { updatedCount: 0 } });
+				expect(await apply_to_contents(f, f.asUser, { ...scope, writePolicy: null })).toEqual({
+					_yay: { status: "succeeded", completed: 0 },
+				});
 				break;
 			case "move":
 				expect(
@@ -750,12 +776,8 @@ describe("saved file media validation clocks", () => {
 		await folder(f, "second", nodeId);
 		const before = await snapshot(f);
 		expect(
-			await f.asUser.mutation(api.files_nodes.apply_write_policy_to_contents, {
-				membershipId: f.db.membershipId,
-				nodeId,
-				writePolicy: null,
-			}),
-		).toEqual({ _yay: { updatedCount: 0 } });
+			await apply_to_contents(f, f.asUser, { membershipId: f.db.membershipId, nodeId, writePolicy: null }),
+		).toEqual({ _yay: { status: "succeeded", completed: 0 } });
 		expect((await snapshot(f)).nodes).toEqual(before.nodes);
 		await expect_clock(f, before, false);
 	});
@@ -851,121 +873,100 @@ describe("saved file media validation clocks", () => {
 								...args,
 								newChildWritePolicy: { mode: "read_only" },
 							})
-						: await asMember.mutation(api.files_nodes.apply_write_policy_to_contents, {
-								...args,
-								writePolicy: { mode: "read_only" },
-							});
+						: await apply_to_contents(f, asMember, { ...args, writePolicy: { mode: "read_only" } });
 			expect(result._nay).toBeDefined();
 			expect((await snapshot(f)).nodes).toEqual(before.nodes);
 			await expect_clock(f, before, false);
 		},
 	);
 
-	test.each(["bulk", "restore"] as const)(
-		"keeps files and the workspace clock when descendant authority is missing: %s",
-		async (operation) => {
-			const f = await fixture();
-			const parent = await folder(f, "parent");
-			const child = await folder(f, "child", parent);
-			await folder(f, "other", parent);
-			const member = await f.t.run(async (ctx) => {
-				const userId = await ctx.db.insert("users", { clerkUserId: "clock-member" });
-				const membershipId = await ctx.db.insert("organizations_workspaces_users", {
-					organizationId: f.db.organizationId,
-					workspaceId: f.db.workspaceId,
-					userId,
-					active: true,
-				});
-				await access_control_db_ensure_role_assignment(ctx, {
-					...f.scope,
-					userId,
-					role: operation === "bulk" ? "admin" : "member",
-					now: Date.now(),
-				});
-				return { userId, membershipId };
-			});
-			const asMember = f.t.withIdentity({ issuer: "https://clerk.test", external_id: member.userId });
-			if (operation === "bulk") {
-				// Prove management works before the child gets its own restricted scope.
-				expect(
-					await asMember.mutation(api.files_nodes.set_node_write_policy, {
-						membershipId: member.membershipId,
-						nodeId: parent,
-						writePolicy: null,
-					}),
-				).toEqual({ _yay: null });
-			}
-			expect(
-				await f.asUser.mutation(api.files_sharing.restrict_node, {
-					membershipId: f.db.membershipId,
-					nodeId: operation === "bulk" ? child : parent,
-				}),
-			).toEqual({ _yay: null });
-			if (operation === "restore") {
-				expect(
-					await f.asUser.mutation(api.files_sharing.set_node_share_grant, {
-						membershipId: f.db.membershipId,
-						nodeId: parent,
-						principal: { kind: "user", userId: member.userId },
-						level: "write",
-					}),
-				).toEqual({ _yay: null });
-				expect(
-					await f.asUser.mutation(api.files_nodes.archive_nodes, {
-						membershipId: f.db.membershipId,
-						nodeIds: [parent],
-					}),
-				).toEqual({ _yay: null });
-			}
-			const before = await snapshot(f);
-			const result =
-				operation === "bulk"
-					? await asMember.mutation(api.files_nodes.apply_write_policy_to_contents, {
-							membershipId: member.membershipId,
-							nodeId: parent,
-							writePolicy: { mode: "read_only" },
-						})
-					: await asMember.mutation(api.files_nodes.unarchive_nodes, {
-							membershipId: member.membershipId,
-							nodeIds: [child],
-						});
-			expect(result._nay).toBeDefined();
-			if (operation === "restore") expect(result._nay?.message).toContain("Can manage");
-			expect((await snapshot(f)).nodes).toEqual(before.nodes);
-			await expect_clock(f, before, false);
-		},
-	);
-
-	test("keeps files and the workspace clock when the bulk policy request exceeds its existing limit", async () => {
+	test("keeps files and the workspace clock when descendant authority is missing: restore", async () => {
 		const f = await fixture();
-		const nodeId = await folder(f, "bulk");
-		await f.t.run(async (ctx) => {
-			for (let index = 0; index < 501; index++)
-				await ctx.db.insert("files_nodes", {
-					...test_mocks.files.base(),
-					organizationId: f.db.organizationId,
-					workspaceId: f.db.workspaceId,
-					createdBy: f.db.userId,
-					updatedBy: f.db.userId,
-					parentId: nodeId,
-					name: `c-${index}`,
-					kind: "folder",
-					path: `/bulk/c-${index}`,
-					treePath: `/bulk/c-${index}/`,
-					pathDepth: 2,
-				});
+		const parent = await folder(f, "parent");
+		const child = await folder(f, "child", parent);
+		await folder(f, "other", parent);
+		const member = await f.t.run(async (ctx) => {
+			const userId = await ctx.db.insert("users", { clerkUserId: "clock-member" });
+			const membershipId = await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: f.db.organizationId,
+				workspaceId: f.db.workspaceId,
+				userId,
+				active: true,
+			});
+			await access_control_db_ensure_role_assignment(ctx, { ...f.scope, userId, role: "member", now: Date.now() });
+			return { userId, membershipId };
 		});
-		const before = await snapshot(f);
+		const asMember = f.t.withIdentity({ issuer: "https://clerk.test", external_id: member.userId });
 		expect(
-			(
-				await f.asUser.mutation(api.files_nodes.apply_write_policy_to_contents, {
-					membershipId: f.db.membershipId,
-					nodeId,
-					writePolicy: { mode: "read_only" },
-				})
-			)._nay?.name,
-		).toBe("too_large");
+			await f.asUser.mutation(api.files_sharing.restrict_node, {
+				membershipId: f.db.membershipId,
+				nodeId: parent,
+			}),
+		).toEqual({ _yay: null });
+		expect(
+			await f.asUser.mutation(api.files_sharing.set_node_share_grant, {
+				membershipId: f.db.membershipId,
+				nodeId: parent,
+				principal: { kind: "user", userId: member.userId },
+				level: "write",
+			}),
+		).toEqual({ _yay: null });
+		expect(
+			await f.asUser.mutation(api.files_nodes.archive_nodes, {
+				membershipId: f.db.membershipId,
+				nodeIds: [parent],
+			}),
+		).toEqual({ _yay: null });
+		const before = await snapshot(f);
+		const result = await asMember.mutation(api.files_nodes.unarchive_nodes, {
+			membershipId: member.membershipId,
+			nodeIds: [child],
+		});
+		expect(result._nay?.message).toContain("Can manage");
 		expect((await snapshot(f)).nodes).toEqual(before.nodes);
 		await expect_clock(f, before, false);
+	});
+
+	test("bulk policy skips a hidden restricted child and advances the clock for the rest", async () => {
+		const f = await fixture();
+		const parent = await folder(f, "parent");
+		const child = await folder(f, "child", parent);
+		const other = await folder(f, "other", parent);
+		const member = await f.t.run(async (ctx) => {
+			const userId = await ctx.db.insert("users", { clerkUserId: "clock-admin" });
+			const membershipId = await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: f.db.organizationId,
+				workspaceId: f.db.workspaceId,
+				userId,
+				active: true,
+			});
+			await access_control_db_ensure_role_assignment(ctx, { ...f.scope, userId, role: "admin", now: Date.now() });
+			return { userId, membershipId };
+		});
+		const asMember = f.t.withIdentity({ issuer: "https://clerk.test", external_id: member.userId });
+		expect(
+			await f.asUser.mutation(api.files_sharing.restrict_node, { membershipId: f.db.membershipId, nodeId: child }),
+		).toEqual({ _yay: null });
+		// The admin cannot see the restricted child, so the job must neither change nor count it.
+		expect(
+			await asMember.query(api.files_nodes.get_file_node_for_membership, {
+				membershipId: member.membershipId,
+				fileNodeId: String(child),
+			}),
+		).toBeNull();
+
+		const before = await snapshot(f);
+		expect(
+			await apply_to_contents(f, asMember, {
+				membershipId: member.membershipId,
+				nodeId: parent,
+				writePolicy: { mode: "read_only" },
+			}),
+		).toEqual({ _yay: { status: "succeeded", completed: 1 } });
+		expect(await f.t.run((ctx) => ctx.db.get("files_nodes", child))).toEqual(
+			before.nodes.find((node) => node._id === child),
+		);
+		expect((await f.t.run((ctx) => ctx.db.get("files_nodes", other)))?.writePolicy).toEqual({ mode: "read_only" });
+		await expect_clock(f, before, true);
 	});
 });

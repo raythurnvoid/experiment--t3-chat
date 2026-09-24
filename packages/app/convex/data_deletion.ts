@@ -42,6 +42,7 @@ import {
 	files_browser_db_schedule_user_deletion,
 } from "./files_browser.ts";
 import { files_pending_update_runs_db_delete_run_batch } from "./files_pending_update_runs.ts";
+import { files_write_policy_runs_db_delete_run_batch } from "./files_write_policy_runs.ts";
 import { files_db_delete_pending_update } from "../server/files.ts";
 import { data_deletion_db_request } from "./data_deletion_requests.ts";
 import { users_db_delete_auth_billing_and_activity_docs } from "./users.ts";
@@ -399,6 +400,16 @@ async function db_purge_organization_workspace_content_batch(
 		.first();
 	if (reviewRun) {
 		const purged = await files_pending_update_runs_db_delete_run_batch(ctx, { runId: reviewRun._id, batchSize });
+		return { done: false, deletedCount: purged.deletedCount };
+	}
+	const writePolicyRun = await ctx.db
+		.query("files_write_policy_runs")
+		.withIndex("by_organization_workspace", (q) =>
+			q.eq("organizationId", organizationId).eq("workspaceId", workspaceId),
+		)
+		.first();
+	if (writePolicyRun) {
+		const purged = await files_write_policy_runs_db_delete_run_batch(ctx, { runId: writePolicyRun._id });
 		return { done: false, deletedCount: purged.deletedCount };
 	}
 
@@ -1692,6 +1703,19 @@ async function db_drain_user_pending_review_runs_batch(
 }
 
 /**
+ * Stop and delete one "Apply to contents" job. Items it already updated keep their new rule.
+ */
+async function db_drain_user_write_policy_runs_batch(ctx: MutationCtx, args: { userId: Id<"users"> }) {
+	const run = await ctx.db
+		.query("files_write_policy_runs")
+		.withIndex("by_user", (q) => q.eq("userId", args.userId))
+		.first();
+	if (!run) return 0;
+	const purged = await files_write_policy_runs_db_delete_run_batch(ctx, { runId: run._id });
+	return purged.deletedCount;
+}
+
+/**
  * Drain one creator-owned thread, children first, even when its workspace survives or membership is gone.
  * User finalization stops its writers and removes grants before reaching this pass.
  */
@@ -2136,6 +2160,9 @@ async function db_drain_user_finalization_batch(
 
 	const reviewRunCount = await db_drain_user_pending_review_runs_batch(ctx, args);
 	if (reviewRunCount > 0) return { done: false, deletedCount: reviewRunCount };
+
+	const writePolicyRunCount = await db_drain_user_write_policy_runs_batch(ctx, args);
+	if (writePolicyRunCount > 0) return { done: false, deletedCount: writePolicyRunCount };
 
 	const browserCount = (
 		await files_browser_db_delete_user_batch(ctx, { userId: args.userId, batchSize: args.batchSize })
@@ -3470,6 +3497,9 @@ export const prepare_user_for_hard_deletion = internalMutation({
 			batchSize,
 		});
 		if (deletedReviewRunCount > 0) return false;
+
+		const deletedWritePolicyRunCount = await db_drain_user_write_policy_runs_batch(ctx, { userId: args.userId });
+		if (deletedWritePolicyRunCount > 0) return false;
 
 		const deletedBrowserCount = (await files_browser_db_delete_user_batch(ctx, { userId: args.userId, batchSize }))
 			.deletedCount;

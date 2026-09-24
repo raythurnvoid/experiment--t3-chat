@@ -50,6 +50,7 @@ import type * as files_sharing from "../files_sharing.js";
 import type * as files_transfer from "../files_transfer.js";
 import type * as files_transfer_media from "../files_transfer_media.js";
 import type * as files_visible from "../files_visible.js";
+import type * as files_write_policy_runs from "../files_write_policy_runs.js";
 import type * as github_mounts from "../github_mounts.js";
 import type * as http from "../http.js";
 import type * as migrations from "../migrations.js";
@@ -146,6 +147,7 @@ declare const fullApi: ApiFromModules<{
   files_transfer: typeof files_transfer;
   files_transfer_media: typeof files_transfer_media;
   files_visible: typeof files_visible;
+  files_write_policy_runs: typeof files_write_policy_runs;
   github_mounts: typeof github_mounts;
   http: typeof http;
   migrations: typeof migrations;

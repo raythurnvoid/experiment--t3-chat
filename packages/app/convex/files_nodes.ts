@@ -1221,7 +1221,7 @@ export async function files_nodes_db_require_subtree_writable(
  * Check the node so a grant on a restricted node can allow this action.
  * Policy management must work while content is blocked.
  */
-async function db_authorize_write_policy_management(
+export async function files_nodes_db_authorize_write_policy_management(
 	ctx: MutationCtx,
 	args: {
 		userAuth: { id: Id<"users"> };
@@ -1447,47 +1447,8 @@ export async function files_nodes_db_require_write_policy_management(
 		return Result({ _nay: { message: "Writer is not available" } });
 	}
 
-	if (args.target.kind === "node" && args.target.node.kind === "folder") {
-		const folder = args.target.node;
-
-		// The folder's management covers open descendants. Nested restricted scopes need their own grant.
-		// Find their roots, archived ones too, by path, so a folder with thousands of children is not read
-		// child by child.
-		const scopeRoots = ctx.db
-			.query("files_nodes")
-			.withIndex("by_organization_workspace_isRestrictedScopeRoot_treePath", (q) =>
-				q
-					.eq("organizationId", args.organizationId)
-					.eq("workspaceId", args.workspaceId)
-					.eq("isRestrictedScopeRoot", true)
-					.gt("treePath", folder.treePath)
-					.lt("treePath", path_tree_prefix_upper_bound(folder.treePath)),
-			);
-		for await (const scopeRoot of scopeRoots) {
-			let parentId = scopeRoot.parentId;
-			// An archived tree can have the same paths as this folder. Walk up to this folder's depth and
-			// skip the root when the ancestor there is another folder. A tenant purge deletes nodes in
-			// parent id order, so a parent can be gone for a short time. Skip the root then too, because it
-			// is no longer inside this folder.
-			for (let depth = scopeRoot.pathDepth - 1; depth > folder.pathDepth && parentId !== files_ROOT_ID; depth--) {
-				parentId = (await ctx.db.get("files_nodes", parentId))?.parentId ?? files_ROOT_ID;
-			}
-			if (parentId !== folder._id) {
-				continue;
-			}
-
-			if (
-				!(await db_has_write_context_permission(ctx, {
-					...args,
-					node: scopeRoot,
-					permission: "content.permissions.manage",
-				}))
-			) {
-				return Result({ _nay: { message: "Permission denied" } });
-			}
-		}
-	}
-
+	// Check only the target. A folder's rule limits rename and move-out of its direct children, restricted
+	// ones too, the same way write access on a Linux or macOS folder does. Children keep their own rules.
 	return Result({ _yay: null });
 }
 
@@ -1639,8 +1600,7 @@ export const get_node_write_policy_management_state = query({
 /**
  * Return which kind of default a folder gives its new children, without account names.
  * The sidebar reads it before a create. `get_node_write_policy_management_state` does more work than
- * a create needs: it checks management of every nested restricted folder or file and looks up account
- * names.
+ * a create needs: it checks management, write access and the blocking rule, and looks up account names.
  */
 export const get_folder_new_child_write_policy_state = query({
 	args: { membershipId: v.id("organizations_workspaces_users"), nodeId: v.id("files_nodes") },
@@ -1692,7 +1652,7 @@ export const set_node_write_policy = mutation({
 			return Result({ _nay: { message: rateLimit.message } });
 		}
 
-		const authorized = await db_authorize_write_policy_management(ctx, {
+		const authorized = await files_nodes_db_authorize_write_policy_management(ctx, {
 			userAuth,
 			membershipId: args.membershipId,
 			nodeId: args.nodeId,
@@ -1768,7 +1728,7 @@ export const set_node_new_child_write_policy = mutation({
 			return Result({ _nay: { message: rateLimit.message } });
 		}
 
-		const authorized = await db_authorize_write_policy_management(ctx, {
+		const authorized = await files_nodes_db_authorize_write_policy_management(ctx, {
 			userAuth,
 			membershipId: args.membershipId,
 			nodeId: args.nodeId,
@@ -1787,120 +1747,6 @@ export const set_node_new_child_write_policy = mutation({
 				policyReach: "ancestors",
 			},
 		});
-	},
-});
-
-/**
- * How many active descendants one apply-to-contents call may rewrite. The call reads every
- * affected node for its management check before writing anything, so the cap bounds both
- * sides of the transaction. Raise it only after measuring a bigger run.
- */
-const APPLY_WRITE_POLICY_TO_CONTENTS_MAX_NODES = 500;
-
-export const apply_write_policy_to_contents = mutation({
-	args: {
-		membershipId: v.id("organizations_workspaces_users"),
-		nodeId: v.id("files_nodes"),
-		writePolicy: doc(app_convex_schema, "files_nodes").fields.writePolicy,
-	},
-	returns: v_result({ _yay: v.object({ updatedCount: v.number() }) }),
-	handler: async (ctx, args) => {
-		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!userAuth) {
-			return Result({ _nay: { message: "Unauthenticated" } });
-		}
-
-		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_tree_write", key: userAuth.id });
-		if (rateLimit) {
-			return Result({ _nay: { message: rateLimit.message } });
-		}
-
-		const authorized = await db_authorize_write_policy_management(ctx, {
-			userAuth,
-			membershipId: args.membershipId,
-			nodeId: args.nodeId,
-		});
-		if (authorized._nay) {
-			return authorized;
-		}
-		const { membership, node: folder } = authorized._yay;
-		if (folder.kind !== "folder") {
-			return Result({ _nay: { message: "Only folders have contents to update." } });
-		}
-
-		const writeContext: files_nodes_WriteContext = {
-			writer: { kind: "user", userId: userAuth.id },
-			actorUserId: userAuth.id,
-			resourceScope: { kind: "workspace" },
-			policyReach: "ancestors",
-		};
-
-		// The new rule itself needs one writer check, on the folder being confirmed.
-		const writerAllowed = await files_nodes_db_require_write_policy_management(ctx, {
-			organizationId: folder.organizationId,
-			workspaceId: folder.workspaceId,
-			writeContext,
-			target: { kind: "node", node: folder },
-			writePolicy: args.writePolicy,
-		});
-		if (writerAllowed._nay) {
-			return writerAllowed;
-		}
-
-		// Active descendants only, through the subtree range. Archived contents keep their rules.
-		// The folder itself keeps its own rule; only folder defaults stay untouched as well.
-		const prefix = folder.treePath;
-		const upper = path_tree_prefix_upper_bound(prefix);
-		const page = await ctx.db
-			.query("files_nodes")
-			.withIndex("by_organization_workspace_treePath", (q) =>
-				q
-					.eq("organizationId", membership.organizationId)
-					.eq("workspaceId", membership.workspaceId)
-					.gte("treePath", prefix)
-					.lt("treePath", upper),
-			)
-			.take(APPLY_WRITE_POLICY_TO_CONTENTS_MAX_NODES + 2);
-		const descendants = page.filter((node) => node._id !== folder._id && node.archiveOperationId === null);
-		if (
-			page.length > APPLY_WRITE_POLICY_TO_CONTENTS_MAX_NODES + 1 ||
-			descendants.length > APPLY_WRITE_POLICY_TO_CONTENTS_MAX_NODES
-		) {
-			return Result({
-				_nay: {
-					name: "too_large",
-					message: `This folder holds more than ${APPLY_WRITE_POLICY_TO_CONTENTS_MAX_NODES} items. Split it into smaller folders and try again.`,
-				},
-			});
-		}
-
-		// Every affected scope is checked before any rule is written.
-		for (const descendant of descendants) {
-			const managed = await files_nodes_db_require_write_policy_management(ctx, {
-				organizationId: folder.organizationId,
-				workspaceId: folder.workspaceId,
-				writeContext,
-				target: { kind: "node", node: descendant },
-				writePolicy: args.writePolicy,
-			});
-			if (managed._nay) {
-				return managed;
-			}
-		}
-
-		let updatedCount = 0;
-		for (const descendant of descendants) {
-			if (JSON.stringify(descendant.writePolicy) === JSON.stringify(args.writePolicy)) {
-				continue;
-			}
-			await ctx.db.patch("files_nodes", descendant._id, {
-				writePolicy: args.writePolicy,
-			});
-			updatedCount += 1;
-		}
-		if (updatedCount > 0) await files_media_validation_db_advance_version(ctx, membership);
-
-		return Result({ _yay: { updatedCount } });
 	},
 });
 

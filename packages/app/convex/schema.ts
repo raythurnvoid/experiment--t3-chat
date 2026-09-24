@@ -2100,14 +2100,6 @@ const app_convex_schema = defineSchema({
 			"name",
 		])
 		.index("by_organization_workspace_treePath", ["organizationId", "workspaceId", "treePath"])
-		// Folder policy management finds the restricted folders and files inside a folder with this index,
-		// so it does not read every child. Archived ones are included on purpose.
-		.index("by_organization_workspace_isRestrictedScopeRoot_treePath", [
-			"organizationId",
-			"workspaceId",
-			"isRestrictedScopeRoot",
-			"treePath",
-		])
 		.index("by_organization_workspace_archiveOperation_treePath", [
 			"organizationId",
 			"workspaceId",
@@ -2968,6 +2960,40 @@ const app_convex_schema = defineSchema({
 		.index("by_organization_workspace", ["organizationId", "workspaceId"]),
 
 	// #endregion files transfer
+
+	// #region files write policy runs
+	/**
+	 * One "Apply to contents" job. It sets a protection rule on every item inside a folder, a few
+	 * items per step. The Activity keeps the membership, the status, and the progress.
+	 */
+	files_write_policy_runs: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		userId: v.id("users"),
+		folderId: v.id("files_nodes"),
+		/**
+		 * The folder's `treePath` when the job started. A step stops the job if the folder moved.
+		 */
+		folderTreePath: v.string(),
+		/**
+		 * The rule the person confirmed. Later edits to the folder do not change a running job.
+		 */
+		writePolicy: files_nodes_write_policy_validator,
+		/**
+		 * Where the next step starts. null means just after the folder itself. `inclusive` is true only
+		 * after a skipped hidden folder, when the bound is the first path after its contents.
+		 */
+		cursor: v.union(v.object({ treePath: v.string(), inclusive: v.boolean() }), v.null()),
+		/**
+		 * Counts from steps that ended at the check limit, not shown in the Activity yet. They are shown
+		 * with the next full 50 or at the end. Otherwise a step that counted fewer than 50 would show
+		 * exactly how many hidden items it passed. Absent until the first such step.
+		 */
+		unpublishedProgress: v.optional(v.object({ completed: v.number(), skipped: v.number(), blocked: v.number() })),
+	})
+		.index("by_user", ["userId"])
+		.index("by_organization_workspace", ["organizationId", "workspaceId"]),
+	// #endregion files write policy runs
 
 	// #region plugins core
 	plugins_publisher_repositories: defineTable({
@@ -4376,6 +4402,7 @@ const app_convex_schema = defineSchema({
 				id: v.id("files_pending_update_runs"),
 				operationKind: v.union(v.literal("accept"), v.literal("discard")),
 			}),
+			v.object({ kind: v.literal("files_write_policy_run"), id: v.id("files_write_policy_runs") }),
 			/**
 			 * A background bash job (`cmd &`). The extra fields let `jobs` read this small
 			 * doc instead of the invocation doc, which can hold 700 KiB.
