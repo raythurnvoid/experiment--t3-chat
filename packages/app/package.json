@@ -117,7 +117,7 @@
 		"listhen": "^1.9.0",
 		"lowlight": "^3.3.0",
 		"lucide-react": "^0.577.0",
-		"marked": "17.0.1",
+		"marked": "17.0.6",
 		"minimatch": "^10.0.3",
 		"monaco-editor": "0.56.0",
 		"motion": "^12.23.24",
