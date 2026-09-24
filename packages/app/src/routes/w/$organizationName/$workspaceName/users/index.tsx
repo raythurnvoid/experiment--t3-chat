@@ -134,10 +134,9 @@ const RouteUsersUserListItem = memo(function RouteUsersUserListItem(props: Route
 			: isCurrentUser || canManageMembers !== false
 				? null
 				: "You don't have permission to remove users from the organization.";
-	// Ariakit renders the tooltip in another place in the DOM, and the button never points at it:
-	// `TooltipAnchor` only sets `aria-labelledby`, and only when the tooltip is used as a label instead
-	// of a description. So we give the reason its own element and point the button at it with
-	// `aria-describedby`. Without this a screen reader says "unavailable" and explains nothing.
+	// The tooltip does not link the button to its text. It sets no `aria-describedby` or `aria-labelledby`.
+	// So we give the reason its own element and point the button at it with `aria-describedby`.
+	// Without this a screen reader says "unavailable" and explains nothing.
 	const removeReasonId = `RouteUsers-remove-reason-${userId}`;
 	// We use `aria-disabled`, not `disabled`. A really disabled button cannot be hovered or focused, so
 	// the tooltip would never open and Tab would skip the button. This way it stays focusable and just

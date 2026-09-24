@@ -1,16 +1,25 @@
 import "./my-tooltip.css";
-import * as Ariakit from "@ariakit/react";
+import {
+	Tooltip,
+	TooltipAnchor,
+	TooltipArrow,
+	TooltipProvider,
+	type TooltipAnchorProps,
+	type TooltipArrowProps,
+	type TooltipProps,
+	type TooltipProviderProps,
+} from "native-popovers/tooltip";
 import { memo } from "react";
 import type { ExtractStrict } from "type-fest";
 import { cn } from "@/lib/utils.ts";
 
 // #region MyTooltip
-export type MyTooltip_Props = Ariakit.TooltipProviderProps;
+export type MyTooltip_Props = TooltipProviderProps;
 
 export const MyTooltip = memo(function MyTooltip(props: MyTooltip_Props) {
 	const { children, ...rest } = props;
 
-	return <Ariakit.TooltipProvider {...rest}>{children}</Ariakit.TooltipProvider>;
+	return <TooltipProvider {...rest}>{children}</TooltipProvider>;
 });
 // #endregion MyTooltip
 
@@ -18,14 +27,14 @@ export const MyTooltip = memo(function MyTooltip(props: MyTooltip_Props) {
 export type MyTooltipTrigger_ClassNames = "MyTooltipTrigger";
 
 export type MyTooltipTrigger_Props = {
-	children?: Ariakit.TooltipAnchorProps["render"];
-} & Omit<Ariakit.TooltipAnchorProps, ExtractStrict<keyof Ariakit.TooltipAnchorProps, "render">>;
+	children?: TooltipAnchorProps["render"];
+} & Omit<TooltipAnchorProps, ExtractStrict<keyof TooltipAnchorProps, "render" | "children">>;
 
 export const MyTooltipTrigger = memo(function MyTooltipTrigger(props: MyTooltipTrigger_Props) {
 	const { ref, id, className, children, ...rest } = props;
 
 	return (
-		<Ariakit.TooltipAnchor
+		<TooltipAnchor
 			ref={ref}
 			id={id}
 			className={cn("MyTooltipTrigger" satisfies MyTooltipTrigger_ClassNames, className)}
@@ -63,15 +72,15 @@ export const MyTooltipInfoTrigger = memo(function MyTooltipInfoTrigger(props: My
 // #region Content
 export type MyTooltipContent_ClassNames = "MyTooltipContent" | "MyTooltipContent-variant-error";
 
-export type MyTooltipContent_Props = Ariakit.TooltipProps & {
+export type MyTooltipContent_Props = TooltipProps & {
 	variant?: "default" | "error";
 };
 
 export const MyTooltipContent = memo(function MyTooltipContent(props: MyTooltipContent_Props) {
-	const { ref, id, className, portal = true, gutter = 8, variant = "default", children, ...rest } = props;
+	const { ref, id, className, gutter = 8, interactive = false, variant = "default", children, ...rest } = props;
 
 	return (
-		<Ariakit.Tooltip
+		<Tooltip
 			ref={ref}
 			id={id}
 			className={cn(
@@ -79,12 +88,14 @@ export const MyTooltipContent = memo(function MyTooltipContent(props: MyTooltipC
 				variant === "error" && ("MyTooltipContent-variant-error" satisfies MyTooltipContent_ClassNames),
 				className,
 			)}
-			portal={portal}
 			gutter={gutter}
+			// Let the pointer pass through app tooltips, so they never catch clicks meant for the controls
+			// under them. A call site that needs a clickable tooltip passes `interactive`.
+			interactive={interactive}
 			{...rest}
 		>
 			{children}
-		</Ariakit.Tooltip>
+		</Tooltip>
 	);
 });
 // #endregion Content
@@ -92,13 +103,13 @@ export const MyTooltipContent = memo(function MyTooltipContent(props: MyTooltipC
 // #region Arrow
 export type MyTooltipArrow_ClassNames = "MyTooltipArrow";
 
-export type MyTooltipArrow_Props = Ariakit.TooltipArrowProps;
+export type MyTooltipArrow_Props = TooltipArrowProps;
 
 export const MyTooltipArrow = memo(function MyTooltipArrow(props: MyTooltipArrow_Props) {
 	const { ref, id, className, ...rest } = props;
 
 	return (
-		<Ariakit.TooltipArrow
+		<TooltipArrow
 			ref={ref}
 			id={id}
 			className={cn("MyTooltipArrow" satisfies MyTooltipArrow_ClassNames, className)}

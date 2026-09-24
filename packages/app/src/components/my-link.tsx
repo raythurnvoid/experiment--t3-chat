@@ -1,10 +1,9 @@
 import { memo, type ComponentPropsWithRef, type ReactNode, type Ref } from "react";
-import type * as Ariakit from "@ariakit/react";
 import { Link, type LinkProps } from "@tanstack/react-router";
 import type { ExtractStrict } from "type-fest";
 
 import { MyIcon } from "@/components/my-icon.tsx";
-import { MyTooltip, MyTooltipContent, MyTooltipTrigger } from "@/components/my-tooltip.tsx";
+import { MyTooltip, MyTooltipContent, MyTooltipTrigger, type MyTooltip_Props } from "@/components/my-tooltip.tsx";
 import { cn } from "@/lib/utils.ts";
 
 import { MyLinkSurface, type MyLinkSurface_Props } from "./my-link-surface.tsx";
@@ -12,7 +11,7 @@ import { MyLinkSurface, type MyLinkSurface_Props } from "./my-link-surface.tsx";
 export type MyLink_Props = LinkProps &
 	Omit<MyLinkSurface_Props, ExtractStrict<keyof MyLinkSurface_Props, "children" | "ref">> & {
 		tooltip?: string;
-		tooltipTimeout?: Ariakit.TooltipProviderProps["timeout"];
+		tooltipTimeout?: MyTooltip_Props["timeout"];
 		tooltipSide?: "top" | "bottom" | "left" | "right";
 	};
 

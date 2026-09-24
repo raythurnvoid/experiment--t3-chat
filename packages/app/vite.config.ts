@@ -109,7 +109,8 @@ export default defineConfig({
 							filename.startsWith(path.resolve(__dirname, "src")) ||
 							filename.startsWith(path.resolve(__dirname, "vendor/novel")) ||
 							filename.startsWith(path.resolve(__dirname, "vendor/polar")) ||
-							filename.startsWith(path.resolve(__dirname, "vendor/tiptap"))
+							filename.startsWith(path.resolve(__dirname, "vendor/tiptap")) ||
+							filename.startsWith(path.resolve(__dirname, "../native-popovers/src"))
 						);
 					},
 				}),

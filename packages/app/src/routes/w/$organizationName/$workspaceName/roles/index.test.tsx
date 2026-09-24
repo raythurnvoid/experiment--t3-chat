@@ -58,8 +58,8 @@ vi.mock("sonner", () => ({
 	toast: toastMock,
 }));
 
-// Ariakit renders the modal and the tooltip through a portal and keeps them mounted when closed.
-// The plain stand-ins below keep the test about this route instead of about Ariakit.
+// Ariakit renders the modal through a portal and keeps it mounted when closed. The tooltip renders
+// its text only while open. The plain stand-ins below keep the test about this route instead.
 vi.mock("@/components/my-modal.tsx", () => ({
 	MyModal: function MyModal(props: { open?: boolean; children?: ReactNode }) {
 		return props.open ? <>{props.children}</> : null;

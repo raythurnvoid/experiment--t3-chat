@@ -508,7 +508,7 @@ const FileNodeViewHeaderBreadcrumbPath = memo(function FileNodeViewHeaderBreadcr
 					    does. A shortened label adds the full name above that hint and shows the tip at once,
 					    since the pointer is already on the short label. A label that fits keeps the normal
 					    tooltip delay.
-					    Ariakit hides the tip when the menu takes focus. Hover could still show it again if the
+					    The tip closes when the menu takes focus. Hover could still show it again if the
 					    pointer leaves and comes back while the menu is open, so skip hover while the menu
 					    button is expanded. */}
 					<MyTooltip timeout={currentLabel === current.name ? undefined : 0} placement="bottom">

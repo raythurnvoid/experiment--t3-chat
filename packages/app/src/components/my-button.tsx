@@ -1,10 +1,9 @@
 import "./my-button.css";
 import { memo, type ComponentPropsWithRef, type Ref } from "react";
-import type * as Ariakit from "@ariakit/react";
 
 import { cn } from "@/lib/utils.ts";
 import { MyIcon } from "@/components/my-icon.tsx";
-import { MyTooltip, MyTooltipContent, MyTooltipTrigger } from "@/components/my-tooltip.tsx";
+import { MyTooltip, MyTooltipContent, MyTooltipTrigger, type MyTooltip_Props } from "@/components/my-tooltip.tsx";
 
 export type MyButton_ClassNames =
 	| "MyButton"
@@ -62,7 +61,7 @@ export type MyButton_Props = ComponentPropsWithRef<"button"> & {
 	"aria-busy"?: boolean;
 
 	tooltip?: string;
-	tooltipTimeout?: Ariakit.TooltipProviderProps["timeout"];
+	tooltipTimeout?: MyTooltip_Props["timeout"];
 	tooltipSide?: "top" | "bottom" | "left" | "right";
 };
 

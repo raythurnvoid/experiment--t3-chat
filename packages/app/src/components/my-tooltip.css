@@ -4,9 +4,10 @@
 		outline-offset: 2px;
 	}
 
+	/* Do not add `contain`, `transform`, or `filter` here. They turn off `anchor()` for the native
+	   arrow, and the arrow then stops pointing at the trigger. */
 	.MyTooltipContent {
 		position: relative;
-		pointer-events: none;
 
 		max-width: 320px;
 
@@ -20,25 +21,17 @@
 
 		padding: 6px 8px;
 
+		/* The tooltip stays inside its trigger's DOM parent, so it inherits text styles from there.
+		   Inside Monaco that would be the editor font and `nowrap`, and inside a bold badge a bold
+		   weight. Reset them to the app values. */
+		font-family: var(--app-font-sans);
+		font-weight: 400;
 		font-size: 0.8125rem;
 		line-height: 1.25;
-
-		contain: content;
-		z-index: 50;
+		white-space: normal;
 	}
 
 	.MyTooltipContent-variant-error {
 		color: var(--color-red-10);
-	}
-
-	.MyTooltipArrow {
-		width: 10px;
-		height: 10px;
-
-		border-radius: 2px;
-
-		background: var(--color-base-1-04);
-
-		transform: rotate(45deg);
 	}
 }

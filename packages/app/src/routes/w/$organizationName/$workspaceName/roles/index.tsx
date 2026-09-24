@@ -366,7 +366,7 @@ const RouteRolesListItem = memo(function RouteRolesListItem(props: RouteRolesLis
 	// button cannot be focused or hovered, so neither the tooltip nor a screen reader would ever
 	// reach the explanation.
 	const changeReasonId = `RouteRoles-change-reason-${roleId}`;
-	// `ReactElement`, not `ReactNode`: `MyTooltipTrigger` passes its child to Ariakit as a render prop,
+	// `ReactElement`, not `ReactNode`: `MyTooltipTrigger` passes its child to the anchor as a render prop,
 	// which has to be a single element.
 	const renderAction = (button: ReactElement) =>
 		changeDisabledReason ? (
@@ -437,8 +437,8 @@ const RouteRolesListItem = memo(function RouteRolesListItem(props: RouteRolesLis
 									</MyButton>,
 								)
 							: null}
-						{/* One reason element for both buttons: Ariakit's tooltip only wires `aria-labelledby`,
-						    and only for label-type tooltips, so the tooltip alone never reaches a screen reader. */}
+						{/* One reason element for both buttons: the tooltip sets no `aria-describedby` or
+						    `aria-labelledby`, so the tooltip alone never reaches a screen reader. */}
 						{changeDisabledReason ? (
 							<span id={changeReasonId} className="sr-only">
 								{changeDisabledReason}

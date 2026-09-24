@@ -1,11 +1,10 @@
 import "./my-icon-button.css";
 
 import { memo, type ComponentPropsWithRef, type Ref } from "react";
-import type * as Ariakit from "@ariakit/react";
 
 import { MyButton } from "@/components/my-button.tsx";
 import { MyIcon } from "@/components/my-icon.tsx";
-import { MyTooltip, MyTooltipContent, MyTooltipTrigger } from "@/components/my-tooltip.tsx";
+import { MyTooltip, MyTooltipContent, MyTooltipTrigger, type MyTooltip_Props } from "@/components/my-tooltip.tsx";
 import { cn } from "@/lib/utils.ts";
 
 export type MyIconButton_ClassNames = "MyIconButton";
@@ -13,7 +12,7 @@ export type MyIconButton_ClassNames = "MyIconButton";
 export type MyIconButton_Props = ComponentPropsWithRef<typeof MyButton> & {
 	ref?: Ref<HTMLButtonElement>;
 	tooltip?: string;
-	tooltipTimeout?: Ariakit.TooltipProviderProps["timeout"];
+	tooltipTimeout?: MyTooltip_Props["timeout"];
 	tooltipSide?: "top" | "bottom" | "left" | "right";
 };
 

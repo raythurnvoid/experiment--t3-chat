@@ -814,7 +814,7 @@ should. It is `snapshot()` that reads the wrong surface. Use `getCleanHTML` for 
   390x844, then found the dialog left open by the previous step in the same runner; with it closed, all
   five controls and every `.participant-pin` hit-tested true at 1440x900, 390x844, 1024x600 and
   720x450. Assert the dialog is hidden in the same runner that does the hit test, and say that you did.
-  Same shape as the tooltip-portal and Playwriter-toolbar traps in `known-hazards.md` — a bare overlay
+  Same shape as the Playwriter-toolbar trap in `known-hazards.md` — a bare overlay
   answering for the control underneath it.
 - **A `route` handler that just returns falls through to the real Worker.** To hold a request open,
   `await new Promise(() => {})` inside the handler. Returning early instead makes the Worker answer,

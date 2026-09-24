@@ -268,7 +268,7 @@ const FileEditorRichTextToolsCommentInner = memo(function FileEditorRichTextTool
 				<MyPopoverTrigger>
 					{/* A disabled trigger cannot open the popover at all, which is the strongest block.
 					    The reason cannot use the `tooltip` prop: a disabled button fires no pointer
-					    events, so an Ariakit hover tooltip would never show. The native `title` and the
+					    events, so a hover tooltip would never show. The native `title` and the
 					    dynamic accessible name both work on a disabled button. */}
 					<MyButton
 						className={cn(

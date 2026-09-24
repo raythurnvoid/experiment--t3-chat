@@ -350,7 +350,7 @@ Always report `incomplete` too — the app's ARIA-on-`<span>` badges and gradien
 
 Scope traps that silently change the result:
 
-- Close every tooltip before a document-scope run. An open Ariakit tooltip portals a bare `<div>` onto `<body>`, outside all landmarks, and that alone produces a `region` violation that is yours, not the app's.
+- Close every tooltip before a document-scope run, so the run checks the page and not a tip your pointer opened. (Before 2026-09-24, an open Ariakit tooltip portaled a bare `<div>` onto `<body>` and produced a `region` violation. The native tooltip stays next to its trigger, so that case is gone.)
 - With an Ariakit modal open the app shell goes `inert`, so axe skips it and a document-scope run audits **only the modal**. App-shell rules then come back `PASS` or `INAPPLICABLE` for a reason that has nothing to do with the app shell. `#root` itself does **not** carry the attribute — probe `document.querySelector("header.MainAppHeader").closest("[inert]")`, not `#root.hasAttribute("inert")`, or you will conclude the shell is in scope when it is not. Confirm scope from the result: read the checked nodes of `landmark-no-duplicate-banner`; if `.MainAppHeader` is absent, the PASS only covers modal content.
 
 ## Prove A Live Region Actually Announces

@@ -2,9 +2,8 @@ import "./my-action.css";
 
 import { Link } from "@tanstack/react-router";
 import { memo, type ComponentPropsWithRef, type ReactNode } from "react";
-import type * as Ariakit from "@ariakit/react";
 
-import { MyTooltip, MyTooltipContent, MyTooltipTrigger } from "@/components/my-tooltip.tsx";
+import { MyTooltip, MyTooltipContent, MyTooltipTrigger, type MyTooltip_Props } from "@/components/my-tooltip.tsx";
 import { cn } from "@/lib/utils.ts";
 
 // #region primary action
@@ -13,9 +12,9 @@ type MyPrimaryAction_ClassNames = "MyPrimaryAction";
 export type MyPrimaryAction_Props = ComponentPropsWithRef<"button"> & {
 	selected?: boolean;
 	tooltip?: string;
-	tooltipTimeout?: Ariakit.TooltipProviderProps["timeout"];
+	tooltipTimeout?: MyTooltip_Props["timeout"];
 	tooltipDisabled?: boolean;
-	tooltipPlacement?: Ariakit.TooltipProviderProps["placement"];
+	tooltipPlacement?: MyTooltip_Props["placement"];
 };
 
 export const MyPrimaryAction = memo(function MyPrimaryAction(props: MyPrimaryAction_Props) {
@@ -65,9 +64,9 @@ type MyPrimaryActionLink_ClassNames = "MyPrimaryActionLink";
 export type MyPrimaryActionLink_Props = Omit<ComponentPropsWithRef<typeof Link>, "children"> & {
 	children?: ReactNode;
 	tooltip?: string;
-	tooltipTimeout?: Ariakit.TooltipProviderProps["timeout"];
+	tooltipTimeout?: MyTooltip_Props["timeout"];
 	tooltipDisabled?: boolean;
-	tooltipPlacement?: Ariakit.TooltipProviderProps["placement"];
+	tooltipPlacement?: MyTooltip_Props["placement"];
 };
 
 export const MyPrimaryActionLink = memo(function MyPrimaryActionLink(props: MyPrimaryActionLink_Props) {

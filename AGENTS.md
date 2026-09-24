@@ -183,6 +183,7 @@ Use [references-submodules/README.md](references-submodules/README.md) as the ma
 - `references-submodules/assistant-ui/` is research-only. The app does not use `@assistant-ui/*` packages at runtime.
 - The app uses the published `file-selector` and `@atlaskit/pragmatic-drag-and-drop` packages. Their repositories under `references-submodules/` are source references only.
 - `packages/council` is a first-party app submodule (the Council Worker, repo `raythurnvoid/bonobo-senate-council`) — neither a vendored dependency nor a research reference. It sits outside the pnpm workspace on purpose and carries its own lockfile and tools; run `vp env exec pnpm --dir packages/council --ignore-workspace install` after a submodule update before using its scripts.
+- `packages/native-popovers` is a first-party submodule (repo `raythurnvoid/native-popovers`) and a pnpm workspace package. `MyTooltip` is built on its `native-popovers/tooltip` entry, and the React Compiler also compiles its `src/`. Its CSS layer `native_popovers` must stay after `base` in the `app.css` layer order. Change it in its own repo: commit and push there first, then commit the new gitlink here.
 
 ## Third-party documentation research
 
