@@ -9951,18 +9951,25 @@ describe("file write policy management", () => {
 		});
 		expect(memberUnlock._nay).toBeUndefined();
 		await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
-		const movedToRootAfterUnlock = await fixture.asOwner.mutation(api.files_nodes.move_nodes, {
-			membershipId: fixture.ownerMembershipId,
-			itemIds: [secret._yay!.nodeId],
-			targetParentId: files_ROOT_ID,
-		});
-		expect(movedToRootAfterUnlock._nay).toBeUndefined();
 		const movedAfterUnlock = await fixture.asOwner.mutation(api.files_nodes.move_nodes, {
 			membershipId: fixture.ownerMembershipId,
 			itemIds: [secret._yay!.nodeId],
 			targetParentId: target._yay!.nodeId,
 		});
 		expect(movedAfterUnlock._nay).toBeUndefined();
+		// Move it back, so the move to the root also starts in the unlocked folder.
+		const movedBack = await fixture.asOwner.mutation(api.files_nodes.move_nodes, {
+			membershipId: fixture.ownerMembershipId,
+			itemIds: [secret._yay!.nodeId],
+			targetParentId: open._yay!.nodeId,
+		});
+		expect(movedBack._nay).toBeUndefined();
+		const movedToRootAfterUnlock = await fixture.asOwner.mutation(api.files_nodes.move_nodes, {
+			membershipId: fixture.ownerMembershipId,
+			itemIds: [secret._yay!.nodeId],
+			targetParentId: files_ROOT_ID,
+		});
+		expect(movedToRootAfterUnlock._nay).toBeUndefined();
 	});
 
 	test("a direct lock inside a hidden outer lock reports the flag but never the outer node", async () => {
