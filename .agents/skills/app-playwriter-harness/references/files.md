@@ -1599,6 +1599,13 @@ selected, and a row's Discard removes only that row, not the folders it `also ad
 rows; a bigger `--limit` times out). The job must succeed, and the `files_pending_node_cleanup_tasks`
 row and the node must be gone within seconds. Verified 2026-09-24.
 
+The `Save reviewed changes` / `Discard reviewed changes` dialog does close. Reopen a finished run
+without new data from `Notifications` > `View review progress`. A mouse click on its footer `Close`
+or its X takes about 2 s in Playwriter and can time out at `performing click action`. Poll
+`.FilesPendingReviewModal` visibility instead of trusting the click result. `Escape` closes one
+layer at a time: an open X tooltip first, then the dialog, then the Notifications popover.
+Verified 2026-09-24.
+
 To check that hidden folders use no page slot, make one deep chain and five siblings
 (`/qa-x/a/b/c/d/e/f` and `/qa-x/x1` to `/qa-x/x5`), then page the list with `numItems: 5`. Every
 page that is not the last holds 5 rows (verified 2026-09-24: pages `5, 1`). With the filter moved
