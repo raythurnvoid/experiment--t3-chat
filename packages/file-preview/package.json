@@ -16,7 +16,7 @@
 		"test:browser": "pnpm build:local && vitest run --config vitest.browser.config.ts"
 	},
 	"dependencies": {
-		"parse5": "8.0.0",
+		"parse5": "8.0.1",
 		"zod": "4.6.5"
 	},
 	"devDependencies": {
