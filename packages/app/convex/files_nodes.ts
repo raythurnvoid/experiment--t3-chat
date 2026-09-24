@@ -5128,20 +5128,22 @@ export async function files_nodes_db_preflight_move(
 			return readOnlyRefusal();
 		}
 
+		// Moving a child out changes its old parent, like `rename(2)`. So check the old parent's rule for
+		// every destination, the workspace root included.
+		if (node.parentId !== files_ROOT_ID && node.parentId !== fields.parentId) {
+			const sourceParent = await readNode(node.parentId);
+			if (readBudgetExceeded) {
+				return Result({ _nay: { name: "move_too_large", message: "This move is too large. Select fewer items." } });
+			}
+			if (!sourceParent || !isLocallyWritable(sourceParent)) {
+				return readOnlyRefusal();
+			}
+		}
+
 		if (fields.parentId !== files_ROOT_ID) {
 			const parent = nodesById.get(fields.parentId)!;
 			if (!isLocallyWritable(parent)) {
 				return readOnlyRefusal();
-			}
-
-			if (node.parentId !== files_ROOT_ID && node.parentId !== fields.parentId) {
-				const sourceParent = await readNode(node.parentId);
-				if (readBudgetExceeded) {
-					return Result({ _nay: { name: "move_too_large", message: "This move is too large. Select fewer items." } });
-				}
-				if (!sourceParent || !isLocallyWritable(sourceParent)) {
-					return readOnlyRefusal();
-				}
 			}
 
 			if (node.parentId !== fields.parentId || plannedParentKeys.has(node._id)) {

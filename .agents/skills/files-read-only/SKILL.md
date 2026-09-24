@@ -27,8 +27,8 @@ protected children. Readable files may still be copied out. Copy and Duplicate k
 
 A read-only folder blocks rename and move-out of all its direct children, restricted children
 included, even ones the person who locked it cannot see. This matches write access on a Linux or
-macOS folder. Anyone who manages the folder can unlock it. Known gap: a move to the workspace root
-does not check the old parent's rule yet.
+macOS folder. This also covers a move to the workspace root. Anyone who manages the folder can
+unlock it.
 
 Human clipboard Cut needs write access on the source entry and on the destination folder. The
 source's parent folder must not be protected, but its sharing is not checked.

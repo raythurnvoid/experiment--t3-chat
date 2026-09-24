@@ -9933,11 +9933,17 @@ describe("file write policy management", () => {
 			targetParentId: target._yay!.nodeId,
 		});
 		expect(movedOut._nay?.name).toBe("read_only");
+		const movedToRoot = await fixture.asOwner.mutation(api.files_nodes.move_nodes, {
+			membershipId: fixture.ownerMembershipId,
+			itemIds: [secret._yay!.nodeId],
+			targetParentId: files_ROOT_ID,
+		});
+		expect(movedToRoot._nay?.name).toBe("read_only");
 		expect(await t.run(async (ctx) => (await ctx.db.get("files_nodes", secret._yay!.nodeId))?.path)).toBe(
 			"/open/secret",
 		);
 
-		// Use the same move to prove the lock was the only reason for the refusal.
+		// Use the same moves to prove the lock was the only reason for the refusals.
 		const memberUnlock = await fixture.asMember.mutation(api.files_nodes.set_node_write_policy, {
 			writePolicy: null,
 			membershipId: fixture.memberMembershipId,
@@ -9945,6 +9951,12 @@ describe("file write policy management", () => {
 		});
 		expect(memberUnlock._nay).toBeUndefined();
 		await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
+		const movedToRootAfterUnlock = await fixture.asOwner.mutation(api.files_nodes.move_nodes, {
+			membershipId: fixture.ownerMembershipId,
+			itemIds: [secret._yay!.nodeId],
+			targetParentId: files_ROOT_ID,
+		});
+		expect(movedToRootAfterUnlock._nay).toBeUndefined();
 		const movedAfterUnlock = await fixture.asOwner.mutation(api.files_nodes.move_nodes, {
 			membershipId: fixture.ownerMembershipId,
 			itemIds: [secret._yay!.nodeId],
