@@ -20,7 +20,7 @@
 		"zod": "4.6.5"
 	},
 	"devDependencies": {
-		"@types/node": "^24.7.2",
+		"@types/node": "^24.13.6",
 		"playwright": "1.63.0",
 		"typescript": "~6.0.3",
 		"vite": "8.3.0",

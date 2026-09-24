@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {},
   "devDependencies": {
-    "@types/node": "^25.2.3",
+    "@types/node": "^25.9.8",
     "eslint-plugin-react-hooks": "^7.1.1",
     "oxfmt": "^0.70.0",
     "oxlint": "^1.85.0",
