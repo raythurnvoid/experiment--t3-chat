@@ -27,7 +27,7 @@ jobs:
       # packages/native-popovers submodule.
       # Do not recurse the whole .gitmodules list. That also clones
       # references-submodules, which the frontend build does not use.
-      - name: Checkout app vendor submodules
+      - name: Checkout app build submodules
         run: |
           git submodule update --init --depth 1 -- \
             packages/app/vendor/headless-tree \
