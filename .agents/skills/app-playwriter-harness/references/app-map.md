@@ -20,6 +20,7 @@ Use this file for stable app browser facts that are worth reusing across Playwri
   - `app_state::sidebar::main_app_collapsed`
 - Closed sidebar state uses `.MySidebar-state-closed`.
 - Collapsed main sidebar state uses `.MainAppSidebar-state-collapsed`.
+- The collapsed main sidebar hides the logo link with `visibility: hidden`. The `.Logo` node stays in the DOM, but `waitFor()` on it times out and snapshots skip it. To see or capture the logo, click the `Expand sidebar` button first, then click `Minimize sidebar` to restore the user's layout.
 
 ## Organization / Workspace Switcher
 

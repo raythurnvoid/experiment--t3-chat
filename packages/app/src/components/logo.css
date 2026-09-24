@@ -3,6 +3,7 @@
 		display: flex;
 		align-items: center;
 		justify-content: start;
+		gap: 8px;
 
 		height: 23px;
 		min-width: 73px;
@@ -19,6 +20,11 @@
 
 	.Logo:hover {
 		color: var(--color-accent-07);
+	}
+
+	.Logo-mark {
+		width: 24px;
+		height: 24px;
 	}
 
 	.Logo-text {
