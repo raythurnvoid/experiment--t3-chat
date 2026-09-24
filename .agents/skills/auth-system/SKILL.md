@@ -61,7 +61,7 @@ Auth is coordinated by `ClerkProvider` + `AppAuthProvider` + Convex auth integra
   - a Clerk JWT (`template: "convex"`) when signed in, or
   - a short-lived anonymous access JWT when not signed in
 
-Convex consumes the auth source via `ConvexProviderWithAuth` using `useAuth={AppAuthProvider.useAuth}`.
+Convex consumes the auth source via `ConvexProviderWithAuth` using `useAuth={AppAuthProvider.useConvexAuth}`. That hook reports `isConvexTokenReady` as authenticated, so Convex can sign in before `isLoaded` is true (see "Clerk (signed-in)" below). App code reads `AppAuthProvider.useAuth`.
 
 `main.tsx` opens the Convex websocket at startup, before this bootstrap ends. The socket sends no query and
 stays unauthenticated until `ConvexProviderWithAuth` sets the token. Otherwise the client opens it only on first

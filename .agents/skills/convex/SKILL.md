@@ -217,7 +217,7 @@ import { AppAuthProvider } from "./components/app-auth";
 import { app_convex } from "./lib/app-convex-client";
 
 <AppAuthProvider>
-	<ConvexProviderWithAuth client={app_convex} useAuth={AppAuthProvider.useAuth}>
+	<ConvexProviderWithAuth client={app_convex} useAuth={AppAuthProvider.useConvexAuth}>
 		<App />
 	</ConvexProviderWithAuth>
 </AppAuthProvider>;
