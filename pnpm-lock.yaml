@@ -271,8 +271,8 @@ importers:
         specifier: ^17.2.3
         version: 17.2.3
       exa-js:
-        specifier: ^2.11.0
-        version: 2.11.0(ws@8.21.1)
+        specifier: ^2.22.2
+        version: 2.22.2(ws@8.21.1)
       fflate:
         specifier: ^0.8.3
         version: 0.8.3
@@ -13307,8 +13307,8 @@ packages:
     resolution: {integrity: sha512-CRT1WTyuQoD771GW56XEZFQ/ZoSfWid1alKGDYMmkt2yl8UXrVR4pspqWNEcqKvVIzg6PAltWjxcSSPrboA4iA==}
     engines: {node: '>=18.0.0'}
 
-  exa-js@2.11.0:
-    resolution: {integrity: sha512-sPlcX96QgSYquUh3C8v/LQZdqGNN68B4h5rJKIb1J1DpoFpEsPm31Hg+/juby+QNQiauH22G/M2+yeMuNbWKQA==}
+  exa-js@2.22.2:
+    resolution: {integrity: sha512-pqXI4ADGL0Ryas5tT4JIowE9PKJmsUu2Ml2IUkNJtWBPnWTnmAZRlKTSCwmJdwXsd3HgdEaMwCrTC3AMcGZlOg==}
 
   execa@5.1.1:
     resolution: {integrity: sha512-8uSpZZocAZRBAPIEINJj3Lo9HyGitllczc27Eh5YYojjMFMn8yHMDMaUHE2Jqfq05D/wucwI4JGURyXt1vchyg==}
@@ -33868,7 +33868,7 @@ snapshots:
     dependencies:
       eventsource-parser: 3.1.0
 
-  exa-js@2.11.0(ws@8.21.1):
+  exa-js@2.22.2(ws@8.21.1):
     dependencies:
       cross-fetch: 4.1.0
       dotenv: 16.4.7
