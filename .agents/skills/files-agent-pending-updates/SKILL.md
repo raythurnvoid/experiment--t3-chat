@@ -110,6 +110,7 @@ Private lifetime and cleanup (`packages/app/convex/files_pending_nodes.ts`):
 - Generic ingestion checks current user, membership, plan, destination access, policy, and byte holds. Chat doors add Agent mode and current thread access. Browser doors add source and lease checks. These checks run again inside fresh finalization. Completed retries check current file access and return the current target without rerunning a producer gate. Abort skips completed work. It retires only its own unchanged draft and unused parents. New edits or dependent children survive. Asset holds remain until exact-key deletion settles after the last possible PUT.
 - `files_nodes_content.get_file_read_data` resolves the caller's pending view. Stored replacements use their held asset; pending deletes and preparing content are unavailable. It pins the target, asset, MIME, path, proposal ID/revision, and private generation. Old private links follow Save and then use current saved-file access. Ready private downloads require a cleared `unfinalizedExpiresAt`, a held byte reservation, and the exact active proposal. All outputs keep normal four-hour expiry and Save billing.
 - `get_file_pending_target` and pending rows return `requiredParents` in root-first order plus `canAcceptWithParents`, and `savedParentId`: the saved folder the pending chain hangs from, `null` at the root. The header breadcrumb builds its saved crumbs from it. UI shows those folder paths before connected Save and submits their exact proposal IDs/revisions with the file. It never silently selects siblings.
+- A private folder draft that holds at least one active child draft is not a change of its own, like in Git: saving the child creates the folder too. `list_files_pending_updates` returns `hasActiveChildDraft` on entry and restricted views. `db_pending_update_has_active_child_draft` decides it with one indexed read (`files_pending_nodes.by_organization_workspace_user_parent_state_name`), so it stays correct across pages and lost access. The Pending list, its source counts, the tab badge, and the chat strip counts all skip such a folder, so they always agree. The folder stays hidden under every source, even when its child came from another chat. When its last child draft is saved or discarded, the folder shows as its own row again.
 
 Bulk review (`packages/app/convex/files_pending_update_runs.ts`):
 
@@ -390,12 +391,15 @@ Important behavior:
 - binary structural replacements query both asset sizes while the row is mounted, then expand to removed and added size lines or `Size unchanged`
 - delete and binary-replacement links open the file, never the diff editor
 - per-row Accept/Discard actions. A row Accept that would affect a hidden source gets the same server `needs_review` refusal and the same way back to `All changes`. Accept is enabled only after the node's current write query returns true; Discard stays available for a readable own draft after write access is removed
-- bulk Accept is enabled only when every shown row currently returns true from its node write query. The backend still checks destination, replacement, and subtree permissions that one source-node query cannot prove
+- bulk Accept is enabled only when every shown row can be accepted: a saved row's node write query returns true, and a draft row is ready with `canAcceptWithParents`. The backend still checks destination, replacement, and subtree permissions that one source-node query cannot prove
 - move-before-content ordering for content-plus-move row acceptance; the content publish re-reads the doc after the move settle bumps `updatedAt`, and the row caption compounds (`Modified · Moved`)
 - delete rows run as their own trailing bulk phase (accepting a folder delete first would archive descendants and fail sibling accepts)
 - private create discard without deleting saved files
+- rows with `hasActiveChildDraft` are neither drawn nor counted. A hidden folder goes with the drafts inside it. `Accept all` sends each shown draft's `requiredParents` first, like row Accept. `Discard all` sends a hidden folder only when a shown draft inside it is discarded in the same run and no other loaded draft needs it. So a chat-scoped Discard all keeps a folder that holds another chat's draft; the server would refuse to discard it. A folder of another source in the middle of a draft's parent chain keeps every folder above it too. A draft on a page that is not loaded yet is unknown to the client, and the server then returns `needs_review`. Restricted views carry no `requiredParents`, so a hidden restricted folder is never sent; it shows again as its own `Draft unavailable` row after its drafts are discarded
+- a draft row's Accept sends its `requiredParents` first, root-first, then the draft. It is enabled when the draft is ready and `canAcceptWithParents` is true. The row looks like any new file: its caption is `Added file`, and only the row link's tooltip and accessible name add `, also adds <paths>`. Row Discard sends only the draft
+- every readable row, including a new folder and a stored draft, uses `FileEditorSidebarPendingItem` with inline Accept and Discard. A new folder shows `Added folder` and has nothing to open. A ready stored draft (a screenshot, an image, or other bytes) opens to show its file details: an image preview for safe images, type and size, creator, source chats, and Download. While it is preparing it has nothing to open
 
-Private stored-file rows and `FileNodeViewPrivateActions` use
+`FileNodeViewPrivateActions` uses
 `files_build_private_review_selection` in `src/lib/files.ts`. It sends the exact
 proposal revisions shown in the UI. Save selects required parents in root-first
 order, followed by the file. Discard selects only the file. Both locations use
@@ -406,15 +410,24 @@ published target through its normal live Files query.
 The helper sends a null `selectedContentStateId` for every item. That is right only
 for stored files and folders, which have no `content`: the review run refuses an
 accept item with `content` and a null state id. So `FileNodeViewPrivateActions`
-shows its Save only when `createIntent.kind !== "text"`. A private text draft saves
-through its editor's own Save (`files_save_private_file_pending_text`, which calls
-`save_file_pending_update`). Known gap: that editor Save refuses a draft whose
-parent folder is still pending (`Review and save the parent draft first`), while
-the header still says `Save also creates: <folder>`. Such a draft saves from the
-Pending tab, with its folder row shown.
+shows its Save only when `createIntent.kind !== "text"`. Saving a folder from its
+own view creates only that folder and its pending parents; its child drafts stay
+pending.
+
+A private text draft saves through its editor's own Save
+(`files_save_private_file_pending_text`). After the upsert, it reads
+`get_file_pending_target` once. Without pending parents, it calls the direct
+`save_file_pending_update`. With pending parents and `canAcceptWithParents`, it
+starts one review run: the parents first with a null state id, then the file with
+its new `stagedStateId`. When `canAcceptWithParents` is false (a parent is still
+preparing, or the user may not save), the parent list is not complete, so it calls
+the direct save and shows that refusal instead.
+The editor then stays on the draft, and the detail view follows the saved file
+when the run ends. The direct save stays strict: it still refuses a draft whose
+parent folder is pending (`Review and save the parent draft first`).
 
 Images preview only inside Files. Other binary types show file details and
-Download. Preparing files cannot preview, download, or Save; owner Discard stays
+Download. Preparing files cannot preview, download, or be accepted; owner Discard stays
 available. Removing the focused row or action returns focus to its panel. Signed
 private image URLs stay local to the preview component and are never shared in a
 cache or chat result.
@@ -423,6 +436,7 @@ cache or chat result.
 
 - the pending-changes strip above the Agent-tab chat composer (rendered through `AiChatThread`'s `composerTopSlot`): one row per destination, hidden at 0, never dismissable. With a persisted `threadId`, `get_chat_pending_updates_summary` counts this creator's contributing proposals separately in the current workspace and their own personal/home. It resolves home from the user's saved default pointers and collapses matching roots. Each root scans at most 500 proposals plus one extra doc to detect overflow; incomplete counts show `+`. It checks current chat read access and each destination's access. New and optimistic chats skip the query. Without the prop, the strip keeps the user's current-workspace count
 - the amber count badge inside the "Pending changes" sidebar tab label, hidden at 0 (always the workspace-wide count)
+- both the strip and the badge count only what the Pending list draws: they skip a folder draft that holds a draft (`hasActiveChildDraft` above)
 - chat rows link to the destination's existing Files route and select Pending changes through `app_state::files_last_tab`. The workspace-wide strip only switches the current sidebar tab. The badge is display-only. No combined Files view or cross-workspace bulk Save is added
 - below a 320px chat-container width, each strip wraps its label above the count and Review action so the destination stays readable. Wider strips keep the compact 42px row
 - the shared `FILE_EDITOR_SIDEBAR_TAB_ID_PENDING` constant (moved here so the sidebar tabs, the strip, and the agent panel import it without a cycle)
@@ -472,7 +486,7 @@ Only destination, occupant, and immediate-parent checks apply. The full contract
 - Bash `meta search` uses one Convex indexed query against `files_metadata_docs` per command. It filters pending metadata to the acting user, filters out other users' pending metadata, and hides committed metadata for files that user has a live (not stale) proposal on. Multi-predicate AND/OR is intentionally outside the command and should be composed by shell tools over path output.
 - Metadata search hides committed metadata only for docs that carry pending chunks (`files_pending_update_has_pending_chunks`) and are not stale, the same rule full-text search uses. A move-only doc or a stale doc does not mask the file's committed metadata.
 - `Review changes` must switch into diff mode.
-- In the diff editor, `Accept all` only copies unstaged content into staged content; it does not save by itself. In the Pending changes tab, bulk Accept applies or saves every row shown by the selected source.
+- In the diff editor, `Accept all` only copies unstaged content into staged content; it does not save by itself. In the Pending changes tab, bulk Accept applies or saves every row shown by the selected source, with the pending folders those rows need.
 - In the diff editor, `Discard all` copies staged content into unstaged content without a special clear mutation. The Pending changes tab uses backend discard mutations for its rows. Its content mutation copies staged into unstaged and may waive only a missing `content.write` permission for the caller's exact existing doc; it never weakens general pending upserts.
 - `Save` can partially resolve a pending update and keep the unresolved branch alive.
 - `Sync` must rebase on top of the latest live file state before persisting.
@@ -498,7 +512,8 @@ Only destination, occupant, and immediate-parent checks apply. The full contract
 - Verify the Pending changes tab renders and sorts content-only, move-only, copy, content-plus-move, and delete rows.
 - Verify the source selector shows All changes, threadless Your edits, archived chats, and contributing chats newest first. A shared pending doc should appear as the same complete row under every linked chat.
 - Verify a home proposal links to its chat's real team route. Another creator and an organization owner receive no chat details. Leave or source deletion hides the source title and link without blocking destination review. Verify current/home strip counts, separate Pending links, same-home deduplication, and `+` for capped counts.
-- Verify source-scoped bulk actions touch only shown rows. Empty sources, including Your edits, disappear; a selected source falls back to All changes after its last row settles.
+- Verify an added folder with a draft inside shows only the draft row, captioned `Added file` with `also adds <folder>` in its link name, and that the tab badge, source counts, and chat strip agree. Accepting the draft (row Accept or editor Save) also saves the folder. Discarding the draft keeps the folder, which then shows as its own row. Saving the folder alone creates an empty folder and keeps the draft pending.
+- Verify source-scoped bulk actions touch only shown rows and the hidden folders that hold them. Empty sources, including Your edits, disappear; a selected source falls back to All changes after its last row settles.
 - Verify source-scoped accept (row and bulk) never settles hidden move-chain/cycle members, hidden folder descendants, hidden replacement occupants, or hidden archive-source rows: the run ends `needs_review`, every row and saved node stays unchanged, and `Review remaining changes` switches the selector to All changes.
 - Verify editable Markdown delete rows start fetching committed content before expansion and render it as fully removed.
 - Verify binary and folder delete rows have no disclosure control and do not fetch committed Markdown.

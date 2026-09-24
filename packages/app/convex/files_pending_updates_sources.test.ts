@@ -411,6 +411,21 @@ describe("chat pending destination counts", () => {
 		).toEqual({ count: 3, truncated: false });
 	});
 
+	test("counts a folder draft that holds a draft as part of that draft", async () => {
+		const f = await fixture();
+		await f.folder(f.current, "/nest/inner");
+		expect(await f.counts()).toEqual([
+			{
+				workspace: "current",
+				organizationName: "test-organization",
+				workspaceName: "test-workspace",
+				count: 1,
+				truncated: false,
+			},
+			{ workspace: "personal", organizationName: "personal", workspaceName: "home", count: 0, truncated: false },
+		]);
+	});
+
 	test("deduplicates a home chat's two roots", async () => {
 		const f = await fixture(true);
 		await f.folder(f.home, "/home");

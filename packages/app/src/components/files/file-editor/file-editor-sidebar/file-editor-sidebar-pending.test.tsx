@@ -199,6 +199,8 @@ const requiredParentsById = new Map<
 	string,
 	Array<{ target: { kind: "private"; id: string }; path: string; pendingUpdateId: string; reviewedRevision: number }>
 >();
+// Folder drafts the server reports as holding another draft (`hasActiveChildDraft`).
+const activeChildDraftTargetIds = new Set<string>();
 function registerPendingState(stateId: string, text: string) {
 	// Always overwrite: tests reuse fixture ids with different texts.
 	const yjsDoc = files_yjs_doc_create_from_text({ text, rootKind: "rich_text" });
@@ -311,6 +313,7 @@ function makeOwnerViewFixtures(updates: app_convex_Doc<"files_pending_updates">[
 	return updates?.map((pendingUpdate) => {
 		const nodes: app_convex_Doc<"files_nodes">[] = treeNodesMock() ?? [];
 		const canAccept = !blockedTargetIds.has(pendingUpdate.target.id) && !pendingUpdate.preparation;
+		const hasActiveChildDraft = activeChildDraftTargetIds.has(pendingUpdate.target.id);
 		if (unreadableTargetIds.has(pendingUpdate.target.id))
 			return {
 				kind: "restricted",
@@ -318,6 +321,7 @@ function makeOwnerViewFixtures(updates: app_convex_Doc<"files_pending_updates">[
 				pendingUpdateId: pendingUpdate._id,
 				revision: pendingUpdate.revision,
 				threadIds: pendingUpdate.threadIds,
+				hasActiveChildDraft,
 			};
 		if (pendingUpdate.target.kind === "private") {
 			const path = privatePathsById.get(pendingUpdate.target.id)!;
@@ -343,6 +347,7 @@ function makeOwnerViewFixtures(updates: app_convex_Doc<"files_pending_updates">[
 				canAccept: canAccept && !requiredParentsById.has(pendingUpdate.target.id),
 				canAcceptWithParents: canAccept,
 				requiredParents: requiredParentsById.get(pendingUpdate.target.id) ?? [],
+				hasActiveChildDraft,
 			};
 		}
 		const node = nodes.find((node) => node._id === pendingUpdate.target.id);
@@ -365,6 +370,7 @@ function makeOwnerViewFixtures(updates: app_convex_Doc<"files_pending_updates">[
 			canAccept,
 			canAcceptWithParents: canAccept,
 			requiredParents: [],
+			hasActiveChildDraft,
 		};
 	});
 }
@@ -434,6 +440,7 @@ beforeEach(() => {
 	loadMoreMock.mockReset();
 	blockedTargetIds.clear();
 	requiredParentsById.clear();
+	activeChildDraftTargetIds.clear();
 	unreadableTargetIds.clear();
 	privatePathsById.clear();
 	tenantContextMock.mockReturnValue({
@@ -580,8 +587,11 @@ describe("FileEditorSidebarPending", () => {
 		actionMock.mockResolvedValue({ _yay: { url: "https://assets.test/private.png" } });
 		const { container } = render(<FileEditorSidebarPending />);
 
+		// Both use the normal row with inline Accept. Only the stored file has details to open.
+		expect(screen.getByText(privateKind === "stored" ? "Added file" : "Added folder")).toBeTruthy();
+		expect(screen.getByRole("link", { name: "/added" })).toBeTruthy();
+		expect(container.querySelector("details") !== null).toBe(privateKind === "stored");
 		if (privateKind === "stored") {
-			expect(screen.getByText("/added · Added file")).toBeTruthy();
 			expect(actionMock).not.toHaveBeenCalled();
 
 			// jsdom does not fire the toggle event by itself, so open the row and fire it by hand.
@@ -589,12 +599,8 @@ describe("FileEditorSidebarPending", () => {
 			details.open = true;
 			fireEvent(details, new Event("toggle"));
 			await screen.findByRole("img", { name: "added" });
-			fireEvent.click(screen.getByRole("button", { name: "Save changes to /added" }));
-		} else {
-			expect(screen.getByText("Added folder")).toBeTruthy();
-			expect(container.querySelector("details")).toBeNull();
-			fireEvent.click(screen.getByRole("button", { name: "Accept changes to /added" }));
 		}
+		fireEvent.click(screen.getByRole("button", { name: "Accept changes to /added" }));
 		await waitFor(() =>
 			expect(startReviewMock).toHaveBeenCalledWith({
 				kind: "accept",
@@ -603,6 +609,285 @@ describe("FileEditorSidebarPending", () => {
 		);
 		expect(fetchPendingStateMock).not.toHaveBeenCalled();
 		expect(fetchFileYjsStateAndTextMock).not.toHaveBeenCalled();
+	});
+
+	describe("folder drafts that hold a draft", () => {
+		function renderFolderWithNote() {
+			const folder = makePendingUpdate({
+				id: "pu_folder",
+				fileNodeId: "private_folder",
+				privatePath: "/qa",
+				privateKind: "folder",
+			});
+			const note = makePendingUpdate({
+				id: "pu_note",
+				fileNodeId: "private_note",
+				privatePath: "/qa/note.md",
+				staged: "",
+				unstaged: "hi",
+			});
+			activeChildDraftTargetIds.add("private_folder");
+			requiredParentsById.set("private_note", [
+				{
+					target: { kind: "private", id: "private_folder" },
+					path: "/qa",
+					pendingUpdateId: "pu_folder",
+					reviewedRevision: 3,
+				},
+			]);
+			useQueryMock.mockReturnValue([folder, note]);
+			treeNodesMock.mockReturnValue(undefined);
+			return render(<FileEditorSidebarPending />);
+		}
+
+		test("draws only the draft inside, names the folder, and counts one change", () => {
+			renderFolderWithNote();
+
+			expect(screen.queryByRole("link", { name: "/qa" })).toBeNull();
+			// The row looks like any new file. Only its tooltip and accessible name list the folder.
+			expect(screen.getByRole("link", { name: "/qa/note.md, also adds /qa" })).toBeTruthy();
+			expect(screen.getByText("Added file")).toBeTruthy();
+			expect(screen.queryByText(/also adds/)).toBeNull();
+			expect(screen.getByRole("combobox", { name: "Pending changes source: All changes, 1 change" })).toBeTruthy();
+		});
+
+		test("row Accept saves the folder first, then the draft with its reviewed text", async () => {
+			renderFolderWithNote();
+
+			fireEvent.click(screen.getByRole("button", { name: "Accept changes to /qa/note.md" }));
+
+			await waitFor(() =>
+				expect(startReviewMock).toHaveBeenCalledWith({
+					kind: "accept",
+					items: [
+						{ pendingUpdateId: "pu_folder", reviewedRevision: 3, selectedContentStateId: null },
+						{ pendingUpdateId: "pu_note", reviewedRevision: 1, selectedContentStateId: "pu_note_unstaged" },
+					],
+				}),
+			);
+		});
+
+		test("row Discard removes only the draft", async () => {
+			renderFolderWithNote();
+
+			fireEvent.click(screen.getByRole("button", { name: "Discard changes to /qa/note.md" }));
+
+			await waitFor(() =>
+				expect(startReviewMock).toHaveBeenCalledWith({
+					kind: "discard",
+					items: [{ pendingUpdateId: "pu_note", reviewedRevision: 1, selectedContentStateId: null }],
+				}),
+			);
+		});
+
+		test("bulk actions send the hidden folder together with the draft inside it", async () => {
+			renderFolderWithNote();
+
+			fireEvent.click(screen.getByRole("button", { name: "Accept all shown pending changes" }));
+			await waitFor(() =>
+				expect(startReviewMock).toHaveBeenLastCalledWith({
+					kind: "accept",
+					items: [
+						{ pendingUpdateId: "pu_folder", reviewedRevision: 3, selectedContentStateId: null },
+						{ pendingUpdateId: "pu_note", reviewedRevision: 1, selectedContentStateId: "pu_note_unstaged" },
+					],
+				}),
+			);
+
+			fireEvent.click(screen.getByRole("button", { name: "Discard all shown pending changes" }));
+			await waitFor(() =>
+				expect(startReviewMock).toHaveBeenLastCalledWith({
+					kind: "discard",
+					items: [
+						{ pendingUpdateId: "pu_folder", reviewedRevision: 1, selectedContentStateId: null },
+						{ pendingUpdateId: "pu_note", reviewedRevision: 1, selectedContentStateId: null },
+					],
+				}),
+			);
+		});
+
+		test("bulk actions under a chat never touch a hidden folder that holds another chat's draft", async () => {
+			activeChildDraftTargetIds.add("private_folder");
+			const folderParent = {
+				target: { kind: "private", id: "private_folder" },
+				path: "/qa",
+				pendingUpdateId: "pu_folder",
+				reviewedRevision: 3,
+			} as const;
+			requiredParentsById.set("private_note", [folderParent]);
+			requiredParentsById.set("private_x", [folderParent]);
+			treeNodesMock.mockReturnValue(undefined);
+			useQueryMock.mockReturnValue([
+				makePendingUpdate({
+					id: "pu_folder",
+					fileNodeId: "private_folder",
+					privatePath: "/qa",
+					privateKind: "folder",
+					threadIds: ["thread_a"],
+				}),
+				makePendingUpdate({
+					id: "pu_note",
+					fileNodeId: "private_note",
+					privatePath: "/qa/note.md",
+					staged: "",
+					unstaged: "hi",
+					threadIds: ["thread_b"],
+				}),
+				makePendingUpdate({
+					id: "pu_x",
+					fileNodeId: "private_x",
+					privatePath: "/qa/x.md",
+					staged: "",
+					unstaged: "x",
+					threadIds: ["thread_a"],
+				}),
+			]);
+			useQueriesMock.mockReturnValue({
+				thread_a: makeThread({ id: "thread_a", title: "First chat", lastMessageAt: 10 }),
+				thread_b: makeThread({ id: "thread_b", title: "Second chat", lastMessageAt: 20 }),
+			});
+			render(<FileEditorSidebarPending />);
+			const selectSource = (name: RegExp) => {
+				fireEvent.click(screen.getByRole("combobox"));
+				fireEvent.click(screen.getByRole("option", { name }));
+			};
+
+			// The folder and x.md belong to the first chat, but note.md in the same folder belongs to
+			// the second one. So discarding x.md must keep the folder, and saving x.md saves it.
+			selectSource(/^First chat/);
+			expect(screen.getByRole("combobox", { name: "Pending changes source: First chat, 1 change" })).toBeTruthy();
+			fireEvent.click(screen.getByRole("button", { name: "Discard all shown pending changes" }));
+			await waitFor(() =>
+				expect(startReviewMock).toHaveBeenLastCalledWith({
+					kind: "discard",
+					items: [{ pendingUpdateId: "pu_x", reviewedRevision: 1, selectedContentStateId: null }],
+				}),
+			);
+			fireEvent.click(screen.getByRole("button", { name: "Accept all shown pending changes" }));
+			await waitFor(() =>
+				expect(startReviewMock).toHaveBeenLastCalledWith({
+					kind: "accept",
+					items: [
+						{ pendingUpdateId: "pu_folder", reviewedRevision: 3, selectedContentStateId: null },
+						{ pendingUpdateId: "pu_x", reviewedRevision: 1, selectedContentStateId: "pu_x_unstaged" },
+					],
+				}),
+			);
+
+			// The second chat's draft saves its folder with it, like its row Accept does.
+			selectSource(/^Second chat/);
+			fireEvent.click(screen.getByRole("button", { name: "Accept all shown pending changes" }));
+			await waitFor(() =>
+				expect(startReviewMock).toHaveBeenLastCalledWith({
+					kind: "accept",
+					items: [
+						{ pendingUpdateId: "pu_folder", reviewedRevision: 3, selectedContentStateId: null },
+						{ pendingUpdateId: "pu_note", reviewedRevision: 1, selectedContentStateId: "pu_note_unstaged" },
+					],
+				}),
+			);
+		});
+
+		test("Discard all under a chat keeps the folders above another chat's hidden folder", async () => {
+			activeChildDraftTargetIds.add("private_f");
+			activeChildDraftTargetIds.add("private_g");
+			const parentF = {
+				target: { kind: "private", id: "private_f" },
+				path: "/f",
+				pendingUpdateId: "pu_f",
+				reviewedRevision: 1,
+			} as const;
+			const parentG = {
+				target: { kind: "private", id: "private_g" },
+				path: "/f/g",
+				pendingUpdateId: "pu_g",
+				reviewedRevision: 1,
+			} as const;
+			requiredParentsById.set("private_g", [parentF]);
+			requiredParentsById.set("private_x", [parentF, parentG]);
+			treeNodesMock.mockReturnValue(undefined);
+			useQueryMock.mockReturnValue([
+				makePendingUpdate({
+					id: "pu_f",
+					fileNodeId: "private_f",
+					privatePath: "/f",
+					privateKind: "folder",
+					threadIds: ["thread_a"],
+				}),
+				makePendingUpdate({
+					id: "pu_g",
+					fileNodeId: "private_g",
+					privatePath: "/f/g",
+					privateKind: "folder",
+					threadIds: ["thread_b"],
+				}),
+				makePendingUpdate({
+					id: "pu_x",
+					fileNodeId: "private_x",
+					privatePath: "/f/g/x.md",
+					staged: "",
+					unstaged: "x",
+					threadIds: ["thread_a"],
+				}),
+			]);
+			useQueriesMock.mockReturnValue({
+				thread_a: makeThread({ id: "thread_a", title: "First chat", lastMessageAt: 10 }),
+				thread_b: makeThread({ id: "thread_b", title: "Second chat", lastMessageAt: 20 }),
+			});
+			render(<FileEditorSidebarPending />);
+
+			// The first chat cannot send g, so /f must stay too: it still holds g.
+			fireEvent.click(screen.getByRole("combobox"));
+			fireEvent.click(screen.getByRole("option", { name: /^First chat/ }));
+			fireEvent.click(screen.getByRole("button", { name: "Discard all shown pending changes" }));
+			await waitFor(() =>
+				expect(startReviewMock).toHaveBeenLastCalledWith({
+					kind: "discard",
+					items: [{ pendingUpdateId: "pu_x", reviewedRevision: 1, selectedContentStateId: null }],
+				}),
+			);
+		});
+
+		test("lists several parent folders only in the label", () => {
+			const note = makePendingUpdate({
+				id: "pu_deep",
+				fileNodeId: "private_deep",
+				privatePath: "/a/b/c.md",
+				staged: "",
+				unstaged: "hi",
+			});
+			requiredParentsById.set("private_deep", [
+				{ target: { kind: "private", id: "private_a" }, path: "/a", pendingUpdateId: "pu_a", reviewedRevision: 1 },
+				{ target: { kind: "private", id: "private_b" }, path: "/a/b", pendingUpdateId: "pu_b", reviewedRevision: 1 },
+			]);
+			useQueryMock.mockReturnValue([note]);
+			treeNodesMock.mockReturnValue(undefined);
+
+			render(<FileEditorSidebarPending />);
+
+			expect(screen.getByText("Added file")).toBeTruthy();
+			expect(screen.getByRole("link", { name: "/a/b/c.md, also adds /a, /a/b" })).toBeTruthy();
+		});
+
+		test("a hidden folder without access is not drawn or counted either", () => {
+			const folder = makePendingUpdate({
+				id: "pu_folder",
+				fileNodeId: "private_folder",
+				privatePath: "/qa",
+				privateKind: "folder",
+			});
+			const note = makePendingUpdate({ id: "pu_note", fileNodeId: "private_note", privatePath: "/qa/note.md" });
+			activeChildDraftTargetIds.add("private_folder");
+			unreadableTargetIds.add("private_folder");
+			unreadableTargetIds.add("private_note");
+			useQueryMock.mockReturnValue([folder, note]);
+			treeNodesMock.mockReturnValue(undefined);
+
+			render(<FileEditorSidebarPending />);
+
+			expect(screen.getAllByText("Draft unavailable")).toHaveLength(1);
+			expect(screen.getByRole("combobox", { name: "Pending changes source: All changes, 1 change" })).toBeTruthy();
+		});
 	});
 
 	test.each(["image/png", "image/webp"])(
@@ -646,12 +931,12 @@ describe("FileEditorSidebarPending", () => {
 			expect(screen.getByRole("link", { name: "Check page" }).getAttribute("href")).toBe(
 				"/w/source-team/source-workspace/chat?threadId=thread_a",
 			);
-			// The row names the folder it will create, and bulk Accept stays off while a shown row needs a
-			// parent. Saving this one row sends the folder first, so the file has somewhere to land.
-			expect(screen.getByText("Save also creates: /captures")).toBeTruthy();
-			expect(screen.getByRole("button", { name: "Accept all shown pending changes" }).matches(":disabled")).toBe(true);
+			// The row names the folder it will create in its label. Accepting this row, or Accept all,
+			// sends the folder first, so the file has somewhere to land.
+			expect(screen.getByRole("link", { name: "/captures/page.png, also adds /captures" })).toBeTruthy();
+			expect(screen.getByRole("button", { name: "Accept all shown pending changes" }).matches(":disabled")).toBe(false);
 
-			fireEvent.click(screen.getByRole("button", { name: "Save changes to /captures/page.png" }));
+			fireEvent.click(screen.getByRole("button", { name: "Accept changes to /captures/page.png" }));
 
 			await waitFor(() =>
 				expect(startReviewMock).toHaveBeenCalledWith({
@@ -737,7 +1022,7 @@ describe("FileEditorSidebarPending", () => {
 			expect(screen.getByRole("button", { name: `Download ${name}` }).matches(":disabled")).toBe(false),
 		);
 
-		fireEvent.click(screen.getByRole("button", { name: `Save changes to /exports/${name}` }));
+		fireEvent.click(screen.getByRole("button", { name: `Accept changes to /exports/${name}` }));
 		await waitFor(() =>
 			expect(startReviewMock).toHaveBeenCalledWith({
 				kind: "accept",
@@ -749,9 +1034,9 @@ describe("FileEditorSidebarPending", () => {
 		);
 	});
 
-	// The bytes of a preparing file are not in storage yet. So there is nothing to show, download or
-	// save. The user may still throw the draft away.
-	test("preparing stored files block preview, download, and Save while keeping Discard", async () => {
+	// The bytes of a preparing file are not in storage yet. So the row has nothing to open, download
+	// or accept. The user may still throw the draft away.
+	test("preparing stored files block preview, download, and Accept while keeping Discard", async () => {
 		useQueryMock.mockReturnValue([
 			makePendingUpdate({
 				id: "pu_preparing",
@@ -764,13 +1049,11 @@ describe("FileEditorSidebarPending", () => {
 		treeNodesMock.mockReturnValue([]);
 
 		const { container } = render(<FileEditorSidebarPending />);
-		const details = container.querySelector("details")!;
-		details.open = true;
-		fireEvent(details, new Event("toggle"));
 
 		expect(screen.getByText("Preparing…")).toBeTruthy();
-		expect(screen.getByRole("button", { name: "Save changes to /preparing.png" }).matches(":disabled")).toBe(true);
-		expect(screen.getByRole("button", { name: "Download preparing.png" }).matches(":disabled")).toBe(true);
+		expect(container.querySelector("details")).toBeNull();
+		expect(screen.getByRole("button", { name: "Accept changes to /preparing.png" }).matches(":disabled")).toBe(true);
+		expect(screen.queryByRole("button", { name: "Download preparing.png" })).toBeNull();
 		expect(screen.queryByRole("img")).toBeNull();
 		expect(actionMock).not.toHaveBeenCalled();
 
@@ -822,7 +1105,7 @@ describe("FileEditorSidebarPending", () => {
 		expect(screen.getByText("No pending changes")).toBeTruthy();
 	});
 
-	test("image Discard stays available when Save loses permission and reports review failure", async () => {
+	test("image Discard stays available when Accept loses permission and reports review failure", async () => {
 		useQueryMock.mockReturnValue([
 			makePendingUpdate({
 				id: "pu_image",
@@ -841,8 +1124,8 @@ describe("FileEditorSidebarPending", () => {
 		fireEvent(details, new Event("toggle"));
 		await screen.findByRole("img", { name: "page.png" });
 
-		// The reader lost write access to the file, so Save is off. Discarding their own draft still works.
-		expect(screen.getByRole("button", { name: "Save changes to /page.png" }).matches(":disabled")).toBe(true);
+		// The reader lost write access to the file, so Accept is off. Discarding their own draft still works.
+		expect(screen.getByRole("button", { name: "Accept changes to /page.png" }).matches(":disabled")).toBe(true);
 
 		const discard = screen.getByRole("button", { name: "Discard changes to /page.png" });
 		discard.focus();
@@ -1778,7 +2061,7 @@ describe("FileEditorSidebarPending", () => {
 		expect(screen.getByRole("link", { name: "/notes.md" }).getAttribute("href")).not.toContain("view=diff_editor");
 	});
 
-	test("added row shows the green Added caption and path and keeps the diff link", () => {
+	test("added row shows the green Added file caption and path and keeps the diff link", () => {
 		useQueryMock.mockReturnValue([
 			makePendingUpdate({
 				id: "pu_copy",
@@ -1796,7 +2079,7 @@ describe("FileEditorSidebarPending", () => {
 
 		const { container } = render(<FileEditorSidebarPending />);
 
-		expect(container.querySelector(".FileEditorSidebarPending-item-caption")?.textContent).toBe("Added");
+		expect(container.querySelector(".FileEditorSidebarPending-item-caption")?.textContent).toBe("Added file");
 		expect(container.querySelector(".FileEditorSidebarPending-item-path-text-added")?.textContent).toBe("/copy.md");
 		const link = screen.getByRole("link", { name: "/copy.md" });
 		expect(link.getAttribute("href")).toContain("view=diff_editor");
@@ -2109,7 +2392,7 @@ describe("FileEditorSidebarPending", () => {
 
 		const { container } = render(<FileEditorSidebarPending />);
 
-		expect(container.querySelector(".FileEditorSidebarPending-item-caption")?.textContent).toBe("Added");
+		expect(container.querySelector(".FileEditorSidebarPending-item-caption")?.textContent).toBe("Added file");
 		expect(screen.getByRole("link", { name: "/b.md" }).getAttribute("href")).toContain("pendingNodeId=node_a");
 	});
 

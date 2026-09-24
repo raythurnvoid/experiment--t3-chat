@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
+import type { FunctionReturnType } from "convex/server";
+import type { Id } from "./_generated/dataModel.js";
 import { test_convex, test_mocks, test_mocks_fill_db_with } from "./setup.test.ts";
 import { files_visible_db_create_reader, type files_visible_internal_list_Result } from "./files_visible.ts";
 
@@ -17,6 +19,7 @@ async function create_private(
 	f: Awaited<ReturnType<typeof fixture>>,
 	path: string,
 	kind: "file" | "folder" = "folder",
+	threadId?: Id<"ai_chat_threads">,
 ) {
 	const created = await f.t.mutation(internal.files_nodes.create_private_node_by_path, {
 		organizationId: f.db.organizationId,
@@ -24,6 +27,7 @@ async function create_private(
 		userId: f.db.userId,
 		path,
 		kind,
+		...(threadId ? { threadId } : {}),
 	});
 	if (created._nay) throw new Error(created._nay.message);
 	return created._yay;
@@ -523,5 +527,91 @@ describe("list_files_pending_updates", () => {
 				membershipId: f.db.membershipId,
 			}),
 		).toEqual({ count: 6, truncated: false });
+	});
+
+	test("hides a folder draft that holds a draft on every page and in the count", async () => {
+		const f = await fixture();
+		await create_private(f, "/qa/page.md", "file");
+		await create_private(f, "/a/b");
+
+		// One row per page, so a folder and its child always land on different pages.
+		const flags = new Map<string, boolean>();
+		let cursor: string | null = null;
+		do {
+			const page: FunctionReturnType<typeof api.files_pending_updates.list_files_pending_updates> =
+				await f.asUser.query(api.files_pending_updates.list_files_pending_updates, {
+					membershipId: f.db.membershipId,
+					paginationOpts: { numItems: 1, cursor },
+				});
+			for (const view of page.page) {
+				if (view.kind === "entry") flags.set(view.entry.path, view.hasActiveChildDraft);
+			}
+			cursor = page.isDone ? null : page.continueCursor;
+		} while (cursor !== null);
+		expect(Object.fromEntries(flags)).toEqual({ "/qa": true, "/qa/page.md": false, "/a": true, "/a/b": false });
+		expect(
+			await f.asUser.query(api.files_pending_updates.get_files_pending_updates_summary, {
+				membershipId: f.db.membershipId,
+			}),
+		).toEqual({ count: 2, truncated: false });
+
+		// Discarding the only file inside brings the empty folder back as its own change.
+		const all = await f.asUser.query(api.files_pending_updates.list_files_pending_updates, {
+			membershipId: f.db.membershipId,
+			paginationOpts: { numItems: 20, cursor: null },
+		});
+		const file = all.page.find((view) => view.kind === "entry" && view.entry.path === "/qa/page.md");
+		if (file?.kind !== "entry" || !file.entry.pendingUpdate) throw new Error("Expected the file draft");
+		expect(
+			(
+				await f.asUser.mutation(api.files_pending_updates.discard_file_pending_update, {
+					membershipId: f.db.membershipId,
+					target: file.entry.pendingUpdate.target,
+					pendingUpdateId: file.entry.pendingUpdate._id,
+					reviewedRevision: file.entry.pendingUpdate.revision,
+				})
+			)._nay,
+		).toBeUndefined();
+		const after = await f.asUser.query(api.files_pending_updates.list_files_pending_updates, {
+			membershipId: f.db.membershipId,
+			paginationOpts: { numItems: 20, cursor: null },
+		});
+		expect(
+			Object.fromEntries(
+				after.page.flatMap((view) => (view.kind === "entry" ? [[view.entry.path, view.hasActiveChildDraft]] : [])),
+			),
+		).toEqual({ "/qa": false, "/a": true, "/a/b": false });
+		expect(
+			await f.asUser.query(api.files_pending_updates.get_files_pending_updates_summary, {
+				membershipId: f.db.membershipId,
+			}),
+		).toEqual({ count: 2, truncated: false });
+	});
+
+	test("hides a folder from one chat that holds a draft from another chat in every count", async () => {
+		const f = await fixture();
+		const [chatA, chatB] = await Promise.all(
+			["pending-chat-a", "pending-chat-b"].map(async (clientGeneratedId) => {
+				const thread = await f.asUser.mutation(api.ai_chat.thread_create, {
+					membershipId: f.db.membershipId,
+					clientGeneratedId,
+					title: clientGeneratedId,
+					lastMessageAt: undefined,
+				});
+				if (thread._nay) throw new Error(thread._nay.message);
+				return thread._yay.threadId;
+			}),
+		);
+		await create_private(f, "/reports", "folder", chatA);
+		await create_private(f, "/reports/june.md", "file", chatB);
+
+		const count = (threadId?: Id<"ai_chat_threads">) =>
+			f.asUser.query(api.files_pending_updates.get_files_pending_updates_summary, {
+				membershipId: f.db.membershipId,
+				...(threadId ? { threadId } : {}),
+			});
+		expect(await count(chatA)).toEqual({ count: 0, truncated: false });
+		expect(await count(chatB)).toEqual({ count: 1, truncated: false });
+		expect(await count()).toEqual({ count: 1, truncated: false });
 	});
 });

@@ -36,7 +36,6 @@ import type { AppClassName } from "@/lib/dom-utils.ts";
 import { files_truncate_path_for_width } from "@/lib/file-paths.ts";
 import {
 	files_ROOT_ID,
-	files_build_private_review_selection,
 	files_collect_protected_descendant_ids,
 	files_download_blob,
 	files_fetch_file_pending_update_yjs_state,
@@ -78,9 +77,8 @@ type FileEditorSidebarPendingRow = {
 	readiness: "preparing" | "ready";
 	recovery?: Extract<FileEditorSidebarPendingView, { kind: "entry" }>["recovery"];
 	copyDestination?: Extract<FileEditorSidebarPendingView, { kind: "entry" }>["copyDestination"];
-	canAccept: boolean;
 	/**
-	 * True when Save can also create the pending parent folders this file still needs.
+	 * True when Accept can also create the pending parent folders this file still needs.
 	 */
 	canAcceptWithParents: boolean;
 	/**
@@ -111,6 +109,11 @@ type FileEditorSidebarPendingRow = {
 	canPreviewDeleteDiff: boolean;
 	/** True when this pending row belongs to a folder node. */
 	isFolder: boolean;
+	/**
+	 * True for a folder draft that holds another draft. The list does not draw it and the counts
+	 * skip it, because saving the draft inside creates the folder too.
+	 */
+	hasActiveChildDraft: boolean;
 	/** Private files and folders are shown as Added until publication. */
 	isAddedFile: boolean;
 	/**
@@ -167,7 +170,7 @@ function build_pending_rows(
 
 	return views
 		.flatMap((view): FileEditorSidebarPendingRow[] => {
-			const { entry, readiness, canAccept, canAcceptWithParents, requiredParents } = view;
+			const { entry, readiness, canAcceptWithParents, requiredParents, hasActiveChildDraft } = view;
 			const pendingUpdate = entry.pendingUpdate;
 			if (!pendingUpdate) return [];
 			const node = entry.kind === "saved" ? entry.node : null;
@@ -237,7 +240,6 @@ function build_pending_rows(
 					readiness,
 					recovery: view.recovery,
 					copyDestination: view.copyDestination,
-					canAccept,
 					canAcceptWithParents,
 					requiredParents,
 					privateEntry: entry.kind === "private" ? entry : null,
@@ -246,6 +248,7 @@ function build_pending_rows(
 					sizeOnlyReplacedNodeId,
 					canPreviewDeleteDiff: kind === "delete" && files_node_has_editable_yjs_state(node),
 					isFolder: entry.node.kind === "folder",
+					hasActiveChildDraft,
 					isAddedFile: entry.kind === "private",
 					isArchived: node != null && node.archiveOperationId !== null,
 					// A file with collaboration off keeps its shape too; its branches decode the same way.
@@ -654,63 +657,37 @@ const FileEditorSidebarPendingSizeDiff = memo(function FileEditorSidebarPendingS
 });
 // #endregion size diff
 
-// #region stored file item
-type FileEditorSidebarPendingStoredFile_ClassNames =
-	| "FileEditorSidebarPendingStoredFile"
-	| "FileEditorSidebarPendingStoredFile-summary"
-	| "FileEditorSidebarPendingStoredFile-body"
-	| "FileEditorSidebarPendingStoredFile-actions";
+// #region stored file details
+type FileEditorSidebarPendingStoredFileDetails_ClassNames =
+	| "FileEditorSidebarPendingStoredFileDetails"
+	| "FileEditorSidebarPendingStoredFileDetails-actions";
 
 /**
- * Review row for a file the agent created with finished bytes (`createIntent.kind === "stored"`),
+ * Open body of a ready draft the agent created with finished bytes (`createIntent.kind === "stored"`),
  * such as a browser screenshot, a generated image, or a file written by a code run. These files
- * have no text diff, so the row shows an image preview, the file facts, and the Save, Discard and
- * Download actions.
+ * have no text diff, so the body shows an image preview, the file facts, and Download. The row
+ * above it owns Accept and Discard, like every other pending row.
  */
-const FileEditorSidebarPendingStoredFile = memo(function FileEditorSidebarPendingStoredFile(props: {
+const FileEditorSidebarPendingStoredFileDetails = memo(function FileEditorSidebarPendingStoredFileDetails(props: {
 	entry: Extract<files_VisibleEntry, { kind: "private" }>;
 	intent: Extract<NonNullable<app_convex_Doc<"files_pending_updates">["createIntent"]>, { kind: "stored" }>;
-	requiredParents: FileEditorSidebarPendingRow["requiredParents"];
-	readiness: "preparing" | "ready";
-	recovery?: FileEditorSidebarPendingRow["recovery"];
-	copyDestination?: FileEditorSidebarPendingRow["copyDestination"];
-	canAccept: boolean;
 	disabled: boolean;
-	onActionSuccess: (message: string) => void;
 }) {
-	const { entry, intent, requiredParents, readiness, canAccept, disabled, onActionSuccess } = props;
-	const { membershipId, organizationName, workspaceName } = AppTenantProvider.useContext();
-	const { startReview } = AppActivitiesProvider.useContext();
-	const [open, setOpen] = useState(false);
-	const [busy, setBusy] = useState<"accept" | "discard" | "download" | null>(null);
-	const itemRef = useRef<HTMLLIElement>(null);
+	const { entry, intent, disabled } = props;
+	const { membershipId } = AppTenantProvider.useContext();
+	const [isDownloading, setIsDownloading] = useState(false);
 	const serving = files_get_signed_download_serving({ contentType: intent.contentType, fileName: entry.node.name });
 	// The serving policy filters unsafe types such as SVG before deciding whether to show an image.
 	const isImage = serving.responseContentType.startsWith("image/");
 
-	// Saving or discarding removes this row. The browser then puts focus on `<body>` and a keyboard
-	// user loses their place, so this cleanup gives focus back to the panel. Both panel roots carry
-	// `tabIndex={-1}` so they can take it.
-	useLayoutEffect(() => {
-		const item = itemRef.current;
-		return () => {
-			if (!item?.contains(document.activeElement)) return;
-			const panel = item.closest<HTMLElement>(".FileEditorSidebarPending");
-			// Wait for row removal to finish. Keep any focus moved by the review dialog.
-			queueMicrotask(() => {
-				if (document.activeElement === document.body) panel?.focus();
-			});
-		};
-	}, []);
-
-	// Read the creator name and the chat titles only while the row is open. The panel can list many
-	// rows, and every closed row would otherwise keep its own live queries.
-	const creator = useQuery(app_convex_api.users.get_anagraphic, open ? { userId: entry.node.userId } : "skip");
+	// The row mounts this body only while it is open. So a long list of closed rows keeps no live
+	// queries for the creator name and the chat titles.
+	const creator = useQuery(app_convex_api.users.get_anagraphic, { userId: entry.node.userId });
 	const threads = useQueries(
 		useMemo(
 			() =>
 				Object.fromEntries(
-					(open ? (entry.pendingUpdate.threadIds ?? []) : []).map((threadId) => [
+					(entry.pendingUpdate.threadIds ?? []).map((threadId) => [
 						threadId,
 						{
 							query: app_convex_api.files_pending_updates.get_pending_source_summary,
@@ -718,28 +695,13 @@ const FileEditorSidebarPendingStoredFile = memo(function FileEditorSidebarPendin
 						},
 					]),
 				),
-			[entry.pendingUpdate.threadIds, membershipId, open],
+			[entry.pendingUpdate.threadIds, membershipId],
 		),
 	);
 
-	const handleReview = useFn((kind: "accept" | "discard") => {
-		if (busy || disabled || (kind === "accept" && !canAccept)) return;
-		setBusy(kind);
-		void startReview(
-			files_build_private_review_selection({
-				kind,
-				pendingUpdate: entry.pendingUpdate,
-				requiredParents,
-			}),
-		)
-			.then(() => onActionSuccess(`Started ${kind === "accept" ? "saving" : "discarding"} ${entry.path}`))
-			.catch((error: unknown) => toast.error(error instanceof Error ? error.message : "Failed to start review"))
-			.finally(() => setBusy(null));
-	});
-
 	const handleDownload = useFn(() => {
-		if (busy || disabled || readiness !== "ready") return;
-		setBusy("download");
+		if (isDownloading || disabled) return;
+		setIsDownloading(true);
 		// Pin the signed download to the draft revision shown in this review.
 		void app_convex
 			.action(app_convex_api.files_pending_updates.create_private_pending_download_url, {
@@ -764,137 +726,74 @@ const FileEditorSidebarPendingStoredFile = memo(function FileEditorSidebarPendin
 				files_download_blob({ blob: await response.blob(), filename: entry.node.name });
 			})
 			.catch(() => toast.error("The file could not be downloaded. Try again."))
-			.finally(() => setBusy(null));
+			.finally(() => setIsDownloading(false));
 	});
 
 	return (
-		<li ref={itemRef}>
-			<FilePendingNotice recovery={props.recovery} copyDestination={props.copyDestination} />
-			<details
-				className={"FileEditorSidebarPendingStoredFile" satisfies FileEditorSidebarPendingStoredFile_ClassNames}
-				open={open}
-				onToggle={(event) => setOpen(event.currentTarget.open)}
-			>
-				<summary
-					className={
-						"FileEditorSidebarPendingStoredFile-summary" satisfies FileEditorSidebarPendingStoredFile_ClassNames
-					}
-				>
-					{entry.path} · Added file
-				</summary>
-				{open && (
-					<div
-						className={
-							"FileEditorSidebarPendingStoredFile-body" satisfies FileEditorSidebarPendingStoredFile_ClassNames
-						}
-					>
-						{/* Show the picture only when the draft is ready. A preparing draft has no finished bytes yet. */}
-						{readiness === "ready" && isImage && (
-							<FileImagePreview
-								target={{
-									kind: "private",
-									id: entry.node._id,
-									pendingUpdateId: entry.pendingUpdate._id,
-									reviewedRevision: entry.pendingUpdate.revision,
-									creationGeneration: entry.node.creationGeneration,
-								}}
-								alt={entry.node.name}
-							/>
-						)}
+		<div
+			className={
+				"FileEditorSidebarPendingStoredFileDetails" satisfies FileEditorSidebarPendingStoredFileDetails_ClassNames
+			}
+		>
+			{isImage && (
+				<FileImagePreview
+					target={{
+						kind: "private",
+						id: entry.node._id,
+						pendingUpdateId: entry.pendingUpdate._id,
+						reviewedRevision: entry.pendingUpdate.revision,
+						creationGeneration: entry.node.creationGeneration,
+					}}
+					alt={entry.node.name}
+				/>
+			)}
 
-						<p>
-							{intent.contentType} · {files_format_size(intent.size)}
-						</p>
-						<p>Created by {creator === undefined ? "Loading…" : (creator?.displayName ?? "Unknown")}</p>
+			<p>
+				{intent.contentType} · {files_format_size(intent.size)}
+			</p>
+			<p>Created by {creator === undefined ? "Loading…" : (creator?.displayName ?? "Unknown")}</p>
 
-						{/* Link every chat that proposed this file. One file can come from more than one chat. */}
-						{(entry.pendingUpdate.threadIds ?? []).map((threadId) => {
-							const thread = threads[threadId];
-							return (
-								<p key={threadId}>
-									{thread && !(thread instanceof Error) ? (
-										<MyLink
-											to="/w/$organizationName/$workspaceName/chat"
-											params={{ organizationName: thread.organizationName, workspaceName: thread.workspaceName }}
-											search={{ threadId }}
-										>
-											{thread.title || "New Chat"}
-										</MyLink>
-									) : thread === undefined ? (
-										"Loading chat…"
-									) : (
-										"Unavailable chat"
-									)}
-								</p>
-							);
-						})}
-
-						{requiredParents.length > 0 && (
-							<p>Save also creates: {requiredParents.map((parent) => parent.path).join(", ")}</p>
-						)}
-
-						<p role="status">
-							{busy === "accept"
-								? "Saving…"
-								: busy === "discard"
-									? "Discarding…"
-									: readiness === "preparing"
-										? "Preparing…"
-										: "Pending review"}
-						</p>
-
-						{/* While a save or discard runs, the buttons use `aria-disabled` instead of `disabled`. A
-						    real `disabled` button leaves the tab order and loses focus, which throws a keyboard
-						    user out of this row. The handlers above already refuse a click while busy. Save keeps
-						    a real `disabled` for the case where the file cannot be saved at all. */}
-						<div
-							className={
-								"FileEditorSidebarPendingStoredFile-actions" satisfies FileEditorSidebarPendingStoredFile_ClassNames
-							}
-						>
-							<MyButton
-								variant="outline"
-								disabled={!canAccept}
-								aria-disabled={!!busy || disabled}
-								aria-busy={busy === "accept"}
-								aria-label={`Save changes to ${entry.path}`}
-								onClick={() => handleReview("accept")}
-							>
-								Save
-							</MyButton>
-							<MyButton
-								variant="outline_destructive"
-								aria-disabled={!!busy || disabled}
-								aria-busy={busy === "discard"}
-								aria-label={`Discard changes to ${entry.path}`}
-								onClick={() => handleReview("discard")}
-							>
-								Discard
-							</MyButton>
-							<MyButton
-								variant="outline"
-								disabled={!!busy || disabled || readiness !== "ready"}
-								aria-busy={busy === "download"}
-								aria-label={`Download ${entry.node.name}`}
-								onClick={handleDownload}
-							>
-								Download
-							</MyButton>
+			{/* Link every chat that proposed this file. One file can come from more than one chat. */}
+			{(entry.pendingUpdate.threadIds ?? []).map((threadId) => {
+				const thread = threads[threadId];
+				return (
+					<p key={threadId}>
+						{thread && !(thread instanceof Error) ? (
 							<MyLink
-								to="/w/$organizationName/$workspaceName/files"
-								params={{ organizationName, workspaceName }}
-								search={{ pendingNodeId: entry.node._id }}
+								to="/w/$organizationName/$workspaceName/chat"
+								params={{ organizationName: thread.organizationName, workspaceName: thread.workspaceName }}
+								search={{ threadId }}
 							>
-								Open file
+								{thread.title || "New Chat"}
 							</MyLink>
-						</div>
-					</div>
-				)}
-			</details>
-		</li>
+						) : thread === undefined ? (
+							"Loading chat…"
+						) : (
+							"Unavailable chat"
+						)}
+					</p>
+				);
+			})}
+
+			<div
+				className={
+					"FileEditorSidebarPendingStoredFileDetails-actions" satisfies FileEditorSidebarPendingStoredFileDetails_ClassNames
+				}
+			>
+				<MyButton
+					variant="outline"
+					disabled={isDownloading || disabled}
+					aria-busy={isDownloading}
+					aria-label={`Download ${entry.node.name}`}
+					onClick={handleDownload}
+				>
+					Download
+				</MyButton>
+			</div>
+		</div>
 	);
 });
-// #endregion stored file item
+// #endregion stored file details
 
 // #region item
 type FileEditorSidebarPendingItem_Props = {
@@ -913,6 +812,8 @@ type FileEditorSidebarPendingItem_Props = {
 	isArchived: boolean;
 	rootKind: files_YjsRootKind | null;
 	isStale: boolean;
+	requiredParents: FileEditorSidebarPendingRow["requiredParents"];
+	privateEntry: FileEditorSidebarPendingRow["privateEntry"];
 	canAccept: boolean;
 	disabled?: boolean;
 	onActionSuccess: (message: string) => void;
@@ -935,6 +836,8 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 		isArchived,
 		rootKind,
 		isStale,
+		requiredParents,
+		privateEntry,
 		canAccept,
 		disabled,
 		onActionSuccess,
@@ -944,6 +847,24 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 
 	const [isOpen, setIsOpen] = useState(false);
 	const [isBusy, setIsBusy] = useState(false);
+	const itemRef = useRef<HTMLLIElement>(null);
+	// A stored draft, such as a screenshot, has no text diff. Its open row shows the file details instead.
+	const storedIntent = pendingUpdate.createIntent?.kind === "stored" ? pendingUpdate.createIntent : null;
+
+	// Accepting or discarding removes this row. The browser then puts focus on `<body>` and a
+	// keyboard user loses their place, so this cleanup gives focus back to the panel. Both panel
+	// roots carry `tabIndex={-1}` so they can take it.
+	useLayoutEffect(() => {
+		const item = itemRef.current;
+		return () => {
+			if (!item?.contains(document.activeElement)) return;
+			const panel = item.closest<HTMLElement>(".FileEditorSidebarPending");
+			// Wait for row removal to finish. Keep any focus moved by the review dialog.
+			queueMicrotask(() => {
+				if (document.activeElement === document.body) panel?.focus();
+			});
+		};
+	}, []);
 
 	// A delete preview always shows the committed Markdown, even when content branches remain on
 	// the pending doc. Start loading it on mount so the first expand does not wait for the reads.
@@ -1048,6 +969,10 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 			: (kind === "move" || kind === "content_and_move") && moveDestinationPath != null
 				? `move of ${path} to ${moveDestinationPath}`
 				: `changes to ${path}`;
+	// Accept saves the pending parent folders too. The caption does not name them, like for any new
+	// file. Only the tooltip and the accessible name list the folders.
+	const parentsLabel =
+		requiredParents.length > 0 ? `, also adds ${requiredParents.map((parent) => parent.path).join(", ")}` : "";
 
 	// `preventDefault()` stops the native <summary> from toggling when the action buttons are clicked.
 	const handleAccept = useFn((event: MouseEvent<HTMLButtonElement>) => {
@@ -1063,6 +988,12 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 		startReview({
 			kind: "accept",
 			items: [
+				// Save the pending parent folders first, so the draft has somewhere to land.
+				...requiredParents.map((parent) => ({
+					pendingUpdateId: parent.pendingUpdateId,
+					reviewedRevision: parent.reviewedRevision,
+					selectedContentStateId: null,
+				})),
 				{
 					pendingUpdateId: pendingUpdate._id,
 					reviewedRevision: pendingUpdate.revision,
@@ -1102,17 +1033,23 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 	});
 
 	// Plain moves have no content to diff. A delete without editable Yjs state also has nothing
-	// useful to preview. Size-only replacements are the exception: their accordion compares
-	// stored sizes.
+	// useful to preview. A new folder and a preparing draft have nothing to open either. Size-only
+	// replacements are the exception: their accordion compares stored sizes. A ready stored draft
+	// opens its file details.
 	if (
-		kind === "added" ||
+		(kind === "added" && !(storedIntent && readiness === "ready")) ||
 		(kind === "move" && !sizeOnlyReplacedNodeId) ||
 		(kind === "delete" && !canPreviewDeleteDiff)
 	) {
-		const moveLabel = kind === "move" && moveDestinationPath != null ? `${path} → ${moveDestinationPath}` : path;
+		const moveLabel =
+			kind === "move" && moveDestinationPath != null
+				? `${path} → ${moveDestinationPath}`
+				: kind === "added"
+					? path + parentsLabel
+					: path;
 
 		return (
-			<li>
+			<li ref={itemRef}>
 				<div
 					className={cn(
 						"FileEditorSidebarPending-item" satisfies FileEditorSidebarPending_ClassNames,
@@ -1206,7 +1143,7 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 					: kind === "content_and_move"
 						? `${isAddedFile ? "Added" : "Modified"} · Moved`
 						: isAddedFile
-							? "Added"
+							? "Added file"
 							: kind === "copy" || kind === "replacement"
 								? "Replaced"
 								: "Modified") + (isArchived ? " · Archived" : "");
@@ -1218,10 +1155,11 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 		(kind === "move" || kind === "content_and_move") && moveDestinationPath != null
 			? `${path} → ${moveDestinationPath}`
 			: path;
-	const rowAccessibleLabel = (isStale ? `${rowLabel}, review to update` : rowLabel) + (isArchived ? ", archived" : "");
+	const rowAccessibleLabel =
+		(isStale ? `${rowLabel}, review to update` : rowLabel) + (isArchived ? ", archived" : "") + parentsLabel;
 
 	return (
-		<li>
+		<li ref={itemRef}>
 			<FilePendingNotice recovery={props.recovery} copyDestination={props.copyDestination} />
 			<details
 				className={cn("FileEditorSidebarPending-item" satisfies FileEditorSidebarPending_ClassNames)}
@@ -1243,11 +1181,13 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 						to="/w/$organizationName/$workspaceName/files"
 						params={{ organizationName, workspaceName }}
 						search={
-							// The diff editor cannot represent a deleted file, a size-only replacement, or a
-							// whole-file copy (no text branches). The inline preview below handles those,
-							// and the link opens the file itself.
+							// The diff editor cannot represent a deleted file, a size-only replacement, a
+							// whole-file copy, or a stored draft (no text branches). The inline preview below
+							// handles those, and the link opens the file itself.
 							pendingUpdate.target.kind === "private"
-								? { pendingNodeId: pendingUpdate.target.id, view: "diff_editor" }
+								? storedIntent
+									? { pendingNodeId: pendingUpdate.target.id }
+									: { pendingNodeId: pendingUpdate.target.id, view: "diff_editor" }
 								: kind === "delete" || kind === "replacement" || sizeOnlyReplacedNodeId
 									? { nodeId: pendingUpdate.target.id }
 									: { nodeId: pendingUpdate.target.id, view: "diff_editor" }
@@ -1296,7 +1236,9 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 						</MyButton>
 					</span>
 				</summary>
-				{sizeOnlyReplacedNodeId && pendingUpdate.target.kind === "saved" ? (
+				{isOpen && storedIntent && privateEntry ? (
+					<FileEditorSidebarPendingStoredFileDetails entry={privateEntry} intent={storedIntent} disabled={!!disabled} />
+				) : sizeOnlyReplacedNodeId && pendingUpdate.target.kind === "saved" ? (
 					<FileEditorSidebarPendingSizeDiff
 						membershipId={membershipId}
 						sourceNodeId={pendingUpdate.target.id}
@@ -1490,7 +1432,11 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 		nodesById,
 	);
 	const restrictedRows = pendingUpdatesResult.filter((view) => view.kind === "restricted");
-	const allSources = [...rows.map((row) => row.pendingUpdate), ...restrictedRows];
+	// The counts and the empty state follow the rows the list draws, like the tab badge does.
+	const shownSources = [
+		...rows.filter((row) => !row.hasActiveChildDraft).map((row) => row.pendingUpdate),
+		...restrictedRows.filter((view) => !view.hasActiveChildDraft),
+	];
 	const protectedDescendantIds = files_collect_protected_descendant_ids(fileNodesList ?? []);
 
 	// The server checks hidden nodes and current policies again when Accept runs.
@@ -1511,8 +1457,10 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 		});
 	};
 
+	// Accept saves a draft's pending parent folders with it. So check canAcceptWithParents, not
+	// canAccept, which is false while a parent folder is pending.
 	const canAcceptRow = (row: FileEditorSidebarPendingRow) => {
-		if (!row.canAccept || row.readiness !== "ready") {
+		if (!row.canAcceptWithParents || row.readiness !== "ready") {
 			return false;
 		}
 		if (row.pendingUpdate.target.kind === "private") return true;
@@ -1561,17 +1509,17 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 			value: PENDING_SOURCE_ALL,
 			label: "All changes",
 			description: pendingUpdatesStatus === "Exhausted" ? "Every pending change" : "Loaded pending changes",
-			count: allSources.length,
+			count: shownSources.length,
 		},
 		{
 			value: PENDING_SOURCE_USER,
 			label: "Your edits",
 			description: "Changes you made in the editor, not from a chat",
-			count: allSources.filter((row) => pending_row_matches_source(row, PENDING_SOURCE_USER)).length,
+			count: shownSources.filter((row) => pending_row_matches_source(row, PENDING_SOURCE_USER)).length,
 		},
 		...sortedThreadIds.map((threadId) => {
 			const thread = threadQueryResults[threadId];
-			const count = allSources.filter((row) => pending_row_matches_source(row, threadId)).length;
+			const count = shownSources.filter((row) => pending_row_matches_source(row, threadId)).length;
 
 			if (thread === undefined) {
 				return { value: threadId, label: "Loading chat…", description: "Agent chat", count };
@@ -1597,24 +1545,12 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 	const activeSource = sourceOptions.some((option) => option.value === selectedSource)
 		? selectedSource
 		: PENDING_SOURCE_ALL;
-	const visibleRows = rows.filter((row) => pending_row_matches_source(row.pendingUpdate, activeSource));
-	const visibleRestrictedRows = restrictedRows.filter((row) => pending_row_matches_source(row, activeSource));
-	const visibleCount = visibleRows.length + visibleRestrictedRows.length;
-	// A private file whose parent folders are still pending cannot be saved on its own. Accept all
-	// sends every visible row in one review, so such a file counts as acceptable when its parent
-	// folders are visible here too.
-	const canAcceptAllVisibleRows =
-		visibleRows.length > 0 &&
-		visibleRestrictedRows.length === 0 &&
-		visibleRows.every(
-			(row) =>
-				canAcceptRow(row) ||
-				(row.privateEntry &&
-					row.canAcceptWithParents &&
-					row.requiredParents.every((parent) =>
-						visibleRows.some((candidate) => candidate.pendingUpdate._id === parent.pendingUpdateId),
-					)),
-		);
+	const sourceRows = rows.filter((row) => pending_row_matches_source(row.pendingUpdate, activeSource));
+	const sourceRestrictedRows = restrictedRows.filter((row) => pending_row_matches_source(row, activeSource));
+	const shownRows = sourceRows.filter((row) => !row.hasActiveChildDraft);
+	const shownRestrictedRows = sourceRestrictedRows.filter((view) => !view.hasActiveChildDraft);
+	const canAcceptAllShownRows =
+		shownRows.length > 0 && shownRestrictedRows.length === 0 && shownRows.every(canAcceptRow);
 
 	useEffect(() => {
 		if (selectedSource !== activeSource) {
@@ -1622,22 +1558,34 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 		}
 	}, [selectedSource, activeSource]);
 
+	// A hidden folder draft goes with the drafts inside it. So Accept all sends each shown draft's
+	// pending parent folders first, like row Accept.
 	const handleAcceptAll = useFn(() => {
-		if (isBulkBusy || !canAcceptAllVisibleRows) return;
-		const acceptRows = visibleRows.filter((row) => !row.isStale);
-		if (acceptRows.length < visibleRows.length) toast.warning(PENDING_ACCEPT_ALL_SKIPS_REVIEW_MESSAGE);
+		if (isBulkBusy || !canAcceptAllShownRows) return;
+		const acceptRows = shownRows.filter((row) => !row.isStale);
+		if (acceptRows.length < shownRows.length) toast.warning(PENDING_ACCEPT_ALL_SKIPS_REVIEW_MESSAGE);
 		if (acceptRows.length === 0) return;
+		const parentsById = new Map(
+			acceptRows.flatMap((row) => row.requiredParents.map((parent) => [parent.pendingUpdateId, parent] as const)),
+		);
 		setIsSubmitting(true);
 		startReview({
 			kind: "accept",
-			items: acceptRows.map(({ pendingUpdate }) => ({
-				pendingUpdateId: pendingUpdate._id,
-				reviewedRevision: pendingUpdate.revision,
-				selectedContentStateId:
-					pendingUpdate.pendingArchive || pendingUpdate.pendingReplacement
-						? null
-						: (pendingUpdate.content?.unstagedStateId ?? null),
-			})),
+			items: [
+				...[...parentsById.values()].map((parent) => ({
+					pendingUpdateId: parent.pendingUpdateId,
+					reviewedRevision: parent.reviewedRevision,
+					selectedContentStateId: null,
+				})),
+				...acceptRows.map(({ pendingUpdate }) => ({
+					pendingUpdateId: pendingUpdate._id,
+					reviewedRevision: pendingUpdate.revision,
+					selectedContentStateId:
+						pendingUpdate.pendingArchive || pendingUpdate.pendingReplacement
+							? null
+							: (pendingUpdate.content?.unstagedStateId ?? null),
+				})),
+			],
 		})
 			.then(() => announceActionSuccess(`Started accepting ${acceptRows.length} pending changes`))
 			.catch((error: unknown) => {
@@ -1646,25 +1594,50 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 			.finally(() => setIsSubmitting(false));
 	});
 
+	// Discard all sends a hidden folder of this source only when a shown draft inside it is
+	// discarded too. A loaded draft that stays, for example another chat's draft, keeps its folders.
+	// The server would refuse to discard a folder that still holds such a draft or folder.
 	const handleDiscardAll = useFn(() => {
 		if (isBulkBusy) return;
+		const sourcePendingUpdateIds = new Set(sourceRows.map((row) => row.pendingUpdate._id));
+		const keptParentIds = new Set(
+			rows
+				.filter((row) => !row.hasActiveChildDraft && !shownRows.includes(row))
+				.flatMap((row) => row.requiredParents.map((parent) => parent.pendingUpdateId)),
+		);
+		// A parent folder of another source stays. So every folder above it stays too, because it
+		// holds that folder. `requiredParents` is root-first.
+		for (const row of shownRows) {
+			const parentIds = row.requiredParents.map((parent) => parent.pendingUpdateId);
+			const deepestKeptIndex = parentIds.findLastIndex((parentId) => !sourcePendingUpdateIds.has(parentId));
+			for (const parentId of parentIds.slice(0, deepestKeptIndex + 1)) keptParentIds.add(parentId);
+		}
+		const discardParentIds = new Set(
+			shownRows
+				.flatMap((row) => row.requiredParents.map((parent) => parent.pendingUpdateId))
+				.filter((pendingUpdateId) => !keptParentIds.has(pendingUpdateId)),
+		);
 		setIsSubmitting(true);
 		startReview({
 			kind: "discard",
 			items: [
-				...visibleRows.map(({ pendingUpdate }) => ({
-					pendingUpdateId: pendingUpdate._id,
-					reviewedRevision: pendingUpdate.revision,
-					selectedContentStateId: null,
-				})),
-				...visibleRestrictedRows.map((view) => ({
+				...sourceRows
+					.filter((row) => !row.hasActiveChildDraft || discardParentIds.has(row.pendingUpdate._id))
+					.map(({ pendingUpdate }) => ({
+						pendingUpdateId: pendingUpdate._id,
+						reviewedRevision: pendingUpdate.revision,
+						selectedContentStateId: null,
+					})),
+				...shownRestrictedRows.map((view) => ({
 					pendingUpdateId: view.pendingUpdateId,
 					reviewedRevision: view.revision,
 					selectedContentStateId: null,
 				})),
 			],
 		})
-			.then(() => announceActionSuccess(`Started discarding ${visibleCount} pending changes`))
+			.then(() =>
+				announceActionSuccess(`Started discarding ${shownRows.length + shownRestrictedRows.length} pending changes`),
+			)
 			.catch((error: unknown) => {
 				toast.error(error instanceof Error ? error.message : "Failed to start review");
 			})
@@ -1691,7 +1664,7 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 			</MyButton>
 		) : null;
 
-	if (pendingUpdatesStatus === "LoadingFirstPage" || allSources.length === 0) {
+	if (pendingUpdatesStatus === "LoadingFirstPage" || shownSources.length === 0) {
 		return (
 			<>
 				{statusElement}
@@ -1745,9 +1718,9 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 								"FileEditorSidebarPending-accept" satisfies FileEditorSidebarPending_ClassNames,
 							)}
 							aria-label="Accept all shown pending changes"
-							tooltip={visibleRows.some((row) => row.isStale) ? PENDING_ACCEPT_ALL_SKIPS_REVIEW_MESSAGE : undefined}
+							tooltip={shownRows.some((row) => row.isStale) ? PENDING_ACCEPT_ALL_SKIPS_REVIEW_MESSAGE : undefined}
 							aria-busy={isBulkBusy}
-							disabled={!canAcceptAllVisibleRows}
+							disabled={!canAcceptAllShownRows}
 							aria-disabled={isBulkBusy}
 							onClick={handleAcceptAll}
 						>
@@ -1777,47 +1750,32 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 				</div>
 				{pendingUpdatesStatus !== "Exhausted" ? <p>Actions apply to the changes shown below.</p> : null}
 				<ul className={cn("FileEditorSidebarPending-list" satisfies FileEditorSidebarPending_ClassNames)}>
-					{/* A stored draft holds bytes, such as a screenshot or a generated image, so it gets the
-					    preview row. Every other change keeps the text diff row. */}
-					{visibleRows.map((row) =>
-						row.privateEntry && row.pendingUpdate.createIntent?.kind === "stored" ? (
-							<FileEditorSidebarPendingStoredFile
-								key={row.pendingUpdate._id}
-								entry={row.privateEntry}
-								intent={row.pendingUpdate.createIntent}
-								requiredParents={row.requiredParents}
-								readiness={row.readiness}
-								recovery={row.recovery}
-								copyDestination={row.copyDestination}
-								canAccept={row.canAcceptWithParents && row.readiness === "ready"}
-								disabled={isBulkBusy}
-								onActionSuccess={announceActionSuccess}
-							/>
-						) : (
-							<FileEditorSidebarPendingItem
-								key={row.pendingUpdate._id}
-								pendingUpdate={row.pendingUpdate}
-								path={row.path}
-								kind={row.kind}
-								moveDestinationPath={row.moveDestinationPath}
-								replacedNodeId={row.replacedNodeId}
-								sizeOnlyReplacedNodeId={row.sizeOnlyReplacedNodeId}
-								canPreviewDeleteDiff={row.canPreviewDeleteDiff}
-								isAddedFile={row.isAddedFile}
-								isFolder={row.isFolder}
-								readiness={row.readiness}
-								recovery={row.recovery}
-								copyDestination={row.copyDestination}
-								isArchived={row.isArchived}
-								rootKind={row.rootKind}
-								isStale={row.isStale}
-								canAccept={canAcceptRow(row)}
-								disabled={isBulkBusy}
-								onActionSuccess={announceActionSuccess}
-							/>
-						),
-					)}
-					{visibleRestrictedRows.map((view) => (
+					{shownRows.map((row) => (
+						<FileEditorSidebarPendingItem
+							key={row.pendingUpdate._id}
+							pendingUpdate={row.pendingUpdate}
+							path={row.path}
+							kind={row.kind}
+							moveDestinationPath={row.moveDestinationPath}
+							replacedNodeId={row.replacedNodeId}
+							sizeOnlyReplacedNodeId={row.sizeOnlyReplacedNodeId}
+							canPreviewDeleteDiff={row.canPreviewDeleteDiff}
+							isAddedFile={row.isAddedFile}
+							isFolder={row.isFolder}
+							readiness={row.readiness}
+							recovery={row.recovery}
+							copyDestination={row.copyDestination}
+							isArchived={row.isArchived}
+							rootKind={row.rootKind}
+							isStale={row.isStale}
+							requiredParents={row.requiredParents}
+							privateEntry={row.privateEntry}
+							canAccept={canAcceptRow(row)}
+							disabled={isBulkBusy}
+							onActionSuccess={announceActionSuccess}
+						/>
+					))}
+					{shownRestrictedRows.map((view) => (
 						<FileEditorSidebarPendingRestrictedItem
 							key={view.pendingUpdateId}
 							view={view}
@@ -1971,6 +1929,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 						canAcceptWithParents: true,
 						requiredParents: [],
 						savedParentId: null,
+						hasActiveChildDraft: false,
 					},
 				];
 			}
@@ -1984,6 +1943,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 					canAcceptWithParents: true,
 					requiredParents: [],
 					savedParentId: null,
+					hasActiveChildDraft: false,
 				},
 			];
 		});
@@ -2022,6 +1982,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 						canAcceptWithParents: true,
 						requiredParents: [],
 						savedParentId: null,
+						hasActiveChildDraft: false,
 					},
 				],
 				new Map(),
@@ -2029,6 +1990,38 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 			expect(rows).toHaveLength(1);
 			expect(rows[0]?.path).toBe("/owned.md");
+		});
+
+		test("keeps the server's flag for a folder draft that holds a draft", () => {
+			const pendingUpdate = makePendingUpdate({ id: "pu_folder", fileNodeId: "private_folder", isPrivate: true });
+			const [row] = build_pending_rows(
+				[
+					{
+						kind: "entry",
+						entry: {
+							kind: "private",
+							node: {
+								_id: "private_folder",
+								kind: "folder",
+								name: "qa",
+								parent: { kind: "root" },
+							} as unknown as app_convex_Doc<"files_pending_nodes">,
+							pendingUpdate,
+							path: "/qa",
+						},
+						readiness: "ready",
+						canEdit: true,
+						canAccept: true,
+						canAcceptWithParents: true,
+						requiredParents: [],
+						savedParentId: null,
+						hasActiveChildDraft: true,
+					},
+				],
+				new Map(),
+			);
+
+			expect(row).toMatchObject({ path: "/qa", isFolder: true, hasActiveChildDraft: true });
 		});
 
 		test("builds a content row with the node's shape for a proposal on a file with collaboration off", () => {

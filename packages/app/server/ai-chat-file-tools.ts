@@ -138,8 +138,10 @@ export function ai_chat_tool_create_view_image(
 	return tool({
 		description:
 			"Inspect a PNG, JPEG, WEBP, or GIF in Files. Choose current or personal and use the path within that workspace, such as /reports/chart.png. Remove the matching Bash root prefix. Both roots share an 8 MiB turn limit, with 8192 pixels per edge and 16 million canvas pixels. Read text with Bash. Read or transform other bytes with execute_code and the Files byte API.",
+		// Use a regex, not `.startsWith("/")`. Since zod 4.6 that check also emits `format: "starts_with"`,
+		// and OpenAI rejects the whole tool list for an unknown format.
 		inputSchema: z
-			.object({ workspace: z.enum(["current", "personal"]), path: z.string().min(1).max(1024).startsWith("/") })
+			.object({ workspace: z.enum(["current", "personal"]), path: z.string().min(1).max(1024).regex(/^\//) })
 			.strict(),
 		strict: true,
 		execute: async ({ workspace, path }, options) => {

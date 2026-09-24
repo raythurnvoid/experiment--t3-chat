@@ -11,6 +11,7 @@ const {
 	convexActionMock,
 	fetchPrivateFilePendingTextMock,
 	savePrivateFilePendingTextMock,
+	startReviewMock,
 	stableQueryMock,
 	editorHarness,
 } = vi.hoisted(() => ({
@@ -19,6 +20,7 @@ const {
 	convexActionMock: vi.fn(),
 	fetchPrivateFilePendingTextMock: vi.fn(),
 	savePrivateFilePendingTextMock: vi.fn(),
+	startReviewMock: vi.fn(),
 	stableQueryMock: vi.fn(),
 	// The drag handle is the one mounted child that already receives the Tiptap instance, so the
 	// stub below hands it to the tests. That is how a test types into the real document.
@@ -42,6 +44,13 @@ vi.mock("sonner", () => ({
 vi.mock("@/lib/app-tenant-context.tsx", () => ({
 	AppTenantProvider: {
 		useContext: () => tenantContextMock(),
+	},
+}));
+
+// Provider boundary: private Save hands this review starter to the save helper.
+vi.mock("@/lib/app-activities-context.tsx", () => ({
+	AppActivitiesProvider: {
+		useContext: () => ({ startReview: startReviewMock }),
 	},
 }));
 
@@ -298,9 +307,32 @@ describe("FileEditorRichTextNonCollab", () => {
 				reviewedRevision: pendingUpdate.revision,
 				text: text ? "alpha beta\n" : "",
 				onUpserted: expect.any(Function),
+				startReview: startReviewMock,
 			});
 			expect(onTargetChange).toHaveBeenCalledWith({ kind: "saved", id: NODE_ID });
 			expect(convexActionMock).not.toHaveBeenCalled();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	test("stays on the draft while a review run saves it with its new folders", async () => {
+		vi.useFakeTimers();
+		try {
+			fetchPrivateFilePendingTextMock.mockResolvedValue({
+				_yay: { text: "alpha\n", rootKind: "rich_text", pendingUpdate: { _id: "pending_update_1", revision: 7 } },
+			});
+			savePrivateFilePendingTextMock.mockResolvedValue({ _yay: { target: null } });
+			const onTargetChange = vi.fn();
+			renderNonCollabRichEditor({ target: PRIVATE_TARGET, onTargetChange });
+			await flushEditorMount();
+
+			fireEvent.click(screen.getByRole("button", { name: "Save" }));
+			await act(async () => {});
+
+			expect(savePrivateFilePendingTextMock).toHaveBeenCalledOnce();
+			expect(toast.error).not.toHaveBeenCalled();
+			expect(onTargetChange).not.toHaveBeenCalled();
 		} finally {
 			vi.useRealTimers();
 		}

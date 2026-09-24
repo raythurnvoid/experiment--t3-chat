@@ -26,7 +26,13 @@ import { should_never_happen, XCustomEvent } from "./utils.ts";
 import type { usePresenceList, usePresenceSessions, usePresenceSessionsData } from "../hooks/presence-hooks.ts";
 import { objects_equal_deep } from "./object.ts";
 import { editor as monaco_editor } from "monaco-editor";
-import { app_convex, type app_convex_Doc, type app_convex_Id, app_convex_api } from "@/lib/app-convex-client.ts";
+import {
+	app_convex,
+	type app_convex_Doc,
+	type app_convex_FunctionArgs,
+	type app_convex_Id,
+	app_convex_api,
+} from "@/lib/app-convex-client.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 import { applyUpdate, Doc as YDoc } from "yjs";
 
@@ -609,6 +615,9 @@ export async function files_upsert_file_pending_update(args: {
 /**
  * Ordinary private editors accept their whole text. Diff keeps its separate staged branch.
  * Report our upsert's revision before Save, so a refused Save can retry that exact draft.
+ *
+ * A draft with pending parent folders is saved by a review run, together with those folders.
+ * Then the result has no target. The file view follows the saved file when the run ends.
  */
 export async function files_save_private_file_pending_text(args: {
 	membershipId: app_convex_Id<"organizations_workspaces_users">;
@@ -617,6 +626,9 @@ export async function files_save_private_file_pending_text(args: {
 	reviewedRevision: number;
 	text: string;
 	onUpserted: (revision: number) => void;
+	startReview: (
+		selection: Pick<app_convex_FunctionArgs<typeof app_convex_api.files_pending_update_runs.start>, "kind" | "items">,
+	) => Promise<void>;
 }) {
 	const upserted = await files_upsert_file_pending_update({
 		membershipId: args.membershipId,
@@ -632,6 +644,34 @@ export async function files_save_private_file_pending_text(args: {
 		return Result({ _nay: { message: "The proposed changes changed. Reopen the file and try again." } });
 	}
 	args.onUpserted(pendingUpdate.revision);
+
+	// The direct save refuses a draft whose folders are still pending. So save the folders first,
+	// then this text, in one review run. The Activity dialog shows its progress and errors.
+	// While a parent folder is still preparing, or the user may not save, the parent list is not
+	// complete. Then the direct save below refuses with its own clear message.
+	const view = await app_convex.query(app_convex_api.files_pending_updates.get_file_pending_target, {
+		membershipId: args.membershipId,
+		target: args.target,
+	});
+	if (view && view.requiredParents.length > 0 && view.canAcceptWithParents) {
+		await args.startReview({
+			kind: "accept",
+			items: [
+				...view.requiredParents.map((parent) => ({
+					pendingUpdateId: parent.pendingUpdateId,
+					reviewedRevision: parent.reviewedRevision,
+					selectedContentStateId: null,
+				})),
+				{
+					pendingUpdateId: pendingUpdate._id,
+					reviewedRevision: pendingUpdate.revision,
+					selectedContentStateId: pendingUpdate.content.stagedStateId,
+				},
+			],
+		});
+		return Result({ _yay: { target: null } });
+	}
+
 	return await app_convex.action(app_convex_api.files_pending_updates.save_file_pending_update, {
 		membershipId: args.membershipId,
 		target: args.target,

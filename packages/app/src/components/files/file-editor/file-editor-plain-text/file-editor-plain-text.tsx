@@ -29,6 +29,7 @@ import { editor as monaco_editor, Range as monaco_Range } from "monaco-editor";
 import { useMutation } from "convex/react";
 import { api } from "@/../convex/_generated/api.js";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
+import { AppActivitiesProvider } from "@/lib/app-activities-context.tsx";
 import { cn, should_never_happen } from "@/lib/utils.ts";
 import type { AppElementId } from "@/lib/dom-utils.ts";
 import { usePromiseValue } from "@/lib/async.ts";
@@ -324,6 +325,7 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 	} = props;
 
 	const { membershipId } = AppTenantProvider.useContext();
+	const { startReview } = AppActivitiesProvider.useContext();
 	const nodeId = target.kind === "saved" ? target.id : null;
 
 	const pushYjsUpdateMutation = useMutation(api.files_nodes.yjs_push_update);
@@ -638,13 +640,14 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 					onUpserted: (revision) => {
 						reviewedRevisionRef.current = revision;
 					},
+					startReview,
 				});
 				if (saved._nay) {
 					toast.error(saved._nay.message);
 					return;
 				}
 				updateDirtyBaselineAfterSave(localMarkdown);
-				onTargetChange?.(saved._yay.target);
+				if (saved._yay.target) onTargetChange?.(saved._yay.target);
 				return;
 			}
 			if (!nodeId) return;

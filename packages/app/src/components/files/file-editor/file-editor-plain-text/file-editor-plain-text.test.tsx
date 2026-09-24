@@ -12,6 +12,7 @@ const {
 	fetchFileYjsStateAndTextMock,
 	fetchPrivateFilePendingTextMock,
 	savePrivateFilePendingTextMock,
+	startReviewMock,
 	convexQueryMock,
 	convexActionMock,
 	monacoHarness,
@@ -21,6 +22,7 @@ const {
 	fetchFileYjsStateAndTextMock: vi.fn(),
 	fetchPrivateFilePendingTextMock: vi.fn(),
 	savePrivateFilePendingTextMock: vi.fn(),
+	startReviewMock: vi.fn(),
 	convexQueryMock: vi.fn(),
 	convexActionMock: vi.fn(),
 	// Shared state between the Editor mock and the tests: the created models with their language,
@@ -48,6 +50,13 @@ vi.mock("sonner", () => ({
 vi.mock("@/lib/app-tenant-context.tsx", () => ({
 	AppTenantProvider: {
 		useContext: () => tenantContextMock(),
+	},
+}));
+
+// Provider boundary: private Save hands this review starter to the save helper.
+vi.mock("@/lib/app-activities-context.tsx", () => ({
+	AppActivitiesProvider: {
+		useContext: () => ({ startReview: startReviewMock }),
 	},
 }));
 
@@ -319,10 +328,28 @@ describe("FileEditorPlainText", () => {
 			reviewedRevision: pendingUpdate.revision,
 			text: currentText,
 			onUpserted: expect.any(Function),
+			startReview: startReviewMock,
 		});
 		expect(onTargetChange).toHaveBeenCalledWith({ kind: "saved", id: NODE_ID });
 		expect(convexActionMock).not.toHaveBeenCalled();
 		expect(pushMutationMock).not.toHaveBeenCalled();
+	});
+
+	test("stays on the draft while a review run saves it with its new folders", async () => {
+		fetchPrivateFilePendingTextMock.mockResolvedValue({
+			_yay: { text: "draft\n", rootKind: "plain_text", pendingUpdate: { _id: "pending_update_1", revision: 7 } },
+		});
+		savePrivateFilePendingTextMock.mockResolvedValue({ _yay: { target: null } });
+		const onTargetChange = vi.fn();
+		renderPlainTextEditor({ target: PRIVATE_TARGET, onTargetChange });
+		await act(async () => {});
+
+		fireEvent.click(screen.getByRole("button", { name: "Save" }));
+		await act(async () => {});
+
+		expect(savePrivateFilePendingTextMock).toHaveBeenCalledOnce();
+		expect(toast.error).not.toHaveBeenCalled();
+		expect(onTargetChange).not.toHaveBeenCalled();
 	});
 
 	test("keeps a private edit after a stale Save is refused", async () => {

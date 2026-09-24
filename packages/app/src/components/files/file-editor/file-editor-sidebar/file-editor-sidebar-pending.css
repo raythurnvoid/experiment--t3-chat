@@ -143,21 +143,10 @@
 	}
 	/* #endregion source select */
 
-	/* #region stored file item */
-	.FileEditorSidebarPendingStoredFile {
-		border-bottom: 1px solid var(--color-fg-02);
-	}
-
-	/* The whole summary is the tap target that opens the row, so keep it tall enough for a finger.
-	   A file path has no spaces to break on, so let it wrap anywhere instead of widening the panel. */
-	.FileEditorSidebarPendingStoredFile-summary {
-		min-height: 48px;
-		padding: 12px 16px;
-		cursor: pointer;
-		overflow-wrap: anywhere;
-	}
-
-	.FileEditorSidebarPendingStoredFile-body {
+	/* #region stored file details */
+	/* A long content type or chat title can have no spaces to break on. Let it wrap anywhere instead
+	   of widening the panel. */
+	.FileEditorSidebarPendingStoredFileDetails {
 		display: flex;
 		flex-direction: column;
 		gap: 12px;
@@ -166,7 +155,7 @@
 		overflow-wrap: anywhere;
 	}
 
-	.FileEditorSidebarPendingStoredFile-actions {
+	.FileEditorSidebarPendingStoredFileDetails-actions {
 		display: flex;
 		flex-wrap: wrap;
 		align-items: center;
@@ -177,7 +166,7 @@
 			min-height: 44px;
 		}
 	}
-	/* #endregion stored file item */
+	/* #endregion stored file details */
 
 	/* #region item */
 	.FileEditorSidebarPending-item {

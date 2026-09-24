@@ -37,6 +37,7 @@ import { FileEditorRichTextAnchoredComments } from "./file-editor-rich-text-comm
 import { FileEditorSnapshotsModal } from "../file-editor-snapshots-modal.tsx";
 import { AI_NAME } from "./constants.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
+import { AppActivitiesProvider } from "@/lib/app-activities-context.tsx";
 import { check_element_is_in_allowed_areas, cn } from "@/lib/utils.ts";
 import type { AppClassName, AppElementId } from "@/lib/dom-utils.ts";
 import { app_fetch_ai_docs_contextual_prompt } from "@/lib/fetch.ts";
@@ -1482,6 +1483,7 @@ const FileEditorRichTextNonCollabInner = memo(function FileEditorRichTextNonColl
 	} = props;
 
 	const { membershipId } = AppTenantProvider.useContext();
+	const { startReview } = AppActivitiesProvider.useContext();
 	const nodeId = target.kind === "saved" ? target.id : null;
 
 	const [editor, setEditor] = useState<Editor | null>(null);
@@ -1634,6 +1636,7 @@ const FileEditorRichTextNonCollabInner = memo(function FileEditorRichTextNonColl
 					onUpserted: (revision) => {
 						reviewedRevisionRef.current = revision;
 					},
+					startReview,
 				});
 				if (saved._nay) {
 					toast.error(saved._nay.message);
@@ -1642,7 +1645,7 @@ const FileEditorRichTextNonCollabInner = memo(function FileEditorRichTextNonColl
 				baselineMarkdownRef.current = textToSave;
 				setShowReformatHint(false);
 				recomputeDirtyState(editor);
-				onTargetChange?.(saved._yay.target);
+				if (saved._yay.target) onTargetChange?.(saved._yay.target);
 				return;
 			}
 			if (!nodeId) return;

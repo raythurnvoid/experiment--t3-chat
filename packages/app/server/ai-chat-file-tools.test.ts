@@ -1,5 +1,5 @@
 import { R2 } from "@convex-dev/r2";
-import type { InferToolInput, InferToolOutput } from "ai";
+import { asSchema, type InferToolInput, type InferToolOutput } from "ai";
 import { getFunctionName } from "convex/server";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { ActionCtx } from "../convex/_generated/server.js";
@@ -109,6 +109,16 @@ describe("ai_chat_tool_create_view_image", () => {
 			{ target },
 		])
 			expect(() => schema.parse(input)).toThrow();
+	});
+
+	// OpenAI refuses the whole request when a tool schema has a `format` it does not know, such as
+	// the `starts_with` that zod emits for `.startsWith(...)`.
+	test("sends a JSON schema without string formats", async () => {
+		const { tool } = makeReader();
+		const jsonSchema = await asSchema(tool.inputSchema).jsonSchema;
+
+		expect(JSON.stringify(jsonSchema)).not.toContain('"format"');
+		expect(jsonSchema.properties?.path).toMatchObject({ type: "string", pattern: "^\\/" });
 	});
 
 	test.each(Object.entries(fixtures))(

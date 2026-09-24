@@ -257,8 +257,8 @@ Needs `AI_CHAT_BROWSER_ENABLED=true` on the dev deployment and an HTML file (sea
 - Each screenshot is capped at 2 MiB, 8192 pixels per edge, and 16 million pixels before the snippet receives it. File output allows eight files and 8 MiB total. Paths are explicit canonical Files paths. There is no default destination folder. A collision adds a name suffix. Check the returned target's actual path. Bash `/tmp` is separate scratch storage.
 - Check both the Files sidebar chat and the chat page. The tool card must show two file paths, their current state, and two `Open in Files` links. It must stay text-only while streaming and after reload. Raw observations, image bytes, and signed download URLs must not appear in the card. A run without files has only its safe status and reason.
 - Stored file results have `metadata: { status, reason, files }`. Status is `succeeded`, `partial`, `errored`, `cancelled`, or `timed_out`. Successful results normally have `reason: null`. Check partial file output too: earlier completed files must remain after a later failure or Stop.
-- Open Pending and expand each image. Require a preview, size, creator, and source chat link. `Open file` and the chat's `Open in Files` must open the same private preview. PNG/JPEG previews must work without an image-viewer plugin.
-- When parent folders are still private, require `Save also creates:` to list the exact folders. Save one image. Both the pending row and private-file view use a review Activity, even without pending parents. Wait for that Activity to finish; a `Started saving` message only confirms that it began. Require those folders and that image to become saved while the second image stays pending. Discard must leave unused parents and siblings alone.
+- Open Pending and expand each image. Require a preview, size, creator, and source chat link. The row's path link and the chat's `Open in Files` must open the same private preview. PNG/JPEG previews must work without an image-viewer plugin.
+- When parent folders are still private, require the private-file view's `Save also creates:` and the Pending row link's accessible name (`/<path>, also adds <folders>`) to list the exact folders. Accept one image from its Pending row, or Save it from the private-file view. Both use a review Activity, even without pending parents. Wait for that Activity to finish; the row's `Started accepting` and the view's `Started saving` messages only confirm that it began. Require those folders and that image to become saved while the second image stays pending. Discard must leave unused parents and siblings alone.
 - A private image can have two `.FileNodeViewPrivate-actions` containers. Use `allInnerTexts()` to inspect them, then locate the visible Save or Discard button by its role and name. Do not assume that class matches one element. Text drafts put Save in the editor toolbar.
 - Keep the first image's original `pendingNodeId` URL. After Save, reopen it and require the saved preview and saved URL. Rename or move the saved image, then reload the chat: its path must update and its link must still open the file. Discard the second image and require its chat row and old private URL to show an unavailable state. Missing, archived, or denied files must not retain an active chat link or preview.
 - Keep a separate image pending for image-read checks. While the shared browser is live, switch to Ask mode and request a new screenshot proposal. Require no new pending files and the stored result `status: "errored", reason: "agent_required"`. The model's answer alone is not evidence. Ask may still inspect the page and return private text observations.
@@ -267,7 +267,7 @@ Needs `AI_CHAT_BROWSER_ENABLED=true` on the dev deployment and an HTML file (sea
 - Test non-image output separately with the [arbitrary-file and byte-transform recipes](agent-panel.md#deterministic-arbitrary-file-check). The same `emitFile` helper supports every byte type. Editable UTF-8 becomes a normal private text draft. Invalid, unsupported, or over-limit text remains stored bytes. Use Bash for text and `execute_code` with `/api/v1/files/read-bytes` for binary transforms.
 - Use Tab and Enter or Space to expand Pending images and reach Save/Discard. During a review, require a progress message and no duplicate action. When a focused row disappears, focus must stay in the Pending panel or file view. Check preview loading, a failed load with `Retry image`, stale review errors, and denied Save. A late preview response must not replace the newly selected image.
 - Save and Discard leave their Activity dialog open after completion. Close `Save reviewed changes` or `Discard reviewed changes` before acting behind it. Use the scoped footer `Close` recipe below; the icon has the same accessible name.
-- Check a narrow viewport and 200% zoom. Long file paths and the parent list must wrap, image previews must fit, and Save/Discard must remain reachable. At 360px, close the Files tree and widen Pending with its resize handle. The tab strip scrolls horizontally. This checks screenshot controls; the wider Files layout still needs manual panel sizing. Return to the HTML file and start a new browser session before continuing live browser checks.
+- Check a narrow viewport and 200% zoom. Long file paths truncate on the row and wrap in the private-file view, image previews must fit, and the row's Accept/Discard must remain reachable. At 360px, close the Files tree and widen Pending with its resize handle. The tab strip scrolls horizontally. This checks screenshot controls; the wider Files layout still needs manual panel sizing. Return to the HTML file and start a new browser session before continuing live browser checks.
 
 ### Personal Draft After Leaving Its Source Team
 
@@ -1380,7 +1380,11 @@ returns to the Pending panel or the file view. Cover plain-text rows, stored-fil
 details, and bulk actions. Busy action buttons keep focus with `aria-disabled`; readiness and
 permission refusals still use `disabled`.
 
-Pending starts with one page. Click `Load more pending changes` before counting all rows. To
+Pending starts with one page. Click `Load more pending changes` before counting all rows. A
+server page holds 5 proposals, and a hidden folder draft (`hasActiveChildDraft`) still uses a slot,
+so the first page can draw fewer than 5 rows while the tab badge already counts them all. Switching
+to another sidebar tab and back remounts the list on one page again. A mouse click on `Load more`
+can wait forever for the button to be "stable"; focus it and press Enter. To
 clean up a QA run, select its chat in `Pending changes source`, load every page, and check the
 shown paths before using Discard all. Do not discard unrelated pending work.
 
@@ -1426,9 +1430,33 @@ Verified 2026-09-23. A text draft (`createIntent.kind === "text"`) has no Save i
 `.FileNodeViewPrivate-actions` header, only `Discard`. The `Save` in the toolbar belongs to the
 editor (`.FileEditorRichTextNonCollabToolbarActions-button`), and it mounts a few seconds after the
 header. It saves a draft at root in about 3 s with no toast: the URL changes from `?pendingNodeId=`
-to `?nodeId=`. For a draft under a new folder it toasts `Review and save the parent draft first`,
-while the header still reads `Save also creates: /<folder>`. Save that pair from the Pending tab
-with `Accept all shown pending changes`, with both rows shown.
+to `?nodeId=`. For a draft under a new folder (the header reads `Save also creates: /<folder>`),
+the same Save opens the `Save reviewed changes` dialog instead. It saves the folders and the file in
+one run (`2 saved` for one folder), and the URL then moves to `?nodeId=` too.
+
+A folder draft's own view has `Save` and `Discard` in the header. Its Save creates only the empty
+folder (`1 saved`). The drafts inside stay pending, and their row link names lose `also adds`.
+
+Close the review dialog by focusing its footer `Close` and pressing Enter. A mouse click on it can
+hang at "performing click action" while the dialog stays open.
+
+### Added Folders Hide Behind The Drafts Inside Them
+
+Verified 2026-09-23. In an owned Agent-mode chat, run `mkdir -p <home>/qa-x/empty/inner` and
+`echo hi > <home>/qa-x/note.md`. Pending then draws two rows: `/qa-x/empty/inner` (`Added folder`)
+and `/qa-x/note.md` (`Added file`). Each row has inline Accept and Discard. Only the row link's
+tooltip and accessible name list the hidden folders (`/qa-x/note.md, also adds /qa-x`). The badge,
+the source counts, and `files_pending_updates:get_chat_pending_updates_summary` all count 2 for
+this chat. Discard `note.md`, then `inner`: `/qa-x/empty` shows as its own row (link name `…, also
+adds /qa-x`). Accepting it saves both folders (`2 saved`).
+
+When the agent chat cannot run, make the same folder drafts with the internal mutation
+`files_nodes:create_private_node_by_path` (args: `organizationId`, `workspaceId`, `userId`, `path`,
+`kind: 'folder'`, `threadId`). Pass the args as JSON5 with single quotes, because PowerShell breaks
+escaped double quotes. Verified 2026-09-24. To read the server flag, page through
+`files_pending_updates:list_files_pending_updates` from page context and read `hasActiveChildDraft`
+on each view. Pass function names as strings: importing `/convex/_generated/api.js` in the page can
+take longer than the 5 s step timeout.
 
 ## Cross-Workspace Copy
 

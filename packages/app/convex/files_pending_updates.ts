@@ -6807,6 +6807,8 @@ const pending_target_view_validator = v.object({
 	savedParentId: v.union(v.id("files_nodes"), v.null()),
 	recovery: v.optional(v.object({ savedParentId: v.id("files_nodes"), expiresAt: v.union(v.number(), v.null()) })),
 	copyDestination: v.optional(v.object({ folderPath: v.string(), personal: v.boolean(), replacement: v.boolean() })),
+	// A folder draft with a draft inside is not its own row. See `db_pending_update_has_active_child_draft`.
+	hasActiveChildDraft: v.boolean(),
 });
 
 async function db_get_pending_target_view(
@@ -7271,6 +7273,33 @@ export const get_file_pending_update_internal = internalQuery({
 	},
 });
 
+/**
+ * A folder draft that holds an active draft is not a change of its own, like Git: saving the
+ * draft inside creates the folder too. The Pending list hides such folders, and every pending
+ * count skips them, so the list and the counts always agree.
+ */
+async function db_pending_update_has_active_child_draft(
+	ctx: QueryCtx,
+	pendingUpdate: app_convex_Doc<"files_pending_updates">,
+) {
+	if (pendingUpdate.target.kind !== "private" || pendingUpdate.createIntent?.kind !== "folder") return false;
+	const folderId = pendingUpdate.target.id;
+
+	const child = await ctx.db
+		.query("files_pending_nodes")
+		.withIndex("by_organization_workspace_user_parent_state_name", (q) =>
+			q
+				.eq("organizationId", pendingUpdate.organizationId)
+				.eq("workspaceId", pendingUpdate.workspaceId)
+				.eq("userId", pendingUpdate.userId)
+				.eq("parent.kind", "private")
+				.eq("parent.id", folderId)
+				.eq("state", "active"),
+		)
+		.first();
+	return child !== null;
+}
+
 export const list_files_pending_updates = query({
 	args: {
 		membershipId: v.id("organizations_workspaces_users"),
@@ -7286,6 +7315,7 @@ export const list_files_pending_updates = query({
 				pendingUpdateId: v.id("files_pending_updates"),
 				revision: v.number(),
 				threadIds: v.optional(v.array(v.id("ai_chat_threads"))),
+				hasActiveChildDraft: v.boolean(),
 			}),
 		),
 	),
@@ -7325,9 +7355,10 @@ export const list_files_pending_updates = query({
 		const views = [];
 		for (const pendingUpdate of page.page) {
 			if (threadId !== undefined && !pendingUpdate.threadIds?.includes(threadId)) continue;
+			const hasActiveChildDraft = await db_pending_update_has_active_child_draft(ctx, pendingUpdate);
 			const view = await db_get_pending_target_view(ctx, { membership, target: pendingUpdate.target, reader });
 			if (view) {
-				views.push(await db_get_public_pending_target_view(ctx, view));
+				views.push({ ...(await db_get_public_pending_target_view(ctx, view)), hasActiveChildDraft });
 				continue;
 			}
 
@@ -7343,6 +7374,7 @@ export const list_files_pending_updates = query({
 				pendingUpdateId: pendingUpdate._id,
 				revision: pendingUpdate.revision,
 				...(pendingUpdate.threadIds ? { threadIds: pendingUpdate.threadIds } : {}),
+				hasActiveChildDraft,
 			});
 		}
 
@@ -7432,6 +7464,8 @@ async function db_get_files_pending_updates_summary(
 			(await ctx.db.get("files_pending_nodes", pendingUpdate.target.id))?.state !== "active"
 		)
 			continue;
+		// Count only the rows the Pending list draws. It hides a folder draft that holds a draft.
+		if (await db_pending_update_has_active_child_draft(ctx, pendingUpdate)) continue;
 		count++;
 	}
 	return { count, truncated: pendingUpdates.length > 500 };
