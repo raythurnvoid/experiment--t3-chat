@@ -616,7 +616,7 @@ axe targets the code-fence label through its `[data-streamdown="list-item"]` anc
 
 The 2026-08-10 plain-text QA runs extended the same baseline to the Monaco surfaces without replacing it. On the plain editor route (a `.json` node, default plain view) and the diff route: no new rule ids or node targets beyond the baseline above; the `auditAccessibility` screen reported **0 unlabeled controls and 0 negative-tabindex problems** on both runs. Monaco's focus target (`div.native-edit-context`, role `textbox`) is labeled `File content editor`, and each diff pane carries its own aria label. Two rows to know when comparing:
 
-- `Open file snapshots` can be reported as a blocked hit target on the editor toolbar. That is toolbar **overflow**, not an overlay: check `scrollWidth > clientWidth` on `.FileNodeViewToolbar` before filing it — with a narrow panel the trailing buttons clip under the Comments tab strip (a recorded design question, not a broken control).
+- `Open file snapshots` can be reported as a blocked hit target on the editor toolbar. That is toolbar **overflow**, not an overlay: check `scrollWidth > clientWidth` on `.FileNodeViewToolbar` before filing it — with a narrow panel the trailing buttons clip under the Comments tab strip (a recorded design question, not a broken control). The rich text `Add link` and `Comment` buttons clip the same way: at 1440x900 with the file sidebar open, `Add link` sits at x≈813, past the toolbar's right edge (x≈796), and a mouse click at its box opens a sidebar tab. Call `button.scrollIntoView({ inline: "nearest" })` first, then click its new box. Verified 2026-09-24.
 - The `Rich` / `Markdown` / `Diff` small-target rows in the pre-slice baseline read `Code` / `Diff` on plain-text nodes — same 1×1 visually-hidden radios, same accepted pattern, only the labels differ.
 
 ## Reading real painted pixels: a `data:` fetch is CSP-blocked, and a rounded box leaks its backdrop
@@ -2526,6 +2526,12 @@ await convex.query(api.files_pending_update_runs.list_items, {
 	paginationOpts: { numItems: 100, cursor: null },
 });
 ```
+
+## Checking whether the editor bubble is shown
+
+`.FileEditorRichTextBubbleContentActions` has `display: contents`, so `checkVisibility()` is always
+`false` on it, even while the bubble is on screen. Check the surface `.FileEditorRichTextBubbleContent`
+instead. Verified 2026-09-24.
 
 ## Typing right after submitting a comment eats the comment
 

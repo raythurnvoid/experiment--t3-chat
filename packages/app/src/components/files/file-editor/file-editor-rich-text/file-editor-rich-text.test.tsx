@@ -452,6 +452,44 @@ describe("FileEditorRichTextNonCollab", () => {
 		expect(screen.getByText("3 Words")).toBeTruthy();
 	});
 
+	test("turning editing off and on again leaves the editor with the same plugins", async () => {
+		resolveQueryWithNonCollaborativeContent("alpha beta\n");
+		const view = renderNonCollabRichEditor();
+		await flushEditorMount();
+		const editor = editorHarness.editor;
+		if (!editor) {
+			throw new Error("Expected the mounted editor to be captured");
+		}
+
+		// The bubble registers its Escape plugin from a timer, so let that timer run before and after each change.
+		const setEditable = async (editable: boolean) => {
+			view.rerender(
+				<FileEditorRichTextNonCollab
+					target={{ kind: "saved", id: NODE_ID }}
+					editable={editable}
+					presenceStore={presenceStore}
+					commentsPortalHost={null}
+					toolbarPortalHost={view.toolbarPortalHost}
+				/>,
+			);
+			await act(async () => {
+				await new Promise((resolve) => setTimeout(resolve, 0));
+			});
+		};
+		await act(async () => {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		});
+		const pluginCount = editor.state.plugins.length;
+
+		// A private draft turns editing off during each Save, so this cycle repeats in the app.
+		await setEditable(false);
+		expect(editor.state.plugins.length).toBeLessThan(pluginCount);
+		await setEditable(true);
+
+		expect(editorHarness.editor).toBe(editor);
+		expect(editor.state.plugins.length).toBe(pluginCount);
+	});
+
 	test("a snapshot restore refreshes the comment anchors without waiting for the next edit", async () => {
 		resolveQueryWithNonCollaborativeContent(comment_markdown("thread_a", "alpha"));
 		renderNonCollabRichEditor();

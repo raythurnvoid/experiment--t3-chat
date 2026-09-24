@@ -595,7 +595,10 @@ const FileEditorRichTextBubble = memo(function FileEditorRichTextBubble(props: F
 
 			// Register Escape handling for the editor bubble.
 			const bubbleEscPluginKey = new PluginKey("FileEditorRichTextBubble_escape_key_handler");
+			// Pass the key to the plugin. The cleanup below removes the plugin by this key, and a
+			// plugin without it stays in the editor after each unmount.
 			const plugin = new Plugin({
+				key: bubbleEscPluginKey,
 				props: {
 					handleKeyDown: (_view, event) => {
 						if (event.key !== "Escape") {
