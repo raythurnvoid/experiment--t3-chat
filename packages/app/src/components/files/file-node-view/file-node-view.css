@@ -907,7 +907,8 @@
 		align-items: center;
 		gap: 4px;
 
-		padding: 8px 12px;
+		/* Keep 6px here, not 8px. The 24px sort buttons fill the rest, so the header stays 36px tall. */
+		padding: 6px 12px;
 
 		font-weight: 500;
 		white-space: nowrap;
@@ -934,6 +935,8 @@
 	}
 
 	.FileNodeViewFolderExplorer-sort-button {
+		min-height: 24px;
+
 		display: inline-flex;
 		align-items: center;
 		gap: 4px;

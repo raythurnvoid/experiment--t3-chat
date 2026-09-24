@@ -563,6 +563,20 @@ Verified 2026-09-24 in `qa-browser/home` with `qa.perm.owner` and `qa.perm.viewe
   `qa-browser` has fewer than 200 restricted folders and files, so the over-200 case needs new fixtures. To clean
   up, remove the role grant, restore the original parent folders, move each item back, and archive the parents
   again. Compare a `list_tree` count taken before the run.
+- **More than 200 restricted children** (verified 2026-09-24). Create 203 folders `c-000`…`c-202` with
+  `create_folder_node`, then `restrict_node` each one. Rate limits make this slow: `files_tree_write` allows 50 per
+  minute and `files_sharing_write` 30 per minute, so the build takes about 11 minutes. Each runner call works for
+  about 35 s. At the start of each call it reads the folder's real children from `list_tree`, because a call that
+  timed out may still have written folders. On "rate" refusals it waits 2.5 s and retries.
+  - Share `c-005` (role), `c-150` and `c-201` (user) with the member. The owner then gets `c-000`…`c-199` and
+    the `Too many shared` notice. The member gets exactly those 3 rows with no notice. `c-201` sorts after
+    position 200, so seeing it proves the member walk runs. The old folder scan gave a member no rows here.
+  - For the member's own over-200 case, share every child with the member: the member then gets
+    `c-000`…`c-199` and the notice. A role fits on at most 50 share lists
+    (`This role is already on 50 share lists…`), so use the role for 50 of them and user grants for the rest.
+  - Clean up: remove every grant first, or the archived folders keep using the role's 50 slots and fill the
+    member's grant list. Then archive the root. With nothing shared, a wait for the member's table timed out, so
+    confirm the removal with `get_node_share_state` on a few folders instead.
 - **Working-tree proof.** Force `tooManyShared` to true in `list_tree_children_sort_side_rows`, push, and every
   folder shows `Too many shared items here to sort. Some are not shown.`; push the real code and it goes away. For
   the member walk, skip every grant candidate instead (`if (!is_in_folder(entry) || true)`): the member loses the
