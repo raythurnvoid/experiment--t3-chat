@@ -67,6 +67,7 @@ import { file_editor_rich_text_SizeLimitExtension } from "@/lib/file-editor-rich
 import { file_editor_rich_text_MediaExtension } from "./file-editor-rich-text-media-extension.ts";
 import { MyButton, MyButtonIcon, type MyButton_Props } from "@/components/my-button.tsx";
 import { MyFloatingSurface } from "@/components/my-floating-surface.tsx";
+import type { MyPopoverContent_ClassNames } from "@/components/my-popover.tsx";
 import { FileEditorRichTextToolsInlineAi } from "./file-editor-rich-text-tools-inline-ai.tsx";
 import {
 	FileEditorRichTextToolsComment,
@@ -452,7 +453,7 @@ type FileEditorRichTextBubble_Props = {
  *
  * It prevents the default behavior from closing when:
  * - Focus moves inside the bubble itself (TipTap `isChildOfMenu`)
- * - The user interacts with portaled/hoisted popovers opened from the bubble (`isElContainedInManagedAreas`)
+ * - The user interacts with the link or comment popover (they have no portal and sit inside the bubble surface)
  * - The user presses Escape to close a popover in the bubble (popover closes, bubble stays visible)
  */
 const FileEditorRichTextBubble = memo(function FileEditorRichTextBubble(props: FileEditorRichTextBubble_Props) {
@@ -540,9 +541,25 @@ const FileEditorRichTextBubble = memo(function FileEditorRichTextBubble(props: F
 		editor.commands.setDecorationHighlight();
 	});
 
+	/**
+	 * The link and comment popovers have no portal, so they sit inside the bubble surface. While one is
+	 * open, it owns Escape and the bubble must stay. The popover's Escape can run before or after the
+	 * bubble listeners (both listen on `window`), so check both signs: a layer already used the press,
+	 * or a popover in the bubble is still open.
+	 */
+	const isEscapeForBubblePopover = (event: KeyboardEvent) =>
+		event.defaultPrevented ||
+		!!bubbleSurfaceRef.current?.querySelector(
+			`.${"MyPopoverContent" satisfies MyPopoverContent_ClassNames}[data-open]`,
+		);
+
 	// Handle Escape while focus stays inside the bubble.
 	const handleKeyDown = useFn<EditorBubbleProps["onKeyDown"]>((event) => {
-		if (event.key === "Escape" && event.currentTarget.contains(event.target as HTMLElement)) {
+		if (
+			event.key === "Escape" &&
+			event.currentTarget.contains(event.target as HTMLElement) &&
+			!isEscapeForBubblePopover(event.nativeEvent)
+		) {
 			setRendered(false);
 			editor.commands.focus();
 		}
@@ -672,7 +689,10 @@ const FileEditorRichTextBubble = memo(function FileEditorRichTextBubble(props: F
 							: undefined;
 
 					if (
-						(event instanceof KeyboardEvent && event.key === "Escape" && targetIsInManagedAreas) ||
+						(event instanceof KeyboardEvent &&
+							event.key === "Escape" &&
+							targetIsInManagedAreas &&
+							!isEscapeForBubblePopover(event)) ||
 						(event instanceof PointerEvent && focusMovingOutOfManagedAreasOnPointerDown === true)
 					) {
 						setRendered(false);

@@ -56,7 +56,7 @@ describe("App portal stacking", () => {
 		}
 	});
 
-	test("keeps an absolute popover next to its trigger when the portal follows tall content", async () => {
+	test("keeps a popover next to its trigger inside tall page content", async () => {
 		const shell = renderShell();
 		render(
 			<MyPopover placement="bottom-start">

@@ -1,33 +1,41 @@
 import "./my-floating-surface.css";
 import "./my-popover.css";
-import * as Ariakit from "@ariakit/react";
+import {
+	Popover,
+	PopoverDisclosure,
+	PopoverDismiss,
+	PopoverProvider,
+	type PopoverDisclosureProps,
+	type PopoverDismissProps,
+	type PopoverProps,
+	type PopoverProviderProps,
+} from "native-popovers/popover";
 import { memo } from "react";
-import type { AppElementId } from "@/lib/dom-utils.ts";
 import { cn } from "@/lib/utils.ts";
 import type { ExtractStrict } from "type-fest";
 import type { MyFloatingSurface_ClassNames } from "@/components/my-floating-surface.tsx";
 
 export type MyPopover_ClassNames = "MyPopover";
 
-export type MyPopover_Props = Ariakit.PopoverProviderProps;
+export type MyPopover_Props = PopoverProviderProps;
 
 export const MyPopover = memo(function MyPopover(props: MyPopover_Props) {
 	const { children, ...rest } = props;
 
-	return <Ariakit.PopoverProvider {...rest}>{children}</Ariakit.PopoverProvider>;
+	return <PopoverProvider {...rest}>{children}</PopoverProvider>;
 });
 
 export type MyPopoverTrigger_ClassNames = "MyPopoverTrigger";
 
 export type MyPopoverTrigger_Props = {
-	children?: Ariakit.PopoverDisclosureProps["render"];
-} & Omit<Ariakit.PopoverDisclosureProps, ExtractStrict<keyof Ariakit.PopoverDisclosureProps, "render" | "children">>;
+	children?: PopoverDisclosureProps["render"];
+} & Omit<PopoverDisclosureProps, ExtractStrict<keyof PopoverDisclosureProps, "render" | "children">>;
 
 export const MyPopoverTrigger = memo(function MyPopoverTrigger(props: MyPopoverTrigger_Props) {
 	const { ref, id, className, children, ...rest } = props;
 
 	return (
-		<Ariakit.PopoverDisclosure
+		<PopoverDisclosure
 			ref={ref}
 			id={id}
 			className={cn("MyPopoverTrigger" satisfies MyPopoverTrigger_ClassNames, className)}
@@ -39,30 +47,27 @@ export const MyPopoverTrigger = memo(function MyPopoverTrigger(props: MyPopoverT
 
 export type MyPopoverContent_ClassNames = "MyPopoverContent";
 
-export type MyPopoverContent_Props = {
-	children?: React.ReactNode;
-	className?: string;
-} & Omit<Ariakit.PopoverProps, ExtractStrict<keyof Ariakit.PopoverProps, "children" | "className">>;
+export type MyPopoverContent_Props = PopoverProps;
 
+/**
+ * The popover content. It has no portal: it stays in the DOM next to its trigger, and the browser
+ * shows it in the top layer.
+ */
 export const MyPopoverContent = memo(function MyPopoverContent(props: MyPopoverContent_Props) {
-	const { className, portal = true, portalElement, gutter = 4, children, ...rest } = props;
-
-	const appHoistingContainer = document.getElementById("app_hoisting_container" satisfies AppElementId);
+	const { className, gutter = 4, children, ...rest } = props;
 
 	return (
-		<Ariakit.Popover
+		<Popover
 			className={cn(
 				"MyPopoverContent" satisfies MyPopoverContent_ClassNames,
 				"MyFloatingSurface" satisfies MyFloatingSurface_ClassNames,
 				className,
 			)}
-			portal={portal}
-			portalElement={portalElement ?? appHoistingContainer ?? undefined}
 			gutter={gutter}
 			{...rest}
 		>
 			{children}
-		</Ariakit.Popover>
+		</Popover>
 	);
 });
 
@@ -71,14 +76,14 @@ export type MyPopoverClose_ClassNames = "MyPopoverClose";
 export type MyPopoverClose_Props = {
 	children?: React.ReactNode;
 	className?: string;
-} & Omit<Ariakit.PopoverDismissProps, ExtractStrict<keyof Ariakit.PopoverDismissProps, "children" | "className">>;
+} & Omit<PopoverDismissProps, ExtractStrict<keyof PopoverDismissProps, "children" | "className">>;
 
 export const MyPopoverClose = memo(function MyPopoverClose(props: MyPopoverClose_Props) {
 	const { className, children, ...rest } = props;
 
 	return (
-		<Ariakit.PopoverDismiss className={cn("MyPopoverClose" satisfies MyPopoverClose_ClassNames, className)} {...rest}>
+		<PopoverDismiss className={cn("MyPopoverClose" satisfies MyPopoverClose_ClassNames, className)} {...rest}>
 			{children}
-		</Ariakit.PopoverDismiss>
+		</PopoverDismiss>
 	);
 });

@@ -30,7 +30,6 @@
 		flex-direction: column;
 
 		width: min(92vw, 320px);
-		max-width: var(--popover-available-width);
 		max-height: min(70dvh, 400px);
 		padding: 8px;
 	}
