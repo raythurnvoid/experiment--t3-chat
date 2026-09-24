@@ -6886,6 +6886,83 @@ async function db_get_readable_tree_node(
 }
 
 /**
+ * The restricted scope nodes of the reader's workspace that the reader's `content.read` grants name:
+ * their own grants and the grants of their workspace role and organization role. A non-owner can
+ * read a restricted scope node only through one of these grants. The owner holds no grants.
+ *
+ * Each grant list stops at `TREE_SHARED_ROOTS_MAX_GRANTS`, and `truncated` says that one list had
+ * more. A grant doc alone does not prove read access, so callers still check every node.
+ */
+async function db_list_granted_restricted_scope_nodes(
+	ctx: QueryCtx,
+	args: {
+		reader: {
+			userAuth: { id: Id<"users"> };
+			membership: Doc<"organizations_workspaces_users">;
+			defaultWorkspaceId: Id<"organizations_workspaces">;
+		};
+	},
+) {
+	const { userAuth, membership, defaultWorkspaceId } = args.reader;
+
+	// Grants sit only on restricted scope nodes. Read the member's own grants and the grants of both
+	// roles that apply here: the workspace role and the organization role.
+	const roleRefs = await access_control_db_resolve_role_refs(ctx, {
+		organizationId: membership.organizationId,
+		workspaceId: membership.workspaceId,
+		defaultWorkspaceId,
+		userId: userAuth.id,
+	});
+	const grantLists = await Promise.all([
+		ctx.db
+			.query("access_control_permission_grants")
+			.withIndex("by_user_org_workspace_kind_principal_permission_resource", (q) =>
+				q
+					.eq("userId", userAuth.id)
+					.eq("organizationId", membership.organizationId)
+					.eq("workspaceId", membership.workspaceId)
+					.eq("resourceKind", "file")
+					.eq("principalKind", "user")
+					.eq("permission", "content.read"),
+			)
+			.take(TREE_SHARED_ROOTS_MAX_GRANTS + 1),
+		...roleRefs.map((role) =>
+			ctx.db
+				.query("access_control_permission_grants")
+				.withIndex("by_organization_role_workspace_resource", (q) =>
+					q
+						.eq("organizationId", membership.organizationId)
+						.eq("principalKind", "role")
+						.eq("role", role)
+						.eq("workspaceId", membership.workspaceId)
+						.eq("resourceKind", "file"),
+				)
+				.filter((q) => q.eq(q.field("permission"), "content.read"))
+				.take(TREE_SHARED_ROOTS_MAX_GRANTS + 1),
+		),
+	]);
+
+	const scopeNodeIds = new Set(
+		grantLists
+			.flatMap((grants) => grants.slice(0, TREE_SHARED_ROOTS_MAX_GRANTS))
+			.map((grant) => ctx.db.normalizeId("files_nodes", grant.resourceId))
+			.filter((nodeId) => nodeId !== null),
+	);
+	const scopeNodes = (await Promise.all([...scopeNodeIds].map((nodeId) => ctx.db.get("files_nodes", nodeId)))).filter(
+		(fileNode): fileNode is Doc<"files_nodes"> =>
+			fileNode !== null &&
+			fileNode.organizationId === membership.organizationId &&
+			fileNode.workspaceId === membership.workspaceId &&
+			fileNode.restrictedScopeNodeId === fileNode._id,
+	);
+
+	return {
+		scopeNodes,
+		truncated: grantLists.some((grants) => grants.length > TREE_SHARED_ROOTS_MAX_GRANTS),
+	};
+}
+
+/**
  * Build the public tree rows for nodes the caller may read.
  * Filter the nodes with `access_control_db_filter_readable_file_nodes` first.
  */
@@ -7590,7 +7667,8 @@ export const list_tree_children_sort_side_rows = query({
 			),
 			nameClaims: v.array(v.string()),
 			/**
-			 * The folder has more restricted children than the table sorts, so some are not shown.
+			 * The table cannot sort every restricted child the caller may see here, so some are not shown.
+			 * The caller gets the first 200 by name. A member whose grant list was cut off gets none.
 			 */
 			tooManyShared: v.boolean(),
 			/**
@@ -7637,37 +7715,63 @@ export const list_tree_children_sort_side_rows = query({
 		// Keep an entry only while the caller sees it in this folder. A row can reach here from two
 		// sources, such as a restricted child the caller renamed, so key entries by target.
 		const entries = new Map<string, files_VisibleEntry>();
+		const is_in_folder = (entry: files_VisibleEntry | null): entry is files_VisibleEntry =>
+			entry !== null && entry.path.slice(0, entry.path.lastIndexOf("/")) === folderPath;
 		const add_entry = (entry: files_VisibleEntry | null) => {
-			if (entry && entry.path.slice(0, entry.path.lastIndexOf("/")) === folderPath) {
+			if (is_in_folder(entry)) {
 				entries.set(`${entry.kind}:${entry.node._id}`, entry);
 			}
 		};
 
 		// Resolve one row at a time. The reader skips a target it is still resolving, so parallel
 		// calls that share a parent would drop rows.
-		//
-		// Over the cap, show a member none of these rows. Hidden rows share the name order, so a cut-off
-		// after the first 200 would move with them: a member could rename their own restricted files
-		// around it and learn the hidden names. This way the answer depends only on the total count.
-		// The owner reads every row, so the owner still gets the first 200.
-		const restrictedNodes = await ctx.db
-			.query("files_nodes")
-			.withIndex("by_org_ws_parent_archive_restricted_kind_sortName_name", (q) =>
-				q
-					.eq("organizationId", membership.organizationId)
-					.eq("workspaceId", membership.workspaceId)
-					.eq("parentId", args.parentId)
-					.eq("archiveOperationId", null)
-					.eq("isRestrictedScopeRoot", true),
-			)
-			.take(TREE_CHILDREN_SIDE_ROWS_MAX_ITEMS + 1);
-		let tooManyShared = restrictedNodes.length > TREE_CHILDREN_SIDE_ROWS_MAX_ITEMS;
-		if (reader.isOwner || !tooManyShared) {
-			for (const node of restrictedNodes.slice(0, TREE_CHILDREN_SIDE_ROWS_MAX_ITEMS)) {
-				add_entry(await visibleReader.resolveTarget({ kind: "saved", id: node._id }));
+		let tooManyShared = false;
+		const granted = reader.isOwner ? null : await db_list_granted_restricted_scope_nodes(ctx, { reader });
+		// A member reads a restricted child only through a grant on it, so walk the candidates from the
+		// member's own grants in name order. The visible reader skips a candidate they cannot read, such
+		// as a plugin grant whose membership ended. So the first 200 shown rows never depend on a row
+		// hidden from the member. The walk stops when a 201st row would show, so a folder with thousands
+		// of private folders costs about 200 checks.
+		if (granted && !granted.truncated) {
+			const candidates = granted.scopeNodes
+				.filter((fileNode) => fileNode.parentId === args.parentId && fileNode.archiveOperationId === null)
+				.sort((left, right) => files_sort_compare([left.sortName, left.name], [right.sortName, right.name], "asc"));
+			for (const node of candidates) {
+				const entry = await visibleReader.resolveTarget({ kind: "saved", id: node._id });
+				if (!is_in_folder(entry)) {
+					continue;
+				}
+				if (entries.size === TREE_CHILDREN_SIDE_ROWS_MAX_ITEMS) {
+					tooManyShared = true;
+					break;
+				}
+				add_entry(entry);
 			}
 		}
-		// A reader that ran out of reads stops at a position too, so apply the same rule.
+		// The owner reads every row, so the owner gets the first 200 restricted children by name. A member
+		// whose grant list was cut off may miss candidates, so scan the folder for them too. Over the cap
+		// that member gets none of them: the hidden rows share the name order, so a cut-off after the
+		// first 200 would move when a hidden row is added and leak that it exists.
+		else {
+			const restrictedNodes = await ctx.db
+				.query("files_nodes")
+				.withIndex("by_org_ws_parent_archive_restricted_kind_sortName_name", (q) =>
+					q
+						.eq("organizationId", membership.organizationId)
+						.eq("workspaceId", membership.workspaceId)
+						.eq("parentId", args.parentId)
+						.eq("archiveOperationId", null)
+						.eq("isRestrictedScopeRoot", true),
+				)
+				.take(TREE_CHILDREN_SIDE_ROWS_MAX_ITEMS + 1);
+			tooManyShared = restrictedNodes.length > TREE_CHILDREN_SIDE_ROWS_MAX_ITEMS;
+			if (reader.isOwner || !tooManyShared) {
+				for (const node of restrictedNodes.slice(0, TREE_CHILDREN_SIDE_ROWS_MAX_ITEMS)) {
+					add_entry(await visibleReader.resolveTarget({ kind: "saved", id: node._id }));
+				}
+			}
+		}
+		// A reader that ran out of reads stops at a position too, so show a member none of these rows.
 		if (visibleReader.exhausted) {
 			tooManyShared = true;
 			if (!reader.isOwner) {
@@ -7981,66 +8085,18 @@ export const list_tree_shared_roots = query({
 		if (!reader || reader.isOwner) {
 			return { rows: [], truncated: false };
 		}
-		const { userAuth, membership, defaultWorkspaceId, hasWorkspaceRead } = reader;
+		const { userAuth, membership, hasWorkspaceRead } = reader;
 
-		// Grants sit only on restricted scope nodes. Read the member's own grants and the grants of both
-		// roles that apply here: the workspace role and the organization role.
-		const roleRefs = await access_control_db_resolve_role_refs(ctx, {
-			organizationId: membership.organizationId,
-			workspaceId: membership.workspaceId,
-			defaultWorkspaceId,
-			userId: userAuth.id,
-		});
-		const grantLists = await Promise.all([
-			ctx.db
-				.query("access_control_permission_grants")
-				.withIndex("by_user_org_workspace_kind_principal_permission_resource", (q) =>
-					q
-						.eq("userId", userAuth.id)
-						.eq("organizationId", membership.organizationId)
-						.eq("workspaceId", membership.workspaceId)
-						.eq("resourceKind", "file")
-						.eq("principalKind", "user")
-						.eq("permission", "content.read"),
-				)
-				.take(TREE_SHARED_ROOTS_MAX_GRANTS + 1),
-			...roleRefs.map((role) =>
-				ctx.db
-					.query("access_control_permission_grants")
-					.withIndex("by_organization_role_workspace_resource", (q) =>
-						q
-							.eq("organizationId", membership.organizationId)
-							.eq("principalKind", "role")
-							.eq("role", role)
-							.eq("workspaceId", membership.workspaceId)
-							.eq("resourceKind", "file"),
-					)
-					.filter((q) => q.eq(q.field("permission"), "content.read"))
-					.take(TREE_SHARED_ROOTS_MAX_GRANTS + 1),
-			),
-		]);
-
-		const truncated = grantLists.some((grants) => grants.length > TREE_SHARED_ROOTS_MAX_GRANTS);
-		if (truncated) {
+		const granted = await db_list_granted_restricted_scope_nodes(ctx, { reader });
+		if (granted.truncated) {
 			console.warn("Shared tree roots reached the grant limit", {
 				membershipId: membership._id,
 				limit: TREE_SHARED_ROOTS_MAX_GRANTS,
 			});
 		}
 
-		const scopeNodeIds = new Set(
-			grantLists
-				.flatMap((grants) => grants.slice(0, TREE_SHARED_ROOTS_MAX_GRANTS))
-				.map((grant) => ctx.db.normalizeId("files_nodes", grant.resourceId))
-				.filter((nodeId) => nodeId !== null),
-		);
-		const scopeNodes = (await Promise.all([...scopeNodeIds].map((nodeId) => ctx.db.get("files_nodes", nodeId)))).filter(
-			(fileNode): fileNode is Doc<"files_nodes"> =>
-				fileNode !== null &&
-				fileNode.organizationId === membership.organizationId &&
-				fileNode.workspaceId === membership.workspaceId &&
-				fileNode.restrictedScopeNodeId === fileNode._id &&
-				(fileNode.archiveOperationId !== null) === args.archived,
+		const scopeNodes = granted.scopeNodes.filter(
+			(fileNode) => (fileNode.archiveOperationId !== null) === args.archived,
 		);
 
 		// A grant doc alone does not prove read access. The filter also checks plugin membership
@@ -8077,7 +8133,7 @@ export const list_tree_shared_roots = query({
 
 		return {
 			rows: await db_get_tree_rows(ctx, { userAuth, membership, fileNodes: sharedRoots }),
-			truncated,
+			truncated: granted.truncated,
 		};
 	},
 });

@@ -664,12 +664,31 @@ resolve the reader with `db_get_tree_reader` and filter every row with
   who can read the folder. That is why no row is filtered after paging, and a hidden row never takes
   a page slot or shows its sort value. Rows with `isRestrictedScopeRoot: true` come from
   `list_tree_children_sort_side_rows`, which checks each one with the visible reader (read access
-  plus the pending hide rules) and caps them at 200. Over the cap a non-owner gets none of them: the
-  hidden rows share the name order, so a cut-off after the first 200 readable rows would move when a
-  hidden row is added and leak that it exists. The owner reads every row, so the owner gets the
-  first 200. A grant-only member's root rows come from these side rows. Known limit: a member of a
-  folder with more than 200 restricted children also loses the ones shared with them. The leak-free
-  fix is to list candidates from the member's own grants, like `list_tree_shared_roots`.
+  plus the pending hide rules) and caps them at 200. A grant-only member's root rows come from these
+  side rows.
+  - The owner reads every row, so the owner scans the folder's restricted children by name and gets
+    the first 200.
+  - A non-owner can read a restricted scope root only through a user or role `content.read` grant
+    on it. So a member's candidates come from `db_list_granted_restricted_scope_nodes`, the same
+    grant lists `list_tree_shared_roots` reads, kept when their parent is this folder. Scanning the
+    folder instead would not scale: a folder of one private folder per person has thousands of
+    restricted children, and each visible-reader check costs about 9 to 14 `db.get` and `db.query`
+    calls. Convex allows 4,096 such calls per query.
+  - A member's cut-off must never depend on a row hidden from them. Otherwise the cut would move
+    when a hidden row is added and leak that it exists. A grant doc can outlive the access, for
+    example a plugin-tagged grant whose membership ended. So the query walks the candidates in name
+    order through the visible reader, skips the ones it refuses, and stops when a 201st row would
+    show. The member gets the first 200 readable rows, with `tooManyShared` when there are more.
+  - When a grant list passes `TREE_SHARED_ROOTS_MAX_GRANTS` (500), some candidates are missing. Then
+    the query scans the folder like the owner path: up to 200 restricted children are all checked,
+    and over 200 the member gets none of them, with `tooManyShared`. That answer depends on the
+    folder's count of all restricted children, like before this change. No name or order leaks, but
+    a member who can add restricted children there can add them one by one and learn that count.
+  - Known limit: the grant lists cost up to 1,500 `db.get` calls, and the walk costs about 9 to 14
+    calls per candidate. The visible reader's own 4096-read budget counts only part of that, so the
+    query throws at Convex's 4,096-call limit before `exhausted` is set. This can happen for a member
+    with hundreds of stale grants in one folder, with three nearly full grant lists and 200 shared
+    rows in one folder, or with 200 shared rows plus 200 pending changes there.
 - A folder that the caller can read but that the Files view hides (archived, or hidden by the
   caller's own pending delete or move) gets empty side rows, not a refusal, so the table shows no
   error there.

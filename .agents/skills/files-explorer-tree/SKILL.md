@@ -288,10 +288,16 @@ folder (`FileNodeViewPrivateFolder`) still lists its children through `useFilesV
 - `files_nodes.list_tree_children_sort_side_rows` returns the rows the partitioned index cannot
   serve, each with its `sortKey`: up to 200 readable restricted-root children, and up to 200 of the
   caller's drafts and pending moves into the folder, plus the saved names those drafts and moves
-  claim. Over a cap it sets `tooManyShared` or `tooManyPending`. Over the shared cap a non-owner gets
-  no restricted rows at all, because a cut-off would move with the hidden rows. The owner still gets
-  the first 200. It returns null when the caller cannot read the folder, and empty side rows for a
-  readable folder the Files view hides (archived, or hidden by the caller's own pending change).
+  claim. Over a cap it sets `tooManyShared` or `tooManyPending`. It returns null when the caller
+  cannot read the folder, and empty side rows for a readable folder the Files view hides (archived,
+  or hidden by the caller's own pending change).
+  - The owner reads every restricted child of the folder by name and gets the first 200.
+  - A member's restricted children come from their own `content.read` grants and their roles'
+    grants, like `list_tree_shared_roots`, so a folder with thousands of private folders still shows
+    the ones shared with them. The query walks the candidates in name order, skips the ones they
+    cannot read, and gives the first 200 readable rows. When one grant list passes 500 it scans the
+    folder like the owner, and over 200 restricted children the member gets none of them. The
+    `access-control` skill explains why.
 - `useFilesSortedChildren` in `packages/app/src/hooks/files-search-hooks.ts` merges it all:
   - Segments show in order folders/value, folders/missing, files/value, files/missing. A later
     segment shows only after every earlier one is done, so the next folder page never pushes

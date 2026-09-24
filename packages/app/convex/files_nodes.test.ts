@@ -13749,6 +13749,58 @@ describe("list_tree_children_sort_side_rows", () => {
 			expect(moved._nay).toBeUndefined();
 		};
 
+		/**
+		 * Insert folders `shared-<index>` in the table folder, or `root-shared-<index>` at the root. Each
+		 * one is its own restricted root.
+		 */
+		const insert_shared = (from: number, to: number, parent: "table" | "root" = "table") =>
+			t.run(async (ctx) => {
+				const nodeIds: Array<Id<"files_nodes">> = [];
+				for (let index = from; index < to; index++) {
+					const name = parent === "table" ? `shared-${index}` : `root-shared-${index}`;
+					const path = parent === "table" ? `/table/${name}` : `/${name}`;
+					const nodeId = await ctx.db.insert("files_nodes", {
+						...test_mocks.files.base(),
+						organizationId: db.organizationId,
+						workspaceId: db.workspaceId,
+						createdBy: db.userId,
+						updatedBy: db.userId,
+						parentId: parent === "table" ? parentId : "root",
+						name,
+						sortName: files_sort_text_key(name),
+						kind: "folder",
+						path,
+						treePath: `${path}/`,
+						pathDepth: parent === "table" ? 2 : 1,
+						isRestrictedScopeRoot: true,
+					});
+					await ctx.db.patch("files_nodes", nodeId, { restrictedScopeNodeId: nodeId });
+					nodeIds.push(nodeId);
+				}
+				return nodeIds;
+			});
+
+		/**
+		 * Give a user the grant doc of a Can view share on each node. Many shares through the sharing
+		 * mutation would run into its rate limit.
+		 */
+		const grant_read = (userId: Id<"users">, nodeIds: Array<Id<"files_nodes">>) =>
+			t.run(async (ctx) => {
+				for (const nodeId of nodeIds) {
+					await ctx.db.insert("access_control_permission_grants", {
+						organizationId: db.organizationId,
+						workspaceId: db.workspaceId,
+						resourceKind: "file",
+						resourceId: String(nodeId),
+						principalKind: "user",
+						userId,
+						permission: "content.read",
+						createdAt: Date.now(),
+						updatedAt: Date.now(),
+					});
+				}
+			});
+
 		const side_rows = (args: {
 			as: typeof asOwner;
 			membershipId: Id<"organizations_workspaces_users">;
@@ -13761,7 +13813,7 @@ describe("list_tree_children_sort_side_rows", () => {
 				sort: args.sort,
 			});
 
-		return { ...seeded, insert_root_file, add_member, restrict, move, side_rows };
+		return { ...seeded, insert_root_file, add_member, restrict, move, insert_shared, grant_read, side_rows };
 	}
 
 	test("returns readable restricted children with their sort keys, and nothing a member cannot read", async () => {
@@ -14082,55 +14134,37 @@ describe("list_tree_children_sort_side_rows", () => {
 	});
 
 	test("says when a folder has more restricted children or pending changes than it sorts", async () => {
-		const { t, db, asOwner, parentId, add_member, side_rows } = await seed_side_rows();
-		const insert_shared = (from: number, to: number) =>
-			t.run(async (ctx) => {
-				const nodeIds: Array<Id<"files_nodes">> = [];
-				for (let index = from; index < to; index++) {
-					const name = `shared-${index}`;
-					const nodeId = await ctx.db.insert("files_nodes", {
-						...test_mocks.files.base(),
-						organizationId: db.organizationId,
-						workspaceId: db.workspaceId,
-						createdBy: db.userId,
-						updatedBy: db.userId,
-						parentId,
-						name,
-						sortName: files_sort_text_key(name),
-						kind: "folder",
-						path: `/table/${name}`,
-						treePath: `/table/${name}/`,
-						pathDepth: 2,
-						isRestrictedScopeRoot: true,
-					});
-					await ctx.db.patch("files_nodes", nodeId, { restrictedScopeNodeId: nodeId });
-					nodeIds.push(nodeId);
-				}
-				return nodeIds;
-			});
-		const [firstSharedId] = await insert_shared(0, 200);
+		const { t, db, asOwner, parentId, add_member, insert_shared, side_rows } = await seed_side_rows();
+		const [userSharedId, roleSharedId] = await insert_shared(0, 200);
 		const member = await add_member("clerk_side_rows_cap", "member");
-		const granted = await asOwner.mutation(api.files_sharing.set_node_share_grant, {
-			membershipId: db.membershipId,
-			nodeId: firstSharedId!,
-			principal: { kind: "user", userId: member.userId },
-			level: "read",
-		});
-		expect(granted._nay).toBeUndefined();
+		for (const [nodeId, principal] of [
+			[userSharedId!, { kind: "user", userId: member.userId }],
+			[roleSharedId!, { kind: "role", role: "member" }],
+		] as const) {
+			const granted = await asOwner.mutation(api.files_sharing.set_node_share_grant, {
+				membershipId: db.membershipId,
+				nodeId,
+				principal,
+				level: "read",
+			});
+			expect(granted._nay).toBeUndefined();
+		}
 		const read = () =>
 			side_rows({ as: asOwner, membershipId: db.membershipId, sort: { field: "name", direction: "asc" } });
 		const read_as_member = () =>
 			side_rows({ as: member.as, membershipId: member.membershipId, sort: { field: "name", direction: "asc" } });
 
-		expect((await read_as_member())?.rows.map((row) => row.name)).toEqual(["shared-0"]);
+		const memberRows = await read_as_member();
+		expect(memberRows?.rows.map((row) => row.name).sort()).toEqual(["shared-0", "shared-1"]);
+		expect(memberRows).toMatchObject({ tooManyShared: false });
 
-		// Over the cap the owner still gets the first 200, and a member gets none. A cut-off that moved
-		// with the hidden rows would let the member learn their names.
+		// Over the cap the owner still gets the first 200. A member's rows come from their own grants,
+		// so a child hidden from them changes nothing in their answer.
 		await insert_shared(200, 201);
 		const shared = await read();
 		expect(shared?.rows).toHaveLength(200);
 		expect(shared).toMatchObject({ tooManyShared: true, tooManyPending: false });
-		expect(await read_as_member()).toEqual({ rows: [], nameClaims: [], tooManyShared: true, tooManyPending: false });
+		expect(await read_as_member()).toEqual(memberRows);
 
 		await t.run(async (ctx) => {
 			for (let index = 0; index < 201; index++) {
@@ -14149,6 +14183,65 @@ describe("list_tree_children_sort_side_rows", () => {
 		expect(pending?.rows).toHaveLength(400);
 		expect(pending).toMatchObject({ tooManyShared: true, tooManyPending: true });
 		expect(pending?.nameClaims).toHaveLength(200);
+	});
+
+	test("gives a member the first 200 of their shared children here, counting only the ones they can read", async () => {
+		const { t, db, add_member, insert_shared, grant_read, side_rows } = await seed_side_rows();
+		const sharedIds = await insert_shared(0, 202);
+		const member = await add_member("clerk_side_rows_many_grants", "member");
+		const read_as_member = () =>
+			side_rows({ as: member.as, membershipId: member.membershipId, sort: { field: "name", direction: "asc" } });
+
+		// A plugin grant whose membership lifetime ended no longer gives access. Its child is sorted
+		// first by name, so a count or a cut-off that still used it would change the answer.
+		await grant_read(member.userId, sharedIds.slice(0, 201));
+		await t.run(async (ctx) => {
+			const grant = await ctx.db
+				.query("access_control_permission_grants")
+				.withIndex("by_organization_workspace_resource_user_permission", (q) =>
+					q
+						.eq("organizationId", db.organizationId)
+						.eq("workspaceId", db.workspaceId)
+						.eq("resourceKind", "file")
+						.eq("resourceId", String(sharedIds[0]))
+						.eq("principalKind", "user")
+						.eq("userId", member.userId)
+						.eq("permission", "content.read"),
+				)
+				.unique();
+			await ctx.db.patch("access_control_permission_grants", grant!._id, { externalPluginMembershipLifetime: 1 });
+		});
+		const atCap = await read_as_member();
+		expect(atCap?.rows).toHaveLength(200);
+		expect(atCap).toMatchObject({ tooManyShared: false });
+
+		// Past the cap the member gets the first 200 by name, like the owner.
+		await grant_read(member.userId, sharedIds.slice(201));
+		const pastCap = await read_as_member();
+		expect(pastCap).toMatchObject({ tooManyShared: true });
+		expect(pastCap?.rows.map((row) => row.name).sort()).toEqual(
+			Array.from({ length: 200 }, (_, index) => `shared-${index + 1}`).sort(),
+		);
+	});
+
+	test("scans the folder for a member whose grant list is cut off, and gives none over the cap", async () => {
+		const { add_member, insert_shared, grant_read, side_rows } = await seed_side_rows();
+		const [sharedId] = await insert_shared(0, 1);
+		const elsewhereIds = await insert_shared(0, 501, "root");
+		const member = await add_member("clerk_side_rows_cut_grants", "member");
+		const read_as_member = () =>
+			side_rows({ as: member.as, membershipId: member.membershipId, sort: { field: "name", direction: "asc" } });
+
+		// 500 grants is the most one list reads, so this list is cut off and `shared-0` may be past the
+		// cut. The folder has only one restricted child, so the scan still finds it.
+		await grant_read(member.userId, [sharedId!, ...elsewhereIds]);
+		const scanned = await read_as_member();
+		expect(scanned?.rows.map((row) => row.name)).toEqual(["shared-0"]);
+		expect(scanned).toMatchObject({ tooManyShared: false });
+
+		// Over the cap the scan would stop at a position among rows hidden from the member, so none show.
+		await insert_shared(1, 201);
+		expect(await read_as_member()).toEqual({ rows: [], nameClaims: [], tooManyShared: true, tooManyPending: false });
 	});
 
 	test("refuses a folder the caller cannot read and a field that cannot be sorted", async () => {
