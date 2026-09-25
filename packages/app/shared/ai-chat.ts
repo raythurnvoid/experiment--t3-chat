@@ -22,7 +22,7 @@ export type ai_chat_Message = Doc<"ai_chat_threads_messages_aisdk_5">;
 
 export type ai_chat_Thread = Doc<"ai_chat_threads">;
 
-export const ai_chat_MODEL_IDS = ["gpt-6-luna"] as const;
+export const ai_chat_MODEL_IDS = ["gpt-6-luna", "deepseek-v4.1-flash"] as const;
 export type ai_chat_ModelId = (typeof ai_chat_MODEL_IDS)[number];
 
 type AiChatModelMetadata = {
@@ -43,6 +43,10 @@ export const ai_chat_MODELS = {
 	"gpt-6-luna": {
 		label: "GPT-6 Luna",
 		supportsImageGeneration: true,
+	},
+	"deepseek-v4.1-flash": {
+		label: "DeepSeek Flash",
+		supportsImageGeneration: false,
 	},
 } as const satisfies Record<ai_chat_ModelId, AiChatModelMetadata>;
 

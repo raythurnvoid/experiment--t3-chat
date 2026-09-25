@@ -64,6 +64,8 @@ The current agent is a Convex-backed AI chat runtime that streams AI SDK 6 UI me
 - Files node data/query layer: `../../../packages/app/convex/files_nodes.ts`
 - R2 upload/event metadata and source conversion/finalization: `../../../packages/app/convex/r2.ts`
 
+The picker offers two models. `gpt-6-luna` is the default. It calls OpenAI, and Agent mode can draw pictures with it. `deepseek-v4.1-flash` calls OpenRouter model `deepseek/deepseek-v4.1-flash` with Convex env `OPENROUTER_API_KEY`. It cannot draw pictures. OpenRouter is asked to skip hosts that train on prompts, and to skip hosts that would drop the tools on the request.
+
 The files system is a db-backed file/folder model scoped by organization/workspace membership. Folders are tree nodes only. Editable text files — Markdown (`rich_text`) and the plain-text extensions (`plain_text`, e.g. `.json`, `.yaml`, `.ts`) — have Yjs snapshots/updates, exact text chunks, and plain-text search chunks; committed current content is read from the chunks, and R2 keeps only Yjs and version snapshot objects for editable files. Uploaded source files preserve the original binary in R2. Enabled `files.upload.completed` plugins may create ordinary visible Markdown siblings.
 
 # Bash Call Records

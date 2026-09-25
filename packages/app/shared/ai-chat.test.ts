@@ -3,17 +3,21 @@ import { describe, expect, test } from "vitest";
 import { ai_chat_DEFAULT_MODEL_ID, ai_chat_is_model_id, ai_chat_MODEL_IDS, ai_chat_MODELS } from "./ai-chat.ts";
 
 describe("ai_chat model catalog", () => {
-	test("keeps GPT-6 Luna as the only allowed model", () => {
-		expect(ai_chat_MODEL_IDS).toEqual(["gpt-6-luna"]);
+	test("keeps GPT-6 Luna as the default and allows DeepSeek Flash", () => {
+		expect(ai_chat_MODEL_IDS).toEqual(["gpt-6-luna", "deepseek-v4.1-flash"]);
 		expect(ai_chat_DEFAULT_MODEL_ID).toBe("gpt-6-luna");
 	});
 
-	test("exposes a friendly label on the allowed model", () => {
+	test("exposes a friendly label on each allowed model", () => {
 		expect(ai_chat_MODELS["gpt-6-luna"].label).toBe("GPT-6 Luna");
+		expect(ai_chat_MODELS["deepseek-v4.1-flash"].label).toBe("DeepSeek Flash");
+		expect(ai_chat_MODELS["gpt-6-luna"].supportsImageGeneration).toBe(true);
+		expect(ai_chat_MODELS["deepseek-v4.1-flash"].supportsImageGeneration).toBe(false);
 	});
 
 	test("treats only the catalog ids as valid models", () => {
 		expect(ai_chat_is_model_id("gpt-6-luna")).toBe(true);
+		expect(ai_chat_is_model_id("deepseek-v4.1-flash")).toBe(true);
 		expect(ai_chat_is_model_id("gpt-5.4-nano")).toBe(false);
 		expect(ai_chat_is_model_id("gpt-5.4-mini")).toBe(false);
 		expect(ai_chat_is_model_id("gpt-5.6-luna")).toBe(false);

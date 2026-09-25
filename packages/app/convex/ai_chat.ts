@@ -35,6 +35,7 @@ import {
 import { doc } from "convex-helpers/validators";
 import { v, type Infer } from "convex/values";
 import { openai } from "@ai-sdk/openai";
+import { openrouter } from "@openrouter/ai-sdk-provider";
 import {
 	streamText,
 	smoothStream,
@@ -267,16 +268,78 @@ function resolve_parent_message_context(input: {
  */
 const GENERATED_IMAGE_COST_CENTS = 4;
 
-function compute_token_usage_cost_cents(args: { modelId: string; inputTokens: number; outputTokens: number }) {
-	// Keep thread titles on the gpt-4.1-nano rate. Chat turns use the GPT-6 Luna rate below.
+function compute_token_usage_cost_cents(args: {
+	modelId: string;
+	inputTokens: number;
+	outputTokens: number;
+	reportedCostUsd?: number | null;
+}) {
+	// Keep thread titles on the gpt-4.1-nano rate.
 	if (args.modelId === "gpt-4.1-nano") {
 		return args.inputTokens * 0.00001 + args.outputTokens * 0.00004;
 	}
 
-	// Standard price is $0.10 input and $0.50 output per 1M tokens.
+	// OpenRouter picks the host for each DeepSeek step, so bill the dollar cost it reports.
+	// If that cost is missing, use the DeepSeek host list price: $0.30 input and $1.20 output per 1M tokens.
+	if (args.modelId === "deepseek-v4.1-flash") {
+		const reportedCostUsd = args.reportedCostUsd;
+		if (typeof reportedCostUsd === "number" && Number.isFinite(reportedCostUsd) && reportedCostUsd >= 0) {
+			return reportedCostUsd * 100;
+		}
+
+		return args.inputTokens * 0.00003 + args.outputTokens * 0.00012;
+	}
+
+	// GPT-6 Luna standard price is $0.10 input and $0.50 output per 1M tokens.
 	// A prompt over 272k input tokens costs 2x input and 1.5x output for the whole request.
 	const longPrompt = args.inputTokens > 272_000;
 	return args.inputTokens * (longPrompt ? 0.00002 : 0.00001) + args.outputTokens * (longPrompt ? 0.000075 : 0.00005);
+}
+
+/**
+ * Read the dollar cost OpenRouter put on one step. A missing or bad value means the caller
+ * should use the list price instead.
+ */
+function openrouter_reported_cost_usd(providerMetadata: unknown): number | null {
+	if (providerMetadata === null || typeof providerMetadata !== "object" || !("openrouter" in providerMetadata)) {
+		return null;
+	}
+
+	const openrouterMetadata = providerMetadata.openrouter;
+	if (openrouterMetadata === null || typeof openrouterMetadata !== "object" || !("usage" in openrouterMetadata)) {
+		return null;
+	}
+
+	const usage = openrouterMetadata.usage;
+	if (usage === null || typeof usage !== "object" || !("cost" in usage)) {
+		return null;
+	}
+
+	const cost = usage.cost;
+	if (typeof cost !== "number" || !Number.isFinite(cost) || cost < 0) {
+		return null;
+	}
+
+	return cost;
+}
+
+/**
+ * The chat model for one turn. GPT-6 Luna stays on OpenAI. DeepSeek Flash goes to OpenRouter.
+ * Picture drawing stays on its own OpenAI call, because that tool is OpenAI's.
+ */
+function chat_language_model(modelId: ai_chat_ModelId) {
+	if (modelId === "deepseek-v4.1-flash") {
+		return openrouter.chat("deepseek/deepseek-v4.1-flash", {
+			usage: { include: true },
+			// Keep chats off hosts that train on prompts, and off hosts that would drop our tools.
+			provider: {
+				data_collection: "deny",
+				require_parameters: true,
+			},
+		});
+	}
+
+	return openai(modelId);
 }
 
 /**
@@ -2382,7 +2445,7 @@ async function create_agent_turn_stream(args: {
 
 			const result1 = streamText({
 				model: wrapLanguageModel({
-					model: openai(args.modelId),
+					model: chat_language_model(args.modelId),
 					middleware: create_image_generation_middleware(null),
 				}),
 				system: `${systemPrompt}\n${workspaceSystem}`,
@@ -2546,11 +2609,24 @@ async function create_agent_turn_stream(args: {
 						inputTokens: totalUsage.inputTokens ?? 0,
 						outputTokens: totalUsage.outputTokens ?? 0,
 					};
-					capturedActualCents += compute_token_usage_cost_cents({
-						modelId: args.modelId,
-						inputTokens: capturedUsage.inputTokens,
-						outputTokens: capturedUsage.outputTokens,
-					});
+					// DeepSeek's price depends on which OpenRouter host answered. Bill each step's
+					// reported cost. Other models keep one rate for the whole turn.
+					if (args.modelId === "deepseek-v4.1-flash" && steps.length > 0) {
+						for (const step of steps) {
+							capturedActualCents += compute_token_usage_cost_cents({
+								modelId: args.modelId,
+								inputTokens: step.usage.inputTokens ?? 0,
+								outputTokens: step.usage.outputTokens ?? 0,
+								reportedCostUsd: openrouter_reported_cost_usd(step.providerMetadata),
+							});
+						}
+					} else {
+						capturedActualCents += compute_token_usage_cost_cents({
+							modelId: args.modelId,
+							inputTokens: capturedUsage.inputTokens,
+							outputTokens: capturedUsage.outputTokens,
+						});
+					}
 
 					// A picture costs per image, not per token. Count the results here rather than in the
 					// upload transform, because a step result holds one entry per finished picture once
@@ -4147,6 +4223,36 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 					outputTokens: 1_000_000,
 				}),
 			).toBe(50);
+		});
+
+		test("bills DeepSeek Flash at the dollar cost OpenRouter reports", () => {
+			expect(
+				compute_token_usage_cost_cents({
+					modelId: "deepseek-v4.1-flash",
+					inputTokens: 100_000,
+					outputTokens: 100_000,
+					reportedCostUsd: 0.15,
+				}),
+			).toBe(15);
+		});
+
+		test("bills DeepSeek Flash at $0.30 input and $1.20 output when OpenRouter omits the cost", () => {
+			expect(
+				compute_token_usage_cost_cents({
+					modelId: "deepseek-v4.1-flash",
+					inputTokens: 100_000,
+					outputTokens: 100_000,
+					reportedCostUsd: null,
+				}),
+			).toBeCloseTo(15);
+		});
+
+		test("reads a non-negative OpenRouter cost and ignores anything else", () => {
+			expect(openrouter_reported_cost_usd({ openrouter: { usage: { cost: 0.15 } } })).toBe(0.15);
+			expect(openrouter_reported_cost_usd({ openrouter: { usage: { cost: 0 } } })).toBe(0);
+			expect(openrouter_reported_cost_usd({ openrouter: { usage: {} } })).toBeNull();
+			expect(openrouter_reported_cost_usd({ openrouter: { usage: { cost: -1 } } })).toBeNull();
+			expect(openrouter_reported_cost_usd(undefined)).toBeNull();
 		});
 	});
 

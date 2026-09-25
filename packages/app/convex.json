@@ -2,7 +2,7 @@
 	"$schema": "node_modules/convex/schemas/convex.schema.json",
 	"node": {
 		"nodeVersion": "24",
-		"externalPackages": ["ai", "@ai-sdk/openai", "zod"]
+		"externalPackages": ["ai", "@ai-sdk/openai", "@openrouter/ai-sdk-provider", "zod"]
 	},
 	"aiFiles": {
 		"disableStalenessMessage": true
