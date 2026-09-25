@@ -56,7 +56,7 @@ describe("FileEditorRichTextDragHandle", () => {
 		expect(menu.isConnected).toBe(true);
 	});
 
-	test("the Turn into check moves to the new block type while the menu stays open", async () => {
+	test("Turn into checks the new block type, then puts the caret back in the text and closes the menu", async () => {
 		const menu = await openSubmenu("Turn into");
 		const heading = within(menu).getByRole("menuitemradio", { name: "Heading 1" });
 
@@ -67,10 +67,10 @@ describe("FileEditorRichTextDragHandle", () => {
 		await waitFor(() => expect(heading.getAttribute("aria-checked")).toBe("true"));
 		expect(within(menu).getByRole("menuitemradio", { name: "Text" }).getAttribute("aria-checked")).toBe("false");
 
-		// Tiptap's focus command moves focus into the editor one frame later. Focus outside the menu
-		// would close it, so wait two frames before checking that the menu is still open.
-		await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-		expect(menu.isConnected).toBe(true);
+		// Tiptap's focus command moves focus into the editor one frame later. The menu then closes
+		// because focus left it, so the user can keep typing in the changed block.
+		await waitFor(() => expect(document.activeElement?.classList.contains("ProseMirror")).toBe(true));
+		await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
 	});
 
 	test("Turn into Quote checks only Quote, not Text for the paragraph inside it", async () => {
