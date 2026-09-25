@@ -45,7 +45,7 @@ export const ai_chat_MODELS = {
 		supportsImageGeneration: true,
 	},
 	"deepseek-v4.1-flash": {
-		label: "DeepSeek Flash",
+		label: "DeepSeek V4.1 Flash",
 		supportsImageGeneration: false,
 	},
 } as const satisfies Record<ai_chat_ModelId, AiChatModelMetadata>;

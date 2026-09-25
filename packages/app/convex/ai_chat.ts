@@ -324,7 +324,7 @@ function openrouter_reported_cost_usd(providerMetadata: unknown): number | null 
 }
 
 /**
- * The chat model for one turn. GPT-6 Luna stays on OpenAI. DeepSeek Flash goes to OpenRouter.
+ * The chat model for one turn. GPT-6 Luna stays on OpenAI. DeepSeek V4.1 Flash goes to OpenRouter.
  * Picture drawing stays on its own OpenAI call, because that tool is OpenAI's.
  */
 function chat_language_model(modelId: ai_chat_ModelId) {
@@ -4225,7 +4225,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			).toBe(50);
 		});
 
-		test("bills DeepSeek Flash at the dollar cost OpenRouter reports", () => {
+		test("bills DeepSeek V4.1 Flash at the dollar cost OpenRouter reports", () => {
 			expect(
 				compute_token_usage_cost_cents({
 					modelId: "deepseek-v4.1-flash",
@@ -4236,7 +4236,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			).toBe(15);
 		});
 
-		test("bills DeepSeek Flash at $0.30 input and $1.20 output when OpenRouter omits the cost", () => {
+		test("bills DeepSeek V4.1 Flash at $0.30 input and $1.20 output when OpenRouter omits the cost", () => {
 			expect(
 				compute_token_usage_cost_cents({
 					modelId: "deepseek-v4.1-flash",
