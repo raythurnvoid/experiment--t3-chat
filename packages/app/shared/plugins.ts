@@ -10,10 +10,13 @@ export const plugins_RUNTIME_VERSION = "1";
 /**
  * Which review policy the current code implements.
  *
- * A stored verdict is only reused when it was produced under this same value. Bump it whenever the
- * review prompts, the mechanical severities, the model or tool semantics, the file classifier, or the
- * required coverage change. Without the bump an old verdict would keep authorizing publishes under a
- * policy that no longer exists.
+ * A stored verdict is reused when the plugin content and this value match. The model name is not
+ * part of that check. Updating the model keeps this value, and a saved pass for the same content is
+ * still reused.
+ *
+ * Bump it when the review prompts, the mechanical severities, the tool behavior, the provider
+ * options, the file classifier, or the required coverage change. Without the bump an old verdict
+ * would keep authorizing publishes under a policy that no longer exists.
  *
  * Keep one value through a multi-step rollout, or invalidate every verdict produced by the interim
  * steps before any of them can authorize a publish.

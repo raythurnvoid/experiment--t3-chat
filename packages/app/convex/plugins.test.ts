@@ -9493,6 +9493,54 @@ describe("plugins publish_version", () => {
 		expect(reviews).toHaveLength(2);
 	});
 
+	test("reuses a saved pass for the same subject after the review model is updated", async () => {
+		const t = test_convex();
+		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const repositoryId = await insert_claimed_repository(t, { ownerUserId: membership.userId });
+		// A miss must not look like the stored pass. This mock rejects, so only the saved row can return passed.
+		const aiReview = mock_ai_review({ verdict: "rejected", findings: [] });
+		const subject = `subject:${"e".repeat(64)}`;
+
+		// The live review model is gpt-6-luna. This pass was stored under an older model and the
+		// current policy. Reuse must keep that row. Updating the model must not miss it.
+		const storedId = await t.run(async (ctx) => {
+			return await ctx.db.insert("plugins_version_reviews", {
+				createdBy: membership.userId,
+				artifactHash: `sha256:${"e".repeat(64)}`,
+				reviewSubjectHash: subject,
+				reviewPolicyVersion: plugins_REVIEW_POLICY_VERSION,
+				pluginName: "media-drain",
+				version: "0.1.0",
+				status: "passed",
+				mechanicalFindings: [],
+				mechanicalAdvisoryFindings: [],
+				aiFindings: [],
+				capabilityMap: [],
+				model: "gpt-5.6-luna",
+				updatedAt: Date.now(),
+			});
+		});
+
+		const reviewed = await request_fresh_review(t, {
+			requestedBy: membership.userId,
+			repositoryId,
+			hashChar: "e",
+			reviewSubjectHash: subject,
+		});
+
+		expect(reviewed).toMatchObject({ _yay: { status: "passed", reviewId: storedId } });
+		expect(aiReview).not.toHaveBeenCalled();
+		const reviews = await t.run((ctx) => ctx.db.query("plugins_version_reviews").collect());
+		expect(reviews).toEqual([
+			expect.objectContaining({
+				_id: storedId,
+				model: "gpt-5.6-luna",
+				reviewPolicyVersion: plugins_REVIEW_POLICY_VERSION,
+				status: "passed",
+			}),
+		]);
+	});
+
 	test("returns the first stored terminal verdict when an identical review settles later", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));

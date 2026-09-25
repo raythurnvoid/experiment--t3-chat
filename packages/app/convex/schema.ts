@@ -3322,10 +3322,12 @@ const app_convex_schema = defineSchema({
 		 */
 		reviewSubjectHash: v.string(),
 		/**
-		 * Which review policy produced this verdict. Bump `plugins_REVIEW_POLICY_VERSION` whenever the
-		 * prompts, the mechanical severities, the model or tool semantics, the file classifier, or the
-		 * required coverage change. Old verdicts then stop being reused instead of silently authorizing
-		 * a publish under a policy that no longer exists.
+		 * Which review policy produced this verdict. Reuse compares this value with `reviewSubjectHash`.
+		 * The model name is not part of that check. Updating the model does not change
+		 * `plugins_REVIEW_POLICY_VERSION`, so a saved pass for the same content is still reused.
+		 * Bump that version when the prompts, the mechanical severities, the tool behavior, the provider
+		 * options, the file classifier, or the required coverage change. Old verdicts then stop being
+		 * reused instead of authorizing a publish under a policy that no longer exists.
 		 */
 		reviewPolicyVersion: v.string(),
 		pluginName: v.string(),
@@ -3358,6 +3360,9 @@ const app_convex_schema = defineSchema({
 				endByte: v.number(),
 			}),
 		),
+		/**
+		 * Which model ran this review. This is a record only. Reuse does not read it.
+		 */
 		model: v.string(),
 		/**
 		 * Artifact hash of the previous passed

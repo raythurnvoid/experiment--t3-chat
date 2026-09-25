@@ -734,6 +734,8 @@ type preflight_publish_plugin_version_Result =
 
 // #region ai review
 
+// Provider options change how the reviewer works, so they stay in the policy pin.
+// The model id is only stored on the review row. Updating the model must not bump the review policy.
 const REVIEW_MODEL_ID = "gpt-6-luna" as const satisfies ai_chat_ModelId;
 const REVIEW_PROVIDER_OPTIONS = { openai: { reasoningEffort: "low", parallelToolCalls: false, store: false } } as const;
 
@@ -5996,7 +5998,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 	const { describe, expect, test } = import.meta.vitest;
 
 	describe("review_policy", () => {
-		test("pins the review prompts and model to their policy version", async () => {
+		test("pins the review prompts and tool schemas to their policy version", async () => {
 			const fixture = {
 				sentinel: "REVIEW_TEST_BOUNDARY",
 				facts: "manifest facts",
@@ -6004,33 +6006,36 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				diff: "",
 				summary: "",
 			};
-			const digest = await crypto_sha256_hex(
-				JSON.stringify({
-					model: REVIEW_MODEL_ID,
-					provider: plugins_ai_review.model.provider,
-					providerOptions: REVIEW_PROVIDER_OPTIONS,
-					system: review_agent_prompt({ ...fixture, stepsLeft: 1 }).system,
-					tools: [
-						{
-							name: "bash",
-							description: REVIEW_BASH_DESCRIPTION,
-							schema: await REVIEW_BASH_JSON_SCHEMA,
-						},
-						{ name: "submit_review", description: REVIEW_SUBMIT_DESCRIPTION, schema: await REVIEW_VERDICT_JSON_SCHEMA },
-						{
-							name: "compact_review",
-							description: REVIEW_COMPACT_DESCRIPTION,
-							schema: await REVIEW_COMPACT_JSON_SCHEMA,
-						},
-					],
-				}),
-			);
+			const pinned = {
+				provider: plugins_ai_review.model.provider,
+				providerOptions: REVIEW_PROVIDER_OPTIONS,
+				system: review_agent_prompt({ ...fixture, stepsLeft: 1 }).system,
+				tools: [
+					{
+						name: "bash",
+						description: REVIEW_BASH_DESCRIPTION,
+						schema: await REVIEW_BASH_JSON_SCHEMA,
+					},
+					{ name: "submit_review", description: REVIEW_SUBMIT_DESCRIPTION, schema: await REVIEW_VERDICT_JSON_SCHEMA },
+					{
+						name: "compact_review",
+						description: REVIEW_COMPACT_DESCRIPTION,
+						schema: await REVIEW_COMPACT_JSON_SCHEMA,
+					},
+				],
+			};
+			const pinnedJson = JSON.stringify(pinned);
+			// Keep the model id out of this JSON. Updating the model must not change the digest.
+			expect(pinnedJson).not.toContain(REVIEW_MODEL_ID);
+			const digest = await crypto_sha256_hex(pinnedJson);
 			/**
-			 * Assess a policy bump before changing this hash. Tool behavior and mechanical rules
-			 * still need manual review; this check pins the prompt, schemas, and model.
+			 * Assess a policy bump before changing this hash. Tool behavior, mechanical rules, the file
+			 * classifier, and required coverage still need manual review. This check pins the prompt, the
+			 * tool schemas, and the provider options. The model id is not here. Updating the model must not
+			 * change the policy version or this hash.
 			 */
 			const reviewedHashes: Record<string, string> = {
-				"15": "bc132a27940909163f5cb23fda0fa317566124d597ef403ea0f803a699ca11b3",
+				"15": "0e7cf300bcb2a7041e6b80ffc746c80aeb5ff63896ecfff2c74118eef0da00fb",
 			};
 			expect(digest).toBe(reviewedHashes[plugins_REVIEW_POLICY_VERSION]);
 		});
