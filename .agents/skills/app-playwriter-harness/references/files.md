@@ -430,6 +430,11 @@ Use this when changing tree focus, context menus, selection, or route sync.
   A selected row's accessible name can end with `ready to move` after Control+X. Escape clears an
   idle cut. There is no Clear button. Repeat shortcuts in Search files, rename, Monaco, rich text,
   and chat: they must keep normal text behavior.
+- Escape in an open row menu must close only the menu. Cut a row with Control+X, right-click
+  another row, press Escape: the menu closes and `.FilesSidebarTreeItem-content-cut` stays. A
+  second Escape on the tree cancels the cut. The row menu renders outside `role="tree"` (see
+  the menu note in `known-hazards.md`), so the tree does not see the menu's keys. Never paste in
+  this check. Verified 2026-09-25.
 - Open an archived QA folder with a non-empty clipboard. Control+V must not paste into that
   archived folder. The Show archived checkbox label is `Show archived items` / `Hide archived items`;
   press Escape after toggling it.

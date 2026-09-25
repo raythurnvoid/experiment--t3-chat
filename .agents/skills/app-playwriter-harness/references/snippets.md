@@ -285,6 +285,47 @@ $b.Dispose()
 
 Sample a whole column, not one point: one pixel cannot tell you which band you landed in, and a control's own background inside a bar reads nothing like the bar. Map image coordinates from the clip (`imageY = pageY - clip.y`) and from `getBoundingClientRect()` of the element, and remember `page.screenshot({ scale: "css" })` plus `bringToFront()` (a backgrounded tab returns a stale frame).
 
+## Read Open Menus
+
+`MyMenu` and `MyContextMenu` keep DOM focus on the `role="menu"` element, so `document.activeElement` never names the active item. This read gives, for each open menu level (outer first): its accessible name, whether it has focus, the active item from `aria-activedescendant`, and `aria-expanded` on each element that controls it.
+
+```js
+state.readMenus = () =>
+	state.page.evaluate(() => {
+		const nameOf = (id) => {
+			const el = document.getElementById(id);
+			return el?.getAttribute("aria-label") ?? el?.textContent?.trim().slice(0, 40) ?? null;
+		};
+		return [...document.querySelectorAll("[role=menu]")]
+			.filter((m) => m.checkVisibility())
+			.map((m) => ({
+				name: m.getAttribute("aria-label") ?? (m.getAttribute("aria-labelledby") ?? "").split(" ").filter(Boolean).map(nameOf).join(" "),
+				focused: document.activeElement === m,
+				active: document.getElementById(m.getAttribute("aria-activedescendant") ?? "")?.textContent?.trim() ?? null,
+				expanded: [...document.querySelectorAll(`[aria-controls="${CSS.escape(m.id)}"]`)].map(
+					(b) => `${b.getAttribute("aria-label") ?? b.textContent.trim()}=${b.getAttribute("aria-expanded")}`,
+				),
+			}));
+	});
+console.log(JSON.stringify(await state.readMenus()));
+```
+
+Expected on the files tree (verified 2026-09-25): a right click on a row and ArrowDown gives `{"name":"More actions for <row>","focused":true,"active":"Cut","expanded":["More actions for <row>=false"]}`. The button stays `false` because only the element that opened the menu is expanded, like Ariakit. A click on the row ⋮ button gives `active: null` and `=true`. A submenu is a DOM child of its parent menu, so read items by role, not by the parent's `textContent`. Right-click a row that is really on screen: a row scrolled under `.FilesSidebarTopSection` still has a box, and the click lands on the header and opens nothing.
+
+## Prove Which native-popovers Code The Dev Server Serves
+
+After a change in `packages/native-popovers`, read the file the dev server sends and search for one line of your change. Vite serves the package source through `/@fs/` plus the absolute path of the checkout. Do not look for it in `performance.getEntriesByType("resource")`: the resource buffer fills with other modules first, so the entry is often missing.
+
+```js
+const res = await state.page.evaluate(async () => {
+	const r = await fetch("/@fs/<absolute repo path>/packages/native-popovers/src/menu/menu-controller.ts");
+	return { status: r.status, hasLine: (await r.text()).includes("<one line of your change>") };
+});
+console.log(JSON.stringify(res));
+```
+
+`hasLine: true` proves only the served source. Reload the tab too, because an open tab keeps running the module it loaded before the change.
+
 ## Run A Real axe-core Audit
 
 `auditAccessibility(...)` is only a screen. For rule-level findings, inject axe-core. The dev server sets no CSP that blocks it, so `addScriptTag` works (verified 2026-07-26, axe-core 4.12.1, 572KB).
