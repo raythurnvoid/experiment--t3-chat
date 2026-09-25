@@ -124,6 +124,7 @@ import {
 	type files_VisibleEntry,
 } from "../shared/files.ts";
 import { files_metadata_db_patch_file_scope, files_metadata_db_write_entries } from "./files_metadata.ts";
+import { files_archive_runs_db_start, files_archive_runs_STEP_MAX_NODES } from "./files_archive_runs.ts";
 import { public_api_service_uploads_db_get_target_by_asset } from "./public_api_service_uploads.ts";
 import {
 	files_pending_nodes_db_create,
@@ -180,50 +181,6 @@ const TREE_CHILDREN_SIDE_ROWS_MOVES_MAX_SCAN = 1000;
 
 const TREE_ANCESTORS_MAX_DEPTH = 64;
 const TREE_SHARED_ROOTS_MAX_GRANTS = 500;
-
-/**
- * Rebase an absolute path from one base path to another.
- *
- * @example
- * ```ts
- * // valid rebase
- * path_rebase({
- * 	fromBasePath: "/docs",
- * 	toBasePath: "/archive",
- * 	path: "/docs/guides/getting-started",
- * }); // => "/archive/guides/getting-started"
- * ```
- *
- * @example
- * ```ts
- * // invalid rebase (path is outside fromBasePath)
- * path_rebase({
- * 	fromBasePath: "/docs",
- * 	toBasePath: "/archive",
- * 	path: "/notes/todo",
- * }); // => null
- * ```
- *
- * Path format: absolute (`/`-prefixed) and no trailing `/` for non-root paths.
- *
- * @param args.fromBasePath - Base path that `args.path` must match (same path format).
- * @param args.toBasePath - Base path used in the rebased result (same path format).
- * @param args.path - Absolute path to rebase (same path format).
- *
- * @returns The rebased path, or `null` when `args.path` does not start with `args.fromBasePath`.
- */
-function path_rebase(args: { fromBasePath: string; toBasePath: string; path: string }) {
-	if (args.path === args.fromBasePath) {
-		return args.toBasePath;
-	}
-
-	if (!args.path.startsWith(`${args.fromBasePath}/`)) {
-		return null;
-	}
-
-	const suffix = args.path.slice(args.fromBasePath.length + 1);
-	return `${args.toBasePath}${args.toBasePath === "/" ? "" : "/"}${suffix}`;
-}
 
 function files_path_depth(path: string) {
 	return path === "/" ? 0 : path_extract_segments_from(path).length;
@@ -341,6 +298,7 @@ async function db_patch_node_search_scope(
 		path?: string;
 		archiveOperationId?: string;
 		parentId?: Doc<"files_nodes">["parentId"];
+		name?: string;
 	},
 ) {
 	await Promise.all([
@@ -1048,56 +1006,10 @@ export type files_nodes_get_user_file_write_access_Result =
 		: never;
 
 /**
- * Whether the caller may act on every node a sweep collected.
- *
- * A cascade — archive a folder, restore a folder — gathers descendants nobody named. The handler's
- * own check asked about the node the caller pointed at, so a restricted folder nested inside an open
- * one would be swept along by somebody holding no grant on it.
- *
- * Pass the named node's own scope as `rootScopeNodeId`: descendants sharing it were already covered.
- * Everything else is asked once per distinct scope, so a restricted folder holding 500 files costs
- * one check and an ordinary tree costs none.
- */
-export async function files_nodes_db_can_act_on_swept_nodes(
-	ctx: MutationCtx,
-	args: {
-		organizationId: Doc<"files_nodes">["organizationId"];
-		workspaceId: Doc<"files_nodes">["workspaceId"];
-		userId: Id<"users">;
-		rootScopeNodeId: Id<"files_nodes"> | null;
-		nodes: readonly Doc<"files_nodes">[];
-		permission: access_control_Permission;
-	},
-) {
-	const checkedScopeNodeIds = new Set<Id<"files_nodes">>();
-
-	for (const node of args.nodes) {
-		const scopeNodeId = node.restrictedScopeNodeId;
-		if (!scopeNodeId || scopeNodeId === args.rootScopeNodeId || checkedScopeNodeIds.has(scopeNodeId)) {
-			continue;
-		}
-
-		checkedScopeNodeIds.add(scopeNodeId);
-		const allowed = await access_control_db_can_act_on_file_node(ctx, {
-			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
-			userId: args.userId,
-			fileNode: node,
-			permission: args.permission,
-		});
-		if (!allowed) {
-			return false;
-		}
-	}
-
-	return true;
-}
-
-/**
  * Load every descendant below `parentId`. Include archived descendants.
  * Use parent ids because active and archived trees can have the same path.
  */
-export async function files_nodes_db_collect_descendants(
+async function db_collect_descendants(
 	ctx: QueryCtx | MutationCtx,
 	args: {
 		organizationId: Doc<"files_nodes">["organizationId"];
@@ -1135,7 +1047,7 @@ export async function files_nodes_db_collect_descendants(
  * Say "read-only" only when the caller can see that node. Otherwise use a general error.
  */
 export async function files_nodes_db_require_swept_nodes_writable(
-	ctx: MutationCtx,
+	ctx: QueryCtx | MutationCtx,
 	args: {
 		organizationId: Doc<"files_nodes">["organizationId"];
 		workspaceId: Doc<"files_nodes">["workspaceId"];
@@ -1201,7 +1113,7 @@ export async function files_nodes_db_require_subtree_writable(
 		return Result({ _yay: null });
 	}
 
-	const subtreeFileNodes = await files_nodes_db_collect_descendants(ctx, {
+	const subtreeFileNodes = await db_collect_descendants(ctx, {
 		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
 		parentId: args.node._id,
@@ -5806,6 +5718,245 @@ export const move_nodes = mutation({
 // #endregion move nodes
 
 // #region archive nodes
+/**
+ * Archive one node and its side docs under `archiveOperationId`, in the same mutation.
+ * The caller advances the media validation version once after its writes.
+ */
+export async function files_nodes_db_archive_node(
+	ctx: MutationCtx,
+	args: {
+		node: Doc<"files_nodes">;
+		archiveOperationId: string;
+		updatedBy: Id<"users">;
+		now: number;
+	},
+) {
+	await ctx.db.patch("files_nodes", args.node._id, {
+		archiveOperationId: args.archiveOperationId,
+		updatedBy: args.updatedBy,
+		updatedAt: args.now,
+	});
+	await db_patch_node_search_scope(ctx, {
+		organizationId: args.node.organizationId,
+		workspaceId: args.node.workspaceId,
+		nodeId: args.node._id,
+		kind: args.node.kind,
+		archiveOperationId: args.archiveOperationId,
+	});
+}
+
+/**
+ * Restore one archived node under `parent`, which is active, or under the workspace root when it is
+ * null. The node and its side docs change in the same mutation. The node takes the parent's
+ * restricted scope unless it is its own scope root, like a move. The caller advances the media
+ * validation version once after its writes.
+ *
+ * Items archived on their own inside a restored folder stay archived. When the folder lands on a new
+ * path or scope, they move with it, like a move moves them. Items of the folder's own operation are
+ * left alone: each one gets its new path when it is restored. Returns how many docs moved (items and
+ * their side docs), or `move_too_large` when more would move than a move allows.
+ */
+export async function files_nodes_db_restore_node(
+	ctx: MutationCtx,
+	args: {
+		node: Doc<"files_nodes">;
+		parent: Doc<"files_nodes"> | null;
+		name: string;
+		updatedBy: Id<"users">;
+		now: number;
+	},
+) {
+	const parentId = args.parent?._id ?? files_ROOT_ID;
+	const path = path_join(args.parent?.path ?? "/", args.name);
+	const restrictedScopeNodeId =
+		args.node.restrictedScopeNodeId === args.node._id ? args.node._id : (args.parent?.restrictedScopeNodeId ?? null);
+
+	const movedNodes: Array<{ node: Doc<"files_nodes">; path: string; restrictedScopeNodeId: Id<"files_nodes"> | null }> =
+		[];
+	const moveTooLarge = Result({
+		_nay: {
+			name: "move_too_large",
+			message: "Too much inside this folder was archived on its own. Restore some of it first.",
+		},
+	});
+	const movedChunks: Array<{ id: Id<"files_plain_text_chunks">; path: string }> = [];
+	const movedMetadataDocs: Array<{ id: Id<"files_metadata_docs">; path: string; treePath: string }> = [];
+	if (
+		args.node.kind === "folder" &&
+		(path !== args.node.path || restrictedScopeNodeId !== args.node.restrictedScopeNodeId)
+	) {
+		const operationId = args.node.archiveOperationId ?? "";
+		const readLimit = MAX_MOVE_NODE_COUNT + 1;
+		// Directly below the restored folder, skip the folder's own operation: read the index below it and
+		// above it. The job restores those items itself.
+		const stack = [
+			{
+				children: [
+					...(await ctx.db
+						.query("files_nodes")
+						.withIndex("by_organization_workspace_parent_archiveOperation_name", (q) =>
+							q
+								.eq("organizationId", args.node.organizationId)
+								.eq("workspaceId", args.node.workspaceId)
+								.eq("parentId", args.node._id)
+								.lt("archiveOperationId", operationId),
+						)
+						.take(readLimit)),
+					...(await ctx.db
+						.query("files_nodes")
+						.withIndex("by_organization_workspace_parent_archiveOperation_name", (q) =>
+							q
+								.eq("organizationId", args.node.organizationId)
+								.eq("workspaceId", args.node.workspaceId)
+								.eq("parentId", args.node._id)
+								.gt("archiveOperationId", operationId),
+						)
+						.take(readLimit)),
+				],
+				path,
+				restrictedScopeNodeId,
+			},
+		];
+		while (stack.length > 0) {
+			const folder = stack.pop()!;
+			for (const child of folder.children) {
+				const childPath = path_join(folder.path, child.name);
+				const childScopeNodeId = child.restrictedScopeNodeId === child._id ? child._id : folder.restrictedScopeNodeId;
+				movedNodes.push({ node: child, path: childPath, restrictedScopeNodeId: childScopeNodeId });
+				if (movedNodes.length > MAX_MOVE_NODE_COUNT) {
+					return moveTooLarge;
+				}
+
+				if (child.kind === "folder") {
+					stack.push({
+						children: await ctx.db
+							.query("files_nodes")
+							.withIndex("by_organization_workspace_parent_archiveOperation_name", (q) =>
+								q
+									.eq("organizationId", args.node.organizationId)
+									.eq("workspaceId", args.node.workspaceId)
+									.eq("parentId", child._id),
+							)
+							.take(readLimit),
+						path: childPath,
+						restrictedScopeNodeId: childScopeNodeId,
+					});
+				}
+			}
+		}
+
+		// Read every side doc before the first write. A few big files can hold thousands of chunks, so
+		// stop at the same size limit as a move, while nothing has changed yet.
+		const readBudget = { readDocumentCount: 0, readBytes: 0 };
+		for (const moved of movedNodes) {
+			if (!fits_move_read_budget(readBudget, moved.node)) {
+				return moveTooLarge;
+			}
+
+			for (const chunks of moved.node.kind === "file"
+				? [
+						ctx.db
+							.query("files_plain_text_chunks")
+							.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
+								q
+									.eq("organizationId", moved.node.organizationId)
+									.eq("workspaceId", moved.node.workspaceId)
+									.eq("fileNodeId", moved.node._id),
+							),
+						ctx.db
+							.query("files_plain_text_chunks")
+							.withIndex("by_organization_workspace_target_chunkIndex", (q) =>
+								q
+									.eq("organizationId", moved.node.organizationId)
+									.eq("workspaceId", moved.node.workspaceId)
+									.eq("target.kind", "saved")
+									.eq("target.id", moved.node._id),
+							),
+					]
+				: []) {
+				for await (const chunk of chunks) {
+					if (!fits_move_read_budget(readBudget, chunk)) {
+						return moveTooLarge;
+					}
+					movedChunks.push({ id: chunk._id, path: moved.path });
+				}
+			}
+
+			for (const metadataDocs of [
+				ctx.db
+					.query("files_metadata_docs")
+					.withIndex("by_organization_workspace_fileNode_fieldPath", (q) =>
+						q
+							.eq("organizationId", moved.node.organizationId)
+							.eq("workspaceId", moved.node.workspaceId)
+							.eq("fileNodeId", moved.node._id),
+					),
+				ctx.db
+					.query("files_metadata_docs")
+					.withIndex("by_organization_workspace_target_fieldPath", (q) =>
+						q
+							.eq("organizationId", moved.node.organizationId)
+							.eq("workspaceId", moved.node.workspaceId)
+							.eq("target.kind", "saved")
+							.eq("target.id", moved.node._id),
+					),
+			]) {
+				for await (const metadata of metadataDocs) {
+					if (!fits_move_read_budget(readBudget, metadata)) {
+						return moveTooLarge;
+					}
+					movedMetadataDocs.push({
+						id: metadata._id,
+						path: moved.path,
+						treePath: derive_tree_path_for_file_node(moved.path, moved.node.kind),
+					});
+				}
+			}
+		}
+	}
+
+	await ctx.db.patch("files_nodes", args.node._id, {
+		archiveOperationId: null,
+		parentId,
+		name: args.name,
+		sortName: files_sort_text_key(args.name),
+		path,
+		treePath: derive_tree_path_for_file_node(path, args.node.kind),
+		pathDepth: files_path_depth(path),
+		lowercaseExtension: files_lowercase_extension(path, args.node.kind),
+		restrictedScopeNodeId,
+		updatedBy: args.updatedBy,
+		updatedAt: args.now,
+	});
+	await db_patch_node_search_scope(ctx, {
+		organizationId: args.node.organizationId,
+		workspaceId: args.node.workspaceId,
+		nodeId: args.node._id,
+		kind: args.node.kind,
+		path,
+		archiveOperationId: undefined,
+		parentId,
+		...(args.name !== args.node.name ? { name: args.name } : {}),
+	});
+
+	for (const moved of movedNodes) {
+		await ctx.db.patch("files_nodes", moved.node._id, {
+			path: moved.path,
+			treePath: derive_tree_path_for_file_node(moved.path, moved.node.kind),
+			pathDepth: files_path_depth(moved.path),
+			restrictedScopeNodeId: moved.restrictedScopeNodeId,
+		});
+	}
+	for (const chunk of movedChunks) {
+		await ctx.db.patch("files_plain_text_chunks", chunk.id, { path: chunk.path });
+	}
+	for (const metadata of movedMetadataDocs) {
+		await ctx.db.patch("files_metadata_docs", metadata.id, { path: metadata.path, treePath: metadata.treePath });
+	}
+
+	return Result({ _yay: { movedDocCount: movedNodes.length + movedChunks.length + movedMetadataDocs.length } });
+}
+
 export async function files_nodes_db_archive_nodes(
 	ctx: MutationCtx,
 	args: {
@@ -5823,18 +5974,12 @@ export async function files_nodes_db_archive_nodes(
 			if (!fileNode) {
 				return;
 			}
-			await ctx.db.patch("files_nodes", nodeId, {
+			archivedWorkspaces.set(fileNode.workspaceId, fileNode.organizationId);
+			await files_nodes_db_archive_node(ctx, {
+				node: fileNode,
 				archiveOperationId,
 				updatedBy: args.updatedBy,
-				updatedAt: args.now,
-			});
-			archivedWorkspaces.set(fileNode.workspaceId, fileNode.organizationId);
-			await db_patch_node_search_scope(ctx, {
-				organizationId: fileNode.organizationId,
-				workspaceId: fileNode.workspaceId,
-				nodeId,
-				kind: fileNode.kind,
-				archiveOperationId,
+				now: args.now,
 			});
 		}),
 	);
@@ -5844,12 +5989,20 @@ export async function files_nodes_db_archive_nodes(
 		await files_media_validation_db_advance_version(ctx, { organizationId, workspaceId });
 }
 
+/**
+ * The most items one Archive or Restore call may name.
+ */
+const MAX_ARCHIVE_NAMED_NODES = 500;
+
 export const archive_nodes = mutation({
 	args: {
 		membershipId: v.id("organizations_workspaces_users"),
 		nodeIds: v.array(v.string()),
 	},
-	returns: v_result({ _yay: v.null(), _nay: { data: v.any() } }),
+	returns: v_result({
+		_yay: v.union(v.null(), v.object({ runId: v.id("files_archive_runs"), activityId: v.id("activities") })),
+		_nay: { data: v.any() },
+	}),
 	handler: async (ctx, args) => {
 		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
 		if (!userAuth) {
@@ -5867,6 +6020,10 @@ export const archive_nodes = mutation({
 		});
 		if (!membership) {
 			return Result({ _nay: { message: "Unauthorized" } });
+		}
+
+		if (args.nodeIds.length > MAX_ARCHIVE_NAMED_NODES) {
+			return Result({ _nay: { message: `Archive at most ${MAX_ARCHIVE_NAMED_NODES} items at once.` } });
 		}
 
 		const nodeIds = [];
@@ -5925,131 +6082,45 @@ export const archive_nodes = mutation({
 			}
 		}
 
-		const nodeIdsToArchive = new Set<Id<"files_nodes">>();
-
-		for (const fileNode of fileNodes._yay) {
-			if (fileNode.archiveOperationId !== null) {
-				continue;
-			}
-
-			// Archive changes the node. The caller can see it, so return the read-only error.
-			const nodeWritable = await files_nodes_db_require_user_writable(ctx, { node: fileNode, userId: userAuth.id });
-			if (nodeWritable._nay) {
-				return nodeWritable;
-			}
-
-			nodeIdsToArchive.add(fileNode._id);
-
-			// Follow parent ids, not paths. Active and archived trees can have the same path.
-			const descendantFileNodes = await files_nodes_db_collect_descendants(ctx, {
-				organizationId: membership.organizationId,
-				workspaceId: membership.workspaceId,
-				parentId: fileNode._id,
-			});
-
-			const activeDescendants = descendantFileNodes.filter(
-				(descendantFileNode) => descendantFileNode.archiveOperationId === null,
-			);
-
-			// A folder can hold a restricted folder the caller was never given, and the check above only
-			// asked about the node they named. Without this, writing to the folder above is enough to
-			// archive somebody else's restricted subtree.
-			if (
-				!(await files_nodes_db_can_act_on_swept_nodes(ctx, {
-					organizationId: membership.organizationId,
-					workspaceId: membership.workspaceId,
-					userId: userAuth.id,
-					rootScopeNodeId: fileNode.restrictedScopeNodeId,
-					nodes: activeDescendants,
-					permission: "content.write",
-				}))
-			) {
-				return Result({ _nay: { message: "Permission denied" } });
-			}
-
-			// The caller may write every active descendant.
-			// Return the clear read-only error for a descendant the caller can see.
-			for (const descendantFileNode of activeDescendants) {
-				const descendantWritable = await files_nodes_db_require_user_writable(ctx, {
-					node: descendantFileNode,
-					userId: userAuth.id,
-				});
-				if (descendantWritable._nay) {
-					return descendantWritable;
-				}
-			}
-
-			// This call does not change archived children. But it must not hide a read-only archived
-			// child under a newly archived parent. Check only read-only archived children.
-			// Use a general error when the caller cannot see the child.
-			const archivedDescendants = descendantFileNodes.filter(
-				(descendantFileNode) => descendantFileNode.archiveOperationId !== null,
-			);
-			const archivedProtected = await files_nodes_db_require_swept_nodes_writable(ctx, {
-				organizationId: membership.organizationId,
-				workspaceId: membership.workspaceId,
-				writeContext: {
-					writer: { kind: "user", userId: userAuth.id },
-					actorUserId: userAuth.id,
-					resourceScope: { kind: "workspace" },
-					policyReach: "ancestors",
-				},
-				nodes: archivedDescendants,
-			});
-			if (archivedProtected._nay) {
-				return archivedProtected;
-			}
-
-			for (const descendantFileNode of activeDescendants) {
-				nodeIdsToArchive.add(descendantFileNode._id);
-			}
+		// Drop an item that is already archived, or that sits inside another named folder. The folder's
+		// walk archives it, so the job does not count it twice.
+		const activeFileNodes = [
+			...new Map(
+				fileNodes._yay.filter((node) => node.archiveOperationId === null).map((node) => [node._id, node]),
+			).values(),
+		];
+		const rootFileNodes = activeFileNodes.filter(
+			(node) =>
+				!activeFileNodes.some(
+					(other) => other.kind === "folder" && other._id !== node._id && node.treePath.startsWith(other.treePath),
+				),
+		);
+		if (rootFileNodes.length === 0) {
+			return Result({ _yay: null });
 		}
 
-		await files_nodes_db_archive_nodes(ctx, {
-			nodeIds: [...nodeIdsToArchive],
-			updatedBy: userAuth.id,
-			now: Date.now(),
+		// The job checks every node inside before it archives anything, then archives in steps.
+		return await files_archive_runs_db_start(ctx, {
+			kind: "archive",
+			userAuth,
+			membership,
+			archiveOperationId: crypto.randomUUID(),
+			rootNodeIds: rootFileNodes.map((node) => node._id),
+			pendingUpdateCleanup: null,
+			budget: { nodes: files_archive_runs_STEP_MAX_NODES },
 		});
-
-		return Result({ _yay: null });
 	},
 });
-
-/**
- * The two fields that name whatever blocked a restore, kept only for a caller who may read it.
- *
- * Every conflict refusal in `unarchive_nodes` names a second node, and the caller did not always ask
- * about that one: it can be an ancestor the sweep walked up to, or a node already sitting on the
- * target path. A `content.write` role without `content.read` reaches these refusals, so the path is
- * worth hiding, and the id is worth hiding on its own — it opens files elsewhere. The message stays
- * either way, because a caller has to learn the restore is blocked.
- */
-async function unarchive_conflict_fields(
-	ctx: MutationCtx,
-	args: {
-		userAuth: { id: Id<"users"> };
-		membership: Doc<"organizations_workspaces_users">;
-		conflictFileNode: Doc<"files_nodes">;
-	},
-) {
-	const authorized = await access_control_db_authorize_node(ctx, {
-		userAuth: args.userAuth,
-		membership: args.membership,
-		nodeId: args.conflictFileNode._id,
-		permission: "content.read",
-	});
-
-	return authorized._nay
-		? {}
-		: { conflictingNodeId: args.conflictFileNode._id, conflictingFilePath: args.conflictFileNode.path };
-}
 
 export const unarchive_nodes = mutation({
 	args: {
 		membershipId: v.id("organizations_workspaces_users"),
 		nodeIds: v.array(v.string()),
 	},
-	returns: v_result({ _yay: v.null(), _nay: { data: v.any() } }),
+	returns: v_result({
+		_yay: v.union(v.null(), v.object({ runId: v.id("files_archive_runs"), activityId: v.id("activities") })),
+		_nay: { data: v.any() },
+	}),
 	handler: async (ctx, args) => {
 		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
 		if (!userAuth) {
@@ -6071,6 +6142,10 @@ export const unarchive_nodes = mutation({
 
 		if (args.nodeIds.length === 0) {
 			return Result({ _yay: null });
+		}
+
+		if (args.nodeIds.length > MAX_ARCHIVE_NAMED_NODES) {
+			return Result({ _nay: { message: `Restore at most ${MAX_ARCHIVE_NAMED_NODES} items at once.` } });
 		}
 
 		const nodeIds = [];
@@ -6127,367 +6202,47 @@ export const unarchive_nodes = mutation({
 			}
 		}
 
-		const fileNodesToUnarchive = [...fileNodes._yay];
-
-		// Find the top most shared ancestor for each requested file node.
-		const topMostSharedAncestorsByPath = new Map<string, Doc<"files_nodes">>();
-		for (const fileNode of fileNodesToUnarchive) {
-			if (!fileNode) {
-				continue;
-			}
-
-			if (fileNode.archiveOperationId === null) {
-				continue;
-			}
-
-			const conflictedCurrentFileNode = topMostSharedAncestorsByPath.get(fileNode.path);
-			if (conflictedCurrentFileNode) {
-				return Result({
-					_nay: {
-						name: "nay",
-						message: "Failed to unarchive file because it would conflict with another unarchiving file",
-						data: {
-							requestedNodeIds: args.nodeIds,
-							nodeId: fileNode._id,
-							filePath: fileNode.path,
-							targetPath: fileNode.path,
-							...(await unarchive_conflict_fields(ctx, {
-								userAuth,
-								membership,
-								conflictFileNode: conflictedCurrentFileNode,
-							})),
-						},
-					},
-				});
-			}
-
-			let isDescendantOfCurrentRoot = false;
-			for (const currentRootPath of topMostSharedAncestorsByPath.keys()) {
-				if (fileNode.path.startsWith(`${currentRootPath}/`)) {
-					isDescendantOfCurrentRoot = true;
-					break;
-				}
-			}
-			if (isDescendantOfCurrentRoot) {
-				continue;
-			}
-
-			for (const currentRootPath of topMostSharedAncestorsByPath.keys()) {
-				if (currentRootPath.startsWith(`${fileNode.path}/`)) {
-					topMostSharedAncestorsByPath.delete(currentRootPath);
-				}
-			}
-
-			topMostSharedAncestorsByPath.set(fileNode.path, fileNode);
-		}
-
-		if (topMostSharedAncestorsByPath.size === 0) {
-			return Result({ _yay: null });
-		}
-
-		const topMostSharedAncestorParentFileNodeById = new Map<string, Doc<"files_nodes">>();
-		await Promise.all(
-			(function* (/* iife */) {
-				const visitedParentIds = new Set<Id<"files_nodes">>();
-				for (const ancestorFileNode of topMostSharedAncestorsByPath.values()) {
-					if (ancestorFileNode.archiveOperationId === null) {
-						continue;
-					}
-
-					if (
-						ancestorFileNode.parentId !== files_ROOT_ID &&
-						!topMostSharedAncestorParentFileNodeById.has(ancestorFileNode.parentId) &&
-						!visitedParentIds.has(ancestorFileNode.parentId)
-					) {
-						visitedParentIds.add(ancestorFileNode.parentId);
-						yield ctx.db.get("files_nodes", ancestorFileNode.parentId).then((parentFileNode) => {
-							if (parentFileNode) {
-								topMostSharedAncestorParentFileNodeById.set(ancestorFileNode.parentId, parentFileNode);
-							}
-						});
-					}
-				}
-			})(),
-		);
-
-		// Build one plan entry per file node to unarchive.
-		const plans: Array<{
-			fileNode: Doc<"files_nodes">;
-			targetParentId: Doc<"files_nodes">["parentId"];
-			targetPath: string;
-		}> = [];
-		const ancestorFileNodesByTargetPath = new Map<string, Doc<"files_nodes">>();
-
-		const plansResult = Result_all(
-			await Promise.all(
-				(function* (/* iife */) {
-					for (const ancestorFileNode of topMostSharedAncestorsByPath.values()) {
-						if (ancestorFileNode.archiveOperationId === null) {
-							continue;
-						}
-
-						let shouldMoveToRoot = false;
-						if (ancestorFileNode.parentId !== files_ROOT_ID) {
-							const parentFileNode = topMostSharedAncestorParentFileNodeById.get(ancestorFileNode.parentId);
-
-							// If parent is still archived or invalid, move this subtree to root when unarchiving.
-							shouldMoveToRoot =
-								!parentFileNode ||
-								parentFileNode.organizationId !== membership.organizationId ||
-								parentFileNode.workspaceId !== membership.workspaceId ||
-								parentFileNode.archiveOperationId !== null;
-						}
-
-						const ancestorTargetParentId = shouldMoveToRoot ? files_ROOT_ID : ancestorFileNode.parentId;
-						let ancestorTargetPath = ancestorFileNode.path;
-						if (shouldMoveToRoot) {
-							const ancestorPathName = path_extract_segments_from(ancestorFileNode.path).at(-1);
-							if (!ancestorPathName) {
-								const errorMessage = "Failed to move file to root because path does not include a name segment";
-								const errorData = {
-									nodeId: ancestorFileNode._id,
-									path: ancestorFileNode.path,
-								};
-								console.error(errorMessage, errorData);
-								throw should_never_happen(errorMessage, errorData);
-							}
-							ancestorTargetPath = `/${ancestorPathName}`;
-						}
-
-						yield (async (/* iife */) => {
-							const conflictedAncestorFileNode = ancestorFileNodesByTargetPath.get(ancestorTargetPath);
-							if (conflictedAncestorFileNode) {
-								return Result({
-									_nay: {
-										name: "nay",
-										message: "Failed to unarchive file because it would conflict with another unarchiving file",
-										data: {
-											requestedNodeIds: args.nodeIds,
-											nodeId: ancestorFileNode._id,
-											filePath: ancestorFileNode.path,
-											targetPath: ancestorTargetPath,
-											...(await unarchive_conflict_fields(ctx, {
-												userAuth,
-												membership,
-												conflictFileNode: conflictedAncestorFileNode,
-											})),
-										},
-									},
-								});
-							}
-							ancestorFileNodesByTargetPath.set(ancestorTargetPath, ancestorFileNode);
-
-							plans.push({
-								fileNode: ancestorFileNode,
-								targetParentId: ancestorTargetParentId,
-								targetPath: ancestorTargetPath,
-							});
-
-							// Follow parent ids, not paths. Two archived trees can have the same paths.
-							// Restore only children from this tree.
-							const descendantFileNodes = await files_nodes_db_collect_descendants(ctx, {
-								organizationId: membership.organizationId,
-								workspaceId: membership.workspaceId,
-								parentId: ancestorFileNode._id,
-							});
-							for (const descendantFileNode of descendantFileNodes) {
-								if (descendantFileNode.archiveOperationId === null) {
-									continue;
-								}
-
-								const targetPath = path_rebase({
-									fromBasePath: ancestorFileNode.path,
-									toBasePath: ancestorTargetPath,
-									path: descendantFileNode.path,
-								});
-
-								if (!targetPath) {
-									const errorMessage = "Failed to rebase descendant file nodes";
-									const errorData = {
-										ancestorNodeId: ancestorFileNode._id,
-										ancestorPath: ancestorFileNode.path,
-										ancestorTargetPath,
-										ancestorTargetParentId,
-										descendantNodeId: descendantFileNode._id,
-										descendantFilePath: descendantFileNode.path,
-									};
-									console.error(errorMessage, errorData);
-									throw should_never_happen(errorMessage, errorData);
-								}
-
-								plans.push({
-									fileNode: descendantFileNode,
-									targetParentId: descendantFileNode.parentId,
-									targetPath,
-								});
-							}
-
-							return Result({ _yay: null });
-						})();
-					}
-				})(),
-			),
-		);
-
-		if (plansResult._nay) {
-			return plansResult;
-		}
-
-		// `plans` holds the whole restored subtree, not only the nodes the caller named, and an archived
-		// node keeps the restricted scope it had. Without this, restoring an open folder would also
-		// restore a restricted folder nested inside it for somebody holding no grant on it.
-		//
-		// No `rootScopeNodeId` here: the named nodes were each checked above, and this call is about
-		// everything the sweep added, which can carry any scope.
-		if (
-			!(await files_nodes_db_can_act_on_swept_nodes(ctx, {
-				organizationId: membership.organizationId,
-				workspaceId: membership.workspaceId,
-				userId: userAuth.id,
-				rootScopeNodeId: null,
-				nodes: plans.map((plan) => plan.fileNode),
-				permission: "content.write",
-			}))
-		) {
-			return Result({ _nay: { message: "Permission denied" } });
-		}
-
-		// Restore changes every node in the plan. Refuse the whole call if one is read-only.
-		// The caller can see every planned node, so return the clear read-only error.
-		for (const plan of plans) {
-			const planWritable = await files_nodes_db_require_user_writable(ctx, {
-				node: plan.fileNode,
-				userId: userAuth.id,
-			});
-			if (planWritable._nay) {
-				return planWritable;
-			}
-		}
-
-		// A plan that lands somewhere new is a move, and dropping into a folder writes into that folder.
-		// Asked before the conflict loop, like `move_nodes`, so a refused caller is not told which path is
-		// taken. Same skip as the scope loop below, because a node that carries its own restriction keeps
-		// it wherever it lands, so moving that one opens nothing. Refusing it would also strand the
-		// folder: the destination is picked by this code, not by the caller, and the only people who can
-		// see the folder are the ones its share list names.
-		for (const plan of plans) {
-			if (plan.targetParentId === plan.fileNode.parentId || plan.fileNode.restrictedScopeNodeId === plan.fileNode._id) {
-				continue;
-			}
-
-			const authorizedTarget = await authorize_file_write(ctx, {
-				userAuth,
-				membership,
-				nodeId: plan.targetParentId,
-			});
-			if (authorizedTarget._nay) {
-				return authorizedTarget;
-			}
-
-			// Landing somewhere new is a move, so it needs the third leg `move_nodes` asks. Leaving a
-			// restricted folder changes who can read the file, and `content.write` never means that.
-			// Without this, a write grant on the folder is enough to archive it and then restore one file
-			// out of it, which hands that file to everybody who can read the workspace. The loop already
-			// skipped nodes that carry their own restriction, so this only ever asks about a node that
-			// inherits its scope from a folder above it.
-			const authorizedLeaving = await authorize_leaving_restricted_scope(ctx, {
-				userAuth,
-				membership,
-				fileNode: plan.fileNode,
-				destParentId: plan.targetParentId,
-			});
-			if (authorizedLeaving._nay) {
-				return authorizedLeaving;
-			}
-		}
-
-		for (const [ancestorTargetPath, ancestorFileNode] of ancestorFileNodesByTargetPath) {
-			// Check whether an active file node already exists for the same path.
-			const conflictFileNode = await ctx.db
+		// Restore brings back every item archived together with a named item. Take the operations
+		// parents first, so a later operation can land in a folder an earlier one restored. Order them by
+		// each operation's top item, not by the named item, which can sit deep inside its operation. The
+		// operations share one budget, so the first ones run inside this request and the rest run as jobs.
+		const topTreePathByOperationId = new Map<string, string>();
+		for (const fileNode of fileNodes._yay) {
+			const archiveOperationId = fileNode.archiveOperationId;
+			if (archiveOperationId === null || topTreePathByOperationId.has(archiveOperationId)) continue;
+			const topNode = await ctx.db
 				.query("files_nodes")
-				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
+				.withIndex("by_organization_workspace_archiveOperation_treePath", (q) =>
 					q
 						.eq("organizationId", membership.organizationId)
 						.eq("workspaceId", membership.workspaceId)
-						.eq("path", ancestorTargetPath)
-						.eq("archiveOperationId", null),
+						.eq("archiveOperationId", archiveOperationId),
 				)
 				.first();
-
-			if (conflictFileNode) {
-				return Result({
-					_nay: {
-						name: "nay",
-						message: "Failed to unarchive file because path already exists",
-						data: {
-							requestedNodeIds: args.nodeIds,
-							nodeId: ancestorFileNode._id,
-							filePath: ancestorFileNode.path,
-							targetPath: ancestorTargetPath,
-							...(await unarchive_conflict_fields(ctx, {
-								userAuth,
-								membership,
-								conflictFileNode,
-							})),
-						},
-					},
-				});
-			}
+			// The query always finds at least `fileNode`. The fallback only satisfies the type.
+			topTreePathByOperationId.set(archiveOperationId, (topNode ?? fileNode).treePath);
 		}
 
-		const now = Date.now();
-
-		await Promise.all(
-			plans.map(async (plan) => {
-				await ctx.db.patch("files_nodes", plan.fileNode._id, {
-					archiveOperationId: null,
-					updatedBy: userAuth.id,
-					updatedAt: now,
-					pathDepth: files_path_depth(plan.targetPath),
-					lowercaseExtension: files_lowercase_extension(plan.targetPath, plan.fileNode.kind),
-					...(plan.targetPath !== plan.fileNode.path
-						? { treePath: derive_tree_path_for_file_node(plan.targetPath, plan.fileNode.kind) }
-						: {}),
-					...(plan.targetPath !== plan.fileNode.path ? { path: plan.targetPath } : {}),
-					...(plan.targetParentId !== plan.fileNode.parentId ? { parentId: plan.targetParentId } : {}),
-				});
-				await db_patch_node_search_scope(ctx, {
-					organizationId: membership.organizationId,
-					workspaceId: membership.workspaceId,
-					nodeId: plan.fileNode._id,
-					kind: plan.fileNode.kind,
-					path: plan.targetPath,
-					archiveOperationId: undefined,
-					parentId: plan.targetParentId,
-				});
-			}),
-		);
-
-		// A subtree whose parent stayed archived comes back at the top of the tree. That is a move to a
-		// new parent, so it follows the same rule as `rename_node`: it inherits the scope of where it
-		// lands, which at the root is none. Without this it would keep pointing at a restricted folder
-		// still in the archive, and nobody could open the share dialog that decides who gets in.
-		for (const plan of plans) {
-			if (plan.targetParentId === plan.fileNode.parentId || plan.fileNode.restrictedScopeNodeId === plan.fileNode._id) {
-				continue;
-			}
-
-			const destScopeNodeId = await files_nodes_db_resolve_parent_restricted_scope(ctx, {
-				parentId: plan.targetParentId,
+		const budget = { nodes: files_archive_runs_STEP_MAX_NODES };
+		let firstJob = null;
+		for (const [archiveOperationId] of [...topTreePathByOperationId].toSorted((a, b) => (a[1] < b[1] ? -1 : 1))) {
+			// A refusal here keeps the operations restored before it. Each operation is one unit.
+			const started = await files_archive_runs_db_start(ctx, {
+				kind: "restore",
+				userAuth,
+				membership,
+				archiveOperationId,
+				rootNodeIds: [],
+				pendingUpdateCleanup: null,
+				budget,
 			});
-			if (destScopeNodeId !== plan.fileNode.restrictedScopeNodeId) {
-				await ctx.db.patch("files_nodes", plan.fileNode._id, { restrictedScopeNodeId: destScopeNodeId });
-				await files_nodes_db_cascade_restricted_scope(ctx, {
-					organizationId: membership.organizationId,
-					workspaceId: membership.workspaceId,
-					parentId: plan.fileNode._id,
-					scopeNodeId: destScopeNodeId,
-				});
+			if (started._nay) {
+				return started;
 			}
+			firstJob ??= started._yay;
 		}
-		await files_media_validation_db_advance_version(ctx, membership);
 
-		return Result({ _yay: null });
+		return Result({ _yay: firstJob });
 	},
 });
 // #endregion archive nodes

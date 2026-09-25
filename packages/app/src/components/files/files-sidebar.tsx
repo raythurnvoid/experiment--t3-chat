@@ -127,6 +127,7 @@ import {
 	MyModalPopover,
 } from "@/components/my-modal.tsx";
 import { useFileNodeActivities } from "@/lib/activities.ts";
+import { AppActivitiesProvider } from "@/lib/app-activities-context.tsx";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { FilesTreeProvider } from "@/lib/files-tree-context.tsx";
 import { cn, copy_to_clipboard, forward_ref, should_never_happen, sx } from "@/lib/utils.ts";
@@ -246,10 +247,11 @@ function can_rename_item(args: {
 }
 
 /**
- * Mirror the `unarchive_nodes` plan: when the archived node's parent is missing or still
- * archived, the backend restores the node to root. That is a move, so it also needs workspace
- * write at the root destination plus permission to leave the node's restricted scope. Without
- * this gate a write-only sharee sees an enabled Restore that the backend always refuses.
+ * Mirror the `unarchive_nodes` plan. Restore brings back the item's whole archive operation, so
+ * check where the operation's top item lands. When its parent is missing or in another archived
+ * operation, it lands at the root. That is a move, so it also needs workspace write at the root plus
+ * permission to leave the item's restricted scope. Without this gate a write-only sharee sees an
+ * enabled Restore that the backend always refuses.
  */
 function can_unarchive_item(args: {
 	item: files_TreeItem;
@@ -262,27 +264,40 @@ function can_unarchive_item(args: {
 		return false;
 	}
 
+	let topItem = args.item;
+	for (
+		let parentItem = args.itemById?.get(topItem.parentId);
+		parentItem != null && files_is_node(parentItem) && parentItem.archiveOperationId === topItem.archiveOperationId;
+		parentItem = args.itemById?.get(topItem.parentId)
+	) {
+		topItem = parentItem;
+	}
+
 	// An active parent (or the root itself) means the restore stays in place, and writing the
 	// node was already answered above.
-	if (args.item.parentId === files_ROOT_ID) {
+	if (topItem.parentId === files_ROOT_ID) {
 		return true;
 	}
-	const parentItem = args.itemById?.get(args.item.parentId);
+	const parentItem = args.itemById?.get(topItem.parentId);
+	// A read-only old folder refuses the restore, even when the item would land at the root.
+	if (parentItem != null && files_is_node(parentItem) && parentItem.writeBlockedReason === "read_only") {
+		return false;
+	}
 	if (parentItem != null && files_is_node(parentItem) && parentItem.archiveOperationId === null) {
 		return true;
 	}
 
 	// A node that carries its own restriction keeps it wherever it lands, so the backend skips
 	// the destination and scope-leave checks for it.
-	if (args.item.restrictedScopeNodeId === args.item._id) {
+	if (topItem.restrictedScopeNodeId === topItem._id) {
 		return true;
 	}
 
 	return (
 		args.canWriteRoot &&
 		files_can_move_node_between_restricted_scopes({
-			nodeId: args.item._id,
-			sourceRestrictedScopeNodeId: args.item.restrictedScopeNodeId,
+			nodeId: topItem._id,
+			sourceRestrictedScopeNodeId: topItem.restrictedScopeNodeId,
 			targetRestrictedScopeNodeId: null,
 			canManageRestrictedScope: args.canManageRestrictedScope,
 		})
@@ -4239,6 +4254,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 	const navigate = useNavigate();
 	const convex = useConvex();
 	const { membershipId, organizationName, workspaceName } = AppTenantProvider.useContext();
+	const { openArchiveRun } = AppActivitiesProvider.useContext();
 
 	const [searchQuery, setSearchQuery] = useState(initialSearchQuery);
 	const [previousRouteQuery, setPreviousRouteQuery] = useState(initialSearchQuery);
@@ -6132,6 +6148,13 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 					toast.error(result._nay.message);
 					return;
 				}
+				// A big restore, or one that hits a name clash, continues as a background job.
+				if (result._yay) {
+					const { runId } = result._yay;
+					toast.info("Restoring in the background. See Activity.", {
+						action: { label: "View", onClick: () => openArchiveRun(runId) },
+					});
+				}
 			})
 			.catch((error) => {
 				console.error("[FilesSidebar.handleUnarchive] Error unarchiving file", { error, nodeId });
@@ -6866,6 +6889,36 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			).toBe(true);
 		});
 
+		test("refuses while the old folder is read-only, even for a restore to the root", () => {
+			const archivedChild = test_node({
+				id: "file",
+				parentId: "folder",
+				kind: "file",
+				name: "file.md",
+				archiveOperationId: "archive-operation",
+			});
+			const args = {
+				item: archivedChild,
+				canWriteItem: () => true,
+				canWriteRoot: true,
+				canManageRestrictedScope: () => true,
+			};
+
+			for (const archiveOperationId of [undefined, "other-operation"]) {
+				const folder = test_node({
+					id: "folder",
+					parentId: files_ROOT_ID,
+					kind: "folder",
+					name: "folder",
+					archiveOperationId,
+				});
+				const lockedFolder = { ...folder, canWrite: false, writeBlockedReason: "read_only" as const };
+
+				expect(can_unarchive_item({ ...args, itemById: new Map([[folder._id, lockedFolder]]) })).toBe(false);
+				expect(can_unarchive_item({ ...args, itemById: new Map([[folder._id, folder]]) })).toBe(true);
+			}
+		});
+
 		test("requires root write when the parent is still archived or missing", () => {
 			const archivedFolder = test_node({
 				id: "folder",
@@ -6879,7 +6932,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				parentId: "folder",
 				kind: "file",
 				name: "file.md",
-				archiveOperationId: "archive-operation",
+				archiveOperationId: "child-operation",
 			});
 			const args = {
 				item: archivedChild,
@@ -6891,6 +6944,10 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(can_unarchive_item({ ...args, canWriteRoot: false })).toBe(false);
 			expect(can_unarchive_item({ ...args, canWriteRoot: true })).toBe(true);
 			expect(can_unarchive_item({ ...args, itemById: new Map(), canWriteRoot: false })).toBe(false);
+
+			// A child of the same operation comes back with its parent, which lands in place.
+			const sameOperationChild = { ...archivedChild, archiveOperationId: "archive-operation" };
+			expect(can_unarchive_item({ ...args, item: sameOperationChild, canWriteRoot: false })).toBe(true);
 		});
 
 		test("requires scope manage when the restore-to-root leaves a restricted scope", () => {
@@ -6907,7 +6964,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				parentId: "scope",
 				kind: "file",
 				name: "file.md",
-				archiveOperationId: "archive-operation",
+				archiveOperationId: "child-operation",
 				restrictedScopeNodeId: "scope",
 			});
 			const args = {

@@ -356,6 +356,48 @@ async function data_deletion_test_start_write_policy_run(
 	return { runId: activity.source.id, activityId: activity._id, membershipId };
 }
 
+/**
+ * Start a restore job that waits for a choice: `/<tag>` is archived and a new `/<tag>` takes its name.
+ */
+async function data_deletion_test_start_archive_run(
+	t: ReturnType<typeof test_convex>,
+	args: {
+		userId: Id<"users">;
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		tag: string;
+	},
+) {
+	const scope = { organizationId: args.organizationId, workspaceId: args.workspaceId, userId: args.userId };
+	const folder = await t.mutation(internal.files_nodes.create_folder_node_by_path, { ...scope, path: `/${args.tag}` });
+	if (folder._nay) throw new Error(folder._nay.message);
+	const membershipId = await t.run(async (ctx) => {
+		const membership = await ctx.db
+			.query("organizations_workspaces_users")
+			.withIndex("by_workspace_user_active", (q) => q.eq("workspaceId", args.workspaceId).eq("userId", args.userId))
+			.unique();
+		if (!membership) throw new Error("Expected workspace membership");
+		return membership._id;
+	});
+	const asUser = t.withIdentity({ issuer: "https://clerk.test", subject: args.userId, external_id: args.userId });
+	const archived = await asUser.mutation(api.files_nodes.archive_nodes, {
+		membershipId,
+		nodeIds: [folder._yay.nodeId],
+	});
+	if (archived._nay) throw new Error(archived._nay.message);
+	const occupant = await t.mutation(internal.files_nodes.create_folder_node_by_path, {
+		...scope,
+		path: `/${args.tag}`,
+	});
+	if (occupant._nay) throw new Error(occupant._nay.message);
+	const restored = await asUser.mutation(api.files_nodes.unarchive_nodes, {
+		membershipId,
+		nodeIds: [folder._yay.nodeId],
+	});
+	if (restored._nay || !restored._yay) throw new Error("Expected a restore job");
+	return { ...restored._yay, membershipId };
+}
+
 async function data_deletion_test_seed_plugin_ui_sessions(
 	ctx: MutationCtx,
 	args: {
@@ -3324,6 +3366,60 @@ describe("process_workspace_deletion_request", () => {
 		expect(after.activity).toBeNull();
 		expect(after.controlRun).not.toBeNull();
 		expect(after.controlActivity).toMatchObject({ status: "queued" });
+	});
+
+	test("drains archive runs and keeps sibling runs", async () => {
+		const t = test_convex();
+		const user = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-delete-archive-workspace",
+				displayName: "Archive Workspace",
+			}),
+		);
+		const sibling = await t.run((ctx) =>
+			organizations_db_create_workspace(ctx, {
+				userId: user.userId,
+				organizationId: user.defaultOrganizationId,
+				name: "archive-sibling",
+				description: "",
+				now: Date.now(),
+			}),
+		);
+		if (sibling._nay) throw new Error(sibling._nay.message);
+		const victim = await data_deletion_test_start_archive_run(t, {
+			userId: user.userId,
+			organizationId: user.defaultOrganizationId,
+			workspaceId: user.defaultWorkspaceId,
+			tag: "archive-victim",
+		});
+		const control = await data_deletion_test_start_archive_run(t, {
+			userId: user.userId,
+			organizationId: user.defaultOrganizationId,
+			workspaceId: sibling._yay.workspaceId,
+			tag: "archive-control",
+		});
+		const requestId = await t.run((ctx) =>
+			data_deletion_db_request(ctx, {
+				userId: user.userId,
+				organizationId: user.defaultOrganizationId,
+				workspaceId: user.defaultWorkspaceId,
+				scope: "workspace",
+				eligibleAt: 0,
+			}),
+		);
+
+		await data_deletion_test_process_workspace_request_until_done(t, { requestId });
+
+		const after = await t.run(async (ctx) => ({
+			run: await ctx.db.get("files_archive_runs", victim.runId),
+			activity: await ctx.db.get("activities", victim.activityId),
+			controlRun: await ctx.db.get("files_archive_runs", control.runId),
+			controlActivity: await ctx.db.get("activities", control.activityId),
+		}));
+		expect(after.run).toBeNull();
+		expect(after.activity).toBeNull();
+		expect(after.controlRun).not.toBeNull();
+		expect(after.controlActivity).toMatchObject({ status: "awaiting_input" });
 	});
 
 	test("removes invalid workspace requests without a workspace id", async () => {
@@ -7022,6 +7118,32 @@ describe("finalize_user_deletion_data", () => {
 		await data_deletion_test_finalize_user_until_done(t, { userId: victim.userId, batchSize: 1 });
 		const after = await t.run(async (ctx) => ({
 			run: await ctx.db.get("files_write_policy_runs", run.runId),
+			activity: await ctx.db.get("activities", run.activityId),
+			membership: await ctx.db.get("organizations_workspaces_users", run.membershipId),
+		}));
+		expect(after.run).toBeNull();
+		expect(after.activity).toBeNull();
+		expect(after.membership).toBeNull();
+	});
+
+	test("drains an archive run before memberships", async () => {
+		const t = test_convex();
+		const victim = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-delete-archive-run",
+				displayName: "Archive Run",
+			}),
+		);
+		const run = await data_deletion_test_start_archive_run(t, {
+			userId: victim.userId,
+			organizationId: victim.defaultOrganizationId,
+			workspaceId: victim.defaultWorkspaceId,
+			tag: "archive-finalize",
+		});
+
+		await data_deletion_test_finalize_user_until_done(t, { userId: victim.userId, batchSize: 1 });
+		const after = await t.run(async (ctx) => ({
+			run: await ctx.db.get("files_archive_runs", run.runId),
 			activity: await ctx.db.get("activities", run.activityId),
 			membership: await ctx.db.get("organizations_workspaces_users", run.membershipId),
 		}));

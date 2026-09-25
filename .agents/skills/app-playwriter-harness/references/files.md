@@ -1017,6 +1017,21 @@ One dialog holding the file's facts, its write policy, and the flat key-value ma
   `Stop Apply protection to folder contents` within about 2 s of Apply.
   To clean up a Read-only fixture, set the folder to `Editable` and apply that to contents first.
   `archive_nodes` refuses a read-only subtree with `This item is read-only.`
+- Archive and restore jobs (verified 2026-09-25). Call `archive_nodes` / `unarchive_nodes` through the
+  page-context `app_convex` client, or use the Archive dialog and the sidebar row menu `Restore` (turn on
+  `Show archived items` in the top More options menu first). A job returns `{ runId, activityId }`. The
+  Activity card reads `N archived, M skipped. Total: T.` (`restored` for a restore) with `View progress`
+  and `Stop`. To test Stop, click `Stop Archive files` in `Notifications` within about 3 s of starting
+  a 1,000+ node archive. To test a name clash, archive a folder, create an empty folder with the same
+  name, then Restore: the card says `Waiting for your choice` and `Review conflicts` opens a dialog with
+  a group named by the path (`/seed`) holding `Keep both`, `Replace empty folder` (`Replace` for a
+  file), and `Skip`, then `Continue`. Replace shows only when `files_archive_runs.get` returns
+  `conflict.canReplace: true`; put an item inside the folder in the way and it disappears. Scope radio
+  lookups to that group, because the Apply to remaining groups repeat the same names. With the
+  Notifications popover still open, `getByRole("dialog", { name: "Restore files" }).waitFor()` timed out
+  (2026-09-25); `page.locator("[role=dialog]", { hasText: "Choose how to handle this name." })` found it.
+  To check the tree rule, page `list_tree` and assert no active node has an archived ancestor. The
+  runners live in the `archive-job-2026-09-24` personal task folder.
 - For screenshots and hit-target checks, scroll the policy block into view first. Tabbing to footer
   controls can leave radios above the scroll area. At 512×768 the dialog scrolls and keeps its footer
   visible. The quick audit counts 18px radio inputs; inspect their clickable labels before treating

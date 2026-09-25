@@ -60,7 +60,7 @@ Some continuity proofs depend on version retention. In this app, a proof based o
 
 A mocked check that asserts an index name only proves that the code and the test agree. It cannot prove the index exists, because in-memory mocks never resolve a name against the real schema. A wrong name passes every mock and then throws on the first live call. That hurts most right after the old root is archived, because the path is already empty at that moment. Before the step that depends on it, check every index name a runner uses against `packages/app/convex/schema.ts`, or run the runner once in a read-only mode against the real deployment.
 
-Never undo a folder archive with a blind `unarchive_nodes` call. That door restores all archived descendants, including earlier operations, and can move a file to root when its parent is archived. Only a reviewed exact-leaf recovery with a free path, active parent, and matching operation is narrow enough for automatic restore.
+Never undo a folder archive with a blind `unarchive_nodes` call. That door restores the whole archive operation of each named item, can start a background job, and can move an item to root when its parent is archived. Only a reviewed exact-leaf recovery with a free path, active parent, and matching operation is narrow enough for automatic restore.
 
 A native exception with unknown send status stays unresolved until readback. Do not call it `not-sent` merely because the first read looks unchanged. A pre-RPC guard refusal can be proved not sent; a timeout after RPC cannot. Do not remove journals or checks to make a retry run.
 

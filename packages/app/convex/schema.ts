@@ -2999,6 +2999,82 @@ const app_convex_schema = defineSchema({
 		.index("by_organization_workspace", ["organizationId", "workspaceId"]),
 	// #endregion files write policy runs
 
+	// #region files archive runs
+	/**
+	 * One archive or restore that is too big for one mutation. Each step changes a batch of nodes and
+	 * their side docs together. The Activity keeps the membership, the status, and the progress.
+	 */
+	files_archive_runs: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		userId: v.id("users"),
+		kind: v.union(v.literal("archive"), v.literal("restore")),
+		/**
+		 * Archive: the operation id this job writes. Restore: the operation id this job brings back.
+		 */
+		archiveOperationId: v.string(),
+		/**
+		 * Archive: the named items, archived last. Restore: the items that land at the workspace root
+		 * because their parent was archived by another operation when the check ran.
+		 */
+		rootNodeIds: v.array(v.id("files_nodes")),
+		/**
+		 * `check` walks everything first and writes nothing. `apply` changes the nodes.
+		 */
+		phase: v.union(v.literal("check"), v.literal("apply")),
+		/**
+		 * Where the check walk goes on. `treePath` is "" at the start of a root.
+		 */
+		checkCursor: v.object({ rootIndex: v.number(), treePath: v.string() }),
+		/**
+		 * The archive walk has no cursor. It only remembers which named item it is on.
+		 */
+		applyRootIndex: v.number(),
+		/**
+		 * False once the Activity finished. The busy checks read only active runs.
+		 */
+		active: v.boolean(),
+		/**
+		 * Restore: items the person chose to skip stay archived under this new operation id.
+		 */
+		skipOperationId: v.union(v.string(), v.null()),
+		/**
+		 * Restore: the name clash the job waits on. `revision` changes with every new clash.
+		 */
+		conflict: v.union(v.object({ nodeId: v.id("files_nodes"), occupantId: v.id("files_nodes") }), v.null()),
+		choice: v.union(
+			v.object({
+				nodeId: v.id("files_nodes"),
+				occupantId: v.id("files_nodes"),
+				choice: v.union(v.literal("keep_both"), v.literal("skip"), v.literal("replace")),
+			}),
+			v.null(),
+		),
+		applyToRemaining: v.object({
+			file: v.union(v.null(), v.literal("keep_both"), v.literal("skip"), v.literal("replace")),
+			folder: v.union(v.null(), v.literal("keep_both"), v.literal("skip")),
+		}),
+		revision: v.number(),
+		/**
+		 * Accepting an agent's delete. Each step removes the person's own proposals on the nodes it
+		 * archives. `reviewedPendingUpdateIds` is the review selection when a review job started it.
+		 */
+		pendingUpdateCleanup: v.union(
+			v.object({ reviewedPendingUpdateIds: v.union(v.array(v.id("files_pending_updates")), v.null()) }),
+			v.null(),
+		),
+	})
+		.index("by_organization_workspace_active_kind", ["organizationId", "workspaceId", "active", "kind"])
+		.index("by_organization_workspace_archiveOperation_active", [
+			"organizationId",
+			"workspaceId",
+			"archiveOperationId",
+			"active",
+		])
+		.index("by_user", ["userId"])
+		.index("by_organization_workspace", ["organizationId", "workspaceId"]),
+	// #endregion files archive runs
+
 	// #region plugins core
 	plugins_publisher_repositories: defineTable({
 		ownerUserId: v.id("users"),
@@ -4407,6 +4483,11 @@ const app_convex_schema = defineSchema({
 				operationKind: v.union(v.literal("accept"), v.literal("discard")),
 			}),
 			v.object({ kind: v.literal("files_write_policy_run"), id: v.id("files_write_policy_runs") }),
+			v.object({
+				kind: v.literal("files_archive_run"),
+				id: v.id("files_archive_runs"),
+				archiveKind: v.union(v.literal("archive"), v.literal("restore")),
+			}),
 			/**
 			 * A background bash job (`cmd &`). The extra fields let `jobs` read this small
 			 * doc instead of the invocation doc, which can hold 700 KiB.

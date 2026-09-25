@@ -86,7 +86,7 @@ Sign-in steps for the `qa.perm.*` accounts are in
 | Folder with about 60 files | `chitchat-qa/xfer-qa-0914:/g4-many`, `/u62-mu2qzdr5/src` |
 | Folder with about 25 files | `chitchat-qa/xfer-qa-0914:/u16`, `/u16-q`, `/u42-other2` |
 | Very big folder (read-only) | `sybill-demo/demo:/people` (about 9,700), `/companies` (1,000+) |
-| Throwaway parent for big fixtures | `qa-browser/home:/protection-bulk-qa`: restricted, `qa.perm.viewer` has manage. No active items, but about 1,310 archived ones, so it cannot be archived yet (see `known-hazards.md`). Build new big fixtures inside it. A Copy job of its archived items is not possible, so seed again: 50 paced creates, then Copy jobs to double. |
+| Big archive fixture (1,311 nodes) | `qa-browser/home`: `/protection-bulk-qa` (532 nodes, restricted, `qa.perm.viewer` has manage) plus the root folders `/copy-2` (104), `/copy-3` (208), `/copy-4` (416) and `/seed` (51). All active since 2026-09-25. Archive all five in one `archive_nodes` call to get one 1,311-node archive job, then restore that one operation. `/seed` alone finishes inline (no job). Empty archived `/seed` folders are left over from clash checks. The archived `/seed/f00/seed` holds `f00/r3-moved-0925.md`, a small text file with real text chunks, for checks that archived side docs follow a moved folder. Build new big fixtures inside `/protection-bulk-qa`. |
 | Deep path (22 levels) | `chitchat-qa/xfer-qa-0914:/g4-u15/d01/…/d20/keeper.txt` |
 | Many small subfolders | `chitchat-qa/xfer-qa-0914:/u55/c0` … `c22`, each with `sibling.md` |
 | Move and copy sources and targets | `personal/home:/demo` (`mv-src.md`, `mv-target.md`, `cp-target.md`, `/archive`), `personal/home:/tests` (`eval-*` files and folders) |

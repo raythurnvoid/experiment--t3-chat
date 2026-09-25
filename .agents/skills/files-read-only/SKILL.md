@@ -110,7 +110,7 @@ The table describes a node whose policy refuses the current writer. ACL still ap
 | Edit/save content, metadata, Yjs marks, or collaboration mode | Refuse |
 | Create children, upload, import, or paste media | Refuse if the destination folder itself is protected |
 | Rename or move | Refuse if the named item or its immediate parent is protected |
-| Replace, archive, restore, or delete | Refuse if any removed or replaced item is protected |
+| Replace, archive, restore, or delete | Refuse if any removed or replaced item is protected; restore also refuses when the old or the landing folder is protected |
 | Browse or download snapshots | Allow |
 | Restore, archive, or unarchive snapshots | Refuse |
 | Share or change policy | Require management permission separately |
@@ -226,6 +226,46 @@ of never showing hidden items.
   links. Equal paths in separate archived and active trees are not the same node. Hidden refusals
   reveal no hidden node name, ID, or path. Cleanup of an upload that never landed deletes its
   placeholder even when locked. Cancel (discard) does the same for the creator.
+- Archive and restore run through one archive job (`files_archive_runs`, Activity source
+  `files_archive_run`). The request runs the first step itself. When that step finishes the work (up
+  to 150 nodes), no run doc and no Activity exist. A bigger one continues in the background.
+  - The job first checks every item and writes nothing. One protected item refuses the whole action.
+    Every later step checks its items again. A lock or lost access set during the job stops it as
+    failed ("Stopped partway"). The done part keeps its one archive operation id, so Restore brings
+    back exactly that part. Stop does the same.
+  - Archive works bottom-up with no cursor: each step takes the deepest active nodes under the named
+    folder's current path, and the named folder is archived last. So no active node ever sits inside
+    an archived folder, and a node added or moved in during the job is archived too.
+  - A node and its side docs (plain text chunks and metadata docs) change in the same mutation. Readers
+    are unchanged: each doc keeps its own path, treePath, and archiveOperationId.
+  - Restore brings back one archive operation. Several operations named in one call run in the order
+    of each operation's top item, so a parent operation comes back first. Items archived earlier on
+    their own keep their own operation. An item whose parent is active lands under the parent's current
+    path. An item whose parent is missing or in another archived operation lands at the workspace root,
+    which is a move: it needs root write and permission to leave its restricted folder. If a restore job
+    of the parent's operation is running, the item joins that operation instead and comes back with it.
+    If an archive job of the parent's operation is running, the restore is refused as busy.
+  - A restored folder that lands on a new path or scope (at the root, or renamed by Keep both) moves the
+    items archived on their own inside it, like a move: they stay archived, and their path, treePath,
+    scope, and side docs follow the folder in the same mutation. The move limits apply (500 items,
+    2,000 docs with side docs, 4 MB). Above them the folder is not restored and the job fails.
+  - Restore refuses when the item's old folder or landing folder is read-only. The message names the
+    folder only to a caller who may read it.
+  - A restore name clash pauses the job (`awaiting_input`) for up to 24 hours and asks like a paste:
+    Keep both (`name-2.ext`), Skip (the item stays archived), or Replace (the item in the way is
+    archived with a new operation id). Replace needs the same kind, a folder with no active child, and
+    write access to the item in the way and to every archived item inside it (at most 500 items;
+    a bigger folder cannot be replaced). `get` returns `canReplace`, and `resolve_conflicts` refuses a
+    Replace that is not possible. A Replace that became impossible after the choice asks again. The
+    item in the way is archived only after the restore of the clashing item worked. Apply-to-remaining choices are kept for the rest of the
+    job. `resolve_conflicts` takes the shown `revision`. `get` shows the clash name and paths only to a caller who may read them.
+  - Busy check: an archive that overlaps a running archive job, or a restore of an operation that
+    already has a job, is refused.
+  - A request whose first step fails after some writes returns the error ("Stopped partway") and keeps a
+    failed Activity. A refusal before any write makes no job.
+  - Agent delete (accepted `pendingArchive`) uses the same job and removes the proposal when it ends.
+    A Discard of that proposal during the job stops the job at its next step. Plugin archive and
+    service uploads stay synchronous with their 256-node cap.
 - Keep expected target IDs and ordered pending source IDs. These stop stale work from changing a
   different file; they are separate from policy history.
 - If an external write already happened before a final refusal, queue every exact key for durable

@@ -41,11 +41,7 @@ import {
 	files_nodes_db_get_content_version,
 	type files_nodes_get_user_file_write_access_Result,
 	files_nodes_db_apply_pending_move,
-	files_nodes_db_archive_nodes,
-	files_nodes_db_can_act_on_swept_nodes,
-	files_nodes_db_collect_descendants,
 	files_nodes_db_require_subtree_writable,
-	files_nodes_db_require_swept_nodes_writable,
 	files_nodes_db_validate_pending_move_target_for_proposal,
 	files_nodes_db_validate_occupant_replace,
 	files_yjs_NODE_NEEDS_REPAIR_MESSAGE,
@@ -77,6 +73,7 @@ import {
 	type files_pending_media_ValidatedSave,
 } from "./files_pending_media.ts";
 import { files_transfer_source_versions_equal } from "./files_transfer.ts";
+import { files_archive_runs_db_start, files_archive_runs_STEP_MAX_NODES } from "./files_archive_runs.ts";
 import {
 	files_private_storage_db_reserve,
 	files_private_storage_db_release,
@@ -634,10 +631,7 @@ export async function files_pending_updates_db_drop_content_for_node(
 
 			// Nothing else was proposed, so the whole doc goes.
 			if (!pendingUpdate.pendingMove && !pendingUpdate.pendingArchive) {
-				await Promise.all([
-					...retireStatesAndChunks,
-					files_db_delete_pending_update(ctx, pendingUpdate._id),
-				]);
+				await Promise.all([...retireStatesAndChunks, files_db_delete_pending_update(ctx, pendingUpdate._id)]);
 				return;
 			}
 
@@ -2585,7 +2579,10 @@ export const expire_file_pending_updates = internalMutation({
 				});
 				// `needs_review` means a child or a move into this folder must expire first.
 				if (discarded._nay && discarded._nay.name !== "needs_review") {
-					console.error("Failed to expire a private draft", { pendingUpdateId: pendingUpdate._id, error: discarded._nay });
+					console.error("Failed to expire a private draft", {
+						pendingUpdateId: pendingUpdate._id,
+						error: discarded._nay,
+					});
 				}
 			}
 
@@ -5093,156 +5090,120 @@ export async function files_pending_updates_db_apply_archive(
 		return nodeWritable;
 	}
 
-	// Load children again because the folder may have changed after the proposal.
-	// Follow node ids so an older archived tree with the same path stays separate.
-	const nodeIdsToArchive = [node._id];
-	if (node.kind === "folder") {
-		const descendantFileNodes = await files_nodes_db_collect_descendants(ctx, {
-			organizationId: membership.organizationId,
-			workspaceId: membership.workspaceId,
-			parentId: node._id,
-		});
-		const activeDescendants = descendantFileNodes.filter(
-			(descendantFileNode) => descendantFileNode.archiveOperationId === null,
-		);
-
-		// Same rule as `archive_nodes`: the check above asked about this folder, and the sweep can
-		// reach a restricted folder nested inside it that the caller was never given.
-		if (
-			!(await files_nodes_db_can_act_on_swept_nodes(ctx, {
-				organizationId: membership.organizationId,
-				workspaceId: membership.workspaceId,
-				userId: userAuth.id,
-				rootScopeNodeId: node.restrictedScopeNodeId,
-				nodes: activeDescendants,
-				permission: "content.write",
-			}))
-		) {
-			return Result({ _nay: { message: "Permission denied" } });
-		}
-
-		// Access was checked above, so a read-only descendant can return the clear lock error.
-		for (const descendantFileNode of activeDescendants) {
-			const descendantWritable = await files_nodes_db_require_user_writable(ctx, {
-				node: descendantFileNode,
-				userId: userAuth.id,
-			});
-			if (descendantWritable._nay) {
-				return descendantWritable;
-			}
-		}
-
-		// Do not hide a read-only archived descendant under this newly archived folder.
-		// The user may not see that node, so return a general error if it blocks the write.
-		const archivedDescendants = descendantFileNodes.filter(
-			(descendantFileNode) => descendantFileNode.archiveOperationId !== null,
-		);
-		const archivedProtected = await files_nodes_db_require_swept_nodes_writable(ctx, {
-			organizationId: membership.organizationId,
-			workspaceId: membership.workspaceId,
-			writeContext: {
-				writer: { kind: "user", userId: userAuth.id },
-				actorUserId: userAuth.id,
-				resourceScope: { kind: "workspace" },
-				policyReach: "ancestors",
-			},
-			nodes: archivedDescendants,
-		});
-		if (archivedProtected._nay) {
-			return archivedProtected;
-		}
-
-		for (const descendantFileNode of activeDescendants) {
-			nodeIdsToArchive.push(descendantFileNode._id);
-		}
-	}
-
-	if (args.reviewedPendingUpdateIds) {
-		for (const archivedNodeId of nodeIdsToArchive) {
-			const proposal = await files_db_get_pending_update(ctx, {
-				organizationId: membership.organizationId,
-				workspaceId: membership.workspaceId,
-				userId: userAuth.id,
-				target: { kind: "saved", id: archivedNodeId },
-			});
-			if (proposal && !args.reviewedPendingUpdateIds.has(proposal._id))
-				return Result({
-					_nay: { name: "needs_review", message: "This delete now affects an unselected change. Review it again." },
-				});
-			const receipts = await ctx.db
-				.query("files_pending_node_publish_receipts")
-				.withIndex("by_savedNode", (q) => q.eq("savedNodeId", archivedNodeId))
-				.collect();
-			const parents: app_convex_Doc<"files_pending_nodes">["parent"][] = [
-				{ kind: "saved", id: archivedNodeId },
-				...receipts
-					.filter((receipt) => receipt.userId === userAuth.id)
-					.map((receipt) => ({ kind: "private" as const, id: receipt.privateNodeId })),
-			];
-			for (const parent of parents) {
-				const child = await ctx.db
-					.query("files_pending_nodes")
-					.withIndex("by_organization_workspace_user_parent_state_name", (q) =>
-						q
-							.eq("organizationId", membership.organizationId)
-							.eq("workspaceId", membership.workspaceId)
-							.eq("userId", userAuth.id)
-							.eq("parent.kind", parent.kind)
-							.eq("parent.id", parent.kind === "root" ? undefined : parent.id)
-							.eq("state", "active"),
-					)
-					.first();
-				if (child)
-					return Result({
-						_nay: { name: "needs_review", message: "This delete now affects a private child. Review it again." },
-					});
-			}
-		}
-	}
-
-	// One operation id for the whole delete, so Unarchive restores it as one unit.
-	await files_nodes_db_archive_nodes(ctx, {
-		nodeIds: nodeIdsToArchive,
-		updatedBy: userAuth.id,
-		now: Date.now(),
+	// The archive job checks the folder's contents again, because they may have changed after the
+	// proposal. It uses one operation id for the whole delete, so Unarchive restores it as one unit.
+	// A big folder goes on in the background, and its steps remove the proposals on what they archive.
+	const started = await files_archive_runs_db_start(ctx, {
+		kind: "archive",
+		userAuth,
+		membership,
+		archiveOperationId: crypto.randomUUID(),
+		rootNodeIds: [node._id],
+		pendingUpdateCleanup: {
+			reviewedPendingUpdateIds: args.reviewedPendingUpdateIds ? [...args.reviewedPendingUpdateIds] : null,
+		},
+		budget: { nodes: files_archive_runs_STEP_MAX_NODES },
 	});
-
-	// Remove the acting user's docs on the archived nodes (this delete doc plus their own
-	// now-dead docs on descendants). Other users' docs stay untouched; they go inert
-	// through the archived-node filters, like any sidebar archive.
-	for (const archivedNodeId of nodeIdsToArchive) {
-		const archivedNodePendingUpdate =
-			pendingUpdate.target.kind === "saved" && archivedNodeId === pendingUpdate.target.id
-				? pendingUpdate
-				: await files_db_get_pending_update(ctx, {
-						organizationId: membership.organizationId,
-						workspaceId: membership.workspaceId,
-						userId: userAuth.id,
-						target: { kind: "saved", id: archivedNodeId },
-					});
-		if (!archivedNodePendingUpdate) {
-			continue;
-		}
-		if (archivedNodePendingUpdate.pendingReplacement)
-			await files_pending_update_db_release_replacement_asset(ctx, {
-				organizationId: membership.organizationId,
-				workspaceId: membership.workspaceId,
-				assetId: archivedNodePendingUpdate.pendingReplacement.assetId,
-			});
-		await Promise.all([
-			files_db_retire_pending_update_yjs_states(ctx, {
-				organizationId: membership.organizationId,
-				workspaceId: membership.workspaceId,
-				pendingUpdateId: archivedNodePendingUpdate._id,
-			}),
-			files_pending_update_db_delete_chunks(ctx, {
-				pendingUpdateId: archivedNodePendingUpdate._id,
-			}),
-			files_db_delete_pending_update(ctx, archivedNodePendingUpdate._id),
-		]);
-	}
+	if (started._nay) return started;
 
 	return Result({ _yay: null });
+}
+
+/**
+ * Refuse a delete that would archive a node carrying a change the person did not select for review.
+ * The review job passes its selection. A private child made on the node counts too.
+ */
+export async function files_pending_updates_db_require_reviewed_archive_node(
+	ctx: MutationCtx,
+	args: {
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		userId: Id<"users">;
+		nodeId: Id<"files_nodes">;
+		reviewedPendingUpdateIds: ReadonlyArray<Id<"files_pending_updates">>;
+	},
+) {
+	const proposal = await files_db_get_pending_update(ctx, {
+		organizationId: args.organizationId,
+		workspaceId: args.workspaceId,
+		userId: args.userId,
+		target: { kind: "saved", id: args.nodeId },
+	});
+	if (proposal && !args.reviewedPendingUpdateIds.includes(proposal._id))
+		return Result({
+			_nay: { name: "needs_review", message: "This delete now affects an unselected change. Review it again." },
+		});
+	const receipts = await ctx.db
+		.query("files_pending_node_publish_receipts")
+		.withIndex("by_savedNode", (q) => q.eq("savedNodeId", args.nodeId))
+		.collect();
+	const parents: app_convex_Doc<"files_pending_nodes">["parent"][] = [
+		{ kind: "saved", id: args.nodeId },
+		...receipts
+			.filter((receipt) => receipt.userId === args.userId)
+			.map((receipt) => ({ kind: "private" as const, id: receipt.privateNodeId })),
+	];
+	for (const parent of parents) {
+		const child = await ctx.db
+			.query("files_pending_nodes")
+			.withIndex("by_organization_workspace_user_parent_state_name", (q) =>
+				q
+					.eq("organizationId", args.organizationId)
+					.eq("workspaceId", args.workspaceId)
+					.eq("userId", args.userId)
+					.eq("parent.kind", parent.kind)
+					.eq("parent.id", parent.kind === "root" ? undefined : parent.id)
+					.eq("state", "active"),
+			)
+			.first();
+		if (child)
+			return Result({
+				_nay: { name: "needs_review", message: "This delete now affects a private child. Review it again." },
+			});
+	}
+	return Result({ _yay: null });
+}
+
+/**
+ * Remove the acting person's proposal on a node that a delete just archived: the delete itself, or a
+ * change on something inside the deleted folder that is now dead. Other people's proposals stay.
+ * They go inert through the archived-node filters, like after any sidebar archive.
+ */
+export async function files_pending_updates_db_remove_archived_node_proposal(
+	ctx: MutationCtx,
+	args: {
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		userId: Id<"users">;
+		nodeId: Id<"files_nodes">;
+	},
+) {
+	const pendingUpdate = await files_db_get_pending_update(ctx, {
+		organizationId: args.organizationId,
+		workspaceId: args.workspaceId,
+		userId: args.userId,
+		target: { kind: "saved", id: args.nodeId },
+	});
+	if (!pendingUpdate) {
+		return;
+	}
+	if (pendingUpdate.pendingReplacement)
+		await files_pending_update_db_release_replacement_asset(ctx, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			assetId: pendingUpdate.pendingReplacement.assetId,
+		});
+	await Promise.all([
+		files_db_retire_pending_update_yjs_states(ctx, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			pendingUpdateId: pendingUpdate._id,
+		}),
+		files_pending_update_db_delete_chunks(ctx, {
+			pendingUpdateId: pendingUpdate._id,
+		}),
+		files_db_delete_pending_update(ctx, pendingUpdate._id),
+	]);
 }
 
 export const discard_file_pending_update = mutation({

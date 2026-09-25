@@ -498,9 +498,11 @@ describe("saved file media validation clocks", () => {
 			expect(
 				await f.asUser.mutation(api.files_sharing.restrict_node, { membershipId: f.db.membershipId, nodeId }),
 			).toEqual({ _yay: null });
-		expect(
-			await f.asUser.mutation(api.files_nodes.archive_nodes, { membershipId: f.db.membershipId, nodeIds: [parent] }),
-		).toEqual({ _yay: null });
+		// Archive the child first, so its restore leaves the parent archived.
+		for (const nodeId of [child, parent])
+			expect(
+				await f.asUser.mutation(api.files_nodes.archive_nodes, { membershipId: f.db.membershipId, nodeIds: [nodeId] }),
+			).toEqual({ _yay: null });
 		const before = await snapshot(f);
 		expect(
 			await f.asUser.mutation(api.files_nodes.unarchive_nodes, { membershipId: f.db.membershipId, nodeIds: [child] }),
@@ -732,6 +734,7 @@ describe("saved file media validation clocks", () => {
 						})
 					)._nay,
 				).toBeDefined();
+			// A restore waits for the person's choice and changes nothing until then.
 			else if (operation === "restore")
 				expect(
 					(
@@ -739,8 +742,8 @@ describe("saved file media validation clocks", () => {
 							membershipId: f.db.membershipId,
 							nodeIds: [nodeId],
 						})
-					)._nay?.message,
-				).toBe("Failed to unarchive file because path already exists");
+					)._yay,
+				).toEqual({ runId: expect.any(String), activityId: expect.any(String) });
 			else if (operation === "upload")
 				expect(
 					(
@@ -911,12 +914,14 @@ describe("saved file media validation clocks", () => {
 				level: "write",
 			}),
 		).toEqual({ _yay: null });
-		expect(
-			await f.asUser.mutation(api.files_nodes.archive_nodes, {
-				membershipId: f.db.membershipId,
-				nodeIds: [parent],
-			}),
-		).toEqual({ _yay: null });
+		// Archive the child first, so its restore has to leave the archived restricted parent.
+		for (const nodeId of [child, parent])
+			expect(
+				await f.asUser.mutation(api.files_nodes.archive_nodes, {
+					membershipId: f.db.membershipId,
+					nodeIds: [nodeId],
+				}),
+			).toEqual({ _yay: null });
 		const before = await snapshot(f);
 		const result = await asMember.mutation(api.files_nodes.unarchive_nodes, {
 			membershipId: member.membershipId,

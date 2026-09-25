@@ -8390,11 +8390,15 @@ describe("file sharing", () => {
 		});
 		const { folderId, childId } = await seed_restricted_folder(t, fixture, { name: "closed" });
 
-		const archived = await fixture.asOwner.mutation(api.files_nodes.archive_nodes, {
-			membershipId: fixture.ownerMembershipId,
-			nodeIds: [String(folderId)],
-		});
-		expect(archived._nay).toBeUndefined();
+		// Archive the child first, so it has its own archive operation and can come back alone.
+		for (const nodeId of [childId, folderId]) {
+			await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
+			const archived = await fixture.asOwner.mutation(api.files_nodes.archive_nodes, {
+				membershipId: fixture.ownerMembershipId,
+				nodeIds: [String(nodeId)],
+			});
+			expect(archived._nay).toBeUndefined();
+		}
 
 		await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
 
@@ -8841,12 +8845,16 @@ describe("file sharing", () => {
 		await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
 
 		// The guest could archive the folder themselves, because their grant is a write on it. The owner
-		// does it here so the test stays about the restore.
-		const archived = await fixture.asOwner.mutation(api.files_nodes.archive_nodes, {
-			membershipId: fixture.ownerMembershipId,
-			nodeIds: [String(folderId)],
-		});
-		expect(archived._nay).toBeUndefined();
+		// does it here so the test stays about the restore. The child goes first, so it has its own
+		// archive operation and a restore of it leaves the folder in the archive.
+		for (const nodeId of [childId, folderId]) {
+			await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
+			const archived = await fixture.asOwner.mutation(api.files_nodes.archive_nodes, {
+				membershipId: fixture.ownerMembershipId,
+				nodeIds: [String(nodeId)],
+			});
+			expect(archived._nay).toBeUndefined();
+		}
 
 		// The path the child would land on, taken by a folder this guest cannot see. The refusal below has
 		// to be about permission and not about the conflict, or it would name a node they were never shown.
@@ -8912,11 +8920,16 @@ describe("file sharing", () => {
 		await demote_to_guest_role(fixture);
 		await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
 
-		const archived = await fixture.asOwner.mutation(api.files_nodes.archive_nodes, {
-			membershipId: fixture.ownerMembershipId,
-			nodeIds: [String(outer._yay!.nodeId)],
-		});
-		expect(archived._nay).toBeUndefined();
+		// The restricted folder goes first, so it has its own archive operation. A restore of it then
+		// leaves `/outer` in the archive, which this guest cannot restore.
+		for (const nodeId of [closed._yay!.nodeId, outer._yay!.nodeId]) {
+			await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
+			const archived = await fixture.asOwner.mutation(api.files_nodes.archive_nodes, {
+				membershipId: fixture.ownerMembershipId,
+				nodeIds: [String(nodeId)],
+			});
+			expect(archived._nay).toBeUndefined();
+		}
 
 		// The folder carries its own restriction, so landing at the root keeps it closed and opens nothing.
 		// Refusing here would strand it: this guest cannot restore the parent either. Passing also proves
@@ -8952,12 +8965,16 @@ describe("file sharing", () => {
 		await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
 
 		// The member could archive the folder themselves, because their grant is a write on it. The owner
-		// does it here so the test stays about the restore.
-		const archived = await fixture.asOwner.mutation(api.files_nodes.archive_nodes, {
-			membershipId: fixture.ownerMembershipId,
-			nodeIds: [String(folderId)],
-		});
-		expect(archived._nay).toBeUndefined();
+		// does it here so the test stays about the restore. The child goes first, so it has its own
+		// archive operation and a restore of it leaves the folder in the archive.
+		for (const nodeId of [childId, folderId]) {
+			await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
+			const archived = await fixture.asOwner.mutation(api.files_nodes.archive_nodes, {
+				membershipId: fixture.ownerMembershipId,
+				nodeIds: [String(nodeId)],
+			});
+			expect(archived._nay).toBeUndefined();
+		}
 		await access_control_test_reset_write_rate_limit(t, fixture.memberId);
 
 		// Unlike the guest two tests above, this member keeps the workspace role, so the write at the root
@@ -8975,7 +8992,7 @@ describe("file sharing", () => {
 		expect(childNode?.restrictedScopeNodeId).toBe(folderId);
 	});
 
-	test("a blocked restore does not name the node in the way when the caller cannot open it", async () => {
+	test("a paused restore does not name the node in the way when the caller cannot open it", async () => {
 		const t = test_convex();
 		const fixture = await access_control_test_seed_enforcement_fixture(t, {
 			name: "restore-blocked-org",
@@ -9011,15 +9028,19 @@ describe("file sharing", () => {
 		expect(granted._nay).toBeUndefined();
 
 		await demote_to_guest_role(fixture);
-		await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
 
-		const archived = await fixture.asOwner.mutation(api.files_nodes.archive_nodes, {
-			membershipId: fixture.ownerMembershipId,
-			nodeIds: [String(outer._yay!.nodeId)],
-		});
-		expect(archived._nay).toBeUndefined();
+		// The restricted folder goes first, so a restore of it lands at the root and `/outer` stays archived.
+		for (const nodeId of [closed._yay!.nodeId, outer._yay!.nodeId]) {
+			await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
+			const archived = await fixture.asOwner.mutation(api.files_nodes.archive_nodes, {
+				membershipId: fixture.ownerMembershipId,
+				nodeIds: [String(nodeId)],
+			});
+			expect(archived._nay).toBeUndefined();
+		}
 
 		// The path `/closed` would land on, taken by a restricted folder this guest holds nothing on.
+		await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
 		const blocker = await fixture.asOwner.mutation(api.files_nodes.create_folder_node, {
 			membershipId: fixture.ownerMembershipId,
 			parentId: files_ROOT_ID,
@@ -9033,30 +9054,26 @@ describe("file sharing", () => {
 		expect(blockerRestricted._nay).toBeUndefined();
 		await access_control_test_reset_write_rate_limit(t, fixture.memberId);
 
-		// `/closed` carries its own restriction, so it skips the destination check and reaches the conflict.
-		// The guest has to hear that the path is taken, but not what is sitting there.
+		// `/closed` carries its own restriction, so it skips the destination check and reaches the clash.
+		// The restore waits for the guest's choice. The guest has to learn the name is taken, but not
+		// what is sitting there.
 		const unarchived = await fixture.asMember.mutation(api.files_nodes.unarchive_nodes, {
 			membershipId: fixture.memberMembershipId,
 			nodeIds: [String(closed._yay!.nodeId)],
 		});
-		expect(unarchived._nay?.message).toBe("Failed to unarchive file because path already exists");
-		expect(unarchived._nay?.data).not.toHaveProperty("conflictingNodeId");
-		expect(unarchived._nay?.data).not.toHaveProperty("conflictingFilePath");
+		expect(unarchived._nay).toBeUndefined();
+		const runId = unarchived._yay!.runId;
 
-		// The owner sees what blocked it, so the missing fields above are the check and not a dropped field.
-		await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
-		const asOwner = await fixture.asOwner.mutation(api.files_nodes.unarchive_nodes, {
-			membershipId: fixture.ownerMembershipId,
-			nodeIds: [String(closed._yay!.nodeId)],
+		const blind = await fixture.asMember.query(api.files_archive_runs.get, {
+			membershipId: fixture.memberMembershipId,
+			runId,
 		});
-		expect(asOwner._nay?.data).toMatchObject({
-			conflictingNodeId: blocker._yay!.nodeId,
-			conflictingFilePath: "/closed",
-		});
+		expect(blind?.activity.status).toBe("awaiting_input");
+		expect(blind?.conflict).toMatchObject({ name: "closed", occupantPath: null });
 
 		// The same guest, now given the weakest thing that lets them open the blocker. Owners pass every
 		// check, so only this pins the question at the gate to `content.read`: asking for anything
-		// stronger would keep the fields hidden here.
+		// stronger would keep the path hidden here.
 		const blockerGrant = await fixture.asOwner.mutation(api.files_sharing.set_node_share_grant, {
 			membershipId: fixture.ownerMembershipId,
 			nodeId: blocker._yay!.nodeId,
@@ -9065,15 +9082,11 @@ describe("file sharing", () => {
 		});
 		expect(blockerGrant._nay).toBeUndefined();
 
-		await access_control_test_reset_write_rate_limit(t, fixture.memberId);
-		const withRead = await fixture.asMember.mutation(api.files_nodes.unarchive_nodes, {
+		const withRead = await fixture.asMember.query(api.files_archive_runs.get, {
 			membershipId: fixture.memberMembershipId,
-			nodeIds: [String(closed._yay!.nodeId)],
+			runId,
 		});
-		expect(withRead._nay?.data).toMatchObject({
-			conflictingNodeId: blocker._yay!.nodeId,
-			conflictingFilePath: "/closed",
-		});
+		expect(withRead?.conflict).toMatchObject({ name: "closed", occupantPath: "/closed" });
 	});
 
 	test("two restores landing on one path do not name the other node to a caller who cannot open it", async () => {
@@ -9083,8 +9096,8 @@ describe("file sharing", () => {
 			suffix: "restore-dup",
 		});
 
-		// Two archived folders that both want `/same` back. Archived nodes may share a path, so this is
-		// the refusal one restore call raises against the other node in the same call.
+		// Two archived folders that both want `/same` back. Archived nodes may share a path, so the
+		// second restore in one call clashes with the first.
 		const nodeIds = [];
 		for (let round = 0; round < 2; round++) {
 			await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
@@ -9105,8 +9118,7 @@ describe("file sharing", () => {
 		}
 
 		// Write without read is a role somebody can really build: nothing makes read a part of write. It
-		// gets past the check at the top of the restore, which asks for write, and then reaches the
-		// refusal below.
+		// gets past the check at the top of the restore, which asks for write, and then reaches the clash.
 		const role = await fixture.asOwner.mutation(api.access_control.create_role, {
 			organizationId: fixture.organizationId,
 			name: "Blind editor",
@@ -9124,27 +9136,32 @@ describe("file sharing", () => {
 		expect(assigned._nay).toBeUndefined();
 
 		await access_control_test_reset_write_rate_limit(t, fixture.memberId);
-		const blind = await fixture.asMember.mutation(api.files_nodes.unarchive_nodes, {
+		const unarchived = await fixture.asMember.mutation(api.files_nodes.unarchive_nodes, {
 			membershipId: fixture.memberMembershipId,
 			nodeIds,
 		});
-		expect(blind._nay?.message).toBe(
-			"Failed to unarchive file because it would conflict with another unarchiving file",
-		);
-		expect(blind._nay?.data).not.toHaveProperty("conflictingNodeId");
-		expect(blind._nay?.data).not.toHaveProperty("conflictingFilePath");
+		expect(unarchived._nay).toBeUndefined();
+		const runId = unarchived._yay!.runId;
 
-		// The owner hears which node it was, so the missing fields above are the read check and not a
-		// field this refusal never carried.
-		await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
-		const asOwner = await fixture.asOwner.mutation(api.files_nodes.unarchive_nodes, {
-			membershipId: fixture.ownerMembershipId,
-			nodeIds,
+		const blind = await fixture.asMember.query(api.files_archive_runs.get, {
+			membershipId: fixture.memberMembershipId,
+			runId,
 		});
-		expect(asOwner._nay?.data).toMatchObject({
-			conflictingNodeId: nodeIds[0],
-			conflictingFilePath: "/same",
+		expect(blind?.conflict).toMatchObject({ name: null, path: null, occupantPath: null });
+
+		// With read added to the role, the same query names both items. So the nulls above are the read
+		// check and not fields the dialog never gets.
+		const updated = await fixture.asOwner.mutation(api.access_control.update_role, {
+			roleId: role._yay!.roleId,
+			permissions: ["content.write", "content.read"],
 		});
+		expect(updated._nay).toBeUndefined();
+
+		const withRead = await fixture.asMember.query(api.files_archive_runs.get, {
+			membershipId: fixture.memberMembershipId,
+			runId,
+		});
+		expect(withRead?.conflict).toMatchObject({ name: "same", path: "/same", occupantPath: "/same" });
 	});
 
 	test("archiving a node the caller cannot see answers the same as a missing one", async () => {

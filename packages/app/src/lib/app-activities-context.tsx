@@ -1,5 +1,6 @@
 import { createContext, memo, use, useRef, useState, type ReactNode } from "react";
 import { useFn } from "@/hooks/utils-hooks.ts";
+import { FilesArchiveRunModal } from "@/components/files/files-archive-modal.tsx";
 import { FilesPendingReviewModal } from "@/components/files/files-pending-review.tsx";
 import {
 	app_convex,
@@ -23,6 +24,7 @@ const AppActivitiesContext = createContext<{
 	isStartingReview: boolean;
 	startReview: (selection: ReviewSelection) => Promise<void>;
 	openReviewRun: (runId: app_convex_Id<"files_pending_update_runs">) => void;
+	openArchiveRun: (runId: app_convex_Id<"files_archive_runs">) => void;
 } | null>(null);
 
 const AppActivitiesProvider = Object.assign(
@@ -34,6 +36,7 @@ const AppActivitiesProvider = Object.assign(
 		const [pendingStopSourceIds, setPendingStopSourceIds] = useState<ReadonlySet<ActivitySourceId>>(new Set());
 		const pendingStops = useRef(new Map<ActivitySourceId, Promise<StopResult>>());
 		const [reviewRunId, setReviewRunId] = useState<app_convex_Id<"files_pending_update_runs"> | null>(null);
+		const [archiveRunId, setArchiveRunId] = useState<app_convex_Id<"files_archive_runs"> | null>(null);
 		const [isStartingReview, setIsStartingReview] = useState(false);
 		const reviewPending = useRef(false);
 		const reviewRequest = useRef<{
@@ -68,6 +71,8 @@ const AppActivitiesProvider = Object.assign(
 		});
 
 		const openReviewRun = useFn((runId: app_convex_Id<"files_pending_update_runs">) => setReviewRunId(runId));
+
+		const openArchiveRun = useFn((runId: app_convex_Id<"files_archive_runs">) => setArchiveRunId(runId));
 
 		const startReview = useFn(async (selection: ReviewSelection) => {
 			if (reviewPending.current) throw new Error("Your changes are already being sent.");
@@ -126,7 +131,7 @@ const AppActivitiesProvider = Object.assign(
 
 		return (
 			<AppActivitiesContext.Provider
-				value={{ pendingStopSourceIds, stop, isStartingReview, startReview, openReviewRun }}
+				value={{ pendingStopSourceIds, stop, isStartingReview, startReview, openReviewRun, openArchiveRun }}
 			>
 				{children}
 				{reviewRunId ? (
@@ -135,6 +140,14 @@ const AppActivitiesProvider = Object.assign(
 						membershipId={membershipId}
 						runId={reviewRunId}
 						onClose={() => setReviewRunId(null)}
+					/>
+				) : null}
+				{archiveRunId ? (
+					<FilesArchiveRunModal
+						key={archiveRunId}
+						membershipId={membershipId}
+						runId={archiveRunId}
+						onClose={() => setArchiveRunId(null)}
 					/>
 				) : null}
 			</AppActivitiesContext.Provider>

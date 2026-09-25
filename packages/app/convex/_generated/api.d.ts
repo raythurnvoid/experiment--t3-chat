@@ -28,6 +28,7 @@ import type * as crons from "../crons.js";
 import type * as data_deletion from "../data_deletion.js";
 import type * as data_deletion_requests from "../data_deletion_requests.js";
 import type * as data_import from "../data_import.js";
+import type * as files_archive_runs from "../files_archive_runs.js";
 import type * as files_browser from "../files_browser.js";
 import type * as files_folder_sorts from "../files_folder_sorts.js";
 import type * as files_ingestion from "../files_ingestion.js";
@@ -125,6 +126,7 @@ declare const fullApi: ApiFromModules<{
   data_deletion: typeof data_deletion;
   data_deletion_requests: typeof data_deletion_requests;
   data_import: typeof data_import;
+  files_archive_runs: typeof files_archive_runs;
   files_browser: typeof files_browser;
   files_folder_sorts: typeof files_folder_sorts;
   files_ingestion: typeof files_ingestion;

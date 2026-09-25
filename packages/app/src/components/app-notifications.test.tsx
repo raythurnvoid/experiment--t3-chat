@@ -28,6 +28,14 @@ vi.mock("@/components/files/files-pending-review.tsx", () => ({
 	),
 }));
 
+vi.mock("@/components/files/files-archive-modal.tsx", () => ({
+	FilesArchiveRunModal: (props: { runId: string; onClose: () => void }) => (
+		<div role="dialog" aria-label={`Archive job ${props.runId}`}>
+			<button onClick={props.onClose}>Hide archive job</button>
+		</div>
+	),
+}));
+
 vi.mock("@tanstack/react-router", () => ({
 	useNavigate: () => vi.fn(),
 }));
@@ -328,6 +336,45 @@ describe("AppNotifications", () => {
 		fireEvent.click(screen.getByRole("button", { name: "View review progress" }));
 		expect(screen.getByRole("dialog", { name: "Review review_1" })).toBeTruthy();
 		expect(mutationMock).not.toHaveBeenCalled();
+	});
+
+	test("shows restore progress and reopens the paused name clash", () => {
+		usePaginatedQueryMock.mockImplementation((_query: unknown, args: { section: string }) => ({
+			results:
+				args.section !== "active"
+					? []
+					: [
+							{
+								_id: "archive_activity",
+								_creationTime: 1,
+								status: "awaiting_input",
+								resultKind: "saved",
+								source: { kind: "files_archive_run", id: "archive_1", archiveKind: "restore" },
+								title: "Restore files",
+								errorMessage: null,
+								targets: [],
+								progress: {
+									unit: "items",
+									discovered: 700,
+									total: 700,
+									completed: 150,
+									blocked: 0,
+									failed: 0,
+									skipped: 2,
+									canceled: 0,
+								},
+								controls: { canStop: true, canRetry: false, canDismiss: false },
+							},
+						],
+			status: "Exhausted",
+			loadMore: vi.fn(),
+		}));
+		render(<TestNotifications />);
+		expect(screen.getByText(/150 restored, 2 skipped. Total: 700./)).toBeTruthy();
+		fireEvent.click(screen.getByRole("button", { name: "Review conflicts" }));
+		expect(screen.getByRole("dialog", { name: "Archive job archive_1" })).toBeTruthy();
+		fireEvent.click(screen.getByRole("button", { name: "Hide archive job" }));
+		expect(screen.queryByRole("dialog", { name: "Archive job archive_1" })).toBeNull();
 	});
 
 	// Only a finished walk sets `total`.

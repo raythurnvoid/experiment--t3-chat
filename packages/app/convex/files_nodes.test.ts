@@ -7051,7 +7051,7 @@ test("create_folder_node allows tenant files under /.mounts", async () => {
 	expect(node?.name).toBe(".mounts");
 });
 
-test("unarchive_nodes returns conflict when active file already has the same path", async () => {
+test("unarchive_nodes waits for a choice when an active file already has the same path", async () => {
 	const t = test_convex();
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
 	const asUser = t.withIdentity({
@@ -7072,19 +7072,16 @@ test("unarchive_nodes returns conflict when active file already has the same pat
 		membershipId: db.membershipId,
 		nodeIds: [db.files.file_root_2._id],
 	});
-	if (!("_nay" in unarchiveResult)) {
-		throw new Error("Expected unarchive to fail with path conflict");
-	}
-
-	const unarchiveError = unarchiveResult._nay;
-	if (!unarchiveError) {
-		throw new Error("Expected unarchive error details");
-	}
-	expect(unarchiveError.message).toContain("path already exists");
+	expect(unarchiveResult._nay).toBeUndefined();
 
 	await t.run(async (ctx) => {
 		const fileRoot2 = await ctx.db.get("files_nodes", db.files.file_root_2._id);
-		expect(fileRoot2?.archiveOperationId).not.toBeNull();
+		expect(fileRoot2?.archiveOperationId).toBe("unarchive-conflict-test");
+
+		const run = await ctx.db.get("files_archive_runs", unarchiveResult._yay!.runId);
+		expect(run?.conflict).toEqual({ nodeId: db.files.file_root_2._id, occupantId: db.files.file_root_1._id });
+		const activity = await ctx.db.get("activities", unarchiveResult._yay!.activityId);
+		expect(activity?.status).toBe("awaiting_input");
 	});
 });
 
@@ -7230,7 +7227,7 @@ test("archive_nodes and unarchive_nodes include generated siblings as normal fol
 	expect(unarchivedDocs.generatedFileNode?.archiveOperationId).toBeNull();
 });
 
-test("unarchive_nodes excludes unrequested ancestors from Archive Operation", async () => {
+test("unarchive_nodes restores the whole archive operation of a named child", async () => {
 	const t = test_convex();
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
 	const asUser = t.withIdentity({
@@ -7248,24 +7245,20 @@ test("unarchive_nodes excludes unrequested ancestors from Archive Operation", as
 		membershipId: db.membershipId,
 		nodeIds: [db.files.file_root_1_child_1._id],
 	});
-	if (unarchiveResult._nay) {
-		throw new Error("Expected unarchive of child subtree to succeed");
-	}
+	expect(unarchiveResult).toEqual({ _yay: null });
 
+	// The folder and the child were archived together, so naming the child brings both back in place.
 	await t.run(async (ctx) => {
 		const fileRoot1 = await ctx.db.get("files_nodes", db.files.file_root_1._id);
 		const fileRoot1Child1 = await ctx.db.get("files_nodes", db.files.file_root_1_child_1._id);
 		const fileRoot1Child1Deep1 = await ctx.db.get("files_nodes", db.files.file_root_1_child_1_deep_1._id);
 
-		expect(fileRoot1?.archiveOperationId).not.toBeNull();
+		expect(fileRoot1?.archiveOperationId).toBeNull();
 		expect(fileRoot1Child1?.archiveOperationId).toBeNull();
 		expect(fileRoot1Child1Deep1?.archiveOperationId).toBeNull();
-		expect(fileRoot1Child1?.parentId).toBe(files_ROOT_ID);
-		expect(fileRoot1Child1?.path).toBe(`/${db.files.file_root_1_child_1.name}`);
+		expect(fileRoot1Child1?.parentId).toBe(db.files.file_root_1._id);
+		expect(fileRoot1Child1?.path).toBe(`/${db.files.file_root_1.name}/${db.files.file_root_1_child_1.name}`);
 		expect(fileRoot1Child1Deep1?.parentId).toBe(db.files.file_root_1_child_1._id);
-		expect(fileRoot1Child1Deep1?.path).toBe(
-			`/${db.files.file_root_1_child_1.name}/${db.files.file_root_1_child_1_deep_1.name}`,
-		);
 	});
 });
 
@@ -7441,7 +7434,7 @@ test("N09 unarchive idempotency", async () => {
 	});
 });
 
-test("N02 archive child then parent then unarchive parent restores hierarchy", async () => {
+test("N02 archive child then parent then unarchive parent keeps the child's own archive", async () => {
 	const t = test_convex();
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
 	const asUser = t.withIdentity({
@@ -7479,9 +7472,11 @@ test("N02 archive child then parent then unarchive parent restores hierarchy", a
 		const fileRoot1Child1 = await ctx.db.get("files_nodes", db.files.file_root_1_child_1._id);
 		const fileRoot1Child1Deep1 = await ctx.db.get("files_nodes", db.files.file_root_1_child_1_deep_1._id);
 
+		// Restore brings back one archive operation. The child was archived on its own before, so it stays
+		// archived under its folder and can be restored with its own operation.
 		expect(fileRoot1?.archiveOperationId).toBeNull();
-		expect(fileRoot1Child1?.archiveOperationId).toBeNull();
-		expect(fileRoot1Child1Deep1?.archiveOperationId).toBeNull();
+		expect(fileRoot1Child1?.archiveOperationId).toBe("test_child_archive_operation");
+		expect(fileRoot1Child1Deep1?.archiveOperationId).toBe("test_child_archive_operation");
 		expect(fileRoot1Child1?.parentId).toBe(fileRoot1?._id);
 		expect(fileRoot1Child1Deep1?.parentId).toBe(fileRoot1Child1?._id);
 	});

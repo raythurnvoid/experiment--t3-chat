@@ -267,10 +267,11 @@ const AppNotificationsActivityItem = memo(function AppNotificationsActivityItem(
 ) {
 	const { activity, onOpenFile, onArchive } = props;
 	const { openRun } = FilesClipboardProvider.useContext();
-	const { stop, pendingStopSourceIds, openReviewRun } = AppActivitiesProvider.useContext();
+	const { stop, pendingStopSourceIds, openReviewRun, openArchiveRun } = AppActivitiesProvider.useContext();
 	const transferRun = activity.source.kind === "files_transfer_run" ? activity.source : null;
 	const reviewRun = activity.source.kind === "files_pending_update_run" ? activity.source : null;
 	const writePolicyRun = activity.source.kind === "files_write_policy_run" ? activity.source : null;
+	const archiveRun = activity.source.kind === "files_archive_run" ? activity.source : null;
 	const isStopPending = pendingStopSourceIds.has(activity.source.id);
 	const progress = activity.progress;
 	const isActive = activity.finishedAt === undefined;
@@ -415,6 +416,18 @@ const AppNotificationsActivityItem = memo(function AppNotificationsActivityItem(
 									? `No items could be changed. ${progress.blocked} ${progress.blocked === 1 ? "is" : "are"} not allowed.`
 									: `Updated ${items_label(progress.completed)}, ${progress.skipped} already set, ${progress.blocked} not allowed.`}
 					</p>
+				</div>
+			) : null}
+			{archiveRun && progress ? (
+				<div className={"AppNotificationsActivityItem-transfer" satisfies AppNotificationsActivityItem_ClassNames}>
+					<p>
+						{progress.completed} {archiveRun.archiveKind === "restore" ? "restored" : "archived"}, {progress.skipped}{" "}
+						skipped.
+						{progress.total !== null ? ` Total: ${progress.total}.` : isActive ? " Checking items…" : null}
+					</p>
+					<MyButton variant="secondary" onClick={() => openArchiveRun(archiveRun.id)}>
+						{activity.status === "awaiting_input" ? "Review conflicts" : "View progress"}
+					</MyButton>
 				</div>
 			) : null}
 			{activity.controls.canStop ? (

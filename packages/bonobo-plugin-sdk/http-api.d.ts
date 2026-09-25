@@ -726,7 +726,7 @@ export type BonoboHttpApi = {
 							sequence: number;
 							nodeId: import("convex/values").GenericId<"files_nodes">;
 							installationId: import("convex/values").GenericId<"plugins_workspace_installations">;
-							operation: "fence" | "write" | "readers" | "archive" | "rollback_readers" | "cancel_readers";
+							operation: "fence" | "archive" | "write" | "readers" | "rollback_readers" | "cancel_readers";
 							fingerprint: string;
 							contentRevision: string | null;
 							readerRevision: number | null;
@@ -1231,7 +1231,7 @@ export type BonoboHttpApi = {
 							sequence: number;
 							nodeId: import("convex/values").GenericId<"files_nodes">;
 							installationId: import("convex/values").GenericId<"plugins_workspace_installations">;
-							operation: "fence" | "write" | "readers" | "archive" | "rollback_readers" | "cancel_readers";
+							operation: "fence" | "archive" | "write" | "readers" | "rollback_readers" | "cancel_readers";
 							fingerprint: string;
 							contentRevision: string | null;
 							readerRevision: number | null;
@@ -1345,7 +1345,7 @@ export type BonoboHttpApi = {
 							sequence: number;
 							nodeId: import("convex/values").GenericId<"files_nodes">;
 							installationId: import("convex/values").GenericId<"plugins_workspace_installations">;
-							operation: "fence" | "write" | "readers" | "archive" | "rollback_readers" | "cancel_readers";
+							operation: "fence" | "archive" | "write" | "readers" | "rollback_readers" | "cancel_readers";
 							fingerprint: string;
 							contentRevision: string | null;
 							readerRevision: number | null;
@@ -1618,7 +1618,7 @@ export type BonoboHttpApi = {
 						sequence: number;
 						nodeId: import("convex/values").GenericId<"files_nodes">;
 						installationId: import("convex/values").GenericId<"plugins_workspace_installations">;
-						operation: "fence" | "write" | "readers" | "archive" | "rollback_readers" | "cancel_readers";
+						operation: "fence" | "archive" | "write" | "readers" | "rollback_readers" | "cancel_readers";
 						fingerprint: string;
 						contentRevision: string | null;
 						readerRevision: number | null;
