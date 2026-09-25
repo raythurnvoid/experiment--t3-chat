@@ -2630,6 +2630,10 @@ describe("files_yjs_doc_check_text_addressable", () => {
 });
 
 describe("files_yjs_doc_update_from_text plain branch", () => {
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
 	test("refuses to write into a document whose text is not addressable", () => {
 		const attackerDoc = new YDoc();
 		attackerDoc.getXmlFragment("plain_text").insert(0, [new YXmlElement("p")]);
@@ -2730,7 +2734,12 @@ describe("files_yjs_doc_update_from_text plain branch", () => {
 	// genuinely pathological near-cap change still refuses. Step counts are deterministic (same
 	// input, same count, on every machine), so these outcomes do not depend on machine speed;
 	// the explicit test timeouts only give slow machines room to finish the compute.
+	// The diff also has a 30 s wall-clock backstop. The full test run can load the CPU enough
+	// to reach it, and then a pass case is refused. So the pass cases freeze `Date`, and only
+	// the step budget decides. The refusal case keeps the real clock, so a slow run still ends
+	// at the backstop instead of running to the step budget.
 	test("applies a full sort of 1,000 lines (~25 KB) within the diff budgets", () => {
+		vi.useFakeTimers({ toFake: ["Date"] });
 		// The generated hash-key order is deterministically scrambled, so sorting it is a
 		// full permutation of every line. Measured cost: 132M steps (budget 1,000M).
 		const lines = Array.from({ length: 1000 }, (_, i) => `key_${((i * 2654435761) >>> 0).toString(16)} = value_${i}`);
@@ -2742,6 +2751,7 @@ describe("files_yjs_doc_update_from_text plain branch", () => {
 	}, 60_000);
 
 	test("applies a prettify of a ~40 KB minified JSON within the diff budgets", () => {
+		vi.useFakeTimers({ toFake: ["Date"] });
 		// Measured cost: 313M steps (budget 1,000M) — the heaviest ordinary edit the budgets
 		// must admit.
 		const obj: Record<string, unknown> = {};
@@ -2762,6 +2772,7 @@ describe("files_yjs_doc_update_from_text plain branch", () => {
 	}, 60_000);
 
 	test("applies a replace-all with 1,000 hits in a ~66 KB file within the diff budgets", () => {
+		vi.useFakeTimers({ toFake: ["Date"] });
 		// Measured cost: 52M steps (budget 1,000M).
 		const lines = Array.from({ length: 2000 }, (_, i) =>
 			i % 2 === 0 ? `const value_${i} = oldName.compute(${i});` : `plain line ${i} with text`,
