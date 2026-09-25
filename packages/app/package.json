@@ -165,7 +165,7 @@
 		"@vitejs/plugin-react": "6.1.1",
 		"@vitest/browser-playwright": "4.1.10",
 		"babel-plugin-react-compiler": "1.0.0",
-		"convex-test": "^0.0.59",
+		"convex-test": "^0.0.60",
 		"culori": "^4.0.2",
 		"globals": "^16.5.0",
 		"pixelmatch": "^7.1.0",
