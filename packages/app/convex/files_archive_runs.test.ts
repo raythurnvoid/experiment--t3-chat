@@ -145,6 +145,50 @@ async function seed_tree(f: Fixture, args: { name: string; folderCount: number; 
 	});
 }
 
+/**
+ * Insert the folder `/<name>` with `count` archived files that all have the path `/<name>/same.md`.
+ * A page of 50 ends inside that group, so a check walk must read the other `count - 50` in one more
+ * read. Each file gets its own operation id unless `archiveOperationId` is given.
+ */
+async function seed_same_path(f: Fixture, args: { name: string; count: number; archiveOperationId: string | null }) {
+	return await f.t.run(async (ctx) => {
+		const fields = {
+			...test_mocks.files.base(),
+			organizationId: f.db.organizationId,
+			workspaceId: f.db.workspaceId,
+			createdBy: f.db.userId,
+			updatedBy: f.db.userId,
+		};
+		const topId = await ctx.db.insert("files_nodes", {
+			...fields,
+			parentId: "root",
+			name: args.name,
+			sortName: files_sort_text_key(args.name),
+			kind: "folder",
+			path: `/${args.name}`,
+			treePath: `/${args.name}/`,
+			pathDepth: 1,
+		});
+		const fileIds = [];
+		for (let index = 0; index < args.count; index++) {
+			fileIds.push(
+				await ctx.db.insert("files_nodes", {
+					...fields,
+					parentId: topId,
+					name: "same.md",
+					sortName: files_sort_text_key("same.md"),
+					kind: "file",
+					path: `/${args.name}/same.md`,
+					treePath: `/${args.name}/same.md`,
+					pathDepth: 2,
+					archiveOperationId: args.archiveOperationId ?? crypto.randomUUID(),
+				}),
+			);
+		}
+		return { topId, fileIds };
+	});
+}
+
 async function read_state(f: Fixture) {
 	return await f.t.run(async (ctx) => ({
 		nodes: await ctx.db.query("files_nodes").collect(),
@@ -420,6 +464,22 @@ describe("archive_nodes", () => {
 		expect(state.nodes.every((node) => node.archiveOperationId === null)).toBe(true);
 	});
 
+	test("the check reads up to 500 more archived items with the path where a page ends", async () => {
+		const f = await fixture();
+		const fits = await seed_same_path(f, { name: "fits", count: 550, archiveOperationId: null });
+		const tooMany = await seed_same_path(f, { name: "too-many", count: 551, archiveOperationId: null });
+
+		const archived = await archive(f, [fits.topId]);
+		expect(archived._nay).toBeUndefined();
+		const ended = await run_to_end(f, archived._yay!);
+		expect(ended.activity.status).toBe("succeeded");
+		expect((await read_node(f, fits.topId)).archiveOperationId).not.toBeNull();
+
+		const refused = await archive(f, [tooMany.topId]);
+		expect(refused._nay?.message).toBe("Too many archived items share one path.");
+		expect((await read_node(f, tooMany.topId)).archiveOperationId).toBeNull();
+	});
+
 	test("refuses to archive an item inside a folder that a job is archiving", async () => {
 		const f = await fixture();
 		const tree = await seed_tree(f, { name: "busy", folderCount: 4, filesPerFolder: 100 });
@@ -435,6 +495,7 @@ describe("archive_nodes", () => {
 });
 
 describe("unarchive_nodes", () => {
+	// It takes about 10 s alone and more than 30 s while the full suite runs.
 	test("a big restore runs as a job, and no node is ever active inside an archived folder", async () => {
 		const f = await fixture();
 		const tree = await seed_tree(f, { name: "back", folderCount: 6, filesPerFolder: 100 });
@@ -449,7 +510,7 @@ describe("unarchive_nodes", () => {
 		const state = await read_state(f);
 		expect(state.nodes.every((node) => node.archiveOperationId === null)).toBe(true);
 		expect((await read_node(f, tree.fileIds[0]!)).path).toBe("/back/d0/f000.md");
-	});
+	}, 60_000);
 
 	test("a folder moved during the restore takes its contents with it", async () => {
 		const f = await fixture();
@@ -482,6 +543,97 @@ describe("unarchive_nodes", () => {
 		expect(restored._yay).not.toBeNull();
 		const again = await restore(f, [tree.fileIds.at(-1)!]);
 		expect(again._nay?.name).toBe("busy");
+	});
+
+	test("the check reads up to 500 more items of the operation with the path where a page ends", async () => {
+		const f = await fixture();
+		const fits = await seed_same_path(f, { name: "fits", count: 550, archiveOperationId: crypto.randomUUID() });
+		const tooMany = await seed_same_path(f, { name: "too-many", count: 551, archiveOperationId: crypto.randomUUID() });
+
+		// The files share one name, so after the first one the job waits for a clash choice. The check
+		// has passed by then.
+		const restored = await restore(f, [fits.fileIds[0]!]);
+		expect(restored._nay).toBeUndefined();
+		const ended = await run_to_end(f, restored._yay!);
+		expect(ended.activity.status).toBe("awaiting_input");
+
+		const refused = await restore(f, [tooMany.fileIds[0]!]);
+		expect(refused._nay?.message).toBe("Too many archived items share one path.");
+		expect((await read_node(f, tooMany.fileIds[0]!)).archiveOperationId).not.toBeNull();
+	});
+
+	test("restoring several big operations runs one job at a time, and the end of one starts the next", async () => {
+		const f = await fixture();
+		const trees = [];
+		for (const name of ["q1", "q2", "q3"]) {
+			const tree = await seed_tree(f, { name, folderCount: 2, filesPerFolder: 100 });
+			await archive_to_end(f, tree.topId);
+			trees.push(tree);
+		}
+		const read_restore_jobs = async () =>
+			(await f.t.run((ctx) => ctx.db.query("activities").collect())).flatMap((activity) =>
+				activity.source.kind === "files_archive_run" && activity.source.archiveKind === "restore"
+					? [{ runId: activity.source.id, activityId: activity._id, status: activity.status }]
+					: [],
+			);
+		const read_statuses = async () => (await read_restore_jobs()).map((job) => job.status);
+
+		const restored = await restore(
+			f,
+			trees.map((tree) => tree.topId),
+		);
+		expect(restored._nay).toBeUndefined();
+		expect(await read_statuses()).toEqual(["running", "queued", "queued"]);
+		const [first, second, third] = await read_restore_jobs();
+
+		// A Stop on a queued job ends it and starts nothing, because the first job still runs.
+		expect(
+			await f.asOwner.mutation(api.activities.request_stop, {
+				membershipId: f.db.membershipId,
+				activityId: third!.activityId,
+			}),
+		).toEqual({ _yay: null });
+		expect(await read_statuses()).toEqual(["running", "queued", "canceled"]);
+
+		expect((await run_to_end(f, first!)).activity.status).toBe("succeeded");
+		expect(await read_statuses()).toEqual(["succeeded", "running", "canceled"]);
+		expect((await run_to_end(f, second!)).activity.status).toBe("succeeded");
+
+		const state = await expect_consistent(f);
+		const archivedPaths = state.nodes.filter((node) => node.archiveOperationId !== null).map((node) => node.path);
+		expect(archivedPaths.length).toBe(203);
+		expect(archivedPaths.every((path) => path.startsWith("/q3"))).toBe(true);
+	});
+
+	test("a queued restore gets more time while the restore ahead of it waits for a clash choice", async () => {
+		const f = await fixture();
+		const clash = await seed_same_path(f, { name: "ahead", count: 200, archiveOperationId: crypto.randomUUID() });
+		const tree = await seed_tree(f, { name: "behind", folderCount: 2, filesPerFolder: 100 });
+		await archive_to_end(f, tree.topId);
+
+		const restored = await restore(f, [clash.fileIds[0]!, tree.topId]);
+		expect(restored._nay).toBeUndefined();
+		const [ahead, queued] = (await f.t.run((ctx) => ctx.db.query("activities").collect())).flatMap((activity) =>
+			activity.source.kind === "files_archive_run" && activity.source.archiveKind === "restore"
+				? [{ runId: activity.source.id, activityId: activity._id, status: activity.status }]
+				: [],
+		);
+		expect(queued!.status).toBe("queued");
+		expect((await run_to_end(f, ahead!)).activity.status).toBe("awaiting_input");
+
+		// Let the queued job reach its deadline while the job ahead still waits for the choice.
+		const now = Date.now();
+		await f.t.run((ctx) => ctx.db.patch("activities", queued!.activityId, { deadlineAt: now - 1 }));
+		await f.t.mutation(internal.activities.recover_expired, { _test_now: now, _test_disableReschedule: true });
+		const waiting = await read_activity(f, queued!.activityId);
+		expect(waiting.status).toBe("queued");
+		expect(waiting.deadlineAt).toBe(now + 24 * 60 * 60 * 1000);
+
+		// With no restore ahead of it any more, the deadline ends it.
+		await f.t.run((ctx) => ctx.db.patch("activities", ahead!.activityId, { status: "canceled" }));
+		await f.t.run((ctx) => ctx.db.patch("activities", queued!.activityId, { deadlineAt: now - 1 }));
+		await f.t.mutation(internal.activities.recover_expired, { _test_now: now, _test_disableReschedule: true });
+		expect((await read_activity(f, queued!.activityId)).status).toBe("timed_out");
 	});
 
 	test("an item whose old folder is still archived lands at the workspace root", async () => {
@@ -749,6 +901,31 @@ describe("unarchive_nodes", () => {
 			expect(replaced.archiveOperationId).not.toBe((await read_node(f, occupants.fileIds[1]!)).archiveOperationId);
 		});
 
+		test("Replace counts the item it archives in the step budget", async () => {
+			const f = await fixture();
+			const tree = await seed_tree(f, { name: "budget", folderCount: 1, filesPerFolder: 100 });
+			expect(await archive(f, tree.fileIds)).toEqual({ _yay: null });
+			const occupants = await seed_tree(f, { name: "occupants", folderCount: 1, filesPerFolder: 100 });
+			expect(
+				await f.asOwner.mutation(api.files_nodes.move_nodes, {
+					membershipId: f.db.membershipId,
+					itemIds: occupants.fileIds,
+					targetParentId: tree.folderIds[0]!,
+				}),
+			).toEqual({ _yay: null });
+			const restored = await restore(f, [tree.fileIds[0]!]);
+			const job = restored._yay!;
+
+			expect(await resolve(f, job.runId, "replace", { file: "replace", folder: null })).toEqual({ _yay: null });
+			await step(f, job.runId);
+
+			// A step may change 150 nodes. Each Replace changes two: the restored file and the one in the way.
+			expect((await read_activity(f, job.activityId)).progress!.completed).toBe(75);
+			const ended = await run_to_end(f, job);
+			expect(ended.activity.status).toBe("succeeded");
+			expect(ended.activity.progress).toMatchObject({ completed: 100 });
+		});
+
 		test("refuses a choice for a clash that changed", async () => {
 			const f = await fixture();
 			const { job } = await seed_clash(f);
@@ -957,6 +1134,37 @@ describe("apply_file_pending_archive", () => {
 			status: "failed",
 			errorMessage: "Stopped partway: The delete was discarded.",
 		});
+		expect((await read_node(f, tree.topId)).archiveOperationId).toBeNull();
+	});
+
+	test("a folder too big to check still gets the proposal, and the job refuses a read-only item inside", async () => {
+		const f = await fixture();
+		// 2,005 items inside, more than the proposal checks in one mutation.
+		const tree = await seed_tree(f, { name: "huge", folderCount: 5, filesPerFolder: 400 });
+		expect(await archive(f, [tree.fileIds.at(-1)!])).toEqual({ _yay: null });
+		await lock_archived(f, tree.fileIds.at(-1)!);
+
+		const proposed = await f.t.mutation(internal.files_pending_updates.upsert_file_pending_archive_in_db, {
+			organizationId: f.db.organizationId,
+			workspaceId: f.db.workspaceId,
+			userId: f.db.userId,
+			target: { kind: "saved", id: tree.topId },
+		});
+		expect(proposed._nay).toBeUndefined();
+
+		const pendingUpdate = (await f.t.run((ctx) => ctx.db.query("files_pending_updates").first()))!;
+		expect(
+			await f.asOwner.mutation(api.files_pending_updates.apply_file_pending_archive, {
+				membershipId: f.db.membershipId,
+				target: { kind: "saved", id: tree.topId },
+				pendingUpdateId: pendingUpdate._id,
+				reviewedRevision: pendingUpdate.revision,
+			}),
+		).toEqual({ _yay: null });
+		const run = (await f.t.run((ctx) => ctx.db.query("files_archive_runs").first()))!;
+		const activity = (await f.t.run((ctx) => ctx.db.query("activities").first()))!;
+		const ended = await run_to_end(f, { runId: run._id, activityId: activity._id });
+		expect(ended.activity).toMatchObject({ status: "failed", errorMessage: "This item is read-only." });
 		expect((await read_node(f, tree.topId)).archiveOperationId).toBeNull();
 	});
 });

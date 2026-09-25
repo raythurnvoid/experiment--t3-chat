@@ -226,10 +226,17 @@ of never showing hidden items.
   links. Equal paths in separate archived and active trees are not the same node. Hidden refusals
   reveal no hidden node name, ID, or path. Cleanup of an upload that never landed deletes its
   placeholder even when locked. Cancel (discard) does the same for the creator.
+- The up-front check of a folder's contents (`files_nodes_db_require_subtree_writable`) reads at most
+  2,000 items, archived ones too. Above that it returns `subtree_too_large`, never a thrown limit
+  error. An agent delete of a bigger folder still gets its proposal, because the accept job checks
+  every item before it archives anything. A move that would replace a bigger folder is refused ("The
+  folder in the way holds too many items to replace.").
 - Archive and restore run through one archive job (`files_archive_runs`, Activity source
   `files_archive_run`). The request runs the first step itself. When that step finishes the work (up
   to 150 nodes), no run doc and no Activity exist. A bigger one continues in the background.
   - The job first checks every item and writes nothing. One protected item refuses the whole action.
+    Archived items can share one path. When a check page ends inside such a group, the check reads up
+    to 500 more of them at once; more refuse ("Too many archived items share one path.").
     Every later step checks its items again. A lock or lost access set during the job stops it as
     failed ("Stopped partway"). The done part keeps its one archive operation id, so Restore brings
     back exactly that part. Stop does the same.
@@ -245,6 +252,16 @@ of never showing hidden items.
     which is a move: it needs root write and permission to leave its restricted folder. If a restore job
     of the parent's operation is running, the item joins that operation instead and comes back with it.
     If an archive job of the parent's operation is running, the restore is refused as busy.
+  - The operations of one restore call share the request's first step. After the first job starts, the
+    later operations wait as `queued` jobs, so their steps never write the same docs at the same time.
+    When a restore job that was running ends (done, failed, Stop, timeout, or deleted), the oldest
+    queued restore job of the same person and workspace starts. A Stop on a queued job ends only that
+    job; the other queued jobs still run. A queued job has a 24-hour deadline. When it passes while a
+    restore job of the same person and workspace is still active, the job gets 24 more hours. The queue
+    is per person and workspace, not per request, so the end of another request's job can start a job
+    of this request while this request's first job still runs. A later job checks its items only when it
+    starts. If an earlier job stopped or failed and left their folder archived, the items land at the
+    root, and their refusals show in the Activity, not in the Unarchive answer.
   - A restored folder that lands on a new path or scope (at the root, or renamed by Keep both) moves the
     items archived on their own inside it, like a move: they stay archived, and their path, treePath,
     scope, and side docs follow the folder in the same mutation. The move limits apply (500 items,

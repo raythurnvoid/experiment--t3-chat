@@ -634,6 +634,63 @@ describe("review jobs", () => {
 		expect(await f.t.run((ctx) => ctx.db.query("files_pending_updates").collect())).toEqual([]);
 	});
 
+	test("a reviewed delete of a folder with many side docs archives its first step within the unit budget", async () => {
+		const f = await fixture();
+		const parentId = await saved_folder(f, "big");
+		// 150 files with 20 metadata docs each: one archive step patches about 3,150 docs.
+		await f.t.run(async (ctx) => {
+			for (let index = 0; index < 150; index++) {
+				const name = `f${String(index).padStart(3, "0")}.md`;
+				const fileNodeId = await ctx.db.insert("files_nodes", {
+					...test_mocks.files.base(),
+					organizationId: f.scope.organizationId,
+					workspaceId: f.scope.workspaceId,
+					createdBy: f.scope.userId,
+					updatedBy: f.scope.userId,
+					parentId,
+					name,
+					sortName: files_sort_text_key(name),
+					kind: "file",
+					path: `/big/${name}`,
+					treePath: `/big/${name}`,
+					pathDepth: 2,
+				});
+				for (let field = 0; field < 20; field++) {
+					await ctx.db.insert("files_metadata_docs", {
+						organizationId: f.scope.organizationId,
+						workspaceId: f.scope.workspaceId,
+						fileNodeId,
+						sourceKind: "committed",
+						yjsSequence: 1,
+						path: `/big/${name}`,
+						treePath: `/big/${name}`,
+						fieldPath: `frontmatter.tag${field}`,
+						docKind: "field",
+					});
+				}
+			}
+		});
+		expect(
+			(
+				await f.t.mutation(internal.files_pending_updates.upsert_file_pending_archive_in_db, {
+					...f.scope,
+					target: { kind: "saved", id: parentId },
+				})
+			)._nay,
+		).toBeUndefined();
+		const proposals = await f.t.run((ctx) => ctx.db.query("files_pending_updates").collect());
+
+		const { runId } = await start_review(f, "accept", proposals);
+		await finish_review(f, runId);
+
+		expect(await f.t.run((ctx) => ctx.db.query("files_pending_update_run_units").collect())).toMatchObject([
+			{ status: "completed", errorMessage: null },
+		]);
+		// The archive job goes on in the background after the review.
+		const archiveRun = await f.t.run((ctx) => ctx.db.query("files_archive_runs").first());
+		expect(archiveRun?.active).toBe(true);
+	});
+
 	test("does not discard an unselected ready child", async () => {
 		const f = await fixture();
 		const parent = await private_folder(f, "/parent");

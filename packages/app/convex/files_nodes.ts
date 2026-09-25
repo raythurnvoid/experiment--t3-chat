@@ -157,6 +157,7 @@ const files_content_materialization_workpool = new Workpool(components.files_con
 });
 
 const MAX_MOVE_NODE_COUNT = 500;
+// The subtree write check before an archive or a Replace uses this limit too.
 const MAX_MOVE_DOCUMENT_COUNT = 2000;
 const MAX_MOVE_BYTES = 4 * 1024 * 1024;
 
@@ -1008,6 +1009,8 @@ export type files_nodes_get_user_file_write_access_Result =
 /**
  * Load every descendant below `parentId`. Include archived descendants.
  * Use parent ids because active and archived trees can have the same path.
+ * Return null when there are more than `MAX_MOVE_DOCUMENT_COUNT`, so one mutation never reads a
+ * huge folder and fails on the Convex read limits.
  */
 async function db_collect_descendants(
 	ctx: QueryCtx | MutationCtx,
@@ -1031,12 +1034,14 @@ async function db_collect_descendants(
 			.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
 				q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("parentId", parentId),
 			)
-			.collect();
+			.take(MAX_MOVE_DOCUMENT_COUNT + 1 - descendants.length);
 
-		for (const child of children) {
-			descendants.push(child);
-			stack.push(child._id);
+		descendants.push(...children);
+		if (descendants.length > MAX_MOVE_DOCUMENT_COUNT) {
+			return null;
 		}
+		// Only folders have children. Skip the files so the walk reads one index range per folder.
+		stack.push(...children.filter((child) => child.kind === "folder").map((child) => child._id));
 	}
 
 	return descendants;
@@ -1099,6 +1104,7 @@ export async function files_nodes_db_require_swept_nodes_writable(
  * Use only for delete, archive, and replace paths. Rename and move never call this:
  * protected descendants travel along and keep their rules.
  * Include archived descendants because hiding them changes them too.
+ * Refuse with `subtree_too_large` when the folder holds more than `MAX_MOVE_DOCUMENT_COUNT` items.
  */
 export async function files_nodes_db_require_subtree_writable(
 	ctx: MutationCtx,
@@ -1118,6 +1124,11 @@ export async function files_nodes_db_require_subtree_writable(
 		workspaceId: args.workspaceId,
 		parentId: args.node._id,
 	});
+	if (!subtreeFileNodes) {
+		return Result({
+			_nay: { name: "subtree_too_large", message: "This folder holds too many items to check at once." },
+		});
+	}
 
 	return await files_nodes_db_require_swept_nodes_writable(ctx, {
 		organizationId: args.organizationId,
@@ -4243,6 +4254,11 @@ export async function files_nodes_db_validate_occupant_replace(
 				policyReach: "ancestors",
 			},
 		});
+		if (subtree._nay?.name === "subtree_too_large") {
+			return Result({
+				_nay: { name: "subtree_too_large", message: "The folder in the way holds too many items to replace." },
+			});
+		}
 		if (subtree._nay) return subtree;
 	}
 
@@ -6108,6 +6124,7 @@ export const archive_nodes = mutation({
 			rootNodeIds: rootFileNodes.map((node) => node._id),
 			pendingUpdateCleanup: null,
 			budget: { nodes: files_archive_runs_STEP_MAX_NODES },
+			queued: false,
 		});
 	},
 });
@@ -6205,7 +6222,9 @@ export const unarchive_nodes = mutation({
 		// Restore brings back every item archived together with a named item. Take the operations
 		// parents first, so a later operation can land in a folder an earlier one restored. Order them by
 		// each operation's top item, not by the named item, which can sit deep inside its operation. The
-		// operations share one budget, so the first ones run inside this request and the rest run as jobs.
+		// operations share one budget, so the first ones run inside this request. After the first job, the
+		// rest wait as queued jobs and run one after another, so their steps do not write the same docs at
+		// the same time.
 		const topTreePathByOperationId = new Map<string, string>();
 		for (const fileNode of fileNodes._yay) {
 			const archiveOperationId = fileNode.archiveOperationId;
@@ -6235,6 +6254,7 @@ export const unarchive_nodes = mutation({
 				rootNodeIds: [],
 				pendingUpdateCleanup: null,
 				budget,
+				queued: firstJob !== null,
 			});
 			if (started._nay) {
 				return started;

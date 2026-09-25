@@ -13704,6 +13704,55 @@ describe("upsert_file_pending_move_in_db", () => {
 		expect(proposed._nay?.message).toBe("Directory not empty");
 	});
 
+	test("rejects a folder replace proposal onto a folder with too many archived items to check", async () => {
+		const t = test_convex();
+
+		const seededFile = await t.run(async (ctx) =>
+			seed_file_with_markdown({
+				ctx,
+				path: "/edr-p-huge-file.md",
+				name: "edr-p-huge-file.md",
+				markdown: "# Edr huge base",
+			}),
+		);
+		const { folderId } = await t.run(async (ctx) => {
+			const scope = {
+				ctx,
+				organizationId: seededFile.organizationId,
+				workspaceId: seededFile.workspaceId,
+				userId: seededFile.userId,
+			};
+			const folderId = await seed_folder_node({ ...scope, path: "/edr-p-huge-src", name: "edr-p-huge-src" });
+			const occupantId = await seed_folder_node({ ...scope, path: "/edr-p-huge", name: "edr-p-huge" });
+			// Archived items do not make the folder "not empty", but Replace must check them all.
+			for (let index = 0; index <= 2000; index++) {
+				const archivedId = await seed_folder_node({
+					...scope,
+					parentId: occupantId,
+					path: `/edr-p-huge/a${index}`,
+					name: `a${index}`,
+				});
+				await ctx.db.patch("files_nodes", archivedId, { archiveOperationId: crypto.randomUUID() });
+			}
+			return { folderId };
+		});
+
+		const proposed = await upsert_file_pending_move_for_test({
+			t,
+			organizationId: seededFile.organizationId,
+			workspaceId: seededFile.workspaceId,
+			userId: seededFile.userId,
+			nodeId: folderId,
+			destParentId: files_ROOT_ID,
+			destName: "edr-p-huge",
+			replace: true,
+		});
+		expect(proposed._nay).toEqual({
+			name: "subtree_too_large",
+			message: "The folder in the way holds too many items to replace.",
+		});
+	});
+
 	test("rejects replacing an empty folder occupant that a pending move targets into", async () => {
 		const t = test_convex();
 

@@ -122,6 +122,9 @@ function merge_needs_review_ids(run: Doc<"files_pending_update_runs">, ids: Id<"
  * Count the full final transaction, including calls inside the shared Save and move tails.
  */
 function db_with_unit_budget(ctx: MutationCtx) {
+	const maxDocuments = 8_000;
+	const maxBytes = 12 * 1024 * 1024;
+	const maxRanges = 3_000;
 	let readDocuments = 0;
 	let writtenDocuments = 0;
 	let readBytes = 0;
@@ -130,11 +133,11 @@ function db_with_unit_budget(ctx: MutationCtx) {
 
 	function check() {
 		if (
-			readDocuments > 8_000 ||
-			writtenDocuments > 8_000 ||
-			readBytes > 12 * 1024 * 1024 ||
-			writtenBytes > 12 * 1024 * 1024 ||
-			ranges > 3_000
+			readDocuments > maxDocuments ||
+			writtenDocuments > maxDocuments ||
+			readBytes > maxBytes ||
+			writtenBytes > maxBytes ||
+			ranges > maxRanges
 		)
 			refuse_unit(
 				"review_too_large",
@@ -246,6 +249,20 @@ function db_with_unit_budget(ctx: MutationCtx) {
 	return {
 		...ctx,
 		db,
+		// An accepted delete starts the archive job, and its first step runs in this unit. The step stops
+		// when a transaction limit is near. Report this unit's own counts and limits, so the step stops
+		// before the unit refuses, and the job does the rest in the background.
+		meta: {
+			...ctx.meta,
+			getTransactionMetrics: async () => ({
+				...(await ctx.meta.getTransactionMetrics()),
+				documentsRead: { used: readDocuments, remaining: maxDocuments - readDocuments },
+				documentsWritten: { used: writtenDocuments, remaining: maxDocuments - writtenDocuments },
+				bytesRead: { used: readBytes, remaining: maxBytes - readBytes },
+				bytesWritten: { used: writtenBytes, remaining: maxBytes - writtenBytes },
+				databaseQueries: { used: ranges, remaining: maxRanges - ranges },
+			}),
+		},
 		runQuery: new Proxy(ctx.runQuery, {
 			async apply(method, receiver, args: unknown[]) {
 				// The final billing gates use Polar's one-doc product lookup.

@@ -4881,7 +4881,9 @@ export const upsert_file_pending_archive_in_db = internalMutation({
 			},
 			node,
 		});
-		if (subtreeWritable._nay) {
+		// A folder too big to check here still gets the proposal. Accepting it starts the archive job,
+		// and that job checks every item inside, archived ones too, before it archives anything.
+		if (subtreeWritable._nay && subtreeWritable._nay.name !== "subtree_too_large") {
 			return subtreeWritable;
 		}
 
@@ -5103,6 +5105,7 @@ export async function files_pending_updates_db_apply_archive(
 			reviewedPendingUpdateIds: args.reviewedPendingUpdateIds ? [...args.reviewedPendingUpdateIds] : null,
 		},
 		budget: { nodes: files_archive_runs_STEP_MAX_NODES },
+		queued: false,
 	});
 	if (started._nay) return started;
 

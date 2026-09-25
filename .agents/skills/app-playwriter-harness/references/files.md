@@ -1032,6 +1032,18 @@ One dialog holding the file's facts, its write policy, and the flat key-value ma
   (2026-09-25); `page.locator("[role=dialog]", { hasText: "Choose how to handle this name." })` found it.
   To check the tree rule, page `list_tree` and assert no active node has an archived ancestor. The
   runners live in the `archive-job-2026-09-24` personal task folder.
+  Mid-job checks (verified 2026-09-25, runners in `archive-job-followups-2026-09-25`): start the job with one
+  `app_convex.mutation` call, poll `files_archive_runs.get` every 200 ms until `activity.progress.completed > 0`,
+  then act in the same `page.evaluate`. A second CLI call is too slow: a 1,311-node job moves 150 items per
+  step. A lock set this way (`set_node_write_policy` `read_only` on the deepest active folder) ends the job
+  `failed` with `Stopped partway: This item is read-only.`, and the locked folder and its parents stay active.
+  A folder created with `create_folder_node` during the check phase or after the first apply step gets the
+  job's operation. Its `path` argument is relative to `parentId`, not a full path. For an agent delete
+  without a chat, make the proposal with `convex run files_pending_updates:upsert_file_pending_archive_in_db`
+  and accept it with `apply_file_pending_archive`. A `discard_file_pending_structural` during the job ends
+  it `failed` with `Stopped partway: The delete was discarded.` To check search during a job, poll
+  `files_nodes.search_content` for a word from one text file inside the tree. That file must go from
+  present to absent once (archive) or from absent to present once (restore), and never back.
 - For screenshots and hit-target checks, scroll the policy block into view first. Tabbing to footer
   controls can leave radios above the scroll area. At 512×768 the dialog scrolls and keeps its footer
   visible. The quick audit counts 18px radio inputs; inspect their clickable labels before treating
