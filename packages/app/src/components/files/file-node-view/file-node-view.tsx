@@ -3444,6 +3444,7 @@ const FileNodeViewFolderExplorerRow = memo(function FileNodeViewFolderExplorerRo
 	});
 
 	const rowRef = useRef<HTMLDivElement | null>(null);
+	const appHoistingContainer = document.getElementById("app_hoisting_container" satisfies AppElementId);
 	const { clipboard } = FilesClipboardProvider.useContext();
 	const isCut = clipboard?.mode === "cut" && clipboard.sourceIds.includes(child._id);
 	FilesClipboardProvider.useHotkeys({
@@ -3663,31 +3664,37 @@ const FileNodeViewFolderExplorerRow = memo(function FileNodeViewFolderExplorerRo
 							</MyIconButtonIcon>
 						</MyIconButton>
 					</MyMenuTrigger>
-					<MyMenuPopover unmountOnHide>
-						<MyMenuPopoverContent>
-							<FilesClipboardMenuItems
-								sourceIds={[child._id]}
-								canCut={capabilities.canRelocateOrRename && !isPendingAction}
-								canCopy={!isPendingAction}
-								targetParentId={child.kind === "folder" ? child._id : null}
-								targetName={child.kind === "folder" ? child.name : null}
-								canPaste={capabilities.canReceiveChildren && !isPendingAction}
-							/>
-							<MyMenuItem
-								variant="destructive"
-								disabled={!capabilities.canArchiveOrRestore || isPendingAction}
-								hideOnClick
-								onClick={handleArchiveClick}
-							>
-								<MyMenuItemContent>
-									<MyMenuItemContentIcon>
-										<Archive />
-									</MyMenuItemContentIcon>
-									<MyMenuItemContentPrimary>Archive</MyMenuItemContentPrimary>
-								</MyMenuItemContent>
-							</MyMenuItem>
-						</MyMenuPopoverContent>
-					</MyMenuPopover>
+					{/* Render the menu outside the row. The row reads clipboard keys with a native listener, which
+					    would run before the menu and take Escape, Mod+C, Mod+X, and Mod+V from it. */}
+					{appHoistingContainer &&
+						createPortal(
+							<MyMenuPopover unmountOnHide>
+								<MyMenuPopoverContent>
+									<FilesClipboardMenuItems
+										sourceIds={[child._id]}
+										canCut={capabilities.canRelocateOrRename && !isPendingAction}
+										canCopy={!isPendingAction}
+										targetParentId={child.kind === "folder" ? child._id : null}
+										targetName={child.kind === "folder" ? child.name : null}
+										canPaste={capabilities.canReceiveChildren && !isPendingAction}
+									/>
+									<MyMenuItem
+										variant="destructive"
+										disabled={!capabilities.canArchiveOrRestore || isPendingAction}
+										hideOnClick
+										onClick={handleArchiveClick}
+									>
+										<MyMenuItemContent>
+											<MyMenuItemContentIcon>
+												<Archive />
+											</MyMenuItemContentIcon>
+											<MyMenuItemContentPrimary>Archive</MyMenuItemContentPrimary>
+										</MyMenuItemContent>
+									</MyMenuItem>
+								</MyMenuPopoverContent>
+							</MyMenuPopover>,
+							appHoistingContainer,
+						)}
 				</MyMenu>
 			</MyGridTableCell>
 		</MyGridTableRow>

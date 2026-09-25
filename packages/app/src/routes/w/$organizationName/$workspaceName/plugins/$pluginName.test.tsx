@@ -191,11 +191,11 @@ vi.mock("@/components/my-icon-button.tsx", () => ({
 	},
 }));
 
-// The real menu is an Ariakit popover: it portals, only mounts its items while open, closes on
-// item activation, and returns the menu's focus to the trigger. None of that runs here — this mock
-// renders the trigger and the items inline so a test can reach both.
+// The real menu is a native-popovers menu: it shows in the top layer, only mounts its items
+// while open, closes on item activation, and returns the menu's focus to the trigger. None of that
+// runs here — this mock renders the trigger and the items inline so a test can reach both.
 //
-// Ariakit also blocks a disabled item's activation; the mocked item deliberately keeps firing
+// The real menu also blocks a disabled item's activation; the mocked item deliberately keeps firing
 // onClick instead, so a re-entry test proves a handler's own in-flight guard and not the UI block.
 vi.mock("@/components/my-menu.tsx", () => ({
 	MyMenu: function MyMenu(props: { children?: ReactNode }) {
@@ -1298,8 +1298,8 @@ describe("RoutePluginsPlugin", () => {
 		const removeItem = screen.getByRole("menuitem", { name: "Remove claim" });
 		fireEvent.click(removeItem);
 
-		// Mid-flight the trigger must stay enabled: the menu closed on activation and Ariakit
-		// returns the menu's focus to the trigger, and a disabled control cannot take it.
+		// Mid-flight the trigger must stay enabled: the menu closed on activation and gave its focus
+		// back to the trigger, and a disabled control cannot take it.
 		const trigger = screen.getByRole("button", { name: "More actions" }) as HTMLButtonElement;
 		expect(trigger.disabled).toBe(false);
 

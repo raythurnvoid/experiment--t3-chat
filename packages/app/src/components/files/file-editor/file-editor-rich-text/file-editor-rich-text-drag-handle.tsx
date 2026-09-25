@@ -21,6 +21,7 @@ import {
 	type LucideIcon,
 } from "lucide-react";
 import { memo, useState, useRef, type ComponentProps, useDeferredValue } from "react";
+import { createPortal } from "react-dom";
 import { Editor, useEditorState } from "@tiptap/react";
 import { EditorDragHandle, type EditorDragHandleProps } from "novel";
 import { offset } from "@floating-ui/dom";
@@ -28,7 +29,6 @@ import {
 	MyMenu,
 	MyMenuTrigger,
 	MyMenuPopover,
-	MyMenuPopoverScrollableArea,
 	MyMenuPopoverContent,
 	MyMenuItem,
 	MyMenuItemsGroup,
@@ -460,18 +460,14 @@ const FileEditorRichTextDragHandleColorSubMenuInner = memo(function FileEditorRi
 				)}
 				gutter={8}
 				shift={-5}
-				hideOnHoverOutside={false}
-				portalElement={editor.view.dom.parentElement}
 			>
-				<MyMenuPopoverScrollableArea>
-					<MyMenuPopoverContent>
-						<MyMenuItemsGroupText>Color</MyMenuItemsGroupText>
-						{TEXT_COLORS.map(renderTextColorItem)}
+				<MyMenuPopoverContent>
+					<MyMenuItemsGroupText>Color</MyMenuItemsGroupText>
+					{TEXT_COLORS.map(renderTextColorItem)}
 
-						<MyMenuItemsGroupText>Background</MyMenuItemsGroupText>
-						{HIGHLIGHT_COLORS.map(renderHighlightColorItem)}
-					</MyMenuPopoverContent>
-				</MyMenuPopoverScrollableArea>
+					<MyMenuItemsGroupText>Background</MyMenuItemsGroupText>
+					{HIGHLIGHT_COLORS.map(renderHighlightColorItem)}
+				</MyMenuPopoverContent>
 			</MyMenuPopover>
 		</MyMenu>
 	);
@@ -616,12 +612,8 @@ const FileEditorRichTextDragHandleTurnIntoSubMenu = memo(function FileEditorRich
 				)}
 				gutter={8}
 				shift={-5}
-				hideOnHoverOutside={false}
-				portalElement={editor.view.dom.parentElement}
 			>
-				<MyMenuPopoverScrollableArea>
-					<MyMenuPopoverContent>{transformItems.map(renderTransformItem)}</MyMenuPopoverContent>
-				</MyMenuPopoverScrollableArea>
+				<MyMenuPopoverContent>{transformItems.map(renderTransformItem)}</MyMenuPopoverContent>
 			</MyMenuPopover>
 		</MyMenu>
 	);
@@ -690,55 +682,59 @@ const FileEditorRichTextDragHandleMenuPopover = memo(function FileEditorRichText
 		editor.chain().focus().deleteRange({ from: start, to: end }).run();
 	});
 
-	return (
+	// Render the menu next to the editor, outside the drag handle. The handle is a draggable `.MyButton`, so
+	// inside it the menu would get its grab cursor and turn on its hover and active styles.
+	const portalElement = editor.view.dom.parentElement;
+	if (!portalElement) {
+		return null;
+	}
+
+	return createPortal(
 		<MyMenuPopover
 			className={cn(
 				"FileEditorRichTextDragHandleMenuPopover" satisfies FileEditorRichTextDragHandleMenuPopover_ClassNames,
 			)}
-			portalElement={editor.view.dom.parentElement}
-			unmountOnHide
 		>
-			<MyMenuPopoverScrollableArea>
-				<MyMenuPopoverContent
-					className={
-						"FileEditorRichTextDragHandleMenuPopover-content" satisfies FileEditorRichTextDragHandleMenuPopover_ClassNames
-					}
-				>
-					<MyMenuItemsGroup>
-						<FileEditorRichTextDragHandleColorSubMenu editor={editor} />
-						<FileEditorRichTextDragHandleTurnIntoSubMenu editor={editor} />
-					</MyMenuItemsGroup>
-					<MyMenuItemsGroup separator>
-						<MyMenuItem onClick={handleDuplicate}>
-							<MyMenuItemContent>
-								<MyMenuItemContentIcon>
-									<CopyPlus />
-								</MyMenuItemContentIcon>
-								<MyMenuItemContentPrimary>Duplicate node</MyMenuItemContentPrimary>
-							</MyMenuItemContent>
-						</MyMenuItem>
-						<MyMenuItem onClick={handleCopyToClipboard}>
-							<MyMenuItemContent>
-								<MyMenuItemContentIcon>
-									<Copy />
-								</MyMenuItemContentIcon>
-								<MyMenuItemContentPrimary>Copy to clipboard</MyMenuItemContentPrimary>
-							</MyMenuItemContent>
-						</MyMenuItem>
-					</MyMenuItemsGroup>
-					<MyMenuItemsGroup separator>
-						<MyMenuItem variant="destructive" onClick={handleDelete}>
-							<MyMenuItemContent>
-								<MyMenuItemContentIcon>
-									<Trash2 />
-								</MyMenuItemContentIcon>
-								<MyMenuItemContentPrimary>Delete block</MyMenuItemContentPrimary>
-							</MyMenuItemContent>
-						</MyMenuItem>
-					</MyMenuItemsGroup>
-				</MyMenuPopoverContent>
-			</MyMenuPopoverScrollableArea>
-		</MyMenuPopover>
+			<MyMenuPopoverContent
+				className={
+					"FileEditorRichTextDragHandleMenuPopover-content" satisfies FileEditorRichTextDragHandleMenuPopover_ClassNames
+				}
+			>
+				<MyMenuItemsGroup>
+					<FileEditorRichTextDragHandleColorSubMenu editor={editor} />
+					<FileEditorRichTextDragHandleTurnIntoSubMenu editor={editor} />
+				</MyMenuItemsGroup>
+				<MyMenuItemsGroup separator>
+					<MyMenuItem onClick={handleDuplicate}>
+						<MyMenuItemContent>
+							<MyMenuItemContentIcon>
+								<CopyPlus />
+							</MyMenuItemContentIcon>
+							<MyMenuItemContentPrimary>Duplicate node</MyMenuItemContentPrimary>
+						</MyMenuItemContent>
+					</MyMenuItem>
+					<MyMenuItem onClick={handleCopyToClipboard}>
+						<MyMenuItemContent>
+							<MyMenuItemContentIcon>
+								<Copy />
+							</MyMenuItemContentIcon>
+							<MyMenuItemContentPrimary>Copy to clipboard</MyMenuItemContentPrimary>
+						</MyMenuItemContent>
+					</MyMenuItem>
+				</MyMenuItemsGroup>
+				<MyMenuItemsGroup separator>
+					<MyMenuItem variant="destructive" onClick={handleDelete}>
+						<MyMenuItemContent>
+							<MyMenuItemContentIcon>
+								<Trash2 />
+							</MyMenuItemContentIcon>
+							<MyMenuItemContentPrimary>Delete block</MyMenuItemContentPrimary>
+						</MyMenuItemContent>
+					</MyMenuItem>
+				</MyMenuItemsGroup>
+			</MyMenuPopoverContent>
+		</MyMenuPopover>,
+		portalElement,
 	);
 });
 // #endregion menu popover

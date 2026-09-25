@@ -801,38 +801,43 @@ const FileEditorSidebarAgentHeaderTabs = memo(function FileEditorSidebarAgentHea
 												return (
 													<MyContextMenu>
 														<MyContextMenuTrigger>{draggableTab}</MyContextMenuTrigger>
-														<MyContextMenuPopover>
-															<MyMenuPopoverContent>
-																<MyMenuItem disabled={isCloseDisabled} onClick={() => handleCloseTab(entry.id)}>
-																	<MyMenuItemContent>
-																		<MyMenuItemContentIcon>
-																			<X />
-																		</MyMenuItemContentIcon>
-																		<MyMenuItemContentPrimary>Close Tab</MyMenuItemContentPrimary>
-																	</MyMenuItemContent>
-																</MyMenuItem>
-																<MyMenuItem
-																	disabled={!canCloseOtherTabs}
-																	onClick={() => handleCloseOtherTabs(entry.id)}
-																>
-																	<MyMenuItemContent>
-																		<MyMenuItemContentIcon>
-																			<CopyX />
-																		</MyMenuItemContentIcon>
-																		<MyMenuItemContentPrimary>Close other tabs</MyMenuItemContentPrimary>
-																	</MyMenuItemContent>
-																</MyMenuItem>
-																<MyMenuItem
-																	disabled={!canCloseTabsToRight}
-																	onClick={() => handleCloseTabsToRight(entry.id)}
-																>
-																	<MyMenuItemContent>
-																		<MyMenuItemContentIcon />
-																		<MyMenuItemContentPrimary>Close tabs to the right</MyMenuItemContentPrimary>
-																	</MyMenuItemContent>
-																</MyMenuItem>
-															</MyMenuPopoverContent>
-														</MyContextMenuPopover>
+														{/* Render the menu outside the tablist. A tablist may only own tabs. */}
+														{appHoistingContainer &&
+															createPortal(
+																<MyContextMenuPopover>
+																	<MyMenuPopoverContent>
+																		<MyMenuItem disabled={isCloseDisabled} onClick={() => handleCloseTab(entry.id)}>
+																			<MyMenuItemContent>
+																				<MyMenuItemContentIcon>
+																					<X />
+																				</MyMenuItemContentIcon>
+																				<MyMenuItemContentPrimary>Close Tab</MyMenuItemContentPrimary>
+																			</MyMenuItemContent>
+																		</MyMenuItem>
+																		<MyMenuItem
+																			disabled={!canCloseOtherTabs}
+																			onClick={() => handleCloseOtherTabs(entry.id)}
+																		>
+																			<MyMenuItemContent>
+																				<MyMenuItemContentIcon>
+																					<CopyX />
+																				</MyMenuItemContentIcon>
+																				<MyMenuItemContentPrimary>Close other tabs</MyMenuItemContentPrimary>
+																			</MyMenuItemContent>
+																		</MyMenuItem>
+																		<MyMenuItem
+																			disabled={!canCloseTabsToRight}
+																			onClick={() => handleCloseTabsToRight(entry.id)}
+																		>
+																			<MyMenuItemContent>
+																				<MyMenuItemContentIcon />
+																				<MyMenuItemContentPrimary>Close tabs to the right</MyMenuItemContentPrimary>
+																			</MyMenuItemContent>
+																		</MyMenuItem>
+																	</MyMenuPopoverContent>
+																</MyContextMenuPopover>,
+																appHoistingContainer,
+															)}
 													</MyContextMenu>
 												);
 											}}

@@ -17,6 +17,7 @@ import React, {
 	type ComponentProps,
 	type RefObject,
 } from "react";
+import { createPortal } from "react-dom";
 import { toast } from "sonner";
 import { create } from "zustand";
 import { fromEvent, type FileWithPath } from "file-selector";
@@ -105,7 +106,6 @@ import {
 	MyMenuItemsGroup,
 	MyMenuPopover,
 	MyMenuPopoverContent,
-	MyMenuPopoverScrollableArea,
 	MyMenuTrigger,
 	type MyMenuItem_Props,
 	type MyMenuPopover_ClassNames,
@@ -1091,6 +1091,7 @@ type FilesSidebarTreeItemMenuPopover_Props = {
 	canExpandSubtree: boolean;
 	canCollapseSubtree: boolean;
 	expandedFolderActionsVisible: boolean;
+	menusPortalHost: HTMLElement | null;
 	clipboardSlot: React.ReactNode;
 	onCreateFile: () => void;
 	onCreateFolder: () => void;
@@ -1120,6 +1121,7 @@ const FilesSidebarTreeItemMenuPopover = memo(function FilesSidebarTreeItemMenuPo
 		canExpandSubtree,
 		canCollapseSubtree,
 		expandedFolderActionsVisible,
+		menusPortalHost,
 		clipboardSlot,
 		onCreateFile,
 		onCreateFolder,
@@ -1137,7 +1139,7 @@ const FilesSidebarTreeItemMenuPopover = memo(function FilesSidebarTreeItemMenuPo
 	const isArchived = archiveOperationId !== null;
 
 	const handleRenameClick = useFn<MyMenuItem_Props["onClick"]>(() => {
-		// Let Ariakit finish closing the menu and restoring focus before Headless Tree enters rename mode.
+		// Let the menu finish closing and give the focus back to the row before Headless Tree enters rename mode.
 		setTimeout(() => {
 			onRename();
 		}, 0);
@@ -1151,143 +1153,147 @@ const FilesSidebarTreeItemMenuPopover = memo(function FilesSidebarTreeItemMenuPo
 		}
 	});
 
-	return (
+	// The menu can open only after the tree has mounted, so render nothing before the element exists.
+	if (!menusPortalHost) {
+		return null;
+	}
+
+	return createPortal(
 		<MyContextMenuPopover
 			{...({
 				"data-files-sidebar-tree-context": "",
 			} satisfies Partial<CustomAttributes>)}
 		>
-			<MyMenuPopoverScrollableArea>
-				<MyMenuPopoverContent>
-					{kind === "folder" ? (
-						<MyMenuItemsGroup>
-							<MyMenuItem
-								className={cn(
-									"FilesSidebarTreeItemMenuPopover-create-action" satisfies FilesSidebarTreeItemMenuPopover_ClassNames,
-									expandedFolderActionsVisible &&
-										("FilesSidebarTreeItemMenuPopover-create-action-visible" satisfies FilesSidebarTreeItemMenuPopover_ClassNames),
-								)}
-								aria-label={`Add file to ${label}`}
-								disabled={!canCreate}
-								hideOnClick
-								onClick={onCreateFile}
-							>
-								<MyMenuItemContent>
-									<MyMenuItemContentIcon>
-										<FilePlus />
-									</MyMenuItemContentIcon>
-									<MyMenuItemContentPrimary>Add file</MyMenuItemContentPrimary>
-								</MyMenuItemContent>
-							</MyMenuItem>
-							<MyMenuItem
-								className={cn(
-									"FilesSidebarTreeItemMenuPopover-create-action" satisfies FilesSidebarTreeItemMenuPopover_ClassNames,
-									expandedFolderActionsVisible &&
-										("FilesSidebarTreeItemMenuPopover-create-action-visible" satisfies FilesSidebarTreeItemMenuPopover_ClassNames),
-								)}
-								aria-label={`Add folder to ${label}`}
-								disabled={!canCreate}
-								hideOnClick
-								onClick={onCreateFolder}
-							>
-								<MyMenuItemContent>
-									<MyMenuItemContentIcon>
-										<FolderPlus />
-									</MyMenuItemContentIcon>
-									<MyMenuItemContentPrimary>Add folder</MyMenuItemContentPrimary>
-								</MyMenuItemContent>
-							</MyMenuItem>
-						</MyMenuItemsGroup>
-					) : null}
-					<MyMenuItemsGroup separator={kind === "folder" && expandedFolderActionsVisible}>
-						{clipboardSlot}
-						<MyMenuItem hideOnClick onClick={onCopy}>
-							<MyMenuItemContent>
-								<MyMenuItemContentIcon>
-									<Copy />
-								</MyMenuItemContentIcon>
-								<MyMenuItemContentPrimary>Copy path</MyMenuItemContentPrimary>
-							</MyMenuItemContent>
-						</MyMenuItem>
-						<MyMenuItem hideOnClick onClick={onCopyLink}>
-							<MyMenuItemContent>
-								<MyMenuItemContentIcon>
-									<Link2 />
-								</MyMenuItemContentIcon>
-								<MyMenuItemContentPrimary>Copy link</MyMenuItemContentPrimary>
-							</MyMenuItemContent>
-						</MyMenuItem>
-						<MyMenuItem hideOnClick onClick={onCopyNodeId}>
-							<MyMenuItemContent>
-								<MyMenuItemContentIcon>
-									<Hash />
-								</MyMenuItemContentIcon>
-								<MyMenuItemContentPrimary>Copy node id</MyMenuItemContentPrimary>
-							</MyMenuItemContent>
-						</MyMenuItem>
-						<MyMenuItem disabled={!canRename} hideOnClick onClick={handleRenameClick}>
-							<MyMenuItemContent>
-								<MyMenuItemContentIcon>
-									<Edit2 />
-								</MyMenuItemContentIcon>
-								<MyMenuItemContentPrimary>Rename</MyMenuItemContentPrimary>
-							</MyMenuItemContent>
-						</MyMenuItem>
-					</MyMenuItemsGroup>
-					{kind === "folder" ? (
-						<MyMenuItemsGroup separator>
-							<MyMenuItem disabled={!canExpandSubtree} hideOnClick onClick={onExpandSubtree}>
-								<MyMenuItemContent>
-									<MyMenuItemContentIcon>
-										<CopyPlus />
-									</MyMenuItemContentIcon>
-									<MyMenuItemContentPrimary>Expand subtree</MyMenuItemContentPrimary>
-								</MyMenuItemContent>
-							</MyMenuItem>
-							<MyMenuItem disabled={!canCollapseSubtree} hideOnClick onClick={onCollapseSubtree}>
-								<MyMenuItemContent>
-									<MyMenuItemContentIcon>
-										<CopyMinus />
-									</MyMenuItemContentIcon>
-									<MyMenuItemContentPrimary>Collapse subtree</MyMenuItemContentPrimary>
-								</MyMenuItemContent>
-							</MyMenuItem>
-						</MyMenuItemsGroup>
-					) : null}
-					<MyMenuItemsGroup separator>
-						<MyMenuItem disabled={!canShare} hideOnClick onClick={onShare}>
-							<MyMenuItemContent>
-								<MyMenuItemContentIcon>
-									<Users />
-								</MyMenuItemContentIcon>
-								<MyMenuItemContentPrimary>Share</MyMenuItemContentPrimary>
-							</MyMenuItemContent>
-						</MyMenuItem>
-						<MyMenuItem hideOnClick onClick={onProperties}>
-							<MyMenuItemContent>
-								<MyMenuItemContentIcon>
-									<Info />
-								</MyMenuItemContentIcon>
-								<MyMenuItemContentPrimary>Properties</MyMenuItemContentPrimary>
-							</MyMenuItemContent>
-						</MyMenuItem>
-					</MyMenuItemsGroup>
-					<MyMenuItemsGroup separator>
+			<MyMenuPopoverContent>
+				{kind === "folder" ? (
+					<MyMenuItemsGroup>
 						<MyMenuItem
-							variant={isArchived ? "default" : "destructive"}
-							disabled={!canArchive}
+							className={cn(
+								"FilesSidebarTreeItemMenuPopover-create-action" satisfies FilesSidebarTreeItemMenuPopover_ClassNames,
+								expandedFolderActionsVisible &&
+									("FilesSidebarTreeItemMenuPopover-create-action-visible" satisfies FilesSidebarTreeItemMenuPopover_ClassNames),
+							)}
+							aria-label={`Add file to ${label}`}
+							disabled={!canCreate}
 							hideOnClick
-							onClick={handleArchiveUnarchiveClick}
+							onClick={onCreateFile}
 						>
 							<MyMenuItemContent>
-								<MyMenuItemContentIcon>{isArchived ? <ArchiveRestore /> : <Archive />}</MyMenuItemContentIcon>
-								<MyMenuItemContentPrimary>{isArchived ? "Restore" : "Archive"}</MyMenuItemContentPrimary>
+								<MyMenuItemContentIcon>
+									<FilePlus />
+								</MyMenuItemContentIcon>
+								<MyMenuItemContentPrimary>Add file</MyMenuItemContentPrimary>
+							</MyMenuItemContent>
+						</MyMenuItem>
+						<MyMenuItem
+							className={cn(
+								"FilesSidebarTreeItemMenuPopover-create-action" satisfies FilesSidebarTreeItemMenuPopover_ClassNames,
+								expandedFolderActionsVisible &&
+									("FilesSidebarTreeItemMenuPopover-create-action-visible" satisfies FilesSidebarTreeItemMenuPopover_ClassNames),
+							)}
+							aria-label={`Add folder to ${label}`}
+							disabled={!canCreate}
+							hideOnClick
+							onClick={onCreateFolder}
+						>
+							<MyMenuItemContent>
+								<MyMenuItemContentIcon>
+									<FolderPlus />
+								</MyMenuItemContentIcon>
+								<MyMenuItemContentPrimary>Add folder</MyMenuItemContentPrimary>
 							</MyMenuItemContent>
 						</MyMenuItem>
 					</MyMenuItemsGroup>
-				</MyMenuPopoverContent>
-			</MyMenuPopoverScrollableArea>
-		</MyContextMenuPopover>
+				) : null}
+				<MyMenuItemsGroup separator={kind === "folder" && expandedFolderActionsVisible}>
+					{clipboardSlot}
+					<MyMenuItem hideOnClick onClick={onCopy}>
+						<MyMenuItemContent>
+							<MyMenuItemContentIcon>
+								<Copy />
+							</MyMenuItemContentIcon>
+							<MyMenuItemContentPrimary>Copy path</MyMenuItemContentPrimary>
+						</MyMenuItemContent>
+					</MyMenuItem>
+					<MyMenuItem hideOnClick onClick={onCopyLink}>
+						<MyMenuItemContent>
+							<MyMenuItemContentIcon>
+								<Link2 />
+							</MyMenuItemContentIcon>
+							<MyMenuItemContentPrimary>Copy link</MyMenuItemContentPrimary>
+						</MyMenuItemContent>
+					</MyMenuItem>
+					<MyMenuItem hideOnClick onClick={onCopyNodeId}>
+						<MyMenuItemContent>
+							<MyMenuItemContentIcon>
+								<Hash />
+							</MyMenuItemContentIcon>
+							<MyMenuItemContentPrimary>Copy node id</MyMenuItemContentPrimary>
+						</MyMenuItemContent>
+					</MyMenuItem>
+					<MyMenuItem disabled={!canRename} hideOnClick onClick={handleRenameClick}>
+						<MyMenuItemContent>
+							<MyMenuItemContentIcon>
+								<Edit2 />
+							</MyMenuItemContentIcon>
+							<MyMenuItemContentPrimary>Rename</MyMenuItemContentPrimary>
+						</MyMenuItemContent>
+					</MyMenuItem>
+				</MyMenuItemsGroup>
+				{kind === "folder" ? (
+					<MyMenuItemsGroup separator>
+						<MyMenuItem disabled={!canExpandSubtree} hideOnClick onClick={onExpandSubtree}>
+							<MyMenuItemContent>
+								<MyMenuItemContentIcon>
+									<CopyPlus />
+								</MyMenuItemContentIcon>
+								<MyMenuItemContentPrimary>Expand subtree</MyMenuItemContentPrimary>
+							</MyMenuItemContent>
+						</MyMenuItem>
+						<MyMenuItem disabled={!canCollapseSubtree} hideOnClick onClick={onCollapseSubtree}>
+							<MyMenuItemContent>
+								<MyMenuItemContentIcon>
+									<CopyMinus />
+								</MyMenuItemContentIcon>
+								<MyMenuItemContentPrimary>Collapse subtree</MyMenuItemContentPrimary>
+							</MyMenuItemContent>
+						</MyMenuItem>
+					</MyMenuItemsGroup>
+				) : null}
+				<MyMenuItemsGroup separator>
+					<MyMenuItem disabled={!canShare} hideOnClick onClick={onShare}>
+						<MyMenuItemContent>
+							<MyMenuItemContentIcon>
+								<Users />
+							</MyMenuItemContentIcon>
+							<MyMenuItemContentPrimary>Share</MyMenuItemContentPrimary>
+						</MyMenuItemContent>
+					</MyMenuItem>
+					<MyMenuItem hideOnClick onClick={onProperties}>
+						<MyMenuItemContent>
+							<MyMenuItemContentIcon>
+								<Info />
+							</MyMenuItemContentIcon>
+							<MyMenuItemContentPrimary>Properties</MyMenuItemContentPrimary>
+						</MyMenuItemContent>
+					</MyMenuItem>
+				</MyMenuItemsGroup>
+				<MyMenuItemsGroup separator>
+					<MyMenuItem
+						variant={isArchived ? "default" : "destructive"}
+						disabled={!canArchive}
+						hideOnClick
+						onClick={handleArchiveUnarchiveClick}
+					>
+						<MyMenuItemContent>
+							<MyMenuItemContentIcon>{isArchived ? <ArchiveRestore /> : <Archive />}</MyMenuItemContentIcon>
+							<MyMenuItemContentPrimary>{isArchived ? "Restore" : "Archive"}</MyMenuItemContentPrimary>
+						</MyMenuItemContent>
+					</MyMenuItem>
+				</MyMenuItemsGroup>
+			</MyMenuPopoverContent>
+		</MyContextMenuPopover>,
+		menusPortalHost,
 	);
 });
 // #endregion tree item menu popover
@@ -1870,6 +1876,10 @@ type FilesSidebarTreeItem_Props = {
 	isTreeDragging: boolean;
 	isFallbackTabStop: boolean;
 	expandedFolderActionsVisible: boolean;
+	/**
+	 * The element after the tree where the row menu renders. It is null until it mounts.
+	 */
+	menusPortalHost: HTMLElement | null;
 	canWrite: boolean;
 	canUnarchive: boolean;
 	canWriteRoot: boolean;
@@ -2034,6 +2044,7 @@ const FilesSidebarTreeRow = memo(
 			isTreeDragging,
 			isFallbackTabStop,
 			expandedFolderActionsVisible,
+			menusPortalHost,
 			canWrite,
 			canUnarchive,
 			canWriteRoot,
@@ -2402,6 +2413,7 @@ const FilesSidebarTreeRow = memo(
 						canExpandSubtree={canExpandSubtree}
 						canCollapseSubtree={canCollapseSubtree}
 						expandedFolderActionsVisible={expandedFolderActionsVisible}
+						menusPortalHost={menusPortalHost}
 						clipboardSlot={
 							<FilesClipboardMenuItems
 								sourceIds={clipboardSourceIds}
@@ -2704,7 +2716,8 @@ type FilesSidebarTree_ClassNames =
 	| "FilesSidebarTree-row"
 	| "FilesSidebarTree-dragging"
 	| "FilesSidebarTree-empty-state"
-	| "FilesSidebarTree-folder-actions-expanded";
+	| "FilesSidebarTree-folder-actions-expanded"
+	| "FilesSidebarTree-menus";
 
 type FilesSidebarTree_Props = {
 	tree: FilesSidebarTree_Shared;
@@ -2790,6 +2803,7 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 
 	const [expandedFolderActionsVisible, setExpandedFolderActionsVisible] = useState(false);
 	const [openMenuItemId, setOpenMenuItemId] = useState<string | null>(null);
+	const [menusPortalHost, setMenusPortalHost] = useState<HTMLElement | null>(null);
 	const [dragSourceItemId, setDragSourceItemId] = useState<string | null>(null);
 
 	const isTreeDragging = (tree().getState().dnd?.draggedItems?.length ?? 0) > 0;
@@ -3118,6 +3132,7 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 										isTreeDragging={isTreeDragging}
 										isFallbackTabStop={!hasFocusedRenderedItem && itemIndex === 0}
 										expandedFolderActionsVisible={expandedFolderActionsVisible}
+										menusPortalHost={menusPortalHost}
 										canWrite={canWriteItem(itemData)}
 										canUnarchive={canUnarchiveItem(itemData)}
 										canWriteRoot={canWriteRoot}
@@ -3152,6 +3167,10 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 					</>
 				) : null}
 			</div>
+			{/* Render the row menus here, outside the role=tree element. A tree may only own treeitems
+			    and groups. Headless Tree also reads keys on the tree element, so ArrowDown in a menu
+			    inside it would move the tree focus and close the menu. */}
+			<div ref={setMenusPortalHost} className={"FilesSidebarTree-menus" satisfies FilesSidebarTree_ClassNames} />
 			{/* Keep the drag announcement live region outside the role=tree element: a tree may
 			    only own treeitems and groups, and this span is neither. */}
 			<AssistiveTreeDescription tree={tree()} />
@@ -3313,12 +3332,7 @@ const FilesSidebarTopSectionMoreAction = memo(function FilesSidebarTopSectionMor
 						</MyMenuItem>
 					) : (
 						<>
-							<MyMenuCheckboxItem
-								name="showArchivedFiles"
-								checked={showArchived}
-								disabled={isBusy}
-								onClick={handleArchiveToggleClick}
-							>
+							<MyMenuCheckboxItem checked={showArchived} disabled={isBusy} onClick={handleArchiveToggleClick}>
 								<MyMenuItemContent>
 									<MyMenuCheckboxItemControl checked={showArchived} disabled={isBusy} />
 									<MyMenuItemContentPrimary>{archivedItemsLabel}</MyMenuItemContentPrimary>

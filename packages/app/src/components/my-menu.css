@@ -4,17 +4,24 @@
 		min-width: 200px;
 		max-height: 300px;
 
+		/* The menu element scrolls itself. A scroll container inside it would be a Tab stop in
+		   Chromium and Firefox, and with `tabindex="-1"` it would be a focusable child that a
+		   role=menu may not have. */
+		overflow-x: hidden;
+		overflow-y: auto;
+
+		/* The menu stays inside its trigger's DOM parent, so it inherits text styles from there.
+		   Inside a bold header or a `nowrap` row, the items would take them. Reset them to the app
+		   values. */
+		font-family: var(--app-font-sans);
+		font-weight: 400;
+		font-size: 1rem;
+		line-height: 1.5;
+		white-space: normal;
+
 		contain: content;
 	}
 	/* #endregion popover */
-
-	/* #region popover scrollable area */
-	.MyMenuPopoverScrollableArea {
-		max-height: inherit;
-		overflow-x: hidden;
-		overflow-y: auto;
-	}
-	/* #endregion popover scrollable area */
 
 	/* #region popover content */
 	.MyMenuPopoverContent {

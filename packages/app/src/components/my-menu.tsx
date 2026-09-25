@@ -1,8 +1,23 @@
 import "./my-floating-surface.css";
 import "./my-menu.css";
-import * as Ariakit from "@ariakit/react";
+import {
+	Menu,
+	MenuButton,
+	MenuGroup,
+	MenuGroupLabel,
+	MenuItem,
+	MenuItemCheckbox,
+	MenuProvider,
+	type MenuButtonProps,
+	type MenuGroupLabelProps,
+	type MenuGroupProps,
+	type MenuItemCheckboxProps,
+	type MenuItemProps,
+	type MenuProps,
+	type MenuProviderProps,
+} from "native-popovers/menu";
 import { memo } from "react";
-import type { AppClassName, AppElementId } from "@/lib/dom-utils.ts";
+import type { AppClassName } from "@/lib/dom-utils.ts";
 import { cn } from "@/lib/utils.ts";
 import type { ExtractStrict } from "type-fest";
 import { Check, ChevronRight } from "lucide-react";
@@ -13,20 +28,20 @@ import { MyIcon, type MyIcon_Props } from "./my-icon.tsx";
 // #region items group text
 export type MyMenuItemsGroupText_ClassNames = "MyMenuItemsGroupText";
 
-export type MyMenuItemsGroupText_Props = Ariakit.MenuGroupLabelProps;
+export type MyMenuItemsGroupText_Props = MenuGroupLabelProps;
 
 export const MyMenuItemsGroupText = memo(function MyMenuItemsGroupText(props: MyMenuItemsGroupText_Props) {
 	const { ref, id, className, children, ...rest } = props;
 
 	return (
-		<Ariakit.MenuGroupLabel
+		<MenuGroupLabel
 			ref={ref}
 			id={id}
 			className={cn("MyMenuItemsGroupText" satisfies MyMenuItemsGroupText_ClassNames, className)}
 			{...rest}
 		>
 			{children}
-		</Ariakit.MenuGroupLabel>
+		</MenuGroupLabel>
 	);
 });
 // #endregion items group text
@@ -36,13 +51,13 @@ export type MyMenuItemsGroup_ClassNames = "MyMenuItemsGroup" | "MyMenuItemsGroup
 
 export type MyMenuItemsGroup_Props = {
 	separator?: boolean;
-} & Ariakit.MenuGroupProps;
+} & MenuGroupProps;
 
 export const MyMenuItemsGroup = memo(function MyMenuItemsGroup(props: MyMenuItemsGroup_Props) {
 	const { className, children, separator = false, ...rest } = props;
 
 	return (
-		<Ariakit.MenuGroup
+		<MenuGroup
 			className={cn(
 				"MyMenuItemsGroup" satisfies MyMenuItemsGroup_ClassNames,
 				separator && ("MyMenuItemsGroup-separator" satisfies MyMenuItemsGroup_ClassNames),
@@ -51,7 +66,7 @@ export const MyMenuItemsGroup = memo(function MyMenuItemsGroup(props: MyMenuItem
 			{...rest}
 		>
 			{children}
-		</Ariakit.MenuGroup>
+		</MenuGroup>
 	);
 });
 // #endregion items group
@@ -161,7 +176,7 @@ export const MyMenuItemSubMenuIndicator = memo(function MyMenuItemSubMenuIndicat
 // #region item
 export type MyMenuItem_ClassNames = "MyMenuItem" | "MyMenuItem-variant-destructive";
 
-export type MyMenuItem_Props = Ariakit.MenuItemProps & {
+export type MyMenuItem_Props = MenuItemProps & {
 	variant?: "default" | "destructive";
 };
 
@@ -169,7 +184,7 @@ export const MyMenuItem = memo(function MyMenuItem(props: MyMenuItem_Props) {
 	const { className, variant = "default", children, ...rest } = props;
 
 	return (
-		<Ariakit.MenuItem
+		<MenuItem
 			className={cn(
 				"MyMenuItem" satisfies MyMenuItem_ClassNames,
 				variant === "destructive" && ("MyMenuItem-variant-destructive" satisfies MyMenuItem_ClassNames),
@@ -178,7 +193,7 @@ export const MyMenuItem = memo(function MyMenuItem(props: MyMenuItem_Props) {
 			{...rest}
 		>
 			{children}
-		</Ariakit.MenuItem>
+		</MenuItem>
 	);
 });
 // #endregion item
@@ -186,13 +201,13 @@ export const MyMenuItem = memo(function MyMenuItem(props: MyMenuItem_Props) {
 // #region checkbox item
 export type MyMenuCheckboxItem_ClassNames = "MyMenuCheckboxItem";
 
-export type MyMenuCheckboxItem_Props = Ariakit.MenuItemCheckboxProps;
+export type MyMenuCheckboxItem_Props = MenuItemCheckboxProps;
 
 export const MyMenuCheckboxItem = memo(function MyMenuCheckboxItem(props: MyMenuCheckboxItem_Props) {
 	const { className, children, ...rest } = props;
 
 	return (
-		<Ariakit.MenuItemCheckbox
+		<MenuItemCheckbox
 			className={cn(
 				"MyMenuItem" satisfies MyMenuItem_ClassNames,
 				"MyMenuCheckboxItem" satisfies MyMenuCheckboxItem_ClassNames,
@@ -201,7 +216,7 @@ export const MyMenuCheckboxItem = memo(function MyMenuCheckboxItem(props: MyMenu
 			{...rest}
 		>
 			{children}
-		</Ariakit.MenuItemCheckbox>
+		</MenuItemCheckbox>
 	);
 });
 // #endregion checkbox item
@@ -241,34 +256,6 @@ export const MyMenuCheckboxItemControl = memo(function MyMenuCheckboxItemControl
 });
 // #endregion checkbox item control
 
-// #region popover scrollable area
-export type MyMenuPopoverScrollableArea_ClassNames = "MyMenuPopoverScrollableArea";
-
-export type MyMenuPopoverScrollableArea_Props = {
-	children?: React.ReactNode;
-	className?: string;
-};
-
-export const MyMenuPopoverScrollableArea = memo(function MyMenuPopoverScrollableArea(
-	props: MyMenuPopoverScrollableArea_Props,
-) {
-	const { className, children, ...rest } = props;
-
-	return (
-		<div
-			className={cn(
-				"MyMenuPopoverScrollableArea" satisfies MyMenuPopoverScrollableArea_ClassNames,
-				"app-scrollable" satisfies AppClassName,
-				className,
-			)}
-			{...rest}
-		>
-			{children}
-		</div>
-	);
-});
-// #endregion popover scrollable area
-
 // #region popover content
 export type MyMenuPopoverContent_ClassNames = "MyMenuPopoverContent";
 
@@ -291,29 +278,32 @@ export const MyMenuPopoverContent = memo(function MyMenuPopoverContent(props: My
 // #region popover
 export type MyMenuPopover_ClassNames = "MyMenuPopover";
 
-// Placement deliberately lives on MyMenu (the Ariakit provider): Ariakit.Menu silently ignores a
-// placement prop, so accepting it here would let call sites set one that never applies.
-export type MyMenuPopover_Props = Ariakit.MenuProps & {
-	gutter?: number;
-};
+export type MyMenuPopover_Props = MenuProps;
 
+/**
+ * The menu. It adds no portal: it stays in the DOM where the caller renders it, and the browser shows
+ * it in the top layer. Its DOM parent still gets its key events, and a pointer over it counts as hover
+ * on that parent. So a caller inside a tree, a tablist, an element that reads keys, or a styled button
+ * can render it with a React portal. It unmounts while closed unless the caller passes
+ * `unmountOnHide={false}`.
+ */
 export const MyMenuPopover = memo(function MyMenuPopover(props: MyMenuPopover_Props) {
-	const { ref, id, className, portal = true, portalElement, children, ...rest } = props;
-
-	const appHoistingContainer = document.getElementById("app_hoisting_container" satisfies AppElementId);
+	const { ref, id, className, unmountOnHide = true, children, ...rest } = props;
 
 	return (
-		<Ariakit.Menu
+		<Menu
 			ref={ref}
 			id={id}
-			className={cn("MyMenuPopover" satisfies MyMenuPopover_ClassNames, className)}
-			portal={portal}
-			portalElement={portalElement ?? appHoistingContainer ?? undefined}
-			unmountOnHide={true}
+			className={cn(
+				"MyMenuPopover" satisfies MyMenuPopover_ClassNames,
+				"app-scrollable" satisfies AppClassName,
+				className,
+			)}
+			unmountOnHide={unmountOnHide}
 			{...rest}
 		>
 			{children}
-		</Ariakit.Menu>
+		</Menu>
 	);
 });
 // #endregion popover
@@ -322,14 +312,14 @@ export const MyMenuPopover = memo(function MyMenuPopover(props: MyMenuPopover_Pr
 export type MyMenuTrigger_ClassNames = "MyMenuTrigger";
 
 export type MyMenuTrigger_Props = {
-	children?: Ariakit.MenuButtonProps["render"];
-} & Omit<Ariakit.MenuButtonProps, ExtractStrict<keyof Ariakit.MenuButtonProps, "render">>;
+	children?: MenuButtonProps["render"];
+} & Omit<MenuButtonProps, ExtractStrict<keyof MenuButtonProps, "render" | "children">>;
 
 export const MyMenuTrigger = memo(function MyMenuTrigger(props: MyMenuTrigger_Props) {
 	const { ref, id, className, children, ...rest } = props;
 
 	return (
-		<Ariakit.MenuButton
+		<MenuButton
 			ref={ref}
 			id={id}
 			className={cn("MyMenuTrigger" satisfies MyMenuTrigger_ClassNames, className)}
@@ -343,15 +333,11 @@ export const MyMenuTrigger = memo(function MyMenuTrigger(props: MyMenuTrigger_Pr
 // #region root
 export type MyMenu_ClassNames = "MyMenu";
 
-export type MyMenu_Props = Ariakit.MenuProviderProps;
+export type MyMenu_Props = MenuProviderProps;
 
 export const MyMenu = memo(function MyMenu(props: MyMenu_Props) {
-	const { virtualFocus = true, children, ...rest } = props;
+	const { children, ...rest } = props;
 
-	return (
-		<Ariakit.MenuProvider virtualFocus={virtualFocus} {...rest}>
-			{children}
-		</Ariakit.MenuProvider>
-	);
+	return <MenuProvider {...rest}>{children}</MenuProvider>;
 });
 // #endregion root

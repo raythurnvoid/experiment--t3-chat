@@ -37,7 +37,7 @@ export default defineConfig({
 					// `<summary>` opens its `<details>` even when React calls `preventDefault()`, and the
 					// Pending changes tests fail. Check those tests before you upgrade it.
 					environment: "happy-dom",
-					setupFiles: ["./src/test-stubs/popover-api.ts"],
+					setupFiles: ["./src/test-stubs/happy-dom-apis.ts"],
 					server: {
 						deps: {
 							// Vendored workspace packages must be inlined for tests,

@@ -16,6 +16,7 @@ import type { FileHtmlPreview } from "./file-html-preview.tsx";
 import { FilesClipboardProvider } from "../files-clipboard.tsx";
 import { AppActivitiesProvider } from "@/lib/app-activities-context.tsx";
 import type { app_convex_Id } from "@/lib/app-convex-client.ts";
+import type { AppElementId } from "@/lib/dom-utils.ts";
 import type { files_VisibleEntry } from "@/lib/files.ts";
 import { app_local_storage_set_value } from "@/lib/storage.ts";
 import { global_custom_event_dispatch, global_custom_event_listen } from "@/lib/global-event.tsx";
@@ -347,6 +348,7 @@ let privateView:
 	| undefined;
 let pendingChildren: unknown[];
 let header: HTMLDivElement;
+let appHoistingContainer: HTMLDivElement;
 let browserSession: unknown;
 
 function pushQueryChanges() {
@@ -498,11 +500,16 @@ beforeEach(() => {
 	header = document.createElement("div");
 	header.id = "app_main_header_content";
 	document.body.append(header);
+	// The folder explorer row menus render into this container through a React portal.
+	appHoistingContainer = document.createElement("div");
+	appHoistingContainer.id = "app_hoisting_container" satisfies AppElementId;
+	document.body.append(appHoistingContainer);
 });
 
 afterEach(() => {
 	cleanup();
 	header.remove();
+	appHoistingContainer.remove();
 });
 
 function renderFileView(searchParams: FileNodeView_SearchParams = { nodeId: NODE._id }) {

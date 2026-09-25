@@ -2710,9 +2710,9 @@ function RoutePluginsPlugin() {
 								<MyMenu placement="bottom-end">
 									<MyMenuTrigger>
 										{/* Never disable this trigger mid-flight: the menu closes on activation and
-										    Ariakit returns the menu's focus here, and a disabled control cannot take
-										    it, so the focus would fall to the page body. The menu item's own disable
-										    and the handler's guard already stop a second run. */}
+										    gives its focus back here, and a disabled control cannot take it, so the
+										    focus would fall to the page body. The menu item's own disable and the
+										    handler's guard already stop a second run. */}
 										<MyIconButton variant="ghost" tooltip="More actions">
 											<MyIconButtonIcon>
 												<Ellipsis />

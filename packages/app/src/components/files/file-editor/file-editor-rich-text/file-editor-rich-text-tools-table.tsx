@@ -15,7 +15,6 @@ import {
 	MyMenu,
 	MyMenuTrigger,
 	MyMenuPopover,
-	MyMenuPopoverScrollableArea,
 	MyMenuPopoverContent,
 	MyMenuItem,
 	MyMenuItemsGroup,
@@ -112,20 +111,18 @@ const FileEditorRichTextToolsTableInner = memo(function FileEditorRichTextToolsT
 					</MyIconButton>
 				</MyMenuTrigger>
 				<MyMenuPopover>
-					<MyMenuPopoverScrollableArea>
-						<MyMenuPopoverContent>
-							<MyMenuItemsGroup>
-								{tableCommandItems.map((item) => (
-									<FileEditorRichTextToolsTableItem
-										key={item.key}
-										editor={editor}
-										item={item}
-										disabled={!canByKey[item.key]}
-									/>
-								))}
-							</MyMenuItemsGroup>
-						</MyMenuPopoverContent>
-					</MyMenuPopoverScrollableArea>
+					<MyMenuPopoverContent>
+						<MyMenuItemsGroup>
+							{tableCommandItems.map((item) => (
+								<FileEditorRichTextToolsTableItem
+									key={item.key}
+									editor={editor}
+									item={item}
+									disabled={!canByKey[item.key]}
+								/>
+							))}
+						</MyMenuItemsGroup>
+					</MyMenuPopoverContent>
 				</MyMenuPopover>
 			</MyMenu>
 		</div>
