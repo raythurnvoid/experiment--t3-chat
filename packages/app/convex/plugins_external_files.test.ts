@@ -820,7 +820,9 @@ describe("public plugin writer archive", () => {
 				(await ctx.db.query("files_nodes").collect()).filter((node) => node.archiveOperationId !== null),
 			),
 		).toHaveLength(261);
-	}, 30_000);
+		// These 261 archive calls crossed the 30s test limit on a busy machine (about 17s when the
+		// machine was free). Give the same loop 60s so a busy run can finish.
+	}, 60_000);
 });
 
 describe("external file writes", () => {
