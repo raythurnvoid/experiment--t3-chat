@@ -128,6 +128,8 @@ For an HTTP route, use this short checklist:
 
 Re-measure on the target deployment and build before optimizing.
 
+For a slow mutation, compare `executionTime` with `userExecutionTime` and `usageStats.databaseReadDocuments` in the same log record. A mutation whose JS time is small but whose total time is many seconds is waiting on database calls that it awaits one by one. On the dev deployment each awaited read cost about 5–15 ms (2026-09-25: `files_pending_update_runs:commit_unit` spent 9.3 s total, 0.33 s JS, and read 895 docs). Also check `occInfo`: a retried mutation runs its whole handler again.
+
 # Cloudflare Wrangler
 
 Use `vp env exec pnpx wrangler`; do not use global Wrangler, `npx`, or package-manager substitutes.

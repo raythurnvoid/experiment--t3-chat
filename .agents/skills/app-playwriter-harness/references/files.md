@@ -1053,10 +1053,12 @@ One dialog holding the file's facts, its write policy, and the flat key-value ma
   it `failed` with `Stopped partway: The delete was discarded.` With a real chat (verified 2026-09-25):
   the agent runs `rm -r copy-4` (relative; `/copy-4` is outside the Bash workspace mount) and answers
   `pending delete created: /copy-4`. The Pending tab `Accept delete of /copy-4` starts an accept review
-  run, and the archive job appears only when that run ends (about 15-18 s later). The `Save reviewed
-  changes` dialog opens over the Pending row and blocks its Discard button until it is closed. By the
-  time a runner closed it, the 416-item job had already finished. Start the same run the button starts
-  from page context instead:
+  run, and the archive job appears only when that run ends (about 15-18 s later). The run's
+  `commit_unit` mutation does the job's whole check and first 150-item step in one transaction, so the
+  job's Activity has an early `_creationTime` but stays invisible until that mutation commits. The
+  `Save reviewed changes` dialog opens over the Pending row and blocks its Discard button until it is
+  closed. By the time a runner closed it, the 416-item job had already finished. Start the same run the
+  button starts from page context instead:
   `files_pending_update_runs.start` with `kind: "discard"`, then `seal`, once the archive Activity is
   `running`. To check search during a job, poll
   `files_nodes.search_content` for a word from one text file inside the tree. That file must go from
