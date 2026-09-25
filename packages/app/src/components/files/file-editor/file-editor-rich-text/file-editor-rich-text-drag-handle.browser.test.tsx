@@ -66,6 +66,11 @@ describe("FileEditorRichTextDragHandle", () => {
 
 		await waitFor(() => expect(heading.getAttribute("aria-checked")).toBe("true"));
 		expect(within(menu).getByRole("menuitemradio", { name: "Text" }).getAttribute("aria-checked")).toBe("false");
+
+		// Tiptap's focus command moves focus into the editor one frame later. Focus outside the menu
+		// would close it, so wait two frames before checking that the menu is still open.
+		await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+		expect(menu.isConnected).toBe(true);
 	});
 
 	test("Turn into Quote checks only Quote, not Text for the paragraph inside it", async () => {

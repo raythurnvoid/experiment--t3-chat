@@ -141,78 +141,80 @@ type TransformItem = {
 	isActive: (editor: Editor) => boolean;
 };
 
+// Do not call `focus()` in these commands. The Turn into menu stays open after a click, and Tiptap
+// moves focus into the editor one frame later. Focus outside the menu closes it.
 const transformItems: TransformItem[] = [
 	{
 		name: "Text",
 		Icon: TextIcon,
-		command: (editor) => editor.chain().focus().clearNodes().run(),
+		command: (editor) => editor.chain().clearNodes().run(),
 		isActive: (editor) =>
 			(editor.isActive("paragraph") && !editor.isActive("bulletList") && !editor.isActive("orderedList")) ?? false,
 	},
 	{
 		name: "Heading 1",
 		Icon: Heading1,
-		command: (editor) => editor.chain().focus().clearNodes().toggleHeading({ level: 1 }).run(),
+		command: (editor) => editor.chain().clearNodes().toggleHeading({ level: 1 }).run(),
 		isActive: (editor) => editor.isActive("heading", { level: 1 }) ?? false,
 	},
 	{
 		name: "Heading 2",
 		Icon: Heading2,
-		command: (editor) => editor.chain().focus().clearNodes().toggleHeading({ level: 2 }).run(),
+		command: (editor) => editor.chain().clearNodes().toggleHeading({ level: 2 }).run(),
 		isActive: (editor) => editor.isActive("heading", { level: 2 }) ?? false,
 	},
 	{
 		name: "Heading 3",
 		Icon: Heading3,
-		command: (editor) => editor.chain().focus().clearNodes().toggleHeading({ level: 3 }).run(),
+		command: (editor) => editor.chain().clearNodes().toggleHeading({ level: 3 }).run(),
 		isActive: (editor) => editor.isActive("heading", { level: 3 }) ?? false,
 	},
 	{
 		name: "Heading 4",
 		Icon: Heading4,
-		command: (editor) => editor.chain().focus().clearNodes().toggleHeading({ level: 4 }).run(),
+		command: (editor) => editor.chain().clearNodes().toggleHeading({ level: 4 }).run(),
 		isActive: (editor) => editor.isActive("heading", { level: 4 }) ?? false,
 	},
 	{
 		name: "Heading 5",
 		Icon: Heading5,
-		command: (editor) => editor.chain().focus().clearNodes().toggleHeading({ level: 5 }).run(),
+		command: (editor) => editor.chain().clearNodes().toggleHeading({ level: 5 }).run(),
 		isActive: (editor) => editor.isActive("heading", { level: 5 }) ?? false,
 	},
 	{
 		name: "Heading 6",
 		Icon: Heading6,
-		command: (editor) => editor.chain().focus().clearNodes().toggleHeading({ level: 6 }).run(),
+		command: (editor) => editor.chain().clearNodes().toggleHeading({ level: 6 }).run(),
 		isActive: (editor) => editor.isActive("heading", { level: 6 }) ?? false,
 	},
 	{
 		name: "To-do List",
 		Icon: CheckSquare,
-		command: (editor) => editor.chain().focus().clearNodes().toggleTaskList().run(),
+		command: (editor) => editor.chain().clearNodes().toggleTaskList().run(),
 		isActive: (editor) => editor.isActive("taskItem") ?? false,
 	},
 	{
 		name: "Bullet List",
 		Icon: ListOrdered,
-		command: (editor) => editor.chain().focus().clearNodes().toggleBulletList().run(),
+		command: (editor) => editor.chain().clearNodes().toggleBulletList().run(),
 		isActive: (editor) => editor.isActive("bulletList") ?? false,
 	},
 	{
 		name: "Numbered List",
 		Icon: ListOrdered,
-		command: (editor) => editor.chain().focus().clearNodes().toggleOrderedList().run(),
+		command: (editor) => editor.chain().clearNodes().toggleOrderedList().run(),
 		isActive: (editor) => editor.isActive("orderedList") ?? false,
 	},
 	{
 		name: "Quote",
 		Icon: TextQuote,
-		command: (editor) => editor.chain().focus().clearNodes().toggleBlockquote().run(),
+		command: (editor) => editor.chain().clearNodes().toggleBlockquote().run(),
 		isActive: (editor) => editor.isActive("blockquote") ?? false,
 	},
 	{
 		name: "Code",
 		Icon: Code,
-		command: (editor) => editor.chain().focus().clearNodes().toggleCodeBlock().run(),
+		command: (editor) => editor.chain().clearNodes().toggleCodeBlock().run(),
 		isActive: (editor) => editor.isActive("codeBlock") ?? false,
 	},
 ];
