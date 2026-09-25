@@ -15,6 +15,8 @@ import {
 	MyMenuItemContent,
 	MyMenuItemContentIcon,
 	MyMenuItemContentPrimary,
+	MyMenuItemsGroup,
+	MyMenuItemsGroupText,
 	MyMenuPopover,
 	MyMenuPopoverContent,
 	MyMenuTrigger,
@@ -85,16 +87,19 @@ const MainSidebarAccountControlMenuProfileData = memo(function MainSidebarAccoun
 				"MainSidebarAccountControlMenuProfileData" satisfies MainSidebarAccountControlMenuProfileData_ClassNames
 			}
 		>
+			{/* Hide the avatar, so its alt text does not repeat the name of the group. */}
 			<MyAvatar
 				size="32px"
 				className={
 					"MainSidebarAccountControlMenuProfileData-avatar" satisfies MainSidebarAccountControlMenuProfileData_ClassNames
 				}
+				aria-hidden
 			>
 				<MyAvatarImage src={avatarUrl} alt={displayName} />
 				<MyAvatarFallback>{avatarFallback}</MyAvatarFallback>
 			</MyAvatar>
-			<div
+			{/* The status and the name label the menu items group, like "Signed in Jane". */}
+			<MyMenuItemsGroupText
 				className={
 					"MainSidebarAccountControlMenuProfileData-copy" satisfies MainSidebarAccountControlMenuProfileData_ClassNames
 				}
@@ -113,7 +118,7 @@ const MainSidebarAccountControlMenuProfileData = memo(function MainSidebarAccoun
 				>
 					{displayName}
 				</div>
-			</div>
+			</MyMenuItemsGroupText>
 		</div>
 	);
 });
@@ -152,32 +157,34 @@ const MainSidebarAccountControlMenu = memo(function MainSidebarAccountControlMen
 			<MyMenuPopoverContent
 				className={"MainSidebarAccountControlMenu" satisfies MainSidebarAccountControlMenu_ClassNames}
 			>
-				<MainSidebarAccountControlMenuProfileData
-					avatarUrl={avatarUrl}
-					displayName={displayName}
-					accountStatusLabel={accountStatusLabel}
-					isAnonymous={isAnonymous}
-				/>
-				{isAnonymous ? (
-					<>
-						<MainSidebarAccountControlMenuItem
-							icon={<UserRound />}
-							label="Manage account"
-							onClick={onOpenUserProfile}
-						/>
-						<MainSidebarAccountControlMenuItem icon={<LogIn />} label="Log in" onClick={onOpenSignIn} />
-						<MainSidebarAccountControlMenuItem icon={<UserRoundPlus />} label="Sign up" onClick={onOpenSignUp} />
-					</>
-				) : (
-					<>
-						<MainSidebarAccountControlMenuItem
-							icon={<UserRound />}
-							label="Manage account"
-							onClick={onOpenUserProfile}
-						/>
-						<MainSidebarAccountControlMenuItem icon={<LogOut />} label="Sign out" onClick={onSignOut} />
-					</>
-				)}
+				<MyMenuItemsGroup>
+					<MainSidebarAccountControlMenuProfileData
+						avatarUrl={avatarUrl}
+						displayName={displayName}
+						accountStatusLabel={accountStatusLabel}
+						isAnonymous={isAnonymous}
+					/>
+					{isAnonymous ? (
+						<>
+							<MainSidebarAccountControlMenuItem
+								icon={<UserRound />}
+								label="Manage account"
+								onClick={onOpenUserProfile}
+							/>
+							<MainSidebarAccountControlMenuItem icon={<LogIn />} label="Log in" onClick={onOpenSignIn} />
+							<MainSidebarAccountControlMenuItem icon={<UserRoundPlus />} label="Sign up" onClick={onOpenSignUp} />
+						</>
+					) : (
+						<>
+							<MainSidebarAccountControlMenuItem
+								icon={<UserRound />}
+								label="Manage account"
+								onClick={onOpenUserProfile}
+							/>
+							<MainSidebarAccountControlMenuItem icon={<LogOut />} label="Sign out" onClick={onSignOut} />
+						</>
+					)}
+				</MyMenuItemsGroup>
 			</MyMenuPopoverContent>
 		</MyMenuPopover>
 	);

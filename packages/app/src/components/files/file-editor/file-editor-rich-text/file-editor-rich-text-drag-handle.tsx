@@ -37,6 +37,7 @@ import {
 	MyMenuItemContentIcon,
 	MyMenuItemContentPrimary,
 	MyMenuItemSubMenuIndicator,
+	MyMenuRadioItem,
 	type MyMenuItem_Props,
 } from "@/components/my-menu.tsx";
 import { MyButtonIcon, type MyButton_ClassNames, type MyButtonIcon_ClassNames } from "@/components/my-button.tsx";
@@ -260,6 +261,7 @@ const FileEditorRichTextDragHandleColorPreview = memo(function FileEditorRichTex
 				} satisfies Partial<FileEditorRichTextDragHandleColorPreview_CssVars>),
 				...style,
 			}}
+			aria-hidden
 		>
 			A
 		</span>
@@ -286,11 +288,11 @@ const FileEditorRichTextDragHandleColorSubMenuTextItem = memo(function FileEdito
 	});
 
 	return (
-		<MyMenuItem
+		<MyMenuRadioItem
 			className={cn(
 				"FileEditorRichTextDragHandleColorSubMenuTextItem" satisfies FileEditorRichTextDragHandleColorSubMenuTextItem_ClassNames,
 			)}
-			hideOnClick={false}
+			checked={isSelected}
 			onClick={handleClick}
 		>
 			<MyMenuItemContent>
@@ -306,7 +308,7 @@ const FileEditorRichTextDragHandleColorSubMenuTextItem = memo(function FileEdito
 					}
 				/>
 			)}
-		</MyMenuItem>
+		</MyMenuRadioItem>
 	);
 });
 
@@ -330,11 +332,11 @@ const FileEditorRichTextDragHandleColorSubMenuHighlightItem = memo(
 		});
 
 		return (
-			<MyMenuItem
+			<MyMenuRadioItem
 				className={cn(
 					"FileEditorRichTextDragHandleColorSubMenuHighlightItem" satisfies FileEditorRichTextDragHandleColorSubMenuHighlightItem_ClassNames,
 				)}
-				hideOnClick={false}
+				checked={isSelected}
 				onClick={handleClick}
 			>
 				<MyMenuItemContent>
@@ -350,7 +352,7 @@ const FileEditorRichTextDragHandleColorSubMenuHighlightItem = memo(
 						}
 					/>
 				)}
-			</MyMenuItem>
+			</MyMenuRadioItem>
 		);
 	},
 );
@@ -402,7 +404,9 @@ const FileEditorRichTextDragHandleColorSubMenuInner = memo(function FileEditorRi
 		chain.run();
 	});
 
-	const renderTextColorItem = useFn((item: TextColorItem) => {
+	// Use plain closures, not useFn. A stable useFn lets the React Compiler keep the old list, so the
+	// checked item would not move after a click while the menu stays open.
+	const renderTextColorItem = (item: TextColorItem) => {
 		const isSelected =
 			item === activeColor ||
 			(item.color ===
@@ -417,9 +421,9 @@ const FileEditorRichTextDragHandleColorSubMenuInner = memo(function FileEditorRi
 				onSelect={handleColorSelect}
 			/>
 		);
-	});
+	};
 
-	const renderHighlightColorItem = useFn((item: HighlightColorItem) => {
+	const renderHighlightColorItem = (item: HighlightColorItem) => {
 		const isSelected =
 			item === activeBackground ||
 			(item.color ===
@@ -434,7 +438,7 @@ const FileEditorRichTextDragHandleColorSubMenuInner = memo(function FileEditorRi
 				onSelect={handleHighlightSelect}
 			/>
 		);
-	});
+	};
 
 	return (
 		<MyMenu>
@@ -462,11 +466,15 @@ const FileEditorRichTextDragHandleColorSubMenuInner = memo(function FileEditorRi
 				shift={-5}
 			>
 				<MyMenuPopoverContent>
-					<MyMenuItemsGroupText>Color</MyMenuItemsGroupText>
-					{TEXT_COLORS.map(renderTextColorItem)}
+					<MyMenuItemsGroup>
+						<MyMenuItemsGroupText>Color</MyMenuItemsGroupText>
+						{TEXT_COLORS.map(renderTextColorItem)}
+					</MyMenuItemsGroup>
 
-					<MyMenuItemsGroupText>Background</MyMenuItemsGroupText>
-					{HIGHLIGHT_COLORS.map(renderHighlightColorItem)}
+					<MyMenuItemsGroup>
+						<MyMenuItemsGroupText>Background</MyMenuItemsGroupText>
+						{HIGHLIGHT_COLORS.map(renderHighlightColorItem)}
+					</MyMenuItemsGroup>
 				</MyMenuPopoverContent>
 			</MyMenuPopover>
 		</MyMenu>
@@ -527,11 +535,11 @@ const FileEditorRichTextDragHandleTurnIntoItem = memo(function FileEditorRichTex
 	});
 
 	return (
-		<MyMenuItem
+		<MyMenuRadioItem
 			className={cn(
 				"FileEditorRichTextDragHandleTurnIntoItem" satisfies FileEditorRichTextDragHandleTurnIntoItem_ClassNames,
 			)}
-			hideOnClick={false}
+			checked={isActive}
 			onClick={handleClick}
 		>
 			<MyMenuItemContent>
@@ -551,7 +559,7 @@ const FileEditorRichTextDragHandleTurnIntoItem = memo(function FileEditorRichTex
 					}
 				/>
 			)}
-		</MyMenuItem>
+		</MyMenuRadioItem>
 	);
 });
 // #endregion turn into submenu item
@@ -575,18 +583,25 @@ const FileEditorRichTextDragHandleTurnIntoSubMenu = memo(function FileEditorRich
 		item.command(editor);
 	});
 
-	const renderTransformItem = useFn((item: TransformItem) => {
-		const isActive = item.isActive(editor);
+	// Subscribe to the active block type, so the checked item moves after a click while the menu stays open.
+	// Pick the last match: a paragraph inside a quote or a to-do item also matches Text, and the wrapper
+	// items come after Text in the list. A radio set must have one checked item.
+	const activeItemName = useEditorState({
+		editor,
+		selector: ({ editor }: { editor: Editor }) =>
+			transformItems.findLast((item) => item.isActive(editor))?.name ?? null,
+	});
 
+	const renderTransformItem = (item: TransformItem) => {
 		return (
 			<FileEditorRichTextDragHandleTurnIntoItem
 				key={item.name}
 				item={item}
-				isActive={isActive}
+				isActive={item.name === activeItemName}
 				onSelect={handleTransform}
 			/>
 		);
-	});
+	};
 
 	return (
 		<MyMenu>

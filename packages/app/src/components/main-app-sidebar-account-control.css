@@ -29,6 +29,12 @@
 		flex-direction: column;
 		min-width: 0;
 		overflow: hidden;
+
+		/* This element is also a MyMenuItemsGroupText, only to name the group. Undo its box and text look. */
+		min-height: 0;
+		padding: 0;
+
+		font-weight: inherit;
 	}
 
 	.MainSidebarAccountControlMenuProfileData-status {

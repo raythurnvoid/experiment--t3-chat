@@ -7,12 +7,14 @@ import {
 	MenuGroupLabel,
 	MenuItem,
 	MenuItemCheckbox,
+	MenuItemRadio,
 	MenuProvider,
 	type MenuButtonProps,
 	type MenuGroupLabelProps,
 	type MenuGroupProps,
 	type MenuItemCheckboxProps,
 	type MenuItemProps,
+	type MenuItemRadioProps,
 	type MenuProps,
 	type MenuProviderProps,
 } from "native-popovers/menu";
@@ -220,6 +222,29 @@ export const MyMenuCheckboxItem = memo(function MyMenuCheckboxItem(props: MyMenu
 	);
 });
 // #endregion checkbox item
+
+// #region radio item
+export type MyMenuRadioItem_ClassNames = "MyMenuRadioItem";
+
+export type MyMenuRadioItem_Props = MenuItemRadioProps;
+
+export const MyMenuRadioItem = memo(function MyMenuRadioItem(props: MyMenuRadioItem_Props) {
+	const { className, children, ...rest } = props;
+
+	return (
+		<MenuItemRadio
+			className={cn(
+				"MyMenuItem" satisfies MyMenuItem_ClassNames,
+				"MyMenuRadioItem" satisfies MyMenuRadioItem_ClassNames,
+				className,
+			)}
+			{...rest}
+		>
+			{children}
+		</MenuItemRadio>
+	);
+});
+// #endregion radio item
 
 // #region checkbox item control
 export type MyMenuCheckboxItemControl_ClassNames = "MyMenuCheckboxItemControl";
