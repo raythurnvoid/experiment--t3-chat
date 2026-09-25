@@ -104,7 +104,7 @@ export default defineConfig({
 						// Adds extra annotations useful when inspecting compiler output.
 						enableMemoizationComments: true,
 					},
-					// The Vitest browser project copies `target` and `sources` in vitest.config.ts. Keep them in sync.
+					// The Vitest src and browser projects copy `target` and `sources` in vitest.config.ts. Keep them in sync.
 					sources: (filename: string) => {
 						return (
 							filename.startsWith(path.resolve(__dirname, "src")) ||

@@ -38,7 +38,9 @@ vi.mock("convex/react", async (importOriginal) => {
 			reference: FunctionReference<"query">,
 			args: { runId?: string; paginationOpts?: { cursor: string | null } } | "skip",
 		) => {
-			useSyncExternalStore(
+			// Thread the revision into every return. The React Compiler keeps a hook's
+			// last result when it does not see that value as an input.
+			const revision = useSyncExternalStore(
 				(listener) => {
 					queryState.listeners.add(listener);
 					return () => queryState.listeners.delete(listener);
@@ -46,14 +48,29 @@ vi.mock("convex/react", async (importOriginal) => {
 				() => queryState.revision,
 			);
 			if (args === "skip") return undefined;
-			if (getFunctionName(reference) === "files_transfer:list_current") return queryState.runs;
+			if (getFunctionName(reference) === "files_transfer:list_current") {
+				return revision < 0 ? undefined : queryState.runs;
+			}
 			if (getFunctionName(reference) === "files_transfer:list_items") {
 				itemQueryMock(args);
-				return queryState.itemPages[args.paginationOpts?.cursor ?? "first"];
+				const itemPage = queryState.itemPages[args.paginationOpts?.cursor ?? "first"];
+				// Return a new page object that includes revision. Mutating nested fields on
+				// the stored page keeps the same object identity, and a compiled consumer
+				// would keep the old UI. revision must appear in the returned value so the
+				// React Compiler treats each store update as a new query result.
+				return itemPage == null
+					? itemPage
+					: {
+							page: itemPage.page,
+							isDone: itemPage.isDone,
+							continueCursor: itemPage.continueCursor,
+							_revision: revision,
+						};
 			}
-			return args.runId
+			const run = args.runId
 				? (queryState.runsById[args.runId] ?? (queryState.run?._id === args.runId ? queryState.run : undefined))
 				: queryState.run;
+			return revision < 0 ? undefined : run;
 		},
 	};
 });

@@ -7,13 +7,21 @@ import type { app_convex_Id } from "@/lib/app-convex-client.ts";
 const { queryMock, stopMock, state } = vi.hoisted(() => ({
 	queryMock: vi.fn(),
 	stopMock: vi.fn(),
-	state: { revision: 0, listeners: new Set<() => void>(), pendingStops: new Set<string>() },
+	state: {
+		revision: 0,
+		listeners: new Set<() => void>(),
+		pendingStops: new Set<string>(),
+		// Replaced on each push. The activities hook reads this array, not the mutated Set.
+		pendingStopIds: [] as string[],
+	},
 }));
 
 vi.mock("convex/react", async () => {
 	const { useSyncExternalStore } = await import("react");
 	return {
 		useQuery: (...args: unknown[]) => {
+			// pushQueries bumps revision and notifies. The component that called useQuery re-renders
+			// and queryMock reads the latest status.
 			useSyncExternalStore(
 				(listener) => {
 					state.listeners.add(listener);
@@ -29,9 +37,27 @@ vi.mock("@/lib/app-convex-client.ts", async () => {
 	const { api } = await import("../../../convex/_generated/api.js");
 	return { app_convex_api: api };
 });
-vi.mock("@/lib/app-activities-context.tsx", () => ({
-	AppActivitiesProvider: { useContext: () => ({ stop: stopMock, pendingStopSourceIds: state.pendingStops }) },
-}));
+vi.mock("@/lib/app-activities-context.tsx", async () => {
+	const { useSyncExternalStore } = await import("react");
+	return {
+		AppActivitiesProvider: {
+			useContext: () => {
+				// pushQueries replaces this array. A mutated Set would keep the same identity.
+				const pendingStopIds = useSyncExternalStore(
+					(listener) => {
+						state.listeners.add(listener);
+						return () => state.listeners.delete(listener);
+					},
+					() => state.pendingStopIds,
+				);
+				return {
+					stop: stopMock,
+					pendingStopSourceIds: new Set(pendingStopIds),
+				};
+			},
+		},
+	};
+});
 vi.mock("@/lib/app-tenant-context.tsx", () => ({
 	AppTenantProvider: { useContext: () => ({ organizationName: "team", workspaceName: "home" }) },
 }));
@@ -65,6 +91,7 @@ let targetReadable = true;
 function pushQueries() {
 	act(() => {
 		state.revision++;
+		state.pendingStopIds = [...state.pendingStops];
 		for (const listener of state.listeners) listener();
 	});
 }
@@ -77,6 +104,7 @@ beforeEach(() => {
 	targetReadable = true;
 	state.revision = 0;
 	state.pendingStops.clear();
+	state.pendingStopIds = [];
 	stopMock.mockReset();
 	stopMock.mockResolvedValue({ _yay: null });
 	queryMock.mockReset();

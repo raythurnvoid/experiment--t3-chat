@@ -9,51 +9,104 @@
 import { act, cleanup, fireEvent, render as testingRender, screen, waitFor } from "@testing-library/react";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { ComponentProps, ReactElement, ReactNode, Ref } from "react";
+import { useSyncExternalStore, type ComponentProps, type ReactElement, type ReactNode, type Ref } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
-const { paramsMock, tenantContextMock, useQueryMock, mutationMock, actionMock, toastErrorMock } = vi.hoisted(() => ({
-	paramsMock: vi.fn(),
-	tenantContextMock: vi.fn(),
-	useQueryMock: vi.fn(),
-	mutationMock: vi.fn(),
-	actionMock: vi.fn(),
-	toastErrorMock: vi.fn(),
-}));
-
-vi.mock("@tanstack/react-router", () => ({
-	createFileRoute: (_path: string) => (options: unknown) => ({
-		options,
-		useParams: () => paramsMock(),
+const { paramsMock, tenantContextMock, useQueryMock, mutationMock, actionMock, toastErrorMock, routeStore } = vi.hoisted(
+	() => ({
+		paramsMock: vi.fn(),
+		tenantContextMock: vi.fn(),
+		useQueryMock: vi.fn(),
+		mutationMock: vi.fn(),
+		actionMock: vi.fn(),
+		toastErrorMock: vi.fn(),
+		// The remount key and mocked hooks subscribe here. Like a real router or Convex update, a
+		// change re-renders the component that read the snapshot. A parent rerender does not, because
+		// the React Compiler keeps its output when props are unchanged.
+		routeStore: {
+			revision: 0,
+			listeners: new Set<() => void>(),
+		},
 	}),
-}));
+);
 
-vi.mock("convex/react", () => ({
-	useQuery: (query: string, ...args: unknown[]) => {
-		const result = useQueryMock(query, ...args);
-		if (query === "account_permission") {
-			return true;
+/**
+ * Tell every subscribed hook that params or query data changed.
+ * `act` flushes that render before the test goes on.
+ */
+function notify_route_store() {
+	act(() => {
+		routeStore.revision += 1;
+		for (const listener of routeStore.listeners) {
+			listener();
 		}
-		if (query === "get_account") {
-			return { _id: "account_1", name: "Media worker", revokedAt: null };
-		}
-		if (query === "grant_management") {
-			return {
-				resource: { kind: "workspace" },
-				level: null,
-				canManage: true,
-				grantableLevels: ["read", "write"],
-				file: null,
-			};
-		}
-		return result;
-	},
-	usePaginatedQuery: () => ({
-		results: [{ _id: "account_1", name: "Media worker", revokedAt: null }],
-		status: "Exhausted",
-		loadMore: vi.fn(),
-	}),
-}));
+	});
+}
+
+vi.mock("@tanstack/react-router", async () => {
+	const { useSyncExternalStore } = await import("react");
+	return {
+		createFileRoute: (_path: string) => (options: unknown) => ({
+			options,
+			useParams: () => {
+				// Thread the revision into the return. An unused counter lets the compiler keep the old params.
+				const revision = useSyncExternalStore(
+					(listener) => {
+						routeStore.listeners.add(listener);
+						return () => {
+							routeStore.listeners.delete(listener);
+						};
+					},
+					() => routeStore.revision,
+				);
+				return revision < 0 ? undefined : paramsMock();
+			},
+		}),
+	};
+});
+
+vi.mock("convex/react", async () => {
+	const { useSyncExternalStore } = await import("react");
+	return {
+		useQuery: (query: string, ...args: unknown[]) => {
+			// Thread the revision into every return. The React Compiler keeps a hook's last result
+			// when it does not see that value as an input.
+			const revision = useSyncExternalStore(
+				(listener) => {
+					routeStore.listeners.add(listener);
+					return () => {
+						routeStore.listeners.delete(listener);
+					};
+				},
+				() => routeStore.revision,
+			);
+			const result = useQueryMock(query, ...args);
+			if (query === "account_permission") {
+				return revision < 0 ? undefined : true;
+			}
+			if (query === "get_account") {
+				return revision < 0 ? undefined : { _id: "account_1", name: "Media worker", revokedAt: null };
+			}
+			if (query === "grant_management") {
+				return revision < 0
+					? undefined
+					: {
+							resource: { kind: "workspace" },
+							level: null,
+							canManage: true,
+							grantableLevels: ["read", "write"],
+							file: null,
+						};
+			}
+			return revision < 0 ? undefined : result;
+		},
+		usePaginatedQuery: () => ({
+			results: [{ _id: "account_1", name: "Media worker", revokedAt: null }],
+			status: "Exhausted",
+			loadMore: vi.fn(),
+		}),
+	};
+});
 
 vi.mock("sonner", () => ({
 	toast: { error: toastErrorMock, success: vi.fn() },
@@ -258,7 +311,18 @@ function route_remount_key() {
 }
 
 function RemountingPageComponent() {
-	return <PageComponent key={route_remount_key()} />;
+	// Read the remount key through the store. A plain call during render does not re-run when
+	// paramsMock changes, because this component has no props and the React Compiler keeps it.
+	const remountKey = useSyncExternalStore(
+		(listener) => {
+			routeStore.listeners.add(listener);
+			return () => {
+				routeStore.listeners.delete(listener);
+			};
+		},
+		() => route_remount_key(),
+	);
+	return <PageComponent key={remountKey} />;
 }
 
 function published_plugin(overrides: {
@@ -370,6 +434,7 @@ function setQueries(
 				return undefined;
 		}
 	});
+	notify_route_store();
 }
 
 describe("RoutePluginsPluginConsentModal", () => {
@@ -1000,6 +1065,11 @@ describe("RoutePluginsPlugin", () => {
 		setQueries(pluginA, [], publisher_plugin_fixture());
 		view.rerender(<RemountingPageComponent />);
 
+		// Remount must clear plugin-local removing state. Without it the label stays on
+		// "Removing claim..." from the earlier A visit, and the provider focus repair is not what ran.
+		expect(screen.queryByRole("menuitem", { name: "Removing claim..." })).toBeNull();
+		expect(screen.getByRole("menuitem", { name: "Remove claim" })).toBeTruthy();
+
 		const replacementTrigger = screen.getByRole("button", { name: "More actions" });
 		act(() => replacementTrigger.focus());
 		await act(async () => resolveRemove({ _yay: null }));
@@ -1103,6 +1173,7 @@ describe("RoutePluginsPlugin", () => {
 					return undefined;
 			}
 		});
+		notify_route_store();
 		view.rerender(<PageComponent />);
 
 		expect(screen.queryByText("Loading plugin...")).toBeNull();
@@ -1339,6 +1410,7 @@ describe("RoutePluginsPlugin", () => {
 						return undefined;
 				}
 			});
+			notify_route_store();
 		};
 		setPublisherOnlyQueries({ ...publisher_plugin_fixture(), versions: [publisher_version_fixture("media")] });
 		let resolveRemove!: (value: unknown) => void;

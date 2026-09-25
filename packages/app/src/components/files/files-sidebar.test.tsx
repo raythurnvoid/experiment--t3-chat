@@ -15,11 +15,15 @@ import { FilesClipboardProvider } from "./files-clipboard.tsx";
 import { files_ROOT_ID, files_SYNTHETIC_ROOT_FOLDER, type files_VisibleTreeNode } from "@/lib/files.ts";
 import { app_convex, app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { AppActivitiesProvider } from "@/lib/app-activities-context.tsx";
+import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { global_custom_event_dispatch } from "@/lib/global-event.tsx";
 
 const { treeState, tenantState, createNode } = vi.hoisted(() => ({
 	treeState: { nodes: [] as files_VisibleTreeNode[], listeners: new Set<() => void>() },
-	tenantState: { membershipId: "membership" },
+	// The mocked tenant hook subscribes here. Like a real membership change, a notify re-renders
+	// every component that called it. A parent rerender alone does not, because the React Compiler
+	// keeps its output when props are unchanged.
+	tenantState: { membershipId: "membership", listeners: new Set<() => void>() },
 	createNode: vi.fn(),
 }));
 
@@ -40,17 +44,33 @@ vi.mock("convex/react", async (importOriginal) => {
 	};
 });
 
-vi.mock("@/lib/app-tenant-context.tsx", () => ({
-	AppTenantProvider: {
-		useContext: () => ({
-			membershipId: tenantState.membershipId,
-			organizationId: "organization",
-			organizationName: "organization",
-			workspaceId: "workspace",
-			workspaceName: "workspace",
-		}),
-	},
-}));
+vi.mock("@/lib/app-tenant-context.tsx", async () => {
+	const { useSyncExternalStore } = await import("react");
+
+	return {
+		AppTenantProvider: {
+			useContext: function useContext() {
+				const membershipId = useSyncExternalStore(
+					(listener) => {
+						tenantState.listeners.add(listener);
+						return () => {
+							tenantState.listeners.delete(listener);
+						};
+					},
+					() => tenantState.membershipId,
+				);
+
+				return {
+					membershipId,
+					organizationId: "organization",
+					organizationName: "organization",
+					workspaceId: "workspace",
+					workspaceName: "workspace",
+				};
+			},
+		},
+	};
+});
 
 vi.mock("@/lib/files-tree-context.tsx", async () => {
 	const { useEffect, useMemo, useState } = await import("react");
@@ -125,20 +145,22 @@ afterEach(() => {
 	cleanup();
 	vi.restoreAllMocks();
 	treeState.listeners.clear();
+	tenantState.listeners.clear();
 });
 
 describe("FilesSidebar", () => {
 	function CreateSidebar(props: { router: AnyRouter; selectedNodeId: string }) {
 		const handleAction = () => {};
+		const { membershipId } = AppTenantProvider.useContext();
 		return (
 			<RouterContextProvider router={props.router}>
 				<AppActivitiesProvider
-					key={tenantState.membershipId}
-					membershipId={tenantState.membershipId as app_convex_Id<"organizations_workspaces_users">}
+					key={membershipId}
+					membershipId={membershipId as app_convex_Id<"organizations_workspaces_users">}
 				>
 					<FilesClipboardProvider
-						key={tenantState.membershipId}
-						membershipId={tenantState.membershipId as app_convex_Id<"organizations_workspaces_users">}
+						key={membershipId}
+						membershipId={membershipId as app_convex_Id<"organizations_workspaces_users">}
 					>
 						<FilesSidebar
 							selectedNodeId={props.selectedNodeId}
@@ -428,8 +450,10 @@ describe("FilesSidebar", () => {
 			if (stage === "unmount") {
 				view.unmount();
 			} else if (stage === "workspace change") {
-				tenantState.membershipId = "other-membership";
-				view.rerender(<CreateSidebar router={router} selectedNodeId="alpha" />);
+				act(() => {
+					tenantState.membershipId = "other-membership";
+					for (const listener of tenantState.listeners) listener();
+				});
 			} else {
 				view.rerender(
 					<CreateSidebar router={router} selectedNodeId={stage === "waiting for row" ? "alpha" : "bravo"} />,
@@ -489,15 +513,16 @@ describe("FilesSidebar", () => {
 			const handleAction = vi.fn();
 			function TestSidebar(props: { selectedNodeId: string }) {
 				const [searchQuery, setSearchQuery] = useState("");
+				const { membershipId } = AppTenantProvider.useContext();
 				return (
 					<RouterContextProvider router={router}>
 						<AppActivitiesProvider
-							key={tenantState.membershipId}
-							membershipId={tenantState.membershipId as app_convex_Id<"organizations_workspaces_users">}
+							key={membershipId}
+							membershipId={membershipId as app_convex_Id<"organizations_workspaces_users">}
 						>
 							<FilesClipboardProvider
-								key={tenantState.membershipId}
-								membershipId={tenantState.membershipId as app_convex_Id<"organizations_workspaces_users">}
+								key={membershipId}
+								membershipId={membershipId as app_convex_Id<"organizations_workspaces_users">}
 							>
 								<FilesSidebar
 									selectedNodeId={props.selectedNodeId}

@@ -1,4 +1,5 @@
 import { cleanup, render, screen } from "@testing-library/react";
+import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 const { useAuthMock, useConvexAuthMock, useQueryMock } = vi.hoisted(() => {
@@ -53,6 +54,14 @@ vi.mock("../components/app-tanstack-router-dev-tools.tsx", () => ({
 vi.mock("../components/app-route-error.tsx", () => ({
 	AppRouteError: function AppRouteError() {
 		return null;
+	},
+}));
+
+// RootLayoutInner wraps Outlet in PluginsPublishSessionProvider. The real provider pulls in
+// modals and Convex helpers that this root shell test does not need. Render children only.
+vi.mock("../components/plugins-publish-session.tsx", () => ({
+	PluginsPublishSessionProvider: function PluginsPublishSessionProvider(props: { children: ReactNode }) {
+		return props.children;
 	},
 }));
 
@@ -194,10 +203,10 @@ describe("RootLayout", () => {
 		});
 
 		const RootLayout = Route.options.component as () => JSX.Element;
-		const element = RootLayout();
+		render(<RootLayout />);
 
-		expect(typeof element.type).toBe("function");
-		expect((element.type as { name?: string }).name).toBe("RootLayoutInner");
+		expect(screen.getByText("App ready")).not.toBeNull();
+		expect(screen.queryByText("Preparing organization")).toBeNull();
 	});
 
 	test("renders the app once the active subscription usage snapshot is ready", () => {
@@ -207,10 +216,10 @@ describe("RootLayout", () => {
 		});
 
 		const RootLayout = Route.options.component as () => JSX.Element;
-		const element = RootLayout();
+		render(<RootLayout />);
 
-		expect(typeof element.type).toBe("function");
-		expect((element.type as { name?: string }).name).toBe("RootLayoutInner");
+		expect(screen.getByText("App ready")).not.toBeNull();
+		expect(screen.queryByText("Preparing organization")).toBeNull();
 	});
 
 	test("renders the app once a Free subscription snapshot is ready without a meter", () => {
@@ -220,9 +229,9 @@ describe("RootLayout", () => {
 		});
 
 		const RootLayout = Route.options.component as () => JSX.Element;
-		const element = RootLayout();
+		render(<RootLayout />);
 
-		expect(typeof element.type).toBe("function");
-		expect((element.type as { name?: string }).name).toBe("RootLayoutInner");
+		expect(screen.getByText("App ready")).not.toBeNull();
+		expect(screen.queryByText("Preparing organization")).toBeNull();
 	});
 });

@@ -8,8 +8,8 @@ import type { files_VisibleEntry } from "@/lib/files.ts";
 import { files_yjs_doc_create_from_text } from "../../../../shared/files-tiptap.ts";
 import { files_u8_to_array_buffer } from "../../../../shared/files.ts";
 
-const { queryMock, actionMock, savedReadMock, pendingReadMock, privateReadMock, tenantMock, queryValues } = vi.hoisted(
-	() => ({
+const { queryMock, actionMock, savedReadMock, pendingReadMock, privateReadMock, tenantMock, queryValues, queryListeners } =
+	vi.hoisted(() => ({
 		queryMock: vi.fn(),
 		actionMock: vi.fn(),
 		savedReadMock: vi.fn(),
@@ -17,14 +17,29 @@ const { queryMock, actionMock, savedReadMock, pendingReadMock, privateReadMock, 
 		privateReadMock: vi.fn(),
 		tenantMock: vi.fn(),
 		queryValues: { pending: null as unknown, sequence: null as unknown },
-	}),
-);
+		// The mocked useQuery subscribes here. Like a real Convex query update, a change re-renders the
+		// component that called it. A parent rerender does not, because the React Compiler keeps its output.
+		queryListeners: new Set<() => void>(),
+	}));
 
 vi.mock("@/lib/app-tenant-context.tsx", () => ({ AppTenantProvider: { useContext: () => tenantMock() } }));
-vi.mock("convex/react", () => ({
-	useQuery: (query: string, args: unknown) =>
-		args === "skip" ? undefined : query === "get_file_pending_update" ? queryValues.pending : queryValues.sequence,
-}));
+vi.mock("convex/react", async () => {
+	const { useSyncExternalStore } = await import("react");
+	const subscribe = (listener: () => void) => {
+		queryListeners.add(listener);
+		return () => {
+			queryListeners.delete(listener);
+		};
+	};
+	return {
+		useQuery: (query: string, args: unknown) => {
+			// Read the snapshot values themselves. An unused counter lets the compiler keep the old return.
+			const pending = useSyncExternalStore(subscribe, () => queryValues.pending);
+			const sequence = useSyncExternalStore(subscribe, () => queryValues.sequence);
+			return args === "skip" ? undefined : query === "get_file_pending_update" ? pending : sequence;
+		},
+	};
+});
 vi.mock("@/lib/app-convex-client.ts", () => ({
 	app_convex: {
 		query: (...args: unknown[]) => queryMock(...args),
@@ -207,14 +222,34 @@ function send_status(
 	});
 }
 
+/**
+ * Publish a new Convex query snapshot and re-render every component that subscribed.
+ * `act` flushes that render before the test goes on.
+ */
+function publish_query_values(next: Partial<{ pending: unknown; sequence: unknown }>) {
+	act(() => {
+		if ("pending" in next) {
+			queryValues.pending = next.pending;
+		}
+		if ("sequence" in next) {
+			queryValues.sequence = next.sequence;
+		}
+		for (const listener of queryListeners) {
+			listener();
+		}
+	});
+}
+
 beforeEach(() => {
 	vi.spyOn(HTMLIFrameElement.prototype, "src", "set").mockImplementation(function (this: HTMLIFrameElement) {
 		vi.spyOn(this.contentWindow!, "postMessage").mockImplementation(() => {});
 	});
 	vi.stubEnv("VITE_FILE_PREVIEW_URL", "https://preview.test/v0");
 	tenantMock.mockReturnValue({ membershipId: MEMBERSHIP_ID });
-	queryValues.pending = null;
-	queryValues.sequence = { yjsLastSequenceId: DOCUMENT_ID, lastSequence: 0 };
+	publish_query_values({
+		pending: null,
+		sequence: { yjsLastSequenceId: DOCUMENT_ID, lastSequence: 0 },
+	});
 	queryMock.mockImplementation(async (query: string) => {
 		if (query === "get_file_node_for_membership") return NODE;
 		if (query === "get_file_pending_update") return queryValues.pending;
@@ -253,7 +288,7 @@ describe("FileHtmlPreview", () => {
 	});
 
 	test.each([false, true])("reads an owner draft with local edits: %s", async (localEdits) => {
-		queryValues.pending = PRIVATE_PENDING;
+		publish_query_values({ pending: PRIVATE_PENDING });
 		queryMock.mockResolvedValue({ entry: PRIVATE_ENTRY, readiness: "ready", canEdit: true, canAccept: true });
 		render(
 			<Preview
@@ -292,7 +327,7 @@ describe("FileHtmlPreview", () => {
 	test.each(["missing", "preparing", "new generation", "new revision"])(
 		"refuses a private draft that is %s",
 		async (change) => {
-			queryValues.pending = PRIVATE_PENDING;
+			publish_query_values({ pending: PRIVATE_PENDING });
 			queryMock.mockResolvedValue(
 				change === "missing"
 					? null
@@ -316,7 +351,7 @@ describe("FileHtmlPreview", () => {
 	);
 
 	test("drops private bytes when owner access ends during the read", async () => {
-		queryValues.pending = PRIVATE_PENDING;
+		publish_query_values({ pending: PRIVATE_PENDING });
 		queryMock
 			.mockResolvedValueOnce({ entry: PRIVATE_ENTRY, readiness: "ready", canEdit: true, canAccept: true })
 			.mockResolvedValue(null);
@@ -328,7 +363,7 @@ describe("FileHtmlPreview", () => {
 	});
 
 	test("captures an immediate editor draft before the pending proposal", async () => {
-		queryValues.pending = PENDING;
+		publish_query_values({ pending: PENDING });
 		render(<Preview getEditorSnapshot={() => editor_snapshot()} />);
 		const { frame, post, hello } = await start_frame();
 		send_status(frame, { ...hello, type: "ready" });
@@ -346,11 +381,10 @@ describe("FileHtmlPreview", () => {
 	});
 
 	test("waits for queries before restoring the selected draft", async () => {
-		queryValues.pending = undefined;
-		const view = render(<Preview initialSource="editor_draft" getEditorSnapshot={() => editor_snapshot()} />);
+		publish_query_values({ pending: undefined });
+		render(<Preview initialSource="editor_draft" getEditorSnapshot={() => editor_snapshot()} />);
 		expect(screen.queryByTitle("HTML preview: brief.html")).toBeNull();
-		queryValues.pending = null;
-		view.rerender(<Preview initialSource="editor_draft" getEditorSnapshot={() => editor_snapshot()} />);
+		publish_query_values({ pending: null });
 		const { frame, post, hello } = await start_frame();
 		send_status(frame, { ...hello, type: "ready" });
 		expect(post).toHaveBeenLastCalledWith(
@@ -360,11 +394,10 @@ describe("FileHtmlPreview", () => {
 	});
 
 	test("waits for pending discovery before choosing a source", async () => {
-		queryValues.pending = undefined;
-		const view = render(<Preview />);
+		publish_query_values({ pending: undefined });
+		render(<Preview />);
 		expect(screen.queryByTitle("HTML preview: brief.html")).toBeNull();
-		queryValues.pending = PENDING;
-		view.rerender(<Preview />);
+		publish_query_values({ pending: PENDING });
 		const { frame, post, hello } = await start_frame();
 		send_status(frame, { ...hello, type: "ready" });
 		expect(post).toHaveBeenLastCalledWith(expect.objectContaining({ html: "<p>Proposed</p>" }), "https://preview.test");
@@ -393,18 +426,19 @@ describe("FileHtmlPreview", () => {
 	});
 
 	test("keeps running text frozen and refreshes the selected proposal", async () => {
-		queryValues.pending = PENDING;
-		const view = render(<Preview initialSource="proposed_changes" />);
+		publish_query_values({ pending: PENDING });
+		render(<Preview initialSource="proposed_changes" />);
 		const { frame, hello } = await start_frame();
 		send_status(frame, { ...hello, type: "ready" });
-		queryValues.pending = {
-			...PENDING,
-			revision: 2,
-			updatedAt: 2,
-			content: { ...PENDING.content, unstagedStateId: "unstaged_2" },
-		};
 		pendingReadMock.mockResolvedValue(pending_bytes("<p>Revised</p>"));
-		view.rerender(<Preview initialSource="proposed_changes" />);
+		publish_query_values({
+			pending: {
+				...PENDING,
+				revision: 2,
+				updatedAt: 2,
+				content: { ...PENDING.content, unstagedStateId: "unstaged_2" },
+			},
+		});
 		expect(screen.getByText("Updates available")).toBeDefined();
 		expect(screen.getByTitle("HTML preview: brief.html")).toBe(frame);
 		expect(pendingReadMock).toHaveBeenCalledTimes(1);
@@ -450,7 +484,7 @@ describe("FileHtmlPreview", () => {
 			content: { ...PENDING.content, base: { kind: "asset", assetId: NODE.assetId } },
 			currentYjsLastSequenceId: null,
 		};
-		queryValues.pending = proposal;
+		publish_query_values({ pending: proposal });
 		queryMock.mockImplementation(async (query: string) =>
 			query === "get_file_node_for_membership" ? currentNode : queryValues.pending,
 		);
@@ -462,18 +496,19 @@ describe("FileHtmlPreview", () => {
 		view.rerender(<Preview node={currentNode} initialSource="proposed_changes" />);
 		expect(screen.queryByTitle("HTML preview: brief.html")).toBeNull();
 		expect(screen.getByText("Review and sync these changes first.")).toBeDefined();
-		queryValues.pending = {
-			...proposal,
-			content: {
-				...proposal.content,
-				base: { kind: "asset", assetId: currentNode.assetId },
-				unstagedStateId: "unstaged_2",
-			},
-			updatedAt: 2,
-			revision: 2,
-		};
 		pendingReadMock.mockResolvedValue(pending_bytes("<p>Prepared proposal</p>"));
-		await act(async () => view.rerender(<Preview node={currentNode} initialSource="proposed_changes" />));
+		publish_query_values({
+			pending: {
+				...proposal,
+				content: {
+					...proposal.content,
+					base: { kind: "asset", assetId: currentNode.assetId },
+					unstagedStateId: "unstaged_2",
+				},
+				updatedAt: 2,
+				revision: 2,
+			},
+		});
 		expect(screen.queryByTitle("HTML preview: brief.html")).toBeNull();
 		expect(pendingReadMock).toHaveBeenCalledOnce();
 		expect(screen.getByText("Refresh to preview this source.")).toBeDefined();
@@ -487,18 +522,17 @@ describe("FileHtmlPreview", () => {
 	});
 
 	test("stops a removed proposal and waits for a source choice", async () => {
-		queryValues.pending = PENDING;
-		const view = render(<Preview />);
+		publish_query_values({ pending: PENDING });
+		render(<Preview />);
 		await start_frame();
-		queryValues.pending = null;
-		view.rerender(<Preview />);
+		publish_query_values({ pending: null });
 		expect(screen.queryByTitle("HTML preview: brief.html")).toBeNull();
 		expect(screen.getByRole("alert").textContent).toContain("Choose an available source");
 		expect(savedReadMock).not.toHaveBeenCalled();
 	});
 
 	test("does not read a private proposal through the saved preview", async () => {
-		queryValues.pending = { ...PENDING, target: { kind: "private", id: NODE_ID } };
+		publish_query_values({ pending: { ...PENDING, target: { kind: "private", id: NODE_ID } } });
 		render(<Preview initialSource="proposed_changes" />);
 		await screen.findByText("Choose an available source.");
 		expect(screen.queryByTitle("HTML preview: brief.html")).toBeNull();
@@ -507,7 +541,7 @@ describe("FileHtmlPreview", () => {
 	});
 
 	test("refuses stale proposals without preparing or reading their pages", async () => {
-		queryValues.pending = { ...PENDING, contentNeedsRebase: true };
+		publish_query_values({ pending: { ...PENDING, contentNeedsRebase: true } });
 		render(<Preview />);
 		await screen.findByText("Review and sync these changes first.");
 		expect(screen.queryByTitle("HTML preview: brief.html")).toBeNull();
@@ -516,20 +550,19 @@ describe("FileHtmlPreview", () => {
 	});
 
 	test("drops a paged proposal read when its revision changes within the same timestamp", async () => {
-		queryValues.pending = PENDING;
+		publish_query_values({ pending: PENDING });
 		const deferred = Promise.withResolvers<ReturnType<typeof pending_bytes>>();
 		pendingReadMock.mockReturnValue(deferred.promise);
-		const view = render(<Preview />);
+		render(<Preview />);
 		await waitFor(() => expect(pendingReadMock).toHaveBeenCalled());
-		queryValues.pending = { ...PENDING, revision: 2 };
-		view.rerender(<Preview />);
+		publish_query_values({ pending: { ...PENDING, revision: 2 } });
 		await act(async () => deferred.resolve(pending_bytes("<p>Old proposal</p>")));
 		expect(screen.queryByTitle("HTML preview: brief.html")).toBeNull();
 		expect(screen.getByRole("alert").textContent).toContain("changed while loading");
 	});
 
 	test("ignores an old read after switching sources", async () => {
-		queryValues.pending = PENDING;
+		publish_query_values({ pending: PENDING });
 		const deferred = Promise.withResolvers<ReturnType<typeof pending_bytes>>();
 		pendingReadMock.mockReturnValue(deferred.promise);
 		const props = {
@@ -551,7 +584,7 @@ describe("FileHtmlPreview", () => {
 
 	test("ignores an old read after switching memberships", async () => {
 		const deferred = Promise.withResolvers<ReturnType<typeof pending_bytes>>();
-		queryValues.pending = PENDING;
+		publish_query_values({ pending: PENDING });
 		pendingReadMock.mockReturnValueOnce(deferred.promise);
 		const view = render(<Preview initialSource="proposed_changes" />);
 		await waitFor(() => expect(pendingReadMock).toHaveBeenCalledOnce());
@@ -571,7 +604,7 @@ describe("FileHtmlPreview", () => {
 	});
 
 	test("uses the Diff modified draft only when its proposal identity matches", async () => {
-		queryValues.pending = PENDING;
+		publish_query_values({ pending: PENDING });
 		render(
 			<Preview
 				getEditorSnapshot={() =>
@@ -590,7 +623,7 @@ describe("FileHtmlPreview", () => {
 	});
 
 	test("ignores a Diff draft from an older proposal", async () => {
-		queryValues.pending = PENDING;
+		publish_query_values({ pending: PENDING });
 		render(
 			<Preview
 				getEditorSnapshot={() =>
@@ -652,7 +685,7 @@ describe("FileHtmlPreview", () => {
 	});
 
 	test("drops a read when access ends before completion", async () => {
-		queryValues.pending = PENDING;
+		publish_query_values({ pending: PENDING });
 		const deferred = Promise.withResolvers<ReturnType<typeof pending_bytes>>();
 		pendingReadMock.mockReturnValue(deferred.promise);
 		render(<Preview />);

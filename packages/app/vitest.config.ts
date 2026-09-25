@@ -30,6 +30,21 @@ export default defineConfig({
 		projects: [
 			{
 				extends: true,
+				plugins: [
+					// Run the React Compiler like the app and the browser project do, so src tests run the same compiled code.
+					// Some bugs only happen in compiled code. Keep these settings in sync with vite.config.ts.
+					babel({
+						presets: [
+							reactCompilerPreset({
+								target: "19",
+								sources: (filename: string) =>
+									["./src", "./vendor/novel", "./vendor/polar", "./vendor/tiptap", "../native-popovers/src"].some(
+										(dir) => filename.startsWith(fileURLToPath(new URL(dir, import.meta.url))),
+									),
+							}),
+						],
+					}),
+				],
 				test: {
 					include: ["src/**/*.test.{ts,tsx}", "shared/**/*.test.ts"],
 					exclude: ["src/**/*.browser.test.{ts,tsx}"],
@@ -58,7 +73,7 @@ export default defineConfig({
 				plugins: [
 					// Browser layout tests need the same utility styles as the app.
 					tailwindcss({ optimize: false }),
-					// Run the React Compiler like the app does, so browser tests run the same compiled code.
+					// Run the React Compiler like the app and the src project do, so browser tests run the same compiled code.
 					// Some bugs only happen in compiled code. Keep these settings in sync with vite.config.ts.
 					babel({
 						presets: [
