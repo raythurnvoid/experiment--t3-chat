@@ -254,12 +254,12 @@ of never showing hidden items.
     If an archive job of the parent's operation is running, the restore is refused as busy.
   - The operations of one restore call share the request's first step. After the first job starts, the
     later operations wait as `queued` jobs, so their steps never write the same docs at the same time.
-    When a restore job that was running ends (done, failed, Stop, timeout, or deleted), the oldest
-    queued restore job of the same person and workspace starts. A Stop on a queued job ends only that
-    job; the other queued jobs still run. A queued job has a 24-hour deadline. When it passes while a
-    restore job of the same person and workspace is still active, the job gets 24 more hours. The queue
-    is per person and workspace, not per request, so the end of another request's job can start a job
-    of this request while this request's first job still runs. A later job checks its items only when it
+    Each queued job saves the first job's id in `requestFirstRunId`. When a restore job that was
+    running ends (done, failed, Stop, timeout, or deleted), the oldest queued job of the same request
+    starts. Jobs of another request are never started by it, so each request runs one job at a time.
+    A Stop on a queued job ends only that job; the other queued jobs still run. A queued job has a
+    24-hour deadline. When it passes while an earlier job of its request is still active, the job gets
+    24 more hours. A later job checks its items only when it
     starts. If an earlier job stopped or failed and left their folder archived, the items land at the
     root, and their refusals show in the Activity, not in the Unarchive answer.
   - A restored folder that lands on a new path or scope (at the root, or renamed by Keep both) moves the

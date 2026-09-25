@@ -3063,8 +3063,14 @@ const app_convex_schema = defineSchema({
 			v.object({ reviewedPendingUpdateIds: v.union(v.array(v.id("files_pending_updates")), v.null()) }),
 			v.null(),
 		),
+		/**
+		 * Restore: on a job that waits behind the first job of its Unarchive request, that first job's
+		 * id. The jobs of one request run one at a time. Null on the first job and on archive jobs.
+		 */
+		requestFirstRunId: v.union(v.id("files_archive_runs"), v.null()),
 	})
 		.index("by_organization_workspace_active_kind", ["organizationId", "workspaceId", "active", "kind"])
+		.index("by_requestFirstRun_active", ["requestFirstRunId", "active"])
 		.index("by_organization_workspace_archiveOperation_active", [
 			"organizationId",
 			"workspaceId",

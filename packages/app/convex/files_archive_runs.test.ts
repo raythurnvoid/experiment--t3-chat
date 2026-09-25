@@ -605,6 +605,41 @@ describe("unarchive_nodes", () => {
 		expect(archivedPaths.every((path) => path.startsWith("/q3"))).toBe(true);
 	});
 
+	test("the end of a job starts the next job of its own request, not of another request", async () => {
+		const f = await fixture();
+		const trees = [];
+		for (const name of ["a1", "a2", "b1", "b2"]) {
+			const tree = await seed_tree(f, { name, folderCount: 2, filesPerFolder: 100 });
+			await archive_to_end(f, tree.topId);
+			trees.push(tree);
+		}
+		const read_restore_jobs = async () =>
+			(await f.t.run((ctx) => ctx.db.query("activities").collect())).flatMap((activity) =>
+				activity.source.kind === "files_archive_run" && activity.source.archiveKind === "restore"
+					? [{ runId: activity.source.id, activityId: activity._id, status: activity.status }]
+					: [],
+			);
+		const read_statuses = async () => (await read_restore_jobs()).map((job) => job.status);
+
+		expect((await restore(f, [trees[0]!.topId, trees[1]!.topId]))._nay).toBeUndefined();
+		expect((await restore(f, [trees[2]!.topId, trees[3]!.topId]))._nay).toBeUndefined();
+		expect(await read_statuses()).toEqual(["running", "queued", "running", "queued"]);
+		const [a1, a2, b1, b2] = await read_restore_jobs();
+
+		// The older queued job belongs to the first request. Starting it here would run it next to the
+		// first request's running job.
+		expect((await run_to_end(f, b1!)).activity.status).toBe("succeeded");
+		expect(await read_statuses()).toEqual(["running", "queued", "succeeded", "running"]);
+
+		expect((await run_to_end(f, a1!)).activity.status).toBe("succeeded");
+		expect(await read_statuses()).toEqual(["succeeded", "running", "succeeded", "running"]);
+		expect((await run_to_end(f, a2!)).activity.status).toBe("succeeded");
+		expect((await run_to_end(f, b2!)).activity.status).toBe("succeeded");
+
+		const state = await expect_consistent(f);
+		expect(state.nodes.filter((node) => node.archiveOperationId !== null)).toEqual([]);
+	});
+
 	test("a queued restore gets more time while the restore ahead of it waits for a clash choice", async () => {
 		const f = await fixture();
 		const clash = await seed_same_path(f, { name: "ahead", count: 200, archiveOperationId: crypto.randomUUID() });
@@ -629,8 +664,12 @@ describe("unarchive_nodes", () => {
 		expect(waiting.status).toBe("queued");
 		expect(waiting.deadlineAt).toBe(now + 24 * 60 * 60 * 1000);
 
-		// With no restore ahead of it any more, the deadline ends it.
-		await f.t.run((ctx) => ctx.db.patch("activities", ahead!.activityId, { status: "canceled" }));
+		// With no job of its request ahead of it any more, the deadline ends it. End the job ahead by hand:
+		// a real end would start the queued job.
+		await f.t.run(async (ctx) => {
+			await ctx.db.patch("activities", ahead!.activityId, { status: "canceled" });
+			await ctx.db.patch("files_archive_runs", ahead!.runId, { active: false });
+		});
 		await f.t.run((ctx) => ctx.db.patch("activities", queued!.activityId, { deadlineAt: now - 1 }));
 		await f.t.mutation(internal.activities.recover_expired, { _test_now: now, _test_disableReschedule: true });
 		expect((await read_activity(f, queued!.activityId)).status).toBe("timed_out");

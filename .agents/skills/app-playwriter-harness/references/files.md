@@ -1050,7 +1050,15 @@ One dialog holding the file's facts, its write policy, and the flat key-value ma
   job's operation. Its `path` argument is relative to `parentId`, not a full path. For an agent delete
   without a chat, make the proposal with `convex run files_pending_updates:upsert_file_pending_archive_in_db`
   and accept it with `apply_file_pending_archive`. A `discard_file_pending_structural` during the job ends
-  it `failed` with `Stopped partway: The delete was discarded.` To check search during a job, poll
+  it `failed` with `Stopped partway: The delete was discarded.` With a real chat (verified 2026-09-25):
+  the agent runs `rm -r copy-4` (relative; `/copy-4` is outside the Bash workspace mount) and answers
+  `pending delete created: /copy-4`. The Pending tab `Accept delete of /copy-4` starts an accept review
+  run, and the archive job appears only when that run ends (about 15-18 s later). The `Save reviewed
+  changes` dialog opens over the Pending row and blocks its Discard button until it is closed. By the
+  time a runner closed it, the 416-item job had already finished. Start the same run the button starts
+  from page context instead:
+  `files_pending_update_runs.start` with `kind: "discard"`, then `seal`, once the archive Activity is
+  `running`. To check search during a job, poll
   `files_nodes.search_content` for a word from one text file inside the tree. That file must go from
   present to absent once (archive) or from absent to present once (restore), and never back.
 - For screenshots and hit-target checks, scroll the policy block into view first. Tabbing to footer

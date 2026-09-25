@@ -6124,7 +6124,7 @@ export const archive_nodes = mutation({
 			rootNodeIds: rootFileNodes.map((node) => node._id),
 			pendingUpdateCleanup: null,
 			budget: { nodes: files_archive_runs_STEP_MAX_NODES },
-			queued: false,
+			requestFirstRunId: null,
 		});
 	},
 });
@@ -6254,7 +6254,7 @@ export const unarchive_nodes = mutation({
 				rootNodeIds: [],
 				pendingUpdateCleanup: null,
 				budget,
-				queued: firstJob !== null,
+				requestFirstRunId: firstJob?.runId ?? null,
 			});
 			if (started._nay) {
 				return started;

@@ -868,7 +868,7 @@ async function db_step(ctx: MutationCtx, args: StepArgs): Promise<StepOutcome> {
 
 async function db_finish_run(
 	ctx: MutationCtx,
-	run: Pick<Doc<"files_archive_runs">, "_id" | "kind" | "userId" | "workspaceId">,
+	run: Pick<Doc<"files_archive_runs">, "_id" | "kind" | "requestFirstRunId">,
 	args: Omit<Parameters<typeof activities_db_finish>[1], "sourceId">,
 ) {
 	const activity = await db_require_activity(ctx, run._id);
@@ -876,28 +876,27 @@ async function db_finish_run(
 	await activities_db_finish(ctx, { sourceId: run._id, ...args });
 
 	// The restore jobs of one request run one at a time, so their steps do not write the same docs at
-	// the same moment. When a job that was running ends, start the oldest queued one. A queued job
-	// that ends, or a job that ended before, starts nothing, so each end starts one job. Mark it running
-	// here, not in its first step, so a second job that ends before that step starts a different one.
+	// the same moment. When a job that was running ends, start the oldest queued job of the same
+	// request. Another request has its own running job, so starting one of its jobs would run two at
+	// once. A queued job that ends, or a job that ended before, starts nothing, so each end starts one
+	// job. Mark it running here, not in its first step, so a second job that ends before that step
+	// starts a different one.
 	if (run.kind !== "restore" || !activities_is_active(activity.status) || activity.status === "queued") return;
-	const nextActivity = await ctx.db
-		.query("activities")
-		.withIndex("by_user_workspace_source_kind_status", (q) =>
-			q
-				.eq("userId", run.userId)
-				.eq("workspaceId", run.workspaceId)
-				.eq("source.kind", "files_archive_run")
-				.eq("status", "queued"),
+	const nextRun = await ctx.db
+		.query("files_archive_runs")
+		.withIndex("by_requestFirstRun_active", (q) =>
+			q.eq("requestFirstRunId", run.requestFirstRunId ?? run._id).eq("active", true),
 		)
 		.first();
-	if (nextActivity?.source.kind === "files_archive_run") {
+	if (nextRun) {
+		const nextActivity = await db_require_activity(ctx, nextRun._id);
 		await ctx.db.patch("activities", nextActivity._id, {
 			status: "running",
 			startedAt: args.now,
 			deadlineAt: args.now + RUN_TIMEOUT_MS,
 			updatedAt: args.now,
 		});
-		await ctx.scheduler.runAfter(0, internal.files_archive_runs.advance, { runId: nextActivity.source.id });
+		await ctx.scheduler.runAfter(0, internal.files_archive_runs.advance, { runId: nextRun._id });
 	}
 }
 
@@ -1036,12 +1035,13 @@ export async function files_archive_runs_db_start(
 		pendingUpdateCleanup: RunFields["pendingUpdateCleanup"];
 		budget: { nodes: number };
 		/**
-		 * A restore that waits for the job before it. It writes nothing now. It starts when the running
-		 * restore job of the same person ends.
+		 * Set on a restore that waits behind the first job of its Unarchive request. It writes nothing
+		 * now. It starts when the running job of the same request ends.
 		 */
-		queued: boolean;
+		requestFirstRunId: Id<"files_archive_runs"> | null;
 	},
 ) {
+	const queued = args.requestFirstRunId !== null;
 	const rootNodes = (await Promise.all(args.rootNodeIds.map((id) => ctx.db.get("files_nodes", id)))).filter(
 		(node) => node !== null,
 	);
@@ -1082,6 +1082,7 @@ export async function files_archive_runs_db_start(
 		applyToRemaining: { file: null, folder: null },
 		revision: 0,
 		pendingUpdateCleanup: args.pendingUpdateCleanup,
+		requestFirstRunId: args.requestFirstRunId,
 	};
 	const progress: RunProgress = {
 		unit: "items",
@@ -1104,7 +1105,7 @@ export async function files_archive_runs_db_start(
 		checkedScopes: new Map(),
 		isWritten: false,
 	};
-	const outcome = args.queued ? null : await db_step(ctx, stepArgs);
+	const outcome = queued ? null : await db_step(ctx, stepArgs);
 	if (outcome?.kind === "done") return Result({ _yay: null });
 	// A refusal before the first write changed nothing, so the request returns it and makes no job.
 	if (outcome?.kind === "failed" && !stepArgs.isWritten) return Result({ _nay: outcome.nay });
@@ -1122,12 +1123,12 @@ export async function files_archive_runs_db_start(
 		targets: [],
 		visibility: "requester",
 		feedVisible: true,
-		status: args.queued ? "queued" : "running",
+		status: queued ? "queued" : "running",
 		resultKind: "saved",
 		progress,
 		// A queued job may wait while the job before it waits for a clash choice, so it gets as long. The
 		// deadline check gives it more time while that job is still active.
-		deadlineAt: now + (args.queued ? CHOICE_TIMEOUT_MS : RUN_TIMEOUT_MS),
+		deadlineAt: now + (queued ? CHOICE_TIMEOUT_MS : RUN_TIMEOUT_MS),
 		now,
 	});
 	if (!outcome) return Result({ _yay: { runId, activityId } });
@@ -1203,28 +1204,26 @@ export async function files_archive_runs_db_request_stop(
 	const run = await ctx.db.get("files_archive_runs", args.runId);
 	if (!run) return;
 
-	// A queued restore waits for the restore ahead of it, and that one can wait up to 24 h for a clash
-	// choice, more than once. So while a restore of the same person and workspace is still active, give
-	// the queued job more time instead of ending it. Keep `updatedAt`: nothing about the job changed.
-	if (args.reason === "timeout" && run.kind === "restore") {
+	// A queued restore waits for the jobs of its request ahead of it, and one of them can wait up to
+	// 24 h for a clash choice, more than once. So while an earlier job of the same request is still
+	// active, give the queued job more time instead of ending it. Keep `updatedAt`: nothing about the
+	// job changed.
+	if (args.reason === "timeout" && run.requestFirstRunId !== null) {
+		const requestFirstRunId = run.requestFirstRunId;
 		const activity = await db_require_activity(ctx, run._id);
-		if (activity.status === "queued") {
-			for (const status of ["running", "awaiting_input", "stopping"] as const) {
-				for await (const aheadActivity of ctx.db
-					.query("activities")
-					.withIndex("by_user_workspace_source_kind_status", (q) =>
-						q
-							.eq("userId", run.userId)
-							.eq("workspaceId", run.workspaceId)
-							.eq("source.kind", "files_archive_run")
-							.eq("status", status),
-					)) {
-					if (aheadActivity.source.kind === "files_archive_run" && aheadActivity.source.archiveKind === "restore") {
-						await ctx.db.patch("activities", activity._id, { deadlineAt: args.now + CHOICE_TIMEOUT_MS });
-						return;
-					}
-				}
-			}
+		const firstRun = await ctx.db.get("files_archive_runs", requestFirstRunId);
+		// The index keeps creation order, so the first active job of the request is the earliest.
+		const earliestActiveRun = firstRun?.active
+			? firstRun
+			: await ctx.db
+					.query("files_archive_runs")
+					.withIndex("by_requestFirstRun_active", (q) =>
+						q.eq("requestFirstRunId", requestFirstRunId).eq("active", true),
+					)
+					.first();
+		if (activity.status === "queued" && earliestActiveRun && earliestActiveRun._id !== run._id) {
+			await ctx.db.patch("activities", activity._id, { deadlineAt: args.now + CHOICE_TIMEOUT_MS });
+			return;
 		}
 	}
 

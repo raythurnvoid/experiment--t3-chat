@@ -111,10 +111,10 @@ See the [plugin runtime spec](../plugin-system/SKILL.md).
   a name clash is `awaiting_input` until `resolve_conflicts`, with a 24-hour deadline like a paused
   paste. The done part stays archived or restored. The restore jobs of one Unarchive request run one
   at a time: the ones after the first start as `queued` with a 24-hour deadline and no scheduled step.
-  When a running restore job of the same person and workspace ends in any way, the oldest queued one is
-  marked `running` and gets its first step. A Stop on a queued job ends only that job. A queued job
-  whose deadline passes while a restore of the same person and workspace is still active gets 24 more
-  hours instead of `timed_out`.
+  When a running restore job ends in any way, the oldest queued job of the same request is marked
+  `running` and gets its first step. A Stop on a queued job ends only that job. A queued job whose
+  deadline passes while an earlier job of its request is still active gets 24 more hours instead of
+  `timed_out`.
 - `files_transfer.recover_expired_attempts` only releases expired transfer attempts. Do not put
   a second job deadline or history scan back in that module.
 - `files_pending_update_runs.recover` checks interrupted selection uploads, planning leases, and
