@@ -1,6 +1,8 @@
 import { configDefaults, defineConfig } from "vitest/config";
 import { playwright } from "@vitest/browser-playwright";
 import tailwindcss from "@tailwindcss/vite";
+import { reactCompilerPreset } from "@vitejs/plugin-react";
+import babel from "@rolldown/plugin-babel";
 import { fileURLToPath } from "node:url";
 
 export default defineConfig({
@@ -53,8 +55,23 @@ export default defineConfig({
 			},
 			{
 				extends: true,
-				// Browser layout tests need the same utility styles as the app.
-				plugins: [tailwindcss({ optimize: false })],
+				plugins: [
+					// Browser layout tests need the same utility styles as the app.
+					tailwindcss({ optimize: false }),
+					// Run the React Compiler like the app does, so browser tests run the same compiled code.
+					// Some bugs only happen in compiled code. Keep these settings in sync with vite.config.ts.
+					babel({
+						presets: [
+							reactCompilerPreset({
+								target: "19",
+								sources: (filename: string) =>
+									["./src", "./vendor/novel", "./vendor/polar", "./vendor/tiptap", "../native-popovers/src"].some(
+										(dir) => filename.startsWith(fileURLToPath(new URL(dir, import.meta.url))),
+									),
+							}),
+						],
+					}),
+				],
 				// Prepare this dynamic dependency before a browser test can trigger a reload.
 				optimizeDeps: { include: ["react-dom/server"] },
 				test: {

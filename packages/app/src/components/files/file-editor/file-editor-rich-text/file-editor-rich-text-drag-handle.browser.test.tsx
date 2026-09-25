@@ -35,8 +35,8 @@ afterEach(() => {
 });
 
 describe("FileEditorRichTextDragHandle", () => {
-	// Vitest does not run the React Compiler. So this test cannot catch a list the compiler keeps
-	// stale (the old useFn render functions). It checks the groups, the names, and the checked state.
+	// The browser project runs the React Compiler like the app. So this test also catches a list the
+	// compiler keeps stale, like the old useFn render functions did.
 	test("the Color check moves to the clicked color while the menu stays open", async () => {
 		const menu = await openSubmenu("Color");
 		const colors = within(menu).getByRole("group", { name: "Color" });

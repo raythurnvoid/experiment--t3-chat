@@ -2,7 +2,7 @@
 // `DefaultChatTransport`. It fakes only Convex, auth, the tenant context, and the HTTP response.
 // A mocked SDK cannot show that an SDK upgrade changed behavior.
 
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { userEvent } from "vitest/browser";
 
@@ -22,6 +22,9 @@ const hookMocks = vi.hoisted(() => ({
 		content: ai_chat_UiMessage;
 	}>,
 	messagesDenied: false,
+	// The mocked `useQuery` subscribes here. Like a real Convex query update, a change re-renders the
+	// component that called it. A parent rerender does not, because the React Compiler keeps its output.
+	messagesDeniedListeners: new Set<() => void>(),
 	mutation: vi.fn((): Promise<{ _yay: { threadId: string } }> => Promise.resolve({ _yay: { threadId: "thread_new" } })),
 	// One scripted response per chat request, shifted in order. A test that scripts two responses
 	// is asserting that the app made two requests.
@@ -31,6 +34,7 @@ const hookMocks = vi.hoisted(() => ({
 
 vi.mock("convex/react", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("convex/react")>();
+	const { useSyncExternalStore } = await import("react");
 
 	return {
 		...actual,
@@ -46,8 +50,19 @@ vi.mock("convex/react", async (importOriginal) => {
 			};
 		},
 		useMutation: () => hookMocks.mutation,
-		useQuery: (_query: unknown, args: unknown) =>
-			args !== "skip" && hookMocks.messagesDenied ? null : { messages: hookMocks.threadMessages },
+		useQuery: (_query: unknown, args: unknown) => {
+			const messagesDenied = useSyncExternalStore(
+				(listener) => {
+					hookMocks.messagesDeniedListeners.add(listener);
+					return () => {
+						hookMocks.messagesDeniedListeners.delete(listener);
+					};
+				},
+				() => hookMocks.messagesDenied,
+			);
+
+			return args !== "skip" && messagesDenied ? null : { messages: hookMocks.threadMessages };
+		},
 	};
 });
 
@@ -192,6 +207,19 @@ function RuntimeSurface() {
 
 function renderRuntime() {
 	return render(<RuntimeSurface />);
+}
+
+/**
+ * Make the thread messages query refuse access, then re-render every component that reads it.
+ * `act` flushes that render and its layout effects before the test goes on.
+ */
+function denyThreadMessages() {
+	act(() => {
+		hookMocks.messagesDenied = true;
+		for (const listener of hookMocks.messagesDeniedListeners) {
+			listener();
+		}
+	});
 }
 
 describe("AiChatController streaming against the real AI SDK", () => {
@@ -393,7 +421,7 @@ describe("AiChatController streaming against the real AI SDK", () => {
 	test("drops private streaming bytes and queued sends when the thread query refuses access", async () => {
 		const live = openSseResponse();
 		hookMocks.responses.push(() => live.response);
-		const view = renderRuntime();
+		renderRuntime();
 		await userEvent.click(screen.getByRole("button", { name: "select persisted" }));
 		await userEvent.click(screen.getByRole("button", { name: "send" }));
 		live.write({ type: "start" });
@@ -404,9 +432,8 @@ describe("AiChatController streaming against the real AI SDK", () => {
 		expect(screen.getByTestId("queued").textContent).toBe("1");
 		const chat = AiChatController.useStore.actions.getSession("thread_persisted")!.chat!;
 
-		hookMocks.messagesDenied = true;
 		hookMocks.mutation.mockClear();
-		view.rerender(<RuntimeSurface />);
+		denyThreadMessages();
 		await waitFor(() => expect(screen.getByTestId("chat-id").textContent).toBe("null"));
 		expect(screen.getByTestId("assistant-text").textContent).toBe("");
 		expect(screen.getByTestId("queued").textContent).toBe("0");
@@ -425,12 +452,11 @@ describe("AiChatController streaming against the real AI SDK", () => {
 				resolveToken = resolve;
 			}),
 		);
-		const view = renderRuntime();
+		renderRuntime();
 		await userEvent.click(screen.getByRole("button", { name: "select persisted" }));
 		await userEvent.click(screen.getByRole("button", { name: "send" }));
 		const chat = AiChatController.useStore.actions.getSession("thread_persisted")!.chat!;
-		hookMocks.messagesDenied = true;
-		view.rerender(<RuntimeSurface />);
+		denyThreadMessages();
 		resolveToken(null);
 		await waitFor(() => expect(chat.status).not.toBe("submitted"));
 		expect(hookMocks.requestBodies).toHaveLength(0);
