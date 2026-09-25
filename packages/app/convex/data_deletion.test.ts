@@ -10351,7 +10351,7 @@ describe("prepare_user_for_hard_deletion", () => {
 				mechanicalAdvisoryFindings: [],
 				aiFindings: ["Cached rejection"],
 				capabilityMap: [],
-				model: "gpt-5.4-mini",
+				model: "gpt-6-luna",
 				updatedAt: now,
 			});
 			const repositoryId = await ctx.db.insert("plugins_publisher_repositories", {

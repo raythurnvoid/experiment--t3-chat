@@ -1480,7 +1480,7 @@ describe("/api/chat browser binding", () => {
 				messages: [{ id: "browser-message", role: "user", parts: [{ type: "text", text: "Inspect the page." }] }],
 				parentId: null,
 				mode: "ask",
-				model: "gpt-5.4-nano",
+				model: "gpt-6-luna",
 				trigger: "submit-message",
 			}),
 		});

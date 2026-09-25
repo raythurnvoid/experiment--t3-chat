@@ -157,7 +157,7 @@ describe("AiChatThread", () => {
 			id: "ai_message-queued",
 			text: "Draft",
 			attachments: [],
-			selectedModelId: "gpt-5.4-nano",
+			selectedModelId: "gpt-6-luna",
 			selectedModeId: "agent",
 			browserSessionId: null,
 		} as const;
@@ -185,7 +185,7 @@ describe("AiChatThread", () => {
 			metadata: {
 				convexParentId: null,
 				parentClientGeneratedId: null,
-				selectedModelId: "gpt-5.4-nano",
+				selectedModelId: "gpt-6-luna",
 				selectedModeId: "ask",
 			},
 		} satisfies ai_chat_UiMessage;
@@ -282,7 +282,7 @@ describe("AiChatThread", () => {
 							id: "ai_message-queued",
 							text: "Run this next",
 							attachments: [],
-							selectedModelId: "gpt-5.4-nano",
+							selectedModelId: "gpt-6-luna",
 							selectedModeId: "agent",
 							browserSessionId: null,
 						},
@@ -317,7 +317,7 @@ describe("AiChatThread", () => {
 			id: "ai_message-queued",
 			text: "Edited queued text",
 			attachments: [],
-			selectedModelId: "gpt-5.4-mini",
+			selectedModelId: "gpt-6-luna",
 			selectedModeId: "ask",
 			browserSessionId: null,
 		} as const;
@@ -347,7 +347,7 @@ describe("AiChatThread", () => {
 		const composer = screen.getByTestId("ai-chat-composer");
 		expect(composer.dataset.initialValue).toBe("Edited queued text");
 		expect(composer.dataset.inputLabel).toBe("Edit queued message");
-		expect(composer.dataset.selectedModelId).toBe("gpt-5.4-mini");
+		expect(composer.dataset.selectedModelId).toBe("gpt-6-luna");
 		expect(composer.dataset.selectedModeId).toBe("ask");
 		expect(composer.dataset.canQueue).toBe("true");
 		expect(screen.getByRole("status").textContent).toBe("1 queued message. Queue is full. Editing a queued message.");
@@ -382,7 +382,7 @@ describe("AiChatThread", () => {
 			id: "ai_message-queued",
 			text: "Leave this queued text alone",
 			attachments: [],
-			selectedModelId: "gpt-5.4-mini",
+			selectedModelId: "gpt-6-luna",
 			selectedModeId: "ask",
 			browserSessionId: null,
 		} as const;
@@ -432,7 +432,7 @@ describe("AiChatThread", () => {
 			id: "ai_message-first",
 			text: "First queued message",
 			attachments: [],
-			selectedModelId: "gpt-5.4-nano",
+			selectedModelId: "gpt-6-luna",
 			selectedModeId: "agent",
 			browserSessionId: null,
 		} as const;
@@ -440,7 +440,7 @@ describe("AiChatThread", () => {
 			id: "ai_message-second",
 			text: "Second queued message",
 			attachments: [],
-			selectedModelId: "gpt-5.4-mini",
+			selectedModelId: "gpt-6-luna",
 			selectedModeId: "ask",
 			browserSessionId: null,
 		} as const;

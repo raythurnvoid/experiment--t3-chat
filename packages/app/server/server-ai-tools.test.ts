@@ -352,7 +352,7 @@ describe("ai_chat_tool_create_bash", () => {
 		const { ctx, runAction } = makeCtx(async () => null, { runActionImpl: async () => bash_result() });
 		const tool = ai_chat_tool_create_bash(ctx, server_ai_tools_test_ctx_data, {
 			allowDbFilesMkdir: true,
-			jobWakeup: { modelId: "gpt-5.4-mini", onWaiting },
+			jobWakeup: { modelId: "gpt-6-luna", onWaiting },
 		});
 		if (!has_defined_property(tool.inputSchema, "parse")) throw new Error("inputSchema has no parse");
 		expect(tool.inputSchema.parse({ command: "wait", wakeOnJobFinish: true })).toEqual({
@@ -367,7 +367,7 @@ describe("ai_chat_tool_create_bash", () => {
 		await tool.execute?.({ command: "wait", wakeOnJobFinish: true }, { toolCallId: "armed", messages: [] });
 		expect(runAction).toHaveBeenLastCalledWith(
 			expect.anything(),
-			expect.objectContaining({ wakeAgent: { modelId: "gpt-5.4-mini" } }),
+			expect.objectContaining({ wakeAgent: { modelId: "gpt-6-luna" } }),
 		);
 		expect(onWaiting).not.toHaveBeenCalled();
 

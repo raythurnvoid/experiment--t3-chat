@@ -664,7 +664,7 @@ describe("ai_chat_files creator privacy", () => {
 				await f.t.mutation(internal.ai_chat_files.arm_bash_job_wakeup, {
 					...scope,
 					jobNumbers: [1],
-					modelId: "gpt-5.4-nano",
+					modelId: "gpt-6-luna",
 				}),
 			).toEqual([]);
 			expect(await f.t.mutation(internal.ai_chat_files.request_bash_job_stop, { ...scope, jobNumber: 1 })).toBe(false);

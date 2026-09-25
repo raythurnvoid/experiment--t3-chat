@@ -170,7 +170,7 @@ describe("/api/chat billing across workspaces", () => {
 					],
 					parentId: null,
 					mode: "agent",
-					model: "gpt-5.4-nano",
+					model: "gpt-6-luna",
 					trigger: "submit-message",
 					threadId,
 					membershipId: membership._id,

@@ -7355,7 +7355,7 @@ describe("plugins publish_version", () => {
 			mechanicalAdvisoryFindings: [],
 			aiFindings: [],
 			capabilityMap: [],
-			model: "gpt-5.6-luna",
+			model: "gpt-6-luna",
 		});
 		if (review._nay) throw new Error(review._nay.message);
 		await t.run((ctx) => ctx.db.patch("users", publisher.userId, { deletedAt: Date.now() }));
@@ -7473,7 +7473,7 @@ describe("plugins publish_version", () => {
 			mechanicalAdvisoryFindings: [],
 			aiFindings: [],
 			capabilityMap: [],
-			model: "gpt-5.6-luna",
+			model: "gpt-6-luna",
 		});
 
 		expect(review).toEqual({
@@ -7504,7 +7504,7 @@ describe("plugins publish_version", () => {
 				mechanicalAdvisoryFindings: [],
 				aiFindings: [],
 				capabilityMap: [],
-				model: "gpt-5.6-luna",
+				model: "gpt-6-luna",
 				updatedAt: Date.now(),
 			}),
 		);
@@ -7562,7 +7562,7 @@ describe("plugins publish_version", () => {
 				mechanicalAdvisoryFindings: [],
 				aiFindings: [],
 				capabilityMap: [],
-				model: "gpt-5.6-luna",
+				model: "gpt-6-luna",
 				updatedAt: Date.now(),
 			}),
 		);
@@ -7731,7 +7731,7 @@ describe("plugins publish_version", () => {
 				mechanicalAdvisoryFindings: [],
 				aiFindings: [],
 				capabilityMap: [],
-				model: "gpt-5.6-luna",
+				model: "gpt-6-luna",
 			},
 		]);
 		expect(reviews[0]!.reviewPolicyVersion).toBe(plugins_REVIEW_POLICY_VERSION);
@@ -9054,7 +9054,7 @@ describe("plugins publish_version", () => {
 				input: unknown;
 			};
 			expect(body).toMatchObject({
-				model: "gpt-5.6-luna",
+				model: "gpt-6-luna",
 				reasoning: { effort: "low" },
 				store: false,
 				parallel_tool_calls: false,
@@ -9076,7 +9076,7 @@ describe("plugins publish_version", () => {
 			const response = {
 				id: `response-${requests}`,
 				created_at: Math.floor(Date.now() / 1000),
-				model: "gpt-5.6-luna",
+				model: "gpt-6-luna",
 				output: [
 					{
 						type: "message",
@@ -9508,7 +9508,7 @@ describe("plugins publish_version", () => {
 			version: "0.2.0",
 			mechanicalFindings: [] as string[],
 			mechanicalAdvisoryFindings: [],
-			model: "gpt-5.6-luna",
+			model: "gpt-6-luna",
 		};
 		const first = await t.mutation(internal.plugins.upsert_version_review, {
 			...base,
@@ -9555,7 +9555,7 @@ describe("plugins publish_version", () => {
 			mechanicalAdvisoryFindings: [],
 			aiFindings: Array.from({ length: 110 }, (_, index) => `${index} ${"x".repeat(596)}`),
 			capabilityMap: [],
-			model: "gpt-5.6-luna",
+			model: "gpt-6-luna",
 		});
 
 		expect(result).toEqual({ _nay: { message: "Plugin review result stores more than 64 KiB of findings" } });
@@ -9581,7 +9581,7 @@ describe("plugins publish_version", () => {
 			mechanicalAdvisoryFindings: [],
 			aiFindings: [],
 			capabilityMap: [],
-			model: "gpt-5.6-luna",
+			model: "gpt-6-luna",
 		});
 
 		expect(result).toEqual({
@@ -9857,7 +9857,7 @@ describe("plugins publish_version", () => {
 				mechanicalAdvisoryFindings: [],
 				aiFindings: ["Cached rejection"],
 				capabilityMap: [],
-				model: "gpt-5.6-luna",
+				model: "gpt-6-luna",
 				updatedAt: Date.now(),
 			}),
 		);
@@ -9970,7 +9970,7 @@ describe("plugins publish_version", () => {
 					mechanicalAdvisoryFindings: [],
 					aiFindings: ["Cached rejection"],
 					capabilityMap: [],
-					model: "gpt-5.6-luna",
+					model: "gpt-6-luna",
 					updatedAt: Date.now(),
 				});
 			const orphanReviewId = await insertReview("1");
@@ -10034,7 +10034,7 @@ describe("plugins publish_version", () => {
 				mechanicalAdvisoryFindings: [],
 				aiFindings: ["Cached rejection"],
 				capabilityMap: [],
-				model: "gpt-5.6-luna",
+				model: "gpt-6-luna",
 				updatedAt: Date.now(),
 			});
 			await ctx.db.patch("plugins_publisher_repositories", repositoryId, {
@@ -10538,7 +10538,7 @@ describe("plugins publish_version", () => {
 				mechanicalAdvisoryFindings: [],
 				aiFindings: ["Gallery-only rejection"],
 				capabilityMap: [],
-				model: "gpt-5.6-luna",
+				model: "gpt-6-luna",
 				updatedAt: Date.now(),
 			});
 			await ctx.db.patch("plugins_publisher_repositories", repositoryId, {
@@ -15427,7 +15427,7 @@ describe("plugins admin hard delete", () => {
 				mechanicalAdvisoryFindings: [],
 				aiFindings: [],
 				capabilityMap: [],
-				model: "gpt-5.6-luna",
+				model: "gpt-6-luna",
 				updatedAt: Date.now(),
 			});
 			await Promise.all([
@@ -15931,7 +15931,7 @@ describe("plugins admin hard delete", () => {
 					mechanicalAdvisoryFindings: [],
 					aiFindings: [],
 					capabilityMap: [],
-					model: "gpt-5.6-luna",
+					model: "gpt-6-luna",
 				})
 			)._nay?.message,
 		).toBe("Plugin registry deletion is in progress");

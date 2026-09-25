@@ -63,7 +63,7 @@ describe("ai_chat_tool_create_view_image", () => {
 				return Response.json({
 					id: `resp_${requests.length}`,
 					created_at: 0,
-					model: "gpt-5.4-nano",
+					model: "gpt-6-luna",
 					output:
 						requests.length === 1
 							? [
@@ -88,7 +88,7 @@ describe("ai_chat_tool_create_view_image", () => {
 			},
 		});
 		const result = await generateText({
-			model: provider.responses("gpt-5.4-nano"),
+			model: provider.responses("gpt-6-luna"),
 			tools: { view_image: viewer },
 			prompt: `Inspect ${file.path}.`,
 			stopWhen: stepCountIs(2),

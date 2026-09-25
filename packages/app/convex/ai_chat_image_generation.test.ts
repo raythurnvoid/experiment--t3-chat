@@ -95,7 +95,7 @@ async function setup(viewer = false) {
 			messages: [{ id: "request", role: "user", parts: [{ type: "text", text: "Draw an image." }] }],
 			parentId: null,
 			mode: "agent",
-			model: "gpt-5.4-nano",
+			model: "gpt-6-luna",
 			trigger: "submit-message",
 			threadId,
 			membershipId: team.membershipId,

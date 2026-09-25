@@ -734,7 +734,7 @@ type preflight_publish_plugin_version_Result =
 
 // #region ai review
 
-const REVIEW_MODEL_ID = "gpt-5.6-luna" as const satisfies ai_chat_ModelId;
+const REVIEW_MODEL_ID = "gpt-6-luna" as const satisfies ai_chat_ModelId;
 const REVIEW_PROVIDER_OPTIONS = { openai: { reasoningEffort: "low", parallelToolCalls: false, store: false } } as const;
 
 const REVIEW_VERDICT_SCHEMA = z.object({

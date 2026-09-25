@@ -91,7 +91,7 @@ describe("billing_event", () => {
 				billedUserId: "billed_user_1" as Id<"users">,
 				organizationId: "organization_1",
 				workspaceId: "workspace_1",
-				modelId: "gpt-5.4-nano",
+				modelId: "gpt-6-luna",
 				inputTokens: 1000,
 				outputTokens: 250,
 				generatedImages: 1,

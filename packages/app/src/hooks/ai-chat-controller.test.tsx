@@ -339,7 +339,7 @@ function RuntimeIdentityProbe() {
 							metadata: {
 								convexParentId: null,
 								parentClientGeneratedId: null,
-								selectedModelId: "gpt-5.4-nano",
+								selectedModelId: "gpt-6-luna",
 								selectedModeId: "ask",
 							},
 						} satisfies ai_chat_UiMessage,
@@ -757,7 +757,7 @@ function RuntimeQueueProbe() {
 			<button
 				type="button"
 				onClick={() => {
-					controller.setSelectedModelId("gpt-5.4-nano");
+					controller.setSelectedModelId("gpt-6-luna");
 					controller.setSelectedModeId("agent");
 				}}
 			>
@@ -766,7 +766,7 @@ function RuntimeQueueProbe() {
 			<button
 				type="button"
 				onClick={() => {
-					controller.setSelectedModelId("gpt-5.4-mini");
+					controller.setSelectedModelId("gpt-6-luna");
 					controller.setSelectedModeId("ask");
 				}}
 			>
@@ -1219,7 +1219,7 @@ describe("AiChatController", () => {
 					parts: [{ type: "text", text: "Retry me" }],
 					metadata: {
 						convexParentId: null,
-						selectedModelId: "gpt-5.4-mini",
+						selectedModelId: "gpt-6-luna",
 						selectedModeId: "ask",
 					},
 				},
@@ -1233,7 +1233,7 @@ describe("AiChatController", () => {
 		const body = (preparedRequest as { body: Record<string, unknown> }).body;
 		expect(body).toMatchObject({
 			clientGeneratedThreadId: optimisticThreadId,
-			model: "gpt-5.4-mini",
+			model: "gpt-6-luna",
 			mode: "ask",
 		});
 		expect(body.threadId).toBeUndefined();
@@ -1520,7 +1520,7 @@ describe("AiChatController", () => {
 					parts: [{ type: "text", text: "Old turn" }],
 					metadata: {
 						convexParentId: null,
-						selectedModelId: "gpt-5.4-nano",
+						selectedModelId: "gpt-6-luna",
 						selectedModeId: "agent",
 					},
 				},
@@ -1540,7 +1540,7 @@ describe("AiChatController", () => {
 			throw new Error("Expected prepared regenerate request body");
 		}
 		expect((preparedRequest as { body: Record<string, unknown> }).body).toMatchObject({
-			model: "gpt-5.4-mini",
+			model: "gpt-6-luna",
 			mode: "ask",
 			parentId: "historical_assistant",
 		});
@@ -1561,7 +1561,7 @@ describe("AiChatController", () => {
 					metadata: {
 						convexParentId: null,
 						parentClientGeneratedId: null,
-						selectedModelId: "gpt-5.4-nano",
+						selectedModelId: "gpt-6-luna",
 						selectedModeId: "ask",
 					},
 				},
@@ -1675,7 +1675,7 @@ describe("AiChatController", () => {
 					metadata: {
 						convexParentId: null,
 						parentClientGeneratedId: null,
-						selectedModelId: "gpt-5.4-nano",
+						selectedModelId: "gpt-6-luna",
 						selectedModeId: "ask",
 					},
 				},
@@ -2228,7 +2228,7 @@ describe("AiChatController", () => {
 		fireEvent.click(screen.getByRole("button", { name: "change queued edit probe" }));
 
 		await waitFor(() => {
-			expect(screen.getByTestId("queue-edit").textContent).toMatch(/^ai_message-.*:Second edited:gpt-5\.4-mini:ask$/);
+			expect(screen.getByTestId("queue-edit").textContent).toMatch(/^ai_message-.*:Second edited:gpt-6-luna:ask$/);
 		});
 		expect(screen.getByTestId("queue-draft").textContent).toBe("Normal draft");
 		expect(screen.getByTestId("queue-texts").textContent).toBe("Second|Third");
@@ -2252,7 +2252,7 @@ describe("AiChatController", () => {
 		expect(screen.getByTestId("queue-draft").textContent).toBe("Normal draft");
 		const sentMessage = chat.sendMessage.mock.calls[1]?.[0] as ai_chat_UiMessage | undefined;
 		expect(sentMessage?.parts).toContainEqual({ type: "text", text: "Second edited" });
-		expect(sentMessage?.metadata?.selectedModelId).toBe("gpt-5.4-mini");
+		expect(sentMessage?.metadata?.selectedModelId).toBe("gpt-6-luna");
 		expect(sentMessage?.metadata?.selectedModeId).toBe("ask");
 		expect(chat.maxActiveRequestCount).toBe(1);
 	});
@@ -3243,7 +3243,7 @@ describe("AiChatController", () => {
 		});
 
 		const queuedMessage = chat.sendMessage.mock.calls[1]?.[0] as ai_chat_UiMessage | undefined;
-		expect(queuedMessage?.metadata?.selectedModelId).toBe("gpt-5.4-nano");
+		expect(queuedMessage?.metadata?.selectedModelId).toBe("gpt-6-luna");
 		expect(queuedMessage?.metadata?.selectedModeId).toBe("agent");
 	});
 

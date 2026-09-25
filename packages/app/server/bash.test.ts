@@ -5827,9 +5827,9 @@ describe("bash_run_command", () => {
 		});
 
 		test("a call with the wake flag arms the jobs it starts, and a job a job starts is never armed", async () => {
-			const runner = await create_bash_runner({ wakeAgent: { modelId: "gpt-5.4-nano" } });
+			const runner = await create_bash_runner({ wakeAgent: { modelId: "gpt-6-luna" } });
 			expect((await runner.run("{ echo nested & } &")).metadata.exitCode).toBe(0);
-			expect((await job_row(runner, 1)).job?.wakeAgent).toEqual({ modelId: "gpt-5.4-nano" });
+			expect((await job_row(runner, 1)).job?.wakeAgent).toEqual({ modelId: "gpt-6-luna" });
 			// The worker's own jobContext carries no wake flag.
 			await run_job(runner, 1);
 			expect((await job_row(runner, 2)).job?.wakeAgent).toBeUndefined();
@@ -5849,7 +5849,7 @@ describe("bash_run_command", () => {
 			const waiter = await create_bash_runner({
 				shared: { t: launcher.t, seeded: launcher.seeded },
 				threadId: launcher.threadId,
-				wakeAgent: { modelId: "gpt-5.4-mini" },
+				wakeAgent: { modelId: "gpt-6-luna" },
 			});
 			const waited = await waiter.run("wait 1 2");
 			expect(waited.stderr).toBe(
@@ -5857,7 +5857,7 @@ describe("bash_run_command", () => {
 			);
 			expect(waited.metadata.exitCode).toBe(3);
 			expect(waited.metadata.waitingForJobs).toEqual([1]);
-			expect((await job_row(launcher, 1)).job?.wakeAgent).toEqual({ modelId: "gpt-5.4-mini" });
+			expect((await job_row(launcher, 1)).job?.wakeAgent).toEqual({ modelId: "gpt-6-luna" });
 			// A finished job is never armed, and a wait on it alone reads its result as usual.
 			expect((await job_row(launcher, 2)).job?.wakeAgent).toBeUndefined();
 			const done = await waiter.run("wait 2");

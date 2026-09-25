@@ -268,18 +268,15 @@ function resolve_parent_message_context(input: {
 const GENERATED_IMAGE_COST_CENTS = 4;
 
 function compute_token_usage_cost_cents(args: { modelId: string; inputTokens: number; outputTokens: number }) {
-	switch (args.modelId) {
-		case "gpt-5.4-nano":
-		case "gpt-4.1-nano":
-			return args.inputTokens * 0.00001 + args.outputTokens * 0.00004;
-		case "gpt-5.6-luna":
-			return args.inputTokens * 0.00002 + args.outputTokens * 0.00012;
-		case "gpt-5.6-terra":
-			return args.inputTokens * 0.0002 + args.outputTokens * 0.0012;
-		case "gpt-5.4-mini":
-		default:
-			return args.inputTokens * 0.00003 + args.outputTokens * 0.00015;
+	// Keep thread titles on the gpt-4.1-nano rate. Chat turns use the GPT-6 Luna rate below.
+	if (args.modelId === "gpt-4.1-nano") {
+		return args.inputTokens * 0.00001 + args.outputTokens * 0.00004;
 	}
+
+	// Standard price is $0.10 input and $0.50 output per 1M tokens.
+	// A prompt over 272k input tokens costs 2x input and 1.5x output for the whole request.
+	const longPrompt = args.inputTokens > 272_000;
+	return args.inputTokens * (longPrompt ? 0.00002 : 0.00001) + args.outputTokens * (longPrompt ? 0.000075 : 0.00005);
 }
 
 /**
@@ -4111,6 +4108,48 @@ export async function ai_chat_http_run_stream(ctx: ActionCtx, request: Request) 
 if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 	const { describe, test, expect, vi } = import.meta.vitest;
 
+	describe("compute_token_usage_cost_cents", () => {
+		test("bills GPT-6 Luna at $0.10 input and $0.50 output per 1M tokens", () => {
+			expect(
+				compute_token_usage_cost_cents({
+					modelId: "gpt-6-luna",
+					inputTokens: 100_000,
+					outputTokens: 100_000,
+				}),
+			).toBeCloseTo(6);
+		});
+
+		test("keeps the standard GPT-6 Luna rate at exactly 272k input tokens", () => {
+			expect(
+				compute_token_usage_cost_cents({
+					modelId: "gpt-6-luna",
+					inputTokens: 272_000,
+					outputTokens: 0,
+				}),
+			).toBeCloseTo(2.72);
+		});
+
+		test("bills a GPT-6 Luna prompt over 272k input tokens at the higher rate", () => {
+			expect(
+				compute_token_usage_cost_cents({
+					modelId: "gpt-6-luna",
+					inputTokens: 272_001,
+					outputTokens: 1_000_000,
+				}),
+			).toBeCloseTo(272_001 * 0.00002 + 75);
+		});
+
+		test("keeps thread titles on the gpt-4.1-nano rate", () => {
+			expect(
+				compute_token_usage_cost_cents({
+					modelId: "gpt-4.1-nano",
+					inputTokens: 1_000_000,
+					outputTokens: 1_000_000,
+				}),
+			).toBe(50);
+		});
+	});
+
 	type build_agent_configuration_test_user_identity = NonNullable<
 		Awaited<ReturnType<ActionCtx["auth"]["getUserIdentity"]>>
 	>;
@@ -4135,7 +4174,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 	// Every model can draw pictures today. Pin one that can, so these cases keep asserting the tool list
 	// of a picture-capable model once a model that cannot draw is added.
-	const build_agent_configuration_test_model_id = "gpt-5.4-nano" as const satisfies (typeof ai_chat_MODEL_IDS)[number];
+	const build_agent_configuration_test_model_id = "gpt-6-luna" as const satisfies (typeof ai_chat_MODEL_IDS)[number];
 
 	const build_agent_configuration_expected_tool_keys = [
 		"view_image",
@@ -4930,7 +4969,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 					},
 				});
 				await expect(
-					generateText({ model: provider.responses("gpt-5.4-mini"), messages: summarized, maxRetries: 0 }),
+					generateText({ model: provider.responses("gpt-6-luna"), messages: summarized, maxRetries: 0 }),
 				).rejects.toThrow("captured request");
 
 				// OpenAI receives one item reference for the tool result it ran itself, so the Files link

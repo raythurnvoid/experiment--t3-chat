@@ -96,7 +96,7 @@ async function fixture() {
 		stopRequestedAt?: number;
 		parentJobNumber?: number;
 		allowDbFilesMkdir?: boolean;
-		wakeAgent?: { modelId: "gpt-5.4-nano" };
+		wakeAgent?: { modelId: "gpt-6-luna" };
 	}) =>
 		await t.run(async (ctx) => {
 			const now = Date.now();
@@ -1611,7 +1611,7 @@ describe("pause_bash_job", () => {
 });
 
 describe("job wakeup", () => {
-	const wakeAgent = { modelId: "gpt-5.4-nano" } as const;
+	const wakeAgent = { modelId: "gpt-6-luna" } as const;
 
 	/**
 	 * A user message and its reply, so the thread has a leaf to hang the job finish message on.
@@ -2055,10 +2055,10 @@ describe("job wakeup", () => {
 			await f.t.mutation(internal.ai_chat_files.arm_bash_job_wakeup, {
 				...f.scope,
 				jobNumbers: [1, 2, 9],
-				modelId: "gpt-5.4-mini",
+				modelId: "gpt-6-luna",
 			}),
 		).toEqual([1]);
-		expect((await f.read(live.invocationId)).row?.job?.wakeAgent).toEqual({ modelId: "gpt-5.4-mini" });
+		expect((await f.read(live.invocationId)).row?.job?.wakeAgent).toEqual({ modelId: "gpt-6-luna" });
 		expect((await f.read(done.invocationId)).row?.job?.wakeAgent).toBeUndefined();
 	});
 
@@ -2091,7 +2091,7 @@ describe("job wakeup", () => {
 		expect(context._yay).toMatchObject({
 			membership: { _id: f.db.membershipId },
 			thread: { _id: f.scope.threadId },
-			modelId: "gpt-5.4-nano",
+			modelId: "gpt-6-luna",
 			modeId: "agent",
 		});
 		expect(context._yay.messages.map((message) => message.clientGeneratedMessageId)).toEqual(["user-1", "assistant-1"]);
@@ -2103,7 +2103,7 @@ describe("job wakeup", () => {
 			invocationId: plain.invocationId,
 		});
 		if (plainContext._nay) throw new Error(plainContext._nay.message);
-		expect(plainContext._yay.modelId).toBe("gpt-5.4-nano");
+		expect(plainContext._yay.modelId).toBe("gpt-6-luna");
 
 		// A member who was removed and invited again gets a new lifetime, and the job still names the
 		// older one. The step below bumps that counter straight in the row, which is the one thing a

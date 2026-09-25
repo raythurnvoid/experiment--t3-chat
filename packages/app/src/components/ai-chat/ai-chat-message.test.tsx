@@ -139,7 +139,7 @@ function createUserMessage() {
 		metadata: {
 			convexParentId: null,
 			parentClientGeneratedId: null,
-			selectedModelId: "gpt-5.4-nano",
+			selectedModelId: "gpt-6-luna",
 			selectedModeId: "ask",
 		},
 	} satisfies ai_chat_UiMessage;
@@ -192,7 +192,7 @@ function renderMessage(args: {
 				messageId={args.message.id}
 				message={args.message}
 				selectedThreadId="thread_1"
-				selectedModelId="gpt-5.4-nano"
+				selectedModelId="gpt-6-luna"
 				selectedModeId="ask"
 				isRunning={Boolean(args.isRunning)}
 				liveJobs={args.liveJobs ?? []}
@@ -297,7 +297,7 @@ describe("AiChatMessage", () => {
 				metadata: {
 					convexParentId: null,
 					parentClientGeneratedId: null,
-					selectedModelId: "gpt-5.4-nano",
+					selectedModelId: "gpt-6-luna",
 					selectedModeId: "ask",
 				},
 			} satisfies ai_chat_UiMessage,
@@ -342,7 +342,7 @@ describe("AiChatMessage", () => {
 				messageId={messageId}
 				message={streamingMessage}
 				selectedThreadId="thread_1"
-				selectedModelId="gpt-5.4-nano"
+				selectedModelId="gpt-6-luna"
 				selectedModeId="ask"
 				isRunning={true}
 				liveJobs={[]}
@@ -616,7 +616,7 @@ describe("AiChatMessage", () => {
 					messageId={persistedMessage.id}
 					message={persistedMessage}
 					selectedThreadId="thread_1"
-					selectedModelId="gpt-5.4-nano"
+					selectedModelId="gpt-6-luna"
 					selectedModeId="ask"
 					isRunning={false}
 					liveJobs={[]}
