@@ -31,7 +31,7 @@ self.MonacoEnvironment = {
 };
 
 // Tokenizer-only for v1: plain-text documents get syntax colors but no language services.
-// Only the base editor worker is wired above, and monaco 0.56's json/css/html/typescript modes
+// Only the base editor worker is wired above, and monaco 0.57's json/css/html/typescript modes
 // register worker-backed providers (completions, hovers, folding ranges, document symbols,
 // colors, validation) that request a labelled worker. `getWorker` answers with the base editor
 // worker, so every such call errors with "Missing requestHandler or method: doValidation" (and
