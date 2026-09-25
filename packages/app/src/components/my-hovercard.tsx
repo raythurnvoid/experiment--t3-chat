@@ -70,6 +70,12 @@ export type MyHoverCardContent_Props = Ariakit.HovercardProps;
 export const MyHoverCardContent = memo(function MyHoverCardContent(props: MyHoverCardContent_Props) {
 	const { ref, id, className, portal = true, gutter = 8, children, ...rest } = props;
 
+	// When the card closes with focus inside it, Ariakit moves focus back to the anchor. Our anchor
+	// is not focusable (the sr-only disclosure is the tab stop), so focus used to fall to <body>.
+	// So send focus back to the disclosure instead.
+	const store = Ariakit.useHovercardContext();
+	const disclosureElement = Ariakit.useStoreState(store, "disclosureElement");
+
 	return (
 		<Ariakit.Hovercard
 			ref={ref}
@@ -77,6 +83,7 @@ export const MyHoverCardContent = memo(function MyHoverCardContent(props: MyHove
 			className={cn("MyHoverCardContent" satisfies MyHoverCardContent_ClassNames, className)}
 			portal={portal}
 			gutter={gutter}
+			finalFocus={disclosureElement}
 			{...rest}
 		>
 			{children}

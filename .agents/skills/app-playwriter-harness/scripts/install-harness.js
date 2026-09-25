@@ -1,5 +1,5 @@
 (() => {
-	const VERSION = "0.6.5";
+	const VERSION = "0.6.6";
 	const SKILL_DIR = ".agents/skills/app-playwriter-harness";
 	/** Somewhere harmless to move the pointer from, so the next move has a non-zero screen delta. */
 	const HOVERCARD_PARK_POINT = { x: 900, y: 500 };
@@ -611,13 +611,18 @@
 						unlabeled.push(described);
 					}
 
-					if (rect.width < minTargetSize || rect.height < minTargetSize) {
+					// A visually hidden control (an sr-only keyboard stop) has no pointer target of its own.
+					// Its pointer twin is a visible element next to it, so skip the size and hit tests.
+					const style = getComputedStyle(element);
+					const visuallyHidden = style.clipPath === "inset(50%)" || style.clip === "rect(0px, 0px, 0px, 0px)";
+
+					if (!visuallyHidden && (rect.width < minTargetSize || rect.height < minTargetSize)) {
 						smallTargets.push({ ...described, width: Math.round(rect.width), height: Math.round(rect.height) });
 					}
 
 					const inViewport =
 						rect.bottom > 0 && rect.right > 0 && rect.top < window.innerHeight && rect.left < window.innerWidth;
-					if (inViewport) {
+					if (inViewport && !visuallyHidden) {
 						// Sample the corners as well as the centre. Testing only the centre missed every control
 						// whose EDGE was covered while its middle stayed clear, and Playwright still refuses that
 						// click. Run against the room at 600x400 with a live pointer-target defect on screen, the
@@ -645,6 +650,15 @@
 							}
 							const top = document.elementFromPoint(sample.x, sample.y);
 							if (!top || top === element || element.contains(top) || top.contains(element)) {
+								continue;
+							}
+							// Hit testing respects overflow clipping. If the control is not in the point's stack
+							// at all, a scroll container cut it off there (a toolbar button past the edge, a
+							// half-scrolled row). That is clipped, not covered: a scroll or Tab brings it back.
+							// Keep pointer-events: none controls on the old path, because they are never in the
+							// stack.
+							const stack = document.elementsFromPoint(sample.x, sample.y);
+							if (style.pointerEvents !== "none" && !stack.some((el) => element.contains(el))) {
 								continue;
 							}
 							const describedTop = describeControl(top);

@@ -104,6 +104,10 @@ Use this file as a quick testing map for `/files`. Keep it short and selector-or
   update arrive, then press ArrowDown. Check the exact focused row id separately from selection.
   The synthetic root has no DOM row. Also check rename cancel/re-entry/save and Properties/Share
   close, including focus again after 200–400 ms.
+- The tree uses a roving tabindex: one row has `tabIndex 0`, the rest `-1`. A script `.focus()` on a
+  `-1` row does not move the tree's own focused item, so the next ArrowDown looks dead. Reach the
+  tree with real Tab presses (from the search input it took 7 on `qa-browser/home`), then use
+  arrows. Checked 2026-09-25.
 - `Failed to scroll to index ... after 10 attempts` is an unresolved scroll result. Record the
   focused id, scroll offset, row count, and build. A later wheel scroll does not prove End or drag
   auto-scroll passed. Test those actions separately.

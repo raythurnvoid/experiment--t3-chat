@@ -1083,11 +1083,13 @@ describe("copy_transfer_file media", () => {
 		for (const src of f.sourceRefs) expect(read?.content).not.toContain(src);
 	});
 
+	// 101 media files fill two media pages of 50 and start a third one. With the document they are
+	// 102 sources, so the selection also needs a second intake page of 100.
 	test.each([false, true])(
-		"adopts 201 distinct media references (replacement: %s)",
+		"adopts 101 distinct media references (replacement: %s)",
 		async (documentReplacement) => {
-			const f = await fixture({ mediaCount: 201, documentReplacement });
-			expect(f.selectedMediaItems).toHaveLength(201);
+			const f = await fixture({ mediaCount: 101, documentReplacement });
+			expect(f.selectedMediaItems).toHaveLength(101);
 			expect(f.selectedMediaItems.every((item) => item.state === "completed")).toBe(true);
 			await f.t.action(internal.files_nodes_content.copy_transfer_file, {
 				itemId: f.document._id,
@@ -1110,16 +1112,16 @@ describe("copy_transfer_file media", () => {
 					.unique(),
 			);
 			const dependencies = await read_dependencies(f.t, pending!.mediaDependencySetId);
-			expect(dependencies).toHaveLength(201);
-			expect(new Set(dependencies.map((dependency) => dependency.assetId)).size).toBe(201);
+			expect(dependencies).toHaveLength(101);
+			expect(new Set(dependencies.map((dependency) => dependency.assetId)).size).toBe(101);
 			expect(new Set(dependencies.map((dependency) => dependency.assetId))).toEqual(
 				new Set(f.selectedMediaItems.map((media) => media.outputMediaAssetId)),
 			);
 			expect(
 				await f.t.run((ctx) => ctx.db.get("files_media_dependency_sets", pending!.mediaDependencySetId!)),
 			).toMatchObject({
-				count: 201,
-				expectedCount: 201,
+				count: 101,
+				expectedCount: 101,
 				sealed: true,
 				owner: { kind: "proposal", pendingUpdateId: pending!._id },
 			});

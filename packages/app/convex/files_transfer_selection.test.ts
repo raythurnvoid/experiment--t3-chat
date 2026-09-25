@@ -155,34 +155,48 @@ describe("Copy selection pages", () => {
 		expect(await f.t.run((ctx) => ctx.db.query("files_nodes").collect())).toHaveLength(202);
 	}, 60_000);
 
-	test("discovers more than 10,000 children in bounded pages before output", async () => {
+	test("discovers past 10,000 items in bounded pages before output", async () => {
 		const f = await fixture();
 		const sourceId = f.folders.get("/source")!;
 		const source = (await f.t.run((ctx) => ctx.db.get("files_nodes", sourceId)))!;
 		const { _id, _creationTime, ...fields } = source;
-		// Seed a large ordinary folder tree. This test stops after its first folder scan.
-		for (let offset = 0; offset < 10_001; offset += 100) {
-			await f.t.run(async (ctx) => {
-				for (let index = offset; index < Math.min(offset + 100, 10_001); index++) {
-					const name = `child-${String(index).padStart(5, "0")}`;
-					await ctx.db.insert("files_nodes", {
-						...fields,
-						parentId: sourceId,
-						name,
-						sortName: files_sort_text_key(name),
-						path: `/source/${name}`,
-						treePath: `/source/${name}/`,
-						pathDepth: 2,
-					});
-				}
-			});
-		}
+		await f.t.run(async (ctx) => {
+			for (let index = 0; index < 120; index++) {
+				const name = `child-${String(index).padStart(5, "0")}`;
+				await ctx.db.insert("files_nodes", {
+					...fields,
+					parentId: sourceId,
+					name,
+					sortName: files_sort_text_key(name),
+					path: `/source/${name}`,
+					treePath: `/source/${name}/`,
+					pathDepth: 2,
+				});
+			}
+		});
 		const started = await start(f, [sourceId]);
 		if (started._nay) throw new Error(started._nay.message);
 		const args = { membershipId: f.scope.membershipId, runId: started._yay.runId };
 		expect(await f.asUser.mutation(api.files_transfer.seal, args)).toEqual({ _yay: null });
-		for (let step = 0; step < 205; step++) {
+
+		// Copy once refused a run past 10,000 discovered items, and that check read only this count.
+		// Start the count as if 9,900 items were already found, so the 120 children cross 10,000
+		// without 10,000 real rows.
+		await f.t.run(async (ctx) => {
+			const activity = (await ctx.db.query("activities").collect()).find(
+				(row) => row.source.kind === "files_transfer_run" && row.source.id === args.runId,
+			)!;
+			await ctx.db.patch("activities", activity._id, { progress: { ...activity.progress!, discovered: 9_900 } });
+		});
+
+		const pageSizes: number[] = [];
+		let discovered = 9_900;
+		for (let step = 0; step < 10; step++) {
 			await f.t.mutation(internal.files_transfer.advance, { runId: args.runId });
+			const view = await f.asUser.query(api.files_transfer.get, args);
+			const added = view!.activity.progress.discovered - discovered;
+			if (added > 0) pageSizes.push(added);
+			discovered = view!.activity.progress.discovered;
 			const root = await f.t.run((ctx) =>
 				ctx.db
 					.query("files_transfer_items")
@@ -191,25 +205,27 @@ describe("Copy selection pages", () => {
 			);
 			if (root?.discoveryDone) break;
 		}
+		// The first step adds the selected folder itself. Then its children come in pages of at most 50.
+		expect(pageSizes).toEqual([1, 50, 50, 20]);
 		const view = await f.asUser.query(api.files_transfer.get, args);
 		expect(view).toMatchObject({
 			step: "discover",
 			activity: {
 				status: "running",
 				errorMessage: null,
-				progress: { discovered: 10_002, completed: 0 },
+				progress: { discovered: 10_021, completed: 0 },
 			},
 		});
 		expect(
 			await f.t.run((ctx) =>
 				ctx.db
 					.query("files_transfer_items")
-					.withIndex("by_run_order", (q) => q.eq("runId", args.runId).eq("order", 10_001))
+					.withIndex("by_run_order", (q) => q.eq("runId", args.runId).eq("order", 10_020))
 					.unique(),
 			),
-		).toMatchObject({ sourcePath: "/source/child-10000", outputTarget: null });
+		).toMatchObject({ sourcePath: "/source/child-00119", outputTarget: null });
 		expect(await f.t.run((ctx) => ctx.db.get("files_nodes", sourceId))).toEqual(source);
-	}, 300_000);
+	}, 60_000);
 
 	test("Stop prevents later pages and seal; cleanup drains selection pages", async () => {
 		const f = await fixture();
