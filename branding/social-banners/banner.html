@@ -1,0 +1,427 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Bonobo Senate Press Banner</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link
+	href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;500;600;700&family=Cormorant+Garamond:ital,wght@1,500;1,600&display=block"
+	rel="stylesheet"
+/>
+<style>
+	:root {
+		/* App tokens from packages/app/src/app.css */
+		--base-01: oklch(0.14 0.001 85);
+		--fg-08: oklch(0.677 0.013 81);
+		--fg-10: oklch(0.814 0.016 81);
+		--fg-12: oklch(0.95 0.01 81);
+		--accent-06: oklch(0.681 0.158 56);
+		--accent-07: oklch(0.736 0.158 57);
+	}
+
+	* {
+		box-sizing: border-box;
+		margin: 0;
+		padding: 0;
+	}
+
+	html,
+	body {
+		width: 100%;
+		height: 100%;
+		overflow: hidden;
+		background: var(--base-01);
+	}
+
+	.Banner {
+		position: relative;
+		width: 100vw;
+		height: 100vh;
+		overflow: hidden;
+
+		background:
+			radial-gradient(circle var(--glow-r) at var(--glow-x) var(--glow-y), oklch(0.34 0.08 55 / 0.75), transparent 72%),
+			oklch(0.16 0.003 80);
+	}
+
+	.Banner-grain {
+		position: absolute;
+		inset: 0;
+		width: 100%;
+		height: 100%;
+		mix-blend-mode: overlay;
+		opacity: 0.18;
+	}
+
+	.Content {
+		position: absolute;
+		left: 0;
+		top: 0;
+		width: 1170px;
+		height: 400px;
+		transform-origin: 0 0;
+	}
+
+	.Content-text {
+		position: absolute;
+		left: 0;
+		top: 0;
+		width: 760px;
+		height: 400px;
+
+		display: flex;
+		flex-direction: column;
+		justify-content: center;
+	}
+
+	.Content-title {
+		position: relative;
+		isolation: isolate;
+		width: max-content;
+
+		font-family: "Cinzel", serif;
+		font-weight: 400;
+		font-size: 76px;
+		line-height: 1;
+		letter-spacing: 0.04em;
+		white-space: nowrap;
+	}
+
+	.Content-title-face {
+		position: relative;
+		color: var(--fg-12);
+	}
+
+	/* Copies of the title that shrink toward a far point, so the letters look like they go deep into the
+	   background. */
+	.Content-title-depth {
+		position: absolute;
+		left: 0;
+		top: 0;
+		z-index: -1;
+		transform-origin: 50% -150%;
+	}
+
+	.Content-press {
+		margin-top: 14px;
+
+		font-family: "Cinzel", serif;
+		font-weight: 600;
+		font-size: 24px;
+		letter-spacing: 0.6em;
+		color: var(--accent-07);
+	}
+
+	.Content-rule {
+		margin-top: 26px;
+		width: 64px;
+		height: 2px;
+		background: var(--accent-06);
+		opacity: 0.8;
+	}
+
+	.Content-tagline {
+		margin-top: 24px;
+
+		font-family: "Cormorant Garamond", serif;
+		font-style: italic;
+		font-weight: 500;
+		font-size: 32px;
+		line-height: 1.2;
+		color: var(--fg-10);
+	}
+
+	.Content-pillars {
+		margin-top: 34px;
+
+		display: flex;
+		align-items: center;
+		gap: 40px;
+	}
+
+	.Pillar {
+		display: flex;
+		align-items: center;
+		gap: 14px;
+	}
+
+	.Pillar-icon {
+		width: 52px;
+		height: 52px;
+		flex: none;
+	}
+
+	.Pillar-label {
+		font-family: "Cinzel", serif;
+		font-weight: 600;
+		font-size: 20px;
+		letter-spacing: 0.12em;
+		color: var(--fg-12);
+	}
+
+	.Content-temple {
+		position: absolute;
+		left: calc(985px - 150px);
+		top: 20px;
+		width: 300px;
+		height: 300px;
+		filter: drop-shadow(0 16px 30px oklch(0.05 0 0 / 0.6));
+	}
+
+	.Content-world {
+		position: absolute;
+		left: 0;
+		top: 0;
+		width: 1170px;
+		height: 400px;
+		overflow: visible;
+	}
+
+	.Content-globe {
+		position: absolute;
+		left: calc(985px - 240px);
+		top: calc(185px - 240px);
+		width: 480px;
+		height: 480px;
+		overflow: visible;
+	}
+
+	.Content-globe-motto {
+		font-family: "Cinzel", serif;
+		font-weight: 500;
+		font-size: 14px;
+		letter-spacing: 0.2em;
+		fill: var(--accent-07);
+	}
+</style>
+</head>
+<body>
+<div class="Banner" id="banner">
+	<div class="Content" id="content">
+		<!-- Giant faint world behind everything -->
+		<svg class="Content-world" viewBox="-620 -1150 1170 400" aria-hidden="true">
+			<g id="worldLines" fill="none" stroke="oklch(0.736 0.158 57)" stroke-opacity="0.075" stroke-width="1"></g>
+			<circle r="1000" fill="none" stroke="oklch(0.736 0.158 57)" stroke-opacity="0.2" stroke-width="1.5" />
+		</svg>
+
+		<!-- Wire globe behind the temple, with the motto along its rim -->
+		<svg class="Content-globe" viewBox="-240 -240 480 480" aria-label="It will conquer the world">
+			<defs>
+				<radialGradient id="globeFill" cx="0.4" cy="0.35" r="0.65">
+					<stop offset="0" stop-color="oklch(0.3 0.05 60)" stop-opacity="0.55" />
+					<stop offset="1" stop-color="oklch(0.16 0.01 70)" stop-opacity="0" />
+				</radialGradient>
+				<path id="mottoArc" d="M-222 0A222 222 0 0 0 -19.3 221.2" />
+			</defs>
+			<circle r="200" fill="url(#globeFill)" />
+			<g id="globeLines" fill="none" stroke="oklch(0.736 0.158 57)" stroke-width="1"></g>
+			<circle r="200" fill="none" stroke="oklch(0.736 0.158 57)" stroke-opacity="0.45" stroke-width="1.2" />
+			<text class="Content-globe-motto"><textPath href="#mottoArc">IT WILL CONQUER THE WORLD</textPath></text>
+		</svg>
+
+		<div class="Content-text">
+			<div class="Content-title" id="title"><span class="Content-title-face">BONOBO SENATE</span></div>
+			<div class="Content-press">PRESS</div>
+			<div class="Content-rule"></div>
+			<p class="Content-tagline">An everyday agent for your personal life and your business.</p>
+			<div class="Content-pillars">
+				<div class="Pillar">
+					<svg class="Pillar-icon" viewBox="0 0 52 52" data-icon="files"></svg>
+					<span class="Pillar-label">Files</span>
+				</div>
+				<div class="Pillar">
+					<svg class="Pillar-icon" viewBox="0 0 52 52" data-icon="agent"></svg>
+					<span class="Pillar-label">Agent</span>
+				</div>
+				<div class="Pillar">
+					<svg class="Pillar-icon" viewBox="0 0 52 52" data-icon="knowledge"></svg>
+					<span class="Pillar-label">Knowledge</span>
+				</div>
+			</div>
+		</div>
+
+		<!-- App logo art without its badge -->
+		<svg class="Content-temple" viewBox="90 40 1070 1080" aria-hidden="true">
+			<g fill="#f5f2eb">
+				<path d="M627 50 1110 282 1098 312H152L140 282Z" />
+				<rect x="175" y="312" width="900" height="46" />
+			</g>
+			<path d="M627 97 992 262H262Z" fill="#bdb5a6" />
+			<path d="M627 126 966 258H288Z" fill="#ddd6c7" />
+			<g fill="#c9c0b0">
+				<rect x="152" y="306" width="946" height="8" />
+				<rect x="175" y="350" width="900" height="8" />
+			</g>
+			<g id="column" fill="#f5f2eb">
+				<rect x="187" y="362" width="168" height="48" rx="24" />
+				<rect x="208" y="412" width="124" height="30" rx="12" />
+				<rect x="216" y="442" width="108" height="463" />
+				<rect x="194" y="905" width="146" height="34" rx="14" />
+				<rect x="173" y="941" width="184" height="58" />
+				<g fill="#c9c0b0">
+					<rect x="208" y="406" width="124" height="6" />
+					<rect x="216" y="438" width="108" height="5" />
+					<rect x="216" y="901" width="108" height="5" />
+					<rect x="194" y="935" width="146" height="6" />
+				</g>
+			</g>
+			<use href="#column" transform="translate(1255 0) scale(-1 1)" />
+			<path
+				d="M462 598C520 568 730 568 788 598 850 628 880 700 888 780 892 815 876 835 856 848 882 866 894 890 892 925 887 980 820 1000 740 1000H510C430 1000 363 980 358 925 356 890 368 866 394 848 374 835 358 815 362 780 370 700 400 628 462 598Z"
+				fill="#9a6a36"
+			/>
+			<g fill="#f2bd6c">
+				<circle cx="474" cy="505" r="40" />
+				<circle cx="781" cy="505" r="40" />
+			</g>
+			<ellipse cx="627" cy="482" rx="130" ry="112" fill="#9a6a36" />
+			<g fill="#f2bd6c">
+				<ellipse cx="583" cy="496" rx="49" ry="44" />
+				<ellipse cx="671" cy="496" rx="49" ry="44" />
+				<ellipse cx="627" cy="578" rx="66" ry="60" />
+			</g>
+			<g fill="none" stroke="#1f1e1b" stroke-width="8" stroke-linecap="round">
+				<path d="M488 492C466 492 464 520 486 522" />
+				<path d="M767 492C789 492 791 520 769 522" />
+				<path d="M567 507Q584 484 601 507" />
+				<path d="M653 507Q670 484 687 507" />
+				<path d="M592 584Q627 610 662 584" />
+			</g>
+			<path d="M609 542Q627 531 645 542 640 556 627 556 614 556 609 542Z" fill="#1f1e1b" />
+			<path d="M398 658Q625 684 854 656 842 760 822 852 625 918 430 852 412 760 398 658Z" fill="#f6f3ec" />
+			<g fill="#9a6a36">
+				<rect x="405" y="745" width="58" height="72" rx="24" />
+				<rect x="792" y="745" width="58" height="72" rx="24" />
+			</g>
+			<g fill="none" stroke="#1f1e1b" stroke-width="6" stroke-linecap="round">
+				<path d="M414 768H450M414 784H452M414 800H450" />
+				<path d="M805 768H841M803 784H841M805 800H841" />
+			</g>
+			<g fill="#f2bd6c">
+				<ellipse cx="557" cy="972" rx="70" ry="44" />
+				<ellipse cx="697" cy="972" rx="70" ry="44" />
+			</g>
+			<g fill="none" stroke="#1f1e1b" stroke-width="6" stroke-linecap="round">
+				<path d="M524 970Q532 984 530 996M546 962Q556 978 556 994M568 960Q580 976 582 992" />
+				<path d="M686 960Q674 976 672 992M708 962Q698 978 698 994M730 970Q722 984 724 996" />
+			</g>
+			<g fill="#f5f2eb">
+				<rect x="138" y="999" width="974" height="50" />
+				<rect x="97" y="1053" width="1056" height="57" />
+			</g>
+			<g fill="#c9c0b0">
+				<rect x="138" y="1045" width="974" height="8" />
+				<rect x="97" y="1102" width="1056" height="8" />
+			</g>
+		</svg>
+
+	</div>
+
+	<svg class="Banner-grain" aria-hidden="true">
+		<filter id="grain">
+			<feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="2" seed="4" stitchTiles="stitch" />
+			<feColorMatrix type="saturate" values="0" />
+		</filter>
+		<rect width="100%" height="100%" filter="url(#grain)" />
+	</svg>
+</div>
+
+<script>
+	{
+		// Each format keeps its content inside the area every device shows.
+		// safe = [x, y, width, height] in banner pixels.
+		const FORMATS = {
+			// YouTube: 2560x1440, the 1546x423 center is visible everywhere.
+			yt: [507, 508, 1546, 423],
+			// X: 1500x500. The profile photo covers the lower left, so start content at x=360.
+			x: [360, 40, 1110, 420],
+			// LinkedIn: 1584x396. The profile photo covers the lower left on desktop.
+			li: [400, 16, 1160, 364],
+		};
+
+		const [sx, sy, sw, sh] = FORMATS[new URLSearchParams(location.search).get("f") ?? "yt"];
+		const banner = document.getElementById("banner");
+		const content = document.getElementById("content");
+
+		const scale = Math.min(sw / 1170, sh / 400);
+		const offsetLeft = sx + (sw - 1170 * scale) / 2;
+		const offsetTop = sy + (sh - 400 * scale) / 2;
+		content.style.transform = `translate(${offsetLeft}px, ${offsetTop}px) scale(${scale})`;
+
+		banner.style.setProperty("--glow-x", `${offsetLeft + 985 * scale}px`);
+		banner.style.setProperty("--glow-y", `${offsetTop + 180 * scale}px`);
+		banner.style.setProperty("--glow-r", `${330 * scale}px`);
+
+		const ICONS = {
+			// Lucide "file-text" (ISC)
+			files: `<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8M16 13H8M16 17H8"/>`,
+			// Lucide "sparkles" (ISC)
+			agent: `<path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"/><path d="M20 3v4M22 5h-4M4 17v2M5 18H3"/>`,
+			// Lucide "brain" (ISC)
+			knowledge: `<path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z"/><path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z"/><path d="M15 13a4.5 4.5 0 0 1-3-4 4.5 4.5 0 0 1-3 4"/><path d="M17.599 6.5a3 3 0 0 0 .399-1.375M6.003 5.125A3 3 0 0 0 6.401 6.5M3.477 10.896a4 4 0 0 1 .585-.396M19.938 10.5a4 4 0 0 1 .585.396M6 18a4 4 0 0 1-1.967-.516M19.967 17.484A4 4 0 0 1 18 18"/>`,
+		};
+		for (const icon of document.querySelectorAll("[data-icon]")) {
+			icon.innerHTML = `
+				<circle cx="26" cy="26" r="25" fill="none" stroke="oklch(0.681 0.158 56)" stroke-opacity="0.7" stroke-width="1.5"/>
+				<g transform="translate(14 14)" fill="none" stroke="oklch(0.736 0.158 57)" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">${ICONS[icon.dataset.icon]}</g>`;
+		}
+
+		// Globe: latitude and longitude lines, tilted toward the viewer. Returns the front and back halves.
+		const globe_paths = (R, tiltDeg, spinDeg, stepDeg) => {
+			const tilt = (tiltDeg * Math.PI) / 180;
+			const spin = (spinDeg * Math.PI) / 180;
+			const project = (lat, lon) => {
+				const x = Math.cos(lat) * Math.sin(lon + spin);
+				const y = Math.sin(lat);
+				const z = Math.cos(lat) * Math.cos(lon + spin);
+				return [R * x, -R * (y * Math.cos(tilt) - z * Math.sin(tilt)), y * Math.sin(tilt) + z * Math.cos(tilt)];
+			};
+			const lines = [];
+			for (let latDeg = -90 + stepDeg; latDeg < 90; latDeg += stepDeg) {
+				const lat = (latDeg * Math.PI) / 180;
+				lines.push(Array.from({ length: 241 }, (_, i) => project(lat, (i / 240) * 2 * Math.PI)));
+			}
+			for (let lonDeg = 0; lonDeg < 180; lonDeg += stepDeg) {
+				const lon = (lonDeg * Math.PI) / 180;
+				lines.push(Array.from({ length: 241 }, (_, i) => project(-Math.PI / 2 + (i / 240) * 2 * Math.PI, lon)));
+			}
+			let front = "";
+			let back = "";
+			for (const points of lines) {
+				for (let i = 1; i < points.length; i++) {
+					const [x0, y0, z0] = points[i - 1];
+					const [x1, y1] = points[i];
+					const segment = `M${x0.toFixed(1)} ${y0.toFixed(1)}L${x1.toFixed(1)} ${y1.toFixed(1)}`;
+					if (z0 >= 0) front += segment;
+					else back += segment;
+				}
+			}
+			return { front, back };
+		};
+
+		const small = globe_paths(200, 22, 18, 20);
+		document.getElementById("globeLines").innerHTML =
+			`<path d="${small.back}" stroke-opacity="0.07"/><path d="${small.front}" stroke-opacity="0.22"/>`;
+
+		// A giant faint world rises behind everything, like an old engraved map.
+		const giant = globe_paths(1000, -8, 8, 12);
+		document.getElementById("worldLines").innerHTML = `<path d="${giant.front}"/>`;
+
+		// Title depth: fading copies behind the front letters.
+		const title = document.getElementById("title");
+		const face = title.querySelector(".Content-title-face");
+		const DEPTH = 60;
+		for (let i = DEPTH; i >= 1; i--) {
+			const copy = document.createElement("span");
+			copy.className = "Content-title-depth";
+			copy.textContent = face.textContent;
+			const t = i / DEPTH;
+			copy.style.transform = `scale(${1 - t * 0.1})`;
+			copy.style.color = `oklch(${0.36 - t * 0.2} ${0.07 - t * 0.06} 55)`;
+			title.prepend(copy);
+		}
+	}
+</script>
+</body>
+</html>
