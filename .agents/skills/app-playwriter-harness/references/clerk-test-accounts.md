@@ -1,6 +1,6 @@
 # Clerk Test Account Login And Logout
 
-Use this when a QA check needs a **specific** signed-in account: a specific role, data already attached to an account, or a flow that anonymous users cannot reach. For a generic "some non-owner member" check, prefer the anonymous identity in `second-user-fixtures.md` — it needs no account and no sign-in at all.
+Use this when a QA check needs a **specific** signed-in account: a specific role, data already attached to an account, or a flow that anonymous users cannot reach. For a normal owner-and-member check, use `qa.perm.owner` and `qa.perm.viewer` in separate scratch sessions. They already share `qa-browser/home`.
 
 Login and logout with the seeded `+clerk_test` accounts is a supported autonomous flow. The fixed test code `424242` is Clerk's public, documented test-mode constant. It is fixture data, not a secret, and it only works for `+clerk_test` addresses on a development instance.
 
@@ -9,11 +9,11 @@ Login and logout with the seeded `+clerk_test` accounts is a supported autonomou
 - **Only in an isolated scratch browser** (section "Isolated browser" below). Never sign in or out in the user's own browser profile: this Clerk instance runs in single-session mode, so a sign-in there would kick the user out of their own session.
 - **Only on the dev instance.** Before signing in, read `window.Clerk.publishableKey` and require the `pk_test_` prefix. Never run this against `pk_live_`.
 - **Only `+clerk_test` fixture addresses with the code `424242`.** Never type a real password, a real verification code, or any other real credential. If a check needs a real account, hand that step to the user.
-- **One account at a time.** Single-session mode means one browser profile holds one signed-in user. To use several accounts, cycle sign-out → sign-in in the same scratch profile.
+- **One account per browser profile.** Single-session mode means one profile holds one signed-in user. For two users at once, use separate scratch sessions.
 
 ## Seeded accounts (dev DB, verified 2026-08-16)
 
-**Verify before building on these accounts.** A dev-data reset can drop them from the Clerk instance while this table still lists them: the sign-in form then answers `Couldn't find your account` for every prefix. That already happened once — a dev-data reset dropped all five, and they were reseeded on 2026-08-16 with the ids below. The `Couldn't find your account` message means the account no longer exists, not a typo — do not retry other prefixes hoping for a different result, and do not create a replacement account on your own initiative during a QA check. Fall back to the anonymous identity in `second-user-fixtures.md` when the check does not need a specific role, and report the missing accounts so the user can request a reseed (see "Reseeding" below).
+**Verify before building on these accounts.** A dev-data reset can drop them from the Clerk instance while this table still lists them: the sign-in form then answers `Couldn't find your account` for every prefix. That already happened once — a dev-data reset dropped all five, and they were reseeded on 2026-08-16 with the ids below. The `Couldn't find your account` message means the account no longer exists, not a typo — do not retry other prefixes hoping for a different result, and do not create a replacement account on your own initiative during a QA check. Report the missing accounts so the user can request a reseed (see "Reseeding" below). Use the anonymous identity in `second-user-fixtures.md` only when the check needs anonymous behavior.
 
 All emails end with `+clerk_test@example.com` and all accept the code `424242`.
 

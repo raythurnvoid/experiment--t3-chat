@@ -4,7 +4,7 @@ Use this when a check needs two identities at once: permission refusals, share g
 
 The org owner passes every permission check, so an owner-only run proves **no over-refusal** and never proves a refusal works. Do not report a permission fix as verified from owner flows alone.
 
-Use a seeded Clerk test account first (see below). The app also mints an anonymous user for any visitor with no Clerk session, and `organizations.invite_user_to_organization_workspace` accepts `userIdToAdd` directly, so that anonymous user can be pulled into a workspace as a normal member. That creates new data each time, so keep it for checks that need it.
+Use the seeded `qa.perm.owner` and `qa.perm.viewer` accounts in `qa-browser/home` for normal two-user checks. The app also mints an anonymous user for any visitor with no Clerk session. Use that identity only when the check needs it, because each one creates new data.
 
 ## When a check needs a specific Clerk account
 
@@ -88,19 +88,22 @@ The sidebar shows the same string in a sonner toast, but that toast is short-liv
 
 ## 3. Invite it into a workspace
 
-`create_organization` refuses anonymous callers, and `invite_user_to_organization_workspace` refuses the **default** organization (`Cannot add user to default organization`). So the fixture org must be a non-default org. Prefer creating a throwaway org as a signed-in user (or via Convex CLI `--identity` as that user — see `snippets.md`):
+For a normal owner-and-member check, sign `qa.perm.owner` and `qa.perm.viewer` into separate scratch sessions. Both already belong to `qa-browser/home`. Check each membership before the test; no invite is needed.
+
+If the check needs an anonymous member, invite it into the existing `qa-browser/home` workspace as `qa.perm.owner`. The default `personal` organization refuses invites (`Cannot add user to default organization`). In the owner's session:
 
 ```js
-const created = await cx.mutation(api.organizations.create_organization, { name: "qa-…", description: "QA throwaway" });
+const membership = await cx.query(api.organizations.get_membership_by_organization_workspace_name, {
+	organizationName: "qa-browser",
+	workspaceName: "home",
+});
 await cx.mutation(api.organizations.invite_user_to_organization_workspace, {
-	organizationId: created._yay.organizationId,
-	workspaceId: created._yay.defaultWorkspaceId,
+	organizationId: membership.organizationId,
+	workspaceId: membership.workspaceId,
 	userIdToAdd: "<anonymous users id>",
 });
 ```
 
-- `description` is short-capped; a sentence trips `Description is too long`. Org names are kebab-case and max 20 characters.
-- Extra organizations are quota-capped (two beyond the default `personal` org). `Organization quota reached` means do **not** keep retrying: invite into the seeded `qa-browser` / `home` workspace as `qa.perm.owner` instead (`clerk-test-accounts.md`). That org is already non-default, so invites work. When the check only needs an owner and a member, skip the invite: sign `qa.perm.owner` into one headless session and `qa.perm.viewer` (already a `member` of `qa-browser`) into a second one, build the fixture from the owner tab, and read from the member tab (done 2026-09-05 for the restricted-folder search check; delete the minted anonymous user first with `users.delete_current_user_account` if you no longer need it).
 - The invitee lands with the `member` system role: `content.read` and `content.write`, and **no** `content.permissions.manage`. That is exactly the shape most permission refusals need.
 - Each side reads its own membership with `organizations.get_membership_by_organization_workspace_name({ organizationName, workspaceName })`.
 - Confirm the granted level per permission with `access_control.get_current_user_workspace_permission({ membershipId, permission })` — it takes the membership id, not org/workspace ids.
@@ -122,7 +125,6 @@ Live demotion recipe: `restrict_node` + `set_node_share_grant(level: "read")` on
 
 ## 5. Clean up
 
-- Delete the fixture organization with `organizations.delete_organization({ organizationId })` as its owner.
-- Delete the throwaway identity from its own session with `app_convex.action(app_convex_api.users.delete_current_user_account, {})` — it is a Convex action, not a mutation. This is the app's supported flow and it works for anonymous users, whose only owned org is their default one.
-- Close the scratch Chrome and remove its `--user-data-dir` folder.
+- If you created an anonymous user, delete it from its own session with `app_convex.action(app_convex_api.users.delete_current_user_account, {})` — it is a Convex action, not a mutation. This also deactivates its `qa-browser` membership.
+- Close the scratch sessions. If you launched Chrome for Testing yourself, close it and remove its `--user-data-dir` folder.
 - Close only the tab you opened in the user's browser. Snapshot `context.pages()` URLs before opening it and compare after closing.

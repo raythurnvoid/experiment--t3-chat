@@ -12,7 +12,7 @@
   - If it is already running, use it. If it is NOT running and you need it, start it — `vp env exec pnpm --dir packages/app run dev` for Vite, `vp env exec pnpm --dir packages/app exec convex dev` for the Convex watcher (background it). Do not ask permission for the dev deployment and do not skip a verification step because a server was down.
   - `convex dev --once` pushes the working tree once and exits. Use it for a one-shot push; use the watcher when you are about to iterate against the browser.
 - Full app lint: run `vp env exec pnpm --dir packages/app run lint`. The root package does not have a `lint` script, and `pnpm --dir packages/app lint:tsc` is only the TypeScript check, not the full Oxlint check.
-- Plugin SDK types: `packages/bonobo-plugin-sdk/convex-api.d.ts` is generated from the app's plugin doors. After changing a public function in `packages/app/convex/plugins_data.ts`, run `vp env exec pnpm --dir packages/app run generate:plugin-sdk-types` and commit the result. The app `lint` runs `check:plugin-sdk-types`, which fails while that file is stale. The check reads the working tree, not the commit, and no CI runs `lint`, so regenerate and commit `convex-api.d.ts` in the same commit as the door change. The generator is [packages/app/scripts/generate-plugin-sdk-types.ts](packages/app/scripts/generate-plugin-sdk-types.ts).
+- Plugin SDK types: `packages/bonobo-plugin-sdk/convex-api.d.ts` is generated from the app's plugin doors. After changing a public function in `packages/app/convex/plugins_data.ts`, run `vp env exec pnpm --dir packages/app run generate:plugin-sdk-types` and include the generated file in the change. The app `lint` runs `check:plugin-sdk-types`, which fails while that file is stale. The check reads the working tree, and no CI runs `lint`, so keep `convex-api.d.ts` in sync with the door change. The generator is [packages/app/scripts/generate-plugin-sdk-types.ts](packages/app/scripts/generate-plugin-sdk-types.ts).
 - Full app tests: run `vp env exec pnpm --dir packages/app run test:once` for a one-shot test run.
 - Full app lint and test commands can take up to 20 minutes to complete. Use a long enough timeout when running them through tooling.
 
@@ -183,7 +183,7 @@ Use [references-submodules/README.md](references-submodules/README.md) as the ma
 - `references-submodules/assistant-ui/` is research-only. The app does not use `@assistant-ui/*` packages at runtime.
 - The app uses the published `file-selector` and `@atlaskit/pragmatic-drag-and-drop` packages. Their repositories under `references-submodules/` are source references only.
 - `packages/council` is a first-party app submodule (the Council Worker, repo `raythurnvoid/bonobo-senate-council`) — neither a vendored dependency nor a research reference. It sits outside the pnpm workspace on purpose and carries its own lockfile and tools; run `vp env exec pnpm --dir packages/council --ignore-workspace install` after a submodule update before using its scripts.
-- `packages/native-popovers` is a first-party submodule (repo `raythurnvoid/react-native-popovers`) and a pnpm workspace package. `MyTooltip` is built on its `native-popovers/tooltip` entry and `MyPopover` on its `native-popovers/popover` entry, and the React Compiler also compiles its `src/`. Its CSS layer `native_popovers` must stay after `base` in the `app.css` layer order. Change it in its own repo: commit and push there first, then commit the new gitlink here.
+- `packages/native-popovers` is a first-party submodule (repo `raythurnvoid/react-native-popovers`) and a pnpm workspace package. `MyTooltip` is built on its `native-popovers/tooltip` entry and `MyPopover` on its `native-popovers/popover` entry, and the React Compiler also compiles its `src/`. Its CSS layer `native_popovers` must stay after `base` in the `app.css` layer order. Change it in its own repo and update the gitlink here to point to the new submodule commit. If pushing both repos, push the submodule first.
 
 ## Third-party documentation research
 
@@ -254,18 +254,6 @@ When product requirements or business logic change, update the relevant spec ski
 
 You must not use `any` to bypass TypeScript errors unless the user asks for it.
 
-## Simplicity and necessity
-
-Treat code as a liability and keep the implementation as direct as the problem allows.
-
-- Use the least code that fully solves the real problem.
-- Treat every new line, branch, helper, abstraction, normalization step, fallback, and defensive check as a cost that must be justified by a concrete need.
-- Prefer direct code over flexible code, local code over abstract code, and obvious code over clever code.
-- Avoid unnecessary indirection.
-- Do not add wrapper functions, pass-through helpers, adapter layers, generic abstractions, and extracted modules when they only rename or forward data.
-- Prefer inline local code over a helper when the helper does not remove real complexity, hide a necessary external-system detail, or enable meaningful reuse.
-- When adding any abstraction, be ready to explain the concrete benefit in the current change.
-
 ## Clean-slate development
 
 This product is not in production. Build the current design directly instead of preserving obsolete behavior in the final code.
@@ -279,15 +267,11 @@ This product is not in production. Build the current design directly instead of 
 
 ## Trust application invariants
 
-When changing application code, default to trusting the product invariants enforced by the app's public queries, mutations, routes, and other supported entrypoints.
+This app enforces many invariants in its public queries, mutations, routes, and other supported entrypoints, even when the schema allows other states.
 
-- Do not add defensive checks, repair paths, or "self-healing" data logic just because the database schema could theoretically allow an invalid state.
-- When one supported flow produces data for a downstream flow, trust that producer/consumer contract in downstream code. Do not add fallback, repair, or self-healing logic in the consumer just because upstream data could theoretically be wrong; identify the concrete producer that can violate the invariant and fix that bug at the source.
-- If you think a corrupted state can happen, point to the exact real bug or reachable flow that would create it. Name the concrete mutation, query, route, background job, migration, or user action path.
-- If you cannot identify a real reachable corruption path, do not add extra validation or repair code for that hypothetical state.
-- Treat "the schema does not prevent it" as insufficient reasoning by itself. In this codebase, the application layer is often the real invariant boundary.
-- Prefer fixing the actual bug at the source over masking it downstream with fallback behavior.
-- Do not silently recreate pointers, memberships, or related records to paper over a suspected invariant violation unless the user explicitly wants a repair/migration flow and there is a concrete product reason for it.
+- Before adding fallback or repair logic, name the real path that can break the producer/consumer contract: the mutation, query, route, background job, migration, or user action. Fix that producer.
+- A state allowed by the schema alone does not justify repair code.
+- Do not silently recreate pointers, memberships, or related records to mask a suspected violation unless the user asks for a repair or migration and there is a concrete product reason.
 
 ## TypeScript return types: prefer inference
 

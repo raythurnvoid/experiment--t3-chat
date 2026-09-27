@@ -30,9 +30,9 @@ Do not write a substantial plan from memory. Trace the current system first, the
 
 State the objective as claims that can come back false. "Performance is good" and "the UI is beautiful" cannot fail, so work against them never terminates and nobody notices. "10k tree nodes scroll at 60fps on this machine" and "a non-member gets a refusal and no doc is written" can be checked and found wanting.
 
-When the user gives a bar rather than a spec, convert everything you can into falsifiable claims; the residue that stays a judgement becomes a blind comparison against a reference fixed at kickoff. `references/blind-comparison.md` has the protocol, including the visual case.
+When the user sets an open-ended quality bar rather than a spec, read [references/iterating-to-a-bar.md](references/iterating-to-a-bar.md) before planning or implementing. It covers claims, blind comparison, rounds, and the stop condition.
 
-Use subagents during planning when the design is broad or security-sensitive — that phrase is the test, and the usual triggers are: it touches auth, tenancy, billing, or deletion; crosses more than one layer (schema, backend, UI); changes shared modules other features import; or handles untrusted input (a parser of arbitrary input counts, even in a library whose current callers are internal). The same rubric decides "high-risk" everywhere below; "blast radius" is a separate measure — how much surface the change touches. In a harness without subagents, run the lanes yourself, sequentially — this fallback applies to every lane, reviewer, and attack round in this skill, except the blind-comparison critic, which has its own fallback. Prefer disjoint lanes:
+Use subagents during planning when the design is broad or security-sensitive — that phrase is the test, and the usual triggers are: it touches auth, tenancy, billing, or deletion; crosses more than one layer (schema, backend, UI); changes shared modules other features import; or handles untrusted input (a parser of arbitrary input counts, even in a library whose current callers are internal). The same rubric decides "high-risk" everywhere below; "blast radius" is a separate measure — how much surface the change touches. In a harness without subagents, run the lanes yourself, sequentially, except the blind-comparison critic, which has its own fallback in the bar reference. Prefer disjoint lanes:
 
 - **Research lane:** local references first, then official docs or public repos if local material is insufficient. Report concrete patterns, not generic advice.
 - **Current-system lane:** trace the existing code path end to end and name exact files, symbols, payload shapes, and invariants.
@@ -104,7 +104,7 @@ Recommended implementation subagent lanes:
 - **Uniformity review:** grouping, placement, regions, empty lines, and test ownership; comments, logs, and docs wording; names and whole-diff vocabulary — split into one auditor each when the diff is broad.
 - **Over-strictness review:** the mirror of the security lane — does a check refuse an action that would have granted nothing?
 
-Give each reviewer one lens and nothing else. A generalist stops at the first thing it notices and never reaches the fourth. `references/attack-lenses.md` is the lens catalog for reviewing existing work — slice reviews here, and attack rounds in the bar loop below.
+Give each reviewer one lens and nothing else. A generalist stops at the first thing it notices and never reaches the fourth. `references/attack-lenses.md` is the lens catalog for reviewing existing work — slice reviews here, and attack rounds in [references/iterating-to-a-bar.md](references/iterating-to-a-bar.md).
 
 Do not accept subagent output just because it is confident. Read its diff or findings, keep only changes that match local evidence, and reject taste-only churn.
 
@@ -164,34 +164,6 @@ Vocabulary is part of uniformity, and the vocabulary audit is its named check: o
 
 Before calling the pass done: would any of this look surprising to someone reading the surrounding file for the first time?
 
-# Iterating To A Bar
-
-The workflow above runs once and ends at a checklist. That is right when the user gave a spec. When they gave a bar — "as good as Linear's", "AAA quality", "don't stop until" — one pass cannot decide whether you reached it, because the thing that decides is an attacker, not a checklist.
-
-Before starting an iterate-to-a-bar loop, tell the user that its round count is not fixed. After every loud round, give a short checkpoint: what materially changed, whether the architecture is still moving, what the next round will check, and that the user may stop with the current evidence-backed result. This is a progress update, not a request for permission to continue under an existing instruction. If the user asks to stop, stop the loop immediately and report which exit conditions remain unmet.
-
-In that case, wrap the implementation workflow in rounds. First convert the bar as in the planning workflow — falsifiable claims, plus a fixed reference for judgement residue when the blind-comparison protocol calls for one — even when the bar arrives with the implement message after planning finished in spec mode. Each round:
-
-1. Build, as above: run the implementation loop (its steps 1–3 and 5 — the attack below covers the review) to a coherent checkpoint — one slice or a few related ones. That loop's closing steps 6–10 wait until this bar loop ends — by converging or by stopping early; the closing-out rules after the stop condition say how to run them.
-2. Prove it, per the verification standard — including its running-app checks for the surface this checkpoint touched; implementation step 7's full QA pass runs at the end, not per checkpoint.
-3. Attack it: reviewers in parallel, one lens each, every finding cited. This attack replaces implementation step 4's slice review for the checkpoint — run one review pass, not two.
-4. Mark each objective met or not — falsifiable claims by their checks, judgement residue by the blind comparison — naming the evidence that settled it. An objective with no recorded evidence is not met, and evidence goes stale when later work changes the surface it covered — re-run it.
-5. Feed what survived into the next round.
-
-Optimize only once correctness holds, and only against a measurement. Say the number before and after; use the repo's profiling skill or tooling when it has one.
-
-Stop when every objective is met with recorded evidence **and** the final state has survived two consecutive quiet attack rounds — the round that built it plus at least one attack-only round, or two attack-only rounds; one quiet round can be luck. An attack-only round has no build step: it re-runs the lenses that still have surface against the work as it stands. A finding rejected with reasons — in this round or an earlier one — does not count as new, and neither does a finding already reported as an unmet objective.
-
-**Closing out.** When the loop ends — the stop condition holds, or the early stop below fires — run the implementation loop's closing steps 6–10 once, then apply these rules until nothing changes:
-
-- If a closing step finds a failure, fix it.
-- If a closing step, a fix, or a reopened build round changes the work, re-run the evidence that covered what changed — the blind comparison included when the judged surface changed. Handle re-runs as each change lands or batched after the remaining closing steps.
-- If the change came from a closing step or a fix, also run attack-only rounds on the changed state until two in a row are quiet; a reopened loop answers to the stop condition instead. The two-quiet requirement applies to the final state either way.
-- If a re-run of evidence comes back failed, an objective you counted as met no longer is: the loop reopens — return to build rounds until your exit holds again (the stop condition, or an accurate early-stop report), then finish the remaining closing steps.
-- Re-run a closing step that already ran only if its surface changed.
-
-Stop early, and say so, when rounds stop producing progress — the same findings returning, or only cosmetic ones. A converged loop that keeps running burns the user's money for nothing. Report which objectives are met, name the ones that are not, and say why; an accurate partial result is worth more than a complete-sounding wrong one.
-
 # Planning And Execution Prompt Pattern
 
 When writing a reusable prompt for another agent, restate both phases separately: a planning phase — planning objective, the goal rules above when the user requested goal tracking, research/current-system/security/codebase-fit/QA lanes and challenge loops when the risk rubric above calls for them — and an implementation phase — a separate plan, implementation/security/QA/uniformity/over-strictness lanes, slices with focused tests, risk-based verification, final diff review. The distinction matters: planning subagents reduce architectural blind spots; execution subagents catch implementation bugs, style drift, missing tests, and QA gaps.
@@ -206,4 +178,3 @@ Before calling a complex task complete:
 - Subagent challenge/review findings were considered explicitly.
 - Focused verification is complete, broader checks matched the verification standard, and skipped checks are clearly explained.
 - Durable skills/spec docs were updated if behavior or canonical workflow changed.
-- When iterating to a bar: the stop condition was met, or the report names the unmet objectives and why.

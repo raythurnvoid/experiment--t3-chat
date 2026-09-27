@@ -75,8 +75,6 @@ Before ending any task that used Playwriter, work through this checklist and end
 2. Accessibility. QA friction is often an accessibility bug: a control that cannot be located by role and accessible name is also broken for assistive tech. Run `state.appPlaywriterHarness.auditAccessibility(...)` on the main route you drove; skip it only for pure data-readback tasks and say so. Fix small app-side gaps (missing accessible name, wrong role, missing label) in the same session when they sit in or next to code the task already touches; for bigger findings, report them or spawn a follow-up task instead of derailing the current one. Project rule: automation first. Report screen-reader-only gaps; fix them only when the user asks.
 3. Recipes. If you had to invent a working multi-step sequence for a flow no reference documents, record it in the nearest route reference so the next agent does not re-invent it.
 
-Doc fixes from this checklist ride along with the task's commit or a small separate commit; do not leave them uncommitted.
-
 # Run Playbooks Step By Step
 
 Use the playbooks in `references/` for manual but repeatable QA when changing live data makes a stable `@playwright/test` setup impractical.
