@@ -52,7 +52,6 @@
 		"@mastra/rag": "workspace:*",
 		"@modelcontextprotocol/client": "2.1.0",
 		"@monaco-editor/react": "4.7.0",
-		"@noble/hashes": "1.8.0",
 		"@openrouter/ai-sdk-provider": "2.10.0",
 		"@polar-sh/sdk": "^0.49.0",
 		"@remix-run/interaction": "workspace:*",
