@@ -193,18 +193,17 @@
 	}
 
 	/**
-	 * Opens an Ariakit hovercard (`MyHovercardAction`) and reports whether its card became visible.
+	 * Opens a hovercard (`MyHovercardAction`, from `native-popovers/hovercard`) and reports whether
+	 * its card became visible.
 	 *
-	 * Parks the pointer before hovering. Ariakit only opens the card while its global `mouseMoving`
-	 * flag is set, and that flag comes from `event.movementX || event.screenX - previousScreenX`.
-	 * CDP mouse events always report `movementX: 0`, so a move to the coordinates the pointer already
-	 * occupies reads as no movement and the card stays shut. Moving from elsewhere guarantees a
-	 * non-zero delta. `mousedown`, `mouseup`, `keydown` and `scroll` reset the flag, so hovering
-	 * straight after typing needs the same treatment.
+	 * Parks the pointer before hovering. The card opens on a pointer move over the anchor, and after
+	 * `Escape` it stays shut until the pointer leaves the anchor and comes back. A move to the
+	 * coordinates the pointer already occupies sends no pointer event, so moving from elsewhere first
+	 * makes the hover count.
 	 *
-	 * Pass `card` to wait for the portalled content. Scope follow-up clicks to that selector: the same
-	 * action is often rendered a second time outside the portal inside a `hidden` container, and a
-	 * bare `.first()` picks the hidden copy.
+	 * Pass `card` to wait for the card content. Scope follow-up clicks to that selector: the same
+	 * action is often rendered a second time inside a `hidden` container, and a bare `.first()` can
+	 * pick the hidden copy.
 	 */
 	async function hoverCard({ anchor, card, timeout = 5000 } = {}) {
 		if (!anchor) {

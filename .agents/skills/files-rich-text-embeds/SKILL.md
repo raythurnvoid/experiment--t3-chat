@@ -156,8 +156,8 @@ Five items sit next to the Youtube item in
 
 The commands live on `file_editor_rich_text_MediaInsertExtension`, which is configured with
 component-owned callbacks in `FileEditorRichTextInner` (the file-input click must run inside
-the user gesture). The picker pins `value=""` because Ariakit adopts the first item's value on
-mount when no value is given, which would fire `setValue` and insert an unpicked embed.
+the user gesture). The picker has no value: the select never picks an option by itself, so only
+a click or Enter on a row inserts an embed. It anchors to the caret through `anchorRect`.
 
 # Read-Only Documents
 

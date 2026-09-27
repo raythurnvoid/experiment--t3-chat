@@ -183,7 +183,7 @@ Use [references-submodules/README.md](references-submodules/README.md) as the ma
 - `references-submodules/assistant-ui/` is research-only. The app does not use `@assistant-ui/*` packages at runtime.
 - The app uses the published `file-selector` and `@atlaskit/pragmatic-drag-and-drop` packages. Their repositories under `references-submodules/` are source references only.
 - `packages/council` is a first-party app submodule (the Council Worker, repo `raythurnvoid/bonobo-senate-council`) — neither a vendored dependency nor a research reference. It sits outside the pnpm workspace on purpose and carries its own lockfile and tools; run `vp env exec pnpm --dir packages/council --ignore-workspace install` after a submodule update before using its scripts.
-- `packages/native-popovers` is a first-party submodule (repo `raythurnvoid/react-native-popovers`) and a pnpm workspace package. `MyTooltip` is built on its `native-popovers/tooltip` entry and `MyPopover` on its `native-popovers/popover` entry, and the React Compiler also compiles its `src/`. Its CSS layer `native_popovers` must stay after `base` in the `app.css` layer order. Change it in its own repo and update the gitlink here to point to the new submodule commit. If pushing both repos, push the submodule first.
+- `packages/native-popovers` is a first-party submodule (repo `raythurnvoid/react-native-popovers`) and a pnpm workspace package. `MyTooltip`, `MyPopover`, `MyMenu`, `MyContextMenu`, `MyHoverCard`, `MySelect`, `MySearchSelect`, and `MyCombobox` are built on its `native-popovers/tooltip`, `/popover`, `/menu`, `/hovercard`, `/select`, and `/combobox` entries, and the React Compiler also compiles its `src/`. Its CSS layer `native_popovers` must stay after `base` in the `app.css` layer order. Change it in its own repo and update the gitlink here to point to the new submodule commit. If pushing both repos, push the submodule first.
 
 ## Third-party documentation research
 
@@ -1098,17 +1098,17 @@ For the current sidebar-row pattern, inspect both `packages/app/src/components/a
 }
 ```
 
-## Ariakit composites with inline row actions
+## Select rows with inline row actions
 
-When a `MySelectItem` or `MySearchSelectItem` row contains secondary buttons, use the corrected wiring below. `packages/app/src/components/files/file-editor/file-editor-sidebar/file-editor-sidebar-agent.tsx` shows the composed behavior, but do not copy its current raw selector or `HTMLElement` guard.
+When a `MySearchSelectItem` row contains secondary buttons, use the wiring below. A plain `MySelect` has no row actions today. If one needs them, attach the same `useSelectItemActive` hook to `MySelect` first. `packages/app/src/components/files/file-editor/file-editor-sidebar/file-editor-sidebar-agent.tsx` shows it in the Past chats picker. The selects come from `native-popovers/select`, with virtual focus: DOM focus stays on the listbox or the search input, and the active option has `data-active-item`.
 
-- Keep the composite item as the primary action.
+- Keep the option as the primary action.
 - Mark secondary buttons with a typed component-owned `data-*` attribute. Gate `hideOnClick` and `setValueOnClick` with a callback typed from the item prop contract.
-- Prevent action `mousedown` from moving composite focus.
-- Keep action buttons out of the tab order unless their row is the active composite item.
+- Prevent action `mousedown` from moving focus out of the list.
+- Keep action buttons out of the tab order unless their row is the active option. Read that with `MySearchSelect.useSelectItemActive(value)`: it renders the row again only when its answer changes. The library's own parts never subscribe like this.
 - For a toggle, expose its pressed state and use a dynamic action label. Do not use `aria-pressed` for one-shot or paired commands that do not expose a persistent pressed state.
-- Use the wrapper's attached store hooks instead of importing Ariakit context/store hooks into feature code.
-- When a select composite has no current selection, pin `value=""` instead of leaving it uncontrolled. An uncontrolled Ariakit select adopts the first item's value on mount and fires `setValue` — a pick nobody made (see the pinned `value=""` in `file-editor-rich-text-media-insert.tsx`).
+- Enter and Space on a focused action button run the button, not the option: the list reads keys only on its own focus owner.
+- A select never picks an option by itself. Pin `value=""` only when no option should ever show as chosen (an action list such as the web browser file chooser).
 
 ```tsx
 type ThreadRow_Props = {
@@ -1125,15 +1125,7 @@ const ThreadRow = memo(function ThreadRow(props: ThreadRow_Props) {
 	const { rowValue, starred, onStarredChange } = props;
 	const starButtonLabel = starred ? "Remove from favorites" : "Add to favorites";
 
-	const selectStore = MySearchSelect.useStore();
-	const isActiveItem =
-		MySearchSelect.useStoreState(selectStore, (state) => {
-			if (!state?.activeId) {
-				return false;
-			}
-
-			return selectStore.item(state.activeId)?.value === rowValue;
-		}) ?? false;
+	const isActiveItem = MySearchSelect.useSelectItemActive(rowValue);
 
 	const handleItemClickBehavior: NonNullable<MySearchSelectItem_Props["setValueOnClick"]> = (event) => {
 		const target = event.target;
