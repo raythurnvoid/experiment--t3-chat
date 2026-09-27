@@ -131,17 +131,7 @@ const FileEditorSidebarAgentThreadPickerItem = memo(function FileEditorSidebarAg
 ) {
 	const { value, title, isOptimistic, starred, archived, unread, lastMessageAt, onStarredChange, onArchiveChange } =
 		props;
-	const selectStore = MySearchSelect.useStore();
-
-	const isActiveItem =
-		MySearchSelect.useStoreState(selectStore, (state) => {
-			if (!state?.activeId) {
-				return false;
-			}
-
-			const activeItem = selectStore.item(state.activeId);
-			return activeItem?.value === value;
-		}) ?? false;
+	const isActiveItem = MySearchSelect.useSelectItemActive(value);
 
 	const actionTabIndex = isActiveItem ? 0 : -1;
 
@@ -150,10 +140,12 @@ const FileEditorSidebarAgentThreadPickerItem = memo(function FileEditorSidebarAg
 
 	const handleItemClickBehavior: NonNullable<MySearchSelectItem_Props["setValueOnClick"]> = (event) => {
 		const target = event.target;
-		if (!(target instanceof HTMLElement)) {
+		if (!(target instanceof Element)) {
 			return true;
 		}
-		return !target.closest("[data-file-editor-sidebar-agent-thread-picker-action]");
+		return !target.closest(
+			`[${"data-file-editor-sidebar-agent-thread-picker-action" satisfies keyof FileEditorSidebarAgentThreadPickerItem_CustomAttributes}]`,
+		);
 	};
 
 	const handleActionMouseDown = (event: MouseEvent<HTMLButtonElement>) => {

@@ -1,14 +1,20 @@
 import "./my-search-select.css";
 
-import * as Ariakit from "@ariakit/react";
+import { SelectItem, SelectList, SelectSearch, type SelectListProps, type SelectSearchProps } from "native-popovers/select";
 import { memo } from "react";
 import type { ExtractStrict } from "type-fest";
 
-import { MyComboboxInputControl } from "@/components/my-combobox.tsx";
-import { MyInput, MyInputArea, MyInputBackground, MyInputBox } from "@/components/my-input.tsx";
+import {
+	MyInput,
+	MyInputArea,
+	MyInputBackground,
+	MyInputBox,
+	type MyInputControl_ClassNames,
+} from "@/components/my-input.tsx";
 import {
 	MySelect,
 	MySelectItem,
+	type MySelect_Props,
 	type MySelectItem_Props,
 	MySelectLabel,
 	type MySelectLabel_Props,
@@ -31,30 +37,19 @@ export type MySearchSelectItem_Props = Omit<MySelectItem_Props, ExtractStrict<ke
 export const MySearchSelectItem = memo(function MySearchSelectItem(props: MySearchSelectItem_Props) {
 	const { className, ...rest } = props;
 
-	return (
-		<MySelectItem
-			className={cn("MySearchSelectItem" satisfies MySearchSelectItem_ClassNames, className)}
-			render={<Ariakit.ComboboxItem />}
-			{...rest}
-		/>
-	);
+	return <MySelectItem className={cn("MySearchSelectItem" satisfies MySearchSelectItem_ClassNames, className)} {...rest} />;
 });
 // #endregion item
 
 // #region list
 export type MySearchSelectList_ClassNames = "MySearchSelectList";
 
-export type MySearchSelectList_Props = Ariakit.ComboboxListProps;
+export type MySearchSelectList_Props = SelectListProps;
 
 export const MySearchSelectList = memo(function MySearchSelectList(props: MySearchSelectList_Props) {
 	const { className, ...rest } = props;
 
-	return (
-		<Ariakit.ComboboxList
-			className={cn("MySearchSelectList" satisfies MySearchSelectList_ClassNames, className)}
-			{...rest}
-		/>
-	);
+	return <SelectList className={cn("MySearchSelectList" satisfies MySearchSelectList_ClassNames, className)} {...rest} />;
 });
 // #endregion list
 
@@ -64,17 +59,25 @@ export type MySearchSelectSearch_ClassNames = "MySearchSelectSearch";
 export type MySearchSelectSearch_Props = {
 	className?: string;
 	inputClassName?: string;
-} & Omit<Ariakit.ComboboxProps, ExtractStrict<keyof Ariakit.ComboboxProps, "className" | "render">>;
+} & Omit<SelectSearchProps, ExtractStrict<keyof SelectSearchProps, "className">>;
 
+/**
+ * The search input at the top of the list. The select moves focus here when it opens, so it needs no
+ * `autoFocus`. The caller filters the options from its `onChange` or its controlled `value`.
+ */
 export const MySearchSelectSearch = memo(function MySearchSelectSearch(props: MySearchSelectSearch_Props) {
-	const { className, inputClassName, autoFocus = true, autoSelect = true, ...rest } = props;
+	const { className, inputClassName, autoSelect = true, ...rest } = props;
 
 	return (
 		<div className={cn("MySearchSelectSearch" satisfies MySearchSelectSearch_ClassNames, className)}>
 			<MyInput variant="floating">
 				<MyInputBackground />
 				<MyInputArea>
-					<MyComboboxInputControl autoFocus={autoFocus} autoSelect={autoSelect} className={inputClassName} {...rest} />
+					<SelectSearch
+						className={cn("MyInputControl" satisfies MyInputControl_ClassNames, inputClassName)}
+						autoSelect={autoSelect}
+						{...rest}
+					/>
 				</MyInputArea>
 				<MyInputBox />
 			</MyInput>
@@ -178,23 +181,22 @@ export const MySearchSelectLabel = memo(function MySearchSelectLabel(props: MySe
 // #region root
 export type MySearchSelect_ClassNames = "MySearchSelect";
 
-export type MySearchSelect_Props = Ariakit.SelectProviderProps<string>;
+export type MySearchSelect_Props = MySelect_Props<string>;
 
 const MySearchSelect = Object.assign(
 	memo(function MySearchSelect(props: MySearchSelect_Props) {
 		const { children, ...rest } = props;
 
-		return (
-			<Ariakit.ComboboxProvider>
-				<MySelect {...rest}>{children}</MySelect>
-			</Ariakit.ComboboxProvider>
-		);
+		return <MySelect {...rest}>{children}</MySelect>;
 	}),
 	{
-		useStore: () => {
-			return MySelect.useStore();
+		/**
+		 * Whether the option with this value is the active one. Use it inside an option, for example to
+		 * keep a row's action buttons out of the Tab order unless the row is active.
+		 */
+		useSelectItemActive: function useSelectItemActive(value: string) {
+			return SelectItem.useActive(value);
 		},
-		useStoreState: MySelect.useStoreState,
 	},
 );
 

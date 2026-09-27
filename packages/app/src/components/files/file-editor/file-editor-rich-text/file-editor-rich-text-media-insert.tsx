@@ -135,14 +135,11 @@ export const FileEditorRichTextMediaEmbedPicker = memo(function FileEditorRichTe
 	});
 
 	return (
-		// The value is pinned to "" because Ariakit adopts the first item's value on mount when
-		// no value is given, and that would fire `setValue` — inserting an embed nobody picked
-		// and closing the picker in the frame it opened.
-		<MySearchSelect open value="" setOpen={handleSetOpen} setValue={handleSetValue}>
+		<MySearchSelect open setOpen={handleSetOpen} setValue={handleSetValue}>
 			<MySearchSelectPopover
 				className={cn("FileEditorRichTextMediaEmbedPicker" satisfies FileEditorRichTextMediaEmbedPicker_ClassNames)}
 				aria-label="Embed a workspace file"
-				getAnchorRect={() => anchorRect}
+				anchorRect={anchorRect}
 			>
 				<MySearchSelectPopoverScrollableArea>
 					<MySearchSelectPopoverContent>
