@@ -1081,7 +1081,7 @@ export const restrict_node = mutation({
 			userId: userAuth.id,
 			membership,
 			roots: [{ node, oldTreePath: node.treePath }],
-			budget: { nodes: files_subtree_ops_STEP_MAX_NODES },
+			budget: { nodes: files_subtree_ops_STEP_MAX_NODES, hasPaginated: false },
 			now,
 		});
 
@@ -1163,7 +1163,7 @@ export const unrestrict_node = mutation({
 			userId: userAuth.id,
 			membership,
 			roots: [{ node, oldTreePath: node.treePath }],
-			budget: { nodes: files_subtree_ops_STEP_MAX_NODES },
+			budget: { nodes: files_subtree_ops_STEP_MAX_NODES, hasPaginated: false },
 			now: Date.now(),
 		});
 

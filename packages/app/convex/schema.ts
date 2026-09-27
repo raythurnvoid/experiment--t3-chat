@@ -448,8 +448,9 @@ const files_subtree_op_shared_fields = {
 	blockedByOpId: v.union(v.id("files_subtree_ops"), v.null()),
 	rootNodeIds: v.array(v.id("files_nodes")),
 	/**
-	 * The `treePath` of each root where readers see it now. A new op overlaps this op when one of its
-	 * paths starts with one of these, or the other way around.
+	 * Where readers see the roots now: the `treePath` of each root, or, for a restore, at most 64 folder
+	 * paths that hold its roots (up to `/`). A new op overlaps this op when one of its paths starts with
+	 * one of these, or the other way around.
 	 */
 	treePaths: v.array(v.string()),
 };
@@ -2031,6 +2032,9 @@ const app_convex_schema = defineSchema({
 			"name",
 			"archiveOperationId",
 		])
+		// The subtree op walks page children with this index. It has no `archiveOperationId`, so an archive
+		// stamp does not move a child inside it. Convex adds `_creationTime` at the end.
+		.index("by_organization_workspace_parent_name", ["organizationId", "workspaceId", "parentId", "name"])
 		.index("by_organization_workspace_parent_archiveOperation_name", [
 			"organizationId",
 			"workspaceId",
@@ -3053,7 +3057,13 @@ const app_convex_schema = defineSchema({
 		 */
 		checkCursor: v.object({ rootIndex: v.number(), treePath: v.string() }),
 		/**
-		 * The archive walk has no cursor. It only remembers which named item it is on.
+		 * Restore discovery: at most 64 paths that hold every top item found so far. The op gets them for
+		 * its overlap checks when discovery ends.
+		 */
+		discoverTreePaths: v.array(v.string()),
+		/**
+		 * Archive: how many named items the apply phase has handled. The walk inside them starts only
+		 * after all of them left the tree.
 		 */
 		applyRootIndex: v.number(),
 		/**
@@ -3166,20 +3176,48 @@ const app_convex_schema = defineSchema({
 		 * cursor during a pass is then still found.
 		 */
 		passWrote: v.boolean(),
+		/**
+		 * The next free `sequence` for the op's queue rows.
+		 */
+		sequence: v.number(),
 		updatedAt: v.number(),
 	}).index("by_op", ["opId"]),
 
 	/**
-	 * The nodes an op still has to walk, oldest first. While `nodeDone` is false, the step first
-	 * changes the node itself, like an archive stamps a named folder. Then it walks the node's
-	 * children. `cursor` is the last child name done, or null to start from the first child.
+	 * The nodes an op still has to walk. The step takes the row with the highest `sequence` first. The
+	 * folders found on one page get the next numbers, the first folder the highest. So the walk goes
+	 * into the first folder of a page before its siblings, and the queue holds about one page per level.
+	 *
+	 * While `nodeDone` is false, the step first handles the node itself: the archive check checks a named
+	 * item, and the restore lands a top item. Then it walks the node's children in the order of the
+	 * `by_organization_workspace_parent_name` index.
 	 */
 	files_subtree_op_nodes: defineTable({
 		opId: v.id("files_subtree_ops"),
+		sequence: v.number(),
 		nodeId: v.id("files_nodes"),
 		nodeDone: v.boolean(),
-		cursor: v.union(v.string(), v.null()),
-	}).index("by_op", ["opId"]),
+		/**
+		 * Where the next page of children starts. Null starts from the first child. `after` starts
+		 * after the child with this name and creation time. `tie` pages through the children that share
+		 * one name and one creation time, because only `pageCursor` can tell them apart.
+		 */
+		cursor: v.union(
+			v.null(),
+			v.object({ mode: v.literal("after"), name: v.string(), creationTime: v.number() }),
+			v.object({
+				mode: v.literal("tie"),
+				name: v.string(),
+				creationTime: v.number(),
+				pageCursor: v.union(v.string(), v.null()),
+			}),
+		),
+		/**
+		 * Children of the page already read that a step did not reach, at most one page. The next step
+		 * takes them first, before it reads the next page.
+		 */
+		pending: v.array(v.id("files_nodes")),
+	}).index("by_op_sequence", ["opId", "sequence"]),
 	// #endregion files subtree ops
 
 	// #region plugins core

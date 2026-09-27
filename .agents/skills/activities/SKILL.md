@@ -115,14 +115,19 @@ See the [plugin runtime spec](../plugin-system/SKILL.md).
 - An archive or restore job (`files_archive_runs`) is not stopped by its 30-minute idle deadline.
   Recovery moves the deadline and schedules the step again (`files_subtree_ops_db_recover`). A restore
   that waits on a name clash is `awaiting_input` until `resolve_conflicts`, with a 24-hour deadline
-  like a paused paste. Only that wait can time out (`timed_out`) or be stopped. Its Stop ends the whole
+  like a paused paste. The clash can be of a top item or of an item inside a restored folder. Only that wait can time out (`timed_out`) or be stopped. Its Stop ends the whole
   Unarchive request, with the queued restore jobs of that request. The done part stays archived or
   restored. The restore jobs of one Unarchive request run one at a time: the ones after the first
   start as `queued`, with `feedVisible: false`, a 24-hour deadline, and no scheduled step. A restore
-  also waits as `queued` while it overlaps another subtree op. When an op ends,
+  also waits as `queued` while it overlaps another subtree op. Its op marks at most 64 paths busy, so
+  a restore of many top items can mark a whole shared folder, or `/`, busy. When an op ends,
   `files_subtree_ops_db_delete` starts each waiter that overlaps nothing any more: promote marks it
-  `running`, shows its card, and schedules its first step. A queued job whose deadline passes gets 24
-  more hours.
+  `running`, shows its card, and schedules its first step. Each waiter's check reads every op of the
+  workspace, so the delete stops near the transaction limits and `files_subtree_ops.release_waiters`
+  goes on with the rest. A queued job whose deadline passes gets 24 more hours.
+- A copy that runs during a restore copies the items that are active when it reads them. Items the
+  restore has not brought back yet are not copied. This holds for a copy into another workspace too,
+  which never waits for an op of the source workspace.
 - A move or scope job (`files_subtree_ops`, source kind `files_subtree_op`) has a 5-minute deadline
   (`files_subtree_ops_RECOVER_AFTER_MS`). `recover_expired` never stops it. It moves the deadline and
   schedules the step again. Each scheduled step carries a step number, so an old step that still runs

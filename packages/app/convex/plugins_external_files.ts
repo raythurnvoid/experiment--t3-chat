@@ -299,7 +299,7 @@ export const ensure_writer = internalMutation({
 				userId: serviceGrant.actorUserId,
 				membership: null,
 				roots: [{ node: scopeRoot, oldTreePath: scopeRoot.treePath }],
-				budget: { nodes: files_subtree_ops_STEP_MAX_NODES },
+				budget: { nodes: files_subtree_ops_STEP_MAX_NODES, hasPaginated: false },
 				now: Date.now(),
 			});
 			// Restricting an empty folder changes access too.

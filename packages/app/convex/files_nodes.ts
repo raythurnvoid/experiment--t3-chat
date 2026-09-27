@@ -4483,11 +4483,14 @@ export const rename_node = mutation({
 			return Result({ _nay: { message: "Not found" } });
 		}
 
+		// Use the live scope in the checks before the preflight too. While a job runs, the stored scope can
+		// be old, so a check could refuse a grant or allow a write it should not.
+		const withLiveScope = await db_live_scope_reader(ctx, membership);
 		const authorized = await access_control_db_authorize_membership(ctx, {
 			userAuth,
 			membership,
 			permission: "content.write",
-			fileNode,
+			fileNode: await withLiveScope(fileNode),
 		});
 		if (authorized._nay) {
 			return authorized;
@@ -4530,7 +4533,7 @@ export const rename_node = mutation({
 				userAuth,
 				membership,
 				permission: "content.write",
-				fileNode: existing,
+				fileNode: await withLiveScope(existing),
 			});
 			if (authorizedSegment._nay) return authorizedSegment;
 			if (existing.kind !== "folder") return Result({ _nay: { message: "This folder already exists." } });
@@ -4561,7 +4564,7 @@ export const rename_node = mutation({
 					userAuth,
 					membership,
 					permission: "content.write",
-					fileNode: activeSiblingConflict,
+					fileNode: await withLiveScope(activeSiblingConflict),
 				});
 				if (authorizedConflict._nay) {
 					return Result({ _nay: { name: "nay", message: "Permission denied" } });
@@ -4612,6 +4615,47 @@ function fits_move_read_budget(budget: { readDocumentCount: number; readBytes: n
 	budget.readDocumentCount += 1;
 	budget.readBytes += files_get_utf8_byte_size(JSON.stringify(value)) + 128;
 	return budget.readDocumentCount <= MAX_MOVE_DOCUMENT_COUNT && budget.readBytes <= MAX_MOVE_BYTES;
+}
+
+/**
+ * A scope op or a move op writes the new scope to the items inside in later steps. Until then an item
+ * can store its old scope. While one runs, the returned function gives a node the scope of its
+ * parents, so a permission check asks about the scope the node really has.
+ */
+async function db_live_scope_reader(
+	ctx: QueryCtx | MutationCtx,
+	args: Pick<Doc<"organizations_workspaces_users">, "organizationId" | "workspaceId">,
+) {
+	const findOp = (kind: "scope" | "move") =>
+		ctx.db
+			.query("files_subtree_ops")
+			.withIndex("by_organization_workspace_kind", (q) =>
+				q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("kind", kind),
+			)
+			.first();
+	const isScopeStale = (await findOp("scope")) !== null || (await findOp("move")) !== null;
+	const scopesInside = new Map<Id<"files_nodes">, Id<"files_nodes"> | null>();
+	async function readScopeInside(folderId: Doc<"files_nodes">["parentId"]): Promise<Id<"files_nodes"> | null> {
+		if (folderId === files_ROOT_ID) return null;
+		let scope = scopesInside.get(folderId);
+		if (scope === undefined) {
+			const folder = await ctx.db.get("files_nodes", folderId);
+			// A restrict or unrestrict writes the folder's own scope in the request, so it is never old.
+			scope = !folder
+				? null
+				: folder.restrictedScopeNodeId === folder._id
+					? folder._id
+					: await readScopeInside(folder.parentId);
+			scopesInside.set(folderId, scope);
+		}
+		return scope;
+	}
+
+	return async function withLiveScope(node: Doc<"files_nodes">) {
+		if (!isScopeStale || node.restrictedScopeNodeId === node._id) return node;
+		const scope = await readScopeInside(node.parentId);
+		return scope === node.restrictedScopeNodeId ? node : { ...node, restrictedScopeNodeId: scope };
+	};
 }
 
 /**
@@ -4671,14 +4715,19 @@ export async function files_nodes_db_preflight_move(
 	const readBudget = args.readBudget ?? { readDocumentCount: 0, readBytes: 0 };
 	const nodesById = new Map<Id<"files_nodes">, Doc<"files_nodes">>();
 	let readBudgetExceeded = false;
+
+	// Give each node read here its live scope. Every permission check below then asks about the scope the
+	// node really has, and the planned scopes follow it.
+	const withLiveScope = await db_live_scope_reader(ctx, membership);
+
 	async function readNode(nodeId: Id<"files_nodes">) {
 		const cached = nodesById.get(nodeId);
 		if (cached) return cached;
-		const node = await ctx.db.get("files_nodes", nodeId);
-		if (node) {
-			readBudgetExceeded ||= !fits_move_read_budget(readBudget, node);
-			nodesById.set(nodeId, node);
-		}
+		const stored = await ctx.db.get("files_nodes", nodeId);
+		if (!stored) return null;
+		readBudgetExceeded ||= !fits_move_read_budget(readBudget, stored);
+		const node = await withLiveScope(stored);
+		nodesById.set(nodeId, node);
 		return node;
 	}
 
@@ -5068,7 +5117,7 @@ export async function files_nodes_db_preflight_move(
 			continue;
 		}
 
-		const occupant = await ctx.db
+		const storedOccupant = await ctx.db
 			.query("files_nodes")
 			.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
 				q
@@ -5079,9 +5128,11 @@ export async function files_nodes_db_preflight_move(
 					.eq("archiveOperationId", null),
 			)
 			.first();
-		if (occupant && !fits_move_read_budget(readBudget, occupant)) {
+		if (storedOccupant && !fits_move_read_budget(readBudget, storedOccupant)) {
 			return Result({ _nay: { name: "move_too_large", message: "This move is too large. Select fewer items." } });
 		}
+		const occupant =
+			storedOccupant && (nodesById.get(storedOccupant._id) ?? (await withLiveScope(storedOccupant)));
 		if (occupant && !nodesById.has(occupant._id)) nodesById.set(occupant._id, occupant);
 
 		if (intent.occupant.kind === "empty") {
@@ -5189,9 +5240,10 @@ export async function files_nodes_db_preflight_move(
 				if (child.archiveOperationId === null) {
 					return Result({ _nay: { message: "Cannot replace a non-empty folder." } });
 				}
-				nodesById.set(child._id, child);
-				archivedDescendants.set(child._id, child);
-				descendants.push(child);
+				const liveChild = await withLiveScope(child);
+				nodesById.set(child._id, liveChild);
+				archivedDescendants.set(child._id, liveChild);
+				descendants.push(liveChild);
 			}
 		}
 	}
@@ -5228,16 +5280,6 @@ export async function files_nodes_db_preflight_move(
 		)
 		.map((intent) => nodesById.get(intent.nodeId)!);
 
-	// A scope op writes a folder's new scope to the items inside in later steps. Until then an item can
-	// store its old scope. So while one runs, read the scope from the parents instead. Otherwise an item
-	// could leave a folder that was just restricted without the Can manage check below.
-	const scopeOp = await ctx.db
-		.query("files_subtree_ops")
-		.withIndex("by_organization_workspace_kind", (q) =>
-			q.eq("organizationId", membership.organizationId).eq("workspaceId", membership.workspaceId).eq("kind", "scope"),
-		)
-		.first();
-
 	for (const node of new Map([...affectedNodes, ...archivedDescendants]).values()) {
 		const final = finalById.get(node._id)!;
 		// Named nodes, archived descendants, and replaced occupants are all removed or hidden, so each
@@ -5258,21 +5300,9 @@ export async function files_nodes_db_preflight_move(
 			});
 		}
 
-		let scope = node.restrictedScopeNodeId;
-		if (scopeOp && scope !== node._id) {
-			scope = null;
-			let parentId = node.parentId;
-			while (parentId !== files_ROOT_ID) {
-				const parent = await ctx.db.get("files_nodes", parentId);
-				if (!parent) break;
-				// A restrict or unrestrict writes the folder's own scope in the request, so it is never old.
-				if (parent.restrictedScopeNodeId === parent._id) {
-					scope = parent._id;
-					break;
-				}
-				parentId = parent.parentId;
-			}
-		}
+		// `readNode` gave this node its live scope. Without it, an item could leave a folder that was just
+		// restricted, or just moved into a restricted one, without the checks below.
+		const scope = node.restrictedScopeNodeId;
 		const needsContentWrite = intentsById.has(node._id) || archiveNodes.has(node._id);
 
 		if (scope && !checkedWriteScopes.has(scope) && affectedNodes.has(node._id) && needsContentWrite) {
@@ -5618,7 +5648,7 @@ export async function files_nodes_db_apply_move(
 		userId: plan.userId,
 		membership: plan.membership,
 		roots,
-		budget: { nodes: files_subtree_ops_STEP_MAX_NODES },
+		budget: { nodes: files_subtree_ops_STEP_MAX_NODES, hasPaginated: false },
 		now: Date.now(),
 	});
 }
@@ -6049,7 +6079,7 @@ export const archive_nodes = mutation({
 			rootNodeIds: rootFileNodes.map((node) => node._id),
 			treePaths: rootFileNodes.map((node) => node.treePath),
 			pendingUpdateCleanup: null,
-			budget: { nodes: files_archive_runs_STEP_MAX_NODES },
+			budget: { nodes: files_archive_runs_STEP_MAX_NODES, hasPaginated: false },
 			previousRunId: null,
 		});
 	},
@@ -6167,7 +6197,7 @@ export const unarchive_nodes = mutation({
 			topTreePathByOperationId.set(archiveOperationId, (topNode ?? fileNode).treePath);
 		}
 
-		const budget = { nodes: files_archive_runs_STEP_MAX_NODES };
+		const budget = { nodes: files_archive_runs_STEP_MAX_NODES, hasPaginated: false };
 		let firstJob = null;
 		let previousJob = null;
 		for (const [archiveOperationId, topTreePath] of [...topTreePathByOperationId].toSorted((a, b) =>

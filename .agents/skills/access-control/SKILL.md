@@ -361,10 +361,16 @@ Rules that are easy to miss, all of which were real holes:
   write access. A hidden restricted child can refuse the whole move with `Permission denied`, without
   exposing its name. While a move op runs, a child can still store an old `treePath`. So preflight
   also looks under the old and new paths of each running move op, and keeps only restricted folders
-  whose live `parentId` chain leads to the moved folder. While a scope op runs, a child can still
-  store an old `restrictedScopeNodeId`. So preflight reads the scope of each moved item from its live
-  parents instead (the nearest folder that is its own restricted root). Otherwise an item could leave
-  a folder that was just restricted without the Can manage check, and stay open after the op ends.
+  whose live `parentId` chain leads to the moved folder. While a scope op or a move op runs, a child
+  can still store an old `restrictedScopeNodeId`. So preflight reads the scope of each item it checks
+  from its live parents instead (the nearest folder that is its own restricted root): the moved items,
+  the item in the way, and the items inside a folder it replaces. Every check of the move uses that
+  scope: source, destination, content write, service account, and Can manage. So do the checks
+  `rename_node` makes before the preflight. Otherwise an item could leave a folder that was just
+  restricted, or a folder just moved into a restricted one, without the check. Once out, the op never
+  reaches it, so it would stay open for good. For these checks, a child of an inner folder that was
+  just unrestricted is under the outer restricted folder at once, even while it still stores the inner
+  folder.
   A move that keeps the same parent and path does not change descendants. A
   name-only rename in the same saved parent carries nested shares without asking for write access to
   each one. Reparenting through Rename uses the same nested-scope checks as other moves.

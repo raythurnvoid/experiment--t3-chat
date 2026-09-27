@@ -6,6 +6,11 @@
 // Each step reads the parent again and writes each child from it. So a person may move, rename, or
 // archive an item inside while the op runs. The walk follows the live tree and never puts it back.
 //
+// The walk takes the queue row with the highest `sequence` first. The folders of one page get the next
+// numbers, so the walk goes into them before it goes back to the folder they came from, and the queue
+// stays small. Each row keeps where its next page starts and the children a full step did not reach
+// (`pending`).
+//
 // Move, rename, archive, and restrict start at once. Copy and restore wait while an op they overlap
 // is still there. A waiting op is `queued`. It writes nothing until the op before it ends.
 
@@ -118,7 +123,7 @@ export async function files_subtree_ops_db_insert(
 	args: { op: WithoutSystemFields<Doc<"files_subtree_ops">>; now: number },
 ) {
 	const opId = await ctx.db.insert("files_subtree_ops", args.op);
-	await ctx.db.insert("files_subtree_op_walks", { opId, step: 0, passWrote: false, updatedAt: args.now });
+	await ctx.db.insert("files_subtree_op_walks", { opId, step: 0, passWrote: false, sequence: 0, updatedAt: args.now });
 	return opId;
 }
 
@@ -134,68 +139,214 @@ export async function files_subtree_ops_db_schedule_step(
 	await ctx.scheduler.runAfter(60_000, internal.files_subtree_ops.advance, { opId: args.opId, step });
 }
 
-export async function files_subtree_ops_db_enqueue_node(
+export async function files_subtree_ops_db_insert_node(
 	ctx: MutationCtx,
-	args: { opId: Id<"files_subtree_ops">; nodeId: Id<"files_nodes">; nodeDone: boolean },
+	args: { opId: Id<"files_subtree_ops">; sequence: number; nodeId: Id<"files_nodes">; nodeDone: boolean },
 ) {
-	await ctx.db.insert("files_subtree_op_nodes", {
-		opId: args.opId,
-		nodeId: args.nodeId,
-		nodeDone: args.nodeDone,
-		cursor: null,
-	});
+	await ctx.db.insert("files_subtree_op_nodes", { ...args, cursor: null, pending: [] });
+}
+
+/**
+ * Queue the nodes with the next free numbers. The step takes the highest number first, so the first
+ * node gets the highest number of the block, and the nodes run in the order given.
+ */
+export async function files_subtree_ops_db_enqueue_nodes(
+	ctx: MutationCtx,
+	args: { opId: Id<"files_subtree_ops">; nodes: Array<{ nodeId: Id<"files_nodes">; nodeDone: boolean }> },
+) {
+	if (args.nodes.length === 0) return;
+
+	const walk = await db_require_walk(ctx, args.opId);
+	await ctx.db.patch("files_subtree_op_walks", walk._id, { sequence: walk.sequence + args.nodes.length });
+	for (const [index, node] of args.nodes.entries()) {
+		await files_subtree_ops_db_insert_node(ctx, {
+			opId: args.opId,
+			sequence: walk.sequence + args.nodes.length - 1 - index,
+			...node,
+		});
+	}
+}
+
+/**
+ * Keep the numbers 0 to `count - 1` for rows that `files_subtree_ops_db_insert_node` adds later.
+ * Only an empty queue may start its numbers again, so no row holds one of them.
+ */
+export async function files_subtree_ops_db_reserve_sequences(
+	ctx: MutationCtx,
+	args: { opId: Id<"files_subtree_ops">; count: number },
+) {
+	const walk = await db_require_walk(ctx, args.opId);
+	await ctx.db.patch("files_subtree_op_walks", walk._id, { sequence: args.count });
 }
 
 export async function files_subtree_ops_db_first_node(ctx: MutationCtx, opId: Id<"files_subtree_ops">) {
 	return await ctx.db
 		.query("files_subtree_op_nodes")
-		.withIndex("by_op", (q) => q.eq("opId", opId))
+		.withIndex("by_op_sequence", (q) => q.eq("opId", opId))
+		.order("desc")
 		.first();
 }
 
+type ChildCursor = Doc<"files_subtree_op_nodes">["cursor"];
+
 /**
- * One page of a folder's children in name order, active and archived. Archived items can share a
- * name, and a page never splits them, so the next page can start after the last name. `cursor` is
- * null when the page reaches the last child.
+ * One page of a folder's children, active and archived, in the order of the
+ * `by_organization_workspace_parent_name` index: by name, then by creation time. `cursor` is where the
+ * next page starts. `isDone` is true when this page reaches the last child. Returns null when the page
+ * needs a paginated read and this mutation already did one.
  */
-export async function files_subtree_ops_db_list_children(
+async function db_read_children(
 	ctx: MutationCtx,
-	args: { folder: Doc<"files_nodes">; cursor: string | null },
-) {
+	args: { folder: Doc<"files_nodes">; cursor: ChildCursor; budget: { hasPaginated: boolean } },
+): Promise<{ children: Doc<"files_nodes">[]; cursor: ChildCursor; isDone: boolean } | null> {
 	const { folder, cursor } = args;
-	const docs = await ctx.db
-		.query("files_nodes")
-		.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) => {
-			const children = q
-				.eq("organizationId", folder.organizationId)
-				.eq("workspaceId", folder.workspaceId)
-				.eq("parentId", folder._id);
-			return cursor === null ? children : children.gt("name", cursor);
-		})
-		.take(PAGE_SIZE + 1);
+
+	if (cursor?.mode === "tie") {
+		// Convex allows one paginated query per mutation. A step that already did one ends here.
+		if (args.budget.hasPaginated) return null;
+		args.budget.hasPaginated = true;
+		const page = await ctx.db
+			.query("files_nodes")
+			.withIndex("by_organization_workspace_parent_name", (q) =>
+				q
+					.eq("organizationId", folder.organizationId)
+					.eq("workspaceId", folder.workspaceId)
+					.eq("parentId", folder._id)
+					.eq("name", cursor.name)
+					.eq("_creationTime", cursor.creationTime),
+			)
+			.paginate({ cursor: cursor.pageCursor, numItems: PAGE_SIZE });
+		return {
+			children: page.page,
+			cursor: page.isDone
+				? { mode: "after", name: cursor.name, creationTime: cursor.creationTime }
+				: { ...cursor, pageCursor: page.continueCursor },
+			isDone: false,
+		};
+	}
+
+	const docs =
+		cursor === null
+			? await ctx.db
+					.query("files_nodes")
+					.withIndex("by_organization_workspace_parent_name", (q) =>
+						q
+							.eq("organizationId", folder.organizationId)
+							.eq("workspaceId", folder.workspaceId)
+							.eq("parentId", folder._id),
+					)
+					.take(PAGE_SIZE + 1)
+			: await ctx.db
+					.query("files_nodes")
+					.withIndex("by_organization_workspace_parent_name", (q) =>
+						q
+							.eq("organizationId", folder.organizationId)
+							.eq("workspaceId", folder.workspaceId)
+							.eq("parentId", folder._id)
+							.eq("name", cursor.name)
+							.gt("_creationTime", cursor.creationTime),
+					)
+					.take(PAGE_SIZE + 1);
+	// One index range cannot start after a name and a creation time. So read the rest of the cursor's
+	// name group first, then the names after it.
+	if (cursor !== null && docs.length <= PAGE_SIZE) {
+		docs.push(
+			...(await ctx.db
+				.query("files_nodes")
+				.withIndex("by_organization_workspace_parent_name", (q) =>
+					q
+						.eq("organizationId", folder.organizationId)
+						.eq("workspaceId", folder.workspaceId)
+						.eq("parentId", folder._id)
+						.gt("name", cursor.name),
+				)
+				.take(PAGE_SIZE + 1 - docs.length)),
+		);
+	}
+
 	if (docs.length <= PAGE_SIZE) {
-		return { children: docs, cursor: null };
+		const last = docs.at(-1);
+		return {
+			children: docs,
+			cursor: last ? { mode: "after", name: last.name, creationTime: last._creationTime } : cursor,
+			isDone: true,
+		};
 	}
 
-	// Leave the name the next page starts with for that page. When the whole page has that one name,
-	// read all of it now.
-	const nextName = docs[PAGE_SIZE]!.name;
-	const children = docs.slice(0, PAGE_SIZE).filter((child) => child.name !== nextName);
+	// The next page starts after a name and a creation time, so it cannot start inside a group of
+	// children that share both. Leave the group of the first child after this page for the next page.
+	const next = docs[PAGE_SIZE]!;
+	const children = docs
+		.slice(0, PAGE_SIZE)
+		.filter((child) => child.name !== next.name || child._creationTime !== next._creationTime);
 	if (children.length > 0) {
-		return { children, cursor: children.at(-1)!.name };
+		const last = children.at(-1)!;
+		return { children, cursor: { mode: "after", name: last.name, creationTime: last._creationTime }, isDone: false };
 	}
 
-	const sameName = await ctx.db
-		.query("files_nodes")
-		.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
-			q
-				.eq("organizationId", folder.organizationId)
-				.eq("workspaceId", folder.workspaceId)
-				.eq("parentId", folder._id)
-				.eq("name", nextName),
-		)
-		.collect();
-	return { children: sameName, cursor: nextName };
+	// The group fills the whole page. Only a paginated read can go through it.
+	return await db_read_children(ctx, {
+		...args,
+		cursor: { mode: "tie", name: next.name, creationTime: next._creationTime, pageCursor: null },
+	});
+}
+
+/**
+ * The children a step handles next for a queue row: the pending ones first, then the next page. A
+ * pending child that somebody moved out of the folder or deleted meanwhile is left out. Returns null
+ * when the next page needs a paginated read and this mutation already did one.
+ */
+export async function files_subtree_ops_db_next_children(
+	ctx: MutationCtx,
+	args: { row: Doc<"files_subtree_op_nodes">; folder: Doc<"files_nodes">; budget: { hasPaginated: boolean } },
+) {
+	const { row, folder } = args;
+	if (row.pending.length === 0) {
+		return await db_read_children(ctx, { folder, cursor: row.cursor, budget: args.budget });
+	}
+
+	const pending = await Promise.all(row.pending.map((nodeId) => ctx.db.get("files_nodes", nodeId)));
+	return {
+		children: pending.filter((child): child is Doc<"files_nodes"> => child !== null && child.parentId === folder._id),
+		cursor: row.cursor,
+		isDone: false,
+	};
+}
+
+/**
+ * Save a queue row after a step handled the children from `files_subtree_ops_db_next_children`, or
+ * the first part of them. `pending` holds the ones the step did not reach. The folders the step found
+ * get the next numbers, so the walk goes into them before anything else in the queue. With
+ * `isRowFirst`, the row gets the number after them and runs before them.
+ */
+export async function files_subtree_ops_db_save_page(
+	ctx: MutationCtx,
+	args: {
+		row: Doc<"files_subtree_op_nodes">;
+		cursor: ChildCursor;
+		isDone: boolean;
+		pending: Array<Id<"files_nodes">>;
+		folderIds: Array<Id<"files_nodes">>;
+		isRowFirst: boolean;
+	},
+) {
+	await files_subtree_ops_db_enqueue_nodes(ctx, {
+		opId: args.row.opId,
+		nodes: args.folderIds.map((nodeId) => ({ nodeId, nodeDone: true })),
+	});
+	if (args.isDone && args.pending.length === 0) {
+		await ctx.db.delete("files_subtree_op_nodes", args.row._id);
+	} else if (args.isRowFirst) {
+		const walk = await db_require_walk(ctx, args.row.opId);
+		await ctx.db.patch("files_subtree_op_walks", walk._id, { sequence: walk.sequence + 1 });
+		await ctx.db.patch("files_subtree_op_nodes", args.row._id, {
+			cursor: args.cursor,
+			pending: args.pending,
+			sequence: walk.sequence,
+		});
+	} else {
+		await ctx.db.patch("files_subtree_op_nodes", args.row._id, { cursor: args.cursor, pending: args.pending });
+	}
 }
 
 /**
@@ -203,7 +354,11 @@ export async function files_subtree_ops_db_list_children(
  * already changed the roots. When the queue is empty, a pass ended. Walk again from the roots,
  * until a pass writes nothing.
  */
-async function db_rebuild_walk(ctx: MutationCtx, op: Doc<"files_subtree_ops">, budget: { nodes: number }) {
+async function db_rebuild_walk(
+	ctx: MutationCtx,
+	op: Doc<"files_subtree_ops">,
+	budget: { nodes: number; hasPaginated: boolean },
+) {
 	const walk = await db_require_walk(ctx, op._id);
 	let passWrote = walk.passWrote;
 	let isWritten = false;
@@ -220,11 +375,15 @@ async function db_rebuild_walk(ctx: MutationCtx, op: Doc<"files_subtree_ops">, b
 				break;
 			}
 			passWrote = false;
-			for (const rootNodeId of op.rootNodeIds) {
-				await files_subtree_ops_db_enqueue_node(ctx, { opId: op._id, nodeId: rootNodeId, nodeDone: true });
-			}
+			await files_subtree_ops_db_enqueue_nodes(ctx, {
+				opId: op._id,
+				nodes: op.rootNodeIds.map((nodeId) => ({ nodeId, nodeDone: true })),
+			});
 			continue;
 		}
+		// Count the row too. A step that only clears empty or deleted folders must still stop near the
+		// limits.
+		count += 1;
 
 		const folder = await ctx.db.get("files_nodes", row.nodeId);
 		if (!folder) {
@@ -232,34 +391,38 @@ async function db_rebuild_walk(ctx: MutationCtx, op: Doc<"files_subtree_ops">, b
 			continue;
 		}
 
-		const page = await files_subtree_ops_db_list_children(ctx, { folder, cursor: row.cursor });
-		let cursor = page.cursor;
-		for (const [index, child] of page.children.entries()) {
-			// A file with many side docs writes a lot, so a full step ends inside the page. The next page
-			// starts after a name, so inside a group of items with one name the step ends before the group.
-			// The next step reads the group again and finds the items this step wrote already right.
+		const next = await files_subtree_ops_db_next_children(ctx, { row, folder, budget });
+		if (!next) break;
+		const folderIds = [];
+		let pending: Array<Id<"files_nodes">> = [];
+		for (const [index, child] of next.children.entries()) {
+			// A file with many side docs writes a lot, so a full step can end inside the page. The children
+			// it did not reach wait in `pending` for the next step.
 			if (index > 0 && (budget.nodes <= 0 || (await files_subtree_ops_db_is_near_limits(ctx)))) {
-				cursor = page.children.slice(0, index).findLast((previous) => previous.name !== child.name)?.name ?? row.cursor;
+				pending = next.children.slice(index).map((pendingChild) => pendingChild._id);
 				break;
 			}
 			count += 1;
 
-			// Count only the items the step writes. So a step that reads a group again still gets further.
+			// Count only the items the step writes. A later pass reads items that are already right, and
+			// they cost only a read.
 			if (await files_nodes_db_rebuild_node(ctx, { node: child, parent: folder })) {
 				budget.nodes -= 1;
 				passWrote = true;
 				isWritten = true;
 			}
 			if (child.kind === "folder") {
-				await files_subtree_ops_db_enqueue_node(ctx, { opId: op._id, nodeId: child._id, nodeDone: true });
+				folderIds.push(child._id);
 			}
 		}
-
-		if (cursor === null) {
-			await ctx.db.delete("files_subtree_op_nodes", row._id);
-		} else {
-			await ctx.db.patch("files_subtree_op_nodes", row._id, { cursor });
-		}
+		await files_subtree_ops_db_save_page(ctx, {
+			row,
+			cursor: next.cursor,
+			isDone: next.isDone,
+			pending,
+			folderIds,
+			isRowFirst: false,
+		});
 	}
 
 	if (passWrote !== walk.passWrote) {
@@ -291,7 +454,7 @@ export async function files_subtree_ops_db_start_rebuild(
 		 * The roots as the request left them. `oldTreePath` is where each one was before.
 		 */
 		roots: Array<{ node: Doc<"files_nodes">; oldTreePath: string }>;
-		budget: { nodes: number };
+		budget: { nodes: number; hasPaginated: boolean };
 		now: number;
 	},
 ) {
@@ -316,9 +479,10 @@ export async function files_subtree_ops_db_start_rebuild(
 				: { ...shared, kind: "scope" },
 		now: args.now,
 	});
-	for (const root of folders) {
-		await files_subtree_ops_db_enqueue_node(ctx, { opId, nodeId: root.node._id, nodeDone: true });
-	}
+	await files_subtree_ops_db_enqueue_nodes(ctx, {
+		opId,
+		nodes: folders.map((root) => ({ nodeId: root.node._id, nodeDone: true })),
+	});
 
 	const op = (await ctx.db.get("files_subtree_ops", opId))!;
 	if (await db_rebuild_walk(ctx, op, args.budget)) {
@@ -367,7 +531,7 @@ export async function files_subtree_ops_db_delete(
 	// An op that ended early can leave many nodes in its queue. Delete the rest in a later mutation.
 	const rows = await ctx.db
 		.query("files_subtree_op_nodes")
-		.withIndex("by_op", (q) => q.eq("opId", args.opId))
+		.withIndex("by_op_sequence", (q) => q.eq("opId", args.opId))
 		.take(PAGE_SIZE);
 	for (const row of rows) {
 		await ctx.db.delete("files_subtree_op_nodes", row._id);
@@ -378,12 +542,29 @@ export async function files_subtree_ops_db_delete(
 
 	await ctx.db.delete("files_subtree_ops", args.opId);
 
-	// Few ops wait at once, so read them all before the loop changes `blockedByOpId`.
-	const waiters = await ctx.db
-		.query("files_subtree_ops")
-		.withIndex("by_blockedByOp", (q) => q.eq("blockedByOpId", args.opId))
-		.collect();
-	for (const waiter of waiters) {
+	await db_release_waiters(ctx, { opId: args.opId });
+}
+
+/**
+ * Look again at the ops that waited for the deleted op `opId`, oldest first. A waiter that overlaps
+ * nothing any more starts. The others wait for the op they overlap now. A restore can mark `/` busy,
+ * so many ops can wait behind one op, and each check reads every op of the workspace. So stop near
+ * the transaction limits and go on in a later mutation.
+ */
+async function db_release_waiters(ctx: MutationCtx, args: { opId: Id<"files_subtree_ops"> }) {
+	while (true) {
+		// Each waiter gets a new `blockedByOpId` below, so it leaves this index range.
+		const waiter = await ctx.db
+			.query("files_subtree_ops")
+			.withIndex("by_blockedByOp", (q) => q.eq("blockedByOpId", args.opId))
+			.first();
+		if (!waiter) return;
+
+		if (await files_subtree_ops_db_is_near_limits(ctx)) {
+			await ctx.scheduler.runAfter(0, internal.files_subtree_ops.release_waiters, { opId: args.opId });
+			return;
+		}
+
 		const blocker = await files_subtree_ops_db_find_blocker(ctx, {
 			organizationId: waiter.organizationId,
 			workspaceId: waiter.workspaceId,
@@ -448,7 +629,7 @@ export const advance = internalMutation({
 		switch (op.kind) {
 			case "move":
 			case "scope": {
-				if (await db_rebuild_walk(ctx, op, { nodes: files_subtree_ops_STEP_MAX_NODES })) {
+				if (await db_rebuild_walk(ctx, op, { nodes: files_subtree_ops_STEP_MAX_NODES, hasPaginated: false })) {
 					await files_subtree_ops_db_delete(ctx, { opId: op._id, now });
 					await activities_db_finish(ctx, { sourceId: op._id, status: "succeeded", errorMessage: null, now });
 				} else {
@@ -500,13 +681,22 @@ export const promote = internalMutation({
 	},
 });
 
+export const release_waiters = internalMutation({
+	args: { opId: v.id("files_subtree_ops") },
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		await db_release_waiters(ctx, args);
+		return null;
+	},
+});
+
 export const delete_queue = internalMutation({
 	args: { opId: v.id("files_subtree_ops") },
 	returns: v.null(),
 	handler: async (ctx, args) => {
 		const rows = await ctx.db
 			.query("files_subtree_op_nodes")
-			.withIndex("by_op", (q) => q.eq("opId", args.opId))
+			.withIndex("by_op_sequence", (q) => q.eq("opId", args.opId))
 			.take(PAGE_SIZE * 10);
 		for (const row of rows) {
 			await ctx.db.delete("files_subtree_op_nodes", row._id);

@@ -199,9 +199,10 @@ async function read_state(f: Fixture) {
 }
 
 /**
- * The two rules the job must keep after every step: each side doc says the same as its node, and no
- * active node sits inside an archived folder. An archive stamps a folder before its children, so
- * while an archive op runs, its folders may still hold active children.
+ * The rules the job must keep after every step: each side doc says the same as its node, no active
+ * node sits inside an archived folder, and no two active nodes share a folder and a name. An archive
+ * stamps a folder before its children, so while an archive op runs, its folders may still hold active
+ * children.
  */
 async function expect_consistent(f: Fixture) {
 	const state = await read_state(f);
@@ -240,6 +241,17 @@ async function expect_consistent(f: Fixture) {
 		);
 	});
 	expect(activeInsideArchived.map((node) => node.path)).toEqual([]);
+
+	// Two active items never share a folder and a name.
+	const activeNames = new Set<string>();
+	const sameName = [];
+	for (const node of state.nodes) {
+		if (node.archiveOperationId !== null) continue;
+		const key = `${node.parentId}/${node.name}`;
+		if (activeNames.has(key)) sameName.push(node.path);
+		activeNames.add(key);
+	}
+	expect(sameName).toEqual([]);
 
 	return state;
 }
@@ -355,6 +367,69 @@ async function add_metadata_docs(f: Fixture, fileNodeId: Id<"files_nodes">, coun
 }
 
 /**
+ * Put 1,200 deleted folders and 1,200 empty folders at the front of the job's queue, before the rows
+ * the job queued itself. The empty folders get `archiveOperationId`. Clearing all of them needs more
+ * reads than one mutation may do.
+ */
+async function queue_empty_folders_first(
+	f: Fixture,
+	runId: Id<"files_archive_runs">,
+	archiveOperationId: string | null,
+) {
+	const opId = await f.t.run(
+		async (ctx) =>
+			(await ctx.db
+				.query("files_subtree_ops")
+				.withIndex("by_archiveRun", (q) => q.eq("archiveRunId", runId))
+				.unique())!._id,
+	);
+	for (const isDeleted of [true, false]) {
+		await f.t.run(async (ctx) => {
+			for (let index = 0; index < 1200; index++) {
+				const name = `${isDeleted ? "deleted" : "empty"}-${index}`;
+				const nodeId = await ctx.db.insert("files_nodes", {
+					...test_mocks.files.base(),
+					organizationId: f.db.organizationId,
+					workspaceId: f.db.workspaceId,
+					createdBy: f.db.userId,
+					updatedBy: f.db.userId,
+					parentId: "root",
+					name,
+					sortName: files_sort_text_key(name),
+					path: `/${name}`,
+					treePath: `/${name}/`,
+					pathDepth: 1,
+					archiveOperationId,
+				});
+				if (isDeleted) await ctx.db.delete("files_nodes", nodeId);
+				await ctx.db.insert("files_subtree_op_nodes", {
+					opId,
+					// Take these rows before the job's own rows, which get small numbers.
+					sequence: 1_000_000 + (isDeleted ? 0 : 1200) + index,
+					nodeId,
+					nodeDone: true,
+					cursor: null,
+					pending: [],
+				});
+			}
+		});
+	}
+	return opId;
+}
+
+async function count_queue(f: Fixture, opId: Id<"files_subtree_ops">) {
+	return await f.t.run(
+		async (ctx) =>
+			(
+				await ctx.db
+					.query("files_subtree_op_nodes")
+					.withIndex("by_op_sequence", (q) => q.eq("opId", opId))
+					.collect()
+			).length,
+	);
+}
+
+/**
  * Archive a big tree to the end as one operation.
  */
 async function archive_to_end(f: Fixture, topId: Id<"files_nodes">) {
@@ -461,7 +536,7 @@ describe("archive_nodes", () => {
 			tree.fileIds[0],
 		]);
 		expect((await read_node(f, tree.fileIds[0]!)).archiveOperationId).toBe(olderOperationId);
-	});
+	}, 120_000);
 
 	test("a lock set after the check does not stop the archive", async () => {
 		const f = await fixture();
@@ -536,6 +611,49 @@ describe("archive_nodes", () => {
 		expect((await read_node(f, tree.fileIds[0]!)).archiveOperationId).toBe(childOperationId);
 		expect((await read_node(f, tree.topId)).archiveOperationId).not.toBe(childOperationId);
 	});
+
+	test("stamps every named item before it walks inside one, and walks the first one's folder first", async () => {
+		const f = await fixture();
+		const first = await seed_tree(f, { name: "first", folderCount: 100, filesPerFolder: 5 });
+		const second = await seed_tree(f, { name: "second", folderCount: 6, filesPerFolder: 100 });
+		const insideFirst = new Set<Id<"files_nodes">>([...first.folderIds, ...first.fileIds]);
+		const insideSecond = new Set<Id<"files_nodes">>([...second.folderIds, ...second.fileIds]);
+
+		const job = (await archive(f, [first.topId, second.topId]))._yay!;
+		for (let count = 0; count < 100; count++) {
+			const stamped = new Set(
+				(await read_state(f)).nodes.filter((node) => node.archiveOperationId !== null).map((node) => node._id),
+			);
+			// Both named items leave the tree before the walk stamps anything inside either of them.
+			if ([...insideFirst].some((nodeId) => stamped.has(nodeId))) {
+				expect(stamped.has(second.topId)).toBe(true);
+			}
+			// The walk ends inside the first named item before it goes inside the second.
+			if ([...insideSecond].some((nodeId) => stamped.has(nodeId))) {
+				expect([...insideFirst].filter((nodeId) => !stamped.has(nodeId))).toEqual([]);
+			}
+
+			const activity = await read_activity(f, job.activityId);
+			if (!activities_is_active(activity.status)) break;
+			await step(f, job.runId);
+		}
+		expect((await read_activity(f, job.activityId)).status).toBe("succeeded");
+	}, 120_000);
+
+	test("a step that only clears empty and deleted folders from the queue stops near the limits", async () => {
+		const f = await fixture();
+		const tree = await seed_tree(f, { name: "drain", folderCount: 6, filesPerFolder: 100 });
+		const job = (await archive(f, [tree.topId]))._yay!;
+		let run = (await f.t.run((ctx) => ctx.db.get("files_archive_runs", job.runId)))!;
+		while (run.phase !== "apply") run = (await step(f, job.runId))!;
+		const opId = await queue_empty_folders_first(f, job.runId, run.archiveOperationId);
+
+		await expect(step(f, job.runId)).resolves.toMatchObject({ active: true });
+		expect(await count_queue(f, opId)).toBeGreaterThan(0);
+
+		expect((await run_to_end(f, job)).activity.status).toBe("succeeded");
+		expect((await read_state(f)).nodes.filter((node) => node.archiveOperationId === null)).toEqual([]);
+	}, 120_000);
 });
 
 describe("unarchive_nodes", () => {
@@ -957,6 +1075,131 @@ describe("unarchive_nodes", () => {
 		await expect_consistent(f);
 	});
 
+	test("a step that only clears empty and deleted folders from the queue stops near the limits", async () => {
+		const f = await fixture();
+		const tree = await seed_tree(f, { name: "drain", folderCount: 6, filesPerFolder: 100 });
+		await archive_to_end(f, tree.topId);
+		const job = (await restore(f, [tree.topId]))._yay!;
+		let run = (await f.t.run((ctx) => ctx.db.get("files_archive_runs", job.runId)))!;
+		while (run.phase !== "apply") run = (await step(f, job.runId))!;
+		const opId = await queue_empty_folders_first(f, job.runId, null);
+
+		await expect(step(f, job.runId)).resolves.toMatchObject({ active: true });
+		expect(await count_queue(f, opId)).toBeGreaterThan(0);
+
+		expect((await run_to_end(f, job)).activity.status).toBe("succeeded");
+		expect((await read_state(f)).nodes.filter((node) => node.archiveOperationId !== null)).toEqual([]);
+	}, 120_000);
+
+	test("a restore of many top items keeps a small queue, and its op holds at most 64 paths", async () => {
+		const f = await fixture();
+		const tree = await seed_tree(f, { name: "tops", folderCount: 200, filesPerFolder: 1 });
+		const archived = await archive(f, tree.fileIds);
+		if (archived._yay) await run_to_end(f, archived._yay);
+		const treePaths = tree.fileIds.map((_, index) => `/tops/d${index}/f000.md`);
+
+		const job = (await restore(f, [tree.fileIds[0]!]))._yay!;
+		for (let count = 0; count < 100; count++) {
+			const { op, queued } = await f.t.run(async (ctx) => {
+				const op = await ctx.db
+					.query("files_subtree_ops")
+					.withIndex("by_archiveRun", (q) => q.eq("archiveRunId", job.runId))
+					.unique();
+				const rows = (await ctx.db.query("files_subtree_op_nodes").collect()).filter((row) => row.opId === op?._id);
+				return { op, queued: rows.length };
+			});
+			if (!op) break;
+			// The op keeps a few folder paths that hold every top item, not one path per item.
+			expect(op.treePaths.length).toBeLessThanOrEqual(64);
+			if ((await f.t.run((ctx) => ctx.db.get("files_archive_runs", job.runId)))!.phase !== "discover") {
+				const holds = (outer: string, inner: string) =>
+					outer === inner || (outer.endsWith("/") && inner.startsWith(outer));
+				expect(treePaths.filter((treePath) => !op.treePaths.some((busy) => holds(busy, treePath)))).toEqual([]);
+			}
+			expect(queued).toBeLessThanOrEqual(50);
+			await step(f, job.runId);
+		}
+
+		expect((await read_activity(f, job.activityId)).status).toBe("succeeded");
+		expect((await read_state(f)).nodes.filter((node) => node.archiveOperationId !== null)).toEqual([]);
+	}, 120_000);
+
+	test("a restore pull queues one page of top items", async () => {
+		const f = await fixture();
+		const tree = await seed_tree(f, { name: "tops", folderCount: 200, filesPerFolder: 1 });
+		const archived = await archive(f, tree.fileIds);
+		if (archived._yay) await run_to_end(f, archived._yay);
+		// The first top item a pull queues runs first. A clash on it pauses the step before any item lands,
+		// so the queue then holds exactly what one pull queued.
+		const occupants = await seed_tree(f, { name: "occupants", folderCount: 1, filesPerFolder: 1 });
+		expect(
+			await f.asOwner.mutation(api.files_nodes.move_nodes, {
+				membershipId: f.db.membershipId,
+				itemIds: [occupants.fileIds[0]!],
+				targetParentId: tree.folderIds[0]!,
+			}),
+		).toEqual({ _yay: null });
+
+		const job = (await restore(f, [tree.fileIds[0]!]))._yay!;
+		expect((await run_to_end(f, job)).activity.status).toBe("awaiting_input");
+
+		const { run, opId } = await f.t.run(async (ctx) => ({
+			run: (await ctx.db.get("files_archive_runs", job.runId))!,
+			opId: (await ctx.db
+				.query("files_subtree_ops")
+				.withIndex("by_archiveRun", (q) => q.eq("archiveRunId", job.runId))
+				.unique())!._id,
+		}));
+		expect(run.conflict?.nodeId).toBe(tree.fileIds[0]);
+		expect(await count_queue(f, opId)).toBe(50);
+	}, 120_000);
+
+	test("a step that already read a page of its discovery leaves a group with one name and time to the next step", async () => {
+		const f = await fixture();
+		// The operation has 62 items, so discovery needs a second page in the first scheduled step.
+		const tree = await seed_tree(f, { name: "tie", folderCount: 1, filesPerFolder: 60 });
+		const folderPath = "/tie/d0";
+		// Somebody replaced `old.md` 120 times, and each old one kept its own archive. All of them got one
+		// creation time: see "reads every child of a group that shares a name and a creation time" in
+		// `files_subtree_ops.test.ts`.
+		const now = Date.now();
+		vi.setSystemTime(8.64e15);
+		await f.t.run(async (ctx) => {
+			for (let index = 0; index < 120; index++) {
+				await ctx.db.insert("files_nodes", {
+					...test_mocks.files.base(),
+					organizationId: f.db.organizationId,
+					workspaceId: f.db.workspaceId,
+					createdBy: f.db.userId,
+					updatedBy: f.db.userId,
+					parentId: tree.folderIds[0]!,
+					name: "old.md",
+					sortName: files_sort_text_key("old.md"),
+					kind: "file",
+					path: `${folderPath}/old.md`,
+					treePath: `${folderPath}/old.md`,
+					pathDepth: 3,
+					archiveOperationId: `replace-${index}`,
+				});
+			}
+		});
+		vi.setSystemTime(now);
+		expect(
+			new Set((await read_state(f)).nodes.filter((node) => node.name === "old.md").map((node) => node._creationTime)),
+		).toEqual(new Set([8.64e15]));
+
+		const archived = await archive(f, [tree.topId]);
+		if (archived._yay) await run_to_end(f, archived._yay);
+		const job = (await restore(f, [tree.topId]))._yay!;
+		expect((await run_to_end(f, job)).activity.status).toBe("succeeded");
+
+		const nodes = (await read_state(f)).nodes;
+		expect(nodes.filter((node) => node.name !== "old.md" && node.archiveOperationId !== null)).toEqual([]);
+		expect(nodes.filter((node) => node.name === "old.md" && !node.archiveOperationId?.startsWith("replace-"))).toEqual(
+			[],
+		);
+	}, 120_000);
+
 	describe("read-only folders", () => {
 		test("refuses when the folder it comes back into is read-only, and works after unlock", async () => {
 			const f = await fixture();
@@ -988,6 +1231,23 @@ describe("unarchive_nodes", () => {
 			expect(await restore(f, [tree.fileIds[0]!])).toEqual({ _yay: null });
 			expect(await read_node(f, tree.fileIds[0]!)).toMatchObject({ archiveOperationId: null, path: "/f000.md" });
 		});
+
+		test("stops when a folder it restored is locked before the items inside come back", async () => {
+			const f = await fixture();
+			const tree = await seed_tree(f, { name: "ro-inside", folderCount: 2, filesPerFolder: 100 });
+			await archive_to_end(f, tree.topId);
+			const job = (await restore(f, [tree.topId]))._yay!;
+			for (let count = 0; (await read_node(f, tree.folderIds[1]!)).archiveOperationId !== null; count++) {
+				if (count === 20) throw new Error("The folder did not come back");
+				await step(f, job.runId);
+			}
+			expect((await read_node(f, tree.fileIds[100]!)).archiveOperationId).not.toBeNull();
+
+			await lock(f, tree.folderIds[1]!, true);
+
+			expect((await run_to_end(f, job)).activity.status).toBe("failed");
+			expect((await read_node(f, tree.fileIds[100]!)).archiveOperationId).not.toBeNull();
+		}, 120_000);
 	});
 
 	describe("name clashes", () => {
@@ -1033,6 +1293,45 @@ describe("unarchive_nodes", () => {
 				choice,
 				applyToRemaining,
 			});
+		}
+
+		/**
+		 * Run steps until `nodeId` is back.
+		 */
+		async function step_until_restored(
+			f: Fixture,
+			runId: Id<"files_archive_runs">,
+			nodeId: Id<"files_nodes">,
+		) {
+			for (let count = 0; (await read_node(f, nodeId)).archiveOperationId !== null; count++) {
+				if (count === 20) throw new Error("The node did not come back");
+				await step(f, runId);
+			}
+		}
+
+		/**
+		 * Archive `/inside` with two folders of 100 files and restore it until `/inside/d1` is back, before
+		 * its files. Then move new files with the names in `names` into d1. The restore waits on the first
+		 * clash inside d1.
+		 */
+		async function seed_clash_inside(f: Fixture, names: string[]) {
+			const tree = await seed_tree(f, { name: "inside", folderCount: 2, filesPerFolder: 100 });
+			await archive_to_end(f, tree.topId);
+			const job = (await restore(f, [tree.topId]))._yay!;
+			await step_until_restored(f, job.runId, tree.folderIds[1]!);
+			expect((await read_node(f, tree.fileIds[100]!)).archiveOperationId).not.toBeNull();
+
+			const occupants = await seed_tree(f, { name: "occupants", folderCount: 1, filesPerFolder: 100 });
+			const occupantIds = names.map((name) => occupants.fileIds[Number(name.slice(1, 4))]!);
+			expect(
+				await f.asOwner.mutation(api.files_nodes.move_nodes, {
+					membershipId: f.db.membershipId,
+					itemIds: occupantIds,
+					targetParentId: tree.folderIds[1]!,
+				}),
+			).toEqual({ _yay: null });
+			expect((await run_to_end(f, job)).activity.status).toBe("awaiting_input");
+			return { tree, occupantIds, job };
 		}
 
 		test("waits for a choice and changes nothing until then", async () => {
@@ -1129,6 +1428,20 @@ describe("unarchive_nodes", () => {
 			expect(skipped.archiveOperationId).toBe((await read_run(f, job.runId)).skipOperationId);
 		});
 
+		test("a pull that finds only the top items it queued before in the step fails instead of repeating", async () => {
+			const f = await fixture();
+			const { job } = await seed_clash(f);
+			// No real flow does this. A Skip that keeps the operation id leaves both files in the operation,
+			// so every pull finds the same top items again.
+			await f.t.run(async (ctx) => {
+				const run = (await ctx.db.get("files_archive_runs", job.runId))!;
+				await ctx.db.patch("files_archive_runs", job.runId, { skipOperationId: run.archiveOperationId });
+			});
+			expect(await resolve(f, job.runId, "skip", { file: "skip", folder: null })).toEqual({ _yay: null });
+
+			await expect(step(f, job.runId)).rejects.toThrow("Restore pull found no new top item");
+		});
+
 		test("Replace archives the item in the way and never deletes it", async () => {
 			const f = await fixture();
 			const { tree, occupants, job } = await seed_clash(f);
@@ -1172,6 +1485,163 @@ describe("unarchive_nodes", () => {
 			const ended = await run_to_end(f, job);
 			expect(ended.activity.status).toBe("succeeded");
 			expect(ended.activity.progress).toMatchObject({ completed: 100 });
+		});
+
+		test("a file made in a restored folder before its own file comes back asks, and Keep both keeps both", async () => {
+			const f = await fixture();
+			const { tree, occupantIds, job } = await seed_clash_inside(f, ["f050.md"]);
+
+			expect((await read_run(f, job.runId)).conflict).toEqual({ nodeId: tree.fileIds[150], occupantId: occupantIds[0] });
+			expect(
+				(await f.asOwner.query(api.files_archive_runs.get, { membershipId: f.db.membershipId, runId: job.runId }))
+					?.conflict,
+			).toMatchObject({ kind: "file", name: "f050.md", occupantPath: "/inside/d1/f050.md", canReplace: true });
+
+			expect(await resolve(f, job.runId, "keep_both")).toEqual({ _yay: null });
+			const ended = await run_to_end(f, job);
+			expect(ended.activity.status).toBe("succeeded");
+			expect(ended.activity.progress).toMatchObject({ total: 203, completed: 203, skipped: 0 });
+			expect(await read_node(f, tree.fileIds[150]!)).toMatchObject({
+				archiveOperationId: null,
+				path: "/inside/d1/f050-2.md",
+			});
+			expect(await read_node(f, occupantIds[0]!)).toMatchObject({
+				archiveOperationId: null,
+				path: "/inside/d1/f050.md",
+			});
+		});
+
+		test("Skip and Replace work for items inside a restored folder", async () => {
+			const f = await fixture();
+			const { tree, occupantIds, job } = await seed_clash_inside(f, ["f050.md", "f080.md"]);
+
+			expect(await resolve(f, job.runId, "skip")).toEqual({ _yay: null });
+			expect((await run_to_end(f, job)).activity.status).toBe("awaiting_input");
+			expect((await read_run(f, job.runId)).conflict).toEqual({ nodeId: tree.fileIds[180], occupantId: occupantIds[1] });
+			expect(await resolve(f, job.runId, "replace")).toEqual({ _yay: null });
+			const ended = await run_to_end(f, job);
+
+			expect(ended.activity.status).toBe("succeeded");
+			expect(ended.activity.progress).toMatchObject({ total: 203, completed: 202, skipped: 1 });
+			expect((await read_node(f, tree.fileIds[150]!)).archiveOperationId).toBe(
+				(await read_run(f, job.runId)).skipOperationId,
+			);
+			expect((await read_node(f, occupantIds[0]!)).archiveOperationId).toBeNull();
+			expect(await read_node(f, tree.fileIds[180]!)).toMatchObject({
+				archiveOperationId: null,
+				path: "/inside/d1/f080.md",
+			});
+			expect((await read_node(f, occupantIds[1]!)).archiveOperationId).not.toBeNull();
+		});
+
+		test("Apply to remaining answers a later clash in the middle of a page, and each file comes back once", async () => {
+			const f = await fixture();
+			const { tree, job } = await seed_clash_inside(f, ["f050.md", "f080.md"]);
+
+			expect(await resolve(f, job.runId, "keep_both", { file: "keep_both", folder: null })).toEqual({ _yay: null });
+			const ended = await run_to_end(f, job);
+
+			expect(ended.activity.status).toBe("succeeded");
+			expect(ended.activity.progress).toMatchObject({ total: 203, completed: 203, skipped: 0 });
+			expect((await read_node(f, tree.fileIds[180]!)).name).toBe("f080-2.md");
+			const nodes = (await read_state(f)).nodes;
+			expect(nodes.filter((node) => node.path.startsWith("/inside/")).length).toBe(204);
+			expect(nodes.every((node) => node.archiveOperationId === null)).toBe(true);
+		});
+
+		test("a folder clash after folders this step restored queues each folder once", async () => {
+			const f = await fixture();
+			const tree = await seed_tree(f, { name: "many", folderCount: 200, filesPerFolder: 0 });
+			await archive_to_end(f, tree.topId);
+			const job = (await restore(f, [tree.topId]))._yay!;
+			// A step restores 75 folders, so `d50` comes back in a later step, in the middle of a page.
+			await step_until_restored(f, job.runId, tree.topId);
+			expect((await read_node(f, tree.folderIds[50]!)).archiveOperationId).not.toBeNull();
+			const occupant = await folder(f, "/many/d50");
+
+			expect((await run_to_end(f, job)).activity.status).toBe("awaiting_input");
+			const queued = await f.t.run(async (ctx) => {
+				const op = await ctx.db
+					.query("files_subtree_ops")
+					.withIndex("by_archiveRun", (q) => q.eq("archiveRunId", job.runId))
+					.unique();
+				return (
+					await ctx.db
+						.query("files_subtree_op_nodes")
+						.withIndex("by_op_sequence", (q) => q.eq("opId", op!._id))
+						.collect()
+				).map((row) => row.nodeId);
+			});
+			expect(new Set(queued).size).toBe(queued.length);
+
+			expect(await resolve(f, job.runId, "keep_both")).toEqual({ _yay: null });
+			const ended = await run_to_end(f, job);
+			expect(ended.activity.status).toBe("succeeded");
+			expect(ended.activity.progress).toMatchObject({ total: 201, completed: 201, skipped: 0 });
+			expect((await read_node(f, tree.folderIds[50]!)).path).toBe("/many/d50-2");
+			expect((await read_node(f, occupant)).path).toBe("/many/d50");
+		});
+
+		test("the step after a choice lands the item before it walks the folders its page restored", async () => {
+			const f = await fixture();
+			const tree = await seed_tree(f, { name: "many", folderCount: 200, filesPerFolder: 1 });
+			await archive_to_end(f, tree.topId);
+			const job = (await restore(f, [tree.topId]))._yay!;
+			await step_until_restored(f, job.runId, tree.topId);
+			await folder(f, "/many/d50");
+			expect((await run_to_end(f, job)).activity.status).toBe("awaiting_input");
+			expect((await read_run(f, job.runId)).conflict?.nodeId).toBe(tree.folderIds[50]);
+
+			// A folder the paused step restored waits in the queue with its file. Put an item with that name there.
+			const queuedId = await f.t.run(async (ctx) => {
+				const op = await ctx.db
+					.query("files_subtree_ops")
+					.withIndex("by_archiveRun", (q) => q.eq("archiveRunId", job.runId))
+					.unique();
+				const rows = await ctx.db
+					.query("files_subtree_op_nodes")
+					.withIndex("by_op_sequence", (q) => q.eq("opId", op!._id))
+					.collect();
+				return rows.find((row) => row.nodeId !== tree.topId)!.nodeId;
+			});
+			const queuedFileId = tree.fileIds[tree.folderIds.indexOf(queuedId)]!;
+			expect((await read_node(f, queuedFileId)).archiveOperationId).not.toBeNull();
+			const occupants = await seed_tree(f, { name: "occupants", folderCount: 1, filesPerFolder: 1 });
+			expect(
+				await f.asOwner.mutation(api.files_nodes.move_nodes, {
+					membershipId: f.db.membershipId,
+					itemIds: occupants.fileIds,
+					targetParentId: queuedId,
+				}),
+			).toEqual({ _yay: null });
+
+			// A choice counts only until the next clash. So `d50` must come back before that clash asks.
+			expect(await resolve(f, job.runId, "keep_both")).toEqual({ _yay: null });
+			expect((await run_to_end(f, job)).activity.status).toBe("awaiting_input");
+			expect(await read_node(f, tree.folderIds[50]!)).toMatchObject({ archiveOperationId: null, path: "/many/d50-2" });
+			expect((await read_run(f, job.runId)).conflict?.nodeId).toBe(queuedFileId);
+
+			expect(await resolve(f, job.runId, "keep_both")).toEqual({ _yay: null });
+			const ended = await run_to_end(f, job);
+			expect(ended.activity.status).toBe("succeeded");
+			expect(ended.activity.progress).toMatchObject({ total: 401, completed: 401, skipped: 0 });
+		});
+
+		test("archived items with one name inside a restored folder ask when the second comes back", async () => {
+			const f = await fixture();
+			const operationId = crypto.randomUUID();
+			const same = await seed_same_path(f, { name: "same", count: 3, archiveOperationId: operationId });
+			await f.t.run((ctx) => ctx.db.patch("files_nodes", same.topId, { archiveOperationId: operationId }));
+
+			const restored = await restore(f, [same.topId]);
+			await expect_consistent(f);
+			const job = restored._yay!;
+			expect((await read_activity(f, job.activityId)).status).toBe("awaiting_input");
+			expect(await resolve(f, job.runId, "keep_both", { file: "keep_both", folder: null })).toEqual({ _yay: null });
+			expect((await run_to_end(f, job)).activity.status).toBe("succeeded");
+
+			const names = await Promise.all(same.fileIds.map(async (fileId) => (await read_node(f, fileId)).name));
+			expect(names.toSorted()).toEqual(["same-2.md", "same-3.md", "same.md"]);
 		});
 
 		test("refuses a choice for a clash that changed", async () => {

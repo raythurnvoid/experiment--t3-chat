@@ -279,7 +279,11 @@ one step. In `qa-browser/home` the catalog folders `copy-2` (104 items), `copy-3
   `files_subtree_ops.js:advance`. A failed step shows `state.kind: "failed"` with the error.
 - Check stored paths with `convex run files_nodes:search_paths` and `{ organizationId, workspaceId,
   visibilityUserId, pathQuery, numItems: 1000, cursor }`. Page with `continueCursor` until
-  `isDone`. After a move, no hit may keep the old path prefix.
+  `isDone`. After a move, no hit may keep the old path prefix. `pathQuery` is a search index text
+  query: an empty one returns 0 hits. To count every item under a folder, page
+  `files_nodes:list_tree` (`{ membershipId, paginationOpts: { numItems: 1000, cursor } }`) from page
+  context with `import("/src/lib/app-convex-client.ts")` and count the `treePath` prefix. Start the
+  read without `await` and park the result on `state`, because the whole list takes longer than 5 s.
 - Check stored scope the same way, with a plain member as `visibilityUserId` (`qa.perm.viewer`).
   The owner sees everything, so an owner readback proves nothing. After a restrict of a folder the
   member cannot open, the member must see 0 items under it. After unrestrict, all of them again.
@@ -291,10 +295,13 @@ one step. In `qa-browser/home` the catalog folders `copy-2` (104 items), `copy-3
   so prove nothing.
   - Stale stored scope: the loop reads `copy-4` and waits until the read returns null (the owner
     restricted it). The owner restricts `copy-4`. The member then moves a child that the job writes
-    late, such as `/copy-4/copy-3/copy-2/copy-1/seed/f49`, to the root. It must be refused with `You
-    need Can manage on the shared folder to move this out of it.` Read the child again after the
-    refusal. If the member can still read it and its `restrictedScopeNodeId` is null, the job had not
-    yet written the new scope to it, so the new check made the refusal.
+    late, such as `/copy-4/seed/f49`, to the root. The walk goes into the first folder of a page first,
+    so `seed` (after `copy-3` by name) and its last file come last. It must be refused with `Permission denied`: a member with no
+    grant fails the write check on the new scope first. The `You need Can manage on the shared folder
+    to move this out of it.` message needs a member who can write in the new scope. Read the child
+    again after the refusal. If the member can still read it and its `restrictedScopeNodeId` is null,
+    the job had not yet written the new scope to it, so the live scope made the refusal. As a positive
+    control, after unrestrict the same member moves the child out and back, and both moves succeed.
   - Stale stored path: the owner restricts `/copy-4/copy-3/copy-2/copy-1/seed` and waits for its
     job to end. The loop reads the folder `/copy-4/copy-3`. The owner moves `copy-4` into `copy-3`.
     As soon as the read's `treePath` starts with `/copy-3/`, the member moves that folder (now

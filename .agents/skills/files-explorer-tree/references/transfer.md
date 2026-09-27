@@ -191,6 +191,10 @@ the same producer with private proposals. `files_pending_updates.ts` and
   running, shows the card, resets the deadline, and schedules `advance`. Every copy finish deletes the
   op, so the ops that wait for it can start. A Bash `cp` (proposal publication) takes no op and never
   waits.
+- A copy copies the items that are active when discovery reads them. When a restore still runs over
+  the source, the items it has not brought back yet are not copied. This holds across workspaces: a
+  copy into another workspace takes no op in the source workspace, so it never waits for that restore.
+  Tested in `files_transfer.test.ts` ("a copy to another workspace during a restore ...").
 - Stop keeps completed copies. It first saves the stopping state, then cancels this run's queued
   work. It drains at most 50 unfinished items per mutation and moves blocked counts to canceled.
   It keeps worker IDs until callbacks or upload leases settle. Publication after Stop is refused.

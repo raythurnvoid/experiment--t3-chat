@@ -609,6 +609,94 @@ describe("start_for_agent", () => {
 		},
 	);
 
+	test("a copy to another workspace during a restore copies the items already back and not the others", async () => {
+		const fixture = await create_folder_fixture([]);
+		const { t, db, asUser } = fixture;
+		// 100 folders do not fit in one step of 75, so the restore still runs when the copy reads them.
+		const topId = await t.run(async (ctx) => {
+			const insert_folder = (parentId: Doc<"files_nodes">["parentId"], name: string, path: string) =>
+				ctx.db.insert("files_nodes", {
+					...test_mocks.files.base(),
+					organizationId: db.organizationId,
+					workspaceId: db.workspaceId,
+					createdBy: db.userId,
+					updatedBy: db.userId,
+					parentId,
+					name,
+					sortName: files_sort_text_key(name),
+					kind: "folder",
+					path,
+					treePath: `${path}/`,
+					pathDepth: path.split("/").length - 1,
+				});
+			const topId = await insert_folder("root", "restoring", "/restoring");
+			for (let index = 0; index < 100; index++) {
+				const name = `d${String(index).padStart(3, "0")}`;
+				await insert_folder(topId, name, `/restoring/${name}`);
+			}
+			return topId;
+		});
+		const step_op = async () => {
+			const op = await t.run((ctx) => ctx.db.query("files_subtree_ops").first());
+			if (!op) return false;
+			const walk = await t.run((ctx) =>
+				ctx.db
+					.query("files_subtree_op_walks")
+					.withIndex("by_op", (q) => q.eq("opId", op._id))
+					.unique(),
+			);
+			await t.mutation(internal.files_subtree_ops.advance, { opId: op._id, step: walk!.step });
+			return true;
+		};
+		const read_children = () =>
+			t.run(async (ctx) => (await ctx.db.query("files_nodes").collect()).filter((node) => node.parentId === topId));
+
+		const archived = await asUser.mutation(api.files_nodes.archive_nodes, { membershipId: db.membershipId, nodeIds: [topId] });
+		if (archived._nay) throw new Error(archived._nay.message);
+		for (let count = 0; count < 20 && (await step_op()); count++);
+		expect(await t.run((ctx) => ctx.db.query("files_subtree_ops").collect())).toEqual([]);
+
+		const restored = await asUser.mutation(api.files_nodes.unarchive_nodes, {
+			membershipId: db.membershipId,
+			nodeIds: [topId],
+		});
+		if (restored._nay) throw new Error(restored._nay.message);
+		for (let count = 0; count < 20 && !(await read_children()).some((node) => node.archiveOperationId === null); count++) {
+			await step_op();
+		}
+		const children = await read_children();
+		const backNames = children.filter((node) => node.archiveOperationId === null).map((node) => node.name);
+		expect(backNames.length).toBeGreaterThan(0);
+		expect(children.filter((node) => node.archiveOperationId !== null).length).toBeGreaterThan(0);
+
+		const thread = await asUser.mutation(api.ai_chat.thread_create, {
+			membershipId: db.membershipId,
+			clientGeneratedId: "copy-during-restore",
+			lastMessageAt: Date.now(),
+		});
+		if (thread._nay) throw new Error(thread._nay.message);
+		const started = await start_agent_transfer(t, {
+			membershipId: db.membershipId,
+			threadId: thread._yay.threadId,
+			sourceWorkspace: "current",
+			destinationWorkspace: "personal",
+			requestId: "copy-during-restore",
+			kind: "copy",
+			sources: [{ kind: "saved", id: topId }],
+			targetParent: { kind: "root" },
+			targetPath: "/",
+			targetName: null,
+			missingParentNames: [],
+			conflictPolicy: { file: "error", folder: "error" },
+		});
+		if (started._nay) throw new Error(started._nay.message);
+		expect((await finish_folder_copy(fixture, started._yay.runId)).activity.status).toBe("succeeded");
+
+		// The copy reads what is active when it reads it. The items the restore has not reached are not copied.
+		const drafts = await t.run((ctx) => ctx.db.query("files_pending_nodes").collect());
+		expect(drafts.map((draft) => draft.name).filter((name) => name !== "restoring").sort()).toEqual(backNames.sort());
+	}, 120_000);
+
 	test.each([false, true])(
 		"a viewer can copy to home, but old work stays stopped after leave and re-invite: %s",
 		async (reinvite) => {
@@ -3524,8 +3612,9 @@ describe("move", () => {
 			restrictedScopeNodeId: null,
 		});
 
-		// The member has no grant on /shared. Moving the item out would leave it open for good, because
-		// the op walks only what is still inside /shared.
+		// The member has no grant on /shared, so the write check refuses the item, like any item inside a
+		// restricted folder. Moving the item out would leave it open for good, because the op walks only
+		// what is still inside /shared.
 		expect(
 			(
 				await member.asUser.mutation(api.files_nodes.move_nodes, {
@@ -3534,7 +3623,7 @@ describe("move", () => {
 					targetParentId: folders.get("/other")!,
 				})
 			)._nay,
-		).toMatchObject({ message: "You need Can manage on the shared folder to move this out of it." });
+		).toMatchObject({ message: "Permission denied" });
 	});
 });
 

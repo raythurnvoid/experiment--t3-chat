@@ -426,7 +426,7 @@ async function data_deletion_test_start_move_op(
 			...scope,
 			membership,
 			roots: [{ node, oldTreePath: node.treePath }],
-			budget: { nodes: 0 },
+			budget: { nodes: 0, hasPaginated: false },
 			now: Date.now(),
 		});
 		if (!started) throw new Error("Expected a move op");

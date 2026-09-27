@@ -236,22 +236,29 @@ of never showing hidden items.
   walks the folder by `parentId`. The request runs the first step itself. When that step finishes the
   work (up to 75 nodes), no run doc, no op, and no Activity exist. A bigger one continues in the
   background.
-  - A restore first pages through its archive operation in creation order to find all top items, then
-    checks every current root path for a running subtree job. If another job overlaps, it waits as
-    `queued`. After promotion it finds the roots and checks their paths again, because archived items
+  - A restore first pages through its archive operation in creation order to find all top items. It
+    keeps at most 64 folder paths that hold them: past 64, the two paths with the longest shared
+    folder merge into that folder, up to `/`. It checks those paths for a running subtree job, and its
+    op keeps them as busy paths. If another job overlaps, it waits as `queued`. After promotion it finds the roots and checks their paths again, because archived items
     can move while it waits. The job then checks every item's permission and writes nothing. One
     protected item refuses the whole action.
     The archive check walks each named item by `parentId`. The restore check pages the operation's
     items by `treePath`. Archived items can share one path. When a restore check page ends inside such
     a group, the check reads up to 500 more of them at once; more refuse ("Too many archived items
     share one path."). Files with the same name in different folders can span discovery pages.
-  - Archive has no Stop. After the check, it stamps each named item first, so the item leaves the tree
-    at once. Then it stamps the active children of each stamped folder, page by page, until no active
-    child is left. It does not check locks or access again, so a lock set during the job does not stop
+  - Archive has no Stop. After the check, it stamps every named item before anything inside them. A
+    step stamps at most 75 items, so with more named items the rest leave the tree in the next steps.
+    Then it stamps the active children of each stamped folder, page
+    by page, until no active child is left. It ends inside the first named item before it goes inside
+    the second. It does not check locks or access again, so a lock set during the job does not stop
     it. A child the person moved out is no longer under the folder. A child archived on its own keeps
     its own `archiveOperationId` and its own Restore.
-  - Restore checks each item again when it lands. A lock or lost access set during the job stops it as
-    failed ("Stopped partway"). The done part keeps its one archive operation id, so Restore brings
+  - Restore does not keep a list of its top items. When its queue is empty, it pulls up to 50 items
+    still in the operation, queues the top item of each, and lands them. A pull that finds only the
+    top items the last pull of the same step queued is a bug, and the step throws.
+  - Restore checks each item again when it lands. An item inside a restored folder also checks that
+    folder, because a folder's lock does not block its children. A lock or lost access set during the
+    job stops it as failed ("Stopped partway"). The done part keeps its one archive operation id, so Restore brings
     back exactly that part.
   - A node and its side docs (plain text chunks and metadata docs) change in the same mutation. Each doc
     keeps its own path, treePath, and archiveOperationId. Until the job stamps a child, the child keeps
@@ -266,9 +273,10 @@ of never showing hidden items.
     If an archive job of the parent's operation is running, the restore is refused as busy.
   - The operations of one restore call share the request's first step. After the first job starts, each
     later job waits as a `queued` op behind the job before it, so their steps never write the same docs
-    at the same time. A restore also waits while any top item overlaps another subtree op. Each job saves
+    at the same time. A restore also waits while any of its busy paths overlaps another subtree op. Each job saves
     the first job's id in `requestFirstRunId`. When an op ends, `files_subtree_ops_db_delete` starts each
-    waiter that overlaps nothing any more. A queued job has no Stop and a 24-hour deadline; when it
+    waiter that overlaps nothing any more. It stops near the transaction limits, and
+    `release_waiters` goes on with the rest. A queued job has no Stop and a 24-hour deadline; when it
     passes, the job gets 24 more hours. A later job checks its items only when it starts. If an earlier
     job failed and left their folder archived, the items land at the root, and their refusals show in
     the Activity, not in the Unarchive answer.
@@ -278,7 +286,11 @@ of never showing hidden items.
     limit for this.
   - Restore refuses when the item's old folder or landing folder is read-only. The message names the
     folder only to a caller who may read it.
-  - A restore name clash pauses the job (`awaiting_input`) for up to 24 hours and asks like a paste:
+  - A restore name clash pauses the job (`awaiting_input`) for up to 24 hours and asks like a paste.
+    This holds for a top item and for an item that comes back inside a restored folder, when somebody
+    made an item with its name there. The clashing item waits first on its folder's queue row, and that
+    row runs before the folders its page restored. A choice counts only for the clash it answered. If a
+    clash in one of those folders asked first, the choice for this item would be lost. It asks:
     Keep both (`name-2.ext`), Skip (the item stays archived), or Replace (the item in the way is
     archived with a new operation id). Replace needs the same kind, a folder with no active child, and
     write access to the item in the way and to every archived item inside it (at most 500 items;

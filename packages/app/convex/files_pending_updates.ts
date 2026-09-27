@@ -5105,7 +5105,7 @@ export async function files_pending_updates_db_apply_archive(
 		pendingUpdateCleanup: {
 			reviewedPendingUpdateIds: args.reviewedPendingUpdateIds ? [...args.reviewedPendingUpdateIds] : null,
 		},
-		budget: { nodes: files_archive_runs_STEP_MAX_NODES },
+		budget: { nodes: files_archive_runs_STEP_MAX_NODES, hasPaginated: false },
 		previousRunId: null,
 	});
 	if (started._nay) return started;

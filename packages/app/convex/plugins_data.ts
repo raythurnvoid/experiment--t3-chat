@@ -4084,7 +4084,7 @@ export async function plugins_data_db_apply_file_access_binding(
 			userId: args.userId,
 			membership: null,
 			roots: [{ node: args.node, oldTreePath: args.node.treePath }],
-			budget: { nodes: files_subtree_ops_STEP_MAX_NODES },
+			budget: { nodes: files_subtree_ops_STEP_MAX_NODES, hasPaginated: false },
 			now,
 		});
 		accessChanged = true;

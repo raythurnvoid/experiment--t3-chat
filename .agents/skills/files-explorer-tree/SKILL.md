@@ -448,12 +448,18 @@ Backend rules, limits, billing, cleanup, and Activity privacy are in
   write access. Archived renames keep their archive identity and can share an active path.
 - Apply writes the named items now. Then `files_subtree_ops_db_start_rebuild` (kind `move`, in
   `files_subtree_ops.ts`) starts a move job for each moved folder. The job walks children by
-  `parentId`, folder by folder, in pages by name. It rewrites each child's `path`, `treePath`,
+  `parentId`, in pages of 50 by name and creation time (`by_organization_workspace_parent_name`). The
+  queue takes the row with the highest number first, so the job goes into the folders of a page before it goes back
+  for the next page, and the queue stays small. It rewrites each child's `path`, `treePath`,
   `pathDepth`, and `restrictedScopeNodeId` from its live parent, with the child's search chunks and
   metadata docs. A child that is its own restricted folder keeps its own scope. The job is done only
   after one full pass from the roots writes nothing. A step ends after it writes 75 items or nears a
-  transaction limit. It can end inside a group of archived items with one name (every replace of a
-  file leaves one). Then the next step reads the group again and skips the items already written. The first step runs inside the request, so a
+  transaction limit. The children of the page it did not reach wait on the queue row (`pending`), and
+  the next step takes them first. A normal page never splits items with the same name and creation
+  time: it leaves the group for the next page. When more than 50 of them share both (every replace
+  of a file leaves an archived one), the job reads that group 50 at a time with a paginated read and
+  saves where it stopped. Convex allows one paginated read per mutation, so a big group can take
+  several steps. The first step runs inside the request, so a
   small folder is done there with no op and no Activity. A bigger one leaves a `files_subtree_ops`
   op and a requester-only Activity (source kind `files_subtree_op`, title "Move files") that shows in
   the feed and has no Stop. Each scheduled step has one retry due after 60 seconds. A retry of a
@@ -474,7 +480,7 @@ Backend rules, limits, billing, cleanup, and Activity privacy are in
   caller's receipt use separate transaction headroom.
 - The selected file/folder path auto-expands in the sidebar after route changes and path-based create/rename moves so the focused row stays visible.
 - Archive/unarchive uses `files_nodes.archive_nodes` / `files_nodes.unarchive_nodes`. Archive always asks first in the shared `FilesArchiveModal` (`files-archive-modal.tsx`). The sidebar row menu, the toolbar Archive-selected button, the folder explorer row menu and the breadcrumb menu open it with the nodes to archive; the modal owns the mutation, shows a refusal inline in the dialog (`role="alert"`), and reports success to its host. After a sidebar confirm, keyboard focus moves to the first row after the archived rows, or to the last row before them. The sidebar picks that row while the archived rows are still in the tree (Convex resolves the mutation in the same task as the tree update) and moves DOM focus from an effect once the dialog has closed, because the sidebar is inert while the dialog is open and the closing dialog first gives focus back to the button that opened it. A multi-select archive also clears the selection. Cancel puts focus back on the first row of the request. Restore is still direct.
-- A big archive or restore goes on as a background job (rules in `../files-read-only/SKILL.md`). The named folder leaves the tree at once, and the job stamps the items inside it. Restore first finds every top item of its archive operation by creation order, then checks all their current paths against running jobs. A blocked restore waits hidden and checks access again after promotion. The job dialog `FilesArchiveRunModal` shows Stop only when the server returns `controls.canStop`: archive never has it, and a restore has it only while it waits for a name clash choice. A restore clash offers Keep both, Replace, or Skip, with no Merge.
+- A big archive or restore goes on as a background job (rules in `../files-read-only/SKILL.md`). The job stamps every named item first, at most 75 per step, so with more named items some stay in the tree until a later step. Then it stamps the items inside them, the first named item's folder first. Restore first finds every top item of its archive operation by creation order and keeps at most 64 folder paths that hold them (up to `/`). It checks those paths against running jobs. Then it finds the top items again one page at a time while it brings them back. A name clash inside a restored folder asks like a clash of a top item. A copy during a restore copies only the items already back (see `references/transfer.md`). A blocked restore waits hidden and checks access again after promotion. The job dialog `FilesArchiveRunModal` shows Stop only when the server returns `controls.canStop`: archive never has it, and a restore has it only while it waits for a name clash choice. A restore clash offers Keep both, Replace, or Skip, with no Merge.
 - The row menu's Restore gate mirrors the backend restore plan (`can_unarchive_item`): a node whose parent is missing or still archived restores to root, so Restore also needs workspace write at root plus scope manage when the node would leave its restricted scope. A node that carries its own restriction only needs its own write answer. An in-place restore only needs the node's write answer.
 - TODO: archived nodes are never purged. They stay until the whole workspace is deleted. Add a
   retention purge that permanently deletes an archive operation some time after it was archived, like
