@@ -111,7 +111,7 @@
 		"just-bash": "workspace:*",
 		"katex": "^0.16.24",
 		"lib0": "^0.2.114",
-		"linkedom": "0.18.12",
+		"linkedom": "0.18.13",
 		"listhen": "^1.9.0",
 		"lowlight": "^3.3.0",
 		"lucide-react": "^0.577.0",
