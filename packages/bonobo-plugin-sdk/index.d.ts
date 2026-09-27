@@ -61,6 +61,12 @@ export type { ExportedHandler, ExecutionContext, Request, Response } from "@clou
  *   resolve names for ids it already holds, which enumerates nobody. Every member reads the roster
  *   under one rule, including a member who signed in anonymously. With `plugin.service.connect`,
  *   a registered service may exchange the current page identity and read workspace member changes.
+ * - `agent.mcp.connect` — the chat agent may call the tools of the manifest's remote `mcpServers`,
+ *   with member data from the thread as input. A server never gets a Press credential, only its
+ *   declared headers and sign-in. It and `mcpServers` require each other: neither may be declared alone.
+ * - `agent.skills.contribute` — the chat skill catalog lists the manifest's `skills`, and the agent
+ *   reads them from the plugin's read-only mount. It and `skills` require each other: neither may be
+ *   declared alone.
  */
 export type BonoboCapability =
 	| "plugin.secrets.read"
@@ -76,7 +82,9 @@ export type BonoboCapability =
 	| "plugin.backend.invoke"
 	| "plugin.service.connect"
 	| "ui.outbound.fetch"
-	| "workspace.members.read";
+	| "workspace.members.read"
+	| "agent.mcp.connect"
+	| "agent.skills.contribute";
 
 /**
  * Optional `navItem` of a manifest `pages[]` entry ({@link BonoboManifestPage}). Declaring it is

@@ -1403,6 +1403,203 @@ describe("plugins_validate_manifest", () => {
 			}),
 		).toEqual({ _nay: { message: "Plugin manifests can declare at most 8 file views" } });
 	});
+
+	function mcp_manifest_json(
+		args: {
+			server?: Record<string, unknown>;
+			mcpServers?: Array<Record<string, unknown>>;
+			skills?: Array<{ name: string; path: string }>;
+			skillContentType?: string;
+			capabilities?: string[];
+		} = {},
+	) {
+		const base = manifest_json();
+		return {
+			...base,
+			capabilities: args.capabilities ?? ["plugin.secrets.read", "agent.mcp.connect", "agent.skills.contribute"],
+			secrets: [{ name: "SEARCH_API_KEY", description: "Search key" }],
+			mcpServers: args.mcpServers ?? [
+				{
+					id: "search",
+					title: "Search",
+					transport: "http",
+					url: "https://mcp.example.com/mcp",
+					headers: [{ name: "Authorization", secret: "SEARCH_API_KEY" }],
+					auth: { kind: "secret_headers" },
+					tools: null,
+					...args.server,
+				},
+			],
+			skills: args.skills ?? [{ name: "search-tips", path: "dist/skills/search-tips/SKILL.md" }],
+			files: [
+				...base.files,
+				{
+					path: "dist/skills/search-tips/SKILL.md",
+					sha256: `sha256:${"c".repeat(64)}`,
+					bytes: 1,
+					contentType: args.skillContentType ?? "text/markdown",
+				},
+			],
+		};
+	}
+
+	test("accepts one MCP server and one skill, and defaults both lists to empty", () => {
+		const accepted = plugins_validate_manifest(mcp_manifest_json());
+		expect(accepted).toMatchObject({
+			_yay: {
+				mcpServers: [{ id: "search", url: "https://mcp.example.com/mcp", auth: { kind: "secret_headers" } }],
+				skills: [{ name: "search-tips", path: "dist/skills/search-tips/SKILL.md" }],
+			},
+		});
+
+		expect(plugins_validate_manifest(manifest_json())).toMatchObject({ _yay: { mcpServers: [], skills: [] } });
+	});
+
+	test("refuses MCP server URLs that are not public https names or that carry a key", () => {
+		const refusals = [
+			["http://mcp.example.com/mcp", "MCP server URL must use https"],
+			["https://user:pass@mcp.example.com/mcp", "MCP server URL must not include credentials"],
+			["https://mcp.example.com/mcp#tools", "MCP server URL must not include a fragment"],
+			["https://127.0.0.1/mcp", "MCP server URL must use a host name, not an IP address"],
+			["https://2130706433/mcp", "MCP server URL must use a host name, not an IP address"],
+			["https://[::1]/mcp", "MCP server URL must use a host name, not an IP address"],
+			["https://localhost/mcp", "MCP server URL must not point to localhost"],
+			["https://tools.localhost/mcp", "MCP server URL must not point to localhost"],
+			[
+				"https://mcp.example.com/mcp?tavilyApiKey=x",
+				"MCP server URL must not carry a key in its query. Send the key in the Authorization header instead",
+			],
+			[
+				"https://mcp.example.com/mcp?access_token=x",
+				"MCP server URL must not carry a key in its query. Send the key in the Authorization header instead",
+			],
+			["https://MCP.example.com/mcp", "MCP server URLs must already be normalized"],
+		];
+		expect(
+			refusals.map(([url]) => plugins_validate_manifest(mcp_manifest_json({ server: { url } }))._nay?.message),
+		).toEqual(refusals.map(([, message]) => message));
+
+		// A plain query is allowed. Real servers use it to pick tools.
+		expect(
+			plugins_validate_manifest(mcp_manifest_json({ server: { url: "https://mcp.example.com/mcp?tools=search" } })),
+		).toMatchObject({ _yay: expect.any(Object) });
+	});
+
+	test("refuses duplicate and reserved MCP server ids and a local server command", () => {
+		const server = mcp_manifest_json().mcpServers[0]!;
+		expect(plugins_validate_manifest(mcp_manifest_json({ mcpServers: [server, server] }))).toEqual({
+			_nay: { message: 'Plugin manifest has duplicate MCP server id "search"' },
+		});
+		expect(plugins_validate_manifest(mcp_manifest_json({ server: { id: "my" } }))).toEqual({
+			_nay: { message: 'MCP server id "my" is reserved' },
+		});
+		expect(plugins_validate_manifest(mcp_manifest_json({ server: { id: "my-search" } }))).toEqual({
+			_nay: { message: 'MCP server id "my-search" is reserved' },
+		});
+		expect(plugins_validate_manifest(mcp_manifest_json({ server: { command: "npx" } }))._nay).toBeDefined();
+	});
+
+	test("holds MCP server headers to declared secrets and to names Press does not set", () => {
+		expect(
+			plugins_validate_manifest(
+				mcp_manifest_json({ server: { headers: [{ name: "Authorization", secret: "OTHER_KEY" }] } }),
+			),
+		).toEqual({
+			_nay: { message: 'MCP server "search" header secret "OTHER_KEY" must be declared in secrets' },
+		});
+		for (const name of ["Cookie", "host", "Content-Type", "Accept", "MCP-Protocol-Version", "Mcp-Session-Id"]) {
+			expect(
+				plugins_validate_manifest(mcp_manifest_json({ server: { headers: [{ name, secret: "SEARCH_API_KEY" }] } })),
+			).toEqual({ _nay: { message: `MCP server "search" must not set the "${name}" header` } });
+		}
+		expect(
+			plugins_validate_manifest(
+				mcp_manifest_json({ server: { headers: [{ name: "Bad Header", secret: "SEARCH_API_KEY" }] } }),
+			),
+		).toEqual({ _nay: { message: 'MCP server "search" has an invalid header name' } });
+		expect(plugins_validate_manifest(mcp_manifest_json({ server: { headers: [] } }))).toEqual({
+			_nay: { message: 'MCP server "search" secret_headers auth requires a header' },
+		});
+		expect(plugins_validate_manifest(mcp_manifest_json({ server: { auth: { kind: "none" } } }))).toEqual({
+			_nay: { message: 'MCP server "search" with no auth must not declare headers' },
+		});
+	});
+
+	test("holds OAuth sign-in to https URLs, the server's own resource, and Press's Authorization header", () => {
+		function oauth(auth: { issuer?: string; resource?: string | null }, headers: unknown[] = []) {
+			return plugins_validate_manifest(
+				mcp_manifest_json({
+					server: {
+						headers,
+						auth: { kind: "oauth", issuer: "https://auth.example.com", resource: null, scopes: [], ...auth },
+					},
+				}),
+			);
+		}
+
+		expect(oauth({})).toMatchObject({ _yay: expect.any(Object) });
+		expect(oauth({ resource: "https://mcp.example.com/" })).toMatchObject({ _yay: expect.any(Object) });
+		expect(oauth({ resource: "https://mcp.example.com/mcp" })).toMatchObject({ _yay: expect.any(Object) });
+		expect(oauth({}, [{ name: "Authorization", secret: "SEARCH_API_KEY" }])).toEqual({
+			_nay: { message: 'MCP server "search" must not set the "Authorization" header' },
+		});
+		for (const auth of [
+			{ issuer: "http://auth.example.com" },
+			{ issuer: "https://auth.example.com?tenant=a" },
+			{ resource: "https://mcp.example.com/mcp#a" },
+		]) {
+			expect(oauth(auth)).toEqual({
+				_nay: { message: 'MCP server "search" issuer and resource must be https URLs without a query or fragment' },
+			});
+		}
+		for (const resource of ["https://other.example.com/mcp", "https://mcp.example.com/mc"]) {
+			expect(oauth({ resource })).toEqual({
+				_nay: { message: 'MCP server "search" resource must be the server URL or one of its parent paths' },
+			});
+		}
+	});
+
+	test("holds skills to their fixed path and a markdown file", () => {
+		expect(
+			plugins_validate_manifest(
+				mcp_manifest_json({ skills: [{ name: "search-tips", path: "dist/skills/other/SKILL.md" }] }),
+			),
+		).toEqual({ _nay: { message: 'Plugin skill "search-tips" path must be dist/skills/search-tips/SKILL.md' } });
+		expect(
+			plugins_validate_manifest(mcp_manifest_json({ skills: [{ name: "other", path: "dist/skills/other/SKILL.md" }] })),
+		).toEqual({ _nay: { message: 'Plugin skill "other" path must be a listed file' } });
+		expect(plugins_validate_manifest(mcp_manifest_json({ skillContentType: "text/plain" }))).toEqual({
+			_nay: { message: 'Plugin skill "search-tips" must be a text/markdown file' },
+		});
+		const skill = { name: "search-tips", path: "dist/skills/search-tips/SKILL.md" };
+		expect(plugins_validate_manifest(mcp_manifest_json({ skills: [skill, skill] }))).toEqual({
+			_nay: { message: 'Plugin manifest has duplicate skill "search-tips"' },
+		});
+	});
+
+	test("keeps agent.mcp.connect and agent.skills.contribute together with their lists", () => {
+		expect(
+			plugins_validate_manifest(
+				mcp_manifest_json({ mcpServers: [], capabilities: ["plugin.secrets.read", "agent.mcp.connect"], skills: [] }),
+			),
+		).toEqual({ _nay: { message: "The agent.mcp.connect capability requires at least one MCP server" } });
+		expect(
+			plugins_validate_manifest(
+				mcp_manifest_json({ capabilities: ["plugin.secrets.read", "agent.skills.contribute"] }),
+			),
+		).toEqual({ _nay: { message: "MCP servers require the agent.mcp.connect capability" } });
+		expect(
+			plugins_validate_manifest(
+				mcp_manifest_json({
+					skills: [],
+					capabilities: ["plugin.secrets.read", "agent.mcp.connect", "agent.skills.contribute"],
+				}),
+			),
+		).toEqual({ _nay: { message: "The agent.skills.contribute capability requires at least one skill" } });
+		expect(
+			plugins_validate_manifest(mcp_manifest_json({ capabilities: ["plugin.secrets.read", "agent.mcp.connect"] })),
+		).toEqual({ _nay: { message: "Skills require the agent.skills.contribute capability" } });
+	});
 });
 
 describe("plugins_Capability", () => {

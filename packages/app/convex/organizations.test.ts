@@ -325,6 +325,9 @@ async function organizations_test_seed_live_plugin_authority(
 		capabilities: [],
 		outboundOrigins: [],
 		uiOutboundOrigins: [],
+		mcpServers: [],
+		mcpServersFingerprint: "mcp-servers-hash",
+		skills: [],
 		files: [],
 		sourceStatus: "ready",
 		sourceLastError: null,
@@ -2924,6 +2927,9 @@ describe("remove_user_from_organization", () => {
 						tokenHash: "6".repeat(64),
 						scopes: ["plugin_data:read"],
 						principalKey: "removal-test-service-control",
+				mcpServers: [],
+				mcpServersFingerprint: "mcp-servers-hash",
+				skills: [],
 						phase: "interactive",
 						destinationPathPrefix: null,
 						expiresAt: now + 24 * 60 * 60 * 1000,
@@ -3453,6 +3459,9 @@ describe("remove_user_from_organization", () => {
 		expect(await countPendingRemovalJobs()).toBe(1);
 
 		const reinviteWhileDraining = await owner.mutation(api.organizations.invite_user_to_organization_workspace, {
+				mcpServers: [],
+				mcpServersFingerprint: "mcp-servers-hash",
+				skills: [],
 			organizationId: created._yay!.organizationId,
 			workspaceId: created._yay!.defaultWorkspaceId,
 			userIdToAdd: memberId,

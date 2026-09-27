@@ -91,6 +91,9 @@ async function fixture() {
 			fileViews: [],
 			outboundOrigins: [],
 			uiOutboundOrigins: [],
+			mcpServers: [],
+			mcpServersFingerprint: "mcp-servers-hash",
+			skills: [],
 			files: [
 				{
 					path: "index.html",

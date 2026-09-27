@@ -3411,6 +3411,43 @@ const app_convex_schema = defineSchema({
 		 * know which installation is looking at it.
 		 */
 		uiOutboundOrigins: v.array(v.string()),
+		/**
+		 * Remote MCP servers from the manifest, stored as declared. Each header value is the value of the
+		 * named secret. An empty array means the chat agent gets no tools from this plugin.
+		 */
+		mcpServers: v.array(
+			v.object({
+				id: v.string(),
+				title: v.string(),
+				transport: v.literal("http"),
+				url: v.string(),
+				headers: v.array(v.object({ name: v.string(), secret: v.string() })),
+				auth: v.union(
+					v.object({ kind: v.literal("none") }),
+					v.object({ kind: v.literal("secret_headers") }),
+					v.object({
+						kind: v.literal("oauth"),
+						issuer: v.string(),
+						resource: v.union(v.string(), v.null()),
+						scopes: v.array(v.string()),
+					}),
+				),
+				/**
+				 * The tools the agent may call. Null means every tool the server lists.
+				 */
+				tools: v.union(v.array(v.string()), v.null()),
+			}),
+		),
+		/**
+		 * SHA-256 of `mcpServers`, computed once at publish. Install compares it with the value the
+		 * member accepted, so any server change needs a new accept.
+		 */
+		mcpServersFingerprint: v.string(),
+		/**
+		 * Skills listed in the chat skill catalog. `description` comes from the skill's frontmatter,
+		 * which the publish checked.
+		 */
+		skills: v.array(v.object({ name: v.string(), path: v.string(), description: v.string() })),
 		files: v.array(
 			v.object({
 				path: v.string(),

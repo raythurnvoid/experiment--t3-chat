@@ -153,6 +153,9 @@ async function register_gallery_plugin(
 		capabilities: args.capabilities ?? ["workspace.files.read"],
 		outboundOrigins: [],
 		uiOutboundOrigins: args.uiOutboundOrigins ?? [],
+		mcpServers: [],
+		mcpServersFingerprint: "mcp-servers-hash",
+		skills: [],
 		files: [
 			{
 				path: "dist/frontend/index.html",

@@ -307,6 +307,9 @@ async function register_media_plugin(
 		capabilities: args.capabilities ?? ["plugin.secrets.read", "outbound.fetch"],
 		outboundOrigins: args.outboundOrigins ?? [],
 		uiOutboundOrigins: args.uiOutboundOrigins ?? [],
+		mcpServers: [],
+		mcpServersFingerprint: "mcp-servers-hash",
+		skills: [],
 		secrets: args.secrets,
 		files: [
 			{
@@ -7003,6 +7006,9 @@ describe("plugins publish_version", () => {
 				capabilities: ["plugin.secrets.read"],
 				outboundOrigins: [],
 				uiOutboundOrigins: [],
+				mcpServers: [],
+				mcpServersFingerprint: "mcp-servers-hash",
+				skills: [],
 				files: args.files ?? [],
 				sourceStatus: "ready",
 				sourceLastError: null,
@@ -7087,6 +7093,8 @@ describe("plugins publish_version", () => {
 			capabilities: args.capabilities ?? ["plugin.secrets.read"],
 			outboundOrigins: args.outboundOrigins ?? [],
 			uiOutboundOrigins: args.uiOutboundOrigins ?? [],
+			mcpServers: [],
+			skillNames: [],
 			repositoryId: args.repositoryId,
 			requestedBy: args.requestedBy,
 		});
@@ -7189,6 +7197,9 @@ describe("plugins publish_version", () => {
 		files: Array<{ path: string; content: string | Uint8Array<ArrayBuffer>; contentType: string }>;
 		pages?: Array<{ id: string; title: string; entry: string }>;
 		fileViews?: Array<{ id: string; title: string; entry: string; contentTypes: string[] }>;
+		mcpServers?: Array<Record<string, unknown>>;
+		skills?: Array<{ name: string; path: string }>;
+		secrets?: Array<{ name: string; description: string }>;
 		backendEntry?: string;
 		capabilities?: string[];
 		delayMs?: number;
@@ -7214,6 +7225,9 @@ describe("plugins publish_version", () => {
 			events: [{ type: "files.upload.completed", contentTypes: ["image/png"] }],
 			pages: args.pages ?? [],
 			...(args.fileViews ? { fileViews: args.fileViews } : {}),
+			...(args.mcpServers ? { mcpServers: args.mcpServers } : {}),
+			...(args.skills ? { skills: args.skills } : {}),
+			...(args.secrets ? { secrets: args.secrets } : {}),
 			capabilities: args.capabilities ?? ["plugin.secrets.read"],
 			outboundOrigins: [],
 			uiOutboundOrigins: [],
@@ -7306,6 +7320,9 @@ describe("plugins publish_version", () => {
 			capabilities: [],
 			outboundOrigins: [],
 			uiOutboundOrigins: [],
+			mcpServers: [],
+			mcpServersFingerprint: "mcp-servers-hash",
+			skills: [],
 			files: [],
 			createdBy: publisherA.userId,
 		};
@@ -7383,6 +7400,9 @@ describe("plugins publish_version", () => {
 			capabilities: [],
 			outboundOrigins: [],
 			uiOutboundOrigins: [],
+			mcpServers: [],
+			mcpServersFingerprint: "mcp-servers-hash",
+			skills: [],
 			files: [],
 			createdBy: publisher.userId,
 		});
@@ -7420,6 +7440,9 @@ describe("plugins publish_version", () => {
 			capabilities: [],
 			outboundOrigins: [],
 			uiOutboundOrigins: [],
+			mcpServers: [],
+			mcpServersFingerprint: "mcp-servers-hash",
+			skills: [],
 			files: [],
 			createdBy: publisher.userId,
 		});
@@ -7531,6 +7554,9 @@ describe("plugins publish_version", () => {
 			capabilities: [],
 			outboundOrigins: [],
 			uiOutboundOrigins: [],
+			mcpServers: [],
+			mcpServersFingerprint: "mcp-servers-hash",
+			skills: [],
 			files: [],
 			createdBy: publisher.userId,
 		};
@@ -7910,6 +7936,87 @@ describe("plugins publish_version", () => {
 		expect(version?.fileViews).toEqual([
 			{ id: "player", title: "Video player", entry: "dist/ui/player.html", contentTypes: ["video/mp4"] },
 		]);
+	});
+
+	const search_tips_skill = [
+		"---",
+		"name: search-tips",
+		"description: How to search well.",
+		"---",
+		"Search tips.",
+	].join("\n");
+
+	test("publishes MCP servers and skills and stores the skill description from its frontmatter", async () => {
+		const t = test_convex();
+		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const repositoryId = await insert_claimed_repository(t, { ownerUserId: membership.userId });
+		const asOwner = t.withIdentity(user_identity(membership.userId));
+		const mcpServer = {
+			id: "search",
+			title: "Search",
+			transport: "http",
+			url: "https://mcp.example.com/mcp",
+			headers: [{ name: "Authorization", secret: "SEARCH_API_KEY" }],
+			auth: { kind: "secret_headers" },
+			tools: null,
+		};
+		await mock_publish_github_fetch_files({
+			files: [{ path: "dist/skills/search-tips/SKILL.md", content: search_tips_skill, contentType: "text/markdown" }],
+			mcpServers: [mcpServer],
+			skills: [{ name: "search-tips", path: "dist/skills/search-tips/SKILL.md" }],
+			secrets: [{ name: "SEARCH_API_KEY", description: "Search key" }],
+			capabilities: ["plugin.secrets.read", "agent.mcp.connect", "agent.skills.contribute"],
+		});
+		const aiReview = mock_ai_review();
+
+		const published = await asOwner.action(api.plugins.publish_version, publishArgs(repositoryId));
+		if (published._nay) throw new Error(published._nay.message);
+
+		// The skill is instructions the agent follows, so the reviewer reads it like code.
+		expect(aiReview).toHaveBeenCalledTimes(1);
+		expect(reviewer_saw()).toContain("Search tips.");
+		// The model prompt is stored as JSON, so its quotes are escaped.
+		expect(aiReview.mock.calls[0]?.[0].prompt ?? "").toContain(
+			JSON.stringify(
+				'Declared MCP servers: [{"id":"search","url":"https://mcp.example.com/mcp","auth":"secret_headers"}]\n' +
+					'Declared skills: ["search-tips"]',
+			).slice(1, -1),
+		);
+
+		const version = await t.run((ctx) => ctx.db.get("plugins_versions", published._yay.pluginVersionId));
+		expect(version?.mcpServers).toEqual([mcpServer]);
+		expect(version?.mcpServersFingerprint).toBe(`sha256:${await crypto_sha256_hex(JSON.stringify([mcpServer]))}`);
+		expect(version?.skills).toEqual([
+			{ name: "search-tips", path: "dist/skills/search-tips/SKILL.md", description: "How to search well." },
+		]);
+	});
+
+	test("refuses a skill with bad frontmatter or over 64 KiB before review and upload", async () => {
+		const t = test_convex();
+		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const repositoryId = await insert_claimed_repository(t, { ownerUserId: membership.userId });
+		const asOwner = t.withIdentity(user_identity(membership.userId));
+		const aiReview = mock_ai_review();
+
+		for (const [content, message] of [
+			[
+				search_tips_skill.replace("name: search-tips", "name: other"),
+				'Plugin skill "search-tips" is invalid: Make name match the skill folder name exactly.',
+			],
+			[`${search_tips_skill}\n${"x".repeat(65 * 1024)}`, 'Plugin skill "search-tips" must be at most 64 KiB'],
+		] as const) {
+			const github = await mock_publish_github_fetch_files({
+				files: [{ path: "dist/skills/search-tips/SKILL.md", content, contentType: "text/markdown" }],
+				skills: [{ name: "search-tips", path: "dist/skills/search-tips/SKILL.md" }],
+				capabilities: ["plugin.secrets.read", "agent.skills.contribute"],
+			});
+
+			const published = await asOwner.action(api.plugins.publish_version, publishArgs(repositoryId));
+
+			expect(published).toEqual({ _nay: { message } });
+			expect(github.uploadUrls).toEqual([]);
+		}
+		expect(aiReview).not.toHaveBeenCalled();
 	});
 
 	test("rejects a publish whose file view entry is not a listed file", async () => {
@@ -15675,6 +15782,9 @@ describe("plugins admin hard delete", () => {
 				capabilities: [],
 				outboundOrigins: [],
 				uiOutboundOrigins: [],
+				mcpServers: [],
+				mcpServersFingerprint: "mcp-servers-hash",
+				skills: [],
 				files: [
 					{
 						path: "dist/page.js",
@@ -15756,6 +15866,9 @@ describe("plugins admin hard delete", () => {
 				capabilities: [],
 				outboundOrigins: [],
 				uiOutboundOrigins: [],
+				mcpServers: [],
+				mcpServersFingerprint: "mcp-servers-hash",
+				skills: [],
 				files: [
 					{
 						path: "dist/page.js",
@@ -15812,6 +15925,9 @@ describe("plugins admin hard delete", () => {
 						capabilities: [],
 						outboundOrigins: [],
 						uiOutboundOrigins: [],
+						mcpServers: [],
+						mcpServersFingerprint: "mcp-servers-hash",
+						skills: [],
 						files: [],
 						sourceStatus: "ready",
 						sourceLastError: null,

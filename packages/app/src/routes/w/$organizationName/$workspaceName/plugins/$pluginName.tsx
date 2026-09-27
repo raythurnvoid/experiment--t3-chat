@@ -2047,6 +2047,9 @@ function get_publisher_version(publisherPlugin: RoutePlugins_PublisherPlugin): R
 		uiOutboundOrigins: version.uiOutboundOrigins,
 		pages: version.pages,
 		fileViews: version.fileViews,
+		mcpServers: version.mcpServers,
+		mcpServersFingerprint: version.mcpServersFingerprint,
+		skills: version.skills,
 	};
 }
 

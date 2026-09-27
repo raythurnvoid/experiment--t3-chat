@@ -466,6 +466,9 @@ async function data_deletion_test_seed_plugin_ui_sessions(
 		fileViews: [],
 		outboundOrigins: [],
 		uiOutboundOrigins: [],
+		mcpServers: [],
+		mcpServersFingerprint: "mcp-servers-hash",
+		skills: [],
 		files: [],
 		sourceStatus: "ready",
 		sourceLastError: null,
@@ -2176,6 +2179,9 @@ describe("process_user_deletion_request", () => {
 				fileViews: [],
 				outboundOrigins: [],
 				uiOutboundOrigins: [],
+				mcpServers: [],
+				mcpServersFingerprint: "mcp-servers-hash",
+				skills: [],
 				files: [],
 				sourceStatus: "ready",
 				sourceLastError: null,
@@ -2621,6 +2627,9 @@ describe("process_user_deletion_request", () => {
 				fileViews: [],
 				outboundOrigins: [],
 				uiOutboundOrigins: [],
+				mcpServers: [],
+				mcpServersFingerprint: "mcp-servers-hash",
+				skills: [],
 				files: [],
 				sourceStatus: "ready",
 				sourceLastError: null,
@@ -2827,6 +2836,9 @@ describe("process_user_deletion_request", () => {
 				fileViews: [],
 				outboundOrigins: [],
 				uiOutboundOrigins: [],
+				mcpServers: [],
+				mcpServersFingerprint: "mcp-servers-hash",
+				skills: [],
 				files: [],
 				sourceStatus: "ready",
 				sourceLastError: null,
@@ -4500,6 +4512,9 @@ describe("process_workspace_deletion_request", () => {
 				fileViews: [],
 				outboundOrigins: [],
 				uiOutboundOrigins: [],
+				mcpServers: [],
+				mcpServersFingerprint: "mcp-servers-hash",
+				skills: [],
 				files: [],
 				sourceStatus: "ready",
 				sourceLastError: null,
@@ -5160,6 +5175,9 @@ describe("process_workspace_deletion_request", () => {
 				fileViews: [],
 				outboundOrigins: [],
 				uiOutboundOrigins: [],
+				mcpServers: [],
+				mcpServersFingerprint: "mcp-servers-hash",
+				skills: [],
 				files: [],
 				sourceStatus: "ready",
 				sourceLastError: null,
@@ -10395,6 +10413,9 @@ describe("prepare_user_for_hard_deletion", () => {
 				unrelatedReview,
 			] = await Promise.all([
 				ctx.db.get("plugins_publisher_repositories", seeded.deletedRepositoryId),
+				mcpServers: [],
+				mcpServersFingerprint: "mcp-servers-hash",
+				skills: [],
 				ctx.db.get("plugins_publisher_repository_secrets", seeded.deletedSecretId),
 				ctx.db.get("plugins_version_reviews", seeded.deletedReviewId),
 				ctx.db.get("plugins_version_reviews", seeded.linkedDeletedReviewId),
@@ -10535,6 +10556,9 @@ describe("prepare_user_for_hard_deletion", () => {
 				sourceLastError: null,
 				createdBy: publisher.userId,
 				updatedAt: now,
+				mcpServers: [],
+				mcpServersFingerprint: "mcp-servers-hash",
+				skills: [],
 			});
 			return { repositoryId, reviewId };
 		});
@@ -10609,6 +10633,9 @@ describe("prepare_user_for_hard_deletion", () => {
 		// Pass 1 deletes two notifications, pass 2 the last one, pass 3 finds nothing and reports done.
 		const passes = [];
 		for (let i = 0; i < 3; i += 1) {
+				mcpServers: [],
+				mcpServersFingerprint: "mcp-servers-hash",
+				skills: [],
 			passes.push(
 				await t.run((ctx) =>
 					ctx.runMutation(internal.data_deletion.prepare_user_for_hard_deletion, {

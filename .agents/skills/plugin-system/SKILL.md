@@ -39,6 +39,9 @@ Validation lives in `plugins_validate_manifest` (`packages/app/shared/plugins.ts
 | Outbound origins                                         | 16           | `manifest_schema.outboundOrigins`                   |
 | UI outbound origins                                      | 16           | `manifest_schema.uiOutboundOrigins`                 |
 | Outbound origin length                                   | 255          | `plugins_validate_origin`                           |
+| MCP servers / headers per server / OAuth scopes          | 4/8/32       | `mcp_server_schema`                                 |
+| MCP server URL length / tool allowlist entries           | 2,048/200    | `plugins_validate_mcp_server_url`, `mcp_server_schema` |
+| Skills / skill `SKILL.md` bytes                          | 32/64 KiB    | `manifest_schema.skills`, publish                   |
 | Normalized file path length                              | 512          | `module_path_schema`                                |
 | Content type length                                      | 255          | `manifest_file_schema.contentType`                  |
 | Secret name length                                       | 128          | `plugins_validate_secret_name`                      |
@@ -77,6 +80,8 @@ Capabilities are the consent set. `CAPABILITIES` in `packages/app/shared/plugins
 | `plugin.service.connect`           | Pages and file views may pass their access to a server outside the app (see below) |
 | `ui.outbound.fetch`                | The plugin's pages and file views may call its declared UI outbound origins        |
 | `workspace.members.read`           | Pages and file views may list every member of the workspace (see below)            |
+| `agent.mcp.connect`                | The chat agent may call tools on the declared `mcpServers` (see below)             |
+| `agent.skills.contribute`          | The chat agent may follow the declared `skills` (see below)                        |
 
 Several capabilities and manifest fields imply another one, and `plugins_validate_manifest` rejects the manifest at publish instead of letting it install and fail later:
 
@@ -90,6 +95,8 @@ Several capabilities and manifest fields imply another one, and `plugins_validat
 - `userWritableCollections` requires `plugin.data.user-write`: the list narrows the user-write door, so without that door it means nothing.
 
 `ui.outbound.fetch` and `uiOutboundOrigins` require each other in both directions. The capability with no origin would grant nothing, and origins with no capability would widen the frame's policy without the install dialog listing a capability for it.
+
+`agent.mcp.connect` and `mcpServers` require each other in both directions, and so do `agent.skills.contribute` and `skills`. The manifest is public, so an MCP server URL must be a normalized `https:` URL with a host name (no IP literal, no `localhost`), no credentials, no fragment, and no query name that looks like a key (`key`, `token`, `secret`, `auth`, and similar). Keys go in `headers`, whose values name declared `secrets`. Server ids `my` and `my-*` are reserved for members' own servers. An OAuth `resource` must be the server URL or one of its parent paths. A skill path must be `dist/skills/<name>/SKILL.md`, a listed `text/markdown` file. Publish parses each skill's frontmatter with `ai_chat_skills_parse`, refuses a bad one before review and upload, and stores its `description`. Publish also stores `mcpServersFingerprint`, the SHA-256 of the parsed `mcpServers` JSON, so install can check an exact accept. The review sees the server ids, URLs, auth kinds, and skill names as facts, and reviews each skill file.
 
 ## UI outbound origins
 

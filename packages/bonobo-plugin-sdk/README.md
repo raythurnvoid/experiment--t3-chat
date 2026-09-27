@@ -36,6 +36,11 @@ The host exchange works for any plugin whose publisher registered a service secr
 - `workspace.files.create-read-only` — lets a sealed service upload ask for a direct read-only lock on the file it creates. It cannot lock existing member files. Declaring it also requires `workspace.files.write`.
 - `workspace.files.own-write` and `workspace.files.own-access` — registered services use public Files APIs with a sealed grant and current service secret. Optional writer conditions bind the root, folder IDs, generation, and replay receipts. Private readers use attached bindings; a Files manager may take over sharing. Current actor/account permissions, labels, and file policies still apply. These contracts are exported in `BonoboHttpApi` and leave ordinary service-upload rules unchanged.
 
+Chat agent (see [MCP servers and skills](#mcp-servers-and-skills)):
+
+- `agent.mcp.connect` — the chat agent may call the tools of the manifest's remote `mcpServers`, with member data from the thread as input. A server never gets a Press credential, only its declared headers and sign-in. The capability and `mcpServers` require each other.
+- `agent.skills.contribute` — the chat skill catalog lists the manifest's `skills`, and the agent reads them from the plugin's read-only mount. Nothing is written into the workspace. The capability and `skills` require each other.
+
 ### Grant lifecycle and service upload routes
 
 An interactive grant comes from `POST /api/v1/plugins/service-grants/exchange` (UI token + registered service secret) and carries the publisher's registered scopes minus `files:write` — for Council's registration, `plugin_data:read` and `plugin_data:write` — for one working day, renewable. When the service's processing work begins (for Council: when a meeting closes), the service seals it:
@@ -301,6 +306,32 @@ export default {
 	},
 };
 ```
+
+## MCP servers and skills
+
+A manifest may declare remote MCP servers for the chat agent, and skills for its skill catalog:
+
+```jsonc
+"mcpServers": [
+	{
+		"id": "search",
+		"title": "Search",
+		"transport": "http",
+		"url": "https://mcp.example.com/mcp",
+		"headers": [{ "name": "Authorization", "secret": "SEARCH_API_KEY" }],
+		"auth": { "kind": "secret_headers" },
+		"tools": null
+	}
+],
+"skills": [{ "name": "search-tips", "path": "dist/skills/search-tips/SKILL.md" }]
+```
+
+- `id` — matches `/^[a-z][a-z0-9-]{0,19}$/`, unique per manifest. `my` and ids starting with `my-` are reserved. At most 4 servers.
+- `url` — normalized `https:` URL of a Streamable HTTP server, at most 2048 characters. No credentials, fragment, IP address, or localhost. A query is allowed, but not a query name that looks like a key (it contains `key`, `token`, `secret`, `password`, `passwd`, `auth`, `credential`, or `signature` after removing `-` and `_`). Send keys in a header.
+- `headers` — at most 8. Each value is the value of one secret declared in `secrets` (which needs `plugin.secrets.read`). Press sets `Cookie`, `Host`, `Content-Type`, `Accept`, and every `Mcp-*` header itself, so they are refused.
+- `auth` — `{ "kind": "none" }` with no headers, `{ "kind": "secret_headers" }` with at least one header, or `{ "kind": "oauth", "issuer", "resource", "scopes" }`. With `oauth`, `issuer` and `resource` are `https:` URLs without a query or fragment, `resource` is null or the server URL or one of its parent paths, and `Authorization` is refused as a header because Press sends the member's token there.
+- `tools` — at most 200 tool names the agent may call, or null for every tool the server lists.
+- A skill `path` must be exactly `dist/skills/<name>/SKILL.md` and a `files[]` entry with contentType `"text/markdown"`. The file is at most 64 KiB and starts with YAML frontmatter between two `---` lines, with `name` equal to the skill name and a nonempty `description`. Publishing refuses a skill that fails these checks. At most 32 skills.
 
 ## Frontend pages
 

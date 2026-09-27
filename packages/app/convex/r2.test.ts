@@ -377,6 +377,9 @@ async function install_upload_plugin(
 		capabilities: ["plugin.secrets.read", "outbound.fetch"],
 		outboundOrigins: [],
 		uiOutboundOrigins: [],
+		mcpServers: [],
+		mcpServersFingerprint: "mcp-servers-hash",
+		skills: [],
 		files: [
 			{
 				path: "dist/backend/worker.js",

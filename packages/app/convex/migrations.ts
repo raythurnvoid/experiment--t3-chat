@@ -821,6 +821,31 @@ export const backfill_plugins_versions_ui_outbound_origins = app_migrations.defi
 });
 
 /**
+ * Versions published before MCP support declare no MCP servers and no skills. The fingerprint is the
+ * one publish computes for an empty list: SHA-256 of `[]`.
+ */
+export const backfill_plugins_versions_mcp_servers_and_skills = app_migrations.define({
+	table: "plugins_versions",
+	migrateOne: async (ctx, version) => {
+		const patch: Partial<Doc<"plugins_versions">> = {};
+		if (version.mcpServers === undefined) {
+			patch.mcpServers = [];
+		}
+		if (version.mcpServersFingerprint === undefined) {
+			patch.mcpServersFingerprint = "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945";
+		}
+		if (version.skills === undefined) {
+			patch.skills = [];
+		}
+		if (Object.keys(patch).length === 0) {
+			return;
+		}
+
+		await ctx.db.patch("plugins_versions", version._id, patch);
+	},
+});
+
+/**
  * The install-side record of the same consent. These installs were accepted before a page could
  * declare outbound origins, so the workspace agreed to none.
  */
@@ -1453,6 +1478,9 @@ export const run_backfill_bash_shell_state_arrays = app_migrations.runner([
 ]);
 export const run_backfill_plugins_versions_ui_outbound_origins = app_migrations.runner(
 	internal.migrations.backfill_plugins_versions_ui_outbound_origins,
+);
+export const run_backfill_plugins_versions_mcp_servers_and_skills = app_migrations.runner(
+	internal.migrations.backfill_plugins_versions_mcp_servers_and_skills,
 );
 export const run_backfill_plugins_installations_accepted_ui_origins = app_migrations.runner(
 	internal.migrations.backfill_plugins_installations_accepted_ui_origins,

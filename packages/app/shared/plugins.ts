@@ -21,7 +21,7 @@ export const plugins_RUNTIME_VERSION = "1";
  * Keep one value through a multi-step rollout, or invalidate every verdict produced by the interim
  * steps before any of them can authorize a publish.
  */
-export const plugins_REVIEW_POLICY_VERSION = "15";
+export const plugins_REVIEW_POLICY_VERSION = "16";
 
 const MANIFEST_SCHEMA_VERSION = 1;
 const EVENT_TYPES = ["files.upload.completed", "users.account.deleted"] as const;
@@ -82,6 +82,13 @@ export const plugins_CAPABILITIES = [
 	// from name resolution, and because every member reads the roster under one rule — including a
 	// member who signed in anonymously.
 	"workspace.members.read",
+	// Consent line: the chat agent may call the tools of the remote MCP servers in `mcpServers`, with
+	// member data from the thread as input. Each server is an outside service. It never gets a Press
+	// credential, only the headers and sign-in the manifest declares.
+	"agent.mcp.connect",
+	// Consent line: the chat agent may read and follow the instructions in the skills in `skills`.
+	// Nothing is written into the workspace. The agent reads the reviewed text from the plugin mount.
+	"agent.skills.contribute",
 ] as const;
 export type plugins_Capability = (typeof plugins_CAPABILITIES)[number];
 
@@ -393,6 +400,68 @@ export function plugins_validate_origin(raw: string, allowWebSocket = false) {
 	return Result({ _yay: url.origin });
 }
 
+const MAX_MCP_SERVER_URL_LENGTH = 2048;
+
+// Query names that look like they carry a key. Checked after lowercasing and removing `-` and `_`.
+const MCP_SERVER_URL_SECRET_QUERY_WORDS = [
+	"key",
+	"token",
+	"secret",
+	"password",
+	"passwd",
+	"auth",
+	"credential",
+	"signature",
+];
+
+/**
+ * Checks a remote MCP server URL. Plugin manifests and the servers members paste both use this rule.
+ *
+ * The URL is not secret: the manifest is public, and policy managers see a pasted URL. So a query name
+ * that looks like a key is refused. Such servers also accept the key in the `Authorization` header.
+ */
+export function plugins_validate_mcp_server_url(raw: string) {
+	if (raw.length > MAX_MCP_SERVER_URL_LENGTH) {
+		return Result({
+			_nay: { message: `MCP server URLs must be at most ${MAX_MCP_SERVER_URL_LENGTH} characters` },
+		});
+	}
+	let url: URL;
+	try {
+		url = new URL(raw);
+	} catch {
+		return Result({ _nay: { message: "MCP server URL must be a valid URL" } });
+	}
+	if (url.protocol !== "https:") {
+		return Result({ _nay: { message: "MCP server URL must use https" } });
+	}
+	if (url.username || url.password) {
+		return Result({ _nay: { message: "MCP server URL must not include credentials" } });
+	}
+	if (url.hash || raw.includes("#")) {
+		return Result({ _nay: { message: "MCP server URL must not include a fragment" } });
+	}
+	// The URL parser already turns every IPv4 form (decimal, hex, short) into dotted numbers, and IPv6
+	// is always in brackets. Press calls hosts by name only.
+	if (/^[0-9.]+$/u.test(url.hostname) || url.hostname.startsWith("[")) {
+		return Result({ _nay: { message: "MCP server URL must use a host name, not an IP address" } });
+	}
+	if (url.hostname === "localhost" || url.hostname.endsWith(".localhost")) {
+		return Result({ _nay: { message: "MCP server URL must not point to localhost" } });
+	}
+	for (const queryName of url.searchParams.keys()) {
+		const folded = queryName.toLowerCase().replaceAll(/[-_]/gu, "");
+		if (MCP_SERVER_URL_SECRET_QUERY_WORDS.some((word) => folded.includes(word))) {
+			return Result({
+				_nay: {
+					message: "MCP server URL must not carry a key in its query. Send the key in the Authorization header instead",
+				},
+			});
+		}
+	}
+	return Result({ _yay: url.href });
+}
+
 export function plugins_consent_diff(args: {
 	current: { capabilities: plugins_Capability[]; outboundOrigins: string[]; uiOutboundOrigins: string[] } | null;
 	target: { capabilities: plugins_Capability[]; outboundOrigins: string[]; uiOutboundOrigins: string[] };
@@ -647,6 +716,11 @@ const SHA256_REGEX = /^sha256:[a-f0-9]{64}$/u;
 const SEMVER_REGEX = /^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$/u;
 const MODULE_PATH_REGEX = /^[A-Za-z0-9._/-]+$/u;
 const COMPATIBILITY_DATE_REGEX = /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/u;
+const MCP_SERVER_ID_REGEX = /^[a-z][a-z0-9-]{0,19}$/u;
+// Stricter than the Agent Skills spec, which also allows Unicode lowercase. ASCII keeps paths and tool text simple.
+const SKILL_NAME_REGEX = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u;
+// RFC 9110 token characters.
+const HTTP_HEADER_NAME_REGEX = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/u;
 
 // These limits are checked before any file is fetched. Publishing downloads, buffers, and uploads
 // whatever the manifest declares, so without them a huge manifest would mean a huge publish.
@@ -675,6 +749,11 @@ const MAX_EXPANDED_FILE_VIEW_CONTENT_TYPES = 64;
 const MAX_OUTBOUND_ORIGINS = 16;
 const MAX_SECRETS = 32;
 const MAX_SECRET_DESCRIPTION_LENGTH = 300;
+const MAX_MCP_SERVERS = 4;
+const MAX_MCP_SERVER_HEADERS = 8;
+const MAX_MCP_SERVER_SCOPES = 32;
+const MAX_MCP_TOOL_ALLOWLIST = 200;
+const MAX_SKILLS = 32;
 const MAX_FILE_PATH_LENGTH = 512;
 const MAX_CONTENT_TYPE_LENGTH = 255;
 // Matches files_MAX_TEXT_CONTENT_BYTES: every artifact file must fit the app's text-content cap.
@@ -875,6 +954,53 @@ const secret_declaration_schema = z
 	})
 	.strict();
 
+// `.strict()` refuses a `command` key, so a local (stdio) server can never be declared here.
+const mcp_server_schema = z
+	.object({
+		id: z.string().regex(MCP_SERVER_ID_REGEX),
+		title: z.string().min(1).max(MAX_DISPLAY_NAME_LENGTH),
+		transport: z.literal("http"),
+		url: z.string().max(MAX_MCP_SERVER_URL_LENGTH),
+		/**
+		 * Each header value is the value of one declared secret.
+		 */
+		headers: z
+			.array(z.object({ name: z.string(), secret: z.string() }).strict())
+			.max(MAX_MCP_SERVER_HEADERS, `MCP servers can declare at most ${MAX_MCP_SERVER_HEADERS} headers`),
+		auth: z.discriminatedUnion("kind", [
+			z.object({ kind: z.literal("none") }).strict(),
+			z.object({ kind: z.literal("secret_headers") }).strict(),
+			z
+				.object({
+					kind: z.literal("oauth"),
+					issuer: z.string(),
+					resource: z.string().nullable(),
+					scopes: z
+						.array(z.string())
+						.max(MAX_MCP_SERVER_SCOPES, `MCP servers can declare at most ${MAX_MCP_SERVER_SCOPES} scopes`),
+				})
+				.strict(),
+		]),
+		/**
+		 * The tools the agent may call. Null means every tool the server lists.
+		 */
+		tools: z
+			.array(z.string().min(1).max(128))
+			.max(MAX_MCP_TOOL_ALLOWLIST, `MCP servers can allow at most ${MAX_MCP_TOOL_ALLOWLIST} tools`)
+			.nullable(),
+	})
+	.strict();
+
+const skill_schema = z
+	.object({
+		name: z.string().max(64).regex(SKILL_NAME_REGEX),
+		/**
+		 * Must be `dist/skills/<name>/SKILL.md`.
+		 */
+		path: z.string(),
+	})
+	.strict();
+
 const manifest_schema = z
 	.object({
 		schemaVersion: z.literal(MANIFEST_SCHEMA_VERSION),
@@ -931,6 +1057,16 @@ const manifest_schema = z
 			.array(file_view_schema)
 			.max(MAX_FILE_VIEWS, `Plugin manifests can declare at most ${MAX_FILE_VIEWS} file views`)
 			.optional(),
+		// Remote MCP servers the chat agent may call; requires `agent.mcp.connect`.
+		mcpServers: z
+			.array(mcp_server_schema)
+			.max(MAX_MCP_SERVERS, `Plugin manifests can declare at most ${MAX_MCP_SERVERS} MCP servers`)
+			.default([]),
+		// Skills listed in the chat skill catalog; requires `agent.skills.contribute`.
+		skills: z
+			.array(skill_schema)
+			.max(MAX_SKILLS, `Plugin manifests can declare at most ${MAX_SKILLS} skills`)
+			.default([]),
 		capabilities: z.array(z.enum(plugins_CAPABILITIES)),
 		/**
 		 * The collections a member-identity writer may write. Absent means every collection stays
@@ -1196,6 +1332,109 @@ export function plugins_validate_manifest(input: unknown) {
 	if (parsed.data.secrets.length > 0 && !capabilities.has("plugin.secrets.read" satisfies plugins_Capability)) {
 		return Result({ _nay: { message: "Plugin secrets declarations require the plugin.secrets.read capability" } });
 	}
+
+	const mcpServerIds = new Set<string>();
+	for (const server of parsed.data.mcpServers) {
+		if (mcpServerIds.has(server.id)) {
+			return Result({ _nay: { message: `Plugin manifest has duplicate MCP server id "${server.id}"` } });
+		}
+		mcpServerIds.add(server.id);
+		// Servers members paste get the tool prefix `my` or `my-...`. A plugin server id is its tool
+		// prefix, so it must not take that space. `my` is refused too: its clash suffix would be `my-2`.
+		if (server.id === "my" || server.id.startsWith("my-")) {
+			return Result({ _nay: { message: `MCP server id "${server.id}" is reserved` } });
+		}
+		const url = plugins_validate_mcp_server_url(server.url);
+		if (url._nay) {
+			return Result({ _nay: { message: url._nay.message } });
+		}
+		if (url._yay !== server.url) {
+			return Result({ _nay: { message: "MCP server URLs must already be normalized" } });
+		}
+		if (server.auth.kind === "secret_headers" && server.headers.length === 0) {
+			return Result({ _nay: { message: `MCP server "${server.id}" secret_headers auth requires a header` } });
+		}
+		if (server.auth.kind === "none" && server.headers.length > 0) {
+			return Result({ _nay: { message: `MCP server "${server.id}" with no auth must not declare headers` } });
+		}
+		if (server.auth.kind === "oauth") {
+			for (const authUrl of [server.auth.issuer, server.auth.resource]) {
+				if (authUrl === null) continue;
+				let parsedAuthUrl: URL | null = null;
+				try {
+					parsedAuthUrl = new URL(authUrl);
+				} catch {
+					// Refused below.
+				}
+				if (!parsedAuthUrl || parsedAuthUrl.protocol !== "https:" || parsedAuthUrl.search || authUrl.includes("#")) {
+					return Result({
+						_nay: {
+							message: `MCP server "${server.id}" issuer and resource must be https URLs without a query or fragment`,
+						},
+					});
+				}
+			}
+			// The resource names the protected server (RFC 8707). It must be the server itself or one of
+			// its parent paths, cut at a "/", so a token for it cannot be meant for another service.
+			if (server.auth.resource !== null) {
+				const resource = new URL(server.auth.resource);
+				const serverUrl = new URL(server.url);
+				const resourcePath = resource.pathname.replace(/\/$/u, "");
+				if (
+					resource.origin !== serverUrl.origin ||
+					(serverUrl.pathname !== resourcePath && !serverUrl.pathname.startsWith(`${resourcePath}/`))
+				) {
+					return Result({
+						_nay: { message: `MCP server "${server.id}" resource must be the server URL or one of its parent paths` },
+					});
+				}
+			}
+		}
+		const headerNames = new Set<string>();
+		for (const header of server.headers) {
+			const lowered = header.name.toLowerCase();
+			if (!HTTP_HEADER_NAME_REGEX.test(header.name)) {
+				return Result({ _nay: { message: `MCP server "${server.id}" has an invalid header name` } });
+			}
+			if (headerNames.has(lowered)) {
+				return Result({ _nay: { message: `MCP server "${server.id}" has duplicate header "${header.name}"` } });
+			}
+			headerNames.add(lowered);
+			// Press sets these itself: the protocol headers, the content headers, and the sign-in token.
+			if (
+				["cookie", "host", "content-type", "accept", "mcp-protocol-version"].includes(lowered) ||
+				lowered.startsWith("mcp-") ||
+				(lowered === "authorization" && server.auth.kind === "oauth")
+			) {
+				return Result({ _nay: { message: `MCP server "${server.id}" must not set the "${header.name}" header` } });
+			}
+			if (!secretNames.has(header.secret)) {
+				return Result({
+					_nay: { message: `MCP server "${server.id}" header secret "${header.secret}" must be declared in secrets` },
+				});
+			}
+		}
+	}
+
+	const skillNames = new Set<string>();
+	for (const skill of parsed.data.skills) {
+		if (skillNames.has(skill.name)) {
+			return Result({ _nay: { message: `Plugin manifest has duplicate skill "${skill.name}"` } });
+		}
+		skillNames.add(skill.name);
+		if (skill.path !== `dist/skills/${skill.name}/SKILL.md`) {
+			return Result({
+				_nay: { message: `Plugin skill "${skill.name}" path must be dist/skills/${skill.name}/SKILL.md` },
+			});
+		}
+		const skillFile = parsed.data.files.find((file) => file.path === skill.path);
+		if (!skillFile) {
+			return Result({ _nay: { message: `Plugin skill "${skill.name}" path must be a listed file` } });
+		}
+		if (skillFile.contentType !== "text/markdown") {
+			return Result({ _nay: { message: `Plugin skill "${skill.name}" must be a text/markdown file` } });
+		}
+	}
 	// A plugin that can write its own documents must also be able to read them back. Without the read
 	// capability the workspace would consent to durable writes it can never see through the plugin.
 	if (
@@ -1255,6 +1494,21 @@ export function plugins_validate_manifest(input: unknown) {
 	}
 	if (parsed.data.uiOutboundOrigins.length > 0 && !capabilities.has("ui.outbound.fetch" satisfies plugins_Capability)) {
 		return Result({ _nay: { message: "UI outbound origins require the ui.outbound.fetch capability" } });
+	}
+	// Like ui.outbound.fetch, the MCP and skill capabilities agree with their lists in both directions.
+	// A capability with an empty list consents to nothing, and a list without the capability would
+	// reach the agent with no consent text shown.
+	if (capabilities.has("agent.mcp.connect" satisfies plugins_Capability) && mcpServerIds.size === 0) {
+		return Result({ _nay: { message: "The agent.mcp.connect capability requires at least one MCP server" } });
+	}
+	if (mcpServerIds.size > 0 && !capabilities.has("agent.mcp.connect" satisfies plugins_Capability)) {
+		return Result({ _nay: { message: "MCP servers require the agent.mcp.connect capability" } });
+	}
+	if (capabilities.has("agent.skills.contribute" satisfies plugins_Capability) && skillNames.size === 0) {
+		return Result({ _nay: { message: "The agent.skills.contribute capability requires at least one skill" } });
+	}
+	if (skillNames.size > 0 && !capabilities.has("agent.skills.contribute" satisfies plugins_Capability)) {
+		return Result({ _nay: { message: "Skills require the agent.skills.contribute capability" } });
 	}
 	// Endpoints live inside the backend block, so this first rule catches the capability declared
 	// with no backend at all; the pair below then agrees in both directions like ui.outbound.fetch.
