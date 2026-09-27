@@ -550,7 +550,7 @@ Two caveats: only rendered lines exist in the DOM (fine for short fixtures, wron
 - Hidden hoisted modals keep `aria-busy="true"` while closed (0x0 rect). Busy/idle checks must count only visible `aria-busy` elements or they will report busy forever.
 - Edge gives all `localhost:5173` tabs one shared renderer process. Killing a wedged renderer PID therefore crashes **every** localhost tab, including the user's own. Observed 2026-08-02: a `New chat` click wedged the renderer at full CPU; killing the PID took down the user's other app tabs, which then had to be reopened by URL. Before considering a process kill, record every localhost tab URL (`context.pages().map((p) => p.url())`), try closing only the stuck tab or replacing it with a fresh one (next entry), and treat the PID kill as a last resort that needs tab-restore work afterwards.
 - To photograph a UI state that lasts under a second (a flash, a spinner blip): `Page.startScreencast` looks like the obvious tool but is a trap when the browser window is occluded on the user's desktop — the compositor stops painting, so every screencast frame is the same stale image (byte-identical files are the signature; hash them). `Page.captureScreenshot` over `getCDPSession(...)` DOES force a fresh paint even while occluded and takes ~70-100 ms per shot. The recipe that worked (2026-08-08, ~130-600 ms flash): set a `window` flag from a MutationObserver when the target state appears, `waitForFunction` on that flag with `{ polling: 15 }`, then fire 4 `Page.captureScreenshot` calls back to back and pick the good frame afterwards. Two extra gotchas: the state must be inside the viewport (scroll the target element into view first — an off-screen flash produces identical screenshots of an unchanged viewport), and JS/MutationObservers keep running normally while occluded, so DOM-level logs stay trustworthy even when pixels are stale.
-- An occluded window also breaks timing checks. On 2026-09-24 the page painted at about 3 fps while the Edge window was covered, and `visibilityState` still read `"visible"`. So `requestAnimationFrame` timing was wrong, and tooltip open delays measured far too long. What worked: `bringToFront()`, keep a `Page.startScreencast` running during the measurement (ack every frame with `Page.screencastFrameAck`), and time the state change with a MutationObserver, not rAF.
+- An occluded window also breaks timing checks. On 2026-09-24 the page painted at about 3 fps while the Edge window was covered, and `visibilityState` still read `"visible"`. So `requestAnimationFrame` timing was wrong, and tooltip open delays measured far too long. What worked: `bringToFront()`, keep a `Page.startScreencast` running during the measurement (ack every frame with `Page.screencastFrameAck`), and time the state change with a MutationObserver, not rAF. It also delays any code that waits for a frame, like Tiptap's `editor.commands.focus()`. On 2026-09-27 frames came 1000 ms apart while `document.hasFocus()` was true. Log a few `requestAnimationFrame` times before any focus or timing check.
 - A tab that has been open for many hours can wedge in a way reloads do not fix: a `[pageerror] Failed to execute 'measure' on 'Performance': Data cannot be cloned, out of memory` appears, and then **every** navigation or reload lands in the route error boundary with the HMR-blank signature (`useAppAuth must be used within AppAuthProvider`), even though the dev server and React Compiler are fine (`curl localhost:5173/src/components/my-button.tsx | grep -c '_c('` is non-zero). Stop reloading: open a fresh tab (`context.newPage()` + `goto`), point the harness at it (`state.page = p; state.appPlaywriterHarness.page = p`), and close the old tab. The fresh tab loads the same routes cleanly. Verified 2026-08-02.
 
 ## Ariakit wrappers must never re-forward `id`
@@ -2306,7 +2306,11 @@ A Bash-heavy message can stop part way with, in the terminal card,
 commands after that point never run, and their cards still render with the command text, so a
 runner that reads the terminals gets plausible-looking output for commands that never executed.
 
-Check each terminal body for that sentence before recording a result. Keep a QA message to a few
+Parallel calls that do not fit at once get a softer refusal: "Too many tool calls at once. This call
+was not run. Try it again in the next step; ...". The model usually runs that call again in its next
+step, so read the later card for the real result.
+
+Check each terminal body for both sentences before recording a result. Keep a QA message to a few
 Bash calls, and start a fresh chat when a thread has already spent its budget.
 
 ## Most `[role="dialog"]` nodes on `/files` are mounted but closed
@@ -2554,8 +2558,10 @@ instead. Verified 2026-09-24.
 
 Escape removes the class `FileEditorRichTextBubble-rendered`, so the bubble stays hidden for the same
 selection. Press `ArrowRight` to drop the selection, then select the word again. Escape on a bubble
-button also leaves `document.activeElement` on `body`. The word stays selected in the editor. Check
-`editor.state.selection`, not the page focus. A happy-dom test expects the editor.
+button puts focus back in the editor, but Tiptap's `focus()` waits one animation frame. Until then
+`document.activeElement` is `body`. In a covered QA window a frame can take a whole second, so an early
+read looks like a focus bug. Measure the frame gap first. Then read focus after it. Verified
+2026-09-27: frames came 1000 ms apart, and after 1.5 s focus was in the editor with the word selected.
 
 Do not press Enter while that selection is in the editor. Enter deletes the selected word. Focus the
 bubble button with `button.focus()`, then press Enter. `locator.click()` on the bubble `Add link`
