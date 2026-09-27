@@ -553,18 +553,6 @@ const FileEditorRichTextBubble = memo(function FileEditorRichTextBubble(props: F
 			`.${"MyPopoverContent" satisfies MyPopoverContent_ClassNames}[data-open]`,
 		);
 
-	// Handle Escape while focus stays inside the bubble.
-	const handleKeyDown = useFn<EditorBubbleProps["onKeyDown"]>((event) => {
-		if (
-			event.key === "Escape" &&
-			event.currentTarget.contains(event.target as HTMLElement) &&
-			!isEscapeForBubblePopover(event.nativeEvent)
-		) {
-			setRendered(false);
-			editor.commands.focus();
-		}
-	});
-
 	const handleClickAi = useFn<MyButton_Props["onClick"]>(() => {
 		setOpenAi(true);
 
@@ -703,6 +691,9 @@ const FileEditorRichTextBubble = memo(function FileEditorRichTextBubble(props: F
 
 						if (event instanceof KeyboardEvent) {
 							event.preventDefault();
+							// Escape on a bubble button hides the button that has the focus. Put the caret back in
+							// the text, or the focus falls to the page body.
+							editor.commands.focus();
 						}
 					}
 				},
@@ -748,7 +739,6 @@ const FileEditorRichTextBubble = memo(function FileEditorRichTextBubble(props: F
 			appendTo={hoistingContainer}
 			shouldShow={shouldShow}
 			options={bubbleOptions}
-			onKeyDown={handleKeyDown}
 		>
 			<FileEditorRichTextBubbleContent
 				editor={editor}
@@ -1246,6 +1236,12 @@ FileEditorRichText.clearDecorationHighlightProperly = (editor: Editor, triggerEl
 	// document.getSelection()?.removeAllRanges();
 
 	setTimeout(() => {
+		// The bubble menu hides itself when the editor is destroyed, and its hide handler calls this.
+		// So the editor can be gone when the timer runs, and `editor.view` would throw.
+		if (editor.isDestroyed) {
+			return;
+		}
+
 		const hasDecorationHighlight = editor.view.dom.querySelector("[data-decoration-highlight='true']");
 		if (!hasDecorationHighlight) {
 			return;

@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { toast } from "sonner";
 
@@ -488,6 +488,44 @@ describe("FileEditorRichTextNonCollab", () => {
 
 		expect(editorHarness.editor).toBe(editor);
 		expect(editor.state.plugins.length).toBe(pluginCount);
+	});
+
+	test("Escape on a bubble button hides the bubble and puts the focus back in the text", async () => {
+		resolveQueryWithNonCollaborativeContent("alpha beta\n");
+		renderNonCollabRichEditor();
+		await flushEditorMount();
+		const editor = editorHarness.editor;
+		if (!editor) {
+			throw new Error("Expected the mounted editor to be captured");
+		}
+
+		// The bubble registers its listeners from a timer. Tiptap shows it 250 ms after the selection changes.
+		await act(async () => {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		});
+		await act(async () => {
+			editor.chain().focus().setTextSelection({ from: 1, to: 6 }).run();
+			await new Promise((resolve) => setTimeout(resolve, 400));
+		});
+		const bubble = document.querySelector<HTMLElement>(".FileEditorRichTextBubble-rendered");
+		if (!bubble) {
+			throw new Error("Expected the bubble to show for the selection");
+		}
+
+		// The toolbar has a Bold button too, so take the one in the bubble.
+		const boldButton = within(bubble).getByRole("button", { name: "Bold (Ctrl+B)" });
+		act(() => {
+			boldButton.focus();
+		});
+
+		fireEvent.keyDown(boldButton, { key: "Escape" });
+		// Tiptap moves the focus one frame later.
+		await act(async () => {
+			await new Promise((resolve) => setTimeout(resolve, 50));
+		});
+
+		expect(document.querySelector(".FileEditorRichTextBubble-rendered")).toBeNull();
+		expect(document.activeElement).toBe(editor.view.dom);
 	});
 
 	test("a snapshot restore refreshes the comment anchors without waiting for the next edit", async () => {
