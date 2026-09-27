@@ -109,7 +109,7 @@
 		"jose": "^6.2.12",
 		"js-base64": "3.9.4",
 		"just-bash": "workspace:*",
-		"katex": "^0.16.24",
+		"katex": "^0.16.47",
 		"lib0": "^0.2.114",
 		"linkedom": "0.18.13",
 		"listhen": "^1.9.0",
