@@ -463,9 +463,6 @@ importers:
       playwright:
         specifier: 1.63.0
         version: 1.63.0
-      pngjs:
-        specifier: ^7.0.0
-        version: 7.0.0
       tw-animate-css:
         specifier: ^1.4.0
         version: 1.4.0
