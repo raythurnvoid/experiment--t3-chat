@@ -84,18 +84,14 @@
 			font-weight: 700;
 		}
 
-		/* Chat links use the accent color. Streamdown does not style them. */
+		/* Chat links use the accent color. AiChatMarkdownLink renders them with no style of its own. */
 		[data-streamdown="link"] {
-			--primary: var(--color-accent-07);
-
-			color: var(--primary);
-			cursor: pointer;
+			color: var(--color-accent-07);
 			text-decoration-thickness: 1px;
 			text-underline-offset: 3px;
 
 			&:hover {
-				--primary: var(--color-accent-08);
-
+				color: var(--color-accent-08);
 				text-decoration-thickness: 2px;
 			}
 

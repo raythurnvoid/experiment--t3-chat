@@ -358,7 +358,7 @@ function rehype_untrusted_images_to_links() {
 					return [child];
 				}
 
-				// Show the image as a link, so Streamdown still asks before it opens the URL.
+				// Show the image as a link, so the browser does not load the untrusted URL until the user clicks it.
 				// A link cannot hold another link, so inside a link keep only the text.
 				const text = { type: "text", value: String(child.properties?.alt || src) };
 				return isInsideLink ? [text] : [{ type: "element", tagName: "a", properties: { href: src }, children: [text] }];
