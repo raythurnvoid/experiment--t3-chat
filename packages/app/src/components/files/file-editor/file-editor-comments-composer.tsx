@@ -103,6 +103,13 @@ function FileEditorCommentsComposerControl(props: FileEditorCommentsComposerCont
 			autofocus: autoFocus,
 			editable: !disabled,
 			editorProps: {
+				handleDOMEvents: {
+					// ProseMirror calls preventDefault on every Escape, even when nothing uses it. A popover or
+					// dialog around the composer then thinks the press was used, and stays open. The composer
+					// has no menu of its own that Escape could close, so let ProseMirror skip the press.
+					// During IME composition, Escape still goes to ProseMirror.
+					keydown: (_view, event) => event.key === "Escape" && !event.isComposing,
+				},
 				attributes: {
 					class: cn(
 						"FileEditorCommentsComposerControl-editor" satisfies FileEditorCommentsComposerControl_ClassNames,
