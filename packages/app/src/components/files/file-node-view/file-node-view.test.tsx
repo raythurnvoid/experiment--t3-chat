@@ -1528,7 +1528,11 @@ describe("FileNodeView folder clipboard", () => {
 			sourceIds: [child._id],
 			targetParentId: target._id,
 		});
-		await waitFor(() => expect(screen.getByRole("dialog")).toBeTruthy());
+		// A one-source paste opens no dialog. The paste would open it right after the start call.
+		await act(async () => {
+			await mutationMock.mock.results[0]!.value;
+		});
+		expect(screen.queryByRole("dialog")).toBeNull();
 		expect(screen.queryByRole("button", { name: "Paste files" })).toBeNull();
 	});
 

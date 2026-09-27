@@ -59,6 +59,7 @@ import {
 	files_INITIAL_CONTENT,
 	files_UPLOAD_PATH_TAKEN_MESSAGE,
 	files_YJS_DOC_KEYS,
+	files_db_get_visible_node_by_path,
 	files_default_text_shape_for_name,
 	files_get_utf8_byte_size,
 	files_u8_to_array_buffer,
@@ -84,6 +85,7 @@ import {
 import { users_SYSTEM_AUTHOR } from "../shared/users.ts";
 import type { files_PendingParent } from "../shared/files.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
+import { files_subtree_ops_STEP_MAX_NODES } from "./files_subtree_ops.ts";
 
 const generateTextMock = vi.hoisted(() => vi.fn());
 const streamTextMock = vi.hoisted(() => vi.fn());
@@ -2894,7 +2896,6 @@ describe("files_nodes_db_preflight_move policy reach", () => {
 describe("files_nodes_db_preflight_move budgets", () => {
 	// files_nodes.ts keeps its move caps private. Mirror them here so the focused pairs below can
 	// sit on one cap and cross only that one.
-	const MAX_MOVE_NODE_COUNT = 500;
 	const MAX_MOVE_DOCUMENT_COUNT = 2000;
 	const MAX_MOVE_BYTES = 4 * 1024 * 1024;
 
@@ -2944,124 +2945,16 @@ describe("files_nodes_db_preflight_move budgets", () => {
 		},
 	);
 
-	test.each([
-		{ childCount: 499, metadataCount: 1499, allowed: true },
-		{ childCount: 500, metadataCount: 0, allowed: false },
-		{ childCount: 499, metadataCount: 1500, allowed: false },
-	])(
-		"checks $childCount children and $metadataCount metadata docs before writing",
-		async ({ childCount, metadataCount, allowed }) => {
-			const t = test_convex();
-			const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-			const { source, target } = await t.run(async (ctx) => {
-				const base = {
-					...test_mocks.files.base(),
-					organizationId: db.organizationId,
-					workspaceId: db.workspaceId,
-					createdBy: db.userId,
-					updatedBy: db.userId,
-				};
-				const sourceId = await ctx.db.insert("files_nodes", {
-					...base,
-					name: "source",
-					sortName: files_sort_text_key("source"),
-					path: "/source",
-					treePath: "/source/",
-				});
-				const targetId = await ctx.db.insert("files_nodes", {
-					...base,
-					name: "target",
-					sortName: files_sort_text_key("target"),
-					path: "/target",
-					treePath: "/target/",
-				});
-				const nodeIds = [sourceId];
-				for (let index = 0; index < childCount; index += 1) {
-					nodeIds.push(
-						await ctx.db.insert("files_nodes", {
-							...base,
-							parentId: sourceId,
-							name: `child-${index}`,
-							sortName: files_sort_text_key(`child-${index}`),
-							path: `/source/child-${index}`,
-							treePath: `/source/child-${index}/`,
-							pathDepth: 2,
-							archiveOperationId: index === childCount - 1 ? "earlier-archive" : null,
-						}),
-					);
-				}
-				for (let index = 0; index < metadataCount; index += 1) {
-					const node = (await ctx.db.get("files_nodes", nodeIds[index % nodeIds.length]))!;
-					await ctx.db.insert("files_metadata_docs", {
-						organizationId: db.organizationId,
-						workspaceId: db.workspaceId,
-						fileNodeId: node._id,
-						sourceKind: "committed",
-						docKind: "field",
-						fieldPath: `metadata.key-${Math.floor(index / nodeIds.length)}`,
-						path: node.path,
-						treePath: node.treePath,
-						archiveOperationId: node.archiveOperationId ?? undefined,
-					});
-				}
-				return {
-					source: (await ctx.db.get("files_nodes", sourceId))!,
-					target: (await ctx.db.get("files_nodes", targetId))!,
-				};
-			});
-			const before = await t.run(async (ctx) => ({
-				nodes: await ctx.db.query("files_nodes").collect(),
-				metadata: await ctx.db.query("files_metadata_docs").collect(),
-			}));
-			const result = await t.run(async (ctx) => {
-				const membership = (await ctx.db.get("organizations_workspaces_users", db.membershipId))!;
-				return await files_nodes_db_preflight_move(ctx, {
-					userAuth: { id: db.userId },
-					membership,
-					writer: { kind: "user", userId: db.userId },
-					policyReach: "ancestors",
-					intents: [
-						{
-							nodeId: source._id,
-							expected: source,
-							destination: {
-								parentId: target._id,
-								name: source.name,
-								expectedParentPath: target.path,
-								expectedParentArchiveOperationId: null,
-							},
-							occupant: { kind: "empty" },
-						},
-					],
-				});
-			});
-			if (allowed) {
-				expect(result._nay).toBeUndefined();
-				expect(result._yay?.nodePatches).toHaveLength(500);
-				expect(result._yay?.budget.readDocumentCount).toBe(2000);
-				expect(result._yay?.budget.writeDocumentCount).toBe(1999);
-			} else {
-				expect(result._nay?.name).toBe("move_too_large");
-			}
-			expect(
-				await t.run(async (ctx) => ({
-					nodes: await ctx.db.query("files_nodes").collect(),
-					metadata: await ctx.db.query("files_metadata_docs").collect(),
-				})),
-			).toEqual(before);
-		},
-	);
-
-	// Each pair below fills one budget to its cap, then crosses that one only. The success case
-	// reports every counter, so it shows which limit refused the next step.
-
-	test.each([
-		{ childCount: MAX_MOVE_NODE_COUNT - 1, allowed: true },
-		{ childCount: MAX_MOVE_NODE_COUNT, allowed: false },
-	])("patches $childCount children with their parent against the node limit", async ({ childCount, allowed }) => {
-		const t = test_convex();
-		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const { source, target } = await t.run(async (ctx) => {
+	/**
+	 * Insert `/source` with `childCount` child folders and `/target`. Every node gets
+	 * `metadataPerNode` metadata docs, so a test can see that the side docs follow their node.
+	 */
+	async function seed_wide_source(
+		t: ReturnType<typeof test_convex>,
+		db: Awaited<ReturnType<typeof test_mocks_fill_db_with.membership>>,
+		args: { childCount: number; metadataPerNode: number },
+	) {
+		return await t.run(async (ctx) => {
 			const base = {
 				...test_mocks.files.base(),
 				organizationId: db.organizationId,
@@ -3083,22 +2976,53 @@ describe("files_nodes_db_preflight_move budgets", () => {
 				path: "/target",
 				treePath: "/target/",
 			});
-			for (let index = 0; index < childCount; index += 1) {
-				await ctx.db.insert("files_nodes", {
-					...base,
-					parentId: sourceId,
-					name: `child-${index}`,
-					sortName: files_sort_text_key(`child-${index}`),
-					path: `/source/child-${index}`,
-					treePath: `/source/child-${index}/`,
-					pathDepth: 2,
-				});
+			const nodeIds = [sourceId];
+			for (let index = 0; index < args.childCount; index += 1) {
+				nodeIds.push(
+					await ctx.db.insert("files_nodes", {
+						...base,
+						parentId: sourceId,
+						name: `child-${index}`,
+						sortName: files_sort_text_key(`child-${index}`),
+						path: `/source/child-${index}`,
+						treePath: `/source/child-${index}/`,
+						pathDepth: 2,
+						archiveOperationId: index === args.childCount - 1 ? "earlier-archive" : null,
+					}),
+				);
+			}
+			for (const nodeId of nodeIds) {
+				const node = (await ctx.db.get("files_nodes", nodeId))!;
+				for (let index = 0; index < args.metadataPerNode; index += 1) {
+					await ctx.db.insert("files_metadata_docs", {
+						organizationId: db.organizationId,
+						workspaceId: db.workspaceId,
+						fileNodeId: node._id,
+						sourceKind: "committed",
+						docKind: "field",
+						fieldPath: `metadata.key-${index}`,
+						path: node.path,
+						treePath: node.treePath,
+						archiveOperationId: node.archiveOperationId ?? undefined,
+					});
+				}
 			}
 			return {
 				source: (await ctx.db.get("files_nodes", sourceId))!,
 				target: (await ctx.db.get("files_nodes", targetId))!,
 			};
 		});
+	}
+
+	test("plans only the moved folder, however many children it has", async () => {
+		const t = test_convex();
+		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const { source, target } = await seed_wide_source(t, db, { childCount: 600, metadataPerNode: 3 });
+		const before = await t.run(async (ctx) => ({
+			nodes: await ctx.db.query("files_nodes").collect(),
+			metadata: await ctx.db.query("files_metadata_docs").collect(),
+		}));
+
 		const result = await t.run(async (ctx) => {
 			const membership = (await ctx.db.get("organizations_workspaces_users", db.membershipId))!;
 			return await files_nodes_db_preflight_move(ctx, {
@@ -3121,18 +3045,193 @@ describe("files_nodes_db_preflight_move budgets", () => {
 				],
 			});
 		});
-		if (allowed) {
-			expect(result._nay).toBeUndefined();
-			// Only the patched node count reaches its cap here.
-			expect(result._yay?.nodePatches).toHaveLength(MAX_MOVE_NODE_COUNT);
-			expect(result._yay?.budget.readDocumentCount).toBe(childCount + 2);
-			expect(result._yay?.budget.writeDocumentCount).toBe(MAX_MOVE_NODE_COUNT);
-			expect(result._yay?.budget.readBytes).toBeLessThan(MAX_MOVE_BYTES / 4);
-			expect(result._yay?.budget.writeBytes).toBeLessThan(MAX_MOVE_BYTES / 4);
-		} else {
-			expect(result._nay?.name).toBe("move_too_large");
-		}
+
+		expect(result._nay).toBeUndefined();
+		expect(result._yay?.nodePatches.map((patch) => patch.id)).toEqual([source._id]);
+		expect(result._yay?.metadataPatches).toHaveLength(3);
+		expect(result._yay?.walkRoots).toEqual([{ nodeId: source._id, oldTreePath: "/source/" }]);
+		expect(
+			await t.run(async (ctx) => ({
+				nodes: await ctx.db.query("files_nodes").collect(),
+				metadata: await ctx.db.query("files_metadata_docs").collect(),
+			})),
+		).toEqual(before);
 	});
+
+	test("a move of a big folder commits now and a job gives every child its new path", async () => {
+		const t = test_convex();
+		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+		const { source, target } = await seed_wide_source(t, db, { childCount: 600, metadataPerNode: 1 });
+
+		expect(
+			await asUser.mutation(api.files_nodes.move_nodes, {
+				membershipId: db.membershipId,
+				itemIds: [source._id],
+				targetParentId: target._id,
+			}),
+		).toEqual({ _yay: null });
+		expect(await t.run((ctx) => ctx.db.get("files_nodes", source._id))).toMatchObject({
+			parentId: target._id,
+			path: "/target/source",
+		});
+		const op = await t.run((ctx) => ctx.db.query("files_subtree_ops").first());
+		expect(op).toMatchObject({ kind: "move", treePaths: ["/target/source/"], oldTreePaths: ["/source/"] });
+		const activity = await t.run((ctx) => ctx.db.query("activities").first());
+		expect(activity).toMatchObject({ source: { kind: "files_subtree_op", opKind: "move" }, status: "running" });
+
+		// The walk has not reached this child yet, so its stored path is still the old one. A lookup by
+		// path finds it at the new place only.
+		const lookup = (path: string) =>
+			t.run(
+				async (ctx) =>
+					(
+						await files_db_get_visible_node_by_path(ctx, {
+							organizationId: db.organizationId,
+							workspaceId: db.workspaceId,
+							path,
+						})
+					)?.name ?? null,
+			);
+		const child = await t.run(async (ctx) =>
+			(await ctx.db.query("files_nodes").collect()).find((node) => node.name === "child-500"),
+		);
+		expect(child?.path).toBe("/source/child-500");
+		expect(await lookup("/target/source/child-500")).toBe("child-500");
+		expect(await lookup("/source/child-500")).toBeNull();
+		expect(
+			await asUser.query(api.files_nodes.get_authorized_by_path, {
+				membershipId: db.membershipId,
+				path: "/target/source/child-500",
+			}),
+		).toMatchObject({ nodeId: child!._id });
+		expect(
+			await asUser.query(api.files_nodes.get_authorized_by_path, {
+				membershipId: db.membershipId,
+				path: "/source/child-500",
+			}),
+		).toBeNull();
+
+		for (let round = 0; round < 20; round += 1) {
+			await delay(0);
+			await t.finishInProgressScheduledFunctions();
+		}
+
+		expect(await t.run((ctx) => ctx.db.query("files_subtree_ops").collect())).toEqual([]);
+		expect(await t.run((ctx) => ctx.db.get("activities", activity!._id))).toMatchObject({ status: "succeeded" });
+		const nodes = await t.run((ctx) => ctx.db.query("files_nodes").collect());
+		const children = nodes.filter((node) => node.parentId === source._id);
+		expect(children).toHaveLength(600);
+		expect(children.filter((node) => !node.path.startsWith("/target/source/child-"))).toEqual([]);
+		// The walk writes paths, never the archive stamp.
+		expect(children.filter((node) => node.archiveOperationId !== null).map((node) => node.name)).toEqual(["child-599"]);
+		const metadata = await t.run((ctx) => ctx.db.query("files_metadata_docs").collect());
+		const pathById = new Map(nodes.map((node) => [node._id, node.path]));
+		expect(
+			metadata.filter((doc) => doc.sourceKind !== "committed" || doc.path !== pathById.get(doc.fileNodeId)),
+		).toEqual([]);
+	});
+
+	test("a move splits a big group of archived items with one name over several steps", async () => {
+		const t = test_convex();
+		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+		const { source, target } = await seed_wide_source(t, db, { childCount: 0, metadataPerNode: 0 });
+		// Each replace of `report.md` archives the old one, so a folder can collect many items with one name.
+		await t.run(async (ctx) => {
+			for (let index = 0; index < 400; index += 1) {
+				await ctx.db.insert("files_nodes", {
+					...test_mocks.files.base(),
+					organizationId: db.organizationId,
+					workspaceId: db.workspaceId,
+					createdBy: db.userId,
+					updatedBy: db.userId,
+					parentId: source._id,
+					kind: "file",
+					name: "report.md",
+					sortName: files_sort_text_key("report.md"),
+					path: "/source/report.md",
+					treePath: "/source/report.md",
+					pathDepth: 2,
+					archiveOperationId: `replace-${index}`,
+				});
+			}
+		});
+		const moved = async () =>
+			(await t.run((ctx) => ctx.db.query("files_nodes").collect())).filter(
+				(node) => node.path === "/target/source/report.md",
+			).length;
+
+		expect(
+			await asUser.mutation(api.files_nodes.move_nodes, {
+				membershipId: db.membershipId,
+				itemIds: [source._id],
+				targetParentId: target._id,
+			}),
+		).toEqual({ _yay: null });
+		// The first step stops inside the group. One step writing the whole group could go past the
+		// transaction limits on every try, and the op would never end.
+		expect(await moved()).toBe(files_subtree_ops_STEP_MAX_NODES);
+
+		for (let round = 0; round < 20; round += 1) {
+			await delay(0);
+			await t.finishInProgressScheduledFunctions();
+		}
+		expect(await moved()).toBe(400);
+		expect(await t.run((ctx) => ctx.db.query("files_subtree_ops").collect())).toEqual([]);
+	});
+
+	test("a restrict of a big folder commits now and a job gives every child the new scope", async () => {
+		const t = test_convex();
+		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+		const { source } = await seed_wide_source(t, db, { childCount: 600, metadataPerNode: 0 });
+		// A restricted child keeps its own scope. The walk still goes inside it.
+		const nested = await t.run(async (ctx) => {
+			const node = (await ctx.db.query("files_nodes").collect()).find((node) => node.path === "/source/child-0")!;
+			await ctx.db.patch("files_nodes", node._id, { isRestrictedScopeRoot: true, restrictedScopeNodeId: node._id });
+			return node;
+		});
+		const drain = async () => {
+			for (let round = 0; round < 20; round += 1) {
+				await delay(0);
+				await t.finishInProgressScheduledFunctions();
+			}
+		};
+		const scopes = async () =>
+			new Map(
+				(await t.run((ctx) => ctx.db.query("files_nodes").collect()))
+					.filter((node) => node.parentId === source._id)
+					.map((node) => [node.name, node.restrictedScopeNodeId]),
+			);
+
+		expect(
+			(await asUser.mutation(api.files_sharing.restrict_node, { membershipId: db.membershipId, nodeId: source._id }))
+				._nay,
+		).toBeUndefined();
+		expect(await t.run((ctx) => ctx.db.query("files_subtree_ops").first())).toMatchObject({ kind: "scope" });
+		const activity = await t.run((ctx) => ctx.db.query("activities").first());
+		expect(activity).toMatchObject({ source: { kind: "files_subtree_op", opKind: "scope" }, feedVisible: false });
+
+		await drain();
+		expect(await t.run((ctx) => ctx.db.query("files_subtree_ops").collect())).toEqual([]);
+		const restricted = await scopes();
+		expect(restricted.size).toBe(600);
+		expect([...restricted].filter(([name, scope]) => name !== "child-0" && scope !== source._id)).toEqual([]);
+		expect(restricted.get("child-0")).toBe(nested._id);
+
+		expect(
+			(await asUser.mutation(api.files_sharing.unrestrict_node, { membershipId: db.membershipId, nodeId: source._id }))
+				._nay,
+		).toBeUndefined();
+		await drain();
+		const open = await scopes();
+		expect([...open].filter(([name, scope]) => name !== "child-0" && scope !== null)).toEqual([]);
+		expect(open.get("child-0")).toBe(nested._id);
+	});
+
+	// Each pair below fills one budget to its cap, then crosses that one only. The success case
+	// reports every counter, so it shows which limit refused the next step.
 
 	test.each([
 		// Reads also count the source, the destination, and the ten ancestors below.
@@ -3758,36 +3857,6 @@ describe("move_nodes", () => {
 		expect(await t.run(async (ctx) => ctx.db.get("files_nodes", db.files.file_root_1._id))).toEqual(
 			db.files.file_root_1,
 		);
-	});
-
-	test("counts archived descendants in the node limit and writes nothing above it", async () => {
-		const t = test_convex();
-		const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
-		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
-		const source = db.files.file_root_1_child_2;
-		await t.run(async (ctx) => {
-			for (let index = 0; index < 500; index += 1) {
-				await ctx.db.insert("files_nodes", {
-					...test_mocks.files.base(),
-					organizationId: db.organizationId,
-					workspaceId: db.workspaceId,
-					createdBy: db.userId,
-					updatedBy: db.userId,
-					parentId: source._id,
-					name: `child-${index}`,
-					path: `${source.path}/child-${index}`,
-					treePath: `${source.path}/child-${index}/`,
-					archiveOperationId: index === 499 ? "archived-child" : null,
-				});
-			}
-		});
-		const result = await asUser.mutation(api.files_nodes.move_nodes, {
-			membershipId: db.membershipId,
-			itemIds: [source._id],
-			targetParentId: db.files.file_root_2._id,
-		});
-		expect(result._nay?.name).toBe("move_too_large");
-		expect(await t.run(async (ctx) => ctx.db.get("files_nodes", source._id))).toEqual(source);
 	});
 
 	test("counts UTF-8 search bytes across files before writing the batch", async () => {

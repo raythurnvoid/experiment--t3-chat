@@ -11,8 +11,9 @@ The producer owns its files, credentials, attempts, conflicts, and result receip
 in one mutation. Workpool delivers work; it does not decide whether a job succeeded.
 
 - Every transfer, pending review, plugin run, Bash background job, "Apply to contents" protection job,
-  and archive or restore job has one Activity, created with the run. A small archive or restore that
-  finishes inside its request makes no run and no Activity.
+  archive or restore job, and move or scope job (`files_subtree_ops`) has one Activity, created with
+  the run or op. A small archive, restore, move, or scope change that finishes inside its request
+  makes no run, no op, and no Activity.
 - `source.id` and `activities.by_source_id` are the only link. Do not add a backlink to the run.
 - Activity owns requester, status, progress, result kind, safe errors, and common times.
   Producer copies of tenant and user IDs exist only for immutable indexes.
@@ -64,16 +65,21 @@ their own expiry. These clocks serve different owners.
 Current membership is required. Hidden or dismissed entries can consume a page. Keep the raw
 continuation and follow `isDone`; an empty visible page does not prove the feed ended.
 
-- Transfer, review, Bash job, protection job, and archive job Activities are private to their requester,
-  including against other workspace owners. Their summaries contain no source names or paths. Archive
-  jobs are titled "Archive files" or "Restore files". A protection job has no targets at all. Details
-  recheck file access separately.
+- Transfer, review, Bash job, protection job, archive job, and move or scope job Activities are private
+  to their requester, including against other workspace owners. Their summaries contain no source names
+  or paths. Archive jobs are titled "Archive files" or "Restore files". A move job (source kind
+  `files_subtree_op`) is titled "Move files" and shows in the feed. A scope job (restrict or
+  unrestrict) is titled "Restrict files" and has `feedVisible: false`: it exists only so the recover
+  cron finds the op. A protection job, an archive job, and a move or scope job have no targets at all.
+  Details recheck file access separately.
 - Shared plugin Activities require current access to every target. A missing target or a changed
   target path hides the whole Activity. A shared Activity with no target requires workspace read.
 - The server returns allowed controls after visibility checks. UI code uses those controls.
 - `request_stop` accepts an Activity ID, checks scope and requester, and dispatches through an
   exhaustive source switch. A folder guest may stop their own work without workspace write.
   Repeated Stop is harmless. Plugin Stop stays unavailable until its producer supports it.
+  `activities_get_controls` gives no Stop to a move or scope job, to an archive job, or to a restore
+  job unless it is `awaiting_input` on a name clash. `request_stop` refuses when `canStop` is false.
 - Dismiss applies only to finished work. `activities_user_states` stores one dismissal per viewer
   and Activity. It does not change another viewer's feed or stop execution. Bulk dismiss is paged.
 - `AppActivitiesProvider` keeps pending Stop requests across dialog and bell changes. Different
@@ -106,22 +112,31 @@ See the [plugin runtime spec](../plugin-system/SKILL.md).
   at once, and a step that was already scheduled then does nothing. Its progress, `updatedAt`, and `deadlineAt`
   move only when 50 more items are counted or the job ends, so the deadline works as an idle limit. See the
   [read-only spec](../files-read-only/SKILL.md#apply-to-contents).
-- An archive or restore job (`files_archive_runs`) works the same way: Stop and the 30-minute idle
-  deadline finish its Activity at once, and a scheduled step then does nothing. A restore that waits on
-  a name clash is `awaiting_input` until `resolve_conflicts`, with a 24-hour deadline like a paused
-  paste. The done part stays archived or restored. The restore jobs of one Unarchive request run one
-  at a time: the ones after the first start as `queued` with a 24-hour deadline and no scheduled step.
-  When a running restore job ends in any way, the oldest queued job of the same request is marked
-  `running` and gets its first step. A Stop on a queued job ends only that job. A queued job whose
-  deadline passes while an earlier job of its request is still active gets 24 more hours instead of
-  `timed_out`.
+- An archive or restore job (`files_archive_runs`) is not stopped by its 30-minute idle deadline.
+  Recovery moves the deadline and schedules the step again (`files_subtree_ops_db_recover`). A restore
+  that waits on a name clash is `awaiting_input` until `resolve_conflicts`, with a 24-hour deadline
+  like a paused paste. Only that wait can time out (`timed_out`) or be stopped. Its Stop ends the whole
+  Unarchive request, with the queued restore jobs of that request. The done part stays archived or
+  restored. The restore jobs of one Unarchive request run one at a time: the ones after the first
+  start as `queued`, with `feedVisible: false`, a 24-hour deadline, and no scheduled step. A restore
+  also waits as `queued` while it overlaps another subtree op. When an op ends,
+  `files_subtree_ops_db_delete` starts each waiter that overlaps nothing any more: promote marks it
+  `running`, shows its card, and schedules its first step. A queued job whose deadline passes gets 24
+  more hours.
+- A move or scope job (`files_subtree_ops`, source kind `files_subtree_op`) has a 5-minute deadline
+  (`files_subtree_ops_RECOVER_AFTER_MS`). `recover_expired` never stops it. It moves the deadline and
+  schedules the step again. Each scheduled step carries a step number, so an old step that still runs
+  does nothing. A successful scheduling mutation also creates one retry for that step 60 seconds
+  later. If the first step worked, the retry does nothing; if it failed, the retry runs the same step.
+  A queued paste Copy recovers the same way instead of stopping. The last step deletes
+  the op and finishes the Activity as `succeeded`.
 - `files_transfer.recover_expired_attempts` only releases expired transfer attempts. Do not put
   a second job deadline or history scan back in that module.
 - `files_pending_update_runs.recover` checks interrupted selection uploads, planning leases, and
   active units every five minutes. It retries planning at most three times and checks the Activity
   deadline before resuming work. It does not scan finished history.
-- `activities.cleanup_history` owns retention: seven days after transfer, review, Bash job, protection job, or archive job finish and thirty days
-  after plugin finish. A Bash job row can hold a 700 KiB result, so a pass reads at most eight job rows and reschedules for the rest; the job row is deleted with its Activity, while the foreground Bash call row beside it stays until thread purge. It stops a pass after a bounded child cleanup page. Each producer deletes
+- `activities.cleanup_history` owns retention: seven days after transfer, review, Bash job, protection job, archive job, or move or scope job finish and thirty days
+  after plugin finish. A move or scope op is already deleted when its walk ends, so cleanup deletes only its Activity. A Bash job row can hold a 700 KiB result, so a pass reads at most eight job rows and reschedules for the rest; the job row is deleted with its Activity, while the foreground Bash call row beside it stays until thread purge. It stops a pass after a bounded child cleanup page. Each producer deletes
   its own receipts. Transfer and review producers also release their proposal holds first. Dismissal docs drain first. The Activity and its producer are then deleted together.
 - Deleting history does not delete saved files or pending proposals. Asset deletion jobs retain
   exact R2 keys and late-upload deadlines independently of Activity history.
@@ -135,5 +150,7 @@ retention. Producer tests cover final publication, late callbacks, tokens, and s
 `convex/files_pending_update_runs.test.ts` also checks review recovery and shared history cleanup.
 `convex/files_write_policy_runs.test.ts` checks the protection job steps, Stop, deadlines, and cleanup.
 `convex/files_archive_runs.test.ts` checks archive and restore job steps, Stop, clashes, and cleanup.
+`convex/files_subtree_ops.test.ts` checks op overlap and how waiting ops start. `convex/files_nodes.test.ts`
+checks the move and scope job Activities and walks.
 `src/components/app-notifications.test.tsx` and `src/components/files/files-clipboard.test.tsx`
 cover shared Stop state and the visible results. Verify reachable flows in the running app too.

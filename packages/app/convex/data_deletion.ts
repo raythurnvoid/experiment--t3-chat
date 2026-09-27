@@ -44,6 +44,7 @@ import {
 import { files_pending_update_runs_db_delete_run_batch } from "./files_pending_update_runs.ts";
 import { files_write_policy_runs_db_delete_run_batch } from "./files_write_policy_runs.ts";
 import { files_archive_runs_db_delete_run_batch } from "./files_archive_runs.ts";
+import { files_subtree_ops_db_delete } from "./files_subtree_ops.ts";
 import { files_db_delete_pending_update } from "../server/files.ts";
 import { data_deletion_db_request } from "./data_deletion_requests.ts";
 import { users_db_delete_auth_billing_and_activity_docs } from "./users.ts";
@@ -422,6 +423,20 @@ async function db_purge_organization_workspace_content_batch(
 	if (archiveRun) {
 		const purged = await files_archive_runs_db_delete_run_batch(ctx, { runId: archiveRun._id });
 		return { done: false, deletedCount: purged.deletedCount };
+	}
+	// The runs above delete their own ops. A move or scope op has no run, so delete it and its
+	// Activity here. The files it walks go away with the workspace.
+	const subtreeOp = await ctx.db
+		.query("files_subtree_ops")
+		.withIndex("by_organization_workspace_kind", (q) =>
+			q.eq("organizationId", organizationId).eq("workspaceId", workspaceId),
+		)
+		.first();
+	if (subtreeOp) {
+		const activity = await activities_db_require_by_source_id(ctx, subtreeOp._id);
+		const deletedActivity = await activities_db_delete(ctx, activity._id);
+		if (deletedActivity.done) await files_subtree_ops_db_delete(ctx, { opId: subtreeOp._id, now: Date.now() });
+		return { done: false, deletedCount: deletedActivity.deletedCount + (deletedActivity.done ? 1 : 0) };
 	}
 
 	// Retire unfinished producers before removing their batches or private targets.
@@ -1741,6 +1756,18 @@ async function db_drain_user_archive_runs_batch(ctx: MutationCtx, args: { userId
 }
 
 /**
+ * Wait for this user's move or scope ops to end. They have no Stop, and the stored paths and
+ * scopes in a surviving workspace are right only after the job ends. Each step is small.
+ */
+async function db_user_has_subtree_ops(ctx: MutationCtx, args: { userId: Id<"users"> }) {
+	const op = await ctx.db
+		.query("files_subtree_ops")
+		.withIndex("by_user", (q) => q.eq("userId", args.userId))
+		.first();
+	return op !== null;
+}
+
+/**
  * Drain one creator-owned thread, children first, even when its workspace survives or membership is gone.
  * User finalization stops its writers and removes grants before reaching this pass.
  */
@@ -2191,6 +2218,7 @@ async function db_drain_user_finalization_batch(
 
 	const archiveRunCount = await db_drain_user_archive_runs_batch(ctx, args);
 	if (archiveRunCount > 0) return { done: false, deletedCount: archiveRunCount };
+	if (await db_user_has_subtree_ops(ctx, args)) return { done: false, deletedCount: 0 };
 
 	const browserCount = (
 		await files_browser_db_delete_user_batch(ctx, { userId: args.userId, batchSize: args.batchSize })
@@ -3531,6 +3559,7 @@ export const prepare_user_for_hard_deletion = internalMutation({
 
 		const deletedArchiveRunCount = await db_drain_user_archive_runs_batch(ctx, { userId: args.userId });
 		if (deletedArchiveRunCount > 0) return false;
+		if (await db_user_has_subtree_ops(ctx, { userId: args.userId })) return false;
 
 		const deletedBrowserCount = (await files_browser_db_delete_user_batch(ctx, { userId: args.userId, batchSize }))
 			.deletedCount;

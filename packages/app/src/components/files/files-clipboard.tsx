@@ -144,7 +144,8 @@ const FilesClipboardProvider = Object.assign(
 					refusal = started._nay?.message;
 					if (!started._nay) {
 						request.runId = started._yay.runId;
-						if (mountedRef.current) openRun(request.runId);
+						// A one-item paste shows only its Activity card. The card can still open this dialog.
+						if (mountedRef.current && selection.sourceIds.length > 1) openRun(request.runId);
 						if (selection.mode === "cut") {
 							setCutRun({ runId: request.runId, revision: selection.revision, finished: false });
 						} else {
@@ -430,15 +431,14 @@ const FilesTransferRunModal = memo(function FilesTransferRunModal(props: {
 	const pageChoices = conflicts.map((item) => {
 		const remaining = item.source && item.conflictKind === "name_conflict" ? applyToRemaining[item.kind] : null;
 
-		// Replace and Merge need a destination doc to act on. When another item in the same paste claims
-		// the name, nothing is there yet, so the bulk choice cannot apply and the user picks per item.
-		const choice =
-			choices[item.itemId] ?? ((remaining === "replace" || remaining === "merge") && !item.conflict ? null : remaining);
+		// Replace needs a destination doc to act on. When another item in the same paste claims the name,
+		// nothing is there yet, so the bulk choice cannot apply and the user picks per item.
+		const choice = choices[item.itemId] ?? (remaining === "replace" && !item.conflict ? null : remaining);
 
 		return {
 			itemId: item.itemId,
 			choice,
-			...(item.conflict && (choice === "replace" || choice === "merge")
+			...(item.conflict && choice === "replace"
 				? {
 						reviewedTarget: item.conflict.target,
 						reviewedVersion: item.conflict.version,
@@ -457,7 +457,8 @@ const FilesTransferRunModal = memo(function FilesTransferRunModal(props: {
 					item.conflictKind === "name_conflict" &&
 					(selected.choice === "keep_both" ||
 						(item.conflict !== null &&
-							selected.choice === (item.kind === "file" || run?.kind === "move" ? "replace" : "merge"))))
+							(item.kind === "file" || run?.kind === "move") &&
+							selected.choice === "replace")))
 			);
 		});
 
@@ -627,8 +628,9 @@ const FilesTransferRunModal = memo(function FilesTransferRunModal(props: {
 												</p>
 												{canChoose ? (
 													<>
-														{/* Only Replace and Merge act on a destination doc, so they need one to exist. */}
-														{item.conflict ? (
+														{/* Only Replace acts on a destination doc, so it needs one to exist. A copied folder
+														   has no Replace: a copy never merges into a folder. */}
+														{item.conflict && (item.kind === "file" || run?.kind === "move") ? (
 															<>
 																<p className={"FilesTransferRunModal-path" satisfies FilesTransferRunModal_ClassNames}>
 																	Destination: {item.conflict.path}
@@ -636,9 +638,7 @@ const FilesTransferRunModal = memo(function FilesTransferRunModal(props: {
 																<p>
 																	{item.kind === "file"
 																		? "Replace overwrites the destination file."
-																		: run?.kind === "move"
-																			? "Replace empty folder removes the empty destination folder."
-																			: "Merge adds these files to the destination folder."}
+																		: "Replace empty folder removes the empty destination folder."}
 																</p>
 															</>
 														) : null}
@@ -652,28 +652,16 @@ const FilesTransferRunModal = memo(function FilesTransferRunModal(props: {
 															/>
 															Keep both
 														</label>
-														{item.conflict ? (
+														{item.conflict && (item.kind === "file" || run?.kind === "move") ? (
 															<label
 																className={"FilesTransferRunModal-choice" satisfies FilesTransferRunModal_ClassNames}
 															>
 																<MyRadio
 																	name={`${conflictChoiceName}-${item.itemId}`}
-																	checked={
-																		selectedChoice ===
-																		(item.kind === "file" || run?.kind === "move" ? "replace" : "merge")
-																	}
-																	onChange={() =>
-																		setChoices((current) => ({
-																			...current,
-																			[item.itemId]: item.kind === "file" || run?.kind === "move" ? "replace" : "merge",
-																		}))
-																	}
+																	checked={selectedChoice === "replace"}
+																	onChange={() => setChoices((current) => ({ ...current, [item.itemId]: "replace" }))}
 																/>
-																{item.kind === "file"
-																	? "Replace"
-																	: run?.kind === "move"
-																		? "Replace empty folder"
-																		: "Merge"}
+																{item.kind === "file" ? "Replace" : "Replace empty folder"}
 															</label>
 														) : null}
 													</>
@@ -761,18 +749,14 @@ const FilesTransferRunModal = memo(function FilesTransferRunModal(props: {
 											{choice === null ? "Ask each time" : choice === "keep_both" ? "Keep both" : "Skip"}
 										</label>
 									))}
-									{kind === "file" || run.kind === "copy" ? (
+									{kind === "file" ? (
 										<label className={"FilesTransferRunModal-choice" satisfies FilesTransferRunModal_ClassNames}>
 											<MyRadio
 												name={`${conflictChoiceName}-remaining-${kind}`}
-												checked={applyToRemaining[kind] === (kind === "file" ? "replace" : "merge")}
-												onChange={() =>
-													setApplyToRemaining((current) =>
-														kind === "file" ? { ...current, file: "replace" } : { ...current, folder: "merge" },
-													)
-												}
+												checked={applyToRemaining.file === "replace"}
+												onChange={() => setApplyToRemaining((current) => ({ ...current, file: "replace" }))}
 											/>
-											{kind === "file" ? "Replace" : "Merge"}
+											Replace
 										</label>
 									) : null}
 								</fieldset>

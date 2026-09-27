@@ -359,12 +359,15 @@ folder (`FileNodeViewPrivateFolder`) still lists its children through `useFilesV
   and blocks another start while this member has an active run in the workspace. Run progress
   comes from `get` and `list_current`. Tree changes come from the live `list_tree_children` pages
   of the open folders.
+- The progress dialog opens by itself only when the paste has more than one source. A one-item
+  paste shows only its Activity card, which can still open the dialog.
 - The progress dialog says `Paste files` until the saved run kind is available, then shows
   `Copy files` or `Move files`, counts, and 50-item pages from `list_items`. Previous/Next page
   follows the server cursor, even after an empty page. Each conflict shows its authorized source
   and destination paths. File name conflicts offer Keep both, Replace, or Skip. Copy folder conflicts
-  offer Keep both, Merge, or Skip. Move folder conflicts offer Keep both, Replace empty folder, or Skip.
-  Replace and Merge send the exact reviewed target and version. Move has no future-folder replace choice.
+  offer Keep both or Skip: a pasted folder never merges into another folder. Move folder conflicts
+  offer Keep both, Replace empty folder, or Skip. Replace sends the exact reviewed target and version.
+  Move has no future-folder replace choice. The remaining-folder choice has no Replace or Merge.
   Changed or unavailable items offer only Skip or Stop. Remaining-file and remaining-folder
   choices start unset. Continue submits only the current page. Choices reset on each server revision.
   Finished items show their authorized output path and say Saved or Ready for review.
@@ -437,18 +440,41 @@ Backend rules, limits, billing, cleanup, and Activity privacy are in
 - Rename uses `files_nodes.rename_node` with Convex `optimisticUpdate` and
   `optimisticallyUpdateValueInPaginatedQuery` for immediate title feedback across cached pages.
 - Rename and saved-node moves use `files_nodes_db_preflight_move` followed by
-  `files_nodes_db_apply_move` in the same mutation. Preflight resolves final paths, permissions,
-  write policies, search chunks, and metadata before any Files write. It includes archived descendants.
-  Archived renames keep their archive identity and can share an active path.
+  `files_nodes_db_apply_move` in the same mutation. Every move entry uses them: `move_nodes`,
+  `rename_node`, the Cut/Paste commit in `files_transfer.ts`, `apply_file_pending_move`, and review
+  runs. Preflight resolves the final paths, permissions, write policies, search chunks, and
+  metadata of the named items before any Files write. It reads no other descendant. It finds the
+  restricted folders inside a reparented folder by their stored `treePath` and asks each one for
+  write access. Archived renames keep their archive identity and can share an active path.
+- Apply writes the named items now. Then `files_subtree_ops_db_start_rebuild` (kind `move`, in
+  `files_subtree_ops.ts`) starts a move job for each moved folder. The job walks children by
+  `parentId`, folder by folder, in pages by name. It rewrites each child's `path`, `treePath`,
+  `pathDepth`, and `restrictedScopeNodeId` from its live parent, with the child's search chunks and
+  metadata docs. A child that is its own restricted folder keeps its own scope. The job is done only
+  after one full pass from the roots writes nothing. A step ends after it writes 75 items or nears a
+  transaction limit. It can end inside a group of archived items with one name (every replace of a
+  file leaves one). Then the next step reads the group again and skips the items already written. The first step runs inside the request, so a
+  small folder is done there with no op and no Activity. A bigger one leaves a `files_subtree_ops`
+  op and a requester-only Activity (source kind `files_subtree_op`, title "Move files") that shows in
+  the feed and has no Stop. Each scheduled step has one retry due after 60 seconds. A retry of a
+  finished step does nothing. The recover cron still schedules a lost step again.
+- While a move op exists in the workspace, a child can still carry its old stored path. The tree is
+  right, because it lists children by `parentId`. `files_db_get_visible_node_by_path` in
+  `server/files.ts` then walks names from the root instead of one path index read. The path picker
+  query `files_nodes.get_authorized_by_path` uses that same walk, so a moved child resolves at its
+  new path while its stored path still has the old prefix.
 - A path-like rename starts at the source's current parent. Missing folders are planned below a
   saved parent ID with `missingParentNames`. Shared folder chains are inserted once. Paths and
   inherited scopes use that saved parent's final position, even when it also moves in the batch.
   Apply inserts the folders from top to bottom and resolves their real IDs without reading again.
-- Move limits include adapter reads, descendant updates, and new parent folders: at most 500 changed
-  or inserted nodes, 2,000 Files docs read or written, and 4 MiB in each direction. A refusal writes
-  no Files changes. Permission reads and the caller's receipt use separate transaction headroom.
+- Move limits (`move_too_large`) bound only the request: the named items, new parent folders, and a
+  replaced empty folder's archived children. That is at most 500 changed or inserted nodes, 2,000
+  Files docs read or written, and 4 MiB in each direction. Descendants of a moved folder do not count,
+  because the move job writes them. A refusal writes no Files changes. Permission reads and the
+  caller's receipt use separate transaction headroom.
 - The selected file/folder path auto-expands in the sidebar after route changes and path-based create/rename moves so the focused row stays visible.
 - Archive/unarchive uses `files_nodes.archive_nodes` / `files_nodes.unarchive_nodes`. Archive always asks first in the shared `FilesArchiveModal` (`files-archive-modal.tsx`). The sidebar row menu, the toolbar Archive-selected button, the folder explorer row menu and the breadcrumb menu open it with the nodes to archive; the modal owns the mutation, shows a refusal inline in the dialog (`role="alert"`), and reports success to its host. After a sidebar confirm, keyboard focus moves to the first row after the archived rows, or to the last row before them. The sidebar picks that row while the archived rows are still in the tree (Convex resolves the mutation in the same task as the tree update) and moves DOM focus from an effect once the dialog has closed, because the sidebar is inert while the dialog is open and the closing dialog first gives focus back to the button that opened it. A multi-select archive also clears the selection. Cancel puts focus back on the first row of the request. Restore is still direct.
+- A big archive or restore goes on as a background job (rules in `../files-read-only/SKILL.md`). The named folder leaves the tree at once, and the job stamps the items inside it. Restore first finds every top item of its archive operation by creation order, then checks all their current paths against running jobs. A blocked restore waits hidden and checks access again after promotion. The job dialog `FilesArchiveRunModal` shows Stop only when the server returns `controls.canStop`: archive never has it, and a restore has it only while it waits for a name clash choice. A restore clash offers Keep both, Replace, or Skip, with no Merge.
 - The row menu's Restore gate mirrors the backend restore plan (`can_unarchive_item`): a node whose parent is missing or still archived restores to root, so Restore also needs workspace write at root plus scope manage when the node would leave its restricted scope. A node that carries its own restriction only needs its own write answer. An in-place restore only needs the node's write answer.
 - TODO: archived nodes are never purged. They stay until the whole workspace is deleted. Add a
   retention purge that permanently deletes an archive operation some time after it was archived, like

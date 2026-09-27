@@ -3,7 +3,7 @@ import type { QueryCtx } from "./_generated/server.js";
 import { access_control_db_filter_readable_file_nodes } from "./access_control.ts";
 import { files_visible_db_create_reader } from "./files_visible.ts";
 import { files_pending_update_has_pending_chunks } from "../server/files.ts";
-import { files_pending_update_content_is_stale, type files_VisibleEntry } from "../shared/files.ts";
+import { files_pending_update_content_is_stale, files_ROOT_ID, type files_VisibleEntry } from "../shared/files.ts";
 import {
 	organizations_is_global_organization_id,
 	organizations_is_reserved_workspace_id,
@@ -44,9 +44,27 @@ export async function files_search_db_create_reader(
 		const key = `${target.kind}:${target.id}`;
 		let entry = entries.get(key);
 		if (entry === undefined) {
-			if (ownerReader) {
-				entry = await ownerReader.resolveTarget(target);
-			} else {
+			entry = ownerReader ? await ownerReader.resolveTarget(target) : null;
+
+			// An archive stamps a folder first and the items inside it in later steps. The owner reader
+			// drops an item whose folder is stamped. Search keeps that item, with its stored path, until
+			// the job stamps it too, like a search without an owner overlay does.
+			let hasArchivedAncestor = false;
+			if (ownerReader && !entry && target.kind === "saved") {
+				const node = await ctx.db.get("files_nodes", target.id);
+				let parentId = node?.archiveOperationId === null ? node.parentId : files_ROOT_ID;
+				while (parentId !== files_ROOT_ID) {
+					const parent = await ctx.db.get("files_nodes", parentId);
+					if (!parent) break;
+					if (parent.archiveOperationId !== null) {
+						hasArchivedAncestor = true;
+						break;
+					}
+					parentId = parent.parentId;
+				}
+			}
+
+			if (!ownerReader || hasArchivedAncestor) {
 				if (target.kind === "private") return null;
 				const node = await ctx.db.get("files_nodes", target.id);
 				const readable =

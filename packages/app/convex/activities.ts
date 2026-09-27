@@ -6,7 +6,7 @@ import { doc } from "convex-helpers/validators";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import { internal } from "./_generated/api.js";
 import { internalMutation, mutation, query, type MutationCtx, type QueryCtx } from "./_generated/server.js";
-import { activities_get_controls, activities_is_active } from "./activities_db.ts";
+import { activities_db_delete, activities_get_controls, activities_is_active } from "./activities_db.ts";
 import { ai_chat_files_db_delete_job_batch, ai_chat_files_db_request_job_stop } from "./ai_chat_files.ts";
 import { files_transfer_db_delete_run_batch, files_transfer_db_request_stop } from "./files_transfer.ts";
 import {
@@ -18,6 +18,7 @@ import {
 	files_write_policy_runs_db_request_stop,
 } from "./files_write_policy_runs.ts";
 import { files_archive_runs_db_delete_run_batch, files_archive_runs_db_request_stop } from "./files_archive_runs.ts";
+import { files_subtree_ops_db_recover, files_subtree_ops_RECOVER_AFTER_MS } from "./files_subtree_ops.ts";
 import { plugins_runtime_db_delete_run_history, plugins_runtime_db_timeout_run } from "./plugins_runtime.ts";
 import { organizations_db_get_membership } from "./organizations.ts";
 import {
@@ -217,6 +218,10 @@ export const request_stop = mutation({
 		}
 		// A repeated Stop remains successful after the first request has settled.
 		if (!activities_is_active(activity.status) || activity.status === "stopping") return Result({ _yay: null });
+		// Archive, move, and restrict have no Stop. A restore has Stop only while it waits for a clash choice.
+		if (!activities_get_controls(activity, userAuth.id).canStop) {
+			return Result({ _nay: { message: "This activity cannot be stopped" } });
+		}
 		switch (activity.source.kind) {
 			case "files_pending_update_run": {
 				await files_pending_update_runs_db_request_stop(ctx, {
@@ -255,6 +260,7 @@ export const request_stop = mutation({
 				break;
 			}
 			case "plugin_run":
+			case "files_subtree_op":
 				return Result({ _nay: { message: "This activity cannot be stopped" } });
 			default:
 				throw should_never_happen("Unknown Activity source", activity.source satisfies never);
@@ -411,6 +417,12 @@ export const recover_expired = internalMutation({
 					await files_archive_runs_db_request_stop(ctx, { runId: activity.source.id, reason: "timeout", now });
 					break;
 				}
+				// A move or scope op has no Stop. Its deadline only schedules the step again.
+				case "files_subtree_op": {
+					await ctx.db.patch("activities", activity._id, { deadlineAt: now + files_subtree_ops_RECOVER_AFTER_MS });
+					await files_subtree_ops_db_recover(ctx, { opId: activity.source.id });
+					break;
+				}
 				case "ai_chat_bash_job": {
 					bashJobCount += 1;
 					await ai_chat_files_db_request_job_stop(ctx, { invocationId: activity.source.id, reason: "timeout", now });
@@ -493,6 +505,11 @@ export const cleanup_history = internalMutation({
 					}
 					case "files_archive_run": {
 						deletion = await files_archive_runs_db_delete_run_batch(ctx, { runId: activity.source.id });
+						break;
+					}
+					// The op row is deleted when its walk ends, so only the Activity is left.
+					case "files_subtree_op": {
+						deletion = await activities_db_delete(ctx, activity._id);
 						break;
 					}
 					case "ai_chat_bash_job": {

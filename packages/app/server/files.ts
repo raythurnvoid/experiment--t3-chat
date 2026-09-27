@@ -16,7 +16,12 @@ import {
 	files_pending_update_has_asset_content,
 	files_pending_update_has_yjs_content,
 	files_MAX_YJS_WIRE_BYTES,
+	files_ROOT_ID,
 } from "../shared/files.ts";
+import {
+	organizations_is_global_organization_id,
+	organizations_is_reserved_workspace_id,
+} from "../shared/organizations.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 import { should_never_happen } from "./server-utils.ts";
 import {
@@ -309,12 +314,46 @@ export async function files_db_get_visible_node_by_path(
 		return null;
 	}
 
+	const { organizationId, workspaceId } = args;
+	// While a move op rewrites stored paths, an item inside the moved folder can still carry its old
+	// `path`. Then find the item by name from the root, like the tree does. Without a move op, one
+	// index read is enough. Global and reserved scopes never have ops.
+	const moveOp =
+		organizations_is_global_organization_id(organizationId) || organizations_is_reserved_workspace_id(workspaceId)
+			? null
+			: await ctx.db
+					.query("files_subtree_ops")
+					.withIndex("by_organization_workspace_kind", (q) =>
+						q.eq("organizationId", organizationId).eq("workspaceId", workspaceId).eq("kind", "move"),
+					)
+					.first();
+	if (moveOp) {
+		let parentId: Doc<"files_nodes">["parentId"] = files_ROOT_ID;
+		let node: Doc<"files_nodes"> | null = null;
+		for (const name of args.path.split("/").filter(Boolean)) {
+			node = await ctx.db
+				.query("files_nodes")
+				.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
+					q
+						.eq("organizationId", organizationId)
+						.eq("workspaceId", workspaceId)
+						.eq("parentId", parentId)
+						.eq("name", name)
+						.eq("archiveOperationId", null),
+				)
+				.first();
+			if (!node) return null;
+			parentId = node._id;
+		}
+		return node;
+	}
+
 	return await ctx.db
 		.query("files_nodes")
 		.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 			q
-				.eq("organizationId", args.organizationId)
-				.eq("workspaceId", args.workspaceId)
+				.eq("organizationId", organizationId)
+				.eq("workspaceId", workspaceId)
 				.eq("path", args.path)
 				.eq("archiveOperationId", null),
 		)

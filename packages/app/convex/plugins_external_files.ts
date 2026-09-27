@@ -12,10 +12,10 @@ import { organizations_membership_lifetimes_db_get } from "./organizations_membe
 import {
 	files_nodes_db_create_node_recursively_at_path,
 	files_nodes_db_require_write_policy_management,
-	files_nodes_db_cascade_restricted_scope,
 	files_nodes_db_set_restricted_scope,
 	files_nodes_db_archive_nodes,
 } from "./files_nodes.ts";
+import { files_subtree_ops_db_start_rebuild, files_subtree_ops_STEP_MAX_NODES } from "./files_subtree_ops.ts";
 import { files_metadata_db_read_entry } from "./files_metadata.ts";
 import { files_media_validation_db_advance_version } from "./files_media_validation.ts";
 import {
@@ -291,11 +291,16 @@ export const ensure_writer = internalMutation({
 				nodeId,
 				restrictedScopeNodeId: nodeId,
 			});
-			await files_nodes_db_cascade_restricted_scope(ctx, {
+			const scopeRoot = (await ctx.db.get("files_nodes", nodeId))!;
+			await files_subtree_ops_db_start_rebuild(ctx, {
+				kind: "scope",
 				organizationId: installation.organizationId,
 				workspaceId: installation.workspaceId,
-				parentId: nodeId,
-				scopeNodeId: nodeId,
+				userId: serviceGrant.actorUserId,
+				membership: null,
+				roots: [{ node: scopeRoot, oldTreePath: scopeRoot.treePath }],
+				budget: { nodes: files_subtree_ops_STEP_MAX_NODES },
+				now: Date.now(),
 			});
 			// Restricting an empty folder changes access too.
 			await files_media_validation_db_advance_version(ctx, installation);

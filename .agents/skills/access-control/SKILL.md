@@ -355,11 +355,19 @@ Rules that are easy to miss, all of which were real holes:
   yet the workspace is the only thing left to ask.
 - **A cascade is not covered by the node you named.** `archive_nodes` and `move_nodes` check
   `content.write` on each distinct restricted scope in their affected descendants, once per scope.
-  Moves include archived descendants because their paths change too. A hidden restricted child
-  can refuse the whole move with `Permission denied`, without exposing its name. A move that keeps
-  the same parent and path does not change descendants. A name-only rename in the same saved parent
-  carries nested shares without asking for write access to each one. It still checks every affected
-  write policy. Reparenting through Rename uses the same nested-scope checks as other moves.
+  The archive job's check walk reads every descendant by `parentId` before the first stamp. A move
+  reads no ordinary descendant: preflight finds the restricted folders inside a reparented folder by
+  their stored `treePath` (`isRestrictedScopeRoot: true`, archived ones too) and asks each one for
+  write access. A hidden restricted child can refuse the whole move with `Permission denied`, without
+  exposing its name. While a move op runs, a child can still store an old `treePath`. So preflight
+  also looks under the old and new paths of each running move op, and keeps only restricted folders
+  whose live `parentId` chain leads to the moved folder. While a scope op runs, a child can still
+  store an old `restrictedScopeNodeId`. So preflight reads the scope of each moved item from its live
+  parents instead (the nearest folder that is its own restricted root). Otherwise an item could leave
+  a folder that was just restricted without the Can manage check, and stay open after the op ends.
+  A move that keeps the same parent and path does not change descendants. A
+  name-only rename in the same saved parent carries nested shares without asking for write access to
+  each one. Reparenting through Rename uses the same nested-scope checks as other moves.
 - **Every refusal comes before the first write.** A Convex mutation that returns normally commits, so
   a `Result({ _nay })` after a write keeps that write and reports failure at the same time. Ask every
   question first. `create_upload_node` shows the shape: a filename may carry path segments, so it
@@ -729,7 +737,18 @@ controls from a reader.
 The model:
 
 - A node is restricted exactly when `restrictedScopeNodeId === _id`. Everything under it points at
-  the same id, kept up to date by `files_nodes_db_cascade_restricted_scope`.
+  the same id. `restrict_node` and `unrestrict_node` set the node's own scope now, then start a scope
+  job with `files_subtree_ops_db_start_rebuild` (kind `scope`). The plugin access binding
+  (`plugins_data_db_apply_file_access_binding`, which takes the acting `userId`) and plugin external
+  files (`plugins_external_files.ts`) do the same. The job walks children by `parentId` and writes
+  each child's `restrictedScopeNodeId` from its live parent. A child that is its own restricted folder
+  keeps its own scope. The first step runs inside the request, so a small folder is done at once. A
+  bigger one leaves a hidden Activity ("Restrict files", `feedVisible: false`) only so the recover
+  cron finds the op. A move job rewrites scope the same way.
+- Until the job writes a child, the child keeps its stored scope. The tree, search, and download
+  trust that stored scope. So a child moved into a restricted folder stays open to the workspace until
+  the job rewrites it, and a child of a newly restricted folder stays open for that time too. This
+  short window is accepted.
 - Grants are always written on the **scope node**, never on the node being opened. Sending a child's
   id to `set_node_share_grant` is refused; the dialog sends the folder's id for exactly this reason.
 - Three levels — `read`, `write`, `manage` — each a superset of the last, saved as one grant doc per

@@ -232,19 +232,31 @@ of never showing hidden items.
   every item before it archives anything. A move that would replace a bigger folder is refused ("The
   folder in the way holds too many items to replace.").
 - Archive and restore run through one archive job (`files_archive_runs`, Activity source
-  `files_archive_run`). The request runs the first step itself. When that step finishes the work (up
-  to 150 nodes), no run doc and no Activity exist. A bigger one continues in the background.
-  - The job first checks every item and writes nothing. One protected item refuses the whole action.
-    Archived items can share one path. When a check page ends inside such a group, the check reads up
-    to 500 more of them at once; more refuse ("Too many archived items share one path.").
-    Every later step checks its items again. A lock or lost access set during the job stops it as
+  `files_archive_run`). The job is the `archive` or `restore` kind of a `files_subtree_ops` op, and it
+  walks the folder by `parentId`. The request runs the first step itself. When that step finishes the
+  work (up to 75 nodes), no run doc, no op, and no Activity exist. A bigger one continues in the
+  background.
+  - A restore first pages through its archive operation in creation order to find all top items, then
+    checks every current root path for a running subtree job. If another job overlaps, it waits as
+    `queued`. After promotion it finds the roots and checks their paths again, because archived items
+    can move while it waits. The job then checks every item's permission and writes nothing. One
+    protected item refuses the whole action.
+    The archive check walks each named item by `parentId`. The restore check pages the operation's
+    items by `treePath`. Archived items can share one path. When a restore check page ends inside such
+    a group, the check reads up to 500 more of them at once; more refuse ("Too many archived items
+    share one path."). Files with the same name in different folders can span discovery pages.
+  - Archive has no Stop. After the check, it stamps each named item first, so the item leaves the tree
+    at once. Then it stamps the active children of each stamped folder, page by page, until no active
+    child is left. It does not check locks or access again, so a lock set during the job does not stop
+    it. A child the person moved out is no longer under the folder. A child archived on its own keeps
+    its own `archiveOperationId` and its own Restore.
+  - Restore checks each item again when it lands. A lock or lost access set during the job stops it as
     failed ("Stopped partway"). The done part keeps its one archive operation id, so Restore brings
-    back exactly that part. Stop does the same.
-  - Archive works bottom-up with no cursor: each step takes the deepest active nodes under the named
-    folder's current path, and the named folder is archived last. So no active node ever sits inside
-    an archived folder, and a node added or moved in during the job is archived too.
-  - A node and its side docs (plain text chunks and metadata docs) change in the same mutation. Readers
-    are unchanged: each doc keeps its own path, treePath, and archiveOperationId.
+    back exactly that part.
+  - A node and its side docs (plain text chunks and metadata docs) change in the same mutation. Each doc
+    keeps its own path, treePath, and archiveOperationId. Until the job stamps a child, the child keeps
+    an empty stamp under a stamped folder. Owner text search still finds it (see the
+    [pending spec](../files-agent-pending-updates/SKILL.md)).
   - Restore brings back one archive operation. Several operations named in one call run in the order
     of each operation's top item, so a parent operation comes back first. Items archived earlier on
     their own keep their own operation. An item whose parent is active lands under the parent's current
@@ -252,20 +264,18 @@ of never showing hidden items.
     which is a move: it needs root write and permission to leave its restricted folder. If a restore job
     of the parent's operation is running, the item joins that operation instead and comes back with it.
     If an archive job of the parent's operation is running, the restore is refused as busy.
-  - The operations of one restore call share the request's first step. After the first job starts, the
-    later operations wait as `queued` jobs, so their steps never write the same docs at the same time.
-    Each queued job saves the first job's id in `requestFirstRunId`. When a restore job that was
-    running ends (done, failed, Stop, timeout, or deleted), the oldest queued job of the same request
-    starts. Jobs of another request are never started by it, so each request runs one job at a time.
-    A Stop on a queued job ends only that job; the other queued jobs still run. A queued job has a
-    24-hour deadline. When it passes while an earlier job of its request is still active, the job gets
-    24 more hours. A later job checks its items only when it
-    starts. If an earlier job stopped or failed and left their folder archived, the items land at the
-    root, and their refusals show in the Activity, not in the Unarchive answer.
-  - A restored folder that lands on a new path or scope (at the root, or renamed by Keep both) moves the
-    items archived on their own inside it, like a move: they stay archived, and their path, treePath,
-    scope, and side docs follow the folder in the same mutation. The move limits apply (500 items,
-    2,000 docs with side docs, 4 MB). Above them the folder is not restored and the job fails.
+  - The operations of one restore call share the request's first step. After the first job starts, each
+    later job waits as a `queued` op behind the job before it, so their steps never write the same docs
+    at the same time. A restore also waits while any top item overlaps another subtree op. Each job saves
+    the first job's id in `requestFirstRunId`. When an op ends, `files_subtree_ops_db_delete` starts each
+    waiter that overlaps nothing any more. A queued job has no Stop and a 24-hour deadline; when it
+    passes, the job gets 24 more hours. A later job checks its items only when it starts. If an earlier
+    job failed and left their folder archived, the items land at the root, and their refusals show in
+    the Activity, not in the Unarchive answer.
+  - A restored folder that lands on a new path or scope (at the root, or renamed by Keep both) does not
+    move the items inside in the same mutation. The restore walk gives each child that stays archived on
+    its own the new path, treePath, and scope from its live parent, with its side docs. There is no size
+    limit for this.
   - Restore refuses when the item's old folder or landing folder is read-only. The message names the
     folder only to a caller who may read it.
   - A restore name clash pauses the job (`awaiting_input`) for up to 24 hours and asks like a paste:
@@ -276,8 +286,12 @@ of never showing hidden items.
     Replace that is not possible. A Replace that became impossible after the choice asks again. The
     item in the way is archived only after the restore of the clashing item worked. Apply-to-remaining choices are kept for the rest of the
     job. `resolve_conflicts` takes the shown `revision`. `get` shows the clash name and paths only to a caller who may read them.
-  - Busy check: an archive that overlaps a running archive job, or a restore of an operation that
-    already has a job, is refused.
+    There is no Merge. Stop (Cancel) is offered only while the job waits for this choice. It ends the
+    whole request: the queued restore jobs of the same request end too. A choice not made in 24 hours
+    ends the job as `timed_out`.
+  - Busy check: a restore of an operation that already has an active job is refused. An archive starts
+    at once, even over a folder another job is archiving: each job stamps only active items, so neither
+    overwrites the other's stamp.
   - A request whose first step fails after some writes returns the error ("Stopped partway") and keeps a
     failed Activity. A refusal before any write makes no job.
   - Agent delete (accepted `pendingArchive`) uses the same job and removes the proposal when it ends.

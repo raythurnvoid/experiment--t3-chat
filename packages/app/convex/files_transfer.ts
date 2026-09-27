@@ -63,10 +63,7 @@ import {
 	files_pending_holds_db_finish,
 	files_pending_holds_db_release_producer_batch,
 } from "./files_pending_holds.ts";
-import {
-	files_db_patch_pending_update,
-	files_db_get_pending_update,
-} from "../server/files.ts";
+import { files_db_patch_pending_update, files_db_get_pending_update } from "../server/files.ts";
 import type { upsert_file_pending_move_in_db_Result } from "./files_pending_updates.ts";
 import { files_metadata_db_read_entries } from "./files_metadata.ts";
 import {
@@ -74,6 +71,13 @@ import {
 	files_nodes_content_db_discard_transfer_file_capture,
 } from "./files_nodes_content.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
+import {
+	files_subtree_ops_db_delete,
+	files_subtree_ops_db_find_blocker,
+	files_subtree_ops_db_insert,
+	files_subtree_ops_db_recover,
+	files_subtree_ops_RECOVER_AFTER_MS,
+} from "./files_subtree_ops.ts";
 import {
 	path_join,
 	server_convex_get_user_fallback_to_anonymous,
@@ -543,9 +547,89 @@ async function db_cancel_items(ctx: MutationCtx, run: Doc<"files_transfer_runs">
 			errorCode: activity.errorCode,
 			now,
 		});
-		if (run.kind === "copy")
+		if (run.kind === "copy") {
 			await files_pending_holds_db_finish(ctx, { producer: { kind: "files_transfer_run", id: run._id } });
+			await db_delete_copy_op(ctx, run._id, now);
+		}
 	}
+}
+
+/**
+ * A paste writes saved files. So it waits while an earlier op still changes the target folder or a
+ * source, like a restore does. The op is only the paste's place in that line. The transfer run keeps
+ * the steps. Returns true when the paste waits.
+ */
+async function db_insert_copy_op(
+	ctx: MutationCtx,
+	args: { run: Doc<"files_transfer_runs">; sources: files_PendingTarget[]; now: number },
+) {
+	const { run } = args;
+	const target = run.targetParent.kind === "saved" ? await ctx.db.get("files_nodes", run.targetParent.id) : null;
+	const treePaths = target ? [target.treePath] : [];
+	const sourceTreePaths = new Set<string>();
+	for (const source of args.sources) {
+		const node = source.kind === "saved" ? await ctx.db.get("files_nodes", source.id) : null;
+		// The ids come from the client and are checked only later. Ops of this workspace only overlap its
+		// own paths, so a node of another workspace adds nothing. Its path must not decide a wait either.
+		if (
+			node &&
+			node.organizationId === run.destinationScope.organizationId &&
+			node.workspaceId === run.destinationScope.workspaceId
+		) {
+			sourceTreePaths.add(node.treePath);
+		}
+	}
+
+	const blocker = await files_subtree_ops_db_find_blocker(ctx, {
+		organizationId: run.destinationScope.organizationId,
+		workspaceId: run.destinationScope.workspaceId,
+		treePaths: [...treePaths, ...sourceTreePaths],
+		waiter: null,
+	});
+	await files_subtree_ops_db_insert(ctx, {
+		op: {
+			kind: "copy",
+			organizationId: run.destinationScope.organizationId,
+			workspaceId: run.destinationScope.workspaceId,
+			userId: run.userId,
+			status: blocker ? "queued" : "running",
+			blockedByOpId: blocker?._id ?? null,
+			rootNodeIds: target ? [target._id] : [],
+			treePaths,
+			transferRunId: run._id,
+			sourceTreePaths: [...sourceTreePaths],
+		},
+		now: args.now,
+	});
+	return blocker !== null;
+}
+
+/**
+ * Delete the op of an ended paste, so the ops that wait for it can start.
+ */
+async function db_delete_copy_op(ctx: MutationCtx, runId: Id<"files_transfer_runs">, now: number) {
+	const op = await ctx.db
+		.query("files_subtree_ops")
+		.withIndex("by_transferRun", (q) => q.eq("transferRunId", runId))
+		.first();
+	if (op) await files_subtree_ops_db_delete(ctx, { opId: op._id, now });
+}
+
+/**
+ * Start a paste whose earlier op ended. Its deadline starts now, so the wait does not time it out.
+ */
+export async function files_transfer_db_promote(
+	ctx: MutationCtx,
+	args: { op: Extract<Doc<"files_subtree_ops">, { kind: "copy" }>; now: number },
+) {
+	await ctx.db.patch("files_subtree_ops", args.op._id, { status: "running" });
+	const activity = await db_require_activity(ctx, args.op.transferRunId);
+	await ctx.db.patch("activities", activity._id, {
+		feedVisible: true,
+		deadlineAt: args.now + RUN_TIMEOUT_MS,
+		updatedAt: args.now,
+	});
+	await ctx.scheduler.runAfter(0, internal.files_transfer.advance, { runId: args.op.transferRunId });
 }
 
 async function db_stop_run(
@@ -595,6 +679,25 @@ export async function files_transfer_db_request_stop(
 ) {
 	const run = await ctx.db.get("files_transfer_runs", args.runId);
 	if (!run) return;
+
+	// A paste that waits for an earlier op has not started, so its deadline does not end it. Move the
+	// deadline and look at the op again.
+	if (args.reason === "timeout") {
+		const op = await ctx.db
+			.query("files_subtree_ops")
+			.withIndex("by_transferRun", (q) => q.eq("transferRunId", run._id))
+			.first();
+		if (op?.status === "queued") {
+			const activity = await db_require_activity(ctx, run._id);
+			await ctx.db.patch("activities", activity._id, {
+				deadlineAt: args.now + files_subtree_ops_RECOVER_AFTER_MS,
+				updatedAt: args.now,
+			});
+			await files_subtree_ops_db_recover(ctx, { opId: op._id });
+			return;
+		}
+	}
+
 	await db_stop_run(
 		ctx,
 		run,
@@ -2014,7 +2117,23 @@ async function db_seal(
 		deadlineAt: run.fixedDeadline ? activity.deadlineAt : now + RUN_TIMEOUT_MS,
 		updatedAt: now,
 	});
-	await ctx.scheduler.runAfter(0, internal.files_transfer.advance, { runId: run._id });
+	const selection =
+		run.publication === "saved"
+			? await ctx.db
+					.query("files_transfer_selection_items")
+					.withIndex("by_run_order", (q) => q.eq("runId", run._id))
+					.collect()
+			: [];
+	// A Bash copy writes proposals, not saved files, so it takes no op and never waits.
+	if (
+		run.publication === "saved" &&
+		(await db_insert_copy_op(ctx, { run, sources: selection.map((item) => item.source), now }))
+	) {
+		// A waiting paste shows no card until it starts.
+		await ctx.db.patch("activities", activity._id, { feedVisible: false });
+	} else {
+		await ctx.scheduler.runAfter(0, internal.files_transfer.advance, { runId: run._id });
+	}
 	if (job)
 		await ai_chat_files_db_seal_copy_admission(ctx, {
 			...job,
@@ -2178,7 +2297,7 @@ export const resolve_conflicts = mutation({
 		choices: v.array(
 			v.object({
 				itemId: v.id("files_transfer_items"),
-				choice: v.union(v.literal("keep_both"), v.literal("skip"), v.literal("merge"), v.literal("replace")),
+				choice: v.union(v.literal("keep_both"), v.literal("skip"), v.literal("replace")),
 				reviewedTarget: v.optional(files_pending_target_validator),
 				reviewedVersion: v.optional(v.union(files_transfer_source_version_validator, v.null())),
 			}),
@@ -2191,8 +2310,9 @@ export const resolve_conflicts = mutation({
 		if (owned._nay) return owned;
 
 		const { run } = owned._yay;
-		if (run.kind === "move" && args.applyToRemaining.folder === "merge")
-			return Result({ _nay: { message: "Moving into a nonempty folder cannot merge its contents" } });
+		// A person never merges a pasted folder into another folder. Only a Bash copy merges.
+		if (args.applyToRemaining.folder === "merge")
+			return Result({ _nay: { message: "A pasted folder cannot merge into another folder" } });
 		const activity = await db_require_activity(ctx, run._id);
 		// The revision pins the conflict set the user reviewed; a new conflict bumps it.
 		if (activity.status !== "awaiting_input" || run.revision !== args.revision)
@@ -2224,11 +2344,9 @@ export const resolve_conflicts = mutation({
 				return Result({ _nay: { message: "The conflicts changed. Review them again." } });
 			}
 			const choice = args.choices[index]!;
-			if (choice.choice === "replace" || choice.choice === "merge") {
+			if (choice.choice === "replace") {
 				if (
-					(choice.choice === "replace"
-						? item.kind !== "file" && run.kind !== "move"
-						: item.kind !== "folder" || run.kind === "move") ||
+					(item.kind !== "file" && run.kind !== "move") ||
 					!choice.reviewedTarget ||
 					!item.conflictTarget ||
 					choice.reviewedTarget.kind !== item.conflictTarget.kind ||
@@ -2236,7 +2354,7 @@ export const resolve_conflicts = mutation({
 					choice.reviewedVersion === undefined ||
 					!files_transfer_source_versions_equal(choice.reviewedVersion, item.conflictVersion)
 				)
-					return Result({ _nay: { message: "Review this exact destination before replacing or merging it" } });
+					return Result({ _nay: { message: "Review this exact destination before replacing it" } });
 				const current = await reader.resolveTarget(item.conflictTarget);
 				if (
 					!current ||
@@ -2421,7 +2539,26 @@ export const retry_remaining = mutation({
 				await db_hold_proposal(ctx, retry, run.preparedParent, "destination_parent");
 		}
 
-		await ctx.scheduler.runAfter(0, internal.files_transfer.advance, { runId });
+		// A move retry is still a move. It takes no op and never waits, like the first move run.
+		const isSavedCopy = run.kind === "copy" && run.publication === "saved";
+		const roots = isSavedCopy
+			? await ctx.db
+					.query("files_transfer_items")
+					.withIndex("by_run_parentItem", (q) => q.eq("runId", run._id).eq("parentItemId", null))
+					.collect()
+			: [];
+		if (
+			isSavedCopy &&
+			(await db_insert_copy_op(ctx, {
+				run: (await ctx.db.get("files_transfer_runs", runId))!,
+				sources: roots.map((item) => item.source),
+				now,
+			}))
+		) {
+			await ctx.db.patch("activities", activityId, { feedVisible: false });
+		} else {
+			await ctx.scheduler.runAfter(0, internal.files_transfer.advance, { runId });
+		}
 		return Result({ _yay: { runId, activityId } });
 	},
 });
@@ -3218,6 +3355,7 @@ export const advance = internalMutation({
 					now: Date.now(),
 				});
 				await files_pending_holds_db_finish(ctx, { producer: { kind: "files_transfer_run", id: run._id } });
+				await db_delete_copy_op(ctx, run._id, Date.now());
 			}
 			return null;
 		}
@@ -3530,8 +3668,10 @@ export async function files_transfer_db_delete_run_batch(
 
 	// The Stop fence and deleted work items prevent late workers from publishing.
 	await activities_db_finish(ctx, { sourceId: runId, status: "canceled", errorMessage: null, now: Date.now() });
-	if (run.kind === "copy")
+	if (run.kind === "copy") {
 		await files_pending_holds_db_finish(ctx, { producer: { kind: "files_transfer_run", id: runId } });
+		await db_delete_copy_op(ctx, runId, Date.now());
+	}
 	const holds = await files_pending_holds_db_release_producer_batch(ctx, {
 		producer: { kind: "files_transfer_run", id: runId },
 	});

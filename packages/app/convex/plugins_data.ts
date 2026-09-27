@@ -19,7 +19,8 @@ import type { Doc, Id } from "./_generated/dataModel";
 import { access_control_db_has_permission } from "./access_control.ts";
 import { activities_db_require_by_source_id } from "./activities_db.ts";
 import { plugins_db_get_live_service_account } from "./plugins_service_accounts.ts";
-import { files_nodes_db_cascade_restricted_scope, files_nodes_db_set_restricted_scope } from "./files_nodes.ts";
+import { files_nodes_db_set_restricted_scope } from "./files_nodes.ts";
+import { files_subtree_ops_db_start_rebuild, files_subtree_ops_STEP_MAX_NODES } from "./files_subtree_ops.ts";
 import { files_media_validation_db_advance_version } from "./files_media_validation.ts";
 import type { access_control_Permission } from "../shared/access-control.ts";
 import type { billing_PRODUCTS } from "../shared/billing.ts";
@@ -4050,6 +4051,10 @@ export async function plugins_data_db_apply_file_access_binding(
 		installation: Doc<"plugins_workspace_installations">;
 		node: Doc<"files_nodes">;
 		prepared: NonNullable<Awaited<ReturnType<typeof plugins_data_db_prepare_file_access_binding>>["_yay"]>;
+		/**
+		 * The user the plugin acts for. The scope op runs in their name.
+		 */
+		userId: Id<"users">;
 	},
 ) {
 	const now = Date.now();
@@ -4064,7 +4069,7 @@ export async function plugins_data_db_apply_file_access_binding(
 	}
 
 	let accessChanged = false;
-	// Restrict the node on itself and cascade, like the member share door does.
+	// Restrict the node on itself and start a scope op for the items inside, like the member share door does.
 	if (args.node.restrictedScopeNodeId !== args.node._id) {
 		await files_nodes_db_set_restricted_scope(ctx, {
 			organizationId: args.node.organizationId,
@@ -4072,11 +4077,15 @@ export async function plugins_data_db_apply_file_access_binding(
 			nodeId: args.node._id,
 			restrictedScopeNodeId: args.node._id,
 		});
-		await files_nodes_db_cascade_restricted_scope(ctx, {
-			organizationId: args.node.organizationId,
-			workspaceId: args.node.workspaceId,
-			parentId: args.node._id,
-			scopeNodeId: args.node._id,
+		await files_subtree_ops_db_start_rebuild(ctx, {
+			kind: "scope",
+			organizationId: args.installation.organizationId,
+			workspaceId: args.installation.workspaceId,
+			userId: args.userId,
+			membership: null,
+			roots: [{ node: args.node, oldTreePath: args.node.treePath }],
+			budget: { nodes: files_subtree_ops_STEP_MAX_NODES },
+			now,
 		});
 		accessChanged = true;
 	}

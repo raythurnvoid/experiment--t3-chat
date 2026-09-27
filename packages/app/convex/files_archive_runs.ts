@@ -1,20 +1,23 @@
 // Archive and restore of a big folder do not fit in one mutation. This job changes a batch of nodes
 // per step. Each node's side docs (text chunks, metadata docs) change in the same step as the node,
 // so search and lists never see a node and its side docs disagree. A small request finishes inside
-// the request and writes no run and no Activity.
+// the request and writes no run, no op, and no Activity.
 //
-// Archive walks the active nodes under each named item from the end of the tree, so a folder is
-// archived only after everything inside it. Restore walks the nodes of one archive operation from
-// the start of the tree, so a folder comes back before everything inside it. Neither walk keeps a
-// cursor, and both read the live paths, so moves and new files during the job stay correct.
+// The job is the archive or restore kind of a `files_subtree_ops` op, and it walks by `parentId`
+// through that op's queue. Archive first checks every node inside and writes nothing. Then it stamps
+// each named item, then the active children of each stamped folder. A child that somebody moved out,
+// or archived on their own, is not reached or keeps its own stamp. Restore lands each top item of the
+// operation, then restores the items of the operation inside it. The other items inside get the new
+// path and scope and keep their own stamp.
+//
+// Archive cannot be stopped. Restore can be stopped only while it waits for a clash choice.
 
 import { v } from "convex/values";
 import { doc } from "convex-helpers/validators";
 import type { WithoutSystemFields } from "convex/server";
 import { Result } from "common/errors-as-values-utils.ts";
-import { internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
-import { internalMutation, mutation, query, type MutationCtx, type QueryCtx } from "./_generated/server.js";
+import { mutation, query, type MutationCtx, type QueryCtx } from "./_generated/server.js";
 import { access_control_db_authorize_membership } from "./access_control.ts";
 import {
 	activities_db_delete,
@@ -23,13 +26,13 @@ import {
 	activities_db_start,
 	activities_get_controls,
 	activities_get_result_status,
-	activities_is_active,
 } from "./activities_db.ts";
 import { files_media_validation_db_advance_version } from "./files_media_validation.ts";
 import {
 	authorize_file_write,
 	authorize_leaving_restricted_scope,
 	files_nodes_db_archive_node,
+	files_nodes_db_rebuild_node,
 	files_nodes_db_require_swept_nodes_writable,
 	files_nodes_db_require_user_writable,
 	files_nodes_db_restore_node,
@@ -38,6 +41,18 @@ import {
 	files_pending_updates_db_remove_archived_node_proposal,
 	files_pending_updates_db_require_reviewed_archive_node,
 } from "./files_pending_updates.ts";
+import {
+	files_subtree_ops_db_delete,
+	files_subtree_ops_db_enqueue_node,
+	files_subtree_ops_db_find_blocker,
+	files_subtree_ops_db_first_node,
+	files_subtree_ops_db_insert,
+	files_subtree_ops_db_is_near_limits,
+	files_subtree_ops_db_list_children,
+	files_subtree_ops_db_recover,
+	files_subtree_ops_db_run,
+	files_subtree_ops_db_schedule_step,
+} from "./files_subtree_ops.ts";
 import { organizations_db_get_membership } from "./organizations.ts";
 import {
 	organizations_membership_lifetimes_db_ensure,
@@ -47,7 +62,7 @@ import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import app_convex_schema from "./schema.ts";
 import { v_result } from "../server/convex-utils.ts";
 import { files_db_get_pending_update, files_ROOT_ID } from "../server/files.ts";
-import { path_tree_prefix_upper_bound, server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
+import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
@@ -58,20 +73,19 @@ export const experimental_reuseContext = true;
  * An apply step ends after this many nodes. On dev, one archived node costs about 8.5 ms of
  * database time and one restored node about 16 ms, so a step stays near 1 to 3 seconds.
  */
-export const files_archive_runs_STEP_MAX_NODES = 150;
+export const files_archive_runs_STEP_MAX_NODES = 75;
 
 /**
  * A check step reads at most this many nodes. It writes nothing, so it can read more than an apply step.
  */
 const CHECK_STEP_MAX_NODES = 500;
 
-/**
- * A step also ends when less than this share of a transaction limit is left. A file with many text
- * chunks writes far more than its node, so the node count alone is not enough.
- */
-const METRICS_MIN_REMAINING_SHARE = 0.25;
-
 const PAGE_SIZE = 50;
+
+/**
+ * A running job moves its deadline with every step. The recover cron schedules a job again when
+ * the deadline passed, so a step that threw does not stop the job.
+ */
 const RUN_TIMEOUT_MS = 30 * 60 * 1000;
 
 /**
@@ -94,13 +108,18 @@ type RunFields = WithoutSystemFields<Doc<"files_archive_runs">>;
 type RunProgress = NonNullable<Doc<"activities">["progress"]>;
 
 type StepArgs = {
+	opId: Id<"files_subtree_ops">;
 	/**
 	 * A copy of the run that the step changes. The caller saves it.
 	 */
 	run: RunFields;
 	progress: RunProgress;
 	userAuth: { id: Id<"users"> };
-	membership: Doc<"organizations_workspaces_users">;
+	/**
+	 * Null when the requester left the workspace. The archive stamp walk goes on without them. The
+	 * checks and a restore stop.
+	 */
+	membership: Doc<"organizations_workspaces_users"> | null;
 	now: number;
 	/**
 	 * How many more nodes this mutation may change. A restore of several operations shares one budget
@@ -116,9 +135,12 @@ type StepArgs = {
 
 type StepOutcome =
 	| { kind: "continue" }
+	| { kind: "blocked" }
 	| { kind: "done" }
 	| { kind: "paused" }
 	| { kind: "failed"; nay: { name?: string; message: string } };
+
+const MEMBERSHIP_LOST: StepOutcome = { kind: "failed", nay: { message: "You can no longer change these files." } };
 
 async function db_require_activity(ctx: QueryCtx | MutationCtx, runId: Id<"files_archive_runs">) {
 	const activity = await activities_db_require_by_source_id(ctx, runId);
@@ -134,6 +156,20 @@ async function db_require_activity(ctx: QueryCtx | MutationCtx, runId: Id<"files
 		membershipId: activity.membershipId,
 		membershipLifetime: activity.membershipLifetime,
 	};
+}
+
+async function db_require_op(ctx: QueryCtx | MutationCtx, runId: Id<"files_archive_runs">) {
+	const op = await ctx.db
+		.query("files_subtree_ops")
+		.withIndex("by_archiveRun", (q) => q.eq("archiveRunId", runId))
+		.unique();
+	if (!op) {
+		const errorMessage = "Active archive run has no subtree op";
+		const errorData = { runId };
+		console.error(errorMessage, errorData);
+		throw should_never_happen(errorMessage, errorData);
+	}
+	return op;
 }
 
 /**
@@ -180,30 +216,22 @@ async function db_get_owned_run(
 	return Result({ _yay: { userAuth, run, activity, membership } });
 }
 
-async function db_is_near_limits(ctx: MutationCtx) {
-	const metrics = await ctx.meta.getTransactionMetrics();
-	return [
-		metrics.bytesRead,
-		metrics.bytesWritten,
-		metrics.documentsRead,
-		metrics.documentsWritten,
-		metrics.databaseQueries,
-	].some((metric) => metric.remaining < (metric.used + metric.remaining) * METRICS_MIN_REMAINING_SHARE);
-}
-
 /**
  * The person must still write each node the job changes: the node's own lock, and write access
  * where it lives. Access is asked once per restricted scope, and once for the unrestricted part of
  * the workspace, so an ordinary tree costs one check per step.
  */
 async function db_check_writable_nodes(ctx: MutationCtx, args: StepArgs, nodes: readonly Doc<"files_nodes">[]) {
+	const membership = args.membership;
+	if (!membership) return MEMBERSHIP_LOST;
+
 	for (const node of nodes) {
 		const scopeKey = node.restrictedScopeNodeId ?? "";
 		let allowed = args.checkedScopes.get(scopeKey);
 		if (allowed === undefined) {
 			const authorized = await access_control_db_authorize_membership(ctx, {
 				userAuth: args.userAuth,
-				membership: args.membership,
+				membership,
 				permission: "content.write",
 				fileNode: node,
 			});
@@ -234,12 +262,15 @@ async function db_check_writable_nodes(ctx: MutationCtx, args: StepArgs, nodes: 
  * folders must not be read-only. Name the folder only for somebody who may read it.
  */
 async function db_check_restore_folder(ctx: MutationCtx, args: StepArgs, folder: Doc<"files_nodes">) {
+	const membership = args.membership;
+	if (!membership) return MEMBERSHIP_LOST;
+
 	const writable = await files_nodes_db_require_user_writable(ctx, { node: folder, userId: args.userAuth.id });
 	if (!writable._nay) return null;
 
 	const readable = await access_control_db_authorize_membership(ctx, {
 		userAuth: args.userAuth,
-		membership: args.membership,
+		membership,
 		permission: "content.read",
 		fileNode: folder,
 	});
@@ -260,18 +291,20 @@ async function db_check_restore_folder(ctx: MutationCtx, args: StepArgs, folder:
  * keeps its scope wherever it lands, so it needs neither.
  */
 async function db_check_restore_move(ctx: MutationCtx, args: StepArgs, node: Doc<"files_nodes">) {
+	const membership = args.membership;
+	if (!membership) return MEMBERSHIP_LOST;
 	if (node.restrictedScopeNodeId === node._id) return null;
 
 	const authorizedTarget = await authorize_file_write(ctx, {
 		userAuth: args.userAuth,
-		membership: args.membership,
+		membership,
 		nodeId: files_ROOT_ID,
 	});
 	if (authorizedTarget._nay) return { kind: "failed", nay: authorizedTarget._nay } as const;
 
 	const authorizedLeaving = await authorize_leaving_restricted_scope(ctx, {
 		userAuth: args.userAuth,
-		membership: args.membership,
+		membership,
 		fileNode: node,
 		destParentId: files_ROOT_ID,
 	});
@@ -281,211 +314,161 @@ async function db_check_restore_move(ctx: MutationCtx, args: StepArgs, node: Doc
 }
 
 /**
- * Whether an archived node found under the root's path really sits inside the root. An older archived
- * tree can have the same paths, so follow parent ids up to the root.
- */
-async function db_is_descendant(
-	ctx: MutationCtx,
-	node: Doc<"files_nodes">,
-	root: Doc<"files_nodes">,
-	cache: Map<Id<"files_nodes">, boolean>,
-) {
-	const visited: Array<Id<"files_nodes">> = [];
-	let parentId = node.parentId;
-	let result = false;
-	while (true) {
-		if (parentId === root._id) {
-			result = true;
-			break;
-		}
-		if (parentId === files_ROOT_ID) break;
-		const cached = cache.get(parentId);
-		if (cached !== undefined) {
-			result = cached;
-			break;
-		}
-		const parent = await ctx.db.get("files_nodes", parentId);
-		if (!parent || !parent.treePath.startsWith(root.treePath)) break;
-		visited.push(parentId);
-		parentId = parent.parentId;
-	}
-	for (const id of visited) cache.set(id, result);
-	return result;
-}
-
-/**
  * Check everything the archive will change before it writes anything: each active node, and each
- * archived node inside, which must not be hidden while it is read-only.
+ * archived node inside, which must not be hidden while it is read-only. The walk follows `parentId`
+ * from each named item. Nothing is written, so a folder needs no second pass.
  */
 async function db_check_archive(ctx: MutationCtx, args: StepArgs): Promise<StepOutcome> {
-	const { run, progress } = args;
-	const descendantCache = new Map<Id<"files_nodes">, boolean>();
+	const { progress } = args;
 	let readCount = 0;
 
-	while (run.checkCursor.rootIndex < run.rootNodeIds.length) {
-		if (readCount >= CHECK_STEP_MAX_NODES || (await db_is_near_limits(ctx))) return { kind: "continue" };
+	while (true) {
+		if (readCount >= CHECK_STEP_MAX_NODES || (await files_subtree_ops_db_is_near_limits(ctx))) {
+			return { kind: "continue" };
+		}
 
-		const root = await ctx.db.get("files_nodes", run.rootNodeIds[run.checkCursor.rootIndex]!);
-		// A named item that is gone or archived by now leaves nothing to archive.
-		if (!root || root.archiveOperationId !== null) {
-			run.checkCursor = { rootIndex: run.checkCursor.rootIndex + 1, treePath: "" };
+		const row = await files_subtree_ops_db_first_node(ctx, args.opId);
+		if (!row) return { kind: "done" };
+
+		const node = await ctx.db.get("files_nodes", row.nodeId);
+		// A named item that is gone or archived by now leaves nothing to check.
+		if (!node || (!row.nodeDone && node.archiveOperationId !== null)) {
+			await ctx.db.delete("files_subtree_op_nodes", row._id);
 			continue;
 		}
 
-		if (run.checkCursor.treePath === "") {
-			const refusal = await db_check_writable_nodes(ctx, args, [root]);
+		if (!row.nodeDone) {
+			const refusal = await db_check_writable_nodes(ctx, args, [node]);
 			if (refusal) return refusal;
 			progress.discovered += 1;
-			if (root.kind === "file") {
-				run.checkCursor = { rootIndex: run.checkCursor.rootIndex + 1, treePath: "" };
+			readCount += 1;
+			if (node.kind === "file") {
+				await ctx.db.delete("files_subtree_op_nodes", row._id);
 				continue;
 			}
-			run.checkCursor = { ...run.checkCursor, treePath: root.treePath };
+			await ctx.db.patch("files_subtree_op_nodes", row._id, { nodeDone: true });
 		}
 
-		// If the folder moved during the check, its old path would read other folders. Check it again
-		// from its new path. The apply steps check every node anyway.
-		const cursorTreePath = run.checkCursor.treePath.startsWith(root.treePath)
-			? run.checkCursor.treePath
-			: root.treePath;
-		const page = await ctx.db
-			.query("files_nodes")
-			.withIndex("by_organization_workspace_treePath", (q) =>
-				q
-					.eq("organizationId", run.organizationId)
-					.eq("workspaceId", run.workspaceId)
-					.gt("treePath", cursorTreePath)
-					.lt("treePath", path_tree_prefix_upper_bound(root.treePath)),
-			)
-			.take(PAGE_SIZE);
-		const isLastPage = page.length < PAGE_SIZE;
-		const lastNode = page.at(-1);
-		// Archived nodes can share a `treePath`. The next page starts after this `treePath`, so read the
-		// rest of the last group now. Two nodes can have the same `_creationTime`, so read from that time
-		// on and skip the nodes the page already has.
-		if (!isLastPage && lastNode) {
-			const pageIds = new Set(page.map((node) => node._id));
-			const sameTreePath = (
-				await ctx.db
-					.query("files_nodes")
-					.withIndex("by_organization_workspace_treePath", (q) =>
-						q
-							.eq("organizationId", run.organizationId)
-							.eq("workspaceId", run.workspaceId)
-							.eq("treePath", lastNode.treePath)
-							.gte("_creationTime", lastNode._creationTime),
-					)
-					.take(CHECK_STEP_MAX_NODES + 1 + pageIds.size)
-			).filter((node) => !pageIds.has(node._id));
-			if (sameTreePath.length > CHECK_STEP_MAX_NODES)
-				return { kind: "failed", nay: { message: "Too many archived items share one path." } };
-			page.push(...sameTreePath);
-		}
-		readCount += page.length;
+		const page = await files_subtree_ops_db_list_children(ctx, { folder: node, cursor: row.cursor });
+		readCount += page.children.length;
 
-		const activeNodes = page.filter((node) => node.archiveOperationId === null);
+		const activeNodes = page.children.filter((child) => child.archiveOperationId === null);
 		const refusal = await db_check_writable_nodes(ctx, args, activeNodes);
 		if (refusal) return refusal;
 
 		// Archive does not change archived nodes inside. But it must not hide a read-only one under a
 		// newly archived folder. Use a general error when the person cannot see it.
-		const archivedNodes: Array<Doc<"files_nodes">> = [];
-		for (const node of page) {
-			if (node.archiveOperationId !== null && (await db_is_descendant(ctx, node, root, descendantCache))) {
-				archivedNodes.push(node);
-			}
-		}
 		const archivedProtected = await files_nodes_db_require_swept_nodes_writable(ctx, {
-			organizationId: run.organizationId,
-			workspaceId: run.workspaceId,
+			organizationId: args.run.organizationId,
+			workspaceId: args.run.workspaceId,
 			writeContext: {
 				writer: { kind: "user", userId: args.userAuth.id },
 				actorUserId: args.userAuth.id,
 				resourceScope: { kind: "workspace" },
 				policyReach: "ancestors",
 			},
-			nodes: archivedNodes,
+			nodes: page.children.filter((child) => child.archiveOperationId !== null),
 		});
 		if (archivedProtected._nay) return { kind: "failed", nay: archivedProtected._nay };
 
 		progress.discovered += activeNodes.length;
-		run.checkCursor = isLastPage
-			? { rootIndex: run.checkCursor.rootIndex + 1, treePath: "" }
-			: { ...run.checkCursor, treePath: page.at(-1)!.treePath };
+		for (const child of page.children) {
+			if (child.kind === "folder") {
+				await files_subtree_ops_db_enqueue_node(ctx, { opId: args.opId, nodeId: child._id, nodeDone: true });
+			}
+		}
+		if (page.cursor === null) {
+			await ctx.db.delete("files_subtree_op_nodes", row._id);
+		} else {
+			await ctx.db.patch("files_subtree_op_nodes", row._id, { cursor: page.cursor });
+		}
 	}
+}
 
-	return { kind: "done" };
+async function db_archive_node(ctx: MutationCtx, args: StepArgs, node: Doc<"files_nodes">) {
+	await files_nodes_db_archive_node(ctx, {
+		node,
+		archiveOperationId: args.run.archiveOperationId,
+		updatedBy: args.userAuth.id,
+		now: args.now,
+	});
+	if (args.run.pendingUpdateCleanup) {
+		await files_pending_updates_db_remove_archived_node_proposal(ctx, {
+			organizationId: args.run.organizationId,
+			workspaceId: args.run.workspaceId,
+			userId: args.userAuth.id,
+			nodeId: node._id,
+		});
+	}
+	args.isWritten = true;
+	args.progress.completed += 1;
+	args.budget.nodes -= 1;
 }
 
 /**
- * Archive the active nodes under each named item, from the end of the tree, and the item itself last.
+ * Stamp each named item first, so it leaves the file tree at once. Then stamp the active children of
+ * each folder this job stamped. A stamped child leaves the index range the page reads, so each page
+ * starts again from the first active child, and a folder is done when that range is empty.
  *
- * Each page is the last active nodes under the item. When a folder is in the page, every active node
- * after it in tree order is in the page too, and its contents come after it. So a folder is archived
- * only after everything inside it, and no active node ever sits inside an archived folder. A node
- * created inside during the job lands in the same range and is archived by a later page.
+ * The check already ran on every node, and the job cannot stop. So a lock or grant that changes
+ * later does not stop the stamps. A child that somebody moved out is no longer under the folder. A
+ * child that somebody archived on their own keeps their stamp and their Restore.
  */
 async function db_apply_archive(ctx: MutationCtx, args: StepArgs): Promise<StepOutcome> {
-	const { run, progress } = args;
+	const { run } = args;
 	let count = 0;
 
-	while (run.applyRootIndex < run.rootNodeIds.length) {
-		const root = await ctx.db.get("files_nodes", run.rootNodeIds[run.applyRootIndex]!);
-		// Archived by this job, or by somebody else in the meantime. Either way nothing is left.
-		if (!root || root.archiveOperationId !== null) {
-			run.applyRootIndex += 1;
+	while (true) {
+		const row = await files_subtree_ops_db_first_node(ctx, args.opId);
+		if (!row) return { kind: "done" };
+
+		const node = await ctx.db.get("files_nodes", row.nodeId);
+		// A named item archived by somebody else in the meantime keeps that archive, with everything inside.
+		if (
+			!node ||
+			(row.nodeDone ? node.archiveOperationId !== run.archiveOperationId : node.archiveOperationId !== null)
+		) {
+			await ctx.db.delete("files_subtree_op_nodes", row._id);
 			continue;
 		}
 
-		const page =
-			root.kind === "folder"
-				? await ctx.db
-						.query("files_nodes")
-						.withIndex("by_organization_workspace_archiveOperation_treePath", (q) =>
-							q
-								.eq("organizationId", run.organizationId)
-								.eq("workspaceId", run.workspaceId)
-								.eq("archiveOperationId", null)
-								.gt("treePath", root.treePath)
-								.lt("treePath", path_tree_prefix_upper_bound(root.treePath)),
-						)
-						.order("desc")
-						.take(PAGE_SIZE)
-				: [];
-		const nodes = page.length < PAGE_SIZE ? [...page, root] : page;
-
-		for (const node of nodes) {
-			if (args.budget.nodes <= 0 || (count > 0 && (await db_is_near_limits(ctx)))) return { kind: "continue" };
-
-			// Locks and access may change during the job. Nodes already archived stay archived with this
-			// job's operation id, so one Restore brings them back.
-			const refusal = await db_check_writable_nodes(ctx, args, [node]);
-			if (refusal) return refusal;
-
-			await files_nodes_db_archive_node(ctx, {
-				node,
-				archiveOperationId: run.archiveOperationId,
-				updatedBy: args.userAuth.id,
-				now: args.now,
-			});
-			if (run.pendingUpdateCleanup) {
-				await files_pending_updates_db_remove_archived_node_proposal(ctx, {
-					organizationId: run.organizationId,
-					workspaceId: run.workspaceId,
-					userId: args.userAuth.id,
-					nodeId: node._id,
-				});
+		if (!row.nodeDone) {
+			if (args.budget.nodes <= 0 || (count > 0 && (await files_subtree_ops_db_is_near_limits(ctx)))) {
+				return { kind: "continue" };
 			}
-			args.isWritten = true;
-			progress.completed += 1;
+			await db_archive_node(ctx, args, node);
 			count += 1;
-			args.budget.nodes -= 1;
+			if (node.kind === "file") {
+				await ctx.db.delete("files_subtree_op_nodes", row._id);
+				continue;
+			}
+			await ctx.db.patch("files_subtree_op_nodes", row._id, { nodeDone: true });
 		}
 
-		if (nodes.at(-1) === root) run.applyRootIndex += 1;
+		const children = await ctx.db
+			.query("files_nodes")
+			.withIndex("by_organization_workspace_parent_archiveOperation_name", (q) =>
+				q
+					.eq("organizationId", run.organizationId)
+					.eq("workspaceId", run.workspaceId)
+					.eq("parentId", node._id)
+					.eq("archiveOperationId", null),
+			)
+			.take(PAGE_SIZE);
+		for (const child of children) {
+			if (args.budget.nodes <= 0 || (count > 0 && (await files_subtree_ops_db_is_near_limits(ctx)))) {
+				return { kind: "continue" };
+			}
+			await db_archive_node(ctx, args, child);
+			count += 1;
+			if (child.kind === "folder") {
+				await files_subtree_ops_db_enqueue_node(ctx, { opId: args.opId, nodeId: child._id, nodeDone: true });
+			}
+		}
+		if (children.length < PAGE_SIZE) {
+			await ctx.db.delete("files_subtree_op_nodes", row._id);
+		}
 	}
-
-	return { kind: "done" };
 }
 
 /**
@@ -561,8 +544,79 @@ async function db_can_replace(
 }
 
 /**
- * Check every node of the operation before the restore writes anything. Also find the items whose
- * folder is archived by another operation. They land at the workspace root.
+ * Find every top item before restore checks access or writes nodes. Different top items in one
+ * archive operation can sit under different folders, so all of their paths must join the busy check.
+ */
+async function db_discover_restore(ctx: MutationCtx, args: StepArgs): Promise<StepOutcome> {
+	const { run } = args;
+	const parents = new Map<Id<"files_nodes">, Doc<"files_nodes"> | null>();
+	if (await files_subtree_ops_db_is_near_limits(ctx)) return { kind: "continue" };
+	// This index keeps its order when an archived item is renamed or moved.
+	// Convex allows one paginated query per mutation. Small restores use `take` so several operations
+	// can still finish in one request. Larger ones read one page per step.
+	const firstPage = run.checkCursor.treePath
+		? null
+		: await ctx.db
+				.query("files_nodes")
+				.withIndex("by_organization_workspace_archiveOperation", (q) =>
+					q
+						.eq("organizationId", run.organizationId)
+						.eq("workspaceId", run.workspaceId)
+						.eq("archiveOperationId", run.archiveOperationId),
+				)
+				.take(PAGE_SIZE + 1);
+	const page =
+		firstPage && firstPage.length <= PAGE_SIZE
+			? { page: firstPage, isDone: true, continueCursor: "" }
+			: await ctx.db
+					.query("files_nodes")
+					.withIndex("by_organization_workspace_archiveOperation", (q) =>
+						q
+							.eq("organizationId", run.organizationId)
+							.eq("workspaceId", run.workspaceId)
+							.eq("archiveOperationId", run.archiveOperationId),
+					)
+					.paginate({ cursor: run.checkCursor.treePath || null, numItems: PAGE_SIZE });
+	for (const node of page.page) {
+		const parentId = node.parentId;
+		let parent = parentId === files_ROOT_ID ? null : parents.get(parentId);
+		if (parent === undefined && parentId !== files_ROOT_ID) {
+			parent = await ctx.db.get("files_nodes", parentId);
+			parents.set(parentId, parent);
+		}
+		if (!parent || parent.archiveOperationId !== run.archiveOperationId) run.rootNodeIds.push(node._id);
+	}
+	if (!page.isDone) {
+		run.checkCursor = { ...run.checkCursor, treePath: page.continueCursor };
+		return { kind: "continue" };
+	}
+
+	const roots = await Promise.all(run.rootNodeIds.map((nodeId) => ctx.db.get("files_nodes", nodeId)));
+	const treePaths = roots.flatMap((node) => (node ? [node.treePath] : []));
+	const op = await ctx.db.get("files_subtree_ops", args.opId);
+	if (!op || op.kind !== "restore") throw should_never_happen("Restore is missing its subtree op", { opId: args.opId });
+	const blocker = await files_subtree_ops_db_find_blocker(ctx, {
+		organizationId: run.organizationId,
+		workspaceId: run.workspaceId,
+		treePaths,
+		waiter: op,
+	});
+	await ctx.db.patch("files_subtree_ops", op._id, {
+		rootNodeIds: run.rootNodeIds,
+		treePaths,
+		status: blocker ? "queued" : "running",
+		blockedByOpId: blocker?._id ?? null,
+	});
+	run.rootNodeIds = [];
+	run.checkCursor = { rootIndex: 0, treePath: "" };
+	run.phase = "check";
+	return blocker ? { kind: "blocked" } : { kind: "done" };
+}
+
+/**
+ * Check every node of the operation before the restore writes anything. Queue each top item: an item
+ * whose parent is not in the operation. Also find the top items whose folder is archived by another
+ * operation. They land at the workspace root.
  * The list is fixed here. A folder archived later, during the job, keeps its restored items inside.
  */
 async function db_check_restore(ctx: MutationCtx, args: StepArgs): Promise<StepOutcome> {
@@ -571,7 +625,9 @@ async function db_check_restore(ctx: MutationCtx, args: StepArgs): Promise<StepO
 	let readCount = 0;
 
 	while (true) {
-		if (readCount >= CHECK_STEP_MAX_NODES || (await db_is_near_limits(ctx))) return { kind: "continue" };
+		if (readCount >= CHECK_STEP_MAX_NODES || (await files_subtree_ops_db_is_near_limits(ctx))) {
+			return { kind: "continue" };
+		}
 
 		const cursorTreePath = run.checkCursor.treePath;
 		const page = await ctx.db
@@ -616,15 +672,18 @@ async function db_check_restore(ctx: MutationCtx, args: StepArgs): Promise<StepO
 
 		for (const node of page) {
 			progress.discovered += 1;
-			if (node.parentId === files_ROOT_ID) continue;
 
-			let parent = parents.get(node.parentId);
-			if (parent === undefined) {
-				parent = await ctx.db.get("files_nodes", node.parentId);
-				parents.set(node.parentId, parent);
+			const parentId = node.parentId;
+			let parent = parentId === files_ROOT_ID ? null : parents.get(parentId);
+			if (parent === undefined && parentId !== files_ROOT_ID) {
+				parent = await ctx.db.get("files_nodes", parentId);
+				parents.set(parentId, parent);
 			}
-			// A folder of the same operation is checked as a node of its own.
-			if (!parent || parent.archiveOperationId === run.archiveOperationId) continue;
+			// A folder of the same operation brings this item back when the walk reaches it.
+			if (parent && parent.archiveOperationId === run.archiveOperationId) continue;
+
+			await files_subtree_ops_db_enqueue_node(ctx, { opId: args.opId, nodeId: node._id, nodeDone: false });
+			if (!parent) continue;
 
 			const folderRefusal = await db_check_restore_folder(ctx, args, parent);
 			if (folderRefusal) return folderRefusal;
@@ -648,7 +707,7 @@ async function db_check_restore(ctx: MutationCtx, args: StepArgs): Promise<StepO
 			if (parentRun && parentRun.kind === "archive") {
 				return {
 					kind: "failed",
-					nay: { name: "busy", message: "These items are being archived. Wait for it to finish or stop it." },
+					nay: { name: "busy", message: "These items are being archived. Wait for it to finish." },
 				};
 			}
 			if (parentOperationId !== null && !parentRun) {
@@ -697,150 +756,259 @@ async function db_find_free_name(
 }
 
 /**
- * Restore the nodes of the operation from the start of the tree, so each folder comes back before
- * what is inside it. Each node lands under its parent's current path, so a folder that moved during
- * the job takes its contents along.
+ * Bring back one top item of the operation: under its parent when the parent is active, at the
+ * workspace root when the check said so, or into the parent's archive when that parent is archived
+ * and not landing here. A name clash pauses the job until the person chooses.
+ */
+async function db_restore_top(ctx: MutationCtx, args: StepArgs, node: Doc<"files_nodes">): Promise<StepOutcome | null> {
+	const { run, progress } = args;
+	const membership = args.membership;
+	if (!membership) return MEMBERSHIP_LOST;
+
+	// Read the parent again. This step may have just restored it.
+	const parent = node.parentId === files_ROOT_ID ? null : await ctx.db.get("files_nodes", node.parentId);
+	const parentOperationId = parent?.archiveOperationId ?? null;
+	let landing: Doc<"files_nodes"> | null;
+	if (parent && parentOperationId === null) {
+		landing = parent;
+	} else if (parentOperationId === null || run.rootNodeIds.includes(node._id)) {
+		landing = null;
+	}
+	// The parent was skipped, or somebody archived it during the job. Keep the node with it, so no
+	// active node sits inside an archived folder. The walk below it moves its items there too.
+	else {
+		const refusal = await db_check_writable_nodes(ctx, args, [node]);
+		if (refusal) return refusal;
+		await files_nodes_db_archive_node(ctx, {
+			node,
+			archiveOperationId: parentOperationId,
+			updatedBy: args.userAuth.id,
+			now: args.now,
+		});
+		args.isWritten = true;
+		progress.skipped += 1;
+		return null;
+	}
+	const landingParentId = landing?._id ?? files_ROOT_ID;
+
+	// Locks and access may change during the job. Nodes already restored stay restored.
+	const refusal =
+		(await db_check_writable_nodes(ctx, args, [node])) ??
+		(landing ? await db_check_restore_folder(ctx, args, landing) : null) ??
+		(parent && parent !== landing ? await db_check_restore_folder(ctx, args, parent) : null) ??
+		(landingParentId !== node.parentId ? await db_check_restore_move(ctx, args, node) : null);
+	if (refusal) return refusal;
+
+	let name = node.name;
+	let replacedNode: Doc<"files_nodes"> | null = null;
+	const occupant = await ctx.db
+		.query("files_nodes")
+		.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
+			q
+				.eq("organizationId", run.organizationId)
+				.eq("workspaceId", run.workspaceId)
+				.eq("parentId", landingParentId)
+				.eq("name", node.name)
+				.eq("archiveOperationId", null),
+		)
+		.first();
+	if (occupant) {
+		// A choice counts only for the clash it answered. A different occupant asks again.
+		const choice =
+			run.choice?.nodeId === node._id && run.choice.occupantId === occupant._id
+				? run.choice.choice
+				: node.kind === "file"
+					? run.applyToRemaining.file
+					: run.applyToRemaining.folder;
+		// A Replace that is not possible here asks again, so the person can pick Keep both or Skip.
+		if (
+			choice === null ||
+			(choice === "replace" &&
+				!(await db_can_replace(ctx, {
+					userAuth: args.userAuth,
+					membership,
+					node,
+					occupant,
+				})))
+		) {
+			run.conflict = { nodeId: node._id, occupantId: occupant._id };
+			run.choice = null;
+			run.revision += 1;
+			return { kind: "paused" };
+		}
+		run.choice = null;
+
+		if (choice === "skip") {
+			run.skipOperationId ??= crypto.randomUUID();
+			await files_nodes_db_archive_node(ctx, {
+				node,
+				archiveOperationId: run.skipOperationId,
+				updatedBy: args.userAuth.id,
+				now: args.now,
+			});
+			args.isWritten = true;
+			progress.skipped += 1;
+			return null;
+		}
+
+		if (choice === "keep_both") {
+			const freeName = await db_find_free_name(ctx, args, node, landingParentId);
+			if (freeName === null) return { kind: "failed", nay: { message: "No free name was found." } };
+			name = freeName;
+		} else {
+			replacedNode = occupant;
+		}
+	}
+
+	await files_nodes_db_restore_node(ctx, {
+		node,
+		parent: landing,
+		name,
+		updatedBy: args.userAuth.id,
+		now: args.now,
+	});
+	// Replace archives the occupant only after the restore, like a move. It gets its own operation id,
+	// so it can come back alone. The pause check above already ran `db_can_replace` in this mutation.
+	if (replacedNode) {
+		await files_nodes_db_archive_node(ctx, {
+			node: replacedNode,
+			archiveOperationId: crypto.randomUUID(),
+			updatedBy: args.userAuth.id,
+			now: args.now,
+		});
+		args.budget.nodes -= 1;
+	}
+	args.isWritten = true;
+	progress.completed += 1;
+	return null;
+}
+
+/**
+ * Land each top item of the operation, then walk each folder by `parentId`. A child of the
+ * operation comes back when its folder is active, or joins its folder's archive when the folder was
+ * skipped. Every other child keeps its stamp and gets the new path and scope.
+ *
+ * The walk is done when no node of the operation is left. A node renamed to a name before the cursor
+ * during the walk is still there, so it is queued again as a top item.
  */
 async function db_apply_restore(ctx: MutationCtx, args: StepArgs): Promise<StepOutcome> {
 	const { run, progress } = args;
 	let count = 0;
 
 	while (true) {
-		const page = await ctx.db
-			.query("files_nodes")
-			.withIndex("by_organization_workspace_archiveOperation_treePath", (q) =>
-				q
-					.eq("organizationId", run.organizationId)
-					.eq("workspaceId", run.workspaceId)
-					.eq("archiveOperationId", run.archiveOperationId),
-			)
-			.take(PAGE_SIZE);
-		if (page.length === 0) return { kind: "done" };
+		if (args.budget.nodes <= 0 || (count > 0 && (await files_subtree_ops_db_is_near_limits(ctx)))) {
+			return { kind: "continue" };
+		}
 
-		for (const node of page) {
-			if (args.budget.nodes <= 0 || (count > 0 && (await db_is_near_limits(ctx)))) return { kind: "continue" };
-			count += 1;
-			args.budget.nodes -= 1;
-
-			// Read the parent again for each node. This step may have just restored it.
-			const parent = node.parentId === files_ROOT_ID ? null : await ctx.db.get("files_nodes", node.parentId);
-			const parentOperationId = parent?.archiveOperationId ?? null;
-			let landing: Doc<"files_nodes"> | null;
-			if (parent && parentOperationId === null) {
-				landing = parent;
-			} else if (parentOperationId === null || run.rootNodeIds.includes(node._id)) {
-				landing = null;
-			}
-			// The parent was skipped, or somebody archived it during the job. Keep the node with it, so
-			// no active node sits inside an archived folder.
-			else {
-				const refusal = await db_check_writable_nodes(ctx, args, [node]);
-				if (refusal) return refusal;
-				await files_nodes_db_archive_node(ctx, {
-					node,
-					archiveOperationId: parentOperationId,
-					updatedBy: args.userAuth.id,
-					now: args.now,
-				});
-				args.isWritten = true;
-				progress.skipped += 1;
-				continue;
-			}
-			const landingParentId = landing?._id ?? files_ROOT_ID;
-
-			// Locks and access may change during the job. Nodes already restored stay restored.
-			const refusal =
-				(await db_check_writable_nodes(ctx, args, [node])) ??
-				(landing ? await db_check_restore_folder(ctx, args, landing) : null) ??
-				(parent && parent !== landing ? await db_check_restore_folder(ctx, args, parent) : null) ??
-				(landingParentId !== node.parentId ? await db_check_restore_move(ctx, args, node) : null);
-			if (refusal) return refusal;
-
-			let name = node.name;
-			let replacedNode: Doc<"files_nodes"> | null = null;
-			const occupant = await ctx.db
+		const row = await files_subtree_ops_db_first_node(ctx, args.opId);
+		if (!row) {
+			const left = await ctx.db
 				.query("files_nodes")
-				.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
+				.withIndex("by_organization_workspace_archiveOperation_treePath", (q) =>
 					q
 						.eq("organizationId", run.organizationId)
 						.eq("workspaceId", run.workspaceId)
-						.eq("parentId", landingParentId)
-						.eq("name", node.name)
-						.eq("archiveOperationId", null),
+						.eq("archiveOperationId", run.archiveOperationId),
 				)
-				.first();
-			if (occupant) {
-				// A choice counts only for the clash it answered. A different occupant asks again.
-				const choice =
-					run.choice?.nodeId === node._id && run.choice.occupantId === occupant._id
-						? run.choice.choice
-						: node.kind === "file"
-							? run.applyToRemaining.file
-							: run.applyToRemaining.folder;
-				// A Replace that is not possible here asks again, so the person can pick Keep both or Skip.
-				if (
-					choice === null ||
-					(choice === "replace" &&
-						!(await db_can_replace(ctx, {
-							userAuth: args.userAuth,
-							membership: args.membership,
-							node,
-							occupant,
-						})))
-				) {
-					run.conflict = { nodeId: node._id, occupantId: occupant._id };
-					run.choice = null;
-					run.revision += 1;
-					return { kind: "paused" };
-				}
-				run.choice = null;
+				.take(PAGE_SIZE);
+			if (left.length === 0) return { kind: "done" };
 
-				if (choice === "skip") {
-					run.skipOperationId ??= crypto.randomUUID();
-					await files_nodes_db_archive_node(ctx, {
-						node,
-						archiveOperationId: run.skipOperationId,
+			// Queue the top item of each node that is left. Its folder may be of the operation too.
+			const topIds = new Set<Id<"files_nodes">>();
+			for (const node of left) {
+				let top = node;
+				while (top.parentId !== files_ROOT_ID) {
+					const parent = await ctx.db.get("files_nodes", top.parentId);
+					if (!parent || parent.archiveOperationId !== run.archiveOperationId) break;
+					top = parent;
+				}
+				topIds.add(top._id);
+			}
+			for (const nodeId of topIds) {
+				await files_subtree_ops_db_enqueue_node(ctx, { opId: args.opId, nodeId, nodeDone: false });
+			}
+			continue;
+		}
+
+		const node = await ctx.db.get("files_nodes", row.nodeId);
+		if (!node) {
+			await ctx.db.delete("files_subtree_op_nodes", row._id);
+			continue;
+		}
+
+		if (!row.nodeDone) {
+			if (node.archiveOperationId === run.archiveOperationId) {
+				const outcome = await db_restore_top(ctx, args, node);
+				if (outcome) return outcome;
+				count += 1;
+				args.budget.nodes -= 1;
+			}
+			if (node.kind === "file") {
+				await ctx.db.delete("files_subtree_op_nodes", row._id);
+				continue;
+			}
+			await ctx.db.patch("files_subtree_op_nodes", row._id, { nodeDone: true });
+		}
+
+		// Read the folder again. The top item above may have just landed it.
+		const folder = (await ctx.db.get("files_nodes", node._id))!;
+		const page = await files_subtree_ops_db_list_children(ctx, { folder, cursor: row.cursor });
+		let cursor = page.cursor;
+		for (const [index, child] of page.children.entries()) {
+			// A file with many side docs writes a lot, so a full step ends inside the page. The next page
+			// starts after a name, so inside a group of items with one name the step ends before the group.
+			// The next step reads the group again and finds the items this step wrote already right.
+			if (index > 0 && (args.budget.nodes <= 0 || (await files_subtree_ops_db_is_near_limits(ctx)))) {
+				cursor = page.children.slice(0, index).findLast((previous) => previous.name !== child.name)?.name ?? row.cursor;
+				break;
+			}
+			count += 1;
+
+			let isWalked = child.kind === "folder";
+			// A top item that lands at the workspace root has its own row.
+			if (child.archiveOperationId === run.archiveOperationId && !run.rootNodeIds.includes(child._id)) {
+				// Like a skipped top item, a child kept archived with its folder is changed, so it must be writable.
+				const refusal = folder.archiveOperationId === null ? null : await db_check_writable_nodes(ctx, args, [child]);
+				if (refusal) return refusal;
+				if (folder.archiveOperationId === null) {
+					await files_nodes_db_restore_node(ctx, {
+						node: child,
+						parent: folder,
+						name: child.name,
 						updatedBy: args.userAuth.id,
 						now: args.now,
 					});
-					args.isWritten = true;
-					progress.skipped += 1;
-					continue;
-				}
-
-				if (choice === "keep_both") {
-					const freeName = await db_find_free_name(ctx, args, node, landingParentId);
-					if (freeName === null) return { kind: "failed", nay: { message: "No free name was found." } };
-					name = freeName;
+					progress.completed += 1;
 				} else {
-					replacedNode = occupant;
+					await files_nodes_db_archive_node(ctx, {
+						node: child,
+						archiveOperationId: folder.archiveOperationId,
+						updatedBy: args.userAuth.id,
+						now: args.now,
+					});
+					await files_nodes_db_rebuild_node(ctx, { node: child, parent: folder });
+					progress.skipped += 1;
 				}
-			}
-
-			const restored = await files_nodes_db_restore_node(ctx, {
-				node,
-				parent: landing,
-				name,
-				updatedBy: args.userAuth.id,
-				now: args.now,
-			});
-			if (restored._nay) return { kind: "failed", nay: restored._nay };
-			// Replace archives the occupant only after the restore worked, so a refused restore keeps it. It
-			// gets its own operation id, so it can come back alone. The pause check above already ran
-			// `db_can_replace` in this mutation.
-			if (replacedNode) {
-				await files_nodes_db_archive_node(ctx, {
-					node: replacedNode,
-					archiveOperationId: crypto.randomUUID(),
-					updatedBy: args.userAuth.id,
-					now: args.now,
-				});
+				// Count only the items the step writes. So a step that reads a group again still gets further.
 				args.budget.nodes -= 1;
+				args.isWritten = true;
 			}
-			args.isWritten = true;
-			progress.completed += 1;
-			// Items that moved with the folder cost writes too.
-			args.budget.nodes -= restored._yay.movedDocCount;
+			// A folder of another archive that kept its path keeps the paths inside too. Skip its walk.
+			else if (await files_nodes_db_rebuild_node(ctx, { node: child, parent: folder })) {
+				args.budget.nodes -= 1;
+				args.isWritten = true;
+			} else {
+				isWalked = false;
+			}
+			if (isWalked) {
+				await files_subtree_ops_db_enqueue_node(ctx, { opId: args.opId, nodeId: child._id, nodeDone: true });
+			}
+		}
+
+		if (cursor === null) {
+			await ctx.db.delete("files_subtree_op_nodes", row._id);
+		} else {
+			await ctx.db.patch("files_subtree_op_nodes", row._id, { cursor });
 		}
 	}
 }
@@ -850,11 +1018,22 @@ async function db_apply_restore(ctx: MutationCtx, args: StepArgs): Promise<StepO
  * the changes in the same mutation, so a small request ends inside the request.
  */
 async function db_step(ctx: MutationCtx, args: StepArgs): Promise<StepOutcome> {
+	if (args.run.phase === "discover") {
+		const discovered = await db_discover_restore(ctx, args);
+		if (discovered.kind !== "done") return discovered;
+	}
 	if (args.run.phase === "check") {
 		const checked = args.run.kind === "archive" ? await db_check_archive(ctx, args) : await db_check_restore(ctx, args);
 		if (checked.kind !== "done") return checked;
 		args.run.phase = "apply";
 		args.progress.total = args.progress.discovered;
+		// The archive check emptied the queue. Walk the named items again, now to stamp them. The restore
+		// check queued the top items already.
+		if (args.run.kind === "archive") {
+			for (const nodeId of args.run.rootNodeIds) {
+				await files_subtree_ops_db_enqueue_node(ctx, { opId: args.opId, nodeId, nodeDone: false });
+			}
+		}
 	}
 
 	const outcome = args.run.kind === "archive" ? await db_apply_archive(ctx, args) : await db_apply_restore(ctx, args);
@@ -868,36 +1047,18 @@ async function db_step(ctx: MutationCtx, args: StepArgs): Promise<StepOutcome> {
 
 async function db_finish_run(
 	ctx: MutationCtx,
-	run: Pick<Doc<"files_archive_runs">, "_id" | "kind" | "requestFirstRunId">,
+	runId: Id<"files_archive_runs">,
 	args: Omit<Parameters<typeof activities_db_finish>[1], "sourceId">,
 ) {
-	const activity = await db_require_activity(ctx, run._id);
-	await ctx.db.patch("files_archive_runs", run._id, { active: false });
-	await activities_db_finish(ctx, { sourceId: run._id, ...args });
+	await ctx.db.patch("files_archive_runs", runId, { active: false });
+	await activities_db_finish(ctx, { sourceId: runId, ...args });
 
-	// The restore jobs of one request run one at a time, so their steps do not write the same docs at
-	// the same moment. When a job that was running ends, start the oldest queued job of the same
-	// request. Another request has its own running job, so starting one of its jobs would run two at
-	// once. A queued job that ends, or a job that ended before, starts nothing, so each end starts one
-	// job. Mark it running here, not in its first step, so a second job that ends before that step
-	// starts a different one.
-	if (run.kind !== "restore" || !activities_is_active(activity.status) || activity.status === "queued") return;
-	const nextRun = await ctx.db
-		.query("files_archive_runs")
-		.withIndex("by_requestFirstRun_active", (q) =>
-			q.eq("requestFirstRunId", run.requestFirstRunId ?? run._id).eq("active", true),
-		)
-		.first();
-	if (nextRun) {
-		const nextActivity = await db_require_activity(ctx, nextRun._id);
-		await ctx.db.patch("activities", nextActivity._id, {
-			status: "running",
-			startedAt: args.now,
-			deadlineAt: args.now + RUN_TIMEOUT_MS,
-			updatedAt: args.now,
-		});
-		await ctx.scheduler.runAfter(0, internal.files_archive_runs.advance, { runId: nextRun._id });
-	}
+	// Deleting the op starts the jobs that waited for it, like the next restore of the same request.
+	const op = await ctx.db
+		.query("files_subtree_ops")
+		.withIndex("by_archiveRun", (q) => q.eq("archiveRunId", runId))
+		.unique();
+	if (op) await files_subtree_ops_db_delete(ctx, { opId: op._id, now: args.now });
 }
 
 /**
@@ -906,6 +1067,7 @@ async function db_finish_run(
 async function db_settle_step(
 	ctx: MutationCtx,
 	args: {
+		opId: Id<"files_subtree_ops">;
 		runId: Id<"files_archive_runs">;
 		activityId: Id<"activities">;
 		run: RunFields;
@@ -917,45 +1079,45 @@ async function db_settle_step(
 	await ctx.db.patch("files_archive_runs", args.runId, args.run);
 	await ctx.db.patch("activities", args.activityId, {
 		progress: args.progress,
-		...(args.outcome.kind === "paused" ? { status: "awaiting_input" as const } : {}),
-		deadlineAt: args.now + (args.outcome.kind === "paused" ? CHOICE_TIMEOUT_MS : RUN_TIMEOUT_MS),
+		...(args.outcome.kind === "paused"
+			? { status: "awaiting_input" as const }
+			: args.outcome.kind === "blocked"
+				? { status: "queued" as const, feedVisible: false }
+				: {}),
+		deadlineAt: args.now +
+			(args.outcome.kind === "paused" || args.outcome.kind === "blocked" ? CHOICE_TIMEOUT_MS : RUN_TIMEOUT_MS),
 		updatedAt: args.now,
 	});
 
 	switch (args.outcome.kind) {
+		case "blocked": {
+			return;
+		}
 		case "continue": {
-			await ctx.scheduler.runAfter(0, internal.files_archive_runs.advance, { runId: args.runId });
+			await files_subtree_ops_db_schedule_step(ctx, { opId: args.opId, now: args.now });
 			return;
 		}
 		case "paused": {
 			return;
 		}
 		case "done": {
-			await db_finish_run(
-				ctx,
-				{ ...args.run, _id: args.runId },
-				{
-					status: activities_get_result_status(args.progress),
-					errorMessage: null,
-					now: args.now,
-				},
-			);
+			await db_finish_run(ctx, args.runId, {
+				status: activities_get_result_status(args.progress),
+				errorMessage: null,
+				now: args.now,
+			});
 			return;
 		}
 		case "failed": {
 			// Nothing changed while the job was still checking. After that, the changed items keep the
 			// job's operation id, so one Restore or Archive brings them back.
 			const isPartway = args.progress.completed + args.progress.skipped > 0;
-			await db_finish_run(
-				ctx,
-				{ ...args.run, _id: args.runId },
-				{
-					status: "failed",
-					errorMessage: isPartway ? `Stopped partway: ${args.outcome.nay.message}` : args.outcome.nay.message,
-					errorCode: "failed",
-					now: args.now,
-				},
-			);
+			await db_finish_run(ctx, args.runId, {
+				status: "failed",
+				errorMessage: isPartway ? `Stopped partway: ${args.outcome.nay.message}` : args.outcome.nay.message,
+				errorCode: "failed",
+				now: args.now,
+			});
 			return;
 		}
 		default:
@@ -964,62 +1126,12 @@ async function db_settle_step(
 }
 
 /**
- * Refuse work on an item that a running job is changing. A second archive over the same folder would
- * split it into two operations, and restoring an operation while it is still being written would
- * race with the job.
- */
-async function db_find_busy_run(
-	ctx: MutationCtx,
-	args: {
-		organizationId: Id<"organizations">;
-		workspaceId: Id<"organizations_workspaces">;
-		kind: "archive" | "restore";
-		archiveOperationId: string;
-		nodes: readonly Doc<"files_nodes">[];
-	},
-) {
-	if (args.kind === "restore") {
-		return await ctx.db
-			.query("files_archive_runs")
-			.withIndex("by_organization_workspace_archiveOperation_active", (q) =>
-				q
-					.eq("organizationId", args.organizationId)
-					.eq("workspaceId", args.workspaceId)
-					.eq("archiveOperationId", args.archiveOperationId)
-					.eq("active", true),
-			)
-			.first();
-	}
-
-	for await (const run of ctx.db
-		.query("files_archive_runs")
-		.withIndex("by_organization_workspace_active_kind", (q) =>
-			q
-				.eq("organizationId", args.organizationId)
-				.eq("workspaceId", args.workspaceId)
-				.eq("active", true)
-				.eq("kind", "archive"),
-		)) {
-		for (const rootNodeId of run.rootNodeIds) {
-			const root = await ctx.db.get("files_nodes", rootNodeId);
-			// A named item the job already archived no longer blocks new work.
-			if (!root || root.archiveOperationId !== null) continue;
-			// Only a folder's `treePath` ends with "/", so a prefix match never mixes up siblings.
-			const overlaps = args.nodes.some(
-				(node) =>
-					node._id === root._id ||
-					(node.kind === "folder" && root.treePath.startsWith(node.treePath)) ||
-					(root.kind === "folder" && node.treePath.startsWith(root.treePath)),
-			);
-			if (overlaps) return run;
-		}
-	}
-	return null;
-}
-
-/**
  * Archive or restore through the job. The caller already checked the items the person named.
  * Returns null when the work finished inside this request, or the job that goes on in the background.
+ *
+ * Archive starts at once, even over a folder another job is archiving. Each job stamps only active
+ * items, so neither overwrites the other's stamp. Restore of an operation that a job still writes is
+ * refused. Restore waits while it overlaps another op, and after the job before it in its request.
  */
 export async function files_archive_runs_db_start(
 	ctx: MutationCtx,
@@ -1029,40 +1141,58 @@ export async function files_archive_runs_db_start(
 		membership: Doc<"organizations_workspaces_users">;
 		archiveOperationId: string;
 		/**
-		 * Archive: the named active items. Restore: empty; the check fills it.
+		 * Archive: the named active items. Restore: empty; the check fills the items that land at the root.
 		 */
 		rootNodeIds: Array<Id<"files_nodes">>;
+		/**
+		 * Where readers see the items now. Restore passes its top item, because it has no named items yet.
+		 */
+		treePaths: string[];
 		pendingUpdateCleanup: RunFields["pendingUpdateCleanup"];
 		budget: { nodes: number };
 		/**
-		 * Set on a restore that waits behind the first job of its Unarchive request. It writes nothing
-		 * now. It starts when the running job of the same request ends.
+		 * The job before this one in the same Unarchive request. The jobs of one request run one
+		 * at a time, so their steps do not write the same docs at the same moment.
 		 */
-		requestFirstRunId: Id<"files_archive_runs"> | null;
+		previousRunId: Id<"files_archive_runs"> | null;
 	},
 ) {
-	const queued = args.requestFirstRunId !== null;
-	const rootNodes = (await Promise.all(args.rootNodeIds.map((id) => ctx.db.get("files_nodes", id)))).filter(
-		(node) => node !== null,
-	);
-	const busy = await db_find_busy_run(ctx, {
-		organizationId: args.membership.organizationId,
-		workspaceId: args.membership.workspaceId,
-		kind: args.kind,
-		archiveOperationId: args.archiveOperationId,
-		nodes: rootNodes,
-	});
-	if (busy) {
-		return Result({
-			_nay: {
-				name: "busy",
-				message:
-					busy.kind === "archive"
-						? "These items are being archived. Wait for it to finish or stop it."
-						: "These items are being restored. Wait for it to finish or stop it.",
-			},
-		});
+	if (args.kind === "restore") {
+		const busy = await ctx.db
+			.query("files_archive_runs")
+			.withIndex("by_organization_workspace_archiveOperation_active", (q) =>
+				q
+					.eq("organizationId", args.membership.organizationId)
+					.eq("workspaceId", args.membership.workspaceId)
+					.eq("archiveOperationId", args.archiveOperationId)
+					.eq("active", true),
+			)
+			.first();
+		if (busy) {
+			return Result({
+				_nay: {
+					name: "busy",
+					message:
+						busy.kind === "archive"
+							? "These items are being archived. Wait for it to finish."
+							: "These items are being restored. Wait for it to finish.",
+				},
+			});
+		}
 	}
+
+	const previousRun = args.previousRunId ? await ctx.db.get("files_archive_runs", args.previousRunId) : null;
+	const previousOp = args.previousRunId ? await db_require_op(ctx, args.previousRunId) : null;
+	const blocker =
+		args.kind === "archive"
+			? null
+			: (previousOp ??
+				(await files_subtree_ops_db_find_blocker(ctx, {
+					organizationId: args.membership.organizationId,
+					workspaceId: args.membership.workspaceId,
+					treePaths: args.treePaths,
+					waiter: null,
+				})));
 
 	const now = Date.now();
 	const run: RunFields = {
@@ -1071,8 +1201,8 @@ export async function files_archive_runs_db_start(
 		userId: args.userAuth.id,
 		kind: args.kind,
 		archiveOperationId: args.archiveOperationId,
-		rootNodeIds: args.rootNodeIds,
-		phase: "check",
+		rootNodeIds: args.kind === "archive" ? args.rootNodeIds : [],
+		phase: args.kind === "restore" ? "discover" : "check",
 		checkCursor: { rootIndex: 0, treePath: "" },
 		applyRootIndex: 0,
 		active: true,
@@ -1082,7 +1212,8 @@ export async function files_archive_runs_db_start(
 		applyToRemaining: { file: null, folder: null },
 		revision: 0,
 		pendingUpdateCleanup: args.pendingUpdateCleanup,
-		requestFirstRunId: args.requestFirstRunId,
+		// Cancel on a clash wait ends every job of the request, so each job names the first one.
+		requestFirstRunId: previousRun ? (previousRun.requestFirstRunId ?? previousRun._id) : null,
 	};
 	const progress: RunProgress = {
 		unit: "items",
@@ -1095,7 +1226,29 @@ export async function files_archive_runs_db_start(
 		canceled: 0,
 	};
 
+	const runId = await ctx.db.insert("files_archive_runs", run);
+	const opId = await files_subtree_ops_db_insert(ctx, {
+		op: {
+			organizationId: args.membership.organizationId,
+			workspaceId: args.membership.workspaceId,
+			userId: args.userAuth.id,
+			status: blocker ? "queued" : "running",
+			blockedByOpId: blocker?._id ?? null,
+			rootNodeIds: args.rootNodeIds,
+			treePaths: args.treePaths,
+			kind: args.kind,
+			archiveRunId: runId,
+		},
+		now,
+	});
+	if (args.kind === "archive") {
+		for (const nodeId of args.rootNodeIds) {
+			await files_subtree_ops_db_enqueue_node(ctx, { opId, nodeId, nodeDone: false });
+		}
+	}
+
 	const stepArgs: StepArgs = {
+		opId,
 		run,
 		progress,
 		userAuth: args.userAuth,
@@ -1105,12 +1258,14 @@ export async function files_archive_runs_db_start(
 		checkedScopes: new Map(),
 		isWritten: false,
 	};
-	const outcome = queued ? null : await db_step(ctx, stepArgs);
-	if (outcome?.kind === "done") return Result({ _yay: null });
-	// A refusal before the first write changed nothing, so the request returns it and makes no job.
-	if (outcome?.kind === "failed" && !stepArgs.isWritten) return Result({ _nay: outcome.nay });
+	const outcome = blocker ? null : await db_step(ctx, stepArgs);
+	// Work that ended inside the request, or a refusal before the first write, leaves no job.
+	if (outcome?.kind === "done" || (outcome?.kind === "failed" && !stepArgs.isWritten)) {
+		await files_subtree_ops_db_delete(ctx, { opId, now });
+		await ctx.db.delete("files_archive_runs", runId);
+		return outcome.kind === "done" ? Result({ _yay: null }) : Result({ _nay: outcome.nay });
+	}
 
-	const runId = await ctx.db.insert("files_archive_runs", run);
 	const activityId = await activities_db_start(ctx, {
 		organizationId: args.membership.organizationId,
 		workspaceId: args.membership.workspaceId,
@@ -1122,18 +1277,17 @@ export async function files_archive_runs_db_start(
 		title: args.kind === "archive" ? "Archive files" : "Restore files",
 		targets: [],
 		visibility: "requester",
-		feedVisible: true,
-		status: queued ? "queued" : "running",
+		// A queued job shows no card until it starts.
+		feedVisible: !blocker && outcome?.kind !== "blocked",
+		status: blocker || outcome?.kind === "blocked" ? "queued" : "running",
 		resultKind: "saved",
 		progress,
-		// A queued job may wait while the job before it waits for a clash choice, so it gets as long. The
-		// deadline check gives it more time while that job is still active.
-		deadlineAt: now + (queued ? CHOICE_TIMEOUT_MS : RUN_TIMEOUT_MS),
+		deadlineAt: now + (blocker || outcome?.kind === "blocked" ? CHOICE_TIMEOUT_MS : RUN_TIMEOUT_MS),
 		now,
 	});
 	if (!outcome) return Result({ _yay: { runId, activityId } });
 
-	await db_settle_step(ctx, { runId, activityId, run, progress, outcome, now });
+	await db_settle_step(ctx, { opId, runId, activityId, run, progress, outcome, now });
 	// A request that failed after some writes keeps them and a failed Activity. Answer with the error, so
 	// the caller does not say the work goes on in the background.
 	if (outcome.kind === "failed") {
@@ -1142,94 +1296,139 @@ export async function files_archive_runs_db_start(
 	return Result({ _yay: { runId, activityId } });
 }
 
-export const advance = internalMutation({
-	args: { runId: v.id("files_archive_runs") },
-	returns: v.null(),
-	handler: async (ctx, args) => {
-		const storedRun = await ctx.db.get("files_archive_runs", args.runId);
-		if (!storedRun?.active) return null;
+/**
+ * One scheduled step of an archive or restore op. `files_subtree_ops.advance` checked the op.
+ */
+export async function files_archive_runs_db_advance(
+	ctx: MutationCtx,
+	args: { op: Extract<Doc<"files_subtree_ops">, { kind: "archive" | "restore" }>; now: number },
+) {
+	const storedRun = await ctx.db.get("files_archive_runs", args.op.archiveRunId);
+	if (!storedRun?.active) return;
 
-		// Stop and the deadline finish the Activity. A step scheduled before that does nothing, and so
-		// does a step while the job waits for a choice.
-		const activity = await db_require_activity(ctx, storedRun._id);
-		if (!activities_is_active(activity.status) || activity.status === "awaiting_input") return null;
-		const now = Date.now();
-		if (activity.deadlineAt <= now) {
-			await files_archive_runs_db_request_stop(ctx, { runId: storedRun._id, reason: "timeout", now });
-			return null;
-		}
+	// A step scheduled before a clash pause does nothing until the person answers.
+	const activity = await db_require_activity(ctx, storedRun._id);
+	if (activity.status === "awaiting_input") return;
 
-		const { _id: runId, _creationTime: _runCreationTime, ...run } = storedRun;
-		const progress = { ...activity.progress };
-		const membership = await db_get_run_membership(ctx, storedRun, activity);
-		// An accepted agent delete keeps its proposal on the named folder until the folder is archived
-		// last. If the person discards it during the job, stop the job.
-		const deleteProposal =
-			storedRun.pendingUpdateCleanup && storedRun.rootNodeIds[0]
-				? await files_db_get_pending_update(ctx, {
-						organizationId: storedRun.organizationId,
-						workspaceId: storedRun.workspaceId,
-						userId: storedRun.userId,
-						target: { kind: "saved", id: storedRun.rootNodeIds[0] },
-					})
-				: null;
-		const outcome: StepOutcome = !membership
-			? { kind: "failed", nay: { message: "You can no longer change these files." } }
-			: storedRun.pendingUpdateCleanup && !deleteProposal?.pendingArchive
-				? { kind: "failed", nay: { message: "The delete was discarded." } }
-				: await db_step(ctx, {
-						run,
-						progress,
-						userAuth: { id: storedRun.userId },
-						membership,
-						now,
-						budget: { nodes: files_archive_runs_STEP_MAX_NODES },
-						checkedScopes: new Map(),
-						isWritten: false,
-					});
+	const { _id: runId, _creationTime: _runCreationTime, ...run } = storedRun;
+	const progress = { ...activity.progress };
+	const membership = await db_get_run_membership(ctx, storedRun, activity);
+	// An accepted agent delete keeps its proposal on the named folder until the check ends. If the
+	// person discards it before that, nothing was archived yet, so the job ends.
+	const deleteProposal =
+		storedRun.pendingUpdateCleanup && storedRun.phase === "check" && storedRun.rootNodeIds[0]
+			? await files_db_get_pending_update(ctx, {
+					organizationId: storedRun.organizationId,
+					workspaceId: storedRun.workspaceId,
+					userId: storedRun.userId,
+					target: { kind: "saved", id: storedRun.rootNodeIds[0] },
+				})
+			: null;
+	const outcome: StepOutcome =
+		storedRun.pendingUpdateCleanup && storedRun.phase === "check" && !deleteProposal?.pendingArchive
+			? { kind: "failed", nay: { message: "The delete was discarded." } }
+			: await db_step(ctx, {
+					opId: args.op._id,
+					run,
+					progress,
+					userAuth: { id: storedRun.userId },
+					membership,
+					now: args.now,
+					budget: { nodes: files_archive_runs_STEP_MAX_NODES },
+					checkedScopes: new Map(),
+					isWritten: false,
+				});
 
-		await db_settle_step(ctx, { runId, activityId: activity._id, run, progress, outcome, now });
-		return null;
-	},
-});
+	await db_settle_step(ctx, {
+		opId: args.op._id,
+		runId,
+		activityId: activity._id,
+		run,
+		progress,
+		outcome,
+		now: args.now,
+	});
+}
+
+/**
+ * The op this restore waited for ended. Start it. Its first step finds current root paths, then
+ * checks access before anything changes.
+ */
+export async function files_archive_runs_db_promote(
+	ctx: MutationCtx,
+	args: { op: Extract<Doc<"files_subtree_ops">, { kind: "archive" | "restore" }>; now: number },
+) {
+	const run = (await ctx.db.get("files_archive_runs", args.op.archiveRunId))!;
+	if (run.phase === "check") {
+		// Archived items can move while this job waits. Find all current root paths again before writing.
+		await ctx.db.patch("files_archive_runs", run._id, {
+			phase: "discover",
+			checkCursor: { rootIndex: 0, treePath: "" },
+			rootNodeIds: [],
+		});
+	}
+	const activity = await db_require_activity(ctx, args.op.archiveRunId);
+	await ctx.db.patch("activities", activity._id, {
+		status: "running",
+		feedVisible: true,
+		startedAt: args.now,
+		deadlineAt: args.now + RUN_TIMEOUT_MS,
+		updatedAt: args.now,
+	});
+	await files_subtree_ops_db_run(ctx, { opId: args.op._id, now: args.now });
+}
 
 /**
  * Finish the job at once. Items already changed keep the job's operation id, so they can be restored
- * or archived again as one unit.
+ * or archived again as one unit. People can stop only a restore that waits for a clash choice. Data
+ * deletion stops any job.
+ *
+ * A timeout does not stop a job that is not waiting for a choice. Archive has no Stop, so the deadline
+ * only tells the recover cron to schedule the step again.
  */
 export async function files_archive_runs_db_request_stop(
 	ctx: MutationCtx,
 	args: { runId: Id<"files_archive_runs">; reason: "user" | "timeout"; now: number },
 ) {
 	const run = await ctx.db.get("files_archive_runs", args.runId);
-	if (!run) return;
+	if (!run?.active) return;
 
-	// A queued restore waits for the jobs of its request ahead of it, and one of them can wait up to
-	// 24 h for a clash choice, more than once. So while an earlier job of the same request is still
-	// active, give the queued job more time instead of ending it. Keep `updatedAt`: nothing about the
-	// job changed.
-	if (args.reason === "timeout" && run.requestFirstRunId !== null) {
-		const requestFirstRunId = run.requestFirstRunId;
+	if (args.reason === "timeout") {
 		const activity = await db_require_activity(ctx, run._id);
-		const firstRun = await ctx.db.get("files_archive_runs", requestFirstRunId);
-		// The index keeps creation order, so the first active job of the request is the earliest.
-		const earliestActiveRun = firstRun?.active
-			? firstRun
-			: await ctx.db
-					.query("files_archive_runs")
-					.withIndex("by_requestFirstRun_active", (q) =>
-						q.eq("requestFirstRunId", requestFirstRunId).eq("active", true),
-					)
-					.first();
-		if (activity.status === "queued" && earliestActiveRun && earliestActiveRun._id !== run._id) {
-			await ctx.db.patch("activities", activity._id, { deadlineAt: args.now + CHOICE_TIMEOUT_MS });
+		if (activity.status !== "awaiting_input") {
+			await ctx.db.patch("activities", activity._id, {
+				deadlineAt: args.now + (activity.status === "queued" ? CHOICE_TIMEOUT_MS : RUN_TIMEOUT_MS),
+			});
+			await files_subtree_ops_db_recover(ctx, { opId: (await db_require_op(ctx, run._id))._id });
 			return;
 		}
 	}
 
-	await db_finish_run(ctx, run, {
+	// Cancel ends the whole request. End the jobs that wait behind this one first, so the end of this
+	// job does not start them.
+	if (args.reason === "user" && run.kind === "restore") {
+		const requestFirstRunId = run.requestFirstRunId ?? run._id;
+		// One request names at most 500 items, so it has at most 500 jobs. Each job waits for the one
+		// made before it. End the newest first. Then no ended job has a waiter left to check again
+		// against every op of the workspace.
+		const requestRuns = await ctx.db
+			.query("files_archive_runs")
+			.withIndex("by_requestFirstRun_active", (q) => q.eq("requestFirstRunId", requestFirstRunId).eq("active", true))
+			.order("desc")
+			.collect();
+		for (const queuedRun of requestRuns.filter((requestRun) => requestRun._id !== run._id)) {
+			await db_finish_run(ctx, queuedRun._id, {
+				status: "canceled",
+				errorMessage: null,
+				errorCode: "canceled",
+				now: args.now,
+			});
+		}
+	}
+
+	await db_finish_run(ctx, run._id, {
 		status: args.reason === "timeout" ? "timed_out" : "canceled",
-		errorMessage: args.reason === "timeout" ? "The archive job reached its time limit." : null,
+		errorMessage: args.reason === "timeout" ? "The restore waited too long for a choice." : null,
 		errorCode: args.reason === "timeout" ? "timed_out" : "canceled",
 		now: args.now,
 	});
@@ -1347,7 +1546,8 @@ export const resolve_conflicts = mutation({
 		)
 			return Result({
 				_nay: {
-					message: "Replace needs the same kind, an empty folder, and write access to the item in the way and everything inside it.",
+					message:
+						"Replace needs the same kind, an empty folder, and write access to the item in the way and everything inside it.",
 				},
 			});
 
@@ -1361,7 +1561,7 @@ export const resolve_conflicts = mutation({
 			deadlineAt: now + RUN_TIMEOUT_MS,
 			updatedAt: now,
 		});
-		await ctx.scheduler.runAfter(0, internal.files_archive_runs.advance, { runId: run._id });
+		await files_subtree_ops_db_schedule_step(ctx, { opId: (await db_require_op(ctx, run._id))._id, now });
 		return Result({ _yay: null });
 	},
 });

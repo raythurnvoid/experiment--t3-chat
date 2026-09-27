@@ -6,8 +6,11 @@ import { api, internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import { activities_is_active } from "./activities_db.ts";
 import { files_transfer_db_delete_run_batch } from "./files_transfer.ts";
+import { files_subtree_ops_db_delete, files_subtree_ops_db_insert } from "./files_subtree_ops.ts";
 import { organizations_membership_lifetimes_db_ensure } from "./organizations_membership_lifetimes.ts";
-import { test_convex, test_create_saved_text_file, test_mocks_fill_db_with } from "./setup.test.ts";
+import { test_convex, test_create_saved_text_file, test_mocks, test_mocks_fill_db_with } from "./setup.test.ts";
+import { files_sort_text_key } from "../shared/files-sort.ts";
+import { files_nodes_db_set_restricted_scope } from "./files_nodes.ts";
 import { files_ROOT_ID } from "../shared/files.ts";
 import { r2_create_asset_key, r2_server_side_copy } from "./r2_client.ts";
 
@@ -1199,89 +1202,11 @@ describe("advance", () => {
 		expect(await get_node(fixture, "/target/source/child.txt")).toBeNull();
 	});
 
-	test("fails children copied into a merged folder that locks after the merge", async () => {
-		const fixture = await create_folder_fixture(["/source", "/target/source"]);
-		const { t, db, asUser, folders } = fixture;
-		await test_create_saved_text_file(t, {
-			membershipId: db.membershipId,
-			path: "/source/child.txt",
-			textContent: "Child\n",
-		});
-		const runId = await start_copy(fixture, [folders.get("/source")!]);
-		const waiting = await finish_discovery(fixture, runId);
-		expect(waiting.activity.status).toBe("awaiting_input");
-
-		const item = await t.run((ctx) =>
-			ctx.db
-				.query("files_transfer_items")
-				.withIndex("by_run_parentItem", (q) => q.eq("runId", runId).eq("parentItemId", null))
-				.unique(),
-		);
-		if (!item?.conflictTarget) throw new Error("Expected a destination conflict");
-		expect(
-			(
-				await asUser.mutation(api.files_transfer.resolve_conflicts, {
-					membershipId: db.membershipId,
-					runId,
-					revision: waiting.revision,
-					choices: [
-						{
-							itemId: item._id,
-							choice: "merge",
-							reviewedTarget: item.conflictTarget,
-							reviewedVersion: item.conflictVersion,
-						},
-					],
-					applyToRemaining: { file: null, folder: null },
-				})
-			)._nay,
-		).toBeUndefined();
-
-		// Finish the merge first, then lock the destination before children copy.
-		for (let step = 0; step < 50; step += 1) {
-			const merged = await t.run((ctx) => ctx.db.get("files_transfer_items", item._id));
-			if (merged?.state === "completed") break;
-			await t.mutation(internal.files_transfer.advance, { runId });
-		}
-		expect(await t.run((ctx) => ctx.db.get("files_transfer_items", item._id))).toMatchObject({
-			state: "completed",
-			outcome: "merged",
-		});
-		expect(
-			(
-				await asUser.mutation(api.files_nodes.set_node_write_policy, {
-					membershipId: db.membershipId,
-					nodeId: folders.get("/target/source")!,
-					writePolicy: { mode: "read_only" },
-				})
-			)._nay,
-		).toBeUndefined();
-
-		// The run did not write the merged folder's lock, so the child fails on the live check.
-		const finished = await finish_copy_with_workers(fixture, runId);
-		expect(finished.activity).toMatchObject({
-			status: "partial",
-			progress: { total: 2, completed: 1, failed: 1 },
-		});
-		const items = await t.run((ctx) =>
-			ctx.db
-				.query("files_transfer_items")
-				.withIndex("by_run_order", (q) => q.eq("runId", runId))
-				.collect(),
-		);
-		expect(items.find((entry) => entry.sourcePath === "/source/child.txt")).toMatchObject({
-			state: "failed",
-			errorMessage: "This item is read-only.",
-		});
-		expect(await get_node(fixture, "/target/source/child.txt")).toBeNull();
-	});
-
 	test.each([
 		{ publication: "saved", destination: "fresh" },
 		{ publication: "proposal", destination: "fresh" },
 		{ publication: "saved", destination: "keep_both" },
 		{ publication: "proposal", destination: "keep_both" },
-		{ publication: "saved", destination: "merge" },
 		{ publication: "proposal", destination: "merge" },
 	] as const)("checks a finite descendant copy ($publication, $destination)", async ({ publication, destination }) => {
 		const sourcePaths = ["/source", "/source/out", "/source/empty"];
@@ -2262,14 +2187,10 @@ describe("resolve_conflicts", () => {
 		expect(await get_node(fixture, "/target/report/second")).toBeNull();
 	});
 
-	test.each([
-		{ publication: "saved", extraRoots: 0 },
-		{ publication: "proposal", extraRoots: 0 },
-		{ publication: "saved", extraRoots: 50 },
-		{ publication: "proposal", extraRoots: 50 },
-	] as const)(
-		"refuses duplicate claims on an occupied folder before $publication output ($extraRoots extra roots)",
-		async ({ publication, extraRoots }) => {
+	// Only a Bash copy merges folders. A paste offers no Merge, so these claims are all proposals.
+	test.each([{ extraRoots: 0 }, { extraRoots: 50 }] as const)(
+		"refuses duplicate claims on an occupied folder before output ($extraRoots extra roots)",
+		async ({ extraRoots }) => {
 			const otherPaths = Array.from({ length: extraRoots }, (_, index) => `/other-${index}`);
 			const fixture = await create_folder_fixture([
 				"/a/report",
@@ -2288,55 +2209,22 @@ describe("resolve_conflicts", () => {
 				lastMessageAt: Date.now(),
 			});
 			if (thread._nay) throw new Error(thread._nay.message);
-			const started =
-				publication === "saved"
-					? await start_transfer(asUser, {
-							membershipId: db.membershipId,
-							requestId: "duplicate-claim",
-							kind: "copy",
-							sourceIds: sources,
-							targetParentId: folders.get("/target")!,
-						})
-					: await start_agent_transfer(t, {
-							membershipId: db.membershipId,
-							sourceWorkspace: "current",
-							destinationWorkspace: "current",
-							threadId: thread._yay.threadId,
-							requestId: "duplicate-claim",
-							kind: "copy",
-							sources: sources.map((id) => ({ kind: "saved" as const, id })),
-							targetParent: { kind: "saved", id: folders.get("/target")! },
-							targetPath: "/target",
-							targetName: null,
-							missingParentNames: [],
-							conflictPolicy: { file: "replace", folder: "merge" },
-						});
+			const started = await start_agent_transfer(t, {
+				membershipId: db.membershipId,
+				sourceWorkspace: "current",
+				destinationWorkspace: "current",
+				threadId: thread._yay.threadId,
+				requestId: "duplicate-claim",
+				kind: "copy",
+				sources: sources.map((id) => ({ kind: "saved" as const, id })),
+				targetParent: { kind: "saved", id: folders.get("/target")! },
+				targetPath: "/target",
+				targetName: null,
+				missingParentNames: [],
+				conflictPolicy: { file: "replace", folder: "merge" },
+			});
 			if (started._nay) throw new Error(started._nay.message);
 			const runId = started._yay.runId;
-			if (publication === "saved") {
-				const checked = await finish_discovery(fixture, runId);
-				expect(checked.activity.status).toBe("awaiting_input");
-				const conflicts = await t.run((ctx) =>
-					ctx.db
-						.query("files_transfer_items")
-						.withIndex("by_run_state_order", (q) => q.eq("runId", runId).eq("state", "conflict"))
-						.collect(),
-				);
-				expect(conflicts).toHaveLength(2);
-				const resolved = await asUser.mutation(api.files_transfer.resolve_conflicts, {
-					membershipId: db.membershipId,
-					runId,
-					revision: checked.revision,
-					choices: conflicts.map((item) => ({
-						itemId: item._id,
-						choice: "merge" as const,
-						reviewedTarget: item.conflictTarget!,
-						reviewedVersion: item.conflictVersion,
-					})),
-					applyToRemaining: { file: null, folder: null },
-				});
-				expect(resolved._nay).toBeUndefined();
-			}
 			const finished = await finish_folder_copy(fixture, runId);
 			expect(finished.activity).toMatchObject({ status: "failed", progress: { completed: 0 } });
 			expect(await t.run((ctx) => ctx.db.query("files_nodes").collect())).toEqual(before);
@@ -2517,6 +2405,31 @@ describe("resolve_conflicts", () => {
 		expect(await get_node(fixture, "/target/source/child")).toBeNull();
 		expect((await get_node(fixture, "/target/source/keep"))?._id).toBe(folders.get("/target/source/keep"));
 		expect((await get_node(fixture, "/source/child/deep"))?._id).toBe(folders.get("/source/child/deep"));
+	});
+
+	test("refuses Merge for the remaining pasted folders", async () => {
+		const fixture = await create_folder_fixture(["/source", "/target/source"]);
+		const { t, db, asUser, folders } = fixture;
+		const runId = await start_copy(fixture, [folders.get("/source")!]);
+		const waiting = await finish_discovery(fixture, runId);
+		expect(waiting.activity.status).toBe("awaiting_input");
+		const item = await t.run((ctx) =>
+			ctx.db
+				.query("files_transfer_items")
+				.withIndex("by_run_parentItem", (q) => q.eq("runId", runId).eq("parentItemId", null))
+				.unique(),
+		);
+
+		expect(
+			await asUser.mutation(api.files_transfer.resolve_conflicts, {
+				membershipId: db.membershipId,
+				runId,
+				revision: waiting.revision,
+				choices: [{ itemId: item!._id, choice: "keep_both" }],
+				applyToRemaining: { file: null, folder: "merge" },
+			}),
+		).toEqual({ _nay: { message: "A pasted folder cannot merge into another folder" } });
+		expect(await t.run((ctx) => ctx.db.get("files_transfer_items", item!._id))).toMatchObject({ state: "conflict" });
 	});
 });
 
@@ -2793,6 +2706,36 @@ describe("retry_remaining", () => {
 			expect(await get_node(fixture, "/target/source/a.pdf")).toBeNull();
 		},
 	);
+
+	test("a move retry takes no op", async () => {
+		const fixture = await create_folder_fixture(["/source", "/target/source"]);
+		const { t, db, asUser, folders } = fixture;
+		const started = await asUser.mutation(api.files_transfer.start, {
+			membershipId: db.membershipId,
+			requestId: "move-retry-no-op",
+			kind: "move",
+			sourceIds: [folders.get("/source")!],
+			targetParentId: folders.get("/target")!,
+		});
+		if (started._nay) throw new Error(started._nay.message);
+		const runId = started._yay.runId;
+		expect(await finish_discovery(fixture, runId)).toMatchObject({ activity: { status: "awaiting_input" } });
+		expect(
+			(await asUser.mutation(api.files_transfer.stop, { membershipId: db.membershipId, runId }))._nay,
+		).toBeUndefined();
+		await finish_folder_copy(fixture, runId);
+
+		const retried = await asUser.mutation(api.files_transfer.retry_remaining, {
+			membershipId: db.membershipId,
+			runId,
+			requestId: "move-retry-no-op-again",
+		});
+		if (retried._nay) throw new Error(retried._nay.message);
+
+		// Only a copy op is deleted when its run ends. An op on a move retry would stay and block every
+		// later restore and paste on these folders.
+		expect(await t.run((ctx) => ctx.db.query("files_subtree_ops").collect())).toEqual([]);
+	});
 
 	test("does not copy a source that moved away after the first run", async () => {
 		const fixture = await create_folder_fixture(["/source", "/elsewhere"]);
@@ -3492,6 +3435,223 @@ describe("move", () => {
 		expect((await get_node(fixture, "/target/one"))?._id).toBe(folders.get("/one"));
 		expect((await get_node(fixture, "/target/one/child"))?._id).toBe(folders.get("/one/child"));
 		expect((await get_node(fixture, "/two"))?._id).toBe(folders.get("/two"));
+	});
+
+	test("checks a nested restricted folder whose stored path a running move has not rewritten yet", async () => {
+		const fixture = await create_folder_fixture(["/a", "/a/shared", "/other"]);
+		const { t, db, asUser, folders } = fixture;
+		const member = await add_member(fixture);
+		const sharedId = folders.get("/a/shared")!;
+		expect(
+			(await asUser.mutation(api.files_sharing.restrict_node, { membershipId: db.membershipId, nodeId: sharedId }))
+				._nay,
+		).toBeUndefined();
+		// Rename /a to /b the way a big folder is renamed: the folder now, its children later. `shared`
+		// still stores /a/shared/, and a new folder takes the free name /a.
+		const newA = await t.run(async (ctx) => {
+			await ctx.db.patch("files_nodes", folders.get("/a")!, {
+				name: "b",
+				sortName: files_sort_text_key("b"),
+				path: "/b",
+				treePath: "/b/",
+			});
+			await files_subtree_ops_db_insert(ctx, {
+				op: {
+					kind: "move",
+					organizationId: db.organizationId,
+					workspaceId: db.workspaceId,
+					userId: db.userId,
+					status: "running",
+					blockedByOpId: null,
+					rootNodeIds: [folders.get("/a")!],
+					treePaths: ["/b/"],
+					oldTreePaths: ["/a/"],
+				},
+				now: Date.now(),
+			});
+			return await ctx.db.insert("files_nodes", {
+				...test_mocks.files.base(),
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				createdBy: db.userId,
+				updatedBy: db.userId,
+				name: "a",
+				sortName: files_sort_text_key("a"),
+				path: "/a",
+				treePath: "/a/",
+			});
+		});
+		const move = (itemId: Id<"files_nodes">) =>
+			member.asUser.mutation(api.files_nodes.move_nodes, {
+				membershipId: member.membershipId,
+				itemIds: [itemId],
+				targetParentId: folders.get("/other")!,
+			});
+
+		// The member cannot write in `shared`, so they cannot carry it away inside /b.
+		expect((await move(folders.get("/a")!))._nay).toMatchObject({ message: "Permission denied" });
+		// The new /a only matches the old stored path of `shared`. It does not hold it.
+		expect(await move(newA)).toEqual({ _yay: null });
+	});
+
+	test("checks the restricted folder of an item whose stored scope a running scope op has not written yet", async () => {
+		const fixture = await create_folder_fixture(["/shared", "/shared/item", "/other"]);
+		const { t, db, folders } = fixture;
+		const member = await add_member(fixture);
+		// Restrict /shared the way a big folder is restricted: the folder now, its children later.
+		await t.run(async (ctx) => {
+			await files_nodes_db_set_restricted_scope(ctx, {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				nodeId: folders.get("/shared")!,
+				restrictedScopeNodeId: folders.get("/shared")!,
+			});
+			await files_subtree_ops_db_insert(ctx, {
+				op: {
+					kind: "scope",
+					organizationId: db.organizationId,
+					workspaceId: db.workspaceId,
+					userId: db.userId,
+					status: "running",
+					blockedByOpId: null,
+					rootNodeIds: [folders.get("/shared")!],
+					treePaths: ["/shared/"],
+				},
+				now: Date.now(),
+			});
+		});
+		expect(await t.run((ctx) => ctx.db.get("files_nodes", folders.get("/shared/item")!))).toMatchObject({
+			restrictedScopeNodeId: null,
+		});
+
+		// The member has no grant on /shared. Moving the item out would leave it open for good, because
+		// the op walks only what is still inside /shared.
+		expect(
+			(
+				await member.asUser.mutation(api.files_nodes.move_nodes, {
+					membershipId: member.membershipId,
+					itemIds: [folders.get("/shared/item")!],
+					targetParentId: folders.get("/other")!,
+				})
+			)._nay,
+		).toMatchObject({ message: "You need Can manage on the shared folder to move this out of it." });
+	});
+});
+
+describe("seal", () => {
+	test("waits behind an op on its source, shows no card, and starts when that op ends", async () => {
+		const fixture = await create_folder_fixture(["/source"]);
+		const { t, db, asUser, folders } = fixture;
+		// An earlier op still works inside the source folder.
+		const blockerId = await t.run((ctx) =>
+			files_subtree_ops_db_insert(ctx, {
+				op: {
+					kind: "scope",
+					organizationId: db.organizationId,
+					workspaceId: db.workspaceId,
+					userId: db.userId,
+					status: "running",
+					blockedByOpId: null,
+					rootNodeIds: [folders.get("/source")!],
+					treePaths: ["/source/"],
+				},
+				now: Date.now(),
+			}),
+		);
+		const started = await asUser.mutation(api.files_transfer.start, {
+			membershipId: db.membershipId,
+			requestId: "queued-copy",
+			kind: "copy",
+			expectedSourceCount: 1,
+			sourceIds: [folders.get("/source")!],
+			targetParentId: folders.get("/target")!,
+		});
+		if (started._nay) throw new Error(started._nay.message);
+		const { runId, activityId } = started._yay;
+
+		expect(await asUser.mutation(api.files_transfer.seal, { membershipId: db.membershipId, runId })).toEqual({
+			_yay: null,
+		});
+		await t.finishAllScheduledFunctions(vi.runAllTimers);
+		expect(
+			await t.run((ctx) =>
+				ctx.db
+					.query("files_subtree_ops")
+					.withIndex("by_transferRun", (q) => q.eq("transferRunId", runId))
+					.unique(),
+			),
+		).toMatchObject({ status: "queued", blockedByOpId: blockerId, sourceTreePaths: ["/source/"] });
+		expect(await t.run((ctx) => ctx.db.get("activities", activityId))).toMatchObject({
+			status: "queued",
+			feedVisible: false,
+		});
+		expect(await get_node(fixture, "/target/source")).toBeNull();
+
+		await t.run((ctx) => files_subtree_ops_db_delete(ctx, { opId: blockerId, now: Date.now() }));
+		await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+		expect(await t.run((ctx) => ctx.db.get("activities", activityId))).toMatchObject({
+			status: "succeeded",
+			feedVisible: true,
+		});
+		expect(await get_node(fixture, "/target/source")).not.toBeNull();
+		// The paste ended, so its op is gone and a later op no longer waits for it.
+		expect(await t.run((ctx) => ctx.db.query("files_subtree_ops").collect())).toEqual([]);
+	});
+
+	test("does not wait on the path of a source from another organization", async () => {
+		const fixture = await create_folder_fixture(["/secret"]);
+		const { t, db, asUser, folders } = fixture;
+		await t.run((ctx) =>
+			files_subtree_ops_db_insert(ctx, {
+				op: {
+					kind: "scope",
+					organizationId: db.organizationId,
+					workspaceId: db.workspaceId,
+					userId: db.userId,
+					status: "running",
+					blockedByOpId: null,
+					rootNodeIds: [folders.get("/secret")!],
+					treePaths: ["/secret/"],
+				},
+				now: Date.now(),
+			}),
+		);
+		// A node of another organization that sits under the same path there.
+		const foreignId = await t.run(async (ctx) => {
+			const other = await test_mocks_fill_db_with.membership(ctx, { organizationName: "other-organization" });
+			return await ctx.db.insert("files_nodes", {
+				...test_mocks.files.base(),
+				organizationId: other.organizationId,
+				workspaceId: other.workspaceId,
+				createdBy: other.userId,
+				updatedBy: other.userId,
+				name: "x",
+				sortName: files_sort_text_key("x"),
+				path: "/secret/x",
+				treePath: "/secret/x/",
+				pathDepth: 2,
+			});
+		});
+		const started = await asUser.mutation(api.files_transfer.start, {
+			membershipId: db.membershipId,
+			requestId: "foreign-copy",
+			kind: "copy",
+			expectedSourceCount: 1,
+			sourceIds: [foreignId],
+			targetParentId: folders.get("/target")!,
+		});
+		if (started._nay) throw new Error(started._nay.message);
+		await asUser.mutation(api.files_transfer.seal, { membershipId: db.membershipId, runId: started._yay.runId });
+
+		// Whether this paste waits must not tell the caller where a node of another tenant sits.
+		const op = await t.run((ctx) =>
+			ctx.db
+				.query("files_subtree_ops")
+				.withIndex("by_transferRun", (q) => q.eq("transferRunId", started._yay.runId))
+				.unique(),
+		);
+		expect(op).toMatchObject({ status: "running", blockedByOpId: null, sourceTreePaths: [] });
 	});
 });
 

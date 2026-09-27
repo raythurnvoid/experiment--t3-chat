@@ -12761,6 +12761,7 @@ async function apply_binding(
 			installation,
 			node,
 			prepared: prepared._yay,
+			userId: fixture.userId,
 		});
 		return prepared;
 	});

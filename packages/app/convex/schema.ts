@@ -437,6 +437,23 @@ const files_browser_session_shared_fields = {
 	updatedAt: v.number(),
 };
 
+const files_subtree_op_shared_fields = {
+	organizationId: v.id("organizations"),
+	workspaceId: v.id("organizations_workspaces"),
+	userId: v.id("users"),
+	/**
+	 * A `queued` op waits for `blockedByOpId`. It has written nothing and has no step scheduled.
+	 */
+	status: v.union(v.literal("running"), v.literal("queued")),
+	blockedByOpId: v.union(v.id("files_subtree_ops"), v.null()),
+	rootNodeIds: v.array(v.id("files_nodes")),
+	/**
+	 * The `treePath` of each root where readers see it now. A new op overlaps this op when one of its
+	 * paths starts with one of these, or the other way around.
+	 */
+	treePaths: v.array(v.string()),
+};
+
 export const files_pending_prepared_state_family_validator = v.object({
 	operationBatchId: v.id("files_pending_update_operation_batches"),
 	baseStateId: v.id("files_pending_update_yjs_states"),
@@ -1978,7 +1995,8 @@ const app_convex_schema = defineSchema({
 		 * stored only on that node, so a restricted folder and everything inside it share one pointer.
 		 *
 		 * `files_sharing.ts` sets and clears it; creates and moves copy it from the new parent, so it
-		 * stays right without walking up the tree. See `files_nodes_db_cascade_restricted_scope`.
+		 * stays right without walking up the tree. When a folder's scope changes, an op writes it to the
+		 * items inside. See `files_subtree_ops_db_start_rebuild`.
 		 */
 		restrictedScopeNodeId: v.union(v.id("files_nodes"), v.null()),
 		/**
@@ -2097,13 +2115,19 @@ const app_convex_schema = defineSchema({
 			"path",
 			"archiveOperationId",
 		])
-		.index("by_organization_workspace_archiveOperation_name", [
+		.index("by_organization_workspace_archiveOperation", [
 			"organizationId",
 			"workspaceId",
 			"archiveOperationId",
-			"name",
 		])
 		.index("by_organization_workspace_treePath", ["organizationId", "workspaceId", "treePath"])
+		// A move finds the restricted folders inside the folder it moves, without reading the rest.
+		.index("by_organization_workspace_isRestrictedScopeRoot_treePath", [
+			"organizationId",
+			"workspaceId",
+			"isRestrictedScopeRoot",
+			"treePath",
+		])
 		.index("by_organization_workspace_archiveOperation_treePath", [
 			"organizationId",
 			"workspaceId",
@@ -3014,16 +3038,18 @@ const app_convex_schema = defineSchema({
 		 */
 		archiveOperationId: v.string(),
 		/**
-		 * Archive: the named items, archived last. Restore: the items that land at the workspace root
+		 * Archive: the named items. The job stamps them first. Restore: the items that land at the workspace root
 		 * because their parent was archived by another operation when the check ran.
 		 */
 		rootNodeIds: v.array(v.id("files_nodes")),
 		/**
-		 * `check` walks everything first and writes nothing. `apply` changes the nodes.
+		 * Restore discovers every top root before checking overlaps. `check` walks everything before
+		 * `apply` changes the nodes.
 		 */
-		phase: v.union(v.literal("check"), v.literal("apply")),
+		phase: v.union(v.literal("discover"), v.literal("check"), v.literal("apply")),
 		/**
-		 * Where the check walk goes on. `treePath` is "" at the start of a root.
+		 * Where the walk goes on. During restore discovery, `treePath` holds the page cursor.
+		 * During check it holds the last tree path. It is "" at the start of either walk.
 		 */
 		checkCursor: v.object({ rootIndex: v.number(), treePath: v.string() }),
 		/**
@@ -3064,8 +3090,8 @@ const app_convex_schema = defineSchema({
 			v.null(),
 		),
 		/**
-		 * Restore: on a job that waits behind the first job of its Unarchive request, that first job's
-		 * id. The jobs of one request run one at a time. Null on the first job and on archive jobs.
+		 * Restore: the id of the first job of the same Unarchive request, so Cancel can end them all.
+		 * Each job waits for the job before it. Null on the first job and on archive jobs.
 		 */
 		requestFirstRunId: v.union(v.id("files_archive_runs"), v.null()),
 	})
@@ -3080,6 +3106,81 @@ const app_convex_schema = defineSchema({
 		.index("by_user", ["userId"])
 		.index("by_organization_workspace", ["organizationId", "workspaceId"]),
 	// #endregion files archive runs
+
+	// #region files subtree ops
+	/**
+	 * One change to a folder and everything inside it that goes on after the request: move, archive,
+	 * restore, restrict, or copy. The request writes what people must see now, like the moved folder
+	 * itself. Steps then fix the stored copies inside, like each child's `path`.
+	 *
+	 * Every new op reads the ops of its workspace to find overlaps. So a step never writes this doc.
+	 * Step state lives on `files_subtree_op_walks`, `files_subtree_op_nodes`, and the kind's run doc.
+	 * The last step deletes the op.
+	 */
+	files_subtree_ops: defineTable(
+		v.union(
+			v.object({
+				...files_subtree_op_shared_fields,
+				kind: v.literal("move"),
+				/**
+				 * The `treePath` of each root before the move. Children keep it until a step rewrites them,
+				 * so the op is busy on these paths too.
+				 */
+				oldTreePaths: v.array(v.string()),
+			}),
+			v.object({
+				...files_subtree_op_shared_fields,
+				kind: v.union(v.literal("archive"), v.literal("restore")),
+				archiveRunId: v.id("files_archive_runs"),
+			}),
+			v.object({ ...files_subtree_op_shared_fields, kind: v.literal("scope") }),
+			v.object({
+				...files_subtree_op_shared_fields,
+				kind: v.literal("copy"),
+				transferRunId: v.id("files_transfer_runs"),
+				/**
+				 * The copy reads these folders, so a change inside them waits too.
+				 */
+				sourceTreePaths: v.array(v.string()),
+			}),
+		),
+	)
+		.index("by_organization_workspace_kind", ["organizationId", "workspaceId", "kind"])
+		.index("by_blockedByOp", ["blockedByOpId"])
+		.index("by_archiveRun", ["archiveRunId"])
+		.index("by_transferRun", ["transferRunId"])
+		.index("by_user", ["userId"]),
+
+	/**
+	 * The step state of one op. Only steps write it, so a step does not conflict with a new op.
+	 */
+	files_subtree_op_walks: defineTable({
+		opId: v.id("files_subtree_ops"),
+		/**
+		 * Each scheduled step carries this number, and a step runs only when the numbers match. So a
+		 * step that recover scheduled again does nothing when the old one ran after all.
+		 */
+		step: v.number(),
+		/**
+		 * A walk is done only after one full pass writes nothing. A child that got a name before the
+		 * cursor during a pass is then still found.
+		 */
+		passWrote: v.boolean(),
+		updatedAt: v.number(),
+	}).index("by_op", ["opId"]),
+
+	/**
+	 * The nodes an op still has to walk, oldest first. While `nodeDone` is false, the step first
+	 * changes the node itself, like an archive stamps a named folder. Then it walks the node's
+	 * children. `cursor` is the last child name done, or null to start from the first child.
+	 */
+	files_subtree_op_nodes: defineTable({
+		opId: v.id("files_subtree_ops"),
+		nodeId: v.id("files_nodes"),
+		nodeDone: v.boolean(),
+		cursor: v.union(v.string(), v.null()),
+	}).index("by_op", ["opId"]),
+	// #endregion files subtree ops
 
 	// #region plugins core
 	plugins_publisher_repositories: defineTable({
@@ -4498,6 +4599,14 @@ const app_convex_schema = defineSchema({
 				kind: v.literal("files_archive_run"),
 				id: v.id("files_archive_runs"),
 				archiveKind: v.union(v.literal("archive"), v.literal("restore")),
+			}),
+			/**
+			 * A move or restrict whose op has no run doc of its own. A restrict Activity is not in the feed.
+			 */
+			v.object({
+				kind: v.literal("files_subtree_op"),
+				id: v.id("files_subtree_ops"),
+				opKind: v.union(v.literal("move"), v.literal("scope")),
 			}),
 			/**
 			 * A background bash job (`cmd &`). The extra fields let `jobs` read this small

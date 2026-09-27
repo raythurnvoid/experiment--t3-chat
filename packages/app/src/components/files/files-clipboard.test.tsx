@@ -388,7 +388,9 @@ describe("FilesClipboardProvider", () => {
 		press_paste();
 		fireEvent.click(await screen.findByRole("button", { name: "Retry Paste" }));
 		expect(mutationMock.mock.calls[1]![1]).toEqual(mutationMock.mock.calls[0]![1]);
-		await waitFor(() => expect(screen.getByRole("dialog")).toBeTruthy());
+		// A one-file paste opens no dialog. Its Activity card can still open it.
+		await waitFor(() => expect(getFunctionName(mutationMock.mock.lastCall![0])).toBe("files_transfer:seal"));
+		expect(screen.queryByRole("dialog")).toBeNull();
 	});
 
 	test("sends all Copy pages before sealing", async () => {
@@ -461,7 +463,8 @@ describe("FilesClipboardProvider", () => {
 		expect(mutationMock).toHaveBeenCalledOnce();
 		fireEvent.click(screen.getByRole("button", { name: "Retry Paste" }));
 		expect(mutationMock.mock.calls[1]![1]).toEqual(mutationMock.mock.calls[0]![1]);
-		await waitFor(() => expect(screen.getByRole("dialog")).toBeTruthy());
+		await waitFor(() => expect(getFunctionName(mutationMock.mock.lastCall![0])).toBe("files_transfer:seal"));
+		expect(screen.queryByRole("dialog")).toBeNull();
 	});
 
 	test("waits for the page reply before sending the next page and seal", async () => {
@@ -839,7 +842,7 @@ describe("FilesTransferRunModal", () => {
 		expect(mutationMock.mock.calls[0]![1]).toEqual({ membershipId: "membership", activityId: "activity" });
 	});
 
-	test("sends the reviewed destination for Replace and Merge with separate remaining choices", async () => {
+	test("sends the reviewed destination for Replace and offers no Merge for a copied folder", async () => {
 		queryState.run = make_run({ status: "awaiting_input" });
 		const file = make_item({
 			conflict: {
@@ -879,21 +882,17 @@ describe("FilesTransferRunModal", () => {
 				name: "Replace",
 			}),
 		);
-		fireEvent.click(
-			within(screen.getByRole("group", { name: "Apply to remaining folder name conflicts" })).getByRole("radio", {
-				name: "Merge",
-			}),
-		);
+		const remainingFolders = screen.getByRole("group", { name: "Apply to remaining folder name conflicts" });
+		expect(within(remainingFolders).queryByRole("radio", { name: "Merge" })).toBeNull();
+		fireEvent.click(within(remainingFolders).getByRole("radio", { name: "Skip" }));
 		expect(
 			within(screen.getByRole("group", { name: "/report.md" }))
 				.getByRole("radio", { name: "Replace" })
 				.matches(":checked"),
 		).toBe(true);
-		expect(
-			within(screen.getByRole("group", { name: "/notes" }))
-				.getByRole("radio", { name: "Merge" })
-				.matches(":checked"),
-		).toBe(true);
+		const folderGroup = screen.getByRole("group", { name: "/notes" });
+		expect(within(folderGroup).queryByRole("radio", { name: "Merge" })).toBeNull();
+		expect(within(folderGroup).getByRole("radio", { name: "Skip" }).matches(":checked")).toBe(true);
 		fireEvent.click(screen.getByRole("button", { name: "Continue" }));
 		expect(mutationMock.mock.calls[0]![1]).toEqual({
 			membershipId: "membership",
@@ -906,9 +905,9 @@ describe("FilesTransferRunModal", () => {
 					reviewedTarget: file.conflict!.target,
 					reviewedVersion: file.conflict!.version,
 				},
-				{ itemId: folder.itemId, choice: "merge", reviewedTarget: folder.conflict!.target, reviewedVersion: null },
+				{ itemId: folder.itemId, choice: "skip" },
 			],
-			applyToRemaining: { file: "replace", folder: "merge" },
+			applyToRemaining: { file: "replace", folder: "skip" },
 		});
 		await waitFor(() => expect(screen.getByRole("button", { name: "Continue" }).matches(":disabled")).toBe(false));
 	});

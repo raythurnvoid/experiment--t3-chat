@@ -24,6 +24,7 @@ import { r2, r2_PUT_MAY_ARRIVE_MARGIN_MS, r2_confirmed_object_delete, r2_create_
 import { files_private_storage_db_reserve } from "./files_private_storage.ts";
 import { files_db_insert_pending_update } from "../server/files.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
+import { files_subtree_ops_db_start_rebuild } from "./files_subtree_ops.ts";
 
 const RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -396,6 +397,41 @@ async function data_deletion_test_start_archive_run(
 	});
 	if (restored._nay || !restored._yay) throw new Error("Expected a restore job");
 	return { ...restored._yay, membershipId };
+}
+
+/**
+ * Start a move op that has not taken a step yet, so it stays until a step runs.
+ */
+async function data_deletion_test_start_move_op(
+	t: ReturnType<typeof test_convex>,
+	args: {
+		userId: Id<"users">;
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		tag: string;
+	},
+) {
+	const scope = { organizationId: args.organizationId, workspaceId: args.workspaceId, userId: args.userId };
+	const folder = await t.mutation(internal.files_nodes.create_folder_node_by_path, { ...scope, path: `/${args.tag}` });
+	if (folder._nay) throw new Error(folder._nay.message);
+	return await t.run(async (ctx) => {
+		const node = (await ctx.db.get("files_nodes", folder._yay.nodeId))!;
+		const membership = await ctx.db
+			.query("organizations_workspaces_users")
+			.withIndex("by_workspace_user_active", (q) => q.eq("workspaceId", args.workspaceId).eq("userId", args.userId))
+			.unique();
+		if (!membership) throw new Error("Expected workspace membership");
+		const started = await files_subtree_ops_db_start_rebuild(ctx, {
+			kind: "move",
+			...scope,
+			membership,
+			roots: [{ node, oldTreePath: node.treePath }],
+			budget: { nodes: 0 },
+			now: Date.now(),
+		});
+		if (!started) throw new Error("Expected a move op");
+		return { ...started, membershipId: membership._id };
+	});
 }
 
 async function data_deletion_test_seed_plugin_ui_sessions(
@@ -3420,6 +3456,65 @@ describe("process_workspace_deletion_request", () => {
 		expect(after.activity).toBeNull();
 		expect(after.controlRun).not.toBeNull();
 		expect(after.controlActivity).toMatchObject({ status: "awaiting_input" });
+	});
+
+	test("drains move ops and keeps sibling ops", async () => {
+		const t = test_convex();
+		const user = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-delete-move-op-workspace",
+				displayName: "Move Op Workspace",
+			}),
+		);
+		const sibling = await t.run((ctx) =>
+			organizations_db_create_workspace(ctx, {
+				userId: user.userId,
+				organizationId: user.defaultOrganizationId,
+				name: "move-op-sibling",
+				description: "",
+				now: Date.now(),
+			}),
+		);
+		if (sibling._nay) throw new Error(sibling._nay.message);
+		const victim = await data_deletion_test_start_move_op(t, {
+			userId: user.userId,
+			organizationId: user.defaultOrganizationId,
+			workspaceId: user.defaultWorkspaceId,
+			tag: "move-victim",
+		});
+		const control = await data_deletion_test_start_move_op(t, {
+			userId: user.userId,
+			organizationId: user.defaultOrganizationId,
+			workspaceId: sibling._yay.workspaceId,
+			tag: "move-control",
+		});
+		const requestId = await t.run((ctx) =>
+			data_deletion_db_request(ctx, {
+				userId: user.userId,
+				organizationId: user.defaultOrganizationId,
+				workspaceId: user.defaultWorkspaceId,
+				scope: "workspace",
+				eligibleAt: 0,
+			}),
+		);
+
+		await data_deletion_test_process_workspace_request_until_done(t, { requestId });
+
+		const after = await t.run(async (ctx) => ({
+			op: await ctx.db.get("files_subtree_ops", victim.opId),
+			walks: await ctx.db
+				.query("files_subtree_op_walks")
+				.withIndex("by_op", (q) => q.eq("opId", victim.opId))
+				.collect(),
+			activity: await ctx.db.get("activities", victim.activityId),
+			controlOp: await ctx.db.get("files_subtree_ops", control.opId),
+			controlActivity: await ctx.db.get("activities", control.activityId),
+		}));
+		expect(after.op).toBeNull();
+		expect(after.walks).toEqual([]);
+		expect(after.activity).toBeNull();
+		expect(after.controlOp).not.toBeNull();
+		expect(after.controlActivity).toMatchObject({ status: "running" });
 	});
 
 	test("removes invalid workspace requests without a workspace id", async () => {
@@ -7149,6 +7244,50 @@ describe("finalize_user_deletion_data", () => {
 		}));
 		expect(after.run).toBeNull();
 		expect(after.activity).toBeNull();
+		expect(after.membership).toBeNull();
+	});
+
+	test("waits for a move op to end before memberships", async () => {
+		const t = test_convex();
+		const victim = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-delete-move-op",
+				displayName: "Move Op",
+			}),
+		);
+		const op = await data_deletion_test_start_move_op(t, {
+			userId: victim.userId,
+			organizationId: victim.defaultOrganizationId,
+			workspaceId: victim.defaultWorkspaceId,
+			tag: "move-finalize",
+		});
+
+		const done = await t.mutation(internal.data_deletion.finalize_user_deletion_data, {
+			userId: victim.userId,
+			_test_batchSize: 1,
+		});
+		const waiting = await t.run(async (ctx) => ({
+			op: await ctx.db.get("files_subtree_ops", op.opId),
+			membership: await ctx.db.get("organizations_workspaces_users", op.membershipId),
+		}));
+		expect(done).toBe(false);
+		expect(waiting.op).not.toBeNull();
+		expect(waiting.membership).not.toBeNull();
+
+		const walk = await t.run((ctx) =>
+			ctx.db
+				.query("files_subtree_op_walks")
+				.withIndex("by_op", (q) => q.eq("opId", op.opId))
+				.unique(),
+		);
+		const step = walk!.step;
+		await t.mutation(internal.files_subtree_ops.advance, { opId: op.opId, step });
+		await data_deletion_test_finalize_user_until_done(t, { userId: victim.userId, batchSize: 1 });
+		const after = await t.run(async (ctx) => ({
+			op: await ctx.db.get("files_subtree_ops", op.opId),
+			membership: await ctx.db.get("organizations_workspaces_users", op.membershipId),
+		}));
+		expect(after.op).toBeNull();
 		expect(after.membership).toBeNull();
 	});
 

@@ -232,3 +232,50 @@ describe("private search", () => {
 		).toBeNull();
 	});
 });
+
+describe("saved search during an archive", () => {
+	test("keeps an item whose folder is stamped until the item gets its own stamp", async () => {
+		const t = test_convex();
+		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+		const scope = { organizationId: db.organizationId, workspaceId: db.workspaceId, userId: db.userId };
+		const created = await t.mutation(internal.files_nodes.create_folder_node_by_path, {
+			...scope,
+			path: "/docs/inner",
+		});
+		if (created._nay) throw new Error(created._nay.message);
+		const innerId = created._yay.nodeId;
+		const updated = await t.mutation(internal.files_metadata.update_entries_by_path, {
+			...scope,
+			path: "/docs/inner",
+			set: [{ key: "status", value: "catchup" }],
+			remove: [],
+		});
+		if (updated._nay) throw new Error(updated._nay.message);
+		const search = async () =>
+			(
+				await asUser.query(api.files_metadata.search_nodes, {
+					membershipId: db.membershipId,
+					plans: [{ op: "eq", fieldPath: "metadata.status", value: "catchup" }],
+				})
+			).targets;
+		expect(await search()).toEqual([{ kind: "saved", id: innerId }]);
+
+		// The archive job stamped the folder but has not reached the item inside yet.
+		const docsId = (await t.run((ctx) => ctx.db.get("files_nodes", innerId)))!.parentId;
+		if (docsId === "root") throw new Error("Expected a parent folder");
+		await t.run((ctx) => ctx.db.patch("files_nodes", docsId, { archiveOperationId: "archive-1" }));
+		expect(await search()).toEqual([{ kind: "saved", id: innerId }]);
+
+		// The job stamps the item and its index docs. Now search drops it.
+		await t.run(async (ctx) => {
+			await ctx.db.patch("files_nodes", innerId, { archiveOperationId: "archive-1" });
+			for (const doc of await ctx.db.query("files_metadata_docs").collect()) {
+				if (doc.sourceKind === "committed" && doc.fileNodeId === innerId) {
+					await ctx.db.patch("files_metadata_docs", doc._id, { archiveOperationId: "archive-1" });
+				}
+			}
+		});
+		expect(await search()).toEqual([]);
+	});
+});

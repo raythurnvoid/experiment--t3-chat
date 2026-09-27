@@ -48,6 +48,7 @@ import type * as files_pending_updates from "../files_pending_updates.js";
 import type * as files_private_storage from "../files_private_storage.js";
 import type * as files_search from "../files_search.js";
 import type * as files_sharing from "../files_sharing.js";
+import type * as files_subtree_ops from "../files_subtree_ops.js";
 import type * as files_transfer from "../files_transfer.js";
 import type * as files_transfer_media from "../files_transfer_media.js";
 import type * as files_visible from "../files_visible.js";
@@ -146,6 +147,7 @@ declare const fullApi: ApiFromModules<{
   files_private_storage: typeof files_private_storage;
   files_search: typeof files_search;
   files_sharing: typeof files_sharing;
+  files_subtree_ops: typeof files_subtree_ops;
   files_transfer: typeof files_transfer;
   files_transfer_media: typeof files_transfer_media;
   files_visible: typeof files_visible;

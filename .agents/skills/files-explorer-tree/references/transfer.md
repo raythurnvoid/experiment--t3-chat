@@ -42,11 +42,13 @@ the same producer with private proposals. `files_pending_updates.ts` and
 - Two file workers may prepare bytes at once. The item records its attempt, assets, payer, and
   completed node. A repeated callback cannot create another copy or bill it again. Reserving
   cross-workspace output IDs does not spend one of the three content-worker attempts.
-- Cut uses one atomic move transaction. It allows at most 500 affected nodes, including archived
-  descendants, 2,000 scanned nodes, search chunks, and metadata docs, and separate 4 MiB read and write
-  budgets. Permission checks are outside that scan counter. Every affected restricted scope needs
-  write access, even when its nodes are hidden or archived. An oversized or unauthorized move fails
-  before moving anything. It never falls back to partial batches.
+- Cut uses one atomic move transaction for the named items. It allows at most 500 named or inserted
+  nodes, 2,000 scanned nodes, search chunks, and metadata docs, and separate 4 MiB read and write
+  budgets. Descendants of a moved folder do not count: a move job (`files_subtree_ops`, kind `move`)
+  gives them their new paths after the transaction. Permission checks are outside that scan counter.
+  Every restricted folder inside a reparented folder needs write access, even when it is hidden or
+  archived. An oversized or unauthorized move fails before moving anything. It never falls back to
+  partial batches.
 - Saved Move and reviewed pending Move use the common preflight/apply plan in `files_nodes.ts`.
   Private publication uses that same plan for a saved replacement occupant. These path moves stay
   within one workspace. Cross-workspace Move is refused before creating a transfer or output.
@@ -62,8 +64,10 @@ the same producer with private proposals. `files_pending_updates.ts` and
   Publication keeps each planned name. A later outside collision chooses another name while keeping
   the other roots' planned names reserved.
   It tries at most 100 counter names. Each initial check and move commit has a 200-lookup budget;
-  exceeding it returns a clear refusal. Copy also supports file replacement and folder merge;
-  merge keeps the destination folder ID, metadata, and unrelated children. File replacement names
+  exceeding it returns a clear refusal. Copy also supports file replacement. Only Bash `cp` merges a
+  folder into an existing one; merge keeps the destination folder ID, metadata, and unrelated
+  children. A paste has no Merge: `resolve_conflicts` refuses `merge` ("A pasted folder cannot merge
+  into another folder"), and a folder Replace is only for a Move run. File replacement names
   the exact reviewed occupant and content version. Move replaces only an empty folder, never merges
   a nonempty one. Bash requires `mv -T -f` for exact empty-folder replacement. A file cannot replace
   a folder or a folder replace a file.
@@ -74,9 +78,9 @@ the same producer with private proposals. `files_pending_updates.ts` and
   no longer readable.
   The public door returns `conflictKind` next to `conflict` for exactly this reason: `conflict` is
   the destination document and is null in the same-paste case, so it cannot be used to tell the two
-  apart. Offer Keep both and Skip for every name conflict. Offer Replace and Merge only when a
-  destination document exists, because only those two act on one. Offer only Skip for an unavailable
-  item.
+  apart. Offer Keep both and Skip for every name conflict. Offer Replace only when a destination
+  document exists, because only Replace acts on one, and only for a file or a Move folder. Offer only
+  Skip for an unavailable item.
 - Skip creates nothing for that item. Skipping a folder also skips its descendants.
 - Source or destination moves, renames, deletion, or lost access pause or refuse the affected work.
   Do not silently use a new path. Recheck membership, ACL, write policy, and workspace purge state.
@@ -173,10 +177,20 @@ the same producer with private proposals. `files_pending_updates.ts` and
   The destination payer pays for storage; agent-run billing is unchanged.
 - Copy current content, metadata, and supported write rules. Keep history, comments, and chats
   at the source. TODO: revisit copying versions and comments in a future change.
-- Large same-workspace Move remains a separate follow-up. Its transaction safety limits stay.
+- A large same-workspace Move works through the move job. Its limits bound only the named items.
 
 ## Stop, Activity, and cleanup
 
+- A paste Copy (saved publication) inserts a `copy` op in `files_subtree_ops` at `seal` and at
+  `retry_remaining`. A Retry of a Cut (move) paste takes no op, like the first move run. Its busy
+  paths are the target folder and the source folders of the same workspace. Source ids come from the
+  client, so a node of another workspace adds no path. A file path holds no other path, so a file
+  `/a.md` never overlaps a folder `/a.md-old/`. When it overlaps an
+  earlier op, like a move or restore still writing there, the op is `queued`: no step runs and the
+  Activity has `feedVisible: false`. When the earlier op ends, `files_transfer_db_promote` marks the op
+  running, shows the card, resets the deadline, and schedules `advance`. Every copy finish deletes the
+  op, so the ops that wait for it can start. A Bash `cp` (proposal publication) takes no op and never
+  waits.
 - Stop keeps completed copies. It first saves the stopping state, then cancels this run's queued
   work. It drains at most 50 unfinished items per mutation and moves blocked counts to canceled.
   It keeps worker IDs until callbacks or upload leases settle. Publication after Stop is refused.
@@ -198,6 +212,7 @@ the same producer with private proposals. `files_pending_updates.ts` and
   three. Conflict pauses may resume later. Progress refreshes the 30-minute Activity deadline;
   conflict choices expire after 24 hours. Finished history lasts seven days. The transfer cron
   releases expired attempts; common Activity recovery stops overdue jobs and owns history cleanup.
+  A queued paste is not stopped at its deadline: recovery moves the deadline and checks its op again.
 - Ordinary Bash transfers share the durable invocation's fixed deadline and command-number receipt.
   Replaying a completed tool call does not start the transfer twice. A `cp` or `mv` inside a
   background job (`&`) runs under the job's deadline: `start_for_agent` takes the job's invocation,

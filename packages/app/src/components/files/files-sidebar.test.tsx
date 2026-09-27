@@ -272,7 +272,11 @@ describe("FilesSidebar", () => {
 			sourceIds: ["alpha"],
 			targetParentId: "delta",
 		});
-		await waitFor(() => expect(view.queryByRole("dialog")).not.toBeNull());
+		// A one-source paste opens no dialog. The paste would open it right after the start call.
+		await act(async () => {
+			await createNode.mock.results[0]!.value;
+		});
+		expect(view.queryByRole("dialog")).toBeNull();
 	});
 
 	test("a menu on an unselected row copies only that row", async () => {
@@ -286,7 +290,11 @@ describe("FilesSidebar", () => {
 		fireEvent.click(view.getByRole("button", { name: "More options" }));
 		fireEvent.click(await view.findByRole("menuitem", { name: "Paste into root folder" }));
 		expect(createNode.mock.calls[0]![1]).toMatchObject({ sourceIds: ["bravo"], targetParentId: files_ROOT_ID });
-		await waitFor(() => expect(view.queryByRole("dialog")).not.toBeNull());
+		// A one-source paste opens no dialog. The paste would open it right after the start call.
+		await act(async () => {
+			await createNode.mock.results[0]!.value;
+		});
+		expect(view.queryByRole("dialog")).toBeNull();
 	});
 
 	test.each([

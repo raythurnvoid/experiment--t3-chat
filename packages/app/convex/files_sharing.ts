@@ -26,11 +26,8 @@ import {
 	access_control_db_resolve_effective_permissions,
 	access_control_db_set_service_account_grant,
 } from "./access_control.ts";
-import {
-	files_nodes_db_cascade_restricted_scope,
-	files_nodes_db_set_restricted_scope,
-	files_nodes_db_resolve_parent_restricted_scope,
-} from "./files_nodes.ts";
+import { files_nodes_db_set_restricted_scope, files_nodes_db_resolve_parent_restricted_scope } from "./files_nodes.ts";
+import { files_subtree_ops_db_start_rebuild, files_subtree_ops_STEP_MAX_NODES } from "./files_subtree_ops.ts";
 import { organizations_db_get_membership } from "./organizations.ts";
 import { files_media_validation_db_advance_version } from "./files_media_validation.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
@@ -1071,16 +1068,21 @@ export const restrict_node = mutation({
 			nodeId: node._id,
 			restrictedScopeNodeId: node._id,
 		});
-		// The root changes even when it has no descendants to cascade.
+		// The root changes even when the folder is empty and no op starts.
 		await files_media_validation_db_advance_version(ctx, {
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
 		});
-		await files_nodes_db_cascade_restricted_scope(ctx, {
+		// An op gives the descendants the new scope. Its first step runs here, so a small folder is done now.
+		await files_subtree_ops_db_start_rebuild(ctx, {
+			kind: "scope",
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
-			parentId: node._id,
-			scopeNodeId: node._id,
+			userId: userAuth.id,
+			membership,
+			roots: [{ node, oldTreePath: node.treePath }],
+			budget: { nodes: files_subtree_ops_STEP_MAX_NODES },
+			now,
 		});
 
 		// The person restricting it has to stay in. A role gives nothing inside a restricted scope, so
@@ -1154,11 +1156,15 @@ export const unrestrict_node = mutation({
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
 		});
-		await files_nodes_db_cascade_restricted_scope(ctx, {
+		await files_subtree_ops_db_start_rebuild(ctx, {
+			kind: "scope",
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
-			parentId: node._id,
-			scopeNodeId: parentScopeNodeId,
+			userId: userAuth.id,
+			membership,
+			roots: [{ node, oldTreePath: node.treePath }],
+			budget: { nodes: files_subtree_ops_STEP_MAX_NODES },
+			now: Date.now(),
 		});
 
 		const grants = await db_list_scope_grants(ctx, {

@@ -946,7 +946,7 @@ browser is still up, since a dead scratch browser and a wrong flag fail the same
 - The chat stop control is labelled `Stop generating`. Playwriter waits that look for `Stop generation` will miss the running state and can send the next prompt too early, producing avoidable `429` failures or branched transcript confusion.
 - Keep AI chat Playwriter scripts short when exercising multiple LLM turns. Long monolithic execute calls can lose the Playwriter relay connection with `fetch failed`; prefer one prompt per execute or a small batch with clear idle waits.
 - Rapid files-tree create/move/archive sequences can hit the `files_tree_write` rate limiter. If a create dialog stays open with `Rate limit exceeded`, wait for the retry window, keep the dialog open, and submit the same draft again instead of restarting the flow.
-- `files_nodes.archive_nodes` and `unarchive_nodes` finish up to 150 nodes inside the request and return `_yay: null`. A bigger one returns `_yay: { runId, activityId }` and goes on as an archive job (Activity titled `Archive files` / `Restore files`). Poll it with `files_archive_runs.get({ membershipId, runId })` until the Activity status is final or `awaiting_input`. A 1,311-node archive took about 18 s and its restore about 29 s on dev (2026-09-25). A restore of several operations in one call runs its jobs one at a time: the first is `running` and the rest are `queued` until the one before ends (since 2026-09-25; 10 operations / 1,311 nodes took about 36 s with no `willRetry: true` in Convex logs). Poll every job until it is final, not only the first. Separate archive calls still run at once. Restore brings back one archive operation only; items archived earlier on their own stay archived.
+- `files_nodes.archive_nodes` and `unarchive_nodes` finish up to 75 nodes inside the request and return `_yay: null`. A bigger one returns `_yay: { runId, activityId }` and goes on as an archive job (Activity titled `Archive files` / `Restore files`). Poll it with `files_archive_runs.get({ membershipId, runId })` until the Activity status is final or `awaiting_input`. A 1,311-node archive took about 18 s and its restore about 29 s on dev (2026-09-25). A restore of several operations in one call runs its jobs one at a time: the first is `running` and the rest are `queued` until the one before ends (since 2026-09-25; 10 operations / 1,311 nodes took about 36 s with no `willRetry: true` in Convex logs). Poll every job until it is final, not only the first. Separate archive calls still run at once. Restore brings back one archive operation only; items archived earlier on their own stay archived.
 - `files_nodes.move_nodes` refuses a big subtree with `This move is too large. Select fewer items.` (779 nodes, 2026-09-25). To act on several big folders as one unit, pass them all to `archive_nodes` instead: one call makes one operation and one job.
 - The `Restoring in the background. See Activity.` / `Archiving in the background. See Activity.` toast closes after about 4 s, so a separate CLI call that clicks its `View` button usually misses it. Open `Notifications` and use the card button (`View progress`, or `Review conflicts` while a restore waits on a name clash) instead.
 - With `Show archived items` on, the sidebar tree is virtualized: rows far down do not exist until scrolled. `mouse.wheel` only scrolls the tree while no menu is open and the pointer is over the tree (for example `mouse.move(380, 550)` at 1280×720). Close the More options menu with Escape first.
@@ -2212,8 +2212,8 @@ await page.locator("label.SomeChoice").evaluateAll((els) =>
 The same wrapping label is also what gives those inputs their accessible name. Do not report
 "radios have no accessible name" from a DOM attribute scan: an implicit label carries no `for` and
 no `aria-label`, and the browser's own tree shows the name anyway. `Accessibility.queryAXTree` on
-the transfer modal returned `radio "Keep both"`, `radio "Merge"`, `radio "Skip"` and named each
-`fieldset` after its `<legend>`.
+the transfer modal returned `radio "Keep both"`, `radio "Skip"` (plus `radio "Replace"` for a file) and
+named each `fieldset` after its `<legend>`. A paste has no Merge choice any more.
 
 ## A Sonner toast is gone before a normal `waitForTimeout`, so a refusal reads as silent
 
@@ -2789,3 +2789,21 @@ and start it with `vp env exec pnpm --dir packages/app exec convex dev --typeche
 push took about 4 minutes the first time and 12-30 s after that. Run `lint:tsc` yourself, because
 the watcher no longer checks types. Then prove once that the browser runs your code: break one
 check on purpose and watch the app change. Hit 2026-09-23.
+
+## Shared load can delay a folder job step
+
+The dev deployment is shared. During a big `github_mounts` import, a folder move step failed with
+`Your request timed out performing too many system operations`. Before the 2026-09-27 retry change,
+two failed steps resumed only after 9m31s and 9m50s. Thirteen nearby successful steps took
+0.79–4.90s, read 540–3,164 docs, and wrote 306–828 docs. The limit is elapsed time spent in
+system operations; the transaction metrics check tracks document, byte, and query counts instead.
+Convex freezes `Date.now()` inside a mutation, and a failed mutation rolls back any schedule it made.
+Each successful step scheduling call now schedules both the next step and one retry for that step
+60 seconds later. A completed step makes the retry a no-op. Move and archive steps now write at most
+75 items instead of 150. The five-minute recover deadline and cron remain as a fallback. Read
+`convex data _scheduled_functions --limit 60` for failed `files_subtree_ops.js:advance` calls,
+then check `convex logs` for other load. After the change, two live moves of the 416-item
+`copy-4` fixture had ten successful scheduled steps: 0.24–2.21s per step, 197–2,210 docs read,
+and 153–612 docs written. Both moves finished and returned the fixture to its old path. This run
+did not reproduce shared-load failure, so it measured step size but not the retry delay after a
+failure. Hit 2026-09-27.

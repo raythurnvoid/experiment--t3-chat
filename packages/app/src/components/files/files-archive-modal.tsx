@@ -357,12 +357,9 @@ export const FilesArchiveRunModal = memo(function FilesArchiveRunModal(props: Fi
 					<MyButton variant="ghost" onClick={onClose}>
 						{isActive ? "Hide" : "Close"}
 					</MyButton>
-					{run && isActive ? (
-						<MyButton
-							variant="secondary"
-							disabled={isSaving || isStopPending || !run.controls.canStop}
-							onClick={handleStop}
-						>
+					{/* An archive has no Stop. A restore has Stop only while it waits for a clash choice. */}
+					{run?.controls.canStop ? (
+						<MyButton variant="secondary" disabled={isSaving || isStopPending} onClick={handleStop}>
 							Stop
 						</MyButton>
 					) : null}

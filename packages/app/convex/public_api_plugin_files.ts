@@ -160,6 +160,7 @@ async function db_apply_plugin_access(
 			installation: args.installation,
 			node: args.node,
 			prepared: args.prepared.binding,
+			userId: args.writeContext.actorUserId,
 		});
 	}
 
@@ -398,7 +399,12 @@ export const ensure_plugin_folder = internalMutation({
 				if (!node) {
 					throw should_never_happen("ensured plugin folder is missing right after create", { nodeId });
 				}
-				await plugins_data_db_apply_file_access_binding(ctx, { installation, node, prepared: preparedAccess.binding });
+				await plugins_data_db_apply_file_access_binding(ctx, {
+					installation,
+					node,
+					prepared: preparedAccess.binding,
+					userId: args.userId,
+				});
 			}
 		}
 

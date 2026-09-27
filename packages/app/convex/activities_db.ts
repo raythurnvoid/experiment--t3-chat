@@ -33,7 +33,11 @@ export function activities_get_controls(activity: Doc<"activities">, userId: Id<
 			activity.visibility === "requester" &&
 			activity.userId === userId &&
 			activities_is_active(activity.status) &&
-			activity.status !== "stopping",
+			activity.status !== "stopping" &&
+			// Archive, move, and restrict have no Stop. A restore has Stop only while it waits for a clash choice.
+			activity.source.kind !== "files_subtree_op" &&
+			(activity.source.kind !== "files_archive_run" ||
+				(activity.source.archiveKind === "restore" && activity.status === "awaiting_input")),
 		// A null total means the transfer stopped before it found all its files. Retry reuses that
 		// partial list and never lists folders again, so it would make a partial folder copy.
 		canRetry:

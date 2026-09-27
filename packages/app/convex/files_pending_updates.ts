@@ -5101,11 +5101,12 @@ export async function files_pending_updates_db_apply_archive(
 		membership,
 		archiveOperationId: crypto.randomUUID(),
 		rootNodeIds: [node._id],
+		treePaths: [node.treePath],
 		pendingUpdateCleanup: {
 			reviewedPendingUpdateIds: args.reviewedPendingUpdateIds ? [...args.reviewedPendingUpdateIds] : null,
 		},
 		budget: { nodes: files_archive_runs_STEP_MAX_NODES },
-		requestFirstRunId: null,
+		previousRunId: null,
 	});
 	if (started._nay) return started;
 
