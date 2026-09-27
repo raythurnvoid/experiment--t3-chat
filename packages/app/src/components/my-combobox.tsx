@@ -2,8 +2,27 @@ import "./my-floating-surface.css";
 import "./my-combobox.css";
 import "./my-input.css";
 import { memo, type ComponentPropsWithRef, type PointerEvent, type ReactNode } from "react";
-import * as Ariakit from "@ariakit/react";
-import type { AppClassName, AppElementId } from "@/lib/dom-utils.ts";
+import {
+	Combobox,
+	ComboboxCancel,
+	ComboboxGroup,
+	ComboboxGroupLabel,
+	ComboboxItem,
+	ComboboxLabel,
+	ComboboxList,
+	ComboboxPopover,
+	ComboboxProvider,
+	type ComboboxCancelProps,
+	type ComboboxGroupLabelProps,
+	type ComboboxGroupProps,
+	type ComboboxItemProps,
+	type ComboboxLabelProps,
+	type ComboboxListProps,
+	type ComboboxPopoverProps,
+	type ComboboxProps,
+	type ComboboxProviderProps,
+} from "native-popovers/combobox";
+import type { AppClassName } from "@/lib/dom-utils.ts";
 import type { MyFloatingSurface_ClassNames } from "@/components/my-floating-surface.tsx";
 import { cn } from "@/lib/utils.ts";
 import type { ExtractStrict } from "type-fest";
@@ -18,25 +37,25 @@ import type {
 // #region input
 export type MyCombobox_ClassNames = "MyCombobox";
 
-export type MyCombobox_Props = Ariakit.ComboboxProviderProps;
+export type MyCombobox_Props = ComboboxProviderProps;
 
 export const MyCombobox = memo(function MyCombobox(props: MyCombobox_Props) {
 	const { children, ...rest } = props;
 
-	return <Ariakit.ComboboxProvider {...rest}>{children}</Ariakit.ComboboxProvider>;
+	return <ComboboxProvider {...rest}>{children}</ComboboxProvider>;
 });
 
 export type MyComboboxLabel_ClassNames = "MyComboboxLabel";
 
-export type MyComboboxLabel_Props = Ariakit.ComboboxLabelProps;
+export type MyComboboxLabel_Props = ComboboxLabelProps;
 
 export const MyComboboxLabel = memo(function MyComboboxLabel(props: MyComboboxLabel_Props) {
 	const { className, children, ...rest } = props;
 
 	return (
-		<Ariakit.ComboboxLabel className={cn("MyComboboxLabel" satisfies MyComboboxLabel_ClassNames, className)} {...rest}>
+		<ComboboxLabel className={cn("MyComboboxLabel" satisfies MyComboboxLabel_ClassNames, className)} {...rest}>
 			{children}
-		</Ariakit.ComboboxLabel>
+		</ComboboxLabel>
 	);
 });
 
@@ -183,18 +202,13 @@ export const MyComboboxInputIcon = memo(function MyComboboxInputIcon(props: MyCo
 
 export type MyComboboxInputControl_ClassNames = "MyComboboxInputControl";
 
-export type MyComboboxInputControl_Props = Omit<
-	Ariakit.ComboboxProps,
-	ExtractStrict<keyof Ariakit.ComboboxProps, "render" | "children">
-> & {
-	className?: string;
-};
+export type MyComboboxInputControl_Props = Omit<ComboboxProps, ExtractStrict<keyof ComboboxProps, "children">>;
 
 export const MyComboboxInputControl = memo(function MyComboboxInputControl(props: MyComboboxInputControl_Props) {
 	const { ref, id, className, ...rest } = props;
 
 	return (
-		<Ariakit.Combobox
+		<Combobox
 			ref={ref}
 			id={id}
 			className={cn(
@@ -211,13 +225,13 @@ export const MyComboboxInputControl = memo(function MyComboboxInputControl(props
 // #region popover
 export type MyComboboxList_ClassNames = "MyComboboxList";
 
-export type MyComboboxList_Props = Ariakit.ComboboxListProps;
+export type MyComboboxList_Props = ComboboxListProps;
 
 export const MyComboboxList = memo(function MyComboboxList(props: MyComboboxList_Props) {
 	const { className, children, ...rest } = props;
 
 	return (
-		<Ariakit.ComboboxList
+		<ComboboxList
 			className={cn(
 				"MyComboboxList" satisfies MyComboboxList_ClassNames,
 				"app-scrollable" satisfies AppClassName,
@@ -226,21 +240,23 @@ export const MyComboboxList = memo(function MyComboboxList(props: MyComboboxList
 			{...rest}
 		>
 			{children}
-		</Ariakit.ComboboxList>
+		</ComboboxList>
 	);
 });
 
 export type MyComboboxPopover_ClassNames = "MyComboboxPopover";
 
-export type MyComboboxPopover_Props = Ariakit.ComboboxPopoverProps;
+export type MyComboboxPopover_Props = ComboboxPopoverProps;
 
+/**
+ * The popup. It adds no portal: it stays in the DOM where the caller renders it, and the browser shows
+ * it in the top layer, so it follows the input when a scroll container moves it.
+ */
 export const MyComboboxPopover = memo(function MyComboboxPopover(props: MyComboboxPopover_Props) {
-	const { className, portal = true, portalElement, sameWidth = false, gutter = 4, children, ...rest } = props;
-
-	const appHoistingContainer = document.getElementById("app_hoisting_container" satisfies AppElementId);
+	const { className, sameWidth = false, gutter = 4, children, ...rest } = props;
 
 	return (
-		<Ariakit.ComboboxPopover
+		<ComboboxPopover
 			className={cn(
 				"MyComboboxPopover" satisfies MyComboboxPopover_ClassNames,
 				"MyFloatingSurface" satisfies MyFloatingSurface_ClassNames,
@@ -248,12 +264,10 @@ export const MyComboboxPopover = memo(function MyComboboxPopover(props: MyCombob
 			)}
 			gutter={gutter}
 			sameWidth={sameWidth}
-			portal={portal}
-			portalElement={portalElement ?? appHoistingContainer ?? undefined}
 			{...rest}
 		>
 			{children}
-		</Ariakit.ComboboxPopover>
+		</ComboboxPopover>
 	);
 });
 
@@ -276,6 +290,8 @@ export const MyComboboxPopoverScrollableArea = memo(function MyComboboxPopoverSc
 				"app-scrollable" satisfies AppClassName,
 				className,
 			)}
+			// Chromium and Firefox make an overflowing scroller a Tab stop. Focus must stay in the input.
+			tabIndex={-1}
 			{...rest}
 		>
 			{children}
@@ -302,20 +318,15 @@ export const MyComboboxPopoverContent = memo(function MyComboboxPopoverContent(p
 
 export type MyComboboxItem_ClassNames = "MyComboboxItem";
 
-export type MyComboboxItem_Props = Ariakit.ComboboxItemProps;
+export type MyComboboxItem_Props = ComboboxItemProps;
 
 export const MyComboboxItem = memo(function MyComboboxItem(props: MyComboboxItem_Props) {
 	const { className, value, children, ...rest } = props;
 
 	return (
-		<Ariakit.ComboboxItem
-			className={cn("MyComboboxItem" satisfies MyComboboxItem_ClassNames, className)}
-			value={value}
-			focusOnHover
-			{...rest}
-		>
+		<ComboboxItem className={cn("MyComboboxItem" satisfies MyComboboxItem_ClassNames, className)} value={value} {...rest}>
 			{children}
-		</Ariakit.ComboboxItem>
+		</ComboboxItem>
 	);
 });
 
@@ -343,13 +354,13 @@ export type MyComboboxGroup_Props = {
 	className?: string;
 	separator?: boolean;
 	heading?: ReactNode;
-} & Omit<Ariakit.ComboboxGroupProps, ExtractStrict<keyof Ariakit.ComboboxGroupProps, "children" | "className">>;
+} & Omit<ComboboxGroupProps, ExtractStrict<keyof ComboboxGroupProps, "children" | "className">>;
 
 export const MyComboboxGroup = memo(function MyComboboxGroup(props: MyComboboxGroup_Props) {
 	const { className, children, separator = false, heading, ...rest } = props;
 
 	return (
-		<Ariakit.ComboboxGroup
+		<ComboboxGroup
 			className={cn(
 				"MyComboboxGroup" satisfies MyComboboxGroup_ClassNames,
 				separator && ("MyComboboxGroup-separator" satisfies MyComboboxGroup_ClassNames),
@@ -359,7 +370,7 @@ export const MyComboboxGroup = memo(function MyComboboxGroup(props: MyComboboxGr
 		>
 			{heading && <MyComboboxGroupHeading>{heading}</MyComboboxGroupHeading>}
 			{children}
-		</Ariakit.ComboboxGroup>
+		</ComboboxGroup>
 	);
 });
 
@@ -368,38 +379,32 @@ export type MyComboboxGroupHeading_ClassNames = "MyComboboxGroupHeading";
 export type MyComboboxGroupHeading_Props = {
 	children?: ReactNode;
 	className?: string;
-} & Omit<
-	Ariakit.ComboboxGroupLabelProps,
-	ExtractStrict<keyof Ariakit.ComboboxGroupLabelProps, "children" | "className">
->;
+} & Omit<ComboboxGroupLabelProps, ExtractStrict<keyof ComboboxGroupLabelProps, "children" | "className">>;
 
 export const MyComboboxGroupHeading = memo(function MyComboboxGroupHeading(props: MyComboboxGroupHeading_Props) {
 	const { className, children, ...rest } = props;
 
 	return (
-		<Ariakit.ComboboxGroupLabel
+		<ComboboxGroupLabel
 			className={cn("MyComboboxGroupHeading" satisfies MyComboboxGroupHeading_ClassNames, className)}
 			{...rest}
 		>
 			{children}
-		</Ariakit.ComboboxGroupLabel>
+		</ComboboxGroupLabel>
 	);
 });
 
 export type MyComboboxCancel_ClassNames = "MyComboboxCancel";
 
-export type MyComboboxCancel_Props = Ariakit.ComboboxCancelProps;
+export type MyComboboxCancel_Props = ComboboxCancelProps;
 
 export const MyComboboxCancel = memo(function MyComboboxCancel(props: MyComboboxCancel_Props) {
 	const { className, children, ...rest } = props;
 
 	return (
-		<Ariakit.ComboboxCancel
-			className={cn("MyComboboxCancel" satisfies MyComboboxCancel_ClassNames, className)}
-			{...rest}
-		>
+		<ComboboxCancel className={cn("MyComboboxCancel" satisfies MyComboboxCancel_ClassNames, className)} {...rest}>
 			{children}
-		</Ariakit.ComboboxCancel>
+		</ComboboxCancel>
 	);
 });
 // #endregion popover

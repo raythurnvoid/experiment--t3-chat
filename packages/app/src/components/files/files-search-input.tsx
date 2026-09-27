@@ -487,7 +487,7 @@ export const FilesSearchInput = memo(function FilesSearchInput(props: FilesSearc
 	});
 
 	const handleInputKeyDown = useFn<NonNullable<MyComboboxInputControl_Props["onKeyDown"]>>((event) => {
-		// Ariakit already used this key: Enter on an active suggestion clicked it. A key pressed while
+		// The combobox already used this key: Enter on an active suggestion clicked it. A key pressed while
 		// an IME composes text belongs to the composition. Safari reports the key that ends a
 		// composition with `isComposing` false and `keyCode` 229.
 		if (event.defaultPrevented || event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) {
@@ -580,7 +580,7 @@ export const FilesSearchInput = memo(function FilesSearchInput(props: FilesSearc
 		setIsFocused(false);
 	});
 
-	// The Ariakit input does not use the `MyInput` label id, so forward clicks on the area by hand.
+	// The combobox input does not use the `MyInput` label id, so forward clicks on the area by hand.
 	const handleFocusForward = useFn<NonNullable<MyInputArea_Props["onFocusForward"]>>((event) => {
 		event.preventDefault();
 		event.detail.originalEvent.preventDefault();
@@ -609,7 +609,7 @@ export const FilesSearchInput = memo(function FilesSearchInput(props: FilesSearc
 		onSearchQueryChange(searchQueryDebounced);
 	}, [searchQueryDebounced]);
 
-	// `MyComboboxInputControl` owns its own generated id for the Ariakit wiring, so the global id
+	// `MyComboboxInputControl` owns its own generated id for the combobox wiring, so the global id
 	// that the Mod+K shortcut looks up lives on the wrapper.
 	return (
 		<MyCombobox value={text} setValue={handleTextChange} open={isSuggestionsOpen} setOpen={setIsSuggestionsOpen}>
@@ -725,7 +725,6 @@ export const FilesSearchInput = memo(function FilesSearchInput(props: FilesSearc
 										<MyComboboxItem
 											key={key.name}
 											value={key.name}
-											focusOnHover
 											hideOnClick={false}
 											setValueOnClick={false}
 											className={cn("FilesSearchInput-suggestion" satisfies FilesSearchInput_ClassNames)}
@@ -748,7 +747,6 @@ export const FilesSearchInput = memo(function FilesSearchInput(props: FilesSearc
 										<MyComboboxItem
 											key={field}
 											value={field}
-											focusOnHover
 											hideOnClick={false}
 											setValueOnClick={false}
 											className={cn("FilesSearchInput-suggestion" satisfies FilesSearchInput_ClassNames)}
@@ -770,7 +768,6 @@ export const FilesSearchInput = memo(function FilesSearchInput(props: FilesSearc
 										<MyComboboxItem
 											key={row.value}
 											value={row.value}
-											focusOnHover
 											setValueOnClick={false}
 											className={cn("FilesSearchInput-suggestion" satisfies FilesSearchInput_ClassNames)}
 											onClick={() => pickValue(row.value)}

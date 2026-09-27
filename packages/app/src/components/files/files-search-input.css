@@ -83,7 +83,8 @@
 		flex-direction: column;
 
 		width: min(340px, calc(100vw - 32px));
-		max-height: min(480px, var(--popover-available-height));
+		/* The browser flips the popover to the other side of the input when it does not fit below. */
+		max-height: 480px;
 	}
 
 	.FilesSearchInput-popover-scrollable-area {

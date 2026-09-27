@@ -50,6 +50,15 @@
 
 	.MyComboboxPopover {
 		max-height: 300px;
+
+		/* The popup stays inside its input's DOM parent, so it inherits text styles from there. Reset
+		   them to the app values, like .MyMenuPopover. */
+		font-family: var(--app-font-sans);
+		font-weight: 400;
+		font-size: 1rem;
+		line-height: 1.5;
+		white-space: normal;
+
 		contain: content;
 	}
 
