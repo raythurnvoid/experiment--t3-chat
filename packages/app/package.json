@@ -128,7 +128,6 @@
 		"react-syntax-highlighter": "^15.6.6",
 		"remark-breaks": "^4.0.0",
 		"remark-gfm": "^4.0.1",
-		"remark-math": "^6.0.0",
 		"sonner": "^2.0.8",
 		"streamdown": "^2.6.0",
 		"string-byte-length": "3.0.1",
