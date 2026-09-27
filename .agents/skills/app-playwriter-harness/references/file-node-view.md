@@ -97,6 +97,21 @@ await state.page.getByRole("button", { name: "Comment" }).click();
 await state.page.getByRole("form", { name: "New document comment" }).waitFor({ state: "visible" });
 ```
 
+- Open a bubble control from the keyboard when a pointer click hangs. Focus the button inside `.FileEditorRichTextBubble-rendered`, then press Enter. If Escape just hid the bubble, press `ArrowRight` and select the word again before looking for the button.
+
+```js
+const opened = await state.page.evaluate(() => {
+	const bubble = document.querySelector(".FileEditorRichTextBubble-rendered");
+	const button = [...(bubble?.querySelectorAll("button") ?? [])].find(
+		(el) => el.getAttribute("aria-label") === "Add link",
+	);
+	button?.focus();
+	return document.activeElement === button;
+});
+await state.page.keyboard.press("Enter");
+await state.page.getByRole("dialog", { name: "Link" }).waitFor({ state: "visible" });
+```
+
 ## Rich Text Comments
 
 Use role locators for forms and buttons. For TipTap contenteditable editors, use a scoped semantic selector with `contenteditable` and `aria-label`; Playwright's role textbox locator may not resolve these editors consistently even though snapshots show them as textboxes.

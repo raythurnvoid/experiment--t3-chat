@@ -2552,6 +2552,20 @@ await convex.query(api.files_pending_update_runs.list_items, {
 `false` on it, even while the bubble is on screen. Check the surface `.FileEditorRichTextBubbleContent`
 instead. Verified 2026-09-24.
 
+Escape removes the class `FileEditorRichTextBubble-rendered`, so the bubble stays hidden for the same
+selection. Press `ArrowRight` to drop the selection, then select the word again. Escape on a bubble
+button also leaves `document.activeElement` on `body`. The word stays selected in the editor. Check
+`editor.state.selection`, not the page focus. A happy-dom test expects the editor.
+
+Do not press Enter while that selection is in the editor. Enter deletes the selected word. Focus the
+bubble button with `button.focus()`, then press Enter. `locator.click()` on the bubble `Add link`
+button can wait at "performing click action" and never open the popover.
+
+The fake highlight is `[data-decoration-highlight='true']` inside `.FileEditorRichText-editor-content`.
+It paints only while the editor is not focused. After the bubble closes, the attribute is gone within
+about 150 ms. It stays while the bubble stays open and the editor is not focused. That is the fake
+selection, not a stuck highlight. Verified 2026-09-27.
+
 ## Typing right after submitting a comment eats the comment
 
 The bubble comment flow leaves the commented word selected in ProseMirror. The next `keyboard.type`

@@ -1215,26 +1215,17 @@ export function FileEditorRichText(props: FileEditorRichText_Props) {
 }
 
 /**
- * Using `clearDecorationHighlight` can have unexpected results because DOM selection
- * can behave in unxepected ways in certain situations like when the editor is not in focus,
- * and relying on an artificial highlight using decoration also have non-trivial side effects.
+ * Clear the fake selection highlight on the next turn.
  *
- * This functions aims to perform all the operations necessary to clear
- * the decoration highlight properly to deliver a good UI.
+ * Leave the browser selection alone. Clearing it drops the selected word while the editor still has focus.
+ *
+ * Leave the editor focus alone. This timer can run while Link or block format is opening.
+ * Moving focus into the editor closes that menu.
  *
  * @param editor - The TipTap editor instance
- * @param triggerElement - Optional trigger element (e.g., button) that opens the popover.
- *                         If provided and matches document.activeElement, the decoration will be cleared.
+ * @param triggerElement - The button that opened the popover, when this clear comes from that button.
  */
 FileEditorRichText.clearDecorationHighlightProperly = (editor: Editor, triggerElement?: HTMLElement | null) => {
-	// TODO: this line of code below seems not necessary anymore, it's causins the selection
-	// to briefly flash when closing the bubble with Esc
-	//
-	// if the decorations are cleared while the editor is not in focus
-	// the browser will set an incorrect text selection range, therefore
-	// the DOM selection needs to be removed or it will look wrong.
-	// document.getSelection()?.removeAllRanges();
-
 	setTimeout(() => {
 		// The bubble menu hides itself when the editor is destroyed, and its hide handler calls this.
 		// So the editor can be gone when the timer runs, and `editor.view` would throw.
@@ -1255,10 +1246,6 @@ FileEditorRichText.clearDecorationHighlightProperly = (editor: Editor, triggerEl
 			) == null;
 
 		if (isTriggerActive || elementSetDecorationHighlight) {
-			// Do not focus the editor here, otherwise it will conflict with ariakit when opening
-			// popovers while a non-collapsed selection is present in the editor.
-			//
-			// editor.chain().clearDecorationHighlight().focus().run();
 			editor.commands.clearDecorationHighlight();
 		}
 	});
