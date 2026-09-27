@@ -1,6 +1,6 @@
 import "./ai-chat-jobs.css";
 
-import { memo, useState } from "react";
+import { memo, useId, useState } from "react";
 import { History } from "lucide-react";
 
 import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
@@ -46,6 +46,7 @@ const AiChatJobs = memo(function AiChatJobs(props: AiChatJobs_Props) {
 	const [open, setOpen] = useState(false);
 	// Elapsed times freeze at mount. The popover unmounts on hide, so each open reads fresh.
 	const [mountedAt] = useState(() => Date.now());
+	const titleId = useId();
 	const hasLiveJobs = liveJobs.length > 0;
 
 	// Stay mounted while open so the popover can show its empty state instead of
@@ -76,9 +77,11 @@ const AiChatJobs = memo(function AiChatJobs(props: AiChatJobs_Props) {
 			<MyPopoverContent
 				unmountOnHide
 				className={"AiChatJobs-popover" satisfies AiChatJobs_ClassNames}
-				aria-label="Background jobs"
+				aria-labelledby={titleId}
 			>
-				<h2 className={"AiChatJobs-title" satisfies AiChatJobs_ClassNames}>Background jobs</h2>
+				<h2 id={titleId} className={"AiChatJobs-title" satisfies AiChatJobs_ClassNames}>
+					Background jobs
+				</h2>
 				{hasLiveJobs ? (
 					<ul className={"AiChatJobs-list" satisfies AiChatJobs_ClassNames}>
 						{liveJobs.map((job) => (

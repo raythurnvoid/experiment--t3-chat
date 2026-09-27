@@ -3,7 +3,7 @@ import "./app-notifications.css";
 import { usePaginatedQuery, useQueries, useQuery } from "convex/react";
 import { useNavigate } from "@tanstack/react-router";
 import { Bell, CircleAlert, CircleCheck, FileText, LoaderCircle, X } from "lucide-react";
-import { memo, useEffect, useMemo, useState } from "react";
+import { memo, useEffect, useId, useMemo, useState } from "react";
 import { toast } from "sonner";
 
 import { FilesClipboardProvider } from "@/components/files/files-clipboard.tsx";
@@ -504,6 +504,7 @@ export const AppNotifications = memo(function AppNotifications() {
 
 	const [open, setOpen] = useState(false);
 	const [dismissing, setDismissing] = useState(false);
+	const titleId = useId();
 
 	const notificationItems = notifications ?? [];
 	// Only unarchived notifications are fetched, so every listed one counts toward the badge.
@@ -632,10 +633,12 @@ export const AppNotifications = memo(function AppNotifications() {
 			<MyPopoverContent
 				unmountOnHide
 				className={"AppNotifications-popover" satisfies AppNotifications_ClassNames}
-				aria-label="Notifications"
+				aria-labelledby={titleId}
 			>
 				<header className={"AppNotifications-header" satisfies AppNotifications_ClassNames}>
-					<h2 className={"AppNotifications-title" satisfies AppNotifications_ClassNames}>Notifications</h2>
+					<h2 id={titleId} className={"AppNotifications-title" satisfies AppNotifications_ClassNames}>
+						Notifications
+					</h2>
 					<MyButton
 						variant="ghost"
 						disabled={

@@ -97,8 +97,10 @@ vi.mock("@/components/my-popover.tsx", () => ({
 	MyPopover: function MyPopover(props: { children?: ReactNode }) {
 		return <>{props.children}</>;
 	},
-	MyPopoverContent: function MyPopoverContent(props: { children?: ReactNode }) {
-		return <div>{props.children}</div>;
+	// Keep the dialog role and the props, so a test can read the name the component gives the popover.
+	MyPopoverContent: function MyPopoverContent(props: ComponentPropsWithRef<"div"> & { unmountOnHide?: boolean }) {
+		const { unmountOnHide: _unmountOnHide, ...rest } = props;
+		return <div role="dialog" {...rest} />;
 	},
 	MyPopoverTrigger: function MyPopoverTrigger(props: { children?: ReactNode }) {
 		return <>{props.children}</>;
@@ -224,6 +226,12 @@ describe("AppNotifications", () => {
 		cleanup();
 		vi.clearAllMocks();
 		vi.useRealTimers();
+	});
+
+	test("names the popover dialog after its visible title", () => {
+		render(<TestNotifications />);
+
+		expect(screen.getByRole("dialog", { name: "Notifications" })).toBeTruthy();
 	});
 
 	test("lets a viewer dismiss a shared card using the returned control", () => {
