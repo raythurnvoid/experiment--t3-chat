@@ -98,7 +98,6 @@
 		"convex-helpers": "^0.1.124",
 		"dedent": "^1.7.2",
 		"diff": "^8.0.4",
-		"dotenv": "^17.2.3",
 		"exa-js": "^2.23.0",
 		"fflate": "^0.8.3",
 		"file-selector": "^2.1.2",
