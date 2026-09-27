@@ -220,6 +220,48 @@ function AiChatMarkdownTd(props: ComponentPropsWithoutRef<"td"> & { node?: unkno
 }
 // #endregion table
 
+// #region link
+const INCOMPLETE_LINK_HREF = "streamdown:incomplete-link";
+
+/**
+ * Another website opens in a new tab. A link to this app stays in the current tab.
+ */
+function link_opens_in_new_tab(href: string | undefined) {
+	if (!href || href === INCOMPLETE_LINK_HREF) {
+		return false;
+	}
+
+	let url: URL;
+	try {
+		url = new URL(href, window.location.origin);
+	} catch {
+		return false;
+	}
+
+	return (url.protocol === "http:" || url.protocol === "https:") && url.origin !== window.location.origin;
+}
+
+function AiChatMarkdownLink(props: ComponentPropsWithoutRef<"a"> & { node?: unknown }) {
+	const { className, children, href, node: _node, ...rest } = props;
+	const isIncomplete = href === INCOMPLETE_LINK_HREF;
+	const openInNewTab = link_opens_in_new_tab(href);
+
+	return (
+		<a
+			{...rest}
+			className={className}
+			data-incomplete={isIncomplete ? true : undefined}
+			data-streamdown="link"
+			href={isIncomplete ? undefined : href}
+			rel={openInNewTab ? "noopener noreferrer" : undefined}
+			target={openInNewTab ? "_blank" : undefined}
+		>
+			{children}
+		</a>
+	);
+}
+// #endregion link
+
 // #region root
 export type AiChatMarkdown_ClassNames =
 	| "AiChatMarkdown"
@@ -268,6 +310,7 @@ const ai_chat_markdown_components = {
 	tr: AiChatMarkdownTr,
 	th: AiChatMarkdownTh,
 	td: AiChatMarkdownTd,
+	a: AiChatMarkdownLink,
 } satisfies Components;
 
 /**

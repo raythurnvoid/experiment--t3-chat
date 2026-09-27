@@ -68,6 +68,27 @@ describe("AiChatMarkdown", () => {
 		expect(links).toEqual(["secret", "badge"]);
 	});
 
+	test("opens an external link in a new tab without a confirm window", () => {
+		const { container } = render(<AiChatMarkdown markdown={"[Example site](https://example.com/docs)"} />);
+		const link = container.querySelector("[data-streamdown='link']");
+
+		expect(link?.tagName).toBe("A");
+		expect(link?.getAttribute("href")).toBe("https://example.com/docs");
+		expect(link?.getAttribute("target")).toBe("_blank");
+		expect(link?.getAttribute("rel")).toBe("noopener noreferrer");
+		expect(document.querySelector("[data-streamdown='link-safety-modal']")).toBeNull();
+	});
+
+	test("keeps a link to this app in the same tab", () => {
+		const { container } = render(<AiChatMarkdown markdown={"[Files](/w/personal/home/files)"} />);
+		const link = container.querySelector("[data-streamdown='link']");
+
+		expect(link?.tagName).toBe("A");
+		expect(link?.getAttribute("href")).toBe("/w/personal/home/files");
+		expect(link?.getAttribute("target")).toBeNull();
+		expect(document.querySelector("[data-streamdown='link-safety-modal']")).toBeNull();
+	});
+
 	test("renders Press media images", () => {
 		const src = `https://${import.meta.env.VITE_R2_FILES_DOWNLOAD_HOST}/organizations/o1/image.png?X-Amz-Signature=abc`;
 

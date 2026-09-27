@@ -84,7 +84,7 @@
 			font-weight: 700;
 		}
 
-		/* Keep Streamdown's link checks; its link button uses the primary color token. */
+		/* Chat links use the accent color. Streamdown does not style them. */
 		[data-streamdown="link"] {
 			--primary: var(--color-accent-07);
 

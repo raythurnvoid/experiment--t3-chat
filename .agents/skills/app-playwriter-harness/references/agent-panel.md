@@ -368,6 +368,14 @@ When the app tab is not foregrounded:
 - `snapshot()`, `screenshot()`, and `innerText` are unreliable — read via `evaluate()` with `textContent`, `getComputedStyle`, `getBoundingClientRect`.
 - Playwright `locator.click()` can hang at `performing click action` on a background trigger. Read its current bounds, use the harness hit test to confirm the target is clear, then use a normal `page.mouse.click` at that observed point. Re-read the resulting state. Do not use forced or DOM clicks, or foreground the user's profile to work around it.
 
+## External links in chat
+
+Assistant Markdown links are `a[data-streamdown="link"]`. A link to another site has `target="_blank"`.
+A link to this app does not. There is no confirm window. A click leaves the chat page in place and
+opens the site in a new browser tab. Playwriter's `popup` event may not list that tab.
+
+A bare `https://` address in a tool result is plain text. It is not a link.
+
 ## Chat page and branching
 
 - `/w/personal/home/chat?threadId=<id>` loads that thread; switching threads updates the URL. Allow ~10 s for messages to load before reading counts.
