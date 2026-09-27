@@ -1100,7 +1100,7 @@ For the current sidebar-row pattern, inspect both `packages/app/src/components/a
 
 ## Select rows with inline row actions
 
-When a `MySearchSelectItem` row contains secondary buttons, use the wiring below. A plain `MySelect` has no row actions today. If one needs them, attach the same `useSelectItemActive` hook to `MySelect` first. `packages/app/src/components/files/file-editor/file-editor-sidebar/file-editor-sidebar-agent.tsx` shows it in the Past chats picker. The selects come from `native-popovers/select`, with virtual focus: DOM focus stays on the listbox or the search input, and the active option has `data-active-item`.
+When a `MySearchSelectItem` row contains secondary buttons, use the wiring below. A plain `MySelect` has no row actions today. If one needs them, attach `SelectItem.useActive` on `MySelect` the same way `MySearchSelect.useSelectItemActive` does. `packages/app/src/components/files/file-editor/file-editor-sidebar/file-editor-sidebar-agent.tsx` shows it in the Past chats picker. The selects come from `native-popovers/select`, with virtual focus: DOM focus stays on the listbox or the search input, and the active option has `data-active-item`.
 
 - Keep the option as the primary action.
 - Mark secondary buttons with a typed component-owned `data-*` attribute. Gate `hideOnClick` and `setValueOnClick` with a callback typed from the item prop contract.

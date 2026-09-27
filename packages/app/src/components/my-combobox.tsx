@@ -147,7 +147,6 @@ export const MyComboboxInputArea = memo(function MyComboboxInputArea(props: MyCo
 				const areaElement = event.currentTarget;
 				const comboboxInput =
 					(areaElement.querySelector('input[role="combobox"]') as HTMLInputElement | null) ||
-					(areaElement.querySelector('input[aria-haspopup="listbox"]') as HTMLInputElement | null) ||
 					(areaElement.querySelector("input") as HTMLInputElement | null);
 				if (comboboxInput) {
 					event.preventDefault();
