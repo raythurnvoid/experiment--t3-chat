@@ -160,9 +160,10 @@ describe("image destination steps", () => {
 
 	test("leaves the last step for a reply and does not offer late preparation", async () => {
 		const f = await setup();
-		expect((await f.prepare([], 8))?.activeTools).not.toContain("prepare_image_generation");
-		expect((await f.prepare([["personal"]], 8))?.activeTools).toEqual(["image_generation"]);
-		expect((await f.prepare([["personal"]], 9))?.activeTools).toEqual([]);
+		expect((await f.prepare([], 22))?.activeTools).toContain("prepare_image_generation");
+		expect((await f.prepare([], 23))?.activeTools).not.toContain("prepare_image_generation");
+		expect((await f.prepare([["personal"]], 23))?.activeTools).toEqual(["image_generation"]);
+		expect((await f.prepare([["personal"]], 24))?.activeTools).toEqual([]);
 	});
 
 	test("checks source access again before sending an image request", async () => {

@@ -131,7 +131,7 @@ For `POST /api/chat`:
 8. Create the thread if needed and persist incoming user messages before generation.
    8a. Take the thread's run lease (`thread_run_begin` sets `activeRun { kind: "chat", expiresAt }`, 10 minutes; a second chat request is still allowed, as before the lease existed, but a request while a job wakeup holds it gets 409 with `retryAfterMs`). The user message is already stored at that point, so the client waits out the wake lease and re-sends the same request; its stored ids dedupe the persist and only the turn starts. The stream's `onFinish` gives the lease back (`thread_run_end` clears only its own kind), or hands it to a wake run through `thread_run_handover_to_wakeup` when the turn never injected a finish. After the lease is gone, a leftover finish takes a free wake lease through `thread_run_begin_wakeup`. Abort persist stores the partial assistant through `thread_messages_add`, which hangs that reply under a mid-run finish the same way `get_chat_reply_parent` does, so Stop does not hide the finish as a sibling. Both walk up through finish messages only: they re-parent when that chain hangs off the captured parent, and they leave a regenerate (or any older captured parent) on its own branch. The route's catch gives the chat lease back when the stream never started. A finished background job always stores its message and reads the lease to decide whether to wake at once (see Job wakeups above).
 9. Convert stored UI messages to model messages, then decode image data URLs into bytes. Steps 9 to 14 are `create_agent_turn_stream`, shared with `run_job_wakeup`; the reply is stored through a callback because the two callers use different doors. The AI SDK routes URL-shaped file parts through its download step and Convex `fetch` cannot request `data:` URLs, so without the decode the model call fails with "Failed to download data:...".
-10. Run `streamText(...)` with the current tools and `activeTools`. When workspace instructions are enabled, add root AGENTS.md and the skill catalog to the initial system prompt. File tool results add newly read ancestor rules. `prepareStep` reserves the last step for an answer and disables tools when the response budget is exhausted, and it ends the turn the same way (no tools, a system line asking for a short status) once the Bash tool reports that `wait` stopped polling for a job whose finish wakes the agent (`metadata.waitingForJobs`, flipped into the configuration's `jobWait.requested`).
+10. Run `streamText(...)` with the current tools and `activeTools`. When workspace instructions are enabled, add root AGENTS.md and the skill catalog to the initial system prompt. File tool results add newly read ancestor rules. A reply has at most 25 model steps (`AI_CHAT_MAX_STEPS`; each step is a paid model call). `prepareStep` reserves the last step for an answer and disables tools when the response budget is exhausted, and it ends the turn the same way (no tools, a system line asking for a short status) once the Bash tool reports that `wait` stopped polling for a job whose finish wakes the agent (`metadata.waitingForJobs`, flipped into the configuration's `jobWait.requested`).
 11. Stream UI message chunks back through `createUIMessageStreamResponse(...)`.
 12. Persist the assistant response in `onFinish`.
 13. If the thread has no title yet, generate a short title and persist it.
@@ -434,7 +434,7 @@ Each output item has a request identity and an attempt identity. Prepare and fin
 
 Normal steps offer `prepare_image_generation({workspace: "current" | "personal"})`, not the provider image tool. Exactly one successful preparation in the immediately preceding completed step selects the next generation step. Conflicting choices produce a clear message and no generation. Old history and earlier steps cannot choose a destination. The selected step checks original source access, the destination payer's paid plan, and the fixed output path's write permission, policy, and node quota before forcing only `image_generation`. This creates no file or byte reservation; final ingestion checks again.
 
-The provider stream binds each image call ID to that step's fixed workspace before its result arrives. Both model and UI conversion use that binding and one save promise. Missing bindings fail; there is no current-workspace fallback. Later steps cannot change an earlier image's destination. Stop, tool budget, and background-job waits take priority. Step 8 no longer offers preparation; step 9 is reserved for the final reply.
+The provider stream binds each image call ID to that step's fixed workspace before its result arrives. Both model and UI conversion use that binding and one save promise. Missing bindings fail; there is no current-workspace fallback. Later steps cannot change an earlier image's destination. Stop, tool budget, and background-job waits take priority. The second-to-last step no longer offers preparation; the last step is reserved for the final reply.
 
 - OpenAI draws the image inside its Responses call. The tool requests `gpt-image-2` and WEBP.
 - It is available only in Agent mode and only for models with `supportsImageGeneration`. Ask mode omits it from the callable registry.
@@ -553,8 +553,12 @@ content written/typed into the workspace.
 
 Complete ordinary reads allow 64 KiB. Larger files use pages capped at 64 KiB and 500 lines.
 Local tools share a 384 KiB response budget. Inputs are capped at 64 KiB serialized, and
-parallel calls reserve their result space before execution. New UI messages must fit the
-900 KiB serialized storage guard. An oversized final reply is not saved; the stream ends
+parallel calls reserve their result space before execution. Each tool set passes its own
+reserve to `ai_chat_tool_budget_apply` (app tools keep 128 KiB per call). When a call does
+not fit while other calls run, only that call is refused ("Too many tool calls at once"),
+and the model can run it again in the next step. When it would not fit even after the running
+calls end, the budget is exhausted and tools stop for the rest of the reply. New UI messages
+must fit the 900 KiB serialized storage guard. An oversized final reply is not saved; the stream ends
 with a clear error asking for a shorter result or smaller pages.
 
 - [x] **Cap total written-document size — done by the editable-text feature.** Every

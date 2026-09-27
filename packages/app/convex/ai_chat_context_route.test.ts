@@ -900,11 +900,21 @@ describe("/api/chat workspace instructions", () => {
 			});
 			expect(second).toEqual({ activeTools: call.activeTools, messages: call.messages });
 
-			const final = await call.prepareStep!({
+			// A reply has 25 steps, so step 9 still offers tools.
+			const tenth = await call.prepareStep!({
 				model: call.model,
 				messages: call.messages ?? [],
 				steps: [],
 				stepNumber: 9,
+				experimental_context: call.experimental_context,
+			});
+			expect(tenth).toEqual({ activeTools: call.activeTools, messages: call.messages });
+
+			const final = await call.prepareStep!({
+				model: call.model,
+				messages: call.messages ?? [],
+				steps: [],
+				stepNumber: 24,
 				experimental_context: call.experimental_context,
 			});
 			expect(final?.activeTools).toEqual([]);

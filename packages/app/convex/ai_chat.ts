@@ -990,7 +990,8 @@ function build_agent_configuration(input: {
 				})()
 			: {}),
 	};
-	ai_chat_tool_budget_apply(appTools, toolBudget);
+	// App tools can return a full 64 KiB file page, so each call keeps 128 KiB of result space.
+	ai_chat_tool_budget_apply(appTools, toolBudget, { resultReservedBytes: 128 * 1024 });
 
 	// Keep current stored outputs valid across mode and model changes. Every file tool stores the
 	// same safe shape, so an old part still validates in either mode, and also while the browser
@@ -2284,6 +2285,9 @@ const chat_body_validator = z.object({
 
 export type ai_chat_http_chat_Body = z.infer<typeof chat_body_validator>;
 
+// Each step is a paid model call, so this also caps what one reply can cost.
+const AI_CHAT_MAX_STEPS = 25;
+
 /**
  * One agent turn: the model stream with the tools, the title of a new thread, billing and the
  * stored reply.
@@ -2491,7 +2495,7 @@ async function create_agent_turn_stream(args: {
 						steps.at(-1)?.toolResults.filter((result) => result?.toolName === "prepare_image_generation") ?? [];
 					let imageWorkspace: "current" | "personal" | null = null;
 					if (
-						stepNumber !== 9 &&
+						stepNumber !== AI_CHAT_MAX_STEPS - 1 &&
 						!toolBudget.exhausted &&
 						!jobWait.requested &&
 						preparations.length === 1 &&
@@ -2526,7 +2530,7 @@ async function create_agent_turn_stream(args: {
 					if (allowed._nay) throw new Error(allowed._nay.message);
 
 					// Leave a model step to explain tool results and any unfinished work.
-					if (stepNumber === 9 || toolBudget.exhausted)
+					if (stepNumber === AI_CHAT_MAX_STEPS - 1 || toolBudget.exhausted)
 						return {
 							activeTools: [],
 							system: `${systemPrompt}\n${workspaceSystem}\nThis is the last step. Give the result and any remaining checkpoint. Do not claim unfinished work is complete.`,
@@ -2558,7 +2562,7 @@ async function create_agent_turn_stream(args: {
 					}
 					const stepTools = activeTools.filter(
 						(name) =>
-							!(stepNumber >= 8 && name === "prepare_image_generation") &&
+							!(stepNumber >= AI_CHAT_MAX_STEPS - 2 && name === "prepare_image_generation") &&
 							!(browserUnavailable && ["browser_run", "browser_reload", "browser_close"].includes(name)),
 					);
 					if (browserUnavailable || preparations.length > 1)
@@ -2589,7 +2593,7 @@ async function create_agent_turn_stream(args: {
 					return null;
 				},
 				toolChoice: "auto",
-				stopWhen: stepCountIs(10),
+				stopWhen: stepCountIs(AI_CHAT_MAX_STEPS),
 				tools,
 				// The SDK's default logger prints request bodies, including private observations.
 				onError: () => {
@@ -2796,6 +2800,8 @@ async function create_agent_turn_stream(args: {
 			let caughtUninjected = false;
 			try {
 				if (result.responseMessage && !didStreamError) {
+					// TODO(ai-chat-reply-size): The tool budget caps tool bytes only. Text and reasoning over
+					// many steps can still push a reply past the storage limit, and then it is not saved.
 					if (!ai_chat_message_fits_storage(result.responseMessage)) {
 						responseStorageError =
 							"This reply is too large and was not saved. Start a new message and ask for a shorter result or smaller file pages. Any file changes already made still need review.";

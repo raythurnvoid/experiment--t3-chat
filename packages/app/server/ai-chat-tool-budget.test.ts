@@ -18,19 +18,97 @@ describe("ai_chat_tool_budget_apply", () => {
 			return { title: "Edit", metadata: { pendingUpdateId: "pending-1" }, output: "Replaced 1 occurrence" };
 		});
 		const budget = ai_chat_tool_budget_create();
-		const tools = ai_chat_tool_budget_apply({ edit: tool({ inputSchema: z.object({}), execute: write }) }, budget);
+		const tools = ai_chat_tool_budget_apply({ edit: tool({ inputSchema: z.object({}), execute: write }) }, budget, {
+			resultReservedBytes: 128 * 1024,
+		});
 		const first = tools.edit.execute!({}, { toolCallId: "one", messages: [] });
 		const second = tools.edit.execute!({}, { toolCallId: "two", messages: [] });
 		await expect(tools.edit.execute!({}, { toolCallId: "three", messages: [] })).rejects.toThrow(
-			"This call was not run",
+			"Too many tool calls at once. This call was not run.",
 		);
 		expect(write).toHaveBeenCalledTimes(2);
-		expect(budget.exhausted).toBe(true);
+		// Refuse only the 3rd call: the running calls give back the reserve they do not use.
+		expect(budget.exhausted).toBe(false);
 
 		finish();
 		await expect(first).resolves.toMatchObject({ metadata: { pendingUpdateId: "pending-1" } });
 		await expect(second).resolves.toMatchObject({ metadata: { pendingUpdateId: "pending-1" } });
 		expect(budget.remainingBytes).toBeGreaterThan(380 * 1024);
+		expect(budget.reservedInFlightBytes).toBe(0);
+		await expect(tools.edit.execute!({}, { toolCallId: "four", messages: [] })).resolves.toMatchObject({
+			output: "Replaced 1 occurrence",
+		});
+		expect(write).toHaveBeenCalledTimes(3);
+	});
+
+	test("runs 5 parallel calls with a 72 KiB reserve and refuses only the 6th", async () => {
+		let finish!: () => void;
+		const pending = new Promise<void>((resolve) => {
+			finish = resolve;
+		});
+		const call = vi.fn(async () => {
+			await pending;
+			return { title: "Call", metadata: {}, output: "done" };
+		});
+		const budget = ai_chat_tool_budget_create();
+		const tools = ai_chat_tool_budget_apply({ call: tool({ inputSchema: z.object({}), execute: call }) }, budget, {
+			resultReservedBytes: 72 * 1024,
+		});
+		const running = [1, 2, 3, 4, 5].map((index) =>
+			tools.call.execute!({}, { toolCallId: `call-${index}`, messages: [] }),
+		);
+		await expect(tools.call.execute!({}, { toolCallId: "call-6", messages: [] })).rejects.toThrow(
+			"Too many tool calls at once",
+		);
+		expect(call).toHaveBeenCalledTimes(5);
+		expect(budget.exhausted).toBe(false);
+
+		finish();
+		for (const result of running) await expect(result).resolves.toMatchObject({ output: "done" });
+	});
+
+	test("the refused call can still hit the budget when the running calls use their reserve", async () => {
+		let finish!: () => void;
+		const pending = new Promise<void>((resolve) => {
+			finish = resolve;
+		});
+		const read = vi.fn(async () => {
+			await pending;
+			// As large as the 128 KiB reserve, so the running calls give nothing back.
+			return { title: "Read", metadata: {}, output: "x".repeat(128 * 1024) };
+		});
+		const budget = ai_chat_tool_budget_create();
+		const tools = ai_chat_tool_budget_apply({ read: tool({ inputSchema: z.object({}), execute: read }) }, budget, {
+			resultReservedBytes: 128 * 1024,
+		});
+		const first = tools.read.execute!({}, { toolCallId: "one", messages: [] });
+		const second = tools.read.execute!({}, { toolCallId: "two", messages: [] });
+		await expect(tools.read.execute!({}, { toolCallId: "three", messages: [] })).rejects.toThrow(
+			"Too many tool calls at once",
+		);
+
+		finish();
+		await Promise.all([first, second]);
+		await expect(tools.read.execute!({}, { toolCallId: "three-again", messages: [] })).rejects.toThrow(
+			"Tool budget reached",
+		);
+		expect(read).toHaveBeenCalledTimes(2);
+		expect(budget.exhausted).toBe(true);
+	});
+
+	test("ends tool use for the reply when a call would not fit even after the running calls end", async () => {
+		const read = vi
+			.fn()
+			.mockResolvedValueOnce({ title: "Read", metadata: {}, output: "x".repeat(300 * 1024) })
+			.mockResolvedValue({ title: "Read", metadata: {}, output: "small" });
+		const budget = ai_chat_tool_budget_create();
+		const tools = ai_chat_tool_budget_apply({ read: tool({ inputSchema: z.object({}), execute: read }) }, budget, {
+			resultReservedBytes: 128 * 1024,
+		});
+		await tools.read.execute!({}, { toolCallId: "large", messages: [] });
+		await expect(tools.read.execute!({}, { toolCallId: "next", messages: [] })).rejects.toThrow("Tool budget reached");
+		expect(read).toHaveBeenCalledOnce();
+		expect(budget.exhausted).toBe(true);
 	});
 
 	test("counts escaped input bytes and refuses a large write before execution", async () => {
@@ -40,6 +118,7 @@ describe("ai_chat_tool_budget_apply", () => {
 				edit: tool({ inputSchema: z.object({ content: z.string() }), execute: write }),
 			},
 			ai_chat_tool_budget_create(),
+			{ resultReservedBytes: 128 * 1024 },
 		);
 		await expect(
 			tools.edit.execute!({ content: "\u0000".repeat(12 * 1024) }, { toolCallId: "large", messages: [] }),
@@ -63,6 +142,7 @@ describe("ai_chat_tool_budget_apply", () => {
 				}),
 			},
 			budget,
+			{ resultReservedBytes: 128 * 1024 },
 		);
 		const input = { command: "cat /docs/notes.md" };
 		const output = await tools.bash.execute!(input, { toolCallId: "read", messages: [] });
@@ -88,7 +168,9 @@ describe("ai_chat_tool_budget_apply", () => {
 			metadata: { pendingUpdateId: "pending-1", matches: 1, diff: "-old\n+new" },
 		}));
 		const budget = ai_chat_tool_budget_create();
-		const tools = ai_chat_tool_budget_apply({ edit: tool({ inputSchema: z.object({}), execute: write }) }, budget);
+		const tools = ai_chat_tool_budget_apply({ edit: tool({ inputSchema: z.object({}), execute: write }) }, budget, {
+			resultReservedBytes: 128 * 1024,
+		});
 		const result = await tools.edit.execute!({}, { toolCallId: "write", messages: [] });
 		expect(write).toHaveBeenCalledOnce();
 		expect(result).toMatchObject({

@@ -245,6 +245,22 @@ Clicking `Stop generating` while a Bash tool call is in flight aborts the AI SDK
 
 So do not read an empty card as "the command was killed", and do not use Stop to exercise the engine's abort path. Check the transcript for the truth (`convex data ai_chat_bash_shell_transcripts --limit 6 --order desc`). To drive a real in-engine abort, use the `timeout` command instead: `printf 'kept\n'; timeout 1 sleep 5; printf 'code=%s\n' "$?"` keeps `kept`, reports `code=124`, and drops the timed-out command's own output. Verified 2026-09-16.
 
+## Count a reply's steps and bytes from the stored message
+
+A reply can have up to 25 model steps. To prove how many steps ran, or how big a reply got, read the
+stored message, not the cards. Chat replies live in `ai_chat_threads_messages_aisdk_5`; the table
+`chat_messages` holds file comments. Export a few recent rows to the task folder, then count
+`step-start` parts and the tool parts in each reply's `content`:
+
+```powershell
+vp env exec pnpm --dir packages/app exec convex data ai_chat_threads_messages_aisdk_5 --format jsonArray --limit 10 --order desc > "$d/messages.json"
+```
+
+To make a reply run many steps, ask for `execute_code` N times, one call per step (`return { call: K };`).
+To test parallel calls, ask for three `execute_code` calls in the same step, each waiting 3 seconds
+(`await new Promise((resolve) => setTimeout(resolve, 3000))`). Small file reads end too fast to overlap.
+The 3rd call gets "Too many tool calls at once" and runs again in the next step. Verified 2026-09-27.
+
 ## Doneness: waitIdle pattern
 
 The Stop button blinks out between agent steps (tool-exec gaps), so a single "no Stop button" check fires too early. Require sustained idle — no Stop button AND no **visible** `aria-busy` element — for 3 consecutive 2 s samples. Visible-only matters: hidden hoisted modals keep `aria-busy="true"` while closed (0x0 rect) and would otherwise report busy forever. Start the samples only after the turn visibly starts (wait for the Stop button first, up to 60 s): right after send, the transport is still preparing, so even sustained-idle checks pass on a turn that has not begun. Verified 2026-09-19.

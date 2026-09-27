@@ -3,8 +3,6 @@ import type { ToolSet } from "ai";
 const encoder = new TextEncoder();
 // One tool call's serialized input cap.
 const TOOL_INPUT_MAX_BYTES = 64 * 1024;
-// Headroom inside the run budget kept for tool results, so inputs can never spend it all.
-const TOOL_RESULT_RESERVED_BYTES = 128 * 1024;
 
 function serialized_bytes(value: unknown) {
 	return encoder.encode(JSON.stringify(value) ?? "null").byteLength;
@@ -16,12 +14,18 @@ export function ai_chat_message_fits_storage(message: unknown) {
 }
 
 export function ai_chat_tool_budget_create() {
-	return { remainingBytes: 384 * 1024, exhausted: false };
+	return { remainingBytes: 384 * 1024, reservedInFlightBytes: 0, exhausted: false };
 }
 
 export function ai_chat_tool_budget_apply<T extends ToolSet>(
 	tools: T,
 	budget: ReturnType<typeof ai_chat_tool_budget_create>,
+	reserve: {
+		/**
+		 * Result space each call of these tools keeps inside the reply budget, so inputs can never spend it all.
+		 */
+		resultReservedBytes: number;
+	},
 ) {
 	for (const value of Object.values(tools)) {
 		const execute = value.execute;
@@ -31,12 +35,24 @@ export function ai_chat_tool_budget_apply<T extends ToolSet>(
 			const inputBytes = serialized_bytes(input);
 			// Reserve before awaiting: parallel calls cannot spend another call's result space.
 			// A file result repeats its path in both the title and metadata.
-			const reservedBytes = TOOL_RESULT_RESERVED_BYTES + 2 * inputBytes;
-			if (budget.exhausted || inputBytes > TOOL_INPUT_MAX_BYTES || budget.remainingBytes < inputBytes + reservedBytes) {
+			const reservedBytes = reserve.resultReservedBytes + 2 * inputBytes;
+			if (
+				budget.exhausted ||
+				inputBytes > TOOL_INPUT_MAX_BYTES ||
+				budget.remainingBytes + budget.reservedInFlightBytes < inputBytes + reservedBytes
+			) {
 				budget.exhausted = true;
 				throw new Error("Tool budget reached. This call was not run. Finish this reply and continue in a new message.");
 			}
+			// The running calls give back the reserve they do not use. So refuse only this call and keep
+			// `exhausted` off: the model can run it again in the next step.
+			if (budget.remainingBytes < inputBytes + reservedBytes) {
+				throw new Error(
+					"Too many tool calls at once. This call was not run. Try it again in the next step; it may still hit the reply's tool budget.",
+				);
+			}
 			budget.remainingBytes -= inputBytes + reservedBytes;
+			budget.reservedInFlightBytes += reservedBytes;
 
 			try {
 				// App tools all return this shape. Provider tools have no local execute function.
@@ -74,6 +90,8 @@ export function ai_chat_tool_budget_apply<T extends ToolSet>(
 				);
 				budget.remainingBytes += reservedBytes - serialized_bytes(boundedError.message);
 				throw boundedError;
+			} finally {
+				budget.reservedInFlightBytes -= reservedBytes;
 			}
 		};
 	}
