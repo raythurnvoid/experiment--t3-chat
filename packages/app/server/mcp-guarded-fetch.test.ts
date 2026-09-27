@@ -89,6 +89,18 @@ describe("mcp_guarded_fetch_create", () => {
 		expect(fetchSpy).toHaveBeenCalledOnce();
 	});
 
+	test("allows plain-HTTP localhost only with the test switch", async () => {
+		vi.spyOn(globalThis, "fetch").mockImplementation(async () => json_response("{}"));
+		const guard = mcp_guarded_fetch_create({ kind: "oauth", testAllowLocalHttp: true });
+
+		await expect(guard.fetch("http://localhost:4000/mcp")).resolves.toBeInstanceOf(Response);
+		await expect(guard.fetch("http://127.0.0.1:4000/mcp")).resolves.toBeInstanceOf(Response);
+		await expect(guard.fetch("http://example.com/mcp")).rejects.toThrow("url_blocked");
+		await expect(mcp_guarded_fetch_create({ kind: "oauth" }).fetch("http://localhost:4000/mcp")).rejects.toThrow(
+			"url_blocked",
+		);
+	});
+
 	test("refuses the exact hosts and suffixes in MCP_DENIED_HOSTS", async () => {
 		vi.stubEnv("MCP_DENIED_HOSTS", " Exact.example.com , *.corp.example.com,");
 		vi.spyOn(globalThis, "fetch").mockImplementation(async () => json_response("{}"));

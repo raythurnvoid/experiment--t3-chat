@@ -61,9 +61,10 @@ function denied_host_entries() {
 /**
  * Return the parsed URL when Press may send a request to it, or `null` when it must not.
  */
-function allowed_url(rawUrl: string) {
+function allowed_url(rawUrl: string, testAllowLocalHttp: boolean) {
 	if (!URL.canParse(rawUrl)) return null;
 	const url = new URL(rawUrl);
+	if (testAllowLocalHttp && url.protocol === "http:" && ["localhost", "127.0.0.1"].includes(url.hostname)) return url;
 	if (url.protocol !== "https:" || url.username || url.password) return null;
 
 	// Compare names without the root dot, so `localhost.` is still `localhost`. A name with an empty
@@ -98,11 +99,11 @@ function allowed_url(rawUrl: string) {
  *
  * The SDK expects a fetch that throws on failure, so the guard throws instead of returning a Result.
  * The SDK wraps a thrown error in its own error, so the guard records why it refused in `failure`.
- * The caller reads `failure` first, and `wwwAuthenticate` after a 401 or 403, because the SDK's HTTP
- * error does not carry that header.
+ * The caller reads `failure` first, `wwwAuthenticate` after a 401 or 403, and `retryAfter` after a
+ * 429, because the SDK's HTTP error does not carry response headers.
  */
 export function mcp_guarded_fetch_create(
-	options:
+	options: (
 		| {
 				kind: "mcp";
 				server: { url: string; headers: Array<{ name: string; value: string }> };
@@ -116,7 +117,14 @@ export function mcp_guarded_fetch_create(
 				 */
 				maxTotalBytes: number;
 		  }
-		| { kind: "oauth" },
+		| { kind: "oauth" }
+	) & {
+		/**
+		 * Test only: allow `http://localhost` and `http://127.0.0.1` for the conformance harness and
+		 * local fixtures. Only test code passes it. Convex functions never do.
+		 */
+		testAllowLocalHttp?: true;
+	},
 ) {
 	const serverOrigin = options.kind === "mcp" ? new URL(options.server.url).origin : null;
 	const maxResponseBytes = options.kind === "mcp" ? options.maxResponseBytes : OAUTH_MAX_RESPONSE_BYTES;
@@ -125,13 +133,14 @@ export function mcp_guarded_fetch_create(
 	const guard = {
 		failure: null as mcp_GuardedFetchFailure | null,
 		wwwAuthenticate: null as string | null,
+		retryAfter: null as string | null,
 		fetch: async (input: string | URL, init?: RequestInit) => {
 			const refuse = (failure: mcp_GuardedFetchFailure) => {
 				guard.failure ??= failure;
 				return new Error(`Guarded fetch refused the request: ${failure}`);
 			};
 
-			let url = allowed_url(String(input));
+			let url = allowed_url(String(input), options.testAllowLocalHttp === true);
 			if (!url) throw refuse("url_blocked");
 
 			const method = (init?.method ?? "GET").toUpperCase();
@@ -197,6 +206,8 @@ export function mcp_guarded_fetch_create(
 
 					const wwwAuthenticate = response.headers.get("www-authenticate");
 					if (wwwAuthenticate !== null) guard.wwwAuthenticate = wwwAuthenticate;
+					const retryAfter = response.headers.get("retry-after");
+					if (retryAfter !== null) guard.retryAfter = retryAfter;
 
 					if (response.status >= 300 && response.status < 400) {
 						await response.body?.cancel();
@@ -212,7 +223,7 @@ export function mcp_guarded_fetch_create(
 							throw refuse("bad_response");
 						}
 
-						const next = allowed_url(new URL(location, url).href);
+						const next = allowed_url(new URL(location, url).href, options.testAllowLocalHttp === true);
 						if (!next) throw refuse("url_blocked");
 						if (next.origin !== url.origin) {
 							for (const name of CREDENTIAL_HEADER_NAMES) headers.delete(name);
