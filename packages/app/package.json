@@ -120,7 +120,6 @@
 		"motion": "^12.23.24",
 		"native-popovers": "workspace:*",
 		"novel": "workspace:*",
-		"p-queue": "^8.1.1",
 		"react": "^19.3.0",
 		"react-dom": "^19.3.0",
 		"react-markdown": "^10.1.0",
