@@ -22,6 +22,7 @@ import { useFn } from "@/hooks/utils-hooks.ts";
 import { app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { files_pending_update_has_content } from "@/lib/files.ts";
+import { global_custom_event_dispatch } from "@/lib/global-event.tsx";
 import type { files_browser_StreamControlMessage, files_browser_StreamHost } from "@/lib/files-browser-stream.ts";
 import { file_preview_MaxHtmlBytes } from "bonobo-file-preview/protocol";
 import { useConvex, useQuery } from "convex/react";
@@ -273,6 +274,89 @@ function is_transfer_message(
 	);
 }
 
+/**
+ * Popout windows opened from the Files panel, by session id. The session keeps running when the
+ * user leaves the Browser view or opens another file, and then the panel unmounts. Keep the
+ * window and its handoff step here, so the panel finds them again when it mounts, and a Dock
+ * request still reaches Files while the panel is gone.
+ *
+ * `opening`: the child is attaching and the docked viewer still streams. `popped_out`: the child
+ * holds the viewer. `docking`: the child asked to come back, so the docked viewer attaches again.
+ */
+const useFilesBrowserPopoutStore = create<{
+	popouts: Record<
+		string,
+		{
+			child: Window;
+			membershipId: app_convex_Id<"organizations_workspaces_users">;
+			nodeId: string;
+			targetKind: "saved" | "private";
+			step: "opening" | "popped_out" | "docking";
+		}
+	>;
+}>(() => ({ popouts: {} }));
+
+function files_browser_set_popout_step(sessionId: string, step: "opening" | "popped_out" | "docking" | null) {
+	useFilesBrowserPopoutStore.setState((store) => {
+		const popout = store.popouts[sessionId];
+		if (!popout) {
+			return store;
+		}
+		const popouts = { ...store.popouts };
+		if (step) {
+			popouts[sessionId] = { ...popout, step };
+		} else {
+			delete popouts[sessionId];
+		}
+		return { popouts };
+	});
+}
+
+/**
+ * One window listener for every popout of this tab. It must not live in the panel: the panel
+ * unmounts while the popout keeps running.
+ */
+const files_browser_listen_to_popouts = ((/* iife */) => {
+	let listening = false;
+
+	function handle_message(event: MessageEvent) {
+		if (event.origin !== window.location.origin || !is_transfer_message(event.data)) {
+			return;
+		}
+		const sessionId = event.data.sessionId;
+		const popout = useFilesBrowserPopoutStore.getState().popouts[sessionId];
+		// Only the opened popout may move this viewer. Any same-origin tab can post a
+		// message, but only the child window holds this session's live viewer.
+		if (!popout || event.source !== popout.child) {
+			return;
+		}
+		if (event.data.kind === "browser-takeover") {
+			popout.child.postMessage(
+				{ kind: "browser-thread", sessionId, threadId: useFilesBrowserResumeThreadStore.getState().threadId },
+				window.location.origin,
+			);
+			files_browser_set_popout_step(sessionId, "popped_out");
+		} else if (event.data.kind === "browser-dock-request") {
+			files_browser_set_popout_step(sessionId, "docking");
+			// The user may have left this file or its Browser view since the popout opened. Open it
+			// again, so its panel mounts and finishes the dock.
+			global_custom_event_dispatch("files::open_browser", {
+				membershipId: popout.membershipId,
+				nodeId: popout.nodeId,
+				targetKind: popout.targetKind,
+			});
+		}
+	}
+
+	return function files_browser_listen_to_popouts() {
+		if (listening) {
+			return;
+		}
+		listening = true;
+		window.addEventListener("message", handle_message);
+	};
+})();
+
 type FilesBrowser_ClassNames =
 	| "FilesBrowser"
 	| "FilesBrowser-header"
@@ -408,6 +492,7 @@ const FilesBrowser = memo(function FilesBrowser(props: FilesBrowser_Props) {
 	const available = useQuery(app_convex_api.files_browser.web_browser_available, { membershipId });
 	const mine =
 		session && session.mode === "file" && session.nodeId === nodeId && session.targetKind === targetKind ? session : null;
+	const sessionFileName = session?.mode === "file" ? session.path.split("/").at(-1) : null;
 	const sessionId = mine?.sessionId;
 	const selectedThreadId = FilesBrowserResumeThreadMirror.useThreadId();
 	const [openerThreadId, setOpenerThreadId] = useState<string | null>(null);
@@ -433,12 +518,14 @@ const FilesBrowser = memo(function FilesBrowser(props: FilesBrowser_Props) {
 	const [taking, setTaking] = useState(false);
 	const [loadedDraftRevision, setLoadedDraftRevision] = useState<number | null>(null);
 	const [now, setNow] = useState(() => Date.now());
-	const [poppedOut, setPoppedOut] = useState(false);
-	const [pendingDockAck, setPendingDockAck] = useState(false);
 	const [takeoverSent, setTakeoverSent] = useState(false);
 	const [docking, setDocking] = useState(false);
-	const childRef = useRef<Window | null>(null);
 	const isChild = host === "detached";
+	const popout = useFilesBrowserPopoutStore((store) =>
+		!isChild && mine ? (store.popouts[mine.sessionId] ?? null) : null,
+	);
+	const poppedOut = popout?.step === "popped_out";
+	const pendingDockAck = popout?.step === "docking";
 
 	const navKey = `${targetKind}:${nodeId}`;
 	// Once per mount: the file view remounts per file, so the initializer runs once per navigation.
@@ -448,7 +535,6 @@ const FilesBrowser = memo(function FilesBrowser(props: FilesBrowser_Props) {
 		setViewerId(null);
 		setRemoteControl(null);
 		setTaking(false);
-		setPendingDockAck(false);
 		setTakeoverSent(false);
 		setDocking(false);
 	}, [mine?.sessionId]);
@@ -510,46 +596,14 @@ const FilesBrowser = memo(function FilesBrowser(props: FilesBrowser_Props) {
 	// Popout transfer between the docked panel and its child window. The child attaches first,
 	// moves input to itself when a human holds it, and only then tells the docked panel to stand
 	// down — a failed child never takes the live viewer away. Docking reverses the dance.
+	// `files_browser_listen_to_popouts` receives the child's messages, also while this panel is gone.
 	useEffect(() => {
-		if (isChild || !mine) {
-			return;
-		}
-		const onMessage = (event: MessageEvent) => {
-			if (event.origin !== window.location.origin || !is_transfer_message(event.data)) {
-				return;
-			}
-			if (event.data.sessionId !== mine.sessionId) {
-				return;
-			}
-			// Only the opened popout may move this viewer. Any same-origin tab can post a
-			// message, but only the child window holds this session's live viewer.
-			if (event.source !== childRef.current) {
-				return;
-			}
-			if (event.data.kind === "browser-takeover") {
-				childRef.current?.postMessage(
-					{ kind: "browser-thread", sessionId: mine.sessionId, threadId: selectedThreadId },
-					window.location.origin,
-				);
-				setPoppedOut(true);
-			} else if (event.data.kind === "browser-dock-request") {
-				setPoppedOut(false);
-				setPendingDockAck(true);
-			}
-		};
-		window.addEventListener("message", onMessage);
-		return () => {
-			window.removeEventListener("message", onMessage);
-		};
-	}, [isChild, mine, selectedThreadId]);
-
-	useEffect(() => {
-		if (isChild || !mine || !poppedOut) return;
-		childRef.current?.postMessage(
+		if (!mine || !popout || !poppedOut) return;
+		popout.child.postMessage(
 			{ kind: "browser-thread", sessionId: mine.sessionId, threadId: selectedThreadId },
 			window.location.origin,
 		);
-	}, [isChild, mine, poppedOut, selectedThreadId]);
+	}, [mine, popout, poppedOut, selectedThreadId]);
 
 	useEffect(() => {
 		if (!isChild) {
@@ -577,19 +631,17 @@ const FilesBrowser = memo(function FilesBrowser(props: FilesBrowser_Props) {
 
 	// A manually closed popout reattaches here instead of stranding the session viewerless.
 	useEffect(() => {
-		if (isChild || !poppedOut) {
+		if (!mine || !popout || !poppedOut) {
 			return;
 		}
 		const timer = setInterval(() => {
-			const child = childRef.current;
-			if (child && child.closed) {
-				childRef.current = null;
-				setPoppedOut(false);
+			if (popout.child.closed) {
+				files_browser_set_popout_step(mine.sessionId, null);
 				toast.info("The popout closed. The viewer reattached here.");
 			}
 		}, 2000);
 		return () => clearInterval(timer);
-	}, [isChild, poppedOut]);
+	}, [mine, popout, poppedOut]);
 
 	useEffect(() => {
 		if (!docking) {
@@ -737,7 +789,9 @@ const FilesBrowser = memo(function FilesBrowser(props: FilesBrowser_Props) {
 				membershipId,
 				nodeId: nodeId,
 				path: path,
-				navGeneration: nav.generation,
+				// Reload checks the capture against the session's `navigationGeneration`. This tab's
+				// `nav.generation` moves on when the user opens another file and comes back.
+				navGeneration: mine.navigationGeneration,
 				html,
 				revision,
 				basisKind: "saved",
@@ -787,6 +841,17 @@ const FilesBrowser = memo(function FilesBrowser(props: FilesBrowser_Props) {
 			});
 	});
 
+	const handleOpenSessionFile = useFn(() => {
+		if (session?.mode !== "file") {
+			return;
+		}
+		global_custom_event_dispatch("files::open_browser", {
+			membershipId,
+			nodeId: session.nodeId,
+			targetKind: session.targetKind,
+		});
+	});
+
 	const handleEnd = useFn((endingSessionId: app_convex_Id<"files_browser_sessions">) => {
 		convex
 			.action(app_convex_api.files_browser.end_browser, { membershipId, sessionId: endingSessionId })
@@ -830,17 +895,21 @@ const FilesBrowser = memo(function FilesBrowser(props: FilesBrowser_Props) {
 			return;
 		}
 		// Move input back here before the child closes; its detach would otherwise release control.
-		if (pendingDockAck && mine) {
-			setPendingDockAck(false);
+		if (pendingDockAck && mine && popout) {
 			const sessionId = mine.sessionId;
+			const child = popout.child;
+			// The child closes on the ack, so this tab forgets it.
 			const ack = () => {
-				childRef.current?.postMessage({ kind: "browser-dock-ack", sessionId }, window.location.origin);
+				child.postMessage({ kind: "browser-dock-ack", sessionId }, window.location.origin);
+				files_browser_set_popout_step(sessionId, null);
 			};
 			if (control === "human") {
 				takeWithViewer(id).then((moved: boolean) => {
 					// On a failed move the child stays live; Dock retries the dance.
 					if (moved) {
 						ack();
+					} else {
+						files_browser_set_popout_step(sessionId, "opening");
 					}
 				});
 			} else {
@@ -878,12 +947,18 @@ const FilesBrowser = memo(function FilesBrowser(props: FilesBrowser_Props) {
 			toast.error("The popout was blocked. Allow popups for this site.");
 			return;
 		}
-		childRef.current = child;
+		files_browser_listen_to_popouts();
+		useFilesBrowserPopoutStore.setState((store) => ({
+			popouts: {
+				...store.popouts,
+				[mine.sessionId]: { child, membershipId, nodeId: mine.nodeId, targetKind: mine.targetKind, step: "opening" },
+			},
+		}));
 		child.focus();
 	});
 
 	const handleFocusPopout = useFn(() => {
-		childRef.current?.focus();
+		popout?.child.focus();
 	});
 
 	const handleDock = useFn(() => {
@@ -1036,6 +1111,11 @@ const FilesBrowser = memo(function FilesBrowser(props: FilesBrowser_Props) {
 						/>
 					)}
 				</>
+			) : session === undefined ? (
+				// Wait for the session query. A browser still live on another file would make Start fail.
+				<div className={"FilesBrowser-start" satisfies FilesBrowser_ClassNames}>
+					<span role="status">Loading…</span>
+				</div>
 			) : session?.mode === "web" ? (
 				// One live browser per user and workspace: a web browser blocks a file browser here.
 				<div className={"FilesBrowser-start" satisfies FilesBrowser_ClassNames}>
@@ -1047,6 +1127,18 @@ const FilesBrowser = memo(function FilesBrowser(props: FilesBrowser_Props) {
 					>
 						Open the web browser
 					</MyLink>
+					<MyButton variant="outline" onClick={() => handleEnd(session.sessionId)}>
+						End it
+					</MyButton>
+				</div>
+			) : session?.mode === "file" ? (
+				// The browser of another file keeps running while the user is here. It holds the one
+				// browser slot, so this file can start only after it ends.
+				<div className={"FilesBrowser-start" satisfies FilesBrowser_ClassNames}>
+					<span>A browser is open on {sessionFileName}.</span>
+					<MyButton variant="ghost-accent" onClick={handleOpenSessionFile}>
+						Open {sessionFileName}
+					</MyButton>
 					<MyButton variant="outline" onClick={() => handleEnd(session.sessionId)}>
 						End it
 					</MyButton>

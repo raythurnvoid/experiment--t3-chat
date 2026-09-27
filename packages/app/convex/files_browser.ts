@@ -948,8 +948,7 @@ type create_starting_web_browser_session_Result =
 
 /**
  * Commit a starting session to its live runner session. Refuses when End ran while the runner was
- * opening (for example because the file moved on); the caller then closes the orphan runner
- * session at once and bills its time.
+ * opening; the caller then closes the orphan runner session at once and bills its time.
  *
  * A web start counts toward the user's daily web starts here, after the runner opened it. So a
  * refused or failed open costs nothing.
@@ -1620,6 +1619,14 @@ export const start_browser = action({
 				}
 				return checked;
 			}
+
+			// A file browser keeps running after the user opens another file. When the user can no
+			// longer open its file (archived, deleted, or access removed), the Files panel does not
+			// show it, so nothing on screen can end it. The check below ends it in that case, and
+			// this start then takes the browser slot. A session the user can still open stays live.
+			if (checked._yay?.mode === "file") {
+				await authorize_live_browser_session(ctx, { membership, userId: user._id, session: checked._yay });
+			}
 		}
 
 		const created = (await ctx.runMutation(internal.files_browser.create_starting_browser_session, {
@@ -1781,9 +1788,8 @@ export const start_browser = action({
 			runner: parsed.data.session,
 		})) as commit_live_browser_session_Result;
 		if (committed._nay) {
-			// The file moved on while the runner was opening, and its End closed the doc. Close the
-			// orphan at once and bill its time. Do not discard the doc: it is no longer starting, and it
-			// must stay until it is billed.
+			// End ran while the runner was opening and closed the doc. Close the orphan at once and bill
+			// its time. Do not discard the doc: it is no longer starting, and it must stay until it is billed.
 			const closed = await files_browser_runner_call({
 				route: "close",
 				body: {
@@ -1799,7 +1805,7 @@ export const start_browser = action({
 				sessionId: created._yay.sessionId,
 				usage: usage?.success ? usage.data.usage : null,
 			});
-			return Result({ _nay: { message: "The file changed. Refresh to try again." } });
+			return Result({ _nay: { message: "Browser did not start" } });
 		}
 
 		// Draft bytes are one-shot: the open consumed them.
@@ -3641,7 +3647,8 @@ export const current_browser_session = query({
 		if (authorized._nay) {
 			return null;
 		}
-		return file_session_public_meta(session);
+		// The stored path is the path at Start. Return the live one, so a renamed file shows its new name.
+		return { ...file_session_public_meta(session), path };
 	},
 });
 

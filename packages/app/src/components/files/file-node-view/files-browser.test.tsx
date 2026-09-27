@@ -7,14 +7,21 @@ import { FilesBrowser, FilesBrowserResumeThreadMirror } from "./files-browser.ts
 
 const mocks = vi.hoisted(() => ({
 	action: vi.fn(),
+	mutation: vi.fn(),
 	sendInput: vi.fn<(input: files_browser_StreamInput) => number>(),
 	events: null as files_browser_StreamEvents | null,
 	selectedThreadId: "thread_selected" as string | null,
 	control: "human",
 	controlGen: 1,
 	sessionEnded: false,
+	sessionLoading: false,
 	webSession: false,
 	paidPlan: true,
+	sessionId: "session_1",
+	sessionNodeId: "node_1",
+	sessionPath: "/page.html",
+	sessionSourceKind: "saved",
+	sessionNavigationGeneration: 1,
 }));
 
 vi.mock("@/components/app-auth.tsx", () => ({
@@ -42,13 +49,14 @@ vi.mock("@/lib/app-convex-client.ts", async () => {
 	return { app_convex_api: api, app_convex: { action: mocks.action } };
 });
 vi.mock("convex/react", () => {
-	const client = { action: mocks.action };
+	const client = { action: mocks.action, mutation: mocks.mutation };
 	return {
 		useConvex: () => client,
 		useQuery: (reference: never, args: unknown) => {
 			if (args === "skip") return undefined;
 			switch (getFunctionName(reference)) {
 				case "files_browser:current_browser_session":
+					if (mocks.sessionLoading) return undefined;
 					if (mocks.sessionEnded) return null;
 					if (mocks.webSession) {
 						return {
@@ -65,12 +73,13 @@ vi.mock("convex/react", () => {
 					}
 					return {
 						mode: "file",
-						sessionId: "session_1",
-						nodeId: "node_1",
+						sessionId: mocks.sessionId,
+						nodeId: mocks.sessionNodeId,
 						targetKind: "saved",
-						path: "/page.html",
+						path: mocks.sessionPath,
+						navigationGeneration: mocks.sessionNavigationGeneration,
 						control: mocks.control,
-						sourceKind: "saved",
+						sourceKind: mocks.sessionSourceKind,
 						sourceVersion: "v1",
 						sourceHash: "hash",
 						loadGen: 1,
@@ -103,8 +112,15 @@ beforeEach(() => {
 	mocks.control = "human";
 	mocks.controlGen = 1;
 	mocks.sessionEnded = false;
+	mocks.sessionLoading = false;
 	mocks.webSession = false;
 	mocks.paidPlan = true;
+	mocks.sessionId = "session_1";
+	mocks.sessionNodeId = "node_1";
+	mocks.sessionPath = "/page.html";
+	mocks.sessionSourceKind = "saved";
+	mocks.sessionNavigationGeneration = 1;
+	mocks.mutation.mockReset();
 });
 
 afterEach(() => {
@@ -210,6 +226,73 @@ describe("FilesBrowser", () => {
 		).toEqual({ membershipId: "membership_1", sessionId: "session_web" });
 	});
 
+	test("offers to open or end the browser of another file instead of starting", () => {
+		mocks.sessionNodeId = "node_other";
+		mocks.sessionPath = "/docs/other.html";
+		const opened = vi.fn();
+		window.addEventListener("files::open_browser", opened);
+		render(browserPanel());
+		expect(screen.getByText("A browser is open on other.html.")).toBeTruthy();
+		expect(screen.queryByRole("button", { name: "Start shared browser" })).toBeNull();
+		expect(screen.queryByRole("application")).toBeNull();
+
+		fireEvent.click(screen.getByRole("button", { name: "Open other.html" }));
+		window.removeEventListener("files::open_browser", opened);
+		expect(opened.mock.calls.map(([event]) => event.detail)).toEqual([
+			{ membershipId: "membership_1", nodeId: "node_other", targetKind: "saved" },
+		]);
+
+		fireEvent.click(screen.getByRole("button", { name: "End it" }));
+		expect(
+			mocks.action.mock.calls.find(([reference]) => getFunctionName(reference) === "files_browser:end_browser")?.[1],
+		).toEqual({ membershipId: "membership_1", sessionId: "session_1" });
+	});
+
+	test("waits for the session query instead of offering Start", () => {
+		mocks.sessionLoading = true;
+		render(browserPanel());
+		expect(screen.getByRole("status").textContent).toBe("Loading…");
+		expect(screen.queryByRole("button", { name: "Start shared browser" })).toBeNull();
+	});
+
+	// This tab's `nav.generation` moves on when the user opens another file and comes back, while the
+	// session keeps its own `navigationGeneration`. Reload checks the capture against the session.
+	test("reloads a draft with the session's navigationGeneration", async () => {
+		mocks.sessionSourceKind = "draft";
+		mocks.sessionNavigationGeneration = 7;
+		mocks.mutation.mockImplementation(async (reference) =>
+			getFunctionName(reference) === "files_browser:capture_browser_draft"
+				? { _yay: { captureId: "capture_1", uploadUrl: "https://upload.test" } }
+				: { _yay: null },
+		);
+		vi.stubGlobal("fetch", vi.fn(async () => Response.json({ storageId: "storage_1" })));
+		render(
+			<FilesBrowser
+				targetKind="saved"
+				nodeId="node_1"
+				path="/page.html"
+				host="docked"
+				editorRevision={0}
+				serverSequence={0}
+				getDraftText={() => "<p>draft</p>"}
+				getDraftRevision={() => 1}
+			/>,
+		);
+		await connectViewer();
+
+		fireEvent.click(screen.getByRole("button", { name: "Reload from current source" }));
+		await waitFor(() =>
+			expect(
+				mocks.action.mock.calls.find(([reference]) => getFunctionName(reference) === "files_browser:reload_browser")?.[1],
+			).toMatchObject({ sessionId: "session_1", draftCaptureId: "capture_1", draftStorageId: "storage_1" }),
+		);
+		expect(
+			mocks.mutation.mock.calls.find(
+				([reference]) => getFunctionName(reference) === "files_browser:capture_browser_draft",
+			)?.[1],
+		).toMatchObject({ nodeId: "node_1", navigationGeneration: 7 });
+	});
+
 	test("does not end the shared session when only the viewer moves", async () => {
 		render(browserPanel());
 		await connectViewer();
@@ -305,7 +388,9 @@ describe("FilesBrowser", () => {
 		]);
 	});
 
+	// The popout store lives in the module and outlasts one test, so each popout test uses its own session.
 	test("mirrors chat changes to the attached popout", async () => {
+		mocks.sessionId = "session_popout_chat";
 		const child = { postMessage: vi.fn(), focus: vi.fn(), closed: false };
 		vi.spyOn(window, "open").mockReturnValue(child as unknown as Window);
 		const { rerender } = render(
@@ -321,12 +406,12 @@ describe("FilesBrowser", () => {
 				new MessageEvent("message", {
 					origin: window.location.origin,
 					source: child as unknown as Window,
-					data: { kind: "browser-takeover", sessionId: "session_1" },
+					data: { kind: "browser-takeover", sessionId: "session_popout_chat" },
 				}),
 			),
 		);
 		expect(child.postMessage).toHaveBeenCalledWith(
-			{ kind: "browser-thread", sessionId: "session_1", threadId: "thread_selected" },
+			{ kind: "browser-thread", sessionId: "session_popout_chat", threadId: "thread_selected" },
 			window.location.origin,
 		);
 		mocks.selectedThreadId = "thread_next";
@@ -338,10 +423,54 @@ describe("FilesBrowser", () => {
 		);
 		await waitFor(() =>
 			expect(child.postMessage).toHaveBeenCalledWith(
-				{ kind: "browser-thread", sessionId: "session_1", threadId: "thread_next" },
+				{ kind: "browser-thread", sessionId: "session_popout_chat", threadId: "thread_next" },
 				window.location.origin,
 			),
 		);
+	});
+
+	// Leaving the Browser view or the file unmounts this panel while the popout keeps running.
+	test("docks the popout after its panel was gone", async () => {
+		mocks.sessionId = "session_popout_dock";
+		const child = { postMessage: vi.fn(), focus: vi.fn(), closed: false };
+		vi.spyOn(window, "open").mockReturnValue(child as unknown as Window);
+		const fromChild = (data: { kind: string; sessionId: string }) =>
+			act(() =>
+				window.dispatchEvent(
+					new MessageEvent("message", { origin: window.location.origin, source: child as unknown as Window, data }),
+				),
+			);
+		const first = render(browserPanel());
+		await connectViewer();
+		fireEvent.click(screen.getByRole("button", { name: "Pop out" }));
+		fromChild({ kind: "browser-takeover", sessionId: "session_popout_dock" });
+		expect(screen.getByText("Viewing in a popout window.")).toBeTruthy();
+		first.unmount();
+
+		// Mounting again must not attach a second viewer, or it would take control from the popout.
+		mocks.events = null;
+		const second = render(browserPanel());
+		expect(screen.getByText("Viewing in a popout window.")).toBeTruthy();
+		expect(screen.queryByRole("application")).toBeNull();
+		second.unmount();
+
+		const opened = vi.fn();
+		window.addEventListener("files::open_browser", opened);
+		fromChild({ kind: "browser-dock-request", sessionId: "session_popout_dock" });
+		window.removeEventListener("files::open_browser", opened);
+		expect(opened.mock.calls.map(([event]) => event.detail)).toEqual([
+			{ membershipId: "membership_1", nodeId: "node_1", targetKind: "saved" },
+		]);
+
+		render(browserPanel());
+		await connectViewer();
+		await waitFor(() =>
+			expect(child.postMessage).toHaveBeenCalledWith(
+				{ kind: "browser-dock-ack", sessionId: "session_popout_dock" },
+				window.location.origin,
+			),
+		);
+		expect(screen.getByRole("button", { name: "Pop out" })).toBeTruthy();
 	});
 
 	test("resumes only the chat sent by its opener for this session", async () => {

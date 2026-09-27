@@ -4655,55 +4655,23 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 	const searchPrivateNodeId = searchParams.pendingNodeId;
 	const searchNodeId = searchPrivateNodeId ? undefined : searchParams.nodeId;
 	const selectionKey = searchPrivateNodeId ? `private:${searchPrivateNodeId}` : `saved:${searchNodeId}`;
-	const browserSession = useQuery(app_convex_api.files_browser.current_browser_session, { membershipId });
-	const endingBrowserSessionRef = useRef<string | null>(null);
-
-	// One shared end call for both effects below. The ref guard stops double
-	// ends; it clears when the session goes away so a later retry can run.
-	const handleEndBrowserSession = useFn((sessionId: app_convex_Id<"files_browser_sessions">) => {
-		if (endingBrowserSessionRef.current === sessionId) {
-			return;
-		}
-		endingBrowserSessionRef.current = sessionId;
-		app_convex
-			.action(app_convex_api.files_browser.end_browser, { membershipId, sessionId })
-			.then((result) => {
-				if (result._nay) {
-					console.error("[FileNodeView] Failed to end browser session", { error: result._nay });
-				}
-			})
-			.catch((error: unknown) => {
-				console.error("[FileNodeView] Unexpected browser end error", { error });
-			});
-	});
-
-	useEffect(() => {
-		if (!browserSession) {
-			endingBrowserSessionRef.current = null;
-		}
-	}, [browserSession]);
-
-	// This owner stays mounted when the next selection has no browser panel, including folders.
-	// Wait for last-open restoration before treating an empty URL as a new selection.
-	// A web browser does not belong to any file, so selection changes never end it.
-	useEffect(() => {
-		if (
-			(!searchNodeId && !searchPrivateNodeId) ||
-			!browserSession ||
-			browserSession.mode !== "file" ||
-			`${browserSession.targetKind}:${browserSession.nodeId}` === selectionKey
-		) {
-			return;
-		}
-		handleEndBrowserSession(browserSession.sessionId);
-	}, [handleEndBrowserSession, membershipId, browserSession, searchNodeId, searchPrivateNodeId, selectionKey]);
 
 	const isRootNodeSelected = searchNodeId === files_ROOT_ID;
-	const [fileViewSelection, setFileViewSelection] = useState({ membershipId, selectionKey, view: "default" });
+	// Remember the chosen view per file, so coming back to a file opens the view it had. A file
+	// browser keeps running while the user is on another file, so its live page comes back too.
+	const [fileViews, setFileViews] = useState<{ membershipId: string; views: Record<string, string> }>({
+		membershipId,
+		views: {},
+	});
 	const selectedFileView =
-		fileViewSelection.membershipId === membershipId && fileViewSelection.selectionKey === selectionKey
-			? fileViewSelection.view
-			: "default";
+		(fileViews.membershipId === membershipId ? fileViews.views[selectionKey] : null) ?? "default";
+	const setFileView = (targetSelectionKey: string, view: string) => {
+		setFileViews((current) => ({
+			membershipId,
+			views: { ...(current.membershipId === membershipId ? current.views : {}), [targetSelectionKey]: view },
+		}));
+	};
+
 	// Flat HTML views keep the editor visible. "default" is the editor for other files.
 	const isEditorActive =
 		selectedFileView === "default" ||
@@ -4712,30 +4680,22 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 		selectedFileView === "code_browser" ||
 		selectedFileView === "review_browser";
 	const handleFileViewChange = useFn((view: string) => {
-		setFileViewSelection({ membershipId, selectionKey, view });
+		setFileView(selectionKey, view);
 	});
-
-	// Leaving a browser view ends its file session: the file browser is only a view, never
-	// background. A web browser lives on its own page, so this never ends it.
-	useEffect(() => {
-		if (
-			!browserSession ||
-			browserSession.mode !== "file" ||
-			`${browserSession.targetKind}:${browserSession.nodeId}` !== selectionKey ||
-			selectedFileView === "browser" ||
-			selectedFileView === "code_browser" ||
-			selectedFileView === "review_browser"
-		) {
-			return;
-		}
-		handleEndBrowserSession(browserSession.sessionId);
-	}, [handleEndBrowserSession, browserSession, membershipId, selectedFileView, selectionKey]);
 
 	useGlobalCustomEvent("files::open_browser", (event) => {
 		if (event.detail.membershipId !== membershipId) return;
 		const requestedSelectionKey = `${event.detail.targetKind}:${event.detail.nodeId}`;
-		// The browser is only a view: remember Browser for that file, then navigate to it.
-		setFileViewSelection({ membershipId, selectionKey: requestedSelectionKey, view: "browser" });
+		const requestedFileView = fileViews.membershipId === membershipId ? fileViews.views[requestedSelectionKey] : null;
+		// Remember Browser for that file, then navigate to it. Keep a view that already shows the
+		// browser, such as Code + Browser.
+		if (
+			requestedFileView !== "browser" &&
+			requestedFileView !== "code_browser" &&
+			requestedFileView !== "review_browser"
+		) {
+			setFileView(requestedSelectionKey, "browser");
+		}
 		if (requestedSelectionKey !== selectionKey) {
 			onNavigateSearch({
 				...(event.detail.targetKind === "private"
@@ -4871,16 +4831,19 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 	 * Carry `q` through navigation.
 	 * The sidebar keeps its filter when a result is opened, so the URL
 	 * has to keep matching the search box instead of silently dropping the query.
-	 * The current view is NOT carried: each node opens on its own default editor.
+	 * The current URL editor mode is NOT carried to the next node: the URL gets only
+	 * `nextEditorMode`. A node that was open before on this page opens on the file view saved
+	 * for it in `fileViews`. A node not opened before opens on its default view.
 	 */
 	const navigateToNode = useFn((nodeId?: string, nextEditorMode: files_EditorView = "rich_text_editor") => {
 		const view = nextEditorMode === "rich_text_editor" ? undefined : nextEditorMode;
-		setFileViewSelection({ membershipId, selectionKey: `saved:${nodeId}`, view: "default" });
 		onNavigateSearch({ nodeId, view, q: searchParams.q });
 	});
 	const navigateToTarget = useFn((target: files_PendingTarget, nextEditorMode?: files_EditorView) => {
 		const view = nextEditorMode === "rich_text_editor" ? undefined : nextEditorMode;
-		setFileViewSelection({ membershipId, selectionKey: `${target.kind}:${target.id}`, view: "default" });
+		// Paging through pending changes opens each file on its default editor, not on a view
+		// left from an earlier visit.
+		setFileView(`${target.kind}:${target.id}`, "default");
 		onNavigateSearch({
 			...(target.kind === "private" ? { pendingNodeId: target.id } : { nodeId: target.id }),
 			view,
@@ -4891,7 +4854,7 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 		(sourceKey: string, target: files_PendingTarget, options?: { keepReview: boolean }) => {
 			// A completed Save must not replace a different file opened while it was running.
 			if (sourceKey !== `${membershipId}:${selectionKey}`) return;
-			setFileViewSelection({ membershipId, selectionKey: `${target.kind}:${target.id}`, view: "default" });
+			setFileView(`${target.kind}:${target.id}`, "default");
 			onNavigateSearch(
 				{
 					...(target.kind === "private" ? { pendingNodeId: target.id } : { nodeId: target.id }),

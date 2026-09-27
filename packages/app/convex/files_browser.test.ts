@@ -1051,7 +1051,7 @@ describe("start_browser", () => {
 		expect(await t.run((ctx) => ctx.db.query("files_browser_sessions").collect())).toEqual([]);
 	});
 
-	test("bills the runner time when the file view ends the session during Start", async () => {
+	test("bills the runner time when End runs during Start", async () => {
 		const t = test_convex();
 		const fixture = await seed_html_file(t);
 		const acquiredAt = Date.now() - 20_000;
@@ -1085,7 +1085,7 @@ describe("start_browser", () => {
 			viewport: { width: 1280, height: 900 },
 		});
 		await checkDuringOpen();
-		expect(started._nay?.message).toBe("The file changed. Refresh to try again.");
+		expect(started._nay?.message).toBe("Browser did not start");
 		expect(runnerCalls.map((call) => call.route)).toEqual(["open", "close"]);
 		const docs = await t.run((ctx) => ctx.db.query("files_browser_sessions").collect());
 		expect(docs).toHaveLength(1);
@@ -1146,6 +1146,35 @@ describe("start_browser", () => {
 		});
 		expect(busy._nay?.message).toBe("Browser busy");
 		expect(runnerCalls.map((call) => call.route)).toEqual(["open", "status"]);
+	});
+
+	// The browser of a file keeps running while the user is on another file. When its file is
+	// archived meanwhile, the Files panel hides it, so the next start must close it.
+	test("closes a live browser whose file was archived, then starts another file", async () => {
+		const t = test_convex();
+		const fixture = await seed_html_file(t);
+		const first = await start_saved_session(t, fixture);
+		await t.run((ctx) => ctx.db.patch("files_nodes", fixture.nodeId, { archiveOperationId: "archived" }));
+		const otherId = await test_create_saved_text_file(t, {
+			membershipId: fixture.membershipId,
+			path: "/other.html",
+			textContent: HTML_TEXT,
+		});
+
+		const acquiredAt = Date.now() - 60_000;
+		runnerQueue.push({ ...runner_open_session({ nodeId: fixture.nodeId }), alive: true, profileStored: false });
+		runnerQueue.push({
+			ok: true,
+			existed: true,
+			verified: true,
+			usage: { providerAcquiredAt: acquiredAt, endedAt: acquiredAt + 60_000, reason: "closed" },
+		});
+		const next = await start_saved_session(t, { ...fixture, nodeId: otherId, path: "/other.html" });
+		expect(next._nay).toBeUndefined();
+		expect(next._yay?.nodeId).toBe(String(otherId));
+		expect(runnerCalls.map((call) => call.route)).toEqual(["open", "status", "close", "open"]);
+		expect(runnerCalls[2]?.body).toMatchObject({ sessionId: "runner-session-1", reason: "access_lost" });
+		expect((await t.run((ctx) => ctx.db.get("files_browser_sessions", first._yay!.sessionId)))?.control).toBe("closed");
 	});
 
 	test("reattaches the same live file without opening again", async () => {
@@ -2358,6 +2387,7 @@ describe("rename and closing slot", () => {
 			membershipId: fixture.membershipId,
 		});
 		expect(current?.mode === "file" ? current.nodeId : null).toBe(String(fixture.nodeId));
+		expect(current?.mode === "file" ? current.path : null).toBe("/renamed.html");
 	});
 
 	test("viewer grant survives a rename instead of ending the session", async () => {

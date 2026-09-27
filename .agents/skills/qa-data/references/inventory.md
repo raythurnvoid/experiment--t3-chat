@@ -62,6 +62,7 @@ Sign-in steps for the `qa.perm.*` accounts are in
 | `.txt` opened as rich text | `chitchat-qa/xfer-qa-0914:/g4-x/movable.txt`, `/g4-many/f00.txt` … `f59.txt` |
 | Plain text (`plain_text` editor) | `personal/home:/qa-plan1-1788804917720/qa-plain.txt`, `qa-browser/home:/two-roots-qa-0921.txt` |
 | HTML | `personal/home:/split-browser-click-check.html` (3 KB), `qa-browser/home:/privacy-browser-qa-0921.html`. Collaboration off: `personal/home:/qa-html-preview-1788973527253/qa-meeting-brief.html` |
+| HTML for shared browser restart checks | `chitchat-qa/xfer-qa-0914:/browser-persistence-demo` (2026-09-27): `01-stateful-app.html` (page age, click counter, random page id, input, checklist, long list, fake 3 s boot), `02-second-page.html`, `03-esm-chart.html` (loads d3 from esm.sh and shows the load time), `notes.txt`, `README.md`. A new page id means the cloud browser restarted. |
 | JSON | `personal/home:/qa-plain.json`. Large (79 KB, read-only): `personal/home:/meetings/15f1649a-d06c-4af3-be03-c5255c9180de/provider-transcript.json` |
 
 ### Stored files (uploads)

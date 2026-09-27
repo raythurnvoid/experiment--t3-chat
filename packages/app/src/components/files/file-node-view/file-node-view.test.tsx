@@ -2094,7 +2094,7 @@ describe("FileNodeView file views", () => {
 });
 
 describe("FileNodeView browser views", () => {
-	test.each(["file", "folder", "root"])("ends the old session when selecting a %s", async (kind) => {
+	test.each(["file", "folder", "root"])("keeps the session when selecting a %s", async (kind) => {
 		const { rerender, onNavigateSearch } = renderFileView();
 		await screen.findByRole("textbox", { name: "Code draft" });
 		browserSession = { mode: "file", sessionId: "session_previous", nodeId: NODE._id, targetKind: "saved" };
@@ -2111,11 +2111,28 @@ describe("FileNodeView browser views", () => {
 				onNavigateSearch={onNavigateSearch}
 			/>,
 		);
-		await waitFor(() => {
-			expect(actionMock.mock.calls.filter((call) => getFunctionName(call[0]) === "files_browser:end_browser")).toEqual([
-				[expect.anything(), { membershipId: "membership_1", sessionId: "session_previous" }],
-			]);
-		});
+		await act(async () => {});
+		const endCalls = actionMock.mock.calls.filter((call) => getFunctionName(call[0]) === "files_browser:end_browser");
+		expect(endCalls.map(([, args]) => args)).toEqual([]);
+	});
+
+	test("coming back to a file opens its Browser view again", async () => {
+		treeNodes = [NODE];
+		const { rerender, onNavigateSearch } = renderFileView();
+		await screen.findByRole("textbox", { name: "Code draft" });
+		await selectView("Browser");
+		expect(await screen.findByRole("region", { name: "Shared browser" })).toBeTruthy();
+
+		node = { ...NODE, _id: "node_next", name: "next.html" };
+		rerender(<FileNodeView searchParams={{ nodeId: node._id }} onNavigateSearch={onNavigateSearch} />);
+		expect(await screen.findByRole("combobox", { name: "View: Code" })).toBeTruthy();
+		expect(screen.queryByRole("region", { name: "Shared browser" })).toBeNull();
+		await selectView("Preview");
+
+		node = NODE;
+		rerender(<FileNodeView searchParams={{ nodeId: NODE._id }} onNavigateSearch={onNavigateSearch} />);
+		expect(await screen.findByRole("combobox", { name: "View: Browser" })).toBeTruthy();
+		expect(await screen.findByRole("region", { name: "Shared browser" })).toBeTruthy();
 	});
 
 	test("lists the flat browser views for HTML files", async () => {
@@ -2189,6 +2206,22 @@ describe("FileNodeView browser views", () => {
 		expect(editorMountMock).toHaveBeenCalledTimes(1);
 	});
 
+	test("an open_browser event keeps a view that already shows the browser", async () => {
+		treeNodes = [NODE];
+		renderFileView();
+		await screen.findByRole("textbox", { name: "Code draft" });
+		await selectView("Code + Browser");
+		act(() =>
+			global_custom_event_dispatch("files::open_browser", {
+				membershipId: "membership_1" as app_convex_Id<"organizations_workspaces_users">,
+				nodeId: NODE._id,
+				targetKind: "saved",
+			}),
+		);
+		expect(screen.getByRole("combobox", { name: "View: Code + Browser" })).toBeTruthy();
+		expect(screen.getByRole("textbox", { name: "Code draft" })).toBeTruthy();
+	});
+
 	test("an open_browser event for another file navigates to it", async () => {
 		const { rerender, onNavigateSearch } = renderFileView();
 		await screen.findByRole("textbox", { name: "Code draft" });
@@ -2205,7 +2238,7 @@ describe("FileNodeView browser views", () => {
 		expect(await screen.findByRole("region", { name: "Shared browser" })).toBeTruthy();
 	});
 
-	test("leaving a browser view ends its session", async () => {
+	test("leaving a browser view keeps its session", async () => {
 		treeNodes = [NODE];
 		renderFileView();
 		await screen.findByRole("textbox", { name: "Code draft" });
@@ -2230,11 +2263,9 @@ describe("FileNodeView browser views", () => {
 		await screen.findByRole("region", { name: "Shared browser" });
 		actionMock.mockClear();
 		await selectView("Code");
-		await waitFor(() => {
-			expect(actionMock.mock.calls.filter((call) => getFunctionName(call[0]) === "files_browser:end_browser")).toEqual([
-				[expect.anything(), { membershipId: "membership_1", sessionId: "session_1" }],
-			]);
-		});
+		await act(async () => {});
+		const endCalls = actionMock.mock.calls.filter((call) => getFunctionName(call[0]) === "files_browser:end_browser");
+		expect(endCalls.map(([, args]) => args)).toEqual([]);
 		expect(screen.queryByRole("region", { name: "Shared browser" })).toBeNull();
 	});
 
