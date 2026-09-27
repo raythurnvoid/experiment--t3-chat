@@ -1797,7 +1797,7 @@ describe("FileNodeView file views", () => {
 
 		fireEvent.change(search, { target: { value: "File" } });
 		const viewer = await screen.findByRole("option", { name: "File viewer" });
-		fireEvent.mouseMove(viewer);
+		fireEvent.pointerMove(viewer);
 		await waitFor(() => expect(search.getAttribute("aria-activedescendant")).toBe(viewer.id));
 
 		fireEvent.keyDown(search, { key: "ArrowUp" });

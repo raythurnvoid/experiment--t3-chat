@@ -68,6 +68,7 @@ import { file_editor_rich_text_MediaExtension } from "./file-editor-rich-text-me
 import { MyButton, MyButtonIcon, type MyButton_Props } from "@/components/my-button.tsx";
 import { MyFloatingSurface } from "@/components/my-floating-surface.tsx";
 import type { MyPopoverContent_ClassNames } from "@/components/my-popover.tsx";
+import type { MySelectPopover_ClassNames } from "@/components/my-select.tsx";
 import { FileEditorRichTextToolsInlineAi } from "./file-editor-rich-text-tools-inline-ai.tsx";
 import {
 	FileEditorRichTextToolsComment,
@@ -542,15 +543,15 @@ const FileEditorRichTextBubble = memo(function FileEditorRichTextBubble(props: F
 	});
 
 	/**
-	 * The link and comment popovers have no portal, so they sit inside the bubble surface. While one is
-	 * open, it owns Escape and the bubble must stay. The popover's Escape can run before or after the
-	 * bubble listeners (both listen on `window`), so check both signs: a layer already used the press,
-	 * or a popover in the bubble is still open.
+	 * The link and comment popovers and the block format and color selects have no portal, so they sit
+	 * inside the bubble surface. While one is open, it owns Escape and the bubble must stay. The layer's
+	 * Escape can run before or after the bubble listeners (both listen on `window`), so check both signs:
+	 * a layer already used the press, or a popover or a select list in the bubble is still open.
 	 */
 	const isEscapeForBubblePopover = (event: KeyboardEvent) =>
 		event.defaultPrevented ||
 		!!bubbleSurfaceRef.current?.querySelector(
-			`.${"MyPopoverContent" satisfies MyPopoverContent_ClassNames}[data-open]`,
+			`.${"MyPopoverContent" satisfies MyPopoverContent_ClassNames}[data-open], .${"MySelectPopover" satisfies MySelectPopover_ClassNames}[data-open]`,
 		);
 
 	const handleClickAi = useFn<MyButton_Props["onClick"]>(() => {

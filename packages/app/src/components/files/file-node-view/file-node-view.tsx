@@ -1210,9 +1210,9 @@ const FileNodeViewViewSelect = memo(function FileNodeViewViewSelect(props: FileN
 	});
 
 	return (
-		<MySearchSelect value={value} setValue={onValueChange} setOpen={handleOpenChange} setValueOnMove={false}>
-			{/* Closed-trigger navigation must not start a preview or plugin session. */}
-			<MySearchSelectTrigger aria-label={`View: ${selectedOption.label}`} moveOnKeyDown={false} typeahead={false}>
+		<MySearchSelect value={value} setValue={onValueChange} setOpen={handleOpenChange}>
+			{/* Closed-trigger typeahead must not start a preview or plugin session. */}
+			<MySearchSelectTrigger aria-label={`View: ${selectedOption.label}`} typeahead={false}>
 				<MyButton
 					type="button"
 					variant="outline"
@@ -3828,8 +3828,9 @@ const FileNodeViewFolderExplorerSortSelect = memo(function FileNodeViewFolderExp
 
 	return (
 		<div className={"FileNodeViewFolderExplorerSortSelect" satisfies FileNodeViewFolderExplorerSortSelect_ClassNames}>
-			<MySearchSelect value={sort.field} setValue={handleValueChange} setOpen={handleOpenChange} setValueOnMove={false}>
-				<MySearchSelectTrigger aria-label={`Sort: ${sortLabel}`} moveOnKeyDown={false} typeahead={false}>
+			<MySearchSelect value={sort.field} setValue={handleValueChange} setOpen={handleOpenChange}>
+				{/* Letter keys on the closed trigger must not change the sort. */}
+				<MySearchSelectTrigger aria-label={`Sort: ${sortLabel}`} typeahead={false}>
 					<MyButton
 						type="button"
 						variant="outline"

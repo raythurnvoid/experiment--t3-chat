@@ -528,6 +528,46 @@ describe("FileEditorRichTextNonCollab", () => {
 		expect(document.activeElement).toBe(editor.view.dom);
 	});
 
+	test("Escape in an open bubble select closes only the select, and the bubble stays", async () => {
+		resolveQueryWithNonCollaborativeContent("alpha beta\n");
+		renderNonCollabRichEditor();
+		await flushEditorMount();
+		const editor = editorHarness.editor;
+		if (!editor) {
+			throw new Error("Expected the mounted editor to be captured");
+		}
+
+		// The bubble registers its listeners from a timer. Tiptap shows it 250 ms after the selection changes.
+		await act(async () => {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		});
+		await act(async () => {
+			editor.chain().focus().setTextSelection({ from: 1, to: 6 }).run();
+			await new Promise((resolve) => setTimeout(resolve, 400));
+		});
+		const bubble = document.querySelector<HTMLElement>(".FileEditorRichTextBubble-rendered");
+		if (!bubble) {
+			throw new Error("Expected the bubble to show for the selection");
+		}
+
+		// The select list has no portal, so it opens inside the bubble surface.
+		fireEvent.click(within(bubble).getByRole("combobox", { name: /^Block format:/ }));
+		await act(async () => {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		});
+		const list = within(bubble).getByRole("listbox");
+		expect(list.hasAttribute("data-open")).toBe(true);
+
+		fireEvent.keyDown(list, { key: "Escape" });
+		await act(async () => {
+			await new Promise((resolve) => setTimeout(resolve, 50));
+		});
+
+		// The block format list unmounts while closed.
+		expect(within(bubble).queryByRole("listbox")).toBeNull();
+		expect(document.querySelector(".FileEditorRichTextBubble-rendered")).not.toBeNull();
+	});
+
 	test("a snapshot restore refreshes the comment anchors without waiting for the next edit", async () => {
 		resolveQueryWithNonCollaborativeContent(comment_markdown("thread_a", "alpha"));
 		renderNonCollabRichEditor();

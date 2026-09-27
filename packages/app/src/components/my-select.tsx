@@ -1,8 +1,24 @@
 import "./my-floating-surface.css";
 import "./my-select.css";
-import * as Ariakit from "@ariakit/react";
+import {
+	Select,
+	SelectGroup,
+	SelectGroupLabel,
+	SelectItem,
+	SelectLabel,
+	SelectPopover,
+	SelectProvider,
+	type SelectGroupLabelProps,
+	type SelectGroupProps,
+	type SelectItemProps,
+	type SelectLabelProps,
+	type SelectPopoverProps,
+	type SelectProps,
+	type SelectProviderProps,
+	type SelectValue,
+} from "native-popovers/select";
 import { memo } from "react";
-import type { AppClassName, AppElementId } from "@/lib/dom-utils.ts";
+import type { AppClassName } from "@/lib/dom-utils.ts";
 import { cn } from "@/lib/utils.ts";
 import type { ExtractStrict } from "type-fest";
 import { MyIcon, type MyIcon_Props } from "./my-icon.tsx";
@@ -11,18 +27,18 @@ import { ChevronDownIcon, Check } from "lucide-react";
 // #region items group text
 export type MySelectItemsGroupText_ClassNames = "MySelectItemsGroupText";
 
-export type MySelectItemsGroupText_Props = Ariakit.SelectGroupLabelProps;
+export type MySelectItemsGroupText_Props = SelectGroupLabelProps;
 
 export const MySelectItemsGroupText = memo(function MySelectItemsGroupText(props: MySelectItemsGroupText_Props) {
 	const { className, children, ...rest } = props;
 
 	return (
-		<Ariakit.SelectGroupLabel
+		<SelectGroupLabel
 			className={cn("MySelectItemsGroupText" satisfies MySelectItemsGroupText_ClassNames, className)}
 			{...rest}
 		>
 			{children}
-		</Ariakit.SelectGroupLabel>
+		</SelectGroupLabel>
 	);
 });
 // #endregion items group text
@@ -86,8 +102,14 @@ export type MySelectItemContentIcon_Props = {
 export const MySelectItemContentIcon = memo(function MySelectItemContentIcon(props: MySelectItemContentIcon_Props) {
 	const { className, children, ...rest } = props;
 
+	// The icon is decorative (a sample letter or a lucide icon). Hidden, it stays out of the option's
+	// accessible name and out of typeahead, so `p` reaches `Purple`, not the sample `A`.
 	return (
-		<MyIcon className={cn("MySelectItemContentIcon" satisfies MySelectItemContentIcon_ClassNames, className)} {...rest}>
+		<MyIcon
+			className={cn("MySelectItemContentIcon" satisfies MySelectItemContentIcon_ClassNames, className)}
+			aria-hidden
+			{...rest}
+		>
 			{children}
 		</MyIcon>
 	);
@@ -132,19 +154,15 @@ export const MySelectItemIndicator = memo(function MySelectItemIndicator(props: 
 // #region item
 export type MySelectItem_ClassNames = "MySelectItem";
 
-export type MySelectItem_Props = Ariakit.SelectItemProps;
+export type MySelectItem_Props = SelectItemProps;
 
 export const MySelectItem = memo(function MySelectItem(props: MySelectItem_Props) {
 	const { className, value, children, ...rest } = props;
 
 	return (
-		<Ariakit.SelectItem
-			className={cn("MySelectItem" satisfies MySelectItem_ClassNames, className)}
-			value={value}
-			{...rest}
-		>
+		<SelectItem className={cn("MySelectItem" satisfies MySelectItem_ClassNames, className)} value={value} {...rest}>
 			{children}
-		</Ariakit.SelectItem>
+		</SelectItem>
 	);
 });
 // #endregion item
@@ -154,13 +172,13 @@ export type MySelectItemsGroup_ClassNames = "MySelectItemsGroup" | "MySelectItem
 
 export type MySelectItemsGroup_Props = {
 	separator?: boolean;
-} & Ariakit.SelectGroupProps;
+} & SelectGroupProps;
 
 export const MySelectItemsGroup = memo(function MySelectItemsGroup(props: MySelectItemsGroup_Props) {
 	const { className, children, separator = false, ...rest } = props;
 
 	return (
-		<Ariakit.SelectGroup
+		<SelectGroup
 			className={cn(
 				"MySelectItemsGroup" satisfies MySelectItemsGroup_ClassNames,
 				separator && ("MySelectItemsGroup-separator" satisfies MySelectItemsGroup_ClassNames),
@@ -169,7 +187,7 @@ export const MySelectItemsGroup = memo(function MySelectItemsGroup(props: MySele
 			{...rest}
 		>
 			{children}
-		</Ariakit.SelectGroup>
+		</SelectGroup>
 	);
 });
 // #endregion items group
@@ -194,6 +212,8 @@ export const MySelectPopoverScrollableArea = memo(function MySelectPopoverScroll
 				"app-scrollable" satisfies AppClassName,
 				className,
 			)}
+			// Chromium and Firefox make an overflowing scroller a Tab stop. Focus must stay on the listbox.
+			tabIndex={-1}
 			{...rest}
 		>
 			{children}
@@ -224,24 +244,25 @@ export const MySelectPopoverContent = memo(function MySelectPopoverContent(props
 // #region popover
 export type MySelectPopover_ClassNames = "MySelectPopover";
 
-export type MySelectPopover_Props = Ariakit.SelectPopoverProps;
+export type MySelectPopover_Props = SelectPopoverProps;
 
+/**
+ * The list. It adds no portal: it stays in the DOM where the caller renders it, and the browser shows
+ * it in the top layer. So inside a `MyModal` it stays inside the dialog, and its key events still reach
+ * the DOM parents of its trigger.
+ */
 export const MySelectPopover = memo(function MySelectPopover(props: MySelectPopover_Props) {
-	const { className, portal = true, portalElement, sameWidth = false, gutter = 4, children, ...rest } = props;
-
-	const appHoistingContainer = document.getElementById("app_hoisting_container" satisfies AppElementId);
+	const { className, sameWidth = false, gutter = 4, children, ...rest } = props;
 
 	return (
-		<Ariakit.SelectPopover
+		<SelectPopover
 			className={cn("MySelectPopover" satisfies MySelectPopover_ClassNames, className)}
 			gutter={gutter}
 			sameWidth={sameWidth}
-			portal={portal}
-			portalElement={portalElement ?? appHoistingContainer ?? undefined}
 			{...rest}
 		>
 			{children}
-		</Ariakit.SelectPopover>
+		</SelectPopover>
 	);
 });
 // #endregion popover
@@ -249,20 +270,19 @@ export const MySelectPopover = memo(function MySelectPopover(props: MySelectPopo
 // #region open indicator
 export type MySelectOpenIndicator_ClassNames = "MySelectOpenIndicator";
 
-export type MySelectOpenIndicator_Props = Omit<
-	Ariakit.SelectArrowProps,
-	ExtractStrict<keyof Ariakit.SelectArrowProps, "render">
->;
+export type MySelectOpenIndicator_Props = MyIcon_Props;
 
 export const MySelectOpenIndicator = memo(function MySelectOpenIndicator(props: MySelectOpenIndicator_Props) {
 	const { className, children, ...rest } = props;
 
 	return (
-		<Ariakit.SelectArrow
+		<MyIcon
 			className={cn("MySelectOpenIndicator" satisfies MySelectOpenIndicator_ClassNames, className)}
-			render={<MyIcon>{children ?? <ChevronDownIcon />}</MyIcon>}
+			aria-hidden
 			{...rest}
-		></Ariakit.SelectArrow>
+		>
+			{children ?? <ChevronDownIcon />}
+		</MyIcon>
 	);
 });
 // #endregion open indicator
@@ -270,15 +290,15 @@ export const MySelectOpenIndicator = memo(function MySelectOpenIndicator(props: 
 // #region label
 export type MySelectLabel_ClassNames = "MySelectLabel";
 
-export type MySelectLabel_Props = Ariakit.SelectLabelProps;
+export type MySelectLabel_Props = SelectLabelProps;
 
 export const MySelectLabel = memo(function MySelectLabel(props: MySelectLabel_Props) {
 	const { className, children, ...rest } = props;
 
 	return (
-		<Ariakit.SelectLabel className={cn("MySelectLabel" satisfies MySelectLabel_ClassNames, className)} {...rest}>
+		<SelectLabel className={cn("MySelectLabel" satisfies MySelectLabel_ClassNames, className)} {...rest}>
 			{children}
-		</Ariakit.SelectLabel>
+		</SelectLabel>
 	);
 });
 // #endregion label
@@ -287,18 +307,14 @@ export const MySelectLabel = memo(function MySelectLabel(props: MySelectLabel_Pr
 export type MySelectTrigger_ClassNames = "MySelectTrigger";
 
 export type MySelectTrigger_Props = {
-	children?: Ariakit.SelectProps["render"];
-} & Omit<Ariakit.SelectProps, ExtractStrict<keyof Ariakit.SelectProps, "render">>;
+	children?: SelectProps["render"];
+} & Omit<SelectProps, ExtractStrict<keyof SelectProps, "render" | "children">>;
 
 export const MySelectTrigger = memo(function MySelectTrigger(props: MySelectTrigger_Props) {
 	const { className, children, ...rest } = props;
 
 	return (
-		<Ariakit.Select
-			className={cn("MySelectTrigger" satisfies MySelectTrigger_ClassNames, className)}
-			render={children}
-			{...rest}
-		/>
+		<Select className={cn("MySelectTrigger" satisfies MySelectTrigger_ClassNames, className)} render={children} {...rest} />
 	);
 });
 // #endregion trigger
@@ -306,31 +322,11 @@ export const MySelectTrigger = memo(function MySelectTrigger(props: MySelectTrig
 // #region root
 export type MySelect_ClassNames = "MySelect";
 
-export type MySelect_Props = Ariakit.SelectProviderProps;
+export type MySelect_Props<V extends SelectValue = SelectValue> = SelectProviderProps<V>;
 
-const MySelect = Object.assign(
-	memo(function MySelect(props: MySelect_Props) {
-		const { children, virtualFocus = true, ...rest } = props;
+export const MySelect = memo(function MySelect(props: MySelect_Props) {
+	const { children, ...rest } = props;
 
-		return (
-			<Ariakit.SelectProvider virtualFocus={virtualFocus} {...rest}>
-				{children}
-			</Ariakit.SelectProvider>
-		);
-	}),
-	{
-		useStore: () => {
-			const context = Ariakit.useSelectContext();
-
-			if (!context) {
-				throw new Error("[MySelect.useStore] Must be used within MySelect");
-			}
-
-			return context;
-		},
-		useStoreState: Ariakit.useStoreState,
-	},
-);
-
-export { MySelect };
+	return <SelectProvider {...rest}>{children}</SelectProvider>;
+});
 // #endregion root

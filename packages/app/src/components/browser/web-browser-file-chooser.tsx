@@ -292,10 +292,11 @@ export const WebBrowserFileChooser = memo(function WebBrowserFileChooser(props: 
 							</p>
 						)}
 						<div className={"WebBrowserFileChooser-actions" satisfies WebBrowserFileChooser_ClassNames}>
-							{/* The value stays "" because Ariakit adopts the first item's value on mount when no
-							    value is given, and that would pick a file nobody chose. */}
+							{/* The value stays "": each pick adds a file to the list, so no option is ever shown
+							    as the chosen one. */}
 							<MySearchSelect open={pickerOpen} setOpen={handlePickerOpenChange} value="" setValue={handlePick}>
-								<MySearchSelectTrigger aria-label="Choose from Files" disabled={blocked || full}>
+								{/* Closed-trigger typeahead would attach a file without opening the list. */}
+								<MySearchSelectTrigger aria-label="Choose from Files" disabled={blocked || full} typeahead={false}>
 									<MyButton type="button" variant="outline">
 										<MyButtonIcon>
 											<FolderOpen aria-hidden />

@@ -169,15 +169,20 @@
 		min-width: 200px;
 		max-height: 300px;
 
+		/* The list stays inside its trigger's DOM parent, so it inherits text styles from there. Reset
+		   them to the app values, like .MyMenuPopover. */
+		font-family: var(--app-font-sans);
+		font-weight: 400;
+		font-size: 1rem;
+		line-height: 1.5;
+		white-space: normal;
+
 		contain: content;
 	}
 	/* #endregion popover */
 
 	/* #region open indicator */
 	.MySelectOpenIndicator.MyIcon {
-		width: 16px;
-		height: 16px;
-
 		transition: transform 0.15s ease-in-out;
 
 		/* Rotate open indicator when open */
