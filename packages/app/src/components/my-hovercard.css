@@ -48,24 +48,18 @@
 
 		padding: 6px 8px;
 
+		/* The card stays inside its anchor's DOM parent, so it inherits text styles from there. Reset
+		   them to the app values, like .MyMenuPopover. */
+		font-family: var(--app-font-sans);
+		font-weight: 400;
 		font-size: 0.75rem;
 		line-height: 1.25;
+		white-space: normal;
 
+		/* Paint containment also clips the arrow outside the box, so the card shows no arrow. The arrow
+		   still adds half its size to the gap. */
 		contain: content;
 		z-index: 50;
 	}
 	/* #endregion content */
-
-	/* #region arrow */
-	.MyHoverCardArrow {
-		width: 10px;
-		height: 10px;
-
-		border-radius: 2px;
-
-		background: var(--color-base-1-04);
-
-		transform: rotate(45deg);
-	}
-	/* #endregion arrow */
 }
