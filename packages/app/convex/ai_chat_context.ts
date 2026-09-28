@@ -36,6 +36,9 @@ export const discover_sources = internalQuery({
 					path: v.string(),
 				}),
 			),
+			pluginSkills: v.array(
+				v.object({ pluginName: v.string(), name: v.string(), description: v.string(), path: v.string() }),
+			),
 			warning: v.optional(v.string()),
 		}),
 	}),
@@ -95,10 +98,30 @@ export const discover_sources = internalQuery({
 			scan.cursor = listed._yay.continueCursor;
 		}
 		skills.sort((a, b) => a.workspace.localeCompare(b.workspace) || a.path.localeCompare(b.path));
+
+		// Plugin skills come only from enabled installations in the current workspace, so they never
+		// reach the home workspace. The Bash mount `/.plugins/<pluginName>` follows the same rule.
+		const current = workspaces.find((root) => root.workspace === "current")!;
+		const installations = await ctx.db
+			.query("plugins_workspace_installations")
+			.withIndex("by_organization_workspace_status_pluginName", (q) =>
+				q.eq("organizationId", current.organizationId).eq("workspaceId", current.workspaceId).eq("status", "enabled"),
+			)
+			.collect();
+		const pluginSkills: { pluginName: string; name: string; description: string; path: string }[] = [];
+		for (const installation of installations) {
+			if (!installation.acceptedCapabilities.includes("agent.skills.contribute")) continue;
+			const version = (await ctx.db.get("plugins_versions", installation.pluginVersionId))!;
+			for (const skill of version.skills) {
+				pluginSkills.push({ pluginName: installation.pluginName, ...skill });
+			}
+		}
+
 		return Result({
 			_yay: {
 				workspaces,
 				skills: skills.slice(0, ai_chat_skills_LIMITS.discovered),
+				pluginSkills,
 				...(scans.some((scan) => !scan.complete) || skills.length > ai_chat_skills_LIMITS.discovered
 					? {
 							warning: "The skill catalog is incomplete. Use Bash to inspect each workspace's .agents/skills folder.",

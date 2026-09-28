@@ -60,6 +60,7 @@ function fixture(sameHome = false) {
 								.concat(sameHome ? [] : [...personalFiles.keys()].map((path) => ({ workspace: "personal", path })))
 								.filter(({ path }) => /^\/\.agents\/skills\/[^/]+\/SKILL\.md$/u.test(path))
 								.slice(0, 100),
+							pluginSkills: [],
 						},
 					});
 				case "files_visible:internal_get_by_path":

@@ -48,9 +48,18 @@ The [Agent Skills specification](https://agentskills.io/specification) permits l
 
 `SKILL.md` starts with fenced YAML frontmatter. A UTF-8 BOM and Windows line endings are accepted. Parse YAML 1.2 core. Reject errors, warnings, duplicate keys, unsupported tags, and excessive aliases. Require `name` and a nonempty `description` of at most 1,024 characters. Optional `compatibility` is nonempty and at most 500 characters. Also accept string `license`, string-to-string `metadata`, and string `allowed-tools`. Ignore unknown fields. These fields never grant permissions or add tools.
 
-The parser returns only `name` and `description`. Each model catalog entry adds `workspace: "current" | "personal"` and the full Bash path under `/home/cloud-usr/w/<organization>/<workspace>/`. Invalid readable entries get that same workspace/path and a short repair warning. Do not include skill bodies, optional metadata, runtime labels, or resource inventories in the catalog. The full serialized entries, including workspace and path labels, share one 32 KiB metadata limit.
+The parser returns only `name` and `description`. Each workspace catalog entry adds `source: "workspace"`, `workspace: "current" | "personal"`, and the full Bash path under `/home/cloud-usr/w/<organization>/<workspace>/`. Invalid readable entries get that same workspace/path and a short repair warning. Do not include skill bodies, optional metadata, runtime labels, or resource inventories in the catalog. The full serialized entries, including workspace and path labels, share one 32 KiB metadata limit.
 
 Read the frontmatter through the ordinary bounded prefix mode. If chunks cannot serve it, use the normal bounded content action. No new skill reader is needed. Readable sources that cannot be read receive a warning. Deleted or restricted sources are omitted. Catalog limits always produce a clear incomplete warning.
+
+# Plugin skills
+
+A plugin manifest may list skills (see the plugin-system spec). `discover_sources` also returns them: for each **enabled** installation in the **current** workspace whose `acceptedCapabilities` include `agent.skills.contribute`, the installed version's `skills`, in plugin-name order. They never come from the home workspace's installations.
+
+- Catalog entry: `{ source: "plugin", plugin, path, name, description }`, where `path` is `/.plugins/<pluginName>/dist/skills/<name>/SKILL.md`. Name and description come from the version doc. Publish parsed the file's frontmatter and stored its description there, so no file is read at turn setup.
+- Plugin entries come after the workspace entries and share the same 32 KiB budget. When the workspace entries already filled it, no plugin entry is added.
+- The agent reads the body with Bash from the read-only `/.plugins/<pluginName>` mount. The mount has only the reviewed text files, and it exists only for enabled installations, so disable and uninstall hide the skill at once.
+- A workspace skill and a plugin skill with the same name are two skills. The prompt tells the agent to say which one it uses.
 
 # Prompt and tool flow
 
@@ -92,7 +101,7 @@ The tool layer also bounds serialized inputs and outputs across the request. It 
 - [Discovery tests](../../../packages/app/convex/ai_chat_context.test.ts): both trusted roots, same-home dedupe, third-workspace and other-home exclusion, source creator/lifetime checks, exact paths, pending visibility, and shared scan/catalog limits.
 - [Context tests](../../../packages/app/server/ai-chat-context.test.ts): qualified roots and metadata-only catalogs, duplicate names, ancestor scope, workspace/path/text dedupe, shared parallel byte budgets, output refusal, access loss during reads, and safe read errors.
 - [Parser tests](../../../packages/app/server/ai-chat-skills.test.ts): valid metadata, malformed YAML, aliases, app name rules, and UTF-8 frontmatter limits.
-- [Gate tests](../../../packages/app/convex/ai_chat_context_gate.test.ts) and [route tests](../../../packages/app/convex/ai_chat_context_route.test.ts): optional feature flag and actual stream setup.
+- [Gate tests](../../../packages/app/convex/ai_chat_context_gate.test.ts) and [route tests](../../../packages/app/convex/ai_chat_context_route.test.ts): optional feature flag, actual stream setup, and plugin skills (enabled and accepted only, read through `/.plugins`).
 - Tool and Bash tests cover complete reads, continuation, actual app path records, successful writes with guidance warnings, and unknown completed tool history.
 - Use the [Playwriter harness](../app-playwriter-harness/SKILL.md) for live auto-use, pending file edits, ancestor-only guidance, history reload, and removal of the picker. Keep QA fixtures in the personal scratch folder unless they are maintained harness fixtures.
 - Run focused tests first, then the required app lint and full test pass for this shared surface. Report live checks separately from mocked tests.

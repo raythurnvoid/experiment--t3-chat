@@ -332,6 +332,7 @@ A manifest may declare remote MCP servers for the chat agent, and skills for its
 - `auth` — `{ "kind": "none" }` with no headers, `{ "kind": "secret_headers" }` with at least one header, or `{ "kind": "oauth", "issuer", "resource", "scopes" }`. With `oauth`, `issuer` and `resource` are `https:` URLs without a query or fragment, `resource` is null or the server URL or one of its parent paths, and `Authorization` is refused as a header because Press sends the member's token there.
 - `tools` — at most 200 tool names the agent may call, or null for every tool the server lists.
 - A skill `path` must be exactly `dist/skills/<name>/SKILL.md` and a `files[]` entry with contentType `"text/markdown"`. The file is at most 64 KiB and starts with YAML frontmatter between two `---` lines, with `name` equal to the skill name and a nonempty `description`. Publishing refuses a skill that fails these checks. At most 32 skills.
+- The chat catalog lists each skill at `/.plugins/<pluginName>/dist/skills/<name>/SKILL.md`, and the agent reads it from there with Bash. That read-only mount holds only the text files the review read, so a file next to `SKILL.md` is there only when it is a reviewed text file. Binary files in the skill folder are not.
 
 ## Frontend pages
 

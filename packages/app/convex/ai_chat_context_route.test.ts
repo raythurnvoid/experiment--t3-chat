@@ -5,7 +5,10 @@ import { APICallError, type streamText } from "ai";
 import { MockLanguageModelV3 } from "ai/test";
 import { getFunctionAddress, getFunctionName } from "convex/server";
 import { api, internal } from "./_generated/api.js";
+import type { MutationCtx } from "./_generated/server.js";
 import { test_convex, test_create_saved_text_file, test_mocks_fill_db_with } from "./setup.test.ts";
+import { organizations_GLOBAL_PLUGINS_WORKSPACE_ID } from "../shared/organizations.ts";
+import type { plugins_Capability } from "../shared/plugins.ts";
 import { files_nodes_db_create_private_node_by_path } from "./files_nodes.ts";
 import { files_private_storage_db_reserve } from "./files_private_storage.ts";
 import { r2_create_asset_key } from "./r2_client.ts";
@@ -80,6 +83,84 @@ async function setup() {
 	});
 	if (thread._nay) throw new Error(thread._nay.message);
 	return { t, asUser, membership, threadId: thread._yay.threadId };
+}
+
+/**
+ * Insert a plugin version with one skill named `triage`, and its installation in the membership's
+ * workspace.
+ */
+async function insert_skill_plugin(
+	ctx: MutationCtx,
+	args: {
+		membership: Awaited<ReturnType<typeof test_mocks_fill_db_with.membership>>;
+		pluginName: string;
+		description: string;
+		status: "enabled" | "disabled";
+		acceptedCapabilities: plugins_Capability[];
+	},
+) {
+	const now = Date.now();
+	const { organizationId, workspaceId, userId } = args.membership;
+	const skills = [{ name: "triage", path: "dist/skills/triage/SKILL.md", description: args.description }];
+	const pluginVersionId = await ctx.db.insert("plugins_versions", {
+		name: args.pluginName,
+		displayName: args.pluginName,
+		version: "1.0.0",
+		description: "",
+		reviewStatus: "passed",
+		reviewId: null,
+		isLatest: true,
+		artifactHash: "hash",
+		sourceRepositoryUrl: `https://github.test/acme/${args.pluginName}`,
+		sourceOwner: "acme",
+		sourceRepo: args.pluginName,
+		sourceCommitSha: "sha",
+		manifestR2Key: "manifest",
+		backendEntrypointFile: null,
+		configuration: null,
+		events: [],
+		pages: [],
+		fileViews: [],
+		capabilities: ["agent.skills.contribute"],
+		outboundOrigins: [],
+		uiOutboundOrigins: [],
+		mcpServers: [],
+		mcpServersFingerprint: "mcp-servers-hash",
+		skills,
+		files: [],
+		sourceStatus: "ready",
+		sourceLastError: null,
+		createdBy: userId,
+		updatedAt: now,
+	});
+	await ctx.db.insert("plugins_workspace_installations", {
+		serviceAccountId: await ctx.db.insert("access_control_service_accounts", {
+			organizationId,
+			workspaceId,
+			name: args.pluginName,
+			createdBy: userId,
+			createdAt: now,
+			updatedAt: now,
+			revokedAt: null,
+		}),
+		organizationId,
+		workspaceId,
+		pluginVersionId,
+		pluginName: args.pluginName,
+		status: args.status,
+		configurationYaml: null,
+		acceptedCapabilities: args.acceptedCapabilities,
+		capabilitiesAcceptedAt: now,
+		acceptedOutboundOrigins: [],
+		acceptedUiOutboundOrigins: [],
+		acceptedMcpServersFingerprint: "mcp-servers-hash",
+		acceptedSkillNames: skills.map((skill) => skill.name),
+		outboundOriginsAcceptedAt: now,
+		installedBy: userId,
+		updatedBy: userId,
+		updatedAt: now,
+	});
+	return pluginVersionId;
 }
 
 describe("/api/chat tool call repair", () => {
@@ -952,6 +1033,89 @@ describe("/api/chat workspace instructions", () => {
 		const stored = messages.find((message) => message.clientGeneratedMessageId === "selected-message")!;
 		expect(stored.content.metadata ?? {}).not.toHaveProperty("skillIds");
 		expect(JSON.stringify(messages)).not.toContain("EXPLICIT_BODY_276");
+	});
+
+	test("lists skills of enabled plugins that were allowed to add them, next to workspace skills", async () => {
+		const { t, asUser, membership, threadId } = await setup();
+		await test_create_saved_text_file(t, {
+			membershipId: membership.membershipId,
+			path: "/.agents/skills/triage/SKILL.md",
+			textContent: "---\nname: triage\ndescription: WORKSPACE_TRIAGE_278\n---\n",
+		});
+		const trackerVersionId = await t.run((ctx) =>
+			insert_skill_plugin(ctx, {
+				membership,
+				pluginName: "tracker",
+				description: "PLUGIN_TRIAGE_279",
+				status: "enabled",
+				acceptedCapabilities: ["agent.skills.contribute"],
+			}),
+		);
+		await t.run((ctx) =>
+			insert_skill_plugin(ctx, {
+				membership,
+				pluginName: "sleepy",
+				description: "DISABLED_TRIAGE_280",
+				status: "disabled",
+				acceptedCapabilities: ["agent.skills.contribute"],
+			}),
+		);
+		await t.run((ctx) =>
+			insert_skill_plugin(ctx, {
+				membership,
+				pluginName: "quiet",
+				description: "NOT_ACCEPTED_TRIAGE_281",
+				status: "enabled",
+				acceptedCapabilities: [],
+			}),
+		);
+		const created = await t.action(internal.files_nodes_content.create_file_node_internal, {
+			workspaceId: organizations_GLOBAL_PLUGINS_WORKSPACE_ID,
+			path: `/${trackerVersionId}/dist/skills/triage/SKILL.md`,
+			rawText: "---\nname: triage\ndescription: PLUGIN_TRIAGE_279\n---\n\nPLUGIN_SKILL_BODY_282",
+		});
+		if (created._nay) throw new Error(created._nay.message);
+
+		const response = await asUser.fetch("/api/chat", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				messages: [{ id: "plugin-skill-message", role: "user", parts: [{ type: "text", text: "Triage this." }] }],
+				parentId: null,
+				mode: "ask",
+				model: "gpt-6-luna",
+				trigger: "submit-message",
+				threadId,
+				membershipId: membership.membershipId,
+			}),
+		});
+		const body = await response.text();
+		expect(response.status, body).toBe(200);
+
+		const call = model.streamText.mock.calls[0][0] as Parameters<typeof streamText>[0];
+		expect(call.system).toContain("WORKSPACE_TRIAGE_278");
+		expect(call.system).toContain(
+			JSON.stringify({
+				source: "plugin",
+				plugin: "tracker",
+				path: "/.plugins/tracker/dist/skills/triage/SKILL.md",
+				name: "triage",
+				description: "PLUGIN_TRIAGE_279",
+			}),
+		);
+		expect(call.system).not.toContain("DISABLED_TRIAGE_280");
+		expect(call.system).not.toContain("NOT_ACCEPTED_TRIAGE_281");
+		expect(call.system).not.toContain("PLUGIN_SKILL_BODY_282");
+		if (!call.tools?.bash?.execute) throw new Error("Expected Bash");
+
+		// The agent reads the body from the read-only plugin mount, like a workspace skill.
+		await t.action(async () => {
+			const output = await call.tools!.bash.execute!(
+				{ command: "cat /.plugins/tracker/dist/skills/triage/SKILL.md" },
+				{ toolCallId: "read-plugin-skill", messages: [] },
+			);
+			expect(output).toMatchObject({ output: expect.stringContaining("PLUGIN_SKILL_BODY_282") });
+		});
 	});
 
 	test("refuses removed skill tools before storage or model replay", async () => {
