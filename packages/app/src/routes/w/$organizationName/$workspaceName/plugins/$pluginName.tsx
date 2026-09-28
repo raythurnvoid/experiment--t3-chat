@@ -21,11 +21,13 @@ import {
 	ShieldCheck,
 	Trash2,
 	TriangleAlert,
+	Unplug,
 } from "lucide-react";
 import { editor as monaco_editor } from "monaco-editor";
 import { memo, useEffect, useRef, useState, type ClipboardEvent, type FormEvent } from "react";
 import { toast } from "sonner";
 
+import { McpConnect } from "@/components/mcp-connect.tsx";
 import { MyBadge } from "@/components/my-badge.tsx";
 import { MyButton } from "@/components/my-button.tsx";
 import { MyCheckboxButton } from "@/components/my-checkbox-button.tsx";
@@ -1439,6 +1441,7 @@ type RoutePluginsPluginAccess_ClassNames =
 	| "RoutePluginsPluginAccess-group-title"
 	| "RoutePluginsPluginAccess-list"
 	| "RoutePluginsPluginAccess-item"
+	| "RoutePluginsPluginAccess-item-actions"
 	| "RoutePluginsPluginAccess-empty"
 	| "RoutePluginsPluginAccess-trigger"
 	| "RoutePluginsPluginAccess-trigger-name"
@@ -1456,6 +1459,14 @@ type RoutePluginsPluginAccess_Props = {
 	mcpServerStatuses: app_convex_FunctionReturnType<
 		typeof app_convex_api.plugins_mcp.get_installation_mcp_status
 	> | null;
+	/**
+	 * Null when the plugin is not installed.
+	 */
+	installationId: app_convex_Id<"plugins_workspace_installations"> | null;
+	installationEnabled: boolean;
+	onMcpDisconnect: (
+		target: app_convex_FunctionArgs<typeof app_convex_api.plugins_mcp_oauth.disconnect>["target"],
+	) => void;
 };
 
 type RoutePluginsPluginAccess_CustomAttributes = {
@@ -1562,7 +1573,16 @@ function format_mcp_server_auth(server: plugins_McpServer) {
 }
 
 const RoutePluginsPluginAccess = memo(function RoutePluginsPluginAccess(props: RoutePluginsPluginAccess_Props) {
-	const { plugin, handlers, configurationYaml, events, mcpServerStatuses } = props;
+	const {
+		plugin,
+		handlers,
+		configurationYaml,
+		events,
+		mcpServerStatuses,
+		installationId,
+		installationEnabled,
+		onMcpDisconnect,
+	} = props;
 	const parsedConfiguration =
 		configurationYaml !== null && events !== null
 			? plugins_parse_installation_configuration_yaml({ configurationYaml, events })
@@ -1708,6 +1728,10 @@ const RoutePluginsPluginAccess = memo(function RoutePluginsPluginAccess(props: R
 						<ul className={"RoutePluginsPluginAccess-list" satisfies RoutePluginsPluginAccess_ClassNames}>
 							{plugin.mcpServers.map((server) => {
 								const status = mcpServerStatuses?.find((item) => item.serverId === server.id);
+								const target = installationId ? { kind: "plugin" as const, installationId, serverId: server.id } : null;
+								// Offer a sign-in only while the installation is on and the organization allows the server.
+								const canConnect =
+									installationEnabled && status?.policy === "allowed" && status.connection?.status !== "connected";
 								return (
 									<li
 										key={server.id}
@@ -1729,6 +1753,32 @@ const RoutePluginsPluginAccess = memo(function RoutePluginsPluginAccess(props: R
 													? ` — You are signed in at ${status.connection.authorizationHost}`
 													: " — Sign in again"
 											: ""}
+										{/* A member can always remove a sign-in. */}
+										{server.auth.kind === "oauth" && status && target && (canConnect || status.connection !== null) ? (
+											<div
+												className={
+													"RoutePluginsPluginAccess-item-actions" satisfies RoutePluginsPluginAccess_ClassNames
+												}
+											>
+												{canConnect ? (
+													<McpConnect
+														target={target}
+														label={status.connection === null ? "Connect" : "Reconnect"}
+														serverLabel={server.title}
+													/>
+												) : null}
+												{status.connection !== null ? (
+													<MyButton
+														variant="outline"
+														aria-label={`Disconnect ${server.title}`}
+														onClick={() => onMcpDisconnect(target)}
+													>
+														<Unplug aria-hidden />
+														Disconnect
+													</MyButton>
+												) : null}
+											</div>
+										) : null}
 									</li>
 								);
 							})}
@@ -2536,6 +2586,23 @@ function RoutePluginsPlugin() {
 			});
 	});
 
+	const handleMcpDisconnect = useFn<RoutePluginsPluginAccess_Props["onMcpDisconnect"]>((target) => {
+		app_convex
+			.mutation(app_convex_api.plugins_mcp_oauth.disconnect, { membershipId, target })
+			.then((result) => {
+				if (result._nay) {
+					toast.error(result._nay.message);
+				}
+			})
+			.catch((error: unknown) => {
+				console.error("[RoutePluginsPlugin.handleMcpDisconnect] Failed to disconnect MCP server", {
+					error,
+					target,
+				});
+				toast.error("Could not disconnect. Try again.");
+			});
+	});
+
 	const handleAcceptAndInstall = useFn((plugin: RoutePlugins_PublishedPlugin) => {
 		// Keep this guard because a mock or programmatic event can still call a disabled handler.
 		if (
@@ -2980,6 +3047,9 @@ function RoutePluginsPlugin() {
 					configurationYaml={installedItem?.installation.configurationYaml ?? null}
 					events={installedItem?.version.events ?? null}
 					mcpServerStatuses={mcpServerStatuses ?? null}
+					installationId={installedItem?.installation._id ?? null}
+					installationEnabled={installedItem?.installation.status === "enabled"}
+					onMcpDisconnect={handleMcpDisconnect}
 				/>
 
 				{publisherPlugin ? (

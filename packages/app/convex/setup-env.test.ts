@@ -103,6 +103,9 @@ if (!process.env.PLUGIN_SECRETS_ENCRYPTION_KEY) {
 if (!process.env.MCP_SECRETS_ENCRYPTION_KEY) {
 	process.env.MCP_SECRETS_ENCRYPTION_KEY = "MCP_SECRETS_ENCRYPTION_KEY_TEST";
 }
+if (!process.env.APP_BASE_URL) {
+	process.env.APP_BASE_URL = "https://app.press.test";
+}
 
 if (!process.env.GITHUB_TOKEN_IMPORT) {
 	process.env.GITHUB_TOKEN_IMPORT = "GITHUB_TOKEN_IMPORT_TEST";

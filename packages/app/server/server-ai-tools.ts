@@ -19,6 +19,7 @@ import type { Infer } from "convex/values";
 import type { FunctionReturnType } from "convex/server";
 import type { ai_chat_workspaces_source_validator } from "../convex/schema.ts";
 import { api, internal } from "../convex/_generated/api.js";
+import { plugins_mcp_oauth_get_access_token } from "../convex/plugins_mcp_oauth.ts";
 import { rate_limiter_limit_by_key } from "../convex/rate_limiter.ts";
 import {
 	files_READ_RANGE_MAX_LINES,
@@ -36,6 +37,7 @@ import {
 } from "../shared/ai-chat-files.ts";
 import {
 	mcp_client_call_tool,
+	mcp_client_step_up_scope,
 	type mcp_client_NormalizedResult,
 	type mcp_client_NormalizedTool,
 } from "./mcp-client.ts";
@@ -1671,6 +1673,7 @@ export type ai_chat_tool_create_execute_code_ToolOutput = InferToolOutput<ai_cha
 // #region mcp tools
 export const ai_chat_tool_MCP_TOOL_NAME_MAX_LENGTH = 64;
 const MCP_CALL_TIMEOUT_MS = 60_000;
+const MCP_SIGN_IN_BUSY_MESSAGE = "Press is renewing the sign-in of this MCP server. Try again.";
 const MCP_OUTPUT_MAX_BYTES = 64 * 1024;
 const MCP_TEXT_ENCODER = new TextEncoder();
 
@@ -1845,12 +1848,14 @@ export async function ai_chat_tool_create_mcp_tools(
 							membershipLifetime: ctxData.membershipLifetime,
 						};
 
-						const recheck = await ctx.runQuery(internal.plugins_mcp.recheck_call, {
-							source,
-							target: server.target,
-							expectedPluginVersionId: server.kind === "plugin" ? server.pluginVersionId : null,
-							expectedDestinationFingerprint: server.kind === "custom" ? server.destinationFingerprint : null,
-						});
+						const recheckCall = () =>
+							ctx.runQuery(internal.plugins_mcp.recheck_call, {
+								source,
+								target: server.target,
+								expectedPluginVersionId: server.kind === "plugin" ? server.pluginVersionId : null,
+								expectedDestinationFingerprint: server.kind === "custom" ? server.destinationFingerprint : null,
+							});
+						const recheck = await recheckCall();
 						if (recheck._nay) throw new Error(recheck._nay.message);
 
 						const rateLimit = await rate_limiter_limit_by_key(ctx, {
@@ -1868,16 +1873,39 @@ export async function ai_chat_tool_create_mcp_tools(
 							throw new Error("MCP tool arguments must be a JSON object.");
 						}
 
+						const signal = options.abortSignal ?? new AbortController().signal;
+						// A sign-in server gets the member's token. A call waits while another caller refreshes it.
+						const getAccess = (refusedVersion: number | null) =>
+							plugins_mcp_oauth_get_access_token(ctx, {
+								userId: ctxData.userId,
+								target: server.target,
+								refusedVersion,
+								waitForLease: true,
+								signal,
+							});
+						let access = server.auth === "oauth" ? await getAccess(null) : null;
+						if (access?.status === "busy") throw new Error(MCP_SIGN_IN_BUSY_MESSAGE);
+						if (access?.status === "failed") throw new Error(access.message);
+
+						// The server can echo the token back, so mask it like the header secrets.
+						const callSecrets = [...secrets];
+						const callWith = (accessToken: string | null) => {
+							if (accessToken !== null) {
+								callSecrets.push(accessToken);
+							}
+							return mcp_client_call_tool({
+								server: { url: server.url, headers: server.headers },
+								accessToken,
+								discover: server.discover,
+								tool: mcpTool,
+								arguments: input as Record<string, unknown>,
+								timeoutMs: Math.min(timeoutMs, ctxData.runDeadline - Date.now()),
+								signal,
+							});
+						};
+
 						const startedAt = Date.now();
-						const called = await mcp_client_call_tool({
-							server: { url: server.url, headers: server.headers },
-							accessToken: null,
-							discover: server.discover,
-							tool: mcpTool,
-							arguments: input as Record<string, unknown>,
-							timeoutMs,
-							signal: options.abortSignal ?? new AbortController().signal,
-						});
+						let called = await callWith(access?.status === "connected" ? access.accessToken : null);
 
 						const recordCall = async (outcome: string, bytesIn: number, result: ai_chat_McpToolOutput | null) => {
 							await ctx.runMutation(internal.plugins_mcp.record_call, {
@@ -1892,10 +1920,54 @@ export async function ai_chat_tool_create_mcp_tools(
 							});
 						};
 
-						// A member's own server with headers never starts a sign-in, so there is nothing to connect.
-						if (server.kind === "custom" && server.headerSpec.length > 0 && called._nay?.name === "auth_required") {
+						// A refused token gets one refresh and one more try. The server refused the first request
+						// before doing any work, so the retry is safe. Check the call again first: the owner may have
+						// blocked the server during the refresh.
+						if (called._nay?.name === "auth_required" && access?.status === "connected" && !access.refreshed) {
+							access = await getAccess(access.version);
+							if (access.status === "busy" || access.status === "failed") {
+								await recordCall(called._nay.name, 0, null);
+								throw new Error(access.status === "busy" ? MCP_SIGN_IN_BUSY_MESSAGE : access.message);
+							}
+							if (access.status === "connected") {
+								const retryRecheck = await recheckCall();
+								if (retryRecheck._nay) {
+									await recordCall(called._nay.name, 0, null);
+									throw new Error(retryRecheck._nay.message);
+								}
+								called = await callWith(access.accessToken);
+							}
+						}
+						// A token refused right after a refresh will not work again. The member must connect again.
+						if (called._nay?.name === "auth_required" && access?.status === "connected") {
+							await ctx.runMutation(internal.plugins_mcp_oauth.mark_refused, {
+								grantId: access.grantId,
+								version: access.version,
+							});
+						}
+						const stepUpScope = mcp_client_step_up_scope(called._nay);
+						if (stepUpScope !== null && server.auth === "oauth") {
+							await ctx.runMutation(internal.plugins_mcp_oauth.record_step_up, {
+								userId: ctxData.userId,
+								target: server.target,
+								scope: stepUpScope,
+							});
+						}
+
+						// Only a plugin server with OAuth, or a member's own server with no headers (its first
+						// sign-in pins it), can start a sign-in. Any other server that refuses the call has
+						// nothing to connect, so a Connect card would only say the server was removed.
+						if (
+							(called._nay?.name === "auth_required" || called._nay?.name === "insufficient_scope") &&
+							server.auth !== "oauth" &&
+							!(server.kind === "custom" && server.auth === "none")
+						) {
 							await recordCall(called._nay.name, 0, null);
-							throw new Error("This server refused its headers. Check them on the MCP servers page.");
+							throw new Error(
+								server.kind === "custom"
+									? "This server refused its headers. Check them on the MCP servers page."
+									: "This MCP server refused the plugin's access. Ask an admin to check the plugin and its secrets.",
+							);
 						}
 
 						// A thrown error reaches the chat as text only. The chat needs the target to show a
@@ -1924,7 +1996,7 @@ export async function ai_chat_tool_create_mcp_tools(
 							throw new Error(called._nay.message);
 						}
 
-						const shaped = mcp_result_output(called._yay.result, secrets);
+						const shaped = mcp_result_output(called._yay.result, callSecrets);
 						const result: ai_chat_McpToolOutput = {
 							title: mcpTool.name,
 							output: shaped.output,

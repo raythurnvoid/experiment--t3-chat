@@ -120,6 +120,42 @@ function mcp_nay(
 }
 
 /**
+ * The 401 challenge of an `auth_required` error: where the server's sign-in settings are, and the scope
+ * it asked for. `null` for every other error. OAuth discovery starts from it.
+ */
+export function mcp_client_auth_challenge(nay: ReturnType<typeof mcp_nay>["_nay"] | undefined) {
+	if (nay?.name !== "auth_required") {
+		return null;
+	}
+	// `error_to_nay` always gives `auth_required` this data.
+	const data = nay.data as { resourceMetadataUrl: string | null; scope: string | null };
+	return { resourceMetadataUrl: data.resourceMetadataUrl, scope: data.scope };
+}
+
+/**
+ * The scope a 403 `insufficient_scope` answer asked for. `null` for every other error, or when the
+ * server named none.
+ */
+export function mcp_client_step_up_scope(nay: ReturnType<typeof mcp_nay>["_nay"] | undefined) {
+	if (nay?.name !== "insufficient_scope") {
+		return null;
+	}
+	// `error_to_nay` always gives `insufficient_scope` this data.
+	return (nay.data as { scope: string | null }).scope;
+}
+
+/**
+ * Whether a `WWW-Authenticate` value names one parameter twice. Quoted values are skipped, because
+ * a URL inside them can hold `name=` too.
+ */
+function has_repeated_challenge_param(value: string) {
+	const names = [...value.replace(/"(?:[^"\\]|\\.)*"/gu, '""').matchAll(/([A-Za-z0-9_.-]+)\s*=/gu)].map((match) =>
+		match[1]!.toLowerCase(),
+	);
+	return new Set(names).size !== names.length;
+}
+
+/**
  * Map an SDK error to a Press error. Read error types and codes only, never message text.
  */
 function error_to_nay(
@@ -139,6 +175,9 @@ function error_to_nay(
 		// Without an auth provider the SDK throws a plain 401, with no challenge. The guard kept the
 		// `WWW-Authenticate` header, so parse it from there.
 		if (error.status === 401) {
+			// The SDK parser keeps one value of a repeated parameter. Press must not guess which one the
+			// server meant, so it refuses the challenge.
+			if (guard.wwwAuthenticate && has_repeated_challenge_param(guard.wwwAuthenticate)) return mcp_nay("bad_response");
 			const challenge = guard.wwwAuthenticate
 				? extractWWWAuthenticateParams(new Response(null, { headers: { "WWW-Authenticate": guard.wwwAuthenticate } }))
 				: {};
@@ -424,7 +463,7 @@ function normalize_result(result: CallToolResult, tool: mcp_client_NormalizedToo
 	const isError = result.isError === true;
 	const blocks: mcp_client_NormalizedBlock[] = [];
 	for (const block of result.content) {
-		// Never decode or fetch anything. Images and audio are not sent to the model in v1 (D14).
+		// Never decode or fetch anything. Images and audio are not sent to the model in v1.
 		switch (block.type) {
 			case "text":
 				blocks.push({ kind: "text", text: block.text });

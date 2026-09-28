@@ -106,7 +106,9 @@ export function plugins_mcp_custom_header_values(
 /**
  * The additional data that binds a grant's encrypted tokens to its target, member, and sign-in server.
  */
-function grant_additional_data(grant: Doc<"plugins_mcp_oauth_grants">) {
+export function plugins_mcp_grant_additional_data(
+	grant: Pick<Doc<"plugins_mcp_oauth_grants">, "target" | "userId" | "issuer" | "resource">,
+) {
 	const target =
 		grant.target.kind === "plugin"
 			? `plugin:${grant.target.installationId}:${grant.target.serverId}`
@@ -123,7 +125,29 @@ function grant_additional_data(grant: Doc<"plugins_mcp_oauth_grants">) {
  */
 export async function plugins_mcp_db_revoke_grant(ctx: MutationCtx, grant: Doc<"plugins_mcp_oauth_grants">) {
 	await ctx.db.delete("plugins_mcp_oauth_grants", grant._id);
+	await plugins_mcp_db_schedule_revocation(ctx, grant);
+}
 
+/**
+ * Copy a grant's encrypted token into a revocation doc and schedule one revoke attempt. The caller
+ * deletes or clears the tokens on the grant itself.
+ */
+export async function plugins_mcp_db_schedule_revocation(
+	ctx: MutationCtx,
+	grant: Pick<
+		Doc<"plugins_mcp_oauth_grants">,
+		| "target"
+		| "userId"
+		| "issuer"
+		| "resource"
+		| "revocationEndpoint"
+		| "clientId"
+		| "clientKind"
+		| "tokenEndpointAuthMethod"
+		| "accessToken"
+		| "refreshToken"
+	>,
+) {
 	// Revoking the refresh token also ends the access tokens it made at most servers.
 	const token = grant.refreshToken
 		? { value: grant.refreshToken, hint: "refresh_token" as const }
@@ -134,15 +158,19 @@ export async function plugins_mcp_db_revoke_grant(ctx: MutationCtx, grant: Doc<"
 		return;
 	}
 
-	await ctx.db.insert("plugins_mcp_oauth_revocations", {
+	const revocationId = await ctx.db.insert("plugins_mcp_oauth_revocations", {
 		token: token.value,
-		additionalData: grant_additional_data(grant),
+		additionalData: plugins_mcp_grant_additional_data(grant),
 		tokenTypeHint: token.hint,
 		revocationEndpoint: grant.revocationEndpoint,
+		issuer: grant.issuer,
 		clientId: grant.clientId,
 		clientKind: grant.clientKind,
 		tokenEndpointAuthMethod: grant.tokenEndpointAuthMethod,
 	});
+	// Only the doc id goes into the scheduler args. Convex keeps those args where the dashboard shows
+	// them, so a token must never be one.
+	await ctx.scheduler.runAfter(0, internal.plugins_mcp_oauth.revoke_one, { revocationId });
 }
 
 /**
@@ -894,6 +922,10 @@ export const list_turn_servers = internalQuery({
 					kind: v.literal("plugin"),
 					target: plugins_mcp_target_validator.members[0],
 					toolPrefix: v.string(),
+					/**
+					 * How the server signs in. `oauth` servers get the member's token.
+					 */
+					auth: v.union(v.literal("none"), v.literal("headers"), v.literal("oauth")),
 					source: v.object({ kind: v.literal("plugin"), pluginName: v.string(), serverTitle: v.string() }),
 					/**
 					 * Press text that names the server in the notes the model reads.
@@ -918,6 +950,7 @@ export const list_turn_servers = internalQuery({
 					kind: v.literal("custom"),
 					target: plugins_mcp_target_validator.members[1],
 					toolPrefix: v.string(),
+					auth: v.union(v.literal("none"), v.literal("headers"), v.literal("oauth")),
 					source: v.object({ kind: v.literal("custom"), serverName: v.string() }),
 					label: v.string(),
 					url: v.string(),
@@ -988,6 +1021,7 @@ export const list_turn_servers = internalQuery({
 					kind: "plugin" as const,
 					target: { kind: "plugin" as const, installationId: installation._id, serverId: server.id },
 					toolPrefix: serverDoc.toolPrefix,
+					auth: server.auth.kind === "secret_headers" ? ("headers" as const) : server.auth.kind,
 					source: { kind: "plugin" as const, pluginName: installation.pluginName, serverTitle: server.title },
 					label: `${installation.pluginName} · ${server.title}`,
 					url: server.url,
@@ -1004,6 +1038,7 @@ export const list_turn_servers = internalQuery({
 						kind: "custom" as const,
 						target: { kind: "custom" as const, customServerId: customServer._id },
 						toolPrefix: customServer.toolPrefix,
+						auth: customServer.auth.kind,
 						source: { kind: "custom" as const, serverName: customServer.name },
 						label: `Your server "${customServer.name}"`,
 						url: customServer.url,

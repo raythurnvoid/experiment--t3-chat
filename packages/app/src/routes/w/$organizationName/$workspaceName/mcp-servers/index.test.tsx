@@ -15,6 +15,7 @@ const { tenantContextMock, useQueryMock, actionMock, mutationMock } = vi.hoisted
 
 vi.mock("@tanstack/react-router", () => ({
 	createFileRoute: (_path: string) => (options: unknown) => ({ options }),
+	useLocation: () => ({ pathname: "/w/team/home/mcp-servers", searchStr: "" }),
 }));
 
 vi.mock("convex/react", () => ({
@@ -45,6 +46,8 @@ vi.mock("@/lib/app-convex-client.ts", () => ({
 		},
 		plugins_mcp_oauth: {
 			disconnect: "plugins_mcp_oauth.disconnect",
+			can_connect: "plugins_mcp_oauth.can_connect",
+			start: "plugins_mcp_oauth.start",
 		},
 	},
 }));
@@ -176,6 +179,8 @@ function setQueries(args: { canUse?: boolean; servers?: unknown[]; pluginServers
 				return { canUse, servers: args.servers ?? [] };
 			case "plugins_mcp.list_member_plugin_connections":
 				return { canUse, servers: args.pluginServers ?? [] };
+			case "plugins_mcp_oauth.can_connect":
+				return true;
 			default:
 				return undefined;
 		}
@@ -400,7 +405,7 @@ describe("RouteMcpServers", () => {
 		expect(screen.getByText(warning)).not.toBeNull();
 	});
 
-	test("the Plugin servers section shows Disconnect for a connected sign-in server", async () => {
+	test("the Plugin servers section shows Disconnect for a connected sign-in server and Connect for the others", async () => {
 		setQueries({
 			pluginServers: [
 				plugin_server({ connection: { status: "connected", scopes: ["read"], connectedAt: 1_700_000_000_000 } }),
@@ -420,7 +425,8 @@ describe("RouteMcpServers", () => {
 
 		const notConnected = screen.getByRole("listitem", { name: "Sentry" });
 		expect(notConnected.getAttribute("data-mcp-connection-status")).toBe("needs_sign_in");
-		expect(within(notConnected).queryByRole("button")).toBeNull();
+		expect(within(connected).queryByRole("button", { name: "Connect Linear" })).toBeNull();
+		expect(within(notConnected).queryByRole("button", { name: "Disconnect Sentry" })).toBeNull();
 
 		await act(async () => {
 			fireEvent.click(within(connected).getByRole("button", { name: "Disconnect Linear" }));
@@ -428,6 +434,51 @@ describe("RouteMcpServers", () => {
 		expect(mutationMock).toHaveBeenCalledWith("plugins_mcp_oauth.disconnect", {
 			membershipId: "membership_1",
 			target: { kind: "plugin", installationId: "installation_1", serverId: "linear" },
+		});
+
+		actionMock.mockResolvedValue({
+			_yay: { authorizationUrl: "https://sentry.io/authorize?state=s", authorizationHost: "sentry.io" },
+		});
+		await act(async () => {
+			fireEvent.click(within(notConnected).getByRole("button", { name: "Connect Sentry" }));
+		});
+		expect(actionMock).toHaveBeenCalledWith("plugins_mcp_oauth.start", {
+			membershipId: "membership_1",
+			target: { kind: "plugin", installationId: "installation_1", serverId: "sentry" },
+			returnPath: "/w/team/home/mcp-servers",
+		});
+		expect(within(notConnected).getByRole("status").textContent).toBe("You will sign in at sentry.io");
+	});
+
+	test("a saved sign-in server shows Connect until it is connected, then Disconnect", async () => {
+		const oauth = { kind: "oauth", authorizationHost: "linear.app" };
+		setQueries({
+			servers: [
+				saved_server({ auth: oauth, headers: [] }),
+				saved_server({
+					customServerId: "custom_2",
+					name: "Sentry",
+					auth: oauth,
+					headers: [],
+					connection: { status: "connected", scopes: [], connectedAt: 1_700_000_000_000 },
+				}),
+			],
+		});
+		mutationMock.mockResolvedValue({ _yay: null });
+		render(<PageComponent />);
+
+		const notConnected = screen.getByRole("listitem", { name: "Linear" });
+		expect(within(notConnected).getByRole("button", { name: "Connect Linear" })).not.toBeNull();
+		expect(within(notConnected).queryByRole("button", { name: "Disconnect Linear" })).toBeNull();
+
+		const connected = screen.getByRole("listitem", { name: "Sentry" });
+		expect(within(connected).queryByRole("button", { name: "Connect Sentry" })).toBeNull();
+		await act(async () => {
+			fireEvent.click(within(connected).getByRole("button", { name: "Disconnect Sentry" }));
+		});
+		expect(mutationMock).toHaveBeenCalledWith("plugins_mcp_oauth.disconnect", {
+			membershipId: "membership_1",
+			target: { kind: "custom", customServerId: "custom_2" },
 		});
 	});
 

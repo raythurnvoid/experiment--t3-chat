@@ -69,9 +69,11 @@ import {
 	ai_chat_file_result_schema,
 	ai_chat_file_result,
 	ai_chat_file_target_schema,
+	ai_chat_mcp_auth_needed_data_schema,
 	ai_chat_mcp_tool_output_schema,
 	type ai_chat_McpSource,
 } from "../../../shared/ai-chat-files.ts";
+import { McpConnect } from "@/components/mcp-connect.tsx";
 
 // Reuse one stable empty array so the store selector does not trigger avoidable re-renders.
 const EMPTY_BRANCH_SIBLING_IDS: readonly string[] = [];
@@ -884,9 +886,19 @@ const AiChatMessagePartToolMcp = memo(function AiChatMessagePartToolMcp(props: A
 				<AiChatMessagePartToolTextAreaSection label="Parameters" code={JSON.stringify(part.input ?? {}, null, "\t")} />
 				{part.errorText && <AiChatMessagePartToolTextAreaSection label="Error" code={part.errorText} state="error" />}
 				{metadata?.kind === "mcp_auth_needed" && (
-					<p role="status" className={"AiChatMessagePartToolMcp-status" satisfies AiChatMessagePartToolMcp_ClassNames}>
-						{result.data?.output}
-					</p>
+					<>
+						<p
+							role="status"
+							className={"AiChatMessagePartToolMcp-status" satisfies AiChatMessagePartToolMcp_ClassNames}
+						>
+							{result.data?.output}
+						</p>
+						<McpConnect
+							target={metadata.target}
+							label={metadata.reason === "needs_more_access" ? "Reconnect with more access" : "Connect"}
+							serverLabel={mcp_source_label(metadata.source)}
+						/>
+					</>
 				)}
 				{/* Server text is untrusted, so show it as plain text, never as Markdown. */}
 				{metadata?.kind === "mcp_result" && (
@@ -899,6 +911,55 @@ const AiChatMessagePartToolMcp = memo(function AiChatMessagePartToolMcp(props: A
 				)}
 			</AiChatMessagePartToolBody>
 		</AiChatMessagePartDisclosure>
+	);
+});
+
+type AiChatMessageMcpAuthNeeded_ClassNames =
+	| "AiChatMessageMcpAuthNeeded"
+	| "AiChatMessageMcpAuthNeeded-server"
+	| "AiChatMessageMcpAuthNeeded-text";
+
+type AiChatMessageMcpAuthNeeded_Props = {
+	data: unknown;
+};
+
+/**
+ * The sign-in notice at the top of a reply: servers left out of the turn because even their tool
+ * list needs sign-in. No tool call happens for them, so without this only the model would know.
+ */
+const AiChatMessageMcpAuthNeeded = memo(function AiChatMessageMcpAuthNeeded(props: AiChatMessageMcpAuthNeeded_Props) {
+	const { data } = props;
+
+	// A stored part is saved data. Show it only when it matches the notice schema.
+	const parsed = ai_chat_mcp_auth_needed_data_schema.safeParse(data);
+	if (!parsed.success) {
+		return null;
+	}
+
+	return (
+		<ul
+			className={"AiChatMessageMcpAuthNeeded" satisfies AiChatMessageMcpAuthNeeded_ClassNames}
+			aria-label="MCP sign-in"
+		>
+			{parsed.data.servers.map((server, index) => {
+				const serverLabel = mcp_source_label(server.source);
+				return (
+					<li
+						key={index}
+						className={"AiChatMessageMcpAuthNeeded-server" satisfies AiChatMessageMcpAuthNeeded_ClassNames}
+					>
+						<span className={"AiChatMessageMcpAuthNeeded-text" satisfies AiChatMessageMcpAuthNeeded_ClassNames}>
+							{serverLabel} {server.reason === "needs_reconnect" ? "needs to reconnect" : "needs sign-in"}
+						</span>
+						<McpConnect
+							target={server.target}
+							label={server.reason === "needs_reconnect" ? "Reconnect" : "Connect"}
+							serverLabel={serverLabel}
+						/>
+					</li>
+				);
+			})}
+		</ul>
 	);
 });
 // #endregion tool mcp
@@ -1479,6 +1540,13 @@ const AiChatMessageContent = memo(function AiChatMessageContent(props: AiChatMes
 			className={cn("AiChatMessageContent" satisfies AiChatMessageContent_ClassNames, className)}
 			{...rest}
 		>
+			{/* Every other data part stays hidden. The sign-in notice is the one the member must see. */}
+			{!children &&
+				parts.map((part, index) =>
+					part.type === "data-mcp-auth-needed" ? (
+						<AiChatMessageMcpAuthNeeded key={`mcp-auth-needed-${index}`} data={part.data} />
+					) : null,
+				)}
 			{children ??
 				displayItems.map((item, index) => {
 					// Keep index keys so persisted assistant messages do not remount while

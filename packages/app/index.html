@@ -2,6 +2,17 @@
 <html lang="en">
 	<head>
 		<meta charset="UTF-8" />
+		<script>
+			// An MCP sign-in comes back as /oauth/mcp/callback?code=...&state=... Move that answer out of the
+			// address bar before any other script runs, so Clerk, the app, and the browser history never keep
+			// the code. The callback route reads it back. Keep the key equal to `CALLBACK_STORAGE_KEY` there.
+			if (location.pathname.endsWith("/oauth/mcp/callback") && location.search) {
+				sessionStorage.setItem("app::mcp_oauth::callback", location.search);
+				history.replaceState(history.state, "", location.pathname);
+			}
+		</script>
+		<!-- GitHub Pages cannot set headers. Send only the origin, never a page path, to other sites. -->
+		<meta name="referrer" content="strict-origin-when-cross-origin" />
 		<link rel="icon" type="image/svg+xml" href="/press-logo.svg" />
 		<link rel="apple-touch-icon" href="/press-logo.png" />
 		<link rel="dns-prefetch" href="//%VITE_R2_FILES_DOWNLOAD_HOST%" />

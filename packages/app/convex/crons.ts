@@ -93,6 +93,10 @@ crons.cron("cleanup old mcp revocations", "50 6 * * *", internal.plugins_mcp.cle
 // Once daily at 06:55 UTC — delete MCP call ledger docs older than 30 days.
 crons.cron("cleanup old mcp calls", "55 6 * * *", internal.plugins_mcp.cleanup_old_calls, {});
 
+// Once daily at 07:00 UTC — delete MCP sign-ins that were started but never finished. Each lives 10
+// minutes and `finish` refuses an expired one, so a daily pass only frees the space.
+crons.cron("cleanup expired mcp sign-ins", "0 7 * * *", internal.plugins_mcp_oauth.cleanup_expired_pending, {});
+
 // Once hourly — release plugin-data reservations a crashed producer never released, then delete the
 // retry records, delete tombstones and append receipts, and delete expired service grants.
 //

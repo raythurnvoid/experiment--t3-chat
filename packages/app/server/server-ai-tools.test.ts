@@ -3432,6 +3432,7 @@ describe("ai_chat_tool_create_mcp_tools", () => {
 				serverId: "tracker",
 			},
 			toolPrefix: "tracker",
+			auth: "none",
 			source: { kind: "plugin", pluginName: "tracker", serverTitle: "Tracker" },
 			label: "tracker · Tracker",
 			url: "https://tracker.example.com/mcp",

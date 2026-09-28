@@ -61,7 +61,7 @@ function denied_host_entries() {
 /**
  * Return the parsed URL when Press may send a request to it, or `null` when it must not.
  */
-function allowed_url(rawUrl: string, testAllowLocalHttp: boolean) {
+function allowed_url(rawUrl: string, testAllowLocalHttp: boolean, allowedPressHost: string | null) {
 	if (!URL.canParse(rawUrl)) return null;
 	const url = new URL(rawUrl);
 	if (testAllowLocalHttp && url.protocol === "http:" && ["localhost", "127.0.0.1"].includes(url.hostname)) return url;
@@ -82,6 +82,7 @@ function allowed_url(rawUrl: string, testAllowLocalHttp: boolean) {
 		return null;
 	}
 
+	if (hostname === allowedPressHost) return url;
 	for (const entry of denied_host_entries()) {
 		if (entry.startsWith("*.") ? hostname.endsWith(entry.slice(1)) : hostname === entry) return null;
 	}
@@ -117,7 +118,14 @@ export function mcp_guarded_fetch_create(
 				 */
 				maxTotalBytes: number;
 		  }
-		| { kind: "oauth" }
+		| {
+				kind: "oauth";
+				/**
+				 * One Press host this guard may still reach. Only the OAuth start action passes it, to read
+				 * Press's own client metadata document on the app host.
+				 */
+				allowedPressHost?: string;
+		  }
 	) & {
 		/**
 		 * Test only: allow `http://localhost` and `http://127.0.0.1` for the conformance harness and
@@ -127,6 +135,7 @@ export function mcp_guarded_fetch_create(
 	},
 ) {
 	const serverOrigin = options.kind === "mcp" ? new URL(options.server.url).origin : null;
+	const allowedPressHost = options.kind === "oauth" ? (options.allowedPressHost ?? null) : null;
 	const maxResponseBytes = options.kind === "mcp" ? options.maxResponseBytes : OAUTH_MAX_RESPONSE_BYTES;
 	let remainingTotalBytes = options.kind === "mcp" ? options.maxTotalBytes : Number.POSITIVE_INFINITY;
 
@@ -140,7 +149,7 @@ export function mcp_guarded_fetch_create(
 				return new Error(`Guarded fetch refused the request: ${failure}`);
 			};
 
-			let url = allowed_url(String(input), options.testAllowLocalHttp === true);
+			let url = allowed_url(String(input), options.testAllowLocalHttp === true, allowedPressHost);
 			if (!url) throw refuse("url_blocked");
 
 			const method = (init?.method ?? "GET").toUpperCase();
@@ -223,7 +232,11 @@ export function mcp_guarded_fetch_create(
 							throw refuse("bad_response");
 						}
 
-						const next = allowed_url(new URL(location, url).href, options.testAllowLocalHttp === true);
+						const next = allowed_url(
+							new URL(location, url).href,
+							options.testAllowLocalHttp === true,
+							allowedPressHost,
+						);
 						if (!next) throw refuse("url_blocked");
 						if (next.origin !== url.origin) {
 							for (const name of CREDENTIAL_HEADER_NAMES) headers.delete(name);

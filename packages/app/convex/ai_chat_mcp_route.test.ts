@@ -9,6 +9,7 @@ import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
 import { crypto_encrypt_secret_value } from "../server/crypto-utils.ts";
 import { mcp_client_list_tools } from "../server/mcp-client.ts";
 import { mcp_fixtures_create } from "../server/mcp-fixtures/mcp-fixtures.ts";
+import { mcp_oauth_fixtures_create } from "../server/mcp-fixtures/mcp-oauth-fixtures.ts";
 import { ai_chat_tool_create_mcp_tools } from "../server/server-ai-tools.ts";
 import { ai_chat_mcp_tool_output_schema, type ai_chat_McpToolOutput } from "../shared/ai-chat-files.ts";
 
@@ -19,11 +20,13 @@ vi.mock("ai", async (importOriginal) => ({
 }));
 
 let fixtures: ReturnType<typeof mcp_fixtures_create>;
+let oauthFixtures: ReturnType<typeof mcp_oauth_fixtures_create>;
 // A test sets this to hold every `tools/call` request until it resolves.
 let callGate: Promise<void> | null = null;
 
 beforeEach(() => {
 	fixtures = mcp_fixtures_create();
+	oauthFixtures = mcp_oauth_fixtures_create();
 	callGate = null;
 	model.streamText.mockReset();
 	model.streamText.mockImplementation(() => ({
@@ -49,6 +52,9 @@ beforeEach(() => {
 		"fetch",
 		vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
 			const request = new Request(input, init);
+			if (new URL(request.url).hostname.endsWith(".oauth.test")) {
+				return await oauthFixtures.fetch(request);
+			}
 			if (!new URL(request.url).hostname.endsWith(".fixtures.test")) {
 				return new Response(null, { status: 404 });
 			}
@@ -62,6 +68,7 @@ beforeEach(() => {
 
 afterEach(async () => {
 	await fixtures.close();
+	await oauthFixtures.close();
 	vi.useRealTimers();
 	vi.restoreAllMocks();
 	vi.unstubAllGlobals();
@@ -96,6 +103,10 @@ async function install_mcp_plugin(
 		url: string;
 		headers?: Array<{ name: string; secret: string; value: string }>;
 		tools?: string[] | null;
+		/**
+		 * A sign-in server pin. Without it the server uses the headers, or nothing.
+		 */
+		oauth?: { issuer: string; scopes: string[] };
 	},
 ) {
 	const now = Date.now();
@@ -131,7 +142,11 @@ async function install_mcp_plugin(
 					transport: "http",
 					url: args.url,
 					headers: headers.map((header) => ({ name: header.name, secret: header.secret })),
-					auth: headers.length > 0 ? { kind: "secret_headers" } : { kind: "none" },
+					auth: args.oauth
+						? { kind: "oauth", issuer: args.oauth.issuer, resource: null, scopes: args.oauth.scopes }
+						: headers.length > 0
+							? { kind: "secret_headers" }
+							: { kind: "none" },
 					tools: args.tools ?? null,
 				},
 			],
@@ -525,6 +540,7 @@ describe("/api/chat MCP tool calls", () => {
 						kind: "plugin",
 						target: { kind: "plugin", installationId: installed.installationId, serverId: "tracker" },
 						toolPrefix: "tracker",
+						auth: "none",
 						source: { kind: "plugin", pluginName: "tracker", serverTitle: "Tracker" },
 						label: "tracker · Tracker",
 						url: MODERN_BASIC_URL,
@@ -1026,21 +1042,30 @@ describe("/api/chat MCP parts in history", () => {
 		expect(stored._yay?.ids).toHaveLength(1);
 	});
 
-	test("refuses a request message with an MCP part before the model runs or any server is called", async () => {
-		const { t, asUser, membership, threadId } = await setup();
-		await install_mcp_plugin(t, membership, { url: MODERN_BASIC_URL });
+	test.each(["dynamic-tool", "data-mcp-auth-needed"])(
+		"refuses a request message with a %s MCP part before the model runs or any server is called",
+		async (partType) => {
+			const { t, asUser, membership, threadId } = await setup();
+			await install_mcp_plugin(t, membership, { url: MODERN_BASIC_URL });
 
-		const response = await chat(asUser, {
-			membershipId: membership.membershipId,
-			threadId,
-			messages: [{ id: "forged-request", role: "user", parts: [mcp_part("gone-installation")] }],
-		});
+			const response = await chat(asUser, {
+				membershipId: membership.membershipId,
+				threadId,
+				messages: [
+					{
+						id: "forged-request",
+						role: "user",
+						parts: [partType === "dynamic-tool" ? mcp_part("gone-installation") : noticePart],
+					},
+				],
+			});
 
-		expect(response.status).toBe(400);
-		expect(response.body).toContain("Invalid file tool result parts");
-		expect(model.streamText).not.toHaveBeenCalled();
-		expect(fixtures.wire).toEqual([]);
-	});
+			expect(response.status).toBe(400);
+			expect(response.body).toContain("Invalid file tool result parts");
+			expect(model.streamText).not.toHaveBeenCalled();
+			expect(fixtures.wire).toEqual([]);
+		},
+	);
 
 	test("loads a stored MCP result after its server is gone", async () => {
 		const { t, asUser, membership, threadId } = await setup();
@@ -1130,5 +1155,122 @@ describe("/api/chat MCP parts in history", () => {
 				}),
 			]),
 		);
+	});
+});
+
+describe("/api/chat MCP sign-in notice", () => {
+	const OAUTH_SERVER_URL = "https://mcp-a.oauth.test/mcp";
+
+	async function install_oauth_server(t: TestConvex, membership: Membership) {
+		const installed = await install_mcp_plugin(t, membership, {
+			url: OAUTH_SERVER_URL,
+			oauth: { issuer: oauthFixtures.issuer(), scopes: [] },
+		});
+		return { kind: "plugin" as const, installationId: installed.installationId, serverId: "tracker" };
+	}
+
+	// The stored reply needs the real `streamText`. The file's stub stream is not a complete turn.
+	beforeEach(async () => {
+		const actualAi = await vi.importActual<typeof import("ai")>("ai");
+		const languageModel = new MockLanguageModelV3({
+			doStream: async () => ({
+				stream: new ReadableStream({
+					start(controller) {
+						controller.enqueue({ type: "stream-start", warnings: [] });
+						controller.enqueue({ type: "text-start", id: "text" });
+						controller.enqueue({ type: "text-delta", id: "text", delta: "Done" });
+						controller.enqueue({ type: "text-end", id: "text" });
+						controller.enqueue({
+							type: "finish",
+							finishReason: { unified: "stop", raw: undefined },
+							usage: {
+								inputTokens: { total: 1, noCache: 1, cacheRead: undefined, cacheWrite: undefined },
+								outputTokens: { total: 1, text: 1, reasoning: undefined },
+							},
+						});
+						controller.close();
+					},
+				}),
+			}),
+		});
+		model.streamText.mockImplementation((options: Parameters<typeof streamText>[0]) =>
+			actualAi.streamText({ ...options, model: languageModel }),
+		);
+	});
+
+	async function reply_parts(t: TestConvex) {
+		const messages = await t.run((ctx) => ctx.db.query("ai_chat_threads_messages_aisdk_5").collect());
+		return messages.find((message) => message.content.role === "assistant")!.content.parts;
+	}
+
+	test("a server whose tool list needs sign-in starts the reply with a notice, and the model hears why", async () => {
+		const { t, asUser, membership, threadId } = await setup();
+		const target = await install_oauth_server(t, membership);
+
+		expect((await chat(asUser, { membershipId: membership.membershipId, threadId })).status).toBe(200);
+
+		expect((await reply_parts(t))[0]).toEqual({
+			type: "data-mcp-auth-needed",
+			data: {
+				servers: [
+					{
+						target,
+						source: { kind: "plugin", pluginName: "tracker", serverTitle: "Tracker" },
+						reason: "needs_sign_in",
+					},
+				],
+			},
+		});
+		expect(Object.keys(last_call().tools ?? {}).filter((name) => name.startsWith("mcp__"))).toEqual([]);
+		expect(last_call().system).toContain("tracker · Tracker: left out. This MCP server needs sign-in.");
+	});
+
+	test("a grant that needs a reconnect gives the reconnect reason", async () => {
+		const { t, asUser, membership, threadId } = await setup();
+		const target = await install_oauth_server(t, membership);
+		await t.run(async (ctx) => {
+			const grantId = await test_mocks_fill_db_with.mcp_oauth_grant(ctx, { ...membership, target });
+			await ctx.db.patch("plugins_mcp_oauth_grants", grantId, {
+				issuer: oauthFixtures.issuer(),
+				resource: OAUTH_SERVER_URL,
+				status: "needs_reconnect",
+				refreshToken: null,
+			});
+		});
+
+		expect((await chat(asUser, { membershipId: membership.membershipId, threadId })).status).toBe(200);
+
+		expect((await reply_parts(t))[0]).toMatchObject({
+			type: "data-mcp-auth-needed",
+			data: { servers: [{ target, reason: "needs_reconnect" }] },
+		});
+	});
+
+	test("a working grant loads the tools with the member's token, and the reply has no notice", async () => {
+		const { t, asUser, membership, threadId } = await setup();
+		const target = await install_oauth_server(t, membership);
+		const started = await asUser.action(api.plugins_mcp_oauth.start, {
+			membershipId: membership.membershipId,
+			target,
+			returnPath: "/w/test/home/chat",
+		});
+		if (started._nay) throw new Error(started._nay.message);
+		const callback = await oauthFixtures.authorize(started._yay.authorizationUrl);
+		const finished = await asUser.action(api.plugins_mcp_oauth.finish, {
+			state: callback.state,
+			code: callback.code,
+			iss: callback.iss,
+			error: null,
+		});
+		if (finished._nay) throw new Error(finished._nay.message);
+		oauthFixtures.wire.length = 0;
+
+		expect((await chat(asUser, { membershipId: membership.membershipId, threadId })).status).toBe(200);
+
+		expect((await reply_parts(t)).some((part: { type: string }) => part.type === "data-mcp-auth-needed")).toBe(false);
+		expect(Object.keys(last_call().tools ?? {})).toEqual(expect.arrayContaining(["mcp__tracker__echo"]));
+		const toServer = oauthFixtures.wire.filter((entry) => entry.host === "mcp-a.oauth.test");
+		expect(toServer.length).toBeGreaterThan(0);
+		expect(toServer.every((entry) => entry.headers.get("authorization")?.startsWith("Bearer access-"))).toBe(true);
 	});
 });

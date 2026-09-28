@@ -88,10 +88,12 @@ import {
 	ai_chat_file_result,
 	ai_chat_mcp_auth_needed_data_schema,
 	ai_chat_mcp_tool_output_schema,
+	type ai_chat_McpAuthNeededData,
 } from "../shared/ai-chat-files.ts";
 import { mcp_client_list_tools, type mcp_client_ErrorCode } from "../server/mcp-client.ts";
 import { crypto_decrypt_secret_value } from "../server/crypto-utils.ts";
 import { plugins_mcp_custom_header_values, plugins_mcp_decrypt_custom_secrets } from "./plugins_mcp.ts";
+import { plugins_mcp_oauth_get_access_token } from "./plugins_mcp_oauth.ts";
 import { ai_chat_tool_create_view_image, type ai_chat_Observation } from "../server/ai-chat-file-tools.ts";
 import { files_ingestion_decode_base64 } from "../server/files-ingestion.ts";
 import app_convex_schema, {
@@ -973,6 +975,7 @@ async function load_turn_mcp_tools(
 		reachOrganizationIds: input.reachOrganizationIds,
 	});
 	const notes = [...listed.notes];
+	const authNeeded: ai_chat_McpAuthNeededData["servers"] = [];
 
 	const loadServer = async (server: (typeof listed.servers)[number]) => {
 		const { label } = server;
@@ -1028,12 +1031,75 @@ async function load_turn_mcp_tools(
 			}
 		}
 
-		const listResult = await mcp_client_list_tools({
-			server: { url: server.url, headers },
-			accessToken: null,
-			timeoutMs: MCP_LIST_TIMEOUT_MS,
-			signal: input.signal,
-		});
+		// A sign-in server gets the member's token. Turn setup never waits for another caller's refresh:
+		// the server is left out of this turn instead.
+		const getAccess = (refusedVersion: number | null) =>
+			plugins_mcp_oauth_get_access_token(ctx, {
+				userId: ctxData.userId,
+				target: server.target,
+				refusedVersion,
+				waitForLease: false,
+				signal: input.signal,
+			});
+		const listWith = (accessToken: string | null) => {
+			if (accessToken !== null) {
+				secretValues.push(accessToken);
+			}
+			return mcp_client_list_tools({
+				server: { url: server.url, headers },
+				accessToken,
+				timeoutMs: MCP_LIST_TIMEOUT_MS,
+				signal: input.signal,
+			});
+		};
+
+		let access = server.auth === "oauth" ? await getAccess(null) : null;
+		if (access?.status === "busy") {
+			notes.push(`${label}: left out, because its sign-in is being renewed.`);
+			return null;
+		}
+		if (access?.status === "failed") {
+			notes.push(`${label}: left out. ${access.message}`);
+			return null;
+		}
+		let listResult = await listWith(access?.status === "connected" ? access.accessToken : null);
+
+		// A refused token gets one refresh and one more try.
+		if (listResult._nay?.name === "auth_required" && access?.status === "connected" && !access.refreshed) {
+			access = await getAccess(access.version);
+			if (access.status === "busy") {
+				notes.push(`${label}: left out, because its sign-in is being renewed.`);
+				return null;
+			}
+			if (access.status === "failed") {
+				notes.push(`${label}: left out. ${access.message}`);
+				return null;
+			}
+			if (access.status === "connected") {
+				listResult = await listWith(access.accessToken);
+			}
+		}
+		// A token refused right after a refresh will not work again. The member must connect again.
+		if (listResult._nay?.name === "auth_required" && access?.status === "connected") {
+			await ctx.runMutation(internal.plugins_mcp_oauth.mark_refused, {
+				grantId: access.grantId,
+				version: access.version,
+			});
+			access = { status: "needs_reconnect" };
+		}
+		// Show the member a sign-in notice. A member's own server saved with no sign-in counts
+		// too: its Connect pins the sign-in server first.
+		if (
+			listResult._nay?.name === "auth_required" &&
+			(server.auth === "oauth" || (server.kind === "custom" && server.auth === "none"))
+		) {
+			authNeeded.push({
+				target: server.target,
+				source: server.source,
+				reason: access?.status === "needs_reconnect" ? "needs_reconnect" : "needs_sign_in",
+			});
+		}
+
 		if (listResult._nay) {
 			notes.push(`${label}: left out. ${listResult._nay.message}`);
 			// Stop aborts the list, and the client reports that as a timeout. Do not count it, or a member
@@ -1104,7 +1170,7 @@ async function load_turn_mcp_tools(
 		entry.server.tools = entry.server.tools.slice(0, counts[index]);
 	}
 
-	return { tools: await ai_chat_tool_create_mcp_tools(ctx, ctxData, servers), notes };
+	return { tools: await ai_chat_tool_create_mcp_tools(ctx, ctxData, servers), notes, authNeeded };
 }
 
 function build_agent_configuration(input: {
@@ -2619,6 +2685,11 @@ async function create_agent_turn_stream(args: {
 	 * Step checks refuse stale browser work without failing the turn.
 	 */
 	browserBinding: ai_chat_tool_BrowserBinding | null;
+	/**
+	 * Sign-in servers left out of this turn because even their tool list needs sign-in. The reply
+	 * starts with a notice for them. A wakeup passes an empty list, because it loads no MCP tools.
+	 */
+	mcpAuthNeeded: ai_chat_McpAuthNeededData["servers"];
 }) {
 	const {
 		ctx,
@@ -2710,6 +2781,11 @@ async function create_agent_turn_stream(args: {
 					parentClientGeneratedId: resolvedParentClientGeneratedId,
 				},
 			});
+
+			// Persisted, so a reload shows the notice too. The model never reads data parts.
+			if (args.mcpAuthNeeded.length > 0) {
+				writer.write({ type: "data-mcp-auth-needed", data: { servers: args.mcpAuthNeeded } });
+			}
 
 			const result1 = streamText({
 				model: wrapLanguageModel({
@@ -3429,7 +3505,7 @@ export async function ai_chat_http_chat(ctx: ActionCtx, request: Request) {
 						],
 						signal: request.signal,
 					})
-				: { tools: {}, notes: [] };
+				: { tools: {}, notes: [], authNeeded: [] };
 
 		const agent = build_agent_configuration({
 			ctx,
@@ -3691,6 +3767,7 @@ export async function ai_chat_http_chat(ctx: ActionCtx, request: Request) {
 				await ctx.runMutation(internal.ai_chat.thread_run_end, { threadId: runThreadId, kind: "chat" });
 			},
 			browserBinding,
+			mcpAuthNeeded: mcp.authNeeded,
 			onUninjectedFinishedMessages: async (finishedMessages) => {
 				// Oldest first: the wake run answers it as its parent branch and injects the
 				// newer ones at its own step boundaries, so one run covers the whole backlog.
@@ -4158,6 +4235,7 @@ export const run_job_wakeup = internalAction({
 				},
 				// A wakeup never drives the shared browser: no binding, no browser tools.
 				browserBinding: null,
+				mcpAuthNeeded: [],
 				onUninjectedFinishedMessages: async (finishedMessages) => {
 					// Oldest first: this run already holds the `job_wakeup` lease, so extend it
 					// across the follow-up instead of taking it again. After the lease is gone,

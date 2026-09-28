@@ -76,6 +76,67 @@ function vite_plugin_css_layer_order(appCssPath: string): Plugin {
 	};
 }
 
+/**
+ * Serve Press's OAuth client metadata document (CIMD) at `oauth/mcp/client.json`, next to the app.
+ * An MCP sign-in server reads it to learn who Press is and where to send the member back.
+ *
+ * `VITE_APP_BASE_URL` is the app origin plus its base path, the same value as the Convex env
+ * `APP_BASE_URL`. Convex builds the same client id and callback from it, and refuses to start a
+ * sign-in when this document says something else. So a production build without it fails.
+ */
+function vite_plugin_mcp_client_document(): Plugin {
+	let document: string | null = null;
+
+	return {
+		name: "app-mcp-client-document",
+
+		configResolved(config) {
+			const base = config.env.VITE_APP_BASE_URL?.trim().replace(/\/$/u, "");
+			if (!base) {
+				if (config.command === "build" && config.mode === "production") {
+					throw new Error("Failed to build the MCP client document: VITE_APP_BASE_URL is not set");
+				}
+				return;
+			}
+
+			document = JSON.stringify(
+				{
+					client_id: `${base}/oauth/mcp/client.json`,
+					client_name: "Press",
+					client_uri: base,
+					logo_uri: `${base}/press-logo.png`,
+					redirect_uris: [`${base}/oauth/mcp/callback`],
+					grant_types: ["authorization_code", "refresh_token"],
+					response_types: ["code"],
+					token_endpoint_auth_method: "none",
+					application_type: "web",
+				},
+				null,
+				"\t",
+			);
+		},
+
+		// Dev only. `generateBundle` below runs only in a build.
+		configureServer(server) {
+			server.middlewares.use((request, response, next) => {
+				if (document === null || request.url !== `${server.config.base}oauth/mcp/client.json`) {
+					next();
+					return;
+				}
+
+				response.setHeader("Content-Type", "application/json");
+				response.end(document);
+			});
+		},
+
+		generateBundle() {
+			if (document !== null) {
+				this.emitFile({ type: "asset", fileName: "oauth/mcp/client.json", source: document });
+			}
+		},
+	};
+}
+
 // https://vite.dev/config/
 export default defineConfig({
 	plugins: [
@@ -120,6 +181,7 @@ export default defineConfig({
 		tailwindcss({
 			optimize: false,
 		}),
+		vite_plugin_mcp_client_document(),
 		// Keep last so it prepends to css Tailwind has already expanded.
 		vite_plugin_css_layer_order(path.resolve(__dirname, "src/app.css")),
 	],

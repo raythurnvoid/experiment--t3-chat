@@ -8,6 +8,7 @@ import { editor as monaco_editor, MarkerSeverity as monaco_MarkerSeverity } from
 import { memo, useEffect, useState, type FormEvent } from "react";
 import { toast } from "sonner";
 
+import { McpConnect } from "@/components/mcp-connect.tsx";
 import { MyBadge } from "@/components/my-badge.tsx";
 import { MyButton } from "@/components/my-button.tsx";
 import {
@@ -56,6 +57,8 @@ type RouteMcpServers_SavedServer = app_convex_FunctionReturnType<
 type RouteMcpServers_PluginServer = app_convex_FunctionReturnType<
 	typeof app_convex_api.plugins_mcp.list_member_plugin_connections
 >["servers"][number];
+
+type RouteMcpServers_Target = app_convex_FunctionArgs<typeof app_convex_api.plugins_mcp_oauth.disconnect>["target"];
 
 type RouteMcpServers_Fill = app_convex_FunctionArgs<typeof app_convex_api.mcp_custom_servers.save>["fill"];
 
@@ -168,7 +171,7 @@ type RouteMcpServersPluginServer_CustomAttributes = {
 
 type RouteMcpServersPluginServer_Props = {
 	server: RouteMcpServers_PluginServer;
-	onDisconnect: (server: RouteMcpServers_PluginServer) => void;
+	onDisconnect: (target: RouteMcpServers_Target) => void;
 };
 
 const RouteMcpServersPluginServer = memo(function RouteMcpServersPluginServer(
@@ -176,6 +179,7 @@ const RouteMcpServersPluginServer = memo(function RouteMcpServersPluginServer(
 ) {
 	const { server, onDisconnect } = props;
 	const status = get_plugin_connection_status(server);
+	const canConnect = status === "needs_sign_in" || status === "needs_reconnect";
 
 	return (
 		<li
@@ -198,17 +202,26 @@ const RouteMcpServersPluginServer = memo(function RouteMcpServersPluginServer(
 				</p>
 			</div>
 
-			{/* No Connect button yet: Press cannot start a sign-in for plugin servers. A member can always remove one. */}
-			{server.connection !== null ? (
+			{/* A member can always remove a sign-in, also when the plugin is off or blocked. */}
+			{canConnect || server.connection !== null ? (
 				<div className={"RouteMcpServersPluginServer-actions" satisfies RouteMcpServersPluginServer_ClassNames}>
-					<MyButton
-						variant="outline"
-						aria-label={`Disconnect ${server.serverTitle}`}
-						onClick={() => onDisconnect(server)}
-					>
-						<Unplug aria-hidden />
-						Disconnect
-					</MyButton>
+					{canConnect ? (
+						<McpConnect
+							target={server.target}
+							label={status === "needs_reconnect" ? "Reconnect" : "Connect"}
+							serverLabel={server.serverTitle}
+						/>
+					) : null}
+					{server.connection !== null ? (
+						<MyButton
+							variant="outline"
+							aria-label={`Disconnect ${server.serverTitle}`}
+							onClick={() => onDisconnect(server.target)}
+						>
+							<Unplug aria-hidden />
+							Disconnect
+						</MyButton>
+					) : null}
 				</div>
 			) : null}
 		</li>
@@ -227,7 +240,7 @@ type RouteMcpServersPluginServers_ClassNames =
 
 type RouteMcpServersPluginServers_Props = {
 	servers: RouteMcpServers_PluginServer[];
-	onDisconnect: (server: RouteMcpServers_PluginServer) => void;
+	onDisconnect: (target: RouteMcpServers_Target) => void;
 };
 
 const RouteMcpServersPluginServers = memo(function RouteMcpServersPluginServers(
@@ -300,11 +313,13 @@ type RouteMcpServersSavedServer_Props = {
 	onEdit: (server: RouteMcpServers_SavedServer) => void;
 	onSetEnabled: (server: RouteMcpServers_SavedServer, enabled: boolean) => void;
 	onDelete: (server: RouteMcpServers_SavedServer) => void;
+	onDisconnect: (target: RouteMcpServers_Target) => void;
 };
 
 const RouteMcpServersSavedServer = memo(function RouteMcpServersSavedServer(props: RouteMcpServersSavedServer_Props) {
-	const { server, canUse, saving, testResult, onTest, onEdit, onSetEnabled, onDelete } = props;
+	const { server, canUse, saving, testResult, onTest, onEdit, onSetEnabled, onDelete, onDisconnect } = props;
 	const status = get_saved_server_status(server);
+	const target = { kind: "custom" as const, customServerId: server.customServerId };
 
 	return (
 		<li
@@ -401,6 +416,20 @@ const RouteMcpServersSavedServer = memo(function RouteMcpServersSavedServer(prop
 					<Power aria-hidden />
 					{server.enabled ? "Turn off" : "Turn on"}
 				</MyButton>
+				{/* Offer a sign-in only while the server can run. A member can always remove a sign-in. */}
+				{server.auth.kind === "oauth" && server.enabled && canUse && server.connection?.status !== "connected" ? (
+					<McpConnect
+						target={target}
+						label={server.connection === null ? "Connect" : "Reconnect"}
+						serverLabel={server.name}
+					/>
+				) : null}
+				{server.connection !== null ? (
+					<MyButton variant="outline" aria-label={`Disconnect ${server.name}`} onClick={() => onDisconnect(target)}>
+						<Unplug aria-hidden />
+						Disconnect
+					</MyButton>
+				) : null}
 				<MyButton variant="ghost_destructive" aria-label={`Delete ${server.name}`} onClick={() => onDelete(server)}>
 					<Trash2 aria-hidden />
 					Delete
@@ -429,12 +458,13 @@ type RouteMcpServersSavedServers_Props = {
 	onEdit: (server: RouteMcpServers_SavedServer) => void;
 	onSetEnabled: (server: RouteMcpServers_SavedServer, enabled: boolean) => void;
 	onDelete: (server: RouteMcpServers_SavedServer) => void;
+	onDisconnect: (target: RouteMcpServers_Target) => void;
 };
 
 const RouteMcpServersSavedServers = memo(function RouteMcpServersSavedServers(
 	props: RouteMcpServersSavedServers_Props,
 ) {
-	const { servers, canUse, saving, testResults, onTest, onEdit, onSetEnabled, onDelete } = props;
+	const { servers, canUse, saving, testResults, onTest, onEdit, onSetEnabled, onDelete, onDisconnect } = props;
 
 	return (
 		<section className={"RouteMcpServersSavedServers" satisfies RouteMcpServersSavedServers_ClassNames}>
@@ -467,6 +497,7 @@ const RouteMcpServersSavedServers = memo(function RouteMcpServersSavedServers(
 							onEdit={onEdit}
 							onSetEnabled={onSetEnabled}
 							onDelete={onDelete}
+							onDisconnect={onDisconnect}
 						/>
 					))}
 				</ul>
@@ -1207,9 +1238,9 @@ function RouteMcpServersMembership(props: RouteMcpServersMembership_Props) {
 			});
 	});
 
-	const handleDisconnect = useFn((server: RouteMcpServers_PluginServer) => {
+	const handleDisconnect = useFn((target: RouteMcpServers_Target) => {
 		app_convex
-			.mutation(app_convex_api.plugins_mcp_oauth.disconnect, { membershipId, target: server.target })
+			.mutation(app_convex_api.plugins_mcp_oauth.disconnect, { membershipId, target })
 			.then((result) => {
 				if (result._nay) {
 					toast.error(result._nay.message);
@@ -1218,7 +1249,7 @@ function RouteMcpServersMembership(props: RouteMcpServersMembership_Props) {
 			.catch((error: unknown) => {
 				console.error("[RouteMcpServers.handleDisconnect] Failed to disconnect MCP server", {
 					error,
-					target: server.target,
+					target,
 				});
 				toast.error("Could not disconnect. Try again.");
 			});
@@ -1303,6 +1334,7 @@ function RouteMcpServersMembership(props: RouteMcpServersMembership_Props) {
 						setDeleteError(null);
 						setDeleteTarget(server);
 					}}
+					onDisconnect={handleDisconnect}
 				/>
 
 				<RouteMcpServersAdd

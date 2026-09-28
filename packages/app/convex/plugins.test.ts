@@ -7049,7 +7049,10 @@ describe("plugins mcp servers install", () => {
 		expect(
 			(await t.run((ctx) => ctx.db.query("plugins_mcp_oauth_grants").collect())).map((grant) => grant._id),
 		).toEqual([docsGrantId]);
-		expect(await t.run((ctx) => ctx.db.query("plugins_mcp_oauth_revocations").collect())).toHaveLength(1);
+		// `revoke_one` ran once for the deleted grant's token, then deleted its revocation doc.
+		expect(await t.run((ctx) => ctx.db.query("plugins_mcp_oauth_revocations").collect())).toEqual([]);
+		const scheduled = await t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect());
+		expect(scheduled.filter((task) => task.name.endsWith("revoke_one"))).toHaveLength(1);
 	});
 
 	test("the status query shows the policy and the caller's own sign-in, never a token", async () => {
@@ -11767,7 +11770,10 @@ describe("plugins uninstall_version", () => {
 		expect(await t.run((ctx) => ctx.db.query("plugins_mcp_oauth_grants").collect())).toEqual([]);
 		expect(await t.run((ctx) => ctx.db.query("plugins_mcp_oauth_pending").collect())).toEqual([]);
 		expect(await t.run((ctx) => ctx.db.query("plugins_mcp_calls").collect())).toEqual([]);
-		expect(await t.run((ctx) => ctx.db.query("plugins_mcp_oauth_revocations").collect())).toHaveLength(1);
+		// `revoke_one` ran once for the deleted grant's token, then deleted its revocation doc.
+		expect(await t.run((ctx) => ctx.db.query("plugins_mcp_oauth_revocations").collect())).toEqual([]);
+		const scheduled = await t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect());
+		expect(scheduled.filter((task) => task.name.endsWith("revoke_one"))).toHaveLength(1);
 	});
 });
 

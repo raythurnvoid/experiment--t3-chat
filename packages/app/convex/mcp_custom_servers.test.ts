@@ -7,17 +7,24 @@ import { plugins_mcp_custom_secret_additional_data } from "./plugins_mcp.ts";
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
 import { crypto_decrypt_secret_value } from "../server/crypto-utils.ts";
 import { mcp_fixtures_create } from "../server/mcp-fixtures/mcp-fixtures.ts";
+import { mcp_oauth_fixtures_create } from "../server/mcp-fixtures/mcp-oauth-fixtures.ts";
 
 let fixtures: ReturnType<typeof mcp_fixtures_create>;
+let oauthFixtures: ReturnType<typeof mcp_oauth_fixtures_create>;
 
 beforeEach(() => {
 	fixtures = mcp_fixtures_create();
+	oauthFixtures = mcp_oauth_fixtures_create();
 	vi.spyOn(R2.prototype, "syncMetadata").mockResolvedValue(undefined);
 	// Only the fake MCP servers answer. Any other outside request would be a bug in the test.
 	vi.stubGlobal(
 		"fetch",
 		vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
 			const request = new Request(input, init);
+			// A fake sign-in server and two MCP servers that need its tokens.
+			if (new URL(request.url).hostname.endsWith(".oauth.test")) {
+				return await oauthFixtures.fetch(request);
+			}
 			if (!new URL(request.url).hostname.endsWith(".fixtures.test")) {
 				return new Response(null, { status: 404 });
 			}
@@ -28,6 +35,8 @@ beforeEach(() => {
 
 afterEach(async () => {
 	await fixtures.close();
+	await oauthFixtures.close();
+	vi.unstubAllEnvs();
 	vi.useRealTimers();
 	vi.restoreAllMocks();
 	vi.unstubAllGlobals();
@@ -158,6 +167,7 @@ async function write_server(
 		secretValues: [],
 		keptSecretNames: args.keptSecretNames ?? [],
 		lastTest: null,
+		oauthPin: null,
 	});
 }
 
@@ -397,6 +407,7 @@ describe("save", () => {
 				customServerId,
 				expectedDestinationFingerprint,
 				lastTest: { at: Date.now(), outcome: "ok", toolCount: 1 },
+				oauthPin: null,
 			});
 		const changed = { _nay: { message: "The server changed; try again." } };
 
@@ -439,6 +450,90 @@ describe("save", () => {
 		}
 
 		expect(await save(member, { customServerId })).toEqual({ _nay: { message: "Rate limit exceeded" } });
+	});
+});
+
+describe("sign-in pin", () => {
+	const OAUTH_URL = "https://mcp-a.oauth.test/mcp";
+
+	test("save pins the sign-in server of a server that asks for sign-in", async () => {
+		const { t, owner } = await setup();
+		const member = await add_member(t, owner);
+
+		const saved = await save(member, { url: OAUTH_URL });
+
+		expect(saved._yay?.outcome).toBe("auth_required");
+		const listed = await member.asUser.query(api.mcp_custom_servers.list, { membershipId: member.membershipId });
+		expect(listed.servers[0]?.auth).toEqual({ kind: "oauth", authorizationHost: "as.oauth.test" });
+		const stored = await t.run((ctx) => ctx.db.get("mcp_custom_servers", saved_id(saved)));
+		expect(stored?.auth).toEqual({
+			kind: "oauth",
+			issuer: oauthFixtures.issuer(),
+			resource: OAUTH_URL,
+			authorizationHost: "as.oauth.test",
+		});
+	});
+
+	test("save refuses a sign-in server that sends no `iss` unless it is trusted", async () => {
+		const { t, owner } = await setup();
+		const member = await add_member(t, owner);
+		oauthFixtures.switches.issSupported = false;
+
+		const refused = await save(member, { url: OAUTH_URL });
+
+		expect(refused._nay?.message).toContain("does not confirm which server answered");
+		expect(await t.run((ctx) => ctx.db.query("mcp_custom_servers").collect())).toEqual([]);
+
+		vi.stubEnv("MCP_TRUSTED_ISSUERS", oauthFixtures.issuer());
+		const saved = await save(member, { url: OAUTH_URL });
+		const stored = await t.run((ctx) => ctx.db.get("mcp_custom_servers", saved_id(saved)));
+		expect(stored?.auth.kind).toBe("oauth");
+	});
+
+	test("save refuses a server whose sign-in settings name several sign-in servers", async () => {
+		const { t, owner } = await setup();
+		const member = await add_member(t, owner);
+		oauthFixtures.switches.prmAuthorizationServers = [oauthFixtures.issuer(), "https://other.oauth.test"];
+
+		const refused = await save(member, { url: OAUTH_URL });
+
+		expect(refused._nay?.message).toBe("This server names more than one sign-in server. Press cannot choose one.");
+		expect(await t.run((ctx) => ctx.db.query("mcp_custom_servers").collect())).toEqual([]);
+	});
+
+	test("an edit of the same URL keeps the pin when the tool list works without a token", async () => {
+		const { t, owner } = await setup();
+		const member = await add_member(t, owner);
+		const customServerId = saved_id(await save(member, { url: OAUTH_URL }));
+		const before = await t.run((ctx) => ctx.db.get("mcp_custom_servers", customServerId));
+
+		oauthFixtures.switches.serverTokenOnlyForCall = true;
+		const edited = await save(member, { name: "renamed", url: OAUTH_URL, customServerId });
+
+		expect(edited._yay?.outcome).toBe("ok");
+		const after = await t.run((ctx) => ctx.db.get("mcp_custom_servers", customServerId));
+		expect(after?.auth).toEqual(before?.auth);
+		expect(after?.destinationFingerprint).toBe(before?.destinationFingerprint);
+	});
+
+	test("test_connection pins a server saved with no sign-in that now asks for one", async () => {
+		const { t, owner } = await setup();
+		const member = await add_member(t, owner);
+		oauthFixtures.switches.serverTokenOnlyForCall = true;
+		const customServerId = saved_id(await save(member, { url: OAUTH_URL }));
+		const before = await t.run((ctx) => ctx.db.get("mcp_custom_servers", customServerId));
+		expect(before?.auth).toEqual({ kind: "none" });
+
+		oauthFixtures.switches.serverTokenOnlyForCall = false;
+		const tested = await member.asUser.action(api.mcp_custom_servers.test_connection, {
+			membershipId: member.membershipId,
+			customServerId,
+		});
+
+		expect(tested._yay?.outcome).toBe("auth_required");
+		const after = await t.run((ctx) => ctx.db.get("mcp_custom_servers", customServerId));
+		expect(after?.auth.kind).toBe("oauth");
+		expect(after?.destinationFingerprint).not.toBe(before?.destinationFingerprint);
 	});
 });
 

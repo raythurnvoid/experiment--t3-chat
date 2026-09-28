@@ -148,6 +148,9 @@ const rate_limiter_CONFIG = {
 		period: MINUTE,
 		capacity: 10,
 	},
+	// Starting an OAuth sign-in makes Convex fetch the server's sign-in settings and may register a client
+	// at the sign-in server. A member starts one sign-in at a time, so a strict bucket is enough.
+	plugins_mcp_oauth_start: STRICT_AUTH_OR_BILLING,
 	// Turning off, deleting, or disconnecting a server removes access. A member who does several in a
 	// row must not be refused on the third, so this is wider than STRICT_WRITE.
 	mcp_member_write: {

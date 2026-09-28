@@ -27,7 +27,8 @@ import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import app_convex_schema from "./schema.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import { crypto_encrypt_secret_value, crypto_sha256_hex } from "../server/crypto-utils.ts";
-import { mcp_client_list_tools } from "../server/mcp-client.ts";
+import { mcp_client_auth_challenge, mcp_client_list_tools } from "../server/mcp-client.ts";
+import { mcp_oauth_discover } from "../server/mcp-oauth.ts";
 import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
 import { mcp_custom_config_build, mcp_custom_config_parse } from "../shared/mcp-custom-config.ts";
 
@@ -49,10 +50,20 @@ const CANNOT_USE_MESSAGE = "You cannot use MCP servers in this workspace.";
 const SERVER_CHANGED_MESSAGE = "The server changed; try again.";
 // A missing or changed `MCP_SECRETS_ENCRYPTION_KEY`, or a damaged doc, makes a decrypt fail.
 const CANNOT_READ_SECRETS_MESSAGE = "Press could not read the saved secrets. Type them again.";
+export const mcp_custom_servers_SIGN_IN_CHANGED_MESSAGE =
+	"This server changed its sign-in settings. Delete it and add it again.";
 
 const custom_server_validator = doc(app_convex_schema, "mcp_custom_servers");
 
 const last_test_validator = custom_server_validator.fields.lastTest;
+
+/**
+ * The sign-in server discovery chose for a server with no headers, or `null`.
+ */
+const oauth_pin_validator = v.union(
+	v.object({ issuer: v.string(), resource: v.string(), authorizationHost: v.string() }),
+	v.null(),
+);
 
 /**
  * SHA-256 of where a member's server sends data: its URL, its auth kind, and its OAuth issuer. The
@@ -205,9 +216,45 @@ async function probe(server: { url: string; headers: Array<{ name: string; value
 		signal: new AbortController().signal,
 	});
 	if (listed._nay) {
-		return { outcome: listed._nay.name, message: listed._nay.message, toolNames: [] };
+		return {
+			outcome: listed._nay.name,
+			message: listed._nay.message,
+			toolNames: [],
+			challenge: mcp_client_auth_challenge(listed._nay),
+		};
 	}
-	return { outcome: "ok", message: null, toolNames: listed._yay.tools.map((tool) => tool.name) };
+	return { outcome: "ok", message: null, toolNames: listed._yay.tools.map((tool) => tool.name), challenge: null };
+}
+
+/**
+ * Pin the sign-in server of a server with no headers that asked for sign-in. PRM must name
+ * exactly one sign-in server, unless the server already has a pin: then it must still name that one.
+ */
+async function discover_pin(args: {
+	url: string;
+	challenge: { resourceMetadataUrl: string | null; scope: string | null } | null;
+	storedPin: { issuer: string; resource: string } | null;
+}) {
+	const discovered = await mcp_oauth_discover({
+		serverUrl: args.url,
+		challenge: args.challenge,
+		pinnedIssuer: args.storedPin?.issuer ?? null,
+		pinnedResource: null,
+	});
+	if (discovered._nay) {
+		return Result({ _nay: { message: discovered._nay.message } });
+	}
+	if (args.storedPin && discovered._yay.resource !== args.storedPin.resource) {
+		return Result({ _nay: { message: mcp_custom_servers_SIGN_IN_CHANGED_MESSAGE } });
+	}
+
+	return Result({
+		_yay: {
+			issuer: discovered._yay.issuer,
+			resource: discovered._yay.resource,
+			authorizationHost: discovered._yay.authorizationHost,
+		},
+	});
 }
 
 /**
@@ -486,13 +533,33 @@ export const save = action({
 		}
 
 		// A failed probe still saves: the outcome goes into `lastTest`, and the member can test again.
-		// TODO(mcp-oauth): pin the sign-in server here when a server with no headers asks for sign-in.
 		const probed = await probe({ url: server.url, headers: plugins_mcp_custom_header_values(server.headers, values) });
 		const lastTest = {
 			at: Date.now(),
 			outcome: probed.outcome,
 			toolCount: probed.outcome === "ok" ? probed.toolNames.length : null,
 		};
+
+		// A server with no headers that asks for sign-in saves only with a pinned sign-in server. When
+		// discovery refuses it, nothing is saved. An edit of the same URL keeps its stored pin, also when
+		// this probe did not ask for sign-in: the tool list may work without a token, or the server may be
+		// down. Losing the pin would delete the member's sign-in.
+		const storedPin =
+			server.headers.length === 0 && customServer?.auth.kind === "oauth" && customServer.url === server.url
+				? {
+						issuer: customServer.auth.issuer,
+						resource: customServer.auth.resource,
+						authorizationHost: customServer.auth.authorizationHost,
+					}
+				: null;
+		let oauthPin = storedPin;
+		if (probed.outcome === "auth_required" && server.headers.length === 0) {
+			const pinned = await discover_pin({ url: server.url, challenge: probed.challenge, storedPin });
+			if (pinned._nay) {
+				return pinned;
+			}
+			oauthPin = pinned._yay;
+		}
 
 		const written = (await ctx.runMutation(internal.mcp_custom_servers.write_server, {
 			userId: userAuth.id,
@@ -503,6 +570,7 @@ export const save = action({
 			secretValues,
 			keptSecretNames,
 			lastTest,
+			oauthPin,
 		})) as write_server_Result;
 		if (written._nay) {
 			return written;
@@ -543,6 +611,7 @@ export const write_server = internalMutation({
 		 */
 		keptSecretNames: v.array(v.string()),
 		lastTest: last_test_validator,
+		oauthPin: oauth_pin_validator,
 	},
 	returns: v_result({ _yay: v.object({ customServerId: v.id("mcp_custom_servers") }) }),
 	handler: async (ctx, args) => {
@@ -552,8 +621,13 @@ export const write_server = internalMutation({
 		}
 
 		const now = Date.now();
-		// A server with headers never starts OAuth. The sign-in pin comes with OAuth support.
-		const auth = args.server.headers.length > 0 ? { kind: "headers" as const } : { kind: "none" as const };
+		// A server with headers never starts OAuth.
+		const auth: Doc<"mcp_custom_servers">["auth"] =
+			args.server.headers.length > 0
+				? { kind: "headers" }
+				: args.oauthPin
+					? { kind: "oauth", ...args.oauthPin }
+					: { kind: "none" };
 		const destinationFingerprint = await destination_fingerprint(args.server.url, auth);
 
 		// Kept secrets must still have their stored doc. Another save may have deleted one meanwhile.
@@ -732,13 +806,27 @@ export const test_connection = action({
 		});
 		const toolCount = probed.outcome === "ok" ? probed.toolNames.length : null;
 
+		// A server saved with no sign-in may ask for one now. Pin it like a first save. When
+		// discovery refuses, the test is still recorded, with discovery's reason as the message.
+		let oauthPin = null;
+		let message: string | null = probed.message;
+		if (probed.outcome === "auth_required" && customServer.auth.kind === "none") {
+			const pinned = await discover_pin({ url: customServer.url, challenge: probed.challenge, storedPin: null });
+			if (pinned._nay) {
+				message = pinned._nay.message;
+			} else {
+				oauthPin = pinned._yay;
+			}
+		}
+
 		const recorded = (await ctx.runMutation(internal.mcp_custom_servers.record_test, {
 			userId: userAuth.id,
 			membershipId: args.membershipId,
 			customServerId: customServer._id,
 			expectedDestinationFingerprint: customServer.destinationFingerprint,
 			lastTest: { at: Date.now(), outcome: probed.outcome, toolCount },
-		})) as record_test_Result;
+			oauthPin,
+		})) as mcp_custom_servers_record_test_Result;
 		if (recorded._nay) {
 			return recorded;
 		}
@@ -746,7 +834,7 @@ export const test_connection = action({
 		return Result({
 			_yay: {
 				outcome: probed.outcome,
-				message: probed.message,
+				message,
 				toolCount,
 				// Convex refuses a string with half a character, and a server can send one.
 				toolNames: probed.toolNames.filter((name) => name.isWellFormed()).slice(0, TEST_TOOL_NAMES_MAX),
@@ -755,6 +843,10 @@ export const test_connection = action({
 	},
 });
 
+/**
+ * Record a test outcome. With `oauthPin`, also pin the server's sign-in server. The pin
+ * changes where the server sends data, so it is a destination change.
+ */
 export const record_test = internalMutation({
 	args: {
 		userId: v.id("users"),
@@ -762,6 +854,7 @@ export const record_test = internalMutation({
 		customServerId: v.id("mcp_custom_servers"),
 		expectedDestinationFingerprint: v.string(),
 		lastTest: last_test_validator,
+		oauthPin: oauth_pin_validator,
 	},
 	returns: v_result({ _yay: v.null() }),
 	handler: async (ctx, args) => {
@@ -779,19 +872,33 @@ export const record_test = internalMutation({
 			return Result({ _nay: { message: SERVER_CHANGED_MESSAGE } });
 		}
 
+		// Only a server with no headers and no pin yet takes a pin. A stored pin never changes.
+		const pin =
+			args.oauthPin && customServer.auth.kind === "none"
+				? {
+						auth: { kind: "oauth" as const, ...args.oauthPin },
+						destinationFingerprint: await destination_fingerprint(customServer.url, {
+							kind: "oauth",
+							...args.oauthPin,
+						}),
+						updatedAt: Date.now(),
+					}
+				: null;
+		if (pin) {
+			await db_forget_destination(ctx, { customServerId: customServer._id, userId: args.userId });
+		}
+
 		// A good test also clears a pause, so the next chat turn tries the server again.
-		await ctx.db.patch(
-			"mcp_custom_servers",
-			customServer._id,
-			args.lastTest?.outcome === "ok"
-				? { lastTest: args.lastTest, failures: 0, unhealthyUntil: null }
-				: { lastTest: args.lastTest },
-		);
+		await ctx.db.patch("mcp_custom_servers", customServer._id, {
+			lastTest: args.lastTest,
+			...(args.lastTest?.outcome === "ok" ? { failures: 0, unhealthyUntil: null } : {}),
+			...pin,
+		});
 		return Result({ _yay: null });
 	},
 });
 
-type record_test_Result =
+export type mcp_custom_servers_record_test_Result =
 	typeof record_test extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
 		? Awaited<ReturnValue>
 		: never;

@@ -4835,6 +4835,21 @@ const app_convex_schema = defineSchema({
 		.index("by_user", ["userId"]),
 
 	/**
+	 * A client that one sign-in server registered for Press with DCR. Every workspace shares it, so it
+	 * is deployment data, not tenant data. Additional data of the secret: `client:<issuer>:<clientId>`.
+	 */
+	plugins_mcp_oauth_clients: defineTable({
+		issuer: v.string(),
+		clientId: v.string(),
+		clientSecret: v.union(plugins_mcp_encrypted_value_validator, v.null()),
+		/**
+		 * When the secret stops working, in ms. `null` means it never expires.
+		 */
+		clientSecretExpiresAt: v.union(v.number(), v.null()),
+		tokenEndpointAuthMethod: plugins_mcp_oauth_token_endpoint_auth_method_validator,
+	}).index("by_issuer", ["issuer"]),
+
+	/**
 	 * A token to revoke at its sign-in server. Deletion paths are mutations and cannot fetch, so they
 	 * copy the encrypted token here. The doc is deployment cleanup, not tenant data: it holds no
 	 * tenant ids, and a daily cron deletes docs older than 1 day.
@@ -4847,6 +4862,10 @@ const app_convex_schema = defineSchema({
 		additionalData: v.string(),
 		tokenTypeHint: v.union(v.literal("access_token"), v.literal("refresh_token")),
 		revocationEndpoint: v.string(),
+		/**
+		 * Finds the DCR client secret in `plugins_mcp_oauth_clients`.
+		 */
+		issuer: v.string(),
 		clientId: v.string(),
 		clientKind: plugins_mcp_oauth_client_kind_validator,
 		tokenEndpointAuthMethod: plugins_mcp_oauth_token_endpoint_auth_method_validator,

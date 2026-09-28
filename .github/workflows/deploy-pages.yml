@@ -65,6 +65,8 @@ jobs:
           VITE_CLERK_PUBLISHABLE_KEY: ${{ vars.VITE_CLERK_PUBLISHABLE_KEY }}
           VITE_CONVEX_URL: ${{ vars.VITE_CONVEX_URL }}
           VITE_CONVEX_HTTP_URL: ${{ vars.VITE_CONVEX_HTTP_URL }}
+          # Also written into `oauth/mcp/client.json`. Keep it equal to the Convex env `APP_BASE_URL`.
+          VITE_APP_BASE_URL: ${{ vars.VITE_APP_BASE_URL }}
         run: pnpm exec vite build --base /experiment--t3-chat/
 
       - name: Add SPA fallback and nojekyll marker

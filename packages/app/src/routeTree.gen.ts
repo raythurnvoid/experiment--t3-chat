@@ -10,6 +10,7 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as OauthMcpCallbackRouteImport } from './routes/oauth/mcp/callback'
 import { Route as WOrganizationNameWorkspaceNameRouteRouteImport } from './routes/w/$organizationName/$workspaceName/route'
 import { Route as WOrganizationNameWorkspaceNameApiKeysIndexRouteImport } from './routes/w/$organizationName/$workspaceName/api-keys/index'
 import { Route as WOrganizationNameWorkspaceNameBrowserIndexRouteImport } from './routes/w/$organizationName/$workspaceName/browser/index'
@@ -29,6 +30,11 @@ import { Route as WOrganizationNameWorkspaceNamePluginsPluginNamePagesPageIdRout
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const OauthMcpCallbackRoute = OauthMcpCallbackRouteImport.update({
+  id: '/oauth/mcp/callback',
+  path: '/oauth/mcp/callback',
   getParentRoute: () => rootRouteImport,
 } as any)
 const WOrganizationNameWorkspaceNameRouteRoute =
@@ -125,6 +131,7 @@ const WOrganizationNameWorkspaceNamePluginsPluginNamePagesPageIdRoute =
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/w/$organizationName/$workspaceName': typeof WOrganizationNameWorkspaceNameRouteRouteWithChildren
+  '/oauth/mcp/callback': typeof OauthMcpCallbackRoute
   '/w/$organizationName/$workspaceName/files/$': typeof WOrganizationNameWorkspaceNameFilesSplatRoute
   '/w/$organizationName/$workspaceName/files/browser': typeof WOrganizationNameWorkspaceNameFilesBrowserRoute
   '/w/$organizationName/$workspaceName/plugins/$pluginName': typeof WOrganizationNameWorkspaceNamePluginsPluginNameRoute
@@ -143,6 +150,7 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/w/$organizationName/$workspaceName': typeof WOrganizationNameWorkspaceNameRouteRouteWithChildren
+  '/oauth/mcp/callback': typeof OauthMcpCallbackRoute
   '/w/$organizationName/$workspaceName/files/$': typeof WOrganizationNameWorkspaceNameFilesSplatRoute
   '/w/$organizationName/$workspaceName/files/browser': typeof WOrganizationNameWorkspaceNameFilesBrowserRoute
   '/w/$organizationName/$workspaceName/plugins/$pluginName': typeof WOrganizationNameWorkspaceNamePluginsPluginNameRoute
@@ -162,6 +170,7 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/w/$organizationName/$workspaceName': typeof WOrganizationNameWorkspaceNameRouteRouteWithChildren
+  '/oauth/mcp/callback': typeof OauthMcpCallbackRoute
   '/w/$organizationName/$workspaceName/files/$': typeof WOrganizationNameWorkspaceNameFilesSplatRoute
   '/w/$organizationName/$workspaceName/files/browser': typeof WOrganizationNameWorkspaceNameFilesBrowserRoute
   '/w/$organizationName/$workspaceName/plugins/$pluginName': typeof WOrganizationNameWorkspaceNamePluginsPluginNameRoute
@@ -182,6 +191,7 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/w/$organizationName/$workspaceName'
+    | '/oauth/mcp/callback'
     | '/w/$organizationName/$workspaceName/files/$'
     | '/w/$organizationName/$workspaceName/files/browser'
     | '/w/$organizationName/$workspaceName/plugins/$pluginName'
@@ -200,6 +210,7 @@ export interface FileRouteTypes {
   to:
     | '/'
     | '/w/$organizationName/$workspaceName'
+    | '/oauth/mcp/callback'
     | '/w/$organizationName/$workspaceName/files/$'
     | '/w/$organizationName/$workspaceName/files/browser'
     | '/w/$organizationName/$workspaceName/plugins/$pluginName'
@@ -218,6 +229,7 @@ export interface FileRouteTypes {
     | '__root__'
     | '/'
     | '/w/$organizationName/$workspaceName'
+    | '/oauth/mcp/callback'
     | '/w/$organizationName/$workspaceName/files/$'
     | '/w/$organizationName/$workspaceName/files/browser'
     | '/w/$organizationName/$workspaceName/plugins/$pluginName'
@@ -237,6 +249,7 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   WOrganizationNameWorkspaceNameRouteRoute: typeof WOrganizationNameWorkspaceNameRouteRouteWithChildren
+  OauthMcpCallbackRoute: typeof OauthMcpCallbackRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -246,6 +259,13 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/oauth/mcp/callback': {
+      id: '/oauth/mcp/callback'
+      path: '/oauth/mcp/callback'
+      fullPath: '/oauth/mcp/callback'
+      preLoaderRoute: typeof OauthMcpCallbackRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/w/$organizationName/$workspaceName': {
@@ -414,6 +434,7 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   WOrganizationNameWorkspaceNameRouteRoute:
     WOrganizationNameWorkspaceNameRouteRouteWithChildren,
+  OauthMcpCallbackRoute: OauthMcpCallbackRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

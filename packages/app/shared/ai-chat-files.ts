@@ -139,6 +139,8 @@ const ai_chat_mcp_source_schema = z.discriminatedUnion("kind", [
 	z.object({ kind: z.literal("custom"), serverName: z.string().min(1).max(64) }).strict(),
 ]);
 
+export type ai_chat_McpTarget = z.infer<typeof ai_chat_mcp_target_schema>;
+
 export type ai_chat_McpSource = z.infer<typeof ai_chat_mcp_source_schema>;
 
 /**

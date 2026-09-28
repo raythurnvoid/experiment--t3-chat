@@ -1,12 +1,13 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { MouseEventHandler, ReactNode } from "react";
 import { afterEach, describe, expect, test, vi } from "vitest";
 
 import type { ai_chat_UiMessage } from "@/lib/ai-chat.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
-import type { app_convex_Id } from "@/lib/app-convex-client.ts";
+import { app_convex, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { AiChatMessage, AiChatMessagePendingAssistant, type AiChatMessage_Props } from "./ai-chat-message.tsx";
 import type { AiChatComposer_Props } from "./ai-chat-composer.tsx";
+import type { ai_chat_McpTarget } from "../../../shared/ai-chat-files.ts";
 
 vi.mock("@/lib/files-tree-context.tsx", () => ({
 	FilesTreeProvider: (props: { children: ReactNode }) => props.children,
@@ -21,8 +22,11 @@ vi.mock("convex/react", async (importOriginal) => {
 	return {
 		...actual,
 		// Files answers one target at a time: undefined while the query loads, and null when this reader
-		// may not open that file.
-		useQuery: (_reference: unknown, args: { target: { id: string } }) => hookMocks.files.get(args.target.id),
+		// may not open that file. An MCP target has no `id`, and `can_connect` answers whether it still exists.
+		useQuery: (_reference: unknown, args: { target: { id: string } | ai_chat_McpTarget }) =>
+			"id" in args.target
+				? hookMocks.files.get(args.target.id)
+				: hookMocks.mcpConnectable.get(JSON.stringify(args.target)),
 	};
 });
 
@@ -43,6 +47,7 @@ const hookMocks = vi.hoisted(() => {
 				readiness: "ready" | "preparing";
 			} | null
 		>(),
+		mcpConnectable: new Map<string, boolean>(),
 		actions: {
 			addToolOutput: vi.fn(),
 			resumeStream: vi.fn(),
@@ -111,6 +116,7 @@ vi.mock("@/components/ai-chat/ai-chat-markdown.tsx", () => ({
 }));
 
 vi.mock("@tanstack/react-router", () => ({
+	useLocation: () => ({ pathname: "/w/personal/home/chat", searchStr: "" }),
 	Link: function Link(props: {
 		children?: ReactNode;
 		to?: string;
@@ -231,6 +237,7 @@ describe("AiChatMessage", () => {
 		hookMocks.sendErrorMessageId = null;
 		hookMocks.sendErrorDetails = null;
 		hookMocks.files.clear();
+		hookMocks.mcpConnectable.clear();
 	});
 
 	test("saves an inline edit with its message id", () => {
@@ -1443,5 +1450,78 @@ describe("AiChatMessage", () => {
 		fireEvent.click(screen.getByText("Execute code"));
 		expect(screen.getByRole("textbox", { name: "Error" }).textContent).toContain("Error: Error: boom");
 		expect(screen.queryByRole("textbox", { name: "Result" })).toBeNull();
+	});
+
+	test("shows one sign-in line per left-out MCP server, and Connect starts that server's sign-in", async () => {
+		const pluginTarget = { kind: "plugin" as const, installationId: "installation_1", serverId: "docs" };
+		const customTarget = { kind: "custom" as const, customServerId: "custom_1" };
+		hookMocks.mcpConnectable.set(JSON.stringify(pluginTarget), true);
+		hookMocks.mcpConnectable.set(JSON.stringify(customTarget), true);
+		const action = vi.spyOn(app_convex, "action").mockResolvedValue({ _nay: { message: "Stop here" } } as never);
+
+		renderMessage({
+			message: {
+				...createAssistantMessage({ text: "Done." }),
+				parts: [
+					{
+						type: "data-mcp-auth-needed",
+						data: {
+							servers: [
+								{
+									target: pluginTarget,
+									source: { kind: "plugin", pluginName: "data-probe", serverTitle: "Docs" },
+									reason: "needs_sign_in",
+								},
+								{
+									target: customTarget,
+									source: { kind: "custom", serverName: "Tracker" },
+									reason: "needs_reconnect",
+								},
+							],
+						},
+					},
+					{ type: "text", text: "Done." },
+				],
+			} satisfies ai_chat_UiMessage,
+		});
+
+		const lines = within(screen.getByRole("list", { name: "MCP sign-in" })).getAllByRole("listitem");
+		expect(lines.map((line) => line.firstChild?.textContent)).toEqual([
+			"data-probe · Docs needs sign-in",
+			"Your server: Tracker needs to reconnect",
+		]);
+
+		fireEvent.click(screen.getByRole("button", { name: "Reconnect Your server: Tracker" }));
+		// Read only the args. The first argument is a Convex function reference, and the diff printer
+		// cannot print it.
+		expect(action.mock.calls[0]?.[1]).toEqual({
+			membershipId: "membership-1",
+			target: customTarget,
+			returnPath: "/w/personal/home/chat",
+		});
+		await waitFor(() => expect(screen.getByRole("button", { name: "Connect data-probe · Docs" })).not.toBeNull());
+		action.mockRestore();
+	});
+
+	test("says a sign-in line's server was removed when its target is gone", () => {
+		const target = { kind: "custom" as const, customServerId: "custom_deleted" };
+		hookMocks.mcpConnectable.set(JSON.stringify(target), false);
+
+		renderMessage({
+			message: {
+				...createAssistantMessage(),
+				parts: [
+					{
+						type: "data-mcp-auth-needed",
+						data: {
+							servers: [{ target, source: { kind: "custom", serverName: "Old" }, reason: "needs_sign_in" }],
+						},
+					},
+				],
+			} satisfies ai_chat_UiMessage,
+		});
+
+		expect(screen.getByRole("status").textContent).toBe("This server was removed");
+		expect(screen.queryByRole("button", { name: "Connect Your server: Old" })).toBeNull();
 	});
 });

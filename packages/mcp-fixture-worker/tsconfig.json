@@ -9,5 +9,5 @@
 		"skipLibCheck": true,
 		"allowImportingTsExtensions": true
 	},
-	"include": ["src/index.ts"]
+	"include": ["src/index.ts", "src/oauth-fixture.ts"]
 }

@@ -45,6 +45,7 @@ function notify_route_store() {
 vi.mock("@tanstack/react-router", async () => {
 	const { useSyncExternalStore } = await import("react");
 	return {
+		useLocation: () => ({ pathname: "/w/team/home/plugins/tracker", searchStr: "" }),
 		createFileRoute: (_path: string) => (options: unknown) => ({
 			options,
 			useParams: () => {
@@ -142,6 +143,11 @@ vi.mock("@/lib/app-convex-client.ts", () => ({
 		},
 		plugins_mcp: {
 			get_installation_mcp_status: "plugins_mcp.get_installation_mcp_status",
+		},
+		plugins_mcp_oauth: {
+			can_connect: "plugins_mcp_oauth.can_connect",
+			start: "plugins_mcp_oauth.start",
+			disconnect: "plugins_mcp_oauth.disconnect",
 		},
 	},
 }));
@@ -820,6 +826,48 @@ describe("RoutePluginsPluginAccess", () => {
 		expect(server.textContent).toContain("You are not signed in");
 		expect(access.textContent).toContain("triage — Sort new issues.");
 		expect(access.textContent).toContain(mcp_warning);
+		expect(within(access).queryByRole("button", { name: "Connect Tracker" })).toBeNull();
+	});
+
+	test.each([
+		{ connection: null, button: "Connect Tracker" },
+		{
+			connection: { status: "connected", scopes: ["read"], authorizationHost: "auth.example.com", connectedAt: 1 },
+			button: "Disconnect Tracker",
+		},
+	])("an allowed sign-in server offers $button", async ({ connection, button }) => {
+		const plugin = published_plugin({ name: "tracker", canProcessFiles: false, ...mcp_plugin_parts });
+		setQueries(plugin, [installed_item(plugin)]);
+		const queries = useQueryMock.getMockImplementation()!;
+		useQueryMock.mockImplementation((query: string, ...args: unknown[]) =>
+			query === "plugins_mcp.get_installation_mcp_status"
+				? [{ serverId: "tracker", health: "healthy", policy: "allowed", connection }]
+				: query === "plugins_mcp_oauth.can_connect"
+					? true
+					: queries(query, ...args),
+		);
+		notify_route_store();
+		actionMock.mockResolvedValue({ _nay: { message: "Stop here" } });
+		mutationMock.mockResolvedValue({ _yay: null });
+
+		render(<PageComponent />);
+
+		const target = { kind: "plugin", installationId: "installation_1", serverId: "tracker" };
+		await act(async () => {
+			fireEvent.click(within(access_section()).getByRole("button", { name: button }));
+		});
+		if (connection === null) {
+			expect(actionMock).toHaveBeenCalledWith("plugins_mcp_oauth.start", {
+				membershipId: "membership_1",
+				target,
+				returnPath: "/w/team/home/plugins/tracker",
+			});
+		} else {
+			expect(mutationMock).toHaveBeenCalledWith("plugins_mcp_oauth.disconnect", {
+				membershipId: "membership_1",
+				target,
+			});
+		}
 	});
 });
 
