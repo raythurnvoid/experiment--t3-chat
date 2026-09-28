@@ -18,7 +18,7 @@ means look but do not change anything.
 | Workspace | Reached by | Policy | Use it for |
 | --- | --- | --- | --- |
 | `chitchat-qa/xfer-qa-0914` | QA Edge profile (Ray) | reuse | Files UI, editors, copy and move, tree, many files, deep folders, shares. The main place for new Files test data. |
-| `chitchat-qa/copy-qa-0922` | QA Edge profile | reuse | Copy checks. Almost empty. |
+| `chitchat-qa/copy-qa-0922` | QA Edge profile | reuse | Copy checks. Almost empty. MCP and plugin-skill checks: Data Probe 0.3.0 is installed here with its `fixture` MCP server and `mcp-echo` skill, so every chat here gets the fixture tools. The `chitchat-qa` plugin policy allows `data-probe`. |
 | `chitchat-qa/metadata-qa-0906` | QA Edge profile | reuse | Metadata checks. Chitchat and Council installed. |
 | `chitchat-qa/home` | QA Edge profile; `qa.perm.member` is a member | reuse | Chitchat page and its transcript files. Uploads here run no plugin. |
 | `qa-browser/home` | `qa.perm.owner` (owner), `qa.perm.viewer` (member) in a scratch browser | reuse | Permission refusals, second-user checks, search, web browser QA. Chitchat installed. The QA Edge profile is **not** a member. |
@@ -127,3 +127,4 @@ matter, continue a chat you already made for the same task instead of starting a
 ## Change Log
 
 - 2026-09-24: first catalog from a full refresh.
+- 2026-09-28: Data Probe 0.3.0 (MCP fixture) installed in `chitchat-qa/copy-qa-0922`.

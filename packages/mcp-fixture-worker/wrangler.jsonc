@@ -1,0 +1,9 @@
+{
+	"$schema": "https://unpkg.com/wrangler/config-schema.json",
+	"name": "bonobo-senate-mcp-fixture",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-05-11",
+	"observability": {
+		"enabled": true,
+	},
+}

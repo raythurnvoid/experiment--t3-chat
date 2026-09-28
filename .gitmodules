@@ -194,3 +194,6 @@
 [submodule "packages/native-popovers"]
 	path = packages/native-popovers
 	url = https://github.com/raythurnvoid/react-native-popovers.git
+[submodule "plugins/bonobo-plugin-data-probe"]
+	path = plugins/bonobo-plugin-data-probe
+	url = https://github.com/raythurnvoid/bonobo-plugin-data-probe.git

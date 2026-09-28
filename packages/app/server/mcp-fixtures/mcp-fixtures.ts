@@ -137,11 +137,19 @@ function create_legacy_handler(
 }
 
 /**
+ * The `modern-basic` server on its own. The public fixture Worker in `packages/mcp-fixture-worker`
+ * serves it for live QA, because Convex dev runs in the cloud and cannot reach a laptop.
+ */
+export function mcp_fixtures_create_basic_handler() {
+	return createMcpHandler(create_basic_server, { legacy: "reject", responseMode: "json" });
+}
+
+/**
  * Create every fixture and one fetch that routes to them. Close it after the tests.
  */
 export function mcp_fixtures_create() {
 	const wire: mcp_fixtures_WireEntry[] = [];
-	const basic = createMcpHandler(create_basic_server, { legacy: "reject", responseMode: "json" });
+	const basic = mcp_fixtures_create_basic_handler();
 	const basicSse = createMcpHandler(create_basic_server, { legacy: "reject", responseMode: "sse", keepAliveMs: 0 });
 	const legacy = {
 		"version-legacy": create_legacy_handler(["2025-11-25"], { forgetSessionOnCall: false, rawTools: null }),

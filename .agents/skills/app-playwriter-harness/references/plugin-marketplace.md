@@ -348,6 +348,41 @@ same HEAD. Known real-world trigger: a bundled dependency's `new Function("")` f
 against the repo's dist yourself, remember PowerShell `-match` is case-insensitive by default and
 over-reports lowercase `function (` lines.
 
+## MCP fixture plugin (Data Probe 0.3.0)
+
+Data Probe 0.3.0 (`plugins/bonobo-plugin-data-probe`) declares one MCP server, `fixture`, and one
+skill, `mcp-echo`. The server is the public fixture Worker
+`https://bonobo-senate-mcp-fixture.ray-thurne-void.workers.dev/modern-basic` (source in
+`packages/mcp-fixture-worker`). It has the tools `echo` and `picture` and no sign-in. Convex dev runs
+in the cloud, so a server on a laptop cannot be used for live MCP checks. Use this one.
+
+Where it lives (verified 2026-09-28): published as `data-probe@0.3.0` and installed only in
+`chitchat-qa/copy-qa-0922`. The `chitchat-qa` plugin policy allows `data-probe`. `personal/home`
+stays on 0.2.1 on purpose, because every chat in a workspace with the plugin gets the fixture tools.
+Reuse that installation. Do not install 0.3.0 in another workspace.
+
+To set it up again (for example after a data reset):
+
+1. Publish from the plugin detail page with the flow in the section above. Paste the submodule's
+   pushed HEAD SHA. The publish takes about 2 minutes.
+2. If the organization has a plugin policy, allow `data-probe` in the policy dialog first. A plugin
+   the policy does not allow shows no `Install` button.
+3. Click `Install` on the plugin hero. `locator.click` timed out there without landing. Clicking the
+   button's bounding-box center with `page.mouse.click(x, y)` worked. The consent modal must list the
+   `MCP fixture` server as "no sign-in", the outside-service warning, and the `mcp-echo` skill. Then
+   click `Accept and install`.
+4. Read back from the CLI: the installation is `enabled` with `agent.mcp.connect` and
+   `agent.skills.contribute` in `acceptedCapabilities`, and `plugins_mcp_servers` has one doc with
+   `serverId: "fixture"` for that installation.
+
+```powershell
+vp env exec pnpm --dir packages/app exec convex data plugins_workspace_installations --limit 20
+vp env exec pnpm --dir packages/app exec convex data plugins_mcp_servers --limit 20
+```
+
+Chat check for the skill: in a new chat in that workspace, ask the agent to read
+`/.plugins/data-probe/dist/skills/mcp-echo/SKILL.md` with Bash. The reply must quote the skill body.
+
 ## Triggering a plugin backend
 
 Plugin backends run on `files.upload.completed`, and **a text upload does not trigger one**. An upload

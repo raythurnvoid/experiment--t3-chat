@@ -1,0 +1,13 @@
+{
+	"name": "bonobo-senate-mcp-fixture",
+	"private": true,
+	"version": "0.0.0",
+	"license": "Apache-2.0",
+	"type": "module",
+	"scripts": {
+		"deploy": "pnpx wrangler deploy",
+		"dev": "pnpx wrangler dev",
+		"tail": "pnpx wrangler tail",
+		"typecheck": "pnpm --dir ../app exec tsc --project ../mcp-fixture-worker/tsconfig.json --noEmit"
+	}
+}
