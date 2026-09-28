@@ -17,6 +17,7 @@ import { Route as WOrganizationNameWorkspaceNameChatIndexRouteImport } from './r
 import { Route as WOrganizationNameWorkspaceNameFilesIndexRouteImport } from './routes/w/$organizationName/$workspaceName/files/index'
 import { Route as WOrganizationNameWorkspaceNameFilesSplatRouteImport } from './routes/w/$organizationName/$workspaceName/files/$'
 import { Route as WOrganizationNameWorkspaceNameFilesBrowserRouteImport } from './routes/w/$organizationName/$workspaceName/files/browser'
+import { Route as WOrganizationNameWorkspaceNameMcpServersIndexRouteImport } from './routes/w/$organizationName/$workspaceName/mcp-servers/index'
 import { Route as WOrganizationNameWorkspaceNamePluginsIndexRouteImport } from './routes/w/$organizationName/$workspaceName/plugins/index'
 import { Route as WOrganizationNameWorkspaceNamePluginsPluginNameRouteImport } from './routes/w/$organizationName/$workspaceName/plugins/$pluginName'
 import { Route as WOrganizationNameWorkspaceNameRolesIndexRouteImport } from './routes/w/$organizationName/$workspaceName/roles/index'
@@ -72,6 +73,12 @@ const WOrganizationNameWorkspaceNameFilesBrowserRoute =
     path: '/files/browser',
     getParentRoute: () => WOrganizationNameWorkspaceNameRouteRoute,
   } as any)
+const WOrganizationNameWorkspaceNameMcpServersIndexRoute =
+  WOrganizationNameWorkspaceNameMcpServersIndexRouteImport.update({
+    id: '/mcp-servers/',
+    path: '/mcp-servers/',
+    getParentRoute: () => WOrganizationNameWorkspaceNameRouteRoute,
+  } as any)
 const WOrganizationNameWorkspaceNamePluginsIndexRoute =
   WOrganizationNameWorkspaceNamePluginsIndexRouteImport.update({
     id: '/plugins/',
@@ -125,6 +132,7 @@ export interface FileRoutesByFullPath {
   '/w/$organizationName/$workspaceName/browser/': typeof WOrganizationNameWorkspaceNameBrowserIndexRoute
   '/w/$organizationName/$workspaceName/chat/': typeof WOrganizationNameWorkspaceNameChatIndexRoute
   '/w/$organizationName/$workspaceName/files/': typeof WOrganizationNameWorkspaceNameFilesIndexRoute
+  '/w/$organizationName/$workspaceName/mcp-servers/': typeof WOrganizationNameWorkspaceNameMcpServersIndexRoute
   '/w/$organizationName/$workspaceName/plugins/': typeof WOrganizationNameWorkspaceNamePluginsIndexRoute
   '/w/$organizationName/$workspaceName/roles/': typeof WOrganizationNameWorkspaceNameRolesIndexRoute
   '/w/$organizationName/$workspaceName/service-accounts/': typeof WOrganizationNameWorkspaceNameServiceAccountsIndexRoute
@@ -142,6 +150,7 @@ export interface FileRoutesByTo {
   '/w/$organizationName/$workspaceName/browser': typeof WOrganizationNameWorkspaceNameBrowserIndexRoute
   '/w/$organizationName/$workspaceName/chat': typeof WOrganizationNameWorkspaceNameChatIndexRoute
   '/w/$organizationName/$workspaceName/files': typeof WOrganizationNameWorkspaceNameFilesIndexRoute
+  '/w/$organizationName/$workspaceName/mcp-servers': typeof WOrganizationNameWorkspaceNameMcpServersIndexRoute
   '/w/$organizationName/$workspaceName/plugins': typeof WOrganizationNameWorkspaceNamePluginsIndexRoute
   '/w/$organizationName/$workspaceName/roles': typeof WOrganizationNameWorkspaceNameRolesIndexRoute
   '/w/$organizationName/$workspaceName/service-accounts': typeof WOrganizationNameWorkspaceNameServiceAccountsIndexRoute
@@ -160,6 +169,7 @@ export interface FileRoutesById {
   '/w/$organizationName/$workspaceName/browser/': typeof WOrganizationNameWorkspaceNameBrowserIndexRoute
   '/w/$organizationName/$workspaceName/chat/': typeof WOrganizationNameWorkspaceNameChatIndexRoute
   '/w/$organizationName/$workspaceName/files/': typeof WOrganizationNameWorkspaceNameFilesIndexRoute
+  '/w/$organizationName/$workspaceName/mcp-servers/': typeof WOrganizationNameWorkspaceNameMcpServersIndexRoute
   '/w/$organizationName/$workspaceName/plugins/': typeof WOrganizationNameWorkspaceNamePluginsIndexRoute
   '/w/$organizationName/$workspaceName/roles/': typeof WOrganizationNameWorkspaceNameRolesIndexRoute
   '/w/$organizationName/$workspaceName/service-accounts/': typeof WOrganizationNameWorkspaceNameServiceAccountsIndexRoute
@@ -179,6 +189,7 @@ export interface FileRouteTypes {
     | '/w/$organizationName/$workspaceName/browser/'
     | '/w/$organizationName/$workspaceName/chat/'
     | '/w/$organizationName/$workspaceName/files/'
+    | '/w/$organizationName/$workspaceName/mcp-servers/'
     | '/w/$organizationName/$workspaceName/plugins/'
     | '/w/$organizationName/$workspaceName/roles/'
     | '/w/$organizationName/$workspaceName/service-accounts/'
@@ -196,6 +207,7 @@ export interface FileRouteTypes {
     | '/w/$organizationName/$workspaceName/browser'
     | '/w/$organizationName/$workspaceName/chat'
     | '/w/$organizationName/$workspaceName/files'
+    | '/w/$organizationName/$workspaceName/mcp-servers'
     | '/w/$organizationName/$workspaceName/plugins'
     | '/w/$organizationName/$workspaceName/roles'
     | '/w/$organizationName/$workspaceName/service-accounts'
@@ -213,6 +225,7 @@ export interface FileRouteTypes {
     | '/w/$organizationName/$workspaceName/browser/'
     | '/w/$organizationName/$workspaceName/chat/'
     | '/w/$organizationName/$workspaceName/files/'
+    | '/w/$organizationName/$workspaceName/mcp-servers/'
     | '/w/$organizationName/$workspaceName/plugins/'
     | '/w/$organizationName/$workspaceName/roles/'
     | '/w/$organizationName/$workspaceName/service-accounts/'
@@ -284,6 +297,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof WOrganizationNameWorkspaceNameFilesBrowserRouteImport
       parentRoute: typeof WOrganizationNameWorkspaceNameRouteRoute
     }
+    '/w/$organizationName/$workspaceName/mcp-servers/': {
+      id: '/w/$organizationName/$workspaceName/mcp-servers/'
+      path: '/mcp-servers'
+      fullPath: '/w/$organizationName/$workspaceName/mcp-servers/'
+      preLoaderRoute: typeof WOrganizationNameWorkspaceNameMcpServersIndexRouteImport
+      parentRoute: typeof WOrganizationNameWorkspaceNameRouteRoute
+    }
     '/w/$organizationName/$workspaceName/plugins/': {
       id: '/w/$organizationName/$workspaceName/plugins/'
       path: '/plugins'
@@ -344,6 +364,7 @@ interface WOrganizationNameWorkspaceNameRouteRouteChildren {
   WOrganizationNameWorkspaceNameBrowserIndexRoute: typeof WOrganizationNameWorkspaceNameBrowserIndexRoute
   WOrganizationNameWorkspaceNameChatIndexRoute: typeof WOrganizationNameWorkspaceNameChatIndexRoute
   WOrganizationNameWorkspaceNameFilesIndexRoute: typeof WOrganizationNameWorkspaceNameFilesIndexRoute
+  WOrganizationNameWorkspaceNameMcpServersIndexRoute: typeof WOrganizationNameWorkspaceNameMcpServersIndexRoute
   WOrganizationNameWorkspaceNamePluginsIndexRoute: typeof WOrganizationNameWorkspaceNamePluginsIndexRoute
   WOrganizationNameWorkspaceNameRolesIndexRoute: typeof WOrganizationNameWorkspaceNameRolesIndexRoute
   WOrganizationNameWorkspaceNameServiceAccountsIndexRoute: typeof WOrganizationNameWorkspaceNameServiceAccountsIndexRoute
@@ -368,6 +389,8 @@ const WOrganizationNameWorkspaceNameRouteRouteChildren: WOrganizationNameWorkspa
       WOrganizationNameWorkspaceNameChatIndexRoute,
     WOrganizationNameWorkspaceNameFilesIndexRoute:
       WOrganizationNameWorkspaceNameFilesIndexRoute,
+    WOrganizationNameWorkspaceNameMcpServersIndexRoute:
+      WOrganizationNameWorkspaceNameMcpServersIndexRoute,
     WOrganizationNameWorkspaceNamePluginsIndexRoute:
       WOrganizationNameWorkspaceNamePluginsIndexRoute,
     WOrganizationNameWorkspaceNameRolesIndexRoute:

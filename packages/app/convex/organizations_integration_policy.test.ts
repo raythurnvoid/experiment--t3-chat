@@ -589,3 +589,105 @@ describe("organizations_integration_policy_db_allows_mcp_server", () => {
 		expect(await allows()).toBe(false);
 	});
 });
+
+describe("get_policy", () => {
+	test("a plain member gets only the modes and plugin names, a manager gets the whole doc", async () => {
+		const t = test_convex();
+		const owner = await custom_organization(t);
+		const member = await t.run((ctx) =>
+			test_mocks_fill_db_with.membership(ctx, { organizationName: "personal", workspaceName: "home" }),
+		);
+		refill_rate_limits();
+		await t.withIdentity(user_identity(owner.userId)).mutation(api.organizations.invite_user_to_organization_workspace, {
+			organizationId: owner.organizationId,
+			workspaceId: owner.workspaceId,
+			userIdToAdd: member.userId,
+		});
+		const customServerId = await t.run((ctx) => test_mocks_fill_db_with.mcp_custom_server(ctx, owner));
+		const fingerprint = (await t.run((ctx) => ctx.db.get("mcp_custom_servers", customServerId)))!.destinationFingerprint;
+		expect(
+			await update_policy(t, owner.userId, {
+				organizationId: owner.organizationId,
+				change: { kind: "allow_mcp_server", destinationFingerprint: fingerprint },
+			}),
+		).toEqual({ _yay: null });
+
+		const asMember = await t
+			.withIdentity(user_identity(member.userId))
+			.query(api.organizations_integration_policy.get_policy, { organizationId: owner.organizationId });
+		const asOwner = await t
+			.withIdentity(user_identity(owner.userId))
+			.query(api.organizations_integration_policy.get_policy, { organizationId: owner.organizationId });
+
+		expect(asMember).toEqual({
+			view: "member",
+			plugins: { mode: "allowlist", allowlist: [] },
+			mcpServers: { mode: "allowlist" },
+		});
+		expect(asOwner).toMatchObject({
+			view: "manager",
+			policy: { mcpServers: { allowlist: [{ destinationFingerprint: fingerprint, url: "https://mcp.example.com/mcp" }] } },
+		});
+	});
+});
+
+describe("list_custom_server_candidates", () => {
+	test("gives a manager the URL and member count over pages, and a plain member nothing", async () => {
+		const t = test_convex();
+		const owner = await custom_organization(t);
+		const member = await t.run((ctx) =>
+			test_mocks_fill_db_with.membership(ctx, { organizationName: "personal", workspaceName: "home" }),
+		);
+		refill_rate_limits();
+		await t.withIdentity(user_identity(owner.userId)).mutation(api.organizations.invite_user_to_organization_workspace, {
+			organizationId: owner.organizationId,
+			workspaceId: owner.workspaceId,
+			userIdToAdd: member.userId,
+		});
+		// 120 docs of server A, split between two members, then 30 docs of server B. Page one holds 100
+		// docs of A, so A spans both pages.
+		await t.run(async (ctx) => {
+			for (let index = 0; index < 150; index++) {
+				const customServerId = await test_mocks_fill_db_with.mcp_custom_server(ctx, {
+					...owner,
+					userId: index % 2 === 0 ? owner.userId : member.userId,
+				});
+				await ctx.db.patch("mcp_custom_servers", customServerId, {
+					destinationFingerprint: index < 120 ? "sha256:a" : "sha256:b",
+					url: index < 120 ? "https://a.example.com/mcp" : "https://b.example.com/mcp",
+				});
+			}
+		});
+		const list = (userId: Id<"users">, cursor: string | null) =>
+			t.withIdentity(user_identity(userId)).query(api.organizations_integration_policy.list_custom_server_candidates, {
+				organizationId: owner.organizationId,
+				paginationOpts: { numItems: 100, cursor },
+			});
+
+		expect(await list(member.userId, null)).toEqual({ page: [], continueCursor: "", isDone: true });
+
+		const first = await list(owner.userId, null);
+		const second = await list(owner.userId, first.continueCursor);
+
+		const candidate = { authKind: "none", oauthIssuer: null, allowed: false };
+		expect(first).toMatchObject({
+			isDone: false,
+			page: [{ ...candidate, destinationFingerprint: "sha256:a", url: "https://a.example.com/mcp", memberCount: 2 }],
+		});
+		expect(second).toMatchObject({
+			isDone: true,
+			page: [
+				{ ...candidate, destinationFingerprint: "sha256:a", memberCount: 2 },
+				{ ...candidate, destinationFingerprint: "sha256:b", url: "https://b.example.com/mcp", memberCount: 2 },
+			],
+		});
+		expect(Object.keys(first.page[0]!).sort()).toEqual([
+			"allowed",
+			"authKind",
+			"destinationFingerprint",
+			"memberCount",
+			"oauthIssuer",
+			"url",
+		]);
+	});
+});

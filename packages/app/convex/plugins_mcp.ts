@@ -11,8 +11,8 @@ import { ai_chat_workspaces_db_resolve, ai_chat_workspaces_SELECTORS } from "./a
 import { organizations_db_get_membership } from "./organizations.ts";
 import { organizations_integration_policy_db_allows_mcp_server } from "./organizations_integration_policy.ts";
 import app_convex_schema, { ai_chat_workspaces_source_validator, plugins_mcp_target_validator } from "./schema.ts";
-import { v_result } from "../server/convex-utils.ts";
-import { crypto_sha256_hex } from "../server/crypto-utils.ts";
+import { convex_error, v_result } from "../server/convex-utils.ts";
+import { crypto_decrypt_secret_value, crypto_sha256_hex } from "../server/crypto-utils.ts";
 import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
 import type { plugins_McpServer } from "../shared/plugins.ts";
 
@@ -37,11 +37,6 @@ const UNHEALTHY_AFTER_FAILURES = 3;
 const UNHEALTHY_PAUSE_MS = 5 * 60 * 1000;
 
 /**
- * A chat turn only knows plugin servers for now. Members cannot add their own servers yet.
- */
-const plugin_target_validator = plugins_mcp_target_validator.members[0];
-
-/**
  * SHA-256 of where a plugin MCP server sends data: its URL, its whole `auth` object, and its header
  * names, never header values. The organization allowlist matches on it. The object is built with a
  * fixed key order, so the same server always gives the same value, however it was read back.
@@ -59,6 +54,53 @@ export async function plugins_mcp_destination_fingerprint(server: plugins_McpSer
 	return `sha256:${await crypto_sha256_hex(
 		JSON.stringify({ url: server.url, auth, headers: server.headers.map((header) => header.name) }),
 	)}`;
+}
+
+/**
+ * The additional data that binds a member's header secret to its server, member, and name. A secret
+ * doc copied to another server, member, or name fails to decrypt.
+ */
+export function plugins_mcp_custom_secret_additional_data(args: {
+	customServerId: Id<"mcp_custom_servers">;
+	userId: Id<"users">;
+	name: string;
+}) {
+	return `custom_secret:${args.customServerId}:${args.userId}:${args.name}`;
+}
+
+/**
+ * Decrypt the header secrets of a member's own server into a name-to-value map.
+ */
+export async function plugins_mcp_decrypt_custom_secrets(args: {
+	customServerId: Id<"mcp_custom_servers">;
+	userId: Id<"users">;
+	secrets: ReadonlyArray<Doc<"mcp_custom_server_secrets">>;
+}) {
+	const values = new Map<string, string>();
+	for (const secret of args.secrets) {
+		values.set(
+			secret.name,
+			await crypto_decrypt_secret_value(
+				secret.value,
+				plugins_mcp_custom_secret_additional_data({ ...args, name: secret.name }),
+				"MCP_SECRETS_ENCRYPTION_KEY",
+			),
+		);
+	}
+	return values;
+}
+
+/**
+ * The header values of a member's own server: each header joins its parts with the secret values.
+ */
+export function plugins_mcp_custom_header_values(
+	headers: Doc<"mcp_custom_servers">["headers"],
+	secretValues: ReadonlyMap<string, string>,
+) {
+	return headers.map((header) => ({
+		name: header.name,
+		value: header.parts.map((part) => (part.kind === "text" ? part.text : secretValues.get(part.secretName)!)).join(""),
+	}));
 }
 
 /**
@@ -608,6 +650,200 @@ export const get_installation_mcp_status = query({
 });
 
 /**
+ * Whether the sidebar shows "MCP servers". A member who lost `workspace.mcp.use` but still has a
+ * server or a sign-in here still gets the page, so they can delete them.
+ */
+export const mcp_available = query({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+	},
+	returns: v.object({ canUse: v.boolean(), hasSavedData: v.boolean() }),
+	handler: async (ctx, args) => {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
+			throw convex_error({ message: "Unauthenticated" });
+		}
+
+		const membership = await organizations_db_get_membership(ctx, {
+			userId: userAuth.id,
+			membershipId: args.membershipId,
+		});
+		if (!membership) {
+			return { canUse: false, hasSavedData: false };
+		}
+
+		const [mayUse, customServer, grant] = await Promise.all([
+			access_control_db_authorize_membership(ctx, { userAuth, membership, permission: "workspace.mcp.use" }),
+			ctx.db
+				.query("mcp_custom_servers")
+				.withIndex("by_organization_workspace_user", (q) =>
+					q
+						.eq("organizationId", membership.organizationId)
+						.eq("workspaceId", membership.workspaceId)
+						.eq("userId", userAuth.id),
+				)
+				.first(),
+			ctx.db
+				.query("plugins_mcp_oauth_grants")
+				.withIndex("by_organization_workspace_user", (q) =>
+					q
+						.eq("organizationId", membership.organizationId)
+						.eq("workspaceId", membership.workspaceId)
+						.eq("userId", userAuth.id),
+				)
+				.first(),
+		]);
+		return { canUse: !mayUse._nay, hasSavedData: customServer !== null || grant !== null };
+	},
+});
+
+/**
+ * The caller's own sign-ins to the plugin MCP servers of this workspace: one entry per sign-in
+ * server of an enabled installation, plus each server the caller still has a sign-in for after its
+ * installation was turned off, so they can disconnect it. Never a token, a secret, a publisher, or a
+ * source repository.
+ */
+export const list_member_plugin_connections = query({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+	},
+	returns: v.object({
+		canUse: v.boolean(),
+		servers: v.array(
+			v.object({
+				target: plugins_mcp_target_validator.members[0],
+				pluginName: v.string(),
+				serverTitle: v.string(),
+				serverHost: v.string(),
+				authorizationHost: v.string(),
+				installationEnabled: v.boolean(),
+				health: v.union(v.literal("healthy"), v.literal("paused")),
+				policy: v.union(v.literal("allowed"), v.literal("blocked")),
+				connection: v.union(
+					v.object({
+						status: doc(app_convex_schema, "plugins_mcp_oauth_grants").fields.status,
+						scopes: v.array(v.string()),
+						connectedAt: v.number(),
+					}),
+					v.null(),
+				),
+			}),
+		),
+	}),
+	handler: async (ctx, args) => {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
+			throw convex_error({ message: "Unauthenticated" });
+		}
+
+		const membership = await organizations_db_get_membership(ctx, {
+			userId: userAuth.id,
+			membershipId: args.membershipId,
+		});
+		if (!membership) {
+			return { canUse: false, servers: [] };
+		}
+		const mayUse = await access_control_db_authorize_membership(ctx, {
+			userAuth,
+			membership,
+			permission: "workspace.mcp.use",
+		});
+
+		const [installations, grants] = await Promise.all([
+			ctx.db
+				.query("plugins_workspace_installations")
+				.withIndex("by_organization_workspace_status_pluginName", (q) =>
+					q
+						.eq("organizationId", membership.organizationId)
+						.eq("workspaceId", membership.workspaceId)
+						.eq("status", "enabled"),
+				)
+				.collect(),
+			ctx.db
+				.query("plugins_mcp_oauth_grants")
+				.withIndex("by_organization_workspace_user", (q) =>
+					q
+						.eq("organizationId", membership.organizationId)
+						.eq("workspaceId", membership.workspaceId)
+						.eq("userId", userAuth.id),
+				)
+				.collect(),
+		]);
+		const grantByTarget = new Map(
+			grants.flatMap((grant) =>
+				grant.target.kind === "plugin" ? [[`${grant.target.installationId}:${grant.target.serverId}`, grant]] : [],
+			),
+		);
+
+		// Installations turned off since the member signed in, so they can still disconnect.
+		const enabledIds = new Set(installations.map((installation) => installation._id));
+		const disabled = await Promise.all(
+			[
+				...new Set(
+					grants.flatMap((grant) =>
+						grant.target.kind === "plugin" && !enabledIds.has(grant.target.installationId)
+							? [grant.target.installationId]
+							: [],
+					),
+				),
+			].map((installationId) => ctx.db.get("plugins_workspace_installations", installationId)),
+		);
+
+		const servers = [];
+		for (const installation of [
+			...installations.filter((installation) => installation.acceptedCapabilities.includes("agent.mcp.connect")),
+			...disabled.filter((installation) => installation !== null),
+		]) {
+			const version = (await ctx.db.get("plugins_versions", installation.pluginVersionId))!;
+			const serverDocs = await ctx.db
+				.query("plugins_mcp_servers")
+				.withIndex("by_organization_workspace_installation", (q) =>
+					q
+						.eq("organizationId", membership.organizationId)
+						.eq("workspaceId", membership.workspaceId)
+						.eq("installationId", installation._id),
+				)
+				.collect();
+			const installationEnabled = enabledIds.has(installation._id);
+
+			for (const server of version.mcpServers) {
+				const grant = grantByTarget.get(`${installation._id}:${server.id}`);
+				if (server.auth.kind !== "oauth" || (!installationEnabled && !grant) || (mayUse._nay && !grant)) {
+					continue;
+				}
+
+				const target = { kind: "plugin" as const, installationId: installation._id, serverId: server.id };
+				const serverDoc = serverDocs.find((candidate) => candidate.serverId === server.id);
+				servers.push({
+					target,
+					pluginName: installation.pluginName,
+					serverTitle: server.title,
+					serverHost: new URL(server.url).host,
+					authorizationHost: new URL(server.auth.issuer).host,
+					installationEnabled,
+					health: serverDoc?.unhealthyUntil ? ("paused" as const) : ("healthy" as const),
+					policy: (await organizations_integration_policy_db_allows_mcp_server(ctx, {
+						organizationId: membership.organizationId,
+						target,
+					}))
+						? ("allowed" as const)
+						: ("blocked" as const),
+					connection: grant
+						? {
+								status: grant.status,
+								scopes: grant.scope.split(" ").filter(Boolean),
+								connectedAt: grant.connectedAt,
+							}
+						: null,
+				});
+			}
+		}
+
+		return { canUse: !mayUse._nay, servers };
+	},
+});
+
+/**
  * Whether every organization a chat thread can reach allows one MCP server. A thread reaches the
  * workspaces of `ai_chat_workspaces_SELECTORS`: today its own and the member's home. So a member
  * cannot get around a block by chatting in their home and reading the organization's files there.
@@ -640,31 +876,63 @@ async function db_thread_allows_target(
  *
  * The thread may not exist yet, so the caller passes the organizations of the workspaces the turn
  * captured. Every one of them must allow a server. The `execute` recheck checks the same rule live.
+ *
+ * Plugin servers come first, then the member's own servers of this workspace. So when a turn has
+ * more than 20, the member's own servers are left out first.
  */
 export const list_turn_servers = internalQuery({
 	args: {
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
+		userId: v.id("users"),
 		reachOrganizationIds: v.array(v.id("organizations")),
 	},
 	returns: v.object({
 		servers: v.array(
-			v.object({
-				target: plugin_target_validator,
-				toolPrefix: v.string(),
-				source: v.object({ kind: v.literal("plugin"), pluginName: v.string(), serverTitle: v.string() }),
-				url: v.string(),
-				/**
-				 * The manifest's tool allowlist. Null means every tool the server lists.
-				 */
-				toolAllowlist: v.union(v.array(v.string()), v.null()),
-				pluginVersionId: v.id("plugins_versions"),
-				/**
-				 * Each header value is the value of the named plugin secret.
-				 */
-				headerSpec: v.array(v.object({ name: v.string(), secretName: v.string() })),
-				failures: v.number(),
-			}),
+			v.union(
+				v.object({
+					kind: v.literal("plugin"),
+					target: plugins_mcp_target_validator.members[0],
+					toolPrefix: v.string(),
+					source: v.object({ kind: v.literal("plugin"), pluginName: v.string(), serverTitle: v.string() }),
+					/**
+					 * Press text that names the server in the notes the model reads.
+					 */
+					label: v.string(),
+					url: v.string(),
+					/**
+					 * The manifest's tool allowlist. Null means every tool the server lists.
+					 */
+					toolAllowlist: v.union(v.array(v.string()), v.null()),
+					/**
+					 * The call recheck compares it, so a turn never calls a URL the admin moved away from.
+					 */
+					pluginVersionId: v.id("plugins_versions"),
+					/**
+					 * Each header value is the value of the named plugin secret.
+					 */
+					headerSpec: v.array(v.object({ name: v.string(), secretName: v.string() })),
+					failures: v.number(),
+				}),
+				v.object({
+					kind: v.literal("custom"),
+					target: plugins_mcp_target_validator.members[1],
+					toolPrefix: v.string(),
+					source: v.object({ kind: v.literal("custom"), serverName: v.string() }),
+					label: v.string(),
+					url: v.string(),
+					/**
+					 * The call recheck compares it, so an edit never sends the old headers to a new URL.
+					 */
+					destinationFingerprint: v.string(),
+					/**
+					 * Each header joins its parts. The chat action decrypts the secrets once per turn.
+					 */
+					headerSpec: doc(app_convex_schema, "mcp_custom_servers").fields.headers,
+					secrets: v.array(doc(app_convex_schema, "mcp_custom_server_secrets")),
+					failures: v.number(),
+				}),
+			),
 		),
 		notes: v.array(v.string()),
 	}),
@@ -702,13 +970,61 @@ export const list_turn_servers = internalQuery({
 		}
 		candidates.sort((a, b) => a.serverDoc.toolPrefix.localeCompare(b.serverDoc.toolPrefix));
 
+		const customServers = (
+			await ctx.db
+				.query("mcp_custom_servers")
+				.withIndex("by_organization_workspace_user", (q) =>
+					q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("userId", args.userId),
+				)
+				.collect()
+		)
+			.filter((customServer) => customServer.enabled)
+			.toSorted((a, b) => a.toolPrefix.localeCompare(b.toolPrefix));
+
+		const entries = [
+			...candidates.map(({ installation, server, serverDoc }) => ({
+				unhealthyUntil: serverDoc.unhealthyUntil,
+				turnServer: {
+					kind: "plugin" as const,
+					target: { kind: "plugin" as const, installationId: installation._id, serverId: server.id },
+					toolPrefix: serverDoc.toolPrefix,
+					source: { kind: "plugin" as const, pluginName: installation.pluginName, serverTitle: server.title },
+					label: `${installation.pluginName} · ${server.title}`,
+					url: server.url,
+					toolAllowlist: server.tools,
+					pluginVersionId: installation.pluginVersionId,
+					headerSpec: server.headers.map((header) => ({ name: header.name, secretName: header.secret })),
+					failures: serverDoc.failures,
+				},
+			})),
+			...(await Promise.all(
+				customServers.map(async (customServer) => ({
+					unhealthyUntil: customServer.unhealthyUntil,
+					turnServer: {
+						kind: "custom" as const,
+						target: { kind: "custom" as const, customServerId: customServer._id },
+						toolPrefix: customServer.toolPrefix,
+						source: { kind: "custom" as const, serverName: customServer.name },
+						label: `Your server "${customServer.name}"`,
+						url: customServer.url,
+						destinationFingerprint: customServer.destinationFingerprint,
+						headerSpec: customServer.headers,
+						secrets: await ctx.db
+							.query("mcp_custom_server_secrets")
+							.withIndex("by_customServer_name", (q) => q.eq("customServerId", customServer._id))
+							.collect(),
+						failures: customServer.failures,
+					},
+				})),
+			)),
+		];
+
 		const servers = [];
 		const notes: string[] = [];
-		for (const { installation, server, serverDoc } of candidates) {
-			const label = `${installation.pluginName} · ${server.title}`;
-			const target = { kind: "plugin" as const, installationId: installation._id, serverId: server.id };
+		for (const { unhealthyUntil, turnServer } of entries) {
+			const { label, target } = turnServer;
 
-			if (serverDoc.unhealthyUntil !== null && serverDoc.unhealthyUntil > now) {
+			if (unhealthyUntil !== null && unhealthyUntil > now) {
 				notes.push(`${label}: left out, because its tool list failed several turns in a row.`);
 				continue;
 			}
@@ -730,21 +1046,28 @@ export const list_turn_servers = internalQuery({
 				continue;
 			}
 
-			servers.push({
-				target,
-				toolPrefix: serverDoc.toolPrefix,
-				source: { kind: "plugin" as const, pluginName: installation.pluginName, serverTitle: server.title },
-				url: server.url,
-				toolAllowlist: server.tools,
-				pluginVersionId: installation.pluginVersionId,
-				headerSpec: server.headers.map((header) => ({ name: header.name, secretName: header.secret })),
-				failures: serverDoc.failures,
-			});
+			servers.push(turnServer);
 		}
 
 		return { servers, notes };
 	},
 });
+
+/**
+ * The health fields after one tool list at turn setup.
+ */
+function next_health(server: { failures: number; unhealthyUntil: number | null }, ok: boolean) {
+	if (ok) {
+		return { failures: 0, unhealthyUntil: null };
+	}
+
+	// Keep counting after the pause ends, so one more failed turn pauses the server again at once.
+	const failures = server.failures + 1;
+	return {
+		failures,
+		unhealthyUntil: failures >= UNHEALTHY_AFTER_FAILURES ? Date.now() + UNHEALTHY_PAUSE_MS : server.unhealthyUntil,
+	};
+}
 
 /**
  * Record how one server's tool list went at turn setup. Only turn setup calls this, once per server
@@ -754,13 +1077,23 @@ export const list_turn_servers = internalQuery({
  */
 export const record_server_outcome = internalMutation({
 	args: {
-		target: plugin_target_validator,
+		target: plugins_mcp_target_validator,
 		ok: v.boolean(),
 	},
 	returns: v.null(),
 	handler: async (ctx, args) => {
-		// Write nothing when the server is gone: an uninstall may have finished while the list ran.
-		const installation = await ctx.db.get("plugins_workspace_installations", args.target.installationId);
+		const target = args.target;
+		// Write nothing when the server is gone: an uninstall or a delete may have finished while the
+		// list ran.
+		if (target.kind === "custom") {
+			const customServer = await ctx.db.get("mcp_custom_servers", target.customServerId);
+			if (customServer) {
+				await ctx.db.patch("mcp_custom_servers", customServer._id, next_health(customServer, args.ok));
+			}
+			return null;
+		}
+
+		const installation = await ctx.db.get("plugins_workspace_installations", target.installationId);
 		if (!installation) {
 			return null;
 		}
@@ -772,23 +1105,11 @@ export const record_server_outcome = internalMutation({
 					.eq("workspaceId", installation.workspaceId)
 					.eq("installationId", installation._id),
 			)
-			.filter((q) => q.eq(q.field("serverId"), args.target.serverId))
+			.filter((q) => q.eq(q.field("serverId"), target.serverId))
 			.first();
-		if (!serverDoc) {
-			return null;
+		if (serverDoc) {
+			await ctx.db.patch("plugins_mcp_servers", serverDoc._id, next_health(serverDoc, args.ok));
 		}
-
-		if (args.ok) {
-			await ctx.db.patch("plugins_mcp_servers", serverDoc._id, { failures: 0, unhealthyUntil: null });
-			return null;
-		}
-
-		// Keep counting after the pause ends, so one more failed turn pauses the server again at once.
-		const failures = serverDoc.failures + 1;
-		await ctx.db.patch("plugins_mcp_servers", serverDoc._id, {
-			failures,
-			unhealthyUntil: failures >= UNHEALTHY_AFTER_FAILURES ? Date.now() + UNHEALTHY_PAUSE_MS : serverDoc.unhealthyUntil,
-		});
 		return null;
 	},
 });
@@ -800,8 +1121,15 @@ export const record_server_outcome = internalMutation({
 export const recheck_call = internalQuery({
 	args: {
 		source: ai_chat_workspaces_source_validator,
-		target: plugin_target_validator,
-		expectedPluginVersionId: v.id("plugins_versions"),
+		target: plugins_mcp_target_validator,
+		/**
+		 * The plugin version at turn setup. Null for a member's own server.
+		 */
+		expectedPluginVersionId: v.union(v.id("plugins_versions"), v.null()),
+		/**
+		 * The fingerprint of a member's own server at turn setup. Null for a plugin server.
+		 */
+		expectedDestinationFingerprint: v.union(v.string(), v.null()),
 	},
 	returns: v_result({ _yay: v.null() }),
 	handler: async (ctx, args) => {
@@ -825,7 +1153,26 @@ export const recheck_call = internalQuery({
 			return Result({ _nay: { message: "Your organization's MCP policy blocks this server." } });
 		}
 
-		const installation = await ctx.db.get("plugins_workspace_installations", args.target.installationId);
+		const target = args.target;
+		if (target.kind === "custom") {
+			const customServer = await ctx.db.get("mcp_custom_servers", target.customServerId);
+			if (
+				!customServer ||
+				!customServer.enabled ||
+				customServer.userId !== args.source.userId ||
+				customServer.organizationId !== args.source.organizationId ||
+				customServer.workspaceId !== args.source.workspaceId
+			) {
+				return Result({ _nay: { message: "This MCP server is no longer available." } });
+			}
+			// An edit can point the server at another URL. Never send the old headers there.
+			if (customServer.destinationFingerprint !== args.expectedDestinationFingerprint) {
+				return Result({ _nay: { message: "The server changed; try again." } });
+			}
+			return Result({ _yay: null });
+		}
+
+		const installation = await ctx.db.get("plugins_workspace_installations", target.installationId);
 		if (
 			!installation ||
 			installation.status !== "enabled" ||
@@ -847,7 +1194,7 @@ export const recheck_call = internalQuery({
 					.eq("workspaceId", installation.workspaceId)
 					.eq("installationId", installation._id),
 			)
-			.filter((q) => q.eq(q.field("serverId"), args.target.serverId))
+			.filter((q) => q.eq(q.field("serverId"), target.serverId))
 			.first();
 		if (!serverDoc) {
 			return Result({ _nay: { message: "This MCP server is no longer available." } });
@@ -863,7 +1210,7 @@ export const recheck_call = internalQuery({
 export const record_call = internalMutation({
 	args: {
 		source: ai_chat_workspaces_source_validator,
-		target: plugin_target_validator,
+		target: plugins_mcp_target_validator,
 		toolName: v.string(),
 		startedAt: v.number(),
 		durationMs: v.number(),
@@ -874,12 +1221,14 @@ export const record_call = internalMutation({
 	returns: v.null(),
 	handler: async (ctx, args) => {
 		// A delete drain may have finished while the call ran. A doc written now would never be
-		// deleted, so write nothing when the member or the installation is gone.
-		const [membership, installation] = await Promise.all([
+		// deleted, so write nothing when the member or the server is gone.
+		const [membership, targetDoc] = await Promise.all([
 			ai_chat_files_db_get_invocation_membership(ctx, args.source),
-			ctx.db.get("plugins_workspace_installations", args.target.installationId),
+			args.target.kind === "plugin"
+				? ctx.db.get("plugins_workspace_installations", args.target.installationId)
+				: ctx.db.get("mcp_custom_servers", args.target.customServerId),
 		]);
-		if (!membership || !installation) {
+		if (!membership || !targetDoc) {
 			return null;
 		}
 

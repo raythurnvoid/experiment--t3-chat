@@ -10,6 +10,7 @@ import { crypto_encrypt_secret_value } from "../server/crypto-utils.ts";
 import { mcp_client_list_tools } from "../server/mcp-client.ts";
 import { mcp_fixtures_create } from "../server/mcp-fixtures/mcp-fixtures.ts";
 import { ai_chat_tool_create_mcp_tools } from "../server/server-ai-tools.ts";
+import { ai_chat_mcp_tool_output_schema, type ai_chat_McpToolOutput } from "../shared/ai-chat-files.ts";
 
 const model = vi.hoisted(() => ({ streamText: vi.fn() }));
 vi.mock("ai", async (importOriginal) => ({
@@ -180,7 +181,11 @@ async function install_mcp_plugin(
 			unhealthyUntil: null,
 		});
 		for (const header of headers) {
-			const encrypted = await crypto_encrypt_secret_value(header.value, `${installationId}:${header.secret}`);
+			const encrypted = await crypto_encrypt_secret_value(
+				header.value,
+				`${installationId}:${header.secret}`,
+				"PLUGIN_SECRETS_ENCRYPTION_KEY",
+			);
 			await ctx.db.insert("plugins_workspace_installation_secrets", {
 				organizationId,
 				workspaceId,
@@ -517,15 +522,18 @@ describe("/api/chat MCP tool calls", () => {
 				},
 				[
 					{
+						kind: "plugin",
 						target: { kind: "plugin", installationId: installed.installationId, serverId: "tracker" },
 						toolPrefix: "tracker",
 						source: { kind: "plugin", pluginName: "tracker", serverTitle: "Tracker" },
+						label: "tracker · Tracker",
 						url: MODERN_BASIC_URL,
 						toolAllowlist: null,
 						pluginVersionId: installed.pluginVersionId,
 						headerSpec: [],
 						failures: 0,
 						headers: [],
+						secretValues: [],
 						discover: listed._yay.discover,
 						tools: listed._yay.tools,
 					},
@@ -642,6 +650,202 @@ describe("/api/chat MCP organization policy", () => {
 			200,
 		);
 		expect(Object.keys(last_call().tools ?? {})).toContain("mcp__tracker__echo");
+	});
+});
+
+describe("/api/chat MCP custom servers", () => {
+	/**
+	 * Save the member's own server through the page door, so its secret is encrypted like in the app.
+	 */
+	async function save_custom_server(
+		asUser: ReturnType<TestConvex["withIdentity"]>,
+		membershipId: Id<"organizations_workspaces_users">,
+		args: {
+			name: string;
+			url?: string;
+			headers?: Record<string, string>;
+			secretValues?: Array<{ name: string; value: string }>;
+			customServerId?: Id<"mcp_custom_servers">;
+		},
+	) {
+		const saved = await asUser.action(api.mcp_custom_servers.save, {
+			membershipId,
+			customServerId: args.customServerId ?? null,
+			text: JSON.stringify({
+				mcpServers: { [args.name]: { url: args.url ?? MODERN_BASIC_URL, headers: args.headers ?? {} } },
+			}),
+			draftKey: args.name,
+			fill: {
+				name: args.name,
+				urlFields: [],
+				notSecretHeaders: [],
+				secretValues: args.secretValues ?? [],
+				keptSecretNames: [],
+			},
+		});
+		if (saved._nay) throw new Error(saved._nay.message);
+		// Forget the save probe, so the checks below see only the chat's requests.
+		fixtures.wire.length = 0;
+		return saved._yay.customServerId;
+	}
+
+	test("loads only the member's own servers of this workspace", async () => {
+		const { t, asUser, membership, threadId } = await setup();
+		await save_custom_server(asUser, membership.membershipId, { name: "Fixture Server" });
+		await t.run(async (ctx) => {
+			// Another member's server in the same workspace, and this member's server in their home workspace.
+			const otherUserId = await ctx.db.insert("users", { clerkUserId: null });
+			const other = await test_mocks_fill_db_with.mcp_custom_server(ctx, { ...membership, userId: otherUserId });
+			await ctx.db.patch("mcp_custom_servers", other, { url: MODERN_BASIC_URL, toolPrefix: "my-other" });
+			const user = (await ctx.db.get("users", membership.userId))!;
+			const home = await test_mocks_fill_db_with.mcp_custom_server(ctx, {
+				organizationId: user.defaultOrganizationId!,
+				workspaceId: user.defaultWorkspaceId!,
+				userId: membership.userId,
+			});
+			await ctx.db.patch("mcp_custom_servers", home, { url: MODERN_BASIC_URL, toolPrefix: "my-home" });
+		});
+
+		expect((await chat(asUser, { membershipId: membership.membershipId, threadId })).status).toBe(200);
+
+		const names = Object.keys(last_call().tools ?? {}).filter((name) => name.startsWith("mcp__"));
+		expect(names.toSorted()).toEqual(["mcp__my-fixture-server__echo", "mcp__my-fixture-server__picture"]);
+	});
+
+	test("leaves the member's server out after 20 plugin servers", async () => {
+		const { t, asUser, membership, threadId } = await setup();
+		for (let index = 0; index < 20; index++) {
+			const { serverDocId } = await install_mcp_plugin(t, membership, { url: MODERN_BASIC_URL, tools: ["echo"] });
+			await t.run((ctx) => ctx.db.patch("plugins_mcp_servers", serverDocId, { toolPrefix: `tracker-${index}` }));
+		}
+		await save_custom_server(asUser, membership.membershipId, { name: "fixture" });
+
+		expect((await chat(asUser, { membershipId: membership.membershipId, threadId })).status).toBe(200);
+
+		expect(Object.keys(last_call().tools ?? {}).some((name) => name.startsWith("mcp__my-"))).toBe(false);
+		expect(last_call().system).toContain(
+			'Your server "fixture": left out, because a chat can use at most 20 MCP servers.',
+		);
+	});
+
+	test("sends the header only to the server, masks its echo, and stores custom metadata", async () => {
+		const { t, asUser, membership, threadId } = await setup();
+		const headerValue = "CUSTOM_HEADER_VALUE_1234";
+		const customServerId = await save_custom_server(asUser, membership.membershipId, {
+			name: "fixture",
+			headers: { Authorization: "Bearer ${API_KEY}" },
+			secretValues: [{ name: "API_KEY", value: headerValue }],
+		});
+		expect((await chat(asUser, { membershipId: membership.membershipId, threadId })).status).toBe(200);
+		expect(fixtures.wire.map((entry) => entry.headers.get("authorization"))).toEqual([
+			`Bearer ${headerValue}`,
+			`Bearer ${headerValue}`,
+		]);
+
+		const result = await run_tool(t, "mcp__my-fixture__echo", { text: `key ${headerValue}` });
+
+		expect(result.error).toBeNull();
+		expect(result.output).toEqual({
+			title: "echo",
+			output: "key [secret]",
+			metadata: {
+				kind: "mcp_result",
+				target: { kind: "custom", customServerId },
+				source: { kind: "custom", serverName: "fixture" },
+				toolName: "echo",
+				isError: false,
+				truncated: false,
+				bytesIn: expect.any(Number),
+			},
+		});
+		expect(tools_calls()[0]?.headers.get("authorization")).toBe(`Bearer ${headerValue}`);
+		expect(ai_chat_mcp_tool_output_schema.safeParse(result.output).success).toBe(true);
+		const output = result.output as ai_chat_McpToolOutput;
+		const mixed = {
+			...output,
+			metadata: { ...output.metadata, source: { kind: "plugin", pluginName: "tracker", serverTitle: "Tracker" } },
+		};
+		expect(ai_chat_mcp_tool_output_schema.safeParse(mixed).success).toBe(false);
+	});
+
+	test("refuses a call after the member turns the server off or moves it, before any request", async () => {
+		const { t, asUser, membership, threadId } = await setup();
+		vi.useFakeTimers({ toFake: ["Date"] });
+		const customServerId = await save_custom_server(asUser, membership.membershipId, { name: "fixture" });
+		const set_enabled = (enabled: boolean) =>
+			asUser.mutation(api.mcp_custom_servers.set_enabled, {
+				membershipId: membership.membershipId,
+				customServerId,
+				enabled,
+			});
+
+		expect((await chat(asUser, { membershipId: membership.membershipId, threadId })).status).toBe(200);
+		expect(await set_enabled(false)).toEqual({ _yay: null });
+		expect((await run_tool(t, "mcp__my-fixture__echo", { text: "ok" })).error).toBe(
+			"This MCP server is no longer available.",
+		);
+
+		expect(await set_enabled(true)).toEqual({ _yay: null });
+		vi.setSystemTime(Date.now() + 60_000);
+		expect((await chat(asUser, { membershipId: membership.membershipId, threadId })).status).toBe(200);
+		await save_custom_server(asUser, membership.membershipId, {
+			name: "fixture",
+			url: `${MODERN_BASIC_URL}moved`,
+			customServerId,
+		});
+		expect((await run_tool(t, "mcp__my-fixture__echo", { text: "ok" })).error).toBe("The server changed; try again.");
+
+		expect(tools_calls()).toEqual([]);
+	});
+
+	test("leaves out a blocked server and refuses a call once the owner blocks it", async () => {
+		const { t, asUser, membership, threadId } = await setup();
+		vi.useFakeTimers({ toFake: ["Date"] });
+		await save_custom_server(asUser, membership.membershipId, { name: "fixture" });
+		const setMode = (mode: "allowlist" | "allow_all") =>
+			t.run(async (ctx) => {
+				const policy = await ctx.db
+					.query("organizations_integration_policies")
+					.withIndex("by_organization", (q) => q.eq("organizationId", membership.organizationId))
+					.first();
+				await ctx.db.patch("organizations_integration_policies", policy!._id, {
+					mcpServers: { mode, allowlist: [] },
+				});
+			});
+
+		await setMode("allowlist");
+		expect((await chat(asUser, { membershipId: membership.membershipId, threadId })).status).toBe(200);
+		expect(Object.keys(last_call().tools ?? {}).some((name) => name.startsWith("mcp__"))).toBe(false);
+		expect(last_call().system).toContain(`Your server "fixture": blocked by your organization's MCP policy.`);
+		expect(fixtures.wire).toEqual([]);
+
+		await setMode("allow_all");
+		vi.setSystemTime(Date.now() + 60_000);
+		expect((await chat(asUser, { membershipId: membership.membershipId, threadId })).status).toBe(200);
+		expect((await run_tool(t, "mcp__my-fixture__echo", { text: "ok" })).error).toBeNull();
+
+		// The owner blocks the server while the turn still holds its tools.
+		await setMode("allowlist");
+		const refused = await run_tool(t, "mcp__my-fixture__echo", { text: "ok" });
+
+		expect(refused.error).toBe("Your organization's MCP policy blocks this server.");
+		expect(tools_calls()).toHaveLength(1);
+	});
+
+	test("gives each custom server its own rate limit bucket", async () => {
+		const { t, asUser, membership, threadId } = await setup();
+		await save_custom_server(asUser, membership.membershipId, { name: "first" });
+		await save_custom_server(asUser, membership.membershipId, { name: "second" });
+		expect((await chat(asUser, { membershipId: membership.membershipId, threadId })).status).toBe(200);
+
+		// Freeze the clock so the 60-call bucket does not refill.
+		vi.useFakeTimers({ toFake: ["Date"] });
+		for (let index = 0; index < 60; index++) {
+			expect((await run_tool(t, "mcp__my-first__echo", { text: "ok" })).error).toBeNull();
+		}
+
+		expect((await run_tool(t, "mcp__my-first__echo", { text: "ok" })).error).toBe("Rate limit exceeded");
+		expect((await run_tool(t, "mcp__my-second__echo", { text: "ok" })).error).toBeNull();
 	});
 });
 

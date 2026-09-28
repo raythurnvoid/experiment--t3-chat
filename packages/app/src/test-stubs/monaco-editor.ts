@@ -17,6 +17,10 @@ export class Range {
 	) {}
 }
 
+export const MarkerSeverity = {
+	Error: 8,
+};
+
 export const editor = {
 	EndOfLineSequence: {
 		LF: 0,
@@ -37,6 +41,11 @@ export const editor = {
 			getFullModelRange() {
 				return FULL_MODEL_RANGE;
 			},
+			// Turn a text offset into a 1-based line and column, like Monaco does.
+			getPositionAt(offset: number) {
+				const lines = currentValue.slice(0, offset).split("\n");
+				return { lineNumber: lines.length, column: lines[lines.length - 1].length + 1 };
+			},
 			pushStackElement() {},
 			applyEdits(edits: Array<{ range: unknown; text: string }>) {
 				for (const edit of edits) {
@@ -55,6 +64,7 @@ export const editor = {
 	},
 	defineTheme() {},
 	setTheme() {},
+	setModelMarkers() {},
 };
 
 // The app config turns the worker-backed language features off at import time (tokenizer-only

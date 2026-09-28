@@ -106,6 +106,7 @@
 		"hono": "^4.9.11",
 		"jose": "^6.2.12",
 		"js-base64": "3.9.4",
+		"jsonc-parser": "3.3.1",
 		"just-bash": "workspace:*",
 		"katex": "^0.16.47",
 		"lib0": "^0.2.114",

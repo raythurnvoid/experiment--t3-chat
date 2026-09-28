@@ -3425,6 +3425,7 @@ describe("ai_chat_tool_create_mcp_tools", () => {
 		headers: ai_chat_tool_McpServer["headers"] = [],
 	) {
 		const server: ai_chat_tool_McpServer = {
+			kind: "plugin",
 			target: {
 				kind: "plugin",
 				installationId: "installation" as Id<"plugins_workspace_installations">,
@@ -3432,12 +3433,14 @@ describe("ai_chat_tool_create_mcp_tools", () => {
 			},
 			toolPrefix: "tracker",
 			source: { kind: "plugin", pluginName: "tracker", serverTitle: "Tracker" },
+			label: "tracker · Tracker",
 			url: "https://tracker.example.com/mcp",
 			toolAllowlist: null,
 			pluginVersionId: "version" as Id<"plugins_versions">,
 			headerSpec: [],
 			failures: 0,
 			headers,
+			secretValues: headers.map((header) => header.value),
 			discover: null,
 			tools: mcpTools.map((mcpTool) => ({
 				name: mcpTool.name,

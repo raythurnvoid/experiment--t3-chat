@@ -309,14 +309,14 @@ const MainAppHeaderOrganizationControls = memo(function MainAppHeaderOrganizatio
 					workspaceId: primaryWorkspace?._id,
 					permission: "organization.billing.manage",
 				});
-
-				return {
-					id: organization._id,
 				const canManageIntegrations = main_app_header_organization_controls_has_permission({
 					permissionsDict: organizationList?.workspaceIdsPermissionsDict,
 					workspaceId: primaryWorkspace?._id,
 					permission: "organization.integrations_policy.manage",
 				});
+
+				return {
+					id: organization._id,
 					label: organization.name,
 					description: organizations_switcher_list_secondary_line({
 						storedDescription: organization.description ?? "",
@@ -342,9 +342,6 @@ const MainAppHeaderOrganizationControls = memo(function MainAppHeaderOrganizatio
 										billingMode: organization.billingMode,
 									});
 								},
-					onEdit:
-						organization.default || !primaryWorkspace || !canUpdateOrganization
-							? undefined
 					// The personal organization allows every plugin and MCP server, so it has nothing to manage.
 					onManageIntegrations:
 						organization.default || !canManageIntegrations
@@ -352,6 +349,9 @@ const MainAppHeaderOrganizationControls = memo(function MainAppHeaderOrganizatio
 							: () => {
 									setIntegrationPolicyTarget({ organizationId: organization._id, organizationName: organization.name });
 								},
+					onEdit:
+						organization.default || !primaryWorkspace || !canUpdateOrganization
+							? undefined
 							: () => {
 									setEditTarget({
 										kind: "organization",
@@ -680,25 +680,25 @@ const MainAppHeaderOrganizationControls = memo(function MainAppHeaderOrganizatio
 	>((args) => {
 		return app_convex.mutation(app_convex_api.organizations.set_organization_billing_mode, args);
 	});
-	const organizationControlsButtonLabel =
-		organizations === undefined
-			? "Open organization and workspace switcher. Current organization and workspace are loading."
 
 	const handleOrganizationSwitcherUpdateIntegrationPolicy = useFn<
 		MainAppHeaderOrganizationSwitcherModal_Props["updateIntegrationPolicy"]
 	>((args) => {
 		return app_convex.mutation(app_convex_api.organizations_integration_policy.update_policy, args);
 	});
+	const organizationControlsButtonLabel =
+		organizations === undefined
+			? "Open organization and workspace switcher. Current organization and workspace are loading."
 			: `Open organization and workspace switcher. Current organization: ${currentOrganizationName}. Current workspace: ${currentWorkspaceName}.`;
 
 	useEffect(() => {
 		if (!isOpen) {
 			setEditTarget(null);
 			setBillingTarget(null);
+			setIntegrationPolicyTarget(null);
 			return;
 		}
 
-			setIntegrationPolicyTarget(null);
 		if (!organizationId || !workspaceId) {
 			return;
 		}
@@ -759,19 +759,19 @@ const MainAppHeaderOrganizationControls = memo(function MainAppHeaderOrganizatio
 				switchDisabled={switchDisabled}
 				editTarget={editTarget}
 				billingTarget={billingTarget}
+				integrationPolicyTarget={integrationPolicyTarget}
 				createOrganization={handleOrganizationSwitcherCreateOrganization}
 				createWorkspace={handleOrganizationSwitcherCreateWorkspace}
 				editOrganization={handleOrganizationSwitcherEditOrganization}
-				integrationPolicyTarget={integrationPolicyTarget}
 				editWorkspace={handleOrganizationSwitcherEditWorkspace}
 				setEditTarget={setEditTarget}
 				setBillingTarget={setBillingTarget}
 				setOrganizationBillingMode={handleOrganizationSwitcherSetOrganizationBillingMode}
+				setIntegrationPolicyTarget={setIntegrationPolicyTarget}
+				updateIntegrationPolicy={handleOrganizationSwitcherUpdateIntegrationPolicy}
 				onAfterCreateOrganization={handleOrganizationSwitcherAfterCreate}
 				onAfterCreateWorkspace={handleOrganizationSwitcherAfterCreate}
 				onAfterEdit={handleOrganizationSwitcherAfterEdit}
-				setIntegrationPolicyTarget={setIntegrationPolicyTarget}
-				updateIntegrationPolicy={handleOrganizationSwitcherUpdateIntegrationPolicy}
 				onCancel={handleOrganizationSwitcherCancel}
 				onSwitch={handleOrganizationSwitcherSwitch}
 			/>

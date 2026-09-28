@@ -44,6 +44,9 @@ vi.mock("@/lib/app-convex-client.ts", () => ({
 		files_browser: {
 			web_browser_available: "files_browser.web_browser_available",
 		},
+		plugins_mcp: {
+			mcp_available: "plugins_mcp.mcp_available",
+		},
 	},
 }));
 
@@ -263,6 +266,7 @@ function mockQueries(args: {
 	canManagePlugins?: boolean;
 	canUseBrowser?: boolean;
 	webBrowserEnabled?: boolean;
+	mcpAvailable?: { canUse: boolean; hasSavedData: boolean };
 }) {
 	useQueryMock.mockImplementation((query: unknown, queryArgs: unknown) => {
 		if (query === "organizations.list") {
@@ -277,6 +281,9 @@ function mockQueries(args: {
 		}
 		if (query === "files_browser.web_browser_available" && queryArgs !== "skip") {
 			return { enabled: args.webBrowserEnabled ?? true, paidPlan: false };
+		}
+		if (query === "plugins_mcp.mcp_available") {
+			return args.mcpAvailable;
 		}
 		return undefined;
 	});
@@ -343,6 +350,52 @@ describe("MainAppSidebar", () => {
 		mockQueries({ organizationIsDefault: false, canUseBrowser: true, webBrowserEnabled: false });
 		render(<MainAppSidebar />);
 		expect(screen.queryByText("Browser")).toBeNull();
+	});
+
+	test("shows MCP servers and not Plugins to a member without plugin management", () => {
+		mockQueries({
+			organizationIsDefault: false,
+			canManagePlugins: false,
+			mcpAvailable: { canUse: true, hasSavedData: false },
+		});
+
+		render(<MainAppSidebar />);
+
+		expect(screen.queryByText("Plugins")).toBeNull();
+		expect(screen.getByText("MCP servers").closest("a")?.getAttribute("href")).toBe("/w/team/home/mcp-servers");
+		expect(useQueryMock).toHaveBeenCalledWith("plugins_mcp.mcp_available", { membershipId: "membership_1" });
+	});
+
+	test("hides MCP servers and Plugins from a viewer", () => {
+		mockQueries({
+			organizationIsDefault: false,
+			canManagePlugins: false,
+			mcpAvailable: { canUse: false, hasSavedData: false },
+		});
+
+		render(<MainAppSidebar />);
+
+		expect(screen.queryByText("Plugins")).toBeNull();
+		expect(screen.queryByText("MCP servers")).toBeNull();
+	});
+
+	test("shows MCP servers without the permission only while the member has saved data", () => {
+		mockQueries({
+			organizationIsDefault: false,
+			canManagePlugins: false,
+			mcpAvailable: { canUse: false, hasSavedData: true },
+		});
+		const { unmount } = render(<MainAppSidebar />);
+		expect(screen.getByText("MCP servers")).not.toBeNull();
+		unmount();
+
+		mockQueries({
+			organizationIsDefault: false,
+			canManagePlugins: false,
+			mcpAvailable: { canUse: false, hasSavedData: false },
+		});
+		render(<MainAppSidebar />);
+		expect(screen.queryByText("MCP servers")).toBeNull();
 	});
 
 	test("renders a nav item for plugin pages that declare one", () => {

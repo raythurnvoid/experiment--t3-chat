@@ -31,8 +31,8 @@ import {
 	plugins_data_db_get_scope_cleanup_pairs,
 } from "./plugins_data.ts";
 import { plugins_db_delete_anonymized_review_if_unlinked } from "./plugins.ts";
-import { files_nodes_db_handoff_yjs_cleanup_task } from "./files_nodes.ts";
 import { plugins_mcp_db_delete_user_batch, plugins_mcp_db_revoke_grant } from "./plugins_mcp.ts";
+import { files_nodes_db_handoff_yjs_cleanup_task } from "./files_nodes.ts";
 import { files_pending_update_db_release_replacement_asset } from "./files_pending_updates.ts";
 import { files_private_storage_db_release_purged_resources } from "./files_private_storage.ts";
 import { files_ingestion_db_delete_receipt } from "./files_ingestion.ts";
@@ -843,7 +843,6 @@ async function db_purge_organization_workspace_content_batch(
 		return { done: false, deletedCount: pluginSecrets.length };
 	}
 
-	// External writers cannot publish through the workspace fence. Drain their children first.
 	const mcpServers = await ctx.db
 		.query("plugins_mcp_servers")
 		.withIndex("by_organization_workspace_installation", (q) =>
@@ -886,6 +885,7 @@ async function db_purge_organization_workspace_content_batch(
 		return { done: false, deletedCount: mcpGrants.length };
 	}
 
+	// External writers cannot publish through the workspace fence. Drain their children first.
 	for (const tableName of [
 		"plugins_external_file_reader_changes",
 		"plugins_external_file_receipts",
@@ -1503,7 +1503,6 @@ async function db_delete_organization_batch(
 		return { done: false, deletedCount: quotaDocs.length };
 	}
 
-	// Delete the organization doc last so retries can continue to target the same
 	// The policy has no workspace, so the workspace purge cannot reach it.
 	const integrationPolicy = await ctx.db
 		.query("organizations_integration_policies")
@@ -1514,6 +1513,7 @@ async function db_delete_organization_batch(
 		return { done: false, deletedCount: 1 };
 	}
 
+	// Delete the organization doc last so retries can continue to target the same
 	// organization id until all scoped docs are gone.
 	const organization = await ctx.db.get("organizations", args.organizationId);
 	if (organization) {
@@ -1712,10 +1712,10 @@ async function db_prepare_user_for_deletion(
 		// Saved browser logins do not wait for the retention window, and account recovery does not
 		// bring them back. This closes live browsers and deletes the profiles in scheduled batches.
 		await files_browser_db_schedule_user_deletion(ctx, { userId: args.user._id });
-	}
 		// The same for MCP servers, secrets, and sign-ins. Account deletion does not purge organizations
 		// the user does not own, so their docs there would stay without this.
 		await ctx.scheduler.runAfter(0, internal.plugins_mcp.drain_user_mcp_docs, { userId: args.user._id });
+	}
 
 	// Remove presence docs so the tombstoned user no longer appears in rooms.
 	// The presence component tolerates missing docs if another cleanup already
@@ -2281,6 +2281,10 @@ async function db_drain_user_finalization_batch(
 	).deletedCount;
 	if (browserCount > 0) return { done: false, deletedCount: browserCount };
 
+	const mcpCount = (await plugins_mcp_db_delete_user_batch(ctx, { userId: args.userId, batchSize: args.batchSize }))
+		.deletedCount;
+	if (mcpCount > 0) return { done: false, deletedCount: mcpCount };
+
 	const serviceGrantCount = await db_drain_user_plugin_service_grants_batch(ctx, args);
 	if (serviceGrantCount > 0) {
 		return { done: false, deletedCount: serviceGrantCount };
@@ -2288,10 +2292,6 @@ async function db_drain_user_finalization_batch(
 
 	const membershipCount = await db_drain_user_memberships_batch(ctx, args);
 	if (membershipCount > 0) {
-	const mcpCount = (await plugins_mcp_db_delete_user_batch(ctx, { userId: args.userId, batchSize: args.batchSize }))
-		.deletedCount;
-	if (mcpCount > 0) return { done: false, deletedCount: mcpCount };
-
 		return { done: false, deletedCount: membershipCount };
 	}
 

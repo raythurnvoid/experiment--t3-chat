@@ -403,7 +403,7 @@ export function plugins_validate_origin(raw: string, allowWebSocket = false) {
 const MAX_MCP_SERVER_URL_LENGTH = 2048;
 
 // Query names that look like they carry a key. Checked after lowercasing and removing `-` and `_`.
-const MCP_SERVER_URL_SECRET_QUERY_WORDS = [
+export const plugins_MCP_SERVER_URL_SECRET_WORDS = [
 	"key",
 	"token",
 	"secret",
@@ -451,7 +451,7 @@ export function plugins_validate_mcp_server_url(raw: string) {
 	}
 	for (const queryName of url.searchParams.keys()) {
 		const folded = queryName.toLowerCase().replaceAll(/[-_]/gu, "");
-		if (MCP_SERVER_URL_SECRET_QUERY_WORDS.some((word) => folded.includes(word))) {
+		if (plugins_MCP_SERVER_URL_SECRET_WORDS.some((word) => folded.includes(word))) {
 			return Result({
 				_nay: {
 					message: "MCP server URL must not carry a key in its query. Send the key in the Authorization header instead",
@@ -753,7 +753,7 @@ const MCP_SERVER_ID_REGEX = /^[a-z][a-z0-9-]{0,19}$/u;
 // Stricter than the Agent Skills spec, which also allows Unicode lowercase. ASCII keeps paths and tool text simple.
 const SKILL_NAME_REGEX = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u;
 // RFC 9110 token characters.
-const HTTP_HEADER_NAME_REGEX = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/u;
+export const plugins_HTTP_HEADER_NAME_REGEX = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/u;
 
 // These limits are checked before any file is fetched. Publishing downloads, buffers, and uploads
 // whatever the manifest declares, so without them a huge manifest would mean a huge publish.
@@ -1428,7 +1428,7 @@ export function plugins_validate_manifest(input: unknown) {
 		const headerNames = new Set<string>();
 		for (const header of server.headers) {
 			const lowered = header.name.toLowerCase();
-			if (!HTTP_HEADER_NAME_REGEX.test(header.name)) {
+			if (!plugins_HTTP_HEADER_NAME_REGEX.test(header.name)) {
 				return Result({ _nay: { message: `MCP server "${server.id}" has an invalid header name` } });
 			}
 			if (headerNames.has(lowered)) {

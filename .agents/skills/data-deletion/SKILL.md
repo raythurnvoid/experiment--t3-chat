@@ -32,6 +32,10 @@ Load each companion skill that owns the affected boundary:
   real content — a rejected agent create proposal, or an upload placeholder that was canceled or
   never finished. An archived file keeps its R2 object and its quota bytes, so archiving frees no
   storage.
+- A member deletes one of their own MCP servers with `mcp_custom_servers.remove`. It deletes the
+  server and its secrets at once, revokes the member's sign-in for it through
+  `plugins_mcp_db_revoke_grant`, deletes its running sign-ins, and schedules `drain_removed_server`,
+  which deletes its `plugins_mcp_calls` docs 100 per run.
 
 # Primary Files
 

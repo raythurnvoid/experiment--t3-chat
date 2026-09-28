@@ -140,6 +140,22 @@ const rate_limiter_CONFIG = {
 		period: MINUTE,
 		capacity: 60,
 	},
+	// Saving or testing a member's own MCP server makes Convex fetch a URL the member chose. The
+	// capacity lets a member save all 10 pasted servers in a row.
+	mcp_custom_servers_probe: {
+		kind: "token bucket",
+		rate: 20,
+		period: MINUTE,
+		capacity: 10,
+	},
+	// Turning off, deleting, or disconnecting a server removes access. A member who does several in a
+	// row must not be refused on the third, so this is wider than STRICT_WRITE.
+	mcp_member_write: {
+		kind: "token bucket",
+		rate: 30,
+		period: MINUTE,
+		capacity: 10,
+	},
 	plugins_manage: STRICT_AUTH_OR_BILLING,
 	// Reading the candidate branch HEAD spends the shared GitHub token but must not consume the
 	// management token that the immediate publish needs. Keep a separate short retry burst here.

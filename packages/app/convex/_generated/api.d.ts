@@ -55,6 +55,7 @@ import type * as files_visible from "../files_visible.js";
 import type * as files_write_policy_runs from "../files_write_policy_runs.js";
 import type * as github_mounts from "../github_mounts.js";
 import type * as http from "../http.js";
+import type * as mcp_custom_servers from "../mcp_custom_servers.js";
 import type * as migrations from "../migrations.js";
 import type * as notifications from "../notifications.js";
 import type * as organizations from "../organizations.js";
@@ -70,6 +71,7 @@ import type * as plugins_external_files_access from "../plugins_external_files_a
 import type * as plugins_invoke from "../plugins_invoke.js";
 import type * as plugins_invoke_http_routes from "../plugins_invoke_http_routes.js";
 import type * as plugins_mcp from "../plugins_mcp.js";
+import type * as plugins_mcp_oauth from "../plugins_mcp_oauth.js";
 import type * as plugins_review from "../plugins_review.js";
 import type * as plugins_runtime from "../plugins_runtime.js";
 import type * as plugins_runtime_http_routes from "../plugins_runtime_http_routes.js";
@@ -156,6 +158,7 @@ declare const fullApi: ApiFromModules<{
   files_write_policy_runs: typeof files_write_policy_runs;
   github_mounts: typeof github_mounts;
   http: typeof http;
+  mcp_custom_servers: typeof mcp_custom_servers;
   migrations: typeof migrations;
   notifications: typeof notifications;
   organizations: typeof organizations;
@@ -171,6 +174,7 @@ declare const fullApi: ApiFromModules<{
   plugins_invoke: typeof plugins_invoke;
   plugins_invoke_http_routes: typeof plugins_invoke_http_routes;
   plugins_mcp: typeof plugins_mcp;
+  plugins_mcp_oauth: typeof plugins_mcp_oauth;
   plugins_review: typeof plugins_review;
   plugins_runtime: typeof plugins_runtime;
   plugins_runtime_http_routes: typeof plugins_runtime_http_routes;

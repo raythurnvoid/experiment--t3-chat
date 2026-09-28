@@ -2773,6 +2773,9 @@ describe("remove_user_from_organization", () => {
 				capabilities: [],
 				outboundOrigins: [],
 				uiOutboundOrigins: [],
+				mcpServers: [],
+				mcpServersFingerprint: "mcp-servers-hash",
+				skills: [],
 				files: [],
 				sourceStatus: "ready",
 				sourceLastError: null,
@@ -2796,6 +2799,8 @@ describe("remove_user_from_organization", () => {
 					capabilitiesAcceptedAt: now,
 					acceptedOutboundOrigins: [],
 					acceptedUiOutboundOrigins: [],
+					acceptedMcpServersFingerprint: "mcp-servers-hash",
+					acceptedSkillNames: [],
 					outboundOriginsAcceptedAt: now,
 					installedBy: ownerId,
 					updatedBy: ownerId,
@@ -2817,6 +2822,8 @@ describe("remove_user_from_organization", () => {
 					capabilitiesAcceptedAt: now,
 					acceptedOutboundOrigins: [],
 					acceptedUiOutboundOrigins: [],
+					acceptedMcpServersFingerprint: "mcp-servers-hash",
+					acceptedSkillNames: [],
 					outboundOriginsAcceptedAt: now,
 					installedBy: ownerId,
 					updatedBy: ownerId,
@@ -2838,6 +2845,8 @@ describe("remove_user_from_organization", () => {
 					capabilitiesAcceptedAt: now,
 					acceptedOutboundOrigins: [],
 					acceptedUiOutboundOrigins: [],
+					acceptedMcpServersFingerprint: "mcp-servers-hash",
+					acceptedSkillNames: [],
 					outboundOriginsAcceptedAt: now,
 					installedBy: ownerId,
 					updatedBy: ownerId,
@@ -2929,9 +2938,6 @@ describe("remove_user_from_organization", () => {
 						tokenHash: "6".repeat(64),
 						scopes: ["plugin_data:read"],
 						principalKey: "removal-test-service-control",
-				mcpServers: [],
-				mcpServersFingerprint: "mcp-servers-hash",
-				skills: [],
 						phase: "interactive",
 						destinationPathPrefix: null,
 						expiresAt: now + 24 * 60 * 60 * 1000,
@@ -2952,8 +2958,6 @@ describe("remove_user_from_organization", () => {
 					pluginVersionId,
 					pluginName: "media",
 					actorUserId: memberId,
-					acceptedMcpServersFingerprint: "mcp-servers-hash",
-					acceptedSkillNames: [],
 					tokenHash: (index + 10).toString(16).padStart(64, "0"),
 					scopes: ["plugin_data:read"],
 					principalKey: `removal-test-service-batch-${index}`,
@@ -2975,8 +2979,6 @@ describe("remove_user_from_organization", () => {
 					workspaceId: organization._yay!.defaultWorkspaceId,
 					installationId: removedInstallationId,
 					userId: memberId,
-					acceptedMcpServersFingerprint: "mcp-servers-hash",
-					acceptedSkillNames: [],
 					usedBytes: 40,
 					usedDocuments: 2,
 					machineBytes: 0,
@@ -2998,8 +3000,6 @@ describe("remove_user_from_organization", () => {
 					installationId: keptInstallationId,
 					userId: memberId,
 					usedBytes: 24,
-					acceptedMcpServersFingerprint: "mcp-servers-hash",
-					acceptedSkillNames: [],
 					usedDocuments: 1,
 					machineBytes: 0,
 					collectionNames: ["messages"],
@@ -3311,6 +3311,9 @@ describe("remove_user_from_organization", () => {
 				capabilities: [],
 				outboundOrigins: [],
 				uiOutboundOrigins: [],
+				mcpServers: [],
+				mcpServersFingerprint: "mcp-servers-hash",
+				skills: [],
 				files: [],
 				sourceStatus: "ready",
 				sourceLastError: null,
@@ -3333,6 +3336,8 @@ describe("remove_user_from_organization", () => {
 				capabilitiesAcceptedAt: now,
 				acceptedOutboundOrigins: [],
 				acceptedUiOutboundOrigins: [],
+				acceptedMcpServersFingerprint: "mcp-servers-hash",
+				acceptedSkillNames: [],
 				outboundOriginsAcceptedAt: now,
 				installedBy: ownerId,
 				updatedBy: ownerId,
@@ -3467,9 +3472,6 @@ describe("remove_user_from_organization", () => {
 		expect(await countPendingRemovalJobs()).toBe(1);
 
 		const reinviteWhileDraining = await owner.mutation(api.organizations.invite_user_to_organization_workspace, {
-				mcpServers: [],
-				mcpServersFingerprint: "mcp-servers-hash",
-				skills: [],
 			organizationId: created._yay!.organizationId,
 			workspaceId: created._yay!.defaultWorkspaceId,
 			userIdToAdd: memberId,
@@ -3489,8 +3491,6 @@ describe("remove_user_from_organization", () => {
 			scopes: (await ctx.db.query("plugins_data_scopes").collect())
 				.map((doc) => ({ scopeId: doc.scopeId, membershipRevision: doc.updatedAt }))
 				.sort((left, right) => left.scopeId.localeCompare(right.scopeId)),
-				acceptedMcpServersFingerprint: "mcp-servers-hash",
-				acceptedSkillNames: [],
 			fences: (await ctx.db.query("plugins_data_released_scope_ranges").collect()).map((doc) => doc.scopeId),
 			grants: (await ctx.db.query("access_control_permission_grants").collect())
 				.filter((grant) => grant.resourceId.startsWith(`${seeded.installationId}:`))
@@ -3613,6 +3613,139 @@ describe("remove_user_from_organization", () => {
 		]);
 		expect(after.wipeJobs).toHaveLength(1);
 	});
+
+	// A few rows finish in the removal mutation itself. More than one batch (100 rows) finish in
+	// continue_remove_user_from_organization.
+	for (const [size, callCount] of [
+		["few", 2],
+		["many", 120],
+	] as const) {
+		test(`deletes the removed member's MCP rows and keeps other members' rows (${size} rows)`, async () => {
+			const t = test_convex();
+			const [ownerId, memberId, otherMemberId] = await t.run(async (ctx) =>
+				Promise.all([
+					ctx.db.insert("users", { clerkUserId: `clerk-user-remove-mcp-owner-${size}` }),
+					ctx.db.insert("users", { clerkUserId: `clerk-user-remove-mcp-member-${size}` }),
+					ctx.db.insert("users", { clerkUserId: `clerk-user-remove-mcp-other-${size}` }),
+				]),
+			);
+			await organizations_test_bootstrap_users(t, { userIds: [ownerId, memberId, otherMemberId] });
+			const created = await t.run((ctx) =>
+				organizations_db_create(ctx, {
+					userId: ownerId,
+					description: "",
+					name: `remove-mcp-team-${size}`,
+					now: Date.now(),
+				}),
+			);
+			const organizationId = created._yay!.organizationId;
+			const workspaceId = created._yay!.defaultWorkspaceId;
+
+			await t.run(async (ctx) => {
+				const now = Date.now();
+				const threadId = await ctx.db.insert("ai_chat_threads", {
+					organizationId,
+					workspaceId,
+					clientGeneratedId: `remove-mcp-thread-${size}`,
+					title: "Remove MCP thread",
+					archived: false,
+					runtime: "aisdk_5",
+					createdBy: ownerId,
+					updatedBy: ownerId,
+					updatedAt: now,
+					lastMessageAt: now,
+				});
+				for (const userId of [memberId, otherMemberId]) {
+					await ctx.db.insert("organizations_workspaces_users", { organizationId, workspaceId, userId, active: true });
+					await access_control_db_ensure_role_assignment(ctx, {
+						organizationId,
+						workspaceId,
+						userId,
+						role: "member",
+						now,
+					});
+					// The removal clears the member's API credential counter, which a real invite creates.
+					await quotas_db_ensure(ctx, {
+						quotaName: "active_api_credentials",
+						userId,
+						organizationId,
+						workspaceId,
+						now,
+					});
+					const customServerId = await test_mocks_fill_db_with.mcp_custom_server(ctx, {
+						organizationId,
+						workspaceId,
+						userId,
+						secretNames: ["TOKEN", "ACCOUNT"],
+					});
+					const scope = { organizationId, workspaceId, userId, target: { kind: "custom" as const, customServerId } };
+					await test_mocks_fill_db_with.mcp_oauth_grant(ctx, scope);
+					await test_mocks_fill_db_with.mcp_oauth_pending(ctx, scope);
+					for (let i = 0; i < callCount; i += 1) {
+						await test_mocks_fill_db_with.mcp_call(ctx, { ...scope, threadId });
+					}
+				}
+			});
+			const read_mcp_row_counts = (userId: Id<"users">) =>
+				t.run(async (ctx) => {
+					const counts: Record<string, number> = {};
+					for (const tableName of [
+						"mcp_custom_servers",
+						"mcp_custom_server_secrets",
+						"plugins_mcp_oauth_grants",
+						"plugins_mcp_oauth_pending",
+						"plugins_mcp_calls",
+					] as const) {
+						counts[tableName] = (
+							await ctx.db
+								.query(tableName)
+								.withIndex("by_organization_workspace_user", (q) =>
+									q.eq("organizationId", organizationId).eq("workspaceId", workspaceId).eq("userId", userId),
+								)
+								.collect()
+						).length;
+					}
+					return counts;
+				});
+			const seededCounts = {
+				mcp_custom_servers: 1,
+				mcp_custom_server_secrets: 2,
+				plugins_mcp_oauth_grants: 1,
+				plugins_mcp_oauth_pending: 1,
+				plugins_mcp_calls: callCount,
+			};
+			const drainedCounts = {
+				mcp_custom_servers: 0,
+				mcp_custom_server_secrets: 0,
+				plugins_mcp_oauth_grants: 0,
+				plugins_mcp_oauth_pending: 0,
+				plugins_mcp_calls: 0,
+			};
+
+			// Fake timers hold the scheduled continuation, so the first pass can be read on its own.
+			vi.useFakeTimers();
+			const removed = await t
+				.withIdentity({ issuer: "https://clerk.test", external_id: ownerId })
+				.mutation(api.organizations.remove_user_from_organization, { organizationId, userIdToRemove: memberId });
+			expect(removed._nay).toBeUndefined();
+
+			const afterFirstPass = await read_mcp_row_counts(memberId);
+			if (size === "few") {
+				expect(afterFirstPass).toEqual(drainedCounts);
+			} else {
+				expect(afterFirstPass.plugins_mcp_calls).toBeGreaterThan(0);
+				await t.run((ctx) =>
+					ctx.runMutation(internal.organizations.continue_remove_user_from_organization, {
+						organizationId,
+						userId: memberId,
+					}),
+				);
+				expect(await read_mcp_row_counts(memberId)).toEqual(drainedCounts);
+			}
+			expect(await t.run((ctx) => ctx.db.query("plugins_mcp_oauth_revocations").collect())).toHaveLength(1);
+			expect(await read_mcp_row_counts(otherMemberId)).toEqual(seededCounts);
+		});
+	}
 });
 
 describe("access_control.transfer_organization_ownership", () => {
@@ -3769,139 +3902,6 @@ describe("access_control.transfer_organization_ownership", () => {
 				oldOwnerMemberRole,
 				oldOwnerQuota,
 				newOwnerQuota,
-
-	// A few rows finish in the removal mutation itself. More than one batch (100 rows) finish in
-	// continue_remove_user_from_organization.
-	for (const [size, callCount] of [
-		["few", 2],
-		["many", 120],
-	] as const) {
-		test(`deletes the removed member's MCP rows and keeps other members' rows (${size} rows)`, async () => {
-			const t = test_convex();
-			const [ownerId, memberId, otherMemberId] = await t.run(async (ctx) =>
-				Promise.all([
-					ctx.db.insert("users", { clerkUserId: `clerk-user-remove-mcp-owner-${size}` }),
-					ctx.db.insert("users", { clerkUserId: `clerk-user-remove-mcp-member-${size}` }),
-					ctx.db.insert("users", { clerkUserId: `clerk-user-remove-mcp-other-${size}` }),
-				]),
-			);
-			await organizations_test_bootstrap_users(t, { userIds: [ownerId, memberId, otherMemberId] });
-			const created = await t.run((ctx) =>
-				organizations_db_create(ctx, {
-					userId: ownerId,
-					description: "",
-					name: `remove-mcp-team-${size}`,
-					now: Date.now(),
-				}),
-			);
-			const organizationId = created._yay!.organizationId;
-			const workspaceId = created._yay!.defaultWorkspaceId;
-
-			await t.run(async (ctx) => {
-				const now = Date.now();
-				const threadId = await ctx.db.insert("ai_chat_threads", {
-					organizationId,
-					workspaceId,
-					clientGeneratedId: `remove-mcp-thread-${size}`,
-					title: "Remove MCP thread",
-					archived: false,
-					runtime: "aisdk_5",
-					createdBy: ownerId,
-					updatedBy: ownerId,
-					updatedAt: now,
-					lastMessageAt: now,
-				});
-				for (const userId of [memberId, otherMemberId]) {
-					await ctx.db.insert("organizations_workspaces_users", { organizationId, workspaceId, userId, active: true });
-					await access_control_db_ensure_role_assignment(ctx, {
-						organizationId,
-						workspaceId,
-						userId,
-						role: "member",
-						now,
-					});
-					// The removal clears the member's API credential counter, which a real invite creates.
-					await quotas_db_ensure(ctx, {
-						quotaName: "active_api_credentials",
-						userId,
-						organizationId,
-						workspaceId,
-						now,
-					});
-					const customServerId = await test_mocks_fill_db_with.mcp_custom_server(ctx, {
-						organizationId,
-						workspaceId,
-						userId,
-						secretNames: ["TOKEN", "ACCOUNT"],
-					});
-					const scope = { organizationId, workspaceId, userId, target: { kind: "custom" as const, customServerId } };
-					await test_mocks_fill_db_with.mcp_oauth_grant(ctx, scope);
-					await test_mocks_fill_db_with.mcp_oauth_pending(ctx, scope);
-					for (let i = 0; i < callCount; i += 1) {
-						await test_mocks_fill_db_with.mcp_call(ctx, { ...scope, threadId });
-					}
-				}
-			});
-			const read_mcp_row_counts = (userId: Id<"users">) =>
-				t.run(async (ctx) => {
-					const counts: Record<string, number> = {};
-					for (const tableName of [
-						"mcp_custom_servers",
-						"mcp_custom_server_secrets",
-						"plugins_mcp_oauth_grants",
-						"plugins_mcp_oauth_pending",
-						"plugins_mcp_calls",
-					] as const) {
-						counts[tableName] = (
-							await ctx.db
-								.query(tableName)
-								.withIndex("by_organization_workspace_user", (q) =>
-									q.eq("organizationId", organizationId).eq("workspaceId", workspaceId).eq("userId", userId),
-								)
-								.collect()
-						).length;
-					}
-					return counts;
-				});
-			const seededCounts = {
-				mcp_custom_servers: 1,
-				mcp_custom_server_secrets: 2,
-				plugins_mcp_oauth_grants: 1,
-				plugins_mcp_oauth_pending: 1,
-				plugins_mcp_calls: callCount,
-			};
-			const drainedCounts = {
-				mcp_custom_servers: 0,
-				mcp_custom_server_secrets: 0,
-				plugins_mcp_oauth_grants: 0,
-				plugins_mcp_oauth_pending: 0,
-				plugins_mcp_calls: 0,
-			};
-
-			// Fake timers hold the scheduled continuation, so the first pass can be read on its own.
-			vi.useFakeTimers();
-			const removed = await t
-				.withIdentity({ issuer: "https://clerk.test", external_id: ownerId })
-				.mutation(api.organizations.remove_user_from_organization, { organizationId, userIdToRemove: memberId });
-			expect(removed._nay).toBeUndefined();
-
-			const afterFirstPass = await read_mcp_row_counts(memberId);
-			if (size === "few") {
-				expect(afterFirstPass).toEqual(drainedCounts);
-			} else {
-				expect(afterFirstPass.plugins_mcp_calls).toBeGreaterThan(0);
-				await t.run((ctx) =>
-					ctx.runMutation(internal.organizations.continue_remove_user_from_organization, {
-						organizationId,
-						userId: memberId,
-					}),
-				);
-				expect(await read_mcp_row_counts(memberId)).toEqual(drainedCounts);
-			}
-			expect(await t.run((ctx) => ctx.db.query("plugins_mcp_oauth_revocations").collect())).toHaveLength(1);
-			expect(await read_mcp_row_counts(otherMemberId)).toEqual(seededCounts);
-		});
-	}
 				oldOwnerHomeMembership,
 			};
 		});

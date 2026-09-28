@@ -1690,6 +1690,11 @@ export type ai_chat_tool_McpServer = FunctionReturnType<
 	 * Header values resolved once at turn setup. The guard sends them only to the server's origin.
 	 */
 	headers: Array<{ name: string; value: string }>;
+	/**
+	 * Every secret value in the headers. A header can hold a secret inside fixed text (`Bearer <secret>`),
+	 * so mask each secret on its own, not only whole header values.
+	 */
+	secretValues: string[];
 	discover: DiscoverResult | null;
 	tools: mcp_client_NormalizedTool[];
 };
@@ -1807,7 +1812,7 @@ export async function ai_chat_tool_create_mcp_tools(
 ) {
 	const tools: Record<string, Tool<unknown, unknown>> = {};
 	for (const server of servers) {
-		const secrets = server.headers.map((header) => header.value);
+		const secrets = server.secretValues;
 		// The tool name is stored in the chat and the ledger, and it goes into the model name. So leave
 		// out a tool whose name holds a header value, a token, or half of a character.
 		const serverTools = server.tools.filter((mcpTool) => mcp_clean_text(mcpTool.name, secrets) === mcpTool.name);
@@ -1843,13 +1848,17 @@ export async function ai_chat_tool_create_mcp_tools(
 						const recheck = await ctx.runQuery(internal.plugins_mcp.recheck_call, {
 							source,
 							target: server.target,
-							expectedPluginVersionId: server.pluginVersionId,
+							expectedPluginVersionId: server.kind === "plugin" ? server.pluginVersionId : null,
+							expectedDestinationFingerprint: server.kind === "custom" ? server.destinationFingerprint : null,
 						});
 						if (recheck._nay) throw new Error(recheck._nay.message);
 
 						const rateLimit = await rate_limiter_limit_by_key(ctx, {
 							name: "plugins_mcp_tool_call",
-							key: `${server.target.installationId}:${ctxData.userId}`,
+							key:
+								server.kind === "plugin"
+									? `${server.target.installationId}:${ctxData.userId}`
+									: `custom:${server.target.customServerId}:${ctxData.userId}`,
 						});
 						if (rateLimit) throw new Error(rateLimit.message);
 
@@ -1882,6 +1891,12 @@ export async function ai_chat_tool_create_mcp_tools(
 								outcome,
 							});
 						};
+
+						// A member's own server with headers never starts a sign-in, so there is nothing to connect.
+						if (server.kind === "custom" && server.headerSpec.length > 0 && called._nay?.name === "auth_required") {
+							await recordCall(called._nay.name, 0, null);
+							throw new Error("This server refused its headers. Check them on the MCP servers page.");
+						}
 
 						// A thrown error reaches the chat as text only. The chat needs the target to show a
 						// Connect card, so a sign-in answer returns a result instead.

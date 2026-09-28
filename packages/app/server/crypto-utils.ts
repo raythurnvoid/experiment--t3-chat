@@ -44,17 +44,34 @@ if (!process.env.PLUGIN_SECRETS_ENCRYPTION_KEY) {
 	throw convex_error({ message: "PLUGIN_SECRETS_ENCRYPTION_KEY is not set in Convex env" });
 }
 
-const PLUGIN_SECRETS_ENCRYPTION_KEY = process.env.PLUGIN_SECRETS_ENCRYPTION_KEY;
+/**
+ * The Convex env var that holds the key. Plugin secrets and MCP secrets use different keys.
+ */
+type SecretKeyName = "PLUGIN_SECRETS_ENCRYPTION_KEY" | "MCP_SECRETS_ENCRYPTION_KEY";
 
 const secret_crypto_key = ((/* iife */) => {
-	let keyPromise: Promise<CryptoKey> | undefined;
+	async function value(keyName: SecretKeyName) {
+		// Read the key at call time. A missing MCP key must break only MCP secrets, not every module
+		// that imports this file.
+		const key = process.env[keyName];
+		if (!key) {
+			throw convex_error({ message: `${keyName} is not set in Convex env` });
+		}
 
-	return function secret_crypto_key() {
-		keyPromise ??= (async (/* iife */) => {
-			const digest = await crypto.subtle.digest("SHA-256", text_encoder.encode(PLUGIN_SECRETS_ENCRYPTION_KEY));
-			return await crypto.subtle.importKey("raw", digest, "AES-GCM", false, ["encrypt", "decrypt"]);
-		})();
-		return keyPromise;
+		const digest = await crypto.subtle.digest("SHA-256", text_encoder.encode(key));
+		return await crypto.subtle.importKey("raw", digest, "AES-GCM", false, ["encrypt", "decrypt"]);
+	}
+
+	const cache = new Map<SecretKeyName, ReturnType<typeof value>>();
+
+	return function secret_crypto_key(keyName: SecretKeyName) {
+		if (cache.has(keyName)) {
+			return cache.get(keyName)!;
+		}
+
+		const result = value(keyName);
+		cache.set(keyName, result);
+		return result;
 	};
 })();
 
@@ -62,11 +79,15 @@ const secret_crypto_key = ((/* iife */) => {
  * AES-GCM additional data binds a ciphertext to its owning scope and name, so a
  * row copied onto another installation/publisher or renamed fails to decrypt.
  */
-export async function crypto_encrypt_secret_value(value: string, additionalData: string) {
+export async function crypto_encrypt_secret_value(
+	value: string,
+	additionalData: string,
+	keyName: SecretKeyName,
+) {
 	const nonce = crypto.getRandomValues(new Uint8Array(12));
 	const ciphertext = await crypto.subtle.encrypt(
 		{ name: "AES-GCM", iv: nonce, additionalData: text_encoder.encode(additionalData) },
-		await secret_crypto_key(),
+		await secret_crypto_key(keyName),
 		text_encoder.encode(value),
 	);
 	return {
@@ -78,10 +99,11 @@ export async function crypto_encrypt_secret_value(value: string, additionalData:
 export async function crypto_decrypt_secret_value(
 	secret: { ciphertext: ArrayBuffer; nonce: ArrayBuffer },
 	additionalData: string,
+	keyName: SecretKeyName,
 ) {
 	const plaintext = await crypto.subtle.decrypt(
 		{ name: "AES-GCM", iv: secret.nonce, additionalData: text_encoder.encode(additionalData) },
-		await secret_crypto_key(),
+		await secret_crypto_key(keyName),
 		secret.ciphertext,
 	);
 	return text_decoder.decode(plaintext);

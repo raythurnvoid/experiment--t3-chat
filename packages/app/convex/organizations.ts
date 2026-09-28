@@ -41,8 +41,8 @@ import {
 import { data_deletion_db_request } from "./data_deletion_requests.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import { plugins_data_db_get_scope_cleanup_pairs } from "./plugins_data.ts";
-import { files_browser_db_delete_profile } from "./files_browser.ts";
 import { plugins_mcp_db_drain_member_batch } from "./plugins_mcp.ts";
+import { files_browser_db_delete_profile } from "./files_browser.ts";
 
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
 // Does NOT work for http actions (see http.ts). No mutable module-level state allowed here.
@@ -1319,13 +1319,6 @@ export const continue_remove_user_from_organization = internalMutation({
 			return null;
 		}
 
-		// Delete only the memberships this organization-removal flow marked. Ordinary inactive
-		// memberships still belong to account-deletion retention and recovery.
-		await Promise.all(
-			pendingMemberships.map((membership) => ctx.db.delete("organizations_workspaces_users", membership._id)),
-		);
-		return null;
-	},
 		const drainedMcp = await plugins_mcp_db_drain_member_batch(ctx, {
 			...args,
 			workspaceIds: pendingMemberships.map((membership) => membership.workspaceId),
@@ -1335,6 +1328,13 @@ export const continue_remove_user_from_organization = internalMutation({
 			return null;
 		}
 
+		// Delete only the memberships this organization-removal flow marked. Ordinary inactive
+		// memberships still belong to account-deletion retention and recovery.
+		await Promise.all(
+			pendingMemberships.map((membership) => ctx.db.delete("organizations_workspaces_users", membership._id)),
+		);
+		return null;
+	},
 });
 
 export const remove_user_from_organization = mutation({

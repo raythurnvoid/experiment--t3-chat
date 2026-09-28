@@ -55,6 +55,12 @@
 		line-height: 1.45;
 		color: var(--color-fg-08);
 	}
+
+	.RoutePluginsHeader-actions {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 8px;
+	}
 	/* #endregion header */
 
 	/* #region gallery */

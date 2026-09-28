@@ -91,6 +91,7 @@ import {
 } from "../shared/ai-chat-files.ts";
 import { mcp_client_list_tools, type mcp_client_ErrorCode } from "../server/mcp-client.ts";
 import { crypto_decrypt_secret_value } from "../server/crypto-utils.ts";
+import { plugins_mcp_custom_header_values, plugins_mcp_decrypt_custom_secrets } from "./plugins_mcp.ts";
 import { ai_chat_tool_create_view_image, type ai_chat_Observation } from "../server/ai-chat-file-tools.ts";
 import { files_ingestion_decode_base64 } from "../server/files-ingestion.ts";
 import app_convex_schema, {
@@ -968,41 +969,63 @@ async function load_turn_mcp_tools(
 	const listed = await ctx.runQuery(internal.plugins_mcp.list_turn_servers, {
 		organizationId: ctxData.organizationId,
 		workspaceId: ctxData.workspaceId,
+		userId: ctxData.userId,
 		reachOrganizationIds: input.reachOrganizationIds,
 	});
 	const notes = [...listed.notes];
 
 	const loadServer = async (server: (typeof listed.servers)[number]) => {
-		const label = `${server.source.pluginName} · ${server.source.serverTitle}`;
+		const { label } = server;
 
 		// Read the header secrets once per turn, not per call. A publisher secret read writes
 		// `lastUsedAt` on one doc that many workspaces share.
 		const headers: ai_chat_tool_McpServer["headers"] = [];
-		for (const header of server.headerSpec) {
-			const resolved = await ctx.runMutation(internal.plugins.get_secret_for_runtime, {
-				organizationId: ctxData.organizationId,
-				workspaceId: ctxData.workspaceId,
-				installationId: server.target.installationId,
-				name: header.secretName,
-			});
-			// A missing secret leaves out its header, not the server. The server then refuses the list
-			// or works without it, and the admin sees the missing secret on the plugin page.
-			if (!resolved) {
-				continue;
-			}
-
-			// Same additional data as `decrypt_secret_for_runtime`. That action is not called here,
-			// because an action must not call another action in the same runtime.
-			const additionalData =
-				resolved.tier === "installation"
-					? `${resolved.secret.installationId}:${resolved.secret.name}`
-					: `${resolved.secret.ownerUserId}:${resolved.secret.name}`;
-			const value = await crypto_decrypt_secret_value(resolved.secret, additionalData).catch(() => null);
-			if (value === null) {
+		const secretValues: string[] = [];
+		// A member's own server keeps its secrets in its own table. Plugin runtimes can never read them.
+		if (server.kind === "custom") {
+			const values = await plugins_mcp_decrypt_custom_secrets({
+				customServerId: server.target.customServerId,
+				userId: ctxData.userId,
+				secrets: server.secrets,
+			}).catch(() => null);
+			if (values === null) {
 				notes.push(`${label}: left out, because Press could not read its secrets.`);
 				return null;
 			}
-			headers.push({ name: header.name, value });
+			headers.push(...plugins_mcp_custom_header_values(server.headerSpec, values));
+			secretValues.push(...values.values());
+		} else {
+			for (const header of server.headerSpec) {
+				const resolved = await ctx.runMutation(internal.plugins.get_secret_for_runtime, {
+					organizationId: ctxData.organizationId,
+					workspaceId: ctxData.workspaceId,
+					installationId: server.target.installationId,
+					name: header.secretName,
+				});
+				// A missing secret leaves out its header, not the server. The server then refuses the list
+				// or works without it, and the admin sees the missing secret on the plugin page.
+				if (!resolved) {
+					continue;
+				}
+
+				// Same additional data as `decrypt_secret_for_runtime`. That action is not called here,
+				// because an action must not call another action in the same runtime.
+				const additionalData =
+					resolved.tier === "installation"
+						? `${resolved.secret.installationId}:${resolved.secret.name}`
+						: `${resolved.secret.ownerUserId}:${resolved.secret.name}`;
+				const value = await crypto_decrypt_secret_value(
+					resolved.secret,
+					additionalData,
+					"PLUGIN_SECRETS_ENCRYPTION_KEY",
+				).catch(() => null);
+				if (value === null) {
+					notes.push(`${label}: left out, because Press could not read its secrets.`);
+					return null;
+				}
+				headers.push({ name: header.name, value });
+				secretValues.push(value);
+			}
 		}
 
 		const listResult = await mcp_client_list_tools({
@@ -1026,7 +1049,7 @@ async function load_turn_mcp_tools(
 		}
 
 		// Count dropped tools, but never name them: tool names are server text.
-		const allowlist = server.toolAllowlist;
+		const allowlist = server.kind === "plugin" ? server.toolAllowlist : null;
 		const tools =
 			allowlist === null
 				? listResult._yay.tools
@@ -1042,6 +1065,7 @@ async function load_turn_mcp_tools(
 			server: {
 				...server,
 				headers,
+				secretValues,
 				discover: listResult._yay.discover,
 				tools: tools.slice(0, MCP_TOOLS_PER_TURN),
 			} satisfies ai_chat_tool_McpServer,

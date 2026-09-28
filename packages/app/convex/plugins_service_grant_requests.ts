@@ -160,6 +160,7 @@ export async function plugins_service_grant_requests_db_recover(
 	const token = await crypto_decrypt_secret_value(
 		{ ciphertext: receipt.ciphertext, nonce: receipt.nonce },
 		JSON.stringify([credentialHash, args.operation, args.requestId, args.fingerprint]),
+		"PLUGIN_SECRETS_ENCRYPTION_KEY",
 	);
 	return Result({
 		_yay: {
@@ -192,6 +193,7 @@ export async function plugins_service_grant_requests_db_save(
 	const encrypted = await crypto_encrypt_secret_value(
 		args.token,
 		JSON.stringify([credentialHash, args.operation, args.requestId, args.fingerprint]),
+		"PLUGIN_SECRETS_ENCRYPTION_KEY",
 	);
 	// A receipt never outlives the grant it replays.
 	const expiresAt = Math.min(Date.now() + 24 * 60 * 60 * 1000, args.grant.expiresAt);

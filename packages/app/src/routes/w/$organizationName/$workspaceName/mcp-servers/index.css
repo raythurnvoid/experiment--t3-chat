@@ -1,0 +1,553 @@
+@layer components {
+	/* #region root */
+	/* Full-width scroll owner so the bar sits on the page's right edge; -content is the centered column. */
+	.RouteMcpServers {
+		width: 100%;
+		height: 100%;
+		overflow-y: auto;
+	}
+
+	.RouteMcpServers-content {
+		display: flex;
+		flex-direction: column;
+		gap: 28px;
+
+		width: min(100%, 960px);
+		margin-inline: auto;
+		padding: 24px;
+	}
+
+	.RouteMcpServers-loading {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		gap: 8px;
+
+		min-height: 180px;
+
+		color: var(--color-fg-08);
+	}
+
+	.RouteMcpServersHeader-title {
+		margin: 0;
+
+		font-size: 24px;
+		font-weight: 650;
+		line-height: 1.2;
+		color: var(--color-fg-12);
+	}
+
+	.RouteMcpServersHeader-description {
+		margin: 6px 0 0;
+
+		font-size: 14px;
+		line-height: 1.45;
+		color: var(--color-fg-08);
+	}
+	/* #endregion root */
+
+	/* #region plugin server */
+	.RouteMcpServersPluginServer {
+		display: flex;
+		align-items: start;
+		justify-content: space-between;
+		gap: 14px;
+
+		min-width: 0;
+		padding: 14px;
+
+		background: var(--color-base-1-03);
+
+		& + & {
+			border-block-start: 1px solid var(--color-base-1-07);
+		}
+	}
+
+	.RouteMcpServersPluginServer-main {
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+		min-width: 0;
+	}
+
+	.RouteMcpServersPluginServer-titleRow {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		min-width: 0;
+	}
+
+	.RouteMcpServersPluginServer-name {
+		min-width: 0;
+		margin: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+
+		font-size: 14px;
+		font-weight: 600;
+		line-height: 1.3;
+		color: var(--color-fg-12);
+	}
+
+	.RouteMcpServersPluginServer-details {
+		margin: 0;
+
+		font-size: 13px;
+		line-height: 1.45;
+		color: var(--color-fg-08);
+		overflow-wrap: anywhere;
+	}
+
+	.RouteMcpServersPluginServer-actions {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		justify-content: end;
+		gap: 8px;
+
+		flex: none;
+	}
+	/* #endregion plugin server */
+
+	/* #region plugin servers */
+	.RouteMcpServersPluginServers {
+		display: flex;
+		flex-direction: column;
+		gap: 14px;
+	}
+
+	.RouteMcpServersPluginServers-header {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+	}
+
+	.RouteMcpServersPluginServers-title {
+		margin: 0;
+
+		font-size: 18px;
+		font-weight: 600;
+		line-height: 1.3;
+		color: var(--color-fg-12);
+	}
+
+	.RouteMcpServersPluginServers-description {
+		margin: 0;
+
+		font-size: 13px;
+		line-height: 1.45;
+		color: var(--color-fg-08);
+	}
+
+	.RouteMcpServersPluginServers-items {
+		display: flex;
+		flex-direction: column;
+
+		margin: 0;
+		padding: 0;
+		border: 1px solid var(--color-base-1-07);
+		border-radius: 8px;
+		overflow: hidden;
+
+		list-style: none;
+	}
+
+	.RouteMcpServersPluginServers-empty {
+		margin: 0;
+		padding: 18px;
+		border: 1px dashed var(--color-base-1-07);
+		border-radius: 8px;
+
+		text-align: center;
+		font-size: 13px;
+		color: var(--color-fg-07);
+	}
+	/* #endregion plugin servers */
+
+	/* #region saved server */
+	.RouteMcpServersSavedServer {
+		display: flex;
+		align-items: start;
+		justify-content: space-between;
+		gap: 14px;
+
+		min-width: 0;
+		padding: 14px;
+
+		background: var(--color-base-1-03);
+
+		& + & {
+			border-block-start: 1px solid var(--color-base-1-07);
+		}
+	}
+
+	.RouteMcpServersSavedServer-main {
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+		min-width: 0;
+	}
+
+	.RouteMcpServersSavedServer-titleRow {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		min-width: 0;
+	}
+
+	.RouteMcpServersSavedServer-name {
+		min-width: 0;
+		margin: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+
+		font-size: 14px;
+		font-weight: 600;
+		line-height: 1.3;
+		color: var(--color-fg-12);
+	}
+
+	.RouteMcpServersSavedServer-details {
+		margin: 0;
+
+		font-size: 13px;
+		line-height: 1.45;
+		color: var(--color-fg-08);
+		overflow-wrap: anywhere;
+	}
+
+	.RouteMcpServersSavedServer-headers {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+
+		margin: 0;
+		padding: 0;
+
+		list-style: none;
+	}
+
+	.RouteMcpServersSavedServer-header {
+		font-size: 12px;
+		color: var(--color-fg-09);
+		overflow-wrap: anywhere;
+
+		& > code {
+			font-family: monospace;
+		}
+	}
+
+	.RouteMcpServersSavedServer-secret {
+		padding: 0 6px;
+		border: 1px solid var(--color-base-1-07);
+		border-radius: 4px;
+
+		font-size: 11px;
+		color: var(--color-fg-10);
+	}
+
+	.RouteMcpServersSavedServer-test {
+		margin: 0;
+
+		font-size: 13px;
+		color: var(--color-fg-10);
+	}
+
+	.RouteMcpServersSavedServer-test-error {
+		color: var(--color-red-11);
+	}
+
+	.RouteMcpServersSavedServer-actions {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		justify-content: end;
+		gap: 8px;
+
+		flex: none;
+	}
+	/* #endregion saved server */
+
+	/* #region saved servers */
+	.RouteMcpServersSavedServers {
+		display: flex;
+		flex-direction: column;
+		gap: 14px;
+	}
+
+	.RouteMcpServersSavedServers-header {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+	}
+
+	.RouteMcpServersSavedServers-title {
+		margin: 0;
+
+		font-size: 18px;
+		font-weight: 600;
+		line-height: 1.3;
+		color: var(--color-fg-12);
+	}
+
+	.RouteMcpServersSavedServers-description {
+		margin: 0;
+
+		font-size: 13px;
+		line-height: 1.45;
+		color: var(--color-fg-08);
+	}
+
+	.RouteMcpServersSavedServers-items {
+		display: flex;
+		flex-direction: column;
+
+		margin: 0;
+		padding: 0;
+		border: 1px solid var(--color-base-1-07);
+		border-radius: 8px;
+		overflow: hidden;
+
+		list-style: none;
+	}
+
+	.RouteMcpServersSavedServers-empty {
+		margin: 0;
+		padding: 18px;
+		border: 1px dashed var(--color-base-1-07);
+		border-radius: 8px;
+
+		text-align: center;
+		font-size: 13px;
+		color: var(--color-fg-07);
+	}
+	/* #endregion saved servers */
+
+	/* #region draft */
+	.RouteMcpServersDraft {
+		display: flex;
+		flex-direction: column;
+		gap: 10px;
+
+		padding: 14px;
+		border: 1px solid var(--color-base-1-07);
+		border-radius: 8px;
+
+		background: var(--color-base-1-03);
+	}
+
+	.RouteMcpServersDraft-header {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+	}
+
+	.RouteMcpServersDraft-title {
+		margin: 0;
+
+		font-size: 14px;
+		font-weight: 600;
+		color: var(--color-fg-12);
+	}
+
+	.RouteMcpServersDraft-note,
+	.RouteMcpServersDraft-preview {
+		margin: 0;
+
+		font-size: 13px;
+		line-height: 1.45;
+		color: var(--color-fg-08);
+		overflow-wrap: anywhere;
+
+		& code {
+			font-family: monospace;
+			color: var(--color-fg-10);
+		}
+	}
+
+	.RouteMcpServersDraft-refusal,
+	.RouteMcpServersDraft-warning {
+		display: flex;
+		align-items: start;
+		gap: 8px;
+
+		margin: 0;
+
+		font-size: 13px;
+		line-height: 1.45;
+
+		& > svg {
+			width: 16px;
+			height: 16px;
+			flex: none;
+			margin-block-start: 1px;
+		}
+	}
+
+	.RouteMcpServersDraft-refusal {
+		color: var(--color-red-11);
+	}
+
+	.RouteMcpServersDraft-warning {
+		color: var(--color-fg-10);
+	}
+
+	.RouteMcpServersDraft-form {
+		display: flex;
+		flex-direction: column;
+		gap: 12px;
+	}
+
+	.RouteMcpServersDraft-headerGroup {
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+	}
+
+	.RouteMcpServersDraft-notSecret {
+		display: inline-flex;
+		align-items: center;
+		gap: 8px;
+
+		font-size: 13px;
+		color: var(--color-fg-09);
+	}
+
+	.RouteMcpServersDraft-result {
+		margin: 0;
+
+		font-size: 13px;
+		color: var(--color-fg-10);
+	}
+
+	.RouteMcpServersDraft-result-error {
+		color: var(--color-red-11);
+	}
+
+	.RouteMcpServersDraft-actions {
+		display: flex;
+		justify-content: end;
+	}
+	/* #endregion draft */
+
+	/* #region editor */
+	.RouteMcpServersEditor {
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+	}
+
+	.RouteMcpServersEditor-editor {
+		overflow: hidden;
+		border: 1px solid var(--color-base-1-07);
+		border-radius: 8px;
+	}
+
+	.RouteMcpServersEditor-errors {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+
+		margin: 0;
+		padding-inline-start: 18px;
+
+		font-size: 13px;
+		color: var(--color-red-11);
+	}
+	/* #endregion editor */
+
+	/* #region add */
+	.RouteMcpServersAdd {
+		display: flex;
+		flex-direction: column;
+		gap: 14px;
+	}
+
+	.RouteMcpServersAdd-header {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+	}
+
+	.RouteMcpServersAdd-title {
+		margin: 0;
+
+		font-size: 18px;
+		font-weight: 600;
+		line-height: 1.3;
+		color: var(--color-fg-12);
+	}
+
+	.RouteMcpServersAdd-description {
+		margin: 0;
+
+		font-size: 13px;
+		line-height: 1.45;
+		color: var(--color-fg-08);
+	}
+
+	.RouteMcpServersAdd-editing {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 12px;
+
+		font-size: 13px;
+		color: var(--color-fg-09);
+	}
+
+	.RouteMcpServersAdd-notice {
+		margin: 0;
+		padding: 12px 14px;
+		border: 1px solid var(--color-base-1-07);
+		border-radius: 8px;
+
+		font-size: 13px;
+		line-height: 1.45;
+		color: var(--color-fg-09);
+	}
+
+	.RouteMcpServersAdd-drafts {
+		display: flex;
+		flex-direction: column;
+		gap: 10px;
+	}
+	/* #endregion add */
+
+	/* #region delete modal */
+	.RouteMcpServersDeleteModal {
+		width: min(92vw, 480px);
+	}
+
+	.RouteMcpServersDeleteModal-content {
+		display: flex;
+		flex-direction: column;
+		gap: 10px;
+
+		& > code {
+			font-family: monospace;
+			font-size: 12px;
+			color: var(--color-fg-09);
+			overflow-wrap: anywhere;
+		}
+	}
+	/* #endregion delete modal */
+
+	@media (max-width: 640px) {
+		.RouteMcpServers-content {
+			padding: 16px;
+		}
+
+		.RouteMcpServersPluginServer,
+		.RouteMcpServersSavedServer {
+			flex-direction: column;
+		}
+
+		.RouteMcpServersPluginServer-actions,
+		.RouteMcpServersSavedServer-actions {
+			justify-content: start;
+		}
+	}
+}

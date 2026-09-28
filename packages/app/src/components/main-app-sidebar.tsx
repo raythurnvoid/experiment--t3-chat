@@ -17,6 +17,7 @@ import {
 	PanelLeftClose,
 	PanelLeftOpen,
 	Puzzle,
+	Server,
 	ShieldCheck,
 	Sun,
 	UserRoundCog,
@@ -31,6 +32,7 @@ import {
 	url_path_browser,
 	url_path_chat,
 	url_path_files,
+	url_path_mcp_servers,
 	url_path_plugin_page,
 	url_path_plugins,
 	url_path_roles,
@@ -440,6 +442,10 @@ export const MainAppSidebar = memo(function MainAppSidebar(props: MainAppSidebar
 		app_convex_api.files_browser.web_browser_available,
 		canUseBrowser ? { membershipId } : "skip",
 	);
+	// Ask for every member, not only those with `workspace.mcp.use`: the query checks that permission
+	// itself (`canUse`). A member who lost it but still has a saved server or sign-in
+	// (`hasSavedData`) must reach the page to delete them.
+	const mcpAvailable = useQuery(app_convex_api.plugins_mcp.mcp_available, { membershipId });
 
 	const chatPath = url_path_chat({ organizationName, workspaceName });
 	const filesPath = url_path_files({ organizationName, workspaceName });
@@ -449,6 +455,7 @@ export const MainAppSidebar = memo(function MainAppSidebar(props: MainAppSidebar
 	const usersPath = url_path_users({ organizationName, workspaceName });
 	const rolesPath = url_path_roles({ organizationName, workspaceName });
 	const pluginsPath = url_path_plugins({ organizationName, workspaceName });
+	const mcpServersPath = url_path_mcp_servers({ organizationName, workspaceName });
 
 	const [isOpen, setIsOpen] = useAppLocalStorageStateValue("app_state::sidebar::main_app_open");
 	const [mainAppSidebarCollapsed, setMainAppSidebarCollapsed] = useAppLocalStorageStateValue(
@@ -539,6 +546,14 @@ export const MainAppSidebar = memo(function MainAppSidebar(props: MainAppSidebar
 							icon={Puzzle}
 							tooltip={mainAppSidebarCollapsed ? "Plugins" : undefined}
 							subpathExcludePattern={PLUGIN_PAGE_SUBPATH_REGEX}
+						/>
+					) : null}
+					{mcpAvailable?.canUse || mcpAvailable?.hasSavedData ? (
+						<MainAppSidebarItem
+							to={mcpServersPath}
+							label="MCP servers"
+							icon={Server}
+							tooltip={mainAppSidebarCollapsed ? "MCP servers" : undefined}
 						/>
 					) : null}
 					{(pluginPages ?? []).flatMap((plugin) =>

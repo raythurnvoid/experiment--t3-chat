@@ -291,6 +291,9 @@ importers:
       js-base64:
         specifier: 3.9.4
         version: 3.9.4
+      jsonc-parser:
+        specifier: 3.3.1
+        version: 3.3.1
       just-bash:
         specifier: workspace:*
         version: link:vendor/just-bash/packages/just-bash

@@ -293,6 +293,10 @@ of MCP servers. `admin` and `member` have it. `viewer` does not. The chat route 
 loads any MCP tool for a turn (`/api/chat` in `convex/ai_chat.ts`), and `plugins_mcp.recheck_call`
 checks it again right before each tool call, so a member who loses it mid-reply is refused with
 "You cannot use MCP servers in this workspace." Ask mode never loads MCP tools, whatever the role.
+The "MCP servers" page (`convex/mcp_custom_servers.ts`) needs it to add, edit, test, or turn on the
+member's own servers. Like the web browser's saved data, a member who lost it can still list, turn off,
+and delete their own servers and disconnect their own sign-ins (`plugins_mcp_oauth.disconnect`). Each
+member sees only their own servers; another member's server id answers "Not found".
 
 `organization.integrations_policy.manage` ("Manage plugins and MCP servers") lets a holder change
 which plugins and member-added MCP servers the organization allows. No system role has it, like

@@ -10348,6 +10348,9 @@ describe("prepare_user_for_hard_deletion", () => {
 				fileViews: [],
 				outboundOrigins: [],
 				uiOutboundOrigins: [],
+				mcpServers: [],
+				mcpServersFingerprint: "mcp-servers-hash",
+				skills: [],
 				files: [],
 				sourceStatus: "ready",
 				sourceLastError: null,
@@ -10427,9 +10430,6 @@ describe("prepare_user_for_hard_deletion", () => {
 				unrelatedReview,
 			] = await Promise.all([
 				ctx.db.get("plugins_publisher_repositories", seeded.deletedRepositoryId),
-				mcpServers: [],
-				mcpServersFingerprint: "mcp-servers-hash",
-				skills: [],
 				ctx.db.get("plugins_publisher_repository_secrets", seeded.deletedSecretId),
 				ctx.db.get("plugins_version_reviews", seeded.deletedReviewId),
 				ctx.db.get("plugins_version_reviews", seeded.linkedDeletedReviewId),
@@ -10491,6 +10491,9 @@ describe("prepare_user_for_hard_deletion", () => {
 				capabilities: [],
 				outboundOrigins: [],
 				uiOutboundOrigins: [],
+				mcpServers: [],
+				mcpServersFingerprint: "mcp-servers-hash",
+				skills: [],
 				files: [],
 				createdBy: unrelatedUser.userId,
 			}),
@@ -10565,11 +10568,11 @@ describe("prepare_user_for_hard_deletion", () => {
 				capabilities: [],
 				outboundOrigins: [],
 				uiOutboundOrigins: [],
-				files: [],
-				sourceStatus: "ready",
 				mcpServers: [],
 				mcpServersFingerprint: "mcp-servers-hash",
 				skills: [],
+				files: [],
+				sourceStatus: "ready",
 				sourceLastError: null,
 				createdBy: publisher.userId,
 				updatedAt: now,
@@ -10644,9 +10647,6 @@ describe("prepare_user_for_hard_deletion", () => {
 			return { actorOnlyId };
 		});
 
-				mcpServers: [],
-				mcpServersFingerprint: "mcp-servers-hash",
-				skills: [],
 		// Pass 1 deletes two notifications, pass 2 the last one, pass 3 finds nothing and reports done.
 		const passes = [];
 		for (let i = 0; i < 3; i += 1) {

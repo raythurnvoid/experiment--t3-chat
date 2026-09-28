@@ -2,7 +2,7 @@ import "./index.css";
 
 import { createFileRoute } from "@tanstack/react-router";
 import { useQuery } from "convex/react";
-import { Puzzle, Search, Store } from "lucide-react";
+import { Puzzle, Search, Server, Store } from "lucide-react";
 import { memo, useState } from "react";
 
 import {
@@ -111,7 +111,8 @@ type RoutePlugins_ClassNames =
 	| "RoutePlugins-blocked"
 	| "RoutePluginsHeader"
 	| "RoutePluginsHeader-title"
-	| "RoutePluginsHeader-description";
+	| "RoutePluginsHeader-description"
+	| "RoutePluginsHeader-actions";
 
 function RoutePlugins() {
 	const { membershipId, organizationName, workspaceId, workspaceName } = AppTenantProvider.useContext();
@@ -161,16 +162,28 @@ function RoutePlugins() {
 							</p>
 						)}
 					</div>
-					<MyLink
-						variant="button-outline"
-						to="/w/$organizationName/$workspaceName/plugins/publisher"
-						params={{ organizationName, workspaceName }}
-					>
-						<MyLinkIcon aria-hidden>
-							<Store />
-						</MyLinkIcon>
-						Publisher
-					</MyLink>
+					<div className={"RoutePluginsHeader-actions" satisfies RoutePlugins_ClassNames}>
+						<MyLink
+							variant="button-outline"
+							to="/w/$organizationName/$workspaceName/mcp-servers"
+							params={{ organizationName, workspaceName }}
+						>
+							<MyLinkIcon aria-hidden>
+								<Server />
+							</MyLinkIcon>
+							MCP servers
+						</MyLink>
+						<MyLink
+							variant="button-outline"
+							to="/w/$organizationName/$workspaceName/plugins/publisher"
+							params={{ organizationName, workspaceName }}
+						>
+							<MyLinkIcon aria-hidden>
+								<Store />
+							</MyLinkIcon>
+							Publisher
+						</MyLink>
+					</div>
 				</header>
 
 				{canManagePlugins && installations ? (

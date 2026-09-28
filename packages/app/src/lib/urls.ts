@@ -95,6 +95,10 @@ export function url_path_plugins(args: { organizationName: string; workspaceName
 	return `/w/${args.organizationName}/${args.workspaceName}/plugins`;
 }
 
+export function url_path_mcp_servers(args: { organizationName: string; workspaceName: string }) {
+	return `/w/${args.organizationName}/${args.workspaceName}/mcp-servers`;
+}
+
 export function url_path_plugin_page(args: {
 	organizationName: string;
 	workspaceName: string;
