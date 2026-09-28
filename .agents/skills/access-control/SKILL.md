@@ -159,7 +159,7 @@ Two names, used everywhere in this subsystem. Nothing else should be called "ext
   changes, and nobody can edit them.
   - `admin` — everything except `organization.billing.manage`, because it charges the owner.
   - `member` — `workspace.create`, `workspace.update`, `content.read`, `content.write`,
-    `workspace.browser.use`.
+    `workspace.browser.use`, `workspace.mcp.use`.
   - `viewer` — `content.read` only.
 - **Custom roles** are `access_control_roles` docs, organization-wide, capped per organization by
   `MAX_CUSTOM_ROLES` in `convex/access_control.ts`. Users compose them from the fixed permission
@@ -272,6 +272,7 @@ Pick the index that matches the principal kind:
 | `content.permissions.manage` | workspace |
 | `workspace.plugins.manage` | workspace |
 | `workspace.browser.use` | workspace |
+| `workspace.mcp.use` | workspace |
 
 `workspace.browser.use` ("Use the web browser") lets a member open the cloud browser in web mode,
 where it can visit any public address. `admin` and `member` have it. `viewer` does not. File mode
@@ -287,6 +288,12 @@ control, resume, agent access, save download, file-chooser fill, upload grant), 
 it: a user may always see and delete their own data. If a live session loses the permission, the
 server closes it with `end_browser_session_internal` and does not save the browser profile.
 
+`workspace.mcp.use` ("Use MCP servers") lets the member's agent chats in this workspace call the tools
+of MCP servers. `admin` and `member` have it. `viewer` does not. The chat route checks it before it
+loads any MCP tool for a turn (`/api/chat` in `convex/ai_chat.ts`), and `plugins_mcp.recheck_call`
+checks it again right before each tool call, so a member who loses it mid-reply is refused with
+"You cannot use MCP servers in this workspace." Ask mode never loads MCP tools, whatever the role.
+
 `organization.integrations_policy.manage` ("Manage plugins and MCP servers") lets a holder change
 which plugins and member-added MCP servers the organization allows. No system role has it, like
 `organization.billing.manage`: the owner holds it by ownership and can give it through a custom role.
@@ -294,7 +301,7 @@ which plugins and member-added MCP servers the organization allows. No system ro
 lists check it at the organization's default workspace, after checking an active membership there. See `../organizations-tenancy/SKILL.md`,
 "Plugins and MCP servers policy".
 
-Inviting someone as `member` also hands out `workspace.browser.use`. The invite ceiling still
+Inviting someone as `member` also hands out `workspace.browser.use` and `workspace.mcp.use`. The invite ceiling still
 applies: an inviter who lacks it cannot invite someone as `member`.
 
 Rule: **every permission in the catalog must be enforced somewhere**, or be marked

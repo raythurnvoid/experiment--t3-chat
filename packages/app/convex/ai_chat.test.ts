@@ -1194,6 +1194,7 @@ describe("chat run writes", () => {
 					messages: [
 						{ clientGeneratedMessageId: id, content: { id, role: "assistant", parts: [{ type: "text", text: id }] } },
 					],
+					allowMcpParts: true,
 				});
 			expect((await writeReply("before"))._yay?.ids).toHaveLength(1);
 			expect(await asUser.mutation(internal.ai_chat.thread_run_set_title, { source, title: "Before" })).toEqual({

@@ -34,7 +34,9 @@ import {
 	ai_chat_tool_create_file_stored,
 	ai_chat_tool_create_browser_reload,
 	ai_chat_tool_create_browser_close,
+	ai_chat_tool_create_mcp_tools,
 	replace_once_or_all,
+	type ai_chat_tool_McpServer,
 } from "./server-ai-tools.ts";
 import { has_defined_property } from "../shared/shared-utils.ts";
 import type { ai_chat_context_Context } from "./ai-chat-context.ts";
@@ -3414,5 +3416,95 @@ describe("browser tools", () => {
 		});
 		expect(JSON.stringify(result)).not.toContain("secret-code");
 		expect(JSON.stringify(result)).not.toContain("secret-result");
+	});
+});
+
+describe("ai_chat_tool_create_mcp_tools", () => {
+	function create_tools(
+		mcpTools: Array<{ name: string; description?: string }>,
+		headers: ai_chat_tool_McpServer["headers"] = [],
+	) {
+		const server: ai_chat_tool_McpServer = {
+			target: {
+				kind: "plugin",
+				installationId: "installation" as Id<"plugins_workspace_installations">,
+				serverId: "tracker",
+			},
+			toolPrefix: "tracker",
+			source: { kind: "plugin", pluginName: "tracker", serverTitle: "Tracker" },
+			url: "https://tracker.example.com/mcp",
+			toolAllowlist: null,
+			pluginVersionId: "version" as Id<"plugins_versions">,
+			headerSpec: [],
+			failures: 0,
+			headers,
+			discover: null,
+			tools: mcpTools.map((mcpTool) => ({
+				name: mcpTool.name,
+				title: null,
+				description: mcpTool.description ?? "",
+				inputSchema: { type: "object" },
+				outputSchema: null,
+				annotations: null,
+			})),
+		};
+		// Creating the tools reads nothing. Only a call uses the ctx.
+		return ai_chat_tool_create_mcp_tools(
+			{} as unknown as ActionCtx,
+			{
+				organizationId: "organization" as Id<"organizations">,
+				workspaceId: "workspace" as Id<"organizations_workspaces">,
+				userId: "user" as Id<"users">,
+				membershipId: "membership" as Id<"organizations_workspaces_users">,
+				membershipLifetime: 1,
+				getThreadId: () => null,
+				runDeadline: Date.now() + 60_000,
+			},
+			[server],
+		);
+	}
+
+	async function model_names(rawNames: string[]) {
+		return Object.keys(await create_tools(rawNames.map((name) => ({ name }))));
+	}
+
+	test("lowercases names and replaces characters outside a-z0-9_-", async () => {
+		expect(await model_names(["Echo", "héllo wörld", "a.b"])).toEqual([
+			"mcp__tracker__echo",
+			"mcp__tracker__h_llo_w_rld",
+			"mcp__tracker__a_b",
+		]);
+	});
+
+	test("gives clashing names a hash that does not depend on list order", async () => {
+		const forward = await model_names(["a.b", "a_b"]);
+		const backward = await model_names(["a_b", "a.b"]);
+
+		expect(forward).toHaveLength(2);
+		expect(forward.every((name) => /^mcp__tracker__a_b-[0-9a-f]{8}$/u.test(name))).toBe(true);
+		expect(new Set(forward)).toEqual(new Set(backward));
+	});
+
+	test("cuts a long name to 64 characters with a hash", async () => {
+		const [name] = await model_names(["x".repeat(100)]);
+
+		expect(name).toHaveLength(64);
+		expect(name).toMatch(/^mcp__tracker__x+-[0-9a-f]{8}$/u);
+	});
+
+	test("leaves out a tool whose name holds a header value, a token, or half a character", async () => {
+		const headerValue = "HEADER_SECRET_VALUE_1234";
+		const tools = await create_tools(
+			[
+				{ name: `leak_${headerValue}` },
+				{ name: `sk-${"a".repeat(24)}` },
+				{ name: "half_\ud83d" },
+				{ name: "search", description: `Search with key ${headerValue}.` },
+			],
+			[{ name: "X-Api-Key", value: headerValue }],
+		);
+
+		expect(Object.keys(tools)).toEqual(["mcp__tracker__search"]);
+		expect(tools["mcp__tracker__search"]?.description).toBe("Search with key [secret].");
 	});
 });

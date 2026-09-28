@@ -52,6 +52,7 @@ const access_control_permission_validator = v.union(
 	v.literal("workspace.plugins.manage"),
 	v.literal("workspace.service_accounts.manage"),
 	v.literal("workspace.browser.use"),
+	v.literal("workspace.mcp.use"),
 );
 
 /**

@@ -69,6 +69,8 @@ import {
 	ai_chat_file_result_schema,
 	ai_chat_file_result,
 	ai_chat_file_target_schema,
+	ai_chat_mcp_tool_output_schema,
+	type ai_chat_McpSource,
 } from "../../../shared/ai-chat-files.ts";
 
 // Reuse one stable empty array so the store selector does not trigger avoidable re-renders.
@@ -843,6 +845,64 @@ const AiChatMessagePartToolFiles = memo(function AiChatMessagePartToolFiles(prop
 });
 // #endregion tool files
 
+// #region tool mcp
+function mcp_source_label(source: ai_chat_McpSource) {
+	return source.kind === "plugin"
+		? `${source.pluginName} · ${source.serverTitle}`
+		: `Your server: ${source.serverName}`;
+}
+
+type AiChatMessagePartToolMcp_ClassNames = "AiChatMessagePartToolMcp" | "AiChatMessagePartToolMcp-status";
+
+type AiChatMessagePartToolMcp_Props = {
+	className?: string | undefined;
+	part: DynamicToolUIPart;
+	isChatRunning: boolean;
+};
+
+const AiChatMessagePartToolMcp = memo(function AiChatMessagePartToolMcp(props: AiChatMessagePartToolMcp_Props) {
+	const { className, part, isChatRunning } = props;
+
+	// A stored part is saved data. Use the output only when it matches the MCP output schema.
+	const result = ai_chat_mcp_tool_output_schema.safeParse(part.output);
+	const metadata = result.success ? result.data.metadata : null;
+	// Before the result arrives, only the model tool name `mcp__<server>__<tool>` is known.
+	const text = metadata ? `${mcp_source_label(metadata.source)}: ${metadata.toolName}` : part.toolName;
+	const isToolError = metadata?.kind === "mcp_result" && metadata.isError;
+
+	return (
+		<AiChatMessagePartDisclosure
+			className={cn("AiChatMessagePartToolMcp" satisfies AiChatMessagePartToolMcp_ClassNames, className)}
+		>
+			<AiChatMessagePartDisclosureButton
+				title="MCP tool"
+				text={text}
+				state={isToolError ? "output-error" : part.state}
+				isChatRunning={isChatRunning}
+			/>
+			<AiChatMessagePartToolBody>
+				<AiChatMessagePartToolTextAreaSection label="Parameters" code={JSON.stringify(part.input ?? {}, null, "\t")} />
+				{part.errorText && <AiChatMessagePartToolTextAreaSection label="Error" code={part.errorText} state="error" />}
+				{metadata?.kind === "mcp_auth_needed" && (
+					<p role="status" className={"AiChatMessagePartToolMcp-status" satisfies AiChatMessagePartToolMcp_ClassNames}>
+						{result.data?.output}
+					</p>
+				)}
+				{/* Server text is untrusted, so show it as plain text, never as Markdown. */}
+				{metadata?.kind === "mcp_result" && (
+					<AiChatMessagePartToolTextAreaSection
+						label={isToolError ? "Error" : "Result"}
+						code={result.data?.output ?? ""}
+						state={isToolError ? "error" : undefined}
+						maxHeight="16lh"
+					/>
+				)}
+			</AiChatMessagePartToolBody>
+		</AiChatMessagePartDisclosure>
+	);
+});
+// #endregion tool mcp
+
 // #region tool unknown
 type AiChatMessagePartToolUnknown_ClassNames = "AiChatMessagePartToolUnknown" | "AiChatMessagePartToolUnknown-meta";
 
@@ -1199,6 +1259,10 @@ const AiChatMessagePartInner = memo(function AiChatMessagePartInner(props: AiCha
 					errorText={part.errorText}
 				/>
 			);
+		}
+
+		if (part.type === "dynamic-tool" && toolName.startsWith("mcp__")) {
+			return <AiChatMessagePartToolMcp part={part} isChatRunning={isChatRunning} />;
 		}
 
 		if (part.type === "dynamic-tool") {

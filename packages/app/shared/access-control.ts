@@ -156,6 +156,12 @@ export const access_control_PERMISSION_CATALOG = {
 		group: "Integrations",
 		scope: "workspace",
 	},
+	"workspace.mcp.use": {
+		label: "Use MCP servers",
+		description: "Let agent chats in this workspace call the tools of MCP servers.",
+		group: "Integrations",
+		scope: "workspace",
+	},
 } as const satisfies Record<
 	access_control_Permission,
 	{
@@ -280,11 +286,19 @@ export const access_control_SYSTEM_ROLE_MATRIX = {
 			"workspace.plugins.manage",
 			"workspace.service_accounts.manage",
 			"workspace.browser.use",
+			"workspace.mcp.use",
 		],
 	},
 	member: {
 		label: "Member",
-		permissions: ["workspace.create", "workspace.update", "content.read", "content.write", "workspace.browser.use"],
+		permissions: [
+			"workspace.create",
+			"workspace.update",
+			"content.read",
+			"content.write",
+			"workspace.browser.use",
+			"workspace.mcp.use",
+		],
 	},
 	viewer: {
 		label: "Viewer",

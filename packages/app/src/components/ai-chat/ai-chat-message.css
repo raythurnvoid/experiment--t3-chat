@@ -535,6 +535,15 @@
 	}
 	/* #endregion tool browser */
 
+	/* #region tool mcp */
+	.AiChatMessagePartToolMcp-status {
+		padding: 4px 0 8px 0;
+
+		font-size: 0.8125rem;
+		color: var(--color-fg-07);
+	}
+	/* #endregion tool mcp */
+
 	/* #region tool unknown */
 	.AiChatMessagePartToolUnknown-meta {
 		display: flex;

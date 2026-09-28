@@ -17,6 +17,7 @@ import type {
 	ai_chat_tool_create_file_stored_ToolOutput,
 } from "../server/server-ai-tools.ts";
 import type { GeneratedIdPrefix } from "./generated-ids.ts";
+import type { ai_chat_McpAuthNeededData } from "./ai-chat-files.ts";
 
 export type ai_chat_Message = Doc<"ai_chat_threads_messages_aisdk_5">;
 
@@ -161,6 +162,10 @@ export type ai_chat_UiDataParts = {
 	"chat-title": {
 		title: string;
 	};
+	/**
+	 * Persisted, not transient: a reload shows it too. The model never sees data parts.
+	 */
+	"mcp-auth-needed": ai_chat_McpAuthNeededData;
 };
 
 export type ai_chat_UiDataPart = DataUIPart<ai_chat_UiDataParts>;

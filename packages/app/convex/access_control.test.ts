@@ -2477,12 +2477,20 @@ describe("system roles", () => {
 				"workspace.members.manage",
 				"workspace.plugins.manage",
 				"workspace.browser.use",
+				"workspace.mcp.use",
 				"workspace.service_accounts.manage",
 				"workspace.update",
 			].sort(),
 		);
 		expect([...access_control_SYSTEM_ROLE_MATRIX.member.permissions].sort()).toEqual(
-			["content.read", "content.write", "workspace.browser.use", "workspace.create", "workspace.update"].sort(),
+			[
+				"content.read",
+				"content.write",
+				"workspace.browser.use",
+				"workspace.create",
+				"workspace.mcp.use",
+				"workspace.update",
+			].sort(),
 		);
 		expect([...access_control_SYSTEM_ROLE_MATRIX.viewer.permissions]).toEqual(["content.read"]);
 
@@ -5731,6 +5739,7 @@ describe("file sharing", () => {
 				"content.read",
 				"content.write",
 				"workspace.browser.use",
+				"workspace.mcp.use",
 			],
 		});
 		expect(inviterRole._nay).toBeUndefined();

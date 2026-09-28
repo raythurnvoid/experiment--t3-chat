@@ -451,6 +451,18 @@ function message_has_visible_parts(message: ai_chat_UiMessage) {
 	});
 }
 
+/**
+ * Whether a message holds a part only the server may store: an MCP tool call or an MCP sign-in notice.
+ * The public save refuses these parts, and the server already stores an aborted reply itself.
+ */
+function message_has_mcp_parts(message: ai_chat_UiMessage) {
+	return message.parts.some(
+		(part) =>
+			part.type === "data-mcp-auth-needed" ||
+			(part.type === "dynamic-tool" && part.toolName.toLowerCase().startsWith("mcp__")),
+	);
+}
+
 function get_message_selected_model_id(message?: ai_chat_UiMessage | null) {
 	const selectedModelId = message?.metadata?.selectedModelId;
 	if (!selectedModelId || !ai_chat_is_model_id(selectedModelId)) {
@@ -1382,6 +1394,11 @@ const useThreadList = (props?: useThreadList_Props) => {
 			return;
 		}
 
+		// Leave a reply with MCP parts to the server's own abort save, so no refused save is logged here.
+		if (message_has_mcp_parts(options.message)) {
+			return;
+		}
+
 		const threadId = ai_chat_is_optimistic_thread_id(options.chatId)
 			? null
 			: (options.chatId as app_convex_Id<"ai_chat_threads">);
@@ -1983,6 +2000,11 @@ const useThreadRuntimeController = () => {
 		}
 
 		if (options.message.metadata?.convexId || !message_has_visible_parts(options.message)) {
+			return;
+		}
+
+		// Leave a reply with MCP parts to the server's own abort save, so no refused save is logged here.
+		if (message_has_mcp_parts(options.message)) {
 			return;
 		}
 

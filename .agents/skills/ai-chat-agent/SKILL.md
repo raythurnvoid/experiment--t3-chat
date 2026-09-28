@@ -42,6 +42,9 @@ Primary:
 - `../../../packages/app/convex/files_nodes.ts`
 - `../../../packages/app/convex/r2.ts`
 - `../../../packages/app/convex/files_pending_updates.ts`
+- `../../../packages/app/convex/plugins_mcp.ts`
+- `../../../packages/app/server/mcp-client.ts`
+- `../../../packages/app/server/mcp-guarded-fetch.ts`
 - `../../../packages/app/server/files.ts`
 - `../../../packages/app/server/files-markdown-chunking-mastra.ts`
 - `../../../packages/app/src/hooks/ai-chat-controller.tsx`
@@ -128,6 +131,7 @@ For `POST /api/chat`:
 5. Derive the agent configuration and validate UI messages against the full registry (`validationTools`, which keeps the write tools so stored history from an agent-mode turn still validates in ask mode).
 6. Enforce the image-attachment contract on incoming messages: every file part must use an allowlisted image media type (`ai_chat_MESSAGE_IMAGE_MEDIA_TYPES`) with a matching `data:<mediaType>;base64,` URL, with at most `ai_chat_MESSAGE_IMAGE_MAX_COUNT` file parts and `ai_chat_MESSAGE_IMAGE_MAX_TOTAL_URL_CHARS` total URL chars per message. Anything else returns 400 `Invalid image attachments`.
 7. Resolve the existing creator-private thread or keep the optimistic client thread id for a new thread, then credit-gate before LLM work. `thread_get` refuses another creator's thread, including for regeneration. The separate title route checks that same door before billing or model work.
+   7a. Load the turn's MCP tools (see "MCP tools" below). This runs after the credit check and after the message checks in steps 1 to 6, because each server costs an outside call. Ask mode and a member without `workspace.mcp.use` load none.
 8. Create the thread if needed and persist incoming user messages before generation.
    8a. Take the thread's run lease (`thread_run_begin` sets `activeRun { kind: "chat", expiresAt }`, 10 minutes; a second chat request is still allowed, as before the lease existed, but a request while a job wakeup holds it gets 409 with `retryAfterMs`). The user message is already stored at that point, so the client waits out the wake lease and re-sends the same request; its stored ids dedupe the persist and only the turn starts. The stream's `onFinish` gives the lease back (`thread_run_end` clears only its own kind), or hands it to a wake run through `thread_run_handover_to_wakeup` when the turn never injected a finish. After the lease is gone, a leftover finish takes a free wake lease through `thread_run_begin_wakeup`. Abort persist stores the partial assistant through `thread_messages_add`, which hangs that reply under a mid-run finish the same way `get_chat_reply_parent` does, so Stop does not hide the finish as a sibling. Both walk up through finish messages only: they re-parent when that chain hangs off the captured parent, and they leave a regenerate (or any older captured parent) on its own branch. The route's catch gives the chat lease back when the stream never started. A finished background job always stores its message and reads the lease to decide whether to wake at once (see Job wakeups above).
 9. Convert stored UI messages to model messages, then decode image data URLs into bytes. Steps 9 to 14 are `create_agent_turn_stream`, shared with `run_job_wakeup`; the reply is stored through a callback because the two callers use different doors. The AI SDK routes URL-shaped file parts through its download step and Convex `fetch` cannot request `data:` URLs, so without the decode the model call fails with "Failed to download data:...".
@@ -174,6 +178,7 @@ The tool registry supports these tools. Mode and model support decide which ones
 - `execute_code`
 - `image_generation` (OpenAI image output saved as a pending Files file; Agent mode only)
 - `browser_run`, `browser_reload`, `browser_close` (only when the request carries a `browserSessionId` bound to a live shared browser; both modes; see below)
+- `mcp__<server>__<tool>` (tools of the plugin MCP servers installed in the workspace; Agent mode only; see "MCP tools" below)
 
 Skill bodies and references are ordinary Bash output. `execute_code` can run suitable JavaScript after the agent reads it. Current tool results replay through `validationTools`. Unknown tools and old file result shapes are refused before model replay.
 
@@ -444,6 +449,23 @@ The provider stream binds each image call ID to that step's fixed workspace befo
 - OpenAI replays provider results by item ID. A separate safe text summary makes the Files target visible on the next step and after history conversion. Native provider IDs are preserved.
 - The model middleware drops preliminary image results before the SDK loses their preliminary flag. This prevents duplicate files, charges, and provider items.
 - Billing adds `GENERATED_IMAGE_COST_CENTS` per completed provider image to token charges.
+
+## MCP tools
+
+A plugin can declare remote MCP servers (see `../plugin-system/SKILL.md`, "MCP servers and skills at install"). The chat agent calls their tools from the Convex action. Members cannot add their own servers yet, so a turn only knows plugin servers.
+
+- **Turn setup.** `load_turn_mcp_tools` in `convex/ai_chat.ts` asks `plugins_mcp.list_turn_servers` for the enabled installations with `agent.mcp.connect`. It leaves out a server that is paused, that the MCP policy of any organization the turn can reach blocks, or that is past the 20-server cap, each with a note. Then it reads the header secrets once, and lists each server's tools once (5-second timeout, 4 servers at a time). A turn offers at most 100 MCP tools: each server first gets up to 40, in tool-prefix order, and then the free slots go to the next tools in the same order. A manifest tool allowlist filters the list first.
+- **Notes.** A server that fails, times out, needs sign-in, or loses tools gets a note in the system prompt under "Not available this turn". Notes hold only Press text, never server text or tool names. The system prompt also says that MCP results are untrusted data.
+- **Health.** Only server-level list errors count (`network_error`, `timeout`, `server_error`, `not_modern_mcp`, `bad_response`), never sign-in errors, and never a list that Stop aborted. After 3 in a row, `record_server_outcome` pauses the server for 5 minutes for every member. A good list resets the count, and it writes only when there is a count to reset. Tool calls never count.
+- **Names.** A model tool name is `mcp__<toolPrefix>__<tool>`, lowercase, at most 64 characters (`ai_chat_tool_MCP_TOOL_NAME_MAX_LENGTH`). A name that clashes, is too long, or is empty gets `-` and 8 hex characters of its SHA-256. A tool whose name holds a header value, a token-shaped string, or half a character is left out. Descriptions are masked the same way.
+- **Each call.** `ai_chat_tool_create_mcp_tools` in `server/server-ai-tools.ts` builds a `dynamicTool` with `strict: false`. Each call: needs a thread; gets at most 60 seconds, and never more than what is left of the chat run lease (`runDeadline`); runs `plugins_mcp.recheck_call` (membership, `workspace.mcp.use`, the policy, the installation, and the same plugin version as at setup); takes the `plugins_mcp_tool_call` rate limit per installation and member; then calls the server. There is no approval step yet.
+- **Results.** The output is server text cleaned by `mcp_clean_text`: half characters are repaired, header values and token-shaped strings become `[secret]`, and the text is cut to 64 KiB of JSON. Images and other blocks are named, not sent. A sign-in answer returns an `mcp_auth_needed` result so the chat can show a Connect card. Other errors throw fixed Press text.
+- **Ledger.** Every call that reached the server writes one `plugins_mcp_calls` doc through `record_call`: tool name, time, byte counts, and outcome, never arguments or output. `record_call` writes nothing when the member or the installation is gone, so a delete drain never misses a doc. Old docs are deleted after 30 days.
+- **History.** MCP parts are `dynamic-tool` parts. Only the reply the chat route streamed itself may store them (`allowMcpParts: true` in `thread_run_messages_add`). A message a client sends with an MCP part is refused with 400 before the model runs or any server is called. The error part of a tool name the model invented is kept, or the reply and the calls that already ran would be lost. Approval states are always refused.
+- **Card.** `ai-chat-message.tsx` shows `<plugin> · <server title>: <tool>` from the result metadata. A failed call has no metadata, so its card shows the raw model tool name.
+- **Wakeups** load no MCP tools: a finished job has no member waiting.
+
+Tests: `convex/ai_chat_mcp_route.test.ts` (the route with the fixture servers in `server/mcp-fixtures/`), the `ai_chat_tool_create_mcp_tools` group in `server/server-ai-tools.test.ts`, and `server/mcp-client.test.ts`.
 
 ## Public Files API
 

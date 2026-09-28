@@ -271,6 +271,17 @@ export function mcp_fixtures_create() {
 				method: "tools/call",
 				handle: (body) => rpc_result(body.id, { content: [{ type: "text", text: "x".repeat(2 * 1024 * 1024) }] }),
 			},
+			// Under the client's 1 MiB cap, but over the 64 KiB the chat keeps of one result.
+			"long-text": {
+				method: "tools/call",
+				handle: (body) => rpc_result(body.id, { content: [{ type: "text", text: "x".repeat(100 * 1024) }] }),
+			},
+			// Half of a character, then emoji past the 64 KiB cut. Convex refuses a string with half a character.
+			"broken-text": {
+				method: "tools/call",
+				handle: (body) =>
+					rpc_result(body.id, { content: [{ type: "text", text: `A\ud83dB ${"😀".repeat(20 * 1024)}` }] }),
+			},
 		},
 		slow: {
 			list: {

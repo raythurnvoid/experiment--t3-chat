@@ -1,5 +1,14 @@
-import { tool, type InferToolInput, type InferToolOutput } from "ai";
+import {
+	dynamicTool,
+	jsonSchema,
+	tool,
+	type InferToolInput,
+	type InferToolOutput,
+	type JSONSchema7,
+	type Tool,
+} from "ai";
 import { openai } from "@ai-sdk/openai";
+import type { DiscoverResult } from "@modelcontextprotocol/client";
 import Exa, { ExaError, type RegularSearchOptions, type SearchResponse } from "exa-js";
 import z from "zod";
 import dedent from "dedent";
@@ -7,8 +16,10 @@ import { createPatch } from "diff";
 import type { ActionCtx } from "../convex/_generated/server";
 import type { Id } from "../convex/_generated/dataModel";
 import type { Infer } from "convex/values";
+import type { FunctionReturnType } from "convex/server";
 import type { ai_chat_workspaces_source_validator } from "../convex/schema.ts";
 import { api, internal } from "../convex/_generated/api.js";
+import { rate_limiter_limit_by_key } from "../convex/rate_limiter.ts";
 import {
 	files_READ_RANGE_MAX_LINES,
 	type files_nodes_get_visible_entry_by_path_Result,
@@ -21,7 +32,13 @@ import {
 	ai_chat_execute_code_result_schema,
 	ai_chat_file_result_schema,
 	ai_chat_file_result,
+	type ai_chat_McpToolOutput,
 } from "../shared/ai-chat-files.ts";
+import {
+	mcp_client_call_tool,
+	type mcp_client_NormalizedResult,
+	type mcp_client_NormalizedTool,
+} from "./mcp-client.ts";
 import {
 	files_ingestion_write,
 	files_ingestion_read_bytes,
@@ -43,6 +60,7 @@ import {
 	bash_EXTERNAL_MOUNTS_ROOT,
 	bash_PLUGINS_MOUNT_ROOT,
 	bash_is_path_under,
+	bash_text_well_formed,
 	files_agent_write_file_text,
 } from "./bash-utils.ts";
 
@@ -1649,6 +1667,275 @@ type ai_chat_tool_create_execute_code_Tool = ReturnType<typeof ai_chat_tool_crea
 export type ai_chat_tool_create_execute_code_ToolInput = InferToolInput<ai_chat_tool_create_execute_code_Tool>;
 export type ai_chat_tool_create_execute_code_ToolOutput = InferToolOutput<ai_chat_tool_create_execute_code_Tool>;
 // #endregion execute code
+
+// #region mcp tools
+export const ai_chat_tool_MCP_TOOL_NAME_MAX_LENGTH = 64;
+const MCP_CALL_TIMEOUT_MS = 60_000;
+const MCP_OUTPUT_MAX_BYTES = 64 * 1024;
+const MCP_TEXT_ENCODER = new TextEncoder();
+
+/**
+ * Text that looks like a token or a key. A tool result is untrusted, and nothing else scrubs it.
+ */
+const MCP_SECRET_SHAPED_REGEX =
+	/\b(?:sk-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{30,}|xox[abprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,})\b|Bearer\s+[A-Za-z0-9._~+/-]{16,}=*/gu;
+
+/**
+ * One MCP server of a chat turn, with the tools its list returned at turn setup.
+ */
+export type ai_chat_tool_McpServer = FunctionReturnType<
+	typeof internal.plugins_mcp.list_turn_servers
+>["servers"][number] & {
+	/**
+	 * Header values resolved once at turn setup. The guard sends them only to the server's origin.
+	 */
+	headers: Array<{ name: string; value: string }>;
+	discover: DiscoverResult | null;
+	tools: mcp_client_NormalizedTool[];
+};
+
+/**
+ * Model tool names of one server: `mcp__<toolPrefix>__<tool>`, lowercase, at most 64 characters.
+ *
+ * A name that clashes after cleaning, is too long, or is empty gets `-` plus 8 hex characters of the
+ * SHA-256 of its raw name. So a name never depends on the order the server lists its tools in. When
+ * a clash appears later, the plain name is not offered anymore, so an old call to it fails as an
+ * unknown tool instead of reaching the other tool.
+ */
+async function mcp_model_tool_names(toolPrefix: string, rawNames: string[]) {
+	const head = `mcp__${toolPrefix}__`;
+	const budget = ai_chat_tool_MCP_TOOL_NAME_MAX_LENGTH - head.length;
+	const cleanNames = rawNames.map((rawName) => rawName.toLowerCase().replace(/[^a-z0-9_-]/gu, "_"));
+	const counts = new Map<string, number>();
+	for (const cleanName of cleanNames) {
+		counts.set(cleanName, (counts.get(cleanName) ?? 0) + 1);
+	}
+
+	const names = new Map<string, string>();
+	for (const [index, rawName] of rawNames.entries()) {
+		const cleanName = cleanNames[index]!;
+		if (cleanName.length > 0 && cleanName.length <= budget && counts.get(cleanName) === 1) {
+			names.set(rawName, `${head}${cleanName}`);
+			continue;
+		}
+
+		const hash = (await crypto_sha256_hex(rawName)).slice(0, 8);
+		names.set(rawName, `${head}${cleanName.slice(0, budget - hash.length - 1)}-${hash}`);
+	}
+	return names;
+}
+
+function mcp_json_bytes(value: unknown) {
+	return MCP_TEXT_ENCODER.encode(JSON.stringify(value)).byteLength;
+}
+
+/**
+ * Clean server text before the model reads it or Convex stores it. A server can echo back the
+ * headers it received, so replace every header value, and anything shaped like a token, with
+ * `[secret]`. A server can also send half of a character, and Convex refuses the whole reply then.
+ */
+function mcp_clean_text(text: string, secrets: string[]) {
+	let cleaned = bash_text_well_formed(text);
+	// Short values would also hide ordinary words, so only mask values of 8 characters or more.
+	for (const secret of secrets) {
+		if (secret.length >= 8) {
+			cleaned = cleaned.replaceAll(secret, "[secret]");
+		}
+	}
+	return cleaned.replace(MCP_SECRET_SHAPED_REGEX, "[secret]");
+}
+
+/**
+ * The text the model reads for one MCP result, cleaned by `mcp_clean_text` and cut to fit.
+ */
+function mcp_result_output(result: mcp_client_NormalizedResult, secrets: string[]) {
+	const lines: string[] = [];
+	if (result.isError) {
+		lines.push("The tool reported an error:");
+	}
+	for (const block of result.blocks) {
+		lines.push(block.kind === "text" ? block.text : `[${block.type} omitted: ${block.mimeType}, ${block.bytes} bytes]`);
+	}
+	if (result.structuredNote) {
+		lines.push(`[${result.structuredNote}]`);
+	}
+	if (result.structured !== null && !result.blocks.some((block) => block.kind === "text")) {
+		lines.push(JSON.stringify(result.structured));
+	}
+
+	const output = mcp_clean_text(lines.join("\n"), secrets);
+
+	// Cut to 64 KiB of JSON-escaped text, so the result fits the 72 KiB each call reserves.
+	const fullBytes = mcp_json_bytes(output);
+	if (fullBytes <= MCP_OUTPUT_MAX_BYTES) {
+		return { output, truncated: false };
+	}
+	let start = 0;
+	let end = output.length;
+	while (start < end) {
+		const middle = Math.ceil((start + end) / 2);
+		if (mcp_json_bytes(output.slice(0, middle)) <= MCP_OUTPUT_MAX_BYTES - 128) start = middle;
+		else end = middle - 1;
+	}
+	// The cut never splits a character: JSON escapes half of one as 6 bytes, more than the whole one.
+	const cut = output.slice(0, start);
+	return { output: `${cut}\n[output cut from ${fullBytes} to ${mcp_json_bytes(cut)} bytes]`, truncated: true };
+}
+
+/**
+ * Build the model tools of the MCP servers a chat turn loaded.
+ *
+ * Each call checks the member, the policy, and the installation again, then calls the server with
+ * the tool definition frozen at turn setup. There is no approval step yet: a tool runs when the model
+ * calls it. Every call that reached the server writes one ledger doc, with no arguments and no output.
+ */
+export async function ai_chat_tool_create_mcp_tools(
+	ctx: ActionCtx,
+	ctxData: {
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		userId: Id<"users">;
+		membershipId: Id<"organizations_workspaces_users">;
+		membershipLifetime: number;
+		getThreadId: () => Id<"ai_chat_threads"> | null;
+		/**
+		 * When the chat run lease ends. After that another run can take the thread, so no call may run longer.
+		 */
+		runDeadline: number;
+	},
+	servers: ai_chat_tool_McpServer[],
+) {
+	const tools: Record<string, Tool<unknown, unknown>> = {};
+	for (const server of servers) {
+		const secrets = server.headers.map((header) => header.value);
+		// The tool name is stored in the chat and the ledger, and it goes into the model name. So leave
+		// out a tool whose name holds a header value, a token, or half of a character.
+		const serverTools = server.tools.filter((mcpTool) => mcp_clean_text(mcpTool.name, secrets) === mcpTool.name);
+		const names = await mcp_model_tool_names(
+			server.toolPrefix,
+			serverTools.map((mcpTool) => mcpTool.name),
+		);
+
+		for (const mcpTool of serverTools) {
+			const modelName = names.get(mcpTool.name)!;
+			tools[modelName] = {
+				...dynamicTool({
+					description: mcp_clean_text(mcpTool.description, secrets),
+					// Do not force `additionalProperties: false`, and check nothing here: the server answers
+					// bad input with -32602, and the model reads that message.
+					inputSchema: jsonSchema(mcpTool.inputSchema as JSONSchema7),
+					execute: async (input, options): Promise<ai_chat_McpToolOutput> => {
+						const threadId = ctxData.getThreadId();
+						if (!threadId) throw new Error("MCP tools need a chat thread.");
+
+						const timeoutMs = Math.min(MCP_CALL_TIMEOUT_MS, ctxData.runDeadline - Date.now());
+						if (timeoutMs <= 0) throw new Error("This chat run has no time left for an MCP call.");
+
+						const source = {
+							organizationId: ctxData.organizationId,
+							workspaceId: ctxData.workspaceId,
+							userId: ctxData.userId,
+							threadId,
+							membershipId: ctxData.membershipId,
+							membershipLifetime: ctxData.membershipLifetime,
+						};
+
+						const recheck = await ctx.runQuery(internal.plugins_mcp.recheck_call, {
+							source,
+							target: server.target,
+							expectedPluginVersionId: server.pluginVersionId,
+						});
+						if (recheck._nay) throw new Error(recheck._nay.message);
+
+						const rateLimit = await rate_limiter_limit_by_key(ctx, {
+							name: "plugins_mcp_tool_call",
+							key: `${server.target.installationId}:${ctxData.userId}`,
+						});
+						if (rateLimit) throw new Error(rateLimit.message);
+
+						// TODO(approvals): add an approval step for MCP calls here, before the credentials are used.
+
+						if (typeof input !== "object" || input === null || Array.isArray(input)) {
+							throw new Error("MCP tool arguments must be a JSON object.");
+						}
+
+						const startedAt = Date.now();
+						const called = await mcp_client_call_tool({
+							server: { url: server.url, headers: server.headers },
+							accessToken: null,
+							discover: server.discover,
+							tool: mcpTool,
+							arguments: input as Record<string, unknown>,
+							timeoutMs,
+							signal: options.abortSignal ?? new AbortController().signal,
+						});
+
+						const recordCall = async (outcome: string, bytesIn: number, result: ai_chat_McpToolOutput | null) => {
+							await ctx.runMutation(internal.plugins_mcp.record_call, {
+								source,
+								target: server.target,
+								toolName: mcpTool.name,
+								startedAt,
+								durationMs: Date.now() - startedAt,
+								bytesIn,
+								bytesOut: result ? mcp_json_bytes(result) : 0,
+								outcome,
+							});
+						};
+
+						// A thrown error reaches the chat as text only. The chat needs the target to show a
+						// Connect card, so a sign-in answer returns a result instead.
+						if (called._nay?.name === "auth_required" || called._nay?.name === "insufficient_scope") {
+							const needsMoreAccess = called._nay.name === "insufficient_scope";
+							const result: ai_chat_McpToolOutput = {
+								title: mcpTool.name,
+								output: needsMoreAccess
+									? "This MCP server needs more access. Ask the user to reconnect it."
+									: "This MCP server needs sign-in. Ask the user to connect it.",
+								metadata: {
+									kind: "mcp_auth_needed",
+									target: server.target,
+									source: server.source,
+									toolName: mcpTool.name,
+									reason: needsMoreAccess ? "needs_more_access" : "needs_sign_in",
+								},
+							};
+							await recordCall("auth_needed", 0, result);
+							return result;
+						}
+						if (called._nay) {
+							await recordCall(called._nay.name, 0, null);
+							// Fixed Press text only. Text from the server never reaches `_nay.message`.
+							throw new Error(called._nay.message);
+						}
+
+						const shaped = mcp_result_output(called._yay.result, secrets);
+						const result: ai_chat_McpToolOutput = {
+							title: mcpTool.name,
+							output: shaped.output,
+							metadata: {
+								kind: "mcp_result",
+								target: server.target,
+								source: server.source,
+								toolName: mcpTool.name,
+								isError: called._yay.result.isError,
+								truncated: shaped.truncated,
+								bytesIn: called._yay.result.bytesIn,
+							},
+						};
+						await recordCall(called._yay.result.isError ? "tool_error" : "ok", called._yay.result.bytesIn, result);
+						return result;
+					},
+				}),
+				// `dynamicTool` has no `strict` option, so set it on the result. @ai-sdk/openai sends
+				// `strict` only when a tool sets it, and a server's schema is rarely strict-ready.
+				strict: false,
+			};
+		}
+	}
+	return tools;
+}
+// #endregion mcp tools
 
 // #region image generation
 

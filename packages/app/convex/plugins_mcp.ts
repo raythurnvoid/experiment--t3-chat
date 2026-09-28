@@ -1,13 +1,17 @@
-import { v } from "convex/values";
+import { v, type Infer } from "convex/values";
 import { doc } from "convex-helpers/validators";
+import { Result } from "common/errors-as-values-utils.ts";
 
 import { internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel";
-import { internalMutation, query, type MutationCtx } from "./_generated/server.js";
+import { internalMutation, internalQuery, query, type MutationCtx, type QueryCtx } from "./_generated/server.js";
 import { access_control_db_authorize_membership } from "./access_control.ts";
+import { ai_chat_files_db_get_invocation_membership } from "./ai_chat_files.ts";
+import { ai_chat_workspaces_db_resolve, ai_chat_workspaces_SELECTORS } from "./ai_chat_workspaces.ts";
 import { organizations_db_get_membership } from "./organizations.ts";
 import { organizations_integration_policy_db_allows_mcp_server } from "./organizations_integration_policy.ts";
-import app_convex_schema from "./schema.ts";
+import app_convex_schema, { ai_chat_workspaces_source_validator, plugins_mcp_target_validator } from "./schema.ts";
+import { v_result } from "../server/convex-utils.ts";
 import { crypto_sha256_hex } from "../server/crypto-utils.ts";
 import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
 import type { plugins_McpServer } from "../shared/plugins.ts";
@@ -20,6 +24,22 @@ const DELETION_BATCH_SIZE = 100;
 const REVOCATION_RETENTION_MS = 24 * 60 * 60 * 1000;
 
 const CALL_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+
+/**
+ * At most this many MCP servers load in one chat turn.
+ */
+const TURN_SERVERS_MAX = 20;
+
+/**
+ * After this many turns in a row with a failed tool list, turn setup skips the server for a while.
+ */
+const UNHEALTHY_AFTER_FAILURES = 3;
+const UNHEALTHY_PAUSE_MS = 5 * 60 * 1000;
+
+/**
+ * A chat turn only knows plugin servers for now. Members cannot add their own servers yet.
+ */
+const plugin_target_validator = plugins_mcp_target_validator.members[0];
 
 /**
  * SHA-256 of where a plugin MCP server sends data: its URL, its whole `auth` object, and its header
@@ -584,5 +604,298 @@ export const get_installation_mcp_status = query({
 				};
 			}),
 		);
+	},
+});
+
+/**
+ * Whether every organization a chat thread can reach allows one MCP server. A thread reaches the
+ * workspaces of `ai_chat_workspaces_SELECTORS`: today its own and the member's home. So a member
+ * cannot get around a block by chatting in their home and reading the organization's files there.
+ */
+async function db_thread_allows_target(
+	ctx: QueryCtx,
+	args: {
+		source: Infer<typeof ai_chat_workspaces_source_validator>;
+		target: Infer<typeof plugins_mcp_target_validator>;
+	},
+) {
+	for (const workspace of ai_chat_workspaces_SELECTORS) {
+		const resolved = await ai_chat_workspaces_db_resolve(ctx, { source: args.source, workspace });
+		if (resolved._nay) {
+			return false;
+		}
+		const allowed = await organizations_integration_policy_db_allows_mcp_server(ctx, {
+			organizationId: resolved._yay.organizationId,
+			target: args.target,
+		});
+		if (!allowed) {
+			return false;
+		}
+	}
+	return true;
+}
+
+/**
+ * The MCP servers one chat turn may load, in load order, and a note for each server left out.
+ *
+ * The thread may not exist yet, so the caller passes the organizations of the workspaces the turn
+ * captured. Every one of them must allow a server. The `execute` recheck checks the same rule live.
+ */
+export const list_turn_servers = internalQuery({
+	args: {
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		reachOrganizationIds: v.array(v.id("organizations")),
+	},
+	returns: v.object({
+		servers: v.array(
+			v.object({
+				target: plugin_target_validator,
+				toolPrefix: v.string(),
+				source: v.object({ kind: v.literal("plugin"), pluginName: v.string(), serverTitle: v.string() }),
+				url: v.string(),
+				/**
+				 * The manifest's tool allowlist. Null means every tool the server lists.
+				 */
+				toolAllowlist: v.union(v.array(v.string()), v.null()),
+				pluginVersionId: v.id("plugins_versions"),
+				/**
+				 * Each header value is the value of the named plugin secret.
+				 */
+				headerSpec: v.array(v.object({ name: v.string(), secretName: v.string() })),
+				failures: v.number(),
+			}),
+		),
+		notes: v.array(v.string()),
+	}),
+	handler: async (ctx, args) => {
+		const now = Date.now();
+		const installations = await ctx.db
+			.query("plugins_workspace_installations")
+			.withIndex("by_organization_workspace_status_pluginName", (q) =>
+				q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("status", "enabled"),
+			)
+			.collect();
+
+		const candidates = [];
+		for (const installation of installations) {
+			if (!installation.acceptedCapabilities.includes("agent.mcp.connect")) {
+				continue;
+			}
+
+			const version = (await ctx.db.get("plugins_versions", installation.pluginVersionId))!;
+			const serverDocs = await ctx.db
+				.query("plugins_mcp_servers")
+				.withIndex("by_organization_workspace_installation", (q) =>
+					q
+						.eq("organizationId", args.organizationId)
+						.eq("workspaceId", args.workspaceId)
+						.eq("installationId", installation._id),
+				)
+				.collect();
+			for (const serverDoc of serverDocs) {
+				// Install and upgrade write the server docs from the installed version in one transaction,
+				// so every doc has its server in the version.
+				const server = version.mcpServers.find((candidate) => candidate.id === serverDoc.serverId)!;
+				candidates.push({ installation, server, serverDoc });
+			}
+		}
+		candidates.sort((a, b) => a.serverDoc.toolPrefix.localeCompare(b.serverDoc.toolPrefix));
+
+		const servers = [];
+		const notes: string[] = [];
+		for (const { installation, server, serverDoc } of candidates) {
+			const label = `${installation.pluginName} · ${server.title}`;
+			const target = { kind: "plugin" as const, installationId: installation._id, serverId: server.id };
+
+			if (serverDoc.unhealthyUntil !== null && serverDoc.unhealthyUntil > now) {
+				notes.push(`${label}: left out, because its tool list failed several turns in a row.`);
+				continue;
+			}
+
+			let allowed = true;
+			for (const organizationId of args.reachOrganizationIds) {
+				if (!(await organizations_integration_policy_db_allows_mcp_server(ctx, { organizationId, target }))) {
+					allowed = false;
+					break;
+				}
+			}
+			if (!allowed) {
+				notes.push(`${label}: blocked by your organization's MCP policy.`);
+				continue;
+			}
+
+			if (servers.length >= TURN_SERVERS_MAX) {
+				notes.push(`${label}: left out, because a chat can use at most ${TURN_SERVERS_MAX} MCP servers.`);
+				continue;
+			}
+
+			servers.push({
+				target,
+				toolPrefix: serverDoc.toolPrefix,
+				source: { kind: "plugin" as const, pluginName: installation.pluginName, serverTitle: server.title },
+				url: server.url,
+				toolAllowlist: server.tools,
+				pluginVersionId: installation.pluginVersionId,
+				headerSpec: server.headers.map((header) => ({ name: header.name, secretName: header.secret })),
+				failures: serverDoc.failures,
+			});
+		}
+
+		return { servers, notes };
+	},
+});
+
+/**
+ * Record how one server's tool list went at turn setup. Only turn setup calls this, once per server
+ * per turn. Tool calls never count: their input comes from the model and the member, so one member
+ * could otherwise pause a shared plugin server for everyone. The caller counts only server-level
+ * failures, never sign-in errors, for the same reason.
+ */
+export const record_server_outcome = internalMutation({
+	args: {
+		target: plugin_target_validator,
+		ok: v.boolean(),
+	},
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		// Write nothing when the server is gone: an uninstall may have finished while the list ran.
+		const installation = await ctx.db.get("plugins_workspace_installations", args.target.installationId);
+		if (!installation) {
+			return null;
+		}
+		const serverDoc = await ctx.db
+			.query("plugins_mcp_servers")
+			.withIndex("by_organization_workspace_installation", (q) =>
+				q
+					.eq("organizationId", installation.organizationId)
+					.eq("workspaceId", installation.workspaceId)
+					.eq("installationId", installation._id),
+			)
+			.filter((q) => q.eq(q.field("serverId"), args.target.serverId))
+			.first();
+		if (!serverDoc) {
+			return null;
+		}
+
+		if (args.ok) {
+			await ctx.db.patch("plugins_mcp_servers", serverDoc._id, { failures: 0, unhealthyUntil: null });
+			return null;
+		}
+
+		// Keep counting after the pause ends, so one more failed turn pauses the server again at once.
+		const failures = serverDoc.failures + 1;
+		await ctx.db.patch("plugins_mcp_servers", serverDoc._id, {
+			failures,
+			unhealthyUntil: failures >= UNHEALTHY_AFTER_FAILURES ? Date.now() + UNHEALTHY_PAUSE_MS : serverDoc.unhealthyUntil,
+		});
+		return null;
+	},
+});
+
+/**
+ * Check one MCP tool call again right before Press sends it. The tool set was frozen at turn setup,
+ * and the member, the policy, or the installation may have changed since. It returns no secret.
+ */
+export const recheck_call = internalQuery({
+	args: {
+		source: ai_chat_workspaces_source_validator,
+		target: plugin_target_validator,
+		expectedPluginVersionId: v.id("plugins_versions"),
+	},
+	returns: v_result({ _yay: v.null() }),
+	handler: async (ctx, args) => {
+		// Membership lifetime, thread, `content.read`, and the purge fence.
+		const current = await ai_chat_workspaces_db_resolve(ctx, { source: args.source, workspace: "current" });
+		if (current._nay) {
+			return Result({ _nay: { message: current._nay.message } });
+		}
+
+		const membership = (await ctx.db.get("organizations_workspaces_users", args.source.membershipId))!;
+		const mayUse = await access_control_db_authorize_membership(ctx, {
+			userAuth: { id: args.source.userId },
+			membership,
+			permission: "workspace.mcp.use",
+		});
+		if (mayUse._nay) {
+			return Result({ _nay: { message: "You cannot use MCP servers in this workspace." } });
+		}
+
+		if (!(await db_thread_allows_target(ctx, { source: args.source, target: args.target }))) {
+			return Result({ _nay: { message: "Your organization's MCP policy blocks this server." } });
+		}
+
+		const installation = await ctx.db.get("plugins_workspace_installations", args.target.installationId);
+		if (
+			!installation ||
+			installation.status !== "enabled" ||
+			!installation.acceptedCapabilities.includes("agent.mcp.connect") ||
+			installation.organizationId !== args.source.organizationId ||
+			installation.workspaceId !== args.source.workspaceId
+		) {
+			return Result({ _nay: { message: "This MCP server is no longer available." } });
+		}
+		// A new version can point the server at another URL. Never keep calling the old one.
+		if (installation.pluginVersionId !== args.expectedPluginVersionId) {
+			return Result({ _nay: { message: "The plugin changed; try again." } });
+		}
+		const serverDoc = await ctx.db
+			.query("plugins_mcp_servers")
+			.withIndex("by_organization_workspace_installation", (q) =>
+				q
+					.eq("organizationId", installation.organizationId)
+					.eq("workspaceId", installation.workspaceId)
+					.eq("installationId", installation._id),
+			)
+			.filter((q) => q.eq(q.field("serverId"), args.target.serverId))
+			.first();
+		if (!serverDoc) {
+			return Result({ _nay: { message: "This MCP server is no longer available." } });
+		}
+
+		return Result({ _yay: null });
+	},
+});
+
+/**
+ * Write one MCP call to the ledger. No arguments and no output.
+ */
+export const record_call = internalMutation({
+	args: {
+		source: ai_chat_workspaces_source_validator,
+		target: plugin_target_validator,
+		toolName: v.string(),
+		startedAt: v.number(),
+		durationMs: v.number(),
+		bytesIn: v.number(),
+		bytesOut: v.number(),
+		outcome: v.string(),
+	},
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		// A delete drain may have finished while the call ran. A doc written now would never be
+		// deleted, so write nothing when the member or the installation is gone.
+		const [membership, installation] = await Promise.all([
+			ai_chat_files_db_get_invocation_membership(ctx, args.source),
+			ctx.db.get("plugins_workspace_installations", args.target.installationId),
+		]);
+		if (!membership || !installation) {
+			return null;
+		}
+
+		await ctx.db.insert("plugins_mcp_calls", {
+			organizationId: args.source.organizationId,
+			workspaceId: args.source.workspaceId,
+			userId: args.source.userId,
+			threadId: args.source.threadId,
+			target: args.target,
+			toolName: args.toolName,
+			startedAt: args.startedAt,
+			durationMs: args.durationMs,
+			bytesIn: args.bytesIn,
+			bytesOut: args.bytesOut,
+			outcome: args.outcome,
+		});
+		return null;
 	},
 });

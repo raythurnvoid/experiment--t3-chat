@@ -370,7 +370,10 @@ To set it up again (for example after a data reset):
 3. Click `Install` on the plugin hero. `locator.click` timed out there without landing. Clicking the
    button's bounding-box center with `page.mouse.click(x, y)` worked. The consent modal must list the
    `MCP fixture` server as "no sign-in", the outside-service warning, and the `mcp-echo` skill. Then
-   click `Accept and install`.
+   click `Accept and install`. This modal is taller than the screen, so it scrolls inside; scroll
+   `Accept and install` into view before the click. The `Service account` combobox can reuse the
+   existing `Data Probe` account after an uninstall, so a reinstall adds no new account
+   (verified 2026-09-28).
 4. Read back from the CLI: the installation is `enabled` with `agent.mcp.connect` and
    `agent.skills.contribute` in `acceptedCapabilities`, and `plugins_mcp_servers` has one doc with
    `serverId: "fixture"` for that installation.
@@ -382,6 +385,14 @@ vp env exec pnpm --dir packages/app exec convex data plugins_mcp_servers --limit
 
 Chat check for the skill: in a new chat in that workspace, ask the agent to read
 `/.plugins/data-probe/dist/skills/mcp-echo/SKILL.md` with Bash. The reply must quote the skill body.
+
+Chat check for the tools: ask the agent to call the fixture `echo` tool once with a run id and reply
+with only what it returned. The reply shows an `MCP tool` card labeled
+`data-probe · MCP fixture: echo` with the run id, and there is no approval step. A failed call card
+shows the raw name `mcp__fixture__echo` instead of the label, because error parts carry no label.
+That is expected. After an uninstall and a reinstall in the same thread, the model can repeat its
+earlier "the tool is not available" answer. Say in the prompt that tools change between turns, and
+it calls the tool again.
 
 ## Triggering a plugin backend
 

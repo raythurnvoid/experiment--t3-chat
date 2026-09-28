@@ -131,6 +131,15 @@ const rate_limiter_CONFIG = {
 		period: MINUTE,
 		capacity: 10,
 	},
+	// A chat agent calling an MCP server's tool. One reply can have 25 steps with about 5 parallel MCP
+	// calls each, and one busy reply must not hit the limit. The key is still one member on one server.
+	// TODO(mcp-inflight-cap): add a per-server cap on calls running at once if a server reports floods.
+	plugins_mcp_tool_call: {
+		kind: "token bucket",
+		rate: 120,
+		period: MINUTE,
+		capacity: 60,
+	},
 	plugins_manage: STRICT_AUTH_OR_BILLING,
 	// Reading the candidate branch HEAD spends the shared GitHub token but must not consume the
 	// management token that the immediate publish needs. Keep a separate short retry burst here.

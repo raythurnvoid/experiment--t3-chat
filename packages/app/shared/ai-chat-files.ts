@@ -112,3 +112,92 @@ export const ai_chat_execute_code_result_schema = z
 			.strict(),
 	})
 	.strict();
+
+/**
+ * Which MCP server a stored part is about. Convex ids are plain strings in stored parts. The check
+ * is on shape only: history must still load after the server is gone. `plugins_mcp_target_validator`
+ * in `convex/schema.ts` is the Convex twin.
+ */
+const ai_chat_mcp_target_schema = z.discriminatedUnion("kind", [
+	z
+		.object({
+			kind: z.literal("plugin"),
+			installationId: z.string().min(1).max(128),
+			serverId: z.string().regex(/^[a-z][a-z0-9-]{0,19}$/u),
+		})
+		.strict(),
+	z.object({ kind: z.literal("custom"), customServerId: z.string().min(1).max(128) }).strict(),
+]);
+
+/**
+ * The label the chat shows for an MCP server: "<pluginName> · <serverTitle>" or "Your server: <serverName>".
+ */
+const ai_chat_mcp_source_schema = z.discriminatedUnion("kind", [
+	z
+		.object({ kind: z.literal("plugin"), pluginName: z.string().min(1), serverTitle: z.string().min(1).max(80) })
+		.strict(),
+	z.object({ kind: z.literal("custom"), serverName: z.string().min(1).max(64) }).strict(),
+]);
+
+export type ai_chat_McpSource = z.infer<typeof ai_chat_mcp_source_schema>;
+
+/**
+ * The one output shape of every MCP tool call: a result, or a note that the server needs sign-in.
+ * The model sees all three fields on every later turn, so none of them may hold a secret.
+ */
+export const ai_chat_mcp_tool_output_schema = z
+	.object({
+		title: z.string(),
+		output: z.string(),
+		metadata: z.discriminatedUnion("kind", [
+			z
+				.object({
+					kind: z.literal("mcp_result"),
+					target: ai_chat_mcp_target_schema,
+					source: ai_chat_mcp_source_schema,
+					toolName: z.string(),
+					isError: z.boolean(),
+					truncated: z.boolean(),
+					bytesIn: z.number().int().nonnegative(),
+				})
+				.strict(),
+			z
+				.object({
+					kind: z.literal("mcp_auth_needed"),
+					target: ai_chat_mcp_target_schema,
+					source: ai_chat_mcp_source_schema,
+					toolName: z.string(),
+					reason: z.enum(["needs_sign_in", "needs_more_access"]),
+				})
+				.strict(),
+		]),
+	})
+	.strict()
+	// A plugin target always has a plugin label, and a custom target a custom label.
+	.refine((value) => value.metadata.target.kind === value.metadata.source.kind);
+
+export type ai_chat_McpToolOutput = z.infer<typeof ai_chat_mcp_tool_output_schema>;
+
+/**
+ * The `data-mcp-auth-needed` part: servers left out of a turn because even their tool list needs
+ * sign-in. Only the server writes it.
+ */
+export const ai_chat_mcp_auth_needed_data_schema = z
+	.object({
+		servers: z
+			.array(
+				z
+					.object({
+						target: ai_chat_mcp_target_schema,
+						source: ai_chat_mcp_source_schema,
+						reason: z.enum(["needs_sign_in", "needs_reconnect"]),
+					})
+					.strict()
+					.refine((server) => server.target.kind === server.source.kind),
+			)
+			.min(1)
+			.max(20),
+	})
+	.strict();
+
+export type ai_chat_McpAuthNeededData = z.infer<typeof ai_chat_mcp_auth_needed_data_schema>;
