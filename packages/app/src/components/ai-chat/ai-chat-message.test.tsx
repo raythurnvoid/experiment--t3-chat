@@ -1524,4 +1524,38 @@ describe("AiChatMessage", () => {
 		expect(screen.getByRole("status").textContent).toBe("This server was removed");
 		expect(screen.queryByRole("button", { name: "Connect Your server: Old" })).toBeNull();
 	});
+
+	test("opens an MCP tool call that needs sign-in, so its Connect button shows", () => {
+		const target = { kind: "custom" as const, customServerId: "custom_1" };
+		hookMocks.mcpConnectable.set(JSON.stringify(target), true);
+
+		renderMessage({
+			message: {
+				...createAssistantMessage(),
+				parts: [
+					{
+						type: "dynamic-tool",
+						toolName: "mcp__my-tracker__echo",
+						toolCallId: "mcp_1",
+						state: "output-available",
+						input: { text: "hi" },
+						output: {
+							title: "MCP tool",
+							output: "This MCP server needs sign-in. Ask the user to connect it.",
+							metadata: {
+								kind: "mcp_auth_needed",
+								target,
+								source: { kind: "custom", serverName: "Tracker" },
+								toolName: "echo",
+								reason: "needs_sign_in",
+							},
+						},
+					},
+				],
+			} satisfies ai_chat_UiMessage,
+		});
+
+		const button = screen.getByRole("button", { name: "Connect Your server: Tracker" });
+		expect(button.closest("details")?.open).toBe(true);
+	});
 });

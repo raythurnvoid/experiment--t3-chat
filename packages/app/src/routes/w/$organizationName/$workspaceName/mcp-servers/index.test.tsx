@@ -482,6 +482,36 @@ describe("RouteMcpServers", () => {
 		});
 	});
 
+	test("a sign-in server that answers auth_required shows ready and needs sign-in", async () => {
+		const authRequired = { at: 1_700_000_000_000, outcome: "auth_required", toolCount: null };
+		setQueries({
+			servers: [
+				// The probe sends no token, so a server that lists tools only after sign-in answers auth_required.
+				saved_server({ auth: { kind: "oauth", authorizationHost: "linear.app" }, headers: [], lastTest: authRequired }),
+				// A server with headers answers auth_required when a value is wrong, so that is a failure.
+				saved_server({ customServerId: "custom_2", name: "Sentry", lastTest: authRequired }),
+			],
+		});
+		render(<PageComponent />);
+
+		const row = screen.getByRole("listitem", { name: "Linear" });
+		expect(row.getAttribute("data-mcp-server-status")).toBe("ready");
+		expect(row.textContent).toContain("Last test: needs sign-in");
+		const headersRow = screen.getByRole("listitem", { name: "Sentry" });
+		expect(headersRow.getAttribute("data-mcp-server-status")).toBe("error");
+		expect(headersRow.textContent).toContain("Last test: failed");
+
+		actionMock.mockResolvedValueOnce({
+			_yay: { outcome: "auth_required", message: "x", toolCount: null, authorizationHost: "linear.app", toolNames: [] },
+		});
+		await act(async () => {
+			fireEvent.click(within(row).getByRole("button", { name: "Test Linear" }));
+		});
+		expect(within(row).getByRole("status").textContent).toBe(
+			"The server lists its tools only after sign-in at linear.app.",
+		);
+	});
+
 	test("a member without the permission sees the notice and no editor", () => {
 		setQueries({ canUse: false, servers: [saved_server()] });
 		render(<PageComponent />);

@@ -588,7 +588,13 @@ export const start = action({
 				membershipId: args.membershipId,
 				customServerId: args.target.customServerId,
 				expectedDestinationFingerprint: authorized._yay.server.destinationFingerprint,
-				lastTest: { at: Date.now(), outcome: "auth_required", toolCount: null },
+				// Record the no-token probe as it answered. Its tool list usually works, so the page does
+				// not show a failed test for a server that asks for sign-in only on a tool call.
+				lastTest: {
+					at: Date.now(),
+					outcome: probed._nay ? probed._nay.name : "ok",
+					toolCount: probed._nay ? null : probed._yay.tools.length,
+				},
 				oauthPin: {
 					issuer: discovered._yay.issuer,
 					resource: discovered._yay.resource,

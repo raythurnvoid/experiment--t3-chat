@@ -2297,7 +2297,7 @@ const MainAppHeaderOrganizationSwitcherModalIntegrationPolicyModal = memo(
 																type="button"
 																variant="ghost_destructive"
 																disabled={isSubmitting}
-																aria-label={`Remove ${entry.url}`}
+																aria-label={`Remove ${entry.url}, ${format_integration_policy_auth(entry)}`}
 																onClick={() =>
 																	handlePolicyChange({
 																		kind: "remove_mcp_server",
@@ -2348,7 +2348,7 @@ const MainAppHeaderOrganizationSwitcherModalIntegrationPolicyModal = memo(
 															type="button"
 															variant="outline"
 															disabled={isSubmitting}
-															aria-label={`Allow ${group.url}`}
+															aria-label={`Allow ${group.url}, ${format_integration_policy_auth(group)}`}
 															onClick={() =>
 																handlePolicyChange({
 																	kind: "allow_mcp_server",

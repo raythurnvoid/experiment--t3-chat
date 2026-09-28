@@ -875,6 +875,9 @@ const AiChatMessagePartToolMcp = memo(function AiChatMessagePartToolMcp(props: A
 	return (
 		<AiChatMessagePartDisclosure
 			className={cn("AiChatMessagePartToolMcp" satisfies AiChatMessagePartToolMcp_ClassNames, className)}
+			// Open the part when it holds a Connect card, so the member sees the button. React sets
+			// `open` only when this value changes, so the member can still close the part.
+			open={metadata?.kind === "mcp_auth_needed" || undefined}
 		>
 			<AiChatMessagePartDisclosureButton
 				title="MCP tool"

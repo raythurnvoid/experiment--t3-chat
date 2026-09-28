@@ -124,7 +124,13 @@ function get_saved_server_status(server: RouteMcpServers_SavedServer) {
 		return "blocked";
 	}
 
-	if (server.health === "paused" || (server.lastTest && server.lastTest.outcome !== "ok")) {
+	// An OAuth server that asks for sign-in to list tools is not broken: the probe has no token.
+	if (
+		server.health === "paused" ||
+		(server.lastTest &&
+			server.lastTest.outcome !== "ok" &&
+			!(server.auth.kind === "oauth" && server.lastTest.outcome === "auth_required"))
+	) {
 		return "error";
 	}
 
@@ -148,12 +154,20 @@ function keep_saved_results(results: Record<string, RouteMcpServers_SaveResult>)
 	return Object.fromEntries(Object.entries(results).filter(([, result]) => result.kind === "saved"));
 }
 
-function format_last_test(lastTest: RouteMcpServers_SavedServer["lastTest"]) {
+function format_last_test(server: RouteMcpServers_SavedServer) {
+	const { lastTest } = server;
 	if (lastTest === null) {
 		return "Not tested yet";
 	}
 
-	return lastTest.outcome === "ok" ? `Last test: ok, ${lastTest.toolCount ?? 0} tools` : "Last test: failed";
+	if (lastTest.outcome === "ok") {
+		return `Last test: ok, ${lastTest.toolCount ?? 0} tools`;
+	}
+
+	// For a server with headers, `auth_required` means a wrong value, so it is a failure.
+	return server.auth.kind === "oauth" && lastTest.outcome === "auth_required"
+		? "Last test: needs sign-in"
+		: "Last test: failed";
 }
 
 // #region plugin server
@@ -335,7 +349,7 @@ const RouteMcpServersSavedServer = memo(function RouteMcpServersSavedServer(prop
 					<MyBadge variant={status === "ready" ? "secondary" : "outline"}>{format_saved_server_status(server)}</MyBadge>
 				</div>
 				<p className={"RouteMcpServersSavedServer-details" satisfies RouteMcpServersSavedServer_ClassNames}>
-					{server.host} — {format_last_test(server.lastTest)}
+					{server.host} — {format_last_test(server)}
 					{server.auth.kind === "oauth" ? ` — Signs in at ${server.auth.authorizationHost}` : ""}
 				</p>
 
@@ -1140,7 +1154,9 @@ function RouteMcpServersMembership(props: RouteMcpServersMembership_Props) {
 				const message =
 					result._yay.outcome === "ok"
 						? `Saved ${fill.name.trim()}. Found ${result._yay.toolCount ?? 0} tools.`
-						: `Saved ${fill.name.trim()}, but the connection test failed: ${result._yay.message ?? result._yay.outcome}`;
+						: result._yay.outcome === "auth_required" && result._yay.authorizationHost !== null
+							? `Saved ${fill.name.trim()}. It signs in at ${result._yay.authorizationHost}.`
+							: `Saved ${fill.name.trim()}, but the connection test failed: ${result._yay.message ?? result._yay.outcome}`;
 				// An old test result describes the server before this save.
 				const customServerId = result._yay.customServerId;
 				setTestResults((current) =>
@@ -1180,7 +1196,12 @@ function RouteMcpServersMembership(props: RouteMcpServersMembership_Props) {
 					? { kind: "error", message: result._nay.message }
 					: result._yay.outcome === "ok"
 						? { kind: "ok", message: `Connected. Found ${result._yay.toolCount ?? 0} tools.` }
-						: { kind: "error", message: `Test failed: ${result._yay.message ?? result._yay.outcome}` };
+						: result._yay.outcome === "auth_required" && result._yay.authorizationHost !== null
+							? {
+									kind: "ok",
+									message: `The server lists its tools only after sign-in at ${result._yay.authorizationHost}.`,
+								}
+							: { kind: "error", message: `Test failed: ${result._yay.message ?? result._yay.outcome}` };
 				setTestResults((current) => ({ ...current, [customServerId]: testResult }));
 			})
 			.catch((error: unknown) => {

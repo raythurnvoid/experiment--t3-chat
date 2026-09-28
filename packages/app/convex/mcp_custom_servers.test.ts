@@ -190,7 +190,9 @@ describe("save", () => {
 			secretValues: [{ name: "API_KEY", value: typed }],
 		});
 
-		expect(saved).toEqual({ _yay: { customServerId: expect.any(String), outcome: "ok", message: null, toolCount: 2 } });
+		expect(saved).toEqual({
+			_yay: { customServerId: expect.any(String), outcome: "ok", message: null, toolCount: 2, authorizationHost: null },
+		});
 		expect(fixtures.wire.at(-1)?.headers.get("authorization")).toBe(`Bearer ${literal}`);
 		expect(fixtures.wire.at(-1)?.headers.get("x-api-key")).toBe(typed);
 
@@ -462,7 +464,7 @@ describe("sign-in pin", () => {
 
 		const saved = await save(member, { url: OAUTH_URL });
 
-		expect(saved._yay?.outcome).toBe("auth_required");
+		expect(saved._yay).toMatchObject({ outcome: "auth_required", authorizationHost: "as.oauth.test" });
 		const listed = await member.asUser.query(api.mcp_custom_servers.list, { membershipId: member.membershipId });
 		expect(listed.servers[0]?.auth).toEqual({ kind: "oauth", authorizationHost: "as.oauth.test" });
 		const stored = await t.run((ctx) => ctx.db.get("mcp_custom_servers", saved_id(saved)));
@@ -530,7 +532,7 @@ describe("sign-in pin", () => {
 			customServerId,
 		});
 
-		expect(tested._yay?.outcome).toBe("auth_required");
+		expect(tested._yay).toMatchObject({ outcome: "auth_required", authorizationHost: "as.oauth.test" });
 		const after = await t.run((ctx) => ctx.db.get("mcp_custom_servers", customServerId));
 		expect(after?.auth.kind).toBe("oauth");
 		expect(after?.destinationFingerprint).not.toBe(before?.destinationFingerprint);
@@ -645,7 +647,9 @@ describe("test_connection", () => {
 			customServerId,
 		});
 
-		expect(tested).toEqual({ _yay: { outcome: "ok", message: null, toolCount: 2, toolNames: ["echo", "picture"] } });
+		expect(tested).toEqual({
+			_yay: { outcome: "ok", message: null, toolCount: 2, authorizationHost: null, toolNames: ["echo", "picture"] },
+		});
 		expect((await server_docs(t)).servers[0]).toMatchObject({
 			failures: 0,
 			unhealthyUntil: null,

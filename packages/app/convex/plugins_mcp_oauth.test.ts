@@ -395,6 +395,8 @@ describe("start", () => {
 			authorizationHost: "as.oauth.test",
 		});
 		expect(after.destinationFingerprint).not.toBe(before.destinationFingerprint);
+		// The tool list still works with no token, so the pin must not record a failed test.
+		expect(after.lastTest).toMatchObject({ outcome: "ok", toolCount: before.lastTest!.toolCount });
 		expect((await read_all(t)).pending).toHaveLength(1);
 	});
 

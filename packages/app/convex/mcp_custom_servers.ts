@@ -460,6 +460,11 @@ export const save = action({
 			outcome: v.string(),
 			message: v.union(v.string(), v.null()),
 			toolCount: v.union(v.number(), v.null()),
+			/**
+			 * The host the member signs in at, when the server is pinned for sign-in. The probe sends no
+			 * token, so such a server may answer `auth_required` without being broken.
+			 */
+			authorizationHost: v.union(v.string(), v.null()),
 		}),
 	}),
 	handler: async (ctx, args) => {
@@ -582,6 +587,7 @@ export const save = action({
 				outcome: lastTest.outcome,
 				message: probed.message,
 				toolCount: lastTest.toolCount,
+				authorizationHost: oauthPin?.authorizationHost ?? null,
 			},
 		});
 	},
@@ -765,6 +771,11 @@ export const test_connection = action({
 			message: v.union(v.string(), v.null()),
 			toolCount: v.union(v.number(), v.null()),
 			/**
+			 * The host the member signs in at, when the server is pinned for sign-in. The probe sends no
+			 * token, so such a server may answer `auth_required` without being broken.
+			 */
+			authorizationHost: v.union(v.string(), v.null()),
+			/**
 			 * The first tool names the server lists. They are server text, shown to the member only.
 			 */
 			toolNames: v.array(v.string()),
@@ -836,6 +847,9 @@ export const test_connection = action({
 				outcome: probed.outcome,
 				message,
 				toolCount,
+				authorizationHost:
+					oauthPin?.authorizationHost ??
+					(customServer.auth.kind === "oauth" ? customServer.auth.authorizationHost : null),
 				// Convex refuses a string with half a character, and a server can send one.
 				toolNames: probed.toolNames.filter((name) => name.isWellFormed()).slice(0, TEST_TOOL_NAMES_MAX),
 			},
