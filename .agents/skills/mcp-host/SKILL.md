@@ -37,7 +37,7 @@ Other specs own these parts:
 
 `mcp_guarded_fetch_create` is the only way Press reaches an MCP server or a sign-in server. Convex sends every `fetch` through its SSRF proxy, which checks where a name resolves. The guard adds the rules the proxy cannot know:
 
-- `https:` only, no user or password in the URL, hostnames only. It refuses IP literals in every form, a name with an empty label (`localhost..`), `localhost`, `instance-data`, and `.localhost`, `.local`, `.internal` names.
+- `https:` only, on port 443 only, no user or password in the URL, hostnames only. It refuses IP literals in every form, a name with an empty label (`localhost..`), `localhost`, `instance-data`, and `.localhost`, `.local`, `.internal` names.
 - It refuses Press's own hosts: the hosts of the env values in `PRESS_HOST_ENV_NAMES` (Convex cloud and site, `APP_BASE_URL`, Clerk, the runners, the media transformer, the Modal services). The optional Convex env `MCP_DENIED_HOSTS` adds exact hosts and `*.` suffixes. Both are read at call time.
 - `mcp` mode: the server's headers and its Bearer token go only to the server's own origin. Redirects are refused. Responses are capped in decoded bytes.
 - `oauth` mode: no server headers. Only a GET may follow redirects (at most 3, each checked again). Each request has 5 seconds and 64 KiB.
@@ -116,7 +116,8 @@ vp env exec -- pnpm --dir packages/app exec conformance client --command "vp env
 
 - No approval step: any MCP tool call runs with no card, and text from a result can steer the model. Approvals are a later phase.
 - One shared client id means a sign-in server's consent screen shows only "Press".
-- A plugin MCP header value is a plugin secret, so it needs `plugin.secrets.read`, and the plugin's backend runs can read it too. A secret only for MCP headers would need a new manifest field and consent line; that is a later phase.
-- Open user decisions (plan open questions 23-25): the secret above; a member's server edit that changes only the path keeps its saved secrets; any port is allowed in a server URL.
+- A plugin MCP header value is a plugin secret, so it needs `plugin.secrets.read`, and the plugin's backend runs can read it too. The user chose this on purpose: the backend and the MCP server belong to the same publisher.
+- A member's server edit that changes only the path on the same origin keeps its saved secrets. The user chose this on purpose: the member picks the new path for their own secret.
+- Only port 443 is allowed, in `plugins_validate_mcp_server_url` (manifest and pasted config), in the manifest `issuer` check, and in the fetch guard for every MCP and OAuth request, redirects included. The user chose this over any port.
 - Servers that support neither CIMD nor DCR (GitHub, Slack, Asana today) cannot connect. Pre-registered OAuth apps are a later phase, and must be a general feature.
 - Later: stdio servers in a container, resources and prompts, `list_changed` and caching, an admin "disconnect all", and owner switches for the agent's other outbound paths.

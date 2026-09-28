@@ -435,6 +435,10 @@ export function plugins_validate_mcp_server_url(raw: string) {
 	if (url.protocol !== "https:") {
 		return Result({ _nay: { message: "MCP server URL must use https" } });
 	}
+	// The URL parser drops `:443` for https, so any port left here is another port.
+	if (url.port) {
+		return Result({ _nay: { message: "MCP server URL must use the https port 443" } });
+	}
 	if (url.username || url.password) {
 		return Result({ _nay: { message: "MCP server URL must not include credentials" } });
 	}
@@ -1401,10 +1405,16 @@ export function plugins_validate_manifest(input: unknown) {
 				} catch {
 					// Refused below.
 				}
-				if (!parsedAuthUrl || parsedAuthUrl.protocol !== "https:" || parsedAuthUrl.search || authUrl.includes("#")) {
+				if (
+					!parsedAuthUrl ||
+					parsedAuthUrl.protocol !== "https:" ||
+					parsedAuthUrl.port ||
+					parsedAuthUrl.search ||
+					authUrl.includes("#")
+				) {
 					return Result({
 						_nay: {
-							message: `MCP server "${server.id}" issuer and resource must be https URLs without a query or fragment`,
+							message: `MCP server "${server.id}" issuer and resource must be https URLs on port 443 without a query or fragment`,
 						},
 					});
 				}

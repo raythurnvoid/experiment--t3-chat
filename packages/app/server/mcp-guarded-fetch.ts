@@ -65,7 +65,8 @@ function allowed_url(rawUrl: string, testAllowLocalHttp: boolean, allowedPressHo
 	if (!URL.canParse(rawUrl)) return null;
 	const url = new URL(rawUrl);
 	if (testAllowLocalHttp && url.protocol === "http:" && ["localhost", "127.0.0.1"].includes(url.hostname)) return url;
-	if (url.protocol !== "https:" || url.username || url.password) return null;
+	// Only the https port 443 is allowed. The URL parser drops `:443`, so any port left is another one.
+	if (url.protocol !== "https:" || url.port || url.username || url.password) return null;
 
 	// Compare names without the root dot, so `localhost.` is still `localhost`. A name with an empty
 	// label, such as `localhost..`, would slip past the name checks below, so refuse it.

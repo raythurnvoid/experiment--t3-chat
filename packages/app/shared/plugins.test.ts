@@ -1458,6 +1458,7 @@ describe("plugins_validate_manifest", () => {
 	test("refuses MCP server URLs that are not public https names or that carry a key", () => {
 		const refusals = [
 			["http://mcp.example.com/mcp", "MCP server URL must use https"],
+			["https://mcp.example.com:8443/mcp", "MCP server URL must use the https port 443"],
 			["https://user:pass@mcp.example.com/mcp", "MCP server URL must not include credentials"],
 			["https://mcp.example.com/mcp#tools", "MCP server URL must not include a fragment"],
 			["https://127.0.0.1/mcp", "MCP server URL must use a host name, not an IP address"],
@@ -1546,10 +1547,13 @@ describe("plugins_validate_manifest", () => {
 		for (const auth of [
 			{ issuer: "http://auth.example.com" },
 			{ issuer: "https://auth.example.com?tenant=a" },
+			{ issuer: "https://auth.example.com:8443" },
 			{ resource: "https://mcp.example.com/mcp#a" },
 		]) {
 			expect(oauth(auth)).toEqual({
-				_nay: { message: 'MCP server "search" issuer and resource must be https URLs without a query or fragment' },
+				_nay: {
+					message: 'MCP server "search" issuer and resource must be https URLs on port 443 without a query or fragment',
+				},
 			});
 		}
 		for (const resource of ["https://other.example.com/mcp", "https://mcp.example.com/mc"]) {

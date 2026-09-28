@@ -305,6 +305,7 @@ describe("mcp_custom_config_parse", () => {
 		const refusalOf = (url: string) => parse_one(remote_text("remote", url)).refusal;
 
 		expect(refusalOf("http://mcp.example.com/mcp")).toBe("MCP server URL must use https");
+		expect(refusalOf("https://mcp.example.com:8443/mcp")).toBe("MCP server URL must use the https port 443");
 		expect(refusalOf("https://10.0.0.1/mcp")).toBe("MCP server URL must use a host name, not an IP address");
 		expect(refusalOf("https://localhost/mcp")).toBe("MCP server URL must not point to localhost");
 		expect(refusalOf("https://user:pass@mcp.example.com/mcp")).toBe("MCP server URL must not include credentials");

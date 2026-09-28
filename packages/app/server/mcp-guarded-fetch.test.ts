@@ -49,6 +49,7 @@ describe("mcp_guarded_fetch_create", () => {
 
 	test.each([
 		"http://example.com/",
+		"https://example.com:8443/",
 		"https://user:password@example.com/",
 		"https://localhost/",
 		"https://localhost./",
