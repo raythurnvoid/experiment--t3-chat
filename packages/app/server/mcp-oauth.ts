@@ -15,7 +15,16 @@ import {
 import { z } from "zod";
 import { Result } from "common/errors-as-values-utils.ts";
 import { crypto_sha256_hex } from "./crypto-utils.ts";
-import { mcp_guarded_fetch_create, type mcp_GuardedFetchFailure } from "./mcp-guarded-fetch.ts";
+import {
+	mcp_guarded_fetch_create,
+	mcp_guarded_fetch_is_allowed_url,
+	type mcp_GuardedFetchFailure,
+} from "./mcp-guarded-fetch.ts";
+
+/**
+ * A registered client secret must stay valid at least this long, or Press refuses the client.
+ */
+const CLIENT_SECRET_MIN_LIFETIME_MS = 60 * 60 * 1000;
 
 const ERROR_MESSAGES = {
 	url_blocked: "Press does not allow requests to this sign-in address.",
@@ -31,17 +40,19 @@ const ERROR_MESSAGES = {
 	oauth_issuer_untrusted:
 		"This sign-in server does not confirm which server answered the sign-in, so Press cannot use it safely.",
 	oauth_metadata_invalid: "The sign-in server's settings are not valid for Press.",
-	oauth_no_client: "This server needs an OAuth app. Ask the plugin publisher.",
-	oauth_registration_failed: "This server's sign-in does not accept Press. Ask the plugin publisher.",
+	// Plugin servers and members' own servers share these. Neither a publisher nor a member can fix
+	// them yet, because Press has no pre-registered OAuth apps.
+	oauth_no_client: "This server's sign-in server does not support Press yet.",
+	oauth_registration_failed: "This server's sign-in server refused to register Press.",
 	oauth_client_document_mismatch: "Press's sign-in settings are out of date. Ask an administrator to redeploy the app.",
 	oauth_token_invalid: "The sign-in server sent a token Press cannot use.",
 	oauth_invalid_grant: "The sign-in expired or was revoked. Connect again.",
 	oauth_token_refused: "The sign-in server refused the request.",
 } as const;
 
-export type mcp_oauth_ErrorCode = keyof typeof ERROR_MESSAGES;
+type ErrorCode = keyof typeof ERROR_MESSAGES;
 
-export type mcp_oauth_ClientAuthMethod = "none" | "client_secret_basic" | "client_secret_post";
+type ClientAuthMethod = "none" | "client_secret_basic" | "client_secret_post";
 
 export type mcp_oauth_Client = {
 	/**
@@ -55,17 +66,17 @@ export type mcp_oauth_Client = {
 	 * When a DCR secret stops working, in ms. `null` means it never expires.
 	 */
 	clientSecretExpiresAt: number | null;
-	authMethod: mcp_oauth_ClientAuthMethod;
+	authMethod: ClientAuthMethod;
 };
 
-export type mcp_oauth_Endpoints = {
+type Endpoints = {
 	authorization: string;
 	token: string;
 	revocation: string | null;
 	registration: string | null;
 };
 
-export type mcp_oauth_Tokens = {
+type Tokens = {
 	accessToken: string;
 	refreshToken: string | null;
 	/**
@@ -121,7 +132,7 @@ const client_metadata_document_schema = z.object({
 	redirect_uris: z.array(z.string()),
 });
 
-function oauth_nay(name: mcp_oauth_ErrorCode, data: { hosts: string[] } | { oauthError: string | null } | null = null) {
+function oauth_nay(name: ErrorCode, data: { hosts: string[] } | { oauthError: string | null } | null = null) {
 	return Result({ _nay: { name, message: ERROR_MESSAGES[name], data } });
 }
 
@@ -136,7 +147,7 @@ async function log_failure(operation: string, url: string, code: string, error: 
 }
 
 /**
- * Compare two URLs the way 9.2 step 4 asks: scheme and host without case, no fragment, and the
+ * Compare two resource URLs: scheme and host without case, no fragment, and the
  * empty path equal to `/`. The URL parser does all three. Every other part stays exact, so a
  * trailing `/` on a non-root path still matters.
  */
@@ -152,7 +163,9 @@ export function mcp_oauth_same_resource(a: string, b: string) {
 function is_allowed_endpoint(value: string, options: TestOptions) {
 	if (!URL.canParse(value)) return false;
 	const url = new URL(value);
-	if (url.protocol === "https:") return true;
+	// The member's browser opens the authorization endpoint, and the guard never sees it. So check it
+	// with the guard's host rules here: no IP address, no local name, no Press host.
+	if (url.protocol === "https:") return mcp_guarded_fetch_is_allowed_url(value);
 	return (
 		options.testAllowLocalHttp === true &&
 		url.protocol === "http:" &&
@@ -198,8 +211,9 @@ async function get_metadata(url: string, options: TestOptions, moveOn: (status: 
 }
 
 /**
- * Run 9.2 steps 1-8: find the protected resource metadata, check its `resource`, choose the issuer,
- * and check the issuer's metadata. It registers nothing and builds no authorization URL.
+ * Find the protected resource metadata (PRM), check its `resource`, choose the issuer, and check the
+ * issuer's metadata. It registers nothing and builds no authorization URL. The `Step` comments below
+ * follow the discovery order. Step 1, reading the 401 challenge, runs in the caller.
  *
  * `pinnedIssuer: null` is only for a member's own server that has no sign-in server yet.
  * Then PRM must list exactly one issuer, and that issuer becomes the pin.
@@ -303,7 +317,7 @@ export async function mcp_oauth_discover(
 	) {
 		return oauth_nay("oauth_metadata_invalid");
 	}
-	const endpoints: mcp_oauth_Endpoints = {
+	const endpoints: Endpoints = {
 		authorization: metadata.authorization_endpoint,
 		token: metadata.token_endpoint,
 		revocation: metadata.revocation_endpoint ?? null,
@@ -376,7 +390,7 @@ export async function mcp_oauth_start(
 	scopes.delete("");
 	const scope = [...scopes].join(" ");
 
-	// 9.3: CIMD first, but only for an AS that accepts a public client. A missing list means
+	// Use CIMD first, but only for an AS that accepts a public client. A missing list means
 	// `client_secret_basic` (RFC 8414), so no CIMD then.
 	const authMethods = metadata.token_endpoint_auth_methods_supported;
 	let client: mcp_oauth_Client;
@@ -394,7 +408,7 @@ export async function mcp_oauth_start(
 	} else if (knownClientUsable) {
 		client = args.knownClient!;
 	} else if (metadata.registration_endpoint) {
-		const requestedMethod: mcp_oauth_ClientAuthMethod = authMethods?.includes("none")
+		const requestedMethod: ClientAuthMethod = authMethods?.includes("none")
 			? "none"
 			: !authMethods || authMethods.includes("client_secret_basic")
 				? "client_secret_basic"
@@ -415,19 +429,27 @@ export async function mcp_oauth_start(
 			});
 			// Use the method the AS answered with. A secret with no method means `client_secret_basic`.
 			const answeredMethod = registered.token_endpoint_auth_method;
-			const authMethod: mcp_oauth_ClientAuthMethod =
+			const authMethod: ClientAuthMethod =
 				answeredMethod === "none" || answeredMethod === "client_secret_basic" || answeredMethod === "client_secret_post"
 					? answeredMethod
 					: registered.client_secret
 						? "client_secret_basic"
 						: "none";
+			// 0 means the secret never expires (RFC 7591).
+			const clientSecretExpiresAt = registered.client_secret_expires_at
+				? registered.client_secret_expires_at * 1000
+				: null;
+			// Every Connect with an expired client registers a new one, and each is stored for good. So a
+			// sign-in server whose secrets expire at once could grow the client table on every Connect.
+			if (clientSecretExpiresAt !== null && clientSecretExpiresAt < Date.now() + CLIENT_SECRET_MIN_LIFETIME_MS) {
+				return oauth_nay("oauth_registration_failed");
+			}
 			console.info("MCP OAuth client registered", { urlHash: (await crypto_sha256_hex(issuer)).slice(0, 16) });
 			client = {
 				kind: "dcr",
 				clientId: registered.client_id,
 				clientSecret: registered.client_secret ?? null,
-				// 0 means the secret never expires (RFC 7591).
-				clientSecretExpiresAt: registered.client_secret_expires_at ? registered.client_secret_expires_at * 1000 : null,
+				clientSecretExpiresAt,
 				authMethod,
 			};
 		} catch (error) {
@@ -510,7 +532,7 @@ async function token_request(
 			refreshToken: parsed.data.refresh_token ?? null,
 			expiresAt: parsed.data.expires_in === undefined ? null : Date.now() + parsed.data.expires_in * 1000,
 			scope: parsed.data.scope ?? null,
-		} satisfies mcp_oauth_Tokens,
+		} satisfies Tokens,
 	});
 }
 

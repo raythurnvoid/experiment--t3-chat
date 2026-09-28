@@ -328,11 +328,20 @@ A manifest may declare remote MCP servers for the chat agent, and skills for its
 
 - `id` — matches `/^[a-z][a-z0-9-]{0,19}$/`, unique per manifest. `my` and ids starting with `my-` are reserved. At most 4 servers.
 - `url` — normalized `https:` URL of a Streamable HTTP server, at most 2048 characters. No credentials, fragment, IP address, or localhost. A query is allowed, but not a query name that looks like a key (it contains `key`, `token`, `secret`, `password`, `passwd`, `auth`, `credential`, or `signature` after removing `-` and `_`). Send keys in a header.
-- `headers` — at most 8. Each value is the value of one secret declared in `secrets` (which needs `plugin.secrets.read`). Press sets `Cookie`, `Host`, `Content-Type`, `Accept`, and every `Mcp-*` header itself, so they are refused.
+- `headers` — at most 8. Each value is the value of one secret declared in `secrets` (which needs `plugin.secrets.read`), so the plugin's backend runs can read the same secret. Press sets `Cookie`, `Host`, `Content-Type`, `Accept`, and every `Mcp-*` header itself, so they are refused.
 - `auth` — `{ "kind": "none" }` with no headers, `{ "kind": "secret_headers" }` with at least one header, or `{ "kind": "oauth", "issuer", "resource", "scopes" }`. With `oauth`, `issuer` and `resource` are `https:` URLs without a query or fragment, `resource` is null or the server URL or one of its parent paths, and `Authorization` is refused as a header because Press sends the member's token there.
 - `tools` — at most 200 tool names the agent may call, or null for every tool the server lists.
 - A skill `path` must be exactly `dist/skills/<name>/SKILL.md` and a `files[]` entry with contentType `"text/markdown"`. The file is at most 64 KiB and starts with YAML frontmatter between two `---` lines, with `name` equal to the skill name and a nonempty `description`. Publishing refuses a skill that fails these checks. At most 32 skills.
 - The chat catalog lists each skill at `/.plugins/<pluginName>/dist/skills/<name>/SKILL.md`, and the agent reads it from there with Bash. That read-only mount holds only the text files the review read, so a file next to `SKILL.md` is there only when it is a reviewed text file. Binary files in the skill folder are not.
+
+Runtime rules for MCP servers:
+
+- Only Agent-mode chat replies call them. Ask mode and job wakeups load no MCP tools. A member needs the workspace permission "Use MCP servers".
+- One turn lists at most 20 servers and offers at most 100 MCP tools, and each server gets its first 40 tools within an equal share of the byte budget below. The tool names, descriptions, and input schemas of one turn must fit in 128 KiB, so keep input schemas small. A tool list gets 5 seconds. A tool call gets 60 seconds and at most 1 MiB of answer, and the model sees at most 64 KiB of it. Each member may make 120 MCP tool calls a minute per plugin installation.
+- Press never retries `tools/call`, because the tool may already have done its work. A tool list may retry a 429 or a 5xx.
+- The protocol is Streamable HTTP, version `2026-07-28` or the 2025 versions (`2025-11-25`, `2025-06-18`, `2025-03-26`).
+- An `oauth` server must publish protected resource metadata (RFC 9728) that names the `issuer`. The sign-in server must offer PKCE with `S256`, accept Press as a client (a client metadata document with no secret, or dynamic registration), and send `iss` in its callback (RFC 9207). A sign-in server without `iss` works only when the Press deployment lists it in `MCP_TRUSTED_ISSUERS`.
+- In a custom organization, the owner allows the plugin and its MCP servers together. A new version that changes a server's URL, `auth`, or header names needs the owner again.
 
 ## Frontend pages
 

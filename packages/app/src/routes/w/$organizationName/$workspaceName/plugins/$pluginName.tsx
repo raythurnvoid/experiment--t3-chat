@@ -1748,10 +1748,10 @@ const RoutePluginsPluginAccess = memo(function RoutePluginsPluginAccess(props: R
 										{status?.health === "paused" ? " — Paused after failed tool lists" : ""}
 										{server.auth.kind === "oauth" && status
 											? status.connection === null
-												? " — You are not signed in"
+												? " — Not connected"
 												: status.connection.status === "connected"
-													? ` — You are signed in at ${status.connection.authorizationHost}`
-													: " — Sign in again"
+													? ` — Connected, signed in at ${status.connection.authorizationHost}`
+													: " — Needs reconnect"
 											: ""}
 										{/* A member can always remove a sign-in. */}
 										{server.auth.kind === "oauth" && status && target && (canConnect || status.connection !== null) ? (

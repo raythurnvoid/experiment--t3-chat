@@ -36,6 +36,9 @@ const TURN_SERVERS_MAX = 20;
 const UNHEALTHY_AFTER_FAILURES = 3;
 const UNHEALTHY_PAUSE_MS = 5 * 60 * 1000;
 
+export const plugins_mcp_CANNOT_USE_MESSAGE = "You cannot use MCP servers in this workspace.";
+export const plugins_mcp_POLICY_MESSAGE = "Your organization's MCP policy blocks this server.";
+
 /**
  * SHA-256 of where a plugin MCP server sends data: its URL, its whole `auth` object, and its header
  * names, never header values. The organization allowlist matches on it. The object is built with a
@@ -1117,37 +1120,80 @@ export const record_server_outcome = internalMutation({
 	},
 	returns: v.null(),
 	handler: async (ctx, args) => {
-		const target = args.target;
 		// Write nothing when the server is gone: an uninstall or a delete may have finished while the
 		// list ran.
-		if (target.kind === "custom") {
-			const customServer = await ctx.db.get("mcp_custom_servers", target.customServerId);
-			if (customServer) {
-				await ctx.db.patch("mcp_custom_servers", customServer._id, next_health(customServer, args.ok));
-			}
+		const healthDoc = await get_health_doc(ctx, args.target);
+		if (!healthDoc) {
 			return null;
 		}
 
-		const installation = await ctx.db.get("plugins_workspace_installations", target.installationId);
-		if (!installation) {
-			return null;
-		}
-		const serverDoc = await ctx.db
-			.query("plugins_mcp_servers")
-			.withIndex("by_organization_workspace_installation", (q) =>
-				q
-					.eq("organizationId", installation.organizationId)
-					.eq("workspaceId", installation.workspaceId)
-					.eq("installationId", installation._id),
-			)
-			.filter((q) => q.eq(q.field("serverId"), target.serverId))
-			.first();
-		if (serverDoc) {
-			await ctx.db.patch("plugins_mcp_servers", serverDoc._id, next_health(serverDoc, args.ok));
+		const health = next_health(healthDoc.doc, args.ok);
+		await healthDoc.patch(health);
+		// Turn setup already uses a server again once its pause ends. Clear the pause at that time too,
+		// so the MCP servers page and the plugin Access screen stop showing "Paused".
+		if (health.unhealthyUntil !== null && health.unhealthyUntil !== healthDoc.doc.unhealthyUntil) {
+			await ctx.scheduler.runAt(health.unhealthyUntil, internal.plugins_mcp.end_pause, {
+				target: args.target,
+				unhealthyUntil: health.unhealthyUntil,
+			});
 		}
 		return null;
 	},
 });
+
+/**
+ * Clear a server's pause when it ends. Keep `failures`, so one more failed turn pauses it again at once.
+ */
+export const end_pause = internalMutation({
+	args: {
+		target: plugins_mcp_target_validator,
+		unhealthyUntil: v.number(),
+	},
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		const healthDoc = await get_health_doc(ctx, args.target);
+		// A newer pause has its own job.
+		if (healthDoc?.doc.unhealthyUntil === args.unhealthyUntil) {
+			await healthDoc.patch({ unhealthyUntil: null });
+		}
+		return null;
+	},
+});
+
+/**
+ * The doc that holds one server's health, or `null` when the server is gone.
+ */
+async function get_health_doc(ctx: MutationCtx, target: Infer<typeof plugins_mcp_target_validator>) {
+	type HealthFields = { failures?: number; unhealthyUntil: number | null };
+
+	if (target.kind === "custom") {
+		const customServer = await ctx.db.get("mcp_custom_servers", target.customServerId);
+		return customServer
+			? {
+					doc: customServer,
+					patch: (fields: HealthFields) => ctx.db.patch("mcp_custom_servers", customServer._id, fields),
+				}
+			: null;
+	}
+
+	const installation = await ctx.db.get("plugins_workspace_installations", target.installationId);
+	if (!installation) {
+		return null;
+	}
+	const serverDoc = await ctx.db
+		.query("plugins_mcp_servers")
+		.withIndex("by_organization_workspace_installation", (q) =>
+			q
+				.eq("organizationId", installation.organizationId)
+				.eq("workspaceId", installation.workspaceId)
+				.eq("installationId", installation._id),
+		)
+		.filter((q) => q.eq(q.field("serverId"), target.serverId))
+		.first();
+	return serverDoc
+		? { doc: serverDoc, patch: (fields: HealthFields) => ctx.db.patch("plugins_mcp_servers", serverDoc._id, fields) }
+		: null;
+}
 
 /**
  * Check one MCP tool call again right before Press sends it. The tool set was frozen at turn setup,
@@ -1181,11 +1227,11 @@ export const recheck_call = internalQuery({
 			permission: "workspace.mcp.use",
 		});
 		if (mayUse._nay) {
-			return Result({ _nay: { message: "You cannot use MCP servers in this workspace." } });
+			return Result({ _nay: { message: plugins_mcp_CANNOT_USE_MESSAGE } });
 		}
 
 		if (!(await db_thread_allows_target(ctx, { source: args.source, target: args.target }))) {
-			return Result({ _nay: { message: "Your organization's MCP policy blocks this server." } });
+			return Result({ _nay: { message: plugins_mcp_POLICY_MESSAGE } });
 		}
 
 		const target = args.target;

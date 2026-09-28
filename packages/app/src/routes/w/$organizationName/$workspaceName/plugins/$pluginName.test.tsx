@@ -823,7 +823,7 @@ describe("RoutePluginsPluginAccess", () => {
 		const server = within(access).getByText(/^Tracker — mcp\.example\.com/);
 		expect(server.getAttribute("data-organization-policy")).toBe("blocked");
 		expect(server.textContent).toContain("Blocked by your organization's MCP policy");
-		expect(server.textContent).toContain("You are not signed in");
+		expect(server.textContent).toContain("Not connected");
 		expect(access.textContent).toContain("triage — Sort new issues.");
 		expect(access.textContent).toContain(mcp_warning);
 		expect(within(access).queryByRole("button", { name: "Connect Tracker" })).toBeNull();

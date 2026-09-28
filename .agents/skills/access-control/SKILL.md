@@ -294,7 +294,9 @@ loads any MCP tool for a turn (`/api/chat` in `convex/ai_chat.ts`), and `plugins
 checks it again right before each tool call, so a member who loses it mid-reply is refused with
 "You cannot use MCP servers in this workspace." Ask mode never loads MCP tools, whatever the role.
 The "MCP servers" page (`convex/mcp_custom_servers.ts`) needs it to add, edit, test, or turn on the
-member's own servers. Like the web browser's saved data, a member who lost it can still list, turn off,
+member's own servers. Starting an MCP sign-in (`plugins_mcp_oauth.start`) needs it too, and the
+check runs again before the pending sign-in and the grant are written, because the sign-in waits on
+outside servers between steps. Like the web browser's saved data, a member who lost it can still list, turn off,
 and delete their own servers and disconnect their own sign-ins (`plugins_mcp_oauth.disconnect`). Each
 member sees only their own servers; another member's server id answers "Not found".
 

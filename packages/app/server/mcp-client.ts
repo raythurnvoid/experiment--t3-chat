@@ -95,13 +95,13 @@ export type mcp_client_NormalizedTool = {
 	annotations: Tool["annotations"] | null;
 };
 
-export type mcp_client_NormalizedBlock =
+type NormalizedBlock =
 	| { kind: "text"; text: string }
 	| { kind: "omitted"; type: "image" | "audio" | "blob"; mimeType: string; bytes: number };
 
 export type mcp_client_NormalizedResult = {
 	isError: boolean;
-	blocks: mcp_client_NormalizedBlock[];
+	blocks: NormalizedBlock[];
 	structured: unknown;
 	structuredNote: string | null;
 	bytesIn: number;
@@ -272,7 +272,7 @@ function create_client(guard: ReturnType<typeof mcp_guarded_fetch_create>, serve
 		{ name: "press", version: "1.0.0" },
 		{
 			// Declare no elicitation, sampling, or roots, so the SDK never answers a server question.
-			// TODO(elicitation): D4.
+			// TODO(elicitation): answer server questions once Press can ask the member.
 			capabilities: {},
 			versionNegotiation: { mode: "auto" },
 			listMaxPages: LIST_MAX_PAGES,
@@ -319,8 +319,16 @@ const SCHEMA_KEYWORDS = [
 	"unevaluatedItems",
 	"unevaluatedProperties",
 	"additionalItems",
+	"contentSchema",
 ];
-const SCHEMA_MAP_KEYWORDS = ["properties", "patternProperties", "$defs", "definitions", "dependentSchemas"];
+const SCHEMA_MAP_KEYWORDS = [
+	"properties",
+	"patternProperties",
+	"$defs",
+	"definitions",
+	"dependentSchemas",
+	"dependencies",
+];
 const SCHEMA_LIST_KEYWORDS = ["allOf", "anyOf", "oneOf", "prefixItems", "items"];
 
 /**
@@ -377,12 +385,36 @@ function schema_problem(schema: unknown): SchemaProblem | null {
 	// A client must never fetch a network `$ref`, so only local refs are allowed.
 	if (refs.some(({ ref }) => !ref.startsWith("#"))) return "external_ref";
 
-	// Model APIs reject recursive schemas. A local ref is recursive when it points at itself or at
-	// one of its parents, for example `#` from inside the root.
+	// Model APIs reject recursive schemas. Following a ref expands its target, and with it every ref
+	// inside that target. The schema is recursive when this comes back to a target that is still being
+	// expanded: `#` from inside the root, or `a` pointing at `b` while `b` points back at `a`.
+	// List each ref under its own path and every parent path once, so a target finds the refs inside it
+	// without scanning all refs again. A tool can hold 500 refs.
+	const refsInside = new Map<string, string[]>();
 	for (const { ref, path } of refs) {
-		const target = ref.slice(1);
-		if (target === "" || path === target || path.startsWith(`${target}/`)) return "recursive_ref";
+		const segments = path.split("/");
+		for (let end = 1; end <= segments.length; end += 1) {
+			const prefix = segments.slice(0, end).join("/");
+			const list = refsInside.get(prefix);
+			if (list) list.push(ref);
+			else refsInside.set(prefix, [ref]);
+		}
 	}
+	const expanding = new Set<string>();
+	const finished = new Set<string>();
+	const leads_back = (target: string): boolean => {
+		if (finished.has(target)) return false;
+		if (expanding.has(target)) return true;
+
+		expanding.add(target);
+		for (const ref of refsInside.get(target) ?? []) {
+			if (leads_back(ref.slice(1))) return true;
+		}
+		expanding.delete(target);
+		finished.add(target);
+		return false;
+	};
+	if (refs.some(({ ref }) => leads_back(ref.slice(1)))) return "recursive_ref";
 	return null;
 }
 
@@ -461,7 +493,7 @@ function base64_bytes(data: string) {
 
 function normalize_result(result: CallToolResult, tool: mcp_client_NormalizedTool): mcp_client_NormalizedResult {
 	const isError = result.isError === true;
-	const blocks: mcp_client_NormalizedBlock[] = [];
+	const blocks: NormalizedBlock[] = [];
 	for (const block of result.content) {
 		// Never decode or fetch anything. Images and audio are not sent to the model in v1.
 		switch (block.type) {

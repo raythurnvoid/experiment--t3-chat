@@ -542,7 +542,9 @@
 		font-size: 0.8125rem;
 		color: var(--color-fg-07);
 	}
+	/* #endregion tool mcp */
 
+	/* #region mcp auth needed */
 	.AiChatMessageMcpAuthNeeded {
 		display: grid;
 		gap: 8px;
@@ -565,7 +567,7 @@
 		font-size: 0.8125rem;
 		color: var(--color-fg-09);
 	}
-	/* #endregion tool mcp */
+	/* #endregion mcp auth needed */
 
 	/* #region tool unknown */
 	.AiChatMessagePartToolUnknown-meta {

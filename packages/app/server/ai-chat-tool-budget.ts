@@ -69,6 +69,10 @@ export function ai_chat_tool_budget_apply<T extends ToolSet>(
 					if (typeof result.metadata.diff === "string") {
 						result.metadata.diff = "[Diff preview omitted: this reply reached its tool budget.]";
 					}
+					// The model reads this flag of an MCP result to know that its output was cut.
+					if (result.metadata.kind === "mcp_result") {
+						result.metadata.truncated = true;
+					}
 					const output = result.output;
 					let start = 0;
 					let end = output.length;

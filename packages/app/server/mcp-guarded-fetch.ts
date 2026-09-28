@@ -91,6 +91,14 @@ function allowed_url(rawUrl: string, testAllowLocalHttp: boolean, allowedPressHo
 }
 
 /**
+ * Whether the guard would send a request to this URL. For a URL Press never fetches itself, such as
+ * the authorization endpoint the member's browser opens.
+ */
+export function mcp_guarded_fetch_is_allowed_url(rawUrl: string) {
+	return allowed_url(rawUrl, false, null) !== null;
+}
+
+/**
  * Create a fetch function for the MCP SDK.
  *
  * - `mcp`: requests to one MCP server. The server's headers and its Bearer token go only to the

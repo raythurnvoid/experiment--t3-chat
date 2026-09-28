@@ -68,6 +68,10 @@ function default_switches() {
 		cimd: false,
 		tokenAuthMethods: ["none", "client_secret_basic", "client_secret_post"] as string[] | null,
 		registration: "ok" as "ok" | "reject" | "none",
+		/**
+		 * Seconds until a registered client secret expires. `null` answers 0 (never expires).
+		 */
+		registrationSecretExpiresIn: null as number | null,
 		asScopes: ["mcp:read", "mcp:write", "offline_access"] as string[] | null,
 		revocation: true,
 		/**
@@ -97,6 +101,10 @@ function default_switches() {
 		 * Server answers 403 to `tools/call`. `insufficient_scope` names a scope; `plain` does not.
 		 */
 		serverForbidden: null as "insufficient_scope" | "plain" | null,
+		/**
+		 * Server answers 500 to every request that carries a good token.
+		 */
+		serverErrorWithToken: false,
 		/**
 		 * A token error body that repeats the token it got.
 		 */
@@ -232,7 +240,13 @@ export function mcp_oauth_fixtures_create() {
 			return Response.json(
 				{
 					client_id: clientId,
-					...(secret && { client_secret: secret, client_secret_expires_at: 0 }),
+					...(secret && {
+						client_secret: secret,
+						client_secret_expires_at:
+							switches.registrationSecretExpiresIn === null
+								? 0
+								: Math.floor(Date.now() / 1000) + switches.registrationSecretExpiresIn,
+					}),
 					token_endpoint_auth_method: authMethod,
 					redirect_uris: metadata.redirect_uris,
 				},
@@ -334,6 +348,7 @@ export function mcp_oauth_fixtures_create() {
 				return new Response(null, { status: 403, headers: { "WWW-Authenticate": header } });
 			}
 		}
+		if (switches.serverErrorWithToken && good) return new Response("error", { status: 500 });
 
 		return await basic.fetch(request);
 	};

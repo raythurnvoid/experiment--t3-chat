@@ -89,8 +89,8 @@ const MONACO_MARKER_OWNER = "mcp-servers-config";
 
 const PLUGIN_CONNECTION_STATUS_LABELS = {
 	connected: "Connected",
-	needs_sign_in: "Not signed in",
-	needs_reconnect: "Sign in again",
+	needs_sign_in: "Not connected",
+	needs_reconnect: "Needs reconnect",
 	blocked: "Blocked by your organization's MCP policy",
 	disabled: "The plugin is turned off in this workspace",
 } as const;
@@ -144,7 +144,7 @@ function format_saved_server_status(server: RouteMcpServers_SavedServer) {
 		case "blocked":
 			return "Blocked by your organization's MCP policy";
 		case "error":
-			return server.health === "paused" ? "Paused after errors" : "Last test failed";
+			return server.health === "paused" ? "Paused after failed tool lists" : "Last test failed";
 		case "ready":
 			return "Ready";
 	}
@@ -212,7 +212,7 @@ const RouteMcpServersPluginServer = memo(function RouteMcpServersPluginServer(
 				</div>
 				<p className={"RouteMcpServersPluginServer-details" satisfies RouteMcpServersPluginServer_ClassNames}>
 					{server.pluginName} — {server.serverHost} — You will sign in at {server.authorizationHost}
-					{server.health === "paused" ? " — Paused after errors" : ""}
+					{server.health === "paused" ? " — Paused after failed tool lists" : ""}
 				</p>
 			</div>
 
@@ -1195,7 +1195,7 @@ function RouteMcpServersMembership(props: RouteMcpServersMembership_Props) {
 				const testResult: RouteMcpServers_TestResult = result._nay
 					? { kind: "error", message: result._nay.message }
 					: result._yay.outcome === "ok"
-						? { kind: "ok", message: `Connected. Found ${result._yay.toolCount ?? 0} tools.` }
+						? { kind: "ok", message: `Test passed. Found ${result._yay.toolCount ?? 0} tools.` }
 						: result._yay.outcome === "auth_required" && result._yay.authorizationHost !== null
 							? {
 									kind: "ok",

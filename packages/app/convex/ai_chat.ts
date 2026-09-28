@@ -934,9 +934,13 @@ function add_generated_file_summaries(messages: ModelMessage[]): ModelMessage[] 
 }
 // #endregion file tool messages
 
-// One server can fill a turn alone, but with several servers each one still gets its first 40 tools.
+// One server can fill a turn alone, but with several servers each one still gets its first 40 tools
+// within an equal share of the byte budget below.
 const MCP_TOOLS_PER_SERVER = 40;
 const MCP_TOOLS_PER_TURN = 100;
+// The model gets every tool definition on every step. One input schema alone can be 64 KiB, so 100 tools
+// could send megabytes. Count the name, description, and input schema of each tool against this budget.
+const MCP_TOOL_DEFINITIONS_MAX_BYTES = 128 * 1024;
 const MCP_LIST_TIMEOUT_MS = 5000;
 // Each tool list can hold up to 4 MiB in memory, so list at most 4 servers at a time.
 const MCP_LIST_CONCURRENCY = 4;
@@ -1103,8 +1107,14 @@ async function load_turn_mcp_tools(
 		if (listResult._nay) {
 			notes.push(`${label}: left out. ${listResult._nay.message}`);
 			// Stop aborts the list, and the client reports that as a timeout. Do not count it, or a member
-			// could pause a shared server just by pressing Stop.
-			if (MCP_HEALTH_FAILURE_CODES.has(listResult._nay.name) && !input.signal.aborted) {
+			// could pause a shared server just by pressing Stop. Do not count a plugin server's list sent with
+			// the member's token either: the server may fail only for that token. A member's own server serves
+			// only that member, so its failures always count.
+			if (
+				MCP_HEALTH_FAILURE_CODES.has(listResult._nay.name) &&
+				!input.signal.aborted &&
+				(server.kind === "custom" || access?.status !== "connected")
+			) {
 				await ctx.runMutation(internal.plugins_mcp.record_server_outcome, { target: server.target, ok: false });
 			}
 			return null;
@@ -1147,24 +1157,36 @@ async function load_turn_mcp_tools(
 	}
 	const servers = loaded.map((entry) => entry.server);
 
-	// First give each server up to 40 tools in server order, then fill the free slots up to 100 with
-	// each server's next tools, in the same order.
+	// First give each server up to 40 tools and an equal share of the byte budget, in server order. Then
+	// fill the free slots up to 100 and the free bytes with each server's next tools, in the same order.
+	// Without the equal share, the first server could use all the bytes and leave the others with no
+	// tools. A server stops at its first tool that does not fit, so it always keeps the start of its list.
 	let freeSlots = MCP_TOOLS_PER_TURN;
-	const counts = servers.map((server) => {
-		const count = Math.min(server.tools.length, MCP_TOOLS_PER_SERVER, freeSlots);
-		freeSlots -= count;
-		return count;
-	});
-	for (const [index, server] of servers.entries()) {
-		const extra = Math.min(server.tools.length - counts[index], freeSlots);
-		counts[index] += extra;
-		freeSlots -= extra;
-	}
+	let freeBytes = MCP_TOOL_DEFINITIONS_MAX_BYTES;
+	const counts = servers.map(() => 0);
+	const usedBytes = servers.map(() => 0);
+	const encoder = new TextEncoder();
+	const fill = (perServer: number, bytesPerServer: number) => {
+		for (const [index, server] of servers.entries()) {
+			while (counts[index] < Math.min(server.tools.length, perServer) && freeSlots > 0) {
+				const tool = server.tools[counts[index]];
+				const bytes = encoder.encode(JSON.stringify([tool.name, tool.description, tool.inputSchema])).byteLength;
+				if (bytes > freeBytes || usedBytes[index] + bytes > bytesPerServer) break;
+
+				freeBytes -= bytes;
+				freeSlots -= 1;
+				usedBytes[index] += bytes;
+				counts[index] += 1;
+			}
+		}
+	};
+	fill(MCP_TOOLS_PER_SERVER, MCP_TOOL_DEFINITIONS_MAX_BYTES / servers.length);
+	fill(MCP_TOOLS_PER_TURN, MCP_TOOL_DEFINITIONS_MAX_BYTES);
 	for (const [index, entry] of loaded.entries()) {
 		const cut = entry.listedCount - counts[index];
 		if (cut > 0) {
 			notes.push(
-				`${entry.label}: ${cut} tools left out, because a chat can use at most ${MCP_TOOLS_PER_TURN} MCP tools.`,
+				`${entry.label}: ${cut} tools left out, because a chat can use at most ${MCP_TOOLS_PER_TURN} MCP tools and ${MCP_TOOL_DEFINITIONS_MAX_BYTES / 1024} KiB of MCP tool definitions.`,
 			);
 		}
 		entry.server.tools = entry.server.tools.slice(0, counts[index]);
@@ -1309,7 +1331,7 @@ function build_agent_configuration(input: {
 		browser_close: ai_chat_tool_create_file_stored(),
 	};
 
-	// TODO(approvals): D4. An approval step for these app write tools and for MCP calls comes later.
+	// TODO(approvals): an approval step for these app write tools and for MCP calls comes later.
 	const writeToolNames = new Set<string>(ai_chat_WRITE_TOOL_NAMES);
 
 	// The tools the model can really call. In ask mode we remove the write tools from this object, not

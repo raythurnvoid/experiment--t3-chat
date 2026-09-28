@@ -1674,6 +1674,7 @@ export type ai_chat_tool_create_execute_code_ToolOutput = InferToolOutput<ai_cha
 export const ai_chat_tool_MCP_TOOL_NAME_MAX_LENGTH = 64;
 const MCP_CALL_TIMEOUT_MS = 60_000;
 const MCP_SIGN_IN_BUSY_MESSAGE = "Press is renewing the sign-in of this MCP server. Try again.";
+const MCP_NO_TIME_MESSAGE = "This chat run has no time left for an MCP call.";
 const MCP_OUTPUT_MAX_BYTES = 64 * 1024;
 const MCP_TEXT_ENCODER = new TextEncoder();
 
@@ -1837,7 +1838,7 @@ export async function ai_chat_tool_create_mcp_tools(
 						if (!threadId) throw new Error("MCP tools need a chat thread.");
 
 						const timeoutMs = Math.min(MCP_CALL_TIMEOUT_MS, ctxData.runDeadline - Date.now());
-						if (timeoutMs <= 0) throw new Error("This chat run has no time left for an MCP call.");
+						if (timeoutMs <= 0) throw new Error(MCP_NO_TIME_MESSAGE);
 
 						const source = {
 							organizationId: ctxData.organizationId,
@@ -1904,6 +1905,10 @@ export async function ai_chat_tool_create_mcp_tools(
 							});
 						};
 
+						// Waiting for a token refresh can use up the run lease. Do not start a call after it ends:
+						// another run may already own the thread.
+						if (ctxData.runDeadline <= Date.now()) throw new Error(MCP_NO_TIME_MESSAGE);
+
 						const startedAt = Date.now();
 						let called = await callWith(access?.status === "connected" ? access.accessToken : null);
 
@@ -1935,6 +1940,10 @@ export async function ai_chat_tool_create_mcp_tools(
 									await recordCall(called._nay.name, 0, null);
 									throw new Error(retryRecheck._nay.message);
 								}
+								if (ctxData.runDeadline <= Date.now()) {
+									await recordCall(called._nay.name, 0, null);
+									throw new Error(MCP_NO_TIME_MESSAGE);
+								}
 								called = await callWith(access.accessToken);
 							}
 						}
@@ -1956,7 +1965,7 @@ export async function ai_chat_tool_create_mcp_tools(
 
 						// Only a plugin server with OAuth, or a member's own server with no headers (its first
 						// sign-in pins it), can start a sign-in. Any other server that refuses the call has
-						// nothing to connect, so a Connect card would only say the server was removed.
+						// nothing to connect, so a Connect card would only say it cannot be connected.
 						if (
 							(called._nay?.name === "auth_required" || called._nay?.name === "insufficient_scope") &&
 							server.auth !== "oauth" &&

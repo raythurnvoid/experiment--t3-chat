@@ -916,7 +916,9 @@ const AiChatMessagePartToolMcp = memo(function AiChatMessagePartToolMcp(props: A
 		</AiChatMessagePartDisclosure>
 	);
 });
+// #endregion tool mcp
 
+// #region mcp auth needed
 type AiChatMessageMcpAuthNeeded_ClassNames =
 	| "AiChatMessageMcpAuthNeeded"
 	| "AiChatMessageMcpAuthNeeded-server"
@@ -952,7 +954,7 @@ const AiChatMessageMcpAuthNeeded = memo(function AiChatMessageMcpAuthNeeded(prop
 						className={"AiChatMessageMcpAuthNeeded-server" satisfies AiChatMessageMcpAuthNeeded_ClassNames}
 					>
 						<span className={"AiChatMessageMcpAuthNeeded-text" satisfies AiChatMessageMcpAuthNeeded_ClassNames}>
-							{serverLabel} {server.reason === "needs_reconnect" ? "needs to reconnect" : "needs sign-in"}
+							{serverLabel} {server.reason === "needs_reconnect" ? "needs to reconnect" : "needs to connect"}
 						</span>
 						<McpConnect
 							target={server.target}
@@ -965,7 +967,7 @@ const AiChatMessageMcpAuthNeeded = memo(function AiChatMessageMcpAuthNeeded(prop
 		</ul>
 	);
 });
-// #endregion tool mcp
+// #endregion mcp auth needed
 
 // #region tool unknown
 type AiChatMessagePartToolUnknown_ClassNames = "AiChatMessagePartToolUnknown" | "AiChatMessagePartToolUnknown-meta";

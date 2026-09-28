@@ -1487,7 +1487,7 @@ describe("AiChatMessage", () => {
 
 		const lines = within(screen.getByRole("list", { name: "MCP sign-in" })).getAllByRole("listitem");
 		expect(lines.map((line) => line.firstChild?.textContent)).toEqual([
-			"data-probe · Docs needs sign-in",
+			"data-probe · Docs needs to connect",
 			"Your server: Tracker needs to reconnect",
 		]);
 
@@ -1503,7 +1503,7 @@ describe("AiChatMessage", () => {
 		action.mockRestore();
 	});
 
-	test("says a sign-in line's server was removed when its target is gone", () => {
+	test("says a sign-in line's server cannot be connected when its target is gone", () => {
 		const target = { kind: "custom" as const, customServerId: "custom_deleted" };
 		hookMocks.mcpConnectable.set(JSON.stringify(target), false);
 
@@ -1521,7 +1521,7 @@ describe("AiChatMessage", () => {
 			} satisfies ai_chat_UiMessage,
 		});
 
-		expect(screen.getByRole("status").textContent).toBe("This server was removed");
+		expect(screen.getByRole("status").textContent).toBe("You cannot connect this server now");
 		expect(screen.queryByRole("button", { name: "Connect Your server: Old" })).toBeNull();
 	});
 

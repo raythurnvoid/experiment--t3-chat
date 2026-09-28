@@ -1,6 +1,7 @@
 import { Workpool } from "@convex-dev/workpool";
 import { R2 } from "@convex-dev/r2";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import type { FunctionArgs } from "convex/server";
 import type { streamText } from "ai";
 import { MockLanguageModelV3 } from "ai/test";
 import { api, internal } from "./_generated/api.js";
@@ -307,6 +308,31 @@ describe("/api/chat MCP tool loading", () => {
 
 		const names = Object.keys(last_call().tools ?? {}).filter((name) => name.startsWith("mcp__"));
 		expect(names).toEqual(["mcp__tracker__echo"]);
+	});
+
+	test("keeps the tool definitions of a turn under 128 KiB", async () => {
+		const { t, asUser, membership, threadId } = await setup();
+		await install_mcp_plugin(t, membership, { url: "https://big.fixtures.test/wide-schemas" });
+
+		expect((await chat(asUser, { membershipId: membership.membershipId, threadId })).status).toBe(200);
+
+		const names = Object.keys(last_call().tools ?? {}).filter((name) => name.startsWith("mcp__"));
+		expect(names).toEqual(["mcp__tracker__wide_0", "mcp__tracker__wide_1", "mcp__tracker__wide_2"]);
+		expect(last_call().system).toContain(
+			"tracker · Tracker: 2 tools left out, because a chat can use at most 100 MCP tools and 128 KiB of MCP tool definitions.",
+		);
+	});
+
+	test("a server with big tools leaves an equal share of the 128 KiB to the next server", async () => {
+		const { t, asUser, membership, threadId } = await setup();
+		await install_mcp_plugin(t, membership, { url: "https://big.fixtures.test/wide-schemas" });
+		const { serverDocId } = await install_mcp_plugin(t, membership, { url: "https://big.fixtures.test/wide-schemas" });
+		await t.run((ctx) => ctx.db.patch("plugins_mcp_servers", serverDocId, { toolPrefix: "tracker-b" }));
+
+		expect((await chat(asUser, { membershipId: membership.membershipId, threadId })).status).toBe(200);
+
+		const names = Object.keys(last_call().tools ?? {}).filter((name) => name.startsWith("mcp__"));
+		expect(names.toSorted()).toEqual(["mcp__tracker-b__wide_0", "mcp__tracker__wide_0", "mcp__tracker__wide_1"]);
 	});
 
 	test("loads nothing in Ask mode and makes no outside request", async () => {
@@ -901,6 +927,21 @@ describe("/api/chat MCP server health", () => {
 		},
 	);
 
+	test("clears a pause when it ends, and keeps the failure count", async () => {
+		const { t, membership } = await setup();
+		const { serverDocId, installationId } = await install_mcp_plugin(t, membership, { url: MODERN_BASIC_URL });
+		const target = { kind: "plugin" as const, installationId, serverId: "tracker" };
+		vi.useFakeTimers();
+
+		for (let turn = 0; turn < 3; turn++) {
+			await t.mutation(internal.plugins_mcp.record_server_outcome, { target, ok: false });
+		}
+		expect(await server_doc(t, serverDocId)).toMatchObject({ failures: 3, unhealthyUntil: expect.any(Number) });
+
+		await t.finishAllScheduledFunctions(vi.runAllTimers);
+		expect(await server_doc(t, serverDocId)).toMatchObject({ failures: 3, unhealthyUntil: null });
+	});
+
 	test("does not count a tool list that Stop aborted", async () => {
 		const { t, asUser, membership, threadId } = await setup();
 		const { serverDocId } = await install_mcp_plugin(t, membership, { url: "https://slow.fixtures.test/list" });
@@ -1246,9 +1287,11 @@ describe("/api/chat MCP sign-in notice", () => {
 		});
 	});
 
-	test("a working grant loads the tools with the member's token, and the reply has no notice", async () => {
-		const { t, asUser, membership, threadId } = await setup();
-		const target = await install_oauth_server(t, membership);
+	async function connect(
+		asUser: ReturnType<TestConvex["withIdentity"]>,
+		membership: Membership,
+		target: FunctionArgs<typeof api.plugins_mcp_oauth.start>["target"],
+	) {
 		const started = await asUser.action(api.plugins_mcp_oauth.start, {
 			membershipId: membership.membershipId,
 			target,
@@ -1264,6 +1307,12 @@ describe("/api/chat MCP sign-in notice", () => {
 		});
 		if (finished._nay) throw new Error(finished._nay.message);
 		oauthFixtures.wire.length = 0;
+	}
+
+	test("a working grant loads the tools with the member's token, and the reply has no notice", async () => {
+		const { t, asUser, membership, threadId } = await setup();
+		const target = await install_oauth_server(t, membership);
+		await connect(asUser, membership, target);
 
 		expect((await chat(asUser, { membershipId: membership.membershipId, threadId })).status).toBe(200);
 
@@ -1272,5 +1321,65 @@ describe("/api/chat MCP sign-in notice", () => {
 		const toServer = oauthFixtures.wire.filter((entry) => entry.host === "mcp-a.oauth.test");
 		expect(toServer.length).toBeGreaterThan(0);
 		expect(toServer.every((entry) => entry.headers.get("authorization")?.startsWith("Bearer access-"))).toBe(true);
+	});
+
+	test("a call that waited for a token refresh past the run lease sends no request", async () => {
+		const { t, asUser, membership, threadId } = await setup();
+		const target = await install_oauth_server(t, membership);
+		oauthFixtures.switches.tokenExpiresIn = 120;
+		await connect(asUser, membership, target);
+		expect((await chat(asUser, { membershipId: membership.membershipId, threadId })).status).toBe(200);
+
+		// The token has expired, but the run lease has not. The refresh then takes the rest of the lease.
+		vi.useFakeTimers({ toFake: ["Date"] });
+		vi.setSystemTime(Date.now() + 5 * 60 * 1000);
+		const fixtureFetch = oauthFixtures.fetch;
+		oauthFixtures.fetch = async (input, init) => {
+			const response = await fixtureFetch(input, init);
+			if (oauthFixtures.wire.at(-1)?.path === "/token") vi.setSystemTime(Date.now() + 6 * 60 * 1000);
+			return response;
+		};
+		oauthFixtures.wire.length = 0;
+		const result = await run_tool(t, "mcp__tracker__echo", { text: "late" });
+
+		expect(result.error).toBe("This chat run has no time left for an MCP call.");
+		expect(oauthFixtures.wire.map((entry) => entry.path)).toEqual(["/token"]);
+	});
+
+	test("a tool list that fails with the member's token never counts toward pausing the shared server", async () => {
+		const { t, asUser, membership, threadId } = await setup();
+		vi.spyOn(console, "warn").mockImplementation(() => {});
+		const target = await install_oauth_server(t, membership);
+		await connect(asUser, membership, target);
+		oauthFixtures.switches.serverErrorWithToken = true;
+
+		expect((await chat(asUser, { membershipId: membership.membershipId, threadId })).status).toBe(200);
+
+		expect(last_call().system).toContain("tracker · Tracker: left out.");
+		expect(await t.run((ctx) => ctx.db.query("plugins_mcp_servers").collect())).toMatchObject([
+			{ failures: 0, unhealthyUntil: null },
+		]);
+	});
+
+	test("a member's own server that fails with their token still counts toward pausing it", async () => {
+		const { t, asUser, membership, threadId } = await setup();
+		vi.spyOn(console, "warn").mockImplementation(() => {});
+		const saved = await asUser.action(api.mcp_custom_servers.save, {
+			membershipId: membership.membershipId,
+			customServerId: null,
+			text: JSON.stringify({ mcpServers: { mine: { url: OAUTH_SERVER_URL } } }),
+			draftKey: "mine",
+			fill: { name: "mine", urlFields: [], notSecretHeaders: [], secretValues: [], keptSecretNames: [] },
+		});
+		if (saved._nay) throw new Error(saved._nay.message);
+		await connect(asUser, membership, { kind: "custom", customServerId: saved._yay.customServerId });
+		oauthFixtures.switches.serverErrorWithToken = true;
+
+		expect((await chat(asUser, { membershipId: membership.membershipId, threadId })).status).toBe(200);
+
+		expect(last_call().system).toContain('Your server "mine": left out.');
+		expect(await t.run((ctx) => ctx.db.get("mcp_custom_servers", saved._yay.customServerId))).toMatchObject({
+			failures: 1,
+		});
 	});
 });

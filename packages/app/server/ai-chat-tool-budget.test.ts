@@ -185,6 +185,21 @@ describe("ai_chat_tool_budget_apply", () => {
 		expect(new TextEncoder().encode(JSON.stringify(result)).byteLength).toBeLessThan(384 * 1024);
 		expect(budget.remainingBytes).toBeGreaterThanOrEqual(0);
 	});
+
+	test("marks an MCP result as cut when the budget cuts its output", async () => {
+		const call = vi.fn(async () => ({
+			title: "echo",
+			output: "x".repeat(500 * 1024),
+			metadata: { kind: "mcp_result", truncated: false },
+		}));
+		const budget = ai_chat_tool_budget_create();
+		const tools = ai_chat_tool_budget_apply({ echo: tool({ inputSchema: z.object({}), execute: call }) }, budget, {
+			resultReservedBytes: 128 * 1024,
+		});
+		const result = await tools.echo.execute!({}, { toolCallId: "mcp", messages: [] });
+		expect(result).toMatchObject({ metadata: { kind: "mcp_result", truncated: true } });
+		expect(result).toHaveProperty("output", expect.stringContaining("Output preview truncated"));
+	});
 });
 
 describe("ai_chat_message_fits_storage", () => {

@@ -13,8 +13,8 @@ import {
 // Parse the JSON config that other MCP hosts use (Claude Desktop and Code, Cursor, Windsurf, VS Code, Cline)
 // for the "MCP servers" page. The browser runs it for the preview, and Convex runs it again on save.
 
-export const mcp_custom_config_MAX_SERVERS = 10;
-export const mcp_custom_config_MAX_TEXT_BYTES = 64 * 1024;
+const MAX_SERVERS = 10;
+const MAX_TEXT_BYTES = 64 * 1024;
 
 const MAX_NAME_LENGTH = 64;
 const MAX_HEADERS = 8;
@@ -536,7 +536,7 @@ export function mcp_custom_config_parse(text: string) {
 	const drafts: mcp_custom_config_Draft[] = [];
 	const errors: Array<{ offset: number; length: number; message: string }> = [];
 
-	if (files_get_utf8_byte_size(text) > mcp_custom_config_MAX_TEXT_BYTES) {
+	if (files_get_utf8_byte_size(text) > MAX_TEXT_BYTES) {
 		errors.push({ offset: 0, length: 0, message: "The text must be at most 64 KiB." });
 		return { drafts, errors };
 	}
@@ -583,11 +583,11 @@ export function mcp_custom_config_parse(text: string) {
 		return { drafts, errors };
 	}
 
-	if (Object.keys(servers).length > mcp_custom_config_MAX_SERVERS) {
+	if (Object.keys(servers).length > MAX_SERVERS) {
 		errors.push({
 			offset: 0,
 			length: 0,
-			message: `Paste at most ${mcp_custom_config_MAX_SERVERS} servers at a time.`,
+			message: `Paste at most ${MAX_SERVERS} servers at a time.`,
 		});
 		return { drafts, errors };
 	}

@@ -240,6 +240,18 @@ describe("mcp_oauth_discover", () => {
 		}
 	});
 
+	test("refuses an authorization endpoint on an IP, a local name, or a Press host", async () => {
+		vi.stubEnv("MCP_DENIED_HOSTS", "app.press.test");
+		for (const endpoint of [
+			"https://10.0.0.1/authorize",
+			"https://intranet.internal/authorize",
+			"https://app.press.test/authorize",
+		]) {
+			fixtures.switches.authorizationEndpoint = endpoint;
+			expect((await discover())._nay?.name, endpoint).toBe("oauth_metadata_invalid");
+		}
+	});
+
 	test("refuses a challenge URL on an IP or a local name before any request", async () => {
 		for (const url of [
 			"https://169.254.169.254/latest",
@@ -343,13 +355,34 @@ describe("mcp_oauth_start", () => {
 	test("refuses when the AS offers no way to become a client", async () => {
 		fixtures.switches.registration = "none";
 
-		expect((await start())._nay?.name).toBe("oauth_no_client");
+		// The message fits a member's own server too, so it names no plugin publisher.
+		expect((await start())._nay).toEqual(
+			expect.objectContaining({
+				name: "oauth_no_client",
+				message: "This server's sign-in server does not support Press yet.",
+			}),
+		);
+	});
+
+	test("refuses a registered client whose secret expires within an hour", async () => {
+		fixtures.switches.tokenAuthMethods = ["client_secret_basic"];
+		fixtures.switches.registrationSecretExpiresIn = 60;
+
+		expect((await start())._nay?.name).toBe("oauth_registration_failed");
+
+		fixtures.switches.registrationSecretExpiresIn = 2 * 60 * 60;
+		expect((await start())._yay?.client.kind).toBe("dcr");
 	});
 
 	test("reports a refused registration once", async () => {
 		fixtures.switches.registration = "reject";
 
-		expect((await start())._nay?.name).toBe("oauth_registration_failed");
+		expect((await start())._nay).toEqual(
+			expect.objectContaining({
+				name: "oauth_registration_failed",
+				message: "This server's sign-in server refused to register Press.",
+			}),
+		);
 		expect(fixtures.counts.register).toBe(1);
 	});
 

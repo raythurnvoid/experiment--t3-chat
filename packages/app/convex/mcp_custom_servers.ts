@@ -18,6 +18,7 @@ import { access_control_db_authorize_membership } from "./access_control.ts";
 import { organizations_db_get_membership } from "./organizations.ts";
 import { organizations_integration_policy_db_allows_mcp_server } from "./organizations_integration_policy.ts";
 import {
+	plugins_mcp_CANNOT_USE_MESSAGE,
 	plugins_mcp_custom_header_values,
 	plugins_mcp_custom_secret_additional_data,
 	plugins_mcp_db_revoke_grant,
@@ -46,7 +47,6 @@ const TEST_TOOL_NAMES_MAX = 50;
 
 const DRAIN_BATCH_SIZE = 100;
 
-const CANNOT_USE_MESSAGE = "You cannot use MCP servers in this workspace.";
 const SERVER_CHANGED_MESSAGE = "The server changed; try again.";
 // A missing or changed `MCP_SECRETS_ENCRYPTION_KEY`, or a damaged doc, makes a decrypt fail.
 const CANNOT_READ_SECRETS_MESSAGE = "Press could not read the saved secrets. Type them again.";
@@ -412,7 +412,7 @@ export const authorize_server = internalQuery({
 	handler: async (ctx, args) => {
 		const member = await db_get_member(ctx, args);
 		if (!member?.canUse) {
-			return Result({ _nay: { message: CANNOT_USE_MESSAGE } });
+			return Result({ _nay: { message: plugins_mcp_CANNOT_USE_MESSAGE } });
 		}
 
 		if (args.customServerId === null) {
@@ -623,7 +623,7 @@ export const write_server = internalMutation({
 	handler: async (ctx, args) => {
 		const member = await db_get_member(ctx, args);
 		if (!member?.canUse) {
-			return Result({ _nay: { message: CANNOT_USE_MESSAGE } });
+			return Result({ _nay: { message: plugins_mcp_CANNOT_USE_MESSAGE } });
 		}
 
 		const now = Date.now();
@@ -874,7 +874,7 @@ export const record_test = internalMutation({
 	handler: async (ctx, args) => {
 		const member = await db_get_member(ctx, args);
 		if (!member?.canUse) {
-			return Result({ _nay: { message: CANNOT_USE_MESSAGE } });
+			return Result({ _nay: { message: plugins_mcp_CANNOT_USE_MESSAGE } });
 		}
 
 		const customServer = await db_get_owned_server(ctx, {
@@ -947,7 +947,7 @@ export const set_enabled = mutation({
 			return Result({ _nay: { message: "Not found" } });
 		}
 		if (args.enabled && !member.canUse) {
-			return Result({ _nay: { message: CANNOT_USE_MESSAGE } });
+			return Result({ _nay: { message: plugins_mcp_CANNOT_USE_MESSAGE } });
 		}
 
 		// Turning a server off keeps its sign-in, like a policy block. Chat turns skip it at once.

@@ -216,6 +216,15 @@ The root layout waits for:
 
 It renders the main app only when App auth and Convex auth are both authenticated. After loading, an unhealthy auth state throws `Failed to start session` to the route error boundary.
 
+## MCP sign-in is not Press auth
+
+Members can sign in to outside MCP servers with OAuth (`convex/plugins_mcp_oauth.ts`, `server/mcp-oauth.ts`; full flow in [the MCP host spec](../mcp-host/SKILL.md)). That sign-in never creates a Press identity and never replaces one:
+
+- Press is the OAuth client there, not the provider. The token belongs to the outside server. Press stores it encrypted with `MCP_SECRETS_ENCRYPTION_KEY` and sends it only to that server.
+- A grant is per member, per workspace, per server (`plugins_mcp_oauth_grants`). No other member, and no admin, can use it. An admin cannot disconnect another member's grant; member removal and the deletion paths remove it.
+- The callback page `/oauth/mcp/callback` needs the member's normal Press session. `finish` takes the pending sign-in only when its `userId` is the caller, so a sign-in link sent to another member cannot land in the sender's grant.
+- Every check runs again before each write (`workspace.mcp.use`, the live membership, the server, and the organization policy), because the flow waits on the network between steps.
+
 ## Account management (current implementation)
 
 ### Profile data in the UI

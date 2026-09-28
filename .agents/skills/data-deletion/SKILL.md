@@ -36,6 +36,18 @@ Load each companion skill that owns the affected boundary:
   server and its secrets at once, revokes the member's sign-in for it through
   `plugins_mcp_db_revoke_grant`, deletes its running sign-ins, and schedules `drain_removed_server`,
   which deletes its `plugins_mcp_calls` docs 100 per run.
+- A member ends their own MCP sign-in with `plugins_mcp_oauth.disconnect`. It deletes the grant through
+  `plugins_mcp_db_revoke_grant`. That helper, and every path that marks a grant `needs_reconnect`,
+  copies the encrypted token into a `plugins_mcp_oauth_revocations` doc and schedules `revoke_one`,
+  when the sign-in server has a revocation endpoint. `revoke_one`
+  asks the sign-in server to revoke the token once, best effort, and deletes the doc whatever the
+  answer. A daily cron deletes revocation docs older than a day, and another deletes expired
+  `plugins_mcp_oauth_pending` sign-ins (each lives 10 minutes). No tenant or user deletion finds a
+  revocation doc, but its `additionalData` holds the target and user ids as text. So a deleted user's id
+  can stay there for up to about 2 days, until the cron deletes the doc.
+- `plugins_mcp_oauth_clients` is not deleted on any path. Each doc is a client that one sign-in
+  server registered for Press (DCR), keyed by issuer. It holds no member data, and every member
+  reuses it.
 
 # Primary Files
 

@@ -293,7 +293,7 @@ describe("RouteMcpServers", () => {
 		await act(async () => {
 			fireEvent.click(screen.getByRole("button", { name: "Test Linear" }));
 		});
-		expect(screen.getByText("Connected. Found 12 tools.")).not.toBeNull();
+		expect(screen.getByText("Test passed. Found 12 tools.")).not.toBeNull();
 		fireEvent.click(screen.getByRole("button", { name: "Edit Linear" }));
 
 		const editor = screen.getByRole("textbox", { name: "MCP server config JSON" }) as HTMLTextAreaElement;
@@ -322,7 +322,7 @@ describe("RouteMcpServers", () => {
 		expect(screen.getByText("Saved Linear. Found 12 tools.")).not.toBeNull();
 		expect(editor.value).toBe("");
 		// The test result described the server before the edit.
-		expect(screen.queryByText("Connected. Found 12 tools.")).toBeNull();
+		expect(screen.queryByText("Test passed. Found 12 tools.")).toBeNull();
 	});
 
 	test("an edit refuses a second server in the text", () => {

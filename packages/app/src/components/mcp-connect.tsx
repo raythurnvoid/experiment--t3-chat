@@ -82,10 +82,12 @@ export const McpConnect = memo(function McpConnect(props: McpConnect_Props) {
 		return null;
 	}
 
+	// The server may be gone, disabled, or blocked, or the member may have lost access. Say only what
+	// all of these mean for the member.
 	if (!canConnect) {
 		return (
 			<p className={"McpConnect-text" satisfies McpConnect_ClassNames} role="status">
-				This server was removed
+				You cannot connect this server now
 			</p>
 		);
 	}

@@ -4851,8 +4851,9 @@ const app_convex_schema = defineSchema({
 
 	/**
 	 * A token to revoke at its sign-in server. Deletion paths are mutations and cannot fetch, so they
-	 * copy the encrypted token here. The doc is deployment cleanup, not tenant data: it holds no
-	 * tenant ids, and a daily cron deletes docs older than 1 day.
+	 * copy the encrypted token here. The doc is deployment cleanup, not tenant data: it has no tenant id
+	 * fields, so no tenant deletion finds it. But `additionalData` holds the target and user ids as text.
+	 * A daily cron deletes docs older than 1 day, so a doc stays at most about 2 days.
 	 */
 	plugins_mcp_oauth_revocations: defineTable({
 		token: plugins_mcp_encrypted_value_validator,

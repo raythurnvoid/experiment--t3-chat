@@ -258,6 +258,19 @@ export function mcp_fixtures_create() {
 		big: {
 			many: { method: "tools/list", handle: many_pages(20, 250) },
 			"too-many-pages": { method: "tools/list", handle: many_pages(21, 1) },
+			// 5 tools of about 40 KiB each. Each one fits the 64 KiB schema cap, but not all of them fit a turn.
+			"wide-schemas": {
+				method: "tools/list",
+				handle: list_pages({
+					"": {
+						tools: Array.from({ length: 5 }, (_, index) =>
+							tool(`wide_${index}`, {
+								inputSchema: { type: "object", properties: {}, description: "x".repeat(40 * 1024) },
+							}),
+						),
+					},
+				}),
+			},
 			"empty-cursor": { method: "tools/list", handle: list_pages({ "": { tools: [tool("a")], nextCursor: "" } }) },
 			loop: {
 				method: "tools/list",
@@ -412,6 +425,25 @@ export function mcp_fixtures_create() {
 									$defs: { node: { type: "object", properties: { child: { $ref: "#/$defs/node" } } } },
 									properties: { root: { $ref: "#/$defs/node" } },
 								},
+							}),
+							tool("mutual_ref", {
+								inputSchema: {
+									type: "object",
+									$defs: {
+										a: { type: "object", properties: { b: { $ref: "#/$defs/b" } } },
+										b: { type: "object", properties: { a: { $ref: "#/$defs/a" } } },
+									},
+									properties: { root: { $ref: "#/$defs/a" } },
+								},
+							}),
+							tool("content_ref", {
+								inputSchema: {
+									type: "object",
+									properties: { a: { type: "string", contentSchema: { $ref: "https://evil.example/s.json" } } },
+								},
+							}),
+							tool("dependencies_ref", {
+								inputSchema: { type: "object", dependencies: { a: { $ref: "https://evil.example/s.json" } } },
 							}),
 							tool("local_ref", {
 								inputSchema: {

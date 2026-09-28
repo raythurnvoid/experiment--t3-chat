@@ -24,9 +24,11 @@ import {
 import { organizations_db_get_membership } from "./organizations.ts";
 import { organizations_integration_policy_db_allows_mcp_server } from "./organizations_integration_policy.ts";
 import {
+	plugins_mcp_CANNOT_USE_MESSAGE,
 	plugins_mcp_db_revoke_grant,
 	plugins_mcp_db_schedule_revocation,
 	plugins_mcp_grant_additional_data,
+	plugins_mcp_POLICY_MESSAGE,
 } from "./plugins_mcp.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import app_convex_schema, { plugins_mcp_target_validator } from "./schema.ts";
@@ -72,9 +74,7 @@ const REFRESH_BEFORE_MS = 60 * 1000;
 
 const REFRESH_POLL_MS = 500;
 
-const CANNOT_USE_MESSAGE = "You cannot use MCP servers in this workspace.";
 const NOT_AVAILABLE_MESSAGE = "This MCP server is no longer available.";
-const POLICY_MESSAGE = "Your organization's MCP policy blocks this server.";
 const SERVER_CHANGED_MESSAGE = "The server changed. Connect again.";
 const EXPIRED_MESSAGE = "This sign-in expired. Connect again.";
 
@@ -270,7 +270,7 @@ async function db_check_sign_in(
 ) {
 	const { membership } = args;
 	if (!membership) {
-		return Result({ _nay: { message: CANNOT_USE_MESSAGE } });
+		return Result({ _nay: { message: plugins_mcp_CANNOT_USE_MESSAGE } });
 	}
 
 	const workspace = await ctx.db.get("organizations_workspaces", membership.workspaceId);
@@ -280,7 +280,7 @@ async function db_check_sign_in(
 		permission: "workspace.mcp.use",
 	});
 	if (!workspace || workspace.pluginDataPurgeStartedAt !== undefined || mayUse._nay) {
-		return Result({ _nay: { message: CANNOT_USE_MESSAGE } });
+		return Result({ _nay: { message: plugins_mcp_CANNOT_USE_MESSAGE } });
 	}
 
 	const server = await db_get_target(ctx, { userId: args.userId, membership, target: args.target });
@@ -299,7 +299,7 @@ async function db_check_sign_in(
 		target: args.target,
 	});
 	if (!allowed) {
-		return Result({ _nay: { message: POLICY_MESSAGE } });
+		return Result({ _nay: { message: plugins_mcp_POLICY_MESSAGE } });
 	}
 
 	return Result({ _yay: server });
@@ -630,7 +630,7 @@ export const start = action({
 			state,
 		});
 		if (started._nay) {
-			// 9.9: never follow a new sign-in server without a new reviewed version or a new server doc.
+			// Never follow a new sign-in server without a new reviewed version or a new server doc.
 			if (started._nay.name === "oauth_issuer_changed") {
 				await ctx.runMutation(internal.plugins_mcp_oauth.mark_needs_reconnect, {
 					userId: userAuth.id,
