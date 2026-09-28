@@ -12,11 +12,14 @@ import {
 } from "./index";
 
 const URL_BASE = "https://runner.internal";
+const APP = { origin: "https://app.example.com", tokens: { current: "a", personal: "b" } };
+const PUBLIC_ONLY_OPTIONS = { deniedHosts: [], app: undefined };
 
 function make_env(opts: {
 	secret?: string;
 	disabled?: boolean;
 	networkDisabled?: boolean;
+	pressDeniedHosts?: string;
 	evaluate?: (input: unknown, source: string) => unknown | Promise<unknown>;
 }): Env {
 	const loader = {
@@ -36,6 +39,7 @@ function make_env(opts: {
 		CODE_EXECUTION_RUNNER_SECRET: opts.secret ?? "test-secret",
 		CODE_EXECUTION_DISABLED: opts.disabled ? "true" : undefined,
 		CODE_EXECUTION_NETWORK_DISABLED: opts.networkDisabled ? "true" : undefined,
+		PRESS_DENIED_HOSTS: opts.pressDeniedHosts,
 	};
 }
 
@@ -187,7 +191,7 @@ describe("execution outcomes", () => {
 			origin: "https://app.example.com",
 			tokens: { current: "current-grant-token", personal: sameHome ? "current-grant-token" : "personal-grant-token" },
 		};
-		const gatewayProps = { executionId: "two-roots", allowPublic: false, app };
+		const gatewayProps = { executionId: "two-roots", allowPublic: false, deniedHosts: [], app };
 		const fetchMock = vi.fn(async (request: Request) => {
 			expect(request.headers.get("x-bonobo-workspace")).toBeNull();
 			return new Response(new Uint8Array([request.headers.get("authorization") === `Bearer ${app.tokens.current}` ? 1 : 2]));
@@ -344,11 +348,11 @@ describe("execution outcomes", () => {
 		expect(loaded?.compatibilityFlags).toEqual(["nodejs_compat"]);
 	});
 
-	it("loads the sandbox with the outbound gateway when network mode is requested", async () => {
+	it("loads the sandbox with the outbound gateway and the parsed Press deny list when network mode is requested", async () => {
 		let loaded: Record<string, unknown> | undefined;
 		let gatewayProps: unknown;
 		const fetcher = { fetch: async () => new Response("ok") };
-		const env = make_env({});
+		const env = make_env({ pressDeniedHosts: " Press.Example , ,app.example.com." });
 		(env.LOADER as unknown as { load: (code: Record<string, unknown>) => unknown }).load = (code) => {
 			loaded = code;
 			return {
@@ -373,7 +377,9 @@ describe("execution outcomes", () => {
 
 		expect(loaded?.globalOutbound).toBe(fetcher);
 		expect(loaded?.env).toBeUndefined();
-		expect(gatewayProps).toEqual(expect.objectContaining({ allowPublic: true }));
+		expect(gatewayProps).toEqual(
+			expect.objectContaining({ allowPublic: true, deniedHosts: ["press.example", "app.example.com"] }),
+		);
 	});
 
 	it("loads the sandbox with app gateway props and synthetic process env", async () => {
@@ -412,6 +418,7 @@ describe("execution outcomes", () => {
 		expect(gatewayProps).toEqual(
 			expect.objectContaining({
 				allowPublic: false,
+				deniedHosts: [],
 				app: { origin: "https://app.example.com", tokens: { current: "current-grant-token", personal: "personal-grant-token" } },
 			}),
 		);
@@ -782,6 +789,7 @@ describe("module generation + wall timeout", () => {
 });
 
 describe("outbound gateway", () => {
+
 	it.each([undefined, "", "home", "CURRENT", "current, personal"])("rejects app selector %s before fetching", async (selector) => {
 		const fetchMock = vi.fn(async () => new Response("ok"));
 		vi.stubGlobal("fetch", fetchMock);
@@ -790,7 +798,7 @@ describe("outbound gateway", () => {
 			if (selector !== undefined) headers.set("X-Bonobo-Workspace", selector);
 			const response = await handle_outbound_gateway_request(
 				new Request("https://app.example.com/api/v1/files/list", { method: "POST", headers }),
-				{ executionId: "exec_1", allowPublic: true, app: { origin: "https://app.example.com", tokens: { current: "a", personal: "b" } } },
+				{ executionId: "exec_1", allowPublic: true, deniedHosts: [], app: APP },
 			);
 			expect(response.status).toBe(400);
 			expect(fetchMock).not.toHaveBeenCalled();
@@ -808,7 +816,7 @@ describe("outbound gateway", () => {
 				new Request(startInApp ? "https://app.example.com/api/v1/files/list" : "https://public.example.com/redirect", {
 					headers: { "X-Bonobo-Workspace": "personal" },
 				}),
-				{ executionId: "exec_1", allowPublic: true, app: { origin: "https://app.example.com", tokens: { current: "a", personal: "b" } } },
+				{ executionId: "exec_1", allowPublic: true, deniedHosts: [], app: APP },
 			);
 			expect(response.status).toBe(403);
 			expect(fetchMock).toHaveBeenCalledTimes(startInApp ? 2 : 1);
@@ -826,7 +834,7 @@ describe("outbound gateway", () => {
 		try {
 			const response = await handle_outbound_gateway_request(
 				new Request("https://app.example.com/api/v1/files/list", { headers: { "X-Bonobo-Workspace": "personal" } }),
-				{ executionId: "exec_1", allowPublic: false, app: { origin: "https://app.example.com", tokens: { current: "a", personal: "b" } } },
+				{ executionId: "exec_1", allowPublic: false, deniedHosts: [], app: APP },
 			);
 			expect(response.status).toBe(200);
 			expect(fetchMock).toHaveBeenCalledTimes(2);
@@ -837,32 +845,106 @@ describe("outbound gateway", () => {
 		} finally { vi.unstubAllGlobals(); }
 	});
 
+	it("refuses Press hosts and their subdomains, except the files API on the app origin", () => {
+		const options = { deniedHosts: ["app.example.com", "press.example"], app: APP };
+
+		expect(validate_outbound_url("https://app.example.com/api/v1/me", options)).toEqual(
+			expect.objectContaining({ ok: false, reason: "press_host" }),
+		);
+		expect(validate_outbound_url("https://api.press.example/path", options)).toEqual(
+			expect.objectContaining({ ok: false, reason: "press_host" }),
+		);
+		expect(validate_outbound_url("https://API.Press.Example./path", options)).toEqual(
+			expect.objectContaining({ ok: false, reason: "press_host" }),
+		);
+		expect(validate_outbound_url("https://app.example.com/api/v1/files/../me", options)).toEqual(
+			expect.objectContaining({ ok: false, reason: "press_host" }),
+		);
+		expect(validate_outbound_url("https://press.example../path", options)).toEqual(
+			expect.objectContaining({ ok: false, reason: "hostname" }),
+		);
+		expect(validate_outbound_url("https://localhost../", options)).toEqual(
+			expect.objectContaining({ ok: false, reason: "hostname" }),
+		);
+		expect(validate_outbound_url("https://app.example.com/api/v1/files/read", options)).toEqual(
+			expect.objectContaining({ ok: true, hostname: "app.example.com" }),
+		);
+		expect(validate_outbound_url("https://notpress.example/path", options)).toEqual(
+			expect.objectContaining({ ok: true, hostname: "notpress.example" }),
+		);
+	});
+
+	it("refuses a fetch to a Press host before sending it", async () => {
+		const fetchMock = vi.fn(async () => new Response("ok"));
+		vi.stubGlobal("fetch", fetchMock);
+		try {
+			const response = await handle_outbound_gateway_request(new Request("https://api.press.example/v1/me"), {
+				executionId: "exec_1",
+				allowPublic: true,
+				deniedHosts: ["press.example"],
+			});
+			expect(response.status).toBe(403);
+			expect(fetchMock).not.toHaveBeenCalled();
+		} finally { vi.unstubAllGlobals(); }
+	});
+
+	it("refuses a public redirect to a Press host", async () => {
+		const fetchMock = vi.fn(async () => new Response(null, { status: 302, headers: { location: "https://press.example/v1/me" } }));
+		vi.stubGlobal("fetch", fetchMock);
+		try {
+			const response = await handle_outbound_gateway_request(new Request("https://public.example.com/redirect"), {
+				executionId: "exec_1",
+				allowPublic: true,
+				deniedHosts: ["press.example"],
+			});
+			expect(response.status).toBe(403);
+			expect(await response.text()).toBe("Blocked outbound redirect");
+			expect(fetchMock).toHaveBeenCalledTimes(1);
+		} finally { vi.unstubAllGlobals(); }
+	});
+
+	it("still reaches the files API and public hosts when the app host is denied", async () => {
+		const fetchMock = vi.fn(async () => new Response("ok"));
+		vi.stubGlobal("fetch", fetchMock);
+		try {
+			const props = { executionId: "exec_1", allowPublic: true, deniedHosts: ["app.example.com"], app: APP };
+			const filesResponse = await handle_outbound_gateway_request(
+				new Request("https://app.example.com/api/v1/files/list", { method: "POST", headers: { "X-Bonobo-Workspace": "current" } }),
+				props,
+			);
+			const publicResponse = await handle_outbound_gateway_request(new Request("https://example.com/path"), props);
+			expect(filesResponse.status).toBe(200);
+			expect(publicResponse.status).toBe(200);
+			expect(fetchMock).toHaveBeenCalledTimes(2);
+		} finally { vi.unstubAllGlobals(); }
+	});
+
 	it("allows public HTTPS hostnames and blocks unsupported URL forms", () => {
-		expect(validate_outbound_url("https://example.com/path")).toEqual(
+		expect(validate_outbound_url("https://example.com/path", PUBLIC_ONLY_OPTIONS)).toEqual(
 			expect.objectContaining({ ok: true, hostname: "example.com" }),
 		);
-		expect(validate_outbound_url("https://example.com./path")).toEqual(
+		expect(validate_outbound_url("https://example.com./path", PUBLIC_ONLY_OPTIONS)).toEqual(
 			expect.objectContaining({ ok: true, hostname: "example.com" }),
 		);
-		expect(validate_outbound_url("http://example.com/path")).toEqual(
+		expect(validate_outbound_url("http://example.com/path", PUBLIC_ONLY_OPTIONS)).toEqual(
 			expect.objectContaining({ ok: false, reason: "protocol" }),
 		);
-		expect(validate_outbound_url("https://127.0.0.1/path")).toEqual(
+		expect(validate_outbound_url("https://127.0.0.1/path", PUBLIC_ONLY_OPTIONS)).toEqual(
 			expect.objectContaining({ ok: false, reason: "ip_literal" }),
 		);
-		expect(validate_outbound_url("https://2130706433/path")).toEqual(
+		expect(validate_outbound_url("https://2130706433/path", PUBLIC_ONLY_OPTIONS)).toEqual(
 			expect.objectContaining({ ok: false, reason: "ip_literal" }),
 		);
-		expect(validate_outbound_url("https://[::1]/path")).toEqual(
+		expect(validate_outbound_url("https://[::1]/path", PUBLIC_ONLY_OPTIONS)).toEqual(
 			expect.objectContaining({ ok: false, reason: "ip_literal" }),
 		);
-		expect(validate_outbound_url("https://service.internal/path")).toEqual(
+		expect(validate_outbound_url("https://service.internal/path", PUBLIC_ONLY_OPTIONS)).toEqual(
 			expect.objectContaining({ ok: false, reason: "hostname" }),
 		);
-		expect(validate_outbound_url("https://service/path")).toEqual(
+		expect(validate_outbound_url("https://service/path", PUBLIC_ONLY_OPTIONS)).toEqual(
 			expect.objectContaining({ ok: false, reason: "hostname" }),
 		);
-		expect(validate_outbound_url("https://example.com:8443/path")).toEqual(
+		expect(validate_outbound_url("https://example.com:8443/path", PUBLIC_ONLY_OPTIONS)).toEqual(
 			expect.objectContaining({ ok: false, reason: "port" }),
 		);
 	});
@@ -884,7 +966,7 @@ describe("outbound gateway", () => {
 						"X-Bonobo-Workspace": "personal",
 					},
 				}),
-				{ executionId: "exec_1", allowPublic: true },
+				{ executionId: "exec_1", allowPublic: true, deniedHosts: [] },
 			);
 
 			expect(response.status).toBe(200);
@@ -916,6 +998,7 @@ describe("outbound gateway", () => {
 				{
 					executionId: "exec_1",
 					allowPublic: true,
+					deniedHosts: [],
 					app: { origin: "https://app.example.com", tokens: { current: "current-grant-token", personal: "personal-grant-token" } },
 				},
 			);
@@ -944,6 +1027,7 @@ describe("outbound gateway", () => {
 				{
 					executionId: "exec_1",
 					allowPublic: false,
+					deniedHosts: [],
 					app: { origin: "https://app.example.com", tokens: { current: "current-grant-token", personal: "personal-grant-token" } },
 				},
 			);
@@ -970,7 +1054,7 @@ describe("outbound gateway", () => {
 		try {
 			const response = await handle_outbound_gateway_request(new Request("https://app.example.com/api/v1/files/read-bytes", {
 				method: "POST", headers: { "X-Bonobo-Workspace": "personal" }, body: JSON.stringify({ path: "/reports/input.bin", offset: 0, length: bytes.length, revision: null }),
-			}), { executionId: "exec_1", allowPublic: false, app: { origin: "https://app.example.com", tokens: { current: "current-grant-token", personal: "personal-grant-token" } } });
+			}), { executionId: "exec_1", allowPublic: false, deniedHosts: [], app: { origin: "https://app.example.com", tokens: { current: "current-grant-token", personal: "personal-grant-token" } } });
 			expect(response.status).toBe(200);
 			expect(new Uint8Array(await response.arrayBuffer())).toEqual(bytes);
 			expect(Object.fromEntries(response.headers)).toEqual({
@@ -989,7 +1073,7 @@ describe("outbound gateway", () => {
 		vi.stubGlobal("fetch", vi.fn(async () => new Response(new Uint8Array(LIMITS.fetchResponseBytes + 1))));
 		try {
 			const response = await handle_outbound_gateway_request(new Request(url, { method, headers: { "X-Bonobo-Workspace": "current" } }), {
-				executionId: "exec_1", allowPublic: true, app: { origin: "https://app.example.com", tokens: { current: "current-grant-token", personal: "personal-grant-token" } },
+				executionId: "exec_1", allowPublic: true, deniedHosts: [], app: { origin: "https://app.example.com", tokens: { current: "current-grant-token", personal: "personal-grant-token" } },
 			});
 			expect(response.status).toBe(413);
 		} finally { vi.unstubAllGlobals(); }
@@ -1002,7 +1086,7 @@ describe("outbound gateway", () => {
 		}))));
 		try {
 			const response = await handle_outbound_gateway_request(new Request("https://app.example.com/api/v1/files/read-bytes", { method: "POST", headers: { "X-Bonobo-Workspace": "personal" } }), {
-				executionId: "exec_1", allowPublic: false, app: { origin: "https://app.example.com", tokens: { current: "current-grant-token", personal: "personal-grant-token" } },
+				executionId: "exec_1", allowPublic: false, deniedHosts: [], app: { origin: "https://app.example.com", tokens: { current: "current-grant-token", personal: "personal-grant-token" } },
 			});
 			expect(response.status).toBe(413);
 			expect(cancel).toHaveBeenCalledOnce();
@@ -1016,7 +1100,7 @@ describe("outbound gateway", () => {
 		try {
 			const response = await handle_outbound_gateway_request(new Request("https://app.example.com/api/v1/files/read-bytes", {
 				method: "POST", headers: { "X-Bonobo-Workspace": "personal" }, body: "private file request",
-			}), { executionId: "exec_1", allowPublic: true, app: { origin: "https://app.example.com", tokens: { current: "current-grant-token", personal: "personal-grant-token" } } });
+			}), { executionId: "exec_1", allowPublic: true, deniedHosts: [], app: { origin: "https://app.example.com", tokens: { current: "current-grant-token", personal: "personal-grant-token" } } });
 			expect(response.status).toBe(403);
 			expect(fetchMock).toHaveBeenCalledOnce();
 			expect(cancel).toHaveBeenCalledOnce();
@@ -1038,6 +1122,7 @@ describe("outbound gateway", () => {
 				{
 					executionId: "exec_1",
 					allowPublic: true,
+					deniedHosts: [],
 					app: { origin: "https://app.example.com", tokens: { current: "current-grant-token", personal: "personal-grant-token" } },
 				},
 			);
@@ -1065,6 +1150,7 @@ describe("outbound gateway", () => {
 			const response = await handle_outbound_gateway_request(new Request("https://example.com/resource"), {
 				executionId: "exec_1",
 				allowPublic: false,
+				deniedHosts: [],
 				app: { origin: "https://app.example.com", tokens: { current: "current-grant-token", personal: "personal-grant-token" } },
 			});
 
@@ -1078,7 +1164,7 @@ describe("outbound gateway", () => {
 	it("rejects unsupported methods and oversize request bodies", async () => {
 		const methodResponse = await handle_outbound_gateway_request(
 			new Request("https://example.com/resource", { method: "OPTIONS" }),
-			{ executionId: "exec_1", allowPublic: true },
+			{ executionId: "exec_1", allowPublic: true, deniedHosts: [] },
 		);
 		expect(methodResponse.status).toBe(405);
 
@@ -1087,7 +1173,7 @@ describe("outbound gateway", () => {
 				method: "POST",
 				body: "x".repeat(LIMITS.fetchRequestBytes + 1),
 			}),
-			{ executionId: "exec_1", allowPublic: true },
+			{ executionId: "exec_1", allowPublic: true, deniedHosts: [] },
 		);
 		expect(bodyResponse.status).toBe(413);
 	});
@@ -1102,6 +1188,7 @@ describe("outbound gateway", () => {
 			const response = await handle_outbound_gateway_request(new Request("https://example.com/redirect"), {
 				executionId: "exec_1",
 				allowPublic: true,
+				deniedHosts: [],
 			});
 
 			expect(response.status).toBe(403);
@@ -1124,6 +1211,7 @@ describe("outbound gateway", () => {
 			const response = await handle_outbound_gateway_request(new Request("https://example.com/large"), {
 				executionId: "exec_1",
 				allowPublic: true,
+				deniedHosts: [],
 			});
 
 			expect(response.status).toBe(413);
@@ -1146,6 +1234,7 @@ describe("outbound gateway", () => {
 			const response = await handle_outbound_gateway_request(new Request("https://example.com/empty"), {
 				executionId: "exec_1",
 				allowPublic: true,
+				deniedHosts: [],
 			});
 
 			expect(response.status).toBe(status);
@@ -1180,6 +1269,7 @@ describe("outbound gateway", () => {
 			const pending = handle_outbound_gateway_request(new Request(fileRead ? "https://app.example.com/api/v1/files/read-bytes" : "https://example.com/stalled", { method: fileRead ? "POST" : "GET", headers: { "X-Bonobo-Workspace": "personal" } }), {
 				executionId: "exec_1",
 				allowPublic: true,
+				deniedHosts: [],
 				app: { origin: "https://app.example.com", tokens: { current: "current-grant-token", personal: "personal-grant-token" } },
 			});
 			// Attach the rejection check before moving the clock. Otherwise the promise rejects with no

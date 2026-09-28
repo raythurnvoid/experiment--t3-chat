@@ -160,7 +160,8 @@ them as canonical base64 for HTTP. There is no caller-supplied size. The app rea
   allows only HTTPS requests using common API methods; strips cookies and hop-by-hop /
   forwarded / host / proxy / Cloudflare-derived headers; blocks
   IP literals, single-label hostnames, localhost/internal-style hostnames, non-443 explicit
-  ports, and redirects to blocked targets; caps request/response bytes, redirects, request
+  ports, Press hosts from `PRESS_DENIED_HOSTS` and their subdomains (except the app file
+  API below), and redirects to blocked targets; caps request/response bytes, redirects, request
   count, and time. Each fetch keeps its five-second deadline through the complete response
   body read.
 - **App file access is gateway-authenticated.** `app: { origin, tokens: { current, personal } }` enables
@@ -197,6 +198,7 @@ them as canonical base64 for HTTP. There is no caller-supplied size. The app rea
 | `CODE_EXECUTION_RUNNER_SECRET`    | secret (required)      | Bearer token the caller must present.                         |
 | `CODE_EXECUTION_DISABLED`         | var (optional)         | Set to `"true"` to hard-disable execution (503 kill switch).  |
 | `CODE_EXECUTION_NETWORK_DISABLED` | var (optional)         | Set to `"true"` to reject requests that need outbound access. |
+| `PRESS_DENIED_HOSTS`              | var (optional)         | Comma list of Press hosts that code may not fetch.            |
 | `LOADER`                          | worker_loaders binding | The Worker Loader binding (declared in `wrangler.jsonc`).     |
 
 ## Develop / deploy

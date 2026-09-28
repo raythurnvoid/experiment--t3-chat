@@ -9,6 +9,12 @@
 			"binding": "LOADER"
 		}
 	],
+	"vars": {
+		// Press hosts that code may not fetch, except the files API on the app origin. Keep it in sync
+		// with the Press host env names in `packages/app/server/mcp-guarded-fetch.ts`. A name also covers
+		// its subdomains. These are the dev hosts.
+		"PRESS_DENIED_HOSTS": "grand-finch-267.convex.cloud,grand-finch-267.convex.site,raythurnvoid.github.io,direct-bass-17.clerk.accounts.dev,bonobo-senate-code-execution-runner.ray-thurne-void.workers.dev,bonobo-senate-browser-runner-dev.ray-thurne-void.workers.dev,bonobo-senate-plugin-runner.ray-thurne-void.workers.dev,bonobo-senate-r2-media-transformer.ray-thurne-void.workers.dev,ray-thurne-void--bonobo-senate-press-file-converter-asgi.modal.run,ray-thurne-void--bonobo-senate-press-media-audio-asgi.modal.run"
+	},
 	"secrets": {
 		"required": ["CODE_EXECUTION_RUNNER_SECRET"]
 	},

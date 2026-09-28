@@ -59,6 +59,11 @@ export type Env = {
 	CODE_EXECUTION_RUNNER_SECRET: string;
 	CODE_EXECUTION_DISABLED?: string;
 	CODE_EXECUTION_NETWORK_DISABLED?: string;
+	/**
+	 * Comma list of Press hosts that code may not fetch, except the files API on the app origin. A
+	 * listed host also denies its subdomains.
+	 */
+	PRESS_DENIED_HOSTS?: string;
 };
 
 type Fetcher = {
@@ -74,6 +79,7 @@ type ExecuteCodeContext = ExecutionContext & {
 type ExecuteCodeHttpGatewayProps = {
 	executionId: string;
 	allowPublic: boolean;
+	deniedHosts: string[];
 	app?: AppRuntime;
 };
 
@@ -377,6 +383,7 @@ function is_blocked_hostname(hostname: string) {
 
 export function validate_outbound_url(
 	rawUrl: string,
+	options: { deniedHosts: string[]; app: AppRuntime | undefined },
 ): { ok: true; url: URL; hostname: string } | { ok: false; reason: string; hostname: string } {
 	let url: URL;
 	try {
@@ -389,9 +396,20 @@ export function validate_outbound_url(
 	if (url.protocol !== "https:") return { ok: false, reason: "protocol", hostname };
 	if (url.username || url.password) return { ok: false, reason: "credentials", hostname };
 	if (!hostname) return { ok: false, reason: "hostname", hostname: "unknown" };
+	// A name like `press.example..` keeps an empty label after one trailing dot is removed. Refuse it, or it
+	// would get past the blocked and Press host checks below.
+	if (hostname.split(".").includes("")) return { ok: false, reason: "hostname", hostname };
 	if (url.port && url.port !== "443") return { ok: false, reason: "port", hostname };
 	if (is_ipv4_literal(hostname) || hostname.includes(":")) return { ok: false, reason: "ip_literal", hostname };
 	if (is_blocked_hostname(hostname)) return { ok: false, reason: "hostname", hostname };
+	// Code runs with the member's rights, so it must not call Press as the member. The files API on the
+	// app origin is the one exception: the gateway adds the member's file grant only there.
+	if (
+		options.deniedHosts.some((host) => hostname === host || hostname.endsWith(`.${host}`)) &&
+		!is_app_public_api_url(url, options.app)
+	) {
+		return { ok: false, reason: "press_host", hostname };
+	}
 
 	return { ok: true, url, hostname };
 }
@@ -515,7 +533,7 @@ export async function handle_outbound_gateway_request(request: Request, props: E
 		return new Response("Method not allowed", { status: 405 });
 	}
 
-	const firstValidation = validate_outbound_url(request.url);
+	const firstValidation = validate_outbound_url(request.url, { deniedHosts: props.deniedHosts, app: props.app });
 	if (!firstValidation.ok) {
 		await log_outbound_event({
 			executionId: props.executionId,
@@ -627,7 +645,10 @@ export async function handle_outbound_gateway_request(request: Request, props: E
 			}
 
 			const redirectedUrl = new URL(redirectLocation, nextUrl);
-			const redirectValidation = validate_outbound_url(redirectedUrl.href);
+			const redirectValidation = validate_outbound_url(redirectedUrl.href, {
+				deniedHosts: props.deniedHosts,
+				app: props.app,
+			});
 			if (!redirectValidation.ok) {
 				await log_outbound_event({
 					executionId: props.executionId,
@@ -969,6 +990,10 @@ async function handle_execute_code(request: Request, env: Env, ctx?: ExecuteCode
 			props: {
 				executionId,
 				allowPublic: network.policy !== null,
+				deniedHosts: (env.PRESS_DENIED_HOSTS ?? "")
+					.split(",")
+					.map((host) => normalize_hostname(host.trim()))
+					.filter((host) => host !== ""),
 				...(appRuntime.app ? { app: appRuntime.app } : {}),
 			},
 		});
