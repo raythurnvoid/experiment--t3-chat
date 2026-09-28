@@ -1074,13 +1074,14 @@ const AiChatContent = memo(function AiChatContent(props: AiChat_Props) {
 	});
 
 	const handleSelectThread = useFn((threadId: string) => {
+		// A local choice also replaces a URL thread that is still loading.
+		lastAppliedUrlThreadIdRef.current = urlThreadId ?? null;
 		controller.selectThread(threadId);
-		setUrlThreadId(threadId);
 	});
 
 	const handleNewChat = useFn(() => {
-		const threadId = controller.startNewChat();
-		setUrlThreadId(threadId);
+		lastAppliedUrlThreadIdRef.current = urlThreadId ?? null;
+		controller.startNewChat();
 	});
 
 	useEffect(() => {
@@ -1088,22 +1089,18 @@ const AiChatContent = memo(function AiChatContent(props: AiChat_Props) {
 			return;
 		}
 
-		if (urlThreadIdIsOptimistic) {
-			lastAppliedUrlThreadIdRef.current = urlThreadId;
+		// The URL can lag behind a local selection. Do not apply the old URL again.
+		if (lastAppliedUrlThreadIdRef.current === urlThreadId) {
+			return;
+		}
 
-			// Only once the streamed thread is persisted, upgrade the optimistic URL so selection
-			// does not bounce between the client id and the real Convex thread id.
-			if (persistedUrlThreadId) {
-				if (persistedUrlThreadId !== controller.selectedThreadId) {
-					controller.selectThread(persistedUrlThreadId);
-				}
-				setUrlThreadId(persistedUrlThreadId);
+		if (urlThreadIdIsOptimistic) {
+			const threadId = persistedUrlThreadId ?? urlThreadId;
+			if (threadId !== controller.selectedThreadId) {
+				controller.selectThread(threadId);
 				return;
 			}
-
-			if (urlThreadId !== controller.selectedThreadId) {
-				controller.selectThread(urlThreadId);
-			}
+			lastAppliedUrlThreadIdRef.current = urlThreadId;
 			return;
 		}
 
@@ -1111,11 +1108,13 @@ const AiChatContent = memo(function AiChatContent(props: AiChat_Props) {
 			return;
 		}
 
+		// Mark it applied after selection changes, so the URL writer cannot send the old id.
 		if (urlThread) {
-			lastAppliedUrlThreadIdRef.current = urlThreadId;
 			if (urlThread._id !== controller.selectedThreadId) {
 				controller.selectThread(urlThread._id);
+				return;
 			}
+			lastAppliedUrlThreadIdRef.current = urlThreadId;
 			return;
 		}
 
@@ -1146,7 +1145,6 @@ const AiChatContent = memo(function AiChatContent(props: AiChat_Props) {
 		const selectedThreadId = controller.selectedThreadId;
 
 		if (urlThreadId === selectedThreadId) {
-			lastAppliedUrlThreadIdRef.current = urlThreadId ?? null;
 			return;
 		}
 

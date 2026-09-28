@@ -37,7 +37,9 @@ Recipes for driving the in-app AI agent (files-page sidebar and `/chat` page). T
 
 `waitForSelector("[role=option]", { state: "visible" })` is a trap in the agent panel: the thread-picker options stay mounted while hidden, so the wait pins the first match — an invisible `FileEditorSidebarAgentThreadPicker-item` — and times out even when the popover you actually opened (for example the `Chat model:` picker) is showing its options. Read all `[role=option]` matches and filter by bounding rect instead of waiting on the first. Same family as the mounted-closed `[role=dialog]` hazard in `known-hazards.md`.
 
-Before sending in a new chat, confirm its tab stays selected. `New Chat` on the full-page route can wedge the tab; a sidebar optimistic `ai_thread-*` tab can also disappear and return selection to an older chat. Do not assume the button created a usable chat. Use an existing chat only when it belongs to your QA run. See the stuck-tab and optimistic-tab entries in `known-hazards.md`.
+Before sending in a new chat, confirm its tab stays selected. The full-page URL loop was fixed on 2026-09-28. The URL must follow the selected chat without returning to the previous id. Use an existing chat only when it belongs to your QA run. See the optimistic-tab entries in `known-hazards.md` for the separate Files sidebar flow.
+
+For full-page navigation QA, use the top `getByRole("button", { name: "New Chat", exact: true }).first()`: empty chat rows have the same name. Click it twice, then activate it with Enter. After each action, compare the URL's `threadId` with `[data-thread-id]` and check logs. Select an older row, use Back and Forward, then reload. Each action should change the URL once, and the selected id must remain stable between actions. Blank chats stay client-only until a message is sent, so this check needs no model call.
 
 The Files route does not select a chat from `?threadId=`. Open the Agent tab, then use
 `getByRole("combobox", { name: "Past chats" })`. It looks like a button but has the combobox role.
