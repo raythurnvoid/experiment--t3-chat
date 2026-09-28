@@ -145,6 +145,23 @@ export function mcp_client_step_up_scope(nay: ReturnType<typeof mcp_nay>["_nay"]
 }
 
 /**
+ * Select one Bearer challenge. Quoted commas and escaped quotes cannot start another challenge.
+ * The SDK parses the selected challenge's fields.
+ */
+function bearer_challenge(value: string) {
+	const unquoted = value.replace(/"(?:[^"\\]|\\.)*"/gu, (quoted) => " ".repeat(quoted.length));
+	const challenges = [...unquoted.matchAll(/(?:^|,)\s*([!#$%&'*+.^_`|~\w-]+)(?=\s+(?!\s*=)|\s*(?:,|$))/gu)];
+	const index = challenges.findIndex((challenge) => challenge[1]!.toLowerCase() === "bearer");
+	if (index === -1) return null;
+	const selected = challenges[index]!;
+	const start = selected.index + selected[0].length - selected[1]!.length;
+	return value
+		.slice(start, challenges[index + 1]?.index)
+		.trim()
+		.replace(/^Bearer\s+/iu, "Bearer ");
+}
+
+/**
  * Whether a `WWW-Authenticate` value names one parameter twice. Quoted values are skipped, because
  * a URL inside them can hold `name=` too.
  */
@@ -167,27 +184,27 @@ function error_to_nay(
 	// The guard's own refusal is the real reason. The SDK only wraps it.
 	if (guard.failure) return mcp_nay(guard.failure);
 
-	if (error instanceof InsufficientScopeError) {
-		return mcp_nay("insufficient_scope", { scope: error.requiredScope ?? null });
+	if (error instanceof InsufficientScopeError || (error instanceof SdkHttpError && [401, 403].includes(error.status))) {
+		// The guard kept the challenge headers. Select one Bearer before the SDK reads its fields.
+		const bearer = guard.wwwAuthenticate ? bearer_challenge(guard.wwwAuthenticate) : null;
+		// Repeated names across separate challenges are fine. Within one Bearer, do not guess.
+		if (bearer && has_repeated_challenge_param(bearer)) return mcp_nay("bad_response");
+		const challenge = bearer
+			? extractWWWAuthenticateParams(new Response(null, { headers: { "WWW-Authenticate": bearer } }))
+			: {};
+		if (error instanceof InsufficientScopeError || error.status === 403) {
+			return challenge.error === "insufficient_scope"
+				? mcp_nay("insufficient_scope", { scope: challenge.scope ?? null })
+				: mcp_nay("forbidden");
+		}
+		return mcp_nay("auth_required", {
+			resourceMetadataUrl: challenge.resourceMetadataUrl?.href ?? null,
+			scope: challenge.scope ?? null,
+			error: challenge.error ?? null,
+		});
 	}
 
 	if (error instanceof SdkHttpError) {
-		// Without an auth provider the SDK throws a plain 401, with no challenge. The guard kept the
-		// `WWW-Authenticate` header, so parse it from there.
-		if (error.status === 401) {
-			// The SDK parser keeps one value of a repeated parameter. Press must not guess which one the
-			// server meant, so it refuses the challenge.
-			if (guard.wwwAuthenticate && has_repeated_challenge_param(guard.wwwAuthenticate)) return mcp_nay("bad_response");
-			const challenge = guard.wwwAuthenticate
-				? extractWWWAuthenticateParams(new Response(null, { headers: { "WWW-Authenticate": guard.wwwAuthenticate } }))
-				: {};
-			return mcp_nay("auth_required", {
-				resourceMetadataUrl: challenge.resourceMetadataUrl?.href ?? null,
-				scope: challenge.scope ?? null,
-				error: challenge.error ?? null,
-			});
-		}
-		if (error.status === 403) return mcp_nay("forbidden");
 		// A legacy session that the server forgot. The call may have run, so never retry it.
 		if (error.status === 404 && phase === "call" && era === "legacy") return mcp_nay("result_unknown");
 		// A 400, 404, or 405 with no JSON-RPC error means the URL is not an MCP endpoint. A modern 400
@@ -580,17 +597,35 @@ export async function mcp_client_list_tools(args: {
 }) {
 	const startedAt = Date.now();
 	const deadline = startedAt + args.timeoutMs;
+	if (args.signal.aborted || Date.now() >= deadline) return mcp_nay("timeout");
+	const deadlineAbort = new AbortController();
+	const signal = AbortSignal.any([args.signal, deadlineAbort.signal]);
+	const deadlineTimer = setTimeout(() => deadlineAbort.abort(), Math.max(0, deadline - Date.now()));
 
-	for (let attempt = 0; ; attempt++) {
-		const result = await list_tools_once(args, deadline, startedAt);
-		if (!result._nay || attempt >= LIST_MAX_RETRIES) return result;
-		if (result._nay.name !== "rate_limited" && result._nay.name !== "server_error") return result;
+	try {
+		for (let attempt = 0; ; attempt++) {
+			if (signal.aborted || Date.now() >= deadline) return mcp_nay("timeout");
+			const result = await list_tools_once({ ...args, signal }, deadline, startedAt);
+			if (!result._nay || attempt >= LIST_MAX_RETRIES) return result;
+			if (result._nay.name !== "rate_limited" && result._nay.name !== "server_error") return result;
 
-		// Retry only when the wait still fits the deadline.
-		const retryAfter = result._nay.data && "retryAfterMs" in result._nay.data ? result._nay.data.retryAfterMs : null;
-		const delayMs = Math.max(retryAfter ?? 0, LIST_RETRY_DELAY_MS);
-		if (Date.now() + delayMs >= deadline || args.signal.aborted) return result;
-		await new Promise((resolve) => setTimeout(resolve, delayMs));
+			// Retry only when the wait still fits the deadline. Stop also ends the wait.
+			const retryAfter = result._nay.data && "retryAfterMs" in result._nay.data ? result._nay.data.retryAfterMs : null;
+			const delayMs = Math.max(retryAfter ?? 0, LIST_RETRY_DELAY_MS);
+			if (Date.now() + delayMs >= deadline || signal.aborted) return result;
+			await new Promise<void>((resolve) => {
+				if (signal.aborted) return resolve();
+				const done = () => {
+					clearTimeout(waitTimer);
+					signal.removeEventListener("abort", done);
+					resolve();
+				};
+				const waitTimer = setTimeout(done, delayMs);
+				signal.addEventListener("abort", done, { once: true });
+			});
+		}
+	} finally {
+		clearTimeout(deadlineTimer);
 	}
 }
 
@@ -605,17 +640,13 @@ async function list_tools_once(
 		accessToken: args.accessToken,
 		maxResponseBytes: LIST_PAGE_MAX_BYTES,
 		maxTotalBytes: LIST_TOTAL_MAX_BYTES,
+		deadline,
+		signal: args.signal,
 		testAllowLocalHttp: args.testAllowLocalHttp,
 	});
 	const { client, transport } = create_client(guard, args.server);
 
-	// One deadline covers the probe, the handshake, and every page. The SDK's `timeout` is per request,
-	// so also abort the whole list when the deadline passes.
-	const deadlineAbort = new AbortController();
-	const abortList = () => deadlineAbort.abort();
-	args.signal.addEventListener("abort", abortList, { once: true });
-	const deadlineTimer = setTimeout(abortList, Math.max(1, deadline - Date.now()));
-	const requestOptions = () => ({ timeout: Math.max(1, deadline - Date.now()), signal: deadlineAbort.signal });
+	const requestOptions = () => ({ timeout: Math.max(1, deadline - Date.now()), signal: args.signal });
 
 	return await (async (/* iife */) => {
 		await client.connect(transport, requestOptions());
@@ -670,11 +701,7 @@ async function list_tools_once(
 			await log_failure("list_tools", args.server, nay._nay, startedAt, error);
 			return nay;
 		})
-		.finally(() => {
-			clearTimeout(deadlineTimer);
-			args.signal.removeEventListener("abort", abortList);
-			return client.close().catch(() => {});
-		});
+		.finally(() => client.close().catch(() => {}));
 }
 
 /**
@@ -698,12 +725,19 @@ export async function mcp_client_call_tool(args: {
 	testAllowLocalHttp?: true;
 }) {
 	const startedAt = Date.now();
+	const deadline = startedAt + args.timeoutMs;
+	if (args.signal.aborted || Date.now() >= deadline) return mcp_nay("timeout");
+	const deadlineAbort = new AbortController();
+	const signal = AbortSignal.any([args.signal, deadlineAbort.signal]);
+	const deadlineTimer = setTimeout(() => deadlineAbort.abort(), Math.max(0, deadline - Date.now()));
 	const guard = mcp_guarded_fetch_create({
 		kind: "mcp",
 		server: args.server,
 		accessToken: args.accessToken,
 		maxResponseBytes: CALL_MAX_BYTES,
 		maxTotalBytes: CALL_MAX_BYTES,
+		deadline,
+		signal,
 		testAllowLocalHttp: args.testAllowLocalHttp,
 	});
 	const { client, transport } = create_client(guard, args.server);
@@ -711,14 +745,15 @@ export async function mcp_client_call_tool(args: {
 
 	return await (async (/* iife */) => {
 		await client.connect(transport, {
-			timeout: args.timeoutMs,
-			signal: args.signal,
+			timeout: Math.max(1, deadline - Date.now()),
+			signal,
 			prior: args.discover ? { kind: "modern", discover: args.discover } : { kind: "legacy" },
 		});
 
 		if (era === "legacy" && !LEGACY_PROTOCOL_VERSIONS.includes(client.getNegotiatedProtocolVersion() ?? "")) {
 			return mcp_nay("unsupported_version", { supported: [] });
 		}
+		if (signal.aborted || Date.now() >= deadline) return mcp_nay("timeout");
 
 		// Pass the definition without `outputSchema`: header mirroring still works, and the SDK does
 		// not throw away the text result on a structured mismatch. `normalize_result` checks it.
@@ -730,7 +765,7 @@ export async function mcp_client_call_tool(args: {
 		const result = await client
 			.callTool(
 				{ name: args.tool.name, arguments: args.arguments },
-				{ timeout: Math.max(1, startedAt + args.timeoutMs - Date.now()), signal: args.signal, toolDefinition },
+				{ timeout: Math.max(1, deadline - Date.now()), signal, toolDefinition },
 			)
 			.then(
 				(value) => ({ value, protocolError: null }),
@@ -746,7 +781,7 @@ export async function mcp_client_call_tool(args: {
 			);
 
 		// End the one-call legacy session. The SDK sends a DELETE only when the server set a session
-		// id, and a 405 answer is fine.
+		// id, and a 405 answer is fine. Cleanup failure must not replace the completed result.
 		if (era === "legacy") await transport.terminateSession().catch(() => {});
 
 		if (result.protocolError) {
@@ -779,5 +814,8 @@ export async function mcp_client_call_tool(args: {
 			await log_failure("call_tool", args.server, nay._nay, startedAt, error);
 			return nay;
 		})
-		.finally(() => client.close().catch(() => {}));
+		.finally(async () => {
+			await client.close().catch(() => {});
+			clearTimeout(deadlineTimer);
+		});
 }

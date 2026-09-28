@@ -355,16 +355,11 @@ function parse_entry(key: string, value: unknown, inputHints: Map<string, string
 		return refuse(REFUSAL_NOT_OBJECT);
 	}
 
-	const entryText = JSON.stringify(value);
-	if (entryText.includes("${file:")) {
-		return refuse(REFUSAL_FILE);
-	}
-
-	// A static OAuth client: Cursor `auth.CLIENT_ID`, VS Code `oauth.clientId`, or a client secret anywhere.
+	// Refuse static OAuth client settings. Text in ignored keys, such as notes, is not a setting.
 	if (
-		(is_object(value.auth) && "CLIENT_ID" in value.auth) ||
-		(is_object(value.oauth) && "clientId" in value.oauth) ||
-		entryText.includes("CLIENT_SECRET")
+		(is_object(value.auth) && ("CLIENT_ID" in value.auth || "CLIENT_SECRET" in value.auth)) ||
+		(is_object(value.oauth) && ("clientId" in value.oauth || "clientSecret" in value.oauth)) ||
+		"CLIENT_SECRET" in value
 	) {
 		return refuse(REFUSAL_OAUTH_CLIENT);
 	}
@@ -426,6 +421,11 @@ function parse_entry(key: string, value: unknown, inputHints: Map<string, string
 				rawHeaders.push({ name: headerName, value: headerValue });
 			}
 		}
+	}
+
+	// Check only values Press uses. Notes and the local wrapper's env are ignored.
+	if (url.includes("${file:") || rawHeaders.some((header) => header.value.includes("${file:"))) {
+		return refuse(REFUSAL_FILE);
 	}
 
 	// Header names.

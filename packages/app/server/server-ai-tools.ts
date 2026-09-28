@@ -1819,7 +1819,31 @@ export async function ai_chat_tool_create_mcp_tools(
 		const secrets = server.secretValues;
 		// The tool name is stored in the chat and the ledger, and it goes into the model name. So leave
 		// out a tool whose name holds a header value, a token, or half of a character.
-		const serverTools = server.tools.filter((mcpTool) => mcp_clean_text(mcpTool.name, secrets) === mcpTool.name);
+		const serverTools = server.tools.filter((mcpTool) => {
+			if (mcp_clean_text(mcpTool.name, secrets) !== mcpTool.name) return false;
+
+			// Skip schemas with private values. Replacing them can change the server's input rules.
+			const values: unknown[] = [mcpTool.inputSchema];
+			while (values.length > 0) {
+				const value = values.pop();
+				if (typeof value === "string" || typeof value === "number") {
+					const text = String(value);
+					if (mcp_clean_text(text, secrets) !== text) return false;
+
+					// Numbers can shorten a secret into exponent form. Compare the value too.
+					if (typeof value === "number" && secrets.some((secret) => secret.length >= 8 && Number(secret) === value)) {
+						return false;
+					}
+				}
+				if (typeof value === "object" && value !== null) {
+					for (const [key, child] of Object.entries(value)) {
+						values.push(key, child);
+					}
+				}
+			}
+
+			return true;
+		});
 		const names = await mcp_model_tool_names(
 			server.toolPrefix,
 			serverTools.map((mcpTool) => mcpTool.name),
@@ -1863,7 +1887,7 @@ export async function ai_chat_tool_create_mcp_tools(
 							name: "plugins_mcp_tool_call",
 							key:
 								server.kind === "plugin"
-									? `${server.target.installationId}:${ctxData.userId}`
+									? `${server.target.installationId}:${server.target.serverId}:${ctxData.userId}`
 									: `custom:${server.target.customServerId}:${ctxData.userId}`,
 						});
 						if (rateLimit) throw new Error(rateLimit.message);
@@ -1876,17 +1900,21 @@ export async function ai_chat_tool_create_mcp_tools(
 
 						const signal = options.abortSignal ?? new AbortController().signal;
 						// A sign-in server gets the member's token. A call waits while another caller refreshes it.
-						const getAccess = (refusedVersion: number | null) =>
+						const getAccess = (refusedGrant: { grantId: Id<"plugins_mcp_oauth_grants">; version: number } | null) =>
 							plugins_mcp_oauth_get_access_token(ctx, {
 								userId: ctxData.userId,
 								target: server.target,
-								refusedVersion,
+								refusedGrant,
 								waitForLease: true,
 								signal,
 							});
 						let access = server.auth === "oauth" ? await getAccess(null) : null;
 						if (access?.status === "busy") throw new Error(MCP_SIGN_IN_BUSY_MESSAGE);
 						if (access?.status === "failed") throw new Error(access.message);
+
+						// Check access again after waiting for a token refresh.
+						const currentRecheck = await recheckCall();
+						if (currentRecheck._nay) throw new Error(currentRecheck._nay.message);
 
 						// The server can echo the token back, so mask it like the header secrets.
 						const callSecrets = [...secrets];
@@ -1929,7 +1957,7 @@ export async function ai_chat_tool_create_mcp_tools(
 						// before doing any work, so the retry is safe. Check the call again first: the owner may have
 						// blocked the server during the refresh.
 						if (called._nay?.name === "auth_required" && access?.status === "connected" && !access.refreshed) {
-							access = await getAccess(access.version);
+							access = await getAccess({ grantId: access.grantId, version: access.version });
 							if (access.status === "busy" || access.status === "failed") {
 								await recordCall(called._nay.name, 0, null);
 								throw new Error(access.status === "busy" ? MCP_SIGN_IN_BUSY_MESSAGE : access.message);

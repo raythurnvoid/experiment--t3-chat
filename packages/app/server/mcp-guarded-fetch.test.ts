@@ -8,7 +8,10 @@ afterEach(() => {
 });
 
 function create_mcp_guard(
-	caps: { maxResponseBytes: number; maxTotalBytes: number } = { maxResponseBytes: 1024, maxTotalBytes: 4096 },
+	caps: { maxResponseBytes: number; maxTotalBytes: number; deadline?: number; signal?: AbortSignal } = {
+		maxResponseBytes: 1024,
+		maxTotalBytes: 4096,
+	},
 ) {
 	return mcp_guarded_fetch_create({
 		kind: "mcp",
@@ -327,15 +330,18 @@ describe("mcp_guarded_fetch_create", () => {
 		expect(guard.failure).toBeNull();
 	});
 
-	test("refuses a text/plain 200", async () => {
+	test("refuses a text/plain 200 and cancels its open body", async () => {
+		const cancel = vi.fn();
 		vi.spyOn(globalThis, "fetch").mockImplementation(
-			async () => new Response("ok", { status: 200, headers: { "Content-Type": "text/plain" } }),
+			async () =>
+				new Response(new ReadableStream({ cancel }), { status: 200, headers: { "Content-Type": "text/plain" } }),
 		);
 		const guard = create_mcp_guard();
 
 		await expect(guard.fetch("https://mcp.example.com/mcp", { method: "POST", body: "{}" })).rejects.toThrow(
 			"bad_response",
 		);
+		expect(cancel, "refused response body was cancelled").toHaveBeenCalledOnce();
 	});
 
 	test("records the last WWW-Authenticate header", async () => {
@@ -351,6 +357,76 @@ describe("mcp_guarded_fetch_create", () => {
 		const response = await guard.fetch("https://mcp.example.com/mcp", { method: "POST", body: "{}" });
 		expect(response.status).toBe(401);
 		expect(guard.wwwAuthenticate).toBe('Bearer resource_metadata="https://mcp.example.com/prm"');
+	});
+
+	test("clears MCP response headers when the next POST has none", async () => {
+		vi.spyOn(globalThis, "fetch")
+			.mockResolvedValueOnce(
+				new Response(null, { status: 401, headers: { "WWW-Authenticate": "Bearer", "Retry-After": "8" } }),
+			)
+			.mockResolvedValueOnce(new Response(null, { status: 403 }));
+		const guard = create_mcp_guard();
+		await guard.fetch("https://mcp.example.com/mcp", { method: "POST", body: "{}" });
+		expect({ auth: guard.wwwAuthenticate, retry: guard.retryAfter }).toEqual({ auth: "Bearer", retry: "8" });
+
+		await guard.fetch("https://mcp.example.com/mcp", { method: "POST", body: "{}" });
+
+		expect({ auth: guard.wwwAuthenticate, retry: guard.retryAfter }, "POST cleared absent response headers").toEqual({
+			auth: null,
+			retry: null,
+		});
+	});
+
+	test.each(["GET", "DELETE"])("keeps MCP POST response headers after a background %s", async (method) => {
+		vi.spyOn(globalThis, "fetch")
+			.mockResolvedValueOnce(
+				new Response(null, { status: 401, headers: { "WWW-Authenticate": "Bearer", "Retry-After": "8" } }),
+			)
+			.mockResolvedValueOnce(
+				new Response(null, { status: 403, headers: { "WWW-Authenticate": "Basic", "Retry-After": "9" } }),
+			);
+		const guard = create_mcp_guard();
+		await guard.fetch("https://mcp.example.com/mcp", { method: "POST", body: "{}" });
+		expect({ auth: guard.wwwAuthenticate, retry: guard.retryAfter }).toEqual({ auth: "Bearer", retry: "8" });
+
+		await guard.fetch("https://mcp.example.com/mcp", { method });
+
+		expect(
+			{ auth: guard.wwwAuthenticate, retry: guard.retryAfter },
+			"background request kept the POST headers",
+		).toEqual({
+			auth: "Bearer",
+			retry: "8",
+		});
+	});
+
+	test("records MCP response headers from an initialized notification", async () => {
+		vi.spyOn(globalThis, "fetch").mockResolvedValue(
+			new Response(null, { status: 401, headers: { "WWW-Authenticate": "Bearer", "Retry-After": "8" } }),
+		);
+		const guard = create_mcp_guard();
+
+		await guard.fetch("https://mcp.example.com/mcp", {
+			method: "POST",
+			body: JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }),
+		});
+
+		expect({ auth: guard.wwwAuthenticate, retry: guard.retryAfter }).toEqual({ auth: "Bearer", retry: "8" });
+	});
+
+	test("keeps OAuth response headers across GETs without them", async () => {
+		vi.spyOn(globalThis, "fetch")
+			.mockResolvedValueOnce(
+				new Response(null, { status: 401, headers: { "WWW-Authenticate": "Bearer", "Retry-After": "8" } }),
+			)
+			.mockResolvedValueOnce(new Response(null, { status: 403 }));
+		const guard = mcp_guarded_fetch_create({ kind: "oauth" });
+		await guard.fetch("https://auth.example.com/prm");
+		expect({ auth: guard.wwwAuthenticate, retry: guard.retryAfter }).toEqual({ auth: "Bearer", retry: "8" });
+
+		await guard.fetch("https://auth.example.com/prm");
+
+		expect({ auth: guard.wwwAuthenticate, retry: guard.retryAfter }).toEqual({ auth: "Bearer", retry: "8" });
 	});
 
 	// Both texts are the real Convex proxy errors from the dev deployment: http first, then https.
@@ -389,6 +465,30 @@ describe("mcp_guarded_fetch_create", () => {
 		const assertion = expect(guard.fetch("https://auth.example.com/token")).rejects.toThrow("timeout");
 		await vi.advanceTimersByTimeAsync(5_000);
 		await assertion;
+		expect(guard.failure).toBe("timeout");
+	});
+
+	test.each(["operation", "SDK"])("keeps the %s abort signal on an MCP fetch", async (abortedSignal) => {
+		const operation = new AbortController();
+		const sdk = new AbortController();
+		const received = Promise.withResolvers<AbortSignal>();
+		const released = Promise.withResolvers<void>();
+		vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+			const signal = init?.signal!;
+			received.resolve(signal);
+			await released.promise;
+			if (signal.aborted) throw signal.reason;
+			return json_response("{}");
+		});
+		const guard = create_mcp_guard({ maxResponseBytes: 1024, maxTotalBytes: 4096, signal: operation.signal });
+		const pending = guard.fetch("https://mcp.example.com/mcp", { signal: sdk.signal }).catch((error: unknown) => error);
+		const signal = await received.promise;
+		(abortedSignal === "operation" ? operation : sdk).abort();
+		const aborted = signal.aborted;
+		released.resolve();
+		await pending;
+
+		expect(aborted, "fetch kept both abort signals").toBe(true);
 		expect(guard.failure).toBe("timeout");
 	});
 

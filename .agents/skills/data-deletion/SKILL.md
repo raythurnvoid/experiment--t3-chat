@@ -37,7 +37,9 @@ Load each companion skill that owns the affected boundary:
   `plugins_mcp_db_revoke_grant`, deletes its running sign-ins, and schedules `drain_removed_server`,
   which deletes its `plugins_mcp_calls` docs 100 per run.
 - A member ends their own MCP sign-in with `plugins_mcp_oauth.disconnect`. It deletes the grant through
-  `plugins_mcp_db_revoke_grant`. That helper, and every path that marks a grant `needs_reconnect`,
+  `plugins_mcp_db_revoke_grant` and deletes their pending sign-ins for that target in the same transaction.
+  A claimed doc stays until exchange ends, so Disconnect can also cancel an exchange in progress.
+  That helper, and every path that marks a grant `needs_reconnect`,
   copies the encrypted token into a `plugins_mcp_oauth_revocations` doc and schedules `revoke_one`,
   when the sign-in server has a revocation endpoint. `revoke_one`
   asks the sign-in server to revoke the token once, best effort, and deletes the doc whatever the

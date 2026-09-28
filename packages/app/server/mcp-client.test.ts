@@ -13,6 +13,7 @@ beforeEach(() => {
 afterEach(async () => {
 	await fixtures.close();
 	vi.restoreAllMocks();
+	vi.useRealTimers();
 });
 
 const echo_tool: mcp_client_NormalizedTool = {
@@ -24,12 +25,12 @@ const echo_tool: mcp_client_NormalizedTool = {
 	annotations: null,
 };
 
-function list(fixture: string, variant = "", timeoutMs = 5000) {
+function list(fixture: string, variant = "", timeoutMs = 5000, signal = new AbortController().signal) {
 	return mcp_client_list_tools({
 		server: { url: `https://${fixture}.fixtures.test/${variant}`, headers: [] },
 		accessToken: null,
 		timeoutMs,
-		signal: new AbortController().signal,
+		signal,
 	});
 }
 
@@ -47,6 +48,7 @@ async function call(
 		arguments?: Record<string, unknown>;
 		era?: "modern" | "legacy";
 		timeoutMs?: number;
+		signal?: AbortSignal;
 	} = {},
 ) {
 	const discover = options.era === "legacy" ? null : await modern_discover();
@@ -59,8 +61,57 @@ async function call(
 		tool: options.tool ?? echo_tool,
 		arguments: options.arguments ?? { text: "hi" },
 		timeoutMs: options.timeoutMs ?? 5000,
-		signal: new AbortController().signal,
+		signal: options.signal ?? new AbortController().signal,
 	});
+}
+
+function hold_request(method: string, bodyOnly = false) {
+	const received = Promise.withResolvers<AbortSignal>();
+	const released = Promise.withResolvers<void>();
+	const methods: string[] = [];
+	vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+		const request = new Request(input, init);
+		const message =
+			request.method === "POST" ? (JSON.parse(await request.clone().text()) as { method?: string }) : null;
+		const requestMethod = message?.method ?? request.method;
+		methods.push(requestMethod);
+		if (requestMethod !== method) return await fixtures.fetch(input, init);
+
+		const signal = init?.signal ?? request.signal;
+		received.resolve(signal);
+		if (bodyOnly) {
+			return new Response(
+				new ReadableStream<Uint8Array>({
+					start(controller) {
+						const abort = () => controller.error(signal.reason);
+						if (signal.aborted) abort();
+						else signal.addEventListener("abort", abort, { once: true });
+						void released.promise.then(() => {
+							if (!signal.aborted) controller.close();
+							signal.removeEventListener("abort", abort);
+						});
+					},
+				}),
+				{ headers: { "Content-Type": "application/json" } },
+			);
+		}
+
+		let abort: () => void = () => {};
+		try {
+			await Promise.race([
+				released.promise,
+				new Promise<never>((_resolve, reject) => {
+					abort = () => reject(signal.reason);
+					if (signal.aborted) abort();
+					else signal.addEventListener("abort", abort, { once: true });
+				}),
+			]);
+			return await fixtures.fetch(input, init);
+		} finally {
+			signal.removeEventListener("abort", abort);
+		}
+	});
+	return { received: received.promise, release: () => released.resolve(), methods };
 }
 
 describe("mcp_client_list_tools", () => {
@@ -136,6 +187,34 @@ describe("mcp_client_list_tools", () => {
 				error: null,
 			},
 		});
+	});
+
+	test.each([
+		'Bearer realm="mcp", resource_metadata="https://remote.example/prm", scope="files:read", Basic realm="legacy"',
+		'Basic realm="legacy", Bearer realm="mcp", resource_metadata="https://remote.example/prm", scope="files:read"',
+		'Bearer realm="a, Basic realm=\\"quoted\\"", resource_metadata="https://remote.example/prm", scope="files:read", Basic realm="legacy", scope="ignored", resource_metadata="https://elsewhere.example/prm"',
+		'Bearer realm="mcp", resource_metadata="https://remote.example/prm", scope="files:read", Bearer realm="other", scope="ignored"',
+	])("reads only the selected Bearer challenge (%s)", async (challenge) => {
+		vi.spyOn(globalThis, "fetch").mockImplementation(
+			async () => new Response(null, { status: 401, headers: { "WWW-Authenticate": challenge } }),
+		);
+
+		expect((await list("modern-basic"))._nay).toMatchObject({
+			name: "auth_required",
+			data: { resourceMetadataUrl: "https://remote.example/prm", scope: "files:read", error: null },
+		});
+	});
+
+	test.each([
+		'Bearer realm="mcp", realm="other"',
+		'Bearer scope="files:read", SCOPE="files:write"',
+		'Bearer resource_metadata="https://remote.example/prm", resource_metadata="https://elsewhere.example/prm"',
+	])("refuses duplicate parameters within one Bearer challenge (%s)", async (challenge) => {
+		vi.spyOn(globalThis, "fetch").mockImplementation(
+			async () => new Response(null, { status: 401, headers: { "WWW-Authenticate": challenge } }),
+		);
+
+		expect((await list("modern-basic"))._nay?.name).toBe("bad_response");
 	});
 
 	test("needs more access on a 403 insufficient_scope", async () => {
@@ -252,6 +331,52 @@ describe("mcp_client_list_tools", () => {
 			message: "The MCP server timed out. It may still have done the work.",
 		});
 	});
+
+	test("aborts an initialized notification at the list deadline", async () => {
+		vi.useFakeTimers();
+		const held = hold_request("notifications/initialized");
+		const pending = list("version-legacy", "", 80);
+		const signal = await held.received;
+		await vi.advanceTimersByTimeAsync(80);
+		const aborted = signal.aborted;
+		held.release();
+		await pending;
+
+		expect(aborted, "initialized notification was aborted at the list deadline").toBe(true);
+		expect(held.methods).not.toContain("tools/list");
+	});
+
+	test("sends no list request for an already-aborted caller", async () => {
+		const caller = new AbortController();
+		caller.abort();
+
+		expect((await list("modern-basic", "", 5000, caller.signal))._nay?.name).toBe("timeout");
+		expect(globalThis.fetch).not.toHaveBeenCalled();
+	});
+
+	test("ends a list retry wait on Stop", async () => {
+		vi.useFakeTimers();
+		const caller = new AbortController();
+		const waiting = Promise.withResolvers<void>();
+		const setTimeout = globalThis.setTimeout;
+		vi.spyOn(globalThis, "setTimeout").mockImplementation((callback, delay, ...args) => {
+			if (delay === 250) waiting.resolve();
+			return setTimeout(callback, delay, ...args);
+		});
+		let finished = false;
+		const pending = list("http-status", "500", 5000, caller.signal).then((result) => {
+			finished = true;
+			return result;
+		});
+		await waiting.promise;
+		caller.abort();
+		await vi.advanceTimersByTimeAsync(1);
+		const endedOnStop = finished;
+		await vi.advanceTimersByTimeAsync(5000);
+		await pending;
+
+		expect(endedOnStop, "retry wait ended on Stop").toBe(true);
+	});
 });
 
 describe("mcp_client_call_tool", () => {
@@ -301,6 +426,87 @@ describe("mcp_client_call_tool", () => {
 			.filter((entry) => entry.httpMethod !== "GET")
 			.map((entry) => entry.rpcMethod ?? entry.httpMethod);
 		expect(methods).toEqual(["initialize", "notifications/initialized", "tools/call", "DELETE"]);
+	});
+
+	test("sends no tool call after the initialized notification uses its deadline", async () => {
+		vi.useFakeTimers();
+		const held = hold_request("notifications/initialized");
+		const pending = call("version-legacy", "", { era: "legacy", timeoutMs: 80 });
+		await held.received;
+		await vi.advanceTimersByTimeAsync(80);
+		held.release();
+		const result = await pending;
+
+		expect(held.methods, "no tool call after the operation deadline").not.toContain("tools/call");
+		expect(result._nay?.name).toBe("timeout");
+	});
+
+	test("refuses an expired tool call before the deadline timer runs", async () => {
+		vi.useFakeTimers();
+		const held = hold_request("notifications/initialized");
+		const pending = call("version-legacy", "", { era: "legacy", timeoutMs: 80 });
+		await held.received;
+		vi.setSystemTime(Date.now() + 80);
+		held.release();
+		const result = await pending;
+
+		expect(held.methods, "no tool call after expiry").not.toContain("tools/call");
+		expect(result._nay?.name).toBe("timeout");
+	});
+
+	test("aborts an initialized notification on Stop", async () => {
+		const caller = new AbortController();
+		const held = hold_request("notifications/initialized");
+		const pending = call("version-legacy", "", { era: "legacy", signal: caller.signal });
+		const signal = await held.received;
+		caller.abort();
+		const aborted = signal.aborted;
+		held.release();
+		await pending;
+
+		expect(aborted, "initialized notification was aborted on Stop").toBe(true);
+		expect(held.methods).not.toContain("tools/call");
+	});
+
+	test.each([false, true])(
+		"keeps the completed result when DELETE reaches the deadline (body only: %s)",
+		async (bodyOnly) => {
+			vi.useFakeTimers();
+			const held = hold_request("DELETE", bodyOnly);
+			const pending = call("version-legacy", "", {
+				era: "legacy",
+				timeoutMs: 80,
+				tool: { ...echo_tool, name: "ping", outputSchema: null },
+				arguments: {},
+			});
+			const signal = await held.received;
+			await vi.advanceTimersByTimeAsync(80);
+			const aborted = signal.aborted;
+			held.release();
+			const result = await pending;
+
+			expect(aborted, "DELETE was aborted at the operation deadline").toBe(true);
+			expect(result._yay?.result.blocks).toEqual([{ kind: "text", text: "pong" }]);
+		},
+	);
+
+	test("keeps the completed result when Stop aborts DELETE", async () => {
+		const caller = new AbortController();
+		const held = hold_request("DELETE");
+		const pending = call("version-legacy", "", {
+			era: "legacy",
+			signal: caller.signal,
+			tool: { ...echo_tool, name: "ping", outputSchema: null },
+			arguments: {},
+		});
+		const signal = await held.received;
+		caller.abort();
+		const aborted = signal.aborted;
+		held.release();
+		const result = await pending;
+
+		expect(aborted, "DELETE was aborted on Stop").toBe(true);
+		expect(result._yay?.result.blocks).toEqual([{ kind: "text", text: "pong" }]);
 	});
 
 	test("reports an unknown result and does not retry when a legacy session is lost", async () => {
@@ -374,6 +580,94 @@ describe("mcp_client_call_tool", () => {
 		expect(result._nay?.name).toBe(code);
 		expect(fixtures.wire).toHaveLength(1);
 	});
+
+	test.each([
+		'Bearer realm="mcp", error="insufficient_scope", scope="files:write", Basic realm="legacy", scope="ignored"',
+		'Basic realm="legacy", scope="ignored", Bearer realm="mcp", error="insufficient_scope", scope="files:write"',
+	])("takes step-up scope only from the selected Bearer challenge (%s)", async (challenge) => {
+		const discover = await modern_discover();
+		vi.spyOn(globalThis, "fetch").mockImplementation(
+			async () => new Response(null, { status: 403, headers: { "WWW-Authenticate": challenge } }),
+		);
+		const result = await mcp_client_call_tool({
+			server: { url: "https://modern-basic.fixtures.test/", headers: [] },
+			accessToken: null,
+			discover,
+			tool: echo_tool,
+			arguments: {},
+			timeoutMs: 5000,
+			signal: new AbortController().signal,
+		});
+
+		expect(result._nay).toMatchObject({ name: "insufficient_scope", data: { scope: "files:write" } });
+	});
+
+	test.each([null, 'Bearer realm="mcp", Basic error="insufficient_scope", scope="ignored"'])(
+		"keeps a 403 without Bearer step-up as forbidden (%s)",
+		async (challenge) => {
+			const discover = await modern_discover();
+			vi.spyOn(globalThis, "fetch").mockImplementation(
+				async () =>
+					new Response(null, {
+						status: 403,
+						headers: challenge ? { "WWW-Authenticate": challenge } : {},
+					}),
+			);
+			const result = await mcp_client_call_tool({
+				server: { url: "https://modern-basic.fixtures.test/", headers: [] },
+				accessToken: null,
+				discover,
+				tool: echo_tool,
+				arguments: {},
+				timeoutMs: 5000,
+				signal: new AbortController().signal,
+			});
+
+			expect(result._nay?.name).toBe("forbidden");
+		},
+	);
+
+	test.each([null, 'Bearer error="insufficient_scope", scope="files:write"'])(
+		"keeps a legacy tool call's own 403 challenge after a background GET (%s)",
+		async (challenge) => {
+			const getAnswered = Promise.withResolvers<void>();
+			const methods: string[] = [];
+			vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+				const request = new Request(input, init);
+				if (request.method === "GET") {
+					methods.push("GET");
+					getAnswered.resolve();
+					return new Response(null, {
+						status: 403,
+						headers: { "WWW-Authenticate": 'Bearer error="insufficient_scope", scope="stream:read"' },
+					});
+				}
+				const message =
+					request.method === "POST" ? (JSON.parse(await request.clone().text()) as { method?: string }) : null;
+				methods.push(message?.method ?? request.method);
+				if (message?.method === "tools/call") {
+					await getAnswered.promise;
+					return new Response(null, { status: 403, headers: challenge ? { "WWW-Authenticate": challenge } : {} });
+				}
+				return await fixtures.fetch(input, init);
+			});
+
+			const result = await call("version-legacy", "", {
+				era: "legacy",
+				tool: { ...echo_tool, name: "ping", outputSchema: null },
+				arguments: {},
+			});
+
+			expect(methods).toContain("GET");
+			expect(methods).toContain("tools/call");
+			expect(result._nay?.name, "tool call did not use the background GET challenge").toBe(
+				challenge ? "insufficient_scope" : "forbidden",
+			);
+			if (challenge) {
+				expect(result._nay).toMatchObject({ data: { scope: "files:write" } });
+			}
+		},
+	);
 
 	test("mirrors an x-mcp-header parameter as an Mcp-Param header", async () => {
 		const listed = await list("header-strict");

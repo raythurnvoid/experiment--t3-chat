@@ -4784,7 +4784,8 @@ const app_convex_schema = defineSchema({
 		tokenEndpointAuthMethod: plugins_mcp_oauth_token_endpoint_auth_method_validator,
 		scopes: v.array(v.string()),
 		/**
-		 * The PKCE verifier. Additional data: `pending:<stateHash>`.
+		 * The PKCE verifier. Additional data: `pending:<original stateHash>`. Claim returns that
+		 * original hash for decryption, and replaces the stored hash to block callback replay.
 		 */
 		codeVerifier: plugins_mcp_encrypted_value_validator,
 		returnPath: v.string(),

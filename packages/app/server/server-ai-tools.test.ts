@@ -3421,7 +3421,7 @@ describe("browser tools", () => {
 
 describe("ai_chat_tool_create_mcp_tools", () => {
 	function create_tools(
-		mcpTools: Array<{ name: string; description?: string }>,
+		mcpTools: Array<{ name: string; description?: string; inputSchema?: Record<string, unknown> }>,
 		headers: ai_chat_tool_McpServer["headers"] = [],
 	) {
 		const server: ai_chat_tool_McpServer = {
@@ -3436,6 +3436,7 @@ describe("ai_chat_tool_create_mcp_tools", () => {
 			source: { kind: "plugin", pluginName: "tracker", serverTitle: "Tracker" },
 			label: "tracker · Tracker",
 			url: "https://tracker.example.com/mcp",
+			destinationFingerprint: "fingerprint-tracker",
 			toolAllowlist: null,
 			pluginVersionId: "version" as Id<"plugins_versions">,
 			headerSpec: [],
@@ -3447,7 +3448,7 @@ describe("ai_chat_tool_create_mcp_tools", () => {
 				name: mcpTool.name,
 				title: null,
 				description: mcpTool.description ?? "",
-				inputSchema: { type: "object" },
+				inputSchema: mcpTool.inputSchema ?? { type: "object" },
 				outputSchema: null,
 				annotations: null,
 			})),
@@ -3510,5 +3511,63 @@ describe("ai_chat_tool_create_mcp_tools", () => {
 
 		expect(Object.keys(tools)).toEqual(["mcp__tracker__search"]);
 		expect(tools["mcp__tracker__search"]?.description).toBe("Search with key [secret].");
+	});
+
+	test.each(["description", "default", "enum", "property", "annotation"])(
+		"leaves out a schema with private text in $0 and keeps safe input rules",
+		async (field) => {
+			const secret = 'PRIVATE_KEY_"quoted"\\value';
+			const unsafe =
+				field === "property"
+					? { properties: { [secret]: { type: "string" } } }
+					: {
+							properties: {
+								text: {
+									type: "string",
+									[field]: field === "enum" ? [secret] : field === "annotation" ? { nested: secret } : secret,
+								},
+							},
+						};
+			const safeSchema = {
+				type: "object",
+				properties: { text: { type: "string", enum: ["yes", "no"], default: "yes" } },
+				required: ["text"],
+			};
+			const tools = await create_tools(
+				[
+					{ name: "private", inputSchema: { type: "object", ...unsafe } },
+					{ name: "safe", inputSchema: safeSchema },
+				],
+				[{ name: "X-Api-Key", value: secret }],
+			);
+
+			expect(Object.keys(tools)).toEqual(["mcp__tracker__safe"]);
+			expect(tools.mcp__tracker__safe?.inputSchema).toMatchObject({ jsonSchema: safeSchema });
+		},
+	);
+
+	test.each([
+		["default", "123456789"],
+		["enum", "123456789"],
+		["default", "10000000000000000000000"],
+		["enum", "10000000000000000000000"],
+	])("leaves out a schema with a numeric header secret in %s (%s)", async (field, secret) => {
+		const safeSchema = { type: "object", properties: { count: { type: "number", default: 42, enum: [42, 43] } } };
+		const tools = await create_tools(
+			[
+				{
+					name: "private",
+					inputSchema: {
+						type: "object",
+						properties: { key: { type: "number", [field]: field === "enum" ? [Number(secret)] : Number(secret) } },
+					},
+				},
+				{ name: "safe", inputSchema: safeSchema },
+			],
+			[{ name: "X-Api-Key", value: secret }],
+		);
+
+		expect(Object.keys(tools)).toEqual(["mcp__tracker__safe"]);
+		expect(tools.mcp__tracker__safe?.inputSchema).toMatchObject({ jsonSchema: safeSchema });
 	});
 });

@@ -370,7 +370,7 @@ function is_app_path(path: string) {
 }
 
 /**
- * Delete the caller's own sign-in for one MCP server in this workspace.
+ * Delete the caller's own grant and pending sign-ins for one MCP server in this workspace.
  *
  * Removing access needs no permission, so a member who lost `workspace.mcp.use` can still
  * disconnect. An admin cannot disconnect another member's sign-in here.
@@ -401,11 +401,38 @@ export const disconnect = mutation({
 		}
 
 		const grant = await db_get_grant(ctx, { userId: userAuth.id, target: args.target });
-		if (!grant || grant.organizationId !== membership.organizationId || grant.workspaceId !== membership.workspaceId) {
+		if (grant && (grant.organizationId !== membership.organizationId || grant.workspaceId !== membership.workspaceId)) {
 			return Result({ _nay: { message: "Not found" } });
 		}
 
-		await plugins_mcp_db_revoke_grant(ctx, grant);
+		const { target } = args;
+		const pending = await ctx.db
+			.query("plugins_mcp_oauth_pending")
+			.withIndex("by_organization_workspace_user", (q) =>
+				q
+					.eq("organizationId", membership.organizationId)
+					.eq("workspaceId", membership.workspaceId)
+					.eq("userId", userAuth.id),
+			)
+			.filter((q) =>
+				target.kind === "plugin"
+					? q.and(
+							q.eq(q.field("target.installationId"), target.installationId),
+							q.eq(q.field("target.serverId"), target.serverId),
+						)
+					: q.eq(q.field("target.customServerId"), target.customServerId),
+			)
+			.collect();
+		if (!grant && pending.length === 0) {
+			return Result({ _nay: { message: "Not found" } });
+		}
+
+		for (const pendingDoc of pending) {
+			await ctx.db.delete("plugins_mcp_oauth_pending", pendingDoc._id);
+		}
+		if (grant) {
+			await plugins_mcp_db_revoke_grant(ctx, grant);
+		}
 		return Result({ _yay: null });
 	},
 });
@@ -478,6 +505,7 @@ export const authorize_start = internalQuery({
 				scopes: v.array(v.string()),
 			}),
 			clientDoc: v.union(doc(app_convex_schema, "plugins_mcp_oauth_clients"), v.null()),
+			grant: v.union(v.object({ grantId: v.id("plugins_mcp_oauth_grants"), version: v.number() }), v.null()),
 		}),
 	}),
 	handler: async (ctx, args) => {
@@ -510,7 +538,13 @@ export const authorize_start = internalQuery({
 						.order("desc")
 						.first();
 
-		return Result({ _yay: { server: { ...server, scopes: [...new Set(scopes)] }, clientDoc } });
+		return Result({
+			_yay: {
+				server: { ...server, scopes: [...new Set(scopes)] },
+				clientDoc,
+				grant: grant ? { grantId: grant._id, version: grant.version } : null,
+			},
+		});
 	},
 });
 
@@ -615,7 +649,7 @@ export const start = action({
 			}
 		}
 
-		const { server, clientDoc } = authorized._yay;
+		const { server, clientDoc, grant } = authorized._yay;
 		const knownClient = clientDoc ? await decrypt_client(clientDoc) : null;
 		const state = crypto_random_hex(32);
 		const started = await mcp_oauth_start({
@@ -632,10 +666,9 @@ export const start = action({
 		if (started._nay) {
 			// Never follow a new sign-in server without a new reviewed version or a new server doc.
 			if (started._nay.name === "oauth_issuer_changed") {
-				await ctx.runMutation(internal.plugins_mcp_oauth.mark_needs_reconnect, {
-					userId: userAuth.id,
-					target: args.target,
-				});
+				if (grant) {
+					await ctx.runMutation(internal.plugins_mcp_oauth.mark_refused, grant);
+				}
 				return Result({
 					_nay: {
 						message:
@@ -798,25 +831,6 @@ type insert_pending_Result =
 		: never;
 
 /**
- * The server stopped naming the pinned sign-in server. The member's sign-in can never refresh
- * again safely, so drop its tokens and ask for a reconnect.
- */
-export const mark_needs_reconnect = internalMutation({
-	args: {
-		userId: v.id("users"),
-		target: plugins_mcp_target_validator,
-	},
-	returns: v.null(),
-	handler: async (ctx, args) => {
-		const grant = await db_get_grant(ctx, args);
-		if (grant) {
-			await db_mark_grant_needs_reconnect(ctx, grant);
-		}
-		return null;
-	},
-});
-
-/**
  * Finish a sign-in from the callback page. Returns the app page to open next.
  */
 export const finish = action({
@@ -847,80 +861,85 @@ export const finish = action({
 		}
 		const { pending, clientDoc } = claimed._yay;
 
-		// Check `iss` before reading `error`: after a mismatch, the answer may come from another AS, so
-		// none of its text is shown or followed.
-		if (
-			!mcp_oauth_callback_iss_matches({
-				iss: args.iss,
-				issuer: pending.issuer,
-				issParameterSupported: pending.issParameterSupported,
-			})
-		) {
-			return Result({ _nay: { message: "The sign-in answer came from an unexpected server. Connect again." } });
-		}
-		if (args.error !== null) {
-			return Result({
-				_nay: {
-					message:
-						args.error === "access_denied" ? "The sign-in was canceled." : "The sign-in server refused the sign-in.",
-				},
-			});
-		}
-		if (args.code === null) {
-			return Result({ _nay: { message: "The sign-in server sent no code. Connect again." } });
-		}
+		try {
+			// Check `iss` before reading `error`: after a mismatch, the answer may come from another AS, so
+			// none of its text is shown or followed.
+			if (
+				!mcp_oauth_callback_iss_matches({
+					iss: args.iss,
+					issuer: pending.issuer,
+					issParameterSupported: pending.issParameterSupported,
+				})
+			) {
+				return Result({ _nay: { message: "The sign-in answer came from an unexpected server. Connect again." } });
+			}
+			if (args.error !== null) {
+				return Result({
+					_nay: {
+						message:
+							args.error === "access_denied" ? "The sign-in was canceled." : "The sign-in server refused the sign-in.",
+					},
+				});
+			}
+			if (args.code === null) {
+				return Result({ _nay: { message: "The sign-in server sent no code. Connect again." } });
+			}
 
-		const codeVerifier = await crypto_decrypt_secret_value(
-			pending.codeVerifier,
-			`pending:${pending.stateHash}`,
-			"MCP_SECRETS_ENCRYPTION_KEY",
-		).catch(() => null);
-		const client = await load_client(pending, clientDoc);
-		if (codeVerifier === null || client === null) {
-			return Result({ _nay: { message: EXPIRED_MESSAGE } });
-		}
+			const codeVerifier = await crypto_decrypt_secret_value(
+				pending.codeVerifier,
+				`pending:${pending.stateHash}`,
+				"MCP_SECRETS_ENCRYPTION_KEY",
+			).catch(() => null);
+			const client = await load_client(pending, clientDoc);
+			if (codeVerifier === null || client === null) {
+				return Result({ _nay: { message: EXPIRED_MESSAGE } });
+			}
 
-		const exchanged = await mcp_oauth_exchange({
-			tokenEndpoint: pending.tokenEndpoint,
-			client,
-			code: args.code,
-			codeVerifier,
-			redirectUri: urls.redirectUri,
-			resource: pending.resource,
-		});
-		if (exchanged._nay) {
-			return Result({ _nay: { message: exchanged._nay.message } });
-		}
-
-		const stored = (await ctx.runMutation(internal.plugins_mcp_oauth.store_grant, {
-			pendingId: pending._id,
-			pending: {
-				organizationId: pending.organizationId,
-				workspaceId: pending.workspaceId,
-				userId: pending.userId,
-				target: pending.target,
-				destinationFingerprint: pending.destinationFingerprint,
-				resource: pending.resource,
-				issuer: pending.issuer,
+			const exchanged = await mcp_oauth_exchange({
 				tokenEndpoint: pending.tokenEndpoint,
-				revocationEndpoint: pending.revocationEndpoint,
-				clientId: pending.clientId,
-				clientKind: pending.clientKind,
-				tokenEndpointAuthMethod: pending.tokenEndpointAuthMethod,
-				scopes: pending.scopes,
-			},
-			tokens: exchanged._yay,
-		})) as store_grant_Result;
-		if (stored._nay) {
-			return stored;
-		}
+				client,
+				code: args.code,
+				codeVerifier,
+				redirectUri: urls.redirectUri,
+				resource: pending.resource,
+			});
+			if (exchanged._nay) {
+				return Result({ _nay: { message: exchanged._nay.message } });
+			}
 
-		return Result({ _yay: { returnPath: pending.returnPath } });
+			const stored = (await ctx.runMutation(internal.plugins_mcp_oauth.store_grant, {
+				pendingId: pending._id,
+				pending: {
+					organizationId: pending.organizationId,
+					workspaceId: pending.workspaceId,
+					userId: pending.userId,
+					target: pending.target,
+					destinationFingerprint: pending.destinationFingerprint,
+					resource: pending.resource,
+					issuer: pending.issuer,
+					tokenEndpoint: pending.tokenEndpoint,
+					revocationEndpoint: pending.revocationEndpoint,
+					clientId: pending.clientId,
+					clientKind: pending.clientKind,
+					tokenEndpointAuthMethod: pending.tokenEndpointAuthMethod,
+					scopes: pending.scopes,
+				},
+				tokens: exchanged._yay,
+			})) as store_grant_Result;
+			if (stored._nay) {
+				return stored;
+			}
+
+			return Result({ _yay: { returnPath: pending.returnPath } });
+		} finally {
+			await ctx.runMutation(internal.plugins_mcp_oauth.delete_pending, { pendingId: pending._id });
+		}
 	},
 });
 
 /**
- * Take one pending sign-in for the caller and delete it, so it works once.
+ * Claim one pending sign-in for the caller. Replace its state hash so the callback works once,
+ * but keep the doc so Disconnect and deletion can cancel the exchange.
  *
  * A failed check never deletes it. Every workspace shares one callback, so an attacker could send
  * their sign-in link to a victim. The victim's code must not land in the attacker's sign-in,
@@ -956,7 +975,9 @@ export const claim_pending = internalMutation({
 			return checked;
 		}
 
-		await ctx.db.delete("plugins_mcp_oauth_pending", pending._id);
+		// Return the original hash: the verifier was encrypted with it. The stored hash is no longer
+		// shared with the browser, so a replay cannot claim the doc while the first exchange waits.
+		await ctx.db.patch("plugins_mcp_oauth_pending", pending._id, { stateHash: crypto_random_hex(32) });
 		return Result({
 			_yay: {
 				pending,
@@ -973,6 +994,17 @@ type claim_pending_Result =
 	typeof claim_pending extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
 		? Awaited<ReturnValue>
 		: never;
+
+export const delete_pending = internalMutation({
+	args: { pendingId: v.id("plugins_mcp_oauth_pending") },
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		if (await ctx.db.get("plugins_mcp_oauth_pending", args.pendingId)) {
+			await ctx.db.delete("plugins_mcp_oauth_pending", args.pendingId);
+		}
+		return null;
+	},
+});
 
 /**
  * Store the tokens of a finished sign-in. Checks the member and the target again, because the code
@@ -1006,7 +1038,15 @@ export const store_grant = internalMutation({
 	returns: v_result({ _yay: v.null() }),
 	handler: async (ctx, args) => {
 		const { pending, tokens } = args;
+		const pendingDoc = await ctx.db.get("plugins_mcp_oauth_pending", args.pendingId);
+		if (pendingDoc) {
+			await ctx.db.delete("plugins_mcp_oauth_pending", pendingDoc._id);
+		}
 		const encrypted = await encrypt_grant_tokens(pending, tokens);
+		if (!pendingDoc) {
+			await plugins_mcp_db_schedule_revocation(ctx, { ...pending, ...encrypted });
+			return Result({ _nay: { message: EXPIRED_MESSAGE } });
+		}
 
 		const checked = await db_check_sign_in(ctx, {
 			userId: pending.userId,
@@ -1180,6 +1220,7 @@ type take_refresh_lease_Result =
 /**
  * End a refresh lease. New tokens replace the old ones only while the caller still holds the lease.
  * `invalid_grant` ends the grant: the member must connect again.
+ * Return true when this lease's outcome was handled, or false when the grant or lease changed.
  */
 export const finish_refresh = internalMutation({
 	args: {
@@ -1220,11 +1261,11 @@ export const finish_refresh = internalMutation({
 
 		if (outcome.kind === "failed") {
 			await ctx.db.patch("plugins_mcp_oauth_grants", grant._id, { leaseId: null, leaseUntil: null });
-			return false;
+			return true;
 		}
 		if (outcome.kind === "invalid_grant") {
 			await db_mark_grant_needs_reconnect(ctx, grant);
-			return false;
+			return true;
 		}
 
 		await ctx.db.patch("plugins_mcp_oauth_grants", grant._id, {
@@ -1239,7 +1280,7 @@ export const finish_refresh = internalMutation({
 });
 
 /**
- * The server refused a token right after a refresh. Another refresh would not help, so end the grant.
+ * The server refused a token or changed its sign-in server, so end the grant.
  * Only for the version the caller used, so a sign-in that finished meanwhile stays.
  */
 export const mark_refused = internalMutation({
@@ -1283,7 +1324,7 @@ export const record_step_up = internalMutation({
 /**
  * The member's access token for a sign-in server, refreshed when needed.
  *
- * `refusedVersion` is the grant version whose token the server just refused. That version is
+ * `refusedGrant` is the grant id and version whose token the server just refused. That token is
  * refreshed even when it has not expired yet. When another caller holds the refresh lease, turn setup
  * does not wait (`waitForLease: false`) and a tool call polls until the lease ends.
  */
@@ -1292,7 +1333,7 @@ export async function plugins_mcp_oauth_get_access_token(
 	args: {
 		userId: Id<"users">;
 		target: Target;
-		refusedVersion: number | null;
+		refusedGrant: { grantId: Id<"plugins_mcp_oauth_grants">; version: number } | null;
 		waitForLease: boolean;
 		signal: AbortSignal;
 	},
@@ -1311,9 +1352,12 @@ export async function plugins_mcp_oauth_get_access_token(
 		}
 
 		const now = Date.now();
-		const refreshed = args.refusedVersion !== null && grant.version !== args.refusedVersion;
-		const needsRefresh =
-			grant.version === args.refusedVersion || (grant.expiresAt !== null && grant.expiresAt - now < REFRESH_BEFORE_MS);
+		const wasRefused =
+			args.refusedGrant !== null &&
+			grant.grantId === args.refusedGrant.grantId &&
+			grant.version === args.refusedGrant.version;
+		const refreshed = args.refusedGrant !== null && !wasRefused;
+		const needsRefresh = wasRefused || (grant.expiresAt !== null && grant.expiresAt - now < REFRESH_BEFORE_MS);
 		if (!needsRefresh) {
 			const accessToken = await crypto_decrypt_secret_value(
 				grant.accessToken,
@@ -1365,11 +1409,12 @@ export async function plugins_mcp_oauth_get_access_token(
 		// Never assume a refresh token exists. Without one, or without the client, the member
 		// must connect again.
 		if (refreshToken === null || client === null) {
-			await ctx.runMutation(internal.plugins_mcp_oauth.finish_refresh, {
+			const handled = await ctx.runMutation(internal.plugins_mcp_oauth.finish_refresh, {
 				grantId: grant.grantId,
 				leaseId: lease.leaseId,
 				outcome: { kind: "invalid_grant" },
 			});
+			if (!handled) continue;
 			return { status: "needs_reconnect" as const };
 		}
 
@@ -1383,11 +1428,13 @@ export async function plugins_mcp_oauth_get_access_token(
 		});
 		if (refreshedTokens._nay) {
 			const invalidGrant = refreshedTokens._nay.name === "oauth_invalid_grant";
-			await ctx.runMutation(internal.plugins_mcp_oauth.finish_refresh, {
+			const handled = await ctx.runMutation(internal.plugins_mcp_oauth.finish_refresh, {
 				grantId: grant.grantId,
 				leaseId: lease.leaseId,
 				outcome: { kind: invalidGrant ? "invalid_grant" : "failed" },
 			});
+			// A new Connect or refresh won the lease. Use its grant instead of this old failure.
+			if (!handled) continue;
 			return invalidGrant
 				? { status: "needs_reconnect" as const }
 				: { status: "failed" as const, message: refreshedTokens._nay.message };

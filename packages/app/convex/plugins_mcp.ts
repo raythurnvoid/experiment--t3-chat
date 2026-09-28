@@ -935,6 +935,7 @@ export const list_turn_servers = internalQuery({
 					 */
 					label: v.string(),
 					url: v.string(),
+					destinationFingerprint: v.string(),
 					/**
 					 * The manifest's tool allowlist. Null means every tool the server lists.
 					 */
@@ -1028,6 +1029,7 @@ export const list_turn_servers = internalQuery({
 					source: { kind: "plugin" as const, pluginName: installation.pluginName, serverTitle: server.title },
 					label: `${installation.pluginName} · ${server.title}`,
 					url: server.url,
+					destinationFingerprint: serverDoc.destinationFingerprint,
 					toolAllowlist: server.tools,
 					pluginVersionId: installation.pluginVersionId,
 					headerSpec: server.headers.map((header) => ({ name: header.name, secretName: header.secret })),
@@ -1116,14 +1118,14 @@ function next_health(server: { failures: number; unhealthyUntil: number | null }
 export const record_server_outcome = internalMutation({
 	args: {
 		target: plugins_mcp_target_validator,
+		expectedDestinationFingerprint: v.string(),
 		ok: v.boolean(),
 	},
 	returns: v.null(),
 	handler: async (ctx, args) => {
-		// Write nothing when the server is gone: an uninstall or a delete may have finished while the
-		// list ran.
+		// Ignore a list result if the server was deleted or moved while the request was running.
 		const healthDoc = await get_health_doc(ctx, args.target);
-		if (!healthDoc) {
+		if (!healthDoc || healthDoc.doc.destinationFingerprint !== args.expectedDestinationFingerprint) {
 			return null;
 		}
 

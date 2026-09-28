@@ -485,6 +485,55 @@ describe("/api/chat MCP tool calls", () => {
 		expect(tools_calls()[0]?.headers.get("x-api-key")).toBe(headerValue);
 	});
 
+	test.each(["text", "number", "exponent"])("keeps an echoed %s header out of the model's tool schemas", async (kind) => {
+		const { t, asUser, membership, threadId } = await setup();
+		const secret =
+			kind === "number" ? "123456789" : kind === "exponent" ? "10000000000000000000000" : 'PRIVATE_HEADER_"quoted"\\value';
+		await install_mcp_plugin(t, membership, {
+			url: MODERN_BASIC_URL,
+			headers: [{ name: "X-Api-Key", secret: "api_key", value: secret }],
+		});
+		const fixtureFetch = fixtures.fetch;
+		fixtures.fetch = async (input, init) => {
+			const request = new Request(input, init);
+			const body = JSON.parse(await request.clone().text()) as { id: number; method: string };
+			if (body.method === "tools/list") {
+				return Response.json({
+					jsonrpc: "2.0",
+					id: body.id,
+					result: {
+						resultType: "complete",
+						ttlMs: 0,
+						cacheScope: "private",
+						tools: [
+							{
+								name: "private",
+								inputSchema: {
+									type: "object",
+									properties: {
+										key: {
+										type: kind === "text" ? "string" : "number",
+											default:
+											kind === "text" ? request.headers.get("x-api-key") : Number(request.headers.get("x-api-key")),
+										},
+									},
+								},
+							},
+							{ name: "safe", inputSchema: { type: "object", properties: { text: { type: "string" } } } },
+						],
+					},
+				});
+			}
+			return await fixtureFetch(request);
+		};
+
+		expect((await chat(asUser, { membershipId: membership.membershipId, threadId })).status).toBe(200);
+		expect(Object.keys(last_call().tools ?? {}).filter((name) => name.startsWith("mcp__"))).toEqual([
+			"mcp__tracker__safe",
+		]);
+		expect(JSON.stringify(last_call().tools)).not.toContain(JSON.stringify(secret).slice(1, -1));
+	});
+
 	test("refuses a call over the per-member server rate limit", async () => {
 		const { t, asUser, membership, threadId } = await setup();
 		await install_mcp_plugin(t, membership, { url: MODERN_BASIC_URL });
@@ -500,6 +549,37 @@ describe("/api/chat MCP tool calls", () => {
 
 		expect(refused.error).toBe("Rate limit exceeded");
 		expect(tools_calls()).toHaveLength(60);
+	});
+
+	test("gives each server of one plugin its own rate limit bucket", async () => {
+		const { t, asUser, membership, threadId } = await setup();
+		const installed = await install_mcp_plugin(t, membership, { url: MODERN_BASIC_URL });
+		await t.run(async (ctx) => {
+			const version = (await ctx.db.get("plugins_versions", installed.pluginVersionId))!;
+			const serverDoc = (await ctx.db.get("plugins_mcp_servers", installed.serverDocId))!;
+			await ctx.db.patch("plugins_versions", version._id, {
+				mcpServers: [...version.mcpServers, { ...version.mcpServers[0]!, id: "second", title: "Second" }],
+			});
+			await ctx.db.insert("plugins_mcp_servers", {
+				organizationId: serverDoc.organizationId,
+				workspaceId: serverDoc.workspaceId,
+				installationId: installed.installationId,
+				serverId: "second",
+				toolPrefix: "second",
+				destinationFingerprint: "fingerprint-second",
+				failures: 0,
+				unhealthyUntil: null,
+			});
+		});
+		expect((await chat(asUser, { membershipId: membership.membershipId, threadId })).status).toBe(200);
+
+		vi.useFakeTimers({ toFake: ["Date"] });
+		for (let index = 0; index < 60; index++) {
+			expect((await run_tool(t, "mcp__tracker__echo", { text: "ok" })).error).toBeNull();
+		}
+		expect((await run_tool(t, "mcp__tracker__echo", { text: "ok" })).error).toBe("Rate limit exceeded");
+		expect((await run_tool(t, "mcp__second__echo", { text: "ok" })).error).toBeNull();
+		expect(tools_calls()).toHaveLength(61);
 	});
 
 	test("refuses a call after the installation is disabled, before any request", async () => {
@@ -528,11 +608,22 @@ describe("/api/chat MCP tool calls", () => {
 		expect(tools_calls()).toEqual([]);
 	});
 
-	test("refuses a server of another workspace, before any request", async () => {
-		const { t, membership, threadId } = await setup();
-		const other = await t.run((ctx) =>
-			test_mocks_fill_db_with.membership(ctx, { userId: membership.userId, organizationName: "other-organization" }),
-		);
+	test.each(["workspace", "organization"])("refuses a server of another %s, before any request", async (scope) => {
+		const { t, asUser, membership, threadId } = await setup();
+		let other = membership;
+		if (scope === "organization") {
+			other = await t.run((ctx) =>
+				test_mocks_fill_db_with.membership(ctx, { userId: membership.userId, organizationName: "other-organization" }),
+			);
+		} else {
+			const created = await asUser.mutation(api.organizations.create_workspace, {
+				organizationId: membership.organizationId,
+				name: "second-workspace",
+				description: "",
+			});
+			if (created._nay) throw new Error(created._nay.message);
+			other = { ...membership, workspaceId: created._yay.workspaceId };
+		}
 		const installed = await install_mcp_plugin(t, other, { url: MODERN_BASIC_URL });
 		const captured = await t.mutation(internal.ai_chat_workspaces.capture, {
 			userId: membership.userId,
@@ -540,8 +631,7 @@ describe("/api/chat MCP tool calls", () => {
 		});
 		if (captured._nay) throw new Error(captured._nay.message);
 
-		// Build the tools of the thread's workspace with the other workspace's server, as a forged turn
-		// would. Only the workspace check of the call recheck stands between them.
+		// Build a forged turn with another workspace or organization's server. Check its scope before calling it.
 		const result = await t.action(async (ctx) => {
 			const listed = await mcp_client_list_tools({
 				server: { url: MODERN_BASIC_URL, headers: [] },
@@ -570,6 +660,7 @@ describe("/api/chat MCP tool calls", () => {
 						source: { kind: "plugin", pluginName: "tracker", serverTitle: "Tracker" },
 						label: "tracker · Tracker",
 						url: MODERN_BASIC_URL,
+						destinationFingerprint: "fingerprint-tracker",
 						toolAllowlist: null,
 						pluginVersionId: installed.pluginVersionId,
 						headerSpec: [],
@@ -810,6 +901,43 @@ describe("/api/chat MCP custom servers", () => {
 		expect(ai_chat_mcp_tool_output_schema.safeParse(mixed).success).toBe(false);
 	});
 
+	test.each([false, true])("ignores an old tool list after a server moves (success: %s)", async (ok) => {
+		const { t, asUser, membership, threadId } = await setup();
+		const customServerId = await save_custom_server(asUser, membership.membershipId, { name: "fixture" });
+		await t.run((ctx) => ctx.db.patch("mcp_custom_servers", customServerId, { failures: 1 }));
+		const listStarted = Promise.withResolvers<void>();
+		const releaseList = Promise.withResolvers<void>();
+		const fixtureFetch = fixtures.fetch;
+		fixtures.fetch = async (input, init) => {
+			const request = new Request(input, init);
+			if (request.url === MODERN_BASIC_URL && (await request.clone().text()).includes('"method":"tools/list"')) {
+				listStarted.resolve();
+				await releaseList.promise;
+				if (!ok) return new Response(null, { status: 500 });
+			}
+			return await fixtureFetch(request);
+		};
+
+		const running = chat(asUser, { membershipId: membership.membershipId, threadId });
+		await listStarted.promise;
+		try {
+			await save_custom_server(asUser, membership.membershipId, {
+				name: "fixture",
+				url: `${MODERN_BASIC_URL}moved`,
+				customServerId,
+			});
+			if (ok) await t.run((ctx) => ctx.db.patch("mcp_custom_servers", customServerId, { failures: 2 }));
+		} finally {
+			releaseList.resolve();
+		}
+		expect((await running).status).toBe(200);
+
+		expect(await t.run((ctx) => ctx.db.get("mcp_custom_servers", customServerId))).toMatchObject({
+			url: `${MODERN_BASIC_URL}moved`,
+			failures: ok ? 2 : 0,
+		});
+	});
+
 	test("refuses a call after the member turns the server off or moves it, before any request", async () => {
 		const { t, asUser, membership, threadId } = await setup();
 		vi.useFakeTimers({ toFake: ["Date"] });
@@ -934,7 +1062,11 @@ describe("/api/chat MCP server health", () => {
 		vi.useFakeTimers();
 
 		for (let turn = 0; turn < 3; turn++) {
-			await t.mutation(internal.plugins_mcp.record_server_outcome, { target, ok: false });
+			await t.mutation(internal.plugins_mcp.record_server_outcome, {
+				target,
+				expectedDestinationFingerprint: "fingerprint-tracker",
+				ok: false,
+			});
 		}
 		expect(await server_doc(t, serverDocId)).toMatchObject({ failures: 3, unhealthyUntil: expect.any(Number) });
 
@@ -1323,6 +1455,60 @@ describe("/api/chat MCP sign-in notice", () => {
 		expect(toServer.every((entry) => entry.headers.get("authorization")?.startsWith("Bearer access-"))).toBe(true);
 	});
 
+	test.each(["list", "call"])("a delayed %s refusal keeps a replacement grant connected", async (operation) => {
+		const { t, asUser, membership, threadId } = await setup();
+		const target = await install_oauth_server(t, membership);
+		oauthFixtures.switches.tokenIncludeRefresh = false;
+		await connect(asUser, membership, target);
+		expect((await chat(asUser, { membershipId: membership.membershipId, threadId })).status).toBe(200);
+		const before = (await t.run((ctx) => ctx.db.query("plugins_mcp_oauth_grants").collect()))[0]!;
+		const refusedRequest = Promise.withResolvers<void>();
+		const releaseRefusal = Promise.withResolvers<void>();
+		const fixtureFetch = oauthFixtures.fetch;
+		let held = false;
+		oauthFixtures.fetch = async (input, init) => {
+			const request = new Request(input, init);
+			if (
+				!held &&
+				request.headers.has("authorization") &&
+				(await request.clone().text()).includes(`"method":"tools/${operation}"`)
+			) {
+				held = true;
+				refusedRequest.resolve();
+				await releaseRefusal.promise;
+				return new Response(null, { status: 401, headers: { "WWW-Authenticate": 'Bearer realm="mcp"' } });
+			}
+			return await fixtureFetch(request);
+		};
+		vi.useFakeTimers({ toFake: ["Date"] });
+		vi.setSystemTime(Date.now() + 60_000);
+		const running =
+			operation === "list"
+				? chat(asUser, { membershipId: membership.membershipId, threadId })
+				: run_tool(t, "mcp__tracker__echo", { text: "ok" });
+		await refusedRequest.promise;
+		try {
+			expect(
+				await asUser.mutation(api.plugins_mcp_oauth.disconnect, { membershipId: membership.membershipId, target }),
+			).toEqual({
+				_yay: null,
+			});
+			await vi.waitFor(async () =>
+				expect(await t.run((ctx) => ctx.db.query("plugins_mcp_oauth_revocations").collect())).toEqual([]),
+			);
+			await connect(asUser, membership, target);
+		} finally {
+			releaseRefusal.resolve();
+		}
+		await running;
+
+		const after = (await t.run((ctx) => ctx.db.query("plugins_mcp_oauth_grants").collect()))[0]!;
+		expect(after._id).not.toBe(before._id);
+		expect(after).toMatchObject({ status: "connected", version: before.version });
+		expect(oauthFixtures.counts.refresh).toBe(0);
+		if (operation === "list") expect(last_call().tools).toHaveProperty("mcp__tracker__echo");
+	});
+
 	test("a call that waited for a token refresh past the run lease sends no request", async () => {
 		const { t, asUser, membership, threadId } = await setup();
 		const target = await install_oauth_server(t, membership);
@@ -1344,6 +1530,46 @@ describe("/api/chat MCP sign-in notice", () => {
 
 		expect(result.error).toBe("This chat run has no time left for an MCP call.");
 		expect(oauthFixtures.wire.map((entry) => entry.path)).toEqual(["/token"]);
+	});
+
+	test("a call rechecks policy after waiting for a token refresh", async () => {
+		const { t, asUser, membership, threadId } = await setup();
+		const target = await install_oauth_server(t, membership);
+		oauthFixtures.switches.tokenExpiresIn = 120;
+		await connect(asUser, membership, target);
+		expect((await chat(asUser, { membershipId: membership.membershipId, threadId })).status).toBe(200);
+		vi.useFakeTimers({ toFake: ["Date"] });
+		vi.setSystemTime(Date.now() + 3 * 60 * 1000);
+
+		const refreshStarted = Promise.withResolvers<void>();
+		const releaseRefresh = Promise.withResolvers<void>();
+		const fixtureFetch = oauthFixtures.fetch;
+		oauthFixtures.fetch = async (input, init) => {
+			const request = new Request(input, init);
+			if (new URL(request.url).pathname === "/token") {
+				refreshStarted.resolve();
+				await releaseRefresh.promise;
+			}
+			return await fixtureFetch(request);
+		};
+		oauthFixtures.wire.length = 0;
+		const running = run_tool(t, "mcp__tracker__echo", { text: "blocked" });
+		await refreshStarted.promise;
+		try {
+			expect(
+				await asUser.mutation(api.organizations_integration_policy.update_policy, {
+					organizationId: membership.organizationId,
+					change: { kind: "set_plugins_mode", mode: "allowlist" },
+				}),
+			).toEqual({ _yay: null });
+		} finally {
+			releaseRefresh.resolve();
+		}
+		const result = await running;
+
+		expect(result.error).toBe("Your organization's MCP policy blocks this server.");
+		expect(oauthFixtures.wire.filter((entry) => entry.body.includes('"method":"tools/call"'))).toEqual([]);
+		expect(await ledger(t)).toEqual([]);
 	});
 
 	test("a tool list that fails with the member's token never counts toward pausing the shared server", async () => {

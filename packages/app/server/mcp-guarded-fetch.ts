@@ -126,6 +126,11 @@ export function mcp_guarded_fetch_create(
 				 * Cap for all responses of this guard together, for example every page of one tool list.
 				 */
 				maxTotalBytes: number;
+				/**
+				 * One deadline and signal for the whole list or call, including session cleanup.
+				 */
+				deadline?: number;
+				signal?: AbortSignal;
 		  }
 		| {
 				kind: "oauth";
@@ -177,12 +182,14 @@ export function mcp_guarded_fetch_create(
 				}
 			}
 
-			// An MCP request keeps the SDK's signal, which carries the per-call timeout. The SDK's OAuth
+			// Keep both the SDK request signal and the whole MCP operation signal. The SDK's OAuth
 			// helpers pass no signal, so each OAuth request gets a 5 second timer, body read included.
 			let signal = init?.signal;
 			let timedOut = false;
 			let timer: ReturnType<typeof setTimeout> | null = null;
-			if (options.kind === "oauth") {
+			if (options.kind === "mcp" && options.signal) {
+				signal = signal ? AbortSignal.any([signal, options.signal]) : options.signal;
+			} else if (options.kind === "oauth") {
 				const controller = new AbortController();
 				signal = controller.signal;
 				timer = setTimeout(() => {
@@ -204,6 +211,12 @@ export function mcp_guarded_fetch_create(
 					}
 
 					let response: Response;
+					if (
+						signal?.aborted ||
+						(options.kind === "mcp" && options.deadline !== undefined && Date.now() >= options.deadline)
+					) {
+						throw refuse("timeout");
+					}
 					try {
 						response = await fetch(url, { ...init, headers, redirect: "manual", signal });
 					} catch (error) {
@@ -222,10 +235,16 @@ export function mcp_guarded_fetch_create(
 						throw refuse("network_error");
 					}
 
-					const wwwAuthenticate = response.headers.get("www-authenticate");
-					if (wwwAuthenticate !== null) guard.wwwAuthenticate = wwwAuthenticate;
-					const retryAfter = response.headers.get("retry-after");
-					if (retryAfter !== null) guard.retryAfter = retryAfter;
+					// Background streams and cleanup must not replace a POST's response headers.
+					if (options.kind === "mcp" && method === "POST") {
+						guard.wwwAuthenticate = response.headers.get("www-authenticate");
+						guard.retryAfter = response.headers.get("retry-after");
+					} else if (options.kind === "oauth") {
+						const wwwAuthenticate = response.headers.get("www-authenticate");
+						if (wwwAuthenticate !== null) guard.wwwAuthenticate = wwwAuthenticate;
+						const retryAfter = response.headers.get("retry-after");
+						if (retryAfter !== null) guard.retryAfter = retryAfter;
+					}
 
 					if (response.status >= 300 && response.status < 400) {
 						await response.body?.cancel();
@@ -322,7 +341,7 @@ export function mcp_guarded_fetch_create(
 				}
 			} catch (error) {
 				// The timer can fire during the fetch or during the body read.
-				if (timedOut) throw refuse("timeout");
+				if (timedOut || (options.kind === "mcp" && signal?.aborted)) throw refuse("timeout");
 				throw error;
 			} finally {
 				if (timer !== null) clearTimeout(timer);

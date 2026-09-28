@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
 import { plugins_mcp_grant_additional_data } from "./plugins_mcp.ts";
+import { plugins_mcp_oauth_get_access_token } from "./plugins_mcp_oauth.ts";
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
 import { crypto_decrypt_secret_value, crypto_encrypt_secret_value } from "../server/crypto-utils.ts";
 import { mcp_client_list_tools } from "../server/mcp-client.ts";
@@ -19,7 +20,7 @@ const RETURN_PATH = "/w/test-organization/home/mcp-servers";
 
 let fixtures: ReturnType<typeof mcp_oauth_fixtures_create>;
 // A test sets this to hold every request to one path until the promise resolves.
-let gate: { path: string; promise: Promise<void>; reached: boolean } | null = null;
+let gate: { path: string; promise: Promise<void>; reached: boolean; onRequest?: () => void } | null = null;
 
 beforeEach(() => {
 	fixtures = mcp_oauth_fixtures_create();
@@ -45,6 +46,7 @@ beforeEach(() => {
 			}
 			if (gate && url.pathname === gate.path) {
 				gate.reached = true;
+				gate.onRequest?.();
 				await gate.promise;
 			}
 			return await fixtures.fetch(request);
@@ -470,6 +472,53 @@ describe("start", () => {
 		expect(grants[0]).toMatchObject({ status: "needs_reconnect", accessToken: null, refreshToken: null });
 		expect(revocations).toHaveLength(1);
 	});
+
+	test.each([false, true])("an old issuer response keeps a later sign-in (existing grant: %s)", async (hasGrant) => {
+		const { t, owner } = await setup();
+		const target = await save_custom_server(owner);
+		if (hasGrant) {
+			await connect(owner, target);
+			next_minute();
+		}
+		const before = (await read_all(t)).grants[0];
+		const { callback } = await sign_in(owner, target);
+		const metadataStarted = Promise.withResolvers<void>();
+		const releaseMetadata = Promise.withResolvers<void>();
+		const fixtureFetch = fixtures.fetch;
+		let held = false;
+		fixtures.switches.prmAuthorizationServers = ["https://other.oauth.test"];
+		fixtures.fetch = async (input, init) => {
+			const request = new Request(input, init);
+			if (!held && new URL(request.url).pathname === "/.well-known/oauth-protected-resource/mcp") {
+				held = true;
+				// Keep the old issuer answer while a later sign-in finishes.
+				const response = await fixtureFetch(request);
+				metadataStarted.resolve();
+				await releaseMetadata.promise;
+				return response;
+			}
+			return await fixtureFetch(request);
+		};
+		const oldStart = start(owner, target);
+		await metadataStarted.promise;
+		try {
+			fixtures.switches.prmAuthorizationServers = null;
+			expect((await finish(owner, callback))._yay !== undefined).toBe(true);
+			const connected = (await read_all(t)).grants[0]!;
+			expect(connected.status).toBe("connected");
+			if (before) {
+				expect(connected._id).toBe(before._id);
+				expect(connected.version).toBe(before.version + 1);
+			}
+		} finally {
+			releaseMetadata.resolve();
+		}
+
+		expect(await oldStart).toEqual({
+			_nay: { message: "This server changed its sign-in server. Delete it and add it again." },
+		});
+		expect((await read_all(t)).grants[0]!.status, "old issuer response kept the later sign-in").toBe("connected");
+	});
 });
 
 describe("finish", () => {
@@ -566,6 +615,55 @@ describe("finish", () => {
 		expect(await finish(owner, callback)).toEqual({ _nay: { message: "This sign-in expired. Connect again." } });
 	});
 
+	test("a callback replay cannot exchange the code while the first callback waits", async () => {
+		const { t, owner } = await setup();
+		const target = await install_oauth_plugin(t, owner);
+		const { callback } = await sign_in(owner, target);
+		let release!: () => void;
+		gate = { path: "/token", promise: new Promise((resolve) => (release = resolve)), reached: false };
+		const first = finish(owner, callback);
+		await vi.waitFor(() => expect(gate?.reached).toBe(true));
+
+		let secondRequest!: () => void;
+		const requestedAgain = new Promise<void>((resolve) => (secondRequest = resolve));
+		gate.onRequest = secondRequest;
+		const second = finish(owner, callback);
+		await Promise.race([second, requestedAgain]);
+		release();
+
+		expect((await first)._yay !== undefined).toBe(true);
+		expect((await second)._nay !== undefined).toBe(true);
+		expect(fixtures.counts.token).toBe(1);
+		expect((await read_all(t)).pending.length).toBe(0);
+	});
+
+	test.each([true, false])("Disconnect cancels a waiting exchange (existing grant: %s)", async (hasGrant) => {
+		const { t, owner } = await setup();
+		const target = await install_oauth_plugin(t, owner);
+		if (hasGrant) {
+			await connect(owner, target);
+		}
+		const { callback } = await sign_in(owner, target);
+		let release!: () => void;
+		gate = { path: "/token", promise: new Promise((resolve) => (release = resolve)), reached: false };
+		const finished = finish(owner, callback);
+		await vi.waitFor(() => expect(gate?.reached).toBe(true));
+
+		const disconnected = await owner.asUser.mutation(api.plugins_mcp_oauth.disconnect, {
+			membershipId: owner.membershipId,
+			target,
+		});
+		release();
+		const result = await finished;
+
+		expect(disconnected._yay === null).toBe(true);
+		expect((await read_all(t)).grants.length).toBe(0);
+		expect(result._nay !== undefined).toBe(true);
+		expect((await read_all(t)).pending.length).toBe(0);
+		await vi.waitFor(async () => expect((await read_all(t)).revocations.length).toBe(0));
+		expect(fixtures.revoked.length).toBe(hasGrant ? 2 : 1);
+	});
+
 	test("refuses an expired sign-in", async () => {
 		const { t, owner } = await setup();
 		const target = await install_oauth_plugin(t, owner);
@@ -604,6 +702,29 @@ describe("finish", () => {
 		const fifth = await sign_in(owner, target);
 		expect(fifth.callback.iss).toBeNull();
 		expect((await finish(owner, fifth.callback))._yay).toBeTruthy();
+		expect((await read_all(t)).pending.length).toBe(0);
+	});
+
+	test.each(["no code", "failed exchange"])("clears a claimed sign-in after %s", async (failure) => {
+		const { t, owner } = await setup();
+		const target = await install_oauth_plugin(t, owner);
+		const { callback } = await sign_in(owner, target);
+		if (failure === "failed exchange") {
+			fixtures.switches.tokenRedirect = "https://evil.oauth.test/token";
+		}
+
+		const result = await owner.asUser.action(api.plugins_mcp_oauth.finish, {
+			state: callback.state,
+			code: failure === "no code" ? null : callback.code,
+			iss: callback.iss,
+			error: null,
+		});
+
+		expect(result._nay !== undefined).toBe(true);
+		expect((await read_all(t)).pending.length).toBe(0);
+		expect(fixtures.wire.filter((entry) => entry.host === "as.oauth.test" && entry.path === "/token").length).toBe(
+			failure === "no code" ? 0 : 1,
+		);
 	});
 
 	test("refuses when the server moved after start", async () => {
@@ -749,6 +870,39 @@ async function grant_access_token(t: TestConvex) {
 function tool_calls_to(host: string) {
 	return fixtures.wire.filter((entry) => entry.host === host && entry.body.includes('"tools/call"'));
 }
+
+describe("disconnect", () => {
+	test("keeps other members' and other servers' pending sign-ins", async () => {
+		const { t, owner } = await setup();
+		const member = await add_member(t, owner);
+		const target = await install_oauth_plugin(t, owner);
+		const customTarget = await save_custom_server(owner);
+		await connect(owner, target);
+		next_minute();
+		await start(owner, target);
+		await start(owner, customTarget);
+		await start(member, target);
+		expect((await read_all(t)).pending.length).toBe(3);
+
+		const result = await owner.asUser.mutation(api.plugins_mcp_oauth.disconnect, {
+			membershipId: owner.membershipId,
+			target,
+		});
+
+		expect(result._yay === null).toBe(true);
+		const { pending } = await read_all(t);
+		expect(pending.length).toBe(2);
+		expect(pending.some((doc) => doc.userId === member.userId && doc.target.kind === "plugin")).toBe(true);
+		expect(
+			pending.some(
+				(doc) =>
+					doc.userId === owner.userId &&
+					doc.target.kind === "custom" &&
+					doc.target.customServerId === customTarget.customServerId,
+			),
+		).toBe(true);
+	});
+});
 
 describe("can_connect", () => {
 	test("finds the member's plugin server and own server", async () => {
@@ -930,6 +1084,89 @@ describe("token use", () => {
 		await vi.waitFor(async () => expect((await read_all(t)).revocations).toEqual([]));
 	});
 
+	test.each(["invalid_grant", "failed"])("an old refresh failure (%s) uses a newer connection", async (kind) => {
+		const { t, owner } = await setup();
+		const target = await install_oauth_plugin(t, owner);
+		await connect(owner, target);
+		const before = (await read_all(t)).grants[0]!;
+		expect(before.expiresAt !== null).toBe(true);
+		vi.setSystemTime(before.expiresAt! + 1);
+
+		const reached = Promise.withResolvers<void>();
+		const release = Promise.withResolvers<void>();
+		const fixtureFetch = fixtures.fetch;
+		let held = false;
+		fixtures.switches.refreshInvalidGrant = true;
+		fixtures.fetch = async (input, init) => {
+			const request = new Request(input, init);
+			if (
+				!held &&
+				new URL(request.url).pathname === "/token" &&
+				(await request.clone().text()).includes("grant_type=refresh_token")
+			) {
+				held = true;
+				const refused = await fixtureFetch(request);
+				const response =
+					kind === "invalid_grant" ? refused : Response.json({ error: "temporarily_unavailable" }, { status: 503 });
+				fixtures.switches.refreshInvalidGrant = false;
+				reached.resolve();
+				await release.promise;
+				return response;
+			}
+			return await fixtureFetch(request);
+		};
+
+		const operation = call_echo(t, owner, target);
+		await reached.promise;
+		try {
+			await connect(owner, target);
+			const fresh = (await read_all(t)).grants[0]!;
+			expect(fresh.status, "the new public Connect finished").toBe("connected");
+			expect(fresh.version).toBe(before.version + 1);
+		} finally {
+			release.resolve();
+		}
+		const [called] = await operation;
+
+		expect((await read_all(t)).grants[0]!.status, "the old refresh kept the new grant").toBe("connected");
+		expect(called!.output?.metadata.kind, "the old refresh failure uses the newer connection").toBe("mcp_result");
+		expect(called!.error).toBeNull();
+		expect(called!.output?.output).toBe("hello");
+		expect(fixtures.counts.refresh).toBe(1);
+	});
+
+	test("a temporary refresh failure keeps the grant and returns the error once", async () => {
+		const { t, owner } = await setup();
+		const target = await install_oauth_plugin(t, owner);
+		await connect(owner, target);
+		const before = (await read_all(t)).grants[0]!;
+		vi.setSystemTime(before.expiresAt! + 1);
+		const fixtureFetch = fixtures.fetch;
+		let attempts = 0;
+		fixtures.fetch = async (input, init) => {
+			const request = new Request(input, init);
+			if (
+				new URL(request.url).pathname === "/token" &&
+				(await request.clone().text()).includes("grant_type=refresh_token")
+			) {
+				attempts += 1;
+				return Response.json({ error: "temporarily_unavailable" }, { status: 503 });
+			}
+			return await fixtureFetch(request);
+		};
+
+		const [called] = await call_echo(t, owner, target);
+
+		expect(called!.error).toBe("The sign-in server had an error.");
+		expect(attempts).toBe(1);
+		expect((await read_all(t)).grants[0]).toMatchObject({
+			status: "connected",
+			version: before.version,
+			leaseId: null,
+			leaseUntil: null,
+		});
+	});
+
 	test("a disconnect during a refresh revokes the new tokens", async () => {
 		const { t, owner } = await setup();
 		const target = await install_oauth_plugin(t, owner);
@@ -958,8 +1195,9 @@ describe("token use", () => {
 
 	test("keeps the scope a 403 asks for, and the next Connect asks for it", async () => {
 		const { t, owner } = await setup();
-		const target = await install_oauth_plugin(t, owner);
+		const target = await save_custom_server(owner);
 		await connect(owner, target);
+		expect((await read_all(t)).grants[0]!.requestedScopes.includes("mcp:write")).toBe(false);
 		fixtures.switches.serverForbidden = "insufficient_scope";
 
 		const [called] = await call_echo(t, owner, target);
@@ -969,6 +1207,36 @@ describe("token use", () => {
 		next_minute();
 		const started = await start(owner, target);
 		expect(new URL(started._yay!.authorizationUrl).searchParams.get("scope")?.split(" ")).toContain("mcp:write");
+	});
+
+	test("an old token refusal cannot end a new grant with the same version", async () => {
+		fixtures.switches.tokenIncludeRefresh = false;
+		const { t, owner } = await setup();
+		const target = await install_oauth_plugin(t, owner);
+		await connect(owner, target);
+		const before = (await read_all(t)).grants[0]!;
+		await owner.asUser.mutation(api.plugins_mcp_oauth.disconnect, { membershipId: owner.membershipId, target });
+		await vi.waitFor(async () => expect((await read_all(t)).revocations.length).toBe(0));
+		next_minute();
+		await connect(owner, target);
+		const after = (await read_all(t)).grants[0]!;
+		expect(after._id === before._id).toBe(false);
+		expect(after.version).toBe(before.version);
+
+		const access = await t.action((ctx) =>
+			plugins_mcp_oauth_get_access_token(ctx, {
+				userId: owner.userId,
+				target,
+				refusedGrant: { grantId: before._id, version: before.version },
+				waitForLease: true,
+				signal: new AbortController().signal,
+			}),
+		);
+
+		expect(access.status).toBe("connected");
+		expect((await read_all(t)).grants[0]!.status).toBe("connected");
+		expect((await read_all(t)).grants[0]!.version).toBe(after.version);
+		expect(fixtures.counts.refresh).toBe(0);
 	});
 
 	test("a plugin server without OAuth that asks for sign-in is a tool error, with no Connect card", async () => {

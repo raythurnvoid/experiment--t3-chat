@@ -281,6 +281,73 @@ describe("mcp_custom_config_parse", () => {
 		expect(draft.ignoredKeys).toEqual(["disabled", "autoApprove", "timeout"]);
 	});
 
+	test.each(["Do not set CLIENT_SECRET", { CLIENT_SECRET: "documentation example" }])(
+		"ignores CLIENT_SECRET in unused notes (%s)",
+		(notes) => {
+			const draft = parse_one(
+				JSON.stringify({
+					mcpServers: {
+						remote: { url: "https://mcp.example.com/mcp", notes },
+					},
+				}),
+			);
+
+			expect(draft.state).toBe("ready");
+			expect(draft.ignoredKeys).toEqual(["notes"]);
+		},
+	);
+
+	test.each(["Do not use ${file:/token.txt}", { example: "${file:/token.txt}" }])(
+		"ignores file references in unused notes (%s)",
+		(notes) => {
+			const draft = parse_one(
+				JSON.stringify({ mcpServers: { remote: { url: "https://mcp.example.com/mcp", notes } } }),
+			);
+
+			expect(draft.state, "unused notes kept the server usable").toBe("ready");
+			expect(draft.ignoredKeys).toEqual(["notes"]);
+		},
+	);
+
+	test("ignores file references in wrapper environment values", () => {
+		const draft = parse_one(
+			JSON.stringify({
+				mcpServers: {
+					remote: {
+						command: "npx",
+						args: ["mcp-remote", "https://mcp.example.com/mcp", "--header", "Authorization: Bearer ${API_TOKEN}"],
+						env: { API_TOKEN: "${file:/token.txt}" },
+					},
+				},
+			}),
+		);
+
+		expect(draft.state, "unused wrapper env kept the server usable").toBe("needs_values");
+		expect(draft.convertedFromMcpRemote).toBe(true);
+		expect(draft.headers[0].parts).toMatchObject([
+			{ kind: "text", text: "Bearer " },
+			{ kind: "secret", secretName: "API_TOKEN", prefill: null },
+		]);
+	});
+
+	test.each([
+		{ auth: { CLIENT_ID: "client" } },
+		{ auth: { CLIENT_SECRET: "secret" } },
+		{ oauth: { clientId: "client" } },
+		{ oauth: { clientSecret: "secret" } },
+		{ CLIENT_SECRET: "secret" },
+	])("refuses actual static OAuth client settings (%s)", (settings) => {
+		const draft = parse_one(
+			JSON.stringify({
+				mcpServers: {
+					remote: { url: "https://mcp.example.com/mcp", ...settings },
+				},
+			}),
+		);
+
+		expect(draft.refusal).toBe("Press signs in with its own OAuth client. Remove the OAuth client settings.");
+	});
+
 	test("parses JSONC comments and trailing commas", () => {
 		const draft = parse_one(`{
 	// My servers
@@ -326,6 +393,26 @@ describe("mcp_custom_config_parse", () => {
 				auth: { CLIENT_ID: "your-oauth-client-id", CLIENT_SECRET: "your-client-secret", scopes: ["read"] },
 			}),
 		).toContain("its own OAuth client");
+	});
+
+	test.each([
+		{ url: "https://mcp.example.com/mcp/${file:/token.txt}" },
+		{ serverUrl: "https://mcp.example.com/mcp/${file:/token.txt}" },
+		{ url: "https://mcp.example.com/mcp", headers: { Authorization: "Bearer ${file:/token.txt}" } },
+		{
+			url: "https://mcp.example.com/mcp",
+			requestOptions: { headers: { Authorization: "Bearer ${file:/token.txt}" } },
+		},
+		{ command: "npx", args: ["mcp-remote", "https://mcp.example.com/mcp/${file:/token.txt}"] },
+		{
+			command: "npx",
+			args: ["mcp-remote", "https://mcp.example.com/mcp", "--header", "Authorization: Bearer ${file:/token.txt}"],
+		},
+	])("refuses file references in a consumed URL or header (%s)", (entry) => {
+		const draft = parse_one(JSON.stringify({ mcpServers: { remote: entry } }));
+
+		expect(draft.state).toBe("refused");
+		expect(draft.refusal).toBe("Press cannot read files from your computer. Remove the ${file:...} reference.");
 	});
 
 	test("refuses reserved, duplicate, and too many headers", () => {

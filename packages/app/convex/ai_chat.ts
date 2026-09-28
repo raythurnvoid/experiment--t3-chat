@@ -1037,11 +1037,11 @@ async function load_turn_mcp_tools(
 
 		// A sign-in server gets the member's token. Turn setup never waits for another caller's refresh:
 		// the server is left out of this turn instead.
-		const getAccess = (refusedVersion: number | null) =>
+		const getAccess = (refusedGrant: { grantId: Id<"plugins_mcp_oauth_grants">; version: number } | null) =>
 			plugins_mcp_oauth_get_access_token(ctx, {
 				userId: ctxData.userId,
 				target: server.target,
-				refusedVersion,
+				refusedGrant,
 				waitForLease: false,
 				signal: input.signal,
 			});
@@ -1070,7 +1070,7 @@ async function load_turn_mcp_tools(
 
 		// A refused token gets one refresh and one more try.
 		if (listResult._nay?.name === "auth_required" && access?.status === "connected" && !access.refreshed) {
-			access = await getAccess(access.version);
+			access = await getAccess({ grantId: access.grantId, version: access.version });
 			if (access.status === "busy") {
 				notes.push(`${label}: left out, because its sign-in is being renewed.`);
 				return null;
@@ -1115,13 +1115,21 @@ async function load_turn_mcp_tools(
 				!input.signal.aborted &&
 				(server.kind === "custom" || access?.status !== "connected")
 			) {
-				await ctx.runMutation(internal.plugins_mcp.record_server_outcome, { target: server.target, ok: false });
+				await ctx.runMutation(internal.plugins_mcp.record_server_outcome, {
+					target: server.target,
+					expectedDestinationFingerprint: server.destinationFingerprint,
+					ok: false,
+				});
 			}
 			return null;
 		}
 		// Write only when there is a count to reset, so a healthy server costs no write per turn.
 		if (server.failures > 0) {
-			await ctx.runMutation(internal.plugins_mcp.record_server_outcome, { target: server.target, ok: true });
+			await ctx.runMutation(internal.plugins_mcp.record_server_outcome, {
+				target: server.target,
+				expectedDestinationFingerprint: server.destinationFingerprint,
+				ok: true,
+			});
 		}
 
 		// Count dropped tools, but never name them: tool names are server text.
