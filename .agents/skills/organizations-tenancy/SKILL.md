@@ -118,6 +118,17 @@ does not revive a check from a previous membership lifetime.
 
 - **`create_workspace`** is allowed in the **default** organization as well as others. Two gates, in order: the caller must already hold a membership in that organization, and must hold `workspace.create`, checked at the default workspace because the permission is organization-scoped. A custom role without `workspace.create` is refused, so the membership check is not the whole gate. Extra workspaces are **not** the primary workspace unless created by `organizations_db_create`.
 
+# Plugins and MCP servers policy
+
+Each custom organization decides which plugins and which member-added MCP servers its members may use. Code: `convex/organizations_integration_policy.ts`.
+
+- **Data.** At most one `organizations_integration_policies` doc per custom organization, with two parts. `plugins` holds `mode` (`allow_all` or `allowlist`) and entries keyed by plugin name, publisher user, and source repository URL. Each entry stores a ceiling: capabilities, both origin lists, and the plugin's MCP servers pinned by `destinationFingerprint`. A plugin and its MCP servers are allowed together. `mcpServers` holds `mode` and entries for servers members add themselves, keyed by `destinationFingerprint`. Each list holds at most 50 entries.
+- **Defaults.** No doc means nothing is allowed. The personal organization allows everything, never has a doc, and `update_policy` refuses it. The D18 migration `backfill_organizations_integration_policies` gave each existing custom organization a doc that allows its installed plugins.
+- **Who changes it.** `organization.integrations_policy.manage` ("Manage plugins and MCP servers"), organization scope. No system role holds it; the owner has it by ownership and can give it through a custom role, like billing. The UI is "Manage plugins and MCP servers" in the organization switcher row menu (hidden for the personal organization and without the permission).
+- **Reads.** `get_policy` returns the full doc to managers (`view: "manager"`) and a reduced view to other members (plugin names and modes only). `list_plugin_candidates` and the paginated `list_custom_server_candidates` feed the manager screen and return nothing to anyone else.
+- **Writes.** `update_policy({ organizationId, change })` takes one change: set a mode, allow, or remove, for either part. The server copies a plugin's ceiling from the chosen published version, so a client cannot send its own. A plugin change runs the disable pass (see `../plugin-system/SKILL.md`, "Organization plugin and MCP policy"). An MCP change needs no pass, because MCP servers are checked at every chat turn and tool call.
+- **Deletion.** Organization delete removes the doc in `db_delete_organization_batch`. The workspace purge cannot reach it, because it has no `workspaceId`.
+
 # Organization and workspace deletion and data purge
 
 **Phase 1 — UI-facing / structural (immediate)** | **Phase 2 — Heavy content (one cron)**

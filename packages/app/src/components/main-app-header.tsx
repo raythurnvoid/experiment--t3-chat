@@ -16,6 +16,7 @@ import {
 	type MainAppHeaderOrganizationSwitcherModal_Props,
 	type MainAppHeaderOrganizationSwitcherModal_EditTarget,
 	type MainAppHeaderOrganizationSwitcherModal_BillingTarget,
+	type MainAppHeaderOrganizationSwitcherModal_IntegrationPolicyTarget,
 } from "@/components/main-app-header-organization-controls-modal.tsx";
 import { MyButton } from "@/components/my-button.tsx";
 import { MyModal, MyModalTrigger } from "@/components/my-modal.tsx";
@@ -149,6 +150,8 @@ const MainAppHeaderOrganizationControls = memo(function MainAppHeaderOrganizatio
 	const [localDraft, setLocalDraft] = useState<MainAppHeaderOrganizationControls_LocalDraft | null>(null);
 	const [editTarget, setEditTarget] = useState<MainAppHeaderOrganizationSwitcherModal_EditTarget | null>(null);
 	const [billingTarget, setBillingTarget] = useState<MainAppHeaderOrganizationSwitcherModal_BillingTarget | null>(null);
+	const [integrationPolicyTarget, setIntegrationPolicyTarget] =
+		useState<MainAppHeaderOrganizationSwitcherModal_IntegrationPolicyTarget | null>(null);
 
 	const organizations = organizationList?.organizations;
 	const workspaces = organizationId ? organizationList?.organizationIdsWorkspacesDict[organizationId] : undefined;
@@ -309,6 +312,11 @@ const MainAppHeaderOrganizationControls = memo(function MainAppHeaderOrganizatio
 
 				return {
 					id: organization._id,
+				const canManageIntegrations = main_app_header_organization_controls_has_permission({
+					permissionsDict: organizationList?.workspaceIdsPermissionsDict,
+					workspaceId: primaryWorkspace?._id,
+					permission: "organization.integrations_policy.manage",
+				});
 					label: organization.name,
 					description: organizations_switcher_list_secondary_line({
 						storedDescription: organization.description ?? "",
@@ -337,6 +345,13 @@ const MainAppHeaderOrganizationControls = memo(function MainAppHeaderOrganizatio
 					onEdit:
 						organization.default || !primaryWorkspace || !canUpdateOrganization
 							? undefined
+					// The personal organization allows every plugin and MCP server, so it has nothing to manage.
+					onManageIntegrations:
+						organization.default || !canManageIntegrations
+							? undefined
+							: () => {
+									setIntegrationPolicyTarget({ organizationId: organization._id, organizationName: organization.name });
+								},
 							: () => {
 									setEditTarget({
 										kind: "organization",
@@ -668,6 +683,12 @@ const MainAppHeaderOrganizationControls = memo(function MainAppHeaderOrganizatio
 	const organizationControlsButtonLabel =
 		organizations === undefined
 			? "Open organization and workspace switcher. Current organization and workspace are loading."
+
+	const handleOrganizationSwitcherUpdateIntegrationPolicy = useFn<
+		MainAppHeaderOrganizationSwitcherModal_Props["updateIntegrationPolicy"]
+	>((args) => {
+		return app_convex.mutation(app_convex_api.organizations_integration_policy.update_policy, args);
+	});
 			: `Open organization and workspace switcher. Current organization: ${currentOrganizationName}. Current workspace: ${currentWorkspaceName}.`;
 
 	useEffect(() => {
@@ -677,6 +698,7 @@ const MainAppHeaderOrganizationControls = memo(function MainAppHeaderOrganizatio
 			return;
 		}
 
+			setIntegrationPolicyTarget(null);
 		if (!organizationId || !workspaceId) {
 			return;
 		}
@@ -740,6 +762,7 @@ const MainAppHeaderOrganizationControls = memo(function MainAppHeaderOrganizatio
 				createOrganization={handleOrganizationSwitcherCreateOrganization}
 				createWorkspace={handleOrganizationSwitcherCreateWorkspace}
 				editOrganization={handleOrganizationSwitcherEditOrganization}
+				integrationPolicyTarget={integrationPolicyTarget}
 				editWorkspace={handleOrganizationSwitcherEditWorkspace}
 				setEditTarget={setEditTarget}
 				setBillingTarget={setBillingTarget}
@@ -747,6 +770,8 @@ const MainAppHeaderOrganizationControls = memo(function MainAppHeaderOrganizatio
 				onAfterCreateOrganization={handleOrganizationSwitcherAfterCreate}
 				onAfterCreateWorkspace={handleOrganizationSwitcherAfterCreate}
 				onAfterEdit={handleOrganizationSwitcherAfterEdit}
+				setIntegrationPolicyTarget={setIntegrationPolicyTarget}
+				updateIntegrationPolicy={handleOrganizationSwitcherUpdateIntegrationPolicy}
 				onCancel={handleOrganizationSwitcherCancel}
 				onSwitch={handleOrganizationSwitcherSwitch}
 			/>

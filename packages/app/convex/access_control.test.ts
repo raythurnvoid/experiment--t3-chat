@@ -244,6 +244,8 @@ async function access_control_test_seed_activity(
 			capabilitiesAcceptedAt: now,
 			acceptedOutboundOrigins: [],
 			acceptedUiOutboundOrigins: [],
+			acceptedMcpServersFingerprint: "mcp-servers-hash",
+			acceptedSkillNames: [],
 			outboundOriginsAcceptedAt: now,
 			installedBy: fixture.ownerId,
 			updatedBy: fixture.ownerId,
@@ -2485,10 +2487,14 @@ describe("system roles", () => {
 		expect([...access_control_SYSTEM_ROLE_MATRIX.viewer.permissions]).toEqual(["content.read"]);
 
 		// No system role includes billing: only the owner, or a custom role the owner made, may change
-		// who pays.
+		// who pays. The same holds for the plugin and MCP policy, which decides where chats send data.
 		for (const role of access_control_SYSTEM_ROLES) {
 			expect(access_control_SYSTEM_ROLE_MATRIX[role].permissions).not.toContain("organization.billing.manage");
+			expect(access_control_SYSTEM_ROLE_MATRIX[role].permissions).not.toContain(
+				"organization.integrations_policy.manage",
+			);
 		}
+		expect(access_control_PERMISSION_CATALOG["organization.integrations_policy.manage"].scope).toBe("organization");
 	});
 
 	test("viewer can read but not write", async () => {

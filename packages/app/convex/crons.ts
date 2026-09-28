@@ -86,6 +86,13 @@ crons.cron(
 // Once daily at 06:45 UTC — delete expired plugin UI page sessions.
 crons.cron("cleanup expired plugin ui sessions", "45 6 * * *", internal.plugins_ui.cleanup_expired_ui_sessions, {});
 
+// Once daily at 06:50 UTC — delete MCP token revocation docs older than a day. Each doc waits for one
+// revoke attempt only, so an old doc is one whose attempt never ran.
+crons.cron("cleanup old mcp revocations", "50 6 * * *", internal.plugins_mcp.cleanup_old_revocations, {});
+
+// Once daily at 06:55 UTC — delete MCP call ledger docs older than 30 days.
+crons.cron("cleanup old mcp calls", "55 6 * * *", internal.plugins_mcp.cleanup_old_calls, {});
+
 // Once hourly — release plugin-data reservations a crashed producer never released, then delete the
 // retry records, delete tombstones and append receipts, and delete expired service grants.
 //

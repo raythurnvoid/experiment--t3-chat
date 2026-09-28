@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { api, internal } from "./_generated/api.js";
+import { ai_chat_workspaces_SELECTORS } from "./ai_chat_workspaces.ts";
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
 
 async function fixture(personal = false) {
@@ -85,7 +86,8 @@ describe("resolve", () => {
 				lastMessageAt: Date.now(),
 			});
 		if (created._nay) throw new Error(created._nay.message);
-		for (const workspace of ["current", "personal"] as const) {
+		// Loop over the shared list, so the validator must accept every selector the MCP check uses.
+		for (const workspace of ai_chat_workspaces_SELECTORS) {
 			expect(
 				await f.t.query(internal.ai_chat_workspaces.resolve, {
 					source: { ...f.source, threadId: created._yay.threadId },

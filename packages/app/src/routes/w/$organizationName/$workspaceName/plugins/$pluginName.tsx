@@ -90,6 +90,7 @@ import {
 	plugins_parse_installation_configuration_yaml,
 	plugins_parse_env_text,
 	plugins_validate_secret_name,
+	type plugins_McpServer,
 } from "../../../../../../shared/plugins.ts";
 import {
 	access_control_FILE_SHARE_LEVEL_KEYS,
@@ -1449,6 +1450,16 @@ type RoutePluginsPluginAccess_Props = {
 	handlers: RoutePlugins_Installation["handlers"] | null;
 	configurationYaml: string | null;
 	events: RoutePlugins_Installation["version"]["events"] | null;
+	/**
+	 * Null when the plugin is not installed.
+	 */
+	mcpServerStatuses: app_convex_FunctionReturnType<
+		typeof app_convex_api.plugins_mcp.get_installation_mcp_status
+	> | null;
+};
+
+type RoutePluginsPluginAccess_CustomAttributes = {
+	"data-organization-policy": "allowed" | "blocked";
 };
 
 /**
@@ -1523,11 +1534,35 @@ function format_capability_label(value: string) {
 		return "Set locks and readers for its output. Members with manage permission can change them.";
 	}
 
+	// The plain rule writes "Agent Mcp Connect", which does not say who calls what. The chat agent
+	// calls the outside servers listed on this screen.
+	if (value === "agent.mcp.connect") {
+		return "Let the chat agent call the MCP servers listed here";
+	}
+
+	// The plain rule writes "Agent Skills Contribute", which does not say where the skills go.
+	if (value === "agent.skills.contribute") {
+		return "Add its skills to the chat agent's skill list";
+	}
+
 	return format_access_label(value);
 }
 
+/**
+ * How a member reaches one MCP server, in words an admin can read.
+ */
+function format_mcp_server_auth(server: plugins_McpServer) {
+	if (server.auth.kind === "none") {
+		return "no sign-in";
+	}
+	if (server.auth.kind === "secret_headers") {
+		return "uses plugin secrets";
+	}
+	return `each member signs in at ${new URL(server.auth.issuer).host}`;
+}
+
 const RoutePluginsPluginAccess = memo(function RoutePluginsPluginAccess(props: RoutePluginsPluginAccess_Props) {
-	const { plugin, handlers, configurationYaml, events } = props;
+	const { plugin, handlers, configurationYaml, events, mcpServerStatuses } = props;
 	const parsedConfiguration =
 		configurationYaml !== null && events !== null
 			? plugins_parse_installation_configuration_yaml({ configurationYaml, events })
@@ -1659,6 +1694,72 @@ const RoutePluginsPluginAccess = memo(function RoutePluginsPluginAccess(props: R
 					by navigating, even when no backend origin is listed.
 				</p>
 			) : null}
+
+			<section className={"RoutePluginsPluginAccess-group" satisfies RoutePluginsPluginAccess_ClassNames}>
+				<h3 className={"RoutePluginsPluginAccess-group-title" satisfies RoutePluginsPluginAccess_ClassNames}>
+					MCP servers
+				</h3>
+				{plugin.mcpServers.length === 0 ? (
+					<div className={"RoutePluginsPluginAccess-empty" satisfies RoutePluginsPluginAccess_ClassNames}>
+						No MCP servers.
+					</div>
+				) : (
+					<>
+						<ul className={"RoutePluginsPluginAccess-list" satisfies RoutePluginsPluginAccess_ClassNames}>
+							{plugin.mcpServers.map((server) => {
+								const status = mcpServerStatuses?.find((item) => item.serverId === server.id);
+								return (
+									<li
+										key={server.id}
+										className={"RoutePluginsPluginAccess-item" satisfies RoutePluginsPluginAccess_ClassNames}
+										{...(status
+											? ({
+													"data-organization-policy": status.policy,
+												} satisfies RoutePluginsPluginAccess_CustomAttributes)
+											: {})}
+									>
+										{server.title} — {new URL(server.url).host} — {format_mcp_server_auth(server)}
+										{server.tools ? ` — tools: ${server.tools.join(", ")}` : ""}
+										{status?.policy === "blocked" ? " — Blocked by your organization's MCP policy" : ""}
+										{status?.health === "paused" ? " — Paused after failed tool lists" : ""}
+										{server.auth.kind === "oauth" && status
+											? status.connection === null
+												? " — You are not signed in"
+												: status.connection.status === "connected"
+													? ` — You are signed in at ${status.connection.authorizationHost}`
+													: " — Sign in again"
+											: ""}
+									</li>
+								);
+							})}
+						</ul>
+						<p className={"RoutePluginsPluginAccess-description" satisfies RoutePluginsPluginAccess_ClassNames}>
+							MCP servers are outside services. When the agent calls a tool, the chat sends that call's data to the
+							server without asking.
+						</p>
+					</>
+				)}
+			</section>
+
+			<section className={"RoutePluginsPluginAccess-group" satisfies RoutePluginsPluginAccess_ClassNames}>
+				<h3 className={"RoutePluginsPluginAccess-group-title" satisfies RoutePluginsPluginAccess_ClassNames}>Skills</h3>
+				{plugin.skills.length === 0 ? (
+					<div className={"RoutePluginsPluginAccess-empty" satisfies RoutePluginsPluginAccess_ClassNames}>
+						No skills.
+					</div>
+				) : (
+					<ul className={"RoutePluginsPluginAccess-list" satisfies RoutePluginsPluginAccess_ClassNames}>
+						{plugin.skills.map((skill) => (
+							<li
+								key={skill.name}
+								className={"RoutePluginsPluginAccess-item" satisfies RoutePluginsPluginAccess_ClassNames}
+							>
+								{skill.name} — {skill.description}
+							</li>
+						))}
+					</ul>
+				)}
+			</section>
 
 			<section className={"RoutePluginsPluginAccess-group" satisfies RoutePluginsPluginAccess_ClassNames}>
 				<h3 className={"RoutePluginsPluginAccess-group-title" satisfies RoutePluginsPluginAccess_ClassNames}>
@@ -2005,6 +2106,10 @@ type RoutePluginsPlugin_ClassNames =
 	| "RoutePluginsPluginConsentModal-actions"
 	| "RoutePluginsPluginConsentModal-accountFields";
 
+type RoutePluginsPlugin_CustomAttributes = {
+	"data-organization-policy": RoutePlugins_PublishedPlugin["organizationPolicy"];
+};
+
 /**
  * Let workspace managers open any plugin and publishers open their own plugin.
  * Deny only after both live permission sources have loaded; a manager is allowed as soon as the
@@ -2050,6 +2155,9 @@ function get_publisher_version(publisherPlugin: RoutePlugins_PublisherPlugin): R
 		mcpServers: version.mcpServers,
 		mcpServersFingerprint: version.mcpServersFingerprint,
 		skills: version.skills,
+		// This view is for a publisher who cannot manage plugins, so it never offers Install. The
+		// server checks the organization policy at install anyway.
+		organizationPolicy: "allowed",
 	};
 }
 
@@ -2288,6 +2396,14 @@ function RoutePluginsPlugin() {
 			: null;
 	const installedItem = installations?.find((item) => item.installation.pluginName === plugin?.name) ?? null;
 	const installedVersion = installedItem?.version;
+	// An organization policy change can disable the installation. Enable reinstalls the same version,
+	// so `install_version` stays the only place that turns an installation on.
+	const enablesInstalledVersion =
+		installedItem?.installation.status === "disabled" && installedVersion?.version === plugin?.version;
+	const mcpServerStatuses = useQuery(
+		app_convex_api.plugins_mcp.get_installation_mcp_status,
+		installedItem ? { membershipId, installationId: installedItem.installation._id } : "skip",
+	);
 	const currentAccount = useQuery(
 		app_convex_api.access_control.get_service_account,
 		installedItem?.installation.serviceAccountId
@@ -2332,7 +2448,9 @@ function RoutePluginsPlugin() {
 	});
 
 	const showInstall =
-		plugin !== null && canManagePlugins === true && (!installedVersion || installedVersion.version !== plugin.version);
+		plugin !== null &&
+		canManagePlugins === true &&
+		(!installedVersion || installedVersion.version !== plugin.version || enablesInstalledVersion);
 
 	const handleUninstall = useFn(
 		(installation: RoutePlugins_Installation["installation"], button: HTMLButtonElement) => {
@@ -2427,7 +2545,8 @@ function RoutePluginsPlugin() {
 			removing ||
 			rebinding ||
 			plugin.reviewStatus === "rejected" ||
-			plugin.reviewStatus === "flagged"
+			plugin.reviewStatus === "flagged" ||
+			plugin.organizationPolicy !== "allowed"
 		) {
 			return;
 		}
@@ -2444,6 +2563,8 @@ function RoutePluginsPlugin() {
 				acceptedCapabilities: plugin.capabilities,
 				acceptedOutboundOrigins: plugin.outboundOrigins,
 				acceptedUiOutboundOrigins: plugin.uiOutboundOrigins,
+				acceptedMcpServersFingerprint: plugin.mcpServersFingerprint,
+				acceptedSkillNames: plugin.skills.map((skill) => skill.name),
 				...(installAccountId ? { serviceAccountId: installAccountId } : {}),
 				...(installGrants.length > 0 ? { serviceAccountGrants: installGrants } : {}),
 			})
@@ -2453,7 +2574,7 @@ function RoutePluginsPlugin() {
 					return;
 				}
 
-				toast.success(`Installed ${plugin.name} ${plugin.version}`);
+				toast.success(`${enablesInstalledVersion ? "Enabled" : "Installed"} ${plugin.name} ${plugin.version}`);
 				// Closing the modal makes Ariakit put the focus back on the Install button, and the
 				// reactive list_installations update then unmounts that button. Arm the landing
 				// effect below so the fallen focus does not stay on the page body.
@@ -2569,21 +2690,42 @@ function RoutePluginsPlugin() {
 					capabilities: installedVersion.capabilities,
 					outboundOrigins: installedVersion.outboundOrigins,
 					uiOutboundOrigins: installedVersion.uiOutboundOrigins,
+					mcpServers: installedVersion.mcpServers,
+					skills: installedVersion.skills,
 				}
 			: null,
 		target: {
 			capabilities: plugin.capabilities,
 			outboundOrigins: plugin.outboundOrigins,
 			uiOutboundOrigins: plugin.uiOutboundOrigins,
+			mcpServers: plugin.mcpServers,
+			skills: plugin.skills,
 		},
 	});
-	// Installed-and-current shows only Uninstall; reinstalling means uninstalling and installing again.
-	const installAction = installedVersion ? "Update" : "Install";
-	const installProgress = installAction === "Update" ? "Updating..." : "Installing...";
+	// Installed-and-current shows only Uninstall, or Enable when it is disabled; reinstalling means
+	// uninstalling and installing again.
+	const installAction = enablesInstalledVersion ? "Enable" : installedVersion ? "Update" : "Install";
+	const installProgress =
+		installAction === "Enable" ? "Enabling..." : installAction === "Update" ? "Updating..." : "Installing...";
 	const installationBlocked = plugin.reviewStatus === "rejected" || plugin.reviewStatus === "flagged";
+	// The server refuses these installs too. Say why here instead of after the consent dialog.
+	const policyNote =
+		plugin.organizationPolicy === "blocked"
+			? "Your organization does not allow this plugin. Ask your organization owner."
+			: plugin.organizationPolicy === "needs_approval"
+				? "Needs your organization owner's approval."
+				: null;
 	const handleOpenConsent = () => {
 		// Keep this guard because a mock or programmatic event can still call a disabled handler.
-		if (publishBusy || managementBusy || installing || uninstalling || removing || installationBlocked) {
+		if (
+			publishBusy ||
+			managementBusy ||
+			installing ||
+			uninstalling ||
+			removing ||
+			installationBlocked ||
+			policyNote !== null
+		) {
 			return;
 		}
 
@@ -2613,6 +2755,8 @@ function RoutePluginsPlugin() {
 				uiOutboundOrigins: installedVersion.uiOutboundOrigins,
 				pages: installedVersion.pages,
 				fileViews: installedVersion.fileViews,
+				mcpServers: installedVersion.mcpServers,
+				skills: installedVersion.skills,
 			}
 		: plugin;
 
@@ -2626,7 +2770,12 @@ function RoutePluginsPlugin() {
 			<div className={"RoutePluginsPlugin-content" satisfies RoutePluginsPlugin_ClassNames}>
 				{breadcrumb}
 
-				<header className={"RoutePluginsPluginHero" satisfies RoutePluginsPlugin_ClassNames}>
+				<header
+					className={"RoutePluginsPluginHero" satisfies RoutePluginsPlugin_ClassNames}
+					{...({
+						"data-organization-policy": plugin.organizationPolicy,
+					} satisfies RoutePluginsPlugin_CustomAttributes)}
+				>
 					<Puzzle aria-hidden className={"RoutePluginsPluginHero-icon" satisfies RoutePluginsPlugin_ClassNames} />
 					<div className={"RoutePluginsPluginHero-info" satisfies RoutePluginsPlugin_ClassNames}>
 						<div className={"RoutePluginsPluginHero-titleRow" satisfies RoutePluginsPlugin_ClassNames}>
@@ -2690,7 +2839,13 @@ function RoutePluginsPlugin() {
 								// modal mid-install.
 								<MyButton
 									disabled={
-										publishBusy || managementBusy || installing || uninstalling || removing || installationBlocked
+										publishBusy ||
+										managementBusy ||
+										installing ||
+										uninstalling ||
+										removing ||
+										installationBlocked ||
+										policyNote !== null
 									}
 									onClick={handleOpenConsent}
 								>
@@ -2746,6 +2901,11 @@ function RoutePluginsPlugin() {
 						{installationBlocked && showInstall ? (
 							<p className={"RoutePluginsPluginHero-action-note" satisfies RoutePluginsPlugin_ClassNames}>
 								Installation is blocked by this release's review verdict.
+							</p>
+						) : null}
+						{policyNote !== null && showInstall ? (
+							<p className={"RoutePluginsPluginHero-action-note" satisfies RoutePluginsPlugin_ClassNames}>
+								{policyNote}
 							</p>
 						) : null}
 					</div>
@@ -2819,6 +2979,7 @@ function RoutePluginsPlugin() {
 					handlers={installedItem?.handlers ?? null}
 					configurationYaml={installedItem?.installation.configurationYaml ?? null}
 					events={installedItem?.version.events ?? null}
+					mcpServerStatuses={mcpServerStatuses ?? null}
 				/>
 
 				{publisherPlugin ? (
@@ -2960,6 +3121,51 @@ function RoutePluginsPlugin() {
 								Plugin pages and file views are trusted with the data their capabilities expose. They can send that data
 								away by navigating, even when no backend origin is listed.
 							</p>
+						) : null}
+						{plugin.mcpServers.length > 0 ? (
+							<>
+								<div className={"RoutePluginsPluginConsentModal-sectionTitle" satisfies RoutePluginsPlugin_ClassNames}>
+									The chat agent can call these MCP servers
+								</div>
+								<ul className={"RoutePluginsPluginConsentModal-list" satisfies RoutePluginsPlugin_ClassNames}>
+									{plugin.mcpServers.map((server) => (
+										<li
+											key={server.id}
+											className={"RoutePluginsPluginConsentModal-item" satisfies RoutePluginsPlugin_ClassNames}
+										>
+											{server.title} — {new URL(server.url).host} — {format_mcp_server_auth(server)}
+											{server.tools ? ` — tools: ${server.tools.join(", ")}` : ""}
+											{installedVersion && consentDiff.newOrChangedMcpServerIds.includes(server.id) ? (
+												<MyBadge variant="secondary">new</MyBadge>
+											) : null}
+										</li>
+									))}
+								</ul>
+								<p className={"RoutePluginsPluginConsentModal-baseline" satisfies RoutePluginsPlugin_ClassNames}>
+									MCP servers are outside services. When the agent calls a tool, the chat sends that call's data to the
+									server without asking.
+								</p>
+							</>
+						) : null}
+						{plugin.skills.length > 0 ? (
+							<>
+								<div className={"RoutePluginsPluginConsentModal-sectionTitle" satisfies RoutePluginsPlugin_ClassNames}>
+									This plugin adds these skills to the chat agent
+								</div>
+								<ul className={"RoutePluginsPluginConsentModal-list" satisfies RoutePluginsPlugin_ClassNames}>
+									{plugin.skills.map((skill) => (
+										<li
+											key={skill.name}
+											className={"RoutePluginsPluginConsentModal-item" satisfies RoutePluginsPlugin_ClassNames}
+										>
+											{skill.name} — {skill.description}
+											{installedVersion && consentDiff.newSkillNames.includes(skill.name) ? (
+												<MyBadge variant="secondary">new</MyBadge>
+											) : null}
+										</li>
+									))}
+								</ul>
+							</>
 						) : null}
 						<div className={"RoutePluginsPluginConsentModal-sectionTitle" satisfies RoutePluginsPlugin_ClassNames}>
 							Backend requests can go to these origins

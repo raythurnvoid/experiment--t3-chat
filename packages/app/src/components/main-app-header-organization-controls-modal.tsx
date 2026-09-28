@@ -1,5 +1,6 @@
 import "./main-app-header-organization-controls-modal.css";
 
+import { usePaginatedQuery, useQuery } from "convex/react";
 import type { FunctionArgs, FunctionReturnType } from "convex/server";
 import {
 	memo,
@@ -25,6 +26,7 @@ import {
 	Info,
 	Pencil,
 	Plus,
+	ShieldCheck,
 	Trash2,
 } from "lucide-react";
 
@@ -32,6 +34,7 @@ import { toast } from "sonner";
 import { useFn, useLiveRef } from "@/hooks/utils-hooks.ts";
 import { MyPrimaryAction } from "@/components/my-action.tsx";
 import { MyButton } from "@/components/my-button.tsx";
+import { MyCheckboxButton } from "@/components/my-checkbox-button.tsx";
 import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
 import { MyIcon } from "@/components/my-icon.tsx";
 import {
@@ -139,6 +142,7 @@ export type MainAppHeaderOrganizationSwitcherModal_ListItem = {
 	ownershipBadge?: "personal" | "owner" | "joined";
 	billingBadge?: "members_pay" | "my_balance" | "owner_pays";
 	onManageBilling?: () => void;
+	onManageIntegrations?: () => void;
 	onEdit?: () => void;
 	onDelete?: () => void;
 	onSelect: () => void;
@@ -175,6 +179,11 @@ export type MainAppHeaderOrganizationSwitcherModal_BillingTarget = {
 	organizationId: app_convex_Id<"organizations">;
 	organizationName: string;
 	billingMode: "user" | "organization_owner";
+};
+
+export type MainAppHeaderOrganizationSwitcherModal_IntegrationPolicyTarget = {
+	organizationId: app_convex_Id<"organizations">;
+	organizationName: string;
 };
 // #endregion edit target / callback
 
@@ -219,12 +228,15 @@ export const MainAppHeaderOrganizationSwitcherModalListItem = memo(
 		const handleManageBilling = useFn(() => {
 			item.onManageBilling?.();
 		});
+		const handleManageIntegrations = useFn(() => {
+			item.onManageIntegrations?.();
+		});
 
 		const descriptionText = item.description.trim() ? item.description : "(No description)";
 		const isCurrent = Boolean(item.isCurrent);
 		const isDefault = Boolean(item.isDefault);
 		const canDelete = !isDefault && Boolean(item.onDelete);
-		const showMenu = Boolean(item.onManageBilling || item.onEdit || item.onDelete);
+		const showMenu = Boolean(item.onManageBilling || item.onManageIntegrations || item.onEdit || item.onDelete);
 		const itemKindLabel = kind === "organization" ? "organization" : "workspace";
 		const itemActionLabel = `${itemKindLabel}: ${item.label}`;
 		const selectLabel = isCurrent ? `Current ${itemActionLabel}` : `Select ${itemActionLabel}`;
@@ -345,6 +357,19 @@ export const MainAppHeaderOrganizationSwitcherModalListItem = memo(
 													<CreditCard />
 												</MyMenuItemContentIcon>
 												<MyMenuItemContentPrimary>Manage billing</MyMenuItemContentPrimary>
+											</MyMenuItemContent>
+										</MyMenuItem>
+									) : null}
+									{item.onManageIntegrations ? (
+										<MyMenuItem
+											aria-label={`Manage plugins and MCP servers for ${itemActionLabel}`}
+											onClick={handleManageIntegrations}
+										>
+											<MyMenuItemContent>
+												<MyMenuItemContentIcon>
+													<ShieldCheck />
+												</MyMenuItemContentIcon>
+												<MyMenuItemContentPrimary>Manage plugins and MCP servers</MyMenuItemContentPrimary>
 											</MyMenuItemContent>
 										</MyMenuItem>
 									) : null}
@@ -1949,6 +1974,413 @@ const MainAppHeaderOrganizationSwitcherModalBillingModal = memo(
 );
 // #endregion billing modal
 
+// #region integration policy modal
+type MainAppHeaderOrganizationSwitcherModalIntegrationPolicyModal_ClassNames =
+	| "MainAppHeaderOrganizationSwitcherModalIntegrationPolicyModal"
+	| "MainAppHeaderOrganizationSwitcherModalIntegrationPolicyModal-body"
+	| "MainAppHeaderOrganizationSwitcherModalIntegrationPolicyModal-note"
+	| "MainAppHeaderOrganizationSwitcherModalIntegrationPolicyModal-section"
+	| "MainAppHeaderOrganizationSwitcherModalIntegrationPolicyModal-section-title"
+	| "MainAppHeaderOrganizationSwitcherModalIntegrationPolicyModal-list"
+	| "MainAppHeaderOrganizationSwitcherModalIntegrationPolicyModal-item"
+	| "MainAppHeaderOrganizationSwitcherModalIntegrationPolicyModal-item-copy"
+	| "MainAppHeaderOrganizationSwitcherModalIntegrationPolicyModal-empty";
+
+type MainAppHeaderOrganizationSwitcherModalIntegrationPolicyModal_Props = {
+	target: MainAppHeaderOrganizationSwitcherModal_IntegrationPolicyTarget | null;
+	setTarget: Dispatch<SetStateAction<MainAppHeaderOrganizationSwitcherModal_IntegrationPolicyTarget | null>>;
+	updateIntegrationPolicy: (
+		args: FunctionArgs<typeof app_convex_api.organizations_integration_policy.update_policy>,
+	) => Promise<FunctionReturnType<typeof app_convex_api.organizations_integration_policy.update_policy> | undefined>;
+};
+
+/**
+ * How a member reaches an MCP server, in words an owner can read.
+ */
+function format_integration_policy_auth(args: { authKind: "none" | "headers" | "oauth"; oauthIssuer: string | null }) {
+	if (args.authKind === "none") {
+		return "no sign-in";
+	}
+	if (args.authKind === "headers") {
+		return "uses secret headers";
+	}
+	return `each member signs in at ${args.oauthIssuer ? new URL(args.oauthIssuer).host : "the server's sign-in page"}`;
+}
+
+const MainAppHeaderOrganizationSwitcherModalIntegrationPolicyModal = memo(
+	function MainAppHeaderOrganizationSwitcherModalIntegrationPolicyModal(
+		props: MainAppHeaderOrganizationSwitcherModalIntegrationPolicyModal_Props,
+	) {
+		const { target, setTarget, updateIntegrationPolicy } = props;
+
+		const [isSubmitting, setIsSubmitting] = useState(false);
+		const [serverFilter, setServerFilter] = useState("");
+
+		const organizationArgs = target ? { organizationId: target.organizationId } : "skip";
+		const policy = useQuery(app_convex_api.organizations_integration_policy.get_policy, organizationArgs);
+		const pluginCandidates = useQuery(
+			app_convex_api.organizations_integration_policy.list_plugin_candidates,
+			organizationArgs,
+		);
+		const customServerCandidates = usePaginatedQuery(
+			app_convex_api.organizations_integration_policy.list_custom_server_candidates,
+			organizationArgs,
+			{ initialNumItems: 50 },
+		);
+
+		// No doc yet means the default: nothing allowed.
+		const managerPolicy = policy?.view === "manager" ? policy.policy : null;
+		const plugins = managerPolicy?.plugins ?? { mode: "allowlist" as const, allowlist: [] };
+		const mcpServers = managerPolicy?.mcpServers ?? { mode: "allowlist" as const, allowlist: [] };
+
+		// One server can span two pages, so merge the groups by fingerprint and add up their members.
+		const customServerGroups = new Map<string, (typeof customServerCandidates.results)[number]>();
+		for (const group of customServerCandidates.results) {
+			const existing = customServerGroups.get(group.destinationFingerprint);
+			customServerGroups.set(
+				group.destinationFingerprint,
+				existing ? { ...existing, memberCount: existing.memberCount + group.memberCount } : group,
+			);
+		}
+		const filteredCustomServers = [...customServerGroups.values()].filter(
+			(group) => !group.allowed && group.url.toLowerCase().includes(serverFilter.trim().toLowerCase()),
+		);
+
+		const handleSetOpen = useFn<Dispatch<SetStateAction<boolean>>>((next) => {
+			const resolved = typeof next === "function" ? next(target !== null) : next;
+			if (!resolved) {
+				setServerFilter("");
+				setTarget(null);
+			}
+		});
+
+		const handlePolicyChange = useFn(
+			(change: FunctionArgs<typeof app_convex_api.organizations_integration_policy.update_policy>["change"]) => {
+				if (!target || isSubmitting) {
+					return;
+				}
+
+				setIsSubmitting(true);
+				updateIntegrationPolicy({ organizationId: target.organizationId, change })
+					.then((result) => {
+						if (result?._nay) {
+							toast.error(result._nay.message);
+						}
+					})
+					.catch((error: unknown) => {
+						console.error("[MainAppHeaderOrganizationSwitcherModalIntegrationPolicyModal] Unexpected policy error", {
+							error,
+							organizationId: target.organizationId,
+						});
+						toast.error("Could not change the policy");
+					})
+					.finally(() => setIsSubmitting(false));
+			},
+		);
+
+		return (
+			<MyModal open={target !== null} setOpen={handleSetOpen}>
+				<MyModalPopover
+					className={cn(
+						"MainAppHeaderOrganizationSwitcherModalIntegrationPolicyModal" satisfies MainAppHeaderOrganizationSwitcherModalIntegrationPolicyModal_ClassNames,
+					)}
+				>
+					<MyModalHeader>
+						<MyModalHeading>Plugins and MCP servers</MyModalHeading>
+						<MyModalDescription>
+							Choose which plugins and MCP servers members of {target ? target.organizationName : "this organization"}{" "}
+							can use.
+						</MyModalDescription>
+					</MyModalHeader>
+
+					<MyModalScrollableArea
+						className={cn(
+							"MainAppHeaderOrganizationSwitcherModalIntegrationPolicyModal-body" satisfies MainAppHeaderOrganizationSwitcherModalIntegrationPolicyModal_ClassNames,
+						)}
+					>
+						{policy === undefined ? (
+							<div role="status">Loading…</div>
+						) : policy?.view !== "manager" ? (
+							<div role="alert">You don't have permission to manage plugins and MCP servers here.</div>
+						) : (
+							<>
+								<p
+									role="note"
+									className={cn(
+										"MainAppHeaderOrganizationSwitcherModalIntegrationPolicyModal-note" satisfies MainAppHeaderOrganizationSwitcherModalIntegrationPolicyModal_ClassNames,
+									)}
+								>
+									Allowing a server lets agent chats send it anything the chat can read, including earlier messages and
+									your members' personal files they open in that chat.
+								</p>
+
+								<section
+									aria-label="Plugins"
+									className={cn(
+										"MainAppHeaderOrganizationSwitcherModalIntegrationPolicyModal-section" satisfies MainAppHeaderOrganizationSwitcherModalIntegrationPolicyModal_ClassNames,
+									)}
+								>
+									<h3
+										className={cn(
+											"MainAppHeaderOrganizationSwitcherModalIntegrationPolicyModal-section-title" satisfies MainAppHeaderOrganizationSwitcherModalIntegrationPolicyModal_ClassNames,
+										)}
+									>
+										Plugins
+									</h3>
+									<MyCheckboxButton
+										variant="outline"
+										checked={plugins.mode === "allow_all"}
+										// A disabled input loses focus, and each toggle saves at once. So only mark it as submitting.
+										// `handlePolicyChange` ignores clicks while a save runs.
+										aria-disabled={isSubmitting || undefined}
+										onCheckedChange={(checked) =>
+											handlePolicyChange({ kind: "set_plugins_mode", mode: checked ? "allow_all" : "allowlist" })
+										}
+									>
+										Allow every plugin and its MCP servers
+									</MyCheckboxButton>
+									{plugins.mode === "allowlist" ? (
+										<>
+											<ul
+												aria-label="Allowed plugins"
+												className={cn(
+													"MainAppHeaderOrganizationSwitcherModalIntegrationPolicyModal-list" satisfies MainAppHeaderOrganizationSwitcherModalIntegrationPolicyModal_ClassNames,
+												)}
+											>
+												{plugins.allowlist.length === 0 ? (
+													<li
+														className={cn(
+															"MainAppHeaderOrganizationSwitcherModalIntegrationPolicyModal-empty" satisfies MainAppHeaderOrganizationSwitcherModalIntegrationPolicyModal_ClassNames,
+														)}
+													>
+														No plugins allowed.
+													</li>
+												) : (
+													plugins.allowlist.map((entry) => (
+														<li
+															key={entry.pluginName}
+															className={cn(
+																"MainAppHeaderOrganizationSwitcherModalIntegrationPolicyModal-item" satisfies MainAppHeaderOrganizationSwitcherModalIntegrationPolicyModal_ClassNames,
+															)}
+														>
+															<span
+																className={cn(
+																	"MainAppHeaderOrganizationSwitcherModalIntegrationPolicyModal-item-copy" satisfies MainAppHeaderOrganizationSwitcherModalIntegrationPolicyModal_ClassNames,
+																)}
+															>
+																{entry.pluginName}
+																{entry.mcpServers.length > 0
+																	? ` — MCP servers: ${entry.mcpServers.map((server) => new URL(server.url).host).join(", ")}`
+																	: ""}
+															</span>
+															<MyButton
+																type="button"
+																variant="ghost_destructive"
+																disabled={isSubmitting}
+																aria-label={`Remove ${entry.pluginName}`}
+																onClick={() =>
+																	handlePolicyChange({ kind: "remove_plugin", pluginName: entry.pluginName })
+																}
+															>
+																Remove
+															</MyButton>
+														</li>
+													))
+												)}
+											</ul>
+											<ul
+												aria-label="Published plugins"
+												className={cn(
+													"MainAppHeaderOrganizationSwitcherModalIntegrationPolicyModal-list" satisfies MainAppHeaderOrganizationSwitcherModalIntegrationPolicyModal_ClassNames,
+												)}
+											>
+												{(pluginCandidates ?? [])
+													.filter((candidate) => candidate.organizationPolicy !== "allowed")
+													.map((candidate) => (
+														<li
+															key={candidate.pluginVersionId}
+															className={cn(
+																"MainAppHeaderOrganizationSwitcherModalIntegrationPolicyModal-item" satisfies MainAppHeaderOrganizationSwitcherModalIntegrationPolicyModal_ClassNames,
+															)}
+														>
+															<span
+																className={cn(
+																	"MainAppHeaderOrganizationSwitcherModalIntegrationPolicyModal-item-copy" satisfies MainAppHeaderOrganizationSwitcherModalIntegrationPolicyModal_ClassNames,
+																)}
+															>
+																{candidate.displayName} {candidate.version} by{" "}
+																{candidate.publisherDisplayName ?? "unknown publisher"}
+																{candidate.organizationPolicy === "needs_approval"
+																	? " — this version asks for more"
+																	: ""}
+																{candidate.mcpServers.map(
+																	(server) =>
+																		` — ${server.title} at ${new URL(server.url).host}${server.auth.kind === "secret_headers" ? ", uses plugin secrets" : ""}`,
+																)}
+															</span>
+															<MyButton
+																type="button"
+																variant="outline"
+																disabled={isSubmitting}
+																aria-label={`Allow ${candidate.displayName}`}
+																onClick={() =>
+																	handlePolicyChange({
+																		kind: "allow_plugin",
+																		pluginVersionId: candidate.pluginVersionId,
+																	})
+																}
+															>
+																Allow
+															</MyButton>
+														</li>
+													))}
+											</ul>
+										</>
+									) : null}
+								</section>
+
+								<section
+									aria-label="MCP servers members add"
+									className={cn(
+										"MainAppHeaderOrganizationSwitcherModalIntegrationPolicyModal-section" satisfies MainAppHeaderOrganizationSwitcherModalIntegrationPolicyModal_ClassNames,
+									)}
+								>
+									<h3
+										className={cn(
+											"MainAppHeaderOrganizationSwitcherModalIntegrationPolicyModal-section-title" satisfies MainAppHeaderOrganizationSwitcherModalIntegrationPolicyModal_ClassNames,
+										)}
+									>
+										MCP servers members add
+									</h3>
+									<MyCheckboxButton
+										variant="outline"
+										checked={mcpServers.mode === "allow_all"}
+										aria-disabled={isSubmitting || undefined}
+										onCheckedChange={(checked) =>
+											handlePolicyChange({ kind: "set_mcp_servers_mode", mode: checked ? "allow_all" : "allowlist" })
+										}
+									>
+										Allow every MCP server members add
+									</MyCheckboxButton>
+									{mcpServers.mode === "allowlist" ? (
+										<>
+											<ul
+												aria-label="Allowed MCP servers"
+												className={cn(
+													"MainAppHeaderOrganizationSwitcherModalIntegrationPolicyModal-list" satisfies MainAppHeaderOrganizationSwitcherModalIntegrationPolicyModal_ClassNames,
+												)}
+											>
+												{mcpServers.allowlist.length === 0 ? (
+													<li
+														className={cn(
+															"MainAppHeaderOrganizationSwitcherModalIntegrationPolicyModal-empty" satisfies MainAppHeaderOrganizationSwitcherModalIntegrationPolicyModal_ClassNames,
+														)}
+													>
+														No MCP servers allowed.
+													</li>
+												) : (
+													mcpServers.allowlist.map((entry) => (
+														<li
+															key={entry.destinationFingerprint}
+															className={cn(
+																"MainAppHeaderOrganizationSwitcherModalIntegrationPolicyModal-item" satisfies MainAppHeaderOrganizationSwitcherModalIntegrationPolicyModal_ClassNames,
+															)}
+														>
+															<span
+																className={cn(
+																	"MainAppHeaderOrganizationSwitcherModalIntegrationPolicyModal-item-copy" satisfies MainAppHeaderOrganizationSwitcherModalIntegrationPolicyModal_ClassNames,
+																)}
+															>
+																{entry.url} — {format_integration_policy_auth(entry)}
+															</span>
+															<MyButton
+																type="button"
+																variant="ghost_destructive"
+																disabled={isSubmitting}
+																aria-label={`Remove ${entry.url}`}
+																onClick={() =>
+																	handlePolicyChange({
+																		kind: "remove_mcp_server",
+																		destinationFingerprint: entry.destinationFingerprint,
+																	})
+																}
+															>
+																Remove
+															</MyButton>
+														</li>
+													))
+												)}
+											</ul>
+											<MyInput layout="stacked">
+												<MyInputLabel>Filter servers members added</MyInputLabel>
+												<MyInputBackground />
+												<MyInputArea>
+													<MyInputControl
+														value={serverFilter}
+														placeholder="mcp.example.com"
+														onChange={(event) => setServerFilter(event.currentTarget.value)}
+													/>
+												</MyInputArea>
+												<MyInputBox />
+											</MyInput>
+											<ul
+												aria-label="Servers members added"
+												className={cn(
+													"MainAppHeaderOrganizationSwitcherModalIntegrationPolicyModal-list" satisfies MainAppHeaderOrganizationSwitcherModalIntegrationPolicyModal_ClassNames,
+												)}
+											>
+												{filteredCustomServers.map((group) => (
+													<li
+														key={group.destinationFingerprint}
+														className={cn(
+															"MainAppHeaderOrganizationSwitcherModalIntegrationPolicyModal-item" satisfies MainAppHeaderOrganizationSwitcherModalIntegrationPolicyModal_ClassNames,
+														)}
+													>
+														<span
+															className={cn(
+																"MainAppHeaderOrganizationSwitcherModalIntegrationPolicyModal-item-copy" satisfies MainAppHeaderOrganizationSwitcherModalIntegrationPolicyModal_ClassNames,
+															)}
+														>
+															{group.url} — {format_integration_policy_auth(group)} —{" "}
+															{group.memberCount === 1 ? "1 member" : `${group.memberCount} members`}
+														</span>
+														<MyButton
+															type="button"
+															variant="outline"
+															disabled={isSubmitting}
+															aria-label={`Allow ${group.url}`}
+															onClick={() =>
+																handlePolicyChange({
+																	kind: "allow_mcp_server",
+																	destinationFingerprint: group.destinationFingerprint,
+																})
+															}
+														>
+															Allow
+														</MyButton>
+													</li>
+												))}
+											</ul>
+											{customServerCandidates.status === "CanLoadMore" ? (
+												<MyButton type="button" variant="outline" onClick={() => customServerCandidates.loadMore(50)}>
+													Load more
+												</MyButton>
+											) : null}
+										</>
+									) : null}
+								</section>
+							</>
+						)}
+					</MyModalScrollableArea>
+
+					<MyModalCloseTrigger />
+				</MyModalPopover>
+			</MyModal>
+		);
+	},
+);
+// #endregion integration policy modal
+
 // #region root
 type MainAppHeaderOrganizationSwitcherModal_ClassNames =
 	| "MainAppHeaderOrganizationSwitcherModal"
@@ -1982,6 +2414,7 @@ export type MainAppHeaderOrganizationSwitcherModal_Props = {
 	switchDisabled: boolean;
 	editTarget: MainAppHeaderOrganizationSwitcherModal_EditTarget | null;
 	billingTarget: MainAppHeaderOrganizationSwitcherModal_BillingTarget | null;
+	integrationPolicyTarget: MainAppHeaderOrganizationSwitcherModal_IntegrationPolicyTarget | null;
 	createOrganization: (
 		args: FunctionArgs<typeof app_convex_api.organizations.create_organization>,
 	) => Promise<FunctionReturnType<typeof app_convex_api.organizations.create_organization> | undefined>;
@@ -1993,6 +2426,8 @@ export type MainAppHeaderOrganizationSwitcherModal_Props = {
 	setEditTarget: MainAppHeaderOrganizationSwitcherModalEditModal_Props["setTarget"];
 	setBillingTarget: MainAppHeaderOrganizationSwitcherModalBillingModal_Props["setTarget"];
 	setOrganizationBillingMode: MainAppHeaderOrganizationSwitcherModalBillingModal_Props["setOrganizationBillingMode"];
+	setIntegrationPolicyTarget: MainAppHeaderOrganizationSwitcherModalIntegrationPolicyModal_Props["setTarget"];
+	updateIntegrationPolicy: MainAppHeaderOrganizationSwitcherModalIntegrationPolicyModal_Props["updateIntegrationPolicy"];
 	onAfterCreateOrganization: (args: {
 		organizationId: app_convex_Id<"organizations">;
 		workspaceId: app_convex_Id<"organizations_workspaces">;
@@ -2034,6 +2469,7 @@ export const MainAppHeaderOrganizationSwitcherModal = memo(function MainAppHeade
 		switchDisabled,
 		editTarget,
 		billingTarget,
+		integrationPolicyTarget,
 		createOrganization,
 		createWorkspace,
 		editOrganization,
@@ -2041,6 +2477,8 @@ export const MainAppHeaderOrganizationSwitcherModal = memo(function MainAppHeade
 		setEditTarget,
 		setBillingTarget,
 		setOrganizationBillingMode,
+		setIntegrationPolicyTarget,
+		updateIntegrationPolicy,
 		onAfterCreateOrganization,
 		onAfterCreateWorkspace,
 		onAfterEdit,
@@ -2185,6 +2623,11 @@ export const MainAppHeaderOrganizationSwitcherModal = memo(function MainAppHeade
 					target={billingTarget}
 					setTarget={setBillingTarget}
 					setOrganizationBillingMode={setOrganizationBillingMode}
+				/>
+				<MainAppHeaderOrganizationSwitcherModalIntegrationPolicyModal
+					target={integrationPolicyTarget}
+					setTarget={setIntegrationPolicyTarget}
+					updateIntegrationPolicy={updateIntegrationPolicy}
 				/>
 			</MyModalPopover>
 		</>

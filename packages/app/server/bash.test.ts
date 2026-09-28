@@ -13051,6 +13051,8 @@ describe("bash_run_command", () => {
 						capabilitiesAcceptedAt: now,
 						acceptedOutboundOrigins: [],
 						acceptedUiOutboundOrigins: [],
+						acceptedMcpServersFingerprint: "mcp-servers-hash",
+						acceptedSkillNames: [],
 						outboundOriginsAcceptedAt: now,
 						installedBy: runner.seeded.userId,
 						updatedBy: runner.seeded.userId,

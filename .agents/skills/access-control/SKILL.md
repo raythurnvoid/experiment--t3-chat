@@ -262,6 +262,7 @@ Pick the index that matches the principal kind:
 | `organization.members.manage` | organization |
 | `organization.roles.manage` | organization |
 | `organization.billing.manage` | organization |
+| `organization.integrations_policy.manage` | organization |
 | `workspace.create` | organization |
 | `workspace.update` | workspace |
 | `workspace.delete` | workspace |
@@ -285,6 +286,13 @@ control, resume, agent access, save download, file-chooser fill, upload grant), 
 (`list_browser_profile_sites`, `clear_browser_profile_site`, `clear_browser_profile`) do not need
 it: a user may always see and delete their own data. If a live session loses the permission, the
 server closes it with `end_browser_session_internal` and does not save the browser profile.
+
+`organization.integrations_policy.manage` ("Manage plugins and MCP servers") lets a holder change
+which plugins and member-added MCP servers the organization allows. No system role has it, like
+`organization.billing.manage`: the owner holds it by ownership and can give it through a custom role.
+`organizations_integration_policy.update_policy`, `get_policy` (full view), and the two candidate
+lists check it at the organization's default workspace, after checking an active membership there. See `../organizations-tenancy/SKILL.md`,
+"Plugins and MCP servers policy".
 
 Inviting someone as `member` also hands out `workspace.browser.use`. The invite ceiling still
 applies: an inviter who lacks it cannot invite someone as `member`.

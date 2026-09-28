@@ -407,6 +407,8 @@ async function install_upload_plugin(
 		acceptedCapabilities: ["plugin.secrets.read", "outbound.fetch"],
 		acceptedOutboundOrigins: [],
 		acceptedUiOutboundOrigins: [],
+		acceptedMcpServersFingerprint: "mcp-servers-hash",
+		acceptedSkillNames: [],
 		serviceAccountGrants: [{ resource: { kind: "workspace" }, level: "write" }],
 	});
 	if (installed._nay) {

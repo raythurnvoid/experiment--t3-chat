@@ -109,6 +109,8 @@ describe("ensure_plugin_folder", () => {
 					capabilitiesAcceptedAt: now,
 					acceptedOutboundOrigins: [],
 					acceptedUiOutboundOrigins: [],
+					acceptedMcpServersFingerprint: "mcp-servers-hash",
+					acceptedSkillNames: [],
 					outboundOriginsAcceptedAt: now,
 					installedBy: owner.userId,
 					updatedBy: owner.userId,

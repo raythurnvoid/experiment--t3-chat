@@ -90,6 +90,12 @@ export const access_control_PERMISSION_CATALOG = {
 		group: "Organization",
 		scope: "organization",
 	},
+	"organization.integrations_policy.manage": {
+		label: "Manage plugins and MCP servers",
+		description: "Choose which plugins and which MCP servers agent chats may use in this organization.",
+		group: "Organization",
+		scope: "organization",
+	},
 	"workspace.create": {
 		label: "Create workspace",
 		description: "Add new workspaces to the organization.",
@@ -257,8 +263,9 @@ export function access_control_file_share_level_from_permissions(
 export const access_control_SYSTEM_ROLE_MATRIX = {
 	admin: {
 		label: "Admin",
-		// Everything except billing. Changing the billing mode costs the owner money, so the owner has
-		// to give that permission out on purpose.
+		// Everything except billing and the plugin and MCP policy. Changing the billing mode costs the
+		// owner money, and the policy decides where agent chats may send the organization's data. So
+		// the owner has to give those permissions out on purpose.
 		permissions: [
 			"organization.update",
 			"organization.members.manage",

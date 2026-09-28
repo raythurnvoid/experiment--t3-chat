@@ -41,6 +41,7 @@ const access_control_permission_validator = v.union(
 	v.literal("organization.members.manage"),
 	v.literal("organization.roles.manage"),
 	v.literal("organization.billing.manage"),
+	v.literal("organization.integrations_policy.manage"),
 	v.literal("workspace.create"),
 	v.literal("workspace.update"),
 	v.literal("workspace.delete"),
@@ -74,6 +75,43 @@ export const ai_chat_workspaces_source_validator = v.object({
 	membershipId: v.id("organizations_workspaces_users"),
 	membershipLifetime: v.number(),
 });
+
+/**
+ * Which MCP server a doc is about: a server a plugin declares, or a server a member added. Every doc
+ * that names an MCP server keeps it in one `target` field, and indexes use its nested paths.
+ */
+export const plugins_mcp_target_validator = v.union(
+	v.object({
+		kind: v.literal("plugin"),
+		installationId: v.id("plugins_workspace_installations"),
+		/** The manifest server id. */
+		serverId: v.string(),
+	}),
+	v.object({
+		kind: v.literal("custom"),
+		customServerId: v.id("mcp_custom_servers"),
+	}),
+);
+
+/**
+ * A value encrypted with `MCP_SECRETS_ENCRYPTION_KEY`. The doc that holds it names the additional
+ * data, so a value copied to another doc fails to decrypt.
+ */
+const plugins_mcp_encrypted_value_validator = v.object({
+	ciphertext: v.bytes(),
+	nonce: v.bytes(),
+	keyId: v.literal("v1"),
+});
+
+const plugins_mcp_oauth_client_kind_validator = v.union(v.literal("cimd"), v.literal("dcr"));
+
+const plugins_mcp_oauth_token_endpoint_auth_method_validator = v.union(
+	v.literal("none"),
+	v.literal("client_secret_basic"),
+	v.literal("client_secret_post"),
+);
+
+const organizations_integration_policy_mode_validator = v.union(v.literal("allow_all"), v.literal("allowlist"));
 
 export const ai_chat_bash_result_validator = v.object({
 	title: v.string(),
@@ -3605,6 +3643,15 @@ const app_convex_schema = defineSchema({
 		 * an audit after an upgrade can still say what the workspace agreed to before it.
 		 */
 		acceptedUiOutboundOrigins: v.array(v.string()),
+		/**
+		 * The version's `mcpServersFingerprint` the install dialog showed. Install refuses any other
+		 * value, so a changed server list always needs a new accept.
+		 */
+		acceptedMcpServersFingerprint: v.string(),
+		/**
+		 * The skill names the install dialog showed.
+		 */
+		acceptedSkillNames: v.array(v.string()),
 		installedBy: v.id("users"),
 		updatedBy: v.id("users"),
 		updatedAt: v.number(),
@@ -4617,6 +4664,219 @@ const app_convex_schema = defineSchema({
 
 	// #endregion plugins services
 
+	// #region plugins mcp
+	/**
+	 * One doc per MCP server of an installed plugin version. Install and upgrade update the docs in
+	 * place by server id, so the tool prefix and the health count survive an upgrade.
+	 */
+	plugins_mcp_servers: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		installationId: v.id("plugins_workspace_installations"),
+		serverId: v.string(),
+		/**
+		 * Model tool names start with `mcp__<toolPrefix>__`. Unique among the workspace's plugin servers.
+		 */
+		toolPrefix: v.string(),
+		/**
+		 * SHA-256 of where the server sends data: its URL, its whole `auth` object, and its header names.
+		 * The organization allowlist matches on it, so a changed destination needs the owner again.
+		 */
+		destinationFingerprint: v.string(),
+		/**
+		 * Failed tool lists in turns in a row. Only turn setup writes it.
+		 */
+		failures: v.number(),
+		unhealthyUntil: v.union(v.number(), v.null()),
+	})
+		.index("by_organization_workspace_installation", ["organizationId", "workspaceId", "installationId"])
+		.index("by_organization_workspace_toolPrefix", ["organizationId", "workspaceId", "toolPrefix"]),
+
+	/**
+	 * An MCP server one member added for themselves in one workspace. It holds no secret value: header
+	 * parts name docs in `mcp_custom_server_secrets`.
+	 */
+	mcp_custom_servers: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		userId: v.id("users"),
+		name: v.string(),
+		/**
+		 * `my-<slug>`. Plugin server ids can never be `my` or start with `my-`, so the two never clash.
+		 */
+		toolPrefix: v.string(),
+		url: v.string(),
+		headers: v.array(
+			v.object({
+				name: v.string(),
+				parts: v.array(
+					v.union(
+						v.object({ kind: v.literal("text"), text: v.string() }),
+						v.object({ kind: v.literal("secret"), secretName: v.string() }),
+					),
+				),
+			}),
+		),
+		auth: v.union(
+			v.object({ kind: v.literal("none") }),
+			v.object({ kind: v.literal("headers") }),
+			v.object({
+				kind: v.literal("oauth"),
+				issuer: v.string(),
+				resource: v.string(),
+				authorizationHost: v.string(),
+			}),
+		),
+		/**
+		 * SHA-256 of the URL, the auth kind, and the OAuth issuer. The organization allowlist matches on it.
+		 */
+		destinationFingerprint: v.string(),
+		enabled: v.boolean(),
+		lastTest: v.union(
+			v.object({ at: v.number(), outcome: v.string(), toolCount: v.union(v.number(), v.null()) }),
+			v.null(),
+		),
+		failures: v.number(),
+		unhealthyUntil: v.union(v.number(), v.null()),
+		updatedAt: v.number(),
+	})
+		.index("by_organization_workspace_user", ["organizationId", "workspaceId", "userId"])
+		.index("by_user", ["userId"])
+		.index("by_organization_destinationFingerprint", ["organizationId", "destinationFingerprint"]),
+
+	/**
+	 * One header secret of a member's MCP server. Additional data:
+	 * `custom_secret:<customServerId>:<userId>:<name>`.
+	 */
+	mcp_custom_server_secrets: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		userId: v.id("users"),
+		customServerId: v.id("mcp_custom_servers"),
+		name: v.string(),
+		value: plugins_mcp_encrypted_value_validator,
+		updatedAt: v.number(),
+	})
+		.index("by_customServer_name", ["customServerId", "name"])
+		.index("by_organization_workspace_user", ["organizationId", "workspaceId", "userId"])
+		.index("by_user", ["userId"]),
+
+	/**
+	 * A started OAuth sign-in, used once by its callback. It lives 10 minutes.
+	 */
+	plugins_mcp_oauth_pending: defineTable({
+		stateHash: v.string(),
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		userId: v.id("users"),
+		target: plugins_mcp_target_validator,
+		destinationFingerprint: v.string(),
+		serverUrl: v.string(),
+		resource: v.string(),
+		issuer: v.string(),
+		authorizationEndpoint: v.string(),
+		tokenEndpoint: v.string(),
+		revocationEndpoint: v.union(v.string(), v.null()),
+		issParameterSupported: v.boolean(),
+		clientId: v.string(),
+		clientKind: plugins_mcp_oauth_client_kind_validator,
+		tokenEndpointAuthMethod: plugins_mcp_oauth_token_endpoint_auth_method_validator,
+		scopes: v.array(v.string()),
+		/**
+		 * The PKCE verifier. Additional data: `pending:<stateHash>`.
+		 */
+		codeVerifier: plugins_mcp_encrypted_value_validator,
+		returnPath: v.string(),
+		expiresAt: v.number(),
+	})
+		.index("by_stateHash", ["stateHash"])
+		.index("by_expiresAt", ["expiresAt"])
+		.index("by_targetInstallation", ["target.installationId"])
+		.index("by_targetCustomServer", ["target.customServerId"])
+		.index("by_organization_workspace_user", ["organizationId", "workspaceId", "userId"])
+		.index("by_user", ["userId"]),
+
+	/**
+	 * One member's OAuth tokens for one MCP server. Additional data:
+	 * `grant:plugin:<installationId>:<serverId>:<userId>:<issuer>:<resource>` or
+	 * `grant:custom:<customServerId>:<userId>:<issuer>:<resource>`.
+	 */
+	plugins_mcp_oauth_grants: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		userId: v.id("users"),
+		target: plugins_mcp_target_validator,
+		issuer: v.string(),
+		resource: v.string(),
+		tokenEndpoint: v.string(),
+		revocationEndpoint: v.union(v.string(), v.null()),
+		clientId: v.string(),
+		clientKind: plugins_mcp_oauth_client_kind_validator,
+		tokenEndpointAuthMethod: plugins_mcp_oauth_token_endpoint_auth_method_validator,
+		accessToken: v.union(plugins_mcp_encrypted_value_validator, v.null()),
+		refreshToken: v.union(plugins_mcp_encrypted_value_validator, v.null()),
+		expiresAt: v.union(v.number(), v.null()),
+		scope: v.string(),
+		requestedScopes: v.array(v.string()),
+		stepUpScope: v.union(v.string(), v.null()),
+		connectedAt: v.number(),
+		status: v.union(v.literal("connected"), v.literal("needs_reconnect")),
+		/**
+		 * Bumped on every token change. A refresh lease is taken only for the version it read.
+		 */
+		version: v.number(),
+		leaseId: v.union(v.string(), v.null()),
+		leaseUntil: v.union(v.number(), v.null()),
+	})
+		.index("by_targetInstallation_targetServerId_user", ["target.installationId", "target.serverId", "userId"])
+		.index("by_targetCustomServer_user", ["target.customServerId", "userId"])
+		.index("by_organization_workspace_user", ["organizationId", "workspaceId", "userId"])
+		.index("by_user", ["userId"]),
+
+	/**
+	 * A token to revoke at its sign-in server. Deletion paths are mutations and cannot fetch, so they
+	 * copy the encrypted token here. The doc is deployment cleanup, not tenant data: it holds no
+	 * tenant ids, and a daily cron deletes docs older than 1 day.
+	 */
+	plugins_mcp_oauth_revocations: defineTable({
+		token: plugins_mcp_encrypted_value_validator,
+		/**
+		 * The grant's additional data, copied as it is.
+		 */
+		additionalData: v.string(),
+		tokenTypeHint: v.union(v.literal("access_token"), v.literal("refresh_token")),
+		revocationEndpoint: v.string(),
+		clientId: v.string(),
+		clientKind: plugins_mcp_oauth_client_kind_validator,
+		tokenEndpointAuthMethod: plugins_mcp_oauth_token_endpoint_auth_method_validator,
+	}),
+
+	/**
+	 * One MCP tool call. No arguments and no output. Kept 30 days.
+	 */
+	plugins_mcp_calls: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		userId: v.id("users"),
+		threadId: v.id("ai_chat_threads"),
+		target: plugins_mcp_target_validator,
+		toolName: v.string(),
+		startedAt: v.number(),
+		durationMs: v.number(),
+		bytesIn: v.number(),
+		bytesOut: v.number(),
+		/**
+		 * `ok`, `tool_error`, `auth_needed`, or an MCP client error code.
+		 */
+		outcome: v.string(),
+	})
+		.index("by_targetInstallation", ["target.installationId"])
+		.index("by_targetCustomServer", ["target.customServerId"])
+		.index("by_organization_workspace_user", ["organizationId", "workspaceId", "userId"])
+		.index("by_user", ["userId"])
+		.index("by_startedAt", ["startedAt"]),
+	// #endregion plugins mcp
+
 	// #region activities
 	/**
 	 * One lifecycle per background job. Producers update it in the same transaction as their
@@ -5189,6 +5449,53 @@ const app_convex_schema = defineSchema({
 		.index("by_user_retiredAt", ["userId", "retiredAt"])
 		.index("by_organization_retiredAt", ["organizationId", "retiredAt"])
 		.index("by_workspace_retiredAt_quotaName", ["workspaceId", "retiredAt", "quotaName"]),
+
+	/**
+	 * Which plugins and which member-added MCP servers a custom organization allows. One doc per custom
+	 * organization; no doc means nothing is allowed. The personal organization allows everything and
+	 * never has a doc.
+	 */
+	organizations_integration_policies: defineTable({
+		organizationId: v.id("organizations"),
+		plugins: v.object({
+			mode: organizations_integration_policy_mode_validator,
+			allowlist: v.array(
+				v.object({
+					// The same key service accounts trust: a plugin name is bound to its first publisher.
+					pluginName: v.string(),
+					publisherUserId: v.id("users"),
+					sourceRepositoryUrl: v.string(),
+					// The ceiling the owner approved. An upgrade inside it installs without the owner.
+					capabilities: v.array(plugins_capability_validator),
+					outboundOrigins: v.array(v.string()),
+					uiOutboundOrigins: v.array(v.string()),
+					// The plugin's MCP servers are allowed with the plugin, pinned by where their data goes.
+					mcpServers: v.array(v.object({ serverId: v.string(), destinationFingerprint: v.string(), url: v.string() })),
+					addedBy: v.id("users"),
+					addedAt: v.number(),
+					updatedAt: v.number(),
+				}),
+			),
+		}),
+		/**
+		 * Servers members add themselves. Plugin servers never appear here.
+		 */
+		mcpServers: v.object({
+			mode: organizations_integration_policy_mode_validator,
+			allowlist: v.array(
+				v.object({
+					destinationFingerprint: v.string(),
+					url: v.string(),
+					authKind: v.union(v.literal("none"), v.literal("headers"), v.literal("oauth")),
+					oauthIssuer: v.union(v.string(), v.null()),
+					addedBy: v.id("users"),
+					addedAt: v.number(),
+				}),
+			),
+		}),
+		updatedBy: v.id("users"),
+		updatedAt: v.number(),
+	}).index("by_organization", ["organizationId"]),
 	// #endregion organizations
 
 	// #region billing

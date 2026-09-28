@@ -6,6 +6,8 @@ import type { DataModel, Doc, Id, TableNames } from "./_generated/dataModel.js";
 import { internalMutation, internalQuery, type MutationCtx, type QueryCtx } from "./_generated/server.js";
 import { quotas } from "../shared/quotas.ts";
 import { path_extract_segments_from } from "../shared/paths.ts";
+import { should_never_happen } from "../shared/shared-utils.ts";
+import { plugins_mcp_destination_fingerprint } from "./plugins_mcp.ts";
 import { access_control_db_ensure_organization_member_role } from "./access_control.ts";
 import {
 	plugins_data_MAX_COLLECTIONS,
@@ -861,6 +863,119 @@ export const backfill_plugins_installations_accepted_ui_origins = app_migrations
 });
 
 /**
+ * The install-side record of the MCP and skill consent. These installs accepted versions from before
+ * MCP support, so they accepted the version's empty server list and no skills.
+ */
+export const backfill_plugins_installations_accepted_mcp_and_skills = app_migrations.define({
+	table: "plugins_workspace_installations",
+	migrateOne: async (ctx, installation) => {
+		if (installation.acceptedMcpServersFingerprint !== undefined && installation.acceptedSkillNames !== undefined) {
+			return;
+		}
+
+		const version = await ctx.db.get("plugins_versions", installation.pluginVersionId);
+		if (!version) {
+			throw should_never_happen("plugins_versions doc missing for an installation", {
+				installationId: installation._id,
+			});
+		}
+		await ctx.db.patch("plugins_workspace_installations", installation._id, {
+			acceptedMcpServersFingerprint: version.mcpServersFingerprint,
+			acceptedSkillNames: version.skills.map((skill) => skill.name),
+		});
+	},
+});
+
+/**
+ * Keeps today's behavior for custom organizations that already use plugins. Each gets a policy doc
+ * that allows exactly its installed plugins, with a ceiling that covers every installed version. A
+ * custom organization with no installations gets no doc, which allows nothing. MCP servers stay off.
+ */
+export const backfill_organizations_integration_policies = app_migrations.define({
+	table: "organizations",
+	migrateOne: async (ctx, organization) => {
+		if (organization.default) {
+			return;
+		}
+
+		const policy = await ctx.db
+			.query("organizations_integration_policies")
+			.withIndex("by_organization", (q) => q.eq("organizationId", organization._id))
+			.first();
+		if (policy) {
+			return;
+		}
+
+		const installations = await ctx.db
+			.query("plugins_workspace_installations")
+			.withIndex("by_organization_workspace_pluginName", (q) => q.eq("organizationId", organization._id))
+			.collect();
+		if (installations.length === 0) {
+			return;
+		}
+
+		const now = Date.now();
+		const entries = new Map<string, Doc<"organizations_integration_policies">["plugins"]["allowlist"][number]>();
+		for (const installation of installations) {
+			const version = await ctx.db.get("plugins_versions", installation.pluginVersionId);
+			if (!version) {
+				throw should_never_happen("plugins_versions doc missing for an installation", {
+					installationId: installation._id,
+				});
+			}
+
+			// One entry names one source. Two workspaces could install the same name from two sources,
+			// so stop and let a person decide which one the organization keeps.
+			const previous = entries.get(version.name);
+			if (
+				previous &&
+				(previous.publisherUserId !== version.createdBy || previous.sourceRepositoryUrl !== version.sourceRepositoryUrl)
+			) {
+				throw should_never_happen("An organization installs one plugin name from two sources", {
+					organizationId: organization._id,
+					pluginName: version.name,
+				});
+			}
+
+			const servers = new Map(
+				(previous?.mcpServers ?? []).map((server) => [
+					JSON.stringify([server.serverId, server.destinationFingerprint]),
+					server,
+				]),
+			);
+			for (const server of version.mcpServers) {
+				const destinationFingerprint = await plugins_mcp_destination_fingerprint(server);
+				servers.set(JSON.stringify([server.id, destinationFingerprint]), {
+					serverId: server.id,
+					destinationFingerprint,
+					url: server.url,
+				});
+			}
+			entries.set(version.name, {
+				pluginName: version.name,
+				publisherUserId: version.createdBy,
+				sourceRepositoryUrl: version.sourceRepositoryUrl,
+				capabilities: [...new Set([...(previous?.capabilities ?? []), ...version.capabilities])],
+				outboundOrigins: [...new Set([...(previous?.outboundOrigins ?? []), ...version.outboundOrigins])],
+				uiOutboundOrigins: [...new Set([...(previous?.uiOutboundOrigins ?? []), ...version.uiOutboundOrigins])],
+				mcpServers: [...servers.values()],
+				addedBy: organization.ownerUserId,
+				addedAt: now,
+				updatedAt: now,
+			});
+		}
+
+		await ctx.db.insert("organizations_integration_policies", {
+			organizationId: organization._id,
+			plugins: { mode: "allowlist", allowlist: [...entries.values()] },
+			mcpServers: { mode: "allowlist", allowlist: [] },
+			updatedBy: organization.ownerUserId,
+			updatedAt: now,
+		});
+	},
+});
+
+/**
  * Attributes the documents that were stored before the per-member share existed. Those rows carry no
  * `chargedTo`, so their bytes and slots sit in the installation total and in nobody's share. Until
  * this runs, the per-member ceilings do nothing on any installation that already holds documents: a
@@ -1484,6 +1599,12 @@ export const run_backfill_plugins_versions_mcp_servers_and_skills = app_migratio
 );
 export const run_backfill_plugins_installations_accepted_ui_origins = app_migrations.runner(
 	internal.migrations.backfill_plugins_installations_accepted_ui_origins,
+);
+export const run_backfill_plugins_installations_accepted_mcp_and_skills = app_migrations.runner(
+	internal.migrations.backfill_plugins_installations_accepted_mcp_and_skills,
+);
+export const run_backfill_organizations_integration_policies = app_migrations.runner(
+	internal.migrations.backfill_organizations_integration_policies,
 );
 export const run_backfill_plugins_data_charged_to = app_migrations.runner(
 	internal.migrations.backfill_plugins_data_charged_to,

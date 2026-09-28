@@ -203,6 +203,75 @@
 	}
 	/* #endregion billing modal */
 
+	/* #region integration policy modal */
+	.MyModalPopover.MainAppHeaderOrganizationSwitcherModalIntegrationPolicyModal {
+		max-width: 560px;
+		width: min(94vw, 560px);
+	}
+
+	.MainAppHeaderOrganizationSwitcherModalIntegrationPolicyModal-body {
+		display: grid;
+		gap: 16px;
+
+		padding-top: 12px;
+		padding-bottom: 12px;
+	}
+
+	.MainAppHeaderOrganizationSwitcherModalIntegrationPolicyModal-note {
+		margin: 0;
+
+		color: var(--color-fg-07);
+
+		font-size: 0.875em;
+		line-height: 1.35;
+	}
+
+	.MainAppHeaderOrganizationSwitcherModalIntegrationPolicyModal-section {
+		display: grid;
+		gap: 8px;
+	}
+
+	.MainAppHeaderOrganizationSwitcherModalIntegrationPolicyModal-section-title {
+		margin: 0;
+
+		color: var(--color-fg-10);
+
+		font-size: 0.9375em;
+		font-weight: 600;
+	}
+
+	.MainAppHeaderOrganizationSwitcherModalIntegrationPolicyModal-list {
+		display: grid;
+		gap: 4px;
+
+		margin: 0;
+		padding: 0;
+
+		list-style: none;
+	}
+
+	.MainAppHeaderOrganizationSwitcherModalIntegrationPolicyModal-item {
+		display: grid;
+		grid-template-columns: minmax(0, 1fr) auto;
+		align-items: center;
+		gap: 8px;
+	}
+
+	.MainAppHeaderOrganizationSwitcherModalIntegrationPolicyModal-item-copy {
+		min-width: 0;
+
+		overflow-wrap: anywhere;
+
+		font-size: 0.875em;
+	}
+
+	.MainAppHeaderOrganizationSwitcherModalIntegrationPolicyModal-empty {
+		color: var(--color-fg-07);
+
+		font-size: 0.875em;
+	}
+	/* #endregion integration policy modal */
+
 	/* #region select head */
 	.MainAppHeaderOrganizationSwitcherModalSelectHead {
 		display: flex;

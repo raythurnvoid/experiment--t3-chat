@@ -85,6 +85,8 @@ async function setup(options?: { publicWriter: true; privateRoot?: boolean }) {
 			capabilitiesAcceptedAt: now,
 			acceptedOutboundOrigins: [],
 			acceptedUiOutboundOrigins: [],
+			acceptedMcpServersFingerprint: "mcp-servers-hash",
+			acceptedSkillNames: [],
 			outboundOriginsAcceptedAt: now,
 			installedBy: membership.userId,
 			updatedBy: membership.userId,
@@ -1950,6 +1952,8 @@ describe("rollback_readers", () => {
 						acceptedCapabilities: next.capabilities,
 						acceptedOutboundOrigins: [],
 						acceptedUiOutboundOrigins: [],
+						acceptedMcpServersFingerprint: "mcp-servers-hash",
+						acceptedSkillNames: [],
 					})
 				)._nay,
 			).toBeUndefined();

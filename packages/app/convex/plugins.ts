@@ -75,6 +75,8 @@ import {
 	plugins_data_db_drain_batch,
 	type plugins_data_PreviewReadBudget,
 } from "./plugins_data.ts";
+import { plugins_mcp_db_drain_installation_batch, plugins_mcp_db_sync_installation_servers } from "./plugins_mcp.ts";
+import { organizations_integration_policy_db_plugin_version_status } from "./organizations_integration_policy.ts";
 
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
 // Does NOT work for http actions (see http.ts). No mutable module-level state allowed here.
@@ -3655,6 +3657,9 @@ export const install_version = mutation({
 		acceptedOutboundOrigins: doc(app_convex_schema, "plugins_workspace_installations").fields.acceptedOutboundOrigins,
 		acceptedUiOutboundOrigins: doc(app_convex_schema, "plugins_workspace_installations").fields
 			.acceptedUiOutboundOrigins,
+		acceptedMcpServersFingerprint: doc(app_convex_schema, "plugins_workspace_installations").fields
+			.acceptedMcpServersFingerprint,
+		acceptedSkillNames: doc(app_convex_schema, "plugins_workspace_installations").fields.acceptedSkillNames,
 		serviceAccountId: v.optional(v.id("access_control_service_accounts")),
 		serviceAccountGrants: v.optional(
 			v.array(
@@ -3721,6 +3726,19 @@ export const install_version = mutation({
 			return Result({ _nay: { message: PLUGIN_REGISTRY_DELETION_IN_PROGRESS_MESSAGE } });
 		}
 
+		// This is the one door for install, upgrade, and re-enable, so the organization policy is
+		// checked here only. A stricter policy turns off what no longer fits at the moment it changes.
+		const policyStatus = await organizations_integration_policy_db_plugin_version_status(ctx, {
+			organization: authorization._yay.organization,
+			version: pluginVersion,
+		});
+		if (policyStatus === "blocked") {
+			return Result({ _nay: { message: "Your organization does not allow this plugin" } });
+		}
+		if (policyStatus === "needs_approval") {
+			return Result({ _nay: { message: "This version needs approval from your organization owner" } });
+		}
+
 		// Consent must exactly cover what the version declares; anything else is a stale or partial consent screen.
 		const acceptedCapabilities = new Set(args.acceptedCapabilities);
 		if (
@@ -3749,6 +3767,18 @@ export const install_version = mutation({
 				_nay: { message: "Install must accept exactly the UI outbound origins the plugin declares" },
 			});
 		}
+		// The dialog sends back the fingerprint it was given, never one it computed. Any change to any
+		// server field gives another fingerprint, so a stale dialog cannot accept a changed server.
+		if (args.acceptedMcpServersFingerprint !== pluginVersion.mcpServersFingerprint) {
+			return Result({ _nay: { message: "Install must accept exactly the MCP servers the plugin declares" } });
+		}
+		const acceptedSkillNames = new Set(args.acceptedSkillNames);
+		if (
+			pluginVersion.skills.length !== acceptedSkillNames.size ||
+			pluginVersion.skills.some((skill) => !acceptedSkillNames.has(skill.name))
+		) {
+			return Result({ _nay: { message: "Install must accept exactly the skills the plugin declares" } });
+		}
 
 		const now = Date.now();
 		const existingInstallation = await ctx.db
@@ -3776,11 +3806,14 @@ export const install_version = mutation({
 
 		let installationId: Id<"plugins_workspace_installations">;
 		let installationCreatedAt: number;
-		if (existingInstallation) {
-			const existingVersion = await ctx.db.get("plugins_versions", existingInstallation.pluginVersionId);
-			if (!existingVersion || existingVersion.sourceRepositoryUrl !== pluginVersion.sourceRepositoryUrl) {
-				return Result({ _nay: { message: "Plugin name already installed from a different source" } });
-			}
+		const existingVersion = existingInstallation
+			? await ctx.db.get("plugins_versions", existingInstallation.pluginVersionId)
+			: null;
+		if (
+			existingInstallation &&
+			(!existingVersion || existingVersion.sourceRepositoryUrl !== pluginVersion.sourceRepositoryUrl)
+		) {
+			return Result({ _nay: { message: "Plugin name already installed from a different source" } });
 		}
 
 		const binding = await ctx.db
@@ -3898,6 +3931,8 @@ export const install_version = mutation({
 					acceptedOutboundOrigins: pluginVersion.outboundOrigins,
 					outboundOriginsAcceptedAt: now,
 					acceptedUiOutboundOrigins: pluginVersion.uiOutboundOrigins,
+					acceptedMcpServersFingerprint: pluginVersion.mcpServersFingerprint,
+					acceptedSkillNames: pluginVersion.skills.map((skill) => skill.name),
 					updatedBy: installationScope.userId,
 					updatedAt: now,
 				}),
@@ -3917,6 +3952,8 @@ export const install_version = mutation({
 				acceptedOutboundOrigins: pluginVersion.outboundOrigins,
 				outboundOriginsAcceptedAt: now,
 				acceptedUiOutboundOrigins: pluginVersion.uiOutboundOrigins,
+				acceptedMcpServersFingerprint: pluginVersion.mcpServersFingerprint,
+				acceptedSkillNames: pluginVersion.skills.map((skill) => skill.name),
 				installedBy: installationScope.userId,
 				updatedBy: installationScope.userId,
 				updatedAt: now,
@@ -3951,6 +3988,14 @@ export const install_version = mutation({
 				),
 			),
 		);
+		await plugins_mcp_db_sync_installation_servers(ctx, {
+			organizationId: installationScope.organizationId,
+			workspaceId: installationScope.workspaceId,
+			installationId,
+			previousServers: existingVersion?.mcpServers ?? [],
+			servers: pluginVersion.mcpServers,
+			now,
+		});
 
 		await access_control_changes_db_record(ctx, [
 			{
@@ -4160,7 +4205,7 @@ export const uninstall_version = mutation({
 		// Event runs and run calls stay as history; the admin hard-delete flow sweeps them.
 		// Deleting the installation revokes every UI session now. The bounded background drain removes
 		// their docs, because one installation can have more sessions than one transaction may read.
-		const [handlers, secrets] = await Promise.all([
+		const [handlers, secrets, mcpServers] = await Promise.all([
 			ctx.db
 				.query("plugins_workspace_event_handlers")
 				.withIndex("by_installation", (q) => q.eq("installationId", installation._id))
@@ -4169,10 +4214,22 @@ export const uninstall_version = mutation({
 				.query("plugins_workspace_installation_secrets")
 				.withIndex("by_installation_name", (q) => q.eq("installationId", installation._id))
 				.collect(),
+			// At most the manifest's server count, so they go in this transaction and free their tool
+			// prefixes now.
+			ctx.db
+				.query("plugins_mcp_servers")
+				.withIndex("by_organization_workspace_installation", (q) =>
+					q
+						.eq("organizationId", installation.organizationId)
+						.eq("workspaceId", installation.workspaceId)
+						.eq("installationId", installation._id),
+				)
+				.collect(),
 		]);
 		await Promise.all([
 			...handlers.map((handler) => ctx.db.delete("plugins_workspace_event_handlers", handler._id)),
 			...secrets.map((secret) => ctx.db.delete("plugins_workspace_installation_secrets", secret._id)),
+			...mcpServers.map((server) => ctx.db.delete("plugins_mcp_servers", server._id)),
 			ctx.db.delete("plugins_workspace_installations", installation._id),
 		]);
 
@@ -4180,6 +4237,13 @@ export const uninstall_version = mutation({
 		// in the background. The installation doc is already gone by then, so the drain cannot look its
 		// tenant up again. Pass the scope this transaction still holds.
 		await ctx.scheduler.runAfter(0, internal.plugins_data.drain_uninstalled_installation, {
+			organizationId: installation.organizationId,
+			workspaceId: installation.workspaceId,
+			installationId: installation._id,
+		});
+		// MCP grants are one per member per server, so they can also be more than one transaction may
+		// write. They are unusable already, because the installation is gone.
+		await ctx.scheduler.runAfter(0, internal.plugins_mcp.drain_uninstalled_installation, {
 			organizationId: installation.organizationId,
 			workspaceId: installation.workspaceId,
 			installationId: installation._id,
@@ -4362,6 +4426,11 @@ export const list_published_plugins = query({
 			mcpServers: doc(app_convex_schema, "plugins_versions").fields.mcpServers,
 			mcpServersFingerprint: doc(app_convex_schema, "plugins_versions").fields.mcpServersFingerprint,
 			skills: doc(app_convex_schema, "plugins_versions").fields.skills,
+			/**
+			 * Whether this organization lets the version be installed. "needs_approval" means the plugin
+			 * is allowed, but this version asks for more than the owner approved.
+			 */
+			organizationPolicy: v.union(v.literal("allowed"), v.literal("blocked"), v.literal("needs_approval")),
 		}),
 	),
 	handler: async (ctx, args) => {
@@ -4406,6 +4475,10 @@ export const list_published_plugins = query({
 					mcpServers: version.mcpServers,
 					mcpServersFingerprint: version.mcpServersFingerprint,
 					skills: version.skills,
+					organizationPolicy: await organizations_integration_policy_db_plugin_version_status(ctx, {
+						organization: authorization._yay.organization,
+						version,
+					}),
 				};
 			}),
 		);
@@ -5456,6 +5529,9 @@ export const preview_hard_delete_registered_plugin = internalQuery({
 		eventHandlers: v.number(),
 		installationSecrets: v.number(),
 		uiSessions: v.number(),
+		mcpServers: v.number(),
+		// One grant per member per MCP server. It carries a user id, like member usage above.
+		mcpOAuthGrants: v.number(),
 		pluginDataUsageDocs: v.number(),
 		pluginDataDocuments: v.number(),
 		pluginDataLiveReservations: v.number(),
@@ -5534,6 +5610,8 @@ export const preview_hard_delete_registered_plugin = internalQuery({
 		let eventHandlers = 0;
 		let installationSecrets = 0;
 		let uiSessions = 0;
+		let mcpServers = 0;
+		let mcpOAuthGrants = 0;
 		let pluginDataUsageDocs = 0;
 		let pluginDataDocuments = 0;
 		let pluginDataLiveReservations = 0;
@@ -5647,6 +5725,31 @@ export const preview_hard_delete_registered_plugin = internalQuery({
 					)
 				).docs;
 				uiSessions += sessions.length;
+				const installationMcpServers = (
+					await plugins_db_take_registry_preview_docs(childDocBudget, (limit) =>
+						ctx.db
+							.query("plugins_mcp_servers")
+							.withIndex("by_organization_workspace_installation", (q) =>
+								q
+									.eq("organizationId", installation.organizationId)
+									.eq("workspaceId", installation.workspaceId)
+									.eq("installationId", installation._id),
+							)
+							.take(limit),
+					)
+				).docs;
+				mcpServers += installationMcpServers.length;
+				const grants = (
+					await plugins_db_take_registry_preview_docs(childDocBudget, (limit) =>
+						ctx.db
+							.query("plugins_mcp_oauth_grants")
+							.withIndex("by_targetInstallation_targetServerId_user", (q) =>
+								q.eq("target.installationId", installation._id),
+							)
+							.take(limit),
+					)
+				).docs;
+				mcpOAuthGrants += grants.length;
 				const pluginData = await plugins_data_db_count_installation_docs(
 					ctx,
 					{
@@ -5730,6 +5833,8 @@ export const preview_hard_delete_registered_plugin = internalQuery({
 			eventHandlers,
 			installationSecrets,
 			uiSessions,
+			mcpServers,
+			mcpOAuthGrants,
 			pluginDataUsageDocs,
 			pluginDataDocuments,
 			pluginDataLiveReservations,
@@ -5901,6 +6006,14 @@ export const hard_delete_plugin_from_registry = internalMutation({
 					batchSize: budget,
 				});
 				if (!pluginData.done) return { done: false, deleted: pluginData.deletedCount };
+
+				const mcp = await plugins_mcp_db_drain_installation_batch(ctx, {
+					organizationId: installation.organizationId,
+					workspaceId: installation.workspaceId,
+					installationId: installation._id,
+					batchSize: budget,
+				});
+				if (!mcp.done) return { done: false, deleted: mcp.deletedCount };
 
 				await ctx.db.delete("plugins_workspace_installations", installation._id);
 				return { done: false, deleted: 1 };

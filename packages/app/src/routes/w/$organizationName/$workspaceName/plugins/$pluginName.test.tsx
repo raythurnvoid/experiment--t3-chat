@@ -6,14 +6,14 @@
  * They must say the same thing about the same surfaces, so a warning added to one and missed on the
  * other is the failure these tests exist to catch.
  */
-import { act, cleanup, fireEvent, render as testingRender, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render as testingRender, screen, waitFor, within } from "@testing-library/react";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { useSyncExternalStore, type ComponentProps, type ReactElement, type ReactNode, type Ref } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
-const { paramsMock, tenantContextMock, useQueryMock, mutationMock, actionMock, toastErrorMock, routeStore } = vi.hoisted(
-	() => ({
+const { paramsMock, tenantContextMock, useQueryMock, mutationMock, actionMock, toastErrorMock, routeStore } =
+	vi.hoisted(() => ({
 		paramsMock: vi.fn(),
 		tenantContextMock: vi.fn(),
 		useQueryMock: vi.fn(),
@@ -27,8 +27,7 @@ const { paramsMock, tenantContextMock, useQueryMock, mutationMock, actionMock, t
 			revision: 0,
 			listeners: new Set<() => void>(),
 		},
-	}),
-);
+	}));
 
 /**
  * Tell every subscribed hook that params or query data changed.
@@ -140,6 +139,9 @@ vi.mock("@/lib/app-convex-client.ts", () => ({
 			remove_repository: "plugins.remove_repository",
 			get_publish_candidate_head: "plugins.get_publish_candidate_head",
 			publish_version: "plugins.publish_version",
+		},
+		plugins_mcp: {
+			get_installation_mcp_status: "plugins_mcp.get_installation_mcp_status",
 		},
 	},
 }));
@@ -332,6 +334,20 @@ function published_plugin(overrides: {
 	pages?: Array<{ id: string; title: string; entry: string; navItem: { label: string; icon: string | null } | null }>;
 	fileViews?: Array<{ id: string; title: string; entry: string; contentTypes: string[] }>;
 	uiOutboundOrigins?: string[];
+	mcpServers?: Array<{
+		id: string;
+		title: string;
+		transport: "http";
+		url: string;
+		headers: Array<{ name: string; secret: string }>;
+		auth:
+			| { kind: "none" }
+			| { kind: "secret_headers" }
+			| { kind: "oauth"; issuer: string; resource: string | null; scopes: string[] };
+		tools: string[] | null;
+	}>;
+	skills?: Array<{ name: string; path: string; description: string }>;
+	organizationPolicy?: "allowed" | "blocked" | "needs_approval";
 }) {
 	return {
 		pluginVersionId: "version_1",
@@ -347,6 +363,10 @@ function published_plugin(overrides: {
 		uiOutboundOrigins: overrides.uiOutboundOrigins ?? [],
 		pages: overrides.pages ?? [],
 		fileViews: overrides.fileViews ?? [],
+		mcpServers: overrides.mcpServers ?? [],
+		mcpServersFingerprint: "mcp-servers-hash",
+		skills: overrides.skills ?? [],
+		organizationPolicy: overrides.organizationPolicy ?? "allowed",
 	};
 }
 
@@ -366,6 +386,9 @@ function installed_item(plugin: ReturnType<typeof published_plugin>) {
 			uiOutboundOrigins: plugin.uiOutboundOrigins,
 			pages: plugin.pages,
 			fileViews: plugin.fileViews,
+			mcpServers: plugin.mcpServers,
+			mcpServersFingerprint: plugin.mcpServersFingerprint,
+			skills: plugin.skills,
 			events: [],
 			configuration: { description: "Where this plugin runs.", defaultYaml: "note: server\n" },
 		},
@@ -408,11 +431,34 @@ function publisher_version_fixture(name: string) {
 		uiOutboundOrigins: [],
 		pages: [],
 		fileViews: [],
+		mcpServers: [],
+		mcpServersFingerprint: "mcp-servers-hash",
+		skills: [],
 		artifactHash: "artifact_1",
 		sourceCommitSha: "1234567890abcdef",
 		updatedAt: 1_700_000_000_000,
 	};
 }
+
+const mcp_plugin_parts = {
+	capabilities: ["agent.mcp.connect", "agent.skills.contribute"],
+	mcpServers: [
+		{
+			id: "tracker",
+			title: "Tracker",
+			transport: "http" as const,
+			url: "https://mcp.example.com/mcp",
+			headers: [],
+			auth: { kind: "oauth" as const, issuer: "https://auth.example.com", resource: null, scopes: ["read"] },
+			tools: null,
+		},
+	],
+	skills: [{ name: "triage", path: "skills/triage/SKILL.md", description: "Sort new issues." }],
+};
+
+// Both screens must carry this sentence in the same words.
+const mcp_warning =
+	"MCP servers are outside services. When the agent calls a tool, the chat sends that call's data to the server without asking.";
 
 function setQueries(
 	plugin: ReturnType<typeof published_plugin>,
@@ -606,6 +652,18 @@ describe("RoutePluginsPluginConsentModal", () => {
 			"This plugin's pages and file views can pass their access to the publisher's own server",
 		);
 	});
+
+	test("lists MCP servers and skills with the MCP warning", () => {
+		setQueries(published_plugin({ name: "tracker", canProcessFiles: false, ...mcp_plugin_parts }));
+
+		render(<PageComponent />);
+		fireEvent.click(screen.getByRole("button", { name: "Install" }));
+
+		const dialog = screen.getByRole("dialog");
+		expect(dialog.textContent).toContain("Tracker — mcp.example.com — each member signs in at auth.example.com");
+		expect(dialog.textContent).toContain("triage — Sort new issues.");
+		expect(dialog.textContent).toContain(mcp_warning);
+	});
 });
 
 describe("RoutePluginsPluginAccess", () => {
@@ -740,6 +798,28 @@ describe("RoutePluginsPluginAccess", () => {
 		expect(access.textContent).toContain("Page and file view network access");
 		expect(access.textContent).toContain("https://cdn.example.com");
 		expect(access.textContent).toContain("A plugin page and a file view both run in a member's browser");
+	});
+
+	test("lists MCP servers with their policy and sign-in, skills, and the MCP warning", () => {
+		const plugin = published_plugin({ name: "tracker", canProcessFiles: false, ...mcp_plugin_parts });
+		setQueries(plugin, [installed_item(plugin)]);
+		const queries = useQueryMock.getMockImplementation()!;
+		useQueryMock.mockImplementation((query: string, ...args: unknown[]) =>
+			query === "plugins_mcp.get_installation_mcp_status"
+				? [{ serverId: "tracker", health: "healthy", policy: "blocked", connection: null }]
+				: queries(query, ...args),
+		);
+		notify_route_store();
+
+		render(<PageComponent />);
+
+		const access = access_section();
+		const server = within(access).getByText(/^Tracker — mcp\.example\.com/);
+		expect(server.getAttribute("data-organization-policy")).toBe("blocked");
+		expect(server.textContent).toContain("Blocked by your organization's MCP policy");
+		expect(server.textContent).toContain("You are not signed in");
+		expect(access.textContent).toContain("triage — Sort new issues.");
+		expect(access.textContent).toContain(mcp_warning);
 	});
 });
 
@@ -945,6 +1025,35 @@ describe("RoutePluginsPlugin", () => {
 	afterEach(() => {
 		cleanup();
 		vi.clearAllMocks();
+	});
+
+	test("says why the organization policy blocks an install and disables Install", () => {
+		setQueries(published_plugin({ name: "media", canProcessFiles: true, organizationPolicy: "needs_approval" }));
+
+		const { container } = render(<PageComponent />);
+
+		expect(screen.getByRole("button", { name: "Install" })).toHaveProperty("disabled", true);
+		expect(screen.getByText("Needs your organization owner's approval.")).toBeTruthy();
+		expect(container.querySelector("header")?.getAttribute("data-organization-policy")).toBe("needs_approval");
+	});
+
+	test("enables a disabled installation by installing the same version again", async () => {
+		const plugin = published_plugin({ name: "media", canProcessFiles: true });
+		const installed = installed_item(plugin);
+		installed.installation.status = "disabled";
+		setQueries(plugin, [installed]);
+		mutationMock.mockResolvedValue({ _yay: { installationId: "installation_1" } });
+
+		render(<PageComponent />);
+		fireEvent.click(screen.getByRole("button", { name: "Enable" }));
+		fireEvent.click(screen.getByRole("button", { name: "Accept and enable" }));
+
+		await waitFor(() =>
+			expect(mutationMock).toHaveBeenCalledWith(
+				"plugins.install_version",
+				expect.objectContaining({ pluginVersionId: "version_1" }),
+			),
+		);
 	});
 
 	test("allows a service registration with no data or Files scopes", async () => {

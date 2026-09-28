@@ -66,6 +66,8 @@ async function seed_installation(
 			capabilitiesAcceptedAt: now,
 			acceptedOutboundOrigins: [],
 			acceptedUiOutboundOrigins: [],
+			acceptedMcpServersFingerprint: "mcp-servers-hash",
+			acceptedSkillNames: [],
 			outboundOriginsAcceptedAt: now,
 			installedBy: membership.userId,
 			updatedBy: membership.userId,

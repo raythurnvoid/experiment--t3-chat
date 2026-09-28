@@ -117,6 +117,8 @@ async function fixture() {
 			acceptedCapabilities: capabilities,
 			acceptedOutboundOrigins: [],
 			acceptedUiOutboundOrigins: [],
+			acceptedMcpServersFingerprint: "mcp-servers-hash",
+			acceptedSkillNames: [],
 			serviceAccountGrants: [{ resource: { kind: "workspace" }, level: "manage" }],
 		});
 		if (installed._nay) throw new Error(installed._nay.message);

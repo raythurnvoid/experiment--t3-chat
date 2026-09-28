@@ -6946,6 +6946,8 @@ describe("service file writes", () => {
 				capabilitiesAcceptedAt: now,
 				acceptedOutboundOrigins: [],
 				acceptedUiOutboundOrigins: [],
+				acceptedMcpServersFingerprint: "mcp-servers-hash",
+				acceptedSkillNames: [],
 				outboundOriginsAcceptedAt: now,
 				installedBy: args.db.userId,
 				updatedBy: args.db.userId,

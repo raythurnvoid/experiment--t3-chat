@@ -202,6 +202,8 @@ async function install_gallery_plugin(
 		acceptedCapabilities: args.capabilities ?? ["workspace.files.read"],
 		acceptedOutboundOrigins: [],
 		acceptedUiOutboundOrigins: args.uiOutboundOrigins ?? [],
+		acceptedMcpServersFingerprint: "mcp-servers-hash",
+		acceptedSkillNames: [],
 		serviceAccountGrants: [{ resource: { kind: "workspace" }, level: "read" }],
 	});
 	if (installed._nay) {
@@ -715,6 +717,8 @@ describe("plugin ui sessions", () => {
 			acceptedCapabilities: ["workspace.files.read"],
 			acceptedOutboundOrigins: [],
 			acceptedUiOutboundOrigins: [],
+			acceptedMcpServersFingerprint: "mcp-servers-hash",
+			acceptedSkillNames: [],
 		});
 		expect(installed._nay).toBeUndefined();
 

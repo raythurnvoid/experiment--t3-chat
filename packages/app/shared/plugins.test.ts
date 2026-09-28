@@ -1678,12 +1678,16 @@ describe("plugins_consent_diff", () => {
 					capabilities: ["plugin.secrets.read"],
 					outboundOrigins: ["https://api.openai.com"],
 					uiOutboundOrigins: ["https://council.example.com"],
+					mcpServers: [],
+					skills: [],
 				},
 			}),
 		).toEqual({
 			newCapabilities: ["plugin.secrets.read"],
 			newOutboundOrigins: ["https://api.openai.com"],
 			newUiOutboundOrigins: ["https://council.example.com"],
+			newOrChangedMcpServerIds: [],
+			newSkillNames: [],
 		});
 	});
 
@@ -1694,14 +1698,24 @@ describe("plugins_consent_diff", () => {
 					capabilities: ["plugin.secrets.read"],
 					outboundOrigins: ["https://api.openai.com"],
 					uiOutboundOrigins: ["https://council.example.com"],
+					mcpServers: [],
+					skills: [],
 				},
 				target: {
 					capabilities: ["plugin.secrets.read"],
 					outboundOrigins: ["https://api.openai.com"],
 					uiOutboundOrigins: ["https://council.example.com"],
+					mcpServers: [],
+					skills: [],
 				},
 			}),
-		).toEqual({ newCapabilities: [], newOutboundOrigins: [], newUiOutboundOrigins: [] });
+		).toEqual({
+			newCapabilities: [],
+			newOutboundOrigins: [],
+			newUiOutboundOrigins: [],
+			newOrChangedMcpServerIds: [],
+			newSkillNames: [],
+		});
 	});
 
 	test("returns only the added capabilities and origins for an upgrade", () => {
@@ -1711,17 +1725,23 @@ describe("plugins_consent_diff", () => {
 					capabilities: ["plugin.secrets.read"],
 					outboundOrigins: ["https://api.openai.com"],
 					uiOutboundOrigins: [],
+					mcpServers: [],
+					skills: [],
 				},
 				target: {
 					capabilities: ["plugin.secrets.read", "outbound.fetch"],
 					outboundOrigins: ["https://api.openai.com", "https://example.com"],
 					uiOutboundOrigins: ["https://council.example.com"],
+					mcpServers: [],
+					skills: [],
 				},
 			}),
 		).toEqual({
 			newCapabilities: ["outbound.fetch"],
 			newOutboundOrigins: ["https://example.com"],
 			newUiOutboundOrigins: ["https://council.example.com"],
+			newOrChangedMcpServerIds: [],
+			newSkillNames: [],
 		});
 	});
 
@@ -1732,17 +1752,73 @@ describe("plugins_consent_diff", () => {
 					capabilities: ["outbound.fetch"],
 					outboundOrigins: ["https://council.example.com"],
 					uiOutboundOrigins: [],
+					mcpServers: [],
+					skills: [],
 				},
 				target: {
 					capabilities: ["outbound.fetch", "ui.outbound.fetch"],
 					outboundOrigins: ["https://council.example.com"],
 					uiOutboundOrigins: ["https://council.example.com"],
+					mcpServers: [],
+					skills: [],
 				},
 			}),
 		).toEqual({
 			newCapabilities: ["ui.outbound.fetch"],
 			newOutboundOrigins: [],
 			newUiOutboundOrigins: ["https://council.example.com"],
+			newOrChangedMcpServerIds: [],
+			newSkillNames: [],
+		});
+	});
+
+	test("returns new or changed MCP servers and new skills", () => {
+		const server = {
+			id: "tracker",
+			title: "Tracker",
+			transport: "http" as const,
+			url: "https://mcp.example.com/mcp",
+			headers: [],
+			auth: { kind: "none" as const },
+			tools: null,
+		};
+		const other = { ...server, id: "docs", url: "https://docs.example.com/mcp" };
+		expect(
+			plugins_consent_diff({
+				current: {
+					capabilities: ["agent.mcp.connect", "agent.skills.contribute"],
+					outboundOrigins: [],
+					uiOutboundOrigins: [],
+					mcpServers: [server, other],
+					skills: [{ name: "triage" }],
+				},
+				target: {
+					capabilities: ["agent.mcp.connect", "agent.skills.contribute"],
+					outboundOrigins: [],
+					uiOutboundOrigins: [],
+					// Same fields in a different order still count as unchanged.
+					mcpServers: [
+						{ ...server, url: "https://mcp.example.com/v2/mcp" },
+						{
+							tools: other.tools,
+							auth: other.auth,
+							headers: other.headers,
+							url: other.url,
+							transport: other.transport,
+							title: other.title,
+							id: other.id,
+						},
+						{ ...server, id: "wiki", url: "https://wiki.example.com/mcp" },
+					],
+					skills: [{ name: "triage" }, { name: "release-notes" }],
+				},
+			}),
+		).toEqual({
+			newCapabilities: [],
+			newOutboundOrigins: [],
+			newUiOutboundOrigins: [],
+			newOrChangedMcpServerIds: ["tracker", "wiki"],
+			newSkillNames: ["release-notes"],
 		});
 	});
 });

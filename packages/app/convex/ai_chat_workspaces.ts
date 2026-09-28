@@ -9,6 +9,13 @@ import { organizations_membership_lifetimes_db_ensure } from "./organizations_me
 import { ai_chat_workspaces_source_validator } from "./schema.ts";
 import { v_result } from "../server/convex-utils.ts";
 
+/**
+ * The workspaces a chat turn can reach. The `resolve` validator is built from this list. The MCP
+ * policy check that comes with the chat tools must loop over it too, so a new selector widens that
+ * check by itself.
+ */
+export const ai_chat_workspaces_SELECTORS = ["current", "personal"] as const;
+
 const workspace_validator = v.object({
 	organizationId: v.id("organizations"),
 	workspaceId: v.id("organizations_workspaces"),
@@ -85,7 +92,10 @@ export const capture = internalMutation({
  */
 export async function ai_chat_workspaces_db_resolve(
 	ctx: QueryCtx | MutationCtx,
-	args: { source: Infer<typeof ai_chat_workspaces_source_validator>; workspace: "current" | "personal" },
+	args: {
+		source: Infer<typeof ai_chat_workspaces_source_validator>;
+		workspace: (typeof ai_chat_workspaces_SELECTORS)[number];
+	},
 ) {
 	const membership = await ai_chat_files_db_get_invocation_membership(ctx, args.source);
 	if (!membership) return Result({ _nay: { message: "Chat is no longer available" } });
@@ -101,7 +111,7 @@ export async function ai_chat_workspaces_db_resolve(
 export const resolve = internalQuery({
 	args: {
 		source: ai_chat_workspaces_source_validator,
-		workspace: v.union(v.literal("current"), v.literal("personal")),
+		workspace: v.union(...ai_chat_workspaces_SELECTORS.map((selector) => v.literal(selector))),
 	},
 	returns: v_result({ _yay: workspace_validator }),
 	handler: ai_chat_workspaces_db_resolve,

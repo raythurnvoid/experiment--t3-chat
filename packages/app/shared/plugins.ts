@@ -463,18 +463,51 @@ export function plugins_validate_mcp_server_url(raw: string) {
 }
 
 export function plugins_consent_diff(args: {
-	current: { capabilities: plugins_Capability[]; outboundOrigins: string[]; uiOutboundOrigins: string[] } | null;
-	target: { capabilities: plugins_Capability[]; outboundOrigins: string[]; uiOutboundOrigins: string[] };
+	current: {
+		capabilities: plugins_Capability[];
+		outboundOrigins: string[];
+		uiOutboundOrigins: string[];
+		mcpServers: plugins_McpServer[];
+		skills: Array<{ name: string }>;
+	} | null;
+	target: {
+		capabilities: plugins_Capability[];
+		outboundOrigins: string[];
+		uiOutboundOrigins: string[];
+		mcpServers: plugins_McpServer[];
+		skills: Array<{ name: string }>;
+	};
 }) {
 	const currentCapabilities = new Set(args.current?.capabilities ?? []);
 	const currentOrigins = new Set(args.current?.outboundOrigins ?? []);
 	// Backend and UI egress are consented separately. The same origin can appear in both lists and
 	// still be new to one of them, so the two sets never share entries.
 	const currentUiOrigins = new Set(args.current?.uiOutboundOrigins ?? []);
+	// Compare every field of a server with an explicit key order, so two versions read back with a
+	// different field order still compare equal.
+	const mcpServerKey = (server: plugins_McpServer) =>
+		JSON.stringify([
+			server.title,
+			server.url,
+			server.headers.map((header) => [header.name, header.secret]),
+			server.auth.kind === "oauth"
+				? [server.auth.kind, server.auth.issuer, server.auth.resource, server.auth.scopes]
+				: [server.auth.kind],
+			server.tools,
+		]);
+	const currentMcpServerKeys = new Map(
+		(args.current?.mcpServers ?? []).map((server) => [server.id, mcpServerKey(server)]),
+	);
+	const currentSkillNames = new Set(args.current?.skills.map((skill) => skill.name) ?? []);
 	return {
 		newCapabilities: args.target.capabilities.filter((capability) => !currentCapabilities.has(capability)),
 		newOutboundOrigins: args.target.outboundOrigins.filter((origin) => !currentOrigins.has(origin)),
 		newUiOutboundOrigins: args.target.uiOutboundOrigins.filter((origin) => !currentUiOrigins.has(origin)),
+		// A server whose id is new, or whose URL, headers, sign-in, or tools changed.
+		newOrChangedMcpServerIds: args.target.mcpServers
+			.filter((server) => currentMcpServerKeys.get(server.id) !== mcpServerKey(server))
+			.map((server) => server.id),
+		newSkillNames: args.target.skills.filter((skill) => !currentSkillNames.has(skill.name)).map((skill) => skill.name),
 	};
 }
 
@@ -990,6 +1023,8 @@ const mcp_server_schema = z
 			.nullable(),
 	})
 	.strict();
+
+export type plugins_McpServer = z.infer<typeof mcp_server_schema>;
 
 const skill_schema = z
 	.object({

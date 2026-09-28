@@ -408,6 +408,11 @@ export const test_mocks_fill_db_with = {
 			 * test a refusal, or `null` for a user with no billing state at all.
 			 */
 			plan?: keyof typeof billing_PRODUCTS | null;
+			/**
+			 * A custom organization with no policy doc allows no plugin and no MCP server. Most tests are
+			 * not about the policy, so the fixture allows everything. Pass `null` to test the policy.
+			 */
+			integrationPolicy?: "allow_all" | null;
 		},
 	) => {
 		const now = Date.now();
@@ -469,6 +474,15 @@ export const test_mocks_fill_db_with = {
 		});
 		if (organizationResult._nay) {
 			throw new Error(`Failed to seed organization membership: ${organizationResult._nay.message}`);
+		}
+		if (args?.integrationPolicy !== null) {
+			await ctx.db.insert("organizations_integration_policies", {
+				organizationId: organizationResult._yay.organizationId,
+				plugins: { mode: "allow_all", allowlist: [] },
+				mcpServers: { mode: "allow_all", allowlist: [] },
+				updatedBy: userId,
+				updatedAt: now,
+			});
 		}
 
 		let workspaceId = organizationResult._yay.defaultWorkspaceId;
@@ -537,6 +551,156 @@ export const test_mocks_fill_db_with = {
 			serviceAccountId,
 		});
 		return serviceAccountId;
+	},
+
+	/**
+	 * One member's MCP sign-in for one server. It holds a refresh token and a revocation endpoint, so
+	 * deleting it leaves a revocation row.
+	 */
+	mcp_oauth_grant: async (
+		ctx: MutationCtx,
+		args: {
+			organizationId: Id<"organizations">;
+			workspaceId: Id<"organizations_workspaces">;
+			userId: Id<"users">;
+			target: Doc<"plugins_mcp_oauth_grants">["target"];
+			connectedAt?: number;
+		},
+	) => {
+		return await ctx.db.insert("plugins_mcp_oauth_grants", {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			userId: args.userId,
+			target: args.target,
+			issuer: "https://auth.example.com",
+			resource: "https://mcp.example.com/mcp",
+			tokenEndpoint: "https://auth.example.com/token",
+			revocationEndpoint: "https://auth.example.com/revoke",
+			clientId: "client-1",
+			clientKind: "cimd",
+			tokenEndpointAuthMethod: "none",
+			accessToken: null,
+			refreshToken: { ciphertext: new ArrayBuffer(8), nonce: new ArrayBuffer(12), keyId: "v1" },
+			expiresAt: null,
+			scope: "read",
+			requestedScopes: ["read"],
+			stepUpScope: null,
+			connectedAt: args.connectedAt ?? Date.now(),
+			status: "connected",
+			version: 1,
+			leaseId: null,
+			leaseUntil: null,
+		});
+	},
+
+	/**
+	 * One member's MCP sign-in that has not come back from the sign-in server yet.
+	 */
+	mcp_oauth_pending: async (
+		ctx: MutationCtx,
+		args: {
+			organizationId: Id<"organizations">;
+			workspaceId: Id<"organizations_workspaces">;
+			userId: Id<"users">;
+			target: Doc<"plugins_mcp_oauth_pending">["target"];
+		},
+	) => {
+		return await ctx.db.insert("plugins_mcp_oauth_pending", {
+			stateHash: faker.string.hexadecimal({ length: 64, prefix: "" }),
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			userId: args.userId,
+			target: args.target,
+			destinationFingerprint: "sha256:pending",
+			serverUrl: "https://mcp.example.com/mcp",
+			resource: "https://mcp.example.com/mcp",
+			issuer: "https://auth.example.com",
+			authorizationEndpoint: "https://auth.example.com/authorize",
+			tokenEndpoint: "https://auth.example.com/token",
+			revocationEndpoint: null,
+			issParameterSupported: true,
+			clientId: "client-1",
+			clientKind: "cimd",
+			tokenEndpointAuthMethod: "none",
+			scopes: ["read"],
+			codeVerifier: { ciphertext: new ArrayBuffer(8), nonce: new ArrayBuffer(12), keyId: "v1" },
+			returnPath: "/",
+			expiresAt: Date.now() + 10 * 60 * 1000,
+		});
+	},
+
+	/**
+	 * One MCP tool call in the call ledger.
+	 */
+	mcp_call: async (
+		ctx: MutationCtx,
+		args: {
+			organizationId: Id<"organizations">;
+			workspaceId: Id<"organizations_workspaces">;
+			userId: Id<"users">;
+			threadId: Id<"ai_chat_threads">;
+			target: Doc<"plugins_mcp_calls">["target"];
+		},
+	) => {
+		return await ctx.db.insert("plugins_mcp_calls", {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			userId: args.userId,
+			threadId: args.threadId,
+			target: args.target,
+			toolName: "search",
+			startedAt: Date.now(),
+			durationMs: 120,
+			bytesIn: 64,
+			bytesOut: 256,
+			outcome: "ok",
+		});
+	},
+
+	/**
+	 * One member's own MCP server, with one secret row per secret name.
+	 */
+	mcp_custom_server: async (
+		ctx: MutationCtx,
+		args: {
+			organizationId: Id<"organizations">;
+			workspaceId: Id<"organizations_workspaces">;
+			userId: Id<"users">;
+			secretNames?: string[];
+		},
+	) => {
+		const secretNames = args.secretNames ?? [];
+		const customServerId = await ctx.db.insert("mcp_custom_servers", {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			userId: args.userId,
+			name: "Tracker",
+			toolPrefix: "my-tracker",
+			url: "https://mcp.example.com/mcp",
+			headers: secretNames.map((secretName) => ({
+				name: `X-${secretName}`,
+				parts: [{ kind: "secret" as const, secretName }],
+			})),
+			auth: secretNames.length > 0 ? { kind: "headers" } : { kind: "none" },
+			destinationFingerprint: "sha256:custom",
+			enabled: true,
+			lastTest: null,
+			failures: 0,
+			unhealthyUntil: null,
+			updatedAt: Date.now(),
+		});
+		for (const secretName of secretNames) {
+			await ctx.db.insert("mcp_custom_server_secrets", {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				userId: args.userId,
+				customServerId,
+				name: secretName,
+				value: { ciphertext: new ArrayBuffer(8), nonce: new ArrayBuffer(12), keyId: "v1" },
+				updatedAt: Date.now(),
+			});
+		}
+		return customServerId;
 	},
 
 	nested_files: async (ctx: MutationCtx) => {

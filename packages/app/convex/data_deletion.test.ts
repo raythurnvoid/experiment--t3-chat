@@ -491,6 +491,8 @@ async function data_deletion_test_seed_plugin_ui_sessions(
 		capabilitiesAcceptedAt: now,
 		acceptedOutboundOrigins: [],
 		acceptedUiOutboundOrigins: [],
+		acceptedMcpServersFingerprint: "mcp-servers-hash",
+		acceptedSkillNames: [],
 		outboundOriginsAcceptedAt: now,
 		installedBy: args.userId,
 		updatedBy: args.userId,
@@ -2204,6 +2206,8 @@ describe("process_user_deletion_request", () => {
 				capabilitiesAcceptedAt: now,
 				acceptedOutboundOrigins: [],
 				acceptedUiOutboundOrigins: [],
+				acceptedMcpServersFingerprint: "mcp-servers-hash",
+				acceptedSkillNames: [],
 				outboundOriginsAcceptedAt: now,
 				installedBy: collaborator.userId,
 				updatedBy: collaborator.userId,
@@ -2671,6 +2675,8 @@ describe("process_user_deletion_request", () => {
 					capabilitiesAcceptedAt: now,
 					acceptedOutboundOrigins: [],
 					acceptedUiOutboundOrigins: [],
+					acceptedMcpServersFingerprint: "mcp-servers-hash",
+					acceptedSkillNames: [],
 					outboundOriginsAcceptedAt: now,
 					installedBy: survivingUser.userId,
 					updatedBy: survivingUser.userId,
@@ -2861,6 +2867,8 @@ describe("process_user_deletion_request", () => {
 				capabilitiesAcceptedAt: now,
 				acceptedOutboundOrigins: [],
 				acceptedUiOutboundOrigins: [],
+				acceptedMcpServersFingerprint: "mcp-servers-hash",
+				acceptedSkillNames: [],
 				outboundOriginsAcceptedAt: now,
 				installedBy: deletedUser.userId,
 				updatedBy: deletedUser.userId,
@@ -4537,6 +4545,8 @@ describe("process_workspace_deletion_request", () => {
 				capabilitiesAcceptedAt: now,
 				acceptedOutboundOrigins: [],
 				acceptedUiOutboundOrigins: [],
+				acceptedMcpServersFingerprint: "mcp-servers-hash",
+				acceptedSkillNames: [],
 				outboundOriginsAcceptedAt: now,
 				installedBy: user.userId,
 				updatedBy: user.userId,
@@ -5200,6 +5210,8 @@ describe("process_workspace_deletion_request", () => {
 				capabilitiesAcceptedAt: now,
 				acceptedOutboundOrigins: [],
 				acceptedUiOutboundOrigins: [],
+				acceptedMcpServersFingerprint: "mcp-servers-hash",
+				acceptedSkillNames: [],
 				outboundOriginsAcceptedAt: now,
 				installedBy: user.userId,
 				updatedBy: user.userId,
@@ -6021,6 +6033,8 @@ describe("hard_delete_user_data", () => {
 					acceptedCapabilities: ["plugin.data.read", "plugin.data.write", "plugin.data.user-write"],
 					acceptedOutboundOrigins: [],
 					acceptedUiOutboundOrigins: [],
+					acceptedMcpServersFingerprint: "mcp-servers-hash",
+					acceptedSkillNames: [],
 				});
 				expect(reinstall._nay?.message).toBe("Workspace cleanup is in progress");
 				const staleWrite = await asPage.mutation(api.plugins_data.user_append_document, {
@@ -10553,12 +10567,12 @@ describe("prepare_user_for_hard_deletion", () => {
 				uiOutboundOrigins: [],
 				files: [],
 				sourceStatus: "ready",
-				sourceLastError: null,
-				createdBy: publisher.userId,
-				updatedAt: now,
 				mcpServers: [],
 				mcpServersFingerprint: "mcp-servers-hash",
 				skills: [],
+				sourceLastError: null,
+				createdBy: publisher.userId,
+				updatedAt: now,
 			});
 			return { repositoryId, reviewId };
 		});
@@ -10630,12 +10644,12 @@ describe("prepare_user_for_hard_deletion", () => {
 			return { actorOnlyId };
 		});
 
-		// Pass 1 deletes two notifications, pass 2 the last one, pass 3 finds nothing and reports done.
-		const passes = [];
-		for (let i = 0; i < 3; i += 1) {
 				mcpServers: [],
 				mcpServersFingerprint: "mcp-servers-hash",
 				skills: [],
+		// Pass 1 deletes two notifications, pass 2 the last one, pass 3 finds nothing and reports done.
+		const passes = [];
+		for (let i = 0; i < 3; i += 1) {
 			passes.push(
 				await t.run((ctx) =>
 					ctx.runMutation(internal.data_deletion.prepare_user_for_hard_deletion, {
@@ -10866,5 +10880,101 @@ describe("saved browser profiles", () => {
 		const after = await read_browser_profiles(t);
 		expect(after.profileIds).toEqual([seeded.otherProfileId]);
 		expect(after.wipes.map((wipe) => wipe.profileId)).toEqual([seeded.resetProfileId]);
+	});
+});
+
+describe("mcp docs", () => {
+	test("the account deletion request deletes the member's MCP docs in an organization they do not own", async () => {
+		const t = test_convex();
+		const user = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-delete-mcp-docs",
+				displayName: "MCP Docs",
+			}),
+		);
+		const owner = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-delete-mcp-docs-owner",
+				displayName: "MCP Docs Owner",
+			}),
+		);
+		const { organizationId, workspaceId } = await t.run(async (ctx) => {
+			const now = Date.now();
+			const created = await organizations_db_create(ctx, {
+				userId: owner.userId,
+				name: "mcp-docs-team",
+				description: "",
+				now,
+			});
+			if (created._nay) throw new Error(created._nay.message);
+			const tenant = { organizationId: created._yay.organizationId, workspaceId: created._yay.defaultWorkspaceId };
+			await ctx.db.insert("organizations_workspaces_users", { ...tenant, userId: user.userId, active: true });
+			const threadId = await ctx.db.insert("ai_chat_threads", {
+				...tenant,
+				clientGeneratedId: "mcp-docs-thread",
+				title: "MCP docs thread",
+				archived: false,
+				runtime: "aisdk_5",
+				createdBy: user.userId,
+				updatedBy: user.userId,
+				updatedAt: now,
+				lastMessageAt: now,
+			});
+			for (const userId of [user.userId, owner.userId]) {
+				const customServerId = await test_mocks_fill_db_with.mcp_custom_server(ctx, {
+					...tenant,
+					userId,
+					secretNames: ["TOKEN", "ACCOUNT"],
+				});
+				const scope = { ...tenant, userId, target: { kind: "custom" as const, customServerId } };
+				await test_mocks_fill_db_with.mcp_oauth_grant(ctx, scope);
+				await test_mocks_fill_db_with.mcp_oauth_pending(ctx, scope);
+				await test_mocks_fill_db_with.mcp_call(ctx, { ...scope, threadId });
+			}
+			await test_mocks_cancel_pending_home_file_seeds(ctx);
+			return tenant;
+		});
+		const read_mcp_doc_ids = (userId: Id<"users">) =>
+			t.run(async (ctx) => {
+				const docs = [];
+				for (const tableName of [
+					"mcp_custom_servers",
+					"mcp_custom_server_secrets",
+					"plugins_mcp_oauth_grants",
+					"plugins_mcp_oauth_pending",
+					"plugins_mcp_calls",
+				] as const) {
+					docs.push(
+						...(await ctx.db
+							.query(tableName)
+							.withIndex("by_organization_workspace_user", (q) =>
+								q.eq("organizationId", organizationId).eq("workspaceId", workspaceId).eq("userId", userId),
+							)
+							.collect()),
+					);
+				}
+				return docs.map((doc) => doc._id);
+			});
+		const ownerDocIds = await read_mcp_doc_ids(owner.userId);
+		expect(ownerDocIds).toHaveLength(6);
+
+		await t.mutation(internal.data_deletion.init_user_deletion, { userId: user.userId });
+		const jobs = await t.run(async (ctx) =>
+			(await ctx.db.system.query("_scheduled_functions").collect()).filter((job) => job.state.kind === "pending"),
+		);
+		expect(jobs.filter((job) => job.name.includes("drain_user_mcp_docs")).map((job) => job.args[0])).toEqual([
+			{ userId: user.userId },
+		]);
+
+		// Each run deletes one table's batch. Run it once per table, plus one run that finds nothing.
+		for (let run = 0; run < 6; run += 1) {
+			await t.mutation(internal.plugins_mcp.drain_user_mcp_docs, {
+				userId: user.userId,
+				_test_disableReschedule: true,
+			});
+		}
+		expect(await read_mcp_doc_ids(user.userId)).toEqual([]);
+		expect(await read_mcp_doc_ids(owner.userId)).toEqual(ownerDocIds);
+		expect(await t.run((ctx) => ctx.db.query("plugins_mcp_oauth_revocations").collect())).toHaveLength(1);
 	});
 });

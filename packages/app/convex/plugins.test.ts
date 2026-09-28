@@ -14,6 +14,7 @@ import {
 import * as activities from "./activities_db.ts";
 import plugin_runner, { type Env as PluginRunnerEnv } from "../../plugin-runner/src/index.ts";
 import { plugins_db_get_live_service_account } from "./plugins_service_accounts.ts";
+import { plugins_mcp_destination_fingerprint } from "./plugins_mcp.ts";
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
 import {
 	plugins_REVIEW_POLICY_VERSION,
@@ -237,6 +238,9 @@ async function register_media_plugin(
 		capabilities?: plugins_Capability[];
 		pages?: Doc<"plugins_versions">["pages"];
 		endpoints?: Doc<"plugins_versions">["endpoints"];
+		mcpServers?: Doc<"plugins_versions">["mcpServers"];
+		mcpServersFingerprint?: string;
+		skills?: Doc<"plugins_versions">["skills"];
 		secrets?: Array<{ name: string; description: string; optional: boolean }>;
 		sourceFiles?: Array<{ path: string; rawText: string }>;
 	} = {},
@@ -307,9 +311,9 @@ async function register_media_plugin(
 		capabilities: args.capabilities ?? ["plugin.secrets.read", "outbound.fetch"],
 		outboundOrigins: args.outboundOrigins ?? [],
 		uiOutboundOrigins: args.uiOutboundOrigins ?? [],
-		mcpServers: [],
-		mcpServersFingerprint: "mcp-servers-hash",
-		skills: [],
+		mcpServers: args.mcpServers ?? [],
+		mcpServersFingerprint: args.mcpServersFingerprint ?? "mcp-servers-hash",
+		skills: args.skills ?? [],
 		secrets: args.secrets,
 		files: [
 			{
@@ -333,11 +337,15 @@ const media_plugin_consent: {
 	acceptedCapabilities: plugins_Capability[];
 	acceptedOutboundOrigins: string[];
 	acceptedUiOutboundOrigins: string[];
+	acceptedMcpServersFingerprint: string;
+	acceptedSkillNames: string[];
 	serviceAccountGrants: Array<{ resource: { kind: "workspace" }; level: "manage" }>;
 } = {
 	acceptedCapabilities: ["plugin.secrets.read", "outbound.fetch"],
 	acceptedOutboundOrigins: [],
 	acceptedUiOutboundOrigins: [],
+	acceptedMcpServersFingerprint: "mcp-servers-hash",
+	acceptedSkillNames: [],
 	// File runtime fixtures explicitly authorize their test account's content operations.
 	serviceAccountGrants: [{ resource: { kind: "workspace" }, level: "manage" }],
 };
@@ -6571,6 +6579,8 @@ describe("plugins outbound origins consent", () => {
 			acceptedCapabilities: ["plugin.secrets.read"],
 			acceptedOutboundOrigins: ["https://api.openai.com"],
 			acceptedUiOutboundOrigins: [],
+			acceptedMcpServersFingerprint: "mcp-servers-hash",
+			acceptedSkillNames: [],
 		});
 		expect(partialCapabilities).toEqual({
 			_nay: { message: "Install must accept exactly the capabilities the plugin declares" },
@@ -6582,6 +6592,8 @@ describe("plugins outbound origins consent", () => {
 			...media_plugin_consent,
 			acceptedOutboundOrigins: [],
 			acceptedUiOutboundOrigins: [],
+			acceptedMcpServersFingerprint: "mcp-servers-hash",
+			acceptedSkillNames: [],
 		});
 		expect(missingOrigin).toEqual({
 			_nay: { message: "Install must accept exactly the outbound origins the plugin declares" },
@@ -6594,6 +6606,8 @@ describe("plugins outbound origins consent", () => {
 			...media_plugin_consent,
 			acceptedOutboundOrigins: ["https://api.openai.com", "https://example.com"],
 			acceptedUiOutboundOrigins: [],
+			acceptedMcpServersFingerprint: "mcp-servers-hash",
+			acceptedSkillNames: [],
 		});
 		expect(excessOrigin).toEqual({
 			_nay: { message: "Install must accept exactly the outbound origins the plugin declares" },
@@ -6605,6 +6619,8 @@ describe("plugins outbound origins consent", () => {
 			...media_plugin_consent,
 			acceptedOutboundOrigins: ["https://api.openai.com"],
 			acceptedUiOutboundOrigins: [],
+			acceptedMcpServersFingerprint: "mcp-servers-hash",
+			acceptedSkillNames: [],
 		});
 		if (installed._nay) {
 			throw new Error(installed._nay.message);
@@ -6636,6 +6652,8 @@ describe("plugins outbound origins consent", () => {
 		const missingOrigin = await asOwner.mutation(api.plugins.install_version, {
 			...consent,
 			acceptedUiOutboundOrigins: [],
+			acceptedMcpServersFingerprint: "mcp-servers-hash",
+			acceptedSkillNames: [],
 		});
 		expect(missingOrigin).toEqual({
 			_nay: { message: "Install must accept exactly the UI outbound origins the plugin declares" },
@@ -6645,6 +6663,8 @@ describe("plugins outbound origins consent", () => {
 		const excessOrigin = await asOwner.mutation(api.plugins.install_version, {
 			...consent,
 			acceptedUiOutboundOrigins: ["https://council.example.com", "https://elsewhere.example.com"],
+			acceptedMcpServersFingerprint: "mcp-servers-hash",
+			acceptedSkillNames: [],
 		});
 		expect(excessOrigin).toEqual({
 			_nay: { message: "Install must accept exactly the UI outbound origins the plugin declares" },
@@ -6657,6 +6677,8 @@ describe("plugins outbound origins consent", () => {
 		const installed = await asOwner.mutation(api.plugins.install_version, {
 			...consent,
 			acceptedUiOutboundOrigins: ["https://council.example.com"],
+			acceptedMcpServersFingerprint: "mcp-servers-hash",
+			acceptedSkillNames: [],
 		});
 		if (installed._nay) {
 			throw new Error(installed._nay.message);
@@ -6701,6 +6723,8 @@ describe("plugins outbound origins consent", () => {
 			...media_plugin_consent,
 			acceptedOutboundOrigins: ["https://api.openai.com"],
 			acceptedUiOutboundOrigins: [],
+			acceptedMcpServersFingerprint: "mcp-servers-hash",
+			acceptedSkillNames: [],
 		});
 		if (freshConsent._nay) {
 			throw new Error(freshConsent._nay.message);
@@ -6718,6 +6742,8 @@ describe("plugins outbound origins consent", () => {
 			...media_plugin_consent,
 			acceptedOutboundOrigins: ["https://api.openai.com"],
 			acceptedUiOutboundOrigins: [],
+			acceptedMcpServersFingerprint: "mcp-servers-hash",
+			acceptedSkillNames: [],
 		});
 		if (sameConsent._nay) {
 			throw new Error(sameConsent._nay.message);
@@ -6742,6 +6768,8 @@ describe("plugins outbound origins consent", () => {
 			...media_plugin_consent,
 			acceptedOutboundOrigins: ["https://api.openai.com", "https://transformer.example.com"],
 			acceptedUiOutboundOrigins: [],
+			acceptedMcpServersFingerprint: "mcp-servers-hash",
+			acceptedSkillNames: [],
 		});
 		if (installed._nay) {
 			throw new Error(installed._nay.message);
@@ -6803,6 +6831,296 @@ describe("plugins outbound origins consent", () => {
 		expect(body.input.configuration).toEqual({
 			triggers: { "files.upload.completed": { folders: ["/"] } },
 		});
+	});
+});
+
+describe("plugins mcp servers install", () => {
+	// plugins_manage is a token bucket with capacity 2; refill a token before each extra write.
+	beforeEach(() => {
+		vi.useFakeTimers();
+	});
+
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	function refill_manage_rate_limit() {
+		vi.advanceTimersByTime(60_000);
+	}
+
+	function oauth_server(id: string, url: string): Doc<"plugins_versions">["mcpServers"][number] {
+		return {
+			id,
+			title: id,
+			transport: "http",
+			url,
+			headers: [],
+			auth: { kind: "oauth", issuer: "https://auth.example.com", resource: null, scopes: ["read"] },
+			tools: null,
+		};
+	}
+
+	const mcp_capabilities: plugins_Capability[] = [
+		"plugin.secrets.read",
+		"outbound.fetch",
+		"agent.mcp.connect",
+		"agent.skills.contribute",
+	];
+
+	test("rejects installs whose MCP servers or skill names do not match the version", async () => {
+		const t = test_convex();
+		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const tracker = oauth_server("tracker", "https://mcp.example.com/mcp");
+		const registered = await register_media_plugin(t, membership.userId, {
+			capabilities: mcp_capabilities,
+			mcpServers: [tracker],
+			mcpServersFingerprint: "sha256:tracker-v1",
+			skills: [{ name: "triage", path: "skills/triage/SKILL.md", description: "Sort new issues." }],
+		});
+		const asOwner = t.withIdentity(user_identity(membership.userId));
+		const consent = {
+			membershipId: membership.membershipId,
+			pluginVersionId: registered.pluginVersionId,
+			...media_plugin_consent,
+			acceptedCapabilities: mcp_capabilities,
+		};
+
+		const staleServers = await asOwner.mutation(api.plugins.install_version, {
+			...consent,
+			acceptedMcpServersFingerprint: "sha256:tracker-v0",
+			acceptedSkillNames: ["triage"],
+		});
+		expect(staleServers).toEqual({
+			_nay: { message: "Install must accept exactly the MCP servers the plugin declares" },
+		});
+
+		const missingSkill = await asOwner.mutation(api.plugins.install_version, {
+			...consent,
+			acceptedMcpServersFingerprint: "sha256:tracker-v1",
+			acceptedSkillNames: [],
+		});
+		expect(missingSkill).toEqual({
+			_nay: { message: "Install must accept exactly the skills the plugin declares" },
+		});
+		expect(await t.run((ctx) => ctx.db.query("plugins_workspace_installations").collect())).toEqual([]);
+		expect(await t.run((ctx) => ctx.db.query("plugins_mcp_servers").collect())).toEqual([]);
+
+		refill_manage_rate_limit();
+		const installed = await asOwner.mutation(api.plugins.install_version, {
+			...consent,
+			acceptedMcpServersFingerprint: "sha256:tracker-v1",
+			acceptedSkillNames: ["triage"],
+		});
+		if (installed._nay) {
+			throw new Error(installed._nay.message);
+		}
+		const installation = await t.run((ctx) =>
+			ctx.db.get("plugins_workspace_installations", installed._yay.installationId),
+		);
+		expect(installation).toMatchObject({
+			acceptedMcpServersFingerprint: "sha256:tracker-v1",
+			acceptedSkillNames: ["triage"],
+		});
+		expect(await t.run((ctx) => ctx.db.query("plugins_mcp_servers").collect())).toEqual([
+			expect.objectContaining({
+				installationId: installed._yay.installationId,
+				serverId: "tracker",
+				toolPrefix: "tracker",
+				destinationFingerprint: await plugins_mcp_destination_fingerprint(tracker),
+				failures: 0,
+				unhealthyUntil: null,
+			}),
+		]);
+	});
+
+	test("gives servers with the same id in one workspace different tool prefixes", async () => {
+		const t = test_convex();
+		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const servers = [
+			oauth_server("github", "https://mcp.github.example.com/mcp"),
+			oauth_server("abcdefghijklmnopqrst", "https://long.example.com/mcp"),
+		];
+		const asOwner = t.withIdentity(user_identity(membership.userId));
+		for (const name of ["media", "media-alt"]) {
+			const registered = await register_media_plugin(t, membership.userId, {
+				name,
+				capabilities: mcp_capabilities,
+				mcpServers: servers,
+			});
+			const installed = await asOwner.mutation(api.plugins.install_version, {
+				membershipId: membership.membershipId,
+				pluginVersionId: registered.pluginVersionId,
+				...media_plugin_consent,
+				acceptedCapabilities: mcp_capabilities,
+			});
+			if (installed._nay) {
+				throw new Error(installed._nay.message);
+			}
+		}
+
+		const rows = await t.run((ctx) => ctx.db.query("plugins_mcp_servers").collect());
+		// The id is cut to 17 characters before the suffix, so the prefix stays at 20 characters.
+		expect(rows.map((row) => row.toolPrefix).toSorted()).toEqual([
+			"abcdefghijklmnopq-2",
+			"abcdefghijklmnopqrst",
+			"github",
+			"github-2",
+		]);
+	});
+
+	test("an upgrade that moves a server needs a new accept and deletes the grants for it", async () => {
+		const t = test_convex();
+		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const docs = oauth_server("docs", "https://docs.example.com/mcp");
+		const first = await register_media_plugin(t, membership.userId, {
+			capabilities: mcp_capabilities,
+			mcpServers: [oauth_server("tracker", "https://mcp.example.com/mcp"), docs],
+			mcpServersFingerprint: "sha256:v1",
+		});
+		const asOwner = t.withIdentity(user_identity(membership.userId));
+		const installed = await asOwner.mutation(api.plugins.install_version, {
+			membershipId: membership.membershipId,
+			pluginVersionId: first.pluginVersionId,
+			...media_plugin_consent,
+			acceptedCapabilities: mcp_capabilities,
+			acceptedMcpServersFingerprint: "sha256:v1",
+		});
+		if (installed._nay) {
+			throw new Error(installed._nay.message);
+		}
+		const installationId = installed._yay.installationId;
+		const rowsBefore = await t.run((ctx) => ctx.db.query("plugins_mcp_servers").collect());
+		const docsGrantId = await t.run(async (ctx) => {
+			await test_mocks_fill_db_with.mcp_oauth_grant(ctx, {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				userId: membership.userId,
+				target: { kind: "plugin", installationId, serverId: "tracker" },
+			});
+			return await test_mocks_fill_db_with.mcp_oauth_grant(ctx, {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				userId: membership.userId,
+				target: { kind: "plugin", installationId, serverId: "docs" },
+			});
+		});
+
+		refill_manage_rate_limit();
+		const movedTracker = oauth_server("tracker", "https://mcp.example.com/v2/mcp");
+		const upgraded = await register_media_plugin(t, membership.userId, {
+			version: "0.2.0",
+			capabilities: mcp_capabilities,
+			mcpServers: [movedTracker, docs],
+			mcpServersFingerprint: "sha256:v2",
+		});
+		const staleConsent = await asOwner.mutation(api.plugins.install_version, {
+			membershipId: membership.membershipId,
+			pluginVersionId: upgraded.pluginVersionId,
+			...media_plugin_consent,
+			acceptedCapabilities: mcp_capabilities,
+			acceptedMcpServersFingerprint: "sha256:v1",
+		});
+		expect(staleConsent).toEqual({
+			_nay: { message: "Install must accept exactly the MCP servers the plugin declares" },
+		});
+
+		refill_manage_rate_limit();
+		const freshConsent = await asOwner.mutation(api.plugins.install_version, {
+			membershipId: membership.membershipId,
+			pluginVersionId: upgraded.pluginVersionId,
+			...media_plugin_consent,
+			acceptedCapabilities: mcp_capabilities,
+			acceptedMcpServersFingerprint: "sha256:v2",
+		});
+		if (freshConsent._nay) {
+			throw new Error(freshConsent._nay.message);
+		}
+		await t.finishAllScheduledFunctions(() => vi.runAllTimers());
+
+		// The rows are updated in place, so the tool prefixes stay the same.
+		const rowsAfter = await t.run((ctx) => ctx.db.query("plugins_mcp_servers").collect());
+		expect(rowsAfter.map((row) => ({ _id: row._id, toolPrefix: row.toolPrefix }))).toEqual(
+			rowsBefore.map((row) => ({ _id: row._id, toolPrefix: row.toolPrefix })),
+		);
+		expect(rowsAfter.find((row) => row.serverId === "tracker")?.destinationFingerprint).toBe(
+			await plugins_mcp_destination_fingerprint(movedTracker),
+		);
+		// Only the moved server's grant is gone. The grant for the unchanged server stays.
+		expect(
+			(await t.run((ctx) => ctx.db.query("plugins_mcp_oauth_grants").collect())).map((grant) => grant._id),
+		).toEqual([docsGrantId]);
+		expect(await t.run((ctx) => ctx.db.query("plugins_mcp_oauth_revocations").collect())).toHaveLength(1);
+	});
+
+	test("the status query shows the policy and the caller's own sign-in, never a token", async () => {
+		const t = test_convex();
+		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const registered = await register_media_plugin(t, membership.userId, {
+			capabilities: mcp_capabilities,
+			mcpServers: [oauth_server("tracker", "https://mcp.example.com/mcp")],
+		});
+		const asOwner = t.withIdentity(user_identity(membership.userId));
+		const installed = await asOwner.mutation(api.plugins.install_version, {
+			membershipId: membership.membershipId,
+			pluginVersionId: registered.pluginVersionId,
+			...media_plugin_consent,
+			acceptedCapabilities: mcp_capabilities,
+		});
+		if (installed._nay) {
+			throw new Error(installed._nay.message);
+		}
+		const installationId = installed._yay.installationId;
+		const other = await t.run((ctx) =>
+			test_mocks_fill_db_with.membership(ctx, { organizationName: "personal", workspaceName: "home" }),
+		);
+		const readStatus = () =>
+			asOwner.query(api.plugins_mcp.get_installation_mcp_status, {
+				membershipId: membership.membershipId,
+				installationId,
+			});
+
+		// Another member's grant must not show as the caller's sign-in.
+		await t.run((ctx) =>
+			test_mocks_fill_db_with.mcp_oauth_grant(ctx, {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				userId: other.userId,
+				target: { kind: "plugin", installationId, serverId: "tracker" },
+			}),
+		);
+		expect(await readStatus()).toMatchObject([{ serverId: "tracker", connection: null }]);
+
+		await t.run((ctx) =>
+			test_mocks_fill_db_with.mcp_oauth_grant(ctx, {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				userId: membership.userId,
+				target: { kind: "plugin", installationId, serverId: "tracker" },
+				connectedAt: 2,
+			}),
+		);
+		const status = await readStatus();
+		expect(status).toEqual([
+			{
+				serverId: "tracker",
+				health: "healthy",
+				policy: "allowed",
+				connection: { status: "connected", scopes: ["read"], authorizationHost: "auth.example.com", connectedAt: 2 },
+			},
+		]);
+		expect(JSON.stringify(status)).not.toMatch(/token/i);
+
+		// A stricter policy keeps the grant but marks the server blocked.
+		await t.run(async (ctx) => {
+			const policy = await ctx.db
+				.query("organizations_integration_policies")
+				.withIndex("by_organization", (q) => q.eq("organizationId", membership.organizationId))
+				.first();
+			await ctx.db.patch("organizations_integration_policies", policy!._id, {
+				plugins: { mode: "allowlist", allowlist: [] },
+			});
+		});
+		expect(await readStatus()).toMatchObject([{ serverId: "tracker", policy: "blocked" }]);
 	});
 });
 
@@ -11379,6 +11697,78 @@ describe("plugins uninstall_version", () => {
 			"video/mp4",
 		]);
 	});
+
+	test("deletes the MCP server rows at once and drains grants, sign-ins, and calls", async () => {
+		const t = test_convex();
+		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const capabilities: plugins_Capability[] = ["plugin.secrets.read", "outbound.fetch", "agent.mcp.connect"];
+		const registered = await register_media_plugin(t, membership.userId, {
+			capabilities,
+			mcpServers: [
+				{
+					id: "tracker",
+					title: "Tracker",
+					transport: "http",
+					url: "https://mcp.example.com/mcp",
+					headers: [],
+					auth: { kind: "oauth", issuer: "https://auth.example.com", resource: null, scopes: ["read"] },
+					tools: null,
+				},
+			],
+		});
+		const asOwner = t.withIdentity(user_identity(membership.userId));
+		const installed = await asOwner.mutation(api.plugins.install_version, {
+			membershipId: membership.membershipId,
+			pluginVersionId: registered.pluginVersionId,
+			...media_plugin_consent,
+			acceptedCapabilities: capabilities,
+		});
+		if (installed._nay) {
+			throw new Error(installed._nay.message);
+		}
+		const target = { kind: "plugin" as const, installationId: installed._yay.installationId, serverId: "tracker" };
+		await t.run(async (ctx) => {
+			const scope = {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				userId: membership.userId,
+				target,
+			};
+			await test_mocks_fill_db_with.mcp_oauth_grant(ctx, scope);
+			await test_mocks_fill_db_with.mcp_oauth_pending(ctx, scope);
+			const threadId = await ctx.db.insert("ai_chat_threads", {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				clientGeneratedId: "mcp-uninstall-thread",
+				title: "MCP uninstall thread",
+				archived: false,
+				runtime: "aisdk_5",
+				createdBy: membership.userId,
+				updatedBy: membership.userId,
+				updatedAt: Date.now(),
+				lastMessageAt: Date.now(),
+			});
+			await test_mocks_fill_db_with.mcp_call(ctx, { ...scope, threadId });
+		});
+		expect(await t.run((ctx) => ctx.db.query("plugins_mcp_servers").collect())).toHaveLength(1);
+
+		refill_manage_rate_limit();
+		const uninstalled = await asOwner.mutation(api.plugins.uninstall_version, {
+			membershipId: membership.membershipId,
+			installationId: installed._yay.installationId,
+		});
+		if (uninstalled._nay) {
+			throw new Error(uninstalled._nay.message);
+		}
+		// The server rows go in the uninstall transaction, so tools stop loading before the drain runs.
+		expect(await t.run((ctx) => ctx.db.query("plugins_mcp_servers").collect())).toEqual([]);
+
+		await t.finishAllScheduledFunctions(() => vi.runAllTimers());
+		expect(await t.run((ctx) => ctx.db.query("plugins_mcp_oauth_grants").collect())).toEqual([]);
+		expect(await t.run((ctx) => ctx.db.query("plugins_mcp_oauth_pending").collect())).toEqual([]);
+		expect(await t.run((ctx) => ctx.db.query("plugins_mcp_calls").collect())).toEqual([]);
+		expect(await t.run((ctx) => ctx.db.query("plugins_mcp_oauth_revocations").collect())).toHaveLength(1);
+	});
 });
 
 describe("plugins list_bash_source_mounts", () => {
@@ -11909,10 +12299,14 @@ describe("plugins backend invoke runs", () => {
 		acceptedCapabilities: plugins_Capability[];
 		acceptedOutboundOrigins: string[];
 		acceptedUiOutboundOrigins: string[];
+		acceptedMcpServersFingerprint: string;
+		acceptedSkillNames: string[];
 	} = {
 		acceptedCapabilities: ["plugin.backend.invoke"],
 		acceptedOutboundOrigins: [],
 		acceptedUiOutboundOrigins: [],
+		acceptedMcpServersFingerprint: "mcp-servers-hash",
+		acceptedSkillNames: [],
 	};
 
 	async function install_invoke_plugin(
@@ -13282,6 +13676,8 @@ describe("plugins metadata file doors", () => {
 			acceptedCapabilities: capabilities,
 			acceptedOutboundOrigins: [],
 			acceptedUiOutboundOrigins: [],
+			acceptedMcpServersFingerprint: "mcp-servers-hash",
+			acceptedSkillNames: [],
 			serviceAccountGrants: [{ resource: { kind: "workspace" }, level: "manage" }],
 		});
 		if (installed._nay) {
@@ -15954,6 +16350,8 @@ describe("plugins admin hard delete", () => {
 						capabilitiesAcceptedAt: Date.now(),
 						acceptedOutboundOrigins: [],
 						acceptedUiOutboundOrigins: [],
+						acceptedMcpServersFingerprint: "mcp-servers-hash",
+						acceptedSkillNames: [],
 						outboundOriginsAcceptedAt: Date.now(),
 						installedBy: membership.userId,
 						updatedBy: membership.userId,
@@ -16191,6 +16589,8 @@ describe("plugins admin hard delete", () => {
 			acceptedCapabilities: capabilities,
 			acceptedOutboundOrigins: [],
 			acceptedUiOutboundOrigins: [],
+			acceptedMcpServersFingerprint: "mcp-servers-hash",
+			acceptedSkillNames: [],
 		});
 		if (installed._nay) {
 			throw new Error(installed._nay.message);
@@ -16608,6 +17008,22 @@ describe("plugins admin hard delete", () => {
 				expiresAt: now + 60 * 60 * 1000,
 				updatedAt: now,
 			});
+			await ctx.db.insert("plugins_mcp_servers", {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				installationId: installedMedia._yay.installationId,
+				serverId: "tracker",
+				toolPrefix: "tracker",
+				destinationFingerprint: "sha256:tracker",
+				failures: 0,
+				unhealthyUntil: null,
+			});
+			await test_mocks_fill_db_with.mcp_oauth_grant(ctx, {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				userId: membership.userId,
+				target: { kind: "plugin", installationId: installedMedia._yay.installationId, serverId: "tracker" },
+			});
 			await ctx.db.insert("access_control_permission_grants", {
 				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
@@ -16726,6 +17142,8 @@ describe("plugins admin hard delete", () => {
 			installations: 1,
 			eventHandlers: 2,
 			installationSecrets: 1,
+			mcpServers: 1,
+			mcpOAuthGrants: 1,
 			uiSessions: 1,
 			pluginDataUsageDocs: 1,
 			pluginDataDocuments: 1,
@@ -16779,6 +17197,8 @@ describe("plugins admin hard delete", () => {
 			installations: 0,
 			eventHandlers: 0,
 			installationSecrets: 0,
+			mcpServers: 0,
+			mcpOAuthGrants: 0,
 			uiSessions: 0,
 			pluginDataUsageDocs: 0,
 			pluginDataDocuments: 0,
@@ -16842,6 +17262,15 @@ describe("plugins admin hard delete", () => {
 		expect(handlers.map((handler) => handler.pluginName)).toEqual(["media-alt"]);
 		expect(await t.run((ctx) => ctx.db.query("plugins_workspace_installation_secrets").collect())).toEqual([]);
 		expect(await t.run((ctx) => ctx.db.query("plugins_ui_sessions").collect())).toEqual([]);
+		expect(await t.run((ctx) => ctx.db.query("plugins_mcp_servers").collect())).toEqual([]);
+		expect(await t.run((ctx) => ctx.db.query("plugins_mcp_oauth_grants").collect())).toEqual([]);
+		// The deleted grant leaves its refresh token behind for one revoke attempt at the sign-in server.
+		expect(
+			(await t.run((ctx) => ctx.db.query("plugins_mcp_oauth_revocations").collect())).map((row) => ({
+				tokenTypeHint: row.tokenTypeHint,
+				revocationEndpoint: row.revocationEndpoint,
+			})),
+		).toEqual([{ tokenTypeHint: "refresh_token", revocationEndpoint: "https://auth.example.com/revoke" }]);
 		// The preview walks installations, so it reports zero once the installation is gone whether or
 		// not its rows went with it. Read the five tables themselves.
 		expect(await t.run((ctx) => ctx.db.query("plugins_data").collect())).toEqual([]);

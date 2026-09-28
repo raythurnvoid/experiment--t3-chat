@@ -32,6 +32,7 @@ import {
 } from "./plugins_data.ts";
 import { plugins_db_delete_anonymized_review_if_unlinked } from "./plugins.ts";
 import { files_nodes_db_handoff_yjs_cleanup_task } from "./files_nodes.ts";
+import { plugins_mcp_db_delete_user_batch, plugins_mcp_db_revoke_grant } from "./plugins_mcp.ts";
 import { files_pending_update_db_release_replacement_asset } from "./files_pending_updates.ts";
 import { files_private_storage_db_release_purged_resources } from "./files_private_storage.ts";
 import { files_ingestion_db_delete_receipt } from "./files_ingestion.ts";
@@ -843,6 +844,48 @@ async function db_purge_organization_workspace_content_batch(
 	}
 
 	// External writers cannot publish through the workspace fence. Drain their children first.
+	const mcpServers = await ctx.db
+		.query("plugins_mcp_servers")
+		.withIndex("by_organization_workspace_installation", (q) =>
+			q.eq("organizationId", organizationId).eq("workspaceId", workspaceId),
+		)
+		.take(batchSize);
+	if (mcpServers.length > 0) {
+		await Promise.all(mcpServers.map((doc) => ctx.db.delete("plugins_mcp_servers", doc._id)));
+		return { done: false, deletedCount: mcpServers.length };
+	}
+
+	for (const tableName of [
+		"mcp_custom_servers",
+		"mcp_custom_server_secrets",
+		"plugins_mcp_oauth_pending",
+		"plugins_mcp_calls",
+	] as const) {
+		const docs = await ctx.db
+			.query(tableName)
+			.withIndex("by_organization_workspace_user", (q) =>
+				q.eq("organizationId", organizationId).eq("workspaceId", workspaceId),
+			)
+			.take(batchSize);
+		if (docs.length > 0) {
+			await Promise.all(docs.map((doc) => ctx.db.delete(tableName, doc._id)));
+			return { done: false, deletedCount: docs.length };
+		}
+	}
+
+	const mcpGrants = await ctx.db
+		.query("plugins_mcp_oauth_grants")
+		.withIndex("by_organization_workspace_user", (q) =>
+			q.eq("organizationId", organizationId).eq("workspaceId", workspaceId),
+		)
+		.take(batchSize);
+	if (mcpGrants.length > 0) {
+		for (const grant of mcpGrants) {
+			await plugins_mcp_db_revoke_grant(ctx, grant);
+		}
+		return { done: false, deletedCount: mcpGrants.length };
+	}
+
 	for (const tableName of [
 		"plugins_external_file_reader_changes",
 		"plugins_external_file_receipts",
@@ -1461,6 +1504,16 @@ async function db_delete_organization_batch(
 	}
 
 	// Delete the organization doc last so retries can continue to target the same
+	// The policy has no workspace, so the workspace purge cannot reach it.
+	const integrationPolicy = await ctx.db
+		.query("organizations_integration_policies")
+		.withIndex("by_organization", (q) => q.eq("organizationId", args.organizationId))
+		.first();
+	if (integrationPolicy) {
+		await ctx.db.delete("organizations_integration_policies", integrationPolicy._id);
+		return { done: false, deletedCount: 1 };
+	}
+
 	// organization id until all scoped docs are gone.
 	const organization = await ctx.db.get("organizations", args.organizationId);
 	if (organization) {
@@ -1660,6 +1713,9 @@ async function db_prepare_user_for_deletion(
 		// bring them back. This closes live browsers and deletes the profiles in scheduled batches.
 		await files_browser_db_schedule_user_deletion(ctx, { userId: args.user._id });
 	}
+		// The same for MCP servers, secrets, and sign-ins. Account deletion does not purge organizations
+		// the user does not own, so their docs there would stay without this.
+		await ctx.scheduler.runAfter(0, internal.plugins_mcp.drain_user_mcp_docs, { userId: args.user._id });
 
 	// Remove presence docs so the tombstoned user no longer appears in rooms.
 	// The presence component tolerates missing docs if another cleanup already
@@ -2232,6 +2288,10 @@ async function db_drain_user_finalization_batch(
 
 	const membershipCount = await db_drain_user_memberships_batch(ctx, args);
 	if (membershipCount > 0) {
+	const mcpCount = (await plugins_mcp_db_delete_user_batch(ctx, { userId: args.userId, batchSize: args.batchSize }))
+		.deletedCount;
+	if (mcpCount > 0) return { done: false, deletedCount: mcpCount };
+
 		return { done: false, deletedCount: membershipCount };
 	}
 

@@ -206,6 +206,8 @@ async function data_deletion_test_seed_plugin_ui_sessions(
 		capabilitiesAcceptedAt: now,
 		acceptedOutboundOrigins: [],
 		acceptedUiOutboundOrigins: [],
+		acceptedMcpServersFingerprint: "mcp-servers-hash",
+		acceptedSkillNames: [],
 		outboundOriginsAcceptedAt: now,
 		installedBy: args.userId,
 		updatedBy: args.userId,
@@ -672,6 +674,12 @@ const review_workspace_tables = [
 	"plugins_data_member_usage",
 	"plugins_data_usage",
 	"plugins_ui_sessions",
+	"plugins_mcp_servers",
+	"mcp_custom_server_secrets",
+	"mcp_custom_servers",
+	"plugins_mcp_oauth_grants",
+	"plugins_mcp_oauth_pending",
+	"plugins_mcp_calls",
 	"plugins_workspace_installations",
 	"activities",
 	"activities_user_states",
@@ -1187,6 +1195,40 @@ async function review_seed_all_workspace_content(
 			expiresAt: now + 900_000,
 			updatedAt: now,
 		});
+		// The first pass seeds plugin-target MCP rows and the second custom-target rows, so the purge
+		// must handle both target kinds.
+		await ctx.db.insert("plugins_mcp_servers", {
+			...tenant,
+			installationId,
+			serverId: "tracker",
+			toolPrefix: "tracker",
+			destinationFingerprint: "sha256:tracker",
+			failures: 0,
+			unhealthyUntil: null,
+		});
+		const customServerId = await test_mocks_fill_db_with.mcp_custom_server(ctx, {
+			...tenant,
+			userId: args.userId,
+			secretNames: ["TOKEN"],
+		});
+		const mcpScope = {
+			...tenant,
+			userId: args.userId,
+			target:
+				i === 0
+					? { kind: "plugin" as const, installationId, serverId: "tracker" }
+					: { kind: "custom" as const, customServerId },
+		};
+		await test_mocks_fill_db_with.mcp_oauth_grant(ctx, mcpScope);
+		await test_mocks_fill_db_with.mcp_oauth_pending(ctx, mcpScope);
+		const mcpThread = await ctx.db
+			.query("ai_chat_threads")
+			.withIndex("by_organization_workspace_archived_lastMessageAt", (q) =>
+				q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId),
+			)
+			.first();
+		if (!mcpThread) throw new Error("Expected the base fixture thread");
+		await test_mocks_fill_db_with.mcp_call(ctx, { ...mcpScope, threadId: mcpThread._id });
 	}
 	// One owner has one expiry check per workspace. Add a draft for a second owner, so the purge
 	// must page through two checks too.
@@ -1351,6 +1393,11 @@ const review_user_tables = [
 	"files_yjs_trusted_update_stages",
 	"plugins_data_append_replay_receipts",
 	"plugins_data_member_usage",
+	"mcp_custom_server_secrets",
+	"mcp_custom_servers",
+	"plugins_mcp_oauth_grants",
+	"plugins_mcp_oauth_pending",
+	"plugins_mcp_calls",
 	"quotas",
 	"api_credentials",
 	"public_api_grants",
@@ -1743,6 +1790,14 @@ describe("organization structure at batch size one", () => {
 					workspaceRows.push(...(await review_capture_workspace_rows(ctx, organizationId, workspaceId)));
 				}
 				const structure = await review_capture_organization_structure(ctx, organizationId);
+				// One doc per organization, so it is checked here and not in the two-row structure table list.
+				const policyId = await ctx.db.insert("organizations_integration_policies", {
+					organizationId,
+					plugins: { mode: "allow_all", allowlist: [] },
+					mcpServers: { mode: "allowlist", allowlist: [] },
+					updatedBy: user.userId,
+					updatedAt: Date.now(),
+				});
 				const retainedRequests = await ctx.db
 					.query("data_deletion_requests")
 					.withIndex("by_scope_eligibleAt", (q) => q.eq("scope", "user"))
@@ -1756,7 +1811,7 @@ describe("organization structure at batch size one", () => {
 								eligibleAt: Date.now(),
 							})
 						: null;
-				return { user, organizationId, workspaceRows, structure, retainedRequests, requestId };
+				return { user, organizationId, workspaceRows, structure, policyId, retainedRequests, requestId };
 			});
 			for (const family of [...seeded.workspaceRows, ...seeded.structure]) {
 				expect(family.ids.length, family.table).toBeGreaterThanOrEqual(2);
@@ -1804,6 +1859,7 @@ describe("organization structure at batch size one", () => {
 				),
 			);
 			expect(remainingStructure.filter((family) => family.count > 0)).toEqual([]);
+			expect(await t.run((ctx) => ctx.db.get("organizations_integration_policies", seeded.policyId))).toBeNull();
 			expect(seeded.retainedRequests).toHaveLength(2);
 			for (const request of seeded.retainedRequests) {
 				expect(await t.run((ctx) => ctx.db.get("data_deletion_requests", request._id))).toEqual(request);
