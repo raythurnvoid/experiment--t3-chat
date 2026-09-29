@@ -69,6 +69,14 @@ makes no API calls. The checks use public APIs and the selected user's real self
 6. Compare complete history and call pages before and after assignment, revocation and
    rejoin. Old actor and grant IDs must stay. Restore `idle` and only owned QA changes.
 
+If the live watch misses completion, use stored Workers Logs after an authorized login.
+Open the Worker's Observability Events page through the dashboard. Search the exact run
+ID and time window. The chart's Success count does not prove the plugin result. The
+[query reply](https://developers.cloudflare.com/api/resources/workers/subresources/observability/subresources/telemetry/methods/query/)
+keeps the console message in `result.events.events[].source`. Save only the matching
+Worker, run ID, status, elapsed time, timestamp and artifact hashes. Match the hashes to
+the published backend file before accepting 204. Keep request bodies and headers private.
+
 Save full, safe JSON receipts outside the repo. Large console output can hide rows.
 Use a new receipt name and keep failed checks. Never log tokens, raw provider data or
 unrelated runner logs. Keep provider credentials on Convex, per `convex-admin-ops`.
