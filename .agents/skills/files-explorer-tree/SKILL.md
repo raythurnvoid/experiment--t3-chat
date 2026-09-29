@@ -281,12 +281,21 @@ folder (`FileNodeViewPrivateFolder`) still lists its children through `useFilesV
     through the side rows.
   - A row whose `isRestrictedScopeRoot` does not match `restrictedScopeNodeId === _id` throws: a
     stale flag would show a hidden row.
-  - Built-in fields and metadata value segments use native Convex pagination. Metadata value pages
+  - With `filter: null`, built-in fields and metadata value segments use native Convex pagination. Metadata value pages
     set `maximumBytesRead` to 4 MiB and keep native split fields. This bounds the indexed page;
     node and permission joins also use transaction reads. An error must not skip unchecked rows.
-    The metadata missing
-    segment walks nodes and field docs in name order with a JSON cursor and a 1000-row scan budget,
-    so a page can be short or empty.
+    The metadata missing segment walks nodes and field docs in name order with a checked JSON
+    cursor and at most 1,000 candidate/proof visits. Each new field witness is checked against its
+    current ordinary node. A page can be short or empty.
+  - A filter uses a custom stream over the same primary index, with at most 50 candidate/proof
+    visits per query. `workLimit` is fixed per request and checked from 1 to 1,000. All joins count
+    toward whole-query byte/call checks: 4 MiB and 1,000 calls, with 1 MiB and 16 calls reserved.
+    A cursor includes the full index suffix and the exact folder, kind, segment, sort, and filter.
+    It advances only after a whole candidate finishes. No first progress throws a work error.
+  - Every result returns `scanBoundary`, `scannedCount`, and `workCount`. Native pages count their
+    raw rows before pending hides and use `workCount: 0`. Custom boundaries include completed
+    readable rows that did not match. An empty matching page may still continue. Refusals are done
+    with a null boundary and zero counts. Only `isDone` ends a segment.
 - `files_nodes.list_tree_children_sort_side_rows` returns the rows the partitioned index cannot
   serve, each with its `sortKey`, `createdAt`, and `contentByteSize`: up to 200 readable restricted-root children, and up to 200 of the
   caller's drafts and pending moves into the folder, plus the saved names those drafts and moves
@@ -307,13 +316,18 @@ folder (`FileNodeViewPrivateFolder`) still lists its children through `useFilesV
   - A missing segment starts when its value segment is done and stays started for that sort.
     Metadata missing pages use a cursor chain (`useFilesSortedMissingPages`) that reloads later
     pages when an earlier page's end changes, and loads the next page by itself after an empty one.
-  - A side row shows once its segment is done or the last loaded main row sorts at or after it. So
+  - A side row shows once its segment is done or the loaded boundary sorts at or after it. A filter
+    uses the last fully scanned boundary, even when there was no matching main row. So
     side rows never jump.
   - While a new sort or a page loads, the last settled rows stay, with `aria-busy="true"` on the
     table. `rowsSort` keeps their header arrows and table sort attributes. The Sort control shows
     the requested sort.
     Columns stay outside the paging scope. `sideTargets` includes the full checked side set for field discovery.
   - `loadMore()` loads the first shown segment that can load more.
+  - With a filter, all supported side targets get stable `get_table_filter_match` queries. Only
+    checked matches show. Full name claims still hide saved shadows while private checks load,
+    fail, prepare, or do not match. Side caps apply before filtering. Essential side errors keep
+    the result incomplete.
 
 ### Table UI
 
@@ -348,6 +362,35 @@ folder (`FileNodeViewPrivateFolder`) still lists its children through `useFilesV
 - Row actions look up the saved row in one merged list: the tree rows from `FilesTreeProvider.useFolders` plus the table rows' `treeRow`. So a row on a page the tree has not loaded still works.
 - Private rows show Added or Preparing and link with `pendingNodeId`.
 - Saved row actions use the real saved document and its current permission data. Never create a fake saved document for a private row. Private folders use tagged children and owner review actions.
+
+### One local filter
+
+- Add filter opens a field menu with built-ins and the same qualified-key catalog as Columns.
+  Allow one applied filter. It stays local to membership and folder and clears on a scope change.
+  It does not change saved sort, columns, sidebar search, or browser storage.
+- Name offers contains and starts with. Type offers is and missing. Dates offer on, before, and
+  after one local calendar day. Size offers is, at least, at most, and missing. Metadata offers
+  text is, starts with, present, and missing. An applied key can stay hidden as a column.
+- Text comparisons ignore case and accents, keep digit runs, and use the whole text. Type uses
+  the lowercase extension. A leading dot is ordinary input and does not match an extension.
+  Dates use checked half-open day bounds. Size is a nonnegative whole number; folders have no size.
+- Apply waits for five matches. First Show more asks for 50; later presses first reveal loaded
+  matches, then ask for 50 more. Show less keeps five and stops forward work. Searching text stays
+  until the goal or a limit is reached. Empty continuing pages do not show a final empty state.
+- Apply, Show more, and Keep searching each get a 1,000-work action allowance. Each custom page
+  reserves its frozen work limit before dispatch. One new forward scan runs at a time across all
+  segments. Its first result charges `workCount` once and releases unused reserve. A dropped or
+  failed request with no count spends its full reserve. Old reactive results do not charge again.
+- An earlier changed cursor drops its suffix. Settled logical slots may rebuild one at a time with
+  their frozen limits, without spending forward allowance. The old settled-slot ceiling prevents
+  auto-extension. Scope changes clear this exemption. Show less keeps only retained slots.
+  Held rows show Refreshing during a rebuild. Refusals, removals, and new name claims prune held
+  rows and payloads at once. Those rows stay pruned when Retry resets the queries.
+- A paused forward scan offers Keep searching. A completed short refresh with an unmet goal does
+  too. A failed or no-progress refresh offers Reload table. Retry also resets a failed unfiltered
+  side query or manual metadata query. Clear stays available. A preparing private metadata check
+  keeps the result incomplete.
+  A Name contains filter may need many bounded pages before a later match is found.
 
 ## File Cut, Copy, And Paste
 

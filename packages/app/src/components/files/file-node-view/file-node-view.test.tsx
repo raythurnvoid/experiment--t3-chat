@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import { encodeStateAsUpdate } from "yjs";
 import { files_yjs_doc_create_from_text } from "../../../../shared/files-tiptap.ts";
 import { files_u8_to_array_buffer } from "../../../../shared/files.ts";
+import { files_table_filter_matches, type files_table_Filter } from "../../../../shared/files-table.ts";
 
 import type {
 	FileEditor_Props,
@@ -18,6 +19,7 @@ import { AppActivitiesProvider } from "@/lib/app-activities-context.tsx";
 import type { app_convex_Id } from "@/lib/app-convex-client.ts";
 import type { AppElementId } from "@/lib/dom-utils.ts";
 import type { files_VisibleEntry } from "@/lib/files.ts";
+import type { useFilesSortedChildren } from "@/hooks/files-search-hooks.ts";
 import { app_local_storage_set_value } from "@/lib/storage.ts";
 import { global_custom_event_dispatch, global_custom_event_listen } from "@/lib/global-event.tsx";
 
@@ -33,6 +35,7 @@ const {
 	editorUnmountMock,
 	pluginUnmountMock,
 	loadMorePendingMock,
+	sortedChildrenMock,
 } = vi.hoisted(() => ({
 	tenantContextMock: vi.fn(),
 	queryMock: vi.fn(),
@@ -45,12 +48,36 @@ const {
 	editorUnmountMock: vi.fn(),
 	pluginUnmountMock: vi.fn(),
 	loadMorePendingMock: vi.fn(),
+	sortedChildrenMock:
+		vi.fn<(props: Parameters<typeof useFilesSortedChildren>[0]) => ReturnType<typeof useFilesSortedChildren>>(),
 }));
 
 // The pending list uses the convex-helpers hook. Serve it from the same mock as every other list.
 vi.mock("convex-helpers/react", async () => ({
 	usePaginatedQuery: (await import("convex/react")).usePaginatedQuery,
 }));
+
+// Most tests use the real hook. Filter state tests control its result and actions.
+vi.mock("@/hooks/files-search-hooks.ts", async (importOriginal) => {
+	const hooks = await importOriginal<typeof import("@/hooks/files-search-hooks.ts")>();
+	const { useEffect, useState } = await import("react");
+	return {
+		...hooks,
+		useFilesSortedChildren: (props: Parameters<typeof useFilesSortedChildren>[0]) => {
+			const [, forceRender] = useState(0);
+			useEffect(() => {
+				const listener = () => forceRender((revision) => revision + 1);
+				queryPushListeners.add(listener);
+				return () => {
+					queryPushListeners.delete(listener);
+				};
+			}, []);
+			return sortedChildrenMock.getMockImplementation()
+				? sortedChildrenMock(props)
+				: hooks.useFilesSortedChildren(props);
+		},
+	};
+});
 
 // Push query changes into memoized children, as the live Convex subscriptions do.
 vi.mock("convex/react", async () => {
@@ -368,6 +395,7 @@ beforeEach(() => {
 	savedPendingUpdate = undefined;
 	pendingListStatus = "Exhausted";
 	loadMorePendingMock.mockReset();
+	sortedChildrenMock.mockReset();
 	privateView = {
 		entry: PRIVATE_ENTRY,
 		readiness: "ready",
@@ -435,10 +463,11 @@ beforeEach(() => {
 				return folderSort;
 			case "files_nodes:list_tree_children_sorted": {
 				// Serve a whole segment at once, by name. The hook's paging has its own tests.
-				const { parentId, kind, segment, paginationOpts } = args as {
+				const { parentId, kind, segment, filter, paginationOpts } = args as {
 					parentId: string;
 					kind: string;
 					segment: string;
+					filter: files_table_Filter | null;
 					paginationOpts?: unknown;
 				};
 				const page =
@@ -446,10 +475,39 @@ beforeEach(() => {
 						? []
 						: (treeNodes ?? [])
 								.filter((item) => item.parentId === parentId && item.kind === kind && item.archiveOperationId === null)
+								.filter((item) => {
+									if (filter === null) return true;
+									const dot = item.name.lastIndexOf(".");
+									return files_table_filter_matches(
+										filter,
+										{
+											name: item.name,
+											createdAt: item._creationTime,
+											updatedAt: item.updatedAt,
+											type:
+												item.kind === "file" && dot > 0 && dot < item.name.length - 1
+													? item.name.slice(dot + 1).toLowerCase()
+													: null,
+											contentByteSize: item.kind === "file" ? item.contentByteSize : null,
+										},
+										"Open",
+									);
+								})
 								.sort((a, b) => (a.name < b.name ? -1 : 1))
 								.map((item) => ({ ...item, sortKey: [item.name] }));
-				return paginationOpts ? { page, isDone: true, continueCursor: "" } : page;
+				return paginationOpts
+					? {
+							page,
+							isDone: true,
+							continueCursor: "",
+							scanBoundary: page.at(-1)?.sortKey ?? null,
+							scannedCount: page.length,
+							workCount: filter === null ? 0 : page.length,
+						}
+					: page;
 			}
+			case "files_nodes:get_table_filter_match":
+				return { matches: true, preparing: false };
 			case "files_metadata:list_search_fields":
 				return [{ fieldPath: "metadata.status", valueKinds: ["string"] }];
 			case "files_metadata:list_folder_fields":
@@ -2193,6 +2251,557 @@ describe("FileNodeView folder columns", () => {
 		expect(observer.disconnect).toHaveBeenCalledTimes(1);
 		expect(observer.targets.size).toBe(0);
 	}, 60_000);
+});
+
+describe("FileNodeView folder filter", () => {
+	let rows: NonNullable<ReturnType<typeof useFilesSortedChildren>["rows"]>;
+	let result: Partial<ReturnType<typeof useFilesSortedChildren>>;
+	let rowsByScope: Map<string, typeof rows>;
+	const requestMatches = vi.fn();
+	const continueSearch = vi.fn();
+	const reload = vi.fn();
+	const retry = vi.fn();
+
+	beforeEach(() => {
+		node = { ...NODE, _id: "folder_1", name: "Docs", path: "/Docs", kind: "folder" };
+		const children = Array.from({ length: 7 }, (_, index) => ({
+			...NODE,
+			_id: `file_${index}`,
+			name: `file-${index}.html`,
+			path: `/Docs/file-${index}.html`,
+			parentId: node._id,
+		}));
+		treeNodes = [node, ...children];
+		rows = children.map((child) => ({
+			target: { kind: "saved", id: child._id as app_convex_Id<"files_nodes"> },
+			name: child.name,
+			kind: "file",
+			createdAt: child._creationTime,
+			updatedAt: child.updatedAt,
+			contentByteSize: child.contentByteSize,
+			updatedBy: "user_1" as app_convex_Id<"users">,
+			contentType: child.contentType,
+			preparing: false,
+			treeRow: child as NonNullable<(typeof rows)[number]["treeRow"]>,
+			segment: "value",
+			sortKey: [child.name],
+		}));
+		result = {};
+		rowsByScope = new Map();
+		requestMatches.mockReset();
+		continueSearch.mockReset();
+		reload.mockReset();
+		retry.mockReset();
+		sortedChildrenMock.mockImplementation((props) => ({
+			rows:
+				props.filter === null
+					? rows
+					: (rowsByScope.get(JSON.stringify([props.membershipId, props.folderId, props.sort, props.filter])) ?? []),
+			sideTargets: [],
+			rowsSort: props.sort,
+			rowsFilter: props.filter,
+			isBusy: false,
+			isDone: true,
+			isFailed: false,
+			isFolderRefused: false,
+			searching: false,
+			paused: false,
+			preparing: false,
+			refreshing: false,
+			filterRecovery: null,
+			tooManyShared: false,
+			tooManyPending: false,
+			loadMore: loadMorePendingMock,
+			requestMatches,
+			continueSearch,
+			reload,
+			retry,
+			...result,
+		}));
+	});
+
+	async function openFilter() {
+		fireEvent.click(await screen.findByRole("button", { name: "Filter" }));
+		return await screen.findByRole("dialog", { name: "Filter" });
+	}
+
+	async function selectField(dialog: HTMLElement, name: string) {
+		fireEvent.click(within(dialog).getByRole("combobox", { name: /^Field: / }));
+		fireEvent.click(await screen.findByRole("option", { name }));
+	}
+
+	async function selectOperation(dialog: HTMLElement, name: string) {
+		fireEvent.click(within(dialog).getByRole("combobox", { name: "Operation" }));
+		fireEvent.click(await screen.findByRole("option", { name }));
+	}
+
+	test("applies only on submit, drops Cancel and Escape edits, and clears without changing sort or columns", async () => {
+		const sort = { field: "updated", direction: "desc" } as const;
+		folderSort = { sort, canSave: false };
+		app_local_storage_set_value("app_state::files_folder_columns::scope::membership_1", {
+			folder_1: ["name", "type"],
+		});
+		const filter: files_table_Filter = { kind: "name", field: "name", op: "contains", value: "file-2" };
+		rowsByScope.set(JSON.stringify(["membership_1", node._id, sort, filter]), [rows[2]!]);
+		renderFileView({ nodeId: node._id });
+		const table = await screen.findByRole("table", { name: "Folder contents" });
+		fireEvent.click(screen.getByRole("button", { name: "Show more" }));
+		expect(within(table).getAllByRole("link", { name: /^Open / })).toHaveLength(7);
+		const dialog = await openFilter();
+		const input = within(dialog).getByRole<HTMLInputElement>("textbox", { name: "Value" });
+		fireEvent.change(input, { target: { value: "file-2" } });
+		expect(sortedChildrenMock.mock.calls.at(-1)![0].filter).toBeNull();
+		expect(within(table).getAllByRole("link", { name: /^Open / })).toHaveLength(7);
+		fireEvent.submit(input.closest("form")!);
+		await waitFor(() => expect(screen.queryByRole("dialog", { name: "Filter" })).toBeNull());
+		expect(sortedChildrenMock.mock.calls.at(-1)![0]).toMatchObject({
+			membershipId: "membership_1",
+			folderId: node._id,
+			sort,
+			filter,
+		});
+		expect(within(table).getAllByRole("link", { name: /^Open / })).toHaveLength(1);
+		expect(screen.getByRole("link", { name: "Open file-2.html" })).toBeTruthy();
+		expect(document.activeElement).toBe(screen.getByRole("button", { name: "Filter" }));
+
+		const reopened = await openFilter();
+		expect(within(reopened).getByRole("textbox", { name: "Value" })).toHaveProperty("value", "file-2");
+		fireEvent.change(within(reopened).getByRole("textbox", { name: "Value" }), { target: { value: "discard" } });
+		fireEvent.click(within(reopened).getByRole("button", { name: "Cancel" }));
+		expect(sortedChildrenMock.mock.calls.at(-1)![0].filter).toEqual(filter);
+		const escaped = await openFilter();
+		const edited = within(escaped).getByRole("textbox", { name: "Value" });
+		expect(edited).toHaveProperty("value", "file-2");
+		fireEvent.change(edited, { target: { value: "also discard" } });
+		fireEvent.keyDown(edited, { key: "Escape", code: "Escape" });
+		await waitFor(() => expect(screen.queryByRole("dialog", { name: "Filter" })).toBeNull());
+		expect(document.activeElement).toBe(screen.getByRole("button", { name: "Filter" }));
+		expect(sortedChildrenMock.mock.calls.at(-1)![0].filter).toEqual(filter);
+
+		fireEvent.click(screen.getByRole("button", { name: "Clear filter" }));
+		expect(sortedChildrenMock.mock.calls.at(-1)![0].filter).toBeNull();
+		expect(within(table).getAllByRole("link", { name: /^Open / })).toHaveLength(5);
+		expect(table.getAttribute("data-sort-field")).toBe("updated");
+		expect(
+			within(table)
+				.getAllByRole("columnheader")
+				.map((cell) => cell.getAttribute("data-column-field")),
+		).toEqual(["name", "type", "actions"]);
+		expect(document.activeElement).toBe(screen.getByRole("button", { name: "Filter" }));
+		expect(mutationMock).not.toHaveBeenCalled();
+		expect(actionMock).not.toHaveBeenCalled();
+	});
+
+	test("keeps built-ins while the catalog loads and distinguishes metadata from frontmatter", async () => {
+		let catalogReady = false;
+		const query = queryMock.getMockImplementation()!;
+		queryMock.mockImplementation((reference, args) =>
+			getFunctionName(reference) === "files_metadata:list_folder_fields"
+				? catalogReady
+					? { fields: ["frontmatter.status", "metadata.status"], afterField: "metadata.status", isDone: true }
+					: undefined
+				: query(reference, args),
+		);
+		renderFileView({ nodeId: node._id });
+		const dialog = await openFilter();
+		fireEvent.click(within(dialog).getByRole("combobox", { name: /^Field: / }));
+		expect(await screen.findByRole("option", { name: "Type" })).toBeTruthy();
+		expect(screen.queryByRole("option", { name: "Updated by" })).toBeNull();
+		expect(screen.queryByRole("option", { name: "Actions" })).toBeNull();
+		expect(within(dialog).getByText("Loading fields…")).toBeTruthy();
+		catalogReady = true;
+		pushQueryChanges();
+		expect(await screen.findByRole("option", { name: "status (frontmatter)" })).toBeTruthy();
+		fireEvent.click(screen.getByRole("option", { name: "status (metadata)" }));
+		expect(within(dialog).getByText("Lists use the first plain value")).toBeTruthy();
+		await selectOperation(dialog, "Has value");
+		expect(within(dialog).queryByRole("textbox", { name: "Value" })).toBeNull();
+		fireEvent.click(within(dialog).getByRole("button", { name: "Apply" }));
+		expect(sortedChildrenMock.mock.calls.at(-1)![0].filter).toEqual({
+			kind: "text",
+			field: "metadata.status",
+			op: "present",
+		});
+	});
+
+	test("projects text errors into native validity and resets them on field and operation changes", async () => {
+		renderFileView({ nodeId: node._id });
+		const dialog = await openFilter();
+		const input = within(dialog).getByRole<HTMLInputElement>("textbox", { name: "Value" });
+		expect(input.required).toBe(true);
+		expect(input.minLength).toBe(1);
+		expect(input.maxLength).toBe(1024);
+		expect(input.validity.valid).toBe(false);
+		expect(input.closest(".MyInput")!.classList.contains("userInvalid")).toBe(false);
+		fireEvent.change(input, { target: { value: "x".repeat(1025) } });
+		expect(input.validity.valid).toBe(false);
+		fireEvent.blur(input);
+		expect(input.validationMessage).toBe("Enter 1 to 1,024 characters.");
+		expect(input.closest(".MyInput")!.classList.contains("userInvalid")).toBe(true);
+		fireEvent.submit(input.closest("form")!);
+		expect(sortedChildrenMock.mock.calls.at(-1)![0].filter).toBeNull();
+		fireEvent.change(input, { target: { value: "ok" } });
+		expect(input.validity.valid).toBe(true);
+		expect(input.closest(".MyInput")!.classList.contains("userInvalid")).toBe(false);
+
+		await selectField(dialog, "Type");
+		const typeInput = within(dialog).getByRole<HTMLInputElement>("textbox", { name: "Value" });
+		expect(typeInput).toHaveProperty("value", "");
+		expect(typeInput.closest(".MyInput")!.classList.contains("userInvalid")).toBe(false);
+		await selectOperation(dialog, "Has no value");
+		expect(within(dialog).queryByRole("textbox", { name: "Value" })).toBeNull();
+		fireEvent.click(within(dialog).getByRole("button", { name: "Apply" }));
+		expect(sortedChildrenMock.mock.calls.at(-1)![0].filter).toEqual({ kind: "type", field: "type", op: "missing" });
+	});
+
+	test("keeps a typed dot in Type and submits lower case", async () => {
+		renderFileView({ nodeId: node._id });
+		const dialog = await openFilter();
+		await selectField(dialog, "Type");
+		const input = within(dialog).getByRole<HTMLInputElement>("textbox", { name: "Value" });
+		fireEvent.change(input, { target: { value: ".MD" } });
+		fireEvent.submit(input.closest("form")!);
+		expect(sortedChildrenMock.mock.calls.at(-1)![0].filter).toEqual({
+			kind: "type",
+			field: "type",
+			op: "is",
+			value: ".md",
+		});
+	});
+
+	test("accepts zero bytes and rejects negative, fractional and non-finite values", async () => {
+		renderFileView({ nodeId: node._id });
+		const dialog = await openFilter();
+		await selectField(dialog, "Size");
+		const input = within(dialog).getByRole<HTMLInputElement>("spinbutton", { name: "Bytes" });
+		expect(input.type).toBe("number");
+		expect(input.min).toBe("0");
+		expect(input.step).toBe("1");
+		for (const value of ["-1", "1.5", "1e309"]) {
+			fireEvent.change(input, { target: { value } });
+			fireEvent.submit(input.closest("form")!);
+			expect(input.validity.valid).toBe(false);
+			expect(input.validationMessage).toBe("Enter a whole number of bytes, zero or more.");
+			expect(sortedChildrenMock.mock.calls.at(-1)![0].filter).toBeNull();
+		}
+		fireEvent.change(input, { target: { value: "0" } });
+		expect(input.validity.valid).toBe(true);
+		fireEvent.submit(input.closest("form")!);
+		expect(sortedChildrenMock.mock.calls.at(-1)![0].filter).toEqual({
+			kind: "size",
+			field: "size",
+			op: "is",
+			value: 0,
+		});
+	});
+
+	test.each([
+		{ day: "2026-03-29", hours: 23, start: Date.UTC(2026, 2, 29), end: Date.UTC(2026, 2, 29, 23) },
+		{ day: "2026-10-25", hours: 25, start: Date.UTC(2026, 9, 24, 23), end: Date.UTC(2026, 9, 26) },
+	])("submits the $hours-hour local day for $day", async ({ day, start, end, hours }) => {
+		renderFileView({ nodeId: node._id });
+		const dialog = await openFilter();
+		await selectField(dialog, "Date created");
+		const input = within(dialog).getByLabelText<HTMLInputElement>("Day");
+		expect(input.type).toBe("date");
+		fireEvent.change(input, { target: { value: day } });
+		fireEvent.submit(input.closest("form")!);
+		expect(sortedChildrenMock.mock.calls.at(-1)![0].filter).toEqual({
+			kind: "date",
+			field: "created",
+			op: "on",
+			start,
+			end,
+		});
+		expect(end - start).toBe(hours * 60 * 60 * 1000);
+		expect(screen.getByText(`Date created on ${day} (Europe/London)`)).toBeTruthy();
+		const reopened = await openFilter();
+		expect(within(reopened).getByLabelText("Day")).toHaveProperty("value", day);
+	});
+
+	test("rejects an impossible calendar day instead of letting it roll into the next month", async () => {
+		renderFileView({ nodeId: node._id });
+		const dialog = await openFilter();
+		await selectField(dialog, "Updated");
+		const input = within(dialog).getByLabelText<HTMLInputElement>("Day");
+		fireEvent.change(input, { target: { value: "2026-02-31" } });
+		fireEvent.submit(input.closest("form")!);
+		expect(input.validity.valid).toBe(false);
+		expect(input.validationMessage).toBe("Enter a valid calendar day.");
+		expect(sortedChildrenMock.mock.calls.at(-1)![0].filter).toBeNull();
+	});
+
+	test("keeps the first century instead of adding 1900 to a typed year", async () => {
+		renderFileView({ nodeId: node._id });
+		const dialog = await openFilter();
+		await selectField(dialog, "Date created");
+		const input = within(dialog).getByLabelText<HTMLInputElement>("Day");
+		fireEvent.change(input, { target: { value: "0001-01-02" } });
+		fireEvent.submit(input.closest("form")!);
+		const filter = sortedChildrenMock.mock.calls.at(-1)![0].filter;
+		expect(filter?.kind).toBe("date");
+		if (filter?.kind !== "date") throw new Error("The date filter was not submitted");
+		expect(new Date(filter.start).getFullYear()).toBe(1);
+		expect(new Date(filter.start).getMonth()).toBe(0);
+		expect(new Date(filter.start).getDate()).toBe(2);
+		expect(new Date(filter.end).getDate()).toBe(3);
+	});
+
+	test("keeps the old day, zone and sort labels through several new Apply actions", async () => {
+		folderSort = { sort: { field: "name", direction: "asc" }, canSave: false };
+		result = { rows: [rows[0]!] };
+		renderFileView({ nodeId: node._id });
+		const dateDialog = await openFilter();
+		await selectField(dateDialog, "Updated");
+		fireEvent.change(within(dateDialog).getByLabelText("Day"), { target: { value: "2026-10-25" } });
+		fireEvent.submit(dateDialog.querySelector("form")!);
+		const oldFilter = sortedChildrenMock.mock.calls.at(-1)![0].filter;
+		result = {
+			rows: [rows[0]!],
+			rowsFilter: oldFilter,
+			rowsSort: { field: "name", direction: "asc" },
+			isBusy: true,
+			isDone: false,
+		};
+
+		for (const value of ["second", "third"]) {
+			const dialog = await openFilter();
+			await selectField(dialog, "Name");
+			fireEvent.change(within(dialog).getByRole("textbox", { name: "Value" }), { target: { value } });
+			fireEvent.submit(dialog.querySelector("form")!);
+			expect(screen.getByText(`Name contains ${value}`)).toBeTruthy();
+			expect(screen.getByText("Showing: Updated on 2026-10-25 (Europe/London). Sort: Name, A to Z.")).toBeTruthy();
+			expect(screen.getByText("Applying filter…")).toBeTruthy();
+			const table = screen.getByRole("table", { name: "Folder contents" });
+			expect(table.closest(".FileNodeViewFolderExplorer")!.getAttribute("data-filter-state")).toBe("applying");
+			expect(table.getAttribute("data-sort-field")).toBe("name");
+			expect(screen.getByRole("button", { name: "Show more" })).toHaveProperty("disabled", true);
+			expect(screen.getByRole("link", { name: "Open file-0.html" })).toBeTruthy();
+		}
+		fireEvent.click(
+			within(screen.getByRole("table", { name: "Folder contents" })).getByRole("button", { name: "Updated" }),
+		);
+		expect(screen.getByRole("combobox", { name: "Sort: Updated, Newest first" })).toBeTruthy();
+		expect(screen.getByText("Showing: Updated on 2026-10-25 (Europe/London). Sort: Name, A to Z.")).toBeTruthy();
+		expect(screen.getByRole("table", { name: "Folder contents" }).getAttribute("data-sort-field")).toBe("name");
+		expect(mutationMock).not.toHaveBeenCalled();
+	});
+
+	test.each([
+		{ name: "finished", state: "ready", overrides: { isDone: true }, message: "No rows match this filter" },
+		{
+			name: "searching",
+			state: "searching",
+			overrides: { isDone: false, isBusy: true, searching: true },
+			message: "Searching this folder…",
+		},
+		{
+			name: "shared cap",
+			state: "ready",
+			overrides: { isDone: true, tooManyShared: true },
+			message: "No matches in the rows checked",
+		},
+		{
+			name: "pending cap",
+			state: "ready",
+			overrides: { isDone: true, tooManyPending: true },
+			message: "No matches in the rows checked",
+		},
+		{
+			name: "preparing",
+			state: "ready",
+			overrides: { isDone: false, preparing: true },
+			message: "No matches in ready rows",
+		},
+	])("shows the honest zero-row state for $name and keeps the toolbar", async ({ state, overrides, message }) => {
+		result = { rows: [], ...overrides };
+		renderFileView({ nodeId: node._id });
+		const dialog = await openFilter();
+		fireEvent.change(within(dialog).getByRole("textbox", { name: "Value" }), { target: { value: "absent" } });
+		fireEvent.submit(dialog.querySelector("form")!);
+		const table = screen.getByRole("table", { name: "Folder contents" });
+		expect(table.closest(".FileNodeViewFolderExplorer")!.getAttribute("data-filter-state")).toBe(state);
+		expect(screen.getByText(message)).toBeTruthy();
+		expect(within(table).getAllByRole("columnheader")).toHaveLength(4);
+		for (const name of ["Columns", "Filter", "Clear filter"]) expect(screen.getByRole("button", { name })).toBeTruthy();
+		expect(screen.getByRole("combobox", { name: "Sort: Name, A to Z" })).toBeTruthy();
+		if (message !== "No rows match this filter") expect(screen.queryByText("No rows match this filter")).toBeNull();
+		if (overrides.preparing) expect(screen.getByText("Some drafts are preparing")).toBeTruthy();
+	});
+
+	test("keeps an incomplete scan out of the empty state and resumes the same match goal", async () => {
+		result = { rows: undefined, isBusy: true, isDone: false, searching: true };
+		renderFileView({ nodeId: node._id });
+		const dialog = await openFilter();
+		fireEvent.change(within(dialog).getByRole("textbox", { name: "Value" }), { target: { value: "rare" } });
+		fireEvent.submit(dialog.querySelector("form")!);
+		expect(screen.getByText("Searching this folder…")).toBeTruthy();
+		expect(screen.queryByText("No rows match this filter")).toBeNull();
+		result = { rows: [], isBusy: true, isDone: false, paused: true };
+		pushQueryChanges();
+		const table = screen.getByRole("table", { name: "Folder contents" });
+		expect(table.closest(".FileNodeViewFolderExplorer")!.getAttribute("data-filter-state")).toBe("paused");
+		expect(table.getAttribute("aria-busy")).toBe("false");
+		fireEvent.click(screen.getByRole("button", { name: "Keep searching" }));
+		expect(continueSearch).toHaveBeenCalledTimes(1);
+		expect(requestMatches).not.toHaveBeenCalled();
+		expect(sortedChildrenMock.mock.calls.at(-1)![0].filter).toEqual({
+			kind: "name",
+			field: "name",
+			op: "contains",
+			value: "rare",
+		});
+	});
+
+	test("requests 50 matches first, then 50 more, and stops forward work on Show less", async () => {
+		result = { rows, isDone: false };
+		renderFileView({ nodeId: node._id });
+		const dialog = await openFilter();
+		fireEvent.change(within(dialog).getByRole("textbox", { name: "Value" }), { target: { value: "file" } });
+		fireEvent.submit(dialog.querySelector("form")!);
+		const table = screen.getByRole("table", { name: "Folder contents" });
+		expect(within(table).getAllByRole("link", { name: /^Open / })).toHaveLength(5);
+		fireEvent.click(screen.getByRole("button", { name: "Show more" }));
+		expect(requestMatches).toHaveBeenLastCalledWith(50);
+		expect(within(table).getAllByRole("link", { name: /^Open / })).toHaveLength(7);
+		fireEvent.click(screen.getByRole("button", { name: "Show more" }));
+		expect(requestMatches).toHaveBeenLastCalledWith(57);
+		fireEvent.click(screen.getByRole("button", { name: "Show less" }));
+		expect(requestMatches).toHaveBeenLastCalledWith(5);
+		expect(within(table).getAllByRole("link", { name: /^Open / })).toHaveLength(5);
+		expect(loadMorePendingMock).not.toHaveBeenCalled();
+	});
+
+	test("keeps held rows during refresh, disables Show more, and reloads with the current choices", async () => {
+		result = { rows, isDone: false };
+		renderFileView({ nodeId: node._id });
+		const dialog = await openFilter();
+		fireEvent.change(within(dialog).getByRole("textbox", { name: "Value" }), { target: { value: "file" } });
+		fireEvent.submit(dialog.querySelector("form")!);
+		fireEvent.click(screen.getByRole("button", { name: "Show more" }));
+		result = { rows, isDone: false, isBusy: true, refreshing: true };
+		pushQueryChanges();
+		expect(screen.getByText("Refreshing rows…")).toBeTruthy();
+		expect(screen.getByRole("button", { name: "Show more" })).toHaveProperty("disabled", true);
+		expect(
+			screen
+				.getByRole("table", { name: "Folder contents" })
+				.closest(".FileNodeViewFolderExplorer")!
+				.getAttribute("data-filter-state"),
+		).toBe("refreshing");
+		result = { rows, isDone: false, isFailed: true, filterRecovery: "reload" };
+		pushQueryChanges();
+		expect(screen.getByRole("alert").textContent).toBe("Rows could not be refreshed.");
+		expect(screen.queryByText("No rows match this filter")).toBeNull();
+		fireEvent.click(screen.getByRole("button", { name: "Reload table" }));
+		expect(reload).toHaveBeenCalledTimes(1);
+		expect(retry).not.toHaveBeenCalled();
+		expect(
+			within(screen.getByRole("table", { name: "Folder contents" })).getAllByRole("link", { name: /^Open / }),
+		).toHaveLength(5);
+		expect(sortedChildrenMock.mock.calls.at(-1)![0].filter).toEqual({
+			kind: "name",
+			field: "name",
+			op: "contains",
+			value: "file",
+		});
+		expect(mutationMock).not.toHaveBeenCalled();
+	});
+
+	test("keeps Clear and Retry on a scan error but removes the table when the folder is refused", async () => {
+		result = { rows: [], isDone: false };
+		renderFileView({ nodeId: node._id });
+		const dialog = await openFilter();
+		fireEvent.change(within(dialog).getByRole("textbox", { name: "Value" }), { target: { value: "file" } });
+		fireEvent.submit(dialog.querySelector("form")!);
+		result = { rows: [], isDone: false, isFailed: true, filterRecovery: "retry" };
+		pushQueryChanges();
+		expect(screen.getByRole("alert").textContent).toBe("Filter could not be applied");
+		expect(screen.getByRole("button", { name: "Clear filter" })).toBeTruthy();
+		expect(screen.getByRole("table", { name: "Folder contents" })).toBeTruthy();
+		fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+		expect(retry).toHaveBeenCalledTimes(1);
+		result = { rows: undefined, isFailed: true, isFolderRefused: true };
+		pushQueryChanges();
+		expect(screen.getByRole("alert").textContent).toBe("This folder could not be loaded.");
+		expect(screen.queryByRole("table", { name: "Folder contents" })).toBeNull();
+		expect(screen.queryByRole("button", { name: "Clear filter" })).toBeNull();
+	});
+
+	test.each(["folder", "membership"] as const)("clears the local filter when its %s changes", async (scope) => {
+		const view = renderFileView({ nodeId: node._id });
+		const dialog = await openFilter();
+		fireEvent.change(within(dialog).getByRole("textbox", { name: "Value" }), { target: { value: "local" } });
+		fireEvent.submit(dialog.querySelector("form")!);
+		expect(screen.getByRole("button", { name: "Clear filter" })).toBeTruthy();
+		if (scope === "folder") {
+			const previousFolder = node;
+			node = { ...node, _id: "folder_2", name: "Other", path: "/Other" };
+			treeNodes = [previousFolder, node];
+		} else {
+			tenantContextMock.mockReturnValue({ ...tenantContextMock(), membershipId: "membership_2" });
+		}
+		view.rerender(<FileNodeView searchParams={{ nodeId: node._id }} onNavigateSearch={view.onNavigateSearch} />);
+		await waitFor(() => expect(sortedChildrenMock.mock.calls.at(-1)![0].filter).toBeNull());
+		expect(screen.queryByRole("button", { name: "Clear filter" })).toBeNull();
+		expect(sortedChildrenMock.mock.calls.at(-1)![0]).toMatchObject({
+			membershipId: scope === "membership" ? "membership_2" : "membership_1",
+			folderId: node._id,
+		});
+		expect(mutationMock).not.toHaveBeenCalled();
+	});
+
+	test.each([
+		{ label: "nonmatching", match: { matches: false, preparing: false } },
+		{ label: "preparing", match: { matches: false, preparing: true } },
+		{ label: "refused", match: null },
+	])("keeps a $label private name claim from showing its saved shadow through the real hook", async ({ match }) => {
+		sortedChildrenMock.mockReset();
+		sideRows = {
+			rows: [
+				{
+					target: { kind: "private", id: "private_1" },
+					name: "file-0.html",
+					kind: "file",
+					createdAt: 1,
+					updatedAt: 1,
+					contentByteSize: 0,
+					updatedBy: "user_1",
+					contentType: "text/html",
+					preparing: false,
+					treeRow: null,
+					segment: "value",
+					sortKey: ["file-0.html"],
+				},
+			],
+			nameClaims: ["file-0.html"],
+			tooManyShared: false,
+			tooManyPending: false,
+		};
+		const query = queryMock.getMockImplementation()!;
+		queryMock.mockImplementation((reference, args) =>
+			getFunctionName(reference) === "files_nodes:get_table_filter_match" ? match : query(reference, args),
+		);
+		renderFileView({ nodeId: node._id });
+		await screen.findByRole("table", { name: "Folder contents" });
+		const dialog = await openFilter();
+		await selectField(dialog, "status (metadata)");
+		fireEvent.change(within(dialog).getByRole("textbox", { name: "Value" }), { target: { value: "Open" } });
+		fireEvent.submit(dialog.querySelector("form")!);
+		await waitFor(() =>
+			expect(
+				queryMock.mock.calls.some(
+					([reference, args]) =>
+						getFunctionName(reference) === "files_nodes:get_table_filter_match" &&
+						args.filter?.field === "metadata.status",
+				),
+			).toBe(true),
+		);
+		await screen.findByRole("link", { name: "Open file-1.html" });
+		expect(screen.queryByRole("link", { name: "Open file-0.html" })).toBeNull();
+		expect(screen.queryByRole("link", { name: "Open file-0.html, pending" })).toBeNull();
+		if (match?.preparing) expect(screen.getByText("Some drafts are preparing")).toBeTruthy();
+	});
 });
 
 describe("FileNodeView file views", () => {

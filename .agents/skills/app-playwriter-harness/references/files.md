@@ -84,7 +84,11 @@ Use this file as a quick testing map for `/files`. Keep it short and selector-or
   `Sort: Name, A to Z`. The direction button next to it has the tooltip `Sort <other direction>`.
   Metadata options read like `status (metadata)`.
 - Folder table row names in order: the overlay links, `getAllByRole("link", { name: /^Open / })`.
-- Extra sort column cell: `.FileNodeViewFolderExplorer-cell-sort-value` (a dash `—` means no value).
+- Folder columns: `getByRole("button", { name: "Columns", exact: true })` opens the `Columns` dialog.
+  Headers and cells carry `data-column-field`; value cells also carry `data-value-state`.
+  A sort does not add its field as a visible column. Select it in Columns before checking its cells.
+- Value query counts: the `Folder contents` table carries `data-value-target-count` and
+  `data-value-page-count`. These attributes are on the table, not `.FileNodeViewFolderExplorer`.
 - The table is a `div` grid, not a `<table>`. In page context use `[role=table][aria-label="Folder contents"]`,
   rows `.FileNodeViewFolderExplorer-row[role=row]`, and headers `[role=columnheader]`. `querySelector("table")`
   answers null.
@@ -608,6 +612,8 @@ downloadThroughput: -1, uploadThroughput: -1 }`. This affects only the owned QA 
 
 Verified 2026-09-24 in `qa-browser/home` with `qa.perm.owner` and `qa.perm.viewer` in two scratch Chromes
 (ports 9223 and 9224, see `clerk-test-accounts.md`). The whole run, fixtures included, took about 25 minutes.
+Check the current [QA inventory](../../qa-data/references/inventory.md) before writing fixtures.
+It now lists the archived sort fixtures and a reusable 203-child restricted-folder fixture.
 
 - **Fixtures from page context.** `files_nodes.create_folder_node` for folders, `files_nodes_content.create_text_node`
   for files (`j.json`, `k.txt`, and `noext` give Type a value, another value, and a missing value), and
@@ -627,8 +633,8 @@ Verified 2026-09-24 in `qa-browser/home` with `qa.perm.owner` and `qa.perm.viewe
   `Sort z to a`. Updated, Date created, and Size start newest or largest first. The `(metadata)` options load
   after the menu opens, so a read of `getByRole("option")` right after the click misses them. Wait for one first.
 - **Read the order.** Wait for `aria-busy` to leave the table, click `Show more` until it is gone, then read the
-  overlay link names and `.FileNodeViewFolderExplorer-cell-sort-value`. Expect folders first, then values, then
-  `—` rows by name, in both directions.
+  overlay link names. Select the sort field in Columns and read its `[data-column-field="<field>"]` cells.
+  Expect folders first, then values, then `—` rows by name, in both directions.
 - **Saved sort and live update.** A writer's change is saved: reload shows it, and a second member's open table
   flips to it with no reload (wait for `data-sort-field` to change).
 - **Reader.** Count `set_folder_sort` in `websocket` `framesent` payloads (attach the listener before `goto`). A
@@ -636,21 +642,18 @@ Verified 2026-09-24 in `qa-browser/home` with `qa.perm.owner` and `qa.perm.viewe
   sort with `canSave: false`, and reload brings it back. The same counter on the owner reads 1 per click, which
   proves the counter works.
 - **Hidden child.** The member must not see the restricted child's row, and its metadata value must not appear in
-  `.FileNodeViewFolderExplorer-cell-sort-value` or anywhere in `body.innerText`.
+  the selected field's cells or anywhere in `body.innerText`.
 - **Member shared rows from existing data** (verified 2026-09-24). A member builds the restricted rows of a folder
   from their own grants, by user or by role. `qa-browser` keeps archived restricted fixtures. `unarchive_nodes` on
   a restricted child alone puts it at root, because its parent stays archived. Then `move_nodes` it into a live
   folder such as `/qa-search-0905`. Share one by user and one with `{ kind: "role", role: "member" }`, and leave
   the others without grants. In every sort, the member sees exactly the shared rows, with no `Too many shared`
   notice and no hidden name in `body.innerText`. The owner sees every row, which proves the text check works.
-  `qa-browser` has fewer than 200 restricted folders and files, so the over-200 case needs new fixtures. To clean
+  Reuse `/qa-cap-0924` for the over-200 case after checking its current grants. To clean
   up, remove the role grant, restore the original parent folders, move each item back, and archive the parents
   again. Compare a `list_tree` count taken before the run.
-- **More than 200 restricted children** (verified 2026-09-24). Create 203 folders `c-000`…`c-202` with
-  `create_folder_node`, then `restrict_node` each one. Rate limits make this slow: `files_tree_write` allows 50 per
-  minute and `files_sharing_write` 30 per minute, so the build takes about 11 minutes. Each runner call works for
-  about 35 s. At the start of each call it reads the folder's real children from `list_tree`, because a call that
-  timed out may still have written folders. On "rate" refusals it waits 2.5 s and retries.
+- **More than 200 restricted children** (verified 2026-09-24). The archived `/qa-cap-0924` fixture holds
+  203 folders `c-000`…`c-202`. Read their current archive state and grants before restoring it for reuse.
   - Share `c-005` (role), `c-150` and `c-201` (user) with the member. The owner then gets `c-000`…`c-199` and
     the `Too many shared` notice. The member gets exactly those 3 rows with no notice. `c-201` sorts after
     position 200, so seeing it proves the member walk runs. The old folder scan gave a member no rows here.
@@ -666,6 +669,76 @@ Verified 2026-09-24 in `qa-browser/home` with `qa.perm.owner` and `qa.perm.viewe
   shared rows. If other agents have unfinished `convex/` edits, push from a worktree (see `known-hazards.md`).
 - Clean up with `files_nodes.archive_nodes` on the fixture roots. Their `files_folder_sorts` docs stay until the
   workspace purge, by design.
+
+### Folder Table Columns
+
+Verified 2026-09-29. Use the current QA inventory. A large real folder can stay read-only: only personal
+column choices need to change. Do not write file metadata or shared sorts for this check.
+
+- **Controls.** `Columns` opens a dialog named `Columns`; its input is `Search columns`.
+  Name is checked and locked. Actions is always shown. Up to eight columns may be selected, including Name;
+  Actions does not count. The order is fixed: built-ins first, then full qualified field keys.
+  Choose fields in a different click order and check the same order after reload. `Reset columns` restores
+  Name, Updated by and Updated. Column changes must keep row ids, row order and paging unchanged.
+- **Checkboxes.** The native input is visually hidden and does not take pointer clicks. Click the visible
+  label inside `.FileNodeViewFolderExplorerColumns-field[data-column-field="<field>"]`, or focus its
+  checkbox and press Space. Do not force-click the input. Tab scrolls clipped fields into view.
+- **Catalog.** Opening Columns starts `files_metadata:list_folder_fields` plus
+  `files_metadata:list_node_fields` for supported side targets, including private drafts. Search only filters
+  loaded keys. `Show more fields` requests another page; it does not load every page automatically.
+  Read `data-fields-state` on the status child, not the dialog. States are `loading`, `ready` and `failed`.
+  An incomplete catalog says `No loaded fields match`; a complete one says `No fields match`.
+  On failure, `Retry` clears the old keys and restarts page 1. Check proposal changes while the chooser stays open.
+- **Cells.** Scope to `[role="table"][aria-label="Folder contents"]`, then the row and
+  `[data-column-field="<field>"]`. `data-value-state` is `deferred`, `loading`, `preparing`, `ready`,
+  `failed` or `refused`. The text is respectively `Loads when row is visible`, `Loading…`, `Preparing`,
+  the scalar value, `Could not load` or `Unavailable`. A ready missing value is `—`; zero, false and
+  an empty string keep their own values. `Retry values` belongs in that row's Actions cell.
+  A refused target must keep no old value or hidden field name. Use unit coverage or a real owned failure
+  path for error states; do not add fake results to the DOM.
+- **Scalar check.** First read one bounded catalog page. Pick a key that exists now, then read at most a few
+  accessible targets with `get_field_values`. Compare one ready cell with that API and `get_entries`.
+  Record the value type and equality without printing private values. Main table preview rows may be folders
+  with no value; open a readable child folder through its normal link to reach files. Back up that folder's
+  own preference entry before changing it too.
+- **Actual subscriptions.** DOM counters alone do not prove the caps. Import the exact
+  `/src/lib/app-convex-client.ts` URL already present in Resource Timing; do not import a second client URL.
+  Increase the Resource Timing buffer in an init script before reload if that entry was evicted.
+  In the current Convex client, read `app_convex.cachedSync.state.querySet` and require a `Map`.
+  Each active descriptor has `numSubscribers > 0` and `canonicalizedUdfPath`.
+  Count only `files_metadata:get_field_values`: descriptors are pages; distinct serialized `args.target`
+  values are targets. Ignore cached entries with zero subscribers. Fail clearly if the installed shape changes.
+  Compare both counts with the table's attributes. Do not print the complete query arguments.
+- **Caps and priority.** Load about 150 rows with `Show more`, then use a tall viewport on only your own tab.
+  In the verified run, 1280×6000 produced 100 real value targets and 100 pages. Require at most 100 targets
+  and 700 pages. Focus a deferred row's normal overlay link: it must become active, replace a nearby target,
+  and stay within both caps. Clear that focus, scroll the editor to another deferred row, and check visible
+  priority too. One-page scalar values do not prove the 700-page worst case; use the focused cap unit test
+  for that case and report the actual live counts.
+- **Editor preload.** The observer root must be the containing `.FileNodeView-editor-area`, with
+  `rootMargin: "400px 0px"`. At scrollTop 0, choose an unfocused mounted row below the editor's bottom by
+  more than 0 and less than 400 px, with horizontal overlap. The same target must have an active value query
+  before it enters view. You may wrap the native IntersectionObserver constructor to record its options;
+  forward its real callback and leave its behavior unchanged.
+  Name this assertion `editor_preload`. For the red proof, coordinate a small served-source switch from
+  `root: scrollRoot` to `root: null`, keeping the margin. Reload only your tab, fetch the exact loaded view
+  module to prove the switch is served, then run the same target and geometry assertion. It must fail because
+  that target has no active value query. Restore the source, prove the fresh module and rerun it to pass.
+- **Keyboard and fit.** Search gets focus on open. Tab skips locked Name. Space toggles a focused checkbox.
+  Done and Escape close the dialog and return focus to Columns. Check the visible focus outline and the
+  label hit area; an automated 1 px input warning is not the visible label's size. At a 320 px layout width,
+  require the chooser inside the viewport with no horizontal overflow. Read `documentElement.clientWidth`:
+  a scrollbar can make a 320 px device viewport narrower. Reach the vertically scrolled Done button by Tab
+  and check its hit target. A 640×450 viewport is a 200% reflow check for 1280×900, not proof of real browser
+  zoom. State that limit. Also record whole-page overflow separately; the existing Files header/panel layout
+  overflowed at 320 px in this run while the chooser fit. Reduced motion must leave the chooser animation off.
+- **Restore.** The membership's column map is stored under
+  `app_state::files_folder_columns::scope::<membershipId>`. Back up the exact touched folder entries,
+  including whether each entry and the physical key existed. Restore only those entries, preserving unrelated
+  entries added meanwhile. If the 100-entry map is full, reuse an existing entry so QA does not evict another
+  folder's choice. Reload to clear the app's storage cache, then prove the original columns and
+  query counts. Restore viewport and media overrides. For screenshots, bring only your owned tab to the front
+  if background capture times out; do not raise the timeout.
 
 ### Sidebar Drop Zone Visuals
 

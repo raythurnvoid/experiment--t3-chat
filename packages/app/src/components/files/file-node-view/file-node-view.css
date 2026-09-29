@@ -873,6 +873,7 @@
 
 		font-size: 0.875rem;
 		color: var(--color-fg-07);
+		overflow-wrap: anywhere;
 	}
 
 	.FileNodeViewFolderExplorer-table-scroll {
@@ -1124,6 +1125,63 @@
 		flex-wrap: wrap;
 		justify-content: space-between;
 		gap: 8px;
+	}
+
+	.FileNodeViewFolderExplorerFilter-popover {
+		width: min(360px, calc(100vw - 24px));
+		max-height: min(600px, calc(100dvh - 32px));
+		padding: 12px;
+		overflow-y: auto;
+	}
+
+	.FileNodeViewFolderExplorerFilter-form {
+		display: flex;
+		flex-direction: column;
+		gap: 12px;
+		min-width: 0;
+	}
+
+	.FileNodeViewFolderExplorerFilter-field {
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+		min-width: 0;
+		font-size: 0.875rem;
+	}
+
+	.FileNodeViewFolderExplorerFilter-field-trigger {
+		width: 100%;
+		min-width: 0;
+		justify-content: space-between;
+		overflow-wrap: anywhere;
+		text-align: start;
+	}
+
+	.FileNodeViewFolderExplorerFilter-fields-popover {
+		width: min(360px, calc(100vw - 24px));
+	}
+
+	.FileNodeViewFolderExplorerFilter-note {
+		margin: 0;
+		font-size: 0.875rem;
+		color: var(--color-fg-07);
+	}
+
+	.FileNodeViewFolderExplorerFilter-actions,
+	.FileNodeViewFolderExplorerFilter-active {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		justify-content: space-between;
+		gap: 8px;
+		min-width: 0;
+		font-size: 0.875rem;
+		overflow-wrap: anywhere;
+	}
+
+	.FileNodeViewFolderExplorerFilter-active {
+		flex-basis: 100%;
+		justify-content: end;
 	}
 
 	.FileNodeViewFolderExplorer-more-action {

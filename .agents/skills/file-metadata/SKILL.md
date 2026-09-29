@@ -332,6 +332,36 @@ Missing membership or target access returns null. Missing current-user auth thro
 A grant-only member gets an empty, done ordinary catalog at the root. A readable folder hidden by
 archive or the caller's pending move or delete gets an empty, done catalog too.
 
+# Folder Table Filter
+
+The table applies one local structured filter through `files_nodes.list_tree_children_sorted`.
+The shared type and predicate live in `shared/files-table.ts`; the reused Convex validator lives
+in `convex/schema.ts`. This filter is separate from the search language below.
+
+Metadata filters use the same scalar as the table cell. Saved targets use committed
+`sortDisplayValue`, including while the caller edits pending text. Private targets use only the
+current create proposal and revision. A bounded iterator stops at the first plain primitive and
+skips date companion docs. Empty strings, zero, and false are present. Empty lists, map parents,
+and absent keys are missing. Text comparisons use the whole scalar with case and accents folded.
+They keep digit runs and do not cut text to the sort key's 256-character limit.
+
+Main filtered rows stay in the readable ordinary index range. A different metadata filter field
+needs one indexed field lookup per candidate. The primary field doc is reused when it is the
+filter field. The metadata-missing walk proves absence before applying the filter and checks every
+new field witness against its current node and ordinary scope.
+
+Side rows use the separate `files_nodes.get_table_filter_match` query. It checks one target's
+current auth, access, private owner, and visible parent. A prior cell value is not proof of a match.
+Authorized private metadata still preparing returns `{ matches: false, preparing: true }`.
+Preparation is active, the create intent is missing, or a text intent has no new content base.
+Built-in predicates do not wait for metadata preparation. Refusal returns null; read exhaustion
+throws. It never returns a guessed missing value. Side name claims stay unfiltered.
+
+Both filter doors check whole-query transaction bytes and calls. Custom main pages commit only
+complete candidates and preserve a continuing cursor after an empty matching page. Each filtered
+page has at most 50 candidate/proof visits, a 4 MiB read budget, and a 1,000-call budget. The next
+read reserves 1 MiB and 16 calls. A stopped first candidate throws a clear error.
+
 # Search Box
 
 The Files sidebar and global search filter by metadata and frontmatter with the same language. The

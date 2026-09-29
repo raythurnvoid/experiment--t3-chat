@@ -721,7 +721,10 @@ The sidebar loads the tree one open folder at a time through four `files_nodes` 
 resolve the reader with `db_get_tree_reader` and filter every row with
 `access_control_db_filter_readable_file_nodes`, so they never show more than `list_tree` does.
 
-- `db_get_tree_reader` returns `null` for an inactive or foreign membership and for every refusal
+- `db_get_tree_reader` requires a live `users` doc before reading membership. Missing auth or a
+  missing user throws `Unauthenticated`. An anonymous user with `deletedAt` does too, even when
+  the supplied membership is inactive. The helper keeps the caller's auth kind.
+  It returns `null` for an inactive or foreign membership and for every refusal
   except "Permission denied". "Permission denied" means the member has no workspace-wide read, so the
   queries continue in grant-only mode and show only what was shared with them.
 - `list_tree_children` pages one kind of child of one folder. A missing, foreign, or hidden parent
@@ -748,6 +751,23 @@ resolve the reader with `db_get_tree_reader` and filter every row with
   `list_tree_children_sort_side_rows`, which checks each one with the visible reader (read access
   plus the pending hide rules) and caps them at 200. A grant-only member's root rows come from these
   side rows.
+  - A local table filter scans that same readable ordinary range. It never scans hidden nodes and
+    then drops them for access. Custom cursors bind the exact membership, folder, kind, segment,
+    sort, and filter. They carry the full index suffix, including Created time/id ties.
+  - Every page returns `scanBoundary`, `scannedCount`, and `workCount`. Native unfiltered pages
+    count raw rows before pending hides and use `workCount: 0`. Custom pages advance only after a
+    whole candidate is checked. Rejected readable candidates still advance the boundary.
+    Refusals return an empty, done page with a null boundary and zero counts.
+  - Filtered walks spend at most 50 candidate/proof visits per query. They check whole-query
+    bytes and calls with a 4 MiB budget and a 1,000-call budget, reserving 1 MiB and 16 calls before
+    another read. The metadata-missing walk keeps both Name streams. Each new field witness is
+    joined to its current ordinary node before its position is used. Stale scope fields throw.
+    A stopped join keeps the last completed cursor. No first progress throws a work error.
+  - `get_table_filter_match({ membershipId, parentId, target, filter })` checks one side target
+    again. It resolves current access, private ownership, visible parent, and metadata readiness.
+    It returns `{ matches, preparing }`, or null for refusal or a target no longer visible here.
+    Missing auth throws. Read exhaustion throws; it never means false, null, or an absent scalar.
+    The side-row list keeps its full unfiltered name claims and both cap flags.
   - The owner reads every row, so the owner scans the folder's restricted children by name and gets
     the first 200.
   - A non-owner can read a restricted scope root only through a user or role `content.read` grant

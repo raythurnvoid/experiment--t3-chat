@@ -333,6 +333,38 @@ export const files_sort_validator = v.object({
 
 export const files_sort_key_validator = v.array(v.union(v.string(), v.number(), v.null()));
 
+export const files_table_filter_validator = v.union(
+	v.object({
+		kind: v.literal("name"),
+		field: v.literal("name"),
+		op: v.union(v.literal("contains"), v.literal("starts_with")),
+		value: v.string(),
+	}),
+	v.object({ kind: v.literal("type"), field: v.literal("type"), op: v.literal("is"), value: v.string() }),
+	v.object({ kind: v.literal("type"), field: v.literal("type"), op: v.literal("missing") }),
+	v.object({
+		kind: v.literal("date"),
+		field: v.union(v.literal("updated"), v.literal("created")),
+		op: v.union(v.literal("on"), v.literal("before"), v.literal("after")),
+		start: v.number(),
+		end: v.number(),
+	}),
+	v.object({
+		kind: v.literal("size"),
+		field: v.literal("size"),
+		op: v.union(v.literal("is"), v.literal("at_least"), v.literal("at_most")),
+		value: v.number(),
+	}),
+	v.object({ kind: v.literal("size"), field: v.literal("size"), op: v.literal("missing") }),
+	v.object({
+		kind: v.literal("text"),
+		field: v.string(),
+		op: v.union(v.literal("is"), v.literal("starts_with")),
+		value: v.string(),
+	}),
+	v.object({ kind: v.literal("text"), field: v.string(), op: v.union(v.literal("present"), v.literal("missing")) }),
+);
+
 const files_pending_create_intent_validator = v.union(
 	v.object({ kind: v.literal("folder"), metadata: files_metadata_entries_validator }),
 	v.object({

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { usePaginatedQuery, useQueries, useQuery } from "convex/react";
+import { usePaginatedQuery, useQueries } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
 import { useFn } from "./utils-hooks.ts";
 import { app_convex_api, type app_convex_Doc, type app_convex_Id } from "@/lib/app-convex-client.ts";
@@ -11,6 +11,7 @@ import {
 	files_search_query_to_plans,
 } from "../../shared/files-search-query.ts";
 import { files_sort_compare, files_sort_field_is_built_in, type files_sort_Sort } from "../../shared/files-sort.ts";
+import type { files_table_Filter } from "../../shared/files-table.ts";
 
 /**
  * Page `files_visible.list` 50 entries at a time, and return the entries only when the listing is done.
@@ -96,6 +97,7 @@ export function useFilesVisibleEntries(
 }
 
 const FILES_SORTED_CHILDREN_PAGE_SIZE = 50;
+const FILES_FILTERED_CHILDREN_ACTION_WORK = 1000;
 
 type FilesSortedChildrenRow = NonNullable<
 	FunctionReturnType<typeof app_convex_api.files_nodes.list_tree_children_sort_side_rows>
@@ -107,6 +109,32 @@ type FilesSortedChildrenPage = FunctionReturnType<typeof app_convex_api.files_no
  * The state of one segment. `inactive` is a segment that has not started, so it is not loading.
  */
 type FilesSortedChildrenSegmentStatus = "inactive" | "loading" | "more" | "done" | "failed";
+
+type FilesFilteredChildrenPage = {
+	id: number;
+	kind: "folder" | "file";
+	segment: "value" | "missing";
+	cursor: string | null;
+	workLimit: number;
+	action: number;
+	refresh: boolean;
+	settled: boolean;
+	continueCursor: string | null;
+	isDone: boolean;
+};
+
+type FilesFilteredChildrenScan = {
+	scope: string;
+	action: number;
+	nextId: number;
+	remaining: number;
+	goal: number;
+	stopped: boolean;
+	pages: FilesFilteredChildrenPage[];
+	refresh: Array<Pick<FilesFilteredChildrenPage, "kind" | "segment" | "workLimit">> | null;
+	failed: "retry" | "reload" | null;
+	retrying: boolean;
+};
 
 /**
  * Page the missing segment of a metadata key. Its cursor is not pinned like a native Convex cursor:
@@ -140,6 +168,8 @@ function useFilesSortedMissingPages(
 							query: app_convex_api.files_nodes.list_tree_children_sorted,
 							args: {
 								...parsed,
+								filter: null,
+								workLimit: FILES_FILTERED_CHILDREN_ACTION_WORK,
 								segment: "missing" as const,
 								paginationOpts: { numItems: FILES_SORTED_CHILDREN_PAGE_SIZE, cursor },
 							},
@@ -222,6 +252,7 @@ type useFilesSortedChildren_Props = {
 	membershipId: app_convex_Id<"organizations_workspaces_users">;
 	folderId: app_convex_Doc<"files_nodes">["parentId"];
 	sort: files_sort_Sort | null;
+	filter: files_table_Filter | null;
 };
 
 /**
@@ -238,7 +269,7 @@ type useFilesSortedChildren_Props = {
  * null` waits, for example for the folder's saved sort.
  */
 export function useFilesSortedChildren(props: useFilesSortedChildren_Props) {
-	const { membershipId, folderId, sort } = props;
+	const { membershipId, folderId, sort, filter } = props;
 	const field = sort?.field ?? null;
 	const isMetadata = field !== null && !files_sort_field_is_built_in(field);
 	// Folders have no extension, so they all miss a type. Folders have no size, so they sort by name.
@@ -246,9 +277,73 @@ export function useFilesSortedChildren(props: useFilesSortedChildren_Props) {
 	const hasFileMissing = field === "type" || field === "size" || isMetadata;
 
 	const segmentArgs = (kind: app_convex_Doc<"files_nodes">["kind"]) =>
-		sort === null ? null : { membershipId, parentId: folderId, kind, sort };
+		sort === null
+			? null
+			: { membershipId, parentId: folderId, kind, sort, filter: null, workLimit: FILES_FILTERED_CHILDREN_ACTION_WORK };
 
-	const sortScope = JSON.stringify([membershipId, folderId, sort]);
+	const sortScope = JSON.stringify([membershipId, folderId, sort, filter]);
+	const [scan, setScan] = useState<FilesFilteredChildrenScan>({
+		scope: sortScope,
+		action: 1,
+		nextId: 1,
+		remaining: FILES_FILTERED_CHILDREN_ACTION_WORK,
+		goal: 5,
+		stopped: false,
+		pages: [],
+		refresh: null,
+		failed: null,
+		retrying: false,
+	});
+	const currentScan: FilesFilteredChildrenScan =
+		scan.scope === sortScope
+			? scan
+			: {
+					scope: sortScope,
+					action: scan.action + 1,
+					nextId: scan.nextId,
+					remaining: FILES_FILTERED_CHILDREN_ACTION_WORK,
+					goal: 5,
+					stopped: false,
+					pages: [],
+					refresh: null,
+					failed: null,
+					retrying: false,
+				};
+	if (scan.scope !== sortScope) setScan(currentScan);
+	const filteredPagesText = JSON.stringify(
+		currentScan.pages.map(({ id, kind, segment, cursor, workLimit }) => ({ id, kind, segment, cursor, workLimit })),
+	);
+	const filteredRequests = useMemo(() => {
+		const [membershipId, folderId, sort, filter] = JSON.parse(sortScope) as [
+			typeof props.membershipId,
+			typeof props.folderId,
+			typeof props.sort,
+			typeof props.filter,
+		];
+		if (sort === null || filter === null || currentScan.retrying) return {};
+		const pages = JSON.parse(filteredPagesText) as Array<
+			Pick<FilesFilteredChildrenPage, "id" | "kind" | "segment" | "cursor" | "workLimit">
+		>;
+		return Object.fromEntries(
+			pages.map((page) => [
+				page.id,
+				{
+					query: app_convex_api.files_nodes.list_tree_children_sorted,
+					args: {
+						membershipId,
+						parentId: folderId,
+						kind: page.kind,
+						segment: page.segment,
+						sort,
+						filter,
+						workLimit: page.workLimit,
+						paginationOpts: { numItems: FILES_SORTED_CHILDREN_PAGE_SIZE, cursor: page.cursor },
+					},
+				},
+			]),
+		);
+	}, [sortScope, filteredPagesText, currentScan.retrying]);
+	const filteredResponses = useQueries(filteredRequests);
 	const [startedMissing, setStartedMissing] = useState({ sortScope, folder: false, file: false });
 	const started = startedMissing.sortScope === sortScope ? startedMissing : { sortScope, folder: false, file: false };
 
@@ -256,37 +351,102 @@ export function useFilesSortedChildren(props: useFilesSortedChildren_Props) {
 	// folder needs one round trip.
 	const folderValues = usePaginatedQuery(
 		app_convex_api.files_nodes.list_tree_children_sorted,
-		sort === null ? "skip" : { ...segmentArgs("folder")!, segment: "value" },
+		sort === null || filter !== null || currentScan.retrying ? "skip" : { ...segmentArgs("folder")!, segment: "value" },
 		{ initialNumItems: FILES_SORTED_CHILDREN_PAGE_SIZE },
 	);
 	const fileValues = usePaginatedQuery(
 		app_convex_api.files_nodes.list_tree_children_sorted,
-		sort === null ? "skip" : { ...segmentArgs("file")!, segment: "value" },
+		sort === null || filter !== null || currentScan.retrying ? "skip" : { ...segmentArgs("file")!, segment: "value" },
 		{ initialNumItems: FILES_SORTED_CHILDREN_PAGE_SIZE },
 	);
 	// Rows without a type or a size have a native cursor. A metadata key's missing rows use a cursor chain.
 	const folderMissing = usePaginatedQuery(
 		app_convex_api.files_nodes.list_tree_children_sorted,
-		field === "type" && started.folder ? { ...segmentArgs("folder")!, segment: "missing" } : "skip",
+		filter === null && !currentScan.retrying && field === "type" && started.folder
+			? { ...segmentArgs("folder")!, segment: "missing" }
+			: "skip",
 		{ initialNumItems: FILES_SORTED_CHILDREN_PAGE_SIZE },
 	);
 	const fileMissing = usePaginatedQuery(
 		app_convex_api.files_nodes.list_tree_children_sorted,
-		(field === "type" || field === "size") && started.file ? { ...segmentArgs("file")!, segment: "missing" } : "skip",
+		filter === null && !currentScan.retrying && (field === "type" || field === "size") && started.file
+			? { ...segmentArgs("file")!, segment: "missing" }
+			: "skip",
 		{ initialNumItems: FILES_SORTED_CHILDREN_PAGE_SIZE },
 	);
-	const folderMissingPages = useFilesSortedMissingPages(isMetadata && started.folder ? segmentArgs("folder") : null);
-	const fileMissingPages = useFilesSortedMissingPages(isMetadata && started.file ? segmentArgs("file") : null);
-	const sideRows = useQuery(
-		app_convex_api.files_nodes.list_tree_children_sort_side_rows,
-		sort === null ? "skip" : { membershipId, parentId: folderId, sort },
+	const folderMissingPages = useFilesSortedMissingPages(
+		filter === null && !currentScan.retrying && isMetadata && started.folder ? segmentArgs("folder") : null,
 	);
+	const fileMissingPages = useFilesSortedMissingPages(
+		filter === null && !currentScan.retrying && isMetadata && started.file ? segmentArgs("file") : null,
+	);
+	const sideScope = JSON.stringify([membershipId, folderId, sort]);
+	const sideRequests = useMemo(() => {
+		const [membershipId, folderId, sort] = JSON.parse(sideScope) as [
+			typeof props.membershipId,
+			typeof props.folderId,
+			typeof props.sort,
+		];
+		return Object.fromEntries(
+			sort === null || currentScan.retrying
+				? []
+				: [
+						[
+							"side",
+							{
+								query: app_convex_api.files_nodes.list_tree_children_sort_side_rows,
+								args: { membershipId, parentId: folderId, sort },
+							},
+						],
+					],
+		);
+	}, [sideScope, currentScan.retrying]);
+	const sideResponse:
+		| FunctionReturnType<typeof app_convex_api.files_nodes.list_tree_children_sort_side_rows>
+		| Error
+		| undefined = useQueries(sideRequests).side;
+	const sideRows = sideResponse instanceof Error ? undefined : sideResponse;
+	const sideTargetsText = JSON.stringify(sideRows?.rows.map((row) => row.target) ?? []);
+	const sideMatchScope = JSON.stringify([membershipId, folderId, filter, sort !== null]);
+	const sideMatchRequests = useMemo(() => {
+		const [membershipId, folderId, filter, hasSort] = JSON.parse(sideMatchScope) as [
+			typeof props.membershipId,
+			typeof props.folderId,
+			typeof props.filter,
+			boolean,
+		];
+		if (filter === null || !hasSort || currentScan.retrying) return {};
+		const targets = JSON.parse(sideTargetsText) as FilesSortedChildrenRow["target"][];
+		return Object.fromEntries(
+			targets.map((target) => [
+				`${target.kind}:${target.id}`,
+				{
+					query: app_convex_api.files_nodes.get_table_filter_match,
+					args: { membershipId, parentId: folderId, target, filter },
+				},
+			]),
+		);
+	}, [sideMatchScope, sideTargetsText, currentScan.retrying]);
+	const sideMatchResponses = useQueries(sideMatchRequests);
+	const sideMatchResults = Object.keys(sideMatchRequests).map(
+		(key) =>
+			sideMatchResponses[key] as
+				| FunctionReturnType<typeof app_convex_api.files_nodes.get_table_filter_match>
+				| Error
+				| undefined,
+	);
+	const sideMatchesReady =
+		sideRows !== undefined && sideMatchResults.every((result) => result !== undefined && !(result instanceof Error));
+	const sideMatchesFailed = sideResponse instanceof Error || sideMatchResults.some((result) => result instanceof Error);
+	const preparing = sideMatchResults.some((result) => result != null && !(result instanceof Error) && result.preparing);
+	const refusedSideKeys = new Set(Object.keys(sideMatchRequests).filter((key) => sideMatchResponses[key] === null));
 
 	// Keep a missing segment started once its value segment was exhausted. A page split briefly turns the
 	// value segment back to loading, and stopping the missing segment then would throw its pages away.
 	if (
-		(hasFolderMissing && !started.folder && folderValues.status === "Exhausted") ||
-		(hasFileMissing && !started.file && fileValues.status === "Exhausted")
+		filter === null &&
+		((hasFolderMissing && !started.folder && folderValues.status === "Exhausted") ||
+			(hasFileMissing && !started.file && fileValues.status === "Exhausted"))
 	) {
 		setStartedMissing({
 			sortScope,
@@ -316,6 +476,7 @@ export function useFilesSortedChildren(props: useFilesSortedChildren_Props) {
 		rows: Array<FilesSortedChildrenPage["page"][number]>;
 		status: FilesSortedChildrenSegmentStatus;
 		loadMore: () => void;
+		scanBoundary?: FilesSortedChildrenRow["sortKey"] | null;
 	}> = [
 		{
 			kind: "folder",
@@ -341,88 +502,406 @@ export function useFilesSortedChildren(props: useFilesSortedChildren_Props) {
 			...(isMetadata ? fileMissingPages : pagerOf(fileMissing, started.file)),
 		});
 	}
+	if (filter !== null) {
+		for (const segment of segments) {
+			const pages = currentScan.pages.filter((page) => page.kind === segment.kind && page.segment === segment.segment);
+			segment.rows = [];
+			segment.scanBoundary = null;
+			segment.status = pages.length === 0 ? "inactive" : "loading";
+			for (let index = 0; index < pages.length; index++) {
+				const page = pages[index]!;
+				const response: FilesSortedChildrenPage | Error | undefined = filteredResponses[page.id];
+				if (response instanceof Error) {
+					segment.status = "failed";
+					break;
+				}
+				if (response === undefined) break;
+				segment.rows.push(...response.page);
+				segment.scanBoundary = response.scanBoundary ?? segment.scanBoundary;
+				if (response.isDone) {
+					segment.status = "done";
+					break;
+				}
+				if (index + 1 === pages.length) {
+					segment.status = "more";
+					break;
+				}
+				if (response.continueCursor !== pages[index + 1]!.cursor) break;
+			}
+		}
+	}
 
-	const isSettled =
-		sort !== null && sideRows !== undefined && segments.every((segment) => segment.status !== "loading");
-
+	const changedPageIndex = currentScan.pages.findIndex((page) => {
+		const response: FilesSortedChildrenPage | Error | undefined = filteredResponses[page.id];
+		return (
+			page.settled &&
+			response !== undefined &&
+			!(response instanceof Error) &&
+			(response.continueCursor !== page.continueCursor || response.isDone !== page.isDone)
+		);
+	});
 	const claimedNames = new Set(sideRows?.nameClaims ?? []);
 	const sideKeys = new Set(sideRows?.rows.map((row) => `${row.target.kind}:${row.target.id}`));
 	// Show a segment only once every segment before it is done. Otherwise the next page of an earlier
 	// segment would push the later rows down.
 	const openSegmentIndex = segments.findIndex((segment) => segment.status !== "done");
 	const shownSegments = openSegmentIndex === -1 ? segments : segments.slice(0, openSegmentIndex + 1);
-	const mergedRows = shownSegments.flatMap((segment) => {
-		const compare = (
-			a: { sortKey: FilesSortedChildrenRow["sortKey"] },
-			b: { sortKey: FilesSortedChildrenRow["sortKey"] },
-		) => files_sort_compare(a.sortKey, b.sortKey, segment.order);
+	const mergedKeys = new Set<string>();
+	const mergedRows = shownSegments
+		.flatMap((segment) => {
+			const compare = (
+				a: { sortKey: FilesSortedChildrenRow["sortKey"] },
+				b: { sortKey: FilesSortedChildrenRow["sortKey"] },
+			) => files_sort_compare(a.sortKey, b.sortKey, segment.order);
 
-		// A draft or a pending move takes a name, so the saved row with that name is hidden, like in
-		// the rest of the Files view. The side rows win over a main row of the same node while the two
-		// queries catch up with each other.
-		const mainRows = segment.rows
-			.filter((row) => !claimedNames.has(row.name) && !sideKeys.has(`saved:${row._id}`))
-			.map((row): FilesSortedChildrenRow => ({
-				target: { kind: "saved", id: row._id },
-				name: row.name,
-				kind: row.kind,
-				createdAt: row._creationTime,
-				updatedAt: row.updatedAt,
-				contentByteSize: row.contentByteSize,
-				updatedBy: row.updatedBy,
-				contentType: row.contentType,
-				preparing: false,
-				treeRow: row,
-				segment: segment.segment,
-				sortKey: row.sortKey,
-			}));
+			// A draft or a pending move takes a name, so the saved row with that name is hidden, like in
+			// the rest of the Files view. The side rows win over a main row of the same node while the two
+			// queries catch up with each other.
+			const mainRows = segment.rows
+				.filter((row) => !claimedNames.has(row.name) && !sideKeys.has(`saved:${row._id}`))
+				.map((row): FilesSortedChildrenRow => ({
+					target: { kind: "saved", id: row._id },
+					name: row.name,
+					kind: row.kind,
+					createdAt: row._creationTime,
+					updatedAt: row.updatedAt,
+					contentByteSize: row.contentByteSize,
+					updatedBy: row.updatedBy,
+					contentType: row.contentType,
+					preparing: false,
+					treeRow: row,
+					segment: segment.segment,
+					sortKey: row.sortKey,
+				}));
 
-		// Show a side row once the last loaded main row of its segment sorts at or after it, or once the
-		// segment is done. Earlier, the next page could still hold rows that sort before it.
-		const lastMainRow = segment.rows.at(-1);
-		const segmentSideRows = (sideRows?.rows ?? []).filter(
-			(row) =>
-				row.kind === segment.kind &&
-				row.segment === segment.segment &&
-				(segment.status === "done" || (lastMainRow !== undefined && compare(lastMainRow, row) >= 0)),
-		);
+			// Show a side row once the last loaded main row of its segment sorts at or after it, or once the
+			// segment is done. Earlier, the next page could still hold rows that sort before it.
+			const lastMainKey = filter !== null ? segment.scanBoundary : segment.rows.at(-1)?.sortKey;
+			const segmentSideRows = (sideRows?.rows ?? []).filter((row) => {
+				const match: FunctionReturnType<typeof app_convex_api.files_nodes.get_table_filter_match> | Error | undefined =
+					sideMatchResponses[`${row.target.kind}:${row.target.id}`];
+				return (
+					row.kind === segment.kind &&
+					row.segment === segment.segment &&
+					(filter === null || (match != null && !(match instanceof Error) && match.matches)) &&
+					(segment.status === "done" || (lastMainKey != null && compare({ sortKey: lastMainKey }, row) >= 0))
+				);
+			});
 
-		return [...mainRows, ...segmentSideRows].sort(compare);
+			return [...mainRows, ...segmentSideRows].sort(compare);
+		})
+		.filter((row) => {
+			const key = `${row.target.kind}:${row.target.id}`;
+			if (mergedKeys.has(key)) return false;
+			mergedKeys.add(key);
+			return true;
+		});
+	const isSettled =
+		sort !== null &&
+		sideMatchesReady &&
+		!sideMatchesFailed &&
+		segments.every((segment) => segment.status !== "loading" && segment.status !== "failed") &&
+		(filter === null ||
+			(currentScan.failed === null &&
+				currentScan.pages.length > 0 &&
+				currentScan.refresh === null &&
+				changedPageIndex === -1 &&
+				currentScan.pages.every((page) => page.settled) &&
+				(segments.every((segment) => segment.status !== "inactive") ||
+					mergedRows.length >= currentScan.goal ||
+					currentScan.remaining === 0 ||
+					currentScan.stopped)));
+
+	useEffect(() => {
+		if (currentScan.retrying) {
+			setScan({ ...currentScan, retrying: false });
+			return;
+		}
+		if (filter === null || sort === null || sideRows === null || currentScan.failed !== null || sideMatchesFailed)
+			return;
+		if (changedPageIndex !== -1) {
+			const page = currentScan.pages[changedPageIndex]!;
+			const response = filteredResponses[page.id] as FilesSortedChildrenPage;
+			if (!response.isDone && (!response.continueCursor || response.continueCursor === page.cursor)) {
+				setScan({ ...currentScan, failed: "reload" });
+				return;
+			}
+			// A live cursor change rebuilds only the old settled slots with their original limits.
+			setScan({
+				...currentScan,
+				pages: currentScan.pages
+					.slice(0, changedPageIndex + 1)
+					.map((entry) =>
+						entry.id === page.id
+							? { ...entry, continueCursor: response.continueCursor, isDone: response.isDone }
+							: entry,
+					),
+				refresh: [
+					...currentScan.pages
+						.slice(changedPageIndex + 1)
+						.filter((entry) => entry.settled || entry.refresh)
+						.map(({ kind, segment, workLimit }) => ({ kind, segment, workLimit })),
+					...(currentScan.refresh ?? []),
+				],
+				stopped:
+					currentScan.refresh !== null
+						? currentScan.stopped
+						: !currentScan.pages.slice(changedPageIndex + 1).some((entry) => !entry.settled && !entry.refresh),
+			});
+			return;
+		}
+		if (currentScan.pages.some((page) => page.settled && filteredResponses[page.id] instanceof Error)) {
+			setScan({ ...currentScan, failed: "reload" });
+			return;
+		}
+		// Reserve before issuing one scan. Cached renders settle that same reservation only once.
+		const unsettled = currentScan.pages.find((page) => !page.settled);
+		if (unsettled) {
+			const response: FilesSortedChildrenPage | Error | undefined = filteredResponses[unsettled.id];
+			if (response === undefined) return;
+			if (
+				response instanceof Error ||
+				!Number.isInteger(response.workCount) ||
+				response.workCount < 0 ||
+				response.workCount > unsettled.workLimit ||
+				(!response.isDone && (!response.continueCursor || response.continueCursor === unsettled.cursor))
+			) {
+				setScan({ ...currentScan, failed: unsettled.refresh ? "reload" : "retry" });
+				return;
+			}
+			setScan({
+				...currentScan,
+				remaining:
+					currentScan.remaining +
+					(!unsettled.refresh && unsettled.action === currentScan.action
+						? unsettled.workLimit - response.workCount
+						: 0),
+				pages: currentScan.pages.map((page) =>
+					page.id === unsettled.id
+						? { ...page, settled: true, continueCursor: response.continueCursor, isDone: response.isDone }
+						: page,
+				),
+			});
+			return;
+		}
+
+		if (currentScan.pages.some((page) => filteredResponses[page.id] === undefined)) return;
+
+		const open = segments.find((segment) => segment.status !== "done");
+		if (currentScan.refresh !== null) {
+			const slots = open
+				? currentScan.refresh.filter((slot) => {
+						const position = segments.findIndex(
+							(segment) => segment.kind === slot.kind && segment.segment === slot.segment,
+						);
+						return position >= segments.indexOf(open);
+					})
+				: [];
+			const slot = slots[0];
+			if (!slot || slot.kind !== open?.kind || slot.segment !== open.segment) {
+				setScan({ ...currentScan, refresh: null });
+				return;
+			}
+			const last = currentScan.pages.filter((page) => page.kind === slot.kind && page.segment === slot.segment).at(-1);
+			setScan({
+				...currentScan,
+				nextId: currentScan.nextId + 1,
+				refresh: slots.slice(1),
+				pages: [
+					...currentScan.pages,
+					{
+						...slot,
+						id: currentScan.nextId,
+						cursor: last?.continueCursor ?? null,
+						action: currentScan.action,
+						refresh: true,
+						settled: false,
+						continueCursor: null,
+						isDone: false,
+					},
+				],
+			});
+			return;
+		}
+		if (
+			!open ||
+			currentScan.stopped ||
+			currentScan.remaining === 0 ||
+			(sideRows !== undefined && mergedRows.length >= currentScan.goal)
+		)
+			return;
+		const last = currentScan.pages.filter((page) => page.kind === open.kind && page.segment === open.segment).at(-1);
+		const workLimit = Math.min(FILES_SORTED_CHILDREN_PAGE_SIZE, currentScan.remaining);
+		setScan({
+			...currentScan,
+			nextId: currentScan.nextId + 1,
+			remaining: currentScan.remaining - workLimit,
+			pages: [
+				...currentScan.pages,
+				{
+					id: currentScan.nextId,
+					kind: open.kind,
+					segment: open.segment,
+					cursor: last?.continueCursor ?? null,
+					workLimit,
+					action: currentScan.action,
+					refresh: false,
+					settled: false,
+					continueCursor: null,
+					isDone: false,
+				},
+			],
+		});
 	});
 
 	// Keep the last settled rows of this folder, to show while a new sort or a page loads. Compare by
 	// the rows and the sort, not by array identity, so storing them cannot loop the render. Compare the
 	// whole rows, so a renamed or updated row is not shown stale while the next page loads.
 	const folderScope = JSON.stringify([membershipId, folderId]);
-	const heldKey = JSON.stringify([sortScope, mergedRows]);
+	const heldKey = JSON.stringify([sortScope, mergedRows, [...sideKeys]]);
 	const [heldRows, setHeldRows] = useState<{
 		folderScope: string;
 		key: string;
 		sort: files_sort_Sort | null;
+		filter: files_table_Filter | null;
 		rows: FilesSortedChildrenRow[];
+		sideKeys: string[];
 	} | null>(null);
-	if (isSettled && heldRows?.key !== heldKey) {
-		setHeldRows({ folderScope, key: heldKey, sort, rows: mergedRows });
-	}
 	const shownHeldRows = heldRows?.folderScope === folderScope ? heldRows : null;
+	const heldRowsToShow = shownHeldRows?.rows.filter((row) => {
+		const key = `${row.target.kind}:${row.target.id}`;
+		return (
+			sideRows !== null &&
+			!refusedSideKeys.has(key) &&
+			!(sideRows !== undefined && shownHeldRows.sideKeys.includes(key) && !sideKeys.has(key)) &&
+			!(
+				row.target.kind === "saved" &&
+				!shownHeldRows.sideKeys.includes(key) &&
+				(claimedNames.has(row.name) || sideKeys.has(key))
+			)
+		);
+	});
+	if (isSettled && heldRows?.key !== heldKey) {
+		setHeldRows({ folderScope, key: heldKey, sort, filter, rows: mergedRows, sideKeys: [...sideKeys] });
+	} else if (shownHeldRows && heldRowsToShow && heldRowsToShow.length !== shownHeldRows.rows.length) {
+		// Keep known removals through Retry's query reset. A settled result can restore the row later.
+		setHeldRows({ ...shownHeldRows, key: "", rows: heldRowsToShow });
+	}
+	const requestMatches = useFn((count: number) => {
+		if (filter === null) return;
+		if (count <= 5) {
+			// Dropping an unanswered request spends its full reserved work.
+			setScan({
+				...currentScan,
+				goal: 5,
+				stopped: true,
+				pages: currentScan.pages.filter((page) => page.settled),
+				refresh: null,
+			});
+			return;
+		}
+		setScan({
+			...currentScan,
+			goal: count,
+			action: currentScan.action + 1,
+			remaining: FILES_FILTERED_CHILDREN_ACTION_WORK,
+			stopped: false,
+		});
+	});
+	const continueSearch = useFn(() => {
+		if (filter === null) return;
+		setScan({
+			...currentScan,
+			action: currentScan.action + 1,
+			remaining: FILES_FILTERED_CHILDREN_ACTION_WORK,
+			stopped: false,
+		});
+	});
+	const reload = useFn(() => {
+		if (filter === null) return;
+		setScan({
+			...currentScan,
+			action: currentScan.action + 1,
+			remaining: FILES_FILTERED_CHILDREN_ACTION_WORK,
+			goal: 5,
+			stopped: false,
+			pages: [],
+			refresh: null,
+			failed: null,
+			retrying: true,
+		});
+	});
+	const retry = useFn(() => {
+		setScan({
+			...currentScan,
+			action: currentScan.action + 1,
+			remaining: FILES_FILTERED_CHILDREN_ACTION_WORK,
+			stopped: false,
+			pages: currentScan.pages.filter((page) => page.settled),
+			refresh: null,
+			failed: null,
+			retrying: true,
+		});
+	});
 
 	// Load the first shown segment that has more rows. A hidden segment would load rows nobody sees.
 	const loadMore = useFn(() => {
+		if (filter !== null) {
+			requestMatches(Math.max(50, mergedRows.length + 50));
+			return;
+		}
 		shownSegments.find((segment) => segment.status === "more")?.loadMore();
 	});
+	const isFailed =
+		sideRows === null ||
+		sideMatchesFailed ||
+		currentScan.failed !== null ||
+		segments.some((segment) => segment.status === "failed");
+	const isDone = isSettled && segments.every((segment) => segment.status === "done") && !preparing;
+	const paused =
+		filter !== null &&
+		!isFailed &&
+		!isDone &&
+		(currentScan.remaining === 0 || (currentScan.stopped && currentScan.refresh === null)) &&
+		currentScan.pages.every((page) => page.settled) &&
+		mergedRows.length < currentScan.goal;
+	const searching =
+		filter !== null &&
+		!isFailed &&
+		!isDone &&
+		!paused &&
+		(sideRows === undefined ||
+			!sideMatchesReady ||
+			currentScan.pages.some((page) => !page.settled) ||
+			(!currentScan.stopped &&
+				mergedRows.length < currentScan.goal &&
+				segments.some((segment) => segment.status !== "done")));
+	const rows = sideRows === null ? undefined : isSettled ? mergedRows : heldRowsToShow;
 
 	return {
-		rows: isSettled ? mergedRows : shownHeldRows?.rows,
+		rows,
 		sideTargets: sideRows?.rows.map((row) => row.target) ?? [],
 		// Held rows keep their old sort keys, header arrows and table sort attributes.
 		rowsSort: isSettled ? sort : (shownHeldRows?.sort ?? null),
-		isBusy: !isSettled,
-		isDone: isSettled && segments.every((segment) => segment.status === "done"),
+		rowsFilter: isSettled ? filter : (shownHeldRows?.filter ?? null),
+		isBusy: !isFailed && (!isSettled || searching),
+		isDone,
 		// Side rows are null when this user cannot read the folder.
-		isFailed: sideRows === null || segments.some((segment) => segment.status === "failed"),
+		isFailed,
+		isFolderRefused: sideRows === null,
+		searching,
+		paused,
+		preparing,
+		refreshing: filter !== null && currentScan.refresh !== null && !isFailed,
+		filterRecovery:
+			currentScan.failed ?? (sideMatchesFailed ? (currentScan.refresh !== null ? "reload" : "retry") : null),
 		tooManyShared: sideRows?.tooManyShared ?? false,
 		tooManyPending: sideRows?.tooManyPending ?? false,
 		loadMore,
+		requestMatches,
+		continueSearch,
+		reload,
+		retry,
 	};
 }
 

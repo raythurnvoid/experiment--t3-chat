@@ -17,6 +17,7 @@ import type { Doc, Id } from "./_generated/dataModel";
 import {
 	paginationOptsValidator,
 	paginationResultValidator,
+	type PaginationOptions,
 	type PaginationResult,
 	type RegisteredMutation,
 	type RegisteredQuery,
@@ -31,6 +32,8 @@ import {
 	string_prefix_upper_bound,
 } from "../server/server-utils.ts";
 import { v, type Infer } from "convex/values";
+import { stream, type QueryStream } from "convex-helpers/server/stream";
+import { z } from "zod";
 import {
 	date_get_week_start_timestamp,
 	date_get_day_start_timestamp,
@@ -69,6 +72,11 @@ import {
 	files_sort_text_key,
 	type files_sort_Key,
 } from "../shared/files-sort.ts";
+import {
+	files_table_filter_is_valid,
+	files_table_filter_matches,
+	type files_table_Filter,
+} from "../shared/files-table.ts";
 import { path_name_of } from "../shared/paths.ts";
 import { Result, Result_all } from "common/errors-as-values-utils.ts";
 import { composite_id, should_never_happen } from "../shared/shared-utils.ts";
@@ -80,6 +88,7 @@ import app_convex_schema, {
 	files_pending_target_validator,
 	files_sort_key_validator,
 	files_sort_validator,
+	files_table_filter_validator,
 	file_content_materialization_state_validator,
 	file_content_materialization_header_validator,
 } from "./schema.ts";
@@ -162,6 +171,12 @@ const MAX_MOVE_DOCUMENT_COUNT = 2000;
 const MAX_MOVE_BYTES = 4 * 1024 * 1024;
 
 const TREE_CHILDREN_MAX_ITEMS = 200;
+
+const TABLE_FILTER_MAX_CANDIDATES = 50;
+const TABLE_FILTER_MAX_BYTES = 4 * 1024 * 1024;
+const TABLE_FILTER_BYTE_RESERVE = 1024 * 1024;
+const TABLE_FILTER_MAX_CALLS = 1000;
+const TABLE_FILTER_CALL_RESERVE = 16;
 
 /**
  * How many children one page of a metadata key's missing segment may scan.
@@ -6413,17 +6428,16 @@ const SUBTREE_FILTER_MAX_ROWS_READ = 10_000;
  *
  * A failed workspace read check does not always end the read. Somebody whose role gives no
  * workspace-wide read can still have been given one folder, and showing them that folder is the
- * whole point of sharing. Only "Permission denied" means this grant-only mode. Every other refusal,
- * such as a deleted user or a broken organization, returns `null`, so it never falls back to grants.
+ * whole point of sharing. Only "Permission denied" means this grant-only mode. Other permission
+ * refusals return `null`. Missing current-user auth throws before membership is read.
  */
 async function db_get_tree_reader(ctx: QueryCtx, args: { membershipId: Id<"organizations_workspaces_users"> }) {
-	const [userAuth, membership] = await Promise.all([
-		server_convex_get_user_fallback_to_anonymous(ctx),
-		ctx.db.get("organizations_workspaces_users", args.membershipId),
-	]);
-	if (!userAuth) {
+	const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+	const user = userAuth ? await ctx.db.get("users", userAuth.id) : null;
+	if (!userAuth || !user || (userAuth.kind === "anonymous" && user.deletedAt !== undefined)) {
 		throw convex_error({ message: "Unauthenticated" });
 	}
+	const membership = await ctx.db.get("organizations_workspaces_users", args.membershipId);
 	if (!membership || membership.userId !== userAuth.id || membership.active === false) {
 		return null;
 	}
@@ -6575,9 +6589,10 @@ async function db_get_tree_rows(
 		userAuth: { id: Id<"users"> };
 		membership: Doc<"organizations_workspaces_users">;
 		fileNodes: Doc<"files_nodes">[];
+		canWriteContentByScope?: Map<Id<"files_nodes"> | null, Promise<boolean>>;
 	},
 ) {
-	const canWriteContentByScope = new Map<Id<"files_nodes"> | null, Promise<boolean>>();
+	const canWriteContentByScope = args.canWriteContentByScope ?? new Map<Id<"files_nodes"> | null, Promise<boolean>>();
 	return await Promise.all(
 		args.fileNodes.map(async (fileNode) => {
 			if (fileNode.createdBy === users_SYSTEM_AUTHOR || fileNode.updatedBy === users_SYSTEM_AUTHOR) {
@@ -6763,6 +6778,510 @@ export const list_tree_children = query({
 	},
 });
 
+const table_cursor_schema = z.object({
+	scope: z.string().max(8192),
+	// A raw Name suffix follows the stored document size limit.
+	after: z.array(z.union([z.string().max(TABLE_FILTER_BYTE_RESERVE), z.number().finite(), z.null()])).max(5),
+});
+
+function count_table_doc(budget: { readBytes: number }, value: object | null) {
+	if (value) budget.readBytes += files_get_utf8_byte_size(JSON.stringify(value)) + 128;
+}
+
+async function fits_table_read_budget(ctx: QueryCtx, budget: { readBytes: number }, reserve = false) {
+	// Metrics include joins and access reads that stream bandwidth does not count.
+	const metrics = await ctx.meta.getTransactionMetrics();
+	const bytes = reserve ? TABLE_FILTER_BYTE_RESERVE : 0;
+	const calls = reserve ? TABLE_FILTER_CALL_RESERVE : 0;
+	return (
+		Math.max(budget.readBytes, metrics.bytesRead.used) + bytes <= TABLE_FILTER_MAX_BYTES &&
+		metrics.bytesRead.remaining >= bytes &&
+		metrics.databaseQueries.used + calls <= TABLE_FILTER_MAX_CALLS &&
+		metrics.databaseQueries.remaining >= calls
+	);
+}
+
+function check_table_node(node: Doc<"files_nodes">) {
+	if (node.isRestrictedScopeRoot || node.restrictedScopeNodeId === node._id) {
+		const errorMessage = "Stale restricted scope root flag in the folder table";
+		const errorData = { nodeId: node._id };
+		console.error(errorMessage, errorData);
+		throw should_never_happen(errorMessage, errorData);
+	}
+}
+
+function check_table_filter_field(metadataDoc: Doc<"files_metadata_docs">, entry: files_VisibleEntry) {
+	const valid =
+		metadataDoc.organizationId === entry.node.organizationId &&
+		metadataDoc.workspaceId === entry.node.workspaceId &&
+		metadataDoc.archiveOperationId === undefined &&
+		(entry.kind === "saved"
+			? metadataDoc.sourceKind === "committed" && metadataDoc.fileNodeId === entry.node._id
+			: metadataDoc.sourceKind === "pending" &&
+				metadataDoc.target.kind === "private" &&
+				metadataDoc.target.id === entry.node._id &&
+				metadataDoc.userId === entry.node.userId &&
+				metadataDoc.pendingUpdateId === entry.pendingUpdate._id &&
+				metadataDoc.proposalRevision === entry.pendingUpdate.revision);
+	if (!valid) {
+		const errorMessage = "metadataDoc source is mismatched";
+		const errorData = { metadataDocId: metadataDoc._id, targetId: entry.node._id };
+		console.error(errorMessage, errorData);
+		throw should_never_happen(errorMessage, errorData);
+	}
+}
+
+async function db_get_table_field_node(
+	ctx: QueryCtx,
+	args: {
+		fieldDoc: Doc<"files_metadata_docs">;
+		membership: Doc<"organizations_workspaces_users">;
+		parentId: Id<"files_nodes"> | "root";
+		kind: "file" | "folder";
+		budget: { readBytes: number };
+	},
+) {
+	if (!(await fits_table_read_budget(ctx, args.budget, true))) return undefined;
+	const fieldDoc = args.fieldDoc;
+	const node = fieldDoc.sourceKind === "committed" ? await ctx.db.get("files_nodes", fieldDoc.fileNodeId) : null;
+	count_table_doc(args.budget, node);
+	if (
+		!node ||
+		fieldDoc.sourceKind !== "committed" ||
+		node.organizationId !== args.membership.organizationId ||
+		node.workspaceId !== args.membership.workspaceId ||
+		node.parentId !== args.parentId ||
+		node.kind !== args.kind ||
+		node.archiveOperationId !== null ||
+		fieldDoc.sortName !== node.sortName ||
+		fieldDoc.name !== node.name
+	) {
+		const errorMessage = "fieldDoc.fileNodeId points to a mismatched files_nodes doc";
+		const errorData = { fieldDocId: fieldDoc._id };
+		console.error(errorMessage, errorData);
+		throw should_never_happen(errorMessage, errorData);
+	}
+	check_table_node(node);
+	if (!(await fits_table_read_budget(ctx, args.budget))) return undefined;
+	return node;
+}
+
+async function db_get_table_filter_scalar(
+	ctx: QueryCtx,
+	args: {
+		entry: files_VisibleEntry;
+		field: string;
+		budget: { readBytes: number };
+		fieldDoc?: Doc<"files_metadata_docs"> | null;
+	},
+) {
+	const entry = args.entry;
+	if (entry.kind === "saved") {
+		if (args.fieldDoc === undefined && !(await fits_table_read_budget(ctx, args.budget, true))) return undefined;
+		const fieldDoc =
+			args.fieldDoc !== undefined
+				? args.fieldDoc
+				: await ctx.db
+						.query("files_metadata_docs")
+						.withIndex("by_organization_workspace_source_fileNode_fieldPath", (q) =>
+							q
+								.eq("organizationId", entry.node.organizationId)
+								.eq("workspaceId", entry.node.workspaceId)
+								.eq("sourceKind", "committed")
+								.eq("fileNodeId", entry.node._id)
+								.eq("fieldPath", args.field),
+						)
+						.filter((q) => q.eq(q.field("docKind"), "field"))
+						.first();
+		if (args.fieldDoc === undefined) count_table_doc(args.budget, fieldDoc);
+		if (fieldDoc) check_table_filter_field(fieldDoc, entry);
+		if (!(await fits_table_read_budget(ctx, args.budget))) return undefined;
+		return fieldDoc?.sourceKind === "committed" ? (fieldDoc.sortDisplayValue ?? null) : null;
+	}
+
+	const iterator = ctx.db
+		.query("files_metadata_docs")
+		.withIndex("by_pendingUpdate_fieldPath", (q) =>
+			q.eq("pendingUpdateId", entry.pendingUpdate._id).eq("fieldPath", args.field),
+		)
+		[Symbol.asyncIterator]();
+	try {
+		while (true) {
+			if (!(await fits_table_read_budget(ctx, args.budget, true))) return undefined;
+			const next = await iterator.next();
+			if (next.done) return null;
+			count_table_doc(args.budget, next.value);
+			check_table_filter_field(next.value, entry);
+			if (!(await fits_table_read_budget(ctx, args.budget))) return undefined;
+			if (next.value.docKind !== "value" || next.value.valueKind === "maybe_date") continue;
+			return next.value.stringValue ?? next.value.numberValue ?? next.value.booleanValue ?? null;
+		}
+	} finally {
+		await iterator.return?.();
+	}
+}
+
+async function db_list_custom_table_children(
+	ctx: QueryCtx,
+	args: {
+		reader: NonNullable<Awaited<ReturnType<typeof db_get_tree_reader>>>;
+		membershipId: Id<"organizations_workspaces_users">;
+		parentId: Id<"files_nodes"> | "root";
+		kind: "file" | "folder";
+		sort: { field: string; direction: "asc" | "desc" };
+		filter: files_table_Filter | null;
+		workLimit: number;
+		segment: "value" | "missing";
+		paginationOpts: PaginationOptions;
+	},
+) {
+	const refused = { page: [], isDone: true, continueCursor: "", scanBoundary: null, scannedCount: 0, workCount: 0 };
+	const { userAuth, membership } = args.reader;
+	const field = args.sort.field;
+	const byName = field === "name" || (field === "size" && args.kind === "folder");
+	if (args.segment === "missing" && (byName || field === "created" || field === "updated")) return refused;
+	const metadata = !["name", "created", "updated", "type", "size"].includes(field);
+	const metadataMissing = metadata && args.segment === "missing";
+	const direction =
+		args.segment === "missing" || (field === "size" && args.kind === "folder") ? "asc" : args.sort.direction;
+	const scope = JSON.stringify([
+		args.membershipId,
+		args.parentId,
+		args.kind,
+		args.segment,
+		field,
+		args.sort.direction,
+		args.filter === null
+			? null
+			: [
+					args.filter.kind,
+					args.filter.field,
+					args.filter.op,
+					"value" in args.filter ? args.filter.value : null,
+					"start" in args.filter ? args.filter.start : null,
+					"end" in args.filter ? args.filter.end : null,
+				],
+	]);
+	let after: Array<string | number | null> | null = null;
+	if (args.paginationOpts.cursor) {
+		let parsed;
+		try {
+			parsed = table_cursor_schema.safeParse(JSON.parse(args.paginationOpts.cursor));
+		} catch {
+			return refused;
+		}
+		if (!parsed.success || parsed.data.scope !== scope) return refused;
+		after = parsed.data.after;
+		const nameSuffix = byName || args.segment === "missing";
+		const count = nameSuffix ? 4 : field === "created" ? 2 : 5;
+		const idTable = metadata && !metadataMissing ? "files_metadata_docs" : "files_nodes";
+		if (
+			after.length !== count ||
+			typeof after.at(-1) !== "string" ||
+			!ctx.db.normalizeId(idTable, String(after.at(-1))) ||
+			typeof after.at(-2) !== "number" ||
+			(nameSuffix && (typeof after[0] !== "string" || typeof after[1] !== "string")) ||
+			(!nameSuffix &&
+				field !== "created" &&
+				(typeof after[1] !== "string" ||
+					typeof after[2] !== "string" ||
+					(field === "updated" || field === "size" ? typeof after[0] !== "number" : typeof after[0] !== "string")))
+		)
+			return refused;
+	}
+
+	const nodes = stream(ctx.db, app_convex_schema).query("files_nodes");
+	let primary: QueryStream<Doc<"files_nodes">> | QueryStream<Doc<"files_metadata_docs">>;
+	if (byName || metadataMissing) {
+		primary = nodes
+			.withIndex("by_org_ws_parent_archive_restricted_kind_sortName_name", (q) =>
+				q
+					.eq("organizationId", membership.organizationId)
+					.eq("workspaceId", membership.workspaceId)
+					.eq("parentId", args.parentId)
+					.eq("archiveOperationId", null)
+					.eq("isRestrictedScopeRoot", false)
+					.eq("kind", args.kind),
+			)
+			.order(direction);
+	} else if (field === "created") {
+		primary = nodes
+			.withIndex("by_org_ws_parent_archive_restricted_kind", (q) =>
+				q
+					.eq("organizationId", membership.organizationId)
+					.eq("workspaceId", membership.workspaceId)
+					.eq("parentId", args.parentId)
+					.eq("archiveOperationId", null)
+					.eq("isRestrictedScopeRoot", false)
+					.eq("kind", args.kind),
+			)
+			.order(direction);
+	} else if (field === "updated") {
+		primary = nodes
+			.withIndex("by_org_ws_parent_archive_restricted_kind_updatedAt_name", (q) =>
+				q
+					.eq("organizationId", membership.organizationId)
+					.eq("workspaceId", membership.workspaceId)
+					.eq("parentId", args.parentId)
+					.eq("archiveOperationId", null)
+					.eq("isRestrictedScopeRoot", false)
+					.eq("kind", args.kind),
+			)
+			.order(direction);
+	} else if (field === "type") {
+		primary = nodes
+			.withIndex("by_org_ws_parent_archive_restricted_kind_ext_sortName_name", (q) => {
+				const range = q
+					.eq("organizationId", membership.organizationId)
+					.eq("workspaceId", membership.workspaceId)
+					.eq("parentId", args.parentId)
+					.eq("archiveOperationId", null)
+					.eq("isRestrictedScopeRoot", false)
+					.eq("kind", args.kind);
+				return args.segment === "value" ? range.gt("lowercaseExtension", null) : range.eq("lowercaseExtension", null);
+			})
+			.order(direction);
+	} else if (field === "size") {
+		primary = nodes
+			.withIndex("by_org_ws_parent_archive_restricted_kind_size_sortName_name", (q) => {
+				const range = q
+					.eq("organizationId", membership.organizationId)
+					.eq("workspaceId", membership.workspaceId)
+					.eq("parentId", args.parentId)
+					.eq("archiveOperationId", null)
+					.eq("isRestrictedScopeRoot", false)
+					.eq("kind", args.kind);
+				return args.segment === "value" ? range.gt("contentByteSize", null) : range.eq("contentByteSize", null);
+			})
+			.order(direction);
+	} else {
+		primary = stream(ctx.db, app_convex_schema)
+			.query("files_metadata_docs")
+			.withIndex("by_org_ws_source_archive_docKind_field_parent_restricted_sort", (q) =>
+				q
+					.eq("organizationId", membership.organizationId)
+					.eq("workspaceId", membership.workspaceId)
+					.eq("sourceKind", "committed")
+					.eq("archiveOperationId", undefined)
+					.eq("docKind", "field")
+					.eq("fieldPath", field)
+					.eq("parentId", args.parentId)
+					.eq("isRestrictedScopeRoot", false)
+					.eq("nodeKind", args.kind)
+					.gte("sortValue", ""),
+			)
+			.order(direction);
+	}
+	const prefix = primary.getEqualityIndexFilter();
+	if (after)
+		primary = primary.narrow({
+			lowerBound: direction === "asc" ? [...prefix, ...after] : [],
+			lowerBoundInclusive: direction !== "asc",
+			upperBound: direction === "desc" ? [...prefix, ...after] : [],
+			upperBoundInclusive: direction !== "desc",
+		});
+	let fields: QueryStream<Doc<"files_metadata_docs">> | null = metadataMissing
+		? stream(ctx.db, app_convex_schema)
+				.query("files_metadata_docs")
+				.withIndex("by_org_ws_source_archive_docKind_field_parent_restricted_name", (q) =>
+					q
+						.eq("organizationId", membership.organizationId)
+						.eq("workspaceId", membership.workspaceId)
+						.eq("sourceKind", "committed")
+						.eq("archiveOperationId", undefined)
+						.eq("docKind", "field")
+						.eq("fieldPath", field)
+						.eq("parentId", args.parentId)
+						.eq("isRestrictedScopeRoot", false)
+						.eq("nodeKind", args.kind),
+				)
+				.order("asc")
+		: null;
+	if (fields && after)
+		fields = fields.narrow({
+			lowerBound: [...fields.getEqualityIndexFilter(), after[0]!, after[1]!],
+			lowerBoundInclusive: false,
+			upperBound: [],
+			upperBoundInclusive: true,
+		});
+	const iterator = primary.iterWithKeys(true)[Symbol.asyncIterator]();
+	const fieldIterator = fields?.iterWithKeys(true)[Symbol.asyncIterator]();
+	let fieldDoc: Extract<Doc<"files_metadata_docs">, { sourceKind: "committed" }> | null = null;
+	let fieldsDone = false;
+	const budget = { readBytes: 0 };
+	const maxWork = Math.min(
+		args.workLimit,
+		args.filter ? TABLE_FILTER_MAX_CANDIDATES : TREE_CHILDREN_SORT_MISSING_MAX_SCAN,
+	);
+	const maxRows = Math.min(
+		args.paginationOpts.numItems,
+		args.filter ? TABLE_FILTER_MAX_CANDIDATES : TREE_CHILDREN_MAX_ITEMS,
+	);
+	let workCount = 0;
+	let scannedCount = 0;
+	let scanBoundary: files_sort_Key | null = null;
+	let last = after;
+	let isDone = false;
+	const page: Array<Awaited<ReturnType<typeof db_get_tree_rows>>[number] & { sortKey: files_sort_Key }> = [];
+	const canWriteContentByScope = new Map<Id<"files_nodes"> | null, Promise<boolean>>();
+	let visibleReader: Awaited<ReturnType<typeof files_visible_db_create_reader>> | undefined;
+	let folderPath: string | undefined;
+
+	while (workCount < maxWork && page.length < maxRows) {
+		if (!(await fits_table_read_budget(ctx, budget, true))) break;
+		workCount++;
+		const next = await iterator.next();
+		if (next.done) {
+			isDone = true;
+			break;
+		}
+		const [raw, indexKey, bytes] = next.value;
+		budget.readBytes += bytes;
+		let primaryField: Extract<Doc<"files_metadata_docs">, { sourceKind: "committed" }> | null = null;
+		let node: Doc<"files_nodes">;
+		if (metadata && !metadataMissing) {
+			const candidate = raw as Doc<"files_metadata_docs">;
+			if (candidate.sourceKind !== "committed") throw should_never_happen("Table primary field is not committed");
+			primaryField = candidate;
+			const linked = await db_get_table_field_node(ctx, {
+				fieldDoc: primaryField,
+				membership,
+				parentId: args.parentId,
+				kind: args.kind,
+				budget,
+			});
+			if (!linked) break;
+			node = linked;
+		} else node = raw as Doc<"files_nodes">;
+		check_table_node(node);
+		const by_name: files_sort_Key = [node.sortName, node.name];
+		let eligible = true;
+		if (fieldIterator) {
+			while (
+				!fieldsDone &&
+				(!fieldDoc || files_sort_compare([fieldDoc.sortName!, fieldDoc.name!], by_name, "asc") < 0)
+			) {
+				if (workCount >= maxWork || !(await fits_table_read_budget(ctx, budget, true))) break;
+				workCount++;
+				const nextField = await fieldIterator.next();
+				if (nextField.done) {
+					fieldsDone = true;
+					fieldDoc = null;
+				} else {
+					budget.readBytes += nextField.value[2];
+					const witness = nextField.value[0];
+					if (witness?.sourceKind !== "committed" || witness.sortName === undefined || witness.name === undefined) {
+						throw should_never_happen("Missing table field witness has no saved Name key");
+					}
+					// A proof witness must share the same readable partition as the raw node.
+					const witnessNode = await db_get_table_field_node(ctx, {
+						fieldDoc: witness,
+						membership,
+						parentId: args.parentId,
+						kind: args.kind,
+						budget,
+					});
+					if (!witnessNode) break;
+					fieldDoc = witness;
+				}
+			}
+			if (!fieldsDone && (!fieldDoc || files_sort_compare([fieldDoc.sortName!, fieldDoc.name!], by_name, "asc") < 0))
+				break;
+			primaryField = fieldDoc?.fileNodeId === node._id ? fieldDoc : null;
+			eligible = primaryField?.sortValue === undefined;
+		}
+		if (!(await fits_table_read_budget(ctx, budget, true))) break;
+		const pendingUpdate = await ctx.db
+			.query("files_pending_updates")
+			.withIndex("by_user_target", (q) =>
+				q.eq("userId", userAuth.id).eq("target.kind", "saved").eq("target.id", node._id),
+			)
+			.unique();
+		count_table_doc(budget, pendingUpdate);
+		if (pendingUpdate?.pendingArchive || pendingUpdate?.pendingMove) {
+			if (!(await fits_table_read_budget(ctx, budget, true))) break;
+			if (!visibleReader) {
+				visibleReader = await files_visible_db_create_reader(ctx, {
+					organizationId: membership.organizationId,
+					workspaceId: membership.workspaceId,
+					userId: userAuth.id,
+				});
+				folderPath =
+					args.parentId === files_ROOT_ID
+						? ""
+						: (await visibleReader.resolveTarget({ kind: "saved", id: args.parentId }))?.path;
+			}
+			const entry = await visibleReader.resolveTarget({ kind: "saved", id: node._id });
+			if (visibleReader.exhausted) throw convex_error({ message: "Table filter exceeded its read limit." });
+			eligible &&= folderPath !== undefined && entry?.path === `${folderPath}/${node.name}`;
+		}
+		const entry: files_VisibleEntry = { kind: "saved", node, pendingUpdate, path: node.path };
+		if (primaryField) check_table_filter_field(primaryField, entry);
+		let scalar: string | number | boolean | null = null;
+		if (eligible && args.filter?.kind === "text") {
+			const value = await db_get_table_filter_scalar(ctx, {
+				entry,
+				field: args.filter.field,
+				budget,
+				...(args.filter.field === field ? { fieldDoc: primaryField } : {}),
+			});
+			if (value === undefined) break;
+			scalar = value;
+		}
+		const matches =
+			eligible &&
+			(args.filter === null ||
+				files_table_filter_matches(
+					args.filter,
+					{
+						name: node.name,
+						createdAt: node._creationTime,
+						updatedAt: node.updatedAt,
+						type: files_lowercase_extension(node.name, node.kind),
+						contentByteSize: node.kind === "folder" ? null : node.contentByteSize,
+					},
+					scalar,
+				));
+		const sortKey: files_sort_Key =
+			byName || args.segment === "missing"
+				? by_name
+				: field === "created"
+					? [node._creationTime]
+					: field === "updated"
+						? [node.updatedAt, ...by_name]
+						: field === "type"
+							? [node.lowercaseExtension, ...by_name]
+							: field === "size"
+								? [node.contentByteSize, ...by_name]
+								: [primaryField!.sortValue ?? null, ...by_name];
+		let treeRow: Awaited<ReturnType<typeof db_get_tree_rows>>[number] | undefined;
+		if (matches) {
+			if (!(await fits_table_read_budget(ctx, budget, true))) break;
+			[treeRow] = await db_get_tree_rows(ctx, { userAuth, membership, fileNodes: [node], canWriteContentByScope });
+		}
+		if (!(await fits_table_read_budget(ctx, budget))) break;
+		// Commit only a complete candidate. A stopped join is reread on the next page.
+		last = indexKey.slice(prefix.length) as Array<string | number | null>;
+		scanBoundary = sortKey;
+		scannedCount++;
+		if (treeRow)
+			page.push({
+				...treeRow,
+				contentType: pendingUpdate?.pendingReplacement?.contentType ?? node.contentType,
+				sortKey,
+			});
+	}
+	if (!isDone && scannedCount === 0) throw convex_error({ message: "Table filter exceeded its work limit." });
+	return {
+		page,
+		isDone,
+		continueCursor: last ? JSON.stringify({ scope, after: last }) : "",
+		scanBoundary,
+		scannedCount,
+		workCount,
+	};
+}
+
 /**
  * One page of one segment of one folder's children, of one kind, for the folder table.
  *
@@ -6781,27 +7300,43 @@ export const list_tree_children_sorted = query({
 		parentId: doc(app_convex_schema, "files_nodes").fields.parentId,
 		kind: doc(app_convex_schema, "files_nodes").fields.kind,
 		sort: files_sort_validator,
+		filter: v.union(files_table_filter_validator, v.null()),
+		workLimit: v.number(),
 		segment: v.union(v.literal("value"), v.literal("missing")),
 		paginationOpts: paginationOptsValidator,
 	},
-	returns: paginationResultValidator(
-		v.object({
-			...files_node_public_doc_fields,
-			// These four fields cannot contain reserved `GLOBAL` or `SYSTEM` values in the visible tree.
-			organizationId: v.id("organizations"),
-			workspaceId: v.id("organizations_workspaces"),
-			createdBy: v.id("users"),
-			updatedBy: v.id("users"),
-			/**
-			 * The row's index tuple after the fields every row of its segment shares. Compare two keys
-			 * with `files_sort_compare`.
-			 */
-			sortKey: files_sort_key_validator,
-		}),
-	),
-	handler: async (ctx, args) => {
+	returns: v.object({
+		...paginationResultValidator(
+			v.object({
+				...files_node_public_doc_fields,
+				// These four fields cannot contain reserved `GLOBAL` or `SYSTEM` values in the visible tree.
+				organizationId: v.id("organizations"),
+				workspaceId: v.id("organizations_workspaces"),
+				createdBy: v.id("users"),
+				updatedBy: v.id("users"),
+				/**
+				 * The row's index tuple after the fields every row of its segment shares. Compare two keys
+				 * with `files_sort_compare`.
+				 */
+				sortKey: files_sort_key_validator,
+			}),
+		).fields,
+		scanBoundary: v.union(files_sort_key_validator, v.null()),
+		scannedCount: v.number(),
+		workCount: v.number(),
+	}),
+	handler: async (
+		ctx,
+		args,
+	): Promise<
+		PaginationResult<Awaited<ReturnType<typeof db_get_tree_rows>>[number] & { sortKey: files_sort_Key }> & {
+			scanBoundary: files_sort_Key | null;
+			scannedCount: number;
+			workCount: number;
+		}
+	> => {
 		// Every refusal gives this one answer, like `list_tree_children`.
-		const refused: PaginationResult<never> = { page: [], isDone: true, continueCursor: "" };
+		const refused = { page: [], isDone: true, continueCursor: "", scanBoundary: null, scannedCount: 0, workCount: 0 };
 
 		const reader = await db_get_tree_reader(ctx, { membershipId: args.membershipId });
 		if (!reader) {
@@ -6821,6 +7356,22 @@ export const list_tree_children_sorted = query({
 		if (!files_sort_field_is_valid(args.sort.field)) {
 			return refused;
 		}
+		if (
+			!Number.isInteger(args.workLimit) ||
+			args.workLimit < 1 ||
+			args.workLimit > 1000 ||
+			!Number.isInteger(args.paginationOpts.numItems) ||
+			args.paginationOpts.numItems < 1 ||
+			(args.filter !== null && !files_table_filter_is_valid(args.filter))
+		)
+			throw convex_error({ message: "Invalid table filter or page limit." });
+
+		if (
+			args.filter !== null ||
+			(!["name", "created", "updated", "type", "size"].includes(args.sort.field) && args.segment === "missing")
+		) {
+			return await db_list_custom_table_children(ctx, { ...args, reader });
+		}
 
 		const paginationOpts = {
 			...args.paginationOpts,
@@ -6839,10 +7390,19 @@ export const list_tree_children_sorted = query({
 		) => ({
 			...result,
 			page: result.page.map((node): SortedRow => ({ node, sortKey: sortKey(node) })),
+			scanBoundary: result.page.length > 0 ? sortKey(result.page.at(-1)!) : null,
+			scannedCount: result.page.length,
+			workCount: 0,
 		});
 		const by_name = (node: Doc<"files_nodes">) => [node.sortName, node.name];
 
-		const segment = await (async (/* iife */): Promise<PaginationResult<SortedRow>> => {
+		const segment = await (async (/* iife */): Promise<
+			PaginationResult<SortedRow> & {
+				scanBoundary: files_sort_Key | null;
+				scannedCount: number;
+				workCount: number;
+			}
+		> => {
 			// Name has no missing value. Folders have no size, so they sort by name.
 			if (field === "name" || (field === "size" && args.kind === "folder")) {
 				if (args.segment === "missing") {
@@ -7012,145 +7572,40 @@ export const list_tree_children_sorted = query({
 					.order(direction)
 					.paginate({ ...paginationOpts, maximumBytesRead: 4 * 1024 * 1024 });
 
+				const page = await Promise.all(
+					result.page.map(async (fieldDoc): Promise<SortedRow> => {
+						const node =
+							fieldDoc.sourceKind === "committed" ? await ctx.db.get("files_nodes", fieldDoc.fileNodeId) : null;
+						if (!node || fieldDoc.sourceKind !== "committed") {
+							const errorMessage = "fieldDoc.fileNodeId points to a missing files_nodes doc";
+							const errorData = { fieldDocId: fieldDoc._id };
+							console.error(errorMessage, errorData);
+							throw should_never_happen(errorMessage, errorData);
+						}
+
+						return {
+							node,
+							sortKey: [fieldDoc.sortValue ?? null, node.sortName, node.name],
+						};
+					}),
+				);
 				return {
 					...result,
-					page: await Promise.all(
-						result.page.map(async (fieldDoc): Promise<SortedRow> => {
-							const node =
-								fieldDoc.sourceKind === "committed" ? await ctx.db.get("files_nodes", fieldDoc.fileNodeId) : null;
-							if (!node || fieldDoc.sourceKind !== "committed") {
-								const errorMessage = "fieldDoc.fileNodeId points to a missing files_nodes doc";
-								const errorData = { fieldDocId: fieldDoc._id };
-								console.error(errorMessage, errorData);
-								throw should_never_happen(errorMessage, errorData);
-							}
-
-							return {
-								node,
-								sortKey: [fieldDoc.sortValue ?? null, node.sortName, node.name],
-							};
-						}),
-					),
+					page,
+					scanBoundary: page.at(-1)?.sortKey ?? null,
+					scannedCount: result.page.length,
+					workCount: 0,
 				};
 			}
 
-			// The missing segment of a metadata key. No index lists the children that lack a key, so walk
-			// the children and the key's field docs in the same name order, and keep each child that has
-			// no field doc with a value. Iterators keep this at two range reads per page.
-			let after: { sortName: string; name: string } | null = null;
-			if (paginationOpts.cursor) {
-				const parsed: unknown = JSON.parse(paginationOpts.cursor);
-				if (
-					typeof parsed !== "object" ||
-					parsed === null ||
-					!("sortName" in parsed) ||
-					typeof parsed.sortName !== "string" ||
-					!("name" in parsed) ||
-					typeof parsed.name !== "string"
-				) {
-					return refused;
-				}
-				after = { sortName: parsed.sortName, name: parsed.name };
-			}
-
-			// Resume after the last scanned child with two ranges: the rest of its sort name, then every later
-			// sort name. This follows the index order exactly, with no string compare in JavaScript.
-			const ranges = after ? (["same", "later"] as const) : (["all"] as const);
-			const child_nodes = async function* () {
-				for (const range of ranges) {
-					yield* ctx.db
-						.query("files_nodes")
-						.withIndex("by_org_ws_parent_archive_restricted_kind_sortName_name", (q) => {
-							const kindRange = q
-								.eq("organizationId", membership.organizationId)
-								.eq("workspaceId", membership.workspaceId)
-								.eq("parentId", args.parentId)
-								.eq("archiveOperationId", null)
-								.eq("isRestrictedScopeRoot", false)
-								.eq("kind", args.kind);
-							return !after || range === "all"
-								? kindRange
-								: range === "same"
-									? kindRange.eq("sortName", after.sortName).gt("name", after.name)
-									: kindRange.gt("sortName", after.sortName);
-						});
-				}
-			};
-			const child_field_docs = async function* () {
-				for (const range of ranges) {
-					for await (const fieldDoc of ctx.db
-						.query("files_metadata_docs")
-						.withIndex("by_org_ws_source_archive_docKind_field_parent_restricted_name", (q) => {
-							const kindRange = q
-								.eq("organizationId", membership.organizationId)
-								.eq("workspaceId", membership.workspaceId)
-								.eq("sourceKind", "committed")
-								.eq("archiveOperationId", undefined)
-								.eq("docKind", "field")
-								.eq("fieldPath", field)
-								.eq("parentId", args.parentId)
-								.eq("isRestrictedScopeRoot", false)
-								.eq("nodeKind", args.kind);
-							return !after || range === "all"
-								? kindRange
-								: range === "same"
-									? kindRange.eq("sortName", after.sortName).gt("name", after.name)
-									: kindRange.gt("sortName", after.sortName);
-						})) {
-						if (fieldDoc.sourceKind === "committed") {
-							yield fieldDoc;
-						}
-					}
-				}
-			};
-
-			const page: SortedRow[] = [];
-			let last = after;
-			let scanCount = 0;
-			let isDone = true;
-			const fieldDocs = child_field_docs();
-			let fieldDoc = await fieldDocs.next();
-			try {
-				for await (const node of child_nodes()) {
-					scanCount++;
-					last = { sortName: node.sortName, name: node.name };
-
-					// Committed field docs always carry their node's sort fields.
-					while (
-						!fieldDoc.done &&
-						files_sort_compare([fieldDoc.value.sortName!, fieldDoc.value.name!], by_name(node), "asc") < 0
-					) {
-						fieldDoc = await fieldDocs.next();
-					}
-					if (fieldDoc.done || fieldDoc.value.fileNodeId !== node._id || fieldDoc.value.sortValue === undefined) {
-						page.push({ node, sortKey: by_name(node) });
-					}
-
-					if (page.length >= paginationOpts.numItems || scanCount >= TREE_CHILDREN_SORT_MISSING_MAX_SCAN) {
-						isDone = false;
-						break;
-					}
-				}
-			} finally {
-				await fieldDocs.return(undefined);
-			}
-
-			// This cursor is not pinned like a native one. The client reloads later pages when an earlier
-			// page's cursor changes. It is safe to send, because every scanned child is readable.
-			return { page, isDone, continueCursor: last ? JSON.stringify(last) : "" };
+			return refused;
 		})();
 
 		// Find the rows this user moved or deleted in a pending change. No index finds those by source
 		// folder, so check each row. Only the caller's own changes can make a page short.
 		const checkedRows = await Promise.all(
 			segment.page.map(async (row) => {
-				// The partition trusts the stored flag. A stale flag would show a hidden row, so fail loudly.
-				if (row.node.isRestrictedScopeRoot || row.node.restrictedScopeNodeId === row.node._id) {
-					const errorMessage = "Stale restricted scope root flag in the folder table";
-					const errorData = { nodeId: row.node._id };
-					console.error(errorMessage, errorData);
-					throw should_never_happen(errorMessage, errorData);
-				}
+				check_table_node(row.node);
 
 				const pendingUpdate = await ctx.db
 					.query("files_pending_updates")
@@ -7571,6 +8026,92 @@ export const list_tree_children_sort_side_rows = query({
 			nameClaims: [...nameClaims],
 			tooManyShared,
 			tooManyPending,
+		};
+	},
+});
+
+export const get_table_filter_match = query({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		parentId: doc(app_convex_schema, "files_nodes").fields.parentId,
+		target: files_pending_target_validator,
+		filter: files_table_filter_validator,
+	},
+	returns: v.union(v.object({ matches: v.boolean(), preparing: v.boolean() }), v.null()),
+	handler: async (ctx, args) => {
+		const reader = await db_get_tree_reader(ctx, { membershipId: args.membershipId });
+		if (!reader) return null;
+		if (!files_table_filter_is_valid(args.filter)) throw convex_error({ message: "Invalid table filter." });
+		if (args.parentId !== files_ROOT_ID && !(await db_get_readable_tree_node(ctx, { reader, nodeId: args.parentId })))
+			return null;
+		const { membership, userAuth } = reader;
+		const budget = { readBytes: 0 };
+		if (!(await fits_table_read_budget(ctx, budget, true)))
+			throw convex_error({ message: "Table filter exceeded its work limit." });
+		const visibleReader = await files_visible_db_create_reader(ctx, {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			userId: userAuth.id,
+		});
+		const folder =
+			args.parentId === files_ROOT_ID ? null : await visibleReader.resolveTarget({ kind: "saved", id: args.parentId });
+		if (visibleReader.exhausted) throw convex_error({ message: "Table filter exceeded its read limit." });
+		if (!(await fits_table_read_budget(ctx, budget, true)))
+			throw convex_error({ message: "Table filter exceeded its work limit." });
+		if (args.parentId !== files_ROOT_ID && (!folder || folder.node.kind !== "folder")) return null;
+		const entry = await visibleReader.resolveTarget(args.target);
+		if (visibleReader.exhausted) throw convex_error({ message: "Table filter exceeded its read limit." });
+		if (!(await fits_table_read_budget(ctx, budget, true)))
+			throw convex_error({ message: "Table filter exceeded its work limit." });
+		if (!entry || entry.path.slice(0, entry.path.lastIndexOf("/")) !== (folder?.path ?? "")) return null;
+		if (
+			entry.kind === "private" &&
+			(entry.pendingUpdate.organizationId !== membership.organizationId ||
+				entry.pendingUpdate.workspaceId !== membership.workspaceId ||
+				entry.pendingUpdate.userId !== userAuth.id ||
+				entry.pendingUpdate.target.kind !== "private" ||
+				entry.pendingUpdate.target.id !== entry.node._id)
+		) {
+			const errorMessage = "private metadata proposal is mismatched";
+			const errorData = { target: args.target, pendingUpdateId: entry.pendingUpdate._id };
+			console.error(errorMessage, errorData);
+			throw should_never_happen(errorMessage, errorData);
+		}
+		let scalar: string | number | boolean | null = null;
+		if (args.filter.kind === "text") {
+			if (
+				entry.kind === "private" &&
+				(entry.pendingUpdate.preparation !== undefined ||
+					entry.pendingUpdate.createIntent === undefined ||
+					(entry.pendingUpdate.createIntent.kind === "text" && entry.pendingUpdate.content?.base.kind !== "new"))
+			)
+				return { matches: false, preparing: true };
+			const value = await db_get_table_filter_scalar(ctx, { entry, field: args.filter.field, budget });
+			if (value === undefined) throw convex_error({ message: "Table filter exceeded its work limit." });
+			scalar = value;
+		}
+		if (!(await fits_table_read_budget(ctx, budget)))
+			throw convex_error({ message: "Table filter exceeded its work limit." });
+		const name = path_name_of(entry.path);
+		const size =
+			entry.kind === "saved"
+				? entry.node.contentByteSize
+				: entry.pendingUpdate.createIntent?.kind === "stored"
+					? entry.pendingUpdate.createIntent.size
+					: null;
+		return {
+			matches: files_table_filter_matches(
+				args.filter,
+				{
+					name,
+					createdAt: entry.node._creationTime,
+					updatedAt: entry.kind === "saved" ? entry.node.updatedAt : entry.pendingUpdate.updatedAt,
+					type: files_lowercase_extension(name, entry.node.kind),
+					contentByteSize: entry.node.kind === "folder" ? null : size,
+				},
+				scalar,
+			),
+			preparing: false,
 		};
 	},
 });
@@ -8695,10 +9236,7 @@ async function db_resolve_committed_chunk_source(
 
 	// External (reserved) scope: no Yjs/pending/materialization. Committed chunks are addressed by
 	// node id alone; byte size comes from the linked R2 content asset.
-	if (
-		organizations_is_global_organization_id(args.organizationId) ||
-		scope.kind !== "workspace"
-	) {
+	if (organizations_is_global_organization_id(args.organizationId) || scope.kind !== "workspace") {
 		const asset = fileNode.assetId ? await ctx.db.get("files_r2_assets", fileNode.assetId) : null;
 		const byteSize =
 			asset &&
@@ -9106,8 +9644,7 @@ export const read_file_content_from_chunks = internalQuery({
 		const requestedWorkspaceId = args.workspaceId;
 		const scope = files_db_resolve_scope(ctx, requestedWorkspaceId);
 		const realTenantScope =
-			organizations_is_global_organization_id(requestedOrganizationId) ||
-			scope.kind !== "workspace"
+			organizations_is_global_organization_id(requestedOrganizationId) || scope.kind !== "workspace"
 				? null
 				: {
 						organizationId: requestedOrganizationId,
@@ -9924,8 +10461,7 @@ async function db_get_text_match_source(
 ) {
 	const scope = files_db_resolve_scope(ctx, args.workspaceId);
 	const tenantScope =
-		!organizations_is_global_organization_id(args.organizationId) &&
-		scope.kind === "workspace"
+		!organizations_is_global_organization_id(args.organizationId) && scope.kind === "workspace"
 			? { organizationId: args.organizationId, workspaceId: scope.workspaceId, userId: args.userId }
 			: null;
 
@@ -9972,7 +10508,8 @@ async function db_get_text_match_source(
 			return null;
 
 		if (
-			scope.kind !== "volume" && !(await access_control_db_can_act_on_file_node(ctx, {
+			scope.kind !== "volume" &&
+			!(await access_control_db_can_act_on_file_node(ctx, {
 				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
 				userId: args.userId,
