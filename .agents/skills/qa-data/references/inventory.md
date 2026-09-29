@@ -129,6 +129,8 @@ matter, continue a chat you already made for the same task instead of starting a
 
 Reuse `QA native-popovers mount 0928` in `personal/home` (`n17e1df2cqn1p6m8kkac9nq8d58f8674`) for this Mount's Bash checks. The saved first turn lists the Mount and reads its README without changing files.
 
+Use saved chat `n174jx56n9dhr2eahg93prek198fba90` in `personal/home` as evidence for natural Mount discovery and later web search. It used GPT-6 Luna in Agent mode. Its first turn had no chat history or supplied path. Stored Bash calls read the README and `AGENTS.md`; the next turn used web search.
+
 Reuse `qa-browser/home` chat `n1708wzk8n9hnt2r9qm87jd1118f9g6z` as `qa.perm.owner` for
 Mount isolation checks. Its saved Bash call found both plugin Mount paths absent.
 Only the original Chitchat installation was present.
