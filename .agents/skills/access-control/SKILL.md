@@ -758,16 +758,30 @@ resolve the reader with `db_get_tree_reader` and filter every row with
     count raw rows before pending hides and use `workCount: 0`. Custom pages advance only after a
     whole candidate is checked. Rejected readable candidates still advance the boundary.
     Refusals return an empty, done page with a null boundary and zero counts.
-  - Filtered walks spend at most 50 candidate/proof visits per query. They check whole-query
-    bytes and calls with a 4 MiB budget and a 1,000-call budget, reserving 1 MiB and 16 calls before
-    another read. The metadata-missing walk keeps both Name streams. Each new field witness is
+  - A sort has one to three ordered clauses. Multi-sort proves only readable ordinary groups.
+    It uses the primary index and a Name range when that index supports the next clause. Other
+    groups are limited to 200 candidates, with a 201st probe. Hidden restricted children never
+    affect that proof, its cap, cursor, bytes, or work count. Complete groups pack up to 50
+    processed candidates. A cumulative budget stop keeps only the completed prefix.
+    `sortLimit` reports a real group limit. `workPaused` reports a smaller request allowance that
+    cannot prove the next group. Every result carries both fields, including native and refused pages.
+  - With one clause, filtered walks spend at most 50 candidate/proof visits per query. Custom walks
+    check whole-query bytes and calls with a 4 MiB budget and a 1,000-call budget. They reserve
+    1 MiB and 16 calls before another read. The metadata-missing walk keeps both Name streams. Each new field witness is
     joined to its current ordinary node before its position is used. Stale scope fields throw.
-    A stopped join keeps the last completed cursor. No first progress throws a work error.
+    A stopped join keeps the last completed cursor. With one clause, no first progress throws a
+    work error.
   - `get_table_filter_match({ membershipId, parentId, target, filter })` checks one side target
     again. It resolves current access, private ownership, visible parent, and metadata readiness.
     It returns `{ matches, preparing }`, or null for refusal or a target no longer visible here.
     Missing auth throws. Read exhaustion throws; it never means false, null, or an absent scalar.
     The side-row list keeps its full unfiltered name claims and both cap flags.
+  - Side enumeration has no sort argument and reads no metadata keys. Built-in keys use its
+    authorized facts locally. `get_table_sort_key({ membershipId, parentId, target, sort })`
+    independently checks current auth, access, visible parent, private owner, and proposal revision.
+    It returns one full fresh row key. All built-in and metadata parts come from the same read.
+    Private metadata still preparing has null sort parts. Refusal is null; byte/call or visible
+    reader exhaustion throws. A refused key cannot revive a held row or remove its current name claim.
   - The owner reads every row, so the owner scans the folder's restricted children by name and gets
     the first 200.
   - A non-owner can read a restricted scope root only through a user or role `content.read` grant

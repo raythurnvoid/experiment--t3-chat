@@ -2,7 +2,13 @@ import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { getFunctionName, type FunctionReference, type FunctionReturnType } from "convex/server";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { app_convex_api, app_convex_Id } from "@/lib/app-convex-client.ts";
-import type { files_sort_Key, files_sort_Sort } from "../../shared/files-sort.ts";
+import {
+	files_sort_key_of,
+	files_sort_text_key,
+	type files_sort_Key,
+	type files_sort_RowKey,
+	type files_sort_Sort,
+} from "../../shared/files-sort.ts";
 import type { files_table_Filter } from "../../shared/files-table.ts";
 import { useFilesSortedChildren, useFilesVisibleEntries } from "./files-search-hooks.ts";
 
@@ -15,10 +21,12 @@ type SideRow = NonNullable<SideRows>["rows"][number];
 // `sorted` holds every row of each sorted segment, keyed by its full folder and sort scope. A metadata
 // key's missing segment is keyed by its pages instead, because its cursor can end a page early.
 // `loadingFields` keeps every query of a sort loading. `loadingKeys` keeps one segment loading.
-const { cursorsSeen, requestsSeen, batchesSeen, sorted } = vi.hoisted(() => ({
+const { cursorsSeen, requestsSeen, batchesSeen, keysSeen, enumsSeen, sorted } = vi.hoisted(() => ({
 	cursorsSeen: [] as string[],
 	requestsSeen: [] as Array<{ id: string; args: SortedArgs }>,
 	batchesSeen: [] as Array<Array<{ id: string; args: SortedArgs }>>,
+	keysSeen: [] as Array<Record<string, unknown>>,
+	enumsSeen: [] as Array<Record<string, unknown>>,
 	sorted: {
 		rows: new Map<string, SortedRow[]>(),
 		missingPages: new Map<string, SortedRow[][]>(),
@@ -28,6 +36,7 @@ const { cursorsSeen, requestsSeen, batchesSeen, sorted } = vi.hoisted(() => ({
 		sideScopes: new Map<string, SideRows | Error | undefined>(),
 		filtered: null as ((args: SortedArgs) => SortedPage | Error | undefined) | null,
 		matches: new Map<string, { matches: boolean; preparing: boolean } | Error | null | undefined>(),
+		keys: new Map<string, files_sort_RowKey | Error | null | undefined>(),
 		seen: new Set<string>(),
 		revision: 0,
 		listeners: new Set<() => void>(),
@@ -70,7 +79,7 @@ const sorted_fixture_key = (
 		parentId: FOLDER_ID,
 		kind,
 		segment,
-		sort: { field, direction },
+		sort: [{ field, direction }],
 		filter: null,
 		workLimit: 1000,
 	});
@@ -98,7 +107,8 @@ vi.mock("convex/react", async (importOriginal) => {
 		useQueries: (queries: Record<string, { query: FunctionReference<"query">; args: Record<string, unknown> }>) => {
 			const revision = useSyncExternalStore(subscribe, () => sorted.revision);
 			const batch = Object.entries(queries).flatMap(([id, request]) =>
-				getFunctionName(request.query) === "files_nodes:list_tree_children_sorted" && request.args.filter !== null
+				getFunctionName(request.query) === "files_nodes:list_tree_children_sorted" &&
+				(request.args.filter !== null || (request.args.sort as files_sort_Sort).length > 1)
 					? [{ id, args: request.args as SortedArgs }]
 					: [],
 			);
@@ -111,16 +121,24 @@ vi.mock("convex/react", async (importOriginal) => {
 								const args = request.args as {
 									membershipId: typeof MEMBERSHIP_ID;
 									parentId: typeof FOLDER_ID;
-									sort: files_sort_Sort;
 								};
-								const scope = JSON.stringify([args.membershipId, args.parentId, args.sort]);
+								const scope = JSON.stringify([args.membershipId, args.parentId]);
+								enumsSeen.push(request.args);
+								return [key, sorted.sideScopes.has(scope) ? sorted.sideScopes.get(scope) : sorted.sideRows];
+							}
+							if (getFunctionName(request.query) === "files_nodes:get_table_sort_key") {
+								if (!keysSeen.some((args) => JSON.stringify(args) === JSON.stringify(request.args)))
+									keysSeen.push(request.args);
 								return [
 									key,
-									sorted.sideScopes.has(scope)
-										? sorted.sideScopes.get(scope)
-										: sorted.loadingFields.has(args.sort.field)
-											? undefined
-											: sorted.sideRows,
+									sorted.keys.get(
+										JSON.stringify([
+											request.args.membershipId,
+											request.args.parentId,
+											request.args.target,
+											request.args.sort,
+										]),
+									),
 								];
 							}
 							if (getFunctionName(request.query) === "files_nodes:get_table_filter_match") {
@@ -134,7 +152,7 @@ vi.mock("convex/react", async (importOriginal) => {
 							}
 							if (getFunctionName(request.query) === "files_nodes:list_tree_children_sorted") {
 								const args = request.args as SortedArgs;
-								if (args.filter !== null) {
+								if (args.filter !== null || args.sort.length > 1) {
 									const issuedKey = JSON.stringify([key, args]);
 									if (!sorted.seen.has(issuedKey)) {
 										sorted.seen.add(issuedKey);
@@ -153,6 +171,8 @@ vi.mock("convex/react", async (importOriginal) => {
 									scanBoundary: pages[index]!.at(-1)?.sortKey ?? null,
 									scannedCount: pages[index]!.length,
 									workCount: pages[index]!.length,
+									sortLimit: null,
+									workPaused: false,
 								};
 								return [key, result];
 							}
@@ -183,7 +203,7 @@ vi.mock("convex/react", async (importOriginal) => {
 			const key = args === "skip" ? "skip" : sorted_key(args);
 			const [loaded, setLoaded] = useState({ key, numItems: options.initialNumItems });
 			const numItems = loaded.key === key ? loaded.numItems : options.initialNumItems;
-			if (args === "skip" || sorted.loadingFields.has(args.sort.field) || sorted.loadingKeys.has(key)) {
+			if (args === "skip" || sorted.loadingFields.has(args.sort[0].field) || sorted.loadingKeys.has(key)) {
 				return { results: [], status: "LoadingFirstPage", loadMore: () => {} };
 			}
 
@@ -199,10 +219,26 @@ vi.mock("convex/react", async (importOriginal) => {
 
 const MEMBERSHIP_ID = "membership_1" as app_convex_Id<"organizations_workspaces_users">;
 const FOLDER_ID = "folder_1" as app_convex_Id<"files_nodes">;
-const NAME_ASC: files_sort_Sort = { field: "name", direction: "asc" };
+const NAME_ASC: files_sort_Sort = [{ field: "name", direction: "asc" }];
 const NAME_FILTER: files_table_Filter = { kind: "name", field: "name", op: "contains", value: "match" };
 
-const saved_row = (kind: "file" | "folder", name: string, sortKey: files_sort_Key = [name]) =>
+const row_key = (name: string, part: files_sort_Key | null = [name]): files_sort_RowKey => {
+	const nameKey: [string, string] = [files_sort_text_key(name), name];
+	return {
+		parts: [
+			part === null
+				? null
+				: part[0] === name
+					? nameKey
+					: part.length > 1 && part.at(-1) === name
+						? [part[0], ...nameKey]
+						: part,
+		],
+		nameKey,
+	};
+};
+
+const saved_row = (kind: "file" | "folder", name: string, part: files_sort_Key | null = [name]) =>
 	({
 		_id: `node_${name}` as app_convex_Id<"files_nodes">,
 		_creationTime: 2,
@@ -212,10 +248,10 @@ const saved_row = (kind: "file" | "folder", name: string, sortKey: files_sort_Ke
 		contentByteSize: kind === "file" ? 42 : null,
 		updatedBy: "user_1" as app_convex_Id<"users">,
 		contentType: kind === "file" ? "text/markdown" : null,
-		sortKey,
+		sortKey: row_key(name, part),
 	}) as SortedRow;
 
-const side_row = (name: string, sortKey: files_sort_Key = [name]): SideRow => ({
+const side_row = (name: string): SideRow => ({
 	target: { kind: "private", id: `draft_${name}` as app_convex_Id<"files_pending_nodes"> },
 	name,
 	kind: "file",
@@ -226,8 +262,6 @@ const side_row = (name: string, sortKey: files_sort_Key = [name]): SideRow => ({
 	contentType: "text/markdown",
 	preparing: false,
 	treeRow: null,
-	segment: "value",
-	sortKey,
 });
 
 const file_names = (count: number, prefix = "file") =>
@@ -237,14 +271,16 @@ const filter_page = (
 	page: SortedRow[] = [],
 	continueCursor: string | null = null,
 	workCount = 0,
-	scanBoundary: files_sort_Key | null = page.at(-1)?.sortKey ?? null,
+	scanBoundary: files_sort_Key | files_sort_RowKey | null = page.at(-1)?.sortKey ?? null,
 ): SortedPage => ({
 	page,
 	isDone: continueCursor === null,
 	continueCursor: continueCursor ?? "",
-	scanBoundary,
+	scanBoundary: Array.isArray(scanBoundary) ? row_key(String(scanBoundary.at(-1)), scanBoundary) : scanBoundary,
 	scannedCount: workCount,
 	workCount,
+	sortLimit: null,
+	workPaused: false,
 });
 
 beforeEach(() => {
@@ -258,6 +294,9 @@ beforeEach(() => {
 	requestsSeen.length = 0;
 	batchesSeen.length = 0;
 	sorted.matches.clear();
+	sorted.keys.clear();
+	keysSeen.length = 0;
+	enumsSeen.length = 0;
 	sorted.seen.clear();
 	sorted.filtered = () => ({
 		page: [],
@@ -266,6 +305,8 @@ beforeEach(() => {
 		scanBoundary: null,
 		scannedCount: 0,
 		workCount: 0,
+		sortLimit: null,
+		workPaused: false,
 	});
 });
 
@@ -290,7 +331,7 @@ describe("useFilesSortedChildren", () => {
 				useFilesSortedChildren({ membershipId: MEMBERSHIP_ID, folderId: FOLDER_ID, sort: props.sort, filter: null }),
 			{ initialProps: { sort } },
 		);
-	const render_filtered = (sort = NAME_ASC, filter = NAME_FILTER) =>
+	const render_filtered = (sort = NAME_ASC, filter: files_table_Filter | null = NAME_FILTER) =>
 		renderHook(
 			(props: {
 				membershipId: typeof MEMBERSHIP_ID;
@@ -358,8 +399,8 @@ describe("useFilesSortedChildren", () => {
 
 	test("keeps folders A to Z when sorting by size, because folders have no size", () => {
 		sorted.rows.set(sorted_fixture_key("folder", "value", "size", "desc"), [
-			saved_row("folder", "a"),
-			saved_row("folder", "c"),
+			saved_row("folder", "a", null),
+			saved_row("folder", "c", null),
 		]);
 		sorted.rows.set(sorted_fixture_key("file", "value", "size", "desc"), [saved_row("file", "big.md", [9, "big.md"])]);
 		sorted.sideRows = {
@@ -368,7 +409,7 @@ describe("useFilesSortedChildren", () => {
 			tooManyShared: false,
 			tooManyPending: false,
 		};
-		const { result } = render_sorted({ field: "size", direction: "desc" });
+		const { result } = render_sorted([{ field: "size", direction: "desc" }]);
 
 		expect(result.current.rows?.map((row) => row.name)).toEqual(["a", "b", "c", "big.md"]);
 	});
@@ -395,7 +436,7 @@ describe("useFilesSortedChildren", () => {
 
 		sorted.loadingFields.add("updated");
 		act(notify_sorted);
-		rerender({ sort: { field: "updated", direction: "desc" } });
+		rerender({ sort: [{ field: "updated", direction: "desc" }] });
 		expect(result.current.rows?.map((row) => row.name)).toEqual(["a.md", "b.md"]);
 		expect(result.current.rows?.[0]?.updatedAt).toBe(5);
 		expect(result.current.isBusy).toBe(true);
@@ -404,10 +445,10 @@ describe("useFilesSortedChildren", () => {
 
 		sorted.loadingFields.clear();
 		act(notify_sorted);
-		rerender({ sort: { field: "updated", direction: "desc" } });
+		rerender({ sort: [{ field: "updated", direction: "desc" }] });
 		expect(result.current.rows?.map((row) => row.name)).toEqual(["b.md", "a.md"]);
 		expect(result.current.isBusy).toBe(false);
-		expect(result.current.rowsSort).toEqual({ field: "updated", direction: "desc" });
+		expect(result.current.rowsSort).toEqual([{ field: "updated", direction: "desc" }]);
 	});
 
 	test("Show more loads only a segment that is shown", () => {
@@ -417,13 +458,13 @@ describe("useFilesSortedChildren", () => {
 		);
 		// No folder has a type, so the folders' missing rows start at once. Keep that page loading.
 		sorted.loadingKeys.add(sorted_fixture_key("folder", "missing", "type", "asc"));
-		const { result, rerender } = render_sorted({ field: "type", direction: "asc" });
+		const { result, rerender } = render_sorted([{ field: "type", direction: "asc" }]);
 		expect(result.current.isBusy).toBe(true);
 
 		act(() => result.current.loadMore());
 		sorted.loadingKeys.clear();
 		act(notify_sorted);
-		rerender({ sort: { field: "type", direction: "asc" } });
+		rerender({ sort: [{ field: "type", direction: "asc" }] });
 		expect(result.current.rows?.map((row) => row.name)).toEqual(file_names(50));
 		expect(result.current.isDone).toBe(false);
 	});
@@ -435,7 +476,7 @@ describe("useFilesSortedChildren", () => {
 	});
 
 	test("starts a metadata key's missing rows after its values, and loads past an empty page by itself", async () => {
-		const sort: files_sort_Sort = { field: "metadata.status", direction: "asc" };
+		const sort: files_sort_Sort = [{ field: "metadata.status", direction: "asc" }];
 		sorted.rows.set(sorted_fixture_key("file", "value", "metadata.status", "asc"), [
 			saved_row("file", "a.md", ["open", "a.md"]),
 		]);
@@ -466,7 +507,7 @@ describe("useFilesSortedChildren", () => {
 	});
 
 	test("Retry drops an unfiltered failed side query before subscribing again", () => {
-		const scope = JSON.stringify([MEMBERSHIP_ID, FOLDER_ID, NAME_ASC]);
+		const scope = JSON.stringify([MEMBERSHIP_ID, FOLDER_ID]);
 		sorted.sideScopes.set(scope, new Error("side rows failed"));
 		const renders: Array<{ isBusy: boolean; isFailed: boolean }> = [];
 		const { result } = renderHook(() => {
@@ -556,7 +597,7 @@ describe("useFilesSortedChildren", () => {
 	});
 
 	test("shares one action allowance across all four segments and retains it across cached renders", async () => {
-		const sort: files_sort_Sort = { field: "type", direction: "asc" };
+		const sort: files_sort_Sort = [{ field: "type", direction: "asc" }];
 		sorted.filtered = (args) => {
 			if (args.kind === "folder" && args.segment === "value") return filter_page();
 			if (args.kind === "file" && args.segment === "missing")
@@ -682,6 +723,42 @@ describe("useFilesSortedChildren", () => {
 		});
 		expect(result.current.rows).toBeUndefined();
 		expect(requestsSeen.at(-1)!.args.paginationOpts!.cursor).toBeNull();
+	});
+
+	test.each([false, true])("finishes a built-in filter when a preparing draft has matches %s", async (matches) => {
+		const draft = { ...side_row(matches ? "match-draft.md" : "draft.md"), preparing: true };
+		sorted.sideRows = { rows: [draft], nameClaims: [draft.name], tooManyShared: false, tooManyPending: false };
+		sorted.matches.set(match_key(NAME_FILTER, draft.target), { matches, preparing: false });
+		const { result } = render_filtered();
+		await waitFor(() => expect(result.current.isBusy).toBe(false));
+		expect(requestsSeen).toHaveLength(2);
+		expect(result.current.rows?.map((row) => row.name)).toEqual(matches ? [draft.name] : []);
+		expect(result.current).toMatchObject({ preparing: false, isDone: true });
+	});
+
+	test("keeps an unknown metadata match incomplete after every segment finishes", async () => {
+		const draft = side_row("draft.md");
+		const filter: files_table_Filter = { kind: "text", field: "metadata.status", op: "missing" };
+		sorted.sideRows = { rows: [draft], nameClaims: [draft.name], tooManyShared: false, tooManyPending: false };
+		sorted.matches.set(match_key(filter, draft.target), { matches: false, preparing: true });
+		const { result } = render_filtered(NAME_ASC, filter);
+		await waitFor(() => expect(result.current.isBusy).toBe(false));
+		expect(requestsSeen).toHaveLength(2);
+		expect(result.current.rows).toEqual([]);
+		expect(result.current).toMatchObject({ preparing: true, isDone: false });
+		act(() => {
+			sorted.matches.set(match_key(filter, draft.target), { matches: false, preparing: false });
+			notify_sorted();
+		});
+		expect(result.current).toMatchObject({ preparing: false, isDone: true });
+	});
+
+	test("keeps unfiltered enumeration preparation incomplete", () => {
+		const draft = { ...side_row("draft.md"), preparing: true };
+		sorted.sideRows = { rows: [draft], nameClaims: [draft.name], tooManyShared: false, tooManyPending: false };
+		const { result } = render_sorted(NAME_ASC);
+		expect(result.current.rows?.map((row) => row.name)).toEqual([draft.name]);
+		expect(result.current).toMatchObject({ preparing: true, isDone: false, isBusy: false });
 	});
 
 	test.each([null, { matches: false, preparing: true }, new Error("match failed")])(
@@ -902,7 +979,7 @@ describe("useFilesSortedChildren", () => {
 	});
 
 	test("does not start a new missing segment during a settled-prefix refresh", async () => {
-		const sort: files_sort_Sort = { field: "metadata.status", direction: "asc" };
+		const sort: files_sort_Sort = [{ field: "metadata.status", direction: "asc" }];
 		let changed = false;
 		sorted.filtered = (args) =>
 			args.kind === "folder"
@@ -1199,5 +1276,361 @@ describe("useFilesSortedChildren", () => {
 		expect(result.current.refreshing).toBe(false);
 		act(notify_sorted);
 		expect(requestsSeen).toHaveLength(count);
+	});
+
+	test("multi-sort without a filter uses one scan and one allowance across all segments", async () => {
+		const sort: files_sort_Sort = [
+			{ field: "type", direction: "desc" },
+			{ field: "updated", direction: "asc" },
+		];
+		sorted.filtered = (args) => {
+			if (args.kind === "folder" && args.segment === "value") return filter_page([], null, 10);
+			if (args.kind === "folder") return filter_page([], null, 250);
+			if (args.segment === "value") return filter_page([], null, 200);
+			return filter_page([], "later", args.workLimit);
+		};
+		const { result } = render_sorted(sort);
+		await waitFor(() => expect(result.current.paused).toBe(true));
+		expect(requestsSeen.map(({ args }) => [args.kind, args.segment, args.workLimit])).toEqual([
+			["folder", "value", 1000],
+			["folder", "missing", 990],
+			["file", "value", 740],
+			["file", "missing", 540],
+		]);
+		expect(requestsSeen.reduce((sum, { args }) => sum + (sorted.filtered!(args) as SortedPage).workCount, 0)).toBe(
+			1000,
+		);
+		expect(requestsSeen.every(({ args }) => args.filter === null && args.paginationOpts!.numItems === 50)).toBe(true);
+		const before = requestsSeen.length;
+		act(notify_sorted);
+		expect(requestsSeen).toHaveLength(before);
+	});
+
+	test.each(["Keep searching", "Show more"])(
+		"a group pause settles safely and %s replaces it with a fresh allowance",
+		async (action) => {
+			const sort: files_sort_Sort = [
+				{ field: "created", direction: "asc" },
+				{ field: "updated", direction: "desc" },
+			];
+			let renewed = false;
+			sorted.filtered = (args) =>
+				args.kind === "folder"
+					? filter_page([], null, 700)
+					: renewed
+						? filter_page([saved_row("file", "a")], null, 201)
+						: { ...filter_page([], "", 200), workPaused: true };
+			const { result } = render_sorted(sort);
+			await waitFor(() =>
+				expect(result.current).toMatchObject({ paused: true, workPaused: true, isFailed: false, sortLimit: null }),
+			);
+			expect(requestsSeen.map(({ args }) => args.workLimit)).toEqual([1000, 300]);
+			const pausedId = requestsSeen.at(-1)!.id;
+			act(() => {
+				renewed = true;
+				if (action === "Keep searching") result.current.continueSearch();
+				else result.current.requestMatches(50);
+			});
+			expect(requestsSeen.at(-1)!.args.workLimit).toBe(1000);
+			expect(requestsSeen.at(-1)!.args.paginationOpts!.cursor).toBeNull();
+			expect(requestsSeen.at(-1)!.id).not.toBe(pausedId);
+			await waitFor(() => expect(result.current.isDone).toBe(true));
+		},
+	);
+
+	test("a true group limit keeps completed rows and stops every later scan", async () => {
+		const sort: files_sort_Sort = [
+			{ field: "created", direction: "asc" },
+			{ field: "updated", direction: "desc" },
+		];
+		sorted.filtered = (args) =>
+			args.kind === "folder"
+				? filter_page()
+				: {
+						...filter_page([saved_row("file", "a")], "safe", 400),
+						sortLimit: { reason: "group_rows" },
+					};
+		const { result } = render_sorted(sort);
+		await waitFor(() => expect(result.current.sortLimit).toEqual({ reason: "group_rows" }));
+		expect(result.current.rows?.map((row) => row.name)).toEqual(["a"]);
+		expect(result.current).toMatchObject({ isDone: false, searching: false, paused: false, isFailed: false });
+		const before = requestsSeen.length;
+		act(() => result.current.requestMatches(50));
+		act(notify_sorted);
+		expect(requestsSeen).toHaveLength(before);
+	});
+
+	test("Retry after a side-key error replaces a paused group with a fresh reserve", async () => {
+		const sort: files_sort_Sort = [
+			{ field: "created", direction: "asc" },
+			{ field: "metadata.status", direction: "asc" },
+		];
+		const draft = side_row("draft.md");
+		sorted.sideRows = { rows: [draft], nameClaims: [], tooManyShared: false, tooManyPending: false };
+		const key = JSON.stringify([MEMBERSHIP_ID, FOLDER_ID, draft.target, sort]);
+		const freshKey = files_sort_key_of(sort, { ...draft, type: "md" }, new Map());
+		sorted.keys.set(key, freshKey);
+		let renewed = false;
+		sorted.filtered = (args) =>
+			args.kind === "folder"
+				? filter_page([], null, 700)
+				: renewed && args.workLimit === 1000
+					? filter_page([], null, 201)
+					: { ...filter_page([], "", 200), workPaused: true };
+		const { result } = render_sorted(sort);
+		await waitFor(() => expect(result.current.paused).toBe(true));
+		const pausedId = requestsSeen.at(-1)!.id;
+		act(() => {
+			sorted.keys.set(key, new Error("key read failed"));
+			notify_sorted();
+		});
+		expect(result.current).toMatchObject({ isFailed: true, filterRecovery: "retry" });
+		act(() => {
+			renewed = true;
+			sorted.keys.set(key, freshKey);
+			result.current.retry();
+		});
+		expect(requestsSeen.at(-1)!.args.workLimit).toBe(1000);
+		expect(requestsSeen.at(-1)!.id).not.toBe(pausedId);
+		await waitFor(() => expect(result.current.isDone).toBe(true));
+		expect(result.current.rows?.map((row) => row.name)).toEqual([draft.name]);
+	});
+
+	test.each([150, 400])(
+		"builds all %s built-in side keys without extra queries and reuses enumeration",
+		async (count) => {
+			const drafts = file_names(count).map(side_row);
+			sorted.sideRows = { rows: drafts, nameClaims: [], tooManyShared: false, tooManyPending: false };
+			const { result, rerender } = render_filtered(
+				[
+					{ field: "name", direction: "asc" },
+					{ field: "metadata.status", direction: "desc" },
+				],
+				null,
+			);
+			expect(keysSeen).toEqual([]);
+			await waitFor(() => expect(result.current.isDone).toBe(true));
+			expect(result.current.rows).toHaveLength(count);
+			expect(keysSeen).toEqual([]);
+			const initialEnumeration = enumsSeen[0];
+			rerender({
+				membershipId: MEMBERSHIP_ID,
+				folderId: FOLDER_ID,
+				sort: [
+					{ field: "size", direction: "desc" },
+					{ field: "created", direction: "asc" },
+				],
+				filter: null,
+			});
+			await waitFor(() => expect(result.current.isDone).toBe(true));
+			expect(result.current.rows).toHaveLength(count);
+			expect(keysSeen).toEqual([]);
+			expect(enumsSeen.every((args) => args === initialEnumeration)).toBe(true);
+			expect(initialEnumeration).toEqual({ membershipId: MEMBERSHIP_ID, parentId: FOLDER_ID });
+		},
+	);
+
+	test("requests one full key for every metadata side target and waits for the last one", async () => {
+		const sort: files_sort_Sort = [
+			{ field: "metadata.status", direction: "asc" },
+			{ field: "metadata.priority", direction: "desc" },
+			{ field: "name", direction: "desc" },
+		];
+		const drafts = file_names(400).map(side_row);
+		sorted.sideRows = { rows: drafts, nameClaims: [], tooManyShared: false, tooManyPending: false };
+		for (const draft of drafts.slice(0, -1))
+			sorted.keys.set(
+				JSON.stringify([MEMBERSHIP_ID, FOLDER_ID, draft.target, sort]),
+				files_sort_key_of(sort, { ...draft, type: "md" }, new Map([["metadata.status", "same"]])),
+			);
+		const { result } = render_sorted(sort);
+		expect(keysSeen).toHaveLength(400);
+		expect(result.current.rows).toBeUndefined();
+		const last = drafts.at(-1)!;
+		act(() => {
+			sorted.keys.set(
+				JSON.stringify([MEMBERSHIP_ID, FOLDER_ID, last.target, sort]),
+				files_sort_key_of(sort, { ...last, type: "md" }, new Map([["metadata.status", "same"]])),
+			);
+			notify_sorted();
+		});
+		await waitFor(() => expect(result.current.isBusy).toBe(false));
+		expect(result.current.rows?.map((row) => row.name)).toEqual([...file_names(400)].reverse());
+	});
+
+	test("uses the full fresh side key and keeps a refused target's claims through Retry", async () => {
+		const sort: files_sort_Sort = [
+			{ field: "updated", direction: "desc" },
+			{ field: "metadata.status", direction: "asc" },
+		];
+		const draft = side_row("shadow.md");
+		sorted.sideRows = { rows: [draft], nameClaims: [draft.name], tooManyShared: false, tooManyPending: false };
+		const targetKey = JSON.stringify([MEMBERSHIP_ID, FOLDER_ID, draft.target, sort]);
+		sorted.keys.set(
+			targetKey,
+			files_sort_key_of(sort, { ...draft, updatedAt: 100, type: "md" }, new Map([["metadata.status", "same"]])),
+		);
+		const main = {
+			...saved_row("file", "other.md"),
+			sortKey: files_sort_key_of(
+				sort,
+				{ ...draft, name: "other.md", updatedAt: 2, type: "md" },
+				new Map([["metadata.status", "same"]]),
+			),
+		};
+		let loading = false;
+		sorted.filtered = (args) =>
+			args.kind === "folder" ? filter_page() : loading ? undefined : filter_page([main, { ...main, name: draft.name }]);
+		const { result } = render_sorted(sort);
+		await waitFor(() => expect(result.current.rows?.map((row) => row.name)).toEqual([draft.name, "other.md"]));
+		act(() => {
+			loading = true;
+			sorted.keys.set(targetKey, null);
+			notify_sorted();
+		});
+		expect(result.current.rows?.map((row) => row.name)).toEqual(["other.md"]);
+		act(() => result.current.retry());
+		expect(result.current.rows?.map((row) => row.name)).toEqual(["other.md"]);
+		expect(result.current.sideTargets).toEqual([draft.target]);
+	});
+
+	test("releases side rows only through the full secondary scan boundary", async () => {
+		const sort: files_sort_Sort = [
+			{ field: "metadata.status", direction: "asc" },
+			{ field: "updated", direction: "desc" },
+		];
+		const before = { ...side_row("z-before.md"), updatedAt: 9 };
+		const after = { ...side_row("a-after.md"), updatedAt: 1 };
+		sorted.sideRows = { rows: [before, after], nameClaims: [], tooManyShared: false, tooManyPending: false };
+		for (const draft of [before, after])
+			sorted.keys.set(
+				JSON.stringify([MEMBERSHIP_ID, FOLDER_ID, draft.target, sort]),
+				files_sort_key_of(sort, { ...draft, type: "md" }, new Map([["metadata.status", "same"]])),
+			);
+		const boundary = files_sort_key_of(
+			sort,
+			{ ...before, name: "boundary.md", updatedAt: 5, type: "md" },
+			new Map([["metadata.status", "same"]]),
+		);
+		sorted.filtered = (args) =>
+			args.kind === "folder"
+				? filter_page()
+				: { ...filter_page([], "next", args.workLimit, boundary), scannedCount: 50 };
+		const { result } = render_sorted(sort);
+		await waitFor(() => expect(result.current.paused).toBe(true));
+		expect(result.current.rows?.map((row) => row.name)).toEqual([before.name]);
+	});
+
+	test("a frozen group refresh pause requires Reload table", async () => {
+		const sort: files_sort_Sort = [
+			{ field: "created", direction: "asc" },
+			{ field: "updated", direction: "desc" },
+		];
+		let changed = false;
+		sorted.filtered = (args) =>
+			args.kind === "folder"
+				? filter_page()
+				: args.paginationOpts!.cursor === null
+					? filter_page(
+							file_names(5).map((name) => saved_row("file", name)),
+							changed ? "changed" : "first",
+							200,
+						)
+					: changed
+						? { ...filter_page([], "changed", 100), workPaused: true }
+						: filter_page(
+								file_names(45, "more").map((name) => saved_row("file", name)),
+								"second",
+								200,
+							);
+		const { result } = render_sorted(sort);
+		await waitFor(() => expect(result.current.rows).toHaveLength(5));
+		act(() => result.current.requestMatches(50));
+		await waitFor(() => expect(result.current.rows).toHaveLength(50));
+		const secondLimit = requestsSeen.at(-1)!.args.workLimit;
+		act(() => {
+			changed = true;
+			notify_sorted();
+		});
+		await waitFor(() => expect(result.current.filterRecovery).toBe("reload"));
+		expect(requestsSeen.at(-1)!.args.workLimit).toBe(secondLimit);
+		expect(result.current.rows).toHaveLength(50);
+		const before = requestsSeen.length;
+		act(notify_sorted);
+		expect(requestsSeen).toHaveLength(before);
+		act(() => result.current.reload());
+		await waitFor(() => expect(result.current.filterRecovery).toBeNull());
+		expect(result.current.rows).toHaveLength(5);
+	});
+
+	test("a new limit on a settled page discards its old suffix even without a cursor change", async () => {
+		const sort: files_sort_Sort = [
+			{ field: "created", direction: "asc" },
+			{ field: "updated", direction: "desc" },
+		];
+		let limited = false;
+		sorted.filtered = (args) =>
+			args.kind === "folder"
+				? filter_page()
+				: args.paginationOpts!.cursor === null
+					? {
+							...filter_page(
+								file_names(5).map((name) => saved_row("file", name)),
+								"first",
+								200,
+							),
+							sortLimit: limited ? { reason: "bytes" } : null,
+						}
+					: limited
+						? new Error("obsolete suffix")
+						: filter_page(
+								file_names(45, "more").map((name) => saved_row("file", name)),
+								"second",
+								200,
+							);
+		const { result } = render_sorted(sort);
+		await waitFor(() => expect(result.current.rows).toHaveLength(5));
+		act(() => result.current.requestMatches(50));
+		await waitFor(() => expect(result.current.rows).toHaveLength(50));
+		const before = requestsSeen.length;
+		act(() => {
+			limited = true;
+			notify_sorted();
+		});
+		await waitFor(() =>
+			expect(result.current).toMatchObject({
+				sortLimit: { reason: "bytes" },
+				isFailed: false,
+				isDone: false,
+				isBusy: false,
+			}),
+		);
+		expect(result.current.rows).toHaveLength(5);
+		act(notify_sorted);
+		expect(requestsSeen).toHaveLength(before);
+	});
+
+	test("holds the whole old list until new metadata keys settle", async () => {
+		const draft = side_row("a.md");
+		sorted.sideRows = { rows: [draft], nameClaims: [], tooManyShared: false, tooManyPending: false };
+		const { result, rerender } = render_filtered(NAME_ASC, null);
+		expect(result.current.rows?.map((row) => row.name)).toEqual([draft.name]);
+		const sort: files_sort_Sort = [
+			{ field: "metadata.status", direction: "asc" },
+			{ field: "name", direction: "desc" },
+		];
+		rerender({ membershipId: MEMBERSHIP_ID, folderId: FOLDER_ID, sort, filter: null });
+		expect(result.current.rowsSort).toEqual(NAME_ASC);
+		expect(result.current.rows?.map((row) => row.name)).toEqual([draft.name]);
+		expect(result.current.isBusy).toBe(true);
+		act(() => {
+			sorted.keys.set(
+				JSON.stringify([MEMBERSHIP_ID, FOLDER_ID, draft.target, sort]),
+				files_sort_key_of(sort, { ...draft, type: "md" }, new Map()),
+			);
+			notify_sorted();
+		});
+		await waitFor(() => expect(result.current.isBusy).toBe(false));
+		expect(result.current.rowsSort).toEqual(sort);
 	});
 });

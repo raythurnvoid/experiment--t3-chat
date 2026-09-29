@@ -140,8 +140,6 @@ import type { FunctionReturnType } from "convex/server";
 import { usePaginatedQuery } from "convex-helpers/react";
 import {
 	Archive,
-	ArrowDown,
-	ArrowUp,
 	BookOpen,
 	ChevronDown,
 	CircleAlert,
@@ -177,6 +175,7 @@ import {
 	files_sort_DEFAULT,
 	files_sort_field_is_built_in,
 	files_sort_field_is_valid,
+	type files_sort_Clause,
 	type files_sort_Sort,
 } from "../../../../shared/files-sort.ts";
 import {
@@ -508,6 +507,7 @@ const FileNodeViewHeaderBreadcrumbPath = memo(function FileNodeViewHeaderBreadcr
 													nodeId: crumb.target === "saved" ? crumb.id : undefined,
 													pendingNodeId: crumb.target === "private" ? crumb.id : undefined,
 													view: undefined,
+													fileView: undefined,
 												})}
 												variant="button-ghost-highlightable"
 												// `aria-label` keeps the full name readable next to the shortened text.
@@ -803,7 +803,7 @@ const FileNodeViewHeader = memo(function FileNodeViewHeader(props: FileNodeViewH
 									className={cn("FileNodeViewHeader-breadcrumb-home" satisfies FileNodeViewHeader_ClassNames)}
 									to="/w/$organizationName/$workspaceName/files"
 									params={{ organizationName, workspaceName }}
-									search={(prev) => ({ ...prev, nodeId: files_ROOT_ID, pendingNodeId: undefined, view: undefined })}
+									search={(prev) => ({ ...prev, nodeId: files_ROOT_ID, pendingNodeId: undefined, view: undefined, fileView: undefined })}
 									variant="button-icon-ghost-highlightable"
 									tooltip="Home"
 								>
@@ -841,7 +841,7 @@ const FileNodeViewHeader = memo(function FileNodeViewHeader(props: FileNodeViewH
 									params={{ organizationName, workspaceName }}
 									// Keep `q` so the URL stays in step with the still-filled sidebar search box.
 									// Drop `view` so the target node opens on its own default editor.
-									search={(prev) => ({ ...prev, nodeId: files_ROOT_ID, pendingNodeId: undefined, view: undefined })}
+									search={(prev) => ({ ...prev, nodeId: files_ROOT_ID, pendingNodeId: undefined, view: undefined, fileView: undefined })}
 									variant="button-icon-ghost-highlightable"
 									tooltip="Home"
 								>
@@ -1328,7 +1328,7 @@ type FileNodeViewFile_Props = {
 	viewSelectPortalHost: HTMLElement;
 	onEditorModeChange: (mode: FileEditor_Mode, options?: { replace?: boolean }) => void;
 	onAutomaticEditorModeChange: FileEditor_Props["onEditorModeChange"];
-	onFileViewChange: (view: string) => void;
+	onFileViewChange: (view: string, options?: { replace?: boolean }) => void;
 	onNavigateNode: FileNodeViewHeader_Props["onNavigateNode"];
 };
 
@@ -1386,7 +1386,7 @@ const FileNodeViewFile = memo(function FileNodeViewFile(props: FileNodeViewFile_
 		(selectedFileView === "code_browser" && hasHtmlPreview) ||
 		(selectedFileView === "review_browser" && hasHtmlPreview) ||
 		fileViewMatches.some((match) => file_view_id(match) === selectedFileView);
-	// Flat HTML views live in local file state. Legacy "default" opens Code.
+	// Flat HTML views live in the URL `fileView`. No `fileView` ("default") opens Code.
 	const activeFileView =
 		hasHtmlPreview && selectedViewExists && selectedFileView === "default"
 			? "code"
@@ -1465,10 +1465,12 @@ const FileNodeViewFile = memo(function FileNodeViewFile(props: FileNodeViewFile_
 	const getBrowserDraftRevision = useFn(() => previewRevision + 1);
 
 	useEffect(() => {
-		if (selectedViewExists) {
+		// A view from the URL can name a plugin view. Wait until the plugin views and the asset are
+		// loaded before deciding that the view is gone.
+		if (selectedViewExists || fileViewPlugins === undefined || (!isEditable && asset === undefined)) {
 			return;
 		}
-		onFileViewChange("default");
+		onFileViewChange("default", { replace: true });
 		// Browser views are only wrong-file-type, not removed: fall back quietly.
 		const isBrowserView =
 			selectedFileView === "browser" || selectedFileView === "code_browser" || selectedFileView === "review_browser";
@@ -1478,7 +1480,7 @@ const FileNodeViewFile = memo(function FileNodeViewFile(props: FileNodeViewFile_
 		if (document.activeElement === document.body) {
 			primaryPanelRef.current?.focus();
 		}
-	}, [isEditable, onFileViewChange, selectedFileView, selectedViewExists]);
+	}, [asset, fileViewPlugins, isEditable, onFileViewChange, selectedFileView, selectedViewExists]);
 
 	const editorContent = isEditable ? (
 		<FileNodeViewFileEditor
@@ -1916,7 +1918,7 @@ const FileNodeViewPrivateContent = memo(function FileNodeViewPrivateContent(prop
 	presenceStore: FileEditor_Props["presenceStore"];
 	onEditorModeChange: FileEditor_Props["onEditorModeChange"];
 	onAutomaticEditorModeChange: FileEditor_Props["onEditorModeChange"];
-	onFileViewChange: (view: string) => void;
+	onFileViewChange: (view: string, options?: { replace?: boolean }) => void;
 	onTargetChange: NonNullable<FileEditor_Props["onTargetChange"]>;
 	onNavigateTarget: (target: files_PendingTarget) => void;
 	onNavigateNode: FileNodeViewHeader_Props["onNavigateNode"];
@@ -1959,7 +1961,7 @@ const FileNodeViewPrivateContent = memo(function FileNodeViewPrivateContent(prop
 				selectedFileView === "browser" ||
 				selectedFileView === "code_browser" ||
 				selectedFileView === "review_browser"));
-	// Flat HTML views live in local file state. Legacy "default" opens Code.
+	// Flat HTML views live in the URL `fileView`. No `fileView` ("default") opens Code.
 	const activePrivateView =
 		!privateSelectedViewExists || (hasHtmlPreview && selectedFileView === "default")
 			? hasHtmlPreview
@@ -2006,7 +2008,7 @@ const FileNodeViewPrivateContent = memo(function FileNodeViewPrivateContent(prop
 		if (privateSelectedViewExists) {
 			return;
 		}
-		onFileViewChange("default");
+		onFileViewChange("default", { replace: true });
 		// Browser views are only wrong-file-type, not removed: fall back quietly.
 		const isBrowserView =
 			selectedFileView === "browser" || selectedFileView === "code_browser" || selectedFileView === "review_browser";
@@ -2994,13 +2996,12 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 		current: FileNodeViewFolderFilterSelection | null;
 		held: FileNodeViewFolderFilterSelection | null;
 	}>({ scope: folderScope, current: null, held: null });
-	// A reader's own sort, or a writer's new sort while it saves. It belongs to one folder, so opening
-	// another folder shows that folder's saved sort.
+	// A reader's own sort, or a writer's new sort while it saves. Keep it in this member's folder.
 	const [localSort, setLocalSort] = useState<{
-		folderId: app_convex_Doc<"files_nodes">["parentId"];
+		scope: string;
 		sort: files_sort_Sort;
 	} | null>(null);
-	const sort = (localSort?.folderId === folderItemId ? localSort.sort : null) ?? folderSort?.sort ?? null;
+	const sort = (localSort?.scope === folderScope ? localSort.sort : null) ?? folderSort?.sort ?? null;
 	const filterSelection = localFilter.scope === folderScope ? localFilter.current : null;
 	const filter = filterSelection?.filter ?? null;
 	const sortedChildren = useFilesSortedChildren({ membershipId, folderId: folderItemId, sort, filter });
@@ -3121,7 +3122,7 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 	const handleShowMoreClick = useFn(() => {
 		if (isShowingHeldRows || sortedChildren.refreshing) return;
 		setShowAllItems(true);
-		if (filter !== null) {
+		if (filter !== null || (sort?.length ?? 0) > 1) {
 			if (!showAllItems) sortedChildren.requestMatches(Math.max(50, childItems.length));
 			else if (hiddenChildItemsCount === 0) sortedChildren.requestMatches(childItems.length + 50);
 			return;
@@ -3177,7 +3178,8 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 
 	// A writer saves the sort for everyone and sees it at once. A reader sorts only their own view.
 	const handleSortChange = useFn((nextSort: files_sort_Sort) => {
-		setLocalSort({ folderId: folderItemId, sort: nextSort });
+		setLocalSort({ scope: folderScope, sort: nextSort });
+		setShowAllItems(false);
 		if (!folderSort?.canSave) {
 			return;
 		}
@@ -3206,12 +3208,15 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 			})
 			// Follow the saved sort again once this save is done, unless a newer sort was chosen meanwhile.
 			// Convex updates the saved sort query before the mutation promise resolves.
-			.finally(() => setLocalSort((current) => (current?.sort === nextSort ? null : current)));
+			.finally(() =>
+				setLocalSort((current) => (current?.scope === folderScope && current.sort === nextSort ? null : current)),
+			);
 	});
 
 	const handleShowLessClick = useFn(() => {
 		setShowAllItems(false);
-		if (filter !== null) sortedChildren.requestMatches(FILE_NODE_VIEW_FOLDER_INITIAL_VISIBLE_ITEMS_COUNT);
+		if (filter !== null || (sort?.length ?? 0) > 1)
+			sortedChildren.requestMatches(FILE_NODE_VIEW_FOLDER_INITIAL_VISIBLE_ITEMS_COUNT);
 	});
 
 	const handleCreateReadmeClick = useFn(() => {
@@ -3340,6 +3345,7 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 	// Collapse the folder table again when navigating into a different folder.
 	useEffect(() => {
 		setShowAllItems(false);
+		setLocalSort(null);
 		setLocalFilter({ scope: folderScope, current: null, held: null });
 	}, [folderScope]);
 
@@ -3364,12 +3370,14 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 					filterPreparing={sortedChildren.preparing}
 					filterRefreshing={sortedChildren.refreshing}
 					filterRecovery={sortedChildren.filterRecovery}
+					sortLimit={sortedChildren.sortLimit}
 					columnCatalog={columnCatalog}
 					columnValues={columnValues.values}
 					activeValueTargetCount={valueTargets.length}
 					valueQueryCount={columnValues.queryCount}
 					sort={sort ?? files_sort_DEFAULT}
-					rowsSort={sortedChildren.rowsSort ?? sort ?? files_sort_DEFAULT}
+					sortOpen={fieldPopover.scope === folderScope && fieldPopover.sort}
+					rowsSort={sortedChildren.rowsSort}
 					canSaveSort={folderSort?.canSave === true}
 					isSortBusy={sortedChildren.isBusy}
 					tooManyShared={sortedChildren.tooManyShared}
@@ -4122,7 +4130,7 @@ const FileNodeViewFolderExplorerRow = memo(function FileNodeViewFolderExplorerRo
 					to="/w/$organizationName/$workspaceName/files"
 					params={{ organizationName, workspaceName }}
 					// Drop `view` so the target node opens on its own default editor.
-					search={(prev) => ({ ...prev, nodeId: child._id, pendingNodeId: undefined, view: undefined })}
+					search={(prev) => ({ ...prev, nodeId: child._id, pendingNodeId: undefined, view: undefined, fileView: undefined })}
 					draggable={false}
 				/>
 				<MyIcon className={"FileNodeViewFolderExplorer-icon" satisfies FileNodeViewFolderExplorerRow_ClassNames}>
@@ -4241,6 +4249,7 @@ const FileNodeViewFolderExplorerPrivateRow = memo(function FileNodeViewFolderExp
 						nodeId: row.target.kind === "saved" ? row.target.id : undefined,
 						pendingNodeId: row.target.kind === "private" ? row.target.id : undefined,
 						view: undefined,
+						fileView: undefined,
 					})}
 				/>
 				<MyIcon className={"FileNodeViewFolderExplorer-icon" satisfies FileNodeViewFolderExplorerRow_ClassNames}>
@@ -4772,13 +4781,16 @@ const FileNodeViewFolderExplorerFilter = memo(function FileNodeViewFolderExplore
 
 // #region folder explorer sort select
 type FileNodeViewFolderExplorerSortSelect_ClassNames =
-	| "FileNodeViewFolderExplorerSortSelect"
 	| "FileNodeViewFolderExplorerSortSelect-trigger"
 	| "FileNodeViewFolderExplorerSortSelect-popover"
-	| "FileNodeViewFolderExplorerSortSelect-note"
-	| "FileNodeViewFolderExplorerSortSelect-search"
-	| "FileNodeViewFolderExplorerSortSelect-item"
-	| "FileNodeViewFolderExplorerSortSelect-empty";
+	| "FileNodeViewFolderExplorerSortSelect-form"
+	| "FileNodeViewFolderExplorerSortSelect-row"
+	| "FileNodeViewFolderExplorerSortSelect-priority"
+	| "FileNodeViewFolderExplorerSortSelect-field"
+	| "FileNodeViewFolderExplorerSortSelect-field-trigger"
+	| "FileNodeViewFolderExplorerSortSelect-fields-popover"
+	| "FileNodeViewFolderExplorerSortSelect-actions"
+	| "FileNodeViewFolderExplorerSortSelect-note";
 
 const FILE_NODE_VIEW_FOLDER_SORT_BUILT_IN_LABELS = {
 	name: "Name",
@@ -4789,8 +4801,7 @@ const FILE_NODE_VIEW_FOLDER_SORT_BUILT_IN_LABELS = {
 } satisfies Record<(typeof files_sort_BUILT_IN_FIELDS)[number], string>;
 
 /**
- * The column name of a sort field: the built-in name, or a key without its `metadata.` or
- * `frontmatter.` prefix.
+ * The field name, with its namespace so equal metadata and frontmatter names stay distinct.
  */
 function get_folder_sort_field_label(field: string) {
 	if (files_sort_field_is_built_in(field)) {
@@ -4806,7 +4817,7 @@ function get_folder_column_label(field: string) {
 	return field === "updated_by" ? "Updated by" : get_folder_sort_field_label(field);
 }
 
-function get_folder_sort_direction_label(sort: files_sort_Sort) {
+function get_folder_sort_direction_label(sort: files_sort_Clause) {
 	const [ascending, descending] =
 		sort.field === "updated" || sort.field === "created"
 			? ["Oldest first", "Newest first"]
@@ -4820,12 +4831,176 @@ function get_folder_sort_direction_label(sort: files_sort_Sort) {
  * The direction a newly chosen field starts with: newest first for dates, largest first for size, and
  * A to Z for the rest.
  */
-function get_folder_sort_first_direction(field: string): files_sort_Sort["direction"] {
+function get_folder_sort_first_direction(field: string): files_sort_Clause["direction"] {
 	return field === "updated" || field === "created" || field === "size" ? "desc" : "asc";
 }
 
+function get_folder_sort_label(sort: files_sort_Sort) {
+	return sort
+		.map((clause) => `${get_folder_sort_field_label(clause.field)} ${clause.direction === "asc" ? "↑" : "↓"}`)
+		.join(", then ");
+}
+
+const FileNodeViewFolderExplorerSortRow = memo(function FileNodeViewFolderExplorerSortRow(props: {
+	formId: string;
+	draftId: number;
+	priority: number;
+	count: number;
+	clause: files_sort_Clause;
+	fields: string[];
+	catalog: FileNodeViewFolderCatalog;
+	onChange: (id: number, clause: files_sort_Clause) => void;
+	onMove: (id: number, offset: -1 | 1) => void;
+	onRemove: (id: number) => void;
+	onRegisterField: (id: number, element: HTMLElement | null) => void;
+}) {
+	const { formId, draftId, priority, count, clause, fields, catalog, onChange, onMove, onRemove, onRegisterField } =
+		props;
+	const id = `${formId}-row-${useId()}`;
+	const [searchText, setSearchText] = useState("");
+	const fieldLabel = get_folder_sort_field_label(clause.field);
+	const shownFields = fields.filter((field) =>
+		get_folder_sort_field_label(field).toLowerCase().includes(searchText.trim().toLowerCase()),
+	);
+	const handleFieldChange = useFn((field: string) => {
+		if (field !== clause.field) onChange(draftId, { field, direction: get_folder_sort_first_direction(field) });
+	});
+	const handleDirectionChange = useFn((direction: string) => {
+		if (direction === "asc" || direction === "desc") onChange(draftId, { ...clause, direction });
+	});
+	const registerField = useFn((element: HTMLElement | null) => onRegisterField(draftId, element));
+
+	return (
+		<div
+			data-sort-draft-id={draftId}
+			className={"FileNodeViewFolderExplorerSortSelect-row" satisfies FileNodeViewFolderExplorerSortSelect_ClassNames}
+		>
+			<span
+				className={
+					"FileNodeViewFolderExplorerSortSelect-priority" satisfies FileNodeViewFolderExplorerSortSelect_ClassNames
+				}
+			>
+				{priority}
+			</span>
+			<div
+				className={
+					"FileNodeViewFolderExplorerSortSelect-field" satisfies FileNodeViewFolderExplorerSortSelect_ClassNames
+				}
+			>
+				<label htmlFor={`${id}-field`}>Field</label>
+				<MySearchSelect value={clause.field} setValue={handleFieldChange} setOpen={() => setSearchText("")}>
+					<MySearchSelectTrigger
+						ref={registerField}
+						id={`${id}-field`}
+						aria-label={`Sort field ${priority}: ${fieldLabel}`}
+						typeahead={false}
+						data-autofocus={priority === 1 ? "" : undefined}
+					>
+						<MyButton
+							variant="outline"
+							className={
+								"FileNodeViewFolderExplorerSortSelect-field-trigger" satisfies FileNodeViewFolderExplorerSortSelect_ClassNames
+							}
+						>
+							{fieldLabel}
+							<MySelectOpenIndicator />
+						</MyButton>
+					</MySearchSelectTrigger>
+					<MySearchSelectPopover
+						aria-label={`Sort fields ${priority}`}
+						className={cn(
+							"FileNodeViewFolderExplorerSortSelect-fields-popover" satisfies FileNodeViewFolderExplorerSortSelect_ClassNames,
+							"FileNodeViewViewSelect-popover" satisfies FileNodeViewViewSelect_ClassNames,
+						)}
+					>
+						<MySearchSelectPopoverScrollableArea>
+							<MySearchSelectPopoverContent>
+								<MySearchSelectSearch
+									aria-label={`Search sort fields ${priority}`}
+									placeholder="Search fields"
+									value={searchText}
+									onChange={(event) => setSearchText(event.currentTarget.value)}
+								/>
+								<MySearchSelectList aria-label={`Sort fields ${priority}`}>
+									{shownFields.map((field) => (
+										<MySearchSelectItem key={field} value={field}>
+											{get_folder_sort_field_label(field)}
+										</MySearchSelectItem>
+									))}
+								</MySearchSelectList>
+								{shownFields.length === 0 && (
+									<p role="status">{catalog.hasMore ? "No loaded fields match" : "No fields match"}</p>
+								)}
+								<FileNodeViewFolderExplorerFieldsStatus catalog={catalog} />
+							</MySearchSelectPopoverContent>
+						</MySearchSelectPopoverScrollableArea>
+					</MySearchSelectPopover>
+				</MySearchSelect>
+			</div>
+			<div
+				className={
+					"FileNodeViewFolderExplorerSortSelect-field" satisfies FileNodeViewFolderExplorerSortSelect_ClassNames
+				}
+			>
+				<MySelect value={clause.direction} setValue={handleDirectionChange}>
+					<MySelectLabel>Direction</MySelectLabel>
+					<MySelectTrigger
+						aria-label={`Direction ${priority}: ${get_folder_sort_direction_label(clause)}`}
+						typeahead={false}
+					>
+						<MyButton
+							variant="outline"
+							className={
+								"FileNodeViewFolderExplorerSortSelect-field-trigger" satisfies FileNodeViewFolderExplorerSortSelect_ClassNames
+							}
+						>
+							{get_folder_sort_direction_label(clause)}
+							<MySelectOpenIndicator />
+						</MyButton>
+					</MySelectTrigger>
+					<MySelectPopover>
+						<MySelectPopoverContent>
+							{(["asc", "desc"] as const).map((direction) => (
+								<MySelectItem key={direction} value={direction}>
+									{get_folder_sort_direction_label({ ...clause, direction })}
+								</MySelectItem>
+							))}
+						</MySelectPopoverContent>
+					</MySelectPopover>
+				</MySelect>
+			</div>
+			<div
+				className={
+					"FileNodeViewFolderExplorerSortSelect-actions" satisfies FileNodeViewFolderExplorerSortSelect_ClassNames
+				}
+			>
+				<MyButton
+					variant="outline"
+					aria-label={`Move ${fieldLabel} up`}
+					disabled={priority === 1}
+					onClick={() => onMove(draftId, -1)}
+				>
+					Move up
+				</MyButton>
+				<MyButton
+					variant="outline"
+					aria-label={`Move ${fieldLabel} down`}
+					disabled={priority === count}
+					onClick={() => onMove(draftId, 1)}
+				>
+					Move down
+				</MyButton>
+				<MyButton variant="ghost" aria-label={`Remove ${fieldLabel}`} onClick={() => onRemove(draftId)}>
+					Remove
+				</MyButton>
+			</div>
+		</div>
+	);
+});
+
 type FileNodeViewFolderExplorerSortSelect_Props = {
 	sort: files_sort_Sort;
+	open: boolean;
 	canSaveSort: boolean;
 	catalog: FileNodeViewFolderCatalog;
 	onOpenChange: (open: boolean) => void;
@@ -4835,125 +5010,173 @@ type FileNodeViewFolderExplorerSortSelect_Props = {
 const FileNodeViewFolderExplorerSortSelect = memo(function FileNodeViewFolderExplorerSortSelect(
 	props: FileNodeViewFolderExplorerSortSelect_Props,
 ) {
-	const { sort, canSaveSort, catalog, onOpenChange, onSortChange } = props;
-
-	const [searchText, setSearchText] = useState("");
-	// Keep a saved choice offered even when the folder no longer has that field.
-	const options = [
-		...files_sort_BUILT_IN_FIELDS.map((field) => ({
-			value: field as string,
-			label: FILE_NODE_VIEW_FOLDER_SORT_BUILT_IN_LABELS[field] as string,
-		})),
-		...[...new Set([...catalog.fields, sort.field])]
+	const { sort, open, canSaveSort, catalog, onOpenChange, onSortChange } = props;
+	const id = `FileNodeViewFolderExplorerSortSelect-${useId()}`;
+	// Draft ids keep each field mounted through edits and moves. Apply saves only its clause.
+	const [draftRows, setDraftRows] = useState(() =>
+		sort.map((clause, draftId) => ({ id: draftId, clause: { ...clause } })),
+	);
+	const nextDraftId = useRef(sort.length);
+	const fieldTriggers = useRef(new Map<number, HTMLElement>());
+	const pendingFocusId = useRef<number | null>(null);
+	// Keep saved and draft choices offered after their last catalog witness disappears.
+	const fields = [
+		...files_sort_BUILT_IN_FIELDS,
+		...[
+			...new Set([
+				...catalog.fields,
+				...sort.map((clause) => clause.field),
+				...draftRows.map((row) => row.clause.field),
+			]),
+		]
 			.filter((field) => files_sort_field_is_valid(field) && !files_sort_field_is_built_in(field))
-			.sort()
-			.map((field) => ({ value: field, label: get_folder_sort_field_label(field) })),
+			.sort(),
 	];
-	const normalizedSearchText = searchText.trim().toLowerCase();
-	const shownOptions = options.filter((option) => option.label.toLowerCase().includes(normalizedSearchText));
-	const sortLabel = `${get_folder_sort_field_label(sort.field)}, ${get_folder_sort_direction_label(sort)}`;
-	const otherDirectionLabel = get_folder_sort_direction_label({
-		field: sort.field,
-		direction: sort.direction === "asc" ? "desc" : "asc",
-	});
-
-	const handleOpenChange = useFn((open: boolean) => {
-		if (!open) setSearchText("");
-		onOpenChange(open);
-	});
-
-	const handleValueChange = useFn((field: string) => {
-		if (field !== sort.field) {
-			onSortChange({ field, direction: get_folder_sort_first_direction(field) });
+	useLayoutEffect(() => {
+		if (pendingFocusId.current !== null) {
+			fieldTriggers.current.get(pendingFocusId.current)?.focus();
+			pendingFocusId.current = null;
 		}
+	}, [draftRows]);
+	const handleOpenChange = useFn((nextOpen: boolean) => {
+		if (nextOpen) setDraftRows(sort.map((clause) => ({ id: nextDraftId.current++, clause: { ...clause } })));
+		onOpenChange(nextOpen);
 	});
-
-	const handleDirectionClick = useFn(() => {
-		onSortChange({ field: sort.field, direction: sort.direction === "asc" ? "desc" : "asc" });
+	const handleChange = useFn((draftId: number, clause: files_sort_Clause) => {
+		setDraftRows((current) => current.map((row) => (row.id === draftId ? { ...row, clause } : row)));
+	});
+	const handleAdd = useFn(() => {
+		if (draftRows.length === 3) return;
+		const field = fields.find((field) => !draftRows.some((row) => row.clause.field === field))!;
+		const draftId = nextDraftId.current++;
+		pendingFocusId.current = draftId;
+		setDraftRows([...draftRows, { id: draftId, clause: { field, direction: get_folder_sort_first_direction(field) } }]);
+	});
+	const handleMove = useFn((draftId: number, offset: -1 | 1) => {
+		const index = draftRows.findIndex((row) => row.id === draftId);
+		const next = [...draftRows];
+		[next[index], next[index + offset]] = [next[index + offset]!, next[index]!];
+		pendingFocusId.current = draftId;
+		setDraftRows(next);
+	});
+	const handleRemove = useFn((draftId: number) => {
+		const index = draftRows.findIndex((row) => row.id === draftId);
+		const next =
+			draftRows.length === 1
+				? [{ id: draftId, clause: { ...files_sort_DEFAULT[0]! } }]
+				: draftRows.filter((row) => row.id !== draftId);
+		pendingFocusId.current = next[Math.min(index, next.length - 1)]!.id;
+		setDraftRows(next);
+	});
+	const handleReset = useFn(() => {
+		pendingFocusId.current = draftRows[0]!.id;
+		setDraftRows([{ id: draftRows[0]!.id, clause: { ...files_sort_DEFAULT[0]! } }]);
+	});
+	const registerField = useFn((draftId: number, element: HTMLElement | null) => {
+		if (element) fieldTriggers.current.set(draftId, element);
+		else fieldTriggers.current.delete(draftId);
+	});
+	const handleSubmit = useFn((event: React.FormEvent<HTMLFormElement>) => {
+		event.preventDefault();
+		onSortChange(draftRows.map((row) => ({ ...row.clause })));
+		handleOpenChange(false);
 	});
 
 	return (
-		<div className={"FileNodeViewFolderExplorerSortSelect" satisfies FileNodeViewFolderExplorerSortSelect_ClassNames}>
-			<MySearchSelect value={sort.field} setValue={handleValueChange} setOpen={handleOpenChange}>
-				{/* Letter keys on the closed trigger must not change the sort. */}
-				<MySearchSelectTrigger aria-label={`Sort: ${sortLabel}`} typeahead={false}>
-					<MyButton
-						type="button"
-						variant="outline"
-						className={cn(
-							"FileNodeViewFolderExplorerSortSelect-trigger" satisfies FileNodeViewFolderExplorerSortSelect_ClassNames,
-							"FileNodeViewViewSelect-trigger" satisfies FileNodeViewViewSelect_ClassNames,
-						)}
-					>
-						<span>Sort: {sortLabel}</span>
-					</MyButton>
-				</MySearchSelectTrigger>
-				<MySearchSelectPopover
-					aria-label="Sort fields"
-					className={cn(
-						"FileNodeViewFolderExplorerSortSelect-popover" satisfies FileNodeViewFolderExplorerSortSelect_ClassNames,
-						"FileNodeViewViewSelect-popover" satisfies FileNodeViewViewSelect_ClassNames,
-					)}
+		<MyPopover open={open} setOpen={handleOpenChange}>
+			<MyPopoverTrigger>
+				<MyButton
+					variant="outline"
+					className={
+						"FileNodeViewFolderExplorerSortSelect-trigger" satisfies FileNodeViewFolderExplorerSortSelect_ClassNames
+					}
 				>
-					<MySearchSelectPopoverScrollableArea>
-						<MySearchSelectPopoverContent>
-							{!canSaveSort && (
-								<p
-									className={
-										"FileNodeViewFolderExplorerSortSelect-note" satisfies FileNodeViewFolderExplorerSortSelect_ClassNames
-									}
-								>
-									Only people who can edit this folder can save its sort.
-								</p>
-							)}
-							<MySearchSelectSearch
-								className={cn(
-									"FileNodeViewFolderExplorerSortSelect-search" satisfies FileNodeViewFolderExplorerSortSelect_ClassNames,
-									"FileNodeViewViewSelect-search" satisfies FileNodeViewViewSelect_ClassNames,
-								)}
-								aria-label="Search sort fields"
-								placeholder="Search fields"
-								value={searchText}
-								onChange={(event) => setSearchText(event.currentTarget.value)}
-							/>
-							<MySearchSelectList aria-label="Sort fields">
-								{shownOptions.map((option) => (
-									<MySearchSelectItem
-										key={option.value}
-										value={option.value}
-										className={cn(
-											"FileNodeViewFolderExplorerSortSelect-item" satisfies FileNodeViewFolderExplorerSortSelect_ClassNames,
-											"FileNodeViewViewSelect-item" satisfies FileNodeViewViewSelect_ClassNames,
-										)}
-									>
-										{option.label}
-									</MySearchSelectItem>
-								))}
-							</MySearchSelectList>
-							{shownOptions.length === 0 && (
-								<div
-									role="status"
-									className={cn(
-										"FileNodeViewFolderExplorerSortSelect-empty" satisfies FileNodeViewFolderExplorerSortSelect_ClassNames,
-										"FileNodeViewViewSelect-empty" satisfies FileNodeViewViewSelect_ClassNames,
-									)}
-								>
-									{catalog.hasMore ? "No loaded fields match" : "No fields match"}
-								</div>
-							)}
-							<FileNodeViewFolderExplorerFieldsStatus catalog={catalog} />
-						</MySearchSelectPopoverContent>
-					</MySearchSelectPopoverScrollableArea>
-				</MySearchSelectPopover>
-			</MySearchSelect>
-			<MyIconButton
-				variant="outline"
-				tooltip={`Sort ${otherDirectionLabel.toLowerCase()}`}
-				onClick={handleDirectionClick}
+					Sort: {get_folder_sort_label(sort)}
+				</MyButton>
+			</MyPopoverTrigger>
+			<MyPopoverContent
+				unmountOnHide
+				aria-label="Sort"
+				className={
+					"FileNodeViewFolderExplorerSortSelect-popover" satisfies FileNodeViewFolderExplorerSortSelect_ClassNames
+				}
 			>
-				<MyIconButtonIcon>{sort.direction === "asc" ? <ArrowUp /> : <ArrowDown />}</MyIconButtonIcon>
-			</MyIconButton>
-		</div>
+				<form
+					onSubmit={handleSubmit}
+					className={
+						"FileNodeViewFolderExplorerSortSelect-form" satisfies FileNodeViewFolderExplorerSortSelect_ClassNames
+					}
+				>
+					<p
+						className={
+							"FileNodeViewFolderExplorerSortSelect-note" satisfies FileNodeViewFolderExplorerSortSelect_ClassNames
+						}
+					>
+						{canSaveSort ? "Saved for everyone who can read this folder" : "Only for your view"}
+					</p>
+					{draftRows.map((row, index) => (
+						<FileNodeViewFolderExplorerSortRow
+							key={row.id}
+							formId={id}
+							draftId={row.id}
+							priority={index + 1}
+							count={draftRows.length}
+							clause={row.clause}
+							fields={fields.filter(
+								(field) => field === row.clause.field || !draftRows.some((other) => other.clause.field === field),
+							)}
+							catalog={catalog}
+							onChange={handleChange}
+							onMove={handleMove}
+							onRemove={handleRemove}
+							onRegisterField={registerField}
+						/>
+					))}
+					{draftRows.length === 3 && (
+						<p
+							className={
+								"FileNodeViewFolderExplorerSortSelect-note" satisfies FileNodeViewFolderExplorerSortSelect_ClassNames
+							}
+						>
+							Use up to 3 sort fields
+						</p>
+					)}
+					{draftRows.length > 1 && draftRows[0]!.clause.field === "name" && (
+						<p
+							className={
+								"FileNodeViewFolderExplorerSortSelect-note" satisfies FileNodeViewFolderExplorerSortSelect_ClassNames
+							}
+						>
+							Name first already gives each row its order
+						</p>
+					)}
+					<div
+						className={
+							"FileNodeViewFolderExplorerSortSelect-actions" satisfies FileNodeViewFolderExplorerSortSelect_ClassNames
+						}
+					>
+						<MyButton variant="outline" disabled={draftRows.length === 3} onClick={handleAdd}>
+							Add sort field
+						</MyButton>
+						<MyButton variant="ghost" onClick={handleReset}>
+							Reset to Name
+						</MyButton>
+					</div>
+					<div
+						className={
+							"FileNodeViewFolderExplorerSortSelect-actions" satisfies FileNodeViewFolderExplorerSortSelect_ClassNames
+						}
+					>
+						<MyButton variant="outline" onClick={() => handleOpenChange(false)}>
+							Cancel
+						</MyButton>
+						<MyButton type="submit" variant="accent">
+							Apply
+						</MyButton>
+					</div>
+				</form>
+			</MyPopoverContent>
+		</MyPopover>
 	);
 });
 // #endregion folder explorer sort select
@@ -4969,7 +5192,6 @@ type FileNodeViewFolderExplorer_ClassNames =
 	| "FileNodeViewFolderExplorer-column-header"
 	| "FileNodeViewFolderExplorer-column-header-actions"
 	| "FileNodeViewFolderExplorer-sort-button"
-	| "FileNodeViewFolderExplorer-sort-icon"
 	| "FileNodeViewFolderExplorer-show-more"
 	| "FileNodeViewFolderExplorer-show-less"
 	| "FileNodeViewFolderExplorer-show-less-cover";
@@ -4981,10 +5203,11 @@ type FileNodeViewFolderExplorer_Props = {
 	 */
 	hasMoreChildItems: boolean;
 	sort: files_sort_Sort;
+	sortOpen: boolean;
 	/**
-	 * The sort of the shown rows, including held rows while a new sort loads.
+	 * The sort of the shown rows, including held rows while a new sort loads. Null until the first result settles.
 	 */
-	rowsSort: files_sort_Sort;
+	rowsSort: files_sort_Sort | null;
 	canSaveSort: boolean;
 	isSortBusy: boolean;
 	isDone: boolean;
@@ -5000,6 +5223,7 @@ type FileNodeViewFolderExplorer_Props = {
 	filterPreparing: boolean;
 	filterRefreshing: boolean;
 	filterRecovery: "retry" | "reload" | null;
+	sortLimit: ReturnType<typeof useFilesSortedChildren>["sortLimit"];
 	columnCatalog: FileNodeViewFolderCatalog;
 	columnValues: Record<string, FileNodeViewFolderColumnValues>;
 	activeValueTargetCount: number;
@@ -5044,6 +5268,7 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 		visibleChildItems,
 		hasMoreChildItems,
 		sort,
+		sortOpen,
 		rowsSort,
 		canSaveSort,
 		isSortBusy,
@@ -5060,6 +5285,7 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 		filterPreparing,
 		filterRefreshing,
 		filterRecovery,
+		sortLimit,
 		columnCatalog,
 		columnValues,
 		activeValueTargetCount,
@@ -5090,6 +5316,18 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 		onShowLessClick,
 	} = props;
 	const hasFilter = filterSelection !== null || rowsFilterSelection !== null;
+	const displayedSort = rowsSort ?? sort;
+	const isApplyingSort = rowsSort === null || JSON.stringify(sort) !== JSON.stringify(rowsSort);
+	const sortState =
+		sortLimit !== null
+			? "limited"
+			: isFilterFailed || filterRecovery !== null
+				? "failed"
+				: filterRefreshing
+					? "refreshing"
+					: isApplyingSort
+						? "applying"
+						: "ready";
 	const filterState =
 		isFilterFailed || filterRecovery !== null
 			? "failed"
@@ -5106,6 +5344,9 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 								: "ready";
 	const emptyMessage =
 		visibleChildItems.length > 0 ||
+		sortLimit !== null ||
+		filterPaused ||
+		filterSearching ||
 		filterState === "failed" ||
 		filterState === "refreshing" ||
 		filterState === "applying"
@@ -5115,11 +5356,9 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 					? "No matches in ready rows"
 					: tooManyShared || tooManyPending
 						? "No matches in the rows checked"
-						: filterPaused || filterSearching
-							? null
-							: isDone
-								? "No rows match this filter"
-								: "Searching this folder…"
+						: isDone
+							? "No rows match this filter"
+							: "Searching this folder…"
 				: tooManyShared || tooManyPending
 					? null
 					: isDone
@@ -5208,19 +5447,18 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 	const rowsText = JSON.stringify(visibleChildItems.map((row) => get_folder_target_key(row.target)));
 	useLayoutEffect(() => updateActiveTargets(), [rowsText, updateActiveTargets]);
 
-	const getAriaSort = (field: string) =>
-		rowsSort.field !== field ? "none" : rowsSort.direction === "asc" ? "ascending" : "descending";
-	const sortIcon = (
-		<MyIcon className={"FileNodeViewFolderExplorer-sort-icon" satisfies FileNodeViewFolderExplorer_ClassNames}>
-			{rowsSort.direction === "asc" ? <ArrowUp aria-hidden /> : <ArrowDown aria-hidden />}
-		</MyIcon>
-	);
 	const handleColumnSortClick = (field: string) => {
-		onSortChange({
-			field,
-			direction:
-				sort.field !== field ? get_folder_sort_first_direction(field) : sort.direction === "asc" ? "desc" : "asc",
-		});
+		onSortChange([
+			{
+				field,
+				direction:
+					sort.length === 1 && sort[0]!.field === field
+						? sort[0]!.direction === "asc"
+							? "desc"
+							: "asc"
+						: get_folder_sort_first_direction(field),
+			},
+		]);
 	};
 	const handleClearFilter = useFn(() => {
 		onFilterChange(null);
@@ -5234,6 +5472,7 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 
 	return (
 		<div
+			data-sort-state={sortState}
 			data-filter-state={hasFilter || filterState === "failed" ? filterState : undefined}
 			className={"FileNodeViewFolderExplorer" satisfies FileNodeViewFolderExplorer_ClassNames}
 		>
@@ -5255,6 +5494,7 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 				/>
 				<FileNodeViewFolderExplorerSortSelect
 					sort={sort}
+					open={sortOpen}
 					canSaveSort={canSaveSort}
 					catalog={columnCatalog}
 					onOpenChange={onSortOpenChange}
@@ -5272,11 +5512,40 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 					</div>
 				)}
 			</div>
-			{(isShowingHeldRows || filterRefreshing || filterRecovery === "reload") && (
+			{(isShowingHeldRows || filterRefreshing || filterRecovery === "reload" || sortLimit !== null) && (
 				<p className={"FileNodeViewFolderExplorer-notice" satisfies FileNodeViewFolderExplorer_ClassNames}>
-					Showing: {get_folder_filter_label(rowsFilterSelection)}. Sort: {get_folder_sort_field_label(rowsSort.field)},{" "}
-					{get_folder_sort_direction_label(rowsSort)}.
+					Showing: {get_folder_filter_label(rowsFilterSelection)}. Sort: {get_folder_sort_label(displayedSort)}.
 				</p>
+			)}
+			{sortState === "applying" && (
+				<p
+					role="status"
+					className={"FileNodeViewFolderExplorer-notice" satisfies FileNodeViewFolderExplorer_ClassNames}
+				>
+					Applying sort… {get_folder_sort_label(sort)}
+				</p>
+			)}
+			{sortLimit !== null && (
+				<div
+					className={"FileNodeViewFolderExplorerFilter-actions" satisfies FileNodeViewFolderExplorerFilter_ClassNames}
+				>
+					<p
+						role="alert"
+						className={"FileNodeViewFolderExplorer-notice" satisfies FileNodeViewFolderExplorer_ClassNames}
+					>
+						These sort fields need too much work for this group. Use Name next, or use one sort field.{" "}
+						{sortLimit.reason === "group_rows"
+							? "This group has more than 200 candidates."
+							: sortLimit.reason === "scan_work"
+								? "The scan cap was reached."
+								: sortLimit.reason === "bytes"
+									? "The byte limit was reached."
+									: "The DB-call limit was reached."}
+					</p>
+					<MyButton variant="outline" onClick={() => onSortChange(files_sort_DEFAULT.map((clause) => ({ ...clause })))}>
+						Reset to Name
+					</MyButton>
+				</div>
 			)}
 			{filterState === "applying" && hasFilter && (
 				<p
@@ -5356,11 +5625,10 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 				<MyGridTable
 					ref={setTableElement}
 					aria-label="Folder contents"
-					aria-busy={isSortBusy && !filterPaused && !isFilterFailed && filterRecovery === null}
+					aria-busy={isSortBusy && !filterPaused && !isFilterFailed && filterRecovery === null && sortLimit === null}
 					className={"FileNodeViewFolderExplorer-table" satisfies FileNodeViewFolderExplorer_ClassNames}
 					style={{ gridTemplateColumns: gridColumns }}
-					data-sort-field={rowsSort.field}
-					data-sort-direction={rowsSort.direction}
+					data-sort-fields={JSON.stringify(displayedSort)}
 					data-value-target-count={activeValueTargetCount}
 					data-value-page-count={valueQueryCount}
 					onFocusCapture={updateActiveTargets}
@@ -5370,29 +5638,41 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 						<MyGridTableRow
 							className={"FileNodeViewFolderExplorer-header-row" satisfies FileNodeViewFolderExplorer_ClassNames}
 						>
-							{columns.map((field) => (
-								<MyGridTableColumnHeader
-									key={field}
-									data-column-field={field}
-									className={"FileNodeViewFolderExplorer-column-header" satisfies FileNodeViewFolderExplorer_ClassNames}
-									aria-sort={files_sort_field_is_built_in(field) ? getAriaSort(field) : undefined}
-								>
-									{files_sort_field_is_built_in(field) ? (
-										<button
-											type="button"
-											className={
-												"FileNodeViewFolderExplorer-sort-button" satisfies FileNodeViewFolderExplorer_ClassNames
-											}
-											onClick={() => handleColumnSortClick(field)}
-										>
-											{get_folder_column_label(field)}
-											{rowsSort.field === field && sortIcon}
-										</button>
-									) : (
-										get_folder_column_label(field)
-									)}
-								</MyGridTableColumnHeader>
-							))}
+							{columns.map((field) => {
+								const priority = displayedSort.findIndex((clause) => clause.field === field);
+								const clause = displayedSort[priority];
+								return (
+									<MyGridTableColumnHeader
+										key={field}
+										data-column-field={field}
+										data-sort-priority={clause ? priority + 1 : undefined}
+										data-sort-direction={clause?.direction}
+										className={
+											"FileNodeViewFolderExplorer-column-header" satisfies FileNodeViewFolderExplorer_ClassNames
+										}
+										aria-sort={priority === 0 ? (clause!.direction === "asc" ? "ascending" : "descending") : undefined}
+									>
+										{files_sort_field_is_valid(field) ? (
+											<button
+												type="button"
+												className={
+													"FileNodeViewFolderExplorer-sort-button" satisfies FileNodeViewFolderExplorer_ClassNames
+												}
+												onClick={() => handleColumnSortClick(field)}
+											>
+												{get_folder_column_label(field)}
+												{clause && (
+													<span>
+														{priority + 1} {clause.direction === "asc" ? "↑" : "↓"}
+													</span>
+												)}
+											</button>
+										) : (
+											get_folder_column_label(field)
+										)}
+									</MyGridTableColumnHeader>
+								);
+							})}
 							<MyGridTableColumnHeader
 								data-column-field="actions"
 								className={cn(
@@ -5459,7 +5739,7 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 				<MyButton
 					className={"FileNodeViewFolderExplorer-show-more" satisfies FileNodeViewFolderExplorer_ClassNames}
 					variant="ghost"
-					disabled={isShowingHeldRows || filterRefreshing || filterRecovery === "reload"}
+					disabled={isShowingHeldRows || filterRefreshing || filterRecovery === "reload" || sortLimit !== null}
 					onClick={onShowMoreClick}
 				>
 					Show more
@@ -5640,7 +5920,7 @@ type FileNodeViewContent_Props = {
 	viewSelectPortalHost: HTMLElement;
 	onEditorModeChange: (mode: FileEditor_Mode, options?: { replace?: boolean }) => void;
 	onAutomaticEditorModeChange: FileEditor_Props["onEditorModeChange"];
-	onFileViewChange: (view: string) => void;
+	onFileViewChange: (view: string, options?: { replace?: boolean }) => void;
 	onNavigateNode: FileNodeViewHeader_Props["onNavigateNode"];
 };
 
@@ -5822,6 +6102,7 @@ export type FileNodeView_SearchParams = {
 	nodeId?: string;
 	pendingNodeId?: string;
 	view?: files_EditorView;
+	fileView?: string;
 	q?: string;
 };
 
@@ -5860,20 +6141,9 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 	const selectionKey = searchPrivateNodeId ? `private:${searchPrivateNodeId}` : `saved:${searchNodeId}`;
 
 	const isRootNodeSelected = searchNodeId === files_ROOT_ID;
-	// Remember the chosen view per file, so coming back to a file opens the view it had. A file
-	// browser keeps running while the user is on another file, so its live page comes back too.
-	const [fileViews, setFileViews] = useState<{ membershipId: string; views: Record<string, string> }>({
-		membershipId,
-		views: {},
-	});
-	const selectedFileView =
-		(fileViews.membershipId === membershipId ? fileViews.views[selectionKey] : null) ?? "default";
-	const setFileView = (targetSelectionKey: string, view: string) => {
-		setFileViews((current) => ({
-			membershipId,
-			views: { ...(current.membershipId === membershipId ? current.views : {}), [targetSelectionKey]: view },
-		}));
-	};
+	// Keep the chosen view in the URL, so a reload or a shared link opens the same view. Opening
+	// another node drops it, so that node opens on its default view.
+	const selectedFileView = searchParams.fileView ?? "default";
 
 	// Flat HTML views keep the editor visible. "default" is the editor for other files.
 	const isEditorActive =
@@ -5882,31 +6152,35 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 		selectedFileView === "review" ||
 		selectedFileView === "code_browser" ||
 		selectedFileView === "review_browser";
-	const handleFileViewChange = useFn((view: string) => {
-		setFileView(selectionKey, view);
+	const handleFileViewChange = useFn((view: string, options?: { replace?: boolean }) => {
+		onNavigateSearch(
+			{
+				...(searchPrivateNodeId ? { pendingNodeId: searchPrivateNodeId } : { nodeId: searchNodeId }),
+				view: searchParams.view,
+				fileView: view === "default" ? undefined : view,
+				q: searchParams.q,
+			},
+			options,
+		);
 	});
 
 	useGlobalCustomEvent("files::open_browser", (event) => {
 		if (event.detail.membershipId !== membershipId) return;
 		const requestedSelectionKey = `${event.detail.targetKind}:${event.detail.nodeId}`;
-		const requestedFileView = fileViews.membershipId === membershipId ? fileViews.views[requestedSelectionKey] : null;
-		// Remember Browser for that file, then navigate to it. Keep a view that already shows the
-		// browser, such as Code + Browser.
+		// Keep a view of the open file that already shows the browser, such as Code + Browser.
 		if (
-			requestedFileView !== "browser" &&
-			requestedFileView !== "code_browser" &&
-			requestedFileView !== "review_browser"
+			requestedSelectionKey === selectionKey &&
+			(selectedFileView === "browser" || selectedFileView === "code_browser" || selectedFileView === "review_browser")
 		) {
-			setFileView(requestedSelectionKey, "browser");
+			return;
 		}
-		if (requestedSelectionKey !== selectionKey) {
-			onNavigateSearch({
-				...(event.detail.targetKind === "private"
-					? { pendingNodeId: event.detail.nodeId }
-					: { nodeId: event.detail.nodeId }),
-				q: searchParams.q,
-			});
-		}
+		onNavigateSearch({
+			...(event.detail.targetKind === "private"
+				? { pendingNodeId: event.detail.nodeId }
+				: { nodeId: event.detail.nodeId }),
+			fileView: "browser",
+			q: searchParams.q,
+		});
 	});
 
 	const queriedNode = useQuery(
@@ -6034,9 +6308,8 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 	 * Carry `q` through navigation.
 	 * The sidebar keeps its filter when a result is opened, so the URL
 	 * has to keep matching the search box instead of silently dropping the query.
-	 * The current URL editor mode is NOT carried to the next node: the URL gets only
-	 * `nextEditorMode`. A node that was open before on this page opens on the file view saved
-	 * for it in `fileViews`. A node not opened before opens on its default view.
+	 * The current URL editor mode and file view are NOT carried to the next node: the URL gets
+	 * only `nextEditorMode`, and the next node opens on its default file view.
 	 */
 	const navigateToNode = useFn((nodeId?: string, nextEditorMode: files_EditorView = "rich_text_editor") => {
 		const view = nextEditorMode === "rich_text_editor" ? undefined : nextEditorMode;
@@ -6044,9 +6317,8 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 	});
 	const navigateToTarget = useFn((target: files_PendingTarget, nextEditorMode?: files_EditorView) => {
 		const view = nextEditorMode === "rich_text_editor" ? undefined : nextEditorMode;
-		// Paging through pending changes opens each file on its default editor, not on a view
-		// left from an earlier visit.
-		setFileView(`${target.kind}:${target.id}`, "default");
+		// Paging through pending changes opens each file on its default editor. Leaving out
+		// `fileView` does that.
 		onNavigateSearch({
 			...(target.kind === "private" ? { pendingNodeId: target.id } : { nodeId: target.id }),
 			view,
@@ -6057,7 +6329,6 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 		(sourceKey: string, target: files_PendingTarget, options?: { keepReview: boolean }) => {
 			// A completed Save must not replace a different file opened while it was running.
 			if (sourceKey !== `${membershipId}:${selectionKey}`) return;
-			setFileView(`${target.kind}:${target.id}`, "default");
 			onNavigateSearch(
 				{
 					...(target.kind === "private" ? { pendingNodeId: target.id } : { nodeId: target.id }),
@@ -6088,15 +6359,23 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 				{
 					...(searchPrivateNodeId ? { pendingNodeId: searchPrivateNodeId } : { nodeId: searchNodeId ?? files_ROOT_ID }),
 					view,
+					fileView: searchParams.fileView,
 					q: searchParams.q,
 				},
 				options,
 			);
 		},
 	);
+	// A user pick of an editor mode also leaves any other file view, so `fileView` is left out.
 	const navigateToView = useFn<FileNodeViewContent_Props["onEditorModeChange"]>((nextView, options) => {
-		handleFileViewChange("default");
-		handleAutomaticEditorModeChange(nextView, options);
+		onNavigateSearch(
+			{
+				...(searchPrivateNodeId ? { pendingNodeId: searchPrivateNodeId } : { nodeId: searchNodeId ?? files_ROOT_ID }),
+				view: nextView === "rich_text_editor" ? undefined : nextView,
+				q: searchParams.q,
+			},
+			options,
+		);
 	});
 
 	/**
@@ -6117,6 +6396,7 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 				{
 					...(searchPrivateNodeId ? { pendingNodeId: searchPrivateNodeId } : { nodeId: searchNodeId }),
 					view: searchParams.view,
+					fileView: searchParams.fileView,
 					q,
 				},
 				{ replace: true },
@@ -6219,7 +6499,7 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 			files_editable_text_content_type_of(resolvedNode.contentType) === "text/html;charset=utf-8");
 
 	const handleReviewPendingUpdates = useFn(() => {
-		// Flat HTML views keep review in local file state; other files use the URL editor mode.
+		// Flat HTML views keep review in the URL `fileView`; other files use the URL editor mode.
 		// From a browser view, keep the split: review beside the browser.
 		if (isHtmlFile) {
 			handleFileViewChange(

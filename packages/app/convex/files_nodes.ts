@@ -31,8 +31,8 @@ import {
 	path_tree_prefix_upper_bound,
 	string_prefix_upper_bound,
 } from "../server/server-utils.ts";
-import { v, type Infer } from "convex/values";
-import { stream, type QueryStream } from "convex-helpers/server/stream";
+import { compareValues, v, type Infer } from "convex/values";
+import { stream, type IndexKey, type QueryStream } from "convex-helpers/server/stream";
 import { z } from "zod";
 import {
 	date_get_week_start_timestamp,
@@ -68,9 +68,13 @@ import { files_yjs_COMPACTION_RETRY_MESSAGE, files_yjs_scan_client_update } from
 import { files_metadata_apply_set_and_remove, type files_metadata_Entry } from "../shared/files-metadata.ts";
 import {
 	files_sort_compare,
-	files_sort_field_is_valid,
+	files_sort_execution_fields,
+	files_sort_key_of,
+	files_sort_is_valid,
 	files_sort_text_key,
 	type files_sort_Key,
+	type files_sort_RowKey,
+	type files_sort_Sort,
 } from "../shared/files-sort.ts";
 import {
 	files_table_filter_is_valid,
@@ -86,7 +90,7 @@ import app_convex_schema, {
 	ai_chat_workspaces_source_validator,
 	files_content_version_validator,
 	files_pending_target_validator,
-	files_sort_key_validator,
+	files_sort_row_key_validator,
 	files_sort_validator,
 	files_table_filter_validator,
 	file_content_materialization_state_validator,
@@ -177,6 +181,7 @@ const TABLE_FILTER_MAX_BYTES = 4 * 1024 * 1024;
 const TABLE_FILTER_BYTE_RESERVE = 1024 * 1024;
 const TABLE_FILTER_MAX_CALLS = 1000;
 const TABLE_FILTER_CALL_RESERVE = 16;
+const TABLE_SORT_MAX_GROUP_ROWS = 200;
 
 /**
  * How many children one page of a metadata key's missing segment may scan.
@@ -6784,6 +6789,27 @@ const table_cursor_schema = z.object({
 	after: z.array(z.union([z.string().max(TABLE_FILTER_BYTE_RESERVE), z.number().finite(), z.null()])).max(5),
 });
 
+const multi_table_cursor_schema = z.object({
+	scope: z.string().max(8192),
+	phase: z.enum(["value", "missing"]),
+	group: z.union([z.string().max(TABLE_FILTER_BYTE_RESERVE), z.number().finite(), z.null()]),
+	after: table_cursor_schema.shape.after.nullable(),
+	key: z
+		.object({
+			parts: z
+				.array(
+					z
+						.array(z.union([z.string().max(TABLE_FILTER_BYTE_RESERVE), z.number().finite(), z.null()]))
+						.max(3)
+						.nullable(),
+				)
+				.max(3),
+			nameKey: z.tuple([z.string().max(TABLE_FILTER_BYTE_RESERVE), z.string().max(TABLE_FILTER_BYTE_RESERVE)]),
+		})
+		.nullable(),
+	groupDone: z.boolean(),
+});
+
 function count_table_doc(budget: { readBytes: number }, value: object | null) {
 	if (value) budget.readBytes += files_get_utf8_byte_size(JSON.stringify(value)) + 128;
 }
@@ -6866,7 +6892,7 @@ async function db_get_table_field_node(
 	return node;
 }
 
-async function db_get_table_filter_scalar(
+async function db_get_table_scalar(
 	ctx: QueryCtx,
 	args: {
 		entry: files_VisibleEntry;
@@ -6896,7 +6922,10 @@ async function db_get_table_filter_scalar(
 		if (args.fieldDoc === undefined) count_table_doc(args.budget, fieldDoc);
 		if (fieldDoc) check_table_filter_field(fieldDoc, entry);
 		if (!(await fits_table_read_budget(ctx, args.budget))) return undefined;
-		return fieldDoc?.sourceKind === "committed" ? (fieldDoc.sortDisplayValue ?? null) : null;
+		return {
+			sortValue: fieldDoc?.sourceKind === "committed" ? (fieldDoc.sortValue ?? null) : null,
+			displayValue: fieldDoc?.sourceKind === "committed" ? (fieldDoc.sortDisplayValue ?? null) : null,
+		};
 	}
 
 	const iterator = ctx.db
@@ -6909,12 +6938,13 @@ async function db_get_table_filter_scalar(
 		while (true) {
 			if (!(await fits_table_read_budget(ctx, args.budget, true))) return undefined;
 			const next = await iterator.next();
-			if (next.done) return null;
+			if (next.done) return { sortValue: null, displayValue: null };
 			count_table_doc(args.budget, next.value);
 			check_table_filter_field(next.value, entry);
 			if (!(await fits_table_read_budget(ctx, args.budget))) return undefined;
 			if (next.value.docKind !== "value" || next.value.valueKind === "maybe_date") continue;
-			return next.value.stringValue ?? next.value.numberValue ?? next.value.booleanValue ?? null;
+			const displayValue = next.value.stringValue ?? next.value.numberValue ?? next.value.booleanValue ?? null;
+			return { sortValue: displayValue === null ? null : files_sort_text_key(String(displayValue)), displayValue };
 		}
 	} finally {
 		await iterator.return?.();
@@ -6928,29 +6958,37 @@ async function db_list_custom_table_children(
 		membershipId: Id<"organizations_workspaces_users">;
 		parentId: Id<"files_nodes"> | "root";
 		kind: "file" | "folder";
-		sort: { field: string; direction: "asc" | "desc" };
+		sort: files_sort_Sort;
 		filter: files_table_Filter | null;
 		workLimit: number;
 		segment: "value" | "missing";
 		paginationOpts: PaginationOptions;
 	},
 ) {
-	const refused = { page: [], isDone: true, continueCursor: "", scanBoundary: null, scannedCount: 0, workCount: 0 };
+	const refused = {
+		page: [],
+		isDone: true,
+		continueCursor: "",
+		scanBoundary: null,
+		scannedCount: 0,
+		workCount: 0,
+		sortLimit: null,
+		workPaused: false,
+	};
 	const { userAuth, membership } = args.reader;
-	const field = args.sort.field;
+	const sort = args.sort[0]!;
+	const field = sort.field;
 	const byName = field === "name" || (field === "size" && args.kind === "folder");
 	if (args.segment === "missing" && (byName || field === "created" || field === "updated")) return refused;
 	const metadata = !["name", "created", "updated", "type", "size"].includes(field);
 	const metadataMissing = metadata && args.segment === "missing";
-	const direction =
-		args.segment === "missing" || (field === "size" && args.kind === "folder") ? "asc" : args.sort.direction;
+	const direction = args.segment === "missing" || (field === "size" && args.kind === "folder") ? "asc" : sort.direction;
 	const scope = JSON.stringify([
 		args.membershipId,
 		args.parentId,
 		args.kind,
 		args.segment,
-		field,
-		args.sort.direction,
+		args.sort,
 		args.filter === null
 			? null
 			: [
@@ -7119,10 +7157,10 @@ async function db_list_custom_table_children(
 	);
 	let workCount = 0;
 	let scannedCount = 0;
-	let scanBoundary: files_sort_Key | null = null;
+	let scanBoundary: files_sort_RowKey | null = null;
 	let last = after;
 	let isDone = false;
-	const page: Array<Awaited<ReturnType<typeof db_get_tree_rows>>[number] & { sortKey: files_sort_Key }> = [];
+	const page: Array<Awaited<ReturnType<typeof db_get_tree_rows>>[number] & { sortKey: files_sort_RowKey }> = [];
 	const canWriteContentByScope = new Map<Id<"files_nodes"> | null, Promise<boolean>>();
 	let visibleReader: Awaited<ReturnType<typeof files_visible_db_create_reader>> | undefined;
 	let folderPath: string | undefined;
@@ -7157,10 +7195,7 @@ async function db_list_custom_table_children(
 		const by_name: files_sort_Key = [node.sortName, node.name];
 		let eligible = true;
 		if (fieldIterator) {
-			while (
-				!fieldsDone &&
-				(!fieldDoc || files_sort_compare([fieldDoc.sortName!, fieldDoc.name!], by_name, "asc") < 0)
-			) {
+			while (!fieldsDone && (!fieldDoc || compareValues([fieldDoc.sortName!, fieldDoc.name!], by_name) < 0)) {
 				if (workCount >= maxWork || !(await fits_table_read_budget(ctx, budget, true))) break;
 				workCount++;
 				const nextField = await fieldIterator.next();
@@ -7185,8 +7220,7 @@ async function db_list_custom_table_children(
 					fieldDoc = witness;
 				}
 			}
-			if (!fieldsDone && (!fieldDoc || files_sort_compare([fieldDoc.sortName!, fieldDoc.name!], by_name, "asc") < 0))
-				break;
+			if (!fieldsDone && (!fieldDoc || compareValues([fieldDoc.sortName!, fieldDoc.name!], by_name) < 0)) break;
 			primaryField = fieldDoc?.fileNodeId === node._id ? fieldDoc : null;
 			eligible = primaryField?.sortValue === undefined;
 		}
@@ -7219,14 +7253,14 @@ async function db_list_custom_table_children(
 		if (primaryField) check_table_filter_field(primaryField, entry);
 		let scalar: string | number | boolean | null = null;
 		if (eligible && args.filter?.kind === "text") {
-			const value = await db_get_table_filter_scalar(ctx, {
+			const value = await db_get_table_scalar(ctx, {
 				entry,
 				field: args.filter.field,
 				budget,
 				...(args.filter.field === field ? { fieldDoc: primaryField } : {}),
 			});
 			if (value === undefined) break;
-			scalar = value;
+			scalar = value.displayValue;
 		}
 		const matches =
 			eligible &&
@@ -7242,18 +7276,18 @@ async function db_list_custom_table_children(
 					},
 					scalar,
 				));
-		const sortKey: files_sort_Key =
-			byName || args.segment === "missing"
-				? by_name
-				: field === "created"
-					? [node._creationTime]
-					: field === "updated"
-						? [node.updatedAt, ...by_name]
-						: field === "type"
-							? [node.lowercaseExtension, ...by_name]
-							: field === "size"
-								? [node.contentByteSize, ...by_name]
-								: [primaryField!.sortValue ?? null, ...by_name];
+		const sortKey = files_sort_key_of(
+			args.sort,
+			{
+				kind: node.kind,
+				name: node.name,
+				createdAt: node._creationTime,
+				updatedAt: node.updatedAt,
+				type: node.lowercaseExtension,
+				contentByteSize: node.contentByteSize,
+			},
+			new Map([[field, metadataMissing ? null : (primaryField?.sortValue ?? null)]]),
+		);
 		let treeRow: Awaited<ReturnType<typeof db_get_tree_rows>>[number] | undefined;
 		if (matches) {
 			if (!(await fits_table_read_budget(ctx, budget, true))) break;
@@ -7279,15 +7313,617 @@ async function db_list_custom_table_children(
 		scanBoundary,
 		scannedCount,
 		workCount,
+		sortLimit: null,
+		workPaused: false,
+	};
+}
+
+async function db_list_multi_sorted_table_children(
+	ctx: QueryCtx,
+	args: {
+		reader: NonNullable<Awaited<ReturnType<typeof db_get_tree_reader>>>;
+		membershipId: Id<"organizations_workspaces_users">;
+		parentId: Id<"files_nodes"> | "root";
+		kind: "file" | "folder";
+		sort: files_sort_Sort;
+		filter: files_table_Filter | null;
+		workLimit: number;
+		segment: "value" | "missing";
+		paginationOpts: PaginationOptions;
+	},
+) {
+	const refused = {
+		page: [],
+		isDone: true,
+		continueCursor: "",
+		scanBoundary: null,
+		scannedCount: 0,
+		workCount: 0,
+		sortLimit: null,
+		workPaused: false,
+	};
+	const { membership, userAuth } = args.reader;
+	const executionFields = files_sort_execution_fields(args.sort, args.kind);
+	const primaryClause = executionFields[0] ?? { field: "name", direction: "asc" as const };
+	const field = primaryClause.field;
+	const metadata = !["name", "created", "updated", "type", "size"].includes(field);
+	const invariantPrimary = args.kind === "folder" && ["type", "size"].includes(args.sort[0]!.field);
+	if (
+		invariantPrimary
+			? args.segment === "value"
+			: args.segment === "missing" && ["name", "created", "updated"].includes(field)
+	)
+		return refused;
+	const indexedName =
+		field === "name" || (field !== "created" && (executionFields.length === 1 || executionFields[1]?.field === "name"));
+	const nameDirection =
+		field === "name"
+			? primaryClause.direction
+			: (executionFields.find((clause) => clause.field === "name")?.direction ?? "asc");
+	const scope = JSON.stringify([args.membershipId, args.parentId, args.kind, args.segment, args.sort, args.filter]);
+	let last: z.infer<typeof multi_table_cursor_schema> = {
+		scope,
+		phase: invariantPrimary ? "value" : args.segment,
+		group: null,
+		after: null,
+		key: null,
+		groupDone: false,
+	};
+	if (args.paginationOpts.cursor) {
+		try {
+			const parsed = multi_table_cursor_schema.safeParse(JSON.parse(args.paginationOpts.cursor));
+			if (
+				!parsed.success ||
+				parsed.data.scope !== scope ||
+				(parsed.data.key && parsed.data.key.parts.length !== args.sort.length)
+			)
+				return refused;
+			last = parsed.data;
+		} catch {
+			return refused;
+		}
+	}
+	if (
+		(!invariantPrimary && last.phase !== args.segment) ||
+		(last.phase === "missing" && ["name", "created", "updated"].includes(field))
+	)
+		return refused;
+	if (
+		last.group !== null &&
+		(field === "created" || field === "updated" || field === "size"
+			? typeof last.group !== "number"
+			: typeof last.group !== "string")
+	)
+		return refused;
+	if (last.after) {
+		const nameSuffix = field === "name" || last.phase === "missing";
+		const length = nameSuffix ? 4 : field === "created" ? 2 : 5;
+		if (
+			last.after.length !== length ||
+			typeof last.after.at(-2) !== "number" ||
+			typeof last.after.at(-1) !== "string" ||
+			!ctx.db.normalizeId(
+				metadata && last.phase === "value" ? "files_metadata_docs" : "files_nodes",
+				String(last.after.at(-1)),
+			) ||
+			(nameSuffix && (typeof last.after[0] !== "string" || typeof last.after[1] !== "string"))
+		)
+			return refused;
+	}
+	const budget = { readBytes: 0 };
+	let workCount = 0;
+	let scannedCount = 0;
+	let scanBoundary: files_sort_RowKey | null = null;
+	let isDone = false;
+	let stopReason: "group_rows" | "scan_work" | "bytes" | "calls" | null = null;
+	let intrinsicLimit = false;
+	const page: Array<Awaited<ReturnType<typeof db_get_tree_rows>>[number] & { sortKey: files_sort_RowKey }> = [];
+	const pageSize = TABLE_FILTER_MAX_CANDIDATES;
+	const canWriteContentByScope = new Map<Id<"files_nodes"> | null, Promise<boolean>>();
+	let visibleReader: Awaited<ReturnType<typeof files_visible_db_create_reader>> | undefined;
+	let folderPath: string | undefined;
+	type Raw = Doc<"files_nodes"> | Doc<"files_metadata_docs">;
+	type Candidate = {
+		node: Doc<"files_nodes">;
+		key: files_sort_RowKey;
+		scalar: string | number | boolean | null;
+	};
+	const stop_for_budget = async () => {
+		const metrics = await ctx.meta.getTransactionMetrics();
+		stopReason =
+			Math.max(budget.readBytes, metrics.bytesRead.used) + TABLE_FILTER_BYTE_RESERVE > TABLE_FILTER_MAX_BYTES ||
+			metrics.bytesRead.remaining < TABLE_FILTER_BYTE_RESERVE
+				? "bytes"
+				: "calls";
+	};
+	const next_doc = async (iterator: AsyncIterator<[Raw | null, IndexKey, number], undefined>) => {
+		if (workCount >= args.workLimit) {
+			stopReason = "scan_work";
+			return undefined;
+		}
+		if (!(await fits_table_read_budget(ctx, budget, true))) {
+			await stop_for_budget();
+			return undefined;
+		}
+		workCount++;
+		const next = await iterator.next();
+		if (!next.done) budget.readBytes += next.value[2];
+		if (!(await fits_table_read_budget(ctx, budget))) {
+			await stop_for_budget();
+			return undefined;
+		}
+		return next;
+	};
+	const primary_stream = (
+		phase: "value" | "missing",
+		direction: "asc" | "desc",
+	): QueryStream<Doc<"files_nodes">> | QueryStream<Doc<"files_metadata_docs">> => {
+		const nodes = stream(ctx.db, app_convex_schema).query("files_nodes");
+		if (field === "name" || (metadata && phase === "missing"))
+			return nodes
+				.withIndex("by_org_ws_parent_archive_restricted_kind_sortName_name", (q) =>
+					q
+						.eq("organizationId", membership.organizationId)
+						.eq("workspaceId", membership.workspaceId)
+						.eq("parentId", args.parentId)
+						.eq("archiveOperationId", null)
+						.eq("isRestrictedScopeRoot", false)
+						.eq("kind", args.kind),
+				)
+				.order(direction);
+		if (field === "created")
+			return nodes
+				.withIndex("by_org_ws_parent_archive_restricted_kind", (q) =>
+					q
+						.eq("organizationId", membership.organizationId)
+						.eq("workspaceId", membership.workspaceId)
+						.eq("parentId", args.parentId)
+						.eq("archiveOperationId", null)
+						.eq("isRestrictedScopeRoot", false)
+						.eq("kind", args.kind),
+				)
+				.order(direction);
+		if (field === "updated")
+			return nodes
+				.withIndex("by_org_ws_parent_archive_restricted_kind_updatedAt_name", (q) =>
+					q
+						.eq("organizationId", membership.organizationId)
+						.eq("workspaceId", membership.workspaceId)
+						.eq("parentId", args.parentId)
+						.eq("archiveOperationId", null)
+						.eq("isRestrictedScopeRoot", false)
+						.eq("kind", args.kind),
+				)
+				.order(direction);
+		if (field === "type")
+			return nodes
+				.withIndex("by_org_ws_parent_archive_restricted_kind_ext_sortName_name", (q) => {
+					const prefix = q
+						.eq("organizationId", membership.organizationId)
+						.eq("workspaceId", membership.workspaceId)
+						.eq("parentId", args.parentId)
+						.eq("archiveOperationId", null)
+						.eq("isRestrictedScopeRoot", false)
+						.eq("kind", args.kind);
+					return phase === "missing" ? prefix.eq("lowercaseExtension", null) : prefix.gt("lowercaseExtension", null);
+				})
+				.order(direction);
+		if (field === "size")
+			return nodes
+				.withIndex("by_org_ws_parent_archive_restricted_kind_size_sortName_name", (q) => {
+					const prefix = q
+						.eq("organizationId", membership.organizationId)
+						.eq("workspaceId", membership.workspaceId)
+						.eq("parentId", args.parentId)
+						.eq("archiveOperationId", null)
+						.eq("isRestrictedScopeRoot", false)
+						.eq("kind", args.kind);
+					return phase === "missing" ? prefix.eq("contentByteSize", null) : prefix.gt("contentByteSize", null);
+				})
+				.order(direction);
+		return stream(ctx.db, app_convex_schema)
+			.query("files_metadata_docs")
+			.withIndex("by_org_ws_source_archive_docKind_field_parent_restricted_sort", (q) =>
+				q
+					.eq("organizationId", membership.organizationId)
+					.eq("workspaceId", membership.workspaceId)
+					.eq("sourceKind", "committed")
+					.eq("archiveOperationId", undefined)
+					.eq("docKind", "field")
+					.eq("fieldPath", field)
+					.eq("parentId", args.parentId)
+					.eq("isRestrictedScopeRoot", false)
+					.eq("nodeKind", args.kind)
+					.gte("sortValue", ""),
+			)
+			.order(direction);
+	};
+	const candidate_node = async (raw: Raw, phase: "value" | "missing") => {
+		if (metadata && phase === "value") {
+			const fieldDoc = raw as Doc<"files_metadata_docs">;
+			const node = await db_get_table_field_node(ctx, {
+				fieldDoc,
+				membership,
+				parentId: args.parentId,
+				kind: args.kind,
+				budget,
+			});
+			if (!node) {
+				await stop_for_budget();
+				return undefined;
+			}
+			return { node, primaryField: fieldDoc };
+		}
+		const node = raw as Doc<"files_nodes">;
+		check_table_node(node);
+		return { node, primaryField: null };
+	};
+	const build_candidate = async (
+		node: Doc<"files_nodes">,
+		primaryField: Doc<"files_metadata_docs"> | null,
+		phase: "value" | "missing",
+		positional = false,
+	): Promise<Candidate | undefined> => {
+		const parts = new Map<string, string | null>();
+		let scalar: string | number | boolean | null = null;
+		const fields = new Set(
+			executionFields
+				.filter((clause) => !["name", "created", "updated", "type", "size"].includes(clause.field))
+				.map((clause) => clause.field),
+		);
+		if (!positional && args.filter?.kind === "text") fields.add(args.filter.field);
+		for (const key of fields) {
+			if (positional) {
+				parts.set(key, null);
+				continue;
+			}
+			const value = await db_get_table_scalar(ctx, {
+				entry: { kind: "saved", node, pendingUpdate: null, path: node.path },
+				field: key,
+				budget,
+				...(key === field && metadata ? { fieldDoc: primaryField } : {}),
+			});
+			if (!value) {
+				await stop_for_budget();
+				return undefined;
+			}
+			parts.set(key, key === field && phase === "missing" ? null : value.sortValue);
+			if (args.filter?.kind === "text" && key === args.filter.field) scalar = value.displayValue;
+		}
+		return {
+			node,
+			scalar,
+			key: files_sort_key_of(
+				args.sort,
+				{
+					kind: node.kind,
+					name: node.name,
+					createdAt: node._creationTime,
+					updatedAt: node.updatedAt,
+					type: node.lowercaseExtension,
+					contentByteSize: node.contentByteSize,
+				},
+				parts,
+			),
+		};
+	};
+	const process_candidate = async (candidate: Candidate, eligible = true) => {
+		if (!eligible) return { complete: true, row: undefined };
+		if (!(await fits_table_read_budget(ctx, budget, true))) {
+			await stop_for_budget();
+			return { complete: false, row: undefined };
+		}
+		const node = candidate.node;
+		const pendingUpdate = await ctx.db
+			.query("files_pending_updates")
+			.withIndex("by_user_target", (q) =>
+				q.eq("userId", userAuth.id).eq("target.kind", "saved").eq("target.id", node._id),
+			)
+			.unique();
+		count_table_doc(budget, pendingUpdate);
+		if (pendingUpdate?.pendingArchive || pendingUpdate?.pendingMove) {
+			if (!(await fits_table_read_budget(ctx, budget, true))) {
+				await stop_for_budget();
+				return { complete: false, row: undefined };
+			}
+			if (!visibleReader) {
+				visibleReader = await files_visible_db_create_reader(ctx, {
+					organizationId: membership.organizationId,
+					workspaceId: membership.workspaceId,
+					userId: userAuth.id,
+				});
+				folderPath =
+					args.parentId === files_ROOT_ID
+						? ""
+						: (await visibleReader.resolveTarget({ kind: "saved", id: args.parentId }))?.path;
+			}
+			const entry = await visibleReader.resolveTarget({ kind: "saved", id: node._id });
+			if (visibleReader.exhausted) {
+				stopReason = "calls";
+				return { complete: false, row: undefined };
+			}
+			eligible = folderPath !== undefined && entry?.path === `${folderPath}/${node.name}`;
+		}
+		const matches =
+			eligible &&
+			(args.filter === null ||
+				files_table_filter_matches(
+					args.filter,
+					{
+						name: node.name,
+						createdAt: node._creationTime,
+						updatedAt: node.updatedAt,
+						type: files_lowercase_extension(node.name, node.kind),
+						contentByteSize: node.kind === "folder" ? null : node.contentByteSize,
+					},
+					candidate.scalar,
+				));
+		let row: Awaited<ReturnType<typeof db_get_tree_rows>>[number] | undefined;
+		if (matches) {
+			if (!(await fits_table_read_budget(ctx, budget, true))) {
+				await stop_for_budget();
+				return { complete: false, row: undefined };
+			}
+			[row] = await db_get_tree_rows(ctx, { userAuth, membership, fileNodes: [node], canWriteContentByScope });
+		}
+		if (!(await fits_table_read_budget(ctx, budget))) {
+			await stop_for_budget();
+			return { complete: false, row: undefined };
+		}
+		return {
+			complete: true,
+			row: row
+				? {
+						...row,
+						contentType: pendingUpdate?.pendingReplacement?.contentType ?? node.contentType,
+						sortKey: candidate.key,
+					}
+				: undefined,
+		};
+	};
+	let phase = last.phase;
+	let group = last.group;
+	let groupDone = last.groupDone;
+	let after = last.after;
+	let afterKey = last.key;
+	while (scannedCount < pageSize && !stopReason) {
+		const missingMetadata = metadata && phase === "missing";
+		const wholeRange = field === "name" || phase === "missing";
+		const rangeDirection = indexedName ? nameDirection : primaryClause.direction;
+		let base = primary_stream(phase, rangeDirection);
+		const prefix = base.getEqualityIndexFilter();
+		if (!wholeRange && (group === null || groupDone)) {
+			let seek = primary_stream(phase, primaryClause.direction);
+			if (group !== null)
+				seek = seek.narrow({
+					lowerBound: primaryClause.direction === "asc" ? [...prefix, group] : [],
+					lowerBoundInclusive: primaryClause.direction !== "asc",
+					upperBound: primaryClause.direction === "desc" ? [...prefix, group] : [],
+					upperBoundInclusive: primaryClause.direction !== "desc",
+				});
+			const distinctField =
+				field === "created"
+					? "_creationTime"
+					: field === "updated"
+						? "updatedAt"
+						: field === "type"
+							? "lowercaseExtension"
+							: field === "size"
+								? "contentByteSize"
+								: "sortValue";
+			const iterator = seek.distinct([distinctField]).iterWithKeys(true)[Symbol.asyncIterator]();
+			const probe = await next_doc(iterator);
+			await iterator.return?.();
+			if (!probe) break;
+			if (probe.done) {
+				if (invariantPrimary && metadata && phase === "value") {
+					phase = "missing";
+					group = null;
+					groupDone = false;
+					after = null;
+					afterKey = null;
+					continue;
+				}
+				isDone = true;
+				break;
+			}
+			if (!probe.value[0] || !(await candidate_node(probe.value[0], phase))) break;
+			group = probe.value[1][prefix.length] as string | number;
+			groupDone = false;
+			after = null;
+			afterKey = null;
+		}
+		if (!wholeRange)
+			base = base.narrow({
+				lowerBound: [...prefix, group!],
+				lowerBoundInclusive: true,
+				upperBound: [...prefix, group!],
+				upperBoundInclusive: true,
+			});
+		// Only an indexed Name walk resumes by a raw suffix. Other paths reread the proved group.
+		if (indexedName && after)
+			base = base.narrow({
+				lowerBound: rangeDirection === "asc" ? [...prefix, ...after] : [],
+				lowerBoundInclusive: rangeDirection !== "asc",
+				upperBound: rangeDirection === "desc" ? [...prefix, ...after] : [],
+				upperBoundInclusive: rangeDirection !== "desc",
+			});
+		let witnesses: QueryStream<Doc<"files_metadata_docs">> | null = missingMetadata
+			? stream(ctx.db, app_convex_schema)
+					.query("files_metadata_docs")
+					.withIndex("by_org_ws_source_archive_docKind_field_parent_restricted_name", (q) =>
+						q
+							.eq("organizationId", membership.organizationId)
+							.eq("workspaceId", membership.workspaceId)
+							.eq("sourceKind", "committed")
+							.eq("archiveOperationId", undefined)
+							.eq("docKind", "field")
+							.eq("fieldPath", field)
+							.eq("parentId", args.parentId)
+							.eq("isRestrictedScopeRoot", false)
+							.eq("nodeKind", args.kind),
+					)
+					.order(indexedName ? rangeDirection : "asc")
+			: null;
+		if (missingMetadata && !indexedName) base = primary_stream(phase, "asc");
+		if (witnesses && indexedName && after)
+			witnesses = witnesses.narrow({
+				lowerBound: rangeDirection === "asc" ? [...witnesses.getEqualityIndexFilter(), after[0]!, after[1]!] : [],
+				lowerBoundInclusive: rangeDirection !== "asc",
+				upperBound: rangeDirection === "desc" ? [...witnesses.getEqualityIndexFilter(), after[0]!, after[1]!] : [],
+				upperBoundInclusive: rangeDirection !== "desc",
+			});
+		const iterator = base.iterWithKeys(true)[Symbol.asyncIterator]();
+		const witnessIterator = witnesses?.iterWithKeys(true)[Symbol.asyncIterator]();
+		let witness: Doc<"files_metadata_docs"> | null = null;
+		let witnessesDone = false;
+		let rangeDone = false;
+		let rawCount = 0;
+		const candidates: Candidate[] = [];
+		try {
+			while (!stopReason && (indexedName ? scannedCount < pageSize : true)) {
+				const next = await next_doc(iterator);
+				if (!next) break;
+				if (next.done) {
+					rangeDone = true;
+					break;
+				}
+				if (!next.value[0]) throw should_never_happen("Table sort stream yielded no document");
+				const linked = await candidate_node(next.value[0], phase);
+				if (!linked) break;
+				const { node } = linked;
+				let primaryField = linked.primaryField;
+				let eligible = true;
+				if (missingMetadata) {
+					if (++rawCount > TREE_CHILDREN_SORT_MISSING_MAX_SCAN) {
+						stopReason = "scan_work";
+						intrinsicLimit = true;
+						break;
+					}
+					const before_node = () =>
+						witness?.sourceKind !== "committed" ||
+						compareValues([witness.sortName!, witness.name!], [node.sortName, node.name]) *
+							(indexedName && rangeDirection === "desc" ? -1 : 1) <
+							0;
+					while (!witnessesDone && before_node() && !stopReason) {
+						const nextWitness = await next_doc(witnessIterator!);
+						if (!nextWitness) break;
+						if (nextWitness.done) {
+							witnessesDone = true;
+							witness = null;
+							break;
+						}
+						const doc = nextWitness.value[0] as Doc<"files_metadata_docs">;
+						if (
+							!doc ||
+							!(await db_get_table_field_node(ctx, {
+								fieldDoc: doc,
+								membership,
+								parentId: args.parentId,
+								kind: args.kind,
+								budget,
+							}))
+						) {
+							await stop_for_budget();
+							break;
+						}
+						witness = doc;
+					}
+					if (stopReason) break;
+					primaryField = witness?.sourceKind === "committed" && witness.fileNodeId === node._id ? witness : null;
+					eligible = primaryField?.sourceKind !== "committed" || primaryField.sortValue === undefined;
+				}
+				if (!indexedName && !eligible) continue;
+				if (!indexedName && candidates.length === TABLE_SORT_MAX_GROUP_ROWS) {
+					stopReason = "group_rows";
+					intrinsicLimit = true;
+					break;
+				}
+				const candidate = await build_candidate(node, primaryField, phase, !eligible);
+				if (!candidate) break;
+				if (!indexedName) {
+					candidates.push(candidate);
+					continue;
+				}
+				const result = await process_candidate(candidate, eligible);
+				if (!result.complete) break;
+				if (result.row) page.push(result.row);
+				scannedCount++;
+				scanBoundary = candidate.key;
+				after = next.value[1].slice(prefix.length) as Array<string | number | null>;
+				last = { scope, phase, group, after, key: candidate.key, groupDone: false };
+			}
+		} finally {
+			await iterator.return?.();
+			await witnessIterator?.return?.();
+		}
+		if (stopReason) break;
+		if (indexedName) {
+			if (!rangeDone) break;
+			if (wholeRange) {
+				isDone = true;
+				break;
+			}
+			groupDone = true;
+			after = null;
+			afterKey = null;
+			if (scannedCount > 0) last = { ...last, groupDone: true };
+			continue;
+		}
+		if (!rangeDone) break;
+		// Order every candidate before filtering. A small group stays whole on the page.
+		candidates.sort((left, right) => files_sort_compare(left.key, right.key, args.sort));
+		const remaining = candidates.filter(
+			(candidate) => afterKey === null || files_sort_compare(candidate.key, afterKey, args.sort) > 0,
+		);
+		if (candidates.length <= pageSize && remaining.length > pageSize - scannedCount) break;
+		const batch = remaining.slice(0, pageSize - scannedCount);
+		const completed: Array<{ candidate: Candidate; row: (typeof page)[number] | undefined }> = [];
+		for (const candidate of batch) {
+			const result = await process_candidate(candidate);
+			if (!result.complete) break;
+			completed.push({ candidate, row: result.row });
+		}
+		if (!stopReason || candidates.length > pageSize) {
+			for (const { candidate, row } of completed) {
+				if (row) page.push(row);
+				scannedCount++;
+				scanBoundary = candidate.key;
+				last = { scope, phase, group, after: null, key: candidate.key, groupDone: false };
+			}
+		}
+		if (stopReason) break;
+		if (batch.length < remaining.length) break;
+		if (wholeRange) {
+			isDone = true;
+			break;
+		}
+		groupDone = true;
+		after = null;
+		afterKey = null;
+		if (scannedCount > 0) last = { ...last, groupDone: true };
+	}
+	const sortLimit =
+		stopReason && (intrinsicLimit || (scannedCount === 0 && args.workLimit === TREE_CHILDREN_SORT_MISSING_MAX_SCAN))
+			? { reason: stopReason }
+			: null;
+	return {
+		page,
+		isDone,
+		continueCursor: scannedCount > 0 ? JSON.stringify(last) : (args.paginationOpts.cursor ?? ""),
+		scanBoundary,
+		scannedCount,
+		workCount,
+		sortLimit,
+		workPaused: stopReason !== null && sortLimit === null && scannedCount === 0,
 	};
 }
 
 /**
  * One page of one segment of one folder's children, of one kind, for the folder table.
  *
- * Each kind has a `value` segment, the children that have a value for the sort field, in the sort
- * direction. Some fields also have a `missing` segment: the children without a value, always by
- * name, A to Z. The table shows folders before files, and each value segment before its missing one.
+ * Each kind has a `value` and `missing` segment for the first clause. One clause keeps its native
+ * index order. Multi-sort applies the later clauses inside each primary group. Folders come first.
  *
  * Only children that are not their own restricted root are read. When the caller may read the
  * folder, every such child is readable. So no row is dropped for access after paging, and a hidden
@@ -7315,28 +7951,45 @@ export const list_tree_children_sorted = query({
 				createdBy: v.id("users"),
 				updatedBy: v.id("users"),
 				/**
-				 * The row's index tuple after the fields every row of its segment shares. Compare two keys
-				 * with `files_sort_compare`.
+				 * The full clause key. Compare it with `files_sort_compare` and the original list.
 				 */
-				sortKey: files_sort_key_validator,
+				sortKey: files_sort_row_key_validator,
 			}),
 		).fields,
-		scanBoundary: v.union(files_sort_key_validator, v.null()),
+		scanBoundary: v.union(files_sort_row_key_validator, v.null()),
 		scannedCount: v.number(),
 		workCount: v.number(),
+		sortLimit: v.union(
+			v.object({
+				reason: v.union(v.literal("group_rows"), v.literal("scan_work"), v.literal("bytes"), v.literal("calls")),
+			}),
+			v.null(),
+		),
+		workPaused: v.boolean(),
 	}),
 	handler: async (
 		ctx,
 		args,
 	): Promise<
-		PaginationResult<Awaited<ReturnType<typeof db_get_tree_rows>>[number] & { sortKey: files_sort_Key }> & {
-			scanBoundary: files_sort_Key | null;
+		PaginationResult<Awaited<ReturnType<typeof db_get_tree_rows>>[number] & { sortKey: files_sort_RowKey }> & {
+			scanBoundary: files_sort_RowKey | null;
 			scannedCount: number;
 			workCount: number;
+			sortLimit: { reason: "group_rows" | "scan_work" | "bytes" | "calls" } | null;
+			workPaused: boolean;
 		}
 	> => {
 		// Every refusal gives this one answer, like `list_tree_children`.
-		const refused = { page: [], isDone: true, continueCursor: "", scanBoundary: null, scannedCount: 0, workCount: 0 };
+		const refused = {
+			page: [],
+			isDone: true,
+			continueCursor: "",
+			scanBoundary: null,
+			scannedCount: 0,
+			workCount: 0,
+			sortLimit: null,
+			workPaused: false,
+		};
 
 		const reader = await db_get_tree_reader(ctx, { membershipId: args.membershipId });
 		if (!reader) {
@@ -7353,7 +8006,7 @@ export const list_tree_children_sorted = query({
 			return refused;
 		}
 
-		if (!files_sort_field_is_valid(args.sort.field)) {
+		if (!files_sort_is_valid(args.sort)) {
 			return refused;
 		}
 		if (
@@ -7366,9 +8019,11 @@ export const list_tree_children_sorted = query({
 		)
 			throw convex_error({ message: "Invalid table filter or page limit." });
 
+		if (args.sort.length > 1) return await db_list_multi_sorted_table_children(ctx, { ...args, reader });
+		const sort = args.sort[0]!;
 		if (
 			args.filter !== null ||
-			(!["name", "created", "updated", "type", "size"].includes(args.sort.field) && args.segment === "missing")
+			(!["name", "created", "updated", "type", "size"].includes(sort.field) && args.segment === "missing")
 		) {
 			return await db_list_custom_table_children(ctx, { ...args, reader });
 		}
@@ -7377,20 +8032,40 @@ export const list_tree_children_sorted = query({
 			...args.paginationOpts,
 			numItems: Math.min(args.paginationOpts.numItems, TREE_CHILDREN_MAX_ITEMS),
 		};
-		const field = args.sort.field;
-		const direction = args.sort.direction;
+		const field = sort.field;
+		const direction = sort.direction;
 
 		type SortedRow = {
 			node: Doc<"files_nodes">;
-			sortKey: files_sort_Key;
+			sortKey: files_sort_RowKey;
 		};
 		const node_rows = (
 			result: PaginationResult<Doc<"files_nodes">>,
 			sortKey: (node: Doc<"files_nodes">) => files_sort_Key,
 		) => ({
 			...result,
-			page: result.page.map((node): SortedRow => ({ node, sortKey: sortKey(node) })),
-			scanBoundary: result.page.length > 0 ? sortKey(result.page.at(-1)!) : null,
+			page: result.page.map((node): SortedRow => ({
+				node,
+				sortKey: {
+					parts: [args.segment === "missing" || (field === "size" && node.kind === "folder") ? null : sortKey(node)],
+					nameKey: [node.sortName, node.name],
+				},
+			})),
+			scanBoundary:
+				result.page.length > 0
+					? files_sort_key_of(
+							args.sort,
+							{
+								kind: result.page.at(-1)!.kind,
+								name: result.page.at(-1)!.name,
+								createdAt: result.page.at(-1)!._creationTime,
+								updatedAt: result.page.at(-1)!.updatedAt,
+								type: result.page.at(-1)!.lowercaseExtension,
+								contentByteSize: result.page.at(-1)!.contentByteSize,
+							},
+							new Map(),
+						)
+					: null,
 			scannedCount: result.page.length,
 			workCount: 0,
 		});
@@ -7398,7 +8073,7 @@ export const list_tree_children_sorted = query({
 
 		const segment = await (async (/* iife */): Promise<
 			PaginationResult<SortedRow> & {
-				scanBoundary: files_sort_Key | null;
+				scanBoundary: files_sort_RowKey | null;
 				scannedCount: number;
 				workCount: number;
 			}
@@ -7585,7 +8260,10 @@ export const list_tree_children_sorted = query({
 
 						return {
 							node,
-							sortKey: [fieldDoc.sortValue ?? null, node.sortName, node.name],
+							sortKey: {
+								parts: [[fieldDoc.sortValue ?? null, node.sortName, node.name]],
+								nameKey: [node.sortName, node.name],
+							},
 						};
 					}),
 				);
@@ -7657,6 +8335,8 @@ export const list_tree_children_sorted = query({
 		const treeRows = await db_get_tree_rows(ctx, { userAuth, membership, fileNodes: rows.map((row) => row.node) });
 		return {
 			...segment,
+			sortLimit: null,
+			workPaused: false,
 			page: treeRows.map((treeRow, index) => ({
 				...treeRow,
 				// Show a pending replacement's type, like the rest of the Files view.
@@ -7668,7 +8348,7 @@ export const list_tree_children_sorted = query({
 });
 
 /**
- * The rows of one folder's table that `list_tree_children_sorted` cannot page, with their sort keys:
+ * The rows of one folder's table that `list_tree_children_sorted` cannot page:
  * the readable children that are their own restricted root, and the caller's own pending drafts and
  * moves into the folder. The table merges them into the sorted pages.
  *
@@ -7679,7 +8359,6 @@ export const list_tree_children_sort_side_rows = query({
 	args: {
 		membershipId: v.id("organizations_workspaces_users"),
 		parentId: doc(app_convex_schema, "files_nodes").fields.parentId,
-		sort: files_sort_validator,
 	},
 	returns: v.union(
 		v.null(),
@@ -7712,8 +8391,6 @@ export const list_tree_children_sort_side_rows = query({
 							updatedBy: v.id("users"),
 						}),
 					),
-					segment: v.union(v.literal("value"), v.literal("missing")),
-					sortKey: files_sort_key_validator,
 				}),
 			),
 			nameClaims: v.array(v.string()),
@@ -7730,7 +8407,7 @@ export const list_tree_children_sort_side_rows = query({
 	),
 	handler: async (ctx, args) => {
 		const reader = await db_get_tree_reader(ctx, { membershipId: args.membershipId });
-		if (!reader || !files_sort_field_is_valid(args.sort.field)) {
+		if (!reader) {
 			return null;
 		}
 		const { userAuth, membership } = reader;
@@ -7786,7 +8463,7 @@ export const list_tree_children_sort_side_rows = query({
 		if (granted && !granted.truncated) {
 			const candidates = granted.scopeNodes
 				.filter((fileNode) => fileNode.parentId === args.parentId && fileNode.archiveOperationId === null)
-				.sort((left, right) => files_sort_compare([left.sortName, left.name], [right.sortName, right.name], "asc"));
+				.sort((left, right) => compareValues([left.sortName, left.name], [right.sortName, right.name]));
 			for (const node of candidates) {
 				const entry = await visibleReader.resolveTarget({ kind: "saved", id: node._id });
 				if (!is_in_folder(entry)) {
@@ -7897,113 +8574,33 @@ export const list_tree_children_sort_side_rows = query({
 		// Past the read limit the reader drops rows, so the list is not complete.
 		tooManyPending ||= visibleReader.exhausted;
 
-		const field = args.sort.field;
-		const rows = await Promise.all(
-			[...entries.values()].map(async (entry) => {
-				const intent = entry.kind === "private" ? entry.pendingUpdate.createIntent : undefined;
-				const name = path_name_of(entry.path);
-				const size =
-					entry.kind === "saved" ? entry.node.contentByteSize : intent?.kind === "stored" ? intent.size : null;
+		const rows = [...entries.values()].map((entry) => {
+			const intent = entry.kind === "private" ? entry.pendingUpdate.createIntent : undefined;
+			const name = path_name_of(entry.path);
+			const size = entry.kind === "saved" ? entry.node.contentByteSize : intent?.kind === "stored" ? intent.size : null;
 
-				// Build the sort key exactly like the sorted pages build it for their rows.
-				const byName: files_sort_Key = [files_sort_text_key(name), name];
-				const sortPart = await (async (/* iife */): Promise<{
-					segment: "value" | "missing";
-					sortKey: files_sort_Key;
-				}> => {
-					if (field === "name" || (field === "size" && entry.node.kind === "folder")) {
-						return { segment: "value", sortKey: byName };
-					}
-					if (field === "created") {
-						return { segment: "value", sortKey: [entry.node._creationTime] };
-					}
-					if (field === "updated") {
-						const updatedAt = entry.kind === "saved" ? entry.node.updatedAt : entry.pendingUpdate.updatedAt;
-						return { segment: "value", sortKey: [updatedAt, ...byName] };
-					}
-					if (field === "type") {
-						const extension = files_lowercase_extension(name, entry.node.kind);
-						return extension === null
-							? { segment: "missing", sortKey: byName }
-							: { segment: "value", sortKey: [extension, ...byName] };
-					}
-					if (field === "size") {
-						return size === null
-							? { segment: "missing", sortKey: byName }
-							: { segment: "value", sortKey: [size, ...byName] };
-					}
-
-					// A saved node sorts by its committed field doc, like the sorted pages. A draft keeps its
-					// values in pending docs, so build its key the way `files_sort_value_of` does.
-					const metadataDocs =
+			return {
+				entry,
+				row: {
+					target:
 						entry.kind === "saved"
-							? await ctx.db
-									.query("files_metadata_docs")
-									.withIndex("by_organization_workspace_source_fileNode_fieldPath", (q) =>
-										q
-											.eq("organizationId", membership.organizationId)
-											.eq("workspaceId", membership.workspaceId)
-											.eq("sourceKind", "committed")
-											.eq("fileNodeId", entry.node._id)
-											.eq("fieldPath", field),
-									)
-									.collect()
-							: await ctx.db
-									.query("files_metadata_docs")
-									.withIndex("by_organization_workspace_target_fieldPath", (q) =>
-										q
-											.eq("organizationId", membership.organizationId)
-											.eq("workspaceId", membership.workspaceId)
-											.eq("target.kind", "private")
-											.eq("target.id", entry.node._id)
-											.eq("fieldPath", field),
-									)
-									.collect();
-					const fieldDoc = metadataDocs.find((metadataDoc) => metadataDoc.docKind === "field");
-					const valueDoc = metadataDocs.find(
-						(metadataDoc) => metadataDoc.docKind === "value" && metadataDoc.valueKind !== "maybe_date",
-					);
-					const value =
+							? { kind: "saved" as const, id: entry.node._id }
+							: { kind: "private" as const, id: entry.node._id },
+					name,
+					kind: entry.node.kind,
+					createdAt: entry.node._creationTime,
+					updatedAt: entry.kind === "saved" ? entry.node.updatedAt : entry.pendingUpdate.updatedAt,
+					contentByteSize: entry.node.kind === "folder" ? null : size,
+					contentType:
 						entry.kind === "saved"
-							? fieldDoc?.sourceKind === "committed" && fieldDoc.sortValue !== undefined
-								? { sortValue: fieldDoc.sortValue, displayValue: fieldDoc.sortDisplayValue ?? null }
-								: null
-							: valueDoc
-								? ((/* iife */) => {
-										const displayValue = valueDoc.stringValue ?? valueDoc.numberValue ?? valueDoc.booleanValue ?? null;
-										return { sortValue: files_sort_text_key(String(displayValue)), displayValue };
-									})()
-								: null;
-					return value === null
-						? { segment: "missing", sortKey: byName }
-						: { segment: "value", sortKey: [value.sortValue, ...byName] };
-				})();
-
-				return {
-					entry,
-					row: {
-						target:
-							entry.kind === "saved"
-								? { kind: "saved" as const, id: entry.node._id }
-								: { kind: "private" as const, id: entry.node._id },
-						name,
-						kind: entry.node.kind,
-						createdAt: entry.node._creationTime,
-						updatedAt: entry.kind === "saved" ? entry.node.updatedAt : entry.pendingUpdate.updatedAt,
-						contentByteSize: entry.node.kind === "folder" ? null : size,
-						contentType:
-							entry.kind === "saved"
-								? (entry.pendingUpdate?.pendingReplacement?.contentType ?? entry.node.contentType)
-								: intent && intent.kind !== "folder"
-									? intent.contentType
-									: null,
-						preparing:
-							entry.kind === "private" && (!intent || (intent.kind === "text" && !entry.pendingUpdate.content)),
-						...sortPart,
-					},
-				};
-			}),
-		);
+							? (entry.pendingUpdate?.pendingReplacement?.contentType ?? entry.node.contentType)
+							: intent && intent.kind !== "folder"
+								? intent.contentType
+								: null,
+					preparing: entry.kind === "private" && (!intent || (intent.kind === "text" && !entry.pendingUpdate.content)),
+				},
+			};
+		});
 
 		const savedNodes = rows.flatMap(({ entry }) => (entry.kind === "saved" ? [entry.node] : []));
 		const treeRowById = new Map(
@@ -8027,6 +8624,95 @@ export const list_tree_children_sort_side_rows = query({
 			tooManyShared,
 			tooManyPending,
 		};
+	},
+});
+
+/**
+ * One fresh sort key for a readable target in this folder. All parts come from this same read.
+ */
+export const get_table_sort_key = query({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		parentId: doc(app_convex_schema, "files_nodes").fields.parentId,
+		target: files_pending_target_validator,
+		sort: files_sort_validator,
+	},
+	returns: v.union(files_sort_row_key_validator, v.null()),
+	handler: async (ctx, args): Promise<files_sort_RowKey | null> => {
+		const reader = await db_get_tree_reader(ctx, { membershipId: args.membershipId });
+		if (!reader || !files_sort_is_valid(args.sort)) return null;
+		if (args.parentId !== files_ROOT_ID && !(await db_get_readable_tree_node(ctx, { reader, nodeId: args.parentId })))
+			return null;
+		const { membership, userAuth } = reader;
+		const budget = { readBytes: 0 };
+		if (!(await fits_table_read_budget(ctx, budget, true)))
+			throw convex_error({ message: "Table sort exceeded its work limit." });
+		const visibleReader = await files_visible_db_create_reader(ctx, {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			userId: userAuth.id,
+		});
+		const folder =
+			args.parentId === files_ROOT_ID ? null : await visibleReader.resolveTarget({ kind: "saved", id: args.parentId });
+		if (visibleReader.exhausted) throw convex_error({ message: "Table sort exceeded its read limit." });
+		if (!(await fits_table_read_budget(ctx, budget, true)))
+			throw convex_error({ message: "Table sort exceeded its work limit." });
+		if (args.parentId !== files_ROOT_ID && (!folder || folder.node.kind !== "folder")) return null;
+		const entry = await visibleReader.resolveTarget(args.target);
+		if (visibleReader.exhausted) throw convex_error({ message: "Table sort exceeded its read limit." });
+		if (!(await fits_table_read_budget(ctx, budget, true)))
+			throw convex_error({ message: "Table sort exceeded its work limit." });
+		if (!entry || entry.path.slice(0, entry.path.lastIndexOf("/")) !== (folder?.path ?? "")) return null;
+		if (
+			entry.kind === "private" &&
+			(entry.pendingUpdate.organizationId !== membership.organizationId ||
+				entry.pendingUpdate.workspaceId !== membership.workspaceId ||
+				entry.pendingUpdate.userId !== userAuth.id ||
+				entry.pendingUpdate.target.kind !== "private" ||
+				entry.pendingUpdate.target.id !== entry.node._id)
+		) {
+			const errorMessage = "private metadata proposal is mismatched";
+			const errorData = { target: args.target, pendingUpdateId: entry.pendingUpdate._id };
+			console.error(errorMessage, errorData);
+			throw should_never_happen(errorMessage, errorData);
+		}
+		const preparing =
+			entry.kind === "private" &&
+			(entry.pendingUpdate.preparation !== undefined ||
+				entry.pendingUpdate.createIntent === undefined ||
+				(entry.pendingUpdate.createIntent.kind === "text" && entry.pendingUpdate.content?.base.kind !== "new"));
+		const metadataParts = new Map<string, string | null>();
+		for (const clause of files_sort_execution_fields(args.sort, entry.node.kind)) {
+			if (["name", "created", "updated", "type", "size"].includes(clause.field)) continue;
+			if (preparing) {
+				metadataParts.set(clause.field, null);
+				continue;
+			}
+			const value = await db_get_table_scalar(ctx, { entry, field: clause.field, budget });
+			if (value === undefined) throw convex_error({ message: "Table sort exceeded its work limit." });
+			metadataParts.set(clause.field, value.sortValue);
+		}
+		if (!(await fits_table_read_budget(ctx, budget)))
+			throw convex_error({ message: "Table sort exceeded its work limit." });
+		const name = path_name_of(entry.path);
+		const size =
+			entry.kind === "saved"
+				? entry.node.contentByteSize
+				: entry.pendingUpdate.createIntent?.kind === "stored"
+					? entry.pendingUpdate.createIntent.size
+					: null;
+		return files_sort_key_of(
+			args.sort,
+			{
+				kind: entry.node.kind,
+				name,
+				createdAt: entry.node._creationTime,
+				updatedAt: entry.kind === "saved" ? entry.node.updatedAt : entry.pendingUpdate.updatedAt,
+				type: files_lowercase_extension(name, entry.node.kind),
+				contentByteSize: entry.node.kind === "folder" ? null : size,
+			},
+			metadataParts,
+		);
 	},
 });
 
@@ -8086,9 +8772,9 @@ export const get_table_filter_match = query({
 					(entry.pendingUpdate.createIntent.kind === "text" && entry.pendingUpdate.content?.base.kind !== "new"))
 			)
 				return { matches: false, preparing: true };
-			const value = await db_get_table_filter_scalar(ctx, { entry, field: args.filter.field, budget });
+			const value = await db_get_table_scalar(ctx, { entry, field: args.filter.field, budget });
 			if (value === undefined) throw convex_error({ message: "Table filter exceeded its work limit." });
-			scalar = value;
+			scalar = value.displayValue;
 		}
 		if (!(await fits_table_read_budget(ctx, budget)))
 			throw convex_error({ message: "Table filter exceeded its work limit." });

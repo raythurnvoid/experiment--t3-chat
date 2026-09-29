@@ -1291,7 +1291,7 @@ async function review_seed_all_workspace_content(
 		await ctx.db.insert("files_folder_sorts", {
 			...tenant,
 			folderId: i === 0 ? "root" : node._id,
-			sort: { field: "updated", direction: "desc" },
+			sort: [{ field: "updated", direction: "desc" }],
 			updatedBy: args.userId,
 			updatedAt: now,
 		});

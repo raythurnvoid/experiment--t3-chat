@@ -323,15 +323,18 @@ export const files_metadata_entries_validator = v.array(
 );
 
 /**
- * The saved sort of a folder and the sort a query reads. It accepts any field string, so check the
- * field with `files_sort_field_is_valid`.
+ * The ordered saved clauses. Check fields, duplicates and count with `files_sort_is_valid`.
  */
-export const files_sort_validator = v.object({
-	field: v.string(),
-	direction: v.union(v.literal("asc"), v.literal("desc")),
-});
+export const files_sort_validator = v.array(
+	v.object({ field: v.string(), direction: v.union(v.literal("asc"), v.literal("desc")) }),
+);
 
-export const files_sort_key_validator = v.array(v.union(v.string(), v.number(), v.null()));
+const files_sort_key_validator = v.array(v.union(v.string(), v.number(), v.null()));
+
+export const files_sort_row_key_validator = v.object({
+	parts: v.array(v.union(files_sort_key_validator, v.null())),
+	nameKey: v.array(v.string()),
+});
 
 export const files_table_filter_validator = v.union(
 	v.object({

@@ -358,9 +358,39 @@ Built-in predicates do not wait for metadata preparation. Refusal returns null; 
 throws. It never returns a guessed missing value. Side name claims stay unfiltered.
 
 Both filter doors check whole-query transaction bytes and calls. Custom main pages commit only
-complete candidates and preserve a continuing cursor after an empty matching page. Each filtered
-page has at most 50 candidate/proof visits, a 4 MiB read budget, and a 1,000-call budget. The next
-read reserves 1 MiB and 16 calls. A stopped first candidate throws a clear error.
+complete candidates and preserve a continuing cursor after an empty matching page. With one clause,
+a filtered page has at most 50 candidate/proof visits. Custom pages use a 4 MiB read budget and a
+1,000-call budget. The next read reserves 1 MiB and 16 calls. With one clause, a stopped first
+candidate throws a clear error. Multi-sort proofs use the frozen workLimit, up to 1,000, while
+pages still pack at most 50 processed candidates.
+
+# Folder Table Sort Keys
+
+A saved sort is an ordered list of one to three unique clauses. A metadata clause uses the
+committed field doc's encoded `sortValue`. Pending edits on saved nodes do not replace it.
+Private rows use only their current create proposal. Their bounded scalar read stops at the
+first plain primitive and checks every consumed doc's tenant, target, owner, proposal and revision.
+Preparation makes metadata sort parts null. It remains unknown for metadata filters.
+
+The row key is `{ parts, nameKey }` from `shared/files-sort.ts`. Missing parts are null and stay
+last in either direction. Multi-sort ends ties by Name asc. A unique Name clause makes later
+metadata irrelevant, so it needs no value read. Folder Type and Size are null. For multi-sort,
+the server drops those clauses only from index selection, while keeping the original list and key positions.
+
+`files_nodes.get_table_sort_key({ membershipId, parentId, target, sort })` returns a full fresh
+key or null. It checks current read access and visible parent again. Fresh metadata is never
+joined with old side-list facts. It returns sort keys without metadata display values.
+Byte/call exhaustion throws.
+The side-row list itself has no metadata sort reads or sort argument.
+
+Ordinary multi-sort pages reuse a primary field doc for its sort or filter. Other meaningful
+metadata fields use bounded indexed scalar reads. A complete unindexed group has at most 200
+candidates. The missing proof keeps both Name streams and checks each witness's current ordinary
+node. Proofs, seeks, rereads, joins, and row checks share one 4 MiB/1,000-call response budget.
+Pages pack up to 50 processed candidates. A budget stop publishes only a completed prefix.
+An indexed metadata-missing Name walk may advance across a rejected node with a present primary
+value. Its boundary is a positional Name key with a null primary part. It does not read the
+filter or irrelevant secondary metadata for that rejected node.
 
 # Search Box
 

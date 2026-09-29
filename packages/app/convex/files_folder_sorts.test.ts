@@ -3,6 +3,7 @@ import { api, internal } from "./_generated/api.js";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
 import { files_ROOT_ID } from "../shared/files.ts";
+import type { files_sort_Sort } from "../shared/files-sort.ts";
 
 async function fixture() {
 	const t = test_convex();
@@ -47,6 +48,87 @@ async function fixture() {
 }
 
 describe("set_folder_sort", () => {
+	test("saves the full ordered list and keeps fields after Name", async () => {
+		const { scope, asOwner, viewer, asViewer, read_rows } = await fixture();
+		const sort: files_sort_Sort = [
+			{ field: "metadata.status", direction: "desc" },
+			{ field: "name", direction: "asc" },
+			{ field: "created", direction: "desc" },
+		];
+		expect(
+			(
+				await asOwner.mutation(api.files_folder_sorts.set_folder_sort, {
+					membershipId: scope.membershipId,
+					folderId: files_ROOT_ID,
+					sort,
+				})
+			)._nay,
+		).toBeUndefined();
+		expect(
+			await asViewer.query(api.files_folder_sorts.get_folder_sort, {
+				membershipId: viewer.membershipId,
+				folderId: files_ROOT_ID,
+			}),
+		).toEqual({ sort, canSave: false });
+		expect(await read_rows()).toEqual([expect.objectContaining({ sort })]);
+	});
+
+	test("refuses empty, duplicate and long lists without changing the saved doc", async () => {
+		const { scope, asOwner, read_rows } = await fixture();
+		const args = { membershipId: scope.membershipId, folderId: files_ROOT_ID };
+		await asOwner.mutation(api.files_folder_sorts.set_folder_sort, {
+			...args,
+			sort: [{ field: "updated", direction: "desc" }],
+		});
+		const before = await read_rows();
+		for (const sort of [
+			[],
+			[
+				{ field: "name", direction: "asc" as const },
+				{ field: "name", direction: "desc" as const },
+			],
+			["name", "size", "updated", "type"].map((field) => ({ field, direction: "asc" as const })),
+		]) {
+			expect((await asOwner.mutation(api.files_folder_sorts.set_folder_sort, { ...args, sort }))._nay?.message).toBe(
+				"Use 1 to 3 different sort fields.",
+			);
+			expect(await read_rows()).toEqual(before);
+		}
+	});
+
+	test("keeps Name plus another field as a saved list", async () => {
+		const { scope, asOwner, read_rows } = await fixture();
+		await asOwner.mutation(api.files_folder_sorts.set_folder_sort, {
+			membershipId: scope.membershipId,
+			folderId: files_ROOT_ID,
+			sort: [
+				{ field: "name", direction: "asc" },
+				{ field: "updated", direction: "desc" },
+			],
+		});
+		expect(await read_rows()).toHaveLength(1);
+	});
+
+	test("returns Unauthenticated without a live current user", async () => {
+		const { t, scope, asOwner, read_rows } = await fixture();
+		const args = {
+			membershipId: scope.membershipId,
+			folderId: files_ROOT_ID,
+			sort: [{ field: "updated", direction: "desc" as const }],
+		};
+		expect((await t.mutation(api.files_folder_sorts.set_folder_sort, args))._nay?.message).toBe("Unauthenticated");
+		await t.run((ctx) => ctx.db.delete("users", scope.userId));
+		expect((await asOwner.mutation(api.files_folder_sorts.set_folder_sort, args))._nay?.message).toBe(
+			"Unauthenticated",
+		);
+		expect(await read_rows()).toEqual([]);
+		await expect(
+			asOwner.query(api.files_folder_sorts.get_folder_sort, {
+				membershipId: scope.membershipId,
+				folderId: files_ROOT_ID,
+			}),
+		).rejects.toThrow("Unauthenticated");
+	});
 	test("a writer saves one folder's sort, every member reads it, and another folder stays on Name", async () => {
 		const { scope, asOwner, viewer, asViewer, create_folder } = await fixture();
 		const sortedId = await create_folder("/sorted");
@@ -55,7 +137,7 @@ describe("set_folder_sort", () => {
 		const saved = await asOwner.mutation(api.files_folder_sorts.set_folder_sort, {
 			membershipId: scope.membershipId,
 			folderId: sortedId,
-			sort: { field: "metadata.status", direction: "desc" },
+			sort: [{ field: "metadata.status", direction: "desc" }],
 		});
 		expect(saved._nay).toBeUndefined();
 
@@ -64,13 +146,13 @@ describe("set_folder_sort", () => {
 				membershipId: viewer.membershipId,
 				folderId: sortedId,
 			}),
-		).toEqual({ sort: { field: "metadata.status", direction: "desc" }, canSave: false });
+		).toEqual({ sort: [{ field: "metadata.status", direction: "desc" }], canSave: false });
 		expect(
 			await asOwner.query(api.files_folder_sorts.get_folder_sort, {
 				membershipId: scope.membershipId,
 				folderId: otherId,
 			}),
-		).toEqual({ sort: { field: "name", direction: "asc" }, canSave: true });
+		).toEqual({ sort: [{ field: "name", direction: "asc" }], canSave: true });
 	});
 
 	test("the root has its own row, and saving Name A to Z deletes the row", async () => {
@@ -79,13 +161,13 @@ describe("set_folder_sort", () => {
 			asOwner.mutation(api.files_folder_sorts.set_folder_sort, {
 				membershipId: scope.membershipId,
 				folderId: files_ROOT_ID,
-				sort: { field, direction },
+				sort: [{ field, direction }],
 			});
 
 		expect((await save("updated", "desc"))._nay).toBeUndefined();
 		expect((await save("size", "asc"))._nay).toBeUndefined();
 		expect(await read_rows()).toEqual([
-			expect.objectContaining({ folderId: files_ROOT_ID, sort: { field: "size", direction: "asc" } }),
+			expect.objectContaining({ folderId: files_ROOT_ID, sort: [{ field: "size", direction: "asc" }] }),
 		]);
 
 		expect((await save("name", "asc"))._nay).toBeUndefined();
@@ -98,17 +180,17 @@ describe("set_folder_sort", () => {
 		await asOwner.mutation(api.files_folder_sorts.set_folder_sort, {
 			membershipId: scope.membershipId,
 			folderId,
-			sort: { field: "created", direction: "desc" },
+			sort: [{ field: "created", direction: "desc" }],
 		});
 
 		const refused = await asViewer.mutation(api.files_folder_sorts.set_folder_sort, {
 			membershipId: viewer.membershipId,
 			folderId,
-			sort: { field: "type", direction: "asc" },
+			sort: [{ field: "type", direction: "asc" }],
 		});
 		expect(refused._nay?.message).toBe("Permission denied");
 		expect(await read_rows()).toEqual([
-			expect.objectContaining({ folderId, sort: { field: "created", direction: "desc" } }),
+			expect.objectContaining({ folderId, sort: [{ field: "created", direction: "desc" }] }),
 		]);
 	});
 
@@ -120,13 +202,13 @@ describe("set_folder_sort", () => {
 		const refused = await asOwner.mutation(api.files_folder_sorts.set_folder_sort, {
 			membershipId: scope.membershipId,
 			folderId,
-			sort: { field: "updated", direction: "desc" },
+			sort: [{ field: "updated", direction: "desc" }],
 		});
 		expect(refused._nay?.name).toBe("read_only");
 		expect(await read_rows()).toEqual([]);
 		expect(
 			await asOwner.query(api.files_folder_sorts.get_folder_sort, { membershipId: scope.membershipId, folderId }),
-		).toEqual({ sort: { field: "name", direction: "asc" }, canSave: false });
+		).toEqual({ sort: [{ field: "name", direction: "asc" }], canSave: false });
 	});
 
 	test("refuses a field that cannot be sorted and a file in place of a folder", async () => {
@@ -136,15 +218,15 @@ describe("set_folder_sort", () => {
 		const badField = await asOwner.mutation(api.files_folder_sorts.set_folder_sort, {
 			membershipId: scope.membershipId,
 			folderId,
-			sort: { field: "metadata.bad key", direction: "asc" },
+			sort: [{ field: "metadata.bad key", direction: "asc" }],
 		});
-		expect(badField._nay?.message).toBe("This field cannot be sorted.");
+		expect(badField._nay?.message).toBe("Use 1 to 3 different sort fields.");
 
 		await t.run(async (ctx) => ctx.db.patch("files_nodes", folderId, { kind: "file" }));
 		const notFolder = await asOwner.mutation(api.files_folder_sorts.set_folder_sort, {
 			membershipId: scope.membershipId,
 			folderId,
-			sort: { field: "updated", direction: "asc" },
+			sort: [{ field: "updated", direction: "asc" }],
 		});
 		expect(notFolder._nay?.message).toBe("Not found");
 		expect(await read_rows()).toEqual([]);
@@ -152,13 +234,32 @@ describe("set_folder_sort", () => {
 });
 
 describe("get_folder_sort", () => {
+	test.each([true, false])("refuses an anonymous deleted user with membership active=%s", async (active) => {
+		const { t, scope, read_rows } = await fixture();
+		await t.run(async (ctx) => {
+			await ctx.db.patch("organizations_workspaces_users", scope.membershipId, { active });
+			await ctx.db.patch("users", scope.userId, { clerkUserId: null, deletedAt: Date.now() });
+		});
+		const asAnonymous = t.withIdentity({ issuer: process.env.VITE_CONVEX_HTTP_URL!, subject: scope.userId });
+		const args = { membershipId: scope.membershipId, folderId: files_ROOT_ID };
+		await expect(asAnonymous.query(api.files_folder_sorts.get_folder_sort, args)).rejects.toThrow("Unauthenticated");
+		expect(
+			(
+				await asAnonymous.mutation(api.files_folder_sorts.set_folder_sort, {
+					...args,
+					sort: [{ field: "updated", direction: "desc" }],
+				})
+			)._nay?.message,
+		).toBe("Unauthenticated");
+		expect(await read_rows()).toEqual([]);
+	});
 	test("returns null for a restricted folder the member cannot read and for another workspace's folder", async () => {
 		const { t, scope, asOwner, viewer, asViewer, create_folder } = await fixture();
 		const folderId = await create_folder("/private");
 		await asOwner.mutation(api.files_folder_sorts.set_folder_sort, {
 			membershipId: scope.membershipId,
 			folderId,
-			sort: { field: "updated", direction: "desc" },
+			sort: [{ field: "updated", direction: "desc" }],
 		});
 		const restricted = await asOwner.mutation(api.files_sharing.restrict_node, {
 			membershipId: scope.membershipId,
@@ -187,7 +288,7 @@ describe("get_folder_sort", () => {
 		await asOwner.mutation(api.files_folder_sorts.set_folder_sort, {
 			membershipId: scope.membershipId,
 			folderId: files_ROOT_ID,
-			sort: { field: "metadata.status", direction: "desc" },
+			sort: [{ field: "metadata.status", direction: "desc" }],
 		});
 		// No role means no workspace read. Such a member reads only what is shared with them.
 		const grantOnly = await t.run(async (ctx) => {
@@ -208,7 +309,7 @@ describe("get_folder_sort", () => {
 				membershipId: grantOnly.membershipId,
 				folderId: files_ROOT_ID,
 			}),
-		).toEqual({ sort: { field: "name", direction: "asc" }, canSave: false });
+		).toEqual({ sort: [{ field: "name", direction: "asc" }], canSave: false });
 	});
 
 	test("throws without a signed-in user", async () => {

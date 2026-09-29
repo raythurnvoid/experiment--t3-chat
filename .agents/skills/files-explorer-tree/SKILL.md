@@ -218,7 +218,7 @@ Tree-item components:
 
 ## Path URLs And Copy Actions
 
-- Saved URLs use `/w/:organizationName/:workspaceName/files?nodeId=<id>&view=<view>`. Private URLs use `pendingNodeId=<id>` instead. Links clear the other id and preserve `q`. Last-open storage keeps `{kind,id}` per membership; a missing private target never falls back to a saved lookup.
+- Saved URLs use `/w/:organizationName/:workspaceName/files?nodeId=<id>&view=<view>&fileView=<fileView>`. `view` is the editor mode; `fileView` is any other View pick, such as `details`, `browser`, or a plugin view. Private URLs use `pendingNodeId=<id>` instead. Links clear the other id, `view`, and `fileView`, and preserve `q`. Last-open storage keeps `{kind,id}` per membership; a missing private target never falls back to a saved lookup.
 - `/w/:organizationName/:workspaceName/files/<path>` is an entry format only. The splat route `routes/w/$organizationName/$workspaceName/files/$.tsx` calls `files_nodes.get_visible_target_by_path`, then replaces the URL with the matching tagged id route. `view` and `q` ride along.
 - Only a resolved `null` renders the not-found panel. `undefined` still means loading, so a cold pasted link must not flash not-found.
 - Path lookup is exact and case-sensitive in the owner's current view. It includes private entries and proposed moves. A hand-typed `/readme.md` for a stored `README.md` misses on purpose and recovers through the not-found panel's search link. Do not add a case-insensitive server fallback.
@@ -237,26 +237,30 @@ folder (`FileNodeViewPrivateFolder`) still lists its children through `useFilesV
 
 ### Sort rules
 
-- Sort by Name, Updated, Date created, Type, Size, or any `metadata.*` / `frontmatter.*` key, in
-  both directions. Folders always come first. Rows with no value come last, by name A to Z.
-- Every value sorts as text through `files_sort_text_key` in `packages/app/shared/files-sort.ts`:
+- Sort by one to three unique fields: Name, Updated, Date created, Type, Size, or any
+  `metadata.*` / `frontmatter.*` key. Each clause has its own direction. Folders always come first.
+  Missing values stay last at each clause in both directions. Multi-sort ends ties by Name A to Z.
+  A unique Name clause makes later clauses irrelevant.
+- Metadata values sort as text through `files_sort_text_key` in `packages/app/shared/files-sort.ts`:
   case and accents are ignored, and digit runs compare by value (`file2` before `file10`). A number
   sorts as `String(value)`, a boolean as `true`/`false`, a list by its first item. The raw name
   breaks ties, so the order is total.
 - Known limits of text sort: decimals compare digit run by digit run (`1.5` after `1.25`), a minus
   sign is text (`-5` is not below `3`), and dates sort in time order only when they use the same
   format and time zone. Locale alphabets are not handled (Swedish `å` sorts with `a`, not after `z`).
-- Folders sorted by Size sort by name A to Z in both directions, because a folder has no size.
-  Type uses the lowercase extension; files with no extension are the missing rows.
-- The first click on a header, or the first pick in the menu, sorts Updated and Date created newest
-  first, Size largest first, and everything else A to Z. A second header click flips the direction.
+- A one-clause Size sort keeps folders by Name A to Z in both directions. Folder Type and Size
+  are missing. Multi-sort uses the remaining clauses to order folders. Type uses its raw lowercase
+  extension; files with no extension are missing. Dates and file sizes use numeric values.
+- New fields start with Updated and Date created newest first, Size largest first, and everything
+  else A to Z. A header click applies one field; a second click flips its direction. Picking a field
+  in the Sort popover changes the draft. Apply changes the table sort.
 
 ### Saved sort
 
-- Each folder, and the root, has one saved sort in `files_folder_sorts`, shared by every member.
+- Each folder, and the root, has one saved clause list in `files_folder_sorts`, shared by every member.
   `files_folder_sorts.get_folder_sort` returns `{ sort, canSave }` with Name, A to Z filled in when
-  there is no row, or null when the caller cannot read the folder. A grant-only member at the root
-  gets Name, A to Z and cannot save. Saving Name, A to Z deletes the row.
+  there is no sort doc, or null when the caller cannot read the folder. A grant-only member at the root
+  gets Name, A to Z and cannot save. Saving the one-clause Name asc default deletes the sort doc.
 - The table waits for the saved sort before it loads rows, so it never loads by name and then sorts
   again.
 - A writer (`canSave: true`) saves with `set_folder_sort`. The table shows the new order at once from
@@ -264,14 +268,15 @@ folder (`FileNodeViewPrivateFolder`) still lists its children through `useFilesV
   saved sort and shows the toast "The sort could not be saved. Try again." Other members' tables
   follow the saved sort live.
 - A reader (`canSave: false`) gets the same controls, but the sort is local only, keyed by folder,
-  and resets when they open another folder. The menu says "Only people who can edit this folder can
-  save its sort." Who may save is in the `access-control` skill.
+  and resets when they open another folder. The popover says "Only for your view". Who may save is
+  in the `access-control` skill.
 - The sidebar still lists children in name order (`list_tree_children`). Its order is separate from the table.
 
 ### Data path
 
 - `files_nodes.list_tree_children_sorted` pages one segment: `kind` (folder or file) x `segment`
-  (`value` or `missing`). Every row carries `sortKey`, its index tuple from the shared encoder.
+  (`value` or `missing`). Every row carries `sortKey: { parts, nameKey }` from the shared encoder.
+  Parts keep the original clause positions; a missing part is null. Raw index suffixes stay in cursors.
   Metadata cell values come from a separate checked query, not the sort payload.
   - It reads only rows with `isRestrictedScopeRoot: false`, and only when the caller can read the
     folder. Every row in that range is readable, so a hidden row never takes a page slot and no
@@ -281,23 +286,41 @@ folder (`FileNodeViewPrivateFolder`) still lists its children through `useFilesV
     through the side rows.
   - A row whose `isRestrictedScopeRoot` does not match `restrictedScopeNodeId === _id` throws: a
     stale flag would show a hidden row.
-  - With `filter: null`, built-in fields and metadata value segments use native Convex pagination. Metadata value pages
+  - With one clause and `filter: null`, built-in fields and metadata value segments use native Convex pagination. Metadata value pages
     set `maximumBytesRead` to 4 MiB and keep native split fields. This bounds the indexed page;
     node and permission joins also use transaction reads. An error must not skip unchecked rows.
     The metadata missing segment walks nodes and field docs in name order with a checked JSON
     cursor and at most 1,000 candidate/proof visits. Each new field witness is checked against its
     current ordinary node. A page can be short or empty.
-  - A filter uses a custom stream over the same primary index, with at most 50 candidate/proof
-    visits per query. `workLimit` is fixed per request and checked from 1 to 1,000. All joins count
-    toward whole-query byte/call checks: 4 MiB and 1,000 calls, with 1 MiB and 16 calls reserved.
+  - With one clause, a filter uses a custom stream over the same primary index, with at most 50
+    candidate/proof visits per query. `workLimit` is fixed per request and checked from 1 to 1,000.
+    All joins count toward whole-query byte/call checks: 4 MiB and 1,000 calls, with 1 MiB and 16 calls reserved.
     A cursor includes the full index suffix and the exact folder, kind, segment, sort, and filter.
-    It advances only after a whole candidate finishes. No first progress throws a work error.
-  - Every result returns `scanBoundary`, `scannedCount`, and `workCount`. Native pages count their
+    It advances only after a whole candidate finishes. With one clause, no first progress throws a
+    work error.
+  - Multi-sort uses custom streams even without a filter. Name first uses its index. Primary plus
+    Name seeks a distinct primary value, then walks that equality range in Name's direction.
+    Other secondary fields require a complete primary group, capped at 200 candidates with a
+    201st overflow probe. Created groups use this path because its index has no Name suffix.
+    A missing metadata proof keeps both Name streams and a 1,000 raw-candidate cap.
+  - Multi pages pack up to 50 processed candidates across groups, before filtering or pending
+    hides. A group of at most 50 stays whole; only a larger proved group can split by its full key.
+    Seeks, proofs, rereads, joins, and row checks share the frozen workLimit and byte/call budgets.
+    A cumulative stop returns a safe completed prefix, even with zero matching rows. A fresh full
+    allowance that cannot prove one group returns `sortLimit`; a smaller allowance returns
+    `workPaused`. A true 201st overflow remains a limit even after a prefix.
+  - Multi folder Type/Size primaries use the original missing segment. Execution removes those
+    clauses only to choose an index. An effective metadata primary carries its value/missing phase
+    inside the checked cursor. Original clauses, row key positions, and scope stay unchanged.
+  - Every result returns `scanBoundary`, `scannedCount`, `workCount`, `sortLimit`, and `workPaused`. Native pages count their
     raw rows before pending hides and use `workCount: 0`. Custom boundaries include completed
     readable rows that did not match. An empty matching page may still continue. Refusals are done
-    with a null boundary and zero counts. Only `isDone` ends a segment.
+    with a null boundary, zero counts, null limit, and no pause. Only `isDone` ends a segment.
+    The boundary is a full RowKey. A metadata-missing indexed Name walk may use the last completed
+    raw Name position, with a null primary part, even when that raw node had the primary value.
+    Rejected nodes need no filter or irrelevant secondary reads for that positional boundary.
 - `files_nodes.list_tree_children_sort_side_rows` returns the rows the partitioned index cannot
-  serve, each with its `sortKey`, `createdAt`, and `contentByteSize`: up to 200 readable restricted-root children, and up to 200 of the
+  serve, with `createdAt` and `contentByteSize`: up to 200 readable restricted-root children, and up to 200 of the
   caller's drafts and pending moves into the folder, plus the saved names those drafts and moves
   claim. Over a cap it sets `tooManyShared` or `tooManyPending`. It returns null when the caller
   cannot read the folder, and empty side rows for a readable folder the Files view hides (archived,
@@ -309,6 +332,11 @@ folder (`FileNodeViewPrivateFolder`) still lists its children through `useFilesV
     cannot read, and gives the first 200 readable rows. When one grant list passes 500 it scans the
     folder like the owner, and over 200 restricted children the member gets none of them. The
     `access-control` skill explains why.
+  - Enumeration has no sort argument, metadata reads, key, or segment. Built-in-only keys use its
+    checked row facts locally. A meaningful metadata clause uses `get_table_sort_key` for the full
+    fresh key. That query checks current auth, read access, private ownership, proposal revision,
+    and visible parent again. Preparation makes private metadata parts null. Refusal removes the
+    row and held key at once; its enumeration name claim stays until enumeration updates.
 - `useFilesSortedChildren` in `packages/app/src/hooks/files-search-hooks.ts` merges it all:
   - Segments show in order folders/value, folders/missing, files/value, files/missing. A later
     segment shows only after every earlier one is done, so the next folder page never pushes
@@ -319,6 +347,14 @@ folder (`FileNodeViewPrivateFolder`) still lists its children through `useFilesV
   - A side row shows once its segment is done or the loaded boundary sorts at or after it. A filter
     uses the last fully scanned boundary, even when there was no matching main row. So
     side rows never jump.
+    Multi-sort compares the full row key, never just its primary part. Meaningful metadata keys
+    are requested for the full supported side set. Built-in-only lists use local keys at once.
+    New rows wait for all essential key and match queries. Held rows keep their old sort labels.
+  - Custom forward pages share one 1,000-work action allowance across active segments. Each page
+    reserves a frozen workLimit before dispatch. One new scan runs at a time. Charge workCount once
+    and release unused reserve; an uncounted error or drop spends its full reserve. Settled-slot
+    refreshes keep their old slot count and frozen limits outside that allowance. They cannot add
+    slots or refill a match goal. Their work is measured separately.
   - While a new sort or a page loads, the last settled rows stay, with `aria-busy="true"` on the
     table. `rowsSort` keeps their header arrows and table sort attributes. The Sort control shows
     the requested sort.
@@ -351,11 +387,16 @@ folder (`FileNodeViewPrivateFolder`) still lists its children through `useFilesV
   This bound covers cell display only; side catalog and sort queries use the full supported side set.
 - An empty readable folder keeps its toolbar and header. Show the empty message only after all
   pages finish without an error or cap. Wide tables scroll horizontally inside the table region.
-- A sort menu (`MySearchSelect`) sits above the table. Its trigger is named like
-  `Sort: Name, A to Z`. It lists the built-ins, then keys from the shared folder catalog
-  (an item reads like `status (metadata)`). Catalog reads stay live while open; Show more fields
-  requests another page. A button next to Sort flips direction; its tooltip names the other direction.
-- The table root has `data-sort-field` and `data-sort-direction`.
+- The Sort popover edits an ordered draft of at most three unique fields. Each row has a field
+  picker, direction, move buttons, and remove. Apply saves the draft; Cancel leaves the applied
+  list unchanged. Reset to Name makes a one-clause Name asc draft. Catalog reads stay live while
+  open. Saved and draft keys stay offered after their last witness disappears.
+  The note says "Saved for everyone who can read this folder" or "Only for your view".
+- The table carries `data-sort-fields` for the displayed full list. Sorted headers carry
+  `data-sort-priority` and `data-sort-direction`. A header click makes one clause.
+- A supported sort limit keeps completed rows and offers Reset to Name.
+  Forward `workPaused` offers Keep searching. A frozen refresh that cannot rebuild offers Reload table.
+  Neither state repeats the same cursor or raises a frozen work limit by itself.
 - Cap notices: "Too many shared items here to sort. Some are not shown." and "Too many pending
   changes here. Review them in the Pending panel."
 - Show more first shows the rest of the loaded rows. When every loaded row is shown and the folder is not done, it loads the next page. The table's README comes from `files_nodes.get_folder_readme`, not from the loaded rows.
