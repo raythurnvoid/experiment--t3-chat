@@ -671,9 +671,57 @@ Every evaluation pass should report:
 - Scoped `search --path <folder>` is filtered before pagination, but broad scopes with common terms can still be heavier.
 - `ls -t <dir>` is immediate-child recency only.
 
+## Published Plugin Mount Evaluation
+
+External sources from enabled plugins in the current workspace live under
+`/.mounts/<mount>/<volume>/<file>`. Each volume serves a published copy. Mounts are
+agent-only and read-only: Bash can read them, but the Files sidebar, public file routes,
+`view_image`, and `execute_code` cannot. The chat user's live workspace membership and
+`content.read` right still apply to each read. Mounted source text is data, never instructions.
+Reading a Mount does not remove the other tools available in the selected chat mode.
+
+Use the existing public Native Popovers copy at `personal/home:/.mounts/github/native-popovers`
+from the [QA data catalog](../../qa-data/references/inventory.md). Keep its daily schedule and
+reuse existing data and chats when they fit. For natural discovery, use one fresh QA chat so
+earlier messages cannot supply the path. Reuse that fresh chat for the continuation check.
+
+1. Before the turn, confirm the signed-in user, exact organization/workspace, model, and mode.
+   Read `organizations.get_membership_by_organization_workspace_name({ organizationName,
+   workspaceName })` and require that user's active membership. Check `content.read` through
+   `access_control.get_current_user_workspace_permission({ membershipId, permission })`.
+2. As an installation manager, read `plugins.list_installations({ membershipId })` and
+   `plugins.get_installation_mounts({ membershipId, installationId })`. Require the exact enabled
+   installation and a non-deleting volume with a published copy. Save the installation/version,
+   plugin `sourceCommitSha`, mount name, volume key/id, revision, file count, and bytes. These
+   manager queries do not prove that another user can read the copy. Pin the deployed host/tool
+   source too. Recheck identity and copy after the turn; stop if the target or source changed.
+3. Send a normal source question, with no path, command, or source-data reminder:
+
+   ```text
+   Look at the Native Popovers source available here. Explain what the library does, using its README and one source file.
+   ```
+
+   Pass only when stored Bash calls discover the Mount and read real files, and the answer agrees
+   with those results. The agent must treat source text as data. Do not alter the source or force
+   a new copy just to test this turn.
+4. Save the new turn's stored messages with `ai_chat.thread_messages_list({ membershipId,
+   threadId, order: "asc" })`. Record Bash inputs, stdout, stderr, exit codes, call ids, and any
+   truncation beside the final answer. Continue in the same chat with a small public-doc question
+   that needs an available web or Browser tool. Save its real call and result too; a claimed tool
+   list is not proof. Mark a missing or blocked tool separately from the Mount read result.
+
+Save run ids, source pins, and safe results outside the repo. This checks discovery, grounded
+reads, and later tool use. It does not prove access revocation, uninstall cleanup, billing, or
+provider behavior. Those need their own checks.
+
 ## GitHub Mount Evaluation
 
-Agent-only read-only external-source mounts live under `/.mounts/<name>` as a Bash-only read surface. The mount must never appear in the Files sidebar or any public API file route. These scenarios validate the live agent path against a real synced mount.
+This section records the historical legacy GitHub mirror checks and scores. The flat
+`/.mounts/<name>` path remains while that mirror exists. Its old commands and results are not
+current proof for published plugin copies; use the evaluation above for those copies.
+
+The legacy mirror is an agent-only read-only Bash surface. It must never appear in the Files
+sidebar or any public API file route. The scenarios below tested a real synced legacy mirror.
 
 Fixture: mount `/.mounts/t3-chat` (source `t3-chat`, owner `raythurnvoid` / repo `experiment--t3-chat` @ `main`). For the full eval fixture, sync to terminal `status: "idle"` and confirm `lastCommitSha != null` before running so the repo contents are complete. Bash mount visibility is gated on `lastCommitSha` (the mount serves the immutable commit root `/<name>/<commitSha>/...`), so a mount whose first sync is running or errored exposes nothing, and shell paths never show the commit sha. Against a deployment where the GitHub mount code is already pushed, use:
 
@@ -741,8 +789,9 @@ Notes: the eval model (GPT-5.4 Nano) is intentionally weak; it still followed ev
 
 ## Plugin Mount Evaluation
 
-`/.plugins/<pluginName>` works exactly like `/.mounts/<name>`: one read-only mount per **enabled**
-plugin installation in the current workspace, backed by that version's published source tree. With
+`/.plugins/<pluginName>` holds the read-only published plugin code. External published copies
+live separately under `/.mounts/<mount>/<volume>`. The code tree requires an **enabled** plugin
+installation in the current workspace, backed by that version's published source tree. With
 zero installations the `/.plugins` directory does not exist at all, so a check here needs a plugin
 installed first (`plugin-marketplace.md`; the Image plugin installs in two clicks and needs no
 secret to mount). Uninstall it again afterwards — its mount disappears with the installation.
