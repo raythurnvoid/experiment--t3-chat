@@ -414,7 +414,7 @@ export function useFilesSortedChildren(props: useFilesSortedChildren_Props) {
 	return {
 		rows: isSettled ? mergedRows : shownHeldRows?.rows,
 		sideTargets: sideRows?.rows.map((row) => row.target) ?? [],
-		// Held rows keep their old sort keys, so keep the matching toolbar label.
+		// Held rows keep their old sort keys, header arrows and table sort attributes.
 		rowsSort: isSettled ? sort : (shownHeldRows?.sort ?? null),
 		isBusy: !isSettled,
 		isDone: isSettled && segments.every((segment) => segment.status === "done"),

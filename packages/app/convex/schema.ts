@@ -411,7 +411,9 @@ const files_metadata_committed_sort_fields = {
 	 * frontmatter map, so the row sorts as missing.
 	 */
 	sortValue: v.optional(v.string()),
-	/** The value the user typed, shown in table cells. Set together with `sortValue`. */
+	/**
+	 * The value the user typed, shown in table cells. Set together with `sortValue`.
+	 */
 	sortDisplayValue: v.optional(v.union(v.string(), v.number(), v.boolean())),
 };
 

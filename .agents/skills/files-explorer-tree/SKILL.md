@@ -310,7 +310,8 @@ folder (`FileNodeViewPrivateFolder`) still lists its children through `useFilesV
   - A side row shows once its segment is done or the last loaded main row sorts at or after it. So
     side rows never jump.
   - While a new sort or a page loads, the last settled rows stay, with `aria-busy="true"` on the
-    table. `rowsSort` is the sort those rows were loaded with, and the toolbar follows it.
+    table. `rowsSort` keeps their header arrows and table sort attributes. The Sort control shows
+    the requested sort.
     Columns stay outside the paging scope. `sideTargets` includes the full checked side set for field discovery.
   - `loadMore()` loads the first shown segment that can load more.
 
@@ -337,9 +338,9 @@ folder (`FileNodeViewPrivateFolder`) still lists its children through `useFilesV
 - An empty readable folder keeps its toolbar and header. Show the empty message only after all
   pages finish without an error or cap. Wide tables scroll horizontally inside the table region.
 - A sort menu (`MySearchSelect`) sits above the table. Its trigger is named like
-  `Sort: Name, A to Z`. It lists the built-ins, then keys from `files_metadata.list_search_fields`,
-  read once per open (an item reads like `status (metadata)`). A button next to it flips the
-  direction; its tooltip names the other direction.
+  `Sort: Name, A to Z`. It lists the built-ins, then keys from the shared folder catalog
+  (an item reads like `status (metadata)`). Catalog reads stay live while open; Show more fields
+  requests another page. A button next to Sort flips direction; its tooltip names the other direction.
 - The table root has `data-sort-field` and `data-sort-direction`.
 - Cap notices: "Too many shared items here to sort. Some are not shown." and "Too many pending
   changes here. Review them in the Pending panel."
