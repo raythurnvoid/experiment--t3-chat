@@ -483,6 +483,7 @@ const FileNodeViewHeaderBreadcrumbPath = memo(function FileNodeViewHeaderBreadcr
 													nodeId: crumb.target === "saved" ? crumb.id : undefined,
 													pendingNodeId: crumb.target === "private" ? crumb.id : undefined,
 													view: undefined,
+													fileView: undefined,
 												})}
 												variant="button-ghost-highlightable"
 												// `aria-label` keeps the full name readable next to the shortened text.
@@ -778,7 +779,7 @@ const FileNodeViewHeader = memo(function FileNodeViewHeader(props: FileNodeViewH
 									className={cn("FileNodeViewHeader-breadcrumb-home" satisfies FileNodeViewHeader_ClassNames)}
 									to="/w/$organizationName/$workspaceName/files"
 									params={{ organizationName, workspaceName }}
-									search={(prev) => ({ ...prev, nodeId: files_ROOT_ID, pendingNodeId: undefined, view: undefined })}
+									search={(prev) => ({ ...prev, nodeId: files_ROOT_ID, pendingNodeId: undefined, view: undefined, fileView: undefined })}
 									variant="button-icon-ghost-highlightable"
 									tooltip="Home"
 								>
@@ -816,7 +817,7 @@ const FileNodeViewHeader = memo(function FileNodeViewHeader(props: FileNodeViewH
 									params={{ organizationName, workspaceName }}
 									// Keep `q` so the URL stays in step with the still-filled sidebar search box.
 									// Drop `view` so the target node opens on its own default editor.
-									search={(prev) => ({ ...prev, nodeId: files_ROOT_ID, pendingNodeId: undefined, view: undefined })}
+									search={(prev) => ({ ...prev, nodeId: files_ROOT_ID, pendingNodeId: undefined, view: undefined, fileView: undefined })}
 									variant="button-icon-ghost-highlightable"
 									tooltip="Home"
 								>
@@ -1303,7 +1304,7 @@ type FileNodeViewFile_Props = {
 	viewSelectPortalHost: HTMLElement;
 	onEditorModeChange: (mode: FileEditor_Mode, options?: { replace?: boolean }) => void;
 	onAutomaticEditorModeChange: FileEditor_Props["onEditorModeChange"];
-	onFileViewChange: (view: string) => void;
+	onFileViewChange: (view: string, options?: { replace?: boolean }) => void;
 	onNavigateNode: FileNodeViewHeader_Props["onNavigateNode"];
 };
 
@@ -1353,7 +1354,7 @@ const FileNodeViewFile = memo(function FileNodeViewFile(props: FileNodeViewFile_
 
 	const selectedViewExists =
 		selectedFileView === "default" ||
-		(selectedFileView === "details" && isEditable) ||
+		selectedFileView === "details" ||
 		(selectedFileView === "preview" && hasHtmlPreview) ||
 		(selectedFileView === "code" && hasHtmlPreview) ||
 		(selectedFileView === "review" && hasHtmlPreview) ||
@@ -1361,13 +1362,16 @@ const FileNodeViewFile = memo(function FileNodeViewFile(props: FileNodeViewFile_
 		(selectedFileView === "code_browser" && hasHtmlPreview) ||
 		(selectedFileView === "review_browser" && hasHtmlPreview) ||
 		fileViewMatches.some((match) => file_view_id(match) === selectedFileView);
-	// Flat HTML views live in local file state. Legacy "default" opens Code.
+	// Flat HTML views live in the URL `fileView`. No `fileView` ("default") opens Code.
+	// A stored file has no editor: its main panel is File details, so "details" shows that panel.
 	const activeFileView =
 		hasHtmlPreview && selectedViewExists && selectedFileView === "default"
 			? "code"
-			: selectedViewExists
-				? selectedFileView
-				: "default";
+			: !isEditable && selectedFileView === "details"
+				? "default"
+				: selectedViewExists
+					? selectedFileView
+					: "default";
 	const isEditorActive = activeFileView === "default";
 	const isFlatEditorVisible =
 		!hasHtmlPreview ||
@@ -1396,7 +1400,7 @@ const FileNodeViewFile = memo(function FileNodeViewFile(props: FileNodeViewFile_
 			]
 		: [
 				...editorOptions,
-				{ value: isEditable ? "details" : "default", label: "File details" },
+				{ value: "details", label: "File details" },
 				...fileViewMatches.map((match) => ({ value: file_view_id(match), label: match.fileView.title })),
 			];
 	const activePluginView = fileViewMatches.find((match) => file_view_id(match) === activeFileView);
@@ -1440,10 +1444,12 @@ const FileNodeViewFile = memo(function FileNodeViewFile(props: FileNodeViewFile_
 	const getBrowserDraftRevision = useFn(() => previewRevision + 1);
 
 	useEffect(() => {
-		if (selectedViewExists) {
+		// A view from the URL can name a plugin view. Wait until the plugin views and the asset are
+		// loaded before deciding that the view is gone.
+		if (selectedViewExists || fileViewPlugins === undefined || (!isEditable && asset === undefined)) {
 			return;
 		}
-		onFileViewChange("default");
+		onFileViewChange("default", { replace: true });
 		// Browser views are only wrong-file-type, not removed: fall back quietly.
 		const isBrowserView =
 			selectedFileView === "browser" || selectedFileView === "code_browser" || selectedFileView === "review_browser";
@@ -1453,7 +1459,7 @@ const FileNodeViewFile = memo(function FileNodeViewFile(props: FileNodeViewFile_
 		if (document.activeElement === document.body) {
 			primaryPanelRef.current?.focus();
 		}
-	}, [isEditable, onFileViewChange, selectedFileView, selectedViewExists]);
+	}, [asset, fileViewPlugins, isEditable, onFileViewChange, selectedFileView, selectedViewExists]);
 
 	const editorContent = isEditable ? (
 		<FileNodeViewFileEditor
@@ -1514,7 +1520,9 @@ const FileNodeViewFile = memo(function FileNodeViewFile(props: FileNodeViewFile_
 			{createPortal(
 				<FileNodeViewViewSelect
 					options={viewOptions}
-					value={hasHtmlPreview ? activeFileView : isEditable && isEditorActive ? editorMode : activeFileView}
+					value={
+						hasHtmlPreview ? activeFileView : isEditorActive ? (isEditable ? editorMode : "details") : activeFileView
+					}
 					onValueChange={handleViewChange}
 				/>,
 				viewSelectPortalHost,
@@ -1891,7 +1899,7 @@ const FileNodeViewPrivateContent = memo(function FileNodeViewPrivateContent(prop
 	presenceStore: FileEditor_Props["presenceStore"];
 	onEditorModeChange: FileEditor_Props["onEditorModeChange"];
 	onAutomaticEditorModeChange: FileEditor_Props["onEditorModeChange"];
-	onFileViewChange: (view: string) => void;
+	onFileViewChange: (view: string, options?: { replace?: boolean }) => void;
 	onTargetChange: NonNullable<FileEditor_Props["onTargetChange"]>;
 	onNavigateTarget: (target: files_PendingTarget) => void;
 	onNavigateNode: FileNodeViewHeader_Props["onNavigateNode"];
@@ -1934,7 +1942,7 @@ const FileNodeViewPrivateContent = memo(function FileNodeViewPrivateContent(prop
 				selectedFileView === "browser" ||
 				selectedFileView === "code_browser" ||
 				selectedFileView === "review_browser"));
-	// Flat HTML views live in local file state. Legacy "default" opens Code.
+	// Flat HTML views live in the URL `fileView`. No `fileView` ("default") opens Code.
 	const activePrivateView =
 		!privateSelectedViewExists || (hasHtmlPreview && selectedFileView === "default")
 			? hasHtmlPreview
@@ -1981,7 +1989,7 @@ const FileNodeViewPrivateContent = memo(function FileNodeViewPrivateContent(prop
 		if (privateSelectedViewExists) {
 			return;
 		}
-		onFileViewChange("default");
+		onFileViewChange("default", { replace: true });
 		// Browser views are only wrong-file-type, not removed: fall back quietly.
 		const isBrowserView =
 			selectedFileView === "browser" || selectedFileView === "code_browser" || selectedFileView === "review_browser";
@@ -3600,7 +3608,7 @@ const FileNodeViewFolderExplorerRow = memo(function FileNodeViewFolderExplorerRo
 					to="/w/$organizationName/$workspaceName/files"
 					params={{ organizationName, workspaceName }}
 					// Drop `view` so the target node opens on its own default editor.
-					search={(prev) => ({ ...prev, nodeId: child._id, pendingNodeId: undefined, view: undefined })}
+					search={(prev) => ({ ...prev, nodeId: child._id, pendingNodeId: undefined, view: undefined, fileView: undefined })}
 					draggable={false}
 				/>
 				<MyIcon className={"FileNodeViewFolderExplorer-icon" satisfies FileNodeViewFolderExplorerRow_ClassNames}>
@@ -4443,7 +4451,7 @@ type FileNodeViewContent_Props = {
 	viewSelectPortalHost: HTMLElement;
 	onEditorModeChange: (mode: FileEditor_Mode, options?: { replace?: boolean }) => void;
 	onAutomaticEditorModeChange: FileEditor_Props["onEditorModeChange"];
-	onFileViewChange: (view: string) => void;
+	onFileViewChange: (view: string, options?: { replace?: boolean }) => void;
 	onNavigateNode: FileNodeViewHeader_Props["onNavigateNode"];
 };
 
@@ -4625,6 +4633,7 @@ export type FileNodeView_SearchParams = {
 	nodeId?: string;
 	pendingNodeId?: string;
 	view?: files_EditorView;
+	fileView?: string;
 	q?: string;
 };
 
@@ -4663,54 +4672,6 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 	const selectionKey = searchPrivateNodeId ? `private:${searchPrivateNodeId}` : `saved:${searchNodeId}`;
 
 	const isRootNodeSelected = searchNodeId === files_ROOT_ID;
-	// Remember the chosen view per file, so coming back to a file opens the view it had. A file
-	// browser keeps running while the user is on another file, so its live page comes back too.
-	const [fileViews, setFileViews] = useState<{ membershipId: string; views: Record<string, string> }>({
-		membershipId,
-		views: {},
-	});
-	const selectedFileView =
-		(fileViews.membershipId === membershipId ? fileViews.views[selectionKey] : null) ?? "default";
-	const setFileView = (targetSelectionKey: string, view: string) => {
-		setFileViews((current) => ({
-			membershipId,
-			views: { ...(current.membershipId === membershipId ? current.views : {}), [targetSelectionKey]: view },
-		}));
-	};
-
-	// Flat HTML views keep the editor visible. "default" is the editor for other files.
-	const isEditorActive =
-		selectedFileView === "default" ||
-		selectedFileView === "code" ||
-		selectedFileView === "review" ||
-		selectedFileView === "code_browser" ||
-		selectedFileView === "review_browser";
-	const handleFileViewChange = useFn((view: string) => {
-		setFileView(selectionKey, view);
-	});
-
-	useGlobalCustomEvent("files::open_browser", (event) => {
-		if (event.detail.membershipId !== membershipId) return;
-		const requestedSelectionKey = `${event.detail.targetKind}:${event.detail.nodeId}`;
-		const requestedFileView = fileViews.membershipId === membershipId ? fileViews.views[requestedSelectionKey] : null;
-		// Remember Browser for that file, then navigate to it. Keep a view that already shows the
-		// browser, such as Code + Browser.
-		if (
-			requestedFileView !== "browser" &&
-			requestedFileView !== "code_browser" &&
-			requestedFileView !== "review_browser"
-		) {
-			setFileView(requestedSelectionKey, "browser");
-		}
-		if (requestedSelectionKey !== selectionKey) {
-			onNavigateSearch({
-				...(event.detail.targetKind === "private"
-					? { pendingNodeId: event.detail.nodeId }
-					: { nodeId: event.detail.nodeId }),
-				q: searchParams.q,
-			});
-		}
-	});
 
 	const queriedNode = useQuery(
 		app_convex_api.files_nodes.get_file_node_for_membership,
@@ -4805,6 +4766,64 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 	// the tree. A file with collaboration turned off has no Yjs sequence to watch.
 	const activeEditorNodeIsCollaborative = activeEditorNode?.collaborationEnabled === true;
 
+	// Flat HTML views ignore the URL editor mode, so the root uses this for
+	// review routing, scrollbar placement, and panel styles below.
+	const isHtmlFile =
+		(privateTextIntent?.textKind === "plain_text" &&
+			files_editable_text_content_type_of(privateTextIntent.contentType) === "text/html;charset=utf-8") ||
+		(resolvedNode != null &&
+			files_node_has_editable_text_content(resolvedNode) &&
+			files_editable_text_content_type_of(resolvedNode.contentType) === "text/html;charset=utf-8");
+
+	// Keep the shown view in the URL, so a reload or a shared link opens the same view. The editor
+	// mode goes in `view` while the editor shows. Any other view goes in `fileView`. Opening another
+	// node drops both, and the effect below writes that node's default once its type is known.
+	const defaultFileView = isHtmlFile
+		? "code"
+		: resolvedNode?.kind === "file" && !resolvedNodeHasEditableTextContent
+			? "details"
+			: undefined;
+	// Resolve the default here, not after the URL write, so the children get the same value before
+	// and after that write and skip the extra render.
+	const selectedFileView = searchParams.fileView ?? defaultFileView ?? "default";
+	const get_view_search = (fileView: string | undefined) => ({
+		...(searchPrivateNodeId ? { pendingNodeId: searchPrivateNodeId } : { nodeId: searchNodeId }),
+		view: fileView === undefined && activeEditorTarget && !isHtmlFile ? effectiveView : searchParams.view,
+		fileView,
+		q: searchParams.q,
+	});
+	const shownViewSearch = get_view_search(selectedFileView === "default" ? undefined : selectedFileView);
+
+	// Flat HTML views keep the editor visible. "default" is the editor for other files.
+	const isEditorActive =
+		selectedFileView === "default" ||
+		selectedFileView === "code" ||
+		selectedFileView === "review" ||
+		selectedFileView === "code_browser" ||
+		selectedFileView === "review_browser";
+	const handleFileViewChange = useFn((view: string, options?: { replace?: boolean }) => {
+		onNavigateSearch(get_view_search(view === "default" ? defaultFileView : view), options);
+	});
+
+	useGlobalCustomEvent("files::open_browser", (event) => {
+		if (event.detail.membershipId !== membershipId) return;
+		const requestedSelectionKey = `${event.detail.targetKind}:${event.detail.nodeId}`;
+		// Keep a view of the open file that already shows the browser, such as Code + Browser.
+		if (
+			requestedSelectionKey === selectionKey &&
+			(selectedFileView === "browser" || selectedFileView === "code_browser" || selectedFileView === "review_browser")
+		) {
+			return;
+		}
+		onNavigateSearch({
+			...(event.detail.targetKind === "private"
+				? { pendingNodeId: event.detail.nodeId }
+				: { nodeId: event.detail.nodeId }),
+			fileView: "browser",
+			q: searchParams.q,
+		});
+	});
+
 	// The list query pages a convex-helpers stream. Only the convex-helpers hook pins where each
 	// loaded page ends, so a proposal added or removed later cannot skip or repeat a row.
 	const {
@@ -4837,9 +4856,8 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 	 * Carry `q` through navigation.
 	 * The sidebar keeps its filter when a result is opened, so the URL
 	 * has to keep matching the search box instead of silently dropping the query.
-	 * The current URL editor mode is NOT carried to the next node: the URL gets only
-	 * `nextEditorMode`. A node that was open before on this page opens on the file view saved
-	 * for it in `fileViews`. A node not opened before opens on its default view.
+	 * The current URL editor mode and file view are NOT carried to the next node: the URL gets
+	 * only `nextEditorMode`, and the next node opens on its default file view.
 	 */
 	const navigateToNode = useFn((nodeId?: string, nextEditorMode: files_EditorView = "rich_text_editor") => {
 		const view = nextEditorMode === "rich_text_editor" ? undefined : nextEditorMode;
@@ -4847,9 +4865,8 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 	});
 	const navigateToTarget = useFn((target: files_PendingTarget, nextEditorMode?: files_EditorView) => {
 		const view = nextEditorMode === "rich_text_editor" ? undefined : nextEditorMode;
-		// Paging through pending changes opens each file on its default editor, not on a view
-		// left from an earlier visit.
-		setFileView(`${target.kind}:${target.id}`, "default");
+		// Paging through pending changes opens each file on its default editor. Leaving out
+		// `fileView` does that.
 		onNavigateSearch({
 			...(target.kind === "private" ? { pendingNodeId: target.id } : { nodeId: target.id }),
 			view,
@@ -4860,7 +4877,6 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 		(sourceKey: string, target: files_PendingTarget, options?: { keepReview: boolean }) => {
 			// A completed Save must not replace a different file opened while it was running.
 			if (sourceKey !== `${membershipId}:${selectionKey}`) return;
-			setFileView(`${target.kind}:${target.id}`, "default");
 			onNavigateSearch(
 				{
 					...(target.kind === "private" ? { pendingNodeId: target.id } : { nodeId: target.id }),
@@ -4884,22 +4900,48 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 		}
 	}, [membershipId, searchPrivateNodeId, privateTargetView, handleEditorTargetChange]);
 
+	// The search this component last asked the router to write. The router applies a navigation
+	// later, so without it the effect below could ask for the same write twice.
+	const pendingViewSearchKeyRef = useRef<string | null>(null);
+	useEffect(() => {
+		// Write the shown view into the URL once the node's type is known. `replace` keeps one
+		// history entry per opened node. The URL then matches, so this runs once per node.
+		if (shownViewSearch.view === searchParams.view && shownViewSearch.fileView === searchParams.fileView) {
+			pendingViewSearchKeyRef.current = null;
+			return;
+		}
+
+		const key = JSON.stringify(shownViewSearch);
+		if (pendingViewSearchKeyRef.current === key) return;
+		pendingViewSearchKeyRef.current = key;
+		onNavigateSearch(shownViewSearch, { replace: true });
+	}, [shownViewSearch, searchParams.view, searchParams.fileView, onNavigateSearch]);
+
+	// Write the editor mode even when it is the default, so the URL already matches the shown view and
+	// the effect above has nothing to write.
 	const handleAutomaticEditorModeChange = useFn<FileNodeViewContent_Props["onEditorModeChange"]>(
 		(nextView, options) => {
-			const view = nextView === "rich_text_editor" ? undefined : nextView;
 			onNavigateSearch(
 				{
 					...(searchPrivateNodeId ? { pendingNodeId: searchPrivateNodeId } : { nodeId: searchNodeId ?? files_ROOT_ID }),
-					view,
+					view: nextView,
+					fileView: searchParams.fileView,
 					q: searchParams.q,
 				},
 				options,
 			);
 		},
 	);
+	// A user pick of an editor mode also leaves any other file view, so `fileView` is left out.
 	const navigateToView = useFn<FileNodeViewContent_Props["onEditorModeChange"]>((nextView, options) => {
-		handleFileViewChange("default");
-		handleAutomaticEditorModeChange(nextView, options);
+		onNavigateSearch(
+			{
+				...(searchPrivateNodeId ? { pendingNodeId: searchPrivateNodeId } : { nodeId: searchNodeId ?? files_ROOT_ID }),
+				view: nextView,
+				q: searchParams.q,
+			},
+			options,
+		);
 	});
 
 	/**
@@ -4920,6 +4962,7 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 				{
 					...(searchPrivateNodeId ? { pendingNodeId: searchPrivateNodeId } : { nodeId: searchNodeId }),
 					view: searchParams.view,
+					fileView: searchParams.fileView,
 					q,
 				},
 				{ replace: true },
@@ -5012,17 +5055,8 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 					: null
 			: null;
 
-	// Flat HTML views ignore the URL editor mode, so the root uses this for
-	// review routing, scrollbar placement, and panel styles below.
-	const isHtmlFile =
-		(privateTextIntent?.textKind === "plain_text" &&
-			files_editable_text_content_type_of(privateTextIntent.contentType) === "text/html;charset=utf-8") ||
-		(resolvedNode != null &&
-			files_node_has_editable_text_content(resolvedNode) &&
-			files_editable_text_content_type_of(resolvedNode.contentType) === "text/html;charset=utf-8");
-
 	const handleReviewPendingUpdates = useFn(() => {
-		// Flat HTML views keep review in local file state; other files use the URL editor mode.
+		// Flat HTML views keep review in the URL `fileView`; other files use the URL editor mode.
 		// From a browser view, keep the split: review beside the browser.
 		if (isHtmlFile) {
 			handleFileViewChange(

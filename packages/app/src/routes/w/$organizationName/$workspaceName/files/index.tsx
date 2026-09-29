@@ -34,6 +34,13 @@ const Route = createFileRoute("/w/$organizationName/$workspaceName/files/")({
 			pendingNodeId: z.string().optional().catch(undefined),
 			view: z.enum(files_editor_view_values).optional().catch(undefined),
 			/**
+			 * The file view picked in the "View" select, such as `details`, `browser`, or a plugin view.
+			 *
+			 * The file view checks the value against the views the file really has, and falls back to
+			 * the default view when it is unknown. So plugin view ids need no list here.
+			 **/
+			fileView: z.string().max(200).optional().catch(undefined),
+			/**
 			 * Seeds the files sidebar search box.
 			 *
 			 * The path splat route uses it for its not-found recovery link. The length cap keeps a

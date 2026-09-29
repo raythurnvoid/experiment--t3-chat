@@ -218,7 +218,7 @@ Tree-item components:
 
 ## Path URLs And Copy Actions
 
-- Saved URLs use `/w/:organizationName/:workspaceName/files?nodeId=<id>&view=<view>`. Private URLs use `pendingNodeId=<id>` instead. Links clear the other id and preserve `q`. Last-open storage keeps `{kind,id}` per membership; a missing private target never falls back to a saved lookup.
+- Saved URLs use `/w/:organizationName/:workspaceName/files?nodeId=<id>&view=<view>&fileView=<fileView>`. `view` is the editor mode; `fileView` is any other View pick, such as `details`, `browser`, or a plugin view. Links may leave both out: the file view writes the node's default into the URL with `replace` once the node's type is known. Private URLs use `pendingNodeId=<id>` instead. Links clear the other id, `view`, and `fileView`, and preserve `q`. Last-open storage keeps `{kind,id}` per membership; a missing private target never falls back to a saved lookup.
 - `/w/:organizationName/:workspaceName/files/<path>` is an entry format only. The splat route `routes/w/$organizationName/$workspaceName/files/$.tsx` calls `files_nodes.get_visible_target_by_path`, then replaces the URL with the matching tagged id route. `view` and `q` ride along.
 - Only a resolved `null` renders the not-found panel. `undefined` still means loading, so a cold pasted link must not flash not-found.
 - Path lookup is exact and case-sensitive in the owner's current view. It includes private entries and proposed moves. A hand-typed `/readme.md` for a stored `README.md` misses on purpose and recovers through the not-found panel's search link. Do not add a case-insensitive server fallback.

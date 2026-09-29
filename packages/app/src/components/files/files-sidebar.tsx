@@ -3218,7 +3218,7 @@ const FilesSidebarHeader = memo(function FilesSidebarHeader(props: FilesSidebarH
 							params={{ organizationName, workspaceName }}
 							// Keep `q`: the sidebar stays mounted with its search box filled, so dropping the
 							// param here would leave the URL disagreeing with what the user still sees.
-							search={(prev) => ({ ...prev, nodeId: files_ROOT_ID, pendingNodeId: undefined, view })}
+							search={(prev) => ({ ...prev, nodeId: files_ROOT_ID, pendingNodeId: undefined, view, fileView: undefined })}
 						>
 							<MySidebarTitle>Files</MySidebarTitle>
 						</MyLink>

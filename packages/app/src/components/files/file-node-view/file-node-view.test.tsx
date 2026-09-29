@@ -1,5 +1,5 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import type { ComponentProps, ReactNode } from "react";
+import type { ComponentProps, ReactElement, ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { getFunctionName } from "convex/server";
 import { toast } from "sonner";
@@ -242,7 +242,7 @@ vi.mock("@/components/my-link.tsx", () => ({
 	MyLinkIcon: (props: { children?: ReactNode }) => <span>{props.children}</span>,
 }));
 
-import { FileNodeView, type FileNodeView_SearchParams } from "./file-node-view.tsx";
+import { FileNodeView, type FileNodeView_Props, type FileNodeView_SearchParams } from "./file-node-view.tsx";
 import { FileEditorSidebarPending } from "../file-editor/file-editor-sidebar/file-editor-sidebar-pending.tsx";
 
 const NODE = {
@@ -513,21 +513,47 @@ afterEach(() => {
 });
 
 function renderFileView(searchParams: FileNodeView_SearchParams = { nodeId: NODE._id }) {
-	const onNavigateSearch = vi.fn();
+	// Follow navigation like the router does, so views kept in the URL render after a pick. A
+	// navigation during the first render is not followed; those tests rerender by hand.
+	let rerender: ((ui: ReactNode) => void) | undefined;
+	let firstRenderSearch: FileNodeView_SearchParams | undefined;
+	let currentSearch = searchParams;
+	// Every navigation except the `replace` writes that keep the same node and query and only put the
+	// shown view into the URL. Tests that check "this action did not navigate" read this one.
+	const otherNavigations = vi.fn();
+	const onNavigateSearch = vi.fn((search: FileNodeView_SearchParams, options?: { replace?: boolean }) => {
+		const isViewWrite =
+			options?.replace === true &&
+			search.nodeId === currentSearch.nodeId &&
+			search.pendingNodeId === currentSearch.pendingNodeId &&
+			search.q === currentSearch.q;
+		if (!isViewWrite) otherNavigations(search, options);
+		currentSearch = search;
+		if (rerender) rerender(<FileNodeView searchParams={search} onNavigateSearch={onNavigateSearch} />);
+		else firstRenderSearch = search;
+	});
+	const result = render(<FileNodeView searchParams={searchParams} onNavigateSearch={onNavigateSearch} />, {
+		wrapper: ({ children }) => (
+			<AppActivitiesProvider key={tenantContextMock().membershipId} membershipId={tenantContextMock().membershipId}>
+				<FilesClipboardProvider key={tenantContextMock().membershipId} membershipId={tenantContextMock().membershipId}>
+					{children}
+				</FilesClipboardProvider>
+			</AppActivitiesProvider>
+		),
+	});
+	rerender = result.rerender;
+	if (firstRenderSearch) {
+		result.rerender(<FileNodeView searchParams={firstRenderSearch} onNavigateSearch={onNavigateSearch} />);
+	}
 	return {
-		...render(<FileNodeView searchParams={searchParams} onNavigateSearch={onNavigateSearch} />, {
-			wrapper: ({ children }) => (
-				<AppActivitiesProvider key={tenantContextMock().membershipId} membershipId={tenantContextMock().membershipId}>
-					<FilesClipboardProvider
-						key={tenantContextMock().membershipId}
-						membershipId={tenantContextMock().membershipId}
-					>
-						{children}
-					</FilesClipboardProvider>
-				</AppActivitiesProvider>
-			),
-		}),
+		...result,
+		// Track the URL a test sets by hand too, so a later view write is compared with it.
+		rerender: (ui: ReactElement<FileNodeView_Props>) => {
+			currentSearch = ui.props.searchParams;
+			result.rerender(ui);
+		},
 		onNavigateSearch,
+		otherNavigations,
 	};
 }
 
@@ -625,7 +651,7 @@ describe("FileNodeView node loading", () => {
 	test.each(["ready", "missing"] as const)("waits for an absent tree node's query to become %s", async (status) => {
 		treeNodes = [];
 		nodeQueryStatus = "loading";
-		const { onNavigateSearch } = renderFileView();
+		const { onNavigateSearch, otherNavigations } = renderFileView();
 		expect(await screen.findByText("Loading...")).toBeTruthy();
 		expect(screen.queryByTestId("editor")).toBeNull();
 		expect(onNavigateSearch).not.toHaveBeenCalled();
@@ -634,7 +660,7 @@ describe("FileNodeView node loading", () => {
 		pushQueryChanges();
 		if (status === "ready") {
 			expect(await screen.findByRole("textbox", { name: "Code draft" })).toBeTruthy();
-			expect(onNavigateSearch).not.toHaveBeenCalled();
+			expect(otherNavigations).not.toHaveBeenCalled();
 		} else {
 			expect(screen.queryByTestId("editor")).toBeNull();
 			expect(onNavigateSearch).toHaveBeenCalledWith({ nodeId: "root", view: undefined, q: undefined });
@@ -645,7 +671,7 @@ describe("FileNodeView node loading", () => {
 		const nextNode = { ...NODE, _id: "node_next", name: "next.html" };
 		treeNodes = loaded ? [NODE, nextNode] : [NODE];
 		nodeQueryStatus = "loading";
-		const { rerender, onNavigateSearch } = renderFileView();
+		const { rerender, onNavigateSearch, otherNavigations } = renderFileView();
 		const editor = await screen.findByRole("textbox", { name: "Code draft" });
 		fireEvent.change(editor, { target: { value: "First file draft" } });
 
@@ -660,7 +686,7 @@ describe("FileNodeView node loading", () => {
 		expect(nextEditor).not.toBe(editor);
 		expect(nextEditor).toHaveProperty("value", "saved HTML");
 		expect(editorRenderMock.mock.calls.at(-1)![0].target).toEqual({ kind: "saved", id: nextNode._id });
-		expect(onNavigateSearch).not.toHaveBeenCalled();
+		expect(otherNavigations).not.toHaveBeenCalled();
 	});
 
 	test("opens Home while the selected-node query is skipped", async () => {
@@ -1001,13 +1027,17 @@ describe("FileNodeView private targets", () => {
 		expect(await screen.findByTestId("html-preview")).toHaveProperty("textContent", "<p>Private local draft</p>");
 		expect(screen.queryByRole("button", { name: "Save draft" })).toBeNull();
 		await selectView("Code");
-		expect(onNavigateSearch).not.toHaveBeenCalled();
+		expect(onNavigateSearch.mock.calls.at(-1)?.[0]).toEqual({
+			pendingNodeId: PRIVATE_ENTRY.node._id,
+			fileView: "code",
+			q: "draft",
+		});
 		expect(await screen.findByRole("textbox", { name: "Code draft" })).toBe(editor);
 		expect(editorMountMock).toHaveBeenCalledOnce();
 	});
 
 	test.each([false, true])("the first Save moves to the saved target and keeps Review: %s", async (keepReview) => {
-		const { onNavigateSearch, rerender } = renderFileView({
+		const { onNavigateSearch, otherNavigations, rerender } = renderFileView({
 			pendingNodeId: PRIVATE_ENTRY.node._id,
 			view: "diff_editor",
 			q: "draft",
@@ -1020,20 +1050,20 @@ describe("FileNodeView private targets", () => {
 		pushQueryChanges();
 		act(() => onTargetChange?.({ kind: "saved", id: NODE._id as app_convex_Id<"files_nodes"> }, { keepReview }));
 		const searchParams = { nodeId: NODE._id, view: keepReview ? ("diff_editor" as const) : undefined, q: "draft" };
-		expect(onNavigateSearch).toHaveBeenLastCalledWith(searchParams, { replace: true });
+		expect(otherNavigations).toHaveBeenLastCalledWith(searchParams, { replace: true });
 		rerender(<FileNodeView searchParams={searchParams} onNavigateSearch={onNavigateSearch} />);
 		expect(await screen.findByRole("textbox", { name: "Code draft" })).not.toBe(editor);
 		expect(editorRenderMock.mock.calls.at(-1)![0].target).toEqual({ kind: "saved", id: NODE._id });
 	});
 
 	test("a completed Save does not leave a different file opened during the request", async () => {
-		const { onNavigateSearch, rerender } = renderFileView({ pendingNodeId: PRIVATE_ENTRY.node._id });
+		const { onNavigateSearch, otherNavigations, rerender } = renderFileView({ pendingNodeId: PRIVATE_ENTRY.node._id });
 		await screen.findByRole("textbox", { name: "Code draft" });
 		const onTargetChange = editorRenderMock.mock.calls.at(-1)![0].onTargetChange;
 		rerender(<FileNodeView searchParams={{ nodeId: NODE._id }} onNavigateSearch={onNavigateSearch} />);
 		const editor = await screen.findByRole("textbox", { name: "Code draft" });
 		act(() => onTargetChange?.({ kind: "saved", id: "published_1" as app_convex_Id<"files_nodes"> }));
-		expect(onNavigateSearch).not.toHaveBeenCalled();
+		expect(otherNavigations).not.toHaveBeenCalled();
 		expect(screen.getByRole("textbox", { name: "Code draft" })).toBe(editor);
 	});
 
@@ -1090,7 +1120,7 @@ describe("FileNodeView private targets", () => {
 
 	test("write loss keeps the draft readable and read loss removes it", async () => {
 		privateView = { ...privateView!, canEdit: false, canAccept: false, canAcceptWithParents: false };
-		const { onNavigateSearch } = renderFileView({ pendingNodeId: PRIVATE_ENTRY.node._id });
+		const { otherNavigations } = renderFileView({ pendingNodeId: PRIVATE_ENTRY.node._id });
 		await screen.findByRole("textbox", { name: "Code draft" });
 		expect(editorRenderMock.mock.calls.at(-1)![0].privateCanEdit).toBe(false);
 		expect(screen.getByRole("button", { name: "Discard" }).matches(":disabled")).toBe(false);
@@ -1098,7 +1128,7 @@ describe("FileNodeView private targets", () => {
 		pushQueryChanges();
 		expect(await screen.findByText(/This draft is no longer available/)).toBeTruthy();
 		expect(screen.queryByTestId("editor")).toBeNull();
-		expect(onNavigateSearch).not.toHaveBeenCalled();
+		expect(otherNavigations).not.toHaveBeenCalled();
 	});
 
 	test("opens private and saved children through their own target kinds", async () => {
@@ -1136,16 +1166,15 @@ describe("FileNodeView private targets", () => {
 				contentType: "text/html",
 			},
 		];
-		const { onNavigateSearch } = renderFileView({ pendingNodeId: PRIVATE_ENTRY.node._id });
+		const { otherNavigations } = renderFileView({ pendingNodeId: PRIVATE_ENTRY.node._id });
 		expect(await screen.findByText("Added folder")).toBeTruthy();
 		fireEvent.click(screen.getByRole("button", { name: "draft.html" }));
-		expect(onNavigateSearch).toHaveBeenLastCalledWith({
-			pendingNodeId: PRIVATE_ENTRY.node._id,
-			view: undefined,
-			q: undefined,
-		});
+		expect(otherNavigations).toHaveBeenLastCalledWith(
+			{ pendingNodeId: PRIVATE_ENTRY.node._id, view: undefined, q: undefined },
+			undefined,
+		);
 		fireEvent.click(screen.getByRole("button", { name: "page.html" }));
-		expect(onNavigateSearch).toHaveBeenLastCalledWith({ nodeId: NODE._id, view: undefined, q: undefined });
+		expect(otherNavigations).toHaveBeenLastCalledWith({ nodeId: NODE._id, view: undefined, q: undefined }, undefined);
 	});
 
 	test("the media preview signs only the captured private asset", async () => {
@@ -1787,9 +1816,41 @@ describe("FileNodeView file views", () => {
 		expect(screen.getAllByRole("option").map((option) => option.textContent)).toEqual(fixture.options);
 	});
 
+	test.each([
+		{
+			name: "rich text",
+			node: { ...NODE, name: "notes.md", contentType: "text/markdown", textKind: "rich_text" },
+			search: { view: "rich_text_editor" },
+		},
+		{
+			name: "plain text asked for rich text",
+			node: { ...NODE, name: "data.json", contentType: "application/json" },
+			search: { view: "plain_text_editor" },
+		},
+		{ name: "HTML", node: NODE, search: { fileView: "code" } },
+		{
+			name: "stored image",
+			node: { ...NODE, name: "image.png", contentType: "image/png", textKind: null },
+			search: { fileView: "details" },
+		},
+	])("writes the shown $name view into the URL once", async (fixture) => {
+		node = fixture.node;
+		const { onNavigateSearch } = renderFileView({ nodeId: NODE._id, q: "page" });
+		await screen.findByRole("combobox", { name: /^View: / });
+		await act(async () => {});
+		expect(onNavigateSearch.mock.calls).toEqual([[{ nodeId: NODE._id, q: "page", ...fixture.search }, { replace: true }]]);
+	});
+
+	test("writes nothing when the URL already names the shown view", async () => {
+		const { onNavigateSearch } = renderFileView({ nodeId: NODE._id, fileView: "code" });
+		await screen.findByRole("combobox", { name: "View: Code" });
+		await act(async () => {});
+		expect(onNavigateSearch).not.toHaveBeenCalled();
+	});
+
 	test("search and arrow keys leave the view unchanged until Enter selects an option", async () => {
 		plugins = [PLUGIN];
-		const { onNavigateSearch } = renderFileView();
+		const { otherNavigations } = renderFileView();
 		const trigger = await screen.findByRole("combobox", { name: "View: Code" });
 		act(() => trigger.focus());
 		const search = await openViewPicker();
@@ -1812,7 +1873,7 @@ describe("FileNodeView file views", () => {
 		expect(screen.queryByTestId("plugin-frame")).toBeNull();
 		expect(screen.queryByTestId("html-preview")).toBeNull();
 		expect(trigger.textContent).toBe("View: Code");
-		expect(onNavigateSearch).not.toHaveBeenCalled();
+		expect(otherNavigations).not.toHaveBeenCalled();
 
 		fireEvent.keyDown(search, { key: "Escape" });
 		await waitFor(() => expect(trigger.getAttribute("aria-expanded")).toBe("false"));
@@ -1838,7 +1899,7 @@ describe("FileNodeView file views", () => {
 
 	test.each(["ArrowUp", "ArrowDown", "p"])("the closed trigger does not select a view on %s", async (key) => {
 		plugins = [PLUGIN];
-		const { onNavigateSearch } = renderFileView();
+		const { otherNavigations } = renderFileView();
 		const trigger = await screen.findByRole("combobox", { name: "View: Code" });
 		const search = await openViewPicker();
 		fireEvent.change(search, { target: { value: "File viewer" } });
@@ -1852,7 +1913,7 @@ describe("FileNodeView file views", () => {
 		expect(trigger.textContent).toBe("View: Code");
 		expect(screen.queryByTestId("plugin-frame")).toBeNull();
 		expect(screen.queryByTestId("html-preview")).toBeNull();
-		expect(onNavigateSearch).not.toHaveBeenCalled();
+		expect(otherNavigations).not.toHaveBeenCalled();
 	});
 
 	test("duplicate view names remain separate choices and switching unmounts the old frame", async () => {
@@ -1973,7 +2034,7 @@ describe("FileNodeView file views", () => {
 	});
 
 	test.each(["Preview", "File details", "File viewer"])(
-		"Review opens the flat review view from %s without navigation",
+		"Review opens the flat review view from %s and keeps it in the URL",
 		async (view) => {
 			plugins = [PLUGIN];
 			pendingUpdates = [
@@ -2006,7 +2067,12 @@ describe("FileNodeView file views", () => {
 			fireEvent.click(await screen.findByRole("button", { name: "Review changes" }));
 			expect(await screen.findByRole("combobox", { name: "View: Review changes" })).toBeTruthy();
 			expect(screen.getByTestId("editor").getAttribute("data-mode")).toBe("diff_editor");
-			expect(onNavigateSearch).not.toHaveBeenCalled();
+			expect(onNavigateSearch.mock.calls.at(-1)?.[0]).toEqual({
+				nodeId: NODE._id,
+				view: "diff_editor",
+				fileView: "review",
+				q: "page",
+			});
 		},
 	);
 
@@ -2040,13 +2106,18 @@ describe("FileNodeView file views", () => {
 		expect(screen.queryByRole("button", { name: "Review changes" })).toBeNull();
 	});
 
-	test("the Review option leaves a plugin without navigation", async () => {
+	test("the Review option leaves a plugin and keeps Review in the URL", async () => {
 		plugins = [PLUGIN];
 		const { onNavigateSearch } = renderFileView({ nodeId: NODE._id, q: "page" });
 		await selectView("File viewer");
+		expect(onNavigateSearch.mock.calls.at(-1)?.[0]).toEqual({
+			nodeId: NODE._id,
+			fileView: "plugin_file-viewer_file",
+			q: "page",
+		});
 
 		await selectView("Review changes");
-		expect(onNavigateSearch).not.toHaveBeenCalled();
+		expect(onNavigateSearch.mock.calls.at(-1)?.[0]).toEqual({ nodeId: NODE._id, fileView: "review", q: "page" });
 		expect(screen.getByRole("combobox", { name: "View: Review changes" })).toBeTruthy();
 		expect(screen.getByTestId("editor").getAttribute("data-mode")).toBe("diff_editor");
 		expect(screen.queryByTestId("plugin-frame")).toBeNull();
@@ -2054,23 +2125,16 @@ describe("FileNodeView file views", () => {
 	});
 
 	test("an automatic Diff exit keeps Preview selected", async () => {
-		const { rerender, onNavigateSearch } = renderFileView({ nodeId: NODE._id, view: "diff_editor" });
+		const { onNavigateSearch } = renderFileView({ nodeId: NODE._id, view: "diff_editor" });
 		await screen.findByRole("textbox", { name: "Code draft" });
 		await selectView("Preview");
 		await screen.findByTestId("html-preview");
 
 		const editorProps = editorRenderMock.mock.calls.at(-1)![0];
 		act(() => editorProps.onAutomaticEditorModeChange?.("plain_text_editor", { replace: true }));
-		expect(onNavigateSearch).toHaveBeenCalledWith(
-			{ nodeId: NODE._id, view: "plain_text_editor", q: undefined },
+		expect(onNavigateSearch).toHaveBeenLastCalledWith(
+			{ nodeId: NODE._id, view: "plain_text_editor", fileView: "preview", q: undefined },
 			{ replace: true },
-		);
-
-		rerender(
-			<FileNodeView
-				searchParams={{ nodeId: NODE._id, view: "plain_text_editor" }}
-				onNavigateSearch={onNavigateSearch}
-			/>,
 		);
 		expect(screen.getByRole("combobox", { name: "View: Preview" })).toBeTruthy();
 		await waitFor(() => expect(screen.queryByRole("textbox", { name: "Code draft" })).toBeNull());
@@ -2116,23 +2180,28 @@ describe("FileNodeView browser views", () => {
 		expect(endCalls.map(([, args]) => args)).toEqual([]);
 	});
 
-	test("coming back to a file opens its Browser view again", async () => {
+	test("keeps the Browser view in the URL and opens it again from the URL", async () => {
 		treeNodes = [NODE];
-		const { rerender, onNavigateSearch } = renderFileView();
+		const { onNavigateSearch } = renderFileView();
 		await screen.findByRole("textbox", { name: "Code draft" });
 		await selectView("Browser");
 		expect(await screen.findByRole("region", { name: "Shared browser" })).toBeTruthy();
+		expect(onNavigateSearch.mock.calls.at(-1)?.[0]).toEqual({ nodeId: NODE._id, fileView: "browser" });
 
-		node = { ...NODE, _id: "node_next", name: "next.html" };
-		rerender(<FileNodeView searchParams={{ nodeId: node._id }} onNavigateSearch={onNavigateSearch} />);
-		expect(await screen.findByRole("combobox", { name: "View: Code" })).toBeTruthy();
-		expect(screen.queryByRole("region", { name: "Shared browser" })).toBeNull();
-		await selectView("Preview");
-
-		node = NODE;
-		rerender(<FileNodeView searchParams={{ nodeId: NODE._id }} onNavigateSearch={onNavigateSearch} />);
+		cleanup();
+		renderFileView({ nodeId: NODE._id, fileView: "browser" });
 		expect(await screen.findByRole("combobox", { name: "View: Browser" })).toBeTruthy();
 		expect(await screen.findByRole("region", { name: "Shared browser" })).toBeTruthy();
+	});
+
+	test("opens a plugin view from the URL once the plugin views load", async () => {
+		renderFileView({ nodeId: NODE._id, fileView: "plugin_file-viewer_file" });
+		await screen.findByRole("combobox", { name: /^View: / });
+
+		plugins = [PLUGIN];
+		pushQueryChanges();
+		expect(await screen.findByTestId("plugin-frame")).toHaveProperty("dataset.plugin", PLUGIN.pluginName);
+		expect(toast.info).not.toHaveBeenCalled();
 	});
 
 	test("lists the flat browser views for HTML files", async () => {
@@ -2232,9 +2301,11 @@ describe("FileNodeView browser views", () => {
 				targetKind: "saved",
 			}),
 		);
-		expect(onNavigateSearch).toHaveBeenCalledWith({ nodeId: "node_next", q: undefined });
+		expect(onNavigateSearch).toHaveBeenCalledWith({ nodeId: "node_next", fileView: "browser", q: undefined });
 		node = { ...NODE, _id: "node_next" };
-		rerender(<FileNodeView searchParams={{ nodeId: node._id }} onNavigateSearch={onNavigateSearch} />);
+		rerender(
+			<FileNodeView searchParams={{ nodeId: node._id, fileView: "browser" }} onNavigateSearch={onNavigateSearch} />,
+		);
 		expect(await screen.findByRole("region", { name: "Shared browser" })).toBeTruthy();
 	});
 
@@ -2480,7 +2551,7 @@ describe("FileNodeView header breadcrumb", () => {
 	});
 
 	test("Cancel closes the Archive dialog without a write", async () => {
-		const { onNavigateSearch } = renderFileView();
+		const { otherNavigations } = renderFileView();
 		await screen.findByRole("textbox", { name: "Code draft" });
 		const menu = await openCurrentCrumbMenu("page.html");
 		fireEvent.click(within(menu).getByRole("menuitem", { name: "Archive" }));
@@ -2490,7 +2561,7 @@ describe("FileNodeView header breadcrumb", () => {
 
 		await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
 		expect(archiveCalls()).toEqual([]);
-		expect(onNavigateSearch).not.toHaveBeenCalled();
+		expect(otherNavigations).not.toHaveBeenCalled();
 	});
 
 	test("the folder explorer row menu archives that row through the same dialog", async () => {
