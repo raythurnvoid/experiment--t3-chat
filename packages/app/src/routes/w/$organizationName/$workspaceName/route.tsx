@@ -8,6 +8,7 @@ import { useFn } from "@/hooks/utils-hooks.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { app_convex_api } from "@/lib/app-convex-client.ts";
 import { cn } from "@/lib/utils.ts";
+import { AppLoadingCard } from "@/components/app-loading-card.tsx";
 import { PluginsPublishSessionProvider } from "@/components/plugins-publish-session.tsx";
 
 import type { RootLayout_ClassNames } from "@/routes/__root.tsx";
@@ -66,15 +67,12 @@ function RouteTenantOrganizationWorkspaceLayout() {
 
 	if (membership === undefined) {
 		return (
-			<main
+			<AppLoadingCard
 				ref={handleStandaloneFocusTargetRef}
-				role="status"
-				aria-live="polite"
-				aria-label="Organization loading"
-				tabIndex={-1}
-			>
-				Loading organization
-			</main>
+				label="Organization loading"
+				title="Loading workspace"
+				description="Getting your organization and workspace ready."
+			/>
 		);
 	}
 

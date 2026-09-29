@@ -4,25 +4,15 @@ import { memo, useEffect } from "react";
 import { useConvexAuth, useQuery } from "convex/react";
 
 import { AppAuthProvider } from "../components/app-auth.tsx";
-import { Logo } from "../components/logo.tsx";
-import { MySpinner } from "../components/my-spinner.tsx";
+import { AppLoadingCard } from "../components/app-loading-card.tsx";
 import { AppTanStackRouterDevTools } from "../components/app-tanstack-router-dev-tools.tsx";
 import { AppRouteError } from "../components/app-route-error.tsx";
 import { app_convex_api, type app_convex_FunctionReturnType } from "../lib/app-convex-client.ts";
-import { cn } from "../lib/utils.ts";
 import { app_scrollbar_measure_width } from "../lib/app-scrollbar.ts";
 import type { AppElementId } from "../lib/dom-utils.ts";
 import { PluginsPublishSessionProvider } from "../components/plugins-publish-session.tsx";
 
-export type RootLayout_ClassNames =
-	| "RootLayout"
-	| "RootLayout-content"
-	| "RootLayoutAuthState"
-	| "RootLayoutAuthState-panel"
-	| "RootLayoutAuthState-logo"
-	| "RootLayoutAuthState-spinner"
-	| "RootLayoutAuthState-title"
-	| "RootLayoutAuthState-description";
+export type RootLayout_ClassNames = "RootLayout" | "RootLayout-content";
 
 type RootLayout_CustomAttributes = {
 	"data-app-ready": "";
@@ -89,30 +79,6 @@ function RootLayoutInner() {
 	);
 }
 
-function RootLayoutAuthState() {
-	return (
-		<div
-			className={cn("RootLayoutAuthState" satisfies RootLayout_ClassNames)}
-			role="status"
-			aria-live="polite"
-			aria-label="Preparing organization"
-		>
-			<div className={cn("RootLayoutAuthState-panel" satisfies RootLayout_ClassNames)}>
-				<Logo className={"RootLayoutAuthState-logo" satisfies RootLayout_ClassNames} />
-				<MySpinner
-					size="24px"
-					color="var(--color-accent-07)"
-					className={"RootLayoutAuthState-spinner" satisfies RootLayout_ClassNames}
-				/>
-				<div className={"RootLayoutAuthState-title" satisfies RootLayout_ClassNames}>Preparing organization</div>
-				<div className={"RootLayoutAuthState-description" satisfies RootLayout_ClassNames}>
-					Finish loading authentication, organization access, and billing setup.
-				</div>
-			</div>
-		</div>
-	);
-}
-
 function RootLayout() {
 	const auth = AppAuthProvider.useAuth();
 	const convexAuth = useConvexAuth();
@@ -140,7 +106,14 @@ function RootLayout() {
 	const isHealthy = auth.isLoaded && auth.isAuthenticated && convexAuth.isAuthenticated;
 
 	if (isLoading) {
-		return <RootLayoutAuthState />;
+		return (
+			<AppLoadingCard
+				ref={null}
+				label="Preparing organization"
+				title="Preparing organization"
+				description="Finish loading authentication, organization access, and billing setup."
+			/>
+		);
 	}
 
 	if (isHealthy) {
