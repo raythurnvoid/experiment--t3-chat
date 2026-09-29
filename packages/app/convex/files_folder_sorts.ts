@@ -1,8 +1,9 @@
-import { v } from "convex/values";
+import { compareValues, v } from "convex/values";
+import { doc } from "convex-helpers/validators";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
-import { mutation, query } from "./_generated/server.js";
-import { files_sort_validator } from "./schema.ts";
+import { internalMutation, mutation, query } from "./_generated/server.js";
+import { app_convex_schema, files_sort_validator } from "./schema.ts";
 import { access_control_db_authorize_membership } from "./access_control.ts";
 import { files_nodes_db_require_user_writable } from "./files_nodes.ts";
 import { organizations_db_get_membership } from "./organizations.ts";
@@ -16,6 +17,9 @@ import { files_sort_DEFAULT, files_sort_field_is_valid } from "../shared/files-s
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
 // Does NOT work for http actions (see http.ts). No mutable module-level state allowed here.
 export const experimental_reuseContext = true;
+
+// Keep the recovery snapshot fixed until the array-only schema is deployed.
+const PAUSE_SAVED_SORT_WRITES = true;
 
 // The saved sort of a folder's table. Each folder has at most one doc, and every member sees it.
 // A folder with no doc sorts by Name, A to Z.
@@ -107,7 +111,8 @@ export const get_folder_sort = query({
 	returns: v.union(v.object({ sort: files_sort_validator, canSave: v.boolean() }), v.null()),
 	handler: async (ctx, args) => {
 		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!userAuth) {
+		const user = userAuth ? await ctx.db.get("users", userAuth.id) : null;
+		if (!userAuth || !user || (userAuth.kind === "anonymous" && user.deletedAt !== undefined)) {
 			throw convex_error({ message: "Unauthenticated" });
 		}
 
@@ -160,7 +165,8 @@ export const set_folder_sort = mutation({
 	returns: v_result({ _yay: v.null() }),
 	handler: async (ctx, args) => {
 		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!userAuth) {
+		const user = userAuth ? await ctx.db.get("users", userAuth.id) : null;
+		if (!userAuth || !user || (userAuth.kind === "anonymous" && user.deletedAt !== undefined)) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 
@@ -185,6 +191,10 @@ export const set_folder_sort = mutation({
 		const authorized = await db_authorize_sort_write(ctx, { userAuth, membership, folder: folder._yay });
 		if (authorized._nay) {
 			return authorized;
+		}
+
+		if (PAUSE_SAVED_SORT_WRITES) {
+			return Result({ _nay: { message: "Saved sorts are being reset. Try again soon." } });
 		}
 
 		if (!files_sort_field_is_valid(args.sort.field)) {
@@ -217,5 +227,43 @@ export const set_folder_sort = mutation({
 		}
 
 		return Result({ _yay: null });
+	},
+});
+
+// One-time cutover helper. Erase only docs from the checked saved-sort snapshot.
+export const erase_saved_sorts_for_multi_sort = internalMutation({
+	args: { expected: v.array(doc(app_convex_schema, "files_folder_sorts")) },
+	returns: v.object({
+		deletedIds: v.array(v.id("files_folder_sorts")),
+		missingIds: v.array(v.id("files_folder_sorts")),
+	}),
+	handler: async (ctx, args) => {
+		if (args.expected.length < 1 || args.expected.length > 50) {
+			throw convex_error({ message: "Choose 1 to 50 saved sort docs." });
+		}
+		if (new Set(args.expected.map((expected) => expected._id)).size !== args.expected.length) {
+			throw convex_error({ message: "Choose each saved sort doc once." });
+		}
+
+		const currentDocs = await Promise.all(args.expected.map((expected) => ctx.db.get("files_folder_sorts", expected._id)));
+		// Check the whole batch before any delete. A changed doc must stop every delete.
+		for (const [index, expected] of args.expected.entries()) {
+			const current = currentDocs[index];
+			if (current && compareValues(current, expected) !== 0) {
+				throw convex_error({ message: "Saved sort changed. Read it again before erasing." });
+			}
+		}
+
+		const deletedIds: Id<"files_folder_sorts">[] = [];
+		const missingIds: Id<"files_folder_sorts">[] = [];
+		for (const [index, expected] of args.expected.entries()) {
+			if (!currentDocs[index]) {
+				missingIds.push(expected._id);
+				continue;
+			}
+			await ctx.db.delete("files_folder_sorts", expected._id);
+			deletedIds.push(expected._id);
+		}
+		return { deletedIds, missingIds };
 	},
 });
