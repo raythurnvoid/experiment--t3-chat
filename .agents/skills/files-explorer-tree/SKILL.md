@@ -266,14 +266,13 @@ folder (`FileNodeViewPrivateFolder`) still lists its children through `useFilesV
 - A reader (`canSave: false`) gets the same controls, but the sort is local only, keyed by folder,
   and resets when they open another folder. The menu says "Only people who can edit this folder can
   save its sort." Who may save is in the `access-control` skill.
-- The sidebar still lists children in name order (`list_tree_children`). Table and sidebar disagree
-  until Phase 2 moves the sidebar onto the sorted query.
+- The sidebar still lists children in name order (`list_tree_children`). Its order is separate from the table.
 
 ### Data path
 
 - `files_nodes.list_tree_children_sorted` pages one segment: `kind` (folder or file) x `segment`
-  (`value` or `missing`). Every row carries `sortKey` (its index tuple from the shared encoder) and
-  `sortFieldValue` (the typed value for the extra column).
+  (`value` or `missing`). Every row carries `sortKey`, its index tuple from the shared encoder.
+  Metadata cell values come from a separate checked query, not the sort payload.
   - It reads only rows with `isRestrictedScopeRoot: false`, and only when the caller can read the
     folder. Every row in that range is readable, so a hidden row never takes a page slot and no
     page is short because of access. Restricted-root children come from the side rows.
@@ -282,11 +281,14 @@ folder (`FileNodeViewPrivateFolder`) still lists its children through `useFilesV
     through the side rows.
   - A row whose `isRestrictedScopeRoot` does not match `restrictedScopeNodeId === _id` throws: a
     stale flag would show a hidden row.
-  - Built-in fields and metadata value segments use native Convex pagination. The metadata missing
+  - Built-in fields and metadata value segments use native Convex pagination. Metadata value pages
+    set `maximumBytesRead` to 4 MiB and keep native split fields. This bounds the indexed page;
+    node and permission joins also use transaction reads. An error must not skip unchecked rows.
+    The metadata missing
     segment walks nodes and field docs in name order with a JSON cursor and a 1000-row scan budget,
     so a page can be short or empty.
 - `files_nodes.list_tree_children_sort_side_rows` returns the rows the partitioned index cannot
-  serve, each with its `sortKey`: up to 200 readable restricted-root children, and up to 200 of the
+  serve, each with its `sortKey`, `createdAt`, and `contentByteSize`: up to 200 readable restricted-root children, and up to 200 of the
   caller's drafts and pending moves into the folder, plus the saved names those drafts and moves
   claim. Over a cap it sets `tooManyShared` or `tooManyPending`. It returns null when the caller
   cannot read the folder, and empty side rows for a readable folder the Files view hides (archived,
@@ -308,15 +310,32 @@ folder (`FileNodeViewPrivateFolder`) still lists its children through `useFilesV
   - A side row shows once its segment is done or the last loaded main row sorts at or after it. So
     side rows never jump.
   - While a new sort or a page loads, the last settled rows stay, with `aria-busy="true"` on the
-    table. `rowsSort` is the sort those rows were loaded with, and the value column follows it.
+    table. `rowsSort` is the sort those rows were loaded with, and the toolbar follows it.
+    Columns stay outside the paging scope. `sideTargets` includes the full checked side set for field discovery.
   - `loadMore()` loads the first shown segment that can load more.
 
 ### Table UI
 
-- Header row: Name | Updated by | Updated | [sorted field] | Actions. Name and Updated hold sort
-  buttons; each column header has `aria-sort`. When the sort is not Name or Updated, one extra column
-  shows the field (Date created, Type, Size, or the key without its prefix). A row with no value
-  shows `—`.
+- Default columns are Name, Updated by, Updated, then Actions. Columns may show Date created,
+  Type, Size, and qualified metadata/frontmatter fields. Name and Actions stay visible.
+  Allow at most eight data columns, including Name. Actions is outside that count.
+  Sorting a hidden field does not show it. Built-in sortable headers keep their sort buttons.
+- The Columns popover uses visible labels and native checkboxes. Its catalog covers readable
+  direct children, plus the full bounded side set. Search checks loaded keys. Show more fields
+  requests another page from unfinished sources. An absent selected key stays removable.
+- Column choices use `app_state::files_folder_columns::scope::${membershipId}` in browser storage.
+  Each folder id, or `root`, has its own list. Keep at most 100 recent folder choices per membership.
+  A folder rename keeps its choice. Another membership starts with its own choices.
+- Cells read their own row facts or `files_metadata.get_field_values`. Saved rows use committed
+  values; private rows use their current proposal. Lists show the first plain value. Only a
+  checked missing value shows `—`. Loading, deferred, preparing, and failed reads have real text.
+  Retry values belongs in Actions, so it does not open the row link.
+- Metadata display keeps at most 100 active targets and 700 value page descriptors. One observer
+  uses the editor scroll box with a 400px vertical margin. Focused rows come first, then visible
+  rows, then nearby rows. Scrolling and resizing update that order. Offscreen payloads are dropped.
+  This bound covers cell display only; side catalog and sort queries use the full supported side set.
+- An empty readable folder keeps its toolbar and header. Show the empty message only after all
+  pages finish without an error or cap. Wide tables scroll horizontally inside the table region.
 - A sort menu (`MySearchSelect`) sits above the table. Its trigger is named like
   `Sort: Name, A to Z`. It lists the built-ins, then keys from `files_metadata.list_search_fields`,
   read once per open (an item reads like `status (metadata)`). A button next to it flips the

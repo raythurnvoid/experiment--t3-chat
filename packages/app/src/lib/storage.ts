@@ -5,6 +5,7 @@ import type { AppElementId } from "@/lib/dom-utils.ts";
 import { objects_equal_deep } from "@/lib/object.ts";
 import { has_defined_property } from "./utils.ts";
 import { useFn } from "../hooks/utils-hooks.ts";
+import { files_table_column_is_valid, files_table_MAX_COLUMNS } from "../../shared/files-table.ts";
 
 type FieldDefinition<T> = {
 	defaultValue: T;
@@ -183,6 +184,36 @@ const storage_local_schema = {
 		serialize: (value) => (value === null ? null : JSON.stringify(value)),
 		defaultValue: null,
 		equals: (left, right) => left === right || (left != null && right != null && objects_equal_deep(left, right)),
+	}),
+
+	"app_state::files_folder_columns::scope::${membershipId}": define_field<
+		`app_state::files_folder_columns::scope::${string}`,
+		Record<string, string[]>
+	>({
+		parse: (raw) => {
+			try {
+				const value: unknown = JSON.parse(raw ?? "{}");
+				if (typeof value !== "object" || value === null || Array.isArray(value)) return {};
+				return Object.fromEntries(
+					Object.entries(value)
+						.filter(([folderId, columns]) =>
+							folderId.length > 0 &&
+							Array.isArray(columns) &&
+							columns.length > 0 &&
+							columns.length <= files_table_MAX_COLUMNS &&
+							columns.includes("name") &&
+							new Set(columns).size === columns.length &&
+							columns.every((field: unknown) => typeof field === "string" && files_table_column_is_valid(field)),
+						)
+						.slice(-100),
+				);
+			} catch {
+				return {};
+			}
+		},
+		serialize: (value) => JSON.stringify(value),
+		defaultValue: {},
+		equals: (left, right) => left === right || objects_equal_deep(left, right),
 	}),
 
 	"app_state::ai_chat_last_open::scope::${membershipId}": define_field<

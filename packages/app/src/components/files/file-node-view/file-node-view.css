@@ -854,12 +854,15 @@
 		display: flex;
 		flex-direction: column;
 		flex: 0 0 auto;
+		min-width: 0;
 
 		padding: 0 24px;
 	}
 
 	.FileNodeViewFolderExplorer-toolbar {
 		display: flex;
+		flex-wrap: wrap;
+		gap: 8px;
 		justify-content: end;
 
 		margin-bottom: 8px;
@@ -872,25 +875,25 @@
 		color: var(--color-fg-07);
 	}
 
+	.FileNodeViewFolderExplorer-table-scroll {
+		width: 100%;
+		overflow-x: auto;
+	}
+
 	.FileNodeViewFolderExplorer-table {
 		width: 100%;
-		grid-template-columns: minmax(0, 1fr) max-content max-content max-content;
+		min-width: max-content;
 		overflow: hidden;
 
 		border: 1px solid var(--color-fg-03);
 		border-radius: 8px;
 		background: var(--color-base-1-04);
 
-		/* Keep the bottom flat when the show more/less row is attached below. */
-		&:has(+ .FileNodeViewFolderExplorer-show-more, + .FileNodeViewFolderExplorer-show-less) {
+		/* Keep the bottom flat when Show more or Show less follows the table. */
+		.FileNodeViewFolderExplorer:has(.FileNodeViewFolderExplorer-show-more, .FileNodeViewFolderExplorer-show-less) & {
 			border-bottom-left-radius: 0;
 			border-bottom-right-radius: 0;
 		}
-	}
-
-	/* A sort by any field other than Name or Updated adds a column for that field before the actions. */
-	.FileNodeViewFolderExplorer-table-has-sort-value {
-		grid-template-columns: minmax(0, 1fr) max-content max-content max-content max-content;
 	}
 
 	.FileNodeViewFolderExplorer-header-row {
@@ -912,22 +915,6 @@
 
 		font-weight: 500;
 		white-space: nowrap;
-	}
-
-	.FileNodeViewFolderExplorer-column-header-name {
-		grid-column: 1;
-	}
-
-	.FileNodeViewFolderExplorer-column-header-updated-by {
-		grid-column: 2;
-	}
-
-	.FileNodeViewFolderExplorer-column-header-updated {
-		grid-column: 3;
-	}
-
-	.FileNodeViewFolderExplorer-column-header-sort-value {
-		grid-column: 4;
 	}
 
 	.FileNodeViewFolderExplorer-column-header-actions {
@@ -1047,28 +1034,12 @@
 		width: 100%;
 	}
 
-	.FileNodeViewFolderExplorer-cell-updated-by {
-		grid-column: 2;
-
-		max-width: 12rem;
-	}
-
-	.FileNodeViewFolderExplorer-cell-updated {
-		grid-column: 3;
-	}
-
-	.FileNodeViewFolderExplorer-cell-sort-value {
-		grid-column: 4;
-
-		max-width: 240px;
-		overflow: hidden;
-	}
-
-	/* The actions are always the last column, whether or not the table has a sort value column. */
+	/* Actions stays last as the chosen columns change. */
 	.FileNodeViewFolderExplorer-cell-actions {
 		grid-column: -2;
 
 		justify-content: center;
+		gap: 6px;
 		padding: 4px 6px;
 
 		/* This stops the open link underneath from catching a click that just missed the menu button,
@@ -1076,9 +1047,7 @@
 		pointer-events: auto;
 	}
 
-	.FileNodeViewFolderExplorer-cell-updated-by,
-	.FileNodeViewFolderExplorer-cell-updated,
-	.FileNodeViewFolderExplorer-cell-sort-value {
+	.FileNodeViewFolderExplorer-cell-value {
 		white-space: nowrap;
 		color: var(--color-fg-07);
 	}
@@ -1110,9 +1079,51 @@
 		color: var(--color-fg-07);
 	}
 
-	.FileNodeViewFolderExplorer-updated-by {
+	.FileNodeViewFolderExplorer-value {
+		min-width: 0;
 		overflow: hidden;
 		text-overflow: ellipsis;
+	}
+
+	.FileNodeViewFolderExplorerColumns-popover {
+		display: flex;
+		flex-direction: column;
+		gap: 12px;
+		width: min(360px, calc(100vw - 24px));
+		max-height: min(600px, calc(100dvh - 32px));
+		padding: 12px;
+		overflow-y: auto;
+	}
+
+	.FileNodeViewFolderExplorerColumns-fields {
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+	}
+
+	.FileNodeViewFolderExplorerColumns-field {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+
+		.MyCheckboxButton {
+			min-width: 0;
+			justify-content: start;
+			overflow-wrap: anywhere;
+		}
+	}
+
+	.FileNodeViewFolderExplorerColumns-note {
+		margin: 0;
+		font-size: 0.875rem;
+		color: var(--color-fg-07);
+	}
+
+	.FileNodeViewFolderExplorerColumns-actions {
+		display: flex;
+		flex-wrap: wrap;
+		justify-content: space-between;
+		gap: 8px;
 	}
 
 	.FileNodeViewFolderExplorer-more-action {

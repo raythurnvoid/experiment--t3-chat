@@ -37,7 +37,7 @@ import {
 	files_nodes_db_insert_file_content_docs,
 } from "./files_nodes_content.ts";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
-import { files_metadata_db_replace_pending } from "./files_metadata.ts";
+import { files_metadata_db_insert_committed, files_metadata_db_replace_pending } from "./files_metadata.ts";
 import { files_pending_nodes_db_create } from "./files_pending_nodes.ts";
 import {
 	test_convex,
@@ -13321,8 +13321,8 @@ describe("folder table sort fields", () => {
 /**
  * A folder `/table` for the folder table queries, with helpers that add children and read its sorted pages.
  */
-async function seed_folder_table() {
-	const t = test_convex();
+async function seed_folder_table(options: Parameters<typeof test_convex>[0] = {}) {
+	const t = test_convex(options);
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 	const asOwner = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
 	const created = await t.mutation(internal.files_nodes.create_folder_node_by_path, {
@@ -13592,7 +13592,40 @@ describe("list_tree_children_sorted", () => {
 			segment: "value",
 			paginationOpts: { numItems: 1, cursor: null },
 		});
-		expect(first.page).toEqual([expect.objectContaining({ name: "b.md", sortFieldValue: "Closed" })]);
+		expect(first.page).toEqual([expect.objectContaining({ name: "b.md" })]);
+		expect(first.page[0]).not.toHaveProperty("sortFieldValue");
+	});
+
+	test("large metadata values keep native byte splits and leave display values out of the page", async () => {
+		const { t, db, asOwner, parentId, insert_child } = await seed_folder_table({ transactionLimits: true });
+		const names = Array.from({ length: 8 }, (_, index) => `large-${index}.md`);
+		for (const name of names) {
+			const nodeId = await insert_child({ name, kind: "file", updatedAt: 1 });
+			await t.run((ctx) => files_metadata_db_insert_committed(ctx, {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				nodeId,
+				markdownContent: `---\nvalue: ${"x".repeat(800_000)}\n---\n`,
+			}));
+		}
+
+		const read = (cursor: string | null) => asOwner.query(api.files_nodes.list_tree_children_sorted, {
+			membershipId: db.membershipId,
+			parentId,
+			kind: "file",
+			sort: { field: "frontmatter.value", direction: "asc" },
+			segment: "value",
+			paginationOpts: { numItems: 50, cursor },
+		});
+		const first = await read(null);
+		expect(first.isDone).toBe(false);
+		expect(first.page.length).toBeLessThan(names.length);
+		expect(first.pageStatus).toBe("SplitRequired");
+		expect(first.splitCursor).toEqual(expect.any(String));
+		expect(first.page.every((row) => !("sortFieldValue" in row))).toBe(true);
+		const second = await read(first.continueCursor);
+		expect([...first.page, ...second.page].map((row) => row.name)).toEqual(names);
+		expect(second.isDone).toBe(true);
 	});
 
 	test("a restricted child the member cannot read never takes a page slot", async () => {
@@ -13939,9 +13972,9 @@ describe("list_tree_children_sort_side_rows", () => {
 			membershipId: db.membershipId,
 			sort: { field: "metadata.status", direction: "desc" },
 		});
-		expect(byStatus?.rows.map((row) => [row.name, row.segment, row.sortKey, row.sortFieldValue])).toEqual([
-			["secret.md", "value", ["open", "secret.md", "secret.md"], "Open"],
-			["shared", "missing", ["shared", "shared"], null],
+		expect(byStatus?.rows.map((row) => [row.name, row.segment, row.sortKey])).toEqual([
+			["secret.md", "value", ["open", "secret.md", "secret.md"]],
+			["shared", "missing", ["shared", "shared"]],
 		]);
 
 		const member = await add_member("clerk_side_rows_member", "member");
@@ -14073,6 +14106,19 @@ describe("list_tree_children_sort_side_rows", () => {
 			membershipId: db.membershipId,
 			sort: { field: "size", direction: "asc" },
 		});
+		const byName = await side_rows({
+			as: asOwner,
+			membershipId: db.membershipId,
+			sort: { field: "name", direction: "asc" },
+		});
+		const draftCreatedAt = await t.run(async (ctx) =>
+			(await ctx.db.get("files_pending_nodes", draftIds.draftId))!._creationTime,
+		);
+		expect(byName?.rows.find((row) => row.name === "draft.md")).toMatchObject({
+			createdAt: draftCreatedAt,
+			contentByteSize: 42,
+		});
+		expect(byName?.rows.find((row) => row.name === "claimed.md")?.contentByteSize).toBeNull();
 		expect(bySize?.nameClaims.sort()).toEqual(["claimed.md", "draft.md", "moved-in.md", "renamed-2.md"]);
 		expect(
 			bySize?.rows
@@ -14128,7 +14174,6 @@ describe("list_tree_children_sort_side_rows", () => {
 		expect(byStatus?.rows.find((row) => row.name === "draft.md")).toMatchObject({
 			segment: "value",
 			sortKey: ["new", "draft.md", "draft.md"],
-			sortFieldValue: "new",
 		});
 	});
 

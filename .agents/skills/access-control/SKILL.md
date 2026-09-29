@@ -782,6 +782,24 @@ resolve the reader with `db_get_tree_reader` and filter every row with
   both whenever a node is restricted or unrestricted. `list_tree_children_sorted` throws
   `should_never_happen` when a returned row is a restricted root, because a stale `false` would
   show a hidden row. The side rows need no such guard: they check every row with the visible reader.
+- `files_metadata.list_folder_fields` checks active membership and folder `content.read` before
+  listing direct-child committed keys. The root needs workspace read; a grant-only member gets an
+  empty, done ordinary catalog there. A readable folder hidden by archive or the caller's pending
+  move or delete also gets an empty, done page. Missing or denied folders return null.
+  The parent-first index contains only active ordinary field docs. It seeks after each distinct key,
+  so hidden restricted children cannot change the catalog's fields, page length, or cursor.
+  Each witness node must still have the same tenant and parent, be active, and have neither a
+  restricted-root flag nor itself as `restrictedScopeNodeId`. A mismatch throws an invariant error.
+- `files_metadata.list_node_fields` and `get_field_values` resolve one target through the visible
+  reader on every call. A prior side row never grants access. Missing access returns null, including
+  after a grant is revoked. Private targets also require the caller to own the node and current
+  proposal. Every private metadata witness must match the current proposal id and revision, tenant,
+  target, and owner. Stale docs throw instead of becoming key names, values, or a false missing cell.
+  Preparing private targets expose no keys or values. Their source token binds the proposal and
+  revision, so the client cannot keep old pages after a source change. These queries keep whole-query
+  byte and call budgets, and throw when no field can finish. They do not scan hidden child partitions
+  to decide a catalog cap. Columns are personal browser preferences; choosing a key does not publish
+  its name as shared folder settings.
 - `files_folder_sorts.get_folder_sort` returns null unless the caller can `content.read` the folder
   (or the workspace, at the root). A grant-only member at the root gets Name, A to Z with
   `canSave: false`, not the saved root sort: a saved metadata sort would name a key they may not see. `canSave` and `set_folder_sort` need what a metadata write needs:

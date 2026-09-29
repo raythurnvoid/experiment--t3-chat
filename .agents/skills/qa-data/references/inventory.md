@@ -88,12 +88,14 @@ Sign-in steps for the `qa.perm.*` accounts are in
 | --- | --- |
 | Folder with about 60 files | `chitchat-qa/xfer-qa-0914:/g4-many`, `/u62-mu2qzdr5/src` |
 | Folder with about 25 files | `chitchat-qa/xfer-qa-0914:/u16`, `/u16-q`, `/u42-other2` |
-| Very big folder (read-only) | `sybill-demo/demo:/people` (about 9,700), `/companies` (1,000+) |
+| Very big folder (read-only) | `sybill-demo/demo:/people` (about 9,700), `/companies` (1,000+). A three-file sample on 2026-09-29 had readable string `metadata.source` values. Check the current folder catalog before choosing other fields. |
 | Big archive fixture (1,311 nodes) | `qa-browser/home`: `/protection-bulk-qa` (532 nodes, restricted, `qa.perm.viewer` has manage) plus the root folders `/copy-2` (104), `/copy-3` (208), `/copy-4` (416) and `/seed` (51). All active since 2026-09-25. Archive all five in one `archive_nodes` call to get one 1,311-node archive job, then restore that one operation. `/seed` alone finishes inline (no job). Empty archived `/seed` folders are left over from clash checks. The archived `/seed/f00/seed` (one operation, 3 nodes) holds `f00/r3-moved-0925.md`, a small text file with real text chunks, for checks that archived side docs follow a moved folder and for search polling during a job. Two empty archived folders, `/protection-bulk-qa/a3-inserted-during-archive-0925` and `/protection-bulk-qa/a3-inserted-during-apply-0925`, are left over from checks that a folder inserted during a job joins its operation. Build new big fixtures inside `/protection-bulk-qa`. |
 | Deep path (22 levels) | `chitchat-qa/xfer-qa-0914:/g4-u15/d01/…/d20/keeper.txt` |
 | Many small subfolders | `chitchat-qa/xfer-qa-0914:/u55/c0` … `c22`, each with `sibling.md` |
 | Move and copy sources and targets | `personal/home:/demo` (`mv-src.md`, `mv-target.md`, `cp-target.md`, `/archive`), `personal/home:/tests` (`eval-*` files and folders) |
-| Search: public and private | `qa-browser/home:/qa-search-0905` (`tasks/public-task.md`, `private/secret-task.md`, `v1.2/`) |
+| Search: public and private | `qa-browser/home:/qa-search-0905` (`tasks/public-task.md`, `private/secret-task.md`, `v1.2/`). On 2026-09-29, the root and its three child folders were active. The private child was restricted, with no grants on it or the root. |
+| Folder table sorts and columns | `qa-browser/home:/qa-sort-0924` is archived. It has 58 files and three folders, all archived; one child is restricted. Neither the root nor that child has grants. `/qa-sort-0924-r` is a separate archived restricted root with three archived files. It keeps one user read grant to `qa.perm.viewer`, who still has an active membership and the `member` role. Checked 2026-09-29. Restore through normal Files doors before reuse, then archive again. |
+| More than 200 restricted children | `qa-browser/home:/qa-cap-0924` is archived with 203 archived restricted child folders. The root and every child have no grants. Checked 2026-09-29. Reuse this fixture for the shared-row cap instead of creating another large set. |
 | Agent skills folder | `personal/home:/.agents/skills/meeting-brief` |
 | Bash agent eval fixture | `personal/home:/bash-eval-smoothness-fixture-2026-07-25-a` ([bash-tool-agent-eval.md](../../app-playwriter-harness/references/bash-tool-agent-eval.md)) |
 | Browser downloads | `personal/home:/.system/downloads`, `personal/home:/tmp/browser` |
@@ -142,3 +144,4 @@ Only the original Chitchat installation was present.
 - 2026-09-28: reused the two saved Files permission fixtures. Original files, shares, roles, policy and Chitchat installation are restored. Temporary Data Probe is uninstalled; its empty service account remains without grants.
 - 2026-09-28: added the QA owner's reusable no-plugin Mount isolation chat in `qa-browser/home`.
 - 2026-09-28: install-access check restored the original setup, policy, roles, accounts and Chitchat. Video Player is uninstalled; its empty account and binding remain.
+- 2026-09-29: checked the search, folder-sort and 203-child cap fixtures, their archive state and grants, and both QA memberships. Sampled three readable `metadata.source` values in `/people`; changed no live data.

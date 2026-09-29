@@ -1,6 +1,7 @@
 import { paginationOptsValidator, type RegisteredQuery } from "convex/server";
 import { v } from "convex/values";
 import { doc } from "convex-helpers/validators";
+import { z } from "zod";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { internalMutation, internalQuery, mutation, query } from "./_generated/server.js";
@@ -57,9 +58,16 @@ import {
 } from "../server/files.ts";
 import {
 	files_pending_update_content_is_stale,
+	files_get_utf8_byte_size,
 	type files_PendingTarget,
 	type files_VisibleEntry,
 } from "../shared/files.ts";
+
+const TABLE_FIELDS_MAX_CANDIDATES = 50;
+const TABLE_FIELDS_MAX_BYTES = 4 * 1024 * 1024;
+const TABLE_FIELDS_BYTE_RESERVE = 1024 * 1024;
+const TABLE_FIELDS_MAX_CALLS = 1000;
+const TABLE_FIELDS_CALL_RESERVE = 16;
 
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
 // Does NOT work for http actions (see http.ts). No mutable module-level state allowed here.
@@ -1065,6 +1073,370 @@ export const list_search_values = query({
 });
 
 // #endregion search box
+
+// #region folder table fields
+
+const node_fields_cursor_schema = z.object({
+	scope: z.string(),
+	sourceToken: z.string(),
+	afterField: z.string(),
+});
+
+function count_table_doc(budget: { readBytes: number }, metadataDoc: object | null) {
+	if (metadataDoc) budget.readBytes += files_get_utf8_byte_size(JSON.stringify(metadataDoc)) + 128;
+}
+
+async function fits_table_read_budget(ctx: QueryCtx, budget: { readBytes: number }, reserve = false) {
+	// Keep room for one max-sized doc. Metrics also count auth and access reads.
+	const metrics = await ctx.meta.getTransactionMetrics();
+	const bytes = reserve ? TABLE_FIELDS_BYTE_RESERVE : 0;
+	const calls = reserve ? TABLE_FIELDS_CALL_RESERVE : 0;
+	return (
+		Math.max(budget.readBytes, metrics.bytesRead.used) + bytes <= TABLE_FIELDS_MAX_BYTES &&
+		metrics.bytesRead.remaining >= bytes &&
+		metrics.databaseQueries.used + calls <= TABLE_FIELDS_MAX_CALLS &&
+		metrics.databaseQueries.remaining >= calls
+	);
+}
+
+async function db_get_table_target(
+	ctx: QueryCtx,
+	args: {
+		membership: Doc<"organizations_workspaces_users">;
+		userId: Id<"users">;
+		target: files_PendingTarget;
+	},
+) {
+	const reader = await files_visible_db_create_reader(ctx, {
+		organizationId: args.membership.organizationId,
+		workspaceId: args.membership.workspaceId,
+		userId: args.userId,
+	});
+	const entry = await reader.resolveTarget(args.target);
+	if (reader.exhausted) throw convex_error({ message: "Metadata lookup exceeded its read limit." });
+	if (!entry) return null;
+	if (
+		entry.kind === "private" &&
+		(entry.pendingUpdate.organizationId !== args.membership.organizationId ||
+			entry.pendingUpdate.workspaceId !== args.membership.workspaceId ||
+			entry.pendingUpdate.userId !== args.userId ||
+			entry.pendingUpdate.target.kind !== "private" ||
+			entry.pendingUpdate.target.id !== entry.node._id)
+	) {
+		const errorMessage = "private metadata proposal is mismatched";
+		const errorData = { target: args.target, pendingUpdateId: entry.pendingUpdate._id };
+		console.error(errorMessage, errorData);
+		throw should_never_happen(errorMessage, errorData);
+	}
+	return entry;
+}
+
+function table_source_token(entry: files_VisibleEntry) {
+	return entry.kind === "saved" ? "committed" : `${entry.pendingUpdate._id}:${entry.pendingUpdate.revision}`;
+}
+
+function table_target_is_preparing(entry: files_VisibleEntry) {
+	return (
+		entry.kind === "private" &&
+		(entry.pendingUpdate.preparation !== undefined ||
+			entry.pendingUpdate.createIntent === undefined ||
+			(entry.pendingUpdate.createIntent.kind === "text" && entry.pendingUpdate.content?.base.kind !== "new"))
+	);
+}
+
+function check_table_field_source(metadataDoc: Doc<"files_metadata_docs">, entry: files_VisibleEntry) {
+	const valid =
+		metadataDoc.organizationId === entry.node.organizationId &&
+		metadataDoc.workspaceId === entry.node.workspaceId &&
+		metadataDoc.archiveOperationId === undefined &&
+		(entry.kind === "saved"
+			? metadataDoc.sourceKind === "committed" && metadataDoc.fileNodeId === entry.node._id
+			: metadataDoc.sourceKind === "pending" &&
+				metadataDoc.target.kind === "private" &&
+				metadataDoc.target.id === entry.node._id &&
+				metadataDoc.userId === entry.node.userId &&
+				metadataDoc.pendingUpdateId === entry.pendingUpdate._id &&
+				metadataDoc.proposalRevision === entry.pendingUpdate.revision);
+	if (!valid) {
+		const errorMessage = "metadataDoc source is mismatched";
+		const errorData = { metadataDocId: metadataDoc._id, targetId: entry.node._id };
+		console.error(errorMessage, errorData);
+		throw should_never_happen(errorMessage, errorData);
+	}
+}
+
+export const list_folder_fields = query({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		parentId: doc(app_convex_schema, "files_nodes").fields.parentId,
+		afterField: v.union(v.string(), v.null()),
+	},
+	returns: v.union(
+		v.object({ fields: v.array(v.string()), afterField: v.union(v.string(), v.null()), isDone: v.boolean() }),
+		v.null(),
+	),
+	handler: async (ctx, args) => {
+		const caller = await db_get_search_caller(ctx, args);
+		if (!caller) return null;
+		const { membership, userAuth, hasWorkspaceRead } = caller;
+		const empty = { fields: [], afterField: null, isDone: true };
+		if (args.parentId === "root") {
+			if (!hasWorkspaceRead) return empty;
+		} else {
+			const folder = await ctx.db.get("files_nodes", args.parentId);
+			if (
+				!folder ||
+				folder.kind !== "folder" ||
+				folder.organizationId !== membership.organizationId ||
+				folder.workspaceId !== membership.workspaceId
+			)
+				return null;
+			const readable = await access_control_db_authorize_membership(ctx, {
+				userAuth,
+				membership,
+				permission: "content.read",
+				fileNode: folder,
+			});
+			if (readable._nay) return null;
+			const entry = await db_get_table_target(ctx, {
+				membership,
+				userId: userAuth.id,
+				target: { kind: "saved", id: args.parentId },
+			});
+			if (!entry) return empty;
+		}
+
+		const budget = { readBytes: 0 };
+		const fields: string[] = [];
+		let afterField = args.afterField;
+		let completed = 0;
+		let isDone = false;
+		for (let count = 0; count < TABLE_FIELDS_MAX_CANDIDATES; count++) {
+			if (!(await fits_table_read_budget(ctx, budget, true))) break;
+			const after = afterField;
+			const metadataDoc = await ctx.db
+				.query("files_metadata_docs")
+				.withIndex("by_org_ws_source_archive_docKind_parent_restricted_field", (q) => {
+					const prefix = q
+						.eq("organizationId", membership.organizationId)
+						.eq("workspaceId", membership.workspaceId)
+						.eq("sourceKind", "committed")
+						.eq("archiveOperationId", undefined)
+						.eq("docKind", "field")
+						.eq("parentId", args.parentId)
+						.eq("isRestrictedScopeRoot", false);
+					return after === null ? prefix : prefix.gt("fieldPath", after);
+				})
+				.first();
+			count_table_doc(budget, metadataDoc);
+			if (!metadataDoc) {
+				isDone = true;
+				break;
+			}
+			if (!(await fits_table_read_budget(ctx, budget, true))) break;
+			const node =
+				metadataDoc.sourceKind === "committed" ? await ctx.db.get("files_nodes", metadataDoc.fileNodeId) : null;
+			count_table_doc(budget, node);
+			if (!(await fits_table_read_budget(ctx, budget))) break;
+			// This partition is readable only while its copied scope flag matches the real node.
+			if (
+				!node ||
+				node.organizationId !== membership.organizationId ||
+				node.workspaceId !== membership.workspaceId ||
+				node.parentId !== args.parentId ||
+				node.archiveOperationId !== null ||
+				node.isRestrictedScopeRoot ||
+				node.restrictedScopeNodeId === node._id
+			) {
+				const errorMessage = "metadataDoc folder scope is mismatched";
+				const errorData = { metadataDocId: metadataDoc._id, parentId: args.parentId };
+				console.error(errorMessage, errorData);
+				throw should_never_happen(errorMessage, errorData);
+			}
+			afterField = metadataDoc.fieldPath;
+			completed++;
+			if (search_field_path_is_valid(afterField)) fields.push(afterField);
+		}
+		if (!isDone && completed === 0) throw convex_error({ message: "Metadata read exceeded its work limit." });
+		return { fields, afterField, isDone };
+	},
+});
+
+export const list_node_fields = query({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		target: files_pending_target_validator,
+		cursor: v.union(v.string(), v.null()),
+	},
+	returns: v.union(
+		v.object({ fields: v.array(v.string()), continueCursor: v.string(), isDone: v.boolean(), sourceToken: v.string() }),
+		v.null(),
+	),
+	handler: async (ctx, args) => {
+		const caller = await db_get_search_caller(ctx, args);
+		if (!caller) return null;
+		const entry = await db_get_table_target(ctx, { ...caller, userId: caller.userAuth.id, target: args.target });
+		if (!entry) return null;
+		const sourceToken = table_source_token(entry);
+		if (table_target_is_preparing(entry)) return { fields: [], continueCursor: "", isDone: true, sourceToken };
+		const scope = JSON.stringify([args.membershipId, args.target.kind, args.target.id]);
+		let afterField: string | null = null;
+		if (args.cursor !== null) {
+			let cursor;
+			try {
+				cursor = node_fields_cursor_schema.parse(JSON.parse(args.cursor));
+			} catch {
+				throw convex_error({ message: "Invalid field cursor." });
+			}
+			if (cursor.scope !== scope) throw convex_error({ message: "Invalid field cursor." });
+			// A changed private proposal starts a new chain; never combine its keys with the old one.
+			if (cursor.sourceToken === sourceToken) afterField = cursor.afterField;
+		}
+		const budget = { readBytes: 0 };
+		const fields: string[] = [];
+		let completed = 0;
+		let isDone = false;
+		for (let count = 0; count < TABLE_FIELDS_MAX_CANDIDATES; count++) {
+			if (!(await fits_table_read_budget(ctx, budget, true))) break;
+			const after = afterField;
+			const metadataDoc =
+				entry.kind === "saved"
+					? await ctx.db
+							.query("files_metadata_docs")
+							.withIndex("by_organization_workspace_source_fileNode_fieldPath", (q) => {
+								const prefix = q
+									.eq("organizationId", caller.membership.organizationId)
+									.eq("workspaceId", caller.membership.workspaceId)
+									.eq("sourceKind", "committed")
+									.eq("fileNodeId", entry.node._id);
+								return after === null ? prefix : prefix.gt("fieldPath", after);
+							})
+							.first()
+					: await ctx.db
+							.query("files_metadata_docs")
+							.withIndex("by_pendingUpdate_fieldPath", (q) => {
+								const prefix = q.eq("pendingUpdateId", entry.pendingUpdate._id);
+								return after === null ? prefix : prefix.gt("fieldPath", after);
+							})
+							.first();
+			count_table_doc(budget, metadataDoc);
+			if (!(await fits_table_read_budget(ctx, budget))) break;
+			if (!metadataDoc) {
+				isDone = true;
+				break;
+			}
+			check_table_field_source(metadataDoc, entry);
+			afterField = metadataDoc.fieldPath;
+			completed++;
+			if (search_field_path_is_valid(afterField)) fields.push(afterField);
+		}
+		if (!isDone && completed === 0) throw convex_error({ message: "Metadata read exceeded its work limit." });
+		return {
+			fields,
+			continueCursor: afterField === null ? "" : JSON.stringify({ scope, sourceToken, afterField }),
+			isDone,
+			sourceToken,
+		};
+	},
+});
+
+export const get_field_values = query({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		target: files_pending_target_validator,
+		fields: v.array(v.string()),
+		afterField: v.union(v.string(), v.null()),
+	},
+	returns: v.union(
+		v.object({
+			preparing: v.boolean(),
+			values: v.array(v.object({ field: v.string(), value: v.union(v.string(), v.number(), v.boolean(), v.null()) })),
+			afterField: v.union(v.string(), v.null()),
+			isDone: v.boolean(),
+			sourceToken: v.string(),
+		}),
+		v.null(),
+	),
+	handler: async (ctx, args) => {
+		const caller = await db_get_search_caller(ctx, args);
+		if (!caller) return null;
+		if (
+			args.fields.length === 0 ||
+			args.fields.length > 7 ||
+			args.fields.some(
+				(field, index) => !search_field_path_is_valid(field) || (index > 0 && args.fields[index - 1]! >= field),
+			) ||
+			(args.afterField !== null && !args.fields.includes(args.afterField))
+		)
+			throw convex_error({ message: "Invalid metadata fields." });
+		const entry = await db_get_table_target(ctx, { ...caller, userId: caller.userAuth.id, target: args.target });
+		if (!entry) return null;
+		const sourceToken = table_source_token(entry);
+		if (table_target_is_preparing(entry))
+			return { preparing: true, values: [], afterField: null, isDone: true, sourceToken };
+		const budget = { readBytes: 0 };
+		const values: Array<{ field: string; value: string | number | boolean | null }> = [];
+		let afterField = args.afterField;
+		const start = afterField === null ? 0 : args.fields.indexOf(afterField) + 1;
+		for (const field of args.fields.slice(start)) {
+			if (!(await fits_table_read_budget(ctx, budget, true))) break;
+			let value: string | number | boolean | null = null;
+			let complete = true;
+			if (entry.kind === "saved") {
+				// Saved rows keep committed frontmatter even while the owner edits pending text.
+				const metadataDoc = await ctx.db
+					.query("files_metadata_docs")
+					.withIndex("by_organization_workspace_source_fileNode_fieldPath", (q) =>
+						q
+							.eq("organizationId", caller.membership.organizationId)
+							.eq("workspaceId", caller.membership.workspaceId)
+							.eq("sourceKind", "committed")
+							.eq("fileNodeId", entry.node._id)
+							.eq("fieldPath", field),
+					)
+					.filter((q) => q.eq(q.field("docKind"), "field"))
+					.first();
+				count_table_doc(budget, metadataDoc);
+				if (metadataDoc) {
+					check_table_field_source(metadataDoc, entry);
+					value = metadataDoc.sourceKind === "committed" ? (metadataDoc.sortDisplayValue ?? null) : null;
+				}
+			} else {
+				const iterator = ctx.db
+					.query("files_metadata_docs")
+					.withIndex("by_pendingUpdate_fieldPath", (q) =>
+						q.eq("pendingUpdateId", entry.pendingUpdate._id).eq("fieldPath", field),
+					)
+					[Symbol.asyncIterator]();
+				try {
+					while (true) {
+						if (!(await fits_table_read_budget(ctx, budget, true))) {
+							complete = false;
+							break;
+						}
+						const next = await iterator.next();
+						if (next.done) break;
+						count_table_doc(budget, next.value);
+						check_table_field_source(next.value, entry);
+						if (next.value.docKind !== "value" || next.value.valueKind === "maybe_date") continue;
+						value = next.value.stringValue ?? next.value.numberValue ?? next.value.booleanValue ?? null;
+						break;
+					}
+				} finally {
+					await iterator.return?.();
+				}
+			}
+			if (!complete || !(await fits_table_read_budget(ctx, budget))) break;
+			values.push({ field, value });
+			afterField = field;
+		}
+		const isDone = afterField === args.fields.at(-1);
+		if (!isDone && values.length === 0) throw convex_error({ message: "Metadata read exceeded its work limit." });
+		return { preparing: false, values, afterField, isDone, sourceToken };
+	},
+});
+
+// #endregion folder table fields
 
 // #region get by path
 

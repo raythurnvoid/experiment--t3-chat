@@ -286,6 +286,52 @@ its indexed scope with the folder's own path, including nested and archived desc
 pending moves keep the committed map and the existing per-user search overlay. True deletion removes
 both field and value docs. File copy does not copy metadata; folder copy is unsupported.
 
+# Folder Table Fields
+
+The table's field catalog is separate from the workspace search suggestions below. It reads
+committed fields on direct children of the open folder. It never finds keys by paging the first
+50 file rows or by scanning another folder.
+
+The three public queries live in the `folder table fields` region of `convex/files_metadata.ts`:
+
+- `list_folder_fields({ membershipId, parentId, afterField })` returns
+  `{ fields, afterField, isDone }`. Its parent-first index reads active committed `field` docs with
+  `isRestrictedScopeRoot: false`. Each `.first()` seek uses `gt(fieldPath, afterField)` to skip all
+  copies of the last key. The real node must still belong to that folder and be active and ordinary.
+  A stale scope flag throws instead of publishing a hidden key. Restricted children never change
+  this page's keys or cursor. Their keys come from the single-target query below after a read check.
+- `list_node_fields({ membershipId, target, cursor })` returns
+  `{ fields, continueCursor, isDone, sourceToken }`. It resolves one saved or private target with
+  the visible reader. It seeks distinct field paths, so a 400-item list costs one key candidate.
+  The cursor belongs to the membership and target. A private revision change starts a new key chain.
+- `get_field_values({ membershipId, target, fields, afterField })` returns
+  `{ preparing, values, afterField, isDone, sourceToken }`. Request one to seven distinct qualified
+  fields in ascending text order. `afterField` is null or one of those fields. The query checks the
+  target again; a prior table row or field catalog is not proof of current access.
+
+Saved rows use committed metadata and frontmatter even while their owner edits pending text.
+The stored field doc's `sortDisplayValue` is the cell value. It preserves `false`, `0`, and `""`.
+A list displays its first plain primitive in extraction order. Date companion docs do not change
+that value. Empty lists, map parents, and absent keys return an explicit `null` cell value.
+
+Private rows use only the owner's current create proposal. Every read doc must match its tenant,
+target, owner, proposal id, and revision. A mismatch throws; it is not an absent value. Their source
+token contains the proposal id and revision. The client replaces old pages when that token changes.
+Preparing drafts return `preparing: true` with no values and an empty key catalog. A draft is
+preparing while preparation is active, its create intent is missing, or a text intent has no new
+content base. No old metadata is shown during that state.
+
+Each catalog reads at most 50 distinct candidates, including invalid keys and an end probe.
+Only search-valid qualified keys are returned. All three queries use whole-query transaction
+metrics and a local doc byte count. They keep a 4 MiB read budget and a 1,000-call budget, with
+1 MiB and 16 calls reserved before the next read. Cell pages advance only after a whole field is
+finished. A budget stop returns the completed prefix; no first progress throws a clear query error.
+Private values use a bounded iterator and stop at the first primitive, rather than collecting a list.
+
+Missing membership or target access returns null. Missing current-user auth throws `Unauthenticated`.
+A grant-only member gets an empty, done ordinary catalog at the root. A readable folder hidden by
+archive or the caller's pending move or delete gets an empty, done catalog too.
+
 # Search Box
 
 The Files sidebar and global search filter by metadata and frontmatter with the same language. The

@@ -6797,16 +6797,11 @@ export const list_tree_children_sorted = query({
 			 * with `files_sort_compare`.
 			 */
 			sortKey: files_sort_key_validator,
-			/**
-			 * The value of a metadata sort field, for the table's extra column. Null for built-in fields
-			 * and in the missing segment.
-			 */
-			sortFieldValue: v.union(v.string(), v.number(), v.boolean(), v.null()),
 		}),
 	),
 	handler: async (ctx, args) => {
 		// Every refusal gives this one answer, like `list_tree_children`.
-		const refused = { page: [], isDone: true, continueCursor: "" };
+		const refused: PaginationResult<never> = { page: [], isDone: true, continueCursor: "" };
 
 		const reader = await db_get_tree_reader(ctx, { membershipId: args.membershipId });
 		if (!reader) {
@@ -6837,18 +6832,17 @@ export const list_tree_children_sorted = query({
 		type SortedRow = {
 			node: Doc<"files_nodes">;
 			sortKey: files_sort_Key;
-			sortFieldValue: string | number | boolean | null;
 		};
 		const node_rows = (
 			result: PaginationResult<Doc<"files_nodes">>,
 			sortKey: (node: Doc<"files_nodes">) => files_sort_Key,
 		) => ({
 			...result,
-			page: result.page.map((node): SortedRow => ({ node, sortKey: sortKey(node), sortFieldValue: null })),
+			page: result.page.map((node): SortedRow => ({ node, sortKey: sortKey(node) })),
 		});
 		const by_name = (node: Doc<"files_nodes">) => [node.sortName, node.name];
 
-		const segment = await (async (/* iife */): Promise<Omit<PaginationResult<SortedRow>, "pageStatus">> => {
+		const segment = await (async (/* iife */): Promise<PaginationResult<SortedRow>> => {
 			// Name has no missing value. Folders have no size, so they sort by name.
 			if (field === "name" || (field === "size" && args.kind === "folder")) {
 				if (args.segment === "missing") {
@@ -7016,7 +7010,7 @@ export const list_tree_children_sorted = query({
 							.gte("sortValue", ""),
 					)
 					.order(direction)
-					.paginate(paginationOpts);
+					.paginate({ ...paginationOpts, maximumBytesRead: 4 * 1024 * 1024 });
 
 				return {
 					...result,
@@ -7034,7 +7028,6 @@ export const list_tree_children_sorted = query({
 							return {
 								node,
 								sortKey: [fieldDoc.sortValue ?? null, node.sortName, node.name],
-								sortFieldValue: fieldDoc.sortDisplayValue ?? null,
 							};
 						}),
 					),
@@ -7130,7 +7123,7 @@ export const list_tree_children_sorted = query({
 						fieldDoc = await fieldDocs.next();
 					}
 					if (fieldDoc.done || fieldDoc.value.fileNodeId !== node._id || fieldDoc.value.sortValue === undefined) {
-						page.push({ node, sortKey: by_name(node), sortFieldValue: null });
+						page.push({ node, sortKey: by_name(node) });
 					}
 
 					if (page.length >= paginationOpts.numItems || scanCount >= TREE_CHILDREN_SORT_MISSING_MAX_SCAN) {
@@ -7214,7 +7207,6 @@ export const list_tree_children_sorted = query({
 				// Show a pending replacement's type, like the rest of the Files view.
 				contentType: rows[index]!.contentType,
 				sortKey: rows[index]!.sortKey,
-				sortFieldValue: rows[index]!.sortFieldValue,
 			})),
 		};
 	},
@@ -7245,7 +7237,9 @@ export const list_tree_children_sort_side_rows = query({
 					 */
 					name: v.string(),
 					kind: doc(app_convex_schema, "files_nodes").fields.kind,
+					createdAt: v.number(),
 					updatedAt: v.number(),
+					contentByteSize: v.union(v.number(), v.null()),
 					updatedBy: v.id("users"),
 					contentType: doc(app_convex_schema, "files_nodes").fields.contentType,
 					preparing: v.boolean(),
@@ -7265,7 +7259,6 @@ export const list_tree_children_sort_side_rows = query({
 					),
 					segment: v.union(v.literal("value"), v.literal("missing")),
 					sortKey: files_sort_key_validator,
-					sortFieldValue: v.union(v.string(), v.number(), v.boolean(), v.null()),
 				}),
 			),
 			nameClaims: v.array(v.string()),
@@ -7462,28 +7455,27 @@ export const list_tree_children_sort_side_rows = query({
 				const sortPart = await (async (/* iife */): Promise<{
 					segment: "value" | "missing";
 					sortKey: files_sort_Key;
-					sortFieldValue: string | number | boolean | null;
 				}> => {
 					if (field === "name" || (field === "size" && entry.node.kind === "folder")) {
-						return { segment: "value", sortKey: byName, sortFieldValue: null };
+						return { segment: "value", sortKey: byName };
 					}
 					if (field === "created") {
-						return { segment: "value", sortKey: [entry.node._creationTime], sortFieldValue: null };
+						return { segment: "value", sortKey: [entry.node._creationTime] };
 					}
 					if (field === "updated") {
 						const updatedAt = entry.kind === "saved" ? entry.node.updatedAt : entry.pendingUpdate.updatedAt;
-						return { segment: "value", sortKey: [updatedAt, ...byName], sortFieldValue: null };
+						return { segment: "value", sortKey: [updatedAt, ...byName] };
 					}
 					if (field === "type") {
 						const extension = files_lowercase_extension(name, entry.node.kind);
 						return extension === null
-							? { segment: "missing", sortKey: byName, sortFieldValue: null }
-							: { segment: "value", sortKey: [extension, ...byName], sortFieldValue: null };
+							? { segment: "missing", sortKey: byName }
+							: { segment: "value", sortKey: [extension, ...byName] };
 					}
 					if (field === "size") {
 						return size === null
-							? { segment: "missing", sortKey: byName, sortFieldValue: null }
-							: { segment: "value", sortKey: [size, ...byName], sortFieldValue: null };
+							? { segment: "missing", sortKey: byName }
+							: { segment: "value", sortKey: [size, ...byName] };
 					}
 
 					// A saved node sorts by its committed field doc, like the sorted pages. A draft keeps its
@@ -7528,8 +7520,8 @@ export const list_tree_children_sort_side_rows = query({
 									})()
 								: null;
 					return value === null
-						? { segment: "missing", sortKey: byName, sortFieldValue: null }
-						: { segment: "value", sortKey: [value.sortValue, ...byName], sortFieldValue: value.displayValue };
+						? { segment: "missing", sortKey: byName }
+						: { segment: "value", sortKey: [value.sortValue, ...byName] };
 				})();
 
 				return {
@@ -7541,7 +7533,9 @@ export const list_tree_children_sort_side_rows = query({
 								: { kind: "private" as const, id: entry.node._id },
 						name,
 						kind: entry.node.kind,
+						createdAt: entry.node._creationTime,
 						updatedAt: entry.kind === "saved" ? entry.node.updatedAt : entry.pendingUpdate.updatedAt,
+						contentByteSize: entry.node.kind === "folder" ? null : size,
 						contentType:
 							entry.kind === "saved"
 								? (entry.pendingUpdate?.pendingReplacement?.contentType ?? entry.node.contentType)

@@ -411,7 +411,7 @@ const files_metadata_committed_sort_fields = {
 	 * frontmatter map, so the row sorts as missing.
 	 */
 	sortValue: v.optional(v.string()),
-	/** The value the user typed, shown in the table's sort column. Set together with `sortValue`. */
+	/** The value the user typed, shown in table cells. Set together with `sortValue`. */
 	sortDisplayValue: v.optional(v.union(v.string(), v.number(), v.boolean())),
 };
 
@@ -1881,6 +1881,17 @@ const app_convex_schema = defineSchema({
 			"valueKind",
 			"booleanValue",
 			"treePath",
+		])
+		// Distinct fields on ordinary direct children. Committed field docs only.
+		.index("by_org_ws_source_archive_docKind_parent_restricted_field", [
+			"organizationId",
+			"workspaceId",
+			"sourceKind",
+			"archiveOperationId",
+			"docKind",
+			"parentId",
+			"isRestrictedScopeRoot",
+			"fieldPath",
 		])
 		// The children of one folder that have one key, by value. Committed field docs only.
 		.index("by_org_ws_source_archive_docKind_field_parent_restricted_sort", [

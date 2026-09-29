@@ -366,14 +366,15 @@ export function useFilesSortedChildren(props: useFilesSortedChildren_Props) {
 				target: { kind: "saved", id: row._id },
 				name: row.name,
 				kind: row.kind,
+				createdAt: row._creationTime,
 				updatedAt: row.updatedAt,
+				contentByteSize: row.contentByteSize,
 				updatedBy: row.updatedBy,
 				contentType: row.contentType,
 				preparing: false,
 				treeRow: row,
 				segment: segment.segment,
 				sortKey: row.sortKey,
-				sortFieldValue: row.sortFieldValue,
 			}));
 
 		// Show a side row once the last loaded main row of its segment sorts at or after it, or once the
@@ -412,7 +413,8 @@ export function useFilesSortedChildren(props: useFilesSortedChildren_Props) {
 
 	return {
 		rows: isSettled ? mergedRows : shownHeldRows?.rows,
-		// Held rows keep the sort keys of the sort they were loaded with, so show their values with it.
+		sideTargets: sideRows?.rows.map((row) => row.target) ?? [],
+		// Held rows keep their old sort keys, so keep the matching toolbar label.
 		rowsSort: isSettled ? sort : (shownHeldRows?.sort ?? null),
 		isBusy: !isSettled,
 		isDone: isSettled && segments.every((segment) => segment.status === "done"),

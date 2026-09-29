@@ -114,27 +114,29 @@ const NAME_ASC: files_sort_Sort = { field: "name", direction: "asc" };
 const saved_row = (kind: "file" | "folder", name: string, sortKey: files_sort_Key = [name]) =>
 	({
 		_id: `node_${name}` as app_convex_Id<"files_nodes">,
+		_creationTime: 2,
 		name,
 		kind,
 		updatedAt: 1,
+		contentByteSize: kind === "file" ? 42 : null,
 		updatedBy: "user_1" as app_convex_Id<"users">,
 		contentType: kind === "file" ? "text/markdown" : null,
 		sortKey,
-		sortFieldValue: null,
 	}) as SortedRow;
 
 const side_row = (name: string, sortKey: files_sort_Key = [name]): SideRow => ({
 	target: { kind: "private", id: `draft_${name}` as app_convex_Id<"files_pending_nodes"> },
 	name,
 	kind: "file",
+	createdAt: 1,
 	updatedAt: 1,
+	contentByteSize: null,
 	updatedBy: "user_1" as app_convex_Id<"users">,
 	contentType: "text/markdown",
 	preparing: false,
 	treeRow: null,
 	segment: "value",
 	sortKey,
-	sortFieldValue: null,
 });
 
 const file_names = (count: number, prefix = "file") =>
@@ -184,10 +186,15 @@ describe("useFilesSortedChildren", () => {
 			tooManyPending: false,
 		};
 		const { result } = render_sorted(NAME_ASC);
+		expect(result.current.sideTargets).toEqual(sorted.sideRows.rows.map((row) => row.target));
 
 		const firstPage = file_names(50).filter((name) => name !== "file-01.md");
 		firstPage.splice(firstPage.indexOf("file-05.md") + 1, 0, "file-05b.md");
 		expect(result.current.rows?.map((row) => row.name)).toEqual(["docs", ...firstPage]);
+		expect(result.current.rows?.find((row) => row.name === "file-00.md")).toMatchObject({
+			createdAt: 2,
+			contentByteSize: 42,
+		});
 		expect(result.current).toMatchObject({ isBusy: false, isDone: false, isFailed: false });
 
 		act(() => result.current.loadMore());
