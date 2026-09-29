@@ -285,6 +285,40 @@ $b.Dispose()
 
 Sample a whole column, not one point: one pixel cannot tell you which band you landed in, and a control's own background inside a bar reads nothing like the bar. Map image coordinates from the clip (`imageY = pageY - clip.y`) and from `getBoundingClientRect()` of the element, and remember `page.screenshot({ scale: "css" })` plus `bringToFront()` (a backgrounded tab returns a stale frame).
 
+## Measure Visible Gaps Between Elements
+
+Use this when the question is "are these two gaps equal": for example panel border → handle → text. DOM rects are not enough here. A panel border can belong to another element, a hover box can paint wider than its rect, and a text block's left edge is not where the first glyph starts. Screenshot only the rows the elements cover, decode the image in the page, and group the columns that differ from the background into runs. The gaps are the empty columns between runs.
+
+```js
+// Clip only the rows inside the target (here the drag handle box), so nothing above or below is counted.
+// Keep the target away from the vertical middle of a panel: the resize grip sits there.
+const buf = await p.screenshot({ clip: { x: x0, y: Math.ceil(box.top) + 2, width: 140, height: Math.floor(box.height) - 4 }, scale: "css", timeout: 3000 });
+const runs = await p.evaluate(async (b64) => {
+	const img = new Image();
+	img.src = "data:image/png;base64," + b64;
+	await img.decode();
+	const c = Object.assign(document.createElement("canvas"), { width: img.width, height: img.height });
+	const ctx = c.getContext("2d");
+	ctx.drawImage(img, 0, 0);
+	const d = ctx.getImageData(0, 0, c.width, c.height).data;
+	const lum = (x, y) => { const i = (y * c.width + x) * 4; return 0.3 * d[i] + 0.59 * d[i + 1] + 0.11 * d[i + 2]; };
+	const counts = {};
+	for (let y = 0; y < c.height; y++) for (let x = 0; x < c.width; x++) counts[Math.round(lum(x, y))] = (counts[Math.round(lum(x, y))] ?? 0) + 1;
+	const bg = +Object.entries(counts).sort((a, b) => b[1] - a[1])[0][0];
+	const runs = [];
+	for (let x = 0; x < c.width; x++) {
+		let on = false;
+		for (let y = 0; y < c.height && !on; y++) on = Math.abs(lum(x, y) - bg) >= 4;
+		if (on && runs.at(-1)?.[1] === x - 1) runs.at(-1)[1] = x;
+		else if (on) runs.push([x, x]);
+	}
+	return runs;
+}, buf.toString("base64"));
+// Add x0 to get page columns. Gap = next run start - previous run end - 1.
+```
+
+Prove the tool sees the change: run it once before the edit and once after, and check that the gap moved by the amount you changed. The `data:` image load worked on the app origin on 2026-09-29. On a CSP-locked frame see the pixel hazard in `known-hazards.md`.
+
 ## Read Open Menus
 
 `MyMenu` and `MyContextMenu` keep DOM focus on the `role="menu"` element, so `document.activeElement` never names the active item. This read gives, for each open menu level (outer first): its accessible name, whether it has focus, the active item from `aria-activedescendant`, and `aria-expanded` on each element that controls it.
