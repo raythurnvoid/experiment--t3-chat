@@ -4782,6 +4782,7 @@ const FileNodeViewFolderExplorerFilter = memo(function FileNodeViewFolderExplore
 // #region folder explorer sort select
 type FileNodeViewFolderExplorerSortSelect_ClassNames =
 	| "FileNodeViewFolderExplorerSortSelect-trigger"
+	| "FileNodeViewFolderExplorerSortSelect-tooltip"
 	| "FileNodeViewFolderExplorerSortSelect-popover"
 	| "FileNodeViewFolderExplorerSortSelect-form"
 	| "FileNodeViewFolderExplorerSortSelect-row"
@@ -5019,6 +5020,7 @@ const FileNodeViewFolderExplorerSortSelect = memo(function FileNodeViewFolderExp
 	const nextDraftId = useRef(sort.length);
 	const fieldTriggers = useRef(new Map<number, HTMLElement>());
 	const pendingFocusId = useRef<number | null>(null);
+	const sortLabel = `Sort: ${get_folder_sort_label(sort)}`;
 	// Keep saved and draft choices offered after their last catalog witness disappears.
 	const fields = [
 		...files_sort_BUILT_IN_FIELDS,
@@ -5084,16 +5086,31 @@ const FileNodeViewFolderExplorerSortSelect = memo(function FileNodeViewFolderExp
 
 	return (
 		<MyPopover open={open} setOpen={handleOpenChange}>
-			<MyPopoverTrigger>
-				<MyButton
-					variant="outline"
+			{/* Keep the tip from taking Escape while Sort is open. */}
+			<MyTooltip placement="bottom" open={open ? false : undefined}>
+				<MyTooltipTrigger>
+					<MyPopoverTrigger>
+						<MyButton
+							variant="outline"
+							aria-label={sortLabel}
+							className={cn(
+								"FileNodeViewFolderExplorerSortSelect-trigger" satisfies FileNodeViewFolderExplorerSortSelect_ClassNames,
+								"FileNodeViewViewSelect-trigger" satisfies FileNodeViewViewSelect_ClassNames,
+							)}
+						>
+							<span>{sortLabel}</span>
+						</MyButton>
+					</MyPopoverTrigger>
+				</MyTooltipTrigger>
+				<MyTooltipContent
+					unmountOnHide
 					className={
-						"FileNodeViewFolderExplorerSortSelect-trigger" satisfies FileNodeViewFolderExplorerSortSelect_ClassNames
+						"FileNodeViewFolderExplorerSortSelect-tooltip" satisfies FileNodeViewFolderExplorerSortSelect_ClassNames
 					}
 				>
-					Sort: {get_folder_sort_label(sort)}
-				</MyButton>
-			</MyPopoverTrigger>
+					{sortLabel}
+				</MyTooltipContent>
+			</MyTooltip>
 			<MyPopoverContent
 				unmountOnHide
 				aria-label="Sort"

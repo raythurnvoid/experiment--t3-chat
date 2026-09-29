@@ -834,14 +834,17 @@
 	/* #endregion folder body */
 
 	/* #region folder explorer sort select */
+	/* Keep the summary in one row. The tooltip shows the full list. */
 	.FileNodeViewFolderExplorerSortSelect-trigger {
-		max-width: 100%;
-		min-width: 0;
-		min-height: 36px;
-		height: auto;
-		white-space: normal;
-		overflow-wrap: anywhere;
+		max-width: min(240px, 100%);
+		min-width: 36px;
+		height: 36px;
 		text-align: start;
+	}
+
+	.FileNodeViewFolderExplorerSortSelect-tooltip {
+		max-width: min(320px, calc(100vw - 32px));
+		overflow-wrap: anywhere;
 	}
 
 	.FileNodeViewFolderExplorerSortSelect-popover {

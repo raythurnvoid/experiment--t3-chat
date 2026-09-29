@@ -392,6 +392,8 @@ folder (`FileNodeViewPrivateFolder`) still lists its children through `useFilesV
   list unchanged. Reset to Name makes a one-clause Name asc draft. Catalog reads stay live while
   open. Saved and draft keys stay offered after their last witness disappears.
   The note says "Saved for everyone who can read this folder" or "Only for your view".
+- The Sort summary stays on one line. Hover or keyboard focus shows the full list in a tooltip.
+  Long field names wrap there so the tooltip fits the screen.
 - The table carries `data-sort-fields` for the displayed full list. Sorted headers carry
   `data-sort-priority` and `data-sort-direction`. A header click makes one clause.
 - A supported sort limit keeps completed rows and offers Reset to Name.
