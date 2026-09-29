@@ -721,7 +721,10 @@ The sidebar loads the tree one open folder at a time through four `files_nodes` 
 resolve the reader with `db_get_tree_reader` and filter every row with
 `access_control_db_filter_readable_file_nodes`, so they never show more than `list_tree` does.
 
-- `db_get_tree_reader` returns `null` for an inactive or foreign membership and for every refusal
+- `db_get_tree_reader` requires a live `users` doc before reading membership. Missing auth or a
+  missing user throws `Unauthenticated`. An anonymous user with `deletedAt` does too, even when
+  the supplied membership is inactive. The helper keeps the caller's auth kind.
+  It returns `null` for an inactive or foreign membership and for every refusal
   except "Permission denied". "Permission denied" means the member has no workspace-wide read, so the
   queries continue in grant-only mode and show only what was shared with them.
 - `list_tree_children` pages one kind of child of one folder. A missing, foreign, or hidden parent
@@ -748,6 +751,37 @@ resolve the reader with `db_get_tree_reader` and filter every row with
   `list_tree_children_sort_side_rows`, which checks each one with the visible reader (read access
   plus the pending hide rules) and caps them at 200. A grant-only member's root rows come from these
   side rows.
+  - A local table filter scans that same readable ordinary range. It never scans hidden nodes and
+    then drops them for access. Custom cursors bind the exact membership, folder, kind, segment,
+    sort, and filter. They carry the full index suffix, including Created time/id ties.
+  - Every page returns `scanBoundary`, `scannedCount`, and `workCount`. Native unfiltered pages
+    count raw rows before pending hides and use `workCount: 0`. Custom pages advance only after a
+    whole candidate is checked. Rejected readable candidates still advance the boundary.
+    Refusals return an empty, done page with a null boundary and zero counts.
+  - A sort has one to three ordered clauses. Multi-sort proves only readable ordinary groups.
+    It uses the primary index and a Name range when that index supports the next clause. Other
+    groups are limited to 200 candidates, with a 201st probe. Hidden restricted children never
+    affect that proof, its cap, cursor, bytes, or work count. Complete groups pack up to 50
+    processed candidates. A cumulative budget stop keeps only the completed prefix.
+    `sortLimit` reports a real group limit. `workPaused` reports a smaller request allowance that
+    cannot prove the next group. Every result carries both fields, including native and refused pages.
+  - With one clause, filtered walks spend at most 50 candidate/proof visits per query. Custom walks
+    check whole-query bytes and calls with a 4 MiB budget and a 1,000-call budget. They reserve
+    1 MiB and 16 calls before another read. The metadata-missing walk keeps both Name streams. Each new field witness is
+    joined to its current ordinary node before its position is used. Stale scope fields throw.
+    A stopped join keeps the last completed cursor. With one clause, no first progress throws a
+    work error.
+  - `get_table_filter_match({ membershipId, parentId, target, filter })` checks one side target
+    again. It resolves current access, private ownership, visible parent, and metadata readiness.
+    It returns `{ matches, preparing }`, or null for refusal or a target no longer visible here.
+    Missing auth throws. Read exhaustion throws; it never means false, null, or an absent scalar.
+    The side-row list keeps its full unfiltered name claims and both cap flags.
+  - Side enumeration has no sort argument and reads no metadata keys. Built-in keys use its
+    authorized facts locally. `get_table_sort_key({ membershipId, parentId, target, sort })`
+    independently checks current auth, access, visible parent, private owner, and proposal revision.
+    It returns one full fresh row key. All built-in and metadata parts come from the same read.
+    Private metadata still preparing has null sort parts. Refusal is null; byte/call or visible
+    reader exhaustion throws. A refused key cannot revive a held row or remove its current name claim.
   - The owner reads every row, so the owner scans the folder's restricted children by name and gets
     the first 200.
   - A non-owner can read a restricted scope root only through a user or role `content.read` grant
@@ -782,6 +816,24 @@ resolve the reader with `db_get_tree_reader` and filter every row with
   both whenever a node is restricted or unrestricted. `list_tree_children_sorted` throws
   `should_never_happen` when a returned row is a restricted root, because a stale `false` would
   show a hidden row. The side rows need no such guard: they check every row with the visible reader.
+- `files_metadata.list_folder_fields` checks active membership and folder `content.read` before
+  listing direct-child committed keys. The root needs workspace read; a grant-only member gets an
+  empty, done ordinary catalog there. A readable folder hidden by archive or the caller's pending
+  move or delete also gets an empty, done page. Missing or denied folders return null.
+  The parent-first index contains only active ordinary field docs. It seeks after each distinct key,
+  so hidden restricted children cannot change the catalog's fields, page length, or cursor.
+  Each witness node must still have the same tenant and parent, be active, and have neither a
+  restricted-root flag nor itself as `restrictedScopeNodeId`. A mismatch throws an invariant error.
+- `files_metadata.list_node_fields` and `get_field_values` resolve one target through the visible
+  reader on every call. A prior side row never grants access. Missing access returns null, including
+  after a grant is revoked. Private targets also require the caller to own the node and current
+  proposal. Every private metadata witness must match the current proposal id and revision, tenant,
+  target, and owner. Stale docs throw instead of becoming key names, values, or a false missing cell.
+  Preparing private targets expose no keys or values. Their source token binds the proposal and
+  revision, so the client cannot keep old pages after a source change. These queries keep whole-query
+  byte and call budgets, and throw when no field can finish. They do not scan hidden child partitions
+  to decide a catalog cap. Columns are personal browser preferences; choosing a key does not publish
+  its name as shared folder settings.
 - `files_folder_sorts.get_folder_sort` returns null unless the caller can `content.read` the folder
   (or the workspace, at the root). A grant-only member at the root gets Name, A to Z with
   `canSave: false`, not the saved root sort: a saved metadata sort would name a key they may not see. `canSave` and `set_folder_sort` need what a metadata write needs:

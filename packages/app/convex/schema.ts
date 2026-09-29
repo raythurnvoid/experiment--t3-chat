@@ -323,15 +323,50 @@ export const files_metadata_entries_validator = v.array(
 );
 
 /**
- * The saved sort of a folder and the sort a query reads. It accepts any field string, so check the
- * field with `files_sort_field_is_valid`.
+ * The ordered saved clauses. Check fields, duplicates and count with `files_sort_is_valid`.
  */
-export const files_sort_validator = v.object({
-	field: v.string(),
-	direction: v.union(v.literal("asc"), v.literal("desc")),
+export const files_sort_validator = v.array(
+	v.object({ field: v.string(), direction: v.union(v.literal("asc"), v.literal("desc")) }),
+);
+
+const files_sort_key_validator = v.array(v.union(v.string(), v.number(), v.null()));
+
+export const files_sort_row_key_validator = v.object({
+	parts: v.array(v.union(files_sort_key_validator, v.null())),
+	nameKey: v.array(v.string()),
 });
 
-export const files_sort_key_validator = v.array(v.union(v.string(), v.number(), v.null()));
+export const files_table_filter_validator = v.union(
+	v.object({
+		kind: v.literal("name"),
+		field: v.literal("name"),
+		op: v.union(v.literal("contains"), v.literal("starts_with")),
+		value: v.string(),
+	}),
+	v.object({ kind: v.literal("type"), field: v.literal("type"), op: v.literal("is"), value: v.string() }),
+	v.object({ kind: v.literal("type"), field: v.literal("type"), op: v.literal("missing") }),
+	v.object({
+		kind: v.literal("date"),
+		field: v.union(v.literal("updated"), v.literal("created")),
+		op: v.union(v.literal("on"), v.literal("before"), v.literal("after")),
+		start: v.number(),
+		end: v.number(),
+	}),
+	v.object({
+		kind: v.literal("size"),
+		field: v.literal("size"),
+		op: v.union(v.literal("is"), v.literal("at_least"), v.literal("at_most")),
+		value: v.number(),
+	}),
+	v.object({ kind: v.literal("size"), field: v.literal("size"), op: v.literal("missing") }),
+	v.object({
+		kind: v.literal("text"),
+		field: v.string(),
+		op: v.union(v.literal("is"), v.literal("starts_with")),
+		value: v.string(),
+	}),
+	v.object({ kind: v.literal("text"), field: v.string(), op: v.union(v.literal("present"), v.literal("missing")) }),
+);
 
 const files_pending_create_intent_validator = v.union(
 	v.object({ kind: v.literal("folder"), metadata: files_metadata_entries_validator }),
@@ -411,7 +446,9 @@ const files_metadata_committed_sort_fields = {
 	 * frontmatter map, so the row sorts as missing.
 	 */
 	sortValue: v.optional(v.string()),
-	/** The value the user typed, shown in the table's sort column. Set together with `sortValue`. */
+	/**
+	 * The value the user typed, shown in table cells. Set together with `sortValue`.
+	 */
 	sortDisplayValue: v.optional(v.union(v.string(), v.number(), v.boolean())),
 };
 
@@ -1881,6 +1918,17 @@ const app_convex_schema = defineSchema({
 			"valueKind",
 			"booleanValue",
 			"treePath",
+		])
+		// Distinct fields on ordinary direct children. Committed field docs only.
+		.index("by_org_ws_source_archive_docKind_parent_restricted_field", [
+			"organizationId",
+			"workspaceId",
+			"sourceKind",
+			"archiveOperationId",
+			"docKind",
+			"parentId",
+			"isRestrictedScopeRoot",
+			"fieldPath",
 		])
 		// The children of one folder that have one key, by value. Committed field docs only.
 		.index("by_org_ws_source_archive_docKind_field_parent_restricted_sort", [

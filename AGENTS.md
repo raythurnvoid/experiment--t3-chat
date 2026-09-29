@@ -1345,6 +1345,8 @@ A package upgrade has the same problem on the frontend side. Vite pre-bundles de
 
 # Git push on this machine
 
+Use `main` directly in this repository. Do not create or push a feature branch unless the user asks for one.
+
 The `gh` CLI holds two accounts. Another agent works on a different repository as `dloreto` and switches the active account whenever it needs to, so the active account can flip at any moment — this is expected and will not change. A plain `git push` from this repo then fails with `403 ... denied to dloreto`. Do not "fix" the active account with `gh auth switch` (it can flip back mid-session and it disturbs the other agent); always push with the command below, which pins the account per invocation. It reads the token into an environment variable so the token is never printed; keep it that way.
 
 Run it in PowerShell only (the backtick before `$GH_TOKEN_RV` is a PowerShell escape; in Git Bash the line breaks). Run all lines in the same shell call so the variable reaches git — with a separate call the push silently sends an empty password. Adjust `origin main` when pushing another branch.

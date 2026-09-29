@@ -75,22 +75,26 @@ Use this file as a quick testing map for `/files`. Keep it short and selector-or
 - Folder table drop target state: `.FileNodeViewFolderExplorer-row-drop-target`.
 - Folder table dragging state: `.FileNodeViewFolderExplorer-row-dragging`.
 - Folder table sort state: `getByRole("table", { name: "Folder contents" })` carries
-  `data-sort-field` (`name`, `updated`, `created`, `type`, `size`, or `metadata.<key>` /
-  `frontmatter.<key>`), `data-sort-direction` (`asc` / `desc`), and `aria-busy="true"` while a new
-  sort loads. Wait for `aria-busy` to go away before reading rows.
-- Folder table header: `getByRole("columnheader", { name: /^Name/ })` has `aria-sort`
-  (`ascending`, `descending`, `none`). Name and Updated hold sort buttons: `getByRole("button", { name: /^Name/ })`.
-- Folder table sort menu: `getByRole("combobox", { name: /^Sort: / })`, named like
-  `Sort: Name, A to Z`. The direction button next to it has the tooltip `Sort <other direction>`.
-  Metadata options read like `status (metadata)`.
+  `data-sort-fields`, a JSON list of `{ field, direction }` pairs in displayed order, and `aria-busy`.
+  `.FileNodeViewFolderExplorer` carries `data-sort-state`: `applying`, `refreshing`, `ready`, `failed`
+  or `limited`. Read both the state and real status text before checking settled rows.
+- Sorted headers carry `data-sort-priority` (starting at 1) and `data-sort-direction` (`asc` / `desc`).
+  Only the first field has `aria-sort`. A visible field's header button applies a one-field sort.
+- Folder table sort form: `getByRole("button", { name: /^Sort: / })` opens the `Sort` dialog.
+  The full name reads like `Sort: Name ↑, then Updated ↓`. Field and direction controls are named
+  `Sort field 1: Name` and `Direction 1: A to Z`. Metadata labels keep their namespace.
 - Folder table row names in order: the overlay links, `getAllByRole("link", { name: /^Open / })`.
-- Extra sort column cell: `.FileNodeViewFolderExplorer-cell-sort-value` (a dash `—` means no value).
+- Folder columns: `getByRole("button", { name: "Columns", exact: true })` opens the `Columns` dialog.
+  Headers and cells carry `data-column-field`; value cells also carry `data-value-state`.
+  A sort does not add its field as a visible column. Select it in Columns before checking its cells.
+- Value query counts: the `Folder contents` table carries `data-value-target-count` and
+  `data-value-page-count`. These attributes are on the table, not `.FileNodeViewFolderExplorer`.
 - The table is a `div` grid, not a `<table>`. In page context use `[role=table][aria-label="Folder contents"]`,
   rows `.FileNodeViewFolderExplorer-row[role=row]`, and headers `[role=columnheader]`. `querySelector("table")`
   answers null.
-- The table shows only its first **5** rows until you click `Show more`. The first click shows the rest of the
-  loaded page (50 per kind); later clicks load the next page. So 5 rows plus `Show more` on a fresh load is
-  the design, not a short server page.
+- The table starts with **5** rows. First `Show more` requests at least 50 matches and reveals all loaded
+  rows; it can show more than 50 when both kinds are loaded. Later clicks request 50 beyond the loaded count.
+  Five rows on a fresh load is the preview, not a short server page.
 
 ### Large And Virtual Trees
 
@@ -559,11 +563,12 @@ downloadThroughput: -1, uploadThroughput: -1 }`. This affects only the owned QA 
   must fail with `Permission denied` and zero moved. Owner readback must show every original path
   and scope unchanged. Give the member `write` on the restricted child and repeat: the move must
   succeed and keep that child's scope. Unit tests also cover read-only grants and archived children.
-- **Where `Upload file` actually is** (verified 2026-09-15): the sidebar toolbar's `More options`
-  button, whose menu is `Cut`, `Copy`, `Paste into root folder`, `Upload file`, `Import folder`,
-  then a separator group with `Show archived items`. It
+- **Where `Upload file` actually is** (upload checked 2026-09-15; menu checked in source 2026-09-29):
+  the sidebar toolbar's `More options` button. With no multi-selection, the menu offers
+  `Upload file`, `Import folder`, then a separator group with `Show archived items` (or
+  `Hide archived items`). Clear a multi-selection first. It
   uploads into the **currently selected** folder, so select the target node first (open
-  `/files?nodeId=<folder id>`) even though the Paste entry says "root folder". Drive it with
+  `/files?nodeId=<folder id>`). Drive it with
   `state.page.waitForEvent("filechooser")` started before the click, then
   `chooser.setFiles("C:/absolute/path")`; under a Windows relay a Windows path works. A 14 KB PNG
   needs ~20 s before the node appears. It is **not** on a row's `More actions` menu (that menu is
@@ -607,66 +612,210 @@ downloadThroughput: -1, uploadThroughput: -1 }`. This affects only the owned QA 
 
 ### Folder Table Sort
 
-Verified 2026-09-24 in `qa-browser/home` with `qa.perm.owner` and `qa.perm.viewer` in two scratch Chromes
-(ports 9223 and 9224, see `clerk-test-accounts.md`). The whole run, fixtures included, took about 25 minutes.
+Verified 2026-09-29 with the existing owner and reader accounts. Read the current
+[QA inventory](../../qa-data/references/inventory.md) and [account guide](clerk-test-accounts.md)
+first. Check membership, grants and archive state; then back up the exact fixture facts, saved arrays
+and personal preference entries. Restore only approved roots through normal Files doors. The checked
+run reused `/qa-sort-0924` and `/qa-sort-0924-r` without new files, metadata, moves or grants.
 
-- **Fixtures from page context.** `files_nodes.create_folder_node` for folders, `files_nodes_content.create_text_node`
-  for files (`j.json`, `k.txt`, and `noext` give Type a value, another value, and a missing value), and
-  `files_metadata.set_entries({ membershipId, fileNodeId, metadataYaml: 'rank: "10"\n' })` for a metadata key.
-  Use string values like `"2"`, `"9"`, `"10"` to see the natural-number order. `files_sharing.restrict_node` on a
-  child with no grant gives the hidden-child case; `restrict_node` plus `set_node_share_grant` with
-  `level: "read"` for the member gives the reader case.
-- **`create_text_node` takes 1.5 to 4 s per call.** 55 files in one `page.evaluate` overran a 90 s timeout. Create
-  more than about 20 files in batches, or race each call against a short timer and log its time.
-- **Sizes.** A new text file is 52 bytes. `qa-browser` refuses uploads (`This workspace's plan does not include file
-  uploads`), and `files_nodes_content.replace_file_content` answers `Not found` on a collaborative file. To vary
-  sizes, open `?nodeId=<id>&view=rich_text_editor` with `waitUntil: "domcontentloaded"` (the `load` wait timed out),
-  click `.ProseMirror[contenteditable=true]`, press `End`, and `keyboard.insertText(...)`. The size updates within
-  a few seconds. Typing does not change the node's `updatedAt`, so the Updated sort keeps creation order for them.
-- **Drive the sort.** Header buttons `Name` and `Updated` (`exact: true`); the Sort select options are `Name`,
-  `Updated`, `Date created`, `Type`, `Size`, and `<key> (metadata)`; the direction button is named like
-  `Sort z to a`. Updated, Date created, and Size start newest or largest first. The `(metadata)` options load
-  after the menu opens, so a read of `getByRole("option")` right after the click misses them. Wait for one first.
-- **Read the order.** Wait for `aria-busy` to leave the table, click `Show more` until it is gone, then read the
-  overlay link names and `.FileNodeViewFolderExplorer-cell-sort-value`. Expect folders first, then values, then
-  `—` rows by name, in both directions.
-- **Saved sort and live update.** A writer's change is saved: reload shows it, and a second member's open table
-  flips to it with no reload (wait for `data-sort-field` to change).
-- **Reader.** Count `set_folder_sort` in `websocket` `framesent` payloads (attach the listener before `goto`). A
-  reader's clicks change their table and send 0 frames; `files_folder_sorts.get_folder_sort` still answers the old
-  sort with `canSave: false`, and reload brings it back. The same counter on the owner reads 1 per click, which
-  proves the counter works.
-- **Hidden child.** The member must not see the restricted child's row, and its metadata value must not appear in
-  `.FileNodeViewFolderExplorer-cell-sort-value` or anywhere in `body.innerText`.
-- **Member shared rows from existing data** (verified 2026-09-24). A member builds the restricted rows of a folder
-  from their own grants, by user or by role. `qa-browser` keeps archived restricted fixtures. `unarchive_nodes` on
-  a restricted child alone puts it at root, because its parent stays archived. Then `move_nodes` it into a live
-  folder such as `/qa-search-0905`. Share one by user and one with `{ kind: "role", role: "member" }`, and leave
-  the others without grants. In every sort, the member sees exactly the shared rows, with no `Too many shared`
-  notice and no hidden name in `body.innerText`. The owner sees every row, which proves the text check works.
-  `qa-browser` has fewer than 200 restricted folders and files, so the over-200 case needs new fixtures. To clean
-  up, remove the role grant, restore the original parent folders, move each item back, and archive the parents
-  again. Compare a `list_tree` count taken before the run.
-- **More than 200 restricted children** (verified 2026-09-24). Create 203 folders `c-000`…`c-202` with
-  `create_folder_node`, then `restrict_node` each one. Rate limits make this slow: `files_tree_write` allows 50 per
-  minute and `files_sharing_write` 30 per minute, so the build takes about 11 minutes. Each runner call works for
-  about 35 s. At the start of each call it reads the folder's real children from `list_tree`, because a call that
-  timed out may still have written folders. On "rate" refusals it waits 2.5 s and retries.
-  - Share `c-005` (role), `c-150` and `c-201` (user) with the member. The owner then gets `c-000`…`c-199` and
-    the `Too many shared` notice. The member gets exactly those 3 rows with no notice. `c-201` sorts after
-    position 200, so seeing it proves the member walk runs. The old folder scan gave a member no rows here.
-  - For the member's own over-200 case, share every child with the member: the member then gets
-    `c-000`…`c-199` and the notice. A role fits on at most 50 share lists
-    (`This role is already on 50 share lists…`), so use the role for 50 of them and user grants for the rest.
-  - Clean up: remove every grant first, or the archived folders keep using the role's 50 slots and fill the
-    member's grant list. Then archive the root. With nothing shared, a wait for the member's table timed out, so
-    confirm the removal with `get_node_share_state` on a few folders instead.
-- **Working-tree proof.** Force `tooManyShared` to true in `list_tree_children_sort_side_rows`, push, and every
-  folder shows `Too many shared items here to sort. Some are not shown.`; push the real code and it goes away. For
-  the member walk, skip every grant candidate instead (`if (!is_in_folder(entry) || true)`): the member loses the
-  shared rows. If other agents have unfinished `convex/` edits, push from a worktree (see `known-hazards.md`).
-- Clean up with `files_nodes.archive_nodes` on the fixture roots. Their `files_folder_sorts` docs stay until the
-  workspace purge, by design.
+- **Form and drafts.** Open `Sort: <full summary>`, then the `Sort` dialog. Field controls are named
+  `Sort field <priority>: <label>`; direction controls are `Direction <priority>: <words>`. The field
+  picker is `Sort fields <priority>` with `Search sort fields <priority>`. Use `Add sort field`,
+  `Move <label> up`, `Move <label> down` and `Remove <label>`. Up to three distinct fields are allowed.
+  Add and move focus the relevant field; Remove focuses a remaining field. Last Remove resets the draft
+  to Name ascending. Stable `data-sort-draft-id` values survive edits and moves and are never saved.
+  Form `Reset to Name`, Cancel and Escape change no applied sort or saved data. Only Apply commits
+  the draft. A header click replaces the whole list with one field.
+- **Saved and local.** The writer sees `Saved for everyone who can read this folder`; the reader sees
+  `Only for your view`. Count `files_folder_sorts:set_folder_sort` mutations before actions. Save an
+  owner array on the same reader fixture, check both users' full saved list, then apply a reader local
+  list. Reader mutations must stay zero, the saved list must stay unchanged, and a fresh reload must
+  return that list. Wait for both the saved query and table to settle before reading it. Compare fields
+  and directions in order, not JSON property order. Require fresh `canSave: false` before local Apply
+  on a real read-only dataset; `/people` may return true despite the QA policy.
+- **Order and labels.** Read `data-sort-fields`, ordered row ids and sorted header priority/direction.
+  Only the primary header has `aria-sort`. During an uncached change, held rows keep their full old
+  array and `Showing: <filter>. Sort: <full list>.` notice; the toolbar describes the requested list.
+  Check all four Type/metadata.rank direction pairs against an order derived independently from
+  bounded fixture facts. Also check Type/Size/rank with folders and Created/rank with unique times.
+  The checked fixture has tied Updated values, so Updated cannot prove its direction there.
+- **Actual query work.** Inspect active `list_tree_children_sorted` descriptors and settled responses
+  with `watchQuery(...).localQueryResult()`; do not add subscriptions just to count them. Each forward
+  action gives new custom scans at most 1,000 work in total. Check each response against its request
+  allowance. Count retained-page refreshes separately. Preserve `sortLimit`, `workPaused`,
+  `workCount`, `scannedCount` and actual request allowances in receipts. Created/rank packed 50 file
+  candidates in one response; a revealed table may also include folders. Hidden sort fields add no
+  displayed-value queries. Metadata after Name needs no sort-key queries. Side enumeration returns
+  facts without sort args or inline keys; `get_table_sort_key` returns a full `RowKey` or null.
+  Type/Size positions stay null for folders.
+- **Filter and preview.** Combine a Name filter with the full sort list. Check preview five, Show more,
+  Show less and exact ordered ids. First Show more requests at least 50 and reveals all loaded rows;
+  later requests add 50 to the loaded count. Show less returns to five without a new scan.
+- **Limit coverage.** A bounded authenticated read of `list_tree_children_sorted` on `/people` with
+  metadata.source/Updated returned `group_rows`, zero candidates and 202 work. It changed no UI or
+  saved sort. Native limit/recovery UI stayed unverified because `canSave` was true. Registered tests
+  cover the limit message, immediate limit `Reset to Name`, private/two-metadata groups, byte/call/work
+  caps, hidden claims and permission loss. Do not create or change large fixtures just to repeat them.
+- **Keyboard and fit.** Check native Enter opening, field/direction arrows, Add/move/remove focus,
+  Cancel and Escape focus return. At real 320px width, verify the closed Sort trigger stays one row
+  (height at most 40px), with its full label in the DOM and a full tooltip on focus/hover. Open Sort,
+  hover its still-visible trigger, then press Escape: the form must close on the first press and
+  restore trigger focus. The tooltip stays closed while the form is open. Check dialog and picker
+  fit against actual `documentElement.clientWidth`, then repeat at 640×450. A DOM-only probe of a
+  128-letter key on the actual tooltip proved text wrapping; it did not prove saved long-key data.
+  Record whole-page overflow separately. These reflow checks do not prove actual browser zoom.
+- **Named source proof.** Pin a two-field reader-local array and its exact rows. Name as the second
+  field must have priority 2 and no `aria-sort`. Name the assertion `secondary_header_priority` before
+  changing source. On a coordinated temporary first-clause-only header lookup, prove the served module
+  and require that assertion to fail. Restore the exact source, reload only the owned tab, apply the
+  same local array and run the unchanged assertion green. A shell/auth setup failure is not the red.
+- **Cleanup.** Reset both approved fixtures to Name through normal controls and require no saved-sort
+  docs. Archive their roots again and compare all child ids, parents, paths, archive flags and raw
+  grants with the backup. Restore only touched personal entries and viewport/sidebar settings. Detach
+  owned observers and CDP listeners, remove exact HTTP routes, and close owned scratch pages to retire
+  page-scoped WebSocket routes. Keep the normal signed-in profile and existing servers unchanged.
+
+### Folder Table Columns
+
+Verified 2026-09-29. Use the current QA inventory. A large real folder can stay read-only: only personal
+column choices need to change. Do not write file metadata or shared sorts for this check.
+
+- **Controls.** `Columns` opens a dialog named `Columns`; its input is `Search columns`.
+  Name is checked and locked. Actions is always shown. Up to eight columns may be selected, including Name;
+  Actions does not count. The order is fixed: built-ins first, then full qualified field keys.
+  Choose fields in a different click order and check the same order after reload. `Reset columns` restores
+  Name, Updated by and Updated. Column changes must keep row ids, row order and paging unchanged.
+- **Checkboxes.** The native input is visually hidden and does not take pointer clicks. Click the visible
+  label inside `.FileNodeViewFolderExplorerColumns-field[data-column-field="<field>"]`, or focus its
+  checkbox and press Space. Do not force-click the input. Tab scrolls clipped fields into view.
+- **Catalog.** Opening Columns starts `files_metadata:list_folder_fields` plus
+  `files_metadata:list_node_fields` for supported side targets, including private drafts. Search only filters
+  loaded keys. `Show more fields` requests another page; it does not load every page automatically.
+  Read `data-fields-state` on the status child, not the dialog. States are `loading`, `ready` and `failed`.
+  An incomplete catalog says `No loaded fields match`; a complete one says `No fields match`.
+  On failure, `Retry` clears the old keys and restarts page 1. Check proposal changes while the chooser stays open.
+- **Cells.** Scope to `[role="table"][aria-label="Folder contents"]`, then the row and
+  `[data-column-field="<field>"]`. `data-value-state` is `deferred`, `loading`, `preparing`, `ready`,
+  `failed` or `refused`. The text is respectively `Loads when row is visible`, `Loading…`, `Preparing`,
+  the scalar value, `Could not load` or `Unavailable`. A ready missing value is `—`; zero, false and
+  an empty string keep their own values. `Retry values` belongs in that row's Actions cell.
+  A refused target must keep no old value or hidden field name. Use unit coverage or a real owned failure
+  path for error states; do not add fake results to the DOM.
+- **Scalar check.** First read one bounded catalog page. Pick a key that exists now, then read at most a few
+  accessible targets with `get_field_values`. Compare one ready cell with that API and `get_entries`.
+  Record the value type and equality without printing private values. Main table preview rows may be folders
+  with no value; open a readable child folder through its normal link to reach files. Back up that folder's
+  own preference entry before changing it too.
+- **Actual subscriptions.** DOM counters alone do not prove the caps. Import the exact
+  `/src/lib/app-convex-client.ts` URL already present in Resource Timing; do not import a second client URL.
+  Increase the Resource Timing buffer in an init script before reload if that entry was evicted.
+  In the current Convex client, read `app_convex.cachedSync.state.querySet` and require a `Map`.
+  Each active descriptor has `numSubscribers > 0` and `canonicalizedUdfPath`.
+  Count only `files_metadata:get_field_values`: descriptors are pages; distinct serialized `args.target`
+  values are targets. Ignore cached entries with zero subscribers. Fail clearly if the installed shape changes.
+  Compare both counts with the table's attributes. Do not print the complete query arguments.
+- **Caps and priority.** Load about 150 rows with `Show more`, then use a tall viewport on only your own tab.
+  In the verified run, 1280×6000 produced 100 real value targets and 100 pages. Require at most 100 targets
+  and 700 pages. Focus a deferred row's normal overlay link: it must become active, replace a nearby target,
+  and stay within both caps. Clear that focus, scroll the editor to another deferred row, and check visible
+  priority too. One-page scalar values do not prove the 700-page worst case; use the focused cap unit test
+  for that case and report the actual live counts.
+- **Editor preload.** The observer root must be the containing `.FileNodeView-editor-area`, with
+  `rootMargin: "400px 0px"`. At scrollTop 0, choose an unfocused mounted row below the editor's bottom by
+  more than 0 and less than 400 px, with horizontal overlap. The same target must have an active value query
+  before it enters view. You may wrap the native IntersectionObserver constructor to record its options;
+  forward its real callback and leave its behavior unchanged.
+  Name this assertion `editor_preload`. For the red proof, coordinate a small served-source switch from
+  `root: scrollRoot` to `root: null`, keeping the margin. Reload only your tab, fetch the exact loaded view
+  module to prove the switch is served, then run the same target and geometry assertion. It must fail because
+  that target has no active value query. Restore the source, prove the fresh module and rerun it to pass.
+- **Keyboard and fit.** Search gets focus on open. Tab skips locked Name. Space toggles a focused checkbox.
+  Done and Escape close the dialog and return focus to Columns. Check the visible focus outline and the
+  label hit area; an automated 1 px input warning is not the visible label's size. At a 320 px layout width,
+  require the chooser inside the viewport with no horizontal overflow. Read `documentElement.clientWidth`:
+  a scrollbar can make a 320 px device viewport narrower. Reach the vertically scrolled Done button by Tab
+  and check its hit target. A 640×450 viewport is a 200% reflow check for 1280×900, not proof of real browser
+  zoom. State that limit. Also record whole-page overflow separately; the existing Files header/panel layout
+  overflowed at 320 px in this run while the chooser fit. Reduced motion must leave the chooser animation off.
+- **Restore.** The membership's column map is stored under
+  `app_state::files_folder_columns::scope::<membershipId>`. Back up the exact touched folder entries,
+  including whether each entry and the physical key existed. Restore only those entries, preserving unrelated
+  entries added meanwhile. If the 100-entry map is full, reuse an existing entry so QA does not evict another
+  folder's choice. Reload to clear the app's storage cache, then prove the original columns and
+  query counts. Restore viewport and media overrides. For screenshots, bring only your owned tab to the front
+  if background capture times out; do not raise the timeout.
+
+### Folder Table Filter
+
+Verified 2026-09-29 on a read-only `/people` folder. Use its current bounded field catalog and readable
+scalar sample. Do not assume a Status field exists. No new fixture is needed for the normal flow.
+
+- **Controls.** `Filter` opens a dialog named `Filter`. Field is a combobox named `Field: <label>`.
+  Its picker is `Filter fields`; the search input has role `combobox` and name `Search filter fields`.
+  Operation is a combobox named `Operation`. The value label is `Value`, `Bytes` or `Day`.
+  Use the label to find Value; the dialog also contains a picker input. Apply changes the local filter.
+  Cancel and Escape drop draft edits and return focus to Filter. Reopening starts from the applied choice.
+  Field and operation changes clear the draft value and its old error. Clear filter keeps sort and columns.
+- **Draft proof.** Save shown row ids and the active main query arguments before typing. They must stay
+  unchanged until Apply. A CDP sent-frame listener can count new main-query Adds without keeping payloads.
+  Filter choices must send no Files mutations or actions. Use `getCDPSession({ page })` in Playwriter;
+  `page.context().newCDPSession(page)` does not work through the extension. Keep each capture owned and
+  remove its listeners before detaching. Presence heartbeats are expected and are not Files writes.
+- **Native validation.** Text uses `minLength=1` and `maxLength=1024`. Bytes uses native number input,
+  `min=0` and `step=1`. Empty, negative and fractional bytes cannot Apply; zero can. Day is a native date
+  input. Invalid Apply keeps the dialog open, shows its real error, and focuses the labelled value input.
+  Check `input.validity`, not only its border. At 320px, edit a valid Value to empty and click Apply once.
+  That first mouse click must reach submit and focus Value. Repeat with Cancel; its first click must close
+  without applying. Showing a blur error must not move the footer before the button click.
+- **Native fields.** Compare shown rows with their actual cached row facts. Name folds case and accents.
+  Type submits lowercase and keeps a typed dot literal. `Has no value` for Type or Size includes folders
+  and shows no value input. Size compares whole byte counts. Date uses local midnight and the next calendar
+  day; its chip shows the day and browser time zone. Test On, Before and After. In Europe/London, the 2026
+  spring and fall change days have 23 and 25 hours. No matching timestamp is needed to check those bounds.
+- **Hidden metadata.** Pick a qualified field that exists now. Is and Starts with use its plain scalar;
+  Has value and Has no value need no input. Lists use the first plain value. Leave that field hidden as a
+  column. Check at most a few shown targets with independent `get_field_values` reads. After those reads
+  settle, require zero displayed-value subscriptions and unchanged columns. Count real active descriptors
+  as in the Columns recipe. A hidden filter must not add displayed-value queries.
+- **State and work.** The explorer has `data-filter-state`: `applying`, `searching`, `refreshing`, `ready`,
+  `paused` or `failed`. It is absent on a normal unfiltered table. The active chip has `data-filter-field`.
+  Read the real empty and status text. Empty non-final pages must keep searching, with a cursor boundary.
+  A paused prefix cannot say `No rows match this filter`. Read settled page results through
+  `watchQuery(...).localQueryResult()` without adding a subscription. Check each `workCount` against its
+  request's `workLimit`. Apply and each forward action get at most 1,000 work. Retained pages span several
+  actions after Keep searching or Show more; do not call their total one action's cost.
+- **Preview and reset.** Apply shows five matches. First Show more requests at least 50 and reveals all
+  loaded rows; later Show more requests 50 beyond the loaded count. Show less returns to five and must
+  add no scan. From a paused prefix, Keep
+  searching must keep settled pages and continue their cursors with one new work allowance. The verified
+  zero-match run kept 21 pages, added 20 pages and 1,000 work, then paused again. A browser reload clears
+  the local filter and restores five rows. The `Reload table` recovery button keeps the filter and resets
+  the scan to five matches. Folder and membership changes clear the filter; use unit coverage for a
+  membership switch when live QA must keep the current sign-in.
+- **Held label.** During a new uncached Apply, old rows keep their old filter and sort label in `Showing:`.
+  Apply a 1,024-character Name value first. A passive MutationObserver can capture that real old notice
+  during the next Apply. Require that it was seen and that `scrollWidth <= clientWidth + 1` with
+  `overflow-wrap:anywhere`. A missed transient is a setup limit, not a pass. Do not insert fake notices.
+- **Keyboard and fit.** Field gets focus on open. Enter opens its picker; wait for search results before
+  Arrow and Enter. Tab reaches Operation, Value, Cancel and Apply. Enter submits Value; Escape cancels.
+  Check Clear's focus return. At 320px, the dialog, picker and long field label must fit the actual
+  `documentElement.clientWidth`; Tab must reach both footer buttons. Repeat the 640×450 reflow check.
+  This does not prove actual browser zoom. Record whole-page overflow separately. The existing Files
+  layout overflowed at 320px while the filter fit. If a visible correct control stalls on stability,
+  inspect it, bring only the owned tab to front, and rerun; do not force-click or raise the timeout.
+- **Named source proof.** Choose a readable target beyond the first 50 ordinary Name rows. Apply its Name
+  value and first assert that exact target appears. Name this check `server_filter_beyond_first_page`.
+  Then require matching rows, an empty non-final page, checked boundaries and bounded work. For the red
+  proof, coordinate a switch only in `files-search-hooks.ts`: main query args in `filteredRequests` pass
+  `filter:null` instead of the chosen filter. Reload the owned tab and fetch its exact loaded hook URL.
+  Prove the switch is served and the active main query uses null. The same target assertion must fail
+  after the prefix settles. Restore the full source hash, prove the fresh module and rerun green.
+- **Limits and cleanup.** Keep private name claims, preparing values, access changes, refresh rebuilds,
+  side caps and intrinsic byte/call limits in registered tests unless existing data supplies a live case.
+  Do not write files, metadata, grants or shared sorts to manufacture it. Clear and reload after QA.
+  Restore only column entries changed by QA; if none changed, verify the backed-up entries instead.
+  Preserve unrelated preferences. Require original sort/columns, five rows, zero value targets/pages and
+  zero Files writes. Remove owned capture/observer hooks and restore the viewport and media overrides.
 
 ### Sidebar Drop Zone Visuals
 

@@ -286,6 +286,112 @@ its indexed scope with the folder's own path, including nested and archived desc
 pending moves keep the committed map and the existing per-user search overlay. True deletion removes
 both field and value docs. File copy does not copy metadata; folder copy is unsupported.
 
+# Folder Table Fields
+
+The table's field catalog is separate from the workspace search suggestions below. It reads
+committed fields on direct children of the open folder. It never finds keys by paging the first
+50 file rows or by scanning another folder.
+
+The three public queries live in the `folder table fields` region of `convex/files_metadata.ts`:
+
+- `list_folder_fields({ membershipId, parentId, afterField })` returns
+  `{ fields, afterField, isDone }`. Its parent-first index reads active committed `field` docs with
+  `isRestrictedScopeRoot: false`. Each `.first()` seek uses `gt(fieldPath, afterField)` to skip all
+  copies of the last key. The real node must still belong to that folder and be active and ordinary.
+  A stale scope flag throws instead of publishing a hidden key. Restricted children never change
+  this page's keys or cursor. Their keys come from the single-target query below after a read check.
+- `list_node_fields({ membershipId, target, cursor })` returns
+  `{ fields, continueCursor, isDone, sourceToken }`. It resolves one saved or private target with
+  the visible reader. It seeks distinct field paths, so a 400-item list costs one key candidate.
+  The cursor belongs to the membership and target. A private revision change starts a new key chain.
+- `get_field_values({ membershipId, target, fields, afterField })` returns
+  `{ preparing, values, afterField, isDone, sourceToken }`. Request one to seven distinct qualified
+  fields in ascending text order. `afterField` is null or one of those fields. The query checks the
+  target again; a prior table row or field catalog is not proof of current access.
+
+Saved rows use committed metadata and frontmatter even while their owner edits pending text.
+The stored field doc's `sortDisplayValue` is the cell value. It preserves `false`, `0`, and `""`.
+A list displays its first plain primitive in extraction order. Date companion docs do not change
+that value. Empty lists, map parents, and absent keys return an explicit `null` cell value.
+
+Private rows use only the owner's current create proposal. Every read doc must match its tenant,
+target, owner, proposal id, and revision. A mismatch throws; it is not an absent value. Their source
+token contains the proposal id and revision. The client replaces old pages when that token changes.
+Preparing drafts return `preparing: true` with no values and an empty key catalog. A draft is
+preparing while preparation is active, its create intent is missing, or a text intent has no new
+content base. No old metadata is shown during that state.
+
+Each catalog reads at most 50 distinct candidates, including invalid keys and an end probe.
+Only search-valid qualified keys are returned. All three queries use whole-query transaction
+metrics and a local doc byte count. They keep a 4 MiB read budget and a 1,000-call budget, with
+1 MiB and 16 calls reserved before the next read. Cell pages advance only after a whole field is
+finished. A budget stop returns the completed prefix; no first progress throws a clear query error.
+Private values use a bounded iterator and stop at the first primitive, rather than collecting a list.
+
+Missing membership or target access returns null. Missing current-user auth throws `Unauthenticated`.
+A grant-only member gets an empty, done ordinary catalog at the root. A readable folder hidden by
+archive or the caller's pending move or delete gets an empty, done catalog too.
+
+# Folder Table Filter
+
+The table applies one local structured filter through `files_nodes.list_tree_children_sorted`.
+The shared type and predicate live in `shared/files-table.ts`; the reused Convex validator lives
+in `convex/schema.ts`. This filter is separate from the search language below.
+
+Metadata filters use the same scalar as the table cell. Saved targets use committed
+`sortDisplayValue`, including while the caller edits pending text. Private targets use only the
+current create proposal and revision. A bounded iterator stops at the first plain primitive and
+skips date companion docs. Empty strings, zero, and false are present. Empty lists, map parents,
+and absent keys are missing. Text comparisons use the whole scalar with case and accents folded.
+They keep digit runs and do not cut text to the sort key's 256-character limit.
+
+Main filtered rows stay in the readable ordinary index range. A different metadata filter field
+needs one indexed field lookup per candidate. The primary field doc is reused when it is the
+filter field. The metadata-missing walk proves absence before applying the filter and checks every
+new field witness against its current node and ordinary scope.
+
+Side rows use the separate `files_nodes.get_table_filter_match` query. It checks one target's
+current auth, access, private owner, and visible parent. A prior cell value is not proof of a match.
+Authorized private metadata still preparing returns `{ matches: false, preparing: true }`.
+Preparation is active, the create intent is missing, or a text intent has no new content base.
+Built-in predicates do not wait for metadata preparation. Refusal returns null; read exhaustion
+throws. It never returns a guessed missing value. Side name claims stay unfiltered.
+
+Both filter doors check whole-query transaction bytes and calls. Custom main pages commit only
+complete candidates and preserve a continuing cursor after an empty matching page. With one clause,
+a filtered page has at most 50 candidate/proof visits. Custom pages use a 4 MiB read budget and a
+1,000-call budget. The next read reserves 1 MiB and 16 calls. With one clause, a stopped first
+candidate throws a clear error. Multi-sort proofs use the frozen workLimit, up to 1,000, while
+pages still pack at most 50 processed candidates.
+
+# Folder Table Sort Keys
+
+A saved sort is an ordered list of one to three unique clauses. A metadata clause uses the
+committed field doc's encoded `sortValue`. Pending edits on saved nodes do not replace it.
+Private rows use only their current create proposal. Their bounded scalar read stops at the
+first plain primitive and checks every consumed doc's tenant, target, owner, proposal and revision.
+Preparation makes metadata sort parts null. It remains unknown for metadata filters.
+
+The row key is `{ parts, nameKey }` from `shared/files-sort.ts`. Missing parts are null and stay
+last in either direction. Multi-sort ends ties by Name asc. A unique Name clause makes later
+metadata irrelevant, so it needs no value read. Folder Type and Size are null. For multi-sort,
+the server drops those clauses only from index selection, while keeping the original list and key positions.
+
+`files_nodes.get_table_sort_key({ membershipId, parentId, target, sort })` returns a full fresh
+key or null. It checks current read access and visible parent again. Fresh metadata is never
+joined with old side-list facts. It returns sort keys without metadata display values.
+Byte/call exhaustion throws.
+The side-row list itself has no metadata sort reads or sort argument.
+
+Ordinary multi-sort pages reuse a primary field doc for its sort or filter. Other meaningful
+metadata fields use bounded indexed scalar reads. A complete unindexed group has at most 200
+candidates. The missing proof keeps both Name streams and checks each witness's current ordinary
+node. Proofs, seeks, rereads, joins, and row checks share one 4 MiB/1,000-call response budget.
+Pages pack up to 50 processed candidates. A budget stop publishes only a completed prefix.
+An indexed metadata-missing Name walk may advance across a rejected node with a present primary
+value. Its boundary is a positional Name key with a null primary part. It does not read the
+filter or irrelevant secondary metadata for that rejected node.
+
 # Search Box
 
 The Files sidebar and global search filter by metadata and frontmatter with the same language. The

@@ -11,7 +11,7 @@ import { Result } from "common/errors-as-values-utils.ts";
 import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import { files_ROOT_ID } from "../shared/files.ts";
-import { files_sort_DEFAULT, files_sort_field_is_valid } from "../shared/files-sort.ts";
+import { files_sort_DEFAULT, files_sort_is_valid } from "../shared/files-sort.ts";
 
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
 // Does NOT work for http actions (see http.ts). No mutable module-level state allowed here.
@@ -107,7 +107,8 @@ export const get_folder_sort = query({
 	returns: v.union(v.object({ sort: files_sort_validator, canSave: v.boolean() }), v.null()),
 	handler: async (ctx, args) => {
 		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!userAuth) {
+		const user = userAuth ? await ctx.db.get("users", userAuth.id) : null;
+		if (!userAuth || !user || (userAuth.kind === "anonymous" && user.deletedAt !== undefined)) {
 			throw convex_error({ message: "Unauthenticated" });
 		}
 
@@ -147,7 +148,11 @@ export const get_folder_sort = query({
 			db_authorize_sort_write(ctx, { userAuth, membership, folder: folder._yay }),
 		]);
 
-		return { sort: sortDoc?.sort ?? files_sort_DEFAULT, canSave: !writable._nay };
+		const sort = sortDoc?.sort ?? files_sort_DEFAULT;
+		if (!files_sort_is_valid(sort)) {
+			throw convex_error({ message: "Invalid saved sort." });
+		}
+		return { sort, canSave: !writable._nay };
 	},
 });
 
@@ -160,7 +165,8 @@ export const set_folder_sort = mutation({
 	returns: v_result({ _yay: v.null() }),
 	handler: async (ctx, args) => {
 		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!userAuth) {
+		const user = userAuth ? await ctx.db.get("users", userAuth.id) : null;
+		if (!userAuth || !user || (userAuth.kind === "anonymous" && user.deletedAt !== undefined)) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 
@@ -187,15 +193,15 @@ export const set_folder_sort = mutation({
 			return authorized;
 		}
 
-		if (!files_sort_field_is_valid(args.sort.field)) {
-			return Result({ _nay: { message: "This field cannot be sorted." } });
+		if (!files_sort_is_valid(args.sort)) {
+			return Result({ _nay: { message: "Use 1 to 3 different sort fields." } });
 		}
 
 		const now = Date.now();
 		const sortDoc = await db_get_folder_sort_doc(ctx, { membership, folderId: args.folderId });
 
 		// Name, A to Z is what a folder with no doc shows, so store it as no doc.
-		if (args.sort.field === files_sort_DEFAULT.field && args.sort.direction === files_sort_DEFAULT.direction) {
+		if (args.sort.length === 1 && args.sort[0].field === "name" && args.sort[0].direction === "asc") {
 			if (sortDoc) {
 				await ctx.db.delete("files_folder_sorts", sortDoc._id);
 			}
