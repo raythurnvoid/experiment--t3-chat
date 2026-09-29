@@ -5982,7 +5982,23 @@ export const archive_nodes = mutation({
 		nodeIds: v.array(v.string()),
 	},
 	returns: v_result({
-		_yay: v.union(v.null(), v.object({ runId: v.id("files_archive_runs"), activityId: v.id("activities") })),
+		_yay: v.union(
+			v.null(),
+			v.object({
+				runId: v.id("files_archive_runs"),
+				activityId: v.id("activities"),
+				/**
+				 * True when the job ended inside the request. The job is kept only to list what was not
+				 * archived.
+				 */
+				isDone: v.boolean(),
+				/**
+				 * The named ids that were not found, and the named ids the job refused so far with the named ids
+				 * inside them. The refused ones stay active.
+				 */
+				notArchivedNodeIds: v.array(v.id("files_nodes")),
+			}),
+		),
 		_nay: { data: v.any() },
 	}),
 	handler: async (ctx, args) => {
@@ -6017,32 +6033,27 @@ export const archive_nodes = mutation({
 			nodeIds.push(nodeId);
 		}
 
-		const fileNodes = Result_all(
-			await Promise.all(
-				nodeIds.map((nodeId) =>
-					ctx.db.get("files_nodes", nodeId).then((fileNode) => {
-						if (
-							!fileNode ||
-							fileNode.organizationId !== membership.organizationId ||
-							fileNode.workspaceId !== membership.workspaceId
-						) {
-							return Result({ _nay: { name: "nay", message: "Not found", data: { nodeId } } });
-						}
+		// Like `rm` with several files, a named item that is missing is "Not found" for that item alone.
+		// The job lists it and archives the others.
+		const notFoundNodeIds = new Set<Id<"files_nodes">>();
+		const fileNodes: Doc<"files_nodes">[] = [];
+		const loadedNodes = await Promise.all(nodeIds.map((nodeId) => ctx.db.get("files_nodes", nodeId)));
+		// Per node, not per workspace, because a grant on one restricted folder has to be enough to
+		// archive what is inside it. This loop only turns a node the person cannot read into "Not found".
+		// A node they can read but not change goes on to the job, which refuses it and archives the other
+		// named items. The write check costs no extra read for an unrestricted tree, and the read check
+		// runs only when the write check fails.
+		let hasWorkspaceRead: boolean | undefined;
+		for (const [index, fileNode] of loadedNodes.entries()) {
+			if (
+				!fileNode ||
+				fileNode.organizationId !== membership.organizationId ||
+				fileNode.workspaceId !== membership.workspaceId
+			) {
+				notFoundNodeIds.add(nodeIds[index]!);
+				continue;
+			}
 
-						return Result({ _yay: fileNode });
-					}),
-				),
-			),
-		);
-
-		if (fileNodes._nay) {
-			return fileNodes;
-		}
-
-		// Per node, not per workspace: archiving is a write to the node itself, and a grant on one
-		// restricted folder has to be enough to archive what is inside it. The nodes are already loaded
-		// here, so this costs no extra read for an unrestricted tree.
-		for (const fileNode of fileNodes._yay) {
 			const authorized = await access_control_db_authorize_membership(ctx, {
 				userAuth,
 				membership,
@@ -6051,25 +6062,30 @@ export const archive_nodes = mutation({
 			});
 			if (authorized._nay) {
 				// Somebody who cannot even see this node hears the same answer as somebody who named an id
-				// that is not there. Two different refusals would confirm the file exists.
+				// that is not there. Two different refusals would confirm the file exists. A member with only
+				// folder grants has no workspace read, so an open node is hidden from them too.
+				hasWorkspaceRead ??= !(
+					await access_control_db_authorize_membership(ctx, { userAuth, membership, permission: "content.read" })
+				)._nay;
 				const [readable] = await access_control_db_filter_readable_file_nodes(ctx, {
 					organizationId: membership.organizationId,
 					workspaceId: membership.workspaceId,
 					userId: userAuth.id,
 					nodes: [fileNode],
+					hasWorkspaceRead,
 				});
-				return readable
-					? authorized
-					: Result({ _nay: { name: "nay", message: "Not found", data: { nodeId: fileNode._id } } });
+				if (!readable) {
+					notFoundNodeIds.add(fileNode._id);
+					continue;
+				}
 			}
+			fileNodes.push(fileNode);
 		}
 
-		// Drop an item that is already archived, or that sits inside another named folder. The folder's
-		// walk archives it, so the job does not count it twice.
+		// Drop an item that is already archived, like `rm -f` drops a missing file. Also drop an item that
+		// sits inside another named folder. The folder's walk archives it, so the job does not count it twice.
 		const activeFileNodes = [
-			...new Map(
-				fileNodes._yay.filter((node) => node.archiveOperationId === null).map((node) => [node._id, node]),
-			).values(),
+			...new Map(fileNodes.filter((node) => node.archiveOperationId === null).map((node) => [node._id, node])).values(),
 		];
 		const rootFileNodes = activeFileNodes.filter(
 			(node) =>
@@ -6078,21 +6094,43 @@ export const archive_nodes = mutation({
 				),
 		);
 		if (rootFileNodes.length === 0) {
-			return Result({ _yay: null });
+			const [notFoundNodeId] = notFoundNodeIds;
+			return notFoundNodeId
+				? Result({ _nay: { name: "nay", message: "Not found", data: { nodeId: notFoundNodeId } } })
+				: Result({ _yay: null });
 		}
 
 		// The job checks every node inside before it archives anything, then archives in steps.
-		return await files_archive_runs_db_start(ctx, {
+		const started = await files_archive_runs_db_start(ctx, {
 			kind: "archive",
 			userAuth,
 			membership,
 			archiveOperationId: crypto.randomUUID(),
 			rootNodeIds: rootFileNodes.map((node) => node._id),
+			notFoundNodeIds: [...notFoundNodeIds],
 			treePaths: rootFileNodes.map((node) => node.treePath),
 			pendingUpdateCleanup: null,
 			budget: { nodes: files_archive_runs_STEP_MAX_NODES, hasPaginated: false },
 			previousRunId: null,
 		});
+		if (started._nay || !started._yay) return started;
+
+		// A named item inside a refused folder stays active with that folder, so report it too.
+		const job = started._yay;
+		const refusedFolders = rootFileNodes.filter(
+			(node) => node.kind === "folder" && job.notArchivedNodeIds.includes(node._id),
+		);
+		const notArchivedNodeIds = [
+			...notFoundNodeIds,
+			...activeFileNodes
+				.filter(
+					(node) =>
+						job.notArchivedNodeIds.includes(node._id) ||
+						refusedFolders.some((folder) => node.treePath.startsWith(folder.treePath)),
+				)
+				.map((node) => node._id),
+		];
+		return Result({ _yay: { ...job, notArchivedNodeIds } });
 	},
 });
 
@@ -6221,6 +6259,7 @@ export const unarchive_nodes = mutation({
 				membership,
 				archiveOperationId,
 				rootNodeIds: [],
+				notFoundNodeIds: [],
 				treePaths: [topTreePath],
 				pendingUpdateCleanup: null,
 				budget,
@@ -6233,7 +6272,9 @@ export const unarchive_nodes = mutation({
 			previousJob = started._yay ?? previousJob;
 		}
 
-		return Result({ _yay: firstJob });
+		// A restore never leaves out one named item. One refusal ends the whole restore, so the caller
+		// needs only the job.
+		return Result({ _yay: firstJob && { runId: firstJob.runId, activityId: firstJob.activityId } });
 	},
 });
 // #endregion archive nodes

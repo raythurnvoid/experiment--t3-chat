@@ -572,8 +572,262 @@ describe("archive_nodes", () => {
 		const ended = await run_to_end(f, archived._yay!);
 		expect(ended.activity.status).toBe("failed");
 		expect(ended.activity.errorMessage).not.toMatch(/partway/);
+		// The refused folder counts once, and the counts add up to the total.
+		expect(ended.activity.progress).toMatchObject({ total: 1, completed: 0, skipped: 0, blocked: 1 });
 		const state = await read_state(f);
 		expect(state.nodes.every((node) => node.archiveOperationId === null)).toBe(true);
+	});
+
+	test("a named item the check refuses is not archived with everything inside, and the other named items are archived", async () => {
+		const f = await fixture();
+		const kept = await seed_tree(f, { name: "kept", folderCount: 1, filesPerFolder: 2 });
+		const refused = await seed_tree(f, { name: "refused", folderCount: 1, filesPerFolder: 2 });
+		await lock(f, refused.fileIds[1]!, true);
+
+		// The file inside the refused folder is named too. It stays active with its folder.
+		const archived = await archive(f, [kept.topId, refused.topId, refused.fileIds[0]!]);
+		expect(archived).toEqual({
+			_yay: {
+				runId: expect.any(String),
+				activityId: expect.any(String),
+				isDone: true,
+				notArchivedNodeIds: [refused.topId, refused.fileIds[0]],
+			},
+		});
+		const job = archived._yay!;
+
+		const state = await expect_consistent(f);
+		const archivedPaths = state.nodes.filter((node) => node.archiveOperationId !== null).map((node) => node.path);
+		expect(archivedPaths.toSorted()).toEqual(["/kept", "/kept/d0", "/kept/d0/f000.md", "/kept/d0/f001.md"]);
+		const activity = await read_activity(f, job.activityId);
+		expect(activity.status).toBe("partial");
+		// The refused folder counts once, as blocked. Nothing inside it counts.
+		expect(activity.progress).toMatchObject({ discovered: 5, total: 5, completed: 4, skipped: 0, blocked: 1 });
+
+		const run = await f.asOwner.query(api.files_archive_runs.get, {
+			membershipId: f.db.membershipId,
+			runId: job.runId,
+		});
+		expect(run?.notArchived).toEqual([
+			{ nodeId: refused.topId, name: "refused", message: "An item inside it is read-only." },
+		]);
+	});
+
+	test("a refusal found in a later check step counts the refused item once", async () => {
+		const f = await fixture();
+		const before = await seed_tree(f, { name: "before", folderCount: 1, filesPerFolder: 2 });
+		const big = await seed_tree(f, { name: "big-refused", folderCount: 6, filesPerFolder: 100 });
+		const after = await seed_tree(f, { name: "after", folderCount: 1, filesPerFolder: 1 });
+		// The check reads 500 nodes in each step, and the walk reaches this file last.
+		await lock(f, big.fileIds.at(-1)!, true);
+
+		// The request checks 500 nodes and does not reach the read-only file yet.
+		const archived = await archive(f, [before.topId, big.topId, after.topId]);
+		expect(archived._yay).toMatchObject({ isDone: false, notArchivedNodeIds: [] });
+		const ended = await run_to_end(f, archived._yay!);
+
+		expect(ended.activity.status).toBe("partial");
+		expect(ended.activity.progress).toMatchObject({ discovered: 8, total: 8, completed: 7, blocked: 1 });
+		const state = await read_state(f);
+		const archivedIds = new Set(state.nodes.filter((node) => node.archiveOperationId !== null).map((node) => node._id));
+		expect([big.topId, ...big.folderIds, ...big.fileIds].some((nodeId) => archivedIds.has(nodeId))).toBe(false);
+		expect(archivedIds.has(before.topId) && archivedIds.has(after.topId)).toBe(true);
+	});
+
+	test("refuses the request when the check refuses every named item", async () => {
+		const f = await fixture();
+		const first = await seed_tree(f, { name: "first-refused", folderCount: 1, filesPerFolder: 1 });
+		const second = await seed_tree(f, { name: "second-refused", folderCount: 1, filesPerFolder: 1 });
+		await lock(f, first.topId, true);
+		await lock(f, second.fileIds[0]!, true);
+
+		const refused = await archive(f, [first.topId, second.topId]);
+		expect(refused._nay?.message).toBe(
+			"None of these items can be archived. You cannot change them or items inside them.",
+		);
+		expect(await f.t.run((ctx) => ctx.db.query("files_archive_runs").collect())).toEqual([]);
+		expect(await f.t.run((ctx) => ctx.db.query("files_subtree_ops").collect())).toEqual([]);
+	});
+
+	test("a named item somebody else archives during the check is skipped, and the refused one is listed", async () => {
+		const f = await fixture();
+		const big = await seed_tree(f, { name: "big-alone", folderCount: 6, filesPerFolder: 100 });
+		const small = await seed_tree(f, { name: "small-archived", folderCount: 1, filesPerFolder: 1 });
+		await lock(f, big.fileIds.at(-1)!, true);
+
+		const archived = await archive(f, [big.topId, small.topId]);
+		// Somebody archives the small tree on their own before the check reaches it.
+		expect(await archive(f, [small.topId])).toEqual({ _yay: null });
+		const smallOperationId = (await read_node(f, small.topId)).archiveOperationId;
+		const ended = await run_to_end(f, archived._yay!);
+
+		// Like `rm` with one refused file, the job fails. The card counts and the dialog list say why.
+		expect(ended.activity).toMatchObject({ status: "failed", errorMessage: null });
+		expect(ended.activity.progress).toMatchObject({ total: 2, completed: 0, skipped: 1, blocked: 1 });
+		expect((await read_node(f, big.topId)).archiveOperationId).toBeNull();
+		expect((await read_node(f, small.topId)).archiveOperationId).toBe(smallOperationId);
+		const run = await f.asOwner.query(api.files_archive_runs.get, {
+			membershipId: f.db.membershipId,
+			runId: archived._yay!.runId,
+		});
+		expect(run?.notArchived).toEqual([
+			{ nodeId: big.topId, name: "big-alone", message: "An item inside it is read-only." },
+		]);
+	});
+
+	test("a named item that is gone when the check reaches it is listed as not found", async () => {
+		const f = await fixture();
+		const big = await seed_tree(f, { name: "big-first", folderCount: 6, filesPerFolder: 100 });
+		// An empty folder, so deleting it leaves no child without a parent.
+		const small = await seed_tree(f, { name: "small-deleted", folderCount: 0, filesPerFolder: 0 });
+
+		const archived = await archive(f, [big.topId, small.topId]);
+		expect(archived._yay).toMatchObject({ isDone: false, notArchivedNodeIds: [] });
+		// A volume or an upload retry can hard-delete a node while the job still checks.
+		await f.t.run((ctx) => ctx.db.delete("files_nodes", small.topId));
+		const ended = await run_to_end(f, archived._yay!);
+
+		expect(ended.activity).toMatchObject({ status: "partial", errorMessage: null });
+		expect(ended.activity.progress).toMatchObject({ total: 608, completed: 607, skipped: 0, blocked: 1 });
+		const run = await f.asOwner.query(api.files_archive_runs.get, {
+			membershipId: f.db.membershipId,
+			runId: archived._yay!.runId,
+		});
+		expect(run?.notArchived).toEqual([{ nodeId: small.topId, name: null, message: "Not found" }]);
+	});
+
+	test("the job archives nothing when the person is removed during the check", async () => {
+		const f = await fixture();
+		const member = await f.t.run((ctx) =>
+			test_mocks_fill_db_with.membership(ctx, { organizationName: "member-home", workspaceName: "home" }),
+		);
+		expect(
+			await f.asOwner.mutation(api.organizations.invite_user_to_organization_workspace, {
+				organizationId: f.db.organizationId,
+				workspaceId: f.db.workspaceId,
+				userIdToAdd: member.userId,
+			}),
+		).toEqual({ _yay: null });
+		const membershipId = (await f.t.run((ctx) =>
+			ctx.db
+				.query("organizations_workspaces_users")
+				.withIndex("by_workspace_user_active", (q) => q.eq("workspaceId", f.db.workspaceId).eq("userId", member.userId))
+				.unique(),
+		))!._id;
+		// 499 reads for the first tree (1 + 6 folders + 6 * 82 files). The locked second folder is read 500,
+		// so the request stops right after it refuses it, with its row still in the queue.
+		const first = await seed_tree(f, { name: "first-passed", folderCount: 6, filesPerFolder: 82 });
+		const refused = await seed_tree(f, { name: "second-refused", folderCount: 0, filesPerFolder: 0 });
+		await lock(f, refused.topId, true);
+
+		const archived = await f.t
+			.withIdentity({ issuer: "https://clerk.test", external_id: member.userId })
+			.mutation(api.files_nodes.archive_nodes, { membershipId, nodeIds: [first.topId, refused.topId] });
+		expect(archived._yay).toMatchObject({ isDone: false, notArchivedNodeIds: [refused.topId] });
+		expect((await f.t.run((ctx) => ctx.db.get("files_archive_runs", archived._yay!.runId)))?.phase).toBe("check");
+		expect(
+			await f.asOwner.mutation(api.organizations.remove_user_from_organization, {
+				organizationId: f.db.organizationId,
+				userIdToRemove: member.userId,
+			}),
+		).toEqual({ _yay: null });
+		const ended = await run_to_end(f, archived._yay!);
+
+		// The next step only drops the refused folder's row, with no write check, and then would archive the
+		// first tree. The membership check stops it first.
+		expect(ended.activity).toMatchObject({ status: "failed", errorMessage: "You can no longer change these files." });
+		expect((await read_node(f, first.topId)).archiveOperationId).toBeNull();
+	});
+
+	test("items somebody else deletes before the apply reaches them count as skipped", async () => {
+		const f = await fixture();
+		const tree = await seed_tree(f, { name: "shrink", folderCount: 6, filesPerFolder: 100 });
+		// An empty folder, so deleting it leaves no child without a parent.
+		const emptyId = await folder(f, "/shrink/d5/empty");
+
+		const archived = await archive(f, [tree.topId]);
+		await step(f, archived._yay!.runId);
+		// The first step finished the check and stamped only the start of the tree.
+		expect((await read_node(f, emptyId)).archiveOperationId).toBeNull();
+		await f.t.run((ctx) => ctx.db.delete("files_nodes", emptyId));
+		const ended = await run_to_end(f, archived._yay!);
+
+		expect(ended.activity.status).toBe("succeeded");
+		expect(ended.activity.progress).toMatchObject({ total: 608, completed: 607, skipped: 1, blocked: 0 });
+	});
+
+	test("a missing or foreign named id is listed as not found, and the other named items are archived", async () => {
+		const f = await fixture();
+		const kept = await seed_tree(f, { name: "kept-found", folderCount: 1, filesPerFolder: 1 });
+		const { missingId, foreignId } = await f.t.run(async (ctx) => {
+			const {
+				_id: _keptId,
+				_creationTime: _keptCreationTime,
+				...fields
+			} = (await ctx.db.get("files_nodes", kept.topId))!;
+			// A valid id whose node is gone.
+			const missingId = await ctx.db.insert("files_nodes", { ...fields, name: "missing" });
+			await ctx.db.delete("files_nodes", missingId);
+			// A node of another organization. The owner passes every check in their own workspace, so a
+			// name read without the workspace check would show it.
+			const foreign = await test_mocks_fill_db_with.membership(ctx, { organizationName: "other-organization" });
+			const foreignId = await ctx.db.insert("files_nodes", {
+				...fields,
+				organizationId: foreign.organizationId,
+				workspaceId: foreign.workspaceId,
+				name: "foreign",
+			});
+			return { missingId, foreignId };
+		});
+
+		const archived = await archive(f, [missingId, foreignId, kept.topId]);
+		expect(archived._yay).toMatchObject({ isDone: true, notArchivedNodeIds: [missingId, foreignId] });
+		expect((await read_node(f, kept.topId)).archiveOperationId).not.toBeNull();
+		expect((await read_node(f, foreignId)).archiveOperationId).toBeNull();
+		const activity = await read_activity(f, archived._yay!.activityId);
+		expect(activity).toMatchObject({ status: "partial", errorMessage: null });
+		expect(activity.progress).toMatchObject({ total: 5, completed: 3, blocked: 2 });
+		const run = await f.asOwner.query(api.files_archive_runs.get, {
+			membershipId: f.db.membershipId,
+			runId: archived._yay!.runId,
+		});
+		expect(run?.notArchived).toEqual([
+			{ nodeId: missingId, name: null, message: "Not found" },
+			{ nodeId: foreignId, name: null, message: "Not found" },
+		]);
+
+		// With nothing else left to archive, a missing id refuses the request, like `rm` of one missing file.
+		expect((await archive(f, [missingId, kept.topId]))._nay?.message).toBe("Not found");
+	});
+
+	test("a named item a member cannot read gets the same answer as a missing id", async () => {
+		const f = await fixture();
+		const member = await add_member(f);
+		const kept = await seed_tree(f, { name: "member-kept", folderCount: 1, filesPerFolder: 1 });
+		const hidden = await seed_tree(f, { name: "member-hidden", folderCount: 1, filesPerFolder: 1 });
+		expect(
+			(
+				await f.asOwner.mutation(api.files_sharing.restrict_node, {
+					membershipId: f.db.membershipId,
+					nodeId: hidden.topId,
+				})
+			)._nay,
+		).toBeUndefined();
+
+		const archived = await member.asUser.mutation(api.files_nodes.archive_nodes, {
+			membershipId: member.membershipId,
+			nodeIds: [hidden.topId, kept.topId],
+		});
+		expect(archived._yay).toMatchObject({ isDone: true, notArchivedNodeIds: [hidden.topId] });
+		expect((await read_node(f, hidden.topId)).archiveOperationId).toBeNull();
+		const activity = await read_activity(f, archived._yay!.activityId);
+		expect(activity).toMatchObject({ status: "partial", errorMessage: null });
+		expect(activity.progress).toMatchObject({ total: 4, completed: 3, blocked: 1 });
+		const run = await member.asUser.query(api.files_archive_runs.get, {
+			membershipId: member.membershipId,
+			runId: archived._yay!.runId,
+		});
+		expect(run?.notArchived).toEqual([{ nodeId: hidden.topId, name: null, message: "Not found" }]);
 	});
 
 	test("a page never splits archived items that share a name", async () => {
@@ -1881,7 +2135,8 @@ describe("apply_file_pending_archive", () => {
 		const run = (await f.t.run((ctx) => ctx.db.query("files_archive_runs").first()))!;
 		const activity = (await f.t.run((ctx) => ctx.db.query("activities").first()))!;
 		const ended = await run_to_end(f, { runId: run._id, activityId: activity._id });
-		expect(ended.activity).toMatchObject({ status: "failed", errorMessage: "This item is read-only." });
+		// An agent's delete names one item, so the refusal that leaves out one named item fails the delete.
+		expect(ended.activity).toMatchObject({ status: "failed", errorMessage: "An item inside it is read-only." });
 		expect((await read_node(f, tree.topId)).archiveOperationId).toBeNull();
 	});
 });

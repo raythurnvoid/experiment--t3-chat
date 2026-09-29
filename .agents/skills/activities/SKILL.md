@@ -13,7 +13,13 @@ in one mutation. Workpool delivers work; it does not decide whether a job succee
 - Every transfer, pending review, plugin run, Bash background job, "Apply to contents" protection job,
   archive or restore job, and move or scope job (`files_subtree_ops`) has one Activity, created with
   the run or op. A small archive, restore, move, or scope change that finishes inside its request
-  makes no run, no op, and no Activity.
+  makes no run, no op, and no Activity. An archive that refused or could not find some named items
+  keeps its run and Activity, even when it finished inside the request, so the person can see what
+  was not archived (`progress.blocked`). When the request's own check refuses every named item, the
+  request answers with the error and makes no run and no Activity. Each refused named item counts
+  once in `total`, so the counts still add up.
+  Items the archive check counted that somebody else archived, deleted, or moved out before the
+  apply reached them count as `skipped` when the job ends.
 - `source.id` and `activities.by_source_id` are the only link. Do not add a backlink to the run.
 - Activity owns requester, status, progress, result kind, safe errors, and common times.
   Producer copies of tenant and user IDs exist only for immutable indexes.

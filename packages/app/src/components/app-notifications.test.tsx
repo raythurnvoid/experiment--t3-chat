@@ -385,6 +385,42 @@ describe("AppNotifications", () => {
 		expect(screen.queryByRole("dialog", { name: "Archive job archive_1" })).toBeNull();
 	});
 
+	test("counts the selected items an archive did not archive", () => {
+		usePaginatedQueryMock.mockImplementation((_query: unknown, args: { section: string }) => ({
+			results:
+				args.section === "active"
+					? []
+					: [
+							{
+								_id: "archive_activity",
+								_creationTime: 1,
+								finishedAt: 2,
+								status: "partial",
+								resultKind: "saved",
+								source: { kind: "files_archive_run", id: "archive_1", archiveKind: "archive" },
+								title: "Archive files",
+								errorMessage: null,
+								targets: [],
+								progress: {
+									unit: "items",
+									discovered: 40,
+									total: 40,
+									completed: 40,
+									blocked: 6,
+									failed: 0,
+									skipped: 0,
+									canceled: 0,
+								},
+								controls: { canStop: false, canRetry: false, canDismiss: true },
+							},
+						],
+			status: "Exhausted",
+			loadMore: vi.fn(),
+		}));
+		render(<TestNotifications />);
+		expect(screen.getByText("40 archived, 0 skipped, 6 not archived. Total: 40.")).toBeTruthy();
+	});
+
 	// Only a finished walk sets `total`.
 	test.each([
 		{ status: "running", completed: 1, skipped: 0, blocked: 0, isDone: false, line: "Updated 1 item so far." },

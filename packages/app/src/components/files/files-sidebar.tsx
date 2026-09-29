@@ -5635,9 +5635,11 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 			.filter((item) => item.isSelected() && files_is_node(item.getItemData()))
 			.map((item) => item.getId()),
 	);
+	// One writable row is enough, like the row menu. The archive refuses the rows it cannot change and
+	// archives the rest.
 	const canArchiveSelection =
 		selectedNodeIds.size > 0 &&
-		[...selectedNodeIds].every((itemId) => {
+		[...selectedNodeIds].some((itemId) => {
 			const item = treeItems?.itemById.get(itemId);
 			return item != null && canWriteItemInRender(item);
 		});
@@ -6085,16 +6087,18 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 	});
 
 	// Archive asks first, in the shared dialog. When the clicked row is part of the selection, the
-	// whole selection is archived. Any row that cannot be archived cancels the request.
+	// whole selection is archived. A row that is not in the tree cancels the request.
 	const handleArchive = useFn<FilesSidebarTree_Props["onArchive"]>((nodeId) => {
 		const shouldArchiveSelectedFiles = selectedNodeIds.has(nodeId);
 		const nodeIdsToArchive = shouldArchiveSelectedFiles ? selectedNodeIds : new Set([nodeId]);
 		const nodes: FilesArchiveModal_Node[] = [];
 		for (const itemId of nodeIdsToArchive) {
 			const item = treeItems?.itemById.get(itemId);
-			if (!item || !files_is_node(item) || !getItemCapabilities(item).canArchiveOrRestore) {
+			if (!item || !files_is_node(item)) {
 				return;
 			}
+			// Do not check the other selected rows here. The archive refuses each item it cannot change and
+			// lists it on its Activity, so one read-only row does not stop a big selection.
 			nodes.push({ _id: item._id, name: item.name, kind: item.kind });
 		}
 		setArchiveNodes(nodes);
@@ -6114,7 +6118,8 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 
 	const handleArchived = useFn<FilesArchiveModal_Props["onArchived"]>((nodeIds) => {
 		setArchiveNodes(null);
-		if (nodeIds.length > 1) {
+		// Read the request, not `nodeIds`: the ids of refused items are left out of `nodeIds`.
+		if (archiveNodes && archiveNodes.length > 1) {
 			tree().setSelectedItems([]);
 		}
 		// The archived rows are still in the tree here: Convex resolves the mutation in the same task

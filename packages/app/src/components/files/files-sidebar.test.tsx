@@ -763,6 +763,76 @@ describe("FilesSidebar", () => {
 		expect(bravo.getAttribute("aria-selected")).toBe("true");
 	});
 
+	test("a multi-select archive that holds a read-only item asks for every selected item and then clears the selection", async () => {
+		treeState.nodes = [
+			...treeState.nodes,
+			{
+				...treeState.nodes[0],
+				_id: "locked" as app_convex_Id<"files_nodes">,
+				kind: "file",
+				name: "locked.md",
+				parentId: "alpha" as app_convex_Id<"files_nodes">,
+				path: "/alpha/locked.md",
+				treePath: "/alpha/locked.md/",
+				pathDepth: 2,
+				canWrite: false,
+				writeBlockedReason: "read_only",
+				writePolicyState: "read_only",
+			},
+		];
+		const router = createRouter({ routeTree: createRootRoute(), history: createMemoryHistory() });
+		const view = render(<CreateSidebar router={router} selectedNodeId="bravo" />);
+		const bravo = await view.findByRole("treeitem", { name: "bravo" });
+		await waitFor(() => expect(bravo.getAttribute("aria-selected")).toBe("true"));
+		const alpha = view.getByRole("treeitem", { name: "alpha" });
+		fireEvent.click(alpha.querySelector(".FilesSidebarTreeItemPrimaryAction")!, { ctrlKey: true });
+		expect(alpha.getAttribute("aria-selected")).toBe("true");
+
+		// Alpha holds a read-only file. The server refuses it and archives bravo, so the dialog names both.
+		fireEvent.click(view.getByRole("button", { name: "More actions for bravo" }));
+		fireEvent.click(await view.findByRole("menuitem", { name: "Archive" }));
+		const dialog = await view.findByRole("dialog", { name: "Archive 2 items?" });
+		expect(within(dialog).getAllByRole("listitem").map((item) => item.textContent)).toEqual(["alpha", "bravo"]);
+
+		// The request had 2 items, so the selection clears even though only bravo was archived.
+		vi.spyOn(app_convex, "mutation").mockResolvedValue({
+			_yay: { runId: "run", activityId: "activity", isDone: true, notArchivedNodeIds: ["alpha"] },
+		});
+		fireEvent.click(within(dialog).getByRole("button", { name: "Archive" }));
+		await waitFor(() => expect(view.queryByRole("dialog", { name: "Archive 2 items?" })).toBeNull());
+		expect(alpha.getAttribute("aria-selected")).not.toBe("true");
+	});
+
+	test("the header archive of a selection with a read-only row still asks to archive every selected item", async () => {
+		treeState.nodes = [
+			...treeState.nodes,
+			{
+				...treeState.nodes[0],
+				_id: "locked" as app_convex_Id<"files_nodes">,
+				kind: "file",
+				name: "locked.md",
+				path: "/locked.md",
+				treePath: "/locked.md/",
+				canWrite: false,
+				writeBlockedReason: "read_only",
+				writePolicyState: "read_only",
+			},
+		];
+		const router = createRouter({ routeTree: createRootRoute(), history: createMemoryHistory() });
+		const view = render(<CreateSidebar router={router} selectedNodeId="bravo" />);
+		const bravo = await view.findByRole("treeitem", { name: "bravo" });
+		await waitFor(() => expect(bravo.getAttribute("aria-selected")).toBe("true"));
+		const locked = view.getByRole("treeitem", { name: /^locked\.md/ });
+		fireEvent.click(locked.querySelector(".FilesSidebarTreeItemPrimaryAction")!, { ctrlKey: true });
+		expect(locked.getAttribute("aria-selected")).toBe("true");
+
+		// The server refuses locked.md and archives bravo, so the header action stays enabled.
+		fireEvent.click(view.getByRole("button", { name: "More options" }));
+		fireEvent.click(await view.findByRole("menuitem", { name: /^Archive 2 selected/ }));
+		const dialog = await view.findByRole("dialog", { name: "Archive 2 items?" });
+		expect(within(dialog).getAllByRole("listitem").map((item) => item.textContent)).toEqual(["bravo", "locked.md"]);
+	});
+
 	test("a reveal event during a search keeps the folder expanded once the search closes", async () => {
 		treeState.nodes = treeState.nodes.map((node) =>
 			node._id === "bravo"

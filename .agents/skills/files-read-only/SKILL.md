@@ -110,7 +110,7 @@ The table describes a node whose policy refuses the current writer. ACL still ap
 | Edit/save content, metadata, Yjs marks, or collaboration mode | Refuse |
 | Create children, upload, import, or paste media | Refuse if the destination folder itself is protected |
 | Rename or move | Refuse if the named item or its immediate parent is protected |
-| Replace, archive, restore, or delete | Refuse if any removed or replaced item is protected; restore also refuses when the old or the landing folder is protected |
+| Replace, archive, restore, or delete | Refuse if any removed or replaced item is protected; restore also refuses when the old or the landing folder is protected. An archive of several items refuses only each named item that is protected or holds a protected item, and archives the others |
 | Browse or download snapshots | Allow |
 | Restore, archive, or unarchive snapshots | Refuse |
 | Share or change policy | Require management permission separately |
@@ -241,9 +241,34 @@ of never showing hidden items.
     folder merge into that folder, up to `/`. It checks those paths for a running subtree job, and its
     op keeps them as busy paths. If another job overlaps, it waits as `queued`. After promotion it finds the roots and checks their paths again, because archived items
     can move while it waits. The job then checks every item's permission and writes nothing. One
-    protected item refuses the whole action.
-    The archive check walks each named item by `parentId`. The restore check pages the operation's
-    items by `treePath`. Archived items can share one path. When a restore check page ends inside such
+    protected item refuses the whole restore.
+    The archive check walks each named item by `parentId`. It follows `rm` with several files: a
+    refusal leaves out only the named item it is in, with everything inside it, and the other named
+    items are still archived. The run keeps the named item the check is on in `checkNamedItem`, and
+    each refused named item with its reason in `refusedItems`. A refusal on an item inside says "An
+    item inside it is read-only." or "You cannot change an item inside it.", so it does not blame the
+    named folder. A `needs_review` refusal keeps its own message.
+    A named item that is gone when the check reaches it is refused as "Not found". A named item that
+    somebody archived meanwhile keeps that archive and is no error, like `rm -f`. It counts once and
+    ends as `skipped`.
+    A refused named item counts once in `total` and in `progress.blocked`. Nothing inside it counts,
+    so the counts add up to `total`. The Activity is then `partial`, or `failed` when nothing is
+    archived. A job that archives nothing without refusing every named item (for example, some were
+    skipped and the rest refused) keeps `errorMessage` null, like the protection job: the card counts
+    and the job dialog list say what was not archived.
+    When the check refuses every named item, one item gets its own refusal, and several items get
+    "None of these items can be archived. …". If the request's own check did it, the request answers
+    with that error and makes no job. If a later check step did it, the job fails with it as
+    `errorMessage`. Otherwise only a lost membership ends the whole job. Every check step asks for
+    it first, even a step that only drops the rows of a refused item, so the apply never starts for
+    somebody who left. An agent's delete names one
+    item, so the same rule refuses the whole delete.
+    `archive_nodes` answers the named ids not found and the named ids refused so far as
+    `notArchivedNodeIds`, with the named ids inside the refused ones. `get` lists them as
+    `notArchived`. It names only items of the run's workspace that the person can still read. An
+    archive that refused a named item keeps its job and Activity, even when it finished inside the
+    request.
+    The restore check pages the operation's items by `treePath`. Archived items can share one path. When a restore check page ends inside such
     a group, the check reads up to 500 more of them at once; more refuse ("Too many archived items
     share one path."). Files with the same name in different folders can span discovery pages.
   - Archive has no Stop. After the check, it stamps every named item before anything inside them. A
@@ -305,7 +330,14 @@ of never showing hidden items.
     at once, even over a folder another job is archiving: each job stamps only active items, so neither
     overwrites the other's stamp.
   - A request whose first step fails after some writes returns the error ("Stopped partway") and keeps a
-    failed Activity. A refusal before any write makes no job.
+    failed Activity. A restore refusal before any write makes no job. An archive makes no job only
+    when the request's own check refuses every named item. When it refuses only some, it keeps the job,
+    so the Activity can list them. In `archive_nodes`, a named id that is
+    missing, in another workspace, or hidden from the person is "Not found" for that item alone. The
+    job lists it and archives the others. The three cases get the same answer, so the answer never
+    confirms that a hidden file exists. When nothing else is left to archive, the request answers "Not
+    found". A malformed id still refuses the whole request. A named item the person can read but not
+    change goes to the job, which refuses it and archives the others.
   - Agent delete (accepted `pendingArchive`) uses the same job and removes the proposal when it ends.
     A Discard of that proposal during the job stops the job at its next step. Plugin archive and
     service uploads stay synchronous with their 256-node cap.

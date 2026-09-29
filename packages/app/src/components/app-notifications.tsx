@@ -422,7 +422,9 @@ const AppNotificationsActivityItem = memo(function AppNotificationsActivityItem(
 				<div className={"AppNotificationsActivityItem-transfer" satisfies AppNotificationsActivityItem_ClassNames}>
 					<p>
 						{progress.completed} {archiveRun.archiveKind === "restore" ? "restored" : "archived"}, {progress.skipped}{" "}
-						skipped.
+						skipped
+						{/* An archive refuses each selected item it cannot change. `progress.blocked` counts them. */}
+						{progress.blocked > 0 ? `, ${progress.blocked} not archived` : null}.
 						{progress.total !== null ? ` Total: ${progress.total}.` : isActive ? " Checking items…" : null}
 					</p>
 					<MyButton variant="secondary" onClick={() => openArchiveRun(archiveRun.id)}>

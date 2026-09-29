@@ -1071,6 +1071,26 @@ describe("list_tree_shared_roots", () => {
 	});
 });
 
+describe("archive_nodes", () => {
+	test("a grant-only member hears Not found for an open node, like for a missing id", async () => {
+		const t = test_convex();
+		const f = await seed_tree_access_fixture(t);
+		const archive = (nodeId: Id<"files_nodes">) =>
+			f.asGrantOnly.mutation(api.files_nodes.archive_nodes, {
+				membershipId: f.grantOnly.membershipId,
+				nodeIds: [nodeId],
+			});
+
+		// The member reads `/shared/note.md` through a grant but cannot change it, so the job refuses it.
+		expect((await archive(f.nodes.sharedFileId))._nay?.message).not.toBe("Not found");
+		// An open node needs workspace read, which this member lacks, so it must answer like a missing id.
+		expect((await archive(f.nodes.openFileId))._nay?.message).toBe("Not found");
+		expect((await archive(f.nodes.missingNodeId))._nay?.message).toBe("Not found");
+		const openFile = await t.run(async (ctx) => await ctx.db.get("files_nodes", f.nodes.openFileId));
+		expect(openFile?.archiveOperationId).toBeNull();
+	});
+});
+
 describe("get_folder_readme", () => {
 	test("finds the README in any letter case and prefers byte order", async () => {
 		const t = test_convex();
@@ -23171,16 +23191,15 @@ describe("files_nodes.archive_nodes read-only gates", () => {
 			nodeIds: [arch2Id],
 		});
 		expect(refusedVisible._nay?.name).toBe("read_only");
-		expect(refusedVisible._nay?.message).toBe("This item is read-only.");
+		expect(refusedVisible._nay?.message).toBe("An item inside it is read-only.");
 		expect((await read_lock_node(t, arch2Id))?.archiveOperationId).toBeNull();
 
-		// Hidden and locked: the same generic denial hidden restricted content uses, never naming
-		// the node (RO-10).
+		// Hidden and locked: a generic refusal that is not `read_only` and never names the node (RO-10).
 		const refusedHidden = await asMember.mutation(api.files_nodes.archive_nodes, {
 			membershipId: other.otherMembershipId,
 			nodeIds: [arch3Id],
 		});
-		expect(refusedHidden._nay?.message).toBe("Permission denied");
+		expect(refusedHidden._nay?.message).toBe("You cannot change an item inside it.");
 		expect(refusedHidden._nay?.name).not.toBe("read_only");
 		expect((await read_lock_node(t, arch3Id))?.archiveOperationId).toBeNull();
 	});

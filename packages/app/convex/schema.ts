@@ -3209,6 +3209,24 @@ const app_convex_schema = defineSchema({
 		 * Each job waits for the job before it. Null on the first job and on archive jobs.
 		 */
 		requestFirstRunId: v.union(v.id("files_archive_runs"), v.null()),
+		/**
+		 * Archive: the named item the check is on. A refusal found inside it sets `discovered` back to
+		 * `discoveredBefore` plus one, so the refused item counts once with nothing inside it.
+		 */
+		checkNamedItem: v.union(
+			v.object({ nodeId: v.id("files_nodes"), discoveredBefore: v.number(), isRefused: v.boolean() }),
+			v.null(),
+		),
+		/**
+		 * Archive: the named items the job leaves out, with everything inside them, and why. Like `rm`,
+		 * the job archives the other named items. At most one per named item, so at most 500.
+		 */
+		refusedItems: v.array(
+			v.object({
+				nodeId: v.id("files_nodes"),
+				refusal: v.object({ name: v.union(v.string(), v.null()), message: v.string() }),
+			}),
+		),
 	})
 		.index("by_organization_workspace_active_kind", ["organizationId", "workspaceId", "active", "kind"])
 		.index("by_requestFirstRun_active", ["requestFirstRunId", "active"])

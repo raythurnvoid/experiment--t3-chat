@@ -8681,12 +8681,12 @@ describe("file sharing", () => {
 		expect(restricted._nay).toBeUndefined();
 
 		// The member may write `/team`, and archiving it collects every descendant. The restricted
-		// folder inside is a descendant they were never given, so the whole call has to stop.
+		// folder inside is a descendant they were never given, so `/team` is not archived.
 		const archived = await fixture.asMember.mutation(api.files_nodes.archive_nodes, {
 			membershipId: fixture.memberMembershipId,
 			nodeIds: [String(outer._yay!.nodeId)],
 		});
-		expect(archived._nay?.message).toBe("Permission denied");
+		expect(archived._nay?.message).toBe("You cannot change an item inside it.");
 
 		const outerNode = await t.run(async (ctx) => await ctx.db.get("files_nodes", outer._yay!.nodeId));
 		expect(outerNode?.archiveOperationId).toBeNull();

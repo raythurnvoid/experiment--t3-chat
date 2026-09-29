@@ -46,8 +46,8 @@ export type FilesArchiveModal_Props = {
 	/** The user closed it: Cancel, Escape, the backdrop or the close button. Nothing was written. */
 	onClose: () => void;
 	/**
-	 * The archive succeeded for every id, or a background job took it over. The host clears its
-	 * state and reacts.
+	 * The ids the archive changed, or that a background job took over. Ids the server refused and
+	 * left active are not in the list. The host clears its state and reacts.
 	 */
 	onArchived: (nodeIds: app_convex_Id<"files_nodes">[]) => void;
 };
@@ -55,8 +55,8 @@ export type FilesArchiveModal_Props = {
 /**
  * The one Archive confirmation shared by the sidebar row menu, the folder explorer row menu and
  * the breadcrumb menu. It owns the archive mutation and shows a refusal inline. Every host already
- * gates its Archive control on `canArchiveOrRestore`, and the server refuses anyway, so there is no
- * gate here.
+ * gates its Archive control on the clicked row or the selection. A multi-select can still hold rows
+ * the person cannot change. The server refuses those and archives the rest, so there is no gate here.
  */
 export const FilesArchiveModal = memo(function FilesArchiveModal(props: FilesArchiveModal_Props) {
 	const { nodes, returnFocusRef, onClose, onArchived } = props;
@@ -101,14 +101,23 @@ export const FilesArchiveModal = memo(function FilesArchiveModal(props: FilesArc
 					);
 					return;
 				}
-				// A big archive continues as a background job. Its items leave the tree as the job runs.
-				if (result._yay) {
-					const { runId } = result._yay;
-					toast.info("Archiving in the background. See Activity.", {
-						action: { label: "View", onClick: () => openArchiveRun(runId) },
-					});
+				if (!result._yay) {
+					onArchived(nodeIds);
+					return;
 				}
-				onArchived(nodeIds);
+
+				// A big archive continues as a background job. Its items leave the tree as the job runs.
+				const { runId, isDone, notArchivedNodeIds } = result._yay;
+				const action = { label: "View", onClick: () => openArchiveRun(runId) };
+				// A job that ended in the request is kept only because it refused items the person cannot change.
+				if (isDone) {
+					toast.warning("Some items could not be archived. See Activity.", { action });
+				} else {
+					toast.info("Archiving in the background. See Activity.", { action });
+				}
+				// A background job can still refuse more items later. The host learns only about the ones known now.
+				const notArchivedNodeIdSet = new Set(notArchivedNodeIds);
+				onArchived(nodeIds.filter((nodeId) => !notArchivedNodeIdSet.has(nodeId)));
 			})
 			.catch((error: unknown) => {
 				console.error("[FilesArchiveModal.handleConfirm] Unexpected async error", { error, nodeIds });
@@ -167,6 +176,8 @@ type FilesArchiveRunModal_ClassNames =
 	| "FilesArchiveRunModal-content"
 	| "FilesArchiveRunModal-conflict"
 	| "FilesArchiveRunModal-path"
+	| "FilesArchiveRunModal-heading"
+	| "FilesArchiveRunModal-list"
 	| "FilesArchiveRunModal-choice"
 	| "FilesArchiveRunModal-error";
 
@@ -193,7 +204,9 @@ export const FilesArchiveRunModal = memo(function FilesArchiveRunModal(props: Fi
 	const [isSaving, setIsSaving] = useState(false);
 	const [errorMessage, setErrorMessage] = useState<string | null>(null);
 	const [previousRevision, setPreviousRevision] = useState(run?.revision);
-	const choiceName = `FilesArchiveRunModal-${useId()}-choice`;
+	const idPrefix = `FilesArchiveRunModal-${useId()}`;
+	const choiceName = `${idPrefix}-choice`;
+	const notArchivedHeadingId = `${idPrefix}-not-archived`;
 
 	// A new clash starts with no choice picked.
 	if (previousRevision !== run?.revision) {
@@ -279,9 +292,31 @@ export const FilesArchiveRunModal = memo(function FilesArchiveRunModal(props: Fi
 					<div className={"FilesArchiveRunModal-content" satisfies FilesArchiveRunModal_ClassNames}>
 						{progress ? (
 							<p role="status">
-								{progress.completed} {run?.kind === "restore" ? "restored" : "archived"}, {progress.skipped} skipped.
+								{progress.completed} {run?.kind === "restore" ? "restored" : "archived"}, {progress.skipped} skipped
+								{progress.blocked > 0 ? `, ${progress.blocked} not archived` : null}.
 								{progress.total !== null ? ` Total: ${progress.total}.` : isActive ? " Checking items…" : null}
 							</p>
+						) : null}
+						{/* The archive refuses each selected item it cannot change, with everything inside it. */}
+						{run && run.notArchived.length > 0 ? (
+							<section aria-labelledby={notArchivedHeadingId}>
+								<h3
+									id={notArchivedHeadingId}
+									className={"FilesArchiveRunModal-heading" satisfies FilesArchiveRunModal_ClassNames}
+								>
+									Not archived
+								</h3>
+								<ul className={"FilesArchiveRunModal-list" satisfies FilesArchiveRunModal_ClassNames}>
+									{run.notArchived.map((item) => (
+										<li key={item.nodeId}>
+											<span className={"FilesArchiveRunModal-path" satisfies FilesArchiveRunModal_ClassNames}>
+												{item.name ?? "An item you cannot open"}
+											</span>
+											: {item.message}
+										</li>
+									))}
+								</ul>
+							</section>
 						) : null}
 						{conflict ? (
 							<fieldset

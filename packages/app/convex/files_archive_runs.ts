@@ -1,11 +1,12 @@
 // Archive and restore of a big folder do not fit in one mutation. This job changes a batch of nodes
 // per step. Each node's side docs (text chunks, metadata docs) change in the same step as the node,
 // so search and lists never see a node and its side docs disagree. A small request finishes inside
-// the request and writes no run, no op, and no Activity.
+// the request and writes no run, no op, and no Activity, unless the archive refused a named item.
 //
 // The job is the archive or restore kind of a `files_subtree_ops` op, and it walks by `parentId`
-// through that op's queue. Archive first checks every node inside and writes nothing. Then it stamps
-// every named item, then the active children of each stamped folder, the first named item's folder
+// through that op's queue. Archive first checks every node inside and writes nothing. A refusal leaves
+// out only the named item it is in, with everything inside it. Then the archive stamps every named item
+// that passed, then the active children of each stamped folder, the first named item's folder
 // first. A child that somebody moved out, or archived on their own, is not reached or keeps its own
 // stamp. Restore finds the top items of the operation one page at a time, lands each one, then
 // restores the items of the operation inside it. The other items inside get the new path and scope
@@ -19,7 +20,10 @@ import type { WithoutSystemFields } from "convex/server";
 import { Result } from "common/errors-as-values-utils.ts";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import { mutation, query, type MutationCtx, type QueryCtx } from "./_generated/server.js";
-import { access_control_db_authorize_membership } from "./access_control.ts";
+import {
+	access_control_db_authorize_membership,
+	access_control_db_filter_readable_file_nodes,
+} from "./access_control.ts";
 import {
 	activities_db_delete,
 	activities_db_finish,
@@ -150,7 +154,10 @@ type StepOutcome =
 	| { kind: "paused" }
 	| { kind: "failed"; nay: { name?: string; message: string } };
 
-const MEMBERSHIP_LOST: StepOutcome = { kind: "failed", nay: { message: "You can no longer change these files." } };
+const MEMBERSHIP_LOST = {
+	kind: "failed",
+	nay: { message: "You can no longer change these files." },
+} as const satisfies StepOutcome;
 
 async function db_require_activity(ctx: QueryCtx | MutationCtx, runId: Id<"files_archive_runs">) {
 	const activity = await activities_db_require_by_source_id(ctx, runId);
@@ -324,12 +331,55 @@ async function db_check_restore_move(ctx: MutationCtx, args: StepArgs, node: Doc
 }
 
 /**
+ * Leave out the named item the check is on, with everything inside it. It counts once, as blocked,
+ * so the counts still add up to the total. Nothing inside it counts.
+ */
+function refuse_named_item(args: StepArgs, refusal: RunFields["refusedItems"][number]["refusal"]) {
+	const namedItem = args.run.checkNamedItem;
+	if (!namedItem) {
+		const errorMessage = "Archive check refused a node before any named item started";
+		const errorData = { opId: args.opId };
+		console.error(errorMessage, errorData);
+		throw should_never_happen(errorMessage, errorData);
+	}
+
+	args.run.checkNamedItem = { ...namedItem, isRefused: true };
+	args.run.refusedItems = [...args.run.refusedItems, { nodeId: namedItem.nodeId, refusal }];
+	args.progress.discovered = namedItem.discoveredBefore + 1;
+	args.progress.blocked += 1;
+}
+
+/**
+ * The reason saved for a refused named item. When the refused node is inside the named folder, the
+ * node's own message would blame the folder. So say that an item inside it is refused.
+ */
+function get_named_item_refusal(nay: { name?: string; message: string }, isInside: boolean) {
+	const name = nay.name ?? null;
+	// A review refusal of an agent's delete asks for a new review. That message fits an item inside too.
+	if (!isInside || name === "needs_review") return { name, message: nay.message };
+	return {
+		name,
+		message: name === "read_only" ? "An item inside it is read-only." : "You cannot change an item inside it.",
+	};
+}
+
+/**
  * Check everything the archive will change before it writes anything: each active node, and each
  * archived node inside, which must not be hidden while it is read-only. The walk follows `parentId`
  * from each named item. Nothing is written, so a folder needs no second pass.
+ *
+ * A refusal leaves out only the named item it is in, with everything inside that item, like `rm` with
+ * several files. The other named items are still archived. An agent's delete names one item, so the
+ * same rule refuses the whole delete. Only a lost membership ends the job at once.
  */
 async function db_check_archive(ctx: MutationCtx, args: StepArgs): Promise<StepOutcome> {
-	const { progress } = args;
+	const { run, progress } = args;
+	// Check once per step, before anything else. A step can finish the check without a write check,
+	// for example when it only drops the rows of a refused item. The apply must not run for somebody
+	// who left.
+	if (!args.membership) return MEMBERSHIP_LOST;
+
+	const namedCount = run.rootNodeIds.length;
 	let readCount = 0;
 
 	while (true) {
@@ -338,25 +388,53 @@ async function db_check_archive(ctx: MutationCtx, args: StepArgs): Promise<StepO
 		}
 
 		const row = await files_subtree_ops_db_first_node(ctx, args.opId);
-		if (!row) return { kind: "done" };
+		if (!row) break;
 
-		const node = await ctx.db.get("files_nodes", row.nodeId);
-		// A named item that is gone or archived by now leaves nothing to check.
-		if (!node || (!row.nodeDone && node.archiveOperationId !== null)) {
+		// Named item k has row number `namedCount - 1 - k`. Every folder the walk finds gets a higher
+		// number, and the highest number runs first. So a row at `namedCount` or above is always inside
+		// the named item the check is on. Drop the rows of a refused item without checking them.
+		if (run.checkNamedItem?.isRefused && (row.sequence >= namedCount || row.nodeId === run.checkNamedItem.nodeId)) {
 			await ctx.db.delete("files_subtree_op_nodes", row._id);
+			readCount += 1;
 			continue;
 		}
 
+		const node = await ctx.db.get("files_nodes", row.nodeId);
+		// Only a named item's row starts with `nodeDone` false.
 		if (!row.nodeDone) {
-			const refusal = await db_check_writable_nodes(ctx, args, [node]);
-			if (refusal) return refusal;
-			progress.discovered += 1;
 			readCount += 1;
+			run.checkNamedItem = { nodeId: row.nodeId, discoveredBefore: progress.discovered, isRefused: false };
+			// A named item that is gone by now is refused, like a missing file in `rm`.
+			if (!node) {
+				await ctx.db.delete("files_subtree_op_nodes", row._id);
+				refuse_named_item(args, { name: null, message: "Not found" });
+				continue;
+			}
+			// One that somebody archived meanwhile keeps that archive with everything inside, and is no
+			// error, like a missing file in `rm -f`. It counts once, and the apply counts it as skipped.
+			if (node.archiveOperationId !== null) {
+				await ctx.db.delete("files_subtree_op_nodes", row._id);
+				progress.discovered += 1;
+				continue;
+			}
+
+			const refusal = await db_check_writable_nodes(ctx, args, [node]);
+			if (refusal) {
+				if (refusal === MEMBERSHIP_LOST) return refusal;
+				refuse_named_item(args, get_named_item_refusal(refusal.nay, false));
+				continue;
+			}
+			progress.discovered += 1;
 			if (node.kind === "file") {
 				await ctx.db.delete("files_subtree_op_nodes", row._id);
 				continue;
 			}
 			await ctx.db.patch("files_subtree_op_nodes", row._id, { nodeDone: true });
+		}
+		// A folder inside that is gone by now leaves nothing to check.
+		else if (!node) {
+			await ctx.db.delete("files_subtree_op_nodes", row._id);
+			continue;
 		}
 
 		const page = await files_subtree_ops_db_next_children(ctx, { row, folder: node, budget: args.budget });
@@ -365,7 +443,11 @@ async function db_check_archive(ctx: MutationCtx, args: StepArgs): Promise<StepO
 
 		const activeNodes = page.children.filter((child) => child.archiveOperationId === null);
 		const refusal = await db_check_writable_nodes(ctx, args, activeNodes);
-		if (refusal) return refusal;
+		if (refusal) {
+			if (refusal === MEMBERSHIP_LOST) return refusal;
+			refuse_named_item(args, get_named_item_refusal(refusal.nay, true));
+			continue;
+		}
 
 		// Archive does not change archived nodes inside. But it must not hide a read-only one under a
 		// newly archived folder. Use a general error when the person cannot see it.
@@ -380,7 +462,10 @@ async function db_check_archive(ctx: MutationCtx, args: StepArgs): Promise<StepO
 			},
 			nodes: page.children.filter((child) => child.archiveOperationId !== null),
 		});
-		if (archivedProtected._nay) return { kind: "failed", nay: archivedProtected._nay };
+		if (archivedProtected._nay) {
+			refuse_named_item(args, get_named_item_refusal(archivedProtected._nay, true));
+			continue;
+		}
 
 		progress.discovered += activeNodes.length;
 		await files_subtree_ops_db_save_page(ctx, {
@@ -392,6 +477,28 @@ async function db_check_archive(ctx: MutationCtx, args: StepArgs): Promise<StepO
 			isRowFirst: false,
 		});
 	}
+
+	run.checkNamedItem = null;
+	if (progress.blocked === 0) return { kind: "done" };
+
+	// A refused named item adds one to both `discovered` and `blocked`. Every other named item adds at
+	// least one to `discovered` only. So equal counts mean that the check refused every named item.
+	if (progress.discovered === progress.blocked) {
+		// The job ends here without an apply, so set the total the apply would set.
+		progress.total = progress.discovered;
+		const refusal = run.refusedItems.length === 1 ? run.refusedItems[0]!.refusal : null;
+		return {
+			kind: "failed",
+			nay: refusal
+				? { ...(refusal.name !== null ? { name: refusal.name } : {}), message: refusal.message }
+				: { message: "None of these items can be archived. You cannot change them or items inside them." },
+		};
+	}
+
+	// The apply stamps only the named items that passed.
+	const refusedNodeIds = new Set(run.refusedItems.map((refusedItem) => refusedItem.nodeId));
+	run.rootNodeIds = run.rootNodeIds.filter((nodeId) => !refusedNodeIds.has(nodeId));
+	return { kind: "done" };
 }
 
 async function db_archive_node(ctx: MutationCtx, args: StepArgs, node: Doc<"files_nodes">) {
@@ -437,8 +544,11 @@ async function db_apply_archive(ctx: MutationCtx, args: StepArgs): Promise<StepO
 
 		const index = run.applyRootIndex;
 		const node = await ctx.db.get("files_nodes", run.rootNodeIds[index]!);
-		// A named item archived by somebody else in the meantime keeps that archive, with everything inside.
-		if (node && node.archiveOperationId === null) {
+		// A named item archived or deleted by somebody else in the meantime keeps that state, with
+		// everything inside. The check counted it, so count it as skipped.
+		if (!node || node.archiveOperationId !== null) {
+			args.progress.skipped += 1;
+		} else {
 			await db_archive_node(ctx, args, node);
 			// The check kept the numbers below `rootNodeIds.length` for these rows. The first named item
 			// gets the highest one, and every folder found later gets a higher one still. So the walk ends
@@ -1157,9 +1267,20 @@ async function db_step(ctx: MutationCtx, args: StepArgs): Promise<StepOutcome> {
 
 	const outcome = args.run.kind === "archive" ? await db_apply_archive(ctx, args) : await db_apply_restore(ctx, args);
 	if (args.isWritten) await files_media_validation_db_advance_version(ctx, args.run);
+	// The check counted items that somebody else archived, deleted or moved out before the apply reached
+	// them. The apply leaves them as they are, so count them as skipped. Then the counts add up to the total.
+	if (args.run.kind === "archive" && outcome.kind === "done" && args.progress.total !== null) {
+		args.progress.skipped += Math.max(
+			0,
+			args.progress.total - args.progress.completed - args.progress.skipped - args.progress.blocked,
+		);
+	}
 	// Items created or joined during the job are counted too, so keep the total at least as big.
 	if (args.progress.total !== null) {
-		args.progress.total = Math.max(args.progress.total, args.progress.completed + args.progress.skipped);
+		args.progress.total = Math.max(
+			args.progress.total,
+			args.progress.completed + args.progress.skipped + args.progress.blocked,
+		);
 	}
 	return outcome;
 }
@@ -1245,8 +1366,10 @@ async function db_settle_step(
 }
 
 /**
- * Archive or restore through the job. The caller already checked the items the person named.
- * Returns null when the work finished inside this request, or the job that goes on in the background.
+ * Archive or restore through the job. The caller checked only that the person can read the items
+ * they named. The job's check decides which of them can be archived.
+ * Returns null when the work finished inside this request with nothing refused. Otherwise returns the
+ * job, with `isDone` true when it already finished, and the named items refused so far.
  *
  * Archive starts at once, even over a folder another job is archiving. Each job stamps only active
  * items, so neither overwrites the other's stamp. Restore of an operation that a job still writes is
@@ -1263,6 +1386,12 @@ export async function files_archive_runs_db_start(
 		 * Archive: the named active items. Restore: empty; the check fills the items that land at the root.
 		 */
 		rootNodeIds: Array<Id<"files_nodes">>;
+		/**
+		 * Archive: named ids that are missing, in another workspace, or that the person cannot read. The
+		 * job lists each one as "Not found", like `rm` does for a missing file, and archives the rest.
+		 * Restore: empty.
+		 */
+		notFoundNodeIds: Array<Id<"files_nodes">>;
 		/**
 		 * Where readers see the items now. Restore passes its top item, because it has no named items yet.
 		 */
@@ -1334,15 +1463,17 @@ export async function files_archive_runs_db_start(
 		pendingUpdateCleanup: args.pendingUpdateCleanup,
 		// Cancel on a clash wait ends every job of the request, so each job names the first one.
 		requestFirstRunId: previousRun ? (previousRun.requestFirstRunId ?? previousRun._id) : null,
+		checkNamedItem: null,
+		refusedItems: args.notFoundNodeIds.map((nodeId) => ({ nodeId, refusal: { name: null, message: "Not found" } })),
 	};
 	const progress: RunProgress = {
 		unit: "items",
-		discovered: 0,
+		discovered: args.notFoundNodeIds.length,
 		total: null,
 		completed: 0,
 		skipped: 0,
 		failed: 0,
-		blocked: 0,
+		blocked: args.notFoundNodeIds.length,
 		canceled: 0,
 	};
 
@@ -1380,8 +1511,9 @@ export async function files_archive_runs_db_start(
 		isWritten: false,
 	};
 	const outcome = blocker ? null : await db_step(ctx, stepArgs);
-	// Work that ended inside the request, or a refusal before the first write, leaves no job.
-	if (outcome?.kind === "done" || (outcome?.kind === "failed" && !stepArgs.isWritten)) {
+	// Work that ended inside the request, or a refusal before the first write, leaves no job. Work that
+	// refused a named item keeps its job, so its Activity can list what was not archived.
+	if ((outcome?.kind === "done" && progress.blocked === 0) || (outcome?.kind === "failed" && !stepArgs.isWritten)) {
 		await files_subtree_ops_db_delete(ctx, { opId, now });
 		await ctx.db.delete("files_archive_runs", runId);
 		return outcome.kind === "done" ? Result({ _yay: null }) : Result({ _nay: outcome.nay });
@@ -1406,7 +1538,9 @@ export async function files_archive_runs_db_start(
 		deadlineAt: now + (blocker || outcome?.kind === "blocked" ? CHOICE_TIMEOUT_MS : RUN_TIMEOUT_MS),
 		now,
 	});
-	if (!outcome) return Result({ _yay: { runId, activityId } });
+	if (!outcome) {
+		return Result({ _yay: { runId, activityId, isDone: false, notArchivedNodeIds: [] as Array<Id<"files_nodes">> } });
+	}
 
 	await db_settle_step(ctx, { opId, runId, activityId, run, progress, outcome, now });
 	// A request that failed after some writes keeps them and a failed Activity. Answer with the error, so
@@ -1414,7 +1548,10 @@ export async function files_archive_runs_db_start(
 	if (outcome.kind === "failed") {
 		return Result({ _nay: { ...outcome.nay, message: `Stopped partway: ${outcome.nay.message}` } });
 	}
-	return Result({ _yay: { runId, activityId } });
+
+	// A job that goes on in the background can refuse more named items in later steps.
+	const notArchivedNodeIds = run.refusedItems.map((refusedItem) => refusedItem.nodeId);
+	return Result({ _yay: { runId, activityId, isDone: outcome.kind === "done", notArchivedNodeIds } });
 }
 
 /**
@@ -1558,6 +1695,8 @@ export async function files_archive_runs_db_request_stop(
 /**
  * The job the person owns, with its progress and the clash it waits on. The clash name and paths are
  * shown only when the person may read the node.
+ * `notArchived` lists the named items the archive refused. It names only nodes of the run's workspace
+ * that the person can still read.
  */
 export const get = query({
 	args: {
@@ -1580,6 +1719,13 @@ export const get = query({
 				}),
 				v.null(),
 			),
+			notArchived: v.array(
+				v.object({
+					nodeId: v.id("files_nodes"),
+					name: v.union(v.string(), v.null()),
+					message: v.string(),
+				}),
+			),
 		}),
 		v.null(),
 	),
@@ -1587,6 +1733,30 @@ export const get = query({
 		const owned = await db_get_owned_run(ctx, args);
 		if (owned._nay) return null;
 		const { userAuth, run, activity, membership } = owned._yay;
+
+		// A named id that was not found can belong to another workspace. Never name it.
+		const refusedNodes = (
+			await Promise.all(run.refusedItems.map((refusedItem) => ctx.db.get("files_nodes", refusedItem.nodeId)))
+		).flatMap((node) => (node && node.workspaceId === run.workspaceId ? [node] : []));
+		// Name an item only while the person may still read it.
+		const workspaceRead = await access_control_db_authorize_membership(ctx, {
+			userAuth,
+			membership,
+			permission: "content.read",
+		});
+		const readableNodes = await access_control_db_filter_readable_file_nodes(ctx, {
+			organizationId: run.organizationId,
+			workspaceId: run.workspaceId,
+			userId: userAuth.id,
+			nodes: refusedNodes,
+			hasWorkspaceRead: !workspaceRead._nay,
+		});
+		const nameByNodeId = new Map(readableNodes.map((node) => [node._id, node.name]));
+		const notArchived = run.refusedItems.map((refusedItem) => ({
+			nodeId: refusedItem.nodeId,
+			name: nameByNodeId.get(refusedItem.nodeId) ?? null,
+			message: refusedItem.refusal.message,
+		}));
 
 		let conflict = null;
 		// A job stopped while it waited keeps its last clash. Show it only while the job waits.
@@ -1622,6 +1792,7 @@ export const get = query({
 			activity,
 			controls: activities_get_controls(activity, userAuth.id),
 			conflict,
+			notArchived,
 		};
 	},
 });

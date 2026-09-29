@@ -2,11 +2,12 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { app_convex_Id } from "@/lib/app-convex-client.ts";
 
-const { mutationMock, openArchiveRunMock, toastInfoMock, useQueryMock } = vi.hoisted(() => ({
+const { mutationMock, openArchiveRunMock, toastInfoMock, toastWarningMock, useQueryMock } = vi.hoisted(() => ({
 	mutationMock: vi.fn(),
 	useQueryMock: vi.fn(),
 	openArchiveRunMock: vi.fn(),
 	toastInfoMock: vi.fn(),
+	toastWarningMock: vi.fn(),
 }));
 
 vi.mock("@/lib/app-tenant-context.tsx", () => ({
@@ -26,7 +27,7 @@ vi.mock("convex/react", () => ({
 	useQuery: (...args: unknown[]) => useQueryMock(...args),
 }));
 
-vi.mock("sonner", () => ({ toast: { info: toastInfoMock } }));
+vi.mock("sonner", () => ({ toast: { info: toastInfoMock, warning: toastWarningMock } }));
 
 vi.mock("@/lib/app-convex-client.ts", () => ({
 	app_convex: { mutation: (...args: unknown[]) => mutationMock(...args) },
@@ -56,6 +57,7 @@ beforeEach(() => {
 	mutationMock.mockReset().mockResolvedValue({ _yay: null });
 	openArchiveRunMock.mockReset();
 	toastInfoMock.mockReset();
+	toastWarningMock.mockReset();
 });
 
 afterEach(cleanup);
@@ -83,7 +85,9 @@ describe("FilesArchiveModal", () => {
 	});
 
 	test("hands a big archive to a background job and links it", async () => {
-		mutationMock.mockResolvedValue({ _yay: { runId: "run_1", activityId: "activity_1" } });
+		mutationMock.mockResolvedValue({
+			_yay: { runId: "run_1", activityId: "activity_1", isDone: false, notArchivedNodeIds: [] },
+		});
 		const { onArchived } = renderModal([REPORTS]);
 		const dialog = await screen.findByRole("dialog");
 		fireEvent.click(within(dialog).getByRole("button", { name: "Archive" }));
@@ -92,6 +96,21 @@ describe("FilesArchiveModal", () => {
 		expect(toastInfoMock).toHaveBeenCalledTimes(1);
 		const [message, options] = toastInfoMock.mock.calls[0] as [string, { action: { onClick: () => void } }];
 		expect(message).toBe("Archiving in the background. See Activity.");
+		options.action.onClick();
+		expect(openArchiveRunMock).toHaveBeenCalledWith("run_1");
+	});
+
+	test("leaves the items the archive refused out of the archived ids and links the job", async () => {
+		mutationMock.mockResolvedValue({
+			_yay: { runId: "run_1", activityId: "activity_1", isDone: true, notArchivedNodeIds: [REPORTS._id] },
+		});
+		const { onArchived } = renderModal([NOTE, REPORTS]);
+		fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Archive" }));
+
+		await waitFor(() => expect(onArchived).toHaveBeenCalledWith([NOTE._id]));
+		expect(toastInfoMock).not.toHaveBeenCalled();
+		const [message, options] = toastWarningMock.mock.calls[0] as [string, { action: { onClick: () => void } }];
+		expect(message).toBe("Some items could not be archived. See Activity.");
 		options.action.onClick();
 		expect(openArchiveRunMock).toHaveBeenCalledWith("run_1");
 	});
@@ -172,7 +191,7 @@ describe("FilesArchiveRunModal", () => {
 			status: "awaiting_input",
 			title: "Restore files",
 			errorMessage: null,
-			progress: { completed: 10, skipped: 0, total: 20 },
+			progress: { completed: 10, skipped: 0, blocked: 0, total: 20 },
 		},
 		controls: { canStop: true, canRetry: false, canDismiss: false },
 		conflict: {
@@ -182,6 +201,7 @@ describe("FilesArchiveRunModal", () => {
 			occupantPath: "/Reports/a.md",
 			canReplace,
 		},
+		notArchived: [],
 	});
 
 	function renderRunModal() {
@@ -224,5 +244,35 @@ describe("FilesArchiveRunModal", () => {
 		const clash = within(dialog).getByRole("group", { name: "/Reports/a.md" });
 		expect(within(clash).queryByRole("radio", { name: "Replace" })).toBeNull();
 		expect(within(clash).getByRole("radio", { name: "Keep both" })).toBeTruthy();
+	});
+
+	test("lists the selected items the archive did not archive", async () => {
+		useQueryMock.mockReturnValue({
+			kind: "archive",
+			revision: 0,
+			activity: {
+				_id: "activity_1",
+				status: "partial",
+				title: "Archive files",
+				errorMessage: null,
+				finishedAt: 1,
+				progress: { completed: 4, skipped: 0, blocked: 2, total: 4 },
+			},
+			controls: { canStop: false, canRetry: false, canDismiss: true },
+			conflict: null,
+			notArchived: [
+				{ nodeId: "node_2", name: "Reports", message: "An item inside it is read-only." },
+				{ nodeId: "node_3", name: null, message: "Permission denied" },
+			],
+		});
+		renderRunModal();
+		const dialog = await screen.findByRole("dialog", { name: "Archive files" });
+		expect(within(dialog).getByText("4 archived, 0 skipped, 2 not archived. Total: 4.")).toBeTruthy();
+		const list = within(dialog).getByRole("region", { name: "Not archived" });
+		expect(
+			within(list)
+				.getAllByRole("listitem")
+				.map((item) => item.textContent),
+		).toEqual(["Reports: An item inside it is read-only.", "An item you cannot open: Permission denied"]);
 	});
 });

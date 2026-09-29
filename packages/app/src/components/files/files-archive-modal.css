@@ -44,6 +44,21 @@
 		font-weight: 600;
 	}
 
+	.FilesArchiveRunModal-heading {
+		margin: 0 0 4px;
+
+		font-size: 0.875rem;
+		font-weight: 600;
+	}
+
+	.FilesArchiveRunModal-list {
+		display: grid;
+		gap: 4px;
+
+		margin: 0;
+		padding-inline-start: 20px;
+	}
+
 	.FilesArchiveRunModal-choice {
 		display: inline-flex;
 		align-items: center;
