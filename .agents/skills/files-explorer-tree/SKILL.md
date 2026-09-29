@@ -335,7 +335,8 @@ folder (`FileNodeViewPrivateFolder`) still lists its children through `useFilesV
   node ids, mode, and a local revision in memory. Navigation keeps the clipboard; reload and
   workspace or account changes clear it. It does not write to the operating system clipboard.
 - Sidebar row menus offer Cut and Copy. A selected row uses the full selection; an unselected row
-  uses only that row. The top selection menu uses the selection too. Copy path, Copy link, and
+  uses only that row. The top `More options` menu has no Cut, Copy, or Paste: use Mod+X, Mod+C,
+  and Mod+V on the tree for the selection. Copy path, Copy link, and
   Copy node id keep their existing behavior. When a folder and its children are selected, all
   menu and keyboard entry points keep only the top-level selected items in the clipboard. Collapsing
   a folder keeps its selected children available to those clipboard actions.

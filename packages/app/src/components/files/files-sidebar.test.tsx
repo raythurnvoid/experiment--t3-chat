@@ -224,8 +224,6 @@ describe("FilesSidebar", () => {
 	test.each([
 		["Cut", "row menu"],
 		["Copy", "row menu"],
-		["Cut", "selection menu"],
-		["Copy", "selection menu"],
 		["Cut", "keyboard"],
 		["Copy", "keyboard"],
 	] as const)("keeps only the selected parent for %s from the %s", async (mode, entrypoint) => {
@@ -255,9 +253,7 @@ describe("FilesSidebar", () => {
 			fireEvent.keyDown(alpha, { key, code, ctrlKey: true });
 			fireEvent.keyUp(alpha, { key, code, ctrlKey: true });
 		} else {
-			fireEvent.click(
-				view.getByRole("button", { name: entrypoint === "row menu" ? "More actions for alpha" : "More options" }),
-			);
+			fireEvent.click(view.getByRole("button", { name: "More actions for alpha" }));
 			fireEvent.click(await view.findByRole("menuitem", { name: new RegExp(`^${mode}$`) }));
 			// Control+V does nothing while a tree menu is open.
 			await waitFor(() => expect(view.queryByRole("menu")).toBeNull());
@@ -301,12 +297,15 @@ describe("FilesSidebar", () => {
 		expect(view.queryByRole("dialog")).toBeNull();
 	});
 
-	test.each([
-		["Cut", "keyboard"],
-		["Copy", "keyboard"],
-		["Cut", "selection menu"],
-		["Copy", "selection menu"],
-	] as const)("keeps collapsed selected children for %s from the %s", async (mode, entrypoint) => {
+	test("the More options menu has no Cut, Copy, or Paste", async () => {
+		const router = createRouter({ routeTree: createRootRoute(), history: createMemoryHistory() });
+		const view = render(<CreateSidebar router={router} selectedNodeId="alpha" />);
+		fireEvent.click(await view.findByRole("button", { name: "More options" }));
+		await view.findByRole("menuitem", { name: "Upload file" });
+		expect(view.queryByRole("menuitem", { name: /^(Cut|Copy|Paste)/ })).toBeNull();
+	});
+
+	test.each(["Cut", "Copy"] as const)("keeps collapsed selected children for %s from the keyboard", async (mode) => {
 		treeState.nodes = treeState.nodes.map((node) =>
 			node._id === "bravo" || node._id === "charlie"
 				? {
@@ -330,20 +329,11 @@ describe("FilesSidebar", () => {
 		}
 		fireEvent.click(view.getByRole("button", { name: "Collapse folder alpha" }));
 		await waitFor(() => expect(view.queryByRole("treeitem", { name: "bravo" })).toBeNull());
-		if (entrypoint === "keyboard") {
-			const key = mode === "Cut" ? "x" : "c";
-			const code = mode === "Cut" ? "KeyX" : "KeyC";
-			const delta = view.getByRole("treeitem", { name: "delta" });
-			fireEvent.keyDown(delta, { key, code, ctrlKey: true });
-			fireEvent.keyUp(delta, { key, code, ctrlKey: true });
-		} else {
-			fireEvent.click(view.getByRole("button", { name: "More options" }));
-			const modeItem = await view.findByRole("menuitem", { name: new RegExp(`^${mode}$`) });
-			// The selection menu has no Paste item: paste into the root uses the focused tree.
-			expect(view.queryByRole("menuitem", { name: /Paste/ })).toBeNull();
-			fireEvent.click(modeItem);
-			await waitFor(() => expect(view.queryByRole("menu")).toBeNull());
-		}
+		const key = mode === "Cut" ? "x" : "c";
+		const code = mode === "Cut" ? "KeyX" : "KeyC";
+		const delta = view.getByRole("treeitem", { name: "delta" });
+		fireEvent.keyDown(delta, { key, code, ctrlKey: true });
+		fireEvent.keyUp(delta, { key, code, ctrlKey: true });
 		view.rerender(<CreateSidebar router={router} selectedNodeId={files_ROOT_ID} />);
 		const tree = view.getByRole("tree", { name: "Files" });
 		tree.focus();

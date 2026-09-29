@@ -3254,7 +3254,6 @@ type FilesSidebarTopSectionMoreAction_Props = {
 	canWriteUploadTarget: boolean;
 	selectedNodeIdsCount: number;
 	showArchived: boolean;
-	clipboardSlot: React.ReactNode;
 	onArchiveToggleClick: () => void;
 	onArchiveSelectionClick: () => void;
 	onUploadFileClick: () => void;
@@ -3273,7 +3272,6 @@ const FilesSidebarTopSectionMoreAction = memo(function FilesSidebarTopSectionMor
 		canWriteUploadTarget,
 		selectedNodeIdsCount,
 		showArchived,
-		clipboardSlot,
 		onArchiveToggleClick,
 		onArchiveSelectionClick,
 		onUploadFileClick,
@@ -3319,7 +3317,6 @@ const FilesSidebarTopSectionMoreAction = memo(function FilesSidebarTopSectionMor
 			>
 				<MyMenuPopoverContent>
 					<MyMenuItemsGroup>
-						{clipboardSlot}
 						{isMultiSelectionActive ? (
 							<MyMenuItem
 								variant="destructive"
@@ -3397,7 +3394,6 @@ type FilesSidebarTopSection_Props = {
 	isSearchLoading: boolean;
 	isSearchFailed: boolean;
 	searchMatchCount: number | null;
-	clipboardSlot: React.ReactNode;
 	onClose: () => void;
 	onSearchQueryChange: (searchQuery: string) => void;
 	onSearchSubmit: (searchQuery: string) => boolean;
@@ -3429,7 +3425,6 @@ const FilesSidebarTopSection = memo(function FilesSidebarTopSection(props: Files
 		isSearchLoading,
 		isSearchFailed,
 		searchMatchCount,
-		clipboardSlot,
 		onClose,
 		onSearchQueryChange,
 		onSearchSubmit,
@@ -3554,7 +3549,6 @@ const FilesSidebarTopSection = memo(function FilesSidebarTopSection(props: Files
 						canWriteUploadTarget={canWriteUploadTarget}
 						selectedNodeIdsCount={selectedNodeIdsCount}
 						showArchived={showArchived}
-						clipboardSlot={clipboardSlot}
 						onArchiveToggleClick={onArchiveToggleClick}
 						onArchiveSelectionClick={onArchiveSelectionClick}
 						onUploadFileClick={onUploadFileClick}
@@ -5653,10 +5647,6 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		.getSelectedItems()
 		.map((item) => item.getItemData())
 		.filter(files_is_node);
-	const canCopySelection =
-		!isBusy && selectedSourceItems.length > 0 && selectedSourceItems.every((item) => item.archiveOperationId === null);
-	const canCutSelection =
-		canCopySelection && selectedSourceItems.every((item) => getItemCapabilitiesInRender(item).canRelocateOrRename);
 
 	FilesClipboardProvider.useHotkeys({
 		target: treeScrollElementRef,
@@ -6599,17 +6589,6 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 				isSearchLoading={isSearchLoading}
 				isSearchFailed={isSearchFailed}
 				searchMatchCount={searchMatches?.matchCount ?? null}
-				clipboardSlot={
-					<FilesClipboardMenuItems
-						sourceIds={get_clipboard_source_ids(selectedSourceItems)}
-						canCut={canCutSelection}
-						canCopy={canCopySelection}
-						// Paste into the root has no menu item. Click empty tree space, then press Mod+V.
-						targetParentId={null}
-						targetName={null}
-						canPaste={false}
-					/>
-				}
 				onClose={onClose}
 				onSearchQueryChange={handleSearchQueryChange}
 				onSearchSubmit={handleSearchSubmit}
