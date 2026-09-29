@@ -766,6 +766,65 @@ describe("scheduled cancellation and retention", () => {
 		});
 	});
 
+	test("member self-revocation refuses the old token at the KV and follow-up HTTP doors", async () => {
+		const f = await fixture();
+		const member = await assign_member(f);
+		const root = await root_run(f);
+		expect(root.actorUserId).toBe(member.member.userId);
+		expect(root.runAsGrantId).toBe(member.grantId);
+		const { token } = await start_run(f, root._id);
+		const request = {
+			method: "POST",
+			headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+			body: JSON.stringify({ collection: "progress", key: "sync" }),
+		};
+		const read = await f.t.fetch("/api/v1/plugin-data/read", request);
+		expect(read.status).toBe(200);
+		expect(await read.json()).toEqual({ document: null });
+		const calls = await f.t.run((ctx) =>
+			ctx.db
+				.query("plugins_event_run_calls")
+				.withIndex("by_run_sequence", (q) => q.eq("runId", root._id))
+				.collect(),
+		);
+		expect(calls).toHaveLength(1);
+		expect(calls[0]).toMatchObject({ route: "/api/v1/plugin-data/read", status: "succeeded", responseStatus: 200 });
+		expect(
+			await member.asMember.mutation(api.plugins_access.revoke_run_as_me, {
+				membershipId: member.membership._id,
+				installationId: f.installationId,
+			}),
+		).toEqual({ _yay: null });
+		const staleRead = await f.t.fetch("/api/v1/plugin-data/read", request);
+		expect(staleRead.status, "revoked_member_token_cannot_read_kv").toBe(401);
+		expect(await staleRead.json()).toEqual({ message: "Unauthenticated" });
+		const staleFollowUp = await follow_up(f, token, '{"late":true}');
+		expect(staleFollowUp.status, "revoked_member_token_cannot_request_follow_up").toBe(401);
+		expect(await staleFollowUp.json()).toEqual({ message: "Unauthenticated" });
+		const saved = await f.t.run(async (ctx) => ({
+			run: await ctx.db.get("plugins_event_runs", root._id),
+			grant: await ctx.db.get("access_control_permission_grants", member.grantId),
+			calls: await ctx.db
+				.query("plugins_event_run_calls")
+				.withIndex("by_run_sequence", (q) => q.eq("runId", root._id))
+				.collect(),
+			runs: await ctx.db
+				.query("plugins_event_runs")
+				.withIndex("by_organization_workspace", (q) =>
+					q.eq("organizationId", f.owner.organizationId).eq("workspaceId", f.owner.workspaceId),
+				)
+				.collect(),
+		}));
+		expect(saved.grant).toBeNull();
+		expect(saved.run?.apiTokenHash).toBeUndefined();
+		expect(saved.run?.apiTokenExpiresAt).toBeUndefined();
+		expect(saved.run?.chainInputState).toBeUndefined();
+		expect(saved.run?.followUpState).toBeUndefined();
+		expect(saved.run?.apiCallCount).toBe(1);
+		expect(saved.calls).toEqual(calls);
+		expect(saved.runs.map((run) => run._id), "revoked requests must not create a child run").toEqual([root._id]);
+	});
+
 	test("timeouts cancel the scheduled pool and preserve scheduled history forever", async () => {
 		const f = await fixture();
 		const root = await root_run(f);
