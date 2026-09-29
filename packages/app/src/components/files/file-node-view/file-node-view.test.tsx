@@ -2454,6 +2454,42 @@ describe("FileNodeView folder filter", () => {
 		expect(sortedChildrenMock.mock.calls.at(-1)![0].filter).toEqual({ kind: "type", field: "type", op: "missing" });
 	});
 
+	test("defers a dirty error before Apply, then shows it and focuses Value on submit", async () => {
+		renderFileView({ nodeId: node._id });
+		const dialog = await openFilter();
+		const input = within(dialog).getByRole<HTMLInputElement>("textbox", { name: "Value" });
+		const apply = within(dialog).getByRole("button", { name: "Apply" });
+		fireEvent.change(input, { target: { value: "valid" } });
+		fireEvent.change(input, { target: { value: "" } });
+		expect(input.validity.valid).toBe(false);
+		// Revealing the error on blur can move the button before its pointer click.
+		fireEvent.blur(input, { relatedTarget: apply });
+		expect(within(dialog).queryByText("Enter 1 to 1,024 characters.")).toBeNull();
+		expect(input.closest(".MyInput")!.classList.contains("userInvalid")).toBe(false);
+		fireEvent.submit(input.closest("form")!);
+		expect(within(dialog).getByText("Enter 1 to 1,024 characters.")).toBeTruthy();
+		expect(input.closest(".MyInput")!.classList.contains("userInvalid")).toBe(true);
+		expect(document.activeElement).toBe(input);
+		expect(sortedChildrenMock.mock.calls.at(-1)![0].filter).toBeNull();
+	});
+
+	test("defers a dirty error before Cancel and closes without applying the draft", async () => {
+		renderFileView({ nodeId: node._id });
+		const dialog = await openFilter();
+		const input = within(dialog).getByRole<HTMLInputElement>("textbox", { name: "Value" });
+		const cancel = within(dialog).getByRole("button", { name: "Cancel" });
+		fireEvent.change(input, { target: { value: "valid" } });
+		fireEvent.change(input, { target: { value: "" } });
+		fireEvent.blur(input, { relatedTarget: cancel });
+		expect(within(dialog).queryByText("Enter 1 to 1,024 characters.")).toBeNull();
+		expect(input.closest(".MyInput")!.classList.contains("userInvalid")).toBe(false);
+		fireEvent.click(cancel);
+		await waitFor(() => expect(screen.queryByRole("dialog", { name: "Filter" })).toBeNull());
+		expect(document.activeElement).toBe(screen.getByRole("button", { name: "Filter" }));
+		expect(sortedChildrenMock.mock.calls.at(-1)![0].filter).toBeNull();
+		expect(mutationMock).not.toHaveBeenCalled();
+	});
+
 	test("keeps a typed dot in Type and submits lower case", async () => {
 		renderFileView({ nodeId: node._id });
 		const dialog = await openFilter();

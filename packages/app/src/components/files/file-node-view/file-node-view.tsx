@@ -4566,7 +4566,12 @@ const FileNodeViewFolderExplorerFilter = memo(function FileNodeViewFolderExplore
 	const handleValueBlur = useFn((event: React.FocusEvent<HTMLInputElement>) => {
 		const result = validate_folder_filter_value(field, event.currentTarget.value);
 		setValidationMessage(result.validationMessage);
-		if (isValueDirty.current) setDisplayValidationMessage(result.validationMessage);
+		// Keep a pressed form button in place until its click handles validation or closes the form.
+		if (
+			isValueDirty.current &&
+			!(event.relatedTarget instanceof HTMLButtonElement && event.relatedTarget.form === event.currentTarget.form)
+		)
+			setDisplayValidationMessage(result.validationMessage);
 	});
 	const handleSubmit = useFn((event: React.FormEvent<HTMLFormElement>) => {
 		event.preventDefault();
