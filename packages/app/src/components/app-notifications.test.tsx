@@ -512,7 +512,7 @@ describe("AppNotifications", () => {
 									unit: "files",
 									discovered: 3,
 									total: 3,
-									completed: 1,
+									completed: status === "succeeded" ? 3 : 1,
 									skipped: 0,
 									failed: 0,
 									blocked: 0,
