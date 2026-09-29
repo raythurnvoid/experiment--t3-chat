@@ -97,9 +97,14 @@
 	.FileEditorRichTextNonCollab-editor-content {
 		width: 100%;
 
-		/* Add a large bottom safe area so the shared FileNodeView scroller can move
+		/* Keep the left padding fixed. The drag handle sits 8px left of the text, so 52px
+		   leaves the same visible gap between the panel border and the handle as between
+		   the handle and the text. The handle fills most of that space, so the right
+		   padding is smaller to look balanced.
+		   Add a large bottom safe area so the shared FileNodeView scroller can move
 		   the final editable block above bubble menus and anchored comment cards. */
-		padding: max(16px, var(--FileEditor-top-safe-area, 0px)) min(64px, 8%) var(--FileEditorRichText-safe-bottom-padding);
+		padding: max(16px, var(--FileEditor-top-safe-area, 0px)) 16px
+			var(--FileEditorRichText-safe-bottom-padding) 52px;
 
 		color: var(--color-fg-11);
 		font-size: 16px;
